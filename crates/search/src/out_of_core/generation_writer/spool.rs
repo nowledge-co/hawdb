@@ -121,7 +121,8 @@ impl SpoolSource<'_> {
     ) -> Result<()> {
         checkpoint(task_context)?;
         let _buffer_memory = self.memory.spool.reserve(SPOOL_BUFFER_BYTES)?;
-        let file = File::open(self.path)?;
+        let file = super::io::GenerationIo::new(&self.memory, task_context)
+            .native(&[self.path], || File::open(self.path))??;
         #[cfg(test)]
         let file = read_evidence::track(file);
         let mut reader = BufReader::with_capacity(SPOOL_BUFFER_BYTES, file);
@@ -196,6 +197,7 @@ impl SpoolSource<'_> {
 
 pub(super) struct StageDirectory {
     pub(super) path: super::context_memory::OwnedPath,
+    _cleanup: skein_executor::QueryMemoryLease,
 }
 
 impl StageDirectory {
@@ -220,9 +222,17 @@ impl StageDirectory {
             }
             let path =
                 super::context_memory::OwnedPath::join(root, Path::new(&name), memory, task)?;
-            match fs::create_dir(&path) {
+            let cleanup = memory
+                .spool
+                .reserve(crate::build_memory::directory::stage_removal_bytes(&path)?)?;
+            let created = super::io::GenerationIo::new(memory, task)
+                .native(&[&path], || fs::create_dir(&path))?;
+            match created {
                 Ok(()) => {
-                    let stage = Self { path };
+                    let stage = Self {
+                        path,
+                        _cleanup: cleanup,
+                    };
                     checkpoint(task)?;
                     return Ok(stage);
                 }
@@ -245,21 +255,51 @@ impl Drop for StageDirectory {
 #[cfg(test)]
 pub(super) mod read_evidence {
     use super::*;
-    use std::cell::{Cell, RefCell};
+    use std::cell::RefCell;
+    use std::sync::{Arc, Mutex};
+
+    #[derive(Default)]
+    struct Observation {
+        opens: usize,
+        bytes: u64,
+        max_request: usize,
+        cancel_after: Option<(u64, crate::RuntimeCancellationToken)>,
+    }
 
     thread_local! {
-        static READS: Cell<(usize, u64)> = const { Cell::new((0, 0)) };
-        static MAX_REQUEST: Cell<usize> = const { Cell::new(0) };
-        static CANCEL_AFTER: RefCell<Option<(u64, crate::RuntimeCancellationToken)>> = const { RefCell::new(None) };
+        static CURRENT: RefCell<Arc<Mutex<Observation>>> = RefCell::new(Default::default());
+    }
+
+    // Keep each test isolated while explicitly following its analyzer worker.
+    pub(in super::super) struct Capture(Arc<Mutex<Observation>>);
+
+    pub(in super::super) fn capture() -> Capture {
+        CURRENT.with(|slot| Capture(Arc::clone(&slot.borrow())))
+    }
+
+    impl Capture {
+        pub(in super::super) fn install(self) -> Restore {
+            Restore(CURRENT.with(|slot| slot.replace(self.0)))
+        }
+    }
+
+    pub(in super::super) struct Restore(Arc<Mutex<Observation>>);
+
+    impl Drop for Restore {
+        fn drop(&mut self) {
+            CURRENT.with(|slot| *slot.borrow_mut() = Arc::clone(&self.0));
+        }
+    }
+
+    fn observe<T>(work: impl FnOnce(&mut Observation) -> T) -> T {
+        CURRENT.with(|slot| work(&mut slot.borrow().lock().unwrap()))
     }
 
     pub(in super::super) struct CancelGuard;
 
     impl Drop for CancelGuard {
         fn drop(&mut self) {
-            CANCEL_AFTER.with(|slot| {
-                slot.borrow_mut().take();
-            });
+            observe(|state| state.cancel_after = None);
         }
     }
 
@@ -267,46 +307,48 @@ pub(super) mod read_evidence {
         bytes: u64,
         token: crate::RuntimeCancellationToken,
     ) -> CancelGuard {
-        CANCEL_AFTER.with(|slot| *slot.borrow_mut() = Some((bytes, token)));
+        observe(|state| state.cancel_after = Some((bytes, token)));
         CancelGuard
     }
 
     pub(super) struct TrackedFile(File);
 
     pub(super) fn track(file: File) -> TrackedFile {
-        READS.with(|reads| {
-            let (opens, bytes) = reads.get();
-            reads.set((opens + 1, bytes));
-        });
+        observe(|state| state.opens += 1);
         TrackedFile(file)
     }
 
     pub(in super::super) fn take() -> (usize, u64) {
-        READS.with(|reads| reads.replace((0, 0)))
+        observe(|state| {
+            (
+                std::mem::take(&mut state.opens),
+                std::mem::take(&mut state.bytes),
+            )
+        })
     }
 
     pub(in super::super) fn take_max_request() -> usize {
-        MAX_REQUEST.replace(0)
+        observe(|state| std::mem::take(&mut state.max_request))
     }
 
     impl Read for TrackedFile {
         fn read(&mut self, output: &mut [u8]) -> std::io::Result<usize> {
-            MAX_REQUEST.set(MAX_REQUEST.get().max(output.len()));
+            observe(|state| state.max_request = state.max_request.max(output.len()));
             let count = self.0.read(output)?;
-            READS.with(|reads| {
-                let (opens, bytes) = reads.get();
-                reads.set((opens, bytes + count as u64));
-                CANCEL_AFTER.with(|slot| {
-                    let mut slot = slot.borrow_mut();
-                    if slot
-                        .as_ref()
-                        .is_some_and(|(limit, _)| bytes + count as u64 >= *limit)
-                    {
-                        slot.take().unwrap().1.cancel();
-                    }
-                });
+            observe(|state| {
+                state.bytes += count as u64;
+                if state
+                    .cancel_after
+                    .as_ref()
+                    .is_some_and(|(limit, _)| state.bytes >= *limit)
+                {
+                    state.cancel_after.take().unwrap().1.cancel();
+                }
             });
             Ok(count)
         }
     }
 }
+
+#[cfg(test)]
+mod stage_tests;

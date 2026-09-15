@@ -102,10 +102,7 @@ mod statistics_refresh;
 #[path = "store/wal_codec.rs"]
 mod wal_codec;
 pub use backup::restore_storage_backup;
-use backup::{
-    copy_backup_file, copy_file_with_checksum, file_checksum, remove_source_scan_artifacts,
-    validate_backup_files, validate_new_backup_destination,
-};
+use backup::{remove_source_scan_artifacts, validate_backup_files};
 pub use derived_repair::{
     DerivedArtifactHealth, DerivedArtifactHealthReport, DerivedArtifactHealthState,
     DerivedArtifactKind, DerivedArtifactRebuildOptions, DerivedArtifactRepairPlan,
@@ -193,13 +190,14 @@ use skein_storage::GraphIndexReadMetrics;
 #[cfg(test)]
 use skein_storage::COW_MAP_TARGET_SEGMENT_BYTES;
 use skein_storage::{
-    available_storage_space, decode_append_wal_batch,
+    available_storage_space, copy_backup_file, copy_file_with_checksum, decode_append_wal_batch,
     decode_relational_checkpoint_file_with_index_load,
     decode_relational_checkpoint_with_index_load, decode_relational_wal_batch,
-    encode_append_wal_batch, encode_relational_checkpoint, persistent_composite_property_identity,
-    sync_parent_directory, AdjacencyPostingList, AppendDecodeLimits, AppendGenerationReader,
-    AppendMutationLimits, AppendPublicationConfig, AppendPublicationState, AppendPublisher,
-    AppendState, CanonicalEndpointDirection, CanonicalSegmentError,
+    encode_append_wal_batch, encode_relational_checkpoint, file_checksum,
+    persistent_composite_property_identity, sync_parent_directory, validate_new_backup_destination,
+    AdjacencyPostingList, AppendDecodeLimits, AppendGenerationReader, AppendMutationLimits,
+    AppendPublicationConfig, AppendPublicationState, AppendPublisher, AppendState,
+    CanonicalEndpointDirection, CanonicalSegmentError,
     PersistentPropertyProjectionDefinitionAdmission, PersistentPropertyProjectionRecord,
     RelationalCheckpointIndexLoad, RelationalDecodeLimits, RelationalMutationLimits,
     RelationalOverflowConfig, RelationalOverflowPublicationConfig, RelationalOverflowPublisher,
@@ -1098,6 +1096,7 @@ pub struct GraphStore {
     projected_graph_artifacts: CowSegment<BTreeMap<String, ProjectedGraphArtifact>>,
     stable_id_mapping: CowSegment<StoreStableIdMapping>,
     initial_import_source_fingerprint: Option<String>,
+    search_projection_database_identity: Option<skein_core::Uuid>,
     search_projection_change_log_start_epoch: u64,
     search_projection_graph_changes: CowSegment<Vec<SearchProjectionGraphChange>>,
     search_projection_change_log_retained_bytes: usize,
@@ -1135,6 +1134,30 @@ pub struct GraphStore {
     /// work can request admission. The store never constructs its own.
     runtime_governor: Option<Arc<dyn skein_storage::BackgroundWorkAdmission>>,
     durable: Option<DurableStore>,
+}
+
+impl skein_system_sql::SystemSqlStore for GraphStore {
+    fn commit_epoch(&self) -> u64 {
+        GraphStore::commit_epoch(self)
+    }
+
+    fn append_storage_residency_report(&self) -> skein_storage::AppendStorageResidencyReport {
+        GraphStore::append_storage_residency_report(self)
+    }
+
+    fn statistics(&self, catalog: &Catalog) -> GraphStatistics {
+        GraphStore::statistics(self, catalog)
+    }
+
+    fn projected_graph_statuses(&self) -> Vec<skein_storage::ProjectedGraphStatus> {
+        GraphStore::projected_graph_statuses(self)
+    }
+
+    fn search_projection_changefeed_status(
+        &self,
+    ) -> skein_storage::SearchProjectionChangefeedStatus {
+        GraphStore::search_projection_changefeed_status(self)
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -2004,6 +2027,7 @@ impl GraphStore {
             projected_graph_artifacts: CowSegment::default(),
             stable_id_mapping: CowSegment::default(),
             initial_import_source_fingerprint: None,
+            search_projection_database_identity: None,
             search_projection_change_log_start_epoch: 0,
             search_projection_graph_changes: CowSegment::default(),
             search_projection_change_log_retained_bytes: 0,
@@ -2272,6 +2296,18 @@ impl GraphStore {
         )
     }
 
+    pub(crate) fn search_projection_database_identity(&self) -> Option<skein_core::Uuid> {
+        self.search_projection_database_identity
+    }
+
+    pub(crate) fn set_search_projection_database_identity(&mut self, identity: skein_core::Uuid) {
+        self.search_projection_database_identity = Some(identity);
+    }
+
+    pub(crate) fn search_projection_registry_root(&self) -> Option<&Path> {
+        self.durable.as_ref().map(|durable| durable.root_path())
+    }
+
     pub fn initial_import_source_fingerprint(&self) -> Option<&str> {
         self.initial_import_source_fingerprint.as_deref()
     }
@@ -2372,6 +2408,7 @@ impl GraphStore {
             projected_graph_artifacts: self.projected_graph_artifacts.clone(),
             stable_id_mapping: self.stable_id_mapping.clone(),
             initial_import_source_fingerprint: self.initial_import_source_fingerprint.clone(),
+            search_projection_database_identity: self.search_projection_database_identity,
             search_projection_change_log_start_epoch: self.search_projection_change_log_start_epoch,
             search_projection_graph_changes: self.search_projection_graph_changes.clone(),
             search_projection_change_log_retained_bytes: self

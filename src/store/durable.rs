@@ -148,6 +148,7 @@ pub(super) struct CheckpointImage<'a> {
     pub(super) statistics: &'a GraphStatistics,
     pub(super) projected_graphs: &'a BTreeMap<String, ProjectedGraphDefinition>,
     pub(super) initial_import_source_fingerprint: Option<&'a str>,
+    pub(super) search_projection_database_identity: Option<skein_core::Uuid>,
     pub(super) relational_checkpoint: Option<DurableArtifactMetadata>,
 }
 

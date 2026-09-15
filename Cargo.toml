@@ -11,8 +11,10 @@ getrandom = "0.4"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 skein-core = { path = "crates/core" }
+skein-bootstrap = { path = "crates/bootstrap" }
 skein-artifact = { path = "crates/artifact" }
 skein-compat = { path = "crates/compat" }
+skein-nowledge-contracts = { path = "crates/nowledge-contracts" }
 skein-analytics = { path = "crates/analytics" }
 skein-cypher = { path = "crates/cypher" }
 skein-ddl = { path = "crates/ddl" }
@@ -20,6 +22,7 @@ skein-evidence = { path = "crates/evidence" }
 skein-explain = { path = "crates/explain" }
 skein-executor = { path = "crates/executor" }
 skein-expression = { path = "crates/expression" }
+skein-fuzz-contracts = { path = "crates/fuzz-contracts" }
 skein-integrity = { path = "crates/integrity" }
 skein-optimizer = { path = "crates/optimizer" }
 skein-plan = { path = "crates/plan" }
@@ -34,6 +37,7 @@ skein-search = { path = "crates/search", default-features = false }
 skein-runtime-tokio = { path = "crates/runtime-tokio", optional = true }
 skein-sql = { path = "crates/sql" }
 skein-storage = { path = "crates/storage" }
+skein-system-sql = { path = "crates/system-sql" }
 skein-vector-projection = { path = "crates/vector-projection", optional = true }
 zstd = "0.13"
 unicode-width = "0.2"
@@ -41,7 +45,6 @@ skein-telemetry = { path = "crates/telemetry" }
 
 [dev-dependencies]
 libc = "0.2"
-loom = "0.7"
 
 [features]
 default = [
@@ -55,7 +58,7 @@ background-maintenance = ["skein-search/background-maintenance"]
 full-text-search = ["skein-search/full-text-search"]
 graph-analytics = ["skein-search/graph-analytics"]
 vector-search = ["skein-search/vector-search", "dep:skein-vector-projection"]
-loom-tests = []
+loom-tests = ["skein-system-sql/loom-tests"]
 opentelemetry = ["skein-telemetry/opentelemetry"]
 qualification = ["skein-search/qualification"]
 tokio-runtime = ["dep:skein-runtime-tokio"]
@@ -63,8 +66,10 @@ tokio-runtime = ["dep:skein-runtime-tokio"]
 [workspace]
 members = [
   "crates/analytics",
+  "crates/bootstrap",
   "crates/artifact",
   "crates/compat",
+  "crates/nowledge-contracts",
   "crates/core",
   "crates/cypher",
   "crates/ddl",
@@ -72,6 +77,7 @@ members = [
   "crates/explain",
   "crates/executor",
   "crates/expression",
+  "crates/fuzz-contracts",
   "crates/fuzz",
   "crates/cgroup",
   "crates/integrity",
@@ -89,6 +95,7 @@ members = [
   "crates/sql",
   "crates/sql-syntax",
   "crates/storage",
+  "crates/system-sql",
   "crates/telemetry",
   "crates/runtime-tokio",
   "crates/vector-projection",

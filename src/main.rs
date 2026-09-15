@@ -1,7 +1,6 @@
 mod cli;
 
 use cli::fixture_contract::{nowledge_fixture_contract_json, nowledge_fixture_contract_usage};
-use cli::fixture_contract_check::run_nowledge_fixture_contract_command_check;
 use skein::background_maintenance_evidence::run_nowledge_background_maintenance_evidence;
 use skein::bounded_read_evidence::run_nowledge_bounded_read_evidence;
 use skein::graph_route_evidence::run_nowledge_graph_route_evidence;
@@ -48,6 +47,7 @@ use skein::{
     BackgroundMaintenanceOptions, CompatibilityFixture, LocalQosPolicy, LocalQosState, WorkClass,
     WORK_CLASS_COUNT,
 };
+use skein_evidence::fixture_contract_check::run_nowledge_fixture_contract_command_check;
 use skein_integrity::checksum_u64;
 use skein_storage::{durable_replace_file, sync_directory as sync_storage_directory};
 use std::collections::{BTreeMap, BTreeSet};

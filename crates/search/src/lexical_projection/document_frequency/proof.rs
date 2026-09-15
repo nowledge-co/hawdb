@@ -25,7 +25,7 @@ fn reference(events: &[Event]) -> (Frequencies, u32) {
             )
             .unwrap();
     }
-    let document = analysis.finish();
+    let document = analysis.finish().unwrap();
     (document.frequencies, document.document_len)
 }
 
@@ -230,7 +230,7 @@ fn resolved_prefix_run(events: &[Event]) -> PartialRun {
             // the last seen field, whose marker suppresses later phrase aliases.
             // No later token may revisit an earlier field in this contract.
             (
-                (term, entry.last_field),
+                (term.into_untracked().unwrap(), entry.last_field),
                 PartialFieldFrequency {
                     repeated_weight: u64::from(entry.frequency),
                     first_event: Some((0, 0)),

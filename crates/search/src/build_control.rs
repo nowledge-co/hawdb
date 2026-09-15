@@ -5,6 +5,8 @@ use skein_core::RuntimeTaskContext;
 use skein_integrity::Crc32cHasher;
 use std::io::{self, Write};
 
+pub(crate) mod json;
+
 pub(crate) fn checkpoint(context: &RuntimeTaskContext) -> Result<()> {
     context
         .checkpoint()

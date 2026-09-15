@@ -17,6 +17,8 @@ mod external_shadow;
 pub mod fixture_contract;
 mod inventory_gate;
 mod nowledge_fixture;
+#[doc(hidden)]
+pub mod nowledge_inventory;
 
 #[cfg(test)]
 use external_shadow::{
@@ -48,6 +50,10 @@ pub use inventory_gate::{
     CompatibilityQueryInventoryItem, CompatibilityRollbackEvidence,
 };
 pub use nowledge_fixture::{nowledge_memory_core_fixture, nowledge_memory_core_inventory};
+pub use nowledge_inventory::{
+    scan_nowledge_query_inventory_cypher_coverage_detail_to_json,
+    scan_nowledge_query_inventory_cypher_coverage_to_json, NowledgeCypherMigrationGateJsonOptions,
+};
 
 const DEFAULT_FLOAT_ABS_TOLERANCE: f64 = 1.0e-9;
 pub const EXTERNAL_SHADOW_PROTOCOL_VERSION: u64 = 1;

@@ -116,6 +116,10 @@ pub use api::{
     RelationalOperatorKind, RelationalSqlIndexReadProfile, RelationalSqlReadProfile,
     RelationalSqlRowReadProfile, RelationalSqlStageTimings, ScheduledSearchProjectionCatchUpReport,
     SearchProjectionCatchUpReport, SearchProjectionCatchUpStopReason, SearchProjectionChangeBatch,
+    SearchProjectionConsumer, SearchProjectionConsumerCatchUpReport, SearchProjectionConsumerError,
+    SearchProjectionConsumerId, SearchProjectionConsumerOptions, SearchProjectionConsumerReadiness,
+    SearchProjectionConsumerRebuildReason, SearchProjectionConsumerResult,
+    SearchProjectionConsumerState, SearchProjectionConsumerStatus,
     SearchProjectionGraphDeltaRequest, SearchProjectionRelationalDelta,
     SkeinLightningBootstrapExport, SkeinLightningBootstrapManifest, SkeinLightningGraphStream,
     SkeinLightningGraphStreamValidation, SkeinLightningInitialImportApplyReport,
@@ -198,9 +202,8 @@ pub use crash_recovery_evidence::{
 };
 pub use cypher::RelationshipDirection;
 pub use embedded::{
-    EmbeddedDeploymentProfile, EmbeddedQueryEntrypoint, EmbeddedQueryError,
-    EmbeddedQueryPathReadiness, EmbeddedRuntimeResources, SkeinEmbedded, SkeinEmbeddedOpenOptions,
-    EMBEDDED_QUERY_PATH_READINESS_PROTOCOL,
+    EmbeddedDeploymentProfile, EmbeddedQueryError, EmbeddedRuntimeResources, SkeinEmbedded,
+    SkeinEmbeddedOpenOptions,
 };
 #[cfg(feature = "tokio-runtime")]
 pub use embedded_tokio::{
@@ -360,9 +363,7 @@ pub use qos::{
     WorkPriority, WorkRequest, WORK_CLASS_COUNT,
 };
 pub use query_family_evidence::nowledge_query_family_evidence_json;
-pub use query_runtime_preflight::{
-    parse_query_runtime_preflight_probes, query_runtime_preflight_json,
-};
+pub use query_runtime_preflight::query_runtime_preflight_json;
 pub use replacement_summary::{
     nowledge_graph_route_readiness_summary, nowledge_graph_route_readiness_summary_from_bundle,
     nowledge_replacement_summary_json, nowledge_replacement_summary_json_with_options,
@@ -473,6 +474,10 @@ pub use skein_qos::{
     RuntimeWorkPriority, RuntimeWorkRequest, StorageDeviceDiscoverySource, StorageDeviceProfile,
     StorageMediaKind,
 };
+pub use skein_readiness::embedded_query_path::{
+    EmbeddedQueryEntrypoint, EmbeddedQueryPathReadiness, EMBEDDED_QUERY_PATH_READINESS_PROTOCOL,
+};
+pub use skein_readiness::query_runtime_preflight::parse_query_runtime_preflight_probes;
 #[cfg(feature = "tokio-runtime")]
 pub use skein_runtime_tokio::{
     TokioRuntimeAdapter, TokioRuntimeConfig, TokioRuntimeError, TokioRuntimeOwnership,
@@ -561,13 +566,14 @@ mod lexical_manifest_budget_tests;
 #[cfg(test)]
 mod tests {
     use super::{
-        Database, IoConcurrencyBudget, NowledgeGraphAdapter, NowledgeGraphStatement,
-        RuntimeGovernor, RuntimeGovernorConfig, RuntimeIoWaveError, RuntimeMemorySnapshot,
-        RuntimeResourceBudget, RuntimeResourceSnapshot, RuntimeTaskContext, RuntimeWorkPriority,
-        RuntimeWorkRequest, SegmentBytes, SegmentRangeReader, SegmentReadError,
-        SegmentReadExecutionError, SegmentReadExecutor, SegmentReadRange, SegmentReadScheduler,
-        Value,
+        Database, EmbeddedQueryEntrypoint, EmbeddedQueryPathReadiness, IoConcurrencyBudget,
+        NowledgeGraphAdapter, NowledgeGraphStatement, RuntimeGovernor, RuntimeGovernorConfig,
+        RuntimeIoWaveError, RuntimeMemorySnapshot, RuntimeResourceBudget, RuntimeResourceSnapshot,
+        RuntimeTaskContext, RuntimeWorkPriority, RuntimeWorkRequest, SegmentBytes,
+        SegmentRangeReader, SegmentReadError, SegmentReadExecutionError, SegmentReadExecutor,
+        SegmentReadRange, SegmentReadScheduler, Value,
     };
+    use std::any::TypeId;
     use std::collections::BTreeMap;
     use std::num::{NonZeroU64, NonZeroUsize};
 
@@ -604,6 +610,18 @@ mod tests {
         assert_eq!(
             output.rows[0].get("title"),
             Some(&Value::String("Root".to_string()))
+        );
+    }
+
+    #[test]
+    fn crate_root_reexports_embedded_query_readiness_contract() {
+        assert_eq!(
+            TypeId::of::<EmbeddedQueryEntrypoint>(),
+            TypeId::of::<skein_readiness::embedded_query_path::EmbeddedQueryEntrypoint>()
+        );
+        assert_eq!(
+            TypeId::of::<EmbeddedQueryPathReadiness>(),
+            TypeId::of::<skein_readiness::embedded_query_path::EmbeddedQueryPathReadiness>()
         );
     }
 

@@ -1,4 +1,3 @@
-use super::next_generation;
 use crate::build_control::checkpoint;
 use crate::build_memory::{
     checked_add, checked_mul, AdmittedDocument, BuildMemory, SET_ENTRY_BYTES, SPOOL_BUFFER_BYTES,
@@ -6,12 +5,13 @@ use crate::build_memory::{
 use crate::document_encoding::DocumentEncoding;
 use crate::error::{Result, SkeinError};
 use crate::generation_cleanup::{
-    SearchProjectionCleanupOptions, SearchProjectionCleanupState, SearchProjectionGenerations,
+    once::PreparedCleanup, SearchProjectionCleanupOptions, SearchProjectionGenerations,
 };
+#[cfg(test)]
+use crate::lexical_projection::artifact_file as lexical_artifact_file;
 use crate::lexical_projection::{
-    analyzer_digest as lexical_analyzer_digest, artifact_file as lexical_artifact_file,
-    LexicalProjectionConfig, LexicalProjectionWriter, DEFAULT_MAX_MANIFEST_BYTES,
-    MANIFEST_FILE as LEXICAL_MANIFEST_FILE,
+    analyzer_digest as lexical_analyzer_digest, LexicalProjectionConfig, LexicalProjectionWriter,
+    DEFAULT_MAX_MANIFEST_BYTES, MANIFEST_FILE as LEXICAL_MANIFEST_FILE,
 };
 use crate::{
     SearchAnalyzerLexicon, SearchDocument, SearchEmbeddingManifest, SearchLexicalTermPolicy,
@@ -19,7 +19,9 @@ use crate::{
     SEARCH_DOCUMENT_ID_FIELD,
 };
 use artifacts::SegmentArtifactBuilder;
-use publication::{file_len_checksum, publish_generation, PublishGenerationInput};
+#[cfg(test)]
+use publication::file_len_checksum;
+use publication::{publish_generation, PublishGenerationInput};
 use rabitq::RaBitQArtifactBuilder;
 use serde::Serialize;
 use skein_core::RuntimeTaskContext;
@@ -38,6 +40,8 @@ mod artifact_name;
 mod artifacts;
 mod context_memory;
 mod delta;
+mod discovery;
+mod io;
 mod publication;
 mod rabitq;
 #[cfg(feature = "vector-search")]
@@ -180,6 +184,7 @@ pub struct SearchOutOfCoreGenerationWriter {
     metadata_field_bytes: u64,
     expected_active_generation: Option<u64>,
     poisoned: bool,
+    needs_chinese_analyzer: bool,
     task_context: RuntimeTaskContext,
     memory: BuildMemory,
     // Keep charges after the payload fields so data drops before its leases.
@@ -254,7 +259,8 @@ impl SearchOutOfCoreGenerationWriter {
         let metadata_memory = memory.retained.reserve(metadata_bytes)?;
         let spool_memory = memory.spool.reserve(SPOOL_BUFFER_BYTES)?;
         let root = context_memory::OwnedPath::copy(root.as_ref(), &memory, &task_context)?;
-        fs::create_dir_all(&root)?;
+        io::GenerationIo::new(&memory, &task_context)
+            .native(&[&root], || fs::create_dir_all(&root))??;
         let stage = StageDirectory::create(&root, &memory, &task_context)?;
         let spool_path = context_memory::OwnedPath::join(
             &stage.path,
@@ -264,10 +270,12 @@ impl SearchOutOfCoreGenerationWriter {
         )?;
         let mut spool = BufWriter::with_capacity(
             SPOOL_BUFFER_BYTES,
-            OpenOptions::new()
-                .create_new(true)
-                .write(true)
-                .open(&spool_path)?,
+            io::GenerationIo::new(&memory, &task_context).native(&[&spool_path], || {
+                OpenOptions::new()
+                    .create_new(true)
+                    .write(true)
+                    .open(&spool_path)
+            })??,
         );
         spool.write_all(SPOOL_HEADER)?;
         let metadata_fields = required_descriptor_fields();
@@ -304,6 +312,7 @@ impl SearchOutOfCoreGenerationWriter {
             metadata_field_bytes,
             expected_active_generation: None,
             poisoned: false,
+            needs_chinese_analyzer: false,
             task_context,
             memory,
             spool_memory: Some(spool_memory),
@@ -373,7 +382,19 @@ impl SearchOutOfCoreGenerationWriter {
     }
 
     pub fn finish(self) -> Result<SearchOutOfCoreGenerationBuildReport> {
-        self.finish_with_artifacts(Self::build_artifacts)
+        self.finish_with_artifacts(|writer, source, generation| {
+            if writer.needs_chinese_analyzer {
+                #[cfg(test)]
+                let read_evidence = spool::read_evidence::capture();
+                crate::analyzer_workspace::run(&writer.memory, &writer.task_context, |workspace| {
+                    #[cfg(test)]
+                    let _read_evidence = read_evidence.install();
+                    writer.build_artifacts_with_workspace(source, generation, Some(workspace))
+                })
+            } else {
+                writer.build_artifacts(source, generation)
+            }
+        })
     }
 
     fn finish_with_artifacts(
@@ -394,7 +415,8 @@ impl SearchOutOfCoreGenerationWriter {
         drop(spool);
         self.spool_memory.take();
         checkpoint(&self.task_context)?;
-        let actual_spool_bytes = fs::metadata(&self.spool_path)?.len();
+        let actual_spool_bytes =
+            io::GenerationIo::new(&self.memory, &self.task_context).length(&self.spool_path)?;
         if actual_spool_bytes != self.spool_bytes {
             return Err(SkeinError::Storage(format!(
                 "search generation spool length changed: expected {}, got {actual_spool_bytes}",
@@ -402,9 +424,13 @@ impl SearchOutOfCoreGenerationWriter {
             )));
         }
 
-        let _publish_lease = super::SearchProjectionPublishLease::acquire(&self.root)?;
+        let _publish_lease = super::SearchProjectionPublishLease::acquire_with_context(
+            &self.root,
+            &self.memory,
+            &self.task_context,
+        )?;
         if let Some(expected) = self.expected_active_generation {
-            let actual = super::active_manifest_generation(&self.root)?;
+            let actual = discovery::active(&self.root, &self.memory, &self.task_context)?;
             if actual != Some(expected) {
                 return Err(SkeinError::Storage(format!(
                     "search generation update base changed before publication: expected {expected}, got {actual:?}"
@@ -419,7 +445,12 @@ impl SearchOutOfCoreGenerationWriter {
             max_metadata_fields: self.options.max_metadata_fields.get(),
             memory: self.memory.clone(),
         };
-        let generation = next_generation(&self.root, self.max_lexical_manifest_bytes.get())?;
+        let generation = discovery::next(
+            &self.root,
+            self.max_lexical_manifest_bytes.get(),
+            &self.memory,
+            &self.task_context,
+        )?;
         let lexical_generation = generation;
         let GenerationArtifacts {
             segment: segment_output,
@@ -430,27 +461,36 @@ impl SearchOutOfCoreGenerationWriter {
         } = build(&self, &source, generation)?;
 
         checkpoint(&self.task_context)?;
-        let published = publish_generation(PublishGenerationInput {
-            root: &self.root,
-            stage: &self.stage.path,
-            generation,
-            document_count: self.document_count,
-            documents_digest: self.documents_digest.finish(),
-            source_graph_commit_epoch: self.options.source_graph_commit_epoch,
-            import_source_graph_commit_epoch: self.options.import_source_graph_commit_epoch,
-            embedding_manifest: self.options.embedding_manifest.as_ref(),
-            embedding_dimension: self.embedding_dimension,
-            layout: &segment_output.layout,
-            lexical_artifact_name: &lexical_artifact_name,
-            rabitq: rabitq.as_ref(),
-            payload_bytes: segment_output.document_payload_bytes,
-            metadata_payload_bytes: segment_output.metadata_payload_bytes,
-            vector_payload_bytes: segment_output.vector_payload_bytes,
-            max_generation_bytes: self.options.max_generation_bytes.get(),
-        })?;
+        let cleanup = PreparedCleanup::prepare(&self.root, &self.memory, &self.task_context)?;
+        let published = publish_generation(
+            PublishGenerationInput {
+                root: &self.root,
+                stage: &self.stage.path,
+                generation,
+                document_count: self.document_count,
+                documents_digest: self.documents_digest.finish(),
+                source_graph_commit_epoch: self.options.source_graph_commit_epoch,
+                import_source_graph_commit_epoch: self.options.import_source_graph_commit_epoch,
+                embedding_manifest: self.options.embedding_manifest.as_ref(),
+                embedding_dimension: self.embedding_dimension,
+                layout: &segment_output.layout,
+                lexical_artifact_name: &lexical_artifact_name,
+                rabitq: rabitq.as_ref(),
+                payload_bytes: segment_output.document_payload_bytes,
+                metadata_payload_bytes: segment_output.metadata_payload_bytes,
+                vector_payload_bytes: segment_output.vector_payload_bytes,
+                max_generation_bytes: self.options.max_generation_bytes.get(),
+            },
+            &self.memory,
+            &self.task_context,
+        )?;
 
-        let mut cleanup_state = SearchProjectionCleanupState::default();
-        let cleanup = cleanup_state.run(
+        #[cfg(test)]
+        crate::generation_cleanup::once::evidence::run(
+            crate::generation_cleanup::once::evidence::Point::AfterCommit,
+            &self.memory,
+        );
+        let cleanup = cleanup.run(
             &self.root,
             SearchProjectionGenerations {
                 lexical: Some(lexical_generation),
@@ -460,6 +500,7 @@ impl SearchOutOfCoreGenerationWriter {
                 out_of_core_discovery_failed: false,
             },
             self.options.cleanup_options,
+            &self.task_context,
         );
 
         Ok(SearchOutOfCoreGenerationBuildReport {
@@ -494,7 +535,7 @@ impl SearchOutOfCoreGenerationWriter {
             resident_document_count: 0,
             active_manifest_published_last: true,
             cleanup_deleted_files: cleanup.deleted_files,
-            cleanup_pending_files: cleanup.pending_after,
+            cleanup_pending_files: cleanup.pending_files,
             cleanup_retry_required: cleanup.retry_required,
         })
     }
@@ -503,6 +544,15 @@ impl SearchOutOfCoreGenerationWriter {
         &self,
         source: &SpoolSource,
         generation: u64,
+    ) -> Result<GenerationArtifacts> {
+        self.build_artifacts_with_workspace(source, generation, None)
+    }
+
+    fn build_artifacts_with_workspace(
+        &self,
+        source: &SpoolSource,
+        generation: u64,
+        workspace: Option<std::sync::Arc<crate::analyzer_workspace::Workspace>>,
     ) -> Result<GenerationArtifacts> {
         let mut segments = SegmentArtifactBuilder::new_with_context(
             &self.stage.path,
@@ -526,6 +576,7 @@ impl SearchOutOfCoreGenerationWriter {
         };
         let lexical = LexicalProjectionWriter::new(lexical_config)
             .with_context(self.memory.clone(), self.task_context.clone())
+            .with_analyzer_workspace(workspace)
             .write_scanned(
                 &self.stage.path,
                 generation,
@@ -547,11 +598,17 @@ impl SearchOutOfCoreGenerationWriter {
             )?;
         drop(lexical);
         let (segment, rabitq) = completed.expect("lexical build completed its input scan");
-        let lexical_artifact_name = lexical_artifact_file(generation);
+        let lexical_artifact_name = artifact_name::Name::generated(
+            "search_lexical.",
+            generation,
+            &self.memory,
+            &self.task_context,
+        )?;
+        let io = io::GenerationIo::new(&self.memory, &self.task_context);
         let (lexical_artifact_bytes, _) =
-            file_len_checksum(&self.stage.path.join(&lexical_artifact_name))?;
+            io.checksum(&io.path(&self.stage.path, lexical_artifact_name.as_ref())?)?;
         let (lexical_manifest_bytes, _) =
-            file_len_checksum(&self.stage.path.join(LEXICAL_MANIFEST_FILE))?;
+            io.checksum(&io.path(&self.stage.path, Path::new(LEXICAL_MANIFEST_FILE))?)?;
         Ok(GenerationArtifacts {
             segment,
             lexical_artifact_name,
@@ -667,6 +724,8 @@ impl SearchOutOfCoreGenerationWriter {
         )?;
         checkpoint(&self.task_context)?;
         self.documents_digest = documents_digest;
+        self.needs_chinese_analyzer |=
+            crate::analyzer_workspace::document_needs_workspace(&document);
         self.last_document_id = Some(document.document.id);
         self.document_count = self.document_count.saturating_add(1);
         if document.document.embedding.is_some() {
@@ -686,7 +745,7 @@ impl SearchOutOfCoreGenerationWriter {
 
 struct GenerationArtifacts {
     segment: artifacts::SegmentArtifactOutput,
-    lexical_artifact_name: String,
+    lexical_artifact_name: artifact_name::Name,
     lexical_artifact_bytes: u64,
     lexical_manifest_bytes: u64,
     rabitq: Option<RaBitQGenerationArtifact>,

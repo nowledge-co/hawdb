@@ -42,31 +42,47 @@ use std::sync::{Arc, Mutex};
 
 mod analyzer_lexicon;
 mod analyzer_stream;
+mod analyzer_workspace;
 mod bounded_file;
 mod build_control;
 mod build_memory;
+mod build_term;
 mod cjk_tokenizer;
 #[cfg(test)]
 mod compression_tests;
+/// Internal assembly support for the embedded database facade.
+#[doc(hidden)]
+pub mod consumer;
 #[cfg(test)]
 mod document_decoding_tests;
 mod document_encoding;
 mod generation_cleanup;
 mod identifier;
+#[doc(hidden)]
+pub mod knowledge_retrieval_pipeline;
 mod lexical_projection;
 mod lexical_readiness;
+#[cfg(all(test, feature = "full-text-search"))]
+mod lexical_snapshot_test_gate;
 mod lexical_term_policy;
 mod out_of_core;
+mod projection_catch_up;
 mod projection_delta_contracts;
 #[doc(hidden)]
 pub mod projection_evidence;
 #[doc(hidden)]
 pub mod projection_evidence_cli;
+
+#[doc(hidden)]
+pub mod projection_consumer;
 #[cfg(feature = "vector-search")]
 pub mod rabitq_projection;
 mod range_io;
 mod recall_validation;
 mod snapshot_writer;
+#[cfg(test)]
+#[path = "../tests/support/live_allocation.rs"]
+mod test_allocation;
 mod vector_execution;
 
 use document_encoding::encode_search_document_line;
@@ -149,6 +165,7 @@ pub use generation_cleanup::{
     SEARCH_PROJECTION_CLEANUP_PROTOCOL,
 };
 use generation_cleanup::{SearchProjectionCleanupState, SearchProjectionGenerations};
+pub use knowledge_retrieval_pipeline::{KnowledgeRetrievalPipelineReport, KnowledgeRetrievalStage};
 use lexical_projection::{
     analyzer_digest as lexical_analyzer_digest, documents_digest as lexical_documents_digest,
     LexicalMiniDelta, LexicalProjectionConfig, LexicalProjectionReader, LexicalProjectionWriter,
@@ -167,6 +184,17 @@ pub use out_of_core::{
     SearchOutOfCoreOutput, SearchOutOfCoreReader,
 };
 // These are internal ownership seams. Hosts continue to use the embedded facade.
+#[doc(hidden)]
+pub use projection_catch_up::{
+    run_scheduled_search_projection_catch_up, run_search_projection_catch_up,
+    scheduled_search_projection_catch_up_report, search_projection_catch_up_report,
+    search_projection_durable_epoch, start_search_projection_background_work,
+    validate_search_projection_catch_up_request,
+};
+pub use projection_catch_up::{
+    ScheduledSearchProjectionCatchUpReport, SearchProjectionCatchUpReport,
+    SearchProjectionCatchUpStopReason,
+};
 #[doc(hidden)]
 pub use projection_delta_contracts::{
     SearchProjectionChangeBatch, SearchProjectionGraphDeltaRequest, SearchProjectionRelationalDelta,
@@ -1217,12 +1245,20 @@ impl SearchAnalyzerLexicon {
         is_core_search_stopword(token) || self.stopwords.contains(token)
     }
 
+    #[cfg(test)]
     fn semantic_aliases(&self, token: &str) -> Vec<String> {
         self.alias_rules
             .iter()
             .filter(|rule| rule.inputs.iter().any(|input| input == token))
             .flat_map(|rule| rule.aliases.iter().cloned())
             .collect()
+    }
+
+    fn semantic_alias_slices<'a>(&'a self, token: &str) -> impl Iterator<Item = &'a str> {
+        self.alias_rules
+            .iter()
+            .filter(move |rule| rule.inputs.iter().any(|input| input == token))
+            .flat_map(|rule| rule.aliases.iter().map(String::as_str))
     }
 }
 
@@ -1328,6 +1364,10 @@ pub struct SearchProjectionDeltaReport {
 #[derive(Debug)]
 pub struct SearchIndex {
     documents: BTreeMap<String, SearchDocument>,
+    consumer_binding: Option<consumer::ConsumerBinding>,
+    consumer_binding_valid: bool,
+    consumer_owned_mutation: bool,
+    consumer_receipt: Mutex<Option<consumer::CheckpointReceipt>>,
     path: Option<PathBuf>,
     embedding_dimension: Option<usize>,
     embedding_manifest: Option<SearchEmbeddingManifest>,
@@ -1361,26 +1401,54 @@ impl SearchIndex {
 
     pub fn open(path: impl AsRef<Path>) -> Result<Self> {
         fs::create_dir_all(path.as_ref())?;
+        let _lease = out_of_core::SearchProjectionPublishLease::acquire(path.as_ref())?;
+        Self::open_under_lease(path.as_ref(), false)
+    }
+
+    fn open_under_lease(path: &Path, registered: bool) -> Result<Self> {
         let mut index = Self {
-            path: Some(path.as_ref().to_path_buf()),
+            path: Some(path.to_path_buf()),
             ..Self::default()
         };
-        index.load_snapshot()?;
-        index.load_or_rebuild_segment_descriptor()?;
-        index.load_lexical_projection()?;
+        index.load_snapshot().map_err(|error| {
+            if registered {
+                SkeinError::StorageIntegrity(error.to_string())
+            } else {
+                error
+            }
+        })?;
+        if index.consumer_binding.is_some() != registered {
+            return Err(SkeinError::Storage(
+                "projection consumer lifecycle does not match snapshot binding".into(),
+            ));
+        }
+        if registered {
+            index
+                .validate_registered_artifacts()
+                .map_err(|error| SkeinError::StorageIntegrity(error.to_string()))?;
+        } else {
+            index.load_or_rebuild_segment_descriptor()?;
+            index.load_lexical_projection()?;
+        }
         #[cfg(feature = "vector-search")]
-        index.load_rabitq_projection();
+        if registered {
+            index.load_registered_rabitq_projection()?;
+        } else {
+            index.load_rabitq_projection();
+        }
         index.retry_projection_cleanup(SearchProjectionCleanupOptions::default());
         Ok(index)
     }
 
     pub fn with_analyzer_lexicon(mut self, analyzer_lexicon: SearchAnalyzerLexicon) -> Self {
+        self.mark_untracked_consumer_mutation();
         self.analyzer_lexicon = analyzer_lexicon;
         self.invalidate_lexical_projection();
         self
     }
 
     pub fn set_analyzer_lexicon(&mut self, analyzer_lexicon: SearchAnalyzerLexicon) {
+        self.mark_untracked_consumer_mutation();
         self.analyzer_lexicon = analyzer_lexicon;
         self.invalidate_lexical_projection();
     }
@@ -1438,6 +1506,7 @@ impl SearchIndex {
         &mut self,
         options: RaBitQCandidateProjectionBuildOptions,
     ) {
+        self.mark_untracked_consumer_mutation();
         self.rabitq_build_options = options;
         self.invalidate_rabitq_projection();
     }
@@ -1578,6 +1647,7 @@ impl SearchIndex {
     }
 
     pub fn set_telemetry_sink(&mut self, telemetry: Option<Arc<dyn TelemetrySink>>) {
+        self.mark_untracked_consumer_mutation();
         self.telemetry = telemetry;
     }
 
@@ -1586,6 +1656,7 @@ impl SearchIndex {
     }
 
     pub fn set_range_read_config(&mut self, config: SearchRangeReadConfig) {
+        self.mark_untracked_consumer_mutation();
         self.range_read_config = config;
     }
 
@@ -1594,6 +1665,7 @@ impl SearchIndex {
     }
 
     pub fn set_runtime_capabilities(&mut self, capabilities: RuntimeCapabilities) {
+        self.mark_untracked_consumer_mutation();
         self.runtime_capabilities =
             crate::compiled_capabilities::effective_runtime_capabilities(capabilities);
     }
@@ -1603,6 +1675,7 @@ impl SearchIndex {
     }
 
     pub fn upsert(&mut self, document: SearchDocument) -> Result<()> {
+        self.require_owned_mutation_or_unregistered()?;
         if let Some(embedding) = &document.embedding {
             self.validate_or_set_dimension(embedding.len())?;
         }
@@ -1619,6 +1692,7 @@ impl SearchIndex {
     }
 
     pub fn delete(&mut self, id: &str) {
+        self.mark_untracked_consumer_mutation();
         self.record_lexical_delete(id);
         self.documents.remove(id);
         #[cfg(feature = "vector-search")]
@@ -1630,6 +1704,7 @@ impl SearchIndex {
         &mut self,
         delta: SearchProjectionDelta,
     ) -> Result<SearchProjectionDeltaReport> {
+        self.require_owned_mutation_or_unregistered()?;
         let operation_count = delta.operation_count();
         if let Some(limit) = delta.max_operations
             && operation_count > limit
@@ -1830,6 +1905,7 @@ impl SearchIndex {
     /// Records immutable provenance for an external graph bootstrap. The
     /// mutable local projection cursor remains independent.
     pub fn record_import_source_graph_commit_epoch(&mut self, epoch: u64) -> Result<()> {
+        self.require_owned_mutation_or_unregistered()?;
         self.validate_import_source_graph_commit_epoch(epoch)?;
         self.import_source_graph_commit_epoch = Some(epoch);
         Ok(())
@@ -1939,6 +2015,7 @@ impl SearchIndex {
     }
 
     pub fn apply_embedding_manifest(&mut self, manifest: SearchEmbeddingManifest) -> Result<()> {
+        self.require_owned_mutation_or_unregistered()?;
         if let Some(existing) = &self.embedding_manifest {
             if existing == &manifest {
                 return Ok(());
@@ -1967,6 +2044,7 @@ impl SearchIndex {
         store: &S,
         options: SearchRebuildOptions,
     ) -> Result<SearchRebuildSummary> {
+        self.require_owned_mutation_or_unregistered()?;
         let started = std::time::Instant::now();
         let mut next_documents = BTreeMap::new();
         let mut scanned_nodes = 0;
@@ -2135,6 +2213,7 @@ impl SearchIndex {
         store: &S,
         options: MetadataRepairOptions,
     ) -> Result<MetadataRepairSummary> {
+        self.require_owned_mutation_or_unregistered()?;
         let started = std::time::Instant::now();
         let mut repairs = Vec::new();
         let mut scanned_nodes = 0;
@@ -2341,12 +2420,21 @@ impl SearchIndex {
     }
 
     pub fn checkpoint_with_report(&self) -> Result<SearchCheckpointReport> {
+        self.require_unregistered_publication()?;
+        self.checkpoint_with_lease(false)
+    }
+
+    fn checkpoint_with_lease(&self, registered: bool) -> Result<SearchCheckpointReport> {
         let Some(path) = &self.path else {
             return Ok(SearchCheckpointReport::in_memory(self.documents.len()));
         };
         let started = std::time::Instant::now();
         let result = (|| {
-            let _publish_lease = out_of_core::SearchProjectionPublishLease::acquire(path)?;
+            let _publish_lease = if registered {
+                None
+            } else {
+                Some(out_of_core::SearchProjectionPublishLease::acquire(path)?)
+            };
             let snapshot_path = path.join(SEARCH_SNAPSHOT_FILE);
             let snapshot = write_search_snapshot(
                 &snapshot_path,
@@ -2354,6 +2442,7 @@ impl SearchIndex {
                 self.import_source_graph_commit_epoch,
                 self.embedding_manifest.as_ref(),
                 self.embedding_dimension,
+                self.consumer_binding.as_ref(),
                 self.documents.values(),
             )?;
             self.write_segment_artifacts(path)?;
@@ -2366,6 +2455,20 @@ impl SearchIndex {
                 .lock()
                 .unwrap_or_else(|poisoned| poisoned.into_inner()) = self.source_graph_commit_epoch;
             self.retry_projection_cleanup(SearchProjectionCleanupOptions::default());
+            if let Some(binding) = &self.consumer_binding {
+                *self
+                    .consumer_receipt
+                    .lock()
+                    .unwrap_or_else(|error| error.into_inner()) =
+                    Some(consumer::CheckpointReceipt {
+                        binding: binding.clone(),
+                        source_epoch: self.source_graph_commit_epoch.ok_or_else(|| {
+                            SkeinError::Storage("registered checkpoint missing source epoch".into())
+                        })?,
+                        encoded_len: snapshot.encoded_len,
+                        sha256: snapshot.encoded_sha256.to_string(),
+                    });
+            }
             Ok(snapshot.finish(projection_generation))
         })();
         if let Some(telemetry) = &self.telemetry {
@@ -3184,6 +3287,10 @@ impl SearchIndex {
         } else {
             None
         };
+        #[cfg(all(test, feature = "full-text-search"))]
+        if lexical_snapshot.is_some() {
+            lexical_snapshot_test_gate::pause_after_capture();
+        }
         let text_corpus =
             if text_available && mode != SearchMode::Vector && lexical_snapshot.is_none() {
                 Some(TextCorpusStats::from_documents(
@@ -3709,7 +3816,32 @@ impl SearchIndex {
             }
             let fields = line.split('\t').collect::<Vec<_>>();
             match fields.as_slice() {
+                ["projection_consumer_binding", database, projection, id, registration, checkpoint] =>
+                {
+                    if body.lines().nth(1) != Some(line) {
+                        return Err(SkeinError::Storage(
+                            "projection consumer binding must follow the snapshot header".into(),
+                        ));
+                    }
+                    if self.consumer_binding.is_some() {
+                        return Err(SkeinError::Storage(
+                            "duplicate projection consumer binding".into(),
+                        ));
+                    }
+                    self.consumer_binding = Some(consumer::ConsumerBinding::parse(
+                        database,
+                        projection,
+                        id,
+                        registration,
+                        checkpoint,
+                    )?);
+                }
                 ["source_graph_commit_epoch", raw] => {
+                    if self.source_graph_commit_epoch.is_some() {
+                        return Err(SkeinError::Storage(
+                            "duplicate projection source epoch".into(),
+                        ));
+                    }
                     let epoch = parse_u64(raw, "source graph commit epoch")?;
                     self.source_graph_commit_epoch = Some(epoch);
                     *self
@@ -3769,6 +3901,17 @@ impl SearchIndex {
                 }
             }
         }
+        if self.consumer_binding.is_some()
+            && (self.source_graph_commit_epoch.is_none()
+                || self
+                    .import_source_graph_commit_epoch
+                    .zip(self.source_graph_commit_epoch)
+                    .is_some_and(|(import, source)| import > source))
+        {
+            return Err(SkeinError::Storage(
+                "invalid registered projection epochs".into(),
+            ));
+        }
         Ok(())
     }
 
@@ -3805,6 +3948,7 @@ impl SearchIndex {
     }
 
     fn append_marker(&self, name: &str, reason: &str) -> Result<()> {
+        self.require_owned_mutation_or_unregistered()?;
         {
             let mut marker_lines = self
                 .marker_lines
@@ -3832,6 +3976,7 @@ impl SearchIndex {
     }
 
     fn write_marker(&self, name: &str, reason: &str) -> Result<()> {
+        self.require_owned_mutation_or_unregistered()?;
         self.marker_lines
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner())
@@ -3844,6 +3989,7 @@ impl SearchIndex {
     }
 
     fn clear_marker(&self, name: &str) -> Result<()> {
+        self.require_owned_mutation_or_unregistered()?;
         self.marker_lines
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner())
@@ -3882,6 +4028,10 @@ impl Default for SearchIndex {
     fn default() -> Self {
         Self {
             documents: BTreeMap::new(),
+            consumer_binding: None,
+            consumer_binding_valid: true,
+            consumer_owned_mutation: false,
+            consumer_receipt: Mutex::new(None),
             path: None,
             embedding_dimension: None,
             embedding_manifest: None,
@@ -6600,6 +6750,7 @@ impl TokenSequence {
     }
 }
 
+#[cfg(test)]
 fn normalize_english_suffixes(token: &str) -> Vec<String> {
     if token.len() <= 4 || token.contains('_') || token.chars().any(|ch| ch.is_ascii_digit()) {
         return Vec::new();
@@ -6628,6 +6779,41 @@ fn normalize_english_suffixes(token: &str) -> Vec<String> {
     Vec::new()
 }
 
+#[cfg(test)]
+fn suffix_stem_variants(stem: &str) -> Vec<String> {
+    let mut variants = vec![stem.to_string()];
+    if matches!(stem.chars().last(), Some('c' | 'v' | 'z')) {
+        variants.push(format!("{stem}e"));
+    }
+    variants
+}
+
+fn english_suffix_parts(token: &str) -> [Option<(&str, &str)>; 2] {
+    if token.len() <= 4 || token.contains('_') || token.chars().any(|ch| ch.is_ascii_digit()) {
+        return [None, None];
+    }
+    if let Some(stem) = token.strip_suffix("ies")
+        && stem.len() >= 2
+    {
+        return [Some((stem, "y")), None];
+    }
+    let stem = token
+        .strip_suffix("ing")
+        .or_else(|| token.strip_suffix("ed"));
+    if let Some(stem) = stem.filter(|stem| stem.len() >= 3) {
+        let stem = trim_doubled_suffix_consonant(stem);
+        let tail = matches!(stem.chars().last(), Some('c' | 'v' | 'z')).then_some((stem, "e"));
+        return [Some((stem, "")), tail];
+    }
+    if let Some(stem) = token.strip_suffix('s')
+        && stem.len() >= 3
+        && !stem.ends_with('s')
+    {
+        return [Some((stem, "")), None];
+    }
+    [None, None]
+}
+
 fn is_core_search_stopword(token: &str) -> bool {
     matches!(
         token,
@@ -6654,14 +6840,6 @@ fn is_core_search_stopword(token: &str) -> bool {
             | "was"
             | "with"
     )
-}
-
-fn suffix_stem_variants(stem: &str) -> Vec<String> {
-    let mut variants = vec![stem.to_string()];
-    if matches!(stem.chars().last(), Some('c' | 'v' | 'z')) {
-        variants.push(format!("{stem}e"));
-    }
-    variants
 }
 
 fn trim_doubled_suffix_consonant(stem: &str) -> &str {

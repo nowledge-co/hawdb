@@ -12,4 +12,5 @@ skein-analytics = { path = "../analytics" }
 skein-core = { path = "../core" }
 skein-ddl = { path = "../ddl" }
 skein-plan = { path = "../plan" }
+skein-qos = { path = "../qos" }
 skein-storage = { path = "../storage" }

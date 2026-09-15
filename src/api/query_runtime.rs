@@ -1,16 +1,5 @@
 use super::*;
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-#[cfg_attr(not(feature = "tokio-runtime"), allow(dead_code))]
-pub(crate) struct RuntimeAdmissionPlan {
-    pub work_request: WorkRequest,
-    pub is_mutation: bool,
-    pub estimated_memory_bytes: u64,
-    pub streaming_eligible: bool,
-    pub required_io_slots: usize,
-    pub parallel_execution_eligible: bool,
-    pub max_parallelism: usize,
-}
+use skein_executor::runtime_admission::{RuntimeAdmissionPlan, CONTROL_STATEMENT_MEMORY_BYTES};
 
 #[cfg_attr(not(feature = "tokio-runtime"), allow(dead_code))]
 pub(crate) struct PreparedRuntimeQuery {
@@ -150,123 +139,6 @@ impl PreparedRuntimeQuery {
             },
         )
     }
-}
-
-impl RuntimeAdmissionPlan {
-    #[cfg_attr(not(feature = "tokio-runtime"), allow(dead_code))]
-    pub(crate) fn runtime_work_request(
-        &self,
-        result_budget_bytes: u64,
-        limits: skein_qos::RuntimeGovernorLimits,
-    ) -> skein_qos::RuntimeWorkRequest {
-        self.runtime_work_request_with_capacity(
-            result_budget_bytes,
-            limits,
-            limits.effective_cpu_slots.get(),
-            limits.memory_budget_bytes,
-        )
-    }
-
-    pub(crate) fn runtime_work_request_for_snapshot(
-        &self,
-        result_budget_bytes: u64,
-        snapshot: skein_qos::RuntimeGovernorSnapshot,
-    ) -> skein_qos::RuntimeWorkRequest {
-        self.runtime_work_request_with_capacity(
-            result_budget_bytes,
-            snapshot.limits,
-            snapshot
-                .limits
-                .effective_cpu_slots
-                .get()
-                .saturating_sub(snapshot.active_cpu_slots)
-                .max(1),
-            snapshot
-                .limits
-                .memory_budget_bytes
-                .saturating_sub(snapshot.admitted_memory_bytes),
-        )
-    }
-
-    fn runtime_work_request_with_capacity(
-        &self,
-        result_budget_bytes: u64,
-        limits: skein_qos::RuntimeGovernorLimits,
-        available_cpu_slots: usize,
-        available_memory_bytes: u64,
-    ) -> skein_qos::RuntimeWorkRequest {
-        let priority = match self.work_request.priority {
-            WorkPriority::Foreground => skein_qos::RuntimeWorkPriority::Foreground,
-            WorkPriority::Background => skein_qos::RuntimeWorkPriority::Background,
-        };
-        if self.is_mutation {
-            return skein_qos::RuntimeWorkRequest::mutation(priority, self.estimated_memory_bytes);
-        }
-        let kind = match self.work_request.class {
-            WorkClass::Query | WorkClass::Mutation | WorkClass::Analytics => {
-                skein_qos::RuntimeWorkKind::Query
-            }
-            WorkClass::Projection | WorkClass::Import => skein_qos::RuntimeWorkKind::Maintenance,
-            WorkClass::Shadow => skein_qos::RuntimeWorkKind::Control,
-        };
-        let cpu_slots = self.admitted_cpu_slots(
-            result_budget_bytes,
-            limits,
-            available_cpu_slots,
-            available_memory_bytes,
-        );
-        skein_qos::RuntimeWorkRequest::query(
-            priority,
-            self.estimated_memory_bytes
-                .saturating_mul(u64::try_from(cpu_slots).unwrap_or(u64::MAX)),
-            result_budget_bytes,
-        )
-        .with_cpu_slots(cpu_slots)
-        .with_kind(kind)
-        .with_io_wave_slots(self.required_io_slots)
-    }
-
-    fn admitted_cpu_slots(
-        &self,
-        result_budget_bytes: u64,
-        limits: skein_qos::RuntimeGovernorLimits,
-        available_cpu_slots: usize,
-        available_memory_bytes: u64,
-    ) -> usize {
-        if !self.parallel_execution_eligible {
-            return 1;
-        }
-        let cpu_slots =
-            crate::executor::default_morsel_cpu_ceiling(limits.effective_cpu_slots.get())
-                .min(self.max_parallelism)
-                .min(available_cpu_slots);
-        if self.estimated_memory_bytes == 0 {
-            return cpu_slots.max(1);
-        }
-        let memory_slots = available_memory_bytes
-            .saturating_sub(result_budget_bytes)
-            .checked_div(self.estimated_memory_bytes)
-            .and_then(|slots| usize::try_from(slots).ok())
-            .unwrap_or_default();
-        cpu_slots.min(memory_slots.max(1)).max(1)
-    }
-}
-
-#[cfg_attr(not(feature = "tokio-runtime"), allow(dead_code))]
-const CONTROL_STATEMENT_MEMORY_BYTES: u64 = 1024 * 1024;
-
-/// A cheap pre-parse reservation, not a measurement of allocator usage. The
-/// source length is available without parsing or walking caller parameters.
-pub(crate) fn runtime_planning_request(
-    source_bytes: usize,
-    priority: skein_qos::RuntimeWorkPriority,
-) -> skein_qos::RuntimeWorkRequest {
-    skein_qos::RuntimeWorkRequest::new(priority, skein_qos::RuntimeWorkKind::Control)
-        .with_cpu_slots(1)
-        .with_memory_bytes(
-            CONTROL_STATEMENT_MEMORY_BYTES
-                .saturating_add(u64::try_from(source_bytes).unwrap_or(u64::MAX)),
-        )
 }
 
 impl Database {
@@ -889,48 +761,6 @@ pub(super) fn query_runtime_checkpoint(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::executor::MAX_MORSEL_PARALLELISM;
-    use std::num::NonZeroUsize;
-
-    fn limits(cpu_slots: usize, memory_budget_bytes: u64) -> skein_qos::RuntimeGovernorLimits {
-        let cpu_slots = NonZeroUsize::new(cpu_slots).expect("test CPU slots are non-zero");
-        skein_qos::RuntimeGovernorLimits {
-            configured_cpu_slots: cpu_slots,
-            effective_cpu_slots: cpu_slots,
-            foreground_task_limit: cpu_slots,
-            background_task_limit: cpu_slots,
-            blocking_task_limit: cpu_slots,
-            foreground_io_depth: NonZeroUsize::MIN,
-            background_io_depth: NonZeroUsize::MIN,
-            memory_capacity_bytes: memory_budget_bytes,
-            memory_budget_bytes,
-            result_budget_bytes: memory_budget_bytes,
-        }
-    }
-
-    fn admission(parallel_execution_eligible: bool) -> RuntimeAdmissionPlan {
-        RuntimeAdmissionPlan {
-            work_request: WorkRequest::foreground(WorkClass::Query, 1),
-            is_mutation: false,
-            estimated_memory_bytes: 1024,
-            streaming_eligible: true,
-            required_io_slots: 0,
-            parallel_execution_eligible,
-            max_parallelism: if parallel_execution_eligible {
-                MAX_MORSEL_PARALLELISM
-            } else {
-                1
-            },
-        }
-    }
-
-    #[test]
-    fn default_morsel_request_uses_governed_cpu_and_memory_slots() {
-        let request = admission(true).runtime_work_request(1024, limits(8, 64 * 1024));
-
-        assert_eq!(request.cpu_slots, 4);
-        assert_eq!(request.memory_bytes, 4 * 1024);
-    }
 
     #[test]
     fn planning_cache_invalidation_does_not_reuse_an_in_flight_generation() {
@@ -1151,48 +981,6 @@ mod tests {
         assert_eq!(db.reader_pins.lock().unwrap().active_views.len(), 1);
         drop(new);
         assert!(db.reader_pins.lock().unwrap().active_views.is_empty());
-    }
-
-    #[test]
-    fn source_segment_io_uses_wave_scoped_runtime_slots() {
-        let mut admission = admission(false);
-        admission.required_io_slots = 2;
-
-        let request = admission.runtime_work_request(1024, limits(8, 64 * 1024));
-
-        assert_eq!(request.io_slots, 2);
-        assert_eq!(
-            request.io_reservation_scope,
-            skein_qos::RuntimeIoReservationScope::Wave
-        );
-    }
-
-    #[test]
-    fn default_morsel_request_uses_executor_cpu_ceiling() {
-        let request = admission(true).runtime_work_request(1024, limits(32, 1024 * 1024));
-        assert_eq!(request.cpu_slots, 8);
-        assert_eq!(request.memory_bytes, 8 * 1024);
-
-        let request = admission(true).runtime_work_request(1024, limits(64, 1024 * 1024));
-        assert_eq!(request.cpu_slots, 16);
-        assert_eq!(request.memory_bytes, 16 * 1024);
-    }
-
-    #[test]
-    fn default_morsel_request_falls_back_for_ineligible_or_tight_memory_work() {
-        let serial = admission(false).runtime_work_request(1024, limits(8, 64 * 1024));
-        let memory_limited = admission(true).runtime_work_request(2048, limits(8, 3072));
-        let load_limited = admission(true).runtime_work_request_with_capacity(
-            1024,
-            limits(8, 64 * 1024),
-            2,
-            64 * 1024,
-        );
-
-        assert_eq!(serial.cpu_slots, 1);
-        assert_eq!(memory_limited.cpu_slots, 1);
-        assert_eq!(load_limited.cpu_slots, 2);
-        assert_eq!(load_limited.memory_bytes, 2 * 1024);
     }
 
     #[test]

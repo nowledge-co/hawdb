@@ -62,6 +62,7 @@ use scan::*;
 use skein_executor::analytics::try_projected_graph_with_node_filter;
 #[cfg(feature = "tokio-runtime")]
 pub(crate) use skein_executor::binding::map_memory_bytes;
+#[cfg(test)]
 pub(crate) use skein_executor::binding::map_payload_bytes;
 use skein_executor::binding::Binding;
 pub(crate) use skein_executor::external::NoExternalReadOperator;
@@ -99,7 +100,7 @@ pub type ReadExecutionProfile = skein_executor::ReadExecutionProfile<ScanPruning
 pub type ProfiledQueryRows = skein_executor::ProfiledQueryRows<ScanPruningReport>;
 pub type ProfiledQueryStream = skein_executor::ProfiledQueryStream<ScanPruningReport>;
 pub(crate) use skein_executor::batch::SOURCE_SEGMENT_SCAN_IO_DEPTH;
-pub(crate) use skein_executor::numeric::{default_morsel_cpu_ceiling, MAX_MORSEL_PARALLELISM};
+pub(crate) use skein_executor::numeric::MAX_MORSEL_PARALLELISM;
 pub(crate) use skein_executor::result_delivery::StreamDelivery;
 
 pub(crate) fn supports_default_morsel_parallelism(plan: &PhysicalPlan, catalog: &Catalog) -> bool {

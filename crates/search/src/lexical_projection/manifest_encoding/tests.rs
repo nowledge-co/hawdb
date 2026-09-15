@@ -4,6 +4,7 @@ use crate::lexical_projection::{
     ARTIFACT_HEADER, DEFAULT_MAX_MANIFEST_BYTES,
 };
 use serde::ser::Error as _;
+use skein_integrity::Crc32cHasher;
 use std::cell::Cell;
 
 pub(in crate::lexical_projection) fn manifest(mut terms: Vec<String>) -> ManifestBody {
@@ -130,30 +131,6 @@ fn decode_preserves_checksum_and_schema_rejection() {
         .contains("counts are inconsistent"));
     let error = ManifestBody::decode(&legacy_encode(&invalid)).unwrap_err();
     assert!(error.to_string().contains("counts are inconsistent"));
-}
-
-#[test]
-fn admitted_output_rejects_growth_without_changing_bytes_or_capacity() {
-    let mut bytes = Vec::with_capacity(8);
-    let capacity = bytes.capacity();
-    let mut output = AdmittedOutput {
-        bytes: &mut bytes,
-        length: 4,
-    };
-    output.write_all(b"abcd").unwrap();
-    assert!(output.write_all(b"x").is_err());
-    assert_eq!(bytes, b"abcd");
-    assert_eq!(bytes.capacity(), capacity);
-}
-
-#[test]
-fn counting_overflow_rejects_without_advancing() {
-    let mut measure = JsonMeasure {
-        length: u64::MAX,
-        digest: None,
-    };
-    assert!(measure.write(b"x").is_err());
-    assert_eq!(measure.length, u64::MAX);
 }
 
 struct ChangingBody {

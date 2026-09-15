@@ -362,7 +362,7 @@ fn spill_reader_rejects_partial_records_but_accepts_record_boundaries() {
         encode_posting(
             &mut bytes,
             &Posting {
-                term: "graph".to_string(),
+                term: "graph".into(),
                 document_id: id.to_string(),
                 term_frequency: 1,
                 document_len: 2,
@@ -503,7 +503,7 @@ fn compaction_charges_output_runs_and_cleans_up_when_budget_is_exhausted() {
     let mut runs = SpillRuns::new(&fixture.root, 2, config);
     for id in ["a", "b", "c"] {
         runs.spill(&mut vec![Posting {
-            term: "graph".to_string(),
+            term: "graph".into(),
             document_id: id.to_string(),
             term_frequency: 1,
             document_len: 1,

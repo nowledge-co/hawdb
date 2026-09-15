@@ -1,6 +1,3 @@
-pub(crate) use skein_relational::field_plan::{
-    resolve_relational_order_target, RelationalOrderTarget,
-};
 pub(crate) use skein_relational::{
     bind_relational_value, compile_append_explain_sql, compile_append_select_sql,
     compile_append_statement_sql, compile_relational_statement_sql,
@@ -9,8 +6,11 @@ pub(crate) use skein_relational::{
 };
 
 mod index_access;
-mod query;
 mod row_access;
+
+#[cfg(test)]
+#[path = "relational_sql/query.rs"]
+mod query;
 
 pub use skein_optimizer::{
     RelationalJoinPlanningAttempt, RelationalJoinPlanningBudget, RelationalJoinPlanningCost,
@@ -24,14 +24,17 @@ pub use skein_optimizer::{
 pub use skein_sql::RelationalSqlStageTimings;
 
 pub(crate) use index_access::RelationalIndexReadMode;
-#[cfg(test)]
-pub(crate) use query::execute_relational_query_sql_with_runtime;
-pub(crate) use query::{
-    execute_prepared_relational_query_with_resources, RelationalQueryLimits, RelationalQueryOutput,
-    RelationalQueryReadModes, RelationalQueryResourceContext,
-};
 pub(crate) use row_access::RelationalRowReadMode;
+#[cfg(test)]
+pub(crate) use skein_relational::query::execute_relational_query_sql_with_runtime;
+pub(crate) use skein_relational::query::{
+    execute_prepared_relational_query_with_resources, RelationalQueryLimits, RelationalQueryOutput,
+    RelationalQueryResourceContext,
+};
 pub(crate) use skein_sql::{PreparedRelationalSql, RelationalPlanTemplateCache};
+
+pub(crate) type RelationalQueryReadModes<'a> =
+    skein_relational::query::RelationalQueryReadModes<'a, crate::store::GraphStore>;
 
 #[cfg(test)]
 mod tests {

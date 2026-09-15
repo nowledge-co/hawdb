@@ -40,6 +40,8 @@ mod read_output;
 #[doc(hidden)]
 pub mod result_delivery;
 #[doc(hidden)]
+pub mod runtime_admission;
+#[doc(hidden)]
 pub mod scan;
 #[doc(hidden)]
 pub mod spill;

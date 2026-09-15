@@ -3,32 +3,29 @@ use crate::cypher;
 use crate::error::{Result, SkeinError};
 use crate::executor::{self, Row, RowRef};
 use crate::optimizer::{
-    CascadesOptimizer, OptimizerCatalog, OptimizerCatalogIndexes, OptimizerCatalogStatistics,
-    OptimizerConfig, OptimizerContext, OptimizerIndexStatistics, OptimizerSearchDirective,
-    OptimizerTrace, PhysicalPlan, ResourceHints,
+    CascadesOptimizer, OptimizerConfig, OptimizerContext, OptimizerSearchDirective, OptimizerTrace,
+    PhysicalPlan, ResourceHints,
 };
 use crate::qos::{
-    BackgroundWorkDecision, BackgroundWorkHint, BackgroundWorkPlan, LocalQosPolicy,
-    LocalQosScheduler, LocalQosSnapshot, LocalQosState, QosAdmission, QosAdmissionCode, WorkClass,
-    WorkPriority, WorkRequest,
+    BackgroundWorkHint, BackgroundWorkPlan, LocalQosPolicy, LocalQosScheduler, LocalQosState,
+    QosAdmission, WorkClass, WorkRequest,
 };
-#[cfg(test)]
-use crate::schema::LabelId;
-use crate::schema::{Catalog, GraphStatistics, IndexKind, SchemaObjectState};
+use crate::schema::{Catalog, SchemaObjectState};
 #[cfg(test)]
 use crate::schema::{
     CompositeIndexDescriptor, ConstraintDescriptor, IndexDescriptor, PropertyDescriptor,
     TableDescriptor,
 };
+#[cfg(test)]
+use crate::schema::{GraphStatistics, LabelId};
 use crate::search::{
     projection_row_from_node_with_graph_metadata, search_metadata_predicate_pushdown,
     AdaptiveVectorSearchOptions, CompressedVectorSearchMode, MetadataRepairOptions,
     MetadataRepairSummary, SearchCandidateSetReport, SearchDerivedArtifactReport,
-    SearchEmptyReasonCode, SearchFallbackReasonCode, SearchFusionWeights, SearchIndex,
-    SearchMatchedSpan, SearchMode, SearchPredicatePushdownReport, SearchProjectionDelta,
-    SearchProjectionDeltaReport, SearchProjectionFreshness, SearchQueryOptions,
-    SearchRebuildOptions, SearchRebuildSummary, SearchResultSet, SearchRetrieverCandidateSetReport,
-    SearchTruncationReasonCode,
+    SearchEmptyReasonCode, SearchFusionWeights, SearchIndex, SearchMatchedSpan,
+    SearchPredicatePushdownReport, SearchProjectionDelta, SearchProjectionDeltaReport,
+    SearchProjectionFreshness, SearchQueryOptions, SearchRebuildOptions, SearchRebuildSummary,
+    SearchResultSet, SearchRetrieverCandidateSetReport,
 };
 use crate::store::{
     restore_storage_backup, AdjacencyConsistencyReport, AdjacencyConsolidationPlan,
@@ -63,17 +60,10 @@ use skein_optimizer::{
 use std::collections::{BTreeMap, BTreeSet, VecDeque};
 use std::num::NonZeroUsize;
 use std::path::Path;
-use std::str::FromStr;
 use std::sync::{Arc, Mutex, MutexGuard};
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) enum KnowledgeNeighborDirection {
-    #[cfg(test)]
-    Outgoing,
-    #[cfg(test)]
-    Incoming,
-    Both,
-}
+#[cfg(not(test))]
+use skein_nowledge_contracts::test_support::graph_read::KnowledgeNeighborDirection;
 use system_variables::{
     apply_set_system_variable, query_statement_variables_for_statement,
     query_work_request_for_statement, reject_system_variable_parameters,
@@ -90,24 +80,28 @@ mod observability;
 mod plan_cache;
 mod query_runtime;
 mod resource_profile;
-mod retrieval_pipeline;
 mod schema_guidance;
 mod search_projection_catch_up;
+mod search_projection_consumer;
+pub use search_projection_consumer::*;
 mod source_candidates;
 mod system_schema;
-mod system_sql;
 mod system_variables;
 mod transaction_locks;
 mod types;
 
-pub(crate) use query_runtime::{runtime_planning_request, PreparedRuntimeQuery};
+pub(crate) use skein_system_sql as system_sql;
+
+pub(crate) use query_runtime::PreparedRuntimeQuery;
 #[cfg(feature = "tokio-runtime")]
-pub(crate) use query_runtime::{RuntimeAdmissionPlan, RuntimePlanningSnapshot};
+pub(crate) use query_runtime::RuntimePlanningSnapshot;
+pub(crate) use skein_executor::runtime_admission::runtime_planning_request;
+#[cfg(feature = "tokio-runtime")]
+pub(crate) use skein_executor::runtime_admission::RuntimeAdmissionPlan;
 pub use types::*;
 
 const DEFAULT_SEARCH_PROJECTION_CHANGE_LOG_MAX_ENTRIES: usize = 4096;
 const DEFAULT_SEARCH_PROJECTION_CHANGE_LOG_MAX_BYTES: usize = 64 * 1024 * 1024;
-pub const SLOW_QUERY_LOG_EVENT_PROTOCOL: &str = "skein-slow-query-log-event-v1";
 
 pub use artifact_jobs::{
     DerivedArtifactJob, DerivedArtifactJobReport, DerivedArtifactJobStatus,
@@ -184,6 +178,9 @@ pub use skein_core::QueryAccessControlContext;
 pub use skein_evidence::AccessControlPolicyReadiness;
 pub use skein_executor::{BoundedReadQueryOutput, QueryStreamOptions, QueryStreamReport};
 pub use skein_explain::{ExplainAnalyzeOutput, ExplainOutput, NowledgeGraphExplainOutput};
+pub use skein_system_sql::{
+    SlowQueryLogExportOptions, SlowQueryLogRecordSummary, SLOW_QUERY_LOG_EVENT_PROTOCOL,
+};
 pub use source_candidates::{
     KnowledgeSourceCandidateRow, KnowledgeSourceCandidateScanOrigin,
     KnowledgeSourceCandidateScanOutput, KnowledgeSourceCandidateScanRequest,
@@ -227,10 +224,10 @@ pub struct Database {
     local_qos_scheduler: LocalQosScheduler,
     system_variables: QuerySystemVariables,
     reader_pins: Arc<Mutex<ReaderPins>>,
-    next_derived_artifact_job_id: u64,
-    derived_artifact_jobs: Vec<DerivedArtifactJob>,
+    derived_artifact_jobs: skein_artifact::DerivedArtifactJobQueue,
     telemetry: Option<Arc<dyn TelemetrySink>>,
     runtime_governor: Option<skein_qos::RuntimeGovernor>,
+    projection_consumers: search_projection_consumer::ConsumerRegistry,
 }
 
 pub(crate) struct DatabaseCheckpointSource {
@@ -511,6 +508,19 @@ impl Default for DatabaseConfig {
     }
 }
 
+pub(crate) fn system_runtime_snapshot(
+    config: &DatabaseConfig,
+) -> system_sql::SystemRuntimeSnapshot {
+    system_sql::SystemRuntimeSnapshot::new(
+        config.read_only,
+        config.max_read_result_rows,
+        config.max_read_result_payload_bytes,
+        config.storage_residency_mode,
+        config.relational_index_mode,
+        config.runtime_capabilities,
+    )
+}
+
 pub use skein_executor::QueryOutput;
 
 /// Deterministic outcome for one relational INSERT, UPDATE, or DELETE statement.
@@ -637,25 +647,6 @@ impl ProjectionRelationalReadBinding {
     pub fn tables(&self) -> &BTreeSet<String> {
         &self.tables
     }
-}
-
-#[derive(Debug, Clone, Default, PartialEq, Eq)]
-pub struct SlowQueryLogExportOptions {
-    pub include_query_text: bool,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct SlowQueryLogRecordSummary {
-    pub sequence: u64,
-    pub query_language: String,
-    pub statement_kind: String,
-    pub query_digest: String,
-    pub started_unix_micros: i64,
-    pub elapsed_micros: i64,
-    pub row_count: i64,
-    pub success: bool,
-    pub slow_log_candidate: bool,
-    pub access_control_policy_epoch: Option<u64>,
 }
 
 #[derive(Debug, Clone, Copy, Default)]
@@ -802,6 +793,10 @@ impl Default for Database {
         configure_relational_fast_paths(&mut store, &config);
         Self {
             catalog: Catalog::default(),
+            projection_consumers: search_projection_consumer::ConsumerRegistry::load(
+                store.search_projection_registry_root(),
+                store.search_projection_database_identity(),
+            ),
             store,
             optimizer: optimizer_from_database_config(&config),
             plan_cache: Arc::new(SharedState::new(PlanCache::new(
@@ -821,8 +816,7 @@ impl Default for Database {
             local_qos_scheduler,
             system_variables: QuerySystemVariables::default(),
             reader_pins: Arc::new(Mutex::new(ReaderPins::default())),
-            next_derived_artifact_job_id: 1,
-            derived_artifact_jobs: Vec::new(),
+            derived_artifact_jobs: skein_artifact::DerivedArtifactJobQueue::default(),
             telemetry: None,
             runtime_governor: None,
         }
@@ -880,6 +874,10 @@ impl Database {
         let optimizer = optimizer_from_database_config(&config);
         Self {
             catalog: Catalog::default(),
+            projection_consumers: search_projection_consumer::ConsumerRegistry::load(
+                store.search_projection_registry_root(),
+                store.search_projection_database_identity(),
+            ),
             store,
             optimizer,
             plan_cache: Arc::new(SharedState::new(PlanCache::new(
@@ -899,8 +897,7 @@ impl Database {
             local_qos_scheduler,
             system_variables: QuerySystemVariables::default(),
             reader_pins: Arc::new(Mutex::new(ReaderPins::default())),
-            next_derived_artifact_job_id: 1,
-            derived_artifact_jobs: Vec::new(),
+            derived_artifact_jobs: skein_artifact::DerivedArtifactJobQueue::default(),
             telemetry: None,
             runtime_governor: None,
         }
@@ -1008,6 +1005,10 @@ impl Database {
         configure_relational_fast_paths(&mut store, &config);
         let mut database = Self {
             catalog,
+            projection_consumers: search_projection_consumer::ConsumerRegistry::load(
+                store.search_projection_registry_root(),
+                store.search_projection_database_identity(),
+            ),
             store,
             optimizer: optimizer_from_database_config(&config),
             plan_cache: Arc::new(SharedState::new(PlanCache::new(
@@ -1027,8 +1028,7 @@ impl Database {
             local_qos_scheduler,
             system_variables: QuerySystemVariables::default(),
             reader_pins: Arc::new(Mutex::new(ReaderPins::default())),
-            next_derived_artifact_job_id: 1,
-            derived_artifact_jobs: Vec::new(),
+            derived_artifact_jobs: skein_artifact::DerivedArtifactJobQueue::default(),
             telemetry: None,
             runtime_governor: None,
         };
@@ -4368,10 +4368,11 @@ impl KnowledgeRetrievalGraphContext<'_> {
         request: &KnowledgeRetrievalRequest,
     ) -> Result<KnowledgeRetrievalOutput> {
         let graph_commit_epoch = self.store.commit_epoch();
-        let mut pipeline = retrieval_pipeline::KnowledgeRetrievalPipelineBudget::new(
-            self.query_memory_budget,
-            self.result_payload_budget,
-        )?;
+        let mut pipeline =
+            skein_search::knowledge_retrieval_pipeline::KnowledgeRetrievalPipelineBudget::new(
+                self.query_memory_budget,
+                self.result_payload_budget,
+            )?;
         pipeline.enter(KnowledgeRetrievalStage::SearchCandidate)?;
         pipeline.enter(KnowledgeRetrievalStage::MetadataFilter)?;
         let canonical_search_nodes =
@@ -18476,9 +18477,7 @@ fn adjacency_directions_for_request(
     requested_direction: KnowledgeNeighborDirection,
 ) -> Vec<AdjacencyDirection> {
     match requested_direction {
-        #[cfg(test)]
         KnowledgeNeighborDirection::Outgoing => vec![AdjacencyDirection::Outgoing],
-        #[cfg(test)]
         KnowledgeNeighborDirection::Incoming => vec![AdjacencyDirection::Incoming],
         KnowledgeNeighborDirection::Both => {
             vec![AdjacencyDirection::Outgoing, AdjacencyDirection::Incoming]
@@ -18499,14 +18498,6 @@ fn adjacency_direction_name(adjacency_direction: AdjacencyDirection) -> &'static
     match adjacency_direction {
         AdjacencyDirection::Outgoing => "outgoing",
         AdjacencyDirection::Incoming => "incoming",
-    }
-}
-
-fn qos_admission_name(admission: &QosAdmission) -> &'static str {
-    match admission {
-        QosAdmission::Admit => "admit",
-        QosAdmission::Defer { .. } => "defer",
-        QosAdmission::Reject { .. } => "reject",
     }
 }
 
@@ -18916,268 +18907,6 @@ impl Drop for ReaderPin {
             .active_views
             .remove(&self.id);
     }
-}
-
-fn optimizer_catalog(catalog: &Catalog, statistics: &GraphStatistics) -> OptimizerCatalog {
-    // Advanced statistics are cost hints, not execution preconditions. Keep a complete
-    // snapshot usable while background refresh catches up: GraphStore overlays current basic
-    // counts, and index samples enforce their own update budget.
-    let advanced_statistics = statistics
-        .advanced_statistics_complete
-        .then_some(statistics);
-    let equality_property_indexes = catalog.property_indexes().filter_map(|index| {
-        if index.kind != IndexKind::Equality {
-            return None;
-        }
-        catalog
-            .label_name(index.label_id)
-            .map(|label| (label.to_string(), index.property.clone()))
-    });
-    let composite_property_indexes = catalog.composite_property_indexes().filter_map(|index| {
-        catalog
-            .label_name(index.label_id)
-            .map(|label| (label.to_string(), index.properties.clone()))
-    });
-    let range_property_indexes = catalog.property_indexes().filter_map(|index| {
-        if index.kind != IndexKind::Range {
-            return None;
-        }
-        catalog
-            .label_name(index.label_id)
-            .map(|label| (label.to_string(), index.property.clone()))
-    });
-    let full_text_property_indexes = catalog.property_indexes().filter_map(|index| {
-        if index.kind != IndexKind::FullText {
-            return None;
-        }
-        catalog
-            .label_name(index.label_id)
-            .map(|label| (label.to_string(), index.property.clone()))
-    });
-    let label_counts = statistics
-        .label_counts
-        .iter()
-        .filter_map(|(label_id, count)| {
-            catalog
-                .label_name(*label_id)
-                .map(|label| (label.to_string(), *count))
-        });
-    let rel_type_counts = statistics
-        .rel_type_counts
-        .iter()
-        .filter_map(|(rel_type_id, count)| {
-            catalog
-                .rel_type_name(*rel_type_id)
-                .map(|rel_type| (rel_type.to_string(), *count))
-        });
-    let rel_type_source_counts = advanced_statistics
-        .into_iter()
-        .flat_map(|statistics| statistics.rel_type_source_counts.iter())
-        .filter_map(|(rel_type_id, count)| {
-            catalog
-                .rel_type_name(*rel_type_id)
-                .map(|rel_type| (rel_type.to_string(), *count))
-        });
-    let rel_type_target_counts = advanced_statistics
-        .into_iter()
-        .flat_map(|statistics| statistics.rel_type_target_counts.iter())
-        .filter_map(|(rel_type_id, count)| {
-            catalog
-                .rel_type_name(*rel_type_id)
-                .map(|rel_type| (rel_type.to_string(), *count))
-        });
-    let path_counts = advanced_statistics
-        .into_iter()
-        .flat_map(|statistics| statistics.path_counts.iter())
-        .filter_map(|((source_label_id, rel_type_id, target_label_id), count)| {
-            Some((
-                (
-                    catalog.label_name(*source_label_id)?.to_string(),
-                    catalog.rel_type_name(*rel_type_id)?.to_string(),
-                    catalog.label_name(*target_label_id)?.to_string(),
-                ),
-                *count,
-            ))
-        });
-    let path_source_distinct_counts = advanced_statistics
-        .into_iter()
-        .flat_map(|statistics| statistics.path_source_distinct_counts.iter())
-        .filter_map(|((source_label_id, rel_type_id, target_label_id), count)| {
-            Some((
-                (
-                    catalog.label_name(*source_label_id)?.to_string(),
-                    catalog.rel_type_name(*rel_type_id)?.to_string(),
-                    catalog.label_name(*target_label_id)?.to_string(),
-                ),
-                *count,
-            ))
-        });
-    let path_target_distinct_counts = advanced_statistics
-        .into_iter()
-        .flat_map(|statistics| statistics.path_target_distinct_counts.iter())
-        .filter_map(|((source_label_id, rel_type_id, target_label_id), count)| {
-            Some((
-                (
-                    catalog.label_name(*source_label_id)?.to_string(),
-                    catalog.rel_type_name(*rel_type_id)?.to_string(),
-                    catalog.label_name(*target_label_id)?.to_string(),
-                ),
-                *count,
-            ))
-        });
-    let bounded_path_counts = advanced_statistics
-        .into_iter()
-        .flat_map(|statistics| statistics.bounded_path_counts.iter())
-        .filter_map(
-            |((source_label_id, rel_type_id, target_label_id, hops), count)| {
-                Some((
-                    (
-                        catalog.label_name(*source_label_id)?.to_string(),
-                        catalog.rel_type_name(*rel_type_id)?.to_string(),
-                        catalog.label_name(*target_label_id)?.to_string(),
-                        *hops,
-                    ),
-                    *count,
-                ))
-            },
-        );
-    let bounded_path_source_distinct_counts = advanced_statistics
-        .into_iter()
-        .flat_map(|statistics| statistics.bounded_path_source_distinct_counts.iter())
-        .filter_map(
-            |((source_label_id, rel_type_id, target_label_id, hops), count)| {
-                Some((
-                    (
-                        catalog.label_name(*source_label_id)?.to_string(),
-                        catalog.rel_type_name(*rel_type_id)?.to_string(),
-                        catalog.label_name(*target_label_id)?.to_string(),
-                        *hops,
-                    ),
-                    *count,
-                ))
-            },
-        );
-    let bounded_path_target_distinct_counts = advanced_statistics
-        .into_iter()
-        .flat_map(|statistics| statistics.bounded_path_target_distinct_counts.iter())
-        .filter_map(
-            |((source_label_id, rel_type_id, target_label_id, hops), count)| {
-                Some((
-                    (
-                        catalog.label_name(*source_label_id)?.to_string(),
-                        catalog.rel_type_name(*rel_type_id)?.to_string(),
-                        catalog.label_name(*target_label_id)?.to_string(),
-                        *hops,
-                    ),
-                    *count,
-                ))
-            },
-        );
-    let property_distinct_counts = advanced_statistics
-        .into_iter()
-        .flat_map(|statistics| statistics.property_distinct_counts.iter())
-        .filter_map(|((label_id, property), count)| {
-            catalog
-                .label_name(*label_id)
-                .map(|label| ((label.to_string(), property.clone()), *count))
-        });
-    let property_histograms = advanced_statistics
-        .into_iter()
-        .flat_map(|statistics| statistics.property_histograms.iter())
-        .filter_map(|((label_id, property), values)| {
-            catalog
-                .label_name(*label_id)
-                .map(|label| ((label.to_string(), property.clone()), values.clone()))
-        });
-    let sampled_property_histograms = advanced_statistics
-        .into_iter()
-        .flat_map(|statistics| statistics.sampled_property_histograms.iter())
-        .filter_map(|((label_id, property), sampled)| {
-            catalog
-                .label_name(*label_id)
-                .map(|label| ((label.to_string(), property.clone()), *sampled))
-        });
-    let rel_property_distinct_counts = advanced_statistics
-        .into_iter()
-        .flat_map(|statistics| statistics.rel_property_distinct_counts.iter())
-        .filter_map(|((rel_type_id, property), count)| {
-            catalog
-                .rel_type_name(*rel_type_id)
-                .map(|rel_type| ((rel_type.to_string(), property.clone()), *count))
-        });
-    let rel_property_histograms = advanced_statistics
-        .into_iter()
-        .flat_map(|statistics| statistics.rel_property_histograms.iter())
-        .filter_map(|((rel_type_id, property), values)| {
-            catalog
-                .rel_type_name(*rel_type_id)
-                .map(|rel_type| ((rel_type.to_string(), property.clone()), values.clone()))
-        });
-    let sampled_rel_property_histograms = advanced_statistics
-        .into_iter()
-        .flat_map(|statistics| statistics.sampled_rel_property_histograms.iter())
-        .filter_map(|((rel_type_id, property), sampled)| {
-            catalog
-                .rel_type_name(*rel_type_id)
-                .map(|rel_type| ((rel_type.to_string(), property.clone()), *sampled))
-        });
-    let property_index_statistics = catalog.property_indexes().filter_map(|index| {
-        if index.kind == IndexKind::FullText {
-            return None;
-        }
-        let statistics = advanced_statistics?;
-        let sample = statistics.index_samples.get(&index.id)?;
-        let distinct_count = sample.estimated_unique_values()?;
-        let label = catalog.label_name(index.label_id)?;
-        Some((
-            (label.to_string(), index.property.clone()),
-            OptimizerIndexStatistics {
-                index_size: sample.index_size,
-                distinct_count,
-            },
-        ))
-    });
-    let composite_index_statistics = catalog.composite_property_indexes().filter_map(|index| {
-        let statistics = advanced_statistics?;
-        let sample = statistics.index_samples.get(&index.id)?;
-        let distinct_count = sample.estimated_unique_values()?;
-        let label = catalog.label_name(index.label_id)?;
-        Some((
-            (label.to_string(), index.properties.clone()),
-            OptimizerIndexStatistics {
-                index_size: sample.index_size,
-                distinct_count,
-            },
-        ))
-    });
-    OptimizerCatalog::new(
-        OptimizerCatalogIndexes::new(
-            equality_property_indexes,
-            composite_property_indexes,
-            range_property_indexes,
-            full_text_property_indexes,
-        ),
-        OptimizerCatalogStatistics::new(
-            label_counts,
-            rel_type_counts,
-            rel_type_source_counts,
-            path_counts,
-            bounded_path_counts,
-            property_distinct_counts,
-            property_histograms,
-        )
-        .with_property_index_statistics(property_index_statistics)
-        .with_composite_index_statistics(composite_index_statistics)
-        .with_relationship_type_target_counts(rel_type_target_counts)
-        .with_path_source_distinct_counts(path_source_distinct_counts)
-        .with_path_target_distinct_counts(path_target_distinct_counts)
-        .with_bounded_path_source_distinct_counts(bounded_path_source_distinct_counts)
-        .with_bounded_path_target_distinct_counts(bounded_path_target_distinct_counts)
-        .with_relationship_property_distinct_counts(rel_property_distinct_counts)
-        .with_relationship_property_histograms(rel_property_histograms)
-        .with_sampled_property_histograms(sampled_property_histograms)
-        .with_sampled_relationship_property_histograms(sampled_rel_property_histograms),
-    )
 }
 
 fn search_kind_to_label(kind: &str) -> Option<&'static str> {
@@ -19898,7 +19627,7 @@ pub(super) fn execute_database_transaction_prepared_sql(
                 store: graph_transaction.store(),
                 relational_state: &state.relational_state,
                 append_state: &state.append_state,
-                runtime: system_sql::SystemRuntimeSnapshot::from_config(&runtime.config),
+                runtime: system_runtime_snapshot(&runtime.config),
                 plan_cache_stats: &plan_cache_stats,
                 slow_queries: &[],
                 statement_summaries: &[],
@@ -21638,7 +21367,7 @@ impl DatabaseReadTransaction {
                     store: &self.store,
                     relational_state: self.store.relational_state(),
                     append_state: self.store.append_state(),
-                    runtime: system_sql::SystemRuntimeSnapshot::from_config(&self.config),
+                    runtime: system_runtime_snapshot(&self.config),
                     plan_cache_stats: &self.plan_cache.borrow().stats(),
                     slow_queries: &self.slow_query_snapshot,
                     statement_summaries: &self.statement_summary_snapshot,

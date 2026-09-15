@@ -879,11 +879,11 @@ dependencies = [
  "chrono",
  "getrandom",
  "libc",
- "loom",
  "serde",
  "serde_json",
  "skein-analytics",
  "skein-artifact",
+ "skein-bootstrap",
  "skein-compat",
  "skein-core",
  "skein-cypher",
@@ -892,7 +892,9 @@ dependencies = [
  "skein-executor",
  "skein-explain",
  "skein-expression",
+ "skein-fuzz-contracts",
  "skein-integrity",
+ "skein-nowledge-contracts",
  "skein-optimizer",
  "skein-plan",
  "skein-plan-cache",
@@ -906,6 +908,7 @@ dependencies = [
  "skein-search",
  "skein-sql",
  "skein-storage",
+ "skein-system-sql",
  "skein-telemetry",
  "skein-vector-projection",
  "unicode-width",
@@ -925,6 +928,19 @@ name = "skein-artifact"
 version = "0.1.0"
 dependencies = [
  "skein-core",
+ "skein-executor",
+ "skein-qos",
+]
+
+[[package]]
+name = "skein-bootstrap"
+version = "0.1.0"
+dependencies = [
+ "serde_json",
+ "skein-core",
+ "skein-integrity",
+ "skein-search",
+ "skein-storage",
 ]
 
 [[package]]
@@ -935,6 +951,7 @@ version = "0.1.0"
 name = "skein-compat"
 version = "0.1.0"
 dependencies = [
+ "serde",
  "serde_json",
  "skein-analytics",
  "skein-core",
@@ -988,6 +1005,7 @@ dependencies = [
  "skein-core",
  "skein-ddl",
  "skein-plan",
+ "skein-qos",
  "skein-storage",
 ]
 
@@ -995,6 +1013,7 @@ dependencies = [
 name = "skein-explain"
 version = "0.1.0"
 dependencies = [
+ "skein-core",
  "skein-executor",
  "skein-optimizer",
  "skein-plan",
@@ -1017,6 +1036,15 @@ version = "0.1.0"
 dependencies = [
  "serde_json",
  "skein",
+ "skein-fuzz-contracts",
+]
+
+[[package]]
+name = "skein-fuzz-contracts"
+version = "0.1.0"
+dependencies = [
+ "serde_json",
+ "skein-core",
 ]
 
 [[package]]
@@ -1025,6 +1053,17 @@ version = "0.1.0"
 dependencies = [
  "crc32c",
  "sha2",
+]
+
+[[package]]
+name = "skein-nowledge-contracts"
+version = "0.1.0"
+dependencies = [
+ "serde_json",
+ "skein-core",
+ "skein-qos",
+ "skein-search",
+ "skein-storage",
 ]
 
 [[package]]
@@ -1108,10 +1147,13 @@ dependencies = [
  "serde",
  "serde_json",
  "skein-core",
+ "skein-cypher",
  "skein-evidence",
  "skein-executor",
+ "skein-plan-cache",
  "skein-route-ownership",
  "skein-search",
+ "skein-storage",
 ]
 
 [[package]]
@@ -1123,6 +1165,7 @@ dependencies = [
  "skein-expression",
  "skein-integrity",
  "skein-optimizer",
+ "skein-plan",
  "skein-sql",
  "skein-storage",
 ]
@@ -1150,6 +1193,9 @@ version = "0.1.0"
 dependencies = [
  "chrono",
  "jieba-rs",
+ "regex",
+ "regex-automata",
+ "regex-syntax",
  "serde",
  "serde_json",
  "simsimd",
@@ -1198,6 +1244,20 @@ dependencies = [
  "skein-core",
  "skein-integrity",
  "zstd",
+]
+
+[[package]]
+name = "skein-system-sql"
+version = "0.1.0"
+dependencies = [
+ "loom",
+ "serde_json",
+ "skein-core",
+ "skein-executor",
+ "skein-plan-cache",
+ "skein-query",
+ "skein-sql",
+ "skein-storage",
 ]
 
 [[package]]

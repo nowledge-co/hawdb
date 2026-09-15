@@ -62,7 +62,7 @@ impl PartialFieldFrequency {
 
 #[derive(Debug)]
 struct FrequencyRecord {
-    term: String,
+    term: Term,
     field: u8,
     summary: PartialFieldFrequency,
 }
@@ -122,6 +122,7 @@ struct SpillingAnalysis {
     buffer_limit: u64,
     lower_bound: u64,
     runs: DocumentRuns,
+    records_memory: Option<QueryMemoryLease>,
 }
 
 impl SpillingAnalysis {
@@ -153,11 +154,15 @@ impl SpillingAnalysis {
             ));
         }
         if capacity > self.records.capacity() {
-            self.records
-                .try_reserve_exact(capacity - self.records.len())
-                .map_err(|error| {
-                    SkeinError::Storage(format!("reserve document frequency records: {error}"))
-                })?;
+            if let Some(memory) = &mut self.records_memory {
+                crate::build_memory::reserve_capacity(&mut self.records, capacity, memory)?;
+            } else {
+                self.records
+                    .try_reserve_exact(capacity - self.records.len())
+                    .map_err(|error| {
+                        SkeinError::Storage(format!("reserve document frequency records: {error}"))
+                    })?;
+            }
         }
         self.string_bytes = self.string_bytes.saturating_add(string_bytes);
         self.records.push(record);
@@ -174,6 +179,9 @@ impl SpillingAnalysis {
         let records = std::mem::take(&mut self.records);
         self.string_bytes = 0;
         let run = write_run(records.into_iter().map(Ok), pool, &mut FileSpillIo)?;
+        if let Some(memory) = &mut self.records_memory {
+            memory.reset();
+        }
         self.runs.insert(run, pool)
     }
 
@@ -206,12 +214,13 @@ impl AnalyzedDocument<'_> {
     pub(super) fn visit(
         self,
         config: LexicalProjectionConfig,
-        mut emit: impl FnMut(String, u32, u64) -> Result<()>,
+        mut emit: impl FnMut(Term, u32, u64) -> Result<()>,
     ) -> Result<()> {
         match self {
             Self::Resident(analysis) => {
                 let mut resident = analysis
                     .required_map_bytes(analysis.resident_bytes, analysis.frequencies.len());
+                let _map_memory = analysis.map_memory;
                 for (term, entry) in analysis.frequencies {
                     let marker_bytes =
                         (std::mem::size_of::<AnalyzedTerm>() - std::mem::size_of::<u32>()) as u64;
@@ -257,11 +266,14 @@ fn progress_memory(pool: &SpillRuns, document_id: &str) -> u64 {
             ),
         )
         .saturating_add(paths)
-        .saturating_add(std::mem::size_of::<DocumentRuns>() as u64)
+        // Keep the historical logical allowance independent of added physical
+        // ownership handles. The operation ledger admits those separately.
+        .saturating_add(u64::from(usize::BITS) * std::mem::size_of::<(PathBuf, bool)>() as u64)
         .saturating_add(document_id.len() as u64)
         .saturating_add(128)
 }
 
+#[cfg(test)]
 pub(super) fn analyze<'a>(
     document: &'a SearchDocument,
     analyzer: &SearchAnalyzerLexicon,
@@ -269,8 +281,31 @@ pub(super) fn analyze<'a>(
     pending: &mut Vec<Posting>,
     pending_bytes: &mut u64,
 ) -> Result<AnalyzedDocument<'a>> {
+    let mut buffer = PendingPostings::new(None)?;
+    buffer.values = std::mem::take(pending);
+    buffer.bytes = *pending_bytes;
+    let result = analyze_with_control(
+        document,
+        analyzer,
+        pool,
+        &mut buffer,
+        crate::analyzer_stream::Control::default(),
+    );
+    *pending = std::mem::take(&mut buffer.values);
+    *pending_bytes = buffer.bytes;
+    result
+}
+
+pub(super) fn analyze_with_control<'a>(
+    document: &'a SearchDocument,
+    analyzer: &SearchAnalyzerLexicon,
+    pool: &mut SpillRuns,
+    pending: &mut PendingPostings,
+    control: crate::analyzer_stream::Control<'_>,
+) -> Result<AnalyzedDocument<'a>> {
     let config = pool.config;
     admit_document_source(document, config)?;
+    pool.prepare(0, document.id.len())?;
     let progress = progress_memory(pool, &document.id);
     let base = document.id.len() as u64 + 64;
     let spill_buffer = config
@@ -279,96 +314,108 @@ pub(super) fn analyze<'a>(
         .checked_sub(progress)
         .filter(|bytes| *bytes >= base);
     let map_limit = spill_buffer.unwrap_or(config.build_memory_bytes.get());
-    if base.saturating_add(*pending_bytes) > map_limit {
-        flush_pending(pool, pending, pending_bytes)?;
+    if base.saturating_add(pending.bytes) > map_limit {
+        pending.flush(pool)?;
     }
-    let mut resident = Some(DocumentAnalysis::new(
+    let mut resident = Some(DocumentAnalysis::new_with_memory(
         &document.id,
         LexicalProjectionConfig {
             build_memory_bytes: NonZeroU64::new(map_limit).unwrap(),
             ..config
         },
+        control.memory,
     )?);
     let mut spilled: Option<SpillingAnalysis> = None;
     let mut ordinal = 0u64;
     for (field, (text, weight)) in document_token_fields(document).enumerate() {
         let field = u8::try_from(field).expect("at most six analysis fields");
-        visit_token_list(text, analyzer, |term, occurrence| {
-            ordinal = ordinal
-                .checked_add(1)
-                .ok_or_else(|| SkeinError::Storage("document token ordinal overflow".into()))?;
-            if term.len() as u64 > config.max_term_bytes.get() {
-                return Err(SkeinError::Storage(format!(
-                    "lexical term uses {} bytes, exceeding {}",
-                    term.len(),
-                    config.max_term_bytes
-                )));
-            }
-            if let Some(analysis) = resident.as_ref() {
-                let new_term = !analysis.frequencies.contains_key(&term);
-                let required = analysis.required_map_bytes(
-                    analysis.resident_bytes.saturating_add(if new_term {
-                        (term.len() as u64).saturating_add(32)
-                    } else {
-                        0
-                    }),
-                    analysis
-                        .frequencies
-                        .len()
-                        .saturating_add(usize::from(new_term)),
-                );
-                if required.saturating_add(*pending_bytes) > map_limit {
-                    flush_pending(pool, pending, pending_bytes)?;
+        crate::analyzer_stream::visit_admitted_token_list(
+            text,
+            analyzer,
+            control,
+            |term, occurrence| {
+                ordinal = ordinal
+                    .checked_add(1)
+                    .ok_or_else(|| SkeinError::Storage("document token ordinal overflow".into()))?;
+                if term.len() as u64 > config.max_term_bytes.get() {
+                    return Err(SkeinError::Storage(format!(
+                        "lexical term uses {} bytes, exceeding {}",
+                        term.len(),
+                        config.max_term_bytes
+                    )));
                 }
-                if required > map_limit {
-                    let Some(buffer_limit) = spill_buffer else {
-                        return Err(SkeinError::Storage(format!("document frequency spill needs at least {} analyzer bytes for progress", progress.saturating_add(base))));
-                    };
-                    if config.max_merge_fan_in.get() < 2 {
-                        return Err(SkeinError::Storage(
-                            "lexical merge fan-in must be at least two".into(),
-                        ));
+                pool.prepare(term.len(), document.id.len())?;
+                if let Some(analysis) = resident.as_ref() {
+                    let new_term = !analysis.frequencies.contains_key(&term);
+                    let required = analysis.required_map_bytes(
+                        analysis.resident_bytes.saturating_add(if new_term {
+                            (term.len() as u64).saturating_add(32)
+                        } else {
+                            0
+                        }),
+                        analysis
+                            .frequencies
+                            .len()
+                            .saturating_add(usize::from(new_term)),
+                    );
+                    if required.saturating_add(pending.bytes) > map_limit {
+                        pending.flush(pool)?;
                     }
-                    let analysis = resident.take().expect("resident accumulator");
-                    let mut external = SpillingAnalysis {
-                        records: Vec::new(),
-                        string_bytes: 0,
-                        buffer_limit,
-                        lower_bound: u64::from(analysis.document_len),
-                        runs: DocumentRuns::default(),
-                    };
-                    if !analysis.frequencies.is_empty() {
-                        let prefix = analysis.frequencies.into_iter().map(|(term, entry)| {
-                            Ok(FrequencyRecord {
-                                term,
-                                field: entry.last_field,
-                                summary: PartialFieldFrequency {
-                                    repeated_weight: u64::from(entry.frequency),
-                                    first_event: Some((0, 0)),
-                                },
-                            })
-                        });
-                        let run = write_run(prefix, pool, &mut FileSpillIo)?;
-                        external.runs.insert(run, pool)?;
+                    if required > map_limit {
+                        let Some(buffer_limit) = spill_buffer else {
+                            return Err(SkeinError::Storage(format!("document frequency spill needs at least {} analyzer bytes for progress", progress.saturating_add(base))));
+                        };
+                        if config.max_merge_fan_in.get() < 2 {
+                            return Err(SkeinError::Storage(
+                                "lexical merge fan-in must be at least two".into(),
+                            ));
+                        }
+                        let analysis = resident.take().expect("resident accumulator");
+                        let _map_memory = analysis.map_memory;
+                        let mut external = SpillingAnalysis {
+                            records: Vec::new(),
+                            string_bytes: 0,
+                            buffer_limit,
+                            lower_bound: u64::from(analysis.document_len),
+                            runs: DocumentRuns::default(),
+                            records_memory: control
+                                .memory
+                                .map(|memory| memory.retained.reserve(0))
+                                .transpose()?,
+                        };
+                        if !analysis.frequencies.is_empty() {
+                            let prefix = analysis.frequencies.into_iter().map(|(term, entry)| {
+                                Ok(FrequencyRecord {
+                                    term,
+                                    field: entry.last_field,
+                                    summary: PartialFieldFrequency {
+                                        repeated_weight: u64::from(entry.frequency),
+                                        first_event: Some((0, 0)),
+                                    },
+                                })
+                            });
+                            let run = write_run(prefix, pool, &mut FileSpillIo)?;
+                            external.runs.insert(run, pool)?;
+                        }
+                        spilled = Some(external);
                     }
-                    spilled = Some(external);
                 }
-            }
-            if let Some(analysis) = resident.as_mut() {
-                analysis.push(term, occurrence, field, weight)
-            } else {
-                let mut summary = PartialFieldFrequency::default();
-                summary.push(ordinal, occurrence, weight as u64)?;
-                spilled.as_mut().expect("spilling accumulator").push(
-                    FrequencyRecord {
-                        term,
-                        field,
-                        summary,
-                    },
-                    pool,
-                )
-            }
-        })?;
+                if let Some(analysis) = resident.as_mut() {
+                    analysis.push_term(term, occurrence, field, weight)
+                } else {
+                    let mut summary = PartialFieldFrequency::default();
+                    summary.push(ordinal, occurrence, weight as u64)?;
+                    spilled.as_mut().expect("spilling accumulator").push(
+                        FrequencyRecord {
+                            term,
+                            field,
+                            summary,
+                        },
+                        pool,
+                    )
+                }
+            },
+        )?;
     }
     if let Some(analysis) = resident {
         return Ok(AnalyzedDocument::Resident(analysis));
@@ -392,10 +439,15 @@ pub(super) fn analyze<'a>(
 fn visit_frequencies(
     run: &FrequencyRun,
     config: LexicalProjectionConfig,
-    mut emit: impl FnMut(String, u32) -> Result<()>,
+    mut emit: impl FnMut(Term, u32) -> Result<()>,
 ) -> Result<()> {
-    let mut reader = FrequencyRunReader::open(&run.guard.path, config)?;
-    let mut current: Option<(String, u64)> = None;
+    let mut reader = FrequencyRunReader::open_with_control(
+        &run.guard.path,
+        config,
+        run.progress.as_ref(),
+        run.task.as_ref(),
+    )?;
+    let mut current: Option<(Term, u64)> = None;
     while let Some(record) = reader.next()? {
         let frequency = record.summary.frequency()?;
         match current.as_mut() {
@@ -418,16 +470,36 @@ fn visit_frequencies(
     Ok(())
 }
 
-pub(super) fn flush_pending(
+/// A reduced document is already sorted. Stream it without retaining progress
+/// terms in the corpus posting buffer or allocating one document ID per term.
+pub(super) fn spill_postings(
+    run: FrequencyRun,
+    id: &str,
+    document_len: u32,
     pool: &mut SpillRuns,
-    pending: &mut Vec<Posting>,
-    bytes: &mut u64,
 ) -> Result<()> {
-    if !pending.is_empty() {
-        pool.spill(pending)?;
-    }
-    // Capacity must not stay resident beside the document-local accumulator.
-    *pending = Vec::new();
-    *bytes = 0;
-    Ok(())
+    let guard = pool.next_guard()?;
+    let mut writer = SpillRunWriter::create_with_progress(
+        &guard.path,
+        pool.bytes,
+        pool.config.max_spill_bytes,
+        &mut FileSpillIo,
+        pool.progress.as_ref(),
+        pool.task(),
+    )?;
+    let mut max_posting_bytes = pool.max_posting_bytes;
+    let posting_limit = pool.config.build_memory_bytes.get();
+    visit_frequencies(&run, pool.config, |term, frequency| {
+        let bytes = Posting::resident_bytes(&term, id);
+        if bytes > posting_limit {
+            return Err(SkeinError::Storage(
+                "one lexical posting exceeds the build memory budget".into(),
+            ));
+        }
+        max_posting_bytes = max_posting_bytes.max(bytes);
+        writer.push_parts(&term, id, frequency, document_len)
+    })?;
+    pool.bytes = writer.finish()?;
+    pool.max_posting_bytes = max_posting_bytes;
+    pool.register(guard)
 }

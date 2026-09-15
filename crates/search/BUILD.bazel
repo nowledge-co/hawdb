@@ -23,6 +23,9 @@ _SEARCH_DEFAULT_FEATURES = [
 _SEARCH_BASE_DEPS = [
     "@crate_index//:chrono",
     "@crate_index//:jieba-rs",
+    "@crate_index//:regex",
+    "@crate_index//:regex-automata",
+    "@crate_index//:regex-syntax",
     "@crate_index//:serde",
     "@crate_index//:serde_json",
     "@crate_index//:zstd",
@@ -49,7 +52,7 @@ rust_library(
     crate_name = "skein_search",
     crate_root = "src/lib.rs",
     crate_features = _SEARCH_DEFAULT_FEATURES,
-    srcs = glob(["src/**/*.rs"]),
+    srcs = glob(["src/**/*.rs"]) + ["tests/support/live_allocation.rs"],
     edition = "2024",
     aliases = aliases(),
     deps = _SEARCH_DEPS,
@@ -62,12 +65,16 @@ rust_library(
     name = "skein_search_minimal",
     crate_name = "skein_search",
     crate_root = "src/lib.rs",
-    srcs = glob(["src/**/*.rs"]),
+    srcs = glob(["src/**/*.rs"]) + ["tests/support/live_allocation.rs"],
     edition = "2024",
     aliases = aliases(),
     deps = _SEARCH_BASE_DEPS,
     proc_macro_deps = all_crate_deps(proc_macro = True),
-    visibility = ["//:__pkg__"],
+    visibility = [
+        "//:__pkg__",
+        "//crates/bootstrap:__pkg__",
+        "//crates/nowledge-contracts:__pkg__",
+    ],
 )
 
 # Match Cargo's explicit `skein-search/acl` forwarding without enabling ACL
@@ -78,12 +85,16 @@ rust_library(
     crate_name = "skein_search",
     crate_root = "src/lib.rs",
     crate_features = _SEARCH_DEFAULT_FEATURES + ["acl"],
-    srcs = glob(["src/**/*.rs"]),
+    srcs = glob(["src/**/*.rs"]) + ["tests/support/live_allocation.rs"],
     edition = "2024",
     aliases = aliases(),
     deps = _SEARCH_DEPS,
     proc_macro_deps = all_crate_deps(proc_macro = True),
-    visibility = ["//:__pkg__"],
+    visibility = [
+        "//:__pkg__",
+        "//crates/bootstrap:__pkg__",
+        "//crates/nowledge-contracts:__pkg__",
+    ],
 )
 
 rust_test(
@@ -418,7 +429,7 @@ rust_test(
         crate_name = "skein_search",
         crate_root = "src/lib.rs",
         crate_features = features,
-        srcs = glob(["src/**/*.rs"]),
+        srcs = glob(["src/**/*.rs"]) + ["tests/support/live_allocation.rs"],
         edition = "2024",
         aliases = aliases(
             normal = True,
@@ -461,4 +472,23 @@ rust_test(
     ],
     edition = "2024",
     deps = [":skein_search"],
+)
+
+# Qualify opaque analyzer capacity independently of the unit-test allocator.
+rust_test(
+    name = "skein_search_analyzer_workspace_allocation_tests",
+    crate_root = "tests/analyzer_workspace_allocation.rs",
+    srcs = [
+        "src/analyzer_workspace/bounds.rs",
+        "src/analyzer_workspace/bounds/tests.rs",
+        "tests/analyzer_workspace_allocation.rs",
+        "tests/support/live_allocation.rs",
+    ],
+    edition = "2024",
+    deps = [
+        "@crate_index//:jieba-rs",
+        "@crate_index//:regex",
+        "@crate_index//:regex-automata",
+        "@crate_index//:regex-syntax",
+    ],
 )
