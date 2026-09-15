@@ -40,6 +40,7 @@ use std::sync::{Arc, Mutex};
 
 mod analyzer_lexicon;
 mod analyzer_stream;
+mod analyzer_workspace;
 mod bounded_file;
 mod build_control;
 mod build_memory;

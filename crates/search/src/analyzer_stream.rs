@@ -1,7 +1,7 @@
 //! Fallible field and identifier traversal. Identifier deduplication and opaque
 //! Jieba analysis still retain whole-run state; this is not a bounded-RSS tokenizer.
 
-use super::cjk_tokenizer::{is_cjk_search_char, visit_chinese_search_tokens};
+use super::cjk_tokenizer::{is_cjk_search_char, visit_chinese_search_tokens_with_workspace};
 use super::identifier::{normalize_part, part_slices, IdentifierParts};
 use super::{
     normalize_english_suffixes, Result, SearchAnalyzerLexicon, SearchDocument, TokenSequence,
@@ -42,11 +42,20 @@ enum TokenScope {
 pub(super) fn visit_token_list(
     text: &str,
     analyzer: &SearchAnalyzerLexicon,
+    emit: impl FnMut(String, TokenOccurrence) -> Result<()>,
+) -> Result<()> {
+    visit_token_list_with_workspace(text, analyzer, None, emit)
+}
+
+pub(super) fn visit_token_list_with_workspace(
+    text: &str,
+    analyzer: &SearchAnalyzerLexicon,
+    workspace: Option<&crate::analyzer_workspace::Workspace>,
     mut emit: impl FnMut(String, TokenOccurrence) -> Result<()>,
 ) -> Result<()> {
     let mut current_scope = None;
     let mut seen = HashMap::new();
-    visit_token_events(text, analyzer, |token, scope| {
+    visit_token_events(text, analyzer, workspace, |token, scope| {
         if current_scope != Some(scope) {
             seen = HashMap::new();
             current_scope = Some(scope);
@@ -72,7 +81,7 @@ pub(super) fn collect_token_list(text: &str, analyzer: &SearchAnalyzerLexicon) -
         // Reuse collected token IDs instead of retaining a second identifier
         // hash table. Release these markers before materializing output order.
         let mut last_identifier = Vec::new();
-        visit_token_events(text, analyzer, |token, scope| {
+        visit_token_events(text, analyzer, None, |token, scope| {
             let (id, inserted) = if let Some(id) = tokens.token_ids.get(token.as_ref()) {
                 (*id, false)
             } else {
@@ -102,6 +111,7 @@ pub(super) fn collect_token_list(text: &str, analyzer: &SearchAnalyzerLexicon) -
 fn visit_token_events<'a>(
     text: &'a str,
     analyzer: &SearchAnalyzerLexicon,
+    workspace: Option<&crate::analyzer_workspace::Workspace>,
     mut emit: impl FnMut(Cow<'a, str>, TokenScope) -> Result<()>,
 ) -> Result<()> {
     let mut previous_part = None::<Cow<'_, str>>;
@@ -122,7 +132,7 @@ fn visit_token_events<'a>(
             });
             phrase.analyzed(Cow::Owned(format!("{previous}_{}", normalized_part(first))))?;
         }
-        if let Some(last) = visit_identifier_tokens(raw, parts, analyzer, |token| {
+        if let Some(last) = visit_identifier_tokens(raw, parts, analyzer, workspace, |token| {
             emit(token, TokenScope::Identifier(identifier))
         })? {
             previous_part = Some(last);
@@ -137,7 +147,7 @@ pub(super) fn identifier_tokens(raw: &str, analyzer: &SearchAnalyzerLexicon) -> 
         return Vec::new();
     }
     let mut tokens = TokenSequence::default();
-    visit_identifier_tokens(raw, part_slices(raw), analyzer, |token| {
+    visit_identifier_tokens(raw, part_slices(raw), analyzer, None, |token| {
         tokens.push_unique(token.into_owned());
         Ok(())
     })
@@ -149,6 +159,7 @@ fn visit_identifier_tokens<'a>(
     raw: &'a str,
     parts: IdentifierParts<'a>,
     analyzer: &SearchAnalyzerLexicon,
+    workspace: Option<&crate::analyzer_workspace::Workspace>,
     emit: impl FnMut(Cow<'a, str>) -> Result<()>,
 ) -> Result<Option<Cow<'a, str>>> {
     let mut tokens = TokenEmitter::new(analyzer, emit);
@@ -158,7 +169,9 @@ fn visit_identifier_tokens<'a>(
         Cow::Owned(raw.to_lowercase())
     })?;
     // Jieba still owns its whole-run scratch and borrowed token collection.
-    visit_chinese_search_tokens(raw, |token| tokens.analyzed(Cow::Borrowed(token)))?;
+    visit_chinese_search_tokens_with_workspace(raw, workspace, |token| {
+        tokens.analyzed(Cow::Borrowed(token))
+    })?;
     for run in raw.split(|ch| !is_cjk_search_char(ch)) {
         for width in [2, 3] {
             let mut starts = [0; 3];
