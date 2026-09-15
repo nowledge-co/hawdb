@@ -558,7 +558,7 @@ fn run_search_metadata_workload_probe(
     name: &str,
     metadata_filters: BTreeMap<String, String>,
 ) -> NowledgeSearchMetadataWorkloadReport {
-    let result = search_index.search_with_options(
+    let result = search_index.try_search_with_options(
         "workload metadata retrieval",
         None,
         SearchMode::Text,
@@ -571,6 +571,12 @@ fn run_search_metadata_workload_probe(
             policy_epoch: None,
         },
     );
+    let result = match result {
+        Ok(result) => result,
+        Err(error) => {
+            return search_metadata_error_report(name, metadata_filters, error_class(&error));
+        }
+    };
     let pushdown = &result.candidate_set.metadata_predicate_pushdown;
     let fields = search_metadata_pushdown_fields(pushdown);
     NowledgeSearchMetadataWorkloadReport {
@@ -845,7 +851,7 @@ fn run_bounded_expansion_probe(
     graph_context_limit: usize,
     graph_context_max_hops: usize,
 ) -> NowledgeGraphRouteWorkloadBoundedExpansionReport {
-    let output = db.retrieve_knowledge(
+    let output = db.try_retrieve_knowledge(
         search_index,
         &KnowledgeRetrievalRequest {
             query_text: query_text.to_string(),
@@ -863,6 +869,17 @@ fn run_bounded_expansion_probe(
             graph_context_max_hops,
         },
     );
+    let output = match output {
+        Ok(output) => output,
+        Err(error) => {
+            return bounded_expansion_error_report(
+                name,
+                graph_context_limit,
+                graph_context_max_hops,
+                error_class(&error),
+            );
+        }
+    };
     NowledgeGraphRouteWorkloadBoundedExpansionReport {
         name: name.to_string(),
         ready: output.search.total_hits > 0
@@ -980,6 +997,9 @@ const SEARCH_METADATA_WORKLOAD_FIXTURE_STATEMENTS: &[&str] = &[
     "CREATE (:Memory {id: 'metadata-task-active', title: 'Workload metadata retrieval task', content: 'workload metadata retrieval', unit_type: 'task', lifecycle_state: 'active', importance: 0.6, confidence: 0.7, created_at: 90, updated_at: 100, source_id: 'workload-source-2', space_id: 'default'})",
     "CREATE (:Memory {id: 'metadata-fact-deleted', title: 'Workload metadata retrieval deleted', content: 'workload metadata retrieval', unit_type: 'fact', lifecycle_state: 'deleted', importance: 0.95, confidence: 0.99, created_at: 150, updated_at: 190, source_id: 'workload-source-1', space_id: 'archive'})",
 ];
+
+#[cfg(test)]
+mod capability_tests;
 
 #[cfg(test)]
 mod tests {
