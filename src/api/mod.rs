@@ -84,7 +84,8 @@ mod artifact_jobs;
 mod canonical_snapshot;
 mod concurrent;
 mod explain;
-mod explain_format;
+#[cfg(test)]
+mod explain_format_tests;
 mod observability;
 mod plan_cache;
 mod query_runtime;
@@ -180,6 +181,7 @@ pub use search_projection_catch_up::{
     ScheduledSearchProjectionCatchUpReport, SearchProjectionCatchUpReport,
     SearchProjectionCatchUpStopReason,
 };
+pub use skein_explain::{ExplainAnalyzeOutput, ExplainOutput};
 pub use source_candidates::{
     KnowledgeSourceCandidateRow, KnowledgeSourceCandidateScanOrigin,
     KnowledgeSourceCandidateScanOutput, KnowledgeSourceCandidateScanRequest,

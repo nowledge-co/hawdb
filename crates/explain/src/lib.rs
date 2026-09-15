@@ -1,10 +1,37 @@
-use super::{ExplainAnalyzeOutput, ExplainOutput};
-use crate::executor::ReadExecutionProfile;
-use crate::optimizer::{PhysicalOperatorId, PhysicalPlan, PhysicalPlanChildren};
+#![deny(unsafe_code)]
+
+//! Explain output contracts and terminal formatting for embedded query clients.
+
+use skein_executor::{QueryOutput, ReadExecutionProfile};
+use skein_optimizer::{OptimizerTrace, PhysicalOperatorId, PhysicalPlanKind};
+use skein_plan::{PhysicalPlan, PhysicalPlanChildren};
+use skein_plan_cache::PlanCacheLookup;
+use skein_qos::WorkRequest;
+use skein_storage::ScanPruningReport;
 use std::fmt::{Display, Formatter, Write};
 use unicode_width::UnicodeWidthStr;
 
 const NOT_AVAILABLE: &str = "N/A";
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct ExplainOutput {
+    pub physical_plan: PhysicalPlan,
+    pub trace: OptimizerTrace,
+    pub work_request: WorkRequest,
+    pub plan_cache_lookup: PlanCacheLookup,
+    pub statement_kind: &'static str,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct ExplainAnalyzeOutput {
+    pub output: QueryOutput,
+    pub execution_profile: ReadExecutionProfile<ScanPruningReport>,
+    pub physical_plan: PhysicalPlan,
+    pub trace: OptimizerTrace,
+    pub work_request: WorkRequest,
+    pub plan_cache_lookup: PlanCacheLookup,
+    pub statement_kind: &'static str,
+}
 
 impl Display for ExplainOutput {
     fn fmt(&self, formatter: &mut Formatter<'_>) -> std::fmt::Result {
@@ -241,9 +268,9 @@ fn plan_rows(
 }
 
 fn estimated_rows(
-    trace: &crate::optimizer::OptimizerTrace,
+    trace: &OptimizerTrace,
     operator_id: PhysicalOperatorId,
-    operator: crate::optimizer::PhysicalPlanKind,
+    operator: PhysicalPlanKind,
 ) -> Option<String> {
     trace
         .selected_plan_cardinality_estimates
@@ -253,9 +280,9 @@ fn estimated_rows(
 }
 
 fn actual_rows(
-    profile: &ReadExecutionProfile,
+    profile: &ReadExecutionProfile<ScanPruningReport>,
     operator_id: PhysicalOperatorId,
-    operator: crate::optimizer::PhysicalPlanKind,
+    operator: PhysicalPlanKind,
 ) -> Option<String> {
     profile
         .operator_cardinality_profiles
@@ -354,7 +381,7 @@ fn operator_info(plan: &PhysicalPlan) -> String {
         .to_string()
 }
 
-fn root_execution_info(profile: &ReadExecutionProfile) -> String {
+fn root_execution_info(profile: &ReadExecutionProfile<ScanPruningReport>) -> String {
     let pipeline = &profile.pipeline_memory_report;
     let mut fields = vec![
         format!("output_rows={}", pipeline.output_rows),
@@ -491,76 +518,7 @@ fn display_width(value: &str) -> usize {
 
 #[cfg(test)]
 mod tests {
-    use super::format_bytes;
-    use crate::{Database, Value};
-
-    #[test]
-    fn explain_is_directly_printable_as_a_tree_table() {
-        let mut db = Database::new();
-        db.query("CREATE (:Memory {id: 1, title: 'Graph foundations'})")
-            .unwrap();
-
-        let rendered = db
-            .explain_query("MATCH (m:Memory) WHERE m.id = 1 RETURN m.title AS title")
-            .unwrap()
-            .to_string();
-
-        assert!(rendered.contains("| id"));
-        assert!(rendered.contains("| estRows"));
-        assert!(rendered.contains("NodeProjectionScanExec"));
-        assert!(!rendered.contains("ProjectExec"));
-        assert!(!rendered.contains("FilterExec"));
-        assert!(rendered.contains("label:Memory"));
-        assert!(rendered.contains("optimizer: mode=memo"));
-        assert!(rendered.contains("query digest:"));
-        assert!(rendered.contains("plan shape:"));
-        for line in rendered
-            .lines()
-            .filter(|line| line.starts_with('|') && line.contains("Exec"))
-        {
-            let cells = line.split('|').map(str::trim).collect::<Vec<_>>();
-            assert_ne!(cells[2], super::NOT_AVAILABLE);
-        }
-    }
-
-    #[test]
-    fn explain_analyze_prints_measured_pipeline_and_blocking_memory() {
-        let mut db = Database::new();
-        for id in [2, 1, 3] {
-            db.query(&format!("CREATE (:Memory {{id: {id}}})")).unwrap();
-        }
-
-        let output = db
-            .explain_analyze_query("MATCH (m:Memory) RETURN m.id AS id ORDER BY id")
-            .unwrap();
-        assert_eq!(output.output.rows[0].get("id"), Some(&Value::Int(1)));
-        assert_eq!(
-            output.trace.selected_plan_cardinality_estimates.len(),
-            output.execution_profile.operator_cardinality_profiles.len()
-        );
-        assert!(output
-            .execution_profile
-            .operator_cardinality_profiles
-            .iter()
-            .all(|cardinality| cardinality.actual_rows.is_some()));
-        let rendered = output.to_string();
-
-        assert!(rendered.contains("| actRows"));
-        assert!(rendered.contains("output_rows=3"));
-        assert!(rendered.contains("intermediate_rows="));
-        assert!(rendered.contains("SortExec"));
-        assert!(rendered.contains("peak="));
-        assert!(rendered.contains("/budget="));
-        assert!(rendered.contains("query_memory="));
-        for line in rendered
-            .lines()
-            .filter(|line| line.starts_with('|') && line.contains("Exec"))
-        {
-            let cells = line.split('|').map(str::trim).collect::<Vec<_>>();
-            assert_ne!(cells[2], super::NOT_AVAILABLE);
-            assert_ne!(cells[3], super::NOT_AVAILABLE);
-        }
-    }
+    use super::{display_width, format_bytes};
 
     #[test]
     fn formats_binary_byte_units_without_platform_dependencies() {
@@ -571,7 +529,7 @@ mod tests {
 
     #[test]
     fn aligns_wide_unicode_by_terminal_column_width() {
-        assert_eq!(super::display_width("Memory"), 6);
-        assert_eq!(super::display_width("记忆"), 4);
+        assert_eq!(display_width("Memory"), 6);
+        assert_eq!(display_width("记忆"), 4);
     }
 }

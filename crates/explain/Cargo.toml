@@ -1,0 +1,15 @@
+[package]
+name = "skein-explain"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+
+[dependencies]
+skein-executor = { path = "../executor" }
+skein-optimizer = { path = "../optimizer" }
+skein-plan = { path = "../plan" }
+skein-plan-cache = { path = "../plan-cache" }
+skein-qos = { path = "../qos" }
+skein-storage = { path = "../storage" }
+unicode-width = "0.2"

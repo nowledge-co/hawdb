@@ -1,0 +1,35 @@
+load("@crate_index//:defs.bzl", "aliases", "all_crate_deps")
+load("@rules_rust//rust:defs.bzl", "rust_library", "rust_test")
+
+package(default_visibility = ["//visibility:public"])
+
+test_suite(
+    name = "presubmit_tests",
+)
+
+rust_library(
+    name = "skein_explain",
+    crate_name = "skein_explain",
+    crate_root = "src/lib.rs",
+    srcs = glob(["src/**/*.rs"]),
+    edition = "2024",
+    aliases = aliases(),
+    deps = all_crate_deps(normal = True) + [
+        "//crates/executor:skein_executor",
+        "//crates/optimizer:skein_optimizer",
+        "//crates/plan:skein_plan",
+        "//crates/plan-cache:skein_plan_cache",
+        "//crates/qos:skein_qos",
+        "//crates/storage:skein_storage",
+    ],
+    proc_macro_deps = all_crate_deps(proc_macro = True),
+)
+
+rust_test(
+    name = "skein_explain_tests",
+    crate = ":skein_explain",
+    edition = "2024",
+    aliases = aliases(normal_dev = True, proc_macro_dev = True),
+    deps = all_crate_deps(normal_dev = True),
+    proc_macro_deps = all_crate_deps(proc_macro_dev = True),
+)
