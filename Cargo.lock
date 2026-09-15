@@ -883,12 +883,15 @@ dependencies = [
  "serde",
  "serde_json",
  "skein-analytics",
+ "skein-artifact",
+ "skein-bootstrap",
  "skein-compat",
  "skein-core",
  "skein-cypher",
  "skein-ddl",
  "skein-evidence",
  "skein-executor",
+ "skein-explain",
  "skein-expression",
  "skein-integrity",
  "skein-optimizer",
@@ -896,6 +899,7 @@ dependencies = [
  "skein-plan-cache",
  "skein-qos",
  "skein-query",
+ "skein-query-policy",
  "skein-readiness",
  "skein-relational",
  "skein-route-ownership",
@@ -914,6 +918,24 @@ name = "skein-analytics"
 version = "0.1.0"
 dependencies = [
  "skein-core",
+ "skein-storage",
+]
+
+[[package]]
+name = "skein-artifact"
+version = "0.1.0"
+dependencies = [
+ "skein-core",
+]
+
+[[package]]
+name = "skein-bootstrap"
+version = "0.1.0"
+dependencies = [
+ "serde_json",
+ "skein-core",
+ "skein-integrity",
+ "skein-search",
  "skein-storage",
 ]
 
@@ -978,7 +1000,22 @@ dependencies = [
  "skein-core",
  "skein-ddl",
  "skein-plan",
+ "skein-qos",
  "skein-storage",
+]
+
+[[package]]
+name = "skein-explain"
+version = "0.1.0"
+dependencies = [
+ "skein-core",
+ "skein-executor",
+ "skein-optimizer",
+ "skein-plan",
+ "skein-plan-cache",
+ "skein-qos",
+ "skein-storage",
+ "unicode-width",
 ]
 
 [[package]]
@@ -1069,6 +1106,16 @@ dependencies = [
 ]
 
 [[package]]
+name = "skein-query-policy"
+version = "0.1.0"
+dependencies = [
+ "skein-core",
+ "skein-cypher",
+ "skein-optimizer",
+ "skein-qos",
+]
+
+[[package]]
 name = "skein-readiness"
 version = "0.1.0"
 dependencies = [
@@ -1076,6 +1123,7 @@ dependencies = [
  "serde_json",
  "skein-core",
  "skein-evidence",
+ "skein-executor",
  "skein-route-ownership",
  "skein-search",
 ]
@@ -1087,6 +1135,7 @@ dependencies = [
  "skein-core",
  "skein-executor",
  "skein-expression",
+ "skein-integrity",
  "skein-optimizer",
  "skein-sql",
  "skein-storage",

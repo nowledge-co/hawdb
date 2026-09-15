@@ -1,4 +1,3 @@
-use crate::sql::SqlStatement;
 pub(crate) use skein_relational::field_plan::{
     resolve_relational_order_target, RelationalOrderTarget,
 };
@@ -33,27 +32,6 @@ pub(crate) use query::{
 };
 pub(crate) use row_access::RelationalRowReadMode;
 pub(crate) use skein_sql::{PreparedRelationalSql, RelationalPlanTemplateCache};
-
-pub(crate) fn statement_writes_system_schema_registry(statement: &SqlStatement) -> bool {
-    const REGISTRY_TABLE: &str = "skein_schema_migrations";
-
-    let table = match statement {
-        SqlStatement::Insert(statement) => Some(&statement.table),
-        SqlStatement::Update(statement) => Some(&statement.table),
-        SqlStatement::Delete(statement) => Some(&statement.table),
-        SqlStatement::CreateTable(statement) => Some(&statement.table),
-        SqlStatement::CreateIndex(statement) => Some(&statement.table),
-        SqlStatement::AlterTableAddColumn(statement) => Some(&statement.table),
-        SqlStatement::Select(_) | SqlStatement::Explain(_) => None,
-    };
-    table.is_some_and(|table| {
-        table.name == REGISTRY_TABLE
-            && table
-                .schema
-                .as_deref()
-                .is_none_or(|schema| schema == "public")
-    })
-}
 
 #[cfg(test)]
 mod tests {

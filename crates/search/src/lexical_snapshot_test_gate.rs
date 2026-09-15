@@ -1,5 +1,11 @@
 use std::cell::RefCell;
 use std::sync::mpsc::{self, Receiver, Sender};
+use std::time::Duration;
+
+/// Generous enough to never fire under real CI load, but bounded so a stuck
+/// query fails fast with a clear message instead of hanging to the CI job's
+/// default timeout.
+const CAPTURE_TIMEOUT: Duration = Duration::from_secs(60);
 
 thread_local! {
     static PENDING_QUERY: RefCell<Option<QueryGate>> = const { RefCell::new(None) };
@@ -52,9 +58,15 @@ impl QueryGate {
 
 impl QueryController {
     pub(crate) fn wait_until_captured(&self) {
-        self.captured
-            .recv()
-            .expect("query ended before capturing its lexical snapshot");
+        match self.captured.recv_timeout(CAPTURE_TIMEOUT) {
+            Ok(()) => {}
+            Err(mpsc::RecvTimeoutError::Disconnected) => {
+                panic!("query ended before capturing its lexical snapshot")
+            }
+            Err(mpsc::RecvTimeoutError::Timeout) => {
+                panic!("query did not capture its lexical snapshot within {CAPTURE_TIMEOUT:?}")
+            }
+        }
     }
 }
 

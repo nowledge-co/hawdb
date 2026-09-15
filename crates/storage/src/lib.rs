@@ -358,6 +358,13 @@ pub use scan::{
 pub use snapshot::{
     SnapshotCommitError, SnapshotCoordinator, SnapshotReadGuard, VersionedSnapshot,
 };
+// These are internal ownership seams. Hosts continue to use the embedded facade.
+#[doc(hidden)]
+pub use source_scan::{
+    render_source_candidate_page, select_source_candidate, validate_source_candidate_scan_request,
+    SourceCandidateCursor, SourceCandidateRow, SourceCandidateScanOrigin,
+    SourceCandidateScanOutput, SourceCandidateScanRequest,
+};
 pub use stable_identity::{
     stable_identity_generation_artifact_path, StableIdentityKey, StableIdentityKind,
     StableIdentityMappingConfig, StableIdentityMappingError, StableIdentityMappingHeader,
@@ -370,3 +377,11 @@ pub use stable_identity::{
     DEFAULT_STABLE_IDENTITY_VALUE_BYTES,
 };
 pub use telemetry::{StorageTelemetrySink, WalAppendTelemetry};
+pub use wal::{
+    WalGroupCommitActivation, WalGroupCommitAdaptiveColdStartEvidence,
+    WalGroupCommitAdaptivePolicyEvidence, WalGroupCommitAdaptiveSteadyStateEvidence,
+    WalGroupCommitConfig, WalGroupCommitDelayPolicy, WalGroupCommitEvidence,
+    WalGroupCommitSnapshot, WalGroupCommitTailLatencyEvidence, WalGroupCommitWaitDecision,
+    DEFAULT_WAL_GROUP_COMMIT_MAX_BYTES, DEFAULT_WAL_GROUP_COMMIT_MAX_DELAY,
+    DEFAULT_WAL_GROUP_COMMIT_MAX_ENTRIES,
+};

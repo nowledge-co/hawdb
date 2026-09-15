@@ -153,6 +153,11 @@ pub(super) fn write_run(
     }
     pool.bytes = writer.finish()?;
     if let Some(memory) = guard._memory.as_mut() {
+        if guard.path.capacity() > memory.bytes() {
+            return Err(SkeinError::Execution(
+                "search spill path allocation exceeded its admitted capacity".into(),
+            ));
+        }
         memory.shrink(memory.bytes() - guard.path.capacity());
     }
     Ok(FrequencyRun {

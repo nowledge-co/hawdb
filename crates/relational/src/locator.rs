@@ -1,8 +1,8 @@
-use crate::error::{Result, SkeinError};
-use crate::sql::{SqlNullOrder, SqlOrderDirection};
+use skein_core::{Result, SkeinError};
 use skein_executor::columnar::RelationalRowLocator;
 use skein_executor::external_order::ExternalOrderRecord;
 use skein_expression::BindingId;
+use skein_sql::{SqlNullOrder, SqlOrderDirection};
 use skein_storage::{RelationalKey, RelationalScalarType, RelationalTableSchema, RelationalValue};
 use std::cmp::Ordering;
 use std::io::{Cursor, Read};
@@ -11,31 +11,31 @@ const TYPED_LOCATOR_RECORD_VERSION: u8 = 1;
 const HASH_SPILL_LOCATOR_RECORD_VERSION: u8 = 1;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub(super) struct RelationalRowSetLocator {
+pub struct RelationalRowSetLocator {
     rows: Box<[Option<RelationalRowLocator>]>,
 }
 
 #[derive(Debug, Clone, PartialEq)]
-pub(super) struct RelationalSortKey {
+pub struct RelationalSortKey {
     value: RelationalValue,
     direction: SqlOrderDirection,
     nulls: SqlNullOrder,
 }
 
 #[derive(Debug, Clone, PartialEq)]
-pub(super) struct RelationalSortRecord {
+pub struct RelationalSortRecord {
     sort_keys: Box<[RelationalSortKey]>,
     locator: RelationalRowSetLocator,
 }
 
 impl RelationalRowSetLocator {
-    pub(super) fn new(rows: Vec<Option<RelationalRowLocator>>) -> Self {
+    pub fn new(rows: Vec<Option<RelationalRowLocator>>) -> Self {
         Self {
             rows: rows.into_boxed_slice(),
         }
     }
 
-    pub(super) fn rows(&self) -> &[Option<RelationalRowLocator>] {
+    pub fn rows(&self) -> &[Option<RelationalRowLocator>] {
         &self.rows
     }
 
@@ -44,7 +44,7 @@ impl RelationalRowSetLocator {
     /// The payload deliberately carries only primary-key locators. The executor
     /// must re-read rows from the query snapshot before evaluating join keys or
     /// residual predicates, so spill files never retain a second copy of rows.
-    pub(super) fn encode_hash_spill_record(&self) -> Result<Vec<u8>> {
+    pub fn encode_hash_spill_record(&self) -> Result<Vec<u8>> {
         let mut output = Vec::new();
         output.push(HASH_SPILL_LOCATOR_RECORD_VERSION);
         write_len(&mut output, self.rows.len())?;
@@ -64,7 +64,7 @@ impl RelationalRowSetLocator {
         Ok(output)
     }
 
-    pub(super) fn decode_hash_spill_record(input: &[u8]) -> Result<Self> {
+    pub fn decode_hash_spill_record(input: &[u8]) -> Result<Self> {
         let mut cursor = Cursor::new(input);
         if read_u8(&mut cursor)? != HASH_SPILL_LOCATOR_RECORD_VERSION {
             return Err(invalid_typed_record(
@@ -101,7 +101,7 @@ impl RelationalRowSetLocator {
         Ok(Self::new(rows))
     }
 
-    pub(super) fn memory_bytes(&self) -> usize {
+    pub fn memory_bytes(&self) -> usize {
         self.rows.iter().fold(
             std::mem::size_of::<Self>().saturating_add(
                 self.rows
@@ -118,7 +118,7 @@ impl RelationalRowSetLocator {
 }
 
 impl RelationalSortKey {
-    pub(super) fn new(
+    pub fn new(
         value: RelationalValue,
         direction: SqlOrderDirection,
         nulls: SqlNullOrder,
@@ -165,14 +165,14 @@ impl RelationalSortKey {
 }
 
 impl RelationalSortRecord {
-    pub(super) fn new(sort_keys: Vec<RelationalSortKey>, locator: RelationalRowSetLocator) -> Self {
+    pub fn new(sort_keys: Vec<RelationalSortKey>, locator: RelationalRowSetLocator) -> Self {
         Self {
             sort_keys: sort_keys.into_boxed_slice(),
             locator,
         }
     }
 
-    pub(super) fn into_locator(self) -> RelationalRowSetLocator {
+    pub fn into_locator(self) -> RelationalRowSetLocator {
         self.locator
     }
 }
@@ -212,20 +212,20 @@ impl ExternalOrderRecord for RelationalSortRecord {
     }
 }
 
-pub(super) struct RelationalLocatorLayout<'a> {
-    pub(super) bindings: Vec<RelationalLocatorBindingLayout<'a>>,
+pub struct RelationalLocatorLayout<'a> {
+    pub bindings: Vec<RelationalLocatorBindingLayout<'a>>,
 }
 
-pub(super) struct RelationalLocatorBindingLayout<'a> {
-    pub(super) binding: BindingId,
-    pub(super) table: &'a str,
-    pub(super) qualifier: &'a str,
-    pub(super) schema: &'a RelationalTableSchema,
+pub struct RelationalLocatorBindingLayout<'a> {
+    pub binding: BindingId,
+    pub table: &'a str,
+    pub qualifier: &'a str,
+    pub schema: &'a RelationalTableSchema,
     primary_key_types: Vec<RelationalScalarType>,
 }
 
 impl<'a> RelationalLocatorLayout<'a> {
-    pub(super) fn from_bindings(
+    pub fn from_bindings(
         bindings: impl IntoIterator<Item = (BindingId, &'a str, &'a str, &'a RelationalTableSchema)>,
     ) -> Result<Self> {
         bindings
@@ -237,7 +237,7 @@ impl<'a> RelationalLocatorLayout<'a> {
             .map(|bindings| Self { bindings })
     }
 
-    pub(super) fn validate(&self, locator: &RelationalRowSetLocator) -> Result<()> {
+    pub fn validate(&self, locator: &RelationalRowSetLocator) -> Result<()> {
         if locator.rows.len() != self.bindings.len() {
             return Err(SkeinError::Execution(format!(
                 "typed relational locator has {} bindings but the query layout requires {}",
@@ -602,7 +602,7 @@ mod tests {
     use skein_storage::RelationalColumnSchema;
     use std::collections::BTreeMap;
 
-    use crate::value::Value;
+    use skein_core::Value;
 
     #[test]
     fn typed_locator_record_round_trips_schema_typed_composite_keys() {

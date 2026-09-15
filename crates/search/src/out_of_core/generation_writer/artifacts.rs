@@ -365,8 +365,10 @@ impl<'a> SegmentArtifactBuilder<'a> {
             file.flush()?;
             file.get_ref().sync_all()?;
         }
+        let mut temporary_guard = RemoveOnDrop::new(&self.descriptor_temporary);
         checkpoint(&self.task)?;
         crate::durable_replace_file(&self.descriptor_temporary, &self.descriptor_path)?;
+        temporary_guard.disarm();
         checkpoint(&self.task)?;
         Ok(encoding.len() as u64)
     }
@@ -386,6 +388,32 @@ impl<'a> SegmentArtifactBuilder<'a> {
             &self.memory,
             &self.task,
         )
+    }
+}
+
+/// Removes a temporary file on drop unless disarmed, so a cancellation
+/// checkpoint between writing a temporary artifact and its durable rename
+/// cannot orphan it on disk.
+struct RemoveOnDrop<'a> {
+    path: &'a Path,
+    armed: bool,
+}
+
+impl<'a> RemoveOnDrop<'a> {
+    fn new(path: &'a Path) -> Self {
+        Self { path, armed: true }
+    }
+
+    fn disarm(&mut self) {
+        self.armed = false;
+    }
+}
+
+impl Drop for RemoveOnDrop<'_> {
+    fn drop(&mut self) {
+        if self.armed {
+            let _ = std::fs::remove_file(self.path);
+        }
     }
 }
 

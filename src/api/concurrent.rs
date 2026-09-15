@@ -1,18 +1,9 @@
 use crate::sql::{Expr, ExprKind};
 mod coordinator;
-mod group_commit;
 #[cfg(test)]
 mod key_range_tests;
 
 use self::coordinator::{CommitSequencer, LockManager, TransactionIdAllocator};
-pub use self::group_commit::{
-    WalGroupCommitActivation, WalGroupCommitAdaptiveColdStartEvidence,
-    WalGroupCommitAdaptivePolicyEvidence, WalGroupCommitAdaptiveSteadyStateEvidence,
-    WalGroupCommitConfig, WalGroupCommitDelayPolicy, WalGroupCommitEvidence,
-    WalGroupCommitSnapshot, WalGroupCommitTailLatencyEvidence, WalGroupCommitWaitDecision,
-    DEFAULT_WAL_GROUP_COMMIT_MAX_BYTES, DEFAULT_WAL_GROUP_COMMIT_MAX_DELAY,
-    DEFAULT_WAL_GROUP_COMMIT_MAX_ENTRIES,
-};
 use super::system_sql;
 use super::transaction_locks::{
     GraphAdjacencyDirection, GraphAllocationKind, LockMode, LockRequest, LockTarget,
@@ -35,6 +26,14 @@ use skein_storage::{
     AppendTransaction, RelationalConflictAction, RelationalIndexRole, RelationalKey, RelationalRow,
     RelationalState, RelationalTableSchema, RelationalTransaction, RelationalValue,
     RelationalWrite, StoragePressureSnapshot, StorageRecoveryReport,
+};
+pub use skein_storage::{
+    WalGroupCommitActivation, WalGroupCommitAdaptiveColdStartEvidence,
+    WalGroupCommitAdaptivePolicyEvidence, WalGroupCommitAdaptiveSteadyStateEvidence,
+    WalGroupCommitConfig, WalGroupCommitDelayPolicy, WalGroupCommitEvidence,
+    WalGroupCommitSnapshot, WalGroupCommitTailLatencyEvidence, WalGroupCommitWaitDecision,
+    DEFAULT_WAL_GROUP_COMMIT_MAX_BYTES, DEFAULT_WAL_GROUP_COMMIT_MAX_DELAY,
+    DEFAULT_WAL_GROUP_COMMIT_MAX_ENTRIES,
 };
 use std::collections::BTreeMap;
 use std::ops::Bound;

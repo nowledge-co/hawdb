@@ -287,8 +287,9 @@ impl Database {
         let statement_kind = sql_statement_kind(prepared.statement());
         let query_result = (|| {
             super::reject_locking_select_without_manager(prepared.statement(), false)?;
-            if crate::relational_sql::statement_writes_system_schema_registry(prepared.statement())
-            {
+            if skein_relational::system_schema::statement_writes_system_schema_registry(
+                prepared.statement(),
+            ) {
                 return Err(SkeinError::Semantic(
                     "skein_schema_migrations is read-only outside system schema upgrade"
                         .to_string(),

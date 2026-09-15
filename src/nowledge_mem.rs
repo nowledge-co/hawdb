@@ -59,18 +59,20 @@ use crate::{
     },
 };
 use skein_core::RuntimeTaskContext;
-use skein_evidence::json_access::{
-    evidence_bool, evidence_string, evidence_u64, nested_bool, nested_u64, nested_value,
-    string_array_at,
-};
-use skein_evidence::resource_profile::production_resource_profile_blocker_codes;
-pub(crate) use skein_evidence::resource_profile::production_resource_profile_ready;
 use skein_optimizer::AdaptiveVectorBackendPolicy;
 use skein_qos::{
     IoConcurrencyBudget, RuntimeGovernor, RuntimeGovernorConfig, RuntimeGovernorSnapshot,
     RuntimePermit, RuntimeWorkKind, RuntimeWorkPriority, RuntimeWorkRequest, StorageDeviceProfile,
     WorkPriority,
 };
+pub use skein_readiness::bounded_read_evidence::{
+    nowledge_mem_bounded_read_evidence_json,
+    nowledge_mem_bounded_read_evidence_json_with_route_readiness,
+    nowledge_mem_bounded_read_evidence_json_with_routes, NowledgeMemGraphMode,
+    NowledgeMemReadReport, NowledgeMemRouteReadinessSummary,
+    NOWLEDGE_MEM_BOUNDED_READ_EVIDENCE_PROTOCOL, NOWLEDGE_MEM_READ_REPORT_PROTOCOL,
+};
+pub use skein_readiness::query_runtime_preflight::NowledgeQueryRuntimePreflightProbe;
 pub use skein_readiness::{NowledgeMemReadinessAreaMap, NowledgeMemReadinessAreaSummary};
 use skein_search::candidate_evidence::{
     advised_compressed_vector_search_mode, effective_search_candidate_mode,
@@ -111,12 +113,6 @@ pub use serving_path::{
 
 const TYPED_CONTROL_STATEMENT_MEMORY_BYTES: u64 = 1024 * 1024;
 const SEARCH_PROJECTION_CHANGEFEED_OPERATION_BYTES: usize = 1024;
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum NowledgeMemGraphMode {
-    ShadowReadOnly,
-    WritableCutover,
-}
 
 pub fn nowledge_mem_graph_config(mode: NowledgeMemGraphMode) -> DatabaseConfig {
     nowledge_mem_graph_config_with_search_mode(mode, CompressedVectorSearchMode::Disabled)
@@ -907,11 +903,9 @@ pub const NOWLEDGE_MEM_RUNTIME_STATUS_PROTOCOL: &str = "skein-nowledge-mem-runti
 pub const NOWLEDGE_MEM_PRODUCTION_STATUS_PROTOCOL: &str = "skein-nowledge-mem-production-status-v1";
 pub use skein_evidence::inventory::NOWLEDGE_MEM_QUERY_REPORT_PROTOCOL;
 pub use skein_readiness::previous_wrapper_preflight::{
-    NOWLEDGE_MEM_BOUNDED_READ_EVIDENCE_PROTOCOL, NOWLEDGE_MEM_CUTOVER_CONTROLS_PROTOCOL,
-    NOWLEDGE_MEM_LIBRARY_READINESS_PROTOCOL, NOWLEDGE_MEM_OPERATIONS_READINESS_PROTOCOL,
-    NOWLEDGE_QUERY_RUNTIME_PREFLIGHT_PROTOCOL,
+    NOWLEDGE_MEM_CUTOVER_CONTROLS_PROTOCOL, NOWLEDGE_MEM_LIBRARY_READINESS_PROTOCOL,
+    NOWLEDGE_MEM_OPERATIONS_READINESS_PROTOCOL, NOWLEDGE_QUERY_RUNTIME_PREFLIGHT_PROTOCOL,
 };
-pub const NOWLEDGE_MEM_READ_REPORT_PROTOCOL: &str = "skein-nowledge-mem-read-report";
 pub const NOWLEDGE_MEM_RETRIEVAL_REPORT_PROTOCOL: &str = "skein-nowledge-mem-retrieval-report";
 pub const NOWLEDGE_MEM_SLOW_QUERY_REPORT_PROTOCOL: &str = "skein-nowledge-mem-slow-query-report-v1";
 pub const NOWLEDGE_MEM_STORAGE_LIFECYCLE_DECISION_PROTOCOL: &str =
@@ -920,17 +914,6 @@ pub const NOWLEDGE_MEM_READINESS_DASHBOARD_PROTOCOL: &str =
     "skein-nowledge-mem-readiness-dashboard-v1";
 pub const NOWLEDGE_MEM_READ_SNAPSHOT_REPORT_PROTOCOL: &str =
     "skein-nowledge-mem-read-snapshot-report-v1";
-const NOWLEDGE_SEARCH_PROJECTION_EVIDENCE_PROTOCOL: &str =
-    "skein-nowledge-search-projection-evidence";
-const NOWLEDGE_SEARCH_PROJECTION_SHADOW_EVIDENCE_PROTOCOL: &str =
-    "skein-nowledge-search-projection-shadow-evidence";
-const NOWLEDGE_SEARCH_PROJECTION_SHADOW_EVIDENCE_SOURCE: &str = "skein-rust-cli";
-const SEARCH_PROJECTION_SHADOW_PUSHDOWN_NOT_READY: &str =
-    "search_projection_shadow_pushdown_evidence_not_ready";
-const SKEIN_SEARCH_PROJECTION_SEGMENT_DESCRIPTOR_MISSING: &str =
-    "skein_search_projection_segment_descriptor_missing";
-const SKEIN_SEARCH_PROJECTION_SEGMENT_DESCRIPTOR_FIELDS_MISSING: &str =
-    "skein_search_projection_segment_descriptor_fields_missing";
 pub use skein_route_ownership::graph::{
     nowledge_mem_graph_read_route_catalog_digest, nowledge_mem_graph_read_route_spec,
     nowledge_mem_graph_read_route_spec_json, nowledge_mem_graph_read_route_specs_json,
@@ -939,66 +922,6 @@ pub use skein_route_ownership::graph::{
     NOWLEDGE_MEM_GRAPH_READ_ROUTE_CATALOG_VERSION, NOWLEDGE_MEM_GRAPH_READ_ROUTE_SPECS,
     NOWLEDGE_MEM_SEARCH_ROUTE, REQUIRED_NOWLEDGE_MEM_BOUNDED_READ_ROUTES,
 };
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct NowledgeQueryRuntimePreflightProbe {
-    pub name: String,
-    pub route: Option<String>,
-    pub query_family: Option<String>,
-    pub cypher: String,
-    pub parameters: BTreeMap<String, Value>,
-    pub require_scan_pruning: bool,
-    pub require_pruned: bool,
-    pub min_scan_pruning_reports: usize,
-    pub max_output_rows: Option<usize>,
-}
-
-impl NowledgeQueryRuntimePreflightProbe {
-    pub fn new(name: impl Into<String>, cypher: impl Into<String>) -> Self {
-        Self {
-            name: name.into(),
-            route: None,
-            query_family: None,
-            cypher: cypher.into(),
-            parameters: BTreeMap::new(),
-            require_scan_pruning: false,
-            require_pruned: false,
-            min_scan_pruning_reports: 1,
-            max_output_rows: None,
-        }
-    }
-
-    pub fn with_route(mut self, route: impl Into<String>) -> Self {
-        self.route = Some(route.into());
-        self
-    }
-
-    pub fn with_query_family(mut self, query_family: impl Into<String>) -> Self {
-        self.query_family = Some(query_family.into());
-        self
-    }
-
-    pub fn with_parameters(mut self, parameters: BTreeMap<String, Value>) -> Self {
-        self.parameters = parameters;
-        self
-    }
-
-    pub fn require_scan_pruning(mut self, min_scan_pruning_reports: usize) -> Self {
-        self.require_scan_pruning = true;
-        self.min_scan_pruning_reports = min_scan_pruning_reports;
-        self
-    }
-
-    pub fn require_pruned(mut self) -> Self {
-        self.require_pruned = true;
-        self
-    }
-
-    pub fn with_max_output_rows(mut self, max_output_rows: usize) -> Self {
-        self.max_output_rows = Some(max_output_rows);
-        self
-    }
-}
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct NowledgeQueryRuntimePreflightReport {
@@ -1203,15 +1126,6 @@ impl NowledgeQueryRuntimePreflightProbeReport {
 pub const DEFAULT_NOWLEDGE_MEM_READ_MAX_ROWS: usize = 512;
 pub const DEFAULT_NOWLEDGE_MEM_READ_MAX_ESTIMATED_PAYLOAD_BYTES: usize = 4 * 1024 * 1024;
 
-impl NowledgeMemGraphMode {
-    pub fn as_str(self) -> &'static str {
-        match self {
-            Self::ShadowReadOnly => "shadow_read_only",
-            Self::WritableCutover => "writable_cutover",
-        }
-    }
-}
-
 #[derive(Debug)]
 pub struct NowledgeMemGraph {
     db: Database,
@@ -1234,274 +1148,6 @@ impl Default for NowledgeMemReadOptions {
             ),
         }
     }
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct NowledgeMemReadReport {
-    pub protocol: String,
-    pub mode: NowledgeMemGraphMode,
-    pub row_count: usize,
-    pub max_rows: Option<usize>,
-    pub execution_row_cap: Option<usize>,
-    pub estimated_payload_bytes: usize,
-    pub max_estimated_payload_bytes: Option<usize>,
-    pub row_budget_exceeded: bool,
-    pub payload_budget_exceeded: bool,
-    pub row_limit_enforced_before_output: bool,
-    pub operator_row_cap_enabled: bool,
-    pub blocking_operator_count: usize,
-    pub blocking_operator_kinds: Vec<String>,
-    pub blocking_operator_memory_reports: Vec<skein_executor::BlockingOperatorMemoryReport>,
-    pub intermediate_rows: usize,
-    pub intermediate_payload_bytes: usize,
-    pub output_payload_bytes: usize,
-    pub steady_resident_bytes: Option<u64>,
-    pub peak_resident_bytes: Option<u64>,
-    pub total_page_faults: Option<u64>,
-    pub minor_page_faults: Option<u64>,
-    pub major_page_faults: Option<u64>,
-    pub streaming: bool,
-}
-
-impl NowledgeMemReadReport {
-    pub fn json(&self) -> serde_json::Value {
-        serde_json::json!({
-            "protocol": self.protocol,
-            "mode": self.mode.as_str(),
-            "row_count": self.row_count,
-            "max_rows": self.max_rows,
-            "execution_row_cap": self.execution_row_cap,
-            "estimated_payload_bytes": self.estimated_payload_bytes,
-            "max_estimated_payload_bytes": self.max_estimated_payload_bytes,
-            "row_budget_exceeded": self.row_budget_exceeded,
-            "payload_budget_exceeded": self.payload_budget_exceeded,
-            "row_limit_enforced_before_output": self.row_limit_enforced_before_output,
-            "operator_row_cap_enabled": self.operator_row_cap_enabled,
-            "blocking_operator_count": self.blocking_operator_count,
-            "blocking_operator_kinds": self.blocking_operator_kinds,
-            "blocking_operator_memory_reports": self.blocking_operator_memory_reports.iter().map(blocking_operator_memory_report_json).collect::<Vec<_>>(),
-            "intermediate_rows": self.intermediate_rows,
-            "intermediate_payload_bytes": self.intermediate_payload_bytes,
-            "output_payload_bytes": self.output_payload_bytes,
-            "steady_resident_bytes": self.steady_resident_bytes,
-            "peak_resident_bytes": self.peak_resident_bytes,
-            "total_page_faults": self.total_page_faults,
-            "minor_page_faults": self.minor_page_faults,
-            "major_page_faults": self.major_page_faults,
-            "streaming": self.streaming,
-        })
-    }
-
-    pub fn bounded_read_evidence_json(&self) -> serde_json::Value {
-        nowledge_mem_bounded_read_evidence_json(self)
-    }
-}
-
-pub fn nowledge_mem_bounded_read_evidence_json(
-    report: &NowledgeMemReadReport,
-) -> serde_json::Value {
-    nowledge_mem_bounded_read_evidence_json_with_routes(report, &[])
-}
-
-pub fn nowledge_mem_bounded_read_evidence_json_with_routes(
-    report: &NowledgeMemReadReport,
-    covered_routes: &[String],
-) -> serde_json::Value {
-    nowledge_mem_bounded_read_evidence_json_with_route_readiness(report, covered_routes, None)
-}
-
-pub use skein_route_ownership::graph::NowledgeMemRouteReadinessSummary;
-
-pub fn nowledge_mem_bounded_read_evidence_json_with_route_readiness(
-    report: &NowledgeMemReadReport,
-    covered_routes: &[String],
-    route_readiness: Option<&NowledgeMemRouteReadinessSummary>,
-) -> serde_json::Value {
-    let blocker_codes = nowledge_mem_bounded_read_blocker_codes(report);
-    let missing_covered_routes = missing_nowledge_mem_bounded_read_routes(covered_routes);
-    let route_readiness_blocker = route_readiness.and_then(|summary| {
-        (!summary.route_primary_ready
-            || !summary.route_query_plan_evidence_ready
-            || !summary.route_query_profile_evidence_ready
-            || !summary.route_query_api_behavior_evidence_ready
-            || !summary.route_relationship_property_pruning_evidence_ready
-            || summary.relationship_property_pruning_required_count
-                != summary.relationship_property_pruning_report_count)
-            .then_some("graph_route_readiness_not_ready")
-    });
-    let blocker_codes = blocker_codes
-        .into_iter()
-        .chain((!missing_covered_routes.is_empty()).then_some("missing_covered_routes"))
-        .chain((route_readiness.is_none()).then_some("graph_route_readiness_missing"))
-        .chain(route_readiness_blocker)
-        .collect::<Vec<_>>();
-    let ready = blocker_codes.is_empty();
-    let route_primary_ready = route_readiness.map(|summary| summary.route_primary_ready);
-    let primary_ready_routes = route_readiness
-        .map(|summary| summary.primary_ready_routes.clone())
-        .unwrap_or_default();
-    let route_query_plan_evidence_ready =
-        route_readiness.map(|summary| summary.route_query_plan_evidence_ready);
-    let route_query_profile_evidence_ready =
-        route_readiness.map(|summary| summary.route_query_profile_evidence_ready);
-    let route_query_api_behavior_evidence_ready =
-        route_readiness.map(|summary| summary.route_query_api_behavior_evidence_ready);
-    let relationship_property_pruning_required_count =
-        route_readiness.map(|summary| summary.relationship_property_pruning_required_count);
-    let relationship_property_pruning_report_count =
-        route_readiness.map(|summary| summary.relationship_property_pruning_report_count);
-    let route_relationship_property_pruning_evidence_ready =
-        route_readiness.map(|summary| summary.route_relationship_property_pruning_evidence_ready);
-    let blocking_operator_memory_reports_complete =
-        blocking_operator_memory_reports_complete(report);
-    let blocking_operator_memory_within_budget = blocking_operator_memory_within_budget(report);
-    let spill_within_budget = blocking_operator_spill_within_budget(report);
-
-    serde_json::json!({
-        "protocol": NOWLEDGE_MEM_BOUNDED_READ_EVIDENCE_PROTOCOL,
-        "present": true,
-        "ready": ready,
-        "mode": report.mode.as_str(),
-        "max_rows": report.max_rows,
-        "execution_row_cap": report.execution_row_cap,
-        "estimated_payload_bytes": report.estimated_payload_bytes,
-        "max_estimated_payload_bytes": report.max_estimated_payload_bytes,
-        "row_limit_enforced_before_output": report.row_limit_enforced_before_output,
-        "operator_row_cap_enabled": report.operator_row_cap_enabled,
-        "streaming": report.streaming,
-        "blocking_operator_count": report.blocking_operator_count,
-        "blocking_operator_kinds": report.blocking_operator_kinds,
-        "blocking_operator_memory_reports": report.blocking_operator_memory_reports.iter().map(blocking_operator_memory_report_json).collect::<Vec<_>>(),
-        "blocking_operator_memory_reports_complete": blocking_operator_memory_reports_complete,
-        "blocking_operator_memory_within_budget": blocking_operator_memory_within_budget,
-        "spill_within_budget": spill_within_budget,
-        "row_budget_exceeded": report.row_budget_exceeded,
-        "payload_budget_exceeded": report.payload_budget_exceeded,
-        "covered_routes": covered_routes,
-        "required_covered_routes": REQUIRED_NOWLEDGE_MEM_BOUNDED_READ_ROUTES,
-        "missing_covered_routes": missing_covered_routes,
-        "route_catalog_version": NOWLEDGE_MEM_GRAPH_READ_ROUTE_CATALOG_VERSION,
-        "route_catalog_digest": nowledge_mem_graph_read_route_catalog_digest(),
-        "route_primary_ready": route_primary_ready,
-        "primary_ready_routes": primary_ready_routes,
-        "route_query_plan_evidence_ready": route_query_plan_evidence_ready,
-        "route_query_profile_evidence_ready": route_query_profile_evidence_ready,
-        "route_query_api_behavior_evidence_ready": route_query_api_behavior_evidence_ready,
-        "relationship_property_pruning_required_count": relationship_property_pruning_required_count,
-        "relationship_property_pruning_report_count": relationship_property_pruning_report_count,
-        "route_relationship_property_pruning_evidence_ready": route_relationship_property_pruning_evidence_ready,
-        "blocker_codes": blocker_codes,
-    })
-}
-
-fn nowledge_mem_bounded_read_blocker_codes(report: &NowledgeMemReadReport) -> Vec<&'static str> {
-    let mut blockers = Vec::new();
-    let expected_row_cap = match report.max_rows {
-        Some(0) => {
-            blockers.push("invalid_max_rows");
-            None
-        }
-        Some(max_rows) => max_rows.checked_add(1),
-        None => {
-            blockers.push("missing_max_rows");
-            None
-        }
-    };
-    if report.mode != NowledgeMemGraphMode::ShadowReadOnly {
-        blockers.push("not_shadow_read_only");
-    }
-
-    match (report.execution_row_cap, expected_row_cap) {
-        (Some(execution_row_cap), Some(expected_row_cap))
-            if execution_row_cap == expected_row_cap => {}
-        (Some(_), _) => blockers.push("execution_row_cap_mismatch"),
-        (None, _) => blockers.push("missing_execution_row_cap"),
-    }
-    if !report.row_limit_enforced_before_output {
-        blockers.push("row_limit_not_enforced_before_output");
-    }
-    if !report.operator_row_cap_enabled {
-        blockers.push("operator_row_cap_disabled");
-    }
-    if report.row_budget_exceeded {
-        blockers.push("row_budget_exceeded");
-    }
-    if report.payload_budget_exceeded {
-        blockers.push("payload_budget_exceeded");
-    }
-    if !blocking_operator_memory_reports_complete(report) {
-        blockers.push("blocking_operator_memory_report_incomplete");
-    }
-    if !blocking_operator_memory_within_budget(report) {
-        blockers.push("blocking_operator_memory_budget_exceeded");
-    }
-    if !blocking_operator_spill_within_budget(report) {
-        blockers.push("blocking_operator_spill_budget_exceeded");
-    }
-    blockers
-}
-
-fn blocking_operator_memory_reports_complete(report: &NowledgeMemReadReport) -> bool {
-    let expected = report
-        .blocking_operator_kinds
-        .iter()
-        .map(String::as_str)
-        .collect::<BTreeSet<_>>();
-    let actual = report
-        .blocking_operator_memory_reports
-        .iter()
-        .map(|report| report.operator.as_str())
-        .collect::<BTreeSet<_>>();
-    report.blocking_operator_count == expected.len() && actual == expected
-}
-
-fn blocking_operator_memory_within_budget(report: &NowledgeMemReadReport) -> bool {
-    report
-        .blocking_operator_memory_reports
-        .iter()
-        .all(|report| report.budget_bytes > 0 && report.peak_tracked_bytes <= report.budget_bytes)
-}
-
-fn blocking_operator_spill_within_budget(report: &NowledgeMemReadReport) -> bool {
-    report
-        .blocking_operator_memory_reports
-        .iter()
-        .all(|report| {
-            report.max_spill_bytes > 0
-                && report.max_spill_runs > 0
-                && report.spilled_bytes <= report.max_spill_bytes
-                && report.spill_run_count <= report.max_spill_runs
-                && ((report.spill_run_count == 0 && report.spilled_bytes == 0)
-                    || (report.spill_run_count > 0 && report.spilled_bytes > 0))
-        })
-}
-
-fn blocking_operator_memory_report_json(
-    report: &skein_executor::BlockingOperatorMemoryReport,
-) -> serde_json::Value {
-    serde_json::json!({
-        "operator": report.operator,
-        "budget_bytes": report.budget_bytes,
-        "peak_tracked_bytes": report.peak_tracked_bytes,
-        "input_rows": report.input_rows,
-        "max_spill_bytes": report.max_spill_bytes,
-        "max_spill_runs": report.max_spill_runs,
-        "spilled_bytes": report.spilled_bytes,
-        "spill_run_count": report.spill_run_count,
-        "spilled_rows": report.spilled_rows,
-    })
-}
-
-fn missing_nowledge_mem_bounded_read_routes(covered_routes: &[String]) -> Vec<&'static str> {
-    let covered_routes = covered_routes
-        .iter()
-        .map(String::as_str)
-        .collect::<BTreeSet<_>>();
-    REQUIRED_NOWLEDGE_MEM_BOUNDED_READ_ROUTES
-        .iter()
-        .copied()
-        .filter(|route| !covered_routes.contains(route))
-        .collect()
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -1641,14 +1287,14 @@ pub struct NowledgeMemQueryApiBehavior {
 
 impl NowledgeMemQueryApiBehavior {
     fn from_statement(statement: &cypher::Statement) -> Self {
-        let body = nowledge_statement_body(statement);
+        let shape = skein_cypher::read_route::classify_read_route_shape(statement);
         Self {
             include_metadata_false_strips_metadata: true,
             ordering_contract_recorded: true,
             pagination_contract_recorded: true,
             error_class_stable: true,
-            statement_has_ordering: statement_has_ordering(body),
-            statement_has_pagination: statement_has_pagination(body),
+            statement_has_ordering: shape.has_ordering,
+            statement_has_pagination: shape.has_pagination,
         }
     }
 
@@ -5828,32 +5474,29 @@ impl NowledgeMemEmbeddedStore {
             .as_ref()
             .map(StorageResourceProfileReport::json)
             .unwrap_or_else(missing_production_resource_profile_json);
-        let evidence = LibraryReadinessEvidence {
-            bounded_read_evidence: &bounded_read_evidence,
-            storage_recovery: &storage_recovery,
-            background_maintenance: &background_maintenance,
-            query_family_evidence: &query_family_evidence,
-            graph_route_readiness: &graph_route_readiness,
-            search_route_ownership: &search_route_ownership,
-            active_search_route_ownership: &active_search_route_ownership,
-            active_search_route_readiness: &active_search_route_readiness,
-            search_projection_evidence: &search_projection_evidence,
-            search_projection_shadow_evidence: &search_projection_shadow_evidence,
-            search_candidate_shadow_evidence: &search_candidate_shadow_evidence,
-            workload_fixture_evidence: &workload_fixture_evidence,
-            production_resource_profile: &production_resource_profile,
-        };
-        let blocker_codes = library_readiness_blocker_codes(&evidence);
-        let readiness_by_area = library_readiness_by_area(&evidence);
+        let assessment = skein_readiness::library_readiness::assess_nowledge_mem_library_readiness(
+            &skein_readiness::library_readiness::NowledgeMemLibraryReadinessEvidence {
+                bounded_read_evidence: &bounded_read_evidence,
+                storage_recovery: &storage_recovery,
+                background_maintenance: &background_maintenance,
+                query_family_evidence: &query_family_evidence,
+                graph_route_readiness: &graph_route_readiness,
+                search_route_ownership: &search_route_ownership,
+                active_search_route_ownership: &active_search_route_ownership,
+                active_search_route_readiness: &active_search_route_readiness,
+                search_projection_evidence: &search_projection_evidence,
+                search_projection_shadow_evidence: &search_projection_shadow_evidence,
+                search_candidate_shadow_evidence: &search_candidate_shadow_evidence,
+                workload_fixture_evidence: &workload_fixture_evidence,
+                production_resource_profile: &production_resource_profile,
+            },
+        );
+        let readiness_by_area = assessment.readiness_by_area;
         let areas = readiness_by_area.areas();
         let ready_area_count = areas.iter().filter(|area| area.ready).count();
         let blocked_area_count = areas.len().saturating_sub(ready_area_count);
-        let blocker_codes = blocker_codes
-            .into_iter()
-            .map(str::to_string)
-            .collect::<Vec<_>>();
+        let blocker_codes = assessment.blocker_codes;
         let ready = blocker_codes.is_empty();
-
         NowledgeMemLibraryReadinessReport {
             protocol: NOWLEDGE_MEM_LIBRARY_READINESS_PROTOCOL.to_string(),
             present: true,
@@ -6052,7 +5695,9 @@ struct NowledgeMemQueryReportInput<'a> {
 }
 
 fn nowledge_mem_query_report(input: NowledgeMemQueryReportInput<'_>) -> NowledgeMemQueryReport {
-    let statement_kind = crate::api::statement_kind(nowledge_statement_body(input.statement));
+    let statement_kind = crate::api::statement_kind(
+        skein_cypher::read_route::query_statement_body(input.statement),
+    );
     let decision = nowledge_mem_fast_path_classification(input.statement);
     let slow_log_candidate = input
         .options
@@ -6573,108 +6218,15 @@ impl NowledgeMemPlanCacheReport {
 pub fn nowledge_mem_fast_path_classification(
     statement: &cypher::Statement,
 ) -> NowledgeMemFastPathClassification {
-    let body = nowledge_statement_body(statement);
-    let fast_path_reason = match body {
-        cypher::Statement::MatchReturn(query) if is_simple_node_lookup(query) => {
-            Some("simple_node_lookup")
-        }
-        cypher::Statement::MatchReturn(query) if is_simple_one_hop_expand(query) => {
-            Some("simple_one_hop_expand")
-        }
-        cypher::Statement::MatchNodesReturn(query) if is_simple_two_node_lookup(query) => {
-            Some("simple_two_node_lookup")
-        }
-        cypher::Statement::ShortestPathReturn(_) => Some("bounded_shortest_path"),
-        _ => None,
-    };
+    let shape = skein_cypher::read_route::classify_read_route_shape(statement);
     NowledgeMemFastPathClassification {
-        execution_path: if fast_path_reason.is_some() {
+        execution_path: if shape.is_fast_path() {
             NowledgeMemQueryExecutionPath::FastPath
         } else {
             NowledgeMemQueryExecutionPath::OptimizedPath
         },
-        fast_path_reason,
+        fast_path_reason: shape.fast_path_reason,
     }
-}
-
-fn nowledge_statement_body(statement: &cypher::Statement) -> &cypher::Statement {
-    match statement {
-        cypher::Statement::CypherQuery(query) => &query.statement,
-        _ => statement,
-    }
-}
-
-fn statement_has_ordering(statement: &cypher::Statement) -> bool {
-    match statement {
-        cypher::Statement::MatchReturn(query) => {
-            !query.order_by.is_empty() || !query.with_order_by.is_empty()
-        }
-        _ => false,
-    }
-}
-
-fn statement_has_pagination(statement: &cypher::Statement) -> bool {
-    match statement {
-        cypher::Statement::MatchReturn(query) => {
-            query.offset.is_some()
-                || query.limit.is_some()
-                || query.with_offset.is_some()
-                || query.with_limit.is_some()
-        }
-        cypher::Statement::MatchNodesReturn(query) => query.limit.is_some(),
-        _ => false,
-    }
-}
-
-fn is_simple_node_lookup(query: &cypher::MatchReturn) -> bool {
-    !query.properties.is_empty()
-        && query.expand.is_none()
-        && query.post_match_expand.is_none()
-        && query.optional_expand.is_none()
-        && query.optional_with.is_none()
-        && query.collect_with.is_none()
-        && query.distinct_with.is_none()
-        && query.with_projection.is_none()
-        && query.with_order_by.is_empty()
-        && query.with_offset.is_none()
-        && query.with_limit.is_none()
-        && query.aggregate_with.is_none()
-        && query.aggregate_with_filter.is_none()
-        && query.post_with_match.is_none()
-        && query.predicate.is_none()
-        && !query.distinct
-        && query.order_by.is_empty()
-        && query.offset.is_none()
-}
-
-fn is_simple_one_hop_expand(query: &cypher::MatchReturn) -> bool {
-    query.expand.as_ref().is_some_and(|expand| {
-        expand.min_hops == 1
-            && expand.max_hops == 1
-            && !query.properties.is_empty()
-            && query.post_match_expand.is_none()
-            && query.optional_expand.is_none()
-            && query.optional_with.is_none()
-            && query.collect_with.is_none()
-            && query.distinct_with.is_none()
-            && query.with_projection.is_none()
-            && query.with_order_by.is_empty()
-            && query.with_offset.is_none()
-            && query.with_limit.is_none()
-            && query.aggregate_with.is_none()
-            && query.aggregate_with_filter.is_none()
-            && query.post_with_match.is_none()
-            && query.predicate.is_none()
-            && !query.distinct
-            && query.order_by.is_empty()
-            && query.offset.is_none()
-    })
-}
-
-fn is_simple_two_node_lookup(query: &cypher::MatchNodesReturn) -> bool {
-    !query.left_properties.is_empty()
-        && !query.right_properties.is_empty()
-        && query.predicate.is_none()
 }
 
 fn recovery_mode_name(mode: RecoveryMode) -> &'static str {
@@ -6855,7 +6407,9 @@ fn nowledge_mem_graph_route_readiness_json(
     };
 
     let missing_required_routes =
-        missing_nowledge_mem_bounded_read_routes(&summary.primary_ready_routes);
+        skein_readiness::bounded_read_evidence::missing_nowledge_mem_bounded_read_routes(
+            &summary.primary_ready_routes,
+        );
     let relationship_property_pruning_count_matches = summary
         .relationship_property_pruning_required_count
         == summary.relationship_property_pruning_report_count;
@@ -6967,841 +6521,6 @@ fn missing_active_search_route_readiness_json() -> serde_json::Value {
         "fail_soft_not_ready_routes": [],
         "blocker_codes": ["active_search_route_readiness_missing"],
     })
-}
-
-fn search_route_ownership_ready(evidence: &serde_json::Value) -> bool {
-    evidence.get("protocol").and_then(serde_json::Value::as_str)
-        == Some(NOWLEDGE_MEM_SEARCH_ROUTE_OWNERSHIP_PROTOCOL)
-        && evidence.get("ready").and_then(serde_json::Value::as_bool) == Some(true)
-        && evidence
-            .get("production_cutover_ready")
-            .and_then(serde_json::Value::as_bool)
-            == Some(true)
-        && evidence
-            .get("lancedb_route_count")
-            .and_then(serde_json::Value::as_u64)
-            == Some(0)
-        && evidence
-            .get("blocker_codes")
-            .and_then(serde_json::Value::as_array)
-            .is_some_and(Vec::is_empty)
-}
-
-fn active_search_route_ownership_ready(evidence: &serde_json::Value) -> bool {
-    evidence.get("protocol").and_then(serde_json::Value::as_str)
-        == Some(NOWLEDGE_MEM_SEARCH_ROUTE_OWNERSHIP_PROTOCOL)
-        && evidence.get("ready").and_then(serde_json::Value::as_bool) == Some(true)
-        && evidence
-            .get("production_cutover_ready")
-            .and_then(serde_json::Value::as_bool)
-            == Some(true)
-        && evidence
-            .get("lancedb_route_count")
-            .and_then(serde_json::Value::as_u64)
-            == Some(0)
-        && evidence
-            .get("blocker_codes")
-            .and_then(serde_json::Value::as_array)
-            .is_some_and(Vec::is_empty)
-}
-
-fn active_search_route_readiness_ready(evidence: &serde_json::Value) -> bool {
-    evidence.get("protocol").and_then(serde_json::Value::as_str)
-        == Some(NOWLEDGE_MEM_ACTIVE_SEARCH_ROUTE_READINESS_PROTOCOL)
-        && evidence.get("ready").and_then(serde_json::Value::as_bool) == Some(true)
-        && evidence
-            .get("production_cutover_ready")
-            .and_then(serde_json::Value::as_bool)
-            == Some(true)
-        && evidence
-            .get("lancedb_handle_required_route_count")
-            .and_then(serde_json::Value::as_u64)
-            == Some(0)
-        && evidence
-            .get("blocker_codes")
-            .and_then(serde_json::Value::as_array)
-            .is_some_and(Vec::is_empty)
-}
-
-struct LibraryReadinessEvidence<'a> {
-    bounded_read_evidence: &'a serde_json::Value,
-    storage_recovery: &'a serde_json::Value,
-    background_maintenance: &'a serde_json::Value,
-    query_family_evidence: &'a serde_json::Value,
-    graph_route_readiness: &'a serde_json::Value,
-    search_route_ownership: &'a serde_json::Value,
-    active_search_route_ownership: &'a serde_json::Value,
-    active_search_route_readiness: &'a serde_json::Value,
-    search_projection_evidence: &'a serde_json::Value,
-    search_projection_shadow_evidence: &'a serde_json::Value,
-    search_candidate_shadow_evidence: &'a serde_json::Value,
-    workload_fixture_evidence: &'a serde_json::Value,
-    production_resource_profile: &'a serde_json::Value,
-}
-
-fn library_readiness_blocker_codes(evidence: &LibraryReadinessEvidence<'_>) -> Vec<&'static str> {
-    let mut blockers = Vec::new();
-    if !bounded_read_evidence_ready(evidence.bounded_read_evidence) {
-        blockers.push("bounded_read_evidence_not_ready");
-    }
-    if evidence
-        .storage_recovery
-        .get("ready")
-        .and_then(serde_json::Value::as_bool)
-        != Some(true)
-    {
-        blockers.push("storage_recovery_not_ready");
-    }
-    if !library_background_maintenance_ready(evidence.background_maintenance) {
-        blockers.push("background_maintenance_not_ready");
-    }
-    if evidence
-        .query_family_evidence
-        .get("ready")
-        .and_then(serde_json::Value::as_bool)
-        != Some(true)
-    {
-        blockers.push("query_family_evidence_not_ready");
-    }
-    if evidence
-        .graph_route_readiness
-        .get("ready")
-        .and_then(serde_json::Value::as_bool)
-        != Some(true)
-    {
-        blockers.push("graph_route_readiness_not_ready");
-    }
-    if !search_route_ownership_ready(evidence.search_route_ownership) {
-        blockers.push("search_route_ownership_not_ready");
-    }
-    if !active_search_route_ownership_ready(evidence.active_search_route_ownership) {
-        blockers.push("active_search_route_ownership_not_ready");
-    }
-    if !active_search_route_readiness_ready(evidence.active_search_route_readiness) {
-        blockers.push("active_search_route_readiness_not_ready");
-    }
-    if !search_projection_evidence_ready(evidence.search_projection_evidence) {
-        blockers.push("search_projection_evidence_not_ready");
-    }
-    if !search_projection_shadow_evidence_ready(evidence.search_projection_shadow_evidence) {
-        blockers.push("search_projection_shadow_evidence_not_ready");
-    }
-    if !search_candidate_shadow_evidence_ready(evidence.search_candidate_shadow_evidence) {
-        blockers.push("search_candidate_shadow_evidence_not_ready");
-    }
-    if !workload_fixture_evidence_ready(evidence.workload_fixture_evidence) {
-        blockers.push("workload_fixture_evidence_not_ready");
-    }
-    if !production_resource_profile_ready(evidence.production_resource_profile) {
-        blockers.push("production_resource_profile_not_ready");
-    }
-    blockers
-}
-
-fn library_readiness_by_area(
-    evidence: &LibraryReadinessEvidence<'_>,
-) -> NowledgeMemReadinessAreaMap {
-    NowledgeMemReadinessAreaMap {
-        graph: NowledgeMemReadinessAreaSummary::new("graph", true, Vec::new()),
-        query: bounded_read_readiness_area(evidence.bounded_read_evidence),
-        query_family: readiness_area(
-            "query_family",
-            evidence.query_family_evidence,
-            "query_family_evidence_not_ready",
-        ),
-        graph_route: readiness_area(
-            "graph_route",
-            evidence.graph_route_readiness,
-            "graph_route_readiness_not_ready",
-        ),
-        search_route_ownership: search_route_ownership_readiness_area(
-            evidence.search_route_ownership,
-            evidence.active_search_route_ownership,
-            evidence.active_search_route_readiness,
-        ),
-        storage: storage_readiness_area(
-            evidence.storage_recovery,
-            evidence.production_resource_profile,
-        ),
-        search_projection: search_projection_readiness_area(evidence.search_projection_evidence),
-        search_projection_shadow: search_projection_shadow_readiness_area(
-            evidence.search_projection_shadow_evidence,
-        ),
-        search_candidate_shadow: search_candidate_shadow_readiness_area(
-            evidence.search_candidate_shadow_evidence,
-        ),
-        workload_fixture: workload_fixture_readiness_area(evidence.workload_fixture_evidence),
-        background: background_maintenance_readiness_area(evidence.background_maintenance),
-    }
-}
-
-fn storage_readiness_area(
-    storage_recovery: &serde_json::Value,
-    production_resource_profile: &serde_json::Value,
-) -> NowledgeMemReadinessAreaSummary {
-    let mut blocker_codes = Vec::new();
-    if storage_recovery
-        .get("ready")
-        .and_then(serde_json::Value::as_bool)
-        != Some(true)
-    {
-        blocker_codes.push("storage_recovery_not_ready".to_string());
-    }
-    blocker_codes.extend(production_resource_profile_blocker_codes(
-        production_resource_profile,
-    ));
-    NowledgeMemReadinessAreaSummary::new("storage", blocker_codes.is_empty(), blocker_codes)
-}
-
-fn bounded_read_readiness_area(evidence: &serde_json::Value) -> NowledgeMemReadinessAreaSummary {
-    let blocker_codes = bounded_read_readiness_blocker_codes(evidence);
-    NowledgeMemReadinessAreaSummary::new("query", blocker_codes.is_empty(), blocker_codes)
-}
-
-fn search_route_ownership_readiness_area(
-    evidence: &serde_json::Value,
-    active_route_evidence: &serde_json::Value,
-    active_read_evidence: &serde_json::Value,
-) -> NowledgeMemReadinessAreaSummary {
-    let ready = search_route_ownership_ready(evidence)
-        && active_search_route_ownership_ready(active_route_evidence)
-        && active_search_route_readiness_ready(active_read_evidence);
-    let blocker_codes = if ready {
-        Vec::new()
-    } else {
-        let mut codes = evidence
-            .get("blocker_codes")
-            .and_then(serde_json::Value::as_array)
-            .map(|values| {
-                values
-                    .iter()
-                    .filter_map(serde_json::Value::as_str)
-                    .map(str::to_string)
-                    .collect::<Vec<_>>()
-            })
-            .unwrap_or_default();
-        codes.extend(
-            active_route_evidence
-                .get("blocker_codes")
-                .and_then(serde_json::Value::as_array)
-                .into_iter()
-                .flatten()
-                .filter_map(serde_json::Value::as_str)
-                .map(str::to_string),
-        );
-        codes.extend(
-            active_read_evidence
-                .get("blocker_codes")
-                .and_then(serde_json::Value::as_array)
-                .into_iter()
-                .flatten()
-                .filter_map(serde_json::Value::as_str)
-                .map(str::to_string),
-        );
-        if codes.is_empty() {
-            vec!["search_route_ownership_not_ready".to_string()]
-        } else {
-            codes
-        }
-    };
-    NowledgeMemReadinessAreaSummary::new("search_route_ownership", ready, blocker_codes)
-}
-
-fn bounded_read_evidence_ready(evidence: &serde_json::Value) -> bool {
-    bounded_read_readiness_blocker_codes(evidence).is_empty()
-}
-
-fn bounded_read_readiness_blocker_codes(evidence: &serde_json::Value) -> Vec<String> {
-    let mut blockers = evidence_blocker_codes(evidence);
-    if evidence.get("present").and_then(serde_json::Value::as_bool) == Some(false) {
-        if blockers.is_empty() {
-            blockers.insert("bounded_read_evidence_missing".to_string());
-        }
-        return blockers.into_iter().collect();
-    }
-    if evidence_string(evidence, "protocol") != Some(NOWLEDGE_MEM_BOUNDED_READ_EVIDENCE_PROTOCOL) {
-        blockers.insert("bounded_read_protocol_mismatch".to_string());
-    }
-    if evidence_bool(evidence, "ready") != Some(true) {
-        blockers.insert("bounded_read_not_ready".to_string());
-    }
-    if evidence_string(evidence, "mode") != Some(NowledgeMemGraphMode::ShadowReadOnly.as_str()) {
-        blockers.insert("bounded_read_not_shadow_read_only".to_string());
-    }
-    let max_rows = evidence_u64(evidence, "max_rows");
-    if !max_rows.is_some_and(|value| value > 0) {
-        blockers.insert("bounded_read_missing_max_rows".to_string());
-    }
-    let expected_execution_row_cap = max_rows.and_then(|value| value.checked_add(1));
-    if expected_execution_row_cap.is_none()
-        || evidence_u64(evidence, "execution_row_cap") != expected_execution_row_cap
-    {
-        blockers.insert("bounded_read_execution_row_cap_mismatch".to_string());
-    }
-    if evidence_u64(evidence, "estimated_payload_bytes").is_none() {
-        blockers.insert("bounded_read_estimated_payload_bytes_missing".to_string());
-    }
-    if !evidence_u64(evidence, "max_estimated_payload_bytes").is_some_and(|value| value > 0) {
-        blockers.insert("bounded_read_max_estimated_payload_bytes_missing".to_string());
-    }
-    if evidence_bool(evidence, "payload_budget_exceeded") != Some(false) {
-        blockers.insert("bounded_read_payload_budget_exceeded".to_string());
-    }
-    if evidence_bool(evidence, "row_limit_enforced_before_output") != Some(true) {
-        blockers.insert("bounded_read_row_limit_not_enforced_before_output".to_string());
-    }
-    if evidence_bool(evidence, "operator_row_cap_enabled") != Some(true) {
-        blockers.insert("bounded_read_operator_row_cap_disabled".to_string());
-    }
-    if evidence_bool(evidence, "row_budget_exceeded") == Some(true) {
-        blockers.insert("bounded_read_row_budget_exceeded".to_string());
-    }
-    if evidence_bool(evidence, "streaming").is_none() {
-        blockers.insert("bounded_read_streaming_evidence_missing".to_string());
-    }
-    if evidence_bool(evidence, "blocking_operator_memory_reports_complete") != Some(true) {
-        blockers.insert("bounded_read_blocking_operator_memory_report_incomplete".to_string());
-    }
-    if evidence_bool(evidence, "blocking_operator_memory_within_budget") != Some(true) {
-        blockers.insert("bounded_read_blocking_operator_memory_budget_exceeded".to_string());
-    }
-    if evidence_bool(evidence, "spill_within_budget") != Some(true) {
-        blockers.insert("bounded_read_blocking_operator_spill_budget_exceeded".to_string());
-    }
-    if !string_array_at(evidence, &["missing_covered_routes"])
-        .is_some_and(|routes| routes.is_empty())
-    {
-        blockers.insert("bounded_read_missing_covered_routes".to_string());
-    }
-    if evidence_string(evidence, "route_catalog_version")
-        != Some(NOWLEDGE_MEM_GRAPH_READ_ROUTE_CATALOG_VERSION)
-        || evidence_string(evidence, "route_catalog_digest")
-            != Some(nowledge_mem_graph_read_route_catalog_digest().as_str())
-    {
-        blockers.insert("bounded_read_route_catalog_stale".to_string());
-    }
-    if evidence_bool(evidence, "route_primary_ready") != Some(true)
-        || evidence_bool(evidence, "route_query_plan_evidence_ready") != Some(true)
-        || evidence_bool(evidence, "route_query_profile_evidence_ready") != Some(true)
-        || evidence_bool(evidence, "route_query_api_behavior_evidence_ready") != Some(true)
-        || evidence_bool(
-            evidence,
-            "route_relationship_property_pruning_evidence_ready",
-        ) != Some(true)
-    {
-        blockers.insert("bounded_read_graph_route_readiness_not_ready".to_string());
-    }
-    let required_pruning_count =
-        evidence_u64(evidence, "relationship_property_pruning_required_count");
-    if required_pruning_count.is_none()
-        || required_pruning_count
-            != evidence_u64(evidence, "relationship_property_pruning_report_count")
-    {
-        blockers.insert("bounded_read_relationship_property_pruning_missing".to_string());
-    }
-    blockers.into_iter().collect()
-}
-
-fn search_projection_readiness_area(
-    evidence: &serde_json::Value,
-) -> NowledgeMemReadinessAreaSummary {
-    let blocker_codes = search_projection_readiness_blocker_codes(evidence);
-    NowledgeMemReadinessAreaSummary::new(
-        "search_projection",
-        blocker_codes.is_empty(),
-        blocker_codes,
-    )
-}
-
-fn search_projection_shadow_readiness_area(
-    evidence: &serde_json::Value,
-) -> NowledgeMemReadinessAreaSummary {
-    let blocker_codes = search_projection_shadow_readiness_blocker_codes(evidence);
-    NowledgeMemReadinessAreaSummary::new(
-        "search_projection_shadow",
-        blocker_codes.is_empty(),
-        blocker_codes,
-    )
-}
-
-fn search_projection_evidence_ready(evidence: &serde_json::Value) -> bool {
-    search_projection_readiness_blocker_codes(evidence).is_empty()
-}
-
-fn search_projection_shadow_evidence_ready(evidence: &serde_json::Value) -> bool {
-    search_projection_shadow_readiness_blocker_codes(evidence).is_empty()
-}
-
-fn search_projection_readiness_blocker_codes(evidence: &serde_json::Value) -> Vec<String> {
-    let mut blockers = evidence_blocker_codes(evidence);
-    if evidence.get("present").and_then(serde_json::Value::as_bool) == Some(false) {
-        if blockers.is_empty() {
-            blockers.insert("search_projection_not_configured".to_string());
-        }
-        return blockers.into_iter().collect();
-    }
-    if evidence_string(evidence, "protocol") != Some(NOWLEDGE_SEARCH_PROJECTION_EVIDENCE_PROTOCOL) {
-        blockers.insert("search_projection_protocol_mismatch".to_string());
-    }
-    if evidence_bool(evidence, "ready") != Some(true) {
-        blockers.insert("search_projection_not_ready".to_string());
-    }
-    if evidence_bool(evidence, "derived_projection") != Some(true) {
-        blockers.insert("search_projection_not_derived".to_string());
-    }
-    if evidence_bool(evidence, "all_tables_covered") != Some(true)
-        || !evidence_u64(evidence, "covered_table_count").is_some_and(|count| count > 0)
-        || evidence_u64(evidence, "covered_table_count")
-            != evidence_u64(evidence, "required_table_count")
-    {
-        blockers.insert("search_projection_tables_not_ready".to_string());
-    }
-    if evidence_bool(evidence, "fts_ready") != Some(true) {
-        blockers.insert("search_projection_fts_not_ready".to_string());
-    }
-    if evidence_bool(evidence, "vector_ready") != Some(true) {
-        blockers.insert("search_projection_vector_not_ready".to_string());
-    }
-    if evidence_bool(evidence, "document_identity_ready") != Some(true) {
-        blockers.insert("search_projection_document_identity_not_ready".to_string());
-    }
-    if evidence_bool(evidence, "embedding_identity_ready") != Some(true) {
-        blockers.insert("search_projection_embedding_identity_not_ready".to_string());
-    }
-    if evidence_bool(evidence, "fail_soft_ready") != Some(true) {
-        blockers.insert("search_projection_fail_soft_not_ready".to_string());
-    }
-    if evidence_bool(evidence, "rebuild_marker_ready") != Some(true) {
-        blockers.insert("search_projection_rebuild_marker_not_ready".to_string());
-    }
-    if evidence_bool(evidence, "metadata_repair_marker_ready") != Some(true) {
-        blockers.insert("search_projection_metadata_repair_marker_not_ready".to_string());
-    }
-    if evidence_bool(evidence, "incremental_update_ready") != Some(true) {
-        blockers.insert("search_projection_incremental_update_not_ready".to_string());
-    }
-    if evidence_bool(evidence, "source_chunk_ready") != Some(true) {
-        blockers.insert("search_projection_source_chunk_not_ready".to_string());
-    }
-    if evidence_bool(evidence, "predicate_pushdown_ready") != Some(true) {
-        blockers.insert("search_projection_predicate_pushdown_not_ready".to_string());
-    }
-    if evidence_bool(evidence, "production_filter_pruning_ready") != Some(true) {
-        blockers.insert("search_projection_production_filter_pruning_not_ready".to_string());
-    }
-    if evidence_bool(evidence, "compressed_vector_projection_ready") == Some(false) {
-        blockers.insert("search_projection_compressed_vector_not_ready".to_string());
-    }
-    blockers.into_iter().collect()
-}
-
-fn search_projection_shadow_readiness_blocker_codes(evidence: &serde_json::Value) -> Vec<String> {
-    let mut blockers = evidence_blocker_codes(evidence);
-    if evidence.get("present").and_then(serde_json::Value::as_bool) == Some(false) {
-        if blockers.is_empty() {
-            blockers.insert("search_projection_not_configured".to_string());
-        }
-        return blockers.into_iter().collect();
-    }
-    if evidence_string(evidence, "protocol")
-        != Some(NOWLEDGE_SEARCH_PROJECTION_SHADOW_EVIDENCE_PROTOCOL)
-    {
-        blockers.insert("search_projection_shadow_protocol_mismatch".to_string());
-    }
-    if evidence_string(evidence, "evidence_source")
-        != Some(NOWLEDGE_SEARCH_PROJECTION_SHADOW_EVIDENCE_SOURCE)
-    {
-        blockers.insert("search_projection_shadow_evidence_source_mismatch".to_string());
-    }
-    if evidence_bool(evidence, "ready") != Some(true) {
-        blockers.insert("search_projection_shadow_not_ready".to_string());
-    }
-    if evidence_bool(evidence, "primary_ready") != Some(true) {
-        blockers.insert("search_projection_shadow_primary_not_ready".to_string());
-    }
-    if evidence_bool(evidence, "shadow_ready") != Some(true) {
-        blockers.insert("search_projection_shadow_shadow_not_ready".to_string());
-    }
-    if evidence_bool(evidence, "document_count_parity") != Some(true)
-        || evidence_bool(evidence, "document_identity_parity") != Some(true)
-    {
-        blockers.insert("search_projection_shadow_document_identity_not_ready".to_string());
-    }
-    if nested_bool(evidence, &["table_parity", "ready"]) != Some(true)
-        && evidence_bool(evidence, "table_parity_ready") != Some(true)
-    {
-        blockers.insert("search_projection_shadow_table_parity_not_ready".to_string());
-    }
-    if evidence_bool(evidence, "embedding_identity_parity") != Some(true) {
-        blockers.insert("search_projection_shadow_embedding_identity_not_ready".to_string());
-    }
-    if evidence_bool(evidence, "lifecycle_parity") != Some(true) {
-        blockers.insert("search_projection_shadow_lifecycle_not_ready".to_string());
-    }
-    if evidence_bool(evidence, "incremental_watermark_parity") != Some(true) {
-        blockers.insert("search_projection_shadow_incremental_watermark_not_ready".to_string());
-    }
-    if evidence_bool(evidence, "predicate_pushdown_parity") != Some(true) {
-        blockers.insert("search_projection_shadow_predicate_pushdown_not_ready".to_string());
-    }
-    if nested_bool(evidence, &["pushdown_evidence", "ready"]) != Some(true) {
-        blockers.insert(SEARCH_PROJECTION_SHADOW_PUSHDOWN_NOT_READY.to_string());
-    }
-    if nested_bool(
-        evidence,
-        &[
-            "pushdown_evidence",
-            "shadow_persisted_segment_descriptor_ready",
-        ],
-    ) != Some(true)
-    {
-        blockers.insert(SKEIN_SEARCH_PROJECTION_SEGMENT_DESCRIPTOR_MISSING.to_string());
-    }
-    if nested_bool(
-        evidence,
-        &[
-            "pushdown_evidence",
-            "shadow_segment_descriptor_scan_filter_fields_ready",
-        ],
-    ) != Some(true)
-    {
-        blockers.insert(SKEIN_SEARCH_PROJECTION_SEGMENT_DESCRIPTOR_FIELDS_MISSING.to_string());
-    }
-    blockers.into_iter().collect()
-}
-
-fn search_candidate_shadow_readiness_area(
-    evidence: &serde_json::Value,
-) -> NowledgeMemReadinessAreaSummary {
-    let blocker_codes = search_candidate_shadow_readiness_blocker_codes(evidence);
-    NowledgeMemReadinessAreaSummary::new(
-        "search_candidate_shadow",
-        blocker_codes.is_empty(),
-        blocker_codes,
-    )
-}
-
-fn search_candidate_shadow_evidence_ready(evidence: &serde_json::Value) -> bool {
-    search_candidate_shadow_readiness_blocker_codes(evidence).is_empty()
-}
-
-fn workload_fixture_readiness_area(
-    evidence: &serde_json::Value,
-) -> NowledgeMemReadinessAreaSummary {
-    let blocker_codes = workload_fixture_readiness_blocker_codes(evidence);
-    NowledgeMemReadinessAreaSummary::new(
-        "workload_fixture",
-        blocker_codes.is_empty(),
-        blocker_codes,
-    )
-}
-
-fn workload_fixture_evidence_ready(evidence: &serde_json::Value) -> bool {
-    workload_fixture_readiness_blocker_codes(evidence).is_empty()
-}
-
-fn workload_fixture_readiness_blocker_codes(evidence: &serde_json::Value) -> Vec<String> {
-    let mut blockers = evidence_blocker_codes(evidence);
-    if evidence.get("present").and_then(serde_json::Value::as_bool) == Some(false) {
-        if blockers.is_empty() {
-            blockers.insert("workload_fixture_evidence_missing".to_string());
-        }
-        return blockers.into_iter().collect();
-    }
-    if evidence_string(evidence, "protocol") != Some(NOWLEDGE_GRAPH_ROUTE_WORKLOAD_FIXTURE_PROTOCOL)
-    {
-        blockers.insert("workload_fixture_protocol_mismatch".to_string());
-    }
-    if evidence_bool(evidence, "ready") != Some(true) {
-        blockers.insert("workload_fixture_not_ready".to_string());
-    }
-    if !evidence_u64(evidence, "route_count").is_some_and(|count| count > 0)
-        || !evidence_u64(evidence, "query_count").is_some_and(|count| count > 0)
-        || evidence_u64(evidence, "failed_query_count") != Some(0)
-    {
-        blockers.insert("workload_fixture_route_queries_not_ready".to_string());
-    }
-    if !evidence_u64(evidence, "bounded_expansion_probe_count").is_some_and(|count| count > 0)
-        || evidence_u64(evidence, "failed_bounded_expansion_probe_count") != Some(0)
-    {
-        blockers.insert("workload_fixture_bounded_expansion_not_ready".to_string());
-    }
-    if !evidence_u64(evidence, "search_metadata_probe_count").is_some_and(|count| count > 0)
-        || evidence_u64(evidence, "failed_search_metadata_probe_count") != Some(0)
-    {
-        blockers.insert("workload_fixture_search_metadata_not_ready".to_string());
-    }
-    if !evidence_u64(evidence, "graph_rag_probe_count").is_some_and(|count| count > 0)
-        || evidence_u64(evidence, "failed_graph_rag_probe_count") != Some(0)
-    {
-        blockers.insert("workload_fixture_graph_rag_not_ready".to_string());
-    }
-    if !array_at(evidence, &["graph_rag_reports"]).is_some_and(|reports| {
-        reports.iter().any(|report| {
-            report.get("ready").and_then(serde_json::Value::as_bool) == Some(true)
-                && report
-                    .get("label_count")
-                    .and_then(serde_json::Value::as_u64)
-                    .is_some_and(|count| count > 0)
-                && report
-                    .get("relationship_type_count")
-                    .and_then(serde_json::Value::as_u64)
-                    .is_some_and(|count| count > 0)
-                && report
-                    .get("route_count")
-                    .and_then(serde_json::Value::as_u64)
-                    .is_some_and(|count| count > 0)
-                && report
-                    .get("parameter_requirement_count")
-                    .and_then(serde_json::Value::as_u64)
-                    .is_some_and(|count| count > 0)
-                && report
-                    .get("row_count")
-                    .and_then(serde_json::Value::as_u64)
-                    .is_some_and(|count| count > 0)
-                && report
-                    .get("row_budget_exceeded")
-                    .and_then(serde_json::Value::as_bool)
-                    == Some(false)
-                && report
-                    .get("payload_budget_exceeded")
-                    .and_then(serde_json::Value::as_bool)
-                    == Some(false)
-                && report
-                    .get("blocking_operator_count")
-                    .and_then(serde_json::Value::as_u64)
-                    == Some(0)
-                && report.get("streaming").and_then(serde_json::Value::as_bool) == Some(false)
-                && report
-                    .get("error_class")
-                    .and_then(serde_json::Value::as_str)
-                    .is_none()
-        })
-    }) {
-        blockers.insert("workload_fixture_graph_rag_probe_missing".to_string());
-    }
-    if !evidence_u64(evidence, "source_projection_probe_count").is_some_and(|count| count > 0)
-        || evidence_u64(evidence, "failed_source_projection_probe_count") != Some(0)
-    {
-        blockers.insert("workload_fixture_source_projection_not_ready".to_string());
-    }
-    if !array_at(evidence, &["source_projection_reports"]).is_some_and(|reports| {
-        reports.iter().any(|report| {
-            report.get("ready").and_then(serde_json::Value::as_bool) == Some(true)
-                && report
-                    .get("too_small_batch_failed_closed")
-                    .and_then(serde_json::Value::as_bool)
-                    == Some(true)
-                && report
-                    .get("operation_count")
-                    .and_then(serde_json::Value::as_u64)
-                    == Some(2)
-                && report
-                    .get("upserted_documents")
-                    .and_then(serde_json::Value::as_u64)
-                    == Some(2)
-                && report
-                    .get("deleted_documents")
-                    .and_then(serde_json::Value::as_u64)
-                    == Some(0)
-                && report
-                    .get("source_document_count")
-                    .and_then(serde_json::Value::as_u64)
-                    == Some(2)
-                && report
-                    .get("indexed_source_document_ready")
-                    .and_then(serde_json::Value::as_bool)
-                    == Some(true)
-                && report
-                    .get("source_graph_commit_epoch")
-                    .and_then(serde_json::Value::as_u64)
-                    .is_some()
-                && report
-                    .get("complete_through_graph_commit_epoch")
-                    .and_then(serde_json::Value::as_u64)
-                    .is_some()
-                && report
-                    .get("error_class")
-                    .and_then(serde_json::Value::as_str)
-                    .is_none()
-        })
-    }) {
-        blockers.insert("workload_fixture_source_projection_probe_missing".to_string());
-    }
-    blockers.into_iter().collect()
-}
-
-fn search_candidate_shadow_readiness_blocker_codes(evidence: &serde_json::Value) -> Vec<String> {
-    let mut blockers = evidence_blocker_codes(evidence);
-    if evidence.get("present").and_then(serde_json::Value::as_bool) == Some(false) {
-        if blockers.is_empty() {
-            blockers.insert("search_candidate_shadow_evidence_missing".to_string());
-        }
-        return blockers.into_iter().collect();
-    }
-    if evidence_string(evidence, "protocol")
-        != Some(NOWLEDGE_MEM_SEARCH_CANDIDATE_SHADOW_EVIDENCE_PROTOCOL)
-    {
-        blockers.insert("search_candidate_shadow_protocol_mismatch".to_string());
-    }
-    if evidence_string(evidence, "route") != Some(NOWLEDGE_MEM_SEARCH_CANDIDATE_EVIDENCE_ROUTE) {
-        blockers.insert("search_candidate_shadow_route_mismatch".to_string());
-    }
-    if evidence_string(evidence, "evidence_source")
-        != Some(NOWLEDGE_MEM_SEARCH_CANDIDATE_EVIDENCE_SOURCE)
-    {
-        blockers.insert("search_candidate_shadow_evidence_source_mismatch".to_string());
-    }
-    if evidence_bool(evidence, "ready") != Some(true) {
-        blockers.insert("search_candidate_shadow_not_ready".to_string());
-    }
-    if evidence_string(evidence, "candidate_primary_engine")
-        != Some(NOWLEDGE_MEM_SEARCH_CANDIDATE_PRIMARY_ENGINE)
-    {
-        blockers.insert("search_candidate_primary_engine_not_skein".to_string());
-    }
-    if !search_candidate_shadow_counts_ready(evidence) {
-        blockers.insert("search_candidate_counts_not_ready".to_string());
-    }
-    if evidence_bool(evidence, "text_retriever_ready") != Some(true) {
-        blockers.insert("search_candidate_text_retriever_not_ready".to_string());
-    }
-    if evidence_bool(evidence, "vector_retriever_ready") != Some(true) {
-        blockers.insert("search_candidate_vector_retriever_not_ready".to_string());
-    }
-    if evidence_bool(evidence, "fts_top_k_overlap_ready") != Some(true) {
-        blockers.insert("search_candidate_fts_top_k_overlap_not_ready".to_string());
-    }
-    if evidence_bool(evidence, "vector_top_k_overlap_ready") != Some(true) {
-        blockers.insert("search_candidate_vector_top_k_overlap_not_ready".to_string());
-    }
-    if nested_bool(
-        evidence,
-        &["candidate_readiness", "source_chunk_identity_ready"],
-    ) != Some(true)
-    {
-        blockers.insert("search_candidate_source_chunk_identity_not_ready".to_string());
-    }
-    if nested_bool(evidence, &["candidate_readiness", "fail_soft_observed"]) != Some(true) {
-        blockers.insert("search_candidate_fail_soft_not_observed".to_string());
-    }
-    if nested_bool(
-        evidence,
-        &["candidate_readiness", "projection_marker_status_visible"],
-    ) != Some(true)
-    {
-        blockers.insert("search_candidate_projection_marker_status_missing".to_string());
-    }
-    if nested_bool(
-        evidence,
-        &["candidate_readiness", "projection_watermark_ready"],
-    ) != Some(true)
-    {
-        blockers.insert("search_candidate_projection_watermark_missing".to_string());
-    }
-    if nested_bool(
-        evidence,
-        &["candidate_readiness", "embedding_identity_ready"],
-    ) != Some(true)
-    {
-        blockers.insert("search_candidate_embedding_identity_not_ready".to_string());
-    }
-    if nested_bool(evidence, &["candidate_identity", "ready"]) != Some(true)
-        || nested_bool(evidence, &["candidate_identity", "parity"]) != Some(true)
-    {
-        blockers.insert("search_candidate_identity_not_ready".to_string());
-    }
-    if nested_bool(evidence, &["filter_pushdown", "ready"]) != Some(true)
-        || evidence_bool(evidence, "filter_pushdown_ready") != Some(true)
-    {
-        blockers.insert("search_candidate_filter_pushdown_not_ready".to_string());
-    }
-    if !nested_u64(evidence, &["filter_pushdown", "field_summary_count"])
-        .is_some_and(|count| count > 0)
-        || !string_array_at(evidence, &["filter_pushdown", "missing_required_fields"])
-            .is_some_and(|fields| fields.is_empty())
-    {
-        blockers.insert("search_candidate_field_pruning_missing".to_string());
-    }
-    blockers.into_iter().collect()
-}
-
-fn array_at<'a>(value: &'a serde_json::Value, path: &[&str]) -> Option<&'a Vec<serde_json::Value>> {
-    nested_value(value, path)?.as_array()
-}
-
-fn evidence_blocker_codes(evidence: &serde_json::Value) -> BTreeSet<String> {
-    evidence
-        .get("blocker_codes")
-        .and_then(serde_json::Value::as_array)
-        .into_iter()
-        .flatten()
-        .filter_map(serde_json::Value::as_str)
-        .map(str::to_string)
-        .collect()
-}
-
-fn search_candidate_shadow_counts_ready(evidence: &serde_json::Value) -> bool {
-    let request_count = evidence_u64(evidence, "request_count");
-    let primary_candidate_count = evidence_u64(evidence, "primary_candidate_count");
-    let shadow_candidate_count = evidence_u64(evidence, "shadow_candidate_count");
-    let matched_candidate_count = evidence_u64(evidence, "matched_candidate_count");
-    let primary_only_candidate_count = evidence_u64(evidence, "primary_only_candidate_count");
-    request_count.is_some_and(|count| count > 0)
-        && primary_candidate_count.is_some()
-        && primary_candidate_count == shadow_candidate_count
-        && matched_candidate_count == shadow_candidate_count
-        && primary_only_candidate_count == Some(0)
-}
-
-fn readiness_area(
-    name: &'static str,
-    evidence: &serde_json::Value,
-    fallback_blocker_code: &'static str,
-) -> NowledgeMemReadinessAreaSummary {
-    let ready = evidence.get("ready").and_then(serde_json::Value::as_bool) == Some(true);
-    NowledgeMemReadinessAreaSummary::new(
-        name,
-        ready,
-        readiness_blocker_codes(evidence, fallback_blocker_code, ready),
-    )
-}
-
-fn background_maintenance_readiness_area(
-    background_maintenance: &serde_json::Value,
-) -> NowledgeMemReadinessAreaSummary {
-    let health = background_maintenance_evidence_health(Some(background_maintenance), true);
-    NowledgeMemReadinessAreaSummary::new("background", health.ready, health.blocker_codes)
-}
-
-fn library_background_maintenance_ready(background_maintenance: &serde_json::Value) -> bool {
-    background_maintenance_evidence_health(Some(background_maintenance), true).ready
-}
-
-fn readiness_blocker_codes(
-    evidence: &serde_json::Value,
-    fallback_blocker_code: &'static str,
-    ready: bool,
-) -> Vec<String> {
-    if ready {
-        return Vec::new();
-    }
-    let codes = evidence
-        .get("blocker_codes")
-        .and_then(serde_json::Value::as_array)
-        .map(|values| {
-            values
-                .iter()
-                .filter_map(serde_json::Value::as_str)
-                .map(str::to_string)
-                .collect::<Vec<_>>()
-        })
-        .unwrap_or_default();
-    if codes.is_empty() {
-        vec![fallback_blocker_code.to_string()]
-    } else {
-        codes
-    }
 }
 
 fn nowledge_mem_readiness_dashboard_areas(
@@ -8060,18 +6779,16 @@ fn estimate_value_payload_bytes(value: &Value) -> usize {
 #[cfg(test)]
 mod tests {
     use super::{
-        nowledge_mem_bounded_read_evidence_json,
         nowledge_mem_bounded_read_evidence_json_with_route_readiness,
         nowledge_mem_fast_path_classification, nowledge_mem_graph_config,
         nowledge_mem_graph_config_with_search_mode,
         nowledge_mem_source_mutation_dual_write_evidence_all_ready,
-        nowledge_mem_source_mutation_dual_write_readiness,
-        workload_fixture_readiness_blocker_codes, NowledgeMemCutoverControls,
+        nowledge_mem_source_mutation_dual_write_readiness, NowledgeMemCutoverControls,
         NowledgeMemEmbeddedStore, NowledgeMemEmbeddedStoreHandle, NowledgeMemGraph,
         NowledgeMemGraphMode, NowledgeMemOpenDiagnosticOptions, NowledgeMemOpenOptions,
         NowledgeMemOutOfCoreSearchProjection, NowledgeMemQualifiedOutOfCoreSearchOptions,
         NowledgeMemQueryExecutionPath, NowledgeMemQueryReportOptions, NowledgeMemReadOptions,
-        NowledgeMemReadReport, NowledgeMemReadinessAreaSummary, NowledgeMemReadinessDashboard,
+        NowledgeMemReadinessAreaSummary, NowledgeMemReadinessDashboard,
         NowledgeMemReadinessOptions, NowledgeMemRetrievalProjectionAdvisor,
         NowledgeMemRouteReadinessSummary, NowledgeMemSearchCandidateReadinessOptions,
         NowledgeMemSearchCandidateRequest, NowledgeMemSearchCandidateShadowAccumulator,
@@ -8091,7 +6808,7 @@ mod tests {
         NOWLEDGE_MEM_STORAGE_LIFECYCLE_DECISION_PROTOCOL,
         NOWLEDGE_QUERY_RUNTIME_PREFLIGHT_PROTOCOL, NOWLEDGE_SEARCH_PROJECTION_SCAN_FILTER_FIELDS,
         REQUIRED_NOWLEDGE_MEM_BOUNDED_READ_ROUTES, REQUIRED_NOWLEDGE_MEM_SOURCE_MUTATION_FAMILIES,
-        REQUIRED_NOWLEDGE_REPLACEMENT_QUERY_FAMILIES, SEARCH_PROJECTION_SHADOW_PUSHDOWN_NOT_READY,
+        REQUIRED_NOWLEDGE_REPLACEMENT_QUERY_FAMILIES,
     };
     use crate::mem_integration_readiness::nowledge_mem_final_cutover_preflight;
     use crate::route_ownership::{
@@ -9560,168 +8277,6 @@ mod tests {
     }
 
     #[test]
-    fn bounded_read_evidence_fails_closed_for_missing_row_cap() {
-        let report = NowledgeMemReadReport {
-            protocol: NOWLEDGE_MEM_READ_REPORT_PROTOCOL.to_string(),
-            mode: NowledgeMemGraphMode::ShadowReadOnly,
-            row_count: 2,
-            max_rows: Some(512),
-            execution_row_cap: None,
-            estimated_payload_bytes: 128,
-            max_estimated_payload_bytes: Some(4 * 1024 * 1024),
-            row_budget_exceeded: false,
-            payload_budget_exceeded: false,
-            row_limit_enforced_before_output: false,
-            operator_row_cap_enabled: false,
-            blocking_operator_count: 1,
-            blocking_operator_kinds: vec!["Sort".to_string()],
-            blocking_operator_memory_reports: Vec::new(),
-            intermediate_rows: 0,
-            intermediate_payload_bytes: 0,
-            output_payload_bytes: 0,
-            steady_resident_bytes: None,
-            peak_resident_bytes: None,
-            total_page_faults: None,
-            minor_page_faults: None,
-            major_page_faults: None,
-            streaming: false,
-        };
-
-        let evidence = nowledge_mem_bounded_read_evidence_json(&report);
-
-        assert_eq!(
-            evidence["protocol"],
-            NOWLEDGE_MEM_BOUNDED_READ_EVIDENCE_PROTOCOL
-        );
-        assert_eq!(evidence["present"], true);
-        assert_eq!(evidence["ready"], false);
-        assert_eq!(evidence["max_rows"], 512);
-        assert_eq!(evidence["execution_row_cap"], serde_json::Value::Null);
-        assert_eq!(
-            evidence["blocker_codes"],
-            serde_json::json!([
-                "missing_execution_row_cap",
-                "row_limit_not_enforced_before_output",
-                "operator_row_cap_disabled",
-                "blocking_operator_memory_report_incomplete",
-                "missing_covered_routes",
-                "graph_route_readiness_missing"
-            ])
-        );
-    }
-
-    #[test]
-    fn bounded_read_evidence_requires_shadow_read_only_mode() {
-        let report = NowledgeMemReadReport {
-            protocol: NOWLEDGE_MEM_READ_REPORT_PROTOCOL.to_string(),
-            mode: NowledgeMemGraphMode::WritableCutover,
-            row_count: 2,
-            max_rows: Some(512),
-            execution_row_cap: Some(513),
-            estimated_payload_bytes: 128,
-            max_estimated_payload_bytes: Some(4 * 1024 * 1024),
-            row_budget_exceeded: false,
-            payload_budget_exceeded: false,
-            row_limit_enforced_before_output: true,
-            operator_row_cap_enabled: true,
-            blocking_operator_count: 0,
-            blocking_operator_kinds: Vec::new(),
-            blocking_operator_memory_reports: Vec::new(),
-            intermediate_rows: 0,
-            intermediate_payload_bytes: 0,
-            output_payload_bytes: 0,
-            steady_resident_bytes: None,
-            peak_resident_bytes: None,
-            total_page_faults: None,
-            minor_page_faults: None,
-            major_page_faults: None,
-            streaming: false,
-        };
-
-        let evidence = nowledge_mem_bounded_read_evidence_json(&report);
-
-        assert_eq!(evidence["ready"], false);
-        assert_eq!(evidence["mode"], "writable_cutover");
-        assert_eq!(
-            evidence["blocker_codes"],
-            serde_json::json!([
-                "not_shadow_read_only",
-                "missing_covered_routes",
-                "graph_route_readiness_missing"
-            ])
-        );
-    }
-
-    #[test]
-    fn bounded_read_evidence_accepts_streaming_with_budgeted_blocking_operator() {
-        let report = NowledgeMemReadReport {
-            protocol: NOWLEDGE_MEM_READ_REPORT_PROTOCOL.to_string(),
-            mode: NowledgeMemGraphMode::ShadowReadOnly,
-            row_count: 2,
-            max_rows: Some(512),
-            execution_row_cap: Some(513),
-            estimated_payload_bytes: 128,
-            max_estimated_payload_bytes: Some(4 * 1024 * 1024),
-            row_budget_exceeded: false,
-            payload_budget_exceeded: false,
-            row_limit_enforced_before_output: true,
-            operator_row_cap_enabled: true,
-            blocking_operator_count: 1,
-            blocking_operator_kinds: vec!["TopNExec".to_string()],
-            blocking_operator_memory_reports: vec![skein_executor::BlockingOperatorMemoryReport {
-                operator: "TopNExec".to_string(),
-                budget_bytes: 4096,
-                peak_tracked_bytes: 2048,
-                input_rows: 100,
-                max_spill_bytes: 8192,
-                max_spill_runs: 4,
-                spilled_bytes: 4096,
-                spill_run_count: 2,
-                spilled_rows: 64,
-            }],
-            intermediate_rows: 100,
-            intermediate_payload_bytes: 2048,
-            output_payload_bytes: 128,
-            steady_resident_bytes: Some(1024),
-            peak_resident_bytes: Some(2048),
-            total_page_faults: Some(1),
-            minor_page_faults: Some(1),
-            major_page_faults: Some(0),
-            streaming: true,
-        };
-        let route_readiness = NowledgeMemRouteReadinessSummary {
-            route_primary_ready: true,
-            primary_ready_routes: REQUIRED_NOWLEDGE_MEM_BOUNDED_READ_ROUTES
-                .iter()
-                .map(|route| (*route).to_string())
-                .collect(),
-            route_query_plan_evidence_ready: true,
-            route_query_profile_evidence_ready: true,
-            route_query_api_behavior_evidence_ready: true,
-            relationship_property_pruning_required_count: 0,
-            relationship_property_pruning_report_count: 0,
-            route_relationship_property_pruning_evidence_ready: true,
-        };
-        let covered_routes = REQUIRED_NOWLEDGE_MEM_BOUNDED_READ_ROUTES
-            .iter()
-            .map(|route| (*route).to_string())
-            .collect::<Vec<_>>();
-
-        let evidence = nowledge_mem_bounded_read_evidence_json_with_route_readiness(
-            &report,
-            &covered_routes,
-            Some(&route_readiness),
-        );
-
-        assert_eq!(evidence["ready"], true);
-        assert_eq!(evidence["streaming"], true);
-        assert_eq!(evidence["blocking_operator_memory_reports_complete"], true);
-        assert_eq!(evidence["blocking_operator_memory_within_budget"], true);
-        assert_eq!(evidence["spill_within_budget"], true);
-        assert_eq!(evidence["blocker_codes"], serde_json::json!([]));
-    }
-
-    #[test]
     fn graph_read_query_rejects_payload_budget_excess() {
         let db = Database::new();
         let mut graph = NowledgeMemGraph::from_database(db, NowledgeMemGraphMode::ShadowReadOnly);
@@ -10367,7 +8922,8 @@ mod tests {
             .unwrap()
             .remove("graph_rag_reports");
 
-        let blockers = workload_fixture_readiness_blocker_codes(&evidence);
+        let blockers =
+            skein_readiness::library_readiness::workload_fixture_readiness_blocker_codes(&evidence);
 
         assert!(blockers.contains(&"workload_fixture_graph_rag_not_ready".to_string()));
         assert!(blockers.contains(&"workload_fixture_graph_rag_probe_missing".to_string()));
@@ -10393,7 +8949,8 @@ mod tests {
             .unwrap()
             .remove("source_projection_reports");
 
-        let blockers = workload_fixture_readiness_blocker_codes(&evidence);
+        let blockers =
+            skein_readiness::library_readiness::workload_fixture_readiness_blocker_codes(&evidence);
 
         assert!(blockers.contains(&"workload_fixture_source_projection_not_ready".to_string()));
         assert!(blockers.contains(&"workload_fixture_source_projection_probe_missing".to_string()));
@@ -10499,9 +9056,9 @@ mod tests {
         assert!(blocker_codes
             .iter()
             .any(|code| code == "search_projection_shadow_document_identity_not_ready"));
-        assert!(blocker_codes
-            .iter()
-            .any(|code| code == SEARCH_PROJECTION_SHADOW_PUSHDOWN_NOT_READY));
+        assert!(blocker_codes.iter().any(|code| {
+            code == skein_readiness::library_readiness::SEARCH_PROJECTION_SHADOW_PUSHDOWN_NOT_READY
+        }));
         assert!(readiness["blocker_codes"]
             .as_array()
             .unwrap()

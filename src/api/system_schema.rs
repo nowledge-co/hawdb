@@ -1,7 +1,10 @@
 use super::Database;
 use crate::error::{Result, SkeinError};
 use crate::value::Value;
-use skein_integrity::IntegrityHasher;
+use skein_relational::system_schema::validate_system_schema_registry;
+pub use skein_relational::{
+    SystemSchemaMigration, SystemSchemaRegistry, SystemSchemaUpgradeReport,
+};
 use skein_storage::{
     RelationalMutationLimits, RelationalOverflowConfig, RelationalState, RelationalTransaction,
     RelationalValue, RelationalWrite,
@@ -18,93 +21,6 @@ const REGISTRY_TABLE_DDL: &str = "CREATE TABLE skein_schema_migrations (\
     UNIQUE (owner, version))";
 const REGISTRY_INSERT_SQL: &str = "INSERT INTO skein_schema_migrations \
     (migration_id, owner, version, name, checksum) VALUES ($1, $2, $3, $4, $5)";
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct SystemSchemaMigration {
-    version: u64,
-    name: String,
-    statements: Vec<String>,
-}
-
-impl SystemSchemaMigration {
-    pub fn new(
-        version: u64,
-        name: impl Into<String>,
-        statements: impl IntoIterator<Item = impl Into<String>>,
-    ) -> Self {
-        Self {
-            version,
-            name: name.into(),
-            statements: statements.into_iter().map(Into::into).collect(),
-        }
-    }
-
-    pub fn version(&self) -> u64 {
-        self.version
-    }
-
-    pub fn name(&self) -> &str {
-        &self.name
-    }
-
-    pub fn statements(&self) -> &[String] {
-        &self.statements
-    }
-
-    pub fn checksum(&self, owner: &str) -> String {
-        let mut hasher = IntegrityHasher::new();
-        hash_component(&mut hasher, b"skein-system-schema-migration-v1");
-        hash_component(&mut hasher, owner.as_bytes());
-        hash_component(&mut hasher, &self.version.to_le_bytes());
-        hash_component(&mut hasher, self.name.as_bytes());
-        for statement in &self.statements {
-            hash_component(&mut hasher, statement.as_bytes());
-        }
-        hasher.finish().sha256.to_string()
-    }
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct SystemSchemaRegistry {
-    owner: String,
-    migrations: Vec<SystemSchemaMigration>,
-}
-
-impl SystemSchemaRegistry {
-    pub fn new(
-        owner: impl Into<String>,
-        migrations: impl IntoIterator<Item = SystemSchemaMigration>,
-    ) -> Self {
-        Self {
-            owner: owner.into(),
-            migrations: migrations.into_iter().collect(),
-        }
-    }
-
-    pub fn owner(&self) -> &str {
-        &self.owner
-    }
-
-    pub fn migrations(&self) -> &[SystemSchemaMigration] {
-        &self.migrations
-    }
-
-    pub fn current_version(&self) -> u64 {
-        self.migrations
-            .last()
-            .map_or(0, SystemSchemaMigration::version)
-    }
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct SystemSchemaUpgradeReport {
-    pub owner: String,
-    pub previous_version: u64,
-    pub current_version: u64,
-    pub applied_versions: Vec<u64>,
-    pub commit_epoch_before: u64,
-    pub commit_epoch_after: u64,
-}
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 struct AppliedMigration {
@@ -127,13 +43,13 @@ impl Database {
         &mut self,
         registry: &SystemSchemaRegistry,
     ) -> Result<SystemSchemaUpgradeReport> {
-        validate_registry(registry)?;
-        if registry.owner == REGISTRY_OWNER && registry != &engine_registry() {
+        validate_system_schema_registry(registry)?;
+        if registry.owner() == REGISTRY_OWNER && registry != &engine_registry() {
             return Err(SkeinError::Semantic(format!(
                 "system schema owner {REGISTRY_OWNER} is reserved by the engine"
             )));
         }
-        if registry.owner != REGISTRY_OWNER {
+        if registry.owner() != REGISTRY_OWNER {
             self.apply_system_schema_registry_inner(&engine_registry())?;
         }
         self.apply_system_schema_registry_inner(registry)
@@ -143,7 +59,7 @@ impl Database {
         &mut self,
         registry: &SystemSchemaRegistry,
     ) -> Result<SystemSchemaUpgradeReport> {
-        validate_registry(registry)?;
+        validate_system_schema_registry(registry)?;
         let commit_epoch_before = self.commit_epoch();
         let registry_table_present = self
             .store
@@ -153,18 +69,18 @@ impl Database {
 
         if registry_table_present {
             validate_registry_table(self.store.relational_state())?;
-        } else if registry.owner != REGISTRY_OWNER {
+        } else if registry.owner() != REGISTRY_OWNER {
             return Err(SkeinError::Storage(
                 "system schema registry table is missing after engine bootstrap".to_string(),
             ));
         }
 
         let applied = if registry_table_present {
-            let max_rows = registry.migrations.len().saturating_add(1);
+            let max_rows = registry.migrations().len().saturating_add(1);
             if self.store.relational_state().materialized_rows_resident() {
-                read_applied_migrations(self.store.relational_state(), &registry.owner, max_rows)?
+                read_applied_migrations(self.store.relational_state(), registry.owner(), max_rows)?
             } else {
-                self.read_applied_migrations_query(&registry.owner, max_rows)?
+                self.read_applied_migrations_query(registry.owner(), max_rows)?
             }
         } else {
             Vec::new()
@@ -173,13 +89,13 @@ impl Database {
 
         let previous_version = applied.last().map_or(0, |migration| migration.version);
         let pending = registry
-            .migrations
+            .migrations()
             .iter()
-            .filter(|migration| migration.version > previous_version)
+            .filter(|migration| migration.version() > previous_version)
             .collect::<Vec<_>>();
         if pending.is_empty() {
             return Ok(SystemSchemaUpgradeReport {
-                owner: registry.owner.clone(),
+                owner: registry.owner().to_string(),
                 previous_version,
                 current_version: previous_version,
                 applied_versions: Vec::new(),
@@ -190,7 +106,7 @@ impl Database {
         if self.config.read_only {
             return Err(SkeinError::Execution(format!(
                 "system schema {} requires upgrade from version {} to {} but the database is read-only",
-                registry.owner,
+                registry.owner(),
                 previous_version,
                 registry.current_version()
             )));
@@ -199,35 +115,36 @@ impl Database {
         let mut transaction = self.begin_transaction();
         let mut applied_versions = Vec::with_capacity(pending.len());
         for migration in pending {
-            for statement in &migration.statements {
-                if registry.owner == REGISTRY_OWNER {
+            for statement in migration.statements() {
+                if registry.owner() == REGISTRY_OWNER {
                     transaction.query_system_schema_sql(statement)?;
                 } else {
                     transaction.query_sql(statement)?;
                 }
             }
-            let version = i64::try_from(migration.version).map_err(|_| {
+            let version = i64::try_from(migration.version()).map_err(|_| {
                 SkeinError::Semantic(format!(
                     "system schema {} migration version {} exceeds BIGINT",
-                    registry.owner, migration.version
+                    registry.owner(),
+                    migration.version()
                 ))
             })?;
             transaction.query_system_schema_sql_with_params(
                 REGISTRY_INSERT_SQL,
                 &[
-                    Value::String(format!("{}:{}", registry.owner, migration.version)),
-                    Value::String(registry.owner.clone()),
+                    Value::String(format!("{}:{}", registry.owner(), migration.version())),
+                    Value::String(registry.owner().to_string()),
                     Value::Int(version),
-                    Value::String(migration.name.clone()),
-                    Value::String(migration.checksum(&registry.owner)),
+                    Value::String(migration.name().to_string()),
+                    Value::String(migration.checksum(registry.owner())),
                 ],
             )?;
-            applied_versions.push(migration.version);
+            applied_versions.push(migration.version());
         }
         transaction.commit()?;
 
         Ok(SystemSchemaUpgradeReport {
-            owner: registry.owner.clone(),
+            owner: registry.owner().to_string(),
             previous_version,
             current_version: registry.current_version(),
             applied_versions,
@@ -291,60 +208,6 @@ fn engine_registry() -> SystemSchemaRegistry {
     )
 }
 
-fn validate_registry(registry: &SystemSchemaRegistry) -> Result<()> {
-    if registry.owner.is_empty()
-        || registry.owner.len() > 128
-        || !registry
-            .owner
-            .bytes()
-            .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'.' | b'_' | b'-'))
-    {
-        return Err(SkeinError::Semantic(
-            "system schema owner must contain 1-128 ASCII letters, digits, '.', '_' or '-'"
-                .to_string(),
-        ));
-    }
-    if registry.migrations.is_empty() {
-        return Err(SkeinError::Semantic(format!(
-            "system schema {} requires at least one migration",
-            registry.owner
-        )));
-    }
-    for (index, migration) in registry.migrations.iter().enumerate() {
-        let expected = u64::try_from(index).unwrap_or(u64::MAX).saturating_add(1);
-        if migration.version != expected {
-            return Err(SkeinError::Semantic(format!(
-                "system schema {} migrations must be contiguous from version 1; expected {}, got {}",
-                registry.owner, expected, migration.version
-            )));
-        }
-        if migration.name.is_empty() || migration.name.len() > 128 {
-            return Err(SkeinError::Semantic(format!(
-                "system schema {} migration {} requires a 1-128 byte name",
-                registry.owner, migration.version
-            )));
-        }
-        if migration.statements.is_empty()
-            || migration
-                .statements
-                .iter()
-                .any(|statement| statement.trim().is_empty())
-        {
-            return Err(SkeinError::Semantic(format!(
-                "system schema {} migration {} requires non-empty SQL statements",
-                registry.owner, migration.version
-            )));
-        }
-        i64::try_from(migration.version).map_err(|_| {
-            SkeinError::Semantic(format!(
-                "system schema {} migration version {} exceeds BIGINT",
-                registry.owner, migration.version
-            ))
-        })?;
-    }
-    Ok(())
-}
-
 fn validate_registry_table(state: &RelationalState) -> Result<()> {
     let expected = crate::relational_sql::compile_relational_statement_sql(
         REGISTRY_TABLE_DDL,
@@ -384,7 +247,7 @@ fn state_with_engine_system_schema(state: &RelationalState) -> Result<Relational
     }
 
     let registry = engine_registry();
-    let migration = &registry.migrations[0];
+    let migration = &registry.migrations()[0];
     let mut transaction =
         crate::relational_sql::compile_relational_statement_sql(REGISTRY_TABLE_DDL, &[], state)?;
     let staged = state
@@ -397,10 +260,10 @@ fn state_with_engine_system_schema(state: &RelationalState) -> Result<Relational
     let insert = crate::relational_sql::compile_relational_statement_sql(
         REGISTRY_INSERT_SQL,
         &[
-            Value::String(format!("{REGISTRY_OWNER}:{}", migration.version)),
+            Value::String(format!("{REGISTRY_OWNER}:{}", migration.version())),
             Value::String(REGISTRY_OWNER.to_string()),
-            Value::Int(i64::try_from(migration.version).expect("engine migration fits BIGINT")),
-            Value::String(migration.name.clone()),
+            Value::Int(i64::try_from(migration.version()).expect("engine migration fits BIGINT")),
+            Value::String(migration.name().to_string()),
             Value::String(migration.checksum(REGISTRY_OWNER)),
         ],
         &staged,
@@ -517,36 +380,32 @@ fn validate_applied_migrations(
     applied: &[AppliedMigration],
     registry_table_present: bool,
 ) -> Result<()> {
-    if registry.owner == REGISTRY_OWNER && registry_table_present && applied.is_empty() {
+    if registry.owner() == REGISTRY_OWNER && registry_table_present && applied.is_empty() {
         return Err(SkeinError::Storage(
             "system schema registry exists without its engine migration record".to_string(),
         ));
     }
-    if applied.len() > registry.migrations.len() {
+    if applied.len() > registry.migrations().len() {
         return Err(SkeinError::Storage(format!(
             "system schema {} is at future version {}, binary supports {}",
-            registry.owner,
+            registry.owner(),
             applied.last().map_or(0, |migration| migration.version),
             registry.current_version()
         )));
     }
     for (index, actual) in applied.iter().enumerate() {
-        let expected = &registry.migrations[index];
-        let expected_checksum = expected.checksum(&registry.owner);
-        if actual.version != expected.version
-            || actual.name != expected.name
+        let expected = &registry.migrations()[index];
+        let expected_checksum = expected.checksum(registry.owner());
+        if actual.version != expected.version()
+            || actual.name != expected.name()
             || actual.checksum != expected_checksum
         {
             return Err(SkeinError::Storage(format!(
                 "system schema {} migration {} checksum or identity drifted",
-                registry.owner, actual.version
+                registry.owner(),
+                actual.version
             )));
         }
     }
     Ok(())
-}
-
-fn hash_component(hasher: &mut IntegrityHasher, bytes: &[u8]) {
-    hasher.update(&(bytes.len() as u64).to_le_bytes());
-    hasher.update(bytes);
 }

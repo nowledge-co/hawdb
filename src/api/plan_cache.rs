@@ -1,5 +1,5 @@
 use super::{
-    optimizer_catalog, optimizer_config_from_database_config, statement_body, DatabaseConfig,
+    optimizer_config_from_database_config, statement_body, DatabaseConfig,
     QueryAccessControlContext, SharedState,
 };
 use crate::cypher;
@@ -12,58 +12,18 @@ use crate::planner::{self, LogicalPlan, Predicate};
 use crate::schema::{Catalog, GraphStatistics, IndexKind};
 use crate::store::GraphStore;
 use crate::value::Value;
-pub use skein_plan_cache::PlanCacheStats;
+use skein_optimizer::graph::optimizer_catalog_from_graph_statistics;
 use skein_plan_cache::{
     bind_physical_plan_parameters, parameterize_logical_plan, parameterize_value_list, LfuCache,
     PlanParameterCacheKey,
 };
+pub use skein_plan_cache::{PlanCacheBypassReason, PlanCacheLookup, PlanCacheStats};
 use std::borrow::Cow;
 use std::collections::BTreeMap;
 use std::sync::Arc;
 
 pub(crate) const DEFAULT_PLAN_CACHE_MAX_ENTRIES: usize = 128;
 const ACCESS_CONTROL_VALUES_PARAMETER: &str = "\0skein_access_control_visibility_values";
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum PlanCacheLookup {
-    Hit,
-    Miss,
-    Bypass(PlanCacheBypassReason),
-}
-
-impl PlanCacheLookup {
-    pub fn as_str(self) -> &'static str {
-        match self {
-            Self::Hit => "hit",
-            Self::Miss => "miss",
-            Self::Bypass(_) => "bypass",
-        }
-    }
-
-    pub fn bypass_reason(self) -> Option<PlanCacheBypassReason> {
-        match self {
-            Self::Bypass(reason) => Some(reason),
-            Self::Hit | Self::Miss => None,
-        }
-    }
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum PlanCacheBypassReason {
-    MutationPlanning,
-    OptimizerDirective,
-    StatementNotCacheable,
-}
-
-impl PlanCacheBypassReason {
-    pub fn as_str(self) -> &'static str {
-        match self {
-            Self::MutationPlanning => "mutation_planning",
-            Self::OptimizerDirective => "optimizer_directive",
-            Self::StatementNotCacheable => "statement_not_cacheable",
-        }
-    }
-}
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(super) enum PlanCacheMode {
@@ -370,7 +330,7 @@ impl OptimizerPlanningCache {
             };
         }
 
-        let optimized = Arc::new(optimizer_catalog(catalog, statistics));
+        let optimized = Arc::new(optimizer_catalog_from_graph_statistics(catalog, statistics));
         decisions.push(format!(
             "optimizer catalog cache refresh: statistics_epoch={} statistics_generation={} graph_commit_epoch={}",
             statistics.computed_at_commit_epoch,

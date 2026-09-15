@@ -1,4 +1,4 @@
-use skein::{Result, SkeinError};
+use skein_core::{Result, SkeinError};
 use std::io::{BufRead, BufReader, Write};
 use std::process::{Child, ChildStdin, ChildStdout, Command, Output, Stdio};
 use std::thread;

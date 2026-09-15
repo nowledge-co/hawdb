@@ -74,86 +74,10 @@ pub fn nowledge_deep_search_graph_seed_limit(page_end: usize) -> usize {
         )
 }
 
-#[derive(Debug, Clone, Default, PartialEq, Eq)]
-pub struct SearchProjectionGraphDeltaRequest {
-    /// Live graph nodes changed in the selected commits. Nodes without a
-    /// direct search-projection kind remain present so a host batch hydrator
-    /// can resolve application-owned projection dependencies.
-    pub upsert_node_ids: Vec<u64>,
-    pub delete_document_ids: Vec<String>,
-    pub max_operations: Option<usize>,
-    pub complete_through_graph_commit_epoch: Option<u64>,
-}
-
-impl SearchProjectionGraphDeltaRequest {
-    pub fn operation_count(&self) -> usize {
-        self.upsert_node_ids.len() + self.delete_document_ids.len()
-    }
-
-    pub(in crate::api) fn background_work_request(&self) -> WorkRequest {
-        WorkRequest::background(WorkClass::Projection, self.operation_count())
-    }
-
-    pub fn background_work_plan(&self, hint: BackgroundWorkHint) -> Option<BackgroundWorkPlan> {
-        let operation_count = self.operation_count();
-        if operation_count == 0 {
-            return None;
-        }
-        if self
-            .max_operations
-            .is_some_and(|limit| operation_count > limit)
-        {
-            return None;
-        }
-        Some(BackgroundWorkPlan::background(
-            WorkClass::Projection,
-            operation_count,
-            hint,
-        ))
-    }
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct SearchProjectionChangeBatch {
-    pub(in crate::api) graph_delta: SearchProjectionGraphDeltaRequest,
-    pub(in crate::api) relational_primary_key_changes:
-        Vec<skein_storage::RelationalTablePrimaryKeyChanges>,
-}
-
-impl SearchProjectionChangeBatch {
-    pub fn operation_count(&self) -> usize {
-        self.graph_delta.operation_count().saturating_add(
-            self.relational_primary_key_changes
-                .iter()
-                .map(|table| table.primary_keys.len())
-                .fold(0usize, usize::saturating_add),
-        )
-    }
-
-    pub const fn complete_through_commit_epoch(&self) -> Option<u64> {
-        self.graph_delta.complete_through_graph_commit_epoch
-    }
-
-    pub fn graph_delta(&self) -> &SearchProjectionGraphDeltaRequest {
-        &self.graph_delta
-    }
-
-    pub fn relational_primary_key_changes(
-        &self,
-    ) -> &[skein_storage::RelationalTablePrimaryKeyChanges] {
-        &self.relational_primary_key_changes
-    }
-
-    pub fn has_relational_changes(&self) -> bool {
-        !self.relational_primary_key_changes.is_empty()
-    }
-}
-
-#[derive(Debug, Clone, Default, PartialEq)]
-pub struct SearchProjectionRelationalDelta {
-    pub delta: SearchProjectionDelta,
-    pub processed_primary_key_count: usize,
-}
+pub use skein_search::{
+    KnowledgeRetrievalPipelineReport, KnowledgeRetrievalStage, SearchProjectionChangeBatch,
+    SearchProjectionGraphDeltaRequest, SearchProjectionRelationalDelta,
+};
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct BackgroundMaintenanceOptions {
@@ -566,44 +490,6 @@ pub struct KnowledgeRetrievalDiagnostics {
     pub pipeline: KnowledgeRetrievalPipelineReport,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum KnowledgeRetrievalStage {
-    SearchCandidate,
-    MetadataFilter,
-    AuthorizedGraphExpand,
-    Rerank,
-    TopK,
-    CanonicalHydration,
-}
-
-impl KnowledgeRetrievalStage {
-    pub const fn as_str(self) -> &'static str {
-        match self {
-            Self::SearchCandidate => "search_candidate",
-            Self::MetadataFilter => "metadata_filter",
-            Self::AuthorizedGraphExpand => "authorized_graph_expand",
-            Self::Rerank => "rerank",
-            Self::TopK => "top_k",
-            Self::CanonicalHydration => "canonical_hydration",
-        }
-    }
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct KnowledgeRetrievalPipelineReport {
-    pub stages: Vec<KnowledgeRetrievalStage>,
-    pub graph_snapshot_commit_epoch: u64,
-    pub query_memory_budget_bytes: usize,
-    pub peak_tracked_memory_bytes: usize,
-    pub result_payload_budget_bytes: usize,
-    pub result_payload_bytes: usize,
-    pub canonical_identity_filtered_out_count: usize,
-    pub canonical_output_hydrated_node_count: usize,
-    pub canonical_output_hydrated_candidate_count: usize,
-    pub canonical_output_hydration_after_top_k: bool,
-    pub metadata_filter_authorized_graph_expansion: bool,
-}
-
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct KnowledgeFanoutReasonDetail {
     pub code: KnowledgeFanoutReasonCode,
@@ -976,4 +862,26 @@ pub struct KnowledgeEvidence {
     pub text_score: f64,
     pub vector_rank: Option<usize>,
     pub text_rank: Option<usize>,
+}
+
+#[cfg(test)]
+mod owner_tests {
+    use super::{KnowledgeRetrievalPipelineReport, KnowledgeRetrievalStage};
+    use std::any::TypeId;
+
+    #[test]
+    fn pipeline_contract_preserves_search_owner_identity() {
+        assert_eq!(
+            TypeId::of::<KnowledgeRetrievalStage>(),
+            TypeId::of::<skein_search::KnowledgeRetrievalStage>(),
+        );
+        assert_eq!(
+            TypeId::of::<KnowledgeRetrievalPipelineReport>(),
+            TypeId::of::<skein_search::KnowledgeRetrievalPipelineReport>(),
+        );
+        assert_eq!(
+            KnowledgeRetrievalStage::TopK.as_str(),
+            skein_search::KnowledgeRetrievalStage::TopK.as_str(),
+        );
+    }
 }

@@ -1,6 +1,8 @@
 use chrono::{DateTime, NaiveDate, NaiveDateTime};
 #[doc(hidden)]
 pub mod candidate_evidence;
+#[doc(hidden)]
+pub mod candidate_evidence_cli;
 #[cfg(feature = "vector-search")]
 use simsimd::SpatialSimilarity;
 use skein_core::{Catalog, Result, RuntimeCapabilities, RuntimeCapability, SkeinError, Value};
@@ -53,14 +55,19 @@ mod document_decoding_tests;
 mod document_encoding;
 mod generation_cleanup;
 mod identifier;
+#[doc(hidden)]
+pub mod knowledge_retrieval_pipeline;
 mod lexical_projection;
 mod lexical_readiness;
 #[cfg(all(test, feature = "full-text-search"))]
 mod lexical_snapshot_test_gate;
 mod lexical_term_policy;
 mod out_of_core;
+mod projection_delta_contracts;
 #[doc(hidden)]
 pub mod projection_evidence;
+#[doc(hidden)]
+pub mod projection_evidence_cli;
 #[cfg(feature = "vector-search")]
 pub mod rabitq_projection;
 mod range_io;
@@ -151,6 +158,7 @@ pub use generation_cleanup::{
     SEARCH_PROJECTION_CLEANUP_PROTOCOL,
 };
 use generation_cleanup::{SearchProjectionCleanupState, SearchProjectionGenerations};
+pub use knowledge_retrieval_pipeline::{KnowledgeRetrievalPipelineReport, KnowledgeRetrievalStage};
 use lexical_projection::{
     analyzer_digest as lexical_analyzer_digest, documents_digest as lexical_documents_digest,
     LexicalMiniDelta, LexicalProjectionConfig, LexicalProjectionReader, LexicalProjectionWriter,
@@ -167,6 +175,11 @@ pub use out_of_core::{
     SearchOutOfCoreGenerationBuildReport, SearchOutOfCoreGenerationUpdate,
     SearchOutOfCoreGenerationWriter, SearchOutOfCoreHydrationOutput, SearchOutOfCoreMetrics,
     SearchOutOfCoreOutput, SearchOutOfCoreReader,
+};
+// These are internal ownership seams. Hosts continue to use the embedded facade.
+#[doc(hidden)]
+pub use projection_delta_contracts::{
+    SearchProjectionChangeBatch, SearchProjectionGraphDeltaRequest, SearchProjectionRelationalDelta,
 };
 pub use range_io::SearchRangeReadConfig;
 use recall_validation::{sample_positions, VectorRecallValidationAccumulator};
@@ -1544,7 +1557,7 @@ impl SearchIndex {
                 .lexical_delta
                 .lock()
                 .unwrap_or_else(|poisoned| poisoned.into_inner());
-            Arc::make_mut(&mut delta).upsert(
+            delta.upsert(
                 document,
                 self.documents.get(&document.id),
                 &self.analyzer_lexicon,
@@ -1570,7 +1583,7 @@ impl SearchIndex {
                 .lexical_delta
                 .lock()
                 .unwrap_or_else(|poisoned| poisoned.into_inner());
-            Arc::make_mut(&mut delta).delete(
+            delta.delete(
                 document_id,
                 self.documents.get(document_id),
                 &self.analyzer_lexicon,

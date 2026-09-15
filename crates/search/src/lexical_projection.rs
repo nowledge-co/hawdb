@@ -402,7 +402,7 @@ pub(super) struct LexicalMiniDelta {
 
 impl LexicalMiniDelta {
     pub(super) fn upsert(
-        &mut self,
+        self: &mut Arc<Self>,
         document: &SearchDocument,
         previous_document: Option<&SearchDocument>,
         analyzer: &SearchAnalyzerLexicon,
@@ -440,15 +440,17 @@ impl LexicalMiniDelta {
                 config.mini_delta_bytes
             )));
         }
-        self.upserts.remove(&document.id);
-        self.deletes.remove(&document.id);
-        self.resident_bytes = required;
-        self.upserts.insert(document.id.clone(), Arc::new(delta));
+        // A retained query snapshot must not force a map clone for rejected work.
+        let current = Arc::make_mut(self);
+        current.upserts.remove(&document.id);
+        current.deletes.remove(&document.id);
+        current.resident_bytes = required;
+        current.upserts.insert(document.id.clone(), Arc::new(delta));
         Ok(())
     }
 
     pub(super) fn delete(
-        &mut self,
+        self: &mut Arc<Self>,
         document_id: &str,
         previous_document: Option<&SearchDocument>,
         analyzer: &SearchAnalyzerLexicon,
@@ -469,8 +471,11 @@ impl LexicalMiniDelta {
         };
         let removed = existing_upsert.map_or(0, |document| document.total_resident_bytes());
         let Some(base) = base else {
-            self.upserts.remove(document_id);
-            self.resident_bytes = self.resident_bytes.saturating_sub(removed);
+            if existing_upsert.is_some() {
+                let current = Arc::make_mut(self);
+                current.upserts.remove(document_id);
+                current.resident_bytes = current.resident_bytes.saturating_sub(removed);
+            }
             return Ok(true);
         };
         let required = self
@@ -480,9 +485,10 @@ impl LexicalMiniDelta {
         if required > config.mini_delta_bytes.get() {
             return Ok(false);
         }
-        self.upserts.remove(document_id);
-        self.deletes.insert(document_id.to_string(), base);
-        self.resident_bytes = required;
+        let current = Arc::make_mut(self);
+        current.upserts.remove(document_id);
+        current.deletes.insert(document_id.to_string(), base);
+        current.resident_bytes = required;
         Ok(true)
     }
 
@@ -2367,7 +2373,7 @@ mod tests {
         let reader = LexicalProjectionWriter::new(config)
             .write(&root, 1, None, 11, 13, documents.values(), &analyzer)
             .unwrap();
-        let mut delta = LexicalMiniDelta::default();
+        let mut delta = Arc::new(LexicalMiniDelta::default());
         delta
             .upsert(&document("c", "Graph", "query"), None, &analyzer, config)
             .unwrap();
@@ -2398,7 +2404,7 @@ mod tests {
         let first_update = document("a", "Graph", "updated");
         let final_update = document("a", "Vector", "updated");
         let inserted = document("d", "Graph", "query");
-        let mut delta = LexicalMiniDelta::default();
+        let mut delta = Arc::new(LexicalMiniDelta::default());
         delta
             .upsert(&first_update, Some(&documents["a"]), &analyzer, config)
             .unwrap();
@@ -2433,7 +2439,7 @@ mod tests {
         let reader = LexicalProjectionWriter::new(config)
             .write(&root, 1, None, 11, 13, documents.values(), &analyzer)
             .unwrap();
-        let mut delta = LexicalMiniDelta::default();
+        let mut delta = Arc::new(LexicalMiniDelta::default());
         delta
             .upsert(&document("a", "Graph", "query"), None, &analyzer, config)
             .unwrap();

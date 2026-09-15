@@ -43,6 +43,18 @@ fn query_inventory_facade_preserves_owner_types_and_artifacts() {
 }
 
 #[test]
+fn cypher_inventory_coverage_facade_preserves_compat_owner_contracts() {
+    use skein_compat::nowledge_inventory as owner;
+
+    let options: owner::NowledgeCypherMigrationGateJsonOptions = Default::default();
+    let _: crate::NowledgeCypherMigrationGateJsonOptions = options;
+    let _: fn(std::path::PathBuf) -> Result<serde_json::Value> =
+        crate::scan_nowledge_query_inventory_cypher_coverage_to_json;
+    let _: fn(std::path::PathBuf) -> Result<serde_json::Value> =
+        crate::scan_nowledge_query_inventory_cypher_coverage_detail_to_json;
+}
+
+#[test]
 fn inventory_health_facade_preserves_owner_types_and_entrypoints() {
     let report = serde_json::json!({"protocol": "wrong", "readiness": {}});
     let owner: skein_evidence::inventory::StorageRecoveryEvidenceHealth =

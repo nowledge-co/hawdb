@@ -13,6 +13,26 @@ fn binding(value: &str) -> Binding {
 }
 
 #[test]
+fn stream_delivery_selects_consumer_memory_mode() {
+    assert!(matches!(
+        StreamDelivery::Validated.consumer_memory_mode(true),
+        ConsumerMemoryMode::DeferredUntilValidated
+    ));
+    assert!(matches!(
+        StreamDelivery::Validated.consumer_memory_mode(false),
+        ConsumerMemoryMode::ReleasedAfterCall
+    ));
+    assert!(matches!(
+        StreamDelivery::Incremental.consumer_memory_mode(true),
+        ConsumerMemoryMode::ReleasedAfterCall
+    ));
+    assert!(matches!(
+        StreamDelivery::Incremental.consumer_memory_mode(false),
+        ConsumerMemoryMode::ReleasedAfterCall
+    ));
+}
+
+#[test]
 fn released_consumer_memory_is_not_retained_between_rows() {
     let memory = ExecutionMemoryConfig::default();
     let ledger = QueryMemoryLedger::new(memory.query_memory_bytes);

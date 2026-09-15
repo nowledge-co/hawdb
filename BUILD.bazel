@@ -7,12 +7,15 @@ package(default_visibility = ["//visibility:public"])
 
 _CARGO_WORKSPACE_PACKAGES = [
     "crates/analytics",
+    "crates/bootstrap",
+    "crates/artifact",
     "crates/cgroup",
     "crates/compat",
     "crates/core",
     "crates/cypher",
     "crates/ddl",
     "crates/evidence",
+    "crates/explain",
     "crates/executor",
     "crates/expression",
     "crates/fuzz",
@@ -23,6 +26,7 @@ _CARGO_WORKSPACE_PACKAGES = [
     "crates/qos",
     "crates/qualification",
     "crates/query",
+    "crates/query-policy",
     "crates/readiness",
     "crates/relational",
     "crates/route-ownership",
@@ -89,7 +93,6 @@ _SKEIN_SRCS = glob(
 ) + [
     "//crates/compat:test_support",
     "//crates/executor:batch_dispatch_test_fixtures",
-    "//crates/search:candidate_probe_test_fixtures",
 ]
 
 _SKEIN_COMMON_DEPS = [
@@ -100,11 +103,13 @@ _SKEIN_COMMON_DEPS = [
     "@crate_index//:unicode-width",
     "@crate_index//:zstd",
     "//crates/analytics:skein_analytics",
+    "//crates/artifact:skein_artifact",
     "//crates/compat:skein_compat",
     "//crates/core:skein_core",
     "//crates/cypher:skein_cypher",
     "//crates/ddl:skein_ddl",
     "//crates/evidence:skein_evidence",
+    "//crates/explain:skein_explain",
     "//crates/executor:skein_executor",
     "//crates/expression:skein_expression",
     "//crates/integrity:skein_integrity",
@@ -113,6 +118,7 @@ _SKEIN_COMMON_DEPS = [
     "//crates/plan-cache:skein_plan_cache",
     "//crates/qos:skein_qos",
     "//crates/query:skein_query",
+    "//crates/query-policy:skein_query_policy",
     "//crates/readiness:skein_readiness",
     "//crates/relational:skein_relational",
     "//crates/route-ownership:skein_route_ownership",
@@ -121,9 +127,15 @@ _SKEIN_COMMON_DEPS = [
     "//crates/telemetry:skein_telemetry",
 ]
 
-_SKEIN_FULL_DEPS = _SKEIN_COMMON_DEPS + ["//crates/search:skein_search"]
+_SKEIN_FULL_DEPS = _SKEIN_COMMON_DEPS + [
+    "//crates/bootstrap:skein_bootstrap",
+    "//crates/search:skein_search",
+]
 
-_SKEIN_MINIMAL_DEPS = _SKEIN_COMMON_DEPS + ["//crates/search:skein_search_minimal"]
+_SKEIN_MINIMAL_DEPS = _SKEIN_COMMON_DEPS + [
+    "//crates/bootstrap:skein_bootstrap_minimal",
+    "//crates/search:skein_search_minimal",
+]
 
 # crate_universe exposes optional normal dependencies to every Bazel target.
 # Keep the native vector dependency owned by targets that enable vector-search.
@@ -393,6 +405,7 @@ rust_test(
     ),
     # Unlike `crate = ":skein"`, this selects the ACL-enabled dependency graph.
     deps = _SKEIN_COMMON_DEPS + _SKEIN_VECTOR_DEPS + all_crate_deps(normal_dev = True) + [
+        "//crates/bootstrap:skein_bootstrap_acl",
         "//crates/search:skein_search_acl",
     ],
     proc_macro_deps = all_crate_deps(proc_macro = True, proc_macro_dev = True),
@@ -403,6 +416,7 @@ _SKEIN_CLI_SRCS = ["src/main.rs"] + glob(["src/cli/**/*.rs"])
 _SKEIN_CLI_DEPS = all_crate_deps(normal = True) + [
     ":skein",
     "//crates/core:skein_core",
+    "//crates/evidence:skein_evidence",
     "//crates/integrity:skein_integrity",
     "//crates/storage:skein_storage",
 ]

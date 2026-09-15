@@ -1,6 +1,99 @@
 use super::*;
 use crate::NodeId;
 
+fn source_candidate_request() -> SourceCandidateScanRequest {
+    SourceCandidateScanRequest {
+        predicate: ScanPredicate::True,
+        after: None,
+        limit: 1,
+        max_payload_bytes: 1024,
+        property_names: vec!["source_type".to_string()],
+    }
+}
+
+fn source_candidate_node(id: u64, created_at: i64, source_id: &str) -> NodeRecord {
+    NodeRecord {
+        id: NodeId(id),
+        labels: BTreeSet::new(),
+        properties: BTreeMap::from([
+            ("id".to_string(), Value::String(source_id.to_string())),
+            ("created_at".to_string(), Value::Int(created_at)),
+            ("source_type".to_string(), Value::String("file".to_string())),
+            ("excluded".to_string(), Value::String("value".to_string())),
+        ]),
+    }
+}
+
+#[test]
+fn source_candidate_page_preserves_cursor_order_and_projection_bounds() {
+    let request = source_candidate_request();
+    let nodes = vec![
+        source_candidate_node(11, 10, "source-old"),
+        source_candidate_node(12, 20, "source-new"),
+    ];
+
+    let first = render_source_candidate_page(
+        7,
+        nodes.clone(),
+        &request,
+        SourceCandidateScanOrigin::Sidecar {
+            graph_epoch: 7,
+            skipped_segment_count: 0,
+        },
+        None,
+    )
+    .unwrap();
+
+    assert_eq!(first.rows.len(), 1);
+    assert_eq!(first.rows[0].node_id, 12);
+    assert_eq!(first.rows[0].source_id.as_deref(), Some("source-new"));
+    assert_eq!(
+        first.rows[0].properties,
+        BTreeMap::from([("source_type".to_string(), Value::String("file".to_string()))])
+    );
+    assert_eq!(
+        first.next_cursor,
+        Some(SourceCandidateCursor {
+            created_at: Some(Value::Int(20)),
+            node_id: 12,
+        })
+    );
+
+    let second = render_source_candidate_page(
+        7,
+        nodes,
+        &SourceCandidateScanRequest {
+            after: first.next_cursor,
+            ..request
+        },
+        SourceCandidateScanOrigin::CanonicalFallback {
+            reason: ScanSegmentFallback::NoManifest,
+        },
+        None,
+    )
+    .unwrap();
+    assert_eq!(second.rows.len(), 1);
+    assert_eq!(second.rows[0].node_id, 11);
+    assert!(second.next_cursor.is_none());
+}
+
+#[test]
+fn source_candidate_request_keeps_resource_bounds() {
+    let mut request = source_candidate_request();
+    request.limit = 0;
+    assert!(validate_source_candidate_scan_request(&request)
+        .unwrap_err()
+        .to_string()
+        .contains("positive limit"));
+
+    request = source_candidate_request();
+    request.max_payload_bytes = 0;
+    assert!(validate_source_candidate_scan_request(&request)
+        .unwrap_err()
+        .to_string()
+        .contains("positive payload budget"));
+}
+
 #[test]
 fn historical_decoder_tolerance_is_not_tightened() {
     let decoded = decode_payload(&reference::envelope(

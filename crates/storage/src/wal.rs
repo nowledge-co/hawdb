@@ -2,8 +2,17 @@
 
 pub mod binary;
 pub mod frame;
+pub mod group_commit;
 pub use crate::wire;
 use crate::{NodeId, RelId};
+pub use group_commit::{
+    WalGroupCommitActivation, WalGroupCommitAdaptiveColdStartEvidence,
+    WalGroupCommitAdaptivePolicyEvidence, WalGroupCommitAdaptiveSteadyStateEvidence,
+    WalGroupCommitConfig, WalGroupCommitDelayPolicy, WalGroupCommitEvidence,
+    WalGroupCommitSnapshot, WalGroupCommitTailLatencyEvidence, WalGroupCommitWaitDecision,
+    DEFAULT_WAL_GROUP_COMMIT_MAX_BYTES, DEFAULT_WAL_GROUP_COMMIT_MAX_DELAY,
+    DEFAULT_WAL_GROUP_COMMIT_MAX_ENTRIES,
+};
 use skein_core::Value;
 use skein_core::{PropertyType, SchemaObjectState, TableKind};
 use skein_core::{Result, SkeinError};

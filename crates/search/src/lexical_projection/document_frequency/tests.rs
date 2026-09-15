@@ -339,6 +339,79 @@ fn frequency_run_path_retains_its_reservation_until_cleanup_after_pool_drop() {
 }
 
 #[test]
+fn spilled_postings_enforce_the_logical_budget_and_clean_partial_output() {
+    use skein_core::RuntimeMemoryReservation;
+
+    let id = "source";
+    // The logical posting unit includes 32 bytes besides the term and ID.
+    let long_term = "z".repeat(262);
+    for (limit, accepted) in [(300, true), (299, false)] {
+        let root = TestRoot::new();
+        let task = RuntimeTaskContext::default()
+            .with_memory_reservation(RuntimeMemoryReservation::new(256 * 1024, 0));
+        let memory = BuildMemory::new(&task).unwrap();
+        let config = LexicalProjectionConfig {
+            build_memory_bytes: NonZeroU64::new(limit).unwrap(),
+            ..Default::default()
+        };
+        let mut pool = SpillRuns::with_context(&root.0, 1, config, memory.clone(), task).unwrap();
+        pool.prepare(long_term.len(), id.len()).unwrap();
+        let records = [("alpha", 2), (long_term.as_str(), 3)].map(|(text, weight)| {
+            let mut summary = PartialFieldFrequency::default();
+            summary.push(1, TokenOccurrence::Repeated, weight).unwrap();
+            Ok(FrequencyRecord {
+                term: Term::copy(text, Some(&memory)).unwrap(),
+                field: 0,
+                summary,
+            })
+        });
+        let run = write_run(records, &mut pool, &mut FileSpillIo).unwrap();
+        assert!(run.progress.is_some());
+        assert!(run.task.is_some());
+        let input_path = run.guard.path.clone();
+        let input_bytes = pool.bytes;
+        assert_eq!(root.entries(), 1);
+
+        let result = spill_postings(run, id, 5, &mut pool);
+        assert_eq!(result.is_ok(), accepted, "limit={limit}: {result:?}");
+        assert_eq!(pool.sequence, 2, "the output run must have been created");
+        assert!(!input_path.exists());
+        if accepted {
+            result.unwrap();
+            assert_eq!(pool.paths.len(), 1);
+            assert_eq!(root.entries(), 1);
+            assert_eq!(pool.max_posting_bytes, limit);
+            assert!(pool.bytes > input_bytes);
+            let mut reader = RunReader::open_with_progress(
+                &pool.paths[0].path,
+                config,
+                pool.progress.as_ref(),
+                pool.task(),
+            )
+            .unwrap();
+            for (term, frequency) in [("alpha", 2), (long_term.as_str(), 3)] {
+                let posting = reader.next(limit).unwrap().unwrap();
+                assert_eq!(posting.term.as_str(), term);
+                assert_eq!(posting.document_id, id);
+                assert_eq!(posting.term_frequency, frequency);
+                assert_eq!(posting.document_len, 5);
+            }
+            assert!(reader.next(limit).unwrap().is_none());
+        } else {
+            assert!(matches!(result, Err(SkeinError::Storage(message))
+                if message == "one lexical posting exceeds the build memory budget"));
+            assert!(pool.paths.is_empty());
+            assert_eq!(root.entries(), 0);
+            assert_eq!(pool.bytes, input_bytes);
+            assert_eq!(pool.max_posting_bytes, 0);
+        }
+        drop(pool);
+        assert_eq!(root.entries(), 0);
+        assert_eq!(memory.ledger.snapshot().used_bytes, 0);
+    }
+}
+
+#[test]
 fn native_spill_path_scratch_is_admitted_before_create_and_retained_through_cleanup() {
     use crate::build_memory::reserved::{native_path, ReservedMemory};
     use skein_core::RuntimeMemoryReservation;

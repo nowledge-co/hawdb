@@ -1,5 +1,7 @@
 use super::*;
 
+mod admission;
+
 struct Fixture {
     root: PathBuf,
     documents: BTreeMap<String, SearchDocument>,
@@ -121,12 +123,12 @@ fn retained_delta_snapshots_survive_mutations_and_budget_rejection() {
     ] {
         retained.push((Arc::clone(&active), documents.clone()));
         if let Some(next) = next {
-            Arc::make_mut(&mut active)
+            active
                 .upsert(&next, documents.get("a"), &fixture.analyzer, config)
                 .unwrap();
             documents.insert("a".into(), next);
         } else {
-            assert!(Arc::make_mut(&mut active)
+            assert!(active
                 .delete("a", documents.get("a"), &fixture.analyzer, config)
                 .unwrap());
             documents.remove("a");
@@ -142,21 +144,21 @@ fn retained_delta_snapshots_survive_mutations_and_budget_rejection() {
     };
     let next = documents["a"].clone();
     retained.push((Arc::clone(&active), documents.clone()));
-    Arc::make_mut(&mut active)
+    active
         .upsert(&next, None, &fixture.analyzer, exact)
         .unwrap();
     let short = LexicalProjectionConfig {
         mini_delta_bytes: NonZeroU64::new(active.resident_bytes - 1).unwrap(),
         ..config
     };
-    assert!(Arc::make_mut(&mut active)
+    assert!(active
         .upsert(&next, None, &fixture.analyzer, short)
         .is_err());
-    assert!(!Arc::make_mut(&mut active)
+    assert!(!active
         .delete("b", documents.get("b"), &fixture.analyzer, short)
         .unwrap());
     let invalid = document("a", "graph", &"x".repeat(4097));
-    assert!(Arc::make_mut(&mut active)
+    assert!(active
         .upsert(&invalid, None, &fixture.analyzer, config)
         .is_err());
     assert_delta_snapshot(&fixture, &active, &documents);
@@ -186,14 +188,14 @@ fn mini_delta_snapshot_lifecycle_campaign() {
             }
             match (random >> 8) % 4 {
                 0 => {
-                    assert!(Arc::make_mut(&mut active)
+                    assert!(active
                         .delete(id, documents.get(id), &fixture.analyzer, config)
                         .unwrap());
                     documents.remove(id);
                 }
                 1 => {
                     let invalid = document(id, "graph", &"x".repeat(4097));
-                    assert!(Arc::make_mut(&mut active)
+                    assert!(active
                         .upsert(&invalid, documents.get(id), &fixture.analyzer, config)
                         .is_err());
                 }
@@ -205,7 +207,7 @@ fn mini_delta_snapshot_lifecycle_campaign() {
                         "\u{77e5}\u{8bc6}\u{56fe}\u{8c31}",
                     ][(random >> 16) as usize % 4];
                     let next = document(id, if step % 2 == 0 { "graph" } else { "" }, body);
-                    Arc::make_mut(&mut active)
+                    active
                         .upsert(&next, documents.get(id), &fixture.analyzer, config)
                         .unwrap();
                     documents.insert(id.into(), next);
@@ -557,7 +559,7 @@ fn block_read_admission_accepts_exact_limit_and_rejects_one_byte_less() {
 fn mini_delta_budget_rejection_is_atomic_for_insert_replace_and_delete() {
     let fixture = Fixture::new("delta-admission");
     let config = LexicalProjectionConfig::default();
-    let mut delta = LexicalMiniDelta::default();
+    let mut delta = Arc::new(LexicalMiniDelta::default());
     let inserted = document("c", "graph", "index");
     delta
         .upsert(&inserted, None, &fixture.analyzer, config)
