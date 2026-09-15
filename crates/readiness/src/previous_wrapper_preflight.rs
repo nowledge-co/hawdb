@@ -19,8 +19,7 @@ use std::path::Path;
 
 pub const NOWLEDGE_PREVIOUS_WRAPPER_PREFLIGHT_PROTOCOL: &str =
     "skein-nowledge-previous-wrapper-preflight-check";
-pub const NOWLEDGE_MEM_BOUNDED_READ_EVIDENCE_PROTOCOL: &str =
-    "skein-nowledge-mem-bounded-read-evidence-v2";
+pub use crate::bounded_read_evidence::NOWLEDGE_MEM_BOUNDED_READ_EVIDENCE_PROTOCOL;
 pub const NOWLEDGE_MEM_CUTOVER_CONTROLS_PROTOCOL: &str = "skein-nowledge-mem-cutover-controls-v1";
 pub const NOWLEDGE_MEM_LIBRARY_READINESS_PROTOCOL: &str = "skein-nowledge-mem-library-readiness-v1";
 pub const NOWLEDGE_MEM_OPERATIONS_READINESS_PROTOCOL: &str =
