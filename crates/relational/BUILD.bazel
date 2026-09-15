@@ -35,6 +35,7 @@ rust_library(
         "//crates/executor:skein_executor",
         "//crates/sql:skein_sql",
         "//crates/expression:skein_expression",
+        "//crates/integrity:skein_integrity",
         "//crates/optimizer:skein_optimizer",
         "//crates/storage:skein_storage",
     ],

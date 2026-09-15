@@ -13,7 +13,7 @@ use skein_route_ownership::graph::{
 use std::collections::{BTreeMap, BTreeSet};
 
 pub const NMEM_GRAPH_ROUTE_READINESS_PROTOCOL: &str = "nmem-graph-route-readiness-v1";
-pub const NMEM_GRAPH_ROUTE_EVIDENCE_PROTOCOL: &str = "nmem-graph-route-evidence-v1";
+pub use super::graph_route_catalog::NMEM_GRAPH_ROUTE_EVIDENCE_PROTOCOL;
 const ROUTE_PARITY_EVIDENCE_SOURCE: &str = "route_parity_evidence";
 const ROUTE_PARITY_FULL_MATCH_PER_MILLION: u64 = 1_000_000;
 

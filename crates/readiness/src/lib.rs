@@ -2,7 +2,16 @@
 pub mod evidence_json;
 
 #[doc(hidden)]
+pub mod bounded_read_evidence;
+
+#[doc(hidden)]
+pub mod bounded_read_evidence_cli;
+
+#[doc(hidden)]
 pub mod graph_summary;
+
+#[doc(hidden)]
+pub mod graph_route_catalog;
 
 #[doc(hidden)]
 pub mod integration_bundle;

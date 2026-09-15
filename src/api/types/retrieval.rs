@@ -74,86 +74,9 @@ pub fn nowledge_deep_search_graph_seed_limit(page_end: usize) -> usize {
         )
 }
 
-#[derive(Debug, Clone, Default, PartialEq, Eq)]
-pub struct SearchProjectionGraphDeltaRequest {
-    /// Live graph nodes changed in the selected commits. Nodes without a
-    /// direct search-projection kind remain present so a host batch hydrator
-    /// can resolve application-owned projection dependencies.
-    pub upsert_node_ids: Vec<u64>,
-    pub delete_document_ids: Vec<String>,
-    pub max_operations: Option<usize>,
-    pub complete_through_graph_commit_epoch: Option<u64>,
-}
-
-impl SearchProjectionGraphDeltaRequest {
-    pub fn operation_count(&self) -> usize {
-        self.upsert_node_ids.len() + self.delete_document_ids.len()
-    }
-
-    pub(in crate::api) fn background_work_request(&self) -> WorkRequest {
-        WorkRequest::background(WorkClass::Projection, self.operation_count())
-    }
-
-    pub fn background_work_plan(&self, hint: BackgroundWorkHint) -> Option<BackgroundWorkPlan> {
-        let operation_count = self.operation_count();
-        if operation_count == 0 {
-            return None;
-        }
-        if self
-            .max_operations
-            .is_some_and(|limit| operation_count > limit)
-        {
-            return None;
-        }
-        Some(BackgroundWorkPlan::background(
-            WorkClass::Projection,
-            operation_count,
-            hint,
-        ))
-    }
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct SearchProjectionChangeBatch {
-    pub(in crate::api) graph_delta: SearchProjectionGraphDeltaRequest,
-    pub(in crate::api) relational_primary_key_changes:
-        Vec<skein_storage::RelationalTablePrimaryKeyChanges>,
-}
-
-impl SearchProjectionChangeBatch {
-    pub fn operation_count(&self) -> usize {
-        self.graph_delta.operation_count().saturating_add(
-            self.relational_primary_key_changes
-                .iter()
-                .map(|table| table.primary_keys.len())
-                .fold(0usize, usize::saturating_add),
-        )
-    }
-
-    pub const fn complete_through_commit_epoch(&self) -> Option<u64> {
-        self.graph_delta.complete_through_graph_commit_epoch
-    }
-
-    pub fn graph_delta(&self) -> &SearchProjectionGraphDeltaRequest {
-        &self.graph_delta
-    }
-
-    pub fn relational_primary_key_changes(
-        &self,
-    ) -> &[skein_storage::RelationalTablePrimaryKeyChanges] {
-        &self.relational_primary_key_changes
-    }
-
-    pub fn has_relational_changes(&self) -> bool {
-        !self.relational_primary_key_changes.is_empty()
-    }
-}
-
-#[derive(Debug, Clone, Default, PartialEq)]
-pub struct SearchProjectionRelationalDelta {
-    pub delta: SearchProjectionDelta,
-    pub processed_primary_key_count: usize,
-}
+pub use skein_search::{
+    SearchProjectionChangeBatch, SearchProjectionGraphDeltaRequest, SearchProjectionRelationalDelta,
+};
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct BackgroundMaintenanceOptions {

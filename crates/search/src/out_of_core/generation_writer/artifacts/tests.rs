@@ -66,3 +66,23 @@ fn partial_segment_io_failure_poisoning_prevents_finish_and_releases_ownership()
     assert_eq!(memory.ledger.snapshot().used_bytes, 0);
     fs::remove_dir_all(root).unwrap();
 }
+
+#[test]
+fn remove_on_drop_guard_removes_the_file_unless_disarmed() {
+    let root = test_dir("remove_on_drop_guard");
+    fs::create_dir(&root).unwrap();
+
+    let armed_path = root.join("armed.tmp");
+    fs::write(&armed_path, b"armed").unwrap();
+    drop(RemoveOnDrop::new(&armed_path));
+    assert!(!armed_path.exists());
+
+    let disarmed_path = root.join("disarmed.tmp");
+    fs::write(&disarmed_path, b"disarmed").unwrap();
+    let mut guard = RemoveOnDrop::new(&disarmed_path);
+    guard.disarm();
+    drop(guard);
+    assert!(disarmed_path.exists());
+
+    fs::remove_dir_all(root).unwrap();
+}
