@@ -448,10 +448,15 @@ pub use search_route_ownership::{
 };
 #[doc(hidden)]
 pub use skein_bootstrap::{
-    endpoint_violations_json, skein_lightning_bootstrap_bundle_json,
+    endpoint_violations_json, skein_lightning_artifact_summary,
+    skein_lightning_bootstrap_bundle_json,
     skein_lightning_bootstrap_bundle_json_with_optional_storage_recovery,
     skein_lightning_bootstrap_manifest_json, skein_lightning_graph_stream_validation_json,
     skein_lightning_relational_stream_validation_json, stable_identity_audit_json,
+    stage_skein_lightning_bootstrap_export,
+    stage_skein_lightning_bootstrap_export_with_optional_storage_recovery,
+    sync_bootstrap_directory, write_bootstrap_atomic_file,
+    SKEIN_LIGHTNING_STAGING_CATALOG_PROTOCOL_VERSION,
 };
 pub use skein_core::LogicalType;
 pub use skein_core::Uuid;

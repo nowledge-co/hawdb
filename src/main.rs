@@ -24,6 +24,8 @@ use skein::search_projection_evidence::{
     nowledge_search_projection_probe_contract_usage, run_nowledge_search_projection_evidence,
     run_nowledge_search_projection_shadow_evidence, run_skein_search_projection_probe,
 };
+#[cfg(test)]
+use skein::stage_skein_lightning_bootstrap_export;
 use skein::storage_recovery_evidence::run_nowledge_storage_recovery_evidence;
 use skein::{
     background_maintenance_evidence_health_from_bundle, external_shadow_ready_missing_capabilities,
@@ -43,9 +45,13 @@ use skein::{
     SKEIN_LIGHTNING_BOOTSTRAP_PROTOCOL_VERSION,
 };
 use skein::{
-    endpoint_violations_json, skein_lightning_bootstrap_bundle_json_with_optional_storage_recovery,
+    endpoint_violations_json, skein_lightning_artifact_summary,
+    skein_lightning_bootstrap_bundle_json_with_optional_storage_recovery,
     skein_lightning_bootstrap_manifest_json, skein_lightning_graph_stream_validation_json,
     skein_lightning_relational_stream_validation_json, stable_identity_audit_json,
+    stage_skein_lightning_bootstrap_export_with_optional_storage_recovery,
+    sync_bootstrap_directory, write_bootstrap_atomic_file,
+    SKEIN_LIGHTNING_STAGING_CATALOG_PROTOCOL_VERSION,
 };
 use skein::{
     nowledge_memory_core_fixture, run_compatibility_fixture_with_shadow,
@@ -54,14 +60,12 @@ use skein::{
 };
 use skein_evidence::fixture_contract_check::run_nowledge_fixture_contract_command_check;
 use skein_integrity::checksum_u64;
-use skein_storage::{durable_replace_file, sync_directory as sync_storage_directory};
 use std::collections::{BTreeMap, BTreeSet};
-use std::fs::{self, File};
+use std::fs;
 use std::io::Write;
 use std::path::Path;
 use std::time::Duration;
 
-const SKEIN_LIGHTNING_STAGING_CATALOG_PROTOCOL_VERSION: u64 = 1;
 const SKEIN_ENABLE_COMPATIBILITY_TOOLS_ENV: &str = "SKEIN_ENABLE_COMPATIBILITY_TOOLS";
 
 fn main() -> Result<()> {
@@ -2760,14 +2764,6 @@ fn skein_lightning_bootstrap_bundle_json_with_storage_recovery(
     )
 }
 
-#[cfg(test)]
-fn stage_skein_lightning_bootstrap_export(
-    export: &skein::SkeinLightningBootstrapExport,
-    staging_dir: impl AsRef<Path>,
-) -> Result<serde_json::Value> {
-    stage_skein_lightning_bootstrap_export_with_optional_storage_recovery(export, staging_dir, None)
-}
-
 fn stage_skein_lightning_bootstrap_export_with_storage_recovery(
     export: &skein::SkeinLightningBootstrapExport,
     staging_dir: impl AsRef<Path>,
@@ -2780,89 +2776,6 @@ fn stage_skein_lightning_bootstrap_export_with_storage_recovery(
         staging_dir,
         Some(storage_recovery_json),
     )
-}
-
-fn stage_skein_lightning_bootstrap_export_with_optional_storage_recovery(
-    export: &skein::SkeinLightningBootstrapExport,
-    staging_dir: impl AsRef<Path>,
-    storage_recovery: Option<serde_json::Value>,
-) -> Result<serde_json::Value> {
-    let staging_dir = staging_dir.as_ref();
-    fs::create_dir_all(staging_dir)?;
-    let bundle = skein_lightning_bootstrap_bundle_json_with_optional_storage_recovery(
-        export,
-        storage_recovery,
-    );
-    let manifest = skein_lightning_bootstrap_manifest_json(&export.manifest);
-    let graph_stream_validation = export
-        .graph_stream
-        .validate_against_manifest(&export.manifest);
-    let relational_stream_validation = export
-        .relational_stream
-        .validate_against_manifest(&export.manifest);
-    let stage_state = if bundle
-        .get("export_gate")
-        .and_then(|gate| gate.get("decision"))
-        .and_then(serde_json::Value::as_str)
-        == Some("ready")
-    {
-        "READY"
-    } else {
-        "QUARANTINED"
-    };
-    let manifest_bytes = serde_json::to_vec_pretty(&manifest).unwrap();
-    let graph_stream_bytes = export.graph_stream.encoded.as_bytes();
-    let relational_stream_bytes = export.relational_stream.encoded.as_slice();
-    let bundle_bytes = serde_json::to_vec_pretty(&bundle).unwrap();
-    let manifest_artifact = write_staging_artifact(
-        staging_dir,
-        "skein_lightning_bootstrap_manifest.json",
-        &manifest_bytes,
-    )?;
-    let graph_stream_artifact = write_staging_artifact(
-        staging_dir,
-        "skein_lightning_graph_stream.txt",
-        graph_stream_bytes,
-    )?;
-    let relational_stream_artifact = write_staging_artifact(
-        staging_dir,
-        "skein_lightning_relational_stream.bin",
-        relational_stream_bytes,
-    )?;
-    let bundle_artifact = write_staging_artifact(
-        staging_dir,
-        "skein_lightning_bootstrap_bundle.json",
-        &bundle_bytes,
-    )?;
-    let artifacts = vec![
-        manifest_artifact,
-        graph_stream_artifact,
-        relational_stream_artifact,
-        bundle_artifact,
-    ];
-    let artifact_summary = skein_lightning_artifact_summary(&artifacts, "byte_len");
-    let catalog = serde_json::json!({
-        "protocol": "skein-lightning-staging-catalog",
-        "protocol_version": SKEIN_LIGHTNING_STAGING_CATALOG_PROTOCOL_VERSION,
-        "stage_state": stage_state,
-        "database_commit_epoch": export.manifest.database_commit_epoch,
-        "graph_commit_epoch": export.manifest.graph_commit_epoch,
-        "logical_checksum": export.manifest.logical_checksum,
-        "schema_checksum": export.manifest.schema_checksum,
-        "export_gate": bundle["export_gate"].clone(),
-        "artifact_summary": artifact_summary,
-        "artifacts": artifacts,
-        "graph_stream_validation": skein_lightning_graph_stream_validation_json(&graph_stream_validation),
-        "relational_stream_validation": skein_lightning_relational_stream_validation_json(&relational_stream_validation),
-    });
-    let catalog_bytes = serde_json::to_vec_pretty(&catalog).unwrap();
-    write_staging_artifact(
-        staging_dir,
-        "skein_lightning_staging_catalog.json",
-        &catalog_bytes,
-    )?;
-    sync_directory(staging_dir)?;
-    Ok(catalog)
 }
 
 fn verify_skein_lightning_staging_catalog(
@@ -3876,40 +3789,6 @@ fn skein_lightning_staging_gc_candidates(
     Ok(candidates)
 }
 
-fn skein_lightning_artifact_summary(
-    artifacts: &[serde_json::Value],
-    byte_len_field: &str,
-) -> serde_json::Value {
-    let mut kind_counts = BTreeMap::new();
-    let mut total_byte_len = 0u64;
-    let mut measured_object_count = 0usize;
-    for artifact in artifacts {
-        if let Some(kind) = artifact.get("kind").and_then(serde_json::Value::as_str) {
-            *kind_counts.entry(kind.to_string()).or_insert(0usize) += 1;
-        }
-        if let Some(byte_len) = artifact
-            .get(byte_len_field)
-            .and_then(serde_json::Value::as_u64)
-        {
-            total_byte_len = total_byte_len.saturating_add(byte_len);
-            measured_object_count += 1;
-        }
-    }
-    let average_byte_len = if measured_object_count == 0 {
-        serde_json::Value::Null
-    } else {
-        serde_json::json!(total_byte_len as f64 / measured_object_count as f64)
-    };
-    serde_json::json!({
-        "object_count": artifacts.len(),
-        "measured_object_count": measured_object_count,
-        "missing_byte_len_count": artifacts.len().saturating_sub(measured_object_count),
-        "total_byte_len": total_byte_len,
-        "average_byte_len": average_byte_len,
-        "kind_counts": kind_counts,
-    })
-}
-
 fn skein_lightning_sum_artifact_bytes(
     artifacts: &[serde_json::Value],
     predicate: impl Fn(&serde_json::Value) -> bool,
@@ -4747,47 +4626,8 @@ fn read_json_file(path: &Path) -> Result<serde_json::Value> {
         .map_err(|_| SkeinError::Execution("invalid JSON file: invalid_json".to_string()))
 }
 
-fn write_staging_artifact(
-    staging_dir: &Path,
-    file_name: &str,
-    bytes: &[u8],
-) -> Result<serde_json::Value> {
-    let path = staging_dir.join(file_name);
-    let tmp_path = staging_dir.join(format!("{file_name}.tmp"));
-    write_atomic_path(&path, &tmp_path, bytes)?;
-    Ok(serde_json::json!({
-        "kind": skein_lightning_artifact_kind(file_name),
-        "path": file_name,
-        "byte_len": bytes.len(),
-        "checksum": checksum_bytes(bytes),
-    }))
-}
-
 fn write_atomic_file(dir: &Path, file_name: &str, bytes: &[u8]) -> Result<()> {
-    let path = dir.join(file_name);
-    let tmp_path = dir.join(format!("{file_name}.tmp"));
-    write_atomic_path(&path, &tmp_path, bytes)
-}
-
-fn write_atomic_path(path: &Path, tmp_path: &Path, bytes: &[u8]) -> Result<()> {
-    {
-        let mut file = File::create(tmp_path)?;
-        file.write_all(bytes)?;
-        file.sync_all()?;
-    }
-    durable_replace_file(tmp_path, path)?;
-    Ok(())
-}
-
-fn skein_lightning_artifact_kind(file_name: &str) -> &'static str {
-    match file_name {
-        "skein_lightning_bootstrap_manifest.json" => "manifest",
-        "skein_lightning_graph_stream.txt" => "graph_stream",
-        "skein_lightning_relational_stream.bin" => "relational_stream",
-        "skein_lightning_bootstrap_bundle.json" => "bundle",
-        "skein_lightning_staging_catalog.json" => "staging_catalog",
-        _ => "unknown",
-    }
+    write_bootstrap_atomic_file(dir, file_name, bytes)
 }
 
 fn checksum_bytes(bytes: &[u8]) -> u64 {
@@ -4795,8 +4635,7 @@ fn checksum_bytes(bytes: &[u8]) -> u64 {
 }
 
 fn sync_directory(path: &Path) -> Result<()> {
-    sync_storage_directory(path)?;
-    Ok(())
+    sync_bootstrap_directory(path)
 }
 
 fn explain_output_json(
