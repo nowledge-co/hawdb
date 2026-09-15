@@ -5,7 +5,8 @@ extends the generation resource ledger through source-owned analysis. It builds
 on [the opaque analyzer contract](SEARCH_ANALYZER_WORKSPACE.md) and
 [the generation ownership foundation](SEARCH_BUILD_RESOURCE_OWNERSHIP.md).
 Public query signatures, token order, field weights, term policies and persisted
-encoding remain unchanged. The approved context constructor pair stays private.
+encoding remain unchanged. The approved pair now exposes the integrated
+[context contract](SEARCH_GENERATION_CONTEXT.md).
 
 ## Payload and collection owners
 
@@ -93,15 +94,13 @@ The subsequent [spill ownership stage](SEARCH_SPILL_OWNERSHIP.md) covers the
 physical spill handoffs below and tightens final shared-control-block destruction.
 The following paragraph records this token stage's original boundary.
 
-This stage does not complete frequency/posting spill buffers, path registries,
-decoded merge heads, simultaneous readers or reserved merge progress on the
-shared ledger. Spill readers still reconstruct untracked terms under existing
-logical limits. A constrained root can reject resident analysis before its
-logical spill threshold; adaptive spill on shared pressure requires the next
-stage's progress reservation. No successful bounded-progress claim follows from
-the current fail-closed admission.
+Frequency/posting spill buffers, native paths, merge heads/readers and reserved
+progress now retain admission; see [the spill contract](SEARCH_SPILL_OWNERSHIP.md).
+That guarantee applies to the admitted working set and merge topology. A new
+maximum term or additional resident state can still exhaust the root before
+logical spilling; general shared-pressure adaptation remains separate.
 
-Outer publication, delta hydration and the public context API remain subsequent
-work. Shared host policy, general large-input support and removal of the 4 MiB
+Outer publication and delta hydration now use the integrated
+[context facade](SEARCH_GENERATION_CONTEXT.md). Shared host policy, general large-input support and removal of the 4 MiB
 source guard remain unqualified. The original #206 corpus acceptance criteria
 and approved validation-only budgets are unchanged.

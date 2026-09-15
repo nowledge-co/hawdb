@@ -4,7 +4,8 @@ This private stage of [#392](https://github.com/nowledge-co/skein/issues/392)
 extends [token ownership](SEARCH_TOKEN_OWNERSHIP.md) through document-frequency
 runs and corpus posting merges. Query APIs, token and field semantics, logical
 source/term/token/spill limits, and persisted artifact encodings retain their
-existing contracts. The approved public context constructors remain private.
+existing contracts. The approved pair is exposed through the integrated
+[context facade](SEARCH_GENERATION_CONTEXT.md).
 
 ## Owners and admission
 
@@ -99,6 +100,6 @@ This establishes progress for an admitted working set and merge topology. A larg
 term, additional retained metadata or a resident map can still exhaust the root
 before the logical spill threshold. Shared-pressure adaptive spilling, policy
 feedback and process headroom remain later work. Outer discovery/publication,
-artifact path conversion, delta hydration and the complete public context API
-are also pending. This stage does not remove the 4 MiB source guard, qualify
+artifact paths and delta hydration now share the integrated
+[context contract](SEARCH_GENERATION_CONTEXT.md). This does not remove the 4 MiB source guard, qualify
 general large-document support, or replace the original #206 corpus criteria.
