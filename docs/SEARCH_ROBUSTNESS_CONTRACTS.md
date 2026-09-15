@@ -176,6 +176,116 @@ required local fuzz suite. `//crates/search:skein_search_segment_allocation_test
 executes the public regression under Bazel. This slice does not complete the
 large-document lifecycle or replace #206's complete-corpus qualification.
 
+## Descriptor serialization admission (#392)
+
+Descriptor serialization uses the shared bounded hex sink for the existing V3
+grammar. A counting pass and a checksum pass determine the complete encoded size,
+including the variable-length checksum footer, before opening the temporary file.
+After admission, the descriptor streams to a buffered file, flushes and syncs,
+then uses the existing atomic replacement path. Resident checkpoints use the
+same encoder and retain their existing interface; generation builds pass their
+existing descriptor limit. The in-memory descriptor and its working-set ledger
+are unchanged.
+
+The encoder no longer builds per-value hex strings, a dictionary join, the
+complete descriptor body, or another complete body with its checksum appended.
+Its scratch consists of fixed 8 KiB hex and I/O buffers plus a small footer.
+This is not a total descriptor-memory or RSS bound: dictionary construction,
+metadata normalization, the decoded source and reader decoding remain separate
+resident costs. The existing 4 MiB lexical source guard remains in force.
+
+A Linux default-feature regression observes public `writer.finish()` after a
+warmup generation. Each fixture has one metadata value containing two tokens
+separated by padding, retaining the complete value in the descriptor without
+introducing a large token-frequency workload. Input construction and subsequent
+hydration are outside the allocation window. Both implementations compare the
+complete document after reopening. The baseline is PR #485 at `eb89261c`:
+
+| Metadata value bytes | Previous total requested bytes | Streaming total requested bytes |
+| ---: | ---: | ---: |
+| 1,048,576 | 39,007,243 | 5,448,560 |
+| 3,145,728 | 118,701,513 | 13,839,662 |
+
+These are Rust allocator requests, including reallocations, rather than peak live
+memory, native zstd allocations, RSS or throughput. The fixture regression uses
+a cumulative bound of twelve times the value size; that is a test bound, not a
+new production resource policy. The unchanged baseline fails it after both full
+reopen/hydration checks succeed.
+
+The retained previous encoder is a test-only byte oracle. Coverage includes
+empty and optional fields, Unicode, numeric/timestamp ranges, multiple segments,
+256 seeded descriptors, and the legacy representation of empty dictionary values.
+Tests check every short-write boundary through the footer, exact/one-short size
+admission before touching active or temporary files, and bounded write chunks
+for a large field. Public generation coverage proves that a rejected replacement
+preserves all previous artifacts and reader results, while exact admission
+publishes a readable generation. Six deliberate admission, checksum, dictionary,
+range, materialization and writer-budget faults produce assertions.
+
+`//crates/search:skein_search_descriptor_allocation_tests` exposes the public
+regression through the existing Bazel search matrix. This slice depends on the
+private streaming grammar from PR #485 and does not complete the remaining
+large-document lifecycle or #206's complete-corpus acceptance.
+
+## Descriptor dictionary construction (#392)
+
+Generation descriptors accumulate fields and unique values under the existing
+working-set ledger. The builder charges field names, document bounds, unique
+normalized values and the existing layout estimate before retaining each
+component. A failed admission stops before appending the current segment's
+payloads. Duplicate values do not consume another retained-value charge, and
+previous segments stay included in the projected total. The 256/192/32-byte
+component estimates and 96-byte layout estimate are unchanged; they are not
+allocator-capacity or process-RSS accounting.
+
+The private generation builder visits label values without collecting a complete
+array. It validates the entire JSON string array first, then visits trimmed,
+nonempty strings one at a time. An invalid element, malformed escape, or trailing
+input selects the existing whole-input CSV fallback before any JSON value is
+emitted. Resource or visitor errors propagate unchanged and never select that
+fallback. The descriptor's query behavior, presence counts, normalized dictionary,
+numeric/timestamp ranges, and existing V3 representation are unchanged.
+
+Already normalized values remain borrowed until a new dictionary entry needs
+ownership. The existing whole-value Unicode lowercase mapping still handles
+contextual final sigma; enum values retain their ASCII-only mapping and kind
+aliases. One changed-case normalized value and the JSON decoder's largest
+escaped-string scratch remain explicit resident units. The source document,
+retained descriptor and collection capacity also remain resident. This change
+does not claim that the descriptor limit bounds all temporary or process memory,
+remove the lexical 4 MiB guard, or complete #392's resource/lifecycle work.
+
+A Linux default-feature regression measures cumulative Rust allocation requests
+during warmed public `writer.finish()`. Inputs use repeated labels; complete
+source documents are compared after reopen and hydration. Input construction,
+spooling via `push`, and subsequent hydration are outside the measurement window.
+The baseline is PR #486 at `4d2f86fa`, using identical Cargo profiles:
+
+| Label representation | Label count | Source value bytes | Previous requested bytes | Incremental requested bytes |
+| --- | ---: | ---: | ---: | ---: |
+| CSV | 32,768 | 65,535 | 4,013,989 | 2,401,255 |
+| CSV | 131,072 | 262,143 | 9,224,103 | 2,794,469 |
+| JSON | 32,768 | 131,073 | 4,472,759 | 2,794,485 |
+| JSON | 131,072 | 524,289 | 11,059,129 | 4,367,351 |
+
+The regression bounds requested-byte growth by eight times input-byte growth
+between the two sizes, excluding the fixed analyzer/generation floor. That is
+a fixture check, not a new production budget. All four unchanged-baseline
+round trips succeed before its allocation-growth assertion fails. These are
+allocator requests, not live allocations, native memory, RSS or throughput.
+
+The retained resident descriptor builder and its original accounting function
+provide an independent semantic/ledger oracle. Tests cover exact/one-short
+limits, previous segments, duplicates, missing/empty/default fields, kind aliases,
+Unicode mappings, JSON/CSV fallback and 256 seeded summaries. A failed second
+segment preserves all three payload lengths and the first descriptor entry.
+Nine deliberate admission, duplicate-charge, retained-segment, range, JSON-tail,
+visitor-error, Unicode-context, label-collection and late-admission faults fail
+assertions and are restored before qualification. Existing public generation
+failure/cleanup and complete-document hydration tests remain part of the owner
+suite. The allocation regression runs through the existing descriptor allocation
+Bazel target; no new CI or fuzz target is introduced.
+
 ## Verification
 
 ```bash

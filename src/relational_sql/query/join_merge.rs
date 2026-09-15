@@ -154,7 +154,7 @@ pub(super) fn visit_index_merge_join<'a>(
                 if !predicates_match {
                     continue;
                 }
-                output_schema.ensure_matches(&combined)?;
+                output_schema.ensure_matches(combined.schema_bindings())?;
                 pipeline.borrow_mut().account_operator_row(operator_id)?;
                 if !visit(combined)? {
                     return Ok(false);

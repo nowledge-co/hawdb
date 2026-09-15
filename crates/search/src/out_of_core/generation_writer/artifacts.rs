@@ -8,16 +8,17 @@ use super::{SearchOutOfCoreGenerationBuildOptions, STAGE_METADATA_FILE, STAGE_VE
 use crate::document_encoding::{DocumentEncoding, SegmentEncoding, SegmentKind};
 use crate::error::{Result, SkeinError};
 use crate::{
-    checksum_bytes, write_search_segment_descriptor, SearchDocument, SearchSegmentDescriptor,
-    SearchSegmentDescriptorEntry, SearchSegmentPayloadRange,
-    SEARCH_FILTER_SEGMENT_TARGET_DOCUMENTS, SEARCH_SEGMENT_DESCRIPTOR_FILE,
-    SEARCH_SEGMENT_PAYLOAD_ARTIFACT_ID, SEARCH_SEGMENT_PAYLOAD_FILE,
+    checksum_bytes, write_search_segment_descriptor_bounded, SearchDocument,
+    SearchSegmentDescriptor, SearchSegmentDescriptorEntry, SearchSegmentPayloadRange,
+    SEARCH_FILTER_SEGMENT_TARGET_DOCUMENTS, SEARCH_SEGMENT_PAYLOAD_ARTIFACT_ID,
+    SEARCH_SEGMENT_PAYLOAD_FILE,
 };
 use std::collections::BTreeSet;
-use std::fs::{self, File};
+use std::fs::File;
 use std::io::Write;
 use std::path::{Path, PathBuf};
 
+mod descriptor;
 mod encoding;
 
 pub(super) struct SegmentArtifactBuilder<'a> {
@@ -97,14 +98,11 @@ impl<'a> SegmentArtifactBuilder<'a> {
         self.metadata_file.sync_all()?;
         self.vector_file.sync_all()?;
         self.descriptor.document_count = document_count;
-        write_search_segment_descriptor(&self.stage, &self.descriptor)?;
-        let descriptor_bytes = fs::metadata(self.stage.join(SEARCH_SEGMENT_DESCRIPTOR_FILE))?.len();
-        if descriptor_bytes > self.options.max_descriptor_working_bytes.get() {
-            return Err(SkeinError::Storage(format!(
-                "search generation descriptor requires {descriptor_bytes} bytes, exceeding {}",
-                self.options.max_descriptor_working_bytes
-            )));
-        }
+        let descriptor_bytes = write_search_segment_descriptor_bounded(
+            &self.stage,
+            &self.descriptor,
+            self.options.max_descriptor_working_bytes.get(),
+        )?;
         Ok(SegmentArtifactOutput {
             layout: SearchOutOfCoreLayoutBody {
                 format: OUT_OF_CORE_LAYOUT_FORMAT.to_string(),
@@ -147,9 +145,13 @@ impl<'a> SegmentArtifactBuilder<'a> {
             return Ok(());
         }
         let segment_id = self.descriptor.segments.len() as u64;
-        let references = self.documents.iter().collect::<Vec<_>>();
-        let mut descriptor =
-            SearchSegmentDescriptorEntry::from_documents(segment_id, &references, self.fields);
+        let (mut descriptor, projected_descriptor_bytes) = descriptor::build(
+            segment_id,
+            &self.documents,
+            self.fields,
+            self.descriptor_working_bytes,
+            self.options.max_descriptor_working_bytes.get(),
+        )?;
 
         let document_payload = self.encode_segment_payload(segment_id, SegmentKind::Documents)?;
         let document_length = document_payload.len() as u64;
@@ -199,17 +201,6 @@ impl<'a> SegmentArtifactBuilder<'a> {
             &vector_payload,
             vector_count,
         )?;
-        let entry_bytes = descriptor_working_bytes(&descriptor);
-        let projected_descriptor_bytes = self
-            .descriptor_working_bytes
-            .saturating_add(entry_bytes)
-            .saturating_add(96);
-        if projected_descriptor_bytes > self.options.max_descriptor_working_bytes.get() {
-            return Err(SkeinError::Storage(format!(
-                "search generation descriptor working set requires {projected_descriptor_bytes} bytes, exceeding {}",
-                self.options.max_descriptor_working_bytes
-            )));
-        }
         self.descriptor_working_bytes = projected_descriptor_bytes;
         self.descriptor.segments.push(descriptor);
         self.layouts.push(SearchOutOfCoreSegmentLayout {
@@ -240,6 +231,7 @@ impl<'a> SegmentArtifactBuilder<'a> {
     }
 }
 
+#[cfg(test)]
 fn descriptor_working_bytes(descriptor: &SearchSegmentDescriptorEntry) -> u64 {
     let mut bytes = 256u64
         .saturating_add(descriptor.first_document_id.len() as u64)

@@ -451,3 +451,14 @@ rust_test(
     edition = "2024",
     deps = [":skein_search"],
 )
+
+rust_test(
+    name = "skein_search_descriptor_allocation_tests",
+    crate_root = "tests/descriptor_allocation.rs",
+    srcs = [
+        "tests/descriptor_allocation.rs",
+        "tests/support/allocation.rs",
+    ],
+    edition = "2024",
+    deps = [":skein_search"],
+)

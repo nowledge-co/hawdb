@@ -315,7 +315,9 @@ pub(super) fn visit_prepared_physical_join_plan_node<'a>(
                         row: Some(row),
                     }],
                 };
-                relation.output_schema.ensure_matches(&bound)?;
+                relation
+                    .output_schema
+                    .ensure_matches(bound.schema_bindings())?;
                 visit(bound)
             },
         ),
@@ -466,7 +468,7 @@ pub(super) fn visit_prepared_physical_join_plan_node<'a>(
                                 return Ok(true);
                             }
                         }
-                        output_schema.ensure_matches(&combined)?;
+                        output_schema.ensure_matches(combined.schema_bindings())?;
                         matched = true;
                         pipeline.borrow_mut().account_operator_row(*operator_id)?;
                         visit(combined)
@@ -501,7 +503,7 @@ pub(super) fn visit_prepared_physical_join_plan_node<'a>(
                     if !matched && let Some(null_right) = &null_right {
                         let mut combined = left_row;
                         combined.bindings.extend(null_right.bindings.clone());
-                        output_schema.ensure_matches(&combined)?;
+                        output_schema.ensure_matches(combined.schema_bindings())?;
                         pipeline.borrow_mut().account_operator_row(*operator_id)?;
                         return visit(combined);
                     }

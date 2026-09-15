@@ -1,6 +1,5 @@
 use super::{
     RelationalJoinPlanningOutcome, RelationalOperatorCardinalityProfile, RelationalOperatorId,
-    RelationalOperatorKind,
 };
 use crate::error::{Result, SkeinError};
 use crate::executor::{map_payload_bytes, Row};
@@ -30,16 +29,12 @@ use skein_executor::{
 };
 use skein_expression::BindingId;
 use skein_optimizer::{
-    estimate_relational_access_cost, estimate_relational_join_cost,
-    estimate_relational_probe_join_cost, select_relational_access_path, PlanCostBreakdown,
-    RelationalAccessPathDescriptor, RelationalAccessPathKind, RelationalJoinCardinality,
-    RelationalJoinEnumerationConfig, RelationalJoinPlanningDirective, RelationalJoinRightInput,
-    RelationalJoinSelectivity,
+    select_relational_access_path, RelationalAccessPathDescriptor, RelationalAccessPathKind,
+    RelationalJoinEnumerationConfig, RelationalJoinPlanningDirective,
 };
 use skein_plan::{PhysicalPlan, SortDirection, SortItem, SortKey};
 use skein_relational::field_plan::{
     order_by_uses_expression_alias, plan_relational_field_plan, projection_contains_aggregate,
-    RelationalFieldPlan,
 };
 #[cfg(test)]
 use skein_storage::RelationalHydrationBudget;
@@ -127,10 +122,10 @@ use physical::{
     planned_operator_cardinality_profiles, PreparedRelationalAccessPlan,
     PreparedRelationalExecutionDescriptor, PreparedRelationalExecutionMode,
     PreparedRelationalJoinSelection, PreparedRelationalSelect, RelationalAccessCandidate,
-    RelationalBaseAccess, RelationalEquiJoinKeys, RelationalJoinAccess,
-    RelationalJoinAccessCandidate, RelationalPhysicalAccess, RelationalPhysicalJoinAlgorithm,
-    RelationalPhysicalJoinNode, RelationalPhysicalJoinPlan, RelationalPhysicalOutputSchema,
-    RelationalPhysicalRelation,
+    RelationalBaseAccess, RelationalEquiJoinKeys, RelationalExecutionAdmission,
+    RelationalJoinAccess, RelationalJoinAccessCandidate, RelationalPhysicalAccess,
+    RelationalPhysicalJoinAlgorithm, RelationalPhysicalJoinNode, RelationalPhysicalJoinPlan,
+    RelationalPhysicalOutputSchema, RelationalPhysicalRelation,
 };
 
 mod pipeline;
@@ -143,9 +138,7 @@ use pipeline::{
 };
 
 mod preparation;
-use preparation::{
-    prepare_relational_select, prepared_access_descriptors, resolved_access_order_by,
-};
+use preparation::{prepare_relational_select, prepared_access_descriptors};
 
 mod projection;
 use projection::{
@@ -364,4 +357,20 @@ impl Binding<'_> {
 #[derive(Clone, Default)]
 struct BoundRow<'a> {
     bindings: Vec<Binding<'a>>,
+}
+
+impl BoundRow<'_> {
+    fn schema_bindings(
+        &self,
+    ) -> impl ExactSizeIterator<
+        Item = skein_relational::physical_plan::RelationalPhysicalOutputBindingRef<'_>,
+    > {
+        self.bindings.iter().map(|binding| {
+            skein_relational::physical_plan::RelationalPhysicalOutputBindingRef {
+                binding: binding.binding,
+                table: binding.table,
+                qualifier: binding.qualifier,
+            }
+        })
+    }
 }

@@ -7,6 +7,22 @@ test_suite(
     name = "presubmit_tests",
 )
 
+rust_test(
+    name = "skein_relational_physical_plan_fuzz_tests",
+    args = [
+        "physical_plan::tests::physical_plan_differential_campaign",
+        "--exact",
+        "--ignored",
+        "--nocapture",
+    ],
+    tags = ["manual"],
+    crate = ":skein_relational",
+    edition = "2024",
+    aliases = aliases(normal_dev = True, proc_macro_dev = True),
+    deps = all_crate_deps(normal_dev = True),
+    proc_macro_deps = all_crate_deps(proc_macro_dev = True),
+)
+
 rust_library(
     name = "skein_relational",
     crate_name = "skein_relational",
@@ -17,8 +33,9 @@ rust_library(
     deps = all_crate_deps(normal = True) + [
         "//crates/core:skein_core",
         "//crates/executor:skein_executor",
-        "//crates/optimizer:skein_optimizer",
         "//crates/sql:skein_sql",
+        "//crates/expression:skein_expression",
+        "//crates/optimizer:skein_optimizer",
         "//crates/storage:skein_storage",
     ],
     proc_macro_deps = all_crate_deps(proc_macro = True),
