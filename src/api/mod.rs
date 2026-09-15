@@ -60,18 +60,10 @@ use skein_optimizer::{
 use std::collections::{BTreeMap, BTreeSet, VecDeque};
 use std::num::NonZeroUsize;
 use std::path::Path;
-#[cfg(test)]
-use std::str::FromStr;
 use std::sync::{Arc, Mutex, MutexGuard};
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) enum KnowledgeNeighborDirection {
-    #[cfg(test)]
-    Outgoing,
-    #[cfg(test)]
-    Incoming,
-    Both,
-}
+#[cfg(not(test))]
+use skein_nowledge_contracts::test_support::graph_read::KnowledgeNeighborDirection;
 use system_variables::{
     apply_set_system_variable, query_statement_variables_for_statement,
     query_work_request_for_statement, reject_system_variable_parameters,
@@ -18492,9 +18484,7 @@ fn adjacency_directions_for_request(
     requested_direction: KnowledgeNeighborDirection,
 ) -> Vec<AdjacencyDirection> {
     match requested_direction {
-        #[cfg(test)]
         KnowledgeNeighborDirection::Outgoing => vec![AdjacencyDirection::Outgoing],
-        #[cfg(test)]
         KnowledgeNeighborDirection::Incoming => vec![AdjacencyDirection::Incoming],
         KnowledgeNeighborDirection::Both => {
             vec![AdjacencyDirection::Outgoing, AdjacencyDirection::Incoming]
