@@ -883,10 +883,8 @@ dependencies = [
  "serde",
  "serde_json",
  "skein-analytics",
- "skein-bootstrap",
  "skein-artifact",
  "skein-bootstrap",
- "skein-artifact",
  "skein-compat",
  "skein-core",
  "skein-cypher",
@@ -924,6 +922,13 @@ dependencies = [
 ]
 
 [[package]]
+name = "skein-artifact"
+version = "0.1.0"
+dependencies = [
+ "skein-core",
+]
+
+[[package]]
 name = "skein-bootstrap"
 version = "0.1.0"
 dependencies = [
@@ -932,13 +937,6 @@ dependencies = [
  "skein-integrity",
  "skein-search",
  "skein-storage",
-]
-
-[[package]]
-name = "skein-artifact"
-version = "0.1.0"
-dependencies = [
- "skein-core",
 ]
 
 [[package]]
