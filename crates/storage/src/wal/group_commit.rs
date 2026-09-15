@@ -1,4 +1,8 @@
-use crate::error::{Result, SkeinError};
+//! WAL group-commit policy, admission evidence, and runtime snapshots.
+//!
+//! The storage layer owns the durable-write contract. Host runtimes may own the
+//! queueing coordinator, but consume these types without redefining policy.
+use skein_core::{Result, SkeinError};
 use std::num::{NonZeroU64, NonZeroUsize};
 use std::time::Duration;
 
@@ -551,5 +555,45 @@ fn push_tail_latency_blocker(
         RegressionAssessment::WithinBudget => {}
         RegressionAssessment::BudgetExceeded => blockers.push(budget_blocker),
         RegressionAssessment::InsufficientSignalQuality => blockers.push(signal_blocker),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{
+        assess_regression, RegressionAssessment, WalGroupCommitConfig,
+        DEFAULT_WAL_GROUP_COMMIT_MAX_BYTES, DEFAULT_WAL_GROUP_COMMIT_MAX_DELAY,
+    };
+    use std::num::NonZeroUsize;
+
+    #[test]
+    fn policy_rejects_runtime_bounds_before_admission() {
+        let error = WalGroupCommitConfig::benchmark_candidate(
+            NonZeroUsize::new(257).unwrap(),
+            DEFAULT_WAL_GROUP_COMMIT_MAX_BYTES,
+            DEFAULT_WAL_GROUP_COMMIT_MAX_DELAY,
+        )
+        .unwrap_err();
+
+        assert_eq!(
+            error.to_string(),
+            "execution error: WAL group commit max_entries must be <= 256"
+        );
+    }
+
+    #[test]
+    fn regression_assessment_accepts_improvements_and_rejects_noise() {
+        assert_eq!(
+            assess_regression(-1, u64::MAX, 0),
+            RegressionAssessment::WithinBudget
+        );
+        assert_eq!(
+            assess_regression(101, 0, 100),
+            RegressionAssessment::BudgetExceeded
+        );
+        assert_eq!(
+            assess_regression(100, 201, 100),
+            RegressionAssessment::InsufficientSignalQuality
+        );
     }
 }

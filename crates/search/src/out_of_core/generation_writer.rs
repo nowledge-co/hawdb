@@ -1,4 +1,8 @@
 use super::next_generation;
+use crate::build_control::checkpoint;
+use crate::build_memory::{
+    checked_add, checked_mul, AdmittedDocument, BuildMemory, SET_ENTRY_BYTES, SPOOL_BUFFER_BYTES,
+};
 use crate::document_encoding::DocumentEncoding;
 use crate::error::{Result, SkeinError};
 use crate::generation_cleanup::{
@@ -18,18 +22,26 @@ use artifacts::SegmentArtifactBuilder;
 use publication::{file_len_checksum, publish_generation, PublishGenerationInput};
 use rabitq::RaBitQArtifactBuilder;
 use serde::Serialize;
+use skein_core::RuntimeTaskContext;
+use skein_executor::QueryMemoryLease;
 use skein_integrity::Crc32cHasher;
 use spool::{SpoolSource, StageDirectory, SPOOL_FRAME_HEADER_BYTES, SPOOL_HEADER};
 use std::collections::BTreeSet;
 use std::fs::{self, File, OpenOptions};
 use std::io::{BufWriter, Write};
 use std::num::{NonZeroU64, NonZeroUsize};
-use std::path::{Path, PathBuf};
+use std::path::Path;
+#[cfg(test)]
+use std::path::PathBuf;
 
+mod artifact_name;
 mod artifacts;
+mod context_memory;
 mod delta;
 mod publication;
 mod rabitq;
+#[cfg(feature = "vector-search")]
+mod rabitq_memory;
 mod spool;
 #[cfg(test)]
 mod tests;
@@ -148,11 +160,12 @@ pub struct SearchOutOfCoreGenerationBuildReport {
 /// remains bounded by `max_descriptor_working_bytes` because the serving reader
 /// must retain that range index.
 pub struct SearchOutOfCoreGenerationWriter {
-    root: PathBuf,
-    stage: StageDirectory,
-    spool_path: PathBuf,
+    root: context_memory::OwnedPath,
+    spool_path: context_memory::OwnedPath,
+    // Close the spool before stage cleanup, including on Windows.
     spool: Option<BufWriter<File>>,
-    options: SearchOutOfCoreGenerationBuildOptions,
+    stage: StageDirectory,
+    options: context_memory::Options,
     lexical_term_policy: SearchLexicalTermPolicy,
     max_lexical_manifest_bytes: NonZeroU64,
     last_document_id: Option<String>,
@@ -167,6 +180,12 @@ pub struct SearchOutOfCoreGenerationWriter {
     metadata_field_bytes: u64,
     expected_active_generation: Option<u64>,
     poisoned: bool,
+    task_context: RuntimeTaskContext,
+    memory: BuildMemory,
+    // Keep charges after the payload fields so data drops before its leases.
+    spool_memory: Option<QueryMemoryLease>,
+    metadata_memory: QueryMemoryLease,
+    last_id_memory: Option<QueryMemoryLease>,
 }
 
 impl std::fmt::Debug for SearchOutOfCoreGenerationWriter {
@@ -192,7 +211,21 @@ impl SearchOutOfCoreGenerationWriter {
         root: impl AsRef<Path>,
         options: SearchOutOfCoreGenerationBuildOptions,
     ) -> Result<Self> {
-        Self::create_with_term_policy(root, options, SearchLexicalTermPolicy::default())
+        Self::create_with_context(root, options, RuntimeTaskContext::default())
+    }
+
+    // Keep this internal until analyzer, spill, publication and delta stages
+    // share the complete operation resource contract.
+    fn create_with_context(
+        root: impl AsRef<Path>,
+        options: SearchOutOfCoreGenerationBuildOptions,
+        task_context: RuntimeTaskContext,
+    ) -> Result<Self> {
+        checkpoint(&task_context)?;
+        validate_options(&options)?;
+        let memory = BuildMemory::new(&task_context)?;
+        let options = context_memory::Options::new(options, &memory, &task_context)?;
+        Self::create_with_memory(root, options, task_context, memory)
     }
 
     /// Creates a writer with an explicit host-selected lexical term bound.
@@ -201,12 +234,36 @@ impl SearchOutOfCoreGenerationWriter {
         options: SearchOutOfCoreGenerationBuildOptions,
         lexical_term_policy: SearchLexicalTermPolicy,
     ) -> Result<Self> {
+        let mut writer = Self::create(root, options)?;
+        writer.set_lexical_term_policy(lexical_term_policy);
+        Ok(writer)
+    }
+
+    // Delta admission creates the same root before converting input rows.
+    fn create_with_memory(
+        root: impl AsRef<Path>,
+        options: context_memory::Options,
+        task_context: RuntimeTaskContext,
+        memory: BuildMemory,
+    ) -> Result<Self> {
+        checkpoint(&task_context)?;
         validate_options(&options)?;
-        let root = root.as_ref().to_path_buf();
+        let metadata_bytes = required_descriptor_field_names().try_fold(0, |bytes, field| {
+            checked_add(bytes, checked_add(SET_ENTRY_BYTES, field.len())?)
+        })?;
+        let metadata_memory = memory.retained.reserve(metadata_bytes)?;
+        let spool_memory = memory.spool.reserve(SPOOL_BUFFER_BYTES)?;
+        let root = context_memory::OwnedPath::copy(root.as_ref(), &memory, &task_context)?;
         fs::create_dir_all(&root)?;
-        let stage = StageDirectory::create(&root)?;
-        let spool_path = stage.path.join("documents.spool.skein");
-        let mut spool = BufWriter::new(
+        let stage = StageDirectory::create(&root, &memory, &task_context)?;
+        let spool_path = context_memory::OwnedPath::join(
+            &stage.path,
+            Path::new("documents.spool.skein"),
+            &memory,
+            &task_context,
+        )?;
+        let mut spool = BufWriter::with_capacity(
+            SPOOL_BUFFER_BYTES,
             OpenOptions::new()
                 .create_new(true)
                 .write(true)
@@ -229,11 +286,11 @@ impl SearchOutOfCoreGenerationWriter {
             .map(|manifest| manifest.dimension);
         Ok(Self {
             root,
-            stage,
             spool_path,
             spool: Some(spool),
+            stage,
             options,
-            lexical_term_policy,
+            lexical_term_policy: SearchLexicalTermPolicy::default(),
             max_lexical_manifest_bytes: NonZeroU64::new(DEFAULT_MAX_MANIFEST_BYTES).unwrap(),
             last_document_id: None,
             document_count: 0,
@@ -247,6 +304,11 @@ impl SearchOutOfCoreGenerationWriter {
             metadata_field_bytes,
             expected_active_generation: None,
             poisoned: false,
+            task_context,
+            memory,
+            spool_memory: Some(spool_memory),
+            metadata_memory,
+            last_id_memory: None,
         })
     }
 
@@ -290,7 +352,9 @@ impl SearchOutOfCoreGenerationWriter {
                 "search generation writer is poisoned after an earlier input failure".to_string(),
             ));
         }
-        let result = self.push_inner(document);
+        let result = checkpoint(&self.task_context)
+            .and_then(|()| self.memory.admit_document(document))
+            .and_then(|document| self.push_inner(document));
         if result.is_err() {
             self.poisoned = true;
         }
@@ -316,6 +380,7 @@ impl SearchOutOfCoreGenerationWriter {
         mut self,
         build: impl FnOnce(&Self, &SpoolSource, u64) -> Result<GenerationArtifacts>,
     ) -> Result<SearchOutOfCoreGenerationBuildReport> {
+        checkpoint(&self.task_context)?;
         if self.poisoned {
             return Err(SkeinError::Storage(
                 "cannot finish a poisoned search generation writer".to_string(),
@@ -327,6 +392,8 @@ impl SearchOutOfCoreGenerationWriter {
         spool.flush()?;
         spool.get_ref().sync_all()?;
         drop(spool);
+        self.spool_memory.take();
+        checkpoint(&self.task_context)?;
         let actual_spool_bytes = fs::metadata(&self.spool_path)?.len();
         if actual_spool_bytes != self.spool_bytes {
             return Err(SkeinError::Storage(format!(
@@ -346,9 +413,11 @@ impl SearchOutOfCoreGenerationWriter {
         }
 
         let source = SpoolSource {
-            path: self.spool_path.clone(),
+            path: &self.spool_path,
             document_count: self.document_count,
             max_record_bytes: self.options.max_record_bytes.get(),
+            max_metadata_fields: self.options.max_metadata_fields.get(),
+            memory: self.memory.clone(),
         };
         let generation = next_generation(&self.root, self.max_lexical_manifest_bytes.get())?;
         let lexical_generation = generation;
@@ -360,6 +429,7 @@ impl SearchOutOfCoreGenerationWriter {
             rabitq,
         } = build(&self, &source, generation)?;
 
+        checkpoint(&self.task_context)?;
         let published = publish_generation(PublishGenerationInput {
             root: &self.root,
             stage: &self.stage.path,
@@ -434,11 +504,13 @@ impl SearchOutOfCoreGenerationWriter {
         source: &SpoolSource,
         generation: u64,
     ) -> Result<GenerationArtifacts> {
-        let mut segments = SegmentArtifactBuilder::new(
+        let mut segments = SegmentArtifactBuilder::new_with_context(
             &self.stage.path,
             generation,
             &self.metadata_fields,
             &self.options,
+            self.memory.clone(),
+            self.task_context.clone(),
         )?;
         let mut vectors = RaBitQArtifactBuilder::new(self, generation)?;
         let mut completed = None;
@@ -452,25 +524,27 @@ impl SearchOutOfCoreGenerationWriter {
             max_document_source_bytes: self.options.lexical_max_document_source_bytes,
             ..LexicalProjectionConfig::default()
         };
-        let lexical = LexicalProjectionWriter::new(lexical_config).write_scanned(
-            &self.stage.path,
-            generation,
-            self.options.source_graph_commit_epoch,
-            lexical_analyzer_digest(&self.options.analyzer_lexicon),
-            self.documents_digest.finish(),
-            |consume| {
-                source.scan(&mut |document| {
-                    consume(&document)?;
-                    vectors.push(&document)?;
-                    segments.push(document)
-                })?;
-                // Drop both writers' buffers before lexical external merge.
-                // All artifacts remain private to the stage until publication.
-                completed = Some((segments.finish(source.document_count)?, vectors.finish()?));
-                Ok(())
-            },
-            &self.options.analyzer_lexicon,
-        )?;
+        let lexical = LexicalProjectionWriter::new(lexical_config)
+            .with_context(self.memory.clone(), self.task_context.clone())
+            .write_scanned(
+                &self.stage.path,
+                generation,
+                self.options.source_graph_commit_epoch,
+                lexical_analyzer_digest(&self.options.analyzer_lexicon),
+                self.documents_digest.finish(),
+                |consume| {
+                    source.scan_admitted(&self.task_context, &mut |document| {
+                        consume(&document)?;
+                        vectors.push(&document)?;
+                        segments.push_admitted(document)
+                    })?;
+                    // Drop both writers' buffers before lexical external merge.
+                    // All artifacts remain private to the stage until publication.
+                    completed = Some((segments.finish(source.document_count)?, vectors.finish()?));
+                    Ok(())
+                },
+                &self.options.analyzer_lexicon,
+            )?;
         drop(lexical);
         let (segment, rabitq) = completed.expect("lexical build completed its input scan");
         let lexical_artifact_name = lexical_artifact_file(generation);
@@ -487,7 +561,8 @@ impl SearchOutOfCoreGenerationWriter {
         })
     }
 
-    fn push_inner(&mut self, document: SearchDocument) -> Result<()> {
+    fn push_inner(&mut self, document: AdmittedDocument) -> Result<()> {
+        checkpoint(&self.task_context)?;
         if document.id.is_empty() {
             return Err(SkeinError::Storage(
                 "search generation document id must not be empty".to_string(),
@@ -515,7 +590,7 @@ impl SearchOutOfCoreGenerationWriter {
             self.embedding_dimension,
             self.options.embedding_manifest.as_ref(),
         )?;
-        let encoding = DocumentEncoding::new(&document)?;
+        let encoding = DocumentEncoding::new_with_context(&document, Some(&self.task_context))?;
         let record_bytes = encoding.len() as u64;
         if record_bytes > self.options.max_record_bytes.get() {
             return Err(SkeinError::Storage(format!(
@@ -565,21 +640,46 @@ impl SearchOutOfCoreGenerationWriter {
             )));
         }
 
+        let last_id_memory = self.memory.retained.reserve(document.id.capacity())?;
+        let added_field_capacity = document
+            .metadata
+            .keys()
+            .filter(|field| !self.metadata_fields.contains(*field))
+            .try_fold(0usize, |bytes, field| checked_add(bytes, field.capacity()))?;
+        self.metadata_memory.grow(checked_add(
+            checked_mul(
+                next_field_count - self.metadata_fields.len(),
+                SET_ENTRY_BYTES,
+            )?,
+            added_field_capacity,
+        )?)?;
+        checkpoint(&self.task_context)?;
         let spool = self.spool.as_mut().ok_or_else(|| {
             SkeinError::Storage("search generation spool is already closed".to_string())
         })?;
-        spool::write_frame(spool, &encoding, &mut self.documents_digest)?;
-        self.last_document_id = Some(document.id);
+        let mut documents_digest = self.documents_digest;
+        spool::write_frame_with_context(
+            spool,
+            &encoding,
+            &mut documents_digest,
+            &self.memory,
+            &self.task_context,
+        )?;
+        checkpoint(&self.task_context)?;
+        self.documents_digest = documents_digest;
+        self.last_document_id = Some(document.document.id);
         self.document_count = self.document_count.saturating_add(1);
-        if document.embedding.is_some() {
+        if document.document.embedding.is_some() {
             self.vector_document_count = self.vector_document_count.saturating_add(1);
         }
         self.logical_document_bytes = logical_document_bytes;
         self.spool_bytes = spool_bytes;
         self.peak_record_bytes = self.peak_record_bytes.max(record_bytes);
         self.embedding_dimension = next_dimension;
-        self.metadata_fields.extend(document.metadata.into_keys());
+        self.metadata_fields
+            .extend(document.document.metadata.into_keys());
         self.metadata_field_bytes = next_field_bytes;
+        self.last_id_memory = Some(last_id_memory);
         Ok(())
     }
 }
@@ -594,7 +694,7 @@ struct GenerationArtifacts {
 
 #[derive(Debug)]
 pub(super) struct RaBitQGenerationArtifact {
-    pub(super) file_name: String,
+    pub(super) file_name: artifact_name::Name,
     pub(super) artifact_bytes: u64,
     pub(super) artifact_checksum: u64,
     pub(super) source_digest: u64,
@@ -621,7 +721,9 @@ fn build_rabitq_artifact(
             "search generation has vector documents without an embedding dimension".to_string(),
         )
     })?;
-    let file_name = crate::rabitq_artifact_file(generation);
+    let task = RuntimeTaskContext::default();
+    let memory = BuildMemory::new(&task)?;
+    let file_name = artifact_name::Name::rabitq(generation, &memory, &task)?;
     let path = stage.join(&file_name);
     let identity = skein_vector_projection::ProjectionIdentity {
         generation,
@@ -744,7 +846,7 @@ fn validate_embedding(
     Ok(Some(embedding.len()))
 }
 
-fn required_descriptor_fields() -> BTreeSet<String> {
+fn required_descriptor_field_names() -> impl Iterator<Item = &'static str> {
     std::iter::once(SEARCH_DOCUMENT_ID_FIELD)
         .chain(
             NOWLEDGE_SEARCH_PROJECTION_SCAN_FILTER_FIELDS
@@ -752,6 +854,10 @@ fn required_descriptor_fields() -> BTreeSet<String> {
                 .copied(),
         )
         .chain(NOWLEDGE_MEMORY_MATERIALIZED_METADATA_PATHS.iter().copied())
+}
+
+fn required_descriptor_fields() -> BTreeSet<String> {
+    required_descriptor_field_names()
         .map(str::to_string)
         .collect()
 }

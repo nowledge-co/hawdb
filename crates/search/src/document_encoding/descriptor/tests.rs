@@ -5,6 +5,33 @@ use crate::{
 };
 use std::collections::{BTreeMap, BTreeSet};
 
+thread_local! {
+    static CANCEL_DIGEST: std::cell::RefCell<Option<(usize, skein_core::RuntimeCancellationToken)>> = const { std::cell::RefCell::new(None) };
+}
+
+pub(super) fn record_digest(bytes: usize) {
+    CANCEL_DIGEST.with_borrow_mut(|pending| {
+        if let Some((seen, token)) = pending {
+            *seen += bytes;
+            if *seen >= HEX_BUFFER_BYTES {
+                token.cancel();
+            }
+        }
+    });
+}
+
+#[test]
+fn descriptor_checksum_prepass_observes_cancellation_between_chunks() {
+    let mut descriptor = sample();
+    descriptor.segments[0].first_document_id = "long".repeat(16 * 1024);
+    let task = RuntimeTaskContext::default();
+    CANCEL_DIGEST.with_borrow_mut(|pending| *pending = Some((0, task.cancellation().clone())));
+    let result = DescriptorEncoding::new_with_context(&descriptor, u64::MAX, Some(&task));
+    let (bytes, _) = CANCEL_DIGEST.with_borrow_mut(Option::take).unwrap();
+    assert!(result.err().unwrap().to_string().contains("cancel"));
+    assert!((HEX_BUFFER_BYTES..2 * HEX_BUFFER_BYTES).contains(&bytes));
+}
+
 struct TestDirectory(std::path::PathBuf);
 
 impl Drop for TestDirectory {
@@ -45,6 +72,43 @@ fn sample() -> SearchSegmentDescriptor {
             )]),
         }],
     }
+}
+
+#[test]
+fn descriptor_context_cancellation_stops_before_or_between_bounded_writes() {
+    let mut descriptor = sample();
+    descriptor.segments[0].first_document_id = "long".repeat(16 * 1024);
+    let task = RuntimeTaskContext::default();
+    let encoding =
+        DescriptorEncoding::new_with_context(&descriptor, u64::MAX, Some(&task)).unwrap();
+    struct CancellingWriter<'a> {
+        bytes: usize,
+        task: &'a RuntimeTaskContext,
+    }
+    impl io::Write for CancellingWriter<'_> {
+        fn write(&mut self, bytes: &[u8]) -> io::Result<usize> {
+            self.bytes += bytes.len();
+            if self.bytes >= HEX_BUFFER_BYTES {
+                self.task.cancellation().cancel();
+            }
+            Ok(bytes.len())
+        }
+        fn flush(&mut self) -> io::Result<()> {
+            Ok(())
+        }
+    }
+    let mut writer = CancellingWriter {
+        bytes: 0,
+        task: &task,
+    };
+    assert!(encoding
+        .write_to(&mut writer)
+        .unwrap_err()
+        .to_string()
+        .contains("cancel"));
+    assert!(writer.bytes <= 2 * HEX_BUFFER_BYTES);
+    assert!(writer.bytes < encoding.len());
+    assert!(DescriptorEncoding::new_with_context(&descriptor, u64::MAX, Some(&task)).is_err());
 }
 
 fn legacy(descriptor: &SearchSegmentDescriptor) -> Vec<u8> {

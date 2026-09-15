@@ -11,15 +11,17 @@ fn streamed_spool_scan_rejects_unadmitted_lengths_before_decoding() {
     let root = test_dir("streamed_spool_reader_admission");
     fs::create_dir(&root).unwrap();
     let source = SpoolSource {
-        path: root.join("test.spool"),
+        path: &root.join("test.spool"),
         document_count: 1,
         max_record_bytes: 128,
+        max_metadata_fields: 256,
+        memory: BuildMemory::new(&RuntimeTaskContext::default()).unwrap(),
     };
     for length in [0u64, 129, u64::MAX] {
         let mut bytes = SPOOL_HEADER.to_vec();
         bytes.extend_from_slice(&length.to_le_bytes());
         bytes.extend_from_slice(&0u64.to_le_bytes());
-        fs::write(&source.path, bytes).unwrap();
+        fs::write(source.path, bytes).unwrap();
         let error = source
             .scan(&mut |_| panic!("unadmitted record reached a consumer"))
             .unwrap_err();
@@ -31,12 +33,14 @@ fn streamed_spool_scan_rejects_unadmitted_lengths_before_decoding() {
     let record = b"doc\t61\t\t\t\t\n";
     let mut bytes = SPOOL_HEADER.to_vec();
     append_frame(&mut bytes, record);
-    fs::write(&source.path, bytes).unwrap();
+    fs::write(source.path, bytes).unwrap();
     for limit in [record.len() - 1, record.len()] {
         let source = SpoolSource {
-            path: source.path.clone(),
+            path: source.path,
             document_count: source.document_count,
             max_record_bytes: limit as u64,
+            max_metadata_fields: source.max_metadata_fields,
+            memory: source.memory.clone(),
         };
         let mut documents = Vec::new();
         let result = source.scan(&mut |document| {
@@ -91,7 +95,7 @@ fn streamed_spool_syntax_failures_never_emit_bad_rows_or_publish() {
                 let mut bytes = SPOOL_HEADER.to_vec();
                 append_frame(&mut bytes, first.as_bytes());
                 append_frame(&mut bytes, second.as_bytes());
-                fs::write(&source.path, bytes)?;
+                fs::write(source.path, bytes)?;
                 let mut consumed = Vec::new();
                 assert!(source
                     .scan(&mut |document| {

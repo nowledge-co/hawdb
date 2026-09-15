@@ -4,10 +4,13 @@ use super::{
     TokenOccurrence, BM25_B, BM25_K1,
 };
 use crate::bounded_file::read_bounded_file;
+use crate::build_control::checkpoint;
+use crate::build_memory::BuildMemory;
 use crate::error::{Result, SkeinError};
 use serde::{Deserialize, Serialize};
+use skein_core::RuntimeTaskContext;
+use skein_executor::QueryMemoryLease;
 use skein_integrity::Crc32cHasher as Digest;
-use skein_storage::durable_replace_file;
 use std::cmp::Reverse;
 use std::collections::{BTreeMap, BTreeSet, BinaryHeap};
 use std::fs::{self, File};
@@ -19,7 +22,10 @@ use std::sync::Arc;
 #[cfg(test)]
 mod analysis_tests;
 
+mod artifacts;
 mod block_encoding;
+use artifacts::ArtifactBuilder;
+mod build_manifest;
 mod document_frequency;
 mod manifest_encoding;
 
@@ -174,7 +180,7 @@ struct ManifestEnvelope {
 }
 
 impl ManifestBody {
-    fn required_term_bytes(&self) -> u64 {
+    fn required_term_bytes(&self, task: Option<&RuntimeTaskContext>) -> Result<u64> {
         self.term_statistics
             .iter()
             .map(|statistics| statistics.term.len())
@@ -184,11 +190,19 @@ impl ManifestBody {
                     .filter(|block| block.kind == BlockKind::Postings)
                     .flat_map(|block| [block.min_key.len(), block.max_key.len()]),
             )
-            .max()
-            .unwrap_or(0) as u64
+            .try_fold(0u64, |largest, bytes| {
+                task.map_or(Ok(()), checkpoint)?;
+                Ok(largest.max(bytes as u64))
+            })
     }
 
+    #[cfg(test)]
     fn validate(&self) -> Result<()> {
+        self.validate_with_context(None)
+    }
+
+    fn validate_with_context(&self, task: Option<&RuntimeTaskContext>) -> Result<()> {
+        task.map_or(Ok(()), checkpoint)?;
         if self.format != "SKEIN_LEXICAL_MANIFEST_V1"
             || self.artifact_file != artifact_file(self.generation)
             || Path::new(&self.artifact_file)
@@ -206,6 +220,7 @@ impl ManifestBody {
         let mut documents = 0u64;
         let mut postings = 0u64;
         for block in &self.blocks {
+            task.map_or(Ok(()), checkpoint)?;
             if block.length == 0
                 || block.entry_count == 0
                 || block.min_key > block.max_key
@@ -238,6 +253,7 @@ impl ManifestBody {
         let mut previous_term: Option<&str> = None;
         let mut term_postings = 0u64;
         for statistics in &self.term_statistics {
+            task.map_or(Ok(()), checkpoint)?;
             if statistics.term.is_empty()
                 || statistics.document_frequency == 0
                 || previous_term.is_some_and(|previous| previous >= statistics.term.as_str())
@@ -267,20 +283,27 @@ impl ManifestBody {
         Ok(())
     }
 
+    #[cfg(test)]
     fn encode(&self, max_bytes: u64) -> Result<Vec<u8>> {
         self.validate()?;
         manifest_encoding::encode(self, max_bytes)
     }
 
     fn decode(bytes: &[u8]) -> Result<Self> {
+        Self::decode_with_context(bytes, None)
+    }
+
+    fn decode_with_context(bytes: &[u8], task: Option<&RuntimeTaskContext>) -> Result<Self> {
+        task.map_or(Ok(()), checkpoint)?;
         let envelope: ManifestEnvelope = serde_json::from_slice(bytes)
             .map_err(|error| SkeinError::Storage(format!("invalid lexical manifest: {error}")))?;
-        if manifest_encoding::checksum(&envelope.body)? != envelope.checksum {
+        task.map_or(Ok(()), checkpoint)?;
+        if manifest_encoding::checksum_with_context(&envelope.body, task)? != envelope.checksum {
             return Err(SkeinError::Storage(
                 "lexical projection manifest checksum mismatch".to_string(),
             ));
         }
-        envelope.body.validate()?;
+        envelope.body.validate_with_context(task)?;
         Ok(envelope.body)
     }
 
@@ -357,7 +380,7 @@ pub(super) struct LexicalMiniDelta {
 
 impl LexicalMiniDelta {
     pub(super) fn upsert(
-        &mut self,
+        self: &mut Arc<Self>,
         document: &SearchDocument,
         previous_document: Option<&SearchDocument>,
         analyzer: &SearchAnalyzerLexicon,
@@ -395,15 +418,17 @@ impl LexicalMiniDelta {
                 config.mini_delta_bytes
             )));
         }
-        self.upserts.remove(&document.id);
-        self.deletes.remove(&document.id);
-        self.resident_bytes = required;
-        self.upserts.insert(document.id.clone(), Arc::new(delta));
+        // A retained query snapshot must not force a map clone for rejected work.
+        let current = Arc::make_mut(self);
+        current.upserts.remove(&document.id);
+        current.deletes.remove(&document.id);
+        current.resident_bytes = required;
+        current.upserts.insert(document.id.clone(), Arc::new(delta));
         Ok(())
     }
 
     pub(super) fn delete(
-        &mut self,
+        self: &mut Arc<Self>,
         document_id: &str,
         previous_document: Option<&SearchDocument>,
         analyzer: &SearchAnalyzerLexicon,
@@ -424,8 +449,11 @@ impl LexicalMiniDelta {
         };
         let removed = existing_upsert.map_or(0, |document| document.total_resident_bytes());
         let Some(base) = base else {
-            self.upserts.remove(document_id);
-            self.resident_bytes = self.resident_bytes.saturating_sub(removed);
+            if existing_upsert.is_some() {
+                let current = Arc::make_mut(self);
+                current.upserts.remove(document_id);
+                current.resident_bytes = current.resident_bytes.saturating_sub(removed);
+            }
             return Ok(true);
         };
         let required = self
@@ -435,9 +463,10 @@ impl LexicalMiniDelta {
         if required > config.mini_delta_bytes.get() {
             return Ok(false);
         }
-        self.upserts.remove(document_id);
-        self.deletes.insert(document_id.to_string(), base);
-        self.resident_bytes = required;
+        let current = Arc::make_mut(self);
+        current.upserts.remove(document_id);
+        current.deletes.insert(document_id.to_string(), base);
+        current.resident_bytes = required;
         Ok(true)
     }
 
@@ -656,6 +685,8 @@ pub(super) struct LexicalProjectionReader {
     file: Arc<File>,
     config: LexicalProjectionConfig,
     required_term_bytes: u64,
+    // Only build-created readers retain an operation-owned metadata lease.
+    _build_memory: Option<QueryMemoryLease>,
 }
 
 impl LexicalProjectionReader {
@@ -722,31 +753,61 @@ impl LexicalProjectionReader {
             ));
         }
         let manifest = ManifestBody::decode(bytes)?;
+        let artifact_path = root.join(&manifest.artifact_file);
+        Self::load_decoded_manifest(
+            &artifact_path,
+            manifest,
+            expected_source_epoch,
+            expected_analyzer_digest,
+            expected_documents_digest,
+            config,
+            None,
+            None,
+        )
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn load_decoded_manifest(
+        artifact_path: &Path,
+        decoded: ManifestBody,
+        expected_source_epoch: Option<u64>,
+        expected_analyzer_digest: u64,
+        expected_documents_digest: u64,
+        config: LexicalProjectionConfig,
+        context: Option<(&BuildMemory, &RuntimeTaskContext)>,
+        build_memory: Option<QueryMemoryLease>,
+    ) -> Result<Option<Arc<Self>>> {
+        // Bind after the lease so the decoded payload drops first on every early return.
+        let manifest = decoded;
+        let task = context.map(|(_, task)| task);
+        task.map_or(Ok(()), checkpoint)?;
         if manifest.source_graph_commit_epoch != expected_source_epoch
             || manifest.analyzer_digest != expected_analyzer_digest
             || manifest.documents_digest != expected_documents_digest
         {
             return Ok(None);
         }
-        let required_term_bytes = manifest.required_term_bytes();
+        let required_term_bytes = manifest.required_term_bytes(task)?;
         admit_term_bytes(required_term_bytes, config.max_term_bytes)?;
-        if manifest
-            .blocks
-            .iter()
-            .any(|block| block.length > config.max_block_bytes.get())
-        {
-            return Err(SkeinError::Storage(
-                "lexical projection contains a block above the read admission limit".to_string(),
-            ));
+        for block in &manifest.blocks {
+            task.map_or(Ok(()), checkpoint)?;
+            if block.length > config.max_block_bytes.get() {
+                return Err(SkeinError::Storage(
+                    "lexical projection contains a block above the read admission limit"
+                        .to_string(),
+                ));
+            }
         }
-        let artifact_path = root.join(&manifest.artifact_file);
-        let file = File::open(&artifact_path)?;
+        let file = File::open(artifact_path)?;
         if file.metadata()?.len() != manifest.artifact_len {
             return Err(SkeinError::Storage(
                 "lexical projection artifact length mismatch".to_string(),
             ));
         }
-        let (length, digest) = file_digest(&file)?;
+        let (length, digest) = match context {
+            Some((memory, task)) => build_manifest::file_digest(&file, memory, task)?,
+            None => file_digest(&file)?,
+        };
         if length != manifest.artifact_len || digest != manifest.artifact_checksum {
             return Err(SkeinError::Storage(
                 "lexical projection artifact checksum mismatch".to_string(),
@@ -756,6 +817,7 @@ impl LexicalProjectionReader {
         let mut cloned = file.try_clone()?;
         cloned.seek(SeekFrom::Start(0))?;
         cloned.read_exact(&mut header)?;
+        task.map_or(Ok(()), checkpoint)?;
         if &header[..16] != ARTIFACT_HEADER
             || u64::from_le_bytes(header[16..24].try_into().unwrap()) != manifest.generation
         {
@@ -768,6 +830,7 @@ impl LexicalProjectionReader {
             file: Arc::new(file),
             config,
             required_term_bytes,
+            _build_memory: build_memory,
         })))
     }
 
@@ -1209,11 +1272,20 @@ fn bm25_term_score(idf: f64, frequency: u32, document_len: u32, average_len: f64
 
 pub(super) struct LexicalProjectionWriter {
     config: LexicalProjectionConfig,
+    build_context: Option<(BuildMemory, RuntimeTaskContext)>,
 }
 
 impl LexicalProjectionWriter {
     pub(super) const fn new(config: LexicalProjectionConfig) -> Self {
-        Self { config }
+        Self {
+            config,
+            build_context: None,
+        }
+    }
+
+    pub(super) fn with_context(mut self, memory: BuildMemory, task: RuntimeTaskContext) -> Self {
+        self.build_context = Some((memory, task));
+        self
     }
 
     #[allow(clippy::too_many_arguments)]
@@ -1254,11 +1326,23 @@ impl LexicalProjectionWriter {
         scan: impl FnOnce(&mut dyn FnMut(&SearchDocument) -> Result<()>) -> Result<()>,
         analyzer: &SearchAnalyzerLexicon,
     ) -> Result<Arc<LexicalProjectionReader>> {
-        let artifact_name = artifact_file(generation);
-        let artifact_path = root.join(&artifact_name);
-        let tmp_path = artifact_path.with_extension("skein.tmp");
-        let mut artifact_guard = RemoveOnDrop::new(tmp_path.clone());
-        let mut artifact = ArtifactBuilder::new(&tmp_path, generation, self.config)?;
+        let (memory, task) = match &self.build_context {
+            Some((memory, task)) => (memory.clone(), task.clone()),
+            None => {
+                let task = RuntimeTaskContext::default();
+                (BuildMemory::new(&task)?, task)
+            }
+        };
+        checkpoint(&task)?;
+        let mut paths = build_manifest::Paths::new(root, generation, &memory, &task)?;
+        let mut artifact_guard = build_manifest::Cleanup::new(&paths.artifact_tmp);
+        let mut artifact = ArtifactBuilder::new_with_context(
+            &paths.artifact_tmp,
+            generation,
+            self.config,
+            memory.clone(),
+            task.clone(),
+        )?;
         let mut runs = SpillRuns::new(root, generation, self.config);
         let mut chunk = Vec::new();
         let mut chunk_bytes = 0u64;
@@ -1275,7 +1359,7 @@ impl LexicalProjectionWriter {
             let document_len = analyzed.document_len();
             document_count = document_count.saturating_add(1);
             total_document_len = total_document_len.saturating_add(u64::from(document_len));
-            artifact.push_document(document.id.clone(), document_len)?;
+            artifact.push_document(&document.id, document_len)?;
             analyzed.visit(self.config, |term, term_frequency, retained| {
                 let bytes = Posting::resident_bytes(&term, &document.id);
                 let posting_limit = self
@@ -1310,13 +1394,14 @@ impl LexicalProjectionWriter {
         runs.compact()?;
         artifact.merge_postings(&runs.paths, self.config)?;
         let artifact = artifact.finish()?;
+        let _format_memory = memory.retained.reserve("SKEIN_LEXICAL_MANIFEST_V1".len())?;
         let manifest = ManifestBody {
             format: "SKEIN_LEXICAL_MANIFEST_V1".to_string(),
             generation,
             source_graph_commit_epoch,
             analyzer_digest,
             documents_digest,
-            artifact_file: artifact_name,
+            artifact_file: std::mem::take(&mut paths.artifact_name),
             artifact_len: artifact.len,
             artifact_checksum: artifact.checksum,
             document_count,
@@ -1325,54 +1410,17 @@ impl LexicalProjectionWriter {
             term_statistics: artifact.term_statistics,
             blocks: artifact.blocks,
         };
-        let manifest_bytes = manifest.encode(self.config.max_manifest_bytes.get())?;
-        drop(manifest);
-        durable_replace_file(&tmp_path, &artifact_path)?;
-        artifact_guard.disarm();
-        let manifest_path = root.join(MANIFEST_FILE);
-        let manifest_tmp = manifest_path.with_extension("skein.tmp");
-        let mut manifest_guard = RemoveOnDrop::new(manifest_tmp.clone());
-        {
-            let mut file = File::create(&manifest_tmp)?;
-            file.write_all(&manifest_bytes)?;
-            file.sync_all()?;
-        }
-        drop(manifest_bytes);
-        durable_replace_file(&manifest_tmp, &manifest_path)?;
-        manifest_guard.disarm();
-        LexicalProjectionReader::load(
-            root,
-            source_graph_commit_epoch,
-            analyzer_digest,
-            documents_digest,
+        let reader = build_manifest::finish(
+            manifest,
+            artifact.memory,
+            &paths,
             self.config,
-        )?
-        .ok_or_else(|| SkeinError::Storage("published lexical projection is missing".to_string()))
+            &memory,
+            &task,
+        )?;
+        artifact_guard.disarm();
+        Ok(reader)
     }
-}
-
-struct ArtifactBuilder {
-    writer: BufWriter<File>,
-    path: PathBuf,
-    generation: u64,
-    config: LexicalProjectionConfig,
-    offset: u64,
-    next_block_id: u64,
-    document_pending: Vec<(String, u32)>,
-    document_pending_bytes: u64,
-    posting_pending: Vec<Posting>,
-    posting_pending_bytes: u64,
-    posting_count: u64,
-    term_statistics: Vec<TermStatistics>,
-    blocks: Vec<BlockDescriptor>,
-}
-
-struct ArtifactSummary {
-    len: u64,
-    checksum: u64,
-    posting_count: u64,
-    term_statistics: Vec<TermStatistics>,
-    blocks: Vec<BlockDescriptor>,
 }
 
 struct RemoveOnDrop {
@@ -1395,144 +1443,6 @@ impl Drop for RemoveOnDrop {
         if self.armed {
             let _ = fs::remove_file(&self.path);
         }
-    }
-}
-
-impl ArtifactBuilder {
-    fn new(path: &Path, generation: u64, config: LexicalProjectionConfig) -> Result<Self> {
-        let mut writer = BufWriter::new(File::create(path)?);
-        writer.write_all(ARTIFACT_HEADER)?;
-        writer.write_all(&generation.to_le_bytes())?;
-        Ok(Self {
-            writer,
-            path: path.to_path_buf(),
-            generation,
-            config,
-            offset: ARTIFACT_HEADER.len() as u64 + 8,
-            next_block_id: 0,
-            document_pending: Vec::new(),
-            document_pending_bytes: 0,
-            posting_pending: Vec::new(),
-            posting_pending_bytes: 0,
-            posting_count: 0,
-            term_statistics: Vec::new(),
-            blocks: Vec::new(),
-        })
-    }
-
-    fn push_document(&mut self, id: String, length: u32) -> Result<()> {
-        let bytes = 4u64.saturating_add(id.len() as u64).saturating_add(4);
-        if !self.document_pending.is_empty()
-            && self.document_pending_bytes.saturating_add(bytes)
-                > self.config.target_block_bytes.get()
-        {
-            self.flush_documents()?;
-        }
-        self.document_pending_bytes = self.document_pending_bytes.saturating_add(bytes);
-        self.document_pending.push((id, length));
-        Ok(())
-    }
-
-    fn finish_documents(&mut self) -> Result<()> {
-        self.flush_documents()
-    }
-
-    fn flush_documents(&mut self) -> Result<()> {
-        if self.document_pending.is_empty() {
-            return Ok(());
-        }
-        let descriptor = block_encoding::write_block(
-            &mut self.writer,
-            self.generation,
-            self.next_block_id,
-            self.offset,
-            self.config.max_block_bytes.get(),
-            block_encoding::Entries::Documents(&self.document_pending),
-        )?;
-        self.commit_block(descriptor);
-        self.document_pending.clear();
-        self.document_pending_bytes = 0;
-        Ok(())
-    }
-
-    fn merge_postings(&mut self, paths: &[PathBuf], config: LexicalProjectionConfig) -> Result<()> {
-        visit_merged_postings(paths, config, |posting| self.push_posting(posting.clone()))?;
-        self.flush_postings()
-    }
-
-    fn push_posting(&mut self, posting: Posting) -> Result<()> {
-        match self.term_statistics.last_mut() {
-            Some(statistics) if statistics.term == posting.term => {
-                statistics.document_frequency = statistics
-                    .document_frequency
-                    .checked_add(1)
-                    .ok_or_else(|| {
-                        SkeinError::Storage(
-                            "lexical term document frequency exceeds u64".to_string(),
-                        )
-                    })?;
-            }
-            Some(statistics) if statistics.term > posting.term => {
-                return Err(SkeinError::Storage(
-                    "lexical merge produced unordered term statistics".to_string(),
-                ));
-            }
-            _ => self.term_statistics.push(TermStatistics {
-                term: posting.term.clone(),
-                document_frequency: 1,
-            }),
-        }
-        let bytes = posting.encoded_len();
-        if !self.posting_pending.is_empty()
-            && self.posting_pending_bytes.saturating_add(bytes)
-                > self.config.target_block_bytes.get()
-        {
-            self.flush_postings()?;
-        }
-        self.posting_pending_bytes = self.posting_pending_bytes.saturating_add(bytes);
-        self.posting_pending.push(posting);
-        Ok(())
-    }
-
-    fn flush_postings(&mut self) -> Result<()> {
-        if self.posting_pending.is_empty() {
-            return Ok(());
-        }
-        let descriptor = block_encoding::write_block(
-            &mut self.writer,
-            self.generation,
-            self.next_block_id,
-            self.offset,
-            self.config.max_block_bytes.get(),
-            block_encoding::Entries::Postings(&self.posting_pending),
-        )?;
-        self.posting_count = self
-            .posting_count
-            .saturating_add(self.posting_pending.len() as u64);
-        self.commit_block(descriptor);
-        self.posting_pending.clear();
-        self.posting_pending_bytes = 0;
-        Ok(())
-    }
-
-    fn commit_block(&mut self, descriptor: BlockDescriptor) {
-        // Encoding checked both additions before writing the block.
-        self.offset += descriptor.length;
-        self.next_block_id += 1;
-        self.blocks.push(descriptor);
-    }
-
-    fn finish(mut self) -> Result<ArtifactSummary> {
-        self.writer.flush()?;
-        self.writer.get_ref().sync_all()?;
-        let (length, digest) = file_digest(&File::open(&self.path)?)?;
-        Ok(ArtifactSummary {
-            len: length,
-            checksum: digest,
-            posting_count: self.posting_count,
-            term_statistics: self.term_statistics,
-            blocks: self.blocks,
-        })
     }
 }
 
@@ -2235,7 +2145,7 @@ mod tests {
         let reader = LexicalProjectionWriter::new(config)
             .write(&root, 1, None, 11, 13, documents.values(), &analyzer)
             .unwrap();
-        let mut delta = LexicalMiniDelta::default();
+        let mut delta = Arc::new(LexicalMiniDelta::default());
         delta
             .upsert(&document("c", "Graph", "query"), None, &analyzer, config)
             .unwrap();
@@ -2266,7 +2176,7 @@ mod tests {
         let first_update = document("a", "Graph", "updated");
         let final_update = document("a", "Vector", "updated");
         let inserted = document("d", "Graph", "query");
-        let mut delta = LexicalMiniDelta::default();
+        let mut delta = Arc::new(LexicalMiniDelta::default());
         delta
             .upsert(&first_update, Some(&documents["a"]), &analyzer, config)
             .unwrap();
@@ -2301,7 +2211,7 @@ mod tests {
         let reader = LexicalProjectionWriter::new(config)
             .write(&root, 1, None, 11, 13, documents.values(), &analyzer)
             .unwrap();
-        let mut delta = LexicalMiniDelta::default();
+        let mut delta = Arc::new(LexicalMiniDelta::default());
         delta
             .upsert(&document("a", "Graph", "query"), None, &analyzer, config)
             .unwrap();

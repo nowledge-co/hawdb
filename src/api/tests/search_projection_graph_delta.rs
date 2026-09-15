@@ -217,15 +217,15 @@ fn unified_search_projection_changefeed_captures_relational_primary_keys() {
         .build_search_projection_change_batch_after(source_epoch, Some(4))
         .unwrap()
         .unwrap();
-    assert!(batch.graph_delta.upsert_node_ids.is_empty());
-    assert!(batch.graph_delta.delete_document_ids.is_empty());
-    assert_eq!(batch.relational_primary_key_changes.len(), 1);
+    assert!(batch.graph_delta().upsert_node_ids.is_empty());
+    assert!(batch.graph_delta().delete_document_ids.is_empty());
+    assert_eq!(batch.relational_primary_key_changes().len(), 1);
     assert_eq!(
-        batch.relational_primary_key_changes[0].table,
+        batch.relational_primary_key_changes()[0].table,
         "thread_messages"
     );
     assert_eq!(
-        batch.relational_primary_key_changes[0].primary_keys,
+        batch.relational_primary_key_changes()[0].primary_keys,
         vec![skein_storage::RelationalKey(vec![
             skein_storage::RelationalValue::BigInt(1)
         ])]
@@ -367,9 +367,9 @@ fn relational_changefeed_resumes_from_wal_after_restart() {
         .unwrap()
         .unwrap();
     assert_eq!(batch.complete_through_commit_epoch(), Some(committed_epoch));
-    assert_eq!(batch.relational_primary_key_changes.len(), 1);
+    assert_eq!(batch.relational_primary_key_changes().len(), 1);
     assert_eq!(
-        batch.relational_primary_key_changes[0].primary_keys,
+        batch.relational_primary_key_changes()[0].primary_keys,
         vec![skein_storage::RelationalKey(vec![
             skein_storage::RelationalValue::BigInt(7)
         ])]
@@ -399,9 +399,9 @@ fn relational_changefeed_resumes_from_checkpoint_after_restart() {
         .unwrap()
         .unwrap();
     assert_eq!(batch.complete_through_commit_epoch(), Some(committed_epoch));
-    assert_eq!(batch.relational_primary_key_changes.len(), 1);
+    assert_eq!(batch.relational_primary_key_changes().len(), 1);
     assert_eq!(
-        batch.relational_primary_key_changes[0].primary_keys,
+        batch.relational_primary_key_changes()[0].primary_keys,
         vec![skein_storage::RelationalKey(vec![
             skein_storage::RelationalValue::BigInt(11)
         ])]

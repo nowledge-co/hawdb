@@ -8,12 +8,14 @@ package(default_visibility = ["//visibility:public"])
 _CARGO_WORKSPACE_PACKAGES = [
     "crates/analytics",
     "crates/bootstrap",
+    "crates/artifact",
     "crates/cgroup",
     "crates/compat",
     "crates/core",
     "crates/cypher",
     "crates/ddl",
     "crates/evidence",
+    "crates/explain",
     "crates/executor",
     "crates/expression",
     "crates/fuzz",
@@ -24,6 +26,7 @@ _CARGO_WORKSPACE_PACKAGES = [
     "crates/qos",
     "crates/qualification",
     "crates/query",
+    "crates/query-policy",
     "crates/readiness",
     "crates/relational",
     "crates/route-ownership",
@@ -90,7 +93,6 @@ _SKEIN_SRCS = glob(
 ) + [
     "//crates/compat:test_support",
     "//crates/executor:batch_dispatch_test_fixtures",
-    "//crates/search:candidate_probe_test_fixtures",
 ]
 
 _SKEIN_COMMON_DEPS = [
@@ -101,11 +103,13 @@ _SKEIN_COMMON_DEPS = [
     "@crate_index//:unicode-width",
     "@crate_index//:zstd",
     "//crates/analytics:skein_analytics",
+    "//crates/artifact:skein_artifact",
     "//crates/compat:skein_compat",
     "//crates/core:skein_core",
     "//crates/cypher:skein_cypher",
     "//crates/ddl:skein_ddl",
     "//crates/evidence:skein_evidence",
+    "//crates/explain:skein_explain",
     "//crates/executor:skein_executor",
     "//crates/expression:skein_expression",
     "//crates/integrity:skein_integrity",
@@ -114,6 +118,7 @@ _SKEIN_COMMON_DEPS = [
     "//crates/plan-cache:skein_plan_cache",
     "//crates/qos:skein_qos",
     "//crates/query:skein_query",
+    "//crates/query-policy:skein_query_policy",
     "//crates/readiness:skein_readiness",
     "//crates/relational:skein_relational",
     "//crates/route-ownership:skein_route_ownership",

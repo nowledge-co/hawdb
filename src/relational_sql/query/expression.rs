@@ -6,8 +6,8 @@ use super::{
 use crate::sql::{Expr, ExprKind};
 use skein_relational::predicate::predicate_truth_with;
 pub(super) use skein_relational::query_value::{
-    bind_bound, bind_sql_value, expression_name, relational_ref_to_value, relational_to_value,
-    value_to_relational, value_to_relational_as,
+    bind_bound, bind_sql_value, expression_name, relational_to_value, value_to_relational,
+    value_to_relational_as,
 };
 
 pub(super) fn projection_uses_non_aggregate_coalesce(projection: &[SelectProjection]) -> bool {

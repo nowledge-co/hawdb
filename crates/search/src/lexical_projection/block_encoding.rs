@@ -2,6 +2,8 @@ use super::{
     encode_block_header, encode_posting, write_string, BlockDescriptor, BlockKind, Digest, Posting,
     Result, SkeinError, SPILL_IO_BUFFER_BYTES,
 };
+use crate::build_control::{checkpoint, CheckedWriter};
+use skein_core::RuntimeTaskContext;
 use std::io::{self, Write};
 
 #[cfg(test)]
@@ -28,7 +30,7 @@ impl<'a> Entries<'a> {
         }
     }
 
-    fn bounds(self) -> Result<(&'a str, &'a str)> {
+    pub(super) fn bounds(self) -> Result<(&'a str, &'a str)> {
         let bounds = match self {
             Self::Documents(entries) => entries
                 .first()
@@ -61,6 +63,7 @@ impl<'a> Entries<'a> {
     }
 }
 
+#[cfg(test)]
 pub(super) fn write_block(
     writer: &mut impl Write,
     generation: u64,
@@ -69,11 +72,30 @@ pub(super) fn write_block(
     max_bytes: u64,
     entries: Entries<'_>,
 ) -> Result<BlockDescriptor> {
+    write_block_with_context(
+        writer, generation, block_id, offset, max_bytes, entries, None,
+    )
+}
+
+pub(super) fn write_block_with_context(
+    writer: &mut impl Write,
+    generation: u64,
+    block_id: u64,
+    offset: u64,
+    max_bytes: u64,
+    entries: Entries<'_>,
+    task: Option<&RuntimeTaskContext>,
+) -> Result<BlockDescriptor> {
+    task.map_or(Ok(()), checkpoint)?;
     let (min_key, max_key) = entries.bounds()?;
     // The sizing pass follows the wire grammar without copying or hashing data.
     // It also validates representable string lengths and counts before any I/O.
     let mut counter = CountingWriter::default();
-    entries.encode(&mut counter, generation, block_id)?;
+    entries.encode(
+        &mut CheckedWriter::new(&mut counter, task),
+        generation,
+        block_id,
+    )?;
     let length = counter.0;
     if length > max_bytes {
         return Err(SkeinError::Storage(format!(
@@ -87,16 +109,22 @@ pub(super) fn write_block(
         .checked_add(1)
         .ok_or_else(|| SkeinError::Storage("lexical block identity exceeds u64".into()))?;
 
+    task.map_or(Ok(()), checkpoint)?;
+    // The builder admits directory slots and both key copies before this call.
+    let min_key = min_key.to_owned();
+    let max_key = max_key.to_owned();
+    let mut checked = CheckedWriter::new(writer, task);
     let mut output = DigestWriter {
-        writer,
+        writer: &mut checked,
         digest: Digest::new(),
     };
     entries.encode(&mut output, generation, block_id)?;
+    task.map_or(Ok(()), checkpoint)?;
     Ok(BlockDescriptor {
         block_id,
         kind: entries.kind(),
-        min_key: min_key.to_owned(),
-        max_key: max_key.to_owned(),
+        min_key,
+        max_key,
         offset,
         length,
         checksum: output.digest.finish(),

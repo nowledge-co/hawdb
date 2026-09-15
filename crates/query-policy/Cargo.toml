@@ -1,0 +1,12 @@
+[package]
+name = "skein-query-policy"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+
+[dependencies]
+skein-core = { path = "../core" }
+skein-cypher = { path = "../cypher" }
+skein-optimizer = { path = "../optimizer" }
+skein-qos = { path = "../qos" }

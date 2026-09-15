@@ -12,6 +12,7 @@ use skein_core::{RuntimeCancellationToken, RuntimeTaskContext};
 use std::collections::BTreeMap;
 use std::time::{SystemTime, UNIX_EPOCH};
 
+mod context;
 mod manifest_budget;
 mod spool_decoding;
 mod spool_encoding;
@@ -486,7 +487,7 @@ fn fused_generation_spool_errors_never_publish_partial_sinks() {
             .finish_with_artifacts(|input, source, generation| {
                 // Mutate after the initial length check so corruption exercises
                 // scan validation with the other sinks already partially filled.
-                let mut bytes = fs::read(&source.path)?;
+                let mut bytes = fs::read(source.path)?;
                 match fault {
                     "checksum" => *bytes.last_mut().unwrap() ^= 1,
                     "truncated" => {
@@ -496,7 +497,7 @@ fn fused_generation_spool_errors_never_publish_partial_sinks() {
                     "header" => bytes[0] ^= 1,
                     _ => unreachable!(),
                 }
-                fs::write(&source.path, bytes)?;
+                fs::write(source.path, bytes)?;
                 input.build_artifacts(source, generation)
             })
             .unwrap_err();
@@ -1229,7 +1230,7 @@ fn streaming_generation_recovers_generation_after_active_manifest_corruption() {
     fs::remove_dir_all(root).unwrap();
 }
 
-fn document(number: usize) -> SearchDocument {
+pub(super) fn document(number: usize) -> SearchDocument {
     SearchDocument {
         id: format!("memory:{number:06}"),
         title: format!("Graph storage {number}"),
@@ -1264,7 +1265,7 @@ fn stage_directories(root: &Path) -> usize {
         .count()
 }
 
-fn test_dir(name: &str) -> PathBuf {
+pub(super) fn test_dir(name: &str) -> PathBuf {
     let nanos = SystemTime::now()
         .duration_since(UNIX_EPOCH)
         .unwrap()
