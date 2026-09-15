@@ -66,6 +66,30 @@ fn hydrate_thread_message_changes(
 }
 
 #[test]
+fn database_facade_reexports_search_owned_catch_up_contracts() {
+    fn accepts_owner_report(_: skein_search::SearchProjectionCatchUpReport) {}
+    fn accepts_owner_scheduled_report(_: skein_search::ScheduledSearchProjectionCatchUpReport) {}
+
+    let report = crate::SearchProjectionCatchUpReport {
+        graph_commit_epoch: 8,
+        start_applied_epoch: Some(3),
+        start_durable_epoch: Some(3),
+        end_applied_epoch: Some(8),
+        end_durable_epoch: Some(8),
+        applied_batch_count: 1,
+        applied_operation_count: 5,
+        complete: true,
+    };
+    accepts_owner_report(report.clone());
+    accepts_owner_scheduled_report(crate::ScheduledSearchProjectionCatchUpReport {
+        catch_up: report,
+        stop_reason: crate::SearchProjectionCatchUpStopReason::Deferred(
+            crate::QosAdmissionCode::TotalBackgroundLimitExceeded,
+        ),
+    });
+}
+
+#[test]
 fn database_facade_builds_search_projection_delta_from_graph_nodes() {
     let mut db = Database::new();
     let node_id = db
