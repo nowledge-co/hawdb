@@ -89,6 +89,10 @@ and each production-source negative control.
 
 ## Remaining boundary
 
+The subsequent [spill ownership stage](SEARCH_SPILL_OWNERSHIP.md) covers the
+physical spill handoffs below and tightens final shared-control-block destruction.
+The following paragraph records this token stage's original boundary.
+
 This stage does not complete frequency/posting spill buffers, path registries,
 decoded merge heads, simultaneous readers or reserved merge progress on the
 shared ledger. Spill readers still reconstruct untracked terms under existing
