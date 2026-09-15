@@ -10,6 +10,7 @@ serde = "1"
 serde_json = "1"
 skein-core = { path = "../core" }
 skein-evidence = { path = "../evidence" }
+skein-executor = { path = "../executor" }
 skein-route-ownership = { path = "../route-ownership" }
 
 [dev-dependencies]

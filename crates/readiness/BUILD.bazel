@@ -22,6 +22,7 @@ rust_library(
     deps = all_crate_deps(normal = True) + [
         "//crates/core:skein_core",
         "//crates/evidence:skein_evidence",
+        "//crates/executor:skein_executor",
         "//crates/route-ownership:skein_route_ownership",
     ],
     proc_macro_deps = all_crate_deps(proc_macro = True),
