@@ -121,7 +121,8 @@ impl SpoolSource<'_> {
     ) -> Result<()> {
         checkpoint(task_context)?;
         let _buffer_memory = self.memory.spool.reserve(SPOOL_BUFFER_BYTES)?;
-        let file = File::open(self.path)?;
+        let file = super::io::GenerationIo::new(&self.memory, task_context)
+            .native(&[self.path], || File::open(self.path))??;
         #[cfg(test)]
         let file = read_evidence::track(file);
         let mut reader = BufReader::with_capacity(SPOOL_BUFFER_BYTES, file);
@@ -196,6 +197,7 @@ impl SpoolSource<'_> {
 
 pub(super) struct StageDirectory {
     pub(super) path: super::context_memory::OwnedPath,
+    _cleanup: skein_executor::QueryMemoryLease,
 }
 
 impl StageDirectory {
@@ -220,9 +222,17 @@ impl StageDirectory {
             }
             let path =
                 super::context_memory::OwnedPath::join(root, Path::new(&name), memory, task)?;
-            match fs::create_dir(&path) {
+            let cleanup = memory
+                .spool
+                .reserve(crate::build_memory::directory::stage_removal_bytes(&path)?)?;
+            let created = super::io::GenerationIo::new(memory, task)
+                .native(&[&path], || fs::create_dir(&path))?;
+            match created {
                 Ok(()) => {
-                    let stage = Self { path };
+                    let stage = Self {
+                        path,
+                        _cleanup: cleanup,
+                    };
                     checkpoint(task)?;
                     return Ok(stage);
                 }
@@ -339,3 +349,6 @@ pub(super) mod read_evidence {
         }
     }
 }
+
+#[cfg(test)]
+mod stage_tests;

@@ -2,7 +2,7 @@
 
 use super::io::GenerationIo;
 use crate::build_control::{checkpoint, json};
-use crate::build_memory::{checked_add as add, checked_mul as mul, path, BuildMemory};
+use crate::build_memory::{checked_add as add, checked_mul as mul, directory, BuildMemory};
 use crate::lexical_projection::admitted_manifest_generation;
 use crate::out_of_core::{
     SearchOutOfCoreManifestEnvelope, MAX_OUT_OF_CORE_MANIFEST_BYTES, OUT_OF_CORE_MANIFEST_FILE,
@@ -10,7 +10,6 @@ use crate::out_of_core::{
 use crate::{Result, SkeinError};
 use skein_core::RuntimeTaskContext;
 use std::fs;
-use std::mem::size_of;
 use std::path::Path;
 
 pub(super) fn active(
@@ -70,20 +69,10 @@ fn latest_lexical(
     task: &RuntimeTaskContext,
 ) -> Result<u64> {
     let io = GenerationIo::new(memory, task);
-    let root_bytes = root.as_os_str().as_encoded_bytes().len();
-    // ReadDir retains its own PathBuf and Arc metadata. The native enumeration
-    // allowance also covers Linux/glibc's capped one-MiB DIR buffer.
-    let directory_bytes = add(
-        add(root_bytes, size_of::<fs::ReadDir>() + 128)?,
-        1024 * 1024,
-    )?;
-    let _directory = memory.spool.reserve(directory_bytes)?;
-    // Windows builds a wildcard PathBuf before native conversion.
-    let scratch = add(
-        path::join_bytes(root_bytes, 1, true)?,
-        crate::build_memory::reserved::native_path::child_bytes(root, 1)?,
-    )?;
-    let startup = memory.spool.reserve(scratch)?;
+    let _directory = memory
+        .spool
+        .reserve(directory::retained_scan_bytes(root)?)?;
+    let startup = memory.spool.reserve(directory::scan_startup_bytes(root)?)?;
     let mut entries = io.native(&[root], || fs::read_dir(root))??;
     drop(startup);
     let mut latest = 0;
@@ -92,13 +81,13 @@ fn latest_lexical(
         // Native directory records have a u16 byte extent on the supported Unix
         // targets; Windows' fixed WCHAR name is smaller. Keep both the entry's
         // owned name and file_name()'s copy admitted until the iteration ends.
-        let _entry = memory.spool.reserve(mul(2, u16::MAX as usize + 1)?)?;
+        let _entry = memory.spool.reserve(mul(2, directory::ENTRY_NAME_BYTES)?)?;
         let Some(entry) = entries.next() else {
             break;
         };
         let entry = entry?;
         let name = entry.file_name();
-        if name.as_encoded_bytes().len() > u16::MAX as usize {
+        if name.as_encoded_bytes().len() >= directory::ENTRY_NAME_BYTES {
             return Err(SkeinError::Execution(
                 "directory entry exceeds native admission".into(),
             ));

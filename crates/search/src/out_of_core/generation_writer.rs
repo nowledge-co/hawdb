@@ -5,7 +5,7 @@ use crate::build_memory::{
 use crate::document_encoding::DocumentEncoding;
 use crate::error::{Result, SkeinError};
 use crate::generation_cleanup::{
-    SearchProjectionCleanupOptions, SearchProjectionCleanupState, SearchProjectionGenerations,
+    once::PreparedCleanup, SearchProjectionCleanupOptions, SearchProjectionGenerations,
 };
 #[cfg(test)]
 use crate::lexical_projection::artifact_file as lexical_artifact_file;
@@ -259,7 +259,8 @@ impl SearchOutOfCoreGenerationWriter {
         let metadata_memory = memory.retained.reserve(metadata_bytes)?;
         let spool_memory = memory.spool.reserve(SPOOL_BUFFER_BYTES)?;
         let root = context_memory::OwnedPath::copy(root.as_ref(), &memory, &task_context)?;
-        fs::create_dir_all(&root)?;
+        io::GenerationIo::new(&memory, &task_context)
+            .native(&[&root], || fs::create_dir_all(&root))??;
         let stage = StageDirectory::create(&root, &memory, &task_context)?;
         let spool_path = context_memory::OwnedPath::join(
             &stage.path,
@@ -269,10 +270,12 @@ impl SearchOutOfCoreGenerationWriter {
         )?;
         let mut spool = BufWriter::with_capacity(
             SPOOL_BUFFER_BYTES,
-            OpenOptions::new()
-                .create_new(true)
-                .write(true)
-                .open(&spool_path)?,
+            io::GenerationIo::new(&memory, &task_context).native(&[&spool_path], || {
+                OpenOptions::new()
+                    .create_new(true)
+                    .write(true)
+                    .open(&spool_path)
+            })??,
         );
         spool.write_all(SPOOL_HEADER)?;
         let metadata_fields = required_descriptor_fields();
@@ -412,7 +415,8 @@ impl SearchOutOfCoreGenerationWriter {
         drop(spool);
         self.spool_memory.take();
         checkpoint(&self.task_context)?;
-        let actual_spool_bytes = fs::metadata(&self.spool_path)?.len();
+        let actual_spool_bytes =
+            io::GenerationIo::new(&self.memory, &self.task_context).length(&self.spool_path)?;
         if actual_spool_bytes != self.spool_bytes {
             return Err(SkeinError::Storage(format!(
                 "search generation spool length changed: expected {}, got {actual_spool_bytes}",
@@ -457,6 +461,7 @@ impl SearchOutOfCoreGenerationWriter {
         } = build(&self, &source, generation)?;
 
         checkpoint(&self.task_context)?;
+        let cleanup = PreparedCleanup::prepare(&self.root, &self.memory, &self.task_context)?;
         let published = publish_generation(
             PublishGenerationInput {
                 root: &self.root,
@@ -480,8 +485,12 @@ impl SearchOutOfCoreGenerationWriter {
             &self.task_context,
         )?;
 
-        let mut cleanup_state = SearchProjectionCleanupState::default();
-        let cleanup = cleanup_state.run(
+        #[cfg(test)]
+        crate::generation_cleanup::once::evidence::run(
+            crate::generation_cleanup::once::evidence::Point::AfterCommit,
+            &self.memory,
+        );
+        let cleanup = cleanup.run(
             &self.root,
             SearchProjectionGenerations {
                 lexical: Some(lexical_generation),
@@ -491,6 +500,7 @@ impl SearchOutOfCoreGenerationWriter {
                 out_of_core_discovery_failed: false,
             },
             self.options.cleanup_options,
+            &self.task_context,
         );
 
         Ok(SearchOutOfCoreGenerationBuildReport {
@@ -525,7 +535,7 @@ impl SearchOutOfCoreGenerationWriter {
             resident_document_count: 0,
             active_manifest_published_last: true,
             cleanup_deleted_files: cleanup.deleted_files,
-            cleanup_pending_files: cleanup.pending_after,
+            cleanup_pending_files: cleanup.pending_files,
             cleanup_retry_required: cleanup.retry_required,
         })
     }
