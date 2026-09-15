@@ -7,6 +7,7 @@ package(default_visibility = ["//visibility:public"])
 
 _CARGO_WORKSPACE_PACKAGES = [
     "crates/analytics",
+    "crates/bootstrap",
     "crates/cgroup",
     "crates/compat",
     "crates/core",
@@ -121,9 +122,15 @@ _SKEIN_COMMON_DEPS = [
     "//crates/telemetry:skein_telemetry",
 ]
 
-_SKEIN_FULL_DEPS = _SKEIN_COMMON_DEPS + ["//crates/search:skein_search"]
+_SKEIN_FULL_DEPS = _SKEIN_COMMON_DEPS + [
+    "//crates/bootstrap:skein_bootstrap",
+    "//crates/search:skein_search",
+]
 
-_SKEIN_MINIMAL_DEPS = _SKEIN_COMMON_DEPS + ["//crates/search:skein_search_minimal"]
+_SKEIN_MINIMAL_DEPS = _SKEIN_COMMON_DEPS + [
+    "//crates/bootstrap:skein_bootstrap_minimal",
+    "//crates/search:skein_search_minimal",
+]
 
 # crate_universe exposes optional normal dependencies to every Bazel target.
 # Keep the native vector dependency owned by targets that enable vector-search.
