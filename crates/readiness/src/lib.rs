@@ -44,6 +44,9 @@ pub mod graph_route;
 pub mod graph_route_cli;
 
 #[doc(hidden)]
+pub mod graph_route_evidence_cli;
+
+#[doc(hidden)]
 pub mod replacement_summary;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
