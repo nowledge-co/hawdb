@@ -7,6 +7,7 @@
 
 mod graph;
 mod retrieval;
+mod workload;
 
 #[doc(hidden)]
 pub mod test_support;
@@ -15,7 +16,9 @@ pub mod test_support;
 pub mod public {
     pub use crate::graph::*;
     pub use crate::retrieval::*;
+    pub use crate::workload::*;
 }
 
 pub use graph::*;
 pub use retrieval::*;
+pub use workload::*;

@@ -59,6 +59,7 @@ use crate::{
     },
 };
 use skein_core::RuntimeTaskContext;
+pub use skein_nowledge_contracts::NowledgeMemQueryExecutionPath;
 use skein_optimizer::AdaptiveVectorBackendPolicy;
 use skein_qos::{
     IoConcurrencyBudget, RuntimeGovernor, RuntimeGovernorConfig, RuntimeGovernorSnapshot,
@@ -1154,21 +1155,6 @@ impl Default for NowledgeMemReadOptions {
 pub struct NowledgeMemReadOutput {
     pub output: QueryOutput,
     pub report: NowledgeMemReadReport,
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum NowledgeMemQueryExecutionPath {
-    FastPath,
-    OptimizedPath,
-}
-
-impl NowledgeMemQueryExecutionPath {
-    pub fn as_str(self) -> &'static str {
-        match self {
-            Self::FastPath => "fast_path",
-            Self::OptimizedPath => "optimized_path",
-        }
-    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]

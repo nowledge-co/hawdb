@@ -1048,6 +1048,7 @@ dependencies = [
 name = "skein-nowledge-contracts"
 version = "0.1.0"
 dependencies = [
+ "serde_json",
  "skein-core",
  "skein-qos",
  "skein-search",
