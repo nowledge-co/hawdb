@@ -3,11 +3,6 @@ use crate::store::{GraphStore, RelationalTransactionRowView};
 use skein_relational::row_runtime::RelationalRowStoreReader;
 use skein_storage::RelationalRowPageSnapshotReader;
 
-pub(super) use skein_relational::row_runtime::RelationalReadRow;
-pub(crate) use skein_relational::row_runtime::{
-    RelationalRowExecutionEvidence, RelationalRowRuntime,
-};
-
 pub(crate) type RelationalRowReadMode<'a> =
     skein_relational::row_runtime::RelationalRowReadMode<'a, GraphStore>;
 
