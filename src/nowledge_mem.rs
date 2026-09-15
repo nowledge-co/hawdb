@@ -31,9 +31,8 @@ use crate::{
     SearchResultSet, SkeinError, SkeinLightningBootstrapManifest,
     SkeinLightningInitialImportApplyReport, SkeinLightningInitialImportCheckpoint,
     SkeinLightningInitialImportCutoverCatchUpReport, SkeinLightningInitialImportDocumentIdentity,
-    SkeinLightningInitialImportRecoveryReadinessReport, SlowQueryLogRecordSummary,
-    StorageResourceProfileLimits, StorageResourceProfileReport, TelemetrySink, Value,
-    STORAGE_RESOURCE_PROFILE_PROTOCOL,
+    SkeinLightningInitialImportRecoveryReadinessReport, StorageResourceProfileLimits,
+    StorageResourceProfileReport, TelemetrySink, Value, STORAGE_RESOURCE_PROFILE_PROTOCOL,
 };
 use crate::{
     graph_route_readiness::NMEM_GRAPH_ROUTE_READINESS_PROTOCOL,
@@ -70,7 +69,33 @@ pub use skein_readiness::bounded_read_evidence::{
     NOWLEDGE_MEM_BOUNDED_READ_EVIDENCE_PROTOCOL, NOWLEDGE_MEM_READ_REPORT_PROTOCOL,
 };
 pub use skein_readiness::query_runtime_preflight::NowledgeQueryRuntimePreflightProbe;
+pub use skein_readiness::slow_query::{
+    NowledgeMemSlowQueryRecord, NowledgeMemSlowQueryReport, NOWLEDGE_MEM_SLOW_QUERY_REPORT_PROTOCOL,
+};
 pub use skein_readiness::{NowledgeMemReadinessAreaMap, NowledgeMemReadinessAreaSummary};
+
+#[cfg(test)]
+mod slow_query_facade_tests {
+    use super::*;
+    use std::any::TypeId;
+
+    #[test]
+    fn facade_reexports_slow_query_contracts_without_conversion() {
+        assert_eq!(
+            TypeId::of::<NowledgeMemSlowQueryRecord>(),
+            TypeId::of::<skein_readiness::slow_query::NowledgeMemSlowQueryRecord>(),
+        );
+        assert_eq!(
+            TypeId::of::<NowledgeMemSlowQueryReport>(),
+            TypeId::of::<skein_readiness::slow_query::NowledgeMemSlowQueryReport>(),
+        );
+        assert_eq!(
+            NOWLEDGE_MEM_SLOW_QUERY_REPORT_PROTOCOL,
+            skein_readiness::slow_query::NOWLEDGE_MEM_SLOW_QUERY_REPORT_PROTOCOL,
+        );
+    }
+}
+
 use skein_search::candidate_evidence::{
     advised_compressed_vector_search_mode, effective_search_candidate_mode,
     nowledge_mem_search_candidate_report, retrieval_projection_advisor_blocker_codes,
@@ -930,7 +955,6 @@ pub use skein_readiness::previous_wrapper_preflight::{
     NOWLEDGE_MEM_OPERATIONS_READINESS_PROTOCOL, NOWLEDGE_QUERY_RUNTIME_PREFLIGHT_PROTOCOL,
 };
 pub const NOWLEDGE_MEM_RETRIEVAL_REPORT_PROTOCOL: &str = "skein-nowledge-mem-retrieval-report";
-pub const NOWLEDGE_MEM_SLOW_QUERY_REPORT_PROTOCOL: &str = "skein-nowledge-mem-slow-query-report-v1";
 pub const NOWLEDGE_MEM_READINESS_DASHBOARD_PROTOCOL: &str =
     "skein-nowledge-mem-readiness-dashboard-v1";
 pub const NOWLEDGE_MEM_READ_SNAPSHOT_REPORT_PROTOCOL: &str =
@@ -1341,111 +1365,6 @@ pub struct NowledgeMemQueryOutput {
 pub struct NowledgeMemQueryReportOptions {
     pub capture_physical_plan: bool,
     pub slow_log_threshold_micros: Option<u128>,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct NowledgeMemSlowQueryRecord {
-    pub sequence: u64,
-    pub query_language: String,
-    pub statement_kind: String,
-    pub query_digest: String,
-    pub started_unix_micros: i64,
-    pub elapsed_micros: i64,
-    pub row_count: i64,
-    pub success: bool,
-    pub slow_log_candidate: bool,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct NowledgeMemSlowQueryReport {
-    pub protocol: String,
-    pub mode: NowledgeMemGraphMode,
-    pub present: bool,
-    pub ready: bool,
-    pub capacity: usize,
-    pub threshold_micros: u128,
-    pub record_count: usize,
-    pub latest_sequence: Option<u64>,
-    pub max_elapsed_micros: Option<i64>,
-    pub total_row_count: i64,
-    pub records: Vec<NowledgeMemSlowQueryRecord>,
-}
-
-impl NowledgeMemSlowQueryReport {
-    fn from_summaries(
-        mode: NowledgeMemGraphMode,
-        capacity: usize,
-        threshold_micros: u128,
-        records: Vec<SlowQueryLogRecordSummary>,
-    ) -> Self {
-        let records = records
-            .into_iter()
-            .map(|record| NowledgeMemSlowQueryRecord {
-                sequence: record.sequence,
-                query_language: record.query_language,
-                statement_kind: record.statement_kind,
-                query_digest: record.query_digest,
-                started_unix_micros: record.started_unix_micros,
-                elapsed_micros: record.elapsed_micros,
-                row_count: record.row_count,
-                success: record.success,
-                slow_log_candidate: record.slow_log_candidate,
-            })
-            .collect::<Vec<_>>();
-        let latest_sequence = records.iter().map(|record| record.sequence).max();
-        let max_elapsed_micros = records.iter().map(|record| record.elapsed_micros).max();
-        let total_row_count = records
-            .iter()
-            .map(|record| record.row_count)
-            .fold(0i64, i64::saturating_add);
-
-        Self {
-            protocol: NOWLEDGE_MEM_SLOW_QUERY_REPORT_PROTOCOL.to_string(),
-            mode,
-            present: true,
-            ready: true,
-            capacity,
-            threshold_micros,
-            record_count: records.len(),
-            latest_sequence,
-            max_elapsed_micros,
-            total_row_count,
-            records,
-        }
-    }
-
-    pub fn json(&self) -> serde_json::Value {
-        serde_json::json!({
-            "protocol": self.protocol,
-            "mode": self.mode.as_str(),
-            "present": self.present,
-            "ready": self.ready,
-            "capacity": self.capacity,
-            "threshold_micros": self.threshold_micros,
-            "record_count": self.record_count,
-            "latest_sequence": self.latest_sequence,
-            "max_elapsed_micros": self.max_elapsed_micros,
-            "total_row_count": self.total_row_count,
-            "redaction": {
-                "query_text_copied": false,
-                "parameters_copied": false,
-                "local_paths_copied": false
-            },
-            "records": self.records.iter().map(|record| {
-                serde_json::json!({
-                    "sequence": record.sequence,
-                    "query_language": record.query_language,
-                    "statement_kind": record.statement_kind,
-                    "query_digest": record.query_digest,
-                    "started_unix_micros": record.started_unix_micros,
-                    "elapsed_micros": record.elapsed_micros,
-                    "row_count": record.row_count,
-                    "success": record.success,
-                    "slow_log_candidate": record.slow_log_candidate,
-                })
-            }).collect::<Vec<_>>(),
-        })
-    }
 }
 
 #[derive(Debug, Clone, Default, PartialEq)]

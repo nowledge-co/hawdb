@@ -1141,6 +1141,7 @@ dependencies = [
  "skein-executor",
  "skein-route-ownership",
  "skein-search",
+ "skein-system-sql",
 ]
 
 [[package]]

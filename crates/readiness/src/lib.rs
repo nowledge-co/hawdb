@@ -43,6 +43,9 @@ pub mod graph_route_cli;
 #[doc(hidden)]
 pub mod replacement_summary;
 
+#[doc(hidden)]
+pub mod slow_query;
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct NowledgeMemReadinessAreaMap {
     pub graph: NowledgeMemReadinessAreaSummary,

@@ -12,6 +12,7 @@ skein-core = { path = "../core" }
 skein-evidence = { path = "../evidence" }
 skein-executor = { path = "../executor" }
 skein-route-ownership = { path = "../route-ownership" }
+skein-system-sql = { path = "../system-sql" }
 
 [dev-dependencies]
 skein-search = { path = "../search" }
