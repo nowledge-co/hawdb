@@ -3,7 +3,6 @@
 use crate::build_control::checkpoint;
 use crate::error::{Result, SkeinError};
 use crate::SearchDocument;
-#[cfg(test)]
 use crate::SearchProjectionRow;
 use skein_core::RuntimeTaskContext;
 use skein_executor::{QueryMemoryAccount, QueryMemoryClass, QueryMemoryLease, QueryMemoryLedger};
@@ -69,7 +68,7 @@ impl BuildMemory {
         let memory = self.input.reserve(document_bytes(&document)?)?;
         Ok(AdmittedDocument {
             document,
-            _memory: memory,
+            _memory: DocumentMemory::Individual(memory),
         })
     }
 }
@@ -77,25 +76,47 @@ impl BuildMemory {
 pub(crate) struct AdmittedDocument {
     // Declaration order releases the owned payload before its capacity lease.
     pub(crate) document: SearchDocument,
-    _memory: QueryMemoryLease,
+    _memory: DocumentMemory,
+}
+
+enum DocumentMemory {
+    Individual(QueryMemoryLease),
+    Batch(shared::Shared<QueryMemoryLease>),
 }
 
 impl AdmittedDocument {
     pub(crate) fn from_admitted_parts(document: SearchDocument, memory: QueryMemoryLease) -> Self {
         Self {
             document,
-            _memory: memory,
+            _memory: DocumentMemory::Individual(memory),
         }
+    }
+
+    pub(crate) fn from_batch(
+        document: SearchDocument,
+        memory: shared::Shared<QueryMemoryLease>,
+    ) -> Self {
+        let admitted = Self {
+            document,
+            _memory: DocumentMemory::Batch(memory),
+        };
+        debug_assert!(admitted.retained_bytes() >= document_bytes(&admitted).unwrap());
+        admitted
     }
 
     #[cfg(test)]
     pub(crate) fn into_parts(self) -> (SearchDocument, QueryMemoryLease) {
-        (self.document, self._memory)
+        match self._memory {
+            DocumentMemory::Individual(memory) => (self.document, memory),
+            DocumentMemory::Batch(_) => panic!("spool test helper requires an individual owner"),
+        }
     }
 
-    #[cfg(test)]
     pub(crate) fn retained_bytes(&self) -> usize {
-        self._memory.bytes()
+        match &self._memory {
+            DocumentMemory::Individual(memory) => memory.bytes(),
+            DocumentMemory::Batch(memory) => memory.bytes(),
+        }
     }
 }
 
@@ -170,7 +191,6 @@ pub(crate) fn document_bytes(document: &SearchDocument) -> Result<usize> {
     )
 }
 
-#[cfg(test)]
 pub(crate) fn projection_row_bytes(row: &SearchProjectionRow) -> Result<usize> {
     checked_add(
         checked_add(

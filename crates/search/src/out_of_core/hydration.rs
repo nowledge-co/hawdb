@@ -5,10 +5,10 @@ use std::io::{self, BufRead, BufReader};
 
 const INPUT_BYTES: usize = 8192;
 
-struct RangeReader<'a> {
-    file: &'a File,
-    offset: u64,
-    remaining: u64,
+pub(super) struct RangeReader<'a> {
+    pub(super) file: &'a File,
+    pub(super) offset: u64,
+    pub(super) remaining: u64,
 }
 
 impl Read for RangeReader<'_> {
@@ -32,14 +32,14 @@ impl Read for RangeReader<'_> {
     }
 }
 
-struct CheckedReader<R> {
-    inner: R,
-    digest: Crc32cHasher,
-    count: u64,
+pub(super) struct CheckedReader<R> {
+    pub(super) inner: R,
+    pub(super) digest: Crc32cHasher,
+    pub(super) count: u64,
 }
 
 impl<R> CheckedReader<R> {
-    fn new(inner: R) -> Self {
+    pub(super) fn new(inner: R) -> Self {
         Self {
             inner,
             digest: Crc32cHasher::new(),

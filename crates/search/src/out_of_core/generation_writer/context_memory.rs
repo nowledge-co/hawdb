@@ -30,6 +30,76 @@ impl Options {
             _memory: lease,
         })
     }
+
+    pub(super) fn bind_delta_identity(
+        &mut self,
+        reader: &crate::SearchOutOfCoreReader,
+        source_graph_commit_epoch: Option<u64>,
+    ) -> Result<()> {
+        use crate::SkeinError;
+        if self.value.source_graph_commit_epoch.is_some()
+            && self.value.source_graph_commit_epoch != source_graph_commit_epoch
+        {
+            return Err(SkeinError::Storage(
+                "search generation update source graph epoch does not match the delta".into(),
+            ));
+        }
+        if self.value.import_source_graph_commit_epoch.is_some()
+            && self.value.import_source_graph_commit_epoch
+                != reader.import_source_graph_commit_epoch()
+        {
+            return Err(SkeinError::Storage(
+                "search generation update import provenance does not match the active generation"
+                    .into(),
+            ));
+        }
+        let expected = reader
+            .manifest
+            .embedding_model
+            .as_deref()
+            .zip(reader.manifest.embedding_dimension)
+            .map(|(model, dimension)| {
+                (
+                    model,
+                    reader.manifest.embedding_version.as_deref(),
+                    dimension,
+                )
+            });
+        let requested = self.value.embedding_manifest.as_ref().map(|identity| {
+            (
+                identity.model.as_str(),
+                identity.version.as_deref(),
+                identity.dimension,
+            )
+        });
+        if requested.is_some() && requested != expected {
+            return Err(SkeinError::Storage(
+                "search generation update embedding identity does not match the active generation"
+                    .into(),
+            ));
+        }
+        if self.value.analyzer_lexicon != *reader.analyzer_lexicon() {
+            return Err(SkeinError::Storage(
+                "search generation update analyzer does not match the active generation".into(),
+            ));
+        }
+        let old = self
+            .value
+            .embedding_manifest
+            .as_ref()
+            .map_or(0, |identity| {
+                identity.model.capacity() + identity.version.as_ref().map_or(0, String::capacity)
+            });
+        let new = expected.map_or(0, |(model, version, _)| {
+            model.len() + version.map_or(0, str::len)
+        });
+        self._memory.grow(new)?;
+        self.value.embedding_manifest = reader.embedding_manifest();
+        self._memory.shrink(old);
+        self.value.source_graph_commit_epoch = source_graph_commit_epoch;
+        self.value.import_source_graph_commit_epoch = reader.import_source_graph_commit_epoch();
+        Ok(())
+    }
 }
 
 impl Deref for Options {
