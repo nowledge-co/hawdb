@@ -76,6 +76,10 @@ pub use skein_readiness::nowledge_mem_query_report::{
     NOWLEDGE_MEM_QUERY_REPORT_PROTOCOL,
 };
 pub use skein_readiness::query_runtime_preflight::NowledgeQueryRuntimePreflightProbe;
+use skein_readiness::query_runtime_preflight_report::{
+    nowledge_query_runtime_route_coverage, query_runtime_preflight_blocker_codes,
+    query_runtime_probe_blocker_codes, skein_error_class,
+};
 pub use skein_readiness::query_runtime_preflight_report::{
     NowledgeQueryRuntimePreflightProbeReport, NowledgeQueryRuntimePreflightRedactionSummary,
     NowledgeQueryRuntimePreflightReport,
@@ -5132,19 +5136,6 @@ fn nowledge_mem_query_report(input: NowledgeMemQueryReportInput<'_>) -> Nowledge
     )
 }
 
-#[derive(Debug)]
-struct NowledgeQueryRuntimeRouteCoverage {
-    required_route_count: usize,
-    covered_route_count: usize,
-    covered_routes: Vec<String>,
-    missing_required_routes: Vec<String>,
-    required_routes_covered: bool,
-    unknown_routes: Vec<String>,
-    duplicate_routes: Vec<String>,
-    ready: bool,
-    blocker_codes: Vec<String>,
-}
-
 fn nowledge_query_runtime_preflight_report(
     db: &mut Database,
     probes: &[NowledgeQueryRuntimePreflightProbe],
@@ -5180,63 +5171,6 @@ fn nowledge_query_runtime_preflight_report(
         route_coverage_blocker_codes: route_coverage.blocker_codes,
         blocker_codes,
         probes: probe_reports,
-    }
-}
-
-fn nowledge_query_runtime_route_coverage(
-    probes: &[NowledgeQueryRuntimePreflightProbe],
-) -> NowledgeQueryRuntimeRouteCoverage {
-    let required_routes = REQUIRED_NOWLEDGE_MEM_BOUNDED_READ_ROUTES
-        .iter()
-        .copied()
-        .collect::<BTreeSet<_>>();
-    let mut route_counts = BTreeMap::<&str, usize>::new();
-    for route in probes.iter().filter_map(|probe| probe.route.as_deref()) {
-        *route_counts.entry(route).or_default() += 1;
-    }
-    let observed_routes = route_counts.keys().copied().collect::<BTreeSet<_>>();
-    let covered_routes = REQUIRED_NOWLEDGE_MEM_BOUNDED_READ_ROUTES
-        .iter()
-        .copied()
-        .filter(|route| observed_routes.contains(route))
-        .map(str::to_string)
-        .collect::<Vec<_>>();
-    let missing_required_routes = REQUIRED_NOWLEDGE_MEM_BOUNDED_READ_ROUTES
-        .iter()
-        .copied()
-        .filter(|route| !observed_routes.contains(route))
-        .map(str::to_string)
-        .collect::<Vec<_>>();
-    let unknown_routes = observed_routes
-        .iter()
-        .filter(|route| !required_routes.contains(**route))
-        .map(|route| (*route).to_string())
-        .collect::<Vec<_>>();
-    let duplicate_routes = route_counts
-        .iter()
-        .filter(|(_, count)| **count > 1)
-        .map(|(route, _)| (*route).to_string())
-        .collect::<Vec<_>>();
-    let required_routes_covered = missing_required_routes.is_empty();
-    let mut blocker_codes = Vec::new();
-    if !required_routes_covered {
-        blocker_codes.push("query_runtime_route_coverage_missing".to_string());
-    }
-    if !unknown_routes.is_empty() {
-        blocker_codes.push("query_runtime_unknown_routes".to_string());
-    }
-    let ready = blocker_codes.is_empty();
-
-    NowledgeQueryRuntimeRouteCoverage {
-        required_route_count: REQUIRED_NOWLEDGE_MEM_BOUNDED_READ_ROUTES.len(),
-        covered_route_count: covered_routes.len(),
-        covered_routes,
-        missing_required_routes,
-        required_routes_covered,
-        unknown_routes,
-        duplicate_routes,
-        ready,
-        blocker_codes,
     }
 }
 
@@ -5331,76 +5265,6 @@ fn nowledge_query_runtime_probe_report(
             error_class: Some(skein_error_class(&error).to_string()),
             blocker_codes: vec!["query_runtime_failed".to_string()],
         },
-    }
-}
-
-fn query_runtime_preflight_blocker_codes(
-    probe_count: usize,
-    failed_probe_count: usize,
-    route_coverage: &NowledgeQueryRuntimeRouteCoverage,
-) -> Vec<String> {
-    let mut blockers = Vec::new();
-    if probe_count == 0 {
-        blockers.push("query_runtime_probes_missing".to_string());
-    }
-    if failed_probe_count > 0 {
-        blockers.push("query_runtime_probe_failed".to_string());
-    }
-    blockers.extend(route_coverage.blocker_codes.iter().cloned());
-    blockers
-}
-
-fn query_runtime_probe_blocker_codes(
-    probe: &NowledgeQueryRuntimePreflightProbe,
-    scan_pruning_report_count: usize,
-    pruned_scan_count: usize,
-    output_row_count: usize,
-) -> Vec<String> {
-    let mut blockers = Vec::new();
-    blockers.extend(query_runtime_probe_identity_blocker_codes(probe));
-    if probe.require_scan_pruning && scan_pruning_report_count < probe.min_scan_pruning_reports {
-        blockers.push("scan_pruning_report_missing".to_string());
-    }
-    if probe.require_pruned && pruned_scan_count == 0 {
-        blockers.push("scan_pruning_not_pruned".to_string());
-    }
-    if let Some(max_output_rows) = probe.max_output_rows
-        && output_row_count > max_output_rows
-    {
-        blockers.push("output_row_count_exceeded".to_string());
-    }
-    blockers
-}
-
-fn query_runtime_probe_identity_blocker_codes(
-    probe: &NowledgeQueryRuntimePreflightProbe,
-) -> Vec<String> {
-    let mut blockers = Vec::new();
-    if probe.name.trim().is_empty() || probe.name == "unnamed" {
-        blockers.push("query_runtime_probe_name_missing".to_string());
-    }
-    match probe.route.as_deref() {
-        Some(route) if REQUIRED_NOWLEDGE_MEM_BOUNDED_READ_ROUTES.contains(&route) => {}
-        Some(_) => blockers.push("query_runtime_probe_unknown_route".to_string()),
-        None => blockers.push("query_runtime_probe_route_missing".to_string()),
-    }
-    match probe.query_family.as_deref() {
-        Some(family) if REQUIRED_NOWLEDGE_REPLACEMENT_QUERY_FAMILIES.contains(&family) => {}
-        Some(_) => blockers.push("query_runtime_probe_unknown_query_family".to_string()),
-        None => blockers.push("query_runtime_probe_query_family_missing".to_string()),
-    }
-    blockers
-}
-
-fn skein_error_class(error: &SkeinError) -> &'static str {
-    match error {
-        SkeinError::Parse(_) => "parse",
-        SkeinError::Semantic(_) => "semantic",
-        SkeinError::Storage(_)
-        | SkeinError::StorageIntegrity(_)
-        | SkeinError::AppendSequenceExhausted { .. } => "storage",
-        SkeinError::Execution(_) => "execution",
-        SkeinError::CapabilityUnavailable { .. } => "capability_unavailable",
     }
 }
 
