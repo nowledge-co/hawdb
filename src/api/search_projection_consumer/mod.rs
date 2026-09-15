@@ -226,7 +226,7 @@ impl Database {
             let mut snapshot = self.begin_read_transaction();
             let hydrated = batch_hydrator(&mut snapshot, &batch)?;
             drop(snapshot);
-            batch.graph_delta.max_operations = Some(max_projection_operations_per_batch);
+            batch.graph_delta_mut().max_operations = Some(max_projection_operations_per_batch);
             consumer
                 .projection
                 .apply(|index| self.apply_search_projection_change_batch(index, batch, hydrated))?;

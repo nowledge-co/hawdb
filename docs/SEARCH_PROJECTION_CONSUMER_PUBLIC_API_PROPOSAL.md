@@ -2,8 +2,10 @@
 
 Status: approved by the owner on September 15, 2026; production implementation in progress.
 This proposal addresses [issue #455](https://github.com/nowledge-co/skein/issues/455).
-It is based on main `1d9970f382b1896e3e6d450cef93f8b709192c88` and the private
-source/state proofs described below. It does not claim that issue 455 is complete.
+The approved proposal was based on main
+`1d9970f382b1896e3e6d450cef93f8b709192c88` and the private source/state proofs
+described below. Implementation now incorporates main through PR533 using a
+normal merge. This document does not claim that issue 455 is complete.
 
 ## Problem and decision
 
