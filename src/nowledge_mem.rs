@@ -68,7 +68,9 @@ pub use skein_readiness::bounded_read_evidence::{
     NowledgeMemReadReport, NowledgeMemRouteReadinessSummary,
     NOWLEDGE_MEM_BOUNDED_READ_EVIDENCE_PROTOCOL, NOWLEDGE_MEM_READ_REPORT_PROTOCOL,
 };
+use skein_readiness::nowledge_mem_query_report::nowledge_mem_plan_cache_report;
 pub use skein_readiness::nowledge_mem_query_report::{
+    nowledge_mem_fast_path_classification, NowledgeMemFastPathClassification,
     NowledgeMemQueryApiBehavior, NowledgeMemQueryExecutionPath, NowledgeMemQueryOutput,
     NowledgeMemQueryOutputRowShape, NowledgeMemQueryReport, NowledgeMemQueryReportOptions,
     NOWLEDGE_MEM_QUERY_REPORT_PROTOCOL,
@@ -5259,7 +5261,7 @@ fn nowledge_query_runtime_probe_report(
                 output_row_count,
             );
             let plan_cache_lookup = output.plan_cache_lookup;
-            let plan_cache = NowledgeMemPlanCacheReport::from_lookup(Some(plan_cache_lookup));
+            let plan_cache = nowledge_mem_plan_cache_report(Some(plan_cache_lookup));
             NowledgeQueryRuntimePreflightProbeReport {
                 name: probe.name.clone(),
                 route: probe.route.clone(),
@@ -5399,65 +5401,6 @@ fn skein_error_class(error: &SkeinError) -> &'static str {
         | SkeinError::AppendSequenceExhausted { .. } => "storage",
         SkeinError::Execution(_) => "execution",
         SkeinError::CapabilityUnavailable { .. } => "capability_unavailable",
-    }
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct NowledgeMemFastPathClassification {
-    pub execution_path: NowledgeMemQueryExecutionPath,
-    pub fast_path_reason: Option<&'static str>,
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-struct NowledgeMemPlanCacheReport {
-    cacheable: bool,
-    hit: bool,
-    miss: bool,
-    bypassed: bool,
-}
-
-impl NowledgeMemPlanCacheReport {
-    fn from_lookup(lookup: Option<PlanCacheLookup>) -> Self {
-        match lookup {
-            Some(PlanCacheLookup::Hit) => Self {
-                cacheable: true,
-                hit: true,
-                miss: false,
-                bypassed: false,
-            },
-            Some(PlanCacheLookup::Miss) => Self {
-                cacheable: true,
-                hit: false,
-                miss: true,
-                bypassed: false,
-            },
-            Some(PlanCacheLookup::Bypass(_)) => Self {
-                cacheable: false,
-                hit: false,
-                miss: false,
-                bypassed: true,
-            },
-            None => Self {
-                cacheable: false,
-                hit: false,
-                miss: false,
-                bypassed: false,
-            },
-        }
-    }
-}
-
-pub fn nowledge_mem_fast_path_classification(
-    statement: &cypher::Statement,
-) -> NowledgeMemFastPathClassification {
-    let shape = skein_cypher::read_route::classify_read_route_shape(statement);
-    NowledgeMemFastPathClassification {
-        execution_path: if shape.is_fast_path() {
-            NowledgeMemQueryExecutionPath::FastPath
-        } else {
-            NowledgeMemQueryExecutionPath::OptimizedPath
-        },
-        fast_path_reason: shape.fast_path_reason,
     }
 }
 

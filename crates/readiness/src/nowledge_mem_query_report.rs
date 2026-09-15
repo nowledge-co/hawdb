@@ -21,6 +21,67 @@ pub enum NowledgeMemQueryExecutionPath {
     OptimizedPath,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct NowledgeMemFastPathClassification {
+    pub execution_path: NowledgeMemQueryExecutionPath,
+    pub fast_path_reason: Option<&'static str>,
+}
+
+pub fn nowledge_mem_fast_path_classification(
+    statement: &Statement,
+) -> NowledgeMemFastPathClassification {
+    let shape = skein_cypher::read_route::classify_read_route_shape(statement);
+    NowledgeMemFastPathClassification {
+        execution_path: if shape.is_fast_path() {
+            NowledgeMemQueryExecutionPath::FastPath
+        } else {
+            NowledgeMemQueryExecutionPath::OptimizedPath
+        },
+        fast_path_reason: shape.fast_path_reason,
+    }
+}
+
+#[doc(hidden)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct NowledgeMemPlanCacheReport {
+    pub cacheable: bool,
+    pub hit: bool,
+    pub miss: bool,
+    pub bypassed: bool,
+}
+
+#[doc(hidden)]
+pub const fn nowledge_mem_plan_cache_report(
+    lookup: Option<PlanCacheLookup>,
+) -> NowledgeMemPlanCacheReport {
+    match lookup {
+        Some(PlanCacheLookup::Hit) => NowledgeMemPlanCacheReport {
+            cacheable: true,
+            hit: true,
+            miss: false,
+            bypassed: false,
+        },
+        Some(PlanCacheLookup::Miss) => NowledgeMemPlanCacheReport {
+            cacheable: true,
+            hit: false,
+            miss: true,
+            bypassed: false,
+        },
+        Some(PlanCacheLookup::Bypass(_)) => NowledgeMemPlanCacheReport {
+            cacheable: false,
+            hit: false,
+            miss: false,
+            bypassed: true,
+        },
+        None => NowledgeMemPlanCacheReport {
+            cacheable: false,
+            hit: false,
+            miss: false,
+            bypassed: false,
+        },
+    }
+}
+
 impl NowledgeMemQueryExecutionPath {
     pub const fn as_str(self) -> &'static str {
         match self {
@@ -205,8 +266,7 @@ pub fn nowledge_mem_query_report(input: NowledgeMemQueryReportInput<'_>) -> Nowl
         .options
         .slow_log_threshold_micros
         .is_some_and(|threshold| input.elapsed_micros >= threshold);
-    let (plan_cache_cacheable, plan_cache_hit, plan_cache_miss, plan_cache_bypassed) =
-        plan_cache_state(input.plan_cache_lookup);
+    let plan_cache = nowledge_mem_plan_cache_report(input.plan_cache_lookup);
     NowledgeMemQueryReport {
         protocol: NOWLEDGE_MEM_QUERY_REPORT_PROTOCOL.to_string(),
         mode: input.mode,
@@ -224,10 +284,10 @@ pub fn nowledge_mem_query_report(input: NowledgeMemQueryReportInput<'_>) -> Nowl
             .plan_cache_lookup
             .and_then(|lookup| lookup.bypass_reason())
             .map(|reason| reason.as_str().to_string()),
-        plan_cache_cacheable,
-        plan_cache_hit,
-        plan_cache_miss,
-        plan_cache_bypassed,
+        plan_cache_cacheable: plan_cache.cacheable,
+        plan_cache_hit: plan_cache.hit,
+        plan_cache_miss: plan_cache.miss,
+        plan_cache_bypassed: plan_cache.bypassed,
         physical_operator_counts: input.physical_operator_counts,
         optimizer_decision_count: input.optimizer_decision_count,
         optimizer_rule_event_count: input.optimizer_rule_event_count,
@@ -248,15 +308,6 @@ pub fn nowledge_mem_query_report(input: NowledgeMemQueryReportInput<'_>) -> Nowl
             .map(|profile| profile.pipeline_memory_report.clone()),
         output_row_shape: NowledgeMemQueryOutputRowShape::from_output(input.output),
         api_behavior: NowledgeMemQueryApiBehavior::from_statement(input.statement),
-    }
-}
-
-fn plan_cache_state(lookup: Option<PlanCacheLookup>) -> (bool, bool, bool, bool) {
-    match lookup {
-        Some(PlanCacheLookup::Hit) => (true, true, false, false),
-        Some(PlanCacheLookup::Miss) => (true, false, true, false),
-        Some(PlanCacheLookup::Bypass(_)) => (false, false, false, true),
-        None => (false, false, false, false),
     }
 }
 
@@ -485,21 +536,44 @@ mod tests {
     }
 
     #[test]
-    fn plan_cache_state_preserves_lookup_semantics() {
+    fn plan_cache_report_preserves_lookup_semantics() {
         assert_eq!(
-            plan_cache_state(Some(PlanCacheLookup::Hit)),
-            (true, true, false, false)
+            nowledge_mem_plan_cache_report(Some(PlanCacheLookup::Hit)),
+            NowledgeMemPlanCacheReport {
+                cacheable: true,
+                hit: true,
+                miss: false,
+                bypassed: false,
+            }
         );
         assert_eq!(
-            plan_cache_state(Some(PlanCacheLookup::Miss)),
-            (true, false, true, false)
+            nowledge_mem_plan_cache_report(Some(PlanCacheLookup::Miss)),
+            NowledgeMemPlanCacheReport {
+                cacheable: true,
+                hit: false,
+                miss: true,
+                bypassed: false,
+            }
         );
         assert_eq!(
-            plan_cache_state(Some(PlanCacheLookup::Bypass(
+            nowledge_mem_plan_cache_report(Some(PlanCacheLookup::Bypass(
                 skein_plan_cache::PlanCacheBypassReason::MutationPlanning,
             ))),
-            (false, false, false, true)
+            NowledgeMemPlanCacheReport {
+                cacheable: false,
+                hit: false,
+                miss: false,
+                bypassed: true,
+            }
         );
-        assert_eq!(plan_cache_state(None), (false, false, false, false));
+        assert_eq!(
+            nowledge_mem_plan_cache_report(None),
+            NowledgeMemPlanCacheReport {
+                cacheable: false,
+                hit: false,
+                miss: false,
+                bypassed: false,
+            }
+        );
     }
 }
