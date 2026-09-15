@@ -5,7 +5,7 @@ use crate::{
 };
 use std::path::Path;
 
-pub use skein_readiness::query_runtime_preflight::parse_query_runtime_preflight_probes;
+use skein_readiness::query_runtime_preflight::parse_query_runtime_preflight_probes;
 
 pub fn nowledge_query_runtime_preflight_usage() -> String {
     "nowledge-query-runtime-preflight requires [--require-ready] --probe-json <path> <database-path>; probe JSON may be a probes array or graph route query inventory"
@@ -145,24 +145,10 @@ fn read_json_file(path: &Path) -> Result<serde_json::Value> {
 
 #[cfg(test)]
 mod tests {
-    use super::{parse_query_runtime_preflight_probes, run_nowledge_query_runtime_preflight};
-    use crate::{
-        Database, NowledgeQueryRuntimePreflightProbe, Result,
-        REQUIRED_NOWLEDGE_MEM_BOUNDED_READ_ROUTES,
-    };
+    use super::run_nowledge_query_runtime_preflight;
+    use crate::{Database, REQUIRED_NOWLEDGE_MEM_BOUNDED_READ_ROUTES};
     use std::path::PathBuf;
     use std::time::{SystemTime, UNIX_EPOCH};
-
-    #[test]
-    fn root_facade_preserves_preflight_parser_identity() {
-        let facade: fn(&serde_json::Value) -> Result<Vec<NowledgeQueryRuntimePreflightProbe>> =
-            parse_query_runtime_preflight_probes;
-        assert!(std::ptr::fn_addr_eq(
-            facade,
-            skein_readiness::query_runtime_preflight::parse_query_runtime_preflight_probes
-                as fn(_) -> _,
-        ));
-    }
 
     #[test]
     fn query_runtime_preflight_accepts_pruned_probe() {
