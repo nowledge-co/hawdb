@@ -883,6 +883,7 @@ dependencies = [
  "serde",
  "serde_json",
  "skein-analytics",
+ "skein-artifact",
  "skein-compat",
  "skein-core",
  "skein-cypher",
@@ -916,6 +917,13 @@ version = "0.1.0"
 dependencies = [
  "skein-core",
  "skein-storage",
+]
+
+[[package]]
+name = "skein-artifact"
+version = "0.1.0"
+dependencies = [
+ "skein-core",
 ]
 
 [[package]]

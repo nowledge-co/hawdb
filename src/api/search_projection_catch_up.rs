@@ -147,7 +147,7 @@ impl Database {
                 let operation_count = batch.operation_count();
                 let mut snapshot = database.begin_read_transaction();
                 let hydrated = batch_hydrator(&mut snapshot, &batch)?;
-                batch.graph_delta.max_operations = Some(max_projection_operations_per_batch);
+                batch.graph_delta_mut().max_operations = Some(max_projection_operations_per_batch);
                 database.apply_search_projection_change_batch(search_index, batch, hydrated)?;
                 Ok(Some(operation_count))
             },

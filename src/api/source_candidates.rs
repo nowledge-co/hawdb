@@ -1,60 +1,22 @@
 use super::{Database, DatabaseReadTransaction};
-use crate::error::{Result, SkeinError};
+use crate::error::Result;
 use crate::schema::Catalog;
-use crate::store::{GraphStore, NodeRecord, SourceScanCandidateRead};
-use crate::value::Value;
-use skein_storage::{ScanPredicate, ScanSegmentFallback, SegmentReadExecutionReport};
-use std::collections::BTreeMap;
+use crate::store::{GraphStore, SourceScanCandidateRead};
+use skein_storage::{
+    render_source_candidate_page, select_source_candidate, validate_source_candidate_scan_request,
+    ScanSegmentFallback,
+};
 use std::num::{NonZeroU64, NonZeroUsize};
 
 const SOURCE_SCAN_IO_DEPTH: usize = 2;
 const SOURCE_SCAN_MAX_COALESCED_BYTES: u64 = 512 * 1024;
 const SOURCE_SCAN_MAX_WAVE_BYTES: u64 = 2 * 1024 * 1024;
-const MAX_SOURCE_CANDIDATE_ROWS: usize = 10_000;
-
-/// A bounded Source candidate scan. The predicate is used for storage pruning;
-/// callers must retain semantic residual evaluation for unsupported terms.
-#[derive(Debug, Clone, PartialEq)]
-pub struct KnowledgeSourceCandidateScanRequest {
-    pub predicate: ScanPredicate,
-    pub after: Option<KnowledgeSourceCandidateCursor>,
-    pub limit: usize,
-    pub max_payload_bytes: usize,
-    pub property_names: Vec<String>,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct KnowledgeSourceCandidateCursor {
-    pub created_at: Option<Value>,
-    pub node_id: u64,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct KnowledgeSourceCandidateRow {
-    pub node_id: u64,
-    pub source_id: Option<String>,
-    pub properties: BTreeMap<String, Value>,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub enum KnowledgeSourceCandidateScanOrigin {
-    Sidecar {
-        graph_epoch: u64,
-        skipped_segment_count: usize,
-    },
-    CanonicalFallback {
-        reason: ScanSegmentFallback,
-    },
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct KnowledgeSourceCandidateScanOutput {
-    pub graph_commit_epoch: u64,
-    pub rows: Vec<KnowledgeSourceCandidateRow>,
-    pub next_cursor: Option<KnowledgeSourceCandidateCursor>,
-    pub origin: KnowledgeSourceCandidateScanOrigin,
-    pub read_report: Option<SegmentReadExecutionReport>,
-}
+pub use skein_storage::{
+    SourceCandidateRow as KnowledgeSourceCandidateRow,
+    SourceCandidateScanOrigin as KnowledgeSourceCandidateScanOrigin,
+    SourceCandidateScanOutput as KnowledgeSourceCandidateScanOutput,
+    SourceCandidateScanRequest as KnowledgeSourceCandidateScanRequest,
+};
 
 impl Database {
     pub fn knowledge_source_candidates(
@@ -79,7 +41,7 @@ fn knowledge_source_candidates(
     store: &GraphStore,
     request: &KnowledgeSourceCandidateScanRequest,
 ) -> Result<KnowledgeSourceCandidateScanOutput> {
-    validate_request(request)?;
+    validate_source_candidate_scan_request(request)?;
     let graph_commit_epoch = store.commit_epoch();
     let source_label_id = catalog.label_id("Source");
     let (nodes, origin, read_report) = match store.read_published_source_scan_candidates(
@@ -133,7 +95,7 @@ fn knowledge_source_candidates(
         }
     };
 
-    render_page(graph_commit_epoch, nodes, request, origin, read_report)
+    render_source_candidate_page(graph_commit_epoch, nodes, request, origin, read_report)
 }
 
 fn canonical_fallback(
@@ -146,7 +108,7 @@ fn canonical_fallback(
     let mut callback_error = None;
     if let Some(label_id) = catalog.label_id("Source") {
         store.visit_nodes_owned(Some(label_id), |node| {
-            if let Err(error) = push_bounded_source_candidate(&mut nodes, node, request) {
+            if let Err(error) = select_source_candidate(&mut nodes, node, request) {
                 callback_error = Some(error);
                 return crate::store::GraphScanControl::Stop;
             }
@@ -156,7 +118,7 @@ fn canonical_fallback(
     if let Some(error) = callback_error {
         return Err(error);
     }
-    render_page(
+    render_source_candidate_page(
         store.commit_epoch(),
         nodes,
         request,
@@ -165,187 +127,12 @@ fn canonical_fallback(
     )
 }
 
-fn render_page(
-    graph_commit_epoch: u64,
-    mut nodes: Vec<NodeRecord>,
-    request: &KnowledgeSourceCandidateScanRequest,
-    origin: KnowledgeSourceCandidateScanOrigin,
-    read_report: Option<SegmentReadExecutionReport>,
-) -> Result<KnowledgeSourceCandidateScanOutput> {
-    let mut bounded = Vec::with_capacity(request.limit.saturating_add(1));
-    for node in nodes.drain(..) {
-        push_bounded_source_candidate(&mut bounded, node, request)?;
-    }
-    nodes = bounded;
-    let has_more = nodes.len() > request.limit;
-    nodes.truncate(request.limit);
-    let next_cursor = has_more
-        .then(|| {
-            nodes.last().map(|node| KnowledgeSourceCandidateCursor {
-                created_at: node.properties.get("created_at").cloned(),
-                node_id: node.id.0,
-            })
-        })
-        .flatten();
-    let rows = nodes
-        .into_iter()
-        .map(|node| KnowledgeSourceCandidateRow {
-            node_id: node.id.0,
-            source_id: node
-                .properties
-                .get("id")
-                .and_then(|value| matches!(value, Value::String(_)).then(|| value.clone()))
-                .and_then(|value| match value {
-                    Value::String(value) => Some(value),
-                    _ => None,
-                }),
-            properties: node
-                .properties
-                .iter()
-                .filter(|(name, _)| request.property_names.contains(*name))
-                .map(|(name, value)| (name.clone(), value.clone()))
-                .collect(),
-        })
-        .collect::<Vec<_>>();
-    Ok(KnowledgeSourceCandidateScanOutput {
-        graph_commit_epoch,
-        rows,
-        next_cursor,
-        origin,
-        read_report,
-    })
-}
-
-fn push_bounded_source_candidate(
-    nodes: &mut Vec<NodeRecord>,
-    mut node: NodeRecord,
-    request: &KnowledgeSourceCandidateScanRequest,
-) -> Result<()> {
-    if request
-        .after
-        .as_ref()
-        .is_some_and(|after| !compare_source_candidate_to_cursor(&node, after).is_gt())
-    {
-        return Ok(());
-    }
-    node.properties.retain(|name, _| {
-        name == "id" || name == "created_at" || request.property_names.contains(name)
-    });
-    let insertion = nodes
-        .binary_search_by(|existing| compare_source_candidates(existing, &node))
-        .unwrap_or_else(|index| index);
-    nodes.insert(insertion, node);
-    if nodes.len() > request.limit.saturating_add(1) {
-        nodes.pop();
-    }
-    let payload_bytes = nodes
-        .iter()
-        .map(estimated_source_candidate_payload_bytes)
-        .fold(0usize, usize::saturating_add);
-    if payload_bytes > request.max_payload_bytes {
-        return Err(SkeinError::Execution(format!(
-            "knowledge source candidate payload budget exceeded: estimated_payload_bytes={payload_bytes}, max_payload_bytes={}",
-            request.max_payload_bytes
-        )));
-    }
-    Ok(())
-}
-
-fn estimated_source_candidate_payload_bytes(node: &NodeRecord) -> usize {
-    node.properties
-        .iter()
-        .fold(16usize, |bytes, (name, value)| {
-            bytes
-                .saturating_add(name.len())
-                .saturating_add(estimated_value_bytes(value))
-        })
-}
-
-fn estimated_value_bytes(value: &Value) -> usize {
-    match value {
-        Value::Null => 1,
-        Value::Bool(_) => 1,
-        Value::Int(_) | Value::Float(_) => 8,
-        Value::String(value) => value.len(),
-        Value::Binary(value) => value.len(),
-        Value::Uuid(_) => 16,
-        Value::List(values) => values
-            .iter()
-            .map(estimated_value_bytes)
-            .fold(16usize, usize::saturating_add),
-        Value::Map(values) => values.iter().fold(16usize, |bytes, (name, value)| {
-            bytes
-                .saturating_add(name.len())
-                .saturating_add(estimated_value_bytes(value))
-        }),
-    }
-}
-
-fn compare_source_candidates(left: &NodeRecord, right: &NodeRecord) -> std::cmp::Ordering {
-    compare_source_candidate_keys(
-        left.properties.get("created_at"),
-        left.id.0,
-        right.properties.get("created_at"),
-        right.id.0,
-    )
-}
-
-fn compare_source_candidate_to_cursor(
-    node: &NodeRecord,
-    cursor: &KnowledgeSourceCandidateCursor,
-) -> std::cmp::Ordering {
-    compare_source_candidate_keys(
-        node.properties.get("created_at"),
-        node.id.0,
-        cursor.created_at.as_ref(),
-        cursor.node_id,
-    )
-}
-
-fn compare_source_candidate_keys(
-    left_created_at: Option<&Value>,
-    left_node_id: u64,
-    right_created_at: Option<&Value>,
-    right_node_id: u64,
-) -> std::cmp::Ordering {
-    right_created_at
-        .cmp(&left_created_at)
-        .then_with(|| right_node_id.cmp(&left_node_id))
-}
-
-fn validate_request(request: &KnowledgeSourceCandidateScanRequest) -> Result<()> {
-    if request.limit == 0 {
-        return Err(SkeinError::Semantic(
-            "knowledge source candidate scan requires a positive limit".to_string(),
-        ));
-    }
-    if request.limit > MAX_SOURCE_CANDIDATE_ROWS {
-        return Err(SkeinError::Semantic(format!(
-            "knowledge source candidate scan limit {} exceeds {MAX_SOURCE_CANDIDATE_ROWS}",
-            request.limit
-        )));
-    }
-    if request.max_payload_bytes == 0 {
-        return Err(SkeinError::Semantic(
-            "knowledge source candidate scan requires a positive payload budget".to_string(),
-        ));
-    }
-    if request
-        .property_names
-        .iter()
-        .any(|name| name.trim().is_empty())
-    {
-        return Err(SkeinError::Semantic(
-            "knowledge source candidate scan requires non-empty property names".to_string(),
-        ));
-    }
-    Ok(())
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::{DatabaseConfig, StorageResidencyMode};
+    use crate::{DatabaseConfig, StorageResidencyMode, Value};
+    use skein_storage::ScanPredicate;
+    use std::collections::BTreeMap;
     use std::path::PathBuf;
 
     fn test_dir(name: &str) -> PathBuf {

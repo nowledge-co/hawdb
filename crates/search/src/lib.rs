@@ -57,6 +57,7 @@ mod lexical_projection;
 mod lexical_readiness;
 mod lexical_term_policy;
 mod out_of_core;
+mod projection_delta_contracts;
 #[doc(hidden)]
 pub mod projection_evidence;
 #[doc(hidden)]
@@ -164,6 +165,11 @@ pub use out_of_core::{
     SearchOutOfCoreGenerationBuildReport, SearchOutOfCoreGenerationUpdate,
     SearchOutOfCoreGenerationWriter, SearchOutOfCoreHydrationOutput, SearchOutOfCoreMetrics,
     SearchOutOfCoreOutput, SearchOutOfCoreReader,
+};
+// These are internal ownership seams. Hosts continue to use the embedded facade.
+#[doc(hidden)]
+pub use projection_delta_contracts::{
+    SearchProjectionChangeBatch, SearchProjectionGraphDeltaRequest, SearchProjectionRelationalDelta,
 };
 pub use range_io::SearchRangeReadConfig;
 use recall_validation::{sample_positions, VectorRecallValidationAccumulator};
