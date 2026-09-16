@@ -1,12 +1,8 @@
 pub mod analytics;
 pub mod api;
-pub mod background_maintenance_evidence;
-pub mod blackbox;
-pub mod bounded_read_evidence;
 pub mod compat;
+mod compatibility_facades;
 mod compiled_capabilities;
-pub mod crash_recovery_evidence;
-pub mod cypher;
 pub mod embedded;
 #[cfg(feature = "tokio-runtime")]
 pub mod embedded_tokio;
@@ -15,35 +11,29 @@ pub mod expression {
     pub use skein_expression::*;
 }
 pub mod graph_route_evidence;
-pub mod graph_route_readiness;
-pub mod mem_integration_bundle;
-pub mod mem_integration_readiness;
 pub mod mem_library_readiness;
 pub mod nowledge_fuzz;
 pub mod nowledge_inventory;
 pub mod nowledge_mem;
-pub mod optimizer;
-pub mod planner;
-pub mod previous_wrapper_preflight;
-pub mod production_evidence;
-pub mod qos;
 pub mod query {
     pub use skein_query::*;
 }
-pub mod query_family_evidence;
 pub mod query_runtime_preflight;
 mod relational_sql;
 pub mod replacement_summary;
-pub mod route_ownership;
 pub mod search;
-pub mod search_candidate_shadow_evidence;
 pub use skein_route_ownership as search_route_ownership;
-pub mod storage_recovery_evidence;
 pub mod store;
 pub mod telemetry;
 pub mod workload_fixtures;
 
-pub mod search_projection_evidence;
+pub use compatibility_facades::{
+    background_maintenance_evidence, blackbox, bounded_read_evidence, crash_recovery_evidence,
+    cypher, graph_route_readiness, mem_integration_bundle, mem_integration_readiness, optimizer,
+    planner, previous_wrapper_preflight, production_evidence, qos, query_family_evidence,
+    route_ownership, search_candidate_shadow_evidence, search_projection_evidence,
+    storage_recovery_evidence,
+};
 
 pub mod error {
     pub use skein_core::error::*;
