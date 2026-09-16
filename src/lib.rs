@@ -445,6 +445,22 @@ pub use search_route_ownership::{
     NOWLEDGE_MEM_SEARCH_ROUTE_SOURCE, NOWLEDGE_MEM_SEARCH_ROUTE_SOURCE_CHUNK,
     REQUIRED_NOWLEDGE_MEM_ACTIVE_SEARCH_ROUTES, REQUIRED_NOWLEDGE_MEM_SEARCH_ROUTES,
 };
+#[doc(hidden)]
+pub use skein_bootstrap::{
+    endpoint_violations_json, publish_skein_lightning_staging_catalog,
+    publish_skein_lightning_staging_catalog_with_options,
+    read_skein_lightning_staging_artifact_json, skein_lightning_artifact_summary,
+    skein_lightning_bootstrap_bundle_json,
+    skein_lightning_bootstrap_bundle_json_with_optional_storage_recovery,
+    skein_lightning_bootstrap_manifest_json, skein_lightning_gc_staging_report,
+    skein_lightning_graph_stream_validation_json, skein_lightning_import_state_marker,
+    skein_lightning_import_status, skein_lightning_relational_stream_validation_json,
+    stable_identity_audit_json, stage_skein_lightning_bootstrap_export,
+    stage_skein_lightning_bootstrap_export_with_optional_storage_recovery,
+    sync_bootstrap_directory, verify_skein_lightning_published_manifest,
+    verify_skein_lightning_staging_catalog, write_bootstrap_atomic_file,
+    SkeinLightningPublishOptions, SKEIN_LIGHTNING_STAGING_CATALOG_PROTOCOL_VERSION,
+};
 pub use skein_core::LogicalType;
 pub use skein_core::Uuid;
 pub use skein_core::{

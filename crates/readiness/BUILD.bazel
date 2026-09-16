@@ -8,6 +8,17 @@ _READINESS_TEST_DEPS = all_crate_deps(normal_dev = True) + [
     "//crates/search:skein_search",
 ]
 
+_READINESS_BASE_DEPS = all_crate_deps(normal = True) + [
+    "//crates/core:skein_core",
+    "//crates/cypher:skein_cypher",
+    "//crates/evidence:skein_evidence",
+    "//crates/executor:skein_executor",
+    "//crates/plan-cache:skein_plan_cache",
+    "//crates/route-ownership:skein_route_ownership",
+    "//crates/system-sql:skein_system_sql",
+    "//crates/storage:skein_storage",
+]
+
 test_suite(
     name = "presubmit_tests",
 )
@@ -19,17 +30,42 @@ rust_library(
     srcs = glob(["src/**/*.rs"]),
     edition = "2024",
     aliases = aliases(),
-    deps = all_crate_deps(normal = True) + [
-        "//crates/core:skein_core",
-        "//crates/cypher:skein_cypher",
-        "//crates/evidence:skein_evidence",
-        "//crates/executor:skein_executor",
-        "//crates/plan-cache:skein_plan_cache",
-        "//crates/route-ownership:skein_route_ownership",
-        "//crates/system-sql:skein_system_sql",
-        "//crates/storage:skein_storage",
+    deps = _READINESS_BASE_DEPS + [
+        "//crates/search:skein_search",
     ],
     proc_macro_deps = all_crate_deps(proc_macro = True),
+)
+
+# Match the root facade's no-default-features graph so public runtime-status
+# contracts are never linked to a second skein-search instance.
+rust_library(
+    name = "skein_readiness_minimal",
+    crate_name = "skein_readiness",
+    crate_root = "src/lib.rs",
+    srcs = glob(["src/**/*.rs"]),
+    edition = "2024",
+    aliases = aliases(),
+    deps = _READINESS_BASE_DEPS + [
+        "//crates/search:skein_search_minimal",
+    ],
+    proc_macro_deps = all_crate_deps(proc_macro = True),
+    visibility = ["//:__pkg__"],
+)
+
+# Match the ACL qualification graph without enabling ACL for the default crate.
+rust_library(
+    name = "skein_readiness_acl",
+    testonly = True,
+    crate_name = "skein_readiness",
+    crate_root = "src/lib.rs",
+    srcs = glob(["src/**/*.rs"]),
+    edition = "2024",
+    aliases = aliases(),
+    deps = _READINESS_BASE_DEPS + [
+        "//crates/search:skein_search_acl",
+    ],
+    proc_macro_deps = all_crate_deps(proc_macro = True),
+    visibility = ["//:__pkg__"],
 )
 
 rust_test(

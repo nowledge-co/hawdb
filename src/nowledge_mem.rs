@@ -25,10 +25,9 @@ use crate::{
     QueryStreamOptions, QueryStreamReport, ReadExecutionProfile, Result,
     ScheduledSearchProjectionCatchUpReport, SearchDocument, SearchIndex,
     SearchProjectionCatchUpReport, SearchProjectionChangeBatch,
-    SearchProjectionChangefeedReadiness, SearchProjectionChangefeedStatus, SearchProjectionDelta,
-    SearchProjectionDeltaReport, SearchProjectionFreshness, SearchProjectionGraphDeltaRequest,
-    SearchProjectionMutationId, SearchProjectionProbeOptions, SearchProjectionRelationalDelta,
-    SearchResultSet, SkeinError, SkeinLightningBootstrapManifest,
+    SearchProjectionChangefeedReadiness, SearchProjectionDelta, SearchProjectionDeltaReport,
+    SearchProjectionFreshness, SearchProjectionGraphDeltaRequest, SearchProjectionProbeOptions,
+    SearchProjectionRelationalDelta, SearchResultSet, SkeinError, SkeinLightningBootstrapManifest,
     SkeinLightningInitialImportApplyReport, SkeinLightningInitialImportCheckpoint,
     SkeinLightningInitialImportCutoverCatchUpReport, SkeinLightningInitialImportDocumentIdentity,
     SkeinLightningInitialImportRecoveryReadinessReport, StorageResourceProfileLimits,
@@ -140,6 +139,45 @@ use std::time::Instant;
 mod app_read_snapshot_tests;
 #[cfg(test)]
 mod candidate_facade_tests;
+
+#[cfg(test)]
+mod runtime_status_facade_tests {
+    use super::{
+        NowledgeMemCutoverControls, NowledgeMemCutoverControlsReport, NowledgeMemProductionStatus,
+        NowledgeMemReadControl, NowledgeMemRuntimeStatus, NowledgeMemWorkControl,
+    };
+    use std::any::TypeId;
+
+    #[test]
+    fn root_facade_preserves_runtime_status_type_identity() {
+        assert_eq!(
+            TypeId::of::<NowledgeMemRuntimeStatus>(),
+            TypeId::of::<skein_readiness::nowledge_mem_runtime_status::NowledgeMemRuntimeStatus>()
+        );
+        assert_eq!(
+            TypeId::of::<NowledgeMemProductionStatus>(),
+            TypeId::of::<skein_readiness::nowledge_mem_runtime_status::NowledgeMemProductionStatus>(
+            )
+        );
+        assert_eq!(
+            TypeId::of::<NowledgeMemReadControl>(),
+            TypeId::of::<skein_readiness::nowledge_mem_cutover::NowledgeMemReadControl>()
+        );
+        assert_eq!(
+            TypeId::of::<NowledgeMemWorkControl>(),
+            TypeId::of::<skein_readiness::nowledge_mem_cutover::NowledgeMemWorkControl>()
+        );
+        assert_eq!(
+            TypeId::of::<NowledgeMemCutoverControls>(),
+            TypeId::of::<skein_readiness::nowledge_mem_cutover::NowledgeMemCutoverControls>()
+        );
+        assert_eq!(
+            TypeId::of::<NowledgeMemCutoverControlsReport>(),
+            TypeId::of::<skein_readiness::nowledge_mem_cutover::NowledgeMemCutoverControlsReport>()
+        );
+    }
+}
+
 pub use skein_readiness::nowledge_mem_serving_path::{
     NowledgeMemServingEntrypoint, NowledgeMemServingPathReadiness,
     NOWLEDGE_MEM_SERVING_PATH_READINESS_PROTOCOL,
@@ -500,310 +538,21 @@ impl NowledgeMemOpenReport {
     }
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct NowledgeMemRuntimeStatus {
-    pub protocol: String,
-    pub graph_commit_epoch: u64,
-    pub changefeed: SearchProjectionChangefeedStatus,
-    pub projection_freshness: Option<SearchProjectionFreshness>,
-}
+pub use skein_readiness::nowledge_mem_runtime_status::{
+    NowledgeMemProductionStatus, NowledgeMemRuntimeStatus, NOWLEDGE_MEM_PRODUCTION_STATUS_PROTOCOL,
+    NOWLEDGE_MEM_RUNTIME_STATUS_PROTOCOL,
+};
 
-impl NowledgeMemRuntimeStatus {
-    pub fn projection_commit_lag(&self) -> u64 {
-        self.changefeed.projection_commit_lag_after(
-            self.projection_freshness
-                .as_ref()
-                .and_then(|freshness| freshness.durable_source_graph_commit_epoch)
-                .unwrap_or(0),
-        )
-    }
-
-    pub fn projection_stale(&self) -> bool {
-        self.projection_commit_lag() > 0
-    }
-
-    pub fn json(&self) -> serde_json::Value {
-        let freshness = self.projection_freshness.as_ref();
-        serde_json::json!({
-            "protocol": self.protocol,
-            "graph_commit_epoch": self.graph_commit_epoch,
-            "changefeed": {
-                "graph_commit_epoch": self.changefeed.graph_commit_epoch,
-                "resume_floor_commit_epoch": self.changefeed.resume_floor_commit_epoch,
-                "oldest_retained_mutation_id": self.changefeed.oldest_retained_mutation_id.map(SearchProjectionMutationId::commit_epoch),
-                "newest_retained_mutation_id": self.changefeed.newest_retained_mutation_id.map(SearchProjectionMutationId::commit_epoch),
-                "retained_mutation_count": self.changefeed.retained_mutation_count,
-                "restart_recoverable": self.changefeed.restart_recoverable,
-            },
-            "projection": {
-                "opened": freshness.is_some(),
-                "document_count": freshness.map(|freshness| freshness.document_count),
-                "source_graph_commit_epoch": freshness.and_then(|freshness| freshness.source_graph_commit_epoch),
-                "durable_source_graph_commit_epoch": freshness.and_then(|freshness| freshness.durable_source_graph_commit_epoch),
-                "has_uncheckpointed_changes": freshness.is_some_and(|freshness| freshness.has_uncheckpointed_changes),
-                "full_reindex_needed": freshness.is_some_and(|freshness| freshness.full_reindex_needed),
-                "full_reindex_reasons": freshness.map(|freshness| freshness.full_reindex_reasons.as_slice()).unwrap_or_default(),
-                "metadata_repair_needed": freshness.is_some_and(|freshness| freshness.metadata_repair_needed),
-                "metadata_repair_reasons": freshness.map(|freshness| freshness.metadata_repair_reasons.as_slice()).unwrap_or_default(),
-                "embedding_model": freshness.and_then(|freshness| freshness.embedding_model.as_deref()),
-                "embedding_version": freshness.and_then(|freshness| freshness.embedding_version.as_deref()),
-                "embedding_dimension": freshness.and_then(|freshness| freshness.embedding_dimension),
-                "commit_lag": self.projection_commit_lag(),
-                "stale": self.projection_stale(),
-            },
-        })
-    }
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct NowledgeMemProductionStatus {
-    pub protocol: String,
-    pub mode: NowledgeMemGraphMode,
-    pub graph_open: bool,
-    pub graph_read_only: bool,
-    pub graph_skein_cutover_effective: bool,
-    pub graph_route_ownership_present: bool,
-    pub graph_route_ownership_ready: bool,
-    pub graph_skein_route_count: usize,
-    pub graph_legacy_route_count: usize,
-    pub search_projection_open: bool,
-    pub search_skein_cutover_effective: bool,
-    pub graph_commit_epoch: u64,
-    pub search_projection_source_graph_commit_epoch: Option<u64>,
-    pub search_projection_durable_source_graph_commit_epoch: Option<u64>,
-    pub search_projection_commit_lag: u64,
-    pub search_projection_stale: bool,
-    pub search_projection_full_reindex_needed: bool,
-    pub search_projection_metadata_repair_needed: bool,
-    pub search_projection_changefeed_restart_recoverable: bool,
-    pub blocker_codes: Vec<String>,
-    pub runtime_status: NowledgeMemRuntimeStatus,
-    pub route_ownership: Option<NowledgeMemRouteOwnershipReadinessReport>,
-}
-
-impl NowledgeMemProductionStatus {
-    fn from_runtime(
-        mode: NowledgeMemGraphMode,
-        graph_read_only: bool,
-        runtime_status: NowledgeMemRuntimeStatus,
-        route_ownership: Option<NowledgeMemRouteOwnershipReadinessReport>,
-    ) -> Self {
-        let freshness = runtime_status.projection_freshness.as_ref();
-        let search_projection_open = freshness.is_some();
-        let search_projection_commit_lag = runtime_status.projection_commit_lag();
-        let search_projection_stale = search_projection_open && runtime_status.projection_stale();
-        let search_projection_full_reindex_needed =
-            freshness.is_some_and(|freshness| freshness.full_reindex_needed);
-        let search_projection_metadata_repair_needed =
-            freshness.is_some_and(|freshness| freshness.metadata_repair_needed);
-        let graph_route_ownership_present = route_ownership.is_some();
-        let graph_route_ownership_ready =
-            route_ownership.as_ref().is_some_and(|report| report.ready);
-        let graph_skein_route_count = route_ownership
-            .as_ref()
-            .map(|report| report.skein_route_count)
-            .unwrap_or(0);
-        let graph_legacy_route_count = route_ownership
-            .as_ref()
-            .map(|report| report.legacy_route_count)
-            .unwrap_or(0);
-        let mut blocker_codes = Vec::new();
-        if graph_read_only {
-            blocker_codes.push("graph_opened_read_only".to_string());
-        }
-        if !graph_route_ownership_present {
-            blocker_codes.push("graph_route_ownership_missing".to_string());
-        } else if !graph_route_ownership_ready {
-            blocker_codes.push("graph_route_ownership_not_ready".to_string());
-        }
-        if graph_legacy_route_count > 0 {
-            blocker_codes.push("graph_legacy_routes_remaining".to_string());
-        }
-        if !search_projection_open {
-            blocker_codes.push("search_projection_not_open".to_string());
-        }
-        if search_projection_stale {
-            blocker_codes.push("search_projection_stale".to_string());
-        }
-        if search_projection_full_reindex_needed {
-            blocker_codes.push("search_projection_full_reindex_needed".to_string());
-        }
-        if search_projection_metadata_repair_needed {
-            blocker_codes.push("search_projection_metadata_repair_needed".to_string());
-        }
-        if !runtime_status.changefeed.restart_recoverable {
-            blocker_codes.push("search_projection_changefeed_not_restart_recoverable".to_string());
-        }
-
-        let graph_skein_cutover_effective = !graph_read_only
-            && route_ownership
-                .as_ref()
-                .is_some_and(|report| report.production_cutover_ready);
-        let search_skein_cutover_effective = search_projection_open
-            && !search_projection_stale
-            && !search_projection_full_reindex_needed
-            && !search_projection_metadata_repair_needed
-            && runtime_status.changefeed.restart_recoverable;
-
-        Self {
-            protocol: NOWLEDGE_MEM_PRODUCTION_STATUS_PROTOCOL.to_string(),
-            mode,
-            graph_open: true,
-            graph_read_only,
-            graph_skein_cutover_effective,
-            graph_route_ownership_present,
-            graph_route_ownership_ready,
-            graph_skein_route_count,
-            graph_legacy_route_count,
-            search_projection_open,
-            search_skein_cutover_effective,
-            graph_commit_epoch: runtime_status.graph_commit_epoch,
-            search_projection_source_graph_commit_epoch: freshness
-                .and_then(|freshness| freshness.source_graph_commit_epoch),
-            search_projection_durable_source_graph_commit_epoch: freshness
-                .and_then(|freshness| freshness.durable_source_graph_commit_epoch),
-            search_projection_commit_lag,
-            search_projection_stale,
-            search_projection_full_reindex_needed,
-            search_projection_metadata_repair_needed,
-            search_projection_changefeed_restart_recoverable: runtime_status
-                .changefeed
-                .restart_recoverable,
-            blocker_codes,
-            runtime_status,
-            route_ownership,
-        }
-    }
-
-    pub fn json(&self) -> serde_json::Value {
-        serde_json::json!({
-            "protocol": self.protocol,
-            "mode": self.mode.as_str(),
-            "graph": {
-                "open": self.graph_open,
-                "read_only": self.graph_read_only,
-                "skein_cutover_effective": self.graph_skein_cutover_effective,
-                "route_ownership_present": self.graph_route_ownership_present,
-                "route_ownership_ready": self.graph_route_ownership_ready,
-                "skein_route_count": self.graph_skein_route_count,
-                "legacy_route_count": self.graph_legacy_route_count,
-                "commit_epoch": self.graph_commit_epoch,
-            },
-            "search": {
-                "projection_open": self.search_projection_open,
-                "skein_cutover_effective": self.search_skein_cutover_effective,
-                "source_graph_commit_epoch": self.search_projection_source_graph_commit_epoch,
-                "durable_source_graph_commit_epoch": self.search_projection_durable_source_graph_commit_epoch,
-                "commit_lag": self.search_projection_commit_lag,
-                "stale": self.search_projection_stale,
-                "full_reindex_needed": self.search_projection_full_reindex_needed,
-                "metadata_repair_needed": self.search_projection_metadata_repair_needed,
-                "changefeed_restart_recoverable": self.search_projection_changefeed_restart_recoverable,
-            },
-            "blocker_codes": self.blocker_codes,
-            "runtime_status": self.runtime_status.json(),
-            "route_ownership": self.route_ownership.as_ref().map(NowledgeMemRouteOwnershipReadinessReport::json),
-            "redaction": {
-                "query_text_copied": false,
-                "parameters_copied": false,
-                "local_paths_copied": false,
-            },
-        })
-    }
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum NowledgeMemReadControl {
-    Legacy,
-    Skein,
-}
-
-impl NowledgeMemReadControl {
-    pub const fn as_str(self) -> &'static str {
-        match self {
-            Self::Legacy => "legacy",
-            Self::Skein => "skein",
-        }
-    }
-
-    pub const fn selects_skein(self) -> bool {
-        matches!(self, Self::Skein)
-    }
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum NowledgeMemWorkControl {
-    Disabled,
-    Enabled,
-}
-
-impl NowledgeMemWorkControl {
-    pub const fn as_str(self) -> &'static str {
-        match self {
-            Self::Disabled => "disabled",
-            Self::Enabled => "enabled",
-        }
-    }
-
-    pub const fn enabled(self) -> bool {
-        matches!(self, Self::Enabled)
-    }
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct NowledgeMemCutoverControls {
-    pub graph_reads: NowledgeMemReadControl,
-    pub search_reads: NowledgeMemReadControl,
-    pub dual_writes: NowledgeMemWorkControl,
-    pub initial_import: NowledgeMemWorkControl,
-    pub projection_catch_up: NowledgeMemWorkControl,
-}
-
-impl NowledgeMemCutoverControls {
-    pub const fn legacy() -> Self {
-        Self {
-            graph_reads: NowledgeMemReadControl::Legacy,
-            search_reads: NowledgeMemReadControl::Legacy,
-            dual_writes: NowledgeMemWorkControl::Disabled,
-            initial_import: NowledgeMemWorkControl::Disabled,
-            projection_catch_up: NowledgeMemWorkControl::Disabled,
-        }
-    }
-
-    pub const fn skein_shadow() -> Self {
-        Self {
-            graph_reads: NowledgeMemReadControl::Legacy,
-            search_reads: NowledgeMemReadControl::Legacy,
-            dual_writes: NowledgeMemWorkControl::Enabled,
-            initial_import: NowledgeMemWorkControl::Enabled,
-            projection_catch_up: NowledgeMemWorkControl::Enabled,
-        }
-    }
-
-    pub const fn skein_reads() -> Self {
-        Self {
-            graph_reads: NowledgeMemReadControl::Skein,
-            search_reads: NowledgeMemReadControl::Skein,
-            dual_writes: NowledgeMemWorkControl::Enabled,
-            initial_import: NowledgeMemWorkControl::Disabled,
-            projection_catch_up: NowledgeMemWorkControl::Enabled,
-        }
-    }
-
-    fn json(self) -> serde_json::Value {
-        serde_json::json!({
-            "graph_reads": self.graph_reads.as_str(),
-            "search_reads": self.search_reads.as_str(),
-            "dual_writes": self.dual_writes.as_str(),
-            "initial_import": self.initial_import.as_str(),
-            "projection_catch_up": self.projection_catch_up.as_str(),
-        })
-    }
-}
+pub use skein_readiness::nowledge_mem_cutover::{
+    NowledgeMemCutoverControls, NowledgeMemCutoverControlsReport, NowledgeMemReadControl,
+    NowledgeMemWorkControl,
+};
 
 pub use skein_nowledge_contracts::{
+    NowledgeMemReadSnapshotBudget, NowledgeMemReadSnapshotReport,
     NowledgeMemStorageLifecycleActionKind, NowledgeMemStorageLifecycleDecision,
-    NowledgeMemStorageRecoveryReport, NOWLEDGE_MEM_STORAGE_LIFECYCLE_DECISION_PROTOCOL,
+    NowledgeMemStorageRecoveryReport, NOWLEDGE_MEM_READ_SNAPSHOT_REPORT_PROTOCOL,
+    NOWLEDGE_MEM_STORAGE_LIFECYCLE_DECISION_PROTOCOL,
 };
 
 #[cfg(test)]
@@ -826,6 +575,22 @@ mod storage_lifecycle_facade_tests {
             TypeId::of::<skein_nowledge_contracts::NowledgeMemStorageLifecycleActionKind>(),
         );
     }
+
+    #[test]
+    fn facade_reexports_read_snapshot_contracts_without_conversion() {
+        assert_eq!(
+            TypeId::of::<NowledgeMemReadSnapshotBudget>(),
+            TypeId::of::<skein_nowledge_contracts::NowledgeMemReadSnapshotBudget>(),
+        );
+        assert_eq!(
+            TypeId::of::<NowledgeMemReadSnapshotReport>(),
+            TypeId::of::<skein_nowledge_contracts::NowledgeMemReadSnapshotReport>(),
+        );
+        assert_eq!(
+            NOWLEDGE_MEM_READ_SNAPSHOT_REPORT_PROTOCOL,
+            skein_nowledge_contracts::NOWLEDGE_MEM_READ_SNAPSHOT_REPORT_PROTOCOL,
+        );
+    }
 }
 
 pub use skein_readiness::source_mutation::{
@@ -845,123 +610,7 @@ pub use skein_readiness::source_mutation::{
     REQUIRED_NOWLEDGE_MEM_SOURCE_MUTATION_FAMILIES,
 };
 
-impl Default for NowledgeMemCutoverControls {
-    fn default() -> Self {
-        Self::legacy()
-    }
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct NowledgeMemCutoverControlsReport {
-    pub protocol: String,
-    pub ready: bool,
-    pub controls: NowledgeMemCutoverControls,
-    pub graph_read_selected_skein: bool,
-    pub graph_read_effective: bool,
-    pub search_read_selected_skein: bool,
-    pub search_read_effective: bool,
-    pub dual_writes_enabled: bool,
-    pub initial_import_enabled: bool,
-    pub initial_import_inactive_for_cutover: bool,
-    pub initial_import_cutover_catch_up_ready: bool,
-    pub initial_import_safe_for_read_cutover: bool,
-    pub projection_catch_up_enabled: bool,
-    pub blocker_codes: Vec<String>,
-    pub production_status: NowledgeMemProductionStatus,
-}
-
-impl NowledgeMemCutoverControlsReport {
-    fn from_status_with_initial_import_cutover_catch_up(
-        controls: NowledgeMemCutoverControls,
-        production_status: NowledgeMemProductionStatus,
-        initial_import_cutover_catch_up: Option<&SkeinLightningInitialImportCutoverCatchUpReport>,
-    ) -> Self {
-        let graph_read_selected_skein = controls.graph_reads.selects_skein();
-        let search_read_selected_skein = controls.search_reads.selects_skein();
-        let dual_writes_enabled = controls.dual_writes.enabled();
-        let initial_import_enabled = controls.initial_import.enabled();
-        let initial_import_inactive_for_cutover = !initial_import_enabled;
-        let initial_import_cutover_catch_up_ready =
-            initial_import_cutover_catch_up.is_some_and(|report| report.ready);
-        let initial_import_safe_for_read_cutover =
-            initial_import_inactive_for_cutover || initial_import_cutover_catch_up_ready;
-        let projection_catch_up_enabled = controls.projection_catch_up.enabled();
-        let graph_read_effective =
-            !graph_read_selected_skein || production_status.graph_skein_cutover_effective;
-        let search_read_effective =
-            !search_read_selected_skein || production_status.search_skein_cutover_effective;
-        let mut blocker_codes = Vec::new();
-        if !graph_read_effective {
-            blocker_codes.push("graph_read_selected_skein_but_not_effective".to_string());
-        }
-        if !search_read_effective {
-            blocker_codes.push("search_read_selected_skein_but_not_effective".to_string());
-        }
-        if search_read_selected_skein && !projection_catch_up_enabled {
-            blocker_codes
-                .push("search_read_selected_skein_without_projection_catch_up".to_string());
-        }
-        if initial_import_enabled && !dual_writes_enabled {
-            blocker_codes.push("initial_import_enabled_without_dual_writes".to_string());
-        }
-        if !initial_import_safe_for_read_cutover {
-            blocker_codes.push("initial_import_active_blocks_read_cutover".to_string());
-        }
-
-        Self {
-            protocol: NOWLEDGE_MEM_CUTOVER_CONTROLS_PROTOCOL.to_string(),
-            ready: blocker_codes.is_empty(),
-            controls,
-            graph_read_selected_skein,
-            graph_read_effective,
-            search_read_selected_skein,
-            search_read_effective,
-            dual_writes_enabled,
-            initial_import_enabled,
-            initial_import_inactive_for_cutover,
-            initial_import_cutover_catch_up_ready,
-            initial_import_safe_for_read_cutover,
-            projection_catch_up_enabled,
-            blocker_codes,
-            production_status,
-        }
-    }
-
-    pub fn json(&self) -> serde_json::Value {
-        serde_json::json!({
-            "protocol": self.protocol,
-            "ready": self.ready,
-            "controls": self.controls.json(),
-            "graph": {
-                "read_selected_skein": self.graph_read_selected_skein,
-                "read_effective": self.graph_read_effective,
-            },
-            "search": {
-                "read_selected_skein": self.search_read_selected_skein,
-                "read_effective": self.search_read_effective,
-            },
-            "work": {
-                "dual_writes_enabled": self.dual_writes_enabled,
-                "initial_import_enabled": self.initial_import_enabled,
-                "initial_import_inactive_for_cutover": self.initial_import_inactive_for_cutover,
-                "initial_import_cutover_catch_up_ready": self.initial_import_cutover_catch_up_ready,
-                "initial_import_safe_for_read_cutover": self.initial_import_safe_for_read_cutover,
-                "projection_catch_up_enabled": self.projection_catch_up_enabled,
-            },
-            "blocker_codes": self.blocker_codes,
-            "production_status": self.production_status.json(),
-            "redaction": {
-                "query_text_copied": false,
-                "parameters_copied": false,
-                "local_paths_copied": false,
-            },
-        })
-    }
-}
-
 pub const NOWLEDGE_MEM_OPEN_REPORT_PROTOCOL: &str = "skein-nowledge-mem-open-report";
-pub const NOWLEDGE_MEM_RUNTIME_STATUS_PROTOCOL: &str = "skein-nowledge-mem-runtime-status-v1";
-pub const NOWLEDGE_MEM_PRODUCTION_STATUS_PROTOCOL: &str = "skein-nowledge-mem-production-status-v1";
 pub use skein_readiness::previous_wrapper_preflight::{
     NOWLEDGE_MEM_CUTOVER_CONTROLS_PROTOCOL, NOWLEDGE_MEM_LIBRARY_READINESS_PROTOCOL,
     NOWLEDGE_MEM_OPERATIONS_READINESS_PROTOCOL, NOWLEDGE_QUERY_RUNTIME_PREFLIGHT_PROTOCOL,
@@ -969,8 +618,6 @@ pub use skein_readiness::previous_wrapper_preflight::{
 pub const NOWLEDGE_MEM_RETRIEVAL_REPORT_PROTOCOL: &str = "skein-nowledge-mem-retrieval-report";
 pub const NOWLEDGE_MEM_READINESS_DASHBOARD_PROTOCOL: &str =
     "skein-nowledge-mem-readiness-dashboard-v1";
-pub const NOWLEDGE_MEM_READ_SNAPSHOT_REPORT_PROTOCOL: &str =
-    "skein-nowledge-mem-read-snapshot-report-v1";
 pub use skein_route_ownership::graph::{
     nowledge_mem_graph_read_route_catalog_digest, nowledge_mem_graph_read_route_spec,
     nowledge_mem_graph_read_route_spec_json, nowledge_mem_graph_read_route_specs_json,
@@ -2574,50 +2221,6 @@ pub struct NowledgeMemEmbeddedStoreHandle {
     inner: Arc<RwLock<NowledgeMemEmbeddedStore>>,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct NowledgeMemReadSnapshotBudget {
-    pub max_rows: usize,
-    pub max_payload_bytes: usize,
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct NowledgeMemReadSnapshotReport {
-    pub commit_epoch: u64,
-    pub search_projection_present: bool,
-    pub search_projection_source_graph_commit_epoch: Option<u64>,
-    pub search_projection_durable_source_graph_commit_epoch: Option<u64>,
-    pub max_rows: usize,
-    pub max_payload_bytes: usize,
-    pub cypher_statement_count: usize,
-    pub sql_statement_count: usize,
-    pub vector_seed_execution_count: usize,
-    pub output_rows: usize,
-    pub output_payload_bytes: usize,
-    pub remaining_rows: usize,
-    pub remaining_payload_bytes: usize,
-}
-
-impl NowledgeMemReadSnapshotReport {
-    pub fn json(&self) -> serde_json::Value {
-        serde_json::json!({
-            "protocol": NOWLEDGE_MEM_READ_SNAPSHOT_REPORT_PROTOCOL,
-            "commit_epoch": self.commit_epoch,
-            "search_projection_present": self.search_projection_present,
-            "search_projection_source_graph_commit_epoch": self.search_projection_source_graph_commit_epoch,
-            "search_projection_durable_source_graph_commit_epoch": self.search_projection_durable_source_graph_commit_epoch,
-            "max_rows": self.max_rows,
-            "max_payload_bytes": self.max_payload_bytes,
-            "cypher_statement_count": self.cypher_statement_count,
-            "sql_statement_count": self.sql_statement_count,
-            "vector_seed_execution_count": self.vector_seed_execution_count,
-            "output_rows": self.output_rows,
-            "output_payload_bytes": self.output_payload_bytes,
-            "remaining_rows": self.remaining_rows,
-            "remaining_payload_bytes": self.remaining_payload_bytes,
-        })
-    }
-}
-
 pub struct NowledgeMemReadSnapshot<'a> {
     transaction: crate::DatabaseReadTransaction,
     external: SearchProjectionExternalReadOperator<'a>,
@@ -4126,10 +3729,10 @@ impl NowledgeMemEmbeddedStore {
         route_ownership: Option<&NowledgeMemRouteOwnershipReadinessReport>,
         initial_import_cutover_catch_up: Option<&SkeinLightningInitialImportCutoverCatchUpReport>,
     ) -> NowledgeMemCutoverControlsReport {
-        NowledgeMemCutoverControlsReport::from_status_with_initial_import_cutover_catch_up(
+        NowledgeMemCutoverControlsReport::from_production_status(
             controls,
             self.production_status(route_ownership),
-            initial_import_cutover_catch_up,
+            initial_import_cutover_catch_up.is_some_and(|report| report.ready),
         )
     }
 
@@ -4148,13 +3751,10 @@ impl NowledgeMemEmbeddedStore {
                     .as_ref()
                     .is_some_and(|catch_up| catch_up.ready)
         });
-        let catch_up = recovery_ready.then(|| {
-            initial_import_recovery.and_then(|report| report.startup.cutover_catch_up.as_ref())
-        });
-        let mut report = self.cutover_controls_report_with_initial_import_cutover_catch_up(
+        let mut report = NowledgeMemCutoverControlsReport::from_production_status(
             controls,
-            route_ownership,
-            catch_up.flatten(),
+            self.production_status(route_ownership),
+            recovery_ready,
         );
         if report.initial_import_enabled && !recovery_ready {
             report.ready = false;
