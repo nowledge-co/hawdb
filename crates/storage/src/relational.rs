@@ -12,6 +12,7 @@ use std::num::{NonZeroU32, NonZeroU64, NonZeroUsize};
 use std::sync::Arc;
 
 mod codec;
+mod compaction;
 mod constraints;
 mod index_shadow;
 mod ordered_key;
@@ -32,6 +33,10 @@ pub use codec::{
 pub(crate) use codec::{
     decode_relational_row_payload, decode_relational_table_schema, encode_relational_row_payload,
     encode_relational_table_schema,
+};
+pub use compaction::{
+    RelationalOverflowCompactionConfig, RelationalOverflowCompactionReport,
+    RelationalRowPageCompactionConfig, RelationalRowPageCompactionReport,
 };
 pub use constraints::RelationalConstraintIndex;
 pub use index_shadow::{
