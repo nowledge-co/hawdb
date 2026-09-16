@@ -15,6 +15,8 @@ pub use primary::{CompatibilityPrimaryEngine, CompatibilityPrimarySession};
 mod external_shadow;
 mod external_shadow_gate;
 mod external_shadow_smoke;
+#[doc(hidden)]
+pub mod fixture_contract;
 mod inventory_gate;
 mod nowledge_fixture;
 #[doc(hidden)]

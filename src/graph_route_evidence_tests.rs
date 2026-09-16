@@ -127,7 +127,13 @@ mod tests {
         )
         .unwrap();
 
-        let error = super::read_json_file(&path).unwrap_err().to_string();
+        let error = super::run_nowledge_graph_route_evidence(
+            ["unused-graph.db", path.to_str().unwrap()]
+                .into_iter()
+                .map(str::to_string),
+        )
+        .unwrap_err()
+        .to_string();
 
         assert_eq!(
             error,

@@ -148,7 +148,10 @@ pub trait RelationalRowStoreReader {
 /// Caller-selected relational row source for one query execution.
 #[doc(hidden)]
 #[derive(Debug)]
-pub enum RelationalRowReadMode<'a, R: RelationalRowStoreReader> {
+pub enum RelationalRowReadMode<
+    'a,
+    R: RelationalRowStoreReader = crate::RelationalMaterializedReader,
+> {
     CanonicalMemory,
     Store(&'a R),
     Transaction {

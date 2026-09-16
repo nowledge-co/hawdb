@@ -7,9 +7,8 @@ use crate::value::Value;
 use std::collections::BTreeMap;
 
 use skein_artifact::{
-    derived_artifact_job_failure_row, external_content_artifact_completion_output,
-    external_content_runtime_can_claim, is_external_content_artifact_job,
-    summarize_external_content_artifact_job,
+    external_content_artifact_completion_output, is_external_content_artifact_job,
+    DerivedArtifactJobClaim,
 };
 pub use skein_artifact::{
     DerivedArtifactJob, DerivedArtifactJobReport, DerivedArtifactJobStatus,
@@ -52,19 +51,11 @@ impl Database {
     }
 
     pub fn derived_artifact_jobs(&self) -> Vec<DerivedArtifactJob> {
-        self.derived_artifact_jobs.clone()
+        self.derived_artifact_jobs.jobs()
     }
 
     pub fn pending_external_content_artifact_jobs(&self, limit: usize) -> Vec<DerivedArtifactJob> {
-        self.derived_artifact_jobs
-            .iter()
-            .filter(|job| {
-                job.status == DerivedArtifactJobStatus::Pending
-                    && is_external_content_artifact_job(&job.artifact_type)
-            })
-            .take(limit)
-            .cloned()
-            .collect()
+        self.derived_artifact_jobs.pending_external(limit)
     }
 
     pub fn pending_external_content_artifact_jobs_for_action(
@@ -73,15 +64,7 @@ impl Database {
         limit: usize,
     ) -> Vec<DerivedArtifactJob> {
         self.derived_artifact_jobs
-            .iter()
-            .filter(|job| {
-                job.status == DerivedArtifactJobStatus::Pending
-                    && job.action == action
-                    && is_external_content_artifact_job(&job.artifact_type)
-            })
-            .take(limit)
-            .cloned()
-            .collect()
+            .pending_external_for_action(action, limit)
     }
 
     pub fn pending_external_content_artifact_jobs_for_runtime(
@@ -90,41 +73,18 @@ impl Database {
         limit: usize,
     ) -> Vec<DerivedArtifactJob> {
         self.derived_artifact_jobs
-            .iter()
-            .filter(|job| {
-                job.status == DerivedArtifactJobStatus::Pending
-                    && external_content_runtime_can_claim(manifest, job)
-            })
-            .take(limit)
-            .cloned()
-            .collect()
+            .pending_external_for_runtime(manifest, limit)
     }
 
     pub fn failed_external_content_artifact_jobs(&self, limit: usize) -> Vec<DerivedArtifactJob> {
-        self.derived_artifact_jobs
-            .iter()
-            .filter(|job| {
-                job.status == DerivedArtifactJobStatus::Failed
-                    && is_external_content_artifact_job(&job.artifact_type)
-            })
-            .take(limit)
-            .cloned()
-            .collect()
+        self.derived_artifact_jobs.failed_external(limit)
     }
 
     pub fn succeeded_external_content_artifact_jobs(
         &self,
         limit: usize,
     ) -> Vec<DerivedArtifactJob> {
-        self.derived_artifact_jobs
-            .iter()
-            .filter(|job| {
-                job.status == DerivedArtifactJobStatus::Succeeded
-                    && is_external_content_artifact_job(&job.artifact_type)
-            })
-            .take(limit)
-            .cloned()
-            .collect()
+        self.derived_artifact_jobs.succeeded_external(limit)
     }
 
     pub fn failed_external_content_artifact_jobs_for_action(
@@ -133,15 +93,7 @@ impl Database {
         limit: usize,
     ) -> Vec<DerivedArtifactJob> {
         self.derived_artifact_jobs
-            .iter()
-            .filter(|job| {
-                job.status == DerivedArtifactJobStatus::Failed
-                    && job.action == action
-                    && is_external_content_artifact_job(&job.artifact_type)
-            })
-            .take(limit)
-            .cloned()
-            .collect()
+            .failed_external_for_action(action, limit)
     }
 
     pub fn succeeded_external_content_artifact_jobs_for_action(
@@ -150,40 +102,18 @@ impl Database {
         limit: usize,
     ) -> Vec<DerivedArtifactJob> {
         self.derived_artifact_jobs
-            .iter()
-            .filter(|job| {
-                job.status == DerivedArtifactJobStatus::Succeeded
-                    && job.action == action
-                    && is_external_content_artifact_job(&job.artifact_type)
-            })
-            .take(limit)
-            .cloned()
-            .collect()
+            .succeeded_external_for_action(action, limit)
     }
 
     pub fn external_content_artifact_job_summary(&self) -> ExternalContentArtifactJobSummary {
-        let mut summary = ExternalContentArtifactJobSummary::default();
-        for job in self
-            .derived_artifact_jobs
-            .iter()
-            .filter(|job| is_external_content_artifact_job(&job.artifact_type))
-        {
-            summarize_external_content_artifact_job(&mut summary, job);
-        }
-        summary
+        self.derived_artifact_jobs.external_summary(None)
     }
 
     pub fn external_content_artifact_job_summary_for_action(
         &self,
         action: &str,
     ) -> ExternalContentArtifactJobSummary {
-        let mut summary = ExternalContentArtifactJobSummary::default();
-        for job in self.derived_artifact_jobs.iter().filter(|job| {
-            job.action == action && is_external_content_artifact_job(&job.artifact_type)
-        }) {
-            summarize_external_content_artifact_job(&mut summary, job);
-        }
-        summary
+        self.derived_artifact_jobs.external_summary(Some(action))
     }
 
     pub fn external_content_artifact_job_background_work_plan(
@@ -192,11 +122,7 @@ impl Database {
         estimated_operations: usize,
     ) -> Option<BackgroundWorkPlan> {
         self.derived_artifact_jobs
-            .iter()
-            .any(|job| {
-                job.status == DerivedArtifactJobStatus::Pending
-                    && is_external_content_artifact_job(&job.artifact_type)
-            })
+            .has_pending_external()
             .then(|| BackgroundWorkPlan::background(WorkClass::Import, estimated_operations, hint))
     }
 
@@ -207,12 +133,7 @@ impl Database {
         estimated_operations: usize,
     ) -> Option<BackgroundWorkPlan> {
         self.derived_artifact_jobs
-            .iter()
-            .any(|job| {
-                job.status == DerivedArtifactJobStatus::Pending
-                    && job.action == action
-                    && is_external_content_artifact_job(&job.artifact_type)
-            })
+            .has_pending_external_for_action(action)
             .then(|| BackgroundWorkPlan::background(WorkClass::Import, estimated_operations, hint))
     }
 
@@ -222,11 +143,7 @@ impl Database {
         hint: BackgroundWorkHint,
     ) -> Option<BackgroundWorkPlan> {
         self.derived_artifact_jobs
-            .iter()
-            .any(|job| {
-                job.status == DerivedArtifactJobStatus::Pending
-                    && external_content_runtime_can_claim(manifest, job)
-            })
+            .has_pending_external_for_runtime(manifest)
             .then(|| {
                 BackgroundWorkPlan::background(
                     WorkClass::Import,
@@ -240,20 +157,8 @@ impl Database {
         &mut self,
         job_id: u64,
     ) -> Option<DerivedArtifactJob> {
-        let job = self
-            .derived_artifact_jobs
-            .iter_mut()
-            .find(|job| job.id == job_id)?;
-        if job.status != DerivedArtifactJobStatus::Failed
-            || !is_external_content_artifact_job(&job.artifact_type)
-        {
-            return None;
-        }
-
-        job.status = DerivedArtifactJobStatus::Pending;
-        job.last_error = None;
-        job.last_output = None;
-        Some(job.clone())
+        self.derived_artifact_jobs
+            .retry_failed_external(job_id, None)
     }
 
     pub fn retry_failed_external_content_artifact_job_for_action(
@@ -261,68 +166,18 @@ impl Database {
         action: &str,
         job_id: u64,
     ) -> Option<DerivedArtifactJob> {
-        let job = self
-            .derived_artifact_jobs
-            .iter_mut()
-            .find(|job| job.id == job_id)?;
-        if job.status != DerivedArtifactJobStatus::Failed
-            || job.action != action
-            || !is_external_content_artifact_job(&job.artifact_type)
-        {
-            return None;
-        }
-
-        job.status = DerivedArtifactJobStatus::Pending;
-        job.last_error = None;
-        job.last_output = None;
-        Some(job.clone())
+        self.derived_artifact_jobs
+            .retry_failed_external(job_id, Some(action))
     }
 
     pub fn run_next_derived_artifact_job(&mut self) -> Result<Option<DerivedArtifactJobReport>> {
         self.ensure_writable()?;
-        let Some(index) = self
-            .derived_artifact_jobs
-            .iter()
-            .position(|job| job.status == DerivedArtifactJobStatus::Pending)
-        else {
+        let Some(claim) = self.derived_artifact_jobs.claim_pending() else {
             return Ok(None);
         };
-
-        self.derived_artifact_jobs[index].status = DerivedArtifactJobStatus::Running;
-        self.derived_artifact_jobs[index].attempts += 1;
-        self.derived_artifact_jobs[index].last_error = None;
-        self.derived_artifact_jobs[index].last_output = None;
-
-        let artifact_type = self.derived_artifact_jobs[index].artifact_type.clone();
-        let name = self.derived_artifact_jobs[index].name.clone();
-        let action = self.derived_artifact_jobs[index].action.clone();
-        let result = self.execute_derived_artifact_job(&artifact_type, &name, &action);
-
-        match result {
-            Ok(output) => {
-                self.derived_artifact_jobs[index].status = DerivedArtifactJobStatus::Succeeded;
-                self.derived_artifact_jobs[index].last_output = Some(output.clone());
-                Ok(Some(DerivedArtifactJobReport {
-                    job: self.derived_artifact_jobs[index].clone(),
-                    output,
-                }))
-            }
-            Err(error) => {
-                self.derived_artifact_jobs[index].status = DerivedArtifactJobStatus::Failed;
-                self.derived_artifact_jobs[index].last_error = Some(error.to_string());
-                self.derived_artifact_jobs[index].last_output = None;
-                Ok(Some(DerivedArtifactJobReport {
-                    job: self.derived_artifact_jobs[index].clone(),
-                    output: QueryOutput {
-                        rows: vec![derived_artifact_job_failure_row(
-                            &self.derived_artifact_jobs[index],
-                            &error.to_string(),
-                        )]
-                        .into(),
-                    },
-                }))
-            }
-        }
+        let job = claim.job().clone();
+        let result = self.execute_derived_artifact_job(&job.artifact_type, &job.name, &job.action);
+        Ok(Some(self.derived_artifact_jobs.complete(claim, result)))
     }
 
     pub fn run_next_background_derived_artifact_job(
@@ -332,11 +187,7 @@ impl Database {
         estimated_operations: usize,
     ) -> Result<Option<DerivedArtifactJobReport>> {
         self.ensure_runtime_capability(skein_core::RuntimeCapability::BackgroundMaintenance)?;
-        let Some(job) = self
-            .derived_artifact_jobs
-            .iter()
-            .find(|job| job.status == DerivedArtifactJobStatus::Pending)
-        else {
+        let Some(job) = self.derived_artifact_jobs.next_pending() else {
             return Ok(None);
         };
 
@@ -356,11 +207,7 @@ impl Database {
         estimated_operations: usize,
     ) -> Result<Option<DerivedArtifactJobReport>> {
         self.ensure_runtime_capability(skein_core::RuntimeCapability::BackgroundMaintenance)?;
-        let Some(job) = self
-            .derived_artifact_jobs
-            .iter()
-            .find(|job| job.status == DerivedArtifactJobStatus::Pending)
-        else {
+        let Some(job) = self.derived_artifact_jobs.next_pending() else {
             return Ok(None);
         };
 
@@ -390,14 +237,11 @@ impl Database {
         mut runtime: impl FnMut(&DerivedArtifactJob) -> Result<QueryOutput>,
     ) -> Result<Option<DerivedArtifactJobReport>> {
         self.ensure_writable()?;
-        let Some(index) = self.derived_artifact_jobs.iter().position(|job| {
-            job.status == DerivedArtifactJobStatus::Pending
-                && is_external_content_artifact_job(&job.artifact_type)
-        }) else {
+        let Some(claim) = self.derived_artifact_jobs.claim_external() else {
             return Ok(None);
         };
 
-        self.run_external_content_artifact_job_at_index(index, &mut runtime)
+        self.run_external_content_artifact_job_with_claim(claim, &mut runtime)
     }
 
     pub fn run_next_background_external_content_artifact_job_with(
@@ -409,19 +253,17 @@ impl Database {
     ) -> Result<Option<DerivedArtifactJobReport>> {
         self.ensure_runtime_capability(skein_core::RuntimeCapability::BackgroundMaintenance)?;
         self.ensure_writable()?;
-        let Some(index) = self.derived_artifact_jobs.iter().position(|job| {
-            job.status == DerivedArtifactJobStatus::Pending
-                && is_external_content_artifact_job(&job.artifact_type)
-        }) else {
+        let Some(job) = self.derived_artifact_jobs.next_external_claimable() else {
             return Ok(None);
         };
 
-        match policy.admit(
-            state,
-            &self.derived_artifact_jobs[index].background_work_request(estimated_operations),
-        ) {
+        match policy.admit(state, &job.background_work_request(estimated_operations)) {
             QosAdmission::Admit => {
-                self.run_external_content_artifact_job_at_index(index, &mut runtime)
+                let claim = self
+                    .derived_artifact_jobs
+                    .claim_external()
+                    .expect("admitted external artifact job must remain pending");
+                self.run_external_content_artifact_job_with_claim(claim, &mut runtime)
             }
             QosAdmission::Defer { reason, .. } => Err(SkeinError::Storage(format!(
                 "background external content artifact job deferred: {reason}"
@@ -439,17 +281,12 @@ impl Database {
     ) -> Result<Option<DerivedArtifactJobReport>> {
         self.ensure_runtime_capability(skein_core::RuntimeCapability::BackgroundMaintenance)?;
         self.ensure_writable()?;
-        let Some(index) = self.derived_artifact_jobs.iter().position(|job| {
-            job.status == DerivedArtifactJobStatus::Pending
-                && is_external_content_artifact_job(&job.artifact_type)
-        }) else {
+        let Some(job) = self.derived_artifact_jobs.next_external_claimable() else {
             return Ok(None);
         };
 
         let scheduler = self.local_qos_scheduler_for_work();
-        let permit = match scheduler.try_start(
-            self.derived_artifact_jobs[index].background_work_request(estimated_operations),
-        ) {
+        let permit = match scheduler.try_start(job.background_work_request(estimated_operations)) {
             Ok(permit) => permit,
             Err(QosAdmission::Defer { reason, .. }) => {
                 return Err(SkeinError::Storage(format!(
@@ -464,7 +301,11 @@ impl Database {
             Err(QosAdmission::Admit) => unreachable!("admitted work returns a permit"),
         };
 
-        let result = self.run_external_content_artifact_job_at_index(index, &mut runtime);
+        let claim = self
+            .derived_artifact_jobs
+            .claim_external()
+            .expect("admitted external artifact job must remain pending");
+        let result = self.run_external_content_artifact_job_with_claim(claim, &mut runtime);
         permit.finish_with_outcome(result.is_ok());
         result
     }
@@ -475,15 +316,11 @@ impl Database {
         mut runtime: impl FnMut(&DerivedArtifactJob) -> Result<QueryOutput>,
     ) -> Result<Option<DerivedArtifactJobReport>> {
         self.ensure_writable()?;
-        let Some(index) = self.derived_artifact_jobs.iter().position(|job| {
-            job.status == DerivedArtifactJobStatus::Pending
-                && job.action == action
-                && is_external_content_artifact_job(&job.artifact_type)
-        }) else {
+        let Some(claim) = self.derived_artifact_jobs.claim_external_for_action(action) else {
             return Ok(None);
         };
 
-        self.run_external_content_artifact_job_at_index(index, &mut runtime)
+        self.run_external_content_artifact_job_with_claim(claim, &mut runtime)
     }
 
     pub fn run_next_external_content_artifact_job_for_runtime_with(
@@ -492,14 +329,14 @@ impl Database {
         mut runtime: impl FnMut(&DerivedArtifactJob) -> Result<QueryOutput>,
     ) -> Result<Option<DerivedArtifactJobReport>> {
         self.ensure_writable()?;
-        let Some(index) = self.derived_artifact_jobs.iter().position(|job| {
-            job.status == DerivedArtifactJobStatus::Pending
-                && external_content_runtime_can_claim(manifest, job)
-        }) else {
+        let Some(claim) = self
+            .derived_artifact_jobs
+            .claim_external_for_runtime(manifest)
+        else {
             return Ok(None);
         };
 
-        self.run_external_content_artifact_job_at_index(index, &mut runtime)
+        self.run_external_content_artifact_job_with_claim(claim, &mut runtime)
     }
 
     pub fn run_next_background_external_content_artifact_job_for_action_with(
@@ -512,20 +349,20 @@ impl Database {
     ) -> Result<Option<DerivedArtifactJobReport>> {
         self.ensure_runtime_capability(skein_core::RuntimeCapability::BackgroundMaintenance)?;
         self.ensure_writable()?;
-        let Some(index) = self.derived_artifact_jobs.iter().position(|job| {
-            job.status == DerivedArtifactJobStatus::Pending
-                && job.action == action
-                && is_external_content_artifact_job(&job.artifact_type)
-        }) else {
+        let Some(job) = self
+            .derived_artifact_jobs
+            .next_external_for_action_claimable(action)
+        else {
             return Ok(None);
         };
 
-        match policy.admit(
-            state,
-            &self.derived_artifact_jobs[index].background_work_request(estimated_operations),
-        ) {
+        match policy.admit(state, &job.background_work_request(estimated_operations)) {
             QosAdmission::Admit => {
-                self.run_external_content_artifact_job_at_index(index, &mut runtime)
+                let claim = self
+                    .derived_artifact_jobs
+                    .claim_external_for_action(action)
+                    .expect("admitted external artifact job must remain pending");
+                self.run_external_content_artifact_job_with_claim(claim, &mut runtime)
             }
             QosAdmission::Defer { reason, .. } => Err(SkeinError::Storage(format!(
                 "background external content artifact job deferred: {reason}"
@@ -544,18 +381,15 @@ impl Database {
     ) -> Result<Option<DerivedArtifactJobReport>> {
         self.ensure_runtime_capability(skein_core::RuntimeCapability::BackgroundMaintenance)?;
         self.ensure_writable()?;
-        let Some(index) = self.derived_artifact_jobs.iter().position(|job| {
-            job.status == DerivedArtifactJobStatus::Pending
-                && job.action == action
-                && is_external_content_artifact_job(&job.artifact_type)
-        }) else {
+        let Some(job) = self
+            .derived_artifact_jobs
+            .next_external_for_action_claimable(action)
+        else {
             return Ok(None);
         };
 
         let scheduler = self.local_qos_scheduler_for_work();
-        let permit = match scheduler.try_start(
-            self.derived_artifact_jobs[index].background_work_request(estimated_operations),
-        ) {
+        let permit = match scheduler.try_start(job.background_work_request(estimated_operations)) {
             Ok(permit) => permit,
             Err(QosAdmission::Defer { reason, .. }) => {
                 return Err(SkeinError::Storage(format!(
@@ -570,7 +404,11 @@ impl Database {
             Err(QosAdmission::Admit) => unreachable!("admitted work returns a permit"),
         };
 
-        let result = self.run_external_content_artifact_job_at_index(index, &mut runtime);
+        let claim = self
+            .derived_artifact_jobs
+            .claim_external_for_action(action)
+            .expect("admitted external artifact job must remain pending");
+        let result = self.run_external_content_artifact_job_with_claim(claim, &mut runtime);
         permit.finish_with_outcome(result.is_ok());
         result
     }
@@ -584,20 +422,23 @@ impl Database {
     ) -> Result<Option<DerivedArtifactJobReport>> {
         self.ensure_runtime_capability(skein_core::RuntimeCapability::BackgroundMaintenance)?;
         self.ensure_writable()?;
-        let Some(index) = self.derived_artifact_jobs.iter().position(|job| {
-            job.status == DerivedArtifactJobStatus::Pending
-                && external_content_runtime_can_claim(manifest, job)
-        }) else {
+        let Some(job) = self
+            .derived_artifact_jobs
+            .next_external_for_runtime_claimable(manifest)
+        else {
             return Ok(None);
         };
 
         match policy.admit(
             state,
-            &self.derived_artifact_jobs[index]
-                .background_work_request(manifest.estimated_operations),
+            &job.background_work_request(manifest.estimated_operations),
         ) {
             QosAdmission::Admit => {
-                self.run_external_content_artifact_job_at_index(index, &mut runtime)
+                let claim = self
+                    .derived_artifact_jobs
+                    .claim_external_for_runtime(manifest)
+                    .expect("admitted external artifact job must remain pending");
+                self.run_external_content_artifact_job_with_claim(claim, &mut runtime)
             }
             QosAdmission::Defer { reason, .. } => Err(SkeinError::Storage(format!(
                 "background external content artifact job deferred: {reason}"
@@ -615,33 +456,35 @@ impl Database {
     ) -> Result<Option<DerivedArtifactJobReport>> {
         self.ensure_runtime_capability(skein_core::RuntimeCapability::BackgroundMaintenance)?;
         self.ensure_writable()?;
-        let Some(index) = self.derived_artifact_jobs.iter().position(|job| {
-            job.status == DerivedArtifactJobStatus::Pending
-                && external_content_runtime_can_claim(manifest, job)
-        }) else {
+        let Some(job) = self
+            .derived_artifact_jobs
+            .next_external_for_runtime_claimable(manifest)
+        else {
             return Ok(None);
         };
 
         let scheduler = self.local_qos_scheduler_for_work();
-        let permit = match scheduler.try_start(
-            self.derived_artifact_jobs[index]
-                .background_work_request(manifest.estimated_operations),
-        ) {
-            Ok(permit) => permit,
-            Err(QosAdmission::Defer { reason, .. }) => {
-                return Err(SkeinError::Storage(format!(
-                    "background external content artifact job deferred: {reason}"
-                )));
-            }
-            Err(QosAdmission::Reject { reason, .. }) => {
-                return Err(SkeinError::Storage(format!(
-                    "background external content artifact job rejected: {reason}"
-                )));
-            }
-            Err(QosAdmission::Admit) => unreachable!("admitted work returns a permit"),
-        };
+        let permit =
+            match scheduler.try_start(job.background_work_request(manifest.estimated_operations)) {
+                Ok(permit) => permit,
+                Err(QosAdmission::Defer { reason, .. }) => {
+                    return Err(SkeinError::Storage(format!(
+                        "background external content artifact job deferred: {reason}"
+                    )));
+                }
+                Err(QosAdmission::Reject { reason, .. }) => {
+                    return Err(SkeinError::Storage(format!(
+                        "background external content artifact job rejected: {reason}"
+                    )));
+                }
+                Err(QosAdmission::Admit) => unreachable!("admitted work returns a permit"),
+            };
 
-        let result = self.run_external_content_artifact_job_at_index(index, &mut runtime);
+        let claim = self
+            .derived_artifact_jobs
+            .claim_external_for_runtime(manifest)
+            .expect("admitted external artifact job must remain pending");
+        let result = self.run_external_content_artifact_job_with_claim(claim, &mut runtime);
         permit.finish_with_outcome(result.is_ok());
         result
     }
@@ -652,15 +495,11 @@ impl Database {
         mut runtime: impl FnMut(&DerivedArtifactJob) -> Result<QueryOutput>,
     ) -> Result<Option<DerivedArtifactJobReport>> {
         self.ensure_writable()?;
-        let Some(index) = self.derived_artifact_jobs.iter().position(|job| {
-            job.id == job_id
-                && job.status == DerivedArtifactJobStatus::Pending
-                && is_external_content_artifact_job(&job.artifact_type)
-        }) else {
+        let Some(claim) = self.derived_artifact_jobs.claim_external_by_id(job_id) else {
             return Ok(None);
         };
 
-        self.run_external_content_artifact_job_at_index(index, &mut runtime)
+        self.run_external_content_artifact_job_with_claim(claim, &mut runtime)
     }
 
     pub fn complete_next_external_content_artifact_job_with(
@@ -805,20 +644,20 @@ impl Database {
     ) -> Result<Option<DerivedArtifactJobReport>> {
         self.ensure_runtime_capability(skein_core::RuntimeCapability::BackgroundMaintenance)?;
         self.ensure_writable()?;
-        let Some(index) = self.derived_artifact_jobs.iter().position(|job| {
-            job.id == job_id
-                && job.status == DerivedArtifactJobStatus::Pending
-                && is_external_content_artifact_job(&job.artifact_type)
-        }) else {
+        let Some(job) = self
+            .derived_artifact_jobs
+            .next_external_by_id_claimable(job_id)
+        else {
             return Ok(None);
         };
 
-        match policy.admit(
-            state,
-            &self.derived_artifact_jobs[index].background_work_request(estimated_operations),
-        ) {
+        match policy.admit(state, &job.background_work_request(estimated_operations)) {
             QosAdmission::Admit => {
-                self.run_external_content_artifact_job_at_index(index, &mut runtime)
+                let claim = self
+                    .derived_artifact_jobs
+                    .claim_external_by_id(job_id)
+                    .expect("admitted external artifact job must remain pending");
+                self.run_external_content_artifact_job_with_claim(claim, &mut runtime)
             }
             QosAdmission::Defer { reason, .. } => Err(SkeinError::Storage(format!(
                 "background external content artifact job deferred: {reason}"
@@ -837,18 +676,15 @@ impl Database {
     ) -> Result<Option<DerivedArtifactJobReport>> {
         self.ensure_runtime_capability(skein_core::RuntimeCapability::BackgroundMaintenance)?;
         self.ensure_writable()?;
-        let Some(index) = self.derived_artifact_jobs.iter().position(|job| {
-            job.id == job_id
-                && job.status == DerivedArtifactJobStatus::Pending
-                && is_external_content_artifact_job(&job.artifact_type)
-        }) else {
+        let Some(job) = self
+            .derived_artifact_jobs
+            .next_external_by_id_claimable(job_id)
+        else {
             return Ok(None);
         };
 
         let scheduler = self.local_qos_scheduler_for_work();
-        let permit = match scheduler.try_start(
-            self.derived_artifact_jobs[index].background_work_request(estimated_operations),
-        ) {
+        let permit = match scheduler.try_start(job.background_work_request(estimated_operations)) {
             Ok(permit) => permit,
             Err(QosAdmission::Defer { reason, .. }) => {
                 return Err(SkeinError::Storage(format!(
@@ -863,47 +699,23 @@ impl Database {
             Err(QosAdmission::Admit) => unreachable!("admitted work returns a permit"),
         };
 
-        let result = self.run_external_content_artifact_job_at_index(index, &mut runtime);
+        let claim = self
+            .derived_artifact_jobs
+            .claim_external_by_id(job_id)
+            .expect("admitted external artifact job must remain pending");
+        let result = self.run_external_content_artifact_job_with_claim(claim, &mut runtime);
         permit.finish_with_outcome(result.is_ok());
         result
     }
 
-    fn run_external_content_artifact_job_at_index(
+    fn run_external_content_artifact_job_with_claim(
         &mut self,
-        index: usize,
+        claim: DerivedArtifactJobClaim,
         runtime: &mut impl FnMut(&DerivedArtifactJob) -> Result<QueryOutput>,
     ) -> Result<Option<DerivedArtifactJobReport>> {
-        self.derived_artifact_jobs[index].status = DerivedArtifactJobStatus::Running;
-        self.derived_artifact_jobs[index].attempts += 1;
-        self.derived_artifact_jobs[index].last_error = None;
-        self.derived_artifact_jobs[index].last_output = None;
-
-        let runtime_job = self.derived_artifact_jobs[index].clone();
-        match runtime(&runtime_job) {
-            Ok(output) => {
-                self.derived_artifact_jobs[index].status = DerivedArtifactJobStatus::Succeeded;
-                self.derived_artifact_jobs[index].last_output = Some(output.clone());
-                Ok(Some(DerivedArtifactJobReport {
-                    job: self.derived_artifact_jobs[index].clone(),
-                    output,
-                }))
-            }
-            Err(error) => {
-                self.derived_artifact_jobs[index].status = DerivedArtifactJobStatus::Failed;
-                self.derived_artifact_jobs[index].last_error = Some(error.to_string());
-                self.derived_artifact_jobs[index].last_output = None;
-                Ok(Some(DerivedArtifactJobReport {
-                    job: self.derived_artifact_jobs[index].clone(),
-                    output: QueryOutput {
-                        rows: vec![derived_artifact_job_failure_row(
-                            &self.derived_artifact_jobs[index],
-                            &error.to_string(),
-                        )]
-                        .into(),
-                    },
-                }))
-            }
-        }
+        Ok(Some(
+            self.derived_artifact_jobs.run_external_with(claim, runtime),
+        ))
     }
 
     pub fn rebuild_derived_artifacts(&mut self) -> Result<QueryOutput> {
@@ -972,20 +784,8 @@ impl Database {
         action: impl Into<String>,
         payload: BTreeMap<String, Value>,
     ) -> DerivedArtifactJob {
-        let job = DerivedArtifactJob {
-            id: self.next_derived_artifact_job_id,
-            artifact_type: artifact_type.into(),
-            name: name.into(),
-            action: action.into(),
-            payload,
-            status: DerivedArtifactJobStatus::Pending,
-            attempts: 0,
-            last_error: None,
-            last_output: None,
-        };
-        self.next_derived_artifact_job_id += 1;
-        self.derived_artifact_jobs.push(job.clone());
-        job
+        self.derived_artifact_jobs
+            .enqueue(artifact_type, name, action, payload)
     }
 
     fn execute_derived_artifact_job(
