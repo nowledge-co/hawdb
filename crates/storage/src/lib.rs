@@ -9,6 +9,8 @@ pub mod backup;
 pub mod cache;
 pub mod canonical;
 pub mod canonical_adjacency;
+#[doc(hidden)]
+pub mod checkpoint;
 pub mod column_group;
 pub mod config;
 #[doc(hidden)]

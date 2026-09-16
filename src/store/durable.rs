@@ -31,16 +31,15 @@ use super::{
     PROPERTY_SPILL_MANIFEST_MAX_BYTES, STABLE_ID_MAPPING_FILE,
 };
 use crate::error::{Result, SkeinError};
-use crate::schema::{Catalog, GraphStatistics};
+use crate::schema::GraphStatistics;
 use skein_integrity::Sha256Digest;
 use skein_storage::{
     AppendGenerationArtifacts, AppendGenerationReader, CanonicalAdjacencyConfig,
     CanonicalAdjacencyGenerationArtifacts, CanonicalAdjacencyReader, CanonicalSegmentReader,
     DatabaseDirectoryLease, DurabilityPolicy, FileSegmentRangeReader,
     GraphDescriptorTreeBuildConfig, ManifestGeneration, PersistentPropertyProjectionConfig,
-    PersistentPropertyProjectionReader, ProjectedGraphDefinition,
-    RelationalIndexGenerationArtifacts, RelationalOverflowGenerationArtifacts,
-    RelationalRowPageGenerationArtifacts, RelationalState, SearchProjectionGraphChange,
+    PersistentPropertyProjectionReader, RelationalIndexGenerationArtifacts,
+    RelationalOverflowGenerationArtifacts, RelationalRowPageGenerationArtifacts, RelationalState,
     SegmentCache, StableIdentityMappingError, StableIdentityMappingReader, StorageTelemetrySink,
     StoreId, WalReplayConfig, WalSyncGroupState,
 };
@@ -138,19 +137,7 @@ pub(super) struct GenerationReclamationDebt {
     pub(super) pending_bytes: u64,
 }
 
-pub(super) struct CheckpointImage<'a> {
-    pub(super) catalog: &'a Catalog,
-    pub(super) commit_epoch: u64,
-    pub(super) next_node_id: u64,
-    pub(super) next_rel_id: u64,
-    pub(super) search_projection_change_log_start_epoch: u64,
-    pub(super) search_projection_graph_changes: &'a [SearchProjectionGraphChange],
-    pub(super) statistics: &'a GraphStatistics,
-    pub(super) projected_graphs: &'a BTreeMap<String, ProjectedGraphDefinition>,
-    pub(super) initial_import_source_fingerprint: Option<&'a str>,
-    pub(super) search_projection_database_identity: Option<skein_core::Uuid>,
-    pub(super) relational_checkpoint: Option<DurableArtifactMetadata>,
-}
+pub(super) use skein_storage::checkpoint::CheckpointImage;
 
 #[derive(Debug)]
 pub(crate) struct PreparedCheckpoint {

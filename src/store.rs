@@ -155,7 +155,7 @@ use skein_storage::artifact_files::{
     wal_generation_file,
 };
 use skein_storage::graph_constraints::{
-    encode_property_type, validate_node_property_exists, validate_node_property_exists_constraints,
+    validate_node_property_exists, validate_node_property_exists_constraints,
     validate_node_record_constraints, validate_property_schema_value, validate_property_schemas,
     validate_relationship_property_exists, validate_relationship_property_exists_constraints,
     validate_relationship_record_constraints, validate_relationship_unique_constraints,
@@ -184,9 +184,7 @@ pub(crate) use skein_storage::text::envelope::{
 pub(crate) use skein_storage::text::{
     decode_bool, decode_bytes, decode_index_kind, decode_nullable, decode_properties,
     decode_property_type, decode_schema_object_state, decode_string, decode_string_vec,
-    decode_table_kind, decode_u64_vec, decode_value_vec, encode_bool, encode_bytes,
-    encode_index_kind, encode_nullable, encode_schema_object_state, encode_string,
-    encode_string_vec, encode_table_kind, encode_u64_vec, encode_value_vec, parse_u64,
+    decode_table_kind, decode_u64_vec, decode_value_vec, parse_u64,
 };
 use skein_storage::GraphIndexReadMetrics;
 #[cfg(test)]
@@ -278,7 +276,7 @@ use skein_storage::durable_manifest::{
 const MANIFEST_FILE: &str = "manifest.skein";
 const PROJECTED_GRAPHS_FILE: &str = "projected_graphs.skein";
 const STABLE_ID_MAPPING_FILE: &str = "stable_ids.skein";
-const CHECKPOINT_HEADER_V1: &str = "SKEIN_CHECKPOINT_V1";
+pub(crate) use skein_storage::checkpoint::CHECKPOINT_HEADER_V1;
 const BACKUP_MANIFEST_FILE: &str = "backup.skein";
 const CANONICAL_MANIFEST_MAX_BYTES: u64 = 256 * 1024 * 1024;
 const PROPERTY_SPILL_MANIFEST_MAX_BYTES: u64 = 64 * 1024;
@@ -4357,60 +4355,6 @@ fn parse_label_set(input: &str) -> Result<BTreeSet<LabelId>> {
         .split(',')
         .map(|raw| parse_u32(raw, "label id").map(LabelId))
         .collect()
-}
-
-fn encode_search_projection_relational_primary_key_changes(
-    capture: &skein_storage::RelationalPrimaryKeyChangeCapture,
-) -> Result<(String, String)> {
-    match capture {
-        skein_storage::RelationalPrimaryKeyChangeCapture::Captured { tables, .. } => {
-            let mut encoded_tables = Vec::with_capacity(tables.len());
-            for table in tables {
-                let encoded_keys = table
-                    .primary_keys
-                    .iter()
-                    .map(|key| {
-                        skein_storage::encode_relational_primary_key(key)
-                            .map(|encoded| encode_bytes(&encoded))
-                            .map_err(|error| SkeinError::Storage(error.to_string()))
-                    })
-                    .collect::<Result<Vec<_>>>()?;
-                encoded_tables.push(format!(
-                    "{}={}",
-                    encode_string(&table.table),
-                    encoded_keys.join(":")
-                ));
-            }
-            Ok(("exact".to_string(), encoded_tables.join(";")))
-        }
-        skein_storage::RelationalPrimaryKeyChangeCapture::RequiresRebuild { reason } => Ok((
-            match reason {
-                skein_storage::RelationalPrimaryKeyChangeRebuildReason::SchemaRewrite => {
-                    "rebuild_schema_rewrite"
-                }
-                skein_storage::RelationalPrimaryKeyChangeRebuildReason::CaptureLimitExceeded => {
-                    "rebuild_capture_limit"
-                }
-                skein_storage::RelationalPrimaryKeyChangeRebuildReason::UnsupportedKeyEncoding => {
-                    "rebuild_key_encoding"
-                }
-                skein_storage::RelationalPrimaryKeyChangeRebuildReason::WalEncodingLimitExceeded => {
-                    "rebuild_wal_encoding_limit"
-                }
-                skein_storage::RelationalPrimaryKeyChangeRebuildReason::MissingWalCapture => {
-                    "rebuild_missing_wal_capture"
-                }
-                skein_storage::RelationalPrimaryKeyChangeRebuildReason::SnapshotReplacement => {
-                    "rebuild_snapshot_replacement"
-                }
-                skein_storage::RelationalPrimaryKeyChangeRebuildReason::MultipleRelationalTransactions => {
-                    "rebuild_multiple_relational_transactions"
-                }
-            }
-            .to_string(),
-            String::new(),
-        )),
-    }
 }
 
 fn decode_search_projection_relational_primary_key_changes(
