@@ -43,6 +43,8 @@ pub mod relational;
 pub mod relational_index_view;
 #[doc(hidden)]
 pub mod relational_row_workspace;
+#[doc(hidden)]
+pub mod residency;
 pub mod scan;
 pub mod snapshot;
 #[doc(hidden)]
@@ -345,6 +347,8 @@ pub use relational::{
     RELATIONAL_OVERFLOW_MANIFEST_FILE, RELATIONAL_PRIMARY_INDEX_NAME,
     RELATIONAL_ROW_DELTA_MANIFEST_FILE, RELATIONAL_ROW_PAGE_MANIFEST_FILE,
 };
+pub use relational_index_view::RelationalIndexStorageResidencyReport;
+pub use residency::{RelationalRowStorageResidencyReport, StorageResidencyReport};
 pub use scan::{
     CandidateCursor, DateTimeMinMax, EnumDictionaryStats, FieldSummary, FileSegmentRangeReader,
     MembershipFilterSummary, MembershipVerdict, NumericMinMax, PersistedScanSegment,

@@ -13,6 +13,8 @@ mod primary;
 pub use primary::{CompatibilityPrimaryEngine, CompatibilityPrimarySession};
 
 mod external_shadow;
+#[doc(hidden)]
+pub mod fixture_contract;
 mod inventory_gate;
 mod nowledge_fixture;
 #[doc(hidden)]

@@ -12,6 +12,50 @@ use skein_storage::{
 };
 use std::collections::{BTreeMap, BTreeSet};
 
+#[doc(hidden)]
+pub mod developer_json;
+#[doc(hidden)]
+pub mod developer_staging;
+#[doc(hidden)]
+pub mod developer_staging_gc;
+#[doc(hidden)]
+pub mod developer_staging_import;
+#[doc(hidden)]
+pub mod developer_staging_publish;
+#[doc(hidden)]
+pub mod developer_staging_verification;
+
+#[doc(hidden)]
+pub use developer_json::{
+    endpoint_violations_json, skein_lightning_bootstrap_bundle_json,
+    skein_lightning_bootstrap_bundle_json_with_optional_storage_recovery,
+    skein_lightning_bootstrap_manifest_json, skein_lightning_graph_stream_validation_json,
+    skein_lightning_relational_stream_validation_json, stable_identity_audit_json,
+};
+#[doc(hidden)]
+pub use developer_staging::{
+    skein_lightning_artifact_summary, stage_skein_lightning_bootstrap_export,
+    stage_skein_lightning_bootstrap_export_with_optional_storage_recovery,
+    sync_bootstrap_directory, write_bootstrap_atomic_file,
+    SKEIN_LIGHTNING_STAGING_CATALOG_PROTOCOL_VERSION,
+};
+#[doc(hidden)]
+pub use developer_staging_gc::skein_lightning_gc_staging_report;
+#[doc(hidden)]
+pub use developer_staging_import::{
+    skein_lightning_import_state_marker, skein_lightning_import_status,
+};
+#[doc(hidden)]
+pub use developer_staging_publish::{
+    publish_skein_lightning_staging_catalog, publish_skein_lightning_staging_catalog_with_options,
+    SkeinLightningPublishOptions,
+};
+#[doc(hidden)]
+pub use developer_staging_verification::{
+    read_skein_lightning_staging_artifact_json, verify_skein_lightning_published_manifest,
+    verify_skein_lightning_staging_catalog,
+};
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct CanonicalGraphSnapshotExport {
     pub graph_commit_epoch: u64,

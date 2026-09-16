@@ -32,6 +32,7 @@ skein-query = { path = "crates/query" }
 skein-query-policy = { path = "crates/query-policy" }
 skein-readiness = { path = "crates/readiness" }
 skein-relational = { path = "crates/relational" }
+skein-resource-profile = { path = "crates/resource-profile" }
 skein-route-ownership = { path = "crates/route-ownership" }
 skein-search = { path = "crates/search", default-features = false }
 skein-runtime-tokio = { path = "crates/runtime-tokio", optional = true }
@@ -90,6 +91,7 @@ members = [
   "crates/qualification",
   "crates/readiness",
   "crates/relational",
+  "crates/resource-profile",
   "crates/route-ownership",
   "crates/search",
   "crates/sql",

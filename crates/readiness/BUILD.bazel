@@ -31,12 +31,13 @@ rust_library(
     aliases = aliases(),
     deps = _READINESS_BASE_DEPS + [
         "//crates/nowledge-contracts:skein_nowledge_contracts",
+        "//crates/search:skein_search",
     ],
     proc_macro_deps = all_crate_deps(proc_macro = True),
 )
 
-# Matches the root facade's no-default-features graph so public contract types
-# are not linked from two feature variants of skein-nowledge-contracts.
+# Matches the root facade's no-default-features graph so public contracts are
+# never linked from a second dependency feature variant.
 rust_library(
     name = "skein_readiness_minimal",
     crate_name = "skein_readiness",
@@ -46,12 +47,13 @@ rust_library(
     aliases = aliases(),
     deps = _READINESS_BASE_DEPS + [
         "//crates/nowledge-contracts:skein_nowledge_contracts_minimal",
+        "//crates/search:skein_search_minimal",
     ],
     proc_macro_deps = all_crate_deps(proc_macro = True),
     visibility = ["//:__pkg__"],
 )
 
-# Matches Cargo feature unification for the root ACL qualification target.
+# Matches the ACL qualification graph without enabling ACL for the default crate.
 rust_library(
     name = "skein_readiness_acl",
     testonly = True,
@@ -62,6 +64,7 @@ rust_library(
     aliases = aliases(),
     deps = _READINESS_BASE_DEPS + [
         "//crates/nowledge-contracts:skein_nowledge_contracts_acl",
+        "//crates/search:skein_search_acl",
     ],
     proc_macro_deps = all_crate_deps(proc_macro = True),
     visibility = ["//:__pkg__"],
