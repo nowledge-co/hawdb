@@ -182,9 +182,11 @@ pub(crate) use skein_storage::text::envelope::{
     encode_durable_text, read_durable_text_bytes, read_durable_text_bytes_with_limit,
 };
 pub(crate) use skein_storage::text::{
-    decode_bytes, decode_properties, decode_string, decode_string_vec, decode_u64_vec,
-    decode_value, encode_bytes, encode_string, encode_string_vec, encode_u64_vec, encode_value,
-    parse_u64,
+    decode_bool, decode_bytes, decode_index_kind, decode_nullable, decode_properties,
+    decode_property_type, decode_schema_object_state, decode_string, decode_string_vec,
+    decode_table_kind, decode_u64_vec, decode_value_vec, encode_bool, encode_bytes,
+    encode_index_kind, encode_nullable, encode_schema_object_state, encode_string,
+    encode_string_vec, encode_table_kind, encode_u64_vec, encode_value_vec, parse_u64,
 };
 use skein_storage::GraphIndexReadMetrics;
 #[cfg(test)]
@@ -4508,24 +4510,6 @@ fn decode_search_projection_relational_primary_key_changes(
     })
 }
 
-fn encode_value_vec(values: &[Value]) -> String {
-    values
-        .iter()
-        .map(|value| encode_string(&encode_value(value)))
-        .collect::<Vec<_>>()
-        .join(":")
-}
-
-fn decode_value_vec(input: &str) -> Result<Vec<Value>> {
-    if input.is_empty() {
-        return Ok(Vec::new());
-    }
-    input
-        .split(':')
-        .map(|value| decode_string(value).and_then(|value| decode_value(&value)))
-        .collect()
-}
-
 fn validate_search_projection_checkpoint_changes(
     start_epoch: u64,
     checkpoint_commit_epoch: u64,
@@ -4593,112 +4577,6 @@ fn validate_search_projection_checkpoint_changes(
         previous_epoch = change.commit_epoch;
     }
     Ok(())
-}
-
-fn encode_table_kind(kind: TableKind) -> &'static str {
-    match kind {
-        TableKind::Node => "node",
-        TableKind::Relationship => "relationship",
-    }
-}
-
-fn decode_table_kind(input: &str) -> Result<TableKind> {
-    match input {
-        "node" => Ok(TableKind::Node),
-        "relationship" => Ok(TableKind::Relationship),
-        _ => Err(SkeinError::Storage(format!("invalid table kind: {input}"))),
-    }
-}
-
-fn decode_property_type(input: &str) -> Result<PropertyType> {
-    match input {
-        "any" => Ok(PropertyType::Any),
-        "bool" => Ok(PropertyType::Bool),
-        "int" => Ok(PropertyType::Int),
-        "float" => Ok(PropertyType::Float),
-        "string" => Ok(PropertyType::String),
-        "text" => Ok(PropertyType::Text),
-        "list" => Ok(PropertyType::List),
-        _ => Err(SkeinError::Storage(format!(
-            "invalid property type: {input}"
-        ))),
-    }
-}
-
-fn encode_index_kind(kind: IndexKind) -> &'static str {
-    match kind {
-        IndexKind::Equality => "equality",
-        IndexKind::Range => "range",
-        IndexKind::FullText => "fulltext",
-    }
-}
-
-fn decode_index_kind(input: &str) -> Result<IndexKind> {
-    match input {
-        "equality" => Ok(IndexKind::Equality),
-        "range" => Ok(IndexKind::Range),
-        "fulltext" => Ok(IndexKind::FullText),
-        _ => Err(SkeinError::Storage(format!("invalid index kind: {input}"))),
-    }
-}
-
-fn encode_nullable(nullable: bool) -> &'static str {
-    if nullable {
-        "nullable"
-    } else {
-        "not_null"
-    }
-}
-
-fn encode_bool(value: bool) -> &'static str {
-    if value {
-        "true"
-    } else {
-        "false"
-    }
-}
-
-fn decode_bool(input: &str, name: &str) -> Result<bool> {
-    match input {
-        "true" => Ok(true),
-        "false" => Ok(false),
-        _ => Err(SkeinError::Storage(format!("invalid {name}: {input}"))),
-    }
-}
-
-fn decode_nullable(input: &str) -> Result<bool> {
-    match input {
-        "nullable" => Ok(true),
-        "not_null" => Ok(false),
-        _ => Err(SkeinError::Storage(format!(
-            "invalid nullable flag: {input}"
-        ))),
-    }
-}
-
-fn encode_schema_object_state(state: SchemaObjectState) -> &'static str {
-    match state {
-        SchemaObjectState::DeleteOnly => "delete_only",
-        SchemaObjectState::WriteOnly => "write_only",
-        SchemaObjectState::Backfill => "backfill",
-        SchemaObjectState::Validating => "validating",
-        SchemaObjectState::Public => "public",
-        SchemaObjectState::Gc => "gc",
-    }
-}
-
-fn decode_schema_object_state(input: &str) -> Result<SchemaObjectState> {
-    match input {
-        "delete_only" => Ok(SchemaObjectState::DeleteOnly),
-        "write_only" => Ok(SchemaObjectState::WriteOnly),
-        "backfill" => Ok(SchemaObjectState::Backfill),
-        "validating" => Ok(SchemaObjectState::Validating),
-        "public" => Ok(SchemaObjectState::Public),
-        "gc" => Ok(SchemaObjectState::Gc),
-        _ => Err(SkeinError::Storage(format!(
-            "invalid schema object state: {input}"
-        ))),
-    }
 }
 
 pub(crate) fn checksum_bytes(bytes: &[u8]) -> u64 {
