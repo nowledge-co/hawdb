@@ -26,6 +26,9 @@ pub mod integration_bundle_cli;
 pub mod integration_readiness;
 
 #[doc(hidden)]
+pub mod json_parse;
+
+#[doc(hidden)]
 pub mod library_readiness;
 
 #[doc(hidden)]
