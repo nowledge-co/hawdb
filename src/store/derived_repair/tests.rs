@@ -4,9 +4,46 @@ use crate::store::{
     property_projection_artifact_generation_file, set_checkpoint_failpoint, CheckpointPublishStage,
 };
 use crate::{Database, Value};
+use std::any::TypeId;
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::time::{SystemTime, UNIX_EPOCH};
+
+#[test]
+fn root_facade_preserves_storage_repair_contract_type_identity() {
+    assert_eq!(
+        TypeId::of::<DerivedArtifactKind>(),
+        TypeId::of::<skein_storage::DerivedArtifactKind>()
+    );
+    assert_eq!(
+        TypeId::of::<DerivedArtifactHealthState>(),
+        TypeId::of::<skein_storage::DerivedArtifactHealthState>()
+    );
+    assert_eq!(
+        TypeId::of::<DerivedArtifactHealth>(),
+        TypeId::of::<skein_storage::DerivedArtifactHealth>()
+    );
+    assert_eq!(
+        TypeId::of::<DerivedArtifactHealthReport>(),
+        TypeId::of::<skein_storage::DerivedArtifactHealthReport>()
+    );
+    assert_eq!(
+        TypeId::of::<DerivedArtifactRepairPlan>(),
+        TypeId::of::<skein_storage::DerivedArtifactRepairPlan>()
+    );
+    assert_eq!(
+        TypeId::of::<DerivedArtifactRebuildOptions>(),
+        TypeId::of::<skein_storage::DerivedArtifactRebuildOptions>()
+    );
+    assert_eq!(
+        TypeId::of::<DerivedArtifactRepairReport>(),
+        TypeId::of::<skein_storage::DerivedArtifactRepairReport>()
+    );
+    assert_eq!(
+        DerivedArtifactRebuildOptions::default(),
+        skein_storage::DerivedArtifactRebuildOptions::default()
+    );
+}
 
 #[test]
 fn rebuilds_corrupt_adjacency_from_verified_canonical_source() {
