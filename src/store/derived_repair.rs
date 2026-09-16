@@ -6,6 +6,7 @@ use super::{
     SegmentCache, StorageResidencyMode, WalReplayConfig, MANIFEST_FILE,
 };
 use crate::error::{Result, SkeinError};
+use skein_storage::derived_repair::{plan_identity, validate_options, validate_plan};
 pub use skein_storage::{
     DerivedArtifactHealth, DerivedArtifactHealthReport, DerivedArtifactHealthState,
     DerivedArtifactKind, DerivedArtifactRebuildOptions, DerivedArtifactRepairPlan,
@@ -36,7 +37,7 @@ impl DatabaseDoctor {
         path: impl AsRef<Path>,
         options: DerivedArtifactRebuildOptions,
     ) -> Result<DerivedArtifactHealthReport> {
-        options.validate()?;
+        validate_options(options)?;
         let path = path.as_ref();
         if let Some(record) = load_single_pending_record(path)? {
             let inspection = inspect(path, record.plan.options)?;
@@ -49,7 +50,7 @@ impl DatabaseDoctor {
         path: impl AsRef<Path>,
         options: DerivedArtifactRebuildOptions,
     ) -> Result<DerivedArtifactRepairPlan> {
-        options.validate()?;
+        validate_options(options)?;
         let path = path.as_ref();
         if let Some(record) = load_single_pending_record(path)? {
             validate_pending_record(path, &record)?;
@@ -63,7 +64,7 @@ impl DatabaseDoctor {
         path: impl AsRef<Path>,
         plan: &DerivedArtifactRepairPlan,
     ) -> Result<DerivedArtifactRepairReport> {
-        plan.validate()?;
+        validate_plan(plan)?;
         let path = path.as_ref();
         if let Some(record) = load_matching_pending_record(path, &plan.plan_id)? {
             let inspection = inspect(path, record.plan.options)?;
@@ -329,7 +330,7 @@ fn plan_from_inspection(
         targets,
         options,
     };
-    plan.refresh_identity();
+    plan.plan_id = plan_identity(&plan);
     Ok(plan)
 }
 

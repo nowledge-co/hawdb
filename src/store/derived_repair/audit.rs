@@ -1,5 +1,5 @@
 use super::{
-    DerivedArtifactKind, DerivedArtifactRepairPlan, DerivedArtifactRepairReport,
+    plan_identity, DerivedArtifactKind, DerivedArtifactRepairPlan, DerivedArtifactRepairReport,
     DERIVED_ARTIFACT_REPAIR_PROTOCOL,
 };
 use crate::error::{Result, SkeinError};
@@ -127,7 +127,7 @@ pub(super) fn validate_pending_record(
     path: &Path,
     record: &DerivedRepairAuditRecord,
 ) -> Result<()> {
-    record.plan.validate()?;
+    super::validate_plan(&record.plan)?;
     validate_quarantine(path, record)?;
     let manifest = DurableManifest::load(&path.join(MANIFEST_FILE))?;
     if manifest.checkpoint_epoch != record.plan.source_generation
@@ -300,7 +300,7 @@ fn load_audit_record(path: &Path) -> Result<DerivedRepairAuditRecord> {
         })?;
     if record.protocol != DERIVED_ARTIFACT_REPAIR_PROTOCOL
         || record.plan.protocol != DERIVED_ARTIFACT_REPAIR_PROTOCOL
-        || record.plan.validate().is_err()
+        || record.plan.plan_id != plan_identity(&record.plan)
     {
         return Err(SkeinError::Storage(
             "derived repair audit identity is invalid".to_string(),

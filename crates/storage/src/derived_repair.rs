@@ -78,27 +78,6 @@ impl Default for DerivedArtifactRebuildOptions {
     }
 }
 
-impl DerivedArtifactRebuildOptions {
-    pub fn validate(self) -> Result<()> {
-        if self.max_source_records == 0
-            || self.max_source_logical_bytes == 0
-            || self.max_temporary_bytes == 0
-            || self.build_memory_bytes == 0
-            || self.max_spill_runs == 0
-            || self.max_generated_property_entries == 0
-            || self.segment_cache_capacity_bytes == 0
-            || self.max_graph_manifest_open_bytes == 0
-            || self.max_wal_replay_bytes == 0
-            || self.max_wal_replay_entries == 0
-        {
-            return Err(SkeinError::Storage(
-                "derived artifact rebuild limits must all be non-zero".to_string(),
-            ));
-        }
-        Ok(())
-    }
-}
-
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct DerivedArtifactRepairPlan {
     pub protocol: String,
@@ -120,51 +99,6 @@ pub struct DerivedArtifactRepairPlan {
     pub options: DerivedArtifactRebuildOptions,
 }
 
-impl DerivedArtifactRepairPlan {
-    pub fn refresh_identity(&mut self) {
-        self.plan_id = self.identity();
-    }
-
-    pub fn validate(&self) -> Result<()> {
-        self.options.validate()?;
-        if self.protocol != DERIVED_ARTIFACT_REPAIR_PROTOCOL
-            || self.plan_id != self.identity()
-            || self.targets.is_empty()
-            || self.target_generation != self.source_generation.saturating_add(1)
-        {
-            return Err(SkeinError::Storage(
-                "derived artifact repair plan identity is invalid".to_string(),
-            ));
-        }
-        Ok(())
-    }
-
-    fn identity(&self) -> String {
-        let encoded = serde_json::to_vec(&(
-            &self.protocol,
-            self.source_generation,
-            self.target_generation,
-            self.source_commit_epoch,
-            self.manifest_len,
-            self.manifest_crc32c,
-            &self.manifest_sha256,
-            self.wal_len,
-            self.wal_crc32c,
-            &self.wal_sha256,
-            self.source_node_count,
-            self.source_relationship_count,
-            self.source_logical_bytes,
-            self.estimated_temporary_bytes,
-            &self.targets,
-            self.options,
-        ))
-        .expect("derived repair plan identity fields are serializable");
-        skein_integrity::integrity_digest(&encoded)
-            .sha256
-            .to_string()
-    }
-}
-
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct DerivedArtifactRepairReport {
     pub protocol: String,
@@ -178,6 +112,68 @@ pub struct DerivedArtifactRepairReport {
     pub resumed_interrupted_repair: bool,
 }
 
+// Internal ownership seams; the embedded facade does not re-export these helpers.
+#[doc(hidden)]
+pub fn validate_options(options: DerivedArtifactRebuildOptions) -> Result<()> {
+    if options.max_source_records == 0
+        || options.max_source_logical_bytes == 0
+        || options.max_temporary_bytes == 0
+        || options.build_memory_bytes == 0
+        || options.max_spill_runs == 0
+        || options.max_generated_property_entries == 0
+        || options.segment_cache_capacity_bytes == 0
+        || options.max_graph_manifest_open_bytes == 0
+        || options.max_wal_replay_bytes == 0
+        || options.max_wal_replay_entries == 0
+    {
+        return Err(SkeinError::Storage(
+            "derived artifact rebuild limits must all be non-zero".to_string(),
+        ));
+    }
+    Ok(())
+}
+
+#[doc(hidden)]
+pub fn validate_plan(plan: &DerivedArtifactRepairPlan) -> Result<()> {
+    validate_options(plan.options)?;
+    if plan.protocol != DERIVED_ARTIFACT_REPAIR_PROTOCOL
+        || plan.plan_id != plan_identity(plan)
+        || plan.targets.is_empty()
+        || plan.target_generation != plan.source_generation.saturating_add(1)
+    {
+        return Err(SkeinError::Storage(
+            "derived artifact repair plan identity is invalid".to_string(),
+        ));
+    }
+    Ok(())
+}
+
+#[doc(hidden)]
+pub fn plan_identity(plan: &DerivedArtifactRepairPlan) -> String {
+    let encoded = serde_json::to_vec(&(
+        &plan.protocol,
+        plan.source_generation,
+        plan.target_generation,
+        plan.source_commit_epoch,
+        plan.manifest_len,
+        plan.manifest_crc32c,
+        &plan.manifest_sha256,
+        plan.wal_len,
+        plan.wal_crc32c,
+        &plan.wal_sha256,
+        plan.source_node_count,
+        plan.source_relationship_count,
+        plan.source_logical_bytes,
+        plan.estimated_temporary_bytes,
+        &plan.targets,
+        plan.options,
+    ))
+    .expect("derived repair plan identity fields are serializable");
+    skein_integrity::integrity_digest(&encoded)
+        .sha256
+        .to_string()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -185,7 +181,7 @@ mod tests {
     #[test]
     fn default_options_preserve_nonzero_resource_limits() {
         let options = DerivedArtifactRebuildOptions::default();
-        options.validate().unwrap();
+        validate_options(options).unwrap();
         assert_eq!(options.max_source_records, 100_000_000);
         assert_eq!(options.max_wal_replay_bytes, DEFAULT_MAX_WAL_REPLAY_BYTES);
         assert_eq!(
@@ -215,10 +211,10 @@ mod tests {
             targets: vec![DerivedArtifactKind::CanonicalAdjacency],
             options: DerivedArtifactRebuildOptions::default(),
         };
-        plan.refresh_identity();
-        plan.validate().unwrap();
+        plan.plan_id = plan_identity(&plan);
+        validate_plan(&plan).unwrap();
 
         plan.estimated_temporary_bytes = 41;
-        assert!(plan.validate().is_err());
+        assert!(validate_plan(&plan).is_err());
     }
 }
