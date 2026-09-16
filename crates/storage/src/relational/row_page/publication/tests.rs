@@ -157,6 +157,7 @@ fn publish_last_root_round_trips_with_a_concrete_refinement_trace() {
         fs::read(directory.join(relational_row_page_manifest_generation_file(1))).unwrap()
     );
 
+    assert_no_temporary_files(&directory);
     fs::remove_dir_all(directory).unwrap();
 }
 
@@ -183,6 +184,14 @@ fn publication_rejects_page_and_table_column_count_drift() {
 #[test]
 fn persisted_row_candidate_does_not_change_latest_selection() {
     let directory = unique_test_dir("candidate");
+    fs::create_dir_all(&directory).unwrap();
+    fs::write(
+        directory
+            .join(RELATIONAL_ROW_PAGE_MANIFEST_FILE)
+            .with_extension("skein.tmp"),
+        b"abandoned latest selector",
+    )
+    .unwrap();
     let config = RelationalRowPagePublicationConfig::default();
     let report = RelationalRowPagePublisher::new(config)
         .persist_generation(
@@ -206,6 +215,7 @@ fn persisted_row_candidate_does_not_change_latest_selection() {
     let candidate = RelationalRowPageRootReader::open_generation(&directory, 1, config).unwrap();
     assert_eq!(candidate.manifest().root_page_count, 1);
 
+    assert_no_temporary_files(&directory);
     fs::remove_dir_all(directory).unwrap();
 }
 
@@ -840,6 +850,7 @@ fn stale_publication_is_rejected_before_creating_a_candidate() {
 #[test]
 fn every_pre_manifest_crash_keeps_the_previous_root_selected() {
     for stop_after in [
+        RelationalRowPagePublicationPhase::CandidateStarted,
         RelationalRowPagePublicationPhase::CandidatePagesDurable,
         RelationalRowPagePublicationPhase::CandidateRootDurable,
         RelationalRowPagePublicationPhase::CandidateManifestDurable,
@@ -875,6 +886,7 @@ fn every_pre_manifest_crash_keeps_the_previous_root_selected() {
             RelationalRowPagePublicationError::Durability(message)
                 if message.contains("injected stop")
         ));
+        assert_no_temporary_files(&directory);
         let selected = RelationalRowPageRootReader::open_latest(&directory, config)
             .unwrap()
             .unwrap();
@@ -1558,4 +1570,16 @@ fn unique_test_dir(label: &str) -> PathBuf {
         std::process::id(),
         TEST_SEQUENCE.fetch_add(1, Ordering::Relaxed)
     ))
+}
+
+fn assert_no_temporary_files(directory: &std::path::Path) {
+    for entry in fs::read_dir(directory).unwrap() {
+        let path = entry.unwrap().path();
+        assert_ne!(
+            path.extension(),
+            Some(std::ffi::OsStr::new("tmp")),
+            "{}",
+            path.display()
+        );
+    }
 }

@@ -2,6 +2,9 @@
 pub mod evidence_json;
 
 #[doc(hidden)]
+pub mod embedded_query_path;
+
+#[doc(hidden)]
 pub mod bounded_read_evidence;
 
 #[doc(hidden)]
@@ -23,10 +26,25 @@ pub mod integration_bundle_cli;
 pub mod integration_readiness;
 
 #[doc(hidden)]
+pub mod json_parse;
+
+#[doc(hidden)]
 pub mod library_readiness;
 
 #[doc(hidden)]
+pub mod library_readiness_cli;
+
+#[doc(hidden)]
 pub mod nowledge_mem_serving_path;
+
+#[doc(hidden)]
+pub mod nowledge_mem_runtime_status;
+
+#[doc(hidden)]
+pub mod nowledge_mem_cutover;
+
+#[doc(hidden)]
+pub mod nowledge_mem_query_report;
 
 #[doc(hidden)]
 pub mod previous_wrapper_preflight;
@@ -35,13 +53,25 @@ pub mod previous_wrapper_preflight;
 pub mod query_runtime_preflight;
 
 #[doc(hidden)]
+pub mod query_runtime_preflight_cli;
+
+#[doc(hidden)]
+pub mod query_runtime_preflight_report;
+
+#[doc(hidden)]
 pub mod graph_route;
 
 #[doc(hidden)]
 pub mod graph_route_cli;
 
 #[doc(hidden)]
+pub mod graph_route_evidence_cli;
+
+#[doc(hidden)]
 pub mod replacement_summary;
+
+#[doc(hidden)]
+pub mod slow_query;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct NowledgeMemReadinessAreaMap {
