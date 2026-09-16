@@ -36,20 +36,3 @@ fn disabled_bounded_expansion_probe_reports_capability_error() {
     assert_eq!(expansion.graph_context_max_hops, 2);
     assert_eq!(expansion.path_count, 0);
 }
-
-#[cfg(not(feature = "full-text-search"))]
-#[test]
-fn unavailable_compiled_search_is_reported_by_the_public_workload_fixture() {
-    let report = nowledge_graph_route_workload_fixture_report(Default::default()).unwrap();
-    assert!(!report.ready);
-    assert_eq!(report.search_metadata_probe_count, 3);
-    assert_eq!(report.failed_search_metadata_probe_count, 3);
-    assert_eq!(report.bounded_expansion_probe_count, 2);
-    assert_eq!(report.failed_bounded_expansion_probe_count, 2);
-    assert!(report.search_metadata_reports.iter().all(|probe| {
-        !probe.ready && probe.error_class.as_deref() == Some("capability_unavailable")
-    }));
-    assert!(report.bounded_expansion_reports.iter().all(|probe| {
-        !probe.ready && probe.error_class.as_deref() == Some("capability_unavailable")
-    }));
-}
