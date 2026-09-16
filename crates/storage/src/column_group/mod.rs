@@ -15,6 +15,8 @@ pub mod encoding;
 pub mod group;
 pub mod manifest;
 #[doc(hidden)]
+pub mod shadow;
+#[doc(hidden)]
 pub mod shadow_metadata;
 pub mod zone;
 

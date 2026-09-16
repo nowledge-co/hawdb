@@ -119,11 +119,8 @@ use durable::{
     DerivedArtifactBuildConfig, DurableArtifactMetadata, DurableManifest, DurableOpenMode,
     DurableStore, GraphManifestOpenBudget,
 };
+pub use graph_columnar_shadow::ColumnarShadowAdmission;
 use graph_columnar_shadow::ColumnarShadowState;
-pub use graph_columnar_shadow::{
-    ColumnarShadowAdmission, ColumnarShadowCheckpointReport, ColumnarShadowCheckpointStatus,
-    ColumnarShadowRecoveryStatus, COLUMN_GROUP_SHADOW_DIR,
-};
 use relational_index_shadow::RelationalIndexShadowState;
 pub use relational_index_shadow::{
     RelationalConstraintQualificationProbeReport, RelationalConstraintQualificationReport,
@@ -243,6 +240,10 @@ pub use skein_storage::{
     StorageReclamationWatermark, StorageRecoveryReport, StorageResidencyMode, StorageRestoreReport,
     StorageScrubReport, StoreId, StoreStableIdMapping, WalReplayConfig,
     STORAGE_PRESSURE_DEFER_RATIO_PER_MILLION, STORAGE_PRESSURE_SOFT_RATIO_PER_MILLION,
+};
+pub use skein_storage::{
+    ColumnarShadowCheckpointReport, ColumnarShadowCheckpointStatus, ColumnarShadowRecoveryStatus,
+    COLUMN_GROUP_SHADOW_DIR,
 };
 use skein_storage::{
     CowSegment, CowSegmentedMap, ProjectedGraphArtifact, ProjectedGraphArtifactData,

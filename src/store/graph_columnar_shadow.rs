@@ -82,12 +82,11 @@ use skein_storage::{
     encode_residual_row_properties, residual_row_properties_encoded_len,
     write_residual_row_properties, ColumnGroupArtifactDescriptor, ColumnGroupError,
     ColumnGroupManifest, ColumnGroupTableDirectory, ColumnGroupTableDirectoryRef,
-    ColumnGroupTableKey, ColumnGroupTableKind, ColumnGroupWriter, PublishedColumnGroupCatalog,
-    DEFAULT_GROUP_ROW_CAPACITY,
+    ColumnGroupTableKey, ColumnGroupTableKind, ColumnGroupWriter, ColumnarShadowCheckpointReport,
+    ColumnarShadowCheckpointStatus, ColumnarShadowRecoveryStatus, PublishedColumnGroupCatalog,
+    COLUMN_GROUP_SHADOW_DIR, DEFAULT_GROUP_ROW_CAPACITY,
 };
 
-/// Subdirectory of the database root holding the self-contained shadow.
-pub const COLUMN_GROUP_SHADOW_DIR: &str = "column-groups";
 /// Reserved column id of the node label-set blob column.
 const LABEL_SET_COLUMN: PropertyId = PropertyId(0);
 /// Reserved column id of the relationship source endpoint column.
@@ -110,81 +109,6 @@ const SHADOW_ENCODER_SCRATCH_MULTIPLIER: u64 = 2;
 /// O(value): arbitrarily large legal rows publish inside this fixed
 /// allowance, which is what makes the shadow converge on any input.
 const SHADOW_STREAMED_FLUSH_ALLOWANCE_BYTES: u64 = 64 * 1024;
-
-/// Outcome of the shadow double-write attempted by one checkpoint. The
-/// canonical checkpoint's `Result` reflects canonical publication only; a
-/// shadow failure lands here instead of failing the checkpoint call, and
-/// the preserved dirty state makes the next checkpoint retry. A disabled
-/// shadow has no report at all (`columnar_shadow_checkpoint_report()`
-/// returns `None`), so no `Disabled` variant exists.
-#[derive(Debug, Clone, Default, PartialEq, Eq)]
-pub enum ColumnarShadowCheckpointStatus {
-    /// The shadow manifest for this checkpoint's epoch was published.
-    #[default]
-    Published,
-    /// The shadow build or publication failed after the canonical
-    /// checkpoint succeeded; dirty state is preserved for the retry.
-    Failed { error: String },
-}
-
-/// Write-amplification evidence for one shadow checkpoint, in the style of
-/// the existing storage reports. A `Failed` report carries only the status
-/// and source epoch; its remaining counters stay zero.
-#[derive(Debug, Clone, Default, PartialEq, Eq)]
-pub struct ColumnarShadowCheckpointReport {
-    /// Whether the shadow published or failed for this checkpoint.
-    pub status: ColumnarShadowCheckpointStatus,
-    /// Shadow manifest generation this checkpoint published.
-    pub generation: u64,
-    /// Storage commit epoch the checkpoint publishes (§3.6.1).
-    pub source_commit_epoch: u64,
-    /// Tables referenced by the published shadow manifest.
-    pub table_count: usize,
-    /// Tables rebuilt because they were dirty since the previous checkpoint.
-    pub dirty_table_count: usize,
-    /// Untouched tables whose directory references were reused byte-for-byte.
-    pub reused_table_count: usize,
-    /// Immutable column-group artifact bytes written by this checkpoint.
-    pub group_bytes_written: u64,
-    /// Table-directory, key-dictionary, and manifest bytes written.
-    pub metadata_bytes_written: u64,
-    /// Honest builder-footprint peak: pass-1 type-lattice state, the key
-    /// dictionary, and all buffered group rows at their largest, measured
-    /// with the same estimates the budget uses (spec §8 discipline).
-    pub peak_builder_bytes: u64,
-    /// The builder-lifetime byte allowance admitted for this build (0 when
-    /// unmetered); `peak_builder_bytes` stays within it.
-    pub admitted_budget_bytes: u64,
-    /// Column groups flushed by this checkpoint, including budget-driven
-    /// short groups (the group row capacity is a maximum, not a minimum).
-    pub flushed_group_count: usize,
-    /// Rows whose estimate alone exceeded the buffer budget: each flushes
-    /// every buffer and is written as its own single-row group immediately
-    /// (a bounded transient), never buffered.
-    pub oversized_row_group_count: usize,
-    /// Superseded shadow files removed by the post-publish sweep, which
-    /// retains only the active manifest's reference closure plus the key
-    /// dictionary (the shadow has no readers and no pins).
-    pub reclaimed_file_count: usize,
-    /// Sweep removals that failed (for example a transient Windows sharing
-    /// violation); recorded here and retried by the next publish, never
-    /// propagated into the publication result.
-    pub reclaim_failed_count: usize,
-    /// Wall-clock time spent building and publishing the shadow.
-    pub elapsed_micros: u64,
-}
-
-/// What recovery observed about the shadow catalog when the flag is on.
-#[derive(Debug, Clone, Default, PartialEq, Eq)]
-pub struct ColumnarShadowRecoveryStatus {
-    /// The published shadow catalog opened and validated cleanly.
-    pub validated: bool,
-    /// A corrupt shadow was discarded (rebuildable derived state, like a
-    /// corrupt projected-graph artifact); the next checkpoint rebuilds it.
-    pub discarded: bool,
-    /// Validation error of the discarded shadow, when any.
-    pub error: Option<String>,
-}
 
 /// Shadow bookkeeping carried by [`GraphStore`].
 #[derive(Debug, Clone)]
@@ -1391,6 +1315,23 @@ impl GraphStore {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::any::TypeId;
+
+    #[test]
+    fn root_facade_preserves_storage_columnar_shadow_contract_identity() {
+        assert_eq!(
+            TypeId::of::<crate::ColumnarShadowCheckpointStatus>(),
+            TypeId::of::<skein_storage::ColumnarShadowCheckpointStatus>()
+        );
+        assert_eq!(
+            TypeId::of::<crate::ColumnarShadowCheckpointReport>(),
+            TypeId::of::<skein_storage::ColumnarShadowCheckpointReport>()
+        );
+        assert_eq!(
+            TypeId::of::<crate::ColumnarShadowRecoveryStatus>(),
+            TypeId::of::<skein_storage::ColumnarShadowRecoveryStatus>()
+        );
+    }
     use skein_storage::{decode_residual_row_properties, ColumnGroupReader};
 
     fn unique_shadow_dir(name: &str) -> PathBuf {
