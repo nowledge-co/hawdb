@@ -1,5 +1,57 @@
-use super::*;
-use crate::executor::tests::{graph_algorithm_fixture, graph_algorithm_plan};
+use super::dispatch::Exit;
+use super::store::ReadFixture;
+use crate::analytics::try_projected_graph_with_node_filter;
+use crate::batch::*;
+use crate::external::NoExternalReadOperator;
+use crate::observer::QueryExecutionReports;
+use crate::Row;
+use skein_analytics::{
+    LouvainOptions, PageRankOptions, ProjectedGraphExecution, ProjectionLayout,
+    ProjectionMemoryBudget,
+};
+use skein_plan::GraphAlgorithmKind;
+
+fn graph_algorithm_fixture() -> (Catalog, ReadFixture) {
+    let mut catalog = Catalog::default();
+    let label = catalog.get_or_create_label("Memory");
+    let rel_type = catalog.get_or_create_rel_type("MENTIONS");
+    let store = ReadFixture {
+        nodes: (0..2)
+            .map(|id| NodeRecord {
+                id: NodeId(id),
+                labels: [label].into_iter().collect(),
+                properties: BTreeMap::from([("id".to_string(), Value::Int(id as i64 + 1))]),
+            })
+            .collect(),
+        relationships: vec![skein_storage::RelRecord {
+            id: skein_storage::RelId(0),
+            source: NodeId(0),
+            target: NodeId(1),
+            rel_type,
+            properties: BTreeMap::new(),
+        }],
+        definition: Some(skein_storage::ProjectedGraphDefinition {
+            node_labels: vec!["Memory".to_string()],
+            rel_types: vec!["MENTIONS".to_string()],
+        }),
+        ..ReadFixture::default()
+    };
+    (catalog, store)
+}
+
+fn graph_algorithm_plan(algorithm: GraphAlgorithmKind) -> PhysicalPlan {
+    PhysicalPlan::GraphAlgorithm {
+        algorithm,
+        graph_name: "MemoryGraph".to_string(),
+        options: skein_plan::GraphAlgorithmOptions {
+            damping: None,
+            max_iterations: Some(2),
+            max_levels: Some(1),
+        },
+        score_column: "score".to_string(),
+        node_visibility_predicate: None,
+    }
+}
 
 fn with_graph_context<T>(
     plan: &PhysicalPlan,

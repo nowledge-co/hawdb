@@ -1,13 +1,9 @@
-use super::*;
-use crate::planner::{
-    ComparisonOp, PhysicalPlanKind, ProjectionExpression, SortDirection, SortKey,
-};
+use super::fixtures;
+use super::store::ReadFixture;
+use crate::batch::*;
+use crate::external::NoExternalReadOperator;
+use skein_plan::{ComparisonOp, PhysicalPlanKind, ProjectionExpression, SortDirection, SortKey};
 use std::collections::BTreeSet;
-
-// Share the owner's explicit capability oracle, not the production classifier.
-#[path = "../../../crates/executor/src/batch/tests/fixtures.rs"]
-mod fixtures;
-mod handlers;
 
 fn wrap(plan: PhysicalPlan, shape: usize) -> PhysicalPlan {
     match shape {
@@ -60,16 +56,19 @@ fn with_context<T>(
     run: impl FnOnce(BatchReadContext<'_>) -> T,
 ) -> T {
     let mut catalog = Catalog::default();
-    let mut store = GraphStore::in_memory();
-    for value in values {
-        store
-            .create_node(
-                &mut catalog,
-                "Item",
-                BTreeMap::from([("score".to_string(), Value::Int(*value))]),
-            )
-            .unwrap();
-    }
+    let label = catalog.get_or_create_label("Item");
+    let store = ReadFixture {
+        nodes: values
+            .iter()
+            .enumerate()
+            .map(|(id, value)| NodeRecord {
+                id: NodeId(id as u64),
+                labels: [label].into_iter().collect(),
+                properties: BTreeMap::from([("score".to_string(), Value::Int(*value))]),
+            })
+            .collect(),
+        ..ReadFixture::default()
+    };
     let memory = ExecutionMemoryConfig {
         batch_rows: NonZeroUsize::new(batch_rows).unwrap(),
         batch_payload_bytes: NonZeroUsize::new(payload_bytes).unwrap(),
@@ -245,7 +244,7 @@ fn read_plan(shape: usize, threshold: i64, offset: usize, limit: usize) -> Physi
 }
 
 #[derive(Clone, Copy, Debug)]
-enum Exit {
+pub(super) enum Exit {
     Complete,
     Stop,
     Error,
