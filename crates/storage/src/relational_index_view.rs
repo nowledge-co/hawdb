@@ -5,6 +5,7 @@
 
 mod authoritative;
 mod constraint_qualification;
+mod qualification;
 mod row_source;
 mod transaction;
 
@@ -13,6 +14,11 @@ pub use constraint_qualification::{
     ConstraintProbeIdentity, RelationalConstraintQualificationProbeReport,
     RelationalConstraintQualificationReport, RelationalConstraintQualificationUse,
     RELATIONAL_CONSTRAINT_QUALIFICATION_PROTOCOL,
+};
+pub use qualification::{
+    RelationalIndexQualificationProbe, RelationalIndexQualificationProbeKind,
+    RelationalIndexQualificationProbeReport, RelationalIndexViewQualificationOptions,
+    RelationalIndexViewQualificationReport, RELATIONAL_INDEX_VIEW_QUALIFICATION_PROTOCOL,
 };
 pub use row_source::{map_index_row_snapshot_error, CanonicalRelationalIndexRowSource};
 pub use transaction::RelationalTransactionIndexView;
