@@ -178,7 +178,10 @@ impl RelationalOverflowPublisher {
                 stop_after: None,
             })
         })();
-        let _ = paths.remove_temps();
+        // Success has durably renamed every candidate; only failure leaves temporary files.
+        if result.is_err() {
+            let _ = paths.remove_temps();
+        }
         result.map(|publication| RelationalOverflowExactPublicationReport {
             publication,
             copied_base_extent_count: preflight.copied_base_extent_count,
@@ -255,7 +258,10 @@ impl RelationalOverflowPublisher {
             select_latest,
             stop_after,
         });
-        let _ = paths.remove_temps();
+        // Success has durably renamed every candidate; only failure leaves temporary files.
+        if result.is_err() {
+            let _ = paths.remove_temps();
+        }
         result
     }
 

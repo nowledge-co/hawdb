@@ -382,17 +382,7 @@ pub fn validate_unique_relationship_property(
     Ok(())
 }
 
-pub fn encode_property_type(value_type: PropertyType) -> &'static str {
-    match value_type {
-        PropertyType::Any => "any",
-        PropertyType::Bool => "bool",
-        PropertyType::Int => "int",
-        PropertyType::Float => "float",
-        PropertyType::String => "string",
-        PropertyType::Text => "text",
-        PropertyType::List => "list",
-    }
-}
+pub use crate::text::encode_property_type;
 
 #[cfg(test)]
 mod tests;

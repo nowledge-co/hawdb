@@ -1,5 +1,6 @@
 //! Storage-neutral query-runtime preflight protocol models.
 
+use crate::json_parse::{optional_query_name, parse_parameters_json};
 use skein_core::{Result, SkeinError, Value};
 use std::collections::BTreeMap;
 
@@ -163,7 +164,7 @@ fn parse_route_query_probe(
     }
     let parameters = object
         .get("parameters")
-        .map(parse_parameters_json)
+        .map(|value| parse_parameters_json(value, "query runtime probe"))
         .transpose()?
         .unwrap_or_default();
     let min_scan_pruning_reports = optional_usize(object, "min_scan_pruning_reports")?.unwrap_or(1);
@@ -198,7 +199,7 @@ fn parse_probe(value: &serde_json::Value) -> Result<NowledgeQueryRuntimePrefligh
         .to_string();
     let parameters = object
         .get("parameters")
-        .map(parse_parameters_json)
+        .map(|value| parse_parameters_json(value, "query runtime probe"))
         .transpose()?
         .unwrap_or_default();
     let min_scan_pruning_reports = optional_usize(object, "min_scan_pruning_reports")?.unwrap_or(1);
@@ -213,52 +214,6 @@ fn parse_probe(value: &serde_json::Value) -> Result<NowledgeQueryRuntimePrefligh
         min_scan_pruning_reports,
         max_output_rows: optional_usize(object, "max_output_rows")?,
     })
-}
-
-fn optional_query_name(value: &serde_json::Value) -> Option<String> {
-    ["name", "query_id", "id"]
-        .iter()
-        .find_map(|field| value.get(*field).and_then(serde_json::Value::as_str))
-        .map(str::to_string)
-}
-
-fn parse_parameters_json(value: &serde_json::Value) -> Result<BTreeMap<String, Value>> {
-    let object = value.as_object().ok_or_else(|| {
-        SkeinError::Semantic("query runtime probe field 'parameters' must be an object".to_string())
-    })?;
-    object
-        .iter()
-        .map(|(key, value)| Ok((key.clone(), value_from_json(value)?)))
-        .collect()
-}
-
-fn value_from_json(value: &serde_json::Value) -> Result<Value> {
-    match value {
-        serde_json::Value::Null => Ok(Value::Null),
-        serde_json::Value::Bool(value) => Ok(Value::Bool(*value)),
-        serde_json::Value::Number(value) => {
-            if let Some(value) = value.as_i64() {
-                Ok(Value::Int(value))
-            } else if let Some(value) = value.as_f64() {
-                Ok(Value::Float(value))
-            } else {
-                Err(SkeinError::Semantic(
-                    "unsupported JSON number in query runtime probe parameters".to_string(),
-                ))
-            }
-        }
-        serde_json::Value::String(value) => Ok(Value::String(value.clone())),
-        serde_json::Value::Array(values) => values
-            .iter()
-            .map(value_from_json)
-            .collect::<Result<Vec<_>>>()
-            .map(Value::List),
-        serde_json::Value::Object(values) => values
-            .iter()
-            .map(|(key, value)| Ok((key.clone(), value_from_json(value)?)))
-            .collect::<Result<BTreeMap<_, _>>>()
-            .map(Value::Map),
-    }
 }
 
 fn optional_string(
