@@ -178,11 +178,12 @@ impl SpillingAnalysis {
             .sort_unstable_by(|left, right| left.key().cmp(&right.key()));
         let records = std::mem::take(&mut self.records);
         self.string_bytes = 0;
-        let run = write_run(records.into_iter().map(Ok), pool, &mut FileSpillIo)?;
+        let run = write_run(records.into_iter().map(Ok), pool, &mut FileSpillIo);
+        // The consumed iterator has dropped its buffer even when writing fails.
         if let Some(memory) = &mut self.records_memory {
             memory.reset();
         }
-        self.runs.insert(run, pool)
+        self.runs.insert(run?, pool)
     }
 
     fn finish(mut self, pool: &mut SpillRuns) -> Result<FrequencyRun> {
