@@ -65,6 +65,11 @@ the snapshot. If another writer publishes first, the stale update fails before
 publishing. Complete range, compressed and inflated integrity is mandatory for
 base hydration, even when a consumer fails after staging only a prefix.
 
+Registered consumer directories remain exclusive to their consumer owner. A
+generation writer checks the binding under publication exclusion using the same
+operation task and budget. Rejection releases exclusion so the registered
+consumer can continue checkpointing.
+
 ## Evidence and scope
 
 `tests/search_generation_context.rs` imports only the embedded facade and std.
@@ -75,7 +80,8 @@ return the explicit unavailable-full-text capability error for text queries;
 build/update/delete and complete hydration remain verified in that profile.
 Failure cases cover stopped
 and unadmitted tasks, spare input capacity, poisoning, caller unwind, abandoned
-updates, stale generations, incompatible identity and reader policy snapshots.
+updates, stale generations, incompatible identity, reader policy snapshots and
+consumer publication exclusion followed by a successful consumer checkpoint.
 Owner tests retain exact/one-short admission, allocation/native lifetime,
 commit-fence and negative-control evidence for each integrated stage.
 

@@ -1,11 +1,12 @@
 //! External embedded-library contract: imports only the facade and std.
 
 use skein::{
-    RuntimeCancellationToken, RuntimeMemoryReservation, RuntimeTaskContext, SearchAnalyzerLexicon,
-    SearchDocument, SearchEmbeddingManifest, SearchLexicalTermPolicy, SearchMode,
-    SearchOutOfCoreConfig, SearchOutOfCoreGenerationBuildOptions,
+    Database, RuntimeCancellationToken, RuntimeMemoryReservation, RuntimeTaskContext,
+    SearchAnalyzerLexicon, SearchDocument, SearchEmbeddingManifest, SearchLexicalTermPolicy,
+    SearchMode, SearchOutOfCoreConfig, SearchOutOfCoreGenerationBuildOptions,
     SearchOutOfCoreGenerationBuildReport, SearchOutOfCoreGenerationWriter, SearchOutOfCoreReader,
-    SearchProjectionDelta, SearchProjectionKind, SearchProjectionRow, SearchQueryOptions,
+    SearchProjectionConsumerId, SearchProjectionConsumerOptions, SearchProjectionDelta,
+    SearchProjectionKind, SearchProjectionRow, SearchQueryOptions, SearchRebuildOptions,
 };
 use std::collections::BTreeMap;
 use std::num::NonZeroU64;
@@ -483,4 +484,72 @@ fn facade_captures_reader_term_and_manifest_admission() {
         vec![expected]
     );
     files(&root.0);
+}
+
+#[test]
+fn governed_writer_preserves_registered_consumer_and_releases_publication() {
+    let root = Directory::new();
+    std::fs::create_dir(&root.0).unwrap();
+    let projection = root.0.join("projection");
+    let mut db = Database::open(root.0.join("database")).unwrap();
+    db.query("CREATE (:Memory {id: 'owned', title: 'consumer document'})")
+        .unwrap();
+    let id = SearchProjectionConsumerId::new("generation-owner").unwrap();
+    let consumer = db
+        .create_search_projection_consumer(
+            id.clone(),
+            &projection,
+            SearchProjectionConsumerOptions::new(NonZeroU64::new(100).unwrap()),
+            |snapshot, index| {
+                snapshot
+                    .rebuild_search_projection(index, SearchRebuildOptions::default())
+                    .map(|_| ())
+            },
+        )
+        .unwrap();
+    let before = files(&projection);
+    let rejected_publication = |task| {
+        let mut writer =
+            SearchOutOfCoreGenerationWriter::create_with_context(&projection, options(), task)
+                .unwrap();
+        writer.push(row("outside", 101).into_document()).unwrap();
+        writer.finish().unwrap_err()
+    };
+    let error = rejected_publication(admitted());
+    assert!(
+        error
+            .to_string()
+            .contains("another search projection publication is active"),
+        "unexpected live-owner failure: {error}"
+    );
+    assert_eq!(files(&projection), before);
+    drop(consumer);
+
+    for task in [RuntimeTaskContext::default(), admitted()] {
+        let error = rejected_publication(task);
+        assert!(
+            error
+                .to_string()
+                .contains("registered projection requires its consumer owner"),
+            "unexpected publication failure: {error}"
+        );
+        assert_eq!(files(&projection), before);
+    }
+
+    // A real consumer checkpoint must still acquire publication after rejection.
+    let mut consumer = db.open_search_projection_consumer(&id, &projection).unwrap();
+    db.query("CREATE (:Memory {id: 'next', title: 'next consumer document'})")
+        .unwrap();
+    let report = db
+        .catch_up_search_projection_consumer(&mut consumer, 16, 16, 1, |_, batch| {
+            assert!(batch.relational_primary_key_changes().is_empty());
+            Ok(Default::default())
+        })
+        .unwrap();
+    assert!(report.catch_up.complete);
+    assert_eq!(report.catch_up.applied_batch_count, 1);
+    assert!(consumer.search_index().document("memory:owned").is_some());
+    assert!(consumer.search_index().document("memory:next").is_some());
+    assert!(consumer.search_index().document("memory:outside").is_none());
+    files(&projection);
 }
