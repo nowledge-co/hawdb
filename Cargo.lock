@@ -1152,6 +1152,7 @@ dependencies = [
  "skein-cypher",
  "skein-evidence",
  "skein-executor",
+ "skein-nowledge-contracts",
  "skein-plan-cache",
  "skein-route-ownership",
  "skein-search",

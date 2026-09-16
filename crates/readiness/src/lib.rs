@@ -67,6 +67,16 @@ pub mod graph_route_evidence_cli;
 #[doc(hidden)]
 pub mod replacement_summary;
 
+#[doc(hidden)]
+pub mod workload_contract;
+
+pub use workload_contract::{
+    NowledgeGraphRagWorkloadReport, NowledgeGraphRouteWorkloadBoundedExpansionReport,
+    NowledgeGraphRouteWorkloadFixtureOptions, NowledgeGraphRouteWorkloadFixtureReport,
+    NowledgeGraphRouteWorkloadQueryReport, NowledgeGraphRouteWorkloadRouteReport,
+    NowledgeSearchMetadataWorkloadReport, NowledgeSourceProjectionWorkloadReport,
+};
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct NowledgeMemReadinessAreaMap {
     pub graph: NowledgeMemReadinessAreaSummary,

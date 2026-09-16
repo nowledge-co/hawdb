@@ -35,7 +35,10 @@ rust_library(
     aliases = aliases(),
     deps = _NOWLEDGE_CONTRACTS_BASE_DEPS + ["//crates/search:skein_search_minimal"],
     proc_macro_deps = all_crate_deps(proc_macro = True),
-    visibility = ["//:__pkg__"],
+    visibility = [
+        "//:__pkg__",
+        "//crates/readiness:__pkg__",
+    ],
 )
 
 # Matches Cargo feature unification for the root ACL qualification target.
@@ -49,7 +52,10 @@ rust_library(
     aliases = aliases(),
     deps = _NOWLEDGE_CONTRACTS_BASE_DEPS + ["//crates/search:skein_search_acl"],
     proc_macro_deps = all_crate_deps(proc_macro = True),
-    visibility = ["//:__pkg__"],
+    visibility = [
+        "//:__pkg__",
+        "//crates/readiness:__pkg__",
+    ],
 )
 
 rust_test(

@@ -30,6 +30,7 @@ rust_library(
     edition = "2024",
     aliases = aliases(),
     deps = _READINESS_BASE_DEPS + [
+        "//crates/nowledge-contracts:skein_nowledge_contracts",
         "//crates/search:skein_search",
     ],
     proc_macro_deps = all_crate_deps(proc_macro = True),
@@ -45,6 +46,7 @@ rust_library(
     edition = "2024",
     aliases = aliases(),
     deps = _READINESS_BASE_DEPS + [
+        "//crates/nowledge-contracts:skein_nowledge_contracts_minimal",
         "//crates/search:skein_search_minimal",
     ],
     proc_macro_deps = all_crate_deps(proc_macro = True),
@@ -61,6 +63,7 @@ rust_library(
     edition = "2024",
     aliases = aliases(),
     deps = _READINESS_BASE_DEPS + [
+        "//crates/nowledge-contracts:skein_nowledge_contracts_acl",
         "//crates/search:skein_search_acl",
     ],
     proc_macro_deps = all_crate_deps(proc_macro = True),
