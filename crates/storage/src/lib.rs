@@ -13,6 +13,7 @@ pub mod column_group;
 pub mod config;
 #[doc(hidden)]
 pub mod cow;
+pub mod derived_repair;
 pub mod doctor;
 pub mod durability;
 #[doc(hidden)]
@@ -143,6 +144,11 @@ pub use config::{
     DEFAULT_SEGMENT_CACHE_CAPACITY_BYTES,
 };
 pub use cow::{CowPageWeight, CowSegment, CowSegmentedMap, COW_MAP_TARGET_SEGMENT_BYTES};
+pub use derived_repair::{
+    DerivedArtifactHealth, DerivedArtifactHealthReport, DerivedArtifactHealthState,
+    DerivedArtifactKind, DerivedArtifactRebuildOptions, DerivedArtifactRepairPlan,
+    DerivedArtifactRepairReport, DERIVED_ARTIFACT_REPAIR_PROTOCOL,
+};
 pub use doctor::{
     WalDoctorOptions, WalRepairAcknowledgement, WalTailRepairPlan, WalTailRepairReason,
     WalTailRepairReport, WAL_DOCTOR_REPAIR_PROTOCOL,
