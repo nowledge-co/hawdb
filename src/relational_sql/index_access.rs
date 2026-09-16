@@ -5,8 +5,6 @@ use skein_storage::{RelationalIndexReadLimits, RelationalIndexShadowError, Relat
 
 pub(crate) type RelationalIndexReadMode<'a> =
     skein_relational::index_runtime::RelationalIndexReadMode<'a, GraphStore>;
-pub(crate) type RelationalIndexRuntime<'a> =
-    skein_relational::index_runtime::RelationalIndexRuntime<'a, GraphStore>;
 
 impl RelationalIndexStoreReader for GraphStore {
     fn relational_index_probe_statistics(

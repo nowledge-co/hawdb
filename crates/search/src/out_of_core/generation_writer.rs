@@ -378,7 +378,17 @@ impl SearchOutOfCoreGenerationWriter {
         delta: crate::SearchProjectionDelta,
         options: SearchOutOfCoreGenerationBuildOptions,
     ) -> Result<SearchOutOfCoreGenerationUpdate> {
-        SearchOutOfCoreGenerationUpdate::prepare(reader, delta, options)
+        Self::prepare_delta_with_context(reader, delta, options, RuntimeTaskContext::default())
+    }
+
+    // Keep the approved facade private until its external lifecycle is qualified.
+    fn prepare_delta_with_context(
+        reader: &super::SearchOutOfCoreReader,
+        delta: crate::SearchProjectionDelta,
+        options: SearchOutOfCoreGenerationBuildOptions,
+        task: RuntimeTaskContext,
+    ) -> Result<SearchOutOfCoreGenerationUpdate> {
+        SearchOutOfCoreGenerationUpdate::prepare(reader, delta, options, task)
     }
 
     pub fn finish(self) -> Result<SearchOutOfCoreGenerationBuildReport> {

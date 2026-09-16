@@ -6,7 +6,9 @@
 #[doc(hidden)]
 pub mod envelope;
 
-use skein_core::{Result, SkeinError, Value};
+use skein_core::{
+    IndexKind, PropertyType, Result, SchemaObjectState, SkeinError, TableKind, Value,
+};
 use std::collections::BTreeMap;
 
 pub fn encode_string_vec(values: &[String]) -> String {
@@ -239,6 +241,142 @@ pub fn parse_i64(input: &str, name: &str) -> Result<i64> {
     input
         .parse()
         .map_err(|_| SkeinError::Storage(format!("invalid {name}: {input}")))
+}
+
+pub fn encode_value_vec(values: &[Value]) -> String {
+    values
+        .iter()
+        .map(|value| encode_string(&encode_value(value)))
+        .collect::<Vec<_>>()
+        .join(":")
+}
+
+pub fn decode_value_vec(input: &str) -> Result<Vec<Value>> {
+    if input.is_empty() {
+        return Ok(Vec::new());
+    }
+    input
+        .split(':')
+        .map(|value| decode_string(value).and_then(|value| decode_value(&value)))
+        .collect()
+}
+
+pub fn encode_table_kind(kind: TableKind) -> &'static str {
+    match kind {
+        TableKind::Node => "node",
+        TableKind::Relationship => "relationship",
+    }
+}
+
+pub fn decode_table_kind(input: &str) -> Result<TableKind> {
+    match input {
+        "node" => Ok(TableKind::Node),
+        "relationship" => Ok(TableKind::Relationship),
+        _ => Err(SkeinError::Storage(format!("invalid table kind: {input}"))),
+    }
+}
+
+pub fn encode_property_type(value_type: PropertyType) -> &'static str {
+    match value_type {
+        PropertyType::Any => "any",
+        PropertyType::Bool => "bool",
+        PropertyType::Int => "int",
+        PropertyType::Float => "float",
+        PropertyType::String => "string",
+        PropertyType::Text => "text",
+        PropertyType::List => "list",
+    }
+}
+
+pub fn decode_property_type(input: &str) -> Result<PropertyType> {
+    match input {
+        "any" => Ok(PropertyType::Any),
+        "bool" => Ok(PropertyType::Bool),
+        "int" => Ok(PropertyType::Int),
+        "float" => Ok(PropertyType::Float),
+        "string" => Ok(PropertyType::String),
+        "text" => Ok(PropertyType::Text),
+        "list" => Ok(PropertyType::List),
+        _ => Err(SkeinError::Storage(format!(
+            "invalid property type: {input}"
+        ))),
+    }
+}
+
+pub fn encode_index_kind(kind: IndexKind) -> &'static str {
+    match kind {
+        IndexKind::Equality => "equality",
+        IndexKind::Range => "range",
+        IndexKind::FullText => "fulltext",
+    }
+}
+
+pub fn decode_index_kind(input: &str) -> Result<IndexKind> {
+    match input {
+        "equality" => Ok(IndexKind::Equality),
+        "range" => Ok(IndexKind::Range),
+        "fulltext" => Ok(IndexKind::FullText),
+        _ => Err(SkeinError::Storage(format!("invalid index kind: {input}"))),
+    }
+}
+
+pub fn encode_nullable(nullable: bool) -> &'static str {
+    if nullable {
+        "nullable"
+    } else {
+        "not_null"
+    }
+}
+
+pub fn decode_nullable(input: &str) -> Result<bool> {
+    match input {
+        "nullable" => Ok(true),
+        "not_null" => Ok(false),
+        _ => Err(SkeinError::Storage(format!(
+            "invalid nullable flag: {input}"
+        ))),
+    }
+}
+
+pub fn encode_bool(value: bool) -> &'static str {
+    if value {
+        "true"
+    } else {
+        "false"
+    }
+}
+
+pub fn decode_bool(input: &str, name: &str) -> Result<bool> {
+    match input {
+        "true" => Ok(true),
+        "false" => Ok(false),
+        _ => Err(SkeinError::Storage(format!("invalid {name}: {input}"))),
+    }
+}
+
+pub fn encode_schema_object_state(state: SchemaObjectState) -> &'static str {
+    match state {
+        SchemaObjectState::DeleteOnly => "delete_only",
+        SchemaObjectState::WriteOnly => "write_only",
+        SchemaObjectState::Backfill => "backfill",
+        SchemaObjectState::Validating => "validating",
+        SchemaObjectState::Public => "public",
+        SchemaObjectState::Gc => "gc",
+    }
+}
+
+pub fn decode_schema_object_state(input: &str) -> Result<SchemaObjectState> {
+    match input {
+        "delete_only" => Ok(SchemaObjectState::DeleteOnly),
+        "write_only" => Ok(SchemaObjectState::WriteOnly),
+        "backfill" => Ok(SchemaObjectState::Backfill),
+        "validating" => Ok(SchemaObjectState::Validating),
+        "public" => Ok(SchemaObjectState::Public),
+        "gc" => Ok(SchemaObjectState::Gc),
+        _ => Err(SkeinError::Storage(format!(
+            "invalid schema object state: {input}"
+        ))),
+    }
 }
 
 #[cfg(test)]

@@ -1,24 +1,36 @@
 use super::{SearchOutOfCoreGenerationBuildOptions, SearchOutOfCoreGenerationWriter};
+use crate::build_control::checkpoint;
+use crate::build_memory::BuildMemory;
 use crate::error::{Result, SkeinError};
 use crate::{
     SearchDocument, SearchOutOfCoreGenerationBuildReport, SearchOutOfCoreMetrics,
     SearchOutOfCoreReader, SearchProjectionDelta, SearchProjectionDeltaReport,
 };
-use std::collections::VecDeque;
+use skein_core::RuntimeTaskContext;
+use skein_executor::QueryMemoryLease;
+
+mod input;
+
+mod hydration;
 
 #[derive(Debug)]
 pub struct SearchOutOfCoreGenerationUpdate {
     writer: SearchOutOfCoreGenerationWriter,
     delta_report: SearchProjectionDeltaReport,
     source_read_metrics: SearchOutOfCoreMetrics,
+    // The owned public report is handed to its caller only after finish returns.
+    _report_memory: QueryMemoryLease,
 }
 
 impl SearchOutOfCoreGenerationUpdate {
     pub(super) fn prepare(
         reader: &SearchOutOfCoreReader,
         delta: SearchProjectionDelta,
-        mut options: SearchOutOfCoreGenerationBuildOptions,
+        options: SearchOutOfCoreGenerationBuildOptions,
+        task: RuntimeTaskContext,
     ) -> Result<Self> {
+        checkpoint(&task)?;
+        let memory = BuildMemory::new(&task)?;
         let operation_count = delta.operation_count();
         if let Some(limit) = delta.max_operations
             && operation_count > limit
@@ -33,7 +45,7 @@ impl SearchOutOfCoreGenerationUpdate {
                 options.max_delta_operations
             )));
         }
-        let delta_working_bytes = delta_working_bytes(&delta);
+        let delta_working_bytes = delta_working_bytes(&delta, &task)?;
         if delta_working_bytes > options.max_delta_working_bytes.get() {
             return Err(SkeinError::Storage(format!(
                 "incremental projection update requires {delta_working_bytes} bytes, exceeding the generation admission {}",
@@ -45,65 +57,71 @@ impl SearchOutOfCoreGenerationUpdate {
         let source_graph_commit_epoch_after = delta
             .source_graph_commit_epoch
             .or(source_graph_commit_epoch_before);
-        bind_identity(reader, &mut options, source_graph_commit_epoch_after)?;
-
-        let SearchProjectionDelta {
-            upserts,
-            mut deletes,
-            max_operations: _,
-            source_graph_commit_epoch,
-        } = delta;
-        let mut upserts = upserts
-            .into_iter()
-            .map(|row| row.into_document())
-            .collect::<Vec<_>>();
-        upserts.sort_unstable_by(|left, right| left.id.cmp(&right.id));
-        deletes.sort_unstable();
-        validate_delta_ids(&upserts, &deletes)?;
-
+        let epoch_updated = delta.source_graph_commit_epoch.is_some();
+        // Admit the retained input before any identity clone or conversion.
+        let input = input::Pending::new(delta, &memory, &task)?;
+        let mut options = super::context_memory::Options::new(options, &memory, &task)?;
+        options.bind_delta_identity(reader, source_graph_commit_epoch_after)?;
+        let report_memory = memory
+            .retained
+            .reserve("search_projection".len() * 2 + "bounded_generation_update".len())?;
+        let mut input = input.convert(&task)?;
+        validate_delta_ids(
+            input.upserts.make_contiguous(),
+            input.deletes.make_contiguous(),
+            &task,
+        )?;
         let before_document_count = reader.document_count();
-        let upserted_documents = upserts.len();
-        let mut upserts = VecDeque::from(upserts);
-        let mut deletes = VecDeque::from(deletes);
-        // A prepared update retains this snapshot even if the reader is later
-        // reconfigured before the staged generation is finalized.
-        let mut writer = SearchOutOfCoreGenerationWriter::create_with_term_policy(
+        let upserted_documents = input.upserts.len();
+        // Preserve the reader's identity, limits and policy snapshot for finish.
+        let mut writer = SearchOutOfCoreGenerationWriter::create_with_memory(
             &reader.root,
             options,
-            reader.lexical_term_policy(),
+            task.clone(),
+            memory.clone(),
         )?;
+        writer.set_lexical_term_policy(reader.lexical_term_policy());
         writer.set_max_lexical_manifest_bytes(reader.config().max_lexical_manifest_bytes)?;
         writer.expected_active_generation = Some(reader.generation());
         let mut deleted_documents = 0usize;
-        let source_read_metrics = reader.visit_documents_in_order(&mut |document| {
-            while upserts
+        let source_read_metrics = hydration::visit(reader, &memory, &task, &mut |document| {
+            while input
+                .upserts
                 .front()
                 .is_some_and(|upsert| upsert.id < document.id)
             {
-                writer.push(upserts.pop_front().expect("front was present"))?;
+                writer.push_inner(input.pop_upsert())?;
             }
-            while deletes
+            while input
+                .deletes
                 .front()
                 .is_some_and(|deleted| deleted < &document.id)
             {
-                deletes.pop_front();
+                input.deletes.pop_front();
             }
-            if let Some(upsert) = upserts.pop_front_if(|upsert| upsert.id == document.id) {
-                writer.push(upsert)?;
+            if input
+                .upserts
+                .front()
+                .is_some_and(|upsert| upsert.id == document.id)
+            {
+                writer.push_inner(input.pop_upsert())?;
                 return Ok(());
             }
-            if deletes
+            if input
+                .deletes
                 .pop_front_if(|deleted| deleted == &document.id)
                 .is_some()
             {
                 deleted_documents = deleted_documents.saturating_add(1);
                 return Ok(());
             }
-            writer.push(document)
+            writer.push_inner(document)
         })?;
-        for document in upserts {
-            writer.push(document)?;
+        while !input.upserts.is_empty() {
+            writer.push_inner(input.pop_upsert())?;
         }
+        drop(input);
+        checkpoint(&task)?;
 
         Ok(Self {
             delta_report: SearchProjectionDeltaReport {
@@ -117,10 +135,11 @@ impl SearchOutOfCoreGenerationUpdate {
                 operation_count,
                 source_graph_commit_epoch_before,
                 source_graph_commit_epoch_after,
-                source_graph_commit_epoch_updated: source_graph_commit_epoch.is_some(),
+                source_graph_commit_epoch_updated: epoch_updated,
             },
             writer,
             source_read_metrics,
+            _report_memory: report_memory,
         })
     }
 
@@ -144,65 +163,40 @@ impl SearchOutOfCoreGenerationUpdate {
     }
 }
 
-fn bind_identity(
-    reader: &SearchOutOfCoreReader,
-    options: &mut SearchOutOfCoreGenerationBuildOptions,
-    source_graph_commit_epoch: Option<u64>,
+fn validate_delta_ids(
+    upserts: &[SearchDocument],
+    deletes: &[String],
+    task: &RuntimeTaskContext,
 ) -> Result<()> {
-    if options.source_graph_commit_epoch.is_some()
-        && options.source_graph_commit_epoch != source_graph_commit_epoch
-    {
-        return Err(SkeinError::Storage(
-            "search generation update source graph epoch does not match the delta".to_string(),
-        ));
+    checkpoint(task)?;
+    for id in upserts.iter().map(|document| &document.id).chain(deletes) {
+        checkpoint(task)?;
+        if id.is_empty() {
+            return Err(SkeinError::Storage(
+                "search generation delta document ids must not be empty".into(),
+            ));
+        }
     }
-    if options.import_source_graph_commit_epoch.is_some()
-        && options.import_source_graph_commit_epoch != reader.import_source_graph_commit_epoch()
-    {
-        return Err(SkeinError::Storage(
-            "search generation update import provenance does not match the active generation"
-                .to_string(),
-        ));
+    for pair in upserts.windows(2) {
+        checkpoint(task)?;
+        if pair[0].id == pair[1].id {
+            return Err(SkeinError::Storage(
+                "search generation delta contains duplicate upsert ids".into(),
+            ));
+        }
     }
-    if options.embedding_manifest.is_some()
-        && options.embedding_manifest != reader.embedding_manifest()
-    {
-        return Err(SkeinError::Storage(
-            "search generation update embedding identity does not match the active generation"
-                .to_string(),
-        ));
-    }
-    if options.analyzer_lexicon != *reader.analyzer_lexicon() {
-        return Err(SkeinError::Storage(
-            "search generation update analyzer does not match the active generation".to_string(),
-        ));
-    }
-    options.source_graph_commit_epoch = source_graph_commit_epoch;
-    options.import_source_graph_commit_epoch = reader.import_source_graph_commit_epoch();
-    options.embedding_manifest = reader.embedding_manifest();
-    Ok(())
-}
-
-fn validate_delta_ids(upserts: &[SearchDocument], deletes: &[String]) -> Result<()> {
-    if upserts.iter().any(|document| document.id.is_empty()) || deletes.iter().any(String::is_empty)
-    {
-        return Err(SkeinError::Storage(
-            "search generation delta document ids must not be empty".to_string(),
-        ));
-    }
-    if upserts.windows(2).any(|pair| pair[0].id == pair[1].id) {
-        return Err(SkeinError::Storage(
-            "search generation delta contains duplicate upsert ids".to_string(),
-        ));
-    }
-    if deletes.windows(2).any(|pair| pair[0] == pair[1]) {
-        return Err(SkeinError::Storage(
-            "search generation delta contains duplicate delete ids".to_string(),
-        ));
+    for pair in deletes.windows(2) {
+        checkpoint(task)?;
+        if pair[0] == pair[1] {
+            return Err(SkeinError::Storage(
+                "search generation delta contains duplicate delete ids".into(),
+            ));
+        }
     }
     let mut upsert_index = 0usize;
     let mut delete_index = 0usize;
     while upsert_index < upserts.len() && delete_index < deletes.len() {
+        checkpoint(task)?;
         match upserts[upsert_index].id.cmp(&deletes[delete_index]) {
             std::cmp::Ordering::Less => upsert_index = upsert_index.saturating_add(1),
             std::cmp::Ordering::Greater => delete_index = delete_index.saturating_add(1),
@@ -217,28 +211,37 @@ fn validate_delta_ids(upserts: &[SearchDocument], deletes: &[String]) -> Result<
     Ok(())
 }
 
-fn delta_working_bytes(delta: &SearchProjectionDelta) -> u64 {
-    let upsert_bytes = delta.upserts.iter().fold(0u64, |total, row| {
+fn delta_working_bytes(delta: &SearchProjectionDelta, task: &RuntimeTaskContext) -> Result<u64> {
+    let mut total = 0u64;
+    for row in &delta.upserts {
+        checkpoint(task)?;
         let embedding_bytes = row.embedding.as_ref().map_or(0u64, |embedding| {
             (embedding.len() as u64).saturating_mul(std::mem::size_of::<f32>() as u64)
         });
-        let metadata_bytes = row.metadata.iter().fold(0u64, |bytes, (name, value)| {
-            bytes
+        let mut metadata_bytes = 0u64;
+        for (name, value) in &row.metadata {
+            checkpoint(task)?;
+            metadata_bytes = metadata_bytes
                 .saturating_add(name.len() as u64)
-                .saturating_add(value.len() as u64)
-        });
-        total
+                .saturating_add(value.len() as u64);
+        }
+        total = total
             .saturating_add(std::mem::size_of::<crate::SearchProjectionRow>() as u64)
             .saturating_add(row.external_id.len() as u64)
             .saturating_add(row.title.len() as u64)
             .saturating_add(row.body.len() as u64)
             .saturating_add(row.source_id.as_ref().map_or(0, |value| value.len() as u64))
             .saturating_add(embedding_bytes)
-            .saturating_add(metadata_bytes)
-    });
-    delta.deletes.iter().fold(upsert_bytes, |total, id| {
-        total
+            .saturating_add(metadata_bytes);
+    }
+    for id in &delta.deletes {
+        checkpoint(task)?;
+        total = total
             .saturating_add(std::mem::size_of::<String>() as u64)
-            .saturating_add(id.len() as u64)
-    })
+            .saturating_add(id.len() as u64);
+    }
+    Ok(total)
 }
+
+#[cfg(test)]
+mod tests;

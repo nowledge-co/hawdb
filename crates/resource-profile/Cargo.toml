@@ -1,0 +1,13 @@
+[package]
+name = "skein-resource-profile"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+
+[dependencies]
+serde_json = "1"
+skein-core = { path = "../core" }
+skein-evidence = { path = "../evidence" }
+skein-executor = { path = "../executor" }
+skein-storage = { path = "../storage" }

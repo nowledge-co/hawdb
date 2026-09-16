@@ -2,7 +2,7 @@
 
 //! Contracts between the embedded database and external artifact runtimes.
 
-use skein_core::Value;
+use skein_core::{Result, Value};
 use skein_executor::{QueryOutput, Row};
 use skein_qos::{WorkClass, WorkRequest};
 use std::collections::{BTreeMap, BTreeSet};
@@ -54,6 +54,332 @@ impl DerivedArtifactJob {
 pub struct DerivedArtifactJobReport {
     pub job: DerivedArtifactJob,
     pub output: QueryOutput,
+}
+
+/// In-memory ownership for derived-artifact job scheduling state.
+///
+/// The embedded facade remains responsible for storage mutations and runtime
+/// capability checks. This queue owns only deterministic job selection and
+/// state transitions so external runtimes can reuse the same protocol.
+#[doc(hidden)]
+#[derive(Debug)]
+pub struct DerivedArtifactJobQueue {
+    next_job_id: u64,
+    jobs: Vec<DerivedArtifactJob>,
+}
+
+impl Default for DerivedArtifactJobQueue {
+    fn default() -> Self {
+        Self {
+            next_job_id: 1,
+            jobs: Vec::new(),
+        }
+    }
+}
+
+#[doc(hidden)]
+#[derive(Debug)]
+pub struct DerivedArtifactJobClaim {
+    index: usize,
+    job: DerivedArtifactJob,
+}
+
+impl DerivedArtifactJobClaim {
+    pub fn job(&self) -> &DerivedArtifactJob {
+        &self.job
+    }
+}
+
+impl DerivedArtifactJobQueue {
+    pub fn enqueue(
+        &mut self,
+        artifact_type: impl Into<String>,
+        name: impl Into<String>,
+        action: impl Into<String>,
+        payload: BTreeMap<String, Value>,
+    ) -> DerivedArtifactJob {
+        let job = DerivedArtifactJob {
+            id: self.next_job_id,
+            artifact_type: artifact_type.into(),
+            name: name.into(),
+            action: action.into(),
+            payload,
+            status: DerivedArtifactJobStatus::Pending,
+            attempts: 0,
+            last_error: None,
+            last_output: None,
+        };
+        self.next_job_id += 1;
+        self.jobs.push(job.clone());
+        job
+    }
+
+    pub fn jobs(&self) -> Vec<DerivedArtifactJob> {
+        self.jobs.clone()
+    }
+
+    pub fn pending_external(&self, limit: usize) -> Vec<DerivedArtifactJob> {
+        self.jobs_matching(limit, |job| {
+            job.status == DerivedArtifactJobStatus::Pending
+                && is_external_content_artifact_job(&job.artifact_type)
+        })
+    }
+
+    pub fn pending_external_for_action(
+        &self,
+        action: &str,
+        limit: usize,
+    ) -> Vec<DerivedArtifactJob> {
+        self.jobs_matching(limit, |job| {
+            job.status == DerivedArtifactJobStatus::Pending
+                && job.action == action
+                && is_external_content_artifact_job(&job.artifact_type)
+        })
+    }
+
+    pub fn pending_external_for_runtime(
+        &self,
+        manifest: &ExternalContentArtifactRuntimeManifest,
+        limit: usize,
+    ) -> Vec<DerivedArtifactJob> {
+        self.jobs_matching(limit, |job| {
+            job.status == DerivedArtifactJobStatus::Pending
+                && external_content_runtime_can_claim(manifest, job)
+        })
+    }
+
+    pub fn failed_external(&self, limit: usize) -> Vec<DerivedArtifactJob> {
+        self.jobs_matching(limit, |job| {
+            job.status == DerivedArtifactJobStatus::Failed
+                && is_external_content_artifact_job(&job.artifact_type)
+        })
+    }
+
+    pub fn succeeded_external(&self, limit: usize) -> Vec<DerivedArtifactJob> {
+        self.jobs_matching(limit, |job| {
+            job.status == DerivedArtifactJobStatus::Succeeded
+                && is_external_content_artifact_job(&job.artifact_type)
+        })
+    }
+
+    pub fn failed_external_for_action(
+        &self,
+        action: &str,
+        limit: usize,
+    ) -> Vec<DerivedArtifactJob> {
+        self.jobs_matching(limit, |job| {
+            job.status == DerivedArtifactJobStatus::Failed
+                && job.action == action
+                && is_external_content_artifact_job(&job.artifact_type)
+        })
+    }
+
+    pub fn succeeded_external_for_action(
+        &self,
+        action: &str,
+        limit: usize,
+    ) -> Vec<DerivedArtifactJob> {
+        self.jobs_matching(limit, |job| {
+            job.status == DerivedArtifactJobStatus::Succeeded
+                && job.action == action
+                && is_external_content_artifact_job(&job.artifact_type)
+        })
+    }
+
+    pub fn external_summary(&self, action: Option<&str>) -> ExternalContentArtifactJobSummary {
+        let mut summary = ExternalContentArtifactJobSummary::default();
+        for job in self.jobs.iter().filter(|job| {
+            is_external_content_artifact_job(&job.artifact_type)
+                && action.is_none_or(|action| job.action == action)
+        }) {
+            summarize_external_content_artifact_job(&mut summary, job);
+        }
+        summary
+    }
+
+    pub fn retry_failed_external(
+        &mut self,
+        job_id: u64,
+        action: Option<&str>,
+    ) -> Option<DerivedArtifactJob> {
+        let job = self.jobs.iter_mut().find(|job| job.id == job_id)?;
+        if job.status != DerivedArtifactJobStatus::Failed
+            || !is_external_content_artifact_job(&job.artifact_type)
+            || action.is_some_and(|action| job.action != action)
+        {
+            return None;
+        }
+
+        job.status = DerivedArtifactJobStatus::Pending;
+        job.last_error = None;
+        job.last_output = None;
+        Some(job.clone())
+    }
+
+    pub fn has_pending_external(&self) -> bool {
+        self.next_external_claimable().is_some()
+    }
+
+    pub fn has_pending_external_for_action(&self, action: &str) -> bool {
+        self.next_external_for_action_claimable(action).is_some()
+    }
+
+    pub fn has_pending_external_for_runtime(
+        &self,
+        manifest: &ExternalContentArtifactRuntimeManifest,
+    ) -> bool {
+        self.next_external_for_runtime_claimable(manifest).is_some()
+    }
+
+    pub fn next_pending(&self) -> Option<DerivedArtifactJob> {
+        self.jobs
+            .iter()
+            .find(|job| job.status == DerivedArtifactJobStatus::Pending)
+            .cloned()
+    }
+
+    pub fn next_external_claimable(&self) -> Option<DerivedArtifactJob> {
+        self.next_matching(|job| is_external_content_artifact_job(&job.artifact_type))
+    }
+
+    pub fn next_external_for_action_claimable(&self, action: &str) -> Option<DerivedArtifactJob> {
+        self.next_matching(|job| {
+            job.action == action && is_external_content_artifact_job(&job.artifact_type)
+        })
+    }
+
+    pub fn next_external_for_runtime_claimable(
+        &self,
+        manifest: &ExternalContentArtifactRuntimeManifest,
+    ) -> Option<DerivedArtifactJob> {
+        self.next_matching(|job| external_content_runtime_can_claim(manifest, job))
+    }
+
+    pub fn next_external_by_id_claimable(&self, job_id: u64) -> Option<DerivedArtifactJob> {
+        self.next_matching(|job| {
+            job.id == job_id && is_external_content_artifact_job(&job.artifact_type)
+        })
+    }
+
+    pub fn claim_pending(&mut self) -> Option<DerivedArtifactJobClaim> {
+        self.claim_matching(|_| true)
+    }
+
+    pub fn claim_external(&mut self) -> Option<DerivedArtifactJobClaim> {
+        self.claim_matching(|job| is_external_content_artifact_job(&job.artifact_type))
+    }
+
+    pub fn claim_external_for_action(&mut self, action: &str) -> Option<DerivedArtifactJobClaim> {
+        self.claim_matching(|job| {
+            job.action == action && is_external_content_artifact_job(&job.artifact_type)
+        })
+    }
+
+    pub fn claim_external_for_runtime(
+        &mut self,
+        manifest: &ExternalContentArtifactRuntimeManifest,
+    ) -> Option<DerivedArtifactJobClaim> {
+        self.claim_matching(|job| external_content_runtime_can_claim(manifest, job))
+    }
+
+    pub fn claim_external_by_id(&mut self, job_id: u64) -> Option<DerivedArtifactJobClaim> {
+        self.claim_matching(|job| {
+            job.id == job_id && is_external_content_artifact_job(&job.artifact_type)
+        })
+    }
+
+    pub fn complete(
+        &mut self,
+        claim: DerivedArtifactJobClaim,
+        result: Result<QueryOutput>,
+    ) -> DerivedArtifactJobReport {
+        let job = self
+            .jobs
+            .get_mut(claim.index)
+            .expect("artifact job claim index must remain valid");
+        assert_eq!(
+            job.id, claim.job.id,
+            "artifact job claim must match queue entry"
+        );
+
+        match result {
+            Ok(output) => {
+                job.status = DerivedArtifactJobStatus::Succeeded;
+                job.last_output = Some(output.clone());
+                DerivedArtifactJobReport {
+                    job: job.clone(),
+                    output,
+                }
+            }
+            Err(error) => {
+                job.status = DerivedArtifactJobStatus::Failed;
+                job.last_error = Some(error.to_string());
+                job.last_output = None;
+                DerivedArtifactJobReport {
+                    job: job.clone(),
+                    output: QueryOutput {
+                        rows: vec![derived_artifact_job_failure_row(job, &error.to_string())]
+                            .into(),
+                    },
+                }
+            }
+        }
+    }
+
+    pub fn run_external_with(
+        &mut self,
+        claim: DerivedArtifactJobClaim,
+        runtime: &mut impl FnMut(&DerivedArtifactJob) -> Result<QueryOutput>,
+    ) -> DerivedArtifactJobReport {
+        let result = runtime(claim.job());
+        self.complete(claim, result)
+    }
+
+    fn jobs_matching(
+        &self,
+        limit: usize,
+        predicate: impl Fn(&DerivedArtifactJob) -> bool,
+    ) -> Vec<DerivedArtifactJob> {
+        self.jobs
+            .iter()
+            .filter(|job| predicate(job))
+            .take(limit)
+            .cloned()
+            .collect()
+    }
+
+    fn next_matching(
+        &self,
+        predicate: impl Fn(&DerivedArtifactJob) -> bool,
+    ) -> Option<DerivedArtifactJob> {
+        self.jobs
+            .iter()
+            .find(|job| job.status == DerivedArtifactJobStatus::Pending && predicate(job))
+            .cloned()
+    }
+
+    fn claim_matching(
+        &mut self,
+        predicate: impl Fn(&DerivedArtifactJob) -> bool,
+    ) -> Option<DerivedArtifactJobClaim> {
+        let index = self
+            .jobs
+            .iter()
+            .position(|job| job.status == DerivedArtifactJobStatus::Pending && predicate(job))?;
+        Some(self.claim_at_index(index))
+    }
+
+    fn claim_at_index(&mut self, index: usize) -> DerivedArtifactJobClaim {
+        let job = &mut self.jobs[index];
+        job.status = DerivedArtifactJobStatus::Running;
+        job.attempts += 1;
+        job.last_error = None;
+        job.last_output = None;
+        DerivedArtifactJobClaim {
+            index,
+            job: job.clone(),
+        }
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -343,6 +669,7 @@ fn optional_string_value(value: Option<String>) -> Value {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use skein_core::SkeinError;
 
     fn job(
         id: u64,
@@ -504,5 +831,41 @@ mod tests {
             failure.get("error"),
             Some(&Value::String("runtime unavailable".to_string()))
         );
+    }
+
+    #[test]
+    fn queue_owns_fifo_claims_and_retryable_external_job_state() {
+        let mut queue = DerivedArtifactJobQueue::default();
+        let projected = queue.enqueue("projected_graph", "main", "rebuild", BTreeMap::new());
+        let first = queue.enqueue("content_artifact", "first", "parse", BTreeMap::new());
+        let second = queue.enqueue("content_artifact", "second", "parse", BTreeMap::new());
+
+        assert_eq!(projected.id, 1);
+        assert_eq!(first.id, 2);
+        assert_eq!(second.id, 3);
+        assert_eq!(
+            queue
+                .pending_external_for_action("parse", 8)
+                .into_iter()
+                .map(|job| job.id)
+                .collect::<Vec<_>>(),
+            vec![first.id, second.id]
+        );
+
+        let claim = queue.claim_external().expect("first external job");
+        assert_eq!(claim.job().id, first.id);
+        let report = queue.run_external_with(claim, &mut |_| {
+            Err(SkeinError::Semantic("external runtime failed".to_string()))
+        });
+        assert_eq!(report.job.status, DerivedArtifactJobStatus::Failed);
+        assert_eq!(report.job.attempts, 1);
+        assert_eq!(report.output.rows.len(), 1);
+
+        let retried = queue
+            .retry_failed_external(first.id, Some("parse"))
+            .expect("failed external job is retryable");
+        assert_eq!(retried.status, DerivedArtifactJobStatus::Pending);
+        assert!(retried.last_error.is_none());
+        assert!(retried.last_output.is_none());
     }
 }

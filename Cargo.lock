@@ -892,6 +892,7 @@ dependencies = [
  "skein-executor",
  "skein-explain",
  "skein-expression",
+ "skein-fuzz-contracts",
  "skein-integrity",
  "skein-nowledge-contracts",
  "skein-optimizer",
@@ -902,6 +903,7 @@ dependencies = [
  "skein-query-policy",
  "skein-readiness",
  "skein-relational",
+ "skein-resource-profile",
  "skein-route-ownership",
  "skein-runtime-tokio",
  "skein-search",
@@ -1035,6 +1037,15 @@ version = "0.1.0"
 dependencies = [
  "serde_json",
  "skein",
+ "skein-fuzz-contracts",
+]
+
+[[package]]
+name = "skein-fuzz-contracts"
+version = "0.1.0"
+dependencies = [
+ "serde_json",
+ "skein-core",
 ]
 
 [[package]]
@@ -1049,6 +1060,7 @@ dependencies = [
 name = "skein-nowledge-contracts"
 version = "0.1.0"
 dependencies = [
+ "serde",
  "serde_json",
  "skein-core",
  "skein-qos",
@@ -1137,10 +1149,15 @@ dependencies = [
  "serde",
  "serde_json",
  "skein-core",
+ "skein-cypher",
  "skein-evidence",
  "skein-executor",
+ "skein-nowledge-contracts",
+ "skein-plan-cache",
  "skein-route-ownership",
  "skein-search",
+ "skein-storage",
+ "skein-system-sql",
 ]
 
 [[package]]
@@ -1152,7 +1169,19 @@ dependencies = [
  "skein-expression",
  "skein-integrity",
  "skein-optimizer",
+ "skein-plan",
  "skein-sql",
+ "skein-storage",
+]
+
+[[package]]
+name = "skein-resource-profile"
+version = "0.1.0"
+dependencies = [
+ "serde_json",
+ "skein-core",
+ "skein-evidence",
+ "skein-executor",
  "skein-storage",
 ]
 
@@ -1227,6 +1256,7 @@ dependencies = [
  "rayon",
  "roaring",
  "serde",
+ "serde_json",
  "skein-core",
  "skein-integrity",
  "zstd",

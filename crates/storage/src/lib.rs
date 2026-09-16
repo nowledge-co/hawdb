@@ -13,6 +13,7 @@ pub mod column_group;
 pub mod config;
 #[doc(hidden)]
 pub mod cow;
+pub mod derived_repair;
 pub mod doctor;
 pub mod durability;
 #[doc(hidden)]
@@ -43,6 +44,8 @@ pub mod relational;
 pub mod relational_index_view;
 #[doc(hidden)]
 pub mod relational_row_workspace;
+#[doc(hidden)]
+pub mod residency;
 pub mod scan;
 pub mod snapshot;
 #[doc(hidden)]
@@ -84,7 +87,8 @@ pub use append_table::{
 };
 pub use background::{BackgroundWorkAdmission, BackgroundWorkPermit, BackgroundWorkRequest};
 pub use backup::{
-    validate_backup_file_name, BackupFileEntry, BackupManifest, StorageBackupReport,
+    copy_backup_file, copy_file_with_checksum, file_checksum, validate_backup_file_name,
+    validate_new_backup_destination, BackupFileEntry, BackupManifest, StorageBackupReport,
     StorageRestoreReport, StorageScrubReport, BACKUP_HEADER_V1, BACKUP_MANIFEST_FILE,
     STABLE_ID_MAPPING_FILE, STORAGE_MANIFEST_FILE,
 };
@@ -140,6 +144,11 @@ pub use config::{
     DEFAULT_SEGMENT_CACHE_CAPACITY_BYTES,
 };
 pub use cow::{CowPageWeight, CowSegment, CowSegmentedMap, COW_MAP_TARGET_SEGMENT_BYTES};
+pub use derived_repair::{
+    DerivedArtifactHealth, DerivedArtifactHealthReport, DerivedArtifactHealthState,
+    DerivedArtifactKind, DerivedArtifactRebuildOptions, DerivedArtifactRepairPlan,
+    DerivedArtifactRepairReport, DERIVED_ARTIFACT_REPAIR_PROTOCOL,
+};
 pub use doctor::{
     WalDoctorOptions, WalRepairAcknowledgement, WalTailRepairPlan, WalTailRepairReason,
     WalTailRepairReport, WAL_DOCTOR_REPAIR_PROTOCOL,
@@ -344,6 +353,8 @@ pub use relational::{
     RELATIONAL_OVERFLOW_MANIFEST_FILE, RELATIONAL_PRIMARY_INDEX_NAME,
     RELATIONAL_ROW_DELTA_MANIFEST_FILE, RELATIONAL_ROW_PAGE_MANIFEST_FILE,
 };
+pub use relational_index_view::RelationalIndexStorageResidencyReport;
+pub use residency::{RelationalRowStorageResidencyReport, StorageResidencyReport};
 pub use scan::{
     CandidateCursor, DateTimeMinMax, EnumDictionaryStats, FieldSummary, FileSegmentRangeReader,
     MembershipFilterSummary, MembershipVerdict, NumericMinMax, PersistedScanSegment,

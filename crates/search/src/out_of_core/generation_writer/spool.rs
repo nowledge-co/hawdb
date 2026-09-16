@@ -85,6 +85,26 @@ mod write_tests;
 
 mod decoding;
 
+pub(super) fn decode_line_admitted(
+    line: &[u8],
+    ordinal: usize,
+    memory: &BuildMemory,
+    task: &RuntimeTaskContext,
+) -> Result<AdmittedDocument> {
+    let mut digest = Crc32cHasher::new();
+    digest.update(line);
+    let mut input = line;
+    decoding::read_frame_admitted(
+        &mut input,
+        line.len(),
+        digest.finish(),
+        ordinal,
+        memory,
+        usize::MAX,
+        task,
+    )
+}
+
 pub(super) struct SpoolSource<'a> {
     pub(super) path: &'a Path,
     pub(super) document_count: usize,
