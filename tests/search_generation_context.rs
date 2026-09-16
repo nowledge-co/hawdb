@@ -537,7 +537,9 @@ fn governed_writer_preserves_registered_consumer_and_releases_publication() {
     }
 
     // A real consumer checkpoint must still acquire publication after rejection.
-    let mut consumer = db.open_search_projection_consumer(&id, &projection).unwrap();
+    let mut consumer = db
+        .open_search_projection_consumer(&id, &projection)
+        .unwrap();
     db.query("CREATE (:Memory {id: 'next', title: 'next consumer document'})")
         .unwrap();
     let report = db
