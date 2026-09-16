@@ -34,6 +34,8 @@ pub(crate) use codec::{
     decode_relational_row_payload, decode_relational_table_schema, encode_relational_row_payload,
     encode_relational_table_schema,
 };
+#[doc(hidden)]
+pub use compaction::relational_row_page_compaction_publication_config;
 pub use compaction::{
     RelationalOverflowCompactionConfig, RelationalOverflowCompactionReport,
     RelationalRowPageCompactionConfig, RelationalRowPageCompactionReport,

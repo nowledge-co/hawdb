@@ -30,7 +30,7 @@ impl Default for RelationalRowPageCompactionConfig {
 }
 
 impl RelationalRowPageCompactionConfig {
-    pub fn publication_config(self) -> RelationalRowPagePublicationConfig {
+    fn publication_config(self) -> RelationalRowPagePublicationConfig {
         RelationalRowPagePublicationConfig {
             max_dirty_pages: self.max_dirty_pages,
             max_dirty_bytes: self.max_dirty_bytes,
@@ -68,6 +68,14 @@ impl RelationalRowPageCompactionConfig {
                 SkeinError::Storage("row-page compaction admission byte count overflow".to_string())
             })
     }
+}
+
+/// Internal bridge for the embedded facade's checkpoint writer.
+#[doc(hidden)]
+pub fn relational_row_page_compaction_publication_config(
+    config: RelationalRowPageCompactionConfig,
+) -> RelationalRowPagePublicationConfig {
+    config.publication_config()
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
