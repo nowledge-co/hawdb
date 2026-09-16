@@ -12,6 +12,8 @@ pub mod canonical_adjacency;
 pub mod column_group;
 pub mod config;
 #[doc(hidden)]
+pub mod consistency;
+#[doc(hidden)]
 pub mod cow;
 pub mod derived_repair;
 pub mod doctor;
