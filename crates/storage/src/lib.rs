@@ -387,6 +387,7 @@ pub use stable_identity::{
     DEFAULT_STABLE_IDENTITY_PAGE_BYTES, DEFAULT_STABLE_IDENTITY_PAGE_ENTRIES,
     DEFAULT_STABLE_IDENTITY_VALUE_BYTES,
 };
+pub use statistics_refresh::{OptimizerStatisticsRefreshOptions, OptimizerStatisticsRefreshReport};
 pub use telemetry::{StorageTelemetrySink, WalAppendTelemetry};
 pub use wal::{
     WalGroupCommitActivation, WalGroupCommitAdaptiveColdStartEvidence,

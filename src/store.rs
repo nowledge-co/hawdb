@@ -169,6 +169,7 @@ use skein_storage::projection::artifact::{
 };
 pub(crate) use skein_storage::source_scan;
 pub use skein_storage::source_scan::SourceScanRow;
+pub(crate) use skein_storage::statistics_refresh::OptimizerStatisticsRefreshWork;
 use skein_storage::statistics_refresh::{
     adaptive_histogram_sample_limit, node_property_supports_optimizer_statistics,
     relationship_property_supports_optimizer_statistics, sample_histogram_values,
@@ -249,10 +250,9 @@ use skein_storage::{
 pub use skein_storage::{
     GraphIndexReadMetricsSnapshot, PersistentGraphIndexClass, PublishedReadView,
 };
+pub use skein_storage::{OptimizerStatisticsRefreshOptions, OptimizerStatisticsRefreshReport};
 pub use skein_storage::{RelationalIndexArtifactMetadata, RelationalIndexGenerationArtifacts};
 pub(crate) use skein_storage::{WalSyncGroupFlush, WalSyncGroupProgress};
-pub(crate) use statistics_refresh::OptimizerStatisticsRefreshWork;
-pub use statistics_refresh::{OptimizerStatisticsRefreshOptions, OptimizerStatisticsRefreshReport};
 use std::collections::{BTreeMap, BTreeSet};
 use std::fs;
 #[cfg(test)]

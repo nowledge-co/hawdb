@@ -1,97 +1,8 @@
 use super::*;
 use skein_storage::statistics_refresh::{
-    RefreshSpillDirectory, StatsRecord, StatsRunOptions, StatsRunWriter,
+    OptimizerStatisticsRefreshAccounting, RefreshSpillDirectory, StatsRecord, StatsRunOptions,
+    StatsRunWriter,
 };
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct OptimizerStatisticsRefreshOptions {
-    pub memory_budget_bytes: usize,
-    pub max_spill_bytes: u64,
-    pub max_spill_runs: usize,
-    pub max_input_records: u64,
-    pub max_generated_facts: u64,
-    pub max_path_expansions: u64,
-    pub spill_directory: PathBuf,
-}
-
-impl OptimizerStatisticsRefreshOptions {
-    fn validate(&self) -> Result<()> {
-        if self.memory_budget_bytes < 4096 {
-            return Err(SkeinError::Semantic(
-                "optimizer statistics refresh memory_budget_bytes must be at least 4096"
-                    .to_string(),
-            ));
-        }
-        for (name, value) in [
-            ("max_spill_bytes", self.max_spill_bytes),
-            ("max_spill_runs", self.max_spill_runs as u64),
-            ("max_input_records", self.max_input_records),
-            ("max_generated_facts", self.max_generated_facts),
-            ("max_path_expansions", self.max_path_expansions),
-        ] {
-            if value == 0 {
-                return Err(SkeinError::Semantic(format!(
-                    "optimizer statistics refresh {name} must be greater than zero"
-                )));
-            }
-        }
-        Ok(())
-    }
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct OptimizerStatisticsRefreshReport {
-    pub source_commit_epoch: u64,
-    pub node_records_read: u64,
-    pub relationship_records_read: u64,
-    pub path_expansions: u64,
-    pub generated_facts: u64,
-    pub spill_run_count: usize,
-    pub spilled_bytes: u64,
-    pub peak_buffer_bytes: usize,
-    pub output_statistics_bytes: usize,
-    pub property_group_count: usize,
-    pub relationship_property_group_count: usize,
-    pub excluded_property_group_count: usize,
-    pub excluded_relationship_property_group_count: usize,
-    pub index_sample_count: usize,
-    pub path_group_count: usize,
-    pub bounded_path_group_count: usize,
-    pub checkpoint_persisted: bool,
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) struct OptimizerStatisticsRefreshWork {
-    pub(crate) estimated_operations: usize,
-    pub(crate) recent_delta_operations: usize,
-    pub(crate) source_commit_lag: u64,
-}
-
-impl OptimizerStatisticsRefreshReport {
-    pub fn json(&self) -> serde_json::Value {
-        serde_json::json!({
-            "protocol": "skein-optimizer-statistics-refresh-v1",
-            "protocol_version": 1,
-            "source_commit_epoch": self.source_commit_epoch,
-            "node_records_read": self.node_records_read,
-            "relationship_records_read": self.relationship_records_read,
-            "path_expansions": self.path_expansions,
-            "generated_facts": self.generated_facts,
-            "spill_run_count": self.spill_run_count,
-            "spilled_bytes": self.spilled_bytes,
-            "peak_buffer_bytes": self.peak_buffer_bytes,
-            "output_statistics_bytes": self.output_statistics_bytes,
-            "property_group_count": self.property_group_count,
-            "relationship_property_group_count": self.relationship_property_group_count,
-            "excluded_property_group_count": self.excluded_property_group_count,
-            "excluded_relationship_property_group_count": self.excluded_relationship_property_group_count,
-            "index_sample_count": self.index_sample_count,
-            "path_group_count": self.path_group_count,
-            "bounded_path_group_count": self.bounded_path_group_count,
-            "checkpoint_persisted": self.checkpoint_persisted,
-        })
-    }
-}
 
 impl GraphStore {
     pub(crate) fn optimizer_statistics_refresh_work(
@@ -171,7 +82,7 @@ impl GraphStore {
             max_generated_facts: options.max_generated_facts,
         };
         let mut writer = StatsRunWriter::new(spill.path(), catalog, &run_options);
-        let mut work = RefreshWork::new(options);
+        let mut work = OptimizerStatisticsRefreshAccounting::new(options);
 
         self.try_visit_nodes_owned(None, |node| {
             work.read_node()?;
@@ -274,9 +185,9 @@ impl GraphStore {
 
         Ok(OptimizerStatisticsRefreshReport {
             source_commit_epoch,
-            node_records_read: work.node_records_read,
-            relationship_records_read: work.relationship_records_read,
-            path_expansions: work.path_expansions,
+            node_records_read: work.node_records_read(),
+            relationship_records_read: work.relationship_records_read(),
+            path_expansions: work.path_expansions(),
             generated_facts: merge_report.generated_facts,
             spill_run_count: merge_report.spill_run_count,
             spilled_bytes: merge_report.spilled_bytes,
@@ -328,7 +239,7 @@ fn collect_bounded_path_facts(
     hop: usize,
     spec: BoundedPathSpec,
     writer: &mut StatsRunWriter<'_>,
-    work: &mut RefreshWork<'_>,
+    work: &mut OptimizerStatisticsRefreshAccounting<'_>,
 ) -> Result<()> {
     if hop > MAX_BOUNDED_PATH_STAT_HOPS {
         return Ok(());
@@ -376,54 +287,24 @@ fn collect_bounded_path_facts(
     Ok(())
 }
 
-struct RefreshWork<'a> {
-    options: &'a OptimizerStatisticsRefreshOptions,
-    node_records_read: u64,
-    relationship_records_read: u64,
-    path_expansions: u64,
-}
+#[cfg(test)]
+mod facade_tests {
+    use super::*;
+    use std::any::TypeId;
 
-impl<'a> RefreshWork<'a> {
-    fn new(options: &'a OptimizerStatisticsRefreshOptions) -> Self {
-        Self {
-            options,
-            node_records_read: 0,
-            relationship_records_read: 0,
-            path_expansions: 0,
-        }
-    }
-
-    fn read_node(&mut self) -> Result<()> {
-        self.node_records_read = self.node_records_read.saturating_add(1);
-        self.check_input_budget()
-    }
-
-    fn read_relationship(&mut self) -> Result<()> {
-        self.relationship_records_read = self.relationship_records_read.saturating_add(1);
-        self.check_input_budget()
-    }
-
-    fn expand_path(&mut self) -> Result<()> {
-        self.path_expansions = self.path_expansions.saturating_add(1);
-        if self.path_expansions > self.options.max_path_expansions {
-            return Err(SkeinError::Execution(format!(
-                "optimizer statistics refresh exceeded max_path_expansions {}",
-                self.options.max_path_expansions
-            )));
-        }
-        Ok(())
-    }
-
-    fn check_input_budget(&self) -> Result<()> {
-        let input_records = self
-            .node_records_read
-            .saturating_add(self.relationship_records_read);
-        if input_records > self.options.max_input_records {
-            return Err(SkeinError::Execution(format!(
-                "optimizer statistics refresh exceeded max_input_records {}",
-                self.options.max_input_records
-            )));
-        }
-        Ok(())
+    #[test]
+    fn root_facade_preserves_storage_statistics_refresh_contract_identity() {
+        assert_eq!(
+            TypeId::of::<OptimizerStatisticsRefreshOptions>(),
+            TypeId::of::<skein_storage::OptimizerStatisticsRefreshOptions>()
+        );
+        assert_eq!(
+            TypeId::of::<OptimizerStatisticsRefreshReport>(),
+            TypeId::of::<skein_storage::OptimizerStatisticsRefreshReport>()
+        );
+        assert_eq!(
+            TypeId::of::<OptimizerStatisticsRefreshWork>(),
+            TypeId::of::<skein_storage::statistics_refresh::OptimizerStatisticsRefreshWork>()
+        );
     }
 }
