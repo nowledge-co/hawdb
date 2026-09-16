@@ -26,7 +26,10 @@ rust_library(
     edition = "2024",
     aliases = aliases(),
     crate_features = _SKEIN_FUZZ_DEFAULT_FEATURES,
-    deps = all_crate_deps(normal = True) + ["//:skein"],
+    deps = all_crate_deps(normal = True) + [
+        "//:skein",
+        "//crates/fuzz-contracts:skein_fuzz_contracts",
+    ],
     proc_macro_deps = all_crate_deps(proc_macro = True),
 )
 
