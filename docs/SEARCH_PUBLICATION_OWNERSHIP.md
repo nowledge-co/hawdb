@@ -86,10 +86,10 @@ ordinary Cargo and unchanged default Bazel/local-fuzz checks. Qualification logs
 and source receipts are retained under `/tmp/skein-392-publication` on the
 validation host. This document does not replace those execution receipts.
 
-The approved context constructors remain private. Post-commit generation cleanup
-still owns an independent pending queue/report, and stage-directory cleanup,
-delta input/hydration and final facade lifetime require follow-up qualification.
-The shared cleanup API also serves readers and ordinary checkpoints; moving it
-under writer admission must preserve retry reporting and the commit fence.
+Writer cleanup now uses an admitted one-pass owner; see the
+[cleanup contract](SEARCH_CLEANUP_OWNERSHIP.md). Mandatory stage cleanup and delta
+input/hydration also retain operation admission through the
+[context facade](SEARCH_GENERATION_CONTEXT.md). Reader/ordinary-checkpoint cleanup
+keeps its existing independent API and retry reporting.
 This PR neither completes #392 nor removes the 4 MiB source guard, establishes
 shared host admission/adaptive indexing, or qualifies the original #206 corpus.

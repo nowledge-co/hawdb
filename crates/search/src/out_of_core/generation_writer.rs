@@ -219,9 +219,20 @@ impl SearchOutOfCoreGenerationWriter {
         Self::create_with_context(root, options, RuntimeTaskContext::default())
     }
 
-    // Keep this internal until analyzer, spill, publication and delta stages
-    // share the complete operation resource contract.
-    fn create_with_context(
+    /// Creates a writer governed by one task through input, finish and cleanup.
+    ///
+    /// Cancellation and deadlines are cooperative. A memory reservation limits
+    /// admitted input, retained state and named native workspace for this
+    /// operation; absent a reservation, existing component limits still apply.
+    /// The caller owns shared host admission: copying a numeric reservation does
+    /// not reserve additional process capacity. This is not a process RSS cap.
+    ///
+    /// Failed input poisons the writer. Dropping an unfinished writer discards
+    /// its private stage. Cancellation before publication preserves the active
+    /// generation; after successful publication it can defer optional cleanup
+    /// but does not undo the commit. Native calls are not internally preempted.
+    /// Existing reports become caller-owned when `finish` returns.
+    pub fn create_with_context(
         root: impl AsRef<Path>,
         options: SearchOutOfCoreGenerationBuildOptions,
         task_context: RuntimeTaskContext,
@@ -381,8 +392,15 @@ impl SearchOutOfCoreGenerationWriter {
         Self::prepare_delta_with_context(reader, delta, options, RuntimeTaskContext::default())
     }
 
-    // Keep the approved facade private until its external lifecycle is qualified.
-    fn prepare_delta_with_context(
+    /// Prepares an update governed by the task until finish or drop.
+    ///
+    /// Uses the same operation contract as [`Self::create_with_context`],
+    /// including input conversion, ordered base hydration and retained reports.
+    /// The reader's term policy, manifest budget and generation identity are
+    /// captured during preparation. Later reader changes do not affect the
+    /// update, and a newer active generation makes its publication fail.
+    /// The reader is not borrowed by the returned update.
+    pub fn prepare_delta_with_context(
         reader: &super::SearchOutOfCoreReader,
         delta: crate::SearchProjectionDelta,
         options: SearchOutOfCoreGenerationBuildOptions,

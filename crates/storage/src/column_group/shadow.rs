@@ -70,6 +70,40 @@ pub struct ColumnarShadowRecoveryStatus {
     pub error: Option<String>,
 }
 
+/// Default global byte budget across all in-flight shadow group buffers.
+#[doc(hidden)]
+pub const DEFAULT_SHADOW_BUFFER_BUDGET_BYTES: u64 = 64 * 1024 * 1024;
+
+/// Shadow bookkeeping carried by the graph store.
+#[doc(hidden)]
+#[derive(Debug, Clone)]
+pub struct ColumnarShadowState {
+    pub enabled: bool,
+    pub all_dirty: bool,
+    pub dirty: std::collections::BTreeSet<crate::ColumnGroupTableKey>,
+    pub catalog: Option<crate::PublishedColumnGroupCatalog>,
+    pub buffer_budget_bytes: u64,
+    pub metadata_budget_bytes: u64,
+    pub recovery: ColumnarShadowRecoveryStatus,
+    pub report: Option<ColumnarShadowCheckpointReport>,
+}
+
+impl Default for ColumnarShadowState {
+    fn default() -> Self {
+        Self {
+            enabled: false,
+            all_dirty: false,
+            dirty: std::collections::BTreeSet::new(),
+            catalog: None,
+            buffer_budget_bytes: DEFAULT_SHADOW_BUFFER_BUDGET_BYTES,
+            metadata_budget_bytes:
+                crate::column_group::shadow_metadata::DEFAULT_SHADOW_METADATA_BUDGET_BYTES,
+            recovery: ColumnarShadowRecoveryStatus::default(),
+            report: None,
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

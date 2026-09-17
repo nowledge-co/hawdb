@@ -8,7 +8,7 @@ use crate::text::{
     encode_string, encode_string_vec, encode_table_kind, encode_value,
 };
 pub use crate::wire;
-use crate::{NodeId, RelId};
+use crate::{CowSegmentedMap, NodeId, NodeRecord, RelId, RelRecord};
 pub use group_commit::{
     WalGroupCommitActivation, WalGroupCommitAdaptiveColdStartEvidence,
     WalGroupCommitAdaptivePolicyEvidence, WalGroupCommitAdaptiveSteadyStateEvidence,
@@ -17,11 +17,12 @@ pub use group_commit::{
     DEFAULT_WAL_GROUP_COMMIT_MAX_BYTES, DEFAULT_WAL_GROUP_COMMIT_MAX_DELAY,
     DEFAULT_WAL_GROUP_COMMIT_MAX_ENTRIES,
 };
-use skein_core::Value;
+use skein_core::{Catalog, Value};
 use skein_core::{PropertyType, SchemaObjectState, TableKind};
 use skein_core::{Result, SkeinError};
 use skein_integrity::{IntegrityHasher, Sha256Digest};
 use std::collections::BTreeMap;
+use std::collections::BTreeSet;
 use std::fs::{self, File, OpenOptions};
 use std::io::{Read, Write};
 use std::path::{Path, PathBuf};
@@ -914,4 +915,104 @@ fn encode_bytes_base64(input: &[u8]) -> String {
         });
     }
     output
+}
+
+/// Applies a WAL op to a copy-on-write node/relationship snapshot.
+pub fn apply_wal_op_to_snapshot(
+    catalog: &Catalog,
+    nodes: &mut CowSegmentedMap<NodeId, NodeRecord>,
+    relationships: &mut CowSegmentedMap<RelId, RelRecord>,
+    op: &WalOp,
+) {
+    match op {
+        WalOp::CreateNode {
+            id,
+            label,
+            properties,
+        } => {
+            if let Some(label_id) = catalog.label_id(label) {
+                nodes.insert(
+                    *id,
+                    NodeRecord {
+                        id: *id,
+                        labels: BTreeSet::from([label_id]),
+                        properties: properties.clone(),
+                    },
+                );
+            }
+        }
+        WalOp::SetNodeProperty {
+            id,
+            property,
+            value,
+        } => {
+            if let Some(node) = nodes.get_mut(id) {
+                node.properties.insert(property.clone(), value.clone());
+            }
+        }
+        WalOp::SetRelationshipProperty {
+            id,
+            property,
+            value,
+        } => {
+            if let Some(relationship) = relationships.get_mut(id) {
+                relationship
+                    .properties
+                    .insert(property.clone(), value.clone());
+            }
+        }
+        WalOp::DeleteNode { id } => {
+            nodes.remove(id);
+        }
+        WalOp::CreateRelationship {
+            id,
+            source,
+            target,
+            rel_type,
+            properties,
+        } => {
+            if let Some(rel_type_id) = catalog.rel_type_id(rel_type) {
+                relationships.insert(
+                    *id,
+                    RelRecord {
+                        id: *id,
+                        source: *source,
+                        target: *target,
+                        rel_type: rel_type_id,
+                        properties: properties.clone(),
+                    },
+                );
+            }
+        }
+        WalOp::DeleteRelationship { id } => {
+            relationships.remove(id);
+        }
+        WalOp::Batch(ops) => {
+            for op in ops {
+                apply_wal_op_to_snapshot(catalog, nodes, relationships, op);
+            }
+        }
+        WalOp::CreateNodeLabel { .. }
+        | WalOp::CreateRelationshipType { .. }
+        | WalOp::CreateNodeTable { .. }
+        | WalOp::CreateRelationshipTable { .. }
+        | WalOp::CreateProperty { .. }
+        | WalOp::AlterTableState { .. }
+        | WalOp::AlterPropertyState { .. }
+        | WalOp::GcTableDescriptor { .. }
+        | WalOp::GcPropertyDescriptor { .. }
+        | WalOp::CreateIndex { .. }
+        | WalOp::CreateCompositeIndex { .. }
+        | WalOp::CreateRangeIndex { .. }
+        | WalOp::CreateFullTextIndex { .. }
+        | WalOp::CreateUniqueConstraint { .. }
+        | WalOp::CreateNodePropertyExistsConstraint { .. }
+        | WalOp::CreateRelationshipUniqueConstraint { .. }
+        | WalOp::CreateRelationshipPropertyExistsConstraint { .. }
+        | WalOp::ProjectGraph { .. }
+        | WalOp::MarkInitialImportSource { .. }
+        | WalOp::Relational { .. }
+        | WalOp::RelationalSnapshot { .. }
+        | WalOp::Append { .. } => {}
+    }
 }

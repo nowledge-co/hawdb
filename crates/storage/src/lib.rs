@@ -51,10 +51,12 @@ pub mod relational_row_workspace;
 #[doc(hidden)]
 pub mod residency;
 pub mod scan;
+pub mod schema;
 pub mod snapshot;
 #[doc(hidden)]
 pub mod source_scan;
 pub mod stable_identity;
+pub mod statistics;
 #[doc(hidden)]
 pub mod statistics_refresh;
 pub mod telemetry;
@@ -137,7 +139,8 @@ pub use column_group::{
     },
     shadow::{
         ColumnarShadowCheckpointReport, ColumnarShadowCheckpointStatus,
-        ColumnarShadowRecoveryStatus, COLUMN_GROUP_SHADOW_DIR,
+        ColumnarShadowRecoveryStatus, ColumnarShadowState, COLUMN_GROUP_SHADOW_DIR,
+        DEFAULT_SHADOW_BUFFER_BUDGET_BYTES,
     },
     zone::{ChunkZoneMap, StringPrefixMinMax},
     ColumnGroupError, DeletionVectorBinding, COLUMN_GROUP_MAGIC, DELETION_VECTOR_MAGIC,

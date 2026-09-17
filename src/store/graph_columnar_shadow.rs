@@ -72,11 +72,12 @@
 
 use super::*;
 #[cfg(test)]
+use skein_storage::column_group::shadow_metadata::DEFAULT_SHADOW_METADATA_BUDGET_BYTES;
+#[cfg(test)]
 use skein_storage::column_group::shadow_metadata::FIRST_DICTIONARY_COLUMN;
 use skein_storage::column_group::shadow_metadata::{
     shadow_table_layout, ShadowKeyDictionary, ShadowMetadataBudget, ShadowTableLayout,
-    TablePropertyTypes, DEFAULT_SHADOW_METADATA_BUDGET_BYTES, SHADOW_KEY_DICTIONARY_FILE,
-    SHADOW_PASS1_TABLE_OVERHEAD_BYTES,
+    TablePropertyTypes, SHADOW_KEY_DICTIONARY_FILE, SHADOW_PASS1_TABLE_OVERHEAD_BYTES,
 };
 use skein_storage::{
     encode_residual_row_properties, residual_row_properties_encoded_len,
@@ -95,8 +96,6 @@ const SOURCE_COLUMN: PropertyId = PropertyId(1);
 const TARGET_COLUMN: PropertyId = PropertyId(2);
 /// Reserved column id of the residual blob column.
 const RESIDUAL_COLUMN: PropertyId = PropertyId(3);
-/// Default global byte budget across all in-flight shadow group buffers.
-const DEFAULT_SHADOW_BUFFER_BUDGET_BYTES: u64 = 64 * 1024 * 1024;
 /// Fixed per-row overhead charged against the buffer budget.
 const SHADOW_ROW_OVERHEAD_BYTES: u64 = 16;
 /// Encoder scratch allowance multiplier inside the admission reservation:
@@ -110,44 +109,9 @@ const SHADOW_ENCODER_SCRATCH_MULTIPLIER: u64 = 2;
 /// allowance, which is what makes the shadow converge on any input.
 const SHADOW_STREAMED_FLUSH_ALLOWANCE_BYTES: u64 = 64 * 1024;
 
-/// Shadow bookkeeping carried by [`GraphStore`].
-#[derive(Debug, Clone)]
-pub(super) struct ColumnarShadowState {
-    /// The config flag; when off, every shadow hook is a no-op.
-    pub(super) enabled: bool,
-    /// All tables must be rebuilt at the next checkpoint (first checkpoint,
-    /// discarded shadow, or a shadow behind the recovered checkpoint).
-    pub(super) all_dirty: bool,
-    /// Tables touched by mutations since the last successful shadow publish.
-    pub(super) dirty: BTreeSet<ColumnGroupTableKey>,
-    /// The active published shadow catalog, for untouched-table reuse.
-    pub(super) catalog: Option<PublishedColumnGroupCatalog>,
-    /// Global byte budget across all in-flight group buffers during a
-    /// shadow build; exceeding it flushes the largest buffer as a short
-    /// group.
-    pub(super) buffer_budget_bytes: u64,
-    /// Enforced budget for dictionary, pass-1, layout, and serialization
-    /// metadata. Unlike the buffer budget, exceeding this cannot be cured by
-    /// flushing rows and therefore fails the derived shadow build early.
-    pub(super) metadata_budget_bytes: u64,
-    pub(super) recovery: ColumnarShadowRecoveryStatus,
-    pub(super) report: Option<ColumnarShadowCheckpointReport>,
-}
-
-impl Default for ColumnarShadowState {
-    fn default() -> Self {
-        Self {
-            enabled: false,
-            all_dirty: false,
-            dirty: BTreeSet::new(),
-            catalog: None,
-            buffer_budget_bytes: DEFAULT_SHADOW_BUFFER_BUDGET_BYTES,
-            metadata_budget_bytes: DEFAULT_SHADOW_METADATA_BUDGET_BYTES,
-            recovery: ColumnarShadowRecoveryStatus::default(),
-            report: None,
-        }
-    }
-}
+pub(super) use skein_storage::ColumnarShadowState;
+#[cfg(test)]
+use skein_storage::DEFAULT_SHADOW_BUFFER_BUDGET_BYTES;
 
 /// The shadow table key of a node with `labels` (minimum label = primary).
 fn node_table_key(labels: &BTreeSet<LabelId>) -> ColumnGroupTableKey {

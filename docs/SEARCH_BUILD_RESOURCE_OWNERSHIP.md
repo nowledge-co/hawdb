@@ -7,8 +7,9 @@ writer, segment and vector builders, lexical blocks and lexical manifest reader.
 The account registry does not grow with document count. Existing component limits
 remain independent constraints.
 
-The context constructor stays private until the remaining stages implement the
-complete resource contract. Existing public entrypoints use their existing defaults.
+The additive context constructors now expose the integrated operation contract;
+see [the embedded context facade](SEARCH_GENERATION_CONTEXT.md). Existing default
+entrypoints retain their defaults.
 This change does not remove the 4 MiB lexical source guard, change the finite term
 policy or 256 MiB manifest default, or change query semantics and artifact formats.
 
@@ -55,10 +56,11 @@ The opaque Jieba/regex workspace now has operation admission and native-join
 ownership; see [the analyzer contract](SEARCH_ANALYZER_WORKSPACE.md). Source-owned
 token normalization, identifier deduplication and resident frequencies also retain
 their admission through consumers; see [the token contract](SEARCH_TOKEN_OWNERSHIP.md).
-Spill buffers/readers, registries, merge heads and reserved progress under combined
-pressure still require integration. Generation discovery, outer manifest publication, delta hydration and
-the two approved public context constructors also remain separate work. Do not
-describe this foundation as a completed whole-operation limit or cancellation bound.
+Spill buffers/readers and reserved progress are integrated in the
+[spill contract](SEARCH_SPILL_OWNERSHIP.md). Discovery/publication, cleanup and
+delta input/hydration now retain the same operation ownership. The
+[context facade](SEARCH_GENERATION_CONTEXT.md) defines the complete exposed
+lifecycle and its cooperative cancellation and accounting boundaries.
 
 The ledger models owned Rust capacities and named native scratch allowances. It
 does not measure allocator overhead, every native allocation or process RSS.

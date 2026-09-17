@@ -21,6 +21,7 @@ mod mutation;
 mod publication;
 mod recovery;
 mod snapshot;
+mod state;
 mod value;
 
 pub use delta::{
@@ -73,6 +74,9 @@ pub use snapshot::{
     RelationalRowPageSnapshotReadLimits, RelationalRowPageSnapshotReader,
     RelationalRowPageSnapshotRowSource, DEFAULT_RELATIONAL_ROW_SNAPSHOT_OVERLAY_BYTES,
     DEFAULT_RELATIONAL_ROW_SNAPSHOT_OVERLAY_ENTRIES,
+};
+pub use state::{
+    RelationalRowLiveUnavailable, RelationalRowPageServingResources, RelationalRowPageState,
 };
 
 #[cfg(test)]

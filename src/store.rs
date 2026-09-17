@@ -166,10 +166,18 @@ use skein_storage::projection::artifact::{
 pub use skein_storage::scan::{ScanPrunedNodeScan, ScanPrunedRelationshipScan};
 pub(crate) use skein_storage::source_scan;
 pub use skein_storage::source_scan::SourceScanRow;
+#[cfg(test)]
+pub(crate) use skein_storage::statistics::compute_statistics;
+pub(crate) use skein_storage::statistics::{
+    composite_property_index_key, composite_property_index_unique_values, compute_basic_statistics,
+    compute_index_statistics_samples, compute_node_property_distinct_counts_from_index,
+    compute_relationship_property_distinct_counts_from_index, compute_statistics_for_catalog,
+    compute_statistics_with_basic, decrement_counter, full_text_index_tokens,
+    full_text_query_tokens, graph_statistics_from_basic, recompute_node_property_index,
+    recompute_relationship_property_index, scalar_property_index_cardinality,
+};
 use skein_storage::statistics_refresh::{
-    adaptive_histogram_sample_limit, node_property_supports_optimizer_statistics,
-    relationship_property_supports_optimizer_statistics, sample_histogram_values,
-    MAX_BOUNDED_PATH_STAT_HOPS, MAX_PROPERTY_HISTOGRAM_VALUES,
+    node_property_supports_optimizer_statistics, MAX_BOUNDED_PATH_STAT_HOPS,
 };
 pub(crate) use skein_storage::statistics_refresh::{
     retain_supported_property_statistics, retain_valid_index_statistics_samples,
@@ -181,11 +189,6 @@ use skein_storage::text::encode_properties;
 use skein_storage::text::envelope::DURABLE_COMPRESSION_HEADER;
 pub(crate) use skein_storage::text::envelope::{
     encode_durable_text, read_durable_text_bytes, read_durable_text_bytes_with_limit,
-};
-pub(crate) use skein_storage::text::{
-    decode_bool, decode_index_kind, decode_nullable, decode_properties, decode_property_type,
-    decode_schema_object_state, decode_string, decode_string_vec, decode_table_kind,
-    decode_u64_vec, decode_value_vec, parse_u64,
 };
 use skein_storage::GraphIndexReadMetrics;
 #[cfg(test)]
@@ -274,15 +277,12 @@ use wal_codec::{
     WalOpenOutcome, WalRecordCursor,
 };
 
-use skein_storage::durable_manifest::{
-    safe_reclaim_commit_epoch, validate_storage_version, STORAGE_VERSION,
-};
+use skein_storage::durable_manifest::{safe_reclaim_commit_epoch, STORAGE_VERSION};
 const MANIFEST_FILE: &str = "manifest.skein";
 const PROJECTED_GRAPHS_FILE: &str = "projected_graphs.skein";
 const STABLE_ID_MAPPING_FILE: &str = "stable_ids.skein";
 pub(crate) use skein_storage::checkpoint::{
-    decode_search_projection_relational_primary_key_changes, parse_label_set,
-    relational_checkpoint_metadata, split_checkpoint_checksum, CHECKPOINT_HEADER_V1,
+    relational_checkpoint_metadata, split_checkpoint_checksum,
 };
 const BACKUP_MANIFEST_FILE: &str = "backup.skein";
 const CANONICAL_MANIFEST_MAX_BYTES: u64 = 256 * 1024 * 1024;
@@ -603,87 +603,10 @@ pub(crate) struct GraphMutationLockFootprint {
     pub(crate) adjacency_writes: BTreeSet<GraphAdjacencyLockIdentity>,
 }
 
-fn ensure_mutation_commit_limits(
-    ops: &[WalOp],
-    rows: &[BTreeMap<String, Value>],
-    limits: MutationLimits,
-) -> Result<()> {
-    ensure_additional_mutation_limits(ops.len(), rows.len(), 0, 0, limits)?;
-    if rows.len() > limits.max_result_rows.get() {
-        return Err(SkeinError::Execution(format!(
-            "mutation would exceed max_mutation_result_rows {}",
-            limits.max_result_rows
-        )));
-    }
-    let payload_bytes = rows.iter().fold(0u64, |total, row| {
-        total.saturating_add(row.iter().fold(0u64, |row_total, (name, value)| {
-            row_total
-                .saturating_add(name.len() as u64)
-                .saturating_add(estimated_value_bytes(value))
-        }))
-    });
-    if payload_bytes > limits.max_result_payload_bytes.get() as u64 {
-        return Err(SkeinError::Execution(format!(
-            "mutation result payload would exceed max_mutation_result_payload_bytes {}",
-            limits.max_result_payload_bytes
-        )));
-    }
-    Ok(())
-}
-
-fn ensure_additional_mutation_limits(
-    operation_count: usize,
-    affected_row_count: usize,
-    additional_operations: usize,
-    additional_affected_rows: usize,
-    limits: MutationLimits,
-) -> Result<()> {
-    let next_operations = operation_count
-        .checked_add(additional_operations)
-        .ok_or_else(|| SkeinError::Execution("mutation operation count overflow".to_string()))?;
-    if next_operations > limits.max_operations.get() {
-        return Err(SkeinError::Execution(format!(
-            "mutation would exceed max_mutation_operations {}",
-            limits.max_operations
-        )));
-    }
-    let next_affected_rows = affected_row_count
-        .checked_add(additional_affected_rows)
-        .ok_or_else(|| SkeinError::Execution("mutation affected-row count overflow".to_string()))?;
-    if next_affected_rows > limits.max_affected_rows.get() {
-        return Err(SkeinError::Execution(format!(
-            "mutation would exceed max_mutation_affected_rows {}",
-            limits.max_affected_rows
-        )));
-    }
-    Ok(())
-}
-
-fn remaining_mutation_affected_rows(current: usize, limits: MutationLimits) -> Result<usize> {
-    limits
-        .max_affected_rows
-        .get()
-        .checked_sub(current)
-        .ok_or_else(|| {
-            SkeinError::Execution(format!(
-                "mutation would exceed max_mutation_affected_rows {}",
-                limits.max_affected_rows
-            ))
-        })
-}
-
-fn remaining_mutation_operations(current: usize, limits: MutationLimits) -> Result<usize> {
-    limits
-        .max_operations
-        .get()
-        .checked_sub(current)
-        .ok_or_else(|| {
-            SkeinError::Execution(format!(
-                "mutation would exceed max_mutation_operations {}",
-                limits.max_operations
-            ))
-        })
-}
+pub(crate) use skein_storage::mutation::{
+    ensure_additional_mutation_limits, ensure_mutation_commit_limits, estimated_properties_bytes,
+    estimated_value_bytes, remaining_mutation_affected_rows, remaining_mutation_operations,
+};
 
 type AdjacencyGroups = BTreeMap<AdjacencyGroupKey, BTreeSet<RelId>>;
 
@@ -1961,133 +1884,9 @@ pub(crate) fn sync_parent_dir(path: &Path) -> Result<()> {
     Ok(())
 }
 
-fn composite_property_index_key(
-    node: &NodeRecord,
-    properties: &[String],
-) -> Option<Vec<(String, Value)>> {
-    properties
-        .iter()
-        .map(|property| {
-            node.properties
-                .get(property)
-                .cloned()
-                .map(|value| (property.clone(), value))
-        })
-        .collect()
-}
-
-fn scalar_property_index_cardinality(
-    index: &NodePropertyIndex,
-    label_id: LabelId,
-    property: &str,
-) -> (u64, u64) {
-    index
-        .iter()
-        .filter(|((candidate_label, candidate_property, _), _)| {
-            *candidate_label == label_id && candidate_property == property
-        })
-        .fold((0_u64, 0_u64), |(size, unique), (_, node_ids)| {
-            (
-                size.saturating_add(node_ids.len() as u64),
-                unique.saturating_add(1),
-            )
-        })
-}
-
-fn composite_property_index_unique_values(
-    index: &CompositePropertyIndex,
-    label_id: LabelId,
-    properties: &[String],
-) -> u64 {
-    index
-        .keys()
-        .filter(|(candidate_label, key)| {
-            *candidate_label == label_id
-                && key
-                    .iter()
-                    .map(|(property, _)| property)
-                    .eq(properties.iter())
-        })
-        .count() as u64
-}
-
-fn compute_index_statistics_samples(
-    catalog: &Catalog,
-    property_index: &NodePropertyIndex,
-    composite_property_index: &CompositePropertyIndex,
-) -> BTreeMap<IndexId, IndexStatisticsSample> {
-    let mut samples = BTreeMap::new();
-    for index in catalog
-        .property_indexes()
-        .filter(|index| index.kind != IndexKind::FullText)
-    {
-        let (index_size, unique_values) =
-            scalar_property_index_cardinality(property_index, index.label_id, &index.property);
-        samples.insert(
-            index.id,
-            IndexStatisticsSample::exact(index_size, unique_values),
-        );
-    }
-    for index in catalog.composite_property_indexes() {
-        let index_size = composite_property_index
-            .iter()
-            .filter(|((candidate_label, key), _)| {
-                *candidate_label == index.label_id
-                    && key
-                        .iter()
-                        .map(|(property, _)| property)
-                        .eq(index.properties.iter())
-            })
-            .fold(0_u64, |size, (_, node_ids)| {
-                size.saturating_add(node_ids.len() as u64)
-            });
-        let unique_values = composite_property_index_unique_values(
-            composite_property_index,
-            index.label_id,
-            &index.properties,
-        );
-        samples.insert(
-            index.id,
-            IndexStatisticsSample::exact(index_size, unique_values),
-        );
-    }
-    samples
-}
-
-fn full_text_index_tokens(value: &str) -> BTreeSet<String> {
-    let normalized = value.to_lowercase();
-    let chars = normalized.chars().collect::<Vec<_>>();
-    let mut tokens = BTreeSet::new();
-    for start in 0..chars.len() {
-        for width in 1..=3 {
-            let end = start + width;
-            if end > chars.len() {
-                break;
-            }
-            let token = chars[start..end].iter().collect::<String>();
-            if !token.chars().all(char::is_whitespace) {
-                tokens.insert(token);
-            }
-        }
-    }
-    tokens
-}
-
-fn full_text_query_tokens(query: &str) -> Vec<String> {
-    full_text_index_tokens(query).into_iter().collect()
-}
-
-fn ensure_table_descriptor(catalog: &mut Catalog, kind: TableKind, name: &str) -> TableId {
-    match kind {
-        TableKind::Node => {
-            catalog.get_or_create_label(name);
-        }
-        TableKind::Relationship => {
-            catalog.get_or_create_rel_type(name);
-        }
-    }
-    catalog.get_or_create_table(kind, name)
-}
+pub(crate) use skein_storage::schema::{
+    ensure_table_descriptor, reserve_schema_maintenance_budget,
+};
 
 fn validate_property_descriptor(
     catalog: &Catalog,
@@ -2159,22 +1958,6 @@ fn validate_property_descriptor_with_table_state(
     Ok(())
 }
 
-fn reserve_schema_maintenance_budget(
-    used_estimated_operations: &mut usize,
-    max_estimated_operations: Option<usize>,
-    estimated_operations: usize,
-) -> bool {
-    let Some(max_estimated_operations) = max_estimated_operations else {
-        return true;
-    };
-    let next = used_estimated_operations.saturating_add(estimated_operations);
-    if next > max_estimated_operations {
-        return false;
-    }
-    *used_estimated_operations = next;
-    true
-}
-
 fn validate_table_descriptor(
     catalog: &Catalog,
     store: &GraphStore,
@@ -2200,105 +1983,7 @@ fn validate_table_descriptor(
     Ok(())
 }
 
-fn apply_wal_op_to_snapshot(
-    catalog: &Catalog,
-    nodes: &mut CowSegmentedMap<NodeId, NodeRecord>,
-    relationships: &mut CowSegmentedMap<RelId, RelRecord>,
-    op: &WalOp,
-) {
-    match op {
-        WalOp::CreateNode {
-            id,
-            label,
-            properties,
-        } => {
-            if let Some(label_id) = catalog.label_id(label) {
-                nodes.insert(
-                    *id,
-                    NodeRecord {
-                        id: *id,
-                        labels: BTreeSet::from([label_id]),
-                        properties: properties.clone(),
-                    },
-                );
-            }
-        }
-        WalOp::SetNodeProperty {
-            id,
-            property,
-            value,
-        } => {
-            if let Some(node) = nodes.get_mut(id) {
-                node.properties.insert(property.clone(), value.clone());
-            }
-        }
-        WalOp::SetRelationshipProperty {
-            id,
-            property,
-            value,
-        } => {
-            if let Some(relationship) = relationships.get_mut(id) {
-                relationship
-                    .properties
-                    .insert(property.clone(), value.clone());
-            }
-        }
-        WalOp::DeleteNode { id } => {
-            nodes.remove(id);
-        }
-        WalOp::CreateRelationship {
-            id,
-            source,
-            target,
-            rel_type,
-            properties,
-        } => {
-            if let Some(rel_type_id) = catalog.rel_type_id(rel_type) {
-                relationships.insert(
-                    *id,
-                    RelRecord {
-                        id: *id,
-                        source: *source,
-                        target: *target,
-                        rel_type: rel_type_id,
-                        properties: properties.clone(),
-                    },
-                );
-            }
-        }
-        WalOp::DeleteRelationship { id } => {
-            relationships.remove(id);
-        }
-        WalOp::Batch(ops) => {
-            for op in ops {
-                apply_wal_op_to_snapshot(catalog, nodes, relationships, op);
-            }
-        }
-        WalOp::CreateNodeLabel { .. }
-        | WalOp::CreateRelationshipType { .. }
-        | WalOp::CreateNodeTable { .. }
-        | WalOp::CreateRelationshipTable { .. }
-        | WalOp::CreateProperty { .. }
-        | WalOp::AlterTableState { .. }
-        | WalOp::AlterPropertyState { .. }
-        | WalOp::GcTableDescriptor { .. }
-        | WalOp::GcPropertyDescriptor { .. }
-        | WalOp::CreateIndex { .. }
-        | WalOp::CreateCompositeIndex { .. }
-        | WalOp::CreateRangeIndex { .. }
-        | WalOp::CreateFullTextIndex { .. }
-        | WalOp::CreateUniqueConstraint { .. }
-        | WalOp::CreateNodePropertyExistsConstraint { .. }
-        | WalOp::CreateRelationshipUniqueConstraint { .. }
-        | WalOp::CreateRelationshipPropertyExistsConstraint { .. }
-        | WalOp::ProjectGraph { .. }
-        | WalOp::MarkInitialImportSource { .. }
-        | WalOp::Relational { .. }
-        | WalOp::RelationalSnapshot { .. }
-        | WalOp::Append { .. } => {}
-    }
-}
-
+pub(crate) use skein_storage::wal::apply_wal_op_to_snapshot;
 fn encode_projected_graph_artifacts(
     catalog: &Catalog,
     store: &GraphStore,
@@ -2544,434 +2229,6 @@ fn validate_unique_relationship_property_streaming(
         }
     })?;
     validation_error.map_or(Ok(()), Err)
-}
-
-#[cfg(test)]
-fn compute_statistics(
-    nodes: &CowSegmentedMap<NodeId, NodeRecord>,
-    relationships: &CowSegmentedMap<RelId, RelRecord>,
-    computed_at_commit_epoch: u64,
-) -> GraphStatistics {
-    compute_statistics_with_basic(
-        nodes,
-        relationships,
-        None,
-        compute_basic_statistics(nodes, relationships, computed_at_commit_epoch),
-    )
-}
-
-fn compute_statistics_for_catalog(
-    nodes: &CowSegmentedMap<NodeId, NodeRecord>,
-    relationships: &CowSegmentedMap<RelId, RelRecord>,
-    catalog: &Catalog,
-    basic_statistics: BasicGraphStatistics,
-) -> GraphStatistics {
-    compute_statistics_with_basic(nodes, relationships, Some(catalog), basic_statistics)
-}
-
-fn graph_statistics_from_basic(
-    basic_statistics: BasicGraphStatistics,
-    advanced_statistics_complete: bool,
-) -> GraphStatistics {
-    GraphStatistics {
-        computed_at_commit_epoch: basic_statistics.computed_at_commit_epoch,
-        advanced_statistics_complete,
-        histogram_sample_limit: MAX_PROPERTY_HISTOGRAM_VALUES,
-        node_count: basic_statistics.node_count,
-        relationship_count: basic_statistics.relationship_count,
-        label_counts: basic_statistics.label_counts,
-        rel_type_counts: basic_statistics.rel_type_counts,
-        ..GraphStatistics::default()
-    }
-}
-
-fn compute_statistics_with_basic(
-    nodes: &CowSegmentedMap<NodeId, NodeRecord>,
-    relationships: &CowSegmentedMap<RelId, RelRecord>,
-    catalog: Option<&Catalog>,
-    basic_statistics: BasicGraphStatistics,
-) -> GraphStatistics {
-    let mut statistics = graph_statistics_from_basic(basic_statistics, true);
-    let mut property_values = BTreeMap::<(LabelId, String), BTreeSet<Value>>::new();
-    let mut rel_property_values = BTreeMap::<(RelTypeId, String), BTreeSet<Value>>::new();
-    let mut excluded_property_groups = BTreeSet::<(LabelId, String)>::new();
-    let mut excluded_rel_property_groups = BTreeSet::<(RelTypeId, String)>::new();
-    let mut rel_type_sources = BTreeMap::<RelTypeId, BTreeSet<NodeId>>::new();
-    let mut rel_type_targets = BTreeMap::<RelTypeId, BTreeSet<NodeId>>::new();
-    let mut path_sources = BTreeMap::<(LabelId, RelTypeId, LabelId), BTreeSet<NodeId>>::new();
-    let mut path_targets = BTreeMap::<(LabelId, RelTypeId, LabelId), BTreeSet<NodeId>>::new();
-    let mut outgoing_by_source_type = BTreeMap::<(NodeId, RelTypeId), Vec<NodeId>>::new();
-
-    for node in nodes.values() {
-        for label_id in &node.labels {
-            for (property, value) in &node.properties {
-                let key = (*label_id, property.clone());
-                collect_property_statistic_value(
-                    &mut property_values,
-                    &mut excluded_property_groups,
-                    key,
-                    value,
-                    node_property_supports_optimizer_statistics(
-                        catalog, *label_id, property, value,
-                    ),
-                );
-            }
-        }
-    }
-    for relationship in relationships.values() {
-        rel_type_sources
-            .entry(relationship.rel_type)
-            .or_default()
-            .insert(relationship.source);
-        rel_type_targets
-            .entry(relationship.rel_type)
-            .or_default()
-            .insert(relationship.target);
-        outgoing_by_source_type
-            .entry((relationship.source, relationship.rel_type))
-            .or_default()
-            .push(relationship.target);
-        for (property, value) in &relationship.properties {
-            let key = (relationship.rel_type, property.clone());
-            collect_property_statistic_value(
-                &mut rel_property_values,
-                &mut excluded_rel_property_groups,
-                key,
-                value,
-                relationship_property_supports_optimizer_statistics(
-                    catalog,
-                    relationship.rel_type,
-                    property,
-                    value,
-                ),
-            );
-        }
-        if let (Some(source), Some(target)) = (
-            nodes.get(&relationship.source),
-            nodes.get(&relationship.target),
-        ) {
-            for source_label in &source.labels {
-                for target_label in &target.labels {
-                    let path_key = (*source_label, relationship.rel_type, *target_label);
-                    *statistics.path_counts.entry(path_key).or_default() += 1;
-                    path_sources
-                        .entry(path_key)
-                        .or_default()
-                        .insert(relationship.source);
-                    path_targets
-                        .entry(path_key)
-                        .or_default()
-                        .insert(relationship.target);
-                }
-            }
-        }
-    }
-    statistics.rel_type_source_counts = rel_type_sources
-        .into_iter()
-        .map(|(rel_type, sources)| (rel_type, sources.len() as u64))
-        .collect();
-    statistics.rel_type_target_counts = rel_type_targets
-        .into_iter()
-        .map(|(rel_type, targets)| (rel_type, targets.len() as u64))
-        .collect();
-    statistics.path_source_distinct_counts = path_sources
-        .into_iter()
-        .map(|(path, sources)| (path, sources.len() as u64))
-        .collect();
-    statistics.path_target_distinct_counts = path_targets
-        .into_iter()
-        .map(|(path, targets)| (path, targets.len() as u64))
-        .collect();
-    for (key, values) in property_values {
-        let histogram_sample_limit = adaptive_histogram_sample_limit(values.len());
-        let is_sampled = values.len() > histogram_sample_limit;
-        statistics
-            .property_distinct_counts
-            .insert(key.clone(), values.len() as u64);
-        statistics
-            .property_histograms
-            .insert(key.clone(), sample_histogram_values(values));
-        statistics
-            .sampled_property_histograms
-            .insert(key, is_sampled);
-    }
-    for (key, values) in rel_property_values {
-        let histogram_sample_limit = adaptive_histogram_sample_limit(values.len());
-        let is_sampled = values.len() > histogram_sample_limit;
-        statistics
-            .rel_property_distinct_counts
-            .insert(key.clone(), values.len() as u64);
-        statistics
-            .rel_property_histograms
-            .insert(key.clone(), sample_histogram_values(values));
-        statistics
-            .sampled_rel_property_histograms
-            .insert(key, is_sampled);
-    }
-    let bounded_path_statistics = compute_bounded_path_statistics(
-        nodes,
-        &outgoing_by_source_type,
-        MAX_BOUNDED_PATH_STAT_HOPS,
-    );
-    statistics.bounded_path_counts = bounded_path_statistics.counts;
-    statistics.bounded_path_source_distinct_counts = bounded_path_statistics.source_distinct_counts;
-    statistics.bounded_path_target_distinct_counts = bounded_path_statistics.target_distinct_counts;
-    statistics
-}
-
-fn collect_property_statistic_value<K: Ord>(
-    values: &mut BTreeMap<K, BTreeSet<Value>>,
-    excluded: &mut BTreeSet<K>,
-    key: K,
-    value: &Value,
-    eligible: bool,
-) {
-    if !eligible {
-        values.remove(&key);
-        excluded.insert(key);
-    } else if !excluded.contains(&key) {
-        values.entry(key).or_default().insert(value.clone());
-    }
-}
-
-fn compute_node_property_distinct_counts_from_index(
-    property_index: &NodePropertyIndex,
-    catalog: &Catalog,
-) -> BTreeMap<(LabelId, String), u64> {
-    compute_supported_property_distinct_counts(
-        property_index
-            .keys()
-            .map(|(label, property, value)| ((*label, property.clone()), value)),
-        |(label, property), value| {
-            node_property_supports_optimizer_statistics(Some(catalog), *label, property, value)
-        },
-    )
-}
-
-fn compute_relationship_property_distinct_counts_from_index(
-    relationship_property_index: &RelationshipPropertyIndex,
-    catalog: &Catalog,
-) -> BTreeMap<(RelTypeId, String), u64> {
-    compute_supported_property_distinct_counts(
-        relationship_property_index
-            .keys()
-            .map(|(rel_type, property, value)| ((*rel_type, property.clone()), value)),
-        |(rel_type, property), value| {
-            relationship_property_supports_optimizer_statistics(
-                Some(catalog),
-                *rel_type,
-                property,
-                value,
-            )
-        },
-    )
-}
-
-fn compute_supported_property_distinct_counts<'a, K: Ord>(
-    entries: impl Iterator<Item = (K, &'a Value)>,
-    mut supports: impl FnMut(&K, &Value) -> bool,
-) -> BTreeMap<K, u64> {
-    let mut counts = BTreeMap::<K, Option<u64>>::new();
-    for (key, value) in entries {
-        let eligible = supports(&key, value);
-        let count = counts.entry(key).or_insert(Some(0));
-        if eligible {
-            if let Some(count) = count {
-                *count = count.saturating_add(1);
-            }
-        } else {
-            *count = None;
-        }
-    }
-    counts
-        .into_iter()
-        .filter_map(|(key, count)| count.map(|count| (key, count)))
-        .collect()
-}
-
-/// Recomputes the node property index the way the write path maintains it:
-/// declared properties only. Recomputing every property would report the
-/// undeclared ones as permanently missing, which is the design, not a defect.
-fn recompute_node_property_index(
-    nodes: &CowSegmentedMap<NodeId, NodeRecord>,
-    catalog: &Catalog,
-) -> NodePropertyIndex {
-    let mut index = NodePropertyIndex::default();
-    for node in nodes.values() {
-        for label_id in &node.labels {
-            for (property, value) in &node.properties {
-                if !catalog.has_scalar_property_index(*label_id, property) {
-                    continue;
-                }
-                index
-                    .entry_or_default((*label_id, property.clone(), value.clone()))
-                    .insert(node.id);
-            }
-        }
-    }
-    index
-}
-
-fn recompute_relationship_property_index(
-    relationships: &CowSegmentedMap<RelId, RelRecord>,
-) -> RelationshipPropertyIndex {
-    let mut index = RelationshipPropertyIndex::default();
-    for relationship in relationships.values() {
-        for (property, value) in &relationship.properties {
-            index
-                .entry_or_default((relationship.rel_type, property.clone(), value.clone()))
-                .insert(relationship.id);
-        }
-    }
-    index
-}
-
-fn compute_basic_statistics(
-    nodes: &CowSegmentedMap<NodeId, NodeRecord>,
-    relationships: &CowSegmentedMap<RelId, RelRecord>,
-    computed_at_commit_epoch: u64,
-) -> BasicGraphStatistics {
-    let mut statistics = BasicGraphStatistics {
-        computed_at_commit_epoch,
-        node_count: nodes.len() as u64,
-        relationship_count: relationships.len() as u64,
-        ..BasicGraphStatistics::default()
-    };
-    for node in nodes.values() {
-        for label_id in &node.labels {
-            *statistics.label_counts.entry(*label_id).or_default() += 1;
-        }
-    }
-    for relationship in relationships.values() {
-        *statistics
-            .rel_type_counts
-            .entry(relationship.rel_type)
-            .or_default() += 1;
-    }
-    statistics
-}
-
-fn decrement_counter<K>(counts: &mut BTreeMap<K, u64>, key: &K)
-where
-    K: Ord,
-{
-    let Some(count) = counts.get_mut(key) else {
-        return;
-    };
-    *count = count.saturating_sub(1);
-    if *count == 0 {
-        counts.remove(key);
-    }
-}
-
-#[derive(Debug, Default)]
-struct BoundedPathStatistics {
-    counts: BTreeMap<(LabelId, RelTypeId, LabelId, usize), u64>,
-    source_distinct_counts: BTreeMap<(LabelId, RelTypeId, LabelId, usize), u64>,
-    target_distinct_counts: BTreeMap<(LabelId, RelTypeId, LabelId, usize), u64>,
-}
-
-fn compute_bounded_path_statistics(
-    nodes: &CowSegmentedMap<NodeId, NodeRecord>,
-    outgoing_by_source_type: &BTreeMap<(NodeId, RelTypeId), Vec<NodeId>>,
-    max_hops: usize,
-) -> BoundedPathStatistics {
-    let mut accumulator = BoundedPathStatAccumulator::default();
-    let context = BoundedPathStatContext {
-        nodes,
-        outgoing_by_source_type,
-        max_hops,
-    };
-    let rel_types = outgoing_by_source_type
-        .keys()
-        .map(|(_, rel_type)| *rel_type)
-        .collect::<BTreeSet<_>>();
-    for source in nodes.values() {
-        for source_label in &source.labels {
-            for rel_type in &rel_types {
-                context.collect(
-                    source.id,
-                    source.id,
-                    *source_label,
-                    *rel_type,
-                    1,
-                    &mut accumulator,
-                );
-            }
-        }
-    }
-    BoundedPathStatistics {
-        counts: accumulator.counts,
-        source_distinct_counts: accumulator
-            .sources
-            .into_iter()
-            .map(|(path, sources)| (path, sources.len() as u64))
-            .collect(),
-        target_distinct_counts: accumulator
-            .targets
-            .into_iter()
-            .map(|(path, targets)| (path, targets.len() as u64))
-            .collect(),
-    }
-}
-
-struct BoundedPathStatContext<'a> {
-    nodes: &'a CowSegmentedMap<NodeId, NodeRecord>,
-    outgoing_by_source_type: &'a BTreeMap<(NodeId, RelTypeId), Vec<NodeId>>,
-    max_hops: usize,
-}
-
-#[derive(Debug, Default)]
-struct BoundedPathStatAccumulator {
-    counts: BTreeMap<(LabelId, RelTypeId, LabelId, usize), u64>,
-    sources: BTreeMap<(LabelId, RelTypeId, LabelId, usize), BTreeSet<NodeId>>,
-    targets: BTreeMap<(LabelId, RelTypeId, LabelId, usize), BTreeSet<NodeId>>,
-}
-
-impl BoundedPathStatContext<'_> {
-    fn collect(
-        &self,
-        root_source: NodeId,
-        current: NodeId,
-        source_label: LabelId,
-        rel_type: RelTypeId,
-        hop: usize,
-        accumulator: &mut BoundedPathStatAccumulator,
-    ) {
-        if hop > self.max_hops {
-            return;
-        }
-        let Some(targets) = self.outgoing_by_source_type.get(&(current, rel_type)) else {
-            return;
-        };
-        for target_id in targets {
-            let Some(target) = self.nodes.get(target_id) else {
-                continue;
-            };
-            for target_label in &target.labels {
-                let path_key = (source_label, rel_type, *target_label, hop);
-                *accumulator.counts.entry(path_key).or_default() += 1;
-                accumulator
-                    .sources
-                    .entry(path_key)
-                    .or_default()
-                    .insert(root_source);
-                accumulator
-                    .targets
-                    .entry(path_key)
-                    .or_default()
-                    .insert(*target_id);
-            }
-            self.collect(
-                root_source,
-                *target_id,
-                source_label,
-                rel_type,
-                hop + 1,
-                accumulator,
-            );
-        }
-    }
 }
 
 fn property_filter_matches(
@@ -3762,45 +3019,6 @@ fn elapsed_micros(started: std::time::Instant) -> u64 {
     started.elapsed().as_micros().min(u64::MAX as u128) as u64
 }
 
-fn parse_u32(input: &str, name: &str) -> Result<u32> {
-    input
-        .parse()
-        .map_err(|_| SkeinError::Storage(format!("invalid {name}: {input}")))
-}
-
-fn parse_usize(input: &str, name: &str) -> Result<usize> {
-    input
-        .parse()
-        .map_err(|_| SkeinError::Storage(format!("invalid {name}: {input}")))
-}
-
-fn parse_statistics_path_key(
-    source: &str,
-    rel_type: &str,
-    target: &str,
-) -> Result<(LabelId, RelTypeId, LabelId)> {
-    Ok((
-        LabelId(parse_u32(source, "statistics source label id")?),
-        RelTypeId(parse_u32(rel_type, "statistics relationship type id")?),
-        LabelId(parse_u32(target, "statistics target label id")?),
-    ))
-}
-
-fn parse_statistics_bounded_path_key(
-    source: &str,
-    rel_type: &str,
-    target: &str,
-    hops: &str,
-) -> Result<(LabelId, RelTypeId, LabelId, usize)> {
-    let (source, rel_type, target) = parse_statistics_path_key(source, rel_type, target)?;
-    Ok((
-        source,
-        rel_type,
-        target,
-        parse_usize(hops, "statistics bounded path hop count")?,
-    ))
-}
-
 fn estimated_node_record_bytes(node: &NodeRecord) -> u64 {
     32u64
         .saturating_add((node.labels.len() as u64).saturating_mul(4))
@@ -3811,32 +3029,9 @@ fn estimated_relationship_record_bytes(relationship: &RelRecord) -> u64 {
     40u64.saturating_add(estimated_properties_bytes(&relationship.properties))
 }
 
-fn estimated_properties_bytes(properties: &BTreeMap<String, Value>) -> u64 {
-    properties.iter().fold(0u64, |bytes, (key, value)| {
-        bytes
-            .saturating_add(key.len() as u64)
-            .saturating_add(estimated_value_bytes(value))
-            .saturating_add(16)
-    })
-}
-
-fn estimated_value_bytes(value: &Value) -> u64 {
-    match value {
-        Value::Null => 1,
-        Value::Bool(_) => 1,
-        Value::Int(_) | Value::Float(_) => 8,
-        Value::String(value) => value.len() as u64,
-        Value::Binary(value) => value.len() as u64,
-        Value::Uuid(_) => 16,
-        Value::List(values) => values.iter().fold(16u64, |bytes, value| {
-            bytes.saturating_add(estimated_value_bytes(value))
-        }),
-        Value::Map(values) => estimated_properties_bytes(values),
-    }
-}
-
 #[cfg(test)]
 mod tests {
+    mod checkpoint_parse_order_tests;
     mod envelope_recovery_tests;
     mod hex_recovery_tests;
 

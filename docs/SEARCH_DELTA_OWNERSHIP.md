@@ -6,7 +6,8 @@ Delta preparation now uses one task and
 operation ledger through input conversion, base hydration, spool handoff,
 publication and cleanup. Public query paths, reader policy/manifest snapshots,
 identity and epoch checks, logical limits and persisted encoding are unchanged.
-The approved context constructors remain private pending external acceptance.
+The approved pair now exposes the integrated
+[context facade](SEARCH_GENERATION_CONTEXT.md).
 
 ## Input and handoff
 
@@ -93,7 +94,8 @@ complete hydration, exact query results and retained artifact bytes under mixed
 and forced-spill inputs. Separate source/target mutations and unchanged default
 Bazel/local fuzz supplement default/minimal Cargo and strict Clippy.
 
-This stage does not complete #392. Public context/facade acceptance, shared host
-admission, adaptive large-source profiles and the original #206 full-corpus gate
-remain separate. The 4-MiB source guard and existing error/report facade remain;
+This stage does not complete #392. The integrated
+[context facade](SEARCH_GENERATION_CONTEXT.md) defines external acceptance. Shared
+host admission, adaptive large-source profiles and the original #206 full-corpus
+gate remain separate. The 4-MiB source guard and existing error/report facade remain;
 requested-capacity probes are not a process-wide RSS claim.

@@ -33,8 +33,8 @@ native stack, a 4 KiB Rust thread bookkeeping allowance and the captured closure
 and result sizes before spawning. One worker stays within either nonzero task
 execution ceiling while its caller waits. This is not a shared process scheduler.
 The stack is a named allowance; OS thread metadata and allocator overhead are not
-modeled. Public context construction remains private pending the complete #392
-contract.
+modeled. Public construction now uses the integrated
+[context contract](SEARCH_GENERATION_CONTEXT.md).
 
 ## Ownership and cancellation
 
@@ -141,7 +141,7 @@ bazel test //crates/search:all //crates/fuzz:skein_fuzz_tests //crates/fuzz:skei
 
 Skein-owned normalized strings, identifier deduplication and resident frequencies
 now retain their own admission; see [the token ownership contract](SEARCH_TOKEN_OWNERSHIP.md).
-Complete spill/merge ownership, outer publication, delta hydration and the public constructor
-pair remain subsequent deliveries. The 4 MiB source guard and existing finite term
-and manifest policies remain. This stage does not complete whole-analyzer admission,
-shared host governance, large-source support or the original #206 corpus gate.
+Spill/merge ownership, outer publication and delta hydration are integrated through
+the [context facade](SEARCH_GENERATION_CONTEXT.md). The 4 MiB source guard and
+existing finite term and manifest policies remain. Shared host governance,
+large-source support and the original #206 corpus gate remain separate work.

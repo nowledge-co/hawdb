@@ -454,6 +454,236 @@ pub struct RelationalIndexShadowBuildReport {
     pub generation_artifacts: RelationalIndexGenerationArtifacts,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum RelationalIndexShadowCheckpointStatus {
+    Published,
+    Failed,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RelationalIndexShadowCheckpointReport {
+    pub status: RelationalIndexShadowCheckpointStatus,
+    pub generation: u64,
+    pub source_commit_epoch: u64,
+    pub index_roots: usize,
+    pub pages_written: u64,
+    pub artifact_bytes: u64,
+    pub manifest_bytes: u64,
+    pub peak_build_metadata_bytes: usize,
+    pub sort_spill_run_count: usize,
+    pub sort_spill_bytes: u64,
+    pub peak_sort_memory_bytes: usize,
+    pub generation_artifacts: Option<RelationalIndexGenerationArtifacts>,
+    pub error: Option<String>,
+}
+
+impl RelationalIndexShadowCheckpointReport {
+    pub fn published(report: RelationalIndexShadowBuildReport) -> Self {
+        Self {
+            status: RelationalIndexShadowCheckpointStatus::Published,
+            generation: report.generation,
+            source_commit_epoch: report.source_commit_epoch,
+            index_roots: report.index_roots,
+            pages_written: report.pages_written,
+            artifact_bytes: report.artifact_bytes,
+            manifest_bytes: report.manifest_bytes,
+            peak_build_metadata_bytes: report.peak_build_metadata_bytes,
+            sort_spill_run_count: report.sort_spill_run_count,
+            sort_spill_bytes: report.sort_spill_bytes,
+            peak_sort_memory_bytes: report.peak_sort_memory_bytes,
+            generation_artifacts: Some(report.generation_artifacts),
+            error: None,
+        }
+    }
+
+    pub fn failed(generation: u64, source_commit_epoch: u64, error: String) -> Self {
+        Self {
+            status: RelationalIndexShadowCheckpointStatus::Failed,
+            generation,
+            source_commit_epoch,
+            index_roots: 0,
+            pages_written: 0,
+            artifact_bytes: 0,
+            manifest_bytes: 0,
+            peak_build_metadata_bytes: 0,
+            sort_spill_run_count: 0,
+            sort_spill_bytes: 0,
+            peak_sort_memory_bytes: 0,
+            generation_artifacts: None,
+            error: Some(error),
+        }
+    }
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub enum RelationalIndexShadowRecoveryStatus {
+    #[default]
+    Disabled,
+    Missing,
+    CheckpointReady {
+        generation: u64,
+        source_commit_epoch: u64,
+        index_roots: usize,
+        page_count: u64,
+    },
+    WalRecovered {
+        base_generation: u64,
+        base_commit_epoch: u64,
+        recovered_commit_epoch: u64,
+        delta_pages: usize,
+        delta_entries: usize,
+        peak_dirty_bytes: usize,
+    },
+    LiveCurrent {
+        base_generation: u64,
+        delta_generation: Option<u64>,
+        base_commit_epoch: u64,
+        visible_commit_epoch: u64,
+        live_batches: usize,
+        live_entries: usize,
+        live_bytes: usize,
+    },
+    LiveUnavailable {
+        base_generation: u64,
+        base_commit_epoch: u64,
+        last_visible_commit_epoch: u64,
+        failed_commit_epoch: u64,
+        reason: String,
+    },
+    RecoveryUnavailable {
+        base_generation: u64,
+        base_commit_epoch: u64,
+        recovered_commit_epoch: u64,
+        reason: String,
+    },
+    CandidateUnavailable {
+        generation: u64,
+        source_commit_epoch: u64,
+        reason: String,
+    },
+    Stale {
+        generation: u64,
+        source_commit_epoch: u64,
+        checkpoint_generation: u64,
+        checkpoint_commit_epoch: u64,
+    },
+    DiscardedInvalid {
+        error: String,
+    },
+    InvalidWritable {
+        error: String,
+    },
+    InvalidReadOnly {
+        error: String,
+    },
+}
+
+#[doc(hidden)]
+#[derive(Debug, Clone, Default)]
+pub struct RelationalIndexShadowState {
+    pub mode: crate::config::RelationalIndexMode,
+    pub expected_previous_generation: Option<u64>,
+    pub checkpoint_report: Option<RelationalIndexShadowCheckpointReport>,
+    pub recovery_builder: Option<recovery::RelationalIndexRecoveryBuilder>,
+    pub recovery_report: Option<recovery::RelationalIndexRecoveryReport>,
+    pub recovery_status: RelationalIndexShadowRecoveryStatus,
+    pub read_view: Option<std::sync::Arc<crate::relational_index_view::RelationalIndexReadView>>,
+    pub live_limits: super::RelationalIndexChangeCaptureLimits,
+    pub generation_artifacts: Option<RelationalIndexGenerationArtifacts>,
+}
+
+impl RelationalIndexShadowState {
+    pub fn new(mode: crate::config::RelationalIndexMode) -> Self {
+        Self {
+            mode,
+            recovery_status: if mode.publishes_persistent_indexes() {
+                RelationalIndexShadowRecoveryStatus::Missing
+            } else {
+                RelationalIndexShadowRecoveryStatus::Disabled
+            },
+            ..Self::default()
+        }
+    }
+
+    pub fn current_read_view(
+        &self,
+        commit_epoch: u64,
+    ) -> Option<&std::sync::Arc<crate::relational_index_view::RelationalIndexReadView>> {
+        self.read_view
+            .as_ref()
+            .filter(|view| view.identity().visible_commit_epoch == commit_epoch)
+    }
+
+    pub fn residency_report(
+        &self,
+        commit_epoch: u64,
+    ) -> crate::RelationalIndexStorageResidencyReport {
+        self.current_read_view(commit_epoch).map_or_else(
+            crate::RelationalIndexStorageResidencyReport::default,
+            |view| view.residency_report(),
+        )
+    }
+
+    pub fn selected_read_failure(&self) -> Option<RelationalIndexShadowError> {
+        if !self.mode.serves_demand_paged_reads() {
+            return None;
+        }
+        match &self.recovery_status {
+            RelationalIndexShadowRecoveryStatus::Stale {
+                generation,
+                source_commit_epoch,
+                checkpoint_generation,
+                checkpoint_commit_epoch,
+            } => Some(RelationalIndexShadowError::Corrupt(format!(
+                "relational index generation/epoch {generation}/{source_commit_epoch} does not match checkpoint {checkpoint_generation}/{checkpoint_commit_epoch}"
+            ))),
+            RelationalIndexShadowRecoveryStatus::DiscardedInvalid { error }
+            | RelationalIndexShadowRecoveryStatus::InvalidWritable { error }
+            | RelationalIndexShadowRecoveryStatus::InvalidReadOnly { error } => {
+                Some(RelationalIndexShadowError::Corrupt(error.clone()))
+            }
+            _ => None,
+        }
+    }
+
+    pub fn snapshot_at_epoch(&self, commit_epoch: u64) -> Self {
+        let mut snapshot = self.clone();
+        snapshot.read_view = self.current_read_view(commit_epoch).cloned();
+        snapshot.recovery_builder = None;
+        snapshot
+    }
+
+    pub fn stage_live_publication(
+        &self,
+        current_epoch: u64,
+        next_epoch: u64,
+        capture: Option<super::RelationalIndexChangeCapture>,
+    ) -> Option<
+        Result<
+            std::sync::Arc<crate::relational_index_view::RelationalIndexReadView>,
+            RelationalIndexLiveUnavailable,
+        >,
+    > {
+        let view = self.current_read_view(current_epoch)?;
+        Some(
+            view.advance(next_epoch, capture, self.live_limits)
+                .map(std::sync::Arc::new)
+                .map_err(|reason| RelationalIndexLiveUnavailable {
+                    identity: view.identity(),
+                    failed_commit_epoch: next_epoch,
+                    reason,
+                }),
+        )
+    }
+}
+
+#[doc(hidden)]
+pub struct RelationalIndexLiveUnavailable {
+    pub identity: crate::relational_index_view::RelationalIndexReadViewIdentity,
+    pub failed_commit_epoch: u64,
+    pub reason: String,
+}
+
 #[derive(Debug)]
 pub enum RelationalIndexShadowError {
     Admission(String),
