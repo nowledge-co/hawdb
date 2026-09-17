@@ -9,6 +9,8 @@ pub(crate) mod json;
 pub(crate) mod temporary;
 
 pub(crate) fn checkpoint(context: &RuntimeTaskContext) -> Result<()> {
+    #[cfg(test)]
+    observation::record();
     context
         .checkpoint()
         .map_err(|reason| SkeinError::Execution(format!("search generation build {reason}")))
@@ -60,3 +62,6 @@ impl<W: Write> Write for CheckedWriter<'_, W> {
 
 #[cfg(test)]
 mod tests;
+
+#[cfg(test)]
+pub(crate) mod observation;

@@ -7,6 +7,8 @@ use crate::test_allocation as allocation;
 
 const BUDGET: usize = 2 * 1024 * 1024;
 
+mod checkpoints;
+
 struct Fixture(PathBuf);
 impl Fixture {
     fn new() -> Self {

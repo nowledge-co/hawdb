@@ -4,6 +4,17 @@ use crate::build_memory::{checked_add as add, checked_mul as mul};
 use crate::Result;
 use std::path::Path;
 
+pub(crate) fn with_scratch<T>(
+    progress: Option<&super::ReservedMemory>,
+    path: &Path,
+    work: impl FnOnce() -> Result<T>,
+) -> Result<T> {
+    match progress {
+        Some(progress) => progress.with_scratch(bytes(path)?, work),
+        None => work(),
+    }
+}
+
 pub(crate) fn bytes(path: &Path) -> Result<usize> {
     let length = path.as_os_str().as_encoded_bytes().len();
     bytes_for_length(length, path.is_absolute())
