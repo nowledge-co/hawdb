@@ -791,6 +791,11 @@ fn dispatch_batch_operator<D: BatchDispatch>(plan: &PhysicalPlan, dispatch: D) -
                 stream_adjacency_exists_batches(plan, input, context, execution_limit, emit)
             })
         }
+        PhysicalPlan::HashJoinExec { .. } => {
+            dispatch.supported(|context, execution_limit, emit| {
+                stream_hash_join_batches(plan, context, execution_limit, emit)
+            })
+        }
         PhysicalPlan::NodeCartesianProductExec { left, right } => {
             dispatch.supported(|context, execution_limit, emit| {
                 stream_cartesian_product_batches(left, right, context, execution_limit, emit)

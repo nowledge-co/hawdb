@@ -78,7 +78,8 @@ pub(super) fn physical_plan_node_variable_distinct_count(
                 physical_plan_node_variable_distinct_count(input, variable, catalog)
             }
         }
-        PhysicalPlan::NodeCartesianProductExec { left, right } => {
+        PhysicalPlan::NodeCartesianProductExec { left, right }
+        | PhysicalPlan::HashJoinExec { left, right, .. } => {
             physical_plan_node_variable_distinct_count(left, variable, catalog)
                 .or_else(|| physical_plan_node_variable_distinct_count(right, variable, catalog))
         }
@@ -160,7 +161,8 @@ pub(super) fn physical_plan_access_path_covers_property(
             branches,
             ..
         } => plan_variable == variable && branches.iter().any(|branch| branch.property == property),
-        PhysicalPlan::NodeCartesianProductExec { left, right } => {
+        PhysicalPlan::NodeCartesianProductExec { left, right }
+        | PhysicalPlan::HashJoinExec { left, right, .. } => {
             physical_plan_access_path_covers_property(left, variable, property)
                 || physical_plan_access_path_covers_property(right, variable, property)
         }
@@ -251,7 +253,8 @@ pub(super) fn physical_plan_node_label<'a>(
                 physical_plan_node_label(input, variable)
             }
         }
-        PhysicalPlan::NodeCartesianProductExec { left, right } => {
+        PhysicalPlan::NodeCartesianProductExec { left, right }
+        | PhysicalPlan::HashJoinExec { left, right, .. } => {
             physical_plan_node_label(left, variable)
                 .or_else(|| physical_plan_node_label(right, variable))
         }
@@ -285,7 +288,8 @@ pub(super) fn physical_plan_relationship_type<'a>(
                 physical_plan_relationship_type(input, variable)
             }
         }
-        PhysicalPlan::NodeCartesianProductExec { left, right } => {
+        PhysicalPlan::NodeCartesianProductExec { left, right }
+        | PhysicalPlan::HashJoinExec { left, right, .. } => {
             physical_plan_relationship_type(left, variable)
                 .or_else(|| physical_plan_relationship_type(right, variable))
         }

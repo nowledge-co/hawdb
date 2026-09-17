@@ -19,6 +19,7 @@ pub(crate) use pool::{spill_pool_snapshot, SpillPool, SpillWriteReservation};
 
 const MAX_SPILL_RECORD_BYTES: usize = 1024 * 1024 * 1024;
 const MAX_VALUE_DEPTH: usize = 64;
+pub(crate) const SPILL_IO_BUFFER_BYTES: usize = 8 * 1024;
 static NEXT_SPILL_ID: AtomicU64 = AtomicU64::new(0);
 
 pub struct SpillRun {
@@ -52,7 +53,7 @@ impl SpillRun {
                             lease: Arc::clone(&lease),
                         },
                         SpillWriter {
-                            writer: BufWriter::new(file),
+                            writer: BufWriter::with_capacity(SPILL_IO_BUFFER_BYTES, file),
                             lease,
                         },
                     ));
@@ -81,7 +82,7 @@ impl SpillRun {
             ))
         })?;
         Ok(SpillReader {
-            reader: BufReader::new(file),
+            reader: BufReader::with_capacity(SPILL_IO_BUFFER_BYTES, file),
         })
     }
 }

@@ -123,6 +123,12 @@ pub struct SpillBudgetTracker {
 }
 
 impl SpillBudgetTracker {
+    pub(crate) fn staging_peak_bytes(&self) -> usize {
+        self.staging_account
+            .as_ref()
+            .map_or(0, QueryMemoryAccount::peak_bytes)
+    }
+
     pub fn new(operator: &'static str, memory: &ExecutionMemoryConfig) -> Self {
         Self {
             operator,

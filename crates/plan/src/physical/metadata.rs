@@ -65,6 +65,7 @@ pub enum PhysicalPlanKind {
     NodeProjectionScanExec,
     SourceSegmentScan,
     NodeCartesianProductExec,
+    HashJoinExec,
     NodeColumnLookupExec,
     IndexNodeSeek,
     IndexNodeMultiSeek,
@@ -162,6 +163,7 @@ impl PhysicalPlanKind {
             PhysicalPlanKind::NodeProjectionScanExec,
             PhysicalPlanKind::SourceSegmentScan,
             PhysicalPlanKind::NodeCartesianProductExec,
+            PhysicalPlanKind::HashJoinExec,
             PhysicalPlanKind::NodeColumnLookupExec,
             PhysicalPlanKind::IndexNodeSeek,
             PhysicalPlanKind::IndexNodeMultiSeek,
@@ -242,6 +244,7 @@ impl PhysicalPlanKind {
             PhysicalPlanKind::SeqNodeScan => "SeqNodeScan",
             PhysicalPlanKind::NodeProjectionScanExec => "NodeProjectionScanExec",
             PhysicalPlanKind::SourceSegmentScan => "SourceSegmentScan",
+            PhysicalPlanKind::HashJoinExec => "HashJoinExec",
             PhysicalPlanKind::NodeCartesianProductExec => "NodeCartesianProductExec",
             PhysicalPlanKind::NodeColumnLookupExec => "NodeColumnLookupExec",
             PhysicalPlanKind::IndexNodeSeek => "IndexNodeSeek",
@@ -327,6 +330,7 @@ impl PhysicalPlanKind {
             | PhysicalPlanKind::RelationshipCountExec
             | PhysicalPlanKind::EmptyExec
             | PhysicalPlanKind::NodeCartesianProductExec
+            | PhysicalPlanKind::HashJoinExec
             | PhysicalPlanKind::FilterExec
             | PhysicalPlanKind::ProjectExec
             | PhysicalPlanKind::AggregateExec

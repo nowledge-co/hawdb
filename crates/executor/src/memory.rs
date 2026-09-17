@@ -318,6 +318,7 @@ fn retains_blocking_state(plan: &PhysicalPlan) -> bool {
             | PhysicalPlan::VectorSeedScan { .. }
             | PhysicalPlan::SourceSegmentScan { .. }
             | PhysicalPlan::NodeCartesianProductExec { .. }
+            | PhysicalPlan::HashJoinExec { .. }
             | PhysicalPlan::AdjacencyExpandExec { .. }
             | PhysicalPlan::OptionalRelationshipCountSumExec { .. }
             | PhysicalPlan::ThreadRepairStatsExec { .. }

@@ -287,3 +287,19 @@ rust_test(
     deps = all_crate_deps(normal_dev = True),
     proc_macro_deps = all_crate_deps(proc_macro_dev = True),
 )
+
+rust_test(
+    name = "skein_graph_hash_join_fuzz_tests",
+    args = [
+        "blocking::join::tests::graph_hash_join_differential_campaign",
+        "--exact",
+        "--ignored",
+        "--nocapture",
+    ],
+    crate = ":skein_executor",
+    edition = "2024",
+    tags = ["manual"],
+    aliases = aliases(normal_dev = True, proc_macro_dev = True),
+    deps = all_crate_deps(normal_dev = True),
+    proc_macro_deps = all_crate_deps(proc_macro_dev = True),
+)

@@ -7,6 +7,22 @@ struct RecursiveBindingBatchSource<'a> {
     context: BatchReadContext<'a>,
 }
 
+pub(super) fn stream_hash_join_batches(
+    plan: &PhysicalPlan,
+    context: BatchReadContext<'_>,
+    execution_limit: ExecutionLimit,
+    emit: &mut dyn FnMut(BindingBatch) -> Result<BatchControl>,
+) -> Result<BatchControl> {
+    let mut source = RecursiveBindingBatchSource { context };
+    executor_blocking::stream_hash_join_batches(
+        plan,
+        &mut source,
+        context.kernel_context(),
+        execution_limit,
+        emit,
+    )
+}
+
 impl BindingBatchSource for RecursiveBindingBatchSource<'_> {
     fn execute(
         &mut self,

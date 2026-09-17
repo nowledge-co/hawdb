@@ -742,6 +742,23 @@ impl PhysicalPlan {
                 write_predicate(output, predicate);
                 output.push(')');
             }
+            PhysicalPlan::HashJoinExec {
+                left_key,
+                right_key,
+                left,
+                right,
+            } => {
+                output.push_str("HashJoinExec(");
+                for key in [left_key, right_key] {
+                    write_identifier(output, &key.variable);
+                    write_identifier(output, &key.property);
+                    output.push(',');
+                }
+                left.write_instance_fingerprint(output);
+                output.push(',');
+                right.write_instance_fingerprint(output);
+                output.push(')');
+            }
             PhysicalPlan::NodeCartesianProductExec { left, right } => {
                 output.push_str("NodeCartesianProductExec(");
                 left.write_instance_fingerprint(output);

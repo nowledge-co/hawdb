@@ -43,7 +43,7 @@ impl BindingBatchSource for Source {
     }
 }
 
-struct Fixture {
+pub(super) struct Fixture {
     memory: ExecutionMemoryConfig,
     ledger: QueryMemoryLedger,
     reports: Reports,
@@ -51,7 +51,7 @@ struct Fixture {
 }
 
 impl Fixture {
-    fn new(budget: usize) -> Self {
+    pub(super) fn new(budget: usize) -> Self {
         static NEXT: AtomicU64 = AtomicU64::new(0);
         let memory = ExecutionMemoryConfig {
             blocking_operator_bytes: NonZeroUsize::new(budget).unwrap(),
@@ -72,7 +72,7 @@ impl Fixture {
         }
     }
 
-    fn context(&self) -> BlockingExecutionContext<'_> {
+    pub(super) fn context(&self) -> BlockingExecutionContext<'_> {
         BlockingExecutionContext {
             catalog: &self.catalog,
             memory: &self.memory,
@@ -82,7 +82,7 @@ impl Fixture {
         }
     }
 
-    fn assert_released(&self) {
+    pub(super) fn assert_released(&self) {
         let ledger = self.ledger.snapshot();
         assert_eq!(ledger.used_bytes, 0);
         assert!(ledger.peak_bytes <= ledger.budget_bytes);
@@ -92,7 +92,7 @@ impl Fixture {
         assert_eq!(spill.pending_write_bytes, 0);
     }
 
-    fn assert_report(&self, spilled: bool) {
+    pub(super) fn assert_report(&self, spilled: bool) {
         let reports = self.reports.0.borrow();
         let report = reports.last().expect("operator memory report");
         assert_eq!(report.spill_run_count > 0, spilled);
@@ -118,7 +118,7 @@ fn input() -> PhysicalPlan {
     }
 }
 
-fn values() -> Vec<Value> {
+pub(super) fn values() -> Vec<Value> {
     vec![
         Value::Null,
         Value::Bool(false),

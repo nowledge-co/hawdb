@@ -156,6 +156,7 @@ pub fn stream_cartesian_product_batches(
         context.memory.batch_payload_bytes,
     );
     let mut output = CartesianOutput::new(
+        "NodeCartesianProductExec output",
         context.memory.batch_rows.get(),
         context.memory.batch_payload_bytes,
         output_account,
@@ -211,6 +212,7 @@ pub fn stream_cartesian_product_batches(
 }
 
 struct CartesianOutput {
+    operator: &'static str,
     batch_rows: usize,
     execution_limit: ExecutionLimit,
     batch: BindingBatch,
@@ -220,12 +222,14 @@ struct CartesianOutput {
 
 impl CartesianOutput {
     fn new(
+        operator: &'static str,
         batch_rows: usize,
         memory_budget: NonZeroUsize,
         account: QueryMemoryAccount,
         execution_limit: ExecutionLimit,
     ) -> Self {
         Self {
+            operator,
             batch_rows,
             execution_limit,
             batch: Vec::with_capacity(batch_rows),
@@ -241,11 +245,7 @@ impl CartesianOutput {
         emit: &mut dyn FnMut(BindingBatch) -> Result<BatchControl>,
     ) -> Result<BatchControl> {
         let reserved_bytes = binding_memory_bytes(left).saturating_add(binding_memory_bytes(right));
-        ensure_operator_item_fits(
-            "NodeCartesianProductExec output",
-            reserved_bytes,
-            &self.tracker,
-        )?;
+        ensure_operator_item_fits(self.operator, reserved_bytes, &self.tracker)?;
         if self.tracker.would_exceed(reserved_bytes)
             && !self.batch.is_empty()
             && self.emit(emit)? == BatchControl::Stop
@@ -313,12 +313,14 @@ mod distinct;
 mod hash_key;
 #[cfg(test)]
 mod hash_oracle;
+mod join;
 mod sort;
 
 use hash_key::{hash_entry_overhead, hash_set_capacity_bytes, HashGroups, HashedKey};
 
 pub use aggregate::*;
 pub use distinct::*;
+pub use join::stream_hash_join_batches;
 pub use sort::*;
 
 #[cfg(test)]
@@ -585,6 +587,7 @@ mod tests {
         );
         retained.try_charge(200).unwrap();
         let mut output = CartesianOutput::new(
+            "NodeCartesianProductExec output",
             8,
             root_budget,
             ledger.account(
@@ -630,6 +633,7 @@ mod tests {
 
         let ledger = QueryMemoryLedger::new(budget);
         let mut output = CartesianOutput::new(
+            "NodeCartesianProductExec output",
             8,
             budget,
             ledger.account(QueryMemoryClass::PipelineBatch, "cartesian output", budget),

@@ -289,6 +289,22 @@ fn estimate_local_operator_cost(
             let total_cost = rows.saturating_mul(VECTOR_SEED_TOTAL_COST_PER_ROW).max(1);
             PlanCostBreakdown::new(rows, total_cost.saturating_sub(rows), 0, 0, rows)
         }
+        PhysicalPlan::HashJoinExec { .. } => {
+            let left = inputs[0].expect("left input cost");
+            let right = inputs[1].expect("right input cost");
+            // Without cross-input key statistics, preserve the conservative
+            // duplicate-heavy output bound. Hashing adds one visit per input;
+            // the enclosing residual filter retains existing selectivity rules.
+            let rows = left
+                .estimated_rows
+                .saturating_mul(right.estimated_rows)
+                .max(1);
+            let work = left
+                .estimated_rows
+                .saturating_add(right.estimated_rows)
+                .saturating_add(rows);
+            PlanCostBreakdown::combine_with_cpu(left, right, rows, work, 0)
+        }
         PhysicalPlan::NodeCartesianProductExec { .. } => {
             let left_cost = inputs[0].expect("left input cost");
             let right_cost = inputs[1].expect("right input cost");
