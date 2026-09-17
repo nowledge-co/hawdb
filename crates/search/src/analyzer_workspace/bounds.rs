@@ -2,6 +2,11 @@
 //!
 //! These model Rust allocation requests, including replacement overlap. Process
 //! dictionary residency, allocator overhead and OS thread metadata are separate.
+//!
+//! A flat workspace allowance cannot bound Jieba's input-sized DAG and HMM
+//! buffers. Keep their capacity-dependent envelopes separate from the fixed
+//! regex envelope. Dependency upgrades must rerun the allocator qualification
+//! in `tests/analyzer_workspace_allocation.rs` before changing the exact pins.
 
 const WORD: usize = 8;
 pub(super) const REGEX_PATTERN: &str = r"([a-zA-Z0-9]+(?:.\d+)?%?)";

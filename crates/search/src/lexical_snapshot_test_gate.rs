@@ -1,10 +1,18 @@
+//! Rendezvous for synchronous lexical snapshot tests.
+//!
+//! `QueryGate::run` and snapshot capture must execute on the same OS thread.
+//! Tests that offload capture must move the gate onto that worker explicitly.
+//! When a query returns or panics without reaching the hook, the scoped reset
+//! disconnects the controller immediately. A running query still has a bounded
+//! capture wait. Runtime qualification probes have separate reporting and
+//! latency-budget contracts and do not use this assertion-based controller.
+
 use std::cell::RefCell;
 use std::sync::mpsc::{self, Receiver, Sender};
 use std::time::Duration;
 
-/// Generous enough to never fire under real CI load, but bounded so a stuck
-/// query fails fast with a clear message instead of hanging to the CI job's
-/// default timeout.
+/// Bound the controller wait below the CI job timeout while allowing a query
+/// to reach its capture point under load.
 const CAPTURE_TIMEOUT: Duration = Duration::from_secs(60);
 
 thread_local! {
@@ -61,10 +69,14 @@ impl QueryController {
         match self.captured.recv_timeout(CAPTURE_TIMEOUT) {
             Ok(()) => {}
             Err(mpsc::RecvTimeoutError::Disconnected) => {
-                panic!("query ended before capturing its lexical snapshot")
+                panic!(
+                    "query ended without reaching the lexical snapshot hook; QueryGate::run and snapshot capture must run on the same OS thread"
+                )
             }
             Err(mpsc::RecvTimeoutError::Timeout) => {
-                panic!("query did not capture its lexical snapshot within {CAPTURE_TIMEOUT:?}")
+                panic!(
+                    "query did not capture its lexical snapshot within {CAPTURE_TIMEOUT:?}; QueryGate::run and snapshot capture must run on the same OS thread"
+                )
             }
         }
     }
@@ -104,4 +116,30 @@ fn controller_unwind_releases_captured_query() {
         assert!(result.is_err());
         query.join().unwrap();
     });
+}
+
+#[test]
+fn offloaded_capture_reports_the_thread_affinity_contract() {
+    let (gate, controller) = query_gate();
+    gate.run(|| std::thread::spawn(pause_after_capture).join().unwrap());
+    let error = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        controller.wait_until_captured();
+    }))
+    .unwrap_err();
+    let message = error
+        .downcast_ref::<String>()
+        .map(String::as_str)
+        .or_else(|| error.downcast_ref::<&str>().copied())
+        .expect("capture failure carries a diagnostic");
+    assert!(message.contains("same OS thread"), "{message}");
+}
+
+#[test]
+fn query_unwind_disconnects_controller() {
+    let (gate, controller) = query_gate();
+    let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        gate.run(|| panic!("query failed before capture"));
+    }));
+    assert!(result.is_err());
+    assert!(controller.captured.recv().is_err());
 }

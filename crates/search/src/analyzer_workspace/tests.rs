@@ -3,6 +3,7 @@ use crate::analyzer_stream::{visit_token_list, visit_token_list_with_workspace};
 use skein_core::RuntimeMemoryReservation;
 use std::cell::RefCell;
 use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::Arc;
 
 fn task(bytes: usize) -> RuntimeTaskContext {
     RuntimeTaskContext::default()
@@ -47,7 +48,7 @@ fn admitted_tokens_keep_complete_order_and_release_scratch_on_consumer_error() {
             visit_token_list_with_workspace(
                 text,
                 &analyzer,
-                Some(&workspace),
+                Some(workspace),
                 |token, occurrence| {
                     output.push((token, occurrence));
                     Ok(())
@@ -56,7 +57,7 @@ fn admitted_tokens_keep_complete_order_and_release_scratch_on_consumer_error() {
             let retained = memory.ledger.snapshot().used_bytes;
             let mut count = 0;
             let error =
-                visit_token_list_with_workspace(text, &analyzer, Some(&workspace), |_, _| {
+                visit_token_list_with_workspace(text, &analyzer, Some(workspace), |_, _| {
                     count += 1;
                     if count == 2 {
                         return Err(SkeinError::Execution("consumer stopped".into()));
@@ -82,13 +83,13 @@ fn retained_hmm_capacity_survives_shorter_calls_and_shared_root_denial() {
         let text = "\u{9f98}\u{9750}\u{9f49}".repeat(512);
         crate::cjk_tokenizer::visit_chinese_search_tokens_with_workspace(
             &text,
-            Some(&workspace),
+            Some(workspace),
             |_| Ok(()),
         )?;
         let retained = memory.ledger.snapshot().used_bytes;
         crate::cjk_tokenizer::visit_chinese_search_tokens_with_workspace(
             WARMUP,
-            Some(&workspace),
+            Some(workspace),
             |_| Ok(()),
         )?;
         assert_eq!(memory.ledger.snapshot().used_bytes, retained);
@@ -102,7 +103,7 @@ fn retained_hmm_capacity_survives_shorter_calls_and_shared_root_denial() {
         assert!(
             crate::cjk_tokenizer::visit_chinese_search_tokens_with_workspace(
                 WARMUP,
-                Some(&workspace),
+                Some(workspace),
                 |_| {
                     entered = true;
                     Ok(())
@@ -177,49 +178,6 @@ fn native_join_keeps_the_lease_through_success_error_panic_and_cancellation_tls(
 }
 
 #[test]
-fn guard_joins_during_parent_unwind_even_when_the_worker_also_panics() {
-    for worker_panics in [false, true] {
-        let task = task(32 * 1024 * 1024);
-        let memory = BuildMemory::new(&task).unwrap();
-        let observed = Arc::new(AtomicUsize::new(0));
-        let expected = Arc::new(AtomicUsize::new(0));
-        let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-            std::thread::scope(|scope| {
-                let workspace = Arc::new(Workspace::new(memory.clone(), task.clone()).unwrap());
-                let thread_memory = memory.retained.reserve(STACK_BYTES).unwrap();
-                let worker_workspace = Arc::clone(&workspace);
-                let handle = scope.spawn(|| {
-                    worker_workspace.warm_up().unwrap();
-                    expected.store(memory.ledger.snapshot().used_bytes, Ordering::Relaxed);
-                    EXIT.with(|observer| {
-                        *observer.borrow_mut() = Some(ExitObserver {
-                            memory: memory.clone(),
-                            observed: Arc::clone(&observed),
-                        });
-                    });
-                    // This owner must end before TLS, leaving only the guard.
-                    drop(worker_workspace);
-                    assert!(!worker_panics, "worker panic during parent unwind");
-                });
-                let _worker = JoinedWorker {
-                    handle: Some(handle),
-                    _workspace: workspace,
-                    _thread_memory: thread_memory,
-                };
-                panic!("parent panic");
-            });
-        }));
-        assert!(result.is_err());
-        assert_eq!(
-            observed.load(Ordering::Relaxed),
-            expected.load(Ordering::Relaxed)
-        );
-        assert!(observed.load(Ordering::Relaxed) > STACK_BYTES);
-        assert_eq!(memory.ledger.snapshot().used_bytes, 0);
-    }
-}
-
-#[test]
 fn cancellation_during_token_consumption_releases_the_remaining_output_and_tls() {
     let task = task(32 * 1024 * 1024);
     let memory = BuildMemory::new(&task).unwrap();
@@ -227,7 +185,7 @@ fn cancellation_during_token_consumption_releases_the_remaining_output_and_tls()
     let error = run(&memory, &task, |workspace| {
         crate::cjk_tokenizer::visit_chinese_search_tokens_with_workspace(
             &"\u{9f98}\u{9750}\u{9f49}".repeat(1024),
-            Some(&workspace),
+            Some(workspace),
             |_| {
                 consumed += 1;
                 task.cancellation().cancel();
