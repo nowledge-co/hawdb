@@ -49,14 +49,13 @@ fn merge_measurement(per_run: usize, repetitions: usize) {
         let output = pool.next_guard().unwrap();
         let start = Instant::now();
         let (result, checkpoints) = observation::measure(|| {
-            merge_runs_with_progress(
+            merge_runs(
                 &pool.paths,
                 &output.path,
                 pool.config,
                 pool.bytes,
                 &mut FileSpillIo,
-                pool.progress.as_ref(),
-                Some(&task),
+                &pool.control,
             )
         });
         let elapsed = start.elapsed();

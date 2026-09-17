@@ -2,15 +2,16 @@
 //! in a published generation or interpreted by a public reader.
 
 use super::*;
-use crate::build_memory::reserved::{Grant, ReservedMemory};
+use crate::build_memory::reserved::Grant;
+#[cfg(test)]
+use crate::build_memory::reserved::ReservedMemory;
 
 const HEADER: &[u8; 8] = b"SKNDOCF1";
 const FOOTER_BYTES: u64 = 16;
 
 pub(in crate::lexical_projection) struct FrequencyRun {
     pub(super) guard: RemoveOnDrop,
-    pub(super) progress: Option<ReservedMemory>,
-    pub(super) task: Option<RuntimeTaskContext>,
+    pub(super) control: SpillControl,
     pub(super) posting_size: PostingSize,
 }
 
@@ -84,7 +85,7 @@ struct RunWriter<W> {
     records: u64,
     config: LexicalProjectionConfig,
     _buffer_memory: Option<Grant>,
-    task: Option<RuntimeTaskContext>,
+    control: SpillControl,
 }
 
 impl<W: Write> RunWriter<W> {
@@ -100,7 +101,7 @@ impl<W: Write> RunWriter<W> {
             .checked_add(1)
             .ok_or_else(|| SkeinError::Storage("document frequency run count overflow".into()))?;
         let (ordinal, unique_weight) = record.summary.first_event.expect("validated first event");
-        let mut writer = spill_control::RecordWriter::new(&mut self.writer, self.task.as_ref())?;
+        let mut writer = spill_control::RecordWriter::new(&mut self.writer, &self.control)?;
         write_string(&mut writer, &record.term)?;
         writer.write_all(&[record.field])?;
         writer.write_all(&record.summary.repeated_weight.to_le_bytes())?;
@@ -115,7 +116,7 @@ impl<W: Write> RunWriter<W> {
         // The footer is reserved before creating the file, not after emitting
         // the last record. It commits both count and payload integrity.
         let mut output =
-            crate::build_control::CheckedWriter::new(&mut self.writer.inner, self.task.as_ref());
+            crate::build_control::CheckedWriter::new(&mut self.writer.inner, self.control.task());
         output.write_all(&self.records.to_le_bytes())?;
         output.write_all(&self.writer.digest.finish().to_le_bytes())?;
         output.flush()?;
@@ -134,23 +135,19 @@ pub(super) fn write_run(
         pool.config.max_spill_bytes,
     )?;
     let mut guard = pool.next_guard()?;
-    let buffer_memory = pool
-        .progress
-        .as_ref()
-        .map(|memory| memory.reserve(SPILL_IO_BUFFER_BYTES))
-        .transpose()?;
+    let buffer_memory = pool.control.reserve(SPILL_IO_BUFFER_BYTES)?;
     let mut writer = RunWriter {
         writer: HashWriter {
-            inner: native_path::with_scratch(pool.progress.as_ref(), &guard.path, || {
-                io.create(&guard.path)
-            })?,
+            inner: pool
+                .control
+                .with_path(&guard.path, || io.create(&guard.path))?,
             digest: Digest::new(),
         },
         total_bytes,
         records: 0,
         config: pool.config,
         _buffer_memory: buffer_memory,
-        task: pool.task().cloned(),
+        control: pool.control.clone(),
     };
     pool.check()?;
     writer.writer.write_all(HEADER)?;
@@ -196,8 +193,7 @@ pub(super) fn write_run(
     }
     Ok(FrequencyRun {
         guard,
-        progress: pool.progress.clone(),
-        task: pool.task().cloned(),
+        control: pool.control.clone(),
         posting_size,
     })
 }
@@ -228,9 +224,8 @@ pub(super) struct FrequencyRunReader {
     finished: bool,
     previous: Option<(Term, u8)>,
     config: LexicalProjectionConfig,
-    progress: Option<ReservedMemory>,
     _buffer_memory: Option<Grant>,
-    task: Option<RuntimeTaskContext>,
+    control: SpillControl,
 }
 
 impl FrequencyRunReader {
@@ -245,26 +240,23 @@ impl FrequencyRunReader {
         config: LexicalProjectionConfig,
         progress: Option<&ReservedMemory>,
     ) -> Result<Self> {
-        Self::open_with_control(path, config, progress, None)
+        Self::open_with_control(path, config, &SpillControl::fixture(progress, None))
     }
 
     pub(super) fn open_with_control(
         path: &Path,
         config: LexicalProjectionConfig,
-        progress: Option<&ReservedMemory>,
-        task: Option<&RuntimeTaskContext>,
+        control: &SpillControl,
     ) -> Result<Self> {
-        task.map_or(Ok(()), checkpoint)?;
-        let file = native_path::with_scratch(progress, path, || Ok(File::open(path)?))?;
+        control.check()?;
+        let file = control.with_path(path, || Ok(File::open(path)?))?;
         let length = file.metadata()?.len();
         if length < HEADER.len() as u64 + FOOTER_BYTES || length > config.max_spill_bytes.get() {
             return Err(SkeinError::Storage(
                 "invalid document frequency spill length".into(),
             ));
         }
-        let buffer_memory = progress
-            .map(|memory| memory.reserve(SPILL_IO_BUFFER_BYTES))
-            .transpose()?;
+        let buffer_memory = control.reserve(SPILL_IO_BUFFER_BYTES)?;
         let mut reader = BufReader::with_capacity(SPILL_IO_BUFFER_BYTES, file);
         let mut header = [0u8; 8];
         reader.read_exact(&mut header)?;
@@ -283,14 +275,13 @@ impl FrequencyRunReader {
             finished: false,
             previous: None,
             config,
-            progress: progress.cloned(),
             _buffer_memory: buffer_memory,
-            task: task.cloned(),
+            control: control.clone(),
         })
     }
 
     pub(super) fn next(&mut self) -> Result<Option<FrequencyRecord>> {
-        self.task.as_ref().map_or(Ok(()), checkpoint)?;
+        self.control.check()?;
         if self.finished {
             return Ok(None);
         }
@@ -316,17 +307,9 @@ impl FrequencyRunReader {
                 "lexical spill string exceeds its limit".into(),
             ));
         }
-        let term = if let Some(progress) = &self.progress {
-            Term::build_reserved(length, progress, || {
-                spill_memory::read_text(&mut reader, length, self.task.as_ref())
-            })?
-        } else {
-            Term::untracked(spill_memory::read_text(
-                &mut reader,
-                length,
-                self.task.as_ref(),
-            )?)
-        };
+        let term = self.control.build_term(length, || {
+            spill_memory::read_text(&mut reader, length, &self.control)
+        })?;
         let mut field = [0u8; 1];
         reader.read_exact(&mut field)?;
         let repeated_weight = read_u64(&mut reader)?;
@@ -371,18 +354,10 @@ pub(super) fn merge_pair(
     pool: &mut SpillRuns,
 ) -> Result<FrequencyRun> {
     let merged = {
-        let mut left_reader = FrequencyRunReader::open_with_control(
-            &left.guard.path,
-            pool.config,
-            pool.progress.as_ref(),
-            pool.task(),
-        )?;
-        let mut right_reader = FrequencyRunReader::open_with_control(
-            &right.guard.path,
-            pool.config,
-            pool.progress.as_ref(),
-            pool.task(),
-        )?;
+        let mut left_reader =
+            FrequencyRunReader::open_with_control(&left.guard.path, pool.config, &pool.control)?;
+        let mut right_reader =
+            FrequencyRunReader::open_with_control(&right.guard.path, pool.config, &pool.control)?;
         let mut left_next = left_reader.next()?;
         let mut right_next = right_reader.next()?;
         let mut failed = false;

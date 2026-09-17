@@ -1,9 +1,9 @@
 //! Pending block and retained directory ownership for one lexical build.
 
 use super::{
-    block_encoding, visit_merged_postings_with_progress, BlockDescriptor, Digest,
-    LexicalProjectionConfig, Posting, Result, SkeinError, TermStatistics, ARTIFACT_HEADER,
-    SPILL_IO_BUFFER_BYTES,
+    block_encoding, visit_merged_postings_with_control, BlockDescriptor, Digest,
+    LexicalProjectionConfig, Posting, Result, SkeinError, SpillControl, TermStatistics,
+    ARTIFACT_HEADER, SPILL_IO_BUFFER_BYTES,
 };
 use crate::build_control::{checkpoint, CheckedWriter};
 use crate::build_memory::{checked_add, grow_slots, path::OwnedPath, BuildMemory};
@@ -192,22 +192,21 @@ impl ArtifactBuilder {
         paths: &[PathBuf],
         config: LexicalProjectionConfig,
     ) -> Result<()> {
-        self.merge_postings_with_progress(paths, config, None)
+        self.merge_postings_with_control(paths, config, &SpillControl::fixture(None, None))
     }
 
-    pub(super) fn merge_postings_with_progress(
+    pub(super) fn merge_postings_with_control(
         &mut self,
         paths: &[impl AsRef<Path>],
         config: LexicalProjectionConfig,
-        progress: Option<&crate::build_memory::reserved::ReservedMemory>,
+        control: &SpillControl,
     ) -> Result<()> {
         self.check()?;
-        let task = self.task.clone();
-        let result =
-            visit_merged_postings_with_progress(paths, config, progress, Some(&task), |posting| {
-                self.push_posting(posting)
-            })
-            .and_then(|()| self.flush_postings());
+        let control = control.with_task(self.task.clone());
+        let result = visit_merged_postings_with_control(paths, config, &control, |posting| {
+            self.push_posting(posting)
+        })
+        .and_then(|()| self.flush_postings());
         self.failed = result.is_err();
         result
     }

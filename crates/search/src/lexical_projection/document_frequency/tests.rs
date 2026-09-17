@@ -183,7 +183,7 @@ fn reserved_two_way_merge_progresses_with_live_input_and_frequencies_at_a_full_r
     let progress =
         ReservedMemory::with_scratch_capacity(&memory.spool, 32 * 1024, scratch).unwrap();
     let progress_bytes = 32 * 1024 + scratch + ReservedMemory::metadata_bytes();
-    pool.progress = Some(progress.clone());
+    pool.control = SpillControl::fixture(Some(&progress), None);
     let owned = |text: &str, field, ordinal, occurrence, weight| {
         let mut summary = PartialFieldFrequency::default();
         summary.push(ordinal, occurrence, weight).unwrap();
@@ -322,8 +322,10 @@ fn frequency_run_path_retains_its_reservation_until_cleanup_after_pool_drop() {
     let memory = BuildMemory::new(&RuntimeTaskContext::default()).unwrap();
     let mut pool = SpillRuns::new(&root.0, 1, Default::default());
     let scratch = crate::build_memory::reserved::native_path::child_bytes(&root.0, 80).unwrap();
-    pool.progress =
-        Some(ReservedMemory::with_scratch_capacity(&memory.spool, 32 * 1024, scratch).unwrap());
+    pool.control = SpillControl::fixture(
+        Some(&ReservedMemory::with_scratch_capacity(&memory.spool, 32 * 1024, scratch).unwrap()),
+        None,
+    );
     let run = write_run(
         [Ok(record("alpha", 0, 1, TokenOccurrence::Repeated, 1))],
         &mut pool,
@@ -335,6 +337,34 @@ fn frequency_run_path_retains_its_reservation_until_cleanup_after_pool_drop() {
     assert!(run.guard.path.exists());
     assert_eq!(root.entries(), 1);
     assert_eq!(memory.ledger.snapshot().used_bytes, retained);
+    drop(run);
+    assert_eq!(root.entries(), 0);
+    assert_eq!(memory.ledger.snapshot().used_bytes, 0);
+}
+
+#[test]
+fn admitted_frequency_run_and_reader_retain_control_after_the_pool_drops() {
+    let root = TestRoot::new();
+    let task = RuntimeTaskContext::default();
+    let memory = BuildMemory::new(&task).unwrap();
+    let mut pool =
+        SpillRuns::with_context(&root.0, 1, Default::default(), memory.clone(), task.clone())
+            .unwrap();
+    pool.prepare(5, 0).unwrap();
+    let mut input = record("alpha", 0, 1, TokenOccurrence::Repeated, 1);
+    input.term = Term::copy("alpha", Some(&memory)).unwrap();
+    let run = write_run([Ok(input)], &mut pool, &mut FileSpillIo).unwrap();
+    let config = pool.config;
+    drop(pool);
+    let retained = memory.ledger.snapshot().used_bytes;
+    assert!(retained > 0);
+    let mut reader =
+        FrequencyRunReader::open_with_control(&run.guard.path, config, &run.control).unwrap();
+    task.cancellation().cancel();
+    assert!(reader.next().unwrap_err().to_string().contains("cancel"));
+    drop(reader);
+    assert_eq!(memory.ledger.snapshot().used_bytes, retained);
+    assert!(run.guard.path.exists());
     drop(run);
     assert_eq!(root.entries(), 0);
     assert_eq!(memory.ledger.snapshot().used_bytes, 0);
@@ -368,8 +398,8 @@ fn spilled_postings_enforce_the_logical_budget_and_clean_partial_output() {
             })
         });
         let run = write_run(records, &mut pool, &mut FileSpillIo).unwrap();
-        assert!(run.progress.is_some());
-        assert!(run.task.is_some());
+        assert!(run.control.progress().is_some());
+        assert!(run.control.task().is_some());
         let input_path = run.guard.path.clone();
         let input_bytes = pool.bytes;
         assert_eq!(root.entries(), 1);
@@ -384,13 +414,8 @@ fn spilled_postings_enforce_the_logical_budget_and_clean_partial_output() {
             assert_eq!(root.entries(), 1);
             assert_eq!(pool.max_posting_bytes, limit);
             assert!(pool.bytes > input_bytes);
-            let mut reader = RunReader::open_with_progress(
-                &pool.paths[0].path,
-                config,
-                pool.progress.as_ref(),
-                pool.task(),
-            )
-            .unwrap();
+            let mut reader =
+                RunReader::open_with_control(&pool.paths[0].path, config, &pool.control).unwrap();
             for (term, frequency) in [("alpha", 2), (long_term.as_str(), 3)] {
                 let posting = reader.next(limit).unwrap().unwrap();
                 assert_eq!(posting.term.as_str(), term);
@@ -435,9 +460,12 @@ fn native_spill_path_scratch_is_admitted_before_create_and_retained_through_clea
             .reserve(directory.as_os_str().as_encoded_bytes().len())
             .unwrap();
         let mut pool = SpillRuns::new(&directory, 1, Default::default());
-        pool.progress = Some(
-            ReservedMemory::with_scratch_capacity(&memory.spool, 32 * 1024, required - extra)
-                .unwrap(),
+        pool.control = SpillControl::fixture(
+            Some(
+                &ReservedMemory::with_scratch_capacity(&memory.spool, 32 * 1024, required - extra)
+                    .unwrap(),
+            ),
+            None,
         );
         let term = Term::copy("alpha", Some(&memory)).unwrap();
         let mut input = record("alpha", 0, 1, TokenOccurrence::Repeated, 1);
@@ -463,7 +491,7 @@ fn native_spill_path_scratch_is_admitted_before_create_and_retained_through_clea
             let reader = FrequencyRunReader::open_with_progress(
                 &run.guard.path,
                 pool.config,
-                pool.progress.as_ref(),
+                pool.control.progress(),
             )
             .unwrap();
             drop(reader);

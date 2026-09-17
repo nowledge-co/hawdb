@@ -31,34 +31,23 @@ impl SpillRuns {
             0,
             native_path::child_bytes(root, RUN_NAME_BYTES)?,
         )?;
-        let mut result = Self::new(root, generation, config);
-        result.path_slots = Some(progress.reserve(0)?);
-        result.progress = Some(progress);
-        result.context = Some((memory, task));
+        let mut result =
+            Self::new_with_control(root, generation, config, SpillControl::new(progress, task));
+        result.path_slots = result.control.reserve(0)?;
         result._root_memory = Some(root_memory);
         result.prepare(0, 0)?;
         Ok(result)
     }
 
     pub(super) fn check(&self) -> Result<()> {
-        self.context
-            .as_ref()
-            .map_or(Ok(()), |(_, task)| checkpoint(task))
-    }
-
-    pub(super) fn task(&self) -> Option<&RuntimeTaskContext> {
-        self.context.as_ref().map(|(_, task)| task)
+        self.control.check()
     }
 
     pub(super) fn prepare(&mut self, term: usize, id: usize) -> Result<()> {
         self.check()?;
-        let Some(progress) = &self.progress else {
+        let Some(progress) = self.control.progress_for_growth() else {
             return Ok(());
         };
-        // Proof-only callers can supply a deliberately exact reservation.
-        if self.context.is_none() {
-            return Ok(());
-        }
         let term = self.max_term_bytes.max(term);
         let id = self.max_id_bytes.max(id);
         if term == self.max_term_bytes
@@ -113,11 +102,7 @@ impl SpillRuns {
         // Ingestion preadmitted a full merge level plus its output paths. Do not
         // grow that reservation merely because a level temporarily retains both.
         self.check()?;
-        let memory = self
-            .progress
-            .as_ref()
-            .map(|progress| progress.reserve(path_bytes(&self.root)?))
-            .transpose()?;
+        let memory = self.control.reserve(path_bytes(&self.root)?)?;
         let path = self.next_path()?;
         Ok(RemoveOnDrop {
             path,
@@ -246,17 +231,17 @@ impl Ord for RunPosting {
 pub(super) fn read_text(
     reader: &mut impl Read,
     length: usize,
-    task: Option<&RuntimeTaskContext>,
+    control: &SpillControl,
 ) -> Result<String> {
     // Both readers check at record entry. Only large fields need another check
     // before their allocation; their subsequent I/O remains bounded to 8 KiB.
     if length > SPILL_IO_BUFFER_BYTES {
-        task.map_or(Ok(()), checkpoint)?;
+        control.check()?;
     }
     let mut bytes = vec![0; length];
     for (index, chunk) in bytes.chunks_mut(SPILL_IO_BUFFER_BYTES).enumerate() {
         if index != 0 {
-            task.map_or(Ok(()), checkpoint)?;
+            control.check()?;
         }
         reader.read_exact(chunk)?;
     }

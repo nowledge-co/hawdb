@@ -436,12 +436,7 @@ fn visit_frequencies(
     config: LexicalProjectionConfig,
     mut emit: impl FnMut(Term, u32) -> Result<()>,
 ) -> Result<()> {
-    let mut reader = FrequencyRunReader::open_with_control(
-        &run.guard.path,
-        config,
-        run.progress.as_ref(),
-        run.task.as_ref(),
-    )?;
+    let mut reader = FrequencyRunReader::open_with_control(&run.guard.path, config, &run.control)?;
     let mut current: Option<(Term, u64)> = None;
     while let Some(record) = reader.next()? {
         let frequency = record.summary.frequency()?;
@@ -484,13 +479,12 @@ pub(super) fn spill_postings(
         pool.config.max_spill_bytes,
     )?;
     let guard = pool.next_guard()?;
-    let mut writer = SpillRunWriter::create_with_progress(
+    let mut writer = SpillRunWriter::create(
         &guard.path,
         pool.bytes,
         pool.config.max_spill_bytes,
         &mut FileSpillIo,
-        pool.progress.as_ref(),
-        pool.task(),
+        &pool.control,
     )?;
     let mut max_posting_bytes = pool.max_posting_bytes;
     let posting_limit = pool.config.build_memory_bytes.get();

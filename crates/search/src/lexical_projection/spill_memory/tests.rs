@@ -94,20 +94,14 @@ fn admitted_corpus_merge_levels_progress_at_a_full_root_and_cover_live_allocatio
             let result = pool.compact();
             let mut count = 0;
             let result = result.and_then(|()| {
-                visit_merged_postings_with_progress(
-                    &pool.paths,
-                    config,
-                    pool.progress.as_ref(),
-                    Some(&task),
-                    |posting| {
-                        assert_eq!(posting.term.as_str(), ["alpha", "beta", "gamma"][count]);
-                        assert_eq!(posting.document_id, "document");
-                        assert_eq!((posting.term_frequency, posting.document_len), (2, 6));
-                        retained = Some(posting.term.clone());
-                        count += 1;
-                        Ok(())
-                    },
-                )
+                visit_merged_postings_with_control(&pool.paths, config, &pool.control, |posting| {
+                    assert_eq!(posting.term.as_str(), ["alpha", "beta", "gamma"][count]);
+                    assert_eq!(posting.document_id, "document");
+                    assert_eq!((posting.term_frequency, posting.document_len), (2, 6));
+                    retained = Some(posting.term.clone());
+                    count += 1;
+                    Ok(())
+                })
             });
             (result, count)
         });
@@ -228,25 +222,24 @@ fn decoded_posting_admits_both_strings_and_reader_before_allocation() {
         )
         .unwrap();
         let competitor = fill(&memory);
-        let mut reader =
-            RunReader::open_with_progress(&path, Default::default(), Some(&progress), Some(&task))
-                .unwrap();
+        let control = SpillControl::new(progress, task);
+        let mut reader = RunReader::open_with_control(&path, Default::default(), &control).unwrap();
+        drop(control);
         let result = reader.next(u64::MAX);
         assert_eq!(result.is_ok(), short == 0);
         if short == 0 {
             assert_eq!(result.as_ref().unwrap().as_ref().unwrap().posting, posting);
         }
-        drop((result, reader, progress, competitor));
+        drop((result, reader, competitor));
         assert_eq!(memory.ledger.snapshot().used_bytes, 0);
     }
 
     let (memory, task) = context();
     let progress = ReservedMemory::new(&memory.spool, size_of::<RunReader>() - 1).unwrap();
-    let error = visit_merged_postings_with_progress(
+    let error = visit_merged_postings_with_control(
         &[fixture.0.join("missing")],
         Default::default(),
-        Some(&progress),
-        Some(&task),
+        &SpillControl::new(progress, task),
         |_| Ok(()),
     )
     .unwrap_err();
@@ -254,6 +247,22 @@ fn decoded_posting_admits_both_strings_and_reader_before_allocation() {
         error.to_string().contains("spill progress"),
         "reader registry must be admitted before file open: {error}"
     );
+}
+
+#[test]
+fn exact_fixture_prepare_cannot_grow_past_its_reserved_capacity() {
+    let fixture = Fixture::new();
+    let (memory, _) = context();
+    let progress = ReservedMemory::new(&memory.spool, 7).unwrap();
+    let mut pool = SpillRuns::new(&fixture.0, 1, Default::default());
+    pool.control = SpillControl::fixture(Some(&progress), None);
+    let before = memory.ledger.snapshot().used_bytes;
+    pool.prepare(1024, 1024).unwrap();
+    assert_eq!(memory.ledger.snapshot().used_bytes, before);
+    assert!(pool.control.reserve(8).is_err());
+    drop(pool.control.reserve(7).unwrap());
+    drop((pool, progress));
+    assert_eq!(memory.ledger.snapshot().used_bytes, 0);
 }
 
 #[test]
@@ -298,17 +307,11 @@ fn merge_cancellation_releases_readers_and_cleanup_keeps_its_admission() {
     populate(&mut pool, &memory, 3);
     let before = memory.ledger.snapshot().used_bytes;
     let mut count = 0;
-    let error = visit_merged_postings_with_progress(
-        &pool.paths,
-        pool.config,
-        pool.progress.as_ref(),
-        Some(&task),
-        |_| {
-            count += 1;
-            token.cancel();
-            Ok(())
-        },
-    )
+    let error = visit_merged_postings_with_control(&pool.paths, pool.config, &pool.control, |_| {
+        count += 1;
+        token.cancel();
+        Ok(())
+    })
     .unwrap_err();
     assert!(error.to_string().contains("cancelled"));
     assert_eq!(count, 1);

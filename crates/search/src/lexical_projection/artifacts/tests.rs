@@ -86,6 +86,46 @@ fn retained_artifact_terms_release_merge_progress_after_the_input_drops() {
 }
 
 #[test]
+fn artifact_merge_uses_its_own_task_and_retains_the_supplied_progress() {
+    use crate::lexical_projection::{spill_memory::PendingPostings, SpillRuns};
+    let fixture = Fixture::new();
+    let (memory, task) = context();
+    let spill_task = RuntimeTaskContext::default();
+    let mut pool = SpillRuns::with_context(
+        &fixture.0,
+        7,
+        Default::default(),
+        memory.clone(),
+        spill_task.clone(),
+    )
+    .unwrap();
+    pool.prepare(5, 8).unwrap();
+    let mut pending = PendingPostings::new(Some(&memory)).unwrap();
+    pending
+        .push(
+            crate::build_term::Term::copy("alpha", Some(&memory)).unwrap(),
+            "document",
+            1,
+            1,
+        )
+        .unwrap();
+    pending.flush(&mut pool).unwrap();
+    drop(pending);
+    let mut builder = fixture.builder(&memory, &task);
+    builder.push_document("document", 1).unwrap();
+    builder.finish_documents().unwrap();
+    spill_task.cancellation().cancel();
+    builder
+        .merge_postings_with_control(&pool.paths, pool.config, &pool.control)
+        .unwrap();
+    assert_eq!(builder.term_statistics.len(), 1);
+    assert_eq!(builder.term_statistics[0].term.as_str(), "alpha");
+    assert!(pool.check().unwrap_err().to_string().contains("cancel"));
+    drop((builder, pool));
+    assert_eq!(used(&memory), 0);
+}
+
+#[test]
 fn writer_buffer_admission_precedes_file_creation() {
     let fixture = Fixture::new();
     let (memory, task) = context();

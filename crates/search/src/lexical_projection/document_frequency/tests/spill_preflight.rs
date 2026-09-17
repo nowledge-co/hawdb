@@ -53,11 +53,10 @@ fn streamed_posting_size_is_exact_after_duplicate_fields_and_pair_merge() {
                 assert_eq!(pool.bytes, bytes + expected);
                 assert_eq!(fs::metadata(&pool.paths[0].path).unwrap().len(), expected);
                 let mut records = Vec::new();
-                visit_merged_postings_with_progress(
+                visit_merged_postings_with_control(
                     &pool.paths,
                     pool.config,
-                    pool.progress.as_ref(),
-                    pool.task(),
+                    &pool.control,
                     |posting| {
                         records.push((posting.term.to_string(), posting.term_frequency));
                         Ok(())

@@ -1,5 +1,11 @@
 use super::*;
 use crate::build_control::observation;
+use crate::build_memory::BuildMemory;
+
+fn admitted(task: &RuntimeTaskContext) -> Control {
+    let memory = BuildMemory::new(task).unwrap();
+    Control::new(ReservedMemory::new(&memory.spool, 0).unwrap(), task.clone())
+}
 
 struct ShortWriter<'a> {
     output: Vec<u8>,
@@ -29,6 +35,7 @@ impl Write for ShortWriter<'_> {
 #[test]
 fn record_checks_cross_field_boundaries_and_preserve_short_writes() {
     let task = RuntimeTaskContext::default();
+    let control = admitted(&task);
     let mut output = ShortWriter {
         output: Vec::new(),
         task: &task,
@@ -37,7 +44,7 @@ fn record_checks_cross_field_boundaries_and_preserve_short_writes() {
     };
     let payload = vec![7; 8193];
     let (result, checks) = observation::measure(|| -> io::Result<()> {
-        let mut writer = RecordWriter::new(&mut output, Some(&task))?;
+        let mut writer = RecordWriter::new(&mut output, &control)?;
         writer.write_all(&[1, 2, 3])?;
         writer.write_all(&payload)?;
         writer.flush()
@@ -52,6 +59,7 @@ fn record_checks_cross_field_boundaries_and_preserve_short_writes() {
 fn cancelled_record_writes_stop_at_a_chunk_or_flush_boundary() {
     for cancel_at in [0, 1, 8191, 8192, 8193, 16387] {
         let task = RuntimeTaskContext::default();
+        let control = admitted(&task);
         if cancel_at == 0 {
             task.cancellation().cancel();
         }
@@ -62,7 +70,7 @@ fn cancelled_record_writes_stop_at_a_chunk_or_flush_boundary() {
             interrupt: false,
         };
         let error = (|| -> io::Result<()> {
-            let mut writer = RecordWriter::new(&mut output, Some(&task))?;
+            let mut writer = RecordWriter::new(&mut output, &control)?;
             writer.write_all(&vec![7; 16387])?;
             writer.flush()
         })()
@@ -76,8 +84,9 @@ fn cancelled_record_writes_stop_at_a_chunk_or_flush_boundary() {
 #[test]
 fn expired_records_do_not_write_any_bytes() {
     let task = RuntimeTaskContext::with_timeout(std::time::Duration::ZERO);
+    let control = admitted(&RuntimeTaskContext::default()).with_task(task);
     let mut output = Vec::<u8>::new();
-    let error = match RecordWriter::new(&mut output, Some(&task)) {
+    let error = match RecordWriter::new(&mut output, &control) {
         Ok(_) => panic!("expired record admitted"),
         Err(error) => error,
     };
@@ -98,8 +107,9 @@ fn interrupted_writes_cannot_hide_cancellation() {
         }
     }
     let task = RuntimeTaskContext::default();
+    let control = admitted(&task);
     let mut output = Interrupt(&task);
-    let error = RecordWriter::new(&mut output, Some(&task))
+    let error = RecordWriter::new(&mut output, &control)
         .unwrap()
         .write_all(b"payload")
         .unwrap_err();
@@ -125,6 +135,7 @@ fn long_field_reads_check_before_allocation_and_between_chunks() {
         if cancelled {
             task.cancellation().cancel();
         }
+        let control = admitted(&RuntimeTaskContext::default()).with_task(task.clone());
         let mut reader = Reader {
             task: &task,
             read: 0,
@@ -132,7 +143,7 @@ fn long_field_reads_check_before_allocation_and_between_chunks() {
         let error = crate::lexical_projection::spill_memory::read_text(
             &mut reader,
             2 * SPILL_IO_BUFFER_BYTES + 1,
-            Some(&task),
+            &control,
         )
         .unwrap_err();
         assert!(error.to_string().contains("cancel"));
