@@ -16,6 +16,7 @@ pub(crate) const MAP_ENTRY_BYTES: usize = 2048;
 pub(crate) const SET_ENTRY_BYTES: usize = 1024;
 pub(crate) const SPOOL_BUFFER_BYTES: usize = 8192;
 
+pub(crate) mod capacity;
 pub(crate) mod decoder;
 pub(crate) mod directory;
 pub(crate) mod path;
@@ -148,26 +149,12 @@ pub(crate) fn reserve_capacity<T>(
     capacity: usize,
     lease: &mut QueryMemoryLease,
 ) -> Result<()> {
-    if capacity <= values.capacity() {
-        return Ok(());
-    }
-    let old = checked_mul(values.capacity(), size_of::<T>())?;
-    let replacement = checked_mul(capacity, size_of::<T>())?;
-    // The allocator can keep the old allocation alive while replacing it.
-    lease.grow(replacement)?;
-    if let Err(error) = values.try_reserve_exact(capacity - values.len()) {
-        lease.shrink(replacement);
-        return Err(SkeinError::Execution(format!(
-            "search build capacity allocation failed: {error}"
-        )));
-    }
-    if values.capacity() > capacity {
-        return Err(SkeinError::Execution(
-            "search build capacity exceeded admission".into(),
-        ));
-    }
-    lease.shrink(old);
-    Ok(())
+    capacity::reserve(
+        values,
+        capacity,
+        capacity::Memory::Lease(lease),
+        "search build capacity",
+    )
 }
 
 pub(crate) fn grow_slots<T>(values: &mut Vec<T>, lease: &mut QueryMemoryLease) -> Result<()> {

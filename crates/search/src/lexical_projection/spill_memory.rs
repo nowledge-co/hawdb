@@ -149,32 +149,12 @@ pub(super) fn reserve_slots<T>(
     capacity: usize,
     memory: Option<&mut Grant>,
 ) -> Result<()> {
-    if capacity <= values.capacity() {
-        return Ok(());
-    }
-    let old = mul(values.capacity(), std::mem::size_of::<T>())?;
-    let replacement = mul(capacity, std::mem::size_of::<T>())?;
-    let mut memory = memory;
-    if let Some(memory) = memory.as_mut() {
-        memory.grow(replacement)?;
-    }
-    if let Err(error) = values.try_reserve_exact(capacity - values.len()) {
-        if let Some(memory) = memory {
-            memory.shrink(replacement);
-        }
-        return Err(SkeinError::Execution(format!(
-            "search spill slots allocation failed: {error}"
-        )));
-    }
-    if values.capacity() > capacity {
-        return Err(SkeinError::Execution(
-            "search spill slots exceeded admission".into(),
-        ));
-    }
-    if let Some(memory) = memory {
-        memory.shrink(old);
-    }
-    Ok(())
+    crate::build_memory::capacity::reserve(
+        values,
+        capacity,
+        crate::build_memory::capacity::Memory::Grant(memory),
+        "search spill slots",
+    )
 }
 
 pub(super) struct PendingPostings {
@@ -268,10 +248,16 @@ pub(super) fn read_text(
     length: usize,
     task: Option<&RuntimeTaskContext>,
 ) -> Result<String> {
-    task.map_or(Ok(()), checkpoint)?;
-    let mut bytes = vec![0; length];
-    for chunk in bytes.chunks_mut(SPILL_IO_BUFFER_BYTES) {
+    // Both readers check at record entry. Only large fields need another check
+    // before their allocation; their subsequent I/O remains bounded to 8 KiB.
+    if length > SPILL_IO_BUFFER_BYTES {
         task.map_or(Ok(()), checkpoint)?;
+    }
+    let mut bytes = vec![0; length];
+    for (index, chunk) in bytes.chunks_mut(SPILL_IO_BUFFER_BYTES).enumerate() {
+        if index != 0 {
+            task.map_or(Ok(()), checkpoint)?;
+        }
         reader.read_exact(chunk)?;
     }
     String::from_utf8(bytes)
