@@ -383,6 +383,21 @@ pub(super) fn operators() -> Vec<(PhysicalPlan, bool)> {
             true,
         ),
         (
+            PhysicalPlan::HashJoinExec {
+                left_key: HashJoinKey {
+                    variable: "a".into(),
+                    property: "key".into(),
+                },
+                right_key: HashJoinKey {
+                    variable: "b".into(),
+                    property: "key".into(),
+                },
+                left: Box::new(PhysicalPlan::EmptyExec),
+                right: Box::new(PhysicalPlan::EmptyExec),
+            },
+            true,
+        ),
+        (
             PhysicalPlan::NodeCartesianProductExec {
                 left: Box::new(PhysicalPlan::EmptyExec),
                 right: Box::new(PhysicalPlan::EmptyExec),

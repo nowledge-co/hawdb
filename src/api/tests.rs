@@ -112,6 +112,7 @@ mod concurrent_transactions;
 mod delete_mutations;
 mod expression_functions;
 mod external_content_artifacts;
+mod graph_hash_join;
 mod graph_meta;
 mod graph_rag_schema_guidance;
 mod knowledge_community_entity_visibility;

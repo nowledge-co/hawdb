@@ -70,6 +70,7 @@ impl PhysicalPlan {
             PhysicalPlan::SeqNodeScan { .. } => PhysicalPlanKind::SeqNodeScan,
             PhysicalPlan::NodeProjectionScanExec { .. } => PhysicalPlanKind::NodeProjectionScanExec,
             PhysicalPlan::SourceSegmentScan { .. } => PhysicalPlanKind::SourceSegmentScan,
+            PhysicalPlan::HashJoinExec { .. } => PhysicalPlanKind::HashJoinExec,
             PhysicalPlan::NodeCartesianProductExec { .. } => {
                 PhysicalPlanKind::NodeCartesianProductExec
             }
@@ -109,9 +110,8 @@ impl PhysicalPlan {
 
     pub fn children(&self) -> PhysicalPlanChildren<'_> {
         match self {
-            PhysicalPlan::NodeCartesianProductExec { left, right } => {
-                PlanChildren::Binary(left, right)
-            }
+            PhysicalPlan::NodeCartesianProductExec { left, right }
+            | PhysicalPlan::HashJoinExec { left, right, .. } => PlanChildren::Binary(left, right),
             PhysicalPlan::NodeColumnLookupExec { input, .. }
             | PhysicalPlan::AdjacencyExpandExec { input, .. }
             | PhysicalPlan::AdjacencyExistsExec { input, .. }

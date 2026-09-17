@@ -100,6 +100,7 @@ test_suite(
         "//crates/executor:skein_execution_lifecycle_fuzz_tests",
         "//crates/executor:skein_execution_report_value_fuzz_tests",
         "//crates/executor:skein_graph_algorithm_fuzz_tests",
+        "//crates/executor:skein_graph_hash_join_fuzz_tests",
         "//crates/executor:skein_morsel_oracle_fuzz_tests",
         "//crates/executor:skein_mutation_lowering_fuzz_tests",
         "//crates/executor:skein_mutation_preflight_fuzz_tests",

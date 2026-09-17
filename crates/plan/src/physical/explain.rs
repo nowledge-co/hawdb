@@ -358,6 +358,10 @@ impl PhysicalPlan {
             PhysicalPlan::SourceSegmentScan { variable, predicate } => {
                 format!("{pad}SourceSegmentScan variable={variable} predicate={predicate:?}")
             }
+            PhysicalPlan::HashJoinExec { left_key, right_key, .. } => {
+                format!("{pad}HashJoinExec left={}.{} right={}.{}", left_key.variable,
+                    left_key.property, right_key.variable, right_key.property)
+            }
             PhysicalPlan::NodeCartesianProductExec { .. } => {
                 format!("{pad}NodeCartesianProductExec")
             }

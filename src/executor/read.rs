@@ -868,6 +868,7 @@ pub(super) fn execute_bindings_with_limit(
         | PhysicalPlan::OptionalRelationshipCountSumExec { .. }
         | PhysicalPlan::ShortestPathExec { .. }
         | PhysicalPlan::NodeCartesianProductExec { .. }
+        | PhysicalPlan::HashJoinExec { .. }
         | PhysicalPlan::FilterExec { .. }
         | PhysicalPlan::ProjectExec { .. }
         | PhysicalPlan::AggregateExec { .. }

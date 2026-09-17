@@ -32,7 +32,7 @@ fn admission_covers_every_physical_operator_and_descendant_position() {
     assert_eq!(kinds, PhysicalPlanKind::all().iter().copied().collect());
     assert_eq!(
         fixtures.iter().filter(|(_, supported)| *supported).count(),
-        30
+        31
     );
     for (plan, expected) in fixtures {
         for shape in 0..4 {
@@ -92,6 +92,79 @@ fn with_context<T>(
     assert_eq!(memory_ledger.snapshot().used_bytes, 0);
     assert!(memory_ledger.snapshot().peak_bytes <= memory.query_memory_bytes.get());
     output
+}
+
+#[test]
+fn graph_hash_join_executes_residual_before_ordered_offset_limit() {
+    let scan = |variable: &str| {
+        Box::new(PhysicalPlan::SeqNodeScan {
+            variable: variable.into(),
+            label: "Item".into(),
+        })
+    };
+    let key = |variable: &str| skein_plan::HashJoinKey {
+        variable: variable.into(),
+        property: "score".into(),
+    };
+    let plan = PhysicalPlan::ProjectExec {
+        items: vec![Projection {
+            name: "score".into(),
+            expression: ProjectionExpression::Property {
+                variable: "a".into(),
+                property: "score".into(),
+            },
+        }],
+        input: Box::new(PhysicalPlan::TopNExec {
+            items: vec![SortItem {
+                key: SortKey::Property {
+                    variable: "a".into(),
+                    property: "score".into(),
+                },
+                direction: SortDirection::Desc,
+            }],
+            offset: 1,
+            limit: 3,
+            input: Box::new(PhysicalPlan::FilterExec {
+                predicate: Predicate::PropertyNotEq {
+                    variable: "a".into(),
+                    property: "score".into(),
+                    value: Value::Int(9),
+                },
+                input: Box::new(PhysicalPlan::HashJoinExec {
+                    left_key: key("a"),
+                    right_key: key("b"),
+                    left: scan("a"),
+                    right: scan("b"),
+                }),
+            }),
+        }),
+    };
+    for batch_rows in [1, 3, 16] {
+        let mut output = Vec::new();
+        with_context(
+            &[7, 1, 9, 3, 5, 2, 8],
+            batch_rows,
+            16 * 1024,
+            None,
+            |context| {
+                execute_binding_batches(
+                    &plan,
+                    context,
+                    ExecutionLimit::unlimited(),
+                    &mut |batch| {
+                        output.extend(
+                            batch
+                                .into_iter()
+                                .map(|binding| binding.values["score"].clone()),
+                        );
+                        Ok(BatchControl::Continue)
+                    },
+                )
+                .unwrap();
+            },
+        );
+        assert_eq!(output, vec![Value::Int(7), Value::Int(5), Value::Int(3)]);
+    }
 }
 
 #[test]

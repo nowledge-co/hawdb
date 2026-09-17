@@ -134,6 +134,7 @@ impl PhysicalPlan {
             | PhysicalPlan::RelationshipCountExec { .. }
             | PhysicalPlan::EmptyExec
             | PhysicalPlan::NodeCartesianProductExec { .. }
+            | PhysicalPlan::HashJoinExec { .. }
             | PhysicalPlan::FilterExec { .. }
             | PhysicalPlan::ProjectExec { .. }
             | PhysicalPlan::AggregateExec { .. }

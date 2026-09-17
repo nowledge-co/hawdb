@@ -536,7 +536,8 @@ fn bind_physical_plan(plan: &mut PhysicalPlan, parameters: &BTreeMap<String, Val
             bind_optional_predicate(predicate, parameters)?;
             bind_projections(items, parameters)?;
         }
-        PhysicalPlan::NodeCartesianProductExec { left, right } => {
+        PhysicalPlan::NodeCartesianProductExec { left, right }
+        | PhysicalPlan::HashJoinExec { left, right, .. } => {
             bind_physical_plan(left, parameters)?;
             bind_physical_plan(right, parameters)?;
         }
@@ -991,6 +992,56 @@ mod tests {
 
         assert!(rebound.explain(0).contains("second"));
         assert!(!rebound.explain(0).contains("skein_parameter_slot"));
+    }
+
+    #[test]
+    fn graph_hash_join_rebinds_both_inputs_without_changing_keys() {
+        let seek = |variable: &str, parameter: &str| PhysicalPlan::IndexNodeSeek {
+            variable: variable.into(),
+            label: "Item".into(),
+            property: "scope".into(),
+            value: parameter_marker(parameter, &Value::Int(0), &[]),
+        };
+        let template = PhysicalPlan::HashJoinExec {
+            left_key: skein_plan::HashJoinKey {
+                variable: "a".into(),
+                property: "key".into(),
+            },
+            right_key: skein_plan::HashJoinKey {
+                variable: "b".into(),
+                property: "key".into(),
+            },
+            left: Box::new(seek("a", "left_scope")),
+            right: Box::new(seek("b", "right_scope")),
+        };
+        for (a, b) in [(1, 2), (3, 4)] {
+            let bound = bind_physical_plan_parameters(
+                &template,
+                &BTreeMap::from([
+                    ("left_scope".into(), Value::Int(a)),
+                    ("right_scope".into(), Value::Int(b)),
+                ]),
+                true,
+            )
+            .unwrap();
+            let PhysicalPlan::HashJoinExec {
+                left_key,
+                right_key,
+                left,
+                right,
+            } = bound
+            else {
+                unreachable!()
+            };
+            assert_eq!(left_key.variable, "a");
+            assert_eq!(right_key.variable, "b");
+            assert!(
+                matches!(*left, PhysicalPlan::IndexNodeSeek { value: Value::Int(value), .. } if value == a)
+            );
+            assert!(
+                matches!(*right, PhysicalPlan::IndexNodeSeek { value: Value::Int(value), .. } if value == b)
+            );
+        }
     }
 
     #[test]

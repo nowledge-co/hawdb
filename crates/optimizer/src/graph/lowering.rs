@@ -27,6 +27,7 @@ use std::collections::{BTreeMap, BTreeSet};
 
 mod access;
 mod ddl;
+mod join;
 mod mutation;
 mod procedure;
 mod simple;
@@ -921,6 +922,7 @@ fn lower_logical(
                     stage_events,
                 );
                 push_vector_seed_metadata_filter(&mut input, predicate, decisions);
+                input = join::lower_property_join(input, predicate, decisions);
                 PhysicalPlan::FilterExec {
                     predicate: predicate.clone(),
                     input: Box::new(input),

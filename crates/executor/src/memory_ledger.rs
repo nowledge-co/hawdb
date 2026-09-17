@@ -322,6 +322,10 @@ pub struct QueryMemoryAccount {
 }
 
 impl QueryMemoryAccount {
+    pub(crate) fn peak_bytes(&self) -> usize {
+        lock_recover(&self.ledger.inner.state).accounts[&self.account_id].peak_bytes
+    }
+
     pub(crate) fn sibling(
         &self,
         class: QueryMemoryClass,

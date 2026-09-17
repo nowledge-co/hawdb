@@ -27,6 +27,13 @@ pub struct GraphExpansionBudget {
     pub payload_byte_limit: usize,
 }
 
+/// A property of an independently bound graph variable used as an equi-join key.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct HashJoinKey {
+    pub variable: String,
+    pub property: String,
+}
+
 /// One equality-index branch in a bounded exact-property union seek.
 #[derive(Debug, Clone, PartialEq)]
 pub struct ExactPropertySeekBranch {
@@ -378,6 +385,14 @@ pub enum PhysicalPlan {
         predicate: Predicate,
     },
     NodeCartesianProductExec {
+        left: Box<PhysicalPlan>,
+        right: Box<PhysicalPlan>,
+    },
+    /// Inner property equi-join using graph Value equality. Null and missing
+    /// properties do not match. Input ordering is not preserved.
+    HashJoinExec {
+        left_key: HashJoinKey,
+        right_key: HashJoinKey,
         left: Box<PhysicalPlan>,
         right: Box<PhysicalPlan>,
     },

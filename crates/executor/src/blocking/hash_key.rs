@@ -28,6 +28,12 @@ impl<K> Hash for HashedKey<K> {
     }
 }
 
+impl<K> HashedKey<K> {
+    pub(super) fn with_hash(key: K, hash: u64) -> Self {
+        Self { hash, key }
+    }
+}
+
 struct GroupEntry<K, V> {
     key: HashedKey<K>,
     value: V,
@@ -53,6 +59,36 @@ impl<K, V> Default for HashGroups<K, V> {
 }
 
 impl<K: Eq, V> HashGroups<K, V> {
+    pub(super) fn len(&self) -> usize {
+        self.entries.len()
+    }
+
+    /// Candidate enumeration for a multimap whose full keys live in its rows.
+    /// The caller must compare those keys before producing a join result.
+    pub(super) fn hashed_values(&self, hash: u64) -> impl Iterator<Item = &V> {
+        let mut cursor = if self.buckets.is_empty() {
+            None
+        } else {
+            self.buckets[hash as usize & (self.buckets.len() - 1)]
+        };
+        std::iter::from_fn(move || {
+            while let Some(index) = cursor {
+                let entry = &self.entries[index.get() - 1];
+                cursor = entry.next;
+                if entry.key.hash == hash {
+                    return Some(&entry.value);
+                }
+            }
+            None
+        })
+    }
+
+    pub(super) fn into_values(self) -> impl Iterator<Item = (u64, V)> {
+        self.entries
+            .into_iter()
+            .map(|entry| (entry.key.hash, entry.value))
+    }
+
     pub(super) fn is_empty(&self) -> bool {
         self.entries.is_empty()
     }

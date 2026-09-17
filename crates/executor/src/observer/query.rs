@@ -206,8 +206,9 @@ fn collect_blocking_operator_kinds(plan: &PhysicalPlan, output: &mut BTreeSet<St
             output.insert("TopNExec".to_string());
             collect_blocking_operator_kinds(input, output);
         }
-        PhysicalPlan::NodeCartesianProductExec { left, right } => {
-            output.insert("NodeCartesianProductExec".to_string());
+        PhysicalPlan::NodeCartesianProductExec { left, right }
+        | PhysicalPlan::HashJoinExec { left, right, .. } => {
+            output.insert(plan.kind().as_str().to_string());
             collect_blocking_operator_kinds(left, output);
             collect_blocking_operator_kinds(right, output);
         }

@@ -145,7 +145,8 @@ pub(super) fn selected_plan_properties(plan: &PhysicalPlan) -> PhysicalPropertie
             memory_budget: MemoryBudgetClass::RowLinear,
             ..PhysicalProperties::default()
         },
-        PhysicalPlan::NodeCartesianProductExec { left, right } => {
+        PhysicalPlan::NodeCartesianProductExec { left, right }
+        | PhysicalPlan::HashJoinExec { left, right, .. } => {
             let left = selected_plan_properties(left);
             let right = selected_plan_properties(right);
             PhysicalProperties {
@@ -160,7 +161,11 @@ pub(super) fn selected_plan_properties(plan: &PhysicalPlan) -> PhysicalPropertie
                     left.vector_precision,
                     right.vector_precision,
                 ),
-                memory_budget: combine_memory_budget(left.memory_budget, right.memory_budget),
+                memory_budget: if matches!(plan, PhysicalPlan::HashJoinExec { .. }) {
+                    MemoryBudgetClass::Blocking
+                } else {
+                    combine_memory_budget(left.memory_budget, right.memory_budget)
+                },
                 ..PhysicalProperties::default()
             }
         }
