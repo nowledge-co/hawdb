@@ -178,11 +178,6 @@ use skein_storage::text::envelope::DURABLE_COMPRESSION_HEADER;
 pub(crate) use skein_storage::text::envelope::{
     encode_durable_text, read_durable_text_bytes, read_durable_text_bytes_with_limit,
 };
-pub(crate) use skein_storage::text::{
-    decode_bool, decode_index_kind, decode_nullable, decode_properties, decode_property_type,
-    decode_schema_object_state, decode_string, decode_string_vec, decode_table_kind,
-    decode_u64_vec, decode_value_vec, parse_u64,
-};
 use skein_storage::GraphIndexReadMetrics;
 #[cfg(test)]
 use skein_storage::COW_MAP_TARGET_SEGMENT_BYTES;
@@ -270,15 +265,12 @@ use wal_codec::{
     WalOpenOutcome, WalRecordCursor,
 };
 
-use skein_storage::durable_manifest::{
-    safe_reclaim_commit_epoch, validate_storage_version, STORAGE_VERSION,
-};
+use skein_storage::durable_manifest::{safe_reclaim_commit_epoch, STORAGE_VERSION};
 const MANIFEST_FILE: &str = "manifest.skein";
 const PROJECTED_GRAPHS_FILE: &str = "projected_graphs.skein";
 const STABLE_ID_MAPPING_FILE: &str = "stable_ids.skein";
 pub(crate) use skein_storage::checkpoint::{
-    decode_search_projection_relational_primary_key_changes, parse_label_set,
-    relational_checkpoint_metadata, split_checkpoint_checksum, CHECKPOINT_HEADER_V1,
+    relational_checkpoint_metadata, split_checkpoint_checksum,
 };
 const BACKUP_MANIFEST_FILE: &str = "backup.skein";
 const CANONICAL_MANIFEST_MAX_BYTES: u64 = 256 * 1024 * 1024;
