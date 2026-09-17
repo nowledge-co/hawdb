@@ -3816,45 +3816,6 @@ fn elapsed_micros(started: std::time::Instant) -> u64 {
     started.elapsed().as_micros().min(u64::MAX as u128) as u64
 }
 
-fn parse_u32(input: &str, name: &str) -> Result<u32> {
-    input
-        .parse()
-        .map_err(|_| SkeinError::Storage(format!("invalid {name}: {input}")))
-}
-
-fn parse_usize(input: &str, name: &str) -> Result<usize> {
-    input
-        .parse()
-        .map_err(|_| SkeinError::Storage(format!("invalid {name}: {input}")))
-}
-
-fn parse_statistics_path_key(
-    source: &str,
-    rel_type: &str,
-    target: &str,
-) -> Result<(LabelId, RelTypeId, LabelId)> {
-    Ok((
-        LabelId(parse_u32(source, "statistics source label id")?),
-        RelTypeId(parse_u32(rel_type, "statistics relationship type id")?),
-        LabelId(parse_u32(target, "statistics target label id")?),
-    ))
-}
-
-fn parse_statistics_bounded_path_key(
-    source: &str,
-    rel_type: &str,
-    target: &str,
-    hops: &str,
-) -> Result<(LabelId, RelTypeId, LabelId, usize)> {
-    let (source, rel_type, target) = parse_statistics_path_key(source, rel_type, target)?;
-    Ok((
-        source,
-        rel_type,
-        target,
-        parse_usize(hops, "statistics bounded path hop count")?,
-    ))
-}
-
 fn estimated_node_record_bytes(node: &NodeRecord) -> u64 {
     32u64
         .saturating_add((node.labels.len() as u64).saturating_mul(4))
@@ -3891,6 +3852,7 @@ fn estimated_value_bytes(value: &Value) -> u64 {
 
 #[cfg(test)]
 mod tests {
+    mod checkpoint_parse_order_tests;
     mod envelope_recovery_tests;
     mod hex_recovery_tests;
 

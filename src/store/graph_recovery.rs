@@ -331,6 +331,11 @@ impl GraphStore {
         for (name, definition) in decoded.projected_graphs {
             self.apply_project_graph_definition(name, definition);
         }
+        if !decoded.nodes.is_empty() || !decoded.relationships.is_empty() {
+            // Applying inline records rebuilds the basic counts. The decoded
+            // totals must not be counted again during that reconstruction.
+            self.basic_statistics = BasicGraphStatistics::default();
+        }
         for node in decoded.nodes {
             self.apply_create_node_with_labels(catalog, node.id, node.labels, node.properties);
         }
