@@ -137,7 +137,8 @@ pub use column_group::{
     },
     shadow::{
         ColumnarShadowCheckpointReport, ColumnarShadowCheckpointStatus,
-        ColumnarShadowRecoveryStatus, COLUMN_GROUP_SHADOW_DIR,
+        ColumnarShadowRecoveryStatus, ColumnarShadowState, COLUMN_GROUP_SHADOW_DIR,
+        DEFAULT_SHADOW_BUFFER_BUDGET_BYTES,
     },
     zone::{ChunkZoneMap, StringPrefixMinMax},
     ColumnGroupError, DeletionVectorBinding, COLUMN_GROUP_MAGIC, DELETION_VECTOR_MAGIC,
