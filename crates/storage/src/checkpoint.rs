@@ -1,17 +1,25 @@
 //! Graph checkpoint text encoding.
 
 use crate::text::{
-    encode_bool, encode_bytes, encode_index_kind, encode_nullable, encode_property_type,
-    encode_schema_object_state, encode_string, encode_string_vec, encode_table_kind,
-    encode_u64_vec, encode_value_vec,
+    decode_bool, decode_index_kind, decode_nullable, decode_properties, decode_property_type,
+    decode_schema_object_state, decode_string, decode_string_vec, decode_table_kind,
+    decode_u64_vec, decode_value_vec, encode_bool, encode_bytes, encode_index_kind,
+    encode_nullable, encode_property_type, encode_schema_object_state, encode_string,
+    encode_string_vec, encode_table_kind, encode_u64_vec, encode_value_vec, parse_u32, parse_u64,
+    parse_usize,
 };
 use crate::{
     artifact_binding::DurableArtifactMetadata, decode_relational_primary_key,
-    durable_manifest::STORAGE_VERSION, encode_relational_primary_key, ProjectedGraphDefinition,
+    durable_manifest::validate_storage_version, durable_manifest::STORAGE_VERSION,
+    encode_relational_primary_key, NodeId, NodeRecord, ProjectedGraphDefinition, RelId, RelRecord,
     RelationalPrimaryKeyChangeCapture, RelationalPrimaryKeyChangeRebuildReason,
     RelationalTablePrimaryKeyChanges, SearchProjectionGraphChange,
 };
-use skein_core::{Catalog, ConstraintSubject, GraphStatistics, LabelId, Result, SkeinError, Uuid};
+use skein_core::{
+    BasicGraphStatistics, Catalog, ConstraintId, ConstraintSubject, GraphStatistics, IndexId,
+    IndexStatisticsSample, LabelId, PropertyId, RelTypeId, Result, SkeinError, TableId, TableKind,
+    Uuid,
+};
 use std::collections::{BTreeMap, BTreeSet};
 
 pub const CHECKPOINT_HEADER_V1: &str = "SKEIN_CHECKPOINT_V1";
@@ -627,4 +635,534 @@ pub fn decode_search_projection_relational_primary_key_changes(
         tables,
         encoded_bytes,
     })
+}
+
+#[doc(hidden)]
+#[derive(Default)]
+pub struct DecodedCheckpoint {
+    pub generation: Option<u64>,
+    pub commit_epoch: Option<u64>,
+    pub next_node_id: u64,
+    pub next_rel_id: u64,
+    pub search_projection_change_log_start_epoch: Option<u64>,
+    pub search_projection_change_log_retained_bytes: usize,
+    pub search_projection_graph_changes: Vec<SearchProjectionGraphChange>,
+    pub search_projection_database_identity: Option<Uuid>,
+    pub initial_import_source_fingerprint: Option<String>,
+    pub basic_statistics: BasicGraphStatistics,
+    pub checkpoint_statistics: GraphStatistics,
+    pub projected_graphs: BTreeMap<String, ProjectedGraphDefinition>,
+    pub nodes: Vec<NodeRecord>,
+    pub relationships: Vec<RelRecord>,
+    pub canonical_records: bool,
+    pub saw_checkpoint_statistics: bool,
+    pub statistics_complete: Option<bool>,
+}
+
+#[doc(hidden)]
+pub fn parse_statistics_path_key(
+    source: &str,
+    rel_type: &str,
+    target: &str,
+) -> Result<(LabelId, RelTypeId, LabelId)> {
+    Ok((
+        LabelId(parse_u32(source, "statistics source label id")?),
+        RelTypeId(parse_u32(rel_type, "statistics relationship type id")?),
+        LabelId(parse_u32(target, "statistics target label id")?),
+    ))
+}
+
+#[doc(hidden)]
+pub fn parse_statistics_bounded_path_key(
+    source: &str,
+    rel_type: &str,
+    target: &str,
+    hops: &str,
+) -> Result<(LabelId, RelTypeId, LabelId, usize)> {
+    let (source, rel_type, target) = parse_statistics_path_key(source, rel_type, target)?;
+    Ok((
+        source,
+        rel_type,
+        target,
+        parse_usize(hops, "statistics bounded path hop count")?,
+    ))
+}
+
+#[doc(hidden)]
+pub fn parse_checkpoint(
+    body: &str,
+    catalog: &mut Catalog,
+    state: &mut DecodedCheckpoint,
+) -> Result<()> {
+    let mut saw_storage_version = false;
+    let mut lines = body.lines();
+    if lines.next() != Some(CHECKPOINT_HEADER_V1) {
+        return Err(SkeinError::Storage(
+            "checkpoint is missing the V1 format header".to_string(),
+        ));
+    }
+    for line in lines {
+        let fields = line.split('\t').collect::<Vec<_>>();
+        match fields.as_slice() {
+            ["version", version] => {
+                if saw_storage_version {
+                    return Err(SkeinError::Storage(
+                        "checkpoint has duplicate storage version".to_string(),
+                    ));
+                }
+                validate_storage_version(version)?;
+                saw_storage_version = true;
+            }
+            ["generation", raw] => {
+                state.generation = Some(parse_u64(raw, "checkpoint generation")?);
+            }
+            ["next_node_id", raw] => {
+                state.next_node_id = parse_u64(raw, "next_node_id")?;
+            }
+            ["next_rel_id", raw] => {
+                state.next_rel_id = parse_u64(raw, "next_rel_id")?;
+            }
+            ["canonical_records", "true"] => {
+                state.canonical_records = true;
+            }
+            ["commit_epoch", raw] => {
+                state.commit_epoch = Some(parse_u64(raw, "commit_epoch")?);
+            }
+            ["relational_checkpoint_encoded_len", _]
+            | ["relational_checkpoint_encoded_checksum", _]
+            | ["relational_checkpoint_encoded_sha256", _] => {}
+            ["search_projection_change_log_start_epoch", raw] => {
+                if state.search_projection_change_log_start_epoch.is_some() {
+                    return Err(SkeinError::Storage(
+                        "checkpoint contains duplicate search projection change log start epoch"
+                            .to_string(),
+                    ));
+                }
+                state.search_projection_change_log_start_epoch =
+                    Some(parse_u64(raw, "search projection change log start epoch")?);
+            }
+            ["search_projection_database_identity", raw] => {
+                if state.search_projection_database_identity.is_some() {
+                    return Err(SkeinError::Storage(
+                        "checkpoint contains duplicate search projection database identity".into(),
+                    ));
+                }
+                let identity = raw.parse::<Uuid>().map_err(|_| {
+                    SkeinError::Storage("invalid search projection database identity".into())
+                })?;
+                if identity.is_nil() || identity.to_string() != *raw {
+                    return Err(SkeinError::Storage(
+                        "noncanonical search projection database identity".into(),
+                    ));
+                }
+                state.search_projection_database_identity = Some(identity);
+            }
+            ["initial_import_source_fingerprint", raw] => {
+                if state.initial_import_source_fingerprint.is_some() {
+                    return Err(SkeinError::Storage(
+                        "checkpoint contains duplicate initial import source fingerprint"
+                            .to_string(),
+                    ));
+                }
+                state.initial_import_source_fingerprint = Some(decode_string(raw)?);
+            }
+            ["search_projection_change", raw_commit_epoch, raw_upsert_node_ids, raw_delete_document_ids, raw_relational_kind, raw_relational_changes] =>
+            {
+                let change = SearchProjectionGraphChange {
+                    commit_epoch: parse_u64(
+                        raw_commit_epoch,
+                        "search projection change commit epoch",
+                    )?,
+                    upsert_node_ids: decode_u64_vec(
+                        raw_upsert_node_ids,
+                        "search projection change upsert node id",
+                    )?,
+                    delete_document_ids: decode_string_vec(raw_delete_document_ids)?,
+                    relational_primary_key_changes:
+                        decode_search_projection_relational_primary_key_changes(
+                            raw_relational_kind,
+                            raw_relational_changes,
+                        )?,
+                };
+                state.search_projection_change_log_retained_bytes = state
+                    .search_projection_change_log_retained_bytes
+                    .checked_add(change.estimated_retained_bytes())
+                    .ok_or_else(|| {
+                        SkeinError::Storage(
+                            "search projection change log retained byte count overflow".to_string(),
+                        )
+                    })?;
+                state.search_projection_graph_changes.push(change);
+            }
+            ["label", raw_id, raw_name] => {
+                catalog.import_label(
+                    LabelId(parse_u32(raw_id, "label id")?),
+                    decode_string(raw_name)?,
+                );
+            }
+            ["rel_type", raw_id, raw_name] => {
+                catalog.import_rel_type(
+                    RelTypeId(parse_u32(raw_id, "rel type id")?),
+                    decode_string(raw_name)?,
+                );
+            }
+            ["property_index", raw_id, raw_label_id, raw_property] => {
+                catalog.import_property_index(
+                    IndexId(parse_u32(raw_id, "property index id")?),
+                    LabelId(parse_u32(raw_label_id, "property index label id")?),
+                    decode_string(raw_property)?,
+                );
+            }
+            ["property_index", raw_id, raw_label_id, raw_property, raw_kind] => {
+                catalog.import_property_index_with_kind(
+                    IndexId(parse_u32(raw_id, "property index id")?),
+                    LabelId(parse_u32(raw_label_id, "property index label id")?),
+                    decode_string(raw_property)?,
+                    decode_index_kind(raw_kind)?,
+                );
+            }
+            ["composite_property_index", raw_id, raw_label_id, raw_properties] => {
+                catalog.import_composite_property_index(
+                    IndexId(parse_u32(raw_id, "composite property index id")?),
+                    LabelId(parse_u32(
+                        raw_label_id,
+                        "composite property index label id",
+                    )?),
+                    decode_string_vec(raw_properties)?,
+                );
+            }
+            ["table", raw_id, raw_kind, raw_name, raw_state] => {
+                let kind = decode_table_kind(raw_kind)?;
+                let name = decode_string(raw_name)?;
+                match kind {
+                    TableKind::Node => {
+                        catalog.get_or_create_label(&name);
+                    }
+                    TableKind::Relationship => {
+                        catalog.get_or_create_rel_type(&name);
+                    }
+                }
+                catalog.import_table(
+                    TableId(parse_u32(raw_id, "table id")?),
+                    kind,
+                    name,
+                    decode_schema_object_state(raw_state)?,
+                );
+            }
+            ["property", raw_id, raw_table_id, raw_name, raw_type, raw_nullable, raw_state] => {
+                catalog.import_property_descriptor(
+                    PropertyId(parse_u32(raw_id, "property id")?),
+                    TableId(parse_u32(raw_table_id, "property table id")?),
+                    decode_string(raw_name)?,
+                    decode_property_type(raw_type)?,
+                    decode_nullable(raw_nullable)?,
+                    decode_schema_object_state(raw_state)?,
+                );
+            }
+            ["unique_constraint", raw_id, raw_label_id, raw_property] => {
+                catalog.import_unique_constraint(
+                    ConstraintId(parse_u32(raw_id, "unique constraint id")?),
+                    LabelId(parse_u32(raw_label_id, "unique constraint label id")?),
+                    decode_string(raw_property)?,
+                );
+            }
+            ["node_property_exists_constraint", raw_id, raw_label_id, raw_property] => {
+                catalog.import_node_property_exists_constraint(
+                    ConstraintId(parse_u32(raw_id, "node property exists constraint id")?),
+                    LabelId(parse_u32(
+                        raw_label_id,
+                        "node property exists constraint label id",
+                    )?),
+                    decode_string(raw_property)?,
+                );
+            }
+            ["relationship_property_exists_constraint", raw_id, raw_rel_type_id, raw_property] => {
+                catalog.import_relationship_property_exists_constraint(
+                    ConstraintId(parse_u32(
+                        raw_id,
+                        "relationship property exists constraint id",
+                    )?),
+                    RelTypeId(parse_u32(
+                        raw_rel_type_id,
+                        "relationship property exists constraint rel type id",
+                    )?),
+                    decode_string(raw_property)?,
+                );
+            }
+            ["relationship_unique_constraint", raw_id, raw_rel_type_id, raw_property] => {
+                catalog.import_relationship_unique_constraint(
+                    ConstraintId(parse_u32(raw_id, "relationship unique constraint id")?),
+                    RelTypeId(parse_u32(
+                        raw_rel_type_id,
+                        "relationship unique constraint rel type id",
+                    )?),
+                    decode_string(raw_property)?,
+                );
+            }
+            ["stat_commit_epoch", raw] => {
+                state.saw_checkpoint_statistics = true;
+                let epoch = parse_u64(raw, "statistics commit epoch")?;
+                state.basic_statistics.computed_at_commit_epoch = epoch;
+                state.checkpoint_statistics.computed_at_commit_epoch = epoch;
+            }
+            ["stat_advanced_complete", raw] => {
+                if state.statistics_complete.is_some() {
+                    return Err(SkeinError::Storage(
+                        "checkpoint contains duplicate statistics completeness flag".to_string(),
+                    ));
+                }
+                state.statistics_complete =
+                    Some(decode_bool(raw, "statistics advanced completeness flag")?);
+            }
+            ["stat_histogram_sample_limit", raw] => {
+                state.checkpoint_statistics.histogram_sample_limit =
+                    parse_usize(raw, "statistics histogram sample limit")?;
+            }
+            ["stat_node_count", raw] => {
+                let count = parse_u64(raw, "statistics node count")?;
+                state.basic_statistics.node_count = count;
+                state.checkpoint_statistics.node_count = count;
+            }
+            ["stat_relationship_count", raw] => {
+                let count = parse_u64(raw, "statistics relationship count")?;
+                state.basic_statistics.relationship_count = count;
+                state.checkpoint_statistics.relationship_count = count;
+            }
+            ["stat_label_count", raw_label_id, raw_count] => {
+                let label_id = LabelId(parse_u32(raw_label_id, "statistics label id")?);
+                let count = parse_u64(raw_count, "statistics label count")?;
+                state.basic_statistics.label_counts.insert(label_id, count);
+                state
+                    .checkpoint_statistics
+                    .label_counts
+                    .insert(label_id, count);
+            }
+            ["stat_rel_type_count", raw_rel_type_id, raw_count] => {
+                let rel_type_id = RelTypeId(parse_u32(
+                    raw_rel_type_id,
+                    "statistics relationship type id",
+                )?);
+                let count = parse_u64(raw_count, "statistics relationship type count")?;
+                state
+                    .basic_statistics
+                    .rel_type_counts
+                    .insert(rel_type_id, count);
+                state
+                    .checkpoint_statistics
+                    .rel_type_counts
+                    .insert(rel_type_id, count);
+            }
+            ["stat_rel_type_source_count", raw_rel_type_id, raw_count] => {
+                state.checkpoint_statistics.rel_type_source_counts.insert(
+                    RelTypeId(parse_u32(
+                        raw_rel_type_id,
+                        "statistics relationship type id",
+                    )?),
+                    parse_u64(raw_count, "statistics relationship source count")?,
+                );
+            }
+            ["stat_rel_type_target_count", raw_rel_type_id, raw_count] => {
+                state.checkpoint_statistics.rel_type_target_counts.insert(
+                    RelTypeId(parse_u32(
+                        raw_rel_type_id,
+                        "statistics relationship type id",
+                    )?),
+                    parse_u64(raw_count, "statistics relationship target count")?,
+                );
+            }
+            ["stat_path_count", raw_source, raw_rel_type, raw_target, raw_count] => {
+                state.checkpoint_statistics.path_counts.insert(
+                    parse_statistics_path_key(raw_source, raw_rel_type, raw_target)?,
+                    parse_u64(raw_count, "statistics path count")?,
+                );
+            }
+            ["stat_path_source_distinct_count", raw_source, raw_rel_type, raw_target, raw_count] => {
+                state
+                    .checkpoint_statistics
+                    .path_source_distinct_counts
+                    .insert(
+                        parse_statistics_path_key(raw_source, raw_rel_type, raw_target)?,
+                        parse_u64(raw_count, "statistics path source distinct count")?,
+                    );
+            }
+            ["stat_path_target_distinct_count", raw_source, raw_rel_type, raw_target, raw_count] => {
+                state
+                    .checkpoint_statistics
+                    .path_target_distinct_counts
+                    .insert(
+                        parse_statistics_path_key(raw_source, raw_rel_type, raw_target)?,
+                        parse_u64(raw_count, "statistics path target distinct count")?,
+                    );
+            }
+            ["stat_bounded_path_count", raw_source, raw_rel_type, raw_target, raw_hops, raw_count] =>
+            {
+                state.checkpoint_statistics.bounded_path_counts.insert(
+                    parse_statistics_bounded_path_key(
+                        raw_source,
+                        raw_rel_type,
+                        raw_target,
+                        raw_hops,
+                    )?,
+                    parse_u64(raw_count, "statistics bounded path count")?,
+                );
+            }
+            ["stat_bounded_path_source_distinct_count", raw_source, raw_rel_type, raw_target, raw_hops, raw_count] =>
+            {
+                state
+                    .checkpoint_statistics
+                    .bounded_path_source_distinct_counts
+                    .insert(
+                        parse_statistics_bounded_path_key(
+                            raw_source,
+                            raw_rel_type,
+                            raw_target,
+                            raw_hops,
+                        )?,
+                        parse_u64(raw_count, "statistics bounded path source distinct count")?,
+                    );
+            }
+            ["stat_bounded_path_target_distinct_count", raw_source, raw_rel_type, raw_target, raw_hops, raw_count] =>
+            {
+                state
+                    .checkpoint_statistics
+                    .bounded_path_target_distinct_counts
+                    .insert(
+                        parse_statistics_bounded_path_key(
+                            raw_source,
+                            raw_rel_type,
+                            raw_target,
+                            raw_hops,
+                        )?,
+                        parse_u64(raw_count, "statistics bounded path target distinct count")?,
+                    );
+            }
+            ["stat_index_sample", raw_index_id, raw_index_size, raw_unique_values, raw_sample_size, raw_updates] =>
+            {
+                state.checkpoint_statistics.index_samples.insert(
+                    IndexId(parse_u32(raw_index_id, "statistics index id")?),
+                    IndexStatisticsSample {
+                        index_size: parse_u64(raw_index_size, "statistics index size")?,
+                        unique_values: parse_u64(
+                            raw_unique_values,
+                            "statistics index unique values",
+                        )?,
+                        sample_size: parse_u64(raw_sample_size, "statistics index sample size")?,
+                        updates_since_sample: parse_u64(raw_updates, "statistics index updates")?,
+                    },
+                );
+            }
+            ["stat_property_distinct_count", raw_label_id, raw_property, raw_count] => {
+                state.checkpoint_statistics.property_distinct_counts.insert(
+                    (
+                        LabelId(parse_u32(raw_label_id, "statistics label id")?),
+                        decode_string(raw_property)?,
+                    ),
+                    parse_u64(raw_count, "statistics property distinct count")?,
+                );
+            }
+            ["stat_rel_property_distinct_count", raw_rel_type_id, raw_property, raw_count] => {
+                state
+                    .checkpoint_statistics
+                    .rel_property_distinct_counts
+                    .insert(
+                        (
+                            RelTypeId(parse_u32(
+                                raw_rel_type_id,
+                                "statistics relationship type id",
+                            )?),
+                            decode_string(raw_property)?,
+                        ),
+                        parse_u64(raw_count, "statistics relationship property distinct count")?,
+                    );
+            }
+            ["stat_rel_property_histogram", raw_rel_type_id, raw_property, raw_values] => {
+                state.checkpoint_statistics.rel_property_histograms.insert(
+                    (
+                        RelTypeId(parse_u32(
+                            raw_rel_type_id,
+                            "statistics relationship type id",
+                        )?),
+                        decode_string(raw_property)?,
+                    ),
+                    decode_value_vec(raw_values)?,
+                );
+            }
+            ["stat_rel_property_histogram_sampled", raw_rel_type_id, raw_property, raw_sampled] => {
+                state
+                    .checkpoint_statistics
+                    .sampled_rel_property_histograms
+                    .insert(
+                        (
+                            RelTypeId(parse_u32(
+                                raw_rel_type_id,
+                                "statistics relationship type id",
+                            )?),
+                            decode_string(raw_property)?,
+                        ),
+                        decode_bool(raw_sampled, "statistics sampled flag")?,
+                    );
+            }
+            ["stat_property_histogram", raw_label_id, raw_property, raw_values] => {
+                state.checkpoint_statistics.property_histograms.insert(
+                    (
+                        LabelId(parse_u32(raw_label_id, "statistics label id")?),
+                        decode_string(raw_property)?,
+                    ),
+                    decode_value_vec(raw_values)?,
+                );
+            }
+            ["stat_property_histogram_sampled", raw_label_id, raw_property, raw_sampled] => {
+                state
+                    .checkpoint_statistics
+                    .sampled_property_histograms
+                    .insert(
+                        (
+                            LabelId(parse_u32(raw_label_id, "statistics label id")?),
+                            decode_string(raw_property)?,
+                        ),
+                        decode_bool(raw_sampled, "statistics sampled flag")?,
+                    );
+            }
+            ["project_graph", raw_name, raw_node_labels, raw_rel_types] => {
+                state.projected_graphs.insert(
+                    decode_string(raw_name)?,
+                    ProjectedGraphDefinition {
+                        node_labels: decode_string_vec(raw_node_labels)?,
+                        rel_types: decode_string_vec(raw_rel_types)?,
+                    },
+                );
+            }
+            ["node", raw_id, raw_labels, raw_properties] => {
+                let id = NodeId(parse_u64(raw_id, "node id")?);
+                let labels = parse_label_set(raw_labels)?;
+                let properties = decode_properties(raw_properties)?;
+                state.nodes.push(NodeRecord {
+                    id,
+                    labels,
+                    properties,
+                });
+            }
+            ["rel", raw_id, raw_source, raw_target, raw_type, raw_properties] => {
+                state.relationships.push(RelRecord {
+                    id: RelId(parse_u64(raw_id, "rel id")?),
+                    source: NodeId(parse_u64(raw_source, "rel source")?),
+                    target: NodeId(parse_u64(raw_target, "rel target")?),
+                    rel_type: RelTypeId(parse_u32(raw_type, "rel type")?),
+                    properties: decode_properties(raw_properties)?,
+                });
+            }
+            [""] => {}
+            _ => {
+                return Err(SkeinError::Storage(format!(
+                    "invalid checkpoint line: {line}"
+                )));
+            }
+        }
+    }
+    if !saw_storage_version {
+        return Err(SkeinError::Storage(
+            "checkpoint is missing its storage version".to_string(),
+        ));
+    }
+    Ok(())
 }
