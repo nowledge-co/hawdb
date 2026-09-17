@@ -172,7 +172,9 @@ pub(super) fn validate_collect_with_match_return(
         ));
     }
     let group_item = &query.returns[0];
-    let ReturnExpression::Property { variable, .. } = &group_item.expression else {
+    let ReturnExpression::Value(ScalarExpression::Property { variable, .. }) =
+        &group_item.expression
+    else {
         return Err(SkeinError::Semantic(
             "WITH COLLECT RETURN must start with the grouped variable property".to_string(),
         ));
@@ -184,7 +186,11 @@ pub(super) fn validate_collect_with_match_return(
     }
     let alias_item = &query.returns[1];
     match &alias_item.expression {
-        ReturnExpression::Variable(variable) if variable == &collect_with.alias => Ok(()),
+        ReturnExpression::Value(ScalarExpression::Variable(variable))
+            if variable == &collect_with.alias =>
+        {
+            Ok(())
+        }
         _ => Err(SkeinError::Semantic(
             "WITH COLLECT RETURN must include the collected alias".to_string(),
         )),
@@ -197,7 +203,9 @@ pub(super) fn plan_collect_with_match_return(
     collect_with: &WithCollect,
 ) -> Result<LogicalPlan> {
     let group_item = &query.returns[0];
-    let ReturnExpression::Property { variable, property } = &group_item.expression else {
+    let ReturnExpression::Value(ScalarExpression::Property { variable, property }) =
+        &group_item.expression
+    else {
         return Err(SkeinError::Semantic(
             "WITH COLLECT RETURN must start with the grouped variable property".to_string(),
         ));
@@ -247,7 +255,9 @@ pub(super) fn validate_with_projection_match_return(
             "WITH projection requires the source variable and at least one alias".to_string(),
         ));
     }
-    let ReturnExpression::Variable(variable) = &with_projection.items[0].expression else {
+    let ReturnExpression::Value(ScalarExpression::Variable(variable)) =
+        &with_projection.items[0].expression
+    else {
         return Err(SkeinError::Semantic(
             "WITH projection must start with the source variable".to_string(),
         ));
@@ -300,8 +310,8 @@ pub(super) fn with_projection_column_names(with_projection: &WithProjection) -> 
         .map(|item| match &item.alias {
             Some(alias) => alias.clone(),
             None => match &item.expression {
-                ReturnExpression::Variable(variable) => variable.clone(),
-                ReturnExpression::Property { variable, property } => {
+                ReturnExpression::Value(ScalarExpression::Variable(variable)) => variable.clone(),
+                ReturnExpression::Value(ScalarExpression::Property { variable, property }) => {
                     format!("{variable}.{property}")
                 }
                 _ => "expression".to_string(),
@@ -347,14 +357,20 @@ pub(super) fn validate_distinct_with_match_return(
                 "WITH DISTINCT projection items require aliases".to_string(),
             ));
         }
-        if !matches!(item.expression, ReturnExpression::Property { .. }) {
+        if !matches!(
+            item.expression,
+            ReturnExpression::Value(ScalarExpression::Property { .. })
+        ) {
             return Err(SkeinError::Semantic(
                 "WITH DISTINCT currently supports only property projections".to_string(),
             ));
         }
     }
     if query.returns.len() != 1
-        || !matches!(query.returns[0].expression, ReturnExpression::CountAll)
+        || !matches!(
+            query.returns[0].expression,
+            ReturnExpression::Aggregate(AggregateExpression::CountAll)
+        )
     {
         return Err(SkeinError::Semantic(
             "WITH DISTINCT currently supports only RETURN count(*)".to_string(),
@@ -433,7 +449,10 @@ pub(super) fn validate_aggregate_with_match_return(
         && (query.post_with_match.is_some()
             || !query.order_by.is_empty()
             || query.returns.len() != 1
-            || !matches!(query.returns[0].expression, ReturnExpression::CountAll))
+            || !matches!(
+                query.returns[0].expression,
+                ReturnExpression::Aggregate(AggregateExpression::CountAll)
+            ))
     {
         return Err(SkeinError::Semantic(
             "WITH aggregate post-aggregation supports only one COUNT(*) projection without MATCH or ORDER BY"
@@ -445,7 +464,7 @@ pub(super) fn validate_aggregate_with_match_return(
             continue;
         }
         if let Some(lookup) = &query.post_with_match
-            && matches!(&item.expression, ReturnExpression::Variable(variable) if variable == &lookup.variable)
+            && matches!(&item.expression, ReturnExpression::Value(ScalarExpression::Variable(variable)) if variable == &lookup.variable)
         {
             return Err(SkeinError::Semantic(
                 "post-WITH MATCH RETURN does not support whole lookup node projection".to_string(),
@@ -480,14 +499,16 @@ pub(super) fn optional_with_as_aggregate(
     WithAggregateProjection {
         items: vec![
             ReturnItem {
-                expression: ReturnExpression::Variable(optional_with.group_variable.clone()),
+                expression: ReturnExpression::Value(ScalarExpression::Variable(
+                    optional_with.group_variable.clone(),
+                )),
                 alias: None,
             },
             ReturnItem {
-                expression: ReturnExpression::CountVariable {
+                expression: ReturnExpression::Aggregate(AggregateExpression::CountVariable {
                     variable: optional_with.count_variable.clone(),
                     distinct: optional_with.distinct,
-                },
+                }),
                 alias: Some(optional_with.alias.clone()),
             },
         ],
@@ -558,80 +579,45 @@ pub(super) fn return_expression_is_scoped(
     column_names: &BTreeSet<String>,
 ) -> bool {
     match expression {
-        ReturnExpression::Variable(variable) => {
-            column_names.contains(variable) || scope.contains(variable)
+        ReturnExpression::Value(expression) => {
+            scalar_expression_is_scoped(expression, scope, column_names)
         }
-        ReturnExpression::Property { variable, .. } => {
-            column_names.contains(variable) || scope.contains(variable)
-        }
-        ReturnExpression::Value(_) => true,
-        ReturnExpression::Coalesce(expressions) => expressions
-            .iter()
-            .all(|expression| return_value_expression_is_scoped(expression, scope, column_names)),
-        ReturnExpression::Left { expression, .. } | ReturnExpression::Lower(expression) => {
-            return_value_expression_is_scoped(expression, scope, column_names)
-        }
-        ReturnExpression::DefaultIfNullOrEq { variable, .. }
-        | ReturnExpression::DefaultIfNull { variable, .. }
-        | ReturnExpression::CasePropertyNotNullOrEq { variable, .. }
-        | ReturnExpression::CasePropertyEqualsRank { variable, .. }
-        | ReturnExpression::CaseLowerPropertyDefault { variable, .. }
-        | ReturnExpression::CaseCoalesceDifferenceFloorZero { variable, .. } => {
-            column_names.contains(variable) || scope.contains(variable)
-        }
-        ReturnExpression::CaseEntitySearchRank(expression) => {
-            column_names.contains(&expression.variable) || scope.contains(&expression.variable)
-        }
-        ReturnExpression::CaseColumnSearchRank(expression) => {
-            column_names.contains(&expression.column)
-        }
-        ReturnExpression::Id(_)
-        | ReturnExpression::RelationshipType(_)
-        | ReturnExpression::DatePart { .. }
-        | ReturnExpression::CountAll
-        | ReturnExpression::CountVariable { .. }
-        | ReturnExpression::CountProperty { .. }
-        | ReturnExpression::CollectVariable { .. }
-        | ReturnExpression::CollectProperty { .. }
-        | ReturnExpression::MinProperty { .. }
-        | ReturnExpression::MaxProperty { .. }
-        | ReturnExpression::AvgProperty { .. } => false,
+        ReturnExpression::Aggregate(_) => false,
     }
 }
 
-pub(super) fn return_value_expression_is_scoped(
-    expression: &ReturnValueExpression,
+pub(super) fn scalar_expression_is_scoped(
+    expression: &ScalarExpression,
     scope: &BTreeSet<String>,
     column_names: &BTreeSet<String>,
 ) -> bool {
     match expression {
-        ReturnValueExpression::Variable(variable)
-        | ReturnValueExpression::Property { variable, .. }
-        | ReturnValueExpression::DefaultIfNullOrEq { variable, .. }
-        | ReturnValueExpression::DefaultIfNull { variable, .. }
-        | ReturnValueExpression::CasePropertyNotNullOrEq { variable, .. }
-        | ReturnValueExpression::CasePropertyEqualsRank { variable, .. }
-        | ReturnValueExpression::CaseLowerPropertyDefault { variable, .. }
-        | ReturnValueExpression::CaseCoalesceDifferenceFloorZero { variable, .. } => {
+        ScalarExpression::Variable(variable)
+        | ScalarExpression::Property { variable, .. }
+        | ScalarExpression::DefaultIfNullOrEq { variable, .. }
+        | ScalarExpression::DefaultIfNull { variable, .. }
+        | ScalarExpression::CasePropertyNotNullOrEq { variable, .. }
+        | ScalarExpression::CasePropertyEqualsRank { variable, .. }
+        | ScalarExpression::CaseLowerPropertyDefault { variable, .. }
+        | ScalarExpression::CaseCoalesceDifferenceFloorZero { variable, .. } => {
             column_names.contains(variable) || scope.contains(variable)
         }
-        ReturnValueExpression::CaseEntitySearchRank(expression) => {
+        ScalarExpression::CaseEntitySearchRank(expression) => {
             column_names.contains(&expression.variable) || scope.contains(&expression.variable)
         }
-        ReturnValueExpression::CaseColumnSearchRank(expression) => {
+        ScalarExpression::CaseColumnSearchRank(expression) => {
             column_names.contains(&expression.column)
         }
-        ReturnValueExpression::Value(_) => true,
-        ReturnValueExpression::Coalesce(expressions) => expressions
+        ScalarExpression::Value(_) => true,
+        ScalarExpression::Coalesce(expressions) => expressions
             .iter()
-            .all(|expression| return_value_expression_is_scoped(expression, scope, column_names)),
-        ReturnValueExpression::Left { expression, .. }
-        | ReturnValueExpression::Lower(expression) => {
-            return_value_expression_is_scoped(expression, scope, column_names)
+            .all(|expression| scalar_expression_is_scoped(expression, scope, column_names)),
+        ScalarExpression::Left { expression, .. } | ScalarExpression::Lower(expression) => {
+            scalar_expression_is_scoped(expression, scope, column_names)
         }
-        ReturnValueExpression::Id(_)
-        | ReturnValueExpression::RelationshipType(_)
-        | ReturnValueExpression::DatePart { .. } => false,
+        ScalarExpression::Id(_)
+        | ScalarExpression::RelationshipType(_)
+        | ScalarExpression::DatePart { .. } => false,
     }
 }
 
@@ -765,7 +751,10 @@ pub(super) fn optional_direct_count_alias(
     let mut has_projection = false;
     for item in &query.returns {
         match &item.expression {
-            ReturnExpression::CountVariable { variable, distinct } => {
+            ReturnExpression::Aggregate(AggregateExpression::CountVariable {
+                variable,
+                distinct,
+            }) => {
                 if *distinct || count_alias.is_some() {
                     return Ok(None);
                 }
@@ -781,72 +770,13 @@ pub(super) fn optional_direct_count_alias(
                         .unwrap_or_else(|| format!("count({variable})")),
                 );
             }
-            ReturnExpression::Variable(variable) => {
-                if variable != &optional.source_variable {
+            ReturnExpression::Value(expression) => {
+                if !scalar_expression_is_source_only(expression, &optional.source_variable) {
                     return Ok(None);
                 }
                 has_projection = true;
             }
-            ReturnExpression::Property { variable, .. }
-            | ReturnExpression::Id(variable)
-            | ReturnExpression::RelationshipType(variable) => {
-                if variable != &optional.source_variable {
-                    return Ok(None);
-                }
-                has_projection = true;
-            }
-            ReturnExpression::Value(_) => {
-                has_projection = true;
-            }
-            ReturnExpression::Coalesce(expressions) => {
-                if !return_value_expressions_are_source_only(expressions, &optional.source_variable)
-                {
-                    return Ok(None);
-                }
-                has_projection = true;
-            }
-            ReturnExpression::Left { expression, .. } | ReturnExpression::Lower(expression) => {
-                if !return_value_expression_is_source_only(expression, &optional.source_variable) {
-                    return Ok(None);
-                }
-                has_projection = true;
-            }
-            ReturnExpression::DatePart { variable, .. } => {
-                if variable != &optional.source_variable {
-                    return Ok(None);
-                }
-                has_projection = true;
-            }
-            ReturnExpression::DefaultIfNullOrEq { variable, .. }
-            | ReturnExpression::DefaultIfNull { variable, .. } => {
-                if variable != &optional.source_variable {
-                    return Ok(None);
-                }
-                has_projection = true;
-            }
-            ReturnExpression::CasePropertyNotNullOrEq { variable, .. }
-            | ReturnExpression::CasePropertyEqualsRank { variable, .. }
-            | ReturnExpression::CaseLowerPropertyDefault { variable, .. }
-            | ReturnExpression::CaseCoalesceDifferenceFloorZero { variable, .. } => {
-                if variable != &optional.source_variable {
-                    return Ok(None);
-                }
-                has_projection = true;
-            }
-            ReturnExpression::CaseEntitySearchRank(expression) => {
-                if expression.variable != optional.source_variable {
-                    return Ok(None);
-                }
-                has_projection = true;
-            }
-            ReturnExpression::CaseColumnSearchRank(_) => return Ok(None),
-            ReturnExpression::CountAll
-            | ReturnExpression::CountProperty { .. }
-            | ReturnExpression::CollectVariable { .. }
-            | ReturnExpression::CollectProperty { .. }
-            | ReturnExpression::MinProperty { .. }
-            | ReturnExpression::MaxProperty { .. }
-            | ReturnExpression::AvgProperty { .. } => return Ok(None),
+            ReturnExpression::Aggregate(_) => return Ok(None),
         }
     }
     Ok(if has_projection { count_alias } else { None })
@@ -860,11 +790,11 @@ pub(super) fn optional_direct_collect_alias(
     let mut has_projection = false;
     for item in &query.returns {
         match &item.expression {
-            ReturnExpression::CollectProperty {
+            ReturnExpression::Aggregate(AggregateExpression::CollectProperty {
                 variable,
                 property,
                 distinct,
-            } => {
+            }) => {
                 if collect_alias.is_some() || variable != &optional.expand.target_variable {
                     return Ok(None);
                 }
@@ -876,72 +806,13 @@ pub(super) fn optional_direct_collect_alias(
                     }
                 }));
             }
-            ReturnExpression::Variable(variable) => {
-                if variable != &optional.source_variable {
+            ReturnExpression::Value(expression) => {
+                if !scalar_expression_is_source_only(expression, &optional.source_variable) {
                     return Ok(None);
                 }
                 has_projection = true;
             }
-            ReturnExpression::Property { variable, .. }
-            | ReturnExpression::Id(variable)
-            | ReturnExpression::RelationshipType(variable) => {
-                if variable != &optional.source_variable {
-                    return Ok(None);
-                }
-                has_projection = true;
-            }
-            ReturnExpression::Value(_) => {
-                has_projection = true;
-            }
-            ReturnExpression::Coalesce(expressions) => {
-                if !return_value_expressions_are_source_only(expressions, &optional.source_variable)
-                {
-                    return Ok(None);
-                }
-                has_projection = true;
-            }
-            ReturnExpression::Left { expression, .. } | ReturnExpression::Lower(expression) => {
-                if !return_value_expression_is_source_only(expression, &optional.source_variable) {
-                    return Ok(None);
-                }
-                has_projection = true;
-            }
-            ReturnExpression::DatePart { variable, .. } => {
-                if variable != &optional.source_variable {
-                    return Ok(None);
-                }
-                has_projection = true;
-            }
-            ReturnExpression::DefaultIfNullOrEq { variable, .. }
-            | ReturnExpression::DefaultIfNull { variable, .. } => {
-                if variable != &optional.source_variable {
-                    return Ok(None);
-                }
-                has_projection = true;
-            }
-            ReturnExpression::CasePropertyNotNullOrEq { variable, .. }
-            | ReturnExpression::CasePropertyEqualsRank { variable, .. }
-            | ReturnExpression::CaseLowerPropertyDefault { variable, .. }
-            | ReturnExpression::CaseCoalesceDifferenceFloorZero { variable, .. } => {
-                if variable != &optional.source_variable {
-                    return Ok(None);
-                }
-                has_projection = true;
-            }
-            ReturnExpression::CaseEntitySearchRank(expression) => {
-                if expression.variable != optional.source_variable {
-                    return Ok(None);
-                }
-                has_projection = true;
-            }
-            ReturnExpression::CaseColumnSearchRank(_) => return Ok(None),
-            ReturnExpression::CountAll
-            | ReturnExpression::CountVariable { .. }
-            | ReturnExpression::CountProperty { .. }
-            | ReturnExpression::CollectVariable { .. }
-            | ReturnExpression::MinProperty { .. }
-            | ReturnExpression::MaxProperty { .. }
-            | ReturnExpression::AvgProperty { .. } => return Ok(None),
+            ReturnExpression::Aggregate(_) => return Ok(None),
         }
     }
     Ok(if has_projection { collect_alias } else { None })
@@ -968,79 +839,34 @@ pub(super) fn optional_direct_row_projection_expression(
     rel_variable: Option<&str>,
 ) -> bool {
     match expression {
-        ReturnExpression::Variable(variable)
-        | ReturnExpression::Property { variable, .. }
-        | ReturnExpression::Id(variable)
-        | ReturnExpression::RelationshipType(variable)
-        | ReturnExpression::DatePart { variable, .. }
-        | ReturnExpression::DefaultIfNullOrEq { variable, .. }
-        | ReturnExpression::DefaultIfNull { variable, .. }
-        | ReturnExpression::CasePropertyNotNullOrEq { variable, .. }
-        | ReturnExpression::CasePropertyEqualsRank { variable, .. }
-        | ReturnExpression::CaseLowerPropertyDefault { variable, .. }
-        | ReturnExpression::CaseCoalesceDifferenceFloorZero { variable, .. } => {
-            optional_direct_row_projection_variable(
-                variable,
-                source_variable,
-                target_variable,
-                rel_variable,
-            )
-        }
-        ReturnExpression::CaseEntitySearchRank(expression) => {
-            optional_direct_row_projection_variable(
-                &expression.variable,
-                source_variable,
-                target_variable,
-                rel_variable,
-            )
-        }
-        ReturnExpression::CaseColumnSearchRank(_) => false,
-        ReturnExpression::Value(_) => true,
-        ReturnExpression::Coalesce(expressions) => expressions.iter().all(|expression| {
-            optional_direct_row_projection_value_expression(
-                expression,
-                source_variable,
-                target_variable,
-                rel_variable,
-            )
-        }),
-        ReturnExpression::Left { expression, .. } | ReturnExpression::Lower(expression) => {
-            optional_direct_row_projection_value_expression(
-                expression,
-                source_variable,
-                target_variable,
-                rel_variable,
-            )
-        }
-        ReturnExpression::CountAll
-        | ReturnExpression::CountVariable { .. }
-        | ReturnExpression::CountProperty { .. }
-        | ReturnExpression::CollectVariable { .. }
-        | ReturnExpression::CollectProperty { .. }
-        | ReturnExpression::MinProperty { .. }
-        | ReturnExpression::MaxProperty { .. }
-        | ReturnExpression::AvgProperty { .. } => false,
+        ReturnExpression::Value(expression) => optional_direct_row_projection_value_expression(
+            expression,
+            source_variable,
+            target_variable,
+            rel_variable,
+        ),
+        ReturnExpression::Aggregate(_) => false,
     }
 }
 
 pub(super) fn optional_direct_row_projection_value_expression(
-    expression: &ReturnValueExpression,
+    expression: &ScalarExpression,
     source_variable: &str,
     target_variable: &str,
     rel_variable: Option<&str>,
 ) -> bool {
     match expression {
-        ReturnValueExpression::Variable(variable)
-        | ReturnValueExpression::Property { variable, .. }
-        | ReturnValueExpression::Id(variable)
-        | ReturnValueExpression::RelationshipType(variable)
-        | ReturnValueExpression::DatePart { variable, .. }
-        | ReturnValueExpression::DefaultIfNullOrEq { variable, .. }
-        | ReturnValueExpression::DefaultIfNull { variable, .. }
-        | ReturnValueExpression::CasePropertyNotNullOrEq { variable, .. }
-        | ReturnValueExpression::CasePropertyEqualsRank { variable, .. }
-        | ReturnValueExpression::CaseLowerPropertyDefault { variable, .. }
-        | ReturnValueExpression::CaseCoalesceDifferenceFloorZero { variable, .. } => {
+        ScalarExpression::Variable(variable)
+        | ScalarExpression::Property { variable, .. }
+        | ScalarExpression::Id(variable)
+        | ScalarExpression::RelationshipType(variable)
+        | ScalarExpression::DatePart { variable, .. }
+        | ScalarExpression::DefaultIfNullOrEq { variable, .. }
+        | ScalarExpression::DefaultIfNull { variable, .. }
+        | ScalarExpression::CasePropertyNotNullOrEq { variable, .. }
+        | ScalarExpression::CasePropertyEqualsRank { variable, .. }
+        | ScalarExpression::CaseLowerPropertyDefault { variable, .. }
+        | ScalarExpression::CaseCoalesceDifferenceFloorZero { variable, .. } => {
             optional_direct_row_projection_variable(
                 variable,
                 source_variable,
@@ -1048,7 +874,7 @@ pub(super) fn optional_direct_row_projection_value_expression(
                 rel_variable,
             )
         }
-        ReturnValueExpression::CaseEntitySearchRank(expression) => {
+        ScalarExpression::CaseEntitySearchRank(expression) => {
             optional_direct_row_projection_variable(
                 &expression.variable,
                 source_variable,
@@ -1056,9 +882,9 @@ pub(super) fn optional_direct_row_projection_value_expression(
                 rel_variable,
             )
         }
-        ReturnValueExpression::CaseColumnSearchRank(_) => false,
-        ReturnValueExpression::Value(_) => true,
-        ReturnValueExpression::Coalesce(expressions) => expressions.iter().all(|expression| {
+        ScalarExpression::CaseColumnSearchRank(_) => false,
+        ScalarExpression::Value(_) => true,
+        ScalarExpression::Coalesce(expressions) => expressions.iter().all(|expression| {
             optional_direct_row_projection_value_expression(
                 expression,
                 source_variable,
@@ -1066,8 +892,7 @@ pub(super) fn optional_direct_row_projection_value_expression(
                 rel_variable,
             )
         }),
-        ReturnValueExpression::Left { expression, .. }
-        | ReturnValueExpression::Lower(expression) => {
+        ScalarExpression::Left { expression, .. } | ScalarExpression::Lower(expression) => {
             optional_direct_row_projection_value_expression(
                 expression,
                 source_variable,
@@ -1156,7 +981,10 @@ pub(super) fn plan_optional_direct_count_projection(
     count_alias: &str,
     parameters: &BTreeMap<String, Value>,
 ) -> Result<Projection> {
-    if matches!(item.expression, ReturnExpression::CountVariable { .. }) {
+    if matches!(
+        item.expression,
+        ReturnExpression::Aggregate(AggregateExpression::CountVariable { .. })
+    ) {
         return Ok(Projection {
             expression: ProjectionExpression::Column(count_alias.to_string()),
             name: item
@@ -1168,44 +996,43 @@ pub(super) fn plan_optional_direct_count_projection(
     plan_projection_with_columns(scope, &BTreeSet::new(), item, parameters)
 }
 
-pub(super) fn return_value_expressions_are_source_only(
-    expressions: &[ReturnValueExpression],
+pub(super) fn scalar_expressions_are_source_only(
+    expressions: &[ScalarExpression],
     source_variable: &str,
 ) -> bool {
     expressions
         .iter()
-        .all(|expression| return_value_expression_is_source_only(expression, source_variable))
+        .all(|expression| scalar_expression_is_source_only(expression, source_variable))
 }
 
-pub(super) fn return_value_expression_is_source_only(
-    expression: &ReturnValueExpression,
+pub(super) fn scalar_expression_is_source_only(
+    expression: &ScalarExpression,
     source_variable: &str,
 ) -> bool {
     match expression {
-        ReturnValueExpression::Variable(variable)
-        | ReturnValueExpression::Property { variable, .. }
-        | ReturnValueExpression::Id(variable)
-        | ReturnValueExpression::RelationshipType(variable)
-        | ReturnValueExpression::DatePart { variable, .. }
-        | ReturnValueExpression::DefaultIfNullOrEq { variable, .. }
-        | ReturnValueExpression::DefaultIfNull { variable, .. }
-        | ReturnValueExpression::CasePropertyNotNullOrEq { variable, .. }
-        | ReturnValueExpression::CasePropertyEqualsRank { variable, .. }
-        | ReturnValueExpression::CaseLowerPropertyDefault { variable, .. }
-        | ReturnValueExpression::CaseCoalesceDifferenceFloorZero { variable, .. } => {
+        ScalarExpression::Variable(variable)
+        | ScalarExpression::Property { variable, .. }
+        | ScalarExpression::Id(variable)
+        | ScalarExpression::RelationshipType(variable)
+        | ScalarExpression::DatePart { variable, .. }
+        | ScalarExpression::DefaultIfNullOrEq { variable, .. }
+        | ScalarExpression::DefaultIfNull { variable, .. }
+        | ScalarExpression::CasePropertyNotNullOrEq { variable, .. }
+        | ScalarExpression::CasePropertyEqualsRank { variable, .. }
+        | ScalarExpression::CaseLowerPropertyDefault { variable, .. }
+        | ScalarExpression::CaseCoalesceDifferenceFloorZero { variable, .. } => {
             variable == source_variable
         }
-        ReturnValueExpression::CaseEntitySearchRank(expression) => {
+        ScalarExpression::CaseEntitySearchRank(expression) => {
             expression.variable == source_variable
         }
-        ReturnValueExpression::CaseColumnSearchRank(_) => false,
-        ReturnValueExpression::Value(_) => true,
-        ReturnValueExpression::Coalesce(expressions) => {
-            return_value_expressions_are_source_only(expressions, source_variable)
+        ScalarExpression::CaseColumnSearchRank(_) => false,
+        ScalarExpression::Value(_) => true,
+        ScalarExpression::Coalesce(expressions) => {
+            scalar_expressions_are_source_only(expressions, source_variable)
         }
-        ReturnValueExpression::Left { expression, .. }
-        | ReturnValueExpression::Lower(expression) => {
-            return_value_expression_is_source_only(expression, source_variable)
+        ScalarExpression::Left { expression, .. } | ScalarExpression::Lower(expression) => {
+            scalar_expression_is_source_only(expression, source_variable)
         }
     }
 }
@@ -1220,45 +1047,65 @@ pub(super) fn aggregate_with_column_names(
             item.alias
                 .clone()
                 .unwrap_or_else(|| match &item.expression {
-                    ReturnExpression::Variable(variable) => variable.clone(),
-                    ReturnExpression::Property { variable, property } => {
+                    ReturnExpression::Value(ScalarExpression::Variable(variable)) => {
+                        variable.clone()
+                    }
+                    ReturnExpression::Value(ScalarExpression::Property { variable, property }) => {
                         format!("{variable}.{property}")
                     }
-                    ReturnExpression::Value(_) => "literal".to_string(),
-                    ReturnExpression::DatePart {
+                    ReturnExpression::Value(ScalarExpression::Value(_)) => "literal".to_string(),
+                    ReturnExpression::Value(ScalarExpression::DatePart {
                         part,
                         variable,
                         property,
-                    } => format!("date_part({part}, {variable}.{property})"),
-                    ReturnExpression::CountAll => "count(*)".to_string(),
-                    ReturnExpression::CountVariable { variable, distinct } if *distinct => {
+                    }) => format!("date_part({part}, {variable}.{property})"),
+                    ReturnExpression::Aggregate(AggregateExpression::CountAll) => {
+                        "count(*)".to_string()
+                    }
+                    ReturnExpression::Aggregate(AggregateExpression::CountVariable {
+                        variable,
+                        distinct,
+                    }) if *distinct => {
                         format!("count(DISTINCT {variable})")
                     }
-                    ReturnExpression::CountVariable { variable, .. } => {
+                    ReturnExpression::Aggregate(AggregateExpression::CountVariable {
+                        variable,
+                        ..
+                    }) => {
                         format!("count({variable})")
                     }
-                    ReturnExpression::CountProperty {
+                    ReturnExpression::Aggregate(AggregateExpression::CountProperty {
                         variable,
                         property,
                         distinct,
-                    } if *distinct => format!("count(DISTINCT {variable}.{property})"),
-                    ReturnExpression::CountProperty {
-                        variable, property, ..
-                    } => format!("count({variable}.{property})"),
-                    ReturnExpression::CollectVariable { variable, distinct } if *distinct => {
+                    }) if *distinct => format!("count(DISTINCT {variable}.{property})"),
+                    ReturnExpression::Aggregate(AggregateExpression::CountProperty {
+                        variable,
+                        property,
+                        ..
+                    }) => format!("count({variable}.{property})"),
+                    ReturnExpression::Aggregate(AggregateExpression::CollectVariable {
+                        variable,
+                        distinct,
+                    }) if *distinct => {
                         format!("collect(DISTINCT {variable})")
                     }
-                    ReturnExpression::CollectVariable { variable, .. } => {
+                    ReturnExpression::Aggregate(AggregateExpression::CollectVariable {
+                        variable,
+                        ..
+                    }) => {
                         format!("collect({variable})")
                     }
-                    ReturnExpression::CollectProperty {
+                    ReturnExpression::Aggregate(AggregateExpression::CollectProperty {
                         variable,
                         property,
                         distinct,
-                    } if *distinct => format!("collect(DISTINCT {variable}.{property})"),
-                    ReturnExpression::CollectProperty {
-                        variable, property, ..
-                    } => format!("collect({variable}.{property})"),
+                    }) if *distinct => format!("collect(DISTINCT {variable}.{property})"),
+                    ReturnExpression::Aggregate(AggregateExpression::CollectProperty {
+                        variable,
+                        property,
+                        ..
+                    }) => format!("collect({variable}.{property})"),
                     _ => String::new(),
                 })
         })
@@ -1266,17 +1113,7 @@ pub(super) fn aggregate_with_column_names(
 }
 
 pub(super) fn is_aggregate_return_expression(expression: &ReturnExpression) -> bool {
-    matches!(
-        expression,
-        ReturnExpression::CountAll
-            | ReturnExpression::CountVariable { .. }
-            | ReturnExpression::CountProperty { .. }
-            | ReturnExpression::CollectVariable { .. }
-            | ReturnExpression::CollectProperty { .. }
-            | ReturnExpression::MinProperty { .. }
-            | ReturnExpression::MaxProperty { .. }
-            | ReturnExpression::AvgProperty { .. }
-    )
+    matches!(expression, ReturnExpression::Aggregate(_))
 }
 
 pub(super) fn plan_with_alias_filter(

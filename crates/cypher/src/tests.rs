@@ -1,10 +1,10 @@
 use super::{
-    parse, parse_profiled, AlterPropertyState, AlterTableState, ComparisonOp, CreateCompositeIndex,
-    CreateIndex, CreateProperty, GraphAlgorithm, GraphAlgorithmKind, GraphAlgorithmOptions,
-    OrderDirection, OrderExpression, ProjectGraph, PropertyPredicate, RelationshipDirection,
-    ReturnExpression, ReturnValueExpression, SchemaObjectState, SchemaPropertyType,
-    SchemaTableKind, SetValueExpression, Statement, ValueExpression, VectorSearch, WithAliasFilter,
-    WithAliasFilterExpression, WithAliasFilterOp,
+    parse, parse_profiled, AggregateExpression, AlterPropertyState, AlterTableState, ComparisonOp,
+    CreateCompositeIndex, CreateIndex, CreateProperty, GraphAlgorithm, GraphAlgorithmKind,
+    GraphAlgorithmOptions, OrderDirection, OrderExpression, ProjectGraph, PropertyPredicate,
+    RelationshipDirection, ReturnExpression, ScalarExpression, SchemaObjectState,
+    SchemaPropertyType, SchemaTableKind, SetValueExpression, Statement, ValueExpression,
+    VectorSearch, WithAliasFilter, WithAliasFilterExpression, WithAliasFilterOp,
 };
 use crate::parser::MAX_CYPHER_INPUT_BYTES;
 use skein_core::Value;
@@ -13,6 +13,27 @@ mod backtracking;
 mod migration_corpus;
 
 const EXCESSIVE_CYPHER_NESTING: usize = 100_000;
+
+#[test]
+fn scalar_contexts_reject_nested_aggregates() {
+    for aggregate in [
+        "count(*)",
+        "count(m)",
+        "collect(m)",
+        "min(m.id)",
+        "max(m.id)",
+        "avg(m.id)",
+    ] {
+        for query in [
+            format!("MATCH (m:Memory) RETURN coalesce({aggregate}, 0)"),
+            format!("MATCH (m:Memory) RETURN lower({aggregate})"),
+            format!("MATCH (m:Memory) RETURN m.id ORDER BY coalesce({aggregate}, 0)"),
+        ] {
+            assert!(parse(&query).is_err(), "accepted nested aggregate: {query}");
+        }
+        assert!(parse(&format!("MATCH (m:Memory) RETURN {aggregate}")).is_ok());
+    }
+}
 
 #[test]
 fn parses_create_node() {
@@ -229,7 +250,7 @@ fn parses_variable_return_item() {
     };
     assert_eq!(
         query.returns[0].expression,
-        ReturnExpression::Variable("m".to_string())
+        ReturnExpression::Value(ScalarExpression::Variable("m".to_string()))
     );
     assert_eq!(query.returns[0].alias, None);
 }
@@ -1016,10 +1037,10 @@ fn parses_match_return() {
     assert_eq!(query.returns[0].alias.as_deref(), Some("title"));
     assert_eq!(
         query.returns[0].expression,
-        ReturnExpression::Property {
+        ReturnExpression::Value(ScalarExpression::Property {
             variable: "m".to_string(),
             property: "title".to_string()
-        }
+        })
     );
 }
 
@@ -1054,10 +1075,10 @@ fn parses_distinct_return() {
     assert_eq!(query.returns[0].alias.as_deref(), Some("kind"));
     assert_eq!(
         query.returns[0].expression,
-        ReturnExpression::Property {
+        ReturnExpression::Value(ScalarExpression::Property {
             variable: "m".to_string(),
             property: "kind".to_string()
-        }
+        })
     );
 }
 
@@ -1072,12 +1093,12 @@ fn parses_id_return_items() {
     };
     assert_eq!(
         query.returns[0].expression,
-        ReturnExpression::Id("m".to_string())
+        ReturnExpression::Value(ScalarExpression::Id("m".to_string()))
     );
     assert_eq!(query.returns[0].alias.as_deref(), Some("memory_id"));
     assert_eq!(
         query.returns[1].expression,
-        ReturnExpression::Id("r".to_string())
+        ReturnExpression::Value(ScalarExpression::Id("r".to_string()))
     );
     assert_eq!(query.returns[1].alias.as_deref(), Some("rel_id"));
 
@@ -1186,7 +1207,7 @@ fn parses_untyped_relationship_match_and_label_return() {
     assert_eq!(expand.target_label, "");
     assert_eq!(
         query.returns[2].expression,
-        ReturnExpression::RelationshipType("r".to_string())
+        ReturnExpression::Value(ScalarExpression::RelationshipType("r".to_string()))
     );
 }
 
@@ -1235,10 +1256,10 @@ fn parses_anonymous_relationship_endpoints() {
     assert_eq!(expand.target_label, "");
     assert_eq!(
         query.returns[0].expression,
-        ReturnExpression::CountVariable {
+        ReturnExpression::Aggregate(AggregateExpression::CountVariable {
             variable: "r".to_string(),
             distinct: false
-        }
+        })
     );
 }
 
@@ -1366,10 +1387,10 @@ fn parses_two_node_match_return() {
     assert_eq!(query.right_label, "Source");
     assert_eq!(
         query.returns[0].expression,
-        ReturnExpression::CountVariable {
+        ReturnExpression::Aggregate(AggregateExpression::CountVariable {
             variable: "m".to_string(),
             distinct: false
-        }
+        })
     );
 }
 
@@ -1584,15 +1605,15 @@ fn parses_with_variable_group_multiple_count_aggregates() {
     assert_eq!(aggregate_with.items.len(), 3);
     assert_eq!(
         aggregate_with.items[0].expression,
-        ReturnExpression::Variable("e1".to_string())
+        ReturnExpression::Value(ScalarExpression::Variable("e1".to_string()))
     );
     assert_eq!(
         aggregate_with.items[1].expression,
-        ReturnExpression::CountProperty {
+        ReturnExpression::Aggregate(AggregateExpression::CountProperty {
             variable: "e2".to_string(),
             property: "community_id".to_string(),
             distinct: true,
-        }
+        })
     );
     assert_eq!(
         aggregate_with.items[1].alias.as_deref(),
@@ -1600,7 +1621,7 @@ fn parses_with_variable_group_multiple_count_aggregates() {
     );
     assert_eq!(
         aggregate_with.items[2].expression,
-        ReturnExpression::CountAll
+        ReturnExpression::Aggregate(AggregateExpression::CountAll)
     );
     assert_eq!(
         aggregate_with.items[2].alias.as_deref(),
@@ -1756,7 +1777,7 @@ fn parses_case_property_presence_order_item() {
         panic!("expected match return");
     };
     assert_eq!(query.order_by.len(), 2);
-    let OrderExpression::Value(ReturnValueExpression::CasePropertyNotNullOrEq {
+    let OrderExpression::Value(ScalarExpression::CasePropertyNotNullOrEq {
         variable,
         property,
         ..
@@ -1784,12 +1805,12 @@ fn parses_case_property_equals_rank_with_projection() {
         .as_ref()
         .expect("expected WITH projection");
     assert_eq!(with_projection.items.len(), 3);
-    let ReturnExpression::CasePropertyEqualsRank {
+    let ReturnExpression::Value(ScalarExpression::CasePropertyEqualsRank {
         variable,
         property,
         branches,
         ..
-    } = &with_projection.items[1].expression
+    }) = &with_projection.items[1].expression
     else {
         panic!("expected property equality rank expression");
     };
@@ -1818,7 +1839,7 @@ fn parses_entity_search_rank_order_item() {
         panic!("expected match return");
     };
     assert_eq!(query.order_by.len(), 2);
-    let OrderExpression::Value(ReturnValueExpression::CaseEntitySearchRank(expression)) =
+    let OrderExpression::Value(ScalarExpression::CaseEntitySearchRank(expression)) =
         &query.order_by[0].expression
     else {
         panic!("expected entity search rank order expression");
@@ -1845,7 +1866,9 @@ fn parses_community_search_projection_with_case_aliases() {
         .expect("expected WITH projection");
     assert_eq!(with_projection.items.len(), 4);
     assert!(query.aggregate_with_filter.is_some());
-    let ReturnExpression::CaseColumnSearchRank(expression) = &query.returns[1].expression else {
+    let ReturnExpression::Value(ScalarExpression::CaseColumnSearchRank(expression)) =
+        &query.returns[1].expression
+    else {
         panic!("expected column search rank expression");
     };
     assert_eq!(expression.column, "c_name");
@@ -1872,11 +1895,11 @@ fn parses_source_search_projection_with_coalesce_ordering() {
     assert!(query.aggregate_with_filter.is_some());
     assert!(matches!(
         query.returns[1].expression,
-        ReturnExpression::Coalesce(_)
+        ReturnExpression::Value(ScalarExpression::Coalesce(_))
     ));
     assert!(matches!(
         query.order_by[1].expression,
-        OrderExpression::Value(ReturnValueExpression::Coalesce(_))
+        OrderExpression::Value(ScalarExpression::Coalesce(_))
     ));
 }
 
@@ -1897,11 +1920,11 @@ fn parses_thread_search_projection_with_coalesce_ordering() {
     assert!(query.aggregate_with_filter.is_some());
     assert!(matches!(
         query.returns[1].expression,
-        ReturnExpression::Coalesce(_)
+        ReturnExpression::Value(ScalarExpression::Coalesce(_))
     ));
     assert!(matches!(
         query.order_by[1].expression,
-        OrderExpression::Value(ReturnValueExpression::Coalesce(_))
+        OrderExpression::Value(ScalarExpression::Coalesce(_))
     ));
 }
 
@@ -1914,7 +1937,7 @@ fn parses_cleanup_active_consumption_order_expression() {
     let Statement::MatchReturn(query) = statement else {
         panic!("expected match return");
     };
-    let OrderExpression::Value(ReturnValueExpression::CaseCoalesceDifferenceFloorZero {
+    let OrderExpression::Value(ScalarExpression::CaseCoalesceDifferenceFloorZero {
         variable,
         terms,
     }) = &query.order_by[0].expression
@@ -1948,7 +1971,7 @@ fn parses_optional_match_direct_projection_count() {
     assert_eq!(query.returns.len(), 3);
     assert!(matches!(
         query.returns[2].expression,
-        ReturnExpression::CountVariable { .. }
+        ReturnExpression::Aggregate(AggregateExpression::CountVariable { .. })
     ));
 }
 
@@ -1983,17 +2006,17 @@ fn parses_with_collect_distinct_variable_and_count() {
     assert_eq!(aggregate_with.items.len(), 3);
     assert!(matches!(
         aggregate_with.items[1].expression,
-        ReturnExpression::CollectVariable {
+        ReturnExpression::Aggregate(AggregateExpression::CollectVariable {
             ref variable,
             distinct: true
-        } if variable == "e"
+        }) if variable == "e"
     ));
     assert!(matches!(
         aggregate_with.items[2].expression,
-        ReturnExpression::CountVariable {
+        ReturnExpression::Aggregate(AggregateExpression::CountVariable {
             ref variable,
             distinct: true
-        } if variable == "e"
+        }) if variable == "e"
     ));
     assert_eq!(query.returns.len(), 3);
     assert_eq!(query.order_by.len(), 1);
@@ -2016,11 +2039,11 @@ fn parses_optional_match_return_collect_distinct_property() {
     assert_eq!(optional.source_variable, "m");
     assert_eq!(optional.expand.target_variable, "l");
     assert_eq!(query.returns.len(), 2);
-    let ReturnExpression::CollectProperty {
+    let ReturnExpression::Aggregate(AggregateExpression::CollectProperty {
         variable,
         property,
         distinct,
-    } = &query.returns[1].expression
+    }) = &query.returns[1].expression
     else {
         panic!("expected collect return");
     };
@@ -2039,7 +2062,7 @@ fn parses_literal_return_projection_alias() {
     assert_eq!(query.returns.len(), 2);
     assert!(matches!(
         query.returns[1].expression,
-        ReturnExpression::Value(_)
+        ReturnExpression::Value(ScalarExpression::Value(_))
     ));
     assert_eq!(query.returns[1].alias.as_deref(), Some("mention_breadth"));
 }
@@ -2053,7 +2076,7 @@ fn parses_case_property_default_if_null_order_expression() {
     let Statement::MatchReturn(query) = statement else {
         panic!("expected match return");
     };
-    let OrderExpression::Value(ReturnValueExpression::DefaultIfNull {
+    let OrderExpression::Value(ScalarExpression::DefaultIfNull {
         variable,
         property,
         default,
@@ -2079,7 +2102,10 @@ fn parses_with_distinct_property_alias_count() {
     assert_eq!(distinct_with.items.len(), 2);
     assert_eq!(distinct_with.items[0].alias.as_deref(), Some("a"));
     assert_eq!(distinct_with.items[1].alias.as_deref(), Some("b"));
-    assert_eq!(query.returns[0].expression, ReturnExpression::CountAll);
+    assert_eq!(
+        query.returns[0].expression,
+        ReturnExpression::Aggregate(AggregateExpression::CountAll)
+    );
 }
 
 #[test]
@@ -2106,7 +2132,7 @@ fn parses_with_aggregate_alias_filter_return() {
     assert_eq!(query.returns.len(), 1);
     assert_eq!(
         query.returns[0].expression,
-        ReturnExpression::Variable("cid".to_string())
+        ReturnExpression::Value(ScalarExpression::Variable("cid".to_string()))
     );
 }
 
@@ -2141,11 +2167,11 @@ fn parses_with_date_part_group_aggregate() {
     assert_eq!(aggregate_with.items[0].alias.as_deref(), Some("year"));
     assert_eq!(
         aggregate_with.items[0].expression,
-        ReturnExpression::DatePart {
+        ReturnExpression::Value(ScalarExpression::DatePart {
             part: "year".to_string(),
             variable: "m".to_string(),
             property: "created_at".to_string(),
-        }
+        })
     );
     assert_eq!(aggregate_with.items[1].alias.as_deref(), Some("month"));
     assert_eq!(
@@ -2172,7 +2198,7 @@ fn parses_normalized_space_case_predicates() {
     assert!(matches!(
         predicates[1],
         PropertyPredicate::ExpressionEq {
-            expression: ReturnValueExpression::DefaultIfNullOrEq { .. },
+            expression: ScalarExpression::DefaultIfNullOrEq { .. },
             ..
         }
     ));
@@ -2187,7 +2213,7 @@ fn parses_normalized_space_case_predicates() {
     assert!(matches!(
         query.predicate,
         Some(PropertyPredicate::ExpressionNotEq {
-            expression: ReturnValueExpression::DefaultIfNullOrEq { .. },
+            expression: ScalarExpression::DefaultIfNullOrEq { .. },
             ..
         })
     ));
@@ -2206,12 +2232,12 @@ fn parses_normalized_space_case_as_first_aggregate_with_item() {
     assert_eq!(aggregate_with.items.len(), 3);
     assert!(matches!(
         aggregate_with.items[0].expression,
-        ReturnExpression::DefaultIfNullOrEq { .. }
+        ReturnExpression::Value(ScalarExpression::DefaultIfNullOrEq { .. })
     ));
     assert_eq!(aggregate_with.items[0].alias.as_deref(), Some("space_id"));
     assert!(matches!(
         aggregate_with.items[2].expression,
-        ReturnExpression::MaxProperty { .. }
+        ReturnExpression::Aggregate(AggregateExpression::MaxProperty { .. })
     ));
 }
 
@@ -2224,34 +2250,37 @@ fn parses_count_return_items() {
     let Statement::MatchReturn(query) = statement else {
         panic!("expected match return");
     };
-    assert_eq!(query.returns[0].expression, ReturnExpression::CountAll);
+    assert_eq!(
+        query.returns[0].expression,
+        ReturnExpression::Aggregate(AggregateExpression::CountAll)
+    );
     assert_eq!(
         query.returns[1].expression,
-        ReturnExpression::CountVariable {
+        ReturnExpression::Aggregate(AggregateExpression::CountVariable {
             variable: "m".to_string(),
             distinct: false
-        }
+        })
     );
     assert_eq!(
         query.returns[2].expression,
-        ReturnExpression::MinProperty {
+        ReturnExpression::Aggregate(AggregateExpression::MinProperty {
             variable: "m".to_string(),
             property: "score".to_string(),
-        }
+        })
     );
     assert_eq!(
         query.returns[3].expression,
-        ReturnExpression::MaxProperty {
+        ReturnExpression::Aggregate(AggregateExpression::MaxProperty {
             variable: "m".to_string(),
             property: "score".to_string(),
-        }
+        })
     );
     assert_eq!(
         query.returns[4].expression,
-        ReturnExpression::AvgProperty {
+        ReturnExpression::Aggregate(AggregateExpression::AvgProperty {
             variable: "m".to_string(),
             property: "score".to_string(),
-        }
+        })
     );
 }
 
@@ -2266,10 +2295,10 @@ fn parses_order_by_count_return_item() {
     };
     assert_eq!(
         query.returns[1].expression,
-        ReturnExpression::CountVariable {
+        ReturnExpression::Aggregate(AggregateExpression::CountVariable {
             variable: "r".to_string(),
             distinct: false,
-        }
+        })
     );
     assert_eq!(
         query.order_by[0].expression,
@@ -2289,11 +2318,11 @@ fn parses_count_distinct_return_items() {
     assert_eq!(query.returns[0].alias.as_deref(), Some("entities"));
     assert_eq!(
         query.returns[0].expression,
-        ReturnExpression::CountProperty {
+        ReturnExpression::Aggregate(AggregateExpression::CountProperty {
             variable: "e".to_string(),
             property: "id".to_string(),
             distinct: true
-        }
+        })
     );
 }
 
@@ -2309,24 +2338,22 @@ fn parses_coalesce_and_left_return_items() {
     assert_eq!(query.returns[0].alias.as_deref(), Some("label"));
     assert_eq!(
         query.returns[0].expression,
-        ReturnExpression::Coalesce(vec![
-            ReturnValueExpression::Property {
+        ReturnExpression::Value(ScalarExpression::Coalesce(vec![
+            ScalarExpression::Property {
                 variable: "m".to_string(),
                 property: "title".to_string(),
             },
-            ReturnValueExpression::Left {
-                expression: Box::new(ReturnValueExpression::Coalesce(vec![
-                    ReturnValueExpression::Property {
+            ScalarExpression::Left {
+                expression: Box::new(ScalarExpression::Coalesce(vec![
+                    ScalarExpression::Property {
                         variable: "m".to_string(),
                         property: "content".to_string(),
                     },
-                    ReturnValueExpression::Value(ValueExpression::Literal(Value::String(
-                        String::new()
-                    ))),
+                    ScalarExpression::Value(ValueExpression::Literal(Value::String(String::new()))),
                 ])),
                 length: ValueExpression::Literal(Value::Int(60)),
             },
-        ])
+        ]))
     );
 }
 
@@ -2345,36 +2372,34 @@ fn parses_coalesce_and_left_predicates() {
     assert_eq!(
         predicates[0],
         PropertyPredicate::ExpressionCompare {
-            expression: ReturnValueExpression::Coalesce(vec![
-                ReturnValueExpression::Property {
+            expression: ScalarExpression::Coalesce(vec![
+                ScalarExpression::Property {
                     variable: "m".to_string(),
                     property: "created_at".to_string(),
                 },
-                ReturnValueExpression::Property {
+                ScalarExpression::Property {
                     variable: "m".to_string(),
                     property: "last_accessed_at".to_string(),
                 },
             ]),
             op: ComparisonOp::Gte,
-            value: ReturnValueExpression::Value(ValueExpression::Parameter("cutoff".to_string(),)),
+            value: ScalarExpression::Value(ValueExpression::Parameter("cutoff".to_string(),)),
         }
     );
     assert_eq!(
         predicates[1],
         PropertyPredicate::ExpressionEq {
-            expression: ReturnValueExpression::Left {
-                expression: Box::new(ReturnValueExpression::Coalesce(vec![
-                    ReturnValueExpression::Property {
+            expression: ScalarExpression::Left {
+                expression: Box::new(ScalarExpression::Coalesce(vec![
+                    ScalarExpression::Property {
                         variable: "m".to_string(),
                         property: "title".to_string(),
                     },
-                    ReturnValueExpression::Value(ValueExpression::Literal(Value::String(
-                        String::new()
-                    ))),
+                    ScalarExpression::Value(ValueExpression::Literal(Value::String(String::new()))),
                 ])),
                 length: ValueExpression::Literal(Value::Int(4)),
             },
-            value: ReturnValueExpression::Value(ValueExpression::Literal(Value::String(
+            value: ScalarExpression::Value(ValueExpression::Literal(Value::String(
                 "Graph".to_string()
             ))),
         }
@@ -2397,16 +2422,16 @@ fn parses_coalesce_float_predicate() {
     };
     assert!(matches!(
         expression,
-        ReturnValueExpression::Coalesce(expressions)
+        ScalarExpression::Coalesce(expressions)
             if expressions.len() == 2
                 && matches!(
                     expressions[1],
-                    ReturnValueExpression::Value(ValueExpression::Literal(Value::Float(1.0)))
+                    ScalarExpression::Value(ValueExpression::Literal(Value::Float(1.0)))
                 )
     ));
     assert!(matches!(
         value,
-        ReturnValueExpression::Value(ValueExpression::Literal(Value::Float(0.55)))
+        ScalarExpression::Value(ValueExpression::Literal(Value::Float(0.55)))
     ));
 }
 
@@ -2422,18 +2447,14 @@ fn parses_lower_contains_expression_predicates() {
     assert_eq!(
         query.predicate,
         Some(PropertyPredicate::ExpressionContains {
-            expression: ReturnValueExpression::Lower(Box::new(ReturnValueExpression::Coalesce(
-                vec![
-                    ReturnValueExpression::Property {
-                        variable: "m".to_string(),
-                        property: "content".to_string(),
-                    },
-                    ReturnValueExpression::Value(ValueExpression::Literal(Value::String(
-                        String::new()
-                    ))),
-                ]
-            ))),
-            value: ReturnValueExpression::Lower(Box::new(ReturnValueExpression::Value(
+            expression: ScalarExpression::Lower(Box::new(ScalarExpression::Coalesce(vec![
+                ScalarExpression::Property {
+                    variable: "m".to_string(),
+                    property: "content".to_string(),
+                },
+                ScalarExpression::Value(ValueExpression::Literal(Value::String(String::new()))),
+            ]))),
+            value: ScalarExpression::Lower(Box::new(ScalarExpression::Value(
                 ValueExpression::Parameter("needle".to_string())
             ))),
         })
@@ -2450,11 +2471,11 @@ fn parses_lower_equality_expression_predicates() {
     assert_eq!(
         query.predicate,
         Some(PropertyPredicate::ExpressionEq {
-            expression: ReturnValueExpression::Lower(Box::new(ReturnValueExpression::Property {
+            expression: ScalarExpression::Lower(Box::new(ScalarExpression::Property {
                 variable: "e".to_string(),
                 property: "name".to_string(),
             })),
-            value: ReturnValueExpression::Lower(Box::new(ReturnValueExpression::Value(
+            value: ScalarExpression::Lower(Box::new(ScalarExpression::Value(
                 ValueExpression::Parameter("mention".to_string())
             ))),
         })
@@ -2494,16 +2515,16 @@ fn parses_order_by_coalesce_expression() {
     assert_eq!(query.order_by.len(), 1);
     assert_eq!(
         query.order_by[0].expression,
-        OrderExpression::Value(ReturnValueExpression::Coalesce(vec![
-            ReturnValueExpression::Property {
+        OrderExpression::Value(ScalarExpression::Coalesce(vec![
+            ScalarExpression::Property {
                 variable: "m".to_string(),
                 property: "pagerank_score".to_string(),
             },
-            ReturnValueExpression::Property {
+            ScalarExpression::Property {
                 variable: "m".to_string(),
                 property: "importance".to_string(),
             },
-            ReturnValueExpression::Value(ValueExpression::Literal(Value::Float(0.5))),
+            ScalarExpression::Value(ValueExpression::Literal(Value::Float(0.5))),
         ]))
     );
     assert_eq!(query.order_by[0].direction, OrderDirection::Desc);
@@ -2677,8 +2698,8 @@ fn parses_contains_function_predicate() {
     assert!(matches!(
         query.predicate,
         Some(PropertyPredicate::ExpressionContains {
-            expression: ReturnValueExpression::Lower(_),
-            value: ReturnValueExpression::Lower(_),
+            expression: ScalarExpression::Lower(_),
+            value: ScalarExpression::Lower(_),
         })
     ));
 }

@@ -841,19 +841,11 @@ pub fn plan_with_params(
                                 .to_string(),
                         ));
                     }
-                    if query.returns.iter().any(|item| {
-                        matches!(
-                            item.expression,
-                            ReturnExpression::CountAll
-                                | ReturnExpression::CountVariable { .. }
-                                | ReturnExpression::CountProperty { .. }
-                                | ReturnExpression::CollectVariable { .. }
-                                | ReturnExpression::CollectProperty { .. }
-                                | ReturnExpression::MinProperty { .. }
-                                | ReturnExpression::MaxProperty { .. }
-                                | ReturnExpression::AvgProperty { .. }
-                        )
-                    }) {
+                    if query
+                        .returns
+                        .iter()
+                        .any(|item| matches!(item.expression, ReturnExpression::Aggregate(_)))
+                    {
                         return Err(SkeinError::Semantic(
                             "OPTIONAL MATCH WITH supports only projection returns".to_string(),
                         ));

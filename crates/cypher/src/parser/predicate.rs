@@ -15,7 +15,7 @@ type MatchRelationshipPattern = (
 
 enum PropertyPredicateRight {
     Value(ValueExpression),
-    Expression(ReturnValueExpression),
+    Expression(ScalarExpression),
 }
 
 impl Parser<'_> {
@@ -60,9 +60,9 @@ impl Parser<'_> {
         if self.consume_keyword("EXISTS") {
             return self.parse_bound_relationship_exists_subquery();
         }
-        if self.looks_like_parenthesized_return_value_expression_predicate() {
+        if self.looks_like_parenthesized_scalar_expression_predicate() {
             self.expect_char('(')?;
-            let expression = self.parse_return_value_expression()?;
+            let expression = self.parse_scalar_expression()?;
             self.expect_char(')')?;
             return self.parse_expression_predicate(expression);
         }
@@ -127,9 +127,9 @@ impl Parser<'_> {
         }
         if variable.eq_ignore_ascii_case("contains") && self.peek_char() == Some('(') {
             self.expect_char('(')?;
-            let expression = self.parse_return_value_expression()?;
+            let expression = self.parse_scalar_expression()?;
             self.expect_char(',')?;
-            let value = self.parse_return_value_expression()?;
+            let value = self.parse_scalar_expression()?;
             self.expect_char(')')?;
             return Ok(PropertyPredicate::ExpressionContains { expression, value });
         }
@@ -137,12 +137,12 @@ impl Parser<'_> {
             && self.peek_char() == Some('(')
         {
             self.restore(expression_start);
-            let expression = self.parse_return_value_expression()?;
+            let expression = self.parse_scalar_expression()?;
             return self.parse_expression_predicate(expression);
         }
         if variable.eq_ignore_ascii_case("case") {
             self.restore(expression_start);
-            let expression = self.parse_return_value_expression()?;
+            let expression = self.parse_scalar_expression()?;
             return self.parse_expression_predicate(expression);
         }
         if variable.eq_ignore_ascii_case("id") && self.consume_char('(') {
@@ -210,7 +210,7 @@ impl Parser<'_> {
                     }),
                     PropertyPredicateRight::Expression(value) => {
                         Ok(PropertyPredicate::ExpressionNotEq {
-                            expression: ReturnValueExpression::Property { variable, property },
+                            expression: ScalarExpression::Property { variable, property },
                             value,
                         })
                     }
@@ -230,7 +230,7 @@ impl Parser<'_> {
                 }),
                 PropertyPredicateRight::Expression(value) => {
                     Ok(PropertyPredicate::ExpressionCompare {
-                        expression: ReturnValueExpression::Property { variable, property },
+                        expression: ScalarExpression::Property { variable, property },
                         op,
                         value,
                     })
@@ -251,7 +251,7 @@ impl Parser<'_> {
                 }),
                 PropertyPredicateRight::Expression(value) => {
                     Ok(PropertyPredicate::ExpressionCompare {
-                        expression: ReturnValueExpression::Property { variable, property },
+                        expression: ScalarExpression::Property { variable, property },
                         op,
                         value,
                     })
@@ -266,7 +266,7 @@ impl Parser<'_> {
                     value,
                 }),
                 PropertyPredicateRight::Expression(value) => Ok(PropertyPredicate::ExpressionEq {
-                    expression: ReturnValueExpression::Property { variable, property },
+                    expression: ScalarExpression::Property { variable, property },
                     value,
                 }),
             }
@@ -280,7 +280,7 @@ impl Parser<'_> {
             let variable = self.parse_ident()?;
             if self.consume_char('.') {
                 return Ok(PropertyPredicateRight::Expression(
-                    ReturnValueExpression::Property {
+                    ScalarExpression::Property {
                         variable,
                         property: self.parse_ident()?,
                     },
@@ -321,7 +321,7 @@ impl Parser<'_> {
         false
     }
 
-    fn looks_like_parenthesized_return_value_expression_predicate(&self) -> bool {
+    fn looks_like_parenthesized_scalar_expression_predicate(&self) -> bool {
         let mut index = self.pos;
         while let Some(ch) = self.input[index..].chars().next() {
             if !ch.is_whitespace() {
@@ -468,14 +468,14 @@ impl Parser<'_> {
 
     fn parse_expression_predicate(
         &mut self,
-        expression: ReturnValueExpression,
+        expression: ScalarExpression,
     ) -> Result<PropertyPredicate> {
         self.skip_ws();
         if self.consume_char('<') {
             if self.consume_char('>') {
                 return Ok(PropertyPredicate::ExpressionNotEq {
                     expression,
-                    value: self.parse_return_value_expression()?,
+                    value: self.parse_scalar_expression()?,
                 });
             }
             let op = if self.consume_char('=') {
@@ -486,7 +486,7 @@ impl Parser<'_> {
             return Ok(PropertyPredicate::ExpressionCompare {
                 expression,
                 op,
-                value: self.parse_return_value_expression()?,
+                value: self.parse_scalar_expression()?,
             });
         }
         if self.consume_char('>') {
@@ -498,19 +498,19 @@ impl Parser<'_> {
             return Ok(PropertyPredicate::ExpressionCompare {
                 expression,
                 op,
-                value: self.parse_return_value_expression()?,
+                value: self.parse_scalar_expression()?,
             });
         }
         if self.consume_keyword("CONTAINS") {
             return Ok(PropertyPredicate::ExpressionContains {
                 expression,
-                value: self.parse_return_value_expression()?,
+                value: self.parse_scalar_expression()?,
             });
         }
         self.expect_char('=')?;
         Ok(PropertyPredicate::ExpressionEq {
             expression,
-            value: self.parse_return_value_expression()?,
+            value: self.parse_scalar_expression()?,
         })
     }
 

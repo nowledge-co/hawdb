@@ -1,10 +1,11 @@
 use skein_core::{Result, SkeinError, ValidatedRegex, Value};
 use skein_cypher::{
-    ComparisonOp as CypherComparisonOp, GraphAlgorithmKind as CypherGraphAlgorithmKind,
+    AggregateExpression, ComparisonOp as CypherComparisonOp,
+    GraphAlgorithmKind as CypherGraphAlgorithmKind,
     GraphAlgorithmOptions as CypherGraphAlgorithmOptions, MatchReturn,
     OrderDirection as CypherOrderDirection, OrderExpression, OrderItem, PostWithNodeLookup,
     PropertyPredicate, RelationshipDirection, RelationshipExpand as CypherRelationshipExpand,
-    ReturnExpression, ReturnItem, ReturnValueExpression, SetProperty, SetValueExpression,
+    ReturnExpression, ReturnItem, ScalarExpression, SetProperty, SetValueExpression,
     ShortestPathReturn, ShortestPathReturnExpression, Statement, ValueExpression,
     VectorSearch as CypherVectorSearch, WithAggregateProjection, WithAliasFilter,
     WithAliasFilterExpression, WithAliasFilterOp, WithCollect, WithDistinctProjection,

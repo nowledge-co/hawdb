@@ -859,13 +859,13 @@ pub(super) fn plan_predicate(
             value: bind_value(value, parameters)?,
         }),
         PropertyPredicate::ExpressionEq { expression, value } => Ok(Predicate::ExpressionEq {
-            expression: plan_return_value_expression(scope, expression, parameters)?,
-            value: plan_return_value_expression(scope, value, parameters)?,
+            expression: plan_scalar_expression(scope, expression, parameters)?,
+            value: plan_scalar_expression(scope, value, parameters)?,
         }),
         PropertyPredicate::ExpressionNotEq { expression, value } => {
             Ok(Predicate::ExpressionNotEq {
-                expression: plan_return_value_expression(scope, expression, parameters)?,
-                value: plan_return_value_expression(scope, value, parameters)?,
+                expression: plan_scalar_expression(scope, expression, parameters)?,
+                value: plan_scalar_expression(scope, value, parameters)?,
             })
         }
         PropertyPredicate::ExpressionCompare {
@@ -873,14 +873,14 @@ pub(super) fn plan_predicate(
             op,
             value,
         } => Ok(Predicate::ExpressionCompare {
-            expression: plan_return_value_expression(scope, expression, parameters)?,
+            expression: plan_scalar_expression(scope, expression, parameters)?,
             op: plan_comparison_op(*op),
-            value: plan_return_value_expression(scope, value, parameters)?,
+            value: plan_scalar_expression(scope, value, parameters)?,
         }),
         PropertyPredicate::ExpressionContains { expression, value } => {
             Ok(Predicate::ExpressionContains {
-                expression: plan_return_value_expression(scope, expression, parameters)?,
-                value: plan_return_value_expression(scope, value, parameters)?,
+                expression: plan_scalar_expression(scope, expression, parameters)?,
+                value: plan_scalar_expression(scope, value, parameters)?,
             })
         }
         PropertyPredicate::ListContains {
@@ -1236,7 +1236,7 @@ pub(super) fn collect_predicate_variables(
         | PropertyPredicate::ExpressionNotEq { expression, .. }
         | PropertyPredicate::ExpressionCompare { expression, .. }
         | PropertyPredicate::ExpressionContains { expression, .. } => {
-            collect_return_value_expression_variables(expression, variables);
+            collect_scalar_expression_variables(expression, variables);
             let value = match predicate {
                 PropertyPredicate::ExpressionEq { value, .. }
                 | PropertyPredicate::ExpressionNotEq { value, .. }
@@ -1245,7 +1245,7 @@ pub(super) fn collect_predicate_variables(
                 _ => None,
             };
             if let Some(value) = value {
-                collect_return_value_expression_variables(value, variables);
+                collect_scalar_expression_variables(value, variables);
             }
         }
         _ => {
@@ -1290,51 +1290,51 @@ pub(super) fn predicate_variable(predicate: &PropertyPredicate) -> Option<&str> 
     }
 }
 
-pub(super) fn collect_return_value_expression_variables(
-    expression: &ReturnValueExpression,
+pub(super) fn collect_scalar_expression_variables(
+    expression: &ScalarExpression,
     variables: &mut BTreeSet<String>,
 ) {
     match expression {
-        ReturnValueExpression::Variable(variable)
-        | ReturnValueExpression::Property { variable, .. }
-        | ReturnValueExpression::Id(variable)
-        | ReturnValueExpression::RelationshipType(variable) => {
+        ScalarExpression::Variable(variable)
+        | ScalarExpression::Property { variable, .. }
+        | ScalarExpression::Id(variable)
+        | ScalarExpression::RelationshipType(variable) => {
             variables.insert(variable.clone());
         }
-        ReturnValueExpression::Value(_) => {}
-        ReturnValueExpression::Coalesce(expressions) => {
+        ScalarExpression::Value(_) => {}
+        ScalarExpression::Coalesce(expressions) => {
             for expression in expressions {
-                collect_return_value_expression_variables(expression, variables);
+                collect_scalar_expression_variables(expression, variables);
             }
         }
-        ReturnValueExpression::Left { expression, .. } => {
-            collect_return_value_expression_variables(expression, variables);
+        ScalarExpression::Left { expression, .. } => {
+            collect_scalar_expression_variables(expression, variables);
         }
-        ReturnValueExpression::Lower(expression) => {
-            collect_return_value_expression_variables(expression, variables);
+        ScalarExpression::Lower(expression) => {
+            collect_scalar_expression_variables(expression, variables);
         }
-        ReturnValueExpression::DatePart { variable, .. } => {
+        ScalarExpression::DatePart { variable, .. } => {
             variables.insert(variable.clone());
         }
-        ReturnValueExpression::DefaultIfNullOrEq { variable, .. }
-        | ReturnValueExpression::DefaultIfNull { variable, .. } => {
+        ScalarExpression::DefaultIfNullOrEq { variable, .. }
+        | ScalarExpression::DefaultIfNull { variable, .. } => {
             variables.insert(variable.clone());
         }
-        ReturnValueExpression::CasePropertyNotNullOrEq { variable, .. } => {
+        ScalarExpression::CasePropertyNotNullOrEq { variable, .. } => {
             variables.insert(variable.clone());
         }
-        ReturnValueExpression::CasePropertyEqualsRank { variable, .. } => {
+        ScalarExpression::CasePropertyEqualsRank { variable, .. } => {
             variables.insert(variable.clone());
         }
-        ReturnValueExpression::CaseLowerPropertyDefault { variable, .. } => {
+        ScalarExpression::CaseLowerPropertyDefault { variable, .. } => {
             variables.insert(variable.clone());
         }
-        ReturnValueExpression::CaseCoalesceDifferenceFloorZero { variable, .. } => {
+        ScalarExpression::CaseCoalesceDifferenceFloorZero { variable, .. } => {
             variables.insert(variable.clone());
         }
-        ReturnValueExpression::CaseEntitySearchRank(expression) => {
+        ScalarExpression::CaseEntitySearchRank(expression) => {
             variables.insert(expression.variable.clone());
         }
-        ReturnValueExpression::CaseColumnSearchRank(_) => {}
+        ScalarExpression::CaseColumnSearchRank(_) => {}
     }
 }

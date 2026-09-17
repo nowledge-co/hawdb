@@ -86,10 +86,10 @@ pub(super) fn plan_sort_items(
 pub(super) fn plan_order_value_expression(
     scope: &BTreeSet<String>,
     projection_names: &BTreeSet<String>,
-    expression: &ReturnValueExpression,
+    expression: &ScalarExpression,
     parameters: &BTreeMap<String, Value>,
 ) -> Result<ProjectionExpression> {
-    if let ReturnValueExpression::CasePropertyNotNullOrEq {
+    if let ScalarExpression::CasePropertyNotNullOrEq {
         variable,
         property,
         empty,
@@ -107,7 +107,7 @@ pub(super) fn plan_order_value_expression(
             });
         }
     }
-    if let ReturnValueExpression::DefaultIfNull {
+    if let ScalarExpression::DefaultIfNull {
         variable,
         property,
         default,
@@ -121,7 +121,7 @@ pub(super) fn plan_order_value_expression(
             });
         }
     }
-    plan_return_value_expression_with_columns(scope, projection_names, expression, parameters)
+    plan_scalar_expression_with_columns(scope, projection_names, expression, parameters)
 }
 
 pub(super) fn bind_pagination_value(
@@ -219,12 +219,15 @@ pub(super) fn plan_set_node_properties_return_mode(
     if returns.len() == 1 {
         let item = &returns[0];
         match &item.expression {
-            ReturnExpression::CountAll => {
+            ReturnExpression::Aggregate(AggregateExpression::CountAll) => {
                 return Ok(SetNodePropertiesReturnMode::Count {
                     name: item.alias.clone().unwrap_or_else(|| "count(*)".to_string()),
                 });
             }
-            ReturnExpression::CountVariable { variable, distinct } if !distinct => {
+            ReturnExpression::Aggregate(AggregateExpression::CountVariable {
+                variable,
+                distinct,
+            }) if !distinct => {
                 if variable != &update.variable {
                     return Err(SkeinError::Semantic(format!(
                         "SET RETURN count variable '{variable}' does not match updated variable '{}'",
@@ -263,41 +266,15 @@ pub(super) fn plan_return_items_with_columns(
     items: &[ReturnItem],
     parameters: &BTreeMap<String, Value>,
 ) -> Result<PlannedReturns> {
-    let has_aggregate = items.iter().any(|item| {
-        matches!(
-            item.expression,
-            ReturnExpression::CountAll
-                | ReturnExpression::CountVariable { .. }
-                | ReturnExpression::CountProperty { .. }
-                | ReturnExpression::CollectVariable { .. }
-                | ReturnExpression::CollectProperty { .. }
-                | ReturnExpression::MinProperty { .. }
-                | ReturnExpression::MaxProperty { .. }
-                | ReturnExpression::AvgProperty { .. }
-        )
-    });
+    let has_aggregate = items
+        .iter()
+        .any(|item| matches!(item.expression, ReturnExpression::Aggregate(_)));
     if has_aggregate {
         let mut group_keys = Vec::new();
         let mut aggregations = Vec::new();
         for item in items {
             match item.expression {
-                ReturnExpression::Variable(_)
-                | ReturnExpression::Property { .. }
-                | ReturnExpression::Value(_)
-                | ReturnExpression::Id(_)
-                | ReturnExpression::RelationshipType(_)
-                | ReturnExpression::Coalesce(_)
-                | ReturnExpression::Left { .. }
-                | ReturnExpression::Lower(_)
-                | ReturnExpression::DatePart { .. }
-                | ReturnExpression::DefaultIfNullOrEq { .. }
-                | ReturnExpression::DefaultIfNull { .. }
-                | ReturnExpression::CasePropertyNotNullOrEq { .. }
-                | ReturnExpression::CasePropertyEqualsRank { .. }
-                | ReturnExpression::CaseLowerPropertyDefault { .. }
-                | ReturnExpression::CaseCoalesceDifferenceFloorZero { .. }
-                | ReturnExpression::CaseEntitySearchRank(_)
-                | ReturnExpression::CaseColumnSearchRank(_) => {
+                ReturnExpression::Value(_) => {
                     group_keys.push(plan_projection_with_columns(
                         scope,
                         column_scope,
@@ -305,14 +282,7 @@ pub(super) fn plan_return_items_with_columns(
                         parameters,
                     )?);
                 }
-                ReturnExpression::CountAll
-                | ReturnExpression::CountVariable { .. }
-                | ReturnExpression::CountProperty { .. }
-                | ReturnExpression::CollectVariable { .. }
-                | ReturnExpression::CollectProperty { .. }
-                | ReturnExpression::MinProperty { .. }
-                | ReturnExpression::MaxProperty { .. }
-                | ReturnExpression::AvgProperty { .. } => {
+                ReturnExpression::Aggregate(_) => {
                     aggregations.push(plan_aggregation(scope, item)?);
                 }
             }
@@ -335,9 +305,9 @@ pub(super) fn returns_are_count_only(items: &[ReturnItem]) -> bool {
         && items.iter().all(|item| {
             matches!(
                 item.expression,
-                ReturnExpression::CountAll
-                    | ReturnExpression::CountVariable { .. }
-                    | ReturnExpression::CountProperty { .. }
+                ReturnExpression::Aggregate(AggregateExpression::CountAll)
+                    | ReturnExpression::Aggregate(AggregateExpression::CountVariable { .. })
+                    | ReturnExpression::Aggregate(AggregateExpression::CountProperty { .. })
             )
         })
 }
@@ -356,8 +326,13 @@ pub(super) fn plan_projection_with_columns(
     item: &ReturnItem,
     parameters: &BTreeMap<String, Value>,
 ) -> Result<Projection> {
-    let (expression, default_name) = match &item.expression {
-        ReturnExpression::Variable(variable) => {
+    let ReturnExpression::Value(value) = &item.expression else {
+        return Err(SkeinError::Semantic(
+            "expected projection return item".to_string(),
+        ));
+    };
+    let (expression, default_name) = match value {
+        ScalarExpression::Variable(variable) => {
             if column_scope.contains(variable) {
                 return Ok(Projection {
                     expression: ProjectionExpression::Column(variable.clone()),
@@ -376,7 +351,7 @@ pub(super) fn plan_projection_with_columns(
                 variable.clone(),
             )
         }
-        ReturnExpression::Property { variable, property } => {
+        ScalarExpression::Property { variable, property } => {
             if column_scope.contains(variable) {
                 return Ok(Projection {
                     expression: ProjectionExpression::ColumnProperty {
@@ -402,7 +377,7 @@ pub(super) fn plan_projection_with_columns(
                 format!("{variable}.{property}"),
             )
         }
-        ReturnExpression::Id(variable) => {
+        ScalarExpression::Id(variable) => {
             if !scope.contains(variable) {
                 return Err(SkeinError::Semantic(format!(
                     "unknown variable '{variable}' in return item"
@@ -415,7 +390,7 @@ pub(super) fn plan_projection_with_columns(
                 format!("id({variable})"),
             )
         }
-        ReturnExpression::RelationshipType(variable) => {
+        ScalarExpression::RelationshipType(variable) => {
             if !scope.contains(variable) {
                 return Err(SkeinError::Semantic(format!(
                     "unknown variable '{variable}' in return item"
@@ -428,16 +403,16 @@ pub(super) fn plan_projection_with_columns(
                 format!("label({variable})"),
             )
         }
-        ReturnExpression::Value(value) => (
+        ScalarExpression::Value(value) => (
             ProjectionExpression::Literal(bind_value(value, parameters)?),
             "literal".to_string(),
         ),
-        ReturnExpression::Coalesce(expressions) => (
+        ScalarExpression::Coalesce(expressions) => (
             ProjectionExpression::Coalesce(
                 expressions
                     .iter()
                     .map(|expression| {
-                        plan_return_value_expression_with_columns(
+                        plan_scalar_expression_with_columns(
                             scope,
                             column_scope,
                             expression,
@@ -448,9 +423,9 @@ pub(super) fn plan_projection_with_columns(
             ),
             "coalesce".to_string(),
         ),
-        ReturnExpression::Left { expression, length } => (
+        ScalarExpression::Left { expression, length } => (
             ProjectionExpression::Left {
-                expression: Box::new(plan_return_value_expression_with_columns(
+                expression: Box::new(plan_scalar_expression_with_columns(
                     scope,
                     column_scope,
                     expression,
@@ -460,8 +435,8 @@ pub(super) fn plan_projection_with_columns(
             },
             "left".to_string(),
         ),
-        ReturnExpression::Lower(expression) => (
-            ProjectionExpression::Lower(Box::new(plan_return_value_expression_with_columns(
+        ScalarExpression::Lower(expression) => (
+            ProjectionExpression::Lower(Box::new(plan_scalar_expression_with_columns(
                 scope,
                 column_scope,
                 expression,
@@ -469,7 +444,7 @@ pub(super) fn plan_projection_with_columns(
             )?)),
             "lower".to_string(),
         ),
-        ReturnExpression::DatePart {
+        ScalarExpression::DatePart {
             part,
             variable,
             property,
@@ -488,7 +463,7 @@ pub(super) fn plan_projection_with_columns(
                 format!("date_part({part}, {variable}.{property})"),
             )
         }
-        ReturnExpression::DefaultIfNullOrEq {
+        ScalarExpression::DefaultIfNullOrEq {
             variable,
             property,
             empty,
@@ -520,7 +495,7 @@ pub(super) fn plan_projection_with_columns(
                 property.clone(),
             )
         }
-        ReturnExpression::DefaultIfNull {
+        ScalarExpression::DefaultIfNull {
             variable,
             property,
             default,
@@ -539,7 +514,7 @@ pub(super) fn plan_projection_with_columns(
                 property.clone(),
             )
         }
-        ReturnExpression::CasePropertyNotNullOrEq {
+        ScalarExpression::CasePropertyNotNullOrEq {
             variable,
             property,
             empty,
@@ -562,7 +537,7 @@ pub(super) fn plan_projection_with_columns(
                 "case".to_string(),
             )
         }
-        ReturnExpression::CasePropertyEqualsRank {
+        ScalarExpression::CasePropertyEqualsRank {
             variable,
             property,
             branches,
@@ -583,7 +558,7 @@ pub(super) fn plan_projection_with_columns(
                 "case".to_string(),
             )
         }
-        ReturnExpression::CaseLowerPropertyDefault {
+        ScalarExpression::CaseLowerPropertyDefault {
             variable,
             property,
             default,
@@ -602,7 +577,7 @@ pub(super) fn plan_projection_with_columns(
                 "case".to_string(),
             )
         }
-        ReturnExpression::CaseCoalesceDifferenceFloorZero { variable, terms } => {
+        ScalarExpression::CaseCoalesceDifferenceFloorZero { variable, terms } => {
             if !scope.contains(variable) {
                 return Err(SkeinError::Semantic(format!(
                     "unknown variable '{variable}' in return item"
@@ -616,7 +591,7 @@ pub(super) fn plan_projection_with_columns(
                 "case".to_string(),
             )
         }
-        ReturnExpression::CaseEntitySearchRank(expression) => {
+        ScalarExpression::CaseEntitySearchRank(expression) => {
             if !scope.contains(&expression.variable) {
                 return Err(SkeinError::Semantic(format!(
                     "unknown variable '{}' in return item",
@@ -640,7 +615,7 @@ pub(super) fn plan_projection_with_columns(
                 "case".to_string(),
             )
         }
-        ReturnExpression::CaseColumnSearchRank(expression) => (
+        ScalarExpression::CaseColumnSearchRank(expression) => (
             ProjectionExpression::CaseColumnSearchRank(Box::new(CaseColumnSearchRankProjection {
                 column: expression.column.clone(),
                 raw_query: bind_value(&expression.raw_query, parameters)?,
@@ -651,18 +626,6 @@ pub(super) fn plan_projection_with_columns(
             })),
             "case".to_string(),
         ),
-        ReturnExpression::CountAll
-        | ReturnExpression::CountVariable { .. }
-        | ReturnExpression::CountProperty { .. }
-        | ReturnExpression::CollectVariable { .. }
-        | ReturnExpression::CollectProperty { .. }
-        | ReturnExpression::MinProperty { .. }
-        | ReturnExpression::MaxProperty { .. }
-        | ReturnExpression::AvgProperty { .. } => {
-            return Err(SkeinError::Semantic(
-                "expected projection return item".to_string(),
-            ));
-        }
     };
     Ok(Projection {
         expression,
@@ -808,9 +771,14 @@ pub(super) fn plan_set_value(
 }
 
 pub(super) fn plan_aggregation(scope: &BTreeSet<String>, item: &ReturnItem) -> Result<Aggregation> {
-    let (function, target, distinct) = match &item.expression {
-        ReturnExpression::CountAll => (AggregateFunction::Count, AggregateTarget::All, false),
-        ReturnExpression::CountVariable { variable, distinct } => {
+    let ReturnExpression::Aggregate(value) = &item.expression else {
+        return Err(SkeinError::Semantic(
+            "expected aggregate return item".to_string(),
+        ));
+    };
+    let (function, target, distinct) = match value {
+        AggregateExpression::CountAll => (AggregateFunction::Count, AggregateTarget::All, false),
+        AggregateExpression::CountVariable { variable, distinct } => {
             if !scope.contains(variable) {
                 return Err(SkeinError::Semantic(format!(
                     "unknown variable '{variable}' in return item"
@@ -822,7 +790,7 @@ pub(super) fn plan_aggregation(scope: &BTreeSet<String>, item: &ReturnItem) -> R
                 *distinct,
             )
         }
-        ReturnExpression::CountProperty {
+        AggregateExpression::CountProperty {
             variable,
             property,
             distinct,
@@ -841,7 +809,7 @@ pub(super) fn plan_aggregation(scope: &BTreeSet<String>, item: &ReturnItem) -> R
                 *distinct,
             )
         }
-        ReturnExpression::CollectProperty {
+        AggregateExpression::CollectProperty {
             variable,
             property,
             distinct,
@@ -860,7 +828,7 @@ pub(super) fn plan_aggregation(scope: &BTreeSet<String>, item: &ReturnItem) -> R
                 *distinct,
             )
         }
-        ReturnExpression::CollectVariable { variable, distinct } => {
+        AggregateExpression::CollectVariable { variable, distinct } => {
             if !scope.contains(variable) {
                 return Err(SkeinError::Semantic(format!(
                     "unknown variable '{variable}' in return item"
@@ -872,7 +840,7 @@ pub(super) fn plan_aggregation(scope: &BTreeSet<String>, item: &ReturnItem) -> R
                 *distinct,
             )
         }
-        ReturnExpression::MinProperty { variable, property } => {
+        AggregateExpression::MinProperty { variable, property } => {
             if !scope.contains(variable) {
                 return Err(SkeinError::Semantic(format!(
                     "unknown variable '{variable}' in return item"
@@ -887,7 +855,7 @@ pub(super) fn plan_aggregation(scope: &BTreeSet<String>, item: &ReturnItem) -> R
                 false,
             )
         }
-        ReturnExpression::MaxProperty { variable, property } => {
+        AggregateExpression::MaxProperty { variable, property } => {
             if !scope.contains(variable) {
                 return Err(SkeinError::Semantic(format!(
                     "unknown variable '{variable}' in return item"
@@ -902,7 +870,7 @@ pub(super) fn plan_aggregation(scope: &BTreeSet<String>, item: &ReturnItem) -> R
                 false,
             )
         }
-        ReturnExpression::AvgProperty { variable, property } => {
+        AggregateExpression::AvgProperty { variable, property } => {
             if !scope.contains(variable) {
                 return Err(SkeinError::Semantic(format!(
                     "unknown variable '{variable}' in return item"
@@ -917,31 +885,6 @@ pub(super) fn plan_aggregation(scope: &BTreeSet<String>, item: &ReturnItem) -> R
                 false,
             )
         }
-        ReturnExpression::Id(_)
-        | ReturnExpression::Variable(_)
-        | ReturnExpression::Value(_)
-        | ReturnExpression::RelationshipType(_)
-        | ReturnExpression::Coalesce(_)
-        | ReturnExpression::Left { .. }
-        | ReturnExpression::Lower(_)
-        | ReturnExpression::DatePart { .. }
-        | ReturnExpression::DefaultIfNullOrEq { .. }
-        | ReturnExpression::DefaultIfNull { .. }
-        | ReturnExpression::CasePropertyNotNullOrEq { .. }
-        | ReturnExpression::CasePropertyEqualsRank { .. }
-        | ReturnExpression::CaseLowerPropertyDefault { .. }
-        | ReturnExpression::CaseCoalesceDifferenceFloorZero { .. }
-        | ReturnExpression::CaseEntitySearchRank(_)
-        | ReturnExpression::CaseColumnSearchRank(_) => {
-            return Err(SkeinError::Semantic(
-                "expected aggregate return item".to_string(),
-            ));
-        }
-        ReturnExpression::Property { .. } => {
-            return Err(SkeinError::Semantic(
-                "expected aggregate return item".to_string(),
-            ));
-        }
     };
     let name = item
         .alias
@@ -955,22 +898,22 @@ pub(super) fn plan_aggregation(scope: &BTreeSet<String>, item: &ReturnItem) -> R
     })
 }
 
-pub(super) fn plan_return_value_expression(
+pub(super) fn plan_scalar_expression(
     scope: &BTreeSet<String>,
-    expression: &ReturnValueExpression,
+    expression: &ScalarExpression,
     parameters: &BTreeMap<String, Value>,
 ) -> Result<ProjectionExpression> {
-    plan_return_value_expression_with_columns(scope, &BTreeSet::new(), expression, parameters)
+    plan_scalar_expression_with_columns(scope, &BTreeSet::new(), expression, parameters)
 }
 
-pub(super) fn plan_return_value_expression_with_columns(
+pub(super) fn plan_scalar_expression_with_columns(
     scope: &BTreeSet<String>,
     column_scope: &BTreeSet<String>,
-    expression: &ReturnValueExpression,
+    expression: &ScalarExpression,
     parameters: &BTreeMap<String, Value>,
 ) -> Result<ProjectionExpression> {
     match expression {
-        ReturnValueExpression::Variable(variable) => {
+        ScalarExpression::Variable(variable) => {
             if column_scope.contains(variable) {
                 return Ok(ProjectionExpression::Column(variable.clone()));
             }
@@ -983,7 +926,7 @@ pub(super) fn plan_return_value_expression_with_columns(
                 variable: variable.clone(),
             })
         }
-        ReturnValueExpression::Property { variable, property } => {
+        ScalarExpression::Property { variable, property } => {
             if column_scope.contains(variable) {
                 return Ok(ProjectionExpression::ColumnProperty {
                     column: variable.clone(),
@@ -1000,7 +943,7 @@ pub(super) fn plan_return_value_expression_with_columns(
                 property: property.clone(),
             })
         }
-        ReturnValueExpression::Id(variable) => {
+        ScalarExpression::Id(variable) => {
             if !scope.contains(variable) {
                 return Err(SkeinError::Semantic(format!(
                     "unknown variable '{variable}' in return item"
@@ -1010,7 +953,7 @@ pub(super) fn plan_return_value_expression_with_columns(
                 variable: variable.clone(),
             })
         }
-        ReturnValueExpression::RelationshipType(variable) => {
+        ScalarExpression::RelationshipType(variable) => {
             if !scope.contains(variable) {
                 return Err(SkeinError::Semantic(format!(
                     "unknown variable '{variable}' in return item"
@@ -1020,24 +963,19 @@ pub(super) fn plan_return_value_expression_with_columns(
                 variable: variable.clone(),
             })
         }
-        ReturnValueExpression::Value(value) => Ok(ProjectionExpression::Literal(bind_value(
+        ScalarExpression::Value(value) => Ok(ProjectionExpression::Literal(bind_value(
             value, parameters,
         )?)),
-        ReturnValueExpression::Coalesce(expressions) => Ok(ProjectionExpression::Coalesce(
+        ScalarExpression::Coalesce(expressions) => Ok(ProjectionExpression::Coalesce(
             expressions
                 .iter()
                 .map(|expression| {
-                    plan_return_value_expression_with_columns(
-                        scope,
-                        column_scope,
-                        expression,
-                        parameters,
-                    )
+                    plan_scalar_expression_with_columns(scope, column_scope, expression, parameters)
                 })
                 .collect::<Result<Vec<_>>>()?,
         )),
-        ReturnValueExpression::Left { expression, length } => Ok(ProjectionExpression::Left {
-            expression: Box::new(plan_return_value_expression_with_columns(
+        ScalarExpression::Left { expression, length } => Ok(ProjectionExpression::Left {
+            expression: Box::new(plan_scalar_expression_with_columns(
                 scope,
                 column_scope,
                 expression,
@@ -1045,10 +983,10 @@ pub(super) fn plan_return_value_expression_with_columns(
             )?),
             length: bind_non_negative_usize(length, parameters, "LEFT length")?,
         }),
-        ReturnValueExpression::Lower(expression) => Ok(ProjectionExpression::Lower(Box::new(
-            plan_return_value_expression_with_columns(scope, column_scope, expression, parameters)?,
+        ScalarExpression::Lower(expression) => Ok(ProjectionExpression::Lower(Box::new(
+            plan_scalar_expression_with_columns(scope, column_scope, expression, parameters)?,
         ))),
-        ReturnValueExpression::DatePart {
+        ScalarExpression::DatePart {
             part,
             variable,
             property,
@@ -1064,7 +1002,7 @@ pub(super) fn plan_return_value_expression_with_columns(
                 property: property.clone(),
             })
         }
-        ReturnValueExpression::DefaultIfNullOrEq {
+        ScalarExpression::DefaultIfNullOrEq {
             variable,
             property,
             empty,
@@ -1090,7 +1028,7 @@ pub(super) fn plan_return_value_expression_with_columns(
                 default: bind_value(default, parameters)?,
             })
         }
-        ReturnValueExpression::DefaultIfNull {
+        ScalarExpression::DefaultIfNull {
             variable,
             property,
             default,
@@ -1106,7 +1044,7 @@ pub(super) fn plan_return_value_expression_with_columns(
                 default: bind_value(default, parameters)?,
             })
         }
-        ReturnValueExpression::CasePropertyNotNullOrEq {
+        ScalarExpression::CasePropertyNotNullOrEq {
             variable,
             property,
             empty,
@@ -1126,7 +1064,7 @@ pub(super) fn plan_return_value_expression_with_columns(
                 null_or_empty: bind_value(null_or_empty, parameters)?,
             })
         }
-        ReturnValueExpression::CasePropertyEqualsRank {
+        ScalarExpression::CasePropertyEqualsRank {
             variable,
             property,
             branches,
@@ -1144,7 +1082,7 @@ pub(super) fn plan_return_value_expression_with_columns(
                 default: bind_value(default, parameters)?,
             })
         }
-        ReturnValueExpression::CaseLowerPropertyDefault {
+        ScalarExpression::CaseLowerPropertyDefault {
             variable,
             property,
             default,
@@ -1160,7 +1098,7 @@ pub(super) fn plan_return_value_expression_with_columns(
                 default: bind_value(default, parameters)?,
             })
         }
-        ReturnValueExpression::CaseCoalesceDifferenceFloorZero { variable, terms } => {
+        ScalarExpression::CaseCoalesceDifferenceFloorZero { variable, terms } => {
             if !scope.contains(variable) {
                 return Err(SkeinError::Semantic(format!(
                     "unknown variable '{variable}' in expression"
@@ -1171,7 +1109,7 @@ pub(super) fn plan_return_value_expression_with_columns(
                 terms: bind_coalesce_difference_terms(terms, parameters)?,
             })
         }
-        ReturnValueExpression::CaseEntitySearchRank(expression) => {
+        ScalarExpression::CaseEntitySearchRank(expression) => {
             if !scope.contains(&expression.variable) {
                 return Err(SkeinError::Semantic(format!(
                     "unknown variable '{}' in expression",
@@ -1192,7 +1130,7 @@ pub(super) fn plan_return_value_expression_with_columns(
                 },
             )))
         }
-        ReturnValueExpression::CaseColumnSearchRank(expression) => {
+        ScalarExpression::CaseColumnSearchRank(expression) => {
             if !column_scope.contains(&expression.column) {
                 return Err(SkeinError::Semantic(format!(
                     "unknown column '{}' in expression",

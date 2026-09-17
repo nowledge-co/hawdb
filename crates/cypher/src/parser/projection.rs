@@ -15,17 +15,20 @@ impl Parser<'_> {
                     if distinct {
                         return Err(self.error("COUNT(DISTINCT *) is not supported"));
                     }
-                    ReturnExpression::CountAll
+                    ReturnExpression::Aggregate(AggregateExpression::CountAll)
                 } else {
                     let variable = self.parse_ident()?;
                     if self.consume_char('.') {
-                        ReturnExpression::CountProperty {
+                        ReturnExpression::Aggregate(AggregateExpression::CountProperty {
                             variable,
                             property: self.parse_ident()?,
                             distinct,
-                        }
+                        })
                     } else {
-                        ReturnExpression::CountVariable { variable, distinct }
+                        ReturnExpression::Aggregate(AggregateExpression::CountVariable {
+                            variable,
+                            distinct,
+                        })
                     }
                 };
                 self.expect_char(')')?;
@@ -36,21 +39,21 @@ impl Parser<'_> {
                 self.expect_char('.')?;
                 let property = self.parse_ident()?;
                 self.expect_char(')')?;
-                ReturnExpression::MinProperty { variable, property }
+                ReturnExpression::Aggregate(AggregateExpression::MinProperty { variable, property })
             } else if self.consume_keyword("MAX") {
                 self.expect_char('(')?;
                 let variable = self.parse_ident()?;
                 self.expect_char('.')?;
                 let property = self.parse_ident()?;
                 self.expect_char(')')?;
-                ReturnExpression::MaxProperty { variable, property }
+                ReturnExpression::Aggregate(AggregateExpression::MaxProperty { variable, property })
             } else if self.consume_keyword("AVG") {
                 self.expect_char('(')?;
                 let variable = self.parse_ident()?;
                 self.expect_char('.')?;
                 let property = self.parse_ident()?;
                 self.expect_char(')')?;
-                ReturnExpression::AvgProperty { variable, property }
+                ReturnExpression::Aggregate(AggregateExpression::AvgProperty { variable, property })
             } else if self.consume_keyword("COLLECT") {
                 self.expect_char('(')?;
                 let distinct = self.consume_keyword("DISTINCT");
@@ -58,17 +61,20 @@ impl Parser<'_> {
                 if self.consume_char('.') {
                     let property = self.parse_ident()?;
                     self.expect_char(')')?;
-                    ReturnExpression::CollectProperty {
+                    ReturnExpression::Aggregate(AggregateExpression::CollectProperty {
                         variable,
                         property,
                         distinct,
-                    }
+                    })
                 } else {
                     self.expect_char(')')?;
-                    ReturnExpression::CollectVariable { variable, distinct }
+                    ReturnExpression::Aggregate(AggregateExpression::CollectVariable {
+                        variable,
+                        distinct,
+                    })
                 }
             } else {
-                self.parse_return_projection_expression()?
+                ReturnExpression::Value(self.parse_scalar_expression()?)
             };
             let alias = if self.consume_keyword("AS") {
                 Some(self.parse_ident()?)
@@ -123,7 +129,7 @@ impl Parser<'_> {
                     && self.peek_char() == Some('('))
             {
                 self.restore(expression_start);
-                OrderExpression::Value(self.parse_return_value_expression()?)
+                OrderExpression::Value(self.parse_scalar_expression()?)
             } else if self.consume_char('.') {
                 OrderExpression::Property {
                     variable: first,
@@ -150,102 +156,11 @@ impl Parser<'_> {
         Ok(items)
     }
 
-    fn parse_return_projection_expression(&mut self) -> Result<ReturnExpression> {
-        let expression = self.parse_return_value_expression()?;
-        Ok(match expression {
-            ReturnValueExpression::Variable(variable) => ReturnExpression::Variable(variable),
-            ReturnValueExpression::Property { variable, property } => {
-                ReturnExpression::Property { variable, property }
-            }
-            ReturnValueExpression::Id(variable) => ReturnExpression::Id(variable),
-            ReturnValueExpression::RelationshipType(variable) => {
-                ReturnExpression::RelationshipType(variable)
-            }
-            ReturnValueExpression::Coalesce(expressions) => ReturnExpression::Coalesce(expressions),
-            ReturnValueExpression::Left { expression, length } => {
-                ReturnExpression::Left { expression, length }
-            }
-            ReturnValueExpression::Lower(expression) => ReturnExpression::Lower(expression),
-            ReturnValueExpression::DatePart {
-                part,
-                variable,
-                property,
-            } => ReturnExpression::DatePart {
-                part,
-                variable,
-                property,
-            },
-            ReturnValueExpression::DefaultIfNullOrEq {
-                variable,
-                property,
-                empty,
-                default,
-            } => ReturnExpression::DefaultIfNullOrEq {
-                variable,
-                property,
-                empty,
-                default,
-            },
-            ReturnValueExpression::DefaultIfNull {
-                variable,
-                property,
-                default,
-            } => ReturnExpression::DefaultIfNull {
-                variable,
-                property,
-                default,
-            },
-            ReturnValueExpression::CasePropertyNotNullOrEq {
-                variable,
-                property,
-                empty,
-                non_empty,
-                null_or_empty,
-            } => ReturnExpression::CasePropertyNotNullOrEq {
-                variable,
-                property,
-                empty,
-                non_empty,
-                null_or_empty,
-            },
-            ReturnValueExpression::CasePropertyEqualsRank {
-                variable,
-                property,
-                branches,
-                default,
-            } => ReturnExpression::CasePropertyEqualsRank {
-                variable,
-                property,
-                branches,
-                default,
-            },
-            ReturnValueExpression::CaseLowerPropertyDefault {
-                variable,
-                property,
-                default,
-            } => ReturnExpression::CaseLowerPropertyDefault {
-                variable,
-                property,
-                default,
-            },
-            ReturnValueExpression::CaseCoalesceDifferenceFloorZero { variable, terms } => {
-                ReturnExpression::CaseCoalesceDifferenceFloorZero { variable, terms }
-            }
-            ReturnValueExpression::CaseEntitySearchRank(expression) => {
-                ReturnExpression::CaseEntitySearchRank(expression)
-            }
-            ReturnValueExpression::CaseColumnSearchRank(expression) => {
-                ReturnExpression::CaseColumnSearchRank(expression)
-            }
-            ReturnValueExpression::Value(value) => ReturnExpression::Value(value),
-        })
+    pub(super) fn parse_scalar_expression(&mut self) -> Result<ScalarExpression> {
+        self.with_recursion(|parser| parser.parse_scalar_expression_inner())
     }
 
-    pub(super) fn parse_return_value_expression(&mut self) -> Result<ReturnValueExpression> {
-        self.with_recursion(|parser| parser.parse_return_value_expression_inner())
-    }
-
-    fn parse_return_value_expression_inner(&mut self) -> Result<ReturnValueExpression> {
+    fn parse_scalar_expression_inner(&mut self) -> Result<ScalarExpression> {
         self.skip_ws();
         if matches!(
             self.peek_char(),
@@ -254,48 +169,48 @@ impl Parser<'_> {
             || self.next_keyword_is("false")
             || self.next_keyword_is("null")
         {
-            return self.parse_value().map(ReturnValueExpression::Value);
+            return self.parse_value().map(ScalarExpression::Value);
         }
 
         let variable = self.parse_ident()?;
         if variable.eq_ignore_ascii_case("id") && self.consume_char('(') {
             let variable = self.parse_ident()?;
             self.expect_char(')')?;
-            return Ok(ReturnValueExpression::Id(variable));
+            return Ok(ScalarExpression::Id(variable));
         }
         if (variable.eq_ignore_ascii_case("label") || variable.eq_ignore_ascii_case("type"))
             && self.consume_char('(')
         {
             let variable = self.parse_ident()?;
             self.expect_char(')')?;
-            return Ok(ReturnValueExpression::RelationshipType(variable));
+            return Ok(ScalarExpression::RelationshipType(variable));
         }
         if variable.eq_ignore_ascii_case("coalesce") && self.consume_char('(') {
             let mut expressions = Vec::new();
             loop {
-                expressions.push(self.parse_return_value_expression()?);
+                expressions.push(self.parse_scalar_expression()?);
                 self.skip_ws();
                 if self.consume_char(')') {
                     break;
                 }
                 self.expect_char(',')?;
             }
-            return Ok(ReturnValueExpression::Coalesce(expressions));
+            return Ok(ScalarExpression::Coalesce(expressions));
         }
         if variable.eq_ignore_ascii_case("left") && self.consume_char('(') {
-            let expression = self.parse_return_value_expression()?;
+            let expression = self.parse_scalar_expression()?;
             self.expect_char(',')?;
             let length = self.parse_value()?;
             self.expect_char(')')?;
-            return Ok(ReturnValueExpression::Left {
+            return Ok(ScalarExpression::Left {
                 expression: Box::new(expression),
                 length,
             });
         }
         if variable.eq_ignore_ascii_case("lower") && self.consume_char('(') {
-            let expression = self.parse_return_value_expression()?;
+            let expression = self.parse_scalar_expression()?;
             self.expect_char(')')?;
-            return Ok(ReturnValueExpression::Lower(Box::new(expression)));
+            return Ok(ScalarExpression::Lower(Box::new(expression)));
         }
         if variable.eq_ignore_ascii_case("date_part") && self.consume_char('(') {
             let part = match self.parse_value()? {
@@ -307,7 +222,7 @@ impl Parser<'_> {
             self.expect_char('.')?;
             let date_property = self.parse_ident()?;
             self.expect_char(')')?;
-            return Ok(ReturnValueExpression::DatePart {
+            return Ok(ScalarExpression::DatePart {
                 part,
                 variable: date_variable,
                 property: date_property,
@@ -342,16 +257,16 @@ impl Parser<'_> {
             return self.parse_case_property_not_null_or_eq_expression();
         }
         if self.consume_char('.') {
-            Ok(ReturnValueExpression::Property {
+            Ok(ScalarExpression::Property {
                 variable,
                 property: self.parse_ident()?,
             })
         } else {
-            Ok(ReturnValueExpression::Variable(variable))
+            Ok(ScalarExpression::Variable(variable))
         }
     }
 
-    fn parse_case_lower_property_default_expression(&mut self) -> Result<ReturnValueExpression> {
+    fn parse_case_lower_property_default_expression(&mut self) -> Result<ScalarExpression> {
         self.expect_keyword("WHEN")?;
         let variable = self.parse_ident()?;
         self.expect_char('.')?;
@@ -375,14 +290,14 @@ impl Parser<'_> {
         self.expect_keyword("ELSE")?;
         let default = self.parse_value()?;
         self.expect_keyword("END")?;
-        Ok(ReturnValueExpression::CaseLowerPropertyDefault {
+        Ok(ScalarExpression::CaseLowerPropertyDefault {
             variable,
             property,
             default,
         })
     }
 
-    fn parse_case_column_search_rank_expression(&mut self) -> Result<ReturnValueExpression> {
+    fn parse_case_column_search_rank_expression(&mut self) -> Result<ScalarExpression> {
         self.expect_keyword("WHEN")?;
         let (column, raw_query) = self.parse_column_equals_value()?;
         self.expect_keyword("THEN")?;
@@ -424,7 +339,7 @@ impl Parser<'_> {
         let fallback_rank = self.parse_value()?;
         self.expect_keyword("END")?;
 
-        Ok(ReturnValueExpression::CaseColumnSearchRank(Box::new(
+        Ok(ScalarExpression::CaseColumnSearchRank(Box::new(
             CaseColumnSearchRankExpression {
                 column,
                 raw_query,
@@ -450,7 +365,7 @@ impl Parser<'_> {
         Ok((column, value))
     }
 
-    fn parse_case_entity_search_rank_expression(&mut self) -> Result<ReturnValueExpression> {
+    fn parse_case_entity_search_rank_expression(&mut self) -> Result<ScalarExpression> {
         self.expect_keyword("WHEN")?;
         let (variable, name_property, raw_query) = self.parse_lower_property_equals_value()?;
         self.expect_keyword("THEN")?;
@@ -480,7 +395,7 @@ impl Parser<'_> {
         let fallback_rank = self.parse_value()?;
         self.expect_keyword("END")?;
 
-        Ok(ReturnValueExpression::CaseEntitySearchRank(Box::new(
+        Ok(ScalarExpression::CaseEntitySearchRank(Box::new(
             CaseEntitySearchRankExpression {
                 variable,
                 name_property,
@@ -525,7 +440,7 @@ impl Parser<'_> {
         Ok((variable, property, value))
     }
 
-    fn parse_default_if_null_or_eq_expression(&mut self) -> Result<ReturnValueExpression> {
+    fn parse_default_if_null_or_eq_expression(&mut self) -> Result<ScalarExpression> {
         self.expect_keyword("WHEN")?;
         let variable = self.parse_ident()?;
         self.expect_char('.')?;
@@ -551,7 +466,7 @@ impl Parser<'_> {
             return Err(self.error("CASE expression ELSE must return the normalized property"));
         }
         self.expect_keyword("END")?;
-        Ok(ReturnValueExpression::DefaultIfNullOrEq {
+        Ok(ScalarExpression::DefaultIfNullOrEq {
             variable,
             property,
             empty,
@@ -559,7 +474,7 @@ impl Parser<'_> {
         })
     }
 
-    fn parse_case_property_not_null_or_eq_expression(&mut self) -> Result<ReturnValueExpression> {
+    fn parse_case_property_not_null_or_eq_expression(&mut self) -> Result<ScalarExpression> {
         self.expect_keyword("WHEN")?;
         let variable = self.parse_ident()?;
         self.expect_char('.')?;
@@ -578,7 +493,7 @@ impl Parser<'_> {
             self.expect_keyword("ELSE")?;
             let default = self.parse_value()?;
             self.expect_keyword("END")?;
-            return Ok(ReturnValueExpression::DefaultIfNull {
+            return Ok(ScalarExpression::DefaultIfNull {
                 variable,
                 property,
                 default,
@@ -599,7 +514,7 @@ impl Parser<'_> {
         self.expect_keyword("ELSE")?;
         let null_or_empty = self.parse_value()?;
         self.expect_keyword("END")?;
-        Ok(ReturnValueExpression::CasePropertyNotNullOrEq {
+        Ok(ScalarExpression::CasePropertyNotNullOrEq {
             variable,
             property,
             empty,
@@ -608,7 +523,7 @@ impl Parser<'_> {
         })
     }
 
-    fn parse_case_property_equals_rank_expression(&mut self) -> Result<ReturnValueExpression> {
+    fn parse_case_property_equals_rank_expression(&mut self) -> Result<ScalarExpression> {
         self.expect_keyword("WHEN")?;
         let variable = self.parse_ident()?;
         self.expect_char('.')?;
@@ -636,7 +551,7 @@ impl Parser<'_> {
         self.expect_keyword("ELSE")?;
         let default = self.parse_value()?;
         self.expect_keyword("END")?;
-        Ok(ReturnValueExpression::CasePropertyEqualsRank {
+        Ok(ScalarExpression::CasePropertyEqualsRank {
             variable,
             property,
             branches,
@@ -644,9 +559,7 @@ impl Parser<'_> {
         })
     }
 
-    fn parse_case_coalesce_difference_floor_zero_expression(
-        &mut self,
-    ) -> Result<ReturnValueExpression> {
+    fn parse_case_coalesce_difference_floor_zero_expression(&mut self) -> Result<ScalarExpression> {
         self.expect_keyword("WHEN")?;
         let (variable, when_terms) = self.parse_coalesce_difference_terms()?;
         self.skip_ws();
@@ -668,7 +581,7 @@ impl Parser<'_> {
             return Err(self.error("CASE floor expression ELSE must repeat the difference"));
         }
         self.expect_keyword("END")?;
-        Ok(ReturnValueExpression::CaseCoalesceDifferenceFloorZero {
+        Ok(ScalarExpression::CaseCoalesceDifferenceFloorZero {
             variable,
             terms: when_terms,
         })

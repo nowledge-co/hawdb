@@ -688,19 +688,9 @@ impl Parser<'_> {
         }
         if self.next_keyword_is("CASE") {
             let items = self.parse_return_items()?;
-            let has_aggregate = items.iter().any(|item| {
-                matches!(
-                    item.expression,
-                    ReturnExpression::CountAll
-                        | ReturnExpression::CountProperty { .. }
-                        | ReturnExpression::CountVariable { .. }
-                        | ReturnExpression::MinProperty { .. }
-                        | ReturnExpression::MaxProperty { .. }
-                        | ReturnExpression::AvgProperty { .. }
-                        | ReturnExpression::CollectProperty { .. }
-                        | ReturnExpression::CollectVariable { .. }
-                )
-            });
+            let has_aggregate = items
+                .iter()
+                .any(|item| matches!(item.expression, ReturnExpression::Aggregate(_)));
             return Ok(ParsedWithClause {
                 optional_with: None,
                 collect_with: None,
@@ -714,10 +704,10 @@ impl Parser<'_> {
         let group_variable = self.parse_ident()?;
         if self.consume_char('.') {
             let first_item = ReturnItem {
-                expression: ReturnExpression::Property {
+                expression: ReturnExpression::Value(ScalarExpression::Property {
                     variable: group_variable,
                     property: self.parse_ident()?,
-                },
+                }),
                 alias: if self.consume_keyword("AS") {
                     Some(self.parse_ident()?)
                 } else {
@@ -742,10 +732,13 @@ impl Parser<'_> {
             let first_count = self.parse_count_return_item_after_count_keyword()?;
             let is_simple_optional_count = matches!(
                 first_count.expression,
-                ReturnExpression::CountVariable { .. }
+                ReturnExpression::Aggregate(AggregateExpression::CountVariable { .. })
             ) && !self.peek_next_with_item_separator();
             if is_simple_optional_count {
-                let ReturnExpression::CountVariable { variable, distinct } = first_count.expression
+                let ReturnExpression::Aggregate(AggregateExpression::CountVariable {
+                    variable,
+                    distinct,
+                }) = first_count.expression
                 else {
                     unreachable!("simple optional count shape checked above");
                 };
@@ -767,7 +760,7 @@ impl Parser<'_> {
             }
             let mut items = vec![
                 ReturnItem {
-                    expression: ReturnExpression::Variable(group_variable),
+                    expression: ReturnExpression::Value(ScalarExpression::Variable(group_variable)),
                     alias: None,
                 },
                 first_count,
@@ -798,23 +791,25 @@ impl Parser<'_> {
             let alias = self.parse_ident()?;
             let first_collect = ReturnItem {
                 expression: if let Some(property) = collect_property.clone() {
-                    ReturnExpression::CollectProperty {
+                    ReturnExpression::Aggregate(AggregateExpression::CollectProperty {
                         variable: collect_variable.clone(),
                         property,
                         distinct,
-                    }
+                    })
                 } else {
-                    ReturnExpression::CollectVariable {
+                    ReturnExpression::Aggregate(AggregateExpression::CollectVariable {
                         variable: collect_variable.clone(),
                         distinct,
-                    }
+                    })
                 },
                 alias: Some(alias.clone()),
             };
             if self.consume_char(',') {
                 let mut items = vec![
                     ReturnItem {
-                        expression: ReturnExpression::Variable(group_variable),
+                        expression: ReturnExpression::Value(ScalarExpression::Variable(
+                            group_variable,
+                        )),
                         alias: None,
                     },
                     first_collect,
@@ -838,7 +833,9 @@ impl Parser<'_> {
                     aggregate_with: Some(WithAggregateProjection {
                         items: vec![
                             ReturnItem {
-                                expression: ReturnExpression::Variable(group_variable),
+                                expression: ReturnExpression::Value(ScalarExpression::Variable(
+                                    group_variable,
+                                )),
                                 alias: None,
                             },
                             first_collect,
@@ -862,7 +859,7 @@ impl Parser<'_> {
         }
         if self.next_keyword_is("CASE") {
             let mut items = vec![ReturnItem {
-                expression: ReturnExpression::Variable(group_variable),
+                expression: ReturnExpression::Value(ScalarExpression::Variable(group_variable)),
                 alias: None,
             }];
             let mut projections = self.parse_return_items()?;
@@ -885,17 +882,20 @@ impl Parser<'_> {
             if distinct {
                 return Err(self.error("COUNT(DISTINCT *) is not supported"));
             }
-            ReturnExpression::CountAll
+            ReturnExpression::Aggregate(AggregateExpression::CountAll)
         } else {
             let variable = self.parse_ident()?;
             if self.consume_char('.') {
-                ReturnExpression::CountProperty {
+                ReturnExpression::Aggregate(AggregateExpression::CountProperty {
                     variable,
                     property: self.parse_ident()?,
                     distinct,
-                }
+                })
             } else {
-                ReturnExpression::CountVariable { variable, distinct }
+                ReturnExpression::Aggregate(AggregateExpression::CountVariable {
+                    variable,
+                    distinct,
+                })
             }
         };
         self.expect_char(')')?;
@@ -1023,10 +1023,10 @@ impl Parser<'_> {
         self.expect_char(',')?;
         self.expect_property_return(variable, "thread_id")?;
         self.expect_char(',')?;
-        let expression = self.parse_return_value_expression()?;
+        let expression = self.parse_scalar_expression()?;
         let space_id_matches = matches!(
             expression,
-            ReturnValueExpression::DefaultIfNullOrEq {
+            ScalarExpression::DefaultIfNullOrEq {
                 variable: ref expression_variable,
                 ref property,
                 ..
@@ -1036,8 +1036,8 @@ impl Parser<'_> {
             return Err(self.error("thread repair RETURN must normalize thread space_id"));
         }
         self.expect_char(',')?;
-        let expression = self.parse_return_value_expression()?;
-        if !matches!(expression, ReturnValueExpression::Coalesce(_)) {
+        let expression = self.parse_scalar_expression()?;
+        if !matches!(expression, ScalarExpression::Coalesce(_)) {
             return Err(self.error("thread repair RETURN must coalesce message_count"));
         }
         self.expect_char(',')?;

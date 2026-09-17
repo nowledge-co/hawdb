@@ -558,21 +558,21 @@ pub enum PropertyPredicate {
         value: ValueExpression,
     },
     ExpressionEq {
-        expression: ReturnValueExpression,
-        value: ReturnValueExpression,
+        expression: ScalarExpression,
+        value: ScalarExpression,
     },
     ExpressionNotEq {
-        expression: ReturnValueExpression,
-        value: ReturnValueExpression,
+        expression: ScalarExpression,
+        value: ScalarExpression,
     },
     ExpressionCompare {
-        expression: ReturnValueExpression,
+        expression: ScalarExpression,
         op: ComparisonOp,
-        value: ReturnValueExpression,
+        value: ScalarExpression,
     },
     ExpressionContains {
-        expression: ReturnValueExpression,
-        value: ReturnValueExpression,
+        expression: ScalarExpression,
+        value: ScalarExpression,
     },
     ListContains {
         variable: String,
@@ -656,8 +656,17 @@ pub struct ReturnItem {
     pub alias: Option<String>,
 }
 
+/// A scalar expression shared by projections, predicates and nested calls.
+///
+/// Aggregates are return items, not scalar function arguments:
+///
+/// ```compile_fail
+/// use skein_cypher::{AggregateExpression, ScalarExpression};
+///
+/// let nested = ScalarExpression::Coalesce(vec![AggregateExpression::CountAll]);
+/// ```
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub enum ReturnValueExpression {
+pub enum ScalarExpression {
     Variable(String),
     Property {
         variable: String,
@@ -666,12 +675,12 @@ pub enum ReturnValueExpression {
     Id(String),
     RelationshipType(String),
     Value(ValueExpression),
-    Coalesce(Vec<ReturnValueExpression>),
+    Coalesce(Vec<ScalarExpression>),
     Left {
-        expression: Box<ReturnValueExpression>,
+        expression: Box<ScalarExpression>,
         length: ValueExpression,
     },
-    Lower(Box<ReturnValueExpression>),
+    Lower(Box<ScalarExpression>),
     DatePart {
         part: String,
         variable: String,
@@ -714,62 +723,15 @@ pub enum ReturnValueExpression {
     CaseColumnSearchRank(Box<CaseColumnSearchRankExpression>),
 }
 
+/// A projection or grouping expression, with aggregation explicit in its type.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ReturnExpression {
-    Variable(String),
-    Property {
-        variable: String,
-        property: String,
-    },
-    Id(String),
-    RelationshipType(String),
-    Value(ValueExpression),
-    Coalesce(Vec<ReturnValueExpression>),
-    Left {
-        expression: Box<ReturnValueExpression>,
-        length: ValueExpression,
-    },
-    Lower(Box<ReturnValueExpression>),
-    DatePart {
-        part: String,
-        variable: String,
-        property: String,
-    },
-    DefaultIfNullOrEq {
-        variable: String,
-        property: String,
-        empty: ValueExpression,
-        default: ValueExpression,
-    },
-    DefaultIfNull {
-        variable: String,
-        property: String,
-        default: ValueExpression,
-    },
-    CasePropertyNotNullOrEq {
-        variable: String,
-        property: String,
-        empty: ValueExpression,
-        non_empty: ValueExpression,
-        null_or_empty: ValueExpression,
-    },
-    CasePropertyEqualsRank {
-        variable: String,
-        property: String,
-        branches: Vec<(ValueExpression, ValueExpression)>,
-        default: ValueExpression,
-    },
-    CaseLowerPropertyDefault {
-        variable: String,
-        property: String,
-        default: ValueExpression,
-    },
-    CaseCoalesceDifferenceFloorZero {
-        variable: String,
-        terms: Vec<CoalesceDifferenceTerm>,
-    },
-    CaseEntitySearchRank(Box<CaseEntitySearchRankExpression>),
-    CaseColumnSearchRank(Box<CaseColumnSearchRankExpression>),
+    Value(ScalarExpression),
+    Aggregate(AggregateExpression),
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum AggregateExpression {
     CountAll,
     CountVariable {
         variable: String,
@@ -842,7 +804,7 @@ pub struct OrderItem {
 pub enum OrderExpression {
     Property { variable: String, property: String },
     Id { variable: String },
-    Value(ReturnValueExpression),
+    Value(ScalarExpression),
     Column(String),
 }
 
