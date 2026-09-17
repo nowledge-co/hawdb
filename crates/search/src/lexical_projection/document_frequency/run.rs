@@ -321,7 +321,11 @@ impl FrequencyRunReader {
                 spill_memory::read_text(&mut reader, length, self.task.as_ref())
             })?
         } else {
-            spill_memory::read_text(&mut reader, length, self.task.as_ref())?.into()
+            Term::untracked(spill_memory::read_text(
+                &mut reader,
+                length,
+                self.task.as_ref(),
+            )?)
         };
         let mut field = [0u8; 1];
         reader.read_exact(&mut field)?;

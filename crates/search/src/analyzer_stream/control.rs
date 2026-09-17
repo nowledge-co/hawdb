@@ -3,6 +3,7 @@ use crate::build_memory::{checked_add, checked_mul, BuildMemory};
 use crate::build_term::Term;
 use crate::{RuntimeTaskContext, SkeinError};
 use skein_executor::QueryMemoryLease;
+use std::collections::hash_map::Entry;
 use std::mem::size_of;
 
 #[derive(Clone, Copy, Default)]
@@ -32,45 +33,61 @@ impl Control<'_> {
 
 pub(super) struct Dedup<'a> {
     terms: HashMap<Text<'a>, ()>,
-    memory: Option<QueryMemoryLease>,
+    _memory: Option<QueryMemoryLease>,
 }
 
 impl<'a> Dedup<'a> {
     pub(super) fn new() -> Self {
         Self {
             terms: HashMap::new(),
-            memory: None,
+            _memory: None,
         }
     }
 
     pub(super) fn insert(&mut self, text: Text<'a>, control: Control<'_>) -> Result<Option<Term>> {
-        if self.terms.contains_key(text.as_str()) {
-            return Ok(None);
-        }
         if self.terms.len() == self.terms.capacity() {
-            let old = table_bytes::<(Text<'_>, ())>(self.terms.capacity())?;
-            let next = table_bytes::<(Text<'_>, ())>(checked_add(self.terms.len(), 1)?)?;
-            if let Some(memory) = control.memory {
-                match self.memory.as_mut() {
-                    Some(lease) => lease.grow(next)?,
-                    None => self.memory = Some(memory.retained.reserve(next)?),
-                }
+            // A duplicate must not need a replacement admission when full.
+            if self.terms.contains_key(text.as_str()) {
+                return Ok(None);
             }
-            self.terms.try_reserve(1).map_err(|error| {
-                SkeinError::Execution(format!("reserve search identifier deduplication: {error}"))
-            })?;
-            if table_bytes::<(Text<'_>, ())>(self.terms.capacity())? > next {
-                return Err(SkeinError::Execution(
-                    "search identifier deduplication exceeded admitted capacity".into(),
-                ));
-            }
-            if let Some(memory) = self.memory.as_mut() {
-                memory.shrink(old);
+            let mut replacement = Self::with_capacity(checked_add(self.terms.len(), 1)?, control)?;
+            replacement.terms.extend(self.terms.drain());
+            // Release the old allocation and lease before copying a new term,
+            // preserving the existing peak-admission boundary. Growth failures
+            // before this commit leave the original owner unchanged.
+            *self = replacement;
+        }
+        match self.terms.entry(text) {
+            Entry::Occupied(_) => Ok(None),
+            Entry::Vacant(entry) => {
+                let emitted = entry.key().materialize(control)?;
+                entry.insert(());
+                Ok(Some(emitted))
             }
         }
-        let emitted = text.materialize(control)?;
-        self.terms.insert(text, ());
-        Ok(Some(emitted))
+    }
+
+    fn with_capacity(capacity: usize, control: Control<'_>) -> Result<Self> {
+        let bytes = table_bytes::<(Text<'_>, ())>(capacity)?;
+        let memory = control
+            .memory
+            .map(|memory| memory.retained.reserve(bytes))
+            .transpose()?;
+        // Field order keeps this candidate's lease alive through allocation
+        // failure and capacity rejection, without a manual grow/shrink rollback.
+        let mut candidate = Self {
+            terms: HashMap::new(),
+            _memory: memory,
+        };
+        candidate.terms.try_reserve(capacity).map_err(|error| {
+            SkeinError::Execution(format!("reserve search identifier deduplication: {error}"))
+        })?;
+        if table_bytes::<(Text<'_>, ())>(candidate.terms.capacity())? > bytes {
+            return Err(SkeinError::Execution(
+                "search identifier deduplication exceeded admitted capacity".into(),
+            ));
+        }
+        Ok(candidate)
     }
 }
 

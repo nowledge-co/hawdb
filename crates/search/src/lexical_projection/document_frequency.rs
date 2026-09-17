@@ -221,8 +221,7 @@ impl AnalyzedDocument<'_> {
             Self::Resident(analysis) => {
                 let mut resident = analysis
                     .required_map_bytes(analysis.resident_bytes, analysis.frequencies.len());
-                let _map_memory = analysis.map_memory;
-                for (term, entry) in analysis.frequencies {
+                for (term, entry) in analysis.into_frequencies() {
                     let marker_bytes =
                         (std::mem::size_of::<AnalyzedTerm>() - std::mem::size_of::<u32>()) as u64;
                     resident = resident.saturating_sub(term.len() as u64 + 32 + marker_bytes);
@@ -368,7 +367,6 @@ pub(super) fn analyze_with_control<'a>(
                         ));
                     }
                     let analysis = resident.take().expect("resident accumulator");
-                    let _map_memory = analysis.map_memory;
                     let mut external = SpillingAnalysis {
                         records: Vec::new(),
                         string_bytes: 0,
@@ -381,7 +379,7 @@ pub(super) fn analyze_with_control<'a>(
                             .transpose()?,
                     };
                     if !analysis.frequencies.is_empty() {
-                        let prefix = analysis.frequencies.into_iter().map(|(term, entry)| {
+                        let prefix = analysis.into_frequencies().map(|(term, entry)| {
                             Ok(FrequencyRecord {
                                 term,
                                 field: entry.last_field,

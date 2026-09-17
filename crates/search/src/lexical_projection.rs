@@ -632,6 +632,25 @@ struct DocumentAnalysis<'a> {
     map_memory: Option<QueryMemoryLease>,
 }
 
+// The iterator owns the map's allocation lease through early return and unwind.
+// Its remaining nodes and terms are destroyed before the lease is released.
+struct FrequencyEntries {
+    entries: std::collections::btree_map::IntoIter<Term, AnalyzedTerm>,
+    _memory: Option<QueryMemoryLease>,
+}
+
+impl Iterator for FrequencyEntries {
+    type Item = (Term, AnalyzedTerm);
+
+    fn next(&mut self) -> Option<Self::Item> {
+        self.entries.next()
+    }
+
+    fn size_hint(&self) -> (usize, Option<usize>) {
+        self.entries.size_hint()
+    }
+}
+
 impl<'a> DocumentAnalysis<'a> {
     fn new(document_id: &'a str, config: LexicalProjectionConfig) -> Result<Self> {
         Self::new_with_memory(document_id, config, None)
@@ -663,7 +682,7 @@ impl<'a> DocumentAnalysis<'a> {
         field: u8,
         weight: usize,
     ) -> Result<()> {
-        self.push_term(term.into(), occurrence, field, weight)
+        self.push_term(Term::untracked(term), occurrence, field, weight)
     }
 
     fn push_term(
@@ -726,15 +745,23 @@ impl<'a> DocumentAnalysis<'a> {
         resident_bytes.saturating_add((terms as u64).saturating_mul(marker_bytes))
     }
 
+    fn into_frequencies(self) -> FrequencyEntries {
+        FrequencyEntries {
+            entries: self.frequencies.into_iter(),
+            _memory: self.map_memory,
+        }
+    }
+
     fn finish(self) -> Result<DeltaDocument> {
+        let document_len = self.document_len;
+        let resident_bytes = self.resident_bytes;
         Ok(DeltaDocument {
-            document_len: self.document_len,
+            document_len,
             frequencies: self
-                .frequencies
-                .into_iter()
+                .into_frequencies()
                 .map(|(term, entry)| Ok((term.into_untracked()?, entry.frequency)))
                 .collect::<Result<_>>()?,
-            resident_bytes: self.resident_bytes,
+            resident_bytes,
             base: None,
         })
     }
@@ -1885,7 +1912,11 @@ impl RunReader {
                 spill_memory::read_text(&mut self.reader, length, self.task.as_ref())
             })?
         } else {
-            spill_memory::read_text(&mut self.reader, length, self.task.as_ref())?.into()
+            Term::untracked(spill_memory::read_text(
+                &mut self.reader,
+                length,
+                self.task.as_ref(),
+            )?)
         };
         let id_length = read_optional_length(
             &mut self.reader,
@@ -2058,7 +2089,7 @@ fn decode_posting_block(
     let mut previous = None;
     for _ in 0..count {
         let posting = Posting {
-            term: cursor.string(max_term_bytes)?.into(),
+            term: Term::untracked(cursor.string(max_term_bytes)?),
             document_id: cursor.string(1024 * 1024)?,
             term_frequency: cursor.u32()?,
             document_len: cursor.u32()?,

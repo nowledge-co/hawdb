@@ -154,6 +154,7 @@ fn resident_frequency_drain_releases_remaining_nodes_on_consumer_error_and_unwin
             document_frequency::AnalyzedDocument::Resident(analysis).visit(
                 Default::default(),
                 |term, _, _| {
+                    assert!(memory.ledger.snapshot().used_bytes >= 3 * MAP_ENTRY_BYTES);
                     retained = Some(term);
                     if unwind {
                         panic!("frequency consumer unwind");
@@ -238,4 +239,28 @@ fn admitted_resident_frequencies_match_seeded_legacy_field_semantics() {
             assert_eq!(memory.ledger.snapshot().used_bytes, 0);
         }
     }
+}
+
+#[test]
+fn frequency_iterator_keeps_the_map_admitted_after_its_analysis_scope_ends() {
+    let (_, memory) = context();
+    let mut entries = {
+        let mut analysis =
+            DocumentAnalysis::new_with_memory("owned", Default::default(), Some(&memory)).unwrap();
+        for text in ["alpha", "beta", "gamma"] {
+            let term = Term::copy(text, Some(&memory)).unwrap();
+            analysis
+                .push_term(term, TokenOccurrence::Repeated, 0, 1)
+                .unwrap();
+        }
+        analysis.into_frequencies()
+    };
+    let (retained, _) = entries.next().unwrap();
+    assert!(memory.ledger.snapshot().used_bytes >= 3 * MAP_ENTRY_BYTES);
+    drop(entries);
+    let bytes = memory.ledger.snapshot().used_bytes;
+    assert!(bytes > 0 && bytes < MAP_ENTRY_BYTES);
+    assert_eq!(retained.as_str(), "alpha");
+    drop(retained);
+    assert_eq!(memory.ledger.snapshot().used_bytes, 0);
 }

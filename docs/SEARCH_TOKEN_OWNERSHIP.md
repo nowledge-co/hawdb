@@ -39,6 +39,29 @@ terms remain independently owned after the map is gone. Artifact copies preserve
 this distinction: shared term clones allocate no additional payload, while
 untracked clones and statistics strings retain their separate copy admission.
 
+## Private ownership boundaries
+
+Production code opts into legacy or separately admitted string copies through
+`Term::untracked`; infallible `From<String>` and `From<&str>` conversions exist
+only in test fixtures. Admitted paths continue to use the fallible constructors.
+This prevents an accidental production `term.into()` from silently dropping the
+admission requirement; explicitly choosing an untracked constructor still needs
+call-site review.
+
+Dedup growth first admits and validates a separate replacement table. Failure
+before transferring entries drops the candidate and its lease, preserving the
+original table. Successful growth releases the old table before materializing
+the new term, preserving the previous peak-memory boundary. If materialization
+then fails, the larger table remains correctly charged and can be retried.
+Spare-capacity insertions use one entry lookup; a full table checks duplicates
+before requesting replacement capacity.
+
+Consuming a resident frequency map returns an iterator that owns both the
+remaining entries and their capacity lease, in that drop order. Early return,
+partial iteration and unwind retain that ownership without a caller-local
+keepalive binding. Tracked artifact terms share the original payload admission;
+reserved merge terms still make independently admitted retained copies.
+
 ## Capacity model and qualification
 
 The model is qualified against Rust 1.97.1 on x86_64 Linux and the pinned analyzer

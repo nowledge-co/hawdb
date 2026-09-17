@@ -39,7 +39,7 @@ fn dedup_growth_admits_replacement_beside_the_old_table() {
             );
             competing.shrink(1);
             drop(dedup.insert(text, control).unwrap().unwrap());
-            assert_eq!(dedup.memory.as_ref().unwrap().bytes(), next_bytes);
+            assert_eq!(dedup._memory.as_ref().unwrap().bytes(), next_bytes);
             assert_eq!(
                 memory.ledger.snapshot().used_bytes,
                 before.used_bytes + competing.bytes() + next_bytes - old_bytes
@@ -99,4 +99,78 @@ fn lowercase_bounds_cover_every_unicode_scalar_and_contextual_sigma() {
     assert_eq!(part.as_str(), "\u{3bf}\u{3c3}");
     drop((raw, part));
     assert_eq!(memory.ledger.snapshot().used_bytes, 0);
+}
+
+#[test]
+fn rejected_term_materialization_keeps_the_replacement_admitted_for_retry() {
+    let memory = memory();
+    let control = Control {
+        memory: Some(&memory),
+        ..Default::default()
+    };
+    let next = "new-key".repeat(512);
+    let mut dedup = Dedup::new();
+    for key in ["alpha", "beta", "gamma"] {
+        drop(dedup.insert(Text::Borrowed(key), control).unwrap());
+    }
+    let capacity = dedup.terms.capacity();
+    assert_eq!(dedup.terms.len(), capacity);
+    let before = memory.ledger.snapshot();
+    let replacement = table_bytes::<(Text<'_>, ())>(capacity + 1).unwrap();
+    let competing = memory
+        .input
+        .reserve(before.budget_bytes - before.used_bytes - replacement)
+        .unwrap();
+    let error = dedup.insert(Text::Borrowed(&next), control).unwrap_err();
+    assert!(error.to_string().contains("query_memory_bytes"));
+    assert!(dedup.terms.capacity() > capacity);
+    let retained = table_bytes::<(Text<'_>, ())>(dedup.terms.capacity()).unwrap();
+    assert_eq!(dedup._memory.as_ref().unwrap().bytes(), retained);
+    assert_eq!(dedup.terms.len(), 3);
+    for key in ["alpha", "beta", "gamma"] {
+        assert!(dedup.terms.contains_key(key));
+    }
+    assert!(!dedup.terms.contains_key(next.as_str()));
+    assert_eq!(
+        memory.ledger.snapshot().used_bytes,
+        retained + competing.bytes()
+    );
+    drop(competing);
+    let term = dedup
+        .insert(Text::Borrowed(&next), control)
+        .unwrap()
+        .unwrap();
+    assert_eq!(term.as_str(), next);
+    drop(term);
+    drop(dedup);
+    assert_eq!(memory.ledger.snapshot().used_bytes, 0);
+}
+
+#[test]
+fn duplicates_need_no_new_admission_with_full_or_spare_capacity() {
+    for count in [3, 4] {
+        let memory = memory();
+        let control = Control {
+            memory: Some(&memory),
+            ..Default::default()
+        };
+        let mut dedup = Dedup::new();
+        for key in ["alpha", "beta", "gamma", "delta"].into_iter().take(count) {
+            drop(dedup.insert(Text::Borrowed(key), control).unwrap());
+        }
+        assert_eq!(dedup.terms.len() == dedup.terms.capacity(), count == 3);
+        let before = memory.ledger.snapshot();
+        let competing = memory
+            .input
+            .reserve(before.budget_bytes - before.used_bytes)
+            .unwrap();
+        assert!(dedup
+            .insert(Text::Borrowed("alpha"), control)
+            .unwrap()
+            .is_none());
+        assert_eq!(memory.ledger.snapshot().used_bytes, before.budget_bytes);
+        drop(competing);
+        drop(dedup);
+        assert_eq!(memory.ledger.snapshot().used_bytes, 0);
+    }
 }
