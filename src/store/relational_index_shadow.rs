@@ -25,21 +25,19 @@ use skein_storage::relational_index_view::{
     map_index_row_snapshot_error, CanonicalRelationalIndexRowSource,
 };
 pub(crate) use skein_storage::relational_index_view::{
-    RelationalIndexProbeStatistics, RelationalIndexReadView, RelationalIndexReadViewIdentity,
-    RelationalTransactionIndexView,
+    RelationalIndexProbeStatistics, RelationalIndexReadView, RelationalTransactionIndexView,
 };
 pub use skein_storage::relational_index_view::{
     RelationalIndexReadViewBackendReport, RelationalIndexReadViewReport,
 };
 
-use super::{GraphStore, RelationalIndexStorageResidencyReport, SkeinError};
+use super::{GraphStore, SkeinError};
 use skein_integrity::IntegrityHasher;
 #[cfg(test)]
-use skein_storage::relational_index_shadow_artifact_file;
+use skein_storage::{relational_index_shadow_artifact_file, RelationalIndexMode};
 use skein_storage::{
     relational_index_shadow_manifest_generation_file, RelationalCheckpointIndexLoad,
-    RelationalIndexChangeCapture, RelationalIndexChangeCaptureLimits,
-    RelationalIndexGenerationArtifacts, RelationalIndexMode, RelationalIndexRangeScan,
+    RelationalIndexChangeCapture, RelationalIndexChangeCaptureLimits, RelationalIndexRangeScan,
     RelationalIndexReadLimits, RelationalIndexRecoveryBuilder, RelationalIndexRecoveryConfig,
     RelationalIndexRecoveryReader, RelationalIndexRecoveryReport, RelationalIndexRole,
     RelationalIndexShadowBuildReport, RelationalIndexShadowConfig, RelationalIndexShadowError,
@@ -180,102 +178,9 @@ pub(super) struct PreparedRelationalIndexCandidate {
     pub(super) report: RelationalIndexShadowCheckpointReport,
 }
 
-#[derive(Debug, Clone, Default)]
-pub(super) struct RelationalIndexShadowState {
-    mode: RelationalIndexMode,
-    expected_previous_generation: Option<u64>,
-    checkpoint_report: Option<RelationalIndexShadowCheckpointReport>,
-    recovery_builder: Option<RelationalIndexRecoveryBuilder>,
-    recovery_report: Option<RelationalIndexRecoveryReport>,
-    recovery_status: RelationalIndexShadowRecoveryStatus,
-    read_view: Option<Arc<RelationalIndexReadView>>,
-    live_limits: RelationalIndexChangeCaptureLimits,
-    generation_artifacts: Option<RelationalIndexGenerationArtifacts>,
-}
-
-impl RelationalIndexShadowState {
-    pub(super) fn new(mode: RelationalIndexMode) -> Self {
-        Self {
-            mode,
-            recovery_status: if mode.publishes_persistent_indexes() {
-                RelationalIndexShadowRecoveryStatus::Missing
-            } else {
-                RelationalIndexShadowRecoveryStatus::Disabled
-            },
-            ..Self::default()
-        }
-    }
-
-    fn current_read_view(&self, commit_epoch: u64) -> Option<&Arc<RelationalIndexReadView>> {
-        self.read_view
-            .as_ref()
-            .filter(|view| view.identity().visible_commit_epoch == commit_epoch)
-    }
-
-    pub(super) fn residency_report(
-        &self,
-        commit_epoch: u64,
-    ) -> RelationalIndexStorageResidencyReport {
-        self.current_read_view(commit_epoch)
-            .map_or_else(RelationalIndexStorageResidencyReport::default, |view| {
-                view.residency_report()
-            })
-    }
-
-    fn selected_read_failure(&self) -> Option<RelationalIndexShadowError> {
-        if !self.mode.serves_demand_paged_reads() {
-            return None;
-        }
-        match &self.recovery_status {
-            RelationalIndexShadowRecoveryStatus::Stale {
-                generation,
-                source_commit_epoch,
-                checkpoint_generation,
-                checkpoint_commit_epoch,
-            } => Some(RelationalIndexShadowError::Corrupt(format!(
-                "relational index generation/epoch {generation}/{source_commit_epoch} does not match checkpoint {checkpoint_generation}/{checkpoint_commit_epoch}"
-            ))),
-            RelationalIndexShadowRecoveryStatus::DiscardedInvalid { error }
-            | RelationalIndexShadowRecoveryStatus::InvalidWritable { error }
-            | RelationalIndexShadowRecoveryStatus::InvalidReadOnly { error } => {
-                Some(RelationalIndexShadowError::Corrupt(error.clone()))
-            }
-            _ => None,
-        }
-    }
-
-    pub(super) fn snapshot_at_epoch(&self, commit_epoch: u64) -> Self {
-        let mut snapshot = self.clone();
-        snapshot.read_view = self.current_read_view(commit_epoch).cloned();
-        snapshot.recovery_builder = None;
-        snapshot
-    }
-
-    fn stage_live_publication(
-        &self,
-        current_epoch: u64,
-        next_epoch: u64,
-        capture: Option<RelationalIndexChangeCapture>,
-    ) -> Option<Result<Arc<RelationalIndexReadView>, RelationalIndexLiveUnavailable>> {
-        let view = self.current_read_view(current_epoch)?;
-        Some(
-            view.advance(next_epoch, capture, self.live_limits)
-                .map(Arc::new)
-                .map_err(|reason| RelationalIndexLiveUnavailable {
-                    identity: view.identity(),
-                    failed_commit_epoch: next_epoch,
-                    reason,
-                }),
-        )
-    }
-}
-
-pub(super) struct RelationalIndexLiveUnavailable {
-    identity: RelationalIndexReadViewIdentity,
-    failed_commit_epoch: u64,
-    reason: String,
-}
-
+pub(super) use skein_storage::relational::{
+    RelationalIndexLiveUnavailable, RelationalIndexShadowState,
+};
 impl GraphStore {
     pub(super) fn relational_checkpoint_index_load(&self) -> RelationalCheckpointIndexLoad {
         if self

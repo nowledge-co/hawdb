@@ -578,6 +578,112 @@ pub enum RelationalIndexShadowRecoveryStatus {
     },
 }
 
+#[doc(hidden)]
+#[derive(Debug, Clone, Default)]
+pub struct RelationalIndexShadowState {
+    pub mode: crate::config::RelationalIndexMode,
+    pub expected_previous_generation: Option<u64>,
+    pub checkpoint_report: Option<RelationalIndexShadowCheckpointReport>,
+    pub recovery_builder: Option<recovery::RelationalIndexRecoveryBuilder>,
+    pub recovery_report: Option<recovery::RelationalIndexRecoveryReport>,
+    pub recovery_status: RelationalIndexShadowRecoveryStatus,
+    pub read_view: Option<std::sync::Arc<crate::relational_index_view::RelationalIndexReadView>>,
+    pub live_limits: super::RelationalIndexChangeCaptureLimits,
+    pub generation_artifacts: Option<RelationalIndexGenerationArtifacts>,
+}
+
+impl RelationalIndexShadowState {
+    pub fn new(mode: crate::config::RelationalIndexMode) -> Self {
+        Self {
+            mode,
+            recovery_status: if mode.publishes_persistent_indexes() {
+                RelationalIndexShadowRecoveryStatus::Missing
+            } else {
+                RelationalIndexShadowRecoveryStatus::Disabled
+            },
+            ..Self::default()
+        }
+    }
+
+    pub fn current_read_view(
+        &self,
+        commit_epoch: u64,
+    ) -> Option<&std::sync::Arc<crate::relational_index_view::RelationalIndexReadView>> {
+        self.read_view
+            .as_ref()
+            .filter(|view| view.identity().visible_commit_epoch == commit_epoch)
+    }
+
+    pub fn residency_report(
+        &self,
+        commit_epoch: u64,
+    ) -> crate::RelationalIndexStorageResidencyReport {
+        self.current_read_view(commit_epoch).map_or_else(
+            crate::RelationalIndexStorageResidencyReport::default,
+            |view| view.residency_report(),
+        )
+    }
+
+    pub fn selected_read_failure(&self) -> Option<RelationalIndexShadowError> {
+        if !self.mode.serves_demand_paged_reads() {
+            return None;
+        }
+        match &self.recovery_status {
+            RelationalIndexShadowRecoveryStatus::Stale {
+                generation,
+                source_commit_epoch,
+                checkpoint_generation,
+                checkpoint_commit_epoch,
+            } => Some(RelationalIndexShadowError::Corrupt(format!(
+                "relational index generation/epoch {generation}/{source_commit_epoch} does not match checkpoint {checkpoint_generation}/{checkpoint_commit_epoch}"
+            ))),
+            RelationalIndexShadowRecoveryStatus::DiscardedInvalid { error }
+            | RelationalIndexShadowRecoveryStatus::InvalidWritable { error }
+            | RelationalIndexShadowRecoveryStatus::InvalidReadOnly { error } => {
+                Some(RelationalIndexShadowError::Corrupt(error.clone()))
+            }
+            _ => None,
+        }
+    }
+
+    pub fn snapshot_at_epoch(&self, commit_epoch: u64) -> Self {
+        let mut snapshot = self.clone();
+        snapshot.read_view = self.current_read_view(commit_epoch).cloned();
+        snapshot.recovery_builder = None;
+        snapshot
+    }
+
+    pub fn stage_live_publication(
+        &self,
+        current_epoch: u64,
+        next_epoch: u64,
+        capture: Option<super::RelationalIndexChangeCapture>,
+    ) -> Option<
+        Result<
+            std::sync::Arc<crate::relational_index_view::RelationalIndexReadView>,
+            RelationalIndexLiveUnavailable,
+        >,
+    > {
+        let view = self.current_read_view(current_epoch)?;
+        Some(
+            view.advance(next_epoch, capture, self.live_limits)
+                .map(std::sync::Arc::new)
+                .map_err(|reason| RelationalIndexLiveUnavailable {
+                    identity: view.identity(),
+                    failed_commit_epoch: next_epoch,
+                    reason,
+                }),
+        )
+    }
+}
+
+#[doc(hidden)]
+pub struct RelationalIndexLiveUnavailable {
+    pub identity: crate::relational_index_view::RelationalIndexReadViewIdentity,
+    pub failed_commit_epoch: u64,
+    pub reason: String,
+}
+
 #[derive(Debug)]
 pub enum RelationalIndexShadowError {
     Admission(String),
