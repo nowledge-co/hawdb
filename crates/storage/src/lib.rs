@@ -51,6 +51,7 @@ pub mod relational_row_workspace;
 #[doc(hidden)]
 pub mod residency;
 pub mod scan;
+pub mod schema;
 pub mod snapshot;
 #[doc(hidden)]
 pub mod source_scan;
