@@ -33,8 +33,9 @@ struct JoinRun {
 }
 
 struct JoinWriter {
-    run: JoinRun,
+    // Release the writer's shared run handle before its metadata admission.
     writer: SpillWriter,
+    run: JoinRun,
     _buffer: QueryMemoryLease,
 }
 
