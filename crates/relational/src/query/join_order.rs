@@ -3,7 +3,10 @@ use super::{
     RelationalBaseAccessPlanning, RelationalJoinPlanningContext, RelationalQueryLimits,
     RelationalQueryReadModes, RelationalQueryStoreReader,
 };
-use crate::field_plan::{resolve_relational_order_target, RelationalOrderTarget};
+use crate::field_plan::{
+    plan_relational_field_plan, resolve_relational_order_target, RelationalFieldPlan,
+    RelationalOrderTarget,
+};
 use crate::physical_plan::{
     PreparedRelationalAccessPlan, PreparedRelationalJoinSelection, RelationalAccessCandidate,
     RelationalBaseAccess, RelationalJoinAccess, RelationalJoinAccessCandidate,
@@ -519,9 +522,10 @@ fn build_graph_relations(
     predicates: &[BoundJoinPredicate],
 ) -> Result<Option<Vec<PreparedGraphRelation>>> {
     let mut graph_relations = Vec::with_capacity(relations.len());
+    let fields = plan_relational_field_plan(select, state)?;
     for relation in relations {
         let Some(graph_relation) = build_graph_relation(
-            select, parameters, state, read_modes, limits, relations, relation, predicates,
+            select, parameters, state, read_modes, limits, relations, relation, predicates, &fields,
         )?
         else {
             return Ok(None);
@@ -541,8 +545,11 @@ fn build_graph_relation(
     relations: &[BoundRelation<'_>],
     relation: &BoundRelation<'_>,
     predicates: &[BoundJoinPredicate],
+    fields: &RelationalFieldPlan,
 ) -> Result<Option<PreparedGraphRelation>> {
     let base = choose_base_access(RelationalBaseAccessPlanning {
+        index_read_mode: read_modes.index,
+        fields,
         predicate: select.selection.as_ref(),
         order_by: &[],
         prefer_ordered_access: false,
@@ -617,6 +624,7 @@ fn build_graph_relation(
             &relation.qualifier,
             read_modes.index,
             projection_access_planning(read_modes.row, &relation.table.name),
+            fields,
         )?;
         if candidate.descriptor.kind == RelationalAccessPathKind::FullScan {
             continue;

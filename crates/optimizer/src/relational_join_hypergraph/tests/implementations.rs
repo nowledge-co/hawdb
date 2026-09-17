@@ -60,7 +60,7 @@ fn costed_implementations_compete_and_charge_the_same_expression_budget() {
     .unwrap();
     assert!(result.plan.cost().cost < old.plan.cost().cost);
     assert_eq!(result.plan.cost_breakdown.estimated_rows, 100);
-    assert_eq!(result.plan.cost_breakdown.cpu, 900);
+    assert_eq!(result.plan.cost_breakdown.cpu, 908);
     assert_eq!(result.memo_expressions, old.memo_expressions + 1);
     let exact = result.memo_expressions;
     assert_eq!(
@@ -96,7 +96,7 @@ fn costed_implementations_compete_and_charge_the_same_expression_budget() {
         panic!("expected costed implementation")
     };
     assert_eq!(selected.algorithm, RelationalEquiJoinAlgorithm::Merge);
-    assert_eq!(result.plan.cost_breakdown.cpu, 700);
+    assert_eq!(result.plan.cost_breakdown.cpu, 708);
 }
 
 #[test]

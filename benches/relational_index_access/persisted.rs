@@ -97,10 +97,10 @@ pub(super) fn measure() -> serde_json::Value {
                 .filter(|ordinal| shape.matches(*ordinal, layout))
                 .collect::<Vec<_>>();
             let scan = measure_path(&fixture.path, width, shape, false, &expected);
-            let index = measure_path(&fixture.path, width, shape, true, &expected);
+            let selected = measure_path(&fixture.path, width, shape, true, &expected);
             assert_eq!(
                 scan["first_profile"]["row_read"]["visible_commit_epoch"],
-                index["first_profile"]["row_read"]["visible_commit_epoch"],
+                selected["first_profile"]["row_read"]["visible_commit_epoch"],
                 "comparison paths must read the same checkpoint",
             );
             results.push(json!({
@@ -110,13 +110,13 @@ pub(super) fn measure() -> serde_json::Value {
                 "matching_rows": expected.len(),
                 "selectivity": expected.len() as f64 / ROWS as f64,
                 "scan": scan,
-                "index": index,
+                "cost_selected": selected,
             }));
         }
         fixture.remove();
     }
     json!({
-        "protocol": "skein-persisted-relational-access-v1",
+        "protocol": "skein-persisted-relational-access-v2",
         "os": std::env::consts::OS,
         "architecture": std::env::consts::ARCH,
         "smoke": SMOKE,
@@ -159,8 +159,17 @@ fn measure_path(
         RelationalOperatorKind::TableFullScan
     } else if matches!(shape, Shape::Point) {
         RelationalOperatorKind::TablePointGet
-    } else {
+    } else if match shape {
+        Shape::Bucket(_) => ROWS.div_ceil(3),
+        _ => ROWS,
+    } * 6
+        + 2
+        < ROWS * 3 + 4
+    {
+        // Independent policy oracle over fresh prefix NDV, not actual result rows.
         RelationalOperatorKind::IndexRangeScan
+    } else {
+        RelationalOperatorKind::TableFullScan
     };
     let (first_nanos, first) = execute(&read, &sql, parameter, width, expected, operator);
     assert!(

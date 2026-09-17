@@ -1094,29 +1094,61 @@ mod tests {
             super::super::fixture::database_config(&seed, RelationalIndexMode::Authoritative);
         database_config.read_only = true;
         let corpus = nowledge_content_store_sql_corpus().unwrap();
-        let statement = corpus.statement("thread_message_anchor_lookup").unwrap();
-        let parameters = vec![
-            Value::String("thread-storage-1".to_string()),
-            Value::String("content-message-00000000".to_string()),
-            Value::Int(1),
-        ];
         let mut database = Database::open_with_durability_and_config(
             &path,
             DurabilityPolicy::SyncOnEveryWrite,
             database_config.clone(),
         )
         .unwrap();
-        let output = database
-            .query_sql_with_params_options(
-                &statement.sql,
-                &parameters,
-                skein::QueryStreamOptions {
-                    max_rows: Some(statement.max_rows),
-                    max_payload_bytes: Some(statement.max_payload_bytes),
-                },
-            )
-            .unwrap();
-        let expected_output_sha256 = rows_sha256(&output.rows);
+        // The residual OR makes the anchor lookup a broad access on this
+        // single-thread fixture. The ordered page exercises the index path.
+        let cases = [
+            (
+                "thread-message-point",
+                "thread_message_anchor_lookup",
+                vec![
+                    Value::String("thread-storage-1".to_string()),
+                    Value::String("content-message-00000000".to_string()),
+                    Value::Int(1),
+                ],
+            ),
+            (
+                "thread-message-ordered-page",
+                "thread_activity_timestamps",
+                vec![
+                    Value::String("thread-storage-1".to_string()),
+                    Value::Int(1),
+                    Value::Int(0),
+                ],
+            ),
+        ];
+        let read_cases = cases
+            .into_iter()
+            .map(|(case_name, statement_name, parameters)| {
+                let statement = corpus.statement(statement_name).unwrap();
+                let output = database
+                    .query_sql_with_params_options(
+                        &statement.sql,
+                        &parameters,
+                        skein::QueryStreamOptions {
+                            max_rows: Some(statement.max_rows),
+                            max_payload_bytes: Some(statement.max_payload_bytes),
+                        },
+                    )
+                    .unwrap();
+                assert_eq!(output.rows.len(), 1);
+                ProductionContentStoreReadCase {
+                    case_name: case_name.to_string(),
+                    statement_name: statement.name.clone(),
+                    parameters,
+                    expected_output_rows: 1,
+                    expected_output_sha256: rows_sha256(&output.rows),
+                    max_intermediate_rows: 256,
+                    max_physical_pages_per_run: 1024,
+                    max_physical_bytes_per_run: 128 * 1024 * 1024,
+                }
+            })
+            .collect();
         let commit_epoch = database.commit_epoch();
         drop(database);
 
@@ -1160,16 +1192,7 @@ mod tests {
                     max_minor_page_faults_per_run: None,
                     max_major_page_faults_per_run: None,
                 },
-                read_cases: vec![ProductionContentStoreReadCase {
-                    case_name: "thread-message-point".to_string(),
-                    statement_name: statement.name.clone(),
-                    parameters,
-                    expected_output_rows: 1,
-                    expected_output_sha256,
-                    max_intermediate_rows: 256,
-                    max_physical_pages_per_run: 1024,
-                    max_physical_bytes_per_run: 128 * 1024 * 1024,
-                }],
+                read_cases,
             },
         )
         .unwrap();
@@ -1192,15 +1215,17 @@ mod tests {
             "unexpected release blockers: {:?}",
             release.content_store_512_mib_read.blocker_codes
         );
-        assert_eq!(report.opens.len(), 1);
-        assert!(report.opens[0].open_timings.consistent);
-        assert!(report.opens[0].open_timings.total_open_micros <= report.opens[0].latency_micros);
-        assert!(report.opens[0].payload_cache.within_limits);
-        assert!(report.opens[0].payload_cache.miss_count > 0);
-        assert!(report.opens[0].payload_cache.resident_bytes > 0);
-        assert_eq!(report.runs.len(), 2);
-        assert_eq!(report.runtime_governor.admissions_delta, 2);
-        assert_eq!(report.runtime_governor.completions_delta, 2);
+        assert_eq!(report.opens.len(), 2);
+        for open in &report.opens {
+            assert!(open.open_timings.consistent);
+            assert!(open.open_timings.total_open_micros <= open.latency_micros);
+            assert!(open.payload_cache.within_limits);
+            assert!(open.payload_cache.miss_count > 0);
+            assert!(open.payload_cache.resident_bytes > 0);
+        }
+        assert_eq!(report.runs.len(), 4);
+        assert_eq!(report.runtime_governor.admissions_delta, 4);
+        assert_eq!(report.runtime_governor.completions_delta, 4);
         assert_eq!(report.runtime_governor.final_admitted_memory_bytes, 0);
         assert!(
             report.runtime_governor.memory_capacity_bytes <= CONTENT_STORE_512_MIB_CAPABILITY_BYTES
@@ -1209,10 +1234,17 @@ mod tests {
         assert!(report.initial_residency.index_artifact_exceeds_cache);
         assert!(report.initial_residency.row_index_epoch_aligned);
         assert_eq!(report.initial_residency.segment_cache_pinned_bytes, 0);
-        assert!(report.runs[0].read.cache.misses > 0);
-        assert!(report.runs[0].read.execution.physical_pages > 0);
-        assert!(report.runs[0].read.execution.index_physical_pages > 0);
-        assert!(report.runs[1].read.cache.hits > 0);
+        for runs in report.runs.chunks_exact(2) {
+            assert!(runs[0].read.cache.misses > 0);
+            assert!(runs[0].read.execution.physical_pages > 0);
+            assert!(runs[1].read.cache.hits > 0);
+        }
+        assert_eq!(report.runs[0].read.execution.index_runtime_path, "none");
+        assert_eq!(
+            report.runs[2].read.execution.index_runtime_path,
+            "authoritative"
+        );
+        assert!(report.runs[2].read.execution.index_physical_pages > 0);
         assert!(report
             .runs
             .iter()

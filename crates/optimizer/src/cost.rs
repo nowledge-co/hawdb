@@ -13,6 +13,10 @@ impl PlanCost {
     }
 }
 
+/// Cardinality and unweighted logical work, plus the weighted scalar total.
+///
+/// CPU work is the scalar normalization unit. Random/sequential work describes
+/// access patterns, not physical file pages; output work counts produced rows.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct PlanCostBreakdown {
     pub estimated_rows: u64,
@@ -22,6 +26,14 @@ pub struct PlanCostBreakdown {
     pub sequential_io: u64,
     pub output_rows: u64,
 }
+
+// CPU is the scalar normalization unit: from_scalar must not weight a cost twice.
+// These are conservative logical-work weights, not physical page counts or time.
+// Random access costs more than sequential access even when the OS caches bytes.
+const CPU_WEIGHT: u64 = 1;
+const RANDOM_ACCESS_WEIGHT: u64 = 2;
+const SEQUENTIAL_ACCESS_WEIGHT: u64 = 1;
+const OUTPUT_WEIGHT: u64 = 1;
 
 impl PlanCostBreakdown {
     pub fn with_cardinality_floor(self) -> Self {
@@ -41,9 +53,10 @@ impl PlanCostBreakdown {
         Self {
             estimated_rows,
             cost: cpu
-                .saturating_add(random_io)
-                .saturating_add(sequential_io)
-                .saturating_add(output_rows),
+                .saturating_mul(CPU_WEIGHT)
+                .saturating_add(random_io.saturating_mul(RANDOM_ACCESS_WEIGHT))
+                .saturating_add(sequential_io.saturating_mul(SEQUENTIAL_ACCESS_WEIGHT))
+                .saturating_add(output_rows.saturating_mul(OUTPUT_WEIGHT)),
             cpu,
             random_io,
             sequential_io,
@@ -112,12 +125,12 @@ mod tests {
         let cost = PlanCostBreakdown::new(7, 10, 20, 30, 40);
 
         assert_eq!(cost.estimated_rows, 7);
-        assert_eq!(cost.cost, 100);
+        assert_eq!(cost.cost, 120);
         assert_eq!(
             cost.as_plan_cost(),
             PlanCost {
                 estimated_rows: 7,
-                cost: 100,
+                cost: 120,
             }
         );
     }
@@ -134,7 +147,7 @@ mod tests {
         assert_eq!(combined.random_io, 24);
         assert_eq!(combined.sequential_io, 30);
         assert_eq!(combined.output_rows, 77);
-        assert_eq!(combined.cost, 182);
+        assert_eq!(combined.cost, 206);
     }
 
     #[test]

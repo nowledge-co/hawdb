@@ -298,11 +298,18 @@ impl Model {
     }
 
     // Independent arithmetic oracle: never call a production cost or tree walker.
-    pub fn reference(&self) -> (u64, u64, usize, usize, Vec<u32>) {
+    pub fn reference(&self) -> (u64, PlanCostBreakdown, usize, usize, Vec<u32>) {
         match self {
-            Self::Leaf { id, rows, .. } => {
+            Self::Leaf {
+                id, rows, indexed, ..
+            } => {
                 let rows = u64::try_from(*rows).unwrap_or(u64::MAX).max(1);
-                (rows, rows, 0, 0, vec![*id])
+                let work = if *indexed {
+                    [rows.saturating_mul(2), rows.saturating_add(1), rows, rows]
+                } else {
+                    [rows.saturating_add(4), 0, rows, rows]
+                };
+                (rows, reference_cost(rows, work), 0, 0, vec![*id])
             }
             Self::Join {
                 algorithm,
@@ -323,21 +330,29 @@ impl Model {
                     pairs.div_ceil(divisor)
                 };
                 let rows = if *outer { joined.max(lr) } else { joined };
-                let cpu = match algorithm {
-                    0 | 1 => lc.saturating_add(rc.saturating_mul(lr)),
-                    2 => lc
-                        .saturating_add(rc)
-                        .saturating_add(lr.saturating_add(rr).saturating_add(joined)),
-                    3 => lc.saturating_add(rc).saturating_add(
-                        lr.saturating_add(rr.saturating_mul(2))
-                            .saturating_add(joined),
-                    ),
-                    4 => lc.saturating_add(rc).saturating_add(pairs),
+                let join_cpu = match algorithm {
+                    0 | 1 => 0,
+                    2 => lr.saturating_add(rr).saturating_add(joined),
+                    3 => lr
+                        .saturating_add(rr.saturating_mul(2))
+                        .saturating_add(joined),
+                    4 => pairs,
                     _ => unreachable!(),
                 };
+                let multiplier = if *algorithm < 2 { lr } else { 1 };
+                let combine = |l: u64, r: u64| l.saturating_add(r.saturating_mul(multiplier));
+                let cost = reference_cost(
+                    rows,
+                    [
+                        combine(lc.cpu, rc.cpu).saturating_add(join_cpu),
+                        combine(lc.random_io, rc.random_io),
+                        combine(lc.sequential_io, rc.sequential_io),
+                        combine(lc.output_rows, rc.output_rows),
+                    ],
+                );
                 (
                     rows,
-                    cpu,
+                    cost,
                     lb + rb + usize::from(*algorithm == 1),
                     lm + rm + usize::from(*algorithm >= 2),
                     ids,
@@ -439,4 +454,22 @@ pub(super) fn primary_key() -> RelationalAccessCandidate {
     access.access =
         RelationalBaseAccess::PrimaryKey(RelationalKey(vec![RelationalValue::BigInt(1)]));
     access
+}
+
+// Keep both component arithmetic and scalar weighting independent of production.
+fn reference_cost(
+    rows: u64,
+    [cpu, random_io, sequential_io, output_rows]: [u64; 4],
+) -> PlanCostBreakdown {
+    PlanCostBreakdown {
+        estimated_rows: rows.max(1),
+        cost: cpu
+            .saturating_add(random_io.saturating_mul(2))
+            .saturating_add(sequential_io)
+            .saturating_add(output_rows),
+        cpu,
+        random_io,
+        sequential_io,
+        output_rows,
+    }
 }

@@ -111,6 +111,7 @@ test_suite(
         "//crates/executor:skein_spill_compaction_fuzz_tests",
         "//crates/executor:skein_transform_fuzz_tests",
         "//crates/executor:skein_vector_seed_fuzz_tests",
+        "//crates/optimizer:skein_optimizer_access_cost_fuzz_tests",
         "//crates/optimizer:skein_optimizer_candidate_fingerprint_fuzz_tests",
         "//crates/optimizer:skein_optimizer_cardinality_defaults_fuzz_tests",
         "//crates/optimizer:skein_optimizer_cardinality_metadata_fuzz_tests",

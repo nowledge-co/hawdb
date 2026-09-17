@@ -16,11 +16,10 @@ use skein_optimizer::relational_sargability::{
     predicate_is_covered_by_equalities,
 };
 use skein_optimizer::{
-    estimate_relational_access_cost, estimate_relational_join_cost,
-    estimate_relational_probe_join_cost, PlanCostBreakdown, RelationalAccessPathDescriptor,
-    RelationalAccessPathKind, RelationalJoinCardinality, RelationalJoinPlanningOutcome,
-    RelationalJoinRightInput, RelationalJoinSelectivity, RelationalOperatorCardinalityProfile,
-    RelationalOperatorId, RelationalOperatorKind,
+    estimate_relational_access_path_cost, estimate_relational_join_cost, PlanCostBreakdown,
+    RelationalAccessPathDescriptor, RelationalAccessPathKind, RelationalJoinCardinality,
+    RelationalJoinPlanningOutcome, RelationalJoinRightInput, RelationalJoinSelectivity,
+    RelationalOperatorCardinalityProfile, RelationalOperatorId, RelationalOperatorKind,
 };
 use skein_sql::{
     RelationalSqlStageTimings, SelectStatement, SqlColumnRef, SqlJoinKind, SqlPredicate,
@@ -253,6 +252,46 @@ pub struct RelationalPhysicalJoinSpec {
 }
 
 impl RelationalPhysicalJoinNode {
+    fn visit_costs(
+        &self,
+        visit: &mut impl FnMut(&Self, PlanCostBreakdown) -> Result<()>,
+    ) -> Result<PlanCostBreakdown> {
+        let cost = match self {
+            Self::Relation(relation) => {
+                estimate_relational_access_path_cost(relation.access.descriptor())
+            }
+            Self::Join {
+                kind,
+                algorithm,
+                selectivity,
+                left,
+                right,
+                ..
+            } => estimate_relational_join_cost(
+                left.visit_costs(visit)?,
+                right.visit_costs(visit)?,
+                match kind {
+                    SqlJoinKind::Inner => RelationalJoinCardinality::Inner,
+                    SqlJoinKind::Left => RelationalJoinCardinality::PreserveLeft,
+                },
+                match algorithm {
+                    RelationalPhysicalJoinAlgorithm::Probe
+                    | RelationalPhysicalJoinAlgorithm::BatchedIndex => {
+                        RelationalJoinRightInput::Probe
+                    }
+                    RelationalPhysicalJoinAlgorithm::Merge => RelationalJoinRightInput::Merge,
+                    RelationalPhysicalJoinAlgorithm::Hash => RelationalJoinRightInput::Hash,
+                    RelationalPhysicalJoinAlgorithm::Materialized => {
+                        RelationalJoinRightInput::Materialized
+                    }
+                },
+                *selectivity,
+            ),
+        };
+        visit(self, cost)?;
+        Ok(cost)
+    }
+
     pub fn relation(
         binding: BindingId,
         table: String,
@@ -278,14 +317,7 @@ impl RelationalPhysicalJoinNode {
                 let schema = state.table_schema(&relation.table).ok_or_else(|| {
                     SkeinError::Semantic(format!("unknown relational table {}", relation.table))
                 })?;
-                let covering = fields.index_covers_table(
-                    &relation.table,
-                    schema,
-                    &descriptor.index_columns,
-                )?;
-                descriptor.covering = covering;
-                descriptor.requires_row_fetch = !covering;
-                Ok(())
+                fields.apply_access_coverage(descriptor, &relation.table, schema)
             }
             Self::Join { left, right, .. } => {
                 left.apply_index_coverage(state, fields)?;
@@ -622,7 +654,9 @@ impl RelationalPhysicalJoinPlan {
         state: &RelationalState,
         fields: &RelationalFieldPlan,
     ) -> Result<()> {
-        self.root.apply_index_coverage(state, fields)
+        self.root.apply_index_coverage(state, fields)?;
+        self.cost_breakdown = self.root.visit_costs(&mut |_, _| Ok(()))?;
+        Ok(())
     }
 }
 
@@ -877,8 +911,8 @@ impl PreparedRelationalAccessPlan {
                 &merge_keys,
             );
             let cost = estimate_relational_join_cost(
-                estimate_relational_access_cost(self.base_access.descriptor.estimated_rows),
-                estimate_relational_access_cost(right_access.descriptor.estimated_rows),
+                estimate_relational_access_path_cost(&self.base_access.descriptor),
+                estimate_relational_access_path_cost(&right_access.descriptor),
                 RelationalJoinCardinality::Inner,
                 RelationalJoinRightInput::Merge,
                 selectivity,
@@ -933,8 +967,8 @@ impl PreparedRelationalAccessPlan {
                 &equi_join_keys,
             );
             let cost = estimate_relational_join_cost(
-                estimate_relational_access_cost(self.base_access.descriptor.estimated_rows),
-                estimate_relational_access_cost(right_access.descriptor.estimated_rows),
+                estimate_relational_access_path_cost(&self.base_access.descriptor),
+                estimate_relational_access_path_cost(&right_access.descriptor),
                 match join.kind {
                     SqlJoinKind::Inner => RelationalJoinCardinality::Inner,
                     SqlJoinKind::Left => RelationalJoinCardinality::PreserveLeft,
@@ -966,7 +1000,7 @@ impl PreparedRelationalAccessPlan {
             base_qualifier.to_string(),
             RelationalPhysicalAccess::Base(self.base_access.clone()),
         );
-        let mut cost = estimate_relational_access_cost(self.base_access.descriptor.estimated_rows);
+        let mut cost = estimate_relational_access_path_cost(&self.base_access.descriptor);
         for (index, (join, access)) in statement.joins.iter().zip(&self.join_accesses).enumerate() {
             let binding = if let Some(selection) = selection {
                 *selection.join_bindings.get(index).ok_or_else(|| {
@@ -997,13 +1031,15 @@ impl PreparedRelationalAccessPlan {
                 root,
                 right,
             )?;
-            cost = estimate_relational_probe_join_cost(
+            cost = estimate_relational_join_cost(
                 cost,
-                access.descriptor.estimated_rows,
+                estimate_relational_access_path_cost(&access.descriptor),
                 match join.kind {
                     SqlJoinKind::Inner => RelationalJoinCardinality::Inner,
                     SqlJoinKind::Left => RelationalJoinCardinality::PreserveLeft,
                 },
+                RelationalJoinRightInput::Probe,
+                RelationalJoinSelectivity::Unknown,
             );
         }
         let cost_breakdown = selection.map_or(cost, |selection| selection.cost_breakdown);
@@ -1199,11 +1235,14 @@ impl PreparedRelationalSelect {
                 ));
             }
             let cost = selection.cost_breakdown;
-            let component_total = cost
-                .cpu
-                .saturating_add(cost.random_io)
-                .saturating_add(cost.sequential_io)
-                .saturating_add(cost.output_rows);
+            let component_total = PlanCostBreakdown::new(
+                cost.estimated_rows,
+                cost.cpu,
+                cost.random_io,
+                cost.sequential_io,
+                cost.output_rows,
+            )
+            .cost;
             if cost.estimated_rows == 0 || cost.cost != component_total {
                 return Err(SkeinError::Execution(
                     "prepared relational join selection has an invalid cost breakdown".to_string(),
@@ -1315,76 +1354,6 @@ pub fn planned_operator_cardinality_profiles(
 pub fn planned_tree_operator_cardinality_profiles(
     tree: &RelationalPhysicalJoinPlan,
 ) -> Result<Vec<RelationalOperatorCardinalityProfile>> {
-    fn plan_node(
-        node: &RelationalPhysicalJoinNode,
-        profiles: &mut [Option<RelationalOperatorCardinalityProfile>],
-    ) -> Result<PlanCostBreakdown> {
-        match node {
-            RelationalPhysicalJoinNode::Relation(relation) => Ok(estimate_relational_access_cost(
-                relation.access.descriptor().estimated_rows,
-            )),
-            RelationalPhysicalJoinNode::Join {
-                operator_id,
-                kind,
-                algorithm,
-                selectivity,
-                left,
-                right,
-                ..
-            } => {
-                let left_cost = plan_node(left, profiles)?;
-                let right_cost = plan_node(right, profiles)?;
-                let cardinality = match kind {
-                    SqlJoinKind::Inner => RelationalJoinCardinality::Inner,
-                    SqlJoinKind::Left => RelationalJoinCardinality::PreserveLeft,
-                };
-                let cost = estimate_relational_join_cost(
-                    left_cost,
-                    right_cost,
-                    cardinality,
-                    match algorithm {
-                        RelationalPhysicalJoinAlgorithm::Probe
-                        | RelationalPhysicalJoinAlgorithm::BatchedIndex => {
-                            RelationalJoinRightInput::Probe
-                        }
-                        RelationalPhysicalJoinAlgorithm::Merge => RelationalJoinRightInput::Merge,
-                        RelationalPhysicalJoinAlgorithm::Hash => RelationalJoinRightInput::Hash,
-                        RelationalPhysicalJoinAlgorithm::Materialized => {
-                            RelationalJoinRightInput::Materialized
-                        }
-                    },
-                    *selectivity,
-                );
-                let index = operator_id.get().checked_sub(1).ok_or_else(|| {
-                    SkeinError::Execution("physical join has an invalid operator id".to_string())
-                })?;
-                let slot = profiles.get_mut(index).ok_or_else(|| {
-                    SkeinError::Execution(format!(
-                        "physical join operator {} is outside the plan profile",
-                        operator_id.get()
-                    ))
-                })?;
-                if slot.is_some() {
-                    return Err(SkeinError::Execution(format!(
-                        "physical join repeats operator {}",
-                        operator_id.get()
-                    )));
-                }
-                let access_path = right.first_relation().access.descriptor().clone();
-                *slot = Some(RelationalOperatorCardinalityProfile {
-                    operator_id: *operator_id,
-                    operator: relational_join_operator_kind(*kind, &access_path, *algorithm),
-                    table: right.first_relation().table.clone(),
-                    access_path,
-                    estimated_rows: estimated_rows_as_usize(cost.estimated_rows),
-                    actual_rows: None,
-                    fully_consumed: false,
-                });
-                Ok(cost)
-            }
-        }
-    }
-
     let relation_count = tree.root.relation_count();
     let mut profiles = vec![None; relation_count];
     let base = tree.root.first_relation();
@@ -1401,7 +1370,43 @@ pub fn planned_tree_operator_cardinality_profiles(
         actual_rows: None,
         fully_consumed: false,
     });
-    let cost = plan_node(&tree.root, &mut profiles)?;
+    let cost = tree.root.visit_costs(&mut |node, cost| {
+        if let RelationalPhysicalJoinNode::Join {
+            operator_id,
+            kind,
+            algorithm,
+            right,
+            ..
+        } = node
+        {
+            let index = operator_id.get().checked_sub(1).ok_or_else(|| {
+                SkeinError::Execution("physical join has an invalid operator id".to_string())
+            })?;
+            let slot = profiles.get_mut(index).ok_or_else(|| {
+                SkeinError::Execution(format!(
+                    "physical join operator {} is outside the plan profile",
+                    operator_id.get()
+                ))
+            })?;
+            if slot.is_some() {
+                return Err(SkeinError::Execution(format!(
+                    "physical join repeats operator {}",
+                    operator_id.get()
+                )));
+            }
+            let access_path = right.first_relation().access.descriptor().clone();
+            *slot = Some(RelationalOperatorCardinalityProfile {
+                operator_id: *operator_id,
+                operator: relational_join_operator_kind(*kind, &access_path, *algorithm),
+                table: right.first_relation().table.clone(),
+                access_path,
+                estimated_rows: estimated_rows_as_usize(cost.estimated_rows),
+                actual_rows: None,
+                fully_consumed: false,
+            });
+        }
+        Ok(())
+    })?;
     if cost != tree.cost_breakdown {
         return Err(SkeinError::Execution(
             "physical join operator estimates diverge from the selected join cost".to_string(),

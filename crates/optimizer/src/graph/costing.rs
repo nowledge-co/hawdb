@@ -52,24 +52,38 @@ fn combine_node_cartesian_product_cost(
 }
 
 pub(super) fn estimate_node_full_scan_cost(label_count: u64) -> u64 {
-    label_count.saturating_add(NODE_FULL_SCAN_STARTUP_COST)
+    node_full_scan_work(label_count).cost
 }
 
 pub(super) fn estimate_node_index_seek_cost(estimated_rows: u64, startup_cost: u64) -> u64 {
-    estimated_rows
-        .saturating_mul(2)
-        .saturating_add(startup_cost)
+    node_index_seek_work(estimated_rows, startup_cost).cost
+}
+
+fn node_full_scan_work(rows: u64) -> PlanCostBreakdown {
+    PlanCostBreakdown::new(
+        rows,
+        0,
+        0,
+        rows.saturating_add(NODE_FULL_SCAN_STARTUP_COST),
+        0,
+    )
+}
+
+fn node_index_seek_work(rows: u64, startup: u64) -> PlanCostBreakdown {
+    // Locating a candidate and materializing it are distinct work components.
+    // Both access ranking and final costing consume this unweighted breakdown.
+    PlanCostBreakdown::new(rows, rows, rows.saturating_add(startup), 0, 0)
 }
 
 fn projected_access_cost(
     access: &NodeProjectionAccess,
     label: &str,
     catalog: &OptimizerCatalog,
-) -> (u64, u64) {
+) -> PlanCostBreakdown {
     match access {
         NodeProjectionAccess::LabelScan => {
             let rows = catalog.label_count(label).max(1);
-            (rows, estimate_node_full_scan_cost(rows))
+            node_full_scan_work(rows)
         }
         NodeProjectionAccess::PropertyValues { property, values } => {
             let rows = if values.len() == 1 {
@@ -78,10 +92,7 @@ fn projected_access_cost(
                 catalog.estimate_property_index_in_rows(label, property, values.len() as u64)
             }
             .max(1);
-            (
-                rows,
-                estimate_node_index_seek_cost(rows, values.len().max(1) as u64),
-            )
+            node_index_seek_work(rows, values.len().max(1) as u64)
         }
         NodeProjectionAccess::PropertyUnion { branches } => {
             exact_property_union_cost(branches, label, catalog)
@@ -94,10 +105,7 @@ fn projected_access_cost(
             let rows = catalog
                 .estimate_composite_property_index_rows(label, &properties)
                 .max(1);
-            (
-                rows,
-                estimate_node_index_seek_cost(rows, predicates.len().max(1) as u64),
-            )
+            node_index_seek_work(rows, predicates.len().max(1) as u64)
         }
         NodeProjectionAccess::CompositeRange { seek } => composite_range_cost(seek, label, catalog),
         NodeProjectionAccess::PropertyRange {
@@ -108,17 +116,11 @@ fn projected_access_cost(
             let rows = catalog
                 .estimate_range_bounds_rows(label, property, lower.as_ref(), upper.as_ref())
                 .max(1);
-            (
-                rows,
-                estimate_node_index_seek_cost(rows, NODE_INDEX_RANGE_STARTUP_COST),
-            )
+            node_index_seek_work(rows, NODE_INDEX_RANGE_STARTUP_COST)
         }
         NodeProjectionAccess::FullText { .. } => {
             let rows = estimate_full_text_rows(catalog.label_count(label));
-            (
-                rows,
-                estimate_node_index_seek_cost(rows, NODE_INDEX_TEXT_STARTUP_COST),
-            )
+            node_index_seek_work(rows, NODE_INDEX_TEXT_STARTUP_COST)
         }
     }
 }
@@ -127,7 +129,7 @@ fn composite_range_cost(
     seek: &CompositeRangeSeek,
     label: &str,
     catalog: &OptimizerCatalog,
-) -> (u64, u64) {
+) -> PlanCostBreakdown {
     let equality_properties = seek
         .equality_prefix
         .iter()
@@ -141,19 +143,17 @@ fn composite_range_cost(
         seek.lower.as_ref(),
         seek.upper.as_ref(),
     );
-    (
-        rows,
-        estimate_node_index_seek_cost(rows, seek.equality_prefix.len().saturating_add(1) as u64),
-    )
+    node_index_seek_work(rows, seek.equality_prefix.len().saturating_add(1) as u64)
 }
 
 fn exact_property_union_cost(
     branches: &[ExactPropertySeekBranch],
     label: &str,
     catalog: &OptimizerCatalog,
-) -> (u64, u64) {
+) -> PlanCostBreakdown {
     let mut rows = 0u64;
-    let mut cost = 0u64;
+    let mut cpu = 0u64;
+    let mut random_io = 0u64;
     for branch in branches {
         let branch_rows = catalog.estimate_property_index_in_rows(
             label,
@@ -161,12 +161,11 @@ fn exact_property_union_cost(
             branch.values.len() as u64,
         );
         rows = rows.saturating_add(branch_rows);
-        cost = cost.saturating_add(estimate_node_index_seek_cost(
-            branch_rows,
-            branch.values.len().max(1) as u64,
-        ));
+        let work = node_index_seek_work(branch_rows, branch.values.len().max(1) as u64);
+        cpu = cpu.saturating_add(work.cpu);
+        random_io = random_io.saturating_add(work.random_io);
     }
-    (rows.min(catalog.label_count(label)).max(1), cost.max(1))
+    PlanCostBreakdown::new(rows.min(catalog.label_count(label)), cpu, random_io, 0, 0)
 }
 
 pub(super) fn node_index_seek_is_cheaper(label_count: u64, seek_cost: u64) -> bool {
@@ -254,7 +253,7 @@ fn estimate_local_operator_cost(
         }
         PhysicalPlan::SeqNodeScan { label, .. } => {
             let rows = catalog.label_count(label);
-            PlanCostBreakdown::new(rows, 0, 0, estimate_node_full_scan_cost(rows), 0)
+            node_full_scan_work(rows)
         }
         PhysicalPlan::NodeProjectionScanExec {
             label,
@@ -263,7 +262,8 @@ fn estimate_local_operator_cost(
             items,
             ..
         } => {
-            let (input_rows, access_cost) = projected_access_cost(access, label, catalog);
+            let access_cost = projected_access_cost(access, label, catalog);
+            let input_rows = access_cost.estimated_rows;
             let rows = predicate.as_ref().map_or(input_rows, |predicate| {
                 estimate_filter_rows(predicate, plan, input_rows, catalog, bindings).max(1)
             });
@@ -272,11 +272,7 @@ fn estimate_local_operator_cost(
             } else {
                 0
             };
-            if access.is_label_scan() {
-                PlanCostBreakdown::new(rows, cpu_rows, 0, access_cost, 0)
-            } else {
-                PlanCostBreakdown::new(rows, cpu_rows, access_cost, 0, 0)
-            }
+            access_cost.with_cpu(rows, cpu_rows, 0)
         }
         PhysicalPlan::SourceSegmentScan { .. } => {
             let rows = catalog.label_count("Source");
@@ -323,13 +319,7 @@ fn estimate_local_operator_cost(
             label, property, ..
         } => {
             let rows = catalog.estimate_property_index_eq_rows(label, property);
-            PlanCostBreakdown::new(
-                rows,
-                0,
-                estimate_node_index_seek_cost(rows, NODE_INDEX_EQ_STARTUP_COST),
-                0,
-                0,
-            )
+            node_index_seek_work(rows, NODE_INDEX_EQ_STARTUP_COST)
         }
         PhysicalPlan::IndexNodeMultiSeek {
             label,
@@ -339,20 +329,11 @@ fn estimate_local_operator_cost(
         } => {
             let rows =
                 catalog.estimate_property_index_in_rows(label, property, values.len() as u64);
-            PlanCostBreakdown::new(
-                rows,
-                0,
-                estimate_node_index_seek_cost(rows, values.len() as u64),
-                0,
-                0,
-            )
+            node_index_seek_work(rows, values.len() as u64)
         }
         PhysicalPlan::IndexNodeUnionSeek {
             label, branches, ..
-        } => {
-            let (rows, cost) = exact_property_union_cost(branches, label, catalog);
-            PlanCostBreakdown::new(rows, 0, cost, 0, 0)
-        }
+        } => exact_property_union_cost(branches, label, catalog),
         PhysicalPlan::IndexNodeCompositeSeek {
             label, predicates, ..
         } => {
@@ -361,17 +342,10 @@ fn estimate_local_operator_cost(
                 .map(|(property, _)| property.clone())
                 .collect::<Vec<_>>();
             let rows = catalog.estimate_composite_property_index_rows(label, &properties);
-            PlanCostBreakdown::new(
-                rows,
-                0,
-                estimate_node_index_seek_cost(rows, predicates.len() as u64),
-                0,
-                0,
-            )
+            node_index_seek_work(rows, predicates.len() as u64)
         }
         PhysicalPlan::IndexNodeCompositeRangeSeek { label, seek, .. } => {
-            let (rows, cost) = composite_range_cost(seek, label, catalog);
-            PlanCostBreakdown::new(rows, 0, cost, 0, 0)
+            composite_range_cost(seek, label, catalog)
         }
         PhysicalPlan::IndexNodeRangeSeek {
             label,
@@ -382,23 +356,11 @@ fn estimate_local_operator_cost(
         } => {
             let rows =
                 catalog.estimate_range_bounds_rows(label, property, lower.as_ref(), upper.as_ref());
-            PlanCostBreakdown::new(
-                rows,
-                0,
-                estimate_node_index_seek_cost(rows, NODE_INDEX_RANGE_STARTUP_COST),
-                0,
-                0,
-            )
+            node_index_seek_work(rows, NODE_INDEX_RANGE_STARTUP_COST)
         }
         PhysicalPlan::IndexNodeTextSeek { label, .. } => {
             let rows = estimate_full_text_rows(catalog.label_count(label));
-            PlanCostBreakdown::new(
-                rows,
-                0,
-                estimate_node_index_seek_cost(rows, NODE_INDEX_TEXT_STARTUP_COST),
-                0,
-                0,
-            )
+            node_index_seek_work(rows, NODE_INDEX_TEXT_STARTUP_COST)
         }
         PhysicalPlan::AdjacencyExpandExec {
             source_label,

@@ -65,7 +65,7 @@ physical_search order=bottom_up input=3 output=1 applied=2 skipped=0
 selected_plan_costing order=once input=1 output=1 applied=0 skipped=0
 
 [cost]
-estimated_rows=1 total=4 cpu=1 random_io=3 sequential_io=0 output_rows=0
+estimated_rows=1 total=6 cpu=2 random_io=2 sequential_io=0 output_rows=0
 
 [properties]
 distribution=single ordering=[] covering_fields=["Memory.id", "Memory.title"] scan_pruning=index vector_precision=not_vector memory_budget=row_linear

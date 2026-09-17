@@ -169,7 +169,11 @@ fn replace_checkpoint_and_reopen(
             live_read.execution.visible_commit_epoch, mutation.committed_epoch
         )));
     }
-    if live_read.execution.overlay_entries == 0 {
+    if replacement_chunk_count == 0 {
+        // A covering index can eliminate every deleted key without fetching a
+        // row. Probe a previously checkpointed key to verify the row tombstone.
+        require_empty_replacement_tombstone(&database, mutation.committed_epoch)?;
+    } else if live_read.execution.overlay_entries == 0 {
         return Err(SkeinError::Execution(format!(
             "content-store {phase} replacement did not use the live row overlay"
         )));
@@ -225,6 +229,28 @@ fn replace_checkpoint_and_reopen(
         duplicate_order_rejected: mutation.duplicate_order_rejected,
         rejected_statement_atomic: mutation.rejected_statement_atomic,
     })
+}
+
+fn require_empty_replacement_tombstone(database: &Database, committed_epoch: u64) -> Result<()> {
+    let transaction = database.begin_read_transaction();
+    let profiled = transaction.query_sql_with_params_options_profiled(
+        "SELECT chunk_id, text FROM content_chunks WHERE chunk_id = $1",
+        &[Value::String("chunk-00000000".to_string())],
+        QueryStreamOptions {
+            max_rows: Some(1),
+            max_payload_bytes: Some(SOURCE_CHUNK_INTEGRITY_MAX_PAYLOAD_BYTES),
+        },
+    )?;
+    if !profiled.output.rows.is_empty()
+        || profiled.profile.row_read.overlay_entries == 0
+        || profiled.profile.row_read.visible_commit_epoch != Some(committed_epoch)
+    {
+        return Err(SkeinError::Execution(
+            "content-store empty replacement did not observe the committed row tombstone"
+                .to_string(),
+        ));
+    }
+    Ok(())
 }
 
 struct ReplacementMutation {

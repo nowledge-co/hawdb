@@ -970,8 +970,8 @@ fn optimizer_trace_reports_physical_plan_operator_and_class_counts() {
         trace.selected_plan_cost_breakdown.as_plan_cost(),
         trace.selected_plan_cost
     );
-    assert_eq!(trace.selected_plan_cost_breakdown.cpu, 1);
-    assert_eq!(trace.selected_plan_cost_breakdown.random_io, 3);
+    assert_eq!(trace.selected_plan_cost_breakdown.cpu, 2);
+    assert_eq!(trace.selected_plan_cost_breakdown.random_io, 2);
     assert_eq!(trace.selected_plan_cost_breakdown.sequential_io, 0);
 
     let (_, fallback_trace) = CascadesOptimizer::new(OptimizerConfig { max_groups: 1 })
@@ -1289,7 +1289,7 @@ fn conjunction_access_path_compares_equality_and_range_candidates_by_total_cost(
             [],
             [],
             [],
-            [(("Memory".to_string(), "kind".to_string()), 2)],
+            [(("Memory".to_string(), "kind".to_string()), 4)],
             [(
                 ("Memory".to_string(), "created_at".to_string()),
                 (0..100).map(Value::Int).collect::<Vec<_>>(),

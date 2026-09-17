@@ -178,13 +178,13 @@ fn cartesian_product_trace_reports_input_rows_and_costs() {
         decision.starts_with("keep NodeCartesianProduct single-row input order: inputs=2")
     }));
     assert!(trace.decisions.iter().any(|decision| {
-            decision == "estimate NodeCartesianProduct: left_rows=1 right_rows=1 output_rows=1 left_cost=3 right_cost=3 cost=7"
+            decision == "estimate NodeCartesianProduct: left_rows=1 right_rows=1 output_rows=1 left_cost=5 right_cost=5 cost=11"
         }));
     assert_eq!(
         trace.selected_plan_cost,
         PlanCost {
             estimated_rows: 1,
-            cost: 7,
+            cost: 11,
         }
     );
 }
@@ -257,7 +257,7 @@ fn cartesian_product_orders_single_row_inputs_by_cost() {
         decision.starts_with("order NodeCartesianProduct single-row inputs: inputs=2")
     }));
     assert!(trace.decisions.iter().any(|decision| {
-            decision == "estimate NodeCartesianProduct: left_rows=1 right_rows=1 output_rows=1 left_cost=3 right_cost=5 cost=9"
+            decision == "estimate NodeCartesianProduct: left_rows=1 right_rows=1 output_rows=1 left_cost=5 right_cost=8 cost=14"
         }));
     assert!(plan
         .instance_fingerprint()
@@ -266,7 +266,7 @@ fn cartesian_product_orders_single_row_inputs_by_cost() {
         trace.selected_plan_cost,
         PlanCost {
             estimated_rows: 1,
-            cost: 9,
+            cost: 14,
         }
     );
 }
@@ -357,7 +357,7 @@ fn cartesian_product_orders_nested_single_row_inputs() {
         decision.starts_with("order NodeCartesianProduct single-row inputs: inputs=3")
     }));
     assert!(trace.decisions.iter().any(|decision| {
-            decision == "estimate NodeCartesianProduct: left_rows=1 right_rows=1 output_rows=1 left_cost=3 right_cost=9 cost=13"
+            decision == "estimate NodeCartesianProduct: left_rows=1 right_rows=1 output_rows=1 left_cost=5 right_cost=14 cost=20"
         }));
     let fingerprint = plan.instance_fingerprint();
     assert!(fingerprint.contains("NodeCartesianProductExec(IndexNodeSeek(1:e:6:Entity"));
@@ -367,7 +367,7 @@ fn cartesian_product_orders_nested_single_row_inputs() {
         trace.selected_plan_cost,
         PlanCost {
             estimated_rows: 1,
-            cost: 13,
+            cost: 20,
         }
     );
 }
@@ -445,7 +445,7 @@ fn cartesian_product_keeps_nested_multi_row_inputs() {
         trace.selected_plan_cost,
         PlanCost {
             estimated_rows: 10,
-            cost: 40,
+            cost: 44,
         }
     );
 }
@@ -499,13 +499,13 @@ fn post_product_node_property_filter_uses_node_statistics() {
         trace.selected_plan_cost,
         PlanCost {
             estimated_rows: 100,
-            cost: 3_007,
+            cost: 3_009,
         }
     );
     assert!(trace
         .decisions
         .iter()
-        .any(|decision| decision == "selected physical plan cost: estimated_rows=100 cost=3007"));
+        .any(|decision| decision == "selected physical plan cost: estimated_rows=100 cost=3009"));
 }
 
 #[test]
@@ -821,7 +821,7 @@ fn residual_relationship_id_in_uses_literal_list_width() {
         trace.selected_plan_cost,
         PlanCost {
             estimated_rows: 2,
-            cost: 10_004,
+            cost: 15_004,
         }
     );
 }
@@ -896,7 +896,7 @@ fn residual_relationship_property_in_uses_relationship_distinct_counts() {
         trace.selected_plan_cost,
         PlanCost {
             estimated_rows: 1_200,
-            cost: 10_004,
+            cost: 15_004,
         }
     );
 }

@@ -1,4 +1,9 @@
+use crate::estimate_relational_access_path_cost;
 use std::collections::BTreeSet;
+
+#[cfg(test)]
+#[path = "relational/cost_tests.rs"]
+mod cost_tests;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
 pub enum RelationalAccessPathKind {
@@ -82,6 +87,8 @@ impl RelationalAccessPathDescriptor {
             && (self.unique_point || !other.unique_point)
             && (self.covering || !other.covering)
             && (!self.requires_row_fetch || other.requires_row_fetch)
+            && estimate_relational_access_path_cost(self).cost
+                <= estimate_relational_access_path_cost(other).cost
             && self.estimated_rows <= other.estimated_rows;
         let strictly_better = self.access_columns != other.access_columns
             || self.equality_prefix_len > other.equality_prefix_len
@@ -125,8 +132,10 @@ pub fn select_relational_access_path(
 ) -> Result<Option<RelationalAccessPathDescriptor>, &'static str> {
     let frontier = skyline_prune_relational_access_paths(candidates)?;
     Ok(frontier.into_iter().min_by(|left, right| {
-        left.estimated_rows
-            .cmp(&right.estimated_rows)
+        estimate_relational_access_path_cost(left)
+            .cost
+            .cmp(&estimate_relational_access_path_cost(right).cost)
+            .then_with(|| left.estimated_rows.cmp(&right.estimated_rows))
             .then_with(|| right.unique_point.cmp(&left.unique_point))
             .then_with(|| right.equality_prefix_len.cmp(&left.equality_prefix_len))
             .then_with(|| right.order_prefix_len.cmp(&left.order_prefix_len))

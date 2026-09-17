@@ -54,9 +54,9 @@ pub use relational_join::{
     RelationalJoinPredicate, RelationalJoinPredicateId, RelationalJoinRelation, RelationalJoinStep,
 };
 pub use relational_join_cost::{
-    estimate_relational_access_cost, estimate_relational_join_cost,
-    estimate_relational_probe_join_cost, RelationalJoinCardinality, RelationalJoinRightInput,
-    RelationalJoinSelectivity,
+    estimate_relational_access_cost, estimate_relational_access_path_cost,
+    estimate_relational_join_cost, estimate_relational_probe_join_cost, RelationalJoinCardinality,
+    RelationalJoinRightInput, RelationalJoinSelectivity,
 };
 pub use relational_join_hypergraph::{
     enumerate_relational_csg_cmp_joins, enumerate_relational_csg_cmp_joins_with_implementations,

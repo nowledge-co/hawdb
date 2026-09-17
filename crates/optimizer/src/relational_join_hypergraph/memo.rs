@@ -3,7 +3,8 @@
 use super::*;
 use crate::{
     relational_join_cost::{
-        estimate_relational_access_cost, estimate_relational_join_cost, RelationalJoinCardinality,
+        estimate_relational_access_path_cost, estimate_relational_join_cost,
+        RelationalJoinCardinality,
     },
     GroupId, Memo, RelationalInnerJoinEnumeration, RelationalJoinEnumerationError,
     RelationalJoinGraph, RelationalJoinPlan, RelationalJoinPredicate, RelationalJoinRelation,
@@ -665,8 +666,8 @@ fn best_plan(
                                 binding: *binding,
                                 access_path: access.clone(),
                             },
-                            cost_breakdown: estimate_relational_access_cost(
-                                access.descriptor.estimated_rows,
+                            cost_breakdown: estimate_relational_access_path_cost(
+                                &access.descriptor,
                             ),
                             properties: access.properties.clone(),
                         })
@@ -800,17 +801,11 @@ fn best_plan(
                                     .then(|| SelectedPlan {
                                         properties,
                                         cost_breakdown: estimate_relational_join_cost(
-                                            estimate_relational_access_cost(
-                                                implementation
-                                                    .left_access
-                                                    .descriptor
-                                                    .estimated_rows,
+                                            estimate_relational_access_path_cost(
+                                                &implementation.left_access.descriptor,
                                             ),
-                                            estimate_relational_access_cost(
-                                                implementation
-                                                    .right_access
-                                                    .descriptor
-                                                    .estimated_rows,
+                                            estimate_relational_access_path_cost(
+                                                &implementation.right_access.descriptor,
                                             ),
                                             match operator_kind {
                                                 RelationalJoinOperatorKind::Inner => {
@@ -875,7 +870,7 @@ fn best_probe_relation_plan(
             binding,
             access_path: access.clone(),
         },
-        cost_breakdown: estimate_relational_access_cost(access.descriptor.estimated_rows),
+        cost_breakdown: estimate_relational_access_path_cost(&access.descriptor),
         properties: access.properties.clone(),
     })
 }
@@ -889,13 +884,15 @@ fn compare_probe_access_paths(
         // CSG-CMP ranks costed probes; the flat frontends rank raw estimates.
         // Preserve the distinction at the zero/one cardinality boundary.
         if domain == EnumerationDomain::CsgCmp {
-            estimate_relational_access_cost(access.descriptor.estimated_rows).estimated_rows
+            estimate_relational_access_path_cost(&access.descriptor).estimated_rows
         } else {
             u64::try_from(access.descriptor.estimated_rows).unwrap_or(u64::MAX)
         }
     };
-    rows(left)
-        .cmp(&rows(right))
+    estimate_relational_access_path_cost(&left.descriptor)
+        .cost
+        .cmp(&estimate_relational_access_path_cost(&right.descriptor).cost)
+        .then_with(|| rows(left).cmp(&rows(right)))
         .then_with(|| {
             right
                 .descriptor

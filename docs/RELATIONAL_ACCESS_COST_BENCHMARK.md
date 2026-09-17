@@ -4,7 +4,9 @@ The `relational_index_access` benchmark retains its original in-memory
 `RelationalStore` measurements and adds a separate `persisted` result. This
 addresses the measurement prerequisite of #216: in-memory prefix timings do
 not establish the cost of persisted index traversal and canonical row fetches.
-It does not change optimizer weights or complete that issue.
+The original v1 recording is retained below. Protocol v2 verifies the descriptor-aware
+policy in [the cost contract](OPTIMIZER_COST_MODEL.md); this benchmark alone does not
+complete that issue.
 
 ## Fixture and comparison
 
@@ -16,8 +18,9 @@ materialized rows and shadow index publication. Reading explicitly selects
 a 64 MiB segment cache. These are fixture-local settings, not new defaults.
 
 Indexed columns have equal-valued, unindexed mirror columns in the same row.
-Changing only the predicate column allows a full scan and an index/point path
-to return exactly the same IDs and payloads from the same checkpoint, without
+Changing only the predicate column compares an unindexed full scan with the
+optimizer-selected access when an index is available. Both return exactly the
+same IDs and payloads from the same checkpoint, without
 an optimizer hint, a forced-plan public API, or differently populated tables.
 
 The matrix covers:
@@ -44,7 +47,7 @@ only for benchmark verification and is not part of the executed query.
 
 ## Evidence and assertions
 
-The additive JSON object uses `skein-persisted-relational-access-v1` and records
+The additive JSON object uses `skein-persisted-relational-access-v2` and records
 the OS, architecture, smoke/full scale, row count, sample count and cache size.
 For each path it includes:
 
@@ -58,9 +61,15 @@ For each path it includes:
   hits/misses/rejections, and visited rows;
 - snapshot epochs and overflow hydration bytes where applicable.
 
-The harness requires a full scan for the unindexed predicate, a canonical
-point get for the primary key, and an index range scan with row fetches for
-secondary prefixes. The scan's access-row count must equal the complete table
+The harness requires a full scan for the unindexed predicate and a canonical
+point get for the primary key. For secondary prefixes, an independent policy
+oracle requires an index only when its `6 * estimated_candidates + 2` logical cost is below
+the scan cost `3 * rows + 4`. Fresh persisted statistics estimate the three
+buckets with `ceil(rows / 3)` and the all-rows prefix with `rows`. All-rows
+cases must choose a full scan; bucket cases retain the index, including the
+broad bucket whose true skew is not represented by average fanout. The second report is named
+`cost_selected`, so timing two full scans in a broad case is explicit. Historical
+v1 reports instead used `index` and required that operator for every prefix. The scan's access-row count must equal the complete table
 size, while point/prefix access counts must equal their matching counts. These
 are different from final result cardinality, which is checked independently.
 Canonical primary-key reads use row-page locators directly; an empty separate
@@ -70,9 +79,8 @@ Every path must read canonical snapshot rows, the first query must perform
 row-file reads, and secondary probes must use authoritative index pages.
 Repeated queries must reuse the SQL template and perform no row/index file
 page reads with this cache-sized fixture. Snapshot epochs must agree across
-each pair, and no mutable row overlay may participate. A plan change must be
-reviewed explicitly; silently timing two full scans would invalidate the
-comparison even if their result sets agreed.
+each pair, and no mutable row overlay may participate. Every selected operator is checked against the independent expected policy;
+silently changing a selective index case to a scan still fails the experiment.
 
 ## Interpretation limits
 
@@ -95,7 +103,7 @@ threshold in the test; correctness and evidence contracts fail closed.
 
 ## Example local observation
 
-One release run on 2026-09-09 used macOS 26.6.2 / aarch64, 18 physical CPU
+One v1 release run on 2026-09-09 used macOS 26.6.2 / aarch64, 18 physical CPU
 cores, 36 GiB system memory, and Rust 1.97.1 with the default Cargo bench
 profile. The fixture ran after local compilation and fuzz jobs completed.
 All 20 persisted comparisons and all four original in-memory cases completed;

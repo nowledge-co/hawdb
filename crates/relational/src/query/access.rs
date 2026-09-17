@@ -15,7 +15,9 @@ use super::{
     SqlOrderDirection, SqlPredicate, Value,
 };
 
-pub(super) struct RelationalBaseAccessPlanning<'a> {
+pub(super) struct RelationalBaseAccessPlanning<'a, R> {
+    pub(super) index_read_mode: RelationalIndexReadMode<'a, R>,
+    pub(super) fields: &'a crate::field_plan::RelationalFieldPlan,
     pub(super) predicate: Option<&'a SqlPredicate>,
     pub(super) order_by: &'a [skein_sql::SqlOrderItem],
     pub(super) prefer_ordered_access: bool,
@@ -45,9 +47,13 @@ pub(super) fn projection_access_planning(
 }
 
 pub(super) fn choose_base_access(
-    planning: RelationalBaseAccessPlanning<'_>,
+    planning: RelationalBaseAccessPlanning<
+        '_,
+        impl crate::index_runtime::RelationalIndexStoreReader,
+    >,
 ) -> Result<RelationalAccessCandidate> {
     let RelationalBaseAccessPlanning {
+        fields,
         predicate,
         order_by,
         prefer_ordered_access,
@@ -58,6 +64,7 @@ pub(super) fn choose_base_access(
         qualifier,
         cardinality_limit,
         projection,
+        ..
     } = planning;
     let mut equalities = Vec::new();
     if let Some(predicate) = predicate {
@@ -165,6 +172,10 @@ pub(super) fn choose_base_access(
         }
     }
 
+    // Coverage must participate in costing before skyline pruning and selection.
+    for candidate in &mut candidates {
+        fields.apply_access_coverage(&mut candidate.descriptor, table, schema)?;
+    }
     let ordered_candidates = candidates
         .iter()
         .filter(|candidate| {
@@ -211,7 +222,10 @@ pub(super) fn complete_key(
 }
 
 pub(super) fn index_access_candidate(
-    planning: &RelationalBaseAccessPlanning<'_>,
+    planning: &RelationalBaseAccessPlanning<
+        '_,
+        impl crate::index_runtime::RelationalIndexStoreReader,
+    >,
     name: String,
     columns: &[String],
     unique: bool,
@@ -263,7 +277,17 @@ pub(super) fn index_access_candidate(
                 if unique && prefix_len == columns.len() {
                     usize::from(state.row_count(table) != 0)
                 } else {
-                    state.row_count(table).min(*cardinality_limit)
+                    // Persisted indexes may have fresh prefix NDV statistics even
+                    // when their posting lists are absent from the in-memory state.
+                    planning
+                        .index_read_mode
+                        .probe_statistics(table, &name, prefix_len)
+                        .map(|statistics| {
+                            usize::try_from(statistics.average_fanout()).unwrap_or(usize::MAX)
+                        })
+                        .unwrap_or_else(|| state.row_count(table))
+                        .min(state.row_count(table))
+                        .min(*cardinality_limit)
                 }
             }
             None => {
@@ -343,7 +367,10 @@ pub(super) fn index_order_prefix(
 }
 
 pub(super) fn bind_canonical_keyset_bound(
-    planning: &RelationalBaseAccessPlanning<'_>,
+    planning: &RelationalBaseAccessPlanning<
+        '_,
+        impl crate::index_runtime::RelationalIndexStoreReader,
+    >,
     prefix: &RelationalKey,
     access_columns: &BTreeSet<String>,
 ) -> Result<Option<RelationalKey>> {
@@ -381,6 +408,7 @@ pub(super) fn bind_canonical_keyset_bound(
     Ok(Some(RelationalKey(bound)))
 }
 
+#[allow(clippy::too_many_arguments)]
 pub(super) fn choose_join_access(
     predicate: &SqlPredicate,
     state: &RelationalState,
@@ -392,6 +420,7 @@ pub(super) fn choose_join_access(
         impl crate::index_runtime::RelationalIndexStoreReader,
     >,
     projection: RelationalProjectionAccessPlanning,
+    fields: &crate::field_plan::RelationalFieldPlan,
 ) -> Result<RelationalJoinAccessCandidate> {
     let mut bound = BTreeMap::<String, SqlColumnRef>::new();
     collect_conjunctive_join_equalities(predicate, table, qualifier, &mut bound);
@@ -464,6 +493,9 @@ pub(super) fn choose_join_access(
         }
     }
 
+    for candidate in &mut candidates {
+        fields.apply_access_coverage(&mut candidate.descriptor, table, schema)?;
+    }
     let selected = select_relational_access_path(
         candidates
             .iter()
