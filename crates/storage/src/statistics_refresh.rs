@@ -1415,5 +1415,59 @@ impl Drop for RefreshSpillDirectory {
     }
 }
 
+pub fn retain_valid_index_statistics_samples(statistics: &mut GraphStatistics, catalog: &Catalog) {
+    statistics
+        .index_samples
+        .retain(|id, sample| catalog.supports_index_statistics(*id) && sample.is_valid());
+}
+
+pub fn retain_supported_property_statistics(
+    statistics: &mut GraphStatistics,
+    catalog: Option<&Catalog>,
+) {
+    retain_supported_property_statistics_group(
+        &mut statistics.property_distinct_counts,
+        &mut statistics.property_histograms,
+        &mut statistics.sampled_property_histograms,
+        |(label_id, property), value| {
+            node_property_supports_optimizer_statistics(catalog, *label_id, property, value)
+        },
+    );
+    retain_supported_property_statistics_group(
+        &mut statistics.rel_property_distinct_counts,
+        &mut statistics.rel_property_histograms,
+        &mut statistics.sampled_rel_property_histograms,
+        |(rel_type_id, property), value| {
+            relationship_property_supports_optimizer_statistics(
+                catalog,
+                *rel_type_id,
+                property,
+                value,
+            )
+        },
+    );
+}
+
+fn retain_supported_property_statistics_group<K: Ord + Clone>(
+    distinct_counts: &mut BTreeMap<K, u64>,
+    histograms: &mut BTreeMap<K, Vec<Value>>,
+    sampled_histograms: &mut BTreeMap<K, bool>,
+    mut supports: impl FnMut(&K, &Value) -> bool,
+) {
+    let complete_groups = histograms
+        .iter()
+        .filter(|(key, values)| {
+            distinct_counts.contains_key(*key)
+                && sampled_histograms.contains_key(*key)
+                && !values.is_empty()
+                && values.iter().all(|value| supports(key, value))
+        })
+        .map(|(key, _)| key.clone())
+        .collect::<BTreeSet<_>>();
+    distinct_counts.retain(|key, _| complete_groups.contains(key));
+    histograms.retain(|key, _| complete_groups.contains(key));
+    sampled_histograms.retain(|key, _| complete_groups.contains(key));
+}
+
 #[cfg(test)]
 mod tests;

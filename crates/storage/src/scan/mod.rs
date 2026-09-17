@@ -1,3 +1,4 @@
+use crate::{NodeRecord, RelRecord};
 use skein_core::{LabelId, RelTypeId};
 
 mod cursor;
@@ -74,6 +75,18 @@ pub struct ScanPruningReport {
     pub candidate_count_before_filter: usize,
     pub output_count: usize,
     pub filtered_out_count: usize,
+}
+
+#[derive(Debug, Clone)]
+pub struct ScanPrunedNodeScan<'a> {
+    pub nodes: Vec<&'a NodeRecord>,
+    pub report: ScanPruningReport,
+}
+
+#[derive(Debug, Clone)]
+pub struct ScanPrunedRelationshipScan<'a> {
+    pub relationships: Vec<&'a RelRecord>,
+    pub report: ScanPruningReport,
 }
 
 #[cfg(test)]

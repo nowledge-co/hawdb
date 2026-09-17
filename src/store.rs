@@ -163,13 +163,17 @@ pub(crate) use skein_storage::mutation::evaluate::{
 use skein_storage::projection::artifact::{
     decode_projected_graph_artifacts, split_projected_graph_artifact_checksum,
 };
+pub use skein_storage::scan::{ScanPrunedNodeScan, ScanPrunedRelationshipScan};
 pub(crate) use skein_storage::source_scan;
 pub use skein_storage::source_scan::SourceScanRow;
-pub(crate) use skein_storage::statistics_refresh::OptimizerStatisticsRefreshWork;
 use skein_storage::statistics_refresh::{
     adaptive_histogram_sample_limit, node_property_supports_optimizer_statistics,
     relationship_property_supports_optimizer_statistics, sample_histogram_values,
     MAX_BOUNDED_PATH_STAT_HOPS, MAX_PROPERTY_HISTOGRAM_VALUES,
+};
+pub(crate) use skein_storage::statistics_refresh::{
+    retain_supported_property_statistics, retain_valid_index_statistics_samples,
+    OptimizerStatisticsRefreshWork,
 };
 #[cfg(test)]
 use skein_storage::text::encode_properties;
@@ -536,18 +540,6 @@ type CompositePropertyIndex = CowSegmentedMap<(LabelId, CompositePropertyKey), N
 type FullTextPropertyIndex = CowSegmentedMap<(LabelId, String, String), NodeIdPostingList>;
 type RelationshipPropertyIndex =
     CowSegmentedMap<(RelTypeId, String, Value), RelIdPropertyPostingList>;
-
-#[derive(Debug, Clone)]
-pub struct ScanPrunedNodeScan<'a> {
-    pub nodes: Vec<&'a NodeRecord>,
-    pub report: ScanPruningReport,
-}
-
-#[derive(Debug, Clone)]
-pub struct ScanPrunedRelationshipScan<'a> {
-    pub relationships: Vec<&'a RelRecord>,
-    pub report: ScanPruningReport,
-}
 
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct KernelWriteBatch {
@@ -2062,12 +2054,6 @@ fn compute_index_statistics_samples(
     samples
 }
 
-fn retain_valid_index_statistics_samples(statistics: &mut GraphStatistics, catalog: &Catalog) {
-    statistics
-        .index_samples
-        .retain(|id, sample| catalog.supports_index_statistics(*id) && sample.is_valid());
-}
-
 fn full_text_index_tokens(value: &str) -> BTreeSet<String> {
     let normalized = value.to_lowercase();
     let chars = normalized.chars().collect::<Vec<_>>();
@@ -2746,54 +2732,6 @@ fn collect_property_statistic_value<K: Ord>(
     } else if !excluded.contains(&key) {
         values.entry(key).or_default().insert(value.clone());
     }
-}
-
-fn retain_supported_property_statistics(
-    statistics: &mut GraphStatistics,
-    catalog: Option<&Catalog>,
-) {
-    retain_supported_property_statistics_group(
-        &mut statistics.property_distinct_counts,
-        &mut statistics.property_histograms,
-        &mut statistics.sampled_property_histograms,
-        |(label_id, property), value| {
-            node_property_supports_optimizer_statistics(catalog, *label_id, property, value)
-        },
-    );
-    retain_supported_property_statistics_group(
-        &mut statistics.rel_property_distinct_counts,
-        &mut statistics.rel_property_histograms,
-        &mut statistics.sampled_rel_property_histograms,
-        |(rel_type_id, property), value| {
-            relationship_property_supports_optimizer_statistics(
-                catalog,
-                *rel_type_id,
-                property,
-                value,
-            )
-        },
-    );
-}
-
-fn retain_supported_property_statistics_group<K: Ord + Clone>(
-    distinct_counts: &mut BTreeMap<K, u64>,
-    histograms: &mut BTreeMap<K, Vec<Value>>,
-    sampled_histograms: &mut BTreeMap<K, bool>,
-    mut supports: impl FnMut(&K, &Value) -> bool,
-) {
-    let complete_groups = histograms
-        .iter()
-        .filter(|(key, values)| {
-            distinct_counts.contains_key(*key)
-                && sampled_histograms.contains_key(*key)
-                && !values.is_empty()
-                && values.iter().all(|value| supports(key, value))
-        })
-        .map(|(key, _)| key.clone())
-        .collect::<BTreeSet<_>>();
-    distinct_counts.retain(|key, _| complete_groups.contains(key));
-    histograms.retain(|key, _| complete_groups.contains(key));
-    sampled_histograms.retain(|key, _| complete_groups.contains(key));
 }
 
 fn compute_node_property_distinct_counts_from_index(
