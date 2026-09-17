@@ -140,7 +140,12 @@ fn every_rule_local_family_preserves_the_lexical_winner_without_recomputing_keys
                 .cloned()
                 .chain(std::iter::once("tenant".into()))
                 .map(|property| (("Node".into(), property), 16)),
-            [],
+            properties.iter().cloned().map(|property| {
+                (
+                    ("Node".into(), property),
+                    (0..48).map(Value::Int).collect::<Vec<_>>(),
+                )
+            }),
         ),
     );
     for family in [

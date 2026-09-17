@@ -141,7 +141,7 @@ fn incoming_optional_degree_cost_uses_target_statistics() {
         trace.selected_plan_cost,
         PlanCost {
             estimated_rows: 1_000,
-            cost: 12_004,
+            cost: 23_004,
         }
     );
 }
@@ -206,13 +206,13 @@ fn expand_trace_marks_fallback_hop_estimates() {
         trace.selected_plan_cost,
         PlanCost {
             estimated_rows: 28,
-            cost: 80,
+            cost: 118,
         }
     );
     assert!(trace
         .decisions
         .iter()
-        .any(|decision| decision == "selected physical plan cost: estimated_rows=28 cost=80"));
+        .any(|decision| decision == "selected physical plan cost: estimated_rows=28 cost=118"));
 }
 
 #[test]
@@ -277,7 +277,7 @@ fn expand_cost_scales_with_selective_input_rows() {
         trace.selected_plan_cost,
         PlanCost {
             estimated_rows: 1,
-            cost: 6,
+            cost: 10,
         }
     );
     assert!(trace
@@ -301,7 +301,7 @@ fn expand_cost_scales_with_selective_input_rows() {
     assert!(trace
         .decisions
         .iter()
-        .any(|decision| decision == "selected physical plan cost: estimated_rows=1 cost=6"));
+        .any(|decision| decision == "selected physical plan cost: estimated_rows=1 cost=10"));
 }
 
 #[test]
@@ -375,7 +375,7 @@ fn expand_cost_uses_relationship_property_distinct_counts() {
         trace.selected_plan_cost,
         PlanCost {
             estimated_rows: 1,
-            cost: 6,
+            cost: 10,
         }
     );
 }

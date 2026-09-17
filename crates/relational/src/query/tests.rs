@@ -3,10 +3,9 @@ use super::*;
 use crate::compile_relational_statement_sql;
 use skein_core::Value;
 use skein_optimizer::{
-    estimate_relational_access_cost, estimate_relational_join_cost,
-    estimate_relational_probe_join_cost, RelationalJoinCardinality, RelationalJoinPlanningAttempt,
-    RelationalJoinPlanningStrategy, RelationalJoinRightInput, RelationalJoinSelectivity,
-    RelationalOperatorKind,
+    estimate_relational_access_path_cost, estimate_relational_join_cost, RelationalJoinCardinality,
+    RelationalJoinPlanningAttempt, RelationalJoinPlanningStrategy, RelationalJoinRightInput,
+    RelationalJoinSelectivity, RelationalOperatorKind,
 };
 use skein_storage::{RelationalMutationLimits, RelationalOverflowConfig};
 use std::num::{NonZeroU64, NonZeroUsize};
@@ -199,6 +198,14 @@ fn hash_join_state() -> RelationalState {
                 )
                 .unwrap_or_else(|error| panic!("failed to apply SQL '{sql}': {error}"));
         }
+    // Keep this execution-algorithm fixture selective under descriptor costing.
+    for i in 0..16 {
+        let sql = format!("INSERT INTO hash_left (id, tenant, join_key, tag) VALUES ('unused-{i}', 'other-tenant-{i}', 'unused-{i}', 'unused')");
+        let transaction = compile_relational_statement_sql(&sql, &[], &state).unwrap();
+        state = state
+            .stage_transaction(transaction, Default::default(), Default::default())
+            .unwrap();
+    }
     state
 }
 
@@ -974,7 +981,11 @@ fn prepared_bushy_physical_join_plan_materializes_the_composite_right_input_once
         ]
     );
     let c_schema = state.table_schema("bushy_c").expect("bushy_c schema");
+    let fields = plan_relational_field_plan(&select, &state).unwrap();
     let c_base = choose_base_access(RelationalBaseAccessPlanning {
+        index_read_mode:
+            RelationalIndexReadMode::<crate::RelationalMaterializedReader>::Materialized,
+        fields: &fields,
         predicate: None,
         order_by: &[],
         prefer_ordered_access: false,
@@ -1028,15 +1039,19 @@ fn prepared_bushy_physical_join_plan_materializes_the_composite_right_input_once
         ),
     )
     .expect("build right physical join");
-    let left_cost = estimate_relational_probe_join_cost(
-        estimate_relational_access_cost(syntax_plan.base_access.descriptor.estimated_rows),
-        syntax_plan.join_accesses[0].descriptor.estimated_rows,
+    let left_cost = estimate_relational_join_cost(
+        estimate_relational_access_path_cost(&syntax_plan.base_access.descriptor),
+        estimate_relational_access_path_cost(&syntax_plan.join_accesses[0].descriptor),
         RelationalJoinCardinality::Inner,
+        RelationalJoinRightInput::Probe,
+        RelationalJoinSelectivity::Unknown,
     );
-    let right_cost = estimate_relational_probe_join_cost(
-        estimate_relational_access_cost(right.first_relation().access.descriptor().estimated_rows),
-        syntax_plan.join_accesses[2].descriptor.estimated_rows,
+    let right_cost = estimate_relational_join_cost(
+        estimate_relational_access_path_cost(right.first_relation().access.descriptor()),
+        estimate_relational_access_path_cost(&syntax_plan.join_accesses[2].descriptor),
         RelationalJoinCardinality::Inner,
+        RelationalJoinRightInput::Probe,
+        RelationalJoinSelectivity::Unknown,
     );
     let cost = estimate_relational_join_cost(
         left_cost,

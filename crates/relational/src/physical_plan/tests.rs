@@ -1,4 +1,5 @@
 use super::*;
+use skein_optimizer::estimate_relational_access_cost;
 use skein_sql::SqlStatement;
 use std::num::NonZeroUsize;
 
@@ -82,11 +83,8 @@ fn error<T>(result: Result<T>) -> String {
 
 fn sample(algorithm: usize) -> RelationalPhysicalJoinPlan {
     let input = model(&mut Rng(31), algorithm, 1, &mut 0, &mut 0);
-    let (rows, cpu, ..) = input.reference();
-    RelationalPhysicalJoinPlan::new(
-        input.construct(&statement().joins[0].on),
-        PlanCostBreakdown::new(rows, cpu, 0, 0, 0),
-    )
+    let (_, cost, ..) = input.reference();
+    RelationalPhysicalJoinPlan::new(input.construct(&statement().joins[0].on), cost)
 }
 
 #[test]
@@ -340,6 +338,19 @@ fn index_coverage_tracks_required_fields_and_rejects_missing_schema() {
         let descriptor = node.first_relation().access.descriptor();
         assert_eq!(descriptor.covering, expected);
         assert_eq!(descriptor.requires_row_fetch, !expected);
+        let mut tree = RelationalPhysicalJoinPlan::new(
+            RelationalPhysicalJoinNode::relation(
+                BindingId::new(0),
+                "l".into(),
+                "l".into(),
+                RelationalPhysicalAccess::Base(base(3, true)),
+            ),
+            estimate_relational_access_path_cost(&base(3, true).descriptor),
+        );
+        let before = tree.cost_breakdown;
+        tree.apply_index_coverage(&state, &fields).unwrap();
+        assert_eq!(tree.cost_breakdown.cost < before.cost, expected);
+        planned_tree_operator_cardinality_profiles(&tree).unwrap();
         assert!(
             error(node.apply_index_coverage(&RelationalState::default(), &fields))
                 .contains("unknown relational table l")
@@ -607,11 +618,8 @@ fn campaign(seeds: u64, cases: usize) -> usize {
         for case in 0..cases {
             for algorithm in 0..5 {
                 let input = model(&mut rng, algorithm, case % 4, &mut 0, &mut 0);
-                let (rows, cpu, batches, materialized, ids) = input.reference();
-                let tree = RelationalPhysicalJoinPlan::new(
-                    input.construct(&predicate),
-                    PlanCostBreakdown::new(rows, cpu, 0, 0, 0),
-                );
+                let (_, cost, batches, materialized, ids) = input.reference();
+                let tree = RelationalPhysicalJoinPlan::new(input.construct(&predicate), cost);
                 tree.validate().unwrap();
                 validate_prepared_physical_join_plan_accesses(&tree.root, true).unwrap();
                 let actual = planned_tree_operator_cardinality_profiles(&tree).unwrap();

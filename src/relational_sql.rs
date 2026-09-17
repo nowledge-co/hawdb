@@ -2784,7 +2784,7 @@ mod tests {
                 .expect("create authoritative SQL index");
             database
                 .query_sql(
-                    "INSERT INTO documents (id, owner, body) VALUES ('doc-1', 'owner-1', 'body-1')",
+                    "INSERT INTO documents (id, owner, body) VALUES ('doc-1', 'owner-1', 'body-1'), ('doc-2', 'owner-2', 'body-2'), ('doc-3', 'owner-3', 'body-3')",
                 )
                 .expect("insert authoritative SQL source");
             database
@@ -3611,6 +3611,17 @@ mod tests {
                      ('doc-3', 'owner-b', 'body-3')",
                 )
                 .expect("insert join documents");
+            for id in 0..16 {
+                database
+                    .query_sql_with_params(
+                        "INSERT INTO join_documents (id, owner, body) VALUES ($1, $2, 'unused')",
+                        &[
+                            text(&format!("unused-{id}")),
+                            text(&format!("unused-owner-{id}")),
+                        ],
+                    )
+                    .unwrap();
+            }
             database
                 .checkpoint()
                 .expect("publish batched-index checkpoint");
@@ -3681,7 +3692,7 @@ mod tests {
                 .query_sql(
                     "EXPLAIN ANALYZE SELECT k.id AS key_id, d.id AS document_id \
                      FROM join_keys AS k \
-                     INNER JOIN join_documents AS d ON d.owner = k.owner",
+                     INNER JOIN join_documents AS d ON d.owner = k.owner WHERE k.id = 'key-4'",
                 )
                 .expect("execute live batched index join");
             let live_info =
@@ -3703,7 +3714,7 @@ mod tests {
                 .query_sql(
                     "EXPLAIN ANALYZE SELECT k.id AS key_id, d.id AS document_id \
                      FROM join_keys AS k \
-                     INNER JOIN join_documents AS d ON d.owner = k.owner",
+                     INNER JOIN join_documents AS d ON d.owner = k.owner WHERE k.id = 'key-4'",
                 )
                 .expect("execute recovered batched index join");
             let recovered_info =
@@ -4343,7 +4354,7 @@ mod tests {
         )
         .expect("indexed join");
         assert_eq!(joined.rows.len(), 1);
-        assert_eq!(joined.access_path.name, "idx_messages_order");
+        assert_eq!(joined.access_path.name, "__full_scan");
         assert_eq!(joined.join_access_paths[0].name, "idx_anchors_message");
         assert_eq!(joined.join_access_paths[0].equality_prefix_len, 2);
 
@@ -4792,9 +4803,9 @@ mod tests {
         );
         assert_eq!(
             output.join_planning.reason,
-            RelationalJoinPlanningReason::SyntaxOrderOptimal
+            RelationalJoinPlanningReason::CostReordered
         );
-        assert_eq!(output.join_planning.selected_order, ["a", "b", "c"]);
+        assert_eq!(output.join_planning.selected_order, ["b", "a", "c"]);
         assert!(output.join_planning.cost.is_some());
         assert_eq!(output.join_planning.attempts.len(), 1);
         assert_eq!(
@@ -4823,10 +4834,10 @@ mod tests {
         assert!(explained.rows.iter().any(|row| matches!(
             row.get("operator info"),
             Some(Value::String(info))
-                if info.contains("join_order=syntax")
+                if info.contains("join_order=cost_reordered")
                     && info.contains("planning_status=selected")
-                    && info.contains("planning_reason=syntax_order_optimal")
-                    && info.contains("0:csg_cmp_memo:selected:syntax_order_optimal")
+                    && info.contains("planning_reason=cost_reordered")
+                    && info.contains("0:csg_cmp_memo:selected:cost_reordered")
                     && info.contains("plan_cost=")
         )));
     }
@@ -4894,8 +4905,18 @@ mod tests {
         assert_eq!(output.rows[1]["a_id"], text("a-2"));
         assert_eq!(output.rows[1]["b_id"], Value::Null);
         assert_eq!(output.access_path.index_columns, ["external_id"]);
-        assert_eq!(output.join_access_paths[0].index_columns, ["c_id"]);
-        assert_eq!(output.join_access_paths[1].index_columns, ["a_id"]);
+        assert_eq!(
+            output.join_access_paths[0].index_columns,
+            Vec::<String>::new(),
+            "{:?}",
+            output.operator_cardinality_profiles
+        );
+        assert_eq!(
+            output.join_access_paths[1].index_columns,
+            Vec::<String>::new(),
+            "{:?}",
+            output.operator_cardinality_profiles
+        );
         assert_eq!(
             output
                 .operator_cardinality_profiles
@@ -4908,16 +4929,8 @@ mod tests {
                 .collect::<Vec<_>>(),
             [
                 (RelationalOperatorKind::IndexRangeScan, 1, Some(1)),
-                (
-                    RelationalOperatorKind::BatchedIndexNestedLoopJoin,
-                    3,
-                    Some(2),
-                ),
-                (
-                    RelationalOperatorKind::BatchedIndexNestedLoopLeftJoin,
-                    6,
-                    Some(2),
-                ),
+                (RelationalOperatorKind::HashJoin, 3, Some(3)),
+                (RelationalOperatorKind::NestedLoopJoin, 1, Some(2)),
             ]
         );
         assert!(output

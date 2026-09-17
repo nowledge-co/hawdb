@@ -104,7 +104,10 @@ pub(super) fn prepare_syntax_access_plan(
     let prefer_ordered_access =
         select.joins.is_empty() && !select.distinct && !has_aggregate && select.group_by.is_empty();
     let access_order_by = resolved_access_order_by(select)?;
+    let fields = plan_relational_field_plan(select, state)?;
     let base_access = choose_base_access(RelationalBaseAccessPlanning {
+        index_read_mode: read_modes.index,
+        fields: &fields,
         predicate: select.selection.as_ref(),
         order_by: &access_order_by,
         prefer_ordered_access,
@@ -135,6 +138,7 @@ pub(super) fn prepare_syntax_access_plan(
                 &qualifier,
                 read_modes.index,
                 projection_access_planning(read_modes.row, &join.table.name),
+                &fields,
             )
         })
         .collect::<Result<Vec<_>>>()?;

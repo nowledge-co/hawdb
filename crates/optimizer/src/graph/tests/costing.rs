@@ -31,7 +31,7 @@ fn source_segment_scan_preserves_scan_startup_cost_in_breakdown() {
     assert_eq!(breakdown.estimated_rows, 12);
     assert_eq!(breakdown.random_io, 4);
     assert_eq!(breakdown.sequential_io, 12);
-    assert_eq!(breakdown.cost, 16);
+    assert_eq!(breakdown.cost, 20);
     assert_scalar_cost_matches_breakdown(&plan, &catalog);
 }
 

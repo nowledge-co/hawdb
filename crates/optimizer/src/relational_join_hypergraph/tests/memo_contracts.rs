@@ -35,7 +35,7 @@ fn binding_order(node: &RelationalCsgCmpPlanNode) -> Vec<BindingId> {
 }
 
 #[test]
-fn zero_estimate_probe_ranking_preserves_each_frontend_contract() {
+fn probe_cost_precedes_legacy_zero_estimate_tie_breaking() {
     for reverse in [false, true] {
         let mut inner = indexed_relation(B, 100_000, A);
         let mut zero = inner.access_paths[1].clone();
@@ -64,8 +64,8 @@ fn zero_estimate_probe_ranking_preserves_each_frontend_contract() {
         assert_eq!(flat.plan.binding_order(), [A, B]);
         assert_eq!(rewrite.plan.binding_order(), [A, B]);
         assert_eq!(binding_order(&csg.plan.root), [A, B]);
-        assert_eq!(flat.plan.steps[0].access_path.descriptor.name, "z_zero");
-        assert_eq!(rewrite.plan.steps[0].access_path.descriptor.name, "z_zero");
+        assert_eq!(flat.plan.steps[0].access_path.descriptor.name, "a_one");
+        assert_eq!(rewrite.plan.steps[0].access_path.descriptor.name, "a_one");
         let RelationalCsgCmpPlanNode::Join { right, .. } = &csg.plan.root else {
             panic!("expected join")
         };
@@ -181,7 +181,7 @@ fn base_only_accesses_require_the_materialization_capability() {
         csg.plan.cost(),
         PlanCost {
             estimated_rows: 1,
-            cost: 11
+            cost: 29
         }
     );
 }
@@ -214,7 +214,7 @@ fn equal_cost_ties_preserve_predicate_and_operator_ordering_domains() {
         flat.plan.cost(),
         PlanCost {
             estimated_rows: 1,
-            cost: 3
+            cost: 21
         }
     );
     assert_eq!(rewrite.plan.cost(), flat.plan.cost());

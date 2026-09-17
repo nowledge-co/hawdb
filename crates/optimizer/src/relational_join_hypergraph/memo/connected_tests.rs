@@ -1,5 +1,5 @@
 use super::*;
-use crate::relational_join_cost::{estimate_relational_probe_join_cost, RelationalJoinCardinality};
+use crate::relational_join_cost::RelationalJoinCardinality;
 use crate::{
     enumerate_relational_inner_joins, RelationalAccessPathDescriptor, RelationalAccessPathKind,
 };
@@ -485,10 +485,12 @@ fn exhaustive_plan(
                     continue;
                 }
                 let mut next = plan.clone();
-                next.cost_breakdown = estimate_relational_probe_join_cost(
+                next.cost_breakdown = estimate_relational_join_cost(
                     next.cost_breakdown,
-                    access.descriptor.estimated_rows,
+                    estimate_relational_access_path_cost(&access.descriptor),
                     RelationalJoinCardinality::Inner,
+                    RelationalJoinRightInput::Probe,
+                    RelationalJoinSelectivity::Unknown,
                 );
                 next.steps.push(RelationalJoinStep {
                     binding: relation.binding,
@@ -509,9 +511,7 @@ fn exhaustive_plan(
                         base_binding: relation.binding,
                         base_access_path: access.clone(),
                         steps: Vec::new(),
-                        cost_breakdown: estimate_relational_access_cost(
-                            access.descriptor.estimated_rows,
-                        ),
+                        cost_breakdown: estimate_relational_access_path_cost(&access.descriptor),
                         properties: access.properties.clone(),
                     },
                     &mut best,

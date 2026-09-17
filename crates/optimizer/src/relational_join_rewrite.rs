@@ -763,7 +763,7 @@ mod tests {
             result.plan.cost(),
             PlanCost {
                 estimated_rows: 1,
-                cost: 3,
+                cost: 21,
             }
         );
         assert_eq!(

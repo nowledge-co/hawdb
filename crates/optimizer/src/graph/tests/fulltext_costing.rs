@@ -44,7 +44,7 @@ fn assert_full_text_access_equivalence(label_count: u64, query: &str) {
     let catalog = catalog(label_count);
     // Do not call the production estimator: check the fixed fallback in a wider type.
     let candidate_rows = expected_candidate_rows(label_count);
-    let expected_io = candidate_rows.saturating_mul(2).saturating_add(3);
+    let expected_io = candidate_rows.saturating_add(3);
     let other_property = Predicate::PropertyContains {
         variable: "m".into(),
         property: "body".into(),
@@ -144,7 +144,7 @@ fn full_text_costing_matches_rule_decisions_in_memo_and_fallback() {
     for count in [0, 1, 8, 9, 99, 100, 101, u64::MAX] {
         let catalog = catalog(count);
         let candidate_rows = expected_candidate_rows(count);
-        let seek_io = candidate_rows.saturating_mul(2).saturating_add(3);
+        let seek_io = candidate_rows.saturating_add(3);
         let mut reference = None;
         for max_groups in [0, 16] {
             let (physical, trace) = CascadesOptimizer::new(OptimizerConfig { max_groups })
@@ -157,7 +157,7 @@ fn full_text_costing_matches_rule_decisions_in_memo_and_fallback() {
             };
             assert_eq!(predicate.as_ref(), Some(&contains("graph")));
             let cost = trace.selected_plan_cost_breakdown;
-            if count > 8 {
+            if count > 8 && u128::from(candidate_rows) * 3 + 6 <= u128::from(count) + 4 {
                 assert!(matches!(access, NodeProjectionAccess::FullText { .. }));
                 assert_eq!(cost.random_io, seek_io);
                 assert_eq!(cost.estimated_rows, candidate_rows);
@@ -165,7 +165,10 @@ fn full_text_costing_matches_rule_decisions_in_memo_and_fallback() {
                     trace.decisions.iter().any(|decision| {
                         decision.contains("choose IndexNodeTextSeek for Memory.title:")
                             && decision.contains(&format!("estimated_rows={candidate_rows}"))
-                            && decision.contains(&format!("seek_cost={seek_io}"))
+                            && decision.contains(&format!(
+                                "seek_cost={}",
+                                candidate_rows.saturating_add(seek_io.saturating_mul(2))
+                            ))
                     }),
                     "count={count} max_groups={max_groups} decisions={:?}",
                     trace.decisions

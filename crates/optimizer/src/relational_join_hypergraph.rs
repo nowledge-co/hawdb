@@ -376,7 +376,7 @@ mod tests {
             result.plan.cost(),
             PlanCost {
                 estimated_rows: 1,
-                cost: 2,
+                cost: 14,
             }
         );
         let RelationalCsgCmpPlanNode::Join { left, right, .. } = result.plan.root else {
@@ -390,7 +390,7 @@ mod tests {
     }
 
     #[test]
-    fn csg_cmp_probe_tie_prefers_the_longer_equality_prefix() {
+    fn csg_cmp_probe_prefers_a_cheaper_scan_over_a_longer_equality_prefix() {
         let tree = RelationalJoinTree::join(
             operator(1, RelationalJoinOperatorKind::Inner, &[A, B]),
             RelationalJoinTree::Relation(A),
@@ -433,7 +433,7 @@ mod tests {
         let RelationalCsgCmpPlanNode::Relation { access_path, .. } = *right else {
             panic!("expected a singleton probe");
         };
-        assert_eq!(access_path.descriptor.name, "by_outer");
+        assert_eq!(access_path.descriptor.name, "__full_scan");
     }
 
     #[test]

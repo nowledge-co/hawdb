@@ -75,6 +75,19 @@ pub struct RelationalFieldPlan {
 }
 
 impl RelationalFieldPlan {
+    pub(crate) fn apply_access_coverage(
+        &self,
+        access: &mut skein_optimizer::RelationalAccessPathDescriptor,
+        table: &str,
+        schema: &RelationalTableSchema,
+    ) -> Result<()> {
+        if access.kind == skein_optimizer::RelationalAccessPathKind::Index {
+            access.covering = self.index_covers_table(table, schema, &access.index_columns)?;
+            access.requires_row_fetch = !access.covering;
+        }
+        Ok(())
+    }
+
     fn new(
         scan_fields: BTreeMap<String, Arc<[usize]>>,
         scan_hydration_fields: BTreeMap<String, Arc<[usize]>>,

@@ -133,7 +133,7 @@ fn aggregate_group_keys_use_node_property_distinct_counts() {
         trace.selected_plan_cost,
         PlanCost {
             estimated_rows: 20,
-            cost: 7_004,
+            cost: 11_004,
         }
     );
 }
@@ -211,7 +211,7 @@ fn aggregate_group_keys_use_relationship_property_distinct_counts() {
         trace.selected_plan_cost,
         PlanCost {
             estimated_rows: 10,
-            cost: 5_004,
+            cost: 7_004,
         }
     );
 }
@@ -391,7 +391,7 @@ fn aggregate_distinct_variable_targets_use_path_target_coverage() {
         trace.selected_plan_cost,
         PlanCost {
             estimated_rows: 5,
-            cost: 4_016,
+            cost: 6_016,
         }
     );
 }
@@ -474,7 +474,7 @@ fn aggregate_distinct_variable_targets_use_bounded_path_target_coverage() {
         trace.selected_plan_cost,
         PlanCost {
             estimated_rows: 5,
-            cost: 5_044,
+            cost: 7_544,
         }
     );
 }

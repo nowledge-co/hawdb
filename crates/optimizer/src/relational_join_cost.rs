@@ -2,6 +2,9 @@
 
 use crate::cardinality_defaults::JOIN_SELECTIVITY_DIVISOR;
 use crate::cost::PlanCostBreakdown;
+use crate::{RelationalAccessPathDescriptor, RelationalAccessPathKind};
+
+const FULL_SCAN_SETUP_CPU: u64 = 4;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum RelationalJoinCardinality {
@@ -72,6 +75,46 @@ impl RelationalJoinSelectivity {
 pub fn estimate_relational_access_cost(estimated_rows: usize) -> PlanCostBreakdown {
     let rows = u64::try_from(estimated_rows).unwrap_or(u64::MAX).max(1);
     PlanCostBreakdown::new(rows, rows, 0, 0, 0)
+}
+
+/// Estimates logical work for a validated access descriptor.
+///
+/// Cardinality counts visited candidate rows, before residual filtering. A full
+/// scan visits sequential rows; primary-key access directly locates rows. An
+/// index navigates once, visits entries, and fetches each non-covering row.
+/// Ordering changes delivered properties, not the number of visited entries.
+/// These units do not predict file I/O: residency, row width, page clustering
+/// and caches require separate runtime evidence. The rows-only helper retains
+/// its original CPU-only contract for callers without an access descriptor.
+pub fn estimate_relational_access_path_cost(
+    access: &RelationalAccessPathDescriptor,
+) -> PlanCostBreakdown {
+    let rows = u64::try_from(access.estimated_rows)
+        .unwrap_or(u64::MAX)
+        .max(1);
+    match access.kind {
+        RelationalAccessPathKind::FullScan => {
+            // Iterator setup is paid once, including for a one-row table.
+            PlanCostBreakdown::new(
+                rows,
+                rows.saturating_add(FULL_SCAN_SETUP_CPU),
+                0,
+                rows,
+                rows,
+            )
+        }
+        RelationalAccessPathKind::PrimaryKey => PlanCostBreakdown::new(rows, rows, rows, 0, rows),
+        RelationalAccessPathKind::Index => {
+            let fetches = if access.requires_row_fetch { rows } else { 0 };
+            PlanCostBreakdown::new(
+                rows,
+                rows.saturating_add(fetches),
+                1_u64.saturating_add(fetches),
+                if access.unique_point { 0 } else { rows },
+                rows,
+            )
+        }
+    }
 }
 
 /// Extends a left-deep plan with one probe join using the canonical
@@ -271,7 +314,7 @@ mod tests {
         assert_eq!(cost.random_io, 39);
         assert_eq!(cost.sequential_io, 45);
         assert_eq!(cost.output_rows, 57);
-        assert_eq!(cost.cost, 170);
+        assert_eq!(cost.cost, 209);
     }
 
     #[test]
