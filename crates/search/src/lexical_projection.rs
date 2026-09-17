@@ -5,6 +5,7 @@ use super::{
 };
 use crate::bounded_file::read_bounded_file;
 use crate::build_control::checkpoint;
+use crate::build_memory::reserved::{native_path, Grant};
 use crate::build_memory::{BuildMemory, MAP_ENTRY_BYTES};
 use crate::build_term::Term;
 use crate::error::{Result, SkeinError};
@@ -28,6 +29,7 @@ mod block_encoding;
 use artifacts::ArtifactBuilder;
 mod build_manifest;
 mod document_frequency;
+mod spill_control;
 mod spill_memory;
 use spill_memory::{PendingPostings, RunPosting};
 mod manifest_encoding;
@@ -353,10 +355,11 @@ impl Posting {
     }
 
     fn encoded_len(&self) -> u64 {
-        4u64.saturating_add(self.term.len() as u64)
-            .saturating_add(4)
-            .saturating_add(self.document_id.len() as u64)
-            .saturating_add(8)
+        Self::encoded_parts_len(self.term.len(), self.document_id.len())
+    }
+
+    fn encoded_parts_len(term: usize, id: usize) -> u64 {
+        (term as u64).saturating_add(id as u64).saturating_add(16)
     }
 }
 
@@ -1581,14 +1584,11 @@ impl RemoveOnDrop {
     }
 
     fn remove(&mut self) -> Result<()> {
-        if let Some(memory) = &self._memory {
-            memory.with_scratch(
-                crate::build_memory::reserved::native_path::bytes(&self.path)?,
-                || Ok(fs::remove_file(&self.path)?),
-            )?;
-        } else {
-            fs::remove_file(&self.path)?;
-        }
+        native_path::with_scratch(
+            self._memory.as_ref().map(Grant::reservation),
+            &self.path,
+            || Ok(fs::remove_file(&self.path)?),
+        )?;
         self.disarm();
         Ok(())
     }
@@ -1677,13 +1677,7 @@ impl<W: Write> SpillRunWriter<W> {
         let buffer_memory = progress
             .map(|memory| memory.reserve(SPILL_IO_BUFFER_BYTES))
             .transpose()?;
-        let mut writer = match progress {
-            Some(progress) => progress.with_scratch(
-                crate::build_memory::reserved::native_path::bytes(path)?,
-                || io.create(path),
-            )?,
-            None => io.create(path)?,
-        };
+        let mut writer = native_path::with_scratch(progress, path, || io.create(path))?;
         writer.write_all(RUN_HEADER)?;
         Ok(Self {
             writer,
@@ -1704,12 +1698,9 @@ impl<W: Write> SpillRunWriter<W> {
     }
 
     fn push_parts(&mut self, term: &str, id: &str, frequency: u32, length: u32) -> Result<()> {
-        let bytes = (term.len() as u64)
-            .saturating_add(id.len() as u64)
-            .saturating_add(16);
+        let bytes = Posting::encoded_parts_len(term.len(), id.len());
         let total_bytes = checked_spill_bytes(self.total_bytes, bytes, self.limit)?;
-        let mut writer =
-            crate::build_control::CheckedWriter::new(&mut self.writer, self.task.as_ref());
+        let mut writer = spill_control::RecordWriter::new(&mut self.writer, self.task.as_ref())?;
         write_string(&mut writer, term)?;
         write_string(&mut writer, id)?;
         writer.write_all(&frequency.to_le_bytes())?;
@@ -1827,14 +1818,11 @@ impl SpillRuns {
                 )?;
                 self.register(guard)?;
                 for source in &mut self.paths[start..end] {
-                    if let Some(memory) = &source._memory {
-                        memory.with_scratch(
-                            crate::build_memory::reserved::native_path::bytes(&source.path)?,
-                            || io.remove(&source.path),
-                        )?;
-                    } else {
-                        io.remove(&source.path)?;
-                    }
+                    native_path::with_scratch(
+                        source._memory.as_ref().map(Grant::reservation),
+                        &source.path,
+                        || io.remove(&source.path),
+                    )?;
                     source.disarm();
                 }
             }
@@ -1886,13 +1874,7 @@ impl RunReader {
         let memory = progress
             .map(|memory| memory.reserve(SPILL_IO_BUFFER_BYTES))
             .transpose()?;
-        let file = match progress {
-            Some(progress) => progress.with_scratch(
-                crate::build_memory::reserved::native_path::bytes(path)?,
-                || Ok(File::open(path)?),
-            )?,
-            None => File::open(path)?,
-        };
+        let file = native_path::with_scratch(progress, path, || Ok(File::open(path)?))?;
         let mut reader = BufReader::with_capacity(SPILL_IO_BUFFER_BYTES, file);
         let mut header = [0u8; 8];
         reader.read_exact(&mut header)?;
@@ -2254,22 +2236,6 @@ fn read_optional_length(reader: &mut impl Read, max: u64) -> Result<Option<usize
         ));
     }
     Ok(Some(length))
-}
-
-fn read_optional_string(reader: &mut impl Read, max: u64) -> Result<Option<String>> {
-    let Some(length) = read_optional_length(reader, max)? else {
-        return Ok(None);
-    };
-    let mut bytes = vec![0u8; length];
-    reader.read_exact(&mut bytes)?;
-    String::from_utf8(bytes)
-        .map(Some)
-        .map_err(|error| SkeinError::Storage(error.to_string()))
-}
-
-fn read_string(reader: &mut impl Read, max: u64) -> Result<String> {
-    read_optional_string(reader, max)?
-        .ok_or_else(|| SkeinError::Storage("lexical spill run is truncated".to_string()))
 }
 
 fn read_u32(reader: &mut impl Read) -> Result<u32> {

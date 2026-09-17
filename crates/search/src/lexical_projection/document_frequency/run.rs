@@ -11,6 +11,38 @@ pub(in crate::lexical_projection) struct FrequencyRun {
     pub(super) guard: RemoveOnDrop,
     pub(super) progress: Option<ReservedMemory>,
     pub(super) task: Option<RuntimeTaskContext>,
+    pub(super) posting_size: PostingSize,
+}
+
+/// Exact output size after combining fields of the same term. This metadata is
+/// private to the live run owner; the on-disk format and reader stay unchanged.
+#[derive(Default)]
+pub(super) struct PostingSize {
+    terms: u64,
+    term_bytes: u64,
+}
+
+impl PostingSize {
+    fn include(&mut self, term: &str) -> Result<()> {
+        self.terms = self.terms.checked_add(1).ok_or_else(Self::overflow)?;
+        self.term_bytes = self
+            .term_bytes
+            .checked_add(term.len() as u64)
+            .ok_or_else(Self::overflow)?;
+        Ok(())
+    }
+
+    pub(super) fn encoded_bytes(&self, id: &str) -> Result<u64> {
+        self.terms
+            .checked_mul(Posting::encoded_parts_len(0, id.len()))
+            .and_then(|bytes| bytes.checked_add(self.term_bytes))
+            .and_then(|bytes| bytes.checked_add(RUN_HEADER.len() as u64))
+            .ok_or_else(Self::overflow)
+    }
+
+    fn overflow() -> SkeinError {
+        SkeinError::Storage("lexical spill bytes overflow".into())
+    }
 }
 
 struct HashWriter<W> {
@@ -68,8 +100,7 @@ impl<W: Write> RunWriter<W> {
             .checked_add(1)
             .ok_or_else(|| SkeinError::Storage("document frequency run count overflow".into()))?;
         let (ordinal, unique_weight) = record.summary.first_event.expect("validated first event");
-        let mut writer =
-            crate::build_control::CheckedWriter::new(&mut self.writer, self.task.as_ref());
+        let mut writer = spill_control::RecordWriter::new(&mut self.writer, self.task.as_ref())?;
         write_string(&mut writer, &record.term)?;
         writer.write_all(&[record.field])?;
         writer.write_all(&record.summary.repeated_weight.to_le_bytes())?;
@@ -110,13 +141,9 @@ pub(super) fn write_run(
         .transpose()?;
     let mut writer = RunWriter {
         writer: HashWriter {
-            inner: match &pool.progress {
-                Some(progress) => progress.with_scratch(
-                    crate::build_memory::reserved::native_path::bytes(&guard.path)?,
-                    || io.create(&guard.path),
-                )?,
-                None => io.create(&guard.path)?,
-            },
+            inner: native_path::with_scratch(pool.progress.as_ref(), &guard.path, || {
+                io.create(&guard.path)
+            })?,
             digest: Digest::new(),
         },
         total_bytes,
@@ -128,6 +155,7 @@ pub(super) fn write_run(
     pool.check()?;
     writer.writer.write_all(HEADER)?;
     let mut pending: Option<FrequencyRecord> = None;
+    let mut posting_size = PostingSize::default();
     for record in records {
         pool.check()?;
         let record = record?;
@@ -143,12 +171,18 @@ pub(super) fn write_run(
                     previous.summary.merge(record.summary)?;
                     continue;
                 }
-                std::cmp::Ordering::Less => writer.push(previous)?,
+                std::cmp::Ordering::Less => {
+                    if previous.term != record.term {
+                        posting_size.include(&previous.term)?;
+                    }
+                    writer.push(previous)?;
+                }
             }
         }
         pending = Some(record);
     }
     if let Some(record) = pending {
+        posting_size.include(&record.term)?;
         writer.push(&record)?;
     }
     pool.bytes = writer.finish()?;
@@ -164,6 +198,7 @@ pub(super) fn write_run(
         guard,
         progress: pool.progress.clone(),
         task: pool.task().cloned(),
+        posting_size,
     })
 }
 
@@ -220,13 +255,7 @@ impl FrequencyRunReader {
         task: Option<&RuntimeTaskContext>,
     ) -> Result<Self> {
         task.map_or(Ok(()), checkpoint)?;
-        let file = match progress {
-            Some(progress) => progress.with_scratch(
-                crate::build_memory::reserved::native_path::bytes(path)?,
-                || Ok(File::open(path)?),
-            )?,
-            None => File::open(path)?,
-        };
+        let file = native_path::with_scratch(progress, path, || Ok(File::open(path)?))?;
         let length = file.metadata()?.len();
         if length < HEADER.len() as u64 + FOOTER_BYTES || length > config.max_spill_bytes.get() {
             return Err(SkeinError::Storage(
@@ -281,18 +310,22 @@ impl FrequencyRunReader {
             remaining: &mut self.remaining,
             digest: &mut self.digest,
         };
+        let length = read_u32(&mut reader)? as usize;
+        if length as u64 > self.config.max_term_bytes.get() {
+            return Err(SkeinError::Storage(
+                "lexical spill string exceeds its limit".into(),
+            ));
+        }
         let term = if let Some(progress) = &self.progress {
-            let length = read_u32(&mut reader)? as usize;
-            if length as u64 > self.config.max_term_bytes.get() {
-                return Err(SkeinError::Storage(
-                    "lexical spill string exceeds its limit".into(),
-                ));
-            }
             Term::build_reserved(length, progress, || {
                 spill_memory::read_text(&mut reader, length, self.task.as_ref())
             })?
         } else {
-            Term::untracked(read_string(&mut reader, self.config.max_term_bytes.get())?)
+            Term::untracked(spill_memory::read_text(
+                &mut reader,
+                length,
+                self.task.as_ref(),
+            )?)
         };
         let mut field = [0u8; 1];
         reader.read_exact(&mut field)?;

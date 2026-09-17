@@ -2,6 +2,8 @@ use super::*;
 use crate::lexical_projection::analysis_tests::reference_document_tokens;
 use std::sync::atomic::{AtomicU64, Ordering};
 
+mod spill_preflight;
+
 struct TestRoot(PathBuf);
 
 impl TestRoot {

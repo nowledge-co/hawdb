@@ -473,6 +473,16 @@ pub(super) fn spill_postings(
     document_len: u32,
     pool: &mut SpillRuns,
 ) -> Result<()> {
+    // The run writer counted unique terms while reducing sorted fields. Reject
+    // size overflow before allocating a name or creating the output file, with
+    // no extra read pass. Attempted I/O still consumes its unique sequence even
+    // on failure: cleanup can fail, so a path must never be reused blindly.
+    pool.check()?;
+    checked_spill_bytes(
+        pool.bytes,
+        run.posting_size.encoded_bytes(id)?,
+        pool.config.max_spill_bytes,
+    )?;
     let guard = pool.next_guard()?;
     let mut writer = SpillRunWriter::create_with_progress(
         &guard.path,

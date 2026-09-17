@@ -145,12 +145,17 @@ impl Grant {
         self.bytes -= released;
     }
 
+    #[cfg(test)]
     pub(crate) fn with_scratch<T>(
         &self,
         bytes: usize,
         work: impl FnOnce() -> Result<T>,
     ) -> Result<T> {
         self.owner.with_scratch(bytes, work)
+    }
+
+    pub(crate) fn reservation(&self) -> &ReservedMemory {
+        &self.owner
     }
 }
 
