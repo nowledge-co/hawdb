@@ -34,10 +34,9 @@ use crate::error::{Result, SkeinError};
 use crate::schema::GraphStatistics;
 use skein_integrity::Sha256Digest;
 use skein_storage::{
-    AppendGenerationArtifacts, AppendGenerationReader, CanonicalAdjacencyConfig,
-    CanonicalAdjacencyGenerationArtifacts, CanonicalAdjacencyReader, CanonicalSegmentReader,
-    DatabaseDirectoryLease, DurabilityPolicy, FileSegmentRangeReader,
-    GraphDescriptorTreeBuildConfig, ManifestGeneration, PersistentPropertyProjectionConfig,
+    AppendGenerationArtifacts, AppendGenerationReader, CanonicalAdjacencyGenerationArtifacts,
+    CanonicalAdjacencyReader, CanonicalSegmentReader, DatabaseDirectoryLease, DurabilityPolicy,
+    FileSegmentRangeReader, GraphDescriptorTreeBuildConfig, ManifestGeneration,
     PersistentPropertyProjectionReader, RelationalIndexGenerationArtifacts,
     RelationalOverflowGenerationArtifacts, RelationalRowPageGenerationArtifacts, RelationalState,
     SegmentCache, StableIdentityMappingError, StableIdentityMappingReader, StorageTelemetrySink,
@@ -161,11 +160,7 @@ pub(crate) struct PreparedCheckpoint {
     pub(super) staging_path: PathBuf,
 }
 
-#[derive(Debug, Clone, Copy, Default)]
-pub(super) struct DerivedArtifactBuildConfig {
-    pub(super) adjacency: CanonicalAdjacencyConfig,
-    pub(super) property_projection: PersistentPropertyProjectionConfig,
-}
+pub(super) use skein_storage::derived_repair::DerivedArtifactBuildConfig;
 
 #[derive(Debug, Clone, Copy)]
 struct DurableStoreOpenOptions {
