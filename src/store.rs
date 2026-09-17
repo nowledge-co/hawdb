@@ -166,6 +166,11 @@ use skein_storage::projection::artifact::{
 pub use skein_storage::scan::{ScanPrunedNodeScan, ScanPrunedRelationshipScan};
 pub(crate) use skein_storage::source_scan;
 pub use skein_storage::source_scan::SourceScanRow;
+pub(crate) use skein_storage::statistics::{
+    composite_property_index_key, composite_property_index_unique_values,
+    compute_index_statistics_samples, full_text_index_tokens, full_text_query_tokens,
+    scalar_property_index_cardinality,
+};
 use skein_storage::statistics_refresh::{
     adaptive_histogram_sample_limit, node_property_supports_optimizer_statistics,
     relationship_property_supports_optimizer_statistics, sample_histogram_values,
@@ -1951,122 +1956,6 @@ impl GraphStore {
 pub(crate) fn sync_parent_dir(path: &Path) -> Result<()> {
     sync_parent_directory(path)?;
     Ok(())
-}
-
-fn composite_property_index_key(
-    node: &NodeRecord,
-    properties: &[String],
-) -> Option<Vec<(String, Value)>> {
-    properties
-        .iter()
-        .map(|property| {
-            node.properties
-                .get(property)
-                .cloned()
-                .map(|value| (property.clone(), value))
-        })
-        .collect()
-}
-
-fn scalar_property_index_cardinality(
-    index: &NodePropertyIndex,
-    label_id: LabelId,
-    property: &str,
-) -> (u64, u64) {
-    index
-        .iter()
-        .filter(|((candidate_label, candidate_property, _), _)| {
-            *candidate_label == label_id && candidate_property == property
-        })
-        .fold((0_u64, 0_u64), |(size, unique), (_, node_ids)| {
-            (
-                size.saturating_add(node_ids.len() as u64),
-                unique.saturating_add(1),
-            )
-        })
-}
-
-fn composite_property_index_unique_values(
-    index: &CompositePropertyIndex,
-    label_id: LabelId,
-    properties: &[String],
-) -> u64 {
-    index
-        .keys()
-        .filter(|(candidate_label, key)| {
-            *candidate_label == label_id
-                && key
-                    .iter()
-                    .map(|(property, _)| property)
-                    .eq(properties.iter())
-        })
-        .count() as u64
-}
-
-fn compute_index_statistics_samples(
-    catalog: &Catalog,
-    property_index: &NodePropertyIndex,
-    composite_property_index: &CompositePropertyIndex,
-) -> BTreeMap<IndexId, IndexStatisticsSample> {
-    let mut samples = BTreeMap::new();
-    for index in catalog
-        .property_indexes()
-        .filter(|index| index.kind != IndexKind::FullText)
-    {
-        let (index_size, unique_values) =
-            scalar_property_index_cardinality(property_index, index.label_id, &index.property);
-        samples.insert(
-            index.id,
-            IndexStatisticsSample::exact(index_size, unique_values),
-        );
-    }
-    for index in catalog.composite_property_indexes() {
-        let index_size = composite_property_index
-            .iter()
-            .filter(|((candidate_label, key), _)| {
-                *candidate_label == index.label_id
-                    && key
-                        .iter()
-                        .map(|(property, _)| property)
-                        .eq(index.properties.iter())
-            })
-            .fold(0_u64, |size, (_, node_ids)| {
-                size.saturating_add(node_ids.len() as u64)
-            });
-        let unique_values = composite_property_index_unique_values(
-            composite_property_index,
-            index.label_id,
-            &index.properties,
-        );
-        samples.insert(
-            index.id,
-            IndexStatisticsSample::exact(index_size, unique_values),
-        );
-    }
-    samples
-}
-
-fn full_text_index_tokens(value: &str) -> BTreeSet<String> {
-    let normalized = value.to_lowercase();
-    let chars = normalized.chars().collect::<Vec<_>>();
-    let mut tokens = BTreeSet::new();
-    for start in 0..chars.len() {
-        for width in 1..=3 {
-            let end = start + width;
-            if end > chars.len() {
-                break;
-            }
-            let token = chars[start..end].iter().collect::<String>();
-            if !token.chars().all(char::is_whitespace) {
-                tokens.insert(token);
-            }
-        }
-    }
-    tokens
-}
-
-fn full_text_query_tokens(query: &str) -> Vec<String> {
-    full_text_index_tokens(query).into_iter().collect()
 }
 
 fn ensure_table_descriptor(catalog: &mut Catalog, kind: TableKind, name: &str) -> TableId {

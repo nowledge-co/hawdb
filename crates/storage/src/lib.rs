@@ -55,6 +55,7 @@ pub mod snapshot;
 #[doc(hidden)]
 pub mod source_scan;
 pub mod stable_identity;
+pub mod statistics;
 #[doc(hidden)]
 pub mod statistics_refresh;
 pub mod telemetry;
