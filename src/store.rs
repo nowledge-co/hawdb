@@ -163,6 +163,7 @@ pub(crate) use skein_storage::mutation::evaluate::{
 use skein_storage::projection::artifact::{
     decode_projected_graph_artifacts, split_projected_graph_artifact_checksum,
 };
+pub use skein_storage::scan::{ScanPrunedNodeScan, ScanPrunedRelationshipScan};
 pub(crate) use skein_storage::source_scan;
 pub use skein_storage::source_scan::SourceScanRow;
 pub(crate) use skein_storage::statistics_refresh::OptimizerStatisticsRefreshWork;
@@ -536,18 +537,6 @@ type CompositePropertyIndex = CowSegmentedMap<(LabelId, CompositePropertyKey), N
 type FullTextPropertyIndex = CowSegmentedMap<(LabelId, String, String), NodeIdPostingList>;
 type RelationshipPropertyIndex =
     CowSegmentedMap<(RelTypeId, String, Value), RelIdPropertyPostingList>;
-
-#[derive(Debug, Clone)]
-pub struct ScanPrunedNodeScan<'a> {
-    pub nodes: Vec<&'a NodeRecord>,
-    pub report: ScanPruningReport,
-}
-
-#[derive(Debug, Clone)]
-pub struct ScanPrunedRelationshipScan<'a> {
-    pub relationships: Vec<&'a RelRecord>,
-    pub report: ScanPruningReport,
-}
 
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct KernelWriteBatch {
