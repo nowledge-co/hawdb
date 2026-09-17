@@ -1,8 +1,15 @@
-//! Storage contracts for the derived graph columnar shadow.
+//! Storage contracts and row representation for the derived graph columnar shadow.
 //!
 //! The embedded facade owns checkpoint orchestration and retry state. These
 //! types describe the durable shadow outcome and can be consumed without a
 //! dependency on that facade.
+
+mod row;
+
+pub use row::{
+    encode_label_set, estimated_shadow_value_bytes, node_table_key, relationship_table_key,
+    ResidualRowBlob,
+};
 
 /// Subdirectory of the database root holding the self-contained shadow.
 pub const COLUMN_GROUP_SHADOW_DIR: &str = "column-groups";
