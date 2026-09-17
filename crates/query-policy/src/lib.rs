@@ -183,8 +183,8 @@ pub fn query_statement_variables_for_statement(
 }
 
 fn literal_system_variable_value(value: &cypher::ValueExpression) -> Result<Value> {
-    match value {
-        cypher::ValueExpression::Literal(value) => Ok(value.clone()),
+    match &value.kind {
+        cypher::ValueExpressionKind::Literal(value) => Ok(value.clone()),
         _ => Err(SkeinError::Semantic(
             "SET system variable requires a literal value".to_string(),
         )),

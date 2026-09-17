@@ -27,45 +27,52 @@ impl Parser<'_> {
     }
 
     pub(super) fn parse_value(&mut self) -> Result<ValueExpression> {
-        self.with_recursion(|parser| parser.parse_value_inner())
+        self.skip_ws();
+        let start = self.pos;
+        let kind = self.with_recursion(|parser| parser.parse_value_inner())?;
+        Ok(self.source_node(kind, start))
     }
 
-    fn parse_value_inner(&mut self) -> Result<ValueExpression> {
+    fn parse_value_inner(&mut self) -> Result<ValueExpressionKind> {
         self.skip_ws();
         match self.peek_char() {
             Some('$') => {
                 self.pos += 1;
-                self.parse_ident().map(ValueExpression::Parameter)
+                self.parse_ident().map(ValueExpressionKind::Parameter)
             }
-            Some('[') => self.parse_list().map(ValueExpression::List),
+            Some('[') => self.parse_list().map(ValueExpressionKind::List),
             Some('\'') | Some('"') => self
                 .parse_string()
                 .map(Value::String)
-                .map(ValueExpression::Literal),
+                .map(ValueExpressionKind::Literal),
             Some(ch) if ch.is_ascii_digit() || ch == '-' => {
                 if self.remaining_number_contains_decimal_point() {
                     self.parse_float()
                         .map(Value::Float)
-                        .map(ValueExpression::Literal)
+                        .map(ValueExpressionKind::Literal)
                 } else {
                     self.parse_int()
                         .map(Value::Int)
-                        .map(ValueExpression::Literal)
+                        .map(ValueExpressionKind::Literal)
                 }
             }
-            _ if self.consume_keyword("true") => Ok(ValueExpression::Literal(Value::Bool(true))),
-            _ if self.consume_keyword("false") => Ok(ValueExpression::Literal(Value::Bool(false))),
-            _ if self.consume_keyword("null") => Ok(ValueExpression::Literal(Value::Null)),
+            _ if self.consume_keyword("true") => {
+                Ok(ValueExpressionKind::Literal(Value::Bool(true)))
+            }
+            _ if self.consume_keyword("false") => {
+                Ok(ValueExpressionKind::Literal(Value::Bool(false)))
+            }
+            _ if self.consume_keyword("null") => Ok(ValueExpressionKind::Literal(Value::Null)),
             _ if self.consume_keyword("CURRENT_TIMESTAMP") => {
                 self.expect_char('(')?;
                 self.expect_char(')')?;
-                Ok(ValueExpression::CurrentTimestamp)
+                Ok(ValueExpressionKind::CurrentTimestamp)
             }
             _ if self.consume_keyword("timestamp") => {
                 self.expect_char('(')?;
                 let value = self.parse_value()?;
                 self.expect_char(')')?;
-                Ok(ValueExpression::Timestamp(Box::new(value)))
+                Ok(ValueExpressionKind::Timestamp(Box::new(value)))
             }
             _ if self.consume_keyword("CAST") => {
                 self.expect_char('(')?;
@@ -73,7 +80,7 @@ impl Parser<'_> {
                 self.expect_keyword("AS")?;
                 self.expect_keyword("TIMESTAMP")?;
                 self.expect_char(')')?;
-                Ok(ValueExpression::Timestamp(Box::new(value)))
+                Ok(ValueExpressionKind::Timestamp(Box::new(value)))
             }
             _ => Err(self.error("expected value")),
         }

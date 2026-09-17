@@ -1,3 +1,6 @@
+mod source;
+pub use source::{AstNode, SourceSpan};
+
 pub use skein_core::RelationshipDirection;
 use skein_core::Value;
 pub use skein_ddl::{SchemaObjectState, SchemaPropertyType, SchemaTableKind};
@@ -642,7 +645,7 @@ pub enum ComparisonOp {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub enum ValueExpression {
+pub enum ValueExpressionKind {
     Literal(Value),
     Parameter(String),
     List(Vec<ValueExpression>),
@@ -651,7 +654,7 @@ pub enum ValueExpression {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct ReturnItem {
+pub struct ReturnItemKind {
     pub expression: ReturnExpression,
     pub alias: Option<String>,
 }
@@ -661,12 +664,12 @@ pub struct ReturnItem {
 /// Aggregates are return items, not scalar function arguments:
 ///
 /// ```compile_fail
-/// use skein_cypher::{AggregateExpression, ScalarExpression};
+/// use skein_cypher::{AggregateExpression, AstNode, ScalarExpressionKind};
 ///
-/// let nested = ScalarExpression::Coalesce(vec![AggregateExpression::CountAll]);
+/// let nested = AstNode::synthetic(ScalarExpressionKind::Coalesce(vec![AggregateExpression::CountAll]));
 /// ```
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub enum ScalarExpression {
+pub enum ScalarExpressionKind {
     Variable(String),
     Property {
         variable: String,
@@ -725,7 +728,7 @@ pub enum ScalarExpression {
 
 /// A projection or grouping expression, with aggregation explicit in its type.
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub enum ReturnExpression {
+pub enum ReturnExpressionKind {
     Value(ScalarExpression),
     Aggregate(AggregateExpression),
 }
@@ -795,7 +798,7 @@ pub struct CoalesceDifferenceTerm {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct OrderItem {
+pub struct OrderItemKind {
     pub expression: OrderExpression,
     pub direction: OrderDirection,
 }
@@ -813,3 +816,13 @@ pub enum OrderDirection {
     Asc,
     Desc,
 }
+
+pub type ValueExpression = AstNode<ValueExpressionKind>;
+
+pub type ScalarExpression = AstNode<ScalarExpressionKind>;
+
+pub type ReturnExpression = AstNode<ReturnExpressionKind>;
+
+pub type ReturnItem = AstNode<ReturnItemKind>;
+
+pub type OrderItem = AstNode<OrderItemKind>;

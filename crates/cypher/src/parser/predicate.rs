@@ -152,6 +152,7 @@ impl Parser<'_> {
         }
         self.expect_char('.')?;
         let property = self.parse_ident()?;
+        let property_span = self.source_span(expression_start.pos);
         self.skip_ws();
         if self.consume_keyword("IS") {
             let is_not = self.consume_keyword("NOT");
@@ -210,7 +211,10 @@ impl Parser<'_> {
                     }),
                     PropertyPredicateRight::Expression(value) => {
                         Ok(PropertyPredicate::ExpressionNotEq {
-                            expression: ScalarExpression::Property { variable, property },
+                            expression: AstNode::from_source(
+                                ScalarExpressionKind::Property { variable, property },
+                                property_span,
+                            ),
                             value,
                         })
                     }
@@ -230,7 +234,10 @@ impl Parser<'_> {
                 }),
                 PropertyPredicateRight::Expression(value) => {
                     Ok(PropertyPredicate::ExpressionCompare {
-                        expression: ScalarExpression::Property { variable, property },
+                        expression: AstNode::from_source(
+                            ScalarExpressionKind::Property { variable, property },
+                            property_span,
+                        ),
                         op,
                         value,
                     })
@@ -251,7 +258,10 @@ impl Parser<'_> {
                 }),
                 PropertyPredicateRight::Expression(value) => {
                     Ok(PropertyPredicate::ExpressionCompare {
-                        expression: ScalarExpression::Property { variable, property },
+                        expression: AstNode::from_source(
+                            ScalarExpressionKind::Property { variable, property },
+                            property_span,
+                        ),
                         op,
                         value,
                     })
@@ -266,7 +276,10 @@ impl Parser<'_> {
                     value,
                 }),
                 PropertyPredicateRight::Expression(value) => Ok(PropertyPredicate::ExpressionEq {
-                    expression: ScalarExpression::Property { variable, property },
+                    expression: AstNode::from_source(
+                        ScalarExpressionKind::Property { variable, property },
+                        property_span,
+                    ),
                     value,
                 }),
             }
@@ -279,12 +292,11 @@ impl Parser<'_> {
         if matches!(self.peek_char(), Some(ch) if ch.is_ascii_alphabetic() || ch == '_') {
             let variable = self.parse_ident()?;
             if self.consume_char('.') {
-                return Ok(PropertyPredicateRight::Expression(
-                    ScalarExpression::Property {
-                        variable,
-                        property: self.parse_ident()?,
-                    },
-                ));
+                let property = self.parse_ident()?;
+                return Ok(PropertyPredicateRight::Expression(self.source_node(
+                    ScalarExpressionKind::Property { variable, property },
+                    value_start.pos,
+                )));
             }
             self.restore(value_start);
         }
@@ -715,7 +727,7 @@ impl Parser<'_> {
         let preserve = self.parse_value()?;
         self.expect_char('=')?;
         let preserve_true = self.parse_value()?;
-        if preserve_true != ValueExpression::Literal(skein_core::Value::Bool(true)) {
+        if preserve_true.kind != ValueExpressionKind::Literal(skein_core::Value::Bool(true)) {
             return Err(self.error("CASE preserve SET only supports comparison to true"));
         }
         self.expect_keyword("AND")?;
@@ -769,7 +781,7 @@ impl Parser<'_> {
         let condition_property = self.parse_ident()?;
         self.expect_char('>')?;
         let threshold = self.parse_value()?;
-        if threshold != ValueExpression::Literal(skein_core::Value::Int(0)) {
+        if threshold.kind != ValueExpressionKind::Literal(skein_core::Value::Int(0)) {
             return Err(self.error("CASE decrement SET only supports a zero threshold"));
         }
         self.expect_keyword("THEN")?;
@@ -781,12 +793,12 @@ impl Parser<'_> {
         }
         self.expect_char('-')?;
         let decrement = self.parse_value()?;
-        if decrement != ValueExpression::Literal(skein_core::Value::Int(1)) {
+        if decrement.kind != ValueExpressionKind::Literal(skein_core::Value::Int(1)) {
             return Err(self.error("CASE decrement SET only supports decrement by one"));
         }
         self.expect_keyword("ELSE")?;
         let floor = self.parse_value()?;
-        if floor != ValueExpression::Literal(skein_core::Value::Int(0)) {
+        if floor.kind != ValueExpressionKind::Literal(skein_core::Value::Int(0)) {
             return Err(self.error("CASE decrement SET only supports a zero floor"));
         }
         self.expect_keyword("END")?;

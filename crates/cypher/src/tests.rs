@@ -2,15 +2,17 @@ use super::{
     parse, parse_profiled, AggregateExpression, AlterPropertyState, AlterTableState, ComparisonOp,
     CreateCompositeIndex, CreateIndex, CreateProperty, GraphAlgorithm, GraphAlgorithmKind,
     GraphAlgorithmOptions, OrderDirection, OrderExpression, ProjectGraph, PropertyPredicate,
-    RelationshipDirection, ReturnExpression, ScalarExpression, SchemaObjectState,
-    SchemaPropertyType, SchemaTableKind, SetValueExpression, Statement, ValueExpression,
-    VectorSearch, WithAliasFilter, WithAliasFilterExpression, WithAliasFilterOp,
+    RelationshipDirection, SchemaObjectState, SchemaPropertyType, SchemaTableKind,
+    SetValueExpression, Statement, VectorSearch, WithAliasFilter, WithAliasFilterExpression,
+    WithAliasFilterOp,
 };
 use crate::parser::MAX_CYPHER_INPUT_BYTES;
+use crate::{AstNode, ReturnExpressionKind, ScalarExpressionKind, ValueExpressionKind};
 use skein_core::Value;
 
 mod backtracking;
 mod migration_corpus;
+mod source_spans;
 
 const EXCESSIVE_CYPHER_NESTING: usize = 100_000;
 
@@ -93,7 +95,9 @@ fn parses_set_system_variable_statement() {
     assert_eq!(set.name, "work_priority");
     assert_eq!(
         set.value,
-        ValueExpression::Literal(Value::String("background".to_string()))
+        AstNode::synthetic(ValueExpressionKind::Literal(Value::String(
+            "background".to_string()
+        )))
     );
 }
 
@@ -106,7 +110,9 @@ fn parses_set_system_variable_keyword_statement() {
     assert_eq!(set.name, "work_priority");
     assert_eq!(
         set.value,
-        ValueExpression::Literal(Value::String("background".to_string()))
+        AstNode::synthetic(ValueExpressionKind::Literal(Value::String(
+            "background".to_string()
+        )))
     );
 
     let statement = parse("SET SYSTEM VARIABLE system.work_class = 'analytics'").unwrap();
@@ -116,7 +122,9 @@ fn parses_set_system_variable_keyword_statement() {
     assert_eq!(set.name, "work_class");
     assert_eq!(
         set.value,
-        ValueExpression::Literal(Value::String("analytics".to_string()))
+        AstNode::synthetic(ValueExpressionKind::Literal(Value::String(
+            "analytics".to_string()
+        )))
     );
 }
 
@@ -135,22 +143,28 @@ fn parses_cypher_system_hints() {
     assert_eq!(query.system_variables[0].name, "work_priority");
     assert_eq!(
         query.system_variables[0].value,
-        ValueExpression::Literal(Value::String("background".to_string()))
+        AstNode::synthetic(ValueExpressionKind::Literal(Value::String(
+            "background".to_string()
+        )))
     );
     assert_eq!(query.system_variables[1].name, "work_class");
     assert_eq!(
         query.system_variables[1].value,
-        ValueExpression::Literal(Value::String("analytics".to_string()))
+        AstNode::synthetic(ValueExpressionKind::Literal(Value::String(
+            "analytics".to_string()
+        )))
     );
     assert_eq!(query.system_variables[2].name, "estimated_operations");
     assert_eq!(
         query.system_variables[2].value,
-        ValueExpression::Literal(Value::Int(64))
+        AstNode::synthetic(ValueExpressionKind::Literal(Value::Int(64)))
     );
     assert_eq!(query.system_variables[3].name, "optimizer_search");
     assert_eq!(
         query.system_variables[3].value,
-        ValueExpression::Literal(Value::String("memo".to_string()))
+        AstNode::synthetic(ValueExpressionKind::Literal(Value::String(
+            "memo".to_string()
+        )))
     );
     let Statement::MatchReturn(match_return) = query.statement else {
         panic!("expected inner match return");
@@ -227,7 +241,7 @@ fn parses_unlabeled_node_match() {
         Some(PropertyPredicate::In {
             variable: "n".to_string(),
             property: "id".to_string(),
-            values: ValueExpression::Parameter("ids".to_string()),
+            values: AstNode::synthetic(ValueExpressionKind::Parameter("ids".to_string())),
         })
     );
 }
@@ -250,7 +264,9 @@ fn parses_variable_return_item() {
     };
     assert_eq!(
         query.returns[0].expression,
-        ReturnExpression::Value(ScalarExpression::Variable("m".to_string()))
+        AstNode::synthetic(ReturnExpressionKind::Value(AstNode::synthetic(
+            ScalarExpressionKind::Variable("m".to_string())
+        )))
     );
     assert_eq!(query.returns[0].alias, None);
 }
@@ -380,14 +396,14 @@ fn parses_escaped_string_literals() {
     };
     assert_eq!(
         node.properties.get("title"),
-        Some(&ValueExpression::Literal(Value::String(
-            "It's graph\\ready".to_string()
+        Some(&AstNode::synthetic(ValueExpressionKind::Literal(
+            Value::String("It's graph\\ready".to_string())
         )))
     );
     assert_eq!(
         node.properties.get("note"),
-        Some(&ValueExpression::Literal(Value::String(
-            "line\nnext".to_string()
+        Some(&AstNode::synthetic(ValueExpressionKind::Literal(
+            Value::String("line\nnext".to_string())
         )))
     );
 }
@@ -402,7 +418,7 @@ fn parses_current_timestamp_value_expression() {
     };
     assert_eq!(
         node.properties.get("created_at"),
-        Some(&ValueExpression::CurrentTimestamp)
+        Some(&AstNode::synthetic(ValueExpressionKind::CurrentTimestamp))
     );
 
     let statement =
@@ -413,7 +429,7 @@ fn parses_current_timestamp_value_expression() {
     };
     assert_eq!(
         update.sets[0].value,
-        SetValueExpression::Value(ValueExpression::CurrentTimestamp)
+        SetValueExpression::Value(AstNode::synthetic(ValueExpressionKind::CurrentTimestamp))
     );
 }
 
@@ -425,8 +441,10 @@ fn parses_timestamp_value_expression() {
     };
     assert_eq!(
         node.properties.get("created_at"),
-        Some(&ValueExpression::Timestamp(Box::new(
-            ValueExpression::Parameter("now".to_string())
+        Some(&AstNode::synthetic(ValueExpressionKind::Timestamp(
+            Box::new(AstNode::synthetic(ValueExpressionKind::Parameter(
+                "now".to_string()
+            )))
         )))
     );
 
@@ -441,8 +459,8 @@ fn parses_timestamp_value_expression() {
             variable: "m".to_string(),
             property: "created_at".to_string(),
             op: ComparisonOp::Gt,
-            value: ValueExpression::Timestamp(Box::new(ValueExpression::Parameter(
-                "cutoff".to_string()
+            value: AstNode::synthetic(ValueExpressionKind::Timestamp(Box::new(
+                AstNode::synthetic(ValueExpressionKind::Parameter("cutoff".to_string()))
             )))
         })
     );
@@ -463,8 +481,8 @@ fn parses_cast_timestamp_value_expression() {
             variable: "m".to_string(),
             property: "created_at".to_string(),
             op: ComparisonOp::Gte,
-            value: ValueExpression::Timestamp(Box::new(ValueExpression::Parameter(
-                "recent_7d".to_string()
+            value: AstNode::synthetic(ValueExpressionKind::Timestamp(Box::new(
+                AstNode::synthetic(ValueExpressionKind::Parameter("recent_7d".to_string()))
             )))
         })
     );
@@ -652,8 +670,8 @@ fn parses_graph_algorithm_calls() {
             algorithm: GraphAlgorithmKind::PageRank,
             graph_name: "EntityGraph".to_string(),
             options: GraphAlgorithmOptions {
-                damping: Some(ValueExpression::Literal(Value::Float(0.85))),
-                max_iterations: Some(ValueExpression::Literal(Value::Int(20))),
+                damping: Some(AstNode::synthetic(ValueExpressionKind::Literal(Value::Float(0.85)))),
+                max_iterations: Some(AstNode::synthetic(ValueExpressionKind::Literal(Value::Int(20)))),
                 max_levels: None,
             },
             score_column: "pagerank_score".to_string(),
@@ -683,8 +701,8 @@ fn parses_graph_algorithm_calls() {
             algorithm: GraphAlgorithmKind::PageRank,
             graph_name: "UnifiedGraph".to_string(),
             options: GraphAlgorithmOptions {
-                damping: Some(ValueExpression::Literal(Value::Float(0.85))),
-                max_iterations: Some(ValueExpression::Literal(Value::Int(20))),
+                damping: Some(AstNode::synthetic(ValueExpressionKind::Literal(Value::Float(0.85)))),
+                max_iterations: Some(AstNode::synthetic(ValueExpressionKind::Literal(Value::Int(20)))),
                 max_levels: None,
             },
             score_column: "rank".to_string(),
@@ -699,7 +717,9 @@ fn parses_graph_algorithm_calls() {
             options: GraphAlgorithmOptions {
                 damping: None,
                 max_iterations: None,
-                max_levels: Some(ValueExpression::Literal(Value::Int(2))),
+                max_levels: Some(AstNode::synthetic(ValueExpressionKind::Literal(
+                    Value::Int(2)
+                ))),
             },
             score_column: "louvain_id".to_string(),
         })
@@ -711,8 +731,8 @@ fn parses_graph_algorithm_calls() {
             algorithm: GraphAlgorithmKind::PageRank,
             graph_name: "EntityGraph".to_string(),
             options: GraphAlgorithmOptions {
-                damping: Some(ValueExpression::Parameter("damping".to_string())),
-                max_iterations: Some(ValueExpression::Parameter("iterations".to_string())),
+                damping: Some(AstNode::synthetic(ValueExpressionKind::Parameter("damping".to_string()))),
+                max_iterations: Some(AstNode::synthetic(ValueExpressionKind::Parameter("iterations".to_string()))),
                 max_levels: None,
             },
             score_column: "pagerank_score".to_string(),
@@ -725,8 +745,10 @@ fn parses_parameterized_vector_search() {
     assert_eq!(
         parse("CALL vector_search($embedding, topK := 20) RETURN id, score").unwrap(),
         Statement::VectorSearch(VectorSearch {
-            embedding: ValueExpression::Parameter("embedding".to_string()),
-            top_k: Some(ValueExpression::Literal(Value::Int(20))),
+            embedding: AstNode::synthetic(ValueExpressionKind::Parameter("embedding".to_string())),
+            top_k: Some(AstNode::synthetic(ValueExpressionKind::Literal(
+                Value::Int(20)
+            ))),
         })
     );
 }
@@ -745,9 +767,14 @@ fn parses_vector_search_feeding_graph_match() {
     let search = query.vector_seed.expect("vector seed");
     assert_eq!(
         search.embedding,
-        ValueExpression::Parameter("embedding".to_string())
+        AstNode::synthetic(ValueExpressionKind::Parameter("embedding".to_string()))
     );
-    assert_eq!(search.top_k, Some(ValueExpression::Literal(Value::Int(20))));
+    assert_eq!(
+        search.top_k,
+        Some(AstNode::synthetic(ValueExpressionKind::Literal(
+            Value::Int(20)
+        )))
+    );
     assert_eq!(query.variable, "m");
     assert_eq!(query.label, "Memory");
     assert_eq!(query.returns.len(), 2);
@@ -873,7 +900,7 @@ fn parses_property_increment_set() {
         SetValueExpression::PropertyAdd {
             variable: "s".to_string(),
             property: "memory_count".to_string(),
-            value: ValueExpression::Literal(Value::Int(1)),
+            value: AstNode::synthetic(ValueExpressionKind::Literal(Value::Int(1))),
         }
     );
 }
@@ -916,8 +943,8 @@ fn parses_coalesce_property_increment_set() {
         SetValueExpression::CoalescePropertyAdd {
             variable: "m".to_string(),
             property: "access_count".to_string(),
-            default: ValueExpression::Literal(Value::Int(0)),
-            value: ValueExpression::Literal(Value::Int(1)),
+            default: AstNode::synthetic(ValueExpressionKind::Literal(Value::Int(0))),
+            value: AstNode::synthetic(ValueExpressionKind::Literal(Value::Int(1))),
         }
     );
     assert_eq!(update.sets[1].property, "last_accessed_at");
@@ -939,8 +966,10 @@ fn parses_case_preserve_newer_existing_set() {
         SetValueExpression::PreserveNewerExisting {
             variable: "t".to_string(),
             property: "updated_at".to_string(),
-            incoming: ValueExpression::Parameter("updated_at".to_string()),
-            preserve: ValueExpression::Parameter("preserve_newer_existing_updated_at".to_string()),
+            incoming: AstNode::synthetic(ValueExpressionKind::Parameter("updated_at".to_string())),
+            preserve: AstNode::synthetic(ValueExpressionKind::Parameter(
+                "preserve_newer_existing_updated_at".to_string()
+            )),
         }
     );
 }
@@ -976,12 +1005,14 @@ fn parses_relationship_pattern_properties() {
     assert_eq!(expand.properties.len(), 2);
     assert_eq!(
         expand.properties.get("weight"),
-        Some(&ValueExpression::Parameter("weight".to_string()))
+        Some(&AstNode::synthetic(ValueExpressionKind::Parameter(
+            "weight".to_string()
+        )))
     );
     assert_eq!(
         expand.properties.get("kind"),
-        Some(&ValueExpression::Literal(Value::String(
-            "primary".to_string()
+        Some(&AstNode::synthetic(ValueExpressionKind::Literal(
+            Value::String("primary".to_string())
         )))
     );
 }
@@ -1037,10 +1068,12 @@ fn parses_match_return() {
     assert_eq!(query.returns[0].alias.as_deref(), Some("title"));
     assert_eq!(
         query.returns[0].expression,
-        ReturnExpression::Value(ScalarExpression::Property {
-            variable: "m".to_string(),
-            property: "title".to_string()
-        })
+        AstNode::synthetic(ReturnExpressionKind::Value(AstNode::synthetic(
+            ScalarExpressionKind::Property {
+                variable: "m".to_string(),
+                property: "title".to_string()
+            }
+        )))
     );
 }
 
@@ -1055,12 +1088,16 @@ fn parses_match_node_property_patterns() {
     };
     assert_eq!(
         query.properties.get("is_crystal"),
-        Some(&ValueExpression::Literal(Value::Bool(true)))
+        Some(&AstNode::synthetic(ValueExpressionKind::Literal(
+            Value::Bool(true)
+        )))
     );
     let expand = query.expand.as_ref().expect("expected relationship expand");
     assert_eq!(
         expand.target_properties.get("kind"),
-        Some(&ValueExpression::Literal(Value::String("note".to_string())))
+        Some(&AstNode::synthetic(ValueExpressionKind::Literal(
+            Value::String("note".to_string())
+        )))
     );
     assert!(query.distinct);
 }
@@ -1075,10 +1112,12 @@ fn parses_distinct_return() {
     assert_eq!(query.returns[0].alias.as_deref(), Some("kind"));
     assert_eq!(
         query.returns[0].expression,
-        ReturnExpression::Value(ScalarExpression::Property {
-            variable: "m".to_string(),
-            property: "kind".to_string()
-        })
+        AstNode::synthetic(ReturnExpressionKind::Value(AstNode::synthetic(
+            ScalarExpressionKind::Property {
+                variable: "m".to_string(),
+                property: "kind".to_string()
+            }
+        )))
     );
 }
 
@@ -1093,12 +1132,16 @@ fn parses_id_return_items() {
     };
     assert_eq!(
         query.returns[0].expression,
-        ReturnExpression::Value(ScalarExpression::Id("m".to_string()))
+        AstNode::synthetic(ReturnExpressionKind::Value(AstNode::synthetic(
+            ScalarExpressionKind::Id("m".to_string())
+        )))
     );
     assert_eq!(query.returns[0].alias.as_deref(), Some("memory_id"));
     assert_eq!(
         query.returns[1].expression,
-        ReturnExpression::Value(ScalarExpression::Id("r".to_string()))
+        AstNode::synthetic(ReturnExpressionKind::Value(AstNode::synthetic(
+            ScalarExpressionKind::Id("r".to_string())
+        )))
     );
     assert_eq!(query.returns[1].alias.as_deref(), Some("rel_id"));
 
@@ -1113,10 +1156,10 @@ fn parses_id_return_items() {
         query.predicate.unwrap(),
         PropertyPredicate::IdIn {
             variable: "r".to_string(),
-            values: ValueExpression::List(vec![
-                ValueExpression::Literal(Value::Int(0)),
-                ValueExpression::Parameter("rel_id".to_string()),
-            ]),
+            values: AstNode::synthetic(ValueExpressionKind::List(vec![
+                AstNode::synthetic(ValueExpressionKind::Literal(Value::Int(0))),
+                AstNode::synthetic(ValueExpressionKind::Parameter("rel_id".to_string())),
+            ])),
         }
     );
     assert_eq!(
@@ -1207,7 +1250,9 @@ fn parses_untyped_relationship_match_and_label_return() {
     assert_eq!(expand.target_label, "");
     assert_eq!(
         query.returns[2].expression,
-        ReturnExpression::Value(ScalarExpression::RelationshipType("r".to_string()))
+        AstNode::synthetic(ReturnExpressionKind::Value(AstNode::synthetic(
+            ScalarExpressionKind::RelationshipType("r".to_string())
+        )))
     );
 }
 
@@ -1256,10 +1301,12 @@ fn parses_anonymous_relationship_endpoints() {
     assert_eq!(expand.target_label, "");
     assert_eq!(
         query.returns[0].expression,
-        ReturnExpression::Aggregate(AggregateExpression::CountVariable {
-            variable: "r".to_string(),
-            distinct: false
-        })
+        AstNode::synthetic(ReturnExpressionKind::Aggregate(
+            AggregateExpression::CountVariable {
+                variable: "r".to_string(),
+                distinct: false
+            }
+        ))
     );
 }
 
@@ -1288,7 +1335,9 @@ fn parses_matched_relationship_create() {
     assert_eq!(create.rel_type, "SOURCED_FROM");
     assert_eq!(
         create.rel_properties.get("chunk_index"),
-        Some(&ValueExpression::Parameter("chunk_index".to_string()))
+        Some(&AstNode::synthetic(ValueExpressionKind::Parameter(
+            "chunk_index".to_string()
+        )))
     );
 }
 
@@ -1306,7 +1355,9 @@ fn parses_matched_relationship_create_with_relationship_variable() {
     assert_eq!(create.rel_type, "MEMORY_RELATES_TO");
     assert_eq!(
         create.rel_properties.get("id"),
-        Some(&ValueExpression::Parameter("relation_id".to_string()))
+        Some(&AstNode::synthetic(ValueExpressionKind::Parameter(
+            "relation_id".to_string()
+        )))
     );
 }
 
@@ -1387,10 +1438,12 @@ fn parses_two_node_match_return() {
     assert_eq!(query.right_label, "Source");
     assert_eq!(
         query.returns[0].expression,
-        ReturnExpression::Aggregate(AggregateExpression::CountVariable {
-            variable: "m".to_string(),
-            distinct: false
-        })
+        AstNode::synthetic(ReturnExpressionKind::Aggregate(
+            AggregateExpression::CountVariable {
+                variable: "m".to_string(),
+                distinct: false
+            }
+        ))
     );
 }
 
@@ -1586,7 +1639,9 @@ fn parses_group_count_order_limit_before_return() {
     assert_eq!(query.order_by.len(), 2);
     assert_eq!(
         query.limit,
-        Some(ValueExpression::Parameter("top_n".to_string()))
+        Some(AstNode::synthetic(ValueExpressionKind::Parameter(
+            "top_n".to_string()
+        )))
     );
     assert_eq!(query.returns.len(), 3);
 }
@@ -1605,15 +1660,19 @@ fn parses_with_variable_group_multiple_count_aggregates() {
     assert_eq!(aggregate_with.items.len(), 3);
     assert_eq!(
         aggregate_with.items[0].expression,
-        ReturnExpression::Value(ScalarExpression::Variable("e1".to_string()))
+        AstNode::synthetic(ReturnExpressionKind::Value(AstNode::synthetic(
+            ScalarExpressionKind::Variable("e1".to_string())
+        )))
     );
     assert_eq!(
         aggregate_with.items[1].expression,
-        ReturnExpression::Aggregate(AggregateExpression::CountProperty {
-            variable: "e2".to_string(),
-            property: "community_id".to_string(),
-            distinct: true,
-        })
+        AstNode::synthetic(ReturnExpressionKind::Aggregate(
+            AggregateExpression::CountProperty {
+                variable: "e2".to_string(),
+                property: "community_id".to_string(),
+                distinct: true,
+            }
+        ))
     );
     assert_eq!(
         aggregate_with.items[1].alias.as_deref(),
@@ -1621,7 +1680,9 @@ fn parses_with_variable_group_multiple_count_aggregates() {
     );
     assert_eq!(
         aggregate_with.items[2].expression,
-        ReturnExpression::Aggregate(AggregateExpression::CountAll)
+        AstNode::synthetic(ReturnExpressionKind::Aggregate(
+            AggregateExpression::CountAll
+        ))
     );
     assert_eq!(
         aggregate_with.items[2].alias.as_deref(),
@@ -1630,7 +1691,9 @@ fn parses_with_variable_group_multiple_count_aggregates() {
     assert_eq!(query.order_by.len(), 2);
     assert_eq!(
         query.limit,
-        Some(ValueExpression::Parameter("limit".to_string()))
+        Some(AstNode::synthetic(ValueExpressionKind::Parameter(
+            "limit".to_string()
+        )))
     );
 }
 
@@ -1656,7 +1719,9 @@ fn parses_with_variable_group_multiple_count_aggregates_and_filter() {
     assert_eq!(op, WithAliasFilterOp::Gte);
     assert_eq!(
         right,
-        WithAliasFilterExpression::Value(ValueExpression::Literal(Value::Int(2)))
+        WithAliasFilterExpression::Value(AstNode::synthetic(ValueExpressionKind::Literal(
+            Value::Int(2)
+        )))
     );
     assert_eq!(query.returns.len(), 5);
 }
@@ -1685,7 +1750,9 @@ fn parses_optional_count_with_alias_filter() {
     assert_eq!(op, WithAliasFilterOp::Lt);
     assert_eq!(
         right,
-        WithAliasFilterExpression::Value(ValueExpression::Parameter("after_count".to_string()))
+        WithAliasFilterExpression::Value(AstNode::synthetic(ValueExpressionKind::Parameter(
+            "after_count".to_string()
+        )))
     );
 }
 
@@ -1720,7 +1787,9 @@ fn parses_optional_count_with_keyset_filter() {
     assert_eq!(*op, WithAliasFilterOp::Gt);
     assert_eq!(
         right,
-        &WithAliasFilterExpression::Value(ValueExpression::Parameter("after_name".to_string()))
+        &WithAliasFilterExpression::Value(AstNode::synthetic(ValueExpressionKind::Parameter(
+            "after_name".to_string()
+        )))
     );
 }
 
@@ -1777,9 +1846,11 @@ fn parses_case_property_presence_order_item() {
         panic!("expected match return");
     };
     assert_eq!(query.order_by.len(), 2);
-    let OrderExpression::Value(ScalarExpression::CasePropertyNotNullOrEq {
-        variable,
-        property,
+    let OrderExpression::Value(AstNode {
+        kind:
+            ScalarExpressionKind::CasePropertyNotNullOrEq {
+                variable, property, ..
+            },
         ..
     }) = &query.order_by[0].expression
     else {
@@ -1805,12 +1876,20 @@ fn parses_case_property_equals_rank_with_projection() {
         .as_ref()
         .expect("expected WITH projection");
     assert_eq!(with_projection.items.len(), 3);
-    let ReturnExpression::Value(ScalarExpression::CasePropertyEqualsRank {
-        variable,
-        property,
-        branches,
+    let AstNode {
+        kind:
+            ReturnExpressionKind::Value(AstNode {
+                kind:
+                    ScalarExpressionKind::CasePropertyEqualsRank {
+                        variable,
+                        property,
+                        branches,
+                        ..
+                    },
+                ..
+            }),
         ..
-    }) = &with_projection.items[1].expression
+    } = &with_projection.items[1].expression
     else {
         panic!("expected property equality rank expression");
     };
@@ -1839,8 +1918,10 @@ fn parses_entity_search_rank_order_item() {
         panic!("expected match return");
     };
     assert_eq!(query.order_by.len(), 2);
-    let OrderExpression::Value(ScalarExpression::CaseEntitySearchRank(expression)) =
-        &query.order_by[0].expression
+    let OrderExpression::Value(AstNode {
+        kind: ScalarExpressionKind::CaseEntitySearchRank(expression),
+        ..
+    }) = &query.order_by[0].expression
     else {
         panic!("expected entity search rank order expression");
     };
@@ -1866,8 +1947,14 @@ fn parses_community_search_projection_with_case_aliases() {
         .expect("expected WITH projection");
     assert_eq!(with_projection.items.len(), 4);
     assert!(query.aggregate_with_filter.is_some());
-    let ReturnExpression::Value(ScalarExpression::CaseColumnSearchRank(expression)) =
-        &query.returns[1].expression
+    let AstNode {
+        kind:
+            ReturnExpressionKind::Value(AstNode {
+                kind: ScalarExpressionKind::CaseColumnSearchRank(expression),
+                ..
+            }),
+        ..
+    } = &query.returns[1].expression
     else {
         panic!("expected column search rank expression");
     };
@@ -1895,11 +1982,20 @@ fn parses_source_search_projection_with_coalesce_ordering() {
     assert!(query.aggregate_with_filter.is_some());
     assert!(matches!(
         query.returns[1].expression,
-        ReturnExpression::Value(ScalarExpression::Coalesce(_))
+        AstNode {
+            kind: ReturnExpressionKind::Value(AstNode {
+                kind: ScalarExpressionKind::Coalesce(_),
+                ..
+            }),
+            ..
+        }
     ));
     assert!(matches!(
         query.order_by[1].expression,
-        OrderExpression::Value(ScalarExpression::Coalesce(_))
+        OrderExpression::Value(AstNode {
+            kind: ScalarExpressionKind::Coalesce(_),
+            ..
+        })
     ));
 }
 
@@ -1920,11 +2016,20 @@ fn parses_thread_search_projection_with_coalesce_ordering() {
     assert!(query.aggregate_with_filter.is_some());
     assert!(matches!(
         query.returns[1].expression,
-        ReturnExpression::Value(ScalarExpression::Coalesce(_))
+        AstNode {
+            kind: ReturnExpressionKind::Value(AstNode {
+                kind: ScalarExpressionKind::Coalesce(_),
+                ..
+            }),
+            ..
+        }
     ));
     assert!(matches!(
         query.order_by[1].expression,
-        OrderExpression::Value(ScalarExpression::Coalesce(_))
+        OrderExpression::Value(AstNode {
+            kind: ScalarExpressionKind::Coalesce(_),
+            ..
+        })
     ));
 }
 
@@ -1937,9 +2042,9 @@ fn parses_cleanup_active_consumption_order_expression() {
     let Statement::MatchReturn(query) = statement else {
         panic!("expected match return");
     };
-    let OrderExpression::Value(ScalarExpression::CaseCoalesceDifferenceFloorZero {
-        variable,
-        terms,
+    let OrderExpression::Value(AstNode {
+        kind: ScalarExpressionKind::CaseCoalesceDifferenceFloorZero { variable, terms },
+        ..
     }) = &query.order_by[0].expression
     else {
         panic!("expected cleanup active-consumption CASE order expression");
@@ -1971,7 +2076,10 @@ fn parses_optional_match_direct_projection_count() {
     assert_eq!(query.returns.len(), 3);
     assert!(matches!(
         query.returns[2].expression,
-        ReturnExpression::Aggregate(AggregateExpression::CountVariable { .. })
+        AstNode {
+            kind: ReturnExpressionKind::Aggregate(AggregateExpression::CountVariable { .. }),
+            ..
+        }
     ));
 }
 
@@ -2006,23 +2114,25 @@ fn parses_with_collect_distinct_variable_and_count() {
     assert_eq!(aggregate_with.items.len(), 3);
     assert!(matches!(
         aggregate_with.items[1].expression,
-        ReturnExpression::Aggregate(AggregateExpression::CollectVariable {
+        AstNode { kind: ReturnExpressionKind::Aggregate(AggregateExpression::CollectVariable {
             ref variable,
             distinct: true
-        }) if variable == "e"
+        }), .. } if variable == "e"
     ));
     assert!(matches!(
         aggregate_with.items[2].expression,
-        ReturnExpression::Aggregate(AggregateExpression::CountVariable {
+        AstNode { kind: ReturnExpressionKind::Aggregate(AggregateExpression::CountVariable {
             ref variable,
             distinct: true
-        }) if variable == "e"
+        }), .. } if variable == "e"
     ));
     assert_eq!(query.returns.len(), 3);
     assert_eq!(query.order_by.len(), 1);
     assert_eq!(
         query.limit,
-        Some(ValueExpression::Parameter("limit".to_string()))
+        Some(AstNode::synthetic(ValueExpressionKind::Parameter(
+            "limit".to_string()
+        )))
     );
 }
 
@@ -2039,11 +2149,15 @@ fn parses_optional_match_return_collect_distinct_property() {
     assert_eq!(optional.source_variable, "m");
     assert_eq!(optional.expand.target_variable, "l");
     assert_eq!(query.returns.len(), 2);
-    let ReturnExpression::Aggregate(AggregateExpression::CollectProperty {
-        variable,
-        property,
-        distinct,
-    }) = &query.returns[1].expression
+    let AstNode {
+        kind:
+            ReturnExpressionKind::Aggregate(AggregateExpression::CollectProperty {
+                variable,
+                property,
+                distinct,
+            }),
+        ..
+    } = &query.returns[1].expression
     else {
         panic!("expected collect return");
     };
@@ -2062,7 +2176,13 @@ fn parses_literal_return_projection_alias() {
     assert_eq!(query.returns.len(), 2);
     assert!(matches!(
         query.returns[1].expression,
-        ReturnExpression::Value(ScalarExpression::Value(_))
+        AstNode {
+            kind: ReturnExpressionKind::Value(AstNode {
+                kind: ScalarExpressionKind::Value(_),
+                ..
+            }),
+            ..
+        }
     ));
     assert_eq!(query.returns[1].alias.as_deref(), Some("mention_breadth"));
 }
@@ -2076,17 +2196,24 @@ fn parses_case_property_default_if_null_order_expression() {
     let Statement::MatchReturn(query) = statement else {
         panic!("expected match return");
     };
-    let OrderExpression::Value(ScalarExpression::DefaultIfNull {
-        variable,
-        property,
-        default,
+    let OrderExpression::Value(AstNode {
+        kind:
+            ScalarExpressionKind::DefaultIfNull {
+                variable,
+                property,
+                default,
+            },
+        ..
     }) = &query.order_by[0].expression
     else {
         panic!("expected default-if-null order expression");
     };
     assert_eq!(variable, "m");
     assert_eq!(property, "importance");
-    assert_eq!(default, &ValueExpression::Literal(Value::Float(0.5)));
+    assert_eq!(
+        default,
+        &AstNode::synthetic(ValueExpressionKind::Literal(Value::Float(0.5)))
+    );
 }
 
 #[test]
@@ -2104,7 +2231,9 @@ fn parses_with_distinct_property_alias_count() {
     assert_eq!(distinct_with.items[1].alias.as_deref(), Some("b"));
     assert_eq!(
         query.returns[0].expression,
-        ReturnExpression::Aggregate(AggregateExpression::CountAll)
+        AstNode::synthetic(ReturnExpressionKind::Aggregate(
+            AggregateExpression::CountAll
+        ))
     );
 }
 
@@ -2132,7 +2261,9 @@ fn parses_with_aggregate_alias_filter_return() {
     assert_eq!(query.returns.len(), 1);
     assert_eq!(
         query.returns[0].expression,
-        ReturnExpression::Value(ScalarExpression::Variable("cid".to_string()))
+        AstNode::synthetic(ReturnExpressionKind::Value(AstNode::synthetic(
+            ScalarExpressionKind::Variable("cid".to_string())
+        )))
     );
 }
 
@@ -2167,11 +2298,13 @@ fn parses_with_date_part_group_aggregate() {
     assert_eq!(aggregate_with.items[0].alias.as_deref(), Some("year"));
     assert_eq!(
         aggregate_with.items[0].expression,
-        ReturnExpression::Value(ScalarExpression::DatePart {
-            part: "year".to_string(),
-            variable: "m".to_string(),
-            property: "created_at".to_string(),
-        })
+        AstNode::synthetic(ReturnExpressionKind::Value(AstNode::synthetic(
+            ScalarExpressionKind::DatePart {
+                part: "year".to_string(),
+                variable: "m".to_string(),
+                property: "created_at".to_string(),
+            }
+        )))
     );
     assert_eq!(aggregate_with.items[1].alias.as_deref(), Some("month"));
     assert_eq!(
@@ -2198,7 +2331,10 @@ fn parses_normalized_space_case_predicates() {
     assert!(matches!(
         predicates[1],
         PropertyPredicate::ExpressionEq {
-            expression: ScalarExpression::DefaultIfNullOrEq { .. },
+            expression: AstNode {
+                kind: ScalarExpressionKind::DefaultIfNullOrEq { .. },
+                ..
+            },
             ..
         }
     ));
@@ -2213,7 +2349,10 @@ fn parses_normalized_space_case_predicates() {
     assert!(matches!(
         query.predicate,
         Some(PropertyPredicate::ExpressionNotEq {
-            expression: ScalarExpression::DefaultIfNullOrEq { .. },
+            expression: AstNode {
+                kind: ScalarExpressionKind::DefaultIfNullOrEq { .. },
+                ..
+            },
             ..
         })
     ));
@@ -2232,12 +2371,21 @@ fn parses_normalized_space_case_as_first_aggregate_with_item() {
     assert_eq!(aggregate_with.items.len(), 3);
     assert!(matches!(
         aggregate_with.items[0].expression,
-        ReturnExpression::Value(ScalarExpression::DefaultIfNullOrEq { .. })
+        AstNode {
+            kind: ReturnExpressionKind::Value(AstNode {
+                kind: ScalarExpressionKind::DefaultIfNullOrEq { .. },
+                ..
+            }),
+            ..
+        }
     ));
     assert_eq!(aggregate_with.items[0].alias.as_deref(), Some("space_id"));
     assert!(matches!(
         aggregate_with.items[2].expression,
-        ReturnExpression::Aggregate(AggregateExpression::MaxProperty { .. })
+        AstNode {
+            kind: ReturnExpressionKind::Aggregate(AggregateExpression::MaxProperty { .. }),
+            ..
+        }
     ));
 }
 
@@ -2252,35 +2400,45 @@ fn parses_count_return_items() {
     };
     assert_eq!(
         query.returns[0].expression,
-        ReturnExpression::Aggregate(AggregateExpression::CountAll)
+        AstNode::synthetic(ReturnExpressionKind::Aggregate(
+            AggregateExpression::CountAll
+        ))
     );
     assert_eq!(
         query.returns[1].expression,
-        ReturnExpression::Aggregate(AggregateExpression::CountVariable {
-            variable: "m".to_string(),
-            distinct: false
-        })
+        AstNode::synthetic(ReturnExpressionKind::Aggregate(
+            AggregateExpression::CountVariable {
+                variable: "m".to_string(),
+                distinct: false
+            }
+        ))
     );
     assert_eq!(
         query.returns[2].expression,
-        ReturnExpression::Aggregate(AggregateExpression::MinProperty {
-            variable: "m".to_string(),
-            property: "score".to_string(),
-        })
+        AstNode::synthetic(ReturnExpressionKind::Aggregate(
+            AggregateExpression::MinProperty {
+                variable: "m".to_string(),
+                property: "score".to_string(),
+            }
+        ))
     );
     assert_eq!(
         query.returns[3].expression,
-        ReturnExpression::Aggregate(AggregateExpression::MaxProperty {
-            variable: "m".to_string(),
-            property: "score".to_string(),
-        })
+        AstNode::synthetic(ReturnExpressionKind::Aggregate(
+            AggregateExpression::MaxProperty {
+                variable: "m".to_string(),
+                property: "score".to_string(),
+            }
+        ))
     );
     assert_eq!(
         query.returns[4].expression,
-        ReturnExpression::Aggregate(AggregateExpression::AvgProperty {
-            variable: "m".to_string(),
-            property: "score".to_string(),
-        })
+        AstNode::synthetic(ReturnExpressionKind::Aggregate(
+            AggregateExpression::AvgProperty {
+                variable: "m".to_string(),
+                property: "score".to_string(),
+            }
+        ))
     );
 }
 
@@ -2295,10 +2453,12 @@ fn parses_order_by_count_return_item() {
     };
     assert_eq!(
         query.returns[1].expression,
-        ReturnExpression::Aggregate(AggregateExpression::CountVariable {
-            variable: "r".to_string(),
-            distinct: false,
-        })
+        AstNode::synthetic(ReturnExpressionKind::Aggregate(
+            AggregateExpression::CountVariable {
+                variable: "r".to_string(),
+                distinct: false,
+            }
+        ))
     );
     assert_eq!(
         query.order_by[0].expression,
@@ -2318,11 +2478,13 @@ fn parses_count_distinct_return_items() {
     assert_eq!(query.returns[0].alias.as_deref(), Some("entities"));
     assert_eq!(
         query.returns[0].expression,
-        ReturnExpression::Aggregate(AggregateExpression::CountProperty {
-            variable: "e".to_string(),
-            property: "id".to_string(),
-            distinct: true
-        })
+        AstNode::synthetic(ReturnExpressionKind::Aggregate(
+            AggregateExpression::CountProperty {
+                variable: "e".to_string(),
+                property: "id".to_string(),
+                distinct: true
+            }
+        ))
     );
 }
 
@@ -2338,22 +2500,26 @@ fn parses_coalesce_and_left_return_items() {
     assert_eq!(query.returns[0].alias.as_deref(), Some("label"));
     assert_eq!(
         query.returns[0].expression,
-        ReturnExpression::Value(ScalarExpression::Coalesce(vec![
-            ScalarExpression::Property {
-                variable: "m".to_string(),
-                property: "title".to_string(),
-            },
-            ScalarExpression::Left {
-                expression: Box::new(ScalarExpression::Coalesce(vec![
-                    ScalarExpression::Property {
-                        variable: "m".to_string(),
-                        property: "content".to_string(),
-                    },
-                    ScalarExpression::Value(ValueExpression::Literal(Value::String(String::new()))),
-                ])),
-                length: ValueExpression::Literal(Value::Int(60)),
-            },
-        ]))
+        AstNode::synthetic(ReturnExpressionKind::Value(AstNode::synthetic(
+            ScalarExpressionKind::Coalesce(vec![
+                AstNode::synthetic(ScalarExpressionKind::Property {
+                    variable: "m".to_string(),
+                    property: "title".to_string(),
+                }),
+                AstNode::synthetic(ScalarExpressionKind::Left {
+                    expression: Box::new(AstNode::synthetic(ScalarExpressionKind::Coalesce(vec![
+                        AstNode::synthetic(ScalarExpressionKind::Property {
+                            variable: "m".to_string(),
+                            property: "content".to_string(),
+                        }),
+                        AstNode::synthetic(ScalarExpressionKind::Value(AstNode::synthetic(
+                            ValueExpressionKind::Literal(Value::String(String::new()))
+                        ))),
+                    ]))),
+                    length: AstNode::synthetic(ValueExpressionKind::Literal(Value::Int(60))),
+                }),
+            ])
+        )))
     );
 }
 
@@ -2372,35 +2538,39 @@ fn parses_coalesce_and_left_predicates() {
     assert_eq!(
         predicates[0],
         PropertyPredicate::ExpressionCompare {
-            expression: ScalarExpression::Coalesce(vec![
-                ScalarExpression::Property {
+            expression: AstNode::synthetic(ScalarExpressionKind::Coalesce(vec![
+                AstNode::synthetic(ScalarExpressionKind::Property {
                     variable: "m".to_string(),
                     property: "created_at".to_string(),
-                },
-                ScalarExpression::Property {
+                }),
+                AstNode::synthetic(ScalarExpressionKind::Property {
                     variable: "m".to_string(),
                     property: "last_accessed_at".to_string(),
-                },
-            ]),
+                }),
+            ])),
             op: ComparisonOp::Gte,
-            value: ScalarExpression::Value(ValueExpression::Parameter("cutoff".to_string(),)),
+            value: AstNode::synthetic(ScalarExpressionKind::Value(AstNode::synthetic(
+                ValueExpressionKind::Parameter("cutoff".to_string(),)
+            ))),
         }
     );
     assert_eq!(
         predicates[1],
         PropertyPredicate::ExpressionEq {
-            expression: ScalarExpression::Left {
-                expression: Box::new(ScalarExpression::Coalesce(vec![
-                    ScalarExpression::Property {
+            expression: AstNode::synthetic(ScalarExpressionKind::Left {
+                expression: Box::new(AstNode::synthetic(ScalarExpressionKind::Coalesce(vec![
+                    AstNode::synthetic(ScalarExpressionKind::Property {
                         variable: "m".to_string(),
                         property: "title".to_string(),
-                    },
-                    ScalarExpression::Value(ValueExpression::Literal(Value::String(String::new()))),
-                ])),
-                length: ValueExpression::Literal(Value::Int(4)),
-            },
-            value: ScalarExpression::Value(ValueExpression::Literal(Value::String(
-                "Graph".to_string()
+                    }),
+                    AstNode::synthetic(ScalarExpressionKind::Value(AstNode::synthetic(
+                        ValueExpressionKind::Literal(Value::String(String::new()))
+                    ))),
+                ]))),
+                length: AstNode::synthetic(ValueExpressionKind::Literal(Value::Int(4))),
+            }),
+            value: AstNode::synthetic(ScalarExpressionKind::Value(AstNode::synthetic(
+                ValueExpressionKind::Literal(Value::String("Graph".to_string()))
             ))),
         }
     );
@@ -2422,16 +2592,22 @@ fn parses_coalesce_float_predicate() {
     };
     assert!(matches!(
         expression,
-        ScalarExpression::Coalesce(expressions)
+        AstNode { kind: ScalarExpressionKind::Coalesce(expressions), .. }
             if expressions.len() == 2
                 && matches!(
                     expressions[1],
-                    ScalarExpression::Value(ValueExpression::Literal(Value::Float(1.0)))
+                    AstNode { kind: ScalarExpressionKind::Value(AstNode { kind: ValueExpressionKind::Literal(Value::Float(1.0)), .. }), .. }
                 )
     ));
     assert!(matches!(
         value,
-        ScalarExpression::Value(ValueExpression::Literal(Value::Float(0.55)))
+        AstNode {
+            kind: ScalarExpressionKind::Value(AstNode {
+                kind: ValueExpressionKind::Literal(Value::Float(0.55)),
+                ..
+            }),
+            ..
+        }
     ));
 }
 
@@ -2447,16 +2623,22 @@ fn parses_lower_contains_expression_predicates() {
     assert_eq!(
         query.predicate,
         Some(PropertyPredicate::ExpressionContains {
-            expression: ScalarExpression::Lower(Box::new(ScalarExpression::Coalesce(vec![
-                ScalarExpression::Property {
-                    variable: "m".to_string(),
-                    property: "content".to_string(),
-                },
-                ScalarExpression::Value(ValueExpression::Literal(Value::String(String::new()))),
-            ]))),
-            value: ScalarExpression::Lower(Box::new(ScalarExpression::Value(
-                ValueExpression::Parameter("needle".to_string())
+            expression: AstNode::synthetic(ScalarExpressionKind::Lower(Box::new(
+                AstNode::synthetic(ScalarExpressionKind::Coalesce(vec![
+                    AstNode::synthetic(ScalarExpressionKind::Property {
+                        variable: "m".to_string(),
+                        property: "content".to_string(),
+                    }),
+                    AstNode::synthetic(ScalarExpressionKind::Value(AstNode::synthetic(
+                        ValueExpressionKind::Literal(Value::String(String::new()))
+                    ))),
+                ]))
             ))),
+            value: AstNode::synthetic(ScalarExpressionKind::Lower(Box::new(AstNode::synthetic(
+                ScalarExpressionKind::Value(AstNode::synthetic(ValueExpressionKind::Parameter(
+                    "needle".to_string()
+                )))
+            )))),
         })
     );
 }
@@ -2471,13 +2653,17 @@ fn parses_lower_equality_expression_predicates() {
     assert_eq!(
         query.predicate,
         Some(PropertyPredicate::ExpressionEq {
-            expression: ScalarExpression::Lower(Box::new(ScalarExpression::Property {
-                variable: "e".to_string(),
-                property: "name".to_string(),
-            })),
-            value: ScalarExpression::Lower(Box::new(ScalarExpression::Value(
-                ValueExpression::Parameter("mention".to_string())
+            expression: AstNode::synthetic(ScalarExpressionKind::Lower(Box::new(
+                AstNode::synthetic(ScalarExpressionKind::Property {
+                    variable: "e".to_string(),
+                    property: "name".to_string(),
+                })
             ))),
+            value: AstNode::synthetic(ScalarExpressionKind::Lower(Box::new(AstNode::synthetic(
+                ScalarExpressionKind::Value(AstNode::synthetic(ValueExpressionKind::Parameter(
+                    "mention".to_string()
+                )))
+            )))),
         })
     );
 }
@@ -2498,7 +2684,9 @@ fn parses_order_offset_and_limit() {
     assert_eq!(query.order_by[0].direction, OrderDirection::Desc);
     assert_eq!(
         query.offset,
-        Some(ValueExpression::Parameter("offset".to_string()))
+        Some(AstNode::synthetic(ValueExpressionKind::Parameter(
+            "offset".to_string()
+        )))
     );
     assert!(query.limit.is_some());
 }
@@ -2515,17 +2703,19 @@ fn parses_order_by_coalesce_expression() {
     assert_eq!(query.order_by.len(), 1);
     assert_eq!(
         query.order_by[0].expression,
-        OrderExpression::Value(ScalarExpression::Coalesce(vec![
-            ScalarExpression::Property {
+        OrderExpression::Value(AstNode::synthetic(ScalarExpressionKind::Coalesce(vec![
+            AstNode::synthetic(ScalarExpressionKind::Property {
                 variable: "m".to_string(),
                 property: "pagerank_score".to_string(),
-            },
-            ScalarExpression::Property {
+            }),
+            AstNode::synthetic(ScalarExpressionKind::Property {
                 variable: "m".to_string(),
                 property: "importance".to_string(),
-            },
-            ScalarExpression::Value(ValueExpression::Literal(Value::Float(0.5))),
-        ]))
+            }),
+            AstNode::synthetic(ScalarExpressionKind::Value(AstNode::synthetic(
+                ValueExpressionKind::Literal(Value::Float(0.5))
+            ))),
+        ])))
     );
     assert_eq!(query.order_by[0].direction, OrderDirection::Desc);
 }
@@ -2541,7 +2731,7 @@ fn parses_parameter_value_without_binding_it() {
         PropertyPredicate::Eq {
             variable: "m".to_string(),
             property: "id".to_string(),
-            value: ValueExpression::Parameter("id".to_string()),
+            value: AstNode::synthetic(ValueExpressionKind::Parameter("id".to_string())),
         }
     );
 }
@@ -2569,10 +2759,10 @@ fn parses_null_and_list_predicates() {
     };
     assert_eq!(
         values,
-        ValueExpression::List(vec![
-            ValueExpression::Literal(Value::Int(1)),
-            ValueExpression::Literal(Value::Int(2))
-        ])
+        AstNode::synthetic(ValueExpressionKind::List(vec![
+            AstNode::synthetic(ValueExpressionKind::Literal(Value::Int(1))),
+            AstNode::synthetic(ValueExpressionKind::Literal(Value::Int(2)))
+        ]))
     );
 
     let statement = parse("MATCH (m:Memory) WHERE m.id IN [1, $id] RETURN m.title").unwrap();
@@ -2584,10 +2774,10 @@ fn parses_null_and_list_predicates() {
     };
     assert_eq!(
         values,
-        ValueExpression::List(vec![
-            ValueExpression::Literal(Value::Int(1)),
-            ValueExpression::Parameter("id".to_string())
-        ])
+        AstNode::synthetic(ValueExpressionKind::List(vec![
+            AstNode::synthetic(ValueExpressionKind::Literal(Value::Int(1))),
+            AstNode::synthetic(ValueExpressionKind::Parameter("id".to_string()))
+        ]))
     );
 
     let statement =
@@ -2600,7 +2790,7 @@ fn parses_null_and_list_predicates() {
         PropertyPredicate::ListContains {
             variable: "e".to_string(),
             property: "aliases".to_string(),
-            value: ValueExpression::Parameter("name".to_string()),
+            value: AstNode::synthetic(ValueExpressionKind::Parameter("name".to_string())),
         }
     );
 
@@ -2614,7 +2804,7 @@ fn parses_null_and_list_predicates() {
         PropertyPredicate::ListContainsLower {
             variable: "e".to_string(),
             property: "aliases".to_string(),
-            value: ValueExpression::Parameter("query".to_string()),
+            value: AstNode::synthetic(ValueExpressionKind::Parameter("query".to_string())),
         }
     );
 }
@@ -2657,7 +2847,9 @@ fn parses_parameter_equality_predicate() {
         default_space_predicates[0],
         PropertyPredicate::ParameterEq {
             left: "space_id".to_string(),
-            right: ValueExpression::Parameter("default_space_id".to_string()),
+            right: AstNode::synthetic(ValueExpressionKind::Parameter(
+                "default_space_id".to_string()
+            )),
         }
     );
 }
@@ -2681,7 +2873,9 @@ fn parses_parameter_literal_equality_predicate() {
         default_space_predicates[0],
         PropertyPredicate::ParameterEq {
             left: "space_id".to_string(),
-            right: ValueExpression::Literal(Value::String("default".to_string())),
+            right: AstNode::synthetic(ValueExpressionKind::Literal(Value::String(
+                "default".to_string()
+            ))),
         }
     );
 }
@@ -2698,8 +2892,14 @@ fn parses_contains_function_predicate() {
     assert!(matches!(
         query.predicate,
         Some(PropertyPredicate::ExpressionContains {
-            expression: ScalarExpression::Lower(_),
-            value: ScalarExpression::Lower(_),
+            expression: AstNode {
+                kind: ScalarExpressionKind::Lower(_),
+                ..
+            },
+            value: AstNode {
+                kind: ScalarExpressionKind::Lower(_),
+                ..
+            },
         })
     ));
 }
@@ -2731,7 +2931,7 @@ fn parses_range_predicates() {
             variable: "m".to_string(),
             property: "created_at".to_string(),
             op: ComparisonOp::Gte,
-            value: ValueExpression::Literal(Value::Int(10)),
+            value: AstNode::synthetic(ValueExpressionKind::Literal(Value::Int(10))),
         }
     );
 
@@ -2745,7 +2945,7 @@ fn parses_range_predicates() {
             variable: "m".to_string(),
             property: "title".to_string(),
             op: ComparisonOp::Lt,
-            value: ValueExpression::Literal(Value::String("m".to_string())),
+            value: AstNode::synthetic(ValueExpressionKind::Literal(Value::String("m".to_string()))),
         }
     );
 }
@@ -2761,7 +2961,9 @@ fn parses_not_equal_predicates() {
         PropertyPredicate::NotEq {
             variable: "m".to_string(),
             property: "kind".to_string(),
-            value: ValueExpression::Literal(Value::String("task".to_string())),
+            value: AstNode::synthetic(ValueExpressionKind::Literal(Value::String(
+                "task".to_string()
+            ))),
         }
     );
 
@@ -2773,7 +2975,7 @@ fn parses_not_equal_predicates() {
         query.predicate.unwrap(),
         PropertyPredicate::IdNotEq {
             variable: "m".to_string(),
-            value: ValueExpression::Parameter("id".to_string()),
+            value: AstNode::synthetic(ValueExpressionKind::Parameter("id".to_string())),
         }
     );
 }
@@ -2789,7 +2991,9 @@ fn parses_contains_predicates() {
                 Some(PropertyPredicate::Contains {
                     variable: "m".to_string(),
                     property: "title".to_string(),
-                    value: ValueExpression::Literal(Value::String("graph".to_string())),
+                    value: AstNode::synthetic(ValueExpressionKind::Literal(Value::String(
+                        "graph".to_string()
+                    ))),
                 })
             );
         }
@@ -2808,7 +3012,9 @@ fn parses_string_prefix_and_suffix_predicates() {
                 Some(PropertyPredicate::StartsWith {
                     variable: "m".to_string(),
                     property: "title".to_string(),
-                    value: ValueExpression::Literal(Value::String("Graph".to_string())),
+                    value: AstNode::synthetic(ValueExpressionKind::Literal(Value::String(
+                        "Graph".to_string()
+                    ))),
                 })
             );
         }
@@ -2824,7 +3030,7 @@ fn parses_string_prefix_and_suffix_predicates() {
                 Some(PropertyPredicate::EndsWith {
                     variable: "m".to_string(),
                     property: "title".to_string(),
-                    value: ValueExpression::Parameter("suffix".to_string()),
+                    value: AstNode::synthetic(ValueExpressionKind::Parameter("suffix".to_string())),
                 })
             );
         }
@@ -2844,7 +3050,9 @@ fn parses_regex_match_predicate() {
                 Some(PropertyPredicate::RegexMatch {
                     variable: "l".to_string(),
                     property: "name".to_string(),
-                    pattern: ValueExpression::Parameter("pattern".to_string()),
+                    pattern: AstNode::synthetic(ValueExpressionKind::Parameter(
+                        "pattern".to_string()
+                    )),
                 })
             );
         }
@@ -2867,13 +3075,13 @@ fn parses_and_predicates() {
                 variable: "m".to_string(),
                 property: "created_at".to_string(),
                 op: ComparisonOp::Gte,
-                value: ValueExpression::Literal(Value::Int(10)),
+                value: AstNode::synthetic(ValueExpressionKind::Literal(Value::Int(10))),
             },
             PropertyPredicate::Compare {
                 variable: "m".to_string(),
                 property: "created_at".to_string(),
                 op: ComparisonOp::Lt,
-                value: ValueExpression::Literal(Value::Int(20)),
+                value: AstNode::synthetic(ValueExpressionKind::Literal(Value::Int(20))),
             },
         ])
     );
@@ -2890,7 +3098,9 @@ fn parses_not_predicates() {
         PropertyPredicate::Not(Box::new(PropertyPredicate::Eq {
             variable: "m".to_string(),
             property: "kind".to_string(),
-            value: ValueExpression::Literal(Value::String("task".to_string())),
+            value: AstNode::synthetic(ValueExpressionKind::Literal(Value::String(
+                "task".to_string()
+            ))),
         }))
     );
 
@@ -2906,13 +3116,15 @@ fn parses_not_predicates() {
             PropertyPredicate::Eq {
                 variable: "m".to_string(),
                 property: "kind".to_string(),
-                value: ValueExpression::Literal(Value::String("task".to_string())),
+                value: AstNode::synthetic(ValueExpressionKind::Literal(Value::String(
+                    "task".to_string()
+                ))),
             },
             PropertyPredicate::Compare {
                 variable: "m".to_string(),
                 property: "score".to_string(),
                 op: ComparisonOp::Lt,
-                value: ValueExpression::Literal(Value::Int(10)),
+                value: AstNode::synthetic(ValueExpressionKind::Literal(Value::Int(10))),
             },
         ])))
     );
@@ -3003,20 +3215,22 @@ fn parses_or_predicates_with_and_precedence() {
             PropertyPredicate::Eq {
                 variable: "m".to_string(),
                 property: "kind".to_string(),
-                value: ValueExpression::Literal(Value::String("note".to_string())),
+                value: AstNode::synthetic(ValueExpressionKind::Literal(Value::String(
+                    "note".to_string()
+                ))),
             },
             PropertyPredicate::And(vec![
                 PropertyPredicate::Compare {
                     variable: "m".to_string(),
                     property: "score".to_string(),
                     op: ComparisonOp::Gte,
-                    value: ValueExpression::Literal(Value::Int(10)),
+                    value: AstNode::synthetic(ValueExpressionKind::Literal(Value::Int(10))),
                 },
                 PropertyPredicate::Compare {
                     variable: "m".to_string(),
                     property: "score".to_string(),
                     op: ComparisonOp::Lt,
-                    value: ValueExpression::Literal(Value::Int(20)),
+                    value: AstNode::synthetic(ValueExpressionKind::Literal(Value::Int(20))),
                 },
             ]),
         ])
@@ -3039,19 +3253,23 @@ fn parses_parenthesized_predicates() {
                 PropertyPredicate::Eq {
                     variable: "m".to_string(),
                     property: "kind".to_string(),
-                    value: ValueExpression::Literal(Value::String("note".to_string())),
+                    value: AstNode::synthetic(ValueExpressionKind::Literal(Value::String(
+                        "note".to_string()
+                    ))),
                 },
                 PropertyPredicate::Eq {
                     variable: "m".to_string(),
                     property: "kind".to_string(),
-                    value: ValueExpression::Literal(Value::String("thread".to_string())),
+                    value: AstNode::synthetic(ValueExpressionKind::Literal(Value::String(
+                        "thread".to_string()
+                    ))),
                 },
             ]),
             PropertyPredicate::Compare {
                 variable: "m".to_string(),
                 property: "score".to_string(),
                 op: ComparisonOp::Gte,
-                value: ValueExpression::Literal(Value::Int(10)),
+                value: AstNode::synthetic(ValueExpressionKind::Literal(Value::Int(10))),
             },
         ])
     );

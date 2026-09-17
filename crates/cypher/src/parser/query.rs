@@ -601,8 +601,8 @@ impl Parser<'_> {
                 let nodes_path_variable = self.parse_ident()?;
                 self.expect_char(')')?;
                 self.expect_char(',')?;
-                let property = match self.parse_value()? {
-                    ValueExpression::Literal(skein_core::Value::String(property)) => property,
+                let property = match self.parse_value()?.kind {
+                    ValueExpressionKind::Literal(skein_core::Value::String(property)) => property,
                     _ => return Err(self.error("node property projection requires a string key")),
                 };
                 self.expect_char(')')?;
@@ -690,7 +690,7 @@ impl Parser<'_> {
             let items = self.parse_return_items()?;
             let has_aggregate = items
                 .iter()
-                .any(|item| matches!(item.expression, ReturnExpression::Aggregate(_)));
+                .any(|item| matches!(item.expression.kind, ReturnExpressionKind::Aggregate(_)));
             return Ok(ParsedWithClause {
                 optional_with: None,
                 collect_with: None,
@@ -701,19 +701,26 @@ impl Parser<'_> {
                 aggregate_with: has_aggregate.then_some(WithAggregateProjection { items }),
             });
         }
+        self.skip_ws();
+        let group_start = self.pos;
         let group_variable = self.parse_ident()?;
+        let group_span = self.source_span(group_start);
         if self.consume_char('.') {
-            let first_item = ReturnItem {
-                expression: ReturnExpression::Value(ScalarExpression::Property {
+            let property = self.parse_ident()?;
+            let value = self.source_node(
+                ScalarExpressionKind::Property {
                     variable: group_variable,
-                    property: self.parse_ident()?,
-                }),
-                alias: if self.consume_keyword("AS") {
-                    Some(self.parse_ident()?)
-                } else {
-                    None
+                    property,
                 },
+                group_start,
+            );
+            let expression = self.source_node(ReturnExpressionKind::Value(value), group_start);
+            let alias = if self.consume_keyword("AS") {
+                Some(self.parse_ident()?)
+            } else {
+                None
             };
+            let first_item = self.source_node(ReturnItemKind { expression, alias }, group_start);
             let mut items = vec![first_item];
             while self.consume_char(',') {
                 let mut next = self.parse_return_items()?;
@@ -728,21 +735,24 @@ impl Parser<'_> {
             });
         }
         self.expect_char(',')?;
+        self.skip_ws();
+        let aggregate_start = self.pos;
         if self.consume_keyword("COUNT") {
-            let first_count = self.parse_count_return_item_after_count_keyword()?;
+            let first_count = self.parse_count_return_item_after_count_keyword(aggregate_start)?;
             let is_simple_optional_count = matches!(
-                first_count.expression,
-                ReturnExpression::Aggregate(AggregateExpression::CountVariable { .. })
+                first_count.expression.kind,
+                ReturnExpressionKind::Aggregate(AggregateExpression::CountVariable { .. })
             ) && !self.peek_next_with_item_separator();
             if is_simple_optional_count {
-                let ReturnExpression::Aggregate(AggregateExpression::CountVariable {
+                let ReturnExpressionKind::Aggregate(AggregateExpression::CountVariable {
                     variable,
                     distinct,
-                }) = first_count.expression
+                }) = first_count.kind.expression.kind
                 else {
                     unreachable!("simple optional count shape checked above");
                 };
                 let alias = first_count
+                    .kind
                     .alias
                     .expect("count return items always require an alias in WITH");
                 return Ok(ParsedWithClause {
@@ -759,10 +769,7 @@ impl Parser<'_> {
                 });
             }
             let mut items = vec![
-                ReturnItem {
-                    expression: ReturnExpression::Value(ScalarExpression::Variable(group_variable)),
-                    alias: None,
-                },
+                variable_return_item(group_variable, group_span),
                 first_count,
             ];
             while self.consume_char(',') {
@@ -787,31 +794,33 @@ impl Parser<'_> {
                 None
             };
             self.expect_char(')')?;
+            let expression_span = self.source_span(aggregate_start);
             self.expect_keyword("AS")?;
             let alias = self.parse_ident()?;
-            let first_collect = ReturnItem {
-                expression: if let Some(property) = collect_property.clone() {
-                    ReturnExpression::Aggregate(AggregateExpression::CollectProperty {
-                        variable: collect_variable.clone(),
-                        property,
-                        distinct,
-                    })
-                } else {
-                    ReturnExpression::Aggregate(AggregateExpression::CollectVariable {
-                        variable: collect_variable.clone(),
-                        distinct,
-                    })
+            let first_collect = self.source_node(
+                ReturnItemKind {
+                    expression: AstNode::from_source(
+                        if let Some(property) = collect_property.clone() {
+                            ReturnExpressionKind::Aggregate(AggregateExpression::CollectProperty {
+                                variable: collect_variable.clone(),
+                                property,
+                                distinct,
+                            })
+                        } else {
+                            ReturnExpressionKind::Aggregate(AggregateExpression::CollectVariable {
+                                variable: collect_variable.clone(),
+                                distinct,
+                            })
+                        },
+                        expression_span,
+                    ),
+                    alias: Some(alias.clone()),
                 },
-                alias: Some(alias.clone()),
-            };
+                aggregate_start,
+            );
             if self.consume_char(',') {
                 let mut items = vec![
-                    ReturnItem {
-                        expression: ReturnExpression::Value(ScalarExpression::Variable(
-                            group_variable,
-                        )),
-                        alias: None,
-                    },
+                    variable_return_item(group_variable, group_span),
                     first_collect,
                 ];
                 let mut next = self.parse_return_items()?;
@@ -832,12 +841,7 @@ impl Parser<'_> {
                     with_projection: None,
                     aggregate_with: Some(WithAggregateProjection {
                         items: vec![
-                            ReturnItem {
-                                expression: ReturnExpression::Value(ScalarExpression::Variable(
-                                    group_variable,
-                                )),
-                                alias: None,
-                            },
+                            variable_return_item(group_variable, group_span),
                             first_collect,
                         ],
                     }),
@@ -858,10 +862,7 @@ impl Parser<'_> {
             });
         }
         if self.next_keyword_is("CASE") {
-            let mut items = vec![ReturnItem {
-                expression: ReturnExpression::Value(ScalarExpression::Variable(group_variable)),
-                alias: None,
-            }];
+            let mut items = vec![variable_return_item(group_variable, group_span)];
             let mut projections = self.parse_return_items()?;
             items.append(&mut projections);
             return Ok(ParsedWithClause {
@@ -875,36 +876,40 @@ impl Parser<'_> {
         Err(self.error("expected COUNT or COLLECT"))
     }
 
-    fn parse_count_return_item_after_count_keyword(&mut self) -> Result<ReturnItem> {
+    fn parse_count_return_item_after_count_keyword(&mut self, start: usize) -> Result<ReturnItem> {
         self.expect_char('(')?;
         let distinct = self.consume_keyword("DISTINCT");
         let expression = if self.consume_char('*') {
             if distinct {
                 return Err(self.error("COUNT(DISTINCT *) is not supported"));
             }
-            ReturnExpression::Aggregate(AggregateExpression::CountAll)
+            ReturnExpressionKind::Aggregate(AggregateExpression::CountAll)
         } else {
             let variable = self.parse_ident()?;
             if self.consume_char('.') {
-                ReturnExpression::Aggregate(AggregateExpression::CountProperty {
+                ReturnExpressionKind::Aggregate(AggregateExpression::CountProperty {
                     variable,
                     property: self.parse_ident()?,
                     distinct,
                 })
             } else {
-                ReturnExpression::Aggregate(AggregateExpression::CountVariable {
+                ReturnExpressionKind::Aggregate(AggregateExpression::CountVariable {
                     variable,
                     distinct,
                 })
             }
         };
         self.expect_char(')')?;
+        let expression = self.source_node(expression, start);
         self.expect_keyword("AS")?;
         let alias = self.parse_ident()?;
-        Ok(ReturnItem {
-            expression,
-            alias: Some(alias),
-        })
+        Ok(self.source_node(
+            ReturnItemKind {
+                expression,
+                alias: Some(alias),
+            },
+            start,
+        ))
     }
 
     fn parse_thread_repair_stats_after_optional_match(
@@ -1025,8 +1030,8 @@ impl Parser<'_> {
         self.expect_char(',')?;
         let expression = self.parse_scalar_expression()?;
         let space_id_matches = matches!(
-            expression,
-            ScalarExpression::DefaultIfNullOrEq {
+            expression.kind,
+            ScalarExpressionKind::DefaultIfNullOrEq {
                 variable: ref expression_variable,
                 ref property,
                 ..
@@ -1037,7 +1042,7 @@ impl Parser<'_> {
         }
         self.expect_char(',')?;
         let expression = self.parse_scalar_expression()?;
-        if !matches!(expression, ScalarExpression::Coalesce(_)) {
+        if !matches!(expression.kind, ScalarExpressionKind::Coalesce(_)) {
             return Err(self.error("thread repair RETURN must coalesce message_count"));
         }
         self.expect_char(',')?;
@@ -1125,7 +1130,7 @@ impl Parser<'_> {
         }
         self.expect_char('=')?;
         let empty = self.parse_value()?;
-        if empty != ValueExpression::Literal(skein_core::Value::String(String::new())) {
+        if empty.kind != ValueExpressionKind::Literal(skein_core::Value::String(String::new())) {
             return Err(self.error(
                 "OPTIONAL relationship count filter only supports an empty-string fallback",
             ));
@@ -1288,4 +1293,16 @@ fn combine_match_predicates(
         Some(left) => PropertyPredicate::And(vec![left, right]),
         None => right,
     }
+}
+
+fn variable_return_item(variable: String, span: SourceSpan) -> ReturnItem {
+    let value = AstNode::from_source(ScalarExpressionKind::Variable(variable), span);
+    let expression = AstNode::from_source(ReturnExpressionKind::Value(value), span);
+    AstNode::from_source(
+        ReturnItemKind {
+            expression,
+            alias: None,
+        },
+        span,
+    )
 }

@@ -3,6 +3,15 @@ use skein_core::{Result, SkeinError};
 use super::{keyword_matches, Parser};
 
 impl Parser<'_> {
+    pub(super) fn source_node<T>(&self, kind: T, start: usize) -> crate::AstNode<T> {
+        crate::AstNode::from_source(kind, self.source_span(start))
+    }
+
+    pub(super) fn source_span(&self, start: usize) -> crate::SourceSpan {
+        let end = start + self.input[start..self.pos].trim_end().len();
+        crate::SourceSpan { start, end }
+    }
+
     pub(super) fn consume_keyword(&mut self, keyword: &str) -> bool {
         self.skip_ws();
         let rest = &self.input[self.pos..];

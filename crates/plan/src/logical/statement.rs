@@ -841,11 +841,15 @@ pub fn plan_with_params(
                                 .to_string(),
                         ));
                     }
-                    if query
-                        .returns
-                        .iter()
-                        .any(|item| matches!(item.expression, ReturnExpression::Aggregate(_)))
-                    {
+                    if query.returns.iter().any(|item| {
+                        matches!(
+                            item.expression,
+                            AstNode {
+                                kind: ReturnExpressionKind::Aggregate(_),
+                                ..
+                            }
+                        )
+                    }) {
                         return Err(SkeinError::Semantic(
                             "OPTIONAL MATCH WITH supports only projection returns".to_string(),
                         ));

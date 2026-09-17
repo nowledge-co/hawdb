@@ -34,7 +34,11 @@ pub(super) fn bind_vector_embedding(
     expression: &ValueExpression,
     parameters: &BTreeMap<String, Value>,
 ) -> Result<(String, usize)> {
-    let ValueExpression::Parameter(name) = expression else {
+    let AstNode {
+        kind: ValueExpressionKind::Parameter(name),
+        ..
+    } = expression
+    else {
         return Err(SkeinError::Semantic(
             "vector search embedding must be a parameter".to_string(),
         ));
@@ -549,19 +553,19 @@ pub(super) fn bind_value(
     expression: &ValueExpression,
     parameters: &BTreeMap<String, Value>,
 ) -> Result<Value> {
-    match expression {
-        ValueExpression::Literal(value) => Ok(value.clone()),
-        ValueExpression::Parameter(name) => parameters
+    match &expression.kind {
+        ValueExpressionKind::Literal(value) => Ok(value.clone()),
+        ValueExpressionKind::Parameter(name) => parameters
             .get(name)
             .cloned()
             .ok_or_else(|| SkeinError::Semantic(format!("missing parameter '${name}'"))),
-        ValueExpression::List(values) => values
+        ValueExpressionKind::List(values) => values
             .iter()
             .map(|value| bind_value(value, parameters))
             .collect::<Result<Vec<_>>>()
             .map(Value::List),
-        ValueExpression::CurrentTimestamp => Ok(current_timestamp_value()),
-        ValueExpression::Timestamp(value) => {
+        ValueExpressionKind::CurrentTimestamp => Ok(current_timestamp_value()),
+        ValueExpressionKind::Timestamp(value) => {
             bind_value(value, parameters).and_then(timestamp_value)
         }
     }
@@ -971,18 +975,28 @@ pub(super) fn plan_predicate(
             property: property.clone(),
         }),
         PropertyPredicate::ParameterIsNull { parameter } => Ok(Predicate::ConstantBool(
-            bind_value(&ValueExpression::Parameter(parameter.clone()), parameters)? == Value::Null,
+            bind_value(
+                &AstNode::synthetic(ValueExpressionKind::Parameter(parameter.clone())),
+                parameters,
+            )? == Value::Null,
         )),
         PropertyPredicate::ParameterIsNotNull { parameter } => Ok(Predicate::ConstantBool(
-            bind_value(&ValueExpression::Parameter(parameter.clone()), parameters)? != Value::Null,
+            bind_value(
+                &AstNode::synthetic(ValueExpressionKind::Parameter(parameter.clone())),
+                parameters,
+            )? != Value::Null,
         )),
         PropertyPredicate::ParameterEq { left, right } => Ok(Predicate::ConstantBool(
-            bind_value(&ValueExpression::Parameter(left.clone()), parameters)?
-                == bind_value(right, parameters)?,
+            bind_value(
+                &AstNode::synthetic(ValueExpressionKind::Parameter(left.clone())),
+                parameters,
+            )? == bind_value(right, parameters)?,
         )),
         PropertyPredicate::ParameterNotEq { left, right } => Ok(Predicate::ConstantBool(
-            bind_value(&ValueExpression::Parameter(left.clone()), parameters)?
-                != bind_value(right, parameters)?,
+            bind_value(
+                &AstNode::synthetic(ValueExpressionKind::Parameter(left.clone())),
+                parameters,
+            )? != bind_value(right, parameters)?,
         )),
         PropertyPredicate::In {
             variable,
@@ -1294,47 +1308,47 @@ pub(super) fn collect_scalar_expression_variables(
     expression: &ScalarExpression,
     variables: &mut BTreeSet<String>,
 ) {
-    match expression {
-        ScalarExpression::Variable(variable)
-        | ScalarExpression::Property { variable, .. }
-        | ScalarExpression::Id(variable)
-        | ScalarExpression::RelationshipType(variable) => {
+    match &expression.kind {
+        ScalarExpressionKind::Variable(variable)
+        | ScalarExpressionKind::Property { variable, .. }
+        | ScalarExpressionKind::Id(variable)
+        | ScalarExpressionKind::RelationshipType(variable) => {
             variables.insert(variable.clone());
         }
-        ScalarExpression::Value(_) => {}
-        ScalarExpression::Coalesce(expressions) => {
+        ScalarExpressionKind::Value(_) => {}
+        ScalarExpressionKind::Coalesce(expressions) => {
             for expression in expressions {
                 collect_scalar_expression_variables(expression, variables);
             }
         }
-        ScalarExpression::Left { expression, .. } => {
+        ScalarExpressionKind::Left { expression, .. } => {
             collect_scalar_expression_variables(expression, variables);
         }
-        ScalarExpression::Lower(expression) => {
+        ScalarExpressionKind::Lower(expression) => {
             collect_scalar_expression_variables(expression, variables);
         }
-        ScalarExpression::DatePart { variable, .. } => {
+        ScalarExpressionKind::DatePart { variable, .. } => {
             variables.insert(variable.clone());
         }
-        ScalarExpression::DefaultIfNullOrEq { variable, .. }
-        | ScalarExpression::DefaultIfNull { variable, .. } => {
+        ScalarExpressionKind::DefaultIfNullOrEq { variable, .. }
+        | ScalarExpressionKind::DefaultIfNull { variable, .. } => {
             variables.insert(variable.clone());
         }
-        ScalarExpression::CasePropertyNotNullOrEq { variable, .. } => {
+        ScalarExpressionKind::CasePropertyNotNullOrEq { variable, .. } => {
             variables.insert(variable.clone());
         }
-        ScalarExpression::CasePropertyEqualsRank { variable, .. } => {
+        ScalarExpressionKind::CasePropertyEqualsRank { variable, .. } => {
             variables.insert(variable.clone());
         }
-        ScalarExpression::CaseLowerPropertyDefault { variable, .. } => {
+        ScalarExpressionKind::CaseLowerPropertyDefault { variable, .. } => {
             variables.insert(variable.clone());
         }
-        ScalarExpression::CaseCoalesceDifferenceFloorZero { variable, .. } => {
+        ScalarExpressionKind::CaseCoalesceDifferenceFloorZero { variable, .. } => {
             variables.insert(variable.clone());
         }
-        ScalarExpression::CaseEntitySearchRank(expression) => {
+        ScalarExpressionKind::CaseEntitySearchRank(expression) => {
             variables.insert(expression.variable.clone());
         }
-        ScalarExpression::CaseColumnSearchRank(_) => {}
+        ScalarExpressionKind::CaseColumnSearchRank(_) => {}
     }
 }

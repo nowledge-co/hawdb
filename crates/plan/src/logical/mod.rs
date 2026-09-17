@@ -11,6 +11,9 @@ use skein_cypher::{
     WithAliasFilterExpression, WithAliasFilterOp, WithCollect, WithDistinctProjection,
     WithProjection,
 };
+use skein_cypher::{
+    AstNode, ReturnExpressionKind, ReturnItemKind, ScalarExpressionKind, ValueExpressionKind,
+};
 pub use skein_ddl::{SchemaObjectState, SchemaPropertyType, SchemaTableKind};
 pub use skein_expression::{
     CaseColumnSearchRankProjection, CaseEntitySearchRankProjection,
