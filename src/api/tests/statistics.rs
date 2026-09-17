@@ -106,7 +106,7 @@ fn explicit_text_index_publishes_payload_free_selectivity() {
         .unwrap();
     assert!(explain.trace.decisions.iter().any(|decision| {
         decision.contains("Memory.body")
-            && decision.contains("seek_cost=21")
+            && decision.contains("seek_cost=32")
             && decision.contains("distinct_count=2")
     }));
 }

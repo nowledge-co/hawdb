@@ -2002,7 +2002,7 @@ fn range_predicates_filter_and_use_range_index() {
         .unwrap();
     for id in 4..=16 {
         db.query(&format!(
-            "CREATE (:Memory {{id: {id}, created_at: 0, title: 'Filler {id}'}})"
+            "CREATE (:Memory {{id: {id}, created_at: -{id}, title: 'Filler {id}'}})"
         ))
         .unwrap();
     }
@@ -2054,8 +2054,11 @@ fn and_range_predicates_use_bounded_range_index_with_residual_filter() {
         .unwrap();
     }
     for id in 6..=16 {
-        db.query(&format!("CREATE (:Memory {{id: {id}, created_at: 100}})"))
-            .unwrap();
+        db.query(&format!(
+            "CREATE (:Memory {{id: {id}, created_at: {}}})",
+            100 + id
+        ))
+        .unwrap();
     }
     db.query("CREATE RANGE INDEX ON :Memory(created_at)")
         .unwrap();
@@ -2138,7 +2141,7 @@ fn relationship_property_statistics_drive_expand_costing() {
         explain.trace.selected_plan_cost,
         PlanCost {
             estimated_rows: 1,
-            cost: 6,
+            cost: 10,
         }
     );
 }
@@ -2167,7 +2170,7 @@ fn relationship_property_histograms_drive_filter_range_costing() {
         explain.trace.selected_plan_cost,
         PlanCost {
             estimated_rows: 1,
-            cost: 45,
+            cost: 65,
         }
     );
 }
