@@ -4,9 +4,8 @@ use crate::build_control::checkpoint;
 use crate::build_memory::{checked_add, BuildMemory};
 use crate::{Result, RuntimeTaskContext, SkeinError};
 use skein_executor::QueryMemoryLease;
+use std::cell::RefCell;
 use std::mem::size_of;
-use std::sync::{Arc, Mutex};
-use std::thread::ScopedJoinHandle;
 
 mod bounds;
 
@@ -24,7 +23,7 @@ pub(crate) fn document_needs_workspace(document: &crate::SearchDocument) -> bool
 pub(crate) struct Workspace {
     memory: BuildMemory,
     task: RuntimeTaskContext,
-    retained: Mutex<Retained>,
+    retained: RefCell<Retained>,
     _header: QueryMemoryLease,
 }
 
@@ -36,16 +35,14 @@ struct Retained {
 impl Workspace {
     fn new(memory: BuildMemory, task: RuntimeTaskContext) -> Result<Self> {
         checkpoint(&task)?;
-        let header = memory
-            .retained
-            .reserve(checked_add(size_of::<Self>(), 2 * size_of::<usize>())?)?;
+        let header = memory.retained.reserve(size_of::<Self>())?;
         let retained = memory
             .retained
             .reserve(required(bounds::regex_retained())?)?;
         Ok(Self {
             memory,
             task,
-            retained: Mutex::new(Retained {
+            retained: RefCell::new(Retained {
                 characters: 0,
                 memory: retained,
             }),
@@ -61,19 +58,16 @@ impl Workspace {
         checkpoint(&self.task)?;
         let mut characters = 0usize;
         for _ in text.chars() {
+            characters = checked_add(characters, 1)?;
             if characters.is_multiple_of(1024) {
                 checkpoint(&self.task)?;
             }
-            characters = checked_add(characters, 1)?;
         }
         let transient = self
             .memory
             .spool
             .reserve(required(bounds::invocation(text.len(), characters))?)?;
-        let mut retained = self
-            .retained
-            .lock()
-            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        let mut retained = self.retained.borrow_mut();
         let next_characters = retained.characters.max(characters);
         let next_bytes = checked_add(
             required(bounds::regex_retained())?,
@@ -101,7 +95,7 @@ impl Workspace {
 pub(crate) fn run<T, F>(memory: &BuildMemory, task: &RuntimeTaskContext, work: F) -> Result<T>
 where
     T: Send,
-    F: FnOnce(Arc<Workspace>) -> Result<T> + Send,
+    F: FnOnce(&Workspace) -> Result<T> + Send,
 {
     checkpoint(task)?;
     // One owned worker is within either nonzero execution ceiling. The caller
@@ -110,55 +104,34 @@ where
         checked_add(STACK_BYTES, THREAD_BOOKKEEPING_BYTES)?,
         checked_add(size_of::<F>(), size_of::<Result<T>>())?,
     )?;
-    let thread_memory = memory.retained.reserve(thread_bytes)?;
-    let workspace = Arc::new(Workspace::new(memory.clone(), task.clone())?);
+    let _thread_memory = memory.retained.reserve(thread_bytes)?;
+    let mut workspace = Workspace::new(memory.clone(), task.clone())?;
     #[cfg(test)]
     let observation = entrypoint_tests::capture(memory);
+    #[cfg(test)]
+    let read_evidence = crate::out_of_core::analyzer_read_evidence::capture();
     std::thread::scope(|scope| {
-        let worker_workspace = Arc::clone(&workspace);
+        // Only the worker may access the workspace. The parent owns both leases
+        // until native join completes, including when the worker panics.
+        let worker_workspace = &mut workspace;
         let handle = std::thread::Builder::new()
             .stack_size(STACK_BYTES)
             .spawn_scoped(scope, move || {
                 #[cfg(test)]
                 entrypoint_tests::install(observation);
+                #[cfg(test)]
+                let _read_evidence = read_evidence.install();
                 worker_workspace.warm_up()?;
                 work(worker_workspace)
             })
             .map_err(|error| {
                 SkeinError::Execution(format!("search analyzer worker creation failed: {error}"))
             })?;
-        let worker = JoinedWorker {
-            handle: Some(handle),
-            _workspace: workspace,
-            _thread_memory: thread_memory,
-        };
-        match worker.join() {
+        match handle.join() {
             Ok(result) => result,
             Err(payload) => std::panic::resume_unwind(payload),
         }
     })
-}
-
-struct JoinedWorker<'scope, T> {
-    handle: Option<ScopedJoinHandle<'scope, T>>,
-    _workspace: Arc<Workspace>,
-    _thread_memory: QueryMemoryLease,
-}
-
-impl<T> JoinedWorker<'_, T> {
-    fn join(mut self) -> std::thread::Result<T> {
-        self.handle.take().expect("unjoined analyzer worker").join()
-    }
-}
-
-impl<T> Drop for JoinedWorker<'_, T> {
-    fn drop(&mut self) {
-        if let Some(handle) = self.handle.take() {
-            // Parent unwind must join before either capacity owner is dropped.
-            // Preserve the parent's panic if the worker also panicked.
-            let _ = handle.join();
-        }
-    }
 }
 
 fn required(bytes: Option<usize>) -> Result<usize> {

@@ -27,6 +27,8 @@ use serde::Serialize;
 use skein_core::RuntimeTaskContext;
 use skein_executor::QueryMemoryLease;
 use skein_integrity::Crc32cHasher;
+#[cfg(test)]
+pub(crate) use spool::read_evidence as analyzer_read_evidence;
 use spool::{SpoolSource, StageDirectory, SPOOL_FRAME_HEADER_BYTES, SPOOL_HEADER};
 use std::collections::BTreeSet;
 use std::fs::{self, File, OpenOptions};
@@ -412,11 +414,7 @@ impl SearchOutOfCoreGenerationWriter {
     pub fn finish(self) -> Result<SearchOutOfCoreGenerationBuildReport> {
         self.finish_with_artifacts(|writer, source, generation| {
             if writer.needs_chinese_analyzer {
-                #[cfg(test)]
-                let read_evidence = spool::read_evidence::capture();
                 crate::analyzer_workspace::run(&writer.memory, &writer.task_context, |workspace| {
-                    #[cfg(test)]
-                    let _read_evidence = read_evidence.install();
                     writer.build_artifacts_with_workspace(source, generation, Some(workspace))
                 })
             } else {
@@ -580,7 +578,7 @@ impl SearchOutOfCoreGenerationWriter {
         &self,
         source: &SpoolSource,
         generation: u64,
-        workspace: Option<std::sync::Arc<crate::analyzer_workspace::Workspace>>,
+        workspace: Option<&crate::analyzer_workspace::Workspace>,
     ) -> Result<GenerationArtifacts> {
         let mut segments = SegmentArtifactBuilder::new_with_context(
             &self.stage.path,

@@ -37,6 +37,8 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 
 mod generation_writer;
+#[cfg(test)]
+pub(crate) use generation_writer::analyzer_read_evidence;
 mod hydration;
 mod publish_lease;
 mod vector_serving;

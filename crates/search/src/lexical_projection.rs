@@ -559,7 +559,7 @@ fn analyze_delta_document(
         let task = RuntimeTaskContext::default();
         let memory = BuildMemory::new(&task)?;
         return crate::analyzer_workspace::run(&memory, &task, |workspace| {
-            analyze_delta_document_with_workspace(document, analyzer, config, Some(&workspace))
+            analyze_delta_document_with_workspace(document, analyzer, config, Some(workspace))
         });
     }
     analyze_delta_document_with_workspace(document, analyzer, config, None)
@@ -1336,13 +1336,13 @@ fn bm25_term_score(idf: f64, frequency: u32, document_len: u32, average_len: f64
     idf * (frequency * (BM25_K1 + 1.0)) / denominator
 }
 
-pub(super) struct LexicalProjectionWriter {
+pub(super) struct LexicalProjectionWriter<'workspace> {
     config: LexicalProjectionConfig,
     build_context: Option<(BuildMemory, RuntimeTaskContext)>,
-    analyzer_workspace: Option<Arc<crate::analyzer_workspace::Workspace>>,
+    analyzer_workspace: Option<&'workspace crate::analyzer_workspace::Workspace>,
 }
 
-impl LexicalProjectionWriter {
+impl<'workspace> LexicalProjectionWriter<'workspace> {
     pub(super) const fn new(config: LexicalProjectionConfig) -> Self {
         Self {
             config,
@@ -1358,7 +1358,7 @@ impl LexicalProjectionWriter {
 
     pub(super) fn with_analyzer_workspace(
         mut self,
-        workspace: Option<Arc<crate::analyzer_workspace::Workspace>>,
+        workspace: Option<&'workspace crate::analyzer_workspace::Workspace>,
     ) -> Self {
         self.analyzer_workspace = workspace;
         self
@@ -1406,8 +1406,9 @@ impl LexicalProjectionWriter {
         }
         if self.analyzer_workspace.is_none() && self.needs_analyzer_workspace(documents.clone())? {
             let (memory, task) = self.context()?;
+            let config = self.config;
             return crate::analyzer_workspace::run(&memory, &task, |workspace| {
-                Self::new(self.config)
+                LexicalProjectionWriter::new(config)
                     .with_context(memory.clone(), task.clone())
                     .with_analyzer_workspace(Some(workspace))
                     .write(
@@ -1473,7 +1474,7 @@ impl LexicalProjectionWriter {
                 crate::analyzer_stream::Control {
                     memory: Some(&memory),
                     task: Some(&task),
-                    workspace: self.analyzer_workspace.as_deref(),
+                    workspace: self.analyzer_workspace,
                 },
             )?;
             let document_len = analyzed.document_len();

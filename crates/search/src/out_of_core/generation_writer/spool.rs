@@ -273,7 +273,7 @@ impl Drop for StageDirectory {
 }
 
 #[cfg(test)]
-pub(super) mod read_evidence {
+pub(crate) mod read_evidence {
     use super::*;
     use std::cell::RefCell;
     use std::sync::{Arc, Mutex};
@@ -291,19 +291,19 @@ pub(super) mod read_evidence {
     }
 
     // Keep each test isolated while explicitly following its analyzer worker.
-    pub(in super::super) struct Capture(Arc<Mutex<Observation>>);
+    pub(crate) struct Capture(Arc<Mutex<Observation>>);
 
-    pub(in super::super) fn capture() -> Capture {
+    pub(crate) fn capture() -> Capture {
         CURRENT.with(|slot| Capture(Arc::clone(&slot.borrow())))
     }
 
     impl Capture {
-        pub(in super::super) fn install(self) -> Restore {
+        pub(crate) fn install(self) -> Restore {
             Restore(CURRENT.with(|slot| slot.replace(self.0)))
         }
     }
 
-    pub(in super::super) struct Restore(Arc<Mutex<Observation>>);
+    pub(crate) struct Restore(Arc<Mutex<Observation>>);
 
     impl Drop for Restore {
         fn drop(&mut self) {
