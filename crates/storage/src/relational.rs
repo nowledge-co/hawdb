@@ -12,6 +12,7 @@ use std::num::{NonZeroU32, NonZeroU64, NonZeroUsize};
 use std::sync::Arc;
 
 mod codec;
+mod compaction;
 mod constraints;
 mod index_shadow;
 mod ordered_key;
@@ -32,6 +33,12 @@ pub use codec::{
 pub(crate) use codec::{
     decode_relational_row_payload, decode_relational_table_schema, encode_relational_row_payload,
     encode_relational_table_schema,
+};
+#[doc(hidden)]
+pub use compaction::relational_row_page_compaction_publication_config;
+pub use compaction::{
+    RelationalOverflowCompactionConfig, RelationalOverflowCompactionReport,
+    RelationalRowPageCompactionConfig, RelationalRowPageCompactionReport,
 };
 pub use constraints::RelationalConstraintIndex;
 pub use index_shadow::{
@@ -100,27 +107,28 @@ pub use row_page::{
     RelationalRowPagePublicationConfig, RelationalRowPagePublicationError,
     RelationalRowPagePublicationPhase, RelationalRowPagePublicationReport,
     RelationalRowPagePublisher, RelationalRowPageReadView, RelationalRowPageReadViewIdentity,
-    RelationalRowPageRecoveredValue, RelationalRowPageRewriteConfig,
-    RelationalRowPageRootDescriptor, RelationalRowPageRootManifest, RelationalRowPageRootReader,
-    RelationalRowPageSlotIntegrity, RelationalRowPageSnapshotPointReport,
-    RelationalRowPageSnapshotPointsReport, RelationalRowPageSnapshotRangeReport,
-    RelationalRowPageSnapshotReadError, RelationalRowPageSnapshotReadLimits,
-    RelationalRowPageSnapshotReader, RelationalRowPageSnapshotRowSource,
-    RelationalRowPageTableDelta, RelationalRowPageTableRoot, RelationalRowPageView,
-    DEFAULT_RELATIONAL_ROW_DELTA_CHECKPOINT_RUNS, DEFAULT_RELATIONAL_ROW_DELTA_DIRTY_BYTES,
-    DEFAULT_RELATIONAL_ROW_DELTA_DIRTY_ENTRIES, DEFAULT_RELATIONAL_ROW_DELTA_MANIFEST_BYTES,
-    DEFAULT_RELATIONAL_ROW_DELTA_RUNS, DEFAULT_RELATIONAL_ROW_DELTA_RUN_BYTES,
-    DEFAULT_RELATIONAL_ROW_PAGE_BYTES, DEFAULT_RELATIONAL_ROW_PAGE_COLUMNS,
-    DEFAULT_RELATIONAL_ROW_PAGE_DIRTY_BYTES, DEFAULT_RELATIONAL_ROW_PAGE_DIRTY_PAGES,
-    DEFAULT_RELATIONAL_ROW_PAGE_INLINE_VALUE_BYTES, DEFAULT_RELATIONAL_ROW_PAGE_KEY_BYTES,
-    DEFAULT_RELATIONAL_ROW_PAGE_MANIFEST_BYTES, DEFAULT_RELATIONAL_ROW_PAGE_READ_BYTES,
-    DEFAULT_RELATIONAL_ROW_PAGE_READ_PAGES, DEFAULT_RELATIONAL_ROW_PAGE_READ_PINS,
-    DEFAULT_RELATIONAL_ROW_PAGE_READ_ROWS, DEFAULT_RELATIONAL_ROW_PAGE_READ_TREE_HEIGHT,
-    DEFAULT_RELATIONAL_ROW_PAGE_ROOT_KEY_BYTES, DEFAULT_RELATIONAL_ROW_PAGE_ROOT_PAGES,
-    DEFAULT_RELATIONAL_ROW_PAGE_ROWS, DEFAULT_RELATIONAL_ROW_PAGE_ROW_BYTES,
-    DEFAULT_RELATIONAL_ROW_PAGE_TABLES, DEFAULT_RELATIONAL_ROW_PAGE_VALUE_BYTES,
-    DEFAULT_RELATIONAL_ROW_SNAPSHOT_OVERLAY_BYTES, DEFAULT_RELATIONAL_ROW_SNAPSHOT_OVERLAY_ENTRIES,
-    RELATIONAL_ROW_DELTA_MANIFEST_FILE, RELATIONAL_ROW_PAGE_MANIFEST_FILE,
+    RelationalRowPageRecoveredValue, RelationalRowPageRecoveryStatus,
+    RelationalRowPageRewriteConfig, RelationalRowPageRootDescriptor, RelationalRowPageRootManifest,
+    RelationalRowPageRootReader, RelationalRowPageSlotIntegrity,
+    RelationalRowPageSnapshotPointReport, RelationalRowPageSnapshotPointsReport,
+    RelationalRowPageSnapshotRangeReport, RelationalRowPageSnapshotReadError,
+    RelationalRowPageSnapshotReadLimits, RelationalRowPageSnapshotReader,
+    RelationalRowPageSnapshotRowSource, RelationalRowPageTableDelta, RelationalRowPageTableRoot,
+    RelationalRowPageView, DEFAULT_RELATIONAL_ROW_DELTA_CHECKPOINT_RUNS,
+    DEFAULT_RELATIONAL_ROW_DELTA_DIRTY_BYTES, DEFAULT_RELATIONAL_ROW_DELTA_DIRTY_ENTRIES,
+    DEFAULT_RELATIONAL_ROW_DELTA_MANIFEST_BYTES, DEFAULT_RELATIONAL_ROW_DELTA_RUNS,
+    DEFAULT_RELATIONAL_ROW_DELTA_RUN_BYTES, DEFAULT_RELATIONAL_ROW_PAGE_BYTES,
+    DEFAULT_RELATIONAL_ROW_PAGE_COLUMNS, DEFAULT_RELATIONAL_ROW_PAGE_DIRTY_BYTES,
+    DEFAULT_RELATIONAL_ROW_PAGE_DIRTY_PAGES, DEFAULT_RELATIONAL_ROW_PAGE_INLINE_VALUE_BYTES,
+    DEFAULT_RELATIONAL_ROW_PAGE_KEY_BYTES, DEFAULT_RELATIONAL_ROW_PAGE_MANIFEST_BYTES,
+    DEFAULT_RELATIONAL_ROW_PAGE_READ_BYTES, DEFAULT_RELATIONAL_ROW_PAGE_READ_PAGES,
+    DEFAULT_RELATIONAL_ROW_PAGE_READ_PINS, DEFAULT_RELATIONAL_ROW_PAGE_READ_ROWS,
+    DEFAULT_RELATIONAL_ROW_PAGE_READ_TREE_HEIGHT, DEFAULT_RELATIONAL_ROW_PAGE_ROOT_KEY_BYTES,
+    DEFAULT_RELATIONAL_ROW_PAGE_ROOT_PAGES, DEFAULT_RELATIONAL_ROW_PAGE_ROWS,
+    DEFAULT_RELATIONAL_ROW_PAGE_ROW_BYTES, DEFAULT_RELATIONAL_ROW_PAGE_TABLES,
+    DEFAULT_RELATIONAL_ROW_PAGE_VALUE_BYTES, DEFAULT_RELATIONAL_ROW_SNAPSHOT_OVERLAY_BYTES,
+    DEFAULT_RELATIONAL_ROW_SNAPSHOT_OVERLAY_ENTRIES, RELATIONAL_ROW_DELTA_MANIFEST_FILE,
+    RELATIONAL_ROW_PAGE_MANIFEST_FILE,
 };
 
 pub const DEFAULT_MAX_RELATIONAL_MUTATION_ROWS: usize = 100_000;

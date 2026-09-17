@@ -114,16 +114,12 @@ pub use doctor::{
 };
 pub(crate) use durable::PreparedCheckpoint;
 use durable::{
-    artifact_metadata_presence_consistent, load_published_canonical_adjacency,
-    load_published_property_projection, CheckpointImage, CheckpointManifestArtifacts,
-    DerivedArtifactBuildConfig, DurableArtifactMetadata, DurableManifest, DurableOpenMode,
+    load_published_canonical_adjacency, load_published_property_projection, CheckpointImage,
+    CheckpointManifestArtifacts, DerivedArtifactBuildConfig, DurableManifest, DurableOpenMode,
     DurableStore, GraphManifestOpenBudget,
 };
+pub use graph_columnar_shadow::ColumnarShadowAdmission;
 use graph_columnar_shadow::ColumnarShadowState;
-pub use graph_columnar_shadow::{
-    ColumnarShadowAdmission, ColumnarShadowCheckpointReport, ColumnarShadowCheckpointStatus,
-    ColumnarShadowRecoveryStatus, COLUMN_GROUP_SHADOW_DIR,
-};
 use relational_index_shadow::RelationalIndexShadowState;
 pub use relational_index_shadow::{
     RelationalConstraintQualificationProbeReport, RelationalConstraintQualificationReport,
@@ -155,7 +151,7 @@ use skein_storage::artifact_files::{
     wal_generation_file,
 };
 use skein_storage::graph_constraints::{
-    encode_property_type, validate_node_property_exists, validate_node_property_exists_constraints,
+    validate_node_property_exists, validate_node_property_exists_constraints,
     validate_node_record_constraints, validate_property_schema_value, validate_property_schemas,
     validate_relationship_property_exists, validate_relationship_property_exists_constraints,
     validate_relationship_record_constraints, validate_relationship_unique_constraints,
@@ -174,6 +170,10 @@ use skein_storage::statistics_refresh::{
     relationship_property_supports_optimizer_statistics, sample_histogram_values,
     MAX_BOUNDED_PATH_STAT_HOPS, MAX_PROPERTY_HISTOGRAM_VALUES,
 };
+pub(crate) use skein_storage::statistics_refresh::{
+    retain_supported_property_statistics, retain_valid_index_statistics_samples,
+    OptimizerStatisticsRefreshWork,
+};
 #[cfg(test)]
 use skein_storage::text::encode_properties;
 #[cfg(test)]
@@ -182,11 +182,9 @@ pub(crate) use skein_storage::text::envelope::{
     encode_durable_text, read_durable_text_bytes, read_durable_text_bytes_with_limit,
 };
 pub(crate) use skein_storage::text::{
-    decode_bool, decode_bytes, decode_index_kind, decode_nullable, decode_properties,
-    decode_property_type, decode_schema_object_state, decode_string, decode_string_vec,
-    decode_table_kind, decode_u64_vec, decode_value_vec, encode_bool, encode_bytes,
-    encode_index_kind, encode_nullable, encode_schema_object_state, encode_string,
-    encode_string_vec, encode_table_kind, encode_u64_vec, encode_value_vec, parse_u64,
+    decode_bool, decode_index_kind, decode_nullable, decode_properties, decode_property_type,
+    decode_schema_object_state, decode_string, decode_string_vec, decode_table_kind,
+    decode_u64_vec, decode_value_vec, parse_u64,
 };
 use skein_storage::GraphIndexReadMetrics;
 #[cfg(test)]
@@ -243,16 +241,19 @@ pub use skein_storage::{
     StorageScrubReport, StoreId, StoreStableIdMapping, WalReplayConfig,
     STORAGE_PRESSURE_DEFER_RATIO_PER_MILLION, STORAGE_PRESSURE_SOFT_RATIO_PER_MILLION,
 };
+pub use skein_storage::{
+    ColumnarShadowCheckpointReport, ColumnarShadowCheckpointStatus, ColumnarShadowRecoveryStatus,
+    COLUMN_GROUP_SHADOW_DIR,
+};
 use skein_storage::{
     CowSegment, CowSegmentedMap, ProjectedGraphArtifact, ProjectedGraphArtifactData,
 };
 pub use skein_storage::{
     GraphIndexReadMetricsSnapshot, PersistentGraphIndexClass, PublishedReadView,
 };
+pub use skein_storage::{OptimizerStatisticsRefreshOptions, OptimizerStatisticsRefreshReport};
 pub use skein_storage::{RelationalIndexArtifactMetadata, RelationalIndexGenerationArtifacts};
 pub(crate) use skein_storage::{WalSyncGroupFlush, WalSyncGroupProgress};
-pub(crate) use statistics_refresh::OptimizerStatisticsRefreshWork;
-pub use statistics_refresh::{OptimizerStatisticsRefreshOptions, OptimizerStatisticsRefreshReport};
 use std::collections::{BTreeMap, BTreeSet};
 use std::fs;
 #[cfg(test)]
@@ -278,15 +279,17 @@ use skein_storage::durable_manifest::{
 const MANIFEST_FILE: &str = "manifest.skein";
 const PROJECTED_GRAPHS_FILE: &str = "projected_graphs.skein";
 const STABLE_ID_MAPPING_FILE: &str = "stable_ids.skein";
-const CHECKPOINT_HEADER_V1: &str = "SKEIN_CHECKPOINT_V1";
+pub(crate) use skein_storage::checkpoint::{
+    decode_search_projection_relational_primary_key_changes, parse_label_set,
+    relational_checkpoint_metadata, split_checkpoint_checksum, CHECKPOINT_HEADER_V1,
+};
 const BACKUP_MANIFEST_FILE: &str = "backup.skein";
 const CANONICAL_MANIFEST_MAX_BYTES: u64 = 256 * 1024 * 1024;
 const PROPERTY_SPILL_MANIFEST_MAX_BYTES: u64 = 64 * 1024;
 const PROPERTY_PROJECTION_MANIFEST_MAX_BYTES: u64 = 32 * 1024 * 1024;
 const CHECKPOINT_TEMPORARY_SPACE_MULTIPLIER: u64 = 4;
 const MIN_CHECKPOINT_TEMPORARY_SPACE_BYTES: u64 = 64 * 1024;
-pub const DENSE_ADJACENCY_DEGREE_THRESHOLD: usize = 64;
-const MAX_ADJACENCY_CONSISTENCY_SAMPLES: usize = 32;
+pub use skein_storage::consistency::DENSE_ADJACENCY_DEGREE_THRESHOLD;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum CheckpointPublishStage {
@@ -528,81 +531,6 @@ struct RelationshipMatchRequest<'a> {
     rel_properties: &'a BTreeMap<String, Value>,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct AdjacencyConsistencyReport {
-    pub ready: bool,
-    pub computed_at_commit_epoch: u64,
-    pub relationship_count: usize,
-    pub maintained_group_count: usize,
-    pub recomputed_group_count: usize,
-    pub dense_group_count: usize,
-    pub missing_group_count: usize,
-    pub extra_group_count: usize,
-    pub mismatched_group_count: usize,
-    pub dangling_relationship_count: usize,
-    pub mismatches: Vec<AdjacencyGroupConsistencyMismatch>,
-    pub dangling_relationship_ids: Vec<RelId>,
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
-pub struct DegreeStatisticsKey {
-    pub label_id: LabelId,
-    pub rel_type: RelTypeId,
-    pub direction: AdjacencyDirection,
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct DegreeStatisticsEntry {
-    pub node_count: u64,
-    pub non_zero_node_count: u64,
-    pub relationship_count: u64,
-    pub max_degree: u64,
-    pub dense_node_count: u64,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct DegreeStatisticsConsistencyReport {
-    pub ready: bool,
-    pub computed_at_commit_epoch: u64,
-    pub maintained: BTreeMap<DegreeStatisticsKey, DegreeStatisticsEntry>,
-    pub recomputed: BTreeMap<DegreeStatisticsKey, DegreeStatisticsEntry>,
-    pub mismatched_keys: Vec<DegreeStatisticsKey>,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct DistinctValueStatisticsConsistencyReport {
-    pub ready: bool,
-    pub computed_at_commit_epoch: u64,
-    pub maintained_property_distinct_counts: BTreeMap<(LabelId, String), u64>,
-    pub recomputed_property_distinct_counts: BTreeMap<(LabelId, String), u64>,
-    pub maintained_rel_property_distinct_counts: BTreeMap<(RelTypeId, String), u64>,
-    pub recomputed_rel_property_distinct_counts: BTreeMap<(RelTypeId, String), u64>,
-    pub mismatched_property_keys: Vec<(LabelId, String)>,
-    pub mismatched_rel_property_keys: Vec<(RelTypeId, String)>,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct PropertyIndexConsistencyReport {
-    pub ready: bool,
-    pub computed_at_commit_epoch: u64,
-    pub node_index_entry_count: usize,
-    pub recomputed_node_index_entry_count: usize,
-    pub node_index_reference_count: usize,
-    pub recomputed_node_index_reference_count: usize,
-    pub missing_node_key_count: usize,
-    pub extra_node_key_count: usize,
-    pub mismatched_node_key_count: usize,
-    pub relationship_index_entry_count: usize,
-    pub recomputed_relationship_index_entry_count: usize,
-    pub relationship_index_reference_count: usize,
-    pub recomputed_relationship_index_reference_count: usize,
-    pub missing_relationship_key_count: usize,
-    pub extra_relationship_key_count: usize,
-    pub mismatched_relationship_key_count: usize,
-    pub mismatched_node_keys: Vec<(LabelId, String, Value)>,
-    pub mismatched_relationship_keys: Vec<(RelTypeId, String, Value)>,
-}
-
 type CompositePropertyKey = Vec<(String, Value)>;
 type NodeIdPostingList = CowSegment<BTreeSet<NodeId>>;
 type RelIdPropertyPostingList = CowSegment<BTreeSet<RelId>>;
@@ -768,270 +696,14 @@ fn remaining_mutation_operations(current: usize, limits: MutationLimits) -> Resu
         })
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct BasicStatisticsConsistencyReport {
-    pub ready: bool,
-    pub computed_at_commit_epoch: u64,
-    pub incremental: BasicGraphStatistics,
-    pub recomputed: BasicGraphStatistics,
-    pub mismatched_fields: Vec<String>,
-}
-
-#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
-pub struct AdjacencyConsolidationPlan {
-    pub group_count: usize,
-    pub delta_entry_count: usize,
-    pub estimated_entries: usize,
-}
-
-#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
-pub struct AdjacencyConsolidationReport {
-    pub planned: AdjacencyConsolidationPlan,
-    pub consolidated_group_count: usize,
-    pub consolidated_delta_entry_count: usize,
-    pub consolidated_estimated_entries: usize,
-    pub remaining: AdjacencyConsolidationPlan,
-}
-
-#[derive(Debug, Clone, Copy)]
-struct AdjacencyConsolidationCandidate {
-    direction: AdjacencyDirection,
-    key: (NodeId, RelTypeId),
-    delta_entry_count: usize,
-    estimated_entries: usize,
-}
-
-impl BasicStatisticsConsistencyReport {
-    fn new(incremental: BasicGraphStatistics, recomputed: BasicGraphStatistics) -> Self {
-        let mut mismatched_fields = Vec::new();
-        if incremental.computed_at_commit_epoch != recomputed.computed_at_commit_epoch {
-            mismatched_fields.push("computed_at_commit_epoch".to_string());
-        }
-        if incremental.node_count != recomputed.node_count {
-            mismatched_fields.push("node_count".to_string());
-        }
-        if incremental.relationship_count != recomputed.relationship_count {
-            mismatched_fields.push("relationship_count".to_string());
-        }
-        if incremental.label_counts != recomputed.label_counts {
-            mismatched_fields.push("label_counts".to_string());
-        }
-        if incremental.rel_type_counts != recomputed.rel_type_counts {
-            mismatched_fields.push("rel_type_counts".to_string());
-        }
-        Self {
-            ready: mismatched_fields.is_empty(),
-            computed_at_commit_epoch: incremental.computed_at_commit_epoch,
-            incremental,
-            recomputed,
-            mismatched_fields,
-        }
-    }
-}
-
 type AdjacencyGroups = BTreeMap<AdjacencyGroupKey, BTreeSet<RelId>>;
 
-impl AdjacencyConsistencyReport {
-    fn new(
-        computed_at_commit_epoch: u64,
-        relationship_count: usize,
-        maintained: AdjacencyGroups,
-        recomputed: AdjacencyGroups,
-        relationships: &CowSegmentedMap<RelId, RelRecord>,
-    ) -> Self {
-        let mut missing_group_count = 0;
-        let mut extra_group_count = 0;
-        let mut mismatched_group_count = 0;
-        let mut mismatches = Vec::new();
-        let keys = maintained
-            .keys()
-            .chain(recomputed.keys())
-            .copied()
-            .collect::<BTreeSet<_>>();
-        for key in keys {
-            let maintained_ids = maintained.get(&key);
-            let recomputed_ids = recomputed.get(&key);
-            if maintained_ids == recomputed_ids {
-                continue;
-            }
-            match (maintained_ids, recomputed_ids) {
-                (None, Some(_)) => missing_group_count += 1,
-                (Some(_), None) => extra_group_count += 1,
-                (Some(_), Some(_)) => mismatched_group_count += 1,
-                (None, None) => {}
-            }
-            if mismatches.len() < MAX_ADJACENCY_CONSISTENCY_SAMPLES {
-                mismatches.push(AdjacencyGroupConsistencyMismatch {
-                    key,
-                    maintained_relationship_ids: maintained_ids
-                        .map(sample_relationship_ids)
-                        .unwrap_or_default(),
-                    recomputed_relationship_ids: recomputed_ids
-                        .map(sample_relationship_ids)
-                        .unwrap_or_default(),
-                });
-            }
-        }
-        let dangling_relationships = maintained
-            .values()
-            .flat_map(|rel_ids| rel_ids.iter().copied())
-            .filter(|rel_id| !relationships.contains_key(rel_id))
-            .collect::<BTreeSet<_>>();
-        let dangling_relationship_ids = dangling_relationships
-            .iter()
-            .copied()
-            .take(MAX_ADJACENCY_CONSISTENCY_SAMPLES)
-            .collect::<Vec<_>>();
-        let dangling_relationship_count = dangling_relationships.len();
-        let ready = missing_group_count == 0
-            && extra_group_count == 0
-            && mismatched_group_count == 0
-            && dangling_relationship_count == 0;
-        Self {
-            ready,
-            computed_at_commit_epoch,
-            relationship_count,
-            maintained_group_count: maintained.len(),
-            recomputed_group_count: recomputed.len(),
-            dense_group_count: maintained
-                .values()
-                .filter(|rel_ids| rel_ids.len() >= DENSE_ADJACENCY_DEGREE_THRESHOLD)
-                .count(),
-            missing_group_count,
-            extra_group_count,
-            mismatched_group_count,
-            dangling_relationship_count,
-            mismatches,
-            dangling_relationship_ids,
-        }
-    }
-}
-
-impl DegreeStatisticsConsistencyReport {
-    fn new(
-        computed_at_commit_epoch: u64,
-        maintained: BTreeMap<DegreeStatisticsKey, DegreeStatisticsEntry>,
-        recomputed: BTreeMap<DegreeStatisticsKey, DegreeStatisticsEntry>,
-    ) -> Self {
-        let mismatched_keys = maintained
-            .keys()
-            .chain(recomputed.keys())
-            .copied()
-            .collect::<BTreeSet<_>>()
-            .into_iter()
-            .filter(|key| maintained.get(key) != recomputed.get(key))
-            .take(MAX_ADJACENCY_CONSISTENCY_SAMPLES)
-            .collect::<Vec<_>>();
-        Self {
-            ready: mismatched_keys.is_empty(),
-            computed_at_commit_epoch,
-            maintained,
-            recomputed,
-            mismatched_keys,
-        }
-    }
-}
-
-impl DistinctValueStatisticsConsistencyReport {
-    fn new(
-        computed_at_commit_epoch: u64,
-        maintained_property_distinct_counts: BTreeMap<(LabelId, String), u64>,
-        recomputed_property_distinct_counts: BTreeMap<(LabelId, String), u64>,
-        maintained_rel_property_distinct_counts: BTreeMap<(RelTypeId, String), u64>,
-        recomputed_rel_property_distinct_counts: BTreeMap<(RelTypeId, String), u64>,
-    ) -> Self {
-        let mismatched_property_keys = maintained_property_distinct_counts
-            .keys()
-            .chain(recomputed_property_distinct_counts.keys())
-            .cloned()
-            .collect::<BTreeSet<_>>()
-            .into_iter()
-            .filter(|key| {
-                maintained_property_distinct_counts.get(key)
-                    != recomputed_property_distinct_counts.get(key)
-            })
-            .take(MAX_ADJACENCY_CONSISTENCY_SAMPLES)
-            .collect::<Vec<_>>();
-        let mismatched_rel_property_keys = maintained_rel_property_distinct_counts
-            .keys()
-            .chain(recomputed_rel_property_distinct_counts.keys())
-            .cloned()
-            .collect::<BTreeSet<_>>()
-            .into_iter()
-            .filter(|key| {
-                maintained_rel_property_distinct_counts.get(key)
-                    != recomputed_rel_property_distinct_counts.get(key)
-            })
-            .take(MAX_ADJACENCY_CONSISTENCY_SAMPLES)
-            .collect::<Vec<_>>();
-        Self {
-            ready: mismatched_property_keys.is_empty() && mismatched_rel_property_keys.is_empty(),
-            computed_at_commit_epoch,
-            maintained_property_distinct_counts,
-            recomputed_property_distinct_counts,
-            maintained_rel_property_distinct_counts,
-            recomputed_rel_property_distinct_counts,
-            mismatched_property_keys,
-            mismatched_rel_property_keys,
-        }
-    }
-}
-
-impl PropertyIndexConsistencyReport {
-    fn new(
-        computed_at_commit_epoch: u64,
-        maintained_node_index: &NodePropertyIndex,
-        recomputed_node_index: &NodePropertyIndex,
-        maintained_relationship_index: &RelationshipPropertyIndex,
-        recomputed_relationship_index: &RelationshipPropertyIndex,
-    ) -> Self {
-        let (
-            missing_node_key_count,
-            extra_node_key_count,
-            mismatched_node_key_count,
-            mismatched_node_keys,
-        ) = property_index_mismatch_summary(maintained_node_index, recomputed_node_index);
-        let (
-            missing_relationship_key_count,
-            extra_relationship_key_count,
-            mismatched_relationship_key_count,
-            mismatched_relationship_keys,
-        ) = relationship_property_index_mismatch_summary(
-            maintained_relationship_index,
-            recomputed_relationship_index,
-        );
-        Self {
-            ready: missing_node_key_count == 0
-                && extra_node_key_count == 0
-                && mismatched_node_key_count == 0
-                && missing_relationship_key_count == 0
-                && extra_relationship_key_count == 0
-                && mismatched_relationship_key_count == 0,
-            computed_at_commit_epoch,
-            node_index_entry_count: maintained_node_index.len(),
-            recomputed_node_index_entry_count: recomputed_node_index.len(),
-            node_index_reference_count: node_property_index_reference_count(maintained_node_index),
-            recomputed_node_index_reference_count: node_property_index_reference_count(
-                recomputed_node_index,
-            ),
-            missing_node_key_count,
-            extra_node_key_count,
-            mismatched_node_key_count,
-            relationship_index_entry_count: maintained_relationship_index.len(),
-            recomputed_relationship_index_entry_count: recomputed_relationship_index.len(),
-            relationship_index_reference_count: relationship_property_index_reference_count(
-                maintained_relationship_index,
-            ),
-            recomputed_relationship_index_reference_count:
-                relationship_property_index_reference_count(recomputed_relationship_index),
-            missing_relationship_key_count,
-            extra_relationship_key_count,
-            mismatched_relationship_key_count,
-            mismatched_node_keys,
-            mismatched_relationship_keys,
-        }
-    }
-}
+pub use skein_storage::consistency::{
+    AdjacencyConsistencyReport, AdjacencyConsolidationCandidate, AdjacencyConsolidationPlan,
+    AdjacencyConsolidationReport, BasicStatisticsConsistencyReport,
+    DegreeStatisticsConsistencyReport, DegreeStatisticsEntry, DegreeStatisticsKey,
+    DistinctValueStatisticsConsistencyReport, PropertyIndexConsistencyReport,
+};
 
 /// Mutation domains that invalidate an out-of-core advanced-statistics snapshot.
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
@@ -1168,171 +840,10 @@ pub enum GraphScanControl {
     Stop,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct RelationalRowPageCompactionConfig {
-    pub rewrite: skein_storage::RelationalRowPageRewriteConfig,
-    pub max_dirty_pages: NonZeroUsize,
-    pub max_dirty_bytes: NonZeroU64,
-    /// Allowance for existing materialized checkpoint sidecars, not row-page
-    /// relocation. Out-of-core row pages are streamed independently of this cap.
-    pub max_materialized_checkpoint_bytes: NonZeroU64,
-}
-
-impl Default for RelationalRowPageCompactionConfig {
-    fn default() -> Self {
-        Self {
-            rewrite: skein_storage::RelationalRowPageRewriteConfig::default(),
-            max_dirty_pages: NonZeroUsize::new(128).unwrap(),
-            max_dirty_bytes: NonZeroU64::new(16 * 1024 * 1024).unwrap(),
-            max_materialized_checkpoint_bytes: NonZeroU64::new(64 * 1024 * 1024).unwrap(),
-        }
-    }
-}
-
-impl RelationalRowPageCompactionConfig {
-    fn publication_config(self) -> RelationalRowPagePublicationConfig {
-        RelationalRowPagePublicationConfig {
-            max_dirty_pages: self.max_dirty_pages,
-            max_dirty_bytes: self.max_dirty_bytes,
-            ..RelationalRowPagePublicationConfig::default()
-        }
-    }
-
-    /// Estimated transient reservation for row planning and checkpoint writers.
-    /// Materialized sidecars and enabled columnar shadow add their own allowance.
-    /// This is not allocator/RSS accounting.
-    pub fn admission_bytes(self) -> Result<u64> {
-        let publication = self.publication_config();
-        let adjacency = CanonicalAdjacencyConfig::default();
-        let projection = PersistentPropertyProjectionConfig::default();
-        let canonical = CanonicalSegmentConfig::default();
-        self.max_dirty_bytes
-            .get()
-            .checked_mul(4)
-            .and_then(|bytes| {
-                bytes.checked_add((publication.max_manifest_bytes.get() as u64).saturating_mul(4))
-            })
-            .and_then(|bytes| {
-                bytes.checked_add(
-                    (publication.page_limits.max_page_bytes.get() as u64).saturating_mul(4),
-                )
-            })
-            .and_then(|bytes| bytes.checked_add(adjacency.memory_budget_bytes.get()))
-            .and_then(|bytes| bytes.checked_add(projection.memory_budget_bytes.get()))
-            .and_then(|bytes| bytes.checked_add(projection.max_definition_bytes.get()))
-            .and_then(|bytes| bytes.checked_add(canonical.max_record_bytes.get().saturating_mul(2)))
-            .and_then(|bytes| {
-                bytes.checked_add(canonical.target_segment_bytes.get().saturating_mul(2))
-            })
-            .ok_or_else(|| {
-                SkeinError::Storage("row-page compaction admission byte count overflow".to_string())
-            })
-    }
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct RelationalRowPageCompactionReport {
-    pub source_commit_epoch: u64,
-    pub published_generation: u64,
-    pub root_pages: u64,
-    pub dirty_pages_written: u64,
-    pub relocated_pages_written: u64,
-    pub reused_pages: u64,
-    pub previous_allocated_pages: u64,
-    pub allocated_pages: u64,
-    pub admitted_memory_bytes: u64,
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct RelationalOverflowCompactionConfig {
-    pub max_scan_rows: NonZeroUsize,
-    pub max_scan_pages: NonZeroUsize,
-    pub max_scan_bytes: NonZeroUsize,
-    pub max_overlay_entries: NonZeroUsize,
-    pub max_overlay_bytes: NonZeroUsize,
-    pub max_rewrite_bytes: NonZeroU64,
-    pub reference_sort: skein_storage::RelationalOverflowReferenceSortConfig,
-}
-
-impl Default for RelationalOverflowCompactionConfig {
-    fn default() -> Self {
-        Self {
-            max_scan_rows: NonZeroUsize::new(100_000_000)
-                .expect("default overflow compaction row limit is non-zero"),
-            max_scan_pages: NonZeroUsize::new(1_000_000)
-                .expect("default overflow compaction page limit is non-zero"),
-            max_scan_bytes: NonZeroUsize::new(1024usize.saturating_mul(1024 * 1024 * 1024))
-                .expect("default overflow compaction read-byte limit is non-zero"),
-            max_overlay_entries: NonZeroUsize::new(
-                skein_storage::DEFAULT_RELATIONAL_ROW_SNAPSHOT_OVERLAY_ENTRIES,
-            )
-            .expect("default overflow compaction overlay entry limit is non-zero"),
-            max_overlay_bytes: NonZeroUsize::new(
-                skein_storage::DEFAULT_RELATIONAL_ROW_SNAPSHOT_OVERLAY_BYTES,
-            )
-            .expect("default overflow compaction overlay byte limit is non-zero"),
-            max_rewrite_bytes: NonZeroU64::new(128 * 1024 * 1024 * 1024)
-                .expect("default overflow compaction rewrite limit is non-zero"),
-            reference_sort: skein_storage::RelationalOverflowReferenceSortConfig::default(),
-        }
-    }
-}
-
-impl RelationalOverflowCompactionConfig {
-    pub fn admission_bytes(self) -> Result<u64> {
-        let sort_bytes =
-            u64::try_from(self.reference_sort.max_memory_bytes.get()).map_err(|_| {
-                SkeinError::Storage(
-                    "overflow compaction sort memory exceeds this target".to_string(),
-                )
-            })?;
-        let overlay_bytes = u64::try_from(self.max_overlay_bytes.get()).map_err(|_| {
-            SkeinError::Storage(
-                "overflow compaction overlay memory exceeds this target".to_string(),
-            )
-        })?;
-        let page_bytes = skein_storage::DEFAULT_RELATIONAL_ROW_PAGE_BYTES as u64;
-        sort_bytes
-            .checked_add(overlay_bytes)
-            .and_then(|bytes| bytes.checked_add(page_bytes.saturating_mul(2)))
-            .and_then(|bytes| {
-                bytes.checked_add(
-                    (skein_storage::DEFAULT_MAX_RELATIONAL_HYDRATION_BYTES as u64)
-                        .saturating_mul(2),
-                )
-            })
-            .ok_or_else(|| {
-                SkeinError::Storage("overflow compaction admission byte count overflow".to_string())
-            })
-    }
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct RelationalOverflowCompactionReport {
-    pub source_commit_epoch: u64,
-    pub published_generation: u64,
-    pub tables_scanned: usize,
-    pub rows_scanned: usize,
-    pub pages_read: usize,
-    pub row_bytes_read: usize,
-    pub hydrated_values: usize,
-    pub overlay_entries: usize,
-    pub overlay_bytes: usize,
-    pub reference_occurrences: u64,
-    pub unique_references: u64,
-    pub spill_run_count: usize,
-    pub spill_bytes: u64,
-    pub peak_sort_memory_bytes: usize,
-    pub previous_extent_count: u64,
-    pub published_extent_count: u64,
-    pub reclaimable_base_extent_count: u64,
-    pub new_extent_count: u64,
-    pub reused_extent_count: u64,
-    pub copied_base_extent_count: u64,
-    pub introduced_extent_count: u64,
-    pub admitted_memory_bytes: u64,
-}
-
+pub use skein_storage::relational::{
+    RelationalOverflowCompactionConfig, RelationalOverflowCompactionReport,
+    RelationalRowPageCompactionConfig, RelationalRowPageCompactionReport,
+};
 pub use skein_storage::{
     RelationalIndexStorageResidencyReport, RelationalRowStorageResidencyReport,
     StorageResidencyReport,
@@ -2554,12 +2065,6 @@ fn compute_index_statistics_samples(
     samples
 }
 
-fn retain_valid_index_statistics_samples(statistics: &mut GraphStatistics, catalog: &Catalog) {
-    statistics
-        .index_samples
-        .retain(|id, sample| catalog.supports_index_statistics(*id) && sample.is_valid());
-}
-
 fn full_text_index_tokens(value: &str) -> BTreeSet<String> {
     let normalized = value.to_lowercase();
     let chars = normalized.chars().collect::<Vec<_>>();
@@ -3240,54 +2745,6 @@ fn collect_property_statistic_value<K: Ord>(
     }
 }
 
-fn retain_supported_property_statistics(
-    statistics: &mut GraphStatistics,
-    catalog: Option<&Catalog>,
-) {
-    retain_supported_property_statistics_group(
-        &mut statistics.property_distinct_counts,
-        &mut statistics.property_histograms,
-        &mut statistics.sampled_property_histograms,
-        |(label_id, property), value| {
-            node_property_supports_optimizer_statistics(catalog, *label_id, property, value)
-        },
-    );
-    retain_supported_property_statistics_group(
-        &mut statistics.rel_property_distinct_counts,
-        &mut statistics.rel_property_histograms,
-        &mut statistics.sampled_rel_property_histograms,
-        |(rel_type_id, property), value| {
-            relationship_property_supports_optimizer_statistics(
-                catalog,
-                *rel_type_id,
-                property,
-                value,
-            )
-        },
-    );
-}
-
-fn retain_supported_property_statistics_group<K: Ord + Clone>(
-    distinct_counts: &mut BTreeMap<K, u64>,
-    histograms: &mut BTreeMap<K, Vec<Value>>,
-    sampled_histograms: &mut BTreeMap<K, bool>,
-    mut supports: impl FnMut(&K, &Value) -> bool,
-) {
-    let complete_groups = histograms
-        .iter()
-        .filter(|(key, values)| {
-            distinct_counts.contains_key(*key)
-                && sampled_histograms.contains_key(*key)
-                && !values.is_empty()
-                && values.iter().all(|value| supports(key, value))
-        })
-        .map(|(key, _)| key.clone())
-        .collect::<BTreeSet<_>>();
-    distinct_counts.retain(|key, _| complete_groups.contains(key));
-    histograms.retain(|key, _| complete_groups.contains(key));
-    sampled_histograms.retain(|key, _| complete_groups.contains(key));
-}
-
 fn compute_node_property_distinct_counts_from_index(
     property_index: &NodePropertyIndex,
     catalog: &Catalog,
@@ -3378,84 +2835,6 @@ fn recompute_relationship_property_index(
         }
     }
     index
-}
-
-fn node_property_index_reference_count(index: &NodePropertyIndex) -> usize {
-    index.values().map(|node_ids| node_ids.len()).sum()
-}
-
-fn relationship_property_index_reference_count(index: &RelationshipPropertyIndex) -> usize {
-    index.values().map(|rel_ids| rel_ids.len()).sum()
-}
-
-fn property_index_mismatch_summary(
-    maintained: &NodePropertyIndex,
-    recomputed: &NodePropertyIndex,
-) -> (usize, usize, usize, Vec<(LabelId, String, Value)>) {
-    let mut missing_key_count = 0usize;
-    let mut extra_key_count = 0usize;
-    let mut mismatched_key_count = 0usize;
-    let mut mismatched_keys = Vec::new();
-    for key in maintained
-        .keys()
-        .chain(recomputed.keys())
-        .cloned()
-        .collect::<BTreeSet<_>>()
-    {
-        match (maintained.get(&key), recomputed.get(&key)) {
-            (Some(left), Some(right)) if left == right => {}
-            (Some(_), Some(_)) => mismatched_key_count += 1,
-            (Some(_), None) => extra_key_count += 1,
-            (None, Some(_)) => missing_key_count += 1,
-            (None, None) => {}
-        }
-        if maintained.get(&key) != recomputed.get(&key)
-            && mismatched_keys.len() < MAX_ADJACENCY_CONSISTENCY_SAMPLES
-        {
-            mismatched_keys.push(key);
-        }
-    }
-    (
-        missing_key_count,
-        extra_key_count,
-        mismatched_key_count,
-        mismatched_keys,
-    )
-}
-
-fn relationship_property_index_mismatch_summary(
-    maintained: &RelationshipPropertyIndex,
-    recomputed: &RelationshipPropertyIndex,
-) -> (usize, usize, usize, Vec<(RelTypeId, String, Value)>) {
-    let mut missing_key_count = 0usize;
-    let mut extra_key_count = 0usize;
-    let mut mismatched_key_count = 0usize;
-    let mut mismatched_keys = Vec::new();
-    for key in maintained
-        .keys()
-        .chain(recomputed.keys())
-        .cloned()
-        .collect::<BTreeSet<_>>()
-    {
-        match (maintained.get(&key), recomputed.get(&key)) {
-            (Some(left), Some(right)) if left == right => {}
-            (Some(_), Some(_)) => mismatched_key_count += 1,
-            (Some(_), None) => extra_key_count += 1,
-            (None, Some(_)) => missing_key_count += 1,
-            (None, None) => {}
-        }
-        if maintained.get(&key) != recomputed.get(&key)
-            && mismatched_keys.len() < MAX_ADJACENCY_CONSISTENCY_SAMPLES
-        {
-            mismatched_keys.push(key);
-        }
-    }
-    (
-        missing_key_count,
-        extra_key_count,
-        mismatched_key_count,
-        mismatched_keys,
-    )
 }
 
 fn compute_basic_statistics(
@@ -3904,14 +3283,6 @@ fn label_counts_for_degree_statistics(
     label_counts
 }
 
-fn sample_relationship_ids(rel_ids: &BTreeSet<RelId>) -> Vec<RelId> {
-    rel_ids
-        .iter()
-        .copied()
-        .take(MAX_ADJACENCY_CONSISTENCY_SAMPLES)
-        .collect()
-}
-
 fn adjacency_direction_sort_key(direction: AdjacencyDirection) -> u8 {
     match direction {
         AdjacencyDirection::Outgoing => 0,
@@ -4292,222 +3663,9 @@ fn merge_relationship_row(
     ])
 }
 
-fn split_checkpoint_checksum(text: &str) -> Result<(&str, u64)> {
-    let Some((body, footer)) = text.rsplit_once("checksum\t") else {
-        return Err(SkeinError::Storage(
-            "checkpoint missing checksum footer".to_string(),
-        ));
-    };
-    let checksum = parse_u64(footer.trim(), "checkpoint checksum")?;
-    Ok((body, checksum))
-}
-
-fn relational_checkpoint_metadata(body: &str) -> Result<Option<DurableArtifactMetadata>> {
-    let mut encoded_len = None;
-    let mut encoded_checksum = None;
-    let mut encoded_sha256 = None;
-    for line in body.lines() {
-        let fields = line.split('\t').collect::<Vec<_>>();
-        match fields.as_slice() {
-            ["relational_checkpoint_encoded_len", raw] if encoded_len.is_none() => {
-                encoded_len = Some(parse_u64(raw, "relational checkpoint encoded length")?);
-            }
-            ["relational_checkpoint_encoded_checksum", raw] if encoded_checksum.is_none() => {
-                encoded_checksum = Some(parse_u64(raw, "relational checkpoint encoded checksum")?);
-            }
-            ["relational_checkpoint_encoded_sha256", raw] if encoded_sha256.is_none() => {
-                encoded_sha256 = Some(raw.parse().map_err(|error| {
-                    SkeinError::Storage(format!(
-                        "invalid relational checkpoint encoded SHA-256: {error}"
-                    ))
-                })?);
-            }
-            ["relational_checkpoint_encoded_len", _]
-            | ["relational_checkpoint_encoded_checksum", _]
-            | ["relational_checkpoint_encoded_sha256", _] => {
-                return Err(SkeinError::Storage(
-                    "checkpoint contains duplicate relational artifact metadata".to_string(),
-                ));
-            }
-            _ => {}
-        }
-    }
-    if !artifact_metadata_presence_consistent(encoded_len, encoded_checksum, encoded_sha256) {
-        return Err(SkeinError::Storage(
-            "checkpoint relational artifact metadata is incomplete".to_string(),
-        ));
-    }
-    Ok(encoded_len.map(|encoded_len| DurableArtifactMetadata {
-        encoded_len,
-        encoded_checksum: encoded_checksum.expect("validated relational checksum"),
-        encoded_sha256: encoded_sha256.expect("validated relational SHA-256"),
-    }))
-}
-
 fn read_durable_text(path: &Path, name: &str) -> Result<String> {
     let bytes = fs::read(path)?;
     read_durable_text_bytes(&bytes, name)
-}
-
-fn parse_label_set(input: &str) -> Result<BTreeSet<LabelId>> {
-    if input.is_empty() {
-        return Ok(BTreeSet::new());
-    }
-    input
-        .split(',')
-        .map(|raw| parse_u32(raw, "label id").map(LabelId))
-        .collect()
-}
-
-fn encode_search_projection_relational_primary_key_changes(
-    capture: &skein_storage::RelationalPrimaryKeyChangeCapture,
-) -> Result<(String, String)> {
-    match capture {
-        skein_storage::RelationalPrimaryKeyChangeCapture::Captured { tables, .. } => {
-            let mut encoded_tables = Vec::with_capacity(tables.len());
-            for table in tables {
-                let encoded_keys = table
-                    .primary_keys
-                    .iter()
-                    .map(|key| {
-                        skein_storage::encode_relational_primary_key(key)
-                            .map(|encoded| encode_bytes(&encoded))
-                            .map_err(|error| SkeinError::Storage(error.to_string()))
-                    })
-                    .collect::<Result<Vec<_>>>()?;
-                encoded_tables.push(format!(
-                    "{}={}",
-                    encode_string(&table.table),
-                    encoded_keys.join(":")
-                ));
-            }
-            Ok(("exact".to_string(), encoded_tables.join(";")))
-        }
-        skein_storage::RelationalPrimaryKeyChangeCapture::RequiresRebuild { reason } => Ok((
-            match reason {
-                skein_storage::RelationalPrimaryKeyChangeRebuildReason::SchemaRewrite => {
-                    "rebuild_schema_rewrite"
-                }
-                skein_storage::RelationalPrimaryKeyChangeRebuildReason::CaptureLimitExceeded => {
-                    "rebuild_capture_limit"
-                }
-                skein_storage::RelationalPrimaryKeyChangeRebuildReason::UnsupportedKeyEncoding => {
-                    "rebuild_key_encoding"
-                }
-                skein_storage::RelationalPrimaryKeyChangeRebuildReason::WalEncodingLimitExceeded => {
-                    "rebuild_wal_encoding_limit"
-                }
-                skein_storage::RelationalPrimaryKeyChangeRebuildReason::MissingWalCapture => {
-                    "rebuild_missing_wal_capture"
-                }
-                skein_storage::RelationalPrimaryKeyChangeRebuildReason::SnapshotReplacement => {
-                    "rebuild_snapshot_replacement"
-                }
-                skein_storage::RelationalPrimaryKeyChangeRebuildReason::MultipleRelationalTransactions => {
-                    "rebuild_multiple_relational_transactions"
-                }
-            }
-            .to_string(),
-            String::new(),
-        )),
-    }
-}
-
-fn decode_search_projection_relational_primary_key_changes(
-    raw_kind: &str,
-    raw_changes: &str,
-) -> Result<skein_storage::RelationalPrimaryKeyChangeCapture> {
-    use skein_storage::{
-        RelationalPrimaryKeyChangeCapture, RelationalPrimaryKeyChangeRebuildReason,
-        RelationalTablePrimaryKeyChanges,
-    };
-
-    let rebuild_reason = match raw_kind {
-        "exact" => None,
-        "rebuild_schema_rewrite" => Some(RelationalPrimaryKeyChangeRebuildReason::SchemaRewrite),
-        "rebuild_capture_limit" => {
-            Some(RelationalPrimaryKeyChangeRebuildReason::CaptureLimitExceeded)
-        }
-        "rebuild_key_encoding" => {
-            Some(RelationalPrimaryKeyChangeRebuildReason::UnsupportedKeyEncoding)
-        }
-        "rebuild_wal_encoding_limit" => {
-            Some(RelationalPrimaryKeyChangeRebuildReason::WalEncodingLimitExceeded)
-        }
-        "rebuild_missing_wal_capture" => {
-            Some(RelationalPrimaryKeyChangeRebuildReason::MissingWalCapture)
-        }
-        "rebuild_snapshot_replacement" => {
-            Some(RelationalPrimaryKeyChangeRebuildReason::SnapshotReplacement)
-        }
-        "rebuild_multiple_relational_transactions" => {
-            Some(RelationalPrimaryKeyChangeRebuildReason::MultipleRelationalTransactions)
-        }
-        _ => {
-            return Err(SkeinError::Storage(format!(
-                "invalid search projection relational change kind: {raw_kind}"
-            )))
-        }
-    };
-    if let Some(reason) = rebuild_reason {
-        if !raw_changes.is_empty() {
-            return Err(SkeinError::Storage(format!(
-                "search projection rebuild marker {raw_kind} contains unexpected key payload"
-            )));
-        }
-        return Ok(RelationalPrimaryKeyChangeCapture::RequiresRebuild { reason });
-    }
-
-    const TABLE_FIXED_BYTES: usize = 4;
-    const KEY_FIXED_BYTES: usize = 4;
-    let mut tables = Vec::new();
-    let mut encoded_bytes = 0usize;
-    if !raw_changes.is_empty() {
-        for raw_table in raw_changes.split(';') {
-            let Some((raw_name, raw_keys)) = raw_table.split_once('=') else {
-                return Err(SkeinError::Storage(format!(
-                    "invalid search projection relational table change: {raw_table}"
-                )));
-            };
-            let table = decode_string(raw_name)?;
-            if raw_keys.is_empty() {
-                return Err(SkeinError::Storage(format!(
-                    "search projection relational table {table} contains no primary keys"
-                )));
-            }
-            encoded_bytes = encoded_bytes
-                .checked_add(TABLE_FIXED_BYTES)
-                .and_then(|bytes| bytes.checked_add(table.len()))
-                .ok_or_else(|| {
-                    SkeinError::Storage(
-                        "search projection relational change byte count overflow".to_string(),
-                    )
-                })?;
-            let mut primary_keys = Vec::new();
-            for raw_key in raw_keys.split(':') {
-                let key_bytes = decode_bytes(raw_key)?;
-                let key = skein_storage::decode_relational_primary_key(&key_bytes)
-                    .map_err(|error| SkeinError::Storage(error.to_string()))?;
-                encoded_bytes = encoded_bytes
-                    .checked_add(KEY_FIXED_BYTES)
-                    .and_then(|bytes| bytes.checked_add(key_bytes.len()))
-                    .ok_or_else(|| {
-                        SkeinError::Storage(
-                            "search projection relational change byte count overflow".to_string(),
-                        )
-                    })?;
-                primary_keys.push(key);
-            }
-            tables.push(RelationalTablePrimaryKeyChanges {
-                table,
-                primary_keys,
-            });
-        }
-    }
-    Ok(RelationalPrimaryKeyChangeCapture::Captured {
-        tables,
-        encoded_bytes,
-    })
 }
 
 fn validate_search_projection_checkpoint_changes(

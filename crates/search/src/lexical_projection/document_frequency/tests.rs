@@ -845,6 +845,111 @@ fn document_record_slots_admit_replacement_overlap_before_mutation() {
     }
 }
 
+#[derive(Clone, Copy, Debug)]
+enum FlushOutcome {
+    Success,
+    Cancelled,
+    CreateError,
+    InvalidRecord,
+}
+
+fn assert_flush_releases_record_memory(outcome: FlushOutcome) {
+    use skein_core::{RuntimeCancellationToken, RuntimeMemoryReservation};
+
+    const BUDGET: usize = 256 * 1024;
+    let root = TestRoot::new();
+    let cancellation = RuntimeCancellationToken::new();
+    let task = RuntimeTaskContext::without_deadline(cancellation.clone())
+        .with_memory_reservation(RuntimeMemoryReservation::new(BUDGET as u64, 0));
+    let memory = BuildMemory::new(&task).unwrap();
+    let mut pool =
+        SpillRuns::with_context(&root.0, 1, Default::default(), memory.clone(), task).unwrap();
+    pool.prepare(5, 0).unwrap();
+    let mut analysis = SpillingAnalysis {
+        records: Vec::new(),
+        string_bytes: 0,
+        buffer_limit: 32 * 1024,
+        lower_bound: 0,
+        runs: DocumentRuns::default(),
+        records_memory: Some(memory.retained.reserve(0).unwrap()),
+    };
+    let retained_before = memory.ledger.snapshot().used_bytes;
+    let mut input = record("alpha", 0, 1, TokenOccurrence::Repeated, 2);
+    input.term = Term::copy("alpha", Some(&memory)).unwrap();
+    if matches!(outcome, FlushOutcome::InvalidRecord) {
+        input.field = 6;
+    }
+    analysis.push(input, &mut pool).unwrap();
+    assert!(analysis.records_memory.as_ref().unwrap().bytes() > 0);
+
+    match outcome {
+        FlushOutcome::Cancelled => {
+            assert!(cancellation.cancel());
+        }
+        FlushOutcome::CreateError => {
+            fs::remove_dir(&root.0).unwrap();
+            fs::write(&root.0, b"not a directory").unwrap();
+        }
+        FlushOutcome::Success | FlushOutcome::InvalidRecord => {}
+    }
+    let result = analysis.flush(&mut pool);
+    if matches!(outcome, FlushOutcome::CreateError) {
+        fs::remove_file(&root.0).unwrap();
+        fs::create_dir(&root.0).unwrap();
+    }
+    match outcome {
+        FlushOutcome::Success => result.unwrap(),
+        FlushOutcome::Cancelled => {
+            assert!(result.unwrap_err().to_string().contains("cancelled"));
+        }
+        FlushOutcome::CreateError => assert!(result.is_err()),
+        FlushOutcome::InvalidRecord => {
+            assert!(result
+                .unwrap_err()
+                .to_string()
+                .contains("invalid document frequency spill record"));
+        }
+    }
+    assert!(analysis.records.is_empty());
+    assert_eq!(analysis.records.capacity(), 0);
+    assert_eq!(analysis.string_bytes, 0);
+    assert_eq!(analysis.records_memory.as_ref().unwrap().bytes(), 0);
+    assert_eq!(memory.ledger.snapshot().used_bytes, retained_before);
+    assert_eq!(
+        root.entries(),
+        usize::from(matches!(outcome, FlushOutcome::Success))
+    );
+
+    // A different operation can use the released bytes while this analysis lives.
+    let competitor = memory.input.reserve(BUDGET - retained_before).unwrap();
+    assert_eq!(memory.ledger.snapshot().used_bytes, BUDGET);
+    drop(competitor);
+    drop(analysis);
+    assert_eq!(root.entries(), 0);
+    drop(pool);
+    assert_eq!(memory.ledger.snapshot().used_bytes, 0);
+}
+
+#[test]
+fn flush_releases_record_memory_after_success() {
+    assert_flush_releases_record_memory(FlushOutcome::Success);
+}
+
+#[test]
+fn flush_releases_record_memory_after_cancellation() {
+    assert_flush_releases_record_memory(FlushOutcome::Cancelled);
+}
+
+#[test]
+fn flush_releases_record_memory_after_create_error() {
+    assert_flush_releases_record_memory(FlushOutcome::CreateError);
+}
+
+#[test]
+fn flush_releases_record_memory_after_invalid_record() {
+    assert_flush_releases_record_memory(FlushOutcome::InvalidRecord);
+}
+
 struct FaultIo {
     remaining: usize,
     flush_error: bool,

@@ -486,9 +486,11 @@ mod summary_json_facade_tests {
 
     #[test]
     fn facade_matches_the_pre_migration_summary_json_oracle() {
-        let mut summary = BackgroundMaintenanceSummary::default();
-        summary.total_candidates = 3;
-        summary.total_estimated_operations = 7;
+        let summary = BackgroundMaintenanceSummary {
+            total_candidates: 3,
+            total_estimated_operations: 7,
+            ..Default::default()
+        };
 
         assert_eq!(
             background_maintenance_summary_to_json(&summary),

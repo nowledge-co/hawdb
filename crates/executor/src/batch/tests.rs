@@ -4,7 +4,9 @@ use skein_plan::GraphAlgorithmKind;
 use std::cell::Cell;
 
 mod boundaries;
+mod dispatch;
 mod fixtures;
+mod handlers;
 mod store;
 
 fn with_context<T>(

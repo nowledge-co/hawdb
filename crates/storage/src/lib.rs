@@ -9,10 +9,15 @@ pub mod backup;
 pub mod cache;
 pub mod canonical;
 pub mod canonical_adjacency;
+#[doc(hidden)]
+pub mod checkpoint;
 pub mod column_group;
 pub mod config;
 #[doc(hidden)]
+pub mod consistency;
+#[doc(hidden)]
 pub mod cow;
+pub mod derived_repair;
 pub mod doctor;
 pub mod durability;
 #[doc(hidden)]
@@ -130,6 +135,10 @@ pub use column_group::{
         ColumnGroupTableDirectoryRef, ColumnGroupTableKey, ColumnGroupTableKind,
         PublishedColumnGroupCatalog, COLUMN_GROUP_MANIFEST_FILE,
     },
+    shadow::{
+        ColumnarShadowCheckpointReport, ColumnarShadowCheckpointStatus,
+        ColumnarShadowRecoveryStatus, COLUMN_GROUP_SHADOW_DIR,
+    },
     zone::{ChunkZoneMap, StringPrefixMinMax},
     ColumnGroupError, DeletionVectorBinding, COLUMN_GROUP_MAGIC, DELETION_VECTOR_MAGIC,
 };
@@ -143,6 +152,11 @@ pub use config::{
     DEFAULT_SEGMENT_CACHE_CAPACITY_BYTES,
 };
 pub use cow::{CowPageWeight, CowSegment, CowSegmentedMap, COW_MAP_TARGET_SEGMENT_BYTES};
+pub use derived_repair::{
+    DerivedArtifactHealth, DerivedArtifactHealthReport, DerivedArtifactHealthState,
+    DerivedArtifactKind, DerivedArtifactRebuildOptions, DerivedArtifactRepairPlan,
+    DerivedArtifactRepairReport, DERIVED_ARTIFACT_REPAIR_PROTOCOL,
+};
 pub use doctor::{
     WalDoctorOptions, WalRepairAcknowledgement, WalTailRepairPlan, WalTailRepairReason,
     WalTailRepairReport, WAL_DOCTOR_REPAIR_PROTOCOL,
@@ -381,6 +395,7 @@ pub use stable_identity::{
     DEFAULT_STABLE_IDENTITY_PAGE_BYTES, DEFAULT_STABLE_IDENTITY_PAGE_ENTRIES,
     DEFAULT_STABLE_IDENTITY_VALUE_BYTES,
 };
+pub use statistics_refresh::{OptimizerStatisticsRefreshOptions, OptimizerStatisticsRefreshReport};
 pub use telemetry::{StorageTelemetrySink, WalAppendTelemetry};
 pub use wal::{
     WalGroupCommitActivation, WalGroupCommitAdaptiveColdStartEvidence,

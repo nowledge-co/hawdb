@@ -145,7 +145,7 @@ fn check_projection(
             "{identity}"
         );
     }
-    let edges = match layout {
+    let edges: usize = match layout {
         ProjectionLayout::Incoming => incoming.iter().map(BTreeSet::len).sum(),
         ProjectionLayout::Undirected => outgoing
             .iter()

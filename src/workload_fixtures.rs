@@ -279,7 +279,7 @@ fn run_search_metadata_workload_probe(
     name: &str,
     metadata_filters: BTreeMap<String, String>,
 ) -> NowledgeSearchMetadataWorkloadReport {
-    let result = search_index.search_with_options(
+    let result = search_index.try_search_with_options(
         "workload metadata retrieval",
         None,
         SearchMode::Text,
@@ -292,6 +292,12 @@ fn run_search_metadata_workload_probe(
             policy_epoch: None,
         },
     );
+    let result = match result {
+        Ok(result) => result,
+        Err(error) => {
+            return search_metadata_error_report(name, metadata_filters, error_class(&error));
+        }
+    };
     let pushdown = &result.candidate_set.metadata_predicate_pushdown;
     let fields = search_metadata_pushdown_fields(pushdown);
     NowledgeSearchMetadataWorkloadReport {
@@ -566,7 +572,7 @@ fn run_bounded_expansion_probe(
     graph_context_limit: usize,
     graph_context_max_hops: usize,
 ) -> NowledgeGraphRouteWorkloadBoundedExpansionReport {
-    let output = db.retrieve_knowledge(
+    let output = db.try_retrieve_knowledge(
         search_index,
         &KnowledgeRetrievalRequest {
             query_text: query_text.to_string(),
@@ -584,6 +590,17 @@ fn run_bounded_expansion_probe(
             graph_context_max_hops,
         },
     );
+    let output = match output {
+        Ok(output) => output,
+        Err(error) => {
+            return bounded_expansion_error_report(
+                name,
+                graph_context_limit,
+                graph_context_max_hops,
+                error_class(&error),
+            );
+        }
+    };
     NowledgeGraphRouteWorkloadBoundedExpansionReport {
         name: name.to_string(),
         ready: output.search.total_hits > 0
@@ -703,6 +720,9 @@ const SEARCH_METADATA_WORKLOAD_FIXTURE_STATEMENTS: &[&str] = &[
 ];
 
 #[cfg(test)]
+mod capability_tests;
+
+#[cfg(test)]
 mod tests {
     use super::{
         nowledge_graph_route_workload_fixture_queries,
@@ -769,13 +789,11 @@ mod tests {
             report.protocol,
             NOWLEDGE_GRAPH_ROUTE_WORKLOAD_FIXTURE_PROTOCOL
         );
-        assert!(report.ready);
+        assert_eq!(report.ready, cfg!(feature = "full-text-search"));
         assert_eq!(report.route_count, 9);
         assert_eq!(report.failed_query_count, 0);
         assert_eq!(report.bounded_expansion_probe_count, 2);
-        assert_eq!(report.failed_bounded_expansion_probe_count, 0);
         assert_eq!(report.search_metadata_probe_count, 3);
-        assert_eq!(report.failed_search_metadata_probe_count, 0);
         assert_eq!(report.graph_rag_probe_count, 1);
         assert_eq!(report.failed_graph_rag_probe_count, 0);
         assert_eq!(report.source_projection_probe_count, 1);
@@ -793,45 +811,69 @@ mod tests {
             .iter()
             .flat_map(|route| route.queries.iter())
             .any(|query| query.scan_pruning_report_count > 0));
-        let two_hop = report
-            .bounded_expansion_reports
-            .iter()
-            .find(|report| report.name == "two-hop-context")
-            .unwrap();
-        assert_eq!(two_hop.path_count, 2);
-        assert!(!two_hop.truncated);
-        let dense = report
-            .bounded_expansion_reports
-            .iter()
-            .find(|report| report.name == "dense-context")
-            .unwrap();
-        assert_eq!(dense.path_count, DENSE_ADJACENCY_DEGREE_THRESHOLD);
-        assert!(dense
-            .fanout_reason_codes
-            .contains(&KnowledgeFanoutReasonCode::DenseAdjacency));
-        assert!(report
-            .search_metadata_reports
-            .iter()
-            .all(|report| report.ready));
-        let typed_filter = report
-            .search_metadata_reports
-            .iter()
-            .find(|report| report.name == "unit-type-lifecycle")
-            .unwrap();
-        assert_eq!(typed_filter.total_hits, 2);
-        assert_eq!(typed_filter.input_predicate_count, 2);
-        assert_eq!(typed_filter.pushed_predicate_count, 2);
-        assert_eq!(typed_filter.residual_predicate_count, 0);
-        assert!(typed_filter.fields.contains(&"unit_type".to_string()));
-        assert!(typed_filter.fields.contains(&"lifecycle_state".to_string()));
-        let range_filter = report
-            .search_metadata_reports
-            .iter()
-            .find(|report| report.name == "importance-confidence-created-at")
-            .unwrap();
-        assert!(range_filter.fields.contains(&"importance".to_string()));
-        assert!(range_filter.fields.contains(&"confidence".to_string()));
-        assert!(range_filter.fields.contains(&"created_at".to_string()));
+        if cfg!(feature = "full-text-search") {
+            assert_eq!(report.failed_bounded_expansion_probe_count, 0);
+            assert_eq!(report.failed_search_metadata_probe_count, 0);
+            let two_hop = report
+                .bounded_expansion_reports
+                .iter()
+                .find(|report| report.name == "two-hop-context")
+                .unwrap();
+            assert_eq!(two_hop.path_count, 2);
+            assert!(!two_hop.truncated);
+            let dense = report
+                .bounded_expansion_reports
+                .iter()
+                .find(|report| report.name == "dense-context")
+                .unwrap();
+            assert_eq!(dense.path_count, DENSE_ADJACENCY_DEGREE_THRESHOLD);
+            assert!(dense
+                .fanout_reason_codes
+                .contains(&KnowledgeFanoutReasonCode::DenseAdjacency));
+            assert!(report
+                .search_metadata_reports
+                .iter()
+                .all(|report| report.ready));
+            let typed_filter = report
+                .search_metadata_reports
+                .iter()
+                .find(|report| report.name == "unit-type-lifecycle")
+                .unwrap();
+            assert_eq!(typed_filter.total_hits, 2);
+            assert_eq!(typed_filter.input_predicate_count, 2);
+            assert_eq!(typed_filter.pushed_predicate_count, 2);
+            assert_eq!(typed_filter.residual_predicate_count, 0);
+            assert!(typed_filter.fields.contains(&"unit_type".to_string()));
+            assert!(typed_filter.fields.contains(&"lifecycle_state".to_string()));
+            let range_filter = report
+                .search_metadata_reports
+                .iter()
+                .find(|report| report.name == "importance-confidence-created-at")
+                .unwrap();
+            assert!(range_filter.fields.contains(&"importance".to_string()));
+            assert!(range_filter.fields.contains(&"confidence".to_string()));
+            assert!(range_filter.fields.contains(&"created_at".to_string()));
+        } else {
+            assert_eq!(report.failed_search_metadata_probe_count, 3);
+            assert_eq!(report.failed_bounded_expansion_probe_count, 2);
+            for probe in &report.search_metadata_reports {
+                assert!(!probe.ready);
+                assert_eq!(probe.error_class.as_deref(), Some("capability_unavailable"));
+                assert_eq!(probe.total_hits, 0);
+                assert_eq!(probe.document_count, 0);
+                assert_eq!(probe.filtered_document_count, 0);
+                assert!(!probe.metadata_filters.is_empty());
+            }
+            for probe in &report.bounded_expansion_reports {
+                assert!(!probe.ready);
+                assert_eq!(probe.error_class.as_deref(), Some("capability_unavailable"));
+                assert_eq!(probe.path_count, 0);
+                assert_eq!(probe.node_count, 0);
+                assert_eq!(probe.relationship_count, 0);
+                assert!(probe.graph_context_limit > 0);
+                assert!(probe.graph_context_max_hops > 0);
+            }
+        }
         let graph_rag = report
             .graph_rag_reports
             .iter()

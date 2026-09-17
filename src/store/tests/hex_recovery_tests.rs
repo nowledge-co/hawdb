@@ -1,8 +1,8 @@
-use super::super::encode_string;
 use super::{active_checkpoint_path, read_durable_text, rewrite_checksummed_file, unique_test_dir};
 use crate::error::SkeinError;
 use crate::value::Value;
 use crate::{Database, DatabaseConfig};
+use skein_storage::text::encode_string;
 use std::collections::BTreeMap;
 use std::fs;
 use std::path::{Path, PathBuf};

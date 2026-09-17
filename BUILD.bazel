@@ -96,7 +96,6 @@ _SKEIN_SRCS = glob(
     ],
 ) + [
     "//crates/compat:test_support",
-    "//crates/executor:batch_dispatch_test_fixtures",
 ]
 
 _SKEIN_COMMON_BASE_DEPS = [
@@ -276,21 +275,11 @@ rust_test(
     proc_macro_deps = all_crate_deps(proc_macro_dev = True),
 )
 
-rust_test(
+# Preserve the root local-fuzz entrypoint after moving tests to their owner.
+test_suite(
     name = "skein_batch_dispatch_fuzz_tests",
-    args = [
-        "executor::batch::dispatch_tests::batch_dispatch_campaign",
-        "--exact",
-        "--ignored",
-        "--nocapture",
-    ],
-    crate = ":skein",
-    crate_features = _SKEIN_DEFAULT_FEATURES,
-    edition = "2024",
     tags = ["manual"],
-    aliases = aliases(normal_dev = True, proc_macro_dev = True),
-    deps = all_crate_deps(normal_dev = True),
-    proc_macro_deps = all_crate_deps(proc_macro_dev = True),
+    tests = ["//crates/executor:skein_batch_dispatch_fuzz_tests"],
 )
 
 rust_test(

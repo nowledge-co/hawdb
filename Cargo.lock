@@ -1256,6 +1256,7 @@ dependencies = [
  "rayon",
  "roaring",
  "serde",
+ "serde_json",
  "skein-core",
  "skein-integrity",
  "zstd",

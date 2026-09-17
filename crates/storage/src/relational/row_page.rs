@@ -19,6 +19,7 @@ mod demand;
 mod live;
 mod mutation;
 mod publication;
+mod recovery;
 mod snapshot;
 mod value;
 
@@ -65,6 +66,7 @@ pub use publication::{
     DEFAULT_RELATIONAL_ROW_PAGE_ROOT_PAGES, DEFAULT_RELATIONAL_ROW_PAGE_TABLES,
     RELATIONAL_ROW_PAGE_MANIFEST_FILE,
 };
+pub use recovery::RelationalRowPageRecoveryStatus;
 pub use snapshot::{
     RelationalRowPageSnapshotPointReport, RelationalRowPageSnapshotPointsReport,
     RelationalRowPageSnapshotRangeReport, RelationalRowPageSnapshotReadError,

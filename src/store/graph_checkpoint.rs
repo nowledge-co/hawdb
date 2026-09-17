@@ -705,11 +705,14 @@ impl GraphStore {
                     .map(|entry| entry.allocated_pages)
                     .sum()
             });
-            let row_publication_config = row_compaction
-                .as_ref()
-                .map_or_else(RelationalRowPagePublicationConfig::default, |row| {
-                    row.config.publication_config()
-                });
+            let row_publication_config = row_compaction.as_ref().map_or_else(
+                RelationalRowPagePublicationConfig::default,
+                |row| {
+                    skein_storage::relational::relational_row_page_compaction_publication_config(
+                        row.config,
+                    )
+                },
+            );
             let row_plan = self.plan_relational_row_page_checkpoint(
                 previous_row,
                 generation,
