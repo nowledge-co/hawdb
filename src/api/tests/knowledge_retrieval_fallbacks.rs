@@ -10,24 +10,26 @@ fn knowledge_retrieval_diagnostics_expose_search_fallback_reasons() {
     db.rebuild_search_projection(&mut search_index, SearchRebuildOptions::default())
         .unwrap();
 
-    let output = db.retrieve_knowledge(
-        &search_index,
-        &KnowledgeRetrievalRequest {
-            query_text: "fallback retrieval".to_string(),
-            query_embedding: Some(vec![1.0, 0.0]),
-            mode: SearchMode::Hybrid,
-            limit: 10,
-            offset: 0,
-            rank_window: None,
-            search_fusion_weights: SearchFusionWeights::default(),
-            metadata_filters: BTreeMap::new(),
-            candidate_limit: None,
-            candidate_scoring: KnowledgeCandidateScoringPolicy::Max,
-            graph_seed_limit: 0,
-            graph_context_limit: 0,
-            graph_context_max_hops: 1,
-        },
-    );
+    let output = db
+        .retrieve_knowledge(
+            &search_index,
+            &KnowledgeRetrievalRequest {
+                query_text: "fallback retrieval".to_string(),
+                query_embedding: Some(vec![1.0, 0.0]),
+                mode: SearchMode::Hybrid,
+                limit: 10,
+                offset: 0,
+                rank_window: None,
+                search_fusion_weights: SearchFusionWeights::default(),
+                metadata_filters: BTreeMap::new(),
+                candidate_limit: None,
+                candidate_scoring: KnowledgeCandidateScoringPolicy::Max,
+                graph_seed_limit: 0,
+                graph_context_limit: 0,
+                graph_context_max_hops: 1,
+            },
+        )
+        .unwrap();
 
     assert!(!output.search.hits.is_empty());
     assert!(output
@@ -86,24 +88,26 @@ fn knowledge_retrieval_empty_reasons_include_search_fallback_reasons() {
     db.rebuild_search_projection(&mut search_index, SearchRebuildOptions::default())
         .unwrap();
 
-    let output = db.retrieve_knowledge(
-        &search_index,
-        &KnowledgeRetrievalRequest {
-            query_text: "".to_string(),
-            query_embedding: Some(vec![1.0, 0.0]),
-            mode: SearchMode::Vector,
-            limit: 10,
-            offset: 0,
-            rank_window: None,
-            search_fusion_weights: SearchFusionWeights::default(),
-            metadata_filters: BTreeMap::new(),
-            candidate_limit: None,
-            candidate_scoring: KnowledgeCandidateScoringPolicy::Max,
-            graph_seed_limit: 0,
-            graph_context_limit: 0,
-            graph_context_max_hops: 1,
-        },
-    );
+    let output = db
+        .retrieve_knowledge(
+            &search_index,
+            &KnowledgeRetrievalRequest {
+                query_text: "".to_string(),
+                query_embedding: Some(vec![1.0, 0.0]),
+                mode: SearchMode::Vector,
+                limit: 10,
+                offset: 0,
+                rank_window: None,
+                search_fusion_weights: SearchFusionWeights::default(),
+                metadata_filters: BTreeMap::new(),
+                candidate_limit: None,
+                candidate_scoring: KnowledgeCandidateScoringPolicy::Max,
+                graph_seed_limit: 0,
+                graph_context_limit: 0,
+                graph_context_max_hops: 1,
+            },
+        )
+        .unwrap();
 
     assert!(output.search.hits.is_empty());
     assert!(output.candidates.is_empty());
@@ -146,24 +150,26 @@ fn knowledge_retrieval_empty_reasons_include_missing_query_embedding() {
     db.rebuild_search_projection(&mut search_index, SearchRebuildOptions::default())
         .unwrap();
 
-    let output = db.retrieve_knowledge(
-        &search_index,
-        &KnowledgeRetrievalRequest {
-            query_text: "missing embedding query".to_string(),
-            query_embedding: None,
-            mode: SearchMode::Vector,
-            limit: 10,
-            offset: 0,
-            rank_window: None,
-            search_fusion_weights: SearchFusionWeights::default(),
-            metadata_filters: BTreeMap::new(),
-            candidate_limit: None,
-            candidate_scoring: KnowledgeCandidateScoringPolicy::Max,
-            graph_seed_limit: 0,
-            graph_context_limit: 0,
-            graph_context_max_hops: 1,
-        },
-    );
+    let output = db
+        .retrieve_knowledge(
+            &search_index,
+            &KnowledgeRetrievalRequest {
+                query_text: "missing embedding query".to_string(),
+                query_embedding: None,
+                mode: SearchMode::Vector,
+                limit: 10,
+                offset: 0,
+                rank_window: None,
+                search_fusion_weights: SearchFusionWeights::default(),
+                metadata_filters: BTreeMap::new(),
+                candidate_limit: None,
+                candidate_scoring: KnowledgeCandidateScoringPolicy::Max,
+                graph_seed_limit: 0,
+                graph_context_limit: 0,
+                graph_context_max_hops: 1,
+            },
+        )
+        .unwrap();
 
     assert!(output.search.hits.is_empty());
     assert!(output.candidates.is_empty());
@@ -211,24 +217,26 @@ fn knowledge_retrieval_empty_reasons_include_empty_text_query() {
     db.rebuild_search_projection(&mut search_index, SearchRebuildOptions::default())
         .unwrap();
 
-    let output = db.retrieve_knowledge(
-        &search_index,
-        &KnowledgeRetrievalRequest {
-            query_text: "".to_string(),
-            query_embedding: None,
-            mode: SearchMode::Text,
-            limit: 10,
-            offset: 0,
-            rank_window: None,
-            search_fusion_weights: SearchFusionWeights::default(),
-            metadata_filters: BTreeMap::new(),
-            candidate_limit: None,
-            candidate_scoring: KnowledgeCandidateScoringPolicy::Max,
-            graph_seed_limit: 0,
-            graph_context_limit: 0,
-            graph_context_max_hops: 1,
-        },
-    );
+    let output = db
+        .retrieve_knowledge(
+            &search_index,
+            &KnowledgeRetrievalRequest {
+                query_text: "".to_string(),
+                query_embedding: None,
+                mode: SearchMode::Text,
+                limit: 10,
+                offset: 0,
+                rank_window: None,
+                search_fusion_weights: SearchFusionWeights::default(),
+                metadata_filters: BTreeMap::new(),
+                candidate_limit: None,
+                candidate_scoring: KnowledgeCandidateScoringPolicy::Max,
+                graph_seed_limit: 0,
+                graph_context_limit: 0,
+                graph_context_max_hops: 1,
+            },
+        )
+        .unwrap();
 
     assert!(output.search.hits.is_empty());
     assert!(output.candidates.is_empty());

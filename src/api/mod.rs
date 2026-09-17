@@ -3686,11 +3686,12 @@ impl Database {
         result
     }
 
+    /// Retrieves from resident search payloads, propagating search and graph/pipeline errors.
     pub fn retrieve_knowledge(
         &self,
         search_index: &SearchIndex,
         request: &KnowledgeRetrievalRequest,
-    ) -> KnowledgeRetrievalOutput {
+    ) -> Result<KnowledgeRetrievalOutput> {
         KnowledgeRetrievalGraphContext {
             catalog: &self.catalog,
             store: &self.store,
@@ -4312,9 +4313,8 @@ impl KnowledgeRetrievalGraphContext<'_> {
         &self,
         search_index: &SearchIndex,
         request: &KnowledgeRetrievalRequest,
-    ) -> KnowledgeRetrievalOutput {
+    ) -> Result<KnowledgeRetrievalOutput> {
         self.retrieve_knowledge_internal(search_index, request, false)
-            .expect("in-memory retrieval path does not perform fallible range I/O")
     }
 
     fn try_retrieve_knowledge(
@@ -4356,7 +4356,7 @@ impl KnowledgeRetrievalGraphContext<'_> {
                 search_options,
                 AdaptiveVectorSearchOptions::new(self.compressed_vector_search_mode)
                     .with_backend_policy(self.adaptive_vector_backend_policy),
-            )
+            )?
         };
         self.retrieve_knowledge_from_search(search, search_index.projection_freshness(), request)
     }
@@ -19196,11 +19196,12 @@ impl<'a> NowledgeGraphAdapter<'a> {
         })
     }
 
+    /// Retrieves from resident search payloads, propagating search and graph/pipeline errors.
     pub fn retrieve_knowledge(
         &self,
         search_index: &SearchIndex,
         request: &KnowledgeRetrievalRequest,
-    ) -> KnowledgeRetrievalOutput {
+    ) -> Result<KnowledgeRetrievalOutput> {
         self.db.retrieve_knowledge(search_index, request)
     }
 
@@ -21628,11 +21629,12 @@ impl DatabaseReadTransaction {
         search_index.repair_metadata_from_graph(&self.catalog, &self.store, options)
     }
 
+    /// Retrieves from resident search payloads, propagating search and graph/pipeline errors.
     pub fn retrieve_knowledge(
         &self,
         search_index: &SearchIndex,
         request: &KnowledgeRetrievalRequest,
-    ) -> KnowledgeRetrievalOutput {
+    ) -> Result<KnowledgeRetrievalOutput> {
         KnowledgeRetrievalGraphContext {
             catalog: &self.catalog,
             store: &self.store,

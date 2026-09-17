@@ -1883,14 +1883,15 @@ impl NowledgeMemSearchProjection {
     pub fn search_candidates(
         &self,
         request: &NowledgeMemSearchCandidateRequest,
-    ) -> SearchResultSet {
-        self.search_candidates_with_report(request).result
+    ) -> Result<SearchResultSet> {
+        self.search_candidates_with_report(request)
+            .map(|output| output.result)
     }
 
     pub fn search_candidates_with_report(
         &self,
         request: &NowledgeMemSearchCandidateRequest,
-    ) -> NowledgeMemSearchCandidateOutput {
+    ) -> Result<NowledgeMemSearchCandidateOutput> {
         let effective_compressed_vector_search_mode = effective_search_candidate_mode(request);
         let result = self.index.search_with_options_adaptive_vector_projection(
             &request.query_text,
@@ -1909,17 +1910,17 @@ impl NowledgeMemSearchProjection {
                 backend_policy: request.adaptive_vector_backend_policy,
                 recall_validation_probe: request.recall_validation_probe,
             },
-        );
+        )?;
         let report = nowledge_mem_search_candidate_report(
             request,
             effective_compressed_vector_search_mode,
             &result,
         );
-        NowledgeMemSearchCandidateOutput {
+        Ok(NowledgeMemSearchCandidateOutput {
             result,
             report,
             out_of_core_metrics: None,
-        }
+        })
     }
 
     pub fn try_search_candidates_with_report(
@@ -1975,37 +1976,37 @@ impl NowledgeMemSearchProjection {
         &self,
         request: &NowledgeMemSearchCandidateRequest,
         options: &NowledgeMemSearchCandidateReadinessOptions,
-    ) -> NowledgeMemSearchCandidateReadinessReport {
+    ) -> Result<NowledgeMemSearchCandidateReadinessReport> {
         self.search_candidates_with_report(request)
-            .readiness_report(options)
+            .map(|output| output.readiness_report(options))
     }
 
     pub fn search_candidate_shadow_evidence<I, S>(
         &self,
         request: &NowledgeMemSearchCandidateRequest,
         primary_candidate_ids: I,
-    ) -> NowledgeMemSearchCandidateShadowEvidence
+    ) -> Result<NowledgeMemSearchCandidateShadowEvidence>
     where
         I: IntoIterator<Item = S>,
         S: AsRef<str>,
     {
-        let output = self.search_candidates_with_report(request);
+        let output = self.search_candidates_with_report(request)?;
         let mut accumulator = NowledgeMemSearchCandidateShadowAccumulator::new();
         accumulator.record_search_candidate_output(primary_candidate_ids, &output);
-        accumulator.evidence()
+        Ok(accumulator.evidence())
     }
 
     pub fn search_candidate_shadow_evidence_json<I, S>(
         &self,
         request: &NowledgeMemSearchCandidateRequest,
         primary_candidate_ids: I,
-    ) -> serde_json::Value
+    ) -> Result<serde_json::Value>
     where
         I: IntoIterator<Item = S>,
         S: AsRef<str>,
     {
         self.search_candidate_shadow_evidence(request, primary_candidate_ids)
-            .json()
+            .map(|evidence| evidence.json())
     }
 }
 
@@ -4048,9 +4049,8 @@ impl NowledgeMemEmbeddedStore {
         I: IntoIterator<Item = S>,
         S: AsRef<str>,
     {
-        Ok(self
-            .require_search_projection()?
-            .search_candidate_shadow_evidence_json(request, primary_candidate_ids))
+        self.require_search_projection()?
+            .search_candidate_shadow_evidence_json(request, primary_candidate_ids)
     }
 
     pub fn retrieve_knowledge(
@@ -10976,8 +10976,12 @@ mod tests {
                 "lifecycle_state__not_in".to_string(),
                 r#"["deleted","forgotten"]"#.to_string(),
             )]));
-        let text_output = projection.search_candidates_with_report(&text_request);
-        let vector_output = projection.search_candidates_with_report(&vector_request);
+        let text_output = projection
+            .search_candidates_with_report(&text_request)
+            .unwrap();
+        let vector_output = projection
+            .search_candidates_with_report(&vector_request)
+            .unwrap();
         let mut accumulator = NowledgeMemSearchCandidateShadowAccumulator::new();
 
         accumulator.record_search_candidate_output(["memory:mem-leg"], &text_output);
@@ -11223,7 +11227,9 @@ mod tests {
         let options =
             NowledgeMemSearchCandidateReadinessOptions::default().with_source_chunk_identity(true);
 
-        let readiness = projection.search_candidate_readiness(&request, &options);
+        let readiness = projection
+            .search_candidate_readiness(&request, &options)
+            .unwrap();
 
         assert!(!readiness.ready);
         assert_eq!(readiness.candidate_report.returned_hit_count, 1);
@@ -11280,7 +11286,9 @@ mod tests {
                 .with_source_chunk_identity(true)
                 .with_embedding_identity("bge-m3", 2);
 
-        let readiness = projection.search_candidate_readiness(&request, &options);
+        let readiness = projection
+            .search_candidate_readiness(&request, &options)
+            .unwrap();
 
         assert!(!readiness.ready);
         assert!(readiness.text_retriever_ready);
@@ -11336,7 +11344,9 @@ mod tests {
                 .with_text_retriever(true)
                 .with_source_chunk_identity(true);
 
-        let readiness = projection.search_candidate_readiness(&request, &options);
+        let readiness = projection
+            .search_candidate_readiness(&request, &options)
+            .unwrap();
 
         assert!(!readiness.ready);
         assert!(readiness.projection_watermark_ready);
@@ -11404,7 +11414,9 @@ mod tests {
                 .with_source_chunk_identity(true)
                 .with_embedding_identity("bge-m3", 3);
 
-        let readiness = projection.search_candidate_readiness(&request, &options);
+        let readiness = projection
+            .search_candidate_readiness(&request, &options)
+            .unwrap();
 
         assert!(!readiness.ready);
         assert!(readiness.projection_watermark_ready);
@@ -11519,7 +11531,7 @@ mod tests {
         let request = NowledgeMemSearchCandidateRequest::vector(vec![1.0, 0.0], 10)
             .with_compressed_vector_search_mode(CompressedVectorSearchMode::Preferred);
 
-        let output = projection.search_candidates_with_report(&request);
+        let output = projection.search_candidates_with_report(&request).unwrap();
 
         assert_eq!(
             output.report.compressed_vector_search_mode,

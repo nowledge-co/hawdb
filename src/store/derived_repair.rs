@@ -1,8 +1,7 @@
 use super::doctor::DatabaseDoctor;
 use super::{
     file_checksum, load_published_canonical_adjacency, load_published_property_projection,
-    store_id_for_path, CanonicalAdjacencyConfig, DerivedArtifactBuildConfig, DurableManifest,
-    GraphManifestOpenBudget, GraphStore, PersistentPropertyProjectionConfig, RecoveryMode,
+    store_id_for_path, DurableManifest, GraphManifestOpenBudget, GraphStore, RecoveryMode,
     SegmentCache, StorageResidencyMode, WalReplayConfig, MANIFEST_FILE,
 };
 use crate::error::{Result, SkeinError};
@@ -12,7 +11,6 @@ pub use skein_storage::{
     DerivedArtifactKind, DerivedArtifactRebuildOptions, DerivedArtifactRepairPlan,
     DerivedArtifactRepairReport, DERIVED_ARTIFACT_REPAIR_PROTOCOL,
 };
-use std::num::{NonZeroU64, NonZeroUsize};
 use std::path::Path;
 use std::sync::Arc;
 
@@ -334,34 +332,7 @@ fn plan_from_inspection(
     Ok(plan)
 }
 
-fn build_config(options: DerivedArtifactRebuildOptions) -> Result<DerivedArtifactBuildConfig> {
-    let memory = NonZeroU64::new(options.build_memory_bytes)
-        .ok_or_else(|| SkeinError::Storage("derived repair memory limit is zero".to_string()))?;
-    let spill = NonZeroU64::new(options.max_temporary_bytes)
-        .ok_or_else(|| SkeinError::Storage("derived repair spill limit is zero".to_string()))?;
-    let spill_runs = NonZeroUsize::new(options.max_spill_runs)
-        .ok_or_else(|| SkeinError::Storage("derived repair spill run limit is zero".to_string()))?;
-    let generated = NonZeroU64::new(options.max_generated_property_entries).ok_or_else(|| {
-        SkeinError::Storage("derived repair generated entry limit is zero".to_string())
-    })?;
-    let adjacency = CanonicalAdjacencyConfig {
-        memory_budget_bytes: memory,
-        max_spill_bytes: spill,
-        max_spill_runs: spill_runs,
-        ..CanonicalAdjacencyConfig::default()
-    };
-    let property_projection = PersistentPropertyProjectionConfig {
-        memory_budget_bytes: memory,
-        max_spill_bytes: spill,
-        max_spill_runs: spill_runs,
-        max_generated_entries: generated,
-        ..PersistentPropertyProjectionConfig::default()
-    };
-    Ok(DerivedArtifactBuildConfig {
-        adjacency,
-        property_projection,
-    })
-}
+pub(crate) use skein_storage::derived_repair::build_config;
 
 fn validate_source_identity(path: &Path, plan: &DerivedArtifactRepairPlan) -> Result<()> {
     let manifest = file_checksum(&path.join(MANIFEST_FILE))?;

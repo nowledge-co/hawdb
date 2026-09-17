@@ -62,24 +62,26 @@ fn knowledge_retrieval_expands_graph_context_by_ordered_adjacency() {
     db.rebuild_search_projection(&mut search_index, SearchRebuildOptions::default())
         .unwrap();
 
-    let output = db.retrieve_knowledge(
-        &search_index,
-        &KnowledgeRetrievalRequest {
-            query_text: "ordered retrieval".to_string(),
-            query_embedding: None,
-            mode: SearchMode::Text,
-            limit: 1,
-            offset: 0,
-            rank_window: None,
-            search_fusion_weights: SearchFusionWeights::default(),
-            metadata_filters: BTreeMap::new(),
-            candidate_limit: None,
-            candidate_scoring: KnowledgeCandidateScoringPolicy::Max,
-            graph_seed_limit: 0,
-            graph_context_limit: 1,
-            graph_context_max_hops: 1,
-        },
-    );
+    let output = db
+        .retrieve_knowledge(
+            &search_index,
+            &KnowledgeRetrievalRequest {
+                query_text: "ordered retrieval".to_string(),
+                query_embedding: None,
+                mode: SearchMode::Text,
+                limit: 1,
+                offset: 0,
+                rank_window: None,
+                search_fusion_weights: SearchFusionWeights::default(),
+                metadata_filters: BTreeMap::new(),
+                candidate_limit: None,
+                candidate_scoring: KnowledgeCandidateScoringPolicy::Max,
+                graph_seed_limit: 0,
+                graph_context_limit: 1,
+                graph_context_max_hops: 1,
+            },
+        )
+        .unwrap();
 
     assert_eq!(output.graph_context_paths.len(), 1);
     assert_eq!(
@@ -143,24 +145,26 @@ fn knowledge_retrieval_reports_dense_graph_context_without_truncation() {
     db.rebuild_search_projection(&mut search_index, SearchRebuildOptions::default())
         .unwrap();
 
-    let output = db.retrieve_knowledge(
-        &search_index,
-        &KnowledgeRetrievalRequest {
-            query_text: "dense retrieval".to_string(),
-            query_embedding: None,
-            mode: SearchMode::Text,
-            limit: 1,
-            offset: 0,
-            rank_window: None,
-            search_fusion_weights: SearchFusionWeights::default(),
-            metadata_filters: BTreeMap::new(),
-            candidate_limit: None,
-            candidate_scoring: KnowledgeCandidateScoringPolicy::Max,
-            graph_seed_limit: 0,
-            graph_context_limit: DENSE_ADJACENCY_DEGREE_THRESHOLD,
-            graph_context_max_hops: 1,
-        },
-    );
+    let output = db
+        .retrieve_knowledge(
+            &search_index,
+            &KnowledgeRetrievalRequest {
+                query_text: "dense retrieval".to_string(),
+                query_embedding: None,
+                mode: SearchMode::Text,
+                limit: 1,
+                offset: 0,
+                rank_window: None,
+                search_fusion_weights: SearchFusionWeights::default(),
+                metadata_filters: BTreeMap::new(),
+                candidate_limit: None,
+                candidate_scoring: KnowledgeCandidateScoringPolicy::Max,
+                graph_seed_limit: 0,
+                graph_context_limit: DENSE_ADJACENCY_DEGREE_THRESHOLD,
+                graph_context_max_hops: 1,
+            },
+        )
+        .unwrap();
 
     assert_eq!(
         output.graph_context_paths.len(),

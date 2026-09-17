@@ -5,11 +5,13 @@
 //! reopening, and repair application.
 
 use crate::{
+    CanonicalAdjacencyConfig, PersistentPropertyProjectionConfig,
     DEFAULT_MAX_GRAPH_MANIFEST_OPEN_BYTES, DEFAULT_MAX_WAL_REPLAY_BYTES,
     DEFAULT_MAX_WAL_REPLAY_ENTRIES,
 };
 use serde::{Deserialize, Serialize};
 use skein_core::{Result, SkeinError};
+use std::num::{NonZeroU64, NonZeroUsize};
 
 pub const DERIVED_ARTIFACT_REPAIR_PROTOCOL: &str = "skein-derived-artifact-repair-v1";
 
@@ -172,6 +174,41 @@ pub fn plan_identity(plan: &DerivedArtifactRepairPlan) -> String {
     skein_integrity::integrity_digest(&encoded)
         .sha256
         .to_string()
+}
+
+#[derive(Debug, Clone, Copy, Default)]
+pub struct DerivedArtifactBuildConfig {
+    pub adjacency: CanonicalAdjacencyConfig,
+    pub property_projection: PersistentPropertyProjectionConfig,
+}
+
+pub fn build_config(options: DerivedArtifactRebuildOptions) -> Result<DerivedArtifactBuildConfig> {
+    let memory = NonZeroU64::new(options.build_memory_bytes)
+        .ok_or_else(|| SkeinError::Storage("derived repair memory limit is zero".to_string()))?;
+    let spill = NonZeroU64::new(options.max_temporary_bytes)
+        .ok_or_else(|| SkeinError::Storage("derived repair spill limit is zero".to_string()))?;
+    let spill_runs = NonZeroUsize::new(options.max_spill_runs)
+        .ok_or_else(|| SkeinError::Storage("derived repair spill run limit is zero".to_string()))?;
+    let generated = NonZeroU64::new(options.max_generated_property_entries).ok_or_else(|| {
+        SkeinError::Storage("derived repair generated entry limit is zero".to_string())
+    })?;
+    let adjacency = CanonicalAdjacencyConfig {
+        memory_budget_bytes: memory,
+        max_spill_bytes: spill,
+        max_spill_runs: spill_runs,
+        ..CanonicalAdjacencyConfig::default()
+    };
+    let property_projection = PersistentPropertyProjectionConfig {
+        memory_budget_bytes: memory,
+        max_spill_bytes: spill,
+        max_spill_runs: spill_runs,
+        max_generated_entries: generated,
+        ..PersistentPropertyProjectionConfig::default()
+    };
+    Ok(DerivedArtifactBuildConfig {
+        adjacency,
+        property_projection,
+    })
 }
 
 #[cfg(test)]

@@ -10,27 +10,29 @@ fn knowledge_retrieval_diagnostics_explain_empty_metadata_scope() {
     db.rebuild_search_projection(&mut search_index, SearchRebuildOptions::default())
         .unwrap();
 
-    let output = db.retrieve_knowledge(
-        &search_index,
-        &KnowledgeRetrievalRequest {
-            query_text: "metadata scoped retrieval".to_string(),
-            query_embedding: None,
-            mode: SearchMode::Text,
-            limit: 10,
-            offset: 0,
-            rank_window: None,
-            search_fusion_weights: SearchFusionWeights::default(),
-            metadata_filters: BTreeMap::from([(
-                "source_id".to_string(),
-                "missing_thread".to_string(),
-            )]),
-            candidate_limit: None,
-            candidate_scoring: KnowledgeCandidateScoringPolicy::Max,
-            graph_seed_limit: 10,
-            graph_context_limit: 0,
-            graph_context_max_hops: 1,
-        },
-    );
+    let output = db
+        .retrieve_knowledge(
+            &search_index,
+            &KnowledgeRetrievalRequest {
+                query_text: "metadata scoped retrieval".to_string(),
+                query_embedding: None,
+                mode: SearchMode::Text,
+                limit: 10,
+                offset: 0,
+                rank_window: None,
+                search_fusion_weights: SearchFusionWeights::default(),
+                metadata_filters: BTreeMap::from([(
+                    "source_id".to_string(),
+                    "missing_thread".to_string(),
+                )]),
+                candidate_limit: None,
+                candidate_scoring: KnowledgeCandidateScoringPolicy::Max,
+                graph_seed_limit: 10,
+                graph_context_limit: 0,
+                graph_context_max_hops: 1,
+            },
+        )
+        .unwrap();
 
     assert_eq!(output.search.total_hits, 0);
     assert_eq!(output.graph_seeds.len(), 0);
@@ -92,24 +94,26 @@ fn knowledge_retrieval_diagnostics_explain_empty_metadata_scope() {
     let mut search_index = SearchIndex::in_memory();
     db.rebuild_search_projection(&mut search_index, SearchRebuildOptions::default())
         .unwrap();
-    let search_disabled_by_limit = db.retrieve_knowledge(
-        &search_index,
-        &KnowledgeRetrievalRequest {
-            query_text: "Graph candidate".to_string(),
-            query_embedding: None,
-            mode: SearchMode::Text,
-            limit: 0,
-            offset: 0,
-            rank_window: None,
-            search_fusion_weights: SearchFusionWeights::default(),
-            metadata_filters: BTreeMap::new(),
-            candidate_limit: None,
-            candidate_scoring: KnowledgeCandidateScoringPolicy::Max,
-            graph_seed_limit: 0,
-            graph_context_limit: 0,
-            graph_context_max_hops: 1,
-        },
-    );
+    let search_disabled_by_limit = db
+        .retrieve_knowledge(
+            &search_index,
+            &KnowledgeRetrievalRequest {
+                query_text: "Graph candidate".to_string(),
+                query_embedding: None,
+                mode: SearchMode::Text,
+                limit: 0,
+                offset: 0,
+                rank_window: None,
+                search_fusion_weights: SearchFusionWeights::default(),
+                metadata_filters: BTreeMap::new(),
+                candidate_limit: None,
+                candidate_scoring: KnowledgeCandidateScoringPolicy::Max,
+                graph_seed_limit: 0,
+                graph_context_limit: 0,
+                graph_context_max_hops: 1,
+            },
+        )
+        .unwrap();
     assert_eq!(search_disabled_by_limit.search.total_hits, 1);
     assert!(search_disabled_by_limit.search.hits.is_empty());
     assert!(search_disabled_by_limit.diagnostics.search_truncated);
@@ -159,24 +163,26 @@ fn knowledge_retrieval_diagnostics_explain_disabled_graph_seeds() {
         .unwrap();
     let search_index = SearchIndex::in_memory();
 
-    let output = db.retrieve_knowledge(
-        &search_index,
-        &KnowledgeRetrievalRequest {
-            query_text: "Graph candidate".to_string(),
-            query_embedding: None,
-            mode: SearchMode::Text,
-            limit: 10,
-            offset: 0,
-            rank_window: None,
-            search_fusion_weights: SearchFusionWeights::default(),
-            metadata_filters: BTreeMap::new(),
-            candidate_limit: None,
-            candidate_scoring: KnowledgeCandidateScoringPolicy::Max,
-            graph_seed_limit: 0,
-            graph_context_limit: 0,
-            graph_context_max_hops: 1,
-        },
-    );
+    let output = db
+        .retrieve_knowledge(
+            &search_index,
+            &KnowledgeRetrievalRequest {
+                query_text: "Graph candidate".to_string(),
+                query_embedding: None,
+                mode: SearchMode::Text,
+                limit: 10,
+                offset: 0,
+                rank_window: None,
+                search_fusion_weights: SearchFusionWeights::default(),
+                metadata_filters: BTreeMap::new(),
+                candidate_limit: None,
+                candidate_scoring: KnowledgeCandidateScoringPolicy::Max,
+                graph_seed_limit: 0,
+                graph_context_limit: 0,
+                graph_context_max_hops: 1,
+            },
+        )
+        .unwrap();
 
     assert!(output.search.hits.is_empty());
     assert!(output.graph_seeds.is_empty());
@@ -218,24 +224,26 @@ fn knowledge_retrieval_diagnostics_report_projection_warnings() {
         .mark_metadata_repair_needed("missing derived metadata")
         .unwrap();
 
-    let output = db.retrieve_knowledge(
-        &search_index,
-        &KnowledgeRetrievalRequest {
-            query_text: "projection warning".to_string(),
-            query_embedding: None,
-            mode: SearchMode::Text,
-            limit: 10,
-            offset: 0,
-            rank_window: None,
-            search_fusion_weights: SearchFusionWeights::default(),
-            metadata_filters: BTreeMap::new(),
-            candidate_limit: None,
-            candidate_scoring: KnowledgeCandidateScoringPolicy::Max,
-            graph_seed_limit: 10,
-            graph_context_limit: 0,
-            graph_context_max_hops: 1,
-        },
-    );
+    let output = db
+        .retrieve_knowledge(
+            &search_index,
+            &KnowledgeRetrievalRequest {
+                query_text: "projection warning".to_string(),
+                query_embedding: None,
+                mode: SearchMode::Text,
+                limit: 10,
+                offset: 0,
+                rank_window: None,
+                search_fusion_weights: SearchFusionWeights::default(),
+                metadata_filters: BTreeMap::new(),
+                candidate_limit: None,
+                candidate_scoring: KnowledgeCandidateScoringPolicy::Max,
+                graph_seed_limit: 10,
+                graph_context_limit: 0,
+                graph_context_max_hops: 1,
+            },
+        )
+        .unwrap();
 
     assert!(output.projection_freshness.full_reindex_needed);
     assert!(output.projection_freshness.metadata_repair_needed);
@@ -289,24 +297,26 @@ fn knowledge_retrieval_diagnostics_expose_stale_projection_flag() {
     )
     .unwrap();
 
-    let output = db.retrieve_knowledge(
-        &search_index,
-        &KnowledgeRetrievalRequest {
-            query_text: "projection warning".to_string(),
-            query_embedding: None,
-            mode: SearchMode::Text,
-            limit: 10,
-            offset: 0,
-            rank_window: None,
-            search_fusion_weights: SearchFusionWeights::default(),
-            metadata_filters: BTreeMap::new(),
-            candidate_limit: None,
-            candidate_scoring: KnowledgeCandidateScoringPolicy::Max,
-            graph_seed_limit: 10,
-            graph_context_limit: 0,
-            graph_context_max_hops: 1,
-        },
-    );
+    let output = db
+        .retrieve_knowledge(
+            &search_index,
+            &KnowledgeRetrievalRequest {
+                query_text: "projection warning".to_string(),
+                query_embedding: None,
+                mode: SearchMode::Text,
+                limit: 10,
+                offset: 0,
+                rank_window: None,
+                search_fusion_weights: SearchFusionWeights::default(),
+                metadata_filters: BTreeMap::new(),
+                candidate_limit: None,
+                candidate_scoring: KnowledgeCandidateScoringPolicy::Max,
+                graph_seed_limit: 10,
+                graph_context_limit: 0,
+                graph_context_max_hops: 1,
+            },
+        )
+        .unwrap();
 
     assert_eq!(output.graph_commit_epoch, 2);
     assert_eq!(
@@ -336,24 +346,26 @@ fn knowledge_retrieval_diagnostics_report_stale_projection_epoch() {
     db.query("CREATE (:Memory {id: 'mem_2', title: 'Newer graph', content: 'new graph data'})")
         .unwrap();
 
-    let output = db.retrieve_knowledge(
-        &search_index,
-        &KnowledgeRetrievalRequest {
-            query_text: "projection epoch".to_string(),
-            query_embedding: None,
-            mode: SearchMode::Text,
-            limit: 10,
-            offset: 0,
-            rank_window: None,
-            search_fusion_weights: SearchFusionWeights::default(),
-            metadata_filters: BTreeMap::new(),
-            candidate_limit: None,
-            candidate_scoring: KnowledgeCandidateScoringPolicy::Max,
-            graph_seed_limit: 10,
-            graph_context_limit: 0,
-            graph_context_max_hops: 1,
-        },
-    );
+    let output = db
+        .retrieve_knowledge(
+            &search_index,
+            &KnowledgeRetrievalRequest {
+                query_text: "projection epoch".to_string(),
+                query_embedding: None,
+                mode: SearchMode::Text,
+                limit: 10,
+                offset: 0,
+                rank_window: None,
+                search_fusion_weights: SearchFusionWeights::default(),
+                metadata_filters: BTreeMap::new(),
+                candidate_limit: None,
+                candidate_scoring: KnowledgeCandidateScoringPolicy::Max,
+                graph_seed_limit: 10,
+                graph_context_limit: 0,
+                graph_context_max_hops: 1,
+            },
+        )
+        .unwrap();
 
     assert_eq!(output.graph_commit_epoch, 2);
     assert_eq!(

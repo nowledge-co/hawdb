@@ -1,7 +1,7 @@
 use skein::{SearchAnalyzerLexicon, SearchDocument, SearchIndex, SearchMode};
 use std::collections::BTreeMap;
 
-fn main() {
+fn main() -> skein::Result<()> {
     let mut index = SearchIndex::in_memory().with_analyzer_lexicon(nowledge_application_lexicon());
 
     index
@@ -14,8 +14,9 @@ fn main() {
         })
         .unwrap();
 
-    let hits = index.search("raw evidence", None, SearchMode::Text, 10);
+    let hits = index.search("raw evidence", None, SearchMode::Text, 10)?;
     assert_eq!(hits[0].id, "memory-lifecycle");
+    Ok(())
 }
 
 fn nowledge_application_lexicon() -> SearchAnalyzerLexicon {

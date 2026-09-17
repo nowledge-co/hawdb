@@ -36,6 +36,8 @@ pub mod index_page;
 pub mod io;
 pub mod mutation;
 mod ownership;
+#[doc(hidden)]
+pub mod predicate;
 pub mod pressure;
 pub mod projection;
 pub mod projection_generation;

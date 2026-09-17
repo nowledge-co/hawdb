@@ -13,24 +13,29 @@ fn knowledge_retrieval_applies_metadata_filters_to_search_and_graph_seeds() {
     db.rebuild_search_projection(&mut search_index, SearchRebuildOptions::default())
         .unwrap();
 
-    let output = db.retrieve_knowledge(
-        &search_index,
-        &KnowledgeRetrievalRequest {
-            query_text: "metadata scoped retrieval".to_string(),
-            query_embedding: None,
-            mode: SearchMode::Text,
-            limit: 10,
-            offset: 0,
-            rank_window: None,
-            search_fusion_weights: SearchFusionWeights::default(),
-            metadata_filters: BTreeMap::from([("source_id".to_string(), "thread_1".to_string())]),
-            candidate_limit: None,
-            candidate_scoring: KnowledgeCandidateScoringPolicy::Max,
-            graph_seed_limit: 10,
-            graph_context_limit: 0,
-            graph_context_max_hops: 1,
-        },
-    );
+    let output = db
+        .retrieve_knowledge(
+            &search_index,
+            &KnowledgeRetrievalRequest {
+                query_text: "metadata scoped retrieval".to_string(),
+                query_embedding: None,
+                mode: SearchMode::Text,
+                limit: 10,
+                offset: 0,
+                rank_window: None,
+                search_fusion_weights: SearchFusionWeights::default(),
+                metadata_filters: BTreeMap::from([(
+                    "source_id".to_string(),
+                    "thread_1".to_string(),
+                )]),
+                candidate_limit: None,
+                candidate_scoring: KnowledgeCandidateScoringPolicy::Max,
+                graph_seed_limit: 10,
+                graph_context_limit: 0,
+                graph_context_max_hops: 1,
+            },
+        )
+        .unwrap();
 
     assert_eq!(output.search.total_hits, 1);
     assert_eq!(output.diagnostics.search_document_count, 2);
@@ -138,8 +143,8 @@ fn knowledge_retrieval_filter_preserves_stable_offset_limit_pages() {
         graph_context_limit: 0,
         graph_context_max_hops: 1,
     };
-    let first_page = db.retrieve_knowledge(&search_index, &request);
-    let repeated_page = db.retrieve_knowledge(&search_index, &request);
+    let first_page = db.retrieve_knowledge(&search_index, &request).unwrap();
+    let repeated_page = db.retrieve_knowledge(&search_index, &request).unwrap();
 
     assert_eq!(first_page.search.total_hits, 3);
     assert_eq!(first_page.search.limit, 1);
@@ -176,13 +181,15 @@ fn knowledge_retrieval_filter_preserves_stable_offset_limit_pages() {
         1
     );
 
-    let empty_page = db.retrieve_knowledge(
-        &search_index,
-        &KnowledgeRetrievalRequest {
-            offset: 10,
-            ..request
-        },
-    );
+    let empty_page = db
+        .retrieve_knowledge(
+            &search_index,
+            &KnowledgeRetrievalRequest {
+                offset: 10,
+                ..request
+            },
+        )
+        .unwrap();
 
     assert_eq!(empty_page.search.total_hits, 3);
     assert_eq!(empty_page.search.offset, 10);
@@ -211,24 +218,26 @@ fn knowledge_retrieval_kind_filter_accepts_canonical_labels() {
     db.rebuild_search_projection(&mut search_index, SearchRebuildOptions::default())
         .unwrap();
 
-    let output = db.retrieve_knowledge(
-        &search_index,
-        &KnowledgeRetrievalRequest {
-            query_text: "kind scoped retrieval".to_string(),
-            query_embedding: None,
-            mode: SearchMode::Text,
-            limit: 10,
-            offset: 0,
-            rank_window: None,
-            search_fusion_weights: SearchFusionWeights::default(),
-            metadata_filters: BTreeMap::from([("kind".to_string(), "Memory".to_string())]),
-            candidate_limit: None,
-            candidate_scoring: KnowledgeCandidateScoringPolicy::Max,
-            graph_seed_limit: 10,
-            graph_context_limit: 0,
-            graph_context_max_hops: 1,
-        },
-    );
+    let output = db
+        .retrieve_knowledge(
+            &search_index,
+            &KnowledgeRetrievalRequest {
+                query_text: "kind scoped retrieval".to_string(),
+                query_embedding: None,
+                mode: SearchMode::Text,
+                limit: 10,
+                offset: 0,
+                rank_window: None,
+                search_fusion_weights: SearchFusionWeights::default(),
+                metadata_filters: BTreeMap::from([("kind".to_string(), "Memory".to_string())]),
+                candidate_limit: None,
+                candidate_scoring: KnowledgeCandidateScoringPolicy::Max,
+                graph_seed_limit: 10,
+                graph_context_limit: 0,
+                graph_context_max_hops: 1,
+            },
+        )
+        .unwrap();
 
     assert_eq!(output.search.total_hits, 1);
     assert_eq!(output.diagnostics.search_filtered_document_count, 1);
@@ -254,24 +263,26 @@ fn knowledge_retrieval_latest_and_history_filters_canonicalize_to_is_latest() {
     db.rebuild_search_projection(&mut search_index, SearchRebuildOptions::default())
         .unwrap();
 
-    let latest = db.retrieve_knowledge(
-        &search_index,
-        &KnowledgeRetrievalRequest {
-            query_text: "version scoped retrieval".to_string(),
-            query_embedding: None,
-            mode: SearchMode::Text,
-            limit: 10,
-            offset: 0,
-            rank_window: None,
-            search_fusion_weights: SearchFusionWeights::default(),
-            metadata_filters: BTreeMap::from([("latest".to_string(), "true".to_string())]),
-            candidate_limit: None,
-            candidate_scoring: KnowledgeCandidateScoringPolicy::Max,
-            graph_seed_limit: 10,
-            graph_context_limit: 0,
-            graph_context_max_hops: 1,
-        },
-    );
+    let latest = db
+        .retrieve_knowledge(
+            &search_index,
+            &KnowledgeRetrievalRequest {
+                query_text: "version scoped retrieval".to_string(),
+                query_embedding: None,
+                mode: SearchMode::Text,
+                limit: 10,
+                offset: 0,
+                rank_window: None,
+                search_fusion_weights: SearchFusionWeights::default(),
+                metadata_filters: BTreeMap::from([("latest".to_string(), "true".to_string())]),
+                candidate_limit: None,
+                candidate_scoring: KnowledgeCandidateScoringPolicy::Max,
+                graph_seed_limit: 10,
+                graph_context_limit: 0,
+                graph_context_max_hops: 1,
+            },
+        )
+        .unwrap();
 
     assert_eq!(latest.search.total_hits, 1);
     assert_eq!(
@@ -283,24 +294,26 @@ fn knowledge_retrieval_latest_and_history_filters_canonicalize_to_is_latest() {
         BTreeMap::from([("latest".to_string(), "true".to_string())])
     );
 
-    let history = db.retrieve_knowledge(
-        &search_index,
-        &KnowledgeRetrievalRequest {
-            query_text: "version scoped retrieval".to_string(),
-            query_embedding: None,
-            mode: SearchMode::Text,
-            limit: 10,
-            offset: 0,
-            rank_window: None,
-            search_fusion_weights: SearchFusionWeights::default(),
-            metadata_filters: BTreeMap::from([("history".to_string(), "true".to_string())]),
-            candidate_limit: None,
-            candidate_scoring: KnowledgeCandidateScoringPolicy::Max,
-            graph_seed_limit: 10,
-            graph_context_limit: 0,
-            graph_context_max_hops: 1,
-        },
-    );
+    let history = db
+        .retrieve_knowledge(
+            &search_index,
+            &KnowledgeRetrievalRequest {
+                query_text: "version scoped retrieval".to_string(),
+                query_embedding: None,
+                mode: SearchMode::Text,
+                limit: 10,
+                offset: 0,
+                rank_window: None,
+                search_fusion_weights: SearchFusionWeights::default(),
+                metadata_filters: BTreeMap::from([("history".to_string(), "true".to_string())]),
+                candidate_limit: None,
+                candidate_scoring: KnowledgeCandidateScoringPolicy::Max,
+                graph_seed_limit: 10,
+                graph_context_limit: 0,
+                graph_context_max_hops: 1,
+            },
+        )
+        .unwrap();
 
     assert_eq!(history.search.total_hits, 1);
     assert_eq!(
@@ -324,33 +337,35 @@ fn knowledge_retrieval_date_alias_filters_lower_to_projection_ranges() {
     db.rebuild_search_projection(&mut search_index, SearchRebuildOptions::default())
         .unwrap();
 
-    let event_window = db.retrieve_knowledge(
-        &search_index,
-        &KnowledgeRetrievalRequest {
-            query_text: "date scoped retrieval".to_string(),
-            query_embedding: None,
-            mode: SearchMode::Text,
-            limit: 10,
-            offset: 0,
-            rank_window: None,
-            search_fusion_weights: SearchFusionWeights::default(),
-            metadata_filters: BTreeMap::from([
-                (
-                    "event_date_from".to_string(),
-                    "2026-07-01T00:00:00Z".to_string(),
-                ),
-                (
-                    "event_date_to".to_string(),
-                    "2026-07-02T00:00:00Z".to_string(),
-                ),
-            ]),
-            candidate_limit: None,
-            candidate_scoring: KnowledgeCandidateScoringPolicy::Max,
-            graph_seed_limit: 10,
-            graph_context_limit: 0,
-            graph_context_max_hops: 1,
-        },
-    );
+    let event_window = db
+        .retrieve_knowledge(
+            &search_index,
+            &KnowledgeRetrievalRequest {
+                query_text: "date scoped retrieval".to_string(),
+                query_embedding: None,
+                mode: SearchMode::Text,
+                limit: 10,
+                offset: 0,
+                rank_window: None,
+                search_fusion_weights: SearchFusionWeights::default(),
+                metadata_filters: BTreeMap::from([
+                    (
+                        "event_date_from".to_string(),
+                        "2026-07-01T00:00:00Z".to_string(),
+                    ),
+                    (
+                        "event_date_to".to_string(),
+                        "2026-07-02T00:00:00Z".to_string(),
+                    ),
+                ]),
+                candidate_limit: None,
+                candidate_scoring: KnowledgeCandidateScoringPolicy::Max,
+                graph_seed_limit: 10,
+                graph_context_limit: 0,
+                graph_context_max_hops: 1,
+            },
+        )
+        .unwrap();
 
     assert_eq!(event_window.search.total_hits, 1);
     assert_eq!(
@@ -359,27 +374,29 @@ fn knowledge_retrieval_date_alias_filters_lower_to_projection_ranges() {
     );
     assert_eq!(event_window.diagnostics.search_filtered_document_count, 1);
 
-    let recorded_window = db.retrieve_knowledge(
-        &search_index,
-        &KnowledgeRetrievalRequest {
-            query_text: "date scoped retrieval".to_string(),
-            query_embedding: None,
-            mode: SearchMode::Text,
-            limit: 10,
-            offset: 0,
-            rank_window: None,
-            search_fusion_weights: SearchFusionWeights::default(),
-            metadata_filters: BTreeMap::from([
-                ("recorded_date_from".to_string(), "2026-06-01".to_string()),
-                ("recorded_date_to".to_string(), "2026-06-30".to_string()),
-            ]),
-            candidate_limit: None,
-            candidate_scoring: KnowledgeCandidateScoringPolicy::Max,
-            graph_seed_limit: 10,
-            graph_context_limit: 0,
-            graph_context_max_hops: 1,
-        },
-    );
+    let recorded_window = db
+        .retrieve_knowledge(
+            &search_index,
+            &KnowledgeRetrievalRequest {
+                query_text: "date scoped retrieval".to_string(),
+                query_embedding: None,
+                mode: SearchMode::Text,
+                limit: 10,
+                offset: 0,
+                rank_window: None,
+                search_fusion_weights: SearchFusionWeights::default(),
+                metadata_filters: BTreeMap::from([
+                    ("recorded_date_from".to_string(), "2026-06-01".to_string()),
+                    ("recorded_date_to".to_string(), "2026-06-30".to_string()),
+                ]),
+                candidate_limit: None,
+                candidate_scoring: KnowledgeCandidateScoringPolicy::Max,
+                graph_seed_limit: 10,
+                graph_context_limit: 0,
+                graph_context_max_hops: 1,
+            },
+        )
+        .unwrap();
 
     assert_eq!(recorded_window.search.total_hits, 2);
     assert_eq!(
@@ -405,27 +422,29 @@ fn knowledge_retrieval_temporal_context_alias_filters_are_descriptor_safe() {
     db.rebuild_search_projection(&mut search_index, SearchRebuildOptions::default())
         .unwrap();
 
-    let output = db.retrieve_knowledge(
-        &search_index,
-        &KnowledgeRetrievalRequest {
-            query_text: "temporal scoped retrieval".to_string(),
-            query_embedding: None,
-            mode: SearchMode::Text,
-            limit: 10,
-            offset: 0,
-            rank_window: None,
-            search_fusion_weights: SearchFusionWeights::default(),
-            metadata_filters: BTreeMap::from([(
-                "temporal_contexts__in".to_string(),
-                r#"["current"]"#.to_string(),
-            )]),
-            candidate_limit: None,
-            candidate_scoring: KnowledgeCandidateScoringPolicy::Max,
-            graph_seed_limit: 10,
-            graph_context_limit: 0,
-            graph_context_max_hops: 1,
-        },
-    );
+    let output = db
+        .retrieve_knowledge(
+            &search_index,
+            &KnowledgeRetrievalRequest {
+                query_text: "temporal scoped retrieval".to_string(),
+                query_embedding: None,
+                mode: SearchMode::Text,
+                limit: 10,
+                offset: 0,
+                rank_window: None,
+                search_fusion_weights: SearchFusionWeights::default(),
+                metadata_filters: BTreeMap::from([(
+                    "temporal_contexts__in".to_string(),
+                    r#"["current"]"#.to_string(),
+                )]),
+                candidate_limit: None,
+                candidate_scoring: KnowledgeCandidateScoringPolicy::Max,
+                graph_seed_limit: 10,
+                graph_context_limit: 0,
+                graph_context_max_hops: 1,
+            },
+        )
+        .unwrap();
 
     assert_eq!(output.search.total_hits, 1);
     assert_eq!(
@@ -450,27 +469,29 @@ fn knowledge_retrieval_space_scope_alias_filters_match_search_and_graph_seeds() 
     db.rebuild_search_projection(&mut search_index, SearchRebuildOptions::default())
         .unwrap();
 
-    let output = db.retrieve_knowledge(
-        &search_index,
-        &KnowledgeRetrievalRequest {
-            query_text: "space scoped retrieval".to_string(),
-            query_embedding: None,
-            mode: SearchMode::Text,
-            limit: 10,
-            offset: 0,
-            rank_window: None,
-            search_fusion_weights: SearchFusionWeights::default(),
-            metadata_filters: BTreeMap::from([(
-                "spaces__in".to_string(),
-                r#"["Default"]"#.to_string(),
-            )]),
-            candidate_limit: None,
-            candidate_scoring: KnowledgeCandidateScoringPolicy::Max,
-            graph_seed_limit: 10,
-            graph_context_limit: 0,
-            graph_context_max_hops: 1,
-        },
-    );
+    let output = db
+        .retrieve_knowledge(
+            &search_index,
+            &KnowledgeRetrievalRequest {
+                query_text: "space scoped retrieval".to_string(),
+                query_embedding: None,
+                mode: SearchMode::Text,
+                limit: 10,
+                offset: 0,
+                rank_window: None,
+                search_fusion_weights: SearchFusionWeights::default(),
+                metadata_filters: BTreeMap::from([(
+                    "spaces__in".to_string(),
+                    r#"["Default"]"#.to_string(),
+                )]),
+                candidate_limit: None,
+                candidate_scoring: KnowledgeCandidateScoringPolicy::Max,
+                graph_seed_limit: 10,
+                graph_context_limit: 0,
+                graph_context_max_hops: 1,
+            },
+        )
+        .unwrap();
 
     let search_ids = output
         .search
@@ -517,27 +538,29 @@ fn knowledge_retrieval_label_filters_use_relationship_derived_projection_metadat
     db.rebuild_search_projection(&mut search_index, SearchRebuildOptions::default())
         .unwrap();
 
-    let output = db.retrieve_knowledge(
-        &search_index,
-        &KnowledgeRetrievalRequest {
-            query_text: "label scoped retrieval".to_string(),
-            query_embedding: None,
-            mode: SearchMode::Text,
-            limit: 10,
-            offset: 0,
-            rank_window: None,
-            search_fusion_weights: SearchFusionWeights::default(),
-            metadata_filters: BTreeMap::from([(
-                "labels__in".to_string(),
-                r#"["Database"]"#.to_string(),
-            )]),
-            candidate_limit: None,
-            candidate_scoring: KnowledgeCandidateScoringPolicy::Max,
-            graph_seed_limit: 10,
-            graph_context_limit: 0,
-            graph_context_max_hops: 1,
-        },
-    );
+    let output = db
+        .retrieve_knowledge(
+            &search_index,
+            &KnowledgeRetrievalRequest {
+                query_text: "label scoped retrieval".to_string(),
+                query_embedding: None,
+                mode: SearchMode::Text,
+                limit: 10,
+                offset: 0,
+                rank_window: None,
+                search_fusion_weights: SearchFusionWeights::default(),
+                metadata_filters: BTreeMap::from([(
+                    "labels__in".to_string(),
+                    r#"["Database"]"#.to_string(),
+                )]),
+                candidate_limit: None,
+                candidate_scoring: KnowledgeCandidateScoringPolicy::Max,
+                graph_seed_limit: 10,
+                graph_context_limit: 0,
+                graph_context_max_hops: 1,
+            },
+        )
+        .unwrap();
 
     assert_eq!(output.search.total_hits, 1);
     assert_eq!(
@@ -571,24 +594,29 @@ fn knowledge_retrieval_source_filter_uses_projection_fallbacks() {
     db.rebuild_search_projection(&mut search_index, SearchRebuildOptions::default())
         .unwrap();
 
-    let output = db.retrieve_knowledge(
-        &search_index,
-        &KnowledgeRetrievalRequest {
-            query_text: "source fallback retrieval".to_string(),
-            query_embedding: None,
-            mode: SearchMode::Text,
-            limit: 10,
-            offset: 0,
-            rank_window: None,
-            search_fusion_weights: SearchFusionWeights::default(),
-            metadata_filters: BTreeMap::from([("source_id".to_string(), "thread_1".to_string())]),
-            candidate_limit: None,
-            candidate_scoring: KnowledgeCandidateScoringPolicy::Max,
-            graph_seed_limit: 10,
-            graph_context_limit: 0,
-            graph_context_max_hops: 1,
-        },
-    );
+    let output = db
+        .retrieve_knowledge(
+            &search_index,
+            &KnowledgeRetrievalRequest {
+                query_text: "source fallback retrieval".to_string(),
+                query_embedding: None,
+                mode: SearchMode::Text,
+                limit: 10,
+                offset: 0,
+                rank_window: None,
+                search_fusion_weights: SearchFusionWeights::default(),
+                metadata_filters: BTreeMap::from([(
+                    "source_id".to_string(),
+                    "thread_1".to_string(),
+                )]),
+                candidate_limit: None,
+                candidate_scoring: KnowledgeCandidateScoringPolicy::Max,
+                graph_seed_limit: 10,
+                graph_context_limit: 0,
+                graph_context_max_hops: 1,
+            },
+        )
+        .unwrap();
 
     assert_eq!(output.search.total_hits, 1);
     assert_eq!(output.diagnostics.search_filtered_document_count, 1);
@@ -613,24 +641,29 @@ fn knowledge_retrieval_source_filter_skips_empty_source_ids() {
     db.rebuild_search_projection(&mut search_index, SearchRebuildOptions::default())
         .unwrap();
 
-    let output = db.retrieve_knowledge(
-        &search_index,
-        &KnowledgeRetrievalRequest {
-            query_text: "empty source fallback retrieval".to_string(),
-            query_embedding: None,
-            mode: SearchMode::Text,
-            limit: 10,
-            offset: 0,
-            rank_window: None,
-            search_fusion_weights: SearchFusionWeights::default(),
-            metadata_filters: BTreeMap::from([("source_id".to_string(), "thread_1".to_string())]),
-            candidate_limit: None,
-            candidate_scoring: KnowledgeCandidateScoringPolicy::Max,
-            graph_seed_limit: 10,
-            graph_context_limit: 0,
-            graph_context_max_hops: 1,
-        },
-    );
+    let output = db
+        .retrieve_knowledge(
+            &search_index,
+            &KnowledgeRetrievalRequest {
+                query_text: "empty source fallback retrieval".to_string(),
+                query_embedding: None,
+                mode: SearchMode::Text,
+                limit: 10,
+                offset: 0,
+                rank_window: None,
+                search_fusion_weights: SearchFusionWeights::default(),
+                metadata_filters: BTreeMap::from([(
+                    "source_id".to_string(),
+                    "thread_1".to_string(),
+                )]),
+                candidate_limit: None,
+                candidate_scoring: KnowledgeCandidateScoringPolicy::Max,
+                graph_seed_limit: 10,
+                graph_context_limit: 0,
+                graph_context_max_hops: 1,
+            },
+        )
+        .unwrap();
 
     assert_eq!(output.search.total_hits, 1);
     assert_eq!(output.diagnostics.search_filtered_document_count, 1);
@@ -655,48 +688,52 @@ fn knowledge_retrieval_presence_filters_match_search_and_graph_seeds() {
     db.rebuild_search_projection(&mut search_index, SearchRebuildOptions::default())
         .unwrap();
 
-    let exists = db.retrieve_knowledge(
-        &search_index,
-        &KnowledgeRetrievalRequest {
-            query_text: "presence scoped retrieval".to_string(),
-            query_embedding: None,
-            mode: SearchMode::Text,
-            limit: 10,
-            offset: 0,
-            rank_window: None,
-            search_fusion_weights: SearchFusionWeights::default(),
-            metadata_filters: BTreeMap::from([(
-                "source_id__exists".to_string(),
-                "true".to_string(),
-            )]),
-            candidate_limit: None,
-            candidate_scoring: KnowledgeCandidateScoringPolicy::Max,
-            graph_seed_limit: 10,
-            graph_context_limit: 0,
-            graph_context_max_hops: 1,
-        },
-    );
-    let missing = db.retrieve_knowledge(
-        &search_index,
-        &KnowledgeRetrievalRequest {
-            query_text: "presence scoped retrieval".to_string(),
-            query_embedding: None,
-            mode: SearchMode::Text,
-            limit: 10,
-            offset: 0,
-            rank_window: None,
-            search_fusion_weights: SearchFusionWeights::default(),
-            metadata_filters: BTreeMap::from([(
-                "source_id__missing".to_string(),
-                "true".to_string(),
-            )]),
-            candidate_limit: None,
-            candidate_scoring: KnowledgeCandidateScoringPolicy::Max,
-            graph_seed_limit: 10,
-            graph_context_limit: 0,
-            graph_context_max_hops: 1,
-        },
-    );
+    let exists = db
+        .retrieve_knowledge(
+            &search_index,
+            &KnowledgeRetrievalRequest {
+                query_text: "presence scoped retrieval".to_string(),
+                query_embedding: None,
+                mode: SearchMode::Text,
+                limit: 10,
+                offset: 0,
+                rank_window: None,
+                search_fusion_weights: SearchFusionWeights::default(),
+                metadata_filters: BTreeMap::from([(
+                    "source_id__exists".to_string(),
+                    "true".to_string(),
+                )]),
+                candidate_limit: None,
+                candidate_scoring: KnowledgeCandidateScoringPolicy::Max,
+                graph_seed_limit: 10,
+                graph_context_limit: 0,
+                graph_context_max_hops: 1,
+            },
+        )
+        .unwrap();
+    let missing = db
+        .retrieve_knowledge(
+            &search_index,
+            &KnowledgeRetrievalRequest {
+                query_text: "presence scoped retrieval".to_string(),
+                query_embedding: None,
+                mode: SearchMode::Text,
+                limit: 10,
+                offset: 0,
+                rank_window: None,
+                search_fusion_weights: SearchFusionWeights::default(),
+                metadata_filters: BTreeMap::from([(
+                    "source_id__missing".to_string(),
+                    "true".to_string(),
+                )]),
+                candidate_limit: None,
+                candidate_scoring: KnowledgeCandidateScoringPolicy::Max,
+                graph_seed_limit: 10,
+                graph_context_limit: 0,
+                graph_context_max_hops: 1,
+            },
+        )
+        .unwrap();
 
     assert_eq!(exists.search.total_hits, 1);
     assert_eq!(
@@ -735,33 +772,35 @@ fn knowledge_retrieval_metadata_filters_support_typed_in_and_not_in() {
     db.rebuild_search_projection(&mut search_index, SearchRebuildOptions::default())
         .unwrap();
 
-    let output = db.retrieve_knowledge(
-        &search_index,
-        &KnowledgeRetrievalRequest {
-            query_text: "typed predicate retrieval".to_string(),
-            query_embedding: None,
-            mode: SearchMode::Text,
-            limit: 10,
-            offset: 0,
-            rank_window: None,
-            search_fusion_weights: SearchFusionWeights::default(),
-            metadata_filters: BTreeMap::from([
-                (
-                    "unit_type__in".to_string(),
-                    r#"["fact","learning"]"#.to_string(),
-                ),
-                (
-                    "lifecycle_state__not_in".to_string(),
-                    r#"["deleted","forgotten"]"#.to_string(),
-                ),
-            ]),
-            candidate_limit: None,
-            candidate_scoring: KnowledgeCandidateScoringPolicy::Max,
-            graph_seed_limit: 10,
-            graph_context_limit: 0,
-            graph_context_max_hops: 1,
-        },
-    );
+    let output = db
+        .retrieve_knowledge(
+            &search_index,
+            &KnowledgeRetrievalRequest {
+                query_text: "typed predicate retrieval".to_string(),
+                query_embedding: None,
+                mode: SearchMode::Text,
+                limit: 10,
+                offset: 0,
+                rank_window: None,
+                search_fusion_weights: SearchFusionWeights::default(),
+                metadata_filters: BTreeMap::from([
+                    (
+                        "unit_type__in".to_string(),
+                        r#"["fact","learning"]"#.to_string(),
+                    ),
+                    (
+                        "lifecycle_state__not_in".to_string(),
+                        r#"["deleted","forgotten"]"#.to_string(),
+                    ),
+                ]),
+                candidate_limit: None,
+                candidate_scoring: KnowledgeCandidateScoringPolicy::Max,
+                graph_seed_limit: 10,
+                graph_context_limit: 0,
+                graph_context_max_hops: 1,
+            },
+        )
+        .unwrap();
 
     assert_eq!(output.search.total_hits, 1);
     assert_eq!(output.diagnostics.search_filtered_document_count, 1);
@@ -837,27 +876,29 @@ fn malformed_typed_metadata_filter_fails_closed_for_search_and_graph_seeds() {
     db.rebuild_search_projection(&mut search_index, SearchRebuildOptions::default())
         .unwrap();
 
-    let output = db.retrieve_knowledge(
-        &search_index,
-        &KnowledgeRetrievalRequest {
-            query_text: "malformed predicate retrieval".to_string(),
-            query_embedding: None,
-            mode: SearchMode::Text,
-            limit: 10,
-            offset: 0,
-            rank_window: None,
-            search_fusion_weights: SearchFusionWeights::default(),
-            metadata_filters: BTreeMap::from([(
-                "lifecycle_state__not_in".to_string(),
-                "deleted,forgotten".to_string(),
-            )]),
-            candidate_limit: None,
-            candidate_scoring: KnowledgeCandidateScoringPolicy::Max,
-            graph_seed_limit: 10,
-            graph_context_limit: 0,
-            graph_context_max_hops: 1,
-        },
-    );
+    let output = db
+        .retrieve_knowledge(
+            &search_index,
+            &KnowledgeRetrievalRequest {
+                query_text: "malformed predicate retrieval".to_string(),
+                query_embedding: None,
+                mode: SearchMode::Text,
+                limit: 10,
+                offset: 0,
+                rank_window: None,
+                search_fusion_weights: SearchFusionWeights::default(),
+                metadata_filters: BTreeMap::from([(
+                    "lifecycle_state__not_in".to_string(),
+                    "deleted,forgotten".to_string(),
+                )]),
+                candidate_limit: None,
+                candidate_scoring: KnowledgeCandidateScoringPolicy::Max,
+                graph_seed_limit: 10,
+                graph_context_limit: 0,
+                graph_context_max_hops: 1,
+            },
+        )
+        .unwrap();
 
     assert_eq!(output.search.total_hits, 0);
     assert_eq!(output.diagnostics.search_filtered_document_count, 0);

@@ -122,24 +122,26 @@ fn nowledge_graph_adapter_retrieves_knowledge_with_external_projection() {
         .unwrap();
 
     let adapter = NowledgeGraphAdapter::new(&mut db);
-    let output = adapter.retrieve_knowledge(
-        &search_index,
-        &KnowledgeRetrievalRequest {
-            query_text: "adapter retrieval".to_string(),
-            query_embedding: None,
-            mode: SearchMode::Text,
-            limit: 4,
-            offset: 0,
-            rank_window: None,
-            search_fusion_weights: SearchFusionWeights::default(),
-            metadata_filters: BTreeMap::new(),
-            candidate_limit: None,
-            candidate_scoring: KnowledgeCandidateScoringPolicy::Max,
-            graph_seed_limit: 2,
-            graph_context_limit: 4,
-            graph_context_max_hops: 1,
-        },
-    );
+    let output = adapter
+        .retrieve_knowledge(
+            &search_index,
+            &KnowledgeRetrievalRequest {
+                query_text: "adapter retrieval".to_string(),
+                query_embedding: None,
+                mode: SearchMode::Text,
+                limit: 4,
+                offset: 0,
+                rank_window: None,
+                search_fusion_weights: SearchFusionWeights::default(),
+                metadata_filters: BTreeMap::new(),
+                candidate_limit: None,
+                candidate_scoring: KnowledgeCandidateScoringPolicy::Max,
+                graph_seed_limit: 2,
+                graph_context_limit: 4,
+                graph_context_max_hops: 1,
+            },
+        )
+        .unwrap();
 
     assert_eq!(output.graph_commit_epoch, 1);
     assert_eq!(output.projection_freshness.document_count, 2);

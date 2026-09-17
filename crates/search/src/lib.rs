@@ -156,6 +156,9 @@ mod compiled_capabilities {
         requested.intersection(super::compiled_runtime_capabilities())
     }
 }
+
+#[cfg(test)]
+mod fallible_wrapper_proof;
 use analyzer_lexicon::{CORE_SEMANTIC_ALIAS_RULES, NOWLEDGE_MEMORY_SEMANTIC_ALIAS_RULES};
 use analyzer_stream::{document_token_fields, visit_token_list, TokenOccurrence};
 #[cfg(test)]
@@ -2548,24 +2551,28 @@ impl SearchIndex {
         Ok(())
     }
 
+    /// Searches resident documents, returning unavailable-capability and execution errors.
+    /// This entrypoint preserves in-memory payload access; `try_*` methods may read persisted ranges.
     pub fn search(
         &self,
         query_text: &str,
         query_embedding: Option<&[f32]>,
         mode: SearchMode,
         limit: usize,
-    ) -> Vec<SearchHit> {
+    ) -> Result<Vec<SearchHit>> {
         self.search_with_report(query_text, query_embedding, mode, limit)
-            .hits
+            .map(|result| result.hits)
     }
 
+    /// Searches resident documents, returning unavailable-capability and execution errors.
+    /// This entrypoint preserves in-memory payload access; `try_*` methods may read persisted ranges.
     pub fn search_with_report(
         &self,
         query_text: &str,
         query_embedding: Option<&[f32]>,
         mode: SearchMode,
         limit: usize,
-    ) -> SearchResultSet {
+    ) -> Result<SearchResultSet> {
         self.search_with_options(
             query_text,
             query_embedding,
@@ -2581,13 +2588,15 @@ impl SearchIndex {
         )
     }
 
+    /// Searches resident documents, returning unavailable-capability and execution errors.
+    /// This entrypoint preserves in-memory payload access; `try_*` methods may read persisted ranges.
     pub fn search_with_options(
         &self,
         query_text: &str,
         query_embedding: Option<&[f32]>,
         mode: SearchMode,
         options: SearchQueryOptions,
-    ) -> SearchResultSet {
+    ) -> Result<SearchResultSet> {
         self.try_search_with_options_using_vector_backend(
             query_text,
             query_embedding,
@@ -2596,7 +2605,6 @@ impl SearchIndex {
             SearchExecutionStrategy::fixed(VectorSearchBackend::Scalar, None, false),
             None,
         )
-        .expect("in-memory search path does not perform fallible range I/O")
     }
 
     pub fn try_search_with_options(
@@ -2634,13 +2642,15 @@ impl SearchIndex {
         )
     }
 
+    /// Searches resident documents, returning unavailable-capability and execution errors.
+    /// This entrypoint preserves in-memory payload access; `try_*` methods may read persisted ranges.
     pub fn search_with_options_prefer_compressed_vector_projection(
         &self,
         query_text: &str,
         query_embedding: Option<&[f32]>,
         mode: SearchMode,
         options: SearchQueryOptions,
-    ) -> SearchResultSet {
+    ) -> Result<SearchResultSet> {
         self.search_with_options_compressed_vector_projection_mode(
             query_text,
             query_embedding,
@@ -2650,6 +2660,8 @@ impl SearchIndex {
         )
     }
 
+    /// Searches resident documents, returning unavailable-capability and execution errors.
+    /// This entrypoint preserves in-memory payload access; `try_*` methods may read persisted ranges.
     pub fn search_with_options_compressed_vector_projection_mode(
         &self,
         query_text: &str,
@@ -2657,7 +2669,7 @@ impl SearchIndex {
         mode: SearchMode,
         options: SearchQueryOptions,
         compressed_vector_search_mode: CompressedVectorSearchMode,
-    ) -> SearchResultSet {
+    ) -> Result<SearchResultSet> {
         self.try_search_with_options_compressed_vector_projection_mode_internal(
             query_text,
             query_embedding,
@@ -2666,7 +2678,6 @@ impl SearchIndex {
             AdaptiveVectorSearchOptions::new(compressed_vector_search_mode),
             AdaptiveVectorExecutionControls::IN_MEMORY,
         )
-        .expect("in-memory search path does not perform fallible range I/O")
     }
 
     pub fn try_search_with_options_compressed_vector_projection_mode(
@@ -2735,6 +2746,8 @@ impl SearchIndex {
         Ok(result)
     }
 
+    /// Searches resident documents, returning unavailable-capability and execution errors.
+    /// This entrypoint preserves in-memory payload access; `try_*` methods may read persisted ranges.
     pub fn search_with_options_adaptive_vector_projection(
         &self,
         query_text: &str,
@@ -2742,7 +2755,7 @@ impl SearchIndex {
         mode: SearchMode,
         options: SearchQueryOptions,
         adaptive_options: AdaptiveVectorSearchOptions,
-    ) -> SearchResultSet {
+    ) -> Result<SearchResultSet> {
         self.try_search_with_options_compressed_vector_projection_mode_internal(
             query_text,
             query_embedding,
@@ -2751,7 +2764,6 @@ impl SearchIndex {
             adaptive_options,
             AdaptiveVectorExecutionControls::IN_MEMORY,
         )
-        .expect("in-memory search path does not perform fallible range I/O")
     }
 
     pub fn validate_sampled_vector_recall(
@@ -7850,8 +7862,9 @@ mod tests {
             metadata_filters: BTreeMap::new(),
             policy_epoch: None,
         };
-        let resident =
-            index.search_with_options("", Some(&query), SearchMode::Vector, options.clone());
+        let resident = index
+            .search_with_options("", Some(&query), SearchMode::Vector, options.clone())
+            .unwrap();
         assert_eq!(
             resident
                 .hits
@@ -7922,7 +7935,9 @@ mod tests {
             .upsert(doc("b", "Embedding model", "Vector search", [0.0, 1.0]))
             .unwrap();
 
-        let hits = index.search("graph", Some(&[1.0, 0.0]), SearchMode::Hybrid, 10);
+        let hits = index
+            .search("graph", Some(&[1.0, 0.0]), SearchMode::Hybrid, 10)
+            .unwrap();
 
         assert_eq!(hits[0].id, "a");
         assert!(hits[0].vector_score > 0.99);
@@ -7962,7 +7977,9 @@ mod tests {
             ))
             .unwrap();
 
-        let hits = index.search("graph", Some(&[1.0, 0.0]), SearchMode::Hybrid, 10);
+        let hits = index
+            .search("graph", Some(&[1.0, 0.0]), SearchMode::Hybrid, 10)
+            .unwrap();
 
         assert_eq!(hits[0].id, "both");
         assert_eq!(hits[0].vector_rank, Some(1));
@@ -7991,7 +8008,9 @@ mod tests {
             ))
             .unwrap();
 
-        let result = index.search_with_report("graph", Some(&[1.0, 0.0]), SearchMode::Hybrid, 2);
+        let result = index
+            .search_with_report("graph", Some(&[1.0, 0.0]), SearchMode::Hybrid, 2)
+            .unwrap();
 
         let vector = result
             .retrievers
@@ -8080,19 +8099,21 @@ mod tests {
             ))
             .unwrap();
 
-        let result = index.search_with_options(
-            "graph",
-            Some(&[1.0, 0.0]),
-            SearchMode::Hybrid,
-            SearchQueryOptions {
-                limit: 10,
-                offset: 0,
-                rank_window: Some(1),
-                fusion_weights: SearchFusionWeights::default(),
-                metadata_filters: BTreeMap::new(),
-                policy_epoch: None,
-            },
-        );
+        let result = index
+            .search_with_options(
+                "graph",
+                Some(&[1.0, 0.0]),
+                SearchMode::Hybrid,
+                SearchQueryOptions {
+                    limit: 10,
+                    offset: 0,
+                    rank_window: Some(1),
+                    fusion_weights: SearchFusionWeights::default(),
+                    metadata_filters: BTreeMap::new(),
+                    policy_epoch: None,
+                },
+            )
+            .unwrap();
 
         assert_eq!(result.rank_window, Some(1));
         let text = result
@@ -8142,19 +8163,24 @@ mod tests {
             })
             .unwrap();
 
-        let result = index.search_with_options(
-            "visible graph",
-            Some(&[1.0, 0.0]),
-            SearchMode::Hybrid,
-            SearchQueryOptions {
-                limit: 10,
-                offset: 0,
-                rank_window: Some(1),
-                fusion_weights: SearchFusionWeights::default(),
-                metadata_filters: BTreeMap::from([("scope".to_string(), "visible".to_string())]),
-                policy_epoch: None,
-            },
-        );
+        let result = index
+            .search_with_options(
+                "visible graph",
+                Some(&[1.0, 0.0]),
+                SearchMode::Hybrid,
+                SearchQueryOptions {
+                    limit: 10,
+                    offset: 0,
+                    rank_window: Some(1),
+                    fusion_weights: SearchFusionWeights::default(),
+                    metadata_filters: BTreeMap::from([(
+                        "scope".to_string(),
+                        "visible".to_string(),
+                    )]),
+                    policy_epoch: None,
+                },
+            )
+            .unwrap();
 
         assert_eq!(result.candidate_set.cardinality, 2);
         assert_eq!(result.candidate_set.filtered_out_count, 1);
@@ -8202,38 +8228,42 @@ mod tests {
             ))
             .unwrap();
 
-        let text_weighted = index.search_with_options(
-            "graph retrieval",
-            Some(&[1.0, 0.0]),
-            SearchMode::Hybrid,
-            SearchQueryOptions {
-                limit: 10,
-                offset: 0,
-                rank_window: None,
-                fusion_weights: SearchFusionWeights {
-                    vector_weight: 1.0,
-                    text_weight: 3.0,
+        let text_weighted = index
+            .search_with_options(
+                "graph retrieval",
+                Some(&[1.0, 0.0]),
+                SearchMode::Hybrid,
+                SearchQueryOptions {
+                    limit: 10,
+                    offset: 0,
+                    rank_window: None,
+                    fusion_weights: SearchFusionWeights {
+                        vector_weight: 1.0,
+                        text_weight: 3.0,
+                    },
+                    metadata_filters: BTreeMap::new(),
+                    policy_epoch: None,
                 },
-                metadata_filters: BTreeMap::new(),
-                policy_epoch: None,
-            },
-        );
-        let vector_weighted = index.search_with_options(
-            "graph retrieval",
-            Some(&[1.0, 0.0]),
-            SearchMode::Hybrid,
-            SearchQueryOptions {
-                limit: 10,
-                offset: 0,
-                rank_window: None,
-                fusion_weights: SearchFusionWeights {
-                    vector_weight: 3.0,
-                    text_weight: 1.0,
+            )
+            .unwrap();
+        let vector_weighted = index
+            .search_with_options(
+                "graph retrieval",
+                Some(&[1.0, 0.0]),
+                SearchMode::Hybrid,
+                SearchQueryOptions {
+                    limit: 10,
+                    offset: 0,
+                    rank_window: None,
+                    fusion_weights: SearchFusionWeights {
+                        vector_weight: 3.0,
+                        text_weight: 1.0,
+                    },
+                    metadata_filters: BTreeMap::new(),
+                    policy_epoch: None,
                 },
-                metadata_filters: BTreeMap::new(),
-                policy_epoch: None,
-            },
-        );
+            )
+            .unwrap();
 
         assert_eq!(
             text_weighted.fusion_weights,
@@ -8291,22 +8321,24 @@ mod tests {
             })
             .unwrap();
 
-        let result = index.search_with_options(
-            "graph",
-            None,
-            SearchMode::Text,
-            SearchQueryOptions {
-                limit: 10,
-                offset: 0,
-                rank_window: None,
-                fusion_weights: SearchFusionWeights::default(),
-                metadata_filters: BTreeMap::from([(
-                    "source_id".to_string(),
-                    "thread_1".to_string(),
-                )]),
-                policy_epoch: None,
-            },
-        );
+        let result = index
+            .search_with_options(
+                "graph",
+                None,
+                SearchMode::Text,
+                SearchQueryOptions {
+                    limit: 10,
+                    offset: 0,
+                    rank_window: None,
+                    fusion_weights: SearchFusionWeights::default(),
+                    metadata_filters: BTreeMap::from([(
+                        "source_id".to_string(),
+                        "thread_1".to_string(),
+                    )]),
+                    policy_epoch: None,
+                },
+            )
+            .unwrap();
 
         assert_eq!(result.total_hits, 1);
         assert_eq!(result.document_count, 3);
@@ -8384,19 +8416,24 @@ mod tests {
             })
             .unwrap();
 
-        let result = index.search_with_options(
-            "graph",
-            None,
-            SearchMode::Text,
-            SearchQueryOptions {
-                limit: 10,
-                offset: 0,
-                rank_window: None,
-                fusion_weights: SearchFusionWeights::default(),
-                metadata_filters: BTreeMap::from([("customer".to_string(), "acme".to_string())]),
-                policy_epoch: None,
-            },
-        );
+        let result = index
+            .search_with_options(
+                "graph",
+                None,
+                SearchMode::Text,
+                SearchQueryOptions {
+                    limit: 10,
+                    offset: 0,
+                    rank_window: None,
+                    fusion_weights: SearchFusionWeights::default(),
+                    metadata_filters: BTreeMap::from([(
+                        "customer".to_string(),
+                        "acme".to_string(),
+                    )]),
+                    policy_epoch: None,
+                },
+            )
+            .unwrap();
 
         assert_eq!(result.total_hits, 1);
         assert_eq!(result.hits[0].id, "memory:acme");
@@ -8427,22 +8464,24 @@ mod tests {
             })
             .unwrap();
 
-        let result = index.search_with_options(
-            "graph",
-            None,
-            SearchMode::Text,
-            SearchQueryOptions {
-                limit: 10,
-                offset: 0,
-                rank_window: None,
-                fusion_weights: SearchFusionWeights::default(),
-                metadata_filters: BTreeMap::from([(
-                    "unit_type__in".to_string(),
-                    r#"["fact","learning"]"#.to_string(),
-                )]),
-                policy_epoch: None,
-            },
-        );
+        let result = index
+            .search_with_options(
+                "graph",
+                None,
+                SearchMode::Text,
+                SearchQueryOptions {
+                    limit: 10,
+                    offset: 0,
+                    rank_window: None,
+                    fusion_weights: SearchFusionWeights::default(),
+                    metadata_filters: BTreeMap::from([(
+                        "unit_type__in".to_string(),
+                        r#"["fact","learning"]"#.to_string(),
+                    )]),
+                    policy_epoch: None,
+                },
+            )
+            .unwrap();
 
         assert_eq!(result.total_hits, 1);
         assert_eq!(result.filtered_document_count, 1);
@@ -8530,22 +8569,24 @@ mod tests {
             })
             .unwrap();
 
-        let result = index.search_with_options(
-            "graph",
-            None,
-            SearchMode::Text,
-            SearchQueryOptions {
-                limit: 10,
-                offset: 0,
-                rank_window: None,
-                fusion_weights: SearchFusionWeights::default(),
-                metadata_filters: BTreeMap::from([(
-                    "lifecycle_state__not_in".to_string(),
-                    r#"["deleted","forgotten"]"#.to_string(),
-                )]),
-                policy_epoch: None,
-            },
-        );
+        let result = index
+            .search_with_options(
+                "graph",
+                None,
+                SearchMode::Text,
+                SearchQueryOptions {
+                    limit: 10,
+                    offset: 0,
+                    rank_window: None,
+                    fusion_weights: SearchFusionWeights::default(),
+                    metadata_filters: BTreeMap::from([(
+                        "lifecycle_state__not_in".to_string(),
+                        r#"["deleted","forgotten"]"#.to_string(),
+                    )]),
+                    policy_epoch: None,
+                },
+            )
+            .unwrap();
         let hit_ids = result
             .hits
             .iter()
@@ -8590,38 +8631,42 @@ mod tests {
                 .unwrap();
         }
 
-        let exists = index.search_with_options(
-            "presence predicate retrieval",
-            None,
-            SearchMode::Text,
-            SearchQueryOptions {
-                limit: 10,
-                offset: 0,
-                rank_window: None,
-                fusion_weights: SearchFusionWeights::default(),
-                metadata_filters: BTreeMap::from([(
-                    "source_id__exists".to_string(),
-                    "true".to_string(),
-                )]),
-                policy_epoch: None,
-            },
-        );
-        let missing = index.search_with_options(
-            "presence predicate retrieval",
-            None,
-            SearchMode::Text,
-            SearchQueryOptions {
-                limit: 10,
-                offset: 0,
-                rank_window: None,
-                fusion_weights: SearchFusionWeights::default(),
-                metadata_filters: BTreeMap::from([(
-                    "source_id__missing".to_string(),
-                    "true".to_string(),
-                )]),
-                policy_epoch: None,
-            },
-        );
+        let exists = index
+            .search_with_options(
+                "presence predicate retrieval",
+                None,
+                SearchMode::Text,
+                SearchQueryOptions {
+                    limit: 10,
+                    offset: 0,
+                    rank_window: None,
+                    fusion_weights: SearchFusionWeights::default(),
+                    metadata_filters: BTreeMap::from([(
+                        "source_id__exists".to_string(),
+                        "true".to_string(),
+                    )]),
+                    policy_epoch: None,
+                },
+            )
+            .unwrap();
+        let missing = index
+            .search_with_options(
+                "presence predicate retrieval",
+                None,
+                SearchMode::Text,
+                SearchQueryOptions {
+                    limit: 10,
+                    offset: 0,
+                    rank_window: None,
+                    fusion_weights: SearchFusionWeights::default(),
+                    metadata_filters: BTreeMap::from([(
+                        "source_id__missing".to_string(),
+                        "true".to_string(),
+                    )]),
+                    policy_epoch: None,
+                },
+            )
+            .unwrap();
 
         assert_eq!(exists.total_hits, 1);
         assert_eq!(exists.hits[0].id, "memory:has_source");
@@ -8683,19 +8728,24 @@ mod tests {
                 .unwrap();
         }
 
-        let result = index.search_with_options(
-            "graph",
-            None,
-            SearchMode::Text,
-            SearchQueryOptions {
-                limit: 10,
-                offset: 0,
-                rank_window: None,
-                fusion_weights: SearchFusionWeights::default(),
-                metadata_filters: BTreeMap::from([("created_at__gt".to_string(), "5".to_string())]),
-                policy_epoch: None,
-            },
-        );
+        let result = index
+            .search_with_options(
+                "graph",
+                None,
+                SearchMode::Text,
+                SearchQueryOptions {
+                    limit: 10,
+                    offset: 0,
+                    rank_window: None,
+                    fusion_weights: SearchFusionWeights::default(),
+                    metadata_filters: BTreeMap::from([(
+                        "created_at__gt".to_string(),
+                        "5".to_string(),
+                    )]),
+                    policy_epoch: None,
+                },
+            )
+            .unwrap();
 
         assert_eq!(result.total_hits, 1);
         assert_eq!(result.filtered_document_count, 1);
@@ -8775,22 +8825,24 @@ mod tests {
             })
             .unwrap();
 
-        let result = index.search_with_options(
-            "graph",
-            None,
-            SearchMode::Text,
-            SearchQueryOptions {
-                limit: 10,
-                offset: 0,
-                rank_window: None,
-                fusion_weights: SearchFusionWeights::default(),
-                metadata_filters: BTreeMap::from([(
-                    "created_at__gte".to_string(),
-                    "not-a-number".to_string(),
-                )]),
-                policy_epoch: None,
-            },
-        );
+        let result = index
+            .search_with_options(
+                "graph",
+                None,
+                SearchMode::Text,
+                SearchQueryOptions {
+                    limit: 10,
+                    offset: 0,
+                    rank_window: None,
+                    fusion_weights: SearchFusionWeights::default(),
+                    metadata_filters: BTreeMap::from([(
+                        "created_at__gte".to_string(),
+                        "not-a-number".to_string(),
+                    )]),
+                    policy_epoch: None,
+                },
+            )
+            .unwrap();
 
         assert_eq!(result.total_hits, 0);
         assert_eq!(result.filtered_document_count, 0);
@@ -8824,22 +8876,24 @@ mod tests {
             })
             .unwrap();
 
-        let result = index.search_with_options(
-            "graph",
-            None,
-            SearchMode::Text,
-            SearchQueryOptions {
-                limit: 10,
-                offset: 0,
-                rank_window: None,
-                fusion_weights: SearchFusionWeights::default(),
-                metadata_filters: BTreeMap::from([(
-                    "lifecycle_state__not_in".to_string(),
-                    "deleted,forgotten".to_string(),
-                )]),
-                policy_epoch: None,
-            },
-        );
+        let result = index
+            .search_with_options(
+                "graph",
+                None,
+                SearchMode::Text,
+                SearchQueryOptions {
+                    limit: 10,
+                    offset: 0,
+                    rank_window: None,
+                    fusion_weights: SearchFusionWeights::default(),
+                    metadata_filters: BTreeMap::from([(
+                        "lifecycle_state__not_in".to_string(),
+                        "deleted,forgotten".to_string(),
+                    )]),
+                    policy_epoch: None,
+                },
+            )
+            .unwrap();
 
         assert_eq!(result.total_hits, 0);
         assert_eq!(result.filtered_document_count, 0);
@@ -8907,22 +8961,24 @@ mod tests {
             })
             .unwrap();
 
-        let result = index.search_with_options(
-            "graph",
-            None,
-            SearchMode::Text,
-            SearchQueryOptions {
-                limit: 10,
-                offset: 0,
-                rank_window: None,
-                fusion_weights: SearchFusionWeights::default(),
-                metadata_filters: BTreeMap::from([(
-                    "source_id".to_string(),
-                    "thread_1".to_string(),
-                )]),
-                policy_epoch: Some(42),
-            },
-        );
+        let result = index
+            .search_with_options(
+                "graph",
+                None,
+                SearchMode::Text,
+                SearchQueryOptions {
+                    limit: 10,
+                    offset: 0,
+                    rank_window: None,
+                    fusion_weights: SearchFusionWeights::default(),
+                    metadata_filters: BTreeMap::from([(
+                        "source_id".to_string(),
+                        "thread_1".to_string(),
+                    )]),
+                    policy_epoch: Some(42),
+                },
+            )
+            .unwrap();
 
         assert_eq!(result.total_hits, 1);
         assert_eq!(result.candidate_set.policy_epoch, Some(42));
@@ -8935,6 +8991,7 @@ mod tests {
         assert_eq!(
             index
                 .search_with_report("graph", None, SearchMode::Text, 10)
+                .unwrap()
                 .candidate_set
                 .policy_epoch,
             None
@@ -8964,19 +9021,21 @@ mod tests {
             })
             .unwrap();
 
-        let result = index.search_with_options(
-            "projection diagnostics",
-            None,
-            SearchMode::Text,
-            SearchQueryOptions {
-                limit: 10,
-                offset: 0,
-                rank_window: None,
-                fusion_weights: SearchFusionWeights::default(),
-                metadata_filters: BTreeMap::from([("kind".to_string(), "Memory".to_string())]),
-                policy_epoch: None,
-            },
-        );
+        let result = index
+            .search_with_options(
+                "projection diagnostics",
+                None,
+                SearchMode::Text,
+                SearchQueryOptions {
+                    limit: 10,
+                    offset: 0,
+                    rank_window: None,
+                    fusion_weights: SearchFusionWeights::default(),
+                    metadata_filters: BTreeMap::from([("kind".to_string(), "Memory".to_string())]),
+                    policy_epoch: None,
+                },
+            )
+            .unwrap();
 
         assert_eq!(result.total_hits, 1);
         assert_eq!(result.filtered_document_count, 1);
@@ -8997,19 +9056,24 @@ mod tests {
             })
             .unwrap();
 
-        let result = index.search_with_options(
-            "projection diagnostics",
-            None,
-            SearchMode::Text,
-            SearchQueryOptions {
-                limit: 10,
-                offset: 0,
-                rank_window: None,
-                fusion_weights: SearchFusionWeights::default(),
-                metadata_filters: BTreeMap::from([("kind".to_string(), "SourceChunk".to_string())]),
-                policy_epoch: None,
-            },
-        );
+        let result = index
+            .search_with_options(
+                "projection diagnostics",
+                None,
+                SearchMode::Text,
+                SearchQueryOptions {
+                    limit: 10,
+                    offset: 0,
+                    rank_window: None,
+                    fusion_weights: SearchFusionWeights::default(),
+                    metadata_filters: BTreeMap::from([(
+                        "kind".to_string(),
+                        "SourceChunk".to_string(),
+                    )]),
+                    policy_epoch: None,
+                },
+            )
+            .unwrap();
 
         assert_eq!(result.total_hits, 1);
         assert_eq!(result.hits[0].id, "source_chunk:chunk_1");
@@ -9047,22 +9111,24 @@ mod tests {
             })
             .unwrap();
 
-        let result = index.search_with_options(
-            "default space retrieval",
-            None,
-            SearchMode::Text,
-            SearchQueryOptions {
-                limit: 10,
-                offset: 0,
-                rank_window: None,
-                fusion_weights: SearchFusionWeights::default(),
-                metadata_filters: BTreeMap::from([(
-                    "space_id".to_string(),
-                    DEFAULT_SPACE_ID.to_string(),
-                )]),
-                policy_epoch: None,
-            },
-        );
+        let result = index
+            .search_with_options(
+                "default space retrieval",
+                None,
+                SearchMode::Text,
+                SearchQueryOptions {
+                    limit: 10,
+                    offset: 0,
+                    rank_window: None,
+                    fusion_weights: SearchFusionWeights::default(),
+                    metadata_filters: BTreeMap::from([(
+                        "space_id".to_string(),
+                        DEFAULT_SPACE_ID.to_string(),
+                    )]),
+                    policy_epoch: None,
+                },
+            )
+            .unwrap();
         let hit_ids = result
             .hits
             .iter()
@@ -9089,22 +9155,24 @@ mod tests {
             })
             .unwrap();
 
-        let result = index.search_with_options(
-            "graph",
-            None,
-            SearchMode::Text,
-            SearchQueryOptions {
-                limit: 10,
-                offset: 0,
-                rank_window: None,
-                fusion_weights: SearchFusionWeights::default(),
-                metadata_filters: BTreeMap::from([(
-                    "source_id".to_string(),
-                    "missing_thread".to_string(),
-                )]),
-                policy_epoch: None,
-            },
-        );
+        let result = index
+            .search_with_options(
+                "graph",
+                None,
+                SearchMode::Text,
+                SearchQueryOptions {
+                    limit: 10,
+                    offset: 0,
+                    rank_window: None,
+                    fusion_weights: SearchFusionWeights::default(),
+                    metadata_filters: BTreeMap::from([(
+                        "source_id".to_string(),
+                        "missing_thread".to_string(),
+                    )]),
+                    policy_epoch: None,
+                },
+            )
+            .unwrap();
 
         assert_eq!(result.document_count, 1);
         assert_eq!(result.filtered_document_count, 0);
@@ -9125,8 +9193,9 @@ mod tests {
             .upsert(doc("a", "Graph storage", "Native adjacency", [1.0, 0.0]))
             .unwrap();
 
-        let result =
-            index.search_with_report("graph", Some(&[1.0, 0.0, 0.0]), SearchMode::Hybrid, 10);
+        let result = index
+            .search_with_report("graph", Some(&[1.0, 0.0, 0.0]), SearchMode::Hybrid, 10)
+            .unwrap();
         let hits = &result.hits;
 
         assert_eq!(hits[0].id, "a");
@@ -9169,7 +9238,9 @@ mod tests {
             .upsert(doc("a", "Graph storage", "Native adjacency", [1.0, 0.0]))
             .unwrap();
 
-        let result = index.search_with_report("", Some(&[1.0, 0.0, 0.0]), SearchMode::Vector, 10);
+        let result = index
+            .search_with_report("", Some(&[1.0, 0.0, 0.0]), SearchMode::Vector, 10)
+            .unwrap();
 
         assert!(result.hits.is_empty());
         assert!(result
@@ -9239,7 +9310,9 @@ mod tests {
             .upsert(doc("a", "Graph storage", "Native adjacency", [1.0, 0.0]))
             .unwrap();
 
-        let result = index.search_with_report("graph", None, SearchMode::Vector, 10);
+        let result = index
+            .search_with_report("graph", None, SearchMode::Vector, 10)
+            .unwrap();
 
         assert!(result.hits.is_empty());
         assert!(result
@@ -9292,7 +9365,9 @@ mod tests {
             })
             .unwrap();
 
-        let hits = index.search("graph storage", None, SearchMode::Text, 10);
+        let hits = index
+            .search("graph storage", None, SearchMode::Text, 10)
+            .unwrap();
 
         assert_eq!(hits[0].id, "focused");
         assert!(hits[0].text_score > hits[1].text_score);
@@ -9321,7 +9396,7 @@ mod tests {
             })
             .unwrap();
 
-        let hits = index.search("graph", None, SearchMode::Text, 10);
+        let hits = index.search("graph", None, SearchMode::Text, 10).unwrap();
 
         assert_eq!(hits[0].id, "title_match");
         assert_eq!(hits[1].id, "content_match");
@@ -9342,8 +9417,12 @@ mod tests {
             })
             .unwrap();
 
-        let underscore_hits = index.search("nowledge_source", None, SearchMode::Text, 10);
-        let punctuation_hits = index.search("GRAPH storage", None, SearchMode::Text, 10);
+        let underscore_hits = index
+            .search("nowledge_source", None, SearchMode::Text, 10)
+            .unwrap();
+        let punctuation_hits = index
+            .search("GRAPH storage", None, SearchMode::Text, 10)
+            .unwrap();
 
         assert_eq!(underscore_hits[0].id, "memory");
         assert_eq!(punctuation_hits[0].id, "memory");
@@ -9377,10 +9456,18 @@ mod tests {
             })
             .unwrap();
 
-        let camel_hits = index.search("source chunk", None, SearchMode::Text, 10);
-        let snake_hits = index.search("source_chunk", None, SearchMode::Text, 10);
-        let kebab_hits = index.search("artifact source", None, SearchMode::Text, 10);
-        let version_hits = index.search("parser v2", None, SearchMode::Text, 10);
+        let camel_hits = index
+            .search("source chunk", None, SearchMode::Text, 10)
+            .unwrap();
+        let snake_hits = index
+            .search("source_chunk", None, SearchMode::Text, 10)
+            .unwrap();
+        let kebab_hits = index
+            .search("artifact source", None, SearchMode::Text, 10)
+            .unwrap();
+        let version_hits = index
+            .search("parser v2", None, SearchMode::Text, 10)
+            .unwrap();
 
         assert_eq!(camel_hits[0].id, "chunk");
         assert_eq!(snake_hits[0].id, "chunk");
@@ -9402,8 +9489,12 @@ mod tests {
             })
             .unwrap();
 
-        let graph_hits = index.search_with_report("图数据库", None, SearchMode::Text, 10);
-        let projection_hits = index.search("重建投影", None, SearchMode::Text, 10);
+        let graph_hits = index
+            .search_with_report("图数据库", None, SearchMode::Text, 10)
+            .unwrap();
+        let projection_hits = index
+            .search("重建投影", None, SearchMode::Text, 10)
+            .unwrap();
 
         assert_eq!(graph_hits.hits[0].id, "design");
         assert!(graph_hits.hits[0]
@@ -9428,7 +9519,9 @@ mod tests {
             })
             .unwrap();
 
-        let output = index.search_with_report(term, None, SearchMode::Text, 10);
+        let output = index
+            .search_with_report(term, None, SearchMode::Text, 10)
+            .unwrap();
 
         assert_eq!(output.hits[0].id, "distributed");
         assert!(output.hits[0]
@@ -9451,11 +9544,21 @@ mod tests {
             })
             .unwrap();
 
-        let lsm_hits = index.search("lsm tree", None, SearchMode::Text, 10);
-        let http_hits = index.search("http server", None, SearchMode::Text, 10);
-        let graphql_hits = index.search("graphql parser", None, SearchMode::Text, 10);
-        let checkpoint_hits = index.search("wal checkpoint", None, SearchMode::Text, 10);
-        let mvcc_hits = index.search_with_report("mvcc snapshot", None, SearchMode::Text, 10);
+        let lsm_hits = index
+            .search("lsm tree", None, SearchMode::Text, 10)
+            .unwrap();
+        let http_hits = index
+            .search("http server", None, SearchMode::Text, 10)
+            .unwrap();
+        let graphql_hits = index
+            .search("graphql parser", None, SearchMode::Text, 10)
+            .unwrap();
+        let checkpoint_hits = index
+            .search("wal checkpoint", None, SearchMode::Text, 10)
+            .unwrap();
+        let mvcc_hits = index
+            .search_with_report("mvcc snapshot", None, SearchMode::Text, 10)
+            .unwrap();
 
         assert_eq!(lsm_hits[0].id, "runtime");
         assert_eq!(http_hits[0].id, "runtime");
@@ -9486,11 +9589,11 @@ mod tests {
             })
             .unwrap();
 
-        let memory_hits = index.search("memory", None, SearchMode::Text, 10);
-        let source_hits = index.search("source", None, SearchMode::Text, 10);
-        let thread_hits = index.search("thread", None, SearchMode::Text, 10);
-        let archive_hits = index.search("archive", None, SearchMode::Text, 10);
-        let chunk_hits = index.search("chunk", None, SearchMode::Text, 10);
+        let memory_hits = index.search("memory", None, SearchMode::Text, 10).unwrap();
+        let source_hits = index.search("source", None, SearchMode::Text, 10).unwrap();
+        let thread_hits = index.search("thread", None, SearchMode::Text, 10).unwrap();
+        let archive_hits = index.search("archive", None, SearchMode::Text, 10).unwrap();
+        let chunk_hits = index.search("chunk", None, SearchMode::Text, 10).unwrap();
 
         assert_eq!(memory_hits[0].id, "memory");
         assert_eq!(source_hits[0].id, "memory");
@@ -9513,12 +9616,17 @@ mod tests {
             })
             .unwrap();
 
-        let graph_retrieval_hits = index.search("graph retrieval", None, SearchMode::Text, 10);
-        let rag_hits = index.search("rag", None, SearchMode::Text, 10);
-        let expanded_hits =
-            index.search("retrieval augmented generation", None, SearchMode::Text, 10);
-        let kg_hits = index.search("kg", None, SearchMode::Text, 10);
-        let knowledge_graph_hits = index.search("knowledge graph", None, SearchMode::Text, 10);
+        let graph_retrieval_hits = index
+            .search("graph retrieval", None, SearchMode::Text, 10)
+            .unwrap();
+        let rag_hits = index.search("rag", None, SearchMode::Text, 10).unwrap();
+        let expanded_hits = index
+            .search("retrieval augmented generation", None, SearchMode::Text, 10)
+            .unwrap();
+        let kg_hits = index.search("kg", None, SearchMode::Text, 10).unwrap();
+        let knowledge_graph_hits = index
+            .search("knowledge graph", None, SearchMode::Text, 10)
+            .unwrap();
 
         assert_eq!(graph_retrieval_hits[0].id, "graph-rag");
         assert_eq!(rag_hits[0].id, "graph-rag");
@@ -9543,10 +9651,15 @@ mod tests {
             })
             .unwrap();
 
-        let crystallization_hits = index.search("crystallization", None, SearchMode::Text, 10);
-        let synthesized_hits = index.search("synthesized memory", None, SearchMode::Text, 10);
-        let raw_evidence_hits =
-            index.search_with_report("raw evidence", None, SearchMode::Text, 10);
+        let crystallization_hits = index
+            .search("crystallization", None, SearchMode::Text, 10)
+            .unwrap();
+        let synthesized_hits = index
+            .search("synthesized memory", None, SearchMode::Text, 10)
+            .unwrap();
+        let raw_evidence_hits = index
+            .search_with_report("raw evidence", None, SearchMode::Text, 10)
+            .unwrap();
 
         assert_eq!(crystallization_hits[0].id, "memory-lifecycle");
         assert_eq!(synthesized_hits[0].id, "memory-lifecycle");
@@ -9571,7 +9684,9 @@ mod tests {
             })
             .unwrap();
 
-        let hits = index.search("crystallization", None, SearchMode::Text, 10);
+        let hits = index
+            .search("crystallization", None, SearchMode::Text, 10)
+            .unwrap();
 
         assert!(hits.is_empty());
     }
@@ -9592,11 +9707,18 @@ mod tests {
             })
             .unwrap();
 
-        let source_hits = index.search("source provenance", None, SearchMode::Text, 10);
-        let mention_hits = index.search("entity mention", None, SearchMode::Text, 10);
-        let evolution_hits = index.search("memory evolution", None, SearchMode::Text, 10);
-        let summary_hits =
-            index.search_with_report("community summary", None, SearchMode::Text, 10);
+        let source_hits = index
+            .search("source provenance", None, SearchMode::Text, 10)
+            .unwrap();
+        let mention_hits = index
+            .search("entity mention", None, SearchMode::Text, 10)
+            .unwrap();
+        let evolution_hits = index
+            .search("memory evolution", None, SearchMode::Text, 10)
+            .unwrap();
+        let summary_hits = index
+            .search_with_report("community summary", None, SearchMode::Text, 10)
+            .unwrap();
 
         assert_eq!(source_hits[0].id, "schema-relationships");
         assert_eq!(mention_hits[0].id, "schema-relationships");
@@ -9624,9 +9746,12 @@ mod tests {
             })
             .unwrap();
 
-        let product_hits =
-            index.search_with_report("memory-to-memory relationships", None, SearchMode::Text, 10);
-        let schema_hits = index.search_with_report("relation_type", None, SearchMode::Text, 10);
+        let product_hits = index
+            .search_with_report("memory-to-memory relationships", None, SearchMode::Text, 10)
+            .unwrap();
+        let schema_hits = index
+            .search_with_report("relation_type", None, SearchMode::Text, 10)
+            .unwrap();
 
         assert_eq!(product_hits.hits[0].id, "memory-relations");
         assert!(product_hits.hits[0]
@@ -9662,10 +9787,12 @@ mod tests {
             })
             .unwrap();
 
-        let raw_evidence_hits =
-            index.search_with_report("raw evidence", None, SearchMode::Text, 10);
-        let summary_hits =
-            index.search_with_report("community summary", None, SearchMode::Text, 10);
+        let raw_evidence_hits = index
+            .search_with_report("raw evidence", None, SearchMode::Text, 10)
+            .unwrap();
+        let summary_hits = index
+            .search_with_report("community summary", None, SearchMode::Text, 10)
+            .unwrap();
 
         assert_eq!(raw_evidence_hits.hits[0].id, "readable-aliases");
         assert!(raw_evidence_hits.hits[0]
@@ -9695,10 +9822,15 @@ mod tests {
             })
             .unwrap();
 
-        let hits =
-            index.search_with_report("memory lifecycle checkpoint", None, SearchMode::Text, 10);
-        let thread_hits = index.search_with_report("thread evidence", None, SearchMode::Text, 10);
-        let noisy_hits = index.search("memory lifecycle thread", None, SearchMode::Text, 10);
+        let hits = index
+            .search_with_report("memory lifecycle checkpoint", None, SearchMode::Text, 10)
+            .unwrap();
+        let thread_hits = index
+            .search_with_report("thread evidence", None, SearchMode::Text, 10)
+            .unwrap();
+        let noisy_hits = index
+            .search("memory lifecycle thread", None, SearchMode::Text, 10)
+            .unwrap();
 
         assert_eq!(hits.hits[0].id, "specific");
         assert!(hits.hits[0]
@@ -9735,17 +9867,29 @@ mod tests {
             })
             .unwrap();
 
-        let wal_hits = index.search_with_report("write ahead log", None, SearchMode::Text, 10);
-        let mvcc_hits = index.search(
-            "multi version concurrency control",
-            None,
-            SearchMode::Text,
-            10,
-        );
-        let lsm_hits = index.search("log structured merge tree", None, SearchMode::Text, 10);
-        let csr_hits = index.search("compressed sparse row", None, SearchMode::Text, 10);
-        let csc_hits = index.search("compressed sparse column", None, SearchMode::Text, 10);
-        let opencypher_hits = index.search("opencypher", None, SearchMode::Text, 10);
+        let wal_hits = index
+            .search_with_report("write ahead log", None, SearchMode::Text, 10)
+            .unwrap();
+        let mvcc_hits = index
+            .search(
+                "multi version concurrency control",
+                None,
+                SearchMode::Text,
+                10,
+            )
+            .unwrap();
+        let lsm_hits = index
+            .search("log structured merge tree", None, SearchMode::Text, 10)
+            .unwrap();
+        let csr_hits = index
+            .search("compressed sparse row", None, SearchMode::Text, 10)
+            .unwrap();
+        let csc_hits = index
+            .search("compressed sparse column", None, SearchMode::Text, 10)
+            .unwrap();
+        let opencypher_hits = index
+            .search("opencypher", None, SearchMode::Text, 10)
+            .unwrap();
 
         assert_eq!(wal_hits.hits[0].id, "runtime");
         assert!(wal_hits.hits[0]
@@ -9773,12 +9917,21 @@ mod tests {
             })
             .unwrap();
 
-        let import_hits = index.search("database import", None, SearchMode::Text, 10);
-        let export_hits = index.search("graph export", None, SearchMode::Text, 10);
-        let value_hits = index.search("value stream", None, SearchMode::Text, 10);
-        let checkpoint_hits =
-            index.search_with_report("checkpoint freshness", None, SearchMode::Text, 10);
-        let staleness_hits = index.search("projection staleness", None, SearchMode::Text, 10);
+        let import_hits = index
+            .search("database import", None, SearchMode::Text, 10)
+            .unwrap();
+        let export_hits = index
+            .search("graph export", None, SearchMode::Text, 10)
+            .unwrap();
+        let value_hits = index
+            .search("value stream", None, SearchMode::Text, 10)
+            .unwrap();
+        let checkpoint_hits = index
+            .search_with_report("checkpoint freshness", None, SearchMode::Text, 10)
+            .unwrap();
+        let staleness_hits = index
+            .search("projection staleness", None, SearchMode::Text, 10)
+            .unwrap();
 
         assert_eq!(import_hits[0].id, "skein-lightning");
         assert_eq!(export_hits[0].id, "skein-lightning");
@@ -9805,12 +9958,18 @@ mod tests {
             })
             .unwrap();
 
-        let postgres_hits = index.search("postgres", None, SearchMode::Text, 10);
-        let pg_hits = index.search("pg", None, SearchMode::Text, 10);
-        let vector_hits = index.search("vector search", None, SearchMode::Text, 10);
-        let fts_hits = index.search_with_report("full text search", None, SearchMode::Text, 10);
-        let lance_hits = index.search("lance", None, SearchMode::Text, 10);
-        let ladybug_hits = index.search("ladybug", None, SearchMode::Text, 10);
+        let postgres_hits = index
+            .search("postgres", None, SearchMode::Text, 10)
+            .unwrap();
+        let pg_hits = index.search("pg", None, SearchMode::Text, 10).unwrap();
+        let vector_hits = index
+            .search("vector search", None, SearchMode::Text, 10)
+            .unwrap();
+        let fts_hits = index
+            .search_with_report("full text search", None, SearchMode::Text, 10)
+            .unwrap();
+        let lance_hits = index.search("lance", None, SearchMode::Text, 10).unwrap();
+        let ladybug_hits = index.search("ladybug", None, SearchMode::Text, 10).unwrap();
 
         assert_eq!(postgres_hits[0].id, "projection");
         assert_eq!(pg_hits[0].id, "projection");
@@ -9848,11 +10007,19 @@ mod tests {
             })
             .unwrap();
 
-        let rrf_hits = index.search("reciprocal rank fusion", None, SearchMode::Text, 10);
-        let ann_hits = index.search("approximate nearest neighbor", None, SearchMode::Text, 10);
-        let abbreviation_hits = index.search("rrf ann", None, SearchMode::Text, 10);
-        let retrieval_hits = index.search("hybrid retrieval", None, SearchMode::Text, 10);
-        let search_hits = index.search("hybrid search", None, SearchMode::Text, 10);
+        let rrf_hits = index
+            .search("reciprocal rank fusion", None, SearchMode::Text, 10)
+            .unwrap();
+        let ann_hits = index
+            .search("approximate nearest neighbor", None, SearchMode::Text, 10)
+            .unwrap();
+        let abbreviation_hits = index.search("rrf ann", None, SearchMode::Text, 10).unwrap();
+        let retrieval_hits = index
+            .search("hybrid retrieval", None, SearchMode::Text, 10)
+            .unwrap();
+        let search_hits = index
+            .search("hybrid search", None, SearchMode::Text, 10)
+            .unwrap();
 
         assert_eq!(rrf_hits[0].id, "retrieval");
         assert_eq!(ann_hits[0].id, "retrieval");
@@ -9880,10 +10047,15 @@ mod tests {
             })
             .unwrap();
 
-        let external_id_hits = index.search("mem graph alpha", None, SearchMode::Text, 10);
-        let source_id_hits =
-            index.search_with_report("thread projection 1", None, SearchMode::Text, 10);
-        let space_id_hits = index.search_with_report("team archive", None, SearchMode::Text, 10);
+        let external_id_hits = index
+            .search("mem graph alpha", None, SearchMode::Text, 10)
+            .unwrap();
+        let source_id_hits = index
+            .search_with_report("thread projection 1", None, SearchMode::Text, 10)
+            .unwrap();
+        let space_id_hits = index
+            .search_with_report("team archive", None, SearchMode::Text, 10)
+            .unwrap();
 
         assert_eq!(external_id_hits[0].id, "metadata-only");
         assert_eq!(source_id_hits.hits[0].id, "metadata-only");
@@ -9923,7 +10095,9 @@ mod tests {
             })
             .unwrap();
 
-        let result = index.search_with_report("the graph of memory", None, SearchMode::Text, 10);
+        let result = index
+            .search_with_report("the graph of memory", None, SearchMode::Text, 10)
+            .unwrap();
 
         assert_eq!(result.total_hits, 1);
         assert_eq!(result.hits[0].id, "graph");
@@ -9955,7 +10129,9 @@ mod tests {
             })
             .unwrap();
 
-        let hits = index.search("rag source chunk", None, SearchMode::Text, 10);
+        let hits = index
+            .search("rag source chunk", None, SearchMode::Text, 10)
+            .unwrap();
 
         assert_eq!(hits.len(), 1);
         assert_eq!(hits[0].id, "memory:mem_1");
@@ -10008,12 +10184,14 @@ mod tests {
             .unwrap();
 
         let freshness = index.projection_freshness();
-        let hits = index.search(
-            "freshness projection",
-            Some(&[1.0, 0.0]),
-            SearchMode::Hybrid,
-            10,
-        );
+        let hits = index
+            .search(
+                "freshness projection",
+                Some(&[1.0, 0.0]),
+                SearchMode::Hybrid,
+                10,
+            )
+            .unwrap();
 
         assert_eq!(hits.len(), 1);
         assert_eq!(hits[0].projection_freshness, freshness);
@@ -10056,7 +10234,9 @@ mod tests {
                 .unwrap();
         }
 
-        let result = index.search_with_report("graph", None, SearchMode::Text, 2);
+        let result = index
+            .search_with_report("graph", None, SearchMode::Text, 2)
+            .unwrap();
 
         assert_eq!(result.hits.len(), 2);
         assert_eq!(result.total_hits, 3);
@@ -10076,7 +10256,9 @@ mod tests {
     fn search_report_exposes_empty_projection_reason() {
         let index = SearchIndex::in_memory();
 
-        let result = index.search_with_report("graph", None, SearchMode::Text, 10);
+        let result = index
+            .search_with_report("graph", None, SearchMode::Text, 10)
+            .unwrap();
 
         assert!(result.hits.is_empty());
         assert_eq!(
@@ -10104,19 +10286,24 @@ mod tests {
             })
             .unwrap();
 
-        let result = index.search_with_options(
-            "graph",
-            None,
-            SearchMode::Text,
-            SearchQueryOptions {
-                limit: 10,
-                offset: 0,
-                rank_window: None,
-                fusion_weights: SearchFusionWeights::default(),
-                metadata_filters: BTreeMap::from([("space_id".to_string(), "archive".to_string())]),
-                policy_epoch: None,
-            },
-        );
+        let result = index
+            .search_with_options(
+                "graph",
+                None,
+                SearchMode::Text,
+                SearchQueryOptions {
+                    limit: 10,
+                    offset: 0,
+                    rank_window: None,
+                    fusion_weights: SearchFusionWeights::default(),
+                    metadata_filters: BTreeMap::from([(
+                        "space_id".to_string(),
+                        "archive".to_string(),
+                    )]),
+                    policy_epoch: None,
+                },
+            )
+            .unwrap();
 
         assert!(result.hits.is_empty());
         assert_eq!(
@@ -10143,7 +10330,9 @@ mod tests {
             })
             .unwrap();
 
-        let result = index.search_with_report("unmatched needle", None, SearchMode::Text, 10);
+        let result = index
+            .search_with_report("unmatched needle", None, SearchMode::Text, 10)
+            .unwrap();
 
         assert!(result.hits.is_empty());
         assert_eq!(
@@ -10170,7 +10359,9 @@ mod tests {
             })
             .unwrap();
 
-        let result = index.search_with_report("", None, SearchMode::Text, 10);
+        let result = index
+            .search_with_report("", None, SearchMode::Text, 10)
+            .unwrap();
 
         assert!(result.hits.is_empty());
         assert_eq!(
@@ -10217,7 +10408,9 @@ mod tests {
             })
             .unwrap();
 
-        let result = index.search_with_report("graph", None, SearchMode::Text, 0);
+        let result = index
+            .search_with_report("graph", None, SearchMode::Text, 0)
+            .unwrap();
 
         assert!(result.hits.is_empty());
         assert_eq!(result.total_hits, 1);
@@ -10251,7 +10444,9 @@ mod tests {
         }
         {
             let index = SearchIndex::open(&path).unwrap();
-            let hits = index.search("adjacency", Some(&[1.0, 0.0]), SearchMode::Hybrid, 10);
+            let hits = index
+                .search("adjacency", Some(&[1.0, 0.0]), SearchMode::Hybrid, 10)
+                .unwrap();
             assert_eq!(hits[0].id, "a");
         }
         std::fs::remove_dir_all(path).unwrap();
@@ -10294,19 +10489,21 @@ mod tests {
                 index.projection_freshness().source_graph_commit_epoch,
                 Some(store.commit_epoch())
             );
-            let result = index.search_with_options(
-                "graph storage",
-                None,
-                SearchMode::Text,
-                SearchQueryOptions {
-                    limit: 10,
-                    offset: 0,
-                    rank_window: None,
-                    fusion_weights: SearchFusionWeights::default(),
-                    metadata_filters: BTreeMap::new(),
-                    policy_epoch: None,
-                },
-            );
+            let result = index
+                .search_with_options(
+                    "graph storage",
+                    None,
+                    SearchMode::Text,
+                    SearchQueryOptions {
+                        limit: 10,
+                        offset: 0,
+                        rank_window: None,
+                        fusion_weights: SearchFusionWeights::default(),
+                        metadata_filters: BTreeMap::new(),
+                        policy_epoch: None,
+                    },
+                )
+                .unwrap();
             assert_eq!(result.total_hits, 1);
             assert_eq!(
                 result.candidate_set.snapshot_source_graph_commit_epoch,
@@ -10442,20 +10639,22 @@ mod tests {
         }));
         assert!(index.projection_cleanup_report().deleted_files >= 1);
 
-        let result = index.search_with_options_compressed_vector_projection_mode(
-            "",
-            Some(&[1.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0]),
-            SearchMode::Vector,
-            SearchQueryOptions {
-                limit: 1,
-                offset: 0,
-                rank_window: None,
-                fusion_weights: SearchFusionWeights::default(),
-                metadata_filters: BTreeMap::new(),
-                policy_epoch: None,
-            },
-            CompressedVectorSearchMode::Required,
-        );
+        let result = index
+            .search_with_options_compressed_vector_projection_mode(
+                "",
+                Some(&[1.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0]),
+                SearchMode::Vector,
+                SearchQueryOptions {
+                    limit: 1,
+                    offset: 0,
+                    rank_window: None,
+                    fusion_weights: SearchFusionWeights::default(),
+                    metadata_filters: BTreeMap::new(),
+                    policy_epoch: None,
+                },
+                CompressedVectorSearchMode::Required,
+            )
+            .unwrap();
         assert_eq!(result.hits[0].id, "memory:a");
         assert_eq!(
             result.retrievers[0].backend,
@@ -10482,20 +10681,22 @@ mod tests {
         }
 
         let index = SearchIndex::open(&path).unwrap();
-        let result = index.search_with_options_compressed_vector_projection_mode(
-            "",
-            Some(&[1.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0]),
-            SearchMode::Vector,
-            SearchQueryOptions {
-                limit: 10,
-                offset: 0,
-                rank_window: None,
-                fusion_weights: SearchFusionWeights::default(),
-                metadata_filters: BTreeMap::new(),
-                policy_epoch: None,
-            },
-            CompressedVectorSearchMode::Disabled,
-        );
+        let result = index
+            .search_with_options_compressed_vector_projection_mode(
+                "",
+                Some(&[1.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0]),
+                SearchMode::Vector,
+                SearchQueryOptions {
+                    limit: 10,
+                    offset: 0,
+                    rank_window: None,
+                    fusion_weights: SearchFusionWeights::default(),
+                    metadata_filters: BTreeMap::new(),
+                    policy_epoch: None,
+                },
+                CompressedVectorSearchMode::Disabled,
+            )
+            .unwrap();
 
         assert_eq!(result.hits[0].id, "memory:a");
         assert_eq!(result.retrievers[0].backend, "scalar_vector_scan");
@@ -10521,20 +10722,22 @@ mod tests {
             ))
             .unwrap();
 
-        let result = index.search_with_options_compressed_vector_projection_mode(
-            "",
-            Some(&[1.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0]),
-            SearchMode::Vector,
-            SearchQueryOptions {
-                limit: 10,
-                offset: 0,
-                rank_window: None,
-                fusion_weights: SearchFusionWeights::default(),
-                metadata_filters: BTreeMap::new(),
-                policy_epoch: None,
-            },
-            CompressedVectorSearchMode::Required,
-        );
+        let result = index
+            .search_with_options_compressed_vector_projection_mode(
+                "",
+                Some(&[1.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0]),
+                SearchMode::Vector,
+                SearchQueryOptions {
+                    limit: 10,
+                    offset: 0,
+                    rank_window: None,
+                    fusion_weights: SearchFusionWeights::default(),
+                    metadata_filters: BTreeMap::new(),
+                    policy_epoch: None,
+                },
+                CompressedVectorSearchMode::Required,
+            )
+            .unwrap();
 
         assert_eq!(result.hits[0].id, "memory:a");
         assert_eq!(
@@ -10579,27 +10782,31 @@ mod tests {
             policy_epoch: None,
         };
 
-        let filtered = index.search_with_options_adaptive_vector_projection(
-            "",
-            Some(&[1.0, 0.0]),
-            SearchMode::Vector,
-            options.clone(),
-            AdaptiveVectorSearchOptions::new(CompressedVectorSearchMode::Preferred)
-                .with_backend_policy(AdaptiveVectorBackendPolicy {
-                    flat_scan_max_documents: 2,
-                    high_filter_selectivity_per_million: u32::MAX,
-                    flat_scan_memory_budget_bytes: 0,
-                }),
-        );
-        let recall_probe = index.search_with_options_adaptive_vector_projection(
-            "",
-            Some(&[1.0, 0.0]),
-            SearchMode::Vector,
-            options,
-            AdaptiveVectorSearchOptions::new(CompressedVectorSearchMode::Preferred)
-                .with_backend_policy(force_quantized_policy())
-                .as_recall_validation_probe(),
-        );
+        let filtered = index
+            .search_with_options_adaptive_vector_projection(
+                "",
+                Some(&[1.0, 0.0]),
+                SearchMode::Vector,
+                options.clone(),
+                AdaptiveVectorSearchOptions::new(CompressedVectorSearchMode::Preferred)
+                    .with_backend_policy(AdaptiveVectorBackendPolicy {
+                        flat_scan_max_documents: 2,
+                        high_filter_selectivity_per_million: u32::MAX,
+                        flat_scan_memory_budget_bytes: 0,
+                    }),
+            )
+            .unwrap();
+        let recall_probe = index
+            .search_with_options_adaptive_vector_projection(
+                "",
+                Some(&[1.0, 0.0]),
+                SearchMode::Vector,
+                options,
+                AdaptiveVectorSearchOptions::new(CompressedVectorSearchMode::Preferred)
+                    .with_backend_policy(force_quantized_policy())
+                    .as_recall_validation_probe(),
+            )
+            .unwrap();
 
         assert_eq!(filtered.hits.len(), 1);
         assert_eq!(
@@ -10933,22 +11140,24 @@ mod tests {
         assert!(descriptor.contains("checksum\t"));
 
         let index = SearchIndex::open(&path).unwrap();
-        let result = index.search_with_options(
-            "segment descriptor retrieval",
-            None,
-            SearchMode::Text,
-            SearchQueryOptions {
-                limit: 10,
-                offset: 0,
-                rank_window: None,
-                fusion_weights: SearchFusionWeights::default(),
-                metadata_filters: BTreeMap::from([(
-                    "source_id".to_string(),
-                    "thread_1".to_string(),
-                )]),
-                policy_epoch: None,
-            },
-        );
+        let result = index
+            .search_with_options(
+                "segment descriptor retrieval",
+                None,
+                SearchMode::Text,
+                SearchQueryOptions {
+                    limit: 10,
+                    offset: 0,
+                    rank_window: None,
+                    fusion_weights: SearchFusionWeights::default(),
+                    metadata_filters: BTreeMap::from([(
+                        "source_id".to_string(),
+                        "thread_1".to_string(),
+                    )]),
+                    policy_epoch: None,
+                },
+            )
+            .unwrap();
 
         assert_eq!(result.total_hits, 1);
         assert_eq!(result.filtered_document_count, 1);
@@ -11025,22 +11234,24 @@ mod tests {
         );
 
         let index = SearchIndex::open(&path).unwrap();
-        let result = index.search_with_options(
-            "segment descriptor range retrieval",
-            None,
-            SearchMode::Text,
-            SearchQueryOptions {
-                limit: 10,
-                offset: 0,
-                rank_window: None,
-                fusion_weights: SearchFusionWeights::default(),
-                metadata_filters: BTreeMap::from([(
-                    "created_at__gte".to_string(),
-                    "10".to_string(),
-                )]),
-                policy_epoch: None,
-            },
-        );
+        let result = index
+            .search_with_options(
+                "segment descriptor range retrieval",
+                None,
+                SearchMode::Text,
+                SearchQueryOptions {
+                    limit: 10,
+                    offset: 0,
+                    rank_window: None,
+                    fusion_weights: SearchFusionWeights::default(),
+                    metadata_filters: BTreeMap::from([(
+                        "created_at__gte".to_string(),
+                        "10".to_string(),
+                    )]),
+                    policy_epoch: None,
+                },
+            )
+            .unwrap();
 
         assert_eq!(result.total_hits, 1);
         assert_eq!(result.hits[0].id, "memory:1_new_0");
@@ -11454,22 +11665,24 @@ mod tests {
         );
 
         let index = SearchIndex::open(&path).unwrap();
-        let result = index.search_with_options(
-            "segment descriptor timestamp retrieval",
-            None,
-            SearchMode::Text,
-            SearchQueryOptions {
-                limit: 10,
-                offset: 0,
-                rank_window: None,
-                fusion_weights: SearchFusionWeights::default(),
-                metadata_filters: BTreeMap::from([(
-                    "created_at__gte".to_string(),
-                    "2026-02-01T00:00:00Z".to_string(),
-                )]),
-                policy_epoch: None,
-            },
-        );
+        let result = index
+            .search_with_options(
+                "segment descriptor timestamp retrieval",
+                None,
+                SearchMode::Text,
+                SearchQueryOptions {
+                    limit: 10,
+                    offset: 0,
+                    rank_window: None,
+                    fusion_weights: SearchFusionWeights::default(),
+                    metadata_filters: BTreeMap::from([(
+                        "created_at__gte".to_string(),
+                        "2026-02-01T00:00:00Z".to_string(),
+                    )]),
+                    policy_epoch: None,
+                },
+            )
+            .unwrap();
 
         assert_eq!(result.total_hits, 1);
         assert_eq!(result.hits[0].id, "memory:1_new_0");
@@ -11549,22 +11762,24 @@ mod tests {
             .all(|segment| segment.metadata.contains_key("space_id")));
 
         let index = SearchIndex::open(&path).unwrap();
-        let result = index.search_with_options(
-            "segment descriptor default space retrieval",
-            None,
-            SearchMode::Text,
-            SearchQueryOptions {
-                limit: 10,
-                offset: 0,
-                rank_window: None,
-                fusion_weights: SearchFusionWeights::default(),
-                metadata_filters: BTreeMap::from([(
-                    "space_id".to_string(),
-                    DEFAULT_SPACE_ID.to_string(),
-                )]),
-                policy_epoch: None,
-            },
-        );
+        let result = index
+            .search_with_options(
+                "segment descriptor default space retrieval",
+                None,
+                SearchMode::Text,
+                SearchQueryOptions {
+                    limit: 10,
+                    offset: 0,
+                    rank_window: None,
+                    fusion_weights: SearchFusionWeights::default(),
+                    metadata_filters: BTreeMap::from([(
+                        "space_id".to_string(),
+                        DEFAULT_SPACE_ID.to_string(),
+                    )]),
+                    policy_epoch: None,
+                },
+            )
+            .unwrap();
 
         assert_eq!(result.total_hits, 3);
         assert_eq!(result.filtered_document_count, 3);
@@ -11624,19 +11839,24 @@ mod tests {
         }
 
         let index = SearchIndex::open(&path).unwrap();
-        let result = index.search_with_options(
-            "segment descriptor missing field retrieval",
-            None,
-            SearchMode::Text,
-            SearchQueryOptions {
-                limit: 10,
-                offset: 0,
-                rank_window: None,
-                fusion_weights: SearchFusionWeights::default(),
-                metadata_filters: BTreeMap::from([("unit_type".to_string(), "fact".to_string())]),
-                policy_epoch: None,
-            },
-        );
+        let result = index
+            .search_with_options(
+                "segment descriptor missing field retrieval",
+                None,
+                SearchMode::Text,
+                SearchQueryOptions {
+                    limit: 10,
+                    offset: 0,
+                    rank_window: None,
+                    fusion_weights: SearchFusionWeights::default(),
+                    metadata_filters: BTreeMap::from([(
+                        "unit_type".to_string(),
+                        "fact".to_string(),
+                    )]),
+                    policy_epoch: None,
+                },
+            )
+            .unwrap();
 
         assert_eq!(result.total_hits, 0);
         assert!(
@@ -11817,22 +12037,24 @@ mod tests {
         );
 
         let index = SearchIndex::open(&path).unwrap();
-        let result = index.search_with_options(
-            "segment descriptor document id retrieval",
-            None,
-            SearchMode::Text,
-            SearchQueryOptions {
-                limit: 10,
-                offset: 0,
-                rank_window: None,
-                fusion_weights: SearchFusionWeights::default(),
-                metadata_filters: BTreeMap::from([(
-                    "document_id__in".to_string(),
-                    r#"["memory:1_target"]"#.to_string(),
-                )]),
-                policy_epoch: None,
-            },
-        );
+        let result = index
+            .search_with_options(
+                "segment descriptor document id retrieval",
+                None,
+                SearchMode::Text,
+                SearchQueryOptions {
+                    limit: 10,
+                    offset: 0,
+                    rank_window: None,
+                    fusion_weights: SearchFusionWeights::default(),
+                    metadata_filters: BTreeMap::from([(
+                        "document_id__in".to_string(),
+                        r#"["memory:1_target"]"#.to_string(),
+                    )]),
+                    policy_epoch: None,
+                },
+            )
+            .unwrap();
 
         assert_eq!(result.total_hits, 1);
         assert_eq!(result.hits[0].id, "memory:1_target");
@@ -11925,22 +12147,24 @@ mod tests {
         );
 
         let index = SearchIndex::open(&path).unwrap();
-        let result = index.search_with_options(
-            "segment descriptor enum retrieval",
-            None,
-            SearchMode::Text,
-            SearchQueryOptions {
-                limit: 10,
-                offset: 0,
-                rank_window: None,
-                fusion_weights: SearchFusionWeights::default(),
-                metadata_filters: BTreeMap::from([(
-                    "lifecycle_state__not_in".to_string(),
-                    r#"["deleted","forgotten"]"#.to_string(),
-                )]),
-                policy_epoch: None,
-            },
-        );
+        let result = index
+            .search_with_options(
+                "segment descriptor enum retrieval",
+                None,
+                SearchMode::Text,
+                SearchQueryOptions {
+                    limit: 10,
+                    offset: 0,
+                    rank_window: None,
+                    fusion_weights: SearchFusionWeights::default(),
+                    metadata_filters: BTreeMap::from([(
+                        "lifecycle_state__not_in".to_string(),
+                        r#"["deleted","forgotten"]"#.to_string(),
+                    )]),
+                    policy_epoch: None,
+                },
+            )
+            .unwrap();
 
         assert_eq!(result.total_hits, 1);
         assert_eq!(result.hits[0].id, "memory:1_active");
@@ -12004,22 +12228,24 @@ mod tests {
                 .to_string_lossy()
                 .starts_with("search_projection_segments.skein.corrupt.")
         }));
-        let result = index.search_with_options(
-            "segment descriptor recovery",
-            None,
-            SearchMode::Text,
-            SearchQueryOptions {
-                limit: 10,
-                offset: 0,
-                rank_window: None,
-                fusion_weights: SearchFusionWeights::default(),
-                metadata_filters: BTreeMap::from([(
-                    "source_id".to_string(),
-                    "thread_1".to_string(),
-                )]),
-                policy_epoch: None,
-            },
-        );
+        let result = index
+            .search_with_options(
+                "segment descriptor recovery",
+                None,
+                SearchMode::Text,
+                SearchQueryOptions {
+                    limit: 10,
+                    offset: 0,
+                    rank_window: None,
+                    fusion_weights: SearchFusionWeights::default(),
+                    metadata_filters: BTreeMap::from([(
+                        "source_id".to_string(),
+                        "thread_1".to_string(),
+                    )]),
+                    policy_epoch: None,
+                },
+            )
+            .unwrap();
 
         assert_eq!(result.total_hits, 1);
         assert!(
@@ -12059,7 +12285,9 @@ mod tests {
                     dimension: 2,
                 })
             );
-            let hits = index.search("graph", Some(&[1.0, 0.0]), SearchMode::Hybrid, 10);
+            let hits = index
+                .search("graph", Some(&[1.0, 0.0]), SearchMode::Hybrid, 10)
+                .unwrap();
             assert_eq!(hits[0].id, "a");
         }
         std::fs::remove_dir_all(path).unwrap();
@@ -12480,7 +12708,9 @@ mod tests {
             })
             .unwrap();
 
-        let hits = index.search("wal", Some(&[1.0, 0.0]), SearchMode::Hybrid, 10);
+        let hits = index
+            .search("wal", Some(&[1.0, 0.0]), SearchMode::Hybrid, 10)
+            .unwrap();
 
         assert_eq!(hits.len(), 1);
         assert_eq!(hits[0].id, "memory:mem_1");
@@ -12527,7 +12757,9 @@ mod tests {
             .rebuild_from_graph(&catalog, &store, SearchRebuildOptions::default())
             .unwrap();
 
-        let hits = index.search("fallback identity projection", None, SearchMode::Text, 10);
+        let hits = index
+            .search("fallback identity projection", None, SearchMode::Text, 10)
+            .unwrap();
         let document = index.document("memory:0").expect("projected document");
 
         assert_eq!(hits.len(), 1);
@@ -12574,22 +12806,24 @@ mod tests {
             .unwrap();
 
         let document = index.document("memory:mem_1").expect("projected document");
-        let hits = index.search_with_options(
-            "source fallback projection",
-            None,
-            SearchMode::Text,
-            SearchQueryOptions {
-                limit: 10,
-                offset: 0,
-                rank_window: None,
-                fusion_weights: SearchFusionWeights::default(),
-                metadata_filters: BTreeMap::from([(
-                    "source_id".to_string(),
-                    "thread_1".to_string(),
-                )]),
-                policy_epoch: None,
-            },
-        );
+        let hits = index
+            .search_with_options(
+                "source fallback projection",
+                None,
+                SearchMode::Text,
+                SearchQueryOptions {
+                    limit: 10,
+                    offset: 0,
+                    rank_window: None,
+                    fusion_weights: SearchFusionWeights::default(),
+                    metadata_filters: BTreeMap::from([(
+                        "source_id".to_string(),
+                        "thread_1".to_string(),
+                    )]),
+                    policy_epoch: None,
+                },
+            )
+            .unwrap();
 
         assert_eq!(
             document.metadata.get("source_id").map(String::as_str),
@@ -12697,7 +12931,9 @@ mod tests {
                 .map(String::as_str),
             Some("entity")
         );
-        let hits = index.search("adjacency", None, SearchMode::Text, 10);
+        let hits = index
+            .search("adjacency", None, SearchMode::Text, 10)
+            .unwrap();
         assert_eq!(hits[0].id, "memory:mem_1");
     }
 
@@ -13025,7 +13261,9 @@ mod tests {
         assert!(!report.source_graph_commit_epoch_updated);
         assert!(index.document("memory:old").is_none());
         assert!(index.document("memory:new").is_some());
-        let hits = index.search("embedded search", None, SearchMode::Text, 10);
+        let hits = index
+            .search("embedded search", None, SearchMode::Text, 10)
+            .unwrap();
         assert_eq!(hits[0].id, "memory:new");
     }
 
@@ -13539,8 +13777,10 @@ mod tests {
             reference.upsert(document).unwrap();
         }
 
-        let actual = index.search("stale", None, SearchMode::Text, 10);
-        let expected = reference.search("stale", None, SearchMode::Text, 10);
+        let actual = index.search("stale", None, SearchMode::Text, 10).unwrap();
+        let expected = reference
+            .search("stale", None, SearchMode::Text, 10)
+            .unwrap();
         assert_eq!(actual.len(), 1);
         assert_eq!(actual[0].id, "memory:mem_2");
         assert_eq!(actual[0].text_score, expected[0].text_score);

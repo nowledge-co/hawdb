@@ -10,24 +10,26 @@ fn knowledge_retrieval_binds_idless_search_hits_to_canonical_nodes() {
     db.rebuild_search_projection(&mut search_index, SearchRebuildOptions::default())
         .unwrap();
 
-    let output = db.retrieve_knowledge(
-        &search_index,
-        &KnowledgeRetrievalRequest {
-            query_text: "idless projection retrieval".to_string(),
-            query_embedding: None,
-            mode: SearchMode::Text,
-            limit: 10,
-            offset: 0,
-            rank_window: None,
-            search_fusion_weights: SearchFusionWeights::default(),
-            metadata_filters: BTreeMap::new(),
-            candidate_limit: None,
-            candidate_scoring: KnowledgeCandidateScoringPolicy::Max,
-            graph_seed_limit: 0,
-            graph_context_limit: 4,
-            graph_context_max_hops: 1,
-        },
-    );
+    let output = db
+        .retrieve_knowledge(
+            &search_index,
+            &KnowledgeRetrievalRequest {
+                query_text: "idless projection retrieval".to_string(),
+                query_embedding: None,
+                mode: SearchMode::Text,
+                limit: 10,
+                offset: 0,
+                rank_window: None,
+                search_fusion_weights: SearchFusionWeights::default(),
+                metadata_filters: BTreeMap::new(),
+                candidate_limit: None,
+                candidate_scoring: KnowledgeCandidateScoringPolicy::Max,
+                graph_seed_limit: 0,
+                graph_context_limit: 4,
+                graph_context_max_hops: 1,
+            },
+        )
+        .unwrap();
 
     assert_eq!(output.search.total_hits, 1);
     assert_eq!(output.search.hits[0].external_id.as_deref(), Some("0"));
@@ -58,24 +60,26 @@ fn knowledge_retrieval_external_filter_uses_projected_identity_for_idless_nodes(
     db.rebuild_search_projection(&mut search_index, SearchRebuildOptions::default())
         .unwrap();
 
-    let output = db.retrieve_knowledge(
-        &search_index,
-        &KnowledgeRetrievalRequest {
-            query_text: "projected identity retrieval".to_string(),
-            query_embedding: None,
-            mode: SearchMode::Text,
-            limit: 10,
-            offset: 0,
-            rank_window: None,
-            search_fusion_weights: SearchFusionWeights::default(),
-            metadata_filters: BTreeMap::from([("external_id".to_string(), "0".to_string())]),
-            candidate_limit: None,
-            candidate_scoring: KnowledgeCandidateScoringPolicy::Max,
-            graph_seed_limit: 10,
-            graph_context_limit: 0,
-            graph_context_max_hops: 1,
-        },
-    );
+    let output = db
+        .retrieve_knowledge(
+            &search_index,
+            &KnowledgeRetrievalRequest {
+                query_text: "projected identity retrieval".to_string(),
+                query_embedding: None,
+                mode: SearchMode::Text,
+                limit: 10,
+                offset: 0,
+                rank_window: None,
+                search_fusion_weights: SearchFusionWeights::default(),
+                metadata_filters: BTreeMap::from([("external_id".to_string(), "0".to_string())]),
+                candidate_limit: None,
+                candidate_scoring: KnowledgeCandidateScoringPolicy::Max,
+                graph_seed_limit: 10,
+                graph_context_limit: 0,
+                graph_context_max_hops: 1,
+            },
+        )
+        .unwrap();
 
     assert_eq!(output.search.total_hits, 1);
     assert_eq!(output.search.hits[0].external_id.as_deref(), Some("0"));
@@ -101,24 +105,26 @@ fn knowledge_retrieval_external_filter_falls_back_for_empty_projected_ids() {
     db.rebuild_search_projection(&mut search_index, SearchRebuildOptions::default())
         .unwrap();
 
-    let output = db.retrieve_knowledge(
-        &search_index,
-        &KnowledgeRetrievalRequest {
-            query_text: "empty projected identity retrieval".to_string(),
-            query_embedding: None,
-            mode: SearchMode::Text,
-            limit: 10,
-            offset: 0,
-            rank_window: None,
-            search_fusion_weights: SearchFusionWeights::default(),
-            metadata_filters: BTreeMap::from([("external_id".to_string(), "0".to_string())]),
-            candidate_limit: None,
-            candidate_scoring: KnowledgeCandidateScoringPolicy::Max,
-            graph_seed_limit: 10,
-            graph_context_limit: 0,
-            graph_context_max_hops: 1,
-        },
-    );
+    let output = db
+        .retrieve_knowledge(
+            &search_index,
+            &KnowledgeRetrievalRequest {
+                query_text: "empty projected identity retrieval".to_string(),
+                query_embedding: None,
+                mode: SearchMode::Text,
+                limit: 10,
+                offset: 0,
+                rank_window: None,
+                search_fusion_weights: SearchFusionWeights::default(),
+                metadata_filters: BTreeMap::from([("external_id".to_string(), "0".to_string())]),
+                candidate_limit: None,
+                candidate_scoring: KnowledgeCandidateScoringPolicy::Max,
+                graph_seed_limit: 10,
+                graph_context_limit: 0,
+                graph_context_max_hops: 1,
+            },
+        )
+        .unwrap();
 
     assert_eq!(output.search.total_hits, 1);
     assert_eq!(output.search.hits[0].id, "memory:0");
@@ -149,24 +155,26 @@ fn knowledge_retrieval_normalizes_default_space_filters() {
     db.rebuild_search_projection(&mut search_index, SearchRebuildOptions::default())
         .unwrap();
 
-    let output = db.retrieve_knowledge(
-        &search_index,
-        &KnowledgeRetrievalRequest {
-            query_text: "default space retrieval".to_string(),
-            query_embedding: None,
-            mode: SearchMode::Text,
-            limit: 10,
-            offset: 0,
-            rank_window: None,
-            search_fusion_weights: SearchFusionWeights::default(),
-            metadata_filters: BTreeMap::from([("space_id".to_string(), "default".to_string())]),
-            candidate_limit: None,
-            candidate_scoring: KnowledgeCandidateScoringPolicy::Max,
-            graph_seed_limit: 10,
-            graph_context_limit: 0,
-            graph_context_max_hops: 1,
-        },
-    );
+    let output = db
+        .retrieve_knowledge(
+            &search_index,
+            &KnowledgeRetrievalRequest {
+                query_text: "default space retrieval".to_string(),
+                query_embedding: None,
+                mode: SearchMode::Text,
+                limit: 10,
+                offset: 0,
+                rank_window: None,
+                search_fusion_weights: SearchFusionWeights::default(),
+                metadata_filters: BTreeMap::from([("space_id".to_string(), "default".to_string())]),
+                candidate_limit: None,
+                candidate_scoring: KnowledgeCandidateScoringPolicy::Max,
+                graph_seed_limit: 10,
+                graph_context_limit: 0,
+                graph_context_max_hops: 1,
+            },
+        )
+        .unwrap();
     let search_hit_ids = output
         .search
         .hits

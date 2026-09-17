@@ -328,6 +328,8 @@ test_suite(
         ":skein_acl_capability_tests",
         ":skein_minimal_native_vector_boundary_test",
         ":skein_pgq_create_binder_tests",
+        ":skein_fallible_search_contract_tests",
+        ":skein_fallible_search_contract_minimal_tests",
         ":skein_search_generation_context_minimal_tests",
         ":skein_search_generation_context_tests",
         ":skein_search_projection_consumer_tests",
@@ -661,4 +663,22 @@ test_suite(
         ]
     ],
     tags = ["manual"],
+)
+
+# Public search error contracts in both embedded dependency profiles.
+rust_test(
+    name = "skein_fallible_search_contract_tests",
+    crate_root = "tests/fallible_search_contract.rs",
+    crate_features = _SKEIN_DEFAULT_FEATURES,
+    srcs = ["tests/fallible_search_contract.rs"],
+    edition = "2024",
+    deps = [":skein"],
+)
+
+rust_test(
+    name = "skein_fallible_search_contract_minimal_tests",
+    crate_root = "tests/fallible_search_contract.rs",
+    srcs = ["tests/fallible_search_contract.rs"],
+    edition = "2024",
+    deps = [":skein_minimal"],
 )
