@@ -595,87 +595,10 @@ pub(crate) struct GraphMutationLockFootprint {
     pub(crate) adjacency_writes: BTreeSet<GraphAdjacencyLockIdentity>,
 }
 
-fn ensure_mutation_commit_limits(
-    ops: &[WalOp],
-    rows: &[BTreeMap<String, Value>],
-    limits: MutationLimits,
-) -> Result<()> {
-    ensure_additional_mutation_limits(ops.len(), rows.len(), 0, 0, limits)?;
-    if rows.len() > limits.max_result_rows.get() {
-        return Err(SkeinError::Execution(format!(
-            "mutation would exceed max_mutation_result_rows {}",
-            limits.max_result_rows
-        )));
-    }
-    let payload_bytes = rows.iter().fold(0u64, |total, row| {
-        total.saturating_add(row.iter().fold(0u64, |row_total, (name, value)| {
-            row_total
-                .saturating_add(name.len() as u64)
-                .saturating_add(estimated_value_bytes(value))
-        }))
-    });
-    if payload_bytes > limits.max_result_payload_bytes.get() as u64 {
-        return Err(SkeinError::Execution(format!(
-            "mutation result payload would exceed max_mutation_result_payload_bytes {}",
-            limits.max_result_payload_bytes
-        )));
-    }
-    Ok(())
-}
-
-fn ensure_additional_mutation_limits(
-    operation_count: usize,
-    affected_row_count: usize,
-    additional_operations: usize,
-    additional_affected_rows: usize,
-    limits: MutationLimits,
-) -> Result<()> {
-    let next_operations = operation_count
-        .checked_add(additional_operations)
-        .ok_or_else(|| SkeinError::Execution("mutation operation count overflow".to_string()))?;
-    if next_operations > limits.max_operations.get() {
-        return Err(SkeinError::Execution(format!(
-            "mutation would exceed max_mutation_operations {}",
-            limits.max_operations
-        )));
-    }
-    let next_affected_rows = affected_row_count
-        .checked_add(additional_affected_rows)
-        .ok_or_else(|| SkeinError::Execution("mutation affected-row count overflow".to_string()))?;
-    if next_affected_rows > limits.max_affected_rows.get() {
-        return Err(SkeinError::Execution(format!(
-            "mutation would exceed max_mutation_affected_rows {}",
-            limits.max_affected_rows
-        )));
-    }
-    Ok(())
-}
-
-fn remaining_mutation_affected_rows(current: usize, limits: MutationLimits) -> Result<usize> {
-    limits
-        .max_affected_rows
-        .get()
-        .checked_sub(current)
-        .ok_or_else(|| {
-            SkeinError::Execution(format!(
-                "mutation would exceed max_mutation_affected_rows {}",
-                limits.max_affected_rows
-            ))
-        })
-}
-
-fn remaining_mutation_operations(current: usize, limits: MutationLimits) -> Result<usize> {
-    limits
-        .max_operations
-        .get()
-        .checked_sub(current)
-        .ok_or_else(|| {
-            SkeinError::Execution(format!(
-                "mutation would exceed max_mutation_operations {}",
-                limits.max_operations
-            ))
-        })
-}
+pub(crate) use skein_storage::mutation::{
+    ensure_additional_mutation_limits, ensure_mutation_commit_limits, estimated_properties_bytes,
+    estimated_value_bytes, remaining_mutation_affected_rows, remaining_mutation_operations,
+};
 
 type AdjacencyGroups = BTreeMap<AdjacencyGroupKey, BTreeSet<RelId>>;
 
@@ -3762,30 +3685,6 @@ fn estimated_node_record_bytes(node: &NodeRecord) -> u64 {
 
 fn estimated_relationship_record_bytes(relationship: &RelRecord) -> u64 {
     40u64.saturating_add(estimated_properties_bytes(&relationship.properties))
-}
-
-fn estimated_properties_bytes(properties: &BTreeMap<String, Value>) -> u64 {
-    properties.iter().fold(0u64, |bytes, (key, value)| {
-        bytes
-            .saturating_add(key.len() as u64)
-            .saturating_add(estimated_value_bytes(value))
-            .saturating_add(16)
-    })
-}
-
-fn estimated_value_bytes(value: &Value) -> u64 {
-    match value {
-        Value::Null => 1,
-        Value::Bool(_) => 1,
-        Value::Int(_) | Value::Float(_) => 8,
-        Value::String(value) => value.len() as u64,
-        Value::Binary(value) => value.len() as u64,
-        Value::Uuid(_) => 16,
-        Value::List(values) => values.iter().fold(16u64, |bytes, value| {
-            bytes.saturating_add(estimated_value_bytes(value))
-        }),
-        Value::Map(values) => estimated_properties_bytes(values),
-    }
 }
 
 #[cfg(test)]
