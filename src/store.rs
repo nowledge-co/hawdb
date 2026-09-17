@@ -1,9 +1,9 @@
 use crate::analytics::ProjectedGraph;
 use crate::error::{Result, SkeinError};
 use crate::schema::{
-    AdvancedStatisticsFreshness, BasicGraphStatistics, Catalog, CompositeIndexDescriptor,
-    ConstraintId, GraphStatistics, IndexId, IndexKind, IndexStatisticsSample, LabelId, PropertyId,
-    PropertyType, RelTypeId, SchemaObjectState, TableDescriptor, TableId, TableKind,
+    AdvancedStatisticsFreshness, BasicGraphStatistics, Catalog, ConstraintId, GraphStatistics,
+    IndexId, IndexKind, IndexStatisticsSample, LabelId, PropertyId, PropertyType, RelTypeId,
+    SchemaObjectState, TableDescriptor, TableId, TableKind,
 };
 use crate::telemetry::TelemetrySink;
 use crate::value::Value;

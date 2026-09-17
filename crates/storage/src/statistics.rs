@@ -1,5 +1,8 @@
 //! Graph statistics sampling, computation, and full-text tokenization.
 
+#[doc(hidden)]
+pub mod node_index_updates;
+
 use crate::statistics_refresh::{
     adaptive_histogram_sample_limit, node_property_supports_optimizer_statistics,
     relationship_property_supports_optimizer_statistics, sample_histogram_values,
