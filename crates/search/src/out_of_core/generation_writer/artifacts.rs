@@ -5,7 +5,7 @@ use super::super::{
 #[cfg(test)]
 use super::spool::SpoolSource;
 use super::{SearchOutOfCoreGenerationBuildOptions, STAGE_METADATA_FILE, STAGE_VECTOR_FILE};
-use crate::build_control::{checkpoint, write_checksummed};
+use crate::build_control::{checkpoint, temporary::RemoveOnDrop, write_checksummed};
 use crate::build_memory::path::OwnedPath;
 use crate::build_memory::{
     checked_mul, grow_slots, AdmittedDocument, BuildMemory, SPOOL_BUFFER_BYTES,
@@ -388,32 +388,6 @@ impl<'a> SegmentArtifactBuilder<'a> {
             &self.memory,
             &self.task,
         )
-    }
-}
-
-/// Removes a temporary file on drop unless disarmed, so a cancellation
-/// checkpoint between writing a temporary artifact and its durable rename
-/// cannot orphan it on disk.
-struct RemoveOnDrop<'a> {
-    path: &'a Path,
-    armed: bool,
-}
-
-impl<'a> RemoveOnDrop<'a> {
-    fn new(path: &'a Path) -> Self {
-        Self { path, armed: true }
-    }
-
-    fn disarm(&mut self) {
-        self.armed = false;
-    }
-}
-
-impl Drop for RemoveOnDrop<'_> {
-    fn drop(&mut self) {
-        if self.armed {
-            let _ = std::fs::remove_file(self.path);
-        }
     }
 }
 

@@ -52,11 +52,7 @@ pub(super) fn encode_segment_payload_with_context<T: std::borrow::Borrow<crate::
             encoding.len(),
         )));
     }
-    if zstd::zstd_safe::version_number() != 10507 {
-        return Err(SkeinError::Execution(
-            "search zstd workspace admission requires qualification for this version".into(),
-        ));
-    }
+    crate::build_memory::compression::require_qualified_zstd("workspace admission")?;
     let workspace = memory.retained.reserve(COMPRESSION_WORKSPACE_BYTES)?;
     let _scratch = memory
         .spool

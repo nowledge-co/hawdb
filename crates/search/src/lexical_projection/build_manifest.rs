@@ -5,14 +5,14 @@ use super::{
     LexicalProjectionConfig, LexicalProjectionReader, ManifestBody, TermStatistics, MANIFEST_FILE,
     SPILL_IO_BUFFER_BYTES,
 };
-use crate::build_control::{checkpoint, CheckedWriter};
+use crate::build_control::{checkpoint, temporary::RemoveOnDrop, CheckedWriter};
 use crate::build_memory::{checked_add as add, checked_mul as mul, path::OwnedPath, BuildMemory};
 use crate::{Result, SkeinError};
 use skein_core::RuntimeTaskContext;
 use skein_executor::QueryMemoryLease;
 use skein_integrity::Crc32cHasher;
 use skein_storage::durable_replace_file;
-use std::fs::{self, File};
+use std::fs::File;
 use std::io::{Read, Seek, SeekFrom, Write};
 use std::mem::size_of;
 use std::path::Path;
@@ -58,28 +58,6 @@ impl Paths {
             manifest_tmp,
             _name_memory: name_memory,
         })
-    }
-}
-
-pub(super) struct Cleanup<'a> {
-    path: &'a Path,
-    armed: bool,
-}
-
-impl<'a> Cleanup<'a> {
-    pub(super) fn new(path: &'a Path) -> Self {
-        Self { path, armed: true }
-    }
-    pub(super) fn disarm(&mut self) {
-        self.armed = false;
-    }
-}
-
-impl Drop for Cleanup<'_> {
-    fn drop(&mut self) {
-        if self.armed {
-            let _ = fs::remove_file(self.path);
-        }
     }
 }
 
@@ -196,7 +174,7 @@ pub(super) fn finish(
 
     let mut output_memory = memory.retained.reserve(plan.output_bytes)?;
     let decode_scratch = memory.spool.reserve(plan.scratch_bytes)?;
-    let mut guard = Cleanup::new(&paths.manifest_tmp);
+    let mut guard = RemoveOnDrop::new(&paths.manifest_tmp);
     {
         let mut file = File::create(&paths.manifest_tmp)?;
         CheckedWriter::new(&mut file, Some(task)).write_all(&encoded.bytes)?;
@@ -241,32 +219,33 @@ pub(super) fn finish(
     Ok(reader)
 }
 
+#[cfg(not(windows))]
+fn rename_memory(_paths: &Paths, memory: &BuildMemory) -> Result<QueryMemoryLease> {
+    memory.spool.reserve(0)
+}
+
+#[cfg(windows)]
 fn rename_memory(paths: &Paths, memory: &BuildMemory) -> Result<QueryMemoryLease> {
-    let _ = paths;
-    #[cfg(not(windows))]
-    let bytes = 0;
-    #[cfg(windows)]
-    let bytes = {
-        use std::os::windows::ffi::OsStrExt;
-        [
-            &paths.artifact_tmp,
-            &paths.artifact,
-            &paths.manifest_tmp,
-            &paths.manifest,
-        ]
-        .into_iter()
-        .try_fold(0, |bytes, path| {
-            // Native MoveFileExW owns two geometrically collected Vec<u16>.
-            add(
-                bytes,
-                mul(
-                    mul(add(path.as_os_str().encode_wide().count(), 1)?.max(4), 3)?,
-                    size_of::<u16>(),
-                )?,
-            )
-        })?
-    };
-    memory.spool.reserve(bytes)
+    use std::os::windows::ffi::OsStrExt;
+    let lengths = [
+        &paths.artifact_tmp,
+        &paths.artifact,
+        &paths.manifest_tmp,
+        &paths.manifest,
+    ]
+    .map(|path| path.as_os_str().encode_wide().count());
+    memory.spool.reserve(windows_rename_bytes(lengths)?)
+}
+
+#[cfg(any(windows, test))]
+fn windows_rename_bytes(lengths: [usize; 4]) -> Result<usize> {
+    lengths.into_iter().try_fold(0, |bytes, length| {
+        // Native MoveFileExW owns two geometrically collected Vec<u16>.
+        add(
+            bytes,
+            mul(mul(add(length, 1)?.max(4), 3)?, size_of::<u16>())?,
+        )
+    })
 }
 
 fn verify_file_bytes(
