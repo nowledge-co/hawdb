@@ -1,4 +1,5 @@
 use serde_json::json;
+use skein::optimizer::RelationalAccessPathKind;
 use skein::{
     Database, DatabaseConfig, DatabaseReadTransaction, ProfiledRelationalSqlQueryOutput,
     QueryStreamOptions, RelationalJoinPlanningStatus, RelationalJoinPlanningStrategy, Value,
@@ -10,16 +11,17 @@ const MAX_TABLES: usize = 8;
 const WARMUPS: usize = 3;
 const SAMPLES: usize = 31;
 // Expressions include admitted physical implementations: three for the first
-// filtered edge, then two for each additional edge. Group count and the winning
-// probe plan's cost remain unchanged for this single-row fixture.
+// filtered edge, then two for each additional edge. Forward probes cost
+// 4 + 5 * (tables - 1); reverse primary-key probes cost 7 + 4 * (tables - 1).
+// The reverse chain becomes cheaper at five tables.
 const EXPECTED_PLAN_SIGNATURES: [(usize, usize, u64); MAX_TABLES - MIN_TABLES + 1] = [
-    (3, 7, 2),
-    (6, 16, 3),
-    (10, 31, 4),
-    (15, 54, 5),
-    (21, 87, 6),
-    (28, 132, 7),
-    (36, 191, 8),
+    (3, 7, 9),
+    (6, 16, 14),
+    (10, 31, 19),
+    (15, 54, 23),
+    (21, 87, 27),
+    (28, 132, 31),
+    (36, 191, 35),
 ];
 
 fn main() {
@@ -36,7 +38,7 @@ fn main() {
     println!(
         "relational_join_planning {}",
         json!({
-            "protocol": "skein-relational-join-planning-v1",
+            "protocol": "skein-relational-join-planning-v2",
             "table_range": [MIN_TABLES, MAX_TABLES],
             "warmups": WARMUPS,
             "samples": SAMPLES,
@@ -139,6 +141,15 @@ fn measure(read: &DatabaseReadTransaction, table_count: usize) -> serde_json::Va
         "plan_cost": plan_cost,
         "attempt_count": 1,
         "selected_strategy": RelationalJoinPlanningStrategy::CsgCmpMemo.as_str(),
+        "selected_order": cold.profile.join_planning.selected_order,
+        "access_paths": cold.profile.operator_cardinality_profiles.iter().map(|operator| {
+            json!({
+                "table": operator.table,
+                "operator": operator.operator.as_str(),
+                "access": operator.access_path.name,
+                "covering": operator.access_path.covering,
+            })
+        }).collect::<Vec<_>>(),
     })
 }
 
@@ -156,7 +167,43 @@ fn execute(read: &DatabaseReadTransaction, sql: &str) -> ProfiledRelationalSqlQu
 
 fn assert_profile_contract(profiled: &ProfiledRelationalSqlQueryOutput, table_count: usize) {
     assert_eq!(profiled.output.rows.len(), 1);
+    assert!(matches!(
+        profiled.output.rows.row(0).and_then(|row| row.get("id")),
+        Some(Value::Int(1))
+    ));
     let planning = &profiled.profile.join_planning;
+    let reverse = table_count >= 5;
+    let mut tables = (0..table_count).collect::<Vec<_>>();
+    if reverse {
+        tables.reverse();
+    }
+    assert_eq!(
+        planning.selected_order,
+        tables
+            .iter()
+            .map(|table| format!("t{table}"))
+            .collect::<Vec<_>>()
+    );
+    assert_eq!(
+        profiled.profile.operator_cardinality_profiles.len(),
+        table_count
+    );
+    for (position, (operator, table)) in profiled
+        .profile
+        .operator_cardinality_profiles
+        .iter()
+        .zip(tables)
+        .enumerate()
+    {
+        assert_eq!(operator.table, format!("planning_t{table}"));
+        let expected_access = match (position == 0, reverse) {
+            (true, true) => RelationalAccessPathKind::FullScan,
+            (true, false) | (false, true) => RelationalAccessPathKind::PrimaryKey,
+            (false, false) => RelationalAccessPathKind::Index,
+        };
+        assert_eq!(operator.access_path.kind, expected_access);
+        assert_eq!(operator.actual_rows, Some(1));
+    }
     assert_eq!(
         planning.strategy,
         RelationalJoinPlanningStrategy::CsgCmpMemo
