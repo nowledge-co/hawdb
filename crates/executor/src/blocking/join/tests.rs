@@ -82,8 +82,14 @@ fn row(variable: &str, id: usize, key: Option<Value>, padding: usize) -> Binding
     }
 }
 
+fn key_values() -> Vec<Value> {
+    let mut domain = values();
+    domain.push(Value::String("unicode-\u{03bb}-\u{1f980}".into()));
+    domain
+}
+
 fn source(seed: usize, count: usize, padding: usize) -> Source {
-    let domain = values();
+    let domain = key_values();
     let rows = |variable: &str, offset: usize| {
         (0..count)
             .map(|i| {
@@ -215,7 +221,7 @@ fn graph_hash_join_collision_candidates_retain_full_value_equality() {
         unreachable!()
     };
     let mut state = JoinState::new(fixture.context(), (&left_key, &right_key));
-    let domain = values();
+    let domain = key_values();
     for (i, value) in domain.iter().enumerate() {
         state
             .insert(0, row("b", i, Some(value.clone()), 0))
