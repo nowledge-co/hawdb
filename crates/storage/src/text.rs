@@ -237,6 +237,18 @@ pub fn parse_u64(input: &str, name: &str) -> Result<u64> {
         .map_err(|_| SkeinError::Storage(format!("invalid {name}: {input}")))
 }
 
+pub fn parse_u32(input: &str, name: &str) -> Result<u32> {
+    input
+        .parse()
+        .map_err(|_| SkeinError::Storage(format!("invalid {name}: {input}")))
+}
+
+pub fn parse_usize(input: &str, name: &str) -> Result<usize> {
+    input
+        .parse()
+        .map_err(|_| SkeinError::Storage(format!("invalid {name}: {input}")))
+}
+
 pub fn parse_i64(input: &str, name: &str) -> Result<i64> {
     input
         .parse()

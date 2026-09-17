@@ -6,12 +6,13 @@ use crate::text::{
     encode_u64_vec, encode_value_vec,
 };
 use crate::{
-    artifact_binding::DurableArtifactMetadata, durable_manifest::STORAGE_VERSION,
-    encode_relational_primary_key, ProjectedGraphDefinition, RelationalPrimaryKeyChangeCapture,
-    RelationalPrimaryKeyChangeRebuildReason, SearchProjectionGraphChange,
+    artifact_binding::DurableArtifactMetadata, decode_relational_primary_key,
+    durable_manifest::STORAGE_VERSION, encode_relational_primary_key, ProjectedGraphDefinition,
+    RelationalPrimaryKeyChangeCapture, RelationalPrimaryKeyChangeRebuildReason,
+    RelationalTablePrimaryKeyChanges, SearchProjectionGraphChange,
 };
-use skein_core::{Catalog, ConstraintSubject, GraphStatistics, Result, SkeinError, Uuid};
-use std::collections::BTreeMap;
+use skein_core::{Catalog, ConstraintSubject, GraphStatistics, LabelId, Result, SkeinError, Uuid};
+use std::collections::{BTreeMap, BTreeSet};
 
 pub const CHECKPOINT_HEADER_V1: &str = "SKEIN_CHECKPOINT_V1";
 
@@ -458,4 +459,172 @@ pub fn encode_checkpoint_body(image: &CheckpointImage<'_>, generation: u64) -> R
         ));
     }
     Ok(body)
+}
+
+#[doc(hidden)]
+pub fn split_checkpoint_checksum(text: &str) -> Result<(&str, u64)> {
+    let Some((body, footer)) = text.rsplit_once("checksum\t") else {
+        return Err(SkeinError::Storage(
+            "checkpoint missing checksum footer".to_string(),
+        ));
+    };
+    let checksum = crate::text::parse_u64(footer.trim(), "checkpoint checksum")?;
+    Ok((body, checksum))
+}
+
+#[doc(hidden)]
+pub fn relational_checkpoint_metadata(body: &str) -> Result<Option<DurableArtifactMetadata>> {
+    let mut encoded_len = None;
+    let mut encoded_checksum = None;
+    let mut encoded_sha256 = None;
+    for line in body.lines() {
+        let fields = line.split('\t').collect::<Vec<_>>();
+        match fields.as_slice() {
+            ["relational_checkpoint_encoded_len", raw] if encoded_len.is_none() => {
+                encoded_len = Some(crate::text::parse_u64(
+                    raw,
+                    "relational checkpoint encoded length",
+                )?);
+            }
+            ["relational_checkpoint_encoded_checksum", raw] if encoded_checksum.is_none() => {
+                encoded_checksum = Some(crate::text::parse_u64(
+                    raw,
+                    "relational checkpoint encoded checksum",
+                )?);
+            }
+            ["relational_checkpoint_encoded_sha256", raw] if encoded_sha256.is_none() => {
+                encoded_sha256 = Some(raw.parse().map_err(|error| {
+                    SkeinError::Storage(format!(
+                        "invalid relational checkpoint encoded SHA-256: {error}"
+                    ))
+                })?);
+            }
+            ["relational_checkpoint_encoded_len", _]
+            | ["relational_checkpoint_encoded_checksum", _]
+            | ["relational_checkpoint_encoded_sha256", _] => {
+                return Err(SkeinError::Storage(
+                    "checkpoint contains duplicate relational artifact metadata".to_string(),
+                ));
+            }
+            _ => {}
+        }
+    }
+    if !crate::durable_manifest::artifact_metadata_presence_consistent(
+        encoded_len,
+        encoded_checksum,
+        encoded_sha256,
+    ) {
+        return Err(SkeinError::Storage(
+            "checkpoint relational artifact metadata is incomplete".to_string(),
+        ));
+    }
+    Ok(encoded_len.map(|encoded_len| DurableArtifactMetadata {
+        encoded_len,
+        encoded_checksum: encoded_checksum.expect("validated relational checksum"),
+        encoded_sha256: encoded_sha256.expect("validated relational SHA-256"),
+    }))
+}
+
+#[doc(hidden)]
+pub fn parse_label_set(input: &str) -> Result<BTreeSet<LabelId>> {
+    if input.is_empty() {
+        return Ok(BTreeSet::new());
+    }
+    input
+        .split(',')
+        .map(|raw| crate::text::parse_u32(raw, "label id").map(LabelId))
+        .collect()
+}
+
+#[doc(hidden)]
+pub fn decode_search_projection_relational_primary_key_changes(
+    raw_kind: &str,
+    raw_changes: &str,
+) -> Result<RelationalPrimaryKeyChangeCapture> {
+    let rebuild_reason = match raw_kind {
+        "exact" => None,
+        "rebuild_schema_rewrite" => Some(RelationalPrimaryKeyChangeRebuildReason::SchemaRewrite),
+        "rebuild_capture_limit" => {
+            Some(RelationalPrimaryKeyChangeRebuildReason::CaptureLimitExceeded)
+        }
+        "rebuild_key_encoding" => {
+            Some(RelationalPrimaryKeyChangeRebuildReason::UnsupportedKeyEncoding)
+        }
+        "rebuild_wal_encoding_limit" => {
+            Some(RelationalPrimaryKeyChangeRebuildReason::WalEncodingLimitExceeded)
+        }
+        "rebuild_missing_wal_capture" => {
+            Some(RelationalPrimaryKeyChangeRebuildReason::MissingWalCapture)
+        }
+        "rebuild_snapshot_replacement" => {
+            Some(RelationalPrimaryKeyChangeRebuildReason::SnapshotReplacement)
+        }
+        "rebuild_multiple_relational_transactions" => {
+            Some(RelationalPrimaryKeyChangeRebuildReason::MultipleRelationalTransactions)
+        }
+        _ => {
+            return Err(SkeinError::Storage(format!(
+                "invalid search projection relational change kind: {raw_kind}"
+            )))
+        }
+    };
+    if let Some(reason) = rebuild_reason {
+        if !raw_changes.is_empty() {
+            return Err(SkeinError::Storage(format!(
+                "search projection rebuild marker {raw_kind} contains unexpected key payload"
+            )));
+        }
+        return Ok(RelationalPrimaryKeyChangeCapture::RequiresRebuild { reason });
+    }
+
+    const TABLE_FIXED_BYTES: usize = 4;
+    const KEY_FIXED_BYTES: usize = 4;
+    let mut tables = Vec::new();
+    let mut encoded_bytes = 0usize;
+    if !raw_changes.is_empty() {
+        for raw_table in raw_changes.split(';') {
+            let Some((raw_name, raw_keys)) = raw_table.split_once('=') else {
+                return Err(SkeinError::Storage(format!(
+                    "invalid search projection relational table change: {raw_table}"
+                )));
+            };
+            let table = crate::text::decode_string(raw_name)?;
+            if raw_keys.is_empty() {
+                return Err(SkeinError::Storage(format!(
+                    "search projection relational table {table} contains no primary keys"
+                )));
+            }
+            encoded_bytes = encoded_bytes
+                .checked_add(TABLE_FIXED_BYTES)
+                .and_then(|bytes| bytes.checked_add(table.len()))
+                .ok_or_else(|| {
+                    SkeinError::Storage(
+                        "search projection relational change byte count overflow".to_string(),
+                    )
+                })?;
+            let mut primary_keys = Vec::new();
+            for raw_key in raw_keys.split(':') {
+                let key_bytes = crate::text::decode_bytes(raw_key)?;
+                let key = decode_relational_primary_key(&key_bytes)
+                    .map_err(|error| SkeinError::Storage(error.to_string()))?;
+                encoded_bytes = encoded_bytes
+                    .checked_add(KEY_FIXED_BYTES)
+                    .and_then(|bytes| bytes.checked_add(key_bytes.len()))
+                    .ok_or_else(|| {
+                        SkeinError::Storage(
+                            "search projection relational change byte count overflow".to_string(),
+                        )
+                    })?;
+                primary_keys.push(key);
+            }
+            tables.push(RelationalTablePrimaryKeyChanges {
+                table,
+                primary_keys,
+            });
+        }
+    }
+    Ok(RelationalPrimaryKeyChangeCapture::Captured {
+        tables,
+        encoded_bytes,
+    })
 }

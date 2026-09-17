@@ -22,7 +22,7 @@ use artifacts::{admit_graph_manifest_binding, load_published_canonical_segments}
 pub(super) use artifacts::{
     load_published_canonical_adjacency, load_published_property_projection,
 };
-pub(super) use manifest::{artifact_metadata_presence_consistent, DurableManifest};
+pub(super) use manifest::DurableManifest;
 
 use super::{
     cleanup_abandoned_checkpoint_preparations, derived_repair, doctor, has_storage_artifacts,
