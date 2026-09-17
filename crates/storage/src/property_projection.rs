@@ -5,6 +5,7 @@ use crate::graph_descriptor_tree::demand::{
     GraphDescriptorTreeDemandReader, GraphDescriptorTreeReadLimits, GraphDescriptorTreeReadReport,
     GraphDescriptorTreeScanControl,
 };
+use crate::predicate::{comparable_value_ordering, range_bounds_match};
 use crate::{
     content_digest, durable_replace_file, ContentDigest, FileSegmentRangeReader,
     GraphDescriptorKind, GraphDescriptorPageError, GraphDescriptorTreeArtifactMetadata,
@@ -2791,30 +2792,6 @@ fn composite_prefix_ordering(values: &[Value], expected: &[&Value]) -> Option<st
     Some(std::cmp::Ordering::Equal)
 }
 
-fn range_bounds_match(
-    value: &Value,
-    lower: Option<&(Value, bool)>,
-    upper: Option<&(Value, bool)>,
-) -> bool {
-    if let Some((bound, inclusive)) = lower {
-        let Some(ordering) = comparable_value_ordering(value, bound) else {
-            return false;
-        };
-        if ordering.is_lt() || (ordering.is_eq() && !inclusive) {
-            return false;
-        }
-    }
-    if let Some((bound, inclusive)) = upper {
-        let Some(ordering) = comparable_value_ordering(value, bound) else {
-            return false;
-        };
-        if ordering.is_gt() || (ordering.is_eq() && !inclusive) {
-            return false;
-        }
-    }
-    true
-}
-
 fn range_block_might_match(
     block: &PersistentPropertyProjectionBlockDescriptor,
     lower: Option<&(Value, bool)>,
@@ -2833,17 +2810,6 @@ fn range_block_might_match(
         return false;
     }
     true
-}
-
-fn comparable_value_ordering(left: &Value, right: &Value) -> Option<std::cmp::Ordering> {
-    match (left, right) {
-        (Value::Int(left), Value::Int(right)) => Some(left.cmp(right)),
-        (Value::Float(left), Value::Float(right)) => Some(left.total_cmp(right)),
-        (Value::Int(left), Value::Float(right)) => Some((*left as f64).total_cmp(right)),
-        (Value::Float(left), Value::Int(right)) => Some(left.total_cmp(&(*right as f64))),
-        (Value::String(left), Value::String(right)) => Some(left.cmp(right)),
-        _ => None,
-    }
 }
 
 fn definition_key(
