@@ -1,8 +1,8 @@
 //! Graph statistics consistency and adjacency consolidation contracts.
 
 use crate::{
-    AdjacencyDirection, AdjacencyGroupConsistencyMismatch, AdjacencyGroupKey, CowSegment,
-    CowSegmentedMap, NodeId, RelId, RelRecord,
+    AdjacencyDirection, AdjacencyGroupConsistencyMismatch, AdjacencyGroupKey, AdjacencyLayout,
+    AdjacencyPostingList, CowSegment, CowSegmentedMap, NodeId, NodeRecord, RelId, RelRecord,
 };
 use skein_core::{BasicGraphStatistics, LabelId, RelTypeId, Value};
 use std::collections::{BTreeMap, BTreeSet};
@@ -14,6 +14,185 @@ type AdjacencyGroups = BTreeMap<AdjacencyGroupKey, BTreeSet<RelId>>;
 type NodePropertyIndex = CowSegmentedMap<(LabelId, String, Value), CowSegment<BTreeSet<NodeId>>>;
 type RelationshipPropertyIndex =
     CowSegmentedMap<(RelTypeId, String, Value), CowSegment<BTreeSet<RelId>>>;
+
+pub fn adjacency_layout_for_degree(degree: usize) -> AdjacencyLayout {
+    if degree >= DENSE_ADJACENCY_DEGREE_THRESHOLD {
+        AdjacencyLayout::Dense
+    } else {
+        AdjacencyLayout::Sparse
+    }
+}
+
+pub fn adjacency_consolidation_plan(
+    candidates: &[AdjacencyConsolidationCandidate],
+) -> AdjacencyConsolidationPlan {
+    candidates.iter().fold(
+        AdjacencyConsolidationPlan::default(),
+        |mut plan, candidate| {
+            plan.group_count = plan.group_count.saturating_add(1);
+            plan.delta_entry_count = plan
+                .delta_entry_count
+                .saturating_add(candidate.delta_entry_count);
+            plan.estimated_entries = plan
+                .estimated_entries
+                .saturating_add(candidate.estimated_entries);
+            plan
+        },
+    )
+}
+
+pub fn maintained_adjacency_groups(
+    outgoing: &CowSegmentedMap<(NodeId, RelTypeId), AdjacencyPostingList>,
+    incoming: &CowSegmentedMap<(NodeId, RelTypeId), AdjacencyPostingList>,
+) -> AdjacencyGroups {
+    let mut groups = AdjacencyGroups::new();
+    for ((node_id, rel_type), rel_ids) in outgoing.iter() {
+        groups.insert(
+            AdjacencyGroupKey {
+                node_id: *node_id,
+                rel_type: *rel_type,
+                direction: AdjacencyDirection::Outgoing,
+            },
+            rel_ids
+                .iter_copied()
+                .map(|entry| entry.relationship_id)
+                .collect(),
+        );
+    }
+    for ((node_id, rel_type), rel_ids) in incoming.iter() {
+        groups.insert(
+            AdjacencyGroupKey {
+                node_id: *node_id,
+                rel_type: *rel_type,
+                direction: AdjacencyDirection::Incoming,
+            },
+            rel_ids
+                .iter_copied()
+                .map(|entry| entry.relationship_id)
+                .collect(),
+        );
+    }
+    groups
+}
+
+pub fn recompute_adjacency_groups(
+    relationships: &CowSegmentedMap<RelId, RelRecord>,
+) -> AdjacencyGroups {
+    let mut groups = AdjacencyGroups::new();
+    for relationship in relationships.values() {
+        groups
+            .entry(AdjacencyGroupKey {
+                node_id: relationship.source,
+                rel_type: relationship.rel_type,
+                direction: AdjacencyDirection::Outgoing,
+            })
+            .or_default()
+            .insert(relationship.id);
+        groups
+            .entry(AdjacencyGroupKey {
+                node_id: relationship.target,
+                rel_type: relationship.rel_type,
+                direction: AdjacencyDirection::Incoming,
+            })
+            .or_default()
+            .insert(relationship.id);
+    }
+    groups
+}
+
+pub fn compute_degree_statistics_from_adjacency(
+    nodes: &CowSegmentedMap<NodeId, NodeRecord>,
+    outgoing: &CowSegmentedMap<(NodeId, RelTypeId), AdjacencyPostingList>,
+    incoming: &CowSegmentedMap<(NodeId, RelTypeId), AdjacencyPostingList>,
+) -> BTreeMap<DegreeStatisticsKey, DegreeStatisticsEntry> {
+    compute_degree_statistics_from_groups(nodes, maintained_adjacency_groups(outgoing, incoming))
+}
+
+pub fn compute_degree_statistics_from_relationships(
+    nodes: &CowSegmentedMap<NodeId, NodeRecord>,
+    relationships: &CowSegmentedMap<RelId, RelRecord>,
+) -> BTreeMap<DegreeStatisticsKey, DegreeStatisticsEntry> {
+    compute_degree_statistics_from_groups(nodes, recompute_adjacency_groups(relationships))
+}
+
+fn compute_degree_statistics_from_groups(
+    nodes: &CowSegmentedMap<NodeId, NodeRecord>,
+    groups: AdjacencyGroups,
+) -> BTreeMap<DegreeStatisticsKey, DegreeStatisticsEntry> {
+    let rel_types = groups
+        .keys()
+        .map(|key| key.rel_type)
+        .collect::<BTreeSet<_>>();
+    let label_counts = label_counts_for_degree_statistics(nodes);
+    let mut statistics = BTreeMap::<DegreeStatisticsKey, DegreeStatisticsEntry>::new();
+    for (label_id, node_count) in &label_counts {
+        for rel_type in &rel_types {
+            for direction in [AdjacencyDirection::Outgoing, AdjacencyDirection::Incoming] {
+                statistics.insert(
+                    DegreeStatisticsKey {
+                        label_id: *label_id,
+                        rel_type: *rel_type,
+                        direction,
+                    },
+                    DegreeStatisticsEntry {
+                        node_count: *node_count,
+                        non_zero_node_count: 0,
+                        relationship_count: 0,
+                        max_degree: 0,
+                        dense_node_count: 0,
+                    },
+                );
+            }
+        }
+    }
+    for (group, rel_ids) in groups {
+        let Some(node) = nodes.get(&group.node_id) else {
+            continue;
+        };
+        let degree = rel_ids.len() as u64;
+        for label_id in &node.labels {
+            let entry = statistics
+                .entry(DegreeStatisticsKey {
+                    label_id: *label_id,
+                    rel_type: group.rel_type,
+                    direction: group.direction,
+                })
+                .or_insert(DegreeStatisticsEntry {
+                    node_count: label_counts.get(label_id).copied().unwrap_or_default(),
+                    non_zero_node_count: 0,
+                    relationship_count: 0,
+                    max_degree: 0,
+                    dense_node_count: 0,
+                });
+            entry.non_zero_node_count += 1;
+            entry.relationship_count += degree;
+            entry.max_degree = entry.max_degree.max(degree);
+            if rel_ids.len() >= DENSE_ADJACENCY_DEGREE_THRESHOLD {
+                entry.dense_node_count += 1;
+            }
+        }
+    }
+    statistics
+}
+
+fn label_counts_for_degree_statistics(
+    nodes: &CowSegmentedMap<NodeId, NodeRecord>,
+) -> BTreeMap<LabelId, u64> {
+    let mut label_counts = BTreeMap::new();
+    for node in nodes.values() {
+        for label_id in &node.labels {
+            *label_counts.entry(*label_id).or_default() += 1;
+        }
+    }
+    label_counts
+}
+
+pub fn adjacency_direction_sort_key(direction: AdjacencyDirection) -> u8 {
+    match direction {
+        AdjacencyDirection::Outgoing => 0,
+        AdjacencyDirection::Incoming => 1,
+    }
+}
 
 fn sample_relationship_ids(rel_ids: &BTreeSet<RelId>) -> Vec<RelId> {
     rel_ids
