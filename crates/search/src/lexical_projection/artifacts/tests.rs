@@ -373,3 +373,28 @@ fn scanned_writer_shares_admission_and_keeps_the_previous_projection_on_denial()
     drop(blocker);
     assert_eq!(used(&memory), 0);
 }
+
+#[test]
+fn retained_artifact_shares_a_tracked_resident_term_and_its_admission() {
+    use crate::build_term::Term;
+    let fixture = Fixture::new();
+    let (memory, task) = context();
+    let mut builder = fixture.builder(&memory, &task);
+    let term = Term::copy("alpha", Some(&memory)).unwrap();
+    let address = term.as_ptr();
+    let posting = Posting {
+        term,
+        document_id: "document".into(),
+        term_frequency: 2,
+        document_len: 2,
+    };
+    builder.push_posting(&posting).unwrap();
+    assert_eq!(builder.posting_pending[0].term.as_ptr(), address);
+    assert_eq!(builder.posting_strings.bytes(), posting.document_id.len());
+    let before = used(&memory);
+    drop(posting);
+    assert_eq!(used(&memory), before);
+    assert_eq!(builder.posting_pending[0].term.as_str(), "alpha");
+    drop(builder);
+    assert_eq!(used(&memory), 0);
+}

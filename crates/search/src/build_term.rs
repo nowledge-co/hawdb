@@ -26,6 +26,12 @@ struct Payload<M = QueryMemoryLease> {
 }
 
 impl Term {
+    // Legacy and independently admitted copies must opt in explicitly. Keep
+    // infallible conversions out of production budget-tracked call sites.
+    pub(crate) fn untracked(text: String) -> Self {
+        Self(Value::Untracked(text))
+    }
+
     pub(crate) fn copy(text: &str, memory: Option<&BuildMemory>) -> Result<Self> {
         Self::build(text.len(), memory, || text.to_owned())
     }
@@ -114,7 +120,7 @@ impl Term {
 
     pub(crate) fn clone_for_retention(&self) -> Self {
         match &self.0 {
-            Value::Reserved(text) => text.text.clone().into(),
+            Value::Reserved(text) => Self::untracked(text.text.clone()),
             _ => self.clone(),
         }
     }
@@ -132,12 +138,14 @@ impl Term {
     }
 }
 
+#[cfg(test)]
 impl From<String> for Term {
     fn from(text: String) -> Self {
         Self(Value::Untracked(text))
     }
 }
 
+#[cfg(test)]
 impl From<&str> for Term {
     fn from(text: &str) -> Self {
         text.to_owned().into()
