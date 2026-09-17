@@ -1,5 +1,3 @@
-#[cfg(test)]
-use crate::analytics::{LouvainOptions, PageRankOptions};
 use crate::analytics::{ProjectionLayout, ProjectionMemoryBudget};
 #[cfg(test)]
 use crate::cypher::RelationshipDirection;
@@ -18,12 +16,8 @@ use crate::store::{
     ScanPruningReport,
 };
 use crate::value::Value;
-#[cfg(test)]
-use skein_analytics::ProjectedGraphExecution;
 use skein_core::RuntimeTaskContext;
 use skein_ddl::{object_state_to_core, property_type_to_core, table_kind_to_core};
-#[cfg(test)]
-use skein_executor::store::ScanControl;
 use skein_executor::ExecutionLimit;
 use std::collections::BTreeMap;
 #[cfg(test)]
@@ -62,6 +56,7 @@ use scan::*;
 use skein_executor::analytics::try_projected_graph_with_node_filter;
 #[cfg(feature = "tokio-runtime")]
 pub(crate) use skein_executor::binding::map_memory_bytes;
+#[cfg(test)]
 pub(crate) use skein_executor::binding::map_payload_bytes;
 use skein_executor::binding::Binding;
 pub(crate) use skein_executor::external::NoExternalReadOperator;

@@ -237,7 +237,10 @@ impl RelationalRowPagePublisher {
             stop_after,
             rewrite,
         });
-        let _ = paths.remove_temps();
+        // Success has durably renamed every candidate; only failure leaves temporary files.
+        if result.is_err() {
+            let _ = paths.remove_temps();
+        }
         result
     }
 

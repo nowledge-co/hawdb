@@ -37,6 +37,7 @@ rust_library(
         "//crates/expression:skein_expression",
         "//crates/integrity:skein_integrity",
         "//crates/optimizer:skein_optimizer",
+        "//crates/plan:skein_plan",
         "//crates/storage:skein_storage",
     ],
     proc_macro_deps = all_crate_deps(proc_macro = True),

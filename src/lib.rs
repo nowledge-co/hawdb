@@ -1,12 +1,8 @@
 pub mod analytics;
 pub mod api;
-pub mod background_maintenance_evidence;
-pub mod blackbox;
-pub mod bounded_read_evidence;
 pub mod compat;
+mod compatibility_facades;
 mod compiled_capabilities;
-pub mod crash_recovery_evidence;
-pub mod cypher;
 pub mod embedded;
 #[cfg(feature = "tokio-runtime")]
 pub mod embedded_tokio;
@@ -15,35 +11,29 @@ pub mod expression {
     pub use skein_expression::*;
 }
 pub mod graph_route_evidence;
-pub mod graph_route_readiness;
-pub mod mem_integration_bundle;
-pub mod mem_integration_readiness;
 pub mod mem_library_readiness;
 pub mod nowledge_fuzz;
 pub mod nowledge_inventory;
 pub mod nowledge_mem;
-pub mod optimizer;
-pub mod planner;
-pub mod previous_wrapper_preflight;
-pub mod production_evidence;
-pub mod qos;
 pub mod query {
     pub use skein_query::*;
 }
-pub mod query_family_evidence;
 pub mod query_runtime_preflight;
 mod relational_sql;
 pub mod replacement_summary;
-pub mod route_ownership;
 pub mod search;
-pub mod search_candidate_shadow_evidence;
 pub use skein_route_ownership as search_route_ownership;
-pub mod storage_recovery_evidence;
 pub mod store;
 pub mod telemetry;
 pub mod workload_fixtures;
 
-pub mod search_projection_evidence;
+pub use compatibility_facades::{
+    background_maintenance_evidence, blackbox, bounded_read_evidence, crash_recovery_evidence,
+    cypher, graph_route_readiness, mem_integration_bundle, mem_integration_readiness, optimizer,
+    planner, previous_wrapper_preflight, production_evidence, qos, query_family_evidence,
+    route_ownership, search_candidate_shadow_evidence, search_projection_evidence,
+    storage_recovery_evidence,
+};
 
 pub mod error {
     pub use skein_core::error::*;
@@ -167,33 +157,37 @@ pub use bounded_read_evidence::{
     parse_covered_routes_json, parse_graph_route_readiness_json, parse_read_report_json,
 };
 pub use compat::{
+    add_shadow_ready_report, add_shadow_run_report, add_shadow_trace_report,
     assess_compatibility_cutover, assess_compatibility_cypher_migration_gate_bundle,
     assess_compatibility_cypher_migration_gate_bundle_with_rollback,
     assess_compatibility_migration_gate, assess_compatibility_migration_gate_bundle,
-    assess_compatibility_migration_gate_with_rollback, assess_query_inventory_coverage,
-    assess_query_inventory_cypher_coverage, assess_query_inventory_gate,
-    build_compatibility_query_inventory, build_compatibility_query_inventory_from_json,
+    assess_compatibility_migration_gate_with_rollback, assess_external_shadow_cutover_evidence,
+    assess_query_inventory_coverage, assess_query_inventory_cypher_coverage,
+    assess_query_inventory_gate, build_compatibility_query_inventory,
+    build_compatibility_query_inventory_from_json,
     build_compatibility_query_inventory_from_json_str, compatibility_cutover_report_to_json,
     compatibility_inventory_coverage_report_to_json, compatibility_inventory_gate_report_to_json,
     compatibility_migration_gate_bundle_to_json, compatibility_migration_gate_report_to_json,
-    compatibility_query_inventory_to_json, external_shadow_json_from_value,
+    compatibility_query_inventory_to_json, cutover_evidence_is_eligible,
+    enforce_external_shadow_adapter_smoke_requirements, external_shadow_adapter_smoke_fixture,
+    external_shadow_adapter_smoke_report_json, external_shadow_json_from_value,
     external_shadow_ready_missing_capabilities, external_shadow_trace_health_from_bundle,
-    external_shadow_trace_report_json, external_shadow_value_from_json,
+    external_shadow_trace_report_json, external_shadow_value_from_json, is_self_shadow_command,
     nowledge_memory_core_fixture, nowledge_memory_core_inventory, run_compatibility_fixture,
-    run_compatibility_fixture_with_shadow, CompatibilityCheck, CompatibilityCheckReport,
-    CompatibilityCutoverDecision, CompatibilityCutoverPolicy, CompatibilityCutoverReport,
-    CompatibilityFixture, CompatibilityInventoryCoveragePolicy,
+    run_compatibility_fixture_with_shadow, should_run_shadow_ready, CompatibilityCheck,
+    CompatibilityCheckReport, CompatibilityCutoverDecision, CompatibilityCutoverPolicy,
+    CompatibilityCutoverReport, CompatibilityFixture, CompatibilityInventoryCoveragePolicy,
     CompatibilityInventoryCoverageReport, CompatibilityInventoryGateReport,
     CompatibilityMigrationGateBundle, CompatibilityMigrationGateReport, CompatibilityQueryCallSite,
     CompatibilityQueryInventory, CompatibilityQueryInventoryItem, CompatibilityReport,
     CompatibilityRollbackEvidence, CompatibilityShadowCheckReport, CompatibilityShadowEngine,
     CompatibilityShadowReport, CompatibilityShadowStatus, CypherFixtureCheck,
     CypherFixtureStatement, ExpectedErrorClass, ExpectedRows, ExternalShadowCommand,
-    ExternalShadowProjectGraphReply, ExternalShadowProjectGraphRequest,
-    ExternalShadowProtocolBackend, ExternalShadowProtocolServer, ExternalShadowReady,
-    ExternalShadowStatementRequest, ExternalShadowTraceHealth, ExternalShadowTraceSummary,
-    ProjectedGraphFixtureCheck, ProjectedGraphShadowOutput, EXTERNAL_SHADOW_PROTOCOL_VERSION,
-    REQUIRED_EXTERNAL_SHADOW_CAPABILITIES,
+    ExternalShadowCutoverEvidence, ExternalShadowProjectGraphReply,
+    ExternalShadowProjectGraphRequest, ExternalShadowProtocolBackend, ExternalShadowProtocolServer,
+    ExternalShadowReady, ExternalShadowStatementRequest, ExternalShadowTraceHealth,
+    ExternalShadowTraceSummary, ProjectedGraphFixtureCheck, ProjectedGraphShadowOutput,
+    EXTERNAL_SHADOW_PROTOCOL_VERSION, REQUIRED_EXTERNAL_SHADOW_CAPABILITIES,
 };
 pub use compiled_capabilities::compiled_runtime_capabilities;
 pub use crash_recovery_evidence::{
@@ -202,9 +196,8 @@ pub use crash_recovery_evidence::{
 };
 pub use cypher::RelationshipDirection;
 pub use embedded::{
-    EmbeddedDeploymentProfile, EmbeddedQueryEntrypoint, EmbeddedQueryError,
-    EmbeddedQueryPathReadiness, EmbeddedRuntimeResources, SkeinEmbedded, SkeinEmbeddedOpenOptions,
-    EMBEDDED_QUERY_PATH_READINESS_PROTOCOL,
+    EmbeddedDeploymentProfile, EmbeddedQueryError, EmbeddedRuntimeResources, SkeinEmbedded,
+    SkeinEmbeddedOpenOptions,
 };
 #[cfg(feature = "tokio-runtime")]
 pub use embedded_tokio::{
@@ -446,6 +439,22 @@ pub use search_route_ownership::{
     NOWLEDGE_MEM_SEARCH_ROUTE_SOURCE, NOWLEDGE_MEM_SEARCH_ROUTE_SOURCE_CHUNK,
     REQUIRED_NOWLEDGE_MEM_ACTIVE_SEARCH_ROUTES, REQUIRED_NOWLEDGE_MEM_SEARCH_ROUTES,
 };
+#[doc(hidden)]
+pub use skein_bootstrap::{
+    endpoint_violations_json, publish_skein_lightning_staging_catalog,
+    publish_skein_lightning_staging_catalog_with_options,
+    read_skein_lightning_staging_artifact_json, skein_lightning_artifact_summary,
+    skein_lightning_bootstrap_bundle_json,
+    skein_lightning_bootstrap_bundle_json_with_optional_storage_recovery,
+    skein_lightning_bootstrap_manifest_json, skein_lightning_gc_staging_report,
+    skein_lightning_graph_stream_validation_json, skein_lightning_import_state_marker,
+    skein_lightning_import_status, skein_lightning_relational_stream_validation_json,
+    stable_identity_audit_json, stage_skein_lightning_bootstrap_export,
+    stage_skein_lightning_bootstrap_export_with_optional_storage_recovery,
+    sync_bootstrap_directory, verify_skein_lightning_published_manifest,
+    verify_skein_lightning_staging_catalog, write_bootstrap_atomic_file,
+    SkeinLightningPublishOptions, SKEIN_LIGHTNING_STAGING_CATALOG_PROTOCOL_VERSION,
+};
 pub use skein_core::LogicalType;
 pub use skein_core::Uuid;
 pub use skein_core::{
@@ -474,6 +483,9 @@ pub use skein_qos::{
     RuntimeTelemetryEvent, RuntimeTelemetryEventKind, RuntimeTelemetrySink, RuntimeWorkKind,
     RuntimeWorkPriority, RuntimeWorkRequest, StorageDeviceDiscoverySource, StorageDeviceProfile,
     StorageMediaKind,
+};
+pub use skein_readiness::embedded_query_path::{
+    EmbeddedQueryEntrypoint, EmbeddedQueryPathReadiness, EMBEDDED_QUERY_PATH_READINESS_PROTOCOL,
 };
 pub use skein_readiness::query_runtime_preflight::parse_query_runtime_preflight_probes;
 #[cfg(feature = "tokio-runtime")]
@@ -564,13 +576,14 @@ mod lexical_manifest_budget_tests;
 #[cfg(test)]
 mod tests {
     use super::{
-        Database, IoConcurrencyBudget, NowledgeGraphAdapter, NowledgeGraphStatement,
-        RuntimeGovernor, RuntimeGovernorConfig, RuntimeIoWaveError, RuntimeMemorySnapshot,
-        RuntimeResourceBudget, RuntimeResourceSnapshot, RuntimeTaskContext, RuntimeWorkPriority,
-        RuntimeWorkRequest, SegmentBytes, SegmentRangeReader, SegmentReadError,
-        SegmentReadExecutionError, SegmentReadExecutor, SegmentReadRange, SegmentReadScheduler,
-        Value,
+        Database, EmbeddedQueryEntrypoint, EmbeddedQueryPathReadiness, IoConcurrencyBudget,
+        NowledgeGraphAdapter, NowledgeGraphStatement, RuntimeGovernor, RuntimeGovernorConfig,
+        RuntimeIoWaveError, RuntimeMemorySnapshot, RuntimeResourceBudget, RuntimeResourceSnapshot,
+        RuntimeTaskContext, RuntimeWorkPriority, RuntimeWorkRequest, SegmentBytes,
+        SegmentRangeReader, SegmentReadError, SegmentReadExecutionError, SegmentReadExecutor,
+        SegmentReadRange, SegmentReadScheduler, Value,
     };
+    use std::any::TypeId;
     use std::collections::BTreeMap;
     use std::num::{NonZeroU64, NonZeroUsize};
 
@@ -607,6 +620,18 @@ mod tests {
         assert_eq!(
             output.rows[0].get("title"),
             Some(&Value::String("Root".to_string()))
+        );
+    }
+
+    #[test]
+    fn crate_root_reexports_embedded_query_readiness_contract() {
+        assert_eq!(
+            TypeId::of::<EmbeddedQueryEntrypoint>(),
+            TypeId::of::<skein_readiness::embedded_query_path::EmbeddedQueryEntrypoint>()
+        );
+        assert_eq!(
+            TypeId::of::<EmbeddedQueryPathReadiness>(),
+            TypeId::of::<skein_readiness::embedded_query_path::EmbeddedQueryPathReadiness>()
         );
     }
 

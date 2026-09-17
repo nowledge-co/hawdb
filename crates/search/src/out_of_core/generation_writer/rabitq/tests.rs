@@ -25,6 +25,8 @@ struct Fixture {
 impl Fixture {
     fn new(budget: usize, dimension: usize, bits: RaBitQBitWidth, rows: usize) -> Self {
         let root = test_dir("vector_context");
+        // Keep the original vector working capacity after mandatory cleanup admission.
+        let budget = budget + crate::build_memory::directory::stage_removal_bytes(&root).unwrap();
         let task = RuntimeTaskContext::default()
             .with_memory_reservation(RuntimeMemoryReservation::new(budget as u64, 0));
         let options = super::super::SearchOutOfCoreGenerationBuildOptions {

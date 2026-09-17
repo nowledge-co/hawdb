@@ -72,11 +72,17 @@ mod projection_delta_contracts;
 pub mod projection_evidence;
 #[doc(hidden)]
 pub mod projection_evidence_cli;
+
+#[doc(hidden)]
+pub mod projection_consumer;
 #[cfg(feature = "vector-search")]
 pub mod rabitq_projection;
 mod range_io;
 mod recall_validation;
 mod snapshot_writer;
+#[cfg(test)]
+#[path = "../tests/support/live_allocation.rs"]
+mod test_allocation;
 mod vector_execution;
 
 use document_encoding::encode_search_document_line;

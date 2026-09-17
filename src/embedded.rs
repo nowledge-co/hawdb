@@ -12,6 +12,9 @@ use skein_qos::{
     IoConcurrencyBudget, RuntimeAdmissionError, RuntimeGovernor, RuntimeGovernorConfig,
     RuntimeMemorySnapshot, RuntimeResourceBudget, RuntimeResourceSnapshot, StorageDeviceProfile,
 };
+#[cfg(test)]
+use skein_readiness::embedded_query_path::EMBEDDED_QUERY_PATH_READINESS_PROTOCOL;
+use skein_readiness::embedded_query_path::{EmbeddedQueryEntrypoint, EmbeddedQueryPathReadiness};
 use skein_storage::SegmentReadScheduler;
 use std::collections::BTreeMap;
 use std::error::Error;
@@ -69,68 +72,6 @@ pub struct SkeinEmbedded {
     deployment_profile: EmbeddedDeploymentProfile,
     runtime_resources: EmbeddedRuntimeResources,
     runtime_governor: RuntimeGovernor,
-}
-
-pub const EMBEDDED_QUERY_PATH_READINESS_PROTOCOL: &str = "skein-embedded-query-path-readiness-v1";
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum EmbeddedQueryEntrypoint {
-    AdmittedSync,
-    AdmittedTokio,
-    RawDatabase,
-}
-
-impl EmbeddedQueryEntrypoint {
-    pub const fn as_str(self) -> &'static str {
-        match self {
-            Self::AdmittedSync => "skein_embedded_admitted",
-            Self::AdmittedTokio => "skein_tokio_embedded_admitted",
-            Self::RawDatabase => "raw_database",
-        }
-    }
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct EmbeddedQueryPathReadiness {
-    pub protocol: &'static str,
-    pub entrypoint: EmbeddedQueryEntrypoint,
-    pub governor_enforced: bool,
-    pub result_budget_enforced: bool,
-    pub cancellation_enforced: bool,
-    pub mutation_serialized: bool,
-    pub admission_safe: bool,
-    pub blockers: Vec<&'static str>,
-}
-
-impl EmbeddedQueryPathReadiness {
-    pub(crate) fn admitted(entrypoint: EmbeddedQueryEntrypoint) -> Self {
-        Self {
-            protocol: EMBEDDED_QUERY_PATH_READINESS_PROTOCOL,
-            entrypoint,
-            governor_enforced: true,
-            result_budget_enforced: true,
-            cancellation_enforced: true,
-            mutation_serialized: true,
-            admission_safe: true,
-            blockers: Vec::new(),
-        }
-    }
-
-    fn raw_database() -> Self {
-        Self {
-            protocol: EMBEDDED_QUERY_PATH_READINESS_PROTOCOL,
-            entrypoint: EmbeddedQueryEntrypoint::RawDatabase,
-            governor_enforced: false,
-            result_budget_enforced: false,
-            cancellation_enforced: false,
-            mutation_serialized: true,
-            admission_safe: false,
-            blockers: vec![
-                "runtime_governor_not_enforced",
-                "host_equivalent_governor_not_proven",
-            ],
-        }
-    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]

@@ -3,52 +3,15 @@ use crate::{
     NowledgeMemGraph, NowledgeQueryRuntimePreflightProbe, Result, SkeinError,
     NOWLEDGE_MEM_GRAPH_READ_ROUTE_CATALOG_VERSION,
 };
-use std::path::Path;
-
-use skein_readiness::query_runtime_preflight::parse_query_runtime_preflight_probes;
-
-pub fn nowledge_query_runtime_preflight_usage() -> String {
-    "nowledge-query-runtime-preflight requires [--require-ready] --probe-json <path> <database-path>; probe JSON may be a probes array or graph route query inventory"
-        .to_string()
-}
+pub use skein_readiness::query_runtime_preflight_cli::nowledge_query_runtime_preflight_usage;
+use skein_readiness::query_runtime_preflight_cli::parse_query_runtime_preflight_cli_inputs;
 
 pub fn run_nowledge_query_runtime_preflight(
-    mut args: impl Iterator<Item = String>,
+    args: impl Iterator<Item = String>,
 ) -> Result<(serde_json::Value, bool)> {
-    let mut require_ready = false;
-    let mut probe_path = None;
-    let mut database_path = None;
-    while let Some(arg) = args.next() {
-        match arg.as_str() {
-            "--require-ready" => {
-                require_ready = true;
-            }
-            "--probe-json" => {
-                probe_path = Some(args.next().ok_or_else(|| {
-                    SkeinError::Semantic(nowledge_query_runtime_preflight_usage())
-                })?);
-            }
-            value if value.starts_with("--") => {
-                return Err(SkeinError::Semantic(
-                    nowledge_query_runtime_preflight_usage(),
-                ));
-            }
-            path => {
-                if database_path.replace(path.to_string()).is_some() {
-                    return Err(SkeinError::Semantic(
-                        nowledge_query_runtime_preflight_usage(),
-                    ));
-                }
-            }
-        }
-    }
-    let probe_path =
-        probe_path.ok_or_else(|| SkeinError::Semantic(nowledge_query_runtime_preflight_usage()))?;
-    let database_path = database_path
-        .ok_or_else(|| SkeinError::Semantic(nowledge_query_runtime_preflight_usage()))?;
-    let probes = parse_query_runtime_preflight_probes(&read_json_file(Path::new(&probe_path))?)?;
-    let report = query_runtime_preflight_json(&database_path, &probes);
-    Ok((report, require_ready))
+    let inputs = parse_query_runtime_preflight_cli_inputs(args)?;
+    let report = query_runtime_preflight_json(&inputs.database_path, &inputs.probes);
+    Ok((report, inputs.require_ready))
 }
 
 pub fn query_runtime_preflight_json(
@@ -127,20 +90,6 @@ fn error_class(error: &SkeinError) -> &'static str {
         SkeinError::Execution(_) => "execution",
         SkeinError::CapabilityUnavailable { .. } => "capability_unavailable",
     }
-}
-
-fn read_json_file(path: &Path) -> Result<serde_json::Value> {
-    let content = std::fs::read_to_string(path).map_err(|error| {
-        SkeinError::Execution(format!(
-            "failed to read query runtime preflight JSON: {}",
-            error.kind()
-        ))
-    })?;
-    serde_json::from_str(&content).map_err(|_| {
-        SkeinError::Semantic(
-            "failed to parse query runtime preflight JSON: invalid_json".to_string(),
-        )
-    })
 }
 
 #[cfg(test)]
@@ -582,7 +531,17 @@ mod tests {
         )
         .unwrap();
 
-        let error = super::read_json_file(&probe_path).unwrap_err().to_string();
+        let error = run_nowledge_query_runtime_preflight(
+            [
+                "--probe-json",
+                probe_path.to_str().unwrap(),
+                "unused-graph.db",
+            ]
+            .into_iter()
+            .map(str::to_string),
+        )
+        .unwrap_err()
+        .to_string();
 
         assert_eq!(
             error,

@@ -1,6 +1,7 @@
 //! Fail-closed read fixture: a test must explicitly implement every storage read it needs.
 
 use super::*;
+use crate::predicate::node_matches_property_filter;
 use crate::store::{
     GraphExecutionRead, PrunedNodeScan, PrunedRelationshipScan, SourceScanCandidateRow,
     SourceScanCandidateVisit, SourceScanReadLimits,
@@ -135,8 +136,9 @@ impl GraphExecutionRead for ReadFixture {
         panic!("unexpected batch test store read: visit_nodes_by_full_text_property_owned")
     }
     fn projected_graph_definition(&self, name: &str) -> Option<ProjectedGraphDefinition> {
-        assert_eq!(name, "MemoryGraph");
-        self.definition.clone()
+        (name == "MemoryGraph")
+            .then(|| self.definition.clone())
+            .flatten()
     }
     fn visit_source_scan_candidates(
         &self,
@@ -196,9 +198,33 @@ impl GraphExecutionRead for ReadFixture {
     fn scan_nodes_with_filter_pruning<'a>(
         &'a self,
         _: &Catalog,
-        _: Option<LabelId>,
-        _: Option<&PropertyFilter>,
+        label_id: Option<LabelId>,
+        filter: Option<&PropertyFilter>,
     ) -> Result<PrunedNodeScan<'a>> {
-        panic!("unexpected batch test store read: scan_nodes_with_filter_pruning")
+        let candidate_count = self.nodes.len();
+        let nodes: Vec<NodeRecord> = self
+            .nodes
+            .iter()
+            .filter(|node| label_id.is_none_or(|label| node.labels.contains(&label)))
+            .filter(|node| filter.is_none_or(|filter| node_matches_property_filter(node, filter)))
+            .cloned()
+            .collect();
+        let output_count = nodes.len();
+        Ok(PrunedNodeScan {
+            nodes: Box::new(nodes.into_iter()),
+            report: ScanPruningReport {
+                target_kind: ScanPruningTargetKind::Node,
+                label_id,
+                rel_type_id: None,
+                strategy: ScanPruningStrategy::FullLabelScan,
+                pruned: false,
+                exact_empty: output_count == 0,
+                candidate_count_before_pruning: candidate_count,
+                pruned_candidate_count: 0,
+                candidate_count_before_filter: candidate_count,
+                output_count,
+                filtered_out_count: candidate_count.saturating_sub(output_count),
+            },
+        })
     }
 }

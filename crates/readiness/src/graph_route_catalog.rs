@@ -3,6 +3,7 @@
 //! The embedded facade owns opening a database and executing a query. This module
 //! owns the stable route protocol, its input validation, and the fail-closed
 //! reduction of query reports into route evidence.
+use crate::json_parse::{optional_query_name, parse_parameters_json};
 use skein_core::{Result, SkeinError, Value};
 use skein_evidence::inventory::REQUIRED_NOWLEDGE_REPLACEMENT_QUERY_FAMILIES;
 use skein_route_ownership::graph::{
@@ -1011,7 +1012,7 @@ fn parse_route_cypher_query(
     }
     let parameters = value
         .get("parameters")
-        .map(parse_parameters_json)
+        .map(|value| parse_parameters_json(value, "graph route query"))
         .transpose()?
         .unwrap_or_default();
     Ok(RouteCypherQuery {
@@ -1022,13 +1023,6 @@ fn parse_route_cypher_query(
         cypher,
         parameters,
     })
-}
-
-fn optional_query_name(value: &serde_json::Value) -> Option<String> {
-    ["name", "query_id", "id"]
-        .iter()
-        .find_map(|field| value.get(*field).and_then(serde_json::Value::as_str))
-        .map(str::to_string)
 }
 
 fn query_report_with_route_context(
@@ -1120,45 +1114,6 @@ fn scan_report_pruned_rows(report: &serde_json::Value) -> bool {
             .get("pruned_candidate_count")
             .and_then(serde_json::Value::as_u64)
             .is_some_and(|count| count > 0)
-}
-
-fn parse_parameters_json(value: &serde_json::Value) -> Result<BTreeMap<String, Value>> {
-    let object = value.as_object().ok_or_else(|| {
-        SkeinError::Semantic("graph route query field 'parameters' must be an object".to_string())
-    })?;
-    object
-        .iter()
-        .map(|(key, value)| Ok((key.clone(), value_from_json(value)?)))
-        .collect()
-}
-
-fn value_from_json(value: &serde_json::Value) -> Result<Value> {
-    match value {
-        serde_json::Value::Null => Ok(Value::Null),
-        serde_json::Value::Bool(value) => Ok(Value::Bool(*value)),
-        serde_json::Value::Number(value) => {
-            if let Some(value) = value.as_i64() {
-                Ok(Value::Int(value))
-            } else if let Some(value) = value.as_f64() {
-                Ok(Value::Float(value))
-            } else {
-                Err(SkeinError::Semantic(format!(
-                    "unsupported JSON number in graph route query parameters: {value}"
-                )))
-            }
-        }
-        serde_json::Value::String(value) => Ok(Value::String(value.clone())),
-        serde_json::Value::Array(values) => values
-            .iter()
-            .map(value_from_json)
-            .collect::<Result<Vec<_>>>()
-            .map(Value::List),
-        serde_json::Value::Object(values) => values
-            .iter()
-            .map(|(key, value)| Ok((key.clone(), value_from_json(value)?)))
-            .collect::<Result<BTreeMap<_, _>>>()
-            .map(Value::Map),
-    }
 }
 
 fn required_string<'a>(value: &'a serde_json::Value, field: &str) -> Result<&'a str> {

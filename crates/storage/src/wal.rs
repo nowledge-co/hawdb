@@ -3,6 +3,10 @@
 pub mod binary;
 pub mod frame;
 pub mod group_commit;
+use crate::text::{
+    encode_nullable, encode_properties, encode_property_type, encode_schema_object_state,
+    encode_string, encode_string_vec, encode_table_kind, encode_value,
+};
 pub use crate::wire;
 use crate::{NodeId, RelId};
 pub use group_commit::{
@@ -887,101 +891,6 @@ fn encode_wal_op_for_batch(op: &WalOp) -> Result<String> {
 
 fn checksum_bytes(bytes: &[u8]) -> u64 {
     skein_integrity::checksum_u64(bytes)
-}
-
-fn encode_string(input: &str) -> String {
-    encode_bytes(input.as_bytes())
-}
-
-fn encode_bytes(input: &[u8]) -> String {
-    input.iter().map(|byte| format!("{byte:02x}")).collect()
-}
-
-fn encode_string_vec(values: &[String]) -> String {
-    values
-        .iter()
-        .map(|value| encode_string(value))
-        .collect::<Vec<_>>()
-        .join(":")
-}
-
-fn encode_properties(properties: &BTreeMap<String, Value>) -> String {
-    properties
-        .iter()
-        .map(|(key, value)| format!("{}={}", encode_string(key), encode_value(value)))
-        .collect::<Vec<_>>()
-        .join(";")
-}
-
-fn encode_value(value: &Value) -> String {
-    match value {
-        Value::Null => "n".to_string(),
-        Value::Bool(false) => "b0".to_string(),
-        Value::Bool(true) => "b1".to_string(),
-        Value::Int(value) => format!("i{value}"),
-        Value::Float(value) => format!("f{}", value.to_bits()),
-        Value::String(value) => format!("s{}", encode_string(value)),
-        Value::Uuid(value) => format!("u{value}"),
-        Value::Binary(value) => format!("x{}", encode_bytes(value)),
-        Value::List(values) => format!(
-            "l{}",
-            values
-                .iter()
-                .map(|value| encode_string(&encode_value(value)))
-                .collect::<Vec<_>>()
-                .join(",")
-        ),
-        Value::Map(values) => format!(
-            "m{}",
-            values
-                .iter()
-                .map(|(key, value)| format!(
-                    "{}={}",
-                    encode_string(key),
-                    encode_string(&encode_value(value))
-                ))
-                .collect::<Vec<_>>()
-                .join(";")
-        ),
-    }
-}
-
-fn encode_table_kind(kind: TableKind) -> &'static str {
-    match kind {
-        TableKind::Node => "node",
-        TableKind::Relationship => "relationship",
-    }
-}
-
-fn encode_property_type(value_type: PropertyType) -> &'static str {
-    match value_type {
-        PropertyType::Any => "any",
-        PropertyType::Bool => "bool",
-        PropertyType::Int => "int",
-        PropertyType::Float => "float",
-        PropertyType::String => "string",
-        PropertyType::Text => "text",
-        PropertyType::List => "list",
-    }
-}
-
-fn encode_nullable(nullable: bool) -> &'static str {
-    if nullable {
-        "nullable"
-    } else {
-        "not_null"
-    }
-}
-
-fn encode_schema_object_state(state: SchemaObjectState) -> &'static str {
-    match state {
-        SchemaObjectState::DeleteOnly => "delete_only",
-        SchemaObjectState::WriteOnly => "write_only",
-        SchemaObjectState::Backfill => "backfill",
-        SchemaObjectState::Validating => "validating",
-        SchemaObjectState::Public => "public",
-        SchemaObjectState::Gc => "gc",
-    }
 }
 
 fn encode_bytes_base64(input: &[u8]) -> String {

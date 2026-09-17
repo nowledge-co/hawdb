@@ -1,5 +1,6 @@
 use super::*;
 use crate::SearchRebuildOptions;
+use std::any::TypeId;
 use std::num::NonZeroU64;
 
 struct Fixture(PathBuf);
@@ -43,6 +44,46 @@ fn catch_up(
     db.catch_up_search_projection_consumer(consumer, 32, 32, 8, |_, _| {
         Ok(SearchProjectionRelationalDelta::default())
     })
+}
+
+#[test]
+fn search_projection_consumer_facade_preserves_owner_type_identity() {
+    assert_eq!(
+        TypeId::of::<crate::SearchProjectionConsumerId>(),
+        TypeId::of::<skein_search::projection_consumer::SearchProjectionConsumerId>()
+    );
+    assert_eq!(
+        TypeId::of::<crate::SearchProjectionConsumerOptions>(),
+        TypeId::of::<skein_search::projection_consumer::SearchProjectionConsumerOptions>()
+    );
+    assert_eq!(
+        TypeId::of::<crate::SearchProjectionConsumer>(),
+        TypeId::of::<skein_search::projection_consumer::SearchProjectionConsumer>()
+    );
+    assert_eq!(
+        TypeId::of::<crate::SearchProjectionConsumerState>(),
+        TypeId::of::<skein_search::projection_consumer::SearchProjectionConsumerState>()
+    );
+    assert_eq!(
+        TypeId::of::<crate::SearchProjectionConsumerRebuildReason>(),
+        TypeId::of::<skein_search::projection_consumer::SearchProjectionConsumerRebuildReason>()
+    );
+    assert_eq!(
+        TypeId::of::<crate::SearchProjectionConsumerStatus>(),
+        TypeId::of::<skein_search::projection_consumer::SearchProjectionConsumerStatus>()
+    );
+    assert_eq!(
+        TypeId::of::<crate::SearchProjectionConsumerReadiness>(),
+        TypeId::of::<skein_search::projection_consumer::SearchProjectionConsumerReadiness>()
+    );
+    assert_eq!(
+        TypeId::of::<crate::SearchProjectionConsumerCatchUpReport>(),
+        TypeId::of::<skein_search::projection_consumer::SearchProjectionConsumerCatchUpReport>()
+    );
+    assert_eq!(
+        TypeId::of::<crate::SearchProjectionConsumerError>(),
+        TypeId::of::<skein_search::projection_consumer::SearchProjectionConsumerError>()
+    );
 }
 
 #[test]
@@ -108,7 +149,7 @@ fn empty_source_epoch_zero_and_repeated_catch_up_are_valid() {
             initialize,
         )
         .unwrap();
-    assert_eq!(consumer.projection.receipt().source_epoch, 0);
+    assert_eq!(consumer.projection().receipt().source_epoch, 0);
     let before = std::fs::read(fixture.0.join("database/projection_consumers.meta")).unwrap();
     let report = catch_up(&mut db, &mut consumer).unwrap();
     assert!(report.catch_up.complete);
@@ -458,13 +499,13 @@ fn overflow_and_hydration_errors_do_not_publish_progress() {
         )
         .unwrap();
     append(&mut db, 1);
-    let receipt = consumer.projection.receipt();
+    let receipt = consumer.projection().receipt();
     let before = std::fs::read(fixture.0.join("database/projection_consumers.meta")).unwrap();
     let result = db.catch_up_search_projection_consumer(&mut consumer, 1, 1, 1, |_, _| {
         Err(SkeinError::Execution("incomplete hydration".into()))
     });
     assert!(result.is_err());
-    assert_eq!(consumer.projection.receipt(), receipt);
+    assert_eq!(consumer.projection().receipt(), receipt);
     assert_eq!(
         std::fs::read(fixture.0.join("database/projection_consumers.meta")).unwrap(),
         before
@@ -514,7 +555,7 @@ fn process_crashes_observe_checkpoint_before_registry_ordering() {
                 initialize,
             )
             .unwrap();
-        let old_epoch = consumer.projection.receipt().source_epoch;
+        let old_epoch = consumer.projection().receipt().source_epoch;
         append(&mut db, 1);
         let source_epoch = db.store.commit_epoch();
         drop(consumer);
@@ -540,7 +581,7 @@ fn process_crashes_observe_checkpoint_before_registry_ordering() {
         } else {
             let mut consumer = opened.unwrap();
             assert_eq!(
-                consumer.projection.receipt().source_epoch,
+                consumer.projection().receipt().source_epoch,
                 if stage == "before_checkpoint" {
                     old_epoch
                 } else {
@@ -679,7 +720,7 @@ fn acknowledgement_is_idempotent_monotonic_and_bound_to_the_complete_receipt() {
             initialize,
         )
         .unwrap();
-    let receipt = consumer.projection.receipt();
+    let receipt = consumer.projection().receipt();
     db.acknowledge_consumer_checkpoint(consumer.id(), &receipt)
         .unwrap();
     for variation in 0..5 {

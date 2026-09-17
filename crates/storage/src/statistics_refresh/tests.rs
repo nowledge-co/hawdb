@@ -855,3 +855,63 @@ fn index_statistics_keys_are_self_delimiting_and_spill_safe() {
     };
     assert_eq!(StatsRecord::decode(&record.encode()).unwrap(), record);
 }
+
+#[test]
+fn refresh_resource_contract_rejects_invalid_limits_and_preserves_accounting_boundaries() {
+    let root = TestRoot::new();
+    let mut options = OptimizerStatisticsRefreshOptions {
+        memory_budget_bytes: 4095,
+        max_spill_bytes: 1,
+        max_spill_runs: 1,
+        max_input_records: 2,
+        max_generated_facts: 1,
+        max_path_expansions: 1,
+        spill_directory: root.0.join("spill"),
+    };
+    assert!(matches!(
+        options.validate(),
+        Err(SkeinError::Semantic(message)) if message.contains("memory_budget_bytes must be at least 4096")
+    ));
+
+    options.memory_budget_bytes = 4096;
+    options.validate().unwrap();
+    let mut accounting = OptimizerStatisticsRefreshAccounting::new(&options);
+    accounting.read_node().unwrap();
+    accounting.read_relationship().unwrap();
+    assert_eq!(accounting.node_records_read(), 1);
+    assert_eq!(accounting.relationship_records_read(), 1);
+    assert_execution_error(accounting.read_node(), "max_input_records 2");
+
+    let mut path_accounting = OptimizerStatisticsRefreshAccounting::new(&options);
+    path_accounting.expand_path().unwrap();
+    assert_execution_error(path_accounting.expand_path(), "max_path_expansions 1");
+}
+
+#[test]
+fn refresh_report_keeps_the_stable_json_protocol() {
+    let report = OptimizerStatisticsRefreshReport {
+        source_commit_epoch: 7,
+        node_records_read: 11,
+        relationship_records_read: 13,
+        path_expansions: 17,
+        generated_facts: 19,
+        spill_run_count: 23,
+        spilled_bytes: 29,
+        peak_buffer_bytes: 31,
+        output_statistics_bytes: 37,
+        property_group_count: 41,
+        relationship_property_group_count: 43,
+        excluded_property_group_count: 47,
+        excluded_relationship_property_group_count: 53,
+        index_sample_count: 59,
+        path_group_count: 61,
+        bounded_path_group_count: 67,
+        checkpoint_persisted: true,
+    };
+    assert_eq!(
+        report.json()["protocol"],
+        "skein-optimizer-statistics-refresh-v1"
+    );
+    assert_eq!(report.json()["node_records_read"], 11);
+    assert_eq!(report.json()["checkpoint_persisted"], true);
+}

@@ -8,9 +8,3 @@ pub(super) use skein_executor::batch::{
 pub(super) use skein_executor::batch::{
     execute_binding_batches, BatchPlanRef, PreparedExecutionMode,
 };
-
-#[cfg(test)]
-use super::*;
-
-#[cfg(test)]
-mod dispatch_tests;

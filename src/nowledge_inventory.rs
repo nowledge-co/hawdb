@@ -1,14 +1,16 @@
-use crate::api::{BackgroundMaintenanceSummary, Database};
+#[cfg(test)]
+use crate::api::BackgroundMaintenanceSummary;
+use crate::api::Database;
 use crate::compat::{
     assess_compatibility_cypher_migration_gate_bundle_with_rollback,
-    compatibility_migration_gate_bundle_to_json, external_shadow_ready_missing_capabilities,
-    external_shadow_trace_health_from_bundle, external_shadow_trace_report_json,
-    nowledge_memory_core_fixture, run_compatibility_fixture_with_shadow,
-    CompatibilityCutoverPolicy, CompatibilityInventoryCoveragePolicy, CompatibilityShadowEngine,
-    ExternalShadowReady, REQUIRED_EXTERNAL_SHADOW_CAPABILITIES,
+    compatibility_migration_gate_bundle_to_json, nowledge_memory_core_fixture,
+    run_compatibility_fixture_with_shadow, CompatibilityCutoverPolicy,
+    CompatibilityInventoryCoveragePolicy, CompatibilityShadowEngine,
 };
-use crate::error::{Result, SkeinError};
-use crate::qos::{LocalQosClassSnapshot, LocalQosPolicy, LocalQosSnapshot, LocalQosState};
+use crate::error::Result;
+#[cfg(test)]
+use crate::qos::{LocalQosClassSnapshot, LocalQosSnapshot};
+use crate::qos::{LocalQosPolicy, LocalQosState};
 use crate::search::SearchIndex;
 use std::path::Path;
 
@@ -16,7 +18,10 @@ pub use skein_evidence::query_inventory::{
     scan_nowledge_query_inventory, scan_nowledge_query_inventory_to_json,
     scan_nowledge_query_inventory_with_options, NowledgeInventoryScanOptions,
 };
+#[cfg(test)]
 const BACKGROUND_MAINTENANCE_ESTIMATED_BYTES_PER_OPERATION: u64 = 1024;
+
+pub use skein_nowledge_contracts::background_maintenance_summary_to_json;
 
 pub use skein_compat::NowledgeCypherMigrationGateJsonOptions;
 
@@ -68,7 +73,7 @@ pub fn scan_nowledge_query_inventory_cypher_migration_gate_with_options_to_json(
     );
     let mut json = compatibility_migration_gate_bundle_to_json(&bundle);
     if let Some(background_maintenance) = options.background_maintenance.as_ref() {
-        migration_gate_json_object(&mut json)?.insert(
+        skein_compat::nowledge_inventory::migration_gate_json_object(&mut json)?.insert(
             "background_maintenance".to_string(),
             background_maintenance.clone(),
         );
@@ -76,70 +81,20 @@ pub fn scan_nowledge_query_inventory_cypher_migration_gate_with_options_to_json(
         insert_background_maintenance_summary_json(&mut json, &primary)?;
     }
     if let Some(replacement_readiness) = options.replacement_readiness_by_query_family.as_ref() {
-        migration_gate_json_object(&mut json)?.insert(
+        skein_compat::nowledge_inventory::migration_gate_json_object(&mut json)?.insert(
             "replacement_readiness_by_query_family".to_string(),
             replacement_readiness.clone(),
         );
     }
-    add_shadow_metadata_to_migration_gate_json(&mut json, &shadow_engine_name, options)?;
+    skein_compat::nowledge_inventory::augment_nowledge_cypher_migration_gate_json(
+        &mut json,
+        &shadow_engine_name,
+        options,
+    )?;
     Ok(json)
 }
 
-fn add_shadow_metadata_to_migration_gate_json(
-    bundle: &mut serde_json::Value,
-    fallback_shadow_name: &str,
-    options: NowledgeCypherMigrationGateJsonOptions,
-) -> Result<()> {
-    let shadow_name = options
-        .shadow_name
-        .as_deref()
-        .unwrap_or(fallback_shadow_name);
-    let ready_preflight = options.ready_preflight || options.shadow_ready.is_some();
-
-    if options.shadow_name.is_some() || options.include_cutover_evidence {
-        insert_shadow_run_json(bundle, shadow_name, options.self_shadow)?;
-    }
-    if let Some(ready) = options.shadow_ready.as_ref() {
-        insert_shadow_ready_json(bundle, ready)?;
-    }
-    if let Some(trace_path) = options.shadow_trace_path.as_ref() {
-        insert_shadow_trace_json(
-            bundle,
-            trace_path,
-            options.shadow_request_count.unwrap_or_default(),
-        )?;
-    }
-    if let Some(storage_recovery) = options.storage_recovery.as_ref() {
-        migration_gate_json_object(bundle)?
-            .insert("storage_recovery".to_string(), storage_recovery.clone());
-    }
-    if let Some(contract_evidence) = options.previous_wrapper_contract_evidence.as_ref() {
-        migration_gate_json_object(bundle)?.insert(
-            "previous_wrapper_contract_evidence".to_string(),
-            contract_evidence.clone(),
-        );
-    }
-    if options.include_cutover_evidence {
-        insert_cutover_evidence_json(
-            bundle,
-            options.self_shadow,
-            ready_preflight,
-            options.shadow_ready.as_ref(),
-            options.storage_recovery_required,
-            options.background_maintenance_required,
-        )?;
-    }
-    Ok(())
-}
-
-fn migration_gate_json_object(
-    bundle: &mut serde_json::Value,
-) -> Result<&mut serde_json::Map<String, serde_json::Value>> {
-    bundle.as_object_mut().ok_or_else(|| {
-        SkeinError::Execution("migration gate bundle must be a JSON object".to_string())
-    })
-}
-
+#[cfg(test)]
 fn insert_json<T: serde::Serialize>(
     object: &mut serde_json::Map<String, serde_json::Value>,
     key: &str,
@@ -149,423 +104,6 @@ fn insert_json<T: serde::Serialize>(
         key.to_string(),
         serde_json::to_value(value).expect("cutover evidence values must serialize"),
     );
-}
-
-fn insert_shadow_run_json(
-    bundle: &mut serde_json::Value,
-    shadow_name: &str,
-    self_shadow: bool,
-) -> Result<()> {
-    migration_gate_json_object(bundle)?.insert(
-        "shadow_run".to_string(),
-        serde_json::json!({
-            "shadow_name": shadow_name,
-            "self_shadow": self_shadow,
-            "evidence_kind": if self_shadow {
-                "protocol_smoke"
-            } else {
-                "previous_wrapper"
-            },
-        }),
-    );
-    Ok(())
-}
-
-fn insert_shadow_ready_json(
-    bundle: &mut serde_json::Value,
-    ready: &ExternalShadowReady,
-) -> Result<()> {
-    migration_gate_json_object(bundle)?.insert(
-        "shadow_ready".to_string(),
-        serde_json::json!({
-            "protocol_version": ready.protocol_version,
-            "capabilities": &ready.capabilities,
-            "engine_kind": &ready.engine_kind,
-            "wrapper_identity": &ready.wrapper_identity,
-        }),
-    );
-    Ok(())
-}
-
-fn insert_shadow_trace_json(
-    bundle: &mut serde_json::Value,
-    trace_path: &str,
-    request_count: u64,
-) -> Result<()> {
-    migration_gate_json_object(bundle)?.insert(
-        "shadow_trace".to_string(),
-        external_shadow_trace_report_json(trace_path, request_count),
-    );
-    Ok(())
-}
-
-fn insert_cutover_evidence_json(
-    bundle: &mut serde_json::Value,
-    self_shadow: bool,
-    ready_preflight: bool,
-    shadow_ready: Option<&ExternalShadowReady>,
-    storage_recovery_required: bool,
-    background_maintenance_required: bool,
-) -> Result<()> {
-    let migration_gate = bundle
-        .get("migration_gate")
-        .and_then(serde_json::Value::as_object)
-        .ok_or_else(|| {
-            SkeinError::Execution("migration gate bundle missing migration_gate".to_string())
-        })?;
-    let migration_gate_ready = migration_gate
-        .get("decision")
-        .and_then(serde_json::Value::as_str)
-        == Some("ready");
-    let ready_engine_kind = shadow_ready.and_then(|ready| ready.engine_kind.as_deref());
-    let ready_wrapper_identity = shadow_ready.and_then(|ready| ready.wrapper_identity.as_deref());
-    let ready_missing_capabilities = external_shadow_ready_missing_capabilities(shadow_ready);
-    let shadow_evidence_present = migration_gate
-        .get("shadow_evidence_present")
-        .and_then(serde_json::Value::as_bool)
-        .unwrap_or(false);
-    let shadow_trace_health = external_shadow_trace_health_from_bundle(bundle);
-    let storage_recovery_health =
-        storage_recovery_evidence_health_from_bundle(bundle, storage_recovery_required);
-    let background_maintenance_health =
-        background_maintenance_evidence_health_from_bundle(bundle, background_maintenance_required);
-    let replacement_family_health =
-        replacement_readiness_family_evidence_health_from_bundle(bundle);
-    let mut blockers = Vec::new();
-    if self_shadow {
-        blockers.push("shadow run is protocol smoke, not previous-wrapper evidence".to_string());
-    }
-    if !ready_preflight {
-        blockers.push("shadow ready preflight was not executed".to_string());
-    }
-    if ready_preflight && ready_engine_kind.is_none() {
-        blockers.push("shadow ready response missing engine_kind".to_string());
-    }
-    if let Some(engine_kind) = ready_engine_kind
-        && engine_kind != "previous_wrapper"
-    {
-        blockers.push("shadow ready engine_kind is not previous_wrapper".to_string());
-    }
-    if ready_preflight
-        && ready_engine_kind == Some("previous_wrapper")
-        && ready_wrapper_identity.is_none()
-    {
-        blockers.push("shadow ready response missing wrapper_identity".to_string());
-    }
-    if ready_preflight && !ready_missing_capabilities.is_empty() {
-        blockers.push("shadow ready response missing required capabilities".to_string());
-    }
-    if !shadow_evidence_present {
-        blockers.push("no matched shadow checks are present".to_string());
-    }
-    if shadow_trace_health.present && !shadow_trace_health.complete {
-        blockers.push("shadow trace is incomplete or unavailable".to_string());
-    }
-    if !storage_recovery_health.ready {
-        blockers.extend(storage_recovery_health.blockers.iter().cloned());
-    }
-    if !background_maintenance_health.ready {
-        blockers.extend(background_maintenance_health.blockers.iter().cloned());
-    }
-    if !replacement_family_health.ready {
-        blockers.extend(replacement_family_health.blockers.iter().cloned());
-    }
-    if !migration_gate_ready {
-        blockers.push("migration gate decision is not ready".to_string());
-    }
-
-    let mut evidence = serde_json::Map::new();
-    insert_json(&mut evidence, "eligible", blockers.is_empty());
-    insert_json(
-        &mut evidence,
-        "evidence_kind",
-        if self_shadow {
-            "protocol_smoke"
-        } else {
-            "previous_wrapper"
-        },
-    );
-    insert_json(&mut evidence, "requires_previous_wrapper", true);
-    insert_json(&mut evidence, "requires_ready_preflight", true);
-    insert_json(
-        &mut evidence,
-        "requires_ready_engine_kind",
-        "previous_wrapper",
-    );
-    insert_json(&mut evidence, "requires_ready_wrapper_identity", true);
-    insert_json(
-        &mut evidence,
-        "requires_ready_capabilities",
-        REQUIRED_EXTERNAL_SHADOW_CAPABILITIES,
-    );
-    insert_json(&mut evidence, "requires_shadow_evidence", true);
-    insert_json(&mut evidence, "ready_preflight", ready_preflight);
-    insert_json(&mut evidence, "ready_engine_kind", ready_engine_kind);
-    insert_json(
-        &mut evidence,
-        "ready_wrapper_identity",
-        ready_wrapper_identity,
-    );
-    insert_json(
-        &mut evidence,
-        "ready_missing_capabilities",
-        ready_missing_capabilities,
-    );
-    insert_json(
-        &mut evidence,
-        "shadow_evidence_present",
-        shadow_evidence_present,
-    );
-    insert_json(
-        &mut evidence,
-        "shadow_trace_present",
-        shadow_trace_health.present,
-    );
-    insert_json(
-        &mut evidence,
-        "shadow_trace_complete",
-        shadow_trace_health.complete,
-    );
-    insert_json(
-        &mut evidence,
-        "shadow_trace_summary_available",
-        shadow_trace_health.summary_available,
-    );
-    insert_json(
-        &mut evidence,
-        "shadow_trace_request_count_matches",
-        shadow_trace_health.request_count_matches,
-    );
-    insert_json(
-        &mut evidence,
-        "shadow_trace_pending_request_count",
-        shadow_trace_health.pending_request_count,
-    );
-    insert_json(
-        &mut evidence,
-        "storage_recovery_required",
-        storage_recovery_health.required,
-    );
-    insert_json(
-        &mut evidence,
-        "storage_recovery_present",
-        storage_recovery_health.present,
-    );
-    insert_json(
-        &mut evidence,
-        "storage_recovery_ready",
-        storage_recovery_health.ready,
-    );
-    insert_json(
-        &mut evidence,
-        "storage_recovery_protocol_matches",
-        storage_recovery_health.protocol_matches,
-    );
-    insert_json(
-        &mut evidence,
-        "storage_recovery_durable",
-        storage_recovery_health.durable_recovery_observed,
-    );
-    insert_json(
-        &mut evidence,
-        "storage_recovery_checkpoint_boundary_present",
-        storage_recovery_health.checkpoint_boundary_present,
-    );
-    insert_json(
-        &mut evidence,
-        "storage_recovery_wal_replay_bounded",
-        storage_recovery_health.wal_replay_bounded,
-    );
-    insert_json(
-        &mut evidence,
-        "storage_recovery_replay_boundary_consistent",
-        storage_recovery_health.replay_boundary_consistent,
-    );
-    insert_json(
-        &mut evidence,
-        "storage_recovery_torn_tail_clean",
-        storage_recovery_health.torn_tail_clean,
-    );
-    insert_json(
-        &mut evidence,
-        "storage_recovery_blocker_codes",
-        storage_recovery_health.blocker_codes,
-    );
-    insert_json(
-        &mut evidence,
-        "storage_recovery_blockers",
-        storage_recovery_health.blockers,
-    );
-    insert_json(
-        &mut evidence,
-        "background_maintenance_required",
-        background_maintenance_health.required,
-    );
-    insert_json(
-        &mut evidence,
-        "background_maintenance_present",
-        background_maintenance_health.present,
-    );
-    insert_json(
-        &mut evidence,
-        "background_maintenance_ready",
-        background_maintenance_health.ready,
-    );
-    insert_json(
-        &mut evidence,
-        "background_maintenance_protocol_matches",
-        background_maintenance_health.protocol_matches,
-    );
-    insert_json(
-        &mut evidence,
-        "background_maintenance_total_candidates",
-        background_maintenance_health.total_candidates,
-    );
-    insert_json(
-        &mut evidence,
-        "background_maintenance_ranked_count",
-        background_maintenance_health.ranked_count,
-    );
-    insert_json(
-        &mut evidence,
-        "background_maintenance_executable_search_projection_graph_delta_count",
-        background_maintenance_health.executable_search_projection_graph_delta_count,
-    );
-    insert_json(
-        &mut evidence,
-        "background_maintenance_admitted_search_projection_graph_delta_count",
-        background_maintenance_health.admitted_search_projection_graph_delta_count,
-    );
-    insert_json(
-        &mut evidence,
-        "background_maintenance_deferred_search_projection_graph_delta_count",
-        background_maintenance_health.deferred_search_projection_graph_delta_count,
-    );
-    insert_json(
-        &mut evidence,
-        "background_maintenance_rejected_search_projection_graph_delta_count",
-        background_maintenance_health.rejected_search_projection_graph_delta_count,
-    );
-    insert_json(
-        &mut evidence,
-        "background_maintenance_executable_search_projection_graph_delta_operations",
-        background_maintenance_health.executable_search_projection_graph_delta_operations,
-    );
-    insert_json(
-        &mut evidence,
-        "background_maintenance_admitted_search_projection_graph_delta_operations",
-        background_maintenance_health.admitted_search_projection_graph_delta_operations,
-    );
-    insert_json(
-        &mut evidence,
-        "background_maintenance_max_search_projection_graph_delta_complete_through_graph_commit_epoch",
-        background_maintenance_health
-            .max_search_projection_graph_delta_complete_through_graph_commit_epoch,
-    );
-    insert_json(
-        &mut evidence,
-        "background_maintenance_foreground_admission_probe_ready",
-        background_maintenance_health.foreground_admission_probe_ready,
-    );
-    insert_json(
-        &mut evidence,
-        "background_maintenance_foreground_admission_probe_admission",
-        background_maintenance_health
-            .foreground_admission_probe_admission_name
-            .as_deref(),
-    );
-    insert_json(
-        &mut evidence,
-        "background_maintenance_memory_pressure_ready",
-        background_maintenance_health.memory_pressure_ready,
-    );
-    insert_json(
-        &mut evidence,
-        "background_maintenance_memory_budget_bytes",
-        background_maintenance_health.memory_budget_bytes,
-    );
-    insert_json(
-        &mut evidence,
-        "background_maintenance_estimated_memory_bytes",
-        background_maintenance_health.estimated_memory_bytes,
-    );
-    insert_json(
-        &mut evidence,
-        "background_maintenance_qos_snapshot_ready",
-        background_maintenance_health.qos_snapshot_ready,
-    );
-    insert_json(
-        &mut evidence,
-        "background_maintenance_qos_snapshot_foreground_admitted",
-        background_maintenance_health.qos_snapshot_foreground_admitted,
-    );
-    insert_json(
-        &mut evidence,
-        "background_maintenance_qos_snapshot_background_bounded",
-        background_maintenance_health.qos_snapshot_background_bounded,
-    );
-    insert_json(
-        &mut evidence,
-        "background_maintenance_qos_snapshot_total_background_over_budget",
-        background_maintenance_health.qos_snapshot_total_background_over_budget,
-    );
-    insert_json(
-        &mut evidence,
-        "background_maintenance_qos_snapshot_blocker_codes",
-        background_maintenance_health.qos_snapshot_blocker_codes,
-    );
-    insert_json(
-        &mut evidence,
-        "background_maintenance_foreground_ranked_count",
-        background_maintenance_health.foreground_ranked_count,
-    );
-    insert_json(
-        &mut evidence,
-        "background_maintenance_unknown_admission_count",
-        background_maintenance_health.unknown_admission_count,
-    );
-    insert_json(
-        &mut evidence,
-        "background_maintenance_blocker_codes",
-        background_maintenance_health.blocker_codes,
-    );
-    insert_json(
-        &mut evidence,
-        "background_maintenance_blockers",
-        background_maintenance_health.blockers,
-    );
-    insert_json(
-        &mut evidence,
-        "replacement_readiness_family_report_present",
-        replacement_family_health.present,
-    );
-    insert_json(
-        &mut evidence,
-        "replacement_readiness_min_per_million",
-        replacement_family_health.min_replacement_readiness_per_million,
-    );
-    insert_json(
-        &mut evidence,
-        "replacement_readiness_invalid_family_count",
-        replacement_family_health.invalid_family_count,
-    );
-    insert_json(
-        &mut evidence,
-        "replacement_readiness_blocked_query_families",
-        replacement_family_health.blocked_query_families,
-    );
-    insert_json(
-        &mut evidence,
-        "replacement_readiness_blockers",
-        replacement_family_health.blockers,
-    );
-    insert_json(&mut evidence, "migration_gate_ready", migration_gate_ready);
-    insert_json(&mut evidence, "blockers", blockers);
-    migration_gate_json_object(bundle)?.insert(
-        "cutover_evidence".to_string(),
-        serde_json::Value::Object(evidence),
-    );
-    Ok(())
 }
 
 fn insert_background_maintenance_summary_json(
@@ -579,132 +117,238 @@ fn insert_background_maintenance_summary_json(
         &LocalQosState::default(),
         Default::default(),
     );
-    migration_gate_json_object(bundle)?.insert(
+    skein_compat::nowledge_inventory::migration_gate_json_object(bundle)?.insert(
         "background_maintenance".to_string(),
         background_maintenance_summary_to_json(&summary),
     );
     Ok(())
 }
 
-pub fn background_maintenance_summary_to_json(
-    summary: &BackgroundMaintenanceSummary,
-) -> serde_json::Value {
-    let mut object = serde_json::Map::new();
-    insert_json(&mut object, "total_candidates", summary.total_candidates);
-    insert_json(&mut object, "admitted_count", summary.admitted_count);
-    insert_json(&mut object, "deferred_count", summary.deferred_count);
-    insert_json(&mut object, "rejected_count", summary.rejected_count);
-    insert_json(
-        &mut object,
-        "total_estimated_operations",
-        summary.total_estimated_operations,
-    );
-    insert_json(
-        &mut object,
-        "admitted_estimated_operations",
-        summary.admitted_estimated_operations,
-    );
-    insert_json(
-        &mut object,
-        "deferred_estimated_operations",
-        summary.deferred_estimated_operations,
-    );
-    insert_json(
-        &mut object,
-        "rejected_estimated_operations",
-        summary.rejected_estimated_operations,
-    );
-    insert_json(
-        &mut object,
-        "executable_search_projection_graph_delta_count",
-        summary.executable_search_projection_graph_delta_count,
-    );
-    insert_json(
-        &mut object,
-        "admitted_search_projection_graph_delta_count",
-        summary.admitted_search_projection_graph_delta_count,
-    );
-    insert_json(
-        &mut object,
-        "deferred_search_projection_graph_delta_count",
-        summary.deferred_search_projection_graph_delta_count,
-    );
-    insert_json(
-        &mut object,
-        "rejected_search_projection_graph_delta_count",
-        summary.rejected_search_projection_graph_delta_count,
-    );
-    insert_json(
-        &mut object,
-        "executable_search_projection_graph_delta_operations",
-        summary.executable_search_projection_graph_delta_operations,
-    );
-    insert_json(
-        &mut object,
-        "admitted_search_projection_graph_delta_operations",
-        summary.admitted_search_projection_graph_delta_operations,
-    );
-    insert_json(
-        &mut object,
-        "max_search_projection_graph_delta_complete_through_graph_commit_epoch",
-        summary.max_search_projection_graph_delta_complete_through_graph_commit_epoch,
-    );
-    insert_json(
-        &mut object,
-        "foreground_admission_probe_ready",
-        summary.foreground_admission_probe_ready,
-    );
-    insert_json(
-        &mut object,
-        "foreground_admission_probe_admission",
-        summary.foreground_admission_probe_admission_name.as_deref(),
-    );
-    if let Some(qos_snapshot) = summary.qos_snapshot.as_ref() {
+#[cfg(test)]
+mod summary_json_oracle {
+    use super::*;
+
+    pub fn background_maintenance_summary_to_json(
+        summary: &BackgroundMaintenanceSummary,
+    ) -> serde_json::Value {
+        let mut object = serde_json::Map::new();
+        insert_json(&mut object, "total_candidates", summary.total_candidates);
+        insert_json(&mut object, "admitted_count", summary.admitted_count);
+        insert_json(&mut object, "deferred_count", summary.deferred_count);
+        insert_json(&mut object, "rejected_count", summary.rejected_count);
         insert_json(
             &mut object,
-            "qos_snapshot",
-            background_maintenance_qos_snapshot_to_json(qos_snapshot),
-        );
-        insert_json(&mut object, "qos_snapshot_ready", qos_snapshot.ready);
-        insert_json(
-            &mut object,
-            "qos_snapshot_foreground_admitted",
-            qos_snapshot.foreground_admitted,
+            "total_estimated_operations",
+            summary.total_estimated_operations,
         );
         insert_json(
             &mut object,
-            "qos_snapshot_background_enabled",
-            qos_snapshot.background_enabled,
+            "admitted_estimated_operations",
+            summary.admitted_estimated_operations,
         );
         insert_json(
             &mut object,
-            "qos_snapshot_background_bounded",
-            qos_snapshot.background_bounded,
+            "deferred_estimated_operations",
+            summary.deferred_estimated_operations,
         );
         insert_json(
             &mut object,
-            "qos_snapshot_running_background_operations",
-            qos_snapshot.running_background_operations,
+            "rejected_estimated_operations",
+            summary.rejected_estimated_operations,
         );
         insert_json(
             &mut object,
-            "qos_snapshot_max_total_background_operations",
-            qos_snapshot.max_total_background_operations,
+            "executable_search_projection_graph_delta_count",
+            summary.executable_search_projection_graph_delta_count,
         );
         insert_json(
             &mut object,
-            "qos_snapshot_remaining_total_background_operations",
-            qos_snapshot.remaining_total_background_operations,
+            "admitted_search_projection_graph_delta_count",
+            summary.admitted_search_projection_graph_delta_count,
         );
         insert_json(
             &mut object,
-            "qos_snapshot_total_background_over_budget",
-            qos_snapshot.total_background_over_budget,
+            "deferred_search_projection_graph_delta_count",
+            summary.deferred_search_projection_graph_delta_count,
         );
         insert_json(
             &mut object,
-            "qos_snapshot_blocker_codes",
-            qos_snapshot
+            "rejected_search_projection_graph_delta_count",
+            summary.rejected_search_projection_graph_delta_count,
+        );
+        insert_json(
+            &mut object,
+            "executable_search_projection_graph_delta_operations",
+            summary.executable_search_projection_graph_delta_operations,
+        );
+        insert_json(
+            &mut object,
+            "admitted_search_projection_graph_delta_operations",
+            summary.admitted_search_projection_graph_delta_operations,
+        );
+        insert_json(
+            &mut object,
+            "max_search_projection_graph_delta_complete_through_graph_commit_epoch",
+            summary.max_search_projection_graph_delta_complete_through_graph_commit_epoch,
+        );
+        insert_json(
+            &mut object,
+            "foreground_admission_probe_ready",
+            summary.foreground_admission_probe_ready,
+        );
+        insert_json(
+            &mut object,
+            "foreground_admission_probe_admission",
+            summary.foreground_admission_probe_admission_name.as_deref(),
+        );
+        if let Some(qos_snapshot) = summary.qos_snapshot.as_ref() {
+            insert_json(
+                &mut object,
+                "qos_snapshot",
+                background_maintenance_qos_snapshot_to_json(qos_snapshot),
+            );
+            insert_json(&mut object, "qos_snapshot_ready", qos_snapshot.ready);
+            insert_json(
+                &mut object,
+                "qos_snapshot_foreground_admitted",
+                qos_snapshot.foreground_admitted,
+            );
+            insert_json(
+                &mut object,
+                "qos_snapshot_background_enabled",
+                qos_snapshot.background_enabled,
+            );
+            insert_json(
+                &mut object,
+                "qos_snapshot_background_bounded",
+                qos_snapshot.background_bounded,
+            );
+            insert_json(
+                &mut object,
+                "qos_snapshot_running_background_operations",
+                qos_snapshot.running_background_operations,
+            );
+            insert_json(
+                &mut object,
+                "qos_snapshot_max_total_background_operations",
+                qos_snapshot.max_total_background_operations,
+            );
+            insert_json(
+                &mut object,
+                "qos_snapshot_remaining_total_background_operations",
+                qos_snapshot.remaining_total_background_operations,
+            );
+            insert_json(
+                &mut object,
+                "qos_snapshot_total_background_over_budget",
+                qos_snapshot.total_background_over_budget,
+            );
+            insert_json(
+                &mut object,
+                "qos_snapshot_blocker_codes",
+                qos_snapshot
+                    .blocker_codes
+                    .iter()
+                    .map(|code| code.as_str())
+                    .collect::<Vec<_>>(),
+            );
+            insert_json(
+                &mut object,
+                "memory_pressure",
+                background_maintenance_memory_pressure_to_json(summary, qos_snapshot),
+            );
+        }
+        insert_json(
+            &mut object,
+            "top_admitted_kind",
+            summary.top_admitted_kind.map(|kind| kind.as_str()),
+        );
+        insert_json(
+            &mut object,
+            "top_admitted_name",
+            summary.top_admitted_name.as_deref(),
+        );
+        insert_json(
+            &mut object,
+            "ranked",
+            summary
+                .ranked
+                .iter()
+                .map(background_maintenance_summary_item_to_json)
+                .collect::<Vec<_>>(),
+        );
+        serde_json::Value::Object(object)
+    }
+
+    fn background_maintenance_memory_pressure_to_json(
+        summary: &BackgroundMaintenanceSummary,
+        qos_snapshot: &LocalQosSnapshot,
+    ) -> serde_json::Value {
+        let estimated_memory_bytes =
+            estimate_background_maintenance_memory_bytes(summary.total_estimated_operations);
+        let memory_budget_bytes = qos_snapshot
+            .remaining_total_background_operations
+            .or(qos_snapshot.max_total_background_operations)
+            .map(estimate_background_maintenance_memory_bytes)
+            .unwrap_or(0);
+        serde_json::json!({
+            "ready": !qos_snapshot.total_background_over_budget
+                && estimated_memory_bytes <= memory_budget_bytes,
+            "budget_bytes": memory_budget_bytes,
+            "estimated_bytes": estimated_memory_bytes,
+        })
+    }
+
+    fn estimate_background_maintenance_memory_bytes(operations: usize) -> u64 {
+        u64::try_from(operations)
+            .unwrap_or(u64::MAX)
+            .saturating_mul(BACKGROUND_MAINTENANCE_ESTIMATED_BYTES_PER_OPERATION)
+    }
+
+    fn background_maintenance_qos_snapshot_to_json(
+        snapshot: &LocalQosSnapshot,
+    ) -> serde_json::Value {
+        let mut object = serde_json::Map::new();
+        insert_json(&mut object, "ready", snapshot.ready);
+        insert_json(
+            &mut object,
+            "foreground_admitted",
+            snapshot.foreground_admitted,
+        );
+        insert_json(
+            &mut object,
+            "background_enabled",
+            snapshot.background_enabled,
+        );
+        insert_json(
+            &mut object,
+            "background_bounded",
+            snapshot.background_bounded,
+        );
+        insert_json(
+            &mut object,
+            "running_background_operations",
+            snapshot.running_background_operations,
+        );
+        insert_json(
+            &mut object,
+            "max_total_background_operations",
+            snapshot.max_total_background_operations,
+        );
+        insert_json(
+            &mut object,
+            "remaining_total_background_operations",
+            snapshot.remaining_total_background_operations,
+        );
+        insert_json(
+            &mut object,
+            "total_background_over_budget",
+            snapshot.total_background_over_budget,
+        );
+        insert_json(
+            &mut object,
+            "blocker_codes",
+            snapshot
                 .blocker_codes
                 .iter()
                 .map(|code| code.as_str())
@@ -712,225 +356,165 @@ pub fn background_maintenance_summary_to_json(
         );
         insert_json(
             &mut object,
-            "memory_pressure",
-            background_maintenance_memory_pressure_to_json(summary, qos_snapshot),
+            "classes",
+            snapshot
+                .class_snapshots
+                .iter()
+                .map(background_maintenance_qos_class_snapshot_to_json)
+                .collect::<Vec<_>>(),
+        );
+        serde_json::Value::Object(object)
+    }
+
+    fn background_maintenance_qos_class_snapshot_to_json(
+        snapshot: &LocalQosClassSnapshot,
+    ) -> serde_json::Value {
+        let mut object = serde_json::Map::new();
+        insert_json(&mut object, "class", snapshot.class.as_str());
+        insert_json(
+            &mut object,
+            "running_background_operations",
+            snapshot.running_background_operations,
+        );
+        insert_json(
+            &mut object,
+            "max_background_operations",
+            snapshot.max_background_operations,
+        );
+        insert_json(
+            &mut object,
+            "remaining_background_operations",
+            snapshot.remaining_background_operations,
+        );
+        insert_json(&mut object, "over_budget", snapshot.over_budget);
+        serde_json::Value::Object(object)
+    }
+
+    fn background_maintenance_summary_item_to_json(
+        item: &crate::api::BackgroundMaintenanceSummaryItem,
+    ) -> serde_json::Value {
+        let mut object = serde_json::Map::new();
+        insert_json(&mut object, "kind", item.kind.as_str());
+        insert_json(&mut object, "name", &item.name);
+        insert_json(&mut object, "work_class", &item.work_class_name);
+        insert_json(&mut object, "priority", &item.priority_name);
+        insert_json(
+            &mut object,
+            "estimated_operations",
+            item.estimated_operations,
+        );
+        insert_json(&mut object, "hint_active_topic", item.hint_active_topic);
+        insert_json(
+            &mut object,
+            "hint_recent_delta_operations",
+            item.hint_recent_delta_operations,
+        );
+        insert_json(
+            &mut object,
+            "hint_source_graph_commit_lag",
+            item.hint_source_graph_commit_lag,
+        );
+        insert_json(
+            &mut object,
+            "hint_query_probability_per_million",
+            item.hint_query_probability_per_million,
+        );
+        insert_json(
+            &mut object,
+            "hint_staleness_millis",
+            item.hint_staleness_millis,
+        );
+        insert_json(
+            &mut object,
+            "hint_staleness_ttl_millis",
+            item.hint_staleness_ttl_millis,
+        );
+        insert_json(
+            &mut object,
+            "hint_freshness_slo_millis",
+            item.hint_freshness_slo_millis,
+        );
+        insert_json(
+            &mut object,
+            "hint_tenant_budget_remaining_operations",
+            item.hint_tenant_budget_remaining_operations,
+        );
+        insert_json(&mut object, "admission", &item.admission_name);
+        insert_json(&mut object, "admission_code", &item.admission_code_name);
+        insert_json(&mut object, "score", item.score);
+        insert_json(&mut object, "reason_codes", &item.reason_code_names);
+        insert_json(&mut object, "reasons", &item.reasons);
+        insert_json(
+            &mut object,
+            "has_executable_search_projection_graph_delta",
+            item.has_executable_search_projection_graph_delta,
+        );
+        insert_json(
+            &mut object,
+            "search_projection_graph_delta_operation_count",
+            item.search_projection_graph_delta_operation_count,
+        );
+        insert_json(
+            &mut object,
+            "search_projection_graph_delta_upsert_node_count",
+            item.search_projection_graph_delta_upsert_node_count,
+        );
+        insert_json(
+            &mut object,
+            "search_projection_graph_delta_delete_document_count",
+            item.search_projection_graph_delta_delete_document_count,
+        );
+        insert_json(
+            &mut object,
+            "search_projection_graph_delta_complete_through_graph_commit_epoch",
+            item.search_projection_graph_delta_complete_through_graph_commit_epoch,
+        );
+        insert_json(
+            &mut object,
+            "search_projection_graph_delta_max_operations",
+            item.search_projection_graph_delta_max_operations,
+        );
+        serde_json::Value::Object(object)
+    }
+}
+
+#[cfg(test)]
+mod summary_json_facade_tests {
+    use super::{
+        background_maintenance_summary_to_json, summary_json_oracle, BackgroundMaintenanceSummary,
+    };
+
+    #[test]
+    fn facade_matches_the_pre_migration_summary_json_oracle() {
+        let summary = BackgroundMaintenanceSummary {
+            total_candidates: 3,
+            total_estimated_operations: 7,
+            ..Default::default()
+        };
+
+        assert_eq!(
+            background_maintenance_summary_to_json(&summary),
+            summary_json_oracle::background_maintenance_summary_to_json(&summary),
         );
     }
-    insert_json(
-        &mut object,
-        "top_admitted_kind",
-        summary.top_admitted_kind.map(|kind| kind.as_str()),
-    );
-    insert_json(
-        &mut object,
-        "top_admitted_name",
-        summary.top_admitted_name.as_deref(),
-    );
-    insert_json(
-        &mut object,
-        "ranked",
-        summary
-            .ranked
-            .iter()
-            .map(background_maintenance_summary_item_to_json)
-            .collect::<Vec<_>>(),
-    );
-    serde_json::Value::Object(object)
-}
 
-fn background_maintenance_memory_pressure_to_json(
-    summary: &BackgroundMaintenanceSummary,
-    qos_snapshot: &LocalQosSnapshot,
-) -> serde_json::Value {
-    let estimated_memory_bytes =
-        estimate_background_maintenance_memory_bytes(summary.total_estimated_operations);
-    let memory_budget_bytes = qos_snapshot
-        .remaining_total_background_operations
-        .or(qos_snapshot.max_total_background_operations)
-        .map(estimate_background_maintenance_memory_bytes)
-        .unwrap_or(0);
-    serde_json::json!({
-        "ready": !qos_snapshot.total_background_over_budget
-            && estimated_memory_bytes <= memory_budget_bytes,
-        "budget_bytes": memory_budget_bytes,
-        "estimated_bytes": estimated_memory_bytes,
-    })
-}
+    #[test]
+    fn facade_matches_the_pre_migration_sampled_summary_json_oracle() {
+        let database = crate::Database::new();
+        let search_index = crate::SearchIndex::in_memory();
+        let summary = database.background_maintenance_summary(
+            Some(&search_index),
+            &crate::LocalQosPolicy::default(),
+            &crate::LocalQosState::default(),
+            Default::default(),
+        );
 
-fn estimate_background_maintenance_memory_bytes(operations: usize) -> u64 {
-    u64::try_from(operations)
-        .unwrap_or(u64::MAX)
-        .saturating_mul(BACKGROUND_MAINTENANCE_ESTIMATED_BYTES_PER_OPERATION)
-}
-
-fn background_maintenance_qos_snapshot_to_json(snapshot: &LocalQosSnapshot) -> serde_json::Value {
-    let mut object = serde_json::Map::new();
-    insert_json(&mut object, "ready", snapshot.ready);
-    insert_json(
-        &mut object,
-        "foreground_admitted",
-        snapshot.foreground_admitted,
-    );
-    insert_json(
-        &mut object,
-        "background_enabled",
-        snapshot.background_enabled,
-    );
-    insert_json(
-        &mut object,
-        "background_bounded",
-        snapshot.background_bounded,
-    );
-    insert_json(
-        &mut object,
-        "running_background_operations",
-        snapshot.running_background_operations,
-    );
-    insert_json(
-        &mut object,
-        "max_total_background_operations",
-        snapshot.max_total_background_operations,
-    );
-    insert_json(
-        &mut object,
-        "remaining_total_background_operations",
-        snapshot.remaining_total_background_operations,
-    );
-    insert_json(
-        &mut object,
-        "total_background_over_budget",
-        snapshot.total_background_over_budget,
-    );
-    insert_json(
-        &mut object,
-        "blocker_codes",
-        snapshot
-            .blocker_codes
-            .iter()
-            .map(|code| code.as_str())
-            .collect::<Vec<_>>(),
-    );
-    insert_json(
-        &mut object,
-        "classes",
-        snapshot
-            .class_snapshots
-            .iter()
-            .map(background_maintenance_qos_class_snapshot_to_json)
-            .collect::<Vec<_>>(),
-    );
-    serde_json::Value::Object(object)
-}
-
-fn background_maintenance_qos_class_snapshot_to_json(
-    snapshot: &LocalQosClassSnapshot,
-) -> serde_json::Value {
-    let mut object = serde_json::Map::new();
-    insert_json(&mut object, "class", snapshot.class.as_str());
-    insert_json(
-        &mut object,
-        "running_background_operations",
-        snapshot.running_background_operations,
-    );
-    insert_json(
-        &mut object,
-        "max_background_operations",
-        snapshot.max_background_operations,
-    );
-    insert_json(
-        &mut object,
-        "remaining_background_operations",
-        snapshot.remaining_background_operations,
-    );
-    insert_json(&mut object, "over_budget", snapshot.over_budget);
-    serde_json::Value::Object(object)
-}
-
-fn background_maintenance_summary_item_to_json(
-    item: &crate::api::BackgroundMaintenanceSummaryItem,
-) -> serde_json::Value {
-    let mut object = serde_json::Map::new();
-    insert_json(&mut object, "kind", item.kind.as_str());
-    insert_json(&mut object, "name", &item.name);
-    insert_json(&mut object, "work_class", &item.work_class_name);
-    insert_json(&mut object, "priority", &item.priority_name);
-    insert_json(
-        &mut object,
-        "estimated_operations",
-        item.estimated_operations,
-    );
-    insert_json(&mut object, "hint_active_topic", item.hint_active_topic);
-    insert_json(
-        &mut object,
-        "hint_recent_delta_operations",
-        item.hint_recent_delta_operations,
-    );
-    insert_json(
-        &mut object,
-        "hint_source_graph_commit_lag",
-        item.hint_source_graph_commit_lag,
-    );
-    insert_json(
-        &mut object,
-        "hint_query_probability_per_million",
-        item.hint_query_probability_per_million,
-    );
-    insert_json(
-        &mut object,
-        "hint_staleness_millis",
-        item.hint_staleness_millis,
-    );
-    insert_json(
-        &mut object,
-        "hint_staleness_ttl_millis",
-        item.hint_staleness_ttl_millis,
-    );
-    insert_json(
-        &mut object,
-        "hint_freshness_slo_millis",
-        item.hint_freshness_slo_millis,
-    );
-    insert_json(
-        &mut object,
-        "hint_tenant_budget_remaining_operations",
-        item.hint_tenant_budget_remaining_operations,
-    );
-    insert_json(&mut object, "admission", &item.admission_name);
-    insert_json(&mut object, "admission_code", &item.admission_code_name);
-    insert_json(&mut object, "score", item.score);
-    insert_json(&mut object, "reason_codes", &item.reason_code_names);
-    insert_json(&mut object, "reasons", &item.reasons);
-    insert_json(
-        &mut object,
-        "has_executable_search_projection_graph_delta",
-        item.has_executable_search_projection_graph_delta,
-    );
-    insert_json(
-        &mut object,
-        "search_projection_graph_delta_operation_count",
-        item.search_projection_graph_delta_operation_count,
-    );
-    insert_json(
-        &mut object,
-        "search_projection_graph_delta_upsert_node_count",
-        item.search_projection_graph_delta_upsert_node_count,
-    );
-    insert_json(
-        &mut object,
-        "search_projection_graph_delta_delete_document_count",
-        item.search_projection_graph_delta_delete_document_count,
-    );
-    insert_json(
-        &mut object,
-        "search_projection_graph_delta_complete_through_graph_commit_epoch",
-        item.search_projection_graph_delta_complete_through_graph_commit_epoch,
-    );
-    insert_json(
-        &mut object,
-        "search_projection_graph_delta_max_operations",
-        item.search_projection_graph_delta_max_operations,
-    );
-    serde_json::Value::Object(object)
+        assert!(summary.qos_snapshot.is_some());
+        assert_eq!(
+            background_maintenance_summary_to_json(&summary),
+            summary_json_oracle::background_maintenance_summary_to_json(&summary),
+        );
+    }
 }
 
 #[cfg(test)]
