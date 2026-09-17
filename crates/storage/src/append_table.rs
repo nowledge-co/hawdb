@@ -1199,6 +1199,39 @@ fn estimated_row_bytes(row: &RelationalRow) -> Result<usize, AppendTableError> {
     })
 }
 
+pub fn append_row_payload_bytes(
+    row: &RelationalRow,
+) -> std::result::Result<usize, AppendTableError> {
+    row.values().iter().try_fold(0usize, |total, value| {
+        let value_bytes = value
+            .estimated_payload_bytes()
+            .checked_add(1)
+            .ok_or_else(append_read_payload_overflow)?;
+        total
+            .checked_add(value_bytes)
+            .ok_or_else(append_read_payload_overflow)
+    })
+}
+
+pub fn append_read_payload_overflow() -> AppendTableError {
+    AppendTableError::Admission("append read payload size overflows usize".to_string())
+}
+
+pub fn merge_live_read_report(
+    report: &mut crate::AppendSegmentReadReport,
+    rows_returned: usize,
+    batches_examined: usize,
+    batches_pruned: usize,
+    rows_examined: usize,
+) {
+    report.rows_returned = report.rows_returned.saturating_add(rows_returned);
+    report.live_batches_examined = report
+        .live_batches_examined
+        .saturating_add(batches_examined);
+    report.live_batches_pruned = report.live_batches_pruned.saturating_add(batches_pruned);
+    report.live_rows_examined = report.live_rows_examined.saturating_add(rows_examined);
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
