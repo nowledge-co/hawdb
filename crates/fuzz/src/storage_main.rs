@@ -300,9 +300,13 @@ fn validate_search_fixture(path: &Path) -> Result<JsonValue, ValidationError> {
         )));
     }
 
-    let text_hits = index.search("persistent search payload", None, SearchMode::Text, 2);
+    let text_hits = index
+        .search("persistent search payload", None, SearchMode::Text, 2)
+        .map_err(|error| ValidationError::Rejected(format!("text search failed: {error}")))?;
     validate_search_hits("text", &text_hits)?;
-    let vector_hits = index.search("", Some(&[0.25, -0.5, 0.75, 1.0]), SearchMode::Vector, 2);
+    let vector_hits = index
+        .search("", Some(&[0.25, -0.5, 0.75, 1.0]), SearchMode::Vector, 2)
+        .map_err(|error| ValidationError::Rejected(format!("vector search failed: {error}")))?;
     validate_search_hits("vector", &vector_hits)?;
 
     Ok(json!({

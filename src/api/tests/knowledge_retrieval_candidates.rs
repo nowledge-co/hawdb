@@ -11,24 +11,26 @@ fn knowledge_retrieval_returns_graph_seeds_without_search_hits() {
         .unwrap();
     let search_index = SearchIndex::in_memory();
 
-    let output = db.retrieve_knowledge(
-        &search_index,
-        &KnowledgeRetrievalRequest {
-            query_text: "Graph".to_string(),
-            query_embedding: None,
-            mode: SearchMode::Text,
-            limit: 5,
-            offset: 0,
-            rank_window: None,
-            search_fusion_weights: SearchFusionWeights::default(),
-            metadata_filters: BTreeMap::new(),
-            candidate_limit: None,
-            candidate_scoring: KnowledgeCandidateScoringPolicy::Max,
-            graph_seed_limit: 1,
-            graph_context_limit: 2,
-            graph_context_max_hops: 1,
-        },
-    );
+    let output = db
+        .retrieve_knowledge(
+            &search_index,
+            &KnowledgeRetrievalRequest {
+                query_text: "Graph".to_string(),
+                query_embedding: None,
+                mode: SearchMode::Text,
+                limit: 5,
+                offset: 0,
+                rank_window: None,
+                search_fusion_weights: SearchFusionWeights::default(),
+                metadata_filters: BTreeMap::new(),
+                candidate_limit: None,
+                candidate_scoring: KnowledgeCandidateScoringPolicy::Max,
+                graph_seed_limit: 1,
+                graph_context_limit: 2,
+                graph_context_max_hops: 1,
+            },
+        )
+        .unwrap();
 
     assert!(output.search.hits.is_empty());
     assert!(output.evidence.is_empty());
@@ -144,24 +146,26 @@ fn knowledge_retrieval_keeps_context_per_retriever_seed() {
     db.rebuild_search_projection(&mut search_index, SearchRebuildOptions::default())
         .unwrap();
 
-    let output = db.retrieve_knowledge(
-        &search_index,
-        &KnowledgeRetrievalRequest {
-            query_text: "shared graph seed".to_string(),
-            query_embedding: None,
-            mode: SearchMode::Text,
-            limit: 1,
-            offset: 0,
-            rank_window: None,
-            search_fusion_weights: SearchFusionWeights::default(),
-            metadata_filters: BTreeMap::new(),
-            candidate_limit: None,
-            candidate_scoring: KnowledgeCandidateScoringPolicy::Max,
-            graph_seed_limit: 1,
-            graph_context_limit: 4,
-            graph_context_max_hops: 1,
-        },
-    );
+    let output = db
+        .retrieve_knowledge(
+            &search_index,
+            &KnowledgeRetrievalRequest {
+                query_text: "shared graph seed".to_string(),
+                query_embedding: None,
+                mode: SearchMode::Text,
+                limit: 1,
+                offset: 0,
+                rank_window: None,
+                search_fusion_weights: SearchFusionWeights::default(),
+                metadata_filters: BTreeMap::new(),
+                candidate_limit: None,
+                candidate_scoring: KnowledgeCandidateScoringPolicy::Max,
+                graph_seed_limit: 1,
+                graph_context_limit: 4,
+                graph_context_max_hops: 1,
+            },
+        )
+        .unwrap();
 
     let search_evidence = output
         .evidence
@@ -202,24 +206,26 @@ fn knowledge_retrieval_applies_candidate_limit_after_merge() {
         .unwrap();
     let search_index = SearchIndex::in_memory();
 
-    let output = db.retrieve_knowledge(
-        &search_index,
-        &KnowledgeRetrievalRequest {
-            query_text: "Graph candidate".to_string(),
-            query_embedding: None,
-            mode: SearchMode::Text,
-            limit: 5,
-            offset: 0,
-            rank_window: None,
-            search_fusion_weights: SearchFusionWeights::default(),
-            metadata_filters: BTreeMap::new(),
-            candidate_limit: Some(1),
-            candidate_scoring: KnowledgeCandidateScoringPolicy::Max,
-            graph_seed_limit: 3,
-            graph_context_limit: 0,
-            graph_context_max_hops: 1,
-        },
-    );
+    let output = db
+        .retrieve_knowledge(
+            &search_index,
+            &KnowledgeRetrievalRequest {
+                query_text: "Graph candidate".to_string(),
+                query_embedding: None,
+                mode: SearchMode::Text,
+                limit: 5,
+                offset: 0,
+                rank_window: None,
+                search_fusion_weights: SearchFusionWeights::default(),
+                metadata_filters: BTreeMap::new(),
+                candidate_limit: Some(1),
+                candidate_scoring: KnowledgeCandidateScoringPolicy::Max,
+                graph_seed_limit: 3,
+                graph_context_limit: 0,
+                graph_context_max_hops: 1,
+            },
+        )
+        .unwrap();
 
     assert_eq!(output.graph_seeds.len(), 3);
     assert_eq!(output.candidates.len(), 1);
@@ -261,24 +267,26 @@ fn knowledge_retrieval_applies_candidate_limit_after_merge() {
     );
     assert_eq!(output.diagnostics.fanout_reasons, output.fanout_reasons);
 
-    let empty_by_limit = db.retrieve_knowledge(
-        &search_index,
-        &KnowledgeRetrievalRequest {
-            query_text: "Graph candidate".to_string(),
-            query_embedding: None,
-            mode: SearchMode::Text,
-            limit: 5,
-            offset: 0,
-            rank_window: None,
-            search_fusion_weights: SearchFusionWeights::default(),
-            metadata_filters: BTreeMap::new(),
-            candidate_limit: Some(0),
-            candidate_scoring: KnowledgeCandidateScoringPolicy::Max,
-            graph_seed_limit: 3,
-            graph_context_limit: 0,
-            graph_context_max_hops: 1,
-        },
-    );
+    let empty_by_limit = db
+        .retrieve_knowledge(
+            &search_index,
+            &KnowledgeRetrievalRequest {
+                query_text: "Graph candidate".to_string(),
+                query_embedding: None,
+                mode: SearchMode::Text,
+                limit: 5,
+                offset: 0,
+                rank_window: None,
+                search_fusion_weights: SearchFusionWeights::default(),
+                metadata_filters: BTreeMap::new(),
+                candidate_limit: Some(0),
+                candidate_scoring: KnowledgeCandidateScoringPolicy::Max,
+                graph_seed_limit: 3,
+                graph_context_limit: 0,
+                graph_context_max_hops: 1,
+            },
+        )
+        .unwrap();
     assert!(empty_by_limit.candidates.is_empty());
     assert_eq!(empty_by_limit.diagnostics.candidate_limit, Some(0));
     assert_eq!(empty_by_limit.diagnostics.candidate_count, 0);
@@ -320,24 +328,26 @@ fn knowledge_retrieval_applies_candidate_limit_after_merge() {
     let mut search_index = SearchIndex::in_memory();
     db.rebuild_search_projection(&mut search_index, SearchRebuildOptions::default())
         .unwrap();
-    let search_empty_by_limit = db.retrieve_knowledge(
-        &search_index,
-        &KnowledgeRetrievalRequest {
-            query_text: "Graph candidate".to_string(),
-            query_embedding: None,
-            mode: SearchMode::Text,
-            limit: 5,
-            offset: 0,
-            rank_window: None,
-            search_fusion_weights: SearchFusionWeights::default(),
-            metadata_filters: BTreeMap::new(),
-            candidate_limit: Some(0),
-            candidate_scoring: KnowledgeCandidateScoringPolicy::Max,
-            graph_seed_limit: 0,
-            graph_context_limit: 0,
-            graph_context_max_hops: 1,
-        },
-    );
+    let search_empty_by_limit = db
+        .retrieve_knowledge(
+            &search_index,
+            &KnowledgeRetrievalRequest {
+                query_text: "Graph candidate".to_string(),
+                query_embedding: None,
+                mode: SearchMode::Text,
+                limit: 5,
+                offset: 0,
+                rank_window: None,
+                search_fusion_weights: SearchFusionWeights::default(),
+                metadata_filters: BTreeMap::new(),
+                candidate_limit: Some(0),
+                candidate_scoring: KnowledgeCandidateScoringPolicy::Max,
+                graph_seed_limit: 0,
+                graph_context_limit: 0,
+                graph_context_max_hops: 1,
+            },
+        )
+        .unwrap();
     assert!(search_empty_by_limit.search.total_hits > 0);
     assert_eq!(search_empty_by_limit.diagnostics.candidate_count, 0);
     assert!(search_empty_by_limit.diagnostics.candidate_total_count > 0);
@@ -374,27 +384,29 @@ fn knowledge_retrieval_applies_weighted_candidate_scoring() {
     let mut search_index = SearchIndex::in_memory();
     db.rebuild_search_projection(&mut search_index, SearchRebuildOptions::default())
         .unwrap();
-    let output = db.retrieve_knowledge(
-        &search_index,
-        &KnowledgeRetrievalRequest {
-            query_text: "weighted graph".to_string(),
-            query_embedding: None,
-            mode: SearchMode::Text,
-            limit: 1,
-            offset: 0,
-            rank_window: None,
-            search_fusion_weights: SearchFusionWeights::default(),
-            metadata_filters: BTreeMap::new(),
-            candidate_limit: None,
-            candidate_scoring: KnowledgeCandidateScoringPolicy::WeightedSum {
-                search_weight: 2.0,
-                graph_seed_weight: 0.5,
+    let output = db
+        .retrieve_knowledge(
+            &search_index,
+            &KnowledgeRetrievalRequest {
+                query_text: "weighted graph".to_string(),
+                query_embedding: None,
+                mode: SearchMode::Text,
+                limit: 1,
+                offset: 0,
+                rank_window: None,
+                search_fusion_weights: SearchFusionWeights::default(),
+                metadata_filters: BTreeMap::new(),
+                candidate_limit: None,
+                candidate_scoring: KnowledgeCandidateScoringPolicy::WeightedSum {
+                    search_weight: 2.0,
+                    graph_seed_weight: 0.5,
+                },
+                graph_seed_limit: 1,
+                graph_context_limit: 0,
+                graph_context_max_hops: 1,
             },
-            graph_seed_limit: 1,
-            graph_context_limit: 0,
-            graph_context_max_hops: 1,
-        },
-    );
+        )
+        .unwrap();
 
     assert_eq!(output.candidates.len(), 1);
     let candidate = &output.candidates[0];

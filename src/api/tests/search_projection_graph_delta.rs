@@ -179,7 +179,9 @@ fn database_facade_builds_search_projection_delta_from_graph_nodes() {
     );
     assert!(search_index.document("memory:old").is_none());
     assert!(search_index.document("memory:new").is_some());
-    let hits = search_index.search("bounded FTS", None, SearchMode::Text, 10);
+    let hits = search_index
+        .search("bounded FTS", None, SearchMode::Text, 10)
+        .unwrap();
     assert_eq!(hits[0].id, "memory:new");
 }
 
@@ -993,6 +995,7 @@ fn durable_search_projection_catch_up_converges_stale_update_delete_sequence() {
     assert!(search_index.document("memory:m2").is_none());
     assert!(search_index
         .search("stale projection", None, SearchMode::Text, 10)
+        .unwrap()
         .is_empty());
     assert_eq!(
         search_index

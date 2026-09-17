@@ -246,24 +246,26 @@ fn read_transaction_retrieves_knowledge_from_pinned_snapshot() {
     db.query("CREATE (:Memory {id: 'later', title: 'Snapshot retrieval', content: 'snapshot retrieval later'})")
         .unwrap();
 
-    let snapshot_output = read_tx.retrieve_knowledge(
-        &search_index,
-        &KnowledgeRetrievalRequest {
-            query_text: "snapshot retrieval".to_string(),
-            query_embedding: None,
-            mode: SearchMode::Text,
-            limit: 4,
-            offset: 0,
-            rank_window: None,
-            search_fusion_weights: SearchFusionWeights::default(),
-            metadata_filters: BTreeMap::new(),
-            candidate_limit: None,
-            candidate_scoring: KnowledgeCandidateScoringPolicy::Max,
-            graph_seed_limit: 8,
-            graph_context_limit: 8,
-            graph_context_max_hops: 1,
-        },
-    );
+    let snapshot_output = read_tx
+        .retrieve_knowledge(
+            &search_index,
+            &KnowledgeRetrievalRequest {
+                query_text: "snapshot retrieval".to_string(),
+                query_embedding: None,
+                mode: SearchMode::Text,
+                limit: 4,
+                offset: 0,
+                rank_window: None,
+                search_fusion_weights: SearchFusionWeights::default(),
+                metadata_filters: BTreeMap::new(),
+                candidate_limit: None,
+                candidate_scoring: KnowledgeCandidateScoringPolicy::Max,
+                graph_seed_limit: 8,
+                graph_context_limit: 8,
+                graph_context_max_hops: 1,
+            },
+        )
+        .unwrap();
     assert_eq!(snapshot_output.graph_commit_epoch, 1);
     assert_eq!(snapshot_output.graph_context_paths.len(), 2);
     assert!(snapshot_output
@@ -279,24 +281,26 @@ fn read_transaction_retrieves_knowledge_from_pinned_snapshot() {
         .iter()
         .all(|seed| seed.entity.external_id.as_deref() != Some("later")));
 
-    let latest_output = db.retrieve_knowledge(
-        &search_index,
-        &KnowledgeRetrievalRequest {
-            query_text: "snapshot retrieval".to_string(),
-            query_embedding: None,
-            mode: SearchMode::Text,
-            limit: 4,
-            offset: 0,
-            rank_window: None,
-            search_fusion_weights: SearchFusionWeights::default(),
-            metadata_filters: BTreeMap::new(),
-            candidate_limit: None,
-            candidate_scoring: KnowledgeCandidateScoringPolicy::Max,
-            graph_seed_limit: 8,
-            graph_context_limit: 8,
-            graph_context_max_hops: 1,
-        },
-    );
+    let latest_output = db
+        .retrieve_knowledge(
+            &search_index,
+            &KnowledgeRetrievalRequest {
+                query_text: "snapshot retrieval".to_string(),
+                query_embedding: None,
+                mode: SearchMode::Text,
+                limit: 4,
+                offset: 0,
+                rank_window: None,
+                search_fusion_weights: SearchFusionWeights::default(),
+                metadata_filters: BTreeMap::new(),
+                candidate_limit: None,
+                candidate_scoring: KnowledgeCandidateScoringPolicy::Max,
+                graph_seed_limit: 8,
+                graph_context_limit: 8,
+                graph_context_max_hops: 1,
+            },
+        )
+        .unwrap();
     assert_eq!(latest_output.graph_commit_epoch, 4);
     assert!(latest_output
         .graph_context_paths

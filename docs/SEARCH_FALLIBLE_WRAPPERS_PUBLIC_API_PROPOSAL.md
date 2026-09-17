@@ -1,41 +1,31 @@
 # Fallible in-memory search wrapper contract
 
-Status: proposed for owner review, not approved or implemented as public signatures.
+Status: implemented in PR #576 after the owner requested completing the prepared contract.
 Issue: [#564](https://github.com/nowledge-co/skein/issues/564).
-Audited main: `7aa6bff3805ce435710075c82d3db7b45dcade02` (September 15, 2026).
-Private worktree: `target/worktrees/564-fallible-search-contract`.
 
-## Problem and verified call paths
+## Contract rationale
 
-Search capability checks already return `SkeinError::CapabilityUnavailable`.
-Three public in-memory owner methods discard that error with `expect`, and their
-convenience wrappers propagate the panic. Database/read-transaction retrieval
-and the direct Mem projection candidate/readiness/shadow APIs inherit it. A
-private retrieval wrapper also discards non-I/O errors from graph enrichment and
-pipeline/result admission.
+Search capability checks return `SkeinError::CapabilityUnavailable`. The former
+infallible in-memory wrappers discarded these errors with `expect`, including
+errors from retrieval graph enrichment and pipeline admission. The public chain
+now propagates these errors to the caller.
 
-The main Mem embedded-store search/retrieval paths already use fallible APIs;
-they should keep those routes. Two workload-evidence helpers create in-memory
-indexes but call the legacy methods. Those helpers can use existing `try_*`
-methods and their existing `ready=false`/`error_class` reports without changing
-any public type.
+The existing `try_*` methods enable pruned physical range reads. The in-memory
+entrypoints below retain resident payload access: after a projection is reopened,
+a selective query can still use resident documents even if persisted payload
+bytes are subsequently damaged. Changing error carriers must not add I/O to
+that path. Embedded-store serving routes already using `try_*` retain their
+persisted-aware execution.
 
-Existing `try_*` APIs are not exact substitutes for the old methods. They enable
-pruned physical range reads, while the old wrappers explicitly choose in-memory
-payload access. On a reopened projection with a selective metadata predicate,
-a damaged persisted payload can fail the former while the latter still uses its
-in-memory documents. A repair must preserve that distinction, not introduce new
-I/O or change enabled-query results merely to obtain an error carrier.
+## Public return contract
 
-## Recommended contract
-
-Change only the return carrier of the following 14 existing public methods from
+This changes only the return carrier of the following 14 existing public methods from
 `T` to the existing crate `Result<T>`. Parameters, method names, generics, options,
 backend selection, payload access, ranking and report contents remain unchanged.
 No new error variant, result field, setting, capability default, persistent format
 or query-language contract is introduced.
 
-| Owner | Method | Proposed return type |
+| Owner | Method | Return type |
 | --- | --- | --- |
 | `SearchIndex` | `search` | `Result<Vec<SearchHit>>` |
 | `SearchIndex` | `search_with_report` | `Result<SearchResultSet>` |
@@ -88,56 +78,37 @@ Given the development-only library state and the goal of fixing supported entry-
 point panics, the direct `Result` transition is recommended. This approval does
 not authorize removing or consolidating other public APIs.
 
-## Private proof and implementation boundaries
+## Regression coverage
 
-The preparation changes no public signature. Private owner tests exercise the
-already-existing fallible backend under the exact in-memory controls, compare
-complete enabled results, reproduce the current panic on unavailable capabilities,
-and distinguish persisted I/O using a selectively pruned damaged payload.
-Private workload helper changes use existing fallible APIs and retain existing
-error-report schemas. Both default and minimal-feature verification are required
-before asking for the contract decision; results are recorded in the local audit.
+The search owner tests exercise all six public entrypoints with disabled runtime
+and compiled capabilities, including hybrid error ordering and empty/zero-limit
+requests. They retain enabled-result parity with the pre-existing internal
+in-memory execution controls and distinguish selective corrupt-payload behavior
+from the existing persisted-aware `try_*` route.
 
-The prepared code has nine passing targeted tests across default and minimal
-profiles: three/default and one/minimal owner proofs, plus three/default and
-two/minimal workload tests. The default proofs include complete enabled-result
-equality and the selective damaged-payload read-policy distinction. The minimal
-public workload fixture returns an unready report with the existing capability
-error class instead of unwinding.
+`tests/fallible_search_contract.rs` imports the public embedded facade. Default
+and minimal Bazel targets cover database/read-transaction/adapter retrieval,
+direct candidate/readiness/shadow APIs, and embedded stores and handles. Search
+capability rejection precedes pipeline admission; admitted search propagates
+pipeline result-budget errors. Failed readiness and shadow operations return
+errors, and embedded handle permits are released. Enabled profiles compare
+complete retrieval outputs, candidate reports, readiness and shadow evidence.
 
-Default facade all-target compilation, strict all-target search Clippy, strict
-facade library Clippy and formatting pass. Strict facade library-and-test Clippy
-reports `items_after_test_module` in the unchanged `src/api/types/analytics.rs`;
-the identical command on clean audited main reproduces the same diagnostic.
-That baseline warning is retained rather than suppressed or folded into this fix.
-These checks qualify the private preparation, not the unimplemented public API
-transition or the complete minimal root suite.
+Existing successful callers handle `Result`; examples propagate it, assertion
+fixtures unwrap it, and fuzz validation converts errors to rejected evidence.
+The private workload correction was delivered separately in #594.
 
-After approval:
+Validation entrypoints:
 
-1. Propagate the existing `Result` through the 14 methods and their private callees.
-2. Adjust every caller and example, including readiness/shadow and function-pointer
-   contracts, without changing query text, ranking, capability enforcement or
-   in-memory/persisted execution policy.
-3. Replace the proposal's legacy-panic observations with regression assertions
-   against actual public methods. Cover disabled full text, disabled vector,
-   hybrid requirements, read transactions, Mem projection and embedded handles.
-4. Preserve all enabled-result/report parity, the selective-corrupt-payload I/O
-   distinction and graph/pipeline error propagation. Verify failure performs no
-   graph enrichment or successful readiness publication.
-5. Complete default/minimal owner tests, facade checks, the default Bazel suites
-   and all three required local fuzz targets, then native CI and independent review.
+```sh
+cargo check --workspace --all-targets --locked
+cargo test -p skein --test fallible_search_contract --locked
+cargo test -p skein --no-default-features --test fallible_search_contract --locked
+bazel test //:skein_fallible_search_contract_tests //:skein_fallible_search_contract_minimal_tests //crates/search:skein_search_tests //crates/search:skein_search_minimal_tests
+bazel test //crates/fuzz:skein_fuzz_tests //crates/fuzz:skein_fuzz_cli_tests //:skein_linux_ci_fuzz_smoke_test
+```
 
-The 52 historical wrapper failures are distinct from the other optional-feature
-assumptions among the 166 recorded minimal root failures. This proposal does not
-claim those unrelated fixtures are repaired or authorize hiding failures through
-feature/test selection changes. Full minimal-suite limitations must remain
-explicit in the final evidence.
-
-## Decision gate
-
-Approval is requested for exactly the 14 return-type changes and necessary
-caller adjustments above. The owner-supplied AGENTS.md instructions reserve
-public API changes for confirmation, and #564 explicitly reserves its return-type
-or fallback contract for owner review. Earlier manifest, compact, binder, pin and
-consumer-registry approvals cover different interfaces.
+The broader minimal root suite has historical fixtures that assume optional
+features are enabled. This correction does not disable those tests or claim
+that every unrelated minimal-profile fixture now passes. Full qualification
+results are bound to the final PR source and recorded in its review.

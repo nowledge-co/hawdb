@@ -444,10 +444,13 @@ mod tests {
         let owner = ConsumerProjection::initialize(&registered, binding(), 0, seed).unwrap();
         #[cfg(feature = "full-text-search")]
         assert_eq!(
-            index.search("searchable", None, super::super::SearchMode::Text, 10),
+            index
+                .search("searchable", None, super::super::SearchMode::Text, 10)
+                .unwrap(),
             owner
                 .index()
                 .search("searchable", None, super::super::SearchMode::Text, 10)
+                .unwrap()
         );
         #[cfg(not(feature = "full-text-search"))]
         for index in [&index, owner.index()] {

@@ -29,24 +29,26 @@ fn retrieves_bounded_multi_hop_knowledge_context() {
     let mut search_index = SearchIndex::in_memory();
     db.rebuild_search_projection(&mut search_index, SearchRebuildOptions::default())
         .unwrap();
-    let output = db.retrieve_knowledge(
-        &search_index,
-        &KnowledgeRetrievalRequest {
-            query_text: "root traversal".to_string(),
-            query_embedding: None,
-            mode: SearchMode::Text,
-            limit: 1,
-            offset: 0,
-            rank_window: None,
-            search_fusion_weights: SearchFusionWeights::default(),
-            metadata_filters: BTreeMap::new(),
-            candidate_limit: None,
-            candidate_scoring: KnowledgeCandidateScoringPolicy::Max,
-            graph_seed_limit: 0,
-            graph_context_limit: 4,
-            graph_context_max_hops: 2,
-        },
-    );
+    let output = db
+        .retrieve_knowledge(
+            &search_index,
+            &KnowledgeRetrievalRequest {
+                query_text: "root traversal".to_string(),
+                query_embedding: None,
+                mode: SearchMode::Text,
+                limit: 1,
+                offset: 0,
+                rank_window: None,
+                search_fusion_weights: SearchFusionWeights::default(),
+                metadata_filters: BTreeMap::new(),
+                candidate_limit: None,
+                candidate_scoring: KnowledgeCandidateScoringPolicy::Max,
+                graph_seed_limit: 0,
+                graph_context_limit: 4,
+                graph_context_max_hops: 2,
+            },
+        )
+        .unwrap();
 
     assert_eq!(output.search.total_hits, 1);
     assert_eq!(output.graph_context_paths.len(), 2);
@@ -70,24 +72,26 @@ fn knowledge_retrieval_reports_graph_context_disabled_by_max_hops() {
     db.rebuild_search_projection(&mut search_index, SearchRebuildOptions::default())
         .unwrap();
 
-    let output = db.retrieve_knowledge(
-        &search_index,
-        &KnowledgeRetrievalRequest {
-            query_text: "root traversal".to_string(),
-            query_embedding: None,
-            mode: SearchMode::Text,
-            limit: 1,
-            offset: 0,
-            rank_window: None,
-            search_fusion_weights: SearchFusionWeights::default(),
-            metadata_filters: BTreeMap::new(),
-            candidate_limit: None,
-            candidate_scoring: KnowledgeCandidateScoringPolicy::Max,
-            graph_seed_limit: 0,
-            graph_context_limit: 4,
-            graph_context_max_hops: 0,
-        },
-    );
+    let output = db
+        .retrieve_knowledge(
+            &search_index,
+            &KnowledgeRetrievalRequest {
+                query_text: "root traversal".to_string(),
+                query_embedding: None,
+                mode: SearchMode::Text,
+                limit: 1,
+                offset: 0,
+                rank_window: None,
+                search_fusion_weights: SearchFusionWeights::default(),
+                metadata_filters: BTreeMap::new(),
+                candidate_limit: None,
+                candidate_scoring: KnowledgeCandidateScoringPolicy::Max,
+                graph_seed_limit: 0,
+                graph_context_limit: 4,
+                graph_context_max_hops: 0,
+            },
+        )
+        .unwrap();
 
     assert_eq!(output.search.total_hits, 1);
     assert!(output.graph_context_paths.is_empty());
@@ -160,24 +164,26 @@ fn knowledge_retrieval_applies_rank_window_to_hybrid_search() {
         })
         .unwrap();
 
-    let output = db.retrieve_knowledge(
-        &search_index,
-        &KnowledgeRetrievalRequest {
-            query_text: "graph".to_string(),
-            query_embedding: Some(vec![1.0, 0.0]),
-            mode: SearchMode::Hybrid,
-            limit: 10,
-            offset: 0,
-            rank_window: Some(1),
-            search_fusion_weights: SearchFusionWeights::default(),
-            metadata_filters: BTreeMap::new(),
-            candidate_limit: None,
-            candidate_scoring: KnowledgeCandidateScoringPolicy::Max,
-            graph_seed_limit: 0,
-            graph_context_limit: 0,
-            graph_context_max_hops: 1,
-        },
-    );
+    let output = db
+        .retrieve_knowledge(
+            &search_index,
+            &KnowledgeRetrievalRequest {
+                query_text: "graph".to_string(),
+                query_embedding: Some(vec![1.0, 0.0]),
+                mode: SearchMode::Hybrid,
+                limit: 10,
+                offset: 0,
+                rank_window: Some(1),
+                search_fusion_weights: SearchFusionWeights::default(),
+                metadata_filters: BTreeMap::new(),
+                candidate_limit: None,
+                candidate_scoring: KnowledgeCandidateScoringPolicy::Max,
+                graph_seed_limit: 0,
+                graph_context_limit: 0,
+                graph_context_max_hops: 1,
+            },
+        )
+        .unwrap();
 
     assert_eq!(output.search.rank_window, Some(1));
     assert_eq!(output.diagnostics.search_limit, 10);
@@ -274,27 +280,29 @@ fn knowledge_retrieval_applies_search_fusion_weights() {
         })
         .unwrap();
 
-    let output = db.retrieve_knowledge(
-        &search_index,
-        &KnowledgeRetrievalRequest {
-            query_text: "graph retrieval".to_string(),
-            query_embedding: Some(vec![1.0, 0.0]),
-            mode: SearchMode::Hybrid,
-            limit: 10,
-            offset: 0,
-            rank_window: None,
-            search_fusion_weights: SearchFusionWeights {
-                vector_weight: 1.0,
-                text_weight: 3.0,
+    let output = db
+        .retrieve_knowledge(
+            &search_index,
+            &KnowledgeRetrievalRequest {
+                query_text: "graph retrieval".to_string(),
+                query_embedding: Some(vec![1.0, 0.0]),
+                mode: SearchMode::Hybrid,
+                limit: 10,
+                offset: 0,
+                rank_window: None,
+                search_fusion_weights: SearchFusionWeights {
+                    vector_weight: 1.0,
+                    text_weight: 3.0,
+                },
+                metadata_filters: BTreeMap::new(),
+                candidate_limit: None,
+                candidate_scoring: KnowledgeCandidateScoringPolicy::Max,
+                graph_seed_limit: 0,
+                graph_context_limit: 0,
+                graph_context_max_hops: 1,
             },
-            metadata_filters: BTreeMap::new(),
-            candidate_limit: None,
-            candidate_scoring: KnowledgeCandidateScoringPolicy::Max,
-            graph_seed_limit: 0,
-            graph_context_limit: 0,
-            graph_context_max_hops: 1,
-        },
-    );
+        )
+        .unwrap();
 
     assert_eq!(
         output.search.fusion_weights,

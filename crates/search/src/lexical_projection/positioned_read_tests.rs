@@ -223,8 +223,9 @@ fn public_concurrent_queries_preserve_results_while_a_new_generation_publishes()
         resident.upsert(document.clone()).unwrap();
     }
     for (query, expected) in queries.iter().zip(&expected) {
-        let reference =
-            resident.search_with_options(query, None, SearchMode::Text, options.clone());
+        let reference = resident
+            .search_with_options(query, None, SearchMode::Text, options.clone())
+            .unwrap();
         assert_eq!(expected.total_hits, reference.total_hits);
         assert_eq!(
             expected

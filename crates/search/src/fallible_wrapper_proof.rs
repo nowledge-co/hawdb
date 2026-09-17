@@ -1,7 +1,6 @@
-//! Private proof for the return-type proposal; no public signature changes.
+//! Public in-memory error propagation and payload-policy regressions.
 
 use super::*;
-use std::panic::{catch_unwind, AssertUnwindSafe};
 
 #[derive(Clone, Copy, Debug)]
 enum Wrapper {
@@ -29,7 +28,11 @@ fn options() -> SearchQueryOptions {
     }
 }
 
-fn legacy(index: &SearchIndex, mode: SearchMode, wrapper: Wrapper) -> SearchResultSet {
+fn public_wrapper(
+    index: &SearchIndex,
+    mode: SearchMode,
+    wrapper: Wrapper,
+) -> Result<SearchResultSet> {
     match wrapper {
         Wrapper::Scalar => index.search_with_options("graph", Some(&[1.0, 0.0]), mode, options()),
         Wrapper::Preferred => index.search_with_options_prefer_compressed_vector_projection(
@@ -55,6 +58,7 @@ fn legacy(index: &SearchIndex, mode: SearchMode, wrapper: Wrapper) -> SearchResu
     }
 }
 
+#[cfg(all(feature = "full-text-search", feature = "vector-search"))]
 fn checked(index: &SearchIndex, mode: SearchMode, wrapper: Wrapper) -> Result<SearchResultSet> {
     match wrapper {
         Wrapper::Scalar => index.try_search_with_options_using_vector_backend(
@@ -81,17 +85,49 @@ fn checked(index: &SearchIndex, mode: SearchMode, wrapper: Wrapper) -> Result<Se
 }
 
 #[test]
-fn disabled_capabilities_can_return_typed_errors_without_a_different_read_policy() {
-    for (mode, capability) in [
-        (SearchMode::Text, RuntimeCapability::FullTextSearch),
-        (SearchMode::Vector, RuntimeCapability::VectorSearch),
-    ] {
-        let mut index = SearchIndex::in_memory();
-        index.set_runtime_capabilities(RuntimeCapabilities::default().with(capability, false));
-        for wrapper in WRAPPERS {
-            assert!(matches!(checked(&index, mode, wrapper),
-                Err(SkeinError::CapabilityUnavailable { capability: actual }) if actual == capability));
-            assert!(catch_unwind(AssertUnwindSafe(|| legacy(&index, mode, wrapper))).is_err());
+fn public_wrappers_return_the_first_unavailable_capability() {
+    for text in [false, true] {
+        for vector in [false, true] {
+            let mut index = SearchIndex::in_memory();
+            index.set_runtime_capabilities(
+                RuntimeCapabilities::default()
+                    .with(RuntimeCapability::FullTextSearch, text)
+                    .with(RuntimeCapability::VectorSearch, vector),
+            );
+            for mode in [SearchMode::Text, SearchMode::Vector, SearchMode::Hybrid] {
+                let required: &[RuntimeCapability] = match mode {
+                    SearchMode::Text => &[RuntimeCapability::FullTextSearch],
+                    SearchMode::Vector => &[RuntimeCapability::VectorSearch],
+                    SearchMode::Hybrid => &[
+                        RuntimeCapability::FullTextSearch,
+                        RuntimeCapability::VectorSearch,
+                    ],
+                };
+                let Some(&capability) = required
+                    .iter()
+                    .find(|&&capability| !index.runtime_capabilities().is_enabled(capability))
+                else {
+                    continue;
+                };
+                let expected = SkeinError::CapabilityUnavailable { capability };
+                for wrapper in WRAPPERS {
+                    assert_eq!(public_wrapper(&index, mode, wrapper).unwrap_err(), expected);
+                }
+                for (query, limit) in [("graph", 5), ("", 0)] {
+                    assert_eq!(
+                        index
+                            .search(query, Some(&[1.0, 0.0]), mode, limit)
+                            .unwrap_err(),
+                        expected
+                    );
+                    assert_eq!(
+                        index
+                            .search_with_report(query, Some(&[1.0, 0.0]), mode, limit)
+                            .unwrap_err(),
+                        expected
+                    );
+                }
+            }
         }
     }
 }
@@ -123,7 +159,7 @@ fn checked_in_memory_search_keeps_complete_enabled_results() {
         for wrapper in WRAPPERS {
             assert_eq!(
                 checked(&index, mode, wrapper).unwrap(),
-                legacy(&index, mode, wrapper)
+                public_wrapper(&index, mode, wrapper).unwrap()
             );
         }
     }
@@ -158,13 +194,21 @@ fn existing_try_api_is_not_a_drop_in_replacement_for_in_memory_access() {
     index.checkpoint().unwrap();
     drop(index);
     let index = SearchIndex::open(&root.0).unwrap();
-    let before = legacy(&index, SearchMode::Text, Wrapper::Scalar);
+    let before = public_wrapper(&index, SearchMode::Text, Wrapper::Scalar).unwrap();
     assert_eq!(before.total_hits, 2);
+    let before_hits = index.search("graph", None, SearchMode::Text, 5).unwrap();
     fs::write(root.0.join(SEARCH_SEGMENT_PAYLOAD_FILE), b"torn payload").unwrap();
+    for wrapper in WRAPPERS {
+        assert_eq!(
+            public_wrapper(&index, SearchMode::Text, wrapper).unwrap(),
+            before
+        );
+    }
     assert_eq!(
-        checked(&index, SearchMode::Text, Wrapper::Scalar).unwrap(),
-        before
+        index.search("graph", None, SearchMode::Text, 5).unwrap(),
+        before_hits
     );
+
     assert!(index
         .try_search_with_options("graph", None, SearchMode::Text, options())
         .is_err());

@@ -34,24 +34,26 @@ fn retrieves_knowledge_through_database_facade() {
     let rebuild = db
         .rebuild_search_projection(&mut search_index, SearchRebuildOptions::default())
         .unwrap();
-    let output = db.retrieve_knowledge(
-        &search_index,
-        &KnowledgeRetrievalRequest {
-            query_text: "projection diagnostics".to_string(),
-            query_embedding: None,
-            mode: SearchMode::Text,
-            limit: 1,
-            offset: 0,
-            rank_window: None,
-            search_fusion_weights: SearchFusionWeights::default(),
-            metadata_filters: BTreeMap::new(),
-            candidate_limit: None,
-            candidate_scoring: KnowledgeCandidateScoringPolicy::Max,
-            graph_seed_limit: 2,
-            graph_context_limit: 1,
-            graph_context_max_hops: 1,
-        },
-    );
+    let output = db
+        .retrieve_knowledge(
+            &search_index,
+            &KnowledgeRetrievalRequest {
+                query_text: "projection diagnostics".to_string(),
+                query_embedding: None,
+                mode: SearchMode::Text,
+                limit: 1,
+                offset: 0,
+                rank_window: None,
+                search_fusion_weights: SearchFusionWeights::default(),
+                metadata_filters: BTreeMap::new(),
+                candidate_limit: None,
+                candidate_scoring: KnowledgeCandidateScoringPolicy::Max,
+                graph_seed_limit: 2,
+                graph_context_limit: 1,
+                graph_context_max_hops: 1,
+            },
+        )
+        .unwrap();
 
     assert_eq!(rebuild.indexed_documents, 4);
     assert_eq!(output.graph_commit_epoch, 4);
@@ -392,7 +394,7 @@ fn nowledge_deep_retrieval_profile_preserves_visible_limit_with_wide_candidate_w
         NOWLEDGE_DEEP_SEARCH_GRAPH_CONTEXT_MAX_HOPS
     );
 
-    let output = db.retrieve_knowledge(&search_index, &request);
+    let output = db.retrieve_knowledge(&search_index, &request).unwrap();
     assert_eq!(output.search.hits.len(), 1);
     assert!(output.search.total_hits >= 2);
     assert_eq!(output.diagnostics.search_limit, 1);

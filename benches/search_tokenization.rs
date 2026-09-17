@@ -8,7 +8,7 @@ const DEFAULT_CJK_CHARS: usize = if cfg!(debug_assertions) {
     400_000
 };
 
-fn main() {
+fn main() -> skein::Result<()> {
     let character_count = std::env::var("SKEIN_SEARCH_TOKENIZATION_BENCH_CJK_CHARS")
         .ok()
         .and_then(|value| value.parse().ok())
@@ -17,7 +17,7 @@ fn main() {
     let index = SearchIndex::in_memory();
 
     let started = Instant::now();
-    let hits = index.search(&query, None, SearchMode::Text, 10);
+    let hits = index.search(&query, None, SearchMode::Text, 10)?;
     let elapsed = started.elapsed();
 
     assert!(hits.is_empty());
@@ -30,6 +30,7 @@ fn main() {
             "characters_per_second": character_count as f64 / elapsed.as_secs_f64(),
         })
     );
+    Ok(())
 }
 
 fn cjk_query(character_count: usize) -> String {
