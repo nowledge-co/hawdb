@@ -5,6 +5,7 @@ use crate::{SearchAnalyzerLexicon, SearchDocument};
 use skein_core::{RuntimeCancellationToken, RuntimeMemoryReservation};
 use std::cell::RefCell;
 use std::collections::BTreeMap;
+use std::fs;
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicU64, Ordering};
 
@@ -316,4 +317,20 @@ fn exact_file_verification_rejects_same_size_bytes_and_incomplete_files() {
         .to_string()
         .contains("length changed"));
     assert_eq!(memory.ledger.snapshot().used_bytes, 0);
+}
+
+#[test]
+fn windows_rename_scratch_keeps_all_four_input_dependent_path_bounds() {
+    assert_eq!(windows_rename_bytes([0; 4]).unwrap(), 4 * 4 * 3 * 2);
+    assert_eq!(
+        windows_rename_bytes([3, 260, 32_767, 65_536]).unwrap(),
+        591_420
+    );
+    for position in 0..4 {
+        for length in [usize::MAX, usize::MAX / 3, usize::MAX / 6] {
+            let mut lengths = [0; 4];
+            lengths[position] = length;
+            assert!(windows_rename_bytes(lengths).is_err());
+        }
+    }
 }

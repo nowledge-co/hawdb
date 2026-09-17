@@ -6,6 +6,7 @@ use skein_integrity::Crc32cHasher;
 use std::io::{self, Write};
 
 pub(crate) mod json;
+pub(crate) mod temporary;
 
 pub(crate) fn checkpoint(context: &RuntimeTaskContext) -> Result<()> {
     #[cfg(test)]

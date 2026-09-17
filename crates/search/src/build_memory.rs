@@ -17,6 +17,7 @@ pub(crate) const SET_ENTRY_BYTES: usize = 1024;
 pub(crate) const SPOOL_BUFFER_BYTES: usize = 8192;
 
 pub(crate) mod capacity;
+pub(crate) mod compression;
 pub(crate) mod decoder;
 pub(crate) mod directory;
 pub(crate) mod path;

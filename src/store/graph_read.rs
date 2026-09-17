@@ -1,6 +1,7 @@
 //! Read, scan, seek, and scan-pruning methods for [`GraphStore`].
 
 use super::*;
+use skein_storage::ids::project_node_record;
 
 impl GraphStore {
     pub fn canonical_node_from_segments(&self, id: NodeId) -> Result<Option<NodeRecord>> {
@@ -3312,26 +3313,6 @@ impl GraphStore {
             AdjacencyDirection::Outgoing => self.outgoing.get(&(node_id, rel_type)),
             AdjacencyDirection::Incoming => self.incoming.get(&(node_id, rel_type)),
         }
-    }
-}
-
-fn project_node_record(
-    node: NodeRecord,
-    required_properties: &BTreeSet<String>,
-) -> ProjectedNodeRecord {
-    let properties = required_properties
-        .iter()
-        .filter_map(|property| {
-            node.properties
-                .get(property)
-                .cloned()
-                .map(|value| (property.clone(), value))
-        })
-        .collect();
-    ProjectedNodeRecord {
-        id: node.id,
-        labels: node.labels,
-        properties,
     }
 }
 

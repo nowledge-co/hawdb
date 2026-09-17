@@ -34,11 +34,7 @@ impl<'a, R: BufRead> Decoder<'a, R> {
         task: &'a RuntimeTaskContext,
     ) -> Result<Self> {
         checkpoint(task)?;
-        if zstd::zstd_safe::version_number() != 10507 {
-            return Err(SkeinError::Execution(
-                "search zstd decode admission requires qualification for this version".into(),
-            ));
-        }
+        super::compression::require_qualified_zstd("decode admission")?;
         let context_memory = memory.spool.reserve(CONTEXT_BYTES)?;
         let buffer_memory = memory.spool.reserve(0)?;
         let mut context = DCtx::try_create().ok_or_else(|| {

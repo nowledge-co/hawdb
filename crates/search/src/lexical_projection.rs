@@ -1483,7 +1483,8 @@ impl<'workspace> LexicalProjectionWriter<'workspace> {
         let (memory, task) = self.context()?;
         checkpoint(&task)?;
         let mut paths = build_manifest::Paths::new(root, generation, &memory, &task)?;
-        let mut artifact_guard = build_manifest::Cleanup::new(&paths.artifact_tmp);
+        let mut artifact_guard =
+            crate::build_control::temporary::RemoveOnDrop::new(&paths.artifact_tmp);
         let mut artifact = ArtifactBuilder::new_with_context(
             &paths.artifact_tmp,
             generation,

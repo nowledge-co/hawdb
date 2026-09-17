@@ -23,6 +23,27 @@ pub struct ProjectedNodeRecord {
     pub properties: BTreeMap<String, Value>,
 }
 
+#[doc(hidden)]
+pub fn project_node_record(
+    node: NodeRecord,
+    required_properties: &BTreeSet<String>,
+) -> ProjectedNodeRecord {
+    let properties = required_properties
+        .iter()
+        .filter_map(|property| {
+            node.properties
+                .get(property)
+                .cloned()
+                .map(|value| (property.clone(), value))
+        })
+        .collect();
+    ProjectedNodeRecord {
+        id: node.id,
+        labels: node.labels,
+        properties,
+    }
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct RelId(pub u64);
 
