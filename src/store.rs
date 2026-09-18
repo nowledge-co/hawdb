@@ -535,14 +535,9 @@ struct RelationshipMatchRequest<'a> {
     rel_properties: &'a BTreeMap<String, Value>,
 }
 
-type CompositePropertyKey = Vec<(String, Value)>;
-type NodeIdPostingList = CowSegment<BTreeSet<NodeId>>;
-type RelIdPropertyPostingList = CowSegment<BTreeSet<RelId>>;
-type NodePropertyIndex = CowSegmentedMap<(LabelId, String, Value), NodeIdPostingList>;
-type CompositePropertyIndex = CowSegmentedMap<(LabelId, CompositePropertyKey), NodeIdPostingList>;
-type FullTextPropertyIndex = CowSegmentedMap<(LabelId, String, String), NodeIdPostingList>;
-type RelationshipPropertyIndex =
-    CowSegmentedMap<(RelTypeId, String, Value), RelIdPropertyPostingList>;
+pub(crate) use skein_storage::graph_index::{
+    CompositePropertyIndex, FullTextPropertyIndex, NodePropertyIndex, RelationshipPropertyIndex,
+};
 
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct KernelWriteBatch {

@@ -3,23 +3,18 @@
 #[doc(hidden)]
 pub mod node_index_updates;
 
+use crate::graph_index::{CompositePropertyIndex, NodePropertyIndex, RelationshipPropertyIndex};
 use crate::statistics_refresh::{
     adaptive_histogram_sample_limit, node_property_supports_optimizer_statistics,
     relationship_property_supports_optimizer_statistics, sample_histogram_values,
     MAX_BOUNDED_PATH_STAT_HOPS, MAX_PROPERTY_HISTOGRAM_VALUES,
 };
-use crate::{CowSegment, CowSegmentedMap, NodeId, NodeRecord, RelId, RelRecord};
+use crate::{CowSegmentedMap, NodeId, NodeRecord, RelId, RelRecord};
 use skein_core::{
     BasicGraphStatistics, Catalog, GraphStatistics, IndexId, IndexKind, IndexStatisticsSample,
     LabelId, RelTypeId, Value,
 };
 use std::collections::{BTreeMap, BTreeSet};
-
-type NodePropertyIndex = CowSegmentedMap<(LabelId, String, Value), CowSegment<BTreeSet<NodeId>>>;
-type RelationshipPropertyIndex =
-    CowSegmentedMap<(RelTypeId, String, Value), CowSegment<BTreeSet<RelId>>>;
-type CompositePropertyIndex =
-    CowSegmentedMap<(LabelId, Vec<(String, Value)>), CowSegment<BTreeSet<NodeId>>>;
 
 pub fn composite_property_index_key(
     node: &NodeRecord,
