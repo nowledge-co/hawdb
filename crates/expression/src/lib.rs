@@ -238,6 +238,11 @@ pub enum ProjectionExpression {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ScalarBinaryOp {
+    Add,
+    Subtract,
+    Multiply,
+    Divide,
+    Remainder,
     Eq,
     NotEq,
     Lt,

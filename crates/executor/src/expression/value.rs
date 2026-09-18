@@ -612,6 +612,16 @@ fn evaluate_scalar_binary(
         }));
     }
     let right = project_expression_value(right, catalog, binding)?;
+    if matches!(
+        op,
+        ScalarBinaryOp::Add
+            | ScalarBinaryOp::Subtract
+            | ScalarBinaryOp::Multiply
+            | ScalarBinaryOp::Divide
+            | ScalarBinaryOp::Remainder
+    ) {
+        return evaluate_arithmetic(left, op, right);
+    }
     if op == ScalarBinaryOp::ListContains {
         return Ok(match left {
             Value::Null => Value::Null,
@@ -632,11 +642,66 @@ fn evaluate_scalar_binary(
             ScalarBinaryOp::Contains => {
                 matches!((left, right), (Value::String(left), Value::String(right)) if left.contains(right))
             }
-            ScalarBinaryOp::ListContains | ScalarBinaryOp::And | ScalarBinaryOp::Or => {
+            ScalarBinaryOp::ListContains
+            | ScalarBinaryOp::And
+            | ScalarBinaryOp::Or
+            | ScalarBinaryOp::Add
+            | ScalarBinaryOp::Subtract
+            | ScalarBinaryOp::Multiply
+            | ScalarBinaryOp::Divide
+            | ScalarBinaryOp::Remainder => {
                 unreachable!("handled before comparison")
             }
         },
     )))
+}
+
+fn evaluate_arithmetic(left: Value, op: ScalarBinaryOp, right: Value) -> Result<Value> {
+    if matches!(left, Value::Null) || matches!(right, Value::Null) {
+        return Ok(Value::Null);
+    }
+    if let (Value::Int(left), Value::Int(right)) = (&left, &right) {
+        if matches!(op, ScalarBinaryOp::Divide | ScalarBinaryOp::Remainder) && *right == 0 {
+            return Err(SkeinError::Execution("division by zero".to_string()));
+        }
+        let value = match op {
+            ScalarBinaryOp::Add => left.checked_add(*right),
+            ScalarBinaryOp::Subtract => left.checked_sub(*right),
+            ScalarBinaryOp::Multiply => left.checked_mul(*right),
+            ScalarBinaryOp::Divide => left.checked_div(*right),
+            ScalarBinaryOp::Remainder => left.checked_rem(*right),
+            _ => unreachable!("arithmetic operators only"),
+        };
+        return value
+            .map(Value::Int)
+            .ok_or_else(|| SkeinError::Execution("integer arithmetic overflow".to_string()));
+    }
+    let numeric = |value| match value {
+        Value::Int(value) => Ok(value as f64),
+        Value::Float(value) => Ok(value),
+        _ => Err(SkeinError::Execution(
+            "arithmetic requires numeric operands".to_string(),
+        )),
+    };
+    let left = numeric(left)?;
+    let right = numeric(right)?;
+    if matches!(op, ScalarBinaryOp::Divide | ScalarBinaryOp::Remainder) && right == 0.0 {
+        return Err(SkeinError::Execution("division by zero".to_string()));
+    }
+    let value = match op {
+        ScalarBinaryOp::Add => left + right,
+        ScalarBinaryOp::Subtract => left - right,
+        ScalarBinaryOp::Multiply => left * right,
+        ScalarBinaryOp::Divide => left / right,
+        ScalarBinaryOp::Remainder => left % right,
+        _ => unreachable!("arithmetic operators only"),
+    };
+    if !value.is_finite() {
+        return Err(SkeinError::Execution(
+            "non-finite arithmetic result".to_string(),
+        ));
+    }
+    Ok(Value::Float(value))
 }
 
 #[cfg(test)]
@@ -882,5 +947,126 @@ mod case_tests {
             evaluate(&ProjectionExpression::Not(Box::new(literal(Value::Null)))).unwrap(),
             Value::Null
         );
+    }
+}
+
+#[cfg(test)]
+mod arithmetic_tests {
+    use super::*;
+
+    #[test]
+    fn arithmetic_preserves_numeric_types_and_nulls() {
+        for (op, left, right, expected) in [
+            (
+                ScalarBinaryOp::Add,
+                Value::Int(2),
+                Value::Int(3),
+                Value::Int(5),
+            ),
+            (
+                ScalarBinaryOp::Subtract,
+                Value::Int(2),
+                Value::Int(3),
+                Value::Int(-1),
+            ),
+            (
+                ScalarBinaryOp::Multiply,
+                Value::Int(2),
+                Value::Int(3),
+                Value::Int(6),
+            ),
+            (
+                ScalarBinaryOp::Divide,
+                Value::Int(7),
+                Value::Int(3),
+                Value::Int(2),
+            ),
+            (
+                ScalarBinaryOp::Remainder,
+                Value::Int(-7),
+                Value::Int(3),
+                Value::Int(-1),
+            ),
+            (
+                ScalarBinaryOp::Add,
+                Value::Float(1.5),
+                Value::Int(2),
+                Value::Float(3.5),
+            ),
+            (
+                ScalarBinaryOp::Divide,
+                Value::Int(7),
+                Value::Float(2.0),
+                Value::Float(3.5),
+            ),
+            (
+                ScalarBinaryOp::Multiply,
+                Value::Int(7),
+                Value::Null,
+                Value::Null,
+            ),
+            (ScalarBinaryOp::Add, Value::Null, Value::Int(7), Value::Null),
+        ] {
+            assert_eq!(evaluate_arithmetic(left, op, right).unwrap(), expected);
+        }
+    }
+
+    #[test]
+    fn arithmetic_errors_propagate_through_projection() {
+        let catalog = Catalog::default();
+        let binding = Binding::values(BTreeMap::new());
+        for (op, left, right, message) in [
+            (
+                ScalarBinaryOp::Add,
+                Value::Int(i64::MAX),
+                Value::Int(1),
+                "overflow",
+            ),
+            (
+                ScalarBinaryOp::Divide,
+                Value::Int(i64::MIN),
+                Value::Int(-1),
+                "overflow",
+            ),
+            (
+                ScalarBinaryOp::Remainder,
+                Value::Int(i64::MIN),
+                Value::Int(-1),
+                "overflow",
+            ),
+            (
+                ScalarBinaryOp::Divide,
+                Value::Int(1),
+                Value::Int(0),
+                "division by zero",
+            ),
+            (
+                ScalarBinaryOp::Remainder,
+                Value::Float(1.0),
+                Value::Float(-0.0),
+                "division by zero",
+            ),
+            (
+                ScalarBinaryOp::Add,
+                Value::String("1".to_string()),
+                Value::Int(1),
+                "numeric operands",
+            ),
+            (
+                ScalarBinaryOp::Multiply,
+                Value::Float(f64::MAX),
+                Value::Float(2.0),
+                "non-finite",
+            ),
+        ] {
+            let expression = ProjectionExpression::Binary {
+                left: Box::new(ProjectionExpression::Literal(left)),
+                op,
+                right: Box::new(ProjectionExpression::Literal(right)),
+            };
+            let error =
+                evaluate_projection_expression(&expression, &catalog, &binding).unwrap_err();
+            assert!(error.to_string().contains(message), "{error}");
+        }
     }
 }

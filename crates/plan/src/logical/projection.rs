@@ -173,6 +173,11 @@ pub(super) enum PlannedReturns {
         group_keys: Vec<Projection>,
         items: Vec<Aggregation>,
     },
+    AggregateProjection {
+        group_keys: Vec<Projection>,
+        items: Vec<Aggregation>,
+        projections: Vec<Projection>,
+    },
 }
 
 impl PlannedReturns {
@@ -189,6 +194,9 @@ impl PlannedReturns {
                 names.extend(items.iter().map(|item| item.name.clone()));
                 names
             }
+            PlannedReturns::AggregateProjection { projections, .. } => {
+                projections.iter().map(|item| item.name.clone()).collect()
+            }
         }
     }
 
@@ -202,6 +210,18 @@ impl PlannedReturns {
                 group_keys,
                 items,
                 input: Box::new(input),
+            },
+            PlannedReturns::AggregateProjection {
+                group_keys,
+                items,
+                projections,
+            } => LogicalPlan::Project {
+                items: projections,
+                input: Box::new(LogicalPlan::Aggregate {
+                    group_keys,
+                    items,
+                    input: Box::new(input),
+                }),
             },
         }
     }
@@ -274,6 +294,14 @@ pub(super) fn plan_return_items_with_columns(
     items: &[ReturnItem],
     parameters: &BTreeMap<String, Value>,
 ) -> Result<PlannedReturns> {
+    if items.iter().any(|item| {
+        matches!(
+            item.expression.kind,
+            ReturnExpressionKind::Arithmetic { .. }
+        )
+    }) {
+        return super::arithmetic::plan_composed_returns(scope, column_scope, items, parameters);
+    }
     let has_aggregate = items.iter().any(|item| {
         matches!(
             item.expression,
@@ -288,7 +316,9 @@ pub(super) fn plan_return_items_with_columns(
         let mut aggregations = Vec::new();
         for item in items {
             match &item.expression.kind {
-                ReturnExpressionKind::Value(_) => {
+                ReturnExpressionKind::Value(_)
+                | ReturnExpressionKind::Path(_)
+                | ReturnExpressionKind::Arithmetic { .. } => {
                     group_keys.push(plan_projection_with_columns(
                         scope,
                         column_scope,

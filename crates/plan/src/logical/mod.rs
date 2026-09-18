@@ -22,6 +22,7 @@ pub use skein_expression::{
 };
 use std::collections::{BTreeMap, BTreeSet};
 
+mod arithmetic;
 mod binding;
 mod case;
 mod projection;
