@@ -27,7 +27,7 @@ mod graph_match;
 mod pipeline;
 mod visibility;
 pub use graph_match::*;
-pub use pipeline::plan_pipeline_query;
+pub use pipeline::{plan_normalized_pipeline_query, plan_pipeline_query};
 pub use visibility::apply_node_visibility_predicates;
 mod binding;
 mod case;

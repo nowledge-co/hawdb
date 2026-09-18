@@ -95,3 +95,27 @@ fn unused_bounded_path_aliases_remain_distinct_from_node_bindings() {
         );
     }
 }
+
+#[test]
+fn normalization_retains_match_boundaries_and_group_output_order() {
+    for query in [
+        "MATCH (n:Node)-[:LINK]->(n) RETURN n.id",
+        "MATCH (a:Node)-[:LINK]->(b:Node)-[:LINK]->(c:Node) RETURN c.id",
+        "OPTIONAL MATCH (a:Node)-[:LINK]->(b:Node) WHERE b.id = 1 RETURN b.id",
+    ] {
+        let plan = plan_normalized_pipeline_query(query, &BTreeMap::new()).unwrap();
+        assert!(format!("{plan:?}").contains("GraphMatch {"), "{query}");
+    }
+    let plan = plan_normalized_pipeline_query(
+        "MATCH (n:Node) RETURN COUNT(n) AS count, n.id AS id",
+        &BTreeMap::new(),
+    )
+    .unwrap();
+    assert!(matches!(plan, LogicalPlan::Project { .. }));
+    let plan = plan_normalized_pipeline_query(
+        "MATCH (n:Node) RETURN n.id AS id, COUNT(n) AS count",
+        &BTreeMap::new(),
+    )
+    .unwrap();
+    assert!(matches!(plan, LogicalPlan::Aggregate { .. }));
+}

@@ -264,3 +264,43 @@ fn complete_ordered_query_corpus_preserves_binding_outcomes() {
         ])
     );
 }
+
+#[test]
+fn normalized_pipeline_frozen_plan_coverage() {
+    let mut exact = 0;
+    let mut differences = Vec::new();
+    for line in CASES.lines() {
+        let case: Value = serde_json::from_str(line).unwrap();
+        let query = case["query"].as_str().unwrap();
+        if case["plan"]["kind"] != "golden" || skein_cypher::parse_pipeline(query).is_err() {
+            continue;
+        }
+        let before = clock_nanos();
+        let mut actual =
+            crate::plan_normalized_pipeline_query(query, &parameters(&case["parameters"])).unwrap();
+        let after = clock_nanos();
+        normalize_clock_slots(
+            &mut actual,
+            &case["clock_slots"],
+            before.min(after)..=before.max(after),
+        );
+        if format!("{actual:?}") == case["plan"]["text"] {
+            exact += 1;
+        } else {
+            differences.push(serde_json::json!({"id":case["id"], "query":query, "expected":case["plan"]["text"], "actual":format!("{actual:?}")}));
+        }
+    }
+    eprintln!(
+        "normalized pipeline exact plans: {exact}; remaining: {}",
+        differences.len()
+    );
+    eprintln!(
+        "remaining case ids: {:?}",
+        differences
+            .iter()
+            .map(|case| &case["id"])
+            .collect::<Vec<_>>()
+    );
+    assert_eq!(exact, 320);
+    assert_eq!(differences.len(), 51);
+}

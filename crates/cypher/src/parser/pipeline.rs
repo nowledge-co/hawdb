@@ -637,6 +637,29 @@ mod tests {
     }
 
     #[test]
+    fn aggregate_function_names_remain_legal_column_aliases() {
+        let query = "MATCH (n:Item) WITH COUNT(n) AS count, MIN(n.id) AS min, MAX(n.id) AS max, AVG(n.id) AS avg, COLLECT(n.id) AS collect RETURN count, min, max, avg, collect";
+        let parsed = parse_pipeline(query).unwrap();
+        let ClauseKind::Return(projection) = &parsed.clauses[2].kind else {
+            panic!("expected RETURN")
+        };
+        for (item, name) in projection
+            .items
+            .iter()
+            .zip(["count", "min", "max", "avg", "collect"])
+        {
+            let ReturnExpressionKind::Value(expression) = &item.expression.kind else {
+                panic!("expected column")
+            };
+            assert_eq!(
+                expression.kind,
+                ScalarExpressionKind::Variable(name.to_string())
+            );
+            assert_eq!(expression.span.unwrap().text(query), Some(name));
+        }
+    }
+
+    #[test]
     fn shortest_paths_are_pattern_search_modes_with_regular_return_clauses() {
         let query = "MATCH route = (a:Item)-[links:LINK* ALL SHORTEST 1..4]->(b:Item) WHERE a.id = $id RETURN properties(nodes(route), 'id') AS ids, length(route) AS hops";
         let parsed = parse_pipeline(query).unwrap();

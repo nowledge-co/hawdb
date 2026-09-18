@@ -2,6 +2,7 @@ use super::*;
 use skein_cypher::{ClauseKind, PathSearch, ProjectionClause, QueryPipeline};
 
 mod mutation;
+mod normalize;
 mod path;
 mod procedure;
 #[cfg(test)]
@@ -14,6 +15,15 @@ pub fn plan_pipeline_query(
     parameters: &BTreeMap<String, Value>,
 ) -> Result<LogicalPlan> {
     bind_pipeline(&skein_cypher::parse_pipeline(query)?, parameters)
+}
+
+/// Migration entrypoint with structural read-plan normalization enabled.
+#[doc(hidden)]
+pub fn plan_normalized_pipeline_query(
+    query: &str,
+    parameters: &BTreeMap<String, Value>,
+) -> Result<LogicalPlan> {
+    plan_pipeline_query(query, parameters).map(normalize::normalize)
 }
 
 #[derive(Clone)]

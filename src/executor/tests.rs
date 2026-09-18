@@ -4,6 +4,8 @@ use super::*;
 
 #[path = "tests/clause_mutations.rs"]
 mod clause_mutations;
+#[path = "tests/clause_normalization.rs"]
+mod clause_normalization;
 #[path = "tests/clause_procedures.rs"]
 mod clause_procedures;
 

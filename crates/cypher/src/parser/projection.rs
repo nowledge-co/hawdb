@@ -26,7 +26,7 @@ impl Parser<'_> {
     }
 
     pub(super) fn parse_return_atom(&mut self) -> Result<ReturnExpressionKind> {
-        Ok(if self.consume_keyword("COUNT") {
+        Ok(if self.consume_aggregate_function_name("COUNT") {
             self.expect_char('(')?;
             let distinct = self.consume_keyword("DISTINCT");
             let expression = if self.consume_char('*') {
@@ -51,28 +51,28 @@ impl Parser<'_> {
             };
             self.expect_char(')')?;
             expression
-        } else if self.consume_keyword("MIN") {
+        } else if self.consume_aggregate_function_name("MIN") {
             self.expect_char('(')?;
             let variable = self.parse_ident()?;
             self.expect_char('.')?;
             let property = self.parse_ident()?;
             self.expect_char(')')?;
             ReturnExpressionKind::Aggregate(AggregateExpression::MinProperty { variable, property })
-        } else if self.consume_keyword("MAX") {
+        } else if self.consume_aggregate_function_name("MAX") {
             self.expect_char('(')?;
             let variable = self.parse_ident()?;
             self.expect_char('.')?;
             let property = self.parse_ident()?;
             self.expect_char(')')?;
             ReturnExpressionKind::Aggregate(AggregateExpression::MaxProperty { variable, property })
-        } else if self.consume_keyword("AVG") {
+        } else if self.consume_aggregate_function_name("AVG") {
             self.expect_char('(')?;
             let variable = self.parse_ident()?;
             self.expect_char('.')?;
             let property = self.parse_ident()?;
             self.expect_char(')')?;
             ReturnExpressionKind::Aggregate(AggregateExpression::AvgProperty { variable, property })
-        } else if self.consume_keyword("COLLECT") {
+        } else if self.consume_aggregate_function_name("COLLECT") {
             self.expect_char('(')?;
             let distinct = self.consume_keyword("DISTINCT");
             let variable = self.parse_ident()?;
@@ -94,6 +94,18 @@ impl Parser<'_> {
         } else {
             ReturnExpressionKind::Value(self.parse_scalar_expression()?)
         })
+    }
+
+    fn consume_aggregate_function_name(&mut self, name: &str) -> bool {
+        let checkpoint = self.checkpoint();
+        if self.consume_keyword(name) {
+            self.skip_ws();
+            if self.peek_char() == Some('(') {
+                return true;
+            }
+        }
+        self.restore(checkpoint);
+        false
     }
 
     pub(super) fn parse_order_items(&mut self) -> Result<Vec<OrderItem>> {
