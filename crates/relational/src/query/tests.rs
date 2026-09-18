@@ -835,7 +835,7 @@ fn hash_join_spills_and_falls_back_for_a_hot_partition() {
 }
 
 #[test]
-fn hash_join_rejects_spill_when_io_buffer_is_not_admitted() {
+fn hash_join_rejects_spill_when_state_is_not_admitted() {
     let state = hash_join_state();
     let prepared = prepare_hash_join(&state);
     let mut memory = constrained_hash_join_memory();
@@ -857,10 +857,14 @@ fn hash_join_rejects_spill_when_io_buffer_is_not_admitted() {
         )
         .expect("admit under-budget hash join");
     let error = execute_select(&prepared, &[], execution)
-        .expect_err("spill I/O buffer must be admitted before writing a run");
-    assert!(error
-        .to_string()
-        .contains("RelationalHashJoin (blocking_state) would use 8192 bytes"));
+        .expect_err("spill state must be admitted before writing a run");
+    let message = error.to_string();
+    assert!(
+        message.contains("RelationalHashJoin (blocking_state)")
+            && message.contains("would use")
+            && message.contains("budget"),
+        "expected a blocking-state admission failure, got: {message}"
+    );
     let _ = std::fs::remove_dir_all(&memory.spill_directory);
 }
 
