@@ -192,6 +192,18 @@ impl SpillBudgetTracker {
     }
 
     pub fn create_run(&mut self, file_operator: &str) -> Result<(SpillRun, SpillWriter)> {
+        self.create_run_with_buffer_bytes(
+            file_operator,
+            NonZeroUsize::new(crate::spill::SPILL_IO_BUFFER_BYTES)
+                .expect("spill buffer is non-zero"),
+        )
+    }
+
+    pub(crate) fn create_run_with_buffer_bytes(
+        &mut self,
+        file_operator: &str,
+        buffer_bytes: NonZeroUsize,
+    ) -> Result<(SpillRun, SpillWriter)> {
         if self.run_count >= self.max_runs {
             return Err(HawDBError::Execution(format!(
                 "{} exceeded max_spill_runs {}",
@@ -201,7 +213,7 @@ impl SpillBudgetTracker {
         let pool = self.pool.as_ref().map_err(|error| {
             HawDBError::Execution(format!("{} spill pool unavailable: {error}", self.operator))
         })?;
-        let run = SpillRun::create(pool.clone(), file_operator)?;
+        let run = SpillRun::create_with_buffer_bytes(pool.clone(), file_operator, buffer_bytes)?;
         self.run_count = self.run_count.saturating_add(1);
         Ok(run)
     }

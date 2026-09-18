@@ -21,6 +21,7 @@ use pool::{process_marker, RunLease, SPILL_FILE_PREFIX, SPILL_FILE_SUFFIX};
 use std::collections::{BTreeMap, BTreeSet};
 use std::fs::{File, OpenOptions};
 use std::io::{BufReader, BufWriter, Cursor, ErrorKind, Read, Write};
+use std::num::NonZeroUsize;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
 
@@ -41,7 +42,11 @@ pub struct SpillRun {
 }
 
 impl SpillRun {
-    pub(crate) fn create(pool: SpillPool, operator: &str) -> Result<(Self, SpillWriter)> {
+    pub(crate) fn create_with_buffer_bytes(
+        pool: SpillPool,
+        operator: &str,
+        buffer_bytes: NonZeroUsize,
+    ) -> Result<(Self, SpillWriter)> {
         pool.begin_run(operator)?;
         let safe_operator: String = operator
             .chars()
@@ -67,7 +72,7 @@ impl SpillRun {
                             lease: Arc::clone(&lease),
                         },
                         SpillWriter {
-                            writer: BufWriter::with_capacity(SPILL_IO_BUFFER_BYTES, file),
+                            writer: BufWriter::with_capacity(buffer_bytes.get(), file),
                             lease,
                         },
                     ));
@@ -89,6 +94,15 @@ impl SpillRun {
     }
 
     pub fn reader(&self) -> Result<SpillReader> {
+        self.reader_with_buffer_bytes(
+            NonZeroUsize::new(SPILL_IO_BUFFER_BYTES).expect("spill buffer is non-zero"),
+        )
+    }
+
+    pub(crate) fn reader_with_buffer_bytes(
+        &self,
+        buffer_bytes: NonZeroUsize,
+    ) -> Result<SpillReader> {
         let file = File::open(self.lease.path()).map_err(|error| {
             HawDBError::Execution(format!(
                 "failed to open spill run '{}': {error}",
@@ -96,7 +110,7 @@ impl SpillRun {
             ))
         })?;
         Ok(SpillReader {
-            reader: BufReader::with_capacity(SPILL_IO_BUFFER_BYTES, file),
+            reader: BufReader::with_capacity(buffer_bytes.get(), file),
         })
     }
 }

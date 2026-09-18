@@ -211,6 +211,20 @@ impl QueryMemoryLedger {
         Ok(())
     }
 
+    fn can_reserve(&self, account_id: u64, bytes: usize) -> bool {
+        let state = lock_recover(&self.inner.state);
+        let Some(account) = state.accounts.get(&account_id) else {
+            return false;
+        };
+        let Some(account_next) = account.used_bytes.checked_add(bytes) else {
+            return false;
+        };
+        let Some(root_next) = state.used_bytes.checked_add(bytes) else {
+            return false;
+        };
+        account_next <= account.budget_bytes && root_next <= self.inner.budget_bytes
+    }
+
     fn release(&self, account_id: u64, bytes: usize) {
         if bytes == 0 {
             return;
@@ -349,6 +363,10 @@ impl QueryMemoryAccount {
         self.ledger.account(class, owner, budget_bytes)
     }
 
+    pub(crate) fn can_reserve(&self, bytes: usize) -> bool {
+        self.ledger.can_reserve(self.account_id, bytes)
+    }
+
     pub fn reserve(&self, bytes: usize) -> Result<QueryMemoryLease> {
         self.ledger.reserve(self.account_id, bytes)?;
         Ok(QueryMemoryLease {
@@ -462,6 +480,32 @@ mod tests {
 
         assert!(error.to_string().contains("query_memory_bytes 10"));
         assert_eq!(ledger.snapshot().used_bytes, 6);
+        drop(left_lease);
+        assert_eq!(ledger.snapshot().used_bytes, 0);
+    }
+
+    #[test]
+    fn capacity_preflight_checks_account_and_root_without_charging() {
+        let ledger = QueryMemoryLedger::new(NonZeroUsize::new(10).unwrap());
+        let left = ledger.account(
+            QueryMemoryClass::BlockingState,
+            "left",
+            NonZeroUsize::new(8).unwrap(),
+        );
+        let right = ledger.account(
+            QueryMemoryClass::PipelineBatch,
+            "right",
+            NonZeroUsize::new(10).unwrap(),
+        );
+
+        assert!(left.can_reserve(8));
+        assert_eq!(ledger.snapshot().used_bytes, 0);
+        let left_lease = left.reserve(6).unwrap();
+        assert!(!left.can_reserve(3));
+        assert!(right.can_reserve(4));
+        assert!(!right.can_reserve(5));
+        assert_eq!(ledger.snapshot().used_bytes, 6);
+
         drop(left_lease);
         assert_eq!(ledger.snapshot().used_bytes, 0);
     }

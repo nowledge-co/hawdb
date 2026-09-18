@@ -130,6 +130,40 @@ struct JoinReader {
     _buffer: QueryMemoryLease,
 }
 
+struct AdmittedHashJoinMemoryLayout {
+    staging_budget: NonZeroUsize,
+    state_budget: NonZeroUsize,
+    table_budget: NonZeroUsize,
+    spill_io_buffer_bytes: NonZeroUsize,
+}
+
+impl AdmittedHashJoinMemoryLayout {
+    fn new(blocking_operator_bytes: NonZeroUsize) -> Self {
+        let total = blocking_operator_bytes.get();
+        let staging_budget =
+            NonZeroUsize::new((total / 4).max(1)).expect("staging budget is non-zero");
+        let state_budget = NonZeroUsize::new(total.saturating_sub(staging_budget.get()).max(1))
+            .expect("state budget is non-zero");
+        // Repartitioning can keep three buffered handles live while a replay
+        // record is decoded. Preserve the table share that bounds spill-run
+        // fanout, and scale each I/O buffer from the admitted state capacity.
+        let table_budget = NonZeroUsize::new((total / 2).max(1)).expect("table budget is non-zero");
+        let spill_io_buffer_bytes = NonZeroUsize::new(
+            state_budget
+                .get()
+                .saturating_div(8)
+                .clamp(1, SPILL_IO_BUFFER_BYTES),
+        )
+        .expect("spill buffer is non-zero");
+        Self {
+            staging_budget,
+            state_budget,
+            table_budget,
+            spill_io_buffer_bytes,
+        }
+    }
+}
+
 pub struct AdmittedHashJoin<'a> {
     operator: &'static str,
     memory: &'a ExecutionMemoryConfig,
@@ -137,6 +171,7 @@ pub struct AdmittedHashJoin<'a> {
     table: HashGroups<usize, Binding>,
     tracker: OperatorMemoryTracker,
     account: QueryMemoryAccount,
+    spill_io_buffer_bytes: NonZeroUsize,
     spill: SpillBudgetTracker,
     build_writer: Option<JoinWriter>,
     build_run: Option<JoinRun>,
@@ -152,29 +187,25 @@ impl<'a> AdmittedHashJoin<'a> {
         memory_ledger: &'a QueryMemoryLedger,
         task_context: Option<&'a RuntimeTaskContext>,
     ) -> Self {
-        let budget = memory.blocking_operator_bytes.get();
-        let staging = NonZeroUsize::new((budget / 4).max(1)).expect("staging budget is non-zero");
+        let layout = AdmittedHashJoinMemoryLayout::new(memory.blocking_operator_bytes);
         let account = memory_ledger.account(
             QueryMemoryClass::BlockingState,
             operator,
-            NonZeroUsize::new(budget.saturating_sub(staging.get()).max(1))
-                .expect("state budget is non-zero"),
+            layout.state_budget,
         );
         Self {
             operator,
             memory,
             task_context,
             table: HashGroups::default(),
-            tracker: OperatorMemoryTracker::with_account(
-                NonZeroUsize::new((budget / 2).max(1)).expect("table budget is non-zero"),
-                account.clone(),
-            ),
+            tracker: OperatorMemoryTracker::with_account(layout.table_budget, account.clone()),
             account,
+            spill_io_buffer_bytes: layout.spill_io_buffer_bytes,
             spill: SpillBudgetTracker::with_ledger_staging_budget(
                 operator,
                 memory,
                 memory_ledger,
-                staging,
+                layout.staging_budget,
             ),
             build_writer: None,
             build_run: None,
@@ -305,7 +336,16 @@ impl<'a> AdmittedHashJoin<'a> {
 
     fn writer(&mut self, side: AdmittedHashJoinSide) -> Result<JoinWriter> {
         runtime_checkpoint(self.task_context)?;
-        let buffer = self.account.reserve(SPILL_IO_BUFFER_BYTES)?;
+        let buffer = self
+            .account
+            .reserve(self.spill_io_buffer_bytes.get())
+            .map_err(|error| {
+                HawDBError::Execution(format!(
+                    "{} cannot admit a {}-byte spill writer buffer: {error}",
+                    self.operator,
+                    self.spill_io_buffer_bytes.get(),
+                ))
+            })?;
         let metadata = self.account.reserve(
             self.memory
                 .spill_directory
@@ -314,7 +354,9 @@ impl<'a> AdmittedHashJoin<'a> {
                 .saturating_mul(2)
                 .saturating_add(1024),
         )?;
-        let (run, writer) = self.spill.create_run("hash-join")?;
+        let (run, writer) = self
+            .spill
+            .create_run_with_buffer_bytes("hash-join", self.spill_io_buffer_bytes)?;
         Ok(JoinWriter {
             run: JoinRun {
                 side,
@@ -331,10 +373,21 @@ impl<'a> AdmittedHashJoin<'a> {
 
     fn reader(&self, run: &JoinRun) -> Result<JoinReader> {
         runtime_checkpoint(self.task_context)?;
-        let buffer = self.account.reserve(SPILL_IO_BUFFER_BYTES)?;
+        let buffer = self
+            .account
+            .reserve(self.spill_io_buffer_bytes.get())
+            .map_err(|error| {
+                HawDBError::Execution(format!(
+                    "{} cannot admit a {}-byte spill reader buffer: {error}",
+                    self.operator,
+                    self.spill_io_buffer_bytes.get(),
+                ))
+            })?;
         Ok(JoinReader {
             side: run.side,
-            reader: run.run.reader()?,
+            reader: run
+                .run
+                .reader_with_buffer_bytes(self.spill_io_buffer_bytes)?,
             _buffer: buffer,
         })
     }
@@ -368,19 +421,25 @@ impl<'a> AdmittedHashJoin<'a> {
     }
 
     fn can_insert(&self, binding: &Binding) -> bool {
-        !self
-            .tracker
-            .would_exceed(self.table.insertion_bytes(binding_memory_bytes(binding)))
+        let insertion_bytes = self.table.insertion_bytes(binding_memory_bytes(binding));
+        !self.tracker.would_exceed(insertion_bytes) && self.account.can_reserve(insertion_bytes)
     }
 
     fn insert(&mut self, hash: u64, binding: Binding) -> Result<()> {
         let bytes = binding_memory_bytes(&binding);
-        self.table.insert(
-            HashedKey::with_hash(self.table.len(), hash),
-            binding,
-            bytes,
-            &mut self.tracker,
-        )
+        self.table
+            .insert(
+                HashedKey::with_hash(self.table.len(), hash),
+                binding,
+                bytes,
+                &mut self.tracker,
+            )
+            .map_err(|error| {
+                HawDBError::Execution(format!(
+                    "{} cannot admit a hash table entry: {error}",
+                    self.operator,
+                ))
+            })
     }
 
     fn clear(&mut self) {
@@ -691,6 +750,19 @@ mod tests {
             )),
             ..ExecutionMemoryConfig::default()
         }
+    }
+
+    #[test]
+    fn memory_layout_scales_spill_buffers_inside_the_state_budget() {
+        let layout = AdmittedHashJoinMemoryLayout::new(
+            NonZeroUsize::new(40 * 1024).expect("non-zero blocking budget"),
+        );
+
+        assert_eq!(layout.staging_budget.get(), 10 * 1024);
+        assert_eq!(layout.state_budget.get(), 30 * 1024);
+        assert_eq!(layout.table_budget.get(), 20 * 1024);
+        assert_eq!(layout.spill_io_buffer_bytes.get(), 3_840);
+        assert!(layout.spill_io_buffer_bytes.get().saturating_mul(3) < layout.state_budget.get());
     }
 
     #[test]
