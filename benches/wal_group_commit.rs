@@ -397,6 +397,7 @@ fn measure(
     let elapsed_micros = elapsed_micros(started);
     progress.start("observation");
     commit_latencies.sort_unstable();
+    let commit_latency = CommitLatencySummary::from_sorted(&commit_latencies);
     let group_commit_after = database
         .wal_group_commit_snapshot()
         .expect("group commit metrics must be readable");
@@ -410,6 +411,16 @@ fn measure(
         group_commit.completed_commits,
         group_commit.shared_sync_count,
         group_commit.total_fsync_micros,
+    );
+    eprintln!(
+        "wal_group_commit latency measurement={label} commits={} total_micros={} min_micros={} p50_micros={} p95_micros={} p99_micros={} max_micros={}",
+        commit_latency.count,
+        commit_latency.total_micros,
+        commit_latency.min_micros,
+        commit_latency.p50_micros,
+        commit_latency.p95_micros,
+        commit_latency.p99_micros,
+        commit_latency.max_micros,
     );
     progress.start("database-close");
     drop(database);
@@ -430,9 +441,9 @@ fn measure(
     Measurement {
         commit_count,
         elapsed_micros,
-        p50_commit_micros: percentile(&commit_latencies, 50),
-        p95_commit_micros: percentile(&commit_latencies, 95),
-        p99_commit_micros: percentile(&commit_latencies, 99),
+        p50_commit_micros: commit_latency.p50_micros,
+        p95_commit_micros: commit_latency.p95_micros,
+        p99_commit_micros: commit_latency.p99_micros,
         group_commit,
         strict_recovery_verified: verification.strict_recovery_verified,
         wal_order_verified: verification.wal_order_verified,
@@ -540,6 +551,30 @@ fn percentile(values: &[u64], percentile: usize) -> u64 {
         .saturating_sub(1)
         .min(values.len().saturating_sub(1));
     values.get(index).copied().unwrap_or_default()
+}
+
+struct CommitLatencySummary {
+    count: usize,
+    total_micros: u64,
+    min_micros: u64,
+    p50_micros: u64,
+    p95_micros: u64,
+    p99_micros: u64,
+    max_micros: u64,
+}
+
+impl CommitLatencySummary {
+    fn from_sorted(values: &[u64]) -> Self {
+        Self {
+            count: values.len(),
+            total_micros: values.iter().copied().fold(0_u64, u64::saturating_add),
+            min_micros: values.first().copied().unwrap_or_default(),
+            p50_micros: percentile(values, 50),
+            p95_micros: percentile(values, 95),
+            p99_micros: percentile(values, 99),
+            max_micros: values.last().copied().unwrap_or_default(),
+        }
+    }
 }
 
 fn elapsed_micros(started: Instant) -> u64 {
