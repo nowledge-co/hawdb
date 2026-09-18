@@ -477,8 +477,11 @@ pub fn plan_with_params(
                     value: plan_set_value(set, parameters)?,
                 });
             }
-            let returns =
-                plan_set_node_properties_return_mode(update, &update_return.returns, parameters)?;
+            let returns = plan_set_node_properties_return_mode(
+                &update.variable,
+                &update_return.returns,
+                parameters,
+            )?;
             Ok(LogicalPlan::SetNodePropertiesReturn {
                 variable: update.variable.clone(),
                 label: update.label.clone(),

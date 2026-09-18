@@ -240,7 +240,7 @@ pub(super) fn planned_sort_scope<'a>(
 }
 
 pub(super) fn plan_set_node_properties_return_mode(
-    update: &skein_cypher::MatchSet,
+    updated_variable: &str,
     returns: &[ReturnItem],
     parameters: &BTreeMap<String, Value>,
 ) -> Result<SetNodePropertiesReturnMode> {
@@ -256,10 +256,10 @@ pub(super) fn plan_set_node_properties_return_mode(
                 variable,
                 distinct,
             }) if !distinct => {
-                if variable != &update.variable {
+                if variable != updated_variable {
                     return Err(SkeinError::Semantic(format!(
                         "SET RETURN count variable '{variable}' does not match updated variable '{}'",
-                        update.variable
+                        updated_variable
                     )));
                 }
                 return Ok(SetNodePropertiesReturnMode::Count {
@@ -272,7 +272,7 @@ pub(super) fn plan_set_node_properties_return_mode(
             _ => {}
         }
     }
-    let scope = BTreeSet::from([update.variable.clone()]);
+    let scope = BTreeSet::from([updated_variable.to_string()]);
     let projections = returns
         .iter()
         .map(|item| plan_projection(&scope, item, parameters))

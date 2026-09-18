@@ -124,3 +124,143 @@ fn ordered_read_pipeline_preserves_corpus_binding_outcomes() {
     assert_eq!(eligible["golden"], 245);
     assert_eq!(eligible["missing_parameters"], 710);
 }
+
+#[test]
+fn ordered_mutation_pipeline_preserves_frozen_plans_and_errors() {
+    use skein_cypher::ClauseKind;
+    let mut covered = BTreeMap::new();
+    let mut failures = Vec::new();
+    for line in CASES.lines() {
+        let case: Value = serde_json::from_str(line).unwrap();
+        let query = case["query"].as_str().unwrap();
+        let Ok(pipeline) = skein_cypher::parse_pipeline(query) else {
+            continue;
+        };
+        if !pipeline.clauses.iter().any(|clause| {
+            matches!(
+                clause.kind,
+                ClauseKind::Create(_)
+                    | ClauseKind::Merge { .. }
+                    | ClauseKind::Set(_)
+                    | ClauseKind::Delete { .. }
+            )
+        }) {
+            continue;
+        }
+        let kind = case["plan"]["kind"].as_str().unwrap();
+        if !matches!(kind, "golden" | "missing_parameters" | "binding_rejected") {
+            continue;
+        }
+        *covered.entry(kind.to_string()).or_insert(0) += 1;
+        let before = clock_nanos();
+        let actual = crate::plan_pipeline_query(query, &parameters(&case["parameters"]));
+        let after = clock_nanos();
+        let text = match actual {
+            Ok(mut plan) => {
+                normalize_clock_slots(
+                    &mut plan,
+                    &case["clock_slots"],
+                    before.min(after)..=before.max(after),
+                );
+                format!("{plan:?}")
+            }
+            Err(error) => error.to_string(),
+        };
+        if text != case["plan"]["text"] {
+            failures.push(format!(
+                "{}: {text}; expected {}; {query}",
+                case["id"], case["plan"]["text"]
+            ));
+        }
+    }
+    eprintln!(
+        "ordered mutation corpus: {covered:?}; {} failures",
+        failures.len()
+    );
+    assert!(failures.is_empty(), "{}", failures.join("\n"));
+    assert_eq!(
+        covered,
+        BTreeMap::from([
+            ("golden".to_string(), 114),
+            ("missing_parameters".to_string(), 240)
+        ])
+    );
+}
+
+#[test]
+fn ordered_procedure_and_shortest_path_plans_preserve_frozen_outcomes() {
+    use skein_cypher::{ClauseKind, PathSearch};
+    let mut covered = BTreeMap::new();
+    for line in CASES.lines() {
+        let case: Value = serde_json::from_str(line).unwrap();
+        let query = case["query"].as_str().unwrap();
+        let Ok(pipeline) = skein_cypher::parse_pipeline(query) else {
+            continue;
+        };
+        if !pipeline.clauses.iter().any(|clause| match &clause.kind {
+            ClauseKind::Call { .. } => true,
+            ClauseKind::Match { patterns, .. } => patterns.iter().any(|pattern| {
+                pattern
+                    .steps
+                    .iter()
+                    .any(|step| step.relationship.search == PathSearch::AllShortest)
+            }),
+            _ => false,
+        }) {
+            continue;
+        }
+        let kind = case["plan"]["kind"].as_str().unwrap();
+        *covered.entry(kind.to_string()).or_insert(0) += 1;
+        let actual = crate::plan_pipeline_query(query, &parameters(&case["parameters"]));
+        let text = match actual {
+            Ok(plan) => format!("{plan:?}"),
+            Err(error) => error.to_string(),
+        };
+        assert_eq!(text, case["plan"]["text"], "{}: {query}", case["id"]);
+    }
+    assert_eq!(
+        covered,
+        BTreeMap::from([
+            ("golden".to_string(), 11),
+            ("missing_parameters".to_string(), 2),
+            ("binding_rejected".to_string(), 2),
+        ])
+    );
+}
+
+#[test]
+fn complete_ordered_query_corpus_preserves_binding_outcomes() {
+    let mut covered = BTreeMap::new();
+    let mut failures = Vec::new();
+    for line in CASES.lines() {
+        let case: Value = serde_json::from_str(line).unwrap();
+        let query = case["query"].as_str().unwrap();
+        if skein_cypher::parse_pipeline(query).is_err() {
+            continue;
+        }
+        let kind = case["plan"]["kind"].as_str().unwrap();
+        if !matches!(kind, "golden" | "missing_parameters" | "binding_rejected") {
+            continue;
+        }
+        *covered.entry(kind.to_string()).or_insert(0) += 1;
+        let actual = crate::plan_pipeline_query(query, &parameters(&case["parameters"]));
+        match actual {
+            Ok(_) if kind == "golden" => {}
+            Err(error) if kind != "golden" && error.to_string() == case["plan"]["text"] => {}
+            actual => failures.push(format!(
+                "{}: {query}; {actual:?}; expected {}",
+                case["id"], case["plan"]["text"]
+            )),
+        }
+    }
+    eprintln!("complete ordered corpus: {covered:?}");
+    assert!(failures.is_empty(), "{}", failures.join("\n"));
+    assert_eq!(
+        covered,
+        BTreeMap::from([
+            ("golden".to_string(), 371),
+            ("missing_parameters".to_string(), 954),
+            ("binding_rejected".to_string(), 2),
+        ])
+    );
+}

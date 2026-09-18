@@ -391,10 +391,12 @@ impl Parser<'_> {
     fn parse_pipeline_node(&mut self) -> Result<NodePattern> {
         self.skip_ws();
         let start = self.pos;
+        let previous_anonymous_id = self.anonymous_variable_id;
         let (variable, label, properties) = self.parse_match_node_pattern()?;
         Ok(self.source_node(
             NodePatternKind {
                 variable,
+                anonymous: self.anonymous_variable_id != previous_anonymous_id,
                 label,
                 properties,
             },

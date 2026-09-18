@@ -2,6 +2,11 @@
 
 use super::*;
 
+#[path = "tests/clause_mutations.rs"]
+mod clause_mutations;
+#[path = "tests/clause_procedures.rs"]
+mod clause_procedures;
+
 #[path = "tests/shortest_path.rs"]
 mod shortest_path;
 use crate::planner::{

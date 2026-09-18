@@ -1,6 +1,12 @@
 use super::*;
 use skein_cypher::{ClauseKind, PathSearch, ProjectionClause, QueryPipeline};
 
+mod mutation;
+mod path;
+mod procedure;
+#[cfg(test)]
+mod tests;
+
 /// Migration entrypoint for the ordered-clause binder.
 #[doc(hidden)]
 pub fn plan_pipeline_query(
@@ -17,6 +23,7 @@ enum BindingType {
         column: Option<String>,
     },
     Scalar,
+    UnmaterializedPath,
 }
 
 #[derive(Default)]
@@ -94,9 +101,40 @@ fn bind_pipeline(
             "query exceeds maximum clause depth".to_string(),
         ));
     }
-    let mut input = None;
-    let mut scope = Scope::default();
-    for clause in &query.clauses {
+    if query.clauses.iter().any(|clause| {
+        matches!(
+            clause.kind,
+            ClauseKind::Create(_)
+                | ClauseKind::Merge { .. }
+                | ClauseKind::Set(_)
+                | ClauseKind::Delete { .. }
+        )
+    }) {
+        return mutation::bind_mutation_pipeline(query, parameters);
+    }
+    if matches!(
+        query.clauses.first().map(|clause| &clause.kind),
+        Some(ClauseKind::Call { .. })
+    ) {
+        return procedure::bind_procedure_pipeline(query, parameters);
+    }
+    if query.clauses.iter().any(|clause| {
+        matches!(&clause.kind,
+        ClauseKind::Match { patterns, .. } if patterns.iter().any(|pattern|
+            pattern.steps.iter().any(|step| step.relationship.search == PathSearch::AllShortest)))
+    }) {
+        return path::bind_shortest_path_pipeline(query, parameters);
+    }
+    bind_read_clauses(&query.clauses, None, Scope::default(), parameters)
+}
+
+fn bind_read_clauses(
+    clauses: &[skein_cypher::Clause],
+    mut input: Option<LogicalPlan>,
+    mut scope: Scope,
+    parameters: &BTreeMap<String, Value>,
+) -> Result<LogicalPlan> {
+    for clause in clauses {
         match &clause.kind {
             ClauseKind::Match {
                 optional,
@@ -107,11 +145,22 @@ fn bind_pipeline(
                 let mut introduced = Vec::new();
                 let mut steps = Vec::new();
                 for pattern in patterns {
-                    if pattern.variable.is_some()
-                        || pattern
-                            .steps
-                            .iter()
-                            .any(|step| step.relationship.search == PathSearch::AllShortest)
+                    if let Some(variable) = &pattern.variable {
+                        if scope.0.contains_key(variable) {
+                            return Err(SkeinError::Semantic(format!(
+                                "path variable '{variable}' is already bound"
+                            )));
+                        }
+                        // Bounded expands may have an unused path alias, but it must not
+                        // accidentally become a node binding in a later MATCH.
+                        scope
+                            .0
+                            .insert(variable.clone(), BindingType::UnmaterializedPath);
+                    }
+                    if pattern
+                        .steps
+                        .iter()
+                        .any(|step| step.relationship.search == PathSearch::AllShortest)
                     {
                         return Err(SkeinError::Semantic(
                             "path binding requires shortest-path lowering".to_string(),

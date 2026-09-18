@@ -89,6 +89,7 @@ pub struct PatternStepKind {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct NodePatternKind {
     pub variable: String,
+    pub anonymous: bool,
     pub label: String,
     pub properties: BTreeMap<String, ValueExpression>,
 }
