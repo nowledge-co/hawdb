@@ -89,7 +89,7 @@ use super::{validate_wal_op_values, WalEntry, WalOp};
 use crate::canonical::MAX_VALUE_DEPTH;
 use crate::{NodeId, RelId};
 use hawdb_core::Value;
-use hawdb_core::{HawdbError, Result};
+use hawdb_core::{HawDBError, Result};
 use hawdb_core::{PropertyType, SchemaObjectState, TableKind};
 use std::collections::BTreeMap;
 use std::sync::Arc;
@@ -174,14 +174,14 @@ pub fn encode_binary_wal_record(entry: &WalEntry, commit_epoch: u64) -> Result<V
 pub fn decode_binary_wal_record(bytes: &[u8]) -> Result<BinaryWalRecordDecode> {
     match decode_binary_wal_record_inner(bytes) {
         Ok(decoded) => Ok(decoded),
-        Err(HawdbError::Storage(reason)) => Ok(BinaryWalRecordDecode::Corrupt(reason)),
+        Err(HawDBError::Storage(reason)) => Ok(BinaryWalRecordDecode::Corrupt(reason)),
         Err(error) => Err(error),
     }
 }
 
 fn decode_binary_wal_record_inner(bytes: &[u8]) -> Result<BinaryWalRecordDecode> {
     if bytes.len() < 21 {
-        return Err(HawdbError::Storage(
+        return Err(HawDBError::Storage(
             "binary WAL record envelope is truncated".to_string(),
         ));
     }
@@ -193,13 +193,13 @@ fn decode_binary_wal_record_inner(bytes: &[u8]) -> Result<BinaryWalRecordDecode>
     let op = match record_kind {
         RECORD_KIND_SINGLE => {
             if op_count != 1 {
-                return Err(HawdbError::Storage(format!(
+                return Err(HawDBError::Storage(format!(
                     "single-op WAL record declares op_count {op_count}"
                 )));
             }
             let op = decode_op_frame(bytes, &mut pos)?;
             if let WalOp::Batch(_) = op {
-                return Err(HawdbError::Storage(
+                return Err(HawDBError::Storage(
                     "single-op WAL record carries a batch envelope".to_string(),
                 ));
             }
@@ -213,13 +213,13 @@ fn decode_binary_wal_record_inner(bytes: &[u8]) -> Result<BinaryWalRecordDecode>
             WalOp::Batch(ops)
         }
         kind => {
-            return Err(HawdbError::Storage(format!(
+            return Err(HawDBError::Storage(format!(
                 "unknown WAL record kind {kind}"
             )));
         }
     };
     if pos != bytes.len() {
-        return Err(HawdbError::Storage(format!(
+        return Err(HawDBError::Storage(format!(
             "binary WAL record has {} trailing bytes",
             bytes.len() - pos
         )));
@@ -249,7 +249,7 @@ fn decode_table_kind_code(code: u64) -> Result<TableKind> {
     match code {
         0 => Ok(TableKind::Node),
         1 => Ok(TableKind::Relationship),
-        code => Err(HawdbError::Storage(format!("invalid table kind: {code}"))),
+        code => Err(HawDBError::Storage(format!("invalid table kind: {code}"))),
     }
 }
 
@@ -274,7 +274,7 @@ fn decode_property_type_code(code: u64) -> Result<PropertyType> {
         4 => Ok(PropertyType::String),
         5 => Ok(PropertyType::List),
         6 => Ok(PropertyType::Text),
-        code => Err(HawdbError::Storage(format!(
+        code => Err(HawDBError::Storage(format!(
             "invalid property type: {code}"
         ))),
     }
@@ -299,7 +299,7 @@ fn decode_schema_object_state_code(code: u64) -> Result<SchemaObjectState> {
         3 => Ok(SchemaObjectState::Validating),
         4 => Ok(SchemaObjectState::Public),
         5 => Ok(SchemaObjectState::Gc),
-        code => Err(HawdbError::Storage(format!(
+        code => Err(HawDBError::Storage(format!(
             "invalid schema object state: {code}"
         ))),
     }
@@ -375,7 +375,7 @@ fn decode_value_message(bytes: &[u8], depth: usize) -> Result<Value> {
             (VALUE_FIELD_UUID, WIRE_TYPE_LEN) => {
                 let encoded = decode_len_body(bytes, &mut pos)?;
                 let bytes: [u8; 16] = encoded.try_into().map_err(|_| {
-                    HawdbError::Storage("WAL UUID value must contain 16 bytes".to_string())
+                    HawDBError::Storage("WAL UUID value must contain 16 bytes".to_string())
                 })?;
                 value = Some(Value::Uuid(hawdb_core::Uuid::from_bytes(bytes)));
             }
@@ -413,7 +413,7 @@ fn decode_value_message(bytes: &[u8], depth: usize) -> Result<Value> {
             (_, wire_type) => skip_field(bytes, &mut pos, wire_type)?,
         }
     }
-    value.ok_or_else(|| HawdbError::Storage("WAL value message is empty".to_string()))
+    value.ok_or_else(|| HawDBError::Storage("WAL value message is empty".to_string()))
 }
 
 fn decode_map_entry(bytes: &[u8], value_depth: usize) -> Result<(String, Value)> {
@@ -435,7 +435,7 @@ fn decode_map_entry(bytes: &[u8], value_depth: usize) -> Result<(String, Value)>
     }
     match (key, value) {
         (Some(key), Some(value)) => Ok((key, value)),
-        _ => Err(HawdbError::Storage(
+        _ => Err(HawDBError::Storage(
             "WAL map entry is missing its key or value".to_string(),
         )),
     }
@@ -443,7 +443,7 @@ fn decode_map_entry(bytes: &[u8], value_depth: usize) -> Result<(String, Value)>
 
 fn ensure_value_depth(depth: usize) -> Result<()> {
     if depth > MAX_VALUE_DEPTH {
-        return Err(HawdbError::Storage(format!(
+        return Err(HawDBError::Storage(format!(
             "WAL value nesting exceeds {MAX_VALUE_DEPTH}"
         )));
     }
@@ -664,7 +664,7 @@ fn encode_op_body(op: &WalOp) -> Result<(u64, Vec<u8>)> {
             OP_APPEND
         }
         WalOp::Batch(_) => {
-            return Err(HawdbError::Storage(
+            return Err(HawDBError::Storage(
                 "nested WAL batches cannot be encoded".to_string(),
             ));
         }
@@ -715,7 +715,7 @@ impl<'a> OpFields<'a> {
             .strings
             .iter()
             .position(|(id, _)| *id == field_id)
-            .ok_or_else(|| HawdbError::Storage(format!("WAL op is missing {name}")))?;
+            .ok_or_else(|| HawDBError::Storage(format!("WAL op is missing {name}")))?;
         Ok(self.strings.remove(index).1)
     }
 
@@ -737,7 +737,7 @@ impl<'a> OpFields<'a> {
             .iter()
             .find(|(id, _)| *id == field_id)
             .map(|(_, value)| *value)
-            .ok_or_else(|| HawdbError::Storage(format!("WAL op is missing {name}")))
+            .ok_or_else(|| HawDBError::Storage(format!("WAL op is missing {name}")))
     }
 
     fn required_message(&self, field_id: u32, name: &str) -> Result<&'a [u8]> {
@@ -745,7 +745,7 @@ impl<'a> OpFields<'a> {
             .iter()
             .find(|(id, _)| *id == field_id)
             .map(|(_, body)| *body)
-            .ok_or_else(|| HawdbError::Storage(format!("WAL op is missing {name}")))
+            .ok_or_else(|| HawDBError::Storage(format!("WAL op is missing {name}")))
     }
 
     fn properties_for(&self, field_id: u32) -> Result<BTreeMap<String, Value>> {
@@ -968,7 +968,7 @@ fn decode_op_body(op_code: u64, body: &[u8]) -> Result<WalOp> {
                 record: Arc::from(fields.required_message(1, "append record")?.to_vec()),
             })
         }
-        op_code => Err(HawdbError::Storage(format!(
+        op_code => Err(HawDBError::Storage(format!(
             "unknown WAL op code {op_code}"
         ))),
     }

@@ -1,4 +1,4 @@
-use crate::{HawdbError, Result, SearchDocument};
+use crate::{HawDBError, Result, SearchDocument};
 use std::fmt::{self, Write};
 use std::io;
 
@@ -201,7 +201,7 @@ impl<'a> DocumentEncoding<'a> {
             {
                 return error;
             }
-            HawdbError::Storage("search document encoded size overflow".to_string())
+            HawDBError::Storage("search document encoded size overflow".to_string())
         })?;
         Ok(Self {
             document,
@@ -229,7 +229,7 @@ impl<'a> DocumentEncoding<'a> {
         ENCODING_ATTEMPTS.set(ENCODING_ATTEMPTS.get() + 1);
         let mut record = String::new();
         record.try_reserve_exact(self.bytes).map_err(|error| {
-            HawdbError::Storage(format!("cannot allocate search document record: {error}"))
+            HawDBError::Storage(format!("cannot allocate search document record: {error}"))
         })?;
         write_document(&mut record, self.document).expect("writing to a String cannot fail");
         debug_assert_eq!(record.len(), self.bytes);

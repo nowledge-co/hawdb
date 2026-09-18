@@ -5,7 +5,7 @@ use crate::{
 use hawdb::api::DatabaseConfig;
 use hawdb::api::{Database, DatabaseReadTransaction};
 use hawdb::{
-    HawdbError, QueryStreamOptions, RelationalJoinPlanningDirective, RelationalJoinPlanningOutcome,
+    HawDBError, QueryStreamOptions, RelationalJoinPlanningDirective, RelationalJoinPlanningOutcome,
     RelationalJoinPlanningReason, RelationalJoinPlanningStatus, RelationalJoinPlanningStrategy,
     Value,
 };
@@ -1160,7 +1160,7 @@ fn sql_failure_signature(case: &SqlFuzzCase, oracle: SqlOracleKind) -> Option<Sq
     .map(|failure| failure.signature)
 }
 
-fn sql_error_observation(phase: &'static str, error: HawdbError) -> SqlExecutionObservation {
+fn sql_error_observation(phase: &'static str, error: HawDBError) -> SqlExecutionObservation {
     SqlExecutionObservation {
         snapshot_epoch: None,
         plan: None,
@@ -1169,7 +1169,7 @@ fn sql_error_observation(phase: &'static str, error: HawdbError) -> SqlExecution
     }
 }
 
-fn sql_error_outcome(phase: &'static str, error: HawdbError) -> ExecutionOutcome {
+fn sql_error_outcome(phase: &'static str, error: HawDBError) -> ExecutionOutcome {
     ExecutionOutcome::Error {
         phase,
         class: error_class(&error),

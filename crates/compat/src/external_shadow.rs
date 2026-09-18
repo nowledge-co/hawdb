@@ -3,7 +3,7 @@ use super::{
     ProjectedGraphFixtureCheck, ProjectedGraphShadowOutput, ProjectedGraphShadowResult,
     ShadowRequestContext, ShadowRequestPhase, EXTERNAL_SHADOW_PROTOCOL_VERSION,
 };
-use hawdb_core::{HawdbError, Result, Value};
+use hawdb_core::{HawDBError, Result, Value};
 use hawdb_executor::{QueryOutput, Row};
 use std::collections::BTreeMap;
 use std::fs::{File, OpenOptions};
@@ -167,17 +167,17 @@ where
     {
         for line in reader.lines() {
             let line = line.map_err(|error| {
-                HawdbError::Execution(format!("failed to read shadow request: {error}"))
+                HawDBError::Execution(format!("failed to read shadow request: {error}"))
             })?;
             let response = match serde_json::from_str::<serde_json::Value>(&line) {
                 Ok(request) => self.handle_request(&request),
                 Err(error) => json_error("parse", format!("invalid JSON: {error}")),
             };
             writeln!(writer, "{response}").map_err(|error| {
-                HawdbError::Execution(format!("failed to write shadow response: {error}"))
+                HawDBError::Execution(format!("failed to write shadow response: {error}"))
             })?;
             writer.flush().map_err(|error| {
-                HawdbError::Execution(format!("failed to flush shadow response: {error}"))
+                HawDBError::Execution(format!("failed to flush shadow response: {error}"))
             })?;
         }
         Ok(())
@@ -272,7 +272,7 @@ pub fn external_shadow_value_from_json(value: &serde_json::Value) -> Result<Valu
             } else if let Some(value) = value.as_f64() {
                 Ok(Value::Float(value))
             } else {
-                Err(HawdbError::Execution(format!(
+                Err(HawDBError::Execution(format!(
                     "unsupported JSON number: {value}"
                 )))
             }
@@ -295,7 +295,7 @@ pub fn external_shadow_value_from_json(value: &serde_json::Value) -> Result<Valu
                 return hawdb_core::Uuid::parse_str(encoded)
                     .map(Value::Uuid)
                     .map_err(|error| {
-                        HawdbError::Semantic(format!("invalid external UUID: {error}"))
+                        HawDBError::Semantic(format!("invalid external UUID: {error}"))
                     });
             }
             values
@@ -434,15 +434,15 @@ fn json_error(class: &str, message: impl ToString) -> serde_json::Value {
     })
 }
 
-fn json_error_from_hawdb(error: HawdbError) -> serde_json::Value {
+fn json_error_from_hawdb(error: HawDBError) -> serde_json::Value {
     match error {
-        HawdbError::Parse(message) => json_error("parse", message),
-        HawdbError::Semantic(message) => json_error("semantic", message),
-        HawdbError::Storage(message) => json_error("storage", message),
-        HawdbError::StorageIntegrity(message) => json_error("storage", message),
-        HawdbError::Execution(message) => json_error("execution", message),
-        error @ HawdbError::AppendSequenceExhausted { .. } => json_error("storage", error),
-        HawdbError::CapabilityUnavailable { capability } => {
+        HawDBError::Parse(message) => json_error("parse", message),
+        HawDBError::Semantic(message) => json_error("semantic", message),
+        HawDBError::Storage(message) => json_error("storage", message),
+        HawDBError::StorageIntegrity(message) => json_error("storage", message),
+        HawDBError::Execution(message) => json_error("execution", message),
+        error @ HawDBError::AppendSequenceExhausted { .. } => json_error("storage", error),
+        HawDBError::CapabilityUnavailable { capability } => {
             json_error("capability_unavailable", capability.as_str())
         }
     }
@@ -517,16 +517,16 @@ impl ExternalShadowCommand {
             .stdout(Stdio::piped())
             .stderr(Stdio::piped());
         let mut child = command.spawn().map_err(|error| {
-            HawdbError::Execution(format!("failed to spawn external shadow engine: {error}"))
+            HawDBError::Execution(format!("failed to spawn external shadow engine: {error}"))
         })?;
         let stdin = child.stdin.take().ok_or_else(|| {
-            HawdbError::Execution("external shadow engine did not expose stdin".to_string())
+            HawDBError::Execution("external shadow engine did not expose stdin".to_string())
         })?;
         let stdout = child.stdout.take().ok_or_else(|| {
-            HawdbError::Execution("external shadow engine did not expose stdout".to_string())
+            HawDBError::Execution("external shadow engine did not expose stdout".to_string())
         })?;
         let stderr = child.stderr.take().ok_or_else(|| {
-            HawdbError::Execution("external shadow engine did not expose stderr".to_string())
+            HawDBError::Execution("external shadow engine did not expose stderr".to_string())
         })?;
         let trace = trace_path
             .map(|path| {
@@ -536,7 +536,7 @@ impl ExternalShadowCommand {
                     .write(true)
                     .open(path)
                     .map_err(|error| {
-                        HawdbError::Execution(format!(
+                        HawDBError::Execution(format!(
                             "failed to open external shadow trace: {error}"
                         ))
                     })
@@ -572,7 +572,7 @@ impl ExternalShadowCommand {
         self.next_trace_sequence += 1;
         {
             let object = request.as_object_mut().ok_or_else(|| {
-                HawdbError::Execution("external shadow request must be a JSON object".to_string())
+                HawDBError::Execution("external shadow request must be a JSON object".to_string())
             })?;
             object.insert(
                 "protocol_version".to_string(),
@@ -585,7 +585,7 @@ impl ExternalShadowCommand {
         }
         self.trace_event(trace_sequence, "request", &request);
         let line = serde_json::to_string(&request).map_err(|error| {
-            HawdbError::Execution(format!("failed to encode shadow request: {error}"))
+            HawDBError::Execution(format!("failed to encode shadow request: {error}"))
         })?;
         writeln!(self.stdin, "{line}").map_err(|error| {
             let message = format!(
@@ -653,10 +653,10 @@ impl ExternalShadowCommand {
         Ok(response)
     }
 
-    fn request_error(&self, message: String) -> HawdbError {
+    fn request_error(&self, message: String) -> HawDBError {
         match self.stderr.tail() {
-            Some(stderr) => HawdbError::Execution(format!("{message}; stderr tail: {stderr}")),
-            None => HawdbError::Execution(message),
+            Some(stderr) => HawDBError::Execution(format!("{message}; stderr tail: {stderr}")),
+            None => HawDBError::Execution(message),
         }
     }
 
@@ -795,7 +795,7 @@ pub fn external_shadow_ready_missing_capabilities(
 
 fn summarize_external_shadow_trace(trace_path: &str) -> Result<ExternalShadowTraceSummary> {
     let file = File::open(trace_path).map_err(|error| {
-        HawdbError::Execution(format!("failed to open external shadow trace: {error}"))
+        HawDBError::Execution(format!("failed to open external shadow trace: {error}"))
     })?;
     let mut summary = ExternalShadowTraceSummary::default();
     let mut request_sequences = std::collections::BTreeSet::new();
@@ -1040,7 +1040,7 @@ impl CompatibilityShadowEngine for ExternalShadowCommand {
         }))?;
         let outputs = decode_external_session_response(&self.name, response)?;
         if outputs.len() != statement_count {
-            return Err(HawdbError::Execution(format!(
+            return Err(HawDBError::Execution(format!(
                 "shadow engine '{}' session returned {} outputs for {} statements",
                 self.name,
                 outputs.len(),
@@ -1238,7 +1238,7 @@ fn encode_binary_hex(value: &[u8]) -> String {
 
 fn decode_binary_hex(encoded: &str) -> Result<Vec<u8>> {
     if !encoded.len().is_multiple_of(2) {
-        return Err(HawdbError::Execution(
+        return Err(HawDBError::Execution(
             "external shadow binary has an odd number of hex digits".to_string(),
         ));
     }
@@ -1258,7 +1258,7 @@ fn decode_binary_hex_digit(digit: u8) -> Result<u8> {
         b'0'..=b'9' => Ok(digit - b'0'),
         b'a'..=b'f' => Ok(digit - b'a' + 10),
         b'A'..=b'F' => Ok(digit - b'A' + 10),
-        _ => Err(HawdbError::Execution(format!(
+        _ => Err(HawDBError::Execution(format!(
             "external shadow binary contains invalid hex digit {:?}",
             char::from(digit)
         ))),
@@ -1274,12 +1274,12 @@ pub(super) fn decode_external_query_response(
         return Err(error_from_external_response(engine_name, error));
     }
     let ok = response.get("ok").ok_or_else(|| {
-        HawdbError::Execution(format!(
+        HawDBError::Execution(format!(
             "shadow engine '{engine_name}' response missing 'ok' or 'error'"
         ))
     })?;
     let rows = ok.get("rows").ok_or_else(|| {
-        HawdbError::Execution(format!(
+        HawDBError::Execution(format!(
             "shadow engine '{engine_name}' query response missing rows"
         ))
     })?;
@@ -1297,12 +1297,12 @@ fn validate_external_response_request_id(
         return Ok(());
     };
     let actual_request_id = request_id.as_u64().ok_or_else(|| {
-        HawdbError::Execution(format!(
+        HawDBError::Execution(format!(
             "shadow engine '{engine_name}' response request_id must be an unsigned integer"
         ))
     })?;
     if actual_request_id != expected_request_id {
-        return Err(HawdbError::Execution(format!(
+        return Err(HawDBError::Execution(format!(
             "shadow engine '{engine_name}' response request_id {actual_request_id} did not match request_id {expected_request_id}"
         )));
     }
@@ -1317,12 +1317,12 @@ fn validate_external_ok_error_shape(
     let shape_count =
         usize::from(response.get("ok").is_some()) + usize::from(response.get("error").is_some());
     if shape_count > 1 {
-        return Err(HawdbError::Execution(format!(
+        return Err(HawDBError::Execution(format!(
             "shadow engine '{engine_name}' {response_kind} response must contain only one of 'ok' or 'error'"
         )));
     }
     if shape_count == 0 {
-        return Err(HawdbError::Execution(format!(
+        return Err(HawDBError::Execution(format!(
             "shadow engine '{engine_name}' {response_kind} response missing 'ok' or 'error'"
         )));
     }
@@ -1338,20 +1338,20 @@ pub(super) fn decode_external_ready_response(
         return Err(error_from_external_response(engine_name, error));
     }
     let ok = response.get("ok").ok_or_else(|| {
-        HawdbError::Execution(format!(
+        HawDBError::Execution(format!(
             "shadow engine '{engine_name}' ready response missing 'ok' or 'error'"
         ))
     })?;
     let protocol_version = required_u64(engine_name, ok, "protocol_version")?;
     if protocol_version != EXTERNAL_SHADOW_PROTOCOL_VERSION {
-        return Err(HawdbError::Execution(format!(
+        return Err(HawDBError::Execution(format!(
             "shadow engine '{engine_name}' ready protocol_version {protocol_version} did not match expected {EXTERNAL_SHADOW_PROTOCOL_VERSION}"
         )));
     }
     let capabilities = required_string_array(engine_name, ok, "capabilities")?;
     for capability in REQUIRED_EXTERNAL_SHADOW_CAPABILITIES {
         if !capabilities.iter().any(|value| value == capability) {
-            return Err(HawdbError::Execution(format!(
+            return Err(HawDBError::Execution(format!(
                 "shadow engine '{engine_name}' ready response missing required capability '{capability}'"
             )));
         }
@@ -1390,7 +1390,7 @@ pub(super) fn decode_external_session_response(
         return Err(error_from_external_response(engine_name, error));
     }
     let ok = response.get("ok").ok_or_else(|| {
-        HawdbError::Execution(format!(
+        HawDBError::Execution(format!(
             "shadow engine '{engine_name}' session response missing 'ok' or 'error'"
         ))
     })?;
@@ -1398,7 +1398,7 @@ pub(super) fn decode_external_session_response(
         .get("outputs")
         .and_then(serde_json::Value::as_array)
         .ok_or_else(|| {
-            HawdbError::Execution(format!(
+            HawDBError::Execution(format!(
                 "shadow engine '{engine_name}' session response missing outputs"
             ))
         })?;
@@ -1407,14 +1407,14 @@ pub(super) fn decode_external_session_response(
         .enumerate()
         .map(|(index, output)| {
             let rows = output.get("rows").ok_or_else(|| {
-                HawdbError::Execution(format!(
+                HawDBError::Execution(format!(
                     "shadow engine '{engine_name}' session output {index} missing rows"
                 ))
             })?;
             Ok(QueryOutput {
                 rows: rows_from_json(engine_name, rows)
                     .map_err(|error| {
-                    HawdbError::Execution(format!(
+                    HawDBError::Execution(format!(
                         "shadow engine '{engine_name}' session output {index} row decoding failed: {error}"
                     ))
                 })?
@@ -1432,7 +1432,7 @@ pub(super) fn decode_external_projected_graph_response(
         None => false,
         Some(serde_json::Value::Bool(value)) => *value,
         Some(_) => {
-            return Err(HawdbError::Execution(format!(
+            return Err(HawDBError::Execution(format!(
                 "shadow engine '{engine_name}' projected graph response field 'primary_only' must be a boolean"
             )));
         }
@@ -1441,7 +1441,7 @@ pub(super) fn decode_external_projected_graph_response(
         + usize::from(response.get("ok").is_some())
         + usize::from(response.get("error").is_some());
     if shape_count > 1 {
-        return Err(HawdbError::Execution(format!(
+        return Err(HawDBError::Execution(format!(
             "shadow engine '{engine_name}' projected graph response must contain only one of 'ok', 'error', or primary_only"
         )));
     }
@@ -1454,7 +1454,7 @@ pub(super) fn decode_external_projected_graph_response(
         return Err(error_from_external_response(engine_name, error));
     }
     let ok = response.get("ok").ok_or_else(|| {
-        HawdbError::Execution(format!(
+        HawDBError::Execution(format!(
             "shadow engine '{engine_name}' projected graph response missing 'ok', 'error', or primary_only"
         ))
     })?;
@@ -1475,7 +1475,7 @@ pub(super) fn decode_external_projected_graph_response(
     ))
 }
 
-fn error_from_external_response(engine_name: &str, error: &serde_json::Value) -> HawdbError {
+fn error_from_external_response(engine_name: &str, error: &serde_json::Value) -> HawDBError {
     let class = error
         .get("class")
         .and_then(serde_json::Value::as_str)
@@ -1487,10 +1487,10 @@ fn error_from_external_response(engine_name: &str, error: &serde_json::Value) ->
         .unwrap_or("external shadow engine error");
     let message = format!("shadow engine '{engine_name}': {message}");
     match class {
-        ExternalShadowErrorClass::Parse => HawdbError::Parse(message),
-        ExternalShadowErrorClass::Semantic => HawdbError::Semantic(message),
-        ExternalShadowErrorClass::Storage => HawdbError::Storage(message),
-        ExternalShadowErrorClass::Execution => HawdbError::Execution(message),
+        ExternalShadowErrorClass::Parse => HawDBError::Parse(message),
+        ExternalShadowErrorClass::Semantic => HawDBError::Semantic(message),
+        ExternalShadowErrorClass::Storage => HawDBError::Storage(message),
+        ExternalShadowErrorClass::Execution => HawDBError::Execution(message),
     }
 }
 
@@ -1508,7 +1508,7 @@ impl ExternalShadowErrorClass {
 
 fn rows_from_json(engine_name: &str, value: &serde_json::Value) -> Result<Vec<Row>> {
     let rows = value.as_array().ok_or_else(|| {
-        HawdbError::Execution(format!(
+        HawDBError::Execution(format!(
             "shadow engine '{engine_name}' rows must be an array"
         ))
     })?;
@@ -1519,7 +1519,7 @@ fn rows_from_json(engine_name: &str, value: &serde_json::Value) -> Result<Vec<Ro
 
 fn row_from_json(engine_name: &str, value: &serde_json::Value) -> Result<Row> {
     let object = value.as_object().ok_or_else(|| {
-        HawdbError::Execution(format!(
+        HawDBError::Execution(format!(
             "shadow engine '{engine_name}' row must be an object"
         ))
     })?;
@@ -1539,7 +1539,7 @@ fn value_from_json(engine_name: &str, value: &serde_json::Value) -> Result<Value
             } else if let Some(value) = value.as_f64() {
                 Ok(Value::Float(value))
             } else {
-                Err(HawdbError::Execution(format!(
+                Err(HawDBError::Execution(format!(
                     "shadow engine '{engine_name}' returned unsupported number: {value}"
                 )))
             }
@@ -1561,7 +1561,7 @@ fn value_from_json(engine_name: &str, value: &serde_json::Value) -> Result<Value
 fn required_usize(engine_name: &str, object: &serde_json::Value, field: &str) -> Result<usize> {
     required_u64(engine_name, object, field).and_then(|value| {
         usize::try_from(value).map_err(|_| {
-            HawdbError::Execution(format!(
+            HawDBError::Execution(format!(
                 "shadow engine '{engine_name}' field '{field}' exceeds usize"
             ))
         })
@@ -1573,7 +1573,7 @@ fn required_u64(engine_name: &str, object: &serde_json::Value, field: &str) -> R
         .get(field)
         .and_then(serde_json::Value::as_u64)
         .ok_or_else(|| {
-            HawdbError::Execution(format!(
+            HawDBError::Execution(format!(
                 "shadow engine '{engine_name}' field '{field}' must be a u64"
             ))
         })
@@ -1583,7 +1583,7 @@ fn optional_u64(engine_name: &str, object: &serde_json::Value, field: &str) -> R
     match object.get(field) {
         Some(serde_json::Value::Null) | None => Ok(None),
         Some(value) => value.as_u64().map(Some).ok_or_else(|| {
-            HawdbError::Execution(format!(
+            HawDBError::Execution(format!(
                 "shadow engine '{engine_name}' field '{field}' must be a u64 or null"
             ))
         }),
@@ -1601,7 +1601,7 @@ fn optional_external_string(
             .as_str()
             .map(|value| Some(value.to_string()))
             .ok_or_else(|| {
-                HawdbError::Execution(format!(
+                HawDBError::Execution(format!(
                     "shadow engine '{engine_name}' field '{field}' must be a string or null"
                 ))
             }),
@@ -1619,7 +1619,7 @@ fn required_string_array(
         .enumerate()
         .map(|(index, value)| {
             value.as_str().map(str::to_string).ok_or_else(|| {
-                HawdbError::Execution(format!(
+                HawDBError::Execution(format!(
                     "shadow engine '{engine_name}' field '{field}' item {index} must be a string"
                 ))
             })
@@ -1736,7 +1736,7 @@ fn required_array<'a>(
         .get(field)
         .and_then(serde_json::Value::as_array)
         .ok_or_else(|| {
-            HawdbError::Execution(format!(
+            HawDBError::Execution(format!(
                 "shadow engine '{engine_name}' field '{field}' must be an array"
             ))
         })
@@ -1757,8 +1757,8 @@ fn tuple_array<'a>(
     Ok(values)
 }
 
-fn tuple_error(engine_name: &str, field: &str) -> HawdbError {
-    HawdbError::Execution(format!(
+fn tuple_error(engine_name: &str, field: &str) -> HawDBError {
+    HawDBError::Execution(format!(
         "shadow engine '{engine_name}' field '{field}' has invalid tuple shape"
     ))
 }

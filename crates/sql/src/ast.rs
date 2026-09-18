@@ -5,7 +5,7 @@ pub use hawdb_expression::sql::{
 };
 
 use caseless::Caseless;
-use hawdb_core::{HawdbError, LogicalType, Result};
+use hawdb_core::{HawDBError, LogicalType, Result};
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum SqlStatement {
@@ -336,7 +336,7 @@ fn tokenize_like_pattern(
     while let Some(character) = characters.next() {
         if Some(character) == escape {
             let escaped = characters.next().ok_or_else(|| {
-                HawdbError::Semantic("LIKE pattern ends with its escape character".to_string())
+                HawDBError::Semantic("LIKE pattern ends with its escape character".to_string())
             })?;
             push_like_literal(&mut tokens, escaped, case_insensitive);
             continue;

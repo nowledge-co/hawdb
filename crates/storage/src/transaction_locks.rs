@@ -4,7 +4,7 @@
 //! This module does not provide a standalone transaction manager.
 
 use crate::RelationalKey;
-use hawdb_core::{HawdbError, Result};
+use hawdb_core::{HawDBError, Result};
 use std::cmp::Ordering;
 use std::collections::{BTreeMap, BTreeSet};
 use std::mem::size_of;
@@ -350,7 +350,7 @@ impl LockTable {
             .saturating_sub(removed_bytes)
             .saturating_add(added_bytes);
         if next_entries > self.limits.max_entries || next_bytes > self.limits.max_bytes {
-            return Err(HawdbError::Execution(format!(
+            return Err(HawDBError::Execution(format!(
                 "lock table resource budget exceeded: required_entries={next_entries} max_entries={} required_bytes={next_bytes} max_bytes={}; retry after competing transactions finish",
                 self.limits.max_entries, self.limits.max_bytes
             )));
@@ -824,13 +824,13 @@ fn upper_is_before_lower(upper: &Bound<RelationalKey>, lower: &Bound<RelationalK
     }
 }
 
-fn deadlock_error(victim: u64, cycle: &[u64]) -> HawdbError {
+fn deadlock_error(victim: u64, cycle: &[u64]) -> HawDBError {
     let cycle = cycle
         .iter()
         .map(u64::to_string)
         .collect::<Vec<_>>()
         .join(" -> ");
-    HawdbError::Execution(format!(
+    HawDBError::Execution(format!(
         "deadlock detected; transaction {victim} selected as victim; wait cycle: {cycle}"
     ))
 }

@@ -1,8 +1,8 @@
 # Production Content Store Qualification
 
 This runbook collects read-only and isolated mutation storage evidence from an
-already imported, representative Hawdb database. It does not import SQLite,
-create replicas, or derive an oracle from Hawdb itself.
+already imported, representative HawDB database. It does not import SQLite,
+create replicas, or derive an oracle from HawDB itself.
 
 ## Preconditions
 
@@ -106,8 +106,8 @@ The example values are placeholders, not accepted release evidence. The
 Plan parsing rejects unknown fields and files larger than 32 MiB.
 
 Use `capability_512_mib` for the separately configured low-memory capability
-run. It sets an explicit 512 MiB Hawdb runtime ceiling. Use
-`shared_host_8_gib` for the dynamic shared-host policy: Hawdb derives its budget
+run. It sets an explicit 512 MiB HawDB runtime ceiling. Use
+`shared_host_8_gib` for the dynamic shared-host policy: HawDB derives its budget
 from current headroom, caps automatic capacity at 2 GiB, normally operates in
 the 1--2 GiB range, and may fall below that range under pressure. A custom
 profile is represented as:
@@ -174,7 +174,7 @@ cargo run -p hawdb-qualification \
 ```
 
 Retain two independent current-revision reports. The `capability_512_mib` plan
-installs an explicit 512 MiB Hawdb ceiling and proves the low-memory capability.
+installs an explicit 512 MiB HawDB ceiling and proves the low-memory capability.
 The `shared_host_8_gib` plan observes an 8 GiB host or cgroup envelope and
 keeps dynamic memory derivation; automatic capacity cannot exceed 2 GiB, while
 pressure may lower the budget below 1 GiB. The release bundle requires both

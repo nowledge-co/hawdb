@@ -3,7 +3,7 @@ use super::evidence::{
 };
 use super::ContentStoreCorruptionQualificationReport;
 use crate::evidence_digest::rows_sha256;
-use hawdb::{Database, DatabaseConfig, DurabilityPolicy, HawdbError, Result};
+use hawdb::{Database, DatabaseConfig, DurabilityPolicy, HawDBError, Result};
 use std::fs::OpenOptions;
 use std::io::{Read, Seek, SeekFrom, Write};
 use std::path::{Path, PathBuf};
@@ -32,7 +32,7 @@ pub(super) fn qualify_content_store_corruption(
     let backup = database.backup_to(&backup_path)?;
     let restored = Database::restore_backup(&backup_path, &restored_path)?;
     if backup.generation != restored.generation {
-        return Err(HawdbError::Execution(format!(
+        return Err(HawDBError::Execution(format!(
             "content-store corruption probe restored generation {} from backup generation {}",
             restored.generation, backup.generation
         )));
@@ -50,7 +50,7 @@ pub(super) fn qualify_content_store_corruption(
     )?;
     let scrub_error = match corrupted.scrub_storage() {
         Ok(_) => {
-            return Err(HawdbError::Execution(
+            return Err(HawDBError::Execution(
                 "content-store corruption probe scrub accepted a bit-flipped row page".to_string(),
             ));
         }
@@ -61,12 +61,12 @@ pub(super) fn qualify_content_store_corruption(
         && !scrub_message.contains("CRC32C mismatch")
         && !scrub_message.contains("SHA-256 mismatch")
     {
-        return Err(HawdbError::Execution(format!(
+        return Err(HawDBError::Execution(format!(
             "content-store corruption probe returned an unexpected scrub error: {scrub_error}"
         )));
     }
     if !corrupted.storage_handle_poisoned() {
-        return Err(HawdbError::Execution(
+        return Err(HawDBError::Execution(
             "content-store corruption probe did not poison the damaged handle".to_string(),
         ));
     }
@@ -76,14 +76,14 @@ pub(super) fn qualify_content_store_corruption(
         point_options,
     ) {
         Ok(_) => {
-            return Err(HawdbError::Execution(
+            return Err(HawDBError::Execution(
                 "content-store corruption probe served SQL after integrity failure".to_string(),
             ));
         }
         Err(error) => error,
     };
     if !service_error.to_string().contains("close and reopen") {
-        return Err(HawdbError::Execution(format!(
+        return Err(HawDBError::Execution(format!(
             "content-store corruption probe expected fail-closed service, got: {service_error}"
         )));
     }
@@ -96,7 +96,7 @@ pub(super) fn qualify_content_store_corruption(
     )?;
     require_one_message(&source_after.rows, content_message_id, "corruption probe")?;
     if rows_sha256(&source_after.rows) != source_sha256 {
-        return Err(HawdbError::Execution(
+        return Err(HawDBError::Execution(
             "content-store corruption probe changed its healthy source database".to_string(),
         ));
     }
@@ -153,7 +153,7 @@ fn latest_non_empty_row_page_artifact(path: &Path) -> Result<(u64, String, PathB
         }
     }
     selected.ok_or_else(|| {
-        HawdbError::Execution(
+        HawDBError::Execution(
             "content-store corruption probe found no non-empty row-page artifact in the restored canonical closure"
                 .to_string(),
         )
@@ -166,7 +166,7 @@ fn probe_paths(database_path: &Path) -> Result<(PathBuf, PathBuf)> {
         .file_name()
         .and_then(|name| name.to_str())
         .ok_or_else(|| {
-            HawdbError::Semantic(
+            HawDBError::Semantic(
                 "content-store corruption probe requires a UTF-8 database directory name"
                     .to_string(),
             )
@@ -177,7 +177,7 @@ fn probe_paths(database_path: &Path) -> Result<(PathBuf, PathBuf)> {
     let restored = parent.join(format!(".{name}.corruption-restored-{suffix}"));
     for path in [&backup, &restored] {
         if path.exists() {
-            return Err(HawdbError::Execution(format!(
+            return Err(HawDBError::Execution(format!(
                 "content-store corruption probe path already exists: {}",
                 path.display()
             )));

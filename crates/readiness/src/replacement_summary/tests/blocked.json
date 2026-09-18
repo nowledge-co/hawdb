@@ -680,7 +680,7 @@
           "search_projection_shadow_evidence.incremental_watermark_parity",
           "search_projection_shadow_evidence.blocker_codes"
         ],
-        "reason": "LanceDB/Hawdb search projection side-by-side evidence is missing or not ready"
+        "reason": "LanceDB/HawDB search projection side-by-side evidence is missing or not ready"
       },
       {
         "action": "run_search_candidate_shadow_evidence",
@@ -719,7 +719,7 @@
           "search_candidate_shadow_evidence.filter_pushdown.missing_timestamp_range_fields",
           "search_candidate_shadow_evidence.blocker_codes"
         ],
-        "reason": "LanceDB/Hawdb search candidate side-by-side evidence is missing or not ready"
+        "reason": "LanceDB/HawDB search candidate side-by-side evidence is missing or not ready"
       },
       {
         "action": "attach_search_route_ownership",

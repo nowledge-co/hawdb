@@ -15,7 +15,7 @@ pub(crate) struct RaBitQEncoding {
 
 /// Encodes one transformed unit vector in Faiss's scalar RaBitQ code layout:
 /// one LSB-first sign plane followed by an optional LSB-first refinement
-/// plane. The Hawdb artifact stores reconstruction factors separately from
+/// plane. The HawDB artifact stores reconstruction factors separately from
 /// these code planes.
 ///
 /// The reference algorithm chooses the per-vector rescaling factor that

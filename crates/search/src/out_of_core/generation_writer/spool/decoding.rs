@@ -85,8 +85,8 @@ struct FrameReader<'a, R> {
 }
 
 impl<R: Read> FrameReader<'_, R> {
-    fn invalid(&self, reason: impl std::fmt::Display) -> HawdbError {
-        HawdbError::Storage(format!(
+    fn invalid(&self, reason: impl std::fmt::Display) -> HawDBError {
+        HawDBError::Storage(format!(
             "search generation spool record {} {reason}",
             self.ordinal
         ))

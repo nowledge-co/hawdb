@@ -1,14 +1,14 @@
-# Hawdb Production Readiness Specification
+# HawDB Production Readiness Specification
 
 ## Scope
 
-This specification defines the evidence required before a Hawdb build may
+This specification defines the evidence required before a HawDB build may
 serve production traffic or replace an existing Nowledge graph or search read
 owner. It complements the runtime correctness contract in
 `EMBEDDED_RUNTIME_SPEC.md`; passing unit tests or implementing an API does not
 by itself satisfy this specification.
 
-Hawdb is an embedded Rust library. Production traffic, readiness collection,
+HawDB is an embedded Rust library. Production traffic, readiness collection,
 and cutover decisions MUST use typed Rust APIs. Command-line programs MAY
 render or transport the same reports for development and CI, but they MUST NOT
 be required by the production serving path.
@@ -38,7 +38,7 @@ readiness requires both.
 
 Every production qualification bundle MUST bind at least:
 
-- Hawdb source revision and Rust toolchain;
+- HawDB source revision and Rust toolchain;
 - target OS, architecture, and enabled Cargo features;
 - durable format and schema versions;
 - database configuration digest and deployment profile;
@@ -287,7 +287,7 @@ derive a 2 GiB capacity and a dynamic headroom-bound budget. With 4--8 GiB
 available, the report records the nominal 1--2 GiB range. Lower headroom may
 legitimately lower the budget below 1 GiB and MUST NOT invalidate the policy;
 the budget is not a fixed reservation.
-`Capability512Mib` sets an explicit 512 MiB Hawdb capacity ceiling while still
+`Capability512Mib` sets an explicit 512 MiB HawDB capacity ceiling while still
 honoring a smaller host or cgroup policy ceiling and dynamic available
 headroom. The policy report MUST be paired with a constrained workload run
 whose peak RSS stays within its declared 512 MiB envelope. This is a supported
@@ -326,7 +326,7 @@ is selectable.
 
 The typed entry point is
 `run_production_content_store_storage_qualification`. It MUST open the imported
-Hawdb copy read-only with authoritative indexes, reopen once per frozen SQL
+HawDB copy read-only with authoritative indexes, reopen once per frozen SQL
 case, retain distinct cold and warm runs, compare every output with an offline
 digest, obtain one runtime-governor permit per measured read, and redact paths,
 parameters, and rows. The report MUST retain the governor's derived capacity,
@@ -358,7 +358,7 @@ separately from one bounded `hawdb-production-content-store-read-plan-v1` JSON
 document. The plan fixes the evidence identity, frozen statement names and
 typed parameters, result oracle digests, read/I/O budgets, process limits, and
 one declared resource profile. Unknown fields, an unknown protocol, zero-sized
-database budgets, or values outside Hawdb's parameter domain MUST be rejected
+database budgets, or values outside HawDB's parameter domain MUST be rejected
 before the database is opened. The wrapper MUST derive `read_only + OutOfCore +
 Authoritative`; callers cannot weaken those selectors in JSON. The
 `capability_512_mib` profile installs an explicit 512 MiB runtime ceiling, while
@@ -392,7 +392,7 @@ one explicit worker definition per writer, and retain explicit frozen statement
 names, parameters, conflict domains, verification digests, latency limits, and
 the accepted latency-reference identity. It MUST also contain the complete WAL
 group-commit activation evidence. The wrapper MUST construct group commit only
-through the evidence-validating Hawdb constructors; a JSON boolean or policy
+through the evidence-validating HawDB constructors; a JSON boolean or policy
 name alone cannot activate it. Unknown fields, incomplete writer matrices,
 invalid numeric bounds, and WAL evidence rejected by the engine MUST fail
 before mutation begins.
@@ -495,8 +495,8 @@ has observed for that directory. `ExecutionMemoryConfig::spill_pool_snapshot`
 exposes active and peak bytes and runs, pending writer bytes, orphan cleanup,
 and deletion failures for readiness and monitoring.
 
-Spill filenames are owned by a versioned Hawdb namespace. On first use of a
-spill directory in a process, Hawdb MUST remove only namespace-matching files
+Spill filenames are owned by a versioned HawDB namespace. On first use of a
+spill directory in a process, HawDB MUST remove only namespace-matching files
 from earlier process identities whose age reaches
 `spill_orphan_grace_period`; unrelated files and current-process runs MUST
 remain untouched. The default grace period is 24 hours. A failed live-run
@@ -509,9 +509,9 @@ low-level library capability, but its use MUST be reported as non-production
 safe unless the host supplies equivalent global admission.
 
 `hawdb-embedded-query-path-readiness-v1` reports this boundary without
-claiming traffic readiness. `HawdbEmbedded::query_admitted`, its parameterized
-and task-context variants, and `HawdbTokioEmbedded::query` are
-`admission_safe=true`. `HawdbEmbedded::database`, `database_mut`, and
+claiming traffic readiness. `HawDBEmbedded::query_admitted`, its parameterized
+and task-context variants, and `HawDBTokioEmbedded::query` are
+`admission_safe=true`. `HawDBEmbedded::database`, `database_mut`, and
 `into_database` remain controlled-host and test surfaces; their report is
 `admission_safe=false` with `host_equivalent_governor_not_proven`. An
 admission-safe path is only one input to production qualification and MUST NOT
@@ -562,7 +562,7 @@ range reads have their own correctness contract.
 An asynchronous facade that returns a materialized result remains subject to
 the result budget. A streaming asynchronous API MUST propagate consumer
 backpressure and cancellation without retaining the complete result.
-`HawdbTokioEmbedded::query_stream` and its parameterized/options variants use
+`HawDBTokioEmbedded::query_stream` and its parameterized/options variants use
 the admitted query request, add the bounded channel residency to admitted
 memory, and deliver execution-memory-sized batches through a finite channel.
 The producer retains its runtime permit until the terminal report, observes a
@@ -876,7 +876,7 @@ or probe the previous engine solely to make the selected owner appear healthy.
 ## Release Controls
 
 Branch protection is a delivery-governance control, not a kernel traffic
-readiness prerequisite. It MAY be deferred while Hawdb is in rapid iteration.
+readiness prerequisite. It MAY be deferred while HawDB is in rapid iteration.
 An unprotected development branch MUST NOT weaken the evidence required for a
 production release or allow branch state alone to imply production readiness.
 

@@ -15,7 +15,7 @@ use super::{
     DatabaseTransactionRuntime, DatabaseTransactionSqlOptions, DatabaseTransactionState,
     QueryOutput, StatementExecutionContext, TransactionCommitResult,
 };
-use crate::error::{HawdbError, Result};
+use crate::error::{HawDBError, Result};
 use crate::sql::{
     SelectStatement, SqlComparisonOp, SqlLockStrength, SqlPredicate, SqlStatement, SqlTableName,
     SqlValue, UpdateStatement,
@@ -382,7 +382,7 @@ impl ConcurrentDatabase {
             .execute_grouped(move |database| {
                 let result = database.append_transaction_with_result(transaction)?;
                 *result_slot.lock().map_err(|_| {
-                    HawdbError::Execution("concurrent append result slot is poisoned".to_string())
+                    HawDBError::Execution("concurrent append result slot is poisoned".to_string())
                 })? = Some(result);
                 Ok(QueryOutput {
                     rows: Vec::new().into(),
@@ -392,11 +392,11 @@ impl ConcurrentDatabase {
         committed_result
             .lock()
             .map_err(|_| {
-                HawdbError::Execution("concurrent append result slot is poisoned".to_string())
+                HawDBError::Execution("concurrent append result slot is poisoned".to_string())
             })?
             .take()
             .ok_or_else(|| {
-                HawdbError::Execution(
+                HawDBError::Execution(
                     "concurrent append completed without a commit result".to_string(),
                 )
             })
@@ -432,7 +432,7 @@ impl ConcurrentDatabase {
             .clone();
         if let Some(gate) = gate {
             gate.snapshot_acquired.send(()).map_err(|_| {
-                HawdbError::Execution(
+                HawDBError::Execution(
                     "concurrent autocommit read gate receiver was dropped".to_string(),
                 )
             })?;
@@ -631,7 +631,7 @@ impl ConcurrentDatabaseTransaction {
                     commit_database_transaction_state(database, &mut state, allow_stale_rebase)?;
                 let output = result.output.clone();
                 *result_slot.lock().map_err(|_| {
-                    HawdbError::Execution(
+                    HawDBError::Execution(
                         "concurrent transaction result slot is poisoned".to_string(),
                     )
                 })? = Some(result);
@@ -644,11 +644,11 @@ impl ConcurrentDatabaseTransaction {
         committed_result
             .lock()
             .map_err(|_| {
-                HawdbError::Execution("concurrent transaction result slot is poisoned".to_string())
+                HawDBError::Execution("concurrent transaction result slot is poisoned".to_string())
             })?
             .take()
             .ok_or_else(|| {
-                HawdbError::Execution(
+                HawDBError::Execution(
                     "concurrent transaction completed without a commit result".to_string(),
                 )
             })
@@ -687,7 +687,7 @@ impl ConcurrentDatabaseTransaction {
                 self.runtime = DatabaseTransactionRuntime::from_database(&database);
                 self.state = DatabaseTransactionState::from_database(&database);
             } else {
-                let error = HawdbError::Execution(format!(
+                let error = HawDBError::Execution(format!(
                     "pessimistic transaction {} cannot acquire a new lock after its snapshot changed from commit epoch {} to {}; retry the transaction",
                     self.transaction_id, self.base_commit_epoch, current_epoch
                 ));
@@ -739,7 +739,7 @@ impl ConcurrentDatabaseTransaction {
             // pinned snapshot. Refreshing here could change the matched graph
             // entities and make that access set incomplete. Fail closed and let
             // the caller retry from a new transaction instead.
-            let error = HawdbError::Execution(format!(
+            let error = HawDBError::Execution(format!(
                 "pessimistic transaction {} cannot acquire a graph lock after its snapshot changed from commit epoch {} to {}; retry the transaction",
                 self.transaction_id, self.base_commit_epoch, current_epoch
             ));
@@ -760,13 +760,13 @@ impl ConcurrentDatabaseTransaction {
 
     fn ensure_active(&self) -> Result<()> {
         if self.finished {
-            return Err(HawdbError::Execution(format!(
+            return Err(HawDBError::Execution(format!(
                 "concurrent transaction {} is already finished",
                 self.transaction_id
             )));
         }
         if let Some(reason) = &self.abort_reason {
-            return Err(HawdbError::Execution(format!(
+            return Err(HawDBError::Execution(format!(
                 "concurrent transaction {} is aborted: {reason}",
                 self.transaction_id
             )));
@@ -774,11 +774,11 @@ impl ConcurrentDatabaseTransaction {
         Ok(())
     }
 
-    fn map_commit_error(&self, error: HawdbError) -> HawdbError {
+    fn map_commit_error(&self, error: HawDBError) -> HawDBError {
         if self.options.mode == ConcurrentTransactionMode::Optimistic
             && error.to_string().contains("transaction snapshot is stale")
         {
-            return HawdbError::Execution(format!(
+            return HawDBError::Execution(format!(
                 "optimistic transaction conflict for transaction {}: {}",
                 self.transaction_id, error
             ));
@@ -806,7 +806,7 @@ fn reject_optimistic_locking_select(
         _ => false,
     };
     if locking_select {
-        return Err(HawdbError::Semantic(
+        return Err(HawDBError::Semantic(
             "FOR UPDATE/SHARE requires a pessimistic concurrent transaction".to_string(),
         ));
     }
@@ -930,7 +930,7 @@ fn sql_lock_requests(
     append_state: &hawdb_storage::AppendState,
 ) -> Result<Vec<LockRequest>> {
     if prepared.template.parameters.len() != parameters.len() {
-        return Err(HawdbError::Semantic(format!(
+        return Err(HawDBError::Semantic(format!(
             "PostgreSQL statement requires {} parameters, but {} parameters were supplied",
             prepared.template.parameters.len(),
             parameters.len()
@@ -983,7 +983,7 @@ fn sql_lock_requests(
     match prepared.statement() {
         SqlStatement::Select(select) => {
             if select.lock_strength.is_some() && system_sql::is_virtual_catalog_select(select) {
-                return Err(HawdbError::Semantic(
+                return Err(HawDBError::Semantic(
                     "system SQL does not support locking clauses".to_string(),
                 ));
             }
@@ -1611,13 +1611,13 @@ fn upper_is_before_lower(upper: &Bound<RelationalKey>, lower: &Bound<RelationalK
     }
 }
 
-fn checkpoint_coordinator_poisoned_error() -> HawdbError {
-    HawdbError::Execution("concurrent checkpoint coordinator is poisoned".to_string())
+fn checkpoint_coordinator_poisoned_error() -> HawDBError {
+    HawDBError::Execution("concurrent checkpoint coordinator is poisoned".to_string())
 }
 
 #[cfg(test)]
-fn autocommit_read_gate_poisoned_error() -> HawdbError {
-    HawdbError::Execution("concurrent autocommit read gate is poisoned".to_string())
+fn autocommit_read_gate_poisoned_error() -> HawDBError {
+    HawDBError::Execution("concurrent autocommit read gate is poisoned".to_string())
 }
 
 #[cfg(test)]

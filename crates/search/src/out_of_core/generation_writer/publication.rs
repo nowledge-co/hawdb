@@ -7,7 +7,7 @@ use super::{
 };
 use crate::build_control::json;
 use crate::build_memory::BuildMemory;
-use crate::error::{HawdbError, Result};
+use crate::error::{HawDBError, Result};
 use crate::lexical_projection::MANIFEST_FILE as LEXICAL_MANIFEST_FILE;
 use crate::{SearchEmbeddingManifest, SEARCH_SEGMENT_DESCRIPTOR_FILE, SEARCH_SEGMENT_PAYLOAD_FILE};
 use hawdb_core::RuntimeTaskContext;
@@ -94,7 +94,7 @@ pub(super) fn publish_generation(
         ("vector", vector_payload_len, input.vector_payload_bytes),
     ] {
         if actual != expected {
-            return Err(HawdbError::Storage(format!(
+            return Err(HawDBError::Storage(format!(
                 "staged search generation {name} payload length {actual} does not match {expected}"
             )));
         }
@@ -172,9 +172,9 @@ pub(super) fn publish_generation(
     ]
     .into_iter()
     .try_fold(0u64, |total, bytes| total.checked_add(bytes))
-    .ok_or_else(|| HawdbError::Storage("search generation size overflow".to_string()))?;
+    .ok_or_else(|| HawDBError::Storage("search generation size overflow".to_string()))?;
     if generation_bytes > input.max_generation_bytes {
-        return Err(HawdbError::Storage(format!(
+        return Err(HawDBError::Storage(format!(
             "search generation requires {generation_bytes} published bytes, exceeding {}",
             input.max_generation_bytes
         )));

@@ -28,7 +28,7 @@ impl PreparedJoinImplementation {
             .iter()
             .map(|id| {
                 predicates.get(id).cloned().ok_or_else(|| {
-                    HawdbError::Execution(format!(
+                    HawDBError::Execution(format!(
                         "CSG-CMP implementation selected unknown predicate {}",
                         id.get()
                     ))

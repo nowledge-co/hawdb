@@ -31,7 +31,7 @@ defines the fixture and correctness assertions.
   query-execution time. Other host activity and the OS page cache were not
   controlled.
 - All 1,239 tracked source/build file hashes remained unchanged. The fixture
-  retained 8,192 rows, a 64 MiB Hawdb cache, two body widths, two layouts, five
+  retained 8,192 rows, a 64 MiB HawDB cache, two body widths, two layouts, five
   shapes, and eleven warm samples. All 480 persisted queries and the four
   original in-memory cases completed; every persisted result's full ID
   multiset and payload matched the oracle. Generated fixture directories
@@ -137,8 +137,8 @@ pending #196 cache-ownership change, which may affect later calibration.
 
 ## Remaining scope
 
-The working set fits the Hawdb cache, the fixture was freshly written, and
-the OS cache is uncontrolled. First-query reads are requests issued by Hawdb,
+The working set fits the HawDB cache, the fixture was freshly written, and
+the OS cache is uncontrolled. First-query reads are requests issued by HawDB,
 not cold-device I/O. Btrfs compression and readahead further prevent treating
 these byte counts as device transfers. Cache pressure, other storage modes,
 joins, spills and concurrent workloads need separate evidence before a

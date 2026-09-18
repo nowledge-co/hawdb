@@ -5,7 +5,7 @@ Issue: [#564](https://github.com/nowledge-co/hawdb/issues/564).
 
 ## Contract rationale
 
-Search capability checks return `HawdbError::CapabilityUnavailable`. The former
+Search capability checks return `HawDBError::CapabilityUnavailable`. The former
 infallible in-memory wrappers discarded these errors with `expect`, including
 errors from retrieval graph enrichment and pipeline admission. The public chain
 now propagates these errors to the caller.

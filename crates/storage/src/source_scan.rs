@@ -14,7 +14,7 @@ use crate::{
     SegmentPayloadRange, SegmentReadExecutionReport, SegmentSummary,
 };
 use hawdb_core::schema::LabelId;
-use hawdb_core::{HawdbError, Result, Value};
+use hawdb_core::{HawDBError, Result, Value};
 use hawdb_integrity::checksum_u64 as checksum_bytes;
 use std::collections::{BTreeMap, BTreeSet};
 use std::fs::{self, File};
@@ -114,18 +114,18 @@ pub struct SourceCandidateScanOutput {
 #[doc(hidden)]
 pub fn validate_source_candidate_scan_request(request: &SourceCandidateScanRequest) -> Result<()> {
     if request.limit == 0 {
-        return Err(HawdbError::Semantic(
+        return Err(HawDBError::Semantic(
             "knowledge source candidate scan requires a positive limit".to_string(),
         ));
     }
     if request.limit > MAX_SOURCE_CANDIDATE_ROWS {
-        return Err(HawdbError::Semantic(format!(
+        return Err(HawDBError::Semantic(format!(
             "knowledge source candidate scan limit {} exceeds {MAX_SOURCE_CANDIDATE_ROWS}",
             request.limit
         )));
     }
     if request.max_payload_bytes == 0 {
-        return Err(HawdbError::Semantic(
+        return Err(HawDBError::Semantic(
             "knowledge source candidate scan requires a positive payload budget".to_string(),
         ));
     }
@@ -134,7 +134,7 @@ pub fn validate_source_candidate_scan_request(request: &SourceCandidateScanReque
         .iter()
         .any(|name| name.trim().is_empty())
     {
-        return Err(HawdbError::Semantic(
+        return Err(HawDBError::Semantic(
             "knowledge source candidate scan requires non-empty property names".to_string(),
         ));
     }
@@ -170,7 +170,7 @@ pub fn select_source_candidate(
         .map(estimated_source_candidate_payload_bytes)
         .fold(0usize, usize::saturating_add);
     if payload_bytes > request.max_payload_bytes {
-        return Err(HawdbError::Execution(format!(
+        return Err(HawDBError::Execution(format!(
             "knowledge source candidate payload budget exceeded: estimated_payload_bytes={payload_bytes}, max_payload_bytes={}",
             request.max_payload_bytes
         )));
@@ -327,7 +327,7 @@ pub fn write(path: &Path, projection: &mut SourceScanProjection) -> Result<Sourc
         for segment in &mut projection.segments {
             let payload = encode_segment_payload(&segment.rows)?;
             let length = u64::try_from(payload.len()).map_err(|_| {
-                HawdbError::Storage(format!(
+                HawDBError::Storage(format!(
                     "source scan segment {} payload exceeds supported range length",
                     segment.summary.segment_id
                 ))
@@ -336,13 +336,13 @@ pub fn write(path: &Path, projection: &mut SourceScanProjection) -> Result<Sourc
                 artifact_id: SOURCE_SCAN_ARTIFACT_ID,
                 offset,
                 length: NonZeroU64::new(length).ok_or_else(|| {
-                    HawdbError::Storage("source scan segment payload is empty".to_string())
+                    HawDBError::Storage("source scan segment payload is empty".to_string())
                 })?,
                 checksum: checksum_bytes(&payload),
             });
             file.write_all(&payload)?;
             offset = offset.checked_add(length).ok_or_else(|| {
-                HawdbError::Storage("source scan payload artifact length overflow".to_string())
+                HawDBError::Storage("source scan payload artifact length overflow".to_string())
             })?;
         }
         file.sync_all()?;
@@ -390,14 +390,14 @@ pub fn load(
             Ok(PersistedScanSegment {
                 summary: segment.summary,
                 payload_range: segment.payload_range.ok_or_else(|| {
-                    HawdbError::Storage("source scan descriptor missing payload range".to_string())
+                    HawDBError::Storage("source scan descriptor missing payload range".to_string())
                 })?,
             })
         })
         .collect::<Result<Vec<_>>>()?;
     ScanSegmentManifest::new(expected_graph_epoch, segments)
         .map(Some)
-        .map_err(|error| HawdbError::Storage(error.to_string()))
+        .map_err(|error| HawDBError::Storage(error.to_string()))
 }
 
 pub fn decode_payload(payload: &[u8]) -> Result<Vec<SourceScanRow>> {
@@ -415,7 +415,7 @@ pub fn decode_payload(payload: &[u8]) -> Result<Vec<SourceScanRow>> {
             }),
             [""] => {}
             _ => {
-                return Err(HawdbError::Storage(format!(
+                return Err(HawDBError::Storage(format!(
                     "invalid source scan segment line: {line}"
                 )));
             }
@@ -425,7 +425,7 @@ pub fn decode_payload(payload: &[u8]) -> Result<Vec<SourceScanRow>> {
         .windows(2)
         .any(|pair| pair[0].node_id >= pair[1].node_id)
     {
-        return Err(HawdbError::Storage(
+        return Err(HawDBError::Storage(
             "source scan segment rows are not strictly ordered".to_string(),
         ));
     }
@@ -563,7 +563,7 @@ fn encode_descriptor(projection: &SourceScanProjection) -> Result<String> {
     );
     for segment in &projection.segments {
         let range = segment.payload_range.ok_or_else(|| {
-            HawdbError::Storage("source scan segment has no payload range".to_string())
+            HawDBError::Storage("source scan segment has no payload range".to_string())
         })?;
         body.push_str(&format!(
             "segment\t{}\t{}\t{}\t{}\t{}\t{}\n",
@@ -616,11 +616,11 @@ fn encode_descriptor(projection: &SourceScanProjection) -> Result<String> {
 
 fn decode_descriptor(text: &str, expected_checksum: u64) -> Result<SourceScanProjection> {
     let (body, checksum) = text.rsplit_once("checksum\t").ok_or_else(|| {
-        HawdbError::Storage("source scan descriptor missing checksum footer".to_string())
+        HawDBError::Storage("source scan descriptor missing checksum footer".to_string())
     })?;
     let checksum = parse_u64(checksum.trim(), "source scan checksum")?;
     if checksum != expected_checksum || checksum_bytes(body.as_bytes()) != checksum {
-        return Err(HawdbError::Storage(
+        return Err(HawDBError::Storage(
             "source scan descriptor checksum mismatch".to_string(),
         ));
     }
@@ -642,7 +642,7 @@ fn decode_descriptor(text: &str, expected_checksum: u64) -> Result<SourceScanPro
                 }
                 let length = NonZeroU64::new(parse_u64(raw_length, "source scan payload length")?)
                     .ok_or_else(|| {
-                        HawdbError::Storage("source scan payload length is zero".to_string())
+                        HawDBError::Storage("source scan payload length is zero".to_string())
                     })?;
                 current = Some(SourceScanSegment {
                     summary: SegmentSummary::new(
@@ -661,7 +661,7 @@ fn decode_descriptor(text: &str, expected_checksum: u64) -> Result<SourceScanPro
             ["field", raw_field, raw_present, raw_null, raw_missing, raw_numeric_min, raw_numeric_max, raw_datetime_min, raw_datetime_max, raw_values] =>
             {
                 let segment = current.as_mut().ok_or_else(|| {
-                    HawdbError::Storage("source scan field appears before a segment".to_string())
+                    HawDBError::Storage("source scan field appears before a segment".to_string())
                 })?;
                 let row_count = segment.summary.row_count;
                 let mut summary = FieldSummary::new(row_count)
@@ -671,14 +671,14 @@ fn decode_descriptor(text: &str, expected_checksum: u64) -> Result<SourceScanPro
                         parse_u64(raw_missing, "source scan field missing count")?,
                     )
                     .ok_or_else(|| {
-                        HawdbError::Storage("invalid source scan field counts".to_string())
+                        HawDBError::Storage("invalid source scan field counts".to_string())
                     })?;
                 if let (Some(min), Some(max)) = (
                     decode_optional_f64(raw_numeric_min)?,
                     decode_optional_f64(raw_numeric_max)?,
                 ) {
                     summary = summary.with_numeric_min_max(min, max).ok_or_else(|| {
-                        HawdbError::Storage("invalid source scan numeric range".to_string())
+                        HawDBError::Storage("invalid source scan numeric range".to_string())
                     })?;
                 }
                 if let (Some(min), Some(max)) = (
@@ -686,7 +686,7 @@ fn decode_descriptor(text: &str, expected_checksum: u64) -> Result<SourceScanPro
                     decode_optional_i64(raw_datetime_max)?,
                 ) {
                     summary = summary.with_datetime_min_max(min, max).ok_or_else(|| {
-                        HawdbError::Storage("invalid source scan datetime range".to_string())
+                        HawDBError::Storage("invalid source scan datetime range".to_string())
                     })?;
                 }
                 let values = decode_enum_dictionary(raw_values)?;
@@ -699,7 +699,7 @@ fn decode_descriptor(text: &str, expected_checksum: u64) -> Result<SourceScanPro
             }
             ["exact", raw_field, raw_value, raw_row_ids] => {
                 let segment = current.as_mut().ok_or_else(|| {
-                    HawdbError::Storage(
+                    HawDBError::Storage(
                         "source scan exact cursor appears before a segment".to_string(),
                     )
                 })?;
@@ -707,7 +707,7 @@ fn decode_descriptor(text: &str, expected_checksum: u64) -> Result<SourceScanPro
                 let value = decode_value(&decode_string(raw_value)?)?;
                 let row_ids = decode_row_ids(raw_row_ids)?;
                 let summary = segment.summary.fields.remove(&field).ok_or_else(|| {
-                    HawdbError::Storage(
+                    HawDBError::Storage(
                         "source scan exact cursor references unknown field".to_string(),
                     )
                 })?;
@@ -717,7 +717,7 @@ fn decode_descriptor(text: &str, expected_checksum: u64) -> Result<SourceScanPro
             }
             [""] => {}
             _ => {
-                return Err(HawdbError::Storage(format!(
+                return Err(HawDBError::Storage(format!(
                     "invalid source scan descriptor line: {line}"
                 )))
             }
@@ -728,7 +728,7 @@ fn decode_descriptor(text: &str, expected_checksum: u64) -> Result<SourceScanPro
     }
     Ok(SourceScanProjection {
         graph_epoch: graph_epoch.ok_or_else(|| {
-            HawdbError::Storage("source scan descriptor missing graph epoch".to_string())
+            HawDBError::Storage("source scan descriptor missing graph epoch".to_string())
         })?,
         segments,
     })
@@ -739,38 +739,38 @@ fn validate_payload_ranges(path: &Path, segments: &[SourceScanSegment]) -> Resul
     let artifact_len = file.metadata()?.len();
     for segment in segments {
         let range = segment.payload_range.ok_or_else(|| {
-            HawdbError::Storage("source scan descriptor missing payload range".to_string())
+            HawDBError::Storage("source scan descriptor missing payload range".to_string())
         })?;
         if range.artifact_id != SOURCE_SCAN_ARTIFACT_ID {
-            return Err(HawdbError::Storage(
+            return Err(HawDBError::Storage(
                 "source scan descriptor has unsupported artifact".to_string(),
             ));
         }
         let end = range
             .offset
             .checked_add(range.length.get())
-            .ok_or_else(|| HawdbError::Storage("source scan payload range overflow".to_string()))?;
+            .ok_or_else(|| HawDBError::Storage("source scan payload range overflow".to_string()))?;
         if end > artifact_len {
-            return Err(HawdbError::Storage(
+            return Err(HawDBError::Storage(
                 "source scan payload range exceeds artifact".to_string(),
             ));
         }
         let mut payload = vec![
             0;
             usize::try_from(range.length.get()).map_err(|_| {
-                HawdbError::Storage("source scan payload range exceeds address space".to_string())
+                HawDBError::Storage("source scan payload range exceeds address space".to_string())
             })?
         ];
         file.seek(SeekFrom::Start(range.offset))?;
         file.read_exact(&mut payload)?;
         if checksum_bytes(&payload) != range.checksum {
-            return Err(HawdbError::Storage(
+            return Err(HawDBError::Storage(
                 "source scan payload checksum mismatch".to_string(),
             ));
         }
         let rows = decode_payload(&payload)?;
         if rows.len() as u64 != segment.summary.row_count {
-            return Err(HawdbError::Storage(
+            return Err(HawDBError::Storage(
                 "source scan payload row count mismatch".to_string(),
             ));
         }
@@ -842,7 +842,7 @@ fn decode_row_ids(value: &str) -> Result<Vec<u64>> {
         .map(|value| parse_u64(value, "source scan row id"))
         .collect::<Result<Vec<_>>>()?;
     if !row_ids.windows(2).all(|pair| pair[0] < pair[1]) {
-        return Err(HawdbError::Storage(
+        return Err(HawDBError::Storage(
             "source scan exact row ids are not ordered".to_string(),
         ));
     }

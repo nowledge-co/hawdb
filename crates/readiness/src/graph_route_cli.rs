@@ -1,6 +1,6 @@
 //! Developer file and CLI adapters for graph route readiness.
 
-use hawdb_core::{HawdbError, Result};
+use hawdb_core::{HawDBError, Result};
 use std::path::Path;
 
 pub use crate::graph_route::{
@@ -23,17 +23,17 @@ pub fn run_nowledge_graph_route_readiness(
                 require_ready = true;
             }
             value if value.starts_with("--") => {
-                return Err(HawdbError::Semantic(nowledge_graph_route_readiness_usage()));
+                return Err(HawDBError::Semantic(nowledge_graph_route_readiness_usage()));
             }
             path => {
                 if evidence_path.replace(path.to_string()).is_some() {
-                    return Err(HawdbError::Semantic(nowledge_graph_route_readiness_usage()));
+                    return Err(HawDBError::Semantic(nowledge_graph_route_readiness_usage()));
                 }
             }
         }
     }
     let Some(evidence_path) = evidence_path else {
-        return Err(HawdbError::Semantic(nowledge_graph_route_readiness_usage()));
+        return Err(HawDBError::Semantic(nowledge_graph_route_readiness_usage()));
     };
     Ok((
         nowledge_graph_route_readiness_json(&read_json_file(Path::new(&evidence_path))?)?,
@@ -43,13 +43,13 @@ pub fn run_nowledge_graph_route_readiness(
 
 fn read_json_file(path: &Path) -> Result<serde_json::Value> {
     let raw = std::fs::read_to_string(path).map_err(|error| {
-        HawdbError::Execution(format!(
+        HawDBError::Execution(format!(
             "failed to read graph route readiness evidence: {}",
             error.kind()
         ))
     })?;
     serde_json::from_str(&raw).map_err(|_| {
-        HawdbError::Semantic(
+        HawDBError::Semantic(
             "failed to parse graph route readiness evidence: invalid_json".to_string(),
         )
     })
@@ -120,14 +120,14 @@ mod tests {
         ] {
             assert!(matches!(
                 run_nowledge_graph_route_readiness(args.into_iter().map(str::to_string)),
-                Err(HawdbError::Semantic(message)) if message == nowledge_graph_route_readiness_usage()
+                Err(HawDBError::Semantic(message)) if message == nowledge_graph_route_readiness_usage()
             ));
         }
         let path = unique_test_file("private_graph_route_evidence");
         let error =
             run_nowledge_graph_route_readiness([path.to_str().unwrap().to_string()].into_iter())
                 .unwrap_err();
-        assert!(matches!(error, HawdbError::Execution(_)));
+        assert!(matches!(error, HawDBError::Execution(_)));
         let message = error.to_string();
         assert!(message.contains("failed to read graph route readiness evidence"));
         assert!(!message.contains("private_graph_route_evidence"));

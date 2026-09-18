@@ -4,7 +4,7 @@ use crate::search::{
     validate_search_projection_catch_up_request, SearchIndex,
 };
 use crate::{
-    DatabaseReadTransaction, HawdbError, Result, SearchProjectionChangeBatch,
+    DatabaseReadTransaction, HawDBError, Result, SearchProjectionChangeBatch,
     SearchProjectionRelationalDelta,
 };
 pub use hawdb_search::{
@@ -43,7 +43,7 @@ impl Database {
     ///
     /// The hydrator receives the exact selected batch and one pinned database
     /// read transaction. It must account for every relational primary key in
-    /// the batch. Hawdb validates that count before applying either the graph
+    /// the batch. HawDB validates that count before applying either the graph
     /// or relational delta, then checkpoints the combined projection before
     /// selecting another batch. Hydration errors and incomplete accounting do
     /// not advance the projection watermark.
@@ -82,7 +82,7 @@ impl Database {
     /// Unlike [`Self::catch_up_search_projection_with_relational`], the
     /// hydrator runs for graph-only batches. This supports bounded host-owned
     /// dependency fan-out without moving application projection semantics into
-    /// Hawdb. The hydrator must still account for every relational primary key
+    /// HawDB. The hydrator must still account for every relational primary key
     /// in the batch. `max_change_operations_per_batch` bounds changefeed
     /// selection, while `max_projection_operations_per_batch` independently
     /// bounds the combined graph and host-derived projection delta. Hydration
@@ -108,7 +108,7 @@ impl Database {
             max_batches,
         )?;
         if max_projection_operations_per_batch == 0 {
-            return Err(HawdbError::Semantic(
+            return Err(HawDBError::Semantic(
                 "search projection catch-up max_projection_operations_per_batch must be greater than zero"
                     .to_string(),
             ));

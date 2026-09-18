@@ -51,7 +51,7 @@
 //!   chain) still holds a valid current-generation fragment, the log was
 //!   damaged in place and the reader fails closed instead.
 
-use hawdb_core::{HawdbError, Result};
+use hawdb_core::{HawDBError, Result};
 use std::io::Read;
 
 pub const WAL_BINARY_MAGIC: &[u8; 8] = b"SKWALB01";
@@ -89,20 +89,20 @@ pub fn encode_binary_wal_header(generation: u64, start_lsn: u64) -> Vec<u8> {
 
 pub fn decode_binary_wal_header(bytes: &[u8]) -> Result<(u64, u64)> {
     if bytes.len() < WAL_BINARY_FILE_HEADER_BYTES {
-        return Err(HawdbError::Storage(
+        return Err(HawDBError::Storage(
             "binary WAL file header is truncated".to_string(),
         ));
     }
     let header = &bytes[..WAL_BINARY_FILE_HEADER_BYTES];
     if &header[..8] != WAL_BINARY_MAGIC {
-        return Err(HawdbError::Storage(
+        return Err(HawDBError::Storage(
             "WAL is missing a supported generation header".to_string(),
         ));
     }
     let expected = u32::from_le_bytes(header[24..28].try_into().expect("4-byte checksum"));
     let actual = hawdb_integrity::crc32c(&header[..24]).get();
     if expected != actual {
-        return Err(HawdbError::Storage(format!(
+        return Err(HawDBError::Storage(format!(
             "WAL header checksum mismatch: expected {expected}, got {actual}"
         )));
     }
@@ -521,7 +521,7 @@ impl<R: Read> BinaryWalReader<R> {
             .max_record_bytes
             .is_some_and(|limit| payload_len > limit)
         {
-            return Err(HawdbError::Storage(format!(
+            return Err(HawDBError::Storage(format!(
                 "WAL record byte limit exceeded: max_wal_record_bytes={}",
                 self.max_record_bytes.unwrap_or_default()
             )));

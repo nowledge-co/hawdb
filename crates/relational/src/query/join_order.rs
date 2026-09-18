@@ -12,7 +12,7 @@ use crate::physical_plan::{
     RelationalBaseAccess, RelationalJoinAccess, RelationalJoinAccessCandidate,
     RelationalPhysicalAccess, RelationalPhysicalJoinNode, RelationalPhysicalJoinPlan,
 };
-use hawdb_core::{HawdbError, Result, Value};
+use hawdb_core::{HawDBError, Result, Value};
 use hawdb_expression::{
     BindingId, BindingSet, BoundPredicate, BoundScalarExpression, ScalarNullability,
 };
@@ -133,7 +133,7 @@ pub(super) fn plan_select_join_order(
         return Ok(unchanged(select, outcome));
     };
     let Some(initial_tree) = build_initial_join_tree(&relations, &bound_joins.operators) else {
-        return Err(HawdbError::Execution(
+        return Err(HawDBError::Execution(
             "relational join planner invariant violated while building the initial join tree"
                 .to_string(),
         ));
@@ -348,7 +348,7 @@ fn syntax_fallback_outcome(
 ) -> Result<RelationalJoinPlanningOutcome> {
     RelationalJoinPlanningOutcome::fallback_to_syntax(attempts, selected_order, config).ok_or_else(
         || {
-            HawdbError::Execution(
+            HawDBError::Execution(
                 "relational join planner invariant violated: syntax fallback has no fallback-eligible attempt"
                     .to_string(),
             )
@@ -359,8 +359,8 @@ fn syntax_fallback_outcome(
 fn invariant_planning_error(
     strategy: RelationalJoinPlanningStrategy,
     error: &dyn std::fmt::Display,
-) -> HawdbError {
-    HawdbError::Execution(format!(
+) -> HawDBError {
+    HawDBError::Execution(format!(
         "relational join planner invariant violated in {}: {error}",
         strategy.as_str()
     ))
@@ -437,10 +437,10 @@ fn bind_relations<'a>(
         .enumerate()
         .map(|(ordinal, (table, alias))| {
             let binding = BindingId::new(u32::try_from(ordinal).map_err(|_| {
-                HawdbError::Execution("relational join has too many bindings".to_string())
+                HawDBError::Execution("relational join has too many bindings".to_string())
             })?);
             let schema = state.table_schema(&table.name).ok_or_else(|| {
-                HawdbError::Semantic(format!("unknown relational table {}", table.name))
+                HawDBError::Semantic(format!("unknown relational table {}", table.name))
             })?;
             Ok(BoundRelation {
                 binding,
@@ -724,12 +724,12 @@ fn prepare_csg_cmp_select(
     let mut leaves = Vec::new();
     root.visit_relations(&mut |relation| leaves.push(relation.clone()));
     let Some(first) = leaves.first() else {
-        return Err(HawdbError::Execution(
+        return Err(HawDBError::Execution(
             "CSG-CMP selected an empty relational join tree".to_string(),
         ));
     };
     let RelationalPhysicalAccess::Base(base_access) = &first.access else {
-        return Err(HawdbError::Execution(
+        return Err(HawDBError::Execution(
             "CSG-CMP join tree does not start with a base access".to_string(),
         ));
     };
@@ -773,7 +773,7 @@ fn prepare_csg_cmp_node(
             .iter()
             .find(|implementation| implementation.optimizer == **selected)
             .ok_or_else(|| {
-                HawdbError::Execution(
+                HawDBError::Execution(
                     "CSG-CMP selected an unavailable join implementation".to_string(),
                 )
             })?;
@@ -838,7 +838,7 @@ fn prepare_csg_cmp_node(
                 .iter()
                 .map(|id| {
                     predicates.get(id).cloned().ok_or_else(|| {
-                        HawdbError::Execution(format!(
+                        HawDBError::Execution(format!(
                             "CSG-CMP selected unknown relational predicate {}",
                             id.get()
                         ))
@@ -871,7 +871,7 @@ fn selected_materialized_join_display_access(
         .find(|(path, _)| path.descriptor.kind == RelationalAccessPathKind::FullScan)
         .map(|(_, access)| access.clone())
         .ok_or_else(|| {
-            HawdbError::Execution(format!(
+            HawDBError::Execution(format!(
                 "CSG-CMP materialized binding {} has no full-scan display access",
                 binding.get()
             ))
@@ -1028,7 +1028,7 @@ fn selected_base_access(
         .find(|(candidate, _)| candidate == path)
         .map(|(_, access)| access.clone())
         .ok_or_else(|| {
-            HawdbError::Execution(format!(
+            HawDBError::Execution(format!(
                 "optimizer selected an unavailable base access path for binding {}",
                 binding.get()
             ))
@@ -1046,7 +1046,7 @@ fn selected_join_access(
         .find(|(candidate, _)| candidate == path)
         .map(|(_, access)| access.clone())
         .ok_or_else(|| {
-            HawdbError::Execution(format!(
+            HawDBError::Execution(format!(
                 "optimizer selected an unavailable join access path for binding {}",
                 binding.get()
             ))
@@ -1061,7 +1061,7 @@ fn prepared_relation(
         .iter()
         .find(|relation| relation.optimizer_relation.binding == binding)
         .ok_or_else(|| {
-            HawdbError::Execution(format!(
+            HawDBError::Execution(format!(
                 "optimizer selected an unknown relational binding {}",
                 binding.get()
             ))
@@ -1364,7 +1364,7 @@ mod tests {
         .expect_err("invalid optimizer state must fail closed");
         assert!(matches!(
             error,
-            HawdbError::Execution(message)
+            HawDBError::Execution(message)
                 if message.contains("relational join planner invariant violated")
                     && message.contains("inner_join_memo")
         ));
@@ -1377,7 +1377,7 @@ mod tests {
         .expect_err("syntax fallback requires an eligible failed attempt");
         assert!(matches!(
             error,
-            HawdbError::Execution(message)
+            HawDBError::Execution(message)
                 if message.contains("syntax fallback has no fallback-eligible attempt")
         ));
     }

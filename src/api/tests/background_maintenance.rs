@@ -155,7 +155,7 @@ fn background_maintenance_kinds_have_stable_string_encodings() {
             "search_projection_metadata_repair",
         ),
         (
-            BackgroundMaintenanceKind::HawdbLightningBootstrapExport,
+            BackgroundMaintenanceKind::HawDBLightningBootstrapExport,
             "hawdb_lightning_bootstrap_export",
         ),
         (
@@ -613,7 +613,7 @@ fn background_maintenance_ranks_mixed_nowledge_background_work() {
     assert!(kinds.contains(&BackgroundMaintenanceKind::PropertyIndexProjection));
     assert!(kinds.contains(&BackgroundMaintenanceKind::SearchProjectionGraphDelta));
     assert!(kinds.contains(&BackgroundMaintenanceKind::SearchProjectionRebuild));
-    assert!(kinds.contains(&BackgroundMaintenanceKind::HawdbLightningBootstrapExport));
+    assert!(kinds.contains(&BackgroundMaintenanceKind::HawDBLightningBootstrapExport));
     assert!(kinds.contains(&BackgroundMaintenanceKind::ExternalContentArtifactJob));
     let graph_delta_candidate = candidates
         .iter()

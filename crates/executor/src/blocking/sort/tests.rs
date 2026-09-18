@@ -245,7 +245,7 @@ fn run_case(
         match case.exit {
             Exit::Complete => Ok(BatchControl::Continue),
             Exit::Stop => Ok(BatchControl::Stop),
-            Exit::Error => Err(HawdbError::Execution(
+            Exit::Error => Err(HawDBError::Execution(
                 "injected merge callback error".to_string(),
             )),
             Exit::Cancel => {

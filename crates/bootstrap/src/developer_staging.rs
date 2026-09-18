@@ -6,7 +6,7 @@
 use crate::{
     hawdb_lightning_bootstrap_bundle_json_with_optional_storage_recovery,
     hawdb_lightning_bootstrap_manifest_json, hawdb_lightning_graph_stream_validation_json,
-    hawdb_lightning_relational_stream_validation_json, HawdbLightningBootstrapExport,
+    hawdb_lightning_relational_stream_validation_json, HawDBLightningBootstrapExport,
 };
 use hawdb_core::Result;
 use hawdb_integrity::checksum_u64;
@@ -19,14 +19,14 @@ use std::path::Path;
 pub const HAWDB_LIGHTNING_STAGING_CATALOG_PROTOCOL_VERSION: u64 = 1;
 
 pub fn stage_hawdb_lightning_bootstrap_export(
-    export: &HawdbLightningBootstrapExport,
+    export: &HawDBLightningBootstrapExport,
     staging_dir: impl AsRef<Path>,
 ) -> Result<serde_json::Value> {
     stage_hawdb_lightning_bootstrap_export_with_optional_storage_recovery(export, staging_dir, None)
 }
 
 pub fn stage_hawdb_lightning_bootstrap_export_with_optional_storage_recovery(
-    export: &HawdbLightningBootstrapExport,
+    export: &HawDBLightningBootstrapExport,
     staging_dir: impl AsRef<Path>,
     storage_recovery: Option<serde_json::Value>,
 ) -> Result<serde_json::Value> {

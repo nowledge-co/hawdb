@@ -1,4 +1,4 @@
-use hawdb_core::{HawdbError, Result, Value};
+use hawdb_core::{HawDBError, Result, Value};
 use hawdb_cypher as cypher;
 use hawdb_plan::{
     self as planner, LogicalPlan, PhysicalPlan, Predicate, Projection, ProjectionExpression,
@@ -946,15 +946,15 @@ fn bind_value(value: &mut Value, parameters: &BTreeMap<String, Value>) -> Result
     if let Some((name, path)) = marker_name_and_path(value) {
         let mut bound = parameters
             .get(name)
-            .ok_or_else(|| HawdbError::Semantic(format!("missing parameter '${name}'")))?;
+            .ok_or_else(|| HawDBError::Semantic(format!("missing parameter '${name}'")))?;
         for index in path {
             let Value::List(values) = bound else {
-                return Err(HawdbError::Semantic(format!(
+                return Err(HawDBError::Semantic(format!(
                     "parameter '${name}' changed shape while binding a cached plan"
                 )));
             };
             bound = values.get(index).ok_or_else(|| {
-                HawdbError::Semantic(format!(
+                HawDBError::Semantic(format!(
                     "parameter '${name}' changed shape while binding a cached plan"
                 ))
             })?;

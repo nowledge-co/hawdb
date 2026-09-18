@@ -3,7 +3,7 @@
 /// Stable protocol identifier for embedded query-path readiness reports.
 pub const EMBEDDED_QUERY_PATH_READINESS_PROTOCOL: &str = "hawdb-embedded-query-path-readiness-v1";
 
-/// One public query entrypoint exposed by an embedded Hawdb facade.
+/// One public query entrypoint exposed by an embedded HawDB facade.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum EmbeddedQueryEntrypoint {
     AdmittedSync,

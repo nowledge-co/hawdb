@@ -32,7 +32,7 @@ canonical vertex table; duplicate constraints are still ambiguous.
 
 Explicit endpoint types must match, except that a BigInt edge column can refer
 to a DoublePrecision vertex column. The reverse direction fails. An inferred
-FK must have identical types, following Hawdb relational metadata. Unused foreign
+FK must have identical types, following HawDB relational metadata. Unused foreign
 keys do not trigger traversal of other source tables.
 
 Labels shared across elements, including vertices and edges, must expose the

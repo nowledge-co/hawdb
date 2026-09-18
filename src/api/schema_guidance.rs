@@ -1,5 +1,5 @@
 use super::{BoundedReadQueryOutput, Database, DatabaseReadTransaction, QueryOutput};
-use crate::error::{HawdbError, Result};
+use crate::error::{HawDBError, Result};
 use crate::value::Value;
 use hawdb_core::{
     build_graph_rag_schema_context, GraphRagGeneratedQuery, GraphRagSchemaContext,
@@ -57,7 +57,7 @@ impl DatabaseReadTransaction {
             .statistics(&self.catalog)
             .computed_at_commit_epoch;
         if query.context_commit_epoch() != pinned_epoch {
-            return Err(HawdbError::Semantic(format!(
+            return Err(HawDBError::Semantic(format!(
                 "GraphRAG schema context is stale: generated at graph epoch {}, pinned at {}",
                 query.context_commit_epoch(),
                 pinned_epoch
@@ -65,7 +65,7 @@ impl DatabaseReadTransaction {
         }
         query
             .validate_parameters(parameters)
-            .map_err(|error| HawdbError::Semantic(error.to_string()))?;
+            .map_err(|error| HawDBError::Semantic(error.to_string()))?;
         self.query_with_params_bounded_profile(query.cypher(), parameters, max_rows)
     }
 }

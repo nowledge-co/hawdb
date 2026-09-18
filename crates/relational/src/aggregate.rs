@@ -7,7 +7,7 @@ use crate::predicate::predicate_truth_with;
 use crate::query_value::{
     bind_sql_value, expression_name, relational_to_value, value_to_relational,
 };
-use hawdb_core::{HawdbError, Result, Value};
+use hawdb_core::{HawDBError, Result, Value};
 use hawdb_executor::kernel::{ensure_operator_item_fits, OperatorMemoryTracker};
 use hawdb_sql::{
     Expr, ExprKind, SelectProjection, SelectStatement, SqlColumnRef, SqlComparisonOp,
@@ -43,7 +43,7 @@ fn evaluate_row_expression<'a>(
         Expr {
             kind: ExprKind::Value(SqlValue::Parameter(position)),
             ..
-        } => Err(HawdbError::Semantic(format!(
+        } => Err(HawDBError::Semantic(format!(
             "aggregate row expression cannot bind parameter ${position}"
         ))),
         Expr {
@@ -61,7 +61,7 @@ fn evaluate_row_expression<'a>(
                 ..
             })] = arguments.as_slice()
             else {
-                return Err(HawdbError::Semantic(
+                return Err(HawDBError::Semantic(
                     "OCTET_LENGTH requires exactly one column".to_string(),
                 ));
             };
@@ -76,7 +76,7 @@ fn evaluate_row_expression<'a>(
                 RelationalValue::Overflow(reference) => Ok(RelationalValue::BigInt(
                     i64::try_from(reference.uncompressed_bytes).unwrap_or(i64::MAX),
                 )),
-                _ => Err(HawdbError::Semantic(
+                _ => Err(HawDBError::Semantic(
                     "OCTET_LENGTH requires TEXT or BYTEA input".to_string(),
                 )),
             }
@@ -84,10 +84,10 @@ fn evaluate_row_expression<'a>(
         Expr {
             kind: ExprKind::Function { name, .. },
             ..
-        } => Err(HawdbError::Semantic(format!(
+        } => Err(HawDBError::Semantic(format!(
             "unsupported aggregate row function {name}"
         ))),
-        _ => Err(HawdbError::Semantic(
+        _ => Err(HawDBError::Semantic(
             "unsupported scalar expression".to_owned(),
         )),
     }

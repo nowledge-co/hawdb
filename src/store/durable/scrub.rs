@@ -1,7 +1,7 @@
 //! Strong verification of selected checkpoint artifacts and the WAL.
 
 use super::{stable_identity_error, DurableManifest, DurableStore};
-use crate::error::{HawdbError, Result};
+use crate::error::{HawDBError, Result};
 use crate::store::{
     canonical_adjacency_artifact_generation_file, canonical_artifact_generation_file,
     canonical_manifest_generation_file, checkpoint_generation_file, file_checksum,
@@ -50,17 +50,17 @@ impl StorageScrubCounters {
     ) -> Result<()> {
         let (actual_len, actual_checksum, actual_sha256) = file_checksum(path)?;
         if actual_len != expected_len {
-            return Err(HawdbError::Storage(format!(
+            return Err(HawDBError::Storage(format!(
                 "{artifact} length mismatch during scrub: expected {expected_len}, got {actual_len}"
             )));
         }
         if actual_checksum != expected_checksum {
-            return Err(HawdbError::Storage(format!(
+            return Err(HawDBError::Storage(format!(
                 "{artifact} CRC32C mismatch during scrub: expected {expected_checksum}, got {actual_checksum}"
             )));
         }
         if actual_sha256 != expected_sha256 {
-            return Err(HawdbError::Storage(format!(
+            return Err(HawDBError::Storage(format!(
                 "{artifact} SHA-256 mismatch during scrub: expected {expected_sha256}, got {actual_sha256}"
             )));
         }
@@ -113,9 +113,9 @@ impl DurableStore {
             )?;
             let checkpoint =
                 decode_relational_checkpoint_file(&path, RelationalDecodeLimits::checkpoint())
-                    .map_err(|error| HawdbError::Storage(error.to_string()))?;
+                    .map_err(|error| HawDBError::Storage(error.to_string()))?;
             if checkpoint.epoch != self.checkpoint_commit_epoch {
-                return Err(HawdbError::Storage(format!(
+                return Err(HawDBError::Storage(format!(
                     "relational checkpoint epoch {} does not match manifest checkpoint commit epoch {}",
                     checkpoint.epoch, self.checkpoint_commit_epoch
                 )));
@@ -153,11 +153,11 @@ impl DurableStore {
                 },
                 hawdb_storage::RelationalIndexShadowConfig::default(),
             )
-            .map_err(|error| HawdbError::Storage(error.to_string()))?;
+            .map_err(|error| HawDBError::Storage(error.to_string()))?;
             if reader.manifest().catalog_schema_digest != binding.catalog_schema_digest
                 || reader.manifest().root_set_digest != binding.root_set_digest
             {
-                return Err(HawdbError::Storage(
+                return Err(HawDBError::Storage(
                     "relational index manifest digests do not match canonical binding during scrub"
                         .to_string(),
                 ));
@@ -179,7 +179,7 @@ impl DurableStore {
                 binding,
                 AppendPublicationConfig::default(),
             )
-            .map_err(|error| HawdbError::Storage(error.to_string()))?;
+            .map_err(|error| HawDBError::Storage(error.to_string()))?;
             for segment in reader.segment_bindings() {
                 scrub.verify_path(
                     &self.root_path.join(append_segment_file(segment.generation)),
@@ -191,7 +191,7 @@ impl DurableStore {
             }
             reader
                 .deep_scrub()
-                .map_err(|error| HawdbError::Storage(error.to_string()))?;
+                .map_err(|error| HawDBError::Storage(error.to_string()))?;
         }
 
         let overflow_root = self.open_bound_relational_overflow()?;
@@ -301,11 +301,11 @@ impl DurableStore {
                 "canonical manifest",
             )?;
             let artifact = CanonicalSegmentManifest::decode(&fs::read_to_string(&manifest_path)?)
-                .map_err(|error| HawdbError::Storage(error.to_string()))?;
+                .map_err(|error| HawDBError::Storage(error.to_string()))?;
             if artifact.generation != ManifestGeneration(generation)
                 || artifact.source_commit_epoch != manifest.checkpoint_commit_epoch
             {
-                return Err(HawdbError::StorageIntegrity(
+                return Err(HawDBError::StorageIntegrity(
                     "canonical descriptor identity does not match its checkpoint during scrub"
                         .to_string(),
                 ));
@@ -343,9 +343,9 @@ impl DurableStore {
                 artifact.descriptor_generation_artifacts(),
                 descriptor_config,
             )
-            .map_err(|error| HawdbError::StorageIntegrity(error.to_string()))?;
+            .map_err(|error| HawDBError::StorageIntegrity(error.to_string()))?;
             if root_reader.root().descriptor_count != artifact.segment_count {
-                return Err(HawdbError::StorageIntegrity(
+                return Err(HawDBError::StorageIntegrity(
                     "canonical descriptor count does not match its manifest during scrub"
                         .to_string(),
                 ));
@@ -358,20 +358,20 @@ impl DurableStore {
                 "canonical segment descriptor pages",
             )?;
             let reader = self.canonical_segments.as_ref().ok_or_else(|| {
-                HawdbError::StorageIntegrity(
+                HawDBError::StorageIntegrity(
                     "canonical manifest is selected without an open canonical reader during scrub"
                         .to_string(),
                 )
             })?;
             if reader.path() != canonical_path || reader.manifest() != &artifact {
-                return Err(HawdbError::StorageIntegrity(
+                return Err(HawDBError::StorageIntegrity(
                     "open canonical reader identity drifted from the selected manifest during scrub"
                         .to_string(),
                 ));
             }
             reader
                 .deep_scrub()
-                .map_err(|error| HawdbError::StorageIntegrity(error.to_string()))?;
+                .map_err(|error| HawDBError::StorageIntegrity(error.to_string()))?;
         }
 
         if let Some(binding) = manifest.canonical_adjacency_generation_artifacts {
@@ -403,7 +403,7 @@ impl DurableStore {
                 },
                 descriptor_config,
             )
-            .map_err(|error| HawdbError::StorageIntegrity(error.to_string()))?;
+            .map_err(|error| HawDBError::StorageIntegrity(error.to_string()))?;
             scrub.verify_path(
                 &descriptor_paths.page_artifact,
                 root_reader.root().page_artifact_len,
@@ -441,7 +441,7 @@ impl DurableStore {
                 max_block_bytes,
             )
             .and_then(|reader| reader.deep_scrub())
-            .map_err(|error| HawdbError::StorageIntegrity(error.to_string()))?;
+            .map_err(|error| HawDBError::StorageIntegrity(error.to_string()))?;
         }
 
         if let (Some(expected_len), Some(expected_checksum), Some(expected_sha256)) = (
@@ -463,11 +463,11 @@ impl DurableStore {
                 "property spill manifest",
             )?;
             let artifact = PropertySpillManifest::decode(&fs::read_to_string(&manifest_path)?)
-                .map_err(|error| HawdbError::Storage(error.to_string()))?;
+                .map_err(|error| HawDBError::Storage(error.to_string()))?;
             if artifact.generation != ManifestGeneration(generation)
                 || artifact.source_commit_epoch != manifest.checkpoint_commit_epoch
             {
-                return Err(HawdbError::StorageIntegrity(
+                return Err(HawDBError::StorageIntegrity(
                     "property spill identity does not match its checkpoint".to_string(),
                 ));
             }
@@ -502,9 +502,9 @@ impl DurableStore {
                 artifact.descriptor_generation_artifacts(),
                 GraphDescriptorTreeBuildConfig::default(),
             )
-            .map_err(|error| HawdbError::StorageIntegrity(error.to_string()))?;
+            .map_err(|error| HawDBError::StorageIntegrity(error.to_string()))?;
             if descriptor_root.root().descriptor_count != artifact.block_count {
-                return Err(HawdbError::StorageIntegrity(
+                return Err(HawDBError::StorageIntegrity(
                     "property spill descriptor count does not match its manifest".to_string(),
                 ));
             }
@@ -520,13 +520,13 @@ impl DurableStore {
                 .as_ref()
                 .and_then(CanonicalSegmentReader::property_spill_manifest)
                 .ok_or_else(|| {
-                    HawdbError::StorageIntegrity(
+                    HawDBError::StorageIntegrity(
                         "property spill manifest is selected without an open spill reader during scrub"
                             .to_string(),
                     )
                 })?;
             if selected != &artifact {
-                return Err(HawdbError::StorageIntegrity(
+                return Err(HawDBError::StorageIntegrity(
                     "open property spill reader identity drifted from the selected manifest during scrub"
                         .to_string(),
                 ));
@@ -553,7 +553,7 @@ impl DurableStore {
             )?;
             let artifact =
                 PersistentPropertyProjectionManifest::decode(&fs::read_to_string(&manifest_path)?)
-                    .map_err(|error| HawdbError::Storage(error.to_string()))?;
+                    .map_err(|error| HawDBError::Storage(error.to_string()))?;
             scrub.verify_path(
                 &self
                     .root_path
@@ -585,7 +585,7 @@ impl DurableStore {
                 artifact.descriptor_generation_artifacts(),
                 GraphDescriptorTreeBuildConfig::default(),
             )
-            .map_err(|error| HawdbError::StorageIntegrity(error.to_string()))?;
+            .map_err(|error| HawDBError::StorageIntegrity(error.to_string()))?;
             scrub.verify_path(
                 &descriptor_paths.page_artifact,
                 descriptor_root.root().page_artifact_len,
@@ -597,20 +597,20 @@ impl DurableStore {
                 .persistent_property_projection
                 .as_ref()
                 .ok_or_else(|| {
-                    HawdbError::Storage(
+                    HawDBError::Storage(
                         "property projection publication exists without a selected reader during scrub"
                             .to_string(),
                     )
                 })?;
             if reader.manifest() != &artifact {
-                return Err(HawdbError::Storage(
+                return Err(HawDBError::Storage(
                     "selected property projection reader does not match the durable manifest"
                         .to_string(),
                 ));
             }
             reader
                 .deep_scrub()
-                .map_err(|error| HawdbError::StorageIntegrity(error.to_string()))?;
+                .map_err(|error| HawDBError::StorageIntegrity(error.to_string()))?;
         }
 
         match (
@@ -625,13 +625,13 @@ impl DurableStore {
                     scrub.sha256_verified_file_count.saturating_add(2);
             }
             (true, None) => {
-                return Err(HawdbError::Storage(
+                return Err(HawDBError::Storage(
                     "stable identity mapping exists without a selected reader during scrub"
                         .to_string(),
                 ));
             }
             (false, Some(_)) => {
-                return Err(HawdbError::Storage(
+                return Err(HawDBError::Storage(
                     "selected stable identity mapping is missing during scrub".to_string(),
                 ));
             }
@@ -659,7 +659,7 @@ impl DurableStore {
                 }
                 Ok(())
             })
-            .map_err(|error| HawdbError::Storage(error.to_string()))?;
+            .map_err(|error| HawDBError::Storage(error.to_string()))?;
         let older_overflow_files = overflow_extent_generations
             .iter()
             .filter(|generation| **generation != overflow_binding.generation)
@@ -671,7 +671,7 @@ impl DurableStore {
 
         row_root
             .scrub_physical_pages()
-            .map_err(|error| HawdbError::Storage(error.to_string()))?;
+            .map_err(|error| HawDBError::Storage(error.to_string()))?;
         let older_generations = row_root
             .manifest()
             .physical_generations
@@ -704,7 +704,7 @@ impl DurableStore {
     fn scrub_wal(&self) -> Result<(usize, u64)> {
         if !self.wal_path.exists() {
             if self.checkpoint_epoch > 0 {
-                return Err(HawdbError::Storage(format!(
+                return Err(HawDBError::Storage(format!(
                     "manifest WAL generation {} is missing during scrub",
                     self.wal_generation
                 )));
@@ -715,25 +715,25 @@ impl DurableStore {
         let mut cursor = match WalRecordCursor::open(&self.wal_path, self.max_record_bytes)? {
             WalOpenOutcome::Cursor(cursor) => cursor,
             WalOpenOutcome::MissingHeader => {
-                return Err(HawdbError::Storage(format!(
+                return Err(HawDBError::Storage(format!(
                     "WAL generation {} is missing its header during scrub",
                     self.wal_generation
                 )));
             }
             WalOpenOutcome::HeaderTorn { .. } => {
-                return Err(HawdbError::Storage(
+                return Err(HawDBError::Storage(
                     "WAL scrub rejected a torn tail; use explicit doctor repair if discarding the incomplete record is acceptable"
                         .to_string(),
                 ));
             }
             WalOpenOutcome::HeaderCorrupt { reason } => {
-                return Err(HawdbError::Storage(reason));
+                return Err(HawDBError::Storage(reason));
             }
         };
         if cursor.generation() != self.wal_generation
             || cursor.start_lsn() != self.wal_replay_start_lsn
         {
-            return Err(HawdbError::Storage(
+            return Err(HawDBError::Storage(
                 "WAL scrub found a header that does not match the durable manifest".to_string(),
             ));
         }
@@ -743,31 +743,31 @@ impl DurableStore {
             let entry = match cursor.next()? {
                 WalCursorEvent::Eof => break,
                 WalCursorEvent::TornTail { .. } => {
-                    return Err(HawdbError::Storage(
+                    return Err(HawDBError::Storage(
                         "WAL scrub rejected a torn tail; use explicit doctor repair if discarding the incomplete record is acceptable"
                             .to_string(),
                     ));
                 }
                 WalCursorEvent::Corrupt { reason, .. } => {
-                    return Err(HawdbError::Storage(format!(
+                    return Err(HawDBError::Storage(format!(
                         "WAL scrub found a corrupt record: {reason}"
                     )));
                 }
                 WalCursorEvent::Entry { entry, .. } => entry,
             };
             if entry.lsn != expected_lsn {
-                return Err(HawdbError::Storage(format!(
+                return Err(HawDBError::Storage(format!(
                     "WAL scrub found an LSN sequence mismatch: expected {expected_lsn}, got {}",
                     entry.lsn
                 )));
             }
             expected_lsn = expected_lsn
                 .checked_add(1)
-                .ok_or_else(|| HawdbError::Storage("WAL LSN overflow during scrub".to_string()))?;
+                .ok_or_else(|| HawDBError::Storage("WAL LSN overflow during scrub".to_string()))?;
             record_count = record_count.saturating_add(1);
         }
         if expected_lsn != self.next_lsn {
-            return Err(HawdbError::Storage(format!(
+            return Err(HawDBError::Storage(format!(
                 "WAL scrub ended at next LSN {expected_lsn}, but the open store expects {}",
                 self.next_lsn
             )));

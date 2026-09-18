@@ -49,7 +49,7 @@ fn path_count(target: u32) -> StatsRecord {
 
 fn assert_execution_error<T>(result: Result<T>, expected: &str) {
     match result {
-        Err(HawdbError::Execution(message)) => assert!(message.contains(expected), "{message}"),
+        Err(HawDBError::Execution(message)) => assert!(message.contains(expected), "{message}"),
         Err(error) => panic!("expected execution error containing {expected:?}: {error}"),
         Ok(_) => panic!("expected execution error containing {expected:?}"),
     }
@@ -211,7 +211,7 @@ fn corrupt_missing_and_existing_runs_fail_and_transient_files_are_reclaimed() {
         }
         assert!(matches!(
             writer.finish(base_statistics()),
-            Err(HawdbError::Storage(_))
+            Err(HawDBError::Storage(_))
         ));
         drop(spill);
         root.assert_empty();
@@ -224,7 +224,7 @@ fn corrupt_missing_and_existing_runs_fail_and_transient_files_are_reclaimed() {
         writer.push(path_count(1)).unwrap();
         assert!(matches!(
             writer.finish(base_statistics()),
-            Err(HawdbError::Storage(_))
+            Err(HawDBError::Storage(_))
         ));
         assert_eq!(fs::read(path).unwrap(), b"existing-run");
     }
@@ -303,7 +303,7 @@ fn statistics_record_framing_and_malformed_fields_remain_unchanged() {
         let result = std::panic::catch_unwind(|| StatsRecord::decode(encoded));
         assert!(result.is_ok(), "decoder panicked for {encoded:?}");
         assert!(
-            matches!(result.unwrap(), Err(HawdbError::Storage(_))),
+            matches!(result.unwrap(), Err(HawDBError::Storage(_))),
             "{encoded:?}"
         );
     }
@@ -870,7 +870,7 @@ fn refresh_resource_contract_rejects_invalid_limits_and_preserves_accounting_bou
     };
     assert!(matches!(
         options.validate(),
-        Err(HawdbError::Semantic(message)) if message.contains("memory_budget_bytes must be at least 4096")
+        Err(HawDBError::Semantic(message)) if message.contains("memory_budget_bytes must be at least 4096")
     ));
 
     options.memory_budget_bytes = 4096;

@@ -2,15 +2,15 @@ use super::*;
 use crate::memory::{enforced_query_memory_budget, enforced_result_memory_budget};
 use crate::observer::ExecutionObserver;
 use crate::{ExecutionMemoryConfig, QueryMemoryClass};
-use hawdb_core::{HawdbError, RuntimeMemoryReservation, RuntimeTaskContext};
+use hawdb_core::{HawDBError, RuntimeMemoryReservation, RuntimeTaskContext};
 use std::num::NonZeroUsize;
 
 fn nonzero(bytes: usize) -> NonZeroUsize {
     NonZeroUsize::new(bytes).unwrap()
 }
 
-fn execution_error(error: HawdbError) -> String {
-    let HawdbError::Execution(message) = error else {
+fn execution_error(error: HawDBError) -> String {
+    let HawDBError::Execution(message) = error else {
         panic!("unexpected error: {error:?}");
     };
     message

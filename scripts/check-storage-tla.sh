@@ -58,7 +58,7 @@ readonly -a specifications
 
 model_tlc_args() {
   tlc_args=(-cleanup -workers auto)
-  if [[ "$1" == "HawdbCowPagePublication" ]]; then
+  if [[ "$1" == "HawDBCowPagePublication" ]]; then
     # Match the Bazel action: defer repeated partial-graph liveness scans, not
     # the final check over the complete graph. No model property is disabled.
     tlc_args+=(-lncheck final)
@@ -91,7 +91,7 @@ verify_tlc_log() {
     printf 'TLA+ complete success evidence is missing or contains an error: %s\n' "$result" >&2
     return 1
   }
-  if [[ "${2:-}" == "HawdbCowPagePublication" ]] &&
+  if [[ "${2:-}" == "HawDBCowPagePublication" ]] &&
     ! grep -Fq 'Checking temporal properties for the complete state space' "$result"; then
     printf 'TLA+ final complete-state-space liveness evidence is missing: %s\n' "$result" >&2
     return 1

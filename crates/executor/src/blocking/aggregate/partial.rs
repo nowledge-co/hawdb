@@ -2,8 +2,8 @@ use super::*;
 
 const PARTIAL_AGGREGATE_VALUE: &str = "__hawdb_partial_aggregate";
 
-fn partial_state_width_mismatch_error() -> HawdbError {
-    HawdbError::Execution("AggregateExec partial state width mismatch".to_string())
+fn partial_state_width_mismatch_error() -> HawDBError {
+    HawDBError::Execution("AggregateExec partial state width mismatch".to_string())
 }
 
 struct PartialGroup {
@@ -267,8 +267,8 @@ pub(super) fn stream_partial_aggregate_batches(
     merge_partial_runs(&runs, &spill_budget, &blocking_account, context, emit)
 }
 
-fn partial_item_limit_error(bytes: usize, limit: usize) -> HawdbError {
-    HawdbError::Execution(format!(
+fn partial_item_limit_error(bytes: usize, limit: usize) -> HawDBError {
+    HawDBError::Execution(format!(
         "AggregateExec partial state uses {bytes} bytes, exceeding its bounded merge allowance {limit}"
     ))
 }
@@ -287,7 +287,7 @@ fn insert_partial_group(
     }
     let payload_bytes = partial_group_payload_bytes(&key.key, &states);
     if tracker.would_exceed(groups.insertion_bytes(payload_bytes)) {
-        return Err(HawdbError::Execution(format!(
+        return Err(HawDBError::Execution(format!(
             "AggregateExec partial state exceeds blocking_operator_bytes {}",
             tracker.budget_bytes
         )));
@@ -367,7 +367,7 @@ fn encode_partial_binding(key: Vec<Value>, states: Vec<AggregateState>) -> Resul
                 Value::List(vec![Value::Float(sum), Value::Int(count as i64)])
             }
             _ => {
-                return Err(HawdbError::Execution(
+                return Err(HawDBError::Execution(
                     "AggregateExec cannot encode an unmergeable partial state".to_string(),
                 ));
             }
@@ -386,25 +386,25 @@ fn decode_partial_binding(
     items: &[Aggregation],
 ) -> Result<PartialRunRow> {
     if !binding.nodes.is_empty() || !binding.relationships.is_empty() || binding.values.len() != 1 {
-        return Err(HawdbError::Execution(
+        return Err(HawDBError::Execution(
             "AggregateExec partial spill record has an invalid shape".to_string(),
         ));
     }
     let Some(Value::List(encoded)) = binding.values.remove(PARTIAL_AGGREGATE_VALUE) else {
-        return Err(HawdbError::Execution(
+        return Err(HawDBError::Execution(
             "AggregateExec partial spill record is missing its state".to_string(),
         ));
     };
     let mut encoded = encoded.into_iter();
     let Some(Value::List(key)) = encoded.next() else {
-        return Err(HawdbError::Execution(
+        return Err(HawDBError::Execution(
             "AggregateExec partial spill record is missing its group key".to_string(),
         ));
     };
     let mut states = Vec::with_capacity(items.len());
     for item in items {
         let Some(value) = encoded.next() else {
-            return Err(HawdbError::Execution(
+            return Err(HawDBError::Execution(
                 "AggregateExec partial spill record has too few states".to_string(),
             ));
         };
@@ -412,7 +412,7 @@ fn decode_partial_binding(
             (AggregateFunction::Count, Value::Int(count)) if count >= 0 && !item.distinct => {
                 AggregateState::Count {
                     count: usize::try_from(count).map_err(|_| {
-                        HawdbError::Execution(
+                        HawDBError::Execution(
                             "AggregateExec partial count does not fit in memory".to_string(),
                         )
                     })?,
@@ -428,19 +428,19 @@ fn decode_partial_binding(
                 let (Some(Value::Float(sum)), Some(Value::Int(count))) =
                     (values.next(), values.next())
                 else {
-                    return Err(HawdbError::Execution(
+                    return Err(HawDBError::Execution(
                         "AggregateExec partial average has an invalid state".to_string(),
                     ));
                 };
                 if count < 0 {
-                    return Err(HawdbError::Execution(
+                    return Err(HawDBError::Execution(
                         "AggregateExec partial average has a negative count".to_string(),
                     ));
                 }
                 AggregateState::Avg {
                     sum,
                     count: usize::try_from(count).map_err(|_| {
-                        HawdbError::Execution(
+                        HawDBError::Execution(
                             "AggregateExec partial average count does not fit in memory"
                                 .to_string(),
                         )
@@ -448,7 +448,7 @@ fn decode_partial_binding(
                 }
             }
             _ => {
-                return Err(HawdbError::Execution(
+                return Err(HawDBError::Execution(
                     "AggregateExec partial spill record has an incompatible state".to_string(),
                 ));
             }
@@ -456,7 +456,7 @@ fn decode_partial_binding(
         states.push(state);
     }
     if encoded.next().is_some() {
-        return Err(HawdbError::Execution(
+        return Err(HawDBError::Execution(
             "AggregateExec partial spill record has too many states".to_string(),
         ));
     }
@@ -608,7 +608,7 @@ fn merge_partial_runs(
         .map(spill::SpillRun::reader)
         .collect::<Result<Vec<_>>>()?;
     if readers.len() > 2 {
-        return Err(HawdbError::Execution(
+        return Err(HawDBError::Execution(
             "AggregateExec partial merge fan-in exceeds two runs".to_string(),
         ));
     }

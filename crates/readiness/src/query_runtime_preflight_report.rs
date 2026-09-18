@@ -5,7 +5,7 @@
 
 use crate::nowledge_mem_query_report::scan_pruning_report_json;
 use crate::query_runtime_preflight::NowledgeQueryRuntimePreflightProbe;
-use hawdb_core::HawdbError;
+use hawdb_core::HawDBError;
 use hawdb_evidence::inventory::REQUIRED_NOWLEDGE_REPLACEMENT_QUERY_FAMILIES;
 use hawdb_route_ownership::graph::REQUIRED_NOWLEDGE_MEM_BOUNDED_READ_ROUTES;
 use hawdb_storage::ScanPruningReport;
@@ -342,15 +342,15 @@ fn query_runtime_probe_identity_blocker_codes(
 }
 
 #[doc(hidden)]
-pub const fn hawdb_error_class(error: &HawdbError) -> &'static str {
+pub const fn hawdb_error_class(error: &HawDBError) -> &'static str {
     match error {
-        HawdbError::Parse(_) => "parse",
-        HawdbError::Semantic(_) => "semantic",
-        HawdbError::Storage(_)
-        | HawdbError::StorageIntegrity(_)
-        | HawdbError::AppendSequenceExhausted { .. } => "storage",
-        HawdbError::Execution(_) => "execution",
-        HawdbError::CapabilityUnavailable { .. } => "capability_unavailable",
+        HawDBError::Parse(_) => "parse",
+        HawDBError::Semantic(_) => "semantic",
+        HawDBError::Storage(_)
+        | HawDBError::StorageIntegrity(_)
+        | HawDBError::AppendSequenceExhausted { .. } => "storage",
+        HawDBError::Execution(_) => "execution",
+        HawDBError::CapabilityUnavailable { .. } => "capability_unavailable",
     }
 }
 

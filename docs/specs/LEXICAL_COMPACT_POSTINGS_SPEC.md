@@ -2,7 +2,7 @@
 
 ## Implementation Status
 
-This is a design-stage contract with **no implemented surface in the Hawdb
+This is a design-stage contract with **no implemented surface in the HawDB
 crates yet**. It defines the target on-disk encoding and read-path contract
 for [#206](https://github.com/nowledge-co/hawdb/issues/206) (compact
 postings layout) and the encoding it must expose for
@@ -27,7 +27,7 @@ and a query pays full decode cost for postings that belong to blocks whose
 key range happens to contain the term but whose entries mostly belong to
 other terms.
 
-Hawdb's positioning is a fixed small memory budget (0.5-2 GiB) against
+HawDB's positioning is a fixed small memory budget (0.5-2 GiB) against
 on-disk data that can reach the tens of GB on a home PC — see
 `docs/SEARCH_BUILD_RESOURCE_OWNERSHIP.md` for the resource-accounting
 infrastructure this must plug into. Under that

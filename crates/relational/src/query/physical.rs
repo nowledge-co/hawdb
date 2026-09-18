@@ -1,5 +1,5 @@
 use super::{
-    AdmittedRelationalExecution, HawdbError, QueryMemoryLedger, RelationalQueryReadModes,
+    AdmittedRelationalExecution, HawDBError, QueryMemoryLedger, RelationalQueryReadModes,
     RelationalQueryResourceContext, RelationalQueryStoreReader, RelationalState, Result,
 };
 
@@ -30,7 +30,7 @@ impl RelationalExecutionAdmission for PreparedRelationalExecutionDescriptor {
             .memory_shape
             .estimated_bytes(resources.execution_memory);
         if estimated_bytes > query_memory_budget.get() {
-            return Err(HawdbError::Execution(format!(
+            return Err(HawDBError::Execution(format!(
                 "prepared relational query requires {estimated_bytes} estimated bytes, exceeding query_memory_bytes {query_memory_budget}"
             )));
         }

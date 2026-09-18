@@ -57,12 +57,12 @@ impl GraphStore {
     ) -> Result<AppendSegmentReadOutput> {
         self.ensure_usable()?;
         if append_state.schema(table).is_none() {
-            return Err(HawdbError::Storage(format!("unknown append table {table}")));
+            return Err(HawDBError::Storage(format!("unknown append table {table}")));
         }
         let mut output = match self.append_generation_reader.as_ref() {
             Some(reader) => reader
                 .read_partition_bounded(table, partition, after, max_rows, max_payload_bytes)
-                .map_err(|error| HawdbError::Storage(error.to_string()))?,
+                .map_err(|error| HawDBError::Storage(error.to_string()))?,
             None => AppendSegmentReadOutput {
                 rows: Vec::new(),
                 report: Default::default(),
@@ -93,7 +93,7 @@ impl GraphStore {
                 output.report.output_payload_bytes = next_payload_bytes;
                 Ok(())
             })
-            .map_err(|error| HawdbError::Storage(error.to_string()))?;
+            .map_err(|error| HawDBError::Storage(error.to_string()))?;
         merge_live_read_report(
             &mut output.report,
             live.rows_returned,

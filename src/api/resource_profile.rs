@@ -33,7 +33,7 @@ impl Database {
         evidence_binding.validate_for(&expected_identity)?;
         let commit_epoch = self.commit_epoch();
         if evidence_binding.identity.canonical_graph_commit_epoch != commit_epoch {
-            return Err(HawdbError::Semantic(format!(
+            return Err(HawDBError::Semantic(format!(
                 "production evidence canonical graph commit epoch {} does not match database epoch {commit_epoch}",
                 evidence_binding.identity.canonical_graph_commit_epoch
             )));
@@ -60,7 +60,7 @@ impl Database {
         evidence_binding.validate_for(&expected_identity)?;
         let commit_epoch = self.commit_epoch();
         if evidence_binding.identity.canonical_graph_commit_epoch != commit_epoch {
-            return Err(HawdbError::Semantic(format!(
+            return Err(HawDBError::Semantic(format!(
                 "production evidence canonical graph commit epoch {} does not match database epoch {commit_epoch}",
                 evidence_binding.identity.canonical_graph_commit_epoch
             )));

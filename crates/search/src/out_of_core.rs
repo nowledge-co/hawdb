@@ -21,7 +21,7 @@ use super::{
     SEARCH_SEGMENT_PAYLOAD_FILE,
 };
 use crate::bounded_file::read_bounded_file;
-use crate::error::{HawdbError, Result};
+use crate::error::{HawDBError, Result};
 #[cfg(test)]
 use crate::{decode_search_segment_documents_bounded, validate_search_segment_documents};
 use crate::{RuntimeCapabilities, RuntimeCapability, SearchLexicalTermPolicy};
@@ -270,7 +270,7 @@ impl SearchOutOfCoreManifestBody {
     fn encode(&self) -> Result<Vec<u8>> {
         self.validate_names()?;
         let body = serde_json::to_vec(self).map_err(|error| {
-            HawdbError::Storage(format!(
+            HawDBError::Storage(format!(
                 "failed to encode search out-of-core manifest: {error}"
             ))
         })?;
@@ -279,7 +279,7 @@ impl SearchOutOfCoreManifestBody {
             checksum: checksum_bytes(&body),
         })
         .map_err(|error| {
-            HawdbError::Storage(format!(
+            HawDBError::Storage(format!(
                 "failed to encode search out-of-core manifest envelope: {error}"
             ))
         })
@@ -288,15 +288,15 @@ impl SearchOutOfCoreManifestBody {
     fn decode(bytes: &[u8]) -> Result<Self> {
         let envelope: SearchOutOfCoreManifestEnvelope =
             serde_json::from_slice(bytes).map_err(|error| {
-                HawdbError::Storage(format!("invalid search out-of-core manifest: {error}"))
+                HawDBError::Storage(format!("invalid search out-of-core manifest: {error}"))
             })?;
         let body = serde_json::to_vec(&envelope.body).map_err(|error| {
-            HawdbError::Storage(format!(
+            HawDBError::Storage(format!(
                 "failed to verify search out-of-core manifest: {error}"
             ))
         })?;
         if checksum_bytes(&body) != envelope.checksum {
-            return Err(HawdbError::Storage(
+            return Err(HawDBError::Storage(
                 "search out-of-core manifest checksum mismatch".to_string(),
             ));
         }
@@ -308,7 +308,7 @@ impl SearchOutOfCoreManifestBody {
 impl<S: AsRef<str>> SearchOutOfCoreManifestBody<S> {
     fn validate_names(&self) -> Result<()> {
         if self.format.as_ref() != OUT_OF_CORE_FORMAT || self.generation == 0 {
-            return Err(HawdbError::Storage(
+            return Err(HawDBError::Storage(
                 "search out-of-core manifest header is invalid".to_string(),
             ));
         }
@@ -321,7 +321,7 @@ impl<S: AsRef<str>> SearchOutOfCoreManifestBody<S> {
             self.lexical_manifest_file.as_ref(),
         ] {
             if Path::new(name).file_name().and_then(|value| value.to_str()) != Some(name) {
-                return Err(HawdbError::Storage(
+                return Err(HawDBError::Storage(
                     "search out-of-core manifest contains an invalid artifact name".to_string(),
                 ));
             }
@@ -329,7 +329,7 @@ impl<S: AsRef<str>> SearchOutOfCoreManifestBody<S> {
         if let Some(name) = self.rabitq_artifact_file.as_ref().map(AsRef::as_ref)
             && Path::new(name).file_name().and_then(|value| value.to_str()) != Some(name)
         {
-            return Err(HawdbError::Storage(
+            return Err(HawDBError::Storage(
                 "search out-of-core manifest contains an invalid RaBitQ artifact name".to_string(),
             ));
         }
@@ -358,7 +358,7 @@ impl<S: AsRef<str>> SearchOutOfCoreManifestBody<S> {
             || self.lexical_manifest_file.as_ref()
                 != format!("search_lexical.manifest.{}.hawdb", self.generation)
         {
-            return Err(HawdbError::Storage(
+            return Err(HawDBError::Storage(
                 "search out-of-core manifest artifact names do not match its generation"
                     .to_string(),
             ));
@@ -375,14 +375,14 @@ impl<S: AsRef<str>> SearchOutOfCoreManifestBody<S> {
         if rabitq_fields.iter().any(|present| *present)
             && rabitq_fields.iter().any(|present| !*present)
         {
-            return Err(HawdbError::Storage(
+            return Err(HawDBError::Storage(
                 "search out-of-core manifest has an incomplete RaBitQ identity".to_string(),
             ));
         }
         if let Some(name) = self.rabitq_artifact_file.as_ref().map(AsRef::as_ref)
             && name != format!("search_rabitq.{}.hawdb", self.generation)
         {
-            return Err(HawdbError::Storage(
+            return Err(HawDBError::Storage(
                 "search out-of-core RaBitQ artifact does not match its generation".to_string(),
             ));
         }
@@ -393,7 +393,7 @@ impl<S: AsRef<str>> SearchOutOfCoreManifestBody<S> {
 impl SearchOutOfCoreLayoutBody {
     fn encode(&self) -> Result<Vec<u8>> {
         let body = serde_json::to_vec(self).map_err(|error| {
-            HawdbError::Storage(format!(
+            HawDBError::Storage(format!(
                 "failed to encode search out-of-core layout: {error}"
             ))
         })?;
@@ -402,7 +402,7 @@ impl SearchOutOfCoreLayoutBody {
             checksum: checksum_bytes(&body),
         })
         .map_err(|error| {
-            HawdbError::Storage(format!(
+            HawDBError::Storage(format!(
                 "failed to encode search out-of-core layout envelope: {error}"
             ))
         })
@@ -411,15 +411,15 @@ impl SearchOutOfCoreLayoutBody {
     fn decode(bytes: &[u8]) -> Result<Self> {
         let envelope: SearchOutOfCoreLayoutEnvelope =
             serde_json::from_slice(bytes).map_err(|error| {
-                HawdbError::Storage(format!("invalid search out-of-core layout: {error}"))
+                HawDBError::Storage(format!("invalid search out-of-core layout: {error}"))
             })?;
         let body = serde_json::to_vec(&envelope.body).map_err(|error| {
-            HawdbError::Storage(format!(
+            HawDBError::Storage(format!(
                 "failed to verify search out-of-core layout: {error}"
             ))
         })?;
         if checksum_bytes(&body) != envelope.checksum {
-            return Err(HawdbError::Storage(
+            return Err(HawDBError::Storage(
                 "search out-of-core layout checksum mismatch".to_string(),
             ));
         }
@@ -437,7 +437,7 @@ impl SearchOutOfCoreLayoutBody {
             || self.document_count != manifest.document_count
             || self.segments.len() != descriptor.segments.len()
         {
-            return Err(HawdbError::Storage(
+            return Err(HawDBError::Storage(
                 "search out-of-core layout header does not match its manifest or descriptor"
                     .to_string(),
             ));
@@ -451,7 +451,7 @@ impl SearchOutOfCoreLayoutBody {
                 || layout.metadata.entry_count != segment.document_count
                 || layout.vectors.entry_count > segment.document_count
             {
-                return Err(HawdbError::Storage(format!(
+                return Err(HawDBError::Storage(format!(
                     "search out-of-core layout does not match segment {}",
                     segment.segment_id
                 )));
@@ -477,13 +477,13 @@ impl SearchOutOfCoreLayoutBody {
             vector_ordinal_base = vector_ordinal_base
                 .checked_add(layout.vectors.entry_count as u64)
                 .ok_or_else(|| {
-                    HawdbError::Storage("search vector ordinal range overflow".to_string())
+                    HawDBError::Storage("search vector ordinal range overflow".to_string())
                 })?;
         }
         if metadata_end != manifest.metadata_payload_len
             || vector_end != manifest.vector_payload_len
         {
-            return Err(HawdbError::Storage(
+            return Err(HawDBError::Storage(
                 "search out-of-core sidecar layout does not cover its payload files".to_string(),
             ));
         }
@@ -540,30 +540,30 @@ impl SearchOutOfCoreReader {
             "search segment descriptor",
         )?;
         let descriptor_text = std::str::from_utf8(&descriptor_bytes).map_err(|error| {
-            HawdbError::Storage(format!("search segment descriptor is not UTF-8: {error}"))
+            HawDBError::Storage(format!("search segment descriptor is not UTF-8: {error}"))
         })?;
         let descriptor = decode_search_segment_descriptor_text(descriptor_text)?;
         if descriptor.document_count != manifest.document_count {
-            return Err(HawdbError::Storage(format!(
+            return Err(HawDBError::Storage(format!(
                 "search out-of-core manifest expects {} documents, descriptor has {}",
                 manifest.document_count, descriptor.document_count
             )));
         }
         for segment in &descriptor.segments {
             let range = segment.payload_range.ok_or_else(|| {
-                HawdbError::Storage(format!(
+                HawDBError::Storage(format!(
                     "search segment {} has no physical payload range",
                     segment.segment_id
                 ))
             })?;
             if range.length > config.max_compressed_segment_bytes.get() {
-                return Err(HawdbError::Storage(format!(
+                return Err(HawDBError::Storage(format!(
                     "search segment {} requires {} compressed bytes, exceeding {}",
                     segment.segment_id, range.length, config.max_compressed_segment_bytes
                 )));
             }
             if range.offset.saturating_add(range.length) > manifest.payload_len {
-                return Err(HawdbError::Storage(format!(
+                return Err(HawDBError::Storage(format!(
                     "search segment {} exceeds the published payload length",
                     segment.segment_id
                 )));
@@ -573,7 +573,7 @@ impl SearchOutOfCoreReader {
         let payload_path = root.join(&manifest.payload_file);
         let payload = File::open(&payload_path)?;
         if payload.metadata()?.len() != manifest.payload_len {
-            return Err(HawdbError::Storage(
+            return Err(HawDBError::Storage(
                 "search out-of-core payload length mismatch".to_string(),
             ));
         }
@@ -600,7 +600,7 @@ impl SearchOutOfCoreReader {
                     .sum()
             })
         {
-            return Err(HawdbError::Storage(
+            return Err(HawDBError::Storage(
                 "search out-of-core RaBitQ vector count does not match the sidecar layout"
                     .to_string(),
             ));
@@ -640,7 +640,7 @@ impl SearchOutOfCoreReader {
             lexical_config,
         )?
         .ok_or_else(|| {
-            HawdbError::Storage(
+            HawDBError::Storage(
                 "published search lexical projection does not match the out-of-core manifest"
                     .to_string(),
             )
@@ -968,7 +968,7 @@ impl SearchOutOfCoreReader {
     ) -> Result<SearchOutOfCoreHydrationOutput> {
         let requested = document_ids.iter().cloned().collect::<BTreeSet<_>>();
         if requested.len() != document_ids.len() {
-            return Err(HawdbError::Storage(
+            return Err(HawDBError::Storage(
                 "search hydration document ids must be unique".to_string(),
             ));
         }
@@ -978,7 +978,7 @@ impl SearchOutOfCoreReader {
             .iter()
             .map(|id| {
                 hydrated.remove(id).ok_or_else(|| {
-                    HawdbError::Storage(format!(
+                    HawDBError::Storage(format!(
                         "search document {id} was not found during bounded hydration"
                     ))
                 })
@@ -1018,7 +1018,7 @@ impl SearchOutOfCoreReader {
         let task_context = vector_execution_options.task_context;
         if let Some(task_context) = task_context {
             task_context.checkpoint().map_err(|reason| {
-                HawdbError::Execution(format!("search out-of-core task {reason}"))
+                HawDBError::Execution(format!("search out-of-core task {reason}"))
             })?;
         }
         if access_control.is_some() {
@@ -1029,15 +1029,15 @@ impl SearchOutOfCoreReader {
         let page_score_limit = options
             .offset
             .checked_add(options.limit)
-            .ok_or_else(|| HawdbError::Storage("search offset and limit overflow".to_string()))?;
+            .ok_or_else(|| HawDBError::Storage("search offset and limit overflow".to_string()))?;
         if page_score_limit > self.config.max_score_entries.get() {
-            return Err(HawdbError::Storage(format!(
+            return Err(HawDBError::Storage(format!(
                 "search page window requires {page_score_limit} score entries, exceeding {}",
                 self.config.max_score_entries
             )));
         }
         if options.limit > self.config.max_hydrated_documents.get() {
-            return Err(HawdbError::Storage(format!(
+            return Err(HawDBError::Storage(format!(
                 "search hydration requested {} documents, exceeding {}",
                 options.limit, self.config.max_hydrated_documents
             )));
@@ -1046,7 +1046,7 @@ impl SearchOutOfCoreReader {
             .rank_window
             .is_some_and(|window| window > self.config.max_score_entries.get())
         {
-            return Err(HawdbError::Storage(format!(
+            return Err(HawDBError::Storage(format!(
                 "search rank window exceeds the admitted {} score entries",
                 self.config.max_score_entries
             )));
@@ -1057,7 +1057,7 @@ impl SearchOutOfCoreReader {
                 if let Some(policy_epoch) = options.policy_epoch
                     && policy_epoch != access_control.policy_epoch
                 {
-                    return Err(HawdbError::Storage(format!(
+                    return Err(HawDBError::Storage(format!(
                         "search options policy epoch {policy_epoch} does not match access control policy epoch {}",
                         access_control.policy_epoch
                     )));
@@ -1474,7 +1474,7 @@ impl SearchOutOfCoreReader {
         metrics: &mut SearchOutOfCoreMetrics,
     ) -> Result<Vec<SearchHit>> {
         if candidates.len() > self.config.max_hydrated_documents.get() {
-            return Err(HawdbError::Storage(format!(
+            return Err(HawDBError::Storage(format!(
                 "search hydration requires {} documents, exceeding {}",
                 candidates.len(),
                 self.config.max_hydrated_documents
@@ -1490,7 +1490,7 @@ impl SearchOutOfCoreReader {
         let mut matched_span_bytes = 0u64;
         for candidate in candidates {
             let document = hydrated.remove(&candidate.id).ok_or_else(|| {
-                HawdbError::Storage(format!(
+                HawDBError::Storage(format!(
                     "search candidate {} was not found during late hydration",
                     candidate.id
                 ))
@@ -1562,7 +1562,7 @@ impl SearchOutOfCoreReader {
         metrics: &mut SearchOutOfCoreMetrics,
     ) -> Result<BTreeMap<String, SearchDocument>> {
         if document_ids.len() > self.config.max_hydrated_documents.get() {
-            return Err(HawdbError::Storage(format!(
+            return Err(HawDBError::Storage(format!(
                 "search hydration requires {} documents, exceeding {}",
                 document_ids.len(),
                 self.config.max_hydrated_documents
@@ -1571,7 +1571,7 @@ impl SearchOutOfCoreReader {
         let mut segment_documents = BTreeMap::<u64, BTreeSet<String>>::new();
         for id in document_ids {
             let segment = self.segment_for_document(id).ok_or_else(|| {
-                HawdbError::Storage(format!(
+                HawDBError::Storage(format!(
                     "search document {id} is outside the published document ranges"
                 ))
             })?;
@@ -1589,7 +1589,7 @@ impl SearchOutOfCoreReader {
                 .get(segment_id as usize)
                 .filter(|segment| segment.segment_id == segment_id)
                 .ok_or_else(|| {
-                    HawdbError::Storage(format!(
+                    HawDBError::Storage(format!(
                         "search hydration references unknown segment {segment_id}"
                     ))
                 })?;
@@ -1602,10 +1602,10 @@ impl SearchOutOfCoreReader {
                 hydrated_bytes = hydrated_bytes
                     .checked_add(search_document_bytes(&document))
                     .ok_or_else(|| {
-                        HawdbError::Storage("search hydration byte count overflow".to_string())
+                        HawDBError::Storage("search hydration byte count overflow".to_string())
                     })?;
                 if hydrated_bytes > self.config.max_hydrated_bytes.get() {
-                    return Err(HawdbError::Storage(format!(
+                    return Err(HawDBError::Storage(format!(
                         "search hydration requires {hydrated_bytes} bytes, exceeding {}",
                         self.config.max_hydrated_bytes
                     )));
@@ -1614,7 +1614,7 @@ impl SearchOutOfCoreReader {
             }
         }
         if hydrated.len() != document_ids.len() {
-            return Err(HawdbError::Storage(format!(
+            return Err(HawDBError::Storage(format!(
                 "search hydration found {} of {} requested documents",
                 hydrated.len(),
                 document_ids.len()
@@ -1664,7 +1664,7 @@ impl SearchOutOfCoreReader {
         metrics: &mut SearchOutOfCoreMetrics,
     ) -> Result<Vec<SearchDocument>> {
         let range = segment.payload_range.ok_or_else(|| {
-            HawdbError::Storage(format!(
+            HawDBError::Storage(format!(
                 "search segment {} has no payload range",
                 segment.segment_id
             ))
@@ -1728,7 +1728,7 @@ impl SearchOutOfCoreReader {
                 *ordinal != layout.vector_ordinal_base.saturating_add(offset as u64)
             })
         {
-            return Err(HawdbError::Storage(format!(
+            return Err(HawDBError::Storage(format!(
                 "search segment {} metadata vector ordinals do not match its layout",
                 segment.segment_id
             )));
@@ -1773,7 +1773,7 @@ impl SearchOutOfCoreReader {
             .get(segment_id as usize)
             .filter(|layout| layout.segment_id == segment_id)
             .ok_or_else(|| {
-                HawdbError::Storage(format!(
+                HawDBError::Storage(format!(
                     "search out-of-core layout has no segment {segment_id}"
                 ))
             })
@@ -1837,7 +1837,7 @@ impl SearchOutOfCoreReader {
                     continue;
                 }
                 let id_len = u32::try_from(candidate.id.len()).map_err(|_| {
-                    HawdbError::Storage(format!(
+                    HawDBError::Storage(format!(
                         "search candidate id {} exceeds the supported length",
                         candidate.id
                     ))
@@ -1849,7 +1849,7 @@ impl SearchOutOfCoreReader {
                 block_cardinality = block_cardinality.saturating_add(1);
             }
             if encoded.len() as u64 > self.config.max_candidate_block_bytes.get() {
-                return Err(HawdbError::Storage(format!(
+                return Err(HawDBError::Storage(format!(
                     "search candidate block for segment {} requires {} bytes, exceeding {}",
                     segment.segment_id,
                     encoded.len(),
@@ -1860,7 +1860,7 @@ impl SearchOutOfCoreReader {
                 .saturating_add(encoded.len() as u64)
                 .saturating_sub(CANDIDATE_FILE_HEADER.len() as u64);
             if next_spill_bytes > self.config.max_candidate_spill_bytes.get() {
-                return Err(HawdbError::Storage(format!(
+                return Err(HawDBError::Storage(format!(
                     "search candidate spill requires {next_spill_bytes} bytes, exceeding {}",
                     self.config.max_candidate_spill_bytes
                 )));
@@ -1907,7 +1907,7 @@ fn verify_rabitq_artifact(root: &Path, manifest: &SearchOutOfCoreManifestBody) -
         .expect("validated RaBitQ identity has a checksum");
     let (actual_len, actual_checksum) = file_len_checksum_streaming(&root.join(file_name))?;
     if actual_len != expected_len || actual_checksum != expected_checksum {
-        return Err(HawdbError::Storage(
+        return Err(HawDBError::Storage(
             "search out-of-core RaBitQ artifact does not match its manifest".to_string(),
         ));
     }
@@ -1928,7 +1928,7 @@ fn open_rabitq_projection(
         .rabitq_peak_build_working_bytes
         .expect("validated RaBitQ identity has a build memory bound");
     if peak_build_working_bytes > max_working_bytes {
-        return Err(HawdbError::Storage(format!(
+        return Err(HawDBError::Storage(format!(
             "search RaBitQ artifact requires {peak_build_working_bytes} build bytes, exceeding the serving admission {max_working_bytes}"
         )));
     }
@@ -1947,7 +1947,7 @@ fn open_rabitq_projection(
         || Some(projection_manifest.source_digest) != manifest.rabitq_source_digest
         || Some(projection_manifest.payload_checksum) != manifest.rabitq_payload_checksum
     {
-        return Err(HawdbError::Storage(
+        return Err(HawDBError::Storage(
             "search out-of-core RaBitQ identity does not match its generation".to_string(),
         ));
     }
@@ -1969,7 +1969,7 @@ fn file_len_checksum_streaming(path: &Path) -> Result<(u64, u64)> {
         actual_len = actual_len.saturating_add(read as u64);
     }
     if actual_len != expected_len {
-        return Err(HawdbError::Storage(format!(
+        return Err(HawDBError::Storage(format!(
             "search artifact {} changed while checksumming",
             path.display()
         )));
@@ -1995,10 +1995,10 @@ pub(super) fn published_generation(
 
 pub(super) fn publish_out_of_core_projection(index: &SearchIndex, root: &Path) -> Result<u64> {
     let descriptor = read_search_segment_descriptor(root)?.ok_or_else(|| {
-        HawdbError::Storage("search segment descriptor is missing after checkpoint".to_string())
+        HawDBError::Storage("search segment descriptor is missing after checkpoint".to_string())
     })?;
     if !descriptor.matches_documents(&index.documents) {
-        return Err(HawdbError::Storage(
+        return Err(HawDBError::Storage(
             "search segment descriptor does not match checkpoint documents".to_string(),
         ));
     }
@@ -2109,7 +2109,7 @@ fn write_out_of_core_sidecars(
             .map(|(_, document)| document)
             .collect::<Vec<_>>();
         if documents.len() != segment.document_count {
-            return Err(HawdbError::Storage(format!(
+            return Err(HawDBError::Storage(format!(
                 "search sidecar segment {} has {} documents, expected {}",
                 segment.segment_id,
                 documents.len(),
@@ -2132,7 +2132,7 @@ fn write_out_of_core_sidecars(
             ));
             if let Some(embedding) = document.embedding.as_deref() {
                 if embedding.is_empty() {
-                    return Err(HawdbError::Storage(format!(
+                    return Err(HawDBError::Storage(format!(
                         "search document {} has an empty embedding",
                         document.id
                     )));
@@ -2145,7 +2145,7 @@ fn write_out_of_core_sidecars(
                 ));
                 vector_count = vector_count.saturating_add(1);
                 vector_ordinal = vector_ordinal.checked_add(1).ok_or_else(|| {
-                    HawdbError::Storage("search vector ordinal overflow".to_string())
+                    HawDBError::Storage("search vector ordinal overflow".to_string())
                 })?;
             }
         }
@@ -2209,7 +2209,7 @@ fn append_sidecar_payload_with_context(
     task: Option<&hawdb_core::RuntimeTaskContext>,
 ) -> Result<SearchOutOfCoreRange> {
     let length = u64::try_from(payload.len()).map_err(|_| {
-        HawdbError::Storage("search sidecar payload length exceeds u64".to_string())
+        HawDBError::Storage("search sidecar payload length exceeds u64".to_string())
     })?;
     let checksum = crate::build_control::write_checksummed(file, payload, task)?;
     let range = SearchOutOfCoreRange {
@@ -2220,7 +2220,7 @@ fn append_sidecar_payload_with_context(
     };
     *offset = offset
         .checked_add(length)
-        .ok_or_else(|| HawdbError::Storage("search sidecar payload offset overflow".to_string()))?;
+        .ok_or_else(|| HawDBError::Storage("search sidecar payload offset overflow".to_string()))?;
     Ok(range)
 }
 
@@ -2333,7 +2333,7 @@ struct BoundedScoreCollector {
 impl BoundedScoreCollector {
     fn new(retained_limit: Option<usize>, max_entries: usize) -> Result<Self> {
         if retained_limit.is_some_and(|limit| limit > max_entries) {
-            return Err(HawdbError::Storage(format!(
+            return Err(HawDBError::Storage(format!(
                 "search rank window exceeds the admitted {max_entries} score entries"
             )));
         }
@@ -2355,7 +2355,7 @@ impl BoundedScoreCollector {
         match &mut self.storage {
             BoundedScoreStorage::Full(scores) => {
                 if scores.len() >= self.max_entries {
-                    return Err(HawdbError::Storage(format!(
+                    return Err(HawDBError::Storage(format!(
                         "vector query matched more than {} documents; provide a rank window or narrow the candidate set",
                         self.max_entries
                     )));
@@ -2470,18 +2470,18 @@ impl SpilledCandidateSet {
             .is_none_or(|cached| cached.segment_id != block.segment_id)
         {
             if block.length > self.max_block_bytes {
-                return Err(HawdbError::Storage(format!(
+                return Err(HawDBError::Storage(format!(
                     "search candidate block {} exceeds its read budget",
                     block.segment_id
                 )));
             }
             let length = usize::try_from(block.length).map_err(|_| {
-                HawdbError::Storage("search candidate block length exceeds usize".to_string())
+                HawDBError::Storage("search candidate block length exceeds usize".to_string())
             })?;
             let mut bytes = vec![0u8; length];
             read_search_range(
                 self.file.as_ref().ok_or_else(|| {
-                    HawdbError::Storage("search candidate spill file is closed".to_string())
+                    HawDBError::Storage("search candidate spill file is closed".to_string())
                 })?,
                 block.offset,
                 &mut bytes,
@@ -2512,7 +2512,7 @@ impl SpilledCandidateSet {
         let ordinal_capacity_bytes = (self.cardinality as u64)
             .checked_mul(std::mem::size_of::<u64>() as u64)
             .ok_or_else(|| {
-                HawdbError::Storage("search vector allowlist size overflow".to_string())
+                HawDBError::Storage("search vector allowlist size overflow".to_string())
             })?;
         let max_block_bytes = self
             .blocks
@@ -2523,10 +2523,10 @@ impl SpilledCandidateSet {
         let required_working_bytes = ordinal_capacity_bytes
             .checked_add(max_block_bytes)
             .ok_or_else(|| {
-                HawdbError::Storage("search vector allowlist working set overflow".to_string())
+                HawDBError::Storage("search vector allowlist working set overflow".to_string())
             })?;
         if required_working_bytes > max_bytes {
-            return Err(HawdbError::Storage(format!(
+            return Err(HawDBError::Storage(format!(
                 "search vector candidate allowlist and block require {required_working_bytes} bytes, exceeding {max_bytes}"
             )));
         }
@@ -2534,7 +2534,7 @@ impl SpilledCandidateSet {
         for block in &self.blocks {
             if let Some(task_context) = task_context {
                 task_context.checkpoint().map_err(|reason| {
-                    HawdbError::Execution(format!("search vector task {reason}"))
+                    HawDBError::Execution(format!("search vector task {reason}"))
                 })?;
             }
             if block.cardinality == 0 {
@@ -2544,7 +2544,7 @@ impl SpilledCandidateSet {
             decode_candidate_ordinals_into(&bytes, block.cardinality, &mut ordinals)?;
         }
         if ordinals.windows(2).any(|pair| pair[0] >= pair[1]) {
-            return Err(HawdbError::Storage(
+            return Err(HawDBError::Storage(
                 "search vector candidate ordinals are not strictly ordered".to_string(),
             ));
         }
@@ -2558,18 +2558,18 @@ impl SpilledCandidateSet {
         metrics: &mut SearchOutOfCoreMetrics,
     ) -> Result<Vec<u8>> {
         if block.length > self.max_block_bytes {
-            return Err(HawdbError::Storage(format!(
+            return Err(HawDBError::Storage(format!(
                 "search candidate block {} exceeds its read budget",
                 block.segment_id
             )));
         }
         let length = usize::try_from(block.length).map_err(|_| {
-            HawdbError::Storage("search candidate block length exceeds usize".to_string())
+            HawDBError::Storage("search candidate block length exceeds usize".to_string())
         })?;
         let mut bytes = vec![0u8; length];
         read_search_range(
             self.file.as_ref().ok_or_else(|| {
-                HawdbError::Storage("search candidate spill file is closed".to_string())
+                HawDBError::Storage("search candidate spill file is closed".to_string())
             })?,
             block.offset,
             &mut bytes,
@@ -2616,30 +2616,30 @@ fn decode_candidate_entries(bytes: &[u8], expected: usize) -> Result<Vec<Candida
     while offset < bytes.len() {
         let end = offset.saturating_add(4);
         let length_bytes = bytes.get(offset..end).ok_or_else(|| {
-            HawdbError::Storage("search candidate block has a truncated length".to_string())
+            HawDBError::Storage("search candidate block has a truncated length".to_string())
         })?;
         let length = u32::from_le_bytes(length_bytes.try_into().unwrap()) as usize;
         offset = end;
         let end = offset.checked_add(length).ok_or_else(|| {
-            HawdbError::Storage("search candidate id length overflows".to_string())
+            HawDBError::Storage("search candidate id length overflows".to_string())
         })?;
         let raw = bytes.get(offset..end).ok_or_else(|| {
-            HawdbError::Storage("search candidate block has a truncated id".to_string())
+            HawDBError::Storage("search candidate block has a truncated id".to_string())
         })?;
         let id = String::from_utf8(raw.to_vec()).map_err(|error| {
-            HawdbError::Storage(format!("search candidate id is not UTF-8: {error}"))
+            HawDBError::Storage(format!("search candidate id is not UTF-8: {error}"))
         })?;
         offset = end;
         let end = offset.saturating_add(std::mem::size_of::<u64>());
         let raw_ordinal = bytes.get(offset..end).ok_or_else(|| {
-            HawdbError::Storage("search candidate block has a truncated vector ordinal".to_string())
+            HawDBError::Storage("search candidate block has a truncated vector ordinal".to_string())
         })?;
         let _vector_ordinal = u64::from_le_bytes(raw_ordinal.try_into().unwrap());
         entries.push(CandidateEntry { id });
         offset = end;
     }
     if entries.len() != expected || entries.windows(2).any(|pair| pair[0].id >= pair[1].id) {
-        return Err(HawdbError::Storage(
+        return Err(HawDBError::Storage(
             "search candidate block count or ordering mismatch".to_string(),
         ));
     }
@@ -2658,21 +2658,21 @@ fn decode_candidate_ordinals_into(
     while offset < bytes.len() {
         let end = offset.saturating_add(std::mem::size_of::<u32>());
         let length_bytes = bytes.get(offset..end).ok_or_else(|| {
-            HawdbError::Storage("search candidate block has a truncated length".to_string())
+            HawDBError::Storage("search candidate block has a truncated length".to_string())
         })?;
         let length = u32::from_le_bytes(length_bytes.try_into().unwrap()) as usize;
         offset = end;
         let end = offset.checked_add(length).ok_or_else(|| {
-            HawdbError::Storage("search candidate id length overflows".to_string())
+            HawDBError::Storage("search candidate id length overflows".to_string())
         })?;
         let id = std::str::from_utf8(bytes.get(offset..end).ok_or_else(|| {
-            HawdbError::Storage("search candidate block has a truncated id".to_string())
+            HawDBError::Storage("search candidate block has a truncated id".to_string())
         })?)
         .map_err(|error| {
-            HawdbError::Storage(format!("search candidate id is not UTF-8: {error}"))
+            HawDBError::Storage(format!("search candidate id is not UTF-8: {error}"))
         })?;
         if previous_id.is_some_and(|previous| previous >= id) {
-            return Err(HawdbError::Storage(
+            return Err(HawDBError::Storage(
                 "search candidate block ids are not strictly ordered".to_string(),
             ));
         }
@@ -2680,7 +2680,7 @@ fn decode_candidate_ordinals_into(
         offset = end;
         let end = offset.saturating_add(std::mem::size_of::<u64>());
         let raw_ordinal = bytes.get(offset..end).ok_or_else(|| {
-            HawdbError::Storage("search candidate block has a truncated vector ordinal".to_string())
+            HawDBError::Storage("search candidate block has a truncated vector ordinal".to_string())
         })?;
         let vector_ordinal = u64::from_le_bytes(raw_ordinal.try_into().unwrap());
         if vector_ordinal != u64::MAX {
@@ -2690,7 +2690,7 @@ fn decode_candidate_ordinals_into(
         count = count.saturating_add(1);
     }
     if count != expected {
-        return Err(HawdbError::Storage(
+        return Err(HawDBError::Storage(
             "search candidate block count mismatch".to_string(),
         ));
     }
@@ -2728,23 +2728,23 @@ fn validate_out_of_core_range(
     kind: &str,
 ) -> Result<()> {
     if range.offset != expected_offset || range.length == 0 {
-        return Err(HawdbError::Storage(format!(
+        return Err(HawDBError::Storage(format!(
             "search segment {segment_id} has an invalid {kind} sidecar range"
         )));
     }
     if range.length > max_compressed_segment_bytes {
-        return Err(HawdbError::Storage(format!(
+        return Err(HawDBError::Storage(format!(
             "search segment {segment_id} {kind} sidecar requires {} compressed bytes, exceeding {max_compressed_segment_bytes}",
             range.length
         )));
     }
     let end = range.offset.checked_add(range.length).ok_or_else(|| {
-        HawdbError::Storage(format!(
+        HawDBError::Storage(format!(
             "search segment {segment_id} {kind} sidecar range overflows"
         ))
     })?;
     if end > artifact_len {
-        return Err(HawdbError::Storage(format!(
+        return Err(HawDBError::Storage(format!(
             "search segment {segment_id} {kind} sidecar exceeds its payload length"
         )));
     }
@@ -2759,7 +2759,7 @@ fn read_out_of_core_payload_range(
     metrics: &mut SearchOutOfCoreMetrics,
 ) -> Result<Vec<u8>> {
     let length = usize::try_from(range.length).map_err(|_| {
-        HawdbError::Storage(format!(
+        HawDBError::Storage(format!(
             "search segment {segment_id} {kind} payload length exceeds the platform address space"
         ))
     })?;
@@ -2769,7 +2769,7 @@ fn read_out_of_core_payload_range(
     metrics.segment_bytes_read = metrics.segment_bytes_read.saturating_add(range.length);
     let actual_checksum = checksum_bytes(&payload);
     if actual_checksum != range.checksum {
-        return Err(HawdbError::Storage(format!(
+        return Err(HawDBError::Storage(format!(
             "search segment {segment_id} {kind} payload checksum mismatch: expected {}, got {actual_checksum}",
             range.checksum
         )));
@@ -2784,7 +2784,7 @@ fn decode_metadata_segment(
 ) -> Result<Vec<SearchMetadataDocument>> {
     let mut lines = text.lines();
     if lines.next() != Some("HAWDB_SEARCH_METADATA_SEGMENT_V1") {
-        return Err(HawdbError::Storage(format!(
+        return Err(HawDBError::Storage(format!(
             "search segment {} metadata sidecar has an invalid header",
             segment.segment_id
         )));
@@ -2801,7 +2801,7 @@ fn decode_metadata_segment(
                 })
             }
             _ => {
-                return Err(HawdbError::Storage(format!(
+                return Err(HawDBError::Storage(format!(
                     "search segment {} has an invalid metadata sidecar line",
                     segment.segment_id
                 )));
@@ -2815,7 +2815,7 @@ fn decode_metadata_segment(
             != Some(segment.last_document_id.as_str())
         || documents.windows(2).any(|pair| pair[0].id >= pair[1].id)
     {
-        return Err(HawdbError::Storage(format!(
+        return Err(HawDBError::Storage(format!(
             "search segment {} metadata sidecar count, bounds, or ordering mismatch",
             segment.segment_id
         )));
@@ -2832,7 +2832,7 @@ fn decode_vector_segment(
 ) -> Result<Vec<SearchVectorDocument>> {
     let mut lines = text.lines();
     if lines.next() != Some("HAWDB_SEARCH_VECTOR_SEGMENT_V1") {
-        return Err(HawdbError::Storage(format!(
+        return Err(HawDBError::Storage(format!(
             "search segment {} vector sidecar has an invalid header",
             segment.segment_id
         )));
@@ -2843,13 +2843,13 @@ fn decode_vector_segment(
         match fields.as_slice() {
             ["vector", raw_ordinal, raw_id, raw_embedding] => {
                 let vector_ordinal = raw_ordinal.parse::<u64>().map_err(|_| {
-                    HawdbError::Storage(format!(
+                    HawDBError::Storage(format!(
                         "search segment {} vector sidecar has an invalid ordinal",
                         segment.segment_id
                     ))
                 })?;
                 let embedding = decode_embedding(raw_embedding)?.ok_or_else(|| {
-                    HawdbError::Storage(format!(
+                    HawDBError::Storage(format!(
                         "search segment {} vector sidecar contains an empty embedding",
                         segment.segment_id
                     ))
@@ -2857,7 +2857,7 @@ fn decode_vector_segment(
                 if embedding.iter().any(|value| !value.is_finite())
                     || expected_dimension.is_none_or(|dimension| embedding.len() != dimension)
                 {
-                    return Err(HawdbError::Storage(format!(
+                    return Err(HawDBError::Storage(format!(
                         "search segment {} vector sidecar has an invalid embedding",
                         segment.segment_id
                     )));
@@ -2869,7 +2869,7 @@ fn decode_vector_segment(
                 });
             }
             _ => {
-                return Err(HawdbError::Storage(format!(
+                return Err(HawDBError::Storage(format!(
                     "search segment {} has an invalid vector sidecar line",
                     segment.segment_id
                 )));
@@ -2885,7 +2885,7 @@ fn decode_vector_segment(
             document.id < segment.first_document_id || document.id > segment.last_document_id
         })
     {
-        return Err(HawdbError::Storage(format!(
+        return Err(HawDBError::Storage(format!(
             "search segment {} vector sidecar count, bounds, or ordering mismatch",
             segment.segment_id
         )));
@@ -2898,7 +2898,7 @@ fn decode_optional_vector_ordinal(raw: &str) -> Result<Option<u64>> {
         return Ok(None);
     }
     raw.parse::<u64>().map(Some).map_err(|_| {
-        HawdbError::Storage("search metadata sidecar has an invalid vector ordinal".to_string())
+        HawDBError::Storage("search metadata sidecar has an invalid vector ordinal".to_string())
     })
 }
 
@@ -2917,13 +2917,13 @@ fn read_bound_artifact(
     name: &str,
 ) -> Result<Vec<u8>> {
     if expected_len > max_bytes {
-        return Err(HawdbError::Storage(format!(
+        return Err(HawDBError::Storage(format!(
             "{name} exceeds the manifest read budget"
         )));
     }
     let bytes = read_bounded_file(path, expected_len)?;
     if bytes.len() as u64 != expected_len || checksum_bytes(&bytes) != expected_checksum {
-        return Err(HawdbError::Storage(format!(
+        return Err(HawDBError::Storage(format!(
             "{name} length or checksum mismatch"
         )));
     }
@@ -2934,7 +2934,7 @@ fn open_exact_length_artifact(path: &Path, expected_len: u64, name: &str) -> Res
     let file = File::open(path)?;
     let actual_len = file.metadata()?.len();
     if actual_len != expected_len {
-        return Err(HawdbError::Storage(format!(
+        return Err(HawDBError::Storage(format!(
             "{name} length mismatch: expected {expected_len}, got {actual_len}"
         )));
     }
@@ -2951,7 +2951,7 @@ fn read_marker_lines_bounded(path: &Path, max_bytes: u64) -> Result<Vec<String>>
     }
     let bytes = read_bounded_file(path, max_bytes)?;
     let content = std::str::from_utf8(&bytes)
-        .map_err(|error| HawdbError::Storage(format!("search marker is not UTF-8: {error}")))?;
+        .map_err(|error| HawDBError::Storage(format!("search marker is not UTF-8: {error}")))?;
     Ok(content
         .lines()
         .map(str::trim)
@@ -2983,7 +2983,7 @@ pub(super) fn next_generation(root: &Path, max_lexical_manifest_bytes: u64) -> R
     };
     active_generation
         .checked_add(1)
-        .ok_or_else(|| HawdbError::Storage("search out-of-core generation overflow".to_string()))
+        .ok_or_else(|| HawDBError::Storage("search out-of-core generation overflow".to_string()))
 }
 
 fn latest_recoverable_lexical_generation(root: &Path, max_manifest_bytes: u64) -> Result<u64> {
@@ -3050,7 +3050,7 @@ fn read_search_range(file: &File, offset: u64, bytes: &mut [u8]) -> Result<()> {
             Ok(()) => Ok(()),
             #[cfg(windows)]
             Err(error) if error.kind() == std::io::ErrorKind::UnexpectedEof => Err(
-                HawdbError::Storage("search range read reached an unexpected EOF".to_string()),
+                HawDBError::Storage("search range read reached an unexpected EOF".to_string()),
             ),
             Err(error) => Err(error.into()),
         }
@@ -3058,7 +3058,7 @@ fn read_search_range(file: &File, offset: u64, bytes: &mut [u8]) -> Result<()> {
     #[cfg(not(any(unix, windows)))]
     {
         let _ = (file, offset, bytes);
-        Err(HawdbError::Storage(
+        Err(HawDBError::Storage(
             "search out-of-core range reads are unsupported on this platform".to_string(),
         ))
     }
@@ -3115,16 +3115,16 @@ mod tests {
         #[cfg(unix)]
         assert_eq!(
             error,
-            HawdbError::Storage("failed to fill whole buffer".to_string())
+            HawDBError::Storage("failed to fill whole buffer".to_string())
         );
         #[cfg(windows)]
         assert_eq!(
             error,
-            HawdbError::Storage("search range read reached an unexpected EOF".to_string())
+            HawDBError::Storage("search range read reached an unexpected EOF".to_string())
         );
         assert_eq!(
             read_search_range(&file, u64::MAX, &mut bytes).unwrap_err(),
-            HawdbError::Storage("read range end overflows u64".to_string())
+            HawDBError::Storage("read range end overflows u64".to_string())
         );
         drop(file);
         fs::remove_file(path).unwrap();

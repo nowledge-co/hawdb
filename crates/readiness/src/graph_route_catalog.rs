@@ -4,7 +4,7 @@
 //! owns the stable route protocol, its input validation, and the fail-closed
 //! reduction of query reports into route evidence.
 use crate::json_parse::{optional_query_name, parse_parameters_json};
-use hawdb_core::{HawdbError, Result, Value};
+use hawdb_core::{HawDBError, Result, Value};
 use hawdb_evidence::inventory::REQUIRED_NOWLEDGE_REPLACEMENT_QUERY_FAMILIES;
 use hawdb_route_ownership::graph::{
     nowledge_mem_required_query_families_for_route, REQUIRED_NOWLEDGE_MEM_BOUNDED_READ_ROUTES,
@@ -541,12 +541,12 @@ pub struct RouteCypherQuery {
 
 pub fn nowledge_mem_graph_overview_route_query(limit: usize) -> Result<RouteQuery> {
     let limit = i64::try_from(limit).map_err(|_| {
-        HawdbError::Semantic(
+        HawDBError::Semantic(
             "graph overview route evidence limit exceeds supported range".to_string(),
         )
     })?;
     if limit <= 0 {
-        return Err(HawdbError::Semantic(
+        return Err(HawDBError::Semantic(
             "graph overview route evidence limit must be greater than zero".to_string(),
         ));
     }
@@ -569,12 +569,12 @@ pub fn nowledge_mem_graph_overview_route_query(limit: usize) -> Result<RouteQuer
 
 pub fn nowledge_mem_graph_sample_route_query(limit: usize) -> Result<RouteQuery> {
     let limit = i64::try_from(limit).map_err(|_| {
-        HawdbError::Semantic(
+        HawDBError::Semantic(
             "graph sample route evidence limit exceeds supported range".to_string(),
         )
     })?;
     if limit <= 0 {
-        return Err(HawdbError::Semantic(
+        return Err(HawDBError::Semantic(
             "graph sample route evidence limit must be greater than zero".to_string(),
         ));
     }
@@ -597,7 +597,7 @@ pub fn nowledge_mem_graph_sample_route_query(limit: usize) -> Result<RouteQuery>
 
 pub fn nowledge_mem_graph_node_details_route_query(node_id: u64) -> Result<RouteQuery> {
     let node_id = i64::try_from(node_id).map_err(|_| {
-        HawdbError::Semantic(
+        HawDBError::Semantic(
             "graph node details route evidence node_id exceeds supported range".to_string(),
         )
     })?;
@@ -623,12 +623,12 @@ pub fn nowledge_mem_graph_community_members_route_query(
     limit: usize,
 ) -> Result<RouteQuery> {
     let limit = i64::try_from(limit).map_err(|_| {
-        HawdbError::Semantic(
+        HawDBError::Semantic(
             "graph community members route evidence limit exceeds supported range".to_string(),
         )
     })?;
     if limit <= 0 {
-        return Err(HawdbError::Semantic(
+        return Err(HawDBError::Semantic(
             "graph community members route evidence limit must be greater than zero".to_string(),
         ));
     }
@@ -657,13 +657,13 @@ pub fn nowledge_mem_graph_community_recent_memories_route_query(
     limit: usize,
 ) -> Result<RouteQuery> {
     let limit = i64::try_from(limit).map_err(|_| {
-        HawdbError::Semantic(
+        HawDBError::Semantic(
             "graph community recent memories route evidence limit exceeds supported range"
                 .to_string(),
         )
     })?;
     if limit <= 0 {
-        return Err(HawdbError::Semantic(
+        return Err(HawDBError::Semantic(
             "graph community recent memories route evidence limit must be greater than zero"
                 .to_string(),
         ));
@@ -699,24 +699,24 @@ where
     S: Into<String>,
 {
     let max_entities = i64::try_from(max_entities).map_err(|_| {
-        HawdbError::Semantic(
+        HawDBError::Semantic(
             "graph community subgraph route evidence max_entities exceeds supported range"
                 .to_string(),
         )
     })?;
     let max_edges = i64::try_from(max_edges).map_err(|_| {
-        HawdbError::Semantic(
+        HawDBError::Semantic(
             "graph community subgraph route evidence max_edges exceeds supported range".to_string(),
         )
     })?;
     if max_entities <= 0 {
-        return Err(HawdbError::Semantic(
+        return Err(HawDBError::Semantic(
             "graph community subgraph route evidence max_entities must be greater than zero"
                 .to_string(),
         ));
     }
     if max_edges < 0 {
-        return Err(HawdbError::Semantic(
+        return Err(HawDBError::Semantic(
             "graph community subgraph route evidence max_edges must not be negative".to_string(),
         ));
     }
@@ -879,12 +879,12 @@ fn pagerank_plan_route_query(
 
 pub fn nowledge_mem_graph_orphans_route_query(limit: usize) -> Result<RouteQuery> {
     let limit = i64::try_from(limit).map_err(|_| {
-        HawdbError::Semantic(
+        HawDBError::Semantic(
             "graph orphans route evidence limit exceeds supported range".to_string(),
         )
     })?;
     if limit <= 0 {
-        return Err(HawdbError::Semantic(
+        return Err(HawDBError::Semantic(
             "graph orphans route evidence limit must be greater than zero".to_string(),
         ));
     }
@@ -912,7 +912,7 @@ pub fn parse_route_query_inventory(value: &serde_json::Value) -> Result<Vec<Rout
         value.get("routes").and_then(serde_json::Value::as_array)
     }
     .ok_or_else(|| {
-        HawdbError::Semantic("graph route query JSON must contain a routes array".to_string())
+        HawDBError::Semantic("graph route query JSON must contain a routes array".to_string())
     })?;
     routes.iter().map(parse_route_query).collect()
 }
@@ -921,7 +921,7 @@ pub fn parse_route_parity_evidence(value: &serde_json::Value) -> Result<RoutePar
     if value.get("protocol").and_then(serde_json::Value::as_str)
         != Some(NMEM_GRAPH_ROUTE_PARITY_EVIDENCE_PROTOCOL)
     {
-        return Err(HawdbError::Semantic(
+        return Err(HawDBError::Semantic(
             "graph route parity evidence protocol mismatch".to_string(),
         ));
     }
@@ -929,7 +929,7 @@ pub fn parse_route_parity_evidence(value: &serde_json::Value) -> Result<RoutePar
         .get("routes")
         .and_then(serde_json::Value::as_array)
         .ok_or_else(|| {
-            HawdbError::Semantic(
+            HawDBError::Semantic(
                 "graph route parity evidence must contain a routes array".to_string(),
             )
         })?
@@ -939,7 +939,7 @@ pub fn parse_route_parity_evidence(value: &serde_json::Value) -> Result<RoutePar
     let mut route_map = BTreeMap::new();
     for (route, evidence) in routes {
         if route_map.insert(route.clone(), evidence).is_some() {
-            return Err(HawdbError::Semantic(format!(
+            return Err(HawDBError::Semantic(format!(
                 "duplicate graph route parity evidence route: {route}"
             )));
         }
@@ -952,7 +952,7 @@ fn parse_route_parity_evidence_route(
 ) -> Result<(String, RouteParityEvidenceRoute)> {
     let route = required_string(value, "route")?.to_string();
     if route.trim().is_empty() {
-        return Err(HawdbError::Semantic(
+        return Err(HawDBError::Semantic(
             "graph route parity evidence route is required".to_string(),
         ));
     }
@@ -970,7 +970,7 @@ fn parse_route_parity_evidence_route(
 fn parse_route_query(value: &serde_json::Value) -> Result<RouteQuery> {
     let route = required_string(value, "route")?.to_string();
     if route.trim().is_empty() {
-        return Err(HawdbError::Semantic(
+        return Err(HawDBError::Semantic(
             "graph route query route is required".to_string(),
         ));
     }
@@ -978,7 +978,7 @@ fn parse_route_query(value: &serde_json::Value) -> Result<RouteQuery> {
         .get("queries")
         .and_then(serde_json::Value::as_array)
         .ok_or_else(|| {
-            HawdbError::Semantic("graph route query field 'queries' must be an array".to_string())
+            HawDBError::Semantic("graph route query field 'queries' must be an array".to_string())
         })?
         .iter()
         .enumerate()
@@ -1000,13 +1000,13 @@ fn parse_route_cypher_query(
 ) -> Result<RouteCypherQuery> {
     let cypher = required_string(value, "cypher")?.to_string();
     if cypher.trim().is_empty() {
-        return Err(HawdbError::Semantic(
+        return Err(HawDBError::Semantic(
             "graph route query field 'cypher' must be non-empty".to_string(),
         ));
     }
     let name = optional_query_name(value).unwrap_or_else(|| format!("query-{}", query_index + 1));
     if name.trim().is_empty() {
-        return Err(HawdbError::Semantic(
+        return Err(HawDBError::Semantic(
             "graph route query name must be non-empty when provided".to_string(),
         ));
     }
@@ -1121,7 +1121,7 @@ fn required_string<'a>(value: &'a serde_json::Value, field: &str) -> Result<&'a 
         .get(field)
         .and_then(serde_json::Value::as_str)
         .ok_or_else(|| {
-            HawdbError::Semantic(format!(
+            HawDBError::Semantic(format!(
                 "graph route query field '{field}' must be a string"
             ))
         })
@@ -1139,7 +1139,7 @@ fn optional_u64_field(value: &serde_json::Value, field: &str) -> Result<Option<u
         .get(field)
         .map(|value| {
             value.as_u64().ok_or_else(|| {
-                HawdbError::Semantic(format!(
+                HawDBError::Semantic(format!(
                     "graph route query field '{field}' must be a non-negative integer"
                 ))
             })
@@ -1152,7 +1152,7 @@ fn optional_string_field(value: &serde_json::Value, field: &str) -> Result<Optio
         .get(field)
         .map(|value| {
             value.as_str().map(str::to_string).ok_or_else(|| {
-                HawdbError::Semantic(format!(
+                HawDBError::Semantic(format!(
                     "graph route query field '{field}' must be a string"
                 ))
             })
@@ -1165,7 +1165,7 @@ fn string_array_field(value: &serde_json::Value, field: &str) -> Result<Vec<Stri
         return Ok(Vec::new());
     };
     let items = items.as_array().ok_or_else(|| {
-        HawdbError::Semantic(format!(
+        HawDBError::Semantic(format!(
             "graph route query field '{field}' must be a string array"
         ))
     })?;
@@ -1173,7 +1173,7 @@ fn string_array_field(value: &serde_json::Value, field: &str) -> Result<Vec<Stri
         .iter()
         .map(|item| {
             item.as_str().map(str::to_string).ok_or_else(|| {
-                HawdbError::Semantic(format!(
+                HawDBError::Semantic(format!(
                     "graph route query field '{field}' must be a string array"
                 ))
             })
@@ -1181,15 +1181,15 @@ fn string_array_field(value: &serde_json::Value, field: &str) -> Result<Vec<Stri
         .collect()
 }
 
-fn error_class(error: &HawdbError) -> &'static str {
+fn error_class(error: &HawDBError) -> &'static str {
     match error {
-        HawdbError::Parse(_) => "parse",
-        HawdbError::Semantic(_) => "semantic",
-        HawdbError::Storage(_)
-        | HawdbError::StorageIntegrity(_)
-        | HawdbError::AppendSequenceExhausted { .. } => "storage",
-        HawdbError::Execution(_) => "execution",
-        HawdbError::CapabilityUnavailable { .. } => "capability_unavailable",
+        HawDBError::Parse(_) => "parse",
+        HawDBError::Semantic(_) => "semantic",
+        HawDBError::Storage(_)
+        | HawDBError::StorageIntegrity(_)
+        | HawDBError::AppendSequenceExhausted { .. } => "storage",
+        HawDBError::Execution(_) => "execution",
+        HawDBError::CapabilityUnavailable { .. } => "capability_unavailable",
     }
 }
 
@@ -1199,7 +1199,7 @@ mod tests {
         graph_route_evidence_json, nowledge_mem_graph_overview_route_query, RouteParityEvidence,
         RouteParityEvidenceRoute,
     };
-    use hawdb_core::HawdbError;
+    use hawdb_core::HawDBError;
     use std::collections::BTreeMap;
 
     fn complete_overview_parity() -> RouteParityEvidence {
@@ -1259,7 +1259,7 @@ mod tests {
             "shadow_read_only",
             &[route],
             Some(&complete_overview_parity()),
-            |_| Err(HawdbError::Execution("host execution failed".to_string())),
+            |_| Err(HawDBError::Execution("host execution failed".to_string())),
         );
 
         assert_eq!(

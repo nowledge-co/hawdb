@@ -8,7 +8,7 @@ use crate::build_memory::{
 use crate::out_of_core::hydration::{CheckedReader, RangeReader};
 use crate::out_of_core::search_document_bytes;
 use crate::{
-    parse_snapshot_header, HawdbError, Result, SearchOutOfCoreMetrics, SearchOutOfCoreReader,
+    parse_snapshot_header, HawDBError, Result, SearchOutOfCoreMetrics, SearchOutOfCoreReader,
     SearchSegmentDescriptorEntry,
 };
 use hawdb_core::RuntimeTaskContext;
@@ -297,8 +297,8 @@ impl<R: Read> Read for Controlled<'_, R> {
     }
 }
 
-fn invalid(reason: impl std::fmt::Display) -> HawdbError {
-    HawdbError::Storage(format!("search hydration {reason}"))
+fn invalid(reason: impl std::fmt::Display) -> HawDBError {
+    HawDBError::Storage(format!("search hydration {reason}"))
 }
 
 #[cfg(test)]

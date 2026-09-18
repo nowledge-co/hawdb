@@ -39,7 +39,7 @@ impl RelationalRowStoreReader for SnapshotlessStore {
         _rows: &Self::TransactionRows,
     ) -> Result<RelationalRowPageSnapshotReader> {
         self.transaction_opens.set(self.transaction_opens.get() + 1);
-        Err(HawdbError::Storage(
+        Err(HawDBError::Storage(
             "transaction snapshot sentinel".to_string(),
         ))
     }
@@ -252,7 +252,7 @@ fn scan_stop_and_callback_errors_are_preserved() {
                 let mut callback = || {
                     calls += 1;
                     if fail {
-                        Err(HawdbError::Semantic("callback sentinel".into()))
+                        Err(HawDBError::Semantic("callback sentinel".into()))
                     } else {
                         Ok(false)
                     }
@@ -265,7 +265,7 @@ fn scan_stop_and_callback_errors_are_preserved() {
                 assert_eq!(calls, 1);
                 if fail {
                     assert!(
-                        matches!(result, Err(HawdbError::Semantic(message)) if message == "callback sentinel")
+                        matches!(result, Err(HawDBError::Semantic(message)) if message == "callback sentinel")
                     );
                 } else {
                     assert!(!result.unwrap());
@@ -287,11 +287,11 @@ fn cancelled_scans_do_not_invoke_callbacks() {
         let runtime = fixture.runtime(mode, "SELECT * FROM docs", &task);
         assert!(matches!(
             runtime.visit_all_ref("docs", |_| panic!("cancelled callback")),
-            Err(HawdbError::Execution(_))
+            Err(HawDBError::Execution(_))
         ));
         assert!(matches!(
             runtime.visit_all("docs", |_| panic!("cancelled callback")),
-            Err(HawdbError::Execution(_))
+            Err(HawDBError::Execution(_))
         ));
         assert_eq!(runtime.evidence().rows_visited, 0);
     }
@@ -308,7 +308,7 @@ fn cumulative_row_budget_applies_across_calls() {
         assert!(runtime.read_point("docs", &key(0)).unwrap().is_some());
         assert!(matches!(
             runtime.read_point("docs", &key(1)),
-            Err(HawdbError::Execution(_))
+            Err(HawDBError::Execution(_))
         ));
         assert_eq!(runtime.evidence().rows_visited, 1);
     }
@@ -343,7 +343,7 @@ fn metadata_reads_preserve_overflow_until_output_hydration() {
     assert_eq!(runtime.hydration().hydrated_rows, 0);
     assert!(matches!(
         runtime.read_output_point("docs", &key(0)),
-        Err(HawdbError::Execution(_))
+        Err(HawDBError::Execution(_))
     ));
     let runtime = RelationalRowRuntime::new(
         &state,
@@ -388,11 +388,11 @@ fn index_coverage_binds_snapshot_without_reading_row_pages() {
     assert_eq!(evidence.logical_pages, 0);
     assert!(matches!(
         runtime.read_index_covered("docs", &["bucket".into()], &RelationalKey(vec![]), &key(4)),
-        Err(HawdbError::StorageIntegrity(_))
+        Err(HawDBError::StorageIntegrity(_))
     ));
     assert!(matches!(
         runtime.read_index_covered("docs", &["bucket".into()], &key(1), &RelationalKey(vec![])),
-        Err(HawdbError::StorageIntegrity(_))
+        Err(HawDBError::StorageIntegrity(_))
     ));
     let uncovered = fixture.runtime(1, "SELECT body FROM docs", &task);
     assert!(uncovered
@@ -529,7 +529,7 @@ fn nested_output_hydration_shares_scan_budget_even_on_callback_error() {
             } else {
                 runtime.visit_all("docs", |_| callback())
             };
-            assert!(matches!(result, Err(HawdbError::Execution(_))));
+            assert!(matches!(result, Err(HawDBError::Execution(_))));
             assert_eq!(calls, 2);
             assert_eq!(runtime.hydration().hydrated_rows, 1);
             assert_eq!(runtime.hydration().decompressed_bytes, body.len());
@@ -630,7 +630,7 @@ fn snapshot_identity_and_all_cumulative_counters_are_preserved() {
         assert_ne!(changed, identity);
         assert!(matches!(
             runtime.record(changed, &report, 10, 11),
-            Err(HawdbError::StorageIntegrity(_))
+            Err(HawDBError::StorageIntegrity(_))
         ));
         assert_eq!(runtime.evidence(), evidence);
     }
@@ -662,13 +662,13 @@ fn exhausted_resource_limits_and_counter_overflow_fail_closed() {
         }
         assert!(matches!(
             runtime.remaining_limits(),
-            Err(HawdbError::Execution(_))
+            Err(HawDBError::Execution(_))
         ));
     }
     let mut counter = usize::MAX;
     assert!(matches!(
         add_counter(&mut counter, 1, "test"),
-        Err(HawdbError::StorageIntegrity(_))
+        Err(HawDBError::StorageIntegrity(_))
     ));
     assert_eq!(counter, usize::MAX);
 }
@@ -753,7 +753,7 @@ fn projection_identity_and_table_selection_are_fail_closed() {
         }
         assert!(matches!(
             runtime.record_projection_page(&changed),
-            Err(HawdbError::StorageIntegrity(_))
+            Err(HawDBError::StorageIntegrity(_))
         ));
         assert_eq!(runtime.evidence(), evidence);
     }

@@ -198,7 +198,7 @@ fn run(case: Case) -> Outcome {
                     .collect(),
             );
             if case.consumer_error {
-                Err(HawdbError::Execution("consumer failure".to_string()))
+                Err(HawDBError::Execution("consumer failure".to_string()))
             } else if case.consumer_stop {
                 Ok(BatchControl::Stop)
             } else {
@@ -312,10 +312,10 @@ fn embedding_conversion_preserves_bits_errors_and_validation_order() {
             ),
             Err(message) => {
                 let error = actual.unwrap_err();
-                assert!(matches!(error, HawdbError::Semantic(_)));
+                assert!(matches!(error, HawDBError::Semantic(_)));
                 assert_eq!(
                     error.to_string(),
-                    HawdbError::Semantic(format!("vector search parameter '$embedding' {message}"))
+                    HawDBError::Semantic(format!("vector search parameter '$embedding' {message}"))
                         .to_string()
                 );
             }
@@ -418,7 +418,7 @@ fn preflight_zero_limit_and_cancellation_keep_error_precedence() {
     error(
         &run(Case {
             cancel_after: true,
-            response: Err(HawdbError::Execution("host failure".into())),
+            response: Err(HawDBError::Execution("host failure".into())),
             ..Case::default()
         }),
         "host failure",

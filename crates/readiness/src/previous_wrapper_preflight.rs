@@ -3,7 +3,7 @@
 //! The embedded facade retains command dispatch. This owner evaluates supplied
 //! evidence and provides the same typed and preflight contracts to that facade.
 
-use hawdb_core::{HawdbError, Result, GRAPH_RAG_SCHEMA_CONTEXT_PROTOCOL};
+use hawdb_core::{HawDBError, Result, GRAPH_RAG_SCHEMA_CONTEXT_PROTOCOL};
 use hawdb_evidence::replacement_contract::{
     NOWLEDGE_GRAPH_ROUTE_WORKLOAD_FIXTURE_PROTOCOL, NOWLEDGE_MEM_SEARCH_CANDIDATE_EVIDENCE_ROUTE,
     NOWLEDGE_MEM_SEARCH_CANDIDATE_EVIDENCE_SOURCE, NOWLEDGE_MEM_SEARCH_CANDIDATE_PRIMARY_ENGINE,
@@ -64,7 +64,7 @@ impl NowledgePreviousWrapperPreflightInputs {
     ) -> Result<Self> {
         let wrapper_identity = wrapper_identity.into();
         if wrapper_identity.trim().is_empty() {
-            return Err(HawdbError::Semantic(
+            return Err(HawDBError::Semantic(
                 "previous-wrapper preflight wrapper identity must not be empty".to_string(),
             ));
         }
@@ -181,10 +181,10 @@ pub fn run_nowledge_previous_wrapper_preflight_check(
             }
             "--wrapper-identity" => {
                 let value = args.next().ok_or_else(|| {
-                    HawdbError::Semantic(nowledge_previous_wrapper_preflight_check_usage())
+                    HawDBError::Semantic(nowledge_previous_wrapper_preflight_check_usage())
                 })?;
                 if value.trim().is_empty() {
-                    return Err(HawdbError::Semantic(
+                    return Err(HawDBError::Semantic(
                         "--wrapper-identity must not be empty".to_string(),
                     ));
                 }
@@ -192,10 +192,10 @@ pub fn run_nowledge_previous_wrapper_preflight_check(
             }
             "--bundle-dir" => {
                 let value = args.next().ok_or_else(|| {
-                    HawdbError::Semantic(nowledge_previous_wrapper_preflight_check_usage())
+                    HawDBError::Semantic(nowledge_previous_wrapper_preflight_check_usage())
                 })?;
                 if value.trim().is_empty() {
-                    return Err(HawdbError::Semantic(
+                    return Err(HawDBError::Semantic(
                         "--bundle-dir must not be empty".to_string(),
                     ));
                 }
@@ -226,7 +226,7 @@ pub fn run_nowledge_previous_wrapper_preflight_check(
                 inputs.operations_readiness = Some(read_json_arg(&mut args)?);
             }
             _ => {
-                return Err(HawdbError::Semantic(
+                return Err(HawDBError::Semantic(
                     nowledge_previous_wrapper_preflight_check_usage(),
                 ));
             }
@@ -280,18 +280,18 @@ fn fill_bundle_dir_inputs(inputs: &mut CliPreviousWrapperPreflightCheckInputs) -
 fn read_json_arg(args: &mut impl Iterator<Item = String>) -> Result<serde_json::Value> {
     let path = args
         .next()
-        .ok_or_else(|| HawdbError::Semantic(nowledge_previous_wrapper_preflight_check_usage()))?;
+        .ok_or_else(|| HawDBError::Semantic(nowledge_previous_wrapper_preflight_check_usage()))?;
     read_json_file(Path::new(&path))
 }
 
 fn read_json_file(path: &Path) -> Result<serde_json::Value> {
     let raw = std::fs::read_to_string(path).map_err(|_| {
-        HawdbError::Execution(
+        HawDBError::Execution(
             "failed to read previous-wrapper preflight JSON: io_error".to_string(),
         )
     })?;
     serde_json::from_str(&raw).map_err(|_| {
-        HawdbError::Execution(
+        HawDBError::Execution(
             "failed to parse previous-wrapper preflight JSON: invalid_json".to_string(),
         )
     })
@@ -302,31 +302,31 @@ fn cli_inputs_to_typed(
 ) -> Result<NowledgePreviousWrapperPreflightInputs> {
     let wrapper_identity = inputs
         .wrapper_identity
-        .ok_or_else(|| HawdbError::Semantic(nowledge_previous_wrapper_preflight_check_usage()))?;
+        .ok_or_else(|| HawDBError::Semantic(nowledge_previous_wrapper_preflight_check_usage()))?;
     let contract_evidence = inputs
         .contract_evidence
-        .ok_or_else(|| HawdbError::Semantic(nowledge_previous_wrapper_preflight_check_usage()))?;
+        .ok_or_else(|| HawDBError::Semantic(nowledge_previous_wrapper_preflight_check_usage()))?;
     let adapter_smoke = inputs
         .adapter_smoke
-        .ok_or_else(|| HawdbError::Semantic(nowledge_previous_wrapper_preflight_check_usage()))?;
+        .ok_or_else(|| HawDBError::Semantic(nowledge_previous_wrapper_preflight_check_usage()))?;
     let migration_gate = inputs
         .migration_gate
-        .ok_or_else(|| HawdbError::Semantic(nowledge_previous_wrapper_preflight_check_usage()))?;
+        .ok_or_else(|| HawDBError::Semantic(nowledge_previous_wrapper_preflight_check_usage()))?;
     let replacement_summary = inputs
         .replacement_summary
-        .ok_or_else(|| HawdbError::Semantic(nowledge_previous_wrapper_preflight_check_usage()))?;
+        .ok_or_else(|| HawDBError::Semantic(nowledge_previous_wrapper_preflight_check_usage()))?;
     let query_runtime_preflight = inputs
         .query_runtime_preflight
-        .ok_or_else(|| HawdbError::Semantic(nowledge_previous_wrapper_preflight_check_usage()))?;
+        .ok_or_else(|| HawDBError::Semantic(nowledge_previous_wrapper_preflight_check_usage()))?;
     let library_readiness = inputs
         .library_readiness
-        .ok_or_else(|| HawdbError::Semantic(nowledge_previous_wrapper_preflight_check_usage()))?;
+        .ok_or_else(|| HawDBError::Semantic(nowledge_previous_wrapper_preflight_check_usage()))?;
     let cutover_controls = inputs
         .cutover_controls
-        .ok_or_else(|| HawdbError::Semantic(nowledge_previous_wrapper_preflight_check_usage()))?;
+        .ok_or_else(|| HawDBError::Semantic(nowledge_previous_wrapper_preflight_check_usage()))?;
     let operations_readiness = inputs
         .operations_readiness
-        .ok_or_else(|| HawdbError::Semantic(nowledge_previous_wrapper_preflight_check_usage()))?;
+        .ok_or_else(|| HawDBError::Semantic(nowledge_previous_wrapper_preflight_check_usage()))?;
 
     NowledgePreviousWrapperPreflightInputs::new(
         wrapper_identity,

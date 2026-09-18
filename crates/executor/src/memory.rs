@@ -1,6 +1,6 @@
 //! Execution memory defaults and admission estimates.
 
-use hawdb_core::{HawdbError, Result, RuntimeTaskContext};
+use hawdb_core::{HawDBError, Result, RuntimeTaskContext};
 use hawdb_plan::{PhysicalPlan, PlanChildren, VectorExecutionResourceProfile};
 use hawdb_storage::MutationLimits;
 use std::num::{NonZeroU64, NonZeroUsize};
@@ -35,12 +35,12 @@ pub fn enforced_result_memory_budget(
 
 fn runtime_memory_budget(owner: &str, bytes: u64) -> Result<NonZeroUsize> {
     let bytes = usize::try_from(bytes).map_err(|_| {
-        HawdbError::Execution(format!(
+        HawDBError::Execution(format!(
             "runtime-admitted {owner} reservation {bytes} does not fit the executor address space"
         ))
     })?;
     NonZeroUsize::new(bytes).ok_or_else(|| {
-        HawdbError::Execution(format!(
+        HawDBError::Execution(format!(
             "runtime-admitted {owner} reservation must be non-zero"
         ))
     })

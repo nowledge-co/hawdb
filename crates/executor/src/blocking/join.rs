@@ -178,7 +178,7 @@ impl<'a> JoinState<'a> {
                     if join_key(&binding, key).map(|value| self.hash_state.hash_one(value))
                         != Some(hash)
                     {
-                        return Err(HawdbError::StorageIntegrity(
+                        return Err(HawDBError::StorageIntegrity(
                             "HashJoinExec spill key does not match its recorded hash".into(),
                         ));
                     }
@@ -293,7 +293,7 @@ impl<'a> JoinState<'a> {
         while let Some((hash, binding)) = self.read(&mut reader, &mut replay)? {
             if !self.can_insert(&binding) {
                 if self.table.is_empty() {
-                    return Err(HawdbError::Execution(
+                    return Err(HawDBError::Execution(
                         "HashJoinExec build row exceeds its admitted table budget".to_string(),
                     ));
                 }
@@ -380,7 +380,7 @@ fn execute_hash_join(
         right,
     } = plan
     else {
-        return Err(HawdbError::Execution(
+        return Err(HawDBError::Execution(
             "expected HashJoinExec plan".to_string(),
         ));
     };

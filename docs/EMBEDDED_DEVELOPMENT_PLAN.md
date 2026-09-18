@@ -11,7 +11,7 @@
 
 ## Objective
 
-Replace the Nowledge local Ladybug/Kuzu graph data plane with Hawdb without
+Replace the Nowledge local Ladybug/Kuzu graph data plane with HawDB without
 changing the product's graph semantics or coupling canonical graph storage to
 vector search.
 
@@ -26,12 +26,12 @@ Three codebases define the work:
 - `nowledge/mem` defines the compatibility contract through `nmem-graph`, its
   Cypher call sites, schema convergence, recovery behavior, and graph algorithm
   usage.
-- Hawdb owns the new parser, planner, optimizer, executor, storage format, WAL,
+- HawDB owns the new parser, planner, optimizer, executor, storage format, WAL,
   checkpoint, and stable embedded API.
 - Chryso is a reference for optimizer structure: memo groups, logical and
   physical rules, physical properties, structured costs, deterministic plan
   fingerprints, and explain traces. SQL-specific operators and statistics are
-  not copied into Hawdb.
+  not copied into HawDB.
 
 ## Non-Negotiable Invariants
 
@@ -147,7 +147,7 @@ Exit gate:
 - restart and torn-WAL tests pass
 - one end-to-end indexed query produces a stable physical plan
 
-Status: complete in the initial Hawdb MVP.
+Status: complete in the initial HawDB MVP.
 
 ### Phase 1: Compatibility Front Door
 
@@ -321,13 +321,13 @@ Nowledge-owned persistent wrapper command, smoke the external shadow adapter,
 attach storage-recovery and background-maintenance evidence, then run the
 migration gate and replacement summary with fail-closed production readiness.
 Nowledge Mem integration is side-by-side only during this phase: the existing
-Kuzu/Ladybug store remains available while Hawdb runs as a sibling embedded
+Kuzu/Ladybug store remains available while HawDB runs as a sibling embedded
 graph store behind explicit adapter flags, shadow comparison, and per-surface
 cutover evidence. Replacement readiness is not permission to delete or replace
 the old database in place; old-store removal requires a later explicit cleanup
 phase after rollback and parity evidence exists. The intended repository
-integration is to add Hawdb to the Nowledge Mem repository as a Git submodule,
-not to copy Hawdb source files into the Nowledge Mem tree; adapter code in
+integration is to add HawDB to the Nowledge Mem repository as a Git submodule,
+not to copy HawDB source files into the Nowledge Mem tree; adapter code in
 Nowledge Mem should depend on that submodule boundary during shadowing and
 cutover.
 The embedded front door now includes a bounded exact physical-plan LFU cache for
@@ -1080,7 +1080,7 @@ references, checksums, parser hints, and projection targets. The default
 graph-kernel runner rejects those jobs while preserving the payload in the job
 report, and `Database::run_next_external_content_artifact_job_with` lets a
 caller-owned content runtime complete parsing/crawling/chunking jobs without
-embedding that runtime in Hawdb. Successful external content jobs retain the
+embedding that runtime in HawDB. Successful external content jobs retain the
 runtime's last structured `QueryOutput` on the job ledger so callers can audit
 published projection refs, parser versions, checksums, chunk counts, and other
 small lineage fields without storing large parsed content in the graph kernel.
@@ -1099,7 +1099,7 @@ completion runners preserve the same row shape while charging parser/crawler
 work to the `Import` QoS lane.
 `ExternalContentArtifactRuntimeManifest` lets caller-owned parser/crawler loops
 declare supported actions, required payload keys, runtime version, and estimated
-operation cost so Hawdb can expose bounded claimable-job views and a matching
+operation cost so HawDB can expose bounded claimable-job views and a matching
 Import-lane background work plan without treating the manifest as a sandbox or
 execution permission.
 Internal parser/crawler loops can use
@@ -1132,13 +1132,13 @@ query families. It runs setup statements, parameterized Cypher checks, expected
 row comparisons, plan-shape assertions, and projected graph checks through the
 public `Database` facade. The fixture harness also exposes a generic shadow
 engine interface that applies the same setup statements to a second engine,
-compares Cypher check rows against the primary Hawdb run, compares declared
+compares Cypher check rows against the primary HawDB run, compares declared
 error classes for failing Cypher checks, compares mutation effects through
 follow-up effect queries, and can compare projected graph outputs from shadow
 engines that implement the projection hook. Engines without that hook still
 report projected graph checks as primary-only. `ExternalShadowCommand` provides
 a JSON-lines process adapter for this interface, so a Ladybug/Kuzu wrapper can
-be attached as a subprocess without linking Kuzu or Python into Hawdb.
+be attached as a subprocess without linking Kuzu or Python into HawDB.
 The current fixture covers indexed parameter lookup, null predicates, list
 predicates with pagination, entity alias list lookup, entity reuse lookup reads,
 entity temporal metadata create/update writes, current timestamp writes,
@@ -1558,7 +1558,7 @@ Remaining Phase 5 work:
 
 ## First Implemented Compatibility Slice: Parameters
 
-Hawdb now represents a parsed value as either a literal or a named parameter.
+HawDB now represents a parsed value as either a literal or a named parameter.
 The planner binds parameters into typed values before creating a logical plan.
 The optimizer, executor, and store therefore never handle unresolved parameter
 tokens.

@@ -2,7 +2,7 @@
 
 ## Scope And Naming
 
-Hawdb exposes vector retrieval through the default `vector-search` Cargo
+HawDB exposes vector retrieval through the default `vector-search` Cargo
 feature. `RaBitQ` identifies the 1-bit and 4-bit candidate encodings described
 in this contract. The implementation is native Rust and has no C++ FFI or
 third-party vector-quantization runtime dependency.
@@ -45,10 +45,10 @@ source digest, and generation. Format version 1 uses
 The current calibration value is `none`.
 
 The sign/refinement code representation is intentionally aligned with Faiss
-`IndexRaBitQ`, but Hawdb stores its reconstruction factors in segment arrays
-rather than inside each Faiss flat code. Hawdb's signed block-Hadamard transform
+`IndexRaBitQ`, but HawDB stores its reconstruction factors in segment arrays
+rather than inside each Faiss flat code. HawDB's signed block-Hadamard transform
 is an explicit pre-transform selected by its manifest; Faiss expects any random
-rotation to be performed externally. Therefore Hawdb artifacts are not binary
+rotation to be performed externally. Therefore HawDB artifacts are not binary
 interchangeable with Faiss artifacts even though their packed quantizer planes
 have the same bit order and code semantics. Centroid calibration, other bit
 widths, native SIMD scoring, and ANN integration require production evidence
@@ -112,7 +112,7 @@ not materialize a full-document allowlist. The caller supplies
 `max_working_bytes`, `max_parallelism`, and an optional cancellation context.
 Admission accounts for the global and per-worker TopK, segment buffers, filter
 bitmaps, and bounded worker stacks. Worker count MUST be the minimum of the
-requested parallelism, segment count, and memory-admitted parallelism. Hawdb
+requested parallelism, segment count, and memory-admitted parallelism. HawDB
 MUST NOT create a Rayon pool, Tokio runtime, or other global vector-search
 executor.
 

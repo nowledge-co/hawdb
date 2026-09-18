@@ -209,7 +209,7 @@ fn order_alias_resolution_preserves_identity_and_ambiguity() {
     let ambiguous = select("SELECT body AS x, payload AS x FROM docs ORDER BY x");
     assert_eq!(
         resolve_relational_order_target(&ambiguous, &ambiguous.order_by[0]).unwrap_err(),
-        HawdbError::Semantic("ambiguous relational ORDER BY alias x".into()),
+        HawDBError::Semantic("ambiguous relational ORDER BY alias x".into()),
     );
 }
 
@@ -249,13 +249,13 @@ fn field_planning_keeps_exact_errors_and_validation_order() {
         let statement = select(sql);
         assert_eq!(
             plan_requested_fields(&statement, &state).unwrap_err(),
-            HawdbError::Semantic(message.into()),
+            HawDBError::Semantic(message.into()),
             "{sql}",
         );
         let all = expected_fields(&state, &[("docs", 31), ("peers", 31)]);
         assert_eq!(
             plan_scan_hydration_fields(&statement, &state, &all).unwrap_err(),
-            HawdbError::Semantic(message.into()),
+            HawDBError::Semantic(message.into()),
             "{sql}",
         );
     }
@@ -313,7 +313,7 @@ fn index_coverage_keeps_primary_keys_and_fails_closed() {
             .unwrap());
         assert_eq!(
             plan.index_covers_table("absent", schema, &[]).unwrap_err(),
-            HawdbError::StorageIntegrity(
+            HawDBError::StorageIntegrity(
                 "relational query has no field plan for table absent".into()
             ),
         );
@@ -371,7 +371,7 @@ fn composed_plans_keep_scan_output_and_hydration_boundaries() {
         ] {
             assert_eq!(
                 result.unwrap_err(),
-                HawdbError::StorageIntegrity(
+                HawDBError::StorageIntegrity(
                     "relational query has no field plan for table absent".into(),
                 )
             );
@@ -387,11 +387,11 @@ fn composed_planning_keeps_error_precedence_and_alias_short_circuit() {
     );
     assert!(order_by_uses_expression_alias(&statement).unwrap());
     let result = plan_relational_field_plan(&statement, &state);
-    assert!(matches!(result, Err(HawdbError::Semantic(message))
+    assert!(matches!(result, Err(HawDBError::Semantic(message))
         if message == "ambiguous relational ORDER BY alias x"));
     let statement = select("SELECT missing FROM absent ORDER BY missing");
     assert!(matches!(plan_relational_field_plan(&statement, &state),
-        Err(HawdbError::Semantic(message)) if message == "unknown relational table absent"));
+        Err(HawDBError::Semantic(message)) if message == "unknown relational table absent"));
 }
 
 #[test]

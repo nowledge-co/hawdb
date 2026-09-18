@@ -1,6 +1,6 @@
 # Host-controlled lexical term admission
 
-Hawdb's embedded facade exposes `SearchLexicalTermPolicy` for out-of-core
+HawDB's embedded facade exposes `SearchLexicalTermPolicy` for out-of-core
 generation builds and readers. It limits the UTF-8 bytes of an **analyzed term**,
 including analyzer-generated aliases and compound terms, not the source document.
 The default remains 4,096 bytes. The separate default 4 MiB document-source limit

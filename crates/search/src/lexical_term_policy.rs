@@ -1,4 +1,4 @@
-use crate::error::{HawdbError, Result};
+use crate::error::{HawDBError, Result};
 use std::num::NonZeroU64;
 
 /// Host-selected admission for the UTF-8 bytes of one analyzed lexical term.
@@ -15,7 +15,7 @@ impl SearchLexicalTermPolicy {
     /// Creates a finite limit representable by the v1 term-length encoding.
     pub fn new(max_term_bytes: NonZeroU64) -> Result<Self> {
         if max_term_bytes.get() > u64::from(u32::MAX) {
-            return Err(HawdbError::Storage(
+            return Err(HawDBError::Storage(
                 "lexical term policy exceeds the v1 u32 length encoding".into(),
             ));
         }

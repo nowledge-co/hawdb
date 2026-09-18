@@ -3,7 +3,7 @@
 //! Host-neutral protocol models for Nowledge retrieval and maintenance.
 //!
 //! Graph storage, transactions, and embedded runtime ownership remain with
-//! the root Hawdb facade.
+//! the root HawDB facade.
 
 mod graph;
 mod maintenance;
@@ -15,7 +15,7 @@ mod workload;
 #[doc(hidden)]
 pub mod test_support;
 
-/// Stable host-neutral contracts exposed to the root Hawdb facade.
+/// Stable host-neutral contracts exposed to the root HawDB facade.
 pub mod public {
     pub use crate::graph::*;
     pub use crate::maintenance::*;

@@ -6,7 +6,7 @@ use crate::evidence_json::{
 };
 use crate::graph_route::NMEM_GRAPH_ROUTE_EVIDENCE_PROTOCOL;
 use crate::graph_summary::nowledge_graph_route_readiness_summary;
-use hawdb_core::{HawdbError, Result};
+use hawdb_core::{HawDBError, Result};
 use hawdb_route_ownership::graph::{
     nowledge_mem_graph_read_route_catalog_digest, NOWLEDGE_MEM_GRAPH_READ_ROUTE_CATALOG_VERSION,
     REQUIRED_NOWLEDGE_MEM_BOUNDED_READ_ROUTES,
@@ -61,7 +61,7 @@ pub fn nowledge_mem_integration_bundle_json(
     let submodule_commit = require_non_empty(inputs.submodule_commit, "--submodule-commit")?;
     let coexistence_mode = require_non_empty(inputs.coexistence_mode, "--coexistence-mode")?;
     if !matches!(coexistence_mode.as_str(), "shadow" | "side_by_side") {
-        return Err(HawdbError::Semantic(
+        return Err(HawDBError::Semantic(
             "--coexistence-mode must be shadow or side_by_side".to_string(),
         ));
     }
@@ -1557,11 +1557,11 @@ fn sanitize_path_label(path: &str) -> String {
 fn require_non_empty(value: Option<String>, flag: &str) -> Result<String> {
     value
         .filter(|value| !value.trim().is_empty())
-        .ok_or_else(|| HawdbError::Semantic(format!("{flag} is required")))
+        .ok_or_else(|| HawDBError::Semantic(format!("{flag} is required")))
 }
 
 fn require_json(value: Option<serde_json::Value>, flag: &str) -> Result<serde_json::Value> {
-    value.ok_or_else(|| HawdbError::Semantic(format!("{flag} is required")))
+    value.ok_or_else(|| HawDBError::Semantic(format!("{flag} is required")))
 }
 
 fn string_set_path(value: &serde_json::Value, path: &[&str]) -> BTreeSet<String> {

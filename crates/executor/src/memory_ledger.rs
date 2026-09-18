@@ -1,6 +1,6 @@
 //! Query-owned hierarchical memory accounting.
 
-use hawdb_core::{HawdbError, Result};
+use hawdb_core::{HawDBError, Result};
 use std::collections::BTreeMap;
 use std::num::NonZeroUsize;
 use std::sync::{Arc, Mutex, MutexGuard};
@@ -142,10 +142,10 @@ impl QueryMemoryLedger {
         let mut state = lock_recover(&self.inner.state);
         let (class, owner, account_budget, account_next) = {
             let account = state.accounts.get(&account_id).ok_or_else(|| {
-                HawdbError::Execution("query memory account is no longer registered".to_string())
+                HawDBError::Execution("query memory account is no longer registered".to_string())
             })?;
             let account_next = account.used_bytes.checked_add(bytes).ok_or_else(|| {
-                HawdbError::Execution(format!(
+                HawDBError::Execution(format!(
                     "query memory account {} ({}) byte accounting overflow",
                     account.owner,
                     account.class.as_str()
@@ -159,19 +159,19 @@ impl QueryMemoryLedger {
             )
         };
         if account_next > account_budget {
-            return Err(HawdbError::Execution(format!(
+            return Err(HawDBError::Execution(format!(
                 "query memory account {owner} ({}) would use {account_next} bytes, exceeding its {account_budget}-byte budget",
                 class.as_str()
             )));
         }
         let root_next = state.used_bytes.checked_add(bytes).ok_or_else(|| {
-            HawdbError::Execution(format!(
+            HawDBError::Execution(format!(
                 "query memory ledger byte accounting overflow while charging {owner} ({})",
                 class.as_str()
             ))
         })?;
         if root_next > self.inner.budget_bytes {
-            return Err(HawdbError::Execution(format!(
+            return Err(HawDBError::Execution(format!(
                 "query memory ledger would use {root_next} bytes while charging {owner} ({}), exceeding query_memory_bytes {}",
                 class.as_str(),
                 self.inner.budget_bytes
@@ -222,7 +222,7 @@ impl QueryMemoryLedger {
         target_bytes: usize,
     ) -> Result<()> {
         if source_account_id == target_account_id {
-            return Err(HawdbError::Execution(
+            return Err(HawDBError::Execution(
                 "query memory transfer requires distinct accounts".to_string(),
             ));
         }
@@ -232,12 +232,12 @@ impl QueryMemoryLedger {
             .get(&source_account_id)
             .map(|account| (account.class, account.used_bytes))
             .ok_or_else(|| {
-                HawdbError::Execution(
+                HawDBError::Execution(
                     "source query memory account is no longer registered".to_string(),
                 )
             })?;
         if source_bytes > source_used {
-            return Err(HawdbError::Execution(format!(
+            return Err(HawDBError::Execution(format!(
                 "query memory transfer tried to release {source_bytes} bytes from a source account using {source_used} bytes"
             )));
         }
@@ -253,35 +253,35 @@ impl QueryMemoryLedger {
                 )
             })
             .ok_or_else(|| {
-                HawdbError::Execution(
+                HawDBError::Execution(
                     "target query memory account is no longer registered".to_string(),
                 )
             })?;
         let target_next = target_used.checked_add(target_bytes).ok_or_else(|| {
-            HawdbError::Execution(format!(
+            HawDBError::Execution(format!(
                 "query memory account {target_owner} ({}) byte accounting overflow",
                 target_class.as_str()
             ))
         })?;
         if target_next > target_budget {
-            return Err(HawdbError::Execution(format!(
+            return Err(HawDBError::Execution(format!(
                 "query memory account {target_owner} ({}) would use {target_next} bytes, exceeding its {target_budget}-byte budget",
                 target_class.as_str()
             )));
         }
         let root_after_release = state.used_bytes.checked_sub(source_bytes).ok_or_else(|| {
-            HawdbError::Execution(
+            HawDBError::Execution(
                 "query memory ledger underflow during ownership transfer".to_string(),
             )
         })?;
         let root_next = root_after_release.checked_add(target_bytes).ok_or_else(|| {
-            HawdbError::Execution(format!(
+            HawDBError::Execution(format!(
                 "query memory ledger byte accounting overflow while transferring ownership to {target_owner} ({})",
                 target_class.as_str()
             ))
         })?;
         if root_next > self.inner.budget_bytes {
-            return Err(HawdbError::Execution(format!(
+            return Err(HawDBError::Execution(format!(
                 "query memory ledger would use {root_next} bytes while transferring ownership to {target_owner} ({}), exceeding query_memory_bytes {}",
                 target_class.as_str(),
                 self.inner.budget_bytes
@@ -382,12 +382,12 @@ impl QueryMemoryLease {
         target_bytes: usize,
     ) -> Result<()> {
         if !Arc::ptr_eq(&self.account.ledger.inner, &target.account.ledger.inner) {
-            return Err(HawdbError::Execution(
+            return Err(HawDBError::Execution(
                 "query memory transfer requires accounts from the same ledger".to_string(),
             ));
         }
         if source_bytes > self.bytes {
-            return Err(HawdbError::Execution(format!(
+            return Err(HawDBError::Execution(format!(
                 "query memory transfer tried to release {source_bytes} bytes from a {}-byte lease",
                 self.bytes,
             )));

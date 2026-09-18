@@ -260,7 +260,7 @@ fn check_stream(fixture: &Fixture, options: &RunOptions, only_visible: bool, ide
     assert!(output.reports.graph_expansion.is_empty());
     if !expected.is_empty() && options.exit == Exit::Error {
         assert!(
-            matches!(output.result, Err(HawdbError::StorageIntegrity(ref message)) if message == "consumer sentinel"),
+            matches!(output.result, Err(HawDBError::StorageIntegrity(ref message)) if message == "consumer sentinel"),
             "{identity}"
         );
     } else {

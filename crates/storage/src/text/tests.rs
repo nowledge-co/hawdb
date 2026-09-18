@@ -69,7 +69,7 @@ fn decoding_preserves_legacy_tolerance_without_changing_binary_hex_rules() {
         "n0",
         "uinvalid",
     ] {
-        assert!(matches!(decode_value(encoded), Err(HawdbError::Storage(_))));
+        assert!(matches!(decode_value(encoded), Err(HawDBError::Storage(_))));
     }
 }
 
@@ -116,7 +116,7 @@ fn malformed_hex_returns_storage_errors_without_panicking() {
     for input in ["a\u{e9}a", "\u{1f980}", "00a\u{e9}a", "f", "gg"] {
         let result = std::panic::catch_unwind(|| decode_bytes(input));
         assert!(result.is_ok(), "hex decoder panicked for {input:?}");
-        assert!(matches!(result.unwrap(), Err(HawdbError::Storage(_))));
+        assert!(matches!(result.unwrap(), Err(HawDBError::Storage(_))));
     }
 }
 
@@ -137,7 +137,7 @@ fn malformed_value_tags_are_rejected_without_unbounded_diagnostics() {
     for input in ["\u{e9}", "\u{4e2d}", "\u{1f980}", "", "?", "nextra"] {
         let result = std::panic::catch_unwind(|| decode_value(input));
         assert!(result.is_ok(), "value decoder panicked for {input:?}");
-        assert!(matches!(result.unwrap(), Err(HawdbError::Storage(_))));
+        assert!(matches!(result.unwrap(), Err(HawDBError::Storage(_))));
     }
     let input = format!("?{}", "x".repeat(256 * 1024));
     let error = decode_value(&input).unwrap_err().to_string();
@@ -158,7 +158,7 @@ fn nested_value_paths_propagate_corruption_and_preserve_valid_values() {
     ] {
         let result = std::panic::catch_unwind(|| decode_value(&input));
         assert!(result.is_ok(), "nested decoder panicked for {input:?}");
-        assert!(matches!(result.unwrap(), Err(HawdbError::Storage(_))));
+        assert!(matches!(result.unwrap(), Err(HawDBError::Storage(_))));
     }
     assert!(decode_properties("6964=sa\u{e9}a").is_err());
     for value in [
@@ -202,7 +202,7 @@ fn campaign(cases: usize) {
         let expected = reference(&input);
         let decoded = decode_bytes(&input);
         if let Err(error) = &decoded {
-            assert!(matches!(error, HawdbError::Storage(_)));
+            assert!(matches!(error, HawDBError::Storage(_)));
             assert!(error.to_string().len() < 128, "case {case}");
         }
         assert_eq!(decoded.ok(), expected, "case {case}");
@@ -216,7 +216,7 @@ fn campaign(cases: usize) {
         let bad_tag = ["\u{e9}", "\u{4e2d}", "\u{1f980}"][case % 3];
         assert!(decode_value(&format!("{bad_tag}{input}")).is_err());
         let error = decode_value(&format!("?{input}")).unwrap_err();
-        assert!(matches!(error, HawdbError::Storage(_)));
+        assert!(matches!(error, HawDBError::Storage(_)));
         assert!(error.to_string().len() < 128, "case {case}");
     }
 }

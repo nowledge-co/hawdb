@@ -4,7 +4,7 @@ use super::{
     stable_identity_error, CanonicalAdjacencyCheckpointArtifacts, DurableArtifactMetadata,
     DurableManifest, DurableStore, GraphManifestOpenBudget,
 };
-use crate::error::{HawdbError, Result};
+use crate::error::{HawDBError, Result};
 use crate::store::{
     canonical_adjacency_artifact_generation_file, canonical_artifact_generation_file,
     canonical_manifest_generation_file, checksum_bytes, decode_projected_graph_artifacts,
@@ -106,11 +106,11 @@ impl DurableStore {
                         descriptor_tree: property_descriptor_tree,
                     },
                 )
-                .map_err(|error| HawdbError::Storage(error.to_string()))?;
+                .map_err(|error| HawDBError::Storage(error.to_string()))?;
         let property_spill_manifest = property_spill_output.manifest;
         let encoded = canonical_manifest
             .encode()
-            .map_err(|error| HawdbError::Storage(error.to_string()))?;
+            .map_err(|error| HawDBError::Storage(error.to_string()))?;
         let metadata = DurableArtifactMetadata::for_bytes(encoded.as_bytes());
         let manifest_path = self
             .root_path
@@ -124,7 +124,7 @@ impl DurableStore {
         durable_replace_file(&tmp_path, &manifest_path)?;
         let property_encoded = property_spill_manifest
             .encode()
-            .map_err(|error| HawdbError::Storage(error.to_string()))?;
+            .map_err(|error| HawDBError::Storage(error.to_string()))?;
         let property_manifest_path = self
             .root_path
             .join(property_spill_manifest_generation_file(generation));
@@ -180,9 +180,9 @@ impl DurableStore {
                 descriptor_config,
                 relationships,
             )
-            .map_err(|error| HawdbError::Storage(error.to_string()))?;
+            .map_err(|error| HawDBError::Storage(error.to_string()))?;
         let descriptor_tree = output.descriptor_tree.as_ref().ok_or_else(|| {
-            HawdbError::Storage(
+            HawDBError::Storage(
                 "canonical adjacency checkpoint omitted its descriptor root".to_string(),
             )
         })?;
@@ -191,18 +191,18 @@ impl DurableStore {
             .sparse_block_count
             .checked_add(output.report.dense_block_count)
             .ok_or_else(|| {
-                HawdbError::Storage("canonical adjacency descriptor count overflow".to_string())
+                HawDBError::Storage("canonical adjacency descriptor count overflow".to_string())
             })?;
         if descriptor_tree.root.generation != generation
             || descriptor_tree.root.source_commit_epoch != source_commit_epoch
             || descriptor_tree.root.descriptor_count != expected_descriptor_count
         {
-            return Err(HawdbError::Storage(
+            return Err(HawDBError::Storage(
                 "canonical adjacency descriptor root identity is inconsistent".to_string(),
             ));
         }
         let generation_artifacts = output.generation_artifacts().ok_or_else(|| {
-            HawdbError::Storage(
+            HawDBError::Storage(
                 "canonical adjacency checkpoint omitted its generation binding".to_string(),
             )
         })?;
@@ -252,21 +252,21 @@ impl DurableStore {
                     GraphDescriptorTreeBuildConfig::default(),
                 ),
             )
-            .map_err(|error| HawdbError::Storage(error.to_string()))?;
+            .map_err(|error| HawDBError::Storage(error.to_string()))?;
         let descriptor_tree = &output.descriptor_tree;
         if descriptor_tree.root.kind != GraphDescriptorKind::PropertyProjection
             || descriptor_tree.root.generation != generation
             || descriptor_tree.root.source_commit_epoch != source_commit_epoch
             || descriptor_tree.root.descriptor_count != output.report.block_count
         {
-            return Err(HawdbError::Storage(
+            return Err(HawDBError::Storage(
                 "property projection descriptor root identity is inconsistent".to_string(),
             ));
         }
         let encoded = output
             .manifest
             .encode()
-            .map_err(|error| HawdbError::Storage(error.to_string()))?;
+            .map_err(|error| HawDBError::Storage(error.to_string()))?;
         let metadata = DurableArtifactMetadata::for_bytes(encoded.as_bytes());
         let manifest_path = self
             .root_path
@@ -322,7 +322,7 @@ impl DurableStore {
                 let (body, checksum) = split_projected_graph_artifact_checksum(&text)?;
                 let actual = checksum_bytes(body.as_bytes());
                 if checksum != actual {
-                    return Err(HawdbError::Storage(format!(
+                    return Err(HawDBError::Storage(format!(
                         "projected graph artifact checksum mismatch: expected {checksum}, got {actual}"
                     )));
                 }
@@ -403,7 +403,7 @@ impl DurableStore {
         let binding = self
             .relational_overflow_generation_artifacts
             .ok_or_else(|| {
-                HawdbError::Storage(
+                HawDBError::Storage(
                     "published checkpoint has no relational overflow generation binding"
                         .to_string(),
                 )
@@ -413,7 +413,7 @@ impl DurableStore {
             binding,
             hawdb_storage::RelationalOverflowPublicationConfig::default(),
         )
-        .map_err(|error| HawdbError::Storage(error.to_string()))?;
+        .map_err(|error| HawDBError::Storage(error.to_string()))?;
         Ok(reader)
     }
 
@@ -422,7 +422,7 @@ impl DurableStore {
         overflow_root: &hawdb_storage::RelationalOverflowRootReader,
     ) -> Result<hawdb_storage::RelationalRowPageRootReader> {
         let binding = self.relational_row_generation_artifacts.ok_or_else(|| {
-            HawdbError::Storage(
+            HawDBError::Storage(
                 "published checkpoint has no relational row-page generation binding".to_string(),
             )
         })?;
@@ -431,24 +431,24 @@ impl DurableStore {
             binding,
             hawdb_storage::RelationalRowPagePublicationConfig::default(),
         )
-        .map_err(|error| HawdbError::Storage(error.to_string()))?;
+        .map_err(|error| HawDBError::Storage(error.to_string()))?;
         let manifest = reader.manifest();
         if manifest.source_commit_epoch != binding.source_commit_epoch
             || manifest.root_set_digest != binding.root_set_digest
         {
-            return Err(HawdbError::Storage(
+            return Err(HawDBError::Storage(
                 "relational row-page generation identity differs from canonical binding"
                     .to_string(),
             ));
         }
         if manifest.overflow_root.is_none() {
-            return Err(HawdbError::Storage(
+            return Err(HawDBError::Storage(
                 "canonical relational row-page generation has no overflow binding".to_string(),
             ));
         }
         reader
             .validate_overflow_root(overflow_root)
-            .map_err(|error| HawdbError::Storage(error.to_string()))?;
+            .map_err(|error| HawDBError::Storage(error.to_string()))?;
         Ok(reader)
     }
 }
@@ -471,7 +471,7 @@ pub(super) fn load_published_canonical_segments(
         return Ok(None);
     };
     let generation = durable_manifest.checkpoint_generation.ok_or_else(|| {
-        HawdbError::Storage(
+        HawDBError::Storage(
             "canonical manifest metadata requires a checkpoint generation".to_string(),
         )
     })?;
@@ -486,18 +486,18 @@ pub(super) fn load_published_canonical_segments(
         open_budget,
     )?;
     let text = std::str::from_utf8(&encoded).map_err(|error| {
-        HawdbError::Storage(format!("canonical manifest is not UTF-8: {error}"))
+        HawDBError::Storage(format!("canonical manifest is not UTF-8: {error}"))
     })?;
     let canonical_manifest = CanonicalSegmentManifest::decode(text)
-        .map_err(|error| HawdbError::Storage(error.to_string()))?;
+        .map_err(|error| HawDBError::Storage(error.to_string()))?;
     if canonical_manifest.generation != ManifestGeneration(generation) {
-        return Err(HawdbError::Storage(format!(
+        return Err(HawDBError::Storage(format!(
             "canonical manifest generation {} does not match durable generation {generation}",
             canonical_manifest.generation.0
         )));
     }
     if canonical_manifest.source_commit_epoch != durable_manifest.checkpoint_commit_epoch {
-        return Err(HawdbError::Storage(format!(
+        return Err(HawDBError::Storage(format!(
             "canonical descriptor source epoch {} does not match durable checkpoint epoch {}",
             canonical_manifest.source_commit_epoch, durable_manifest.checkpoint_commit_epoch
         )));
@@ -535,7 +535,7 @@ pub(super) fn load_published_canonical_segments(
         ),
     }
     .map(Some)
-    .map_err(|error| HawdbError::Storage(error.to_string()))
+    .map_err(|error| HawDBError::Storage(error.to_string()))
 }
 
 fn load_published_property_spills(
@@ -553,7 +553,7 @@ fn load_published_property_spills(
         return Ok(None);
     };
     let generation = durable_manifest.checkpoint_generation.ok_or_else(|| {
-        HawdbError::Storage("property spill metadata requires a checkpoint generation".to_string())
+        HawDBError::Storage("property spill metadata requires a checkpoint generation".to_string())
     })?;
     let manifest_path = root.join(property_spill_manifest_generation_file(generation));
     let encoded = read_bound_graph_manifest(
@@ -566,18 +566,18 @@ fn load_published_property_spills(
         open_budget,
     )?;
     let text = std::str::from_utf8(&encoded).map_err(|error| {
-        HawdbError::Storage(format!("property spill manifest is not UTF-8: {error}"))
+        HawDBError::Storage(format!("property spill manifest is not UTF-8: {error}"))
     })?;
     let manifest = PropertySpillManifest::decode(text)
-        .map_err(|error| HawdbError::Storage(error.to_string()))?;
+        .map_err(|error| HawDBError::Storage(error.to_string()))?;
     if manifest.generation != ManifestGeneration(generation) {
-        return Err(HawdbError::Storage(format!(
+        return Err(HawDBError::Storage(format!(
             "property spill generation {} does not match durable generation {generation}",
             manifest.generation.0
         )));
     }
     if manifest.source_commit_epoch != durable_manifest.checkpoint_commit_epoch {
-        return Err(HawdbError::Storage(format!(
+        return Err(HawDBError::Storage(format!(
             "property spill source epoch {} does not match durable checkpoint epoch {}",
             manifest.source_commit_epoch, durable_manifest.checkpoint_commit_epoch
         )));
@@ -610,7 +610,7 @@ fn load_published_property_spills(
         max_block_bytes,
     )
     .map(Some)
-    .map_err(|error| HawdbError::Storage(error.to_string()))
+    .map_err(|error| HawDBError::Storage(error.to_string()))
 }
 
 pub(in crate::store) fn load_published_property_projection(
@@ -628,7 +628,7 @@ pub(in crate::store) fn load_published_property_projection(
         return Ok(None);
     };
     let generation = durable_manifest.checkpoint_generation.ok_or_else(|| {
-        HawdbError::Storage(
+        HawDBError::Storage(
             "property projection metadata requires a checkpoint generation".to_string(),
         )
     })?;
@@ -643,16 +643,16 @@ pub(in crate::store) fn load_published_property_projection(
         open_budget,
     )?;
     let text = std::str::from_utf8(&encoded).map_err(|error| {
-        HawdbError::Storage(format!(
+        HawDBError::Storage(format!(
             "property projection manifest is not UTF-8: {error}"
         ))
     })?;
     let manifest = PersistentPropertyProjectionManifest::decode(text)
-        .map_err(|error| HawdbError::Storage(error.to_string()))?;
+        .map_err(|error| HawDBError::Storage(error.to_string()))?;
     if manifest.generation != ManifestGeneration(generation)
         || manifest.source_commit_epoch != durable_manifest.checkpoint_commit_epoch
     {
-        return Err(HawdbError::Storage(
+        return Err(HawDBError::Storage(
             "property projection generation or source epoch does not match the durable checkpoint"
                 .to_string(),
         ));
@@ -684,7 +684,7 @@ pub(in crate::store) fn load_published_property_projection(
         max_block_bytes,
     )
     .map(Some)
-    .map_err(|error| HawdbError::Storage(error.to_string()))
+    .map_err(|error| HawDBError::Storage(error.to_string()))
 }
 
 pub(in crate::store) fn load_published_canonical_adjacency(
@@ -698,12 +698,12 @@ pub(in crate::store) fn load_published_canonical_adjacency(
         return Ok(None);
     };
     let generation = durable_manifest.checkpoint_generation.ok_or_else(|| {
-        HawdbError::Storage(
+        HawDBError::Storage(
             "canonical adjacency metadata requires a checkpoint generation".to_string(),
         )
     })?;
     if binding.generation != generation {
-        return Err(HawdbError::Storage(format!(
+        return Err(HawDBError::Storage(format!(
             "canonical adjacency generation {} does not match durable generation {generation}",
             binding.generation
         )));
@@ -731,7 +731,7 @@ pub(in crate::store) fn load_published_canonical_adjacency(
         },
         descriptor_config,
     )
-    .map_err(|error| HawdbError::StorageIntegrity(error.to_string()))?;
+    .map_err(|error| HawDBError::StorageIntegrity(error.to_string()))?;
     let config = CanonicalAdjacencyConfig::default();
     let max_block_bytes = NonZeroU64::new(
         config
@@ -750,5 +750,5 @@ pub(in crate::store) fn load_published_canonical_adjacency(
         max_block_bytes,
     )
     .map(Some)
-    .map_err(|error| HawdbError::StorageIntegrity(error.to_string()))
+    .map_err(|error| HawDBError::StorageIntegrity(error.to_string()))
 }

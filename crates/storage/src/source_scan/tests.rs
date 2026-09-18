@@ -519,7 +519,7 @@ fn write_reference(directory: &Path, body: &str, payload: &[u8]) -> u64 {
 
 fn storage_error<T: std::fmt::Debug>(result: Result<T>) -> String {
     match result {
-        Err(HawdbError::Storage(message)) => message,
+        Err(HawDBError::Storage(message)) => message,
         other => panic!("expected storage error, got {other:?}"),
     }
 }

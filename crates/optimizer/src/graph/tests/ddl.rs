@@ -1,5 +1,5 @@
 use crate::CascadesOptimizer;
-use hawdb_core::HawdbError;
+use hawdb_core::HawDBError;
 use hawdb_plan::{
     LogicalPlan, PhysicalPlan, SchemaObjectState, SchemaPropertyType, SchemaTableKind,
 };
@@ -77,7 +77,7 @@ fn assert_pipeline(
 
     for invalid in [invalid_keyword, &format!("{input} unexpected")] {
         assert!(
-            matches!(hawdb_cypher::parse(invalid), Err(HawdbError::Parse(_))),
+            matches!(hawdb_cypher::parse(invalid), Err(HawDBError::Parse(_))),
             "expected a parse rejection: {invalid}"
         );
         counts.rejected += 1;

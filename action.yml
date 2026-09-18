@@ -1,9 +1,9 @@
-name: Stage Hawdb source
-description: Stage this pinned Hawdb revision for an organization workflow.
+name: Stage HawDB source
+description: Stage this pinned HawDB revision for an organization workflow.
 
 inputs:
   path:
-    description: Workspace-relative destination for the Hawdb source tree.
+    description: Workspace-relative destination for the HawDB source tree.
     required: false
     default: hawdb
 

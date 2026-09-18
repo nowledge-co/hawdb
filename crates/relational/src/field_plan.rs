@@ -2,7 +2,7 @@
 //!
 //! This internal ownership seam does not open stores, read rows, or hydrate values.
 
-use hawdb_core::{HawdbError, Result};
+use hawdb_core::{HawDBError, Result};
 use hawdb_sql::{
     Expr, ExprKind, SelectProjection, SelectStatement, SqlColumnRef, SqlExpression,
     SqlFunctionArgument, SqlOrderItem, SqlPredicate,
@@ -60,7 +60,7 @@ pub fn resolve_relational_order_target<'a>(
         return Ok(RelationalOrderTarget::InputColumn(column));
     };
     if aliases.next().is_some() {
-        return Err(HawdbError::Semantic(format!(
+        return Err(HawDBError::Semantic(format!(
             "ambiguous relational ORDER BY alias {}",
             column.name
         )));
@@ -117,7 +117,7 @@ impl RelationalFieldPlan {
         table: &str,
     ) -> Result<&'fields [usize]> {
         plan.get(table).map(AsRef::as_ref).ok_or_else(|| {
-            HawdbError::StorageIntegrity(format!(
+            HawDBError::StorageIntegrity(format!(
                 "relational query has no field plan for table {table}"
             ))
         })
@@ -134,7 +134,7 @@ impl RelationalFieldPlan {
         index_columns: &[String],
     ) -> Result<bool> {
         let fields = self.scan_fields.get(table).ok_or_else(|| {
-            HawdbError::StorageIntegrity(format!(
+            HawDBError::StorageIntegrity(format!(
                 "relational query has no field plan for table {table}"
             ))
         })?;
@@ -264,7 +264,7 @@ fn plan_scan_hydration_fields(
     scan_fields: &BTreeMap<String, Arc<[usize]>>,
 ) -> Result<BTreeMap<String, Arc<[usize]>>> {
     let base_schema = state.table_schema(&select.from.name).ok_or_else(|| {
-        HawdbError::Semantic(format!("unknown relational table {}", select.from.name))
+        HawDBError::Semantic(format!("unknown relational table {}", select.from.name))
     })?;
     let mut bindings = Vec::with_capacity(select.joins.len() + 1);
     bindings.push(FieldBinding {
@@ -274,7 +274,7 @@ fn plan_scan_hydration_fields(
     });
     for join in &select.joins {
         let schema = state.table_schema(&join.table.name).ok_or_else(|| {
-            HawdbError::Semantic(format!("unknown relational table {}", join.table.name))
+            HawDBError::Semantic(format!("unknown relational table {}", join.table.name))
         })?;
         bindings.push(FieldBinding {
             table: &join.table.name,
@@ -379,7 +379,7 @@ fn plan_fields(
 ) -> Result<BTreeMap<String, Arc<[usize]>>> {
     let mut bindings = Vec::with_capacity(select.joins.len() + 1);
     let base_schema = state.table_schema(&select.from.name).ok_or_else(|| {
-        HawdbError::Semantic(format!("unknown relational table {}", select.from.name))
+        HawDBError::Semantic(format!("unknown relational table {}", select.from.name))
     })?;
     bindings.push(FieldBinding {
         table: &select.from.name,
@@ -388,7 +388,7 @@ fn plan_fields(
     });
     for join in &select.joins {
         let schema = state.table_schema(&join.table.name).ok_or_else(|| {
-            HawdbError::Semantic(format!("unknown relational table {}", join.table.name))
+            HawDBError::Semantic(format!("unknown relational table {}", join.table.name))
         })?;
         bindings.push(FieldBinding {
             table: &join.table.name,
@@ -493,10 +493,10 @@ fn resolve_field_binding<'a>(
             .map(|ordinal| (binding.table, ordinal))
     });
     let first = matches.next().ok_or_else(|| {
-        HawdbError::Semantic(format!("unknown relational column {}", column.name))
+        HawDBError::Semantic(format!("unknown relational column {}", column.name))
     })?;
     if matches.next().is_some() {
-        return Err(HawdbError::Semantic(format!(
+        return Err(HawDBError::Semantic(format!(
             "ambiguous relational column {}",
             column.name
         )));

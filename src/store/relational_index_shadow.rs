@@ -31,7 +31,7 @@ pub use hawdb_storage::relational_index_view::{
     RelationalIndexReadViewBackendReport, RelationalIndexReadViewReport,
 };
 
-use super::{GraphStore, HawdbError};
+use super::{GraphStore, HawDBError};
 use hawdb_integrity::IntegrityHasher;
 #[cfg(test)]
 use hawdb_storage::{relational_index_shadow_artifact_file, RelationalIndexMode};
@@ -62,16 +62,16 @@ fn qualification_probe_error(
     table: &str,
     index: &str,
     error: RelationalIndexShadowError,
-) -> HawdbError {
+) -> HawDBError {
     let context = format!(
         "relational index qualification probe {ordinal} on {table}.{index} failed: {error}"
     );
     match error {
-        RelationalIndexShadowError::Corrupt(_) => HawdbError::StorageIntegrity(context),
+        RelationalIndexShadowError::Corrupt(_) => HawDBError::StorageIntegrity(context),
         RelationalIndexShadowError::Admission(_)
         | RelationalIndexShadowError::Durability(_)
         | RelationalIndexShadowError::MissingIndex { .. }
-        | RelationalIndexShadowError::StaleGeneration { .. } => HawdbError::Storage(context),
+        | RelationalIndexShadowError::StaleGeneration { .. } => HawDBError::Storage(context),
     }
 }
 
@@ -707,12 +707,12 @@ impl GraphStore {
     ) -> crate::Result<RelationalIndexViewQualificationReport> {
         self.relational_state
             .require_materialized_rows("relational index differential qualification")
-            .map_err(|error| HawdbError::Storage(error.to_string()))?;
+            .map_err(|error| HawDBError::Storage(error.to_string()))?;
         let view = self
             .relational_index_shadow
             .current_read_view(self.commit_epoch)
             .ok_or_else(|| {
-                HawdbError::Storage(format!(
+                HawDBError::Storage(format!(
                     "relational index read view is unavailable at commit epoch {}",
                     self.commit_epoch
                 ))
@@ -740,7 +740,7 @@ impl GraphStore {
                 .take(options.max_rows_per_table.get())
             {
                 rows_sampled = rows_sampled.checked_add(1).ok_or_else(|| {
-                    HawdbError::Storage(
+                    HawDBError::Storage(
                         "relational index qualification row sample counter overflow".to_string(),
                     )
                 })?;
@@ -881,7 +881,7 @@ impl GraphStore {
                         limits.max_rows.get().saturating_add(1),
                     )
                     .ok_or_else(|| {
-                        HawdbError::Storage(format!(
+                        HawDBError::Storage(format!(
                             "relational index qualification oracle is missing {}.{}",
                             probe.table, probe.index
                         ))
@@ -898,7 +898,7 @@ impl GraphStore {
                         limits.max_rows.get().saturating_add(1),
                     )
                     .ok_or_else(|| {
-                        HawdbError::Storage(format!(
+                        HawDBError::Storage(format!(
                             "relational index qualification oracle is missing {}.{}",
                             probe.table, probe.index
                         ))
@@ -909,7 +909,7 @@ impl GraphStore {
             }
         };
         if rows.len() > limits.max_rows.get() {
-            return Err(HawdbError::Storage(format!(
+            return Err(HawDBError::Storage(format!(
                 "relational index qualification oracle exceeds row limit {}",
                 limits.max_rows
             )));
@@ -2118,7 +2118,7 @@ mod tests {
                 })
                 .expect_err("two foreign-key referrers must exhaust a one-row budget");
             assert!(
-                matches!(budget_error, HawdbError::Storage(message) if message.contains("qualification probe"))
+                matches!(budget_error, HawDBError::Storage(message) if message.contains("qualification probe"))
             );
 
             let pinned = Arc::clone(current_index_view(&store));
@@ -2318,7 +2318,7 @@ mod tests {
                 )
                 .expect_err("constraint qualification must reject a corrupt selected page");
             assert!(
-                matches!(error, HawdbError::StorageIntegrity(message) if message.contains("qualification probe"))
+                matches!(error, HawDBError::StorageIntegrity(message) if message.contains("qualification probe"))
             );
             assert_eq!(store.relational_state().row_count("accounts"), 2);
         }
@@ -2500,7 +2500,7 @@ mod tests {
                 },
             );
             assert!(
-                matches!(duplicate, Err(HawdbError::Storage(message)) if message.contains("duplicate key"))
+                matches!(duplicate, Err(HawDBError::Storage(message)) if message.contains("duplicate key"))
             );
             assert_eq!(store.commit_epoch, base_epoch);
             assert_eq!(
@@ -2523,7 +2523,7 @@ mod tests {
                 },
             );
             assert!(
-                matches!(missing_foreign_key, Err(HawdbError::Storage(message)) if message.contains("no visible target"))
+                matches!(missing_foreign_key, Err(HawDBError::Storage(message)) if message.contains("no visible target"))
             );
             assert_eq!(store.commit_epoch, base_epoch);
             assert_eq!(
@@ -2552,7 +2552,7 @@ mod tests {
                 },
             );
             assert!(
-                matches!(live_budget_failure, Err(HawdbError::Storage(message)) if message.contains("capture"))
+                matches!(live_budget_failure, Err(HawDBError::Storage(message)) if message.contains("capture"))
             );
             assert_eq!(store.commit_epoch, base_epoch);
             assert_eq!(
@@ -2839,7 +2839,7 @@ mod tests {
                 },
             )
             .expect_err("corrupt authoritative constraint page must reject the mutation");
-        assert!(matches!(error, HawdbError::StorageIntegrity(_)));
+        assert!(matches!(error, HawDBError::StorageIntegrity(_)));
         assert_eq!(store.commit_epoch, epoch);
         assert_eq!(
             store.durable.as_ref().expect("durable store").next_lsn,
@@ -2847,7 +2847,7 @@ mod tests {
         );
         assert!(matches!(
             store.ensure_usable(),
-            Err(HawdbError::StorageIntegrity(_))
+            Err(HawDBError::StorageIntegrity(_))
         ));
 
         drop(file);

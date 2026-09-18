@@ -52,7 +52,7 @@ repeatable end-to-end evidence beyond an isolated local timing:
   demonstrates queueing or tail-latency pressure that the current serial read
   path cannot meet.
 
-The benchmark does not authorize Hawdb in stable release artifacts and does
+The benchmark does not authorize HawDB in stable release artifacts and does
 not replace the full Mem replacement qualification suite.
 
 ## Verification

@@ -31,7 +31,7 @@ pub(in crate::api) fn knowledge_entity_details_via_query_runtime(
     request: &KnowledgeEntityDetailsRequest,
 ) -> Result<KnowledgeEntityDetailsOutput> {
     if request.external_id.is_empty() {
-        return Err(HawdbError::Semantic(
+        return Err(HawDBError::Semantic(
             "knowledge entity details requires a non-empty external_id".to_string(),
         ));
     }
@@ -252,12 +252,12 @@ fn decode_entity_lookup_rows(
             .get("entity")
             .and_then(knowledge_entity_from_value)
             .ok_or_else(|| {
-                HawdbError::Execution(
+                HawDBError::Execution(
                     "knowledge entity lookup returned an invalid entity row".to_string(),
                 )
             })?;
         let external_id = entity.external_id.clone().ok_or_else(|| {
-            HawdbError::Execution(
+            HawDBError::Execution(
                 "knowledge entity lookup returned an entity without identity".to_string(),
             )
         })?;
@@ -303,7 +303,7 @@ mod tests {
 
         assert_eq!(
             error,
-            HawdbError::Execution(
+            HawDBError::Execution(
                 "knowledge entity lookup returned an invalid entity row".to_string()
             )
         );

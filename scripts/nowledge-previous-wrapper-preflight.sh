@@ -50,7 +50,7 @@ usage: scripts/nowledge-previous-wrapper-preflight.sh \
   [--integration-content-store-source-chunks-available] \
   -- <wrapper-command> [args...]
 
-Runs the Hawdb-side Nowledge previous-wrapper production preflight bundle.
+Runs the HawDB-side Nowledge previous-wrapper production preflight bundle.
 The wrapper command must own all Kuzu/Ladybug dependencies and must read from
 an isolated Nowledge data copy, not from the live application database.
 EOF

@@ -113,7 +113,7 @@ impl SpillIo for ObservedIo {
         let file = File::create(path)?;
         if matches!(self.fault, Fault::CreateAfterFile) {
             self.fired.set(true);
-            return Err(HawdbError::Storage("injected spill create failure".into()));
+            return Err(HawDBError::Storage("injected spill create failure".into()));
         }
         Ok(ObservedWriter {
             file,
@@ -135,7 +135,7 @@ impl SpillIo for ObservedIo {
             if matches!(self.fault, Fault::PanicRemoveAfter(_)) {
                 panic!("injected spill unlink panic");
             }
-            return Err(HawdbError::Storage("injected spill unlink failure".into()));
+            return Err(HawDBError::Storage("injected spill unlink failure".into()));
         }
         fs::remove_file(path)?;
         self.removed += 1;

@@ -70,7 +70,7 @@ state. A projection epoch is never presented as canonical graph identity.
 
 ## Formal refinement
 
-`docs/tla/HawdbKnowledgeRetrievalPipeline.tla` models the stage machine,
+`docs/tla/HawDBKnowledgeRetrievalPipeline.tla` models the stage machine,
 snapshot binding, authorization gate, TopK-before-hydration rule, query memory
 bound, result payload bound, and fail-closed terminal states. The Rust
 refinement points are `KnowledgeRetrievalGraphContext`,

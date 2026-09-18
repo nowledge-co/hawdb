@@ -122,14 +122,14 @@ fn three_valued_truth_tables_and_resolution_order_are_preserved() {
 #[test]
 fn short_circuit_preserves_resolver_errors_and_in_list_evaluation_order() {
     let value = RelationalValue::BigInt(7);
-    let missing = HawdbError::Execution("column was not hydrated".into());
+    let missing = HawDBError::Execution("column was not hydrated".into());
     for (sql, expected) in [
         ("x = 0 AND y = 1", Ok(Some(false))),
         ("x = 7 OR y = 1", Ok(Some(true))),
         ("x = 7 AND y = 1", Err(missing.clone())),
         (
             "x IN (7, $1)",
-            Err(HawdbError::Semantic(
+            Err(HawDBError::Semantic(
                 "missing PostgreSQL parameter $1".into(),
             )),
         ),
@@ -210,7 +210,7 @@ fn comparison_preserves_scalar_ordering_and_overflow_before_null() {
     ] {
         assert_eq!(
             compare_values(left, right, SqlComparisonOp::Eq),
-            Err(HawdbError::Execution(
+            Err(HawDBError::Execution(
                 "relational filter or join requires overflow hydration before qualification".into()
             ))
         );
@@ -221,7 +221,7 @@ fn comparison_preserves_scalar_ordering_and_overflow_before_null() {
             &RelationalValue::Text("1".into()),
             SqlComparisonOp::Eq
         ),
-        Err(HawdbError::Semantic(
+        Err(HawDBError::Semantic(
             "relational comparison has incompatible scalar types".into()
         ))
     );
@@ -266,7 +266,7 @@ fn scalar_binding_round_trips_and_keeps_exact_errors() {
     for value in [Value::List(vec![]), Value::Map(Default::default())] {
         assert_eq!(
             value_to_relational(value),
-            Err(HawdbError::Semantic(
+            Err(HawDBError::Semantic(
                 "relational SQL values must be scalar".into()
             ))
         );
@@ -274,7 +274,7 @@ fn scalar_binding_round_trips_and_keeps_exact_errors() {
     for position in [1, usize::MAX] {
         assert_eq!(
             bind_sql_value(&SqlValue::Parameter(position), &[]),
-            Err(HawdbError::Semantic(format!(
+            Err(HawDBError::Semantic(format!(
                 "missing PostgreSQL parameter ${position}"
             )))
         );
@@ -284,7 +284,7 @@ fn scalar_binding_round_trips_and_keeps_exact_errors() {
         Ok(Value::Int(9))
     );
     let overflow = overflow();
-    let expected = Err(HawdbError::Execution(
+    let expected = Err(HawDBError::Execution(
         "overflow value reached projection without hydration".into(),
     ));
     assert_eq!(relational_to_value(&overflow), expected);
@@ -307,7 +307,7 @@ fn bounds_and_uuid_conversion_keep_their_existing_contracts() {
         ] {
             assert_eq!(
                 bind_bound(Some(SqlBound::Parameter(1)), &[value], name),
-                Err(HawdbError::Semantic(format!(
+                Err(HawDBError::Semantic(format!(
                     "PostgreSQL {name} parameter $1 must be a non-negative integer"
                 )))
             );
@@ -320,7 +320,7 @@ fn bounds_and_uuid_conversion_keep_their_existing_contracts() {
         }
         assert_eq!(
             bind_bound(Some(SqlBound::Parameter(2)), &[], name),
-            Err(HawdbError::Semantic(
+            Err(HawDBError::Semantic(
                 "missing PostgreSQL parameter $2".into()
             ))
         );
@@ -332,7 +332,7 @@ fn bounds_and_uuid_conversion_keep_their_existing_contracts() {
     );
     assert_eq!(
         value_to_relational_as(Value::String("bad".into()), RelationalScalarType::Uuid),
-        Err(HawdbError::Semantic("invalid UUID value \"bad\"".into()))
+        Err(HawDBError::Semantic("invalid UUID value \"bad\"".into()))
     );
 }
 
@@ -371,7 +371,7 @@ fn like_handles_unicode_escapes_nulls_and_unhydrated_values() {
         (
             overflow(),
             Value::String("%".into()),
-            Err(HawdbError::Execution(
+            Err(HawDBError::Execution(
                 "LIKE reached an overflow value without hydration".into(),
             )),
         ),
@@ -426,7 +426,7 @@ fn streaming_binding_keeps_eager_validation_and_qualifier_errors() {
         );
         assert_eq!(
             bound.err(),
-            Some(HawdbError::Semantic(message.into())),
+            Some(HawDBError::Semantic(message.into())),
             "{source}"
         );
     }
@@ -502,7 +502,7 @@ fn borrowed_row_binding_short_circuits_before_missing_fields() {
 
 #[test]
 fn borrowed_streaming_resolution_keeps_short_circuit_and_error_order() {
-    let missing = HawdbError::Execution("unavailable borrowed ordinal".into());
+    let missing = HawDBError::Execution("unavailable borrowed ordinal".into());
     for (source, expected, ordinals) in [
         ("x = 0 AND body = 'unused'", Ok(Some(false)), vec![0]),
         ("x = 1 OR body = 'unused'", Ok(Some(true)), vec![0]),
@@ -563,21 +563,21 @@ fn internal_operands_preserve_borrows_and_reject_unsupported_shapes() {
         );
         assert_eq!(
             BoundStreamingPredicate::bind(&expression, &[], &schema(), "records", "r").err(),
-            Some(HawdbError::Semantic(
+            Some(HawDBError::Semantic(
                 "unsupported streaming predicate expression".into()
             ))
         );
     }
     assert_eq!(
         predicate_truth_with(&column, &[], &resolver),
-        Err(HawdbError::Semantic(
+        Err(HawDBError::Semantic(
             "unsupported relational predicate expression".into()
         ))
     );
     let unsupported = Expr::unspanned(ExprKind::Not(Box::new(column)));
     assert_eq!(
         predicate_operand(&unsupported, &[], RelationalScalarType::Text, &resolver),
-        Err(HawdbError::Semantic("unsupported predicate operand".into()))
+        Err(HawDBError::Semantic("unsupported predicate operand".into()))
     );
 }
 
@@ -597,7 +597,7 @@ fn uuid_binding_does_not_unify_the_two_existing_paths() {
     );
     assert_eq!(
         BoundStreamingPredicate::bind(&expression, &parameters, &schema, "records", "r").err(),
-        Some(HawdbError::Semantic(
+        Some(HawDBError::Semantic(
             "relational comparison on x has an incompatible scalar type".into()
         ))
     );

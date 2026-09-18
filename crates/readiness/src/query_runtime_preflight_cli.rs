@@ -3,7 +3,7 @@
 use crate::query_runtime_preflight::{
     parse_query_runtime_preflight_probes, NowledgeQueryRuntimePreflightProbe,
 };
-use hawdb_core::{HawdbError, Result};
+use hawdb_core::{HawDBError, Result};
 use std::path::Path;
 
 #[derive(Debug, Clone, PartialEq)]
@@ -29,22 +29,22 @@ pub fn parse_query_runtime_preflight_cli_inputs(
             "--require-ready" => require_ready = true,
             "--probe-json" => probe_path = Some(next_arg(&mut args)?),
             value if value.starts_with("--") => {
-                return Err(HawdbError::Semantic(
+                return Err(HawDBError::Semantic(
                     nowledge_query_runtime_preflight_usage(),
                 ));
             }
             value if database_path.replace(value.to_string()).is_none() => {}
             _ => {
-                return Err(HawdbError::Semantic(
+                return Err(HawDBError::Semantic(
                     nowledge_query_runtime_preflight_usage(),
                 ))
             }
         }
     }
     let probe_path =
-        probe_path.ok_or_else(|| HawdbError::Semantic(nowledge_query_runtime_preflight_usage()))?;
+        probe_path.ok_or_else(|| HawDBError::Semantic(nowledge_query_runtime_preflight_usage()))?;
     let database_path = database_path
-        .ok_or_else(|| HawdbError::Semantic(nowledge_query_runtime_preflight_usage()))?;
+        .ok_or_else(|| HawDBError::Semantic(nowledge_query_runtime_preflight_usage()))?;
     Ok(QueryRuntimePreflightCliInputs {
         require_ready,
         database_path,
@@ -54,18 +54,18 @@ pub fn parse_query_runtime_preflight_cli_inputs(
 
 fn next_arg(args: &mut impl Iterator<Item = String>) -> Result<String> {
     args.next()
-        .ok_or_else(|| HawdbError::Semantic(nowledge_query_runtime_preflight_usage()))
+        .ok_or_else(|| HawDBError::Semantic(nowledge_query_runtime_preflight_usage()))
 }
 
 fn read_json_file(path: &Path) -> Result<serde_json::Value> {
     let content = std::fs::read_to_string(path).map_err(|error| {
-        HawdbError::Execution(format!(
+        HawDBError::Execution(format!(
             "failed to read query runtime preflight JSON: {}",
             error.kind()
         ))
     })?;
     serde_json::from_str(&content).map_err(|_| {
-        HawdbError::Semantic(
+        HawDBError::Semantic(
             "failed to parse query runtime preflight JSON: invalid_json".to_string(),
         )
     })

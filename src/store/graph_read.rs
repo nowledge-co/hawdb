@@ -112,7 +112,7 @@ impl GraphStore {
                     required_properties,
                     consumer,
                 ),
-            hawdb_plan::NodeProjectionAccess::PropertyUnion { .. } => Err(HawdbError::Execution(
+            hawdb_plan::NodeProjectionAccess::PropertyUnion { .. } => Err(HawDBError::Execution(
                 "property-union projection access requires executor-owned deduplication admission"
                     .to_string(),
             )),
@@ -999,7 +999,7 @@ impl GraphStore {
                         }
                         Ok(CanonicalScanControl::Continue)
                     })
-                    .map_err(|error| HawdbError::StorageIntegrity(error.to_string()))?;
+                    .map_err(|error| HawDBError::StorageIntegrity(error.to_string()))?;
                 self.graph_index_read_metrics
                     .record_property(PersistentGraphIndexClass::NodeEquality, report);
                 control
@@ -1103,7 +1103,7 @@ impl GraphStore {
                     }
                     Ok(CanonicalScanControl::Continue)
                 })
-                .map_err(|error| HawdbError::StorageIntegrity(error.to_string()))?;
+                .map_err(|error| HawDBError::StorageIntegrity(error.to_string()))?;
             self.graph_index_read_metrics
                 .record_property(PersistentGraphIndexClass::NodeEquality, report);
             if projection_control == CanonicalScanControl::Stop {
@@ -1198,7 +1198,7 @@ impl GraphStore {
                             Ok(CanonicalScanControl::Continue)
                         },
                     )
-                    .map_err(|error| HawdbError::StorageIntegrity(error.to_string()))?;
+                    .map_err(|error| HawDBError::StorageIntegrity(error.to_string()))?;
                 self.graph_index_read_metrics
                     .record_property(PersistentGraphIndexClass::NodeCompositeEquality, report);
                 if projection_control == CanonicalScanControl::Stop {
@@ -1296,7 +1296,7 @@ impl GraphStore {
                 }
                 Ok(CanonicalScanControl::Continue)
             })
-            .map_err(|error| HawdbError::StorageIntegrity(error.to_string()))?;
+            .map_err(|error| HawDBError::StorageIntegrity(error.to_string()))?;
         self.graph_index_read_metrics
             .record_property(PersistentGraphIndexClass::NodeCompositeEquality, report);
         if projection_control == CanonicalScanControl::Stop {
@@ -1370,7 +1370,7 @@ impl GraphStore {
                         Ok(CanonicalScanControl::Continue)
                     },
                 )
-                .map_err(|error| HawdbError::StorageIntegrity(error.to_string()))?;
+                .map_err(|error| HawDBError::StorageIntegrity(error.to_string()))?;
             self.graph_index_read_metrics
                 .record_property(PersistentGraphIndexClass::NodeCompositeEquality, report);
             if projection_control == CanonicalScanControl::Stop {
@@ -1476,7 +1476,7 @@ impl GraphStore {
                     Ok(CanonicalScanControl::Continue)
                 },
             )
-            .map_err(|error| HawdbError::StorageIntegrity(error.to_string()))?;
+            .map_err(|error| HawDBError::StorageIntegrity(error.to_string()))?;
         self.graph_index_read_metrics
             .record_property(PersistentGraphIndexClass::NodeCompositeEquality, report);
         if projection_control == CanonicalScanControl::Stop {
@@ -1593,7 +1593,7 @@ impl GraphStore {
                 }
                 Ok(CanonicalScanControl::Continue)
             })
-            .map_err(|error| HawdbError::StorageIntegrity(error.to_string()))?;
+            .map_err(|error| HawDBError::StorageIntegrity(error.to_string()))?;
         self.graph_index_read_metrics
             .record_property(PersistentGraphIndexClass::NodeRange, report);
         if projection_control == CanonicalScanControl::Stop {
@@ -1679,7 +1679,7 @@ impl GraphStore {
                 }
                 Ok(CanonicalScanControl::Continue)
             })
-            .map_err(|error| HawdbError::StorageIntegrity(error.to_string()))?;
+            .map_err(|error| HawDBError::StorageIntegrity(error.to_string()))?;
         self.graph_index_read_metrics
             .record_property(PersistentGraphIndexClass::NodeRange, report);
         if projection_control == CanonicalScanControl::Stop {
@@ -1787,7 +1787,7 @@ impl GraphStore {
         for token in &query_tokens {
             let (estimated_entries, report) = projection
                 .estimate_full_text_token_entries(label_id, property, token)
-                .map_err(|error| HawdbError::StorageIntegrity(error.to_string()))?;
+                .map_err(|error| HawDBError::StorageIntegrity(error.to_string()))?;
             accumulate_property_projection_report(&mut estimate_report, report);
             if seed_token
                 .as_ref()
@@ -1820,7 +1820,7 @@ impl GraphStore {
                 }
                 Ok(CanonicalScanControl::Continue)
             })
-            .map_err(|error| HawdbError::StorageIntegrity(error.to_string()))?;
+            .map_err(|error| HawDBError::StorageIntegrity(error.to_string()))?;
         accumulate_property_projection_report(&mut estimate_report, report);
         self.graph_index_read_metrics
             .record_property(PersistentGraphIndexClass::NodeFullText, estimate_report);
@@ -1887,7 +1887,7 @@ impl GraphStore {
         for token in &query_tokens {
             let (estimated_entries, report) = projection
                 .estimate_full_text_token_entries(label_id, property, token)
-                .map_err(|error| HawdbError::StorageIntegrity(error.to_string()))?;
+                .map_err(|error| HawDBError::StorageIntegrity(error.to_string()))?;
             accumulate_property_projection_report(&mut estimate_report, report);
             if seed_token
                 .as_ref()
@@ -1922,7 +1922,7 @@ impl GraphStore {
                 }
                 Ok(CanonicalScanControl::Continue)
             })
-            .map_err(|error| HawdbError::StorageIntegrity(error.to_string()))?;
+            .map_err(|error| HawDBError::StorageIntegrity(error.to_string()))?;
         accumulate_property_projection_report(&mut estimate_report, report);
         self.graph_index_read_metrics
             .record_property(PersistentGraphIndexClass::NodeFullText, estimate_report);
@@ -2033,7 +2033,7 @@ impl GraphStore {
                         };
                         Ok(consume_canonical(relationship))
                     })
-                    .map_err(|error| HawdbError::StorageIntegrity(error.to_string()))?;
+                    .map_err(|error| HawDBError::StorageIntegrity(error.to_string()))?;
                 let class = match direction {
                     AdjacencyDirection::Outgoing => PersistentGraphIndexClass::ForwardAdjacency,
                     AdjacencyDirection::Incoming => PersistentGraphIndexClass::ReverseAdjacency,
@@ -2091,7 +2091,7 @@ impl GraphStore {
         };
         for entry in entries.iter_copied() {
             let Some(relationship) = self.relationships.get(&entry.relationship_id) else {
-                return Err(HawdbError::StorageIntegrity(format!(
+                return Err(HawDBError::StorageIntegrity(format!(
                     "live adjacency references missing relationship {}",
                     entry.relationship_id.0
                 )));
@@ -2206,7 +2206,7 @@ impl GraphStore {
                     }
                 }
             })
-            .map_err(|error| HawdbError::StorageIntegrity(error.to_string()))?;
+            .map_err(|error| HawDBError::StorageIntegrity(error.to_string()))?;
         self.graph_index_read_metrics.record_adjacency(
             match direction {
                 AdjacencyDirection::Outgoing => PersistentGraphIndexClass::ForwardAdjacency,
@@ -2279,7 +2279,7 @@ impl GraphStore {
             );
         };
         let Some(probe) = relationship_projection_probe(projection, rel_type, filter)
-            .map_err(|error| HawdbError::StorageIntegrity(error.to_string()))?
+            .map_err(|error| HawDBError::StorageIntegrity(error.to_string()))?
         else {
             return self.visit_adjacent_relationships_filter_fallback(
                 node_id,
@@ -2291,7 +2291,7 @@ impl GraphStore {
         };
         let adjacency_entries = adjacency
             .estimate_endpoint_entries(node_id, direction, Some(rel_type))
-            .map_err(|error| HawdbError::StorageIntegrity(error.to_string()))?;
+            .map_err(|error| HawDBError::StorageIntegrity(error.to_string()))?;
         if probe.estimated_entries() > adjacency_entries {
             self.graph_index_read_metrics
                 .record_property(probe.index_class(), probe.estimate_report());
@@ -2344,7 +2344,7 @@ impl GraphStore {
                 }
                 Ok(CanonicalScanControl::Continue)
             })
-            .map_err(|error| HawdbError::StorageIntegrity(error.to_string()))?;
+            .map_err(|error| HawDBError::StorageIntegrity(error.to_string()))?;
         self.graph_index_read_metrics
             .record_property(probe.index_class(), projection_read_report);
         if projection_control == CanonicalScanControl::Stop {
@@ -2406,7 +2406,7 @@ impl GraphStore {
                 for relationship_id in &candidate.rel_ids {
                     let relationship =
                         self.relationships.get(relationship_id).ok_or_else(|| {
-                            HawdbError::StorageIntegrity(format!(
+                            HawDBError::StorageIntegrity(format!(
                                 "relationship property index references missing relationship {}",
                                 relationship_id.0
                             ))
@@ -3212,39 +3212,39 @@ impl GraphStore {
         let mut consume = |payload: SegmentReadPayload| {
             for segment_id in &payload.range.segment_ids {
                 let range = ranges.get(segment_id).ok_or_else(|| {
-                    HawdbError::StorageIntegrity(format!(
+                    HawDBError::StorageIntegrity(format!(
                         "source scan reader returned unknown segment {segment_id}"
                     ))
                 })?;
                 let start = usize::try_from(range.offset.saturating_sub(payload.range.offset))
                     .map_err(|_| {
-                        HawdbError::StorageIntegrity(
+                        HawDBError::StorageIntegrity(
                             "source scan payload offset exceeds address space".to_string(),
                         )
                     })?;
                 let end = start
                     .checked_add(usize::try_from(range.length.get()).map_err(|_| {
-                        HawdbError::StorageIntegrity(
+                        HawDBError::StorageIntegrity(
                             "source scan payload length exceeds address space".to_string(),
                         )
                     })?)
                     .ok_or_else(|| {
-                        HawdbError::StorageIntegrity(
+                        HawDBError::StorageIntegrity(
                             "source scan payload slice overflows".to_string(),
                         )
                     })?;
                 let bytes = payload.bytes.get(start..end).ok_or_else(|| {
-                    HawdbError::StorageIntegrity(
+                    HawDBError::StorageIntegrity(
                         "source scan coalesced payload does not cover a segment".to_string(),
                     )
                 })?;
                 if checksum_bytes(bytes) != checksums[segment_id] {
-                    return Err(HawdbError::StorageIntegrity(format!(
+                    return Err(HawDBError::StorageIntegrity(format!(
                             "source scan segment {segment_id} checksum changed after manifest validation"
                         )));
                 }
                 let segment_rows = source_scan::decode_payload(bytes)
-                    .map_err(|error| HawdbError::StorageIntegrity(error.to_string()))?;
+                    .map_err(|error| HawDBError::StorageIntegrity(error.to_string()))?;
                 let candidate_positions = candidates
                     .remove(segment_id)
                     .flatten()
@@ -3263,7 +3263,7 @@ impl GraphStore {
                         positions.len().saturating_mul(std::mem::size_of::<u64>())
                     }));
                 if max_live_candidate_bytes.is_some_and(|limit| live_candidate_bytes > limit) {
-                    return Err(HawdbError::Execution(format!(
+                    return Err(HawDBError::Execution(format!(
                         "SourceSegmentScan decoded segment uses {live_candidate_bytes} bytes, exceeding blocking_operator_bytes {}",
                         max_live_candidate_bytes.unwrap_or_default()
                     )));
@@ -3280,7 +3280,7 @@ impl GraphStore {
                     }
                 }
             }
-            Ok::<_, HawdbError>(hawdb_storage::SegmentReadControl::Continue)
+            Ok::<_, HawDBError>(hawdb_storage::SegmentReadControl::Continue)
         };
         let executor = SegmentReadExecutor::new(max_wave_bytes);
         let report = match task_context {
@@ -3291,9 +3291,9 @@ impl GraphStore {
         }
         .map_err(|error| match error {
             SegmentReadExecutionError::Stopped(reason) => {
-                HawdbError::Execution(format!("runtime task stopped: {reason}"))
+                HawDBError::Execution(format!("runtime task stopped: {reason}"))
             }
-            error => HawdbError::StorageIntegrity(error.to_string()),
+            error => HawDBError::StorageIntegrity(error.to_string()),
         })?;
         Ok(SourceScanCandidateVisit::Rows {
             graph_epoch,
@@ -3328,7 +3328,7 @@ fn validate_composite_range_seek(seek: &hawdb_plan::CompositeRangeSeek) -> Resul
         || seek.index_properties[prefix_len] != seek.range_property
         || (seek.lower.is_none() && seek.upper.is_none())
     {
-        return Err(HawdbError::Execution(
+        return Err(HawDBError::Execution(
             "invalid composite range seek shape".to_string(),
         ));
     }
@@ -3381,7 +3381,7 @@ fn push_compact_adjacency_key(
     let entry_bytes = std::mem::size_of::<OrderedAdjacencyEntry>();
     let required_bytes = entries.len().saturating_add(1).saturating_mul(entry_bytes);
     if required_bytes > memory_budget_bytes {
-        return Err(HawdbError::Execution(format!(
+        return Err(HawDBError::Execution(format!(
             "ordered adjacency keys use {required_bytes} bytes, exceeding blocking_operator_bytes {memory_budget_bytes}"
         )));
     }
@@ -3403,7 +3403,7 @@ fn emit_compact_adjacency_before(
         }
         *index = index.saturating_add(1);
         let Some(relationship) = store.relationship_owned(entry.relationship_id)? else {
-            return Err(HawdbError::StorageIntegrity(format!(
+            return Err(HawDBError::StorageIntegrity(format!(
                 "ordered adjacency references missing relationship {}",
                 entry.relationship_id.0
             )));
@@ -3427,7 +3427,7 @@ fn emit_live_adjacency_before(
         }
         entries.next();
         let Some(relationship) = store.relationships.get(&entry.relationship_id) else {
-            return Err(HawdbError::StorageIntegrity(format!(
+            return Err(HawDBError::StorageIntegrity(format!(
                 "live ordered adjacency references missing relationship {}",
                 entry.relationship_id.0
             )));

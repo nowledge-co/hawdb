@@ -2,14 +2,14 @@
 
 ## Scope
 
-Hawdb treats engine-owned metadata and application-owned durable tables as
+HawDB treats engine-owned metadata and application-owned durable tables as
 versioned system schemas. An embedding application registers its schema during
 database open; the embedded handle is not returned until the registered schema
 is current. Ordinary user tables remain outside this contract.
 
 The first intended application schema is Nowledge Content Store. Its owner and
 table definitions remain adapter-owned and are deliberately not compiled into
-Hawdb.
+HawDB.
 
 ## Upgrade Protocol
 
@@ -17,7 +17,7 @@ The protocol follows the useful local subset of TiDB bootstrap upgrades:
 
 1. Each owner has an append-only migration list, contiguous from version 1.
 2. A migration identity includes owner, version, name, and the ordered SQL
-   statement bytes. Hawdb persists its SHA-256 checksum.
+   statement bytes. HawDB persists its SHA-256 checksum.
 3. Existing migration identities and checksums are verified before any write.
 4. All pending DDL and migration records for one owner are staged in one mixed
    graph/relational transaction and published by one WAL commit.
@@ -40,7 +40,7 @@ latest retained projection-relevant mutation or the changefeed resume floor,
 not against unrelated schema epochs; otherwise an automatic schema upgrade
 would make an unchanged search projection spuriously stale.
 
-Hawdb Lightning includes the engine registry in its relational stream. An
+HawDB Lightning includes the engine registry in its relational stream. An
 in-memory source that has not durably bootstrapped the registry derives that
 export state without mutating its live commit epoch. Initial import accepts a
 target containing only the verified engine bootstrap, but rejects a stream
@@ -53,13 +53,13 @@ is admitted against row and full resident-rewrite byte limits. Adding a
 EXISTS` and inline key, unique, or foreign-key constraints are rejected so a
 migration cannot hide schema drift.
 
-TiDB also coordinates bootstrap ownership between distributed nodes. Hawdb
+TiDB also coordinates bootstrap ownership between distributed nodes. HawDB
 does not copy that mechanism: its embedded durable writer already owns the
 exclusive database open, so a second bootstrap election would add no safety.
 
 ## Application Registration
 
-Application schema definitions remain in the owning adapter. Hawdb provides
+Application schema definitions remain in the owning adapter. HawDB provides
 `SystemSchemaRegistry`, `SystemSchemaMigration`, and
 `Database::apply_system_schema_registry`; it does not compile Nowledge table
 definitions into the default database facade. `NowledgeMemOpenOptions` accepts
@@ -76,7 +76,7 @@ Schema upgrade and SQLite data migration are separate state machines. Schema
 upgrade must stay small and deterministic. The Nowledge adapter owns SQLite's
 online backup, immutable snapshot identity, stable keyset pages, row and byte
 budgets, and the import cursor. Each data page and cursor update is committed
-in the same Hawdb transaction. The source SQLite file remains unchanged.
+in the same HawDB transaction. The source SQLite file remains unchanged.
 
 Completing the immutable Content Store snapshot is not live-cutover evidence.
 Cutover remains fail-closed until the host atomically fences legacy writers,
@@ -86,15 +86,15 @@ representative-load gates remain required before SQLite can be decommissioned.
 
 ## Verification
 
-The bounded `HawdbSystemSchemaUpgrade.tla` model checks ordered suffix staging,
+The bounded `HawDBSystemSchemaUpgrade.tla` model checks ordered suffix staging,
 atomic durable and visible schema/registry versions, fail-closed validation,
-read-only and failed-DDL behavior, crash recovery, and the Hawdb Lightning
+read-only and failed-DDL behavior, crash recovery, and the HawDB Lightning
 registry boundary. The model and its TLC configuration are executed by the
-`//docs/tla:HawdbSystemSchemaUpgrade_check` Bazel target and included in the
+`//docs/tla:HawDBSystemSchemaUpgrade_check` Bazel target and included in the
 `//docs/tla:storage_models` suite. `scripts/check-storage-tla.sh` repeats the
 bounded check only when producing retained release evidence.
 
-Focused Hawdb tests must prove:
+Focused HawDB tests must prove:
 
 - fresh version 1 bootstrap and version 2 upgrade;
 - restart idempotency without an extra commit;

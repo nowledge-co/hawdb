@@ -2,7 +2,7 @@
 
 use crate::index_runtime::RelationalIndexExecutionEvidence;
 use crate::row_runtime::RelationalRowExecutionEvidence;
-use hawdb_core::{HawdbError, Result};
+use hawdb_core::{HawDBError, Result};
 use hawdb_executor::binding::map_payload_bytes;
 use hawdb_executor::{BlockingOperatorMemoryReport, QueryRows, Row};
 use hawdb_optimizer::{
@@ -48,14 +48,14 @@ pub fn push_relational_output(
     limits: RelationalQueryLimits,
 ) -> Result<()> {
     if output.len() >= limits.max_output_rows {
-        return Err(HawdbError::Execution(format!(
+        return Err(HawDBError::Execution(format!(
             "relational SQL output exceeds max_output_rows {}",
             limits.max_output_rows
         )));
     }
     *payload_bytes = payload_bytes.saturating_add(map_payload_bytes(&row));
     if *payload_bytes > limits.max_output_payload_bytes {
-        return Err(HawdbError::Execution(format!(
+        return Err(HawDBError::Execution(format!(
             "relational SQL output exceeds max_output_payload_bytes {}",
             limits.max_output_payload_bytes
         )));

@@ -5,7 +5,7 @@ use super::{
     typed_row_set_locator, visit_relational_rows, AccountedBindingBatch, BatchControl,
     BindingBatch, BindingBatchSource, BlockingExecutionContext, BlockingOperatorMemoryReport,
     BoundRow, Catalog, ExecutionLimit, ExecutionObserver, ExecutorBinding, ExternalTopN,
-    HawdbError, NonZeroUsize, PhysicalPlan, PlannedJoin, QueryMemoryLedger, QueryRows, RefCell,
+    HawDBError, NonZeroUsize, PhysicalPlan, PlannedJoin, QueryMemoryLedger, QueryRows, RefCell,
     RelationalBaseAccess, RelationalIndexRuntime, RelationalOrderTarget,
     RelationalPhysicalJoinExecution, RelationalPipelineState, RelationalQueryLimits,
     RelationalRowRuntime, RelationalSortKey, RelationalSortRecord, RelationalState,
@@ -230,7 +230,7 @@ impl BindingBatchSource for ProjectedSortKeyBatchSource<'_> {
                 for binding in &mut batch {
                     for (ordinal, (column, item)) in self.order_columns.iter().enumerate() {
                         let value = binding.values.get(column).cloned().ok_or_else(|| {
-                            HawdbError::Semantic(format!(
+                            HawDBError::Semantic(format!(
                                 "DISTINCT ORDER BY column {} is not projected",
                                 item.expression
                                     .as_column()
@@ -270,11 +270,11 @@ pub(super) fn execute_blocking_projection<'a>(
     memory_ledger: &QueryMemoryLedger,
 ) -> Result<StreamingProjectionOutput> {
     let offset = usize::try_from(bind_bound(select.offset, parameters, "OFFSET")?.unwrap_or(0))
-        .map_err(|_| HawdbError::Semantic("SQL OFFSET is too large".to_string()))?;
+        .map_err(|_| HawDBError::Semantic("SQL OFFSET is too large".to_string()))?;
     let requested = bind_bound(select.limit, parameters, "LIMIT")?
         .map(|value| {
             usize::try_from(value)
-                .map_err(|_| HawdbError::Semantic("SQL LIMIT is too large".to_string()))
+                .map_err(|_| HawDBError::Semantic("SQL LIMIT is too large".to_string()))
         })
         .transpose()?
         .unwrap_or(usize::MAX);
@@ -586,7 +586,7 @@ pub(super) fn add_relational_order_keys(
             RelationalOrderTarget::ProjectionColumn { alias, .. }
             | RelationalOrderTarget::ProjectionExpression { alias, .. } => {
                 projected.get(alias).cloned().ok_or_else(|| {
-                    HawdbError::Semantic(format!(
+                    HawDBError::Semantic(format!(
                         "relational ORDER BY alias {alias} is not projected"
                     ))
                 })?
@@ -613,7 +613,7 @@ pub(super) fn relational_sort_value(value: &RelationalValue) -> Result<Value> {
         RelationalValue::Text(value) => Ok(Value::String(value.clone())),
         RelationalValue::Bytea(value) => Ok(Value::Binary(value.clone())),
         RelationalValue::Uuid(value) => Ok(Value::Uuid(*value)),
-        RelationalValue::Overflow(_) => Err(HawdbError::Execution(
+        RelationalValue::Overflow(_) => Err(HawDBError::Execution(
             "ORDER BY requires overflow hydration before qualification".to_string(),
         )),
     }
@@ -677,7 +677,7 @@ pub(super) fn projected_order_columns(
                         }),
                 };
             output.map(|output| (output, item.clone())).ok_or_else(|| {
-                HawdbError::Semantic(format!(
+                HawDBError::Semantic(format!(
                     "SELECT DISTINCT requires ORDER BY column {} to appear in the projection",
                     item.expression
                         .as_column()

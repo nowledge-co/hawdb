@@ -2,7 +2,7 @@ use super::*;
 use crate::binding::Binding;
 use crate::kernel::SpillBudgetTracker;
 use crate::{ExecutionMemoryConfig, QueryMemoryLedger};
-use hawdb_core::{HawdbError, RuntimeCancellationToken, Value};
+use hawdb_core::{HawDBError, RuntimeCancellationToken, Value};
 use std::num::NonZeroU64;
 use std::panic::{catch_unwind, AssertUnwindSafe};
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -156,7 +156,7 @@ fn check_case(values: Vec<Vec<u64>>, final_count: usize, exit: Exit) {
                     )?;
                     match exit {
                         Exit::Error(at) if index == at => {
-                            return Err(HawdbError::Execution("injected merge failure".into()))
+                            return Err(HawDBError::Execution("injected merge failure".into()))
                         }
                         Exit::Panic(at) if index == at => panic!("injected merge panic"),
                         _ => {}

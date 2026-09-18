@@ -8,7 +8,7 @@ use crate::build_control::checkpoint;
 use crate::build_memory::reserved::{native_path, Grant};
 use crate::build_memory::{BuildMemory, MAP_ENTRY_BYTES};
 use crate::build_term::Term;
-use crate::error::{HawdbError, Result};
+use crate::error::{HawDBError, Result};
 use hawdb_core::RuntimeTaskContext;
 use hawdb_executor::QueryMemoryLease;
 use hawdb_integrity::Crc32cHasher as Digest;
@@ -236,7 +236,7 @@ impl ManifestBody {
                 != Some(self.artifact_file.as_str())
             || self.artifact_len < ARTIFACT_HEADER.len() as u64 + 8
         {
-            return Err(HawdbError::Storage(
+            return Err(HawDBError::Storage(
                 "lexical projection manifest header is invalid".to_string(),
             ));
         }
@@ -251,20 +251,20 @@ impl ManifestBody {
                 || block.min_key > block.max_key
                 || block.offset != previous_end
             {
-                return Err(HawdbError::Storage(format!(
+                return Err(HawDBError::Storage(format!(
                     "lexical projection block {} has invalid bounds",
                     block.block_id
                 )));
             }
             let key = (block.kind as u8, block.min_key.as_str(), block.block_id);
             if previous.is_some_and(|previous| previous >= key) {
-                return Err(HawdbError::Storage(
+                return Err(HawDBError::Storage(
                     "lexical projection blocks are not ordered".to_string(),
                 ));
             }
             previous = Some(key);
             previous_end = previous_end.checked_add(block.length).ok_or_else(|| {
-                HawdbError::Storage("lexical projection block range overflows".to_string())
+                HawDBError::Storage("lexical projection block range overflows".to_string())
             })?;
             match block.kind {
                 BlockKind::Documents => {
@@ -283,14 +283,14 @@ impl ManifestBody {
                 || statistics.document_frequency == 0
                 || previous_term.is_some_and(|previous| previous >= statistics.term.as_str())
             {
-                return Err(HawdbError::Storage(
+                return Err(HawDBError::Storage(
                     "lexical projection term statistics are invalid or unordered".to_string(),
                 ));
             }
             term_postings = term_postings
                 .checked_add(statistics.document_frequency)
                 .ok_or_else(|| {
-                    HawdbError::Storage(
+                    HawDBError::Storage(
                         "lexical projection term document frequency overflows".to_string(),
                     )
                 })?;
@@ -301,7 +301,7 @@ impl ManifestBody {
             || postings != self.posting_count
             || term_postings != self.posting_count
         {
-            return Err(HawdbError::Storage(
+            return Err(HawDBError::Storage(
                 "lexical projection manifest counts are inconsistent".to_string(),
             ));
         }
@@ -321,10 +321,10 @@ impl ManifestBody {
     fn decode_with_context(bytes: &[u8], task: Option<&RuntimeTaskContext>) -> Result<Self> {
         task.map_or(Ok(()), checkpoint)?;
         let envelope: ManifestEnvelope = serde_json::from_slice(bytes)
-            .map_err(|error| HawdbError::Storage(format!("invalid lexical manifest: {error}")))?;
+            .map_err(|error| HawDBError::Storage(format!("invalid lexical manifest: {error}")))?;
         task.map_or(Ok(()), checkpoint)?;
         if manifest_encoding::checksum_with_context(&envelope.body, task)? != envelope.checksum {
-            return Err(HawdbError::Storage(
+            return Err(HawDBError::Storage(
                 "lexical projection manifest checksum mismatch".to_string(),
             ));
         }
@@ -439,7 +439,7 @@ impl LexicalMiniDelta {
             .saturating_sub(removed_delete)
             .saturating_add(delta.total_resident_bytes());
         if required > config.mini_delta_bytes.get() {
-            return Err(HawdbError::Storage(format!(
+            return Err(HawDBError::Storage(format!(
                 "lexical mini-delta requires {required} bytes, exceeding {}",
                 config.mini_delta_bytes
             )));
@@ -602,7 +602,7 @@ fn admit_document_source(document: &SearchDocument, config: LexicalProjectionCon
                 }),
         );
     if source_bytes as u64 > config.max_document_source_bytes.get() {
-        return Err(HawdbError::Storage(format!(
+        return Err(HawDBError::Storage(format!(
             "lexical document {} uses {source_bytes} source bytes, exceeding {}",
             document.id, config.max_document_source_bytes
         )));
@@ -617,7 +617,7 @@ struct AnalyzedTerm {
 
 fn admit_term_bytes(bytes: u64, max_term_bytes: NonZeroU64) -> Result<()> {
     if bytes > max_term_bytes.get() {
-        return Err(HawdbError::Storage(format!(
+        return Err(HawDBError::Storage(format!(
             "lexical term uses {bytes} bytes, exceeding {max_term_bytes}"
         )));
     }
@@ -702,13 +702,13 @@ impl<'a> DocumentAnalysis<'a> {
         }
         let required_tokens = u64::from(self.document_len).saturating_add(weight as u64);
         if required_tokens > self.config.max_document_tokens.get() as u64 {
-            return Err(HawdbError::Storage(format!(
+            return Err(HawDBError::Storage(format!(
                 "lexical document {} produced at least {required_tokens} tokens, exceeding {}",
                 self.document_id, self.config.max_document_tokens,
             )));
         }
         let document_len = u32::try_from(required_tokens)
-            .map_err(|_| HawdbError::Storage("lexical document length exceeds u32".to_string()))?;
+            .map_err(|_| HawDBError::Storage("lexical document length exceeds u32".to_string()))?;
         if previous.is_none() {
             let required_bytes = self.resident_bytes.saturating_add(term.len() as u64 + 32);
             self.admit_map_bytes(required_bytes, self.frequencies.len() + 1)?;
@@ -732,7 +732,7 @@ impl<'a> DocumentAnalysis<'a> {
     fn admit_map_bytes(&self, resident_bytes: u64, terms: usize) -> Result<()> {
         let required_bytes = self.required_map_bytes(resident_bytes, terms);
         if required_bytes > self.config.build_memory_bytes.get() {
-            return Err(HawdbError::Storage(format!(
+            return Err(HawDBError::Storage(format!(
                 "lexical document {} requires more than {} analyzer bytes",
                 self.document_id, self.config.build_memory_bytes,
             )));
@@ -817,7 +817,7 @@ impl LexicalProjectionReader {
             .and_then(|name| name.to_str())
             != Some(manifest_file)
         {
-            return Err(HawdbError::Storage(
+            return Err(HawDBError::Storage(
                 "lexical projection manifest name is invalid".to_string(),
             ));
         }
@@ -845,7 +845,7 @@ impl LexicalProjectionReader {
         config: LexicalProjectionConfig,
     ) -> Result<Option<Arc<Self>>> {
         if bytes.len() as u64 > config.max_manifest_bytes.get() {
-            return Err(HawdbError::Storage(
+            return Err(HawDBError::Storage(
                 "lexical projection manifest exceeds its read budget".to_string(),
             ));
         }
@@ -889,7 +889,7 @@ impl LexicalProjectionReader {
         for block in &manifest.blocks {
             task.map_or(Ok(()), checkpoint)?;
             if block.length > config.max_block_bytes.get() {
-                return Err(HawdbError::Storage(
+                return Err(HawDBError::Storage(
                     "lexical projection contains a block above the read admission limit"
                         .to_string(),
                 ));
@@ -897,7 +897,7 @@ impl LexicalProjectionReader {
         }
         let file = File::open(artifact_path)?;
         if file.metadata()?.len() != manifest.artifact_len {
-            return Err(HawdbError::Storage(
+            return Err(HawDBError::Storage(
                 "lexical projection artifact length mismatch".to_string(),
             ));
         }
@@ -906,7 +906,7 @@ impl LexicalProjectionReader {
             None => file_digest(&file)?,
         };
         if length != manifest.artifact_len || digest != manifest.artifact_checksum {
-            return Err(HawdbError::Storage(
+            return Err(HawDBError::Storage(
                 "lexical projection artifact checksum mismatch".to_string(),
             ));
         }
@@ -918,7 +918,7 @@ impl LexicalProjectionReader {
         if &header[..16] != ARTIFACT_HEADER
             || u64::from_le_bytes(header[16..24].try_into().unwrap()) != manifest.generation
         {
-            return Err(HawdbError::Storage(
+            return Err(HawDBError::Storage(
                 "lexical projection artifact header mismatch".to_string(),
             ));
         }
@@ -954,7 +954,7 @@ impl LexicalProjectionReader {
         max_term_bytes: NonZeroU64,
     ) -> Result<BTreeSet<String>> {
         if text.len() as u64 > self.config.query_memory_bytes.get() {
-            return Err(HawdbError::Storage(
+            return Err(HawDBError::Storage(
                 "lexical query source exceeds its memory budget".into(),
             ));
         }
@@ -964,7 +964,7 @@ impl LexicalProjectionReader {
             admit_term_bytes(term.len() as u64, max_term_bytes)?;
             if !terms.contains(&term) {
                 if terms.len() >= self.config.max_query_terms.get() {
-                    return Err(HawdbError::Storage(format!(
+                    return Err(HawDBError::Storage(format!(
                         "lexical query produced more than {} terms",
                         self.config.max_query_terms
                     )));
@@ -973,7 +973,7 @@ impl LexicalProjectionReader {
                     .saturating_add(term.len() as u64)
                     .saturating_add(32);
                 if retained_bytes > self.config.query_memory_bytes.get() {
-                    return Err(HawdbError::Storage(
+                    return Err(HawDBError::Storage(
                         "lexical query terms exceed their memory budget".into(),
                     ));
                 }
@@ -1013,7 +1013,7 @@ impl LexicalProjectionReader {
             admit_term_bytes(term.len() as u64, max_term_bytes)?;
         }
         if query_terms.len() > self.config.max_query_terms.get() {
-            return Err(HawdbError::Storage(format!(
+            return Err(HawDBError::Storage(format!(
                 "lexical query produced {} terms, exceeding {}",
                 query_terms.len(),
                 self.config.max_query_terms
@@ -1050,7 +1050,7 @@ impl LexicalProjectionReader {
                 .saturating_add(32)
         });
         if admitted_stream_bytes > self.config.query_memory_bytes.get() {
-            return Err(HawdbError::Storage(format!(
+            return Err(HawDBError::Storage(format!(
                 "lexical query streams require {admitted_stream_bytes} bytes, exceeding {}",
                 self.config.query_memory_bytes
             )));
@@ -1165,13 +1165,13 @@ impl LexicalProjectionReader {
 
     fn read_block(&self, block: &BlockDescriptor) -> Result<Vec<u8>> {
         if block.length > self.config.max_block_bytes.get() {
-            return Err(HawdbError::Storage(format!(
+            return Err(HawDBError::Storage(format!(
                 "lexical block {} exceeds the read budget",
                 block.block_id
             )));
         }
         let length = usize::try_from(block.length).map_err(|_| {
-            HawdbError::Storage(format!(
+            HawDBError::Storage(format!(
                 "lexical block {} length exceeds the platform address space",
                 block.block_id
             ))
@@ -1181,7 +1181,7 @@ impl LexicalProjectionReader {
         // so concurrent posting streams cannot redirect one another's I/O.
         hawdb_storage::io::read_exact_at(&self.file, &mut bytes, block.offset)?;
         if checksum(&bytes) != block.checksum {
-            return Err(HawdbError::Storage(format!(
+            return Err(HawDBError::Storage(format!(
                 "lexical block {} checksum mismatch",
                 block.block_id
             )));
@@ -1295,7 +1295,7 @@ struct ScoreCollector {
 impl ScoreCollector {
     fn new(retained_limit: Option<usize>, max_entries: usize) -> Result<Self> {
         if retained_limit.is_some_and(|limit| limit > max_entries) {
-            return Err(HawdbError::Storage(format!(
+            return Err(HawDBError::Storage(format!(
                 "lexical rank window exceeds the admitted {max_entries} score entries"
             )));
         }
@@ -1317,7 +1317,7 @@ impl ScoreCollector {
         match &mut self.storage {
             ScoreStorage::Full(scores) => {
                 if scores.len() >= self.max_entries {
-                    return Err(HawdbError::Storage(format!(
+                    return Err(HawDBError::Storage(format!(
                         "lexical query matched more than {} documents; provide a rank window or narrow the candidate set",
                         self.max_entries
                     )));
@@ -1526,7 +1526,7 @@ impl<'workspace> LexicalProjectionWriter<'workspace> {
                         .get()
                         .saturating_sub(retained);
                     if bytes > posting_limit {
-                        return Err(HawdbError::Storage(
+                        return Err(HawDBError::Storage(
                             "one lexical posting exceeds the build memory budget".into(),
                         ));
                     }
@@ -1647,9 +1647,9 @@ impl SpillIo for FileSpillIo {
 fn checked_spill_bytes(current: u64, additional: u64, limit: NonZeroU64) -> Result<u64> {
     let required = current
         .checked_add(additional)
-        .ok_or_else(|| HawdbError::Storage("lexical spill bytes overflow".to_string()))?;
+        .ok_or_else(|| HawDBError::Storage("lexical spill bytes overflow".to_string()))?;
     if required > limit.get() {
-        return Err(HawdbError::Storage(format!(
+        return Err(HawDBError::Storage(format!(
             "lexical build requires {required} spill bytes, exceeding {limit}"
         )));
     }
@@ -1784,7 +1784,7 @@ impl SpillRuns {
     fn compact_with_io(&mut self, io: &mut impl SpillIo) -> Result<()> {
         let configured_fan_in = self.config.max_merge_fan_in.get();
         if configured_fan_in < 2 {
-            return Err(HawdbError::Storage(
+            return Err(HawDBError::Storage(
                 "lexical merge fan-in must be at least two".to_string(),
             ));
         }
@@ -1832,10 +1832,10 @@ impl SpillRuns {
 
     fn next_path(&mut self) -> Result<PathBuf> {
         let required = self.sequence.checked_add(1).ok_or_else(|| {
-            HawdbError::Storage("lexical spill run sequence overflow".to_string())
+            HawDBError::Storage("lexical spill run sequence overflow".to_string())
         })?;
         if required > self.config.max_spill_runs.get() {
-            return Err(HawdbError::Storage(format!(
+            return Err(HawDBError::Storage(format!(
                 "lexical build requires {required} spill runs, exceeding {}",
                 self.config.max_spill_runs
             )));
@@ -1874,7 +1874,7 @@ impl RunReader {
         let mut header = [0u8; 8];
         reader.read_exact(&mut header)?;
         if &header != RUN_HEADER {
-            return Err(HawdbError::Storage(
+            return Err(HawDBError::Storage(
                 "lexical spill run header mismatch".into(),
             ));
         }
@@ -1897,7 +1897,7 @@ impl RunReader {
             return Ok(None);
         };
         if available_bytes < 32 {
-            return Err(HawdbError::Storage(
+            return Err(HawDBError::Storage(
                 "lexical merge head exceeds the build memory budget".into(),
             ));
         }
@@ -1908,7 +1908,7 @@ impl RunReader {
             &mut self.reader,
             (1024 * 1024).min(available_strings.saturating_sub(term.len() as u64)),
         )?
-        .ok_or_else(|| HawdbError::Storage("lexical spill run is truncated".into()))?;
+        .ok_or_else(|| HawDBError::Storage("lexical spill run is truncated".into()))?;
         let id_memory = self.control.reserve(id_length)?;
         let document_id = spill_memory::read_text(&mut self.reader, id_length, &self.control)?;
         let term_frequency = read_u32(&mut self.reader)?;
@@ -2023,7 +2023,7 @@ fn encode_block_header(
     count: usize,
 ) -> Result<()> {
     let count = u32::try_from(count)
-        .map_err(|_| HawdbError::Storage("lexical block count exceeds u32".to_string()))?;
+        .map_err(|_| HawDBError::Storage("lexical block count exceeds u32".to_string()))?;
     output.write_all(BLOCK_HEADER)?;
     output.write_all(&generation.to_le_bytes())?;
     output.write_all(&block_id.to_le_bytes())?;
@@ -2067,7 +2067,7 @@ fn decode_posting_block(
                 .as_ref()
                 .is_some_and(|previous: &Posting| previous >= &posting)
         {
-            return Err(HawdbError::Storage(
+            return Err(HawDBError::Storage(
                 "lexical posting block is invalid or unordered".to_string(),
             ));
         }
@@ -2098,13 +2098,13 @@ fn decode_block_header(
                 BlockKind::Postings => 2,
             }
     {
-        return Err(HawdbError::Storage(
+        return Err(HawDBError::Storage(
             "lexical block header does not match its manifest".to_string(),
         ));
     }
     let count = cursor.u32()?;
     if count != descriptor.entry_count {
-        return Err(HawdbError::Storage(
+        return Err(HawDBError::Storage(
             "lexical block count does not match its manifest".to_string(),
         ));
     }
@@ -2121,7 +2121,7 @@ fn validate_block_tail(
         || first.as_deref() != Some(descriptor.min_key.as_str())
         || last.as_deref() != Some(descriptor.max_key.as_str())
     {
-        return Err(HawdbError::Storage(
+        return Err(HawDBError::Storage(
             "lexical block payload bounds do not match its manifest".to_string(),
         ));
     }
@@ -2142,11 +2142,11 @@ impl<'a> SliceCursor<'a> {
         let end = self
             .offset
             .checked_add(length)
-            .ok_or_else(|| HawdbError::Storage("lexical block cursor overflow".to_string()))?;
+            .ok_or_else(|| HawDBError::Storage("lexical block cursor overflow".to_string()))?;
         let bytes = self
             .bytes
             .get(self.offset..end)
-            .ok_or_else(|| HawdbError::Storage("lexical block is truncated".to_string()))?;
+            .ok_or_else(|| HawDBError::Storage("lexical block is truncated".to_string()))?;
         self.offset = end;
         Ok(bytes)
     }
@@ -2166,12 +2166,12 @@ impl<'a> SliceCursor<'a> {
     fn string(&mut self, max: u64) -> Result<String> {
         let length = self.u32()? as usize;
         if length as u64 > max {
-            return Err(HawdbError::Storage(format!(
+            return Err(HawDBError::Storage(format!(
                 "lexical string uses {length} bytes, exceeding {max}"
             )));
         }
         String::from_utf8(self.bytes(length)?.to_vec())
-            .map_err(|error| HawdbError::Storage(format!("invalid lexical UTF-8: {error}")))
+            .map_err(|error| HawDBError::Storage(format!("invalid lexical UTF-8: {error}")))
     }
 
     fn is_empty(&self) -> bool {
@@ -2181,7 +2181,7 @@ impl<'a> SliceCursor<'a> {
 
 fn write_string(writer: &mut impl Write, value: &str) -> Result<()> {
     let length = u32::try_from(value.len())
-        .map_err(|_| HawdbError::Storage("lexical string exceeds u32".to_string()))?;
+        .map_err(|_| HawDBError::Storage("lexical string exceeds u32".to_string()))?;
     writer.write_all(&length.to_le_bytes())?;
     writer.write_all(value.as_bytes())?;
     Ok(())
@@ -2198,7 +2198,7 @@ fn read_optional_length(reader: &mut impl Read, max: u64) -> Result<Option<usize
     }
     let length = u32::from_le_bytes(length) as usize;
     if length as u64 > max {
-        return Err(HawdbError::Storage(
+        return Err(HawDBError::Storage(
             "lexical spill string exceeds its admitted length".to_string(),
         ));
     }

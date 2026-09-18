@@ -7119,14 +7119,14 @@ pub fn nowledge_memory_core_fixture() -> CompatibilityFixture {
                     ),
                     ExpectedRows::Exact(vec![compatibility_row([(
                         "e.name",
-                        Value::String("Hawdb".to_string()),
+                        Value::String("HawDB".to_string()),
                     )])]),
                 )
                 .with_setup_query(CypherFixtureStatement::new(
                     "CREATE (:Memory {id: 'memory-entity-list-memory-1', title: 'Entity linked memory'})",
                 ))
                 .with_setup_query(CypherFixtureStatement::new(
-                    "CREATE (:Entity {id: 'memory-entity-list-entity-1', name: 'Hawdb'})",
+                    "CREATE (:Entity {id: 'memory-entity-list-entity-1', name: 'HawDB'})",
                 ))
                 .with_setup_query(CypherFixtureStatement::new(
                     "MATCH (m:Memory {id: 'memory-entity-list-memory-1'}), (e:Entity {id: 'memory-entity-list-entity-1'}) CREATE (m)-[:MENTIONS]->(e)",

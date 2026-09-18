@@ -3,7 +3,7 @@
 use crate::predicate::bind_streaming_column;
 use crate::query_value::relational_ref_to_value;
 use crate::row_runtime::RelationalReadRowRef;
-use hawdb_core::{HawdbError, Result, Value};
+use hawdb_core::{HawDBError, Result, Value};
 use hawdb_executor::{QueryRowsBuilder, QuerySchema};
 use hawdb_sql::{Expr, ExprKind, SelectProjection};
 use hawdb_storage::RelationalTableSchema;
@@ -77,7 +77,7 @@ impl BoundStreamingProjection {
                         });
                     }
                     _ => {
-                        return Err(HawdbError::Semantic(
+                        return Err(HawDBError::Semantic(
                             "non-aggregate relational projection expressions are not supported"
                                 .to_string(),
                         ));
@@ -90,7 +90,7 @@ impl BoundStreamingProjection {
             .iter()
             .find(|column| !names.insert(column.output_name.as_str()))
         {
-            return Err(HawdbError::Semantic(format!(
+            return Err(HawDBError::Semantic(format!(
                 "relational projection contains duplicate output column {}",
                 duplicate.output_name
             )));
@@ -129,7 +129,7 @@ impl BoundStreamingProjection {
             *payload_bytes =
                 payload_bytes.saturating_add(hawdb_executor::query_value_payload_bytes(&value));
             if *payload_bytes > max_payload_bytes {
-                return Err(HawdbError::Execution(format!(
+                return Err(HawDBError::Execution(format!(
                     "relational SQL output exceeds max_output_payload_bytes {max_payload_bytes}"
                 )));
             }
@@ -224,7 +224,7 @@ mod tests {
 
         assert_eq!(
             error,
-            HawdbError::Execution(
+            HawDBError::Execution(
                 "relational SQL output exceeds max_output_payload_bytes 1".to_string()
             )
         );
@@ -242,7 +242,7 @@ mod tests {
         };
         assert_eq!(
             error,
-            HawdbError::Semantic(
+            HawDBError::Semantic(
                 "relational projection contains duplicate output column value".to_string()
             )
         );

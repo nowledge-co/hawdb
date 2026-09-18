@@ -2,7 +2,7 @@ use crate::inventory::{
     replacement_readiness_family_evidence_health_from_bundle,
     ReplacementReadinessFamilyEvidenceHealth, REQUIRED_NOWLEDGE_REPLACEMENT_QUERY_FAMILIES,
 };
-use hawdb_core::{HawdbError, Result};
+use hawdb_core::{HawDBError, Result};
 use std::path::Path;
 
 pub fn nowledge_query_family_evidence_usage() -> String {
@@ -20,14 +20,14 @@ pub fn run_nowledge_query_family_evidence(
             }
             path => {
                 if args.next().is_some() {
-                    return Err(HawdbError::Semantic(nowledge_query_family_evidence_usage()));
+                    return Err(HawDBError::Semantic(nowledge_query_family_evidence_usage()));
                 }
                 let input = read_json_file(Path::new(path))?;
                 return Ok((nowledge_query_family_evidence_json(&input)?, require_ready));
             }
         }
     }
-    Err(HawdbError::Semantic(nowledge_query_family_evidence_usage()))
+    Err(HawDBError::Semantic(nowledge_query_family_evidence_usage()))
 }
 
 pub fn nowledge_query_family_evidence_json(input: &serde_json::Value) -> Result<serde_json::Value> {
@@ -60,7 +60,7 @@ fn query_family_array(input: &serde_json::Value) -> Result<&Vec<serde_json::Valu
         .get("replacement_readiness_by_query_family")
         .and_then(serde_json::Value::as_array)
         .ok_or_else(|| {
-            HawdbError::Semantic(
+            HawDBError::Semantic(
                 "query family evidence requires a family array or replacement_readiness_by_query_family array".to_string(),
             )
         })
@@ -84,13 +84,13 @@ fn query_family_blocker_codes(
 
 fn read_json_file(path: &Path) -> Result<serde_json::Value> {
     let content = std::fs::read_to_string(path).map_err(|error| {
-        HawdbError::Execution(format!(
+        HawDBError::Execution(format!(
             "failed to read query family JSON: {}",
             error.kind()
         ))
     })?;
     serde_json::from_str(&content).map_err(|_| {
-        HawdbError::Semantic("failed to parse query family JSON: invalid_json".to_string())
+        HawDBError::Semantic("failed to parse query family JSON: invalid_json".to_string())
     })
 }
 

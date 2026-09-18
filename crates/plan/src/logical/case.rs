@@ -135,7 +135,7 @@ fn specialize_case(
                     } else {
                         "expression"
                     };
-                    return Err(HawdbError::Semantic(format!(
+                    return Err(HawDBError::Semantic(format!(
                         "unknown variable '{variable}' in {position}"
                     )));
                 }

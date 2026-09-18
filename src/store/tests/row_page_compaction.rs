@@ -202,15 +202,15 @@ fn row_page_compaction_failure_limits_leave_the_generation_retryable() {
 
 #[test]
 fn row_page_compaction_dirty_and_materialized_limits_release_admission() {
-    use crate::{HawdbEmbedded, HawdbEmbeddedOpenOptions};
+    use crate::{HawDBEmbedded, HawDBEmbeddedOpenOptions};
     use hawdb_qos::RuntimeGovernorConfig;
     use std::num::{NonZeroU64, NonZeroUsize};
 
     let path = unique_test_dir("row_page_compaction_dirty_limits");
     let mode = StorageResidencyMode::Materialized;
     drop(churn_database(&path, mode, 4));
-    let mut engine = HawdbEmbedded::open_with_options(
-        HawdbEmbeddedOpenOptions::new(&path)
+    let mut engine = HawDBEmbedded::open_with_options(
+        HawDBEmbeddedOpenOptions::new(&path)
             .with_config(open_config(mode))
             .with_runtime_governor_config(RuntimeGovernorConfig {
                 cpu_slot_limit: NonZeroUsize::new(1),
@@ -364,7 +364,7 @@ fn row_page_compaction_checkpoint_failpoints_recover_one_complete_selection() {
 
 #[test]
 fn row_page_compaction_admits_before_building_and_shares_shadow_capacity() {
-    use crate::{HawdbEmbedded, HawdbEmbeddedOpenOptions};
+    use crate::{HawDBEmbedded, HawDBEmbeddedOpenOptions};
     use hawdb_qos::RuntimeGovernorConfig;
     use std::num::NonZeroUsize;
 
@@ -379,8 +379,8 @@ fn row_page_compaction_admits_before_building_and_shares_shadow_capacity() {
             graph_columnar_shadow_checkpoint: true,
             ..open_config(mode)
         };
-        let mut engine = HawdbEmbedded::open_with_options(
-            HawdbEmbeddedOpenOptions::new(&path)
+        let mut engine = HawDBEmbedded::open_with_options(
+            HawDBEmbeddedOpenOptions::new(&path)
                 .with_config(config)
                 .with_runtime_governor_config(RuntimeGovernorConfig {
                     cpu_slot_limit: NonZeroUsize::new(1),

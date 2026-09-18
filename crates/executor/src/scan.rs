@@ -18,7 +18,7 @@ use crate::traversal::{
 };
 use crate::{ExecutionLimit, QueryMemoryAccount};
 use hawdb_core::{
-    Catalog, HawdbError, LabelId, RelTypeId, RelationshipDirection, Result, RuntimeTaskContext,
+    Catalog, HawDBError, LabelId, RelTypeId, RelationshipDirection, Result, RuntimeTaskContext,
     Value,
 };
 use hawdb_plan::{
@@ -117,7 +117,7 @@ pub fn stream_expand_binding(
 ) -> Result<ScanControl> {
     runtime_checkpoint(task_context)?;
     let source = binding.nodes.get(spec.source_variable).ok_or_else(|| {
-        HawdbError::Execution(format!(
+        HawDBError::Execution(format!(
             "missing variable '{}' during expand",
             spec.source_variable
         ))
@@ -173,7 +173,7 @@ pub fn stream_expand_binding(
         )?
     } else {
         let Some(rel_type_id) = rel_type_id else {
-            return Err(HawdbError::Execution(
+            return Err(HawDBError::Execution(
                 "typed bounded expand is missing a relationship type".to_string(),
             ));
         };
@@ -291,7 +291,7 @@ fn ensure_expanded_binding_fits(
 ) -> Result<()> {
     let bytes = binding_memory_bytes(&expanded.binding);
     if bytes > memory_budget_bytes {
-        return Err(HawdbError::Execution(format!(
+        return Err(HawDBError::Execution(format!(
             "AdjacencyExpandExec result uses {bytes} bytes, exceeding blocking_operator_bytes {memory_budget_bytes}"
         )));
     }
@@ -866,7 +866,7 @@ pub fn execute_node_column_lookup(
     let mut tracker = context.memory_tracker();
     for binding in input {
         let expected = binding.values.get(spec.column).ok_or_else(|| {
-            HawdbError::Execution(format!(
+            HawDBError::Execution(format!(
                 "missing column '{}' during node column lookup",
                 spec.column
             ))
@@ -918,7 +918,7 @@ fn execute_indexed_node_column_lookup(
     let mut lookup_values = BTreeSet::new();
     for binding in &input {
         let expected = binding.values.get(spec.column).ok_or_else(|| {
-            HawdbError::Execution(format!(
+            HawDBError::Execution(format!(
                 "missing column '{}' during node column lookup",
                 spec.column
             ))

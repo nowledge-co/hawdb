@@ -9,7 +9,7 @@ use crate::predicate::{
 };
 use crate::store::{AdjacencyReadMemory, GraphExecutionRead, ScanControl};
 use crate::traversal::{visit_one_hop_relationships_with_budget, OneHopRelationshipSpec};
-use hawdb_core::{Catalog, HawdbError, RelationshipDirection, Result, Value, ValueRef};
+use hawdb_core::{Catalog, HawDBError, RelationshipDirection, Result, Value, ValueRef};
 use hawdb_plan::{
     CoalesceDifferenceProjectionTerm, ComparisonOp, DatePart, Predicate, Projection,
     ProjectionExpression, SortDirection, SortItem, SortKey,

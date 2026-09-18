@@ -73,7 +73,7 @@ fn discovery_resource_failure_and_cancellation_never_reuse_a_generation() {
             }
             assert!(matches!(
                 next(&fixture.0, u64::MAX, &memory, &task),
-                Err(HawdbError::Execution(_))
+                Err(HawDBError::Execution(_))
             ));
             assert_eq!(memory.ledger.snapshot().used_bytes, 0);
         }
@@ -117,7 +117,7 @@ fn discovery_decode_admission_covers_valid_escaped_sequence_and_invalid_json() {
         let (limited, task) = context(exact - 1);
         assert!(matches!(
             admitted_manifest_generation(&bytes, &limited, &task),
-            Err(HawdbError::Execution(_))
+            Err(HawDBError::Execution(_))
         ));
     }
     // Active outer decoding and native recovery traversal use the same ledger.

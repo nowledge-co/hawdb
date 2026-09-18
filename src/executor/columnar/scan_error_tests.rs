@@ -151,8 +151,8 @@ enum Exit {
     Cancel,
 }
 
-fn sentinel() -> HawdbError {
-    HawdbError::Semantic("scan callback sentinel".to_string())
+fn sentinel() -> HawDBError {
+    HawDBError::Semantic("scan callback sentinel".to_string())
 }
 
 fn with_context<T>(
@@ -543,7 +543,7 @@ fn mutation_scan_predicate_errors_do_not_commit_partial_writes() {
             &binding(records[1].clone()),
         )
         .unwrap_err();
-        assert!(matches!(expected_error, HawdbError::StorageIntegrity(_)));
+        assert!(matches!(expected_error, HawDBError::StorageIntegrity(_)));
         // The first physical failure poisons the reader. Compare callback
         // propagation with the error from the same subsequent reader state.
         let expected_error = evaluate_predicate(

@@ -660,15 +660,15 @@ fn seed_search_metadata_workload_fixture(graph: &mut NowledgeMemGraph) -> Result
     Ok(())
 }
 
-fn error_class(error: &crate::HawdbError) -> String {
+fn error_class(error: &crate::HawDBError) -> String {
     match error {
-        crate::HawdbError::Parse(_) => "parse",
-        crate::HawdbError::Semantic(_) => "semantic",
-        crate::HawdbError::Execution(_) => "execution",
-        crate::HawdbError::Storage(_)
-        | crate::HawdbError::StorageIntegrity(_)
-        | crate::HawdbError::AppendSequenceExhausted { .. } => "storage",
-        crate::HawdbError::CapabilityUnavailable { .. } => "capability_unavailable",
+        crate::HawDBError::Parse(_) => "parse",
+        crate::HawDBError::Semantic(_) => "semantic",
+        crate::HawDBError::Execution(_) => "execution",
+        crate::HawDBError::Storage(_)
+        | crate::HawDBError::StorageIntegrity(_)
+        | crate::HawDBError::AppendSequenceExhausted { .. } => "storage",
+        crate::HawDBError::CapabilityUnavailable { .. } => "capability_unavailable",
     }
     .to_string()
 }

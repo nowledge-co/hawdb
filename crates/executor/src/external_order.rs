@@ -8,7 +8,7 @@ use crate::{
     BlockingOperatorMemoryReport, ExecutionMemoryConfig, QueryMemoryAccount, QueryMemoryClass,
     QueryMemoryLedger,
 };
-use hawdb_core::{HawdbError, Result, RuntimeTaskContext};
+use hawdb_core::{HawDBError, Result, RuntimeTaskContext};
 use std::cmp::Ordering;
 use std::collections::BinaryHeap;
 use std::num::NonZeroUsize;
@@ -377,14 +377,14 @@ fn write_record<R: ExternalOrderRecord>(
     let record_len = row.record.encoded_len()?;
     let payload_len = EXTERNAL_ORDER_HEADER_BYTES
         .checked_add(record_len)
-        .ok_or_else(|| HawdbError::Execution("external order record size overflow".to_string()))?;
+        .ok_or_else(|| HawDBError::Execution("external order record size overflow".to_string()))?;
     let _staging_lease = spill_budget.reserve_staging(payload_len)?;
     let mut payload = Vec::with_capacity(payload_len);
     payload.push(EXTERNAL_ORDER_RECORD_VERSION);
     payload.extend_from_slice(&row.ordinal.to_le_bytes());
     row.record.encode(&mut payload)?;
     if payload.len() != payload_len {
-        return Err(HawdbError::Execution(format!(
+        return Err(HawDBError::Execution(format!(
             "external order codec declared {record_len} bytes but encoded {} bytes",
             payload.len().saturating_sub(EXTERNAL_ORDER_HEADER_BYTES)
         )));
@@ -427,8 +427,8 @@ fn read_record<R: ExternalOrderRecord>(
     Ok(Some(row))
 }
 
-fn invalid_record(reason: &str) -> HawdbError {
-    HawdbError::Execution(format!("external order spill record is invalid: {reason}"))
+fn invalid_record(reason: &str) -> HawDBError {
+    HawDBError::Execution(format!("external order spill record is invalid: {reason}"))
 }
 
 #[cfg(test)]
@@ -460,7 +460,7 @@ mod tests {
             output.extend_from_slice(&self.key.to_le_bytes());
             output.extend_from_slice(
                 &u32::try_from(self.payload.len())
-                    .map_err(|_| HawdbError::Execution("test payload is too large".to_string()))?
+                    .map_err(|_| HawDBError::Execution("test payload is too large".to_string()))?
                     .to_le_bytes(),
             );
             output.extend_from_slice(&self.payload);
@@ -469,7 +469,7 @@ mod tests {
 
         fn decode(input: &[u8]) -> Result<Self> {
             if input.len() < 12 {
-                return Err(HawdbError::Execution(
+                return Err(HawDBError::Execution(
                     "test external record is truncated".to_string(),
                 ));
             }
@@ -477,7 +477,7 @@ mod tests {
             let len =
                 u32::from_le_bytes(input[8..12].try_into().expect("checked length width")) as usize;
             if input.len() != 12usize.saturating_add(len) {
-                return Err(HawdbError::Execution(
+                return Err(HawDBError::Execution(
                     "test external record length mismatch".to_string(),
                 ));
             }

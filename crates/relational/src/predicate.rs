@@ -1,6 +1,6 @@
 //! SQL qualification over caller-owned row values.
 
-use hawdb_core::{HawdbError, Result, Value};
+use hawdb_core::{HawDBError, Result, Value};
 use hawdb_sql::{Expr, ExprKind, SqlColumnRef, SqlComparisonOp, SqlPredicate, SqlValue};
 use hawdb_storage::{RelationalScalarType, RelationalValue, RelationalValueRef};
 
@@ -17,7 +17,7 @@ fn compare_value_refs(
     if matches!(left, RelationalValueRef::Overflow(_))
         || matches!(right, RelationalValueRef::Overflow(_))
     {
-        return Err(HawdbError::Execution(
+        return Err(HawDBError::Execution(
             "relational filter or join requires overflow hydration before qualification"
                 .to_string(),
         ));
@@ -26,7 +26,7 @@ fn compare_value_refs(
         return Ok(None);
     }
     if left.scalar_type() != right.scalar_type() {
-        return Err(HawdbError::Semantic(
+        return Err(HawDBError::Semantic(
             "relational comparison has incompatible scalar types".to_string(),
         ));
     }
@@ -78,7 +78,7 @@ pub fn predicate_truth_with<'a>(
                     )
                 }
                 ExprKind::Column(right) => compare_values(resolve(left)?.0, resolve(right)?.0, *op),
-                _ => Err(HawdbError::Semantic(
+                _ => Err(HawDBError::Semantic(
                     "unsupported comparison operand".to_owned(),
                 )),
             }
@@ -120,7 +120,7 @@ pub fn predicate_truth_with<'a>(
         } => {
             let (left, scalar_type) = resolve(left.require_column()?)?;
             if scalar_type != RelationalScalarType::Text {
-                return Err(HawdbError::Semantic(
+                return Err(HawDBError::Semantic(
                     "LIKE and ILIKE require a TEXT column".to_string(),
                 ));
             }
@@ -133,10 +133,10 @@ pub fn predicate_truth_with<'a>(
                         hawdb_sql::sql_like_matches(value, pattern, *escape, *case_insensitive)?;
                     Ok(Some(matched != *negated))
                 }
-                (RelationalValue::Overflow(_), _) => Err(HawdbError::Execution(
+                (RelationalValue::Overflow(_), _) => Err(HawDBError::Execution(
                     "LIKE reached an overflow value without hydration".to_string(),
                 )),
-                _ => Err(HawdbError::Semantic(
+                _ => Err(HawDBError::Semantic(
                     "LIKE and ILIKE require TEXT values".to_string(),
                 )),
             }
@@ -147,7 +147,7 @@ pub fn predicate_truth_with<'a>(
         } => Ok(Some(
             matches!(resolve(column.require_column()?)?.0, RelationalValue::Null) != *negated,
         )),
-        _ => Err(HawdbError::Semantic(
+        _ => Err(HawDBError::Semantic(
             "unsupported relational predicate expression".to_owned(),
         )),
     }
@@ -165,7 +165,7 @@ fn predicate_operand<'a>(
             bind_sql_value(value, parameters)?,
             scalar_type,
         )?)),
-        _ => Err(HawdbError::Semantic("unsupported predicate operand".into())),
+        _ => Err(HawDBError::Semantic("unsupported predicate operand".into())),
     }
 }
 

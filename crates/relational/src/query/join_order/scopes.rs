@@ -11,7 +11,7 @@ pub(in crate::query) fn bind_from_scopes(
     let mut qualifiers = BTreeSet::new();
     for relation in &relations {
         if !qualifiers.insert(&relation.qualifier) {
-            return Err(HawdbError::Semantic(format!(
+            return Err(HawDBError::Semantic(format!(
                 "duplicate relational FROM qualifier {}",
                 relation.qualifier
             )));
@@ -20,7 +20,7 @@ pub(in crate::query) fn bind_from_scopes(
     for (ordinal, join) in select.joins.iter_mut().enumerate() {
         let scope = relations
             .get(join.on_scope_start..=ordinal + 1)
-            .ok_or_else(|| HawdbError::Semantic("invalid relational ON scope boundary".into()))?;
+            .ok_or_else(|| HawDBError::Semantic("invalid relational ON scope boundary".into()))?;
         qualify_expression(&mut join.on, scope)?;
     }
     for projection in &mut select.projection {
@@ -79,13 +79,13 @@ fn qualify_scoped_column(
             && relation.schema.column_position(&column.name).is_some()
     });
     let first = matches.next().ok_or_else(|| {
-        HawdbError::Semantic(format!(
+        HawDBError::Semantic(format!(
             "column {} is not visible in this relational FROM scope",
             column.name
         ))
     })?;
     if matches.next().is_some() {
-        return Err(HawdbError::Semantic(format!(
+        return Err(HawDBError::Semantic(format!(
             "ambiguous relational column {} in FROM scope",
             column.name
         )));

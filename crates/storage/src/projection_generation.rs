@@ -103,7 +103,7 @@ pub struct ProjectionGenerationMember {
 /// Encodes one relational row as a storage-neutral projection member.
 ///
 /// The collection is the relational table name, the member key is the
-/// canonical ordered primary-key encoding, and the payload uses Hawdb's
+/// canonical ordered primary-key encoding, and the payload uses HawDB's
 /// versioned relational row codec. Query bindings decode the same member
 /// against the durable table schema before exposing it to PostgreSQL SQL.
 pub fn encode_projection_relational_member(

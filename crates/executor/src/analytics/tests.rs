@@ -266,7 +266,7 @@ fn run(fixture: &Fixture, options: &RunOptions, task: Option<&RuntimeTaskContext
             match options.exit {
                 Exit::Complete => Ok(BatchControl::Continue),
                 Exit::Stop => Ok(BatchControl::Stop),
-                Exit::Error => Err(HawdbError::StorageIntegrity("consumer sentinel".into())),
+                Exit::Error => Err(HawDBError::StorageIntegrity("consumer sentinel".into())),
             }
         },
     );

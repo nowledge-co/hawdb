@@ -4,7 +4,7 @@
 //! cannot be verified against its staged catalog.
 
 use crate::{hawdb_lightning_artifact_summary, verify_hawdb_lightning_published_manifest};
-use hawdb_core::{HawdbError, Result};
+use hawdb_core::{HawDBError, Result};
 use hawdb_integrity::checksum_u64;
 use std::collections::BTreeSet;
 use std::fs;
@@ -19,7 +19,7 @@ pub fn hawdb_lightning_gc_staging_report(
     let catalog_path = staging_dir.join("hawdb_lightning_staging_catalog.json");
     let catalog_bytes = fs::read(&catalog_path)?;
     let catalog = serde_json::from_slice::<serde_json::Value>(&catalog_bytes)
-        .map_err(|_| HawdbError::Execution("invalid JSON file: invalid_json".to_string()))?;
+        .map_err(|_| HawDBError::Execution("invalid JSON file: invalid_json".to_string()))?;
     let candidates = hawdb_lightning_staging_gc_candidates(&catalog, &catalog_bytes)?;
     let published_path = publish_dir.join("hawdb_lightning_published_manifest.json");
     let mut errors = Vec::new();
@@ -168,19 +168,19 @@ fn hawdb_lightning_staging_gc_candidates(
         .get("artifacts")
         .and_then(serde_json::Value::as_array)
         .ok_or_else(|| {
-            HawdbError::Execution("staging catalog missing artifacts array".to_string())
+            HawDBError::Execution("staging catalog missing artifacts array".to_string())
         })?;
     for artifact in artifacts {
         let kind = artifact
             .get("kind")
             .and_then(serde_json::Value::as_str)
-            .ok_or_else(|| HawdbError::Execution("staging artifact missing kind".to_string()))?;
+            .ok_or_else(|| HawDBError::Execution("staging artifact missing kind".to_string()))?;
         let path = artifact
             .get("path")
             .and_then(serde_json::Value::as_str)
-            .ok_or_else(|| HawdbError::Execution("staging artifact missing path".to_string()))?;
+            .ok_or_else(|| HawDBError::Execution("staging artifact missing path".to_string()))?;
         if path.contains('/') || path.contains('\\') {
-            return Err(HawdbError::Execution(format!(
+            return Err(HawDBError::Execution(format!(
                 "staging artifact {kind} uses non-local path {path}"
             )));
         }

@@ -498,7 +498,7 @@ fn push_ordered_adjacency_entry(
     let entry_bytes = std::mem::size_of::<(NodeId, RelId)>();
     let required_bytes = entries.len().saturating_add(1).saturating_mul(entry_bytes);
     if required_bytes > memory_budget_bytes {
-        return Err(crate::error::HawdbError::Execution(format!(
+        return Err(crate::error::HawDBError::Execution(format!(
             "ordered adjacency keys use {required_bytes} bytes, exceeding blocking_operator_bytes {memory_budget_bytes}"
         )));
     }
@@ -522,7 +522,7 @@ fn emit_ordered_adjacency_entries(
     entries.sort_unstable();
     for (_, relationship_id) in entries {
         let Some(relationship) = store.relationship_owned(relationship_id)? else {
-            return Err(crate::error::HawdbError::StorageIntegrity(format!(
+            return Err(crate::error::HawDBError::StorageIntegrity(format!(
                 "ordered adjacency references missing relationship {}",
                 relationship_id.0
             )));

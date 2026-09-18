@@ -21,7 +21,7 @@ fn graph_rag_schema_context_guides_queries_through_the_read_runtime() {
         .unwrap();
     db.query(
         "CREATE (:Memory {id: 'memory-1', private_payload: 'do-not-render'})\
-         -[:MENTIONS {confidence: 0.9}]->(:Entity {id: 'entity-1', name: 'Hawdb'})",
+         -[:MENTIONS {confidence: 0.9}]->(:Entity {id: 'entity-1', name: 'HawDB'})",
     )
     .unwrap();
 
@@ -69,7 +69,7 @@ fn graph_rag_schema_context_guides_queries_through_the_read_runtime() {
         .unwrap();
     assert_eq!(
         output.rows[0].get("name"),
-        Some(&Value::String("Hawdb".to_string()))
+        Some(&Value::String("HawDB".to_string()))
     );
     assert_eq!(db.slow_query_log_snapshot().len(), slow_query_count + 1);
 
@@ -99,7 +99,7 @@ fn graph_rag_two_hop_draft_runs_through_the_query_runtime() {
     db.query("CREATE PROPERTY ON NODE TABLE Source(uri) TYPE STRING NOT NULL")
         .unwrap();
     db.query(
-        "CREATE (:Memory {id: 'memory-1'})-[:MENTIONS]->(:Entity {id: 'entity-1', name: 'Hawdb'})",
+        "CREATE (:Memory {id: 'memory-1'})-[:MENTIONS]->(:Entity {id: 'entity-1', name: 'HawDB'})",
     )
     .unwrap();
     db.query("CREATE (:Source {id: 'source-1', uri: 'https://example.test/hawdb'})")
@@ -142,7 +142,7 @@ fn graph_rag_two_hop_draft_runs_through_the_query_runtime() {
             generated.cypher(),
             &BTreeMap::from([(
                 "entity_name".to_string(),
-                Value::String("Hawdb".to_string()),
+                Value::String("HawDB".to_string()),
             )]),
         )
         .unwrap();

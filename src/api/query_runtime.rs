@@ -569,7 +569,7 @@ impl Database {
         }
         if matches!(body, cypher::Statement::Checkpoint) {
             if !parameters.is_empty() {
-                return Err(HawdbError::Semantic(
+                return Err(HawDBError::Semantic(
                     "CHECKPOINT does not accept parameters".to_string(),
                 ));
             }
@@ -696,7 +696,7 @@ impl Database {
         let inner_statement_kind = statement_kind(statement_body(&explain.statement));
         if explain.analyze {
             if executor::is_mutation_plan(&optimized.physical_plan)? {
-                return Err(HawdbError::Execution(
+                return Err(HawDBError::Execution(
                     "EXPLAIN ANALYZE only supports read queries".to_string(),
                 ));
             }
@@ -753,7 +753,7 @@ pub(super) fn query_runtime_checkpoint(
     match task_context {
         Some(task_context) => task_context
             .checkpoint()
-            .map_err(|reason| HawdbError::Execution(format!("runtime task stopped: {reason}"))),
+            .map_err(|reason| HawDBError::Execution(format!("runtime task stopped: {reason}"))),
         None => Ok(()),
     }
 }

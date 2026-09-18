@@ -9,7 +9,7 @@ use crate::{
     DEFAULT_MAX_GRAPH_MANIFEST_OPEN_BYTES, DEFAULT_MAX_WAL_REPLAY_BYTES,
     DEFAULT_MAX_WAL_REPLAY_ENTRIES,
 };
-use hawdb_core::{HawdbError, Result};
+use hawdb_core::{HawDBError, Result};
 use serde::{Deserialize, Serialize};
 use std::num::{NonZeroU64, NonZeroUsize};
 
@@ -128,7 +128,7 @@ pub fn validate_options(options: DerivedArtifactRebuildOptions) -> Result<()> {
         || options.max_wal_replay_bytes == 0
         || options.max_wal_replay_entries == 0
     {
-        return Err(HawdbError::Storage(
+        return Err(HawDBError::Storage(
             "derived artifact rebuild limits must all be non-zero".to_string(),
         ));
     }
@@ -143,7 +143,7 @@ pub fn validate_plan(plan: &DerivedArtifactRepairPlan) -> Result<()> {
         || plan.targets.is_empty()
         || plan.target_generation != plan.source_generation.saturating_add(1)
     {
-        return Err(HawdbError::Storage(
+        return Err(HawDBError::Storage(
             "derived artifact repair plan identity is invalid".to_string(),
         ));
     }
@@ -184,13 +184,13 @@ pub struct DerivedArtifactBuildConfig {
 
 pub fn build_config(options: DerivedArtifactRebuildOptions) -> Result<DerivedArtifactBuildConfig> {
     let memory = NonZeroU64::new(options.build_memory_bytes)
-        .ok_or_else(|| HawdbError::Storage("derived repair memory limit is zero".to_string()))?;
+        .ok_or_else(|| HawDBError::Storage("derived repair memory limit is zero".to_string()))?;
     let spill = NonZeroU64::new(options.max_temporary_bytes)
-        .ok_or_else(|| HawdbError::Storage("derived repair spill limit is zero".to_string()))?;
+        .ok_or_else(|| HawDBError::Storage("derived repair spill limit is zero".to_string()))?;
     let spill_runs = NonZeroUsize::new(options.max_spill_runs)
-        .ok_or_else(|| HawdbError::Storage("derived repair spill run limit is zero".to_string()))?;
+        .ok_or_else(|| HawDBError::Storage("derived repair spill run limit is zero".to_string()))?;
     let generated = NonZeroU64::new(options.max_generated_property_entries).ok_or_else(|| {
-        HawdbError::Storage("derived repair generated entry limit is zero".to_string())
+        HawDBError::Storage("derived repair generated entry limit is zero".to_string())
     })?;
     let adjacency = CanonicalAdjacencyConfig {
         memory_budget_bytes: memory,

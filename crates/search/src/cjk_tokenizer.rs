@@ -52,7 +52,7 @@ pub(super) fn prime_workspace(text: &str) -> super::Result<()> {
     // this worker. The private dictionary is immutable; fail closed if a future
     // dictionary invalidates the dependency qualification fixture.
     if CHINESE_TOKENIZER.has_word(text) {
-        return Err(super::HawdbError::Execution(
+        return Err(super::HawDBError::Execution(
             "search analyzer dictionary invalidated workspace initialization".into(),
         ));
     }

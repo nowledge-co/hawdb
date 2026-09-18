@@ -3,7 +3,7 @@ use crate::observer::NoopExecutionObserver;
 use crate::pipeline::runtime_checkpoint;
 use crate::{ExecutionMemoryConfig, QueryMemoryLedger};
 use hawdb_core::{
-    Catalog, HawdbError, LabelId, RelTypeId, RuntimeCancellationToken, RuntimeTaskContext, Value,
+    Catalog, HawDBError, LabelId, RelTypeId, RuntimeCancellationToken, RuntimeTaskContext, Value,
 };
 use hawdb_plan::ProjectionExpression;
 use hawdb_storage::{NodeId, NodeRecord, RelId, RelRecord};
@@ -49,7 +49,7 @@ impl BindingBatchSource for Source<'_> {
         for batch in self.rows[..end].chunks(self.batch_rows) {
             runtime_checkpoint(self.task)?;
             if self.fail_at == Some(self.calls) {
-                return Err(HawdbError::Execution("source failure".into()));
+                return Err(HawDBError::Execution("source failure".into()));
             }
             self.calls += 1;
             if emit(batch.to_vec())? == BatchControl::Stop {
@@ -229,7 +229,7 @@ fn check_case(seed: usize, input_batch: usize, output_batch: usize, kernel: Kern
             match exit {
                 Exit::Complete => Ok(BatchControl::Continue),
                 Exit::Stop => Ok(BatchControl::Stop),
-                Exit::Error => Err(HawdbError::Execution("consumer failure".into())),
+                Exit::Error => Err(HawDBError::Execution("consumer failure".into())),
             }
         })
     });
@@ -360,7 +360,7 @@ fn predicate_and_projection_failures_release_partial_batches() {
             &mut |_| {
                 evaluated += 1;
                 if evaluated == 2 {
-                    Err(HawdbError::Execution("predicate failure".into()))
+                    Err(HawDBError::Execution("predicate failure".into()))
                 } else {
                     Ok(true)
                 }

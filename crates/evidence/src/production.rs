@@ -1,4 +1,4 @@
-use hawdb_core::{HawdbError, Result};
+use hawdb_core::{HawDBError, Result};
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeSet;
 
@@ -26,7 +26,7 @@ impl ProductionQualificationIdentity {
         if blockers.is_empty() {
             Ok(())
         } else {
-            Err(HawdbError::Semantic(format!(
+            Err(HawDBError::Semantic(format!(
                 "invalid production qualification identity: {}",
                 blockers.join(",")
             )))
@@ -106,7 +106,7 @@ impl ProductionEvidenceBinding {
         if blockers.is_empty() {
             Ok(())
         } else {
-            Err(HawdbError::Semantic(format!(
+            Err(HawDBError::Semantic(format!(
                 "production evidence identity mismatch: {}",
                 blockers.join(",")
             )))

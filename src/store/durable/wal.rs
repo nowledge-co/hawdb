@@ -1,7 +1,7 @@
 //! WAL admission, append rollback, group durability and generation preparation.
 
 use super::{DurableStore, WalFreeSpaceProbeState, WAL_FREE_SPACE_PROBE_INTERVAL_BYTES};
-use crate::error::{HawdbError, Result};
+use crate::error::{HawDBError, Result};
 use crate::store::{
     elapsed_micros, encode_binary_wal_header, encode_binary_wal_record, frame_binary_wal_record,
     process_crash_failpoint, sync_parent_dir, wal_generation_file, wal_group_sync_failpoint,
@@ -23,7 +23,7 @@ impl DurableStore {
             return Ok(false);
         }
         if self.wal_sync_group.is_some() {
-            return Err(HawdbError::Storage(
+            return Err(HawDBError::Storage(
                 "nested WAL sync groups are not allowed".to_string(),
             ));
         }
@@ -50,7 +50,7 @@ impl DurableStore {
         wal_group_sync_failpoint()?;
         let started = std::time::Instant::now();
         let file = self.wal_append_file.as_ref().ok_or_else(|| {
-            HawdbError::Storage(
+            HawDBError::Storage(
                 "WAL sync group has entries without an open append handle".to_string(),
             )
         })?;
@@ -86,7 +86,7 @@ impl DurableStore {
             .max_batch_operations
             .is_some_and(|limit| operation_count > limit)
         {
-            return Err(HawdbError::Storage(format!(
+            return Err(HawDBError::Storage(format!(
                 "WAL batch operation limit exceeded before append: max_wal_batch_operations={}",
                 self.max_batch_operations.unwrap_or_default()
             )));
@@ -109,7 +109,7 @@ impl DurableStore {
             .max_record_bytes
             .is_some_and(|limit| payload.len() > limit)
         {
-            return Err(HawdbError::Storage(format!(
+            return Err(HawDBError::Storage(format!(
                 "WAL record byte limit exceeded before append: max_wal_record_bytes={}",
                 self.max_record_bytes.unwrap_or_default()
             )));
@@ -176,12 +176,12 @@ impl DurableStore {
                             if self.wal_bytes > 0 {
                                 self.wal_append_file = Some(Arc::clone(&file));
                             }
-                            Err(HawdbError::Storage(format!(
+                            Err(HawDBError::Storage(format!(
                                 "WAL write failed and was rolled back to byte {}: {error}",
                                 self.wal_bytes
                             )))
                         }
-                        Err(rollback_error) => Err(HawdbError::StorageIntegrity(format!(
+                        Err(rollback_error) => Err(HawDBError::StorageIntegrity(format!(
                             "WAL write failed: {error}; rollback to byte {} failed: {rollback_error}; close and recover the database",
                             self.wal_bytes
                         ))),
@@ -192,7 +192,7 @@ impl DurableStore {
                         if sync_result.is_ok() && !sync_deferred {
                             process_crash_failpoint("after_wal_sync");
                         }
-                        sync_result.map_err(|error| HawdbError::StorageIntegrity(format!(
+                        sync_result.map_err(|error| HawDBError::StorageIntegrity(format!(
                             "WAL append outcome is uncertain after writing the complete record: {error}"
                         )))
                     }
@@ -240,7 +240,7 @@ impl DurableStore {
         // Windows append-only handles do not grant the access required to resize.
         let file = OpenOptions::new().write(true).open(&self.wal_path)?;
         if file.metadata()?.len() < self.wal_bytes {
-            return Err(HawdbError::Storage(
+            return Err(HawDBError::Storage(
                 "WAL lost previously appended bytes before rollback".to_string(),
             ));
         }
@@ -303,7 +303,7 @@ impl DurableStore {
         } else {
             "checkpoint the database before retrying"
         };
-        Err(HawdbError::Storage(format!(
+        Err(HawDBError::Storage(format!(
             "WAL append rejected by storage pressure: state={}, projected_wal_bytes={projected_wal_bytes}, max_wal_bytes={}, available_free_space_bytes={}, estimated_checkpoint_temporary_bytes={}, reasons={reasons}; {recovery}",
             pressure.state.as_str(),
             self.max_wal_bytes.unwrap_or_default(),
@@ -325,7 +325,7 @@ impl DurableStore {
             #[cfg(not(test))]
             let available = available_storage_space(&self.root_path);
             let available = available.ok_or_else(|| {
-                HawdbError::Storage(
+                HawDBError::Storage(
                     "WAL append rejected because filesystem free space could not be inspected"
                         .to_string(),
                 )

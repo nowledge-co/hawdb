@@ -220,7 +220,7 @@ impl FileProjection {
 
         // SAFETY: the artifact is published via atomic rename and never mutated in
         // place after that point, so external truncation/mutation racing this map is
-        // not part of Hawdb's supported artifact lifecycle.
+        // not part of HawDB's supported artifact lifecycle.
         let mmap = Arc::new(unsafe { Mmap::map(&file)? });
 
         verify_projection_payload(&mmap, &manifest)?;

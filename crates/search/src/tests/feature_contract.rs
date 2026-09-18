@@ -92,7 +92,7 @@ fn assert_mode_admission(
     } else {
         let error = result.unwrap_err();
         assert!(
-            matches!(error, HawdbError::CapabilityUnavailable { capability }
+            matches!(error, HawDBError::CapabilityUnavailable { capability }
                 if required.contains(&capability) && !available.is_enabled(capability)),
             "{mode:?}: {error}"
         );
@@ -132,7 +132,7 @@ fn background_delta_obeys_compiled_and_requested_capabilities() {
             } else {
                 assert_eq!(
                     result.unwrap_err(),
-                    HawdbError::CapabilityUnavailable {
+                    HawDBError::CapabilityUnavailable {
                         capability: RuntimeCapability::BackgroundMaintenance
                     }
                 );

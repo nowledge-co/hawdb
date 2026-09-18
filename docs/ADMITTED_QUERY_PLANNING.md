@@ -1,7 +1,7 @@
 # Admitted query planning
 
-The synchronous `HawdbEmbedded` admitted query methods and all
-`HawdbTokioEmbedded` query methods acquire a cheap `Control` permit before
+The synchronous `HawDBEmbedded` admitted query methods and all
+`HawDBTokioEmbedded` query methods acquire a cheap `Control` permit before
 parsing, optimizing, or capturing a planner snapshot. Raw `Database` APIs remain
 available to hosts that provide their own admission boundary.
 

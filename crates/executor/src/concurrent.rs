@@ -1,5 +1,5 @@
 use hawdb_core::{
-    HawdbError, Result as HawdbResult, RuntimeCancellationReason, RuntimeTaskContext,
+    HawDBError, Result as HawDBResult, RuntimeCancellationReason, RuntimeTaskContext,
 };
 use std::collections::BTreeMap;
 use std::error::Error;
@@ -259,11 +259,11 @@ impl BoundedExecutor {
         context: Option<&RuntimeTaskContext>,
         operation: F,
         mut consume: C,
-    ) -> HawdbResult<BoundedOrderedStreamReport>
+    ) -> HawDBResult<BoundedOrderedStreamReport>
     where
         R: Send,
-        F: Fn(usize) -> HawdbResult<R> + Sync,
-        C: FnMut(usize, R) -> HawdbResult<BoundedOrderedStreamControl>,
+        F: Fn(usize) -> HawDBResult<R> + Sync,
+        C: FnMut(usize, R) -> HawDBResult<BoundedOrderedStreamControl>,
     {
         runtime_checkpoint(context)?;
         if input_count == 0 {
@@ -308,7 +308,7 @@ impl BoundedExecutor {
                     }
                     let output = catch_unwind(AssertUnwindSafe(|| operation(index)))
                         .unwrap_or_else(|_| {
-                            Err(HawdbError::Execution(format!(
+                            Err(HawDBError::Execution(format!(
                                 "bounded executor worker panicked at input index {index}"
                             )))
                         });
@@ -335,7 +335,7 @@ impl BoundedExecutor {
                             Err(error) => break Err(error),
                         };
                         if reorder.insert(index, output).is_some() {
-                            break Err(HawdbError::Execution(format!(
+                            break Err(HawDBError::Execution(format!(
                                 "bounded executor produced duplicate output index {index}"
                             )));
                         }
@@ -347,7 +347,7 @@ impl BoundedExecutor {
                                 consume(next_expected, output)
                             }))
                             .unwrap_or_else(|_| {
-                                Err(HawdbError::Execution(format!(
+                                Err(HawDBError::Execution(format!(
                                     "bounded executor consumer panicked at input index {next_expected}"
                                 )))
                             }) {
@@ -373,7 +373,7 @@ impl BoundedExecutor {
                     }
                     Err(RecvTimeoutError::Timeout) => continue,
                     Err(RecvTimeoutError::Disconnected) => {
-                        break Err(HawdbError::Execution(format!(
+                        break Err(HawDBError::Execution(format!(
                             "bounded executor stopped after {next_expected} of {input_count} ordered outputs"
                         )));
                     }
@@ -418,7 +418,7 @@ struct OrderedWorkState {
 }
 
 enum OrderedWorkerMessage<R> {
-    Output(usize, HawdbResult<R>),
+    Output(usize, HawDBResult<R>),
     Stopped(RuntimeCancellationReason),
 }
 
@@ -427,10 +427,10 @@ fn run_sequential_index_stream<R, F, C>(
     context: Option<&RuntimeTaskContext>,
     operation: &F,
     consume: &mut C,
-) -> HawdbResult<BoundedOrderedStreamReport>
+) -> HawDBResult<BoundedOrderedStreamReport>
 where
-    F: Fn(usize) -> HawdbResult<R> + Sync,
-    C: FnMut(usize, R) -> HawdbResult<BoundedOrderedStreamControl>,
+    F: Fn(usize) -> HawDBResult<R> + Sync,
+    C: FnMut(usize, R) -> HawDBResult<BoundedOrderedStreamControl>,
 {
     let mut report = BoundedOrderedStreamReport::default();
     for index in 0..input_count {
@@ -494,12 +494,12 @@ fn context_checkpoint(
     context.map_or(Ok(()), RuntimeTaskContext::checkpoint)
 }
 
-fn runtime_checkpoint(context: Option<&RuntimeTaskContext>) -> HawdbResult<()> {
+fn runtime_checkpoint(context: Option<&RuntimeTaskContext>) -> HawDBResult<()> {
     context_checkpoint(context).map_err(runtime_stopped_error)
 }
 
-fn runtime_stopped_error(reason: RuntimeCancellationReason) -> HawdbError {
-    HawdbError::Execution(format!("runtime task stopped: {reason}"))
+fn runtime_stopped_error(reason: RuntimeCancellationReason) -> HawDBError {
+    HawDBError::Execution(format!("runtime task stopped: {reason}"))
 }
 
 fn lock_recover<T>(mutex: &Mutex<T>) -> MutexGuard<'_, T> {

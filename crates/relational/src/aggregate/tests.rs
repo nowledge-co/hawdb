@@ -100,7 +100,7 @@ fn first_values_and_coalesce_keep_update_and_finish_order() {
         .finish()
         .unwrap_err();
     assert!(
-        matches!(error, HawdbError::Semantic(ref message) if message == "aggregate column has no input row")
+        matches!(error, HawDBError::Semantic(ref message) if message == "aggregate column has no input row")
     );
 }
 
@@ -134,12 +134,12 @@ fn filters_short_circuit_row_access_and_preserve_parameter_failures() {
         .contains("missing PostgreSQL parameter $1"));
     let error = state
         .update(
-            &|_| Err(HawdbError::Execution("row sentinel".into())),
+            &|_| Err(HawDBError::Execution("row sentinel".into())),
             &[Value::Bool(true)],
         )
         .map(|_| ())
         .unwrap_err();
-    assert!(matches!(error, HawdbError::Execution(ref message) if message == "row sentinel"));
+    assert!(matches!(error, HawDBError::Execution(ref message) if message == "row sentinel"));
 }
 
 #[test]
@@ -154,7 +154,7 @@ fn numeric_overflow_and_type_errors_keep_the_prior_state() {
         .map(|_| ())
         .unwrap_err();
         assert!(
-            matches!(error, HawdbError::Execution(ref message) if message == "BIGINT SUM overflow")
+            matches!(error, HawDBError::Execution(ref message) if message == "BIGINT SUM overflow")
         );
         assert_eq!(result, Some(RelationalValue::BigInt(first)));
     }
@@ -167,7 +167,7 @@ fn numeric_overflow_and_type_errors_keep_the_prior_state() {
     .map(|_| ())
     .unwrap_err();
     assert!(
-        matches!(error, HawdbError::Semantic(ref message) if message == "SUM requires BIGINT or DOUBLE PRECISION input")
+        matches!(error, HawDBError::Semantic(ref message) if message == "SUM requires BIGINT or DOUBLE PRECISION input")
     );
     assert_eq!(result, Some(RelationalValue::BigInt(2)));
     let mut result = Some(RelationalValue::DoublePrecision(1.5));
@@ -218,7 +218,7 @@ fn constructor_rejections_keep_exact_aggregate_errors() {
             .err()
             .expect("invalid shape");
         assert!(
-            matches!(error, HawdbError::Semantic(ref actual) if actual == message),
+            matches!(error, HawDBError::Semantic(ref actual) if actual == message),
             "{error}"
         );
     }
@@ -247,7 +247,7 @@ fn row_expressions_keep_metadata_and_parameter_boundaries() {
     })
     .unwrap_err();
     assert!(
-        matches!(error, HawdbError::Semantic(ref message) if message == "aggregate row expression cannot bind parameter $1")
+        matches!(error, HawDBError::Semantic(ref message) if message == "aggregate row expression cannot bind parameter $1")
     );
     let value = RelationalValue::Boolean(true);
     let error = evaluate_row_expression(&expr("OCTET_LENGTH(payload)"), &|_| {
@@ -255,7 +255,7 @@ fn row_expressions_keep_metadata_and_parameter_boundaries() {
     })
     .unwrap_err();
     assert!(
-        matches!(error, HawdbError::Semantic(ref message) if message == "OCTET_LENGTH requires TEXT or BYTEA input")
+        matches!(error, HawDBError::Semantic(ref message) if message == "OCTET_LENGTH requires TEXT or BYTEA input")
     );
 }
 
@@ -286,7 +286,7 @@ fn having_unknown_is_rejected_and_hidden_state_cannot_be_projected() {
         .finish()
         .unwrap_err();
     assert!(
-        matches!(error, HawdbError::Execution(ref message) if message == "HAVING state reached output projection")
+        matches!(error, HawDBError::Execution(ref message) if message == "HAVING state reached output projection")
     );
 }
 
@@ -325,7 +325,7 @@ fn having_group_binding_requires_all_primary_key_columns_and_resolves_aliases() 
     ] {
         let error = validate_having(&select(sql), &[], &state).unwrap_err();
         assert!(
-            matches!(error, HawdbError::Semantic(ref actual) if actual == message),
+            matches!(error, HawDBError::Semantic(ref actual) if actual == message),
             "{sql}: {error}"
         );
     }
@@ -470,14 +470,14 @@ fn having_validation_preserves_lock_and_projection_error_precedence() {
     query.lock_strength = Some(hawdb_sql::SqlLockStrength::Share);
     let error = validate_having(&query, &[], &state).unwrap_err();
     assert!(
-        matches!(error, HawdbError::Semantic(ref message) if message == "HAVING does not support row locking")
+        matches!(error, HawDBError::Semantic(ref message) if message == "HAVING does not support row locking")
     );
     query.having = None;
     validate_having(&query, &[], &state).unwrap();
     let query = select("SELECT * FROM records HAVING COUNT(*) >= 0");
     let error = validate_having(&query, &[], &state).unwrap_err();
     assert!(
-        matches!(error, HawdbError::Semantic(ref message) if message == "aggregate SELECT does not support wildcard projection")
+        matches!(error, HawDBError::Semantic(ref message) if message == "aggregate SELECT does not support wildcard projection")
     );
 }
 

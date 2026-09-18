@@ -1,4 +1,4 @@
-# Hawdb Vectorized Morsel Execution Specification
+# HawDB Vectorized Morsel Execution Specification
 
 ## Scope
 
@@ -177,7 +177,7 @@ Execution profiles MUST expose the root budget, peak aggregate charge,
 completion charge, and account count. Root-budget rejection MUST be
 fail-closed and identify `query_memory_bytes`.
 
-[`../tla/HawdbQueryMemoryLedger.tla`](../tla/HawdbQueryMemoryLedger.tla)
+[`../tla/HawDBQueryMemoryLedger.tla`](../tla/HawDBQueryMemoryLedger.tla)
 models atomic hierarchical reservation, result handoff, and cleanup on
 failure or cancellation.
 
@@ -235,7 +235,7 @@ source, one admitted CPU slot, or insufficient worker memory MUST execute
 serially. CPU slots, memory, cancellation, result bytes, and storage I/O depth
 remain separate admission dimensions.
 
-[`../tla/HawdbBoundedMorselMerge.tla`](../tla/HawdbBoundedMorselMerge.tla)
+[`../tla/HawDBBoundedMorselMerge.tla`](../tla/HawDBBoundedMorselMerge.tla)
 models the sliding issuance window, bounded channel and reorder states,
 deterministic prefix emission, and terminal cleanup after cancellation or a
 worker panic.

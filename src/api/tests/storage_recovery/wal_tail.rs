@@ -1,6 +1,6 @@
 use super::*;
 use crate::store::{set_wal_append_failpoint, WalAppendFailure};
-use crate::HawdbError;
+use crate::HawDBError;
 use std::fs;
 use std::path::Path;
 
@@ -155,7 +155,7 @@ fn rollback_and_sync_failures_poison_the_handle() {
         let before = fs::metadata(&wal).unwrap().len();
         set_wal_append_failpoint(failure);
         let error = db.query("CREATE (:Memory {id: 'uncertain'})").unwrap_err();
-        assert!(matches!(error, HawdbError::StorageIntegrity(_)), "{error}");
+        assert!(matches!(error, HawDBError::StorageIntegrity(_)), "{error}");
         assert!(db.storage_handle_poisoned());
         let damaged = fs::read(&wal).unwrap();
         assert!(damaged.len() as u64 > before);

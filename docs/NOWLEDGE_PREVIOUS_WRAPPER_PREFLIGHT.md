@@ -1,10 +1,10 @@
 # Nowledge Previous-Wrapper Preflight
 
-This runbook turns a Nowledge-owned Kuzu/Ladybug wrapper command into Hawdb
+This runbook turns a Nowledge-owned Kuzu/Ladybug wrapper command into HawDB
 production-replacement evidence. It is intentionally evidence-first: a passing
 scanner or a passing protocol smoke is not enough for cutover.
 
-This is not a production serving path. Mem should embed Hawdb as a Rust library
+This is not a production serving path. Mem should embed HawDB as a Rust library
 and consume typed readiness APIs for startup and read selection. The CLI commands
 used here are quarantined developer/preflight tools and require
 `HAWDB_ENABLE_COMPATIBILITY_TOOLS=1`; the checked-in script sets that variable
@@ -12,7 +12,7 @@ only around the isolated `cargo run --bin hawdb` calls it owns.
 
 ## Safety Boundary
 
-Never open the live Nowledge Kuzu database from a Hawdb or ad hoc validation
+Never open the live Nowledge Kuzu database from a HawDB or ad hoc validation
 tool. Kuzu's writer lock is process-exclusive, and the desktop/server runtime
 may already hold the live handle.
 
@@ -36,7 +36,7 @@ live application directory.
 
 ## Required Wrapper Command
 
-Hawdb does not link `nmem-graph`, Kuzu, or Ladybug. Nowledge owns the wrapper
+HawDB does not link `nmem-graph`, Kuzu, or Ladybug. Nowledge owns the wrapper
 command process and all graph dependencies. The command must read one JSON
 request per line from stdin and write one JSON response per line to stdout.
 
@@ -107,27 +107,27 @@ only when the content copy lives elsewhere.
 
 ## Production Library Embedding
 
-Production nmem should not start Hawdb by shelling out to this runner or any
-other command. It should embed Hawdb like SQLite: keep a long-lived Rust handle
+Production nmem should not start HawDB by shelling out to this runner or any
+other command. It should embed HawDB like SQLite: keep a long-lived Rust handle
 inside the process and call typed functions directly.
 
 ```rust
 use hawdb::{
-    BlackboxRunStatus, DatabaseConfig, Result, HawdbEmbedded,
-    HawdbEmbeddedOpenOptions,
+    BlackboxRunStatus, DatabaseConfig, Result, HawDBEmbedded,
+    HawDBEmbeddedOpenOptions,
 };
 
-fn open_hawdb(path: std::path::PathBuf) -> Result<HawdbEmbedded> {
+fn open_hawdb(path: std::path::PathBuf) -> Result<HawDBEmbedded> {
     let config = DatabaseConfig {
         slow_query_log_threshold_micros: 300_000,
         ..DatabaseConfig::default()
     };
-    HawdbEmbedded::open_with_options(
-        HawdbEmbeddedOpenOptions::new(path).with_config(config),
+    HawDBEmbedded::open_with_options(
+        HawDBEmbeddedOpenOptions::new(path).with_config(config),
     )
 }
 
-fn flush_observability(engine: &HawdbEmbedded, artifact_dir: std::path::PathBuf) -> Result<()> {
+fn flush_observability(engine: &HawDBEmbedded, artifact_dir: std::path::PathBuf) -> Result<()> {
     engine.write_slow_query_log_jsonl(artifact_dir.join("slow-query-log.jsonl"))?;
     engine.write_blackbox_report(
         artifact_dir.clone(),
@@ -148,7 +148,7 @@ redacted slow-query events and does not include query text.
 
 ### Production-copy memory profile
 
-Memory replacement evidence must use a point-in-time Hawdb copy populated from
+Memory replacement evidence must use a point-in-time HawDB copy populated from
 the same production snapshot and the same bounded route queries used for parity.
 Run each query family in a fresh process so the process high-water RSS is
 attributable to that workload:
@@ -240,7 +240,7 @@ replacement evidence by itself.
 
 ## 4. Attach Storage And Background Evidence
 
-Use an isolated Hawdb database for storage-recovery and background-maintenance
+Use an isolated HawDB database for storage-recovery and background-maintenance
 evidence:
 
 ```bash
@@ -266,7 +266,7 @@ cargo run --quiet --bin hawdb -- \
   > "$NMEM_PREFLIGHT_ROOT/background-maintenance.json"
 ```
 
-These reports prove Hawdb-side recovery and background QoS readiness. They do
+These reports prove HawDB-side recovery and background QoS readiness. They do
 not prove Nowledge wrapper parity.
 
 ## 5. Run The Migration Gate
@@ -405,13 +405,13 @@ The runner can also materialize those search-projection evidence files from
 `--search-projection-shadow-probe-json` inputs. When both a standalone
 projection probe and a shadow probe are present, the standalone probe is used
 for `search-projection-evidence.json`; otherwise the shadow probe is used as
-the Hawdb-side projection evidence source.
+the HawDB-side projection evidence source.
 Automatic generation also needs `--library-readiness-search-projection` to
-point at an existing Hawdb search projection so `open_report` can prove that
+point at an existing HawDB search projection so `open_report` can prove that
 the embedded library opened both graph and search projection state.
 
 Search projection probes must also publish the scan-pruning contract that Mem
-relies on during the LanceDB replacement path. The Hawdb probe is not ready
+relies on during the LanceDB replacement path. The HawDB probe is not ready
 unless `predicate_pushdown.persisted_segment_descriptor_ready == true`,
 `predicate_pushdown.segment_descriptor_scan_filter_fields_ready == true`, and
 `predicate_pushdown.segment_descriptor_field_summaries` covers the required
@@ -429,7 +429,7 @@ segment descriptor metadata instead of only proving row-filter fallback.
 Search projection evidence also recomputes incremental update readiness instead
 of trusting `incremental_update.ready` alone. A ready probe must prove
 `upsert_ready`, `delete_ready`, `watermark_ready`, and a concrete
-`source_graph_commit_epoch`; LanceDB/Hawdb shadow evidence compares that
+`source_graph_commit_epoch`; LanceDB/HawDB shadow evidence compares that
 watermark so stale or full-rebuild-only projections do not pass as incremental
 replacement evidence.
 Search projection probes must also include a redacted `document_identity`
@@ -468,7 +468,7 @@ replacement summary must carry `dual_engine_evidence.present == true` and
 It also requires
 `search_projection_shadow_evidence.pushdown_evidence.ready == true`,
 `predicate_pushdown_parity == true`, and shadow segment descriptor scan-filter
-coverage, so LanceDB/Hawdb shadow parity cannot pass with row-filter fallback
+coverage, so LanceDB/HawDB shadow parity cannot pass with row-filter fallback
 alone.
 When adapter smoke reports include `dual_engine_evidence`, the verifier also
 requires `dual_engine_evidence.ready == true` so side-by-side cutover evidence
@@ -594,7 +594,7 @@ evidence remains fail-closed.
 
 The graph route report proves route-level query runtime evidence. The query
 runtime preflight independently runs JSON-defined probes through the read-only
-Hawdb runtime with `EXPLAIN ANALYZE`, then emits plan/profile evidence without
+HawDB runtime with `EXPLAIN ANALYZE`, then emits plan/profile evidence without
 rows, parameters, or local paths:
 
 ```bash
@@ -627,7 +627,7 @@ and prevents a count-only probe summary from being treated as cutover evidence.
 ## 11. Compile The Mem Integration Bundle
 
 The previous-wrapper preflight proves replacement behavior. The Mem integration
-bundle adds the product migration boundary: Hawdb must be present as a
+bundle adds the product migration boundary: HawDB must be present as a
 submodule, legacy Kuzu/Ladybug and LanceDB data must still be retained
 side-by-side, and `content.db` must remain available for message and source
 chunk payloads.

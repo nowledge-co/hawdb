@@ -61,7 +61,7 @@ Export these types through `hawdb`; internal owners remain implementation detail
 - `SearchProjectionConsumerCatchUpReport`: public fields
   `catch_up: SearchProjectionCatchUpReport` and
   `consumer: SearchProjectionConsumerStatus`.
-- `SearchProjectionConsumerError`: `Database(HawdbError)`, `InvalidHandle`,
+- `SearchProjectionConsumerError`: `Database(HawDBError)`, `InvalidHandle`,
   `AlreadyRegistered`, `RegistryFull`, `SourceNotDurable`, or
   `RebuildRequired(SearchProjectionConsumerRebuildReason)`; implements Display
   and Error. `SearchProjectionConsumerResult<T>` aliases Result with this error.
@@ -128,7 +128,7 @@ or a different checkpoint at an already acknowledged epoch is rejected.
 
 Existing status/readiness structs retain their fields and struct-literal
 compatibility. The new reports compose them rather than adding a required field
-to every existing status literal. No new HawdbError variant is required.
+to every existing status literal. No new HawDBError variant is required.
 
 ## Initialization and projection ownership
 
@@ -146,7 +146,7 @@ hydration, row/payload-budget failure and initialization errors.
 The library supplies the source identity and complete-through epoch from that
 pinned transaction; the callback cannot supply an advancement epoch. The
 initializer owns projection semantics, just as the existing batch hydrator does;
-Hawdb does not infer or validate arbitrary application mapping logic. This is an
+HawDB does not infer or validate arbitrary application mapping logic. This is an
 explicit initialization contract, not automatic adoption of unknown existing data.
 Initialization does not claim to finish #392/#529's separate SearchIndex memory
 ownership work.

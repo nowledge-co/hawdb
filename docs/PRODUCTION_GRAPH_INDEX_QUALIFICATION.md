@@ -1,10 +1,10 @@
 # Production Graph Index Qualification
 
 This runbook collects the all-class persistent graph-index artifact from one
-already imported representative Hawdb database. The collector is a thin
+already imported representative HawDB database. The collector is a thin
 developer and evidence wrapper over the typed Rust matrix runner. It does not
 import data, build indexes, create a database, or derive the reference oracle
-from Hawdb.
+from HawDB.
 
 ## Preconditions
 

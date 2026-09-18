@@ -3,7 +3,7 @@ use crate::{
     SqlArithmeticOperand, SqlAssignment, SqlAssignmentValue, SqlBound, SqlColumnDefault,
     SqlExpression, SqlStatement, SqlValue, UpdateStatement,
 };
-use hawdb_core::{HawdbError, Result};
+use hawdb_core::{HawDBError, Result};
 use std::collections::BTreeSet;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -29,14 +29,14 @@ pub fn prepare_postgres_sql(input: &str) -> Result<PreparedPostgresStatement> {
                 | SqlStatement::AlterTableAddColumn(_)
         )
     {
-        return Err(HawdbError::Semantic(
+        return Err(HawDBError::Semantic(
             "PostgreSQL schema statements do not accept parameters".to_string(),
         ));
     }
     let maximum = positions.last().copied().unwrap_or(0);
     let expected = (1..=maximum).collect::<BTreeSet<_>>();
     if positions != expected {
-        return Err(HawdbError::Semantic(format!(
+        return Err(HawDBError::Semantic(format!(
             "PostgreSQL parameter positions must be dense from $1 through ${maximum}; found {positions:?}"
         )));
     }

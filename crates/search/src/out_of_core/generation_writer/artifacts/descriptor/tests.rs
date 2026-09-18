@@ -171,7 +171,7 @@ fn descriptor_value_failure_does_not_select_csv_fallback_or_visit_tail() {
         let mut calls = 0;
         let error = values::visit(&source, "labels", &mut |_| {
             calls += 1;
-            Err(HawdbError::Storage(
+            Err(HawDBError::Storage(
                 "injected descriptor budget failure".into(),
             ))
         })
@@ -179,7 +179,7 @@ fn descriptor_value_failure_does_not_select_csv_fallback_or_visit_tail() {
         assert_eq!(calls, 1);
         assert_eq!(
             error.to_string(),
-            HawdbError::Storage("injected descriptor budget failure".into()).to_string()
+            HawDBError::Storage("injected descriptor budget failure".into()).to_string()
         );
     }
 }

@@ -4,7 +4,7 @@ This runbook collects the identity-bound memory-policy matrix required before
 Content Store workload evidence can be admitted. The collector evaluates the
 dynamic shared-host policy and the explicit 512 MiB capability policy from one
 actual host/cgroup resource snapshot. It does not open, copy, create,
-checkpoint, or mutate a Hawdb database.
+checkpoint, or mutate a HawDB database.
 
 Policy evidence is not workload evidence. A ready matrix proves that the
 governor derived the intended capacities and budgets; separate representative
@@ -49,7 +49,7 @@ The report always contains both profiles:
 - `shared_host_8_gib` leaves the governor dynamic. Capacity is capped at
   2 GiB; the budget is one quarter of detected headroom, normally around
   1--2 GiB and allowed to fall below 1 GiB under pressure.
-- `capability_512_mib` applies an explicit 512 MiB Hawdb ceiling on the same
+- `capability_512_mib` applies an explicit 512 MiB HawDB ceiling on the same
   host snapshot. It does not claim that the host itself has only 512 MiB.
 
 Exit code `0` means both policy derivations are ready, `1` means a complete

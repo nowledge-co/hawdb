@@ -1,7 +1,7 @@
 //! Checkpoint-bound backup closure and destination publication.
 
 use super::DurableStore;
-use crate::error::{HawdbError, Result};
+use crate::error::{HawDBError, Result};
 use crate::store::{
     canonical_adjacency_artifact_generation_file, canonical_artifact_generation_file,
     canonical_manifest_generation_file, checkpoint_generation_file, copy_backup_file,
@@ -23,7 +23,7 @@ impl DurableStore {
     pub(in crate::store) fn backup_to(&self, destination: &Path) -> Result<StorageBackupReport> {
         let generation = self.checkpoint_epoch;
         if self.checkpoint_encoded_len.is_none() {
-            return Err(HawdbError::Storage(
+            return Err(HawDBError::Storage(
                 "storage must have a published checkpoint before backup".to_string(),
             ));
         }
@@ -76,7 +76,7 @@ impl DurableStore {
                     binding,
                     AppendPublicationConfig::default(),
                 )
-                .map_err(|error| HawdbError::Storage(error.to_string()))?;
+                .map_err(|error| HawDBError::Storage(error.to_string()))?;
                 let manifest_name = append_generation_manifest_file(binding.generation);
                 sources.insert(manifest_name.clone(), self.root_path.join(manifest_name));
                 for segment in reader.segment_bindings() {
@@ -92,7 +92,7 @@ impl DurableStore {
                     overflow_extent_generations.insert(descriptor.physical_generation);
                     Ok(())
                 })
-                .map_err(|error| HawdbError::Storage(error.to_string()))?;
+                .map_err(|error| HawDBError::Storage(error.to_string()))?;
             for physical_generation in overflow_extent_generations {
                 let name = hawdb_storage::relational_overflow_extent_file(physical_generation);
                 sources.insert(name.clone(), self.root_path.join(name));
@@ -111,7 +111,7 @@ impl DurableStore {
                         row_page_generations.insert(descriptor.physical_generation);
                         Ok(())
                     })
-                    .map_err(|error| HawdbError::Storage(error.to_string()))?;
+                    .map_err(|error| HawDBError::Storage(error.to_string()))?;
             }
             for physical_generation in row_page_generations {
                 let name = hawdb_storage::relational_row_page_artifact_file(physical_generation);
@@ -194,7 +194,7 @@ impl DurableStore {
                         .file_name()
                         .and_then(|name| name.to_str())
                         .ok_or_else(|| {
-                            HawdbError::Storage(
+                            HawDBError::Storage(
                                 "stable identity generation artifact name is not UTF-8".to_string(),
                             )
                         })?
@@ -206,12 +206,12 @@ impl DurableStore {
                     sources.insert(artifact_name, artifact_path.to_path_buf());
                 }
                 (true, None) => {
-                    return Err(HawdbError::Storage(
+                    return Err(HawDBError::Storage(
                         "stable identity selector exists without a pinned generation".to_string(),
                     ));
                 }
                 (false, Some(_)) => {
-                    return Err(HawdbError::Storage(
+                    return Err(HawDBError::Storage(
                         "pinned stable identity generation has no selector".to_string(),
                     ));
                 }
@@ -234,7 +234,7 @@ impl DurableStore {
                 .files
                 .iter()
                 .try_fold(0u64, |total, file| total.checked_add(file.encoded_len))
-                .ok_or_else(|| HawdbError::Storage("backup byte count overflow".to_string()))?;
+                .ok_or_else(|| HawDBError::Storage("backup byte count overflow".to_string()))?;
             Ok(StorageBackupReport {
                 generation,
                 checkpoint_commit_epoch: self.checkpoint_commit_epoch,

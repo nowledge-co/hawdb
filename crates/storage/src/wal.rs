@@ -18,7 +18,7 @@ pub use group_commit::{
     DEFAULT_WAL_GROUP_COMMIT_MAX_ENTRIES,
 };
 use hawdb_core::{Catalog, Value};
-use hawdb_core::{HawdbError, Result};
+use hawdb_core::{HawDBError, Result};
 use hawdb_core::{PropertyType, SchemaObjectState, TableKind};
 use hawdb_integrity::{IntegrityHasher, Sha256Digest};
 use std::collections::BTreeMap;
@@ -45,7 +45,7 @@ pub fn quarantine_corrupt_wal(
     }
     let root = path
         .parent()
-        .ok_or_else(|| HawdbError::Storage("WAL path has no database directory".to_string()))?;
+        .ok_or_else(|| HawDBError::Storage("WAL path has no database directory".to_string()))?;
     let quarantine_dir = root.join("quarantine");
     fs::create_dir_all(&quarantine_dir)?;
     crate::sync_parent_directory(&quarantine_dir)?;
@@ -107,7 +107,7 @@ fn wal_file_identity(path: &Path) -> Result<(u64, Sha256Digest)> {
         integrity.update(&buffer[..read]);
         encoded_len = encoded_len
             .checked_add(read as u64)
-            .ok_or_else(|| HawdbError::Storage("WAL quarantine byte count overflow".to_string()))?;
+            .ok_or_else(|| HawDBError::Storage("WAL quarantine byte count overflow".to_string()))?;
     }
     Ok((encoded_len, integrity.finish().sha256))
 }
@@ -152,7 +152,7 @@ fn copy_wal_exclusive(
             if wal_file_identity(destination)? == expected_identity {
                 return Ok(());
             }
-            return Err(HawdbError::Storage(
+            return Err(HawDBError::Storage(
                 "concurrent WAL quarantine copy has the wrong identity".to_string(),
             ));
         }
@@ -170,12 +170,12 @@ fn copy_wal_exclusive(
             destination_file.write_all(&buffer[..read])?;
             integrity.update(&buffer[..read]);
             encoded_len = encoded_len.checked_add(read as u64).ok_or_else(|| {
-                HawdbError::Storage("WAL quarantine byte count overflow".to_string())
+                HawDBError::Storage("WAL quarantine byte count overflow".to_string())
             })?;
         }
         destination_file.sync_all()?;
         if (encoded_len, integrity.finish().sha256) != expected_identity {
-            return Err(HawdbError::Storage(
+            return Err(HawDBError::Storage(
                 "WAL changed while its corrupt content was being quarantined".to_string(),
             ));
         }
@@ -197,7 +197,7 @@ pub fn reject_corrupt_wal_record<T>(
     reason: impl std::fmt::Display,
 ) -> Result<T> {
     quarantine_corrupt_wal(path, generation, read_only, max_quarantine_bytes)?;
-    Err(HawdbError::Storage(format!(
+    Err(HawDBError::Storage(format!(
         "WAL corruption at byte offset {record_start}: {reason}"
     )))
 }
@@ -484,7 +484,7 @@ pub fn validate_wal_op_values(ops: &[WalOp]) -> Result<()> {
 
 fn validate_wal_value(value: &Value) -> Result<()> {
     crate::canonical::validate_property_value(value).map_err(|error| {
-        HawdbError::Storage(format!(
+        HawDBError::Storage(format!(
             "WAL value violates canonical storage limits: {error}"
         ))
     })
@@ -882,7 +882,7 @@ fn encode_wal_op_for_batch(op: &WalOp) -> Result<String> {
             format!("append,{}", encode_bytes_base64(record))
         }
         WalOp::Batch(_) => {
-            return Err(HawdbError::Storage(
+            return Err(HawDBError::Storage(
                 "nested WAL batches cannot be encoded".to_string(),
             ));
         }

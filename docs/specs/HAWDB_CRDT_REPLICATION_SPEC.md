@@ -1,9 +1,9 @@
-# Hawdb CRDT Replication Specification
+# HawDB CRDT Replication Specification
 
 ## Implementation Status
 
 This is a design-stage contract with a machine-checked model and **no
-implemented surface in the Hawdb crates yet**. Nothing here describes shipped
+implemented surface in the HawDB crates yet**. Nothing here describes shipped
 behavior, and the single-process embedded scope in `TODO.md` still stands: a
 replication layer is a product decision, not an implied backlog item. The
 document exists so that decision can be made against a verified design, and
@@ -12,7 +12,7 @@ it is the layer the deferred replica-assisted repair task depends on.
 ## Scope
 
 This specification defines the convergent replication contract that lets a
-set of Hawdb nodes synchronize the canonical property graph.
+set of HawDB nodes synchronize the canonical property graph.
 The design is a delta-state CRDT layered above the existing single-node
 transactional engine: local transactions keep their existing semantics, and
 replication ships the committed effects of those transactions.
@@ -415,8 +415,8 @@ an already-applied frame, still fail the replica closed.
 
 ## Verification
 
-`docs/tla/HawdbCrdtReplication.tla` is the executable model of this
-contract, checked by `//docs/tla:HawdbCrdtReplication_check` and included in
+`docs/tla/HawDBCrdtReplication.tla` is the executable model of this
+contract, checked by `//docs/tla:HawDBCrdtReplication_check` and included in
 the `//docs/tla:storage_models` Bazel suite. The release-evidence collector in
 `scripts/check-storage-tla.sh` repeats the bounded check for audit retention.
 The model abstracts
@@ -432,7 +432,7 @@ delta segments as state joins (their semantic foundation) and checks:
 | Occurrence dots are unique and contexts never exceed minted ops | `DotsAreUnique`, `ContextBoundsMintedDots` |
 | Visible-graph referential integrity | By construction via `VisibleEdges`; masking is exercised by the `DETACH DELETE` vs concurrent edge-create interleavings |
 | An acknowledged peer context never runs ahead of what that peer applied | `AcknowledgedContextNeverExceedsPeer` |
-| A replica's confirmation position never runs past the log | `ConfirmedWithinLog` in `HawdbGossipDelivery.tla` |
+| A replica's confirmation position never runs past the log | `ConfirmedWithinLog` in `HawDBGossipDelivery.tla` |
 | Gossip never carries pending, unconfirmed work | `HeldIsConfirmedOrOwn` |
 | Fair rounds deliver every confirmed operation to every slave | `EventualDelivery` |
 | Slaves converge on the confirmed prefix while the master is unreachable | `SlavesAgreeWithoutMaster` under `SlaveFairSpec` |
@@ -446,7 +446,7 @@ model: the first two are representation, and the third is a quantitative
 drift property that a state-machine model expresses poorly. They rest on
 review and implementation tests. It does not check transport security, delta-segment encoding, or
 the WAL durability boundary; the last is covered by
-`HawdbStorageDurability.tla`.
+`HawDBStorageDurability.tla`.
 
 ### Why Masked-Edge Reclamation Is Not Verified Here
 
@@ -476,9 +476,9 @@ on review and implementation tests, not on machine checking.
 
 ### Why Verification Is Layered
 
-Two models cover this contract because one cannot. `HawdbCrdtReplication.tla`
+Two models cover this contract because one cannot. `HawDBCrdtReplication.tla`
 checks what the join computes once a batch arrives and is bounded to two
-replicas. `HawdbGossipDelivery.tla` checks what arrives, and by abstracting
+replicas. `HawDBGossipDelivery.tla` checks what arrives, and by abstracting
 the payload to per-origin counters it reaches three nodes and two origins.
 
 Their composition — that fair delivery of causally-ordered prefixes into a

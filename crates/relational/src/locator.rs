@@ -1,4 +1,4 @@
-use hawdb_core::{HawdbError, Result};
+use hawdb_core::{HawDBError, Result};
 use hawdb_executor::columnar::RelationalRowLocator;
 use hawdb_executor::external_order::ExternalOrderRecord;
 use hawdb_expression::BindingId;
@@ -124,7 +124,7 @@ impl RelationalSortKey {
         nulls: SqlNullOrder,
     ) -> Result<Self> {
         if matches!(value, RelationalValue::Overflow(_)) {
-            return Err(HawdbError::Execution(
+            return Err(HawDBError::Execution(
                 "ORDER BY requires overflow hydration before qualification".to_string(),
             ));
         }
@@ -239,7 +239,7 @@ impl<'a> RelationalLocatorLayout<'a> {
 
     pub fn validate(&self, locator: &RelationalRowSetLocator) -> Result<()> {
         if locator.rows.len() != self.bindings.len() {
-            return Err(HawdbError::Execution(format!(
+            return Err(HawDBError::Execution(format!(
                 "typed relational locator has {} bindings but the query layout requires {}",
                 locator.rows.len(),
                 self.bindings.len()
@@ -250,12 +250,12 @@ impl<'a> RelationalLocatorLayout<'a> {
                 continue;
             };
             let expected_table_id = u32::try_from(table_id).map_err(|_| {
-                HawdbError::Execution(
+                HawDBError::Execution(
                     "typed relational locator table count exceeds u32".to_string(),
                 )
             })?;
             if locator.table_id() != expected_table_id {
-                return Err(HawdbError::Execution(format!(
+                return Err(HawDBError::Execution(format!(
                     "typed relational locator table id {} does not match layout slot {expected_table_id}",
                     locator.table_id()
                 )));
@@ -274,7 +274,7 @@ impl<'a> RelationalLocatorBindingLayout<'a> {
         schema: &'a RelationalTableSchema,
     ) -> Result<Self> {
         if schema.primary_key.is_empty() {
-            return Err(HawdbError::Storage(format!(
+            return Err(HawDBError::Storage(format!(
                 "relational locator layout requires a primary key for table {table}"
             )));
         }
@@ -286,7 +286,7 @@ impl<'a> RelationalLocatorBindingLayout<'a> {
                     .column_position(column)
                     .map(|position| schema.columns[position].scalar_type)
                     .ok_or_else(|| {
-                        HawdbError::Storage(format!(
+                        HawDBError::Storage(format!(
                             "relational locator layout references unknown primary-key column {column} in table {table}"
                         ))
                     })
@@ -303,7 +303,7 @@ impl<'a> RelationalLocatorBindingLayout<'a> {
 
     fn validate_primary_key(&self, key: &RelationalKey) -> Result<()> {
         if key.0.len() != self.primary_key_types.len() {
-            return Err(HawdbError::Execution(format!(
+            return Err(HawDBError::Execution(format!(
                 "typed relational locator for table {} has {} key values but the schema requires {}",
                 self.table,
                 key.0.len(),
@@ -324,7 +324,7 @@ impl<'a> RelationalLocatorBindingLayout<'a> {
                     | (RelationalScalarType::Uuid, RelationalValue::Uuid(_))
             );
             if !matches {
-                return Err(HawdbError::Execution(format!(
+                return Err(HawDBError::Execution(format!(
                     "typed relational locator key for table {} does not match schema type {scalar_type:?}",
                     self.table
                 )));
@@ -449,7 +449,7 @@ fn relational_value_encoded_len(value: &RelationalValue) -> Result<usize> {
         RelationalValue::Text(value) => checked_add(5, value.len(), "text value"),
         RelationalValue::Bytea(value) => checked_add(5, value.len(), "bytea value"),
         RelationalValue::Uuid(_) => Ok(17),
-        RelationalValue::Overflow(_) => Err(HawdbError::Execution(
+        RelationalValue::Overflow(_) => Err(HawDBError::Execution(
             "typed relational locator cannot spill an overflow reference".to_string(),
         )),
     }
@@ -463,7 +463,7 @@ fn write_relational_value(
     match value {
         RelationalValue::Null if allow_null => output.push(0),
         RelationalValue::Null => {
-            return Err(HawdbError::Execution(
+            return Err(HawDBError::Execution(
                 "typed relational locator contains a null primary-key value".to_string(),
             ));
         }
@@ -492,7 +492,7 @@ fn write_relational_value(
             output.extend_from_slice(value.as_bytes());
         }
         RelationalValue::Overflow(_) => {
-            return Err(HawdbError::Execution(
+            return Err(HawDBError::Execution(
                 "typed relational locator cannot spill an overflow reference".to_string(),
             ));
         }
@@ -529,14 +529,14 @@ fn read_relational_value(
 
 fn checked_add(left: usize, right: usize, field: &str) -> Result<usize> {
     left.checked_add(right)
-        .ok_or_else(|| HawdbError::Execution(format!("typed relational {field} size overflow")))
+        .ok_or_else(|| HawDBError::Execution(format!("typed relational {field} size overflow")))
 }
 
 fn write_len(output: &mut Vec<u8>, value: usize) -> Result<()> {
     output.extend_from_slice(
         &u32::try_from(value)
             .map_err(|_| {
-                HawdbError::Execution("typed relational collection exceeds u32".to_string())
+                HawDBError::Execution("typed relational collection exceeds u32".to_string())
             })?
             .to_le_bytes(),
     );
@@ -589,8 +589,8 @@ fn read_array<const N: usize>(input: &mut Cursor<&[u8]>) -> Result<[u8; N]> {
     Ok(value)
 }
 
-fn invalid_typed_record(reason: &str) -> HawdbError {
-    HawdbError::Execution(format!(
+fn invalid_typed_record(reason: &str) -> HawDBError {
+    HawDBError::Execution(format!(
         "typed relational spill record is invalid: {reason}"
     ))
 }

@@ -561,7 +561,7 @@ fn hash_operators_release_memory_and_runs_on_stop_error_and_cancellation() {
                 context.task_context = Some(&task);
                 let mut emit = |_| {
                     if exit == 1 {
-                        Err(HawdbError::Execution("oracle consumer failure".into()))
+                        Err(HawDBError::Execution("oracle consumer failure".into()))
                     } else {
                         Ok(BatchControl::Stop)
                     }

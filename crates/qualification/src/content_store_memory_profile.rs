@@ -1,7 +1,7 @@
 use crate::production_graph::validate_production_identity_for_current_target;
 use crate::ContentStoreResourceProfileKind;
 use hawdb::{
-    HawdbError, IoConcurrencyBudget, ProductionEvidenceBinding, ProductionQualificationIdentity,
+    HawDBError, IoConcurrencyBudget, ProductionEvidenceBinding, ProductionQualificationIdentity,
     RuntimeGovernor, RuntimeGovernorConfig, RuntimeResourceSnapshot, StorageDeviceProfile,
 };
 use serde::Serialize;
@@ -77,7 +77,7 @@ pub fn qualify_content_store_memory_profile(
     profile_kind: ContentStoreResourceProfileKind,
     resources: RuntimeResourceSnapshot,
     storage_io: IoConcurrencyBudget,
-) -> Result<ContentStoreMemoryProfileQualificationReport, HawdbError> {
+) -> Result<ContentStoreMemoryProfileQualificationReport, HawDBError> {
     let (
         required_effective_limit_bytes,
         configured_memory_ceiling_bytes,
@@ -94,7 +94,7 @@ pub fn qualify_content_store_memory_profile(
             None,
         ),
         ContentStoreResourceProfileKind::ConfiguredWorkload => {
-            return Err(HawdbError::Semantic(
+            return Err(HawDBError::Semantic(
                 "fixed Content Store memory qualification requires the shared-host 8 GiB or 512 MiB capability profile"
                     .to_string(),
             ));
@@ -192,9 +192,9 @@ pub fn qualify_content_store_memory_profile(
 /// workload reports remain separate release obligations.
 pub fn run_production_content_store_memory_qualification(
     config: ProductionContentStoreMemoryQualificationConfig,
-) -> Result<ProductionContentStoreMemoryQualificationReport, HawdbError> {
+) -> Result<ProductionContentStoreMemoryQualificationReport, HawDBError> {
     if !config.storage_path.exists() {
-        return Err(HawdbError::Semantic(
+        return Err(HawDBError::Semantic(
             "production Content Store memory qualification requires an existing storage path"
                 .to_string(),
         ));
@@ -203,7 +203,7 @@ pub fn run_production_content_store_memory_qualification(
         &config.evidence_binding,
         &config.expected_identity,
     )
-    .map_err(|error| HawdbError::Semantic(error.to_string()))?;
+    .map_err(|error| HawDBError::Semantic(error.to_string()))?;
     let storage_io = IoConcurrencyBudget::shared_host_for_device(StorageDeviceProfile::detect(
         &config.storage_path,
     ));
@@ -218,7 +218,7 @@ fn evaluate_production_content_store_memory_qualification(
     config: ProductionContentStoreMemoryQualificationConfig,
     resources: RuntimeResourceSnapshot,
     storage_io: IoConcurrencyBudget,
-) -> Result<ProductionContentStoreMemoryQualificationReport, HawdbError> {
+) -> Result<ProductionContentStoreMemoryQualificationReport, HawDBError> {
     let shared_host_8_gib = qualify_content_store_memory_profile(
         ContentStoreResourceProfileKind::SharedHost8Gib,
         resources,

@@ -17,17 +17,17 @@ use crate::{
     hawdb_lightning_initial_import_source_bundle_readiness,
     parse_hawdb_lightning_graph_stream_export, CanonicalGraphSnapshotExport,
     CanonicalSnapshotIdentityAudit, CanonicalSnapshotNode, CanonicalSnapshotRelationship,
-    HawdbLightningBootstrapManifest, HawdbLightningInitialImportCheckpoint,
-    HawdbLightningInitialImportCheckpointProgress, HawdbLightningInitialImportDocumentIdentity,
-    HawdbLightningInitialImportIdempotencyKey, HawdbLightningInitialImportReadinessInputs,
-    HawdbLightningInitialImportResumeActionKind, HawdbLightningRelationalStream,
+    HawDBLightningBootstrapManifest, HawDBLightningInitialImportCheckpoint,
+    HawDBLightningInitialImportCheckpointProgress, HawDBLightningInitialImportDocumentIdentity,
+    HawDBLightningInitialImportIdempotencyKey, HawDBLightningInitialImportReadinessInputs,
+    HawDBLightningInitialImportResumeActionKind, HawDBLightningRelationalStream,
 };
 use crate::{SearchProjectionDelta, SearchProjectionRow};
 
 fn test_hawdb_lightning_checkpoint(
-    manifest: &HawdbLightningBootstrapManifest,
-) -> HawdbLightningInitialImportCheckpoint {
-    HawdbLightningInitialImportCheckpoint {
+    manifest: &HawDBLightningBootstrapManifest,
+) -> HawDBLightningInitialImportCheckpoint {
+    HawDBLightningInitialImportCheckpoint {
         protocol_version: 1,
         import_id: "import-1".to_string(),
         task_id: "task-1".to_string(),
@@ -52,14 +52,14 @@ fn test_hawdb_lightning_checkpoint(
 fn initial_import_document_identity(
     kind: SearchProjectionKind,
     document_id: &str,
-) -> HawdbLightningInitialImportDocumentIdentity {
-    HawdbLightningInitialImportDocumentIdentity {
+) -> HawDBLightningInitialImportDocumentIdentity {
+    HawDBLightningInitialImportDocumentIdentity {
         kind,
         document_id: document_id.to_string(),
     }
 }
 
-fn all_initial_import_document_identities() -> Vec<HawdbLightningInitialImportDocumentIdentity> {
+fn all_initial_import_document_identities() -> Vec<HawDBLightningInitialImportDocumentIdentity> {
     vec![
         initial_import_document_identity(SearchProjectionKind::Memory, "memory:1"),
         initial_import_document_identity(SearchProjectionKind::Message, "message:1"),
@@ -116,7 +116,7 @@ fn canonical_snapshot_from_rows_derives_checksum_and_identity_audit() {
 }
 
 fn initial_import_projection_freshness(
-    manifest: &HawdbLightningBootstrapManifest,
+    manifest: &HawDBLightningBootstrapManifest,
 ) -> SearchProjectionFreshness {
     SearchProjectionFreshness {
         document_count: manifest.node_count + manifest.relationship_count,
@@ -789,7 +789,7 @@ fn hawdb_lightning_graph_stream_decodes_to_import_ready_snapshot() {
         },
         ..snapshot
     };
-    let relational_stream = HawdbLightningRelationalStream::from_state(
+    let relational_stream = HawDBLightningRelationalStream::from_state(
         snapshot.graph_commit_epoch,
         &hawdb_storage::RelationalState::default(),
     )
@@ -918,7 +918,7 @@ fn hawdb_lightning_initial_import_checkpoint_readiness_accepts_matching_checkpoi
     assert!(readiness.idempotency_key_present);
     assert_eq!(
         readiness.idempotency_key,
-        Some(HawdbLightningInitialImportIdempotencyKey {
+        Some(HawDBLightningInitialImportIdempotencyKey {
             import_id: "import-1".to_string(),
             task_id: "task-1".to_string(),
             fencing_token: "fence-1".to_string(),
@@ -943,7 +943,7 @@ fn hawdb_lightning_initial_import_checkpoint_readiness_blocks_stale_checkpoint()
         .prepare_hawdb_lightning_bootstrap_export()
         .unwrap()
         .manifest;
-    let checkpoint = HawdbLightningInitialImportCheckpoint {
+    let checkpoint = HawDBLightningInitialImportCheckpoint {
         schema_checksum: manifest.schema_checksum + 1,
         applied_search_projection_commit_epoch: Some(manifest.graph_commit_epoch - 1),
         durable_search_projection_commit_epoch: Some(manifest.graph_commit_epoch - 1),
@@ -982,7 +982,7 @@ fn hawdb_lightning_initial_import_checkpoint_readiness_requires_idempotency_key(
         .prepare_hawdb_lightning_bootstrap_export()
         .unwrap()
         .manifest;
-    let checkpoint = HawdbLightningInitialImportCheckpoint {
+    let checkpoint = HawDBLightningInitialImportCheckpoint {
         task_id: String::new(),
         ..test_hawdb_lightning_checkpoint(&manifest)
     };
@@ -1006,7 +1006,7 @@ fn hawdb_lightning_initial_import_checkpoint_progress_advances_monotonically() {
         .prepare_hawdb_lightning_bootstrap_export()
         .unwrap()
         .manifest;
-    let checkpoint = HawdbLightningInitialImportCheckpoint {
+    let checkpoint = HawDBLightningInitialImportCheckpoint {
         applied_graph_commit_epoch: 0,
         applied_search_projection_commit_epoch: None,
         durable_search_projection_commit_epoch: None,
@@ -1019,7 +1019,7 @@ fn hawdb_lightning_initial_import_checkpoint_progress_advances_monotonically() {
     let report = hawdb_lightning_initial_import_advance_checkpoint(
         &manifest,
         &checkpoint,
-        HawdbLightningInitialImportCheckpointProgress {
+        HawDBLightningInitialImportCheckpointProgress {
             applied_graph_commit_epoch: manifest.graph_commit_epoch,
             applied_search_projection_commit_epoch: Some(manifest.graph_commit_epoch),
             durable_search_projection_commit_epoch: Some(manifest.graph_commit_epoch),
@@ -1034,7 +1034,7 @@ fn hawdb_lightning_initial_import_checkpoint_progress_advances_monotonically() {
     assert!(report.readiness.ready);
     assert_eq!(
         report.resume_action.kind,
-        HawdbLightningInitialImportResumeActionKind::ReadyForCutover
+        HawDBLightningInitialImportResumeActionKind::ReadyForCutover
     );
     assert_eq!(report.checkpoint.completed_batches, 4);
     assert_eq!(
@@ -1052,7 +1052,7 @@ fn hawdb_lightning_initial_import_checkpoint_progress_rejects_regressions() {
         .prepare_hawdb_lightning_bootstrap_export()
         .unwrap()
         .manifest;
-    let checkpoint = HawdbLightningInitialImportCheckpoint {
+    let checkpoint = HawDBLightningInitialImportCheckpoint {
         completed_batches: 3,
         total_batches: 4,
         document_identity_count: 3,
@@ -1062,7 +1062,7 @@ fn hawdb_lightning_initial_import_checkpoint_progress_rejects_regressions() {
     let report = hawdb_lightning_initial_import_advance_checkpoint(
         &manifest,
         &checkpoint,
-        HawdbLightningInitialImportCheckpointProgress {
+        HawDBLightningInitialImportCheckpointProgress {
             applied_graph_commit_epoch: 0,
             applied_search_projection_commit_epoch: None,
             durable_search_projection_commit_epoch: Some(manifest.graph_commit_epoch - 1),
@@ -1161,12 +1161,12 @@ fn hawdb_lightning_initial_import_resume_action_tracks_start_resume_cutover_and_
     let start = crate::hawdb_lightning_initial_import_resume_action(&manifest, None);
     assert_eq!(
         start.kind,
-        HawdbLightningInitialImportResumeActionKind::Start
+        HawDBLightningInitialImportResumeActionKind::Start
     );
     assert_eq!(start.next_batch, Some(0));
     assert_eq!(start.idempotency_key, None);
 
-    let partial = HawdbLightningInitialImportCheckpoint {
+    let partial = HawDBLightningInitialImportCheckpoint {
         applied_search_projection_commit_epoch: Some(manifest.graph_commit_epoch - 1),
         durable_search_projection_commit_epoch: Some(manifest.graph_commit_epoch - 1),
         completed_batches: 2,
@@ -1177,12 +1177,12 @@ fn hawdb_lightning_initial_import_resume_action_tracks_start_resume_cutover_and_
     let resume = crate::hawdb_lightning_initial_import_resume_action(&manifest, Some(&partial));
     assert_eq!(
         resume.kind,
-        HawdbLightningInitialImportResumeActionKind::Resume
+        HawDBLightningInitialImportResumeActionKind::Resume
     );
     assert_eq!(resume.next_batch, Some(2));
     assert_eq!(
         resume.idempotency_key,
-        Some(HawdbLightningInitialImportIdempotencyKey {
+        Some(HawDBLightningInitialImportIdempotencyKey {
             import_id: "import-1".to_string(),
             task_id: "task-1".to_string(),
             fencing_token: "fence-1".to_string(),
@@ -1190,7 +1190,7 @@ fn hawdb_lightning_initial_import_resume_action_tracks_start_resume_cutover_and_
         })
     );
 
-    let complete = HawdbLightningInitialImportCheckpoint {
+    let complete = HawDBLightningInitialImportCheckpoint {
         applied_search_projection_commit_epoch: Some(manifest.graph_commit_epoch),
         durable_search_projection_commit_epoch: Some(manifest.graph_commit_epoch),
         completed_batches: 4,
@@ -1200,11 +1200,11 @@ fn hawdb_lightning_initial_import_resume_action_tracks_start_resume_cutover_and_
     let ready = crate::hawdb_lightning_initial_import_resume_action(&manifest, Some(&complete));
     assert_eq!(
         ready.kind,
-        HawdbLightningInitialImportResumeActionKind::ReadyForCutover
+        HawDBLightningInitialImportResumeActionKind::ReadyForCutover
     );
     assert_eq!(ready.next_batch, None);
 
-    let mismatched = HawdbLightningInitialImportCheckpoint {
+    let mismatched = HawDBLightningInitialImportCheckpoint {
         graph_stream_checksum: manifest.graph_stream_checksum + 1,
         ..complete
     };
@@ -1212,11 +1212,11 @@ fn hawdb_lightning_initial_import_resume_action_tracks_start_resume_cutover_and_
         crate::hawdb_lightning_initial_import_resume_action(&manifest, Some(&mismatched));
     assert_eq!(
         quarantine.kind,
-        HawdbLightningInitialImportResumeActionKind::Quarantine
+        HawDBLightningInitialImportResumeActionKind::Quarantine
     );
     assert_eq!(quarantine.next_batch, None);
 
-    let missing_idempotency = HawdbLightningInitialImportCheckpoint {
+    let missing_idempotency = HawDBLightningInitialImportCheckpoint {
         import_id: String::new(),
         ..test_hawdb_lightning_checkpoint(&manifest)
     };
@@ -1224,7 +1224,7 @@ fn hawdb_lightning_initial_import_resume_action_tracks_start_resume_cutover_and_
         crate::hawdb_lightning_initial_import_resume_action(&manifest, Some(&missing_idempotency));
     assert_eq!(
         quarantine.kind,
-        HawdbLightningInitialImportResumeActionKind::Quarantine
+        HawDBLightningInitialImportResumeActionKind::Quarantine
     );
     assert!(quarantine
         .blocker_codes
@@ -1269,7 +1269,7 @@ fn hawdb_lightning_initial_import_plan_reports_ready_cutover() {
         .is_some_and(|readiness| readiness.ready));
     assert_eq!(
         plan.resume_action.kind,
-        HawdbLightningInitialImportResumeActionKind::ReadyForCutover
+        HawDBLightningInitialImportResumeActionKind::ReadyForCutover
     );
     assert!(plan.blocker_codes.is_empty());
 }
@@ -1308,7 +1308,7 @@ fn hawdb_lightning_initial_import_search_projection_batch_reports_checkpoint_pro
     db.query("CREATE (:Memory {id: 'root'})-[:LINKS {id: 'rel'}]->(:Entity {id: 'mid'})")
         .unwrap();
     let export = db.prepare_hawdb_lightning_bootstrap_export().unwrap();
-    let checkpoint = HawdbLightningInitialImportCheckpoint {
+    let checkpoint = HawDBLightningInitialImportCheckpoint {
         completed_batches: 0,
         total_batches: 1,
         document_identity_count: 0,
@@ -1379,7 +1379,7 @@ fn hawdb_lightning_initial_import_search_projection_batch_reports_checkpoint_pro
             .as_ref()
             .expect("expected checkpoint resume action")
             .kind,
-        HawdbLightningInitialImportResumeActionKind::Resume
+        HawDBLightningInitialImportResumeActionKind::Resume
     );
     assert!(report.checkpoint_progress_blocker_codes.is_empty());
 
@@ -1399,7 +1399,7 @@ fn hawdb_lightning_initial_import_search_projection_batch_reports_cutover_ready_
     db.query("CREATE (:Memory {id: 'root'})-[:LINKS {id: 'rel'}]->(:Entity {id: 'mid'})")
         .unwrap();
     let export = db.prepare_hawdb_lightning_bootstrap_export().unwrap();
-    let checkpoint = HawdbLightningInitialImportCheckpoint {
+    let checkpoint = HawDBLightningInitialImportCheckpoint {
         completed_batches: 0,
         total_batches: 1,
         document_identity_count: 0,
@@ -1437,7 +1437,7 @@ fn hawdb_lightning_initial_import_search_projection_batch_reports_cutover_ready_
             .as_ref()
             .expect("expected checkpoint resume action")
             .kind,
-        HawdbLightningInitialImportResumeActionKind::ReadyForCutover
+        HawDBLightningInitialImportResumeActionKind::ReadyForCutover
     );
     assert!(report.checkpoint_progress_blocker_codes.is_empty());
 }
@@ -1448,7 +1448,7 @@ fn hawdb_lightning_initial_import_durable_state_persists_partial_resume_progress
     db.query("CREATE (:Memory {id: 'root'})-[:LINKS {id: 'rel'}]->(:Entity {id: 'mid'})")
         .unwrap();
     let export = db.prepare_hawdb_lightning_bootstrap_export().unwrap();
-    let checkpoint = HawdbLightningInitialImportCheckpoint {
+    let checkpoint = HawDBLightningInitialImportCheckpoint {
         completed_batches: 1,
         total_batches: 3,
         document_identity_count: 2,
@@ -1471,7 +1471,7 @@ fn hawdb_lightning_initial_import_durable_state_persists_partial_resume_progress
     assert!(!report.ready_for_cutover);
     assert_eq!(
         report.resume_action.kind,
-        HawdbLightningInitialImportResumeActionKind::Resume
+        HawDBLightningInitialImportResumeActionKind::Resume
     );
     assert!(report
         .blocker_codes
@@ -1493,7 +1493,7 @@ fn hawdb_lightning_initial_import_durable_state_reports_cutover_ready_checkpoint
     db.query("CREATE (:Memory {id: 'root'})-[:LINKS {id: 'rel'}]->(:Entity {id: 'mid'})")
         .unwrap();
     let export = db.prepare_hawdb_lightning_bootstrap_export().unwrap();
-    let checkpoint = HawdbLightningInitialImportCheckpoint {
+    let checkpoint = HawDBLightningInitialImportCheckpoint {
         completed_batches: 1,
         total_batches: 1,
         document_identity_count: 6,
@@ -1514,7 +1514,7 @@ fn hawdb_lightning_initial_import_durable_state_reports_cutover_ready_checkpoint
     assert!(report.checkpoint_readiness.ready);
     assert_eq!(
         report.resume_action.kind,
-        HawdbLightningInitialImportResumeActionKind::ReadyForCutover
+        HawDBLightningInitialImportResumeActionKind::ReadyForCutover
     );
     assert!(report.blocker_codes.is_empty());
     let state = report.state.expect("expected persistable durable state");
@@ -1531,7 +1531,7 @@ fn hawdb_lightning_initial_import_durable_state_codec_round_trips_json_string() 
     db.query("CREATE (:Memory {id: 'root'})-[:LINKS {id: 'rel'}]->(:Entity {id: 'mid'})")
         .unwrap();
     let export = db.prepare_hawdb_lightning_bootstrap_export().unwrap();
-    let checkpoint = HawdbLightningInitialImportCheckpoint {
+    let checkpoint = HawDBLightningInitialImportCheckpoint {
         completed_batches: 1,
         total_batches: 1,
         document_identity_count: 6,
@@ -1564,7 +1564,7 @@ fn hawdb_lightning_initial_import_durable_state_codec_blocks_source_mismatch() {
     db.query("CREATE (:Memory {id: 'root'})-[:LINKS {id: 'rel'}]->(:Entity {id: 'mid'})")
         .unwrap();
     let export = db.prepare_hawdb_lightning_bootstrap_export().unwrap();
-    let checkpoint = HawdbLightningInitialImportCheckpoint {
+    let checkpoint = HawDBLightningInitialImportCheckpoint {
         completed_batches: 1,
         total_batches: 1,
         document_identity_count: 6,
@@ -1625,7 +1625,7 @@ fn hawdb_lightning_initial_import_session_resumes_from_durable_state() {
     db.query("CREATE (:Memory {id: 'root'})-[:LINKS {id: 'rel'}]->(:Entity {id: 'mid'})")
         .unwrap();
     let export = db.prepare_hawdb_lightning_bootstrap_export().unwrap();
-    let checkpoint = HawdbLightningInitialImportCheckpoint {
+    let checkpoint = HawDBLightningInitialImportCheckpoint {
         completed_batches: 1,
         total_batches: 3,
         document_identity_count: 2,
@@ -1659,7 +1659,7 @@ fn hawdb_lightning_initial_import_session_resumes_from_durable_state() {
     assert!(session.durable_state_source_matches_manifest);
     assert_eq!(
         session.next_action.kind,
-        HawdbLightningInitialImportResumeActionKind::Resume
+        HawDBLightningInitialImportResumeActionKind::Resume
     );
     assert_eq!(session.next_action.next_batch, Some(1));
     assert!(session
@@ -1676,7 +1676,7 @@ fn hawdb_lightning_initial_import_session_quarantines_mismatched_durable_state()
     db.query("CREATE (:Memory {id: 'root'})-[:LINKS {id: 'rel'}]->(:Entity {id: 'mid'})")
         .unwrap();
     let export = db.prepare_hawdb_lightning_bootstrap_export().unwrap();
-    let checkpoint = HawdbLightningInitialImportCheckpoint {
+    let checkpoint = HawDBLightningInitialImportCheckpoint {
         completed_batches: 1,
         total_batches: 1,
         document_identity_count: 6,
@@ -1711,7 +1711,7 @@ fn hawdb_lightning_initial_import_session_quarantines_mismatched_durable_state()
     assert!(!session.durable_state_source_matches_manifest);
     assert_eq!(
         session.next_action.kind,
-        HawdbLightningInitialImportResumeActionKind::Quarantine
+        HawDBLightningInitialImportResumeActionKind::Quarantine
     );
     assert!(session.next_action.next_batch.is_none());
     assert!(session
@@ -1767,7 +1767,7 @@ fn hawdb_lightning_initial_import_session_bundle_readiness_accepts_cutover_ready
     db.query("CREATE (:Memory {id: 'root'})-[:LINKS {id: 'rel'}]->(:Entity {id: 'mid'})")
         .unwrap();
     let export = db.prepare_hawdb_lightning_bootstrap_export().unwrap();
-    let checkpoint = HawdbLightningInitialImportCheckpoint {
+    let checkpoint = HawDBLightningInitialImportCheckpoint {
         completed_batches: 1,
         total_batches: 1,
         ..test_hawdb_lightning_checkpoint(&export.manifest)
@@ -1825,7 +1825,7 @@ fn hawdb_lightning_initial_import_session_bundle_readiness_accepts_cutover_ready
     );
     assert_eq!(
         readiness.next_action.kind,
-        HawdbLightningInitialImportResumeActionKind::ReadyForCutover
+        HawDBLightningInitialImportResumeActionKind::ReadyForCutover
     );
     assert!(readiness.blocker_codes.is_empty());
 }
@@ -1836,7 +1836,7 @@ fn hawdb_lightning_initial_import_session_bundle_readiness_requires_catch_up_for
     db.query("CREATE (:Memory {id: 'root'})-[:LINKS {id: 'rel'}]->(:Entity {id: 'mid'})")
         .unwrap();
     let export = db.prepare_hawdb_lightning_bootstrap_export().unwrap();
-    let checkpoint = HawdbLightningInitialImportCheckpoint {
+    let checkpoint = HawDBLightningInitialImportCheckpoint {
         completed_batches: 1,
         total_batches: 1,
         ..test_hawdb_lightning_checkpoint(&export.manifest)
@@ -1889,7 +1889,7 @@ fn hawdb_lightning_initial_import_startup_readiness_accepts_ready_session() {
     db.query("CREATE (:Memory {id: 'root'})-[:LINKS {id: 'rel'}]->(:Entity {id: 'mid'})")
         .unwrap();
     let export = db.prepare_hawdb_lightning_bootstrap_export().unwrap();
-    let checkpoint = HawdbLightningInitialImportCheckpoint {
+    let checkpoint = HawDBLightningInitialImportCheckpoint {
         completed_batches: 1,
         total_batches: 1,
         ..test_hawdb_lightning_checkpoint(&export.manifest)
@@ -1911,7 +1911,7 @@ fn hawdb_lightning_initial_import_startup_readiness_accepts_ready_session() {
 
     let projection_batches = [delta];
     let report = db.hawdb_lightning_initial_import_startup_readiness(
-        HawdbLightningInitialImportReadinessInputs {
+        HawDBLightningInitialImportReadinessInputs {
             encoded_graph_stream: &export.graph_stream.encoded,
             encoded_relational_stream: &export.relational_stream.encoded,
             manifest: &export.manifest,
@@ -1939,7 +1939,7 @@ fn hawdb_lightning_initial_import_startup_readiness_blocks_live_projection_lag()
     db.query("CREATE (:Memory {id: 'root'})-[:LINKS {id: 'rel'}]->(:Entity {id: 'mid'})")
         .unwrap();
     let export = db.prepare_hawdb_lightning_bootstrap_export().unwrap();
-    let checkpoint = HawdbLightningInitialImportCheckpoint {
+    let checkpoint = HawDBLightningInitialImportCheckpoint {
         completed_batches: 1,
         total_batches: 1,
         ..test_hawdb_lightning_checkpoint(&export.manifest)
@@ -1964,7 +1964,7 @@ fn hawdb_lightning_initial_import_startup_readiness_blocks_live_projection_lag()
 
     let projection_batches = [delta];
     let report = db.hawdb_lightning_initial_import_startup_readiness(
-        HawdbLightningInitialImportReadinessInputs {
+        HawDBLightningInitialImportReadinessInputs {
             encoded_graph_stream: &export.graph_stream.encoded,
             encoded_relational_stream: &export.relational_stream.encoded,
             manifest: &export.manifest,
@@ -1996,7 +1996,7 @@ fn hawdb_lightning_initial_import_recovery_readiness_resumes_encoded_state() {
     db.query("CREATE (:Memory {id: 'root'})-[:LINKS {id: 'rel'}]->(:Entity {id: 'mid'})")
         .unwrap();
     let export = db.prepare_hawdb_lightning_bootstrap_export().unwrap();
-    let checkpoint = HawdbLightningInitialImportCheckpoint {
+    let checkpoint = HawDBLightningInitialImportCheckpoint {
         completed_batches: 1,
         total_batches: 1,
         ..test_hawdb_lightning_checkpoint(&export.manifest)
@@ -2019,7 +2019,7 @@ fn hawdb_lightning_initial_import_recovery_readiness_resumes_encoded_state() {
 
     let projection_batches = [delta];
     let report = db.hawdb_lightning_initial_import_recovery_readiness(
-        HawdbLightningInitialImportReadinessInputs {
+        HawDBLightningInitialImportReadinessInputs {
             encoded_graph_stream: &export.graph_stream.encoded,
             encoded_relational_stream: &export.relational_stream.encoded,
             manifest: &export.manifest,
@@ -2038,7 +2038,7 @@ fn hawdb_lightning_initial_import_recovery_readiness_resumes_encoded_state() {
         .is_some_and(|codec| codec.ready));
     assert_eq!(
         report.next_action.kind,
-        HawdbLightningInitialImportResumeActionKind::ReadyForCutover
+        HawDBLightningInitialImportResumeActionKind::ReadyForCutover
     );
     assert!(report.blocker_codes.is_empty());
 }
@@ -2050,7 +2050,7 @@ fn hawdb_lightning_initial_import_recovery_readiness_quarantines_invalid_payload
     let export = db.prepare_hawdb_lightning_bootstrap_export().unwrap();
 
     let report = db.hawdb_lightning_initial_import_recovery_readiness(
-        HawdbLightningInitialImportReadinessInputs {
+        HawDBLightningInitialImportReadinessInputs {
             encoded_graph_stream: &export.graph_stream.encoded,
             encoded_relational_stream: &export.relational_stream.encoded,
             manifest: &export.manifest,
@@ -2066,7 +2066,7 @@ fn hawdb_lightning_initial_import_recovery_readiness_quarantines_invalid_payload
     assert_eq!(report.durable_state_codec, None);
     assert_eq!(
         report.next_action.kind,
-        HawdbLightningInitialImportResumeActionKind::Quarantine
+        HawDBLightningInitialImportResumeActionKind::Quarantine
     );
     assert!(report
         .blocker_codes
@@ -2081,7 +2081,7 @@ fn hawdb_lightning_initial_import_recovery_readiness_quarantines_source_mismatch
     let mut db = Database::new();
     db.query("CREATE (:Memory {id: 'root'})").unwrap();
     let export = db.prepare_hawdb_lightning_bootstrap_export().unwrap();
-    let checkpoint = HawdbLightningInitialImportCheckpoint {
+    let checkpoint = HawDBLightningInitialImportCheckpoint {
         completed_batches: 1,
         total_batches: 1,
         document_identity_count: 6,
@@ -2104,7 +2104,7 @@ fn hawdb_lightning_initial_import_recovery_readiness_quarantines_source_mismatch
     let encoded = serde_json::to_string(&value).unwrap();
 
     let report = db.hawdb_lightning_initial_import_recovery_readiness(
-        HawdbLightningInitialImportReadinessInputs {
+        HawDBLightningInitialImportReadinessInputs {
             encoded_graph_stream: &export.graph_stream.encoded,
             encoded_relational_stream: &export.relational_stream.encoded,
             manifest: &export.manifest,
@@ -2122,7 +2122,7 @@ fn hawdb_lightning_initial_import_recovery_readiness_quarantines_source_mismatch
         .is_some_and(|codec| !codec.ready));
     assert_eq!(
         report.next_action.kind,
-        HawdbLightningInitialImportResumeActionKind::Quarantine
+        HawDBLightningInitialImportResumeActionKind::Quarantine
     );
     assert!(report
         .blocker_codes
@@ -2218,7 +2218,7 @@ fn hawdb_lightning_initial_import_durable_state_rejects_unstable_checkpoint_iden
     db.query("CREATE (:Memory {id: 'root'})-[:LINKS {id: 'rel'}]->(:Entity {id: 'mid'})")
         .unwrap();
     let export = db.prepare_hawdb_lightning_bootstrap_export().unwrap();
-    let checkpoint = HawdbLightningInitialImportCheckpoint {
+    let checkpoint = HawDBLightningInitialImportCheckpoint {
         import_id: String::new(),
         schema_checksum: export.manifest.schema_checksum + 1,
         completed_batches: 4,
@@ -2257,7 +2257,7 @@ fn hawdb_lightning_initial_import_durable_state_advances_with_search_projection_
     db.query("CREATE (:Memory {id: 'root'})-[:LINKS {id: 'rel'}]->(:Entity {id: 'mid'})")
         .unwrap();
     let export = db.prepare_hawdb_lightning_bootstrap_export().unwrap();
-    let checkpoint = HawdbLightningInitialImportCheckpoint {
+    let checkpoint = HawDBLightningInitialImportCheckpoint {
         completed_batches: 0,
         total_batches: 1,
         document_identity_count: 0,
@@ -2308,7 +2308,7 @@ fn hawdb_lightning_initial_import_streaming_batches_advance_before_final_coverag
     db.query("CREATE (:Memory {id: 'root'})-[:LINKS {id: 'rel'}]->(:Entity {id: 'mid'})")
         .unwrap();
     let export = db.prepare_hawdb_lightning_bootstrap_export().unwrap();
-    let checkpoint = HawdbLightningInitialImportCheckpoint {
+    let checkpoint = HawDBLightningInitialImportCheckpoint {
         completed_batches: 0,
         total_batches: 2,
         document_identity_count: 0,
@@ -2380,7 +2380,7 @@ fn hawdb_lightning_initial_import_durable_state_treats_completed_batch_as_idempo
     db.query("CREATE (:Memory {id: 'root'})-[:LINKS {id: 'rel'}]->(:Entity {id: 'mid'})")
         .unwrap();
     let export = db.prepare_hawdb_lightning_bootstrap_export().unwrap();
-    let checkpoint = HawdbLightningInitialImportCheckpoint {
+    let checkpoint = HawDBLightningInitialImportCheckpoint {
         completed_batches: 1,
         total_batches: 1,
         document_identity_count: 6,
@@ -2428,7 +2428,7 @@ fn hawdb_lightning_initial_import_durable_state_blocks_invalid_batch_advance() {
     db.query("CREATE (:Memory {id: 'root'})-[:LINKS {id: 'rel'}]->(:Entity {id: 'mid'})")
         .unwrap();
     let export = db.prepare_hawdb_lightning_bootstrap_export().unwrap();
-    let checkpoint = HawdbLightningInitialImportCheckpoint {
+    let checkpoint = HawDBLightningInitialImportCheckpoint {
         completed_batches: 0,
         total_batches: 1,
         document_identity_count: 0,
@@ -2477,7 +2477,7 @@ fn hawdb_lightning_initial_import_search_projection_batch_accepts_cumulative_ide
     db.query("CREATE (:Memory {id: 'root'})-[:LINKS {id: 'rel'}]->(:Entity {id: 'mid'})")
         .unwrap();
     let export = db.prepare_hawdb_lightning_bootstrap_export().unwrap();
-    let checkpoint = HawdbLightningInitialImportCheckpoint {
+    let checkpoint = HawDBLightningInitialImportCheckpoint {
         completed_batches: 1,
         total_batches: 3,
         document_identity_count: 4,
@@ -2583,7 +2583,7 @@ fn hawdb_lightning_initial_import_search_projection_batch_rejects_checkpoint_tot
     db.query("CREATE (:Memory {id: 'root'})-[:LINKS {id: 'rel'}]->(:Entity {id: 'mid'})")
         .unwrap();
     let export = db.prepare_hawdb_lightning_bootstrap_export().unwrap();
-    let checkpoint = HawdbLightningInitialImportCheckpoint {
+    let checkpoint = HawDBLightningInitialImportCheckpoint {
         completed_batches: 0,
         total_batches: 2,
         document_identity_count: 0,
@@ -2627,7 +2627,7 @@ fn hawdb_lightning_initial_import_source_bundle_accepts_graph_and_projection_sou
     db.query("CREATE (:Memory {id: 'root'})-[:LINKS {id: 'rel'}]->(:Entity {id: 'mid'})")
         .unwrap();
     let export = db.prepare_hawdb_lightning_bootstrap_export().unwrap();
-    let checkpoint = HawdbLightningInitialImportCheckpoint {
+    let checkpoint = HawDBLightningInitialImportCheckpoint {
         completed_batches: 0,
         total_batches: 1,
         document_identity_count: 0,
@@ -2768,7 +2768,7 @@ fn hawdb_lightning_initial_import_plan_fails_closed_for_invalid_stream_and_missi
     assert_eq!(plan.checkpoint_readiness, None);
     assert_eq!(
         plan.resume_action.kind,
-        HawdbLightningInitialImportResumeActionKind::Start
+        HawDBLightningInitialImportResumeActionKind::Start
     );
     assert!(plan
         .blocker_codes
@@ -2970,7 +2970,7 @@ fn hawdb_lightning_initial_import_rejects_stream_without_engine_registry() {
     let mut source = Database::new();
     source.query("CREATE (:Memory {id: 'root'})").unwrap();
     let export = source.prepare_hawdb_lightning_bootstrap_export().unwrap();
-    let relational_stream = HawdbLightningRelationalStream::from_state(
+    let relational_stream = HawDBLightningRelationalStream::from_state(
         export.manifest.database_commit_epoch,
         &hawdb_storage::RelationalState::default(),
     )
@@ -3221,7 +3221,7 @@ fn hawdb_lightning_background_bootstrap_export_uses_qos_without_gating_direct_ex
 
         assert!(error
             .to_string()
-            .contains("background Hawdb Lightning bootstrap export deferred"));
+            .contains("background HawDB Lightning bootstrap export deferred"));
         assert!(!path.join("stable_ids.hawdb").exists());
 
         let export = db.prepare_hawdb_lightning_bootstrap_export().unwrap();

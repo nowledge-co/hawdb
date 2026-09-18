@@ -1,5 +1,5 @@
 use crate::{SearchIndex, SearchProjectionCatchUpReport};
-use hawdb_core::{HawdbError, Result};
+use hawdb_core::{HawDBError, Result};
 use hawdb_storage::{SearchProjectionChangefeedReadiness, SearchProjectionChangefeedStatus};
 use std::fmt;
 use std::num::NonZeroU64;
@@ -16,7 +16,7 @@ impl SearchProjectionConsumerId {
                 .bytes()
                 .all(|byte| byte.is_ascii_alphanumeric() || b"._-".contains(&byte))
         {
-            return Err(HawdbError::Semantic(
+            return Err(HawDBError::Semantic(
                 "consumer ID must contain 1-128 ASCII letters, digits, '.', '_' or '-'".into(),
             ));
         }
@@ -127,7 +127,7 @@ pub struct SearchProjectionConsumerCatchUpReport {
 
 #[derive(Debug)]
 pub enum SearchProjectionConsumerError {
-    Database(HawdbError),
+    Database(HawDBError),
     InvalidHandle,
     AlreadyRegistered,
     RegistryFull,
@@ -166,8 +166,8 @@ impl std::error::Error for SearchProjectionConsumerError {
     }
 }
 
-impl From<HawdbError> for SearchProjectionConsumerError {
-    fn from(error: HawdbError) -> Self {
+impl From<HawDBError> for SearchProjectionConsumerError {
+    fn from(error: HawDBError) -> Self {
         Self::Database(error)
     }
 }

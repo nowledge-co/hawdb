@@ -99,8 +99,8 @@ fn decode_aggregate_input(value: Value) -> Result<AggregateInput> {
     }
 }
 
-fn invalid_compact_row(reason: &str) -> HawdbError {
-    HawdbError::Execution(format!("AggregateExec compact spill record {reason}"))
+fn invalid_compact_row(reason: &str) -> HawDBError {
+    HawDBError::Execution(format!("AggregateExec compact spill record {reason}"))
 }
 
 #[cfg(test)]

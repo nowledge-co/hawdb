@@ -1,7 +1,7 @@
 use crate::binding::Binding;
 use crate::kernel::{ensure_operator_item_fits, OperatorMemoryTracker, SpillBudgetTracker};
 use crate::QueryMemoryLease;
-use hawdb_core::{HawdbError, LabelId, RelTypeId, Result, Value};
+use hawdb_core::{HawDBError, LabelId, RelTypeId, Result, Value};
 use hawdb_storage::{NodeId, NodeRecord, RelId, RelRecord};
 use pool::{process_marker, RunLease, SPILL_FILE_PREFIX, SPILL_FILE_SUFFIX};
 use std::collections::{BTreeMap, BTreeSet};
@@ -61,7 +61,7 @@ impl SpillRun {
                 Err(error) if error.kind() == ErrorKind::AlreadyExists => continue,
                 Err(error) => {
                     pool.cancel_run();
-                    return Err(HawdbError::Execution(format!(
+                    return Err(HawDBError::Execution(format!(
                         "failed to create spill run '{}': {error}",
                         path.display()
                     )));
@@ -69,14 +69,14 @@ impl SpillRun {
             }
         }
         pool.cancel_run();
-        Err(HawdbError::Execution(
+        Err(HawDBError::Execution(
             "failed to allocate a unique spill run path".to_string(),
         ))
     }
 
     pub fn reader(&self) -> Result<SpillReader> {
         let file = File::open(self.lease.path()).map_err(|error| {
-            HawdbError::Execution(format!(
+            HawDBError::Execution(format!(
                 "failed to open spill run '{}': {error}",
                 self.lease.path().display()
             ))
@@ -105,13 +105,13 @@ impl SpillWriter {
         write_u64(&mut payload, ordinal)?;
         write_binding(&mut payload, binding)?;
         if payload.len() != encoded_len {
-            return Err(HawdbError::Execution(format!(
+            return Err(HawDBError::Execution(format!(
                 "spill binding codec declared {encoded_len} bytes but encoded {} bytes",
                 payload.len()
             )));
         }
         let payload_len = u64::try_from(payload.len()).map_err(|_| {
-            HawdbError::Execution("spill record exceeds the supported size".to_string())
+            HawDBError::Execution("spill record exceeds the supported size".to_string())
         })?;
         let record_bytes = payload_len.saturating_add(8);
         let reservation = spill_budget.reserve_write(record_bytes)?;
@@ -119,7 +119,7 @@ impl SpillWriter {
             .write_all(&payload_len.to_le_bytes())
             .and_then(|_| self.writer.write_all(&payload))
             .map_err(|error| {
-                HawdbError::Execution(format!("failed to write spill run: {error}"))
+                HawDBError::Execution(format!("failed to write spill run: {error}"))
             })?;
         reservation.commit(&self.lease);
         spill_budget.commit_write(record_bytes);
@@ -132,7 +132,7 @@ impl SpillWriter {
         spill_budget: &mut SpillBudgetTracker,
     ) -> Result<u64> {
         let payload_len = u64::try_from(payload.len()).map_err(|_| {
-            HawdbError::Execution("spill record exceeds the supported size".to_string())
+            HawDBError::Execution("spill record exceeds the supported size".to_string())
         })?;
         let record_bytes = payload_len.saturating_add(8);
         let reservation = spill_budget.reserve_write(record_bytes)?;
@@ -140,7 +140,7 @@ impl SpillWriter {
             .write_all(&payload_len.to_le_bytes())
             .and_then(|_| self.writer.write_all(payload))
             .map_err(|error| {
-                HawdbError::Execution(format!("failed to write spill run: {error}"))
+                HawDBError::Execution(format!("failed to write spill run: {error}"))
             })?;
         reservation.commit(&self.lease);
         spill_budget.commit_write(record_bytes);
@@ -149,7 +149,7 @@ impl SpillWriter {
 
     pub fn finish(mut self) -> Result<()> {
         self.writer.flush().map_err(|error| {
-            HawdbError::Execution(format!("failed to flush spill run: {error}"))
+            HawDBError::Execution(format!("failed to flush spill run: {error}"))
         })?;
         self.lease.mark_flushed();
         Ok(())
@@ -200,7 +200,7 @@ impl SpillBindingRecord {
         let bytes = memory_bytes(&item);
         if bytes > max_item_bytes {
             tracker.release(decoded_binding_bytes);
-            return Err(HawdbError::Execution(format!(
+            return Err(HawDBError::Execution(format!(
                 "{operator} spill merge item uses {bytes} bytes, exceeding its {max_item_bytes}-byte allowance"
             )));
         }
@@ -212,7 +212,7 @@ impl SpillBindingRecord {
             let additional_bytes = bytes - decoded_binding_bytes;
             if tracker.would_exceed(additional_bytes) {
                 tracker.release(decoded_binding_bytes);
-                return Err(HawdbError::Execution(format!(
+                return Err(HawDBError::Execution(format!(
                     "{operator} spill merge fan-in uses more than blocking_operator_bytes {}",
                     tracker.budget_bytes
                 )));
@@ -238,7 +238,7 @@ impl SpillReader {
     pub fn read(&mut self, max_record_bytes: usize) -> Result<Option<(u64, Binding)>> {
         let mut encoded_len = [0u8; 8];
         let bytes_read = self.reader.read(&mut encoded_len).map_err(|error| {
-            HawdbError::Execution(format!("failed to read spill record length: {error}"))
+            HawDBError::Execution(format!("failed to read spill record length: {error}"))
         })?;
         if bytes_read == 0 {
             return Ok(None);
@@ -246,26 +246,26 @@ impl SpillReader {
         self.reader
             .read_exact(&mut encoded_len[bytes_read..])
             .map_err(|error| {
-                HawdbError::Execution(format!("truncated spill record length: {error}"))
+                HawDBError::Execution(format!("truncated spill record length: {error}"))
             })?;
         let payload_len = usize::try_from(u64::from_le_bytes(encoded_len)).map_err(|_| {
-            HawdbError::Execution("spill record length does not fit in memory".to_string())
+            HawDBError::Execution("spill record length does not fit in memory".to_string())
         })?;
         let safety_limit = MAX_SPILL_RECORD_BYTES.min(max_record_bytes);
         if payload_len > safety_limit {
-            return Err(HawdbError::Execution(format!(
+            return Err(HawDBError::Execution(format!(
                 "spill record length {payload_len} exceeds the admitted limit {safety_limit}"
             )));
         }
         let mut payload = vec![0; payload_len];
         self.reader.read_exact(&mut payload).map_err(|error| {
-            HawdbError::Execution(format!("truncated spill record payload: {error}"))
+            HawDBError::Execution(format!("truncated spill record payload: {error}"))
         })?;
         let mut cursor = Cursor::new(payload.as_slice());
         let ordinal = read_u64(&mut cursor)?;
         let binding = read_binding(&mut cursor)?;
         if cursor.position() != payload.len() as u64 {
-            return Err(HawdbError::Execution(
+            return Err(HawDBError::Execution(
                 "spill record contains trailing bytes".to_string(),
             ));
         }
@@ -279,7 +279,7 @@ impl SpillReader {
     ) -> Result<Option<SpillRecordPayload>> {
         let mut encoded_len = [0u8; 8];
         let bytes_read = self.reader.read(&mut encoded_len).map_err(|error| {
-            HawdbError::Execution(format!("failed to read spill record length: {error}"))
+            HawDBError::Execution(format!("failed to read spill record length: {error}"))
         })?;
         if bytes_read == 0 {
             return Ok(None);
@@ -287,21 +287,21 @@ impl SpillReader {
         self.reader
             .read_exact(&mut encoded_len[bytes_read..])
             .map_err(|error| {
-                HawdbError::Execution(format!("truncated spill record length: {error}"))
+                HawDBError::Execution(format!("truncated spill record length: {error}"))
             })?;
         let payload_len = usize::try_from(u64::from_le_bytes(encoded_len)).map_err(|_| {
-            HawdbError::Execution("spill record length does not fit in memory".to_string())
+            HawDBError::Execution("spill record length does not fit in memory".to_string())
         })?;
         let safety_limit = MAX_SPILL_RECORD_BYTES.min(max_record_bytes);
         if payload_len > safety_limit {
-            return Err(HawdbError::Execution(format!(
+            return Err(HawDBError::Execution(format!(
                 "spill record length {payload_len} exceeds the admitted limit {safety_limit}"
             )));
         }
         let lease = spill_budget.reserve_staging(payload_len)?;
         let mut bytes = vec![0; payload_len];
         self.reader.read_exact(&mut bytes).map_err(|error| {
-            HawdbError::Execution(format!("truncated spill record payload: {error}"))
+            HawDBError::Execution(format!("truncated spill record payload: {error}"))
         })?;
         Ok(Some(SpillRecordPayload {
             bytes,
@@ -321,7 +321,7 @@ impl SpillReader {
         read_u64(&mut cursor)?;
         let decoded_binding_bytes = estimate_binding_memory_bytes(&mut cursor)?;
         if cursor.position() != payload.as_slice().len() as u64 {
-            return Err(HawdbError::Execution(
+            return Err(HawDBError::Execution(
                 "spill record contains trailing bytes".to_string(),
             ));
         }
@@ -337,7 +337,7 @@ fn decode_binding_record(payload: &[u8]) -> Result<(u64, Binding)> {
     let ordinal = read_u64(&mut cursor)?;
     let binding = read_binding(&mut cursor)?;
     if cursor.position() != payload.len() as u64 {
-        return Err(HawdbError::Execution(
+        return Err(HawDBError::Execution(
             "spill record contains trailing bytes".to_string(),
         ));
     }
@@ -379,7 +379,7 @@ fn estimate_binding_memory_bytes(input: &mut Cursor<&[u8]>) -> Result<usize> {
     let entry_count = values
         .checked_add(nodes)
         .and_then(|count| count.checked_add(relationships))
-        .ok_or_else(|| HawdbError::Execution("spill binding entry count overflow".to_string()))?;
+        .ok_or_else(|| HawDBError::Execution("spill binding entry count overflow".to_string()))?;
     encoded_len_add(
         std::mem::size_of::<Binding>(),
         encoded_len_add(
@@ -406,7 +406,7 @@ fn estimate_value_payload(input: &mut Cursor<&[u8]>, depth: usize) -> Result<usi
         0 => Ok(0),
         1 => match read_u8(input)? {
             0 | 1 => Ok(std::mem::size_of::<bool>()),
-            value => Err(HawdbError::Execution(format!(
+            value => Err(HawDBError::Execution(format!(
                 "invalid boolean tag in spill record: {value}"
             ))),
         },
@@ -433,11 +433,11 @@ fn estimate_value_payload(input: &mut Cursor<&[u8]>, depth: usize) -> Result<usi
         8 => {
             let mut bytes = [0_u8; 16];
             input.read_exact(&mut bytes).map_err(|error| {
-                HawdbError::Execution(format!("truncated UUID in spill record: {error}"))
+                HawDBError::Execution(format!("truncated UUID in spill record: {error}"))
             })?;
             Ok(bytes.len())
         }
-        tag => Err(HawdbError::Execution(format!(
+        tag => Err(HawDBError::Execution(format!(
             "invalid value tag in spill record: {tag}"
         ))),
     }
@@ -446,17 +446,17 @@ fn estimate_value_payload(input: &mut Cursor<&[u8]>, depth: usize) -> Result<usi
 fn skip_string(input: &mut Cursor<&[u8]>) -> Result<usize> {
     let len = read_len(input)?;
     let start = usize::try_from(input.position()).map_err(|_| {
-        HawdbError::Execution("spill cursor position does not fit in memory".to_string())
+        HawDBError::Execution("spill cursor position does not fit in memory".to_string())
     })?;
     let end = start
         .checked_add(len)
-        .ok_or_else(|| HawdbError::Execution("spill string position overflow".to_string()))?;
+        .ok_or_else(|| HawDBError::Execution("spill string position overflow".to_string()))?;
     let bytes = input
         .get_ref()
         .get(start..end)
-        .ok_or_else(|| HawdbError::Execution("truncated string in spill record".to_string()))?;
+        .ok_or_else(|| HawDBError::Execution("truncated string in spill record".to_string()))?;
     std::str::from_utf8(bytes)
-        .map_err(|error| HawdbError::Execution(format!("invalid spill string: {error}")))?;
+        .map_err(|error| HawDBError::Execution(format!("invalid spill string: {error}")))?;
     input.set_position(end as u64);
     Ok(len)
 }
@@ -464,15 +464,15 @@ fn skip_string(input: &mut Cursor<&[u8]>) -> Result<usize> {
 fn skip_binary(input: &mut Cursor<&[u8]>) -> Result<usize> {
     let len = read_len(input)?;
     let start = usize::try_from(input.position()).map_err(|_| {
-        HawdbError::Execution("spill cursor position does not fit in memory".to_string())
+        HawDBError::Execution("spill cursor position does not fit in memory".to_string())
     })?;
     let end = start
         .checked_add(len)
-        .ok_or_else(|| HawdbError::Execution("spill binary position overflow".to_string()))?;
+        .ok_or_else(|| HawDBError::Execution("spill binary position overflow".to_string()))?;
     input
         .get_ref()
         .get(start..end)
-        .ok_or_else(|| HawdbError::Execution("truncated binary in spill record".to_string()))?;
+        .ok_or_else(|| HawDBError::Execution("truncated binary in spill record".to_string()))?;
     input.set_position(end as u64);
     Ok(len)
 }
@@ -532,12 +532,12 @@ fn string_encoded_len(value: &str) -> Result<usize> {
 
 fn encoded_len_add(left: usize, right: usize) -> Result<usize> {
     left.checked_add(right)
-        .ok_or_else(|| HawdbError::Execution("spill record encoded length overflow".to_string()))
+        .ok_or_else(|| HawDBError::Execution("spill record encoded length overflow".to_string()))
 }
 
 fn encoded_len_mul(left: usize, right: usize) -> Result<usize> {
     left.checked_mul(right)
-        .ok_or_else(|| HawdbError::Execution("spill record encoded length overflow".to_string()))
+        .ok_or_else(|| HawDBError::Execution("spill record encoded length overflow".to_string()))
 }
 
 fn write_binding(output: &mut Vec<u8>, binding: &Binding) -> Result<()> {
@@ -680,7 +680,7 @@ fn read_value(input: &mut Cursor<&[u8]>, depth: usize) -> Result<Value> {
             0 => false,
             1 => true,
             value => {
-                return Err(HawdbError::Execution(format!(
+                return Err(HawDBError::Execution(format!(
                     "invalid boolean tag in spill record: {value}"
                 )));
             }
@@ -700,19 +700,19 @@ fn read_value(input: &mut Cursor<&[u8]>, depth: usize) -> Result<Value> {
             let len = read_len(input)?;
             let mut bytes = vec![0; len];
             input.read_exact(&mut bytes).map_err(|error| {
-                HawdbError::Execution(format!("truncated binary in spill record: {error}"))
+                HawDBError::Execution(format!("truncated binary in spill record: {error}"))
             })?;
             Value::Binary(bytes)
         }
         8 => {
             let mut bytes = [0_u8; 16];
             input.read_exact(&mut bytes).map_err(|error| {
-                HawdbError::Execution(format!("truncated UUID in spill record: {error}"))
+                HawDBError::Execution(format!("truncated UUID in spill record: {error}"))
             })?;
             Value::Uuid(hawdb_core::Uuid::from_bytes(bytes))
         }
         tag => {
-            return Err(HawdbError::Execution(format!(
+            return Err(HawDBError::Execution(format!(
                 "invalid value tag in spill record: {tag}"
             )));
         }
@@ -721,7 +721,7 @@ fn read_value(input: &mut Cursor<&[u8]>, depth: usize) -> Result<Value> {
 
 fn check_depth(depth: usize) -> Result<()> {
     if depth > MAX_VALUE_DEPTH {
-        return Err(HawdbError::Execution(
+        return Err(HawDBError::Execution(
             "spill value nesting exceeds the safety limit".to_string(),
         ));
     }
@@ -738,31 +738,31 @@ fn read_string(input: &mut Cursor<&[u8]>) -> Result<String> {
     let len = read_len(input)?;
     let mut bytes = vec![0; len];
     input.read_exact(&mut bytes).map_err(|error| {
-        HawdbError::Execution(format!("truncated string in spill record: {error}"))
+        HawDBError::Execution(format!("truncated string in spill record: {error}"))
     })?;
     String::from_utf8(bytes)
-        .map_err(|error| HawdbError::Execution(format!("invalid spill string: {error}")))
+        .map_err(|error| HawDBError::Execution(format!("invalid spill string: {error}")))
 }
 
 fn write_len(output: &mut Vec<u8>, value: usize) -> Result<()> {
     write_u64(
         output,
         u64::try_from(value).map_err(|_| {
-            HawdbError::Execution("spill collection length is too large".to_string())
+            HawDBError::Execution("spill collection length is too large".to_string())
         })?,
     )
 }
 
 fn read_len(input: &mut Cursor<&[u8]>) -> Result<usize> {
     let value = usize::try_from(read_u64(input)?).map_err(|_| {
-        HawdbError::Execution("spill collection length does not fit in memory".to_string())
+        HawDBError::Execution("spill collection length does not fit in memory".to_string())
     })?;
     let remaining = input
         .get_ref()
         .len()
         .saturating_sub(input.position() as usize);
     if value > remaining {
-        return Err(HawdbError::Execution(format!(
+        return Err(HawDBError::Execution(format!(
             "spill collection length {value} exceeds remaining payload {remaining}"
         )));
     }
@@ -772,27 +772,27 @@ fn read_len(input: &mut Cursor<&[u8]>) -> Result<usize> {
 fn write_u64(output: &mut Vec<u8>, value: u64) -> Result<()> {
     output
         .write_all(&value.to_le_bytes())
-        .map_err(|error| HawdbError::Execution(format!("failed to encode spill integer: {error}")))
+        .map_err(|error| HawDBError::Execution(format!("failed to encode spill integer: {error}")))
 }
 
 fn read_u8(input: &mut Cursor<&[u8]>) -> Result<u8> {
     let mut bytes = [0; 1];
     input
         .read_exact(&mut bytes)
-        .map_err(|error| HawdbError::Execution(format!("truncated spill tag: {error}")))?;
+        .map_err(|error| HawDBError::Execution(format!("truncated spill tag: {error}")))?;
     Ok(bytes[0])
 }
 
 fn read_u32(input: &mut Cursor<&[u8]>) -> Result<u32> {
     u32::try_from(read_u64(input)?)
-        .map_err(|_| HawdbError::Execution("spill identifier exceeds u32".to_string()))
+        .map_err(|_| HawDBError::Execution("spill identifier exceeds u32".to_string()))
 }
 
 fn read_u64(input: &mut Cursor<&[u8]>) -> Result<u64> {
     let mut bytes = [0; 8];
     input
         .read_exact(&mut bytes)
-        .map_err(|error| HawdbError::Execution(format!("truncated spill integer: {error}")))?;
+        .map_err(|error| HawDBError::Execution(format!("truncated spill integer: {error}")))?;
     Ok(u64::from_le_bytes(bytes))
 }
 
@@ -800,7 +800,7 @@ fn read_i64(input: &mut Cursor<&[u8]>) -> Result<i64> {
     let mut bytes = [0; 8];
     input
         .read_exact(&mut bytes)
-        .map_err(|error| HawdbError::Execution(format!("truncated spill integer: {error}")))?;
+        .map_err(|error| HawDBError::Execution(format!("truncated spill integer: {error}")))?;
     Ok(i64::from_le_bytes(bytes))
 }
 

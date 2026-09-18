@@ -7,10 +7,10 @@ fn relational_ddl_requires_exactly_one_primary_key_declaration() {
     )
     .expect("valid PostgreSQL syntax");
     let error = compile_schema_statement(missing.statement)
-        .expect_err("Hawdb relational tables require a primary key");
+        .expect_err("HawDB relational tables require a primary key");
     assert_eq!(
         error,
-        HawdbError::Semantic("relational table documents must declare a primary key".to_string())
+        HawDBError::Semantic("relational table documents must declare a primary key".to_string())
     );
 
     let duplicate = hawdb_sql::prepare_postgres_sql(
@@ -21,7 +21,7 @@ fn relational_ddl_requires_exactly_one_primary_key_declaration() {
         .expect_err("multiple primary-key declarations must be rejected");
     assert_eq!(
         error,
-        HawdbError::Semantic("table declares more than one primary key".to_string())
+        HawDBError::Semantic("table declares more than one primary key".to_string())
     );
 }
 

@@ -1,6 +1,6 @@
 //! Portable contracts for deterministic Nowledge query fuzz harnesses.
 
-use hawdb_core::{HawdbError, Value};
+use hawdb_core::{HawDBError, Value};
 use std::collections::BTreeMap;
 
 pub const NOWLEDGE_QUERY_FUZZ_HARNESS_PROTOCOL: &str = "hawdb-nowledge-query-fuzz-harness-v1";
@@ -136,15 +136,15 @@ pub fn nowledge_query_fuzz_harness_report(
 }
 
 #[doc(hidden)]
-pub const fn nowledge_query_fuzz_error_class(error: &HawdbError) -> &'static str {
+pub const fn nowledge_query_fuzz_error_class(error: &HawDBError) -> &'static str {
     match error {
-        HawdbError::Parse(_) => "parse",
-        HawdbError::Semantic(_) => "semantic",
-        HawdbError::Execution(_) => "execution",
-        HawdbError::Storage(_)
-        | HawdbError::StorageIntegrity(_)
-        | HawdbError::AppendSequenceExhausted { .. } => "storage",
-        HawdbError::CapabilityUnavailable { .. } => "capability_unavailable",
+        HawDBError::Parse(_) => "parse",
+        HawDBError::Semantic(_) => "semantic",
+        HawDBError::Execution(_) => "execution",
+        HawDBError::Storage(_)
+        | HawDBError::StorageIntegrity(_)
+        | HawDBError::AppendSequenceExhausted { .. } => "storage",
+        HawDBError::CapabilityUnavailable { .. } => "capability_unavailable",
     }
 }
 

@@ -1,5 +1,5 @@
 use super::{SearchProjectionConsumerId, SearchProjectionConsumerState};
-use hawdb_core::{HawdbError, Result, Uuid};
+use hawdb_core::{HawDBError, Result, Uuid};
 use hawdb_integrity::IntegrityHasher;
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
@@ -266,8 +266,8 @@ fn digest(bytes: &[u8]) -> String {
     hasher.finish().sha256.to_string()
 }
 
-fn invalid(detail: &str) -> HawdbError {
-    HawdbError::Storage(format!("invalid projection consumer registry: {detail}"))
+fn invalid(detail: &str) -> HawDBError {
+    HawDBError::Storage(format!("invalid projection consumer registry: {detail}"))
 }
 
 fn bounded_records<'de, D: serde::Deserializer<'de>>(

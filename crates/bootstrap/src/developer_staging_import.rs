@@ -7,7 +7,7 @@ use crate::{
     hawdb_lightning_gc_staging_report, verify_hawdb_lightning_published_manifest,
     verify_hawdb_lightning_staging_catalog,
 };
-use hawdb_core::{HawdbError, Result};
+use hawdb_core::{HawDBError, Result};
 use std::collections::{BTreeMap, BTreeSet};
 use std::fs;
 use std::path::Path;
@@ -789,7 +789,7 @@ fn gate_errors(report: &serde_json::Value, gate: &str) -> Vec<String> {
 fn read_json_file(path: &Path) -> Result<serde_json::Value> {
     let bytes = fs::read(path)?;
     serde_json::from_slice(&bytes)
-        .map_err(|_| HawdbError::Execution("invalid JSON file: invalid_json".to_string()))
+        .map_err(|_| HawDBError::Execution("invalid JSON file: invalid_json".to_string()))
 }
 
 fn record_error(errors: &mut Vec<String>, group: &mut Vec<String>, message: impl Into<String>) {

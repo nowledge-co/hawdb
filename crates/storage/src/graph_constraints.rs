@@ -5,7 +5,7 @@
 
 use crate::{CowSegmentedMap, NodeId, NodeRecord, RelId, RelRecord};
 use hawdb_core::{
-    Catalog, ConstraintSubject, HawdbError, LabelId, PropertyType, RelTypeId, Result,
+    Catalog, ConstraintSubject, HawDBError, LabelId, PropertyType, RelTypeId, Result,
     SchemaObjectState, TableKind, Value,
 };
 use std::collections::BTreeMap;
@@ -101,7 +101,7 @@ pub fn validate_node_record_constraints(catalog: &Catalog, node: &NodeRecord) ->
                 .is_some_and(|value| value != &Value::Null)
         {
             let label = catalog.label_name(label_id).unwrap_or("<unknown>");
-            return Err(HawdbError::Storage(format!(
+            return Err(HawDBError::Storage(format!(
                 "node property exists constraint violation on :{label}({}) for node {}",
                 constraint.property, node.id.0
             )));
@@ -149,7 +149,7 @@ pub fn validate_relationship_record_constraints(
                 .is_some_and(|value| value != &Value::Null)
         {
             let rel_type = catalog.rel_type_name(rel_type_id).unwrap_or("<unknown>");
-            return Err(HawdbError::Storage(format!(
+            return Err(HawDBError::Storage(format!(
                 "relationship property exists constraint violation on :{rel_type}({}) for relationship {}",
                 constraint.property, relationship.id.0
             )));
@@ -210,8 +210,8 @@ pub fn validate_property_schema_value(
     }
 }
 
-fn property_schema_error(table: &str, property: &str, record: &str, reason: &str) -> HawdbError {
-    HawdbError::Storage(format!(
+fn property_schema_error(table: &str, property: &str, record: &str, reason: &str) -> HawDBError {
+    HawDBError::Storage(format!(
         "property schema violation on {record} in {table}({property}): {reason}"
     ))
 }
@@ -292,7 +292,7 @@ pub fn validate_node_property_exists(
             Some(value) if value != &Value::Null => {}
             _ => {
                 let label = catalog.label_name(label_id).unwrap_or("<unknown>");
-                return Err(HawdbError::Storage(format!(
+                return Err(HawDBError::Storage(format!(
                     "node property exists constraint violation on :{label}({property}) for node {}",
                     node.id.0
                 )));
@@ -316,7 +316,7 @@ pub fn validate_relationship_property_exists(
             Some(value) if value != &Value::Null => {}
             _ => {
                 let rel_type = catalog.rel_type_name(rel_type_id).unwrap_or("<unknown>");
-                return Err(HawdbError::Storage(format!(
+                return Err(HawDBError::Storage(format!(
                     "relationship property exists constraint violation on :{rel_type}({property}) for relationship {}",
                     relationship.id.0
                 )));
@@ -345,7 +345,7 @@ pub fn validate_unique_property(
         }
         if let Some(previous) = seen.insert(value.clone(), node.id) {
             let label = catalog.label_name(label_id).unwrap_or("<unknown>");
-            return Err(HawdbError::Storage(format!(
+            return Err(HawDBError::Storage(format!(
                 "unique constraint violation on :{label}({property}) for nodes {} and {}",
                 previous.0, node.id.0
             )));
@@ -373,7 +373,7 @@ pub fn validate_unique_relationship_property(
         }
         if let Some(previous) = seen.insert(value.clone(), relationship.id) {
             let rel_type = catalog.rel_type_name(rel_type_id).unwrap_or("<unknown>");
-            return Err(HawdbError::Storage(format!(
+            return Err(HawDBError::Storage(format!(
                 "relationship unique constraint violation on :{rel_type}({property}) for relationships {} and {}",
                 previous.0, relationship.id.0
             )));

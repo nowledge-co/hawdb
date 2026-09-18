@@ -9,7 +9,7 @@ use hawdb_core::RuntimeTaskContext;
 #[cfg(feature = "vector-search")]
 use super::rabitq_memory::Admission;
 #[cfg(feature = "vector-search")]
-use super::{artifact_name::Name, context_memory::OwnedPath, HawdbError};
+use super::{artifact_name::Name, context_memory::OwnedPath, HawDBError};
 
 #[cfg(feature = "vector-search")]
 pub(super) struct RaBitQArtifactBuilder {
@@ -40,7 +40,7 @@ impl RaBitQArtifactBuilder {
             None
         } else {
             let dimension = input.embedding_dimension.ok_or_else(|| {
-                HawdbError::Storage(
+                HawDBError::Storage(
                     "search generation has vector documents without an embedding dimension"
                         .to_string(),
                 )
@@ -94,7 +94,7 @@ impl RaBitQArtifactBuilder {
 
     pub(super) fn push(&mut self, document: &SearchDocument) -> Result<()> {
         if self.failed {
-            return Err(HawdbError::Storage(
+            return Err(HawDBError::Storage(
                 "search RaBitQ writer already failed".to_owned(),
             ));
         }
@@ -109,21 +109,21 @@ impl RaBitQArtifactBuilder {
             return Ok(());
         };
         if self.vector_ordinal >= self.expected_documents as u64 {
-            return Err(HawdbError::Storage(
+            return Err(HawDBError::Storage(
                 "search RaBitQ exceeded the expected vector document count".to_owned(),
             ));
         }
         let next = self
             .vector_ordinal
             .checked_add(1)
-            .ok_or_else(|| HawdbError::Storage("search vector ordinal overflow".to_owned()))?;
+            .ok_or_else(|| HawDBError::Storage("search vector ordinal overflow".to_owned()))?;
         let memory = self.admission.as_mut().ok_or_else(|| {
-            HawdbError::Storage("search RaBitQ has no admitted writer".to_owned())
+            HawDBError::Storage("search RaBitQ has no admitted writer".to_owned())
         })?;
         memory.admit_directory(next as usize / memory.segment_rows)?;
         let _quantization = memory.quantization()?;
         let writer = self.writer.as_mut().ok_or_else(|| {
-            HawdbError::Storage(
+            HawDBError::Storage(
                 "search generation contains unexpected vector documents".to_string(),
             )
         })?;
@@ -142,12 +142,12 @@ impl RaBitQArtifactBuilder {
     pub(super) fn finish(mut self) -> Result<Option<RaBitQGenerationArtifact>> {
         checkpoint(&self.task_context)?;
         if self.failed {
-            return Err(HawdbError::Storage(
+            return Err(HawDBError::Storage(
                 "search RaBitQ writer already failed".to_owned(),
             ));
         }
         if self.vector_ordinal != self.expected_documents as u64 {
-            return Err(HawdbError::Storage(
+            return Err(HawDBError::Storage(
                 "search RaBitQ build did not consume the expected vector document count"
                     .to_string(),
             ));
@@ -190,8 +190,8 @@ impl RaBitQArtifactBuilder {
 }
 
 #[cfg(feature = "vector-search")]
-fn rabitq_error(error: hawdb_vector_projection::ProjectionError) -> HawdbError {
-    HawdbError::Storage(format!("search RaBitQ projection: {error}"))
+fn rabitq_error(error: hawdb_vector_projection::ProjectionError) -> HawDBError {
+    HawDBError::Storage(format!("search RaBitQ projection: {error}"))
 }
 
 #[cfg(all(test, feature = "vector-search"))]

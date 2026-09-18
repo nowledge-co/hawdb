@@ -1,5 +1,5 @@
 use crate::{bind_relational_value, compile_column, reject_non_public_schema};
-use hawdb_core::{HawdbError, Result, Value};
+use hawdb_core::{HawDBError, Result, Value};
 use hawdb_sql::{
     CreateTableStatement, SelectProjection, SelectStatement, SqlBound, SqlComparisonOp,
     SqlGeneratedOrder, SqlNullOrder, SqlOrderDirection, SqlPredicate, SqlStatement,
@@ -40,7 +40,7 @@ pub fn compile_append_statement_sql(
 ) -> Result<Option<AppendTransaction>> {
     let prepared = hawdb_sql::prepare_postgres_sql(sql)?;
     if prepared.parameters.len() != parameters.len() {
-        return Err(HawdbError::Semantic(format!(
+        return Err(HawDBError::Semantic(format!(
             "PostgreSQL statement requires {} parameters, but {} parameters were supplied",
             prepared.parameters.len(),
             parameters.len()
@@ -59,13 +59,13 @@ pub fn compile_append_statement_sql(
         SqlStatement::Insert(insert) if state.schema(&insert.table.name).is_some() => {
             reject_non_public_schema(insert.table.schema.as_deref())?;
             if !insert.returning.is_empty() {
-                return Err(HawdbError::Semantic(
+                return Err(HawDBError::Semantic(
                     "strict append INSERT does not support RETURNING; use the typed Rust commit result for generated order keys"
                         .to_string(),
                 ));
             }
             if insert.on_conflict.is_some() {
-                return Err(HawdbError::Semantic(
+                return Err(HawDBError::Semantic(
                     "strict append INSERT does not support ON CONFLICT".to_string(),
                 ));
             }
@@ -98,16 +98,16 @@ pub fn compile_append_statement_sql(
             }))
         }
         SqlStatement::Update(update) if state.schema(&update.table.name).is_some() => Err(
-            HawdbError::Semantic("strict append tables do not support UPDATE".to_string()),
+            HawDBError::Semantic("strict append tables do not support UPDATE".to_string()),
         ),
         SqlStatement::Delete(delete) if state.schema(&delete.table.name).is_some() => Err(
-            HawdbError::Semantic("strict append tables do not support DELETE".to_string()),
+            HawDBError::Semantic("strict append tables do not support DELETE".to_string()),
         ),
         SqlStatement::CreateIndex(create) if state.schema(&create.table.name).is_some() => Err(
-            HawdbError::Semantic("strict append tables do not support CREATE INDEX".to_string()),
+            HawDBError::Semantic("strict append tables do not support CREATE INDEX".to_string()),
         ),
         SqlStatement::AlterTableAddColumn(alter) if state.schema(&alter.table.name).is_some() => {
-            Err(HawdbError::Semantic(
+            Err(HawDBError::Semantic(
                 "strict append tables do not support ALTER TABLE".to_string(),
             ))
         }
@@ -118,7 +118,7 @@ pub fn compile_append_statement_sql(
 fn compile_append_table(create: CreateTableStatement) -> Result<AppendTableSchema> {
     reject_non_public_schema(create.table.schema.as_deref())?;
     if create.if_not_exists {
-        return Err(HawdbError::Semantic(
+        return Err(HawDBError::Semantic(
             "strict append schema must not hide drift with IF NOT EXISTS".to_string(),
         ));
     }
@@ -128,12 +128,12 @@ fn compile_append_table(create: CreateTableStatement) -> Result<AppendTableSchem
         generated_order,
     } = create.storage
     else {
-        return Err(HawdbError::Semantic(
+        return Err(HawDBError::Semantic(
             "strict append compiler requires strict_append storage".to_string(),
         ));
     };
     if partition_key.len() != 1 || order_key.len() != 1 {
-        return Err(HawdbError::Semantic(
+        return Err(HawDBError::Semantic(
             "strict append SQL currently requires one partition key and one order key column"
                 .to_string(),
         ));
@@ -144,7 +144,7 @@ fn compile_append_table(create: CreateTableStatement) -> Result<AppendTableSchem
             .iter()
             .any(|column| column.primary_key || column.unique || column.references.is_some())
     {
-        return Err(HawdbError::Semantic(
+        return Err(HawDBError::Semantic(
             "strict append tables do not support primary, unique, or foreign-key constraints"
                 .to_string(),
         ));
@@ -183,13 +183,13 @@ fn compile_generated_insert_rows(
     schema: &AppendTableSchema,
 ) -> Result<Vec<AppendGeneratedRow>> {
     let order_column = schema.order_key.first().ok_or_else(|| {
-        HawdbError::Semantic(format!(
+        HawDBError::Semantic(format!(
             "generated-order table {} has no order-key column",
             schema.name
         ))
     })?;
     if insert_columns.iter().any(|column| column == order_column) {
-        return Err(HawdbError::Semantic(format!(
+        return Err(HawDBError::Semantic(format!(
             "generated-order column {order_column} cannot be supplied by INSERT"
         )));
     }
@@ -223,10 +223,10 @@ fn compile_insert_values(
             .iter()
             .position(|candidate| candidate.name == *column)
             .ok_or_else(|| {
-                HawdbError::Semantic(format!("table {table_name} has no column {column}"))
+                HawDBError::Semantic(format!("table {table_name} has no column {column}"))
             })?;
         if !unique.insert(position) {
-            return Err(HawdbError::Semantic(format!(
+            return Err(HawDBError::Semantic(format!(
                 "INSERT column {column} is specified more than once"
             )));
         }
@@ -236,7 +236,7 @@ fn compile_insert_values(
         .into_iter()
         .map(|values| {
             if values.len() != insert_columns.len() {
-                return Err(HawdbError::Semantic(format!(
+                return Err(HawDBError::Semantic(format!(
                     "INSERT into table {table_name} names {} columns but row contains {} values",
                     insert_columns.len(),
                     values.len()
@@ -247,7 +247,7 @@ fn compile_insert_values(
                 .map(|column| match &column.default {
                     None => Ok(RelationalValue::Null),
                     Some(RelationalColumnDefault::Literal(value)) => Ok(value.clone()),
-                    Some(RelationalColumnDefault::UuidV7) => Err(HawdbError::Semantic(format!(
+                    Some(RelationalColumnDefault::UuidV7) => Err(HawDBError::Semantic(format!(
                         "append table column {} does not support uuidv7() defaults",
                         column.name
                     ))),
@@ -257,7 +257,7 @@ fn compile_insert_values(
                 positions.iter().zip(values).zip(insert_columns.iter())
             {
                 row[*position] = bind_relational_value(value, parameters).map_err(|error| {
-                    HawdbError::Semantic(format!(
+                    HawDBError::Semantic(format!(
                         "failed to bind INSERT column {column_name}: {error}"
                     ))
                 })?;
@@ -275,7 +275,7 @@ pub fn compile_append_select_sql(
 ) -> Result<Option<AppendSelectPlan>> {
     let prepared = hawdb_sql::prepare_postgres_sql(sql)?;
     if prepared.parameters.len() != parameters.len() {
-        return Err(HawdbError::Semantic(format!(
+        return Err(HawDBError::Semantic(format!(
             "PostgreSQL statement requires {} parameters, but {} parameters were supplied",
             prepared.parameters.len(),
             parameters.len()
@@ -298,7 +298,7 @@ pub fn compile_append_explain_sql(
 ) -> Result<Option<AppendExplainPlan>> {
     let prepared = hawdb_sql::prepare_postgres_sql(sql)?;
     if prepared.parameters.len() != parameters.len() {
-        return Err(HawdbError::Semantic(format!(
+        return Err(HawDBError::Semantic(format!(
             "PostgreSQL statement requires {} parameters, but {} parameters were supplied",
             prepared.parameters.len(),
             parameters.len()
@@ -333,12 +333,12 @@ fn compile_append_select(
         || select.offset.is_some()
         || select.lock_strength.is_some()
     {
-        return Err(HawdbError::Semantic(
+        return Err(HawDBError::Semantic(
             "strict append SELECT supports only a single bounded table scan".to_string(),
         ));
     }
     if schema.partition_key.len() != 1 || schema.order_key.len() != 1 {
-        return Err(HawdbError::Semantic(
+        return Err(HawDBError::Semantic(
             "strict append SQL SELECT currently requires single-column partition and order keys"
                 .to_string(),
         ));
@@ -352,18 +352,18 @@ fn compile_append_select(
                 && order.direction == SqlOrderDirection::Asc
                 && matches!(order.nulls, SqlNullOrder::DialectDefault | SqlNullOrder::Last)
     ) {
-        return Err(HawdbError::Semantic(format!(
+        return Err(HawDBError::Semantic(format!(
             "strict append SELECT requires ORDER BY {expected_order} ASC"
         )));
     }
     let requested = bind_append_bound(select.limit, parameters, "LIMIT")?.ok_or_else(|| {
-        HawdbError::Semantic("strict append SELECT requires an explicit LIMIT".to_string())
+        HawDBError::Semantic("strict append SELECT requires an explicit LIMIT".to_string())
     })?;
     let max_rows = usize::try_from(requested)
         .unwrap_or(usize::MAX)
         .min(configured_max_rows);
     if max_rows == 0 || requested > configured_max_rows as u64 {
-        return Err(HawdbError::Semantic(format!(
+        return Err(HawDBError::Semantic(format!(
             "strict append SELECT LIMIT must be between 1 and {configured_max_rows}"
         )));
     }
@@ -371,7 +371,7 @@ fn compile_append_select(
     let mut after = None;
     collect_append_predicates(
         select.selection.as_ref().ok_or_else(|| {
-            HawdbError::Semantic(
+            HawDBError::Semantic(
                 "strict append SELECT requires an exact partition predicate".to_string(),
             )
         })?,
@@ -382,7 +382,7 @@ fn compile_append_select(
         &mut after,
     )?;
     let partition = partition.ok_or_else(|| {
-        HawdbError::Semantic(format!(
+        HawDBError::Semantic(format!(
             "strict append SELECT requires {} = <value>",
             schema.partition_key[0]
         ))
@@ -419,17 +419,17 @@ fn collect_append_predicates(
         ..
     } = predicate
     else {
-        return Err(HawdbError::Semantic(
+        return Err(HawDBError::Semantic(
             "strict append SELECT predicates must be key comparisons joined by AND".to_string(),
         ));
     };
     let (Some(left), Some(right)) = (left.as_column(), right.as_value()) else {
-        return Err(HawdbError::Semantic(
+        return Err(HawDBError::Semantic(
             "strict append SELECT predicates must be key comparisons joined by AND".to_owned(),
         ));
     };
     if !qualifier_matches(&left.qualifier, alias, &schema.name) {
-        return Err(HawdbError::Semantic(format!(
+        return Err(HawDBError::Semantic(format!(
             "strict append SELECT has unknown qualifier {}",
             left.qualifier.as_deref().unwrap_or_default()
         )));
@@ -440,7 +440,7 @@ fn collect_append_predicates(
     } else if left.name == schema.order_key[0] && *op == SqlComparisonOp::Gt {
         (after, "order")
     } else {
-        return Err(HawdbError::Semantic(format!(
+        return Err(HawDBError::Semantic(format!(
             "strict append SELECT supports {} = <value> and optional {} > <value>",
             schema.partition_key[0], schema.order_key[0]
         )));
@@ -453,13 +453,13 @@ fn collect_append_predicates(
     if matches!(value, RelationalValue::Null | RelationalValue::Overflow(_))
         || value.scalar_type() != Some(column.scalar_type)
     {
-        return Err(HawdbError::Semantic(format!(
+        return Err(HawDBError::Semantic(format!(
             "strict append {key_kind} key {} expects {:?}",
             column.name, column.scalar_type
         )));
     }
     if target.replace(value).is_some() {
-        return Err(HawdbError::Semantic(format!(
+        return Err(HawDBError::Semantic(format!(
             "strict append SELECT repeats predicate for column {}",
             left.name
         )));
@@ -486,7 +486,7 @@ fn compile_append_projection(
             SelectProjection::Wildcard => {
                 for (position, column) in schema.columns.iter().enumerate() {
                     if !output_names.insert(column.name.clone()) {
-                        return Err(HawdbError::Semantic(format!(
+                        return Err(HawDBError::Semantic(format!(
                             "strict append projection contains duplicate output column {}",
                             column.name
                         )));
@@ -507,20 +507,20 @@ fn compile_append_projection(
                 ..
             } => {
                 if !qualifier_matches(&name.qualifier, alias, &schema.name) {
-                    return Err(HawdbError::Semantic(format!(
+                    return Err(HawDBError::Semantic(format!(
                         "strict append SELECT has unknown qualifier {}",
                         name.qualifier.as_deref().unwrap_or_default()
                     )));
                 }
                 let position = schema.column_position(&name.name).ok_or_else(|| {
-                    HawdbError::Semantic(format!(
+                    HawDBError::Semantic(format!(
                         "table {} has no column {}",
                         schema.name, name.name
                     ))
                 })?;
                 let output_name = output_alias.clone().unwrap_or_else(|| name.name.clone());
                 if !output_names.insert(output_name.clone()) {
-                    return Err(HawdbError::Semantic(format!(
+                    return Err(HawDBError::Semantic(format!(
                         "strict append projection contains duplicate output column {output_name}"
                     )));
                 }
@@ -530,7 +530,7 @@ fn compile_append_projection(
                 });
             }
             SelectProjection::Expression { .. } => {
-                return Err(HawdbError::Semantic(
+                return Err(HawDBError::Semantic(
                     "strict append SELECT does not support projection expressions".to_string(),
                 ));
             }
@@ -549,7 +549,7 @@ pub fn project_append_rows(
                 .iter()
                 .map(|projection| {
                     let value = row.row.values().get(projection.position).ok_or_else(|| {
-                        HawdbError::StorageIntegrity(
+                        HawDBError::StorageIntegrity(
                             "strict append row does not match its table schema".to_string(),
                         )
                     })?;
@@ -630,10 +630,10 @@ fn bind_append_bound(
             SqlBound::Literal(value) => Ok(value),
             SqlBound::Parameter(position) => match parameters.get(position.saturating_sub(1)) {
                 Some(Value::Int(value)) if *value >= 0 => Ok(*value as u64),
-                Some(_) => Err(HawdbError::Semantic(format!(
+                Some(_) => Err(HawDBError::Semantic(format!(
                     "PostgreSQL {name} parameter ${position} must be a non-negative integer"
                 ))),
-                None => Err(HawdbError::Semantic(format!(
+                None => Err(HawDBError::Semantic(format!(
                     "missing PostgreSQL parameter ${position}"
                 ))),
             },
@@ -650,7 +650,7 @@ fn append_value_to_value(value: &RelationalValue) -> Result<Value> {
         RelationalValue::Text(value) => Ok(Value::String(value.clone())),
         RelationalValue::Bytea(value) => Ok(Value::Binary(value.clone())),
         RelationalValue::Uuid(value) => Ok(Value::Uuid(*value)),
-        RelationalValue::Overflow(_) => Err(HawdbError::StorageIntegrity(
+        RelationalValue::Overflow(_) => Err(HawDBError::StorageIntegrity(
             "strict append row contains an overflow reference".to_string(),
         )),
     }

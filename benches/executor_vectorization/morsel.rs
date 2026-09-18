@@ -251,7 +251,7 @@ impl ExternalReadOperator for BenchmarkExternalRead {
         &mut self,
         _request: VectorSeedExecutionRequest<'_>,
     ) -> hawdb::Result<VectorSeedExecutionOutput> {
-        Err(hawdb::HawdbError::Execution(
+        Err(hawdb::HawDBError::Execution(
             "vector reads are outside the executor vectorization benchmark".to_string(),
         ))
     }

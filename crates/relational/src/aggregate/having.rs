@@ -24,7 +24,7 @@ pub fn validate_having(
         return Ok(());
     }
     if select.lock_strength.is_some() {
-        return Err(HawdbError::Semantic(
+        return Err(HawDBError::Semantic(
             "HAVING does not support row locking".into(),
         ));
     }
@@ -35,7 +35,7 @@ pub fn validate_having(
                 bindings.scalar(expression, true)?;
             }
             SelectProjection::Wildcard => {
-                return Err(HawdbError::Semantic(
+                return Err(HawDBError::Semantic(
                     "aggregate SELECT does not support wildcard projection".into(),
                 ))
             }
@@ -63,7 +63,7 @@ pub fn projection_template(
         .iter()
         .map(|projection| {
             let SelectProjection::Expression { expression, alias } = projection else {
-                return Err(HawdbError::Semantic(
+                return Err(HawDBError::Semantic(
                     "aggregate SELECT does not support wildcard projection".into(),
                 ));
             };
@@ -168,7 +168,7 @@ impl HavingState {
                 .parse::<usize>()
                 .ok()
                 .and_then(|index| values.get(index))
-                .ok_or_else(|| HawdbError::Execution("invalid HAVING value slot".into()))?;
+                .ok_or_else(|| HawDBError::Execution("invalid HAVING value slot".into()))?;
             Ok((&slot.0, slot.1))
         })?;
         Ok(truth == Some(true))

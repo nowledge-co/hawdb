@@ -6,19 +6,19 @@ use crate::previous_wrapper_preflight::NOWLEDGE_MEM_CUTOVER_CONTROLS_PROTOCOL;
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum NowledgeMemReadControl {
     Legacy,
-    Hawdb,
+    HawDB,
 }
 
 impl NowledgeMemReadControl {
     pub const fn as_str(self) -> &'static str {
         match self {
             Self::Legacy => "legacy",
-            Self::Hawdb => "hawdb",
+            Self::HawDB => "hawdb",
         }
     }
 
     pub const fn selects_hawdb(self) -> bool {
-        matches!(self, Self::Hawdb)
+        matches!(self, Self::HawDB)
     }
 }
 
@@ -73,8 +73,8 @@ impl NowledgeMemCutoverControls {
 
     pub const fn hawdb_reads() -> Self {
         Self {
-            graph_reads: NowledgeMemReadControl::Hawdb,
-            search_reads: NowledgeMemReadControl::Hawdb,
+            graph_reads: NowledgeMemReadControl::HawDB,
+            search_reads: NowledgeMemReadControl::HawDB,
             dual_writes: NowledgeMemWorkControl::Enabled,
             initial_import: NowledgeMemWorkControl::Disabled,
             projection_catch_up: NowledgeMemWorkControl::Enabled,

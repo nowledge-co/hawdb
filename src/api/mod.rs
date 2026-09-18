@@ -1,6 +1,6 @@
 use crate::analytics::ProjectedGraph;
 use crate::cypher;
-use crate::error::{HawdbError, Result};
+use crate::error::{HawDBError, Result};
 use crate::executor::{self, Row, RowRef};
 use crate::optimizer::{
     CascadesOptimizer, OptimizerConfig, OptimizerContext, OptimizerSearchDirective, OptimizerTrace,
@@ -33,7 +33,7 @@ use crate::store::{
     AppendTableSchema, AppendTransaction, BasicStatisticsConsistencyReport,
     DegreeStatisticsConsistencyReport, DistinctValueStatisticsConsistencyReport, DurabilityPolicy,
     GraphMutationLockFootprint, GraphMutationSavepoint, GraphMutationTransaction,
-    GraphSnapshotNodeImport, GraphSnapshotRelationshipImport, GraphStore, HawdbSnapshotRowsImport,
+    GraphSnapshotNodeImport, GraphSnapshotRelationshipImport, GraphStore, HawDBSnapshotRowsImport,
     KernelWriteBatch, MutationSummary, NodeId, NodeRecord, OptimizerStatisticsRefreshWork,
     PreparedCheckpoint, PropertyIndexConsistencyReport, PropertyIndexProjectionRebuildAction,
     PublishedReadView, RecoveryMode, RelId, RelRecord, SchemaMaintenanceAction,
@@ -131,27 +131,27 @@ pub use canonical_snapshot::{
     validate_hawdb_lightning_graph_stream, validate_hawdb_lightning_relational_stream,
     CanonicalGraphSnapshotExport, CanonicalGraphSnapshotValidation,
     CanonicalSnapshotEndpointViolation, CanonicalSnapshotIdentityAudit, CanonicalSnapshotNode,
-    CanonicalSnapshotRelationship, CanonicalStableIdMapping, HawdbLightningBootstrapExport,
-    HawdbLightningBootstrapManifest, HawdbLightningGraphStream,
-    HawdbLightningGraphStreamValidation, HawdbLightningInitialImportApplyReport,
-    HawdbLightningInitialImportCheckpoint, HawdbLightningInitialImportCheckpointProgress,
-    HawdbLightningInitialImportCheckpointProgressReport,
-    HawdbLightningInitialImportCheckpointReadiness,
-    HawdbLightningInitialImportCutoverCatchUpReport, HawdbLightningInitialImportDocumentIdentity,
-    HawdbLightningInitialImportDocumentIdentityCoverage,
-    HawdbLightningInitialImportDocumentIdentityKindReport,
-    HawdbLightningInitialImportDurableBatchAdvanceReport, HawdbLightningInitialImportDurableState,
-    HawdbLightningInitialImportDurableStateCodecReport,
-    HawdbLightningInitialImportDurableStateReport, HawdbLightningInitialImportIdempotencyKey,
-    HawdbLightningInitialImportPlan, HawdbLightningInitialImportReadiness,
-    HawdbLightningInitialImportReadinessInputs, HawdbLightningInitialImportRecoveryReadinessReport,
-    HawdbLightningInitialImportResumeAction, HawdbLightningInitialImportResumeActionKind,
-    HawdbLightningInitialImportSearchProjectionBatchReport,
-    HawdbLightningInitialImportSessionBundleReadiness, HawdbLightningInitialImportSessionReport,
-    HawdbLightningInitialImportSourceBundleReadiness, HawdbLightningInitialImportSourceFingerprint,
-    HawdbLightningInitialImportStartupReadinessReport,
-    HawdbLightningInitialImportStreamingBatchAdvanceReport, HawdbLightningRelationalStream,
-    HawdbLightningRelationalStreamValidation, HAWDB_LIGHTNING_BOOTSTRAP_PROTOCOL_VERSION,
+    CanonicalSnapshotRelationship, CanonicalStableIdMapping, HawDBLightningBootstrapExport,
+    HawDBLightningBootstrapManifest, HawDBLightningGraphStream,
+    HawDBLightningGraphStreamValidation, HawDBLightningInitialImportApplyReport,
+    HawDBLightningInitialImportCheckpoint, HawDBLightningInitialImportCheckpointProgress,
+    HawDBLightningInitialImportCheckpointProgressReport,
+    HawDBLightningInitialImportCheckpointReadiness,
+    HawDBLightningInitialImportCutoverCatchUpReport, HawDBLightningInitialImportDocumentIdentity,
+    HawDBLightningInitialImportDocumentIdentityCoverage,
+    HawDBLightningInitialImportDocumentIdentityKindReport,
+    HawDBLightningInitialImportDurableBatchAdvanceReport, HawDBLightningInitialImportDurableState,
+    HawDBLightningInitialImportDurableStateCodecReport,
+    HawDBLightningInitialImportDurableStateReport, HawDBLightningInitialImportIdempotencyKey,
+    HawDBLightningInitialImportPlan, HawDBLightningInitialImportReadiness,
+    HawDBLightningInitialImportReadinessInputs, HawDBLightningInitialImportRecoveryReadinessReport,
+    HawDBLightningInitialImportResumeAction, HawDBLightningInitialImportResumeActionKind,
+    HawDBLightningInitialImportSearchProjectionBatchReport,
+    HawDBLightningInitialImportSessionBundleReadiness, HawDBLightningInitialImportSessionReport,
+    HawDBLightningInitialImportSourceBundleReadiness, HawDBLightningInitialImportSourceFingerprint,
+    HawDBLightningInitialImportStartupReadinessReport,
+    HawDBLightningInitialImportStreamingBatchAdvanceReport, HawDBLightningRelationalStream,
+    HawDBLightningRelationalStreamValidation, HAWDB_LIGHTNING_BOOTSTRAP_PROTOCOL_VERSION,
     HAWDB_LIGHTNING_GRAPH_STREAM_FORMAT_VERSION,
     HAWDB_LIGHTNING_INITIAL_IMPORT_DURABLE_STATE_PROTOCOL,
     HAWDB_LIGHTNING_RELATIONAL_STREAM_FORMAT_VERSION,
@@ -189,7 +189,7 @@ pub use system_schema::{SystemSchemaMigration, SystemSchemaRegistry, SystemSchem
 pub use system_variables::QuerySystemVariables;
 
 fn hawdb_lightning_initial_import_source_fingerprint_key(
-    manifest: &HawdbLightningBootstrapManifest,
+    manifest: &HawDBLightningBootstrapManifest,
 ) -> String {
     let fingerprint = hawdb_lightning_initial_import_source_fingerprint(manifest);
     format!(
@@ -583,7 +583,7 @@ impl QueryRowLookup for executor::QueryRowRef<'_> {
 /// generation inside a pinned read transaction.
 ///
 /// The binding is generic rather than route-specific. The application owns the
-/// PostgreSQL DDL for the named tables and the projection version. Hawdb owns
+/// PostgreSQL DDL for the named tables and the projection version. HawDB owns
 /// active-generation resolution, pin lifetime, row decoding, and query
 /// admission.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -605,22 +605,22 @@ impl ProjectionRelationalReadBinding {
         let owner_key = owner_key.into();
         let tables = tables.into_iter().map(Into::into).collect::<BTreeSet<_>>();
         if projection.trim().is_empty() {
-            return Err(HawdbError::Semantic(
+            return Err(HawDBError::Semantic(
                 "projection relational binding requires a non-empty projection name".to_string(),
             ));
         }
         if owner_key.is_empty() {
-            return Err(HawdbError::Semantic(
+            return Err(HawDBError::Semantic(
                 "projection relational binding requires a non-empty owner key".to_string(),
             ));
         }
         if projection_version == 0 {
-            return Err(HawdbError::Semantic(
+            return Err(HawDBError::Semantic(
                 "projection relational binding requires a non-zero projection version".to_string(),
             ));
         }
         if tables.is_empty() || tables.iter().any(|table| table.trim().is_empty()) {
-            return Err(HawdbError::Semantic(
+            return Err(HawDBError::Semantic(
                 "projection relational binding requires non-empty table names".to_string(),
             ));
         }
@@ -844,16 +844,16 @@ impl Database {
             .relational_state()
             .table_schema(table)
             .ok_or_else(|| {
-                HawdbError::Semantic(format!(
+                HawDBError::Semantic(format!(
                     "projection relational table {table} has no durable PostgreSQL schema"
                 ))
             })?;
         hawdb_storage::encode_projection_relational_member(schema, row).map_err(|error| match error
         {
             hawdb_storage::ProjectionGenerationError::Corruption(message) => {
-                HawdbError::StorageIntegrity(message)
+                HawDBError::StorageIntegrity(message)
             }
-            error => HawdbError::Execution(error.to_string()),
+            error => HawDBError::Execution(error.to_string()),
         })
     }
 
@@ -1128,13 +1128,13 @@ impl Database {
         let query_result = (|| {
             if matches!(body, cypher::Statement::Checkpoint) {
                 reject_transaction_control_parameters("CHECKPOINT", parameters)?;
-                return Err(HawdbError::Execution(
+                return Err(HawDBError::Execution(
                     "CHECKPOINT is not allowed inside a read-only query runtime".to_string(),
                 ));
             }
             if matches!(body, cypher::Statement::SetSystemVariable(_)) {
                 reject_system_variable_parameters(parameters)?;
-                return Err(HawdbError::Execution(
+                return Err(HawDBError::Execution(
                     "SET system variable is not allowed inside a read-only query runtime"
                         .to_string(),
                 ));
@@ -1147,7 +1147,7 @@ impl Database {
                 None,
             )?;
             if executor::is_mutation_plan(&optimized.physical_plan)? {
-                return Err(HawdbError::Execution(
+                return Err(HawDBError::Execution(
                     "read-only query runtime must not execute a mutation".to_string(),
                 ));
             }
@@ -1230,9 +1230,9 @@ impl Database {
         let reader = self
             .projection_generation_store()?
             .open_active(binding.projection(), binding.owner_key())
-            .map_err(|error| HawdbError::Storage(error.to_string()))?;
+            .map_err(|error| HawDBError::Storage(error.to_string()))?;
         if reader.manifest().begin.projection_version != binding.projection_version() {
-            return Err(HawdbError::StorageIntegrity(format!(
+            return Err(HawDBError::StorageIntegrity(format!(
                 "projection {} version {} does not match required version {}",
                 binding.projection(),
                 reader.manifest().begin.projection_version,
@@ -1241,13 +1241,13 @@ impl Database {
         }
         for table in binding.tables() {
             if self.store.relational_state().table_schema(table).is_none() {
-                return Err(HawdbError::Semantic(format!(
+                return Err(HawDBError::Semantic(format!(
                     "projection relational table {table} has no durable PostgreSQL schema"
                 )));
             }
             let canonical_rows = self.store.relational_state().row_count(table);
             if canonical_rows != 0 {
-                return Err(HawdbError::StorageIntegrity(format!(
+                return Err(HawDBError::StorageIntegrity(format!(
                     "projection relational table {table} contains {canonical_rows} canonical rows"
                 )));
             }
@@ -1390,7 +1390,7 @@ impl Database {
             access_control.as_ref(),
         )?;
         if executor::is_mutation_plan(&optimized.physical_plan)? {
-            return Err(HawdbError::Execution(
+            return Err(HawDBError::Execution(
                 "EXPLAIN ANALYZE only supports read queries".to_string(),
             ));
         }
@@ -1723,10 +1723,10 @@ impl Database {
         let checkpoint = self.checkpoint_internal(None);
         let result = match checkpoint {
             Ok(()) if !self.relational_row_schema_checkpoint_required() => Ok(()),
-            Ok(()) => Err(HawdbError::StorageIntegrity(format!(
+            Ok(()) => Err(HawDBError::StorageIntegrity(format!(
                 "canonical relational row schema checkpoint remained required after {context}"
             ))),
-            Err(error) => Err(HawdbError::StorageIntegrity(format!(
+            Err(error) => Err(HawDBError::StorageIntegrity(format!(
                 "canonical relational row schema checkpoint failed after {context}; the durable WAL remains authoritative and writable reopen will retry: {error}"
             ))),
         };
@@ -1806,7 +1806,7 @@ impl Database {
 
     /// Threads the engine's runtime governor into the storage layer so
     /// background columnar-shadow work can request admission. Called by the
-    /// embedding layers that own the governor (`HawdbEmbedded`,
+    /// embedding layers that own the governor (`HawDBEmbedded`,
     /// `NowledgeMemGraph`); a second governor is never constructed here.
     pub fn set_runtime_governor(&mut self, governor: hawdb_qos::RuntimeGovernor) {
         if let Some(telemetry) = &self.telemetry {
@@ -1921,16 +1921,16 @@ impl Database {
 
     pub fn prepare_hawdb_lightning_bootstrap_export(
         &mut self,
-    ) -> Result<HawdbLightningBootstrapExport> {
+    ) -> Result<HawDBLightningBootstrapExport> {
         let snapshot = self.export_canonical_graph_snapshot_with_persisted_stable_ids()?;
         let relational_state = self.hawdb_lightning_relational_state()?;
-        let relational_stream = HawdbLightningRelationalStream::from_state(
+        let relational_stream = HawDBLightningRelationalStream::from_state(
             self.store.commit_epoch(),
             &relational_state,
         )?;
         let manifest = snapshot.hawdb_lightning_bootstrap_manifest(&relational_stream);
         let graph_stream = snapshot.hawdb_lightning_graph_stream();
-        Ok(HawdbLightningBootstrapExport {
+        Ok(HawDBLightningBootstrapExport {
             snapshot,
             manifest,
             graph_stream,
@@ -1940,9 +1940,9 @@ impl Database {
 
     pub fn hawdb_lightning_initial_import_readiness(
         &self,
-        manifest: &HawdbLightningBootstrapManifest,
+        manifest: &HawDBLightningBootstrapManifest,
         projection_freshness: Option<&SearchProjectionFreshness>,
-    ) -> HawdbLightningInitialImportReadiness {
+    ) -> HawDBLightningInitialImportReadiness {
         hawdb_lightning_initial_import_readiness(
             manifest,
             self.store.commit_epoch(),
@@ -1952,9 +1952,9 @@ impl Database {
 
     pub fn hawdb_lightning_initial_import_cutover_catch_up_report(
         &self,
-        session: &HawdbLightningInitialImportSessionReport,
+        session: &HawDBLightningInitialImportSessionReport,
         live_projection_freshness: Option<&SearchProjectionFreshness>,
-    ) -> HawdbLightningInitialImportCutoverCatchUpReport {
+    ) -> HawDBLightningInitialImportCutoverCatchUpReport {
         hawdb_lightning_initial_import_cutover_catch_up_report(
             session,
             self.store.commit_epoch(),
@@ -1964,26 +1964,26 @@ impl Database {
 
     pub fn hawdb_lightning_initial_import_session_bundle_readiness(
         &self,
-        source_bundle: &HawdbLightningInitialImportSourceBundleReadiness,
-        session: &HawdbLightningInitialImportSessionReport,
-        catch_up: Option<&HawdbLightningInitialImportCutoverCatchUpReport>,
-    ) -> HawdbLightningInitialImportSessionBundleReadiness {
+        source_bundle: &HawDBLightningInitialImportSourceBundleReadiness,
+        session: &HawDBLightningInitialImportSessionReport,
+        catch_up: Option<&HawDBLightningInitialImportCutoverCatchUpReport>,
+    ) -> HawDBLightningInitialImportSessionBundleReadiness {
         hawdb_lightning_initial_import_session_bundle_readiness(source_bundle, session, catch_up)
     }
 
     pub fn hawdb_lightning_initial_import_decode_durable_state(
         &self,
-        manifest: &HawdbLightningBootstrapManifest,
+        manifest: &HawDBLightningBootstrapManifest,
         raw: &str,
-    ) -> Result<HawdbLightningInitialImportDurableStateCodecReport> {
+    ) -> Result<HawDBLightningInitialImportDurableStateCodecReport> {
         hawdb_lightning_initial_import_decode_durable_state(manifest, raw)
     }
 
     pub fn hawdb_lightning_initial_import_startup_readiness(
         &self,
-        inputs: HawdbLightningInitialImportReadinessInputs<'_>,
-        durable_state: Option<&HawdbLightningInitialImportDurableState>,
-    ) -> HawdbLightningInitialImportStartupReadinessReport {
+        inputs: HawDBLightningInitialImportReadinessInputs<'_>,
+        durable_state: Option<&HawDBLightningInitialImportDurableState>,
+    ) -> HawDBLightningInitialImportStartupReadinessReport {
         hawdb_lightning_initial_import_startup_readiness(
             inputs,
             self.store.commit_epoch(),
@@ -1993,9 +1993,9 @@ impl Database {
 
     pub fn hawdb_lightning_initial_import_recovery_readiness(
         &self,
-        inputs: HawdbLightningInitialImportReadinessInputs<'_>,
+        inputs: HawDBLightningInitialImportReadinessInputs<'_>,
         durable_state_payload: Option<&str>,
-    ) -> HawdbLightningInitialImportRecoveryReadinessReport {
+    ) -> HawDBLightningInitialImportRecoveryReadinessReport {
         hawdb_lightning_initial_import_recovery_readiness(
             inputs,
             self.store.commit_epoch(),
@@ -2007,10 +2007,10 @@ impl Database {
         &self,
         encoded_graph_stream: &str,
         encoded_relational_stream: &[u8],
-        manifest: &HawdbLightningBootstrapManifest,
+        manifest: &HawDBLightningBootstrapManifest,
         projection_freshness: Option<&SearchProjectionFreshness>,
-        checkpoint: Option<&HawdbLightningInitialImportCheckpoint>,
-    ) -> HawdbLightningInitialImportPlan {
+        checkpoint: Option<&HawDBLightningInitialImportCheckpoint>,
+    ) -> HawDBLightningInitialImportPlan {
         hawdb_lightning_initial_import_plan(
             encoded_graph_stream,
             encoded_relational_stream,
@@ -2025,11 +2025,11 @@ impl Database {
         &self,
         encoded_graph_stream: &str,
         encoded_relational_stream: &[u8],
-        manifest: &HawdbLightningBootstrapManifest,
+        manifest: &HawDBLightningBootstrapManifest,
         projection_freshness: Option<&SearchProjectionFreshness>,
-        checkpoint: Option<&HawdbLightningInitialImportCheckpoint>,
-        document_identities: &[HawdbLightningInitialImportDocumentIdentity],
-    ) -> HawdbLightningInitialImportPlan {
+        checkpoint: Option<&HawDBLightningInitialImportCheckpoint>,
+        document_identities: &[HawDBLightningInitialImportDocumentIdentity],
+    ) -> HawDBLightningInitialImportPlan {
         hawdb_lightning_initial_import_plan_with_document_identities(
             encoded_graph_stream,
             encoded_relational_stream,
@@ -2045,10 +2045,10 @@ impl Database {
         &mut self,
         encoded_graph_stream: &str,
         encoded_relational_stream: &[u8],
-        manifest: &HawdbLightningBootstrapManifest,
+        manifest: &HawDBLightningBootstrapManifest,
         projection_freshness: Option<&SearchProjectionFreshness>,
-        checkpoint: Option<&HawdbLightningInitialImportCheckpoint>,
-    ) -> Result<HawdbLightningInitialImportApplyReport> {
+        checkpoint: Option<&HawDBLightningInitialImportCheckpoint>,
+    ) -> Result<HawDBLightningInitialImportApplyReport> {
         self.hawdb_lightning_initial_import_apply_internal(
             encoded_graph_stream,
             encoded_relational_stream,
@@ -2063,11 +2063,11 @@ impl Database {
         &mut self,
         encoded_graph_stream: &str,
         encoded_relational_stream: &[u8],
-        manifest: &HawdbLightningBootstrapManifest,
+        manifest: &HawDBLightningBootstrapManifest,
         projection_freshness: Option<&SearchProjectionFreshness>,
-        checkpoint: Option<&HawdbLightningInitialImportCheckpoint>,
-        document_identities: &[HawdbLightningInitialImportDocumentIdentity],
-    ) -> Result<HawdbLightningInitialImportApplyReport> {
+        checkpoint: Option<&HawDBLightningInitialImportCheckpoint>,
+        document_identities: &[HawDBLightningInitialImportDocumentIdentity],
+    ) -> Result<HawDBLightningInitialImportApplyReport> {
         self.hawdb_lightning_initial_import_apply_internal(
             encoded_graph_stream,
             encoded_relational_stream,
@@ -2082,11 +2082,11 @@ impl Database {
         &mut self,
         encoded_graph_stream: &str,
         encoded_relational_stream: &[u8],
-        manifest: &HawdbLightningBootstrapManifest,
+        manifest: &HawDBLightningBootstrapManifest,
         projection_freshness: Option<&SearchProjectionFreshness>,
-        checkpoint: Option<&HawdbLightningInitialImportCheckpoint>,
-        document_identities: Option<&[HawdbLightningInitialImportDocumentIdentity]>,
-    ) -> Result<HawdbLightningInitialImportApplyReport> {
+        checkpoint: Option<&HawDBLightningInitialImportCheckpoint>,
+        document_identities: Option<&[HawDBLightningInitialImportDocumentIdentity]>,
+    ) -> Result<HawDBLightningInitialImportApplyReport> {
         self.ensure_writable()?;
         let mut blocker_codes = BTreeSet::new();
         let plan = hawdb_lightning_initial_import_plan_with_document_identities(
@@ -2106,7 +2106,7 @@ impl Database {
             if imported_source_fingerprint == source_fingerprint && plan.ready_for_database_import {
                 let (relational_table_count, relational_row_count) =
                     relational_state_counts(self.store.relational_state());
-                return Ok(HawdbLightningInitialImportApplyReport {
+                return Ok(HawDBLightningInitialImportApplyReport {
                     applied: false,
                     ready_for_cutover: plan.ready_for_cutover,
                     database_commit_epoch: self.store.commit_epoch(),
@@ -2149,7 +2149,7 @@ impl Database {
                     encoded_relational_stream,
                     hawdb_storage::RelationalDecodeLimits::checkpoint(),
                 )
-                .map_err(|error| HawdbError::Storage(error.to_string()))?
+                .map_err(|error| HawDBError::Storage(error.to_string()))?
                 .state,
             )
         } else {
@@ -2168,7 +2168,7 @@ impl Database {
         if !blocker_codes.is_empty() {
             let (relational_table_count, relational_row_count) =
                 relational_state_counts(self.store.relational_state());
-            return Ok(HawdbLightningInitialImportApplyReport {
+            return Ok(HawDBLightningInitialImportApplyReport {
                 applied: false,
                 ready_for_cutover: false,
                 database_commit_epoch: self.store.commit_epoch(),
@@ -2232,7 +2232,7 @@ impl Database {
         self.store
             .import_hawdb_snapshot_rows_with_source_fingerprint(
                 &mut self.catalog,
-                HawdbSnapshotRowsImport {
+                HawDBSnapshotRowsImport {
                     stable_id_mapping,
                     source_fingerprint,
                     nodes: node_rows,
@@ -2252,7 +2252,7 @@ impl Database {
         );
         let (relational_table_count, relational_row_count) =
             relational_state_counts(self.store.relational_state());
-        Ok(HawdbLightningInitialImportApplyReport {
+        Ok(HawDBLightningInitialImportApplyReport {
             applied: true,
             ready_for_cutover: updated_plan.ready_for_cutover,
             database_commit_epoch: self.store.commit_epoch(),
@@ -2284,7 +2284,7 @@ impl Database {
         &mut self,
         policy: &LocalQosPolicy,
         state: &LocalQosState,
-    ) -> Result<HawdbLightningBootstrapExport> {
+    ) -> Result<HawDBLightningBootstrapExport> {
         self.ensure_runtime_capability(hawdb_core::RuntimeCapability::BackgroundMaintenance)?;
         let estimated_operations = self.hawdb_lightning_bootstrap_export_estimated_operations();
         if estimated_operations == 0 {
@@ -2293,18 +2293,18 @@ impl Database {
         let request = WorkRequest::background(WorkClass::Import, estimated_operations);
         match policy.admit(state, &request) {
             QosAdmission::Admit => self.prepare_hawdb_lightning_bootstrap_export(),
-            QosAdmission::Defer { reason, .. } => Err(HawdbError::Storage(format!(
-                "background Hawdb Lightning bootstrap export deferred: {reason}"
+            QosAdmission::Defer { reason, .. } => Err(HawDBError::Storage(format!(
+                "background HawDB Lightning bootstrap export deferred: {reason}"
             ))),
-            QosAdmission::Reject { reason, .. } => Err(HawdbError::Storage(format!(
-                "background Hawdb Lightning bootstrap export rejected: {reason}"
+            QosAdmission::Reject { reason, .. } => Err(HawDBError::Storage(format!(
+                "background HawDB Lightning bootstrap export rejected: {reason}"
             ))),
         }
     }
 
     pub fn prepare_scheduled_background_hawdb_lightning_bootstrap_export(
         &mut self,
-    ) -> Result<HawdbLightningBootstrapExport> {
+    ) -> Result<HawDBLightningBootstrapExport> {
         self.ensure_runtime_capability(hawdb_core::RuntimeCapability::BackgroundMaintenance)?;
         let estimated_operations = self.hawdb_lightning_bootstrap_export_estimated_operations();
         if estimated_operations == 0 {
@@ -2317,13 +2317,13 @@ impl Database {
         )) {
             Ok(permit) => permit,
             Err(QosAdmission::Defer { reason, .. }) => {
-                return Err(HawdbError::Storage(format!(
-                    "background Hawdb Lightning bootstrap export deferred: {reason}"
+                return Err(HawDBError::Storage(format!(
+                    "background HawDB Lightning bootstrap export deferred: {reason}"
                 )));
             }
             Err(QosAdmission::Reject { reason, .. }) => {
-                return Err(HawdbError::Storage(format!(
-                    "background Hawdb Lightning bootstrap export rejected: {reason}"
+                return Err(HawDBError::Storage(format!(
+                    "background HawDB Lightning bootstrap export rejected: {reason}"
                 )));
             }
             Err(QosAdmission::Admit) => unreachable!("admitted work returns a permit"),
@@ -2421,10 +2421,10 @@ impl Database {
             QosAdmission::Admit => self
                 .refresh_optimizer_statistics_external(options)
                 .map(Some),
-            QosAdmission::Defer { reason, .. } => Err(HawdbError::Storage(format!(
+            QosAdmission::Defer { reason, .. } => Err(HawDBError::Storage(format!(
                 "background optimizer statistics refresh deferred: {reason}"
             ))),
-            QosAdmission::Reject { reason, .. } => Err(HawdbError::Storage(format!(
+            QosAdmission::Reject { reason, .. } => Err(HawDBError::Storage(format!(
                 "background optimizer statistics refresh rejected: {reason}"
             ))),
         }
@@ -2443,12 +2443,12 @@ impl Database {
         let permit = match scheduler.try_start(plan.request) {
             Ok(permit) => permit,
             Err(QosAdmission::Defer { reason, .. }) => {
-                return Err(HawdbError::Storage(format!(
+                return Err(HawDBError::Storage(format!(
                     "background optimizer statistics refresh deferred: {reason}"
                 )));
             }
             Err(QosAdmission::Reject { reason, .. }) => {
-                return Err(HawdbError::Storage(format!(
+                return Err(HawDBError::Storage(format!(
                     "background optimizer statistics refresh rejected: {reason}"
                 )));
             }
@@ -2518,10 +2518,10 @@ impl Database {
         };
         match policy.admit(state, &plan.request) {
             QosAdmission::Admit => self.checkpoint(),
-            QosAdmission::Defer { reason, .. } => Err(HawdbError::Storage(format!(
+            QosAdmission::Defer { reason, .. } => Err(HawDBError::Storage(format!(
                 "background storage checkpoint deferred: {reason}"
             ))),
-            QosAdmission::Reject { reason, .. } => Err(HawdbError::Storage(format!(
+            QosAdmission::Reject { reason, .. } => Err(HawDBError::Storage(format!(
                 "background storage checkpoint rejected: {reason}"
             ))),
         }
@@ -2536,12 +2536,12 @@ impl Database {
         let permit = match scheduler.try_start(plan.request) {
             Ok(permit) => permit,
             Err(QosAdmission::Defer { reason, .. }) => {
-                return Err(HawdbError::Storage(format!(
+                return Err(HawDBError::Storage(format!(
                     "background storage checkpoint deferred: {reason}"
                 )));
             }
             Err(QosAdmission::Reject { reason, .. }) => {
-                return Err(HawdbError::Storage(format!(
+                return Err(HawDBError::Storage(format!(
                     "background storage checkpoint rejected: {reason}"
                 )));
             }
@@ -2592,10 +2592,10 @@ impl Database {
             QosAdmission::Admit => {
                 Ok(self.consolidate_bounded_adjacency_deltas(max_estimated_entries))
             }
-            QosAdmission::Defer { reason, .. } => Err(HawdbError::Storage(format!(
+            QosAdmission::Defer { reason, .. } => Err(HawDBError::Storage(format!(
                 "background adjacency consolidation deferred: {reason}"
             ))),
-            QosAdmission::Reject { reason, .. } => Err(HawdbError::Storage(format!(
+            QosAdmission::Reject { reason, .. } => Err(HawDBError::Storage(format!(
                 "background adjacency consolidation rejected: {reason}"
             ))),
         }
@@ -2619,12 +2619,12 @@ impl Database {
         )) {
             Ok(permit) => permit,
             Err(QosAdmission::Defer { reason, .. }) => {
-                return Err(HawdbError::Storage(format!(
+                return Err(HawDBError::Storage(format!(
                     "background adjacency consolidation deferred: {reason}"
                 )));
             }
             Err(QosAdmission::Reject { reason, .. }) => {
-                return Err(HawdbError::Storage(format!(
+                return Err(HawDBError::Storage(format!(
                     "background adjacency consolidation rejected: {reason}"
                 )));
             }
@@ -2711,10 +2711,10 @@ impl Database {
             QosAdmission::Admit => {
                 Ok(self.rebuild_bounded_property_index_projections(max_estimated_operations))
             }
-            QosAdmission::Defer { reason, .. } => Err(HawdbError::Storage(format!(
+            QosAdmission::Defer { reason, .. } => Err(HawDBError::Storage(format!(
                 "background property index projection rebuild deferred: {reason}"
             ))),
-            QosAdmission::Reject { reason, .. } => Err(HawdbError::Storage(format!(
+            QosAdmission::Reject { reason, .. } => Err(HawDBError::Storage(format!(
                 "background property index projection rebuild rejected: {reason}"
             ))),
         }
@@ -2741,12 +2741,12 @@ impl Database {
         )) {
             Ok(permit) => permit,
             Err(QosAdmission::Defer { reason, .. }) => {
-                return Err(HawdbError::Storage(format!(
+                return Err(HawDBError::Storage(format!(
                     "background property index projection rebuild deferred: {reason}"
                 )));
             }
             Err(QosAdmission::Reject { reason, .. }) => {
-                return Err(HawdbError::Storage(format!(
+                return Err(HawDBError::Storage(format!(
                     "background property index projection rebuild rejected: {reason}"
                 )));
             }
@@ -2867,10 +2867,10 @@ impl Database {
         let request = WorkRequest::background(WorkClass::Mutation, estimated_operations);
         match policy.admit(state, &request) {
             QosAdmission::Admit => self.run_schema_maintenance(),
-            QosAdmission::Defer { reason, .. } => Err(HawdbError::Storage(format!(
+            QosAdmission::Defer { reason, .. } => Err(HawDBError::Storage(format!(
                 "background schema maintenance deferred: {reason}"
             ))),
-            QosAdmission::Reject { reason, .. } => Err(HawdbError::Storage(format!(
+            QosAdmission::Reject { reason, .. } => Err(HawDBError::Storage(format!(
                 "background schema maintenance rejected: {reason}"
             ))),
         }
@@ -2891,10 +2891,10 @@ impl Database {
         let request = WorkRequest::background(WorkClass::Mutation, estimated_operations);
         match policy.admit(state, &request) {
             QosAdmission::Admit => self.run_bounded_schema_maintenance(max_estimated_operations),
-            QosAdmission::Defer { reason, .. } => Err(HawdbError::Storage(format!(
+            QosAdmission::Defer { reason, .. } => Err(HawDBError::Storage(format!(
                 "background schema maintenance deferred: {reason}"
             ))),
-            QosAdmission::Reject { reason, .. } => Err(HawdbError::Storage(format!(
+            QosAdmission::Reject { reason, .. } => Err(HawDBError::Storage(format!(
                 "background schema maintenance rejected: {reason}"
             ))),
         }
@@ -2924,12 +2924,12 @@ impl Database {
         )) {
             Ok(permit) => permit,
             Err(QosAdmission::Defer { reason, .. }) => {
-                return Err(HawdbError::Storage(format!(
+                return Err(HawDBError::Storage(format!(
                     "background schema maintenance deferred: {reason}"
                 )));
             }
             Err(QosAdmission::Reject { reason, .. }) => {
-                return Err(HawdbError::Storage(format!(
+                return Err(HawDBError::Storage(format!(
                     "background schema maintenance rejected: {reason}"
                 )));
             }
@@ -2958,12 +2958,12 @@ impl Database {
         )) {
             Ok(permit) => permit,
             Err(QosAdmission::Defer { reason, .. }) => {
-                return Err(HawdbError::Storage(format!(
+                return Err(HawDBError::Storage(format!(
                     "background schema maintenance deferred: {reason}"
                 )));
             }
             Err(QosAdmission::Reject { reason, .. }) => {
-                return Err(HawdbError::Storage(format!(
+                return Err(HawDBError::Storage(format!(
                     "background schema maintenance rejected: {reason}"
                 )));
             }
@@ -3206,7 +3206,7 @@ impl Database {
             return Ok(None);
         };
         if batch.has_relational_changes() {
-            return Err(HawdbError::Storage(format!(
+            return Err(HawDBError::Storage(format!(
                 "search projection commits through epoch {} contain relational primary-key changes; use the unified search projection changefeed and publish one combined projection delta",
                 batch.complete_through_commit_epoch().unwrap_or(source_graph_commit_epoch)
             )));
@@ -3225,7 +3225,7 @@ impl Database {
         }
         let change_log_start_epoch = self.store.search_projection_change_log_start_epoch();
         if source_commit_epoch < change_log_start_epoch {
-            return Err(HawdbError::Storage(format!(
+            return Err(HawDBError::Storage(format!(
                 "search projection change log starts at commit epoch {change_log_start_epoch}; requested source commit epoch {source_commit_epoch}; full search projection rebuild required"
             )));
         }
@@ -3243,7 +3243,7 @@ impl Database {
             let tables = match &change.relational_primary_key_changes {
                 hawdb_storage::RelationalPrimaryKeyChangeCapture::Captured { tables, .. } => tables,
                 hawdb_storage::RelationalPrimaryKeyChangeCapture::RequiresRebuild { reason } => {
-                    return Err(HawdbError::Storage(format!(
+                    return Err(HawDBError::Storage(format!(
                         "search projection relational change at commit epoch {} requires a full rebuild: {reason:?}",
                         change.commit_epoch
                     )));
@@ -3288,7 +3288,7 @@ impl Database {
                 && next_operation_count > limit
             {
                 if complete_through_commit_epoch == source_commit_epoch {
-                    return Err(HawdbError::Storage(format!(
+                    return Err(HawDBError::Storage(format!(
                         "search projection change at commit epoch {} requires {next_operation_count} operations, exceeding configured per-batch limit {limit}",
                         change.commit_epoch
                     )));
@@ -3497,7 +3497,7 @@ impl Database {
                 self.hawdb_lightning_bootstrap_export_background_work_plan(options.hint.clone())
         {
             candidates.push(BackgroundMaintenanceCandidate::new(
-                BackgroundMaintenanceKind::HawdbLightningBootstrapExport,
+                BackgroundMaintenanceKind::HawDBLightningBootstrapExport,
                 plan,
             ));
         }
@@ -3592,13 +3592,13 @@ impl Database {
             .map(|table| table.primary_keys.len())
             .fold(0usize, usize::saturating_add);
         if relational.processed_primary_key_count != expected_primary_key_count {
-            return Err(HawdbError::Storage(format!(
+            return Err(HawDBError::Storage(format!(
                 "search projection relational delta processed {} primary keys, expected {expected_primary_key_count}; projection watermark was not published",
                 relational.processed_primary_key_count
             )));
         }
         if relational.delta.source_graph_commit_epoch.is_some() {
-            return Err(HawdbError::Storage(
+            return Err(HawDBError::Storage(
                 "search projection relational delta must not publish its own source epoch"
                     .to_string(),
             ));
@@ -3640,10 +3640,10 @@ impl Database {
         self.ensure_runtime_capability(hawdb_core::RuntimeCapability::BackgroundMaintenance)?;
         match policy.admit(state, &request.background_work_request()) {
             QosAdmission::Admit => self.apply_search_projection_graph_delta(search_index, request),
-            QosAdmission::Defer { reason, .. } => Err(HawdbError::Storage(format!(
+            QosAdmission::Defer { reason, .. } => Err(HawDBError::Storage(format!(
                 "background search projection graph delta deferred: {reason}"
             ))),
-            QosAdmission::Reject { reason, .. } => Err(HawdbError::Storage(format!(
+            QosAdmission::Reject { reason, .. } => Err(HawDBError::Storage(format!(
                 "background search projection graph delta rejected: {reason}"
             ))),
         }
@@ -3669,12 +3669,12 @@ impl Database {
         let permit = match scheduler.try_start(request.background_work_request()) {
             Ok(permit) => permit,
             Err(QosAdmission::Defer { reason, .. }) => {
-                return Err(HawdbError::Storage(format!(
+                return Err(HawDBError::Storage(format!(
                     "background search projection graph delta deferred: {reason}"
                 )));
             }
             Err(QosAdmission::Reject { reason, .. }) => {
-                return Err(HawdbError::Storage(format!(
+                return Err(HawDBError::Storage(format!(
                     "background search projection graph delta rejected: {reason}"
                 )));
             }
@@ -4274,7 +4274,7 @@ impl Database {
     fn ensure_writable(&self) -> Result<()> {
         self.store.ensure_usable()?;
         if self.config.read_only {
-            return Err(HawdbError::Execution(
+            return Err(HawDBError::Execution(
                 "database is opened in read-only mode".to_string(),
             ));
         }
@@ -4858,7 +4858,7 @@ impl KnowledgeRetrievalGraphContext<'_> {
             .iter()
             .map(|seed| {
                 let entity = entities.get(&seed.node_id).cloned().ok_or_else(|| {
-                    HawdbError::StorageIntegrity(format!(
+                    HawDBError::StorageIntegrity(format!(
                         "knowledge retrieval graph seed references missing canonical node {}",
                         seed.node_id.0
                     ))
@@ -4884,7 +4884,7 @@ impl KnowledgeRetrievalGraphContext<'_> {
         let mut entities = BTreeMap::new();
         for node_id in node_ids {
             let Some(node) = self.store.node_owned(*node_id)? else {
-                return Err(HawdbError::StorageIntegrity(format!(
+                return Err(HawDBError::StorageIntegrity(format!(
                     "knowledge retrieval canonical hydration references missing node {}",
                     node_id.0
                 )));
@@ -4903,19 +4903,19 @@ impl KnowledgeRetrievalGraphContext<'_> {
             .store
             .relationship_owned(path.relationship_id)?
             .ok_or_else(|| {
-                HawdbError::StorageIntegrity(format!(
+                HawDBError::StorageIntegrity(format!(
                     "knowledge retrieval graph context references missing relationship {}",
                     path.relationship_id.0
                 ))
             })?;
         let source = entities.get(&path.source_node_id).ok_or_else(|| {
-            HawdbError::StorageIntegrity(format!(
+            HawDBError::StorageIntegrity(format!(
                 "knowledge retrieval graph context references missing source node {}",
                 path.source_node_id.0
             ))
         })?;
         let target = entities.get(&path.target_node_id).ok_or_else(|| {
-            HawdbError::StorageIntegrity(format!(
+            HawDBError::StorageIntegrity(format!(
                 "knowledge retrieval graph context references missing target node {}",
                 path.target_node_id.0
             ))
@@ -6349,7 +6349,7 @@ pub(super) fn knowledge_community_entity_visibility_via_query_runtime(
             i64::try_from(entity.entity_node_id)
                 .map(Value::Int)
                 .map_err(|_| {
-                    HawdbError::Execution(format!(
+                    HawDBError::Execution(format!(
                         "entity node id {} exceeds query parameter range",
                         entity.entity_node_id
                     ))
@@ -6458,7 +6458,7 @@ pub(super) fn community_entity_visibility_entity_row_from_query(
     row: impl QueryRowLookup,
 ) -> Result<CommunityEntityVisibilityEntityRow> {
     let community_id = row.get("community_id").cloned().ok_or_else(|| {
-        HawdbError::Execution(
+        HawDBError::Execution(
             "knowledge community entity visibility row is missing community_id".to_string(),
         )
     })?;
@@ -6466,7 +6466,7 @@ pub(super) fn community_entity_visibility_entity_row_from_query(
         .get("entity_node_id")
         .and_then(value_to_non_negative_u64)
         .ok_or_else(|| {
-            HawdbError::Execution(
+            HawDBError::Execution(
                 "knowledge community entity visibility row is missing entity_node_id".to_string(),
             )
         })?;
@@ -6487,7 +6487,7 @@ pub(super) fn community_entity_visibility_memory_row_from_query(
         .get("entity_node_id")
         .and_then(value_to_non_negative_u64)
         .ok_or_else(|| {
-            HawdbError::Execution(
+            HawDBError::Execution(
                 "knowledge community entity visibility memory row is missing entity_node_id"
                     .to_string(),
             )
@@ -6496,7 +6496,7 @@ pub(super) fn community_entity_visibility_memory_row_from_query(
         .get("memory_node_id")
         .and_then(value_to_non_negative_u64)
         .ok_or_else(|| {
-            HawdbError::Execution(
+            HawDBError::Execution(
                 "knowledge community entity visibility memory row is missing memory_node_id"
                     .to_string(),
             )
@@ -6505,7 +6505,7 @@ pub(super) fn community_entity_visibility_memory_row_from_query(
         Some(Value::Bool(value)) => Some(*value),
         Some(Value::Null) | None => None,
         Some(value) => {
-            return Err(HawdbError::Execution(format!(
+            return Err(HawDBError::Execution(format!(
                 "knowledge community entity visibility memory row has non-boolean memory_is_latest: {value:?}"
             )));
         }
@@ -6538,7 +6538,7 @@ pub(super) fn validate_knowledge_community_entity_visibility_request(
     request: &KnowledgeCommunityEntityVisibilityRequest,
 ) -> Result<()> {
     if request.community_ids.is_empty() {
-        return Err(HawdbError::Semantic(
+        return Err(HawDBError::Semantic(
             "knowledge community entity visibility requires non-empty community ids".to_string(),
         ));
     }
@@ -6547,7 +6547,7 @@ pub(super) fn validate_knowledge_community_entity_visibility_request(
         .iter()
         .any(|community_id| community_id == &Value::Null)
     {
-        return Err(HawdbError::Semantic(
+        return Err(HawDBError::Semantic(
             "knowledge community entity visibility requires non-null community ids".to_string(),
         ));
     }
@@ -6612,7 +6612,7 @@ pub(super) fn validate_knowledge_community_memory_list_request(
     request: &KnowledgeCommunityMemoryListRequest,
 ) -> Result<()> {
     if request.community_ids.is_empty() {
-        return Err(HawdbError::Semantic(
+        return Err(HawDBError::Semantic(
             "knowledge community memory list requires non-empty community ids".to_string(),
         ));
     }
@@ -6621,12 +6621,12 @@ pub(super) fn validate_knowledge_community_memory_list_request(
         .iter()
         .any(|community_id| community_id == &Value::Null)
     {
-        return Err(HawdbError::Semantic(
+        return Err(HawDBError::Semantic(
             "knowledge community memory list requires non-null community ids".to_string(),
         ));
     }
     if request.unit_types.iter().any(String::is_empty) {
-        return Err(HawdbError::Semantic(
+        return Err(HawDBError::Semantic(
             "knowledge community memory list requires non-empty unit types".to_string(),
         ));
     }
@@ -6744,13 +6744,13 @@ pub(super) fn knowledge_community_memory_row_from_query(
     source: KnowledgeCommunityMemoryRowSource,
 ) -> Result<KnowledgeCommunityMemoryRow> {
     let community_id = row.get("community_id").cloned().ok_or_else(|| {
-        HawdbError::Execution("knowledge community memory row is missing community_id".to_string())
+        HawDBError::Execution("knowledge community memory row is missing community_id".to_string())
     })?;
     let memory = row
         .get("memory")
         .and_then(knowledge_entity_from_value)
         .ok_or_else(|| {
-            HawdbError::Execution("knowledge community memory row is missing memory".to_string())
+            HawDBError::Execution("knowledge community memory row is missing memory".to_string())
         })?;
     let entity_ids = row
         .get("entity_ids")
@@ -6932,17 +6932,17 @@ pub(super) fn knowledge_crystals_via_query_runtime(
 #[cfg(test)]
 pub(super) fn validate_knowledge_crystal_list_request(request: &KnowledgeCrystalListRequest) -> Result<()> {
     if request.key_match.as_ref().is_some_and(String::is_empty) {
-        return Err(HawdbError::Semantic(
+        return Err(HawDBError::Semantic(
             "knowledge crystal list requires a non-empty key match".to_string(),
         ));
     }
     if request.after_id.as_ref().is_some_and(String::is_empty) {
-        return Err(HawdbError::Semantic(
+        return Err(HawDBError::Semantic(
             "knowledge crystal list requires a non-empty after id".to_string(),
         ));
     }
     if request.key_match.is_some() && request.after_id.is_some() {
-        return Err(HawdbError::Semantic(
+        return Err(HawDBError::Semantic(
             "knowledge crystal list accepts key_match or after_id, not both".to_string(),
         ));
     }
@@ -7012,12 +7012,12 @@ pub(super) fn merge_knowledge_crystal_source_for(
     request: &KnowledgeCrystalSourceMergeRequest,
 ) -> Result<KnowledgeCrystalSourceMergeOutput> {
     if request.crystal_memory_id.is_empty() {
-        return Err(HawdbError::Semantic(
+        return Err(HawDBError::Semantic(
             "knowledge crystal source merge requires a non-empty crystal memory id".to_string(),
         ));
     }
     if request.source_memory_id.is_empty() {
-        return Err(HawdbError::Semantic(
+        return Err(HawDBError::Semantic(
             "knowledge crystal source merge requires a non-empty source memory id".to_string(),
         ));
     }
@@ -7071,7 +7071,7 @@ pub(super) fn validate_knowledge_crystal_source_weight(weight: &Value) -> Result
     if valid {
         Ok(())
     } else {
-        Err(HawdbError::Semantic(
+        Err(HawDBError::Semantic(
             "knowledge crystal source merge requires a numeric finite weight".to_string(),
         ))
     }
@@ -7172,7 +7172,7 @@ pub(super) fn validate_knowledge_crystal_community_list_request(
     match &request.scope {
         KnowledgeCrystalCommunityScope::CommunityIds(community_ids) => {
             if community_ids.is_empty() {
-                return Err(HawdbError::Semantic(
+                return Err(HawDBError::Semantic(
                     "knowledge crystal community list requires non-empty community ids".to_string(),
                 ));
             }
@@ -7180,7 +7180,7 @@ pub(super) fn validate_knowledge_crystal_community_list_request(
                 .iter()
                 .any(|community_id| community_id == &Value::Null)
             {
-                return Err(HawdbError::Semantic(
+                return Err(HawDBError::Semantic(
                     "knowledge crystal community list requires non-null community ids".to_string(),
                 ));
             }
@@ -7221,18 +7221,18 @@ pub(super) fn knowledge_crystal_community_row_from_query(
         .get("crystal_node_id")
         .and_then(value_to_non_negative_u64)
         .ok_or_else(|| {
-            HawdbError::Execution(
+            HawDBError::Execution(
                 "knowledge crystal community row is missing crystal_node_id".to_string(),
             )
         })?;
     let community_id = row.get("community_id").cloned().ok_or_else(|| {
-        HawdbError::Execution("knowledge crystal community row is missing community_id".to_string())
+        HawDBError::Execution("knowledge crystal community row is missing community_id".to_string())
     })?;
     let hit_count = row
         .get("hit_count")
         .and_then(value_to_non_negative_usize)
         .ok_or_else(|| {
-            HawdbError::Execution(
+            HawDBError::Execution(
                 "knowledge crystal community row is missing hit_count".to_string(),
             )
         })?;
@@ -7240,7 +7240,7 @@ pub(super) fn knowledge_crystal_community_row_from_query(
         .get("source_memory_count")
         .and_then(value_to_non_negative_usize)
         .ok_or_else(|| {
-            HawdbError::Execution(
+            HawDBError::Execution(
                 "knowledge crystal community row is missing source_memory_count".to_string(),
             )
         })?;
@@ -7346,7 +7346,7 @@ pub(super) fn validate_knowledge_crystal_source_visibility_request(
     request: &KnowledgeCrystalSourceVisibilityRequest,
 ) -> Result<()> {
     if request.community_ids.is_empty() {
-        return Err(HawdbError::Semantic(
+        return Err(HawDBError::Semantic(
             "knowledge crystal source visibility requires non-empty community ids".to_string(),
         ));
     }
@@ -7355,7 +7355,7 @@ pub(super) fn validate_knowledge_crystal_source_visibility_request(
         .iter()
         .any(|community_id| community_id == &Value::Null)
     {
-        return Err(HawdbError::Semantic(
+        return Err(HawDBError::Semantic(
             "knowledge crystal source visibility requires non-null community ids".to_string(),
         ));
     }
@@ -7370,7 +7370,7 @@ pub(super) fn knowledge_crystal_source_visibility_row_from_query(
         .get("crystal")
         .and_then(knowledge_entity_from_value)
         .ok_or_else(|| {
-            HawdbError::Execution(
+            HawDBError::Execution(
                 "knowledge crystal source visibility row is missing crystal".to_string(),
             )
         })?;
@@ -7378,7 +7378,7 @@ pub(super) fn knowledge_crystal_source_visibility_row_from_query(
         .get("source_memory")
         .and_then(knowledge_entity_from_value)
         .ok_or_else(|| {
-            HawdbError::Execution(
+            HawDBError::Execution(
                 "knowledge crystal source visibility row is missing source_memory".to_string(),
             )
         })?;
@@ -7386,7 +7386,7 @@ pub(super) fn knowledge_crystal_source_visibility_row_from_query(
         .get("entity")
         .and_then(knowledge_entity_from_value)
         .ok_or_else(|| {
-            HawdbError::Execution(
+            HawDBError::Execution(
                 "knowledge crystal source visibility row is missing entity".to_string(),
             )
         })?;
@@ -7395,7 +7395,7 @@ pub(super) fn knowledge_crystal_source_visibility_row_from_query(
         .get("community_id")
         .cloned()
         .ok_or_else(|| {
-            HawdbError::Execution(
+            HawDBError::Execution(
                 "knowledge crystal source visibility row is missing community_id".to_string(),
             )
         })?;
@@ -7586,7 +7586,7 @@ pub(super) fn create_knowledge_entity_batch_for(
 pub(super) fn validate_knowledge_entity_create(request: &KnowledgeEntityCreateRequest) -> Result<()> {
     validate_cypher_identifier(&request.label, "label")?;
     if request.external_id.is_empty() {
-        return Err(HawdbError::Semantic(
+        return Err(HawDBError::Semantic(
             "knowledge entity create requires a non-empty external id".to_string(),
         ));
     }
@@ -7596,7 +7596,7 @@ pub(super) fn validate_knowledge_entity_create(request: &KnowledgeEntityCreateRe
     if let Some(id) = request.properties.get("id") {
         let property_external_id = value_to_external_id(id);
         if property_external_id != request.external_id {
-            return Err(HawdbError::Semantic(format!(
+            return Err(HawDBError::Semantic(format!(
                 "knowledge entity create id property {property_external_id:?} does not match external id {:?}",
                 request.external_id
             )));
@@ -7867,7 +7867,7 @@ pub(super) fn upsert_knowledge_entity_batch_for(
 pub(super) fn validate_knowledge_entity_upsert(request: &KnowledgeEntityUpsertRequest) -> Result<()> {
     validate_cypher_identifier(&request.label, "label")?;
     if request.external_id.is_empty() {
-        return Err(HawdbError::Semantic(
+        return Err(HawDBError::Semantic(
             "knowledge entity upsert requires a non-empty external id".to_string(),
         ));
     }
@@ -7894,7 +7894,7 @@ pub(super) fn validate_knowledge_entity_upsert_properties(
     if let Some(id) = properties.get("id") {
         let property_external_id = value_to_external_id(id);
         if property_external_id != external_id {
-            return Err(HawdbError::Semantic(format!(
+            return Err(HawDBError::Semantic(format!(
                 "knowledge entity upsert {phase} id property {property_external_id:?} does not match external id {external_id:?}"
             )));
         }
@@ -7976,7 +7976,7 @@ pub(super) fn update_scoped_knowledge_properties_for(
 ) -> Result<KnowledgePropertyUpdateOutput> {
     db.ensure_writable()?;
     if request.update.assignments.is_empty() {
-        return Err(HawdbError::Semantic(
+        return Err(HawDBError::Semantic(
             "knowledge property update requires at least one assignment".to_string(),
         ));
     }
@@ -8076,7 +8076,7 @@ pub(super) fn update_scoped_knowledge_properties_batch_for(
     db.ensure_writable()?;
     for update in &request.updates {
         if update.assignments.is_empty() {
-            return Err(HawdbError::Semantic(
+            return Err(HawDBError::Semantic(
                 "knowledge property batch update requires every row to have at least one assignment"
                     .to_string(),
             ));
@@ -8205,7 +8205,7 @@ pub(super) fn move_knowledge_normalized_space_batch_for(
     validate_cypher_identifier(&request.label, "label")?;
     validate_cypher_identifier(&request.identity_property, "identity property")?;
     if request.target_space_id.is_empty() {
-        return Err(HawdbError::Semantic(
+        return Err(HawDBError::Semantic(
             "knowledge normalized space move requires a non-empty target space id".to_string(),
         ));
     }
@@ -8352,7 +8352,7 @@ pub(super) fn touch_knowledge_memory_access_batch_for(
     db.ensure_writable()?;
     for touch in &request.touches {
         if touch.memory_id.is_empty() {
-            return Err(HawdbError::Semantic(
+            return Err(HawDBError::Semantic(
                 "knowledge memory access touch requires a non-empty memory id".to_string(),
             ));
         }
@@ -8360,7 +8360,7 @@ pub(super) fn touch_knowledge_memory_access_batch_for(
             .click_dwell_time_ms
             .is_some_and(|dwell_time_ms| dwell_time_ms < 0)
         {
-            return Err(HawdbError::Semantic(
+            return Err(HawDBError::Semantic(
                 "knowledge memory access touch requires non-negative dwell time".to_string(),
             ));
         }
@@ -8642,17 +8642,17 @@ pub(super) fn update_knowledge_memory_content_batch_for(
 
 pub(super) fn validate_knowledge_memory_content_update(update: &KnowledgeMemoryContentUpdate) -> Result<()> {
     if update.memory_id.is_empty() {
-        return Err(HawdbError::Semantic(
+        return Err(HawDBError::Semantic(
             "knowledge memory content update requires a non-empty memory id".to_string(),
         ));
     }
     if update.unit_type.is_empty() {
-        return Err(HawdbError::Semantic(
+        return Err(HawDBError::Semantic(
             "knowledge memory content update requires a non-empty unit type".to_string(),
         ));
     }
     if update.extraction_method.is_empty() {
-        return Err(HawdbError::Semantic(
+        return Err(HawDBError::Semantic(
             "knowledge memory content update requires a non-empty extraction method".to_string(),
         ));
     }
@@ -8676,7 +8676,7 @@ pub(super) fn validate_finite_numeric_value(value: &Value, message: &str) -> Res
     if valid {
         Ok(())
     } else {
-        Err(HawdbError::Semantic(message.to_string()))
+        Err(HawDBError::Semantic(message.to_string()))
     }
 }
 
@@ -8723,7 +8723,7 @@ pub(super) fn update_knowledge_memory_metadata_batch_for(
     db.ensure_writable()?;
     for update in &request.updates {
         if update.memory_id.is_empty() {
-            return Err(HawdbError::Semantic(
+            return Err(HawDBError::Semantic(
                 "knowledge memory metadata update requires a non-empty memory id".to_string(),
             ));
         }
@@ -8849,7 +8849,7 @@ pub(super) fn update_knowledge_memory_dedup_reviewed_batch_for(
 ) -> Result<KnowledgeMemoryDedupReviewedBatchOutput> {
     db.ensure_writable()?;
     if request.memory_ids.iter().any(String::is_empty) {
-        return Err(HawdbError::Semantic(
+        return Err(HawDBError::Semantic(
             "knowledge memory dedup reviewed update requires non-empty memory ids".to_string(),
         ));
     }
@@ -9076,7 +9076,7 @@ pub(super) fn validate_knowledge_memory_decay_refresh_update(
     update: &KnowledgeMemoryDecayRefreshUpdate,
 ) -> Result<()> {
     if update.memory_id.is_empty() {
-        return Err(HawdbError::Semantic(
+        return Err(HawDBError::Semantic(
             "knowledge memory decay refresh update requires a non-empty memory id".to_string(),
         ));
     }
@@ -9113,13 +9113,13 @@ pub(super) fn adjust_knowledge_source_memory_count_batch_for(
     db.ensure_writable()?;
     for adjustment in &request.adjustments {
         if adjustment.source_id.is_empty() {
-            return Err(HawdbError::Semantic(
+            return Err(HawDBError::Semantic(
                 "knowledge source memory count adjustment requires a non-empty source id"
                     .to_string(),
             ));
         }
         if adjustment.delta == 0 {
-            return Err(HawdbError::Semantic(
+            return Err(HawDBError::Semantic(
                 "knowledge source memory count adjustment requires a non-zero delta".to_string(),
             ));
         }
@@ -9279,12 +9279,12 @@ pub(super) fn update_knowledge_source_lifecycle_batch_for(
     db.ensure_writable()?;
     for update in &request.updates {
         if update.source_id.is_empty() {
-            return Err(HawdbError::Semantic(
+            return Err(HawDBError::Semantic(
                 "knowledge source lifecycle update requires a non-empty source id".to_string(),
             ));
         }
         if update.lifecycle_state.is_empty() {
-            return Err(HawdbError::Semantic(
+            return Err(HawDBError::Semantic(
                 "knowledge source lifecycle update requires a non-empty lifecycle state"
                     .to_string(),
             ));
@@ -9294,7 +9294,7 @@ pub(super) fn update_knowledge_source_lifecycle_batch_for(
             .as_deref()
             .is_some_and(str::is_empty)
         {
-            return Err(HawdbError::Semantic(
+            return Err(HawDBError::Semantic(
                 "knowledge source lifecycle update requires a non-empty current lifecycle state"
                     .to_string(),
             ));
@@ -9303,7 +9303,7 @@ pub(super) fn update_knowledge_source_lifecycle_batch_for(
             .chunk_count
             .is_some_and(|chunk_count| chunk_count < 0)
         {
-            return Err(HawdbError::Semantic(
+            return Err(HawDBError::Semantic(
                 "knowledge source lifecycle update requires non-negative chunk count".to_string(),
             ));
         }
@@ -9467,7 +9467,7 @@ pub(super) fn update_knowledge_source_metadata_batch_for(
     db.ensure_writable()?;
     for update in &request.updates {
         if update.source_id.is_empty() {
-            return Err(HawdbError::Semantic(
+            return Err(HawDBError::Semantic(
                 "knowledge source metadata update requires a non-empty source id".to_string(),
             ));
         }
@@ -9594,18 +9594,18 @@ pub(super) fn update_knowledge_source_parsed_metadata_batch_for(
     db.ensure_writable()?;
     for update in &request.updates {
         if update.source_id.is_empty() {
-            return Err(HawdbError::Semantic(
+            return Err(HawDBError::Semantic(
                 "knowledge source parsed metadata update requires a non-empty source id"
                     .to_string(),
             ));
         }
         if update.sha256.is_empty() {
-            return Err(HawdbError::Semantic(
+            return Err(HawDBError::Semantic(
                 "knowledge source parsed metadata update requires a non-empty sha256".to_string(),
             ));
         }
         if update.size_bytes < 0 {
-            return Err(HawdbError::Semantic(
+            return Err(HawDBError::Semantic(
                 "knowledge source parsed metadata update requires non-negative size bytes"
                     .to_string(),
             ));
@@ -9804,47 +9804,47 @@ pub(super) fn create_knowledge_source_parsed_batch_for(
 
 pub(super) fn validate_knowledge_source_parsed_create(create: &KnowledgeSourceParsedCreate) -> Result<()> {
     if create.source_id.is_empty() {
-        return Err(HawdbError::Semantic(
+        return Err(HawDBError::Semantic(
             "knowledge source parsed create requires a non-empty source id".to_string(),
         ));
     }
     if create.source_type.is_empty() {
-        return Err(HawdbError::Semantic(
+        return Err(HawDBError::Semantic(
             "knowledge source parsed create requires a non-empty source type".to_string(),
         ));
     }
     if create.original_name.is_empty() {
-        return Err(HawdbError::Semantic(
+        return Err(HawDBError::Semantic(
             "knowledge source parsed create requires a non-empty original name".to_string(),
         ));
     }
     if create.mime_type.is_empty() {
-        return Err(HawdbError::Semantic(
+        return Err(HawDBError::Semantic(
             "knowledge source parsed create requires a non-empty mime type".to_string(),
         ));
     }
     if create.parsed_path.is_empty() {
-        return Err(HawdbError::Semantic(
+        return Err(HawDBError::Semantic(
             "knowledge source parsed create requires a non-empty parsed path".to_string(),
         ));
     }
     if create.sha256.is_empty() {
-        return Err(HawdbError::Semantic(
+        return Err(HawDBError::Semantic(
             "knowledge source parsed create requires a non-empty sha256".to_string(),
         ));
     }
     if create.size_bytes < 0 {
-        return Err(HawdbError::Semantic(
+        return Err(HawDBError::Semantic(
             "knowledge source parsed create requires non-negative size bytes".to_string(),
         ));
     }
     if create.version < 1 {
-        return Err(HawdbError::Semantic(
+        return Err(HawDBError::Semantic(
             "knowledge source parsed create requires a positive version".to_string(),
         ));
     }
     if create.space_id.is_empty() {
-        return Err(HawdbError::Semantic(
+        return Err(HawDBError::Semantic(
             "knowledge source parsed create requires a non-empty space id".to_string(),
         ));
     }
@@ -9915,12 +9915,12 @@ pub(super) fn create_knowledge_source_revision_batch_for(
 ) -> Result<KnowledgeSourceRevisionCreateBatchOutput> {
     for create in &request.creates {
         if create.newer_source_id.is_empty() {
-            return Err(HawdbError::Semantic(
+            return Err(HawDBError::Semantic(
                 "knowledge source revision create requires a non-empty newer source id".to_string(),
             ));
         }
         if create.older_source_id.is_empty() {
-            return Err(HawdbError::Semantic(
+            return Err(HawDBError::Semantic(
                 "knowledge source revision create requires a non-empty older source id".to_string(),
             ));
         }
@@ -9996,7 +9996,7 @@ pub(super) fn delete_knowledge_sources_for(
 ) -> Result<KnowledgeSourceDeleteBatchOutput> {
     for source_id in &request.source_ids {
         if source_id.is_empty() {
-            return Err(HawdbError::Semantic(
+            return Err(HawDBError::Semantic(
                 "knowledge source delete requires a non-empty source id".to_string(),
             ));
         }
@@ -10036,7 +10036,7 @@ pub(super) fn delete_knowledge_skills_for(
 ) -> Result<KnowledgeSkillDeleteBatchOutput> {
     for skill_id in &request.skill_ids {
         if skill_id.is_empty() {
-            return Err(HawdbError::Semantic(
+            return Err(HawDBError::Semantic(
                 "knowledge skill delete requires a non-empty skill id".to_string(),
             ));
         }
@@ -10137,17 +10137,17 @@ pub(super) fn validate_knowledge_source_label_assignment(
     assignment: &KnowledgeSourceLabelAssignment,
 ) -> Result<()> {
     if assignment.source_id.is_empty() {
-        return Err(HawdbError::Semantic(
+        return Err(HawDBError::Semantic(
             "knowledge source label assignment requires a non-empty source id".to_string(),
         ));
     }
     if assignment.label_id.is_empty() {
-        return Err(HawdbError::Semantic(
+        return Err(HawDBError::Semantic(
             "knowledge source label assignment requires a non-empty label id".to_string(),
         ));
     }
     if assignment.assigned_by.is_empty() {
-        return Err(HawdbError::Semantic(
+        return Err(HawDBError::Semantic(
             "knowledge source label assignment requires a non-empty assigned_by".to_string(),
         ));
     }
@@ -10207,12 +10207,12 @@ pub(super) fn delete_knowledge_source_labels_batch_for(
 
 pub(super) fn validate_knowledge_source_label_delete(delete: &KnowledgeSourceLabelDelete) -> Result<()> {
     if delete.source_id.is_empty() {
-        return Err(HawdbError::Semantic(
+        return Err(HawDBError::Semantic(
             "knowledge source label delete requires a non-empty source id".to_string(),
         ));
     }
     if delete.label_id.is_empty() {
-        return Err(HawdbError::Semantic(
+        return Err(HawDBError::Semantic(
             "knowledge source label delete requires a non-empty label id".to_string(),
         ));
     }
@@ -10317,12 +10317,12 @@ pub(super) fn update_knowledge_memory_lifecycle_batch_for(
     db.ensure_writable()?;
     for update in &request.updates {
         if update.memory_id.is_empty() {
-            return Err(HawdbError::Semantic(
+            return Err(HawDBError::Semantic(
                 "knowledge memory lifecycle update requires a non-empty memory id".to_string(),
             ));
         }
         if update.lifecycle_state.is_empty() {
-            return Err(HawdbError::Semantic(
+            return Err(HawDBError::Semantic(
                 "knowledge memory lifecycle update requires a non-empty lifecycle state"
                     .to_string(),
             ));
@@ -10455,7 +10455,7 @@ pub(super) fn update_knowledge_memory_latest_batch_for(
     db.ensure_writable()?;
     for update in &request.updates {
         if update.memory_id.is_empty() {
-            return Err(HawdbError::Semantic(
+            return Err(HawDBError::Semantic(
                 "knowledge memory latest update requires a non-empty memory id".to_string(),
             ));
         }
@@ -10649,17 +10649,17 @@ pub(super) fn create_knowledge_memory_evolves_batch_for(
 
 pub(super) fn validate_knowledge_memory_evolves_create(create: &KnowledgeMemoryEvolvesCreate) -> Result<()> {
     if create.older_memory_id.is_empty() {
-        return Err(HawdbError::Semantic(
+        return Err(HawDBError::Semantic(
             "knowledge memory evolves create requires a non-empty older memory id".to_string(),
         ));
     }
     if create.newer_memory_id.is_empty() {
-        return Err(HawdbError::Semantic(
+        return Err(HawDBError::Semantic(
             "knowledge memory evolves create requires a non-empty newer memory id".to_string(),
         ));
     }
     if create.content_relation.is_empty() {
-        return Err(HawdbError::Semantic(
+        return Err(HawDBError::Semantic(
             "knowledge memory evolves create requires a non-empty content relation".to_string(),
         ));
     }
@@ -10670,7 +10670,7 @@ pub(super) fn validate_knowledge_memory_evolves_create(create: &KnowledgeMemoryE
         )?;
     }
     if create.detected_by.as_deref().is_some_and(str::is_empty) {
-        return Err(HawdbError::Semantic(
+        return Err(HawDBError::Semantic(
             "knowledge memory evolves create requires a non-empty detected_by".to_string(),
         ));
     }
@@ -10715,12 +10715,12 @@ pub(super) fn update_knowledge_skill_usage_stats_batch_for(
     db.ensure_writable()?;
     for update in &request.updates {
         if update.skill_id.is_empty() {
-            return Err(HawdbError::Semantic(
+            return Err(HawDBError::Semantic(
                 "knowledge skill usage stats update requires a non-empty skill id".to_string(),
             ));
         }
         if update.use_count < 0 {
-            return Err(HawdbError::Semantic(
+            return Err(HawDBError::Semantic(
                 "knowledge skill usage stats update requires non-negative use count".to_string(),
             ));
         }
@@ -10858,7 +10858,7 @@ pub(super) fn update_knowledge_skill_metadata_batch_for(
     db.ensure_writable()?;
     for update in &request.updates {
         if update.skill_id.is_empty() {
-            return Err(HawdbError::Semantic(
+            return Err(HawDBError::Semantic(
                 "knowledge skill metadata update requires a non-empty skill id".to_string(),
             ));
         }
@@ -10987,7 +10987,7 @@ pub(super) fn validate_skill_success_rate(value: &Value) -> Result<()> {
     if valid {
         Ok(())
     } else {
-        Err(HawdbError::Semantic(
+        Err(HawDBError::Semantic(
             "knowledge skill usage stats update requires success rate between 0 and 1".to_string(),
         ))
     }
@@ -10998,12 +10998,12 @@ pub(super) fn merge_knowledge_skill_source_for(
     request: &KnowledgeSkillSourceMergeRequest,
 ) -> Result<KnowledgeSkillSourceMergeOutput> {
     if request.skill_id.is_empty() {
-        return Err(HawdbError::Semantic(
+        return Err(HawDBError::Semantic(
             "knowledge skill source merge requires a non-empty skill id".to_string(),
         ));
     }
     if request.memory_id.is_empty() {
-        return Err(HawdbError::Semantic(
+        return Err(HawDBError::Semantic(
             "knowledge skill source merge requires a non-empty memory id".to_string(),
         ));
     }
@@ -11057,22 +11057,22 @@ pub(super) fn update_knowledge_skill_lifecycle_batch_for(
     db.ensure_writable()?;
     for update in &request.updates {
         if update.skill_id.is_empty() {
-            return Err(HawdbError::Semantic(
+            return Err(HawDBError::Semantic(
                 "knowledge skill lifecycle update requires a non-empty skill id".to_string(),
             ));
         }
         if update.stage.as_deref().is_some_and(str::is_empty) {
-            return Err(HawdbError::Semantic(
+            return Err(HawDBError::Semantic(
                 "knowledge skill lifecycle update requires a non-empty stage".to_string(),
             ));
         }
         if update.write_origin.as_deref().is_some_and(str::is_empty) {
-            return Err(HawdbError::Semantic(
+            return Err(HawDBError::Semantic(
                 "knowledge skill lifecycle update requires a non-empty write origin".to_string(),
             ));
         }
         if !skill_lifecycle_update_has_business_field(update) {
-            return Err(HawdbError::Semantic(
+            return Err(HawDBError::Semantic(
                 "knowledge skill lifecycle update requires at least one lifecycle field"
                     .to_string(),
             ));
@@ -11249,7 +11249,7 @@ pub(super) fn update_knowledge_thread_metadata_batch_for(
     db.ensure_writable()?;
     for update in &request.updates {
         if update.thread_id.is_empty() {
-            return Err(HawdbError::Semantic(
+            return Err(HawDBError::Semantic(
                 "knowledge thread metadata update requires a non-empty thread id".to_string(),
             ));
         }
@@ -11375,7 +11375,7 @@ pub(super) fn delete_knowledge_threads_for(
 ) -> Result<KnowledgeThreadDeleteBatchOutput> {
     for thread_id in &request.thread_ids {
         if thread_id.is_empty() {
-            return Err(HawdbError::Semantic(
+            return Err(HawDBError::Semantic(
                 "knowledge thread delete requires a non-empty thread id".to_string(),
             ));
         }
@@ -11416,12 +11416,12 @@ pub(super) fn update_knowledge_thread_message_count_batch_for(
     db.ensure_writable()?;
     for update in &request.updates {
         if update.thread_id.is_empty() {
-            return Err(HawdbError::Semantic(
+            return Err(HawDBError::Semantic(
                 "knowledge thread message-count update requires a non-empty thread id".to_string(),
             ));
         }
         if update.message_count < 0 {
-            return Err(HawdbError::Semantic(
+            return Err(HawDBError::Semantic(
                 "knowledge thread message-count update requires non-negative message count"
                     .to_string(),
             ));
@@ -11694,7 +11694,7 @@ pub(super) fn validate_knowledge_thread_identity_delete_request(
 ) -> Result<()> {
     match (&request.identity_key, &request.cascade_keys) {
         (Some(identity_key), None) if !identity_key.is_empty() => Ok(()),
-        (Some(_), None) => Err(HawdbError::Semantic(
+        (Some(_), None) => Err(HawDBError::Semantic(
             "knowledge thread identity delete requires a non-empty identity key".to_string(),
         )),
         (None, Some(keys))
@@ -11704,10 +11704,10 @@ pub(super) fn validate_knowledge_thread_identity_delete_request(
         {
             Ok(())
         }
-        (None, Some(_)) => Err(HawdbError::Semantic(
+        (None, Some(_)) => Err(HawDBError::Semantic(
             "knowledge thread identity cascade delete requires non-empty cascade keys".to_string(),
         )),
-        _ => Err(HawdbError::Semantic(
+        _ => Err(HawDBError::Semantic(
             "knowledge thread identity delete requires exactly one delete mode".to_string(),
         )),
     }
@@ -11842,17 +11842,17 @@ pub(super) fn validate_knowledge_thread_compaction_link_request(
     request: &KnowledgeThreadCompactionLinkRequest,
 ) -> Result<()> {
     if request.thread_id.is_empty() {
-        return Err(HawdbError::Semantic(
+        return Err(HawDBError::Semantic(
             "knowledge thread compaction link create requires a non-empty thread id".to_string(),
         ));
     }
     if request.memory_id.is_empty() {
-        return Err(HawdbError::Semantic(
+        return Err(HawDBError::Semantic(
             "knowledge thread compaction link create requires a non-empty memory id".to_string(),
         ));
     }
     if request.compaction_method.is_empty() {
-        return Err(HawdbError::Semantic(
+        return Err(HawDBError::Semantic(
             "knowledge thread compaction link create requires a non-empty compaction method"
                 .to_string(),
         ));
@@ -11866,7 +11866,7 @@ pub(super) fn delete_knowledge_thread_messages_for(
 ) -> Result<KnowledgeThreadMessageDeleteOutput> {
     db.ensure_writable()?;
     if request.thread_id.is_empty() {
-        return Err(HawdbError::Semantic(
+        return Err(HawDBError::Semantic(
             "knowledge thread message delete requires a non-empty thread id".to_string(),
         ));
     }
@@ -11962,22 +11962,22 @@ pub(super) fn update_knowledge_label_lifecycle_batch_for(
     db.ensure_writable()?;
     for update in &request.updates {
         if update.label_id.is_empty() {
-            return Err(HawdbError::Semantic(
+            return Err(HawDBError::Semantic(
                 "knowledge label lifecycle update requires a non-empty label id".to_string(),
             ));
         }
         if update.name.as_deref().is_some_and(str::is_empty) {
-            return Err(HawdbError::Semantic(
+            return Err(HawDBError::Semantic(
                 "knowledge label lifecycle update requires a non-empty name".to_string(),
             ));
         }
         if update.canonical_name.as_deref().is_some_and(str::is_empty) {
-            return Err(HawdbError::Semantic(
+            return Err(HawDBError::Semantic(
                 "knowledge label lifecycle update requires a non-empty canonical name".to_string(),
             ));
         }
         if !label_lifecycle_update_has_business_field(update) {
-            return Err(HawdbError::Semantic(
+            return Err(HawDBError::Semantic(
                 "knowledge label lifecycle update requires at least one lifecycle field"
                     .to_string(),
             ));
@@ -12237,12 +12237,12 @@ pub(super) fn validate_knowledge_memory_label_delete_request(
     request: &KnowledgeMemoryLabelDeleteRequest,
 ) -> Result<()> {
     if request.memory_id.is_empty() {
-        return Err(HawdbError::Semantic(
+        return Err(HawDBError::Semantic(
             "knowledge memory label delete requires a non-empty memory id".to_string(),
         ));
     }
     if request.label_id.as_deref().is_some_and(str::is_empty) {
-        return Err(HawdbError::Semantic(
+        return Err(HawDBError::Semantic(
             "knowledge memory label delete requires a non-empty label id".to_string(),
         ));
     }
@@ -12472,12 +12472,12 @@ pub(super) fn validate_knowledge_label_memory_transfer_request(
     request: &KnowledgeLabelMemoryTransferRequest,
 ) -> Result<()> {
     if request.source_label_id.is_empty() {
-        return Err(HawdbError::Semantic(
+        return Err(HawDBError::Semantic(
             "knowledge label memory transfer requires a non-empty source label id".to_string(),
         ));
     }
     if request.target_label_id.is_empty() {
-        return Err(HawdbError::Semantic(
+        return Err(HawDBError::Semantic(
             "knowledge label memory transfer requires a non-empty target label id".to_string(),
         ));
     }
@@ -12750,17 +12750,17 @@ pub(super) fn validate_knowledge_memory_label_transfer_request(
     request: &KnowledgeMemoryLabelTransferRequest,
 ) -> Result<()> {
     if request.older_memory_id.is_empty() {
-        return Err(HawdbError::Semantic(
+        return Err(HawDBError::Semantic(
             "knowledge memory label transfer requires a non-empty older memory id".to_string(),
         ));
     }
     if request.newer_memory_id.is_empty() {
-        return Err(HawdbError::Semantic(
+        return Err(HawDBError::Semantic(
             "knowledge memory label transfer requires a non-empty newer memory id".to_string(),
         ));
     }
     if request.space_id.is_empty() {
-        return Err(HawdbError::Semantic(
+        return Err(HawDBError::Semantic(
             "knowledge memory label transfer requires a non-empty space id".to_string(),
         ));
     }
@@ -12963,7 +12963,7 @@ pub(super) fn validate_knowledge_entity_label_list_request(
 ) -> Result<()> {
     validate_cypher_identifier(&request.entity_label, "knowledge entity label")?;
     if request.external_ids.is_empty() {
-        return Err(HawdbError::Semantic(
+        return Err(HawDBError::Semantic(
             "knowledge entity label read requires non-empty external ids".to_string(),
         ));
     }
@@ -12985,7 +12985,7 @@ pub(super) fn validate_knowledge_entity_label_projected_list_request(
             .iter()
             .any(String::is_empty)
     {
-        return Err(HawdbError::Semantic(
+        return Err(HawDBError::Semantic(
             "knowledge entity label projected read requires non-empty property names".to_string(),
         ));
     }
@@ -13072,20 +13072,20 @@ pub(super) fn entity_label_projected_rows_via_query_runtime(
                 .get("label")
                 .and_then(knowledge_entity_from_value)
                 .ok_or_else(|| {
-                    HawdbError::Execution("entity label row is missing label".to_string())
+                    HawDBError::Execution("entity label row is missing label".to_string())
                 })?;
             let relationship = row
                 .get("relationship")
                 .and_then(value_to_map)
                 .ok_or_else(|| {
-                    HawdbError::Execution("entity label row is missing relationship".to_string())
+                    HawDBError::Execution("entity label row is missing relationship".to_string())
                 })?;
             let relationship_id = row
                 .get("relationship_id")
                 .and_then(value_to_non_negative_u64)
                 .or_else(|| relationship.get("_id").and_then(value_to_non_negative_u64))
                 .ok_or_else(|| {
-                    HawdbError::Execution("entity label row is missing relationship_id".to_string())
+                    HawDBError::Execution("entity label row is missing relationship_id".to_string())
                 })?;
             let mut relationship_properties = relationship.clone();
             relationship_properties.remove("_id");
@@ -13129,7 +13129,7 @@ pub(super) fn entity_label_query_output_via_query_runtime(
         BTreeMap::from([(
             "entity_node_id".to_string(),
             Value::Int(i64::try_from(entity_node_id).map_err(|_| {
-                HawdbError::Execution("entity label node id exceeds i64".to_string())
+                HawDBError::Execution("entity label node id exceeds i64".to_string())
             })?),
         )]);
     let query = "MATCH (entity)-[relationship:HAS_LABEL]->(label:Label) \
@@ -13145,7 +13145,7 @@ pub(super) fn entity_label_row_from_query_row(
     let label = row
         .get("label")
         .and_then(knowledge_entity_from_value)
-        .ok_or_else(|| HawdbError::Execution("entity label row is missing label".to_string()))?;
+        .ok_or_else(|| HawDBError::Execution("entity label row is missing label".to_string()))?;
     Ok(KnowledgeEntityLabelRow {
         label_id: knowledge_entity_id_property(&label),
         node_id: label.node_id,
@@ -13169,12 +13169,12 @@ pub(super) fn update_knowledge_pagerank_scores_batch_for(
     for update in &request.updates {
         validate_pagerank_label(update.label.as_str())?;
         if update.external_id.is_empty() {
-            return Err(HawdbError::Semantic(
+            return Err(HawDBError::Semantic(
                 "knowledge pagerank score update requires a non-empty external id".to_string(),
             ));
         }
         if !update.score.is_finite() || update.score < 0.0 {
-            return Err(HawdbError::Semantic(
+            return Err(HawDBError::Semantic(
                 "knowledge pagerank score update requires a finite non-negative score".to_string(),
             ));
         }
@@ -13294,7 +13294,7 @@ pub(super) fn clear_knowledge_pagerank_scores_for(
 ) -> Result<KnowledgePageRankClearOutput> {
     db.ensure_writable()?;
     if request.labels.is_empty() {
-        return Err(HawdbError::Semantic(
+        return Err(HawDBError::Semantic(
             "knowledge pagerank clear requires at least one label".to_string(),
         ));
     }
@@ -13385,7 +13385,7 @@ pub(super) fn clear_knowledge_pagerank_scores_for(
 #[cfg(test)]
 pub(super) fn validate_non_empty_external_ids(external_ids: &[String], message: &str) -> Result<()> {
     if external_ids.iter().any(String::is_empty) {
-        return Err(HawdbError::Semantic(message.to_string()));
+        return Err(HawDBError::Semantic(message.to_string()));
     }
     Ok(())
 }
@@ -13393,7 +13393,7 @@ pub(super) fn validate_non_empty_external_ids(external_ids: &[String], message: 
 pub(super) fn validate_pagerank_label(label: &str) -> Result<()> {
     match label {
         "Memory" | "memory" | "Entity" | "entity" => Ok(()),
-        _ => Err(HawdbError::Semantic(
+        _ => Err(HawDBError::Semantic(
             "knowledge pagerank operations support only Memory and Entity labels".to_string(),
         )),
     }
@@ -13568,17 +13568,17 @@ pub(super) fn validate_knowledge_community_membership_create(
     membership: &KnowledgeCommunityMembershipCreate,
 ) -> Result<()> {
     if membership.entity_id.is_empty() {
-        return Err(HawdbError::Semantic(
+        return Err(HawDBError::Semantic(
             "knowledge community membership create requires a non-empty entity_id".to_string(),
         ));
     }
     if membership.community_id.is_empty() {
-        return Err(HawdbError::Semantic(
+        return Err(HawDBError::Semantic(
             "knowledge community membership create requires a non-empty community_id".to_string(),
         ));
     }
     if !membership.strength.is_finite() {
-        return Err(HawdbError::Semantic(
+        return Err(HawDBError::Semantic(
             "knowledge community membership strength must be finite".to_string(),
         ));
     }
@@ -13686,7 +13686,7 @@ pub(super) fn validate_knowledge_community_request(request: &KnowledgeCommunityR
     if let KnowledgeCommunityLookupKey::Id(id) = &request.key
         && id.is_empty()
     {
-        return Err(HawdbError::Semantic(
+        return Err(HawDBError::Semantic(
             "knowledge community read requires a non-empty id".to_string(),
         ));
     }
@@ -13932,27 +13932,27 @@ pub(super) fn update_knowledge_communities_batch_for(
 
 pub(super) fn validate_knowledge_community_create(create: &KnowledgeCommunityCreate) -> Result<()> {
     if create.id.is_empty() {
-        return Err(HawdbError::Semantic(
+        return Err(HawDBError::Semantic(
             "knowledge community create requires a non-empty id".to_string(),
         ));
     }
     if create.name.is_empty() {
-        return Err(HawdbError::Semantic(
+        return Err(HawDBError::Semantic(
             "knowledge community create requires a non-empty name".to_string(),
         ));
     }
     if create.community_id < 0 {
-        return Err(HawdbError::Semantic(
+        return Err(HawDBError::Semantic(
             "knowledge community create requires non-negative community_id".to_string(),
         ));
     }
     if create.member_count < 0 {
-        return Err(HawdbError::Semantic(
+        return Err(HawDBError::Semantic(
             "knowledge community create requires non-negative member_count".to_string(),
         ));
     }
     if !create.resolution.is_finite() {
-        return Err(HawdbError::Semantic(
+        return Err(HawDBError::Semantic(
             "knowledge community create resolution must be finite".to_string(),
         ));
     }
@@ -13963,12 +13963,12 @@ pub(super) fn validate_knowledge_community_summary_update(
     update: &KnowledgeCommunitySummaryUpdate,
 ) -> Result<()> {
     if update.id.is_empty() {
-        return Err(HawdbError::Semantic(
+        return Err(HawDBError::Semantic(
             "knowledge community summary update requires a non-empty id".to_string(),
         ));
     }
     if update.name.is_empty() {
-        return Err(HawdbError::Semantic(
+        return Err(HawDBError::Semantic(
             "knowledge community summary update requires a non-empty name".to_string(),
         ));
     }
@@ -14086,7 +14086,7 @@ pub(super) fn knowledge_community_cleanup_statement(
     detach: bool,
 ) -> Result<(String, BTreeMap<String, Value>)> {
     let node_id = i64::try_from(node_id.0)
-        .map_err(|_| HawdbError::Semantic("node id does not fit Cypher integer".to_string()))?;
+        .map_err(|_| HawDBError::Semantic("node id does not fit Cypher integer".to_string()))?;
     let verb = if detach { "DETACH DELETE" } else { "DELETE" };
     Ok((
         format!("MATCH (c:Community) WHERE id(c) = $node_id {verb} c"),
@@ -14134,7 +14134,7 @@ pub(super) fn delete_knowledge_graph_meta_for(
 
 pub(super) fn validate_graph_meta_request(request: &KnowledgeGraphMetaRequest) -> Result<()> {
     if request.meta_id.is_empty() {
-        return Err(HawdbError::Semantic(
+        return Err(HawDBError::Semantic(
             "knowledge graph meta request requires a non-empty meta id".to_string(),
         ));
     }
@@ -14145,7 +14145,7 @@ pub(super) fn knowledge_graph_meta_delete_statement(
     node_id: NodeId,
 ) -> Result<(String, BTreeMap<String, Value>)> {
     let node_id = i64::try_from(node_id.0)
-        .map_err(|_| HawdbError::Semantic("node id does not fit Cypher integer".to_string()))?;
+        .map_err(|_| HawDBError::Semantic("node id does not fit Cypher integer".to_string()))?;
     Ok((
         "MATCH (m:GraphMeta) WHERE id(m) = $node_id DELETE m".to_string(),
         BTreeMap::from([("node_id".to_string(), Value::Int(node_id))]),
@@ -14159,19 +14159,19 @@ pub(super) fn stamp_knowledge_graph_meta_batch_for(
     db.ensure_writable()?;
     for stamp in &request.stamps {
         if stamp.meta_id.is_empty() {
-            return Err(HawdbError::Semantic(
+            return Err(HawDBError::Semantic(
                 "knowledge graph meta stamp requires a non-empty meta id".to_string(),
             ));
         }
         if stamp.assignments.is_empty() {
-            return Err(HawdbError::Semantic(
+            return Err(HawDBError::Semantic(
                 "knowledge graph meta stamp requires at least one assignment".to_string(),
             ));
         }
         for property in stamp.assignments.keys() {
             validate_cypher_identifier(property, "property")?;
             if property == "meta_id" {
-                return Err(HawdbError::Semantic(
+                return Err(HawDBError::Semantic(
                     "knowledge graph meta stamp cannot update meta_id".to_string(),
                 ));
             }
@@ -14336,7 +14336,7 @@ pub(super) fn apply_knowledge_schema_migrations_batch_for(
     db.ensure_writable()?;
     for migration in &request.migrations {
         if migration.migration_id.is_empty() {
-            return Err(HawdbError::Semantic(
+            return Err(HawDBError::Semantic(
                 "knowledge schema migration apply requires a non-empty migration id".to_string(),
             ));
         }
@@ -14645,26 +14645,26 @@ pub(super) fn validate_augmentation_job_lifecycle_update(
     update: &KnowledgeAugmentationJobLifecycleUpdate,
 ) -> Result<()> {
     if update.job_id.is_empty() {
-        return Err(HawdbError::Semantic(
+        return Err(HawDBError::Semantic(
             "knowledge augmentation job update requires a non-empty job id".to_string(),
         ));
     }
     match &update.transition {
         KnowledgeAugmentationJobLifecycleTransition::Create { job_type, .. } => {
             if job_type.is_empty() {
-                return Err(HawdbError::Semantic(
+                return Err(HawDBError::Semantic(
                     "knowledge augmentation job create requires a non-empty job type".to_string(),
                 ));
             }
         }
         KnowledgeAugmentationJobLifecycleTransition::UpdateProgress { progress, message } => {
             if !progress.is_finite() || *progress < 0.0 || *progress > 100.0 {
-                return Err(HawdbError::Semantic(
+                return Err(HawDBError::Semantic(
                     "knowledge augmentation job progress requires a finite percentage".to_string(),
                 ));
             }
             if message.is_empty() {
-                return Err(HawdbError::Semantic(
+                return Err(HawDBError::Semantic(
                     "knowledge augmentation job progress requires a non-empty message".to_string(),
                 ));
             }
@@ -14672,7 +14672,7 @@ pub(super) fn validate_augmentation_job_lifecycle_update(
         KnowledgeAugmentationJobLifecycleTransition::MarkFailed { error_message, .. }
             if error_message.is_empty() =>
         {
-            return Err(HawdbError::Semantic(
+            return Err(HawDBError::Semantic(
                 "knowledge augmentation job failure requires a non-empty error message".to_string(),
             ));
         }
@@ -14850,7 +14850,7 @@ pub(super) fn interrupt_knowledge_augmentation_jobs_for(
 ) -> Result<KnowledgeAugmentationJobInterruptOutput> {
     db.ensure_writable()?;
     if request.error_message.is_empty() {
-        return Err(HawdbError::Semantic(
+        return Err(HawDBError::Semantic(
             "knowledge augmentation job interrupt requires a non-empty error message".to_string(),
         ));
     }
@@ -16339,7 +16339,7 @@ pub(super) fn validate_knowledge_relationship_update(
     request: &KnowledgeRelationshipUpdateRequest,
 ) -> Result<()> {
     if request.assignments.is_empty() {
-        return Err(HawdbError::Semantic(
+        return Err(HawDBError::Semantic(
             "knowledge relationship update requires at least one assignment".to_string(),
         ));
     }
@@ -16578,7 +16578,7 @@ pub(super) struct KnowledgeSourceReferenceRelationshipDeleteCandidate {
 
 pub(super) fn validate_source_reference(source_reference: &str, operation: &str) -> Result<()> {
     if source_reference.trim().is_empty() {
-        return Err(HawdbError::Semantic(format!(
+        return Err(HawDBError::Semantic(format!(
             "knowledge {operation} requires a non-empty source_reference"
         )));
     }
@@ -16677,7 +16677,7 @@ pub(super) fn knowledge_source_reference_relationship_delete_statement(
     relationship_id: u64,
 ) -> Result<(String, BTreeMap<String, Value>)> {
     let relationship_id = i64::try_from(relationship_id).map_err(|_| {
-        HawdbError::Semantic("relationship id does not fit Cypher integer".to_string())
+        HawDBError::Semantic("relationship id does not fit Cypher integer".to_string())
     })?;
     Ok((
         "MATCH (:Entity)-[r:RELATES_TO]->(:Entity) WHERE id(r) = $relationship_id DELETE r"
@@ -16695,15 +16695,15 @@ pub(super) fn node_has_external_id_property(node: &NodeRecord, external_id: &str
 pub(super) fn validate_cypher_identifier(value: &str, kind: &str) -> Result<()> {
     let mut chars = value.chars();
     let Some(first) = chars.next() else {
-        return Err(HawdbError::Semantic(format!("{kind} identifier is empty")));
+        return Err(HawDBError::Semantic(format!("{kind} identifier is empty")));
     };
     if !(first == '_' || first.is_ascii_alphabetic()) {
-        return Err(HawdbError::Semantic(format!(
+        return Err(HawDBError::Semantic(format!(
             "{kind} identifier {value:?} must start with an ASCII letter or underscore"
         )));
     }
     if chars.any(|ch| !(ch == '_' || ch.is_ascii_alphanumeric())) {
-        return Err(HawdbError::Semantic(format!(
+        return Err(HawDBError::Semantic(format!(
             "{kind} identifier {value:?} must contain only ASCII letters, digits, or underscores"
         )));
     }
@@ -17115,7 +17115,7 @@ fn knowledge_relationship_rows_via_query_runtime(
     let parameters = BTreeMap::from([(
         "seed_node_id".to_string(),
         Value::Int(i64::try_from(seed_node_id).map_err(|_| {
-            HawdbError::Execution("knowledge relationship seed node id exceeds i64".to_string())
+            HawDBError::Execution("knowledge relationship seed node id exceeds i64".to_string())
         })?),
     )]);
 
@@ -17197,7 +17197,7 @@ fn knowledge_relationship_rows_for_direction_via_query_runtime(
             .get("relationship_id")
             .and_then(value_to_non_negative_u64)
             .ok_or_else(|| {
-                HawdbError::Execution(
+                HawDBError::Execution(
                     "knowledge relationship row is missing relationship_id".to_string(),
                 )
             })?;
@@ -17235,19 +17235,19 @@ fn knowledge_context_path_from_query_row(
         .get("source")
         .and_then(knowledge_entity_from_value)
         .ok_or_else(|| {
-            HawdbError::Execution("knowledge relationship row is missing source map".to_string())
+            HawDBError::Execution("knowledge relationship row is missing source map".to_string())
         })?;
     let target = row
         .get("target")
         .and_then(knowledge_entity_from_value)
         .ok_or_else(|| {
-            HawdbError::Execution("knowledge relationship row is missing target map".to_string())
+            HawDBError::Execution("knowledge relationship row is missing target map".to_string())
         })?;
     let relationship = row
         .get("relationship")
         .and_then(value_to_map)
         .ok_or_else(|| {
-            HawdbError::Execution(
+            HawDBError::Execution(
                 "knowledge relationship row is missing relationship map".to_string(),
             )
         })?;
@@ -17638,7 +17638,7 @@ fn knowledge_path_segments_from_node_via_query_runtime(
     let parameters = BTreeMap::from([(
         "current_node_id".to_string(),
         Value::Int(i64::try_from(current_node_id).map_err(|_| {
-            HawdbError::Execution("knowledge path frontier node id exceeds i64".to_string())
+            HawDBError::Execution("knowledge path frontier node id exceeds i64".to_string())
         })?),
     )]);
     let mut segments = Vec::new();
@@ -17701,7 +17701,7 @@ fn knowledge_path_segments_for_direction_via_query_runtime(
             .get("relationship_id")
             .and_then(value_to_non_negative_u64)
             .ok_or_else(|| {
-                HawdbError::Execution("knowledge path row is missing relationship_id".to_string())
+                HawDBError::Execution("knowledge path row is missing relationship_id".to_string())
             })?;
         if !seen_relationships.insert(relationship_id) {
             continue;
@@ -18011,7 +18011,7 @@ fn expand_knowledge_subgraph_node_via_query_runtime(
     let parameters = BTreeMap::from([(
         "current_node_id".to_string(),
         Value::Int(i64::try_from(context.current_node.0).map_err(|_| {
-            HawdbError::Execution("knowledge subgraph frontier node id exceeds i64".to_string())
+            HawDBError::Execution("knowledge subgraph frontier node id exceeds i64".to_string())
         })?),
     )]);
 
@@ -18092,7 +18092,7 @@ fn knowledge_subgraph_for_direction_via_query_runtime(
             .get("relationship_id")
             .and_then(value_to_non_negative_u64)
             .ok_or_else(|| {
-                HawdbError::Execution(
+                HawDBError::Execution(
                     "knowledge subgraph row is missing relationship_id".to_string(),
                 )
             })?;
@@ -18108,7 +18108,7 @@ fn knowledge_subgraph_for_direction_via_query_runtime(
             }
         }
         .ok_or_else(|| {
-            HawdbError::Execution("knowledge subgraph row is missing next node".to_string())
+            HawDBError::Execution("knowledge subgraph row is missing next node".to_string())
         })?;
         let new_node = !context.seen_nodes.contains(&next_node.node_id);
         if new_node && context.nodes.len() >= context.node_limit {
@@ -18629,7 +18629,7 @@ fn knowledge_induced_edges_via_query_runtime(
                     .iter()
                     .map(|node_id| {
                         i64::try_from(*node_id).map(Value::Int).map_err(|_| {
-                            HawdbError::Execution(
+                            HawDBError::Execution(
                                 "knowledge induced edge node id exceeds i64".to_string(),
                             )
                         })
@@ -18678,7 +18678,7 @@ fn validate_knowledge_induced_edges_request(
     request: &KnowledgeInducedEdgeListRequest,
 ) -> Result<()> {
     if request.external_ids.is_empty() || request.external_ids.iter().any(String::is_empty) {
-        return Err(HawdbError::Semantic(
+        return Err(HawDBError::Semantic(
             "knowledge induced edge read requires non-empty external ids".to_string(),
         ));
     }
@@ -18702,26 +18702,26 @@ fn knowledge_induced_edge_row_from_query_row(
         .get("source")
         .and_then(knowledge_entity_from_value)
         .ok_or_else(|| {
-            HawdbError::Execution("knowledge induced edge row is missing source".to_string())
+            HawDBError::Execution("knowledge induced edge row is missing source".to_string())
         })?;
     let target = row
         .get("target")
         .and_then(knowledge_entity_from_value)
         .ok_or_else(|| {
-            HawdbError::Execution("knowledge induced edge row is missing target".to_string())
+            HawDBError::Execution("knowledge induced edge row is missing target".to_string())
         })?;
     let relationship = row
         .get("relationship")
         .and_then(value_to_map)
         .ok_or_else(|| {
-            HawdbError::Execution("knowledge induced edge row is missing relationship".to_string())
+            HawDBError::Execution("knowledge induced edge row is missing relationship".to_string())
         })?;
     let relationship_id = row
         .get("relationship_id")
         .and_then(value_to_non_negative_u64)
         .or_else(|| relationship.get("_id").and_then(value_to_non_negative_u64))
         .ok_or_else(|| {
-            HawdbError::Execution(
+            HawDBError::Execution(
                 "knowledge induced edge row is missing relationship_id".to_string(),
             )
         })?;
@@ -18753,14 +18753,14 @@ fn search_projection_graph_delta_for(
     if let Some(limit) = request.max_operations
         && operation_count > limit
     {
-        return Err(HawdbError::Storage(format!(
+        return Err(HawDBError::Storage(format!(
                 "search projection graph delta operation count {operation_count} exceeded configured limit {limit}"
             )));
     }
     if let Some(epoch) = request.complete_through_graph_commit_epoch {
         let current_epoch = store.commit_epoch();
         if epoch > current_epoch {
-            return Err(HawdbError::Storage(format!(
+            return Err(HawDBError::Storage(format!(
                 "search projection graph delta complete-through epoch {epoch} is ahead of graph commit epoch {current_epoch}"
             )));
         }
@@ -19238,7 +19238,7 @@ impl DatabaseTransactionRuntime {
     fn ensure_writable(&self, store: &GraphStore) -> Result<()> {
         store.ensure_usable()?;
         if self.config.read_only {
-            return Err(HawdbError::Execution(
+            return Err(HawDBError::Execution(
                 "database is opened in read-only mode".to_string(),
             ));
         }
@@ -19305,10 +19305,10 @@ impl DatabaseTransactionState {
     ) -> Result<&crate::store::RelationalTransactionIndexView> {
         match &self.relational_index {
             Ok(Some(index)) => Ok(index),
-            Ok(None) => Err(HawdbError::StorageIntegrity(
+            Ok(None) => Err(HawDBError::StorageIntegrity(
                 "authoritative transaction index view is unavailable".to_string(),
             )),
-            Err(error) => Err(HawdbError::StorageIntegrity(format!(
+            Err(error) => Err(HawDBError::StorageIntegrity(format!(
                 "authoritative transaction index view could not be pinned: {error}"
             ))),
         }
@@ -19322,7 +19322,7 @@ impl DatabaseTransactionState {
             Ok(Some(rows)) => rows,
             Ok(None) => return Ok(None),
             Err(error) => {
-                return Err(HawdbError::StorageIntegrity(format!(
+                return Err(HawDBError::StorageIntegrity(format!(
                     "authoritative transaction row view could not be pinned: {error}"
                 )));
             }
@@ -19330,12 +19330,12 @@ impl DatabaseTransactionState {
         let index = match &self.relational_index {
             Ok(Some(index)) => index,
             Ok(None) => {
-                return Err(HawdbError::StorageIntegrity(
+                return Err(HawDBError::StorageIntegrity(
                     "authoritative transaction index view is unavailable".to_string(),
                 ));
             }
             Err(error) => {
-                return Err(HawdbError::StorageIntegrity(format!(
+                return Err(HawDBError::StorageIntegrity(format!(
                     "authoritative transaction index view could not be pinned: {error}"
                 )));
             }
@@ -19395,7 +19395,7 @@ fn execute_graph_transaction_statement(
     if executor::is_mutation_plan(&optimized.physical_plan)? {
         runtime.ensure_writable(transaction.store())?;
         let mutation = executor::mutation_command(&optimized.physical_plan)?.ok_or_else(|| {
-            HawdbError::Execution(
+            HawDBError::Execution(
                 "transaction mutation plan cannot be represented as a staged mutation".to_string(),
             )
         })?;
@@ -19501,12 +19501,12 @@ fn execute_database_transaction_query(
     let body = statement_body(&statement);
     if matches!(body, cypher::Statement::SetSystemVariable(_)) {
         reject_system_variable_parameters(parameters)?;
-        return Err(HawdbError::Execution(
+        return Err(HawDBError::Execution(
             "SET system variable is not allowed inside a transaction".to_string(),
         ));
     }
     if matches!(body, cypher::Statement::Explain(_)) {
-        return Err(HawdbError::Execution(
+        return Err(HawDBError::Execution(
             "EXPLAIN is not allowed inside a transaction".to_string(),
         ));
     }
@@ -19536,12 +19536,12 @@ pub(super) fn execute_concurrent_graph_transaction_query(
     let body = statement_body(&statement);
     if matches!(body, cypher::Statement::SetSystemVariable(_)) {
         reject_system_variable_parameters(parameters)?;
-        return Err(HawdbError::Execution(
+        return Err(HawDBError::Execution(
             "SET system variable is not allowed inside a transaction".to_string(),
         ));
     }
     if matches!(body, cypher::Statement::Explain(_)) {
-        return Err(HawdbError::Execution(
+        return Err(HawDBError::Execution(
             "EXPLAIN is not allowed inside a transaction".to_string(),
         ));
     }
@@ -19604,7 +19604,7 @@ pub(super) fn execute_database_transaction_prepared_sql(
             prepared.statement(),
         )
     {
-        return Err(HawdbError::Semantic(
+        return Err(HawDBError::Semantic(
             "hawdb_schema_migrations is read-only outside system schema upgrade".to_string(),
         ));
     }
@@ -19647,7 +19647,7 @@ pub(super) fn execute_database_transaction_prepared_sql(
     if pending_generated_read_table
         .is_some_and(|table| state.pending_generated_append_tables.contains(table))
     {
-        return Err(HawdbError::Execution(format!(
+        return Err(HawDBError::Execution(format!(
             "strict append table {} has uncommitted generated-order rows; reads are unavailable until commit",
             pending_generated_read_table.expect("pending generated table was checked")
         )));
@@ -19744,7 +19744,7 @@ pub(super) fn execute_database_transaction_prepared_sql(
             },
             Ok(None) => crate::relational_sql::RelationalRowReadMode::CanonicalMemory,
             Err(error) => {
-                return Err(HawdbError::StorageIntegrity(format!(
+                return Err(HawDBError::StorageIntegrity(format!(
                     "authoritative transaction row view could not be pinned: {error}"
                 )));
             }
@@ -19782,7 +19782,7 @@ pub(super) fn execute_database_transaction_prepared_sql(
                 .table_schema(&create.table.name)
                 .is_some()
         {
-            return Err(HawdbError::Semantic(format!(
+            return Err(HawDBError::Semantic(format!(
                 "table {} already exists as a RowPage table",
                 create.table.name
             )));
@@ -19810,7 +19810,7 @@ pub(super) fn execute_database_transaction_prepared_sql(
     if let crate::sql::SqlStatement::CreateTable(create) = prepared.statement()
         && state.append_state.schema(&create.table.name).is_some()
     {
-        return Err(HawdbError::Semantic(format!(
+        return Err(HawDBError::Semantic(format!(
             "table {} already exists as a strict append table",
             create.table.name
         )));
@@ -19838,12 +19838,12 @@ pub(super) fn execute_database_transaction_prepared_sql(
             let index = match &mut state.relational_index {
                 Ok(Some(index)) => index,
                 Ok(None) => {
-                    return Err(HawdbError::StorageIntegrity(
+                    return Err(HawDBError::StorageIntegrity(
                         "authoritative transaction index view is unavailable".to_string(),
                     ));
                 }
                 Err(error) => {
-                    return Err(HawdbError::StorageIntegrity(format!(
+                    return Err(HawDBError::StorageIntegrity(format!(
                         "authoritative transaction index view could not be pinned: {error}"
                     )));
                 }
@@ -19872,7 +19872,7 @@ pub(super) fn execute_database_transaction_prepared_sql(
             .map_err(map_transaction_relational_error)?
     };
     if mutation_outcomes.len() > 1 {
-        return Err(HawdbError::StorageIntegrity(
+        return Err(HawDBError::StorageIntegrity(
             "one SQL statement produced multiple relational mutation outcomes".to_string(),
         ));
     }
@@ -19892,12 +19892,12 @@ pub(super) fn execute_database_transaction_prepared_sql(
         let rows = match &state.relational_rows {
             Ok(Some(rows)) => rows,
             Ok(None) => {
-                return Err(HawdbError::StorageIntegrity(
+                return Err(HawDBError::StorageIntegrity(
                     "relational row transaction view is unavailable".to_string(),
                 ));
             }
             Err(error) => {
-                return Err(HawdbError::StorageIntegrity(format!(
+                return Err(HawDBError::StorageIntegrity(format!(
                     "relational transaction row view could not be pinned: {error}"
                 )));
             }
@@ -19914,13 +19914,13 @@ pub(super) fn execute_database_transaction_prepared_sql(
             .relational_index
             .as_mut()
             .map_err(|error| {
-                HawdbError::StorageIntegrity(format!(
+                HawDBError::StorageIntegrity(format!(
                     "authoritative transaction index view could not be pinned: {error}"
                 ))
             })?
             .as_mut()
             .ok_or_else(|| {
-                HawdbError::StorageIntegrity(
+                HawDBError::StorageIntegrity(
                     "authoritative transaction index view is unavailable".to_string(),
                 )
             })?
@@ -19963,27 +19963,27 @@ fn project_relational_mutation_outcome(
     provisional: bool,
 ) -> Result<RelationalMutationResult> {
     if outcome.affected_rows > limits.max_affected_rows.get() {
-        return Err(HawdbError::Execution(format!(
+        return Err(HawDBError::Execution(format!(
             "relational mutation affects {} rows, exceeding max_affected_rows {}",
             outcome.affected_rows, limits.max_affected_rows
         )));
     }
     let rows = if let Some(returning) = returning {
         if returning.table != outcome.table {
-            return Err(HawdbError::StorageIntegrity(format!(
+            return Err(HawDBError::StorageIntegrity(format!(
                 "relational mutation outcome for table {} was paired with RETURNING for table {}",
                 outcome.table, returning.table
             )));
         }
         if outcome.rows.len() > limits.max_result_rows.get() {
-            return Err(HawdbError::Execution(format!(
+            return Err(HawDBError::Execution(format!(
                 "relational mutation returns {} rows, exceeding max_result_rows {}",
                 outcome.rows.len(),
                 limits.max_result_rows
             )));
         }
         let schema = state.table_schema(&outcome.table).ok_or_else(|| {
-            HawdbError::StorageIntegrity(format!(
+            HawDBError::StorageIntegrity(format!(
                 "relational mutation outcome references unknown table {}",
                 outcome.table
             ))
@@ -19993,7 +19993,7 @@ fn project_relational_mutation_outcome(
             .iter()
             .map(|column| {
                 schema.column_position(column).ok_or_else(|| {
-                    HawdbError::StorageIntegrity(format!(
+                    HawDBError::StorageIntegrity(format!(
                         "relational mutation outcome references unknown column {column}"
                     ))
                 })
@@ -20011,7 +20011,7 @@ fn project_relational_mutation_outcome(
         }
         let rows = builder.finish();
         if rows.payload_bytes() > limits.max_result_payload_bytes.get() {
-            return Err(HawdbError::Execution(format!(
+            return Err(HawDBError::Execution(format!(
                 "relational mutation result contains {} payload bytes, exceeding max_result_payload_bytes {}",
                 rows.payload_bytes(), limits.max_result_payload_bytes
             )));
@@ -20037,45 +20037,45 @@ fn relational_value_to_query_value(value: &hawdb_storage::RelationalValue) -> Re
         hawdb_storage::RelationalValue::Text(value) => Ok(Value::String(value.clone())),
         hawdb_storage::RelationalValue::Bytea(value) => Ok(Value::Binary(value.clone())),
         hawdb_storage::RelationalValue::Uuid(value) => Ok(Value::Uuid(*value)),
-        hawdb_storage::RelationalValue::Overflow(_) => Err(HawdbError::StorageIntegrity(
+        hawdb_storage::RelationalValue::Overflow(_) => Err(HawDBError::StorageIntegrity(
             "logical relational mutation outcome contains an overflow reference".to_string(),
         )),
     }
 }
 
-fn map_transaction_append_error(error: hawdb_storage::AppendTableError) -> HawdbError {
+fn map_transaction_append_error(error: hawdb_storage::AppendTableError) -> HawDBError {
     match error {
         hawdb_storage::AppendTableError::SequenceExhausted {
             table,
             watermark,
             requested,
-        } => HawdbError::AppendSequenceExhausted {
+        } => HawDBError::AppendSequenceExhausted {
             table,
             watermark,
             requested,
         },
         hawdb_storage::AppendTableError::Corruption(message)
         | hawdb_storage::AppendTableError::Durability(message) => {
-            HawdbError::StorageIntegrity(message)
+            HawDBError::StorageIntegrity(message)
         }
         error @ (hawdb_storage::AppendTableError::Admission(_)
         | hawdb_storage::AppendTableError::Schema(_)
         | hawdb_storage::AppendTableError::Constraint(_)) => {
-            HawdbError::Execution(error.to_string())
+            HawDBError::Execution(error.to_string())
         }
     }
 }
 
-fn map_transaction_relational_error(error: hawdb_storage::RelationalError) -> HawdbError {
+fn map_transaction_relational_error(error: hawdb_storage::RelationalError) -> HawDBError {
     match error {
         hawdb_storage::RelationalError::Corruption(message)
         | hawdb_storage::RelationalError::Durability(message) => {
-            HawdbError::StorageIntegrity(message)
+            HawDBError::StorageIntegrity(message)
         }
         error @ (hawdb_storage::RelationalError::Admission(_)
         | hawdb_storage::RelationalError::Schema(_)
         | hawdb_storage::RelationalError::Constraint(_)) => {
-            HawdbError::Execution(error.to_string())
+            HawDBError::Execution(error.to_string())
         }
     }
 }
@@ -20092,7 +20092,7 @@ fn reject_locking_select_without_manager(
         _ => false,
     };
     if locking_select && !allow_locking_select {
-        return Err(HawdbError::Semantic(
+        return Err(HawDBError::Semantic(
             "FOR UPDATE/SHARE requires a pessimistic concurrent transaction".to_string(),
         ));
     }
@@ -20132,7 +20132,7 @@ fn commit_database_transaction_state(
     };
     db.complete_required_relational_row_checkpoint("transaction commit")?;
     if returning.len() != summary.relational_mutation_outcomes.len() {
-        return Err(HawdbError::StorageIntegrity(format!(
+        return Err(HawDBError::StorageIntegrity(format!(
             "transaction recorded {} relational result projections but committed {} outcomes",
             returning.len(),
             summary.relational_mutation_outcomes.len()
@@ -20276,7 +20276,7 @@ impl DatabaseSession<'_> {
         parameters: &BTreeMap<String, Value>,
     ) -> Result<ExplainOutput> {
         if self.graph_transaction.is_some() {
-            return Err(HawdbError::Execution(
+            return Err(HawDBError::Execution(
                 "EXPLAIN is not allowed inside an active transaction".to_string(),
             ));
         }
@@ -20309,7 +20309,7 @@ impl DatabaseSession<'_> {
             cypher::Statement::BeginTransaction => {
                 reject_transaction_control_parameters("BEGIN TRANSACTION", parameters)?;
                 if self.graph_transaction.is_some() {
-                    return Err(HawdbError::Execution(
+                    return Err(HawDBError::Execution(
                         "transaction is already active".to_string(),
                     ));
                 }
@@ -20329,7 +20329,7 @@ impl DatabaseSession<'_> {
             cypher::Statement::Commit => {
                 reject_transaction_control_parameters("COMMIT", parameters)?;
                 let Some(transaction) = self.graph_transaction.take() else {
-                    return Err(HawdbError::Execution(
+                    return Err(HawDBError::Execution(
                         "COMMIT requires an active transaction".to_string(),
                     ));
                 };
@@ -20348,7 +20348,7 @@ impl DatabaseSession<'_> {
             cypher::Statement::Rollback => {
                 reject_transaction_control_parameters("ROLLBACK", parameters)?;
                 if self.graph_transaction.take().is_none() {
-                    return Err(HawdbError::Execution(
+                    return Err(HawDBError::Execution(
                         "ROLLBACK requires an active transaction".to_string(),
                     ));
                 }
@@ -20358,12 +20358,12 @@ impl DatabaseSession<'_> {
                 })
             }
             cypher::Statement::Checkpoint if self.graph_transaction.is_some() => {
-                Err(HawdbError::Execution(
+                Err(HawDBError::Execution(
                     "CHECKPOINT is not allowed inside an active transaction".to_string(),
                 ))
             }
             cypher::Statement::SetSystemVariable(_) if self.graph_transaction.is_some() => {
-                Err(HawdbError::Execution(
+                Err(HawDBError::Execution(
                     "SET system variable is not allowed inside an active transaction".to_string(),
                 ))
             }
@@ -20372,7 +20372,7 @@ impl DatabaseSession<'_> {
                 apply_set_system_variable(&mut self.system_variables, set)
             }
             cypher::Statement::Explain(_) if self.graph_transaction.is_some() => {
-                Err(HawdbError::Execution(
+                Err(HawDBError::Execution(
                     "EXPLAIN is not allowed inside an active transaction".to_string(),
                 ))
             }
@@ -20420,7 +20420,7 @@ impl DatabaseSession<'_> {
         let inner_statement_kind = statement_kind(statement_body(&explain.statement));
         if explain.analyze {
             if executor::is_mutation_plan(&optimized.physical_plan)? {
-                return Err(HawdbError::Execution(
+                return Err(HawDBError::Execution(
                     "EXPLAIN ANALYZE only supports read queries".to_string(),
                 ));
             }
@@ -20466,7 +20466,7 @@ fn reject_transaction_control_parameters(
     if parameters.is_empty() {
         Ok(())
     } else {
-        Err(HawdbError::Semantic(format!(
+        Err(HawDBError::Semantic(format!(
             "{statement} does not accept parameters"
         )))
     }
@@ -20822,17 +20822,17 @@ impl DatabaseReadTransaction {
         } = prepared;
         let body = statement_body(&statement);
         if matches!(statement, cypher::Statement::Explain(_)) {
-            return Err(HawdbError::Execution(
+            return Err(HawDBError::Execution(
                 "streaming query does not support EXPLAIN".to_string(),
             ));
         }
         if matches!(body, cypher::Statement::Checkpoint) {
-            return Err(HawdbError::Execution(
+            return Err(HawDBError::Execution(
                 "CHECKPOINT is not allowed inside a read transaction".to_string(),
             ));
         }
         if matches!(body, cypher::Statement::SetSystemVariable(_)) {
-            return Err(HawdbError::Execution(
+            return Err(HawDBError::Execution(
                 "SET system variable is not allowed inside a read transaction".to_string(),
             ));
         }
@@ -20847,7 +20847,7 @@ impl DatabaseReadTransaction {
             )?,
         };
         if executor::is_mutation_plan(&optimized.physical_plan)? {
-            return Err(HawdbError::Execution(
+            return Err(HawDBError::Execution(
                 "read transaction query must not be a mutation".to_string(),
             ));
         }
@@ -20944,13 +20944,13 @@ impl DatabaseReadTransaction {
         }
         if matches!(body, cypher::Statement::Checkpoint) {
             reject_transaction_control_parameters("CHECKPOINT", parameters)?;
-            return Err(HawdbError::Execution(
+            return Err(HawDBError::Execution(
                 "CHECKPOINT is not allowed inside a read transaction".to_string(),
             ));
         }
         if matches!(body, cypher::Statement::SetSystemVariable(_)) {
             reject_system_variable_parameters(parameters)?;
-            return Err(HawdbError::Execution(
+            return Err(HawDBError::Execution(
                 "SET system variable is not allowed inside a read transaction".to_string(),
             ));
         }
@@ -20965,7 +20965,7 @@ impl DatabaseReadTransaction {
             )?,
         };
         if executor::is_mutation_plan(&optimized.physical_plan)? {
-            return Err(HawdbError::Execution(
+            return Err(HawDBError::Execution(
                 "read transaction query must not be a mutation".to_string(),
             ));
         }
@@ -21030,11 +21030,11 @@ impl DatabaseReadTransaction {
         let inner_statement_kind = statement_kind(statement_body(&explain.statement));
         if executor::is_mutation_plan(&optimized.physical_plan)? {
             if explain.analyze {
-                return Err(HawdbError::Execution(
+                return Err(HawDBError::Execution(
                     "EXPLAIN ANALYZE only supports read queries".to_string(),
                 ));
             }
-            return Err(HawdbError::Execution(
+            return Err(HawDBError::Execution(
                 "read transaction query must not be a mutation".to_string(),
             ));
         }
@@ -21249,12 +21249,12 @@ impl DatabaseReadTransaction {
         let prepared = self.relational_plan_template_cache.prepare(sql_text)?;
         reject_locking_select_without_manager(prepared.statement(), false)?;
         let crate::sql::SqlStatement::Select(select) = prepared.statement() else {
-            return Err(HawdbError::Semantic(
+            return Err(HawDBError::Semantic(
                 "profiled relational SQL requires SELECT".to_string(),
             ));
         };
         if system_sql::is_virtual_catalog_select(select) {
-            return Err(HawdbError::Semantic(
+            return Err(HawDBError::Semantic(
                 "profiled relational SQL does not support virtual system catalogs".to_string(),
             ));
         }
@@ -21490,7 +21490,7 @@ impl DatabaseReadTransaction {
             query_work_request_for_statement(&QuerySystemVariables::default(), &statement)?;
         let optimized = self.optimized_explain_query_plan(cypher_text, &statement, parameters)?;
         if executor::is_mutation_plan(&optimized.physical_plan)? {
-            return Err(HawdbError::Execution(
+            return Err(HawDBError::Execution(
                 "read transaction query must not be a mutation".to_string(),
             ));
         }
@@ -21682,11 +21682,11 @@ impl DatabaseReadTransaction {
 fn single_import_label(node: &CanonicalSnapshotNode) -> Result<String> {
     match node.labels.as_slice() {
         [label] => Ok(label.clone()),
-        [] => Err(HawdbError::Storage(
-            "Hawdb Lightning initial import node has no label".to_string(),
+        [] => Err(HawDBError::Storage(
+            "HawDB Lightning initial import node has no label".to_string(),
         )),
-        _ => Err(HawdbError::Storage(
-            "Hawdb Lightning initial import multi-label node is unsupported".to_string(),
+        _ => Err(HawDBError::Storage(
+            "HawDB Lightning initial import multi-label node is unsupported".to_string(),
         )),
     }
 }

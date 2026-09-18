@@ -1,7 +1,7 @@
 //! Own vector replacement admission until the candidate is accepted or dropped.
 
 use super::{checked_mul, reserved::Grant};
-use crate::{HawdbError, Result};
+use crate::{HawDBError, Result};
 use hawdb_executor::QueryMemoryLease;
 use std::collections::TryReserveError;
 use std::mem::size_of;
@@ -84,10 +84,10 @@ fn reserve_with<T>(
     // returning its admission. The original allocation and elements stay owned.
     let mut replacement = Vec::new();
     allocate(&mut replacement, capacity).map_err(|error| {
-        HawdbError::Execution(format!("{description} allocation failed: {error}"))
+        HawDBError::Execution(format!("{description} allocation failed: {error}"))
     })?;
     if replacement.capacity() != capacity {
-        return Err(HawdbError::Execution(format!(
+        return Err(HawDBError::Execution(format!(
             "{description} exceeded admission"
         )));
     }

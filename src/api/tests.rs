@@ -1207,7 +1207,7 @@ fn creates_knowledge_entity_batch_through_typed_api() {
                     external_id: "entity_1".to_string(),
                     properties: BTreeMap::from([(
                         "name".to_string(),
-                        Value::String("Hawdb".to_string()),
+                        Value::String("HawDB".to_string()),
                     )]),
                 },
             ],
@@ -1365,7 +1365,7 @@ fn typed_knowledge_entity_batch_create_persists_as_one_wal_batch_and_replays() {
                     external_id: "entity_1".to_string(),
                     properties: BTreeMap::from([(
                         "name".to_string(),
-                        Value::String("Hawdb".to_string()),
+                        Value::String("HawDB".to_string()),
                     )]),
                 },
             ],
@@ -1487,7 +1487,7 @@ fn knowledge_entity_upsert_rejects_id_mismatch_before_writing() {
 #[test]
 fn knowledge_entity_upsert_does_not_write_projected_idless_identity() {
     let mut db = Database::new();
-    db.query("CREATE (:Entity {name: 'Hawdb', description: 'old'})")
+    db.query("CREATE (:Entity {name: 'HawDB', description: 'old'})")
         .unwrap();
 
     let output = db

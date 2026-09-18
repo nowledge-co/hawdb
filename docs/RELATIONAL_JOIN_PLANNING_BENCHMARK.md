@@ -49,7 +49,7 @@ v2 as latency measurements. The earlier logical-only expression counts were
 values are machine-local trend evidence and require a
 same-revision, same-target reference before they can enforce a regression
 threshold. They are not representative Mem-replica qualification and do not
-authorize Hawdb in stable release artifacts.
+authorize HawDB in stable release artifacts.
 
 ## Verification
 

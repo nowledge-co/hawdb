@@ -7,7 +7,7 @@ use crate::lexical_projection::admitted_manifest_generation;
 use crate::out_of_core::{
     SearchOutOfCoreManifestEnvelope, MAX_OUT_OF_CORE_MANIFEST_BYTES, OUT_OF_CORE_MANIFEST_FILE,
 };
-use crate::{HawdbError, Result};
+use crate::{HawDBError, Result};
 use hawdb_core::RuntimeTaskContext;
 use std::fs;
 use std::path::Path;
@@ -29,11 +29,11 @@ pub(super) fn active(
     let _decode = memory.spool.reserve(capacity)?;
     let envelope: SearchOutOfCoreManifestEnvelope =
         serde_json::from_slice(&bytes.bytes).map_err(|error| {
-            HawdbError::Storage(format!("invalid search out-of-core manifest: {error}"))
+            HawDBError::Storage(format!("invalid search out-of-core manifest: {error}"))
         })?;
     checkpoint(task)?;
     if json::checksum_with_context(&envelope.body, Some(task))? != envelope.checksum {
-        return Err(HawdbError::Storage(
+        return Err(HawDBError::Storage(
             "search out-of-core manifest checksum mismatch".into(),
         ));
     }
@@ -51,7 +51,7 @@ pub(super) fn next(
     let active = match active(root, memory, task) {
         Ok(None) => return Ok(1),
         Ok(Some(generation)) => generation,
-        Err(error @ HawdbError::Execution(_)) => return Err(error),
+        Err(error @ HawDBError::Execution(_)) => return Err(error),
         Err(_) => {
             checkpoint(task)?;
             latest_lexical(root, max_lexical_manifest_bytes, memory, task)?
@@ -59,7 +59,7 @@ pub(super) fn next(
     };
     active
         .checked_add(1)
-        .ok_or_else(|| HawdbError::Storage("search out-of-core generation overflow".into()))
+        .ok_or_else(|| HawDBError::Storage("search out-of-core generation overflow".into()))
 }
 
 fn latest_lexical(
@@ -88,7 +88,7 @@ fn latest_lexical(
         let entry = entry?;
         let name = entry.file_name();
         if name.as_encoded_bytes().len() >= directory::ENTRY_NAME_BYTES {
-            return Err(HawdbError::Execution(
+            return Err(HawDBError::Execution(
                 "directory entry exceeds native admission".into(),
             ));
         }

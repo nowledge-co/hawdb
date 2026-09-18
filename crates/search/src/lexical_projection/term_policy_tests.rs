@@ -342,7 +342,7 @@ fn term_policy_cancelled_scan_removes_long_term_staging() {
             13,
             |consume| {
                 consume(&document())?;
-                Err(HawdbError::Execution("cancelled scan".into()))
+                Err(HawDBError::Execution("cancelled scan".into()))
             },
             &Default::default(),
         )

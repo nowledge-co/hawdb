@@ -10,7 +10,7 @@ use crate::{
         REQUIRED_NOWLEDGE_MEM_SOURCE_MUTATION_FAMILIES,
     },
 };
-use hawdb_core::{HawdbError, Result};
+use hawdb_core::{HawDBError, Result};
 use hawdb_evidence::{
     blackbox::{blackbox_readiness_from_manifest_json, BlackboxReadinessReport},
     inventory::REQUIRED_NOWLEDGE_REPLACEMENT_QUERY_FAMILIES,
@@ -241,7 +241,7 @@ pub struct ReplacementSummaryProtocolCutoverReadiness {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct HawdbSubmoduleCutoverReadiness {
+pub struct HawDBSubmoduleCutoverReadiness {
     pub present: bool,
     pub path_present: bool,
     pub commit_present: bool,
@@ -699,7 +699,7 @@ impl ReplacementSummaryProtocolCutoverReadiness {
     }
 }
 
-impl HawdbSubmoduleCutoverReadiness {
+impl HawDBSubmoduleCutoverReadiness {
     pub fn evidence_ready(&self) -> bool {
         self.present && self.path_present && self.commit_present
     }
@@ -1165,7 +1165,7 @@ pub fn run_nowledge_mem_integration_readiness(
             }
             path => {
                 if args.next().is_some() {
-                    return Err(HawdbError::Semantic(
+                    return Err(HawDBError::Semantic(
                         nowledge_mem_integration_readiness_usage(),
                     ));
                 }
@@ -1177,7 +1177,7 @@ pub fn run_nowledge_mem_integration_readiness(
             }
         }
     }
-    Err(HawdbError::Semantic(
+    Err(HawDBError::Semantic(
         nowledge_mem_integration_readiness_usage(),
     ))
 }
@@ -1645,7 +1645,7 @@ fn replacement_summary_protocol_cutover_conditions(
 }
 
 fn hawdb_submodule_cutover_conditions(
-    readiness: &HawdbSubmoduleCutoverReadiness,
+    readiness: &HawDBSubmoduleCutoverReadiness,
 ) -> Vec<(&'static str, bool)> {
     vec![
         ("submodule.present", readiness.present),
@@ -1829,7 +1829,7 @@ fn blackbox_operational_cutover_conditions(
 struct IntegrationGateReadiness<'a> {
     integration_bundle: &'a IntegrationBundleProtocolCutoverReadiness,
     replacement_summary_protocol: &'a ReplacementSummaryProtocolCutoverReadiness,
-    submodule: &'a HawdbSubmoduleCutoverReadiness,
+    submodule: &'a HawDBSubmoduleCutoverReadiness,
     legacy_coexistence: &'a LegacyCoexistenceCutoverReadiness,
     content_store: &'a ContentStoreBoundaryCutoverReadiness,
     previous_wrapper: &'a PreviousWrapperPreflightCutoverReadiness,
@@ -1875,14 +1875,14 @@ fn next_actions(
     if !readiness.submodule.evidence_ready() {
         actions.push(next_action(
             "add_hawdb_submodule",
-            "Nowledge Mem must depend on Hawdb as a submodule instead of copying sources",
+            "Nowledge Mem must depend on HawDB as a submodule instead of copying sources",
             ["submodule.present", "submodule.path", "submodule.commit"],
         ));
     }
     if !readiness.legacy_coexistence.evidence_ready() {
         actions.push(next_action(
             "enable_side_by_side_coexistence",
-            "Kuzu/Ladybug and LanceDB must remain available while Hawdb runs in shadow",
+            "Kuzu/Ladybug and LanceDB must remain available while HawDB runs in shadow",
             [
                 "coexistence.old_database_retained",
                 "coexistence.mode",
@@ -1923,7 +1923,7 @@ fn next_actions(
     if !readiness.replacement_summary_protocol.evidence_ready() {
         actions.push(next_action(
             "produce_replacement_summary",
-            "replacement summary must use the Hawdb protocol and explicit replacement boundaries",
+            "replacement summary must use the HawDB protocol and explicit replacement boundaries",
             [
                 "replacement_summary.protocol",
                 "replacement_summary.replacement_boundaries.graph_layer",
@@ -1972,7 +1972,7 @@ fn next_actions(
     if !readiness.search_candidate.evidence_ready() {
         actions.push(next_action(
             "enable_hawdb_search_candidate_primary_reads",
-            "LanceDB replacement must prove memory-hybrid candidate reads are served by Hawdb before Mem cutover",
+            "LanceDB replacement must prove memory-hybrid candidate reads are served by HawDB before Mem cutover",
             [
                 "search_candidate_shadow_evidence.protocol",
                 "search_candidate_shadow_evidence.evidence_source",
@@ -2008,7 +2008,7 @@ fn next_actions(
     if !readiness.bounded_read.evidence_ready() {
         actions.push(next_action(
             "attach_bounded_read_profile",
-            "Hawdb read replacement must prove bounded execution before Mem cutover",
+            "HawDB read replacement must prove bounded execution before Mem cutover",
             [
                 "replacement_summary.bounded_read_evidence.present",
                 "replacement_summary.bounded_read_evidence.protocol",
@@ -2108,7 +2108,7 @@ fn next_actions(
     if !readiness.route_ownership.evidence_ready() {
         actions.push(next_action(
             "attach_route_ownership_evidence",
-            "Nowledge Mem cutover requires every active read route to be owned by Hawdb through the embedded library runtime",
+            "Nowledge Mem cutover requires every active read route to be owned by HawDB through the embedded library runtime",
             [
                 "route_ownership.protocol",
                 "route_ownership.ready",
@@ -2242,7 +2242,7 @@ fn next_actions(
     if !readiness.library.evidence_ready() {
         actions.push(next_action(
             "attach_library_readiness_evidence",
-            "Nowledge Mem cutover requires the Hawdb Rust library to open graph, search projection, and required evidence areas",
+            "Nowledge Mem cutover requires the HawDB Rust library to open graph, search projection, and required evidence areas",
             [
                 "library_readiness.protocol",
                 "library_readiness.ready",
@@ -2256,7 +2256,7 @@ fn next_actions(
     if !readiness.cutover_controls.evidence_ready() {
         actions.push(next_action(
             "attach_cutover_controls_evidence",
-            "Nowledge Mem cutover requires host-owned graph/search read controls to select effective Hawdb reads with dual writes and projection catch-up enabled",
+            "Nowledge Mem cutover requires host-owned graph/search read controls to select effective HawDB reads with dual writes and projection catch-up enabled",
             [
                 "cutover_controls.protocol",
                 "cutover_controls.ready",
@@ -2321,7 +2321,7 @@ fn next_actions(
     if !readiness.operations.evidence_ready() {
         actions.push(next_action(
             "attach_operations_readiness_report",
-            "Nowledge Mem cutover requires the embedded Hawdb library to expose ready lifecycle, recovery, slow-query, background, and projection freshness status",
+            "Nowledge Mem cutover requires the embedded HawDB library to expose ready lifecycle, recovery, slow-query, background, and projection freshness status",
             [
                 "operations_readiness.protocol",
                 "operations_readiness.present",
@@ -2379,12 +2379,12 @@ fn next_action(
 
 fn read_json_file(path: &Path) -> Result<serde_json::Value> {
     let raw = std::fs::read_to_string(path).map_err(|_| {
-        HawdbError::Execution(
+        HawDBError::Execution(
             "failed to read Nowledge Mem integration bundle: io_error".to_string(),
         )
     })?;
     serde_json::from_str(&raw).map_err(|_| {
-        HawdbError::Execution(
+        HawDBError::Execution(
             "failed to parse Nowledge Mem integration bundle: invalid_json".to_string(),
         )
     })
@@ -2460,8 +2460,8 @@ fn replacement_boundary_matches(
 
 pub fn hawdb_submodule_cutover_readiness(
     bundle: &serde_json::Value,
-) -> HawdbSubmoduleCutoverReadiness {
-    HawdbSubmoduleCutoverReadiness {
+) -> HawDBSubmoduleCutoverReadiness {
+    HawDBSubmoduleCutoverReadiness {
         present: bool_path(bundle, &["submodule", "present"]) == Some(true),
         path_present: non_empty_str_path(bundle, &["submodule", "path"]),
         commit_present: non_empty_str_path(bundle, &["submodule", "commit"]),

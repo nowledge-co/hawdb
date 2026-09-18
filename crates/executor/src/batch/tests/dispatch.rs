@@ -368,7 +368,7 @@ fn check_read_case(seed: usize, batch_rows: usize, shape: usize, exit: Exit) {
                 match exit {
                     Exit::Complete => Ok(BatchControl::Continue),
                     Exit::Stop => Ok(BatchControl::Stop),
-                    Exit::Error => Err(HawdbError::Execution(
+                    Exit::Error => Err(HawDBError::Execution(
                         "dispatch consumer failure".to_string(),
                     )),
                 }
@@ -506,7 +506,7 @@ fn generic_transform_adapters_preserve_graph_bindings_and_consumer_control() {
                                 match exit {
                                     Exit::Complete => Ok(BatchControl::Continue),
                                     Exit::Stop => Ok(BatchControl::Stop),
-                                    Exit::Error => Err(HawdbError::Execution(
+                                    Exit::Error => Err(HawDBError::Execution(
                                         "transform consumer failure".into(),
                                     )),
                                 }

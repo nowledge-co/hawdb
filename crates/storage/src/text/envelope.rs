@@ -5,7 +5,7 @@
 
 use super::parse_u64;
 use crate::DurableCompression;
-use hawdb_core::{HawdbError, Result};
+use hawdb_core::{HawDBError, Result};
 use hawdb_integrity::checksum_u64 as checksum_bytes;
 use std::collections::BTreeSet;
 use std::io::{Cursor, Read};
@@ -21,7 +21,7 @@ pub fn encode_durable_text(text: &str, compression: DurableCompression) -> Resul
 
 fn encode_zstd_durable_text(text: &str) -> Result<Vec<u8>> {
     let compressed = zstd::stream::encode_all(text.as_bytes(), DEFAULT_COMPRESSION_LEVEL)
-        .map_err(|error| HawdbError::Storage(format!("zstd compression failed: {error}")))?;
+        .map_err(|error| HawDBError::Storage(format!("zstd compression failed: {error}")))?;
     let compressed_checksum = checksum_bytes(&compressed);
     let uncompressed_checksum = checksum_bytes(text.as_bytes());
     let header = format!(
@@ -44,7 +44,7 @@ pub fn read_durable_text_bytes_with_limit(
     max_decoded_bytes: Option<u64>,
 ) -> Result<String> {
     if !bytes.starts_with(DURABLE_COMPRESSION_HEADER.as_bytes()) {
-        return Err(HawdbError::Storage(format!(
+        return Err(HawDBError::Storage(format!(
             "{name} is missing the V1 compressed envelope"
         )));
     }
@@ -57,12 +57,12 @@ fn decode_compressed_durable_text(
     max_decoded_bytes: Option<u64>,
 ) -> Result<String> {
     let Some(header_end) = bytes.windows(2).position(|window| window == b"\n\n") else {
-        return Err(HawdbError::Storage(format!(
+        return Err(HawDBError::Storage(format!(
             "{name} compressed envelope missing header terminator"
         )));
     };
     let header = std::str::from_utf8(&bytes[..header_end]).map_err(|error| {
-        HawdbError::Storage(format!(
+        HawDBError::Storage(format!(
             "{name} compressed envelope header is invalid: {error}"
         ))
     })?;
@@ -79,7 +79,7 @@ fn decode_compressed_durable_text(
         }
         let fields = line.split('\t').collect::<Vec<_>>();
         if !seen_fields.insert(fields[0]) {
-            return Err(HawdbError::Storage(format!(
+            return Err(HawDBError::Storage(format!(
                 "{name} compressed envelope has duplicate field: {}",
                 fields[0]
             )));
@@ -99,44 +99,44 @@ fn decode_compressed_durable_text(
                 uncompressed_len = Some(parse_usize(value, "uncompressed length")?);
             }
             _ => {
-                return Err(HawdbError::Storage(format!(
+                return Err(HawDBError::Storage(format!(
                     "{name} compressed envelope has invalid header line: {line}"
                 )));
             }
         }
     }
     if codec != Some("zstd") {
-        return Err(HawdbError::Storage(format!(
+        return Err(HawDBError::Storage(format!(
             "{name} compressed envelope uses unsupported codec"
         )));
     }
     let expected_compressed_len = compressed_len.ok_or_else(|| {
-        HawdbError::Storage(format!("{name} compressed envelope missing compressed_len"))
+        HawDBError::Storage(format!("{name} compressed envelope missing compressed_len"))
     })?;
     if payload.len() != expected_compressed_len {
-        return Err(HawdbError::Storage(format!(
+        return Err(HawDBError::Storage(format!(
             "{name} compressed length mismatch: expected {expected_compressed_len}, got {}",
             payload.len()
         )));
     }
     let expected_compressed_checksum = compressed_checksum.ok_or_else(|| {
-        HawdbError::Storage(format!(
+        HawDBError::Storage(format!(
             "{name} compressed envelope missing compressed_checksum"
         ))
     })?;
     let actual_compressed_checksum = checksum_bytes(payload);
     if actual_compressed_checksum != expected_compressed_checksum {
-        return Err(HawdbError::Storage(format!(
+        return Err(HawDBError::Storage(format!(
             "{name} compressed checksum mismatch: expected {expected_compressed_checksum}, got {actual_compressed_checksum}"
         )));
     }
     let expected_uncompressed_len = uncompressed_len.ok_or_else(|| {
-        HawdbError::Storage(format!(
+        HawDBError::Storage(format!(
             "{name} compressed envelope missing uncompressed_len"
         ))
     })?;
     if max_decoded_bytes.is_some_and(|limit| expected_uncompressed_len as u64 > limit) {
-        return Err(HawdbError::Storage(format!(
+        return Err(HawDBError::Storage(format!(
             "{name} decoded byte limit exceeded: max_decoded_bytes={}",
             max_decoded_bytes.unwrap_or_default()
         )));
@@ -145,7 +145,7 @@ fn decode_compressed_durable_text(
         .unwrap_or(expected_uncompressed_len as u64)
         .min(usize::MAX as u64);
     let mut decoder = zstd::stream::read::Decoder::new(Cursor::new(payload)).map_err(|error| {
-        HawdbError::Storage(format!("{name} zstd decompression failed: {error}"))
+        HawDBError::Storage(format!("{name} zstd decompression failed: {error}"))
     })?;
     let initial_capacity = expected_uncompressed_len.min(8 * 1024 * 1024);
     let mut decoded = Vec::with_capacity(initial_capacity);
@@ -154,32 +154,32 @@ fn decode_compressed_durable_text(
         .take(decode_limit.saturating_add(1))
         .read_to_end(&mut decoded)
         .map_err(|error| {
-            HawdbError::Storage(format!("{name} zstd decompression failed: {error}"))
+            HawDBError::Storage(format!("{name} zstd decompression failed: {error}"))
         })?;
     if decoded.len() as u64 > decode_limit {
-        return Err(HawdbError::Storage(format!(
+        return Err(HawDBError::Storage(format!(
             "{name} decoded byte limit exceeded: max_decoded_bytes={decode_limit}"
         )));
     }
     if decoded.len() != expected_uncompressed_len {
-        return Err(HawdbError::Storage(format!(
+        return Err(HawDBError::Storage(format!(
             "{name} uncompressed length mismatch: expected {expected_uncompressed_len}, got {}",
             decoded.len()
         )));
     }
     let expected_uncompressed_checksum = uncompressed_checksum.ok_or_else(|| {
-        HawdbError::Storage(format!(
+        HawDBError::Storage(format!(
             "{name} compressed envelope missing uncompressed_checksum"
         ))
     })?;
     let actual_uncompressed_checksum = checksum_bytes(&decoded);
     if actual_uncompressed_checksum != expected_uncompressed_checksum {
-        return Err(HawdbError::Storage(format!(
+        return Err(HawDBError::Storage(format!(
             "{name} uncompressed checksum mismatch: expected {expected_uncompressed_checksum}, got {actual_uncompressed_checksum}"
         )));
     }
     String::from_utf8(decoded).map_err(|error| {
-        HawdbError::Storage(format!(
+        HawDBError::Storage(format!(
             "{name} decompressed payload is not valid UTF-8: {error}"
         ))
     })
@@ -188,7 +188,7 @@ fn decode_compressed_durable_text(
 fn parse_usize(input: &str, name: &str) -> Result<usize> {
     input
         .parse()
-        .map_err(|_| HawdbError::Storage(format!("invalid {name}: {input}")))
+        .map_err(|_| HawDBError::Storage(format!("invalid {name}: {input}")))
 }
 
 #[cfg(test)]

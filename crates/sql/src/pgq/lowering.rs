@@ -50,7 +50,7 @@ impl fmt::Display for PgqLoweringError {
 
 impl std::error::Error for PgqLoweringError {}
 
-/// Lowers the qualified executable SQL/PGQ subset into Hawdb's shared graph
+/// Lowers the qualified executable SQL/PGQ subset into HawDB's shared graph
 /// logical operators.
 ///
 /// Shapes without an equivalent shared operator fail here. Syntax nodes never

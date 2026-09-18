@@ -1,5 +1,5 @@
 use super::{active_checkpoint_path, read_durable_text, rewrite_checksummed_file, unique_test_dir};
-use crate::error::HawdbError;
+use crate::error::HawDBError;
 use crate::value::Value;
 use crate::{Database, DatabaseConfig};
 use hawdb_storage::text::encode_string;
@@ -74,7 +74,7 @@ fn assert_corrupt_checkpoint_rejected(fixture: &Fixture, from: &str, to: &str, e
             Ok(_) => panic!("corrupted checkpoint opened"),
             Err(error) => error,
         };
-        assert!(matches!(error, HawdbError::Storage(_)));
+        assert!(matches!(error, HawDBError::Storage(_)));
         assert!(error.to_string().contains(expected), "{error}");
         assert!(error.to_string().len() < 256);
         assert_eq!(snapshot(&fixture.0), before);

@@ -425,7 +425,7 @@ fn spilled_postings_enforce_the_logical_budget_and_clean_partial_output() {
             }
             assert!(reader.next(limit).unwrap().is_none());
         } else {
-            assert!(matches!(result, Err(HawdbError::Storage(message))
+            assert!(matches!(result, Err(HawDBError::Storage(message))
                 if message == "one lexical posting exceeds the build memory budget"));
             assert!(pool.paths.is_empty());
             assert_eq!(root.entries(), 0);
@@ -631,7 +631,7 @@ fn failed_consumer_and_merge_remove_all_document_runs() {
     .unwrap();
     let error = analyzed
         .visit(config, |_, _, _| {
-            Err(HawdbError::Execution("cancel consumer".into()))
+            Err(HawDBError::Execution("cancel consumer".into()))
         })
         .unwrap_err();
     assert!(error.to_string().contains("cancel consumer"));

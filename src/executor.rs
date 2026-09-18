@@ -1,7 +1,7 @@
 use crate::analytics::{ProjectionLayout, ProjectionMemoryBudget};
 #[cfg(test)]
 use crate::cypher::RelationshipDirection;
-use crate::error::{HawdbError, Result};
+use crate::error::{HawDBError, Result};
 use crate::optimizer::PhysicalPlan;
 #[cfg(test)]
 use crate::planner::GraphAlgorithmKind;

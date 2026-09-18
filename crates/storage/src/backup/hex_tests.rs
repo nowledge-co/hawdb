@@ -24,7 +24,7 @@ fn persisted_hex_rejects_non_ascii_without_panicking() {
     for input in ["a\u{e9}a", "\u{1f980}", "00a\u{e9}a", "f", "gg", "ff"] {
         let result = std::panic::catch_unwind(|| decode_string(input));
         assert!(result.is_ok(), "decoder panicked for {input:?}");
-        assert!(matches!(result.unwrap(), Err(HawdbError::Storage(_))));
+        assert!(matches!(result.unwrap(), Err(HawDBError::Storage(_))));
     }
 }
 
@@ -82,7 +82,7 @@ fn persisted_hex_public_load_rejects_checksum_valid_corruption_without_writes() 
         let result = std::panic::catch_unwind(|| BackupManifest::load(&path));
         assert!(result.is_ok(), "public load panicked for {invalid:?}");
         let error = result.unwrap().unwrap_err();
-        assert!(matches!(error, HawdbError::Storage(_)));
+        assert!(matches!(error, HawDBError::Storage(_)));
         let expected = if invalid == "ff" {
             "invalid utf-8"
         } else {

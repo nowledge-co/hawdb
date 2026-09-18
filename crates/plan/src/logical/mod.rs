@@ -1,4 +1,4 @@
-use hawdb_core::{HawdbError, Result, ValidatedRegex, Value};
+use hawdb_core::{HawDBError, Result, ValidatedRegex, Value};
 use hawdb_cypher::{
     AggregateExpression, ComparisonOp as CypherComparisonOp,
     GraphAlgorithmKind as CypherGraphAlgorithmKind,

@@ -210,7 +210,7 @@ pub enum BackgroundMaintenanceKind {
     SearchProjectionGraphDelta,
     SearchProjectionRebuild,
     SearchProjectionMetadataRepair,
-    HawdbLightningBootstrapExport,
+    HawDBLightningBootstrapExport,
     ExternalContentArtifactJob,
 }
 
@@ -228,7 +228,7 @@ impl BackgroundMaintenanceKind {
             BackgroundMaintenanceKind::SearchProjectionMetadataRepair => {
                 "search_projection_metadata_repair"
             }
-            BackgroundMaintenanceKind::HawdbLightningBootstrapExport => {
+            BackgroundMaintenanceKind::HawDBLightningBootstrapExport => {
                 "hawdb_lightning_bootstrap_export"
             }
             BackgroundMaintenanceKind::ExternalContentArtifactJob => {
@@ -257,7 +257,7 @@ impl FromStr for BackgroundMaintenanceKind {
                 Ok(BackgroundMaintenanceKind::SearchProjectionMetadataRepair)
             }
             "hawdb_lightning_bootstrap_export" => {
-                Ok(BackgroundMaintenanceKind::HawdbLightningBootstrapExport)
+                Ok(BackgroundMaintenanceKind::HawDBLightningBootstrapExport)
             }
             "external_content_artifact_job" => {
                 Ok(BackgroundMaintenanceKind::ExternalContentArtifactJob)

@@ -3,7 +3,7 @@ use super::{
     Database, QueryOutput, WalGroupCommitConfig, WalGroupCommitDelayPolicy, WalGroupCommitSnapshot,
     WalGroupCommitWaitDecision, DEFAULT_WAL_GROUP_COMMIT_MAX_DELAY,
 };
-use crate::error::{HawdbError, Result};
+use crate::error::{HawDBError, Result};
 use std::collections::VecDeque;
 use std::fmt::{self, Debug, Formatter};
 use std::panic::{catch_unwind, AssertUnwindSafe};
@@ -41,7 +41,7 @@ impl CommitSequencer {
 
     pub(super) fn lock(&self) -> Result<MutexGuard<'_, Database>> {
         self.database.lock().map_err(|_| {
-            HawdbError::Execution("concurrent commit sequencer is poisoned".to_string())
+            HawDBError::Execution("concurrent commit sequencer is poisoned".to_string())
         })
     }
 
@@ -220,7 +220,7 @@ impl CommitSequencer {
             };
             completed.push((
                 request,
-                Err(HawdbError::Execution(
+                Err(HawDBError::Execution(
                     "WAL group commit task panicked before recording a result".to_string(),
                 )),
             ));
@@ -245,7 +245,7 @@ impl CommitSequencer {
                     let message = error.to_string();
                     for (_, result) in completed.iter_mut() {
                         if result.is_ok() {
-                            *result = Err(HawdbError::StorageIntegrity(message.clone()));
+                            *result = Err(HawDBError::StorageIntegrity(message.clone()));
                         }
                     }
                 }
@@ -257,7 +257,7 @@ impl CommitSequencer {
                 );
                 for (_, result) in completed.iter_mut() {
                     if result.is_ok() {
-                        *result = Err(HawdbError::StorageIntegrity(message.clone()));
+                        *result = Err(HawDBError::StorageIntegrity(message.clone()));
                     }
                 }
                 Default::default()
@@ -318,7 +318,7 @@ impl CommitSequencer {
             .map(|request| {
                 (
                     request,
-                    Err(HawdbError::Storage(format!(
+                    Err(HawDBError::Storage(format!(
                         "WAL group commit could not start: {message}"
                     ))),
                 )
@@ -360,7 +360,7 @@ impl QueuedCommit {
             .map_err(|_| group_commit_coordinator_poisoned_error())?
             .take()
             .ok_or_else(|| {
-                HawdbError::Execution("WAL group commit task was already consumed".to_string())
+                HawDBError::Execution("WAL group commit task was already consumed".to_string())
             })
     }
 
@@ -469,7 +469,7 @@ fn fail_completed_commits(
     message: String,
 ) {
     for (_, result) in completed {
-        *result = Err(HawdbError::Storage(message.clone()));
+        *result = Err(HawDBError::Storage(message.clone()));
     }
 }
 
@@ -533,7 +533,7 @@ impl GroupCommitState {
         {
             return Ok(());
         }
-        Err(HawdbError::Execution(
+        Err(HawDBError::Execution(
             "WAL group commit request was dequeued without being completed; \
              the commit sequencer is inconsistent and the database must be \
              closed and reopened"
@@ -821,21 +821,21 @@ impl TransactionIdAllocator {
                 current.checked_add(1)
             })
             .map_err(|_| {
-                HawdbError::Execution("concurrent transaction id space is exhausted".to_string())
+                HawDBError::Execution("concurrent transaction id space is exhausted".to_string())
             })
     }
 }
 
-fn lock_manager_poisoned_error() -> HawdbError {
-    HawdbError::Execution("concurrent lock manager is poisoned".to_string())
+fn lock_manager_poisoned_error() -> HawDBError {
+    HawDBError::Execution("concurrent lock manager is poisoned".to_string())
 }
 
-fn group_commit_coordinator_poisoned_error() -> HawdbError {
-    HawdbError::Execution("WAL group commit coordinator is poisoned".to_string())
+fn group_commit_coordinator_poisoned_error() -> HawDBError {
+    HawDBError::Execution("WAL group commit coordinator is poisoned".to_string())
 }
 
-fn lock_timeout_error(timeout: Duration) -> HawdbError {
-    HawdbError::Execution(format!(
+fn lock_timeout_error(timeout: Duration) -> HawDBError {
+    HawDBError::Execution(format!(
         "transaction lock wait timed out after {} ms",
         timeout.as_millis()
     ))

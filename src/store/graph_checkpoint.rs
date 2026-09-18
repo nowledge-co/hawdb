@@ -18,37 +18,37 @@ struct RelationalRowCompactionCheckpoint<'a> {
 
 fn row_compaction_checkpoint(task: &RuntimeTaskContext) -> Result<()> {
     task.checkpoint().map_err(|reason| {
-        HawdbError::Execution(format!("relational row-page compaction stopped: {reason}"))
+        HawDBError::Execution(format!("relational row-page compaction stopped: {reason}"))
     })
 }
 
 fn row_compaction_publication_error(
     error: hawdb_storage::RelationalRowPagePublicationError,
-) -> HawdbError {
+) -> HawDBError {
     match error {
         hawdb_storage::RelationalRowPagePublicationError::Corrupt(_) => {
-            HawdbError::StorageIntegrity(error.to_string())
+            HawDBError::StorageIntegrity(error.to_string())
         }
-        _ => HawdbError::Storage(error.to_string()),
+        _ => HawDBError::Storage(error.to_string()),
     }
 }
 
 fn exact_overflow_publication_error(
     error: hawdb_storage::RelationalOverflowPublicationError,
-) -> HawdbError {
+) -> HawDBError {
     let message = error.to_string();
     match error {
         hawdb_storage::RelationalOverflowPublicationError::Corrupt(_)
         | hawdb_storage::RelationalOverflowPublicationError::MissingExtent(_) => {
-            HawdbError::StorageIntegrity(message)
+            HawDBError::StorageIntegrity(message)
         }
         hawdb_storage::RelationalOverflowPublicationError::Admission(_)
         | hawdb_storage::RelationalOverflowPublicationError::Durability(_)
         | hawdb_storage::RelationalOverflowPublicationError::StaleGeneration { .. } => {
-            HawdbError::Storage(message)
+            HawDBError::Storage(message)
         }
         hawdb_storage::RelationalOverflowPublicationError::Stopped(_) => {
-            HawdbError::Execution(message)
+            HawDBError::Execution(message)
         }
     }
 }
@@ -60,7 +60,7 @@ fn push_property_projection_definition(
 ) -> Result<()> {
     admission
         .admit(&definition)
-        .map_err(|error| HawdbError::Storage(error.to_string()))?;
+        .map_err(|error| HawDBError::Storage(error.to_string()))?;
     definitions.push(definition);
     Ok(())
 }
@@ -106,13 +106,13 @@ impl GraphStore {
             binding,
             self.append_publication_config,
         )
-        .map_err(|error| HawdbError::Storage(error.to_string()))?;
+        .map_err(|error| HawDBError::Storage(error.to_string()))?;
         self.append_state = AppendState::from_checkpoint_with_generated_order_watermarks(
             reader.manifest().schemas.clone(),
             reader.watermarks(),
             reader.generated_order_watermarks().clone(),
         )
-        .map_err(|error| HawdbError::Storage(error.to_string()))?;
+        .map_err(|error| HawDBError::Storage(error.to_string()))?;
         self.append_generation_reader = Some(reader);
         Ok(())
     }
@@ -134,7 +134,7 @@ impl GraphStore {
             config,
             task,
         );
-        if matches!(&result, Err(HawdbError::StorageIntegrity(_))) {
+        if matches!(&result, Err(HawDBError::StorageIntegrity(_))) {
             self.integrity_poisoned.store(true, AtomicOrdering::Release);
         }
         result
@@ -154,12 +154,12 @@ impl GraphStore {
             .validate()
             .map_err(row_compaction_publication_error)?;
         let durable = self.durable.as_ref().ok_or_else(|| {
-            HawdbError::Storage(
+            HawDBError::Storage(
                 "relational row-page compaction requires durable storage".to_string(),
             )
         })?;
         if durable.read_only {
-            return Err(HawdbError::Storage(
+            return Err(HawDBError::Storage(
                 "read-only database cannot compact relational row pages".to_string(),
             ));
         }
@@ -171,7 +171,7 @@ impl GraphStore {
                 .get()
                 .checked_mul(2)
                 .ok_or_else(|| {
-                    HawdbError::Storage(
+                    HawDBError::Storage(
                         "row-page checkpoint materialization allowance overflow".to_string(),
                     )
                 })?
@@ -184,7 +184,7 @@ impl GraphStore {
             .checked_add(materialized_bytes)
             .and_then(|bytes| bytes.checked_add(shadow_bytes))
             .ok_or_else(|| {
-                HawdbError::Storage("row-page compaction admission byte count overflow".to_string())
+                HawDBError::Storage("row-page compaction admission byte count overflow".to_string())
             })?;
         let _permit = match &self.runtime_governor {
             Some(governor) => Some(
@@ -195,7 +195,7 @@ impl GraphStore {
                         io_slots: 1,
                     })
                     .map_err(|error| {
-                        HawdbError::Storage(format!(
+                        HawDBError::Storage(format!(
                             "row-page compaction admission denied: {error}"
                         ))
                     })?,
@@ -211,12 +211,12 @@ impl GraphStore {
             let materialized_estimate = graph_bytes
                 .checked_add(self.relational_state.estimated_materialized_row_bytes())
                 .ok_or_else(|| {
-                    HawdbError::Storage(
+                    HawDBError::Storage(
                         "row-page checkpoint materialization estimate overflow".to_string(),
                     )
                 })?;
             if materialized_estimate > config.max_materialized_checkpoint_bytes.get() {
-                return Err(HawdbError::Storage(
+                return Err(HawDBError::Storage(
                     "row-page compaction exceeds its materialized checkpoint allowance".to_string(),
                 ));
             }
@@ -234,7 +234,7 @@ impl GraphStore {
                 }),
             )?
             .ok_or_else(|| {
-                HawdbError::Storage(
+                HawDBError::Storage(
                     "row-page compaction did not prepare a durable checkpoint".to_string(),
                 )
             })?;
@@ -269,7 +269,7 @@ impl GraphStore {
             config,
             task,
         );
-        if matches!(&result, Err(HawdbError::StorageIntegrity(_))) {
+        if matches!(&result, Err(HawDBError::StorageIntegrity(_))) {
             self.integrity_poisoned.store(true, AtomicOrdering::Release);
         }
         result
@@ -284,15 +284,15 @@ impl GraphStore {
     ) -> Result<RelationalOverflowCompactionReport> {
         self.ensure_usable()?;
         task.checkpoint().map_err(|reason| {
-            HawdbError::Execution(format!("relational overflow compaction stopped: {reason}"))
+            HawDBError::Execution(format!("relational overflow compaction stopped: {reason}"))
         })?;
         let durable = self.durable.as_ref().ok_or_else(|| {
-            HawdbError::Storage(
+            HawDBError::Storage(
                 "relational overflow compaction requires durable storage".to_string(),
             )
         })?;
         if durable.read_only {
-            return Err(HawdbError::Storage(
+            return Err(HawDBError::Storage(
                 "read-only database cannot compact relational overflow".to_string(),
             ));
         }
@@ -306,7 +306,7 @@ impl GraphStore {
                         io_slots: 1,
                     })
                     .map_err(|error| {
-                        HawdbError::Storage(format!(
+                        HawDBError::Storage(format!(
                             "relational overflow compaction admission denied: {error}"
                         ))
                     })?,
@@ -317,7 +317,7 @@ impl GraphStore {
         let (references, scan) =
             self.collect_exact_relational_overflow_closure(generation, config, task)?;
         task.checkpoint().map_err(|reason| {
-            HawdbError::Execution(format!("relational overflow compaction stopped: {reason}"))
+            HawDBError::Execution(format!("relational overflow compaction stopped: {reason}"))
         })?;
         let prepared = self
             .prepare_checkpoint_with_maintenance(
@@ -333,7 +333,7 @@ impl GraphStore {
                 None,
             )?
             .ok_or_else(|| {
-                HawdbError::Storage(
+                HawDBError::Storage(
                     "relational overflow compaction did not prepare a durable checkpoint"
                         .to_string(),
                 )
@@ -342,7 +342,7 @@ impl GraphStore {
             .relational_overflow_compaction_report
             .clone()
             .ok_or_else(|| {
-                HawdbError::StorageIntegrity(
+                HawDBError::StorageIntegrity(
                     "relational overflow compaction checkpoint lost its report".to_string(),
                 )
             })?;
@@ -356,7 +356,7 @@ impl GraphStore {
         destination: impl AsRef<Path>,
     ) -> Result<StorageBackupReport> {
         if self.durable.is_none() {
-            return Err(HawdbError::Storage(
+            return Err(HawDBError::Storage(
                 "an in-memory database cannot create a durable backup".to_string(),
             ));
         }
@@ -370,7 +370,7 @@ impl GraphStore {
     pub fn scrub_storage(&mut self) -> Result<StorageScrubReport> {
         self.ensure_usable()?;
         let durable = self.durable.as_ref().ok_or_else(|| {
-            HawdbError::Storage("an in-memory database has no durable storage to scrub".to_string())
+            HawDBError::Storage("an in-memory database has no durable storage to scrub".to_string())
         })?;
         let result = durable.scrub_storage();
         if result.is_err() {
@@ -506,7 +506,7 @@ impl GraphStore {
         }
         for index in catalog.composite_property_indexes() {
             let property = persistent_composite_property_identity(&index.properties)
-                .map_err(|error| HawdbError::Storage(error.to_string()))?;
+                .map_err(|error| HawDBError::Storage(error.to_string()))?;
             push_property_projection_definition(
                 &mut property_projection_definitions,
                 &mut property_projection_definition_admission,
@@ -578,7 +578,7 @@ impl GraphStore {
             let append_rows = self
                 .append_state
                 .checkpoint_rows(self.append_publication_config.segment.max_rows)
-                .map_err(|error| HawdbError::Storage(error.to_string()))?;
+                .map_err(|error| HawDBError::Storage(error.to_string()))?;
             let append_report = AppendPublisher::publish_candidate_with_state(
                 durable.root_path(),
                 generation,
@@ -591,13 +591,13 @@ impl GraphStore {
                 &append_rows,
                 self.append_publication_config,
             )
-            .map_err(|error| HawdbError::Storage(error.to_string()))?;
+            .map_err(|error| HawDBError::Storage(error.to_string()))?;
             let checkpoint_append_reader = AppendGenerationReader::open_bound(
                 durable.root_path(),
                 append_report.generation_artifacts,
                 self.append_publication_config,
             )
-            .map_err(|error| HawdbError::Storage(error.to_string()))?;
+            .map_err(|error| HawDBError::Storage(error.to_string()))?;
             if let Some(encoded) = projected_graph_artifacts.as_deref() {
                 durable.write_projected_graph_artifacts_to(
                     &staging_path.join(PROJECTED_GRAPHS_FILE),
@@ -682,7 +682,7 @@ impl GraphStore {
                         index_load,
                     )
                     .map(|checkpoint| checkpoint.state)
-                    .map_err(|error| HawdbError::Storage(error.to_string()))
+                    .map_err(|error| HawDBError::Storage(error.to_string()))
                 })
                 .transpose()?;
             let mut overflow_publication_config = RelationalOverflowPublicationConfig::default();
@@ -724,7 +724,7 @@ impl GraphStore {
                     .unwrap_or(usize::MAX);
             let metadata_only_rows = self.relational_state.canonical_row_metadata_only();
             if exact_overflow.is_some() && !metadata_only_rows {
-                return Err(HawdbError::Storage(
+                return Err(HawDBError::Storage(
                     "exact overflow compaction requires canonical metadata-only rows".to_string(),
                 ));
             }
@@ -733,7 +733,7 @@ impl GraphStore {
             let mut introduced_extent_count = 0u64;
             let relational_overflow_report = if let Some(exact) = exact_overflow.as_ref() {
                 let base = previous_overflow.as_ref().ok_or_else(|| {
-                    HawdbError::StorageIntegrity(
+                    HawDBError::StorageIntegrity(
                         "exact overflow compaction requires a pinned overflow root".to_string(),
                     )
                 })?;
@@ -758,7 +758,7 @@ impl GraphStore {
                     .map_err(exact_overflow_publication_error)
             } else if metadata_only_rows {
                 let base = previous_overflow.as_ref().ok_or_else(|| {
-                    HawdbError::StorageIntegrity(
+                    HawDBError::StorageIntegrity(
                         "metadata-only relational checkpoint requires a pinned overflow root"
                             .to_string(),
                     )
@@ -766,7 +766,7 @@ impl GraphStore {
                 let overflow_inputs = self
                     .relational_state
                     .overflow_delta_generation_inputs(&row_plan.deltas)
-                    .map_err(|error| HawdbError::Storage(error.to_string()))?;
+                    .map_err(|error| HawDBError::Storage(error.to_string()))?;
                 overflow_publisher
                     .persist_generation_retaining_base(
                         durable.root_path(),
@@ -776,7 +776,7 @@ impl GraphStore {
                         base.manifest().generation,
                         overflow_inputs,
                     )
-                    .map_err(|error| HawdbError::Storage(error.to_string()))
+                    .map_err(|error| HawDBError::Storage(error.to_string()))
             } else {
                 let overflow_inputs = self
                     .relational_state
@@ -784,7 +784,7 @@ impl GraphStore {
                         previous_overflow.is_some(),
                         max_materialized_overflow_bytes,
                     )
-                    .map_err(|error| HawdbError::Storage(error.to_string()))?;
+                    .map_err(|error| HawDBError::Storage(error.to_string()))?;
                 overflow_publisher
                     .persist_generation(
                         durable.root_path(),
@@ -796,7 +796,7 @@ impl GraphStore {
                             .map(|binding| binding.generation),
                         overflow_inputs,
                     )
-                    .map_err(|error| HawdbError::Storage(error.to_string()))
+                    .map_err(|error| HawDBError::Storage(error.to_string()))
             }?;
             let relational_overflow_compaction_report =
                 exact_overflow
@@ -840,7 +840,7 @@ impl GraphStore {
                     generation,
                     overflow_publication_config,
                 )
-                .map_err(|error| HawdbError::Storage(error.to_string()))?;
+                .map_err(|error| HawDBError::Storage(error.to_string()))?;
 
             let row_request = RelationalRowPageGenerationRequest {
                 directory: durable.root_path(),
@@ -867,7 +867,7 @@ impl GraphStore {
                 }
                 None => row_publisher
                     .persist_generation(row_request, row_plan.deltas)
-                    .map_err(|error| HawdbError::Storage(error.to_string()))?,
+                    .map_err(|error| HawDBError::Storage(error.to_string()))?,
             };
             let relational_row_compaction_report = row_compaction
                 .as_ref()
@@ -878,7 +878,7 @@ impl GraphStore {
                         row_publication_config,
                     )
                     .map_err(row_compaction_publication_error)?;
-                    Ok::<_, HawdbError>(RelationalRowPageCompactionReport {
+                    Ok::<_, HawDBError>(RelationalRowPageCompactionReport {
                         source_commit_epoch: commit_epoch,
                         published_generation: generation,
                         root_pages: relational_row_report.root_pages,
@@ -1021,14 +1021,14 @@ impl GraphStore {
     ) -> Result<()> {
         let generation = prepared.generation;
         let durable = self.durable.as_mut().ok_or_else(|| {
-            HawdbError::Storage("prepared checkpoint requires durable storage".to_string())
+            HawDBError::Storage("prepared checkpoint requires durable storage".to_string())
         })?;
         if self.commit_epoch != prepared.source_commit_epoch
             || durable.checkpoint_epoch != prepared.source_checkpoint_epoch
             || durable.next_lsn != prepared.source_next_lsn
         {
             durable.discard_prepared_checkpoint(prepared.generation, &prepared.staging_path)?;
-            return Err(HawdbError::Storage(format!(
+            return Err(HawDBError::Storage(format!(
                 "checkpoint source changed before publication: prepared commit/checkpoint/lsn=({},{},{}), current=({},{},{}); retry checkpoint",
                 prepared.source_commit_epoch,
                 prepared.source_checkpoint_epoch,
@@ -1079,7 +1079,7 @@ impl GraphStore {
                 .generated_order_watermarks()
                 .clone(),
         )
-        .map_err(|error| HawdbError::Storage(error.to_string()))?;
+        .map_err(|error| HawDBError::Storage(error.to_string()))?;
         self.append_generation_reader = Some(prepared.checkpoint_append_reader);
         if prepared.checkpoint_out_of_core {
             self.canonical_base = durable.canonical_segments.clone();

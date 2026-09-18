@@ -20,10 +20,10 @@ use crate::{
     cypher, BackgroundMaintenanceKind, BackgroundMaintenanceOptions, BackgroundMaintenanceSummary,
     BackgroundWorkHint, BackgroundWorkPlan, BoundedReadQueryOutput, Database, DatabaseConfig,
     DatabaseReadTransaction, GraphRagGeneratedQuery, GraphRagSchemaContext,
-    GraphRagSchemaContextOptions, HawdbError, HawdbLightningBootstrapManifest,
-    HawdbLightningInitialImportApplyReport, HawdbLightningInitialImportCheckpoint,
-    HawdbLightningInitialImportCutoverCatchUpReport, HawdbLightningInitialImportDocumentIdentity,
-    HawdbLightningInitialImportRecoveryReadinessReport, KnowledgeRetrievalOutput,
+    GraphRagSchemaContextOptions, HawDBError, HawDBLightningBootstrapManifest,
+    HawDBLightningInitialImportApplyReport, HawDBLightningInitialImportCheckpoint,
+    HawDBLightningInitialImportCutoverCatchUpReport, HawDBLightningInitialImportDocumentIdentity,
+    HawDBLightningInitialImportRecoveryReadinessReport, KnowledgeRetrievalOutput,
     KnowledgeRetrievalRequest, LocalQosPolicy, LocalQosState, NowledgeGraphStatement,
     PlanCacheLookup, QueryOutput, QueryStreamOptions, QueryStreamReport, ReadExecutionProfile,
     Result, ScheduledSearchProjectionCatchUpReport, SearchDocument, SearchIndex,
@@ -394,14 +394,14 @@ impl NowledgeMemOpenOptions {
             &self.search_projection_open_mode,
         ) {
             (None, NowledgeMemSearchProjectionOpenMode::QualifiedOutOfCore(_)) => {
-                return Err(HawdbError::Semantic(
+                return Err(HawDBError::Semantic(
                     "qualified out-of-core search requires search_projection_path".to_string(),
                 ));
             }
             (Some(_), NowledgeMemSearchProjectionOpenMode::QualifiedOutOfCore(qualified)) => {
                 qualified.expected_identity.validate()?;
                 if self.search_range_read_config.is_some() {
-                    return Err(HawdbError::Semantic(
+                    return Err(HawDBError::Semantic(
                         "search_range_read_config applies only to the full-residency maintenance projection"
                             .to_string(),
                     ));
@@ -410,14 +410,14 @@ impl NowledgeMemOpenOptions {
             _ => {}
         }
         if self.search_projection_path.is_none() && self.search_range_read_config.is_some() {
-            return Err(HawdbError::Semantic(
+            return Err(HawDBError::Semantic(
                 "search_range_read_config requires search_projection_path".to_string(),
             ));
         }
         let mut schema_owners = BTreeSet::new();
         for registry in &self.system_schema_registries {
             if !schema_owners.insert(registry.owner()) {
-                return Err(HawdbError::Semantic(format!(
+                return Err(HawDBError::Semantic(format!(
                     "system schema owner {} is registered more than once",
                     registry.owner()
                 )));
@@ -1434,14 +1434,14 @@ impl NowledgeMemGraph {
                 .config()
                 .max_read_result_payload_bytes
                 .ok_or_else(|| {
-                    HawdbError::Execution(
+                    HawDBError::Execution(
                         "admitted materialized query requires max_read_result_payload_bytes"
                             .to_string(),
                     )
                 })?;
             let configured = u64::try_from(configured).unwrap_or(u64::MAX);
             if configured > governor_budget {
-                return Err(HawdbError::Execution(format!(
+                return Err(HawDBError::Execution(format!(
                     "admitted materialized query payload budget {configured} exceeds runtime result budget {governor_budget}"
                 )));
             }
@@ -1462,7 +1462,7 @@ impl NowledgeMemGraph {
     ) -> Result<RuntimePermit> {
         let admission = self.db.runtime_admission_plan(cypher, parameters)?;
         if admission.is_mutation {
-            return Err(HawdbError::Execution(
+            return Err(HawDBError::Execution(
                 "admitted streaming query must be read-only".to_string(),
             ));
         }
@@ -1478,7 +1478,7 @@ impl NowledgeMemGraph {
                 self.runtime_governor
                     .record_admission_wait(request, error.code, 0);
             }
-            HawdbError::Execution(error.to_string())
+            HawDBError::Execution(error.to_string())
         })
     }
 
@@ -1496,7 +1496,7 @@ impl NowledgeMemGraph {
             .unwrap_or(governor_budget);
         let admitted = governor_budget.min(configured).min(requested);
         if admitted == 0 {
-            return Err(HawdbError::Execution(
+            return Err(HawDBError::Execution(
                 "admitted streaming query requires a non-zero result byte budget".to_string(),
             ));
         }
@@ -1506,13 +1506,13 @@ impl NowledgeMemGraph {
     fn check_runtime_context(&self, task_context: &RuntimeTaskContext) -> Result<()> {
         task_context.checkpoint().map_err(|reason| {
             self.runtime_governor.record_cancellation(reason);
-            HawdbError::Execution(format!("runtime task {reason}"))
+            HawDBError::Execution(format!("runtime task {reason}"))
         })
     }
 
     fn record_runtime_cancellation(
         &self,
-        error: Option<&HawdbError>,
+        error: Option<&HawDBError>,
         task_context: &RuntimeTaskContext,
     ) {
         if error.is_some()
@@ -2041,7 +2041,7 @@ impl crate::executor::ExternalReadOperator for SearchProjectionExternalReadOpera
                 .into(),
             (None, None) => return Err(missing_search_projection_error()),
             (Some(_), Some(_)) => {
-                return Err(HawdbError::Storage(
+                return Err(HawDBError::Storage(
                     "nowledge mem search projection ownership is ambiguous".to_string(),
                 ));
             }
@@ -2052,7 +2052,7 @@ impl crate::executor::ExternalReadOperator for SearchProjectionExternalReadOpera
             .iter()
             .find(|retriever| retriever.name == "vector")
             .ok_or_else(|| {
-                HawdbError::Execution(
+                HawDBError::Execution(
                     "vector search did not produce a vector retriever report".to_string(),
                 )
             })?;
@@ -2117,7 +2117,7 @@ impl crate::executor::ExternalReadOperator for SearchProjectionExternalReadOpera
             .vector_seed_execution_count
             .checked_add(1)
             .ok_or_else(|| {
-                HawdbError::Execution(
+                HawDBError::Execution(
                     "bounded external vector seed execution count overflowed".to_string(),
                 )
             })?;
@@ -2128,7 +2128,7 @@ impl crate::executor::ExternalReadOperator for SearchProjectionExternalReadOpera
 fn vector_plan_top_k(plan: &hawdb_plan::VectorPhysicalPlan) -> Result<usize> {
     match plan {
         hawdb_plan::VectorPhysicalPlan::TopK { limit, .. } => Ok(*limit),
-        _ => Err(HawdbError::Execution(
+        _ => Err(HawDBError::Execution(
             "vector seed physical plan is missing TopK".to_string(),
         )),
     }
@@ -2142,7 +2142,7 @@ fn vector_plan_candidate_source(
         hawdb_plan::VectorPhysicalPlan::ResidualFilter { input, .. }
         | hawdb_plan::VectorPhysicalPlan::RawVectorRerank { input, .. }
         | hawdb_plan::VectorPhysicalPlan::TopK { input, .. } => vector_plan_candidate_source(input),
-        hawdb_plan::VectorPhysicalPlan::Filter { .. } => Err(HawdbError::Execution(
+        hawdb_plan::VectorPhysicalPlan::Filter { .. } => Err(HawDBError::Execution(
             "vector seed physical plan is missing VectorCandidateScan".to_string(),
         )),
     }
@@ -2154,7 +2154,7 @@ fn vector_score_source(value: &str) -> Result<hawdb_executor::VectorScoreSource>
         "raw_vector" => Ok(hawdb_executor::VectorScoreSource::RawVector),
         "ann_approximate" => Ok(hawdb_executor::VectorScoreSource::AnnApproximate),
         "quantized_approximate" => Ok(hawdb_executor::VectorScoreSource::QuantizedApproximate),
-        _ => Err(HawdbError::Execution(
+        _ => Err(HawDBError::Execution(
             "vector search returned an unsupported score source".to_string(),
         )),
     }
@@ -2247,7 +2247,7 @@ impl NowledgeMemReadSnapshot<'_> {
     ) -> Result<QueryOutput> {
         let completed_statement_count =
             self.cypher_statement_count.checked_add(1).ok_or_else(|| {
-                HawdbError::Execution(
+                HawDBError::Execution(
                     "bounded read snapshot Cypher statement count overflowed".to_string(),
                 )
             })?;
@@ -2280,7 +2280,7 @@ impl NowledgeMemReadSnapshot<'_> {
     ) -> Result<QueryOutput> {
         let completed_statement_count =
             self.sql_statement_count.checked_add(1).ok_or_else(|| {
-                HawdbError::Execution(
+                HawDBError::Execution(
                     "bounded read snapshot SQL statement count overflowed".to_string(),
                 )
             })?;
@@ -2327,13 +2327,13 @@ impl NowledgeMemReadSnapshot<'_> {
 
     fn statement_row_budget(&self, requested: usize) -> Result<usize> {
         if requested == 0 {
-            return Err(HawdbError::Execution(
+            return Err(HawDBError::Execution(
                 "bounded read statement requires max_rows greater than zero".to_string(),
             ));
         }
         let remaining = self.budget.max_rows.saturating_sub(self.output_rows);
         if remaining == 0 {
-            return Err(HawdbError::Execution(
+            return Err(HawDBError::Execution(
                 "bounded read snapshot exhausted max_rows".to_string(),
             ));
         }
@@ -2346,7 +2346,7 @@ impl NowledgeMemReadSnapshot<'_> {
             .max_payload_bytes
             .saturating_sub(self.output_payload_bytes);
         if remaining == 0 {
-            return Err(HawdbError::Execution(
+            return Err(HawDBError::Execution(
                 "bounded read snapshot exhausted max_payload_bytes".to_string(),
             ));
         }
@@ -2357,13 +2357,13 @@ impl NowledgeMemReadSnapshot<'_> {
         let output_rows = self.output_rows.saturating_add(rows);
         let output_payload_bytes = self.output_payload_bytes.saturating_add(payload_bytes);
         if output_rows > self.budget.max_rows {
-            return Err(HawdbError::Execution(format!(
+            return Err(HawDBError::Execution(format!(
                 "bounded read snapshot produced {output_rows} rows, exceeding max_rows {}",
                 self.budget.max_rows
             )));
         }
         if output_payload_bytes > self.budget.max_payload_bytes {
-            return Err(HawdbError::Execution(format!(
+            return Err(HawDBError::Execution(format!(
                 "bounded read snapshot produced {output_payload_bytes} payload bytes, exceeding max_payload_bytes {}",
                 self.budget.max_payload_bytes
             )));
@@ -2509,7 +2509,7 @@ impl NowledgeMemEmbeddedStoreHandle {
         max_documents: usize,
     ) -> Result<NowledgeMemSearchHydrationOutput> {
         if document_ids.len() > max_documents {
-            return Err(HawdbError::Execution(format!(
+            return Err(HawDBError::Execution(format!(
                 "search projection document hydration requested {} rows, limit is {max_documents}",
                 document_ids.len()
             )));
@@ -2522,7 +2522,7 @@ impl NowledgeMemEmbeddedStoreHandle {
             .config()
             .max_read_result_payload_bytes
             .ok_or_else(|| {
-                HawdbError::Execution(
+                HawDBError::Execution(
                     "admitted search hydration requires max_read_result_payload_bytes".to_string(),
                 )
             })?;
@@ -2540,7 +2540,7 @@ impl NowledgeMemEmbeddedStoreHandle {
                     payload_bytes =
                         payload_bytes.saturating_add(search_document_payload_bytes(document));
                     if payload_bytes > max_payload_bytes {
-                        return Err(HawdbError::Execution(format!(
+                        return Err(HawDBError::Execution(format!(
                             "search projection document hydration produced {payload_bytes} payload bytes, limit is {max_payload_bytes}"
                         )));
                     }
@@ -2556,7 +2556,7 @@ impl NowledgeMemEmbeddedStoreHandle {
                 if output.metrics.hydrated_bytes
                     > u64::try_from(max_payload_bytes).unwrap_or(u64::MAX)
                 {
-                    return Err(HawdbError::Execution(format!(
+                    return Err(HawDBError::Execution(format!(
                         "search projection document hydration produced {} payload bytes, limit is {max_payload_bytes}",
                         output.metrics.hydrated_bytes
                     )));
@@ -2688,12 +2688,12 @@ impl NowledgeMemEmbeddedStoreHandle {
         operation: impl FnOnce(&mut NowledgeMemReadSnapshot<'_>) -> Result<T>,
     ) -> Result<T> {
         if budget.max_rows == 0 {
-            return Err(HawdbError::Execution(
+            return Err(HawDBError::Execution(
                 "bounded read snapshot requires max_rows greater than zero".to_string(),
             ));
         }
         if budget.max_payload_bytes == 0 {
-            return Err(HawdbError::Execution(
+            return Err(HawDBError::Execution(
                 "bounded read snapshot requires max_payload_bytes greater than zero".to_string(),
             ));
         }
@@ -2707,12 +2707,12 @@ impl NowledgeMemEmbeddedStoreHandle {
             .config()
             .max_read_result_rows
             .ok_or_else(|| {
-                HawdbError::Execution(
+                HawDBError::Execution(
                     "bounded read snapshot requires max_read_result_rows".to_string(),
                 )
             })?;
         if budget.max_rows > configured_rows {
-            return Err(HawdbError::Execution(format!(
+            return Err(HawDBError::Execution(format!(
                 "bounded read snapshot row budget {} exceeds configured limit {configured_rows}",
                 budget.max_rows
             )));
@@ -2756,11 +2756,11 @@ impl NowledgeMemEmbeddedStoreHandle {
         &self,
         encoded_graph_stream: &str,
         encoded_relational_stream: &[u8],
-        manifest: &HawdbLightningBootstrapManifest,
+        manifest: &HawDBLightningBootstrapManifest,
         projection_freshness: Option<&SearchProjectionFreshness>,
-        checkpoint: Option<&HawdbLightningInitialImportCheckpoint>,
-        document_identities: &[HawdbLightningInitialImportDocumentIdentity],
-    ) -> Result<HawdbLightningInitialImportApplyReport> {
+        checkpoint: Option<&HawDBLightningInitialImportCheckpoint>,
+        document_identities: &[HawDBLightningInitialImportDocumentIdentity],
+    ) -> Result<HawDBLightningInitialImportApplyReport> {
         let estimated_input_bytes = encoded_graph_stream
             .len()
             .saturating_add(encoded_relational_stream.len())
@@ -3055,7 +3055,7 @@ impl NowledgeMemEmbeddedStoreHandle {
         &self,
         controls: NowledgeMemCutoverControls,
         route_ownership: Option<&NowledgeMemRouteOwnershipReadinessReport>,
-        initial_import_cutover_catch_up: Option<&HawdbLightningInitialImportCutoverCatchUpReport>,
+        initial_import_cutover_catch_up: Option<&HawDBLightningInitialImportCutoverCatchUpReport>,
     ) -> Result<NowledgeMemCutoverControlsReport> {
         Ok(self
             .read_store()?
@@ -3070,7 +3070,7 @@ impl NowledgeMemEmbeddedStoreHandle {
         &self,
         controls: NowledgeMemCutoverControls,
         route_ownership: Option<&NowledgeMemRouteOwnershipReadinessReport>,
-        initial_import_recovery: Option<&HawdbLightningInitialImportRecoveryReadinessReport>,
+        initial_import_recovery: Option<&HawDBLightningInitialImportRecoveryReadinessReport>,
     ) -> Result<NowledgeMemCutoverControlsReport> {
         Ok(self
             .read_store()?
@@ -3095,7 +3095,7 @@ impl NowledgeMemEmbeddedStoreHandle {
         &self,
         controls: NowledgeMemCutoverControls,
         route_ownership: Option<&NowledgeMemRouteOwnershipReadinessReport>,
-        initial_import_cutover_catch_up: Option<&HawdbLightningInitialImportCutoverCatchUpReport>,
+        initial_import_cutover_catch_up: Option<&HawDBLightningInitialImportCutoverCatchUpReport>,
     ) -> Result<serde_json::Value> {
         Ok(self
             .read_store()?
@@ -3295,12 +3295,12 @@ impl NowledgeMemEmbeddedStoreHandle {
         let store = self.read_store()?;
         let config = store.graph.database().config();
         let configured_result_bytes = config.max_read_result_payload_bytes.ok_or_else(|| {
-            HawdbError::Execution(
+            HawDBError::Execution(
                 "admitted typed read requires max_read_result_payload_bytes".to_string(),
             )
         })?;
         if max_estimated_payload_bytes > configured_result_bytes {
-            return Err(HawdbError::Execution(format!(
+            return Err(HawDBError::Execution(format!(
                 "typed read payload budget {max_estimated_payload_bytes} exceeds configured limit {configured_result_bytes}"
             )));
         }
@@ -3340,13 +3340,13 @@ impl NowledgeMemEmbeddedStoreHandle {
         let result_bytes = config
             .max_read_result_payload_bytes
             .ok_or_else(|| {
-                HawdbError::Execution(
+                HawDBError::Execution(
                     "admitted typed search requires max_read_result_payload_bytes".to_string(),
                 )
             })
             .and_then(|bytes| {
                 u64::try_from(bytes).map_err(|_| {
-                    HawdbError::Execution(
+                    HawDBError::Execution(
                         "admitted typed search result budget exceeds u64".to_string(),
                     )
                 })
@@ -3386,7 +3386,7 @@ impl NowledgeMemEmbeddedStoreHandle {
                 config.mutation_limits.max_result_payload_bytes.get()
             } else {
                 config.max_read_result_payload_bytes.ok_or_else(|| {
-                    HawdbError::Execution(
+                    HawDBError::Execution(
                         "admitted transaction requires max_read_result_payload_bytes".to_string(),
                     )
                 })?
@@ -3405,13 +3405,13 @@ impl NowledgeMemEmbeddedStoreHandle {
 
     fn read_store(&self) -> Result<RwLockReadGuard<'_, NowledgeMemEmbeddedStore>> {
         self.inner.read().map_err(|_| {
-            HawdbError::Execution("nowledge mem embedded store read lock poisoned".to_string())
+            HawDBError::Execution("nowledge mem embedded store read lock poisoned".to_string())
         })
     }
 
     fn write_store(&self) -> Result<RwLockWriteGuard<'_, NowledgeMemEmbeddedStore>> {
         self.inner.write().map_err(|_| {
-            HawdbError::Execution("nowledge mem embedded store write lock poisoned".to_string())
+            HawDBError::Execution("nowledge mem embedded store write lock poisoned".to_string())
         })
     }
 }
@@ -3546,7 +3546,7 @@ impl NowledgeMemEmbeddedStore {
             NowledgeMemSearchProjectionOpenMode::QualifiedOutOfCore(qualified) => {
                 let graph_commit_epoch = graph.database().commit_epoch();
                 if graph_commit_epoch != qualified.expected_identity.canonical_graph_commit_epoch {
-                    return Err(HawdbError::Storage(format!(
+                    return Err(HawDBError::Storage(format!(
                         "qualified out-of-core search expected canonical graph commit epoch {}, opened graph is at {graph_commit_epoch}",
                         qualified.expected_identity.canonical_graph_commit_epoch
                     )));
@@ -3728,7 +3728,7 @@ impl NowledgeMemEmbeddedStore {
         &self,
         controls: NowledgeMemCutoverControls,
         route_ownership: Option<&NowledgeMemRouteOwnershipReadinessReport>,
-        initial_import_cutover_catch_up: Option<&HawdbLightningInitialImportCutoverCatchUpReport>,
+        initial_import_cutover_catch_up: Option<&HawDBLightningInitialImportCutoverCatchUpReport>,
     ) -> NowledgeMemCutoverControlsReport {
         NowledgeMemCutoverControlsReport::from_production_status(
             controls,
@@ -3741,7 +3741,7 @@ impl NowledgeMemEmbeddedStore {
         &self,
         controls: NowledgeMemCutoverControls,
         route_ownership: Option<&NowledgeMemRouteOwnershipReadinessReport>,
-        initial_import_recovery: Option<&HawdbLightningInitialImportRecoveryReadinessReport>,
+        initial_import_recovery: Option<&HawDBLightningInitialImportRecoveryReadinessReport>,
     ) -> NowledgeMemCutoverControlsReport {
         let recovery_ready = initial_import_recovery.is_some_and(|report| {
             report.ready
@@ -3781,7 +3781,7 @@ impl NowledgeMemEmbeddedStore {
         &self,
         controls: NowledgeMemCutoverControls,
         route_ownership: Option<&NowledgeMemRouteOwnershipReadinessReport>,
-        initial_import_cutover_catch_up: Option<&HawdbLightningInitialImportCutoverCatchUpReport>,
+        initial_import_cutover_catch_up: Option<&HawDBLightningInitialImportCutoverCatchUpReport>,
     ) -> serde_json::Value {
         self.cutover_controls_report_with_initial_import_cutover_catch_up(
             controls,
@@ -4593,12 +4593,12 @@ impl NowledgeMemEmbeddedStore {
     }
 }
 
-fn missing_search_projection_error() -> HawdbError {
-    HawdbError::Storage("nowledge mem search projection is not configured".to_string())
+fn missing_search_projection_error() -> HawDBError {
+    HawDBError::Storage("nowledge mem search projection is not configured".to_string())
 }
 
-fn ambiguous_search_projection_error() -> HawdbError {
-    HawdbError::Storage("nowledge mem search projection ownership is ambiguous".to_string())
+fn ambiguous_search_projection_error() -> HawDBError {
+    HawDBError::Storage("nowledge mem search projection ownership is ambiguous".to_string())
 }
 
 fn require_search_projection_mut(
@@ -5242,14 +5242,14 @@ fn bounded_nowledge_mem_read_output(
     let report =
         nowledge_mem_read_report(mode, &bounded.output, options, &bounded.execution_profile);
     if report.row_budget_exceeded {
-        return Err(HawdbError::Execution(format!(
+        return Err(HawDBError::Execution(format!(
             "nowledge mem read query returned {} rows, exceeding max_rows {}",
             report.row_count,
             report.max_rows.unwrap_or_default()
         )));
     }
     if report.payload_budget_exceeded {
-        return Err(HawdbError::Execution(format!(
+        return Err(HawDBError::Execution(format!(
             "nowledge mem read query estimated {} payload bytes, exceeding max_estimated_payload_bytes {}",
             report.estimated_payload_bytes,
             report.max_estimated_payload_bytes.unwrap_or_default()
@@ -5279,18 +5279,18 @@ fn streamed_nowledge_mem_read_output(
 }
 
 fn legacy_nowledge_mem_read_error(
-    error: HawdbError,
+    error: HawDBError,
     options: &NowledgeMemReadOptions,
-) -> HawdbError {
+) -> HawDBError {
     let Some(max_payload_bytes) = options.max_estimated_payload_bytes else {
         return error;
     };
     if matches!(
         &error,
-        HawdbError::Execution(message)
+        HawDBError::Execution(message)
             if message.contains(&format!("max_payload_bytes {max_payload_bytes}"))
     ) {
-        return HawdbError::Execution(format!(
+        return HawDBError::Execution(format!(
             "nowledge mem read query payload exceeding max_estimated_payload_bytes {max_payload_bytes}"
         ));
     }
@@ -5389,9 +5389,9 @@ mod tests {
         BackgroundMaintenanceKind, BackgroundMaintenanceOptions, BackgroundWorkHint, Database,
         DatabaseConfig, GraphRagQueryBinding, GraphRagQueryDraft, GraphRagQueryPattern,
         GraphRagQueryPredicate, GraphRagQueryPredicateOperator, GraphRagQueryProjection,
-        GraphRagSchemaContextOptions, HawdbError, HawdbLightningInitialImportCheckpoint,
-        HawdbLightningInitialImportCutoverCatchUpReport,
-        HawdbLightningInitialImportDocumentIdentity, HawdbLightningInitialImportReadinessInputs,
+        GraphRagSchemaContextOptions, HawDBError, HawDBLightningInitialImportCheckpoint,
+        HawDBLightningInitialImportCutoverCatchUpReport,
+        HawDBLightningInitialImportDocumentIdentity, HawDBLightningInitialImportReadinessInputs,
         KnowledgeCandidateScoringPolicy, KnowledgeRetrievalRequest, LocalQosPolicy, LocalQosState,
         NowledgeGraphStatement, ProductionEvidenceBinding, ProductionQualificationIdentity,
         RecoveryMode, SearchEmbeddingManifest, SearchIndex, SearchMode, SearchProjectionDelta,
@@ -5507,7 +5507,7 @@ mod tests {
         graph
             .query(
                 "CREATE (:Memory {id: 'memory-1'})\
-                 -[:MENTIONS]->(:Entity {id: 'entity-1', name: 'Hawdb'})",
+                 -[:MENTIONS]->(:Entity {id: 'entity-1', name: 'HawDB'})",
             )
             .unwrap();
         let handle =
@@ -5553,7 +5553,7 @@ mod tests {
 
         assert_eq!(
             output.output.rows[0].get("entity_name"),
-            Some(&Value::String("Hawdb".to_string()))
+            Some(&Value::String("HawDB".to_string()))
         );
         assert_eq!(output.report.max_rows, Some(2));
         assert!(output.report.row_limit_enforced_before_output);
@@ -6558,7 +6558,7 @@ mod tests {
         let error = handle
             .with_transaction(|transaction| {
                 transaction.query("CREATE (:Memory {id: 'rolled-back'})")?;
-                Err::<(), _>(crate::HawdbError::Execution(
+                Err::<(), _>(crate::HawDBError::Execution(
                     "injected callback failure".to_string(),
                 ))
             })
@@ -8877,13 +8877,13 @@ mod tests {
                     [row] => match row.get("body") {
                         Some(Value::String(body)) => body.clone(),
                         value => {
-                            return Err(HawdbError::Execution(format!(
+                            return Err(HawDBError::Execution(format!(
                                 "thread_messages body expected STRING, got {value:?}"
                             )));
                         }
                     },
                     rows => {
-                        return Err(HawdbError::Execution(format!(
+                        return Err(HawDBError::Execution(format!(
                             "thread_messages hydration returned {} rows",
                             rows.len()
                         )));
@@ -9265,8 +9265,8 @@ mod tests {
     }
 
     fn ready_initial_import_cutover_catch_up_report(
-    ) -> HawdbLightningInitialImportCutoverCatchUpReport {
-        HawdbLightningInitialImportCutoverCatchUpReport {
+    ) -> HawDBLightningInitialImportCutoverCatchUpReport {
+        HawDBLightningInitialImportCutoverCatchUpReport {
             ready: true,
             session_ready_for_cutover: true,
             durable_state_present: true,
@@ -9286,13 +9286,13 @@ mod tests {
     }
 
     fn ready_initial_import_recovery_report(
-    ) -> crate::HawdbLightningInitialImportRecoveryReadinessReport {
+    ) -> crate::HawDBLightningInitialImportRecoveryReadinessReport {
         let mut source = Database::new();
         source
             .query("CREATE (:Memory {id: 'import-root'})-[:LINKS {id: 'import-rel'}]->(:Entity {id: 'import-entity'})")
             .unwrap();
         let export = source.prepare_hawdb_lightning_bootstrap_export().unwrap();
-        let checkpoint = HawdbLightningInitialImportCheckpoint {
+        let checkpoint = HawDBLightningInitialImportCheckpoint {
             protocol_version: 1,
             import_id: "import-controls".to_string(),
             task_id: "import-controls-task".to_string(),
@@ -9321,7 +9321,7 @@ mod tests {
             SearchProjectionKind::Community,
         ]
         .into_iter()
-        .map(|kind| HawdbLightningInitialImportDocumentIdentity {
+        .map(|kind| HawDBLightningInitialImportDocumentIdentity {
             kind,
             document_id: format!("{}:import", kind.as_str()),
         })
@@ -9370,7 +9370,7 @@ mod tests {
 
         let projection_batches = [projection_delta];
         let recovery = source.hawdb_lightning_initial_import_recovery_readiness(
-            HawdbLightningInitialImportReadinessInputs {
+            HawDBLightningInitialImportReadinessInputs {
                 encoded_graph_stream: &export.graph_stream.encoded,
                 encoded_relational_stream: &export.relational_stream.encoded,
                 manifest: &export.manifest,
@@ -9407,8 +9407,8 @@ mod tests {
             dual_writes: NowledgeMemWorkControl::Enabled,
             initial_import: NowledgeMemWorkControl::Enabled,
             projection_catch_up: NowledgeMemWorkControl::Enabled,
-            graph_reads: super::NowledgeMemReadControl::Hawdb,
-            search_reads: super::NowledgeMemReadControl::Hawdb,
+            graph_reads: super::NowledgeMemReadControl::HawDB,
+            search_reads: super::NowledgeMemReadControl::HawDB,
         };
         let catch_up = ready_initial_import_cutover_catch_up_report();
 
@@ -9476,8 +9476,8 @@ mod tests {
             dual_writes: NowledgeMemWorkControl::Enabled,
             initial_import: NowledgeMemWorkControl::Enabled,
             projection_catch_up: NowledgeMemWorkControl::Enabled,
-            graph_reads: super::NowledgeMemReadControl::Hawdb,
-            search_reads: super::NowledgeMemReadControl::Hawdb,
+            graph_reads: super::NowledgeMemReadControl::HawDB,
+            search_reads: super::NowledgeMemReadControl::HawDB,
         };
         let recovery = ready_initial_import_recovery_report();
 
@@ -9861,10 +9861,10 @@ mod tests {
         let db = Database::new();
         let mut graph = NowledgeMemGraph::from_database(db, NowledgeMemGraphMode::WritableCutover);
         graph
-            .query("CREATE (:Memory {id: 'mem-search', title: 'Facade retrieval', content: 'Hawdb replaces LanceDB retrieval'})")
+            .query("CREATE (:Memory {id: 'mem-search', title: 'Facade retrieval', content: 'HawDB replaces LanceDB retrieval'})")
             .unwrap();
         graph
-            .query("CREATE (:Entity {id: 'entity-hawdb', name: 'Hawdb'})")
+            .query("CREATE (:Entity {id: 'entity-hawdb', name: 'HawDB'})")
             .unwrap();
         graph
             .query("MATCH (m:Memory {id: 'mem-search'}), (e:Entity {id: 'entity-hawdb'}) CREATE (m)-[:MENTIONS]->(e)")
@@ -9924,7 +9924,7 @@ mod tests {
         let mut graph =
             NowledgeMemGraph::from_database(Database::new(), NowledgeMemGraphMode::WritableCutover);
         graph
-            .query("CREATE (:Memory {id: 'mem-ooc', title: 'Bounded serving', content: 'Hawdb out of core retrieval'})")
+            .query("CREATE (:Memory {id: 'mem-ooc', title: 'Bounded serving', content: 'HawDB out of core retrieval'})")
             .unwrap();
         graph
             .query("CREATE (:Entity {id: 'entity-ooc', name: 'OutOfCore'})")
@@ -9948,7 +9948,7 @@ mod tests {
                         kind: SearchProjectionKind::Memory,
                         external_id: "mem-ooc".to_string(),
                         title: "Bounded serving".to_string(),
-                        body: "Hawdb out of core retrieval".to_string(),
+                        body: "HawDB out of core retrieval".to_string(),
                         embedding: Some(vec![1.0, 0.0]),
                         source_id: Some("source-ooc".to_string()),
                         metadata: BTreeMap::from([

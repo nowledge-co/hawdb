@@ -1,4 +1,4 @@
-use hawdb_core::{HawdbError, Result};
+use hawdb_core::{HawDBError, Result};
 
 use super::{keyword_matches, Parser};
 
@@ -129,10 +129,10 @@ impl Parser<'_> {
         Some(ch)
     }
 
-    pub(super) fn error(&self, message: &str) -> HawdbError {
+    pub(super) fn error(&self, message: &str) -> HawDBError {
         let (line, column) = self.line_column();
         let near = self.near_fragment();
-        HawdbError::Parse(format!(
+        HawDBError::Parse(format!(
             "{message} at byte {} line {line} column {column} near `{near}`",
             self.pos
         ))

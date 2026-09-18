@@ -7,7 +7,7 @@ use crate::{
     ContentStoreSqlStatementClassification, ContentStoreSqlStatementKind,
     ContentStoreSqlStatementSpec,
 };
-use hawdb::{Database, HawdbError, QueryStreamOptions, RelationalSqlReadProfile, Result, Value};
+use hawdb::{Database, HawDBError, QueryStreamOptions, RelationalSqlReadProfile, Result, Value};
 
 pub(super) const MESSAGE_POINT_SQL: &str =
     "SELECT content_message_id, content FROM thread_messages WHERE content_message_id = $1";
@@ -53,7 +53,7 @@ pub(super) fn require_one_message(
         Some(Value::String(actual)) if actual == content_message_id
     );
     if rows.len() != 1 || !matches_message {
-        return Err(HawdbError::Execution(format!(
+        return Err(HawDBError::Execution(format!(
             "content-store {probe} expected exactly message {content_message_id}, got {rows:?}"
         )));
     }
@@ -87,7 +87,7 @@ pub(super) fn execute_qualified_read(
     expected_rows: usize,
 ) -> Result<ContentStoreRowPageReadReport> {
     let before = database.segment_cache_snapshot().ok_or_else(|| {
-        HawdbError::Execution(
+        HawDBError::Execution(
             "content-store row-page qualification requires a segment cache".to_string(),
         )
     })?;
@@ -103,12 +103,12 @@ pub(super) fn execute_qualified_read(
     let output = profiled.output;
     let execution = execution_evidence(statement, profiled.profile)?;
     let after = database.segment_cache_snapshot().ok_or_else(|| {
-        HawdbError::Execution(
+        HawDBError::Execution(
             "content-store row-page qualification lost its segment cache".to_string(),
         )
     })?;
     if output.rows.len() != expected_rows {
-        return Err(HawdbError::Execution(format!(
+        return Err(HawDBError::Execution(format!(
             "content-store statement {} returned {} rows, expected {expected_rows}",
             statement.name,
             output.rows.len()
@@ -116,7 +116,7 @@ pub(super) fn execute_qualified_read(
     }
     let output_payload_bytes = output.payload_bytes();
     if output_payload_bytes > statement.max_payload_bytes {
-        return Err(HawdbError::Execution(format!(
+        return Err(HawDBError::Execution(format!(
             "content-store statement {} returned {output_payload_bytes} payload bytes, exceeding {}",
             statement.name, statement.max_payload_bytes
         )));
@@ -203,19 +203,19 @@ fn execution_evidence(
         evidence.index_runtime_path.as_str(),
         "authoritative" | "none"
     ) {
-        return Err(HawdbError::Execution(format!(
+        return Err(HawDBError::Execution(format!(
             "content-store statement {} used index runtime {}, expected authoritative or a direct canonical row scan",
             statement.name, evidence.index_runtime_path
         )));
     }
     if evidence.row_runtime_path != "snapshot_rows" {
-        return Err(HawdbError::Execution(format!(
+        return Err(HawDBError::Execution(format!(
             "content-store statement {} used row runtime {}, expected snapshot_rows",
             statement.name, evidence.row_runtime_path
         )));
     }
     if evidence.root_set_digest == "none" {
-        return Err(HawdbError::Execution(format!(
+        return Err(HawDBError::Execution(format!(
             "content-store statement {} did not bind a row root-set digest",
             statement.name
         )));
@@ -223,8 +223,8 @@ fn execution_evidence(
     Ok(evidence)
 }
 
-fn missing_profile(statement: &ContentStoreSqlStatementSpec, field: &str) -> HawdbError {
-    HawdbError::Execution(format!(
+fn missing_profile(statement: &ContentStoreSqlStatementSpec, field: &str) -> HawDBError {
+    HawDBError::Execution(format!(
         "content-store statement {} has no {field} execution evidence",
         statement.name
     ))
@@ -248,7 +248,7 @@ fn cache_delta(
     after: hawdb::SegmentCacheSnapshot,
 ) -> Result<ContentStoreRowPageCacheDelta> {
     if after.pinned_bytes != 0 {
-        return Err(HawdbError::Execution(format!(
+        return Err(HawDBError::Execution(format!(
             "content-store row-page qualification leaked {} pinned cache bytes",
             after.pinned_bytes
         )));
@@ -278,7 +278,7 @@ fn cache_delta(
 
 fn monotonic_delta(name: &str, before: u64, after: u64) -> Result<u64> {
     after.checked_sub(before).ok_or_else(|| {
-        HawdbError::Execution(format!(
+        HawDBError::Execution(format!(
             "content-store row-page qualification observed non-monotonic {name}"
         ))
     })
@@ -289,7 +289,7 @@ pub(super) fn require_matching_results(
     warm: &[ContentStoreRowPageReadReport],
 ) -> Result<()> {
     if cold.len() != warm.len() {
-        return Err(HawdbError::Execution(
+        return Err(HawDBError::Execution(
             "content-store cold and warm read sets have different lengths".to_string(),
         ));
     }
@@ -298,7 +298,7 @@ pub(super) fn require_matching_results(
             || cold.output_rows != warm.output_rows
             || cold.output_sha256 != warm.output_sha256
         {
-            return Err(HawdbError::Execution(format!(
+            return Err(HawDBError::Execution(format!(
                 "content-store cold/warm result mismatch for {}",
                 cold.statement_name
             )));

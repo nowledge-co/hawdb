@@ -3,7 +3,7 @@ use super::{
     QueryAccessControlContext, SharedState,
 };
 use crate::cypher;
-use crate::error::{HawdbError, Result};
+use crate::error::{HawDBError, Result};
 use crate::optimizer::{
     CascadesOptimizer, LogicalPlanRoot, OptimizerCatalog, OptimizerSearchDirective, OptimizerTrace,
     PhysicalPlan,
@@ -454,7 +454,7 @@ pub(super) fn optimized_query_plan_for(
             context.optimizer_search,
         )
         .map_err(|error| {
-            HawdbError::Execution(format!(
+            HawDBError::Execution(format!(
                 "optimizer search directive could not be honored: {error}"
             ))
         })?;

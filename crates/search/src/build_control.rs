@@ -1,6 +1,6 @@
 //! Cooperative controls for one mutable projection build, never its readers.
 
-use crate::error::{HawdbError, Result};
+use crate::error::{HawDBError, Result};
 use hawdb_core::RuntimeTaskContext;
 use hawdb_integrity::Crc32cHasher;
 use std::io::{self, Write};
@@ -13,7 +13,7 @@ pub(crate) fn checkpoint(context: &RuntimeTaskContext) -> Result<()> {
     observation::record();
     context
         .checkpoint()
-        .map_err(|reason| HawdbError::Execution(format!("search generation build {reason}")))
+        .map_err(|reason| HawDBError::Execution(format!("search generation build {reason}")))
 }
 
 pub(crate) fn write_checksummed(

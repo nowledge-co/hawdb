@@ -1,6 +1,6 @@
 # Cypher Yacc experiment
 
-This standalone package measures a Yacc-generated parser against Hawdb's
+This standalone package measures a Yacc-generated parser against HawDB's
 production hand-written parser without adding parser-generator dependencies to
 the workspace build.
 

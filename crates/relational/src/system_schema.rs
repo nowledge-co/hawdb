@@ -1,4 +1,4 @@
-use hawdb_core::{HawdbError, Result, Value};
+use hawdb_core::{HawDBError, Result, Value};
 use hawdb_executor::QueryRowRef;
 use hawdb_integrity::IntegrityHasher;
 use hawdb_sql::SqlStatement;
@@ -136,7 +136,7 @@ impl AppliedSystemSchemaMigration {
     }
 }
 
-/// Returns the append-only registry reserved for Hawdb's own relational
+/// Returns the append-only registry reserved for HawDB's own relational
 /// bootstrap. Hosts may use separate [`SystemSchemaRegistry`] owners.
 #[doc(hidden)]
 pub fn engine_system_schema_registry() -> SystemSchemaRegistry {
@@ -159,13 +159,13 @@ pub fn validate_system_schema_registry(registry: &SystemSchemaRegistry) -> Resul
             .bytes()
             .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'.' | b'_' | b'-'))
     {
-        return Err(HawdbError::Semantic(
+        return Err(HawDBError::Semantic(
             "system schema owner must contain 1-128 ASCII letters, digits, '.', '_' or '-'"
                 .to_string(),
         ));
     }
     if registry.migrations.is_empty() {
-        return Err(HawdbError::Semantic(format!(
+        return Err(HawDBError::Semantic(format!(
             "system schema {} requires at least one migration",
             registry.owner
         )));
@@ -173,13 +173,13 @@ pub fn validate_system_schema_registry(registry: &SystemSchemaRegistry) -> Resul
     for (index, migration) in registry.migrations.iter().enumerate() {
         let expected = u64::try_from(index).unwrap_or(u64::MAX).saturating_add(1);
         if migration.version != expected {
-            return Err(HawdbError::Semantic(format!(
+            return Err(HawDBError::Semantic(format!(
                 "system schema {} migrations must be contiguous from version 1; expected {}, got {}",
                 registry.owner, expected, migration.version
             )));
         }
         if migration.name.is_empty() || migration.name.len() > 128 {
-            return Err(HawdbError::Semantic(format!(
+            return Err(HawDBError::Semantic(format!(
                 "system schema {} migration {} requires a 1-128 byte name",
                 registry.owner, migration.version
             )));
@@ -190,13 +190,13 @@ pub fn validate_system_schema_registry(registry: &SystemSchemaRegistry) -> Resul
                 .iter()
                 .any(|statement| statement.trim().is_empty())
         {
-            return Err(HawdbError::Semantic(format!(
+            return Err(HawDBError::Semantic(format!(
                 "system schema {} migration {} requires non-empty SQL statements",
                 registry.owner, migration.version
             )));
         }
         i64::try_from(migration.version).map_err(|_| {
-            HawdbError::Semantic(format!(
+            HawDBError::Semantic(format!(
                 "system schema {} migration version {} exceeds BIGINT",
                 registry.owner, migration.version
             ))
@@ -205,7 +205,7 @@ pub fn validate_system_schema_registry(registry: &SystemSchemaRegistry) -> Resul
     Ok(())
 }
 
-/// Identifies statements that may mutate Hawdb's internal migration registry.
+/// Identifies statements that may mutate HawDB's internal migration registry.
 ///
 /// The embedded facade owns authorization and transaction handling; the
 /// relational owner defines which SQL AST shapes target the registry.
@@ -229,7 +229,7 @@ pub fn statement_writes_system_schema_registry(statement: &SqlStatement) -> bool
     })
 }
 
-/// Validates the durable shape of Hawdb's own schema migration registry.
+/// Validates the durable shape of HawDB's own schema migration registry.
 #[doc(hidden)]
 pub fn validate_engine_system_schema_registry_table(state: &RelationalState) -> Result<()> {
     let expected = crate::compile_relational_statement_sql(
@@ -238,17 +238,17 @@ pub fn validate_engine_system_schema_registry_table(state: &RelationalState) -> 
         &RelationalState::default(),
     )?;
     let Some(RelationalWrite::CreateTable(expected)) = expected.writes.into_iter().next() else {
-        return Err(HawdbError::Execution(
+        return Err(HawDBError::Execution(
             "system schema registry DDL did not compile to CREATE TABLE".to_string(),
         ));
     };
     let actual = state
         .table_schema(ENGINE_SYSTEM_SCHEMA_REGISTRY_TABLE)
         .ok_or_else(|| {
-            HawdbError::Storage("system schema registry table disappeared during open".to_string())
+            HawDBError::Storage("system schema registry table disappeared during open".to_string())
         })?;
     if actual != &expected {
-        return Err(HawdbError::Storage(
+        return Err(HawDBError::Storage(
             "system schema registry table does not match the engine definition".to_string(),
         ));
     }
@@ -282,12 +282,12 @@ pub fn decode_applied_system_schema_migration_query_row(
 ) -> Result<AppliedSystemSchemaMigration> {
     let version = match row.get("version") {
         Some(Value::Int(version)) => u64::try_from(*version).map_err(|_| {
-            HawdbError::Storage(format!(
+            HawDBError::Storage(format!(
                 "system schema {owner} contains a negative migration version"
             ))
         })?,
         _ => {
-            return Err(HawdbError::Storage(format!(
+            return Err(HawDBError::Storage(format!(
                 "system schema {owner} contains an invalid migration version"
             )))
         }
@@ -295,7 +295,7 @@ pub fn decode_applied_system_schema_migration_query_row(
     let name = match row.get("name") {
         Some(Value::String(name)) => name.clone(),
         _ => {
-            return Err(HawdbError::Storage(format!(
+            return Err(HawDBError::Storage(format!(
                 "system schema {owner} contains an invalid migration name"
             )))
         }
@@ -303,7 +303,7 @@ pub fn decode_applied_system_schema_migration_query_row(
     let checksum = match row.get("checksum") {
         Some(Value::String(checksum)) => checksum.clone(),
         _ => {
-            return Err(HawdbError::Storage(format!(
+            return Err(HawDBError::Storage(format!(
                 "system schema {owner} contains an invalid migration checksum"
             )))
         }
@@ -326,12 +326,12 @@ pub fn validate_applied_system_schema_migrations(
         && registry_table_present
         && applied.is_empty()
     {
-        return Err(HawdbError::Storage(
+        return Err(HawDBError::Storage(
             "system schema registry exists without its engine migration record".to_string(),
         ));
     }
     if applied.len() > registry.migrations().len() {
-        return Err(HawdbError::Storage(format!(
+        return Err(HawDBError::Storage(format!(
             "system schema {} is at future version {}, binary supports {}",
             registry.owner(),
             applied
@@ -347,7 +347,7 @@ pub fn validate_applied_system_schema_migrations(
             || actual.name != expected.name()
             || actual.checksum != expected_checksum
         {
-            return Err(HawdbError::Storage(format!(
+            return Err(HawDBError::Storage(format!(
                 "system schema {} migration {} checksum or identity drifted",
                 registry.owner(),
                 actual.version
@@ -357,7 +357,7 @@ pub fn validate_applied_system_schema_migrations(
     Ok(())
 }
 
-/// Validates the state expected by a Hawdb Lightning relational export.
+/// Validates the state expected by a HawDB Lightning relational export.
 #[doc(hidden)]
 pub fn validate_engine_system_schema_state(state: &RelationalState) -> Result<()> {
     validate_engine_system_schema_registry_table(state)?;
@@ -366,13 +366,13 @@ pub fn validate_engine_system_schema_state(state: &RelationalState) -> Result<()
     validate_applied_system_schema_migrations(&registry, &applied, true)
 }
 
-/// Creates the Hawdb registry in a materialized relational snapshot when it
+/// Creates the HawDB registry in a materialized relational snapshot when it
 /// is absent, or validates the exact existing registry when it is present.
 #[doc(hidden)]
 pub fn state_with_engine_system_schema(state: &RelationalState) -> Result<RelationalState> {
     state
-        .require_materialized_rows("Hawdb Lightning relational export")
-        .map_err(|error| HawdbError::Storage(error.to_string()))?;
+        .require_materialized_rows("HawDB Lightning relational export")
+        .map_err(|error| HawDBError::Storage(error.to_string()))?;
     if state
         .table_schema(ENGINE_SYSTEM_SCHEMA_REGISTRY_TABLE)
         .is_some()
@@ -394,7 +394,7 @@ pub fn state_with_engine_system_schema(state: &RelationalState) -> Result<Relati
             RelationalMutationLimits::default(),
             RelationalOverflowConfig::default(),
         )
-        .map_err(|error| HawdbError::Storage(error.to_string()))?;
+        .map_err(|error| HawDBError::Storage(error.to_string()))?;
     let insert = crate::compile_relational_statement_sql(
         ENGINE_SYSTEM_SCHEMA_REGISTRY_INSERT_SQL,
         &[
@@ -418,7 +418,7 @@ pub fn state_with_engine_system_schema(state: &RelationalState) -> Result<Relati
             RelationalMutationLimits::default(),
             RelationalOverflowConfig::default(),
         )
-        .map_err(|error| HawdbError::Storage(error.to_string()))
+        .map_err(|error| HawDBError::Storage(error.to_string()))
 }
 
 /// Returns whether the state consists only of the engine registry bootstrap.
@@ -442,12 +442,12 @@ fn decode_applied_system_schema_migration_row(
 ) -> Result<AppliedSystemSchemaMigration> {
     let version = match row.values().get(2) {
         Some(RelationalValue::BigInt(version)) => u64::try_from(*version).map_err(|_| {
-            HawdbError::Storage(format!(
+            HawDBError::Storage(format!(
                 "system schema {owner} contains a negative migration version"
             ))
         })?,
         _ => {
-            return Err(HawdbError::Storage(format!(
+            return Err(HawDBError::Storage(format!(
                 "system schema {owner} contains an invalid migration version"
             )))
         }
@@ -455,7 +455,7 @@ fn decode_applied_system_schema_migration_row(
     let name = match row.values().get(3) {
         Some(RelationalValue::Text(name)) => name.clone(),
         _ => {
-            return Err(HawdbError::Storage(format!(
+            return Err(HawDBError::Storage(format!(
                 "system schema {owner} contains an invalid migration name"
             )))
         }
@@ -463,7 +463,7 @@ fn decode_applied_system_schema_migration_row(
     let checksum = match row.values().get(4) {
         Some(RelationalValue::Text(checksum)) => checksum.clone(),
         _ => {
-            return Err(HawdbError::Storage(format!(
+            return Err(HawDBError::Storage(format!(
                 "system schema {owner} contains an invalid migration checksum"
             )))
         }

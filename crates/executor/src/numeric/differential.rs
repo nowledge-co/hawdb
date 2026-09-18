@@ -147,7 +147,7 @@ fn check_case(seed: usize, batch_rows: usize, path: Path, exit: Exit) {
         match exit {
             Exit::Complete => Ok(BatchControl::Continue),
             Exit::Stop => Ok(BatchControl::Stop),
-            Exit::Error => Err(HawdbError::Execution("numeric consumer failure".into())),
+            Exit::Error => Err(HawDBError::Execution("numeric consumer failure".into())),
         }
     };
     let mut emitter = NumericBatchEmitter::new(fragment, &items, limit, None, &observer, &mut emit);

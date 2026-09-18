@@ -1,5 +1,5 @@
 use crate::analytics::ProjectedGraph;
-use crate::error::{HawdbError, Result};
+use crate::error::{HawDBError, Result};
 use crate::schema::{
     AdvancedStatisticsFreshness, BasicGraphStatistics, Catalog, ConstraintId, GraphStatistics,
     IndexId, IndexKind, IndexStatisticsSample, LabelId, PropertyId, PropertyType, RelTypeId,
@@ -352,7 +352,7 @@ fn checkpoint_publish_failpoint(stage: CheckpointPublishStage) -> Result<()> {
     }
     #[cfg(test)]
     if CHECKPOINT_FAILPOINT.with(|failpoint| failpoint.get()) == Some(stage) {
-        return Err(HawdbError::Storage(format!(
+        return Err(HawDBError::Storage(format!(
             "injected checkpoint failure at {stage:?}"
         )));
     }
@@ -422,7 +422,7 @@ fn wal_apply_failpoint() -> Result<()> {
             None => false,
         });
         if should_fail {
-            return Err(HawdbError::Storage(
+            return Err(HawDBError::Storage(
                 "injected failure while applying a durable WAL batch".to_string(),
             ));
         }
@@ -498,7 +498,7 @@ pub(crate) fn set_wal_group_sync_failpoint(enabled: bool) {
 fn wal_group_sync_failpoint() -> Result<()> {
     #[cfg(test)]
     if WAL_GROUP_SYNC_FAILPOINT.with(std::cell::Cell::take) {
-        return Err(HawdbError::Storage(
+        return Err(HawDBError::Storage(
             "injected WAL group sync failure".to_string(),
         ));
     }
@@ -510,7 +510,7 @@ type PendingRelationship = (RelId, NodeId, NodeId, RelTypeId, BTreeMap<String, V
 pub type GraphSnapshotNodeImport = (NodeId, String, BTreeMap<String, Value>);
 pub type GraphSnapshotRelationshipImport = (RelId, NodeId, NodeId, String, BTreeMap<String, Value>);
 
-pub(crate) struct HawdbSnapshotRowsImport {
+pub(crate) struct HawDBSnapshotRowsImport {
     pub stable_id_mapping: StoreStableIdMapping,
     pub source_fingerprint: String,
     pub nodes: Vec<GraphSnapshotNodeImport>,
@@ -718,7 +718,7 @@ pub struct GraphStore {
     relational_row_pages: RelationalRowPageState,
     projection_generations: Option<hawdb_storage::ProjectionGenerationStore>,
     /// The engine's runtime governor, threaded down from the embedding
-    /// layer (`HawdbEmbedded` / `NowledgeMemGraph`) so background shadow
+    /// layer (`HawDBEmbedded` / `NowledgeMemGraph`) so background shadow
     /// work can request admission. The store never constructs its own.
     runtime_governor: Option<Arc<dyn hawdb_storage::BackgroundWorkAdmission>>,
     durable: Option<DurableStore>,
@@ -765,8 +765,8 @@ pub use hawdb_storage::{
 
 pub use hawdb_storage::graph_overlay::{GraphNodeIterator, GraphRelationshipIterator};
 
-fn canonical_segment_error(error: CanonicalSegmentError) -> HawdbError {
-    HawdbError::StorageIntegrity(error.to_string())
+fn canonical_segment_error(error: CanonicalSegmentError) -> HawDBError {
+    HawDBError::StorageIntegrity(error.to_string())
 }
 
 /// Result of reading Source scan sidecar candidates. The rows have passed
@@ -1060,7 +1060,7 @@ fn collect_graph_lock_footprint(
             WalOp::DeleteRelationship { id } => {
                 footprint.relationship_writes.insert(*id);
                 let relationship = before.relationship_owned(*id)?.ok_or_else(|| {
-                    HawdbError::Execution(format!(
+                    HawDBError::Execution(format!(
                         "deleted relationship {} is missing while deriving transaction locks",
                         id.0
                     ))
@@ -1149,13 +1149,13 @@ impl GraphStore {
 
     pub(crate) fn ensure_usable(&self) -> Result<()> {
         if self.integrity_poisoned.load(AtomicOrdering::Acquire) {
-            return Err(HawdbError::Storage(
+            return Err(HawDBError::Storage(
                 "database handle is poisoned after a runtime storage integrity failure; close and reopen the database before issuing more operations"
                     .to_string(),
             ));
         }
         if self.post_wal_apply_poisoned {
-            return Err(HawdbError::Storage(
+            return Err(HawDBError::Storage(
                 "database handle is poisoned after a durable WAL batch failed during in-memory apply; close and reopen the database before issuing more operations"
                     .to_string(),
             ));
@@ -1172,7 +1172,7 @@ impl GraphStore {
         &self,
     ) -> Result<hawdb_storage::ProjectionGenerationStore> {
         self.projection_generations.clone().ok_or_else(|| {
-            HawdbError::Storage(
+            HawDBError::Storage(
                 "projection generation catalog requires a durable database".to_string(),
             )
         })
@@ -1183,7 +1183,7 @@ impl GraphStore {
     }
 
     pub(crate) fn poison_on_storage_error<T>(&self, result: &Result<T>) {
-        if matches!(result, Err(HawdbError::StorageIntegrity(_))) {
+        if matches!(result, Err(HawDBError::StorageIntegrity(_))) {
             self.integrity_poisoned.store(true, AtomicOrdering::Release);
         }
     }
@@ -1280,7 +1280,7 @@ impl GraphStore {
         replay_config: WalReplayConfig,
     ) -> Result<Self> {
         if replay_config.recovery_mode == RecoveryMode::DoctorRepairTornTail {
-            return Err(HawdbError::Storage(
+            return Err(HawDBError::Storage(
                 "WAL repair is not available through database open; use DatabaseDoctor to plan and explicitly apply repair before opening in strict mode"
                     .to_string(),
             ));
@@ -1288,7 +1288,7 @@ impl GraphStore {
         if matches!(mode, DurableOpenMode::ExistingOnly)
             && replay_config.recovery_mode == RecoveryMode::AutoRepairTornTail
         {
-            return Err(HawdbError::Storage(
+            return Err(HawDBError::Storage(
                 "automatic WAL tail repair requires a writable database open".to_string(),
             ));
         }
@@ -1343,7 +1343,7 @@ impl GraphStore {
                     hawdb_storage::ProjectionGenerationStore::open_existing(
                         &projection_generation_root,
                     )
-                    .map_err(|error| HawdbError::Storage(error.to_string()))?,
+                    .map_err(|error| HawDBError::Storage(error.to_string()))?,
                 )
             } else {
                 None
@@ -1351,7 +1351,7 @@ impl GraphStore {
         } else {
             Some(
                 hawdb_storage::ProjectionGenerationStore::open(&projection_generation_root)
-                    .map_err(|error| HawdbError::Storage(error.to_string()))?,
+                    .map_err(|error| HawDBError::Storage(error.to_string()))?,
             )
         };
         let mut store = Self {
@@ -1454,7 +1454,7 @@ impl GraphStore {
         replay_config: WalReplayConfig,
     ) -> Result<(Self, Catalog, Catalog)> {
         if replay_config.recovery_mode != RecoveryMode::Strict {
-            return Err(HawdbError::Storage(
+            return Err(HawDBError::Storage(
                 "derived repair requires strict WAL replay".to_string(),
             ));
         }
@@ -1484,7 +1484,7 @@ impl GraphStore {
 
     fn enable_derived_repair_writes(&mut self) -> Result<()> {
         let durable = self.durable.as_mut().ok_or_else(|| {
-            HawdbError::Storage("derived repair requires durable storage".to_string())
+            HawDBError::Storage("derived repair requires durable storage".to_string())
         })?;
         durable.read_only = false;
         Ok(())
@@ -1672,7 +1672,7 @@ impl GraphStore {
             .as_ref()
             .is_some_and(|durable| durable.read_only)
         {
-            return Err(HawdbError::Storage(
+            return Err(HawDBError::Storage(
                 "stable id mapping persistence is not allowed in read-only mode".to_string(),
             ));
         }
@@ -1695,7 +1695,7 @@ impl GraphStore {
             .as_ref()
             .is_some_and(|durable| durable.read_only)
         {
-            return Err(HawdbError::Storage(
+            return Err(HawDBError::Storage(
                 "stable id mapping persistence is not allowed in read-only mode".to_string(),
             ));
         }
@@ -1913,7 +1913,7 @@ fn validate_property_descriptor_with_table_state(
     force: bool,
 ) -> Result<()> {
     let Some(table) = catalog.table_descriptor(table_id) else {
-        return Err(HawdbError::Storage(format!(
+        return Err(HawDBError::Storage(format!(
             "property schema references missing table {}",
             table_id.0
         )));
@@ -2061,7 +2061,7 @@ fn validate_changed_node_uniqueness(
             }
             if let Some(previous) = changed_values.insert(value.clone(), node.id) {
                 let label = catalog.label_name(label_id).unwrap_or("<unknown>");
-                return Err(HawdbError::Storage(format!(
+                return Err(HawDBError::Storage(format!(
                     "unique constraint violation on :{label}({}) for nodes {} and {}",
                     constraint.property, previous.0, node.id.0
                 )));
@@ -2082,7 +2082,7 @@ fn validate_changed_node_uniqueness(
             })?;
             if let Some(existing_id) = violation {
                 let label = catalog.label_name(label_id).unwrap_or("<unknown>");
-                return Err(HawdbError::Storage(format!(
+                return Err(HawDBError::Storage(format!(
                     "unique constraint violation on :{label}({}) for nodes {} and {}",
                     constraint.property, existing_id.0, changed_id.0
                 )));
@@ -2114,7 +2114,7 @@ fn validate_changed_relationship_uniqueness(
             }
             if let Some(previous) = changed_values.insert(value.clone(), relationship.id) {
                 let rel_type = catalog.rel_type_name(rel_type_id).unwrap_or("<unknown>");
-                return Err(HawdbError::Storage(format!(
+                return Err(HawDBError::Storage(format!(
                     "relationship unique constraint violation on :{rel_type}({}) for relationships {} and {}",
                     constraint.property, previous.0, relationship.id.0
                 )));
@@ -2135,7 +2135,7 @@ fn validate_changed_relationship_uniqueness(
             })?;
             if let Some(existing_id) = violation {
                 let rel_type = catalog.rel_type_name(rel_type_id).unwrap_or("<unknown>");
-                return Err(HawdbError::Storage(format!(
+                return Err(HawDBError::Storage(format!(
                     "relationship unique constraint violation on :{rel_type}({}) for relationships {} and {}",
                     constraint.property, existing_id.0, changed_id.0
                 )));
@@ -2176,7 +2176,7 @@ fn validate_unique_property_streaming(
         }
         if let Some(duplicate) = duplicate {
             let label = catalog.label_name(label_id).unwrap_or("<unknown>");
-            validation_error = Some(HawdbError::Storage(format!(
+            validation_error = Some(HawDBError::Storage(format!(
                 "unique constraint violation on :{label}({property}) for nodes {} and {}",
                 node.id.0, duplicate.0
             )));
@@ -2221,7 +2221,7 @@ fn validate_unique_relationship_property_streaming(
         }
         if let Some(duplicate) = duplicate {
             let rel_type = catalog.rel_type_name(rel_type_id).unwrap_or("<unknown>");
-            validation_error = Some(HawdbError::Storage(format!(
+            validation_error = Some(HawDBError::Storage(format!(
                 "relationship unique constraint violation on :{rel_type}({property}) for relationships {} and {}",
                 relationship.id.0, duplicate.0
             )));
@@ -2433,7 +2433,7 @@ fn relationships_with_pending_matching_bounded(
             properties: relationship.properties.clone(),
         });
         if relationships.len() > max_relationships {
-            return Err(HawdbError::Execution(format!(
+            return Err(HawDBError::Execution(format!(
                 "mutation would exceed max_mutation_affected_rows {max_relationships}"
             )));
         }
@@ -2465,7 +2465,7 @@ fn relationships_with_pending_matching_bounded(
             properties: properties.clone(),
         });
         if relationships.len() > max_relationships {
-            return Err(HawdbError::Execution(format!(
+            return Err(HawDBError::Execution(format!(
                 "mutation would exceed max_mutation_affected_rows {max_relationships}"
             )));
         }
@@ -2578,20 +2578,20 @@ fn validate_search_projection_checkpoint_changes(
     changes: &[SearchProjectionGraphChange],
 ) -> Result<()> {
     if start_epoch > checkpoint_commit_epoch {
-        return Err(HawdbError::Storage(format!(
+        return Err(HawDBError::Storage(format!(
             "search projection change log start epoch {start_epoch} exceeds checkpoint commit epoch {checkpoint_commit_epoch}"
         )));
     }
     let mut previous_epoch = start_epoch;
     for change in changes {
         if change.commit_epoch <= previous_epoch {
-            return Err(HawdbError::Storage(format!(
+            return Err(HawDBError::Storage(format!(
                 "search projection change commit epoch {} is not greater than previous epoch {previous_epoch}",
                 change.commit_epoch
             )));
         }
         if change.commit_epoch > checkpoint_commit_epoch {
-            return Err(HawdbError::Storage(format!(
+            return Err(HawDBError::Storage(format!(
                 "search projection change commit epoch {} exceeds checkpoint commit epoch {checkpoint_commit_epoch}",
                 change.commit_epoch
             )));
@@ -2601,7 +2601,7 @@ fn validate_search_projection_checkpoint_changes(
             .windows(2)
             .all(|pair| pair[0] < pair[1])
         {
-            return Err(HawdbError::Storage(format!(
+            return Err(HawDBError::Storage(format!(
                 "search projection change at commit epoch {} has unordered or duplicate upsert node ids",
                 change.commit_epoch
             )));
@@ -2611,7 +2611,7 @@ fn validate_search_projection_checkpoint_changes(
             .windows(2)
             .all(|pair| pair[0] < pair[1])
         {
-            return Err(HawdbError::Storage(format!(
+            return Err(HawDBError::Storage(format!(
                 "search projection change at commit epoch {} has unordered or duplicate delete document ids",
                 change.commit_epoch
             )));
@@ -2620,7 +2620,7 @@ fn validate_search_projection_checkpoint_changes(
             &change.relational_primary_key_changes
         {
             if !tables.windows(2).all(|pair| pair[0].table < pair[1].table) {
-                return Err(HawdbError::Storage(format!(
+                return Err(HawDBError::Storage(format!(
                     "search projection change at commit epoch {} has unordered or duplicate relational tables",
                     change.commit_epoch
                 )));
@@ -2629,7 +2629,7 @@ fn validate_search_projection_checkpoint_changes(
                 if table.primary_keys.is_empty()
                     || !table.primary_keys.windows(2).all(|pair| pair[0] < pair[1])
                 {
-                    return Err(HawdbError::Storage(format!(
+                    return Err(HawDBError::Storage(format!(
                         "search projection change at commit epoch {} has empty, unordered, or duplicate primary keys for table {}",
                         change.commit_epoch, table.table
                     )));
@@ -2656,17 +2656,17 @@ fn verify_file_integrity(
 ) -> Result<()> {
     let (actual_len, actual_checksum, actual_sha256) = file_checksum(path)?;
     if actual_len != expected_len {
-        return Err(HawdbError::Storage(format!(
+        return Err(HawDBError::Storage(format!(
             "{artifact} encoded length mismatch: expected {expected_len}, got {actual_len}"
         )));
     }
     if actual_checksum != expected_checksum {
-        return Err(HawdbError::Storage(format!(
+        return Err(HawDBError::Storage(format!(
             "{artifact} CRC32C mismatch: expected {expected_checksum}, got {actual_checksum}"
         )));
     }
     if actual_sha256 != expected_sha256 {
-        return Err(HawdbError::Storage(format!(
+        return Err(HawDBError::Storage(format!(
             "{artifact} SHA-256 mismatch: expected {expected_sha256}, got {actual_sha256}"
         )));
     }
@@ -2702,7 +2702,7 @@ mod tests {
         set_wal_apply_failpoint, source_scan, AdjacencyConsolidationPlan, AdjacencyDirection,
         AdjacencyGroupStats, AdjacencyLayout, CheckpointPublishStage, ConnectedNodesCreate,
         CowSegmentedMap, DatabaseDoctor, DegreeStatisticsEntry, DegreeStatisticsKey,
-        DurableCompression, DurableManifest, GraphScanControl, GraphStore, HawdbError, NodeId,
+        DurableCompression, DurableManifest, GraphScanControl, GraphStore, HawDBError, NodeId,
         NodeRecord, NodeSetAssignment, NodeSetValue, OrderedAdjacencyEntry,
         PersistentGraphIndexClass, ProjectedGraphDefinition, PropertyFilter, RelId, RelRecord,
         RelTypeId, RelationalIndexStorageResidencyReport, RelationalRowStorageResidencyReport,
@@ -5918,7 +5918,7 @@ mod tests {
                 NonZeroU64::new(1024).unwrap(),
             )
             .expect_err("an admitted streaming read must fail closed on corruption");
-        assert!(matches!(error, HawdbError::StorageIntegrity(_)));
+        assert!(matches!(error, HawDBError::StorageIntegrity(_)));
         std::fs::remove_dir_all(path).unwrap();
     }
 
@@ -6989,7 +6989,7 @@ mod tests {
             .to_string();
         let mut catalog = Catalog::default();
         let error = GraphStore::open(&path, &mut catalog).unwrap_err();
-        assert!(matches!(&error, HawdbError::Storage(_)));
+        assert!(matches!(&error, HawDBError::Storage(_)));
         assert!(error
             .to_string()
             .contains("duplicate field: wal_generation"));
@@ -8295,7 +8295,7 @@ mod tests {
                 properties([("payload", value_at_depth(33))]),
             )
             .unwrap_err();
-        assert!(matches!(error, HawdbError::Semantic(_)));
+        assert!(matches!(error, HawDBError::Semantic(_)));
         assert!(error.to_string().contains("nesting exceeds 32"));
         assert_eq!(store.commit_epoch(), commit_epoch);
         assert_eq!(std::fs::metadata(&wal_path).unwrap().len(), wal_len);

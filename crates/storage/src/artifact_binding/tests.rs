@@ -6,7 +6,7 @@ const PAYLOAD: &[u8] = b"123456789";
 
 fn storage_error<T: std::fmt::Debug>(result: Result<T>) -> String {
     let error = result.expect_err("invalid binding admitted");
-    assert!(matches!(&error, HawdbError::Storage(_)), "{error:?}");
+    assert!(matches!(&error, HawDBError::Storage(_)), "{error:?}");
     error.to_string()
 }
 

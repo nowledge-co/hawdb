@@ -3,7 +3,7 @@
 //! Preflight uses the existing storage-neutral execution contracts; the embedding
 //! layer retains transaction admission, atomic commit, and recovery ownership.
 
-use hawdb_core::{HawdbError, Result};
+use hawdb_core::{HawDBError, Result};
 use hawdb_ddl::{object_state_to_core, property_type_to_core, table_kind_to_core};
 use hawdb_plan::{PhysicalPlan, RelationshipOnCreateValue, SetValue};
 use hawdb_storage::{
@@ -299,7 +299,7 @@ pub fn mutation_command(plan: &PhysicalPlan) -> Result<Option<GraphMutation>> {
                     property: property.clone(),
                     value: value.clone(),
                 })),
-                SetValue::Coalesce { .. } => Err(HawdbError::Semantic(
+                SetValue::Coalesce { .. } => Err(HawDBError::Semantic(
                     "COALESCE node SET is not supported in transactional MATCH SET".to_string(),
                 )),
                 SetValue::AddInt { amount, .. } => Ok(Some(GraphMutation::SetNodePropertyAddInt {

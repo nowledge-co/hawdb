@@ -114,7 +114,7 @@ fn nowledge_graph_adapter_transaction_rolls_back_on_parameter_error() {
 #[test]
 fn nowledge_graph_adapter_retrieves_knowledge_with_external_projection() {
     let mut db = Database::new();
-    db.query("CREATE (:Memory {id: 'root', title: 'Root retrieval', content: 'Adapter knowledge retrieval'})-[:MENTIONS]->(:Entity {id: 'entity_1', name: 'Hawdb'})")
+    db.query("CREATE (:Memory {id: 'root', title: 'Root retrieval', content: 'Adapter knowledge retrieval'})-[:MENTIONS]->(:Entity {id: 'entity_1', name: 'HawDB'})")
             .unwrap();
 
     let mut search_index = SearchIndex::in_memory();

@@ -3,7 +3,7 @@
 //! The typed evidence reducer lives in `projection_evidence`; this module only
 //! maps CLI and file inputs to the search owner APIs.
 use crate::{SearchIndex, SearchProjectionProbeOptions};
-use hawdb_core::{HawdbError, Result};
+use hawdb_core::{HawDBError, Result};
 use std::path::Path;
 
 pub use crate::projection_evidence::{
@@ -41,7 +41,7 @@ pub fn run_nowledge_search_projection_evidence(
             }
             path => {
                 if args.next().is_some() {
-                    return Err(HawdbError::Semantic(
+                    return Err(HawDBError::Semantic(
                         nowledge_search_projection_evidence_usage(),
                     ));
                 }
@@ -53,7 +53,7 @@ pub fn run_nowledge_search_projection_evidence(
             }
         }
     }
-    Err(HawdbError::Semantic(
+    Err(HawDBError::Semantic(
         nowledge_search_projection_evidence_usage(),
     ))
 }
@@ -67,26 +67,26 @@ pub fn run_hawdb_search_projection_probe(
             "--active-model" => {
                 options.active_embedding_model =
                     Some(args.next().ok_or_else(|| {
-                        HawdbError::Semantic(hawdb_search_projection_probe_usage())
+                        HawDBError::Semantic(hawdb_search_projection_probe_usage())
                     })?);
             }
             "--active-dimension" => {
                 let raw_dimension = args
                     .next()
-                    .ok_or_else(|| HawdbError::Semantic(hawdb_search_projection_probe_usage()))?;
+                    .ok_or_else(|| HawDBError::Semantic(hawdb_search_projection_probe_usage()))?;
                 options.active_embedding_dimension =
                     Some(parse_positive_usize("--active-dimension", &raw_dimension)?);
             }
             path => {
                 if args.next().is_some() {
-                    return Err(HawdbError::Semantic(hawdb_search_projection_probe_usage()));
+                    return Err(HawDBError::Semantic(hawdb_search_projection_probe_usage()));
                 }
                 let index = SearchIndex::open(path)?;
                 return Ok(index.nowledge_search_projection_probe_json(options));
             }
         }
     }
-    Err(HawdbError::Semantic(hawdb_search_projection_probe_usage()))
+    Err(HawDBError::Semantic(hawdb_search_projection_probe_usage()))
 }
 
 pub fn run_nowledge_search_projection_shadow_evidence(
@@ -102,27 +102,27 @@ pub fn run_nowledge_search_projection_shadow_evidence(
             }
             "--primary-probe-json" => {
                 let path = args.next().ok_or_else(|| {
-                    HawdbError::Semantic(nowledge_search_projection_shadow_evidence_usage())
+                    HawDBError::Semantic(nowledge_search_projection_shadow_evidence_usage())
                 })?;
                 primary_probe = Some(read_json_file(Path::new(&path))?);
             }
             "--shadow-probe-json" => {
                 let path = args.next().ok_or_else(|| {
-                    HawdbError::Semantic(nowledge_search_projection_shadow_evidence_usage())
+                    HawDBError::Semantic(nowledge_search_projection_shadow_evidence_usage())
                 })?;
                 shadow_probe = Some(read_json_file(Path::new(&path))?);
             }
             _ => {
-                return Err(HawdbError::Semantic(
+                return Err(HawDBError::Semantic(
                     nowledge_search_projection_shadow_evidence_usage(),
                 ));
             }
         }
     }
     let primary_probe = primary_probe
-        .ok_or_else(|| HawdbError::Semantic(nowledge_search_projection_shadow_evidence_usage()))?;
+        .ok_or_else(|| HawDBError::Semantic(nowledge_search_projection_shadow_evidence_usage()))?;
     let shadow_probe = shadow_probe
-        .ok_or_else(|| HawdbError::Semantic(nowledge_search_projection_shadow_evidence_usage()))?;
+        .ok_or_else(|| HawDBError::Semantic(nowledge_search_projection_shadow_evidence_usage()))?;
     Ok((
         nowledge_search_projection_shadow_evidence_json(&primary_probe, &shadow_probe),
         require_ready,
@@ -131,12 +131,12 @@ pub fn run_nowledge_search_projection_shadow_evidence(
 
 fn read_json_file(path: &Path) -> Result<serde_json::Value> {
     let content = std::fs::read_to_string(path).map_err(|_| {
-        HawdbError::Execution(
+        HawDBError::Execution(
             "failed to read search projection evidence JSON: io_error".to_string(),
         )
     })?;
     serde_json::from_str(&content).map_err(|_| {
-        HawdbError::Semantic(
+        HawDBError::Semantic(
             "failed to parse search projection evidence JSON: invalid_json".to_string(),
         )
     })
@@ -144,10 +144,10 @@ fn read_json_file(path: &Path) -> Result<serde_json::Value> {
 
 fn parse_positive_usize(flag: &str, value: &str) -> Result<usize> {
     let parsed = value.parse::<usize>().map_err(|error| {
-        HawdbError::Semantic(format!("invalid {flag} value '{value}': {error}"))
+        HawDBError::Semantic(format!("invalid {flag} value '{value}': {error}"))
     })?;
     if parsed == 0 {
-        return Err(HawdbError::Semantic(format!(
+        return Err(HawDBError::Semantic(format!(
             "invalid {flag} value '{value}': expected a positive integer"
         )));
     }

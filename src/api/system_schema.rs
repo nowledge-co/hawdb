@@ -1,5 +1,5 @@
 use super::Database;
-use crate::error::{HawdbError, Result};
+use crate::error::{HawDBError, Result};
 use crate::value::Value;
 use hawdb_relational::system_schema::{
     decode_applied_system_schema_migration_query_row, engine_system_schema_registry,
@@ -32,7 +32,7 @@ impl Database {
         if registry.owner() == ENGINE_SYSTEM_SCHEMA_OWNER
             && registry != &engine_system_schema_registry()
         {
-            return Err(HawdbError::Semantic(format!(
+            return Err(HawDBError::Semantic(format!(
                 "system schema owner {ENGINE_SYSTEM_SCHEMA_OWNER} is reserved by the engine"
             )));
         }
@@ -57,7 +57,7 @@ impl Database {
         if registry_table_present {
             validate_engine_system_schema_registry_table(self.store.relational_state())?;
         } else if registry.owner() != ENGINE_SYSTEM_SCHEMA_OWNER {
-            return Err(HawdbError::Storage(
+            return Err(HawDBError::Storage(
                 "system schema registry table is missing after engine bootstrap".to_string(),
             ));
         }
@@ -97,7 +97,7 @@ impl Database {
             });
         }
         if self.config.read_only {
-            return Err(HawdbError::Execution(format!(
+            return Err(HawDBError::Execution(format!(
                 "system schema {} requires upgrade from version {} to {} but the database is read-only",
                 registry.owner(),
                 previous_version,
@@ -116,7 +116,7 @@ impl Database {
                 }
             }
             let version = i64::try_from(migration.version()).map_err(|_| {
-                HawdbError::Semantic(format!(
+                HawDBError::Semantic(format!(
                     "system schema {} migration version {} exceeds BIGINT",
                     registry.owner(),
                     migration.version()
@@ -152,7 +152,7 @@ impl Database {
         max_rows: usize,
     ) -> Result<Vec<AppliedSystemSchemaMigration>> {
         let limit = i64::try_from(max_rows).map_err(|_| {
-            HawdbError::Execution("system schema migration read limit exceeds BIGINT".to_string())
+            HawDBError::Execution("system schema migration read limit exceeds BIGINT".to_string())
         })?;
         let output = self.query_sql_with_params_bounded(
             "SELECT version, name, checksum FROM hawdb_schema_migrations \

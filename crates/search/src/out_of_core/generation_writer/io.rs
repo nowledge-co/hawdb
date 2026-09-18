@@ -5,7 +5,7 @@ use crate::build_control::{checkpoint, CheckedWriter};
 use crate::build_memory::{
     checked_add, path::OwnedPath, reserved::native_path, BuildMemory, SPOOL_BUFFER_BYTES,
 };
-use crate::{HawdbError, Result};
+use crate::{HawDBError, Result};
 use hawdb_core::RuntimeTaskContext;
 use hawdb_executor::QueryMemoryLease;
 use hawdb_integrity::Crc32cHasher;
@@ -49,12 +49,12 @@ impl<'a> GenerationIo<'a> {
         let mut file = self.native(&[path], || File::open(path))??;
         let length = file.metadata()?.len();
         if length > max_bytes {
-            return Err(HawdbError::Storage(format!(
+            return Err(HawDBError::Storage(format!(
                 "search generation file requires {length} bytes, exceeding {max_bytes}"
             )));
         }
         let length = usize::try_from(length).map_err(|_| {
-            HawdbError::Storage("search generation file length exceeds usize".into())
+            HawDBError::Storage("search generation file length exceeds usize".into())
         })?;
         let memory = self.memory.spool.reserve(length)?;
         let _scratch = self.memory.spool.reserve(SPOOL_BUFFER_BYTES)?;
@@ -63,10 +63,10 @@ impl<'a> GenerationIo<'a> {
             _memory: memory,
         };
         output.bytes.try_reserve_exact(length).map_err(|error| {
-            HawdbError::Execution(format!("search generation file allocation failed: {error}"))
+            HawDBError::Execution(format!("search generation file allocation failed: {error}"))
         })?;
         if output.bytes.capacity() > length {
-            return Err(HawdbError::Execution(
+            return Err(HawDBError::Execution(
                 "search generation file exceeds admission".into(),
             ));
         }
@@ -78,7 +78,7 @@ impl<'a> GenerationIo<'a> {
                 break;
             }
             if read > length - output.bytes.len() {
-                return Err(HawdbError::Storage(
+                return Err(HawDBError::Storage(
                     "search generation file grew during read".into(),
                 ));
             }
@@ -86,7 +86,7 @@ impl<'a> GenerationIo<'a> {
         }
         checkpoint(self.task)?;
         if output.bytes.len() != length {
-            return Err(HawdbError::Storage(
+            return Err(HawDBError::Storage(
                 "search generation file shrank during read".into(),
             ));
         }
@@ -99,7 +99,7 @@ impl<'a> GenerationIo<'a> {
         let expected = file.metadata()?.len();
         let (length, checksum) = checksum_reader(&mut file, self.task)?;
         if length != expected {
-            return Err(HawdbError::Storage(format!(
+            return Err(HawDBError::Storage(format!(
                 "search generation artifact {} changed while checksumming",
                 path.display()
             )));
@@ -120,7 +120,7 @@ impl<'a> GenerationIo<'a> {
             None => true,
         };
         if actual_len != expected_len || !checksum_matches {
-            return Err(HawdbError::Storage(format!(
+            return Err(HawDBError::Storage(format!(
                 "published search generation {name} does not match its staged artifact"
             )));
         }
@@ -157,7 +157,7 @@ impl<'a> GenerationIo<'a> {
         let mut source = self.native(&[source], || File::open(source))??;
         let metadata = source.metadata()?;
         if !metadata.is_file() {
-            return Err(HawdbError::Storage(
+            return Err(HawDBError::Storage(
                 "search publication source is not a file".into(),
             ));
         }
@@ -170,7 +170,7 @@ impl<'a> GenerationIo<'a> {
         })??;
         let copied = copy_reader(&mut source, &mut output, self.task)?;
         if copied != metadata.len() {
-            return Err(HawdbError::Storage(
+            return Err(HawDBError::Storage(
                 "search publication source length changed during copy".into(),
             ));
         }
@@ -255,7 +255,7 @@ fn checksum_reader(reader: &mut impl Read, task: &RuntimeTaskContext) -> Result<
             break;
         }
         length = length.checked_add(read as u64).ok_or_else(|| {
-            HawdbError::Storage("search artifact checksum length overflow".into())
+            HawDBError::Storage("search artifact checksum length overflow".into())
         })?;
         checksum.update(&buffer[..read]);
     }
@@ -280,7 +280,7 @@ fn copy_reader(
         writer.write_all(&buffer[..read])?;
         length = length
             .checked_add(read as u64)
-            .ok_or_else(|| HawdbError::Storage("search artifact copy length overflow".into()))?;
+            .ok_or_else(|| HawDBError::Storage("search artifact copy length overflow".into()))?;
     }
     checkpoint(task)?;
     Ok(length)

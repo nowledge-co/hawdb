@@ -1,6 +1,6 @@
 use super::{NowledgeMemSearchCandidateFieldSummary, NowledgeMemSearchCandidateShadowAccumulator};
 use crate::SearchMode;
-use hawdb_core::{HawdbError, Result};
+use hawdb_core::{HawDBError, Result};
 
 pub fn parse_search_candidate_shadow_probe(
     value: &serde_json::Value,
@@ -203,8 +203,8 @@ fn optional_usize(value: &serde_json::Value, field: &str) -> Result<Option<usize
         .map_err(|_| invalid_field(field, "usize-sized integer"))
 }
 
-fn invalid_field(field: &str, expected: &str) -> HawdbError {
-    HawdbError::Semantic(format!(
+fn invalid_field(field: &str, expected: &str) -> HawDBError {
+    HawDBError::Semantic(format!(
         "search candidate shadow probe field '{field}' must be a {expected}"
     ))
 }

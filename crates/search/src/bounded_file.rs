@@ -1,4 +1,4 @@
-use crate::error::{HawdbError, Result};
+use crate::error::{HawDBError, Result};
 use std::fs::File;
 use std::io::{self, Read};
 use std::path::Path;
@@ -11,13 +11,13 @@ pub(crate) fn read_bounded_file(path: &Path, max_bytes: u64) -> Result<Vec<u8>> 
     let mut file = File::open(path)?;
     let length = file.metadata()?.len();
     if length > max_bytes {
-        return Err(HawdbError::Storage(format!(
+        return Err(HawDBError::Storage(format!(
             "search artifact {} requires {length} bytes, exceeding {max_bytes}",
             path.display()
         )));
     }
     let length = usize::try_from(length).map_err(|_| {
-        HawdbError::Storage(format!(
+        HawDBError::Storage(format!(
             "search artifact {} length does not fit in memory",
             path.display()
         ))
@@ -44,7 +44,7 @@ fn read_admitted_bytes(reader: &mut impl Read, length: usize, path: &Path) -> Re
             bytes
                 .try_reserve_exact(capacity - bytes.len())
                 .map_err(|error| {
-                    HawdbError::Storage(format!(
+                    HawDBError::Storage(format!(
                         "search artifact {} allocation failed: {error}",
                         path.display()
                     ))
@@ -58,7 +58,7 @@ fn read_admitted_bytes(reader: &mut impl Read, length: usize, path: &Path) -> Re
         match reader.read(&mut buffer[..1]) {
             Ok(0) => return Ok(bytes),
             Ok(_) => {
-                return Err(HawdbError::Storage(format!(
+                return Err(HawDBError::Storage(format!(
                     "search artifact {} grew beyond its admitted {length} bytes",
                     path.display()
                 )));

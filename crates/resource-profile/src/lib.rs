@@ -1,6 +1,6 @@
-//! Typed storage resource-profile evidence for embedded Hawdb hosts.
+//! Typed storage resource-profile evidence for embedded HawDB hosts.
 
-use hawdb_core::{HawdbError, Result};
+use hawdb_core::{HawDBError, Result};
 use hawdb_evidence::{
     production_evidence_blocker_codes, ProductionEvidenceBinding, ProductionQualificationIdentity,
 };
@@ -50,7 +50,7 @@ impl StorageResourceProfileLimits {
             ),
         ];
         if let Some((name, _)) = positive.into_iter().find(|(_, value)| *value == 0) {
-            return Err(HawdbError::Semantic(format!(
+            return Err(HawDBError::Semantic(format!(
                 "storage resource profile {name} must be greater than zero"
             )));
         }

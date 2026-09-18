@@ -11,7 +11,7 @@ use super::{
 use crate::evidence_digest::rows_sha256;
 use crate::ContentStoreSqlCorpus;
 use hawdb::{
-    Database, DatabaseConfig, DurabilityPolicy, HawdbError, QueryOutput, QueryStreamOptions,
+    Database, DatabaseConfig, DurabilityPolicy, HawDBError, QueryOutput, QueryStreamOptions,
     Result, Value,
 };
 use std::path::Path;
@@ -33,7 +33,7 @@ pub(super) fn qualify_source_chunk_replacement(
     chunk_payload_bytes: usize,
 ) -> Result<(Database, ContentStoreSourceReplacementQualificationReport)> {
     if initial_chunk_count <= SHORT_REPLACEMENT_CHUNK_COUNT {
-        return Err(HawdbError::Semantic(format!(
+        return Err(HawDBError::Semantic(format!(
             "content-store source replacement needs more than {SHORT_REPLACEMENT_CHUNK_COUNT} initial chunks, got {initial_chunk_count}"
         )));
     }
@@ -75,13 +75,13 @@ pub(super) fn qualify_source_chunk_replacement(
     database = empty.database;
     require_exact_replacement_rows(&mut database, corpus, 0, chunk_payload_bytes, "empty")?;
     if empty.report.committed_epoch <= shorter.report.committed_epoch {
-        return Err(HawdbError::Execution(format!(
+        return Err(HawDBError::Execution(format!(
             "content-store empty replacement epoch {} did not advance beyond shorter replacement epoch {}",
             empty.report.committed_epoch, shorter.report.committed_epoch
         )));
     }
     if empty.report.checkpoint_generation <= shorter.report.checkpoint_generation {
-        return Err(HawdbError::Execution(format!(
+        return Err(HawDBError::Execution(format!(
             "content-store empty replacement checkpoint generation {} did not advance beyond shorter replacement generation {}",
             empty.report.checkpoint_generation, shorter.report.checkpoint_generation
         )));
@@ -164,7 +164,7 @@ fn replace_checkpoint_and_reopen(
         ContentStoreRowPageReadPhase::LiveOverlay,
     )?;
     if live_read.execution.visible_commit_epoch != mutation.committed_epoch {
-        return Err(HawdbError::Execution(format!(
+        return Err(HawDBError::Execution(format!(
             "content-store {phase} replacement read observed epoch {}, expected {}",
             live_read.execution.visible_commit_epoch, mutation.committed_epoch
         )));
@@ -174,7 +174,7 @@ fn replace_checkpoint_and_reopen(
         // row. Probe a previously checkpointed key to verify the row tombstone.
         require_empty_replacement_tombstone(&database, mutation.committed_epoch)?;
     } else if live_read.execution.overlay_entries == 0 {
-        return Err(HawdbError::Execution(format!(
+        return Err(HawDBError::Execution(format!(
             "content-store {phase} replacement did not use the live row overlay"
         )));
     }
@@ -184,7 +184,7 @@ fn replace_checkpoint_and_reopen(
     let checkpoint_generation = database
         .relational_index_shadow_checkpoint_report()
         .ok_or_else(|| {
-            HawdbError::Execution(format!(
+            HawDBError::Execution(format!(
                 "content-store {phase} replacement checkpoint did not publish relational indexes"
             ))
         })?
@@ -203,13 +203,13 @@ fn replace_checkpoint_and_reopen(
         ContentStoreRowPageReadPhase::ColdCheckpoint,
     )?;
     if reopened_read.execution.visible_commit_epoch != mutation.committed_epoch {
-        return Err(HawdbError::Execution(format!(
+        return Err(HawDBError::Execution(format!(
             "content-store reopened {phase} replacement observed epoch {}, expected {}",
             reopened_read.execution.visible_commit_epoch, mutation.committed_epoch
         )));
     }
     if reopened_read.output_sha256 != live_read.output_sha256 {
-        return Err(HawdbError::Execution(format!(
+        return Err(HawDBError::Execution(format!(
             "content-store {phase} replacement changed across checkpoint/reopen"
         )));
     }
@@ -245,7 +245,7 @@ fn require_empty_replacement_tombstone(database: &Database, committed_epoch: u64
         || profiled.profile.row_read.overlay_entries == 0
         || profiled.profile.row_read.visible_commit_epoch != Some(committed_epoch)
     {
-        return Err(HawdbError::Execution(
+        return Err(HawDBError::Execution(
             "content-store empty replacement did not observe the committed row tombstone"
                 .to_string(),
         ));
@@ -311,14 +311,14 @@ fn replace_source_chunks(
             .query_sql_with_params(&insert_chunk.sql, &duplicate)
             .expect_err("duplicate source chunk order must be rejected");
         if !error.to_string().to_ascii_lowercase().contains("unique") {
-            return Err(HawdbError::Execution(format!(
+            return Err(HawDBError::Execution(format!(
                 "content-store source replacement expected a unique-key rejection, got: {error}"
             )));
         }
         let after_rejection = transaction.query_sql_with_params(&page.sql, &page_parameters)?;
         require_row_count(&after_rejection, replacement_chunk_count, phase)?;
         if rows_sha256(&after_rejection.rows) != before_sha256 {
-            return Err(HawdbError::Execution(
+            return Err(HawDBError::Execution(
                 "content-store rejected duplicate chunk changed the transaction workspace"
                     .to_string(),
             ));
@@ -335,10 +335,10 @@ fn replace_source_chunks(
     let summary_item_count = required_i64(&summary, "item_count")?;
     let summary_size_bytes = required_i64(&summary, "size_bytes")?;
     let expected_item_count = i64::try_from(replacement_chunk_count).map_err(|_| {
-        HawdbError::Semantic("content-store source chunk count does not fit BIGINT".to_string())
+        HawDBError::Semantic("content-store source chunk count does not fit BIGINT".to_string())
     })?;
     if summary_item_count != expected_item_count {
-        return Err(HawdbError::Execution(format!(
+        return Err(HawDBError::Execution(format!(
             "content-store {phase} replacement summary counted {summary_item_count} chunks, expected {replacement_chunk_count}"
         )));
     }
@@ -404,10 +404,10 @@ fn require_source_state(
     )?;
     let item_count = required_i64(&summary, "item_count")?;
     let expected_item_count = i64::try_from(expected_chunk_count).map_err(|_| {
-        HawdbError::Semantic("content-store source chunk count does not fit BIGINT".to_string())
+        HawDBError::Semantic("content-store source chunk count does not fit BIGINT".to_string())
     })?;
     if item_count != expected_item_count {
-        return Err(HawdbError::Execution(format!(
+        return Err(HawDBError::Execution(format!(
             "content-store source document summary counted {item_count} chunks, expected {expected_chunk_count}"
         )));
     }
@@ -415,7 +415,7 @@ fn require_source_state(
         summary.rows[0].get("space_id"),
         Some(Value::String(space_id)) if space_id == expected_space_id
     ) {
-        return Err(HawdbError::Execution(format!(
+        return Err(HawDBError::Execution(format!(
             "content-store source document expected space {expected_space_id}, got {:?}",
             summary.rows[0].get("space_id")
         )));
@@ -456,14 +456,14 @@ fn require_exact_replacement_rows(
             row.get("chunk_id"),
             Some(Value::String(chunk_id)) if chunk_id == &expected_chunk_id
         ) {
-            return Err(HawdbError::Execution(format!(
+            return Err(HawDBError::Execution(format!(
                 "content-store {phase} replacement returned a stale or unordered chunk instead of {expected_chunk_id}: {row:?}"
             )));
         }
         match row.get("text") {
             Some(Value::String(text)) if text.starts_with(&expected_text_prefix) => {}
             other => {
-                return Err(HawdbError::Execution(format!(
+                return Err(HawDBError::Execution(format!(
                     "content-store {phase} replacement returned unexpected chunk text {other:?}"
                 )));
             }
@@ -518,7 +518,7 @@ fn require_exact_replacement_rows(
                 && content_hash == &expected_hash
         );
         if !exact {
-            return Err(HawdbError::Execution(format!(
+            return Err(HawDBError::Execution(format!(
                 "content-store {phase} replacement did not preserve chunk identity, offsets, metadata, and hash at position {position}: {row:?}"
             )));
         }
@@ -528,7 +528,7 @@ fn require_exact_replacement_rows(
 
 fn require_row_count(output: &QueryOutput, expected: usize, phase: &str) -> Result<()> {
     if output.rows.len() != expected {
-        return Err(HawdbError::Execution(format!(
+        return Err(HawDBError::Execution(format!(
             "content-store {phase} replacement returned {} chunks, expected {expected}",
             output.rows.len()
         )));
@@ -543,7 +543,7 @@ fn require_graph_state(
     phase: &str,
 ) -> Result<()> {
     let expected_chunk_count = i64::try_from(expected_chunk_count).map_err(|_| {
-        HawdbError::Semantic("content-store source chunk count does not fit BIGINT".to_string())
+        HawDBError::Semantic("content-store source chunk count does not fit BIGINT".to_string())
     })?;
     match output.rows.as_slice() {
         [row]
@@ -552,7 +552,7 @@ fn require_graph_state(
         {
             Ok(())
         }
-        rows => Err(HawdbError::Execution(format!(
+        rows => Err(HawDBError::Execution(format!(
             "content-store {phase} replacement graph state expected chunks={expected_chunk_count}, space={expected_space_id}, got {rows:?}"
         ))),
     }

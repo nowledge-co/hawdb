@@ -5,7 +5,7 @@
 //! database lifecycle and transaction coordination.
 
 use hawdb_core::{
-    Catalog, ConstraintKind, ConstraintSubject, GraphStatistics, HawdbError, IndexKind,
+    Catalog, ConstraintKind, ConstraintSubject, GraphStatistics, HawDBError, IndexKind,
     IndexStatisticsSample, LabelId, PropertyType, RelTypeId, Result, RuntimeCapabilities,
     SchemaObjectState, TableKind, Value,
 };
@@ -302,7 +302,7 @@ pub fn slow_query_log_jsonl(
     for record in records {
         let line = serde_json::to_string(&slow_query_record_json(record, include_query_text))
             .map_err(|error| {
-                HawdbError::Execution(format!("slow query log JSON error: {error}"))
+                HawDBError::Execution(format!("slow query log JSON error: {error}"))
             })?;
         jsonl.push_str(&line);
         jsonl.push('\n');
@@ -556,7 +556,7 @@ pub fn query_sql_with_params<Store: SystemSqlStore>(
         total.saturating_add(map_payload_bytes(row))
     });
     if max_payload_bytes.is_some_and(|limit| payload_bytes > limit) {
-        return Err(HawdbError::Execution(format!(
+        return Err(HawDBError::Execution(format!(
             "SQL query payload uses {payload_bytes} bytes, exceeding max_read_result_payload_bytes {}",
             max_payload_bytes.unwrap_or_default()
         )));
@@ -567,14 +567,14 @@ pub fn query_sql_with_params<Store: SystemSqlStore>(
 fn plan_sql(sql_text: &str, parameters: &[Value]) -> Result<SqlLogicalPlan> {
     let prepared = hawdb_sql::prepare_postgres_sql(sql_text)?;
     if prepared.parameters.len() != parameters.len() {
-        return Err(HawdbError::Semantic(format!(
+        return Err(HawDBError::Semantic(format!(
             "PostgreSQL statement requires {} parameters, but {} parameters were supplied",
             prepared.parameters.len(),
             parameters.len()
         )));
     }
     let SqlStatement::Select(select) = prepared.statement else {
-        return Err(HawdbError::Semantic(
+        return Err(HawDBError::Semantic(
             "system SQL only supports SELECT statements".to_string(),
         ));
     };
@@ -604,7 +604,7 @@ fn plan_sql(sql_text: &str, parameters: &[Value]) -> Result<SqlLogicalPlan> {
 
 fn validate_system_select_shape(select: &SelectStatement) -> Result<()> {
     if select.having.is_some() {
-        return Err(HawdbError::Semantic(
+        return Err(HawDBError::Semantic(
             "system SQL does not support HAVING".into(),
         ));
     }
@@ -614,7 +614,7 @@ fn validate_system_select_shape(select: &SelectStatement) -> Result<()> {
         || !select.group_by.is_empty()
         || select.lock_strength.is_some()
     {
-        return Err(HawdbError::Semantic(
+        return Err(HawDBError::Semantic(
             "system SQL does not support DISTINCT, table aliases, joins, GROUP BY, or locking clauses"
                 .to_string(),
         ));
@@ -624,7 +624,7 @@ fn validate_system_select_shape(select: &SelectStatement) -> Result<()> {
         .iter()
         .any(|item| item.nulls != hawdb_sql::SqlNullOrder::DialectDefault)
     {
-        return Err(HawdbError::Semantic(
+        return Err(HawDBError::Semantic(
             "system SQL does not support explicit NULLS FIRST/LAST".to_string(),
         ));
     }
@@ -647,7 +647,7 @@ fn bind_predicate(mut predicate: SqlPredicate, parameters: &[Value]) -> Result<S
         {
             hawdb_sql::sql_like_matches("", pattern, *escape, *case_insensitive)?;
         }
-        Ok::<_, HawdbError>(())
+        Ok::<_, HawDBError>(())
     })?;
     Ok(predicate)
 }
@@ -656,7 +656,7 @@ fn bind_value(value: SqlValue, parameters: &[Value]) -> Result<Value> {
     match value {
         SqlValue::Literal(value) => Ok(value),
         SqlValue::Parameter(position) => parameters.get(position - 1).cloned().ok_or_else(|| {
-            HawdbError::Semantic(format!("missing PostgreSQL parameter ${position}"))
+            HawDBError::Semantic(format!("missing PostgreSQL parameter ${position}"))
         }),
     }
 }
@@ -666,10 +666,10 @@ fn bind_bound(bound: SqlBound, parameters: &[Value], name: &str) -> Result<u64> 
         SqlBound::Literal(value) => Ok(value),
         SqlBound::Parameter(position) => match parameters.get(position - 1) {
             Some(Value::Int(value)) if *value >= 0 => Ok(*value as u64),
-            Some(_) => Err(HawdbError::Semantic(format!(
+            Some(_) => Err(HawDBError::Semantic(format!(
                 "PostgreSQL {name} parameter ${position} must be a non-negative integer"
             ))),
-            None => Err(HawdbError::Semantic(format!(
+            None => Err(HawDBError::Semantic(format!(
                 "missing PostgreSQL parameter ${position}"
             ))),
         },
@@ -749,7 +749,7 @@ fn execute_system_table_scan<Store: SystemSqlStore>(
     if let Some(max_rows) = max_rows
         && rows.len() > max_rows
     {
-        return Err(HawdbError::Execution(format!(
+        return Err(HawDBError::Execution(format!(
                 "SQL query returned more than {max_rows} rows, exceeding max_read_result_rows {max_rows}"
             )));
     }
@@ -761,7 +761,7 @@ fn effective_limit(query_limit: Option<u64>, max_rows: Option<usize>) -> Result<
     let query_limit = query_limit
         .map(|limit| {
             usize::try_from(limit)
-                .map_err(|_| HawdbError::Semantic("SQL LIMIT is too large".to_string()))
+                .map_err(|_| HawDBError::Semantic("SQL LIMIT is too large".to_string()))
         })
         .transpose()?;
     Ok(match (query_limit, max_rows) {
@@ -2178,7 +2178,7 @@ fn system_table(select: &SelectStatement) -> Result<SystemTable> {
         (Some("pg_catalog"), "pg_indexes") => Ok(SystemTable::PgIndexes),
         (None, "pg_tables") => Ok(SystemTable::PgTables),
         (None, "pg_indexes") => Ok(SystemTable::PgIndexes),
-        _ => Err(HawdbError::Semantic(format!(
+        _ => Err(HawDBError::Semantic(format!(
             "unknown SQL virtual catalog table {}",
             format_table_name(select)
         ))),
@@ -2198,7 +2198,7 @@ fn validate_projection(table: SystemTable, projection: &[SelectProjection]) -> R
                 ..
             } => validate_column(table, name)?,
             SelectProjection::Expression { .. } => {
-                return Err(HawdbError::Semantic(
+                return Err(HawDBError::Semantic(
                     "system SQL aggregate expressions are not supported".to_string(),
                 ));
             }
@@ -2251,7 +2251,7 @@ fn validate_column(table: SystemTable, column: &SqlColumnRef) -> Result<()> {
             SystemTable::PgIndexes => "pg_indexes",
         };
         if qualifier != table_name {
-            return Err(HawdbError::Semantic(format!(
+            return Err(HawDBError::Semantic(format!(
                 "unknown SQL column qualifier {qualifier}"
             )));
         }
@@ -2259,7 +2259,7 @@ fn validate_column(table: SystemTable, column: &SqlColumnRef) -> Result<()> {
     if table_columns(table).contains(&column.name.as_str()) {
         Ok(())
     } else {
-        Err(HawdbError::Semantic(format!(
+        Err(HawDBError::Semantic(format!(
             "unknown SQL column {}",
             column.name
         )))

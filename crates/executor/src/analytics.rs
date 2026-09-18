@@ -12,7 +12,7 @@ use hawdb_analytics::{
     LouvainOptions, PageRankOptions, ProjectedGraph, ProjectedGraphExecution, ProjectionLayout,
     ProjectionMemoryBudget,
 };
-use hawdb_core::{Catalog, HawdbError, Result, RuntimeTaskContext, Value};
+use hawdb_core::{Catalog, HawDBError, Result, RuntimeTaskContext, Value};
 use hawdb_plan::{GraphAlgorithmKind, Predicate};
 use hawdb_storage::{NodeRecord, RelRecord};
 use std::collections::BTreeMap;
@@ -51,7 +51,7 @@ impl GraphAlgorithmSpec<'_> {
             node_visibility_predicate,
         } = self;
         let Some(definition) = context.store.projected_graph_definition(graph_name) else {
-            return Err(HawdbError::Execution(format!(
+            return Err(HawDBError::Execution(format!(
                 "projected graph '{graph_name}' does not exist"
             )));
         };
@@ -225,7 +225,7 @@ fn charge_graph_algorithm_memory(
     bytes: usize,
 ) -> Result<()> {
     if tracker.would_exceed(bytes) {
-        return Err(HawdbError::Execution(format!(
+        return Err(HawDBError::Execution(format!(
             "GraphAlgorithm {algorithm} {phase} requires {} tracked bytes, exceeding blocking_operator_bytes {}",
             tracker.used_bytes.saturating_add(bytes),
             tracker.budget_bytes,
@@ -277,7 +277,7 @@ pub fn try_projected_graph_with_node_filter(
             layout,
             budget,
         )
-        .map_err(|error| HawdbError::Execution(error.to_string()));
+        .map_err(|error| HawDBError::Execution(error.to_string()));
     }
     let label_ids = node_labels
         .iter()
@@ -291,7 +291,7 @@ pub fn try_projected_graph_with_node_filter(
             layout,
             budget,
         )
-        .map_err(|error| HawdbError::Execution(error.to_string()));
+        .map_err(|error| HawDBError::Execution(error.to_string()));
     }
     let rel_type_ids = rel_types
         .iter()
@@ -305,7 +305,7 @@ pub fn try_projected_graph_with_node_filter(
                 layout,
                 budget,
             )
-            .map_err(|error| HawdbError::Execution(error.to_string()));
+            .map_err(|error| HawDBError::Execution(error.to_string()));
         }
         return ProjectedGraph::try_from_store_labels_without_edges_with_node_filter_and_layout(
             &source,
@@ -314,7 +314,7 @@ pub fn try_projected_graph_with_node_filter(
             layout,
             budget,
         )
-        .map_err(|error| HawdbError::Execution(error.to_string()));
+        .map_err(|error| HawDBError::Execution(error.to_string()));
     }
     ProjectedGraph::try_from_store_labels_and_rel_types_with_node_filter_and_layout(
         &source,
@@ -324,7 +324,7 @@ pub fn try_projected_graph_with_node_filter(
         layout,
         budget,
     )
-    .map_err(|error| HawdbError::Execution(error.to_string()))
+    .map_err(|error| HawDBError::Execution(error.to_string()))
 }
 
 struct GraphExecutionProjectionSource<'a>(&'a dyn GraphExecutionRead);

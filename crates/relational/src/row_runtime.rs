@@ -5,7 +5,7 @@ mod tests;
 
 use crate::field_plan::RelationalFieldPlan;
 use hawdb_core::RuntimeTaskContext;
-use hawdb_core::{HawdbError, Result};
+use hawdb_core::{HawDBError, Result};
 use hawdb_storage::{
     decode_projection_relational_member, encode_relational_primary_key, ProjectionGenerationError,
     ProjectionGenerationReadLimits, ProjectionGenerationReader, RelationalError,
@@ -76,7 +76,7 @@ impl RelationalReadRow {
             .ok()
             .map(|position| &self.row.fields[position])
             .ok_or_else(|| {
-                HawdbError::StorageIntegrity(format!(
+                HawDBError::StorageIntegrity(format!(
                     "relational row projection omitted required field {ordinal}"
                 ))
             })?;
@@ -121,7 +121,7 @@ impl<'a> RelationalReadRowRef<'a> {
 
     pub fn value(self, ordinal: usize) -> Result<RelationalValueRef<'a>> {
         self.row.value(ordinal).ok_or_else(|| {
-            HawdbError::StorageIntegrity(format!(
+            HawDBError::StorageIntegrity(format!(
                 "relational row projection omitted required field {ordinal}"
             ))
         })
@@ -351,7 +351,7 @@ impl<'a> RelationalRowRuntime<'a> {
         let schema = self
             .state
             .table_schema(table)
-            .ok_or_else(|| HawdbError::Semantic(format!("unknown relational table {table}")))?;
+            .ok_or_else(|| HawDBError::Semantic(format!("unknown relational table {table}")))?;
         if !self
             .fields
             .index_covers_table(table, schema, index_columns)?
@@ -359,14 +359,14 @@ impl<'a> RelationalRowRuntime<'a> {
             return Ok(None);
         }
         if index_key.0.len() != index_columns.len() {
-            return Err(HawdbError::StorageIntegrity(format!(
+            return Err(HawDBError::StorageIntegrity(format!(
                 "relational index key for table {table} has {} values but its descriptor has {} columns",
                 index_key.0.len(),
                 index_columns.len()
             )));
         }
         if primary_key.0.len() != schema.primary_key.len() {
-            return Err(HawdbError::StorageIntegrity(format!(
+            return Err(HawDBError::StorageIntegrity(format!(
                 "relational primary-key locator for table {table} has {} values but the schema has {} primary-key columns",
                 primary_key.0.len(),
                 schema.primary_key.len()
@@ -378,7 +378,7 @@ impl<'a> RelationalRowRuntime<'a> {
         let mut values = BTreeMap::new();
         for (column, value) in index_columns.iter().zip(&index_key.0) {
             let ordinal = schema.column_position(column).ok_or_else(|| {
-                HawdbError::StorageIntegrity(format!(
+                HawDBError::StorageIntegrity(format!(
                     "relational index coverage references unknown column {column} on table {table}"
                 ))
             })?;
@@ -386,7 +386,7 @@ impl<'a> RelationalRowRuntime<'a> {
         }
         for (column, value) in schema.primary_key.iter().zip(&primary_key.0) {
             let ordinal = schema.column_position(column).ok_or_else(|| {
-                HawdbError::StorageIntegrity(format!(
+                HawDBError::StorageIntegrity(format!(
                     "relational primary-key coverage references unknown column {column} on table {table}"
                 ))
             })?;
@@ -404,7 +404,7 @@ impl<'a> RelationalRowRuntime<'a> {
                         value,
                     })
                     .ok_or_else(|| {
-                        HawdbError::StorageIntegrity(format!(
+                        HawDBError::StorageIntegrity(format!(
                             "relational index coverage omitted required field {ordinal} on table {table}"
                         ))
                     })
@@ -524,7 +524,7 @@ impl<'a> RelationalRowRuntime<'a> {
                 let mut rows = BTreeMap::new();
                 for key in keys {
                     self.task.checkpoint().map_err(|reason| {
-                        HawdbError::Execution(format!("runtime task stopped: {reason}"))
+                        HawDBError::Execution(format!("runtime task stopped: {reason}"))
                     })?;
                     let Some((key, row)) = self.state.row_entry(table, &key) else {
                         continue;
@@ -555,7 +555,7 @@ impl<'a> RelationalRowRuntime<'a> {
                     .map_err(map_snapshot_error)?;
                 for key in &report.unbound_overlay_keys {
                     let row = rows.get_mut(key).ok_or_else(|| {
-                        HawdbError::StorageIntegrity(
+                        HawDBError::StorageIntegrity(
                             "snapshot multi-point resolver lost an overlay row".to_string(),
                         )
                     })?;
@@ -597,7 +597,7 @@ impl<'a> RelationalRowRuntime<'a> {
             RelationalRowBackend::CanonicalMemory => {
                 for (key, row) in self.state.rows(table) {
                     self.task.checkpoint().map_err(|reason| {
-                        HawdbError::Execution(format!("runtime task stopped: {reason}"))
+                        HawDBError::Execution(format!("runtime task stopped: {reason}"))
                     })?;
                     self.admit_memory_row()?;
                     if !visit(self.project_memory_row(
@@ -688,7 +688,7 @@ impl<'a> RelationalRowRuntime<'a> {
             RelationalRowBackend::CanonicalMemory => {
                 for (key, row) in self.state.rows(table) {
                     self.task.checkpoint().map_err(|reason| {
-                        HawdbError::Execution(format!("runtime task stopped: {reason}"))
+                        HawDBError::Execution(format!("runtime task stopped: {reason}"))
                     })?;
                     self.admit_memory_row()?;
                     let projected =
@@ -763,7 +763,7 @@ impl<'a> RelationalRowRuntime<'a> {
         hydration_fields: &[usize],
     ) -> Result<Option<RelationalReadRow>> {
         let encoded_key = encode_relational_primary_key(key).map_err(|error| {
-            HawdbError::StorageIntegrity(format!(
+            HawDBError::StorageIntegrity(format!(
                 "projection lookup key for {table} cannot be encoded: {error}"
             ))
         })?;
@@ -772,7 +772,7 @@ impl<'a> RelationalRowRuntime<'a> {
             .projection
             .as_ref()
             .ok_or_else(|| {
-                HawdbError::StorageIntegrity(
+                HawDBError::StorageIntegrity(
                     "projection row path was selected without a pinned generation".to_string(),
                 )
             })?
@@ -817,7 +817,7 @@ impl<'a> RelationalRowRuntime<'a> {
         visit: &mut dyn FnMut(&hawdb_storage::ProjectionGenerationMember) -> Result<bool>,
     ) -> Result<bool> {
         let projection = self.projection.as_ref().ok_or_else(|| {
-            HawdbError::StorageIntegrity(
+            HawDBError::StorageIntegrity(
                 "projection row path was selected without a pinned generation".to_string(),
             )
         })?;
@@ -835,13 +835,13 @@ impl<'a> RelationalRowRuntime<'a> {
         visit: &mut dyn FnMut(&hawdb_storage::ProjectionGenerationMember) -> Result<bool>,
     ) -> Result<bool> {
         let projection = self.projection.as_ref().ok_or_else(|| {
-            HawdbError::StorageIntegrity(
+            HawDBError::StorageIntegrity(
                 "projection row path was selected without a pinned generation".to_string(),
             )
         })?;
         loop {
             self.task.checkpoint().map_err(|reason| {
-                HawdbError::Execution(format!("runtime task stopped: {reason}"))
+                HawDBError::Execution(format!("runtime task stopped: {reason}"))
             })?;
             let page = projection
                 .reader
@@ -850,7 +850,7 @@ impl<'a> RelationalRowRuntime<'a> {
             self.record_projection_page(&page.report)?;
             for member in &page.members {
                 if !projection.tables.contains(&member.collection) {
-                    return Err(HawdbError::StorageIntegrity(format!(
+                    return Err(HawDBError::StorageIntegrity(format!(
                         "projection generation contains unbound collection {}",
                         member.collection
                     )));
@@ -882,7 +882,7 @@ impl<'a> RelationalRowRuntime<'a> {
         let schema = self
             .state
             .table_schema(table)
-            .ok_or_else(|| HawdbError::Semantic(format!("unknown relational table {table}")))?;
+            .ok_or_else(|| HawDBError::Semantic(format!("unknown relational table {table}")))?;
         let (primary_key, row) =
             decode_projection_relational_member(schema, member, member.payload.len())
                 .map_err(map_projection_read_error)?;
@@ -896,7 +896,7 @@ impl<'a> RelationalRowRuntime<'a> {
                     .cloned()
                     .map(|value| RelationalProjectedField { ordinal, value })
                     .ok_or_else(|| {
-                        HawdbError::StorageIntegrity(format!(
+                        HawDBError::StorageIntegrity(format!(
                             "projection row field {ordinal} is outside table {table}"
                         ))
                     })
@@ -920,7 +920,7 @@ impl<'a> RelationalRowRuntime<'a> {
             .checked_sub(evidence.rows_visited)
             .and_then(NonZeroUsize::new)
             .ok_or_else(|| {
-                HawdbError::Execution(format!(
+                HawDBError::Execution(format!(
                     "projection generation row budget is exhausted at {}",
                     self.limits.demand.max_rows
                 ))
@@ -933,7 +933,7 @@ impl<'a> RelationalRowRuntime<'a> {
             .checked_sub(evidence.logical_bytes)
             .and_then(NonZeroUsize::new)
             .ok_or_else(|| {
-                HawdbError::Execution(format!(
+                HawDBError::Execution(format!(
                     "projection generation payload budget is exhausted at {} bytes",
                     self.limits.demand.max_bytes
                 ))
@@ -955,7 +955,7 @@ impl<'a> RelationalRowRuntime<'a> {
             || evidence.projection_version != Some(report.projection_version)
             || evidence.projection_publication_commit_epoch != Some(report.publication_commit_epoch)
         {
-            return Err(HawdbError::StorageIntegrity(
+            return Err(HawDBError::StorageIntegrity(
                 "projection generation identity changed within one SQL transaction".to_string(),
             ));
         }
@@ -999,7 +999,7 @@ impl<'a> RelationalRowRuntime<'a> {
                             value,
                         })
                         .ok_or_else(|| {
-                            HawdbError::StorageIntegrity(format!(
+                            HawDBError::StorageIntegrity(format!(
                                 "relational field {ordinal} is outside row shape for table {table}"
                             ))
                         })
@@ -1025,15 +1025,15 @@ impl<'a> RelationalRowRuntime<'a> {
         let next_rows = evidence
             .rows_visited
             .checked_add(1)
-            .ok_or_else(|| HawdbError::Execution("relational row count overflow".to_string()))?;
+            .ok_or_else(|| HawDBError::Execution("relational row count overflow".to_string()))?;
         if next_rows > self.limits.demand.max_rows.get() {
-            return Err(HawdbError::Execution(format!(
+            return Err(HawDBError::Execution(format!(
                 "relational row scan exceeds row limit {}",
                 self.limits.demand.max_rows
             )));
         }
         let next_owned_rows = evidence.owned_rows_visited.checked_add(1).ok_or_else(|| {
-            HawdbError::Execution("relational owned row count overflow".to_string())
+            HawDBError::Execution("relational owned row count overflow".to_string())
         })?;
         evidence.rows_visited = next_rows;
         evidence.owned_rows_visited = next_owned_rows;
@@ -1048,7 +1048,7 @@ impl<'a> RelationalRowRuntime<'a> {
                 .checked_sub(used)
                 .and_then(NonZeroUsize::new)
                 .ok_or_else(|| {
-                    HawdbError::Execution(format!(
+                    HawDBError::Execution(format!(
                         "relational row {name} budget is exhausted at {}",
                         limit.get()
                     ))
@@ -1138,7 +1138,7 @@ impl<'a> RelationalRowRuntime<'a> {
             evidence.root_set_digest.clone(),
         );
         if evidence.base_generation.is_some() && expected != observed {
-            return Err(HawdbError::StorageIntegrity(
+            return Err(HawDBError::StorageIntegrity(
                 "relational row view identity changed within one SQL statement".to_string(),
             ));
         }
@@ -1208,14 +1208,14 @@ impl<'a> RelationalRowRuntime<'a> {
     }
 }
 
-fn map_projection_read_error(error: ProjectionGenerationError) -> HawdbError {
+fn map_projection_read_error(error: ProjectionGenerationError) -> HawDBError {
     match error {
-        ProjectionGenerationError::Admission(message) => HawdbError::Execution(message),
-        ProjectionGenerationError::Io(error) => HawdbError::StorageIntegrity(error.to_string()),
+        ProjectionGenerationError::Admission(message) => HawDBError::Execution(message),
+        ProjectionGenerationError::Io(error) => HawDBError::StorageIntegrity(error.to_string()),
         error @ (ProjectionGenerationError::Conflict(_)
         | ProjectionGenerationError::Corruption(_)
         | ProjectionGenerationError::NotFound(_)) => {
-            HawdbError::StorageIntegrity(error.to_string())
+            HawDBError::StorageIntegrity(error.to_string())
         }
     }
 }
@@ -1234,33 +1234,33 @@ fn map_state_to_demand_error(error: RelationalError) -> RelationalRowPageDemandR
     }
 }
 
-fn map_state_error(error: RelationalError) -> HawdbError {
+fn map_state_error(error: RelationalError) -> HawDBError {
     match error {
-        RelationalError::Admission(message) => HawdbError::Execution(message),
+        RelationalError::Admission(message) => HawDBError::Execution(message),
         RelationalError::Durability(message)
         | RelationalError::Schema(message)
         | RelationalError::Constraint(message)
-        | RelationalError::Corruption(message) => HawdbError::StorageIntegrity(message),
+        | RelationalError::Corruption(message) => HawDBError::StorageIntegrity(message),
     }
 }
 
-fn map_snapshot_error(error: RelationalRowPageSnapshotReadError) -> HawdbError {
+fn map_snapshot_error(error: RelationalRowPageSnapshotReadError) -> HawDBError {
     match error {
-        RelationalRowPageSnapshotReadError::Admission(message) => HawdbError::Execution(message),
+        RelationalRowPageSnapshotReadError::Admission(message) => HawDBError::Execution(message),
         RelationalRowPageSnapshotReadError::Stopped(reason) => {
-            HawdbError::Execution(format!("runtime task stopped: {reason}"))
+            HawDBError::Execution(format!("runtime task stopped: {reason}"))
         }
         RelationalRowPageSnapshotReadError::Corrupt(message)
         | RelationalRowPageSnapshotReadError::Durability(message)
         | RelationalRowPageSnapshotReadError::MissingTable(message) => {
-            HawdbError::StorageIntegrity(message)
+            HawDBError::StorageIntegrity(message)
         }
     }
 }
 
 fn add_counter(counter: &mut usize, value: usize, name: &str) -> Result<()> {
     *counter = counter.checked_add(value).ok_or_else(|| {
-        HawdbError::StorageIntegrity(format!("relational row {name} counter overflow"))
+        HawDBError::StorageIntegrity(format!("relational row {name} counter overflow"))
     })?;
     Ok(())
 }

@@ -29,7 +29,7 @@ fn admitted_events_and_every_rejected_prefix_match_the_legacy_oracle() {
                 let result =
                     visit_admitted_token_list(text, &analyzer, control, |term, occurrence| {
                         if actual.len() == stop_after {
-                            return Err(HawdbError::Execution("consumer stopped".into()));
+                            return Err(HawDBError::Execution("consumer stopped".into()));
                         }
                         actual.push((term, occurrence));
                         Ok(())
@@ -159,7 +159,7 @@ fn resident_frequency_drain_releases_remaining_nodes_on_consumer_error_and_unwin
                     if unwind {
                         panic!("frequency consumer unwind");
                     }
-                    Err(HawdbError::Execution("frequency consumer stopped".into()))
+                    Err(HawDBError::Execution("frequency consumer stopped".into()))
                 },
             )
         }));

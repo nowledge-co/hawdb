@@ -1,7 +1,7 @@
 use super::{
     batched_index_probe_key, bound_row_resident_bytes, null_extended_tree_row, predicate_truth,
     relational_key_resident_bytes, visit_prepared_physical_join_plan_node, BTreeMap, BTreeSet,
-    Binding, BindingId, BoundRow, HawdbError, OperatorMemoryTracker, QueryMemoryClass, RefCell,
+    Binding, BindingId, BoundRow, HawDBError, OperatorMemoryTracker, QueryMemoryClass, RefCell,
     RelationalIndexRuntime, RelationalJoinAccess, RelationalKey, RelationalOperatorId,
     RelationalPhysicalAccess, RelationalPhysicalJoinExecution, RelationalPhysicalJoinNode,
     RelationalPhysicalOutputSchema, RelationalPipelineState, RelationalRowRuntime, RelationalState,
@@ -38,12 +38,12 @@ pub(super) fn flush_batched_index_join_rows<'a>(
     visit: &mut dyn FnMut(BoundRow<'a>) -> Result<bool>,
 ) -> Result<bool> {
     let RelationalPhysicalJoinNode::Relation(right_relation) = right else {
-        return Err(HawdbError::Execution(
+        return Err(HawDBError::Execution(
             "batched index nested-loop join requires a relational probe input".to_string(),
         ));
     };
     let RelationalPhysicalAccess::Probe(access) = &right_relation.access else {
-        return Err(HawdbError::Execution(format!(
+        return Err(HawDBError::Execution(format!(
             "batched index join relation {} is not a probe input",
             right_relation.qualifier
         )));
@@ -58,7 +58,7 @@ pub(super) fn flush_batched_index_join_rows<'a>(
             continue;
         }
         if batch_tracker.would_exceed(BATCHED_INDEX_JOIN_CACHE_ENTRY_OVERHEAD_BYTES) {
-            return Err(HawdbError::Execution(format!(
+            return Err(HawDBError::Execution(format!(
                 "RelationalBatchedIndexJoin cache exceeds batch_payload_bytes {}",
                 execution.memory.batch_payload_bytes
             )));
@@ -66,7 +66,7 @@ pub(super) fn flush_batched_index_join_rows<'a>(
         batch_tracker.try_charge(BATCHED_INDEX_JOIN_CACHE_ENTRY_OVERHEAD_BYTES)?;
         let key_bytes = relational_key_resident_bytes(probe_key);
         if batch_tracker.would_exceed(key_bytes) {
-            return Err(HawdbError::Execution(format!(
+            return Err(HawDBError::Execution(format!(
                 "RelationalBatchedIndexJoin cache exceeds batch_payload_bytes {}",
                 execution.memory.batch_payload_bytes
             )));
@@ -78,7 +78,7 @@ pub(super) fn flush_batched_index_join_rows<'a>(
             RelationalJoinAccess::PrimaryKey(_) => {
                 let bytes = relational_key_resident_bytes(probe_key);
                 if batch_tracker.would_exceed(bytes) {
-                    return Err(HawdbError::Execution(format!(
+                    return Err(HawDBError::Execution(format!(
                         "RelationalBatchedIndexJoin cache exceeds batch_payload_bytes {}",
                         execution.memory.batch_payload_bytes
                     )));
@@ -91,7 +91,7 @@ pub(super) fn flush_batched_index_join_rows<'a>(
             }
             RelationalJoinAccess::Index { .. } => {}
             RelationalJoinAccess::FullScan => {
-                return Err(HawdbError::Execution(format!(
+                return Err(HawDBError::Execution(format!(
                     "batched index join relation {} has a full-scan probe",
                     right_relation.qualifier
                 )));
@@ -111,14 +111,14 @@ pub(super) fn flush_batched_index_join_rows<'a>(
                 let bytes = relational_key_resident_bytes(index_key)
                     .saturating_add(relational_key_resident_bytes(primary_key));
                 if batch_tracker.would_exceed(bytes) {
-                    return Err(HawdbError::Execution(format!(
+                    return Err(HawDBError::Execution(format!(
                         "RelationalBatchedIndexJoin cache exceeds batch_payload_bytes {}",
                         execution.memory.batch_payload_bytes
                     )));
                 }
                 batch_tracker.try_charge(bytes)?;
                 let locators = locators_by_probe.get_mut(prefix).ok_or_else(|| {
-                    HawdbError::StorageIntegrity(
+                    HawDBError::StorageIntegrity(
                         "batch index reader emitted an unknown requested prefix".to_string(),
                     )
                 })?;
@@ -142,7 +142,7 @@ pub(super) fn flush_batched_index_join_rows<'a>(
         .then(|| row_runtime.read_points(&right_relation.table, &primary_keys))
         .transpose()?;
     let schema = state.table_schema(&right_relation.table).ok_or_else(|| {
-        HawdbError::Semantic(format!("unknown relational table {}", right_relation.table))
+        HawDBError::Semantic(format!("unknown relational table {}", right_relation.table))
     })?;
     let mut candidates = BTreeMap::<RelationalKey, Vec<BoundRow<'a>>>::new();
     for (probe_key, locators) in locators_by_probe {
@@ -157,7 +157,7 @@ pub(super) fn flush_batched_index_join_rows<'a>(
                 )?,
                 (_, Some(read_rows)) => read_rows.get(&locator.primary_key).cloned(),
                 (None, None) => {
-                    return Err(HawdbError::StorageIntegrity(format!(
+                    return Err(HawDBError::StorageIntegrity(format!(
                         "relational primary-key probe on table {} cannot claim secondary-index coverage",
                         right_relation.table
                     )));
@@ -167,7 +167,7 @@ pub(super) fn flush_batched_index_join_rows<'a>(
                 if matches!(access.access, RelationalJoinAccess::PrimaryKey(_)) {
                     continue;
                 }
-                return Err(HawdbError::StorageIntegrity(format!(
+                return Err(HawDBError::StorageIntegrity(format!(
                     "relational index probe on table {} points to missing or non-coverable row {:?}",
                     right_relation.table, locator.primary_key
                 )));
@@ -186,7 +186,7 @@ pub(super) fn flush_batched_index_join_rows<'a>(
                 .ensure_matches(bound.schema_bindings())?;
             let bytes = bound_row_resident_bytes(&bound);
             if batch_tracker.would_exceed(bytes) {
-                return Err(HawdbError::Execution(format!(
+                return Err(HawDBError::Execution(format!(
                     "RelationalBatchedIndexJoin cache exceeds batch_payload_bytes {}",
                     execution.memory.batch_payload_bytes
                 )));
@@ -204,7 +204,7 @@ pub(super) fn flush_batched_index_join_rows<'a>(
                 continue;
             }
             let Some(null_right) = null_right else {
-                return Err(HawdbError::Execution(
+                return Err(HawDBError::Execution(
                     "left batched index join has no null extension".to_string(),
                 ));
             };
@@ -220,7 +220,7 @@ pub(super) fn flush_batched_index_join_rows<'a>(
 
         let mut matched = false;
         let rows = candidates.get(probe_key).ok_or_else(|| {
-            HawdbError::Execution("batched index join lost a probe cache entry".to_string())
+            HawDBError::Execution("batched index join lost a probe cache entry".to_string())
         })?;
         for right_row in rows {
             pipeline.borrow_mut().account_candidate_work()?;
@@ -245,7 +245,7 @@ pub(super) fn flush_batched_index_join_rows<'a>(
         }
         if !matched && kind == SqlJoinKind::Left {
             let Some(null_right) = null_right else {
-                return Err(HawdbError::Execution(
+                return Err(HawDBError::Execution(
                     "left batched index join has no null extension".to_string(),
                 ));
             };
@@ -283,7 +283,7 @@ pub(super) fn visit_batched_index_nested_loop<'a>(
     visit: &mut dyn FnMut(BoundRow<'a>) -> Result<bool>,
 ) -> Result<bool> {
     let RelationalPhysicalJoinNode::Relation(right_relation) = right else {
-        return Err(HawdbError::Execution(
+        return Err(HawDBError::Execution(
             "batched index nested-loop join requires a relational probe input".to_string(),
         ));
     };
@@ -317,7 +317,7 @@ pub(super) fn visit_batched_index_nested_loop<'a>(
                 .saturating_add(std::mem::size_of::<(BoundRow<'_>, Option<RelationalKey>)>());
             if batch_tracker.would_exceed(bytes) {
                 if batch.is_empty() {
-                    return Err(HawdbError::Execution(format!(
+                    return Err(HawDBError::Execution(format!(
                         "RelationalBatchedIndexJoin input row exceeds batch_payload_bytes {}",
                         execution.memory.batch_payload_bytes
                     )));
@@ -346,7 +346,7 @@ pub(super) fn visit_batched_index_nested_loop<'a>(
                 }
             }
             if batch_tracker.would_exceed(bytes) {
-                return Err(HawdbError::Execution(format!(
+                return Err(HawDBError::Execution(format!(
                     "RelationalBatchedIndexJoin input row exceeds batch_payload_bytes {}",
                     execution.memory.batch_payload_bytes
                 )));

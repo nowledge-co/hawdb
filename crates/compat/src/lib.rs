@@ -4,7 +4,7 @@
 //! supplied by the facade; this crate cannot open or activate a database.
 
 use hawdb_analytics::ProjectedGraph;
-use hawdb_core::{HawdbError, Result, Value};
+use hawdb_core::{HawDBError, Result, Value};
 use hawdb_executor::{QueryOutput, Row};
 use std::collections::BTreeMap;
 
@@ -403,15 +403,15 @@ impl CypherFixtureCheck {
 }
 
 impl ExpectedErrorClass {
-    fn from_error(error: &HawdbError) -> Self {
+    fn from_error(error: &HawDBError) -> Self {
         match error {
-            HawdbError::Parse(_) => Self::Parse,
-            HawdbError::Semantic(_) => Self::Semantic,
-            HawdbError::Storage(_)
-            | HawdbError::StorageIntegrity(_)
-            | HawdbError::AppendSequenceExhausted { .. } => Self::Storage,
-            HawdbError::Execution(_) => Self::Execution,
-            HawdbError::CapabilityUnavailable { .. } => Self::CapabilityUnavailable,
+            HawDBError::Parse(_) => Self::Parse,
+            HawDBError::Semantic(_) => Self::Semantic,
+            HawDBError::Storage(_)
+            | HawDBError::StorageIntegrity(_)
+            | HawDBError::AppendSequenceExhausted { .. } => Self::Storage,
+            HawDBError::Execution(_) => Self::Execution,
+            HawDBError::CapabilityUnavailable { .. } => Self::CapabilityUnavailable,
         }
     }
 }
@@ -585,7 +585,7 @@ fn run_primary_setup(
     for statement in &fixture.setup {
         db.query_with_params(&statement.cypher, &statement.parameters)
             .map_err(|error| {
-                HawdbError::Execution(format!(
+                HawDBError::Execution(format!(
                     "fixture '{}' setup failed for '{}': {error}",
                     fixture.name, statement.cypher
                 ))
@@ -610,7 +610,7 @@ fn run_shadow_setup(
                 },
             )
             .map_err(|error| {
-                HawdbError::Execution(format!(
+                HawDBError::Execution(format!(
                     "fixture '{}' shadow engine '{}' setup failed for '{}': {error}",
                     fixture.name,
                     shadow.name(),
@@ -684,7 +684,7 @@ fn run_shadow_cypher_check(
                 },
             )
             .map_err(|error| {
-                HawdbError::Execution(format!(
+                HawDBError::Execution(format!(
                     "fixture '{}' check '{}' shadow engine '{}' setup failed for '{}': {error}",
                     fixture.name,
                     check.name,
@@ -705,7 +705,7 @@ fn run_shadow_cypher_check(
     match (primary, check.expected_error) {
         (CypherCheckOutcome::Error(expected), Some(_)) => {
             let Err(error) = shadow_output else {
-                return Err(HawdbError::Execution(format!(
+                return Err(HawDBError::Execution(format!(
                     "fixture '{}' check '{}' shadow engine '{}' expected {:?} error for '{}', got success",
                     fixture.name,
                     check.name,
@@ -716,7 +716,7 @@ fn run_shadow_cypher_check(
             };
             let actual = ExpectedErrorClass::from_error(&error);
             if actual != *expected {
-                return Err(HawdbError::Execution(format!(
+                return Err(HawDBError::Execution(format!(
                     "fixture '{}' check '{}' shadow engine '{}' expected {:?} error for '{}', got {:?}: {error}",
                     fixture.name,
                     check.name,
@@ -735,7 +735,7 @@ fn run_shadow_cypher_check(
             None,
         ) => {
             let shadow_output = shadow_output.map_err(|error| {
-                HawdbError::Execution(format!(
+                HawDBError::Execution(format!(
                     "fixture '{}' check '{}' shadow engine '{}' failed for '{}': {error}",
                     fixture.name,
                     check.name,
@@ -753,7 +753,7 @@ fn run_shadow_cypher_check(
                     check.tolerance,
                 )
                 .map_err(|error| {
-                    HawdbError::Execution(format!(
+                    HawDBError::Execution(format!(
                         "fixture '{}' check '{}' shadow engine '{}' row validation failed: {error}",
                         fixture.name,
                         check.name,
@@ -770,7 +770,7 @@ fn run_shadow_cypher_check(
             )?;
             if let Some(effect_query) = &check.effect_query {
                 let Some(primary_effect) = primary_effect else {
-                    return Err(HawdbError::Execution(format!(
+                    return Err(HawDBError::Execution(format!(
                         "fixture '{}' check '{}' missing primary effect output",
                         fixture.name, check.name
                     )));
@@ -786,7 +786,7 @@ fn run_shadow_cypher_check(
                         },
                     )
                     .map_err(|error| {
-                    HawdbError::Execution(format!(
+                    HawDBError::Execution(format!(
                         "fixture '{}' check '{}' shadow engine '{}' failed effect query '{}': {error}",
                         fixture.name,
                         check.name,
@@ -795,7 +795,7 @@ fn run_shadow_cypher_check(
                     ))
                 })?;
                 let expected = check.effect_expected_rows.as_ref().ok_or_else(|| {
-                    HawdbError::Execution(format!(
+                    HawDBError::Execution(format!(
                         "fixture '{}' check '{}' effect query is missing expected rows",
                         fixture.name, check.name
                     ))
@@ -818,7 +818,7 @@ fn run_shadow_cypher_check(
             }
         }
         _ => {
-            return Err(HawdbError::Execution(format!(
+            return Err(HawDBError::Execution(format!(
                 "fixture '{}' check '{}' has inconsistent primary outcome and expectation",
                 fixture.name, check.name
             )));
@@ -849,7 +849,7 @@ fn run_shadow_cypher_session_check(
             },
         )
         .map_err(|error| {
-            HawdbError::Execution(format!(
+            HawDBError::Execution(format!(
                 "fixture '{}' check '{}' shadow engine '{}' session failed: {error}",
                 fixture.name,
                 check.name,
@@ -858,7 +858,7 @@ fn run_shadow_cypher_session_check(
         })?;
     let statement_index = check.setup_queries.len();
     let shadow_output = outputs.get(statement_index).ok_or_else(|| {
-        HawdbError::Execution(format!(
+        HawDBError::Execution(format!(
             "fixture '{}' check '{}' shadow engine '{}' session returned no statement output",
             fixture.name,
             check.name,
@@ -871,7 +871,7 @@ fn run_shadow_cypher_session_check(
         effect: primary_effect,
     } = primary
     else {
-        return Err(HawdbError::Execution(format!(
+        return Err(HawDBError::Execution(format!(
             "fixture '{}' check '{}' has inconsistent session primary outcome",
             fixture.name, check.name
         )));
@@ -895,14 +895,14 @@ fn run_shadow_cypher_session_check(
 
     if let Some(effect_query) = &check.effect_query {
         let Some(primary_effect) = primary_effect else {
-            return Err(HawdbError::Execution(format!(
+            return Err(HawDBError::Execution(format!(
                 "fixture '{}' check '{}' missing primary effect output",
                 fixture.name, check.name
             )));
         };
         let effect_index = statements.len() - 1;
         let shadow_effect = outputs.get(effect_index).ok_or_else(|| {
-            HawdbError::Execution(format!(
+            HawDBError::Execution(format!(
                 "fixture '{}' check '{}' shadow engine '{}' session returned no effect output",
                 fixture.name,
                 check.name,
@@ -910,7 +910,7 @@ fn run_shadow_cypher_session_check(
             ))
         })?;
         let expected = check.effect_expected_rows.as_ref().ok_or_else(|| {
-            HawdbError::Execution(format!(
+            HawDBError::Execution(format!(
                 "fixture '{}' check '{}' effect query is missing expected rows",
                 fixture.name, check.name
             ))
@@ -946,7 +946,7 @@ fn run_cypher_check(
     for setup_query in &check.setup_queries {
         db.query_with_params(&setup_query.cypher, &setup_query.parameters)
             .map_err(|error| {
-                HawdbError::Execution(format!(
+                HawDBError::Execution(format!(
                     "fixture '{}' check '{}' setup failed for '{}': {error}",
                     fixture.name, check.name, setup_query.cypher
                 ))
@@ -956,7 +956,7 @@ fn run_cypher_check(
     if let Some(expected_error) = check.expected_error {
         let error = match output {
             Ok(output) => {
-                return Err(HawdbError::Execution(format!(
+                return Err(HawDBError::Execution(format!(
                     "fixture '{}' check '{}' expected {:?} error for '{}', got rows {:?}",
                     fixture.name, check.name, expected_error, check.statement.cypher, output.rows
                 )));
@@ -965,7 +965,7 @@ fn run_cypher_check(
         };
         let actual = ExpectedErrorClass::from_error(&error);
         if actual != expected_error {
-            return Err(HawdbError::Execution(format!(
+            return Err(HawDBError::Execution(format!(
                 "fixture '{}' check '{}' expected {:?} error for '{}', got {:?}: {error}",
                 fixture.name, check.name, expected_error, check.statement.cypher, actual
             )));
@@ -987,7 +987,7 @@ fn run_cypher_check(
             db.explain_plan_with_params(&check.statement.cypher, &check.statement.parameters)?;
         for needle in &check.expected_plan_contains {
             if !plan.contains(needle) {
-                return Err(HawdbError::Execution(format!(
+                return Err(HawDBError::Execution(format!(
                     "fixture '{}' check '{}' expected plan to contain '{}', got:\n{}",
                     fixture.name, check.name, needle, plan
                 )));
@@ -998,7 +998,7 @@ fn run_cypher_check(
     let effect = if let Some(effect_query) = &check.effect_query {
         let effect = db.query_with_params(&effect_query.cypher, &effect_query.parameters)?;
         let expected = check.effect_expected_rows.as_ref().ok_or_else(|| {
-            HawdbError::Execution(format!(
+            HawDBError::Execution(format!(
                 "fixture '{}' check '{}' effect query is missing expected rows",
                 fixture.name, check.name
             ))
@@ -1028,7 +1028,7 @@ fn run_cypher_session_check(
         session
             .query_with_params(&setup_query.cypher, &setup_query.parameters)
             .map_err(|error| {
-                HawdbError::Execution(format!(
+                HawDBError::Execution(format!(
                     "fixture '{}' check '{}' session setup failed for '{}': {error}",
                     fixture.name, check.name, setup_query.cypher
                 ))
@@ -1047,7 +1047,7 @@ fn run_cypher_session_check(
     let effect = if let Some(effect_query) = &check.effect_query {
         let effect = session.query_with_params(&effect_query.cypher, &effect_query.parameters)?;
         let expected = check.effect_expected_rows.as_ref().ok_or_else(|| {
-            HawdbError::Execution(format!(
+            HawDBError::Execution(format!(
                 "fixture '{}' check '{}' effect query is missing expected rows",
                 fixture.name, check.name
             ))
@@ -1131,13 +1131,13 @@ fn assert_projected_graph_matches_fixture(
     output: &ProjectedGraphShadowOutput,
 ) -> Result<()> {
     if output.node_count != check.expected_node_count {
-        return Err(HawdbError::Execution(format!(
+        return Err(HawDBError::Execution(format!(
             "fixture '{}' check '{}' expected {} projected nodes, got {}",
             fixture.name, check.name, check.expected_node_count, output.node_count
         )));
     }
     if output.edge_count != check.expected_edge_count {
-        return Err(HawdbError::Execution(format!(
+        return Err(HawDBError::Execution(format!(
             "fixture '{}' check '{}' expected {} projected edges, got {}",
             fixture.name, check.name, check.expected_edge_count, output.edge_count
         )));
@@ -1150,7 +1150,7 @@ fn assert_projected_graph_matches_fixture(
             .map(|(_, sources)| sources.clone())
             .unwrap_or_default();
         if actual != *expected_sources {
-            return Err(HawdbError::Execution(format!(
+            return Err(HawDBError::Execution(format!(
                 "fixture '{}' check '{}' expected incoming sources {:?} for node {}, got {:?}",
                 fixture.name, check.name, expected_sources, node, actual
             )));
@@ -1160,7 +1160,7 @@ fn assert_projected_graph_matches_fixture(
     if let Some(expected_node) = check.page_rank_top_node
         && output.page_rank_top_node != Some(expected_node)
     {
-        return Err(HawdbError::Execution(format!(
+        return Err(HawDBError::Execution(format!(
             "fixture '{}' check '{}' expected PageRank top node {}, got {:?}",
             fixture.name, check.name, expected_node, output.page_rank_top_node
         )));
@@ -1174,7 +1174,7 @@ fn assert_projected_graph_matches_fixture(
         for (node, expected_community) in &check.expected_communities {
             let actual = communities.get(node).copied();
             if actual != Some(*expected_community) {
-                return Err(HawdbError::Execution(format!(
+                return Err(HawDBError::Execution(format!(
                     "fixture '{}' check '{}' expected community {} for node {}, got {:?}",
                     fixture.name, check.name, expected_community, node, actual
                 )));
@@ -1191,7 +1191,7 @@ fn assert_projected_graph_matches_fixture(
         for (level, node, expected_community) in &check.expected_hierarchical_communities {
             let actual = communities.get(&(*level, *node)).copied();
             if actual != Some(*expected_community) {
-                return Err(HawdbError::Execution(format!(
+                return Err(HawDBError::Execution(format!(
                     "fixture '{}' check '{}' expected level {} community {} for node {}, got {:?}",
                     fixture.name, check.name, level, expected_community, node, actual
                 )));
@@ -1207,13 +1207,13 @@ fn assert_projected_graph_matches_fixture(
         for (node, expected_score) in &check.expected_page_rank_scores {
             let actual = scores.get(node).copied();
             let Some(actual_score) = actual else {
-                return Err(HawdbError::Execution(format!(
+                return Err(HawDBError::Execution(format!(
                     "fixture '{}' check '{}' expected PageRank score for node {}, got none",
                     fixture.name, check.name, node
                 )));
             };
             if !float_matches(actual_score, *expected_score, check.tolerance.float_abs) {
-                return Err(HawdbError::Execution(format!(
+                return Err(HawDBError::Execution(format!(
                     "fixture '{}' check '{}' expected PageRank score {} for node {}, got {}",
                     fixture.name, check.name, expected_score, node, actual_score
                 )));
@@ -1232,13 +1232,13 @@ fn compare_projected_graph_shadow(
     shadow: &ProjectedGraphShadowOutput,
 ) -> Result<()> {
     assert_projected_graph_matches_fixture(fixture, check, shadow).map_err(|error| {
-        HawdbError::Execution(format!(
+        HawDBError::Execution(format!(
             "fixture '{}' check '{}' shadow engine '{}' projected graph validation failed: {error}",
             fixture.name, check.name, shadow_engine
         ))
     })?;
     if !projected_graph_outputs_match(primary, shadow, check.tolerance) {
-        return Err(HawdbError::Execution(format!(
+        return Err(HawDBError::Execution(format!(
             "fixture '{}' check '{}' shadow engine '{}' projected graph mismatch: primary {:?}, shadow {:?}",
             fixture.name, check.name, shadow_engine, primary, shadow
         )));
@@ -1286,7 +1286,7 @@ impl ExpectedRows {
             }
             ExpectedRows::RowCount(expected) => {
                 if output.rows.len() != *expected {
-                    return Err(HawdbError::Execution(format!(
+                    return Err(HawDBError::Execution(format!(
                         "fixture '{}' check '{}' expected {} rows for '{}', got {}",
                         fixture_name,
                         check_name,
@@ -1340,7 +1340,7 @@ impl ExpectedRows {
             }
             ExpectedRows::RowCount(_) => {
                 if primary.rows.len() != shadow.rows.len() {
-                    return Err(HawdbError::Execution(format!(
+                    return Err(HawDBError::Execution(format!(
                         "fixture '{}' check '{}' shadow engine '{}' row count mismatch: primary {}, shadow {}",
                         fixture_name,
                         check_name,
@@ -1361,8 +1361,8 @@ fn row_mismatch_error(
     cypher: &str,
     expected: &[Row],
     actual: &[Row],
-) -> HawdbError {
-    HawdbError::Execution(format!(
+) -> HawDBError {
+    HawDBError::Execution(format!(
         "fixture '{}' check '{}' row mismatch for '{}': expected {:?}, got {:?}",
         fixture_name, check_name, cypher, expected, actual
     ))
@@ -1474,8 +1474,8 @@ fn shadow_mismatch_error(
     shadow_engine: &str,
     primary: &[Row],
     shadow: &[Row],
-) -> HawdbError {
-    HawdbError::Execution(format!(
+) -> HawDBError {
+    HawDBError::Execution(format!(
         "fixture '{}' check '{}' shadow engine '{}' row mismatch: primary {:?}, shadow {:?}",
         fixture_name, check_name, shadow_engine, primary, shadow
     ))

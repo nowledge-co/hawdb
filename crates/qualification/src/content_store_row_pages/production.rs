@@ -14,7 +14,7 @@ use crate::{
     CONTENT_STORE_SHARED_HOST_8_GIB_BYTES, CONTENT_STORE_SHARED_HOST_MAX_CAPACITY_BYTES,
 };
 use hawdb::{
-    Database, DatabaseConfig, DurabilityPolicy, HawdbError, IoConcurrencyBudget,
+    Database, DatabaseConfig, DurabilityPolicy, HawDBError, IoConcurrencyBudget,
     ProcessMemoryProfile, ProcessMemorySnapshot, ProductionEvidenceBinding,
     ProductionQualificationIdentity, RelationalIndexMode, RuntimeGovernor, RuntimeGovernorConfig,
     RuntimeGovernorSnapshot, RuntimeMemorySnapshot, RuntimeWorkRequest, StorageDeviceProfile,
@@ -250,7 +250,7 @@ impl ProductionContentStoreStorageQualificationReport {
 
 pub fn run_production_content_store_storage_qualification(
     config: ProductionContentStoreStorageQualificationConfig,
-) -> Result<ProductionContentStoreStorageQualificationReport, HawdbError> {
+) -> Result<ProductionContentStoreStorageQualificationReport, HawDBError> {
     let corpus = nowledge_content_store_sql_corpus()?;
     validate_config(&config, &corpus)?;
 
@@ -340,7 +340,7 @@ pub fn run_production_content_store_storage_qualification(
         });
 
         let statement = corpus.statement(&read_case.statement_name).ok_or_else(|| {
-            HawdbError::Semantic(format!(
+            HawDBError::Semantic(format!(
                 "production Content Store case {} references missing statement {}",
                 read_case.case_name, read_case.statement_name
             ))
@@ -378,7 +378,7 @@ pub fn run_production_content_store_storage_qualification(
                     .with_blocking(true),
                 )
                 .map_err(|error| {
-                    HawdbError::Execution(format!(
+                    HawDBError::Execution(format!(
                         "production Content Store read admission failed: {error}"
                     ))
                 })?;
@@ -520,31 +520,31 @@ fn open_cache_evidence(
 fn validate_config(
     config: &ProductionContentStoreStorageQualificationConfig,
     corpus: &ContentStoreSqlCorpus,
-) -> Result<(), HawdbError> {
+) -> Result<(), HawDBError> {
     if !config.database_path.is_dir() {
-        return Err(HawdbError::Semantic(
-            "production Content Store qualification requires an existing Hawdb database directory"
+        return Err(HawDBError::Semantic(
+            "production Content Store qualification requires an existing HawDB database directory"
                 .to_string(),
         ));
     }
     if !config.database_config.read_only {
-        return Err(HawdbError::Semantic(
+        return Err(HawDBError::Semantic(
             "production Content Store qualification requires read_only database config".to_string(),
         ));
     }
     if config.database_config.storage_residency_mode != StorageResidencyMode::OutOfCore {
-        return Err(HawdbError::Semantic(
+        return Err(HawDBError::Semantic(
             "production Content Store qualification requires out-of-core storage".to_string(),
         ));
     }
     if config.database_config.relational_index_mode != RelationalIndexMode::Authoritative {
-        return Err(HawdbError::Semantic(
+        return Err(HawDBError::Semantic(
             "production Content Store qualification requires authoritative relational indexes"
                 .to_string(),
         ));
     }
     if config.database_config.segment_cache_capacity_bytes == 0 {
-        return Err(HawdbError::Semantic(
+        return Err(HawDBError::Semantic(
             "production Content Store qualification requires a non-zero segment cache".to_string(),
         ));
     }
@@ -553,13 +553,13 @@ fn validate_config(
         || config.open_payload_cache_limits.max_resident_bytes
             > config.database_config.segment_cache_capacity_bytes
     {
-        return Err(HawdbError::Semantic(
+        return Err(HawDBError::Semantic(
             "production Content Store qualification requires non-zero open payload-cache limits within the segment-cache capacity"
                 .to_string(),
         ));
     }
     if config.measurement_runs < 2 || config.measurement_runs > 1024 {
-        return Err(HawdbError::Semantic(
+        return Err(HawDBError::Semantic(
             "production Content Store qualification requires between 2 and 1024 measurement runs"
                 .to_string(),
         ));
@@ -574,7 +574,7 @@ fn validate_config(
         &config.evidence_binding,
         &config.expected_identity,
     )
-    .map_err(|error| HawdbError::Semantic(error.to_string()))?;
+    .map_err(|error| HawDBError::Semantic(error.to_string()))?;
 
     validate_read_cases(
         &config.read_cases,
@@ -587,21 +587,21 @@ pub(super) fn validate_read_cases(
     read_cases: &[ProductionContentStoreReadCase],
     corpus: &ContentStoreSqlCorpus,
     result_budget_bytes: u64,
-) -> Result<(), HawdbError> {
+) -> Result<(), HawDBError> {
     if read_cases.is_empty() {
-        return Err(HawdbError::Semantic(
+        return Err(HawDBError::Semantic(
             "production Content Store qualification requires at least one read case".to_string(),
         ));
     }
     let mut case_names = BTreeSet::new();
     for read_case in read_cases {
         if read_case.case_name.trim().is_empty() || !case_names.insert(&read_case.case_name) {
-            return Err(HawdbError::Semantic(
+            return Err(HawDBError::Semantic(
                 "production Content Store case names must be non-empty and unique".to_string(),
             ));
         }
         let statement = corpus.statement(&read_case.statement_name).ok_or_else(|| {
-            HawdbError::Semantic(format!(
+            HawDBError::Semantic(format!(
                 "production Content Store case {} references unknown statement {}",
                 read_case.case_name, read_case.statement_name
             ))
@@ -609,13 +609,13 @@ pub(super) fn validate_read_cases(
         if statement.kind != ContentStoreSqlStatementKind::Read
             || statement.classification == ContentStoreSqlStatementClassification::RetainedOnSqlite
         {
-            return Err(HawdbError::Semantic(format!(
-                "production Content Store case {} must reference a Hawdb-owned read statement",
+            return Err(HawDBError::Semantic(format!(
+                "production Content Store case {} must reference a HawDB-owned read statement",
                 read_case.case_name
             )));
         }
         if statement.parameters.len() != read_case.parameters.len() {
-            return Err(HawdbError::Semantic(format!(
+            return Err(HawDBError::Semantic(format!(
                 "production Content Store case {} supplies {} parameters for a {}-parameter statement",
                 read_case.case_name,
                 read_case.parameters.len(),
@@ -623,7 +623,7 @@ pub(super) fn validate_read_cases(
             )));
         }
         if u64::try_from(statement.max_payload_bytes).unwrap_or(u64::MAX) > result_budget_bytes {
-            return Err(HawdbError::Semantic(format!(
+            return Err(HawDBError::Semantic(format!(
                 "production Content Store case {} payload budget exceeds the runtime governor result budget",
                 read_case.case_name
             )));
@@ -634,7 +634,7 @@ pub(super) fn validate_read_cases(
             || read_case.max_physical_bytes_per_run == 0
             || !valid_sha256(&read_case.expected_output_sha256)
         {
-            return Err(HawdbError::Semantic(format!(
+            return Err(HawDBError::Semantic(format!(
                 "production Content Store case {} has invalid output, intermediate, I/O, or digest limits",
                 read_case.case_name
             )));
@@ -648,9 +648,9 @@ pub(super) fn validate_resource_profile(
     configured_available_memory_bytes: u64,
     governor: RuntimeGovernorConfig,
     limits: ProductionContentStoreResourceLimits,
-) -> Result<(), HawdbError> {
+) -> Result<(), HawDBError> {
     if configured_available_memory_bytes == 0 {
-        return Err(HawdbError::Semantic(
+        return Err(HawDBError::Semantic(
             "production Content Store qualification requires a non-zero configured memory profile"
                 .to_string(),
         ));
@@ -659,14 +659,14 @@ pub(super) fn validate_resource_profile(
         ContentStoreResourceProfileKind::Capability512Mib
             if configured_available_memory_bytes != CONTENT_STORE_512_MIB_CAPABILITY_BYTES =>
         {
-            return Err(HawdbError::Semantic(format!(
+            return Err(HawDBError::Semantic(format!(
                 "production Content Store 512 MiB capability must declare {CONTENT_STORE_512_MIB_CAPABILITY_BYTES} bytes"
             )));
         }
         ContentStoreResourceProfileKind::SharedHost8Gib
             if configured_available_memory_bytes != CONTENT_STORE_SHARED_HOST_8_GIB_BYTES =>
         {
-            return Err(HawdbError::Semantic(format!(
+            return Err(HawDBError::Semantic(format!(
                 "production Content Store shared-host profile must declare {CONTENT_STORE_SHARED_HOST_8_GIB_BYTES} bytes"
             )));
         }
@@ -677,7 +677,7 @@ pub(super) fn validate_resource_profile(
         ContentStoreResourceProfileKind::Capability512Mib
             if governor.memory_budget_bytes != Some(CONTENT_STORE_512_MIB_CAPABILITY_BYTES) =>
         {
-            return Err(HawdbError::Semantic(format!(
+            return Err(HawDBError::Semantic(format!(
                 "production Content Store 512 MiB capability requires an explicit {CONTENT_STORE_512_MIB_CAPABILITY_BYTES}-byte governor ceiling"
             )));
         }
@@ -688,7 +688,7 @@ pub(super) fn validate_resource_profile(
                 || governor.fallback_memory_budget_bytes
                     != shared_host_governor.fallback_memory_budget_bytes =>
         {
-            return Err(HawdbError::Semantic(
+            return Err(HawDBError::Semantic(
                 "production Content Store shared-host profile requires the dynamic shared-host governor memory policy"
                     .to_string(),
             ));
@@ -700,7 +700,7 @@ pub(super) fn validate_resource_profile(
         || limits.max_steady_resident_bytes > limits.max_peak_resident_bytes
         || limits.max_peak_resident_bytes > configured_available_memory_bytes
     {
-        return Err(HawdbError::Semantic(
+        return Err(HawDBError::Semantic(
             "production Content Store resident-memory limits must be non-zero, ordered, and within the configured profile"
                 .to_string(),
         ));

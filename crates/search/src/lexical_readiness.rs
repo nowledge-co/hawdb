@@ -1,4 +1,4 @@
-use crate::error::{HawdbError, Result};
+use crate::error::{HawDBError, Result};
 use hawdb_evidence::production_evidence_blocker_codes;
 
 pub const SEARCH_LEXICAL_QUALIFICATION_PROTOCOL: &str =
@@ -323,7 +323,7 @@ impl SearchLexicalProductionQualificationReport {
         if blockers.is_empty() {
             Ok(())
         } else {
-            Err(HawdbError::Storage(format!(
+            Err(HawDBError::Storage(format!(
                 "segmented lexical projection is not qualified for production: {}",
                 blockers.join(",")
             )))
@@ -340,7 +340,7 @@ impl SearchLexicalProductionQualificationReport {
         if blockers.is_empty() {
             Ok(())
         } else {
-            Err(HawdbError::Storage(format!(
+            Err(HawDBError::Storage(format!(
                 "segmented lexical projection is not qualified for the current production release: {}",
                 blockers.join(",")
             )))

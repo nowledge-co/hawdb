@@ -39,10 +39,10 @@ opening the database.
 
 Use `shared_host_8_gib` only with separate evidence that the effective host
 or cgroup limit is 8 GiB. It keeps runtime memory derivation dynamic: automatic
-Hawdb capacity is capped at 2 GiB, normally moves through roughly 1--2 GiB as
+HawDB capacity is capped at 2 GiB, normally moves through roughly 1--2 GiB as
 headroom changes, and may fall below that range under pressure. It is not a
 fixed reservation. Use `capability_512_mib` for a separate explicitly bounded
-low-memory capability run. It installs a 512 MiB Hawdb ceiling; 512 MiB is not
+low-memory capability run. It installs a 512 MiB HawDB ceiling; 512 MiB is not
 the shared-host default, a universal production cutoff, or a minimum host size.
 
 ## Execute

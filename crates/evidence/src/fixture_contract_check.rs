@@ -1,4 +1,4 @@
-use hawdb_core::{HawdbError, Result};
+use hawdb_core::{HawDBError, Result};
 use std::io::{BufRead, BufReader, Write};
 use std::process::{Child, ChildStdin, ChildStdout, Command, Output, Stdio};
 use std::thread;
@@ -50,24 +50,24 @@ pub fn run_nowledge_fixture_contract_command_check(
         match arg.as_str() {
             "--max-checks" => {
                 let raw = args.next().ok_or_else(|| {
-                    HawdbError::Semantic(nowledge_fixture_contract_command_check_usage())
+                    HawDBError::Semantic(nowledge_fixture_contract_command_check_usage())
                 })?;
                 options.max_checks = Some(parse_positive_usize("--max-checks", &raw)?);
             }
             "--start-check" => {
                 let raw = args.next().ok_or_else(|| {
-                    HawdbError::Semantic(nowledge_fixture_contract_command_check_usage())
+                    HawDBError::Semantic(nowledge_fixture_contract_command_check_usage())
                 })?;
                 options.start_check = parse_usize("--start-check", &raw)?;
             }
             "--check-name" => {
                 options.check_name = Some(args.next().ok_or_else(|| {
-                    HawdbError::Semantic(nowledge_fixture_contract_command_check_usage())
+                    HawDBError::Semantic(nowledge_fixture_contract_command_check_usage())
                 })?);
             }
             "--command-timeout-ms" => {
                 let raw = args.next().ok_or_else(|| {
-                    HawdbError::Semantic(nowledge_fixture_contract_command_check_usage())
+                    HawDBError::Semantic(nowledge_fixture_contract_command_check_usage())
                 })?;
                 options.command_timeout =
                     Duration::from_millis(parse_positive_u64("--command-timeout-ms", &raw)?);
@@ -80,10 +80,10 @@ pub fn run_nowledge_fixture_contract_command_check(
             }
             "--wrapper-identity" => {
                 let value = args.next().ok_or_else(|| {
-                    HawdbError::Semantic(nowledge_fixture_contract_command_check_usage())
+                    HawDBError::Semantic(nowledge_fixture_contract_command_check_usage())
                 })?;
                 if value.trim().is_empty() {
-                    return Err(HawdbError::Semantic(
+                    return Err(HawDBError::Semantic(
                         "--wrapper-identity must not be empty".to_string(),
                     ));
                 }
@@ -91,10 +91,10 @@ pub fn run_nowledge_fixture_contract_command_check(
             }
             "--previous-wrapper-contract-evidence-output" => {
                 let value = args.next().ok_or_else(|| {
-                    HawdbError::Semantic(nowledge_fixture_contract_command_check_usage())
+                    HawDBError::Semantic(nowledge_fixture_contract_command_check_usage())
                 })?;
                 if value.trim().is_empty() {
-                    return Err(HawdbError::Semantic(
+                    return Err(HawDBError::Semantic(
                         "--previous-wrapper-contract-evidence-output must not be empty".to_string(),
                     ));
                 }
@@ -113,15 +113,15 @@ pub fn run_nowledge_fixture_contract_command_check(
 
     let contract_path = positional
         .first()
-        .ok_or_else(|| HawdbError::Semantic(nowledge_fixture_contract_command_check_usage()))?;
+        .ok_or_else(|| HawDBError::Semantic(nowledge_fixture_contract_command_check_usage()))?;
     let program = positional
         .get(1)
-        .ok_or_else(|| HawdbError::Semantic(nowledge_fixture_contract_command_check_usage()))?;
+        .ok_or_else(|| HawDBError::Semantic(nowledge_fixture_contract_command_check_usage()))?;
     let (program, command_args) = if program == "--persistent-command" {
         options.command_mode = FixtureCommandMode::Persistent;
         let program = positional
             .get(2)
-            .ok_or_else(|| HawdbError::Semantic(nowledge_fixture_contract_command_check_usage()))?;
+            .ok_or_else(|| HawDBError::Semantic(nowledge_fixture_contract_command_check_usage()))?;
         (
             program.as_str(),
             positional.iter().skip(3).cloned().collect::<Vec<_>>(),
@@ -142,10 +142,10 @@ pub fn run_nowledge_fixture_contract_command_check(
 
 fn read_contract(path: &str) -> Result<serde_json::Value> {
     let raw = std::fs::read_to_string(path).map_err(|_| {
-        HawdbError::Execution("failed to read fixture contract: io_error".to_string())
+        HawDBError::Execution("failed to read fixture contract: io_error".to_string())
     })?;
     serde_json::from_str(&raw).map_err(|_| {
-        HawdbError::Execution("failed to parse fixture contract: invalid_json".to_string())
+        HawDBError::Execution("failed to parse fixture contract: invalid_json".to_string())
     })
 }
 
@@ -153,14 +153,14 @@ fn write_previous_wrapper_contract_evidence(report: &serde_json::Value, path: &s
     let evidence = report
         .get("previous_wrapper_contract_evidence")
         .ok_or_else(|| {
-            HawdbError::Semantic(
+            HawDBError::Semantic(
                 "contract command check missing previous-wrapper evidence".to_string(),
             )
         })?;
     let rendered = serde_json::to_string_pretty(evidence)
         .expect("previous-wrapper contract evidence must be serializable");
     std::fs::write(path, format!("{rendered}\n")).map_err(|error| {
-        HawdbError::Execution(format!(
+        HawDBError::Execution(format!(
             "failed to write previous-wrapper contract evidence: {}",
             error.kind()
         ))
@@ -176,7 +176,7 @@ fn check_contract_command(
     if contract.get("protocol").and_then(serde_json::Value::as_str)
         != Some("hawdb-nowledge-fixture-contract")
     {
-        return Err(HawdbError::Semantic(
+        return Err(HawDBError::Semantic(
             "fixture contract protocol must be hawdb-nowledge-fixture-contract".to_string(),
         ));
     }
@@ -193,7 +193,7 @@ fn check_contract_command(
     for statement in contract
         .get("setup")
         .and_then(serde_json::Value::as_array)
-        .ok_or_else(|| HawdbError::Semantic("fixture contract missing setup array".to_string()))?
+        .ok_or_else(|| HawDBError::Semantic("fixture contract missing setup array".to_string()))?
     {
         if let Err(error) = command.invoke(statement_request(statement)) {
             failures.push(failure_json("fixture_setup", statement, error.to_string()));
@@ -215,7 +215,7 @@ fn check_contract_command(
     let checks = contract
         .get("checks")
         .and_then(serde_json::Value::as_array)
-        .ok_or_else(|| HawdbError::Semantic("fixture contract missing checks array".to_string()))?;
+        .ok_or_else(|| HawDBError::Semantic("fixture contract missing checks array".to_string()))?;
     let selected_checks = select_contract_checks(checks, options);
     let selected_check_count = selected_checks.len();
     if selected_check_count == 0 {
@@ -351,7 +351,7 @@ fn check_cypher_contract_check(
 
     let statement = check
         .get("statement")
-        .ok_or_else(|| HawdbError::Semantic("cypher check missing statement".to_string()))?;
+        .ok_or_else(|| HawDBError::Semantic("cypher check missing statement".to_string()))?;
     let output = if is_session_check(check) {
         session_statements.push(statement_request(statement));
         let session = serde_json::json!({
@@ -368,7 +368,7 @@ fn check_cypher_contract_check(
     if let Some(effect) = check.get("effect").filter(|value| !value.is_null()) {
         let statement = effect
             .get("statement")
-            .ok_or_else(|| HawdbError::Semantic("cypher effect missing statement".to_string()))?;
+            .ok_or_else(|| HawDBError::Semantic("cypher effect missing statement".to_string()))?;
         let output = command.invoke(statement_request(statement))?;
         expected_rows_matches(effect.get("expected_rows"), &output)?;
     }
@@ -387,7 +387,7 @@ fn check_project_graph_contract_check(
     let request = check
         .get("request")
         .cloned()
-        .ok_or_else(|| HawdbError::Semantic("projected_graph check missing request".to_string()))?;
+        .ok_or_else(|| HawDBError::Semantic("projected_graph check missing request".to_string()))?;
     let reply = command.invoke(request)?;
     if reply
         .get("primary_only")
@@ -403,7 +403,7 @@ fn check_project_graph_contract_check(
     }
     let actual = reply.get("ok").unwrap_or(&reply);
     let expected = check.get("expected_projected_graph").ok_or_else(|| {
-        HawdbError::Semantic("projected_graph check missing expected payload".to_string())
+        HawDBError::Semantic("projected_graph check missing expected payload".to_string())
     })?;
     for key in [
         "node_count",
@@ -414,7 +414,7 @@ fn check_project_graph_contract_check(
         "page_rank_top_node",
     ] {
         if actual.get(key) != expected.get(key) {
-            return Err(HawdbError::Execution(format!(
+            return Err(HawDBError::Execution(format!(
                 "project_graph mismatch for '{key}': expected {}, got {}",
                 json_debug(expected.get(key)),
                 json_debug(actual.get(key))
@@ -449,11 +449,11 @@ fn session_last_rows(reply: &serde_json::Value) -> Result<serde_json::Value> {
         .get("results")
         .and_then(serde_json::Value::as_array)
         .ok_or_else(|| {
-            HawdbError::Execution("execute_session reply missing results".to_string())
+            HawDBError::Execution("execute_session reply missing results".to_string())
         })?;
     let last = results
         .last()
-        .ok_or_else(|| HawdbError::Execution("execute_session reply had no results".to_string()))?;
+        .ok_or_else(|| HawDBError::Execution("execute_session reply had no results".to_string()))?;
     if last.get("rows").is_some() {
         Ok(last.clone())
     } else {
@@ -466,11 +466,11 @@ fn expected_rows_matches(
     output: &serde_json::Value,
 ) -> Result<()> {
     let expected_rows = expected_rows
-        .ok_or_else(|| HawdbError::Semantic("contract check missing expected_rows".to_string()))?;
+        .ok_or_else(|| HawDBError::Semantic("contract check missing expected_rows".to_string()))?;
     let actual = output
         .get("rows")
         .and_then(serde_json::Value::as_array)
-        .ok_or_else(|| HawdbError::Execution("command reply missing rows array".to_string()))?;
+        .ok_or_else(|| HawDBError::Execution("command reply missing rows array".to_string()))?;
     match expected_rows
         .get("kind")
         .and_then(serde_json::Value::as_str)
@@ -480,10 +480,10 @@ fn expected_rows_matches(
                 .get("count")
                 .and_then(serde_json::Value::as_u64)
                 .ok_or_else(|| {
-                    HawdbError::Semantic("row_count expected_rows missing count".to_string())
+                    HawDBError::Semantic("row_count expected_rows missing count".to_string())
                 })?;
             if actual.len() as u64 != expected {
-                return Err(HawdbError::Execution(format!(
+                return Err(HawDBError::Execution(format!(
                     "row count mismatch: expected {expected}, got {}",
                     actual.len()
                 )));
@@ -494,10 +494,10 @@ fn expected_rows_matches(
                 .get("rows")
                 .and_then(serde_json::Value::as_array)
                 .ok_or_else(|| {
-                    HawdbError::Semantic("exact expected_rows missing rows".to_string())
+                    HawDBError::Semantic("exact expected_rows missing rows".to_string())
                 })?;
             if actual != expected {
-                return Err(HawdbError::Execution(format!(
+                return Err(HawDBError::Execution(format!(
                     "ordered row mismatch: expected {}, got {}",
                     serde_json::Value::Array(expected.clone()),
                     serde_json::Value::Array(actual.clone())
@@ -509,23 +509,23 @@ fn expected_rows_matches(
                 .get("rows")
                 .and_then(serde_json::Value::as_array)
                 .ok_or_else(|| {
-                    HawdbError::Semantic("unordered expected_rows missing rows".to_string())
+                    HawDBError::Semantic("unordered expected_rows missing rows".to_string())
                 })?;
             let mut expected = expected.iter().map(json_sort_key).collect::<Vec<_>>();
             let mut actual = actual.iter().map(json_sort_key).collect::<Vec<_>>();
             expected.sort();
             actual.sort();
             if actual != expected {
-                return Err(HawdbError::Execution("unordered row mismatch".to_string()));
+                return Err(HawDBError::Execution("unordered row mismatch".to_string()));
             }
         }
         Some(kind) => {
-            return Err(HawdbError::Semantic(format!(
+            return Err(HawDBError::Semantic(format!(
                 "unsupported expected_rows kind '{kind}'"
             )));
         }
         None => {
-            return Err(HawdbError::Semantic(
+            return Err(HawDBError::Semantic(
                 "expected_rows missing kind".to_string(),
             ));
         }
@@ -588,32 +588,32 @@ impl SpawnPerRequestFixtureCommand {
             .stderr(Stdio::piped())
             .spawn()
             .map_err(|error| {
-                HawdbError::Execution(format!(
+                HawDBError::Execution(format!(
                     "failed to spawn fixture contract command '{}': {error}",
                     self.program
                 ))
             })?;
         {
             let mut stdin = child.stdin.take().ok_or_else(|| {
-                HawdbError::Execution("fixture contract command stdin is not available".to_string())
+                HawDBError::Execution("fixture contract command stdin is not available".to_string())
             })?;
             use std::io::Write;
             writeln!(stdin, "{request}").map_err(|error| {
-                HawdbError::Execution(format!(
+                HawDBError::Execution(format!(
                     "failed to write fixture contract command request: {error}"
                 ))
             })?;
         }
         let output = self.wait_for_output(child)?;
         if !output.status.success() {
-            return Err(HawdbError::Execution(format!(
+            return Err(HawDBError::Execution(format!(
                 "fixture contract command exited with {}; stderr: {}",
                 output.status,
                 String::from_utf8_lossy(&output.stderr).trim()
             )));
         }
         serde_json::from_slice(&output.stdout).map_err(|error| {
-            HawdbError::Execution(format!(
+            HawDBError::Execution(format!(
                 "fixture contract command returned invalid JSON: {error}; stdout: {}",
                 String::from_utf8_lossy(&output.stdout).trim()
             ))
@@ -626,7 +626,7 @@ impl SpawnPerRequestFixtureCommand {
             match child.try_wait() {
                 Ok(Some(_status)) => {
                     return child.wait_with_output().map_err(|error| {
-                        HawdbError::Execution(format!(
+                        HawDBError::Execution(format!(
                             "failed to collect fixture contract command output: {error}"
                         ))
                     });
@@ -634,12 +634,12 @@ impl SpawnPerRequestFixtureCommand {
                 Ok(None) if started_at.elapsed() >= self.timeout => {
                     let _ = child.kill();
                     let output = child.wait_with_output().map_err(|error| {
-                        HawdbError::Execution(format!(
+                        HawDBError::Execution(format!(
                             "fixture contract command timed out after {} ms and failed to collect output: {error}",
                             self.timeout.as_millis()
                         ))
                     })?;
-                    return Err(HawdbError::Execution(format!(
+                    return Err(HawDBError::Execution(format!(
                         "fixture contract command timed out after {} ms; stderr: {}",
                         self.timeout.as_millis(),
                         String::from_utf8_lossy(&output.stderr).trim()
@@ -648,7 +648,7 @@ impl SpawnPerRequestFixtureCommand {
                 Ok(None) => thread::sleep(Duration::from_millis(COMMAND_WAIT_POLL_MS)),
                 Err(error) => {
                     let _ = child.kill();
-                    return Err(HawdbError::Execution(format!(
+                    return Err(HawDBError::Execution(format!(
                         "failed to poll fixture contract command: {error}"
                     )));
                 }
@@ -673,19 +673,19 @@ impl PersistentFixtureCommand {
             .stderr(Stdio::inherit())
             .spawn()
             .map_err(|error| {
-                HawdbError::Execution(format!(
+                HawDBError::Execution(format!(
                     "failed to spawn persistent fixture contract command '{program}': {error}"
                 ))
             })?;
         let stdin = child.stdin.take().ok_or_else(|| {
             let _ = child.kill();
-            HawdbError::Execution(
+            HawDBError::Execution(
                 "persistent fixture contract command stdin is not available".to_string(),
             )
         })?;
         let stdout = child.stdout.take().ok_or_else(|| {
             let _ = child.kill();
-            HawdbError::Execution(
+            HawDBError::Execution(
                 "persistent fixture contract command stdout is not available".to_string(),
             )
         })?;
@@ -699,29 +699,29 @@ impl PersistentFixtureCommand {
 
     fn invoke(&mut self, request: serde_json::Value) -> Result<serde_json::Value> {
         writeln!(self.stdin, "{request}").map_err(|error| {
-            HawdbError::Execution(format!(
+            HawDBError::Execution(format!(
                 "failed to write persistent fixture contract command request: {error}"
             ))
         })?;
         self.stdin.flush().map_err(|error| {
-            HawdbError::Execution(format!(
+            HawDBError::Execution(format!(
                 "failed to flush persistent fixture contract command request: {error}"
             ))
         })?;
         let mut line = String::new();
         let bytes = self.stdout.read_line(&mut line).map_err(|_| {
-            HawdbError::Execution(
+            HawDBError::Execution(
                 "failed to read persistent fixture contract command response: io_error".to_string(),
             )
         })?;
         if bytes == 0 {
-            return Err(HawdbError::Execution(format!(
+            return Err(HawDBError::Execution(format!(
                 "persistent fixture contract command '{}' closed stdout",
                 self.program
             )));
         }
         serde_json::from_str(&line).map_err(|_| {
-            HawdbError::Execution(
+            HawDBError::Execution(
                 "persistent fixture contract command returned invalid JSON: invalid_json"
                     .to_string(),
             )
@@ -1030,10 +1030,10 @@ fn failure_code(phase: &str, message: &str) -> &'static str {
 
 fn parse_positive_usize(flag: &str, value: &str) -> Result<usize> {
     let parsed = value.parse::<usize>().map_err(|error| {
-        HawdbError::Semantic(format!("invalid {flag} value '{value}': {error}"))
+        HawDBError::Semantic(format!("invalid {flag} value '{value}': {error}"))
     })?;
     if parsed == 0 {
-        return Err(HawdbError::Semantic(format!(
+        return Err(HawDBError::Semantic(format!(
             "{flag} must be greater than zero"
         )));
     }
@@ -1043,15 +1043,15 @@ fn parse_positive_usize(flag: &str, value: &str) -> Result<usize> {
 fn parse_usize(flag: &str, value: &str) -> Result<usize> {
     value
         .parse::<usize>()
-        .map_err(|error| HawdbError::Semantic(format!("invalid {flag} value '{value}': {error}")))
+        .map_err(|error| HawDBError::Semantic(format!("invalid {flag} value '{value}': {error}")))
 }
 
 fn parse_positive_u64(flag: &str, value: &str) -> Result<u64> {
     let parsed = value.parse::<u64>().map_err(|error| {
-        HawdbError::Semantic(format!("invalid {flag} value '{value}': {error}"))
+        HawDBError::Semantic(format!("invalid {flag} value '{value}': {error}"))
     })?;
     if parsed == 0 {
-        return Err(HawdbError::Semantic(format!(
+        return Err(HawDBError::Semantic(format!(
             "{flag} must be greater than zero"
         )));
     }

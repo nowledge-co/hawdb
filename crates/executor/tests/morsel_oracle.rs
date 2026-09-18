@@ -1,4 +1,4 @@
-use hawdb_core::{HawdbError, Result, RuntimeCancellationToken, RuntimeTaskContext};
+use hawdb_core::{HawDBError, Result, RuntimeCancellationToken, RuntimeTaskContext};
 use hawdb_executor::{
     execute_morsels_ordered, BoundedExecutor, Morsel, MorselAdmission, MorselAdmissionRequest,
     MorselOrdinal, MorselOutput, MorselStreamControl, MorselStreamResources, PipelineId,
@@ -328,7 +328,7 @@ fn assert_stream(
             let output = TrackedOutput::new(fixture.work(morsel, &calls, gate), &lifetimes);
             let index = morsel.ordinal.0 as usize;
             if exit == Exit::WorkerError(index) {
-                return Err(HawdbError::Execution("injected worker failure".into()));
+                return Err(HawDBError::Execution("injected worker failure".into()));
             }
             assert_ne!(exit, Exit::WorkerPanic(index), "injected worker panic");
             if exit == Exit::CancelWorker(index) {
@@ -354,7 +354,7 @@ fn assert_stream(
             });
             assert_ne!(exit, Exit::ConsumerPanic(index), "injected consumer panic");
             if exit == Exit::ConsumerError(index) {
-                return Err(HawdbError::Execution("injected consumer failure".into()));
+                return Err(HawDBError::Execution("injected consumer failure".into()));
             }
             Ok(if exit == Exit::Stop(index) {
                 MorselStreamControl::Stop
@@ -571,7 +571,7 @@ fn materializing_error_order_does_not_imply_parallel_fail_fast() {
         let work = |morsel: Morsel| -> Result<u64> {
             calls.fetch_add(1, Ordering::SeqCst);
             match morsel.ordinal.0 {
-                2 | 4 => Err(HawdbError::Execution(format!(
+                2 | 4 => Err(HawDBError::Execution(format!(
                     "failure {}",
                     morsel.ordinal.0
                 ))),

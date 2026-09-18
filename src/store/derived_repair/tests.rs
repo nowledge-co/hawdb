@@ -135,7 +135,7 @@ fn canonical_corruption_fails_closed_before_repair_is_planned() {
         DerivedArtifactRebuildOptions::default(),
     )
     .unwrap_err();
-    assert!(matches!(error, HawdbError::StorageIntegrity(_)));
+    assert!(matches!(error, HawDBError::StorageIntegrity(_)));
     assert!(pending_record_paths(&path).unwrap().is_empty());
     fs::remove_dir_all(path).unwrap();
 }

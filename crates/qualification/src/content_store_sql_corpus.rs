@@ -1,4 +1,4 @@
-use hawdb::{HawdbError, Result};
+use hawdb::{HawDBError, Result};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use std::collections::BTreeSet;
@@ -168,31 +168,31 @@ impl ContentStoreSqlCorpus {
 
     pub fn validate(&self) -> Result<()> {
         if self.protocol != NOWLEDGE_CONTENT_STORE_SQL_CORPUS_PROTOCOL {
-            return Err(HawdbError::Semantic(format!(
+            return Err(HawDBError::Semantic(format!(
                 "content-store SQL corpus protocol mismatch: expected {NOWLEDGE_CONTENT_STORE_SQL_CORPUS_PROTOCOL}, got {}",
                 self.protocol
             )));
         }
         if self.revision != NOWLEDGE_CONTENT_STORE_SQL_CORPUS_REVISION {
-            return Err(HawdbError::Semantic(format!(
+            return Err(HawDBError::Semantic(format!(
                 "content-store SQL corpus revision mismatch: expected {NOWLEDGE_CONTENT_STORE_SQL_CORPUS_REVISION}, got {}",
                 self.revision
             )));
         }
         if self.schema_protocol != NOWLEDGE_CONTENT_STORE_SCHEMA_PROTOCOL {
-            return Err(HawdbError::Semantic(format!(
+            return Err(HawDBError::Semantic(format!(
                 "content-store schema protocol mismatch: expected {NOWLEDGE_CONTENT_STORE_SCHEMA_PROTOCOL}, got {}",
                 self.schema_protocol
             )));
         }
         if self.schema_revision != NOWLEDGE_CONTENT_STORE_SCHEMA_REVISION {
-            return Err(HawdbError::Semantic(format!(
+            return Err(HawDBError::Semantic(format!(
                 "content-store schema revision mismatch: expected {NOWLEDGE_CONTENT_STORE_SCHEMA_REVISION}, got {}",
                 self.schema_revision
             )));
         }
         if self.source_engine != "sqlite" || self.target_dialect != "postgresql" {
-            return Err(HawdbError::Semantic(
+            return Err(HawDBError::Semantic(
                 "content-store SQL corpus must map sqlite to postgresql".to_string(),
             ));
         }
@@ -204,7 +204,7 @@ impl ContentStoreSqlCorpus {
             .collect::<BTreeSet<_>>();
         let required_tables = REQUIRED_TABLES.iter().copied().collect::<BTreeSet<_>>();
         if tables != required_tables {
-            return Err(HawdbError::Semantic(
+            return Err(HawDBError::Semantic(
                 "content-store SQL corpus table set does not match the v1 scope".to_string(),
             ));
         }
@@ -213,7 +213,7 @@ impl ContentStoreSqlCorpus {
         for statement in &self.statements {
             validate_statement(statement)?;
             if !names.insert(statement.name.as_str()) {
-                return Err(HawdbError::Semantic(format!(
+                return Err(HawDBError::Semantic(format!(
                     "content-store SQL corpus contains duplicate statement name {}",
                     statement.name
                 )));
@@ -221,7 +221,7 @@ impl ContentStoreSqlCorpus {
         }
 
         if self.source_inventory.is_empty() {
-            return Err(HawdbError::Semantic(
+            return Err(HawDBError::Semantic(
                 "content-store SQL corpus source inventory must not be empty".to_string(),
             ));
         }
@@ -232,19 +232,19 @@ impl ContentStoreSqlCorpus {
                 || caller.statements.is_empty()
                 || caller.note.is_empty()
             {
-                return Err(HawdbError::Semantic(
+                return Err(HawDBError::Semantic(
                     "content-store caller inventory fields must not be empty".to_string(),
                 ));
             }
             if !callers.insert((caller.source_path.as_str(), caller.symbol.as_str())) {
-                return Err(HawdbError::Semantic(format!(
+                return Err(HawDBError::Semantic(format!(
                     "content-store SQL corpus contains duplicate caller {}::{}",
                     caller.source_path, caller.symbol
                 )));
             }
             for statement in &caller.statements {
                 if !names.contains(statement.as_str()) {
-                    return Err(HawdbError::Semantic(format!(
+                    return Err(HawDBError::Semantic(format!(
                         "content-store caller {} references unknown statement {statement}",
                         caller.symbol
                     )));
@@ -258,7 +258,7 @@ impl ContentStoreSqlCorpus {
                 .iter()
                 .any(|statement| contains_sql_identifier(&statement.sql, table));
             if !data_owned {
-                return Err(HawdbError::Semantic(format!(
+                return Err(HawDBError::Semantic(format!(
                     "content-store SQL corpus does not own data behavior for {table}"
                 )));
             }
@@ -299,7 +299,7 @@ pub fn nowledge_content_store_schema_statements() -> Result<Vec<&'static str>> {
                 .strip_suffix(';')
                 .filter(|statement| !statement.trim().is_empty())
                 .ok_or_else(|| {
-                    HawdbError::Parse(
+                    HawDBError::Parse(
                         "content-store schema statements must be one non-empty semicolon-terminated line"
                             .to_string(),
                     )
@@ -310,7 +310,7 @@ pub fn nowledge_content_store_schema_statements() -> Result<Vec<&'static str>> {
 
 pub fn nowledge_content_store_sql_corpus() -> Result<ContentStoreSqlCorpus> {
     let corpus = serde_json::from_str::<ContentStoreSqlCorpus>(CORPUS_JSON).map_err(|error| {
-        HawdbError::Parse(format!(
+        HawDBError::Parse(format!(
             "failed to parse embedded content-store SQL corpus: {error}"
         ))
     })?;
@@ -333,7 +333,7 @@ fn validate_content_store_schema() -> Result<()> {
         if let hawdb::sql::SqlStatement::CreateTable(create) = &lowered {
             tables.insert(create.table.name.clone());
         } else if !matches!(lowered, hawdb::sql::SqlStatement::CreateIndex(_)) {
-            return Err(HawdbError::Semantic(
+            return Err(HawDBError::Semantic(
                 "content-store schema may contain only CREATE TABLE and CREATE INDEX statements"
                     .to_string(),
             ));
@@ -346,7 +346,7 @@ fn validate_content_store_schema() -> Result<()> {
         .map(|table| (*table).to_string())
         .collect::<BTreeSet<_>>();
     if tables != required_tables {
-        return Err(HawdbError::Semantic(
+        return Err(HawDBError::Semantic(
             "content-store schema table set does not match the v1 scope".to_string(),
         ));
     }
@@ -359,12 +359,12 @@ fn sha256_hex(bytes: &[u8]) -> String {
 
 fn validate_statement(statement: &ContentStoreSqlStatementSpec) -> Result<()> {
     if statement.name.is_empty() || statement.sql.trim().is_empty() {
-        return Err(HawdbError::Semantic(
+        return Err(HawDBError::Semantic(
             "content-store SQL corpus statement name and SQL must be non-empty".to_string(),
         ));
     }
     if statement.sql.trim_end().ends_with(';') {
-        return Err(HawdbError::Semantic(format!(
+        return Err(HawDBError::Semantic(format!(
             "content-store SQL statement {} must not contain a trailing semicolon",
             statement.name
         )));
@@ -373,13 +373,13 @@ fn validate_statement(statement: &ContentStoreSqlStatementSpec) -> Result<()> {
     match statement.kind {
         ContentStoreSqlStatementKind::Read => {
             if statement.max_rows == 0 || statement.max_payload_bytes == 0 {
-                return Err(HawdbError::Semantic(format!(
+                return Err(HawDBError::Semantic(format!(
                     "content-store read statement {} must declare non-zero row and payload budgets",
                     statement.name
                 )));
             }
             if statement.result_columns.is_empty() {
-                return Err(HawdbError::Semantic(format!(
+                return Err(HawDBError::Semantic(format!(
                     "content-store read statement {} must declare its result schema",
                     statement.name
                 )));
@@ -387,13 +387,13 @@ fn validate_statement(statement: &ContentStoreSqlStatementSpec) -> Result<()> {
         }
         ContentStoreSqlStatementKind::Mutation => {
             if statement.transaction_group.is_none() {
-                return Err(HawdbError::Semantic(format!(
+                return Err(HawDBError::Semantic(format!(
                     "content-store write statement {} must declare a transaction group",
                     statement.name
                 )));
             }
             if statement.max_rows != 0 || statement.max_payload_bytes != 0 {
-                return Err(HawdbError::Semantic(format!(
+                return Err(HawDBError::Semantic(format!(
                     "content-store write statement {} must not declare read-result budgets",
                     statement.name
                 )));
@@ -407,7 +407,7 @@ fn validate_parameter_positions(statement: &ContentStoreSqlStatementSpec) -> Res
     let positions = postgres_parameter_positions(&statement.sql)?;
     let expected = (1..=statement.parameters.len()).collect::<BTreeSet<_>>();
     if positions != expected {
-        return Err(HawdbError::Semantic(format!(
+        return Err(HawDBError::Semantic(format!(
             "content-store SQL statement {} parameter positions do not match its parameter schema",
             statement.name
         )));
@@ -441,13 +441,13 @@ fn postgres_parameter_positions(sql: &str) -> Result<BTreeSet<usize>> {
                     continue;
                 }
                 let raw = std::str::from_utf8(&bytes[start..end]).map_err(|_| {
-                    HawdbError::Parse("invalid PostgreSQL parameter position".to_string())
+                    HawDBError::Parse("invalid PostgreSQL parameter position".to_string())
                 })?;
                 let position = raw.parse::<usize>().map_err(|_| {
-                    HawdbError::Parse("invalid PostgreSQL parameter position".to_string())
+                    HawDBError::Parse("invalid PostgreSQL parameter position".to_string())
                 })?;
                 if position == 0 {
-                    return Err(HawdbError::Semantic(
+                    return Err(HawDBError::Semantic(
                         "PostgreSQL parameters are one-based".to_string(),
                     ));
                 }
@@ -458,7 +458,7 @@ fn postgres_parameter_positions(sql: &str) -> Result<BTreeSet<usize>> {
         }
     }
     if single_quoted {
-        return Err(HawdbError::Parse(
+        return Err(HawDBError::Parse(
             "content-store SQL statement contains an unterminated string literal".to_string(),
         ));
     }

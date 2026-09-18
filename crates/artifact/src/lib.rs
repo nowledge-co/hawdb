@@ -669,7 +669,7 @@ fn optional_string_value(value: Option<String>) -> Value {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use hawdb_core::HawdbError;
+    use hawdb_core::HawDBError;
 
     fn job(
         id: u64,
@@ -855,7 +855,7 @@ mod tests {
         let claim = queue.claim_external().expect("first external job");
         assert_eq!(claim.job().id, first.id);
         let report = queue.run_external_with(claim, &mut |_| {
-            Err(HawdbError::Semantic("external runtime failed".to_string()))
+            Err(HawDBError::Semantic("external runtime failed".to_string()))
         });
         assert_eq!(report.job.status, DerivedArtifactJobStatus::Failed);
         assert_eq!(report.job.attempts, 1);

@@ -58,8 +58,8 @@ impl<R: Read> Read for CheckedReader<R> {
     }
 }
 
-fn invalid(reason: impl std::fmt::Display) -> HawdbError {
-    HawdbError::Storage(format!("search hydration {reason}"))
+fn invalid(reason: impl std::fmt::Display) -> HawDBError {
+    HawDBError::Storage(format!("search hydration {reason}"))
 }
 
 #[derive(Debug)]

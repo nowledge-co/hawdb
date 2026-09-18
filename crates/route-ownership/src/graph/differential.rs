@@ -217,7 +217,7 @@ fn inventory(seed: usize, layout: usize) -> Vec<NowledgeMemRouteOwnership> {
                 if layout == 0 || (layout == 2 && (index + seed).is_multiple_of(3)) {
                     NowledgeMemRouteReadEngine::Legacy
                 } else {
-                    NowledgeMemRouteReadEngine::Hawdb
+                    NowledgeMemRouteReadEngine::HawDB
                 },
             )
         })
@@ -239,7 +239,7 @@ fn inventory(seed: usize, layout: usize) -> Vec<NowledgeMemRouteOwnership> {
         )),
         7 => routes.push(NowledgeMemRouteOwnership::new(
             "/\u{65e5}\u{672c}\u{8a9e}",
-            NowledgeMemRouteReadEngine::Hawdb,
+            NowledgeMemRouteReadEngine::HawDB,
         )),
         8 => routes.clear(),
         9 => {
@@ -247,7 +247,7 @@ fn inventory(seed: usize, layout: usize) -> Vec<NowledgeMemRouteOwnership> {
             routes.push(routes[seed % routes.len()].clone());
             routes.push(NowledgeMemRouteOwnership::new(
                 "/unknown",
-                NowledgeMemRouteReadEngine::Hawdb,
+                NowledgeMemRouteReadEngine::HawDB,
             ));
             routes.push(NowledgeMemRouteOwnership::new(
                 "/unknown",
@@ -332,7 +332,7 @@ fn reference(
             routes.iter().any(|route| {
                 route.route == **name && route.read_engine == NowledgeMemRouteReadEngine::Legacy
             }) && routes.iter().any(|route| {
-                route.route == **name && route.read_engine == NowledgeMemRouteReadEngine::Hawdb
+                route.route == **name && route.read_engine == NowledgeMemRouteReadEngine::HawDB
             })
         })
         .cloned()
@@ -340,7 +340,7 @@ fn reference(
     let hawdb = sorted_unique(
         routes
             .iter()
-            .filter(|route| route.read_engine == NowledgeMemRouteReadEngine::Hawdb)
+            .filter(|route| route.read_engine == NowledgeMemRouteReadEngine::HawDB)
             .map(|route| route.route.clone())
             .collect(),
     );
@@ -403,7 +403,7 @@ fn reference(
                 "route": route.route,
                 "read_engine": match route.read_engine {
                     NowledgeMemRouteReadEngine::Legacy => "legacy",
-                    NowledgeMemRouteReadEngine::Hawdb => "hawdb",
+                    NowledgeMemRouteReadEngine::HawDB => "hawdb",
                 },
             })
         })

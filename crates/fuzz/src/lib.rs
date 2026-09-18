@@ -1,7 +1,7 @@
 use hawdb::api::{Database, DatabaseReadTransaction};
 use hawdb::executor::Row;
 use hawdb::optimizer::OptimizerSearchDirective;
-use hawdb::{HawdbError, Value};
+use hawdb::{HawDBError, Value};
 use serde_json::{json, Map as JsonMap, Value as JsonValue};
 use std::cmp::Ordering;
 use std::collections::{BTreeMap, BTreeSet};
@@ -1346,7 +1346,7 @@ fn observation_count(observation: &ExecutionObservation) -> Option<u64> {
     u64::try_from(*count).ok()
 }
 
-fn error_observation(phase: &'static str, error: HawdbError) -> ExecutionObservation {
+fn error_observation(phase: &'static str, error: HawDBError) -> ExecutionObservation {
     snapshot_error_observation(None, None, phase, error)
 }
 
@@ -1354,7 +1354,7 @@ fn snapshot_error_observation(
     snapshot_epoch: Option<u64>,
     optimizer_search: Option<String>,
     phase: &'static str,
-    error: HawdbError,
+    error: HawDBError,
 ) -> ExecutionObservation {
     ExecutionObservation {
         snapshot_epoch,
@@ -1366,7 +1366,7 @@ fn snapshot_error_observation(
     }
 }
 
-fn error_outcome(phase: &'static str, error: HawdbError) -> ExecutionOutcome {
+fn error_outcome(phase: &'static str, error: HawDBError) -> ExecutionOutcome {
     ExecutionOutcome::Error {
         phase,
         class: error_class(&error),
@@ -2153,15 +2153,15 @@ fn observes_all_shapes<'a>(observed: impl Iterator<Item = &'a str>, expected: &[
     expected.iter().all(|shape| observed.contains(shape))
 }
 
-fn error_class(error: &HawdbError) -> &'static str {
+fn error_class(error: &HawDBError) -> &'static str {
     match error {
-        HawdbError::Parse(_) => "parse",
-        HawdbError::Semantic(_) => "semantic",
-        HawdbError::Execution(_) => "execution",
-        HawdbError::Storage(_)
-        | HawdbError::StorageIntegrity(_)
-        | HawdbError::AppendSequenceExhausted { .. } => "storage",
-        HawdbError::CapabilityUnavailable { .. } => "capability_unavailable",
+        HawDBError::Parse(_) => "parse",
+        HawDBError::Semantic(_) => "semantic",
+        HawDBError::Execution(_) => "execution",
+        HawDBError::Storage(_)
+        | HawDBError::StorageIntegrity(_)
+        | HawDBError::AppendSequenceExhausted { .. } => "storage",
+        HawDBError::CapabilityUnavailable { .. } => "capability_unavailable",
     }
 }
 

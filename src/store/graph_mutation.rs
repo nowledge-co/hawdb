@@ -99,13 +99,13 @@ impl GraphStore {
         properties: BTreeMap<String, Value>,
     ) -> Result<RelId> {
         if self.node_owned(source)?.is_none() {
-            return Err(HawdbError::Storage(format!(
+            return Err(HawDBError::Storage(format!(
                 "source node {} does not exist",
                 source.0
             )));
         }
         if self.node_owned(target)?.is_none() {
-            return Err(HawdbError::Storage(format!(
+            return Err(HawDBError::Storage(format!(
                 "target node {} does not exist",
                 target.0
             )));
@@ -657,19 +657,19 @@ impl GraphStore {
             .iter()
             .map(|id| {
                 let node = self.node_owned(*id)?.ok_or_else(|| {
-                    HawdbError::Storage(format!("node {} disappeared during property update", id.0))
+                    HawDBError::Storage(format!("node {} disappeared during property update", id.0))
                 })?;
                 let current = match node.properties.get(property) {
                     None | Some(Value::Null) => 0,
                     Some(Value::Int(value)) => *value,
                     Some(value) => {
-                        return Err(HawdbError::Execution(format!(
+                        return Err(HawDBError::Execution(format!(
                             "property increment requires an integer or null value, got {value:?}"
                         )));
                     }
                 };
                 let value = current.checked_add(amount).ok_or_else(|| {
-                    HawdbError::Execution("property increment overflowed i64".to_string())
+                    HawDBError::Execution("property increment overflowed i64".to_string())
                 })?;
                 Ok(WalOp::SetNodeProperty {
                     id: *id,
@@ -750,7 +750,7 @@ impl GraphStore {
             return Ok(Vec::new());
         }
         let operation_count = ids.len().checked_mul(assignments.len()).ok_or_else(|| {
-            HawdbError::Execution("mutation operation count overflow".to_string())
+            HawDBError::Execution("mutation operation count overflow".to_string())
         })?;
         ensure_additional_mutation_limits(0, 0, operation_count, ids.len(), limits)?;
         let ops = self.node_set_property_ops(ids, assignments)?;
@@ -772,7 +772,7 @@ impl GraphStore {
         let mut ops = Vec::with_capacity(ids.len().saturating_mul(assignments.len()));
         for id in ids {
             let node = self.node_owned(*id)?.ok_or_else(|| {
-                HawdbError::Storage(format!("node {} disappeared during property update", id.0))
+                HawDBError::Storage(format!("node {} disappeared during property update", id.0))
             })?;
             for assignment in assignments {
                 let value = evaluate_node_set_value(&node.properties, assignment)?;
@@ -1006,7 +1006,7 @@ impl GraphStore {
                 Ok(Some(target)) if target.labels.contains(&target_label_id) => {
                     ids.insert(relationship.target);
                     if ids.len() > max_ids {
-                        callback_error = Some(HawdbError::Execution(format!(
+                        callback_error = Some(HawDBError::Execution(format!(
                             "mutation would exceed max_mutation_affected_rows {max_ids}"
                         )));
                         return GraphScanControl::Stop;
@@ -1095,7 +1095,7 @@ impl GraphStore {
             }
             ids.push(*target);
             if ids.len() > max_ids {
-                return Err(HawdbError::Execution(format!(
+                return Err(HawDBError::Execution(format!(
                     "mutation would exceed max_mutation_affected_rows {max_ids}"
                 )));
             }
@@ -1728,7 +1728,7 @@ impl GraphStore {
             GraphScanControl::Continue
         })?;
         if exceeded {
-            return Err(HawdbError::Execution(format!(
+            return Err(HawDBError::Execution(format!(
                 "mutation would exceed {limit_name} {max_ids}"
             )));
         }
@@ -1746,7 +1746,7 @@ impl GraphStore {
         let mut ids = self.matching_node_ids_bounded(label_id, filter, max_ids, limit_name)?;
         for id in Self::pending_node_ids_matching(label_id, filter, pending_nodes) {
             if ids.len() == max_ids {
-                return Err(HawdbError::Execution(format!(
+                return Err(HawDBError::Execution(format!(
                     "mutation would exceed {limit_name} {max_ids}"
                 )));
             }
@@ -1786,14 +1786,14 @@ impl GraphStore {
                 let relationship = relationship?;
                 if relationship.source == *id || relationship.target == *id {
                     if !detach {
-                        return Err(HawdbError::Storage(format!(
+                        return Err(HawDBError::Storage(format!(
                             "node {} has relationships; use DETACH DELETE",
                             id.0
                         )));
                     }
                     relationship_ids.insert(relationship.id);
                     if relationship_ids.len().saturating_add(ids.len()) > max_operations {
-                        return Err(HawdbError::Execution(format!(
+                        return Err(HawDBError::Execution(format!(
                             "mutation would exceed max_mutation_operations {max_operations}"
                         )));
                     }
@@ -1801,7 +1801,7 @@ impl GraphStore {
             }
         }
         if ids.len() > max_operations {
-            return Err(HawdbError::Execution(format!(
+            return Err(HawDBError::Execution(format!(
                 "mutation would exceed max_mutation_operations {max_operations}"
             )));
         }
@@ -1847,7 +1847,7 @@ fn collect_relational_primary_key_changes_from_wal_ops(
         match op {
             WalOp::Relational { record } => {
                 let batch = decode_relational_wal_batch(record, RelationalDecodeLimits::wal())
-                    .map_err(|error| HawdbError::Storage(error.to_string()))?;
+                    .map_err(|error| HawDBError::Storage(error.to_string()))?;
                 captures.push(batch.primary_key_changes.unwrap_or(
                     hawdb_storage::RelationalPrimaryKeyChangeCapture::RequiresRebuild {
                         reason: hawdb_storage::RelationalPrimaryKeyChangeRebuildReason::MissingWalCapture,

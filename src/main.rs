@@ -43,7 +43,7 @@ use hawdb::{
     scan_nowledge_query_inventory_cypher_migration_gate_with_options_to_json,
     scan_nowledge_query_inventory_to_json, CanonicalGraphSnapshotValidation,
     CompatibilityRollbackEvidence, Database, DatabaseConfig, ExternalShadowCommand,
-    ExternalShadowReady, HawdbError, NowledgeCypherMigrationGateJsonOptions, NowledgeMemGraph,
+    ExternalShadowReady, HawDBError, NowledgeCypherMigrationGateJsonOptions, NowledgeMemGraph,
     NowledgeMemGraphMode, NowledgeMemReadOptions, RecoveryMode, Result, SearchIndex,
     StorageRecoveryReport, StorageResidencyMode, StorageResourceProfileLimits, Value,
     REQUIRED_EXTERNAL_SHADOW_CAPABILITIES,
@@ -53,7 +53,7 @@ use hawdb::{
     hawdb_lightning_bootstrap_manifest_json, hawdb_lightning_graph_stream_validation_json,
     hawdb_lightning_relational_stream_validation_json, stable_identity_audit_json,
     stage_hawdb_lightning_bootstrap_export_with_optional_storage_recovery,
-    HawdbLightningPublishOptions,
+    HawDBLightningPublishOptions,
 };
 use hawdb_evidence::fixture_contract_check::run_nowledge_fixture_contract_command_check;
 use std::collections::BTreeMap;
@@ -90,7 +90,7 @@ fn main() -> Result<()> {
                 .next()
                 .unwrap_or_else(|| "nowledge-memory-core".to_string());
             if args.next().is_some() || fixture_name != "nowledge-memory-core" {
-                return Err(HawdbError::Semantic(nowledge_fixture_contract_usage()));
+                return Err(HawDBError::Semantic(nowledge_fixture_contract_usage()));
             }
             let fixture = nowledge_memory_core_fixture();
             let json = nowledge_fixture_contract_json(&fixture);
@@ -108,7 +108,7 @@ fn main() -> Result<()> {
             {
                 return Ok(());
             }
-            return Err(HawdbError::Execution(
+            return Err(HawDBError::Execution(
                 "fixture contract command check failed".to_string(),
             ));
         }
@@ -121,7 +121,7 @@ fn main() -> Result<()> {
                     .and_then(serde_json::Value::as_bool)
                     != Some(true)
             {
-                return Err(HawdbError::Execution(
+                return Err(HawDBError::Execution(
                     "nowledge graph route readiness is not ready".to_string(),
                 ));
             }
@@ -132,7 +132,7 @@ fn main() -> Result<()> {
             println!("{}", serde_json::to_string_pretty(&json).unwrap());
             if require_ready && json.get("ready").and_then(serde_json::Value::as_bool) != Some(true)
             {
-                return Err(HawdbError::Execution(
+                return Err(HawDBError::Execution(
                     "nowledge graph route evidence is not ready".to_string(),
                 ));
             }
@@ -143,7 +143,7 @@ fn main() -> Result<()> {
             println!("{}", serde_json::to_string_pretty(&json).unwrap());
             if require_ready && json.get("ready").and_then(serde_json::Value::as_bool) != Some(true)
             {
-                return Err(HawdbError::Execution(
+                return Err(HawDBError::Execution(
                     "nowledge previous-wrapper preflight is not ready".to_string(),
                 ));
             }
@@ -154,7 +154,7 @@ fn main() -> Result<()> {
             println!("{}", serde_json::to_string_pretty(&json).unwrap());
             if require_ready && json.get("ready").and_then(serde_json::Value::as_bool) != Some(true)
             {
-                return Err(HawdbError::Execution(
+                return Err(HawDBError::Execution(
                     "nowledge mem integration readiness is not ready".to_string(),
                 ));
             }
@@ -169,7 +169,7 @@ fn main() -> Result<()> {
                     .and_then(serde_json::Value::as_bool)
                     != Some(true)
             {
-                return Err(HawdbError::Execution(
+                return Err(HawDBError::Execution(
                     "nowledge mem integration bundle is not ready".to_string(),
                 ));
             }
@@ -180,7 +180,7 @@ fn main() -> Result<()> {
             println!("{}", serde_json::to_string_pretty(&json).unwrap());
             if require_ready && json.get("ready").and_then(serde_json::Value::as_bool) != Some(true)
             {
-                return Err(HawdbError::Execution(
+                return Err(HawDBError::Execution(
                     "nowledge mem library readiness is not ready".to_string(),
                 ));
             }
@@ -191,7 +191,7 @@ fn main() -> Result<()> {
             println!("{}", serde_json::to_string_pretty(&json).unwrap());
             if require_ready && json.get("ready").and_then(serde_json::Value::as_bool) != Some(true)
             {
-                return Err(HawdbError::Execution(
+                return Err(HawDBError::Execution(
                     "nowledge search projection evidence is not ready".to_string(),
                 ));
             }
@@ -199,7 +199,7 @@ fn main() -> Result<()> {
         }
         if command == "nowledge-search-projection-probe-contract" {
             if args.next().is_some() {
-                return Err(HawdbError::Semantic(
+                return Err(HawDBError::Semantic(
                     nowledge_search_projection_probe_contract_usage(),
                 ));
             }
@@ -217,7 +217,7 @@ fn main() -> Result<()> {
             println!("{}", serde_json::to_string_pretty(&json).unwrap());
             if require_ready && json.get("ready").and_then(serde_json::Value::as_bool) != Some(true)
             {
-                return Err(HawdbError::Execution(
+                return Err(HawDBError::Execution(
                     "nowledge search projection shadow evidence is not ready".to_string(),
                 ));
             }
@@ -228,7 +228,7 @@ fn main() -> Result<()> {
             println!("{}", serde_json::to_string_pretty(&json).unwrap());
             if require_ready && json.get("ready").and_then(serde_json::Value::as_bool) != Some(true)
             {
-                return Err(HawdbError::Execution(
+                return Err(HawDBError::Execution(
                     "nowledge search candidate shadow evidence is not ready".to_string(),
                 ));
             }
@@ -239,7 +239,7 @@ fn main() -> Result<()> {
             println!("{}", serde_json::to_string_pretty(&json).unwrap());
             if require_ready && json.get("ready").and_then(serde_json::Value::as_bool) != Some(true)
             {
-                return Err(HawdbError::Execution(
+                return Err(HawDBError::Execution(
                     "nowledge bounded read evidence is not ready".to_string(),
                 ));
             }
@@ -253,21 +253,21 @@ fn main() -> Result<()> {
                     "--params-json" => {
                         args.next();
                         let raw_parameters = args.next().ok_or_else(|| {
-                            HawdbError::Semantic(nowledge_bounded_read_report_usage())
+                            HawDBError::Semantic(nowledge_bounded_read_report_usage())
                         })?;
                         parameters = parse_parameters_json(&raw_parameters)?;
                     }
                     "--max-rows" => {
                         args.next();
                         let raw_limit = args.next().ok_or_else(|| {
-                            HawdbError::Semantic(nowledge_bounded_read_report_usage())
+                            HawDBError::Semantic(nowledge_bounded_read_report_usage())
                         })?;
                         options.max_rows = Some(parse_positive_usize("--max-rows", &raw_limit)?);
                     }
                     "--max-estimated-payload-bytes" => {
                         args.next();
                         let raw_limit = args.next().ok_or_else(|| {
-                            HawdbError::Semantic(nowledge_bounded_read_report_usage())
+                            HawDBError::Semantic(nowledge_bounded_read_report_usage())
                         })?;
                         options.max_estimated_payload_bytes = Some(parse_positive_usize(
                             "--max-estimated-payload-bytes",
@@ -279,12 +279,12 @@ fn main() -> Result<()> {
             }
             let path = args
                 .next()
-                .ok_or_else(|| HawdbError::Semantic(nowledge_bounded_read_report_usage()))?;
+                .ok_or_else(|| HawDBError::Semantic(nowledge_bounded_read_report_usage()))?;
             let query = args
                 .next()
-                .ok_or_else(|| HawdbError::Semantic(nowledge_bounded_read_report_usage()))?;
+                .ok_or_else(|| HawDBError::Semantic(nowledge_bounded_read_report_usage()))?;
             if args.next().is_some() {
-                return Err(HawdbError::Semantic(nowledge_bounded_read_report_usage()));
+                return Err(HawDBError::Semantic(nowledge_bounded_read_report_usage()));
             }
             let json = nowledge_bounded_read_report_json(&path, &query, &parameters, &options)?;
             println!("{}", serde_json::to_string_pretty(&json).unwrap());
@@ -295,7 +295,7 @@ fn main() -> Result<()> {
             println!("{}", serde_json::to_string_pretty(&json).unwrap());
             if require_ready && json.get("ready").and_then(serde_json::Value::as_bool) != Some(true)
             {
-                return Err(HawdbError::Execution(
+                return Err(HawDBError::Execution(
                     "nowledge storage recovery evidence is not ready".to_string(),
                 ));
             }
@@ -306,7 +306,7 @@ fn main() -> Result<()> {
             println!("{}", serde_json::to_string_pretty(&json).unwrap());
             if require_ready && json.get("ready").and_then(serde_json::Value::as_bool) != Some(true)
             {
-                return Err(HawdbError::Execution(
+                return Err(HawDBError::Execution(
                     "nowledge background maintenance evidence is not ready".to_string(),
                 ));
             }
@@ -317,7 +317,7 @@ fn main() -> Result<()> {
             println!("{}", serde_json::to_string_pretty(&json).unwrap());
             if require_ready && json.get("ready").and_then(serde_json::Value::as_bool) != Some(true)
             {
-                return Err(HawdbError::Execution(
+                return Err(HawDBError::Execution(
                     "nowledge query family evidence is not ready".to_string(),
                 ));
             }
@@ -328,7 +328,7 @@ fn main() -> Result<()> {
             println!("{}", serde_json::to_string_pretty(&json).unwrap());
             if require_ready && json.get("ready").and_then(serde_json::Value::as_bool) != Some(true)
             {
-                return Err(HawdbError::Execution(
+                return Err(HawDBError::Execution(
                     "nowledge query runtime preflight is not ready".to_string(),
                 ));
             }
@@ -342,7 +342,7 @@ fn main() -> Result<()> {
                         args.next();
                         let raw_parameters = args
                             .next()
-                            .ok_or_else(|| HawdbError::Semantic(explain_table_usage(&command)))?;
+                            .ok_or_else(|| HawDBError::Semantic(explain_table_usage(&command)))?;
                         parameters = parse_parameters_json(&raw_parameters)?;
                     }
                     _ => break,
@@ -350,12 +350,12 @@ fn main() -> Result<()> {
             }
             let path = args
                 .next()
-                .ok_or_else(|| HawdbError::Semantic(explain_table_usage(&command)))?;
+                .ok_or_else(|| HawDBError::Semantic(explain_table_usage(&command)))?;
             let query = args
                 .next()
-                .ok_or_else(|| HawdbError::Semantic(explain_table_usage(&command)))?;
+                .ok_or_else(|| HawDBError::Semantic(explain_table_usage(&command)))?;
             if args.next().is_some() {
-                return Err(HawdbError::Semantic(explain_table_usage(&command)));
+                return Err(HawDBError::Semantic(explain_table_usage(&command)));
             }
             let mut db = Database::open_with_config(
                 path,
@@ -382,7 +382,7 @@ fn main() -> Result<()> {
                         args.next();
                         let raw_parameters = args
                             .next()
-                            .ok_or_else(|| HawdbError::Semantic(explain_json_usage()))?;
+                            .ok_or_else(|| HawDBError::Semantic(explain_json_usage()))?;
                         parameters = parse_parameters_json(&raw_parameters)?;
                     }
                     _ => break,
@@ -390,12 +390,12 @@ fn main() -> Result<()> {
             }
             let path = args
                 .next()
-                .ok_or_else(|| HawdbError::Semantic(explain_json_usage()))?;
+                .ok_or_else(|| HawDBError::Semantic(explain_json_usage()))?;
             let query = args
                 .next()
-                .ok_or_else(|| HawdbError::Semantic(explain_json_usage()))?;
+                .ok_or_else(|| HawDBError::Semantic(explain_json_usage()))?;
             if args.next().is_some() {
-                return Err(HawdbError::Semantic(explain_json_usage()));
+                return Err(HawDBError::Semantic(explain_json_usage()));
             }
             let db = Database::open_with_config(
                 path,
@@ -418,7 +418,7 @@ fn main() -> Result<()> {
                         args.next();
                         let raw_parameters = args
                             .next()
-                            .ok_or_else(|| HawdbError::Semantic(explain_analyze_json_usage()))?;
+                            .ok_or_else(|| HawDBError::Semantic(explain_analyze_json_usage()))?;
                         parameters = parse_parameters_json(&raw_parameters)?;
                     }
                     _ => break,
@@ -426,12 +426,12 @@ fn main() -> Result<()> {
             }
             let path = args
                 .next()
-                .ok_or_else(|| HawdbError::Semantic(explain_analyze_json_usage()))?;
+                .ok_or_else(|| HawDBError::Semantic(explain_analyze_json_usage()))?;
             let query = args
                 .next()
-                .ok_or_else(|| HawdbError::Semantic(explain_analyze_json_usage()))?;
+                .ok_or_else(|| HawDBError::Semantic(explain_analyze_json_usage()))?;
             if args.next().is_some() {
-                return Err(HawdbError::Semantic(explain_analyze_json_usage()));
+                return Err(HawDBError::Semantic(explain_analyze_json_usage()));
             }
             let mut db = Database::open_with_config(
                 path,
@@ -460,13 +460,13 @@ fn main() -> Result<()> {
                     "--shadow-trace" => {
                         args.next();
                         shadow_trace = Some(args.next().ok_or_else(|| {
-                            HawdbError::Semantic(external_shadow_adapter_smoke_usage())
+                            HawDBError::Semantic(external_shadow_adapter_smoke_usage())
                         })?);
                     }
                     "--shadow-timeout-ms" => {
                         args.next();
                         let raw_timeout = args.next().ok_or_else(|| {
-                            HawdbError::Semantic(external_shadow_adapter_smoke_usage())
+                            HawDBError::Semantic(external_shadow_adapter_smoke_usage())
                         })?;
                         shadow_timeout = Some(parse_shadow_timeout_ms(&raw_timeout)?);
                     }
@@ -475,10 +475,10 @@ fn main() -> Result<()> {
             }
             let shadow_name = args
                 .next()
-                .ok_or_else(|| HawdbError::Semantic(external_shadow_adapter_smoke_usage()))?;
+                .ok_or_else(|| HawDBError::Semantic(external_shadow_adapter_smoke_usage()))?;
             let program = args
                 .next()
-                .ok_or_else(|| HawdbError::Semantic(external_shadow_adapter_smoke_usage()))?;
+                .ok_or_else(|| HawDBError::Semantic(external_shadow_adapter_smoke_usage()))?;
             let program_args = args.collect::<Vec<_>>();
             let shadow_trace_report = shadow_trace.clone();
             let mut shadow = match (shadow_trace, shadow_timeout) {
@@ -559,13 +559,13 @@ fn main() -> Result<()> {
                     "--shadow-trace" => {
                         args.next();
                         shadow_trace = Some(args.next().ok_or_else(|| {
-                            HawdbError::Semantic(nowledge_cypher_migration_gate_usage())
+                            HawDBError::Semantic(nowledge_cypher_migration_gate_usage())
                         })?);
                     }
                     "--shadow-timeout-ms" => {
                         args.next();
                         let raw_timeout = args.next().ok_or_else(|| {
-                            HawdbError::Semantic(nowledge_cypher_migration_gate_usage())
+                            HawDBError::Semantic(nowledge_cypher_migration_gate_usage())
                         })?;
                         shadow_timeout = Some(parse_shadow_timeout_ms(&raw_timeout)?);
                     }
@@ -576,7 +576,7 @@ fn main() -> Result<()> {
                     "--rollback-evidence" => {
                         args.next();
                         rollback_evidence = Some(args.next().ok_or_else(|| {
-                            HawdbError::Semantic(nowledge_cypher_migration_gate_usage())
+                            HawDBError::Semantic(nowledge_cypher_migration_gate_usage())
                         })?);
                     }
                     "--require-storage-recovery-evidence" => {
@@ -590,21 +590,21 @@ fn main() -> Result<()> {
                     "--storage-recovery-report-json" => {
                         args.next();
                         let path = args.next().ok_or_else(|| {
-                            HawdbError::Semantic(nowledge_cypher_migration_gate_usage())
+                            HawDBError::Semantic(nowledge_cypher_migration_gate_usage())
                         })?;
                         storage_recovery = Some(read_json_file(Path::new(&path))?);
                     }
                     "--background-maintenance-report-json" => {
                         args.next();
                         let path = args.next().ok_or_else(|| {
-                            HawdbError::Semantic(nowledge_cypher_migration_gate_usage())
+                            HawDBError::Semantic(nowledge_cypher_migration_gate_usage())
                         })?;
                         background_maintenance = Some(read_json_file(Path::new(&path))?);
                     }
                     "--previous-wrapper-contract-evidence-json" => {
                         args.next();
                         let path = args.next().ok_or_else(|| {
-                            HawdbError::Semantic(nowledge_cypher_migration_gate_usage())
+                            HawDBError::Semantic(nowledge_cypher_migration_gate_usage())
                         })?;
                         previous_wrapper_contract_evidence =
                             Some(read_json_file(Path::new(&path))?);
@@ -614,17 +614,17 @@ fn main() -> Result<()> {
             }
             let root = args
                 .next()
-                .ok_or_else(|| HawdbError::Semantic(nowledge_cypher_migration_gate_usage()))?;
+                .ok_or_else(|| HawDBError::Semantic(nowledge_cypher_migration_gate_usage()))?;
             let shadow_name = args
                 .next()
-                .ok_or_else(|| HawdbError::Semantic(nowledge_cypher_migration_gate_usage()))?;
+                .ok_or_else(|| HawDBError::Semantic(nowledge_cypher_migration_gate_usage()))?;
             let program = args
                 .next()
-                .ok_or_else(|| HawdbError::Semantic(nowledge_cypher_migration_gate_usage()))?;
+                .ok_or_else(|| HawDBError::Semantic(nowledge_cypher_migration_gate_usage()))?;
             let program_args = args.collect::<Vec<_>>();
             let is_self_shadow = is_self_shadow_command(&shadow_name, &program, &program_args);
             if (require_ready || require_cutover_evidence) && !allow_self_shadow && is_self_shadow {
-                return Err(HawdbError::Execution(
+                return Err(HawDBError::Execution(
                     "nowledge migration gate requires a previous-wrapper shadow for required cutover gates; pass --allow-self-shadow only for protocol smoke tests"
                     .to_string(),
                 ));
@@ -697,7 +697,7 @@ fn main() -> Result<()> {
             let rendered = serde_json::to_string_pretty(&json).unwrap();
             println!("{rendered}");
             if require_cutover_evidence && !cutover_evidence_is_eligible(&json) {
-                return Err(HawdbError::Execution(
+                return Err(HawDBError::Execution(
                     "nowledge migration gate lacks eligible cutover evidence".to_string(),
                 ));
             }
@@ -708,7 +708,7 @@ fn main() -> Result<()> {
                     .and_then(serde_json::Value::as_str)
                     != Some("ready")
             {
-                return Err(HawdbError::Execution(
+                return Err(HawDBError::Execution(
                     "nowledge migration gate is blocked".to_string(),
                 ));
             }
@@ -739,7 +739,7 @@ fn main() -> Result<()> {
                     "--max-family-items" => {
                         args.next();
                         let raw_limit = args.next().ok_or_else(|| {
-                            HawdbError::Semantic(nowledge_replacement_summary_usage())
+                            HawDBError::Semantic(nowledge_replacement_summary_usage())
                         })?;
                         options.max_family_items = Some(parse_max_family_items(&raw_limit)?);
                         custom_summary_options = true;
@@ -747,7 +747,7 @@ fn main() -> Result<()> {
                     "--max-blockers" => {
                         args.next();
                         let raw_limit = args.next().ok_or_else(|| {
-                            HawdbError::Semantic(nowledge_replacement_summary_usage())
+                            HawDBError::Semantic(nowledge_replacement_summary_usage())
                         })?;
                         options.max_blockers = Some(parse_max_blockers(&raw_limit)?);
                         custom_summary_options = true;
@@ -755,39 +755,39 @@ fn main() -> Result<()> {
                     "--search-projection-evidence-json" => {
                         args.next();
                         search_projection_evidence_path = Some(args.next().ok_or_else(|| {
-                            HawdbError::Semantic(nowledge_replacement_summary_usage())
+                            HawDBError::Semantic(nowledge_replacement_summary_usage())
                         })?);
                     }
                     "--search-projection-shadow-evidence-json" => {
                         args.next();
                         search_projection_shadow_evidence_path =
                             Some(args.next().ok_or_else(|| {
-                                HawdbError::Semantic(nowledge_replacement_summary_usage())
+                                HawDBError::Semantic(nowledge_replacement_summary_usage())
                             })?);
                     }
                     "--search-candidate-shadow-evidence-json" => {
                         args.next();
                         search_candidate_shadow_evidence_path =
                             Some(args.next().ok_or_else(|| {
-                                HawdbError::Semantic(nowledge_replacement_summary_usage())
+                                HawDBError::Semantic(nowledge_replacement_summary_usage())
                             })?);
                     }
                     "--bounded-read-evidence-json" => {
                         args.next();
                         bounded_read_evidence_path = Some(args.next().ok_or_else(|| {
-                            HawdbError::Semantic(nowledge_replacement_summary_usage())
+                            HawDBError::Semantic(nowledge_replacement_summary_usage())
                         })?);
                     }
                     "--query-runtime-preflight-json" => {
                         args.next();
                         query_runtime_preflight_path = Some(args.next().ok_or_else(|| {
-                            HawdbError::Semantic(nowledge_replacement_summary_usage())
+                            HawDBError::Semantic(nowledge_replacement_summary_usage())
                         })?);
                     }
                     "--query-family-evidence-json" => {
                         args.next();
                         query_family_evidence_path = Some(args.next().ok_or_else(|| {
-                            HawdbError::Semantic(nowledge_replacement_summary_usage())
+                            HawDBError::Semantic(nowledge_replacement_summary_usage())
                         })?);
                     }
                     _ => break,
@@ -795,9 +795,9 @@ fn main() -> Result<()> {
             }
             let bundle_path = args
                 .next()
-                .ok_or_else(|| HawdbError::Semantic(nowledge_replacement_summary_usage()))?;
+                .ok_or_else(|| HawDBError::Semantic(nowledge_replacement_summary_usage()))?;
             if args.next().is_some() {
-                return Err(HawdbError::Semantic(nowledge_replacement_summary_usage()));
+                return Err(HawDBError::Semantic(nowledge_replacement_summary_usage()));
             }
             let mut bundle = read_json_file(Path::new(&bundle_path))?;
             merge_replacement_summary_evidence(
@@ -821,7 +821,7 @@ fn main() -> Result<()> {
                     .and_then(serde_json::Value::as_bool)
                     != Some(true)
             {
-                return Err(HawdbError::Execution(
+                return Err(HawDBError::Execution(
                     "nowledge replacement summary is not production cutover ready".to_string(),
                 ));
             }
@@ -843,7 +843,7 @@ fn main() -> Result<()> {
                     "--max-background-operations" => {
                         args.next();
                         let raw_limit = args.next().ok_or_else(|| {
-                            HawdbError::Semantic(background_maintenance_report_usage())
+                            HawDBError::Semantic(background_maintenance_report_usage())
                         })?;
                         options.policy.max_background_operations =
                             Some(parse_background_maintenance_limit(
@@ -854,7 +854,7 @@ fn main() -> Result<()> {
                     "--max-total-background-operations" => {
                         args.next();
                         let raw_limit = args.next().ok_or_else(|| {
-                            HawdbError::Semantic(background_maintenance_report_usage())
+                            HawDBError::Semantic(background_maintenance_report_usage())
                         })?;
                         options.policy.max_total_background_operations =
                             Some(parse_background_maintenance_limit(
@@ -865,7 +865,7 @@ fn main() -> Result<()> {
                     "--max-projection-background-operations" => {
                         args.next();
                         let raw_limit = args.next().ok_or_else(|| {
-                            HawdbError::Semantic(background_maintenance_report_usage())
+                            HawDBError::Semantic(background_maintenance_report_usage())
                         })?;
                         options.policy.max_background_operations_by_class
                             [WorkClass::Projection.as_index()] =
@@ -879,9 +879,9 @@ fn main() -> Result<()> {
             }
             let path = args
                 .next()
-                .ok_or_else(|| HawdbError::Semantic(background_maintenance_report_usage()))?;
+                .ok_or_else(|| HawDBError::Semantic(background_maintenance_report_usage()))?;
             if args.next().is_some() {
-                return Err(HawdbError::Semantic(background_maintenance_report_usage()));
+                return Err(HawDBError::Semantic(background_maintenance_report_usage()));
             }
             let db = Database::open_with_config(
                 path,
@@ -903,7 +903,7 @@ fn main() -> Result<()> {
                     } else {
                         health.blocker_codes.join(",")
                     };
-                    return Err(HawdbError::Execution(format!(
+                    return Err(HawDBError::Execution(format!(
                         "background maintenance report is not cutover ready: {reason}"
                     )));
                 }
@@ -938,7 +938,7 @@ fn main() -> Result<()> {
                     "--params-json" => {
                         args.next();
                         let raw = args.next().ok_or_else(|| {
-                            HawdbError::Semantic(storage_resource_profile_usage())
+                            HawDBError::Semantic(storage_resource_profile_usage())
                         })?;
                         parameters = parse_parameters_json(&raw)?;
                     }
@@ -995,12 +995,12 @@ fn main() -> Result<()> {
             }
             let path = args
                 .next()
-                .ok_or_else(|| HawdbError::Semantic(storage_resource_profile_usage()))?;
+                .ok_or_else(|| HawDBError::Semantic(storage_resource_profile_usage()))?;
             let cypher = args
                 .next()
-                .ok_or_else(|| HawdbError::Semantic(storage_resource_profile_usage()))?;
+                .ok_or_else(|| HawDBError::Semantic(storage_resource_profile_usage()))?;
             if args.next().is_some() {
-                return Err(HawdbError::Semantic(storage_resource_profile_usage()));
+                return Err(HawDBError::Semantic(storage_resource_profile_usage()));
             }
             let segment_cache_capacity_bytes = required_positive_profile_u64(
                 segment_cache_capacity_bytes,
@@ -1051,7 +1051,7 @@ fn main() -> Result<()> {
             let report = db.storage_resource_profile(&cypher, &parameters, limits)?;
             println!("{}", serde_json::to_string_pretty(&report.json()).unwrap());
             if require_ready && !report.production_ready() {
-                return Err(HawdbError::Execution(format!(
+                return Err(HawDBError::Execution(format!(
                     "storage resource profile is not ready: {}",
                     report.blocker_codes.join(",")
                 )));
@@ -1075,7 +1075,7 @@ fn main() -> Result<()> {
                         args.next();
                         let raw_limit = args
                             .next()
-                            .ok_or_else(|| HawdbError::Semantic(storage_recovery_report_usage()))?;
+                            .ok_or_else(|| HawDBError::Semantic(storage_recovery_report_usage()))?;
                         max_wal_replay_entries = Some(parse_max_wal_replay_entries(&raw_limit)?);
                     }
                     "--require-durable" => {
@@ -1099,9 +1099,9 @@ fn main() -> Result<()> {
             }
             let path = args
                 .next()
-                .ok_or_else(|| HawdbError::Semantic(storage_recovery_report_usage()))?;
+                .ok_or_else(|| HawDBError::Semantic(storage_recovery_report_usage()))?;
             if args.next().is_some() {
-                return Err(HawdbError::Semantic(storage_recovery_report_usage()));
+                return Err(HawDBError::Semantic(storage_recovery_report_usage()));
             }
             let db = Database::open_with_config(
                 path,
@@ -1144,9 +1144,9 @@ fn main() -> Result<()> {
             }
             let path = args
                 .next()
-                .ok_or_else(|| HawdbError::Semantic(validate_canonical_snapshot_usage()))?;
+                .ok_or_else(|| HawDBError::Semantic(validate_canonical_snapshot_usage()))?;
             if args.next().is_some() {
-                return Err(HawdbError::Semantic(validate_canonical_snapshot_usage()));
+                return Err(HawDBError::Semantic(validate_canonical_snapshot_usage()));
             }
             let db = Database::open_with_config(
                 path,
@@ -1166,12 +1166,12 @@ fn main() -> Result<()> {
             );
             println!("{}", serde_json::to_string_pretty(&rendered).unwrap());
             if require_valid && !validation.is_valid {
-                return Err(HawdbError::Execution(
+                return Err(HawDBError::Execution(
                     "canonical snapshot validation failed".to_string(),
                 ));
             }
             if require_import_ready && !validation.is_import_ready {
-                return Err(HawdbError::Execution(
+                return Err(HawDBError::Execution(
                     "canonical snapshot import readiness failed".to_string(),
                 ));
             }
@@ -1190,9 +1190,9 @@ fn main() -> Result<()> {
             }
             let path = args
                 .next()
-                .ok_or_else(|| HawdbError::Semantic(hawdb_lightning_bootstrap_manifest_usage()))?;
+                .ok_or_else(|| HawDBError::Semantic(hawdb_lightning_bootstrap_manifest_usage()))?;
             if args.next().is_some() {
-                return Err(HawdbError::Semantic(
+                return Err(HawDBError::Semantic(
                     hawdb_lightning_bootstrap_manifest_usage(),
                 ));
             }
@@ -1205,8 +1205,8 @@ fn main() -> Result<()> {
                     || !export.manifest.relational_validation.is_valid
                     || export.manifest.database_commit_epoch != export.manifest.graph_commit_epoch)
             {
-                return Err(HawdbError::Execution(
-                    "Hawdb Lightning bootstrap manifest is not import ready".to_string(),
+                return Err(HawDBError::Execution(
+                    "HawDB Lightning bootstrap manifest is not import ready".to_string(),
                 ));
             }
             return Ok(());
@@ -1224,9 +1224,9 @@ fn main() -> Result<()> {
             }
             let path = args
                 .next()
-                .ok_or_else(|| HawdbError::Semantic(hawdb_lightning_bootstrap_bundle_usage()))?;
+                .ok_or_else(|| HawDBError::Semantic(hawdb_lightning_bootstrap_bundle_usage()))?;
             if args.next().is_some() {
-                return Err(HawdbError::Semantic(
+                return Err(HawDBError::Semantic(
                     hawdb_lightning_bootstrap_bundle_usage(),
                 ));
             }
@@ -1245,8 +1245,8 @@ fn main() -> Result<()> {
                     .and_then(serde_json::Value::as_str)
                     != Some("ready")
             {
-                return Err(HawdbError::Execution(
-                    "Hawdb Lightning bootstrap bundle is not ready".to_string(),
+                return Err(HawDBError::Execution(
+                    "HawDB Lightning bootstrap bundle is not ready".to_string(),
                 ));
             }
             return Ok(());
@@ -1264,12 +1264,12 @@ fn main() -> Result<()> {
             }
             let database_path = args
                 .next()
-                .ok_or_else(|| HawdbError::Semantic(hawdb_lightning_stage_bootstrap_usage()))?;
+                .ok_or_else(|| HawDBError::Semantic(hawdb_lightning_stage_bootstrap_usage()))?;
             let staging_dir = args
                 .next()
-                .ok_or_else(|| HawdbError::Semantic(hawdb_lightning_stage_bootstrap_usage()))?;
+                .ok_or_else(|| HawDBError::Semantic(hawdb_lightning_stage_bootstrap_usage()))?;
             if args.next().is_some() {
-                return Err(HawdbError::Semantic(hawdb_lightning_stage_bootstrap_usage()));
+                return Err(HawDBError::Semantic(hawdb_lightning_stage_bootstrap_usage()));
             }
             let mut db = Database::open(database_path)?;
             let export = db.prepare_hawdb_lightning_bootstrap_export()?;
@@ -1287,8 +1287,8 @@ fn main() -> Result<()> {
                     .and_then(serde_json::Value::as_str)
                     != Some("ready")
             {
-                return Err(HawdbError::Execution(
-                    "Hawdb Lightning staged bootstrap is not ready".to_string(),
+                return Err(HawDBError::Execution(
+                    "HawDB Lightning staged bootstrap is not ready".to_string(),
                 ));
             }
             return Ok(());
@@ -1306,9 +1306,9 @@ fn main() -> Result<()> {
             }
             let staging_dir = args
                 .next()
-                .ok_or_else(|| HawdbError::Semantic(hawdb_lightning_verify_staging_usage()))?;
+                .ok_or_else(|| HawDBError::Semantic(hawdb_lightning_verify_staging_usage()))?;
             if args.next().is_some() {
-                return Err(HawdbError::Semantic(hawdb_lightning_verify_staging_usage()));
+                return Err(HawDBError::Semantic(hawdb_lightning_verify_staging_usage()));
             }
             let report = verify_hawdb_lightning_staging_catalog(staging_dir)?;
             println!("{}", serde_json::to_string_pretty(&report).unwrap());
@@ -1319,8 +1319,8 @@ fn main() -> Result<()> {
                     .and_then(serde_json::Value::as_str)
                     != Some("ready")
             {
-                return Err(HawdbError::Execution(
-                    "Hawdb Lightning staging verification is not ready".to_string(),
+                return Err(HawDBError::Execution(
+                    "HawDB Lightning staging verification is not ready".to_string(),
                 ));
             }
             return Ok(());
@@ -1328,7 +1328,7 @@ fn main() -> Result<()> {
         if command == "hawdb-lightning-publish-staging" {
             let (options, staging_dir, publish_dir) =
                 parse_hawdb_lightning_publish_staging_args(args)?;
-            let report = if options == HawdbLightningPublishOptions::default() {
+            let report = if options == HawDBLightningPublishOptions::default() {
                 publish_hawdb_lightning_staging_catalog(staging_dir, publish_dir)?
             } else {
                 publish_hawdb_lightning_staging_catalog_with_options(
@@ -1343,12 +1343,12 @@ fn main() -> Result<()> {
         if command == "hawdb-lightning-verify-published" {
             let staging_dir = args
                 .next()
-                .ok_or_else(|| HawdbError::Semantic(hawdb_lightning_verify_published_usage()))?;
+                .ok_or_else(|| HawDBError::Semantic(hawdb_lightning_verify_published_usage()))?;
             let publish_dir = args
                 .next()
-                .ok_or_else(|| HawdbError::Semantic(hawdb_lightning_verify_published_usage()))?;
+                .ok_or_else(|| HawDBError::Semantic(hawdb_lightning_verify_published_usage()))?;
             if args.next().is_some() {
-                return Err(HawdbError::Semantic(
+                return Err(HawDBError::Semantic(
                     hawdb_lightning_verify_published_usage(),
                 ));
             }
@@ -1359,12 +1359,12 @@ fn main() -> Result<()> {
         if command == "hawdb-lightning-gc-staging-report" {
             let staging_dir = args
                 .next()
-                .ok_or_else(|| HawdbError::Semantic(hawdb_lightning_gc_staging_report_usage()))?;
+                .ok_or_else(|| HawDBError::Semantic(hawdb_lightning_gc_staging_report_usage()))?;
             let publish_dir = args
                 .next()
-                .ok_or_else(|| HawdbError::Semantic(hawdb_lightning_gc_staging_report_usage()))?;
+                .ok_or_else(|| HawDBError::Semantic(hawdb_lightning_gc_staging_report_usage()))?;
             if args.next().is_some() {
-                return Err(HawdbError::Semantic(
+                return Err(HawDBError::Semantic(
                     hawdb_lightning_gc_staging_report_usage(),
                 ));
             }
@@ -1375,12 +1375,12 @@ fn main() -> Result<()> {
         if command == "hawdb-lightning-import-status" {
             let staging_dir = args
                 .next()
-                .ok_or_else(|| HawdbError::Semantic(hawdb_lightning_import_status_usage()))?;
+                .ok_or_else(|| HawDBError::Semantic(hawdb_lightning_import_status_usage()))?;
             let publish_dir = args
                 .next()
-                .ok_or_else(|| HawdbError::Semantic(hawdb_lightning_import_status_usage()))?;
+                .ok_or_else(|| HawDBError::Semantic(hawdb_lightning_import_status_usage()))?;
             if args.next().is_some() {
-                return Err(HawdbError::Semantic(hawdb_lightning_import_status_usage()));
+                return Err(HawDBError::Semantic(hawdb_lightning_import_status_usage()));
             }
             let report = hawdb_lightning_import_status(staging_dir, publish_dir)?;
             println!("{}", serde_json::to_string_pretty(&report).unwrap());
@@ -1399,15 +1399,15 @@ fn main() -> Result<()> {
             }
             let path = args
                 .next()
-                .ok_or_else(|| HawdbError::Semantic(hawdb_lightning_graph_stream_usage()))?;
+                .ok_or_else(|| HawDBError::Semantic(hawdb_lightning_graph_stream_usage()))?;
             if args.next().is_some() {
-                return Err(HawdbError::Semantic(hawdb_lightning_graph_stream_usage()));
+                return Err(HawDBError::Semantic(hawdb_lightning_graph_stream_usage()));
             }
             let mut db = Database::open(path)?;
             let export = db.prepare_hawdb_lightning_bootstrap_export()?;
             if require_ready && !export.manifest.validation.is_import_ready {
-                return Err(HawdbError::Execution(
-                    "Hawdb Lightning graph stream is not import ready".to_string(),
+                return Err(HawDBError::Execution(
+                    "HawDB Lightning graph stream is not import ready".to_string(),
                 ));
             }
             print!("{}", export.graph_stream.encoded);
@@ -1426,9 +1426,9 @@ fn main() -> Result<()> {
             }
             let path = args
                 .next()
-                .ok_or_else(|| HawdbError::Semantic(hawdb_lightning_relational_stream_usage()))?;
+                .ok_or_else(|| HawDBError::Semantic(hawdb_lightning_relational_stream_usage()))?;
             if args.next().is_some() {
-                return Err(HawdbError::Semantic(
+                return Err(HawDBError::Semantic(
                     hawdb_lightning_relational_stream_usage(),
                 ));
             }
@@ -1438,8 +1438,8 @@ fn main() -> Result<()> {
                 .relational_stream
                 .validate_against_manifest(&export.manifest);
             if require_ready && !validation.is_valid {
-                return Err(HawdbError::Execution(
-                    "Hawdb Lightning relational stream is not import ready".to_string(),
+                return Err(HawDBError::Execution(
+                    "HawDB Lightning relational stream is not import ready".to_string(),
                 ));
             }
             std::io::stdout().write_all(&export.relational_stream.encoded)?;
@@ -1458,9 +1458,9 @@ fn main() -> Result<()> {
             }
             let path = args
                 .next()
-                .ok_or_else(|| HawdbError::Semantic(hawdb_lightning_verify_export_usage()))?;
+                .ok_or_else(|| HawDBError::Semantic(hawdb_lightning_verify_export_usage()))?;
             if args.next().is_some() {
-                return Err(HawdbError::Semantic(hawdb_lightning_verify_export_usage()));
+                return Err(HawDBError::Semantic(hawdb_lightning_verify_export_usage()));
             }
             let mut db = Database::open(path)?;
             let export = db.prepare_hawdb_lightning_bootstrap_export()?;
@@ -1483,13 +1483,13 @@ fn main() -> Result<()> {
             });
             println!("{}", serde_json::to_string_pretty(&rendered).unwrap());
             if require_valid && !valid {
-                return Err(HawdbError::Execution(
-                    "Hawdb Lightning export validation failed".to_string(),
+                return Err(HawDBError::Execution(
+                    "HawDB Lightning export validation failed".to_string(),
                 ));
             }
             return Ok(());
         }
-        return Err(HawdbError::Semantic(format!("unknown command '{command}'")));
+        return Err(HawDBError::Semantic(format!("unknown command '{command}'")));
     }
 
     let path = std::env::temp_dir().join("hawdb-demo");
@@ -1531,8 +1531,8 @@ fn require_developer_compatibility_tool(command: &str) -> Result<()> {
     ) {
         return Ok(());
     }
-    Err(HawdbError::Semantic(format!(
-        "{command} is quarantined as a developer compatibility tool; production callers must use Hawdb library APIs and typed readiness gates. Set {HAWDB_ENABLE_COMPATIBILITY_TOOLS_ENV}=1 only for isolated preflight or CI validation."
+    Err(HawDBError::Semantic(format!(
+        "{command} is quarantined as a developer compatibility tool; production callers must use HawDB library APIs and typed readiness gates. Set {HAWDB_ENABLE_COMPATIBILITY_TOOLS_ENV}=1 only for isolated preflight or CI validation."
     )))
 }
 
@@ -1617,8 +1617,8 @@ fn hawdb_lightning_publish_staging_usage() -> String {
 
 fn parse_hawdb_lightning_publish_staging_args(
     args: impl Iterator<Item = String>,
-) -> Result<(HawdbLightningPublishOptions, String, String)> {
-    let mut options = HawdbLightningPublishOptions::default();
+) -> Result<(HawDBLightningPublishOptions, String, String)> {
+    let mut options = HawDBLightningPublishOptions::default();
     let mut positional = Vec::new();
     let mut args = args.peekable();
     while let Some(arg) = args.next() {
@@ -1628,27 +1628,27 @@ fn parse_hawdb_lightning_publish_staging_args(
             }
             "--fencing-token" => {
                 let Some(value) = args.next() else {
-                    return Err(HawdbError::Semantic(hawdb_lightning_publish_staging_usage()));
+                    return Err(HawDBError::Semantic(hawdb_lightning_publish_staging_usage()));
                 };
                 options.fencing_token = Some(value);
             }
             "--expected-database-epoch" => {
                 let Some(value) = args.next() else {
-                    return Err(HawdbError::Semantic(hawdb_lightning_publish_staging_usage()));
+                    return Err(HawDBError::Semantic(hawdb_lightning_publish_staging_usage()));
                 };
                 let epoch = value
                     .parse::<u64>()
-                    .map_err(|_| HawdbError::Semantic(hawdb_lightning_publish_staging_usage()))?;
+                    .map_err(|_| HawDBError::Semantic(hawdb_lightning_publish_staging_usage()))?;
                 options.expected_database_epoch = Some(epoch);
             }
             value if value.starts_with("--") => {
-                return Err(HawdbError::Semantic(hawdb_lightning_publish_staging_usage()));
+                return Err(HawDBError::Semantic(hawdb_lightning_publish_staging_usage()));
             }
             value => positional.push(value.to_string()),
         }
     }
     if positional.len() != 2 {
-        return Err(HawdbError::Semantic(hawdb_lightning_publish_staging_usage()));
+        return Err(HawDBError::Semantic(hawdb_lightning_publish_staging_usage()));
     }
     Ok((options, positional.remove(0), positional.remove(0)))
 }
@@ -1675,12 +1675,12 @@ fn hawdb_lightning_verify_export_usage() -> String {
 
 fn parse_shadow_timeout_ms(raw_timeout: &str) -> Result<Duration> {
     let timeout_ms = raw_timeout.parse::<u64>().map_err(|error| {
-        HawdbError::Semantic(format!(
+        HawDBError::Semantic(format!(
             "invalid --shadow-timeout-ms '{raw_timeout}': {error}"
         ))
     })?;
     if timeout_ms == 0 {
-        return Err(HawdbError::Semantic(
+        return Err(HawDBError::Semantic(
             "--shadow-timeout-ms must be greater than zero".to_string(),
         ));
     }
@@ -1689,12 +1689,12 @@ fn parse_shadow_timeout_ms(raw_timeout: &str) -> Result<Duration> {
 
 fn parse_max_wal_replay_entries(raw_limit: &str) -> Result<usize> {
     let limit = raw_limit.parse::<usize>().map_err(|error| {
-        HawdbError::Semantic(format!(
+        HawDBError::Semantic(format!(
             "invalid --max-wal-replay-entries '{raw_limit}': {error}"
         ))
     })?;
     if limit == 0 {
-        return Err(HawdbError::Semantic(
+        return Err(HawDBError::Semantic(
             "--max-wal-replay-entries must be greater than zero".to_string(),
         ));
     }
@@ -1703,10 +1703,10 @@ fn parse_max_wal_replay_entries(raw_limit: &str) -> Result<usize> {
 
 fn parse_max_family_items(raw_limit: &str) -> Result<usize> {
     let limit = raw_limit.parse::<usize>().map_err(|error| {
-        HawdbError::Semantic(format!("invalid --max-family-items '{raw_limit}': {error}"))
+        HawDBError::Semantic(format!("invalid --max-family-items '{raw_limit}': {error}"))
     })?;
     if limit == 0 {
-        return Err(HawdbError::Semantic(
+        return Err(HawDBError::Semantic(
             "--max-family-items must be greater than zero".to_string(),
         ));
     }
@@ -1715,10 +1715,10 @@ fn parse_max_family_items(raw_limit: &str) -> Result<usize> {
 
 fn parse_max_blockers(raw_limit: &str) -> Result<usize> {
     let limit = raw_limit.parse::<usize>().map_err(|error| {
-        HawdbError::Semantic(format!("invalid --max-blockers '{raw_limit}': {error}"))
+        HawDBError::Semantic(format!("invalid --max-blockers '{raw_limit}': {error}"))
     })?;
     if limit == 0 {
-        return Err(HawdbError::Semantic(
+        return Err(HawDBError::Semantic(
             "--max-blockers must be greater than zero".to_string(),
         ));
     }
@@ -1728,9 +1728,9 @@ fn parse_max_blockers(raw_limit: &str) -> Result<usize> {
 fn parse_positive_usize(flag: &str, raw_value: &str) -> Result<usize> {
     let value = raw_value
         .parse::<usize>()
-        .map_err(|error| HawdbError::Semantic(format!("invalid {flag} '{raw_value}': {error}")))?;
+        .map_err(|error| HawDBError::Semantic(format!("invalid {flag} '{raw_value}': {error}")))?;
     if value == 0 {
-        return Err(HawdbError::Semantic(format!(
+        return Err(HawDBError::Semantic(format!(
             "{flag} must be greater than zero"
         )));
     }
@@ -1743,13 +1743,13 @@ where
 {
     let flag = args
         .next()
-        .ok_or_else(|| HawdbError::Semantic(storage_resource_profile_usage()))?;
+        .ok_or_else(|| HawDBError::Semantic(storage_resource_profile_usage()))?;
     debug_assert_eq!(flag, expected_flag);
     let raw = args
         .next()
-        .ok_or_else(|| HawdbError::Semantic(storage_resource_profile_usage()))?;
+        .ok_or_else(|| HawDBError::Semantic(storage_resource_profile_usage()))?;
     raw.parse::<u64>()
-        .map_err(|error| HawdbError::Semantic(format!("invalid {expected_flag} '{raw}': {error}")))
+        .map_err(|error| HawDBError::Semantic(format!("invalid {expected_flag} '{raw}': {error}")))
 }
 
 fn parse_next_usize_flag<I>(args: &mut std::iter::Peekable<I>, expected_flag: &str) -> Result<usize>
@@ -1758,28 +1758,28 @@ where
 {
     let flag = args
         .next()
-        .ok_or_else(|| HawdbError::Semantic(storage_resource_profile_usage()))?;
+        .ok_or_else(|| HawDBError::Semantic(storage_resource_profile_usage()))?;
     debug_assert_eq!(flag, expected_flag);
     let raw = args
         .next()
-        .ok_or_else(|| HawdbError::Semantic(storage_resource_profile_usage()))?;
+        .ok_or_else(|| HawDBError::Semantic(storage_resource_profile_usage()))?;
     parse_positive_usize(expected_flag, &raw)
 }
 
 fn required_positive_profile_u64(value: Option<u64>, flag: &str) -> Result<u64> {
     match value {
         Some(value) if value > 0 => Ok(value),
-        Some(_) => Err(HawdbError::Semantic(format!(
+        Some(_) => Err(HawDBError::Semantic(format!(
             "{flag} must be greater than zero"
         ))),
-        None => Err(HawdbError::Semantic(format!(
+        None => Err(HawDBError::Semantic(format!(
             "storage-resource-profile is missing {flag}"
         ))),
     }
 }
 
 fn required_profile_usize(value: Option<usize>, flag: &str) -> Result<usize> {
-    value.ok_or_else(|| HawdbError::Semantic(format!("storage-resource-profile is missing {flag}")))
+    value.ok_or_else(|| HawDBError::Semantic(format!("storage-resource-profile is missing {flag}")))
 }
 
 fn merge_replacement_summary_evidence(
@@ -1832,7 +1832,7 @@ fn merge_replacement_summary_evidence(
             .get("replacement_readiness_by_query_family")
             .cloned()
             .ok_or_else(|| {
-                HawdbError::Semantic(
+                HawDBError::Semantic(
                     "query family evidence missing replacement_readiness_by_query_family"
                         .to_string(),
                 )
@@ -1859,7 +1859,7 @@ fn insert_replacement_summary_artifact(
     bundle
         .as_object_mut()
         .ok_or_else(|| {
-            HawdbError::Semantic("replacement summary bundle must be a JSON object".to_string())
+            HawDBError::Semantic("replacement summary bundle must be a JSON object".to_string())
         })?
         .insert(key.to_string(), value);
     Ok(())
@@ -1868,9 +1868,9 @@ fn insert_replacement_summary_artifact(
 fn parse_background_maintenance_limit(flag: &str, raw_limit: &str) -> Result<usize> {
     let limit = raw_limit
         .parse::<usize>()
-        .map_err(|error| HawdbError::Semantic(format!("invalid {flag} '{raw_limit}': {error}")))?;
+        .map_err(|error| HawDBError::Semantic(format!("invalid {flag} '{raw_limit}': {error}")))?;
     if limit == 0 {
-        return Err(HawdbError::Semantic(format!(
+        return Err(HawDBError::Semantic(format!(
             "{flag} must be greater than zero"
         )));
     }
@@ -1905,7 +1905,7 @@ fn enforce_storage_recovery_requirements(
     if blockers.is_empty() {
         return Ok(());
     }
-    Err(HawdbError::Execution(format!(
+    Err(HawDBError::Execution(format!(
         "storage recovery report requirements failed: {}",
         blockers.join("; ")
     )))
@@ -1952,7 +1952,7 @@ fn add_cutover_evidence_report(
     )?;
 
     let object = bundle.as_object_mut().ok_or_else(|| {
-        HawdbError::Execution("migration gate bundle must be a JSON object".to_string())
+        HawDBError::Execution("migration gate bundle must be a JSON object".to_string())
     })?;
     let mut evidence = serde_json::Map::new();
     insert_json(&mut evidence, "eligible", eligible);
@@ -2446,7 +2446,7 @@ fn recovery_mode_name(recovery_mode: RecoveryMode) -> &'static str {
 }
 
 fn hawdb_lightning_bootstrap_bundle_json_with_storage_recovery(
-    export: &hawdb::HawdbLightningBootstrapExport,
+    export: &hawdb::HawDBLightningBootstrapExport,
     storage_version: &str,
     storage_recovery: &StorageRecoveryReport,
 ) -> serde_json::Value {
@@ -2458,7 +2458,7 @@ fn hawdb_lightning_bootstrap_bundle_json_with_storage_recovery(
 }
 
 fn stage_hawdb_lightning_bootstrap_export_with_storage_recovery(
-    export: &hawdb::HawdbLightningBootstrapExport,
+    export: &hawdb::HawDBLightningBootstrapExport,
     staging_dir: impl AsRef<Path>,
     storage_version: &str,
     storage_recovery: &StorageRecoveryReport,
@@ -2487,7 +2487,7 @@ fn publish_hawdb_lightning_staging_catalog(
 fn publish_hawdb_lightning_staging_catalog_with_options(
     staging_dir: impl AsRef<Path>,
     publish_dir: impl AsRef<Path>,
-    options: HawdbLightningPublishOptions,
+    options: HawDBLightningPublishOptions,
 ) -> Result<serde_json::Value> {
     hawdb::publish_hawdb_lightning_staging_catalog_with_options(staging_dir, publish_dir, options)
 }
@@ -2516,7 +2516,7 @@ fn hawdb_lightning_import_status(
 fn read_json_file(path: &Path) -> Result<serde_json::Value> {
     let bytes = fs::read(path)?;
     serde_json::from_slice(&bytes)
-        .map_err(|_| HawdbError::Execution("invalid JSON file: invalid_json".to_string()))
+        .map_err(|_| HawDBError::Execution("invalid JSON file: invalid_json".to_string()))
 }
 
 fn explain_output_json(
@@ -2830,10 +2830,10 @@ fn rule_event_json(event: &hawdb::optimizer::RuleEvent) -> serde_json::Value {
 
 fn parse_parameters_json(raw_parameters: &str) -> Result<BTreeMap<String, Value>> {
     let value = serde_json::from_str::<serde_json::Value>(raw_parameters)
-        .map_err(|error| HawdbError::Semantic(format!("invalid --params-json object: {error}")))?;
+        .map_err(|error| HawDBError::Semantic(format!("invalid --params-json object: {error}")))?;
     let object = value
         .as_object()
-        .ok_or_else(|| HawdbError::Semantic("--params-json must be a JSON object".to_string()))?;
+        .ok_or_else(|| HawDBError::Semantic("--params-json must be a JSON object".to_string()))?;
     object
         .iter()
         .map(|(key, value)| Ok((key.clone(), value_from_json(value)?)))
@@ -2873,7 +2873,7 @@ fn value_from_json(value: &serde_json::Value) -> Result<Value> {
             } else if let Some(value) = value.as_f64() {
                 Ok(Value::Float(value))
             } else {
-                Err(HawdbError::Semantic(format!(
+                Err(HawDBError::Semantic(format!(
                     "unsupported JSON number in --params-json: {value}"
                 )))
             }
@@ -2896,7 +2896,7 @@ fn value_from_json(value: &serde_json::Value) -> Result<Value> {
                 return hawdb_core::Uuid::parse_str(encoded)
                     .map(Value::Uuid)
                     .map_err(|error| {
-                        HawdbError::Semantic(format!("invalid $uuid value: {error}"))
+                        HawDBError::Semantic(format!("invalid $uuid value: {error}"))
                     });
             }
             values
@@ -2910,7 +2910,7 @@ fn value_from_json(value: &serde_json::Value) -> Result<Value> {
 
 fn decode_json_binary(encoded: &str) -> Result<Vec<u8>> {
     if !encoded.len().is_multiple_of(2) {
-        return Err(HawdbError::Semantic(
+        return Err(HawDBError::Semantic(
             "$binary must contain an even number of hex digits".to_string(),
         ));
     }
@@ -2930,7 +2930,7 @@ fn decode_json_hex_digit(digit: u8) -> Result<u8> {
         b'0'..=b'9' => Ok(digit - b'0'),
         b'a'..=b'f' => Ok(digit - b'a' + 10),
         b'A'..=b'F' => Ok(digit - b'A' + 10),
-        _ => Err(HawdbError::Semantic(format!(
+        _ => Err(HawDBError::Semantic(format!(
             "$binary contains invalid hex digit {:?}",
             char::from(digit)
         ))),
@@ -2966,7 +2966,7 @@ mod tests {
         stage_hawdb_lightning_bootstrap_export_with_storage_recovery, storage_recovery_report_json,
         validate_canonical_snapshot_usage, value_from_json, value_json,
         verify_hawdb_lightning_published_manifest, verify_hawdb_lightning_staging_catalog,
-        BackgroundMaintenanceReportOptions, HawdbLightningPublishOptions,
+        BackgroundMaintenanceReportOptions, HawDBLightningPublishOptions,
         StorageRecoveryRequirements,
     };
     use hawdb::{
@@ -2981,8 +2981,8 @@ mod tests {
         CanonicalGraphSnapshotValidation, CanonicalSnapshotEndpointViolation,
         CanonicalSnapshotIdentityAudit, CompatibilityCheck, CompatibilityCheckReport,
         CompatibilityShadowCheckReport, CompatibilityShadowReport, CompatibilityShadowStatus,
-        Database, ExternalShadowReady, HawdbLightningBootstrapManifest,
-        HawdbLightningGraphStreamValidation, HawdbLightningRelationalStreamValidation,
+        Database, ExternalShadowReady, HawDBLightningBootstrapManifest,
+        HawDBLightningGraphStreamValidation, HawDBLightningRelationalStreamValidation,
         LocalQosPolicy, NowledgeMemReadOptions, PlanCacheStats, RecoveryMode,
         StorageRecoveryReport, Value, WorkClass, WorkRequest,
     };
@@ -4495,7 +4495,7 @@ mod tests {
             missing_sources: Vec::new(),
             missing_targets: Vec::new(),
         };
-        let manifest = HawdbLightningBootstrapManifest {
+        let manifest = HawDBLightningBootstrapManifest {
             protocol_version: 1,
             database_commit_epoch: 5,
             graph_commit_epoch: 5,
@@ -4516,7 +4516,7 @@ mod tests {
             node_property_count: 6,
             relationship_property_count: 2,
             validation,
-            relational_validation: HawdbLightningRelationalStreamValidation {
+            relational_validation: HawDBLightningRelationalStreamValidation {
                 is_valid: true,
                 checksum_matches: true,
                 format_version_matches: true,
@@ -4556,7 +4556,7 @@ mod tests {
 
     #[test]
     fn renders_hawdb_lightning_graph_stream_validation_json() {
-        let validation = HawdbLightningGraphStreamValidation {
+        let validation = HawDBLightningGraphStreamValidation {
             is_valid: false,
             checksum_matches: false,
             format_version_matches: true,
@@ -5085,7 +5085,7 @@ mod tests {
         let published = publish_hawdb_lightning_staging_catalog_with_options(
             &staging_dir,
             &publish_dir,
-            HawdbLightningPublishOptions {
+            HawDBLightningPublishOptions {
                 require_state_marker: true,
                 fencing_token: Some("fence-1".to_string()),
                 expected_database_epoch: Some(export.manifest.graph_commit_epoch),
@@ -5136,7 +5136,7 @@ mod tests {
         let error = publish_hawdb_lightning_staging_catalog_with_options(
             &staging_dir,
             &publish_dir,
-            HawdbLightningPublishOptions {
+            HawDBLightningPublishOptions {
                 require_state_marker: true,
                 fencing_token: None,
                 expected_database_epoch: None,
@@ -5146,7 +5146,7 @@ mod tests {
 
         assert!(error
             .to_string()
-            .contains("publish requires Hawdb Lightning import state marker"));
+            .contains("publish requires HawDB Lightning import state marker"));
         assert!(!publish_dir
             .join("hawdb_lightning_published_manifest.json")
             .exists());
@@ -5183,7 +5183,7 @@ mod tests {
         let error = publish_hawdb_lightning_staging_catalog_with_options(
             &staging_dir,
             &publish_dir,
-            HawdbLightningPublishOptions {
+            HawDBLightningPublishOptions {
                 require_state_marker: true,
                 fencing_token: Some("stale-fence".to_string()),
                 expected_database_epoch: Some(export.manifest.graph_commit_epoch),
@@ -5216,7 +5216,7 @@ mod tests {
         let error = publish_hawdb_lightning_staging_catalog_with_options(
             &staging_dir,
             &publish_dir,
-            HawdbLightningPublishOptions {
+            HawDBLightningPublishOptions {
                 require_state_marker: false,
                 fencing_token: None,
                 expected_database_epoch: Some(export.manifest.graph_commit_epoch + 1),

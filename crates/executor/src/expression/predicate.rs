@@ -521,7 +521,7 @@ pub fn property_filter_from_predicate(predicate: &Predicate) -> Result<PropertyF
         | Predicate::ExpressionContains { .. }
         | Predicate::ConstantBool(_)
         | Predicate::RelationshipExists { .. }
-        | Predicate::BoundRelationshipExists { .. } => Err(HawdbError::Execution(
+        | Predicate::BoundRelationshipExists { .. } => Err(HawDBError::Execution(
             "expression predicates are not supported in property filters".to_string(),
         )),
         Predicate::PropertyListContains {
@@ -746,7 +746,7 @@ fn property_filter_from_default_expression(
             value: value.clone(),
             negated,
         }),
-        _ => Err(HawdbError::Execution(
+        _ => Err(HawDBError::Execution(
             "expression predicates are not supported in property filters".to_string(),
         )),
     }

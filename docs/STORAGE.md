@@ -522,12 +522,12 @@ cannot expose that batch without its selected identity generation. The default
 persistent export metadata.
 `Database::prepare_hawdb_lightning_bootstrap_export` wraps the same persisted
 stable-ID snapshot and the relational state at one database commit epoch in a
-Hawdb Lightning bootstrap manifest. The authoritative logical payload consists
+HawDB Lightning bootstrap manifest. The authoritative logical payload consists
 of the GraphStream plus a RelationalStream checkpoint. The latter carries SQL
 table schemas, rows, indexes, constraints, and overflow values. The manifest
 records both stream checksums and byte lengths, their shared database epoch,
 graph schema and row counts, relational table/row/overflow counts, and both
-validation reports. Hawdb Lightning deliberately excludes WAL history, physical
+validation reports. HawDB Lightning deliberately excludes WAL history, physical
 pages, adjacency layouts, statistics, caches, and search or analytics projection
 artifacts; those are recovery history or rebuildable physical state rather than
 portable user data. The GraphStream remains deterministic canonical text sorted
@@ -557,8 +557,8 @@ the manifest's `graph_stream_checksum`.
 `hawdb hawdb-lightning-relational-stream [--require-ready] <database-path>`
 writes the binary relational stream to stdout. It is a component command for
 upload pipelines; consumers must preserve the bytes without text conversion.
-`HawdbLightningGraphStream::validate_against_manifest`,
-`HawdbLightningRelationalStream::validate_against_manifest`, and the CLI command
+`HawDBLightningGraphStream::validate_against_manifest`,
+`HawDBLightningRelationalStream::validate_against_manifest`, and the CLI command
 `hawdb hawdb-lightning-verify-export [--require-valid] <database-path>` verify
 the local bootstrap artifacts before upload. The report covers GraphStream
 format, checksum, count, and endpoint integrity plus relational checkpoint
@@ -692,7 +692,7 @@ which leaves the caller with a full label scan. Declining is what keeps the
 optimization sound: an index that covers only part of the data is safe to
 consult only where its coverage is known to be complete. Results never depend
 on the choice — a query answered from an index returns exactly what the full
-scan would. `docs/tla/HawdbPropertyIndexPruning.tla` models both evaluations
+scan would. `docs/tla/HawDBPropertyIndexPruning.tla` models both evaluations
 side by side and checks them for equality, so a pruning path that read an
 incomplete index would surface as a violated invariant rather than as a
 silently short answer.
@@ -884,7 +884,7 @@ through `Database::schema_maintenance_background_work_plan`, which returns a
 descriptor maintenance is pending.
 `LocalQosPolicy::evaluate_background_work` returns the existing admission result
 plus a deterministic expected-value score and reasons, so the caller can rank or
-skip internal background work without moving queue ownership into Hawdb. If a
+skip internal background work without moving queue ownership into HawDB. If a
 candidate carries a tenant budget hint below its estimated operations, the
 ranked decision is deferred even when the base background policy would admit it.
 `LocalQosPolicy::rank_background_work` and the matching
@@ -911,10 +911,10 @@ while
 `Database::run_next_external_content_artifact_job_with` and
 `Database::run_external_content_artifact_job_with` let the caller supply the
 content artifact runtime and complete either the next pending job or a specific
-pending job selected from a bounded poll result. Hawdb records the state
+pending job selected from a bounded poll result. HawDB records the state
 transition without embedding parsing, crawling, chunking, or large-value runtime
 logic. That runtime reads the payload and publishes rebuildable projections back
-to Hawdb through caller-owned output. Successful external content jobs keep the
+to HawDB through caller-owned output. Successful external content jobs keep the
 last structured output rows on the job ledger for lightweight lineage and
 operator audit; large parser results, raw bytes, chunks, and projection payloads
 remain caller-owned artifacts outside the graph kernel. Bounded succeeded-job
@@ -931,7 +931,7 @@ background and scheduled completion runners apply the same standard row shape
 while charging parser/crawler work to the `Import` QoS lane.
 `ExternalContentArtifactRuntimeManifest` lets a caller-owned runtime declare the
 actions it can handle, required payload keys, version, and estimated operation
-cost. Hawdb uses that manifest only to return bounded claimable-job views and an
+cost. HawDB uses that manifest only to return bounded claimable-job views and an
 Import-lane background work plan; it is not a sandbox policy and does not grant
 the runtime access to graph-kernel execution.
 Internal parser/crawler loops can use

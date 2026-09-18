@@ -132,7 +132,7 @@ fn encode_one(
 
 fn assert_storage_error<T: std::fmt::Debug>(result: Result<T>, expected: &str) {
     match result {
-        Err(HawdbError::Storage(message)) => assert_eq!(message, expected),
+        Err(HawDBError::Storage(message)) => assert_eq!(message, expected),
         other => panic!("expected storage error {expected:?}, got {other:?}"),
     }
 }
@@ -471,7 +471,7 @@ fn run_campaign(seeds: u64, steps: usize) -> usize {
                 assert!(
                     matches!(
                         decode_projected_graph_artifacts(&text),
-                        Err(HawdbError::Storage(_))
+                        Err(HawDBError::Storage(_))
                     ),
                     "accepted mutation={mutation}, seed={seed}, step={step}"
                 );

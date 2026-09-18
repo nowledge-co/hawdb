@@ -1,6 +1,6 @@
 # External Shadow Protocol
 
-Hawdb uses the external shadow protocol to compare the embedded engine with a
+HawDB uses the external shadow protocol to compare the embedded engine with a
 previous local graph wrapper during Nowledge migration gates. The protocol is a
 line-delimited JSON request/response stream over child-process stdin/stdout.
 
@@ -16,14 +16,14 @@ one UTF-8 JSON object followed by a newline.
 
 The child process must not write logs or progress messages to stdout. Diagnostic
 output belongs on stderr; malformed stdout is treated as a protocol error and
-Hawdb includes a bounded stdout line tail in the error for local debugging.
+HawDB includes a bounded stdout line tail in the error for local debugging.
 
 `request_id` is a monotonically increasing per-process identifier assigned by
-Hawdb. It matches the external shadow trace `sequence` value for the same
+HawDB. It matches the external shadow trace `sequence` value for the same
 request.
 
 The child process must keep its graph state for the lifetime of the process.
-Hawdb sends fixture setup statements and checks to the same process so the
+HawDB sends fixture setup statements and checks to the same process so the
 shadow engine can model an embedded database instance.
 
 Every request includes:
@@ -52,7 +52,7 @@ statements nested inside `execute_session`.
 
 Responses may include a top-level `request_id` echo. The echo is optional for
 backward compatibility, but when present it must match the request `request_id`.
-Hawdb rejects mismatched response identifiers as an `execution` error because
+HawDB rejects mismatched response identifiers as an `execution` error because
 they indicate a stale, reordered, or misrouted shadow response.
 
 Every response must use exactly one envelope shape. `execute`, `execute_session`,
@@ -63,7 +63,7 @@ responses are rejected as protocol errors.
 
 Cypher parameters and result rows use JSON values:
 
-| JSON value | Hawdb value |
+| JSON value | HawDB value |
 | --- | --- |
 | `null` | `Null` |
 | `true` or `false` | `Bool` |
@@ -117,7 +117,7 @@ reports `protocol_smoke`, so it can validate the protocol without being accepted
 as previous-wrapper cutover evidence.
 
 Previous-wrapper adapters should not hand-roll the JSON-lines protocol loop.
-Hawdb exposes `ExternalShadowProtocolBackend` and
+HawDB exposes `ExternalShadowProtocolBackend` and
 `ExternalShadowProtocolServer` for wrapper processes: implement the backend
 methods against the existing Kuzu/Ladybug wrapper, return
 `engine_kind() == "previous_wrapper"`, then call `run_json_lines` on stdin and
@@ -138,7 +138,7 @@ cargo run --example nowledge_previous_wrapper_shadow_adapter -- [--command-timeo
 cargo run --example nowledge_previous_wrapper_shadow_adapter -- --persistent-command <program> [args...]
 ```
 
-In this mode the adapter keeps the Hawdb external-shadow JSON-lines protocol on
+In this mode the adapter keeps the HawDB external-shadow JSON-lines protocol on
 stdin/stdout and delegates each operation to the command as a separate JSON
 request on the command's stdin. The command should return one JSON value on
 stdout:
@@ -157,7 +157,7 @@ stdout:
 
 The command bridge is intentionally process-owned by Nowledge. It lets the real
 Kuzu/Ladybug wrapper keep its dependencies and transaction/session handling
-outside Hawdb while still producing `engine_kind: "previous_wrapper"` shadow
+outside HawDB while still producing `engine_kind: "previous_wrapper"` shadow
 evidence through the shared protocol server. `--command-timeout-ms` bounds each
 delegated command invocation so a hung wrapper fails with a direct adapter error
 instead of only surfacing as an outer shadow request timeout.
@@ -358,7 +358,7 @@ The `outputs` array must have the same length and order as the request
 the session may write; otherwise it is `read`. Per-statement `access` is
 advisory but stable: previous-wrapper adapters should use `read` for read-only
 Kuzu/Ladybug APIs and `mutation` for serialized write paths. `role` is a
-compatibility-harness context label. Hawdb reports malformed session outputs
+compatibility-harness context label. HawDB reports malformed session outputs
 with their zero-based output index so wrapper logs can be aligned with
 `statements[*].context.statement_index`.
 
@@ -455,7 +455,7 @@ Any operation can return an error:
 - `execution`
 
 Unknown classes are treated as `execution`. The message is included in the
-Hawdb-side error with the shadow engine name.
+HawDB-side error with the shadow engine name.
 
 ## Adapter Smoke Command
 
@@ -548,7 +548,7 @@ checkpoint boundary is present, WAL replay was opened with a configured bound,
 and no torn tail was ignored.
 
 The bundle includes a top-level `background_maintenance` object with the local
-Hawdb maintenance summary after the compatibility fixture run. It reports
+HawDB maintenance summary after the compatibility fixture run. It reports
 candidate counts, admitted/deferred/rejected operation totals, stable work
 class/priority/admission strings, reason codes, whether a search projection
 delta candidate carries an executable request, and top-level aggregate counts
@@ -670,10 +670,10 @@ shadow, and matched sets; it must not include raw candidate IDs.
 Rust bridge code should generate this object with
 `nowledge_mem_search_candidate_shadow_evidence_json` and
 `NowledgeMemSearchCandidateShadowEvidence` so `ready` and blocker codes are
-computed by Hawdb instead of handwritten by the caller.
+computed by HawDB instead of handwritten by the caller.
 For multi-request bridge runs, prefer
 `NowledgeMemSearchCandidateShadowAccumulator::record_compare_candidate_ids`
-once per LanceDB/Hawdb candidate comparison and emit `accumulator.json()` at
+once per LanceDB/HawDB candidate comparison and emit `accumulator.json()` at
 the end. Use `record_compare` only for count-only diagnostics; final
 integration readiness requires candidate identity evidence.
 CLI-based harnesses can emit the same evidence from a minimal probe:
@@ -715,7 +715,7 @@ The probe schema is:
 ```
 
 The CLI does not execute search; it only compiles already-observed LanceDB and
-Hawdb candidate IDs plus filter-pushdown fields into fail-closed evidence.
+HawDB candidate IDs plus filter-pushdown fields into fail-closed evidence.
 
 `--require-cutover-evidence` runs the same `ready` preflight and exits with an
 error unless `cutover_evidence.eligible` is true. Use it for isolated release or
@@ -753,7 +753,7 @@ which records `primary_engine`, `shadow_engine`, primary and shadow check
 counts, matched check count, primary-only check count, matched ratio, and a
 `ready` boolean. This is the stable side-by-side evidence field for release
 automation; it makes primary-only or self-shadow protocol smoke visibly
-different from real Hawdb-vs-previous-wrapper parity.
+different from real HawDB-vs-previous-wrapper parity.
 The coverage and inventory gate objects also include
 `coverage_by_query_family`, which groups required inventory checks by their
 scanner-assigned query family and reports per-family required, covered, missing,
@@ -788,7 +788,7 @@ is `0` even when scanner coverage and shadow matched ratios are complete. If
 the bundle includes `dual_engine_evidence`, the summary copies it into the
 release-facing output and also requires `dual_engine_evidence.ready == true`
 for production readiness. It also requires ready
-`search_candidate_shadow_evidence` for the LanceDB/Hawdb candidate-read path,
+`search_candidate_shadow_evidence` for the LanceDB/HawDB candidate-read path,
 including count parity and redacted candidate identity parity. The summary also
 preserves cutover storage/background
 evidence, including background search-projection graph-delta aggregate counts,
@@ -811,7 +811,7 @@ decision.
 
 When the caller requires rollback proof, the migration gate can also carry
 caller-owned rollback evidence through `rollback_required`, `rollback_ready`,
-and `rollback_evidence`. Hawdb only gates on this supplied evidence; it does not
+and `rollback_evidence`. HawDB only gates on this supplied evidence; it does not
 open or link the previous graph database. The CLI sets `rollback_required` with
 `--require-rollback-evidence` and marks rollback ready only when
 `--rollback-evidence <text>` is supplied.

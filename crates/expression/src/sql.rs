@@ -105,7 +105,7 @@ impl Expr {
 
     pub fn require_column(&self) -> hawdb_core::Result<&SqlColumnRef> {
         self.as_column().ok_or_else(|| {
-            hawdb_core::HawdbError::Semantic(
+            hawdb_core::HawDBError::Semantic(
                 "this SQL expression position requires a column reference".to_owned(),
             )
         })
@@ -113,7 +113,7 @@ impl Expr {
 
     pub fn require_value(&self) -> hawdb_core::Result<&SqlValue> {
         self.as_value().ok_or_else(|| {
-            hawdb_core::HawdbError::Semantic(
+            hawdb_core::HawDBError::Semantic(
                 "this SQL expression position requires a literal or parameter".to_owned(),
             )
         })

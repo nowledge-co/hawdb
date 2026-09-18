@@ -1,7 +1,7 @@
 //! Reader-safe physical-generation retention and retryable reclamation.
 
 use super::{DurableStore, GenerationReclamationDebt};
-use crate::error::{HawdbError, Result};
+use crate::error::{HawDBError, Result};
 use crate::store::{
     parse_append_segment_generation_file, parse_relational_overflow_extent_generation_file,
     parse_relational_row_page_artifact_generation_file, remove_generation_reclamation_candidate,
@@ -144,13 +144,13 @@ impl DurableStore {
                     generation,
                     hawdb_storage::RelationalOverflowPublicationConfig::default(),
                 )
-                .map_err(|error| HawdbError::Storage(error.to_string()))?;
+                .map_err(|error| HawDBError::Storage(error.to_string()))?;
                 overflow
                     .visit_descriptors(|descriptor| {
                         overflow_extent_generations.insert(descriptor.physical_generation);
                         Ok(())
                     })
-                    .map_err(|error| HawdbError::Storage(error.to_string()))?;
+                    .map_err(|error| HawDBError::Storage(error.to_string()))?;
             }
 
             let row_manifest =
@@ -164,7 +164,7 @@ impl DurableStore {
                     generation,
                     hawdb_storage::RelationalRowPagePublicationConfig::default(),
                 )
-                .map_err(|error| HawdbError::Storage(error.to_string()))?;
+                .map_err(|error| HawDBError::Storage(error.to_string()))?;
                 let tables = rows
                     .manifest()
                     .tables
@@ -176,7 +176,7 @@ impl DurableStore {
                         row_page_generations.insert(descriptor.physical_generation);
                         Ok(())
                     })
-                    .map_err(|error| HawdbError::Storage(error.to_string()))?;
+                    .map_err(|error| HawDBError::Storage(error.to_string()))?;
                 }
             }
         }
@@ -201,7 +201,7 @@ impl DurableStore {
                 generation,
                 AppendPublicationConfig::default(),
             )
-            .map_err(|error| HawdbError::Storage(error.to_string()))?;
+            .map_err(|error| HawDBError::Storage(error.to_string()))?;
             segment_generations.extend(manifest.segments.iter().map(|segment| segment.generation));
         }
         Ok(segment_generations)

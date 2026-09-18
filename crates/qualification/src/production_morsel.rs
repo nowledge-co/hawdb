@@ -345,10 +345,10 @@ fn run_cancellation_probe(
                     first_row = false;
                     started_sender
                         .send(())
-                        .map_err(|error| hawdb::HawdbError::Execution(error.to_string()))?;
+                        .map_err(|error| hawdb::HawDBError::Execution(error.to_string()))?;
                     resume_receiver
                         .recv()
-                        .map_err(|error| hawdb::HawdbError::Execution(error.to_string()))?;
+                        .map_err(|error| hawdb::HawDBError::Execution(error.to_string()))?;
                 }
                 Ok(())
             },

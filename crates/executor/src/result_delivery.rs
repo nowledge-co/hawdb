@@ -3,7 +3,7 @@
 use crate::binding::{map_memory_bytes, map_payload_bytes, Binding};
 use crate::pipeline::runtime_checkpoint;
 use crate::{QueryMemoryAccount, QueryMemoryClass, QueryMemoryLease, QueryMemoryLedger, Row};
-use hawdb_core::{HawdbError, Result, RuntimeTaskContext};
+use hawdb_core::{HawDBError, Result, RuntimeTaskContext};
 use std::num::NonZeroUsize;
 
 #[derive(Clone, Copy)]
@@ -88,7 +88,7 @@ impl<'a> QueryOutputAccumulator<'a> {
         if let Some(max_rows) = self.max_rows
             && self.metrics.rows >= max_rows
         {
-            return Err(HawdbError::Execution(format!(
+            return Err(HawDBError::Execution(format!(
                 "read query returned more than {max_rows} rows, exceeding max_read_result_rows {max_rows}"
             )));
         }
@@ -99,7 +99,7 @@ impl<'a> QueryOutputAccumulator<'a> {
         if let Some(max_payload_bytes) = self.max_payload_bytes
             && next_payload_bytes > max_payload_bytes
         {
-            return Err(HawdbError::Execution(format!(
+            return Err(HawDBError::Execution(format!(
                 "read query payload would exceed max_payload_bytes {max_payload_bytes} (max_read_result_payload_bytes {max_payload_bytes}; next total {next_payload_bytes})"
             )));
         }

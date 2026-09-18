@@ -1,7 +1,7 @@
 use std::fmt::{Debug, Formatter};
 use std::sync::Arc;
 
-use crate::{HawdbError, Result};
+use crate::{HawDBError, Result};
 
 #[derive(Clone)]
 pub struct ValidatedRegex {
@@ -13,7 +13,7 @@ impl ValidatedRegex {
     pub fn new(source: impl Into<String>) -> Result<Self> {
         let source = source.into();
         let compiled = regex::Regex::new(&source)
-            .map_err(|error| HawdbError::Semantic(format!("invalid regex pattern: {error}")))?;
+            .map_err(|error| HawDBError::Semantic(format!("invalid regex pattern: {error}")))?;
         Ok(Self {
             source,
             compiled: Arc::new(compiled),

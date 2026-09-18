@@ -1,6 +1,6 @@
 # hawdb-fuzz
 
-`hawdb-fuzz` is a development-only correctness harness over Hawdb's public embedded API. The
+`hawdb-fuzz` is a development-only correctness harness over HawDB's public embedded API. The
 production `hawdb` crate does not depend on it.
 
 The [DST scoping recommendation](../../docs/DST_SCOPING.md) explains the existing
@@ -25,7 +25,7 @@ campaign runs nine complementary oracles:
   predicates without implementing another graph executor.
 - The Graph TLP Aggregate oracle runs `count(variable)` over the original match and the same three
   predicate partitions on one pinned snapshot. The original count must equal the checked sum of
-  the partition counts. This follows SQLancer's TLP Aggregate construction and exercises Hawdb's
+  the partition counts. This follows SQLancer's TLP Aggregate construction and exercises HawDB's
   aggregate execution path without adding a reference executor or host-side graph semantics.
 - The graph predicate-rewrite oracle cycles through double negation, conjunction idempotence,
   disjunction idempotence, null totality, and the two predicate absorption laws. It

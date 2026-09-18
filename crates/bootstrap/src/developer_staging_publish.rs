@@ -7,13 +7,13 @@ use crate::{
     hawdb_lightning_import_state_marker, read_hawdb_lightning_staging_artifact_json,
     sync_bootstrap_directory, verify_hawdb_lightning_staging_catalog, write_bootstrap_atomic_file,
 };
-use hawdb_core::{HawdbError, Result};
+use hawdb_core::{HawDBError, Result};
 use hawdb_integrity::checksum_u64;
 use std::fs;
 use std::path::Path;
 
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
-pub struct HawdbLightningPublishOptions {
+pub struct HawDBLightningPublishOptions {
     pub require_state_marker: bool,
     pub fencing_token: Option<String>,
     pub expected_database_epoch: Option<u64>,
@@ -26,14 +26,14 @@ pub fn publish_hawdb_lightning_staging_catalog(
     publish_hawdb_lightning_staging_catalog_with_options(
         staging_dir,
         publish_dir,
-        HawdbLightningPublishOptions::default(),
+        HawDBLightningPublishOptions::default(),
     )
 }
 
 pub fn publish_hawdb_lightning_staging_catalog_with_options(
     staging_dir: impl AsRef<Path>,
     publish_dir: impl AsRef<Path>,
-    options: HawdbLightningPublishOptions,
+    options: HawDBLightningPublishOptions,
 ) -> Result<serde_json::Value> {
     let staging_dir = staging_dir.as_ref();
     let publish_dir = publish_dir.as_ref();
@@ -44,8 +44,8 @@ pub fn publish_hawdb_lightning_staging_catalog_with_options(
         .and_then(serde_json::Value::as_str)
         != Some("ready")
     {
-        return Err(HawdbError::Execution(
-            "Hawdb Lightning staging verification is not ready".to_string(),
+        return Err(HawDBError::Execution(
+            "HawDB Lightning staging verification is not ready".to_string(),
         ));
     }
 
@@ -53,7 +53,7 @@ pub fn publish_hawdb_lightning_staging_catalog_with_options(
     let catalog_bytes = fs::read(&catalog_path)?;
     let catalog_checksum = checksum_u64(&catalog_bytes);
     let catalog = serde_json::from_slice::<serde_json::Value>(&catalog_bytes)
-        .map_err(|_| HawdbError::Execution("invalid JSON file: invalid_json".to_string()))?;
+        .map_err(|_| HawDBError::Execution("invalid JSON file: invalid_json".to_string()))?;
     let manifest = read_hawdb_lightning_staging_artifact_json(&catalog, staging_dir, "manifest")?;
     let publish_preflight = hawdb_lightning_publish_preflight(staging_dir, &manifest, &options)?;
     let pointer = serde_json::json!({
@@ -97,8 +97,8 @@ pub fn publish_hawdb_lightning_staging_catalog_with_options(
             }
             return Ok(report);
         }
-        return Err(HawdbError::Execution(
-            "published Hawdb Lightning manifest already points to a different snapshot".to_string(),
+        return Err(HawDBError::Execution(
+            "published HawDB Lightning manifest already points to a different snapshot".to_string(),
         ));
     }
 
@@ -126,7 +126,7 @@ pub fn publish_hawdb_lightning_staging_catalog_with_options(
 fn hawdb_lightning_publish_preflight(
     staging_dir: &Path,
     manifest: &serde_json::Value,
-    options: &HawdbLightningPublishOptions,
+    options: &HawDBLightningPublishOptions,
 ) -> Result<serde_json::Value> {
     let mut errors = Vec::new();
     let mut state_errors = Vec::new();
@@ -143,7 +143,7 @@ fn hawdb_lightning_publish_preflight(
         record_error(
             &mut errors,
             &mut state_errors,
-            "publish requires Hawdb Lightning import state marker",
+            "publish requires HawDB Lightning import state marker",
         );
     }
     if marker_present && marker_state != Some("VALIDATING") {
@@ -191,8 +191,8 @@ fn hawdb_lightning_publish_preflight(
     }
 
     if !errors.is_empty() {
-        return Err(HawdbError::Execution(format!(
-            "Hawdb Lightning publish preflight blocked: {}",
+        return Err(HawDBError::Execution(format!(
+            "HawDB Lightning publish preflight blocked: {}",
             errors.join("; ")
         )));
     }
@@ -234,7 +234,7 @@ fn same_published_manifest_identity(left: &serde_json::Value, right: &serde_json
 fn read_json_file(path: &Path) -> Result<serde_json::Value> {
     let bytes = fs::read(path)?;
     serde_json::from_slice(&bytes)
-        .map_err(|_| HawdbError::Execution("invalid JSON file: invalid_json".to_string()))
+        .map_err(|_| HawDBError::Execution("invalid JSON file: invalid_json".to_string()))
 }
 
 fn record_error(errors: &mut Vec<String>, group: &mut Vec<String>, message: impl Into<String>) {

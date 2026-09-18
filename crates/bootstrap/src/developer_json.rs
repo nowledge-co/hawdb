@@ -5,13 +5,13 @@
 
 use crate::{
     CanonicalSnapshotEndpointViolation, CanonicalSnapshotIdentityAudit,
-    HawdbLightningBootstrapExport, HawdbLightningBootstrapManifest,
-    HawdbLightningGraphStreamValidation, HawdbLightningRelationalStreamValidation,
+    HawDBLightningBootstrapExport, HawDBLightningBootstrapManifest,
+    HawDBLightningGraphStreamValidation, HawDBLightningRelationalStreamValidation,
 };
 use hawdb_core::Value;
 
 pub fn hawdb_lightning_bootstrap_manifest_json(
-    manifest: &HawdbLightningBootstrapManifest,
+    manifest: &HawDBLightningBootstrapManifest,
 ) -> serde_json::Value {
     serde_json::json!({
         "protocol": "hawdb-lightning-bootstrap",
@@ -54,13 +54,13 @@ pub fn hawdb_lightning_bootstrap_manifest_json(
 }
 
 pub fn hawdb_lightning_bootstrap_bundle_json(
-    export: &HawdbLightningBootstrapExport,
+    export: &HawDBLightningBootstrapExport,
 ) -> serde_json::Value {
     hawdb_lightning_bootstrap_bundle_json_with_optional_storage_recovery(export, None)
 }
 
 pub fn hawdb_lightning_bootstrap_bundle_json_with_optional_storage_recovery(
-    export: &HawdbLightningBootstrapExport,
+    export: &HawDBLightningBootstrapExport,
     storage_recovery: Option<serde_json::Value>,
 ) -> serde_json::Value {
     let graph_stream_validation = export
@@ -119,7 +119,7 @@ pub fn hawdb_lightning_bootstrap_bundle_json_with_optional_storage_recovery(
 }
 
 pub fn hawdb_lightning_graph_stream_validation_json(
-    validation: &HawdbLightningGraphStreamValidation,
+    validation: &HawDBLightningGraphStreamValidation,
 ) -> serde_json::Value {
     serde_json::json!({
         "is_valid": validation.is_valid,
@@ -144,7 +144,7 @@ pub fn hawdb_lightning_graph_stream_validation_json(
 }
 
 pub fn hawdb_lightning_relational_stream_validation_json(
-    validation: &HawdbLightningRelationalStreamValidation,
+    validation: &HawDBLightningRelationalStreamValidation,
 ) -> serde_json::Value {
     serde_json::json!({
         "is_valid": validation.is_valid,

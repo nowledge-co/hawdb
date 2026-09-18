@@ -1,11 +1,11 @@
-# Hawdb TODO
+# HawDB TODO
 
 This file contains only actionable, incomplete work. Completed behavior belongs
 in the contracts indexed by [`docs/specs/README.md`](docs/specs/README.md), in
 supporting design documents, and in Git history. Do not use checked tasks as a
 second specification or completion archive.
 
-The scope remains product-driven: Hawdb is a single-process embedded Rust
+The scope remains product-driven: HawDB is a single-process embedded Rust
 database for Nowledge graph and search workloads, with thread-safe concurrent
 reads and writes inside that one process as a first-class goal (see #226 for
 the intra-process concurrency design). Multi-process writers, distributed
@@ -28,7 +28,7 @@ algorithms outside active routes are not implied backlog items.
     unbounded segment payload-cache activity before the first user query, or
     explicit resource-budget violations. The release validator recomputes the
     bounded-cache predicate from raw counters. Run it against the imported
-    representative Hawdb copy; its synthetic contract test is not production
+    representative HawDB copy; its synthetic contract test is not production
     evidence. The `hawdb-content-store-read-qualification` binary now derives
     the fixed read-only authoritative typed configuration from a bounded plan
     while keeping the local path out of evidence; retain this item until the
@@ -255,7 +255,7 @@ crash; read-only recovery remains fail closed.
     regular in-process run does not certify an OS-enforced 512 MiB limit: retain
     the isolated constrained-profile run and production-copy measurements as
     separate evidence gates.
-  - Qualify `SharedHost` separately on an 8 GiB host: automatic Hawdb
+  - Qualify `SharedHost` separately on an 8 GiB host: automatic HawDB
     capacity must remain at or below 2 GiB, while the effective budget tracks
     sensed headroom and is expected to move through the 1--2 GiB range rather
     than becoming a fixed reservation. Keep the explicit 512 MiB run as a
@@ -263,7 +263,7 @@ crash; read-only recovery remains fail closed.
     release threshold. The typed memory-policy evaluator now rejects a mismatched
     detected limit, derives the exact 25% capacity/headroom budget, records the
     nominal 1--2 GiB range without turning 1 GiB into a hard floor, and proves
-    that an explicit 512 MiB Hawdb ceiling is effective unless a smaller
+    that an explicit 512 MiB HawDB ceiling is effective unless a smaller
     host/cgroup ceiling takes precedence. The identity-bound production matrix
     and `hawdb-content-store-memory-qualification` collector now evaluate both
     fixed policies from one detected snapshot without opening or mutating the
@@ -322,7 +322,7 @@ crash; read-only recovery remains fail closed.
     generation-bound and demand-paged. Relationship probes choose the property
     projection only when its estimated work does not exceed the bound endpoint
     adjacency path.
-  - The Hawdb Lightning physical-id to stable-identity sidecar is separately
+  - The HawDB Lightning physical-id to stable-identity sidecar is separately
     publish-last and demand-paged because it must become durable before an
     initial-import graph WAL batch. It is not a query index and is not bound to
     a checkpoint that does not yet contain that import.
@@ -339,7 +339,7 @@ crash; read-only recovery remains fail closed.
     budgets without retaining result rows. It now requires distinct cold and
     warm runs, proves the relevant artifact exceeds the cache, and records a
     bounded non-poisoning cancellation followed by a successful read.
-    `HawdbGraphIndexQualification.tla` proves the ordered cache lifecycle,
+    `HawDBGraphIndexQualification.tla` proves the ordered cache lifecycle,
     independent same-generation evidence gating, complete matrix publication,
     and fail-closed selected corruption. The typed production matrix rejects
     missing, duplicate, mixed-replica, mixed-runtime, or mixed-generation cases
@@ -358,14 +358,14 @@ crash; read-only recovery remains fail closed.
 
 This work reopens a deliberately deferred boundary: selected durable row and
 large-value responsibilities currently owned by Mem's SQLite `content.db` may
-move into Hawdb. PostgreSQL defines the SQL syntax and semantics; it is not a
+move into HawDB. PostgreSQL defines the SQL syntax and semantics; it is not a
 runtime dependency and this backlog does not replace PostgreSQL in Nowledge
 Cloud. The initial scope is `content_documents`, `thread_messages`,
 `content_chunks`, `content_anchors`, and their migration state. External
 artifact/blob files remain sidecars until a separate workload and recovery
 qualification justifies moving them.
 
-- [x] Qualify the partial callers in the frozen SQLite-to-Hawdb statement
+- [x] Qualify the partial callers in the frozen SQLite-to-HawDB statement
   corpus.
   - The versioned corpus, schema-v4 canonical projection, explicit source-only
     control-table exclusions, parameter/result contracts, source inventory,
@@ -377,9 +377,9 @@ qualification justifies moving them.
     tail deletion, and whole-thread deletion.
   - Acceptance: every active Mem caller is `covered`, and cutover fails closed
     when the corpus protocol, revision, or digest differs from the qualified
-    Hawdb artifact.
+    HawDB artifact.
 
-- [ ] Materialize the scoped Content Store schema and behavior in Hawdb.
+- [ ] Materialize the scoped Content Store schema and behavior in HawDB.
   - Define PostgreSQL-dialect migrations for `content_documents`,
     `thread_messages`, `content_chunks`, `content_anchors`, and the durable
     migration ledger without editing an already-applied migration.
@@ -396,15 +396,15 @@ qualification justifies moving them.
     source-chunk replacement, ownership move, anchor creation, and projection
     rebuild all have exact behavior fixtures.
 
-- [ ] Add an idempotent, resumable SQLite-to-Hawdb migration coordinator in
+- [ ] Add an idempotent, resumable SQLite-to-HawDB migration coordinator in
   Mem.
-  - Keep `rusqlite` and SQLite snapshot handling in the Mem adapter; Hawdb must
+  - Keep `rusqlite` and SQLite snapshot handling in the Mem adapter; HawDB must
     not acquire SQLite as a production dependency.
   - Acquire an explicit legacy write fence or run a durable dual-write
     obligation protocol before copying. Record database identity, schema
     checksums, source snapshot identity, import id, and source high watermark.
   - Copy by stable keyset pages with bounded payload bytes, persist the cursor
-    after each committed Hawdb batch, and make replay idempotent by primary key
+    after each committed HawDB batch, and make replay idempotent by primary key
     and content hash.
   - Verify per-table counts, ordered identities, payload hashes, aggregate
     totals, anchor reachability, and representative query results before
@@ -433,7 +433,7 @@ qualification justifies moving them.
     of trusting child `ready` fields. Representative retained artifacts are
     still required; synthetic fixtures establish only the evaluator contract.
   - Add a differential oracle that runs the frozen statement corpus against one
-    SQLite snapshot and one Hawdb snapshot, comparing values, nulls, ordering,
+    SQLite snapshot and one HawDB snapshot, comparing values, nulls, ordering,
     errors, and transaction outcomes rather than only row counts.
   - Exercise empty stores, duplicate legacy message ids, duplicate order
     indexes, non-ASCII and large content, 50,000-message threads, large source
@@ -443,15 +443,15 @@ qualification justifies moving them.
     bytes, write amplification, compression ratio, steady/peak RSS, page
     faults, spill, and decompressed bytes on Windows, Linux, and macOS.
   - Run shadow reads and durable dual writes on a production copy, bind parity
-    and recovery artifacts to the exact Hawdb revision and statement-corpus
+    and recovery artifacts to the exact HawDB revision and statement-corpus
     revision, then fail closed on stale or incomplete evidence.
   - Remove the SQLite runtime, backup/export branch, and `nmem-content`
     repository only after portable export/import, doctor, projection rebuild,
-    rollback, and route ownership all select Hawdb with no fallback.
+    rollback, and route ownership all select HawDB with no fallback.
 
 ## P1: PostgreSQL SQL/PGQ Compatibility
 
-- [ ] Add the Hawdb-owned PostgreSQL syntax frontend specified by
+- [ ] Add the HawDB-owned PostgreSQL syntax frontend specified by
   `docs/specs/POSTGRES_SQL_PGQ_SPEC.md`.
   - [x] Add dependency-free token, byte-span, structured-error, and syntax-AST
     ownership under `crates/`.
@@ -495,7 +495,7 @@ qualification justifies moving them.
 
 ## P2: Deferred Delivery Governance
 
-- [ ] Adopt `main` branch protection when Hawdb enters a release-candidate or
+- [ ] Adopt `main` branch protection when HawDB enters a release-candidate or
   general-availability phase.
   - Keep direct pushes available during the current rapid-iteration phase.
   - Production release evidence must still bind to an exact revision with green
@@ -511,7 +511,7 @@ qualification justifies moving them.
 
 ## P2: Deferred Replica Repair
 
-- [ ] Add replica-assisted storage repair after Hawdb has a replication layer.
+- [ ] Add replica-assisted storage repair after HawDB has a replication layer.
   - Require an exact database identity, manifest lineage, generation, LSN range,
     and content-digest match before accepting repair bytes from a follower.
   - Stage and verify replacement WAL or segment data before atomic publication;

@@ -22,7 +22,7 @@ mutation interface.
 
 Strict Append tables use the same SQL boundary. The storage mode is declared
 with PostgreSQL `CREATE TABLE ... WITH (...)` storage-parameter syntax; the
-parameter names and values are Hawdb extensions:
+parameter names and values are HawDB extensions:
 
 ```sql
 CREATE TABLE events (
@@ -74,7 +74,7 @@ Generated assignments are returned only by the typed durable result:
 `TransactionCommitResult::append_mutations` for mixed transactions. Each
 `AppendMutationOutcome` preserves append-write order and caller row order.
 Exhaustion fails before WAL publication as
-`HawdbError::AppendSequenceExhausted`, retaining the table, prior watermark,
+`HawDBError::AppendSequenceExhausted`, retaining the table, prior watermark,
 and requested row count as typed fields.
 `system.append_tables` exposes `order_mode` and
 `generated_order_watermark`; the watermark is null for caller-provided tables.
@@ -117,7 +117,7 @@ The retained categories are:
 - schema migration and maintenance orchestration;
 - search projection, changefeed, freshness, and rebuild boundaries;
 - bounded unified knowledge retrieval over canonical graph identities;
-- Hawdb Lightning import and canonical snapshot boundaries;
+- HawDB Lightning import and canonical snapshot boundaries;
 - QoS admission, readiness, qualification, and telemetry evidence.
 
 These APIs MUST remain route-neutral. A new REST route, scheduler operation, or
@@ -126,7 +126,7 @@ method.
 
 ## Compatibility and formal-model impact
 
-Hawdb has no released public compatibility obligation for the removed business
+HawDB has no released public compatibility obligation for the removed business
 facades. This is an intentional source-breaking cleanup before the first
 release.
 

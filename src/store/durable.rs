@@ -30,7 +30,7 @@ use super::{
     MANIFEST_FILE, PROJECTED_GRAPHS_FILE, PROPERTY_PROJECTION_MANIFEST_MAX_BYTES,
     PROPERTY_SPILL_MANIFEST_MAX_BYTES, STABLE_ID_MAPPING_FILE,
 };
-use crate::error::{HawdbError, Result};
+use crate::error::{HawDBError, Result};
 use crate::schema::GraphStatistics;
 use hawdb_integrity::Sha256Digest;
 use hawdb_storage::{
@@ -49,8 +49,8 @@ use std::sync::Arc;
 
 const WAL_FREE_SPACE_PROBE_INTERVAL_BYTES: u64 = 64 * 1024 * 1024;
 
-fn stable_identity_error(error: StableIdentityMappingError) -> HawdbError {
-    HawdbError::Storage(error.to_string())
+fn stable_identity_error(error: StableIdentityMappingError) -> HawDBError {
+    HawDBError::Storage(error.to_string())
 }
 
 #[derive(Debug, Clone)]
@@ -211,7 +211,7 @@ impl DurableStore {
         replay_config: WalReplayConfig,
     ) -> Result<Self> {
         if replay_config.max_graph_manifest_open_bytes == 0 {
-            return Err(HawdbError::Storage(
+            return Err(HawDBError::Storage(
                 "max_graph_manifest_open_bytes must be non-zero".to_string(),
             ));
         }
@@ -245,13 +245,13 @@ impl DurableStore {
         max_batch_operations: Option<usize>,
     ) -> Result<Self> {
         if !path.exists() {
-            return Err(HawdbError::Storage(format!(
+            return Err(HawDBError::Storage(format!(
                 "read-only database path does not exist: {}",
                 path.display()
             )));
         }
         if !path.is_dir() {
-            return Err(HawdbError::Storage(format!(
+            return Err(HawDBError::Storage(format!(
                 "read-only database path is not a directory: {}",
                 path.display()
             )));
@@ -283,7 +283,7 @@ impl DurableStore {
         max_batch_operations: Option<usize>,
     ) -> Result<Self> {
         if !path.is_dir() {
-            return Err(HawdbError::Storage(format!(
+            return Err(HawDBError::Storage(format!(
                 "derived repair database path is not a directory: {}",
                 path.display()
             )));
@@ -322,12 +322,12 @@ impl DurableStore {
             automatic_tail_repair,
         } = options;
         if max_graph_manifest_open_bytes == 0 {
-            return Err(HawdbError::Storage(
+            return Err(HawDBError::Storage(
                 "max_graph_manifest_open_bytes must be non-zero".to_string(),
             ));
         }
         let directory_lease = DatabaseDirectoryLease::acquire(path)
-            .map_err(|error| HawdbError::Storage(error.to_string()))?;
+            .map_err(|error| HawDBError::Storage(error.to_string()))?;
         if load_rebuildable_artifacts {
             derived_repair::reject_pending_derived_artifact_repair(path)?;
         }
@@ -342,7 +342,7 @@ impl DurableStore {
         let manifest = if manifest_path.exists() {
             DurableManifest::load(&manifest_path)?
         } else if has_storage_artifacts(path)? {
-            return Err(HawdbError::Storage(
+            return Err(HawDBError::Storage(
                 "database has storage artifacts but no durable manifest".to_string(),
             ));
         } else if initialize_if_empty {
@@ -350,7 +350,7 @@ impl DurableStore {
             manifest.write(&manifest_path)?;
             manifest
         } else {
-            return Err(HawdbError::Storage(
+            return Err(HawDBError::Storage(
                 "read-only database directory has no durable manifest".to_string(),
             ));
         };
@@ -400,7 +400,7 @@ impl DurableStore {
         if let (Some(canonical), Some(adjacency)) = (&canonical_segments, &canonical_adjacency)
             && canonical.manifest().relationship_count != adjacency.relationship_count()
         {
-            return Err(HawdbError::Storage(
+            return Err(HawDBError::Storage(
                 "canonical adjacency relationship count does not match canonical segments"
                     .to_string(),
             ));

@@ -184,7 +184,7 @@ fn check_stream(rng: &mut Rng, seed: u64, iteration: usize, mode: usize) {
         }
         9 => {
             case.cancel_after = true;
-            case.response = Err(HawdbError::Execution("host failure".into()));
+            case.response = Err(HawDBError::Execution("host failure".into()));
             (Some("host failure"), 1, 0)
         }
         10 => {

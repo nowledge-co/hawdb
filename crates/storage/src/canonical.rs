@@ -3306,7 +3306,7 @@ const RESIDUAL_KEY_ID_FIELD: u32 = 1;
 /// as the length-delimited field body; no second value encoding exists.
 const RESIDUAL_CANONICAL_VALUE_FIELD: u32 = 2;
 
-fn wire_corrupt(error: hawdb_core::error::HawdbError) -> CanonicalSegmentError {
+fn wire_corrupt(error: hawdb_core::error::HawDBError) -> CanonicalSegmentError {
     CanonicalSegmentError::Corrupt(format!("residual row wire payload is invalid: {error}"))
 }
 

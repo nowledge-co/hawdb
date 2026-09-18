@@ -58,7 +58,7 @@
 //! serialization allocations draw from a separate enforced metadata budget
 //! that is included in the same up-front admission.
 //!
-//! Formal-model coverage note: `HawdbColumnarShadowIntegration.tla` models
+//! Formal-model coverage note: `HawDBColumnarShadowIntegration.tla` models
 //! the four-phase publication machine, recovery, and the post-publish
 //! reclamation sweep (`ActiveClosureRetained`: a sweep never removes a
 //! file the active shadow manifest references; the sweep here is exactly
@@ -67,7 +67,7 @@
 //! admission is absent structurally — the builder receives a pre-admitted
 //! [`ColumnarShadowAdmission`] by value and has no governor handle — and
 //! the constrained-governor convergence test proves it; admission
-//! semantics are modeled separately by `HawdbRuntimeAdmission.tla`
+//! semantics are modeled separately by `HawDBRuntimeAdmission.tla`
 //! (landing via another PR).
 
 use super::*;
@@ -116,8 +116,8 @@ pub(super) use hawdb_storage::ColumnarShadowState;
 #[cfg(test)]
 use hawdb_storage::DEFAULT_SHADOW_BUFFER_BUDGET_BYTES;
 
-fn shadow_error(error: ColumnGroupError) -> HawdbError {
-    HawdbError::Storage(format!("columnar shadow: {error}"))
+fn shadow_error(error: ColumnGroupError) -> HawDBError {
+    HawDBError::Storage(format!("columnar shadow: {error}"))
 }
 
 #[cfg(test)]
@@ -126,12 +126,12 @@ fn decode_varint_u32(bytes: &[u8], position: &mut usize) -> Result<u32> {
     let mut shift = 0u32;
     loop {
         let byte = *bytes.get(*position).ok_or_else(|| {
-            HawdbError::Storage("columnar shadow: label set varint is truncated".to_string())
+            HawDBError::Storage("columnar shadow: label set varint is truncated".to_string())
         })?;
         *position += 1;
         let bits = u32::from(byte & 0x7f);
         if shift >= 32 || (shift == 28 && bits > 0x0f) {
-            return Err(HawdbError::Storage(
+            return Err(HawDBError::Storage(
                 "columnar shadow: label set varint overflows u32".to_string(),
             ));
         }
@@ -219,7 +219,7 @@ impl ColumnarShadowAdmission {
         };
         let transient = SHADOW_STREAMED_FLUSH_ALLOWANCE_BYTES.saturating_add(metadata_bytes);
         if transient > allowance {
-            return Err(HawdbError::Storage(format!(
+            return Err(HawDBError::Storage(format!(
                 "columnar shadow streamed flush needs {transient} bytes, \
                  exceeding its admitted {allowance} byte allowance"
             )));
@@ -238,7 +238,7 @@ impl ColumnarShadowAdmission {
             .saturating_mul(1 + SHADOW_ENCODER_SCRATCH_MULTIPLIER)
             .saturating_add(metadata_bytes);
         if transient > allowance {
-            return Err(HawdbError::Storage(format!(
+            return Err(HawDBError::Storage(format!(
                 "columnar shadow flush and metadata need {transient} bytes, exceeding their \
                  admitted {allowance} byte allowance"
             )));
@@ -449,7 +449,7 @@ impl ShadowCheckpointBuilder {
         let mut residual_values = Vec::new();
         for (key, value) in properties {
             let property_id = dictionary.id(&key).ok_or_else(|| {
-                HawdbError::Storage(format!(
+                HawDBError::Storage(format!(
                     "columnar shadow pass 2 encountered property key {key:?} absent from pass 1"
                 ))
             })?;
@@ -475,7 +475,7 @@ impl ShadowCheckpointBuilder {
                 .collect::<Vec<_>>();
             Some(
                 encode_residual_row_properties(&residual_entries)
-                    .map_err(|error| HawdbError::Storage(error.to_string()))?,
+                    .map_err(|error| HawDBError::Storage(error.to_string()))?,
             )
         };
 
@@ -499,7 +499,7 @@ impl ShadowCheckpointBuilder {
                 buffer.targets.push(Value::Int(target as i64));
             }
             ColumnGroupTableKind::Relational => {
-                return Err(HawdbError::Storage(
+                return Err(HawDBError::Storage(
                     "columnar shadow does not cover relational tables".to_string(),
                 ));
             }
@@ -535,7 +535,7 @@ impl ShadowCheckpointBuilder {
         let mut residual_entries: Vec<(u32, &Value)> = Vec::new();
         for (key, value) in properties {
             let property_id = dictionary.id(key).ok_or_else(|| {
-                HawdbError::Storage(format!(
+                HawDBError::Storage(format!(
                     "columnar shadow pass 2 encountered property key {key:?} absent from pass 1"
                 ))
             })?;
@@ -573,7 +573,7 @@ impl ShadowCheckpointBuilder {
             ColumnGroupTableKind::Node => "node",
             ColumnGroupTableKind::Relationship => "relationship",
             ColumnGroupTableKind::Relational => {
-                return Err(HawdbError::Storage(
+                return Err(HawDBError::Storage(
                     "columnar shadow does not cover relational tables".to_string(),
                 ));
             }
@@ -643,7 +643,7 @@ impl ShadowCheckpointBuilder {
             ColumnGroupTableKind::Node => "node",
             ColumnGroupTableKind::Relationship => "relationship",
             ColumnGroupTableKind::Relational => {
-                return Err(HawdbError::Storage(
+                return Err(HawDBError::Storage(
                     "columnar shadow does not cover relational tables".to_string(),
                 ));
             }
@@ -927,7 +927,7 @@ impl GraphStore {
         };
         match governor.try_admit(request) {
             Ok(permit) => Ok(ColumnarShadowAdmission::owned(permit, allowance)),
-            Err(error) => Err(HawdbError::Storage(format!(
+            Err(error) => Err(HawDBError::Storage(format!(
                 "columnar shadow build admission denied: {error}"
             ))),
         }
@@ -954,7 +954,7 @@ impl GraphStore {
             return;
         }
         let record_failure = |report: &mut Option<ColumnarShadowCheckpointReport>,
-                              error: HawdbError| {
+                              error: HawDBError| {
             *report = Some(ColumnarShadowCheckpointReport {
                 status: ColumnarShadowCheckpointStatus::Failed {
                     error: error.to_string(),

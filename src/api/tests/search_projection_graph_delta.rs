@@ -1,6 +1,6 @@
 use super::*;
 use crate::{
-    HawdbError, RelationalValue, SearchProjectionChangeBatch, SearchProjectionRelationalDelta,
+    HawDBError, RelationalValue, SearchProjectionChangeBatch, SearchProjectionRelationalDelta,
 };
 
 fn hydrate_thread_message_changes(
@@ -12,14 +12,14 @@ fn hydrate_thread_message_changes(
     let mut processed_primary_key_count = 0usize;
     for table in batch.relational_primary_key_changes() {
         if table.table != "thread_messages" {
-            return Err(HawdbError::Execution(format!(
+            return Err(HawDBError::Execution(format!(
                 "unsupported relational projection table {}",
                 table.table
             )));
         }
         for key in &table.primary_keys {
             let [RelationalValue::BigInt(message_id)] = key.0.as_slice() else {
-                return Err(HawdbError::Execution(
+                return Err(HawDBError::Execution(
                     "thread_messages projection key must be one BIGINT".to_string(),
                 ));
             };
@@ -31,7 +31,7 @@ fn hydrate_thread_message_changes(
                 [] => deletes.push(format!("message:{message_id}")),
                 [row] => {
                     let Some(Value::String(body)) = row.get("body") else {
-                        return Err(HawdbError::Execution(
+                        return Err(HawDBError::Execution(
                             "thread_messages projection query omitted body".to_string(),
                         ));
                     };
@@ -46,7 +46,7 @@ fn hydrate_thread_message_changes(
                     });
                 }
                 rows => {
-                    return Err(HawdbError::Execution(format!(
+                    return Err(HawDBError::Execution(format!(
                         "thread_messages projection query returned {} rows",
                         rows.len()
                     )));
@@ -698,7 +698,7 @@ fn unified_projection_batch_hydrator_failure_keeps_graph_only_watermark_unpublis
             1,
             |_snapshot, batch| {
                 assert!(!batch.has_relational_changes());
-                Err(HawdbError::Execution(
+                Err(HawDBError::Execution(
                     "graph dependency hydration failed".to_string(),
                 ))
             },
@@ -840,7 +840,7 @@ fn unified_projection_catch_up_failure_does_not_publish_watermark() {
 
     let hydration_error = db
         .catch_up_search_projection_with_relational(&mut search_index, 1, 1, |_database, _batch| {
-            Err(HawdbError::Execution(
+            Err(HawDBError::Execution(
                 "relational hydration failed".to_string(),
             ))
         })

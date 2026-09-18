@@ -16,11 +16,11 @@ This mirrors the already-landed checkpoint **encode** split (#627): encode is
 
 - **Internal, not public.** `DecodedCheckpoint` and `parse_checkpoint` are
   `#[doc(hidden)]` / crate-private in `hawdb-storage`. They are not re-exported
-  as a new host-facing API. Hawdb's public surface stays query-first
+  as a new host-facing API. HawDB's public surface stays query-first
   (`Database::query`, `execute`, `explain`); this contract only serves the
   recovery reconstruction path.
 - **Byte-identical.** Field names, field order, checksum semantics, and every
-  `HawdbError::Storage` message must remain unchanged. The existing hex-recovery
+  `HawDBError::Storage` message must remain unchanged. The existing hex-recovery
   tests are the acceptance oracle.
 - **Fail-closed.** Any malformed/duplicate/out-of-order line, checksum mismatch,
   or decoded-byte-limit violation fails the open, exactly as today.

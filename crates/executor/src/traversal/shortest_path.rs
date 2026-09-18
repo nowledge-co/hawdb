@@ -261,7 +261,7 @@ pub(super) fn search_shortest_paths(
 
 fn charge(tracker: &mut OperatorMemoryTracker, bytes: usize) -> Result<()> {
     if tracker.would_exceed(bytes) {
-        return Err(HawdbError::Execution(format!(
+        return Err(HawDBError::Execution(format!(
             "ShortestPathExec state exceeds blocking_operator_bytes {}",
             tracker.budget_bytes
         )));

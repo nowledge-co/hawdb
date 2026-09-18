@@ -5,7 +5,7 @@
 //! and the admission token remain in the embedded facade.
 
 use crate::durable_replace_file;
-use hawdb_core::{HawdbError, PropertyId, Result, Value};
+use hawdb_core::{HawDBError, PropertyId, Result, Value};
 use hawdb_integrity::crc32c;
 use std::collections::BTreeMap;
 use std::fs::{self, File};
@@ -68,12 +68,12 @@ impl ShadowMetadataBudget {
 
     pub fn charge(&mut self, bytes: u64, allocation: &str) -> Result<()> {
         let required = self.used_bytes.checked_add(bytes).ok_or_else(|| {
-            HawdbError::Storage(format!(
+            HawDBError::Storage(format!(
                 "columnar shadow metadata accounting overflows while reserving {allocation}"
             ))
         })?;
         if required > self.limit_bytes {
-            return Err(HawdbError::Storage(format!(
+            return Err(HawDBError::Storage(format!(
                 "columnar shadow {allocation} needs {required} metadata bytes, exceeding its \
                  enforced {} byte budget",
                 self.limit_bytes
@@ -97,8 +97,8 @@ impl ShadowMetadataBudget {
         self.peak_bytes
     }
 
-    fn exceeded(required: u64, limit: u64) -> HawdbError {
-        HawdbError::Storage(format!(
+    fn exceeded(required: u64, limit: u64) -> HawDBError {
+        HawDBError::Storage(format!(
             "columnar shadow existing key dictionary needs {required} metadata bytes, exceeding \
              its enforced {limit} byte budget"
         ))
@@ -122,7 +122,7 @@ impl ShadowKeyDictionary {
             Err(error) => return Err(error.into()),
         };
         if file_bytes > MAX_SHADOW_KEY_DICTIONARY_BYTES {
-            return Err(HawdbError::Storage(
+            return Err(HawDBError::Storage(
                 "columnar shadow key dictionary exceeds its size limit".to_string(),
             ));
         }
@@ -161,7 +161,7 @@ impl ShadowKeyDictionary {
 
     fn decode(bytes: &[u8], metadata_budget: &mut ShadowMetadataBudget) -> Result<Self> {
         let corrupt = |message: &str| {
-            HawdbError::Storage(format!("columnar shadow key dictionary {message}"))
+            HawDBError::Storage(format!("columnar shadow key dictionary {message}"))
         };
         if bytes.len() as u64 > MAX_SHADOW_KEY_DICTIONARY_BYTES {
             return Err(corrupt("exceeds its size limit"));
@@ -248,7 +248,7 @@ impl ShadowKeyDictionary {
             .ok()
             .and_then(|index| index.checked_add(FIRST_DICTIONARY_COLUMN))
             .ok_or_else(|| {
-                HawdbError::Storage(
+                HawDBError::Storage(
                     "columnar shadow key dictionary exceeds the u32 id space".to_string(),
                 )
             })?;
@@ -273,7 +273,7 @@ impl ShadowKeyDictionary {
                 .checked_add(4)
                 .and_then(|bytes| bytes.checked_add(key.len() as u64))
                 .ok_or_else(|| {
-                    HawdbError::Storage(
+                    HawDBError::Storage(
                         "columnar shadow key dictionary length overflows u64".to_string(),
                     )
                 })
@@ -281,7 +281,7 @@ impl ShadowKeyDictionary {
         body_len
             .checked_add((2 * SHADOW_KEY_DICTIONARY_MAGIC.len() + 12) as u64)
             .ok_or_else(|| {
-                HawdbError::Storage(
+                HawDBError::Storage(
                     "columnar shadow key dictionary framing length overflows u64".to_string(),
                 )
             })
@@ -289,12 +289,12 @@ impl ShadowKeyDictionary {
 
     fn encode(&self, encoded_len: u64) -> Result<Vec<u8>> {
         if encoded_len > MAX_SHADOW_KEY_DICTIONARY_BYTES {
-            return Err(HawdbError::Storage(
+            return Err(HawDBError::Storage(
                 "columnar shadow key dictionary exceeds its size limit".to_string(),
             ));
         }
         let capacity = usize::try_from(encoded_len).map_err(|_| {
-            HawdbError::Storage(
+            HawDBError::Storage(
                 "columnar shadow key dictionary exceeds the addressable memory range".to_string(),
             )
         })?;

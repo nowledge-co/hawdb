@@ -1,7 +1,7 @@
 //! Shared JSON-to-`Value` parsing helpers for query-probe and route-catalog
 //! inventories.
 
-use hawdb_core::{HawdbError, Result, Value};
+use hawdb_core::{HawDBError, Result, Value};
 use std::collections::BTreeMap;
 
 pub fn optional_query_name(value: &serde_json::Value) -> Option<String> {
@@ -16,7 +16,7 @@ pub fn parse_parameters_json(
     context: &str,
 ) -> Result<BTreeMap<String, Value>> {
     let object = value.as_object().ok_or_else(|| {
-        HawdbError::Semantic(format!("{context} field 'parameters' must be an object"))
+        HawDBError::Semantic(format!("{context} field 'parameters' must be an object"))
     })?;
     object
         .iter()
@@ -34,7 +34,7 @@ pub fn value_from_json(value: &serde_json::Value, context: &str) -> Result<Value
             } else if let Some(value) = value.as_f64() {
                 Ok(Value::Float(value))
             } else {
-                Err(HawdbError::Semantic(format!(
+                Err(HawDBError::Semantic(format!(
                     "unsupported JSON number in {context} parameters: {value}"
                 )))
             }

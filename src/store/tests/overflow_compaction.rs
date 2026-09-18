@@ -272,7 +272,7 @@ fn exact_overflow_compaction_rewrites_reachable_closure_without_hydration() {
         .unwrap_err();
     assert!(matches!(
         corruption,
-        crate::error::HawdbError::StorageIntegrity(_)
+        crate::error::HawDBError::StorageIntegrity(_)
     ));
     assert!(!path
         .join(relational_overflow_manifest_generation_file(5))

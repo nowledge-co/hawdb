@@ -9,7 +9,7 @@ use crate::text::{
     encode_u64_vec, parse_u64,
 };
 use crate::NodeId;
-use hawdb_core::{HawdbError, Result};
+use hawdb_core::{HawDBError, Result};
 use std::collections::BTreeMap;
 
 const PROJECTED_GRAPH_ARTIFACT_VERSION: u64 = 1;
@@ -73,7 +73,7 @@ pub fn decode_projected_graph_artifacts(
     match lines.next() {
         Some("HAWDB_PROJECTED_GRAPHS_V1") => {}
         _ => {
-            return Err(HawdbError::Storage(
+            return Err(HawDBError::Storage(
                 "invalid projected graph artifact header".to_string(),
             ));
         }
@@ -84,7 +84,7 @@ pub fn decode_projected_graph_artifacts(
         "projected graph artifact version",
     )?;
     if artifact_version != PROJECTED_GRAPH_ARTIFACT_VERSION {
-        return Err(HawdbError::Storage(format!(
+        return Err(HawDBError::Storage(format!(
             "unsupported projected graph artifact version: {artifact_version}"
         )));
     }
@@ -117,13 +117,13 @@ pub fn decode_projected_graph_artifacts(
                 let csc_offsets = decode_projected_graph_usize_line(lines.next(), "csc_offsets")?;
                 let csc_sources = decode_projected_graph_usize_line(lines.next(), "csc_sources")?;
                 if nodes.len() as u64 != node_count {
-                    return Err(HawdbError::Storage(format!(
+                    return Err(HawDBError::Storage(format!(
                         "projected graph artifact node count mismatch for {name}"
                     )));
                 }
                 if csr_targets.len() as u64 != edge_count || csc_sources.len() as u64 != edge_count
                 {
-                    return Err(HawdbError::Storage(format!(
+                    return Err(HawDBError::Storage(format!(
                         "projected graph artifact edge count mismatch for {name}"
                     )));
                 }
@@ -134,7 +134,7 @@ pub fn decode_projected_graph_artifacts(
                     csc_offsets,
                     csc_sources,
                 )
-                .map_err(HawdbError::Storage)?;
+                .map_err(HawDBError::Storage)?;
                 artifacts.insert(
                     name,
                     ProjectedGraphArtifact {
@@ -147,7 +147,7 @@ pub fn decode_projected_graph_artifacts(
             }
             [""] => {}
             _ => {
-                return Err(HawdbError::Storage(format!(
+                return Err(HawDBError::Storage(format!(
                     "invalid projected graph artifact line: {line}"
                 )));
             }
@@ -162,14 +162,14 @@ fn decode_projected_graph_u64_header(
     name: &str,
 ) -> Result<u64> {
     let Some(line) = line else {
-        return Err(HawdbError::Storage(format!(
+        return Err(HawDBError::Storage(format!(
             "missing projected graph artifact {expected}"
         )));
     };
     let fields = line.split('\t').collect::<Vec<_>>();
     match fields.as_slice() {
         [field, raw] if *field == expected => parse_u64(raw, name),
-        _ => Err(HawdbError::Storage(format!(
+        _ => Err(HawDBError::Storage(format!(
             "invalid projected graph artifact line: {line}"
         ))),
     }
@@ -177,7 +177,7 @@ fn decode_projected_graph_u64_header(
 
 fn decode_projected_graph_nodes_line(line: Option<&str>) -> Result<Vec<NodeId>> {
     let Some(line) = line else {
-        return Err(HawdbError::Storage(
+        return Err(HawDBError::Storage(
             "missing projected graph artifact nodes line".to_string(),
         ));
     };
@@ -185,7 +185,7 @@ fn decode_projected_graph_nodes_line(line: Option<&str>) -> Result<Vec<NodeId>> 
     match fields.as_slice() {
         ["nodes", raw_values] => decode_u64_vec(raw_values, "projected graph artifact node id")
             .map(|nodes| nodes.into_iter().map(NodeId).collect()),
-        _ => Err(HawdbError::Storage(format!(
+        _ => Err(HawDBError::Storage(format!(
             "invalid projected graph artifact line: {line}"
         ))),
     }
@@ -193,7 +193,7 @@ fn decode_projected_graph_nodes_line(line: Option<&str>) -> Result<Vec<NodeId>> 
 
 fn decode_projected_graph_usize_line(line: Option<&str>, expected: &str) -> Result<Vec<usize>> {
     let Some(line) = line else {
-        return Err(HawdbError::Storage(format!(
+        return Err(HawDBError::Storage(format!(
             "missing projected graph artifact {expected} line"
         )));
     };
@@ -202,7 +202,7 @@ fn decode_projected_graph_usize_line(line: Option<&str>, expected: &str) -> Resu
         [name, raw_values] if *name == expected => {
             decode_usize_vec(raw_values, "projected graph artifact index")
         }
-        _ => Err(HawdbError::Storage(format!(
+        _ => Err(HawDBError::Storage(format!(
             "invalid projected graph artifact line: {line}"
         ))),
     }
@@ -210,7 +210,7 @@ fn decode_projected_graph_usize_line(line: Option<&str>, expected: &str) -> Resu
 
 pub fn split_projected_graph_artifact_checksum(text: &str) -> Result<(&str, u64)> {
     let Some((body, footer)) = text.rsplit_once("checksum\t") else {
-        return Err(HawdbError::Storage(
+        return Err(HawDBError::Storage(
             "projected graph artifact missing checksum footer".to_string(),
         ));
     };
@@ -235,7 +235,7 @@ fn decode_usize_vec(input: &str, name: &str) -> Result<Vec<usize>> {
         .map(|value| {
             value
                 .parse()
-                .map_err(|_| HawdbError::Storage(format!("invalid {name}: {value}")))
+                .map_err(|_| HawDBError::Storage(format!("invalid {name}: {value}")))
         })
         .collect()
 }

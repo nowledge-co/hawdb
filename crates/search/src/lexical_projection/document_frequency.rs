@@ -42,7 +42,7 @@ impl PartialFieldFrequency {
         let repeated_weight = self
             .repeated_weight
             .checked_add(incoming.repeated_weight)
-            .ok_or_else(|| HawdbError::Storage("document term frequency overflow".into()))?;
+            .ok_or_else(|| HawDBError::Storage("document term frequency overflow".into()))?;
         if let Some(first) = incoming
             .first_event
             .filter(|first| self.first_event.is_none_or(|current| first.0 < current.0))
@@ -56,7 +56,7 @@ impl PartialFieldFrequency {
     fn frequency(self) -> Result<u64> {
         self.repeated_weight
             .checked_add(self.first_event.map_or(0, |(_, weight)| weight))
-            .ok_or_else(|| HawdbError::Storage("document term frequency overflow".into()))
+            .ok_or_else(|| HawDBError::Storage("document term frequency overflow".into()))
     }
 }
 
@@ -99,7 +99,7 @@ impl DocumentRuns {
             };
             incoming = merge_pair(previous, incoming, pool)?;
         }
-        Err(HawdbError::Storage(
+        Err(HawDBError::Storage(
             "document frequency spill levels exhausted".into(),
         ))
     }
@@ -112,7 +112,7 @@ impl DocumentRuns {
                 None => run,
             });
         }
-        merged.ok_or_else(|| HawdbError::Storage("document frequency spill has no runs".into()))
+        merged.ok_or_else(|| HawDBError::Storage("document frequency spill has no runs".into()))
     }
 }
 
@@ -130,7 +130,7 @@ impl SpillingAnalysis {
         let lower_bound = self
             .lower_bound
             .checked_add(record.summary.repeated_weight)
-            .ok_or_else(|| HawdbError::Storage("lexical document length overflow".into()))?;
+            .ok_or_else(|| HawDBError::Storage("lexical document length overflow".into()))?;
         admit_document_len(lower_bound, pool.config)?;
         let string_bytes = record.term.capacity() as u64;
         let slot_bytes = std::mem::size_of::<FrequencyRecord>() as u64;
@@ -149,7 +149,7 @@ impl SpillingAnalysis {
         if string_bytes.saturating_add(slot_bytes.saturating_mul(capacity as u64))
             > self.buffer_limit
         {
-            return Err(HawdbError::Storage(
+            return Err(HawDBError::Storage(
                 "one document frequency record exceeds analyzer bytes".into(),
             ));
         }
@@ -160,7 +160,7 @@ impl SpillingAnalysis {
                 self.records
                     .try_reserve_exact(capacity - self.records.len())
                     .map_err(|error| {
-                        HawdbError::Storage(format!("reserve document frequency records: {error}"))
+                        HawDBError::Storage(format!("reserve document frequency records: {error}"))
                     })?;
             }
         }
@@ -242,13 +242,13 @@ impl AnalyzedDocument<'_> {
 
 fn admit_document_len(length: u64, config: LexicalProjectionConfig) -> Result<u32> {
     if length > config.max_document_tokens.get() as u64 {
-        return Err(HawdbError::Storage(format!(
+        return Err(HawDBError::Storage(format!(
             "lexical document produced at least {length} tokens, exceeding {}",
             config.max_document_tokens
         )));
     }
     u32::try_from(length)
-        .map_err(|_| HawdbError::Storage("lexical document length exceeds u32".into()))
+        .map_err(|_| HawDBError::Storage("lexical document length exceeds u32".into()))
 }
 
 fn progress_memory(pool: &SpillRuns, document_id: &str) -> u64 {
@@ -332,9 +332,9 @@ pub(super) fn analyze_with_control<'a>(
         let consume = |term: Term, occurrence| {
             ordinal = ordinal
                 .checked_add(1)
-                .ok_or_else(|| HawdbError::Storage("document token ordinal overflow".into()))?;
+                .ok_or_else(|| HawDBError::Storage("document token ordinal overflow".into()))?;
             if term.len() as u64 > config.max_term_bytes.get() {
-                return Err(HawdbError::Storage(format!(
+                return Err(HawDBError::Storage(format!(
                     "lexical term uses {} bytes, exceeding {}",
                     term.len(),
                     config.max_term_bytes
@@ -359,10 +359,10 @@ pub(super) fn analyze_with_control<'a>(
                 }
                 if required > map_limit {
                     let Some(buffer_limit) = spill_buffer else {
-                        return Err(HawdbError::Storage(format!("document frequency spill needs at least {} analyzer bytes for progress", progress.saturating_add(base))));
+                        return Err(HawDBError::Storage(format!("document frequency spill needs at least {} analyzer bytes for progress", progress.saturating_add(base))));
                     };
                     if config.max_merge_fan_in.get() < 2 {
-                        return Err(HawdbError::Storage(
+                        return Err(HawDBError::Storage(
                             "lexical merge fan-in must be at least two".into(),
                         ));
                     }
@@ -420,7 +420,7 @@ pub(super) fn analyze_with_control<'a>(
     visit_frequencies(&run, config, |_, frequency| {
         document_len = document_len
             .checked_add(u64::from(frequency))
-            .ok_or_else(|| HawdbError::Storage("lexical document length overflow".into()))?;
+            .ok_or_else(|| HawDBError::Storage("lexical document length overflow".into()))?;
         admit_document_len(document_len, config)?;
         Ok(())
     })?;
@@ -443,7 +443,7 @@ fn visit_frequencies(
         match current.as_mut() {
             Some((term, total)) if term == &record.term => {
                 *total = total.checked_add(frequency).ok_or_else(|| {
-                    HawdbError::Storage("document term frequency overflow".into())
+                    HawDBError::Storage("document term frequency overflow".into())
                 })?;
             }
             _ => {
@@ -491,7 +491,7 @@ pub(super) fn spill_postings(
     visit_frequencies(&run, pool.config, |term, frequency| {
         let bytes = Posting::resident_bytes(&term, id);
         if bytes > posting_limit {
-            return Err(HawdbError::Storage(
+            return Err(HawDBError::Storage(
                 "one lexical posting exceeds the build memory budget".into(),
             ));
         }

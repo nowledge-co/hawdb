@@ -1,12 +1,12 @@
-# Hawdb Architecture
+# HawDB Architecture
 
 ## Goal
 
-Hawdb is an embedded Rust graph database for Nowledge local runtimes. It is
+HawDB is an embedded Rust graph database for Nowledge local runtimes. It is
 intended to replace the current Ladybug/Kuzu dependency while preserving the
 Cypher-facing behavior that Nowledge relies on today.
 
-Hawdb is single-process: one `DatabaseDirectoryLease`-enforced writer per
+HawDB is single-process: one `DatabaseDirectoryLease`-enforced writer per
 database path (see `specs/EMBEDDED_RUNTIME_SPEC.md`). Thread-safe concurrent
 reads and writes inside that one process are a first-class goal, tracked in
 issue #226. Multi-process writers remain out of scope.
@@ -28,7 +28,7 @@ Nowledge graph data plane:
 - deterministic query planning and explain output
 - graph projection hooks for rebuildable analytics
 
-Cloud remains PostgreSQL-first. Hawdb is the local embedded graph engine and can
+Cloud remains PostgreSQL-first. HawDB is the local embedded graph engine and can
 share logical semantics with Cloud projections, but Cloud canonical state should
 continue to live in PostgreSQL facts, edges, jobs, and op-log tables.
 
@@ -42,7 +42,7 @@ continue to live in PostgreSQL facts, edges, jobs, and op-log tables.
 
 ## Compatibility Boundary
 
-Nowledge currently uses the Ladybug fork through the local graph wrapper. Hawdb
+Nowledge currently uses the Ladybug fork through the local graph wrapper. HawDB
 must cover the used surface before it can replace that dependency:
 
 - database lifecycle with configurable memory, thread, size, read-only, and
@@ -62,7 +62,7 @@ outside the graph engine.
 
 ## Crate Layout
 
-Hawdb follows a RisingWave/Chryso-style workspace-and-facade layout. The root
+HawDB follows a RisingWave/Chryso-style workspace-and-facade layout. The root
 crate remains the stable embedded facade, while implementation crates are split
 out as interfaces harden and dependency direction becomes acyclic. The current
 crate split includes `hawdb-core` for common graph primitives,
@@ -513,7 +513,7 @@ The `hawdb-qualification` package is also outside the production dependency
 graph. It owns synthetic, revision-bound CI workloads that exercise the public
 embedded facade without turning qualification orchestration into a production
 API. Its mixed-runtime soak creates a controlled larger-than-memory fixture,
-reopens it through `HawdbTokioEmbedded`, and runs admitted foreground streams,
+reopens it through `HawDBTokioEmbedded`, and runs admitted foreground streams,
 background external `DISTINCT`, mutation, and checkpoint work concurrently.
 The typed report retains latency, process-memory, page-fault, spill, cache,
 checkpoint, and runtime-governor measurements. Synthetic reports always carry
@@ -531,7 +531,7 @@ crates/cypher/src/tests.rs     parser coverage for the supported subset
 
 ## Data Model
 
-Hawdb stores a property graph:
+HawDB stores a property graph:
 
 - `NodeId`: stable internal node identity
 - `RelId`: stable internal relationship identity
@@ -592,7 +592,7 @@ from planning semantics.
 
 ## PostgreSQL SQL/PGQ Pipeline
 
-Hawdb also treats PostgreSQL SQL/PGQ as a first-class syntax surface:
+HawDB also treats PostgreSQL SQL/PGQ as a first-class syntax surface:
 
 ```text
 PostgreSQL SQL with CREATE PROPERTY GRAPH or GRAPH_TABLE
@@ -661,7 +661,7 @@ the shared intermediate label and both relationship types. It does not infer
 topology from `GraphRagCommonPathSummary`, because that compact summary does not
 preserve the intermediate node and both edge types.
 
-Hawdb does not embed an LLM and does not execute generated queries through a
+HawDB does not embed an LLM and does not execute generated queries through a
 special GraphRAG interpreter. The host submits generated Cypher through the
 normal query runtime, or through a read transaction when it needs an enforced
 read-only snapshot. Parsing, optimization, execution profiling, slow-query
@@ -669,7 +669,7 @@ logging, and blackbox aggregation therefore retain their normal ownership.
 
 ### Cloud semantic seam
 
-Neither the current Cloud adapter nor Hawdb Cloud runs the Hawdb embedded
+Neither the current Cloud adapter nor HawDB Cloud runs the HawDB embedded
 database. They reuse a narrower, storage-neutral contract:
 
 - a versioned semantic graph catalog for node kinds, relationship endpoint
@@ -681,34 +681,34 @@ database. They reuse a narrower, storage-neutral contract:
 - a storage-neutral deterministic analytics kernel over immutable CSR/CSC
   snapshots.
 
-The local backend lowers logical operators to Hawdb scans, indexes, adjacency
+The local backend lowers logical operators to HawDB scans, indexes, adjacency
 expansion, and the embedded executor. The current Nowledge Cloud adapter lowers
 the same logical operators to workspace-scoped PostgreSQL joins and bounded
-recursive CTEs. The target Hawdb Cloud backend lowers them to immutable
+recursive CTEs. The target HawDB Cloud backend lowers them to immutable
 graph-segment scans, topology expansion, distributed joins/path stages, and
 retryable exchanges over a pinned manifest. Physical plans and costs are
 deliberately different; logical rows, cardinality/null semantics,
 authorization, and completeness diagnostics must match.
 
-Hawdb Cloud stores canonical graph, value, delta, statistics, checkpoint, and
+HawDB Cloud stores canonical graph, value, delta, statistics, checkpoint, and
 projection objects in S3. Worker-local SSD/NVMe is a digest-verified cache for
 objects and decoded topology/column blocks, never durable database state. A
 write becomes visible only after its S3 objects are verified and metadata Raft
 publishes the manifest pointer. Eviction, worker restart, or complete cache-disk
 loss must preserve committed data and query semantics.
 
-For a Cloud-attached workspace, Hawdb is an eventually consistent partial
+For a Cloud-attached workspace, HawDB is an eventually consistent partial
 mirror, not a second canonical writer. The current Cloud adapter is authoritative
-until migration; Hawdb Cloud becomes the permanent authority after cutover.
+until migration; HawDB Cloud becomes the permanent authority after cutover.
 Local query eligibility is therefore a semantic coverage check, not merely
 "does this node exist locally." Results must identify the subscription identity
 and epoch, filter digest, materialization scope, applied sequence, canonical
 head, and whether the requested query is complete within that scope. Standalone
 local workspaces remain locally authoritative.
 
-Graph analytics follows the same boundary. Local Hawdb and small Cloud jobs may
+Graph analytics follows the same boundary. Local HawDB and small Cloud jobs may
 feed immutable source-epoch snapshots into the shared in-process kernel.
-Distributed Hawdb Cloud execution shares the algorithm semantics, message
+Distributed HawDB Cloud execution shares the algorithm semantics, message
 algebra, fixtures, and output contract without sharing the embedded runtime.
 Analytics outputs are rebuildable, versioned projection generations; they
 never enter the local graph WAL or either Cloud canonical mutation log. This
@@ -723,7 +723,7 @@ Statement parsers should compose those helpers rather than open-coding byte
 movement or separator loops. This keeps syntax changes reviewable and avoids
 leaking semantic validation into parsing.
 
-The parser technology choice is deliberately conservative. Hawdb should not add
+The parser technology choice is deliberately conservative. HawDB should not add
 a yacc-style generated grammar for the current Nowledge replacement slice. The
 supported Cypher surface is production-query-driven, narrow, and tied to
 planner/executor semantics that are still changing. A generated grammar would
@@ -734,7 +734,7 @@ The preferred direction is closer to RisingWave's newer parser organization:
 keep the top-level statement flow explicit in Rust, keep token/cursor ownership
 separate from AST construction, and use small parser helpers or combinators only
 where they reduce local ambiguity for expressions, lists, and delimited forms.
-Hawdb can adopt a real lexer or parser-combinator layer later, but only after a
+HawDB can adopt a real lexer or parser-combinator layer later, but only after a
 Nowledge scanner hit proves that the current cursor helpers are becoming the
 main source of complexity.
 
@@ -783,13 +783,13 @@ order.
 
 ## Physical Plan
 
-Hawdb currently keeps a public `PhysicalPlan` enum as the embedded facade
+HawDB currently keeps a public `PhysicalPlan` enum as the embedded facade
 between optimizer and executor. That shape is intentionally compatibility-first:
 it keeps execution, explain output, and deterministic fingerprints stable while
 the Nowledge replacement surface is still growing.
 
 The flat enum is a compatibility surface, not the long-term internal ownership
-boundary. Hawdb should migrate incrementally toward a statement root that
+boundary. HawDB should migrate incrementally toward a statement root that
 separates schema, mutation, query, and procedure plans. Query plans should use a
 framework-owned node shape with operator payload, inputs, and physical
 properties kept as separate contracts:
@@ -839,7 +839,7 @@ index seeks matter more than full relational join sophistication.
 
 ## Cascades Optimizer
 
-Hawdb should use a Cascades model similar to Chryso:
+HawDB should use a Cascades model similar to Chryso:
 
 - `Memo`: stores equivalent plan alternatives. The generic group storage lives
   in `hawdb-optimizer`; `hawdb_optimizer::graph` stores Cypher-specific
@@ -868,7 +868,7 @@ Hawdb should use a Cascades model similar to Chryso:
   legacy `OptimizerTrace` surface.
 - `OptimizerTrace`: deterministic diagnostics for rules, groups, candidates,
   costs, warnings, search limits, and selected physical plan operator/class
-  histograms. If a logical plan exceeds `OptimizerConfig::max_groups`, Hawdb
+  histograms. If a logical plan exceeds `OptimizerConfig::max_groups`, HawDB
   does not build an oversized memo; it records an informational budget decision
   and resolves logical children directly. Both graph modes call one physical
   lowerer, including the same access-path and bounded-sort alternatives. The
@@ -876,7 +876,7 @@ Hawdb should use a Cascades model similar to Chryso:
   Explicit `memo` requests still fail if the group allocation exceeds the limit;
   EXPLAIN reports `budget_exceeded` numerically, independently of warnings.
 
-Unlike Chryso, Hawdb needs graph-specific properties:
+Unlike Chryso, HawDB needs graph-specific properties:
 
 - bound variables
 - preserved path uniqueness mode
@@ -982,8 +982,8 @@ without adding an ACL layer to the embedded built-in core, while preserving the
 rule that search projections stay outside canonical graph state.
 
 Mem integration should start with side-by-side writes to Kuzu/Ladybug and
-Hawdb, then select the read engine through runtime configuration. Kuzu/Ladybug
-remains the default read engine until route evidence proves that Hawdb can
+HawDB, then select the read engine through runtime configuration. Kuzu/Ladybug
+remains the default read engine until route evidence proves that HawDB can
 serve that read family. This avoids a large typed facade migration and keeps the
 cutover mechanism simple: write both, read one, compare when requested.
 
@@ -992,7 +992,7 @@ walks Nowledge Rust source files, extracts conservative Cypher string-literal
 call sites, classifies them as read, mutation, schema, procedure, or transaction
 control, and emits the audited `required_checks` JSON artifact. The lower-level
 JSON importer also accepts scanner-shaped `name` plus `call_sites` objects; each
-call site has `name`, `query_family`, `source`, and optional `cypher`. Hawdb
+call site has `name`, `query_family`, `source`, and optional `cypher`. HawDB
 validates this through `build_compatibility_query_inventory_from_json`, rejects
 duplicate check names, and can export the audited artifact through
 `compatibility_query_inventory_to_json` for CI reuse. Coverage and shadow gates
@@ -1032,7 +1032,7 @@ suitable for isolated release or nightly cutover evidence generation. Production
 Mem should consume typed Rust library gates such as
 `nowledge_mem_final_cutover_preflight` instead of invoking this CLI path.
 External shadow adapter smoke reports include a `dual_engine_evidence` object
-that records the Hawdb primary side, the previous-wrapper shadow side, matched
+that records the HawDB primary side, the previous-wrapper shadow side, matched
 check count, primary-only count, and readiness. Preflight consumes this field
 when present so release automation can distinguish true side-by-side evidence
 from primary-only protocol smoke.
@@ -1065,13 +1065,13 @@ The process protocol is specified in
 `docs/EXTERNAL_SHADOW_PROTOCOL.md` so previous-wrapper adapters can be
 implemented without depending on internal fixture code.
 
-Cloud integration should not embed Hawdb as canonical storage. Cloud can reuse
+Cloud integration should not embed HawDB as canonical storage. Cloud can reuse
 Cypher parsing, logical planning, and graph projection semantics if useful, but
 the execution backend remains PostgreSQL-backed facts and edges.
 
 Search integration should also preserve the current Nowledge boundary: semantic
 and full-text search are rebuildable projections, not source-of-truth graph
-state. Hawdb therefore keeps `SearchIndex` separate from `GraphStore`. This
+state. HawDB therefore keeps `SearchIndex` separate from `GraphStore`. This
 allows the graph store to replace Kuzu/Ladybug while the search projection
 replaces LanceDB without coupling vector lifecycle state to canonical graph
 durability.
@@ -1336,7 +1336,7 @@ expansion rechecks canonical scope metadata and propagates `space_id`,
 snapshot epoch, tracked peak, result bytes, and post-TopK hydration counts
 observable. The full contract and its formal refinement are specified in
 `docs/specs/KNOWLEDGE_RETRIEVAL_PIPELINE_SPEC.md` and
-`docs/tla/HawdbKnowledgeRetrievalPipeline.tla`.
+`docs/tla/HawDBKnowledgeRetrievalPipeline.tla`.
 
 The same facade performs bounded multi-hop graph context
 expansion for returned search hits whose projection metadata maps back to a
@@ -1375,7 +1375,7 @@ the QoS ranker prioritize stale graph-derived projection maintenance by expected
 value. This keeps FTS/vector projection maintenance incremental without writing
 search state into the graph WAL.
 
-Hawdb Lightning bootstrap export follows the same resource boundary for
+HawDB Lightning bootstrap export follows the same resource boundary for
 embedded deployments. One export pins a shared database commit epoch and emits
 two authoritative logical streams: canonical graph rows and the complete
 relational checkpoint, including SQL schemas, rows, and overflow values. Initial
@@ -1391,7 +1391,7 @@ but caller-owned pre-upload or background import loops can first ask
 `hawdb_lightning_bootstrap_export_background_work_plan` for an `Import` lane
 estimate and then execute through the background or scheduled background export
 facades. The same plan can appear in `background_maintenance_candidates`, so a
-caller-owned multi-queue loop can rank Hawdb Lightning pre-export against
+caller-owned multi-queue loop can rank HawDB Lightning pre-export against
 projection, parser, schema, and analytics maintenance before attempting
 admission. Deferred background export does not generate stable-ID mapping files,
 so QoS rejection cannot create partial import state.
@@ -1440,7 +1440,7 @@ Required test suites:
   effective query `WorkRequest` observability
 - transaction commit/rollback tests
 - WAL recovery and checkpoint tests
-- internal Nowledge-shaped compatibility fixtures against the Hawdb facade
+- internal Nowledge-shaped compatibility fixtures against the HawDB facade
 - external-process shadow adapter tests for Ladybug/Kuzu wrapper wiring
 - compatibility tests against the current Nowledge Ladybug-backed wrapper
 

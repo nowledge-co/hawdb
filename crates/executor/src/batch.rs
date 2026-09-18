@@ -39,7 +39,7 @@ use crate::{
     ExecutionLimit, ExecutionMemoryConfig, ExternalReadOperator, QueryMemoryClass,
     QueryMemoryLedger,
 };
-use hawdb_core::{Catalog, HawdbError, RelationshipDirection, Result, RuntimeTaskContext, Value};
+use hawdb_core::{Catalog, HawDBError, RelationshipDirection, Result, RuntimeTaskContext, Value};
 use hawdb_plan::{
     Aggregation, PhysicalPlan, PlanChildren, Predicate, Projection, RelationshipCountLeg, SortItem,
 };
@@ -184,7 +184,7 @@ impl OptionalDegreeSpec<'_> {
                         0
                     } else {
                         let source = binding.nodes.get(source_variable).ok_or_else(|| {
-                            HawdbError::Execution(format!(
+                            HawDBError::Execution(format!(
                                 "missing variable '{source_variable}' during optional degree"
                             ))
                         })?;
@@ -393,7 +393,7 @@ fn emit_byte_bounded_batches(
     for binding in &batch {
         let binding_bytes = binding_memory_bytes(binding);
         if binding_bytes > max_payload_bytes {
-            return Err(HawdbError::Execution(format!(
+            return Err(HawDBError::Execution(format!(
                 "intermediate row uses {binding_bytes} bytes, exceeding batch_payload_bytes {max_payload_bytes}"
             )));
         }
@@ -414,7 +414,7 @@ fn emit_byte_bounded_batches(
     for binding in batch {
         let binding_bytes = binding_memory_bytes(&binding);
         if binding_bytes > max_payload_bytes {
-            return Err(HawdbError::Execution(format!(
+            return Err(HawDBError::Execution(format!(
                 "intermediate row uses {binding_bytes} bytes, exceeding batch_payload_bytes {max_payload_bytes}"
             )));
         }

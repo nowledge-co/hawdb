@@ -500,7 +500,7 @@ fn ordinal_validation_rejects_invalid_documents_before_creating_artifacts() {
             ProjectionIdentity::new(1),
             RaBitQCandidateProjectionBuildOptions::default(),
         );
-        assert!(matches!(result, Err(HawdbError::Storage(_))));
+        assert!(matches!(result, Err(HawDBError::Storage(_))));
         assert!(!path.exists());
         assert!(RaBitQCandidateProjection::build_from_documents(
             &invalid,

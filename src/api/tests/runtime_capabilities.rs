@@ -1,5 +1,5 @@
 use super::*;
-use crate::{HawdbError, QueryAccessControlContext, RuntimeCapabilities, RuntimeCapability};
+use crate::{HawDBError, QueryAccessControlContext, RuntimeCapabilities, RuntimeCapability};
 
 #[test]
 fn disabled_query_capabilities_fail_before_planning_or_catalog_mutation() {
@@ -681,10 +681,10 @@ fn minimal_build_fails_closed_for_every_optional_capability() {
     );
 }
 
-fn assert_capability_error(error: HawdbError, expected: RuntimeCapability) {
+fn assert_capability_error(error: HawDBError, expected: RuntimeCapability) {
     assert_eq!(
         error,
-        HawdbError::CapabilityUnavailable {
+        HawDBError::CapabilityUnavailable {
             capability: expected
         }
     );

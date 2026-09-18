@@ -153,7 +153,7 @@ mod tests {
     fn embedded_open_wires_runtime_governor_to_the_host_sink() {
         let path = unique_test_dir("runtime_governor");
         let sink = Arc::new(RecordingSink::default());
-        let mut embedded = crate::HawdbEmbedded::open(&path).unwrap();
+        let mut embedded = crate::HawDBEmbedded::open(&path).unwrap();
         embedded
             .database_mut()
             .set_telemetry_sink(Some(sink.clone()));

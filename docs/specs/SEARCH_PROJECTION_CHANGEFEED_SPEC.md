@@ -4,7 +4,7 @@
 
 This contract defines the commit-ordered identity feed used to maintain an
 external search projection from canonical graph and relational mutations. The
-feed is part of the embedded Hawdb library surface. Search documents, lexical
+feed is part of the embedded HawDB library surface. Search documents, lexical
 segments, embeddings, ranks, and projection-owned watermarks remain derived
 state owned by `SearchIndex`; they MUST NOT become canonical graph or
 relational WAL payloads.
@@ -106,7 +106,7 @@ mapping. It is not a CLI, helper-process, or route-specific control plane.
 
 ## Formal refinement
 
-`HawdbProjectionChangefeed.tla` models the following obligations:
+`HawDBProjectionChangefeed.tla` models the following obligations:
 
 - a visible canonical commit is already durable;
 - every relevant committed epoch has either an exact retained change or a

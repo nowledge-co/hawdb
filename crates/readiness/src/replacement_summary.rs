@@ -2858,7 +2858,7 @@ fn nowledge_replacement_next_actions(
     if !inputs.search_projection_shadow_evidence_ready {
         actions.push(next_action(
             "run_search_projection_shadow_evidence",
-            "LanceDB/Hawdb search projection side-by-side evidence is missing or not ready",
+            "LanceDB/HawDB search projection side-by-side evidence is missing or not ready",
             [
                 "search_projection_shadow_evidence.protocol",
                 "search_projection_shadow_evidence.evidence_source",
@@ -2879,7 +2879,7 @@ fn nowledge_replacement_next_actions(
     if !inputs.search_candidate_shadow_evidence_ready {
         actions.push(next_action(
             "run_search_candidate_shadow_evidence",
-            "LanceDB/Hawdb search candidate side-by-side evidence is missing or not ready",
+            "LanceDB/HawDB search candidate side-by-side evidence is missing or not ready",
             [
                 "search_candidate_shadow_evidence.protocol",
                 "search_candidate_shadow_evidence.evidence_source",

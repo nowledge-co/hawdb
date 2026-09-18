@@ -1125,7 +1125,7 @@ fn derive_limits(
 /// The headroom-independent maximum for the current resource snapshot:
 /// explicit configuration and the limit-derived term
 /// (`effective_limit_bytes` = min of cgroup `memory.max`, the kernel hard
-/// limit, and `memory.high`, the throttle threshold Hawdb honors as its
+/// limit, and `memory.high`, the throttle threshold HawDB honors as its
 /// policy ceiling), with the fallback when neither is sensed. A request
 /// above this can never be satisfied by waiting, so admission reports it
 /// non-retryable. A resource refresh may change this capacity when the

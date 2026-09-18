@@ -139,7 +139,7 @@ cargo clippy -p hawdb-search --all-targets -- -D warnings
 bazel test //crates/search:all //crates/fuzz:hawdb_fuzz_tests //crates/fuzz:hawdb_fuzz_cli_tests //:hawdb_linux_ci_fuzz_smoke_test
 ```
 
-Hawdb-owned normalized strings, identifier deduplication and resident frequencies
+HawDB-owned normalized strings, identifier deduplication and resident frequencies
 now retain their own admission; see [the token ownership contract](SEARCH_TOKEN_OWNERSHIP.md).
 Spill/merge ownership, outer publication and delta hydration are integrated through
 the [context facade](SEARCH_GENERATION_CONTEXT.md). The 4 MiB source guard and

@@ -234,10 +234,10 @@ fn check_failure<R: OverlayRecord + Clone + Debug + Eq>(
         .next()
         .expect("physical error must not disappear")
         .unwrap_err();
-    assert!(matches!(&error, HawdbError::StorageIntegrity(_)));
+    assert!(matches!(&error, HawDBError::StorageIntegrity(_)));
     assert_eq!(
         error.to_string(),
-        HawdbError::StorageIntegrity(CanonicalSegmentError::Corrupt(fault.to_string()).to_string())
+        HawDBError::StorageIntegrity(CanonicalSegmentError::Corrupt(fault.to_string()).to_string())
             .to_string()
     );
     assert_eq!(actual.collect::<Result<Vec<_>>>().unwrap(), after);
@@ -294,11 +294,11 @@ fn corrupt_canonical_file_is_not_hidden_by_delta_or_tombstones() {
         .unwrap();
     assert!(matches!(
         nodes.next(),
-        Some(Err(HawdbError::StorageIntegrity(_)))
+        Some(Err(HawDBError::StorageIntegrity(_)))
     ));
     assert!(matches!(
         relationships.next(),
-        Some(Err(HawdbError::StorageIntegrity(_)))
+        Some(Err(HawDBError::StorageIntegrity(_)))
     ));
     assert!(reader.is_poisoned());
     assert!(relationship_reader.is_poisoned());

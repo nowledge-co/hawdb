@@ -7,7 +7,7 @@ fn creates_knowledge_relationship_batch_through_typed_api() {
         .unwrap();
     db.query("CREATE (:Memory {id: 'memory_2', source_id: 'thread_1'})")
         .unwrap();
-    db.query("CREATE (:Entity {id: 'entity_1', name: 'Hawdb'})")
+    db.query("CREATE (:Entity {id: 'entity_1', name: 'HawDB'})")
         .unwrap();
     db.query("CREATE (:Entity {id: 'entity_2', name: 'Graph'})")
         .unwrap();

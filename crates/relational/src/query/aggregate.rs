@@ -6,7 +6,7 @@ use super::{
     typed_row_set_locator, visit_relational_rows, with_typed_locator_bound_row_mode,
     AggregateProjectionState, BTreeMap, BatchControl, BlockingExecutionContext, Catalog,
     ColumnarAggregateExecutor, DistinctAggregateValueBatchSource, ExecutionLimit, ExternalTopN,
-    HawdbError, OperatorMemoryTracker, PlannedJoin, QueryMemoryClass, QueryMemoryLedger,
+    HawDBError, OperatorMemoryTracker, PlannedJoin, QueryMemoryClass, QueryMemoryLedger,
     RelationalAccessPathDescriptor, RelationalBaseAccess, RelationalBlockingObserver,
     RelationalIndexRuntime, RelationalJoinPlanningOutcome, RelationalPhysicalJoinExecution,
     RelationalPipelineState, RelationalQueryLimits, RelationalQueryOutput, RelationalRowRuntime,
@@ -85,7 +85,7 @@ pub(super) fn execute_aggregate_select<'a>(
         );
     }
     if !select.order_by.is_empty() || select.distinct {
-        return Err(HawdbError::Semantic(
+        return Err(HawDBError::Semantic(
             "aggregate SELECT does not yet support statement DISTINCT or ORDER BY".to_string(),
         ));
     }
@@ -131,20 +131,20 @@ pub(super) fn execute_aggregate_select<'a>(
         let intermediate_rows = pipeline.intermediate_rows;
         let finished = aggregate.finish()?;
         let offset = usize::try_from(bind_bound(select.offset, parameters, "OFFSET")?.unwrap_or(0))
-            .map_err(|_| HawdbError::Semantic("SQL OFFSET is too large".to_string()))?;
+            .map_err(|_| HawDBError::Semantic("SQL OFFSET is too large".to_string()))?;
         let requested = bind_bound(select.limit, parameters, "LIMIT")?
             .map(|value| usize::try_from(value).unwrap_or(usize::MAX))
             .unwrap_or(usize::MAX);
         let mut rows = Vec::new();
         if offset == 0 && requested != 0 {
             if limits.max_output_rows == 0 {
-                return Err(HawdbError::Execution(
+                return Err(HawDBError::Execution(
                     "relational SQL output exceeds max_output_rows 0".to_string(),
                 ));
             }
             let row = finished.into_iter().collect::<Row>();
             if map_payload_bytes(&row) > limits.max_output_payload_bytes {
-                return Err(HawdbError::Execution(format!(
+                return Err(HawDBError::Execution(format!(
                     "relational SQL output exceeds max_output_payload_bytes {}",
                     limits.max_output_payload_bytes
                 )));
@@ -232,7 +232,7 @@ pub(super) fn execute_aggregate_select<'a>(
     pipeline.finish()?;
     let intermediate_rows = pipeline.intermediate_rows;
     if groups.len() > limits.max_intermediate_rows {
-        return Err(HawdbError::Execution(format!(
+        return Err(HawDBError::Execution(format!(
             "relational aggregate groups exceed max_intermediate_rows {}",
             limits.max_intermediate_rows
         )));
@@ -240,7 +240,7 @@ pub(super) fn execute_aggregate_select<'a>(
     let offset = bind_bound(select.offset, parameters, "OFFSET")?.unwrap_or(0);
     let limit = bind_bound(select.limit, parameters, "LIMIT")?;
     let offset = usize::try_from(offset)
-        .map_err(|_| HawdbError::Semantic("SQL OFFSET is too large".to_string()))?;
+        .map_err(|_| HawDBError::Semantic("SQL OFFSET is too large".to_string()))?;
     let limit = limit
         .map(|value| usize::try_from(value).unwrap_or(usize::MAX))
         .unwrap_or(usize::MAX);
@@ -262,14 +262,14 @@ pub(super) fn execute_aggregate_select<'a>(
         for projection in projections {
             let (name, value) = projection.finish()?;
             if row.insert(name.clone(), value).is_some() {
-                return Err(HawdbError::Semantic(format!(
+                return Err(HawDBError::Semantic(format!(
                     "relational projection contains duplicate output column {name}"
                 )));
             }
         }
         payload_bytes = payload_bytes.saturating_add(map_payload_bytes(&row));
         if payload_bytes > limits.max_output_payload_bytes {
-            return Err(HawdbError::Execution(format!(
+            return Err(HawDBError::Execution(format!(
                 "relational SQL output exceeds max_output_payload_bytes {}",
                 limits.max_output_payload_bytes
             )));
@@ -277,7 +277,7 @@ pub(super) fn execute_aggregate_select<'a>(
         output.push(row);
     }
     if output.len() > limits.max_output_rows {
-        return Err(HawdbError::Execution(format!(
+        return Err(HawDBError::Execution(format!(
             "relational SQL output exceeds max_output_rows {}",
             limits.max_output_rows
         )));
@@ -374,13 +374,13 @@ pub(super) fn execute_single_count_distinct<'a>(
         Value::Int(i64::try_from(count).unwrap_or(i64::MAX)),
     )]);
     if map_payload_bytes(&row) > limits.max_output_payload_bytes {
-        return Err(HawdbError::Execution(format!(
+        return Err(HawDBError::Execution(format!(
             "relational SQL output exceeds max_output_payload_bytes {}",
             limits.max_output_payload_bytes
         )));
     }
     if limits.max_output_rows == 0 {
-        return Err(HawdbError::Execution(
+        return Err(HawDBError::Execution(
             "relational SQL output exceeds max_output_rows 0".to_string(),
         ));
     }
@@ -423,17 +423,17 @@ pub(super) fn execute_grouped_aggregate<'a>(
     join_planning: &RelationalJoinPlanningOutcome,
 ) -> Result<RelationalQueryOutput> {
     if !select.order_by.is_empty() || select.distinct {
-        return Err(HawdbError::Semantic(
+        return Err(HawDBError::Semantic(
             "aggregate SELECT does not yet support statement DISTINCT or ORDER BY".to_string(),
         ));
     }
     let projection_template = super::having::projection_template(select, parameters, state)?;
     let mut offset = usize::try_from(bind_bound(select.offset, parameters, "OFFSET")?.unwrap_or(0))
-        .map_err(|_| HawdbError::Semantic("SQL OFFSET is too large".to_string()))?;
+        .map_err(|_| HawDBError::Semantic("SQL OFFSET is too large".to_string()))?;
     let requested = bind_bound(select.limit, parameters, "LIMIT")?
         .map(|value| {
             usize::try_from(value)
-                .map_err(|_| HawdbError::Semantic("SQL LIMIT is too large".to_string()))
+                .map_err(|_| HawDBError::Semantic("SQL LIMIT is too large".to_string()))
         })
         .transpose()?
         .unwrap_or(usize::MAX);
@@ -608,7 +608,7 @@ pub(super) fn emit_aggregate_group(
     for projection in projections {
         let (name, value) = projection.finish()?;
         if row.insert(name.clone(), value).is_some() {
-            return Err(HawdbError::Semantic(format!(
+            return Err(HawDBError::Semantic(format!(
                 "relational projection contains duplicate output column {name}"
             )));
         }

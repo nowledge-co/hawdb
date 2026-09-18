@@ -578,7 +578,7 @@ pub(super) fn execute_bindings_with_limit(
                     .into_iter()
                     .map(|id| {
                         let node = store.node_owned(id)?.ok_or_else(|| {
-                            HawdbError::Execution(format!(
+                            HawDBError::Execution(format!(
                                 "updated node {} is missing during SET RETURN projection",
                                 id.0
                             ))

@@ -2,7 +2,7 @@ use super::{
     encode_search_document_line, encode_string, SearchDocument, SearchEmbeddingManifest,
     SEARCH_COMPRESSION_HEADER, SEARCH_COMPRESSION_LEVEL,
 };
-use crate::error::{HawdbError, Result};
+use crate::error::{HawDBError, Result};
 use hawdb_integrity::{Crc32cHasher, IntegrityHasher, Sha256Digest};
 use hawdb_storage::durable_replace_file;
 use serde::Serialize;
@@ -76,7 +76,7 @@ pub(super) fn write_search_snapshot<'a>(
     let compressed_file = File::create(&compressed_path)?;
     let counted = CountingChecksumWriter::new(compressed_file);
     let mut encoder = zstd::stream::write::Encoder::new(counted, SEARCH_COMPRESSION_LEVEL)
-        .map_err(|error| HawdbError::Storage(format!("zstd compression failed: {error}")))?;
+        .map_err(|error| HawDBError::Storage(format!("zstd compression failed: {error}")))?;
     let mut body_checksum = Crc32cHasher::new();
     let mut uncompressed_checksum = Crc32cHasher::new();
     let mut uncompressed_bytes = 0u64;
@@ -167,7 +167,7 @@ pub(super) fn write_search_snapshot<'a>(
     )?;
     let counted = encoder
         .finish()
-        .map_err(|error| HawdbError::Storage(format!("zstd compression failed: {error}")))?;
+        .map_err(|error| HawDBError::Storage(format!("zstd compression failed: {error}")))?;
     let (compressed_file, compressed_bytes, compressed_checksum) = counted.finish()?;
     compressed_file.sync_all()?;
     drop(compressed_file);
@@ -188,7 +188,7 @@ pub(super) fn write_search_snapshot<'a>(
         let mut compressed = File::open(&compressed_path)?;
         let copied = std::io::copy(&mut compressed, &mut output)?;
         if copied != compressed_bytes {
-            return Err(HawdbError::Storage(format!(
+            return Err(HawDBError::Storage(format!(
                 "search checkpoint copied {copied} compressed bytes, expected {compressed_bytes}"
             )));
         }
@@ -247,7 +247,7 @@ fn write_envelope_chunk<W: Write>(
     checksum.update(bytes);
     *byte_count = byte_count
         .checked_add(bytes.len() as u64)
-        .ok_or_else(|| HawdbError::Storage("search checkpoint byte count overflow".to_string()))?;
+        .ok_or_else(|| HawDBError::Storage("search checkpoint byte count overflow".to_string()))?;
     Ok(())
 }
 

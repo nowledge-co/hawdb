@@ -2,7 +2,7 @@
 
 use super::{checked_add as add, checked_mul as mul, BuildMemory};
 use crate::build_control::checkpoint;
-use crate::{HawdbError, Result};
+use crate::{HawDBError, Result};
 use hawdb_core::RuntimeTaskContext;
 use hawdb_executor::QueryMemoryLease;
 use std::mem::size_of;
@@ -94,7 +94,7 @@ impl OwnedPath {
         };
         task.map_or(Ok(()), checkpoint)?;
         if owned.value.capacity() > owned._memory.bytes() {
-            return Err(HawdbError::Execution(
+            return Err(HawDBError::Execution(
                 "search writer path exceeds preflight capacity".into(),
             ));
         }

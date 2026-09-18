@@ -1,7 +1,7 @@
 use super::{SearchOutOfCoreGenerationBuildOptions, SearchOutOfCoreGenerationWriter};
 use crate::build_control::checkpoint;
 use crate::build_memory::BuildMemory;
-use crate::error::{HawdbError, Result};
+use crate::error::{HawDBError, Result};
 use crate::{
     SearchDocument, SearchOutOfCoreGenerationBuildReport, SearchOutOfCoreMetrics,
     SearchOutOfCoreReader, SearchProjectionDelta, SearchProjectionDeltaReport,
@@ -35,19 +35,19 @@ impl SearchOutOfCoreGenerationUpdate {
         if let Some(limit) = delta.max_operations
             && operation_count > limit
         {
-            return Err(HawdbError::Storage(format!(
+            return Err(HawDBError::Storage(format!(
                 "incremental projection update operation count {operation_count} exceeded configured limit {limit}"
             )));
         }
         if operation_count > options.max_delta_operations.get() {
-            return Err(HawdbError::Storage(format!(
+            return Err(HawDBError::Storage(format!(
                 "incremental projection update operation count {operation_count} exceeded the generation admission {}",
                 options.max_delta_operations
             )));
         }
         let delta_working_bytes = delta_working_bytes(&delta, &task)?;
         if delta_working_bytes > options.max_delta_working_bytes.get() {
-            return Err(HawdbError::Storage(format!(
+            return Err(HawDBError::Storage(format!(
                 "incremental projection update requires {delta_working_bytes} bytes, exceeding the generation admission {}",
                 options.max_delta_working_bytes
             )));
@@ -172,7 +172,7 @@ fn validate_delta_ids(
     for id in upserts.iter().map(|document| &document.id).chain(deletes) {
         checkpoint(task)?;
         if id.is_empty() {
-            return Err(HawdbError::Storage(
+            return Err(HawDBError::Storage(
                 "search generation delta document ids must not be empty".into(),
             ));
         }
@@ -180,7 +180,7 @@ fn validate_delta_ids(
     for pair in upserts.windows(2) {
         checkpoint(task)?;
         if pair[0].id == pair[1].id {
-            return Err(HawdbError::Storage(
+            return Err(HawDBError::Storage(
                 "search generation delta contains duplicate upsert ids".into(),
             ));
         }
@@ -188,7 +188,7 @@ fn validate_delta_ids(
     for pair in deletes.windows(2) {
         checkpoint(task)?;
         if pair[0] == pair[1] {
-            return Err(HawdbError::Storage(
+            return Err(HawDBError::Storage(
                 "search generation delta contains duplicate delete ids".into(),
             ));
         }
@@ -201,7 +201,7 @@ fn validate_delta_ids(
             std::cmp::Ordering::Less => upsert_index = upsert_index.saturating_add(1),
             std::cmp::Ordering::Greater => delete_index = delete_index.saturating_add(1),
             std::cmp::Ordering::Equal => {
-                return Err(HawdbError::Storage(format!(
+                return Err(HawDBError::Storage(format!(
                     "search generation delta contains both upsert and delete for {}",
                     deletes[delete_index]
                 )));

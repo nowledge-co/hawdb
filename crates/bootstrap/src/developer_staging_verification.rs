@@ -11,7 +11,7 @@ use crate::{
     HAWDB_LIGHTNING_RELATIONAL_STREAM_FORMAT_VERSION,
     HAWDB_LIGHTNING_STAGING_CATALOG_PROTOCOL_VERSION,
 };
-use hawdb_core::{HawdbError, Result};
+use hawdb_core::{HawDBError, Result};
 use hawdb_integrity::checksum_u64;
 use std::fs;
 use std::path::Path;
@@ -442,7 +442,7 @@ pub fn verify_hawdb_lightning_staging_catalog(
 fn read_json_file(path: &Path) -> Result<serde_json::Value> {
     let bytes = fs::read(path)?;
     serde_json::from_slice(&bytes)
-        .map_err(|_| HawdbError::Execution("invalid JSON file: invalid_json".to_string()))
+        .map_err(|_| HawDBError::Execution("invalid JSON file: invalid_json".to_string()))
 }
 
 fn record_error(errors: &mut Vec<String>, group: &mut Vec<String>, message: impl Into<String>) {
@@ -556,7 +556,7 @@ pub fn verify_hawdb_lightning_published_manifest(
         .cloned()
         .unwrap_or_else(default_storage_recovery_evidence);
     let catalog = serde_json::from_slice::<serde_json::Value>(&catalog_bytes)
-        .map_err(|_| HawdbError::Execution("invalid JSON file: invalid_json".to_string()))?;
+        .map_err(|_| HawDBError::Execution("invalid JSON file: invalid_json".to_string()))?;
     let manifest = read_staging_artifact_json(&catalog, staging_dir, "manifest")?;
     let pointer_matches_manifest = published.get("database_commit_epoch")
         == manifest.get("database_commit_epoch")
@@ -658,18 +658,18 @@ fn read_staging_artifact_json(
         .get("artifacts")
         .and_then(serde_json::Value::as_array)
         .ok_or_else(|| {
-            HawdbError::Execution("staging catalog missing artifacts array".to_string())
+            HawDBError::Execution("staging catalog missing artifacts array".to_string())
         })?;
     let artifact = artifacts
         .iter()
         .find(|artifact| artifact.get("kind").and_then(serde_json::Value::as_str) == Some(kind))
-        .ok_or_else(|| HawdbError::Execution(format!("staging catalog missing {kind} artifact")))?;
+        .ok_or_else(|| HawDBError::Execution(format!("staging catalog missing {kind} artifact")))?;
     let path = artifact
         .get("path")
         .and_then(serde_json::Value::as_str)
-        .ok_or_else(|| HawdbError::Execution(format!("staging {kind} artifact missing path")))?;
+        .ok_or_else(|| HawDBError::Execution(format!("staging {kind} artifact missing path")))?;
     if path.contains('/') || path.contains('\\') {
-        return Err(HawdbError::Execution(format!(
+        return Err(HawDBError::Execution(format!(
             "staging {kind} artifact uses non-local path {path}"
         )));
     }
@@ -691,7 +691,7 @@ mod tests {
     use super::verify_hawdb_lightning_staging_catalog;
     use crate::{
         stage_hawdb_lightning_bootstrap_export, CanonicalGraphSnapshotExport,
-        HawdbLightningBootstrapExport, HawdbLightningRelationalStream,
+        HawDBLightningBootstrapExport, HawDBLightningRelationalStream,
     };
     use hawdb_storage::RelationalState;
 
@@ -699,10 +699,10 @@ mod tests {
     fn verifies_a_staged_export_through_the_bootstrap_owner() {
         let snapshot = CanonicalGraphSnapshotExport::from_rows(7, Vec::new(), Vec::new());
         let relational_stream =
-            HawdbLightningRelationalStream::from_state(7, &RelationalState::default()).unwrap();
+            HawDBLightningRelationalStream::from_state(7, &RelationalState::default()).unwrap();
         let manifest = snapshot.hawdb_lightning_bootstrap_manifest(&relational_stream);
         let graph_stream = snapshot.hawdb_lightning_graph_stream();
-        let export = HawdbLightningBootstrapExport {
+        let export = HawDBLightningBootstrapExport {
             snapshot,
             manifest,
             graph_stream,

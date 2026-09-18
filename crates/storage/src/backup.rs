@@ -10,7 +10,7 @@ use crate::artifact_files::{
     parse_relational_row_generation_file,
 };
 use crate::durable_replace_file;
-use hawdb_core::{HawdbError, Result};
+use hawdb_core::{HawDBError, Result};
 use hawdb_integrity::{checksum_u64, IntegrityHasher, Sha256Digest};
 use std::collections::BTreeSet;
 use std::fs::{self, File, OpenOptions};
@@ -33,22 +33,22 @@ pub struct BackupFileEntry {
 #[doc(hidden)]
 pub fn validate_new_backup_destination(root: &Path, destination: &Path) -> Result<()> {
     if destination.exists() {
-        return Err(HawdbError::Storage(format!(
+        return Err(HawDBError::Storage(format!(
             "backup destination already exists: {}",
             destination.display()
         )));
     }
     let file_name = destination.file_name().ok_or_else(|| {
-        HawdbError::Storage("backup destination must have a file name".to_string())
+        HawDBError::Storage("backup destination must have a file name".to_string())
     })?;
     let parent = destination.parent().ok_or_else(|| {
-        HawdbError::Storage("backup destination must have a parent directory".to_string())
+        HawDBError::Storage("backup destination must have a parent directory".to_string())
     })?;
     let canonical_parent = parent.canonicalize()?;
     let destination = canonical_parent.join(file_name);
     let canonical_root = root.canonicalize()?;
     if destination.starts_with(&canonical_root) {
-        return Err(HawdbError::Storage(
+        return Err(HawDBError::Storage(
             "backup destination cannot be inside the database directory".to_string(),
         ));
     }
@@ -88,7 +88,7 @@ pub fn copy_file_with_checksum(
         integrity.update(&buffer[..read]);
         total = total
             .checked_add(read as u64)
-            .ok_or_else(|| HawdbError::Storage("file byte count overflow".to_string()))?;
+            .ok_or_else(|| HawDBError::Storage("file byte count overflow".to_string()))?;
     }
     destination.sync_all()?;
     let digest = integrity.finish();
@@ -109,7 +109,7 @@ pub fn file_checksum(path: &Path) -> Result<(u64, u64, Sha256Digest)> {
         integrity.update(&buffer[..read]);
         total = total
             .checked_add(read as u64)
-            .ok_or_else(|| HawdbError::Storage("file byte count overflow".to_string()))?;
+            .ok_or_else(|| HawDBError::Storage("file byte count overflow".to_string()))?;
     }
     let digest = integrity.finish();
     Ok((total, digest.crc32c.as_u64(), digest.sha256))
@@ -129,7 +129,7 @@ impl BackupManifest {
 
         let metadata = fs::metadata(path)?;
         if metadata.len() > MAX_BACKUP_MANIFEST_BYTES {
-            return Err(HawdbError::Storage(format!(
+            return Err(HawDBError::Storage(format!(
                 "backup manifest exceeds {MAX_BACKUP_MANIFEST_BYTES} bytes"
             )));
         }
@@ -137,7 +137,7 @@ impl BackupManifest {
         let (body, checksum) = split_backup_manifest_checksum(&text)?;
         let actual = checksum_u64(body.as_bytes());
         if checksum != actual {
-            return Err(HawdbError::Storage(format!(
+            return Err(HawDBError::Storage(format!(
                 "backup manifest checksum mismatch: expected {checksum}, got {actual}"
             )));
         }
@@ -150,7 +150,7 @@ impl BackupManifest {
         for line in body.lines() {
             if line == BACKUP_HEADER_V1 {
                 if saw_header {
-                    return Err(HawdbError::Storage(
+                    return Err(HawDBError::Storage(
                         "backup manifest has duplicate headers".to_string(),
                     ));
                 }
@@ -165,7 +165,7 @@ impl BackupManifest {
                         .replace(parse_u64(raw, "backup generation")?)
                         .is_some()
                     {
-                        return Err(HawdbError::Storage(
+                        return Err(HawDBError::Storage(
                             "backup manifest has duplicate generation".to_string(),
                         ));
                     }
@@ -175,7 +175,7 @@ impl BackupManifest {
                         .replace(parse_u64(raw, "backup checkpoint commit epoch")?)
                         .is_some()
                     {
-                        return Err(HawdbError::Storage(
+                        return Err(HawDBError::Storage(
                             "backup manifest has duplicate checkpoint commit epoch".to_string(),
                         ));
                     }
@@ -184,7 +184,7 @@ impl BackupManifest {
                     let name = decode_string(encoded_name)?;
                     validate_backup_file_name(&name)?;
                     if !names.insert(name.clone()) {
-                        return Err(HawdbError::Storage(format!(
+                        return Err(HawDBError::Storage(format!(
                             "backup manifest has duplicate file: {name}"
                         )));
                     }
@@ -193,7 +193,7 @@ impl BackupManifest {
                         encoded_len: parse_u64(encoded_len, "backup file length")?,
                         encoded_checksum: parse_u64(encoded_checksum, "backup file checksum")?,
                         sha256: sha256.parse().map_err(|error| {
-                            HawdbError::Storage(format!(
+                            HawDBError::Storage(format!(
                                 "invalid backup file SHA-256 digest: {error}"
                             ))
                         })?,
@@ -201,22 +201,22 @@ impl BackupManifest {
                 }
                 [""] => {}
                 _ => {
-                    return Err(HawdbError::Storage(format!(
+                    return Err(HawDBError::Storage(format!(
                         "invalid backup manifest line: {line}"
                     )));
                 }
             }
         }
         if !saw_header {
-            return Err(HawdbError::Storage(
+            return Err(HawDBError::Storage(
                 "backup manifest is missing its format header".to_string(),
             ));
         }
         let generation = generation.ok_or_else(|| {
-            HawdbError::Storage("backup manifest is missing generation".to_string())
+            HawDBError::Storage("backup manifest is missing generation".to_string())
         })?;
         let checkpoint_commit_epoch = checkpoint_commit_epoch.ok_or_else(|| {
-            HawdbError::Storage("backup manifest is missing checkpoint commit epoch".to_string())
+            HawDBError::Storage("backup manifest is missing checkpoint commit epoch".to_string())
         })?;
         Ok(Self {
             generation,
@@ -265,11 +265,11 @@ fn split_backup_manifest_checksum(text: &str) -> Result<(&str, u64)> {
     let marker = "checksum\t";
     let checksum_offset = text
         .rfind(marker)
-        .ok_or_else(|| HawdbError::Storage("backup manifest is missing checksum".to_string()))?;
+        .ok_or_else(|| HawDBError::Storage("backup manifest is missing checksum".to_string()))?;
     let body = &text[..checksum_offset];
     let checksum_line = text[checksum_offset..].trim_end();
     if checksum_line.contains('\n') {
-        return Err(HawdbError::Storage(
+        return Err(HawDBError::Storage(
             "backup manifest has data after checksum".to_string(),
         ));
     }
@@ -305,7 +305,7 @@ pub fn validate_backup_file_name(name: &str) -> Result<()> {
         || parse_append_segment_generation_file(name).is_some()
         || parse_append_manifest_generation_file(name).is_some();
     if !allowed || Path::new(name).file_name().and_then(|value| value.to_str()) != Some(name) {
-        return Err(HawdbError::Storage(format!(
+        return Err(HawDBError::Storage(format!(
             "backup contains unsupported file name: {name}"
         )));
     }
@@ -314,7 +314,7 @@ pub fn validate_backup_file_name(name: &str) -> Result<()> {
 
 fn parse_u64(raw: &str, field: &str) -> Result<u64> {
     raw.parse()
-        .map_err(|_| HawdbError::Storage(format!("invalid {field}: {raw}")))
+        .map_err(|_| HawDBError::Storage(format!("invalid {field}: {raw}")))
 }
 
 fn encode_string(input: &str) -> String {
@@ -327,7 +327,7 @@ fn encode_string(input: &str) -> String {
 
 fn decode_string(input: &str) -> Result<String> {
     if !input.len().is_multiple_of(2) {
-        return Err(HawdbError::Storage(format!(
+        return Err(HawDBError::Storage(format!(
             "invalid hex string length: {}",
             input.len()
         )));
@@ -338,11 +338,11 @@ fn decode_string(input: &str) -> Result<String> {
             .get(offset..offset + 2)
             .and_then(|pair| u8::from_str_radix(pair, 16).ok())
             .ok_or_else(|| {
-                HawdbError::Storage(format!("invalid hex string at byte offset {offset}"))
+                HawDBError::Storage(format!("invalid hex string at byte offset {offset}"))
             })?;
         bytes.push(byte);
     }
-    String::from_utf8(bytes).map_err(|error| HawdbError::Storage(error.to_string()))
+    String::from_utf8(bytes).map_err(|error| HawDBError::Storage(error.to_string()))
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

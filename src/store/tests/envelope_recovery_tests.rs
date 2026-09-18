@@ -1,5 +1,5 @@
 use super::{active_checkpoint_path, refresh_manifest_checkpoint_metadata, unique_test_dir};
-use crate::{Database, DatabaseConfig, HawdbError, Value};
+use crate::{Database, DatabaseConfig, HawDBError, Value};
 use hawdb_storage::text::envelope::{encode_durable_text, read_durable_text_bytes};
 use hawdb_storage::DurableCompression;
 use std::collections::BTreeMap;
@@ -48,7 +48,7 @@ fn assert_rejected_without_writes(root: &Path, limit: Option<u64>, expected: &st
             Err(error) => error,
             Ok(_) => panic!("invalid checkpoint admitted"),
         };
-        assert!(matches!(error, HawdbError::Storage(_)));
+        assert!(matches!(error, HawDBError::Storage(_)));
         assert!(error.to_string().contains(expected), "{error}");
         assert_eq!(
             files(root),

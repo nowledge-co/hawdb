@@ -4,7 +4,7 @@
 //! Callers retain validation, rollback, and publication responsibility.
 
 use super::{NodeSetAssignment, NodeSetValue};
-use hawdb_core::{HawdbError, Result, Value};
+use hawdb_core::{HawDBError, Result, Value};
 use std::collections::BTreeMap;
 
 #[cfg(test)]
@@ -25,13 +25,13 @@ pub fn evaluate_node_set_value(
                 None | Some(Value::Null) => 0,
                 Some(Value::Int(value)) => *value,
                 Some(value) => {
-                    return Err(HawdbError::Execution(format!(
+                    return Err(HawDBError::Execution(format!(
                         "property increment requires an integer or null value, got {value:?}"
                     )));
                 }
             };
             Ok(Value::Int(current.checked_add(*amount).ok_or_else(
-                || HawdbError::Execution("property increment overflowed i64".to_string()),
+                || HawDBError::Execution("property increment overflowed i64".to_string()),
             )?))
         }
         NodeSetValue::DecrementFloorZero => {
@@ -39,7 +39,7 @@ pub fn evaluate_node_set_value(
                 None | Some(Value::Null) => 0,
                 Some(Value::Int(value)) => *value,
                 Some(value) => {
-                    return Err(HawdbError::Execution(format!(
+                    return Err(HawDBError::Execution(format!(
                         "property decrement requires an integer or null value, got {value:?}"
                     )));
                 }

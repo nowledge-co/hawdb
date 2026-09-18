@@ -241,7 +241,7 @@ fn check_seed(seed: u64) -> usize {
                 assert!(is_mutation_plan(&plan).unwrap());
                 assert!(matches!(
                     mutation_command(&plan),
-                    Err(HawdbError::Semantic(message))
+                    Err(HawDBError::Semantic(message))
                         if message == "COALESCE node SET is not supported in transactional MATCH SET"
                 ));
             }
@@ -400,7 +400,7 @@ fn check_seed(seed: u64) -> usize {
     };
     assert!(is_mutation_plan(&rejected).unwrap());
     assert!(
-        matches!(mutation_command(&rejected), Err(HawdbError::Execution(message))
+        matches!(mutation_command(&rejected), Err(HawDBError::Execution(message))
         if message == "expression predicates are not supported in property filters")
     );
     checked += 1;

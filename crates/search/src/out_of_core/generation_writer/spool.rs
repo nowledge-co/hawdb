@@ -3,7 +3,7 @@ use crate::build_memory::{AdmittedDocument, BuildMemory, SPOOL_BUFFER_BYTES};
 #[cfg(test)]
 use crate::checksum_bytes;
 use crate::document_encoding::DocumentEncoding;
-use crate::error::{HawdbError, Result};
+use crate::error::{HawDBError, Result};
 use crate::SearchDocument;
 use hawdb_core::RuntimeTaskContext;
 use hawdb_integrity::Crc32cHasher;
@@ -149,7 +149,7 @@ impl SpoolSource<'_> {
         let mut header = [0u8; SPOOL_HEADER.len()];
         reader.read_exact(&mut header)?;
         if &header != SPOOL_HEADER {
-            return Err(HawdbError::Storage(
+            return Err(HawDBError::Storage(
                 "search generation spool header is invalid".to_string(),
             ));
         }
@@ -160,23 +160,23 @@ impl SpoolSource<'_> {
             let mut raw_length = [0u8; 8];
             let mut raw_checksum = [0u8; 8];
             reader.read_exact(&mut raw_length).map_err(|error| {
-                HawdbError::Storage(format!(
+                HawDBError::Storage(format!(
                     "search generation spool record {ordinal} has a truncated length: {error}"
                 ))
             })?;
             reader.read_exact(&mut raw_checksum).map_err(|error| {
-                HawdbError::Storage(format!(
+                HawDBError::Storage(format!(
                     "search generation spool record {ordinal} has a truncated checksum: {error}"
                 ))
             })?;
             let length = u64::from_le_bytes(raw_length);
             if length == 0 || length > self.max_record_bytes {
-                return Err(HawdbError::Storage(format!(
+                return Err(HawDBError::Storage(format!(
                     "search generation spool record {ordinal} length {length} is outside its admission"
                 )));
             }
             let length = usize::try_from(length).map_err(|_| {
-                HawdbError::Storage(format!(
+                HawDBError::Storage(format!(
                     "search generation spool record {ordinal} length exceeds usize"
                 ))
             })?;
@@ -195,7 +195,7 @@ impl SpoolSource<'_> {
                 .as_ref()
                 .is_some_and(|previous| previous >= &document.id)
             {
-                return Err(HawdbError::Storage(format!(
+                return Err(HawDBError::Storage(format!(
                     "search generation spool record {ordinal} is not strictly ordered"
                 )));
             }
@@ -207,7 +207,7 @@ impl SpoolSource<'_> {
         }
         let mut trailing = [0u8; 1];
         if reader.read(&mut trailing)? != 0 {
-            return Err(HawdbError::Storage(
+            return Err(HawDBError::Storage(
                 "search generation spool has trailing records".to_string(),
             ));
         }
@@ -236,7 +236,7 @@ impl StageDirectory {
                 sequence
             );
             if name.capacity() > 128 {
-                return Err(HawdbError::Execution(
+                return Err(HawDBError::Execution(
                     "search stage name exceeds preflight capacity".into(),
                 ));
             }
@@ -260,7 +260,7 @@ impl StageDirectory {
                 Err(error) => return Err(error.into()),
             }
         }
-        Err(HawdbError::Storage(
+        Err(HawDBError::Storage(
             "failed to allocate a unique search generation stage directory".to_string(),
         ))
     }

@@ -1093,7 +1093,7 @@ impl<S: ColumnGroupByteSource> ColumnGroupReader<S> {
     /// Directory-only pruning: decides from zone maps and null counts
     /// whether the predicate's chunk (or the whole group) can be skipped,
     /// without reading any chunk bytes. Sound by the mirror of the
-    /// `HawdbPropertyIndexPruning` obligation: a skipped chunk never
+    /// `HawDBPropertyIndexPruning` obligation: a skipped chunk never
     /// contains a qualifying row.
     pub fn prune(&self, predicate: &ColumnPredicate) -> ColumnGroupPruneDecision {
         if self.directory.row_count == 0 {

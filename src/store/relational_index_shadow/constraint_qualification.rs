@@ -1,7 +1,7 @@
 use super::{
     qualification_probe_error, relational_keys_digest, RelationalIndexViewQualificationOptions,
 };
-use crate::store::{GraphStore, HawdbError};
+use crate::store::{GraphStore, HawDBError};
 use hawdb_storage::{
     relational_foreign_key_index_name, RelationalForeignKeySchema, RelationalIndexDefinition,
     RelationalIndexRole, RelationalKey, RelationalScalarType, RelationalState,
@@ -25,12 +25,12 @@ impl GraphStore {
     ) -> crate::Result<RelationalConstraintQualificationReport> {
         self.relational_state
             .require_materialized_rows("relational constraint differential qualification")
-            .map_err(|error| HawdbError::Storage(error.to_string()))?;
+            .map_err(|error| HawDBError::Storage(error.to_string()))?;
         let view = self
             .relational_index_shadow
             .current_read_view(self.commit_epoch)
             .ok_or_else(|| {
-                HawdbError::Storage(format!(
+                HawDBError::Storage(format!(
                     "relational constraint read view is unavailable at commit epoch {}",
                     self.commit_epoch
                 ))
@@ -66,7 +66,7 @@ impl GraphStore {
                         .count(),
                 )
                 .ok_or_else(|| {
-                    HawdbError::Storage(
+                    HawDBError::Storage(
                         "relational constraint qualification row counter overflow".to_string(),
                     )
                 })?;
@@ -88,7 +88,7 @@ impl GraphStore {
                     .relational_state
                     .table_schema(&foreign_key.referenced_table)
                     .ok_or_else(|| {
-                        HawdbError::Storage(format!(
+                        HawDBError::Storage(format!(
                             "foreign key from {} references missing table {}",
                             schema.name, foreign_key.referenced_table
                         ))
@@ -96,7 +96,7 @@ impl GraphStore {
                 let referenced_definition = referenced_schema
                     .unique_index_definition(&foreign_key.referenced_columns)
                     .ok_or_else(|| {
-                        HawdbError::Storage(format!(
+                        HawDBError::Storage(format!(
                             "foreign key from {} references non-unique columns on {}",
                             schema.name, foreign_key.referenced_table
                         ))
@@ -153,12 +153,12 @@ impl GraphStore {
             mismatches = mismatches
                 .checked_add(usize::from(!matched))
                 .ok_or_else(|| {
-                    HawdbError::Storage(
+                    HawDBError::Storage(
                         "relational constraint mismatch counter overflow".to_string(),
                     )
                 })?;
             uses_covered = uses_covered.checked_add(uses.len()).ok_or_else(|| {
-                HawdbError::Storage("relational constraint use counter overflow".to_string())
+                HawDBError::Storage("relational constraint use counter overflow".to_string())
             })?;
             let uses = uses.into_iter().collect::<Vec<_>>();
             probes.push(RelationalConstraintQualificationProbeReport {
@@ -527,7 +527,7 @@ fn relational_constraint_oracle_rows(
         state
             .index_prefix_lookup(table, index, key, max_rows.saturating_add(1))
             .ok_or_else(|| {
-                HawdbError::Storage(format!(
+                HawDBError::Storage(format!(
                     "relational constraint oracle is missing {table}.{index}"
                 ))
             })?
@@ -536,7 +536,7 @@ fn relational_constraint_oracle_rows(
             .collect()
     };
     if rows.len() > max_rows {
-        return Err(HawdbError::Storage(format!(
+        return Err(HawDBError::Storage(format!(
             "relational constraint oracle on {table}.{index} contains {} rows, exceeding limit {max_rows}",
             rows.len()
         )));

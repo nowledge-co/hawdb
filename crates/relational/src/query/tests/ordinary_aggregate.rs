@@ -120,7 +120,7 @@ fn grouped_aggregate_order_by_retains_its_explicit_unsupported_error() {
         let error = execute_relational_query_sql_with_runtime(
             sql, &[], &state, read_modes(), batched_index_join_limits(), &memory, None,
         ).unwrap_err();
-        assert!(matches!(error, HawdbError::Semantic(ref message) if message == "aggregate SELECT does not yet support statement DISTINCT or ORDER BY"));
+        assert!(matches!(error, HawDBError::Semantic(ref message) if message == "aggregate SELECT does not yet support statement DISTINCT or ORDER BY"));
     }
 }
 

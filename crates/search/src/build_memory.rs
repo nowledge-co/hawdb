@@ -1,7 +1,7 @@
 //! One generation operation owns these accounts across all of its build stages.
 
 use crate::build_control::checkpoint;
-use crate::error::{HawdbError, Result};
+use crate::error::{HawDBError, Result};
 use crate::SearchDocument;
 use crate::SearchProjectionRow;
 use hawdb_core::RuntimeTaskContext;
@@ -40,13 +40,13 @@ impl BuildMemory {
             .memory_reservation()
             .map_or(Ok(usize::MAX), |reservation| {
                 usize::try_from(reservation.memory_bytes()).map_err(|_| {
-                    HawdbError::Execution(
+                    HawDBError::Execution(
                         "search build memory reservation does not fit the address space".into(),
                     )
                 })
             })?;
         let limit = NonZeroUsize::new(limit).ok_or_else(|| {
-            HawdbError::Execution("search build has no admitted working memory".into())
+            HawDBError::Execution("search build has no admitted working memory".into())
         })?;
         let ledger = QueryMemoryLedger::new(limit);
         // The ledger retains account metadata until operation end. Reuse these
@@ -165,8 +165,8 @@ pub(crate) fn grow_slots<T>(values: &mut Vec<T>, lease: &mut QueryMemoryLease) -
     Ok(())
 }
 
-fn overflow() -> HawdbError {
-    HawdbError::Execution("search build memory accounting overflow".into())
+fn overflow() -> HawDBError {
+    HawDBError::Execution("search build memory accounting overflow".into())
 }
 
 pub(crate) fn document_bytes(document: &SearchDocument) -> Result<usize> {

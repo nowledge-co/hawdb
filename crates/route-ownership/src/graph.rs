@@ -61,14 +61,14 @@ impl Default for NowledgeMemRouteOwnershipPolicy {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
 pub enum NowledgeMemRouteReadEngine {
     Legacy,
-    Hawdb,
+    HawDB,
 }
 
 impl NowledgeMemRouteReadEngine {
     pub const fn as_str(self) -> &'static str {
         match self {
             Self::Legacy => "legacy",
-            Self::Hawdb => "hawdb",
+            Self::HawDB => "hawdb",
         }
     }
 }
@@ -146,7 +146,7 @@ pub fn nowledge_mem_route_ownership_all_legacy() -> Vec<NowledgeMemRouteOwnershi
 }
 
 pub fn nowledge_mem_route_ownership_all_hawdb() -> Vec<NowledgeMemRouteOwnership> {
-    nowledge_mem_route_ownership_for_engine(NowledgeMemRouteReadEngine::Hawdb)
+    nowledge_mem_route_ownership_for_engine(NowledgeMemRouteReadEngine::HawDB)
 }
 
 pub fn nowledge_mem_route_ownership_for_engine(
@@ -205,7 +205,7 @@ pub fn nowledge_mem_route_ownership_readiness(
         .map(|(route, _)| (*route).to_string())
         .collect::<Vec<_>>();
 
-    let hawdb_routes = routes_by_engine(routes, NowledgeMemRouteReadEngine::Hawdb);
+    let hawdb_routes = routes_by_engine(routes, NowledgeMemRouteReadEngine::HawDB);
     let legacy_routes = routes_by_engine(routes, NowledgeMemRouteReadEngine::Legacy);
     let primary_ready_routes = route_readiness
         .map(|summary| {
@@ -412,7 +412,7 @@ mod tests {
         routes.pop();
         routes.push(NowledgeMemRouteOwnership::new(
             "/unknown",
-            NowledgeMemRouteReadEngine::Hawdb,
+            NowledgeMemRouteReadEngine::HawDB,
         ));
         routes.push(NowledgeMemRouteOwnership::new(
             first_route,

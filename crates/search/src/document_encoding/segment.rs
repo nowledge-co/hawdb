@@ -49,7 +49,7 @@ impl<'a, T: Borrow<SearchDocument>> SegmentEncoding<'a, T> {
             {
                 return error;
             }
-            HawdbError::Storage(format!(
+            HawDBError::Storage(format!(
                 "search {} segment encoded size overflow",
                 kind.name()
             ))

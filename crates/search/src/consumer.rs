@@ -1,6 +1,6 @@
 //! Internal projection ownership used by the embedded database facade.
 use super::{SearchIndex, SEARCH_SNAPSHOT_FILE};
-use crate::error::{HawdbError, Result};
+use crate::error::{HawDBError, Result};
 use crate::out_of_core::SearchProjectionPublishLease;
 use hawdb_core::Uuid;
 use hawdb_integrity::IntegrityHasher;
@@ -278,7 +278,7 @@ impl SearchIndex {
                 return Ok(());
             }
         }
-        Err(HawdbError::StorageIntegrity(
+        Err(HawDBError::StorageIntegrity(
             "missing or inconsistent registered vector projection".into(),
         ))
     }
@@ -337,8 +337,8 @@ fn canonical_uuid(raw: &str) -> Result<Uuid> {
     }
     Ok(uuid)
 }
-fn invalid(detail: &str) -> HawdbError {
-    HawdbError::Storage(format!("projection consumer: {detail}"))
+fn invalid(detail: &str) -> HawDBError {
+    HawDBError::Storage(format!("projection consumer: {detail}"))
 }
 
 #[cfg(test)]
@@ -468,7 +468,7 @@ mod tests {
                         policy_epoch: None,
                     }
                 ),
-                Err(HawdbError::CapabilityUnavailable {
+                Err(HawDBError::CapabilityUnavailable {
                     capability: hawdb_core::RuntimeCapability::FullTextSearch
                 })
             ));
@@ -511,7 +511,7 @@ mod tests {
         }
         assert!(matches!(
             ConsumerProjection::open(&root),
-            Err(HawdbError::StorageIntegrity(_))
+            Err(HawDBError::StorageIntegrity(_))
         ));
         fs::remove_dir_all(root).unwrap();
     }

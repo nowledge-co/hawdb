@@ -84,9 +84,9 @@ silently changing a selective index case to a scan still fails the experiment.
 
 ## Interpretation limits
 
-"First query" means first use of a new Hawdb handle, not cold physical disk.
+"First query" means first use of a new HawDB handle, not cold physical disk.
 The OS page cache is uncontrolled, the fixture was just written, and earlier
-probes can warm OS caches. File-read counters show reads requested by Hawdb,
+probes can warm OS caches. File-read counters show reads requested by HawDB,
 not physical device I/O. Dispersed membership spreads matching rows across
 canonical pages; it does not prove random device access or bypass readahead.
 Query timing includes the profiled execution path's instrumentation.

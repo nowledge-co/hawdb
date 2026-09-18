@@ -6,7 +6,7 @@
 use crate::text::{decode_string, decode_value, encode_string, encode_value};
 use crate::{NodeId, NodeRecord};
 use hawdb_core::{
-    Catalog, GraphStatistics, HawdbError, IndexId, IndexStatisticsSample, LabelId, RelTypeId,
+    Catalog, GraphStatistics, HawDBError, IndexId, IndexStatisticsSample, LabelId, RelTypeId,
     Result, Value,
 };
 use std::cmp::Reverse;
@@ -43,7 +43,7 @@ impl OptimizerStatisticsRefreshOptions {
     #[doc(hidden)]
     pub fn validate(&self) -> Result<()> {
         if self.memory_budget_bytes < 4096 {
-            return Err(HawdbError::Semantic(
+            return Err(HawDBError::Semantic(
                 "optimizer statistics refresh memory_budget_bytes must be at least 4096"
                     .to_string(),
             ));
@@ -56,7 +56,7 @@ impl OptimizerStatisticsRefreshOptions {
             ("max_path_expansions", self.max_path_expansions),
         ] {
             if value == 0 {
-                return Err(HawdbError::Semantic(format!(
+                return Err(HawDBError::Semantic(format!(
                     "optimizer statistics refresh {name} must be greater than zero"
                 )));
             }
@@ -153,7 +153,7 @@ impl<'a> OptimizerStatisticsRefreshAccounting<'a> {
     pub fn expand_path(&mut self) -> Result<()> {
         self.path_expansions = self.path_expansions.saturating_add(1);
         if self.path_expansions > self.options.max_path_expansions {
-            return Err(HawdbError::Execution(format!(
+            return Err(HawDBError::Execution(format!(
                 "optimizer statistics refresh exceeded max_path_expansions {}",
                 self.options.max_path_expansions
             )));
@@ -178,7 +178,7 @@ impl<'a> OptimizerStatisticsRefreshAccounting<'a> {
             .node_records_read
             .saturating_add(self.relationship_records_read);
         if input_records > self.options.max_input_records {
-            return Err(HawdbError::Execution(format!(
+            return Err(HawDBError::Execution(format!(
                 "optimizer statistics refresh exceeded max_input_records {}",
                 self.options.max_input_records
             )));
@@ -430,7 +430,7 @@ impl StatsRecord {
                     node: NodeId(parse_u64_field(node, "node id")?),
                 })
             }
-            _ => Err(HawdbError::Storage(
+            _ => Err(HawDBError::Storage(
                 "invalid optimizer statistics spill record".to_string(),
             )),
         }
@@ -439,17 +439,17 @@ impl StatsRecord {
 
 fn parse_u32_field(raw: &str, name: &str) -> Result<u32> {
     raw.parse::<u32>()
-        .map_err(|error| HawdbError::Storage(format!("invalid statistics {name}: {error}")))
+        .map_err(|error| HawDBError::Storage(format!("invalid statistics {name}: {error}")))
 }
 
 fn parse_u64_field(raw: &str, name: &str) -> Result<u64> {
     raw.parse::<u64>()
-        .map_err(|error| HawdbError::Storage(format!("invalid statistics {name}: {error}")))
+        .map_err(|error| HawDBError::Storage(format!("invalid statistics {name}: {error}")))
 }
 
 fn parse_usize_field(raw: &str, name: &str) -> Result<usize> {
     raw.parse::<usize>()
-        .map_err(|error| HawdbError::Storage(format!("invalid statistics {name}: {error}")))
+        .map_err(|error| HawDBError::Storage(format!("invalid statistics {name}: {error}")))
 }
 
 // Refresh keys are transient and outer spill framing already escapes them. A
@@ -741,7 +741,7 @@ impl<'a> StatsRunWriter<'a> {
         if record_bytes.saturating_add(self.excluded_property_group_bytes)
             > self.options.memory_budget_bytes
         {
-            return Err(HawdbError::Execution(format!(
+            return Err(HawDBError::Execution(format!(
                 "optimizer statistics fact uses {record_bytes} bytes, exceeding memory_budget_bytes {}",
                 self.options.memory_budget_bytes
             )));
@@ -765,7 +765,7 @@ impl<'a> StatsRunWriter<'a> {
         }
         let next_excluded_bytes = self.excluded_property_group_bytes.saturating_add(key_bytes);
         if next_excluded_bytes > self.options.memory_budget_bytes {
-            return Err(HawdbError::Execution(format!(
+            return Err(HawDBError::Execution(format!(
                 "optimizer statistics excluded-property state exceeds memory_budget_bytes {}",
                 self.options.memory_budget_bytes
             )));
@@ -782,7 +782,7 @@ impl<'a> StatsRunWriter<'a> {
     pub fn push(&mut self, record: StatsRecord) -> Result<()> {
         self.generated_facts = self.generated_facts.saturating_add(1);
         if self.generated_facts > self.options.max_generated_facts {
-            return Err(HawdbError::Execution(format!(
+            return Err(HawDBError::Execution(format!(
                 "optimizer statistics refresh exceeded max_generated_facts {}",
                 self.options.max_generated_facts
             )));
@@ -791,7 +791,7 @@ impl<'a> StatsRunWriter<'a> {
         if record_bytes.saturating_add(self.excluded_property_group_bytes)
             > self.options.memory_budget_bytes
         {
-            return Err(HawdbError::Execution(format!(
+            return Err(HawDBError::Execution(format!(
                 "optimizer statistics fact uses {record_bytes} bytes, exceeding memory_budget_bytes {}",
                 self.options.memory_budget_bytes
             )));
@@ -819,7 +819,7 @@ impl<'a> StatsRunWriter<'a> {
             return Ok(());
         }
         if self.runs.len() == self.options.max_spill_runs {
-            return Err(HawdbError::Execution(format!(
+            return Err(HawDBError::Execution(format!(
                 "optimizer statistics refresh exceeded max_spill_runs {}",
                 self.options.max_spill_runs
             )));
@@ -833,7 +833,7 @@ impl<'a> StatsRunWriter<'a> {
             .write(true)
             .open(&path)
             .map_err(|error| {
-                HawdbError::Storage(format!(
+                HawDBError::Storage(format!(
                     "failed to create optimizer statistics spill run: {error}"
                 ))
             })?;
@@ -844,24 +844,24 @@ impl<'a> StatsRunWriter<'a> {
             let encoded_bytes = encoded.len().saturating_add(1) as u64;
             run_bytes = run_bytes.saturating_add(encoded_bytes);
             if self.spilled_bytes.saturating_add(run_bytes) > self.options.max_spill_bytes {
-                return Err(HawdbError::Execution(format!(
+                return Err(HawDBError::Execution(format!(
                     "optimizer statistics refresh exceeded max_spill_bytes {}",
                     self.options.max_spill_bytes
                 )));
             }
             output.write_all(encoded.as_bytes()).map_err(|error| {
-                HawdbError::Storage(format!(
+                HawDBError::Storage(format!(
                     "failed to write optimizer statistics spill run: {error}"
                 ))
             })?;
             output.write_all(b"\n").map_err(|error| {
-                HawdbError::Storage(format!(
+                HawDBError::Storage(format!(
                     "failed to write optimizer statistics spill run: {error}"
                 ))
             })?;
         }
         output.flush().map_err(|error| {
-            HawdbError::Storage(format!(
+            HawDBError::Storage(format!(
                 "failed to flush optimizer statistics spill run: {error}"
             ))
         })?;
@@ -880,7 +880,7 @@ impl<'a> StatsRunWriter<'a> {
         let mut readers = Vec::with_capacity(self.runs.len());
         for path in &self.runs {
             let file = File::open(path).map_err(|error| {
-                HawdbError::Storage(format!(
+                HawDBError::Storage(format!(
                     "failed to open optimizer statistics spill run: {error}"
                 ))
             })?;
@@ -910,7 +910,7 @@ impl<'a> StatsRunWriter<'a> {
             .len()
             .saturating_mul(INDEX_SAMPLE_OUTPUT_BYTES);
         if index_sample_output_bytes > accumulator_memory_budget {
-            return Err(HawdbError::Execution(format!(
+            return Err(HawDBError::Execution(format!(
                 "optimizer index statistics output state exceeds memory_budget_bytes {}",
                 self.options.memory_budget_bytes
             )));
@@ -960,7 +960,7 @@ fn read_next_record(lines: &mut Lines<BufReader<File>>) -> Result<Option<StatsRe
         return Ok(None);
     };
     let line = line.map_err(|error| {
-        HawdbError::Storage(format!(
+        HawDBError::Storage(format!(
             "failed to read optimizer statistics spill run: {error}"
         ))
     })?;
@@ -1322,7 +1322,7 @@ impl StatsAccumulator {
 
     fn ensure_memory(&self, temporary_bytes: usize) -> Result<()> {
         if self.output_statistics_bytes.saturating_add(temporary_bytes) > self.memory_budget_bytes {
-            return Err(HawdbError::Execution(format!(
+            return Err(HawDBError::Execution(format!(
                 "optimizer statistics refresh output state exceeds memory_budget_bytes {}",
                 self.memory_budget_bytes
             )));
@@ -1349,7 +1349,7 @@ fn reserve_counter_entry<K: Ord + Clone>(
     }
     let entry_bytes = std::mem::size_of::<K>().saturating_add(48);
     if output_bytes.saturating_add(entry_bytes) > memory_budget_bytes {
-        return Err(HawdbError::Execution(format!(
+        return Err(HawDBError::Execution(format!(
             "optimizer statistics refresh output state exceeds memory_budget_bytes {memory_budget_bytes}"
         )));
     }
@@ -1364,7 +1364,7 @@ fn ensure_statistics_memory(
     memory_budget_bytes: usize,
 ) -> Result<()> {
     if output_bytes.saturating_add(temporary_bytes) > memory_budget_bytes {
-        return Err(HawdbError::Execution(format!(
+        return Err(HawDBError::Execution(format!(
             "optimizer statistics refresh output state exceeds memory_budget_bytes {memory_budget_bytes}"
         )));
     }
@@ -1387,7 +1387,7 @@ pub struct RefreshSpillDirectory {
 impl RefreshSpillDirectory {
     pub fn create(root: &Path) -> Result<Self> {
         fs::create_dir_all(root).map_err(|error| {
-            HawdbError::Storage(format!(
+            HawDBError::Storage(format!(
                 "failed to create optimizer statistics spill root: {error}"
             ))
         })?;
@@ -1397,7 +1397,7 @@ impl RefreshSpillDirectory {
             std::process::id()
         ));
         fs::create_dir(&path).map_err(|error| {
-            HawdbError::Storage(format!(
+            HawDBError::Storage(format!(
                 "failed to create optimizer statistics spill directory: {error}"
             ))
         })?;

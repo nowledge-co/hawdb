@@ -1,5 +1,5 @@
 use crate::{SearchIndex, SearchProjectionFreshness};
-use hawdb_core::{HawdbError, Result};
+use hawdb_core::{HawDBError, Result};
 use hawdb_qos::{
     LocalQosPermit, LocalQosScheduler, QosAdmission, QosAdmissionCode, WorkClass, WorkRequest,
 };
@@ -37,18 +37,18 @@ pub fn validate_search_projection_catch_up_request(
     max_batches: usize,
 ) -> Result<()> {
     if !search_index.is_persistent() {
-        return Err(HawdbError::Storage(
+        return Err(HawDBError::Storage(
             "durable search projection catch-up requires a persistent search index".to_string(),
         ));
     }
     if max_operations_per_batch == 0 {
-        return Err(HawdbError::Semantic(
+        return Err(HawDBError::Semantic(
             "search projection catch-up max_operations_per_batch must be greater than zero"
                 .to_string(),
         ));
     }
     if max_batches == 0 {
-        return Err(HawdbError::Semantic(
+        return Err(HawDBError::Semantic(
             "search projection catch-up max_batches must be greater than zero".to_string(),
         ));
     }

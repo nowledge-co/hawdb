@@ -1,6 +1,6 @@
 # Cypher parser benchmark
 
-Hawdb keeps parser changes evidence-driven. The production benchmark covers
+HawDB keeps parser changes evidence-driven. The production benchmark covers
 short exact lookup, bounded expansion, aggregate pagination, mutation, and
 query-hint shapes while constructing the complete production AST.
 

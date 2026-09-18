@@ -186,7 +186,7 @@ fn resolver_call_order_and_first_failure_are_preserved() {
         .push(|column| {
             calls.push((column.qualifier.clone(), column.name.clone()));
             if column.name == "body" {
-                Err(HawdbError::Execution("binding sentinel".into()))
+                Err(HawDBError::Execution("binding sentinel".into()))
             } else {
                 Ok(&value)
             }
@@ -200,7 +200,7 @@ fn resolver_call_order_and_first_failure_are_preserved() {
             (None, "body".into())
         ]
     );
-    assert!(matches!(error, HawdbError::Execution(ref message) if message == "binding sentinel"));
+    assert!(matches!(error, HawDBError::Execution(ref message) if message == "binding sentinel"));
     drop(aggregate);
     assert_eq!(ledger.snapshot().used_bytes, 0);
     let mut count = executor("COUNT(*)", 1, &ledger);
@@ -235,7 +235,7 @@ fn invalid_values_fail_with_existing_semantic_errors_and_release_the_lease() {
         let ledger = ledger();
         let mut aggregate = executor(projection, 1, &ledger);
         let error = aggregate.push(|_| Ok(&value)).unwrap_err();
-        assert!(matches!(error, HawdbError::Semantic(ref message) if message == expected));
+        assert!(matches!(error, HawDBError::Semantic(ref message) if message == expected));
         drop(aggregate);
         assert_eq!(ledger.snapshot().used_bytes, 0);
     }
@@ -259,7 +259,7 @@ fn sum_overflow_is_identical_inside_across_and_at_the_tail_of_batches() {
                 Ok(()) => aggregate.finish().unwrap_err(),
             };
             assert!(
-                matches!(error, HawdbError::Execution(ref message) if message == "BIGINT SUM overflow"),
+                matches!(error, HawDBError::Execution(ref message) if message == "BIGINT SUM overflow"),
                 "batch={batch}: {error}"
             );
             assert_eq!(ledger.snapshot().used_bytes, 0);
@@ -320,7 +320,7 @@ fn batch_admission_is_maximal_at_payload_and_validity_boundaries() {
                     None => {
                         let error = actual.err().expect("one row must be refused");
                         assert!(
-                            matches!(error, HawdbError::Execution(ref message) if message == &format!("relational columnar aggregate cannot fit one row within batch_payload_bytes {limit}"))
+                            matches!(error, HawDBError::Execution(ref message) if message == &format!("relational columnar aggregate cannot fit one row within batch_payload_bytes {limit}"))
                         );
                         assert_eq!(ledger.snapshot().account_count, 0);
                     }
@@ -348,7 +348,7 @@ fn query_memory_admission_is_shared_and_released_on_drop() {
     )
     .err()
     .expect("second lease exceeds shared budget");
-    assert!(matches!(error, HawdbError::Execution(_)));
+    assert!(matches!(error, HawDBError::Execution(_)));
     assert_eq!(ledger.snapshot().used_bytes, bytes);
     drop(first);
     assert_eq!(ledger.snapshot().used_bytes, 0);

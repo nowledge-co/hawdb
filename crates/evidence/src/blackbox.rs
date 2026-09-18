@@ -1,4 +1,4 @@
-use hawdb_core::{HawdbError, Result};
+use hawdb_core::{HawDBError, Result};
 use std::collections::BTreeSet;
 use std::fs;
 use std::io::Write;
@@ -517,14 +517,14 @@ impl BlackboxReport {
 }
 
 impl std::str::FromStr for BlackboxRunStatus {
-    type Err = HawdbError;
+    type Err = HawDBError;
 
     fn from_str(value: &str) -> Result<Self> {
         match value {
             "completed" => Ok(Self::Completed),
             "failed" => Ok(Self::Failed),
             "running" => Ok(Self::Running),
-            _ => Err(HawdbError::Semantic(
+            _ => Err(HawDBError::Semantic(
                 "blackbox run status must be completed, failed, or running".to_string(),
             )),
         }
@@ -533,13 +533,13 @@ impl std::str::FromStr for BlackboxRunStatus {
 
 pub fn blackbox_report(options: &BlackboxReportOptions) -> Result<BlackboxReport> {
     if !options.artifact_dir.is_dir() {
-        return Err(HawdbError::Semantic(
+        return Err(HawDBError::Semantic(
             "blackbox artifact_dir does not exist or is not a directory".to_string(),
         ));
     }
     let generated_unix_seconds = SystemTime::now()
         .duration_since(UNIX_EPOCH)
-        .map_err(|error| HawdbError::Execution(format!("system clock before unix epoch: {error}")))?
+        .map_err(|error| HawDBError::Execution(format!("system clock before unix epoch: {error}")))?
         .as_secs();
     let run_id = options
         .run_id
@@ -663,7 +663,7 @@ pub fn write_blackbox_report_typed(options: &BlackboxReportOptions) -> Result<Bl
     write_blackbox_events(&options.output_dir.join("events.jsonl"), &manifest.events())?;
     let manifest_json = manifest.json();
     let manifest_bytes = serde_json::to_vec_pretty(&manifest_json).map_err(|_| {
-        HawdbError::Execution("blackbox manifest JSON error: serialization_error".to_string())
+        HawDBError::Execution("blackbox manifest JSON error: serialization_error".to_string())
     })?;
     fs::write(options.output_dir.join("manifest.json"), manifest_bytes)?;
     Ok(manifest)
@@ -1196,7 +1196,7 @@ fn write_blackbox_events(events_path: &Path, events: &[BlackboxEventReport]) -> 
     let mut file = fs::File::create(events_path)?;
     for event in events {
         let event_line = serde_json::to_string(&event.json()).map_err(|_| {
-            HawdbError::Execution("blackbox event JSON error: serialization_error".to_string())
+            HawDBError::Execution("blackbox event JSON error: serialization_error".to_string())
         })?;
         writeln!(file, "{event_line}")?;
     }

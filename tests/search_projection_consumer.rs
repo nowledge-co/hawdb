@@ -1,6 +1,6 @@
-//! External embedded-library callers use only the public Hawdb facade.
+//! External embedded-library callers use only the public HawDB facade.
 use hawdb::{
-    Database, DatabaseReadTransaction, HawdbError, SearchDocument, SearchIndex,
+    Database, DatabaseReadTransaction, HawDBError, SearchDocument, SearchIndex,
     SearchProjectionChangeBatch, SearchProjectionConsumerError, SearchProjectionConsumerId,
     SearchProjectionConsumerOptions, SearchProjectionConsumerRebuildReason,
     SearchProjectionConsumerState, SearchProjectionDelta, SearchProjectionKind,
@@ -47,7 +47,7 @@ fn initialize(
         Some(1),
     )?;
     let Value::String(body) = &output.rows[0]["body"] else {
-        return Err(HawdbError::Execution("expected message body".into()));
+        return Err(HawDBError::Execution("expected message body".into()));
     };
     index.upsert(SearchDocument {
         id: "message:1".into(),
@@ -76,7 +76,7 @@ fn hydrate(
         Some(1),
     )?;
     let Value::String(body) = &output.rows[0]["body"] else {
-        return Err(HawdbError::Execution("expected message body".into()));
+        return Err(HawDBError::Execution("expected message body".into()));
     };
     Ok(SearchProjectionRelationalDelta {
         processed_primary_key_count: 1,

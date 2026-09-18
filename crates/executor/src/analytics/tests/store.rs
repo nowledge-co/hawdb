@@ -44,7 +44,7 @@ impl GraphExecutionRead for Fixture {
         self.node_scans.set(self.node_scans.get() + 1);
         for (index, node) in self.nodes.iter().enumerate() {
             if self.fail_node_at == Some(index) {
-                return Err(HawdbError::StorageIntegrity("node scan sentinel".into()));
+                return Err(HawDBError::StorageIntegrity("node scan sentinel".into()));
             }
             self.node_visits.set(self.node_visits.get() + 1);
             if consumer(node.clone())? == ScanControl::Stop {
@@ -64,7 +64,7 @@ impl GraphExecutionRead for Fixture {
         assert!(rel_type.is_none());
         self.rel_scans.set(self.rel_scans.get() + 1);
         if self.fail_rel_scan == Some(self.rel_scans.get()) {
-            return Err(HawdbError::StorageIntegrity(
+            return Err(HawDBError::StorageIntegrity(
                 "relationship scan sentinel".into(),
             ));
         }

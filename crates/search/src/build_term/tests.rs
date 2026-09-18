@@ -98,7 +98,7 @@ fn reserved_term_decodes_with_a_full_root_and_outlives_the_reservation_handle() 
     let term = Term::build_reserved(source.len(), &reservation, || {
         let mut bytes = vec![0; source.len()];
         source.as_slice().read_exact(&mut bytes)?;
-        String::from_utf8(bytes).map_err(|error| HawdbError::Storage(error.to_string()))
+        String::from_utf8(bytes).map_err(|error| HawDBError::Storage(error.to_string()))
     })
     .unwrap();
     assert_eq!(term.as_str(), "decoded spill term");
@@ -117,7 +117,7 @@ fn failed_reserved_decode_returns_its_grant_for_retry() {
     let memory = memory(8192);
     let reservation = ReservedMemory::new(&memory.spool, 1024).unwrap();
     assert!(Term::build_reserved(256, &reservation, || {
-        Err(HawdbError::Storage("short spill read".into()))
+        Err(HawDBError::Storage("short spill read".into()))
     })
     .is_err());
     let grant = reservation.reserve(1024).unwrap();

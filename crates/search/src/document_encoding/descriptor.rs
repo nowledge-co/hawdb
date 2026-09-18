@@ -56,7 +56,7 @@ impl<'a> DescriptorEncoding<'a> {
             .checked_add(encoding.footer_len)
             .ok_or_else(size_overflow)?;
         if encoding.bytes as u64 > max_bytes {
-            return Err(HawdbError::Storage(format!(
+            return Err(HawDBError::Storage(format!(
                 "search generation descriptor requires {} bytes, exceeding {max_bytes}",
                 encoding.bytes,
             )));
@@ -84,8 +84,8 @@ impl<'a> DescriptorEncoding<'a> {
     }
 }
 
-fn size_overflow() -> HawdbError {
-    HawdbError::Storage("search segment descriptor encoded size overflow".into())
+fn size_overflow() -> HawDBError {
+    HawDBError::Storage("search segment descriptor encoded size overflow".into())
 }
 
 struct DigestWriter(Crc32cHasher);

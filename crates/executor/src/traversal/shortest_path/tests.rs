@@ -57,7 +57,7 @@ impl GraphExecutionRead for ChainStore {
         if self.visits.get() == self.stop_after {
             assert!(!self.panic, "injected adjacency panic");
             if self.failure {
-                return Err(HawdbError::Execution(
+                return Err(HawDBError::Execution(
                     "injected adjacency failure".to_string(),
                 ));
             }

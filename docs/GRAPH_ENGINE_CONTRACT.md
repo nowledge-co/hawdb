@@ -6,7 +6,7 @@ Status: proposal for review. No code change yet.
 
 Move the concrete graph engine (`GraphStore` + its `graph_*` / relational-row /
 index-shadow modules, currently in `src/store*`) into `hawdb-storage`, keeping
-`src` as the query-first facade (`Database`, `NowledgeMemGraph`, `HawdbEmbedded`).
+`src` as the query-first facade (`Database`, `NowledgeMemGraph`, `HawDBEmbedded`).
 
 `src` must not depend on the concrete store type; it consumes a storage-neutral
 contract. The contract stays internal (`#[doc(hidden)]`), never a host API.

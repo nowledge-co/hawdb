@@ -7,7 +7,7 @@ use super::{
 };
 use crate::build_control::{checkpoint, temporary::RemoveOnDrop, CheckedWriter};
 use crate::build_memory::{checked_add as add, checked_mul as mul, path::OwnedPath, BuildMemory};
-use crate::{HawdbError, Result};
+use crate::{HawDBError, Result};
 use hawdb_core::RuntimeTaskContext;
 use hawdb_executor::QueryMemoryLease;
 use hawdb_integrity::Crc32cHasher;
@@ -41,7 +41,7 @@ impl Paths {
         let mut name_memory = memory.retained.reserve(3 * 128)?;
         let artifact_name = artifact_file(generation);
         if artifact_name.capacity() > 128 {
-            return Err(HawdbError::Execution(
+            return Err(HawDBError::Execution(
                 "lexical artifact name exceeded admission".into(),
             ));
         }
@@ -189,7 +189,7 @@ pub(super) fn finish(
     let decoded = ManifestBody::decode_with_context(&encoded.bytes, Some(task))?;
     let actual = retained_bytes(&decoded, task)?;
     if actual > output_memory.bytes() {
-        return Err(HawdbError::Execution(
+        return Err(HawDBError::Execution(
             "decoded lexical manifest exceeded admission".into(),
         ));
     }
@@ -206,7 +206,7 @@ pub(super) fn finish(
         Some((memory, task)),
         Some(output_memory),
     )?
-    .ok_or_else(|| HawdbError::Storage("built lexical projection identity mismatch".into()))?;
+    .ok_or_else(|| HawDBError::Storage("built lexical projection identity mismatch".into()))?;
     // Both paths and platform rename scratch are admitted before publication.
     let _rename_memory = rename_memory(paths, memory)?;
     checkpoint(task)?;
@@ -258,7 +258,7 @@ fn verify_file_bytes(
     let _scratch = memory.spool.reserve(SPILL_IO_BUFFER_BYTES)?;
     let mut file = File::open(path)?;
     if file.metadata()?.len() != expected.len() as u64 {
-        return Err(HawdbError::Storage(
+        return Err(HawDBError::Storage(
             "private lexical manifest length changed".into(),
         ));
     }
@@ -267,14 +267,14 @@ fn verify_file_bytes(
         checkpoint(task)?;
         file.read_exact(&mut buffer[..chunk.len()])?;
         if &buffer[..chunk.len()] != chunk {
-            return Err(HawdbError::Storage(
+            return Err(HawDBError::Storage(
                 "private lexical manifest bytes changed".into(),
             ));
         }
     }
     checkpoint(task)?;
     if file.read(&mut buffer[..1])? != 0 {
-        return Err(HawdbError::Storage(
+        return Err(HawDBError::Storage(
             "private lexical manifest grew during verification".into(),
         ));
     }
@@ -302,7 +302,7 @@ pub(super) fn file_digest(
         digest.update(&buffer[..count]);
         length = length
             .checked_add(count as u64)
-            .ok_or_else(|| HawdbError::Storage("lexical artifact length exceeds u64".into()))?;
+            .ok_or_else(|| HawDBError::Storage("lexical artifact length exceeds u64".into()))?;
     }
     checkpoint(task)?;
     Ok((length, digest.finish()))

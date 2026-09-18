@@ -162,7 +162,7 @@ fn graph_handlers_preserve_rows_limits_consumer_control_and_reports() {
                                 .into_iter()
                                 .take(output_rows.unwrap_or(usize::MAX))
                                 .collect();
-                            let consumer_error = HawdbError::StorageIntegrity(
+                            let consumer_error = HawDBError::StorageIntegrity(
                                 "graph handler consumer sentinel".to_string(),
                             );
                             let result = execute_binding_batches(
@@ -269,7 +269,7 @@ fn graph_handler_cancellation_from_consumer_releases_memory() {
         assert_eq!(calls, 1);
         assert_eq!(
             result.unwrap_err(),
-            HawdbError::Execution("runtime task stopped: cancelled".to_string())
+            HawDBError::Execution("runtime task stopped: cancelled".to_string())
         );
     }
 }

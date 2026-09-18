@@ -108,14 +108,14 @@ impl Default for NowledgeMemSearchRouteOwnershipPolicy {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
 pub enum NowledgeMemSearchReadEngine {
     LanceDb,
-    Hawdb,
+    HawDB,
 }
 
 impl NowledgeMemSearchReadEngine {
     pub const fn as_str(self) -> &'static str {
         match self {
             Self::LanceDb => "lancedb",
-            Self::Hawdb => "hawdb",
+            Self::HawDB => "hawdb",
         }
     }
 }
@@ -297,7 +297,7 @@ impl NowledgeMemActiveSearchRouteReadEvidence {
         Self::new(
             route,
             projection_route,
-            NowledgeMemSearchReadEngine::Hawdb,
+            NowledgeMemSearchReadEngine::HawDB,
             true,
             true,
             true,
@@ -384,7 +384,7 @@ pub fn nowledge_mem_search_route_ownership_all_lancedb() -> Vec<NowledgeMemSearc
 }
 
 pub fn nowledge_mem_search_route_ownership_all_hawdb() -> Vec<NowledgeMemSearchRouteOwnership> {
-    nowledge_mem_search_route_ownership_for_engine(NowledgeMemSearchReadEngine::Hawdb)
+    nowledge_mem_search_route_ownership_for_engine(NowledgeMemSearchReadEngine::HawDB)
 }
 
 pub fn nowledge_mem_search_route_ownership_for_engine(
@@ -403,7 +403,7 @@ pub fn nowledge_mem_active_search_route_ownership_all_lancedb(
 
 pub fn nowledge_mem_active_search_route_ownership_all_hawdb(
 ) -> Vec<NowledgeMemActiveSearchRouteOwnership> {
-    nowledge_mem_active_search_route_ownership_for_engine(NowledgeMemSearchReadEngine::Hawdb)
+    nowledge_mem_active_search_route_ownership_for_engine(NowledgeMemSearchReadEngine::HawDB)
 }
 
 pub fn nowledge_mem_active_search_route_ownership_for_engine(
@@ -526,7 +526,7 @@ pub fn nowledge_mem_search_route_ownership_readiness(
         .filter(|(_, engines)| engines.len() > 1)
         .map(|(route, _)| (*route).to_string())
         .collect::<Vec<_>>();
-    let hawdb_routes = search_routes_by_engine(routes, NowledgeMemSearchReadEngine::Hawdb);
+    let hawdb_routes = search_routes_by_engine(routes, NowledgeMemSearchReadEngine::HawDB);
     let lancedb_routes = search_routes_by_engine(routes, NowledgeMemSearchReadEngine::LanceDb);
 
     let mut blocker_codes = Vec::new();
@@ -613,7 +613,7 @@ pub fn nowledge_mem_active_search_route_ownership_readiness(
         .collect::<BTreeSet<_>>()
         .into_iter()
         .collect::<Vec<_>>();
-    let hawdb_routes = active_search_routes_by_engine(routes, NowledgeMemSearchReadEngine::Hawdb);
+    let hawdb_routes = active_search_routes_by_engine(routes, NowledgeMemSearchReadEngine::HawDB);
     let lancedb_routes =
         active_search_routes_by_engine(routes, NowledgeMemSearchReadEngine::LanceDb);
 
@@ -702,7 +702,7 @@ pub fn nowledge_mem_active_search_route_readiness(
         .into_iter()
         .collect::<Vec<_>>();
     let non_hawdb_routes = active_search_read_routes_where(evidence, |route| {
-        route.read_engine != NowledgeMemSearchReadEngine::Hawdb
+        route.read_engine != NowledgeMemSearchReadEngine::HawDB
     });
     let lancedb_handle_required_routes =
         active_search_read_routes_where(evidence, |route| route.lancedb_handle_required);
@@ -753,7 +753,7 @@ pub fn nowledge_mem_active_search_route_readiness(
     let ready_routes = active_search_read_routes_where(evidence, active_search_read_evidence_ready);
     let hawdb_route_count = evidence
         .iter()
-        .filter(|route| route.read_engine == NowledgeMemSearchReadEngine::Hawdb)
+        .filter(|route| route.read_engine == NowledgeMemSearchReadEngine::HawDB)
         .map(|route| route.route.as_str())
         .collect::<BTreeSet<_>>()
         .len();
@@ -962,7 +962,7 @@ fn active_search_read_evidence_ready(route: &NowledgeMemActiveSearchRouteReadEvi
     let Some(requirement) = active_search_route_read_requirement(&route.route) else {
         return false;
     };
-    route.read_engine == NowledgeMemSearchReadEngine::Hawdb
+    route.read_engine == NowledgeMemSearchReadEngine::HawDB
         && route.candidate_readiness_ready
         && (!requirement.requires_candidate_identity || route.candidate_identity_ready)
         && (!requirement.requires_embedding_identity || route.embedding_identity_ready)
@@ -1064,13 +1064,13 @@ mod tests {
         let routes = vec![
             NowledgeMemSearchRouteOwnership::new(
                 NOWLEDGE_MEM_SEARCH_ROUTE_MEMORY,
-                NowledgeMemSearchReadEngine::Hawdb,
+                NowledgeMemSearchReadEngine::HawDB,
             ),
             NowledgeMemSearchRouteOwnership::new(
                 NOWLEDGE_MEM_SEARCH_ROUTE_MEMORY,
                 NowledgeMemSearchReadEngine::LanceDb,
             ),
-            NowledgeMemSearchRouteOwnership::new("unknown", NowledgeMemSearchReadEngine::Hawdb),
+            NowledgeMemSearchRouteOwnership::new("unknown", NowledgeMemSearchReadEngine::HawDB),
         ];
 
         let report = nowledge_mem_search_route_ownership_readiness(
@@ -1146,17 +1146,17 @@ mod tests {
             NowledgeMemActiveSearchRouteOwnership::new(
                 NOWLEDGE_MEM_ACTIVE_SEARCH_ROUTE_THREAD_MESSAGE_FTS,
                 NOWLEDGE_MEM_SEARCH_ROUTE_MESSAGE,
-                NowledgeMemSearchReadEngine::Hawdb,
+                NowledgeMemSearchReadEngine::HawDB,
             ),
             NowledgeMemActiveSearchRouteOwnership::new(
                 NOWLEDGE_MEM_ACTIVE_SEARCH_ROUTE_THREAD_MESSAGE_FTS,
                 "invalid_projection",
-                NowledgeMemSearchReadEngine::Hawdb,
+                NowledgeMemSearchReadEngine::HawDB,
             ),
             NowledgeMemActiveSearchRouteOwnership::new(
                 "unknown_active_route",
                 NOWLEDGE_MEM_SEARCH_ROUTE_MEMORY,
-                NowledgeMemSearchReadEngine::Hawdb,
+                NowledgeMemSearchReadEngine::HawDB,
             ),
         ];
 

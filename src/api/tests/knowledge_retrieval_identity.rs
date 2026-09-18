@@ -3,7 +3,7 @@ use super::*;
 #[test]
 fn knowledge_retrieval_binds_idless_search_hits_to_canonical_nodes() {
     let mut db = Database::new();
-    db.query("CREATE (:Memory {title: 'Anonymous graph', content: 'idless projection retrieval'})-[:MENTIONS]->(:Entity {id: 'entity_1', name: 'Hawdb'})")
+    db.query("CREATE (:Memory {title: 'Anonymous graph', content: 'idless projection retrieval'})-[:MENTIONS]->(:Entity {id: 'entity_1', name: 'HawDB'})")
             .unwrap();
 
     let mut search_index = SearchIndex::in_memory();

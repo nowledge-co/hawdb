@@ -135,7 +135,7 @@ impl NowledgeSearchProjectionEvidenceReport {
 pub fn nowledge_search_projection_probe_contract_json() -> serde_json::Value {
     serde_json::json!({
         "protocol": "hawdb-nowledge-search-projection-probe-contract-v1",
-        "purpose": "primary LanceDB and shadow Hawdb probes must use this shape before search projection shadow evidence can pass",
+        "purpose": "primary LanceDB and shadow HawDB probes must use this shape before search projection shadow evidence can pass",
         "required_tables": REQUIRED_TABLES,
         "vector_tables": VECTOR_TABLES,
         "required_predicate_pushdown_ops": ["eq", "in", "not_in", "gt", "gte", "lt", "lte"],

@@ -4,7 +4,7 @@ use crate::{
     PostgresParameterMetadata, SqlColumnDefinition, SqlDataType, SqlStatement, SqlTableName,
     SqlTableStorage, SqlValue,
 };
-use hawdb_core::{HawdbError, Value};
+use hawdb_core::{HawDBError, Value};
 use sqlparser::ast::*;
 
 type ClauseCase<T> = (&'static str, fn(&mut T));
@@ -194,8 +194,8 @@ fn insert_cases() -> Vec<ClauseCase<Insert>> {
     ]
 }
 
-fn assert_error(error: HawdbError, statement: &str, clause: &str) {
-    let HawdbError::Semantic(message) = error else {
+fn assert_error(error: HawDBError, statement: &str, clause: &str) {
+    let HawDBError::Semantic(message) = error else {
         panic!("expected a lowering rejection, got {error:?}");
     };
     assert_eq!(

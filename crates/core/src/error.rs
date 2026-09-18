@@ -2,7 +2,7 @@ use crate::RuntimeCapability;
 use std::fmt::{Display, Formatter};
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub enum HawdbError {
+pub enum HawDBError {
     Parse(String),
     Semantic(String),
     Storage(String),
@@ -18,17 +18,17 @@ pub enum HawdbError {
     },
 }
 
-impl Display for HawdbError {
+impl Display for HawDBError {
     fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
         match self {
-            HawdbError::Parse(message) => write!(f, "parse error: {message}"),
-            HawdbError::Semantic(message) => write!(f, "semantic error: {message}"),
-            HawdbError::Storage(message) => write!(f, "storage error: {message}"),
-            HawdbError::StorageIntegrity(message) => {
+            HawDBError::Parse(message) => write!(f, "parse error: {message}"),
+            HawDBError::Semantic(message) => write!(f, "semantic error: {message}"),
+            HawDBError::Storage(message) => write!(f, "storage error: {message}"),
+            HawDBError::StorageIntegrity(message) => {
                 write!(f, "storage integrity error: {message}")
             }
-            HawdbError::Execution(message) => write!(f, "execution error: {message}"),
-            HawdbError::AppendSequenceExhausted {
+            HawDBError::Execution(message) => write!(f, "execution error: {message}"),
+            HawDBError::AppendSequenceExhausted {
                 table,
                 watermark,
                 requested,
@@ -36,19 +36,19 @@ impl Display for HawdbError {
                 f,
                 "append commit sequence exhausted for table {table}: watermark={watermark}, requested={requested}"
             ),
-            HawdbError::CapabilityUnavailable { capability } => {
+            HawDBError::CapabilityUnavailable { capability } => {
                 write!(f, "capability unavailable: {}", capability.as_str())
             }
         }
     }
 }
 
-impl std::error::Error for HawdbError {}
+impl std::error::Error for HawDBError {}
 
-pub type Result<T> = std::result::Result<T, HawdbError>;
+pub type Result<T> = std::result::Result<T, HawDBError>;
 
-impl From<std::io::Error> for HawdbError {
+impl From<std::io::Error> for HawDBError {
     fn from(error: std::io::Error) -> Self {
-        HawdbError::Storage(error.to_string())
+        HawDBError::Storage(error.to_string())
     }
 }

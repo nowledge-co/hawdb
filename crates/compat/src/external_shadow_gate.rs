@@ -2,7 +2,7 @@ use crate::{
     external_shadow_ready_missing_capabilities, external_shadow_trace_health_from_bundle,
     external_shadow_trace_report_json, ExternalShadowReady,
 };
-use hawdb_core::{HawdbError, Result};
+use hawdb_core::{HawDBError, Result};
 use hawdb_evidence::inventory::{
     background_maintenance_evidence_health_from_bundle,
     replacement_readiness_family_evidence_health_from_bundle,
@@ -16,7 +16,7 @@ pub fn add_shadow_ready_report(
     ready: &ExternalShadowReady,
 ) -> Result<()> {
     let object = bundle.as_object_mut().ok_or_else(|| {
-        HawdbError::Execution("migration gate bundle must be a JSON object".to_string())
+        HawDBError::Execution("migration gate bundle must be a JSON object".to_string())
     })?;
     object.insert(
         "shadow_ready".to_string(),
@@ -37,7 +37,7 @@ pub fn add_shadow_run_report(
     self_shadow: bool,
 ) -> Result<()> {
     let object = bundle.as_object_mut().ok_or_else(|| {
-        HawdbError::Execution("migration gate bundle must be a JSON object".to_string())
+        HawDBError::Execution("migration gate bundle must be a JSON object".to_string())
     })?;
     object.insert(
         "shadow_run".to_string(),
@@ -61,7 +61,7 @@ pub fn add_shadow_trace_report(
     request_count: u64,
 ) -> Result<()> {
     let object = bundle.as_object_mut().ok_or_else(|| {
-        HawdbError::Execution("migration gate bundle must be a JSON object".to_string())
+        HawDBError::Execution("migration gate bundle must be a JSON object".to_string())
     })?;
     object.insert(
         "shadow_trace".to_string(),
@@ -117,7 +117,7 @@ pub fn assess_external_shadow_cutover_evidence(
         .get("migration_gate")
         .and_then(serde_json::Value::as_object)
         .ok_or_else(|| {
-            HawdbError::Execution("migration gate bundle missing migration_gate".to_string())
+            HawDBError::Execution("migration gate bundle missing migration_gate".to_string())
         })?;
     let migration_gate_ready = migration_gate
         .get("decision")

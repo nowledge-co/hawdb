@@ -134,7 +134,7 @@ impl DescriptorBudget {
     fn reserve(&mut self, bytes: u64) -> Result<()> {
         let projected = self.bytes.saturating_add(bytes);
         if projected > self.max_bytes {
-            return Err(HawdbError::Storage(format!(
+            return Err(HawDBError::Storage(format!(
                 "search generation descriptor working set requires {projected} bytes, exceeding {}",
                 self.max_bytes
             )));
@@ -196,7 +196,7 @@ fn admitted_summary_value<'a>(
         trimmed.to_lowercase()
     };
     if normalized.capacity() > bytes {
-        return Err(HawdbError::Execution(
+        return Err(HawDBError::Execution(
             "search summary normalization exceeded admission".into(),
         ));
     }

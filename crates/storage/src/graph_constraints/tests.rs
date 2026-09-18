@@ -123,7 +123,7 @@ fn scalar_type_matrix_preserves_nullability_and_exact_error_messages() {
                         format!("expected {name}")
                     };
                     match result {
-                        Err(HawdbError::Storage(message)) => assert_eq!(
+                        Err(HawDBError::Storage(message)) => assert_eq!(
                             message,
                             format!("property schema violation on node 7 in Items(key): {reason}")
                         ),
@@ -268,7 +268,7 @@ fn constraint_errors_preserve_subject_and_first_conflicting_ids() {
         (validate_relationship_property_exists(&catalog, &relationships, RelTypeId(0), "missing"), "relationship property exists constraint violation on :LINKS(missing) for relationship 3"),
     ] {
         match result {
-            Err(HawdbError::Storage(message)) => assert_eq!(message, expected),
+            Err(HawDBError::Storage(message)) => assert_eq!(message, expected),
             other => panic!("unexpected constraint result: {other:?}"),
         }
     }
@@ -313,7 +313,7 @@ fn record_validation_reports_schema_errors_before_existence_errors() {
             ),
         ] {
             match result {
-                Err(HawdbError::Storage(message)) => assert_eq!(message, expected),
+                Err(HawDBError::Storage(message)) => assert_eq!(message, expected),
                 other => panic!("unexpected constraint result: {other:?}"),
             }
         }
@@ -422,7 +422,7 @@ fn check_seed(seed: u64) -> usize {
                 "seed={seed}, case={case}, check={name}: {result:?}"
             );
             if let Err(error) = result {
-                assert!(matches!(error, HawdbError::Storage(_)), "{error}");
+                assert!(matches!(error, HawDBError::Storage(_)), "{error}");
             }
             checks += 1;
         };

@@ -1,6 +1,6 @@
 use super::nowledge_graph_route_readiness_json;
 use super::tests::{ready_evidence, ready_route, ready_routes};
-use hawdb_core::HawdbError;
+use hawdb_core::HawDBError;
 use hawdb_route_ownership::graph::REQUIRED_NOWLEDGE_MEM_BOUNDED_READ_ROUTES;
 use serde_json::{json, Value};
 
@@ -505,7 +505,7 @@ fn malformed_route_evidence_returns_stable_errors() {
         json!({"routes": {}}),
     ] {
         assert!(
-            matches!(nowledge_graph_route_readiness_json(&evidence), Err(HawdbError::Semantic(message))
+            matches!(nowledge_graph_route_readiness_json(&evidence), Err(HawDBError::Semantic(message))
             if message == "graph route evidence JSON must contain a routes array")
         );
     }
@@ -516,7 +516,7 @@ fn malformed_route_evidence_returns_stable_errors() {
         json!({"route": " \t"}),
     ] {
         assert!(
-            matches!(nowledge_graph_route_readiness_json(&json!([route])), Err(HawdbError::Semantic(message))
+            matches!(nowledge_graph_route_readiness_json(&json!([route])), Err(HawDBError::Semantic(message))
             if message == "graph route evidence route is required")
         );
     }

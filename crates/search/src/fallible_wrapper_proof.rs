@@ -109,7 +109,7 @@ fn public_wrappers_return_the_first_unavailable_capability() {
                 else {
                     continue;
                 };
-                let expected = HawdbError::CapabilityUnavailable { capability };
+                let expected = HawDBError::CapabilityUnavailable { capability };
                 for wrapper in WRAPPERS {
                     assert_eq!(public_wrapper(&index, mode, wrapper).unwrap_err(), expected);
                 }

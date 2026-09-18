@@ -30,7 +30,7 @@ fn vector_seed_receives_resolved_runtime_resource_contract() {
                 request.resources.result.max_memory_bytes.get(),
                 request.resources.task_context.is_some(),
             ));
-            Err(HawdbError::Execution(
+            Err(HawDBError::Execution(
                 "recorded external read contract".to_string(),
             ))
         }

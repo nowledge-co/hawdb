@@ -15,7 +15,7 @@ use crate::{
     BlockingOperatorMemoryReport, ExecutionLimit, ExecutionMemoryConfig, QueryMemoryAccount,
     QueryMemoryClass, QueryMemoryLedger,
 };
-use hawdb_core::{Catalog, HawdbError, Result, RuntimeTaskContext, Value};
+use hawdb_core::{Catalog, HawDBError, Result, RuntimeTaskContext, Value};
 use hawdb_plan::{
     AggregateFunction, AggregateTarget, Aggregation, PhysicalPlan, Projection, SortDirection,
     SortItem,

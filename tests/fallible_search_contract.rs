@@ -33,7 +33,7 @@ fn required(mode: SearchMode) -> RuntimeCapability {
 fn unavailable<T: Debug>(result: Result<T>, mode: SearchMode) {
     assert_eq!(
         result.unwrap_err(),
-        HawdbError::CapabilityUnavailable {
+        HawDBError::CapabilityUnavailable {
             capability: required(mode)
         }
     );

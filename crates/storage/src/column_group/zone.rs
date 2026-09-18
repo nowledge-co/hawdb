@@ -7,7 +7,7 @@
 //! model cannot carry. Zone maps serialize as fixed-size records inside the
 //! group directory so scan planning reads directories, never chunks.
 //!
-//! Pruning soundness contract (mirror of `HawdbPropertyIndexPruning`): every
+//! Pruning soundness contract (mirror of `HawDBPropertyIndexPruning`): every
 //! `may_match_*` method returns `false` only when no row of the chunk can
 //! satisfy the predicate under the value-match semantics documented on
 //! `ColumnPredicate` in `group.rs`.

@@ -179,7 +179,7 @@ pub(super) fn stream_node_count_batches(
             filtered_out_count: 0,
         });
     let count = i64::try_from(count).map_err(|_| {
-        HawdbError::Execution(format!(
+        HawDBError::Execution(format!(
             "node count for label '{label}' exceeds the supported i64 result range"
         ))
     })?;
@@ -223,7 +223,7 @@ pub(super) fn stream_relationship_count_batches(
             filtered_out_count: 0,
         });
     let count = i64::try_from(count).map_err(|_| {
-        HawdbError::Execution(format!(
+        HawDBError::Execution(format!(
             "relationship count for type '{rel_type}' exceeds the supported i64 result range"
         ))
     })?;

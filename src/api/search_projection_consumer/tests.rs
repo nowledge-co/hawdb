@@ -170,7 +170,7 @@ fn initialization_failure_cleans_stage_and_preserves_existing_destination() {
         options(100),
         |_, index| {
             assert!(index.is_persistent());
-            Err(HawdbError::Execution("incomplete initialization".into()))
+            Err(HawDBError::Execution("incomplete initialization".into()))
         },
     );
     assert!(result.is_err());
@@ -502,7 +502,7 @@ fn overflow_and_hydration_errors_do_not_publish_progress() {
     let receipt = consumer.projection().receipt();
     let before = std::fs::read(fixture.0.join("database/projection_consumers.meta")).unwrap();
     let result = db.catch_up_search_projection_consumer(&mut consumer, 1, 1, 1, |_, _| {
-        Err(HawdbError::Execution("incomplete hydration".into()))
+        Err(HawDBError::Execution("incomplete hydration".into()))
     });
     assert!(result.is_err());
     assert_eq!(consumer.projection().receipt(), receipt);
@@ -859,7 +859,7 @@ fn foreign_registry_reinitializes_only_after_the_new_projection_is_complete() {
             id("main"),
             fixture.0.join("failed"),
             options(100),
-            |_, _| Err(HawdbError::Execution("incomplete mapping".into()))
+            |_, _| Err(HawDBError::Execution("incomplete mapping".into()))
         )
         .is_err());
     assert_eq!(std::fs::read(&registry).unwrap(), foreign_bytes);

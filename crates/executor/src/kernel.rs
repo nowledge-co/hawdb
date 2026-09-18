@@ -6,7 +6,7 @@ use crate::{
     ExecutionMemoryConfig, QueryMemoryAccount, QueryMemoryClass, QueryMemoryLease,
     QueryMemoryLedger,
 };
-use hawdb_core::{HawdbError, Result};
+use hawdb_core::{HawDBError, Result};
 use std::num::NonZeroUsize;
 
 pub struct OperatorMemoryTracker {
@@ -45,7 +45,7 @@ impl OperatorMemoryTracker {
 
     pub fn try_charge(&mut self, bytes: usize) -> Result<()> {
         if self.would_exceed(bytes) {
-            return Err(HawdbError::Execution(format!(
+            return Err(HawDBError::Execution(format!(
                 "operator state would use {} bytes, exceeding its {}-byte budget",
                 self.used_bytes.saturating_add(bytes),
                 self.budget_bytes
@@ -81,13 +81,13 @@ impl OperatorMemoryTracker {
         target_bytes: usize,
     ) -> Result<()> {
         if source_bytes > self.used_bytes {
-            return Err(HawdbError::Execution(format!(
+            return Err(HawDBError::Execution(format!(
                 "operator memory transfer tried to release {source_bytes} bytes while using {} bytes",
                 self.used_bytes
             )));
         }
         if target.would_exceed(target_bytes) {
-            return Err(HawdbError::Execution(format!(
+            return Err(HawDBError::Execution(format!(
                 "operator memory transfer would use {} bytes, exceeding its {}-byte budget",
                 target.used_bytes.saturating_add(target_bytes),
                 target.budget_bytes
@@ -99,7 +99,7 @@ impl OperatorMemoryTracker {
             }
             (None, None) => {}
             _ => {
-                return Err(HawdbError::Execution(
+                return Err(HawDBError::Execution(
                     "operator memory transfer cannot cross accounted and unaccounted trackers"
                         .to_string(),
                 ));
@@ -179,13 +179,13 @@ impl SpillBudgetTracker {
 
     pub fn create_run(&mut self, file_operator: &str) -> Result<(SpillRun, SpillWriter)> {
         if self.run_count >= self.max_runs {
-            return Err(HawdbError::Execution(format!(
+            return Err(HawDBError::Execution(format!(
                 "{} exceeded max_spill_runs {}",
                 self.operator, self.max_runs
             )));
         }
         let pool = self.pool.as_ref().map_err(|error| {
-            HawdbError::Execution(format!("{} spill pool unavailable: {error}", self.operator))
+            HawDBError::Execution(format!("{} spill pool unavailable: {error}", self.operator))
         })?;
         let run = SpillRun::create(pool.clone(), file_operator)?;
         self.run_count = self.run_count.saturating_add(1);
@@ -195,7 +195,7 @@ impl SpillBudgetTracker {
     pub(crate) fn reserve_write(&self, bytes: u64) -> Result<SpillWriteReservation> {
         let next = self.used_bytes.saturating_add(bytes);
         if next > self.max_bytes {
-            return Err(HawdbError::Execution(format!(
+            return Err(HawDBError::Execution(format!(
                 "{} exceeded max_spill_bytes {} (next total {})",
                 self.operator, self.max_bytes, next
             )));
@@ -203,7 +203,7 @@ impl SpillBudgetTracker {
         self.pool
             .as_ref()
             .map_err(|error| {
-                HawdbError::Execution(format!("{} spill pool unavailable: {error}", self.operator))
+                HawDBError::Execution(format!("{} spill pool unavailable: {error}", self.operator))
             })?
             .reserve_bytes(self.operator, bytes)
     }
@@ -219,7 +219,7 @@ pub fn ensure_operator_item_fits(
     tracker: &OperatorMemoryTracker,
 ) -> Result<()> {
     if bytes > tracker.budget_bytes {
-        return Err(HawdbError::Execution(format!(
+        return Err(HawDBError::Execution(format!(
             "{operator} item uses {bytes} bytes, exceeding blocking_operator_bytes {}",
             tracker.budget_bytes
         )));
@@ -236,7 +236,7 @@ pub fn push_bounded_operator_binding(
     let bytes = binding_memory_bytes(&binding);
     ensure_operator_item_fits(operator, bytes, tracker)?;
     if tracker.would_exceed(bytes) {
-        return Err(HawdbError::Execution(format!(
+        return Err(HawDBError::Execution(format!(
             "{operator} state exceeds blocking_operator_bytes {}",
             tracker.budget_bytes
         )));

@@ -147,7 +147,7 @@ fn verify(root: &Path, expected: &BTreeMap<String, SearchDocument>, epoch: u64) 
         let error = result.unwrap_err();
         assert!(matches!(
             error,
-            hawdb::HawdbError::CapabilityUnavailable {
+            hawdb::HawDBError::CapabilityUnavailable {
                 capability: hawdb::RuntimeCapability::FullTextSearch
             }
         ));

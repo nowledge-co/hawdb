@@ -3,7 +3,7 @@
 //! Reference revision: PostgreSQL 3d00537feb565c410baf41bb301eee338e4b2317.
 //! Reference files: src/test/regress/sql/create_property_graph.sql and
 //! src/test/regress/sql/graph_table.sql. The cases are reduced and renamed for
-//! Hawdb; PostgreSQL expected-output text is not copied.
+//! HawDB; PostgreSQL expected-output text is not copied.
 
 use hawdb_sql_syntax::{
     parse_graph_table, parse_pgq_statement, ElementLabel, GraphEdgeDirection,

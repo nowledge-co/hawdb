@@ -1,7 +1,7 @@
 use super::{
     bind_bound, map_payload_bytes, project_bound_row, projection_uses_non_aggregate_coalesce,
     visit_relational_rows, AccountedRelationalLocatorBatch, BatchControl, Binding, BindingId,
-    BoundRow, BoundStreamingPredicate, BoundStreamingProjection, ColumnarBatch, HawdbError,
+    BoundRow, BoundStreamingPredicate, BoundStreamingProjection, ColumnarBatch, HawDBError,
     PlannedJoin, QueryMemoryLedger, QueryRowsBuilder, RelationalBaseAccess, RelationalIndexRuntime,
     RelationalOperatorId, RelationalPhysicalJoinExecution, RelationalPipelineState,
     RelationalQueryLimits, RelationalRowLocator, RelationalRowRuntime, RelationalState,
@@ -28,16 +28,16 @@ pub(super) fn execute_ordered_index_projection<'a>(
     memory_ledger: &QueryMemoryLedger,
 ) -> Result<StreamingProjectionOutput> {
     let RelationalBaseAccess::Index { name, scan } = base_access else {
-        return Err(HawdbError::Execution(
+        return Err(HawDBError::Execution(
             "ordered relational projection requires an index range access".to_string(),
         ));
     };
     let mut offset = usize::try_from(bind_bound(select.offset, parameters, "OFFSET")?.unwrap_or(0))
-        .map_err(|_| HawdbError::Semantic("SQL OFFSET is too large".to_string()))?;
+        .map_err(|_| HawDBError::Semantic("SQL OFFSET is too large".to_string()))?;
     let requested = bind_bound(select.limit, parameters, "LIMIT")?
         .map(|value| {
             usize::try_from(value)
-                .map_err(|_| HawdbError::Semantic("SQL LIMIT is too large".to_string()))
+                .map_err(|_| HawDBError::Semantic("SQL LIMIT is too large".to_string()))
         })
         .transpose()?
         .unwrap_or(usize::MAX);
@@ -50,27 +50,27 @@ pub(super) fn execute_ordered_index_projection<'a>(
     )?;
     let mut hydrate = |batch: ColumnarBatch| -> Result<BatchControl> {
         let locators = batch.column(RELATIONAL_ROW_LOCATOR_SLOT).ok_or_else(|| {
-            HawdbError::Execution("ordered locator batch is missing its locator column".to_string())
+            HawDBError::Execution("ordered locator batch is missing its locator column".to_string())
         })?;
         for row_index in batch.selection().iter() {
             if output.len() >= requested {
                 return Ok(BatchControl::Stop);
             }
             if output.len() >= limits.max_output_rows {
-                return Err(HawdbError::Execution(format!(
+                return Err(HawDBError::Execution(format!(
                     "relational SQL output exceeds max_output_rows {}",
                     limits.max_output_rows
                 )));
             }
             let locator = locators.relational_row_locator(row_index).ok_or_else(|| {
-                HawdbError::Execution(format!(
+                HawDBError::Execution(format!(
                     "ordered locator batch row {row_index} is not a relational row locator"
                 ))
             })?;
             let row = row_runtime
                 .read_output_point(&select.from.name, locator.primary_key())?
                 .ok_or_else(|| {
-                    HawdbError::StorageIntegrity(format!(
+                    HawDBError::StorageIntegrity(format!(
                         "relational index {name} on table {} points to missing row {:?}",
                         select.from.name,
                         locator.primary_key()
@@ -88,7 +88,7 @@ pub(super) fn execute_ordered_index_projection<'a>(
             let projected = project_bound_row(&bound, &select.projection, parameters)?;
             payload_bytes = payload_bytes.saturating_add(map_payload_bytes(&projected));
             if payload_bytes > limits.max_output_payload_bytes {
-                return Err(HawdbError::Execution(format!(
+                return Err(HawDBError::Execution(format!(
                     "relational SQL output exceeds max_output_payload_bytes {}",
                     limits.max_output_payload_bytes
                 )));
@@ -175,11 +175,11 @@ pub(super) fn execute_streaming_projection<'a>(
         );
     }
     let mut offset = usize::try_from(bind_bound(select.offset, parameters, "OFFSET")?.unwrap_or(0))
-        .map_err(|_| HawdbError::Semantic("SQL OFFSET is too large".to_string()))?;
+        .map_err(|_| HawDBError::Semantic("SQL OFFSET is too large".to_string()))?;
     let requested = bind_bound(select.limit, parameters, "LIMIT")?
         .map(|value| {
             usize::try_from(value)
-                .map_err(|_| HawdbError::Semantic("SQL LIMIT is too large".to_string()))
+                .map_err(|_| HawDBError::Semantic("SQL LIMIT is too large".to_string()))
         })
         .transpose()?
         .unwrap_or(usize::MAX);
@@ -207,7 +207,7 @@ pub(super) fn execute_streaming_projection<'a>(
                     return Ok(false);
                 }
                 if output.len() >= limits.max_output_rows {
-                    return Err(HawdbError::Execution(format!(
+                    return Err(HawDBError::Execution(format!(
                         "relational SQL output exceeds max_output_rows {}",
                         limits.max_output_rows
                     )));
@@ -215,7 +215,7 @@ pub(super) fn execute_streaming_projection<'a>(
                 let projected = project_bound_row(&row, &select.projection, parameters)?;
                 payload_bytes = payload_bytes.saturating_add(map_payload_bytes(&projected));
                 if payload_bytes > limits.max_output_payload_bytes {
-                    return Err(HawdbError::Execution(format!(
+                    return Err(HawDBError::Execution(format!(
                         "relational SQL output exceeds max_output_payload_bytes {}",
                         limits.max_output_payload_bytes
                     )));
@@ -256,11 +256,11 @@ pub(super) fn execute_borrowed_streaming_full_scan(
     let projection =
         BoundStreamingProjection::bind(&select.projection, schema, &select.from.name, qualifier)?;
     let mut offset = usize::try_from(bind_bound(select.offset, parameters, "OFFSET")?.unwrap_or(0))
-        .map_err(|_| HawdbError::Semantic("SQL OFFSET is too large".to_string()))?;
+        .map_err(|_| HawDBError::Semantic("SQL OFFSET is too large".to_string()))?;
     let requested = bind_bound(select.limit, parameters, "LIMIT")?
         .map(|value| {
             usize::try_from(value)
-                .map_err(|_| HawdbError::Semantic("SQL LIMIT is too large".to_string()))
+                .map_err(|_| HawDBError::Semantic("SQL LIMIT is too large".to_string()))
         })
         .transpose()?
         .unwrap_or(usize::MAX);
@@ -290,7 +290,7 @@ pub(super) fn execute_borrowed_streaming_full_scan(
                 return Ok(false);
             }
             if output_rows >= limits.max_output_rows {
-                return Err(HawdbError::Execution(format!(
+                return Err(HawDBError::Execution(format!(
                     "relational SQL output exceeds max_output_rows {}",
                     limits.max_output_rows
                 )));

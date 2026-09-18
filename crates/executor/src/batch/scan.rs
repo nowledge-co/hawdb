@@ -275,7 +275,7 @@ pub(super) fn stream_source_segment_scan_batches(
                 return Ok(ScanControl::Stop);
             }
             let Some(node) = store.node_owned(NodeId(row.node_id))? else {
-                return Err(HawdbError::StorageIntegrity(
+                return Err(HawDBError::StorageIntegrity(
                     "SourceSegmentScan sidecar candidate is absent from the canonical graph"
                         .to_string(),
                 ));
@@ -283,7 +283,7 @@ pub(super) fn stream_source_segment_scan_batches(
             if source_label_id.is_none_or(|label_id| !node.labels.contains(&label_id))
                 || node.properties != row.properties
             {
-                return Err(HawdbError::StorageIntegrity(
+                return Err(HawDBError::StorageIntegrity(
                     "SourceSegmentScan sidecar candidate disagrees with the canonical graph"
                         .to_string(),
                 ));
@@ -453,7 +453,7 @@ pub(super) fn stream_adjacency_exists_batches(
         ..
     } = plan
     else {
-        return Err(HawdbError::Execution(
+        return Err(HawDBError::Execution(
             "expected adjacency exists plan".to_string(),
         ));
     };
@@ -546,7 +546,7 @@ pub(super) fn stream_adjacency_expand_batches(
         ..
     } = plan
     else {
-        return Err(HawdbError::Execution(
+        return Err(HawDBError::Execution(
             "expected adjacency expand plan".to_string(),
         ));
     };
@@ -623,7 +623,7 @@ pub(super) fn stream_adjacency_expand_batches(
                         runtime_checkpoint(context.task_context)?;
                         let candidate_bytes = binding_memory_bytes(&candidate.binding);
                         if candidate_bytes > batch_payload_bytes {
-                            return Err(HawdbError::Execution(format!(
+                            return Err(HawDBError::Execution(format!(
                                 "intermediate row uses {candidate_bytes} bytes, exceeding batch_payload_bytes {batch_payload_bytes}"
                             )));
                         }

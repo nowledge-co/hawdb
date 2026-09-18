@@ -2,7 +2,7 @@
 //!
 //! Bundle evaluation remains in `integration_bundle`; this module only maps
 //! bounded CLI inputs into that typed contract.
-use hawdb_core::{HawdbError, Result};
+use hawdb_core::{HawDBError, Result};
 use std::path::Path;
 
 pub use crate::integration_bundle::{
@@ -95,7 +95,7 @@ pub fn run_nowledge_mem_integration_bundle(
                 inputs.blackbox_manifest = Some(read_json_arg(&mut args)?);
             }
             _ => {
-                return Err(HawdbError::Semantic(nowledge_mem_integration_bundle_usage()));
+                return Err(HawDBError::Semantic(nowledge_mem_integration_bundle_usage()));
             }
         }
     }
@@ -111,12 +111,12 @@ fn read_json_arg(args: &mut impl Iterator<Item = String>) -> Result<serde_json::
 
 fn read_json_file(path: &Path) -> Result<serde_json::Value> {
     let raw = std::fs::read_to_string(path).map_err(|_| {
-        HawdbError::Execution(
+        HawDBError::Execution(
             "failed to read Nowledge Mem integration bundle input: io_error".to_string(),
         )
     })?;
     serde_json::from_str(&raw).map_err(|_| {
-        HawdbError::Semantic(
+        HawDBError::Semantic(
             "failed to parse Nowledge Mem integration bundle input: invalid_json".to_string(),
         )
     })
@@ -124,7 +124,7 @@ fn read_json_file(path: &Path) -> Result<serde_json::Value> {
 
 fn next_arg(args: &mut impl Iterator<Item = String>) -> Result<String> {
     args.next()
-        .ok_or_else(|| HawdbError::Semantic(nowledge_mem_integration_bundle_usage()))
+        .ok_or_else(|| HawDBError::Semantic(nowledge_mem_integration_bundle_usage()))
 }
 
 #[cfg(test)]

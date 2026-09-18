@@ -9,7 +9,7 @@ use crate::row_runtime::{
     RelationalReadRow, RelationalRowExecutionEvidence, RelationalRowReadMode, RelationalRowRuntime,
     RelationalRowStoreReader,
 };
-use hawdb_core::{Catalog, HawdbError, Result, Value};
+use hawdb_core::{Catalog, HawDBError, Result, Value};
 use hawdb_executor::binding::map_payload_bytes;
 use hawdb_executor::binding::Binding as ExecutorBinding;
 use hawdb_executor::blocking::{
@@ -329,7 +329,7 @@ impl RelationalRowStoreReader for crate::RelationalMaterializedReader {
         &self,
         _rows: &Self::TransactionRows,
     ) -> Result<hawdb_storage::RelationalRowPageSnapshotReader> {
-        Err(HawdbError::Execution(
+        Err(HawDBError::Execution(
             "materialized relational reader does not expose transaction rows".to_string(),
         ))
     }
@@ -346,7 +346,7 @@ pub fn execute_prepared_relational_query_with_resources<'a, R: RelationalQuerySt
     let parse_nanos = prepared_sql.parse_nanos;
     let prepared = Arc::unwrap_or_clone(prepared_sql.template);
     if prepared.parameters.len() != parameters.len() {
-        return Err(HawdbError::Semantic(format!(
+        return Err(HawDBError::Semantic(format!(
             "PostgreSQL statement requires {} parameters, but {} parameters were supplied",
             prepared.parameters.len(),
             parameters.len()
@@ -373,7 +373,7 @@ pub fn execute_prepared_relational_query_with_resources<'a, R: RelationalQuerySt
         }
         SqlStatement::Explain(explain) => {
             let SqlStatement::Select(select) = *explain.statement else {
-                return Err(HawdbError::Semantic(
+                return Err(HawDBError::Semantic(
                     "EXPLAIN only supports relational SELECT".to_string(),
                 ));
             };
@@ -399,7 +399,7 @@ pub fn execute_prepared_relational_query_with_resources<'a, R: RelationalQuerySt
                 resources.limits,
             )
         }
-        _ => Err(HawdbError::Semantic(
+        _ => Err(HawDBError::Semantic(
             "relational query entrypoint requires SELECT or EXPLAIN SELECT".to_string(),
         )),
     }

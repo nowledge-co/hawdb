@@ -122,7 +122,7 @@ fn graph_handler_checks_cancellation_inside_its_execution_boundary() {
         });
         assert_eq!(
             result.unwrap_err(),
-            HawdbError::Execution("runtime task stopped: cancelled".to_string())
+            HawDBError::Execution("runtime task stopped: cancelled".to_string())
         );
     }
 }

@@ -17,7 +17,7 @@ package(default_visibility = ["//visibility:public"])
             "-cleanup",
             "-workers",
             "auto",
-        ] + (["-lncheck", "final"] if model == "HawdbCowPagePublication" else []),
+        ] + (["-lncheck", "final"] if model == "HawDBCowPagePublication" else []),
     )
     for model in STORAGE_MODELS
 ]

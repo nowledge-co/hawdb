@@ -7,12 +7,12 @@ not active in the query data path.
 
 ## Decision
 
-Hawdb's portable async segment-read API uses Tokio's bounded blocking lane over
+HawDB's portable async segment-read API uses Tokio's bounded blocking lane over
 the existing positioned file reader. It does not use `io_uring`, a dedicated
 platform runtime, or a second storage implementation.
 
 This is the same portability model documented by Tokio for ordinary files:
-filesystem syscalls remain blocking and are executed by `spawn_blocking`. Hawdb
+filesystem syscalls remain blocking and are executed by `spawn_blocking`. HawDB
 uses `spawn_blocking` directly because `FileSegmentRangeReader` already owns the
 cross-platform positioned-read, cache, digest, and error semantics that
 `tokio::fs::File` would otherwise duplicate.
@@ -21,7 +21,7 @@ The async API is valuable even though the underlying syscall is blocking:
 
 - the host async worker is yielded while the physical read is running;
 - owned and borrowed Tokio runtimes use one integration path;
-- the governor, rather than an additional Rayon pool, bounds Hawdb's submitted
+- the governor, rather than an additional Rayon pool, bounds HawDB's submitted
   blocking reads;
 - result ordering, wave byte budgets, cancellation checkpoints, cache behavior,
   and typed read errors stay aligned with the synchronous executor.
@@ -189,7 +189,7 @@ being considered for activation.
 
 ## Query Integration Gate
 
-The current `HawdbTokioEmbedded` query path still executes the synchronous
+The current `HawDBTokioEmbedded` query path still executes the synchronous
 query engine through `execute_blocking`. Enabling the new executor there first
 requires an awaitable boundary between physical segment scheduling and payload
 consumption. Until that boundary exists, the synchronous executor remains

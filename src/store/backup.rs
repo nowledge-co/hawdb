@@ -16,7 +16,7 @@ use super::{
     MANIFEST_FILE, PROPERTY_PROJECTION_MANIFEST_MAX_BYTES, PROPERTY_SPILL_MANIFEST_MAX_BYTES,
     STABLE_ID_MAPPING_FILE,
 };
-use crate::error::{HawdbError, Result};
+use crate::error::{HawDBError, Result};
 use hawdb_storage::{
     append_generation_manifest_file, append_segment_file, decode_relational_checkpoint_file,
     validate_backup_file_name, AppendGenerationReader, AppendPublicationConfig,
@@ -52,7 +52,7 @@ pub(super) fn validate_backup_files(
         || manifest.checkpoint_epoch != generation
         || manifest.wal_generation != generation
     {
-        return Err(HawdbError::Storage(
+        return Err(HawDBError::Storage(
             "backup files do not describe one published generation".to_string(),
         ));
     }
@@ -60,7 +60,7 @@ pub(super) fn validate_backup_files(
     let wal_name = wal_generation_file(generation);
     for required in [MANIFEST_FILE, checkpoint_name.as_str(), wal_name.as_str()] {
         if !names.contains(required) {
-            return Err(HawdbError::Storage(format!(
+            return Err(HawDBError::Storage(format!(
                 "backup is missing required file: {required}"
             )));
         }
@@ -72,7 +72,7 @@ pub(super) fn validate_backup_files(
             || actual_checksum != file.encoded_checksum
             || actual_sha256 != file.sha256
         {
-            return Err(HawdbError::Storage(format!(
+            return Err(HawDBError::Storage(format!(
                 "backup file verification failed: {}",
                 file.name
             )));
@@ -86,7 +86,7 @@ pub(super) fn validate_backup_files(
         || manifest.checkpoint_encoded_checksum != Some(checkpoint.encoded_checksum)
         || manifest.checkpoint_encoded_sha256 != Some(checkpoint.sha256)
     {
-        return Err(HawdbError::Storage(
+        return Err(HawDBError::Storage(
             "backup checkpoint metadata does not match the durable manifest".to_string(),
         ));
     }
@@ -101,7 +101,7 @@ pub(super) fn validate_backup_files(
     )?;
     let (checkpoint_body, checkpoint_checksum) = split_checkpoint_checksum(&checkpoint_text)?;
     if checkpoint_checksum != checksum_bytes(checkpoint_body.as_bytes()) {
-        return Err(HawdbError::Storage(
+        return Err(HawDBError::Storage(
             "backup checkpoint logical checksum mismatch".to_string(),
         ));
     }
@@ -112,7 +112,7 @@ pub(super) fn validate_backup_files(
                 .iter()
                 .find(|file| file.name == relational_name)
                 .ok_or_else(|| {
-                    HawdbError::Storage(format!(
+                    HawDBError::Storage(format!(
                         "backup is missing required relational checkpoint: {relational_name}"
                     ))
                 })?;
@@ -120,14 +120,14 @@ pub(super) fn validate_backup_files(
                 || relational.encoded_checksum != metadata.encoded_checksum
                 || relational.sha256 != metadata.encoded_sha256
             {
-                return Err(HawdbError::Storage(
+                return Err(HawDBError::Storage(
                     "backup relational checkpoint metadata does not match the generation checkpoint"
                         .to_string(),
                 ));
             }
             let max_bytes = RelationalDecodeLimits::checkpoint().max_record_bytes;
             if relational.encoded_len > max_bytes as u64 {
-                return Err(HawdbError::Storage(format!(
+                return Err(HawDBError::Storage(format!(
                     "backup relational checkpoint contains {} bytes, exceeding max_record_bytes {max_bytes}",
                     relational.encoded_len
                 )));
@@ -136,16 +136,16 @@ pub(super) fn validate_backup_files(
                 &root.join(&relational_name),
                 RelationalDecodeLimits::checkpoint(),
             )
-            .map_err(|error| HawdbError::Storage(error.to_string()))?;
+            .map_err(|error| HawDBError::Storage(error.to_string()))?;
             if relational_checkpoint.epoch != manifest.checkpoint_commit_epoch {
-                return Err(HawdbError::Storage(format!(
+                return Err(HawDBError::Storage(format!(
                     "backup relational checkpoint epoch {} does not match checkpoint commit epoch {}",
                     relational_checkpoint.epoch, manifest.checkpoint_commit_epoch
                 )));
             }
         }
         None if names.contains(relational_name.as_str()) => {
-            return Err(HawdbError::Storage(
+            return Err(HawDBError::Storage(
                 "backup contains an unreferenced relational checkpoint".to_string(),
             ));
         }
@@ -170,7 +170,7 @@ pub(super) fn validate_backup_files(
             descriptor_root_name.as_str(),
         ] {
             if !names.contains(required) {
-                return Err(HawdbError::Storage(format!(
+                return Err(HawDBError::Storage(format!(
                     "backup is missing required canonical file: {required}"
                 )));
             }
@@ -183,18 +183,18 @@ pub(super) fn validate_backup_files(
             || encoded_manifest.encoded_checksum != expected_checksum
             || manifest.canonical_manifest_encoded_sha256 != Some(encoded_manifest.sha256)
         {
-            return Err(HawdbError::Storage(
+            return Err(HawDBError::Storage(
                 "backup canonical manifest metadata does not match the durable manifest"
                     .to_string(),
             ));
         }
         let canonical_manifest_text = fs::read_to_string(root.join(&canonical_manifest_name))?;
         let canonical_manifest = CanonicalSegmentManifest::decode(&canonical_manifest_text)
-            .map_err(|error| HawdbError::Storage(error.to_string()))?;
+            .map_err(|error| HawDBError::Storage(error.to_string()))?;
         if canonical_manifest.generation != ManifestGeneration(generation)
             || canonical_manifest.source_commit_epoch != manifest.checkpoint_commit_epoch
         {
-            return Err(HawdbError::Storage(
+            return Err(HawDBError::Storage(
                 "backup canonical descriptor identity does not match its checkpoint".to_string(),
             ));
         }
@@ -206,7 +206,7 @@ pub(super) fn validate_backup_files(
             || canonical_manifest.artifact_digest.0 != canonical_artifact.encoded_checksum
             || canonical_manifest.artifact_sha256 != canonical_artifact.sha256
         {
-            return Err(HawdbError::Storage(
+            return Err(HawDBError::Storage(
                 "backup canonical artifact metadata does not match its manifest".to_string(),
             ));
         }
@@ -219,7 +219,7 @@ pub(super) fn validate_backup_files(
                 != u64::from(canonical_manifest.descriptor_root_artifact.encoded_crc32c)
             || descriptor_root.sha256 != canonical_manifest.descriptor_root_artifact.encoded_sha256
         {
-            return Err(HawdbError::Storage(
+            return Err(HawDBError::Storage(
                 "backup canonical descriptor root does not match its manifest".to_string(),
             ));
         }
@@ -233,9 +233,9 @@ pub(super) fn validate_backup_files(
             canonical_manifest.descriptor_generation_artifacts(),
             descriptor_config,
         )
-        .map_err(|error| HawdbError::StorageIntegrity(error.to_string()))?;
+        .map_err(|error| HawDBError::StorageIntegrity(error.to_string()))?;
         if root_reader.root().descriptor_count != canonical_manifest.segment_count {
-            return Err(HawdbError::Storage(
+            return Err(HawDBError::Storage(
                 "backup canonical descriptor count does not match its manifest".to_string(),
             ));
         }
@@ -247,7 +247,7 @@ pub(super) fn validate_backup_files(
             || descriptor_page.encoded_checksum != root_reader.root().page_artifact_crc32c.as_u64()
             || descriptor_page.sha256 != root_reader.root().page_artifact_sha256
         {
-            return Err(HawdbError::Storage(
+            return Err(HawDBError::Storage(
                 "backup canonical descriptor pages do not match their root".to_string(),
             ));
         }
@@ -280,7 +280,7 @@ pub(super) fn validate_backup_files(
         };
         reader
             .and_then(|reader| reader.deep_scrub())
-            .map_err(|error| HawdbError::StorageIntegrity(error.to_string()))?;
+            .map_err(|error| HawDBError::StorageIntegrity(error.to_string()))?;
     }
     if let Some(binding) = manifest.canonical_adjacency_generation_artifacts {
         let adjacency_artifact_name = canonical_adjacency_artifact_generation_file(generation);
@@ -294,7 +294,7 @@ pub(super) fn validate_backup_files(
             descriptor_root_name.as_str(),
         ] {
             if !names.contains(required) {
-                return Err(HawdbError::Storage(format!(
+                return Err(HawDBError::Storage(format!(
                     "backup is missing required canonical adjacency file: {required}"
                 )));
             }
@@ -308,7 +308,7 @@ pub(super) fn validate_backup_files(
                 != u64::from(binding.descriptor_root_artifact.encoded_crc32c)
             || descriptor_root.sha256 != binding.descriptor_root_artifact.encoded_sha256
         {
-            return Err(HawdbError::Storage(
+            return Err(HawDBError::Storage(
                 "backup canonical adjacency descriptor root does not match the durable manifest"
                     .to_string(),
             ));
@@ -321,7 +321,7 @@ pub(super) fn validate_backup_files(
             || binding.adjacency_artifact.encoded_crc32c != adjacency_artifact.encoded_checksum
             || binding.adjacency_artifact.encoded_sha256 != adjacency_artifact.sha256
         {
-            return Err(HawdbError::Storage(
+            return Err(HawDBError::Storage(
                 "backup canonical adjacency artifact metadata does not match its durable binding"
                     .to_string(),
             ));
@@ -341,7 +341,7 @@ pub(super) fn validate_backup_files(
             },
             descriptor_config,
         )
-        .map_err(|error| HawdbError::StorageIntegrity(error.to_string()))?;
+        .map_err(|error| HawDBError::StorageIntegrity(error.to_string()))?;
         let descriptor_page = files
             .iter()
             .find(|file| file.name == descriptor_page_name)
@@ -350,7 +350,7 @@ pub(super) fn validate_backup_files(
             || descriptor_page.encoded_checksum != root_reader.root().page_artifact_crc32c.as_u64()
             || descriptor_page.sha256 != root_reader.root().page_artifact_sha256
         {
-            return Err(HawdbError::Storage(
+            return Err(HawDBError::Storage(
                 "backup canonical adjacency descriptor pages do not match their root".to_string(),
             ));
         }
@@ -372,7 +372,7 @@ pub(super) fn validate_backup_files(
             max_block_bytes,
         )
         .and_then(|reader| reader.deep_scrub())
-        .map_err(|error| HawdbError::StorageIntegrity(error.to_string()))?;
+        .map_err(|error| HawDBError::StorageIntegrity(error.to_string()))?;
     }
     if let (Some(expected_len), Some(expected_checksum)) = (
         manifest.property_projection_manifest_encoded_len,
@@ -391,7 +391,7 @@ pub(super) fn validate_backup_files(
             descriptor_root_name.as_str(),
         ] {
             if !names.contains(required) {
-                return Err(HawdbError::Storage(format!(
+                return Err(HawDBError::Storage(format!(
                     "backup is missing required property projection file: {required}"
                 )));
             }
@@ -404,13 +404,13 @@ pub(super) fn validate_backup_files(
             || encoded_manifest.encoded_checksum != expected_checksum
             || manifest.property_projection_manifest_encoded_sha256 != Some(encoded_manifest.sha256)
         {
-            return Err(HawdbError::Storage(
+            return Err(HawDBError::Storage(
                 "backup property projection manifest metadata does not match the durable manifest"
                     .to_string(),
             ));
         }
         if encoded_manifest.encoded_len > PROPERTY_PROJECTION_MANIFEST_MAX_BYTES {
-            return Err(HawdbError::Storage(format!(
+            return Err(HawDBError::Storage(format!(
                 "backup property projection manifest contains {} bytes, exceeding the {} byte format limit",
                 encoded_manifest.encoded_len, PROPERTY_PROJECTION_MANIFEST_MAX_BYTES
             )));
@@ -418,7 +418,7 @@ pub(super) fn validate_backup_files(
         let projection_manifest_text = fs::read_to_string(root.join(&projection_manifest_name))?;
         let projection_manifest =
             PersistentPropertyProjectionManifest::decode(&projection_manifest_text)
-                .map_err(|error| HawdbError::Storage(error.to_string()))?;
+                .map_err(|error| HawDBError::Storage(error.to_string()))?;
         let projection_artifact = files
             .iter()
             .find(|file| file.name == projection_artifact_name)
@@ -429,7 +429,7 @@ pub(super) fn validate_backup_files(
             || projection_manifest.artifact_digest.0 != projection_artifact.encoded_checksum
             || projection_manifest.artifact_sha256 != projection_artifact.sha256
         {
-            return Err(HawdbError::Storage(
+            return Err(HawDBError::Storage(
                 "backup property projection artifact metadata does not match its manifest"
                     .to_string(),
             ));
@@ -443,13 +443,13 @@ pub(super) fn validate_backup_files(
             projection_manifest.descriptor_generation_artifacts(),
             GraphDescriptorTreeBuildConfig::default(),
         )
-        .map_err(|error| HawdbError::StorageIntegrity(error.to_string()))?;
+        .map_err(|error| HawDBError::StorageIntegrity(error.to_string()))?;
         if descriptor_root.root().kind != GraphDescriptorKind::PropertyProjection
             || descriptor_root.root().generation != generation
             || descriptor_root.root().source_commit_epoch != manifest.checkpoint_commit_epoch
             || descriptor_root.root().descriptor_count != projection_manifest.block_count
         {
-            return Err(HawdbError::Storage(
+            return Err(HawDBError::Storage(
                 "backup property projection descriptor root identity is inconsistent".to_string(),
             ));
         }
@@ -462,7 +462,7 @@ pub(super) fn validate_backup_files(
                 != descriptor_root.root().page_artifact_crc32c.as_u64()
             || descriptor_page.sha256 != descriptor_root.root().page_artifact_sha256
         {
-            return Err(HawdbError::Storage(
+            return Err(HawDBError::Storage(
                 "backup property projection descriptor pages do not match their root".to_string(),
             ));
         }
@@ -486,7 +486,7 @@ pub(super) fn validate_backup_files(
             max_block_bytes,
         )
         .and_then(|reader| reader.deep_scrub())
-        .map_err(|error| HawdbError::StorageIntegrity(error.to_string()))?;
+        .map_err(|error| HawDBError::StorageIntegrity(error.to_string()))?;
     }
     Ok(())
 }
@@ -502,7 +502,7 @@ fn validate_backup_stable_identity(root: &Path, names: &BTreeSet<&str>) -> Resul
         if generation_files.is_empty() {
             return Ok(());
         }
-        return Err(HawdbError::Storage(
+        return Err(HawDBError::Storage(
             "backup contains a stable identity generation without its selector".to_string(),
         ));
     }
@@ -510,18 +510,18 @@ fn validate_backup_stable_identity(root: &Path, names: &BTreeSet<&str>) -> Resul
         &root.join(STABLE_ID_MAPPING_FILE),
         StableIdentityMappingConfig::default(),
     )
-    .map_err(|error| HawdbError::Storage(error.to_string()))?;
+    .map_err(|error| HawDBError::Storage(error.to_string()))?;
     let selected_name = reader
         .artifact_path()
         .file_name()
         .and_then(|name| name.to_str())
         .ok_or_else(|| {
-            HawdbError::Storage(
+            HawDBError::Storage(
                 "backup stable identity generation artifact name is not UTF-8".to_string(),
             )
         })?;
     if generation_files.as_slice() != [selected_name] {
-        return Err(HawdbError::Storage(format!(
+        return Err(HawDBError::Storage(format!(
             "backup stable identity selector must bind exactly one generation: selected {selected_name}, found {generation_files:?}"
         )));
     }
@@ -539,7 +539,7 @@ fn validate_backup_append_generation(
             parse_append_segment_generation_file(&file.name).is_some()
                 || parse_append_manifest_generation_file(&file.name).is_some()
         }) {
-            return Err(HawdbError::Storage(
+            return Err(HawDBError::Storage(
                 "backup contains unreferenced append artifacts".to_string(),
             ));
         }
@@ -548,7 +548,7 @@ fn validate_backup_append_generation(
 
     let manifest_name = append_generation_manifest_file(binding.generation);
     if !names.contains(manifest_name.as_str()) {
-        return Err(HawdbError::Storage(format!(
+        return Err(HawDBError::Storage(format!(
             "backup is missing required append generation manifest: {manifest_name}"
         )));
     }
@@ -560,18 +560,18 @@ fn validate_backup_append_generation(
         || manifest_file.encoded_checksum != u64::from(binding.manifest_artifact.encoded_crc32c)
         || manifest_file.sha256 != binding.manifest_artifact.encoded_sha256
     {
-        return Err(HawdbError::Storage(
+        return Err(HawDBError::Storage(
             "backup append manifest metadata does not match the durable manifest".to_string(),
         ));
     }
 
     let reader =
         AppendGenerationReader::open_bound(root, binding, AppendPublicationConfig::default())
-            .map_err(|error| HawdbError::Storage(error.to_string()))?;
+            .map_err(|error| HawDBError::Storage(error.to_string()))?;
     for segment in reader.segment_bindings() {
         let name = append_segment_file(segment.generation);
         if !names.contains(name.as_str()) {
-            return Err(HawdbError::Storage(format!(
+            return Err(HawDBError::Storage(format!(
                 "backup is missing required append segment: {name}"
             )));
         }
@@ -583,14 +583,14 @@ fn validate_backup_append_generation(
             || file.encoded_checksum != u64::from(segment.artifact.encoded_crc32c)
             || file.sha256 != segment.artifact.encoded_sha256
         {
-            return Err(HawdbError::Storage(format!(
+            return Err(HawDBError::Storage(format!(
                 "backup append segment metadata does not match its manifest: {name}"
             )));
         }
     }
     reader
         .deep_scrub()
-        .map_err(|error| HawdbError::Storage(error.to_string()))?;
+        .map_err(|error| HawDBError::Storage(error.to_string()))?;
     Ok(())
 }
 
@@ -619,7 +619,7 @@ fn validate_backup_property_spills(
         descriptor_root_name.as_str(),
     ] {
         if !names.contains(required) {
-            return Err(HawdbError::Storage(format!(
+            return Err(HawDBError::Storage(format!(
                 "backup is missing required property spill file: {required}"
             )));
         }
@@ -632,24 +632,24 @@ fn validate_backup_property_spills(
         || encoded_manifest.encoded_checksum != expected_checksum
         || encoded_manifest.sha256 != expected_sha256
     {
-        return Err(HawdbError::Storage(
+        return Err(HawDBError::Storage(
             "backup property spill manifest metadata does not match the durable manifest"
                 .to_string(),
         ));
     }
     if encoded_manifest.encoded_len > PROPERTY_SPILL_MANIFEST_MAX_BYTES {
-        return Err(HawdbError::Storage(format!(
+        return Err(HawDBError::Storage(format!(
             "backup property spill manifest contains {} bytes, exceeding the {} byte format limit",
             encoded_manifest.encoded_len, PROPERTY_SPILL_MANIFEST_MAX_BYTES
         )));
     }
     let property_manifest_text = fs::read_to_string(root.join(&property_manifest_name))?;
     let property_manifest = PropertySpillManifest::decode(&property_manifest_text)
-        .map_err(|error| HawdbError::Storage(error.to_string()))?;
+        .map_err(|error| HawDBError::Storage(error.to_string()))?;
     if property_manifest.generation != ManifestGeneration(generation)
         || property_manifest.source_commit_epoch != manifest.checkpoint_commit_epoch
     {
-        return Err(HawdbError::Storage(
+        return Err(HawDBError::Storage(
             "backup property spill identity does not match its checkpoint".to_string(),
         ));
     }
@@ -661,7 +661,7 @@ fn validate_backup_property_spills(
         || property_manifest.artifact_digest.0 != property_artifact.encoded_checksum
         || property_manifest.artifact_sha256 != property_artifact.sha256
     {
-        return Err(HawdbError::Storage(
+        return Err(HawDBError::Storage(
             "backup property spill artifact metadata does not match its manifest".to_string(),
         ));
     }
@@ -674,7 +674,7 @@ fn validate_backup_property_spills(
             != u64::from(property_manifest.descriptor_root_artifact.encoded_crc32c)
         || descriptor_root.sha256 != property_manifest.descriptor_root_artifact.encoded_sha256
     {
-        return Err(HawdbError::Storage(
+        return Err(HawDBError::Storage(
             "backup property spill descriptor root does not match its manifest".to_string(),
         ));
     }
@@ -687,9 +687,9 @@ fn validate_backup_property_spills(
         property_manifest.descriptor_generation_artifacts(),
         GraphDescriptorTreeBuildConfig::default(),
     )
-    .map_err(|error| HawdbError::StorageIntegrity(error.to_string()))?;
+    .map_err(|error| HawDBError::StorageIntegrity(error.to_string()))?;
     if root_reader.root().descriptor_count != property_manifest.block_count {
-        return Err(HawdbError::Storage(
+        return Err(HawDBError::Storage(
             "backup property spill descriptor count does not match its manifest".to_string(),
         ));
     }
@@ -701,7 +701,7 @@ fn validate_backup_property_spills(
         || descriptor_page.encoded_checksum != root_reader.root().page_artifact_crc32c.as_u64()
         || descriptor_page.sha256 != root_reader.root().page_artifact_sha256
     {
-        return Err(HawdbError::Storage(
+        return Err(HawDBError::Storage(
             "backup property spill descriptor pages do not match their root".to_string(),
         ));
     }
@@ -724,7 +724,7 @@ fn validate_backup_property_spills(
         store_id_for_path(root)?,
         max_block_bytes,
     )
-    .map_err(|error| HawdbError::StorageIntegrity(error.to_string()))?;
+    .map_err(|error| HawDBError::StorageIntegrity(error.to_string()))?;
     Ok(Some(reader))
 }
 
@@ -736,12 +736,12 @@ fn validate_backup_relational_roots(
     let row_binding = manifest
         .relational_row_generation_artifacts
         .ok_or_else(|| {
-            HawdbError::Storage("backup manifest has no relational row-page binding".to_string())
+            HawDBError::Storage("backup manifest has no relational row-page binding".to_string())
         })?;
     let overflow_binding = manifest
         .relational_overflow_generation_artifacts
         .ok_or_else(|| {
-            HawdbError::Storage("backup manifest has no relational overflow binding".to_string())
+            HawDBError::Storage("backup manifest has no relational overflow binding".to_string())
         })?;
     let row_files = files
         .iter()
@@ -758,7 +758,7 @@ fn validate_backup_relational_roots(
         files
             .iter()
             .find(|file| file.name == name)
-            .ok_or_else(|| HawdbError::Storage(format!("backup is missing bound file: {name}")))
+            .ok_or_else(|| HawDBError::Storage(format!("backup is missing bound file: {name}")))
     };
     let overflow_manifest_name =
         hawdb_storage::relational_overflow_manifest_generation_file(overflow_binding.generation);
@@ -768,7 +768,7 @@ fn validate_backup_relational_roots(
             != u64::from(overflow_binding.manifest_artifact.encoded_crc32c)
         || overflow_manifest_file.sha256 != overflow_binding.manifest_artifact.encoded_sha256
     {
-        return Err(HawdbError::Storage(
+        return Err(HawDBError::Storage(
             "backup relational overflow manifest does not match its canonical binding".to_string(),
         ));
     }
@@ -777,11 +777,11 @@ fn validate_backup_relational_roots(
         overflow_binding.generation,
         hawdb_storage::RelationalOverflowPublicationConfig::default(),
     )
-    .map_err(|error| HawdbError::Storage(error.to_string()))?;
+    .map_err(|error| HawDBError::Storage(error.to_string()))?;
     if overflow.manifest().source_commit_epoch != overflow_binding.source_commit_epoch
         || overflow.manifest().root_set_digest != overflow_binding.root_set_digest
     {
-        return Err(HawdbError::Storage(
+        return Err(HawDBError::Storage(
             "backup relational overflow identity differs from its canonical binding".to_string(),
         ));
     }
@@ -800,7 +800,7 @@ fn validate_backup_relational_roots(
             || file.encoded_checksum != u64::from(metadata.encoded_crc32c)
             || file.sha256 != metadata.encoded_sha256
         {
-            return Err(HawdbError::Storage(format!(
+            return Err(HawDBError::Storage(format!(
                 "backup relational overflow artifact does not match its generation manifest: {name}"
             )));
         }
@@ -822,9 +822,9 @@ fn validate_backup_relational_roots(
             )?;
             Ok(())
         })
-        .map_err(|error| HawdbError::Storage(error.to_string()))?;
+        .map_err(|error| HawDBError::Storage(error.to_string()))?;
     if overflow_files != expected_overflow_files {
-        return Err(HawdbError::Storage(
+        return Err(HawDBError::Storage(
             "backup relational overflow files do not match the bound physical closure".to_string(),
         ));
     }
@@ -837,7 +837,7 @@ fn validate_backup_relational_roots(
             != u64::from(row_binding.manifest_artifact.encoded_crc32c)
         || row_manifest_file.sha256 != row_binding.manifest_artifact.encoded_sha256
     {
-        return Err(HawdbError::Storage(
+        return Err(HawDBError::Storage(
             "backup relational row-page manifest does not match its canonical binding".to_string(),
         ));
     }
@@ -846,16 +846,16 @@ fn validate_backup_relational_roots(
         row_binding.generation,
         hawdb_storage::RelationalRowPagePublicationConfig::default(),
     )
-    .map_err(|error| HawdbError::Storage(error.to_string()))?;
+    .map_err(|error| HawDBError::Storage(error.to_string()))?;
     if row.manifest().source_commit_epoch != row_binding.source_commit_epoch
         || row.manifest().root_set_digest != row_binding.root_set_digest
     {
-        return Err(HawdbError::Storage(
+        return Err(HawDBError::Storage(
             "backup relational row-page identity differs from its canonical binding".to_string(),
         ));
     }
     row.validate_overflow_root(&overflow)
-        .map_err(|error| HawdbError::Storage(error.to_string()))?;
+        .map_err(|error| HawDBError::Storage(error.to_string()))?;
     for (name, metadata) in [
         (
             hawdb_storage::relational_row_page_artifact_file(row_binding.generation),
@@ -875,7 +875,7 @@ fn validate_backup_relational_roots(
             || file.encoded_checksum != u64::from(metadata.encoded_crc32c)
             || file.sha256 != metadata.encoded_sha256
         {
-            return Err(HawdbError::Storage(format!(
+            return Err(HawDBError::Storage(format!(
                 "backup relational row-page artifact does not match its generation manifest: {name}"
             )));
         }
@@ -900,10 +900,10 @@ fn validate_backup_relational_roots(
             row.read_page(descriptor)?;
             Ok(())
         })
-        .map_err(|error| HawdbError::Storage(error.to_string()))?;
+        .map_err(|error| HawDBError::Storage(error.to_string()))?;
     }
     if row_files != expected_row_files {
-        return Err(HawdbError::Storage(
+        return Err(HawDBError::Storage(
             "backup relational row-page files do not match the bound physical closure".to_string(),
         ));
     }
@@ -926,7 +926,7 @@ fn validate_backup_relational_index_generation(
         if relational_index_files.is_empty() {
             return Ok(());
         }
-        return Err(HawdbError::Storage(
+        return Err(HawDBError::Storage(
             "backup contains relational index files without a canonical manifest binding"
                 .to_string(),
         ));
@@ -938,7 +938,7 @@ fn validate_backup_relational_index_generation(
         .iter()
         .find(|file| file.name == page_name)
         .ok_or_else(|| {
-            HawdbError::Storage(format!(
+            HawDBError::Storage(format!(
                 "backup is missing bound relational index page artifact: {page_name}"
             ))
         })?;
@@ -946,12 +946,12 @@ fn validate_backup_relational_index_generation(
         .iter()
         .find(|file| file.name == generation_manifest_name)
         .ok_or_else(|| {
-            HawdbError::Storage(format!(
+            HawDBError::Storage(format!(
                 "backup is missing bound relational index generation manifest: {generation_manifest_name}"
             ))
         })?;
     if relational_index_files.len() != 2 {
-        return Err(HawdbError::Storage(
+        return Err(HawDBError::Storage(
             "backup relational index files do not match the single canonical generation binding"
                 .to_string(),
         ));
@@ -970,11 +970,11 @@ fn validate_backup_relational_index_generation(
         },
         RelationalIndexShadowConfig::default(),
     )
-    .map_err(|error| HawdbError::Storage(error.to_string()))?;
+    .map_err(|error| HawDBError::Storage(error.to_string()))?;
     if reader.manifest().catalog_schema_digest != binding.catalog_schema_digest
         || reader.manifest().root_set_digest != binding.root_set_digest
     {
-        return Err(HawdbError::Storage(
+        return Err(HawDBError::Storage(
             "backup relational index manifest digests do not match the canonical binding"
                 .to_string(),
         ));
@@ -991,7 +991,7 @@ fn validate_backup_relational_index_artifact(
         || file.encoded_checksum != expected.encoded_crc32c
         || file.sha256 != expected.encoded_sha256
     {
-        return Err(HawdbError::Storage(format!(
+        return Err(HawDBError::Storage(format!(
             "backup relational index {artifact} does not match the canonical binding"
         )));
     }
@@ -1008,7 +1008,7 @@ pub fn restore_storage_backup(
     validate_backup_files(backup, &backup_manifest.files, backup_manifest.generation)?;
     let durable_manifest = DurableManifest::load(&backup.join(MANIFEST_FILE))?;
     if durable_manifest.checkpoint_commit_epoch != backup_manifest.checkpoint_commit_epoch {
-        return Err(HawdbError::Storage(
+        return Err(HawDBError::Storage(
             "backup checkpoint commit epoch does not match the durable manifest".to_string(),
         ));
     }
@@ -1027,7 +1027,7 @@ pub fn restore_storage_backup(
                 || encoded_checksum != entry.encoded_checksum
                 || sha256 != entry.sha256
             {
-                return Err(HawdbError::Storage(format!(
+                return Err(HawDBError::Storage(format!(
                     "backup file changed while restoring: {}",
                     entry.name
                 )));
@@ -1047,7 +1047,7 @@ pub fn restore_storage_backup(
             || encoded_checksum != manifest_entry.encoded_checksum
             || sha256 != manifest_entry.sha256
         {
-            return Err(HawdbError::Storage(
+            return Err(HawDBError::Storage(
                 "backup manifest file changed while restoring".to_string(),
             ));
         }
@@ -1056,7 +1056,7 @@ pub fn restore_storage_backup(
             .files
             .iter()
             .try_fold(0u64, |total, file| total.checked_add(file.encoded_len))
-            .ok_or_else(|| HawdbError::Storage("restore byte count overflow".to_string()))?;
+            .ok_or_else(|| HawDBError::Storage("restore byte count overflow".to_string()))?;
         Ok(StorageRestoreReport {
             generation: backup_manifest.generation,
             checkpoint_commit_epoch: backup_manifest.checkpoint_commit_epoch,

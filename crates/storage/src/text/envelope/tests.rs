@@ -81,7 +81,7 @@ impl Envelope {
 
 fn error(bytes: &[u8], limit: Option<u64>) -> String {
     match read_durable_text_bytes_with_limit(bytes, "fixture", limit) {
-        Err(HawdbError::Storage(message)) => message,
+        Err(HawDBError::Storage(message)) => message,
         Err(other) => panic!("wrong error class: {other}"),
         Ok(_) => panic!("invalid envelope accepted"),
     }

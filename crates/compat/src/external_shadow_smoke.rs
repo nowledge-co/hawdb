@@ -6,7 +6,7 @@ use crate::{
 };
 #[cfg(test)]
 use crate::{CompatibilityCheckReport, CompatibilityShadowCheckReport};
-use hawdb_core::{HawdbError, Result, Value};
+use hawdb_core::{HawDBError, Result, Value};
 use std::collections::BTreeMap;
 
 #[doc(hidden)]
@@ -135,13 +135,13 @@ pub fn enforce_external_shadow_adapter_smoke_requirements(
 ) -> Result<()> {
     let missing_capabilities = external_shadow_ready_missing_capabilities(Some(ready));
     if !missing_capabilities.is_empty() {
-        return Err(HawdbError::Execution(format!(
+        return Err(HawDBError::Execution(format!(
             "external shadow adapter smoke missing required capabilities: {}",
             missing_capabilities.join(", ")
         )));
     }
     if require_previous_wrapper && ready.engine_kind.as_deref() != Some("previous_wrapper") {
-        return Err(HawdbError::Execution(
+        return Err(HawDBError::Execution(
             "external shadow adapter smoke requires engine_kind 'previous_wrapper'".to_string(),
         ));
     }
@@ -150,7 +150,7 @@ pub fn enforce_external_shadow_adapter_smoke_requirements(
         .iter()
         .any(|check| check.status == CompatibilityShadowStatus::Matched)
     {
-        return Err(HawdbError::Execution(
+        return Err(HawDBError::Execution(
             "external shadow adapter smoke did not match any shadow checks".to_string(),
         ));
     }
@@ -161,7 +161,7 @@ pub fn enforce_external_shadow_adapter_smoke_requirements(
         .map(|check| check.name.as_str())
         .collect::<Vec<_>>();
     if require_previous_wrapper && !primary_only_checks.is_empty() {
-        return Err(HawdbError::Execution(format!(
+        return Err(HawDBError::Execution(format!(
             "external shadow adapter smoke requires all checks to run on previous-wrapper; primary-only checks: {}",
             primary_only_checks.join(", ")
         )));
@@ -171,7 +171,7 @@ pub fn enforce_external_shadow_adapter_smoke_requirements(
         .iter()
         .any(|check| check.name == "single memory projection")
     {
-        return Err(HawdbError::Execution(
+        return Err(HawDBError::Execution(
             "external shadow adapter smoke did not exercise project_graph".to_string(),
         ));
     }

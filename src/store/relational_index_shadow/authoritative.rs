@@ -38,7 +38,7 @@ impl GraphStore {
             .relational_index_shadow
             .generation_artifacts
             .ok_or_else(|| {
-                HawdbError::StorageIntegrity(
+                HawDBError::StorageIntegrity(
                     "authoritative relational indexes require a canonical generation binding"
                         .to_string(),
                 )
@@ -48,7 +48,7 @@ impl GraphStore {
             .as_ref()
             .is_some_and(|durable| durable.relational_index_generation_artifacts != Some(binding))
         {
-            return Err(HawdbError::StorageIntegrity(
+            return Err(HawDBError::StorageIntegrity(
                 "authoritative relational index snapshot binding does not match durable state"
                     .to_string(),
             ));
@@ -57,7 +57,7 @@ impl GraphStore {
             .relational_index_shadow
             .current_read_view(self.commit_epoch)
             .ok_or_else(|| {
-                HawdbError::StorageIntegrity(format!(
+                HawDBError::StorageIntegrity(format!(
                     "authoritative relational index view is unavailable at commit epoch {}",
                     self.commit_epoch
                 ))
@@ -68,7 +68,7 @@ impl GraphStore {
             || identity.root_set_digest != binding.root_set_digest
             || identity.visible_commit_epoch != self.commit_epoch
         {
-            return Err(HawdbError::StorageIntegrity(format!(
+            return Err(HawDBError::StorageIntegrity(format!(
                 "authoritative relational index identity {}/{}/{} does not match canonical binding {}/{}/{} at visible epoch {}",
                 identity.base_generation,
                 identity.base_commit_epoch,
@@ -80,7 +80,7 @@ impl GraphStore {
             )));
         }
         if view.is_poisoned() {
-            return Err(HawdbError::StorageIntegrity(
+            return Err(HawDBError::StorageIntegrity(
                 "authoritative relational index view is poisoned".to_string(),
             ));
         }
@@ -103,7 +103,7 @@ impl GraphStore {
                 candidate: Some(_),
                 ..
             }) => Ok(()),
-            Some(prepared) => Err(HawdbError::Storage(format!(
+            Some(prepared) => Err(HawDBError::Storage(format!(
                 "authoritative relational index checkpoint candidate failed before canonical publication: {}",
                 prepared
                     .report
@@ -111,7 +111,7 @@ impl GraphStore {
                     .as_deref()
                     .unwrap_or("candidate is unavailable")
             ))),
-            None => Err(HawdbError::Storage(
+            None => Err(HawDBError::Storage(
                 "authoritative relational index checkpoint did not prepare a required candidate"
                     .to_string(),
             )),
@@ -136,15 +136,15 @@ impl GraphStore {
             {
                 Ok(())
             }
-            Some(Ok(view)) => Err(HawdbError::StorageIntegrity(format!(
+            Some(Ok(view)) => Err(HawDBError::StorageIntegrity(format!(
                 "authoritative relational index staged visible epoch {} for commit {next_epoch}",
                 view.identity().visible_commit_epoch
             ))),
-            Some(Err(unavailable)) => Err(HawdbError::Storage(format!(
+            Some(Err(unavailable)) => Err(HawDBError::Storage(format!(
                 "authoritative relational index could not stage commit {next_epoch}: {}",
                 unavailable.reason
             ))),
-            None => Err(HawdbError::StorageIntegrity(format!(
+            None => Err(HawDBError::StorageIntegrity(format!(
                 "authoritative relational index has no current view for commit {next_epoch}"
             ))),
         }

@@ -6,7 +6,7 @@ use hawdb_optimizer::relational_sargability::{
 
 use super::{
     bind_sql_value, relational_unique_index_name, resolve_column, select_relational_access_path,
-    value_to_relational_as, BTreeMap, BTreeSet, BoundRow, HawdbError, PlannedJoin,
+    value_to_relational_as, BTreeMap, BTreeSet, BoundRow, HawDBError, PlannedJoin,
     RelationalAccessCandidate, RelationalAccessPathDescriptor, RelationalAccessPathKind,
     RelationalBaseAccess, RelationalIndexRangeScan, RelationalIndexReadMode,
     RelationalIndexRuntime, RelationalIndexScanDirection, RelationalJoinAccess,
@@ -90,7 +90,7 @@ pub(super) fn choose_base_access(
             continue;
         }
         if value.scalar_type() != Some(schema.columns[position].scalar_type) {
-            return Err(HawdbError::Semantic(format!(
+            return Err(HawDBError::Semantic(format!(
                 "relational comparison on {} has an incompatible scalar type",
                 column.name
             )));
@@ -201,7 +201,7 @@ pub(super) fn choose_base_access(
         ordered_candidates
     };
     let selected = select_relational_access_path(descriptors)
-        .map_err(|error| HawdbError::Execution(format!("invalid relational access path: {error}")))?
+        .map_err(|error| HawDBError::Execution(format!("invalid relational access path: {error}")))?
         .expect("full scan is always an access-path candidate");
     let position = candidates
         .iter()
@@ -291,7 +291,7 @@ pub(super) fn index_access_candidate(
                 }
             }
             None => {
-                return Err(HawdbError::Execution(format!(
+                return Err(HawDBError::Execution(format!(
                     "relational index {name} on table {table} is not materialized"
                 )));
             }
@@ -501,7 +501,7 @@ pub(super) fn choose_join_access(
             .iter()
             .map(|candidate| candidate.descriptor.clone()),
     )
-    .map_err(|error| HawdbError::Execution(format!("invalid relational join access: {error}")))?
+    .map_err(|error| HawDBError::Execution(format!("invalid relational join access: {error}")))?
     .expect("full scan is always a join access-path candidate");
     let position = candidates
         .iter()
@@ -601,13 +601,13 @@ pub(super) fn bound_join_key(
             return Ok(None);
         }
         let position = schema.column_position(join_column).ok_or_else(|| {
-            HawdbError::Semantic(format!(
+            HawDBError::Semantic(format!(
                 "relational join table {} has no column {join_column}",
                 schema.name
             ))
         })?;
         if value.scalar_type() != Some(schema.columns[position].scalar_type) {
-            return Err(HawdbError::Semantic(format!(
+            return Err(HawDBError::Semantic(format!(
                 "relational join comparison on {join_column} has an incompatible scalar type"
             )));
         }
@@ -645,7 +645,7 @@ pub(super) fn visit_join_entries<'a>(
             index_runtime.visit_prefix(state, table, name, &prefix, |key| {
                 match row_runtime.read_point(table, key)? {
                     Some(row) => visit(row),
-                    None => Err(HawdbError::StorageIntegrity(format!(
+                    None => Err(HawDBError::StorageIntegrity(format!(
                         "relational index {name} on table {table} points to missing row {key:?}"
                     ))),
                 }
@@ -684,7 +684,7 @@ pub(super) fn visit_base_entries<'a>(
                 };
                 match row {
                     Some(row) => visit(row),
-                    None => Err(HawdbError::StorageIntegrity(format!(
+                    None => Err(HawDBError::StorageIntegrity(format!(
                         "relational index {name} on table {table} points to missing or non-coverable row {key:?}"
                     ))),
                 }

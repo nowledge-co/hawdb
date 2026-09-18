@@ -13,7 +13,7 @@ fn malformed_hex_returns_storage_errors_without_panicking() {
     ] {
         let outcome = std::panic::catch_unwind(|| decode_string(input));
         assert!(outcome.is_ok(), "decoder panicked for {input:?}");
-        assert!(matches!(outcome.unwrap(), Err(HawdbError::Storage(_))));
+        assert!(matches!(outcome.unwrap(), Err(HawDBError::Storage(_))));
     }
 }
 
@@ -50,7 +50,7 @@ fn assert_decode(input: &str) {
     let actual = actual.unwrap();
     match reference_decode(input) {
         Some(expected) => assert_eq!(actual.unwrap(), expected),
-        None => assert!(matches!(actual, Err(HawdbError::Storage(_)))),
+        None => assert!(matches!(actual, Err(HawDBError::Storage(_)))),
     }
 }
 
@@ -132,7 +132,7 @@ fn reopen_rejects_malformed_hex_even_with_valid_snapshot_checksums() {
         let Err(error) = outcome.unwrap() else {
             panic!("public reopen accepted a malformed persisted field");
         };
-        assert!(matches!(error, HawdbError::Storage(_)));
+        assert!(matches!(error, HawDBError::Storage(_)));
         assert!(error.to_string().contains("invalid hex"));
         assert_eq!(fs::read(&path).unwrap(), corrupt);
     }
@@ -159,7 +159,7 @@ fn malformed_payload_fields_return_errors_without_partial_rows() {
             let outcome = std::panic::catch_unwind(|| decode_search_segment_documents(&payload));
             assert!(outcome.is_ok());
             let error = outcome.unwrap().unwrap_err();
-            assert!(matches!(error, HawdbError::Storage(_)));
+            assert!(matches!(error, HawDBError::Storage(_)));
             assert!(error.to_string().contains(if malformed == "ff" {
                 "utf-8"
             } else {

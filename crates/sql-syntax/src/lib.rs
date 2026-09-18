@@ -1,4 +1,4 @@
-//! In-progress Hawdb-owned PostgreSQL SQL/PGQ syntax frontend.
+//! In-progress HawDB-owned PostgreSQL SQL/PGQ syntax frontend.
 //!
 //! This crate owns tokens, byte spans, structured syntax errors, and syntax ASTs.
 //! Semantic binding and logical-plan lowering belong to `hawdb-sql`.

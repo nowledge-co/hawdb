@@ -169,7 +169,7 @@ fn campaign(seeds: u64, cases_per_seed: usize, include_corpus: bool) {
 fn required_inputs_preserve_admission_errors_and_order() {
     let err = nowledge_mem_integration_bundle_json(IntegrationBundleInputs::default()).unwrap_err();
     assert!(
-        matches!(err, hawdb_core::HawdbError::Semantic(ref message) if message == "--submodule-path is required")
+        matches!(err, hawdb_core::HawDBError::Semantic(ref message) if message == "--submodule-path is required")
     );
     let complete = inputs(&ready());
     type RemoveInput = fn(&mut IntegrationBundleInputs);
@@ -222,7 +222,7 @@ fn required_inputs_preserve_admission_errors_and_order() {
         remove(&mut input);
         let err = nowledge_mem_integration_bundle_json(input).unwrap_err();
         assert!(
-            matches!(err, hawdb_core::HawdbError::Semantic(ref message) if message == &format!("{flag} is required")),
+            matches!(err, hawdb_core::HawDBError::Semantic(ref message) if message == &format!("{flag} is required")),
             "{flag}: {err:?}"
         );
     }
@@ -230,14 +230,14 @@ fn required_inputs_preserve_admission_errors_and_order() {
         let mut input = complete.clone();
         input.submodule_path = path;
         assert!(
-            matches!(nowledge_mem_integration_bundle_json(input), Err(hawdb_core::HawdbError::Semantic(message)) if message == "--submodule-path is required")
+            matches!(nowledge_mem_integration_bundle_json(input), Err(hawdb_core::HawDBError::Semantic(message)) if message == "--submodule-path is required")
         );
     }
     let mut input = complete;
     input.coexistence_mode = Some("active".to_string());
     input.content_store_engine = None;
     assert!(
-        matches!(nowledge_mem_integration_bundle_json(input), Err(hawdb_core::HawdbError::Semantic(message)) if message == "--coexistence-mode must be shadow or side_by_side")
+        matches!(nowledge_mem_integration_bundle_json(input), Err(hawdb_core::HawDBError::Semantic(message)) if message == "--coexistence-mode must be shadow or side_by_side")
     );
 }
 

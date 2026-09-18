@@ -1,5 +1,5 @@
 use crate::{
-    nowledge_mem_graph_read_route_catalog_digest, DatabaseConfig, HawdbError,
+    nowledge_mem_graph_read_route_catalog_digest, DatabaseConfig, HawDBError,
     NowledgeMemEmbeddedStore, NowledgeMemGraph, NowledgeQueryRuntimePreflightProbe, Result,
     NOWLEDGE_MEM_GRAPH_READ_ROUTE_CATALOG_VERSION,
 };
@@ -80,15 +80,15 @@ fn database_open_blocker_codes(probe_count: usize, failed_probe_count: usize) ->
     blockers
 }
 
-fn error_class(error: &HawdbError) -> &'static str {
+fn error_class(error: &HawDBError) -> &'static str {
     match error {
-        HawdbError::Parse(_) => "parse",
-        HawdbError::Semantic(_) => "semantic",
-        HawdbError::Storage(_)
-        | HawdbError::StorageIntegrity(_)
-        | HawdbError::AppendSequenceExhausted { .. } => "storage",
-        HawdbError::Execution(_) => "execution",
-        HawdbError::CapabilityUnavailable { .. } => "capability_unavailable",
+        HawDBError::Parse(_) => "parse",
+        HawDBError::Semantic(_) => "semantic",
+        HawDBError::Storage(_)
+        | HawDBError::StorageIntegrity(_)
+        | HawDBError::AppendSequenceExhausted { .. } => "storage",
+        HawDBError::Execution(_) => "execution",
+        HawDBError::CapabilityUnavailable { .. } => "capability_unavailable",
     }
 }
 

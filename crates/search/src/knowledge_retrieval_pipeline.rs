@@ -1,4 +1,4 @@
-use hawdb_core::{HawdbError, Result};
+use hawdb_core::{HawDBError, Result};
 use hawdb_executor::{
     QueryMemoryClass, QueryMemoryLease, QueryMemoryLedger, QueryMemoryLedgerSnapshot,
 };
@@ -67,7 +67,7 @@ pub struct KnowledgeRetrievalPipelineBudget {
 impl KnowledgeRetrievalPipelineBudget {
     pub fn new(query_memory_budget: NonZeroUsize, result_payload_budget: usize) -> Result<Self> {
         if result_payload_budget == 0 {
-            return Err(HawdbError::Execution(
+            return Err(HawDBError::Execution(
                 "knowledge retrieval requires a positive result payload budget".to_string(),
             ));
         }
@@ -99,7 +99,7 @@ impl KnowledgeRetrievalPipelineBudget {
     pub fn enter(&mut self, stage: KnowledgeRetrievalStage) -> Result<()> {
         let expected = STAGE_ORDER.get(self.stages.len()).copied();
         if expected != Some(stage) {
-            return Err(HawdbError::Execution(format!(
+            return Err(HawDBError::Execution(format!(
                 "knowledge retrieval stage order violation: expected {}, got {}",
                 expected.map_or("<complete>", KnowledgeRetrievalStage::as_str),
                 stage.as_str(),
@@ -118,12 +118,12 @@ impl KnowledgeRetrievalPipelineBudget {
             .result_payload_bytes
             .checked_add(payload_bytes)
             .ok_or_else(|| {
-                HawdbError::Execution(
+                HawDBError::Execution(
                     "knowledge retrieval result payload accounting overflow".to_string(),
                 )
             })?;
         if next_payload > self.result_payload_budget {
-            return Err(HawdbError::Execution(format!(
+            return Err(HawDBError::Execution(format!(
                 "knowledge retrieval result uses {next_payload} payload bytes, exceeding max_read_result_payload_bytes {}",
                 self.result_payload_budget
             )));
@@ -142,7 +142,7 @@ impl KnowledgeRetrievalPipelineBudget {
         metadata_filter_authorized_graph_expansion: bool,
     ) -> Result<KnowledgeRetrievalPipelineReport> {
         if self.stages.as_slice() != STAGE_ORDER {
-            return Err(HawdbError::Execution(format!(
+            return Err(HawDBError::Execution(format!(
                 "knowledge retrieval pipeline completed after {} of {} required stages",
                 self.stages.len(),
                 STAGE_ORDER.len()

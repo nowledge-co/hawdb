@@ -1,6 +1,6 @@
 //! Host-neutral runtime and production status for embedded Nowledge Mem.
 //!
-//! The root Hawdb facade samples graph, storage, and search state. This module
+//! The root HawDB facade samples graph, storage, and search state. This module
 //! owns the typed reduction into observable readiness contracts.
 
 use crate::bounded_read_evidence::NowledgeMemGraphMode;

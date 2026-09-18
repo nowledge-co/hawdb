@@ -10,7 +10,7 @@ use crate::memory::external_read_memory_budget;
 use crate::observer::QueryExecutionObserver;
 use crate::pipeline::{emit_owned_binding_batches, BatchControl, BindingBatch};
 use crate::{ExecutionLimit, ExecutionMemoryConfig, QueryMemoryClass, QueryMemoryLedger};
-use hawdb_core::{HawdbError, Result, RuntimeTaskContext, Value};
+use hawdb_core::{HawDBError, Result, RuntimeTaskContext, Value};
 use std::cell::RefCell;
 use std::collections::BTreeMap;
 use std::num::NonZeroUsize;
@@ -60,7 +60,7 @@ fn vector_embedding_parameter(
     vector_plan: &hawdb_plan::VectorPhysicalPlan,
 ) -> Result<Vec<f32>> {
     let Some(Value::List(values)) = parameters.get(name) else {
-        return Err(HawdbError::Semantic(format!(
+        return Err(HawDBError::Semantic(format!(
             "vector search parameter '${name}' must be a numeric list"
         )));
     };
@@ -72,20 +72,20 @@ fn vector_embedding_parameter(
                 if value.is_finite() {
                     Ok(value)
                 } else {
-                    Err(HawdbError::Semantic(format!(
+                    Err(HawDBError::Semantic(format!(
                         "vector search parameter '${name}' exceeds f32 range"
                     )))
                 }
             }
             Value::Int(value) => Ok(*value as f32),
-            _ => Err(HawdbError::Semantic(format!(
+            _ => Err(HawDBError::Semantic(format!(
                 "vector search parameter '${name}' must contain finite numbers"
             ))),
         })
         .collect::<Result<Vec<_>>>()?;
     let expected_dimension = vector_plan_embedding_dimension(vector_plan);
     if embedding.len() != expected_dimension {
-        return Err(HawdbError::Semantic(format!(
+        return Err(HawDBError::Semantic(format!(
             "vector search parameter '${name}' dimension changed after planning"
         )));
     }
@@ -144,7 +144,7 @@ impl VectorSeedScanSpec<'_> {
         } = self;
         let max_rows = vector_plan_top_k(vector_plan)
             .ok_or_else(|| {
-                HawdbError::Execution("vector seed physical plan is missing TopK".to_string())
+                HawDBError::Execution("vector seed physical plan is missing TopK".to_string())
             })?
             .min(execution_limit.output_rows.unwrap_or(usize::MAX));
         if max_rows == 0 {

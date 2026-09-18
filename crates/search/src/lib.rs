@@ -3,7 +3,7 @@ use chrono::{DateTime, NaiveDate, NaiveDateTime};
 pub mod candidate_evidence;
 #[doc(hidden)]
 pub mod candidate_evidence_cli;
-use hawdb_core::{Catalog, HawdbError, Result, RuntimeCapabilities, RuntimeCapability, Value};
+use hawdb_core::{Catalog, HawDBError, Result, RuntimeCapabilities, RuntimeCapability, Value};
 pub use hawdb_core::{RuntimeCancellationToken, RuntimeTaskContext};
 pub use hawdb_evidence::{
     ProductionEvidenceBinding, ProductionQualificationIdentity,
@@ -88,7 +88,7 @@ mod vector_execution;
 use document_encoding::encode_search_document_line;
 
 mod error {
-    pub use hawdb_core::{HawdbError, Result};
+    pub use hawdb_core::{HawDBError, Result};
 }
 
 /// Storage-neutral source for graph-derived search projection maintenance.
@@ -677,17 +677,17 @@ impl SearchAccessControlContext {
 
     fn validate(&self) -> Result<()> {
         if self.policy_epoch == 0 {
-            return Err(HawdbError::Storage(
+            return Err(HawDBError::Storage(
                 "access control context requires a non-zero policy epoch".to_string(),
             ));
         }
         if self.visibility_metadata_field.trim().is_empty() {
-            return Err(HawdbError::Storage(
+            return Err(HawDBError::Storage(
                 "access control context requires a visibility metadata field".to_string(),
             ));
         }
         if self.allowed_visibility_values.is_empty() {
-            return Err(HawdbError::Storage(
+            return Err(HawDBError::Storage(
                 "access control context requires at least one visibility value".to_string(),
             ));
         }
@@ -696,7 +696,7 @@ impl SearchAccessControlContext {
             .iter()
             .any(|value| value.trim().is_empty())
         {
-            return Err(HawdbError::Storage(
+            return Err(HawDBError::Storage(
                 "access control context visibility values must be non-empty".to_string(),
             ));
         }
@@ -729,7 +729,7 @@ impl SearchAccessControlContext {
                         .collect::<Vec<_>>(),
                 )
                 .map_err(|error| {
-                    HawdbError::Storage(format!(
+                    HawDBError::Storage(format!(
                         "failed to encode access control visibility predicate: {error}"
                     ))
                 })?,
@@ -1415,20 +1415,20 @@ impl SearchIndex {
         };
         index.load_snapshot().map_err(|error| {
             if registered {
-                HawdbError::StorageIntegrity(error.to_string())
+                HawDBError::StorageIntegrity(error.to_string())
             } else {
                 error
             }
         })?;
         if index.consumer_binding.is_some() != registered {
-            return Err(HawdbError::Storage(
+            return Err(HawDBError::Storage(
                 "projection consumer lifecycle does not match snapshot binding".into(),
             ));
         }
         if registered {
             index
                 .validate_registered_artifacts()
-                .map_err(|error| HawdbError::StorageIntegrity(error.to_string()))?;
+                .map_err(|error| HawDBError::StorageIntegrity(error.to_string()))?;
         } else {
             index.load_or_rebuild_segment_descriptor()?;
             index.load_lexical_projection()?;
@@ -1712,7 +1712,7 @@ impl SearchIndex {
         if let Some(limit) = delta.max_operations
             && operation_count > limit
         {
-            return Err(HawdbError::Storage(format!(
+            return Err(HawDBError::Storage(format!(
                     "incremental projection update operation count {operation_count} exceeded configured limit {limit}"
                 )));
         }
@@ -1726,14 +1726,14 @@ impl SearchIndex {
             if let Some(manifest) = &self.embedding_manifest
                 && manifest.dimension != dimension
             {
-                return Err(HawdbError::Storage(format!(
+                return Err(HawDBError::Storage(format!(
                     "embedding dimension mismatch: manifest expects {}, row has {dimension}",
                     manifest.dimension
                 )));
             }
             match next_embedding_dimension {
                 Some(existing) if existing != dimension => {
-                    return Err(HawdbError::Storage(format!(
+                    return Err(HawDBError::Storage(format!(
                         "embedding dimension mismatch: index has {existing}, row has {dimension}"
                     )));
                 }
@@ -1799,10 +1799,10 @@ impl SearchIndex {
             .require(RuntimeCapability::BackgroundMaintenance)?;
         match policy.admit(state, &delta.background_work_request()) {
             QosAdmission::Admit => self.apply_projection_delta(delta),
-            QosAdmission::Defer { reason, .. } => Err(HawdbError::Storage(format!(
+            QosAdmission::Defer { reason, .. } => Err(HawDBError::Storage(format!(
                 "background search projection delta deferred: {reason}"
             ))),
-            QosAdmission::Reject { reason, .. } => Err(HawdbError::Storage(format!(
+            QosAdmission::Reject { reason, .. } => Err(HawDBError::Storage(format!(
                 "background search projection delta rejected: {reason}"
             ))),
         }
@@ -1818,12 +1818,12 @@ impl SearchIndex {
         let permit = match scheduler.try_start(delta.background_work_request()) {
             Ok(permit) => permit,
             Err(QosAdmission::Defer { reason, .. }) => {
-                return Err(HawdbError::Storage(format!(
+                return Err(HawDBError::Storage(format!(
                     "background search projection delta deferred: {reason}"
                 )));
             }
             Err(QosAdmission::Reject { reason, .. }) => {
-                return Err(HawdbError::Storage(format!(
+                return Err(HawDBError::Storage(format!(
                     "background search projection delta rejected: {reason}"
                 )));
             }
@@ -1843,7 +1843,7 @@ impl SearchIndex {
         self.documents.len()
     }
 
-    /// Returns vector-bearing document IDs accepted by Hawdb's metadata
+    /// Returns vector-bearing document IDs accepted by HawDB's metadata
     /// predicate implementation. This validation surface keeps differential
     /// oracles aligned with serving filter semantics.
     #[cfg(feature = "qualification")]
@@ -1918,7 +1918,7 @@ impl SearchIndex {
     /// source without changing the in-memory projection state.
     pub fn validate_import_source_graph_commit_epoch(&self, epoch: u64) -> Result<()> {
         match self.import_source_graph_commit_epoch {
-            Some(existing) if existing != epoch => Err(HawdbError::Storage(
+            Some(existing) if existing != epoch => Err(HawDBError::Storage(
                 "search projection import provenance conflicts with existing source".to_string(),
             )),
             Some(_) | None => Ok(()),
@@ -2072,7 +2072,7 @@ impl SearchIndex {
                     .unwrap_or(false)
                 {
                     self.mark_full_reindex_needed("full rebuild exceeded configured row limit")?;
-                    return Err(HawdbError::Storage(format!(
+                    return Err(HawDBError::Storage(format!(
                         "full rebuild exceeded configured row limit after {} documents",
                         next_documents.len()
                     )));
@@ -2168,10 +2168,10 @@ impl SearchIndex {
         );
         match policy.admit(state, &request) {
             QosAdmission::Admit => self.rebuild_derived_artifacts(catalog, store, options),
-            QosAdmission::Defer { reason, .. } => Err(HawdbError::Storage(format!(
+            QosAdmission::Defer { reason, .. } => Err(HawDBError::Storage(format!(
                 "background search projection rebuild deferred: {reason}"
             ))),
-            QosAdmission::Reject { reason, .. } => Err(HawdbError::Storage(format!(
+            QosAdmission::Reject { reason, .. } => Err(HawDBError::Storage(format!(
                 "background search projection rebuild rejected: {reason}"
             ))),
         }
@@ -2193,12 +2193,12 @@ impl SearchIndex {
         let permit = match scheduler.try_start(request) {
             Ok(permit) => permit,
             Err(QosAdmission::Defer { reason, .. }) => {
-                return Err(HawdbError::Storage(format!(
+                return Err(HawDBError::Storage(format!(
                     "background search projection rebuild deferred: {reason}"
                 )));
             }
             Err(QosAdmission::Reject { reason, .. }) => {
-                return Err(HawdbError::Storage(format!(
+                return Err(HawDBError::Storage(format!(
                     "background search projection rebuild rejected: {reason}"
                 )));
             }
@@ -2249,7 +2249,7 @@ impl SearchIndex {
                     self.mark_metadata_repair_needed(
                         "metadata repair exceeded configured row limit",
                     )?;
-                    return Err(HawdbError::Storage(format!(
+                    return Err(HawDBError::Storage(format!(
                         "metadata repair exceeded configured row limit after {} documents",
                         repairs.len()
                     )));
@@ -2327,10 +2327,10 @@ impl SearchIndex {
         let request = WorkRequest::background(WorkClass::Projection, estimated_operations);
         match policy.admit(state, &request) {
             QosAdmission::Admit => self.repair_metadata_from_graph(catalog, store, options),
-            QosAdmission::Defer { reason, .. } => Err(HawdbError::Storage(format!(
+            QosAdmission::Defer { reason, .. } => Err(HawDBError::Storage(format!(
                 "background search metadata repair deferred: {reason}"
             ))),
-            QosAdmission::Reject { reason, .. } => Err(HawdbError::Storage(format!(
+            QosAdmission::Reject { reason, .. } => Err(HawDBError::Storage(format!(
                 "background search metadata repair rejected: {reason}"
             ))),
         }
@@ -2350,12 +2350,12 @@ impl SearchIndex {
         let permit = match scheduler.try_start(request) {
             Ok(permit) => permit,
             Err(QosAdmission::Defer { reason, .. }) => {
-                return Err(HawdbError::Storage(format!(
+                return Err(HawDBError::Storage(format!(
                     "background search metadata repair deferred: {reason}"
                 )));
             }
             Err(QosAdmission::Reject { reason, .. }) => {
-                return Err(HawdbError::Storage(format!(
+                return Err(HawDBError::Storage(format!(
                     "background search metadata repair rejected: {reason}"
                 )));
             }
@@ -2466,7 +2466,7 @@ impl SearchIndex {
                     Some(consumer::CheckpointReceipt {
                         binding: binding.clone(),
                         source_epoch: self.source_graph_commit_epoch.ok_or_else(|| {
-                            HawdbError::Storage("registered checkpoint missing source epoch".into())
+                            HawDBError::Storage("registered checkpoint missing source epoch".into())
                         })?,
                         encoded_len: snapshot.encoded_len,
                         sha256: snapshot.encoded_sha256.to_string(),
@@ -2539,8 +2539,8 @@ impl SearchIndex {
             self.rabitq_build_options,
         )?
         .ok_or_else(|| {
-            HawdbError::Storage(
-                "Hawdb RaBitQ projection build produced no artifact for vector documents"
+            HawDBError::Storage(
+                "HawDB RaBitQ projection build produced no artifact for vector documents"
                     .to_string(),
             )
         })?;
@@ -2728,7 +2728,7 @@ impl SearchIndex {
         if let Some(task_context) = vector_execution_options.task_context {
             task_context
                 .checkpoint()
-                .map_err(|reason| HawdbError::Execution(format!("vector search task {reason}")))?;
+                .map_err(|reason| HawDBError::Execution(format!("vector search task {reason}")))?;
         }
         let result = self.try_search_with_options_compressed_vector_projection_mode_internal(
             query_text,
@@ -2741,7 +2741,7 @@ impl SearchIndex {
         if let Some(task_context) = vector_execution_options.task_context {
             task_context
                 .checkpoint()
-                .map_err(|reason| HawdbError::Execution(format!("vector search task {reason}")))?;
+                .map_err(|reason| HawDBError::Execution(format!("vector search task {reason}")))?;
         }
         Ok(result)
     }
@@ -3085,7 +3085,7 @@ impl SearchIndex {
         }
     }
 
-    /// Executes externally generated candidates through Hawdb's normal
+    /// Executes externally generated candidates through HawDB's normal
     /// metadata filtering and raw-vector rerank path. This validation surface
     /// is not a production vector backend contract.
     #[cfg(feature = "qualification")]
@@ -3154,7 +3154,7 @@ impl SearchIndex {
                 if let Some(policy_epoch) = options.policy_epoch
                     && policy_epoch != access_control.policy_epoch
                 {
-                    return Err(HawdbError::Storage(format!(
+                    return Err(HawDBError::Storage(format!(
                         "search options policy epoch {policy_epoch} does not match access control policy epoch {}",
                         access_control.policy_epoch
                     )));
@@ -3671,7 +3671,7 @@ impl SearchIndex {
                 .ok()
                 .and_then(|index| filtered_documents.get(index).copied())
                 .ok_or_else(|| {
-                    HawdbError::Storage(format!(
+                    HawDBError::Storage(format!(
                         "search candidate {} is missing from the filtered document set",
                         candidate.id
                     ))
@@ -3789,13 +3789,13 @@ impl SearchIndex {
         if let Some(manifest) = &self.embedding_manifest
             && manifest.dimension != dimension
         {
-            return Err(HawdbError::Storage(format!(
+            return Err(HawDBError::Storage(format!(
                 "embedding dimension mismatch: manifest expects {}, row has {dimension}",
                 manifest.dimension
             )));
         }
         match self.embedding_dimension {
-            Some(existing) if existing != dimension => Err(HawdbError::Storage(format!(
+            Some(existing) if existing != dimension => Err(HawDBError::Storage(format!(
                 "embedding dimension mismatch: index has {existing}, row has {dimension}"
             ))),
             Some(_) => Ok(()),
@@ -3818,7 +3818,7 @@ impl SearchIndex {
         let (body, checksum) = split_checksum(&text)?;
         let actual = checksum_bytes(body.as_bytes());
         if checksum != actual {
-            return Err(HawdbError::Storage(format!(
+            return Err(HawDBError::Storage(format!(
                 "search projection checksum mismatch: expected {checksum}, got {actual}"
             )));
         }
@@ -3831,12 +3831,12 @@ impl SearchIndex {
                 ["projection_consumer_binding", database, projection, id, registration, checkpoint] =>
                 {
                     if body.lines().nth(1) != Some(line) {
-                        return Err(HawdbError::Storage(
+                        return Err(HawDBError::Storage(
                             "projection consumer binding must follow the snapshot header".into(),
                         ));
                     }
                     if self.consumer_binding.is_some() {
-                        return Err(HawdbError::Storage(
+                        return Err(HawDBError::Storage(
                             "duplicate projection consumer binding".into(),
                         ));
                     }
@@ -3850,7 +3850,7 @@ impl SearchIndex {
                 }
                 ["source_graph_commit_epoch", raw] => {
                     if self.source_graph_commit_epoch.is_some() {
-                        return Err(HawdbError::Storage(
+                        return Err(HawDBError::Storage(
                             "duplicate projection source epoch".into(),
                         ));
                     }
@@ -3884,7 +3884,7 @@ impl SearchIndex {
                     if let Some(manifest) = &self.embedding_manifest
                         && manifest.dimension != dimension
                     {
-                        return Err(HawdbError::Storage(format!(
+                        return Err(HawDBError::Storage(format!(
                                 "embedding manifest dimension {} does not match snapshot dimension {dimension}",
                                 manifest.dimension
                             )));
@@ -3907,7 +3907,7 @@ impl SearchIndex {
                 }
                 [""] => {}
                 _ => {
-                    return Err(HawdbError::Storage(format!(
+                    return Err(HawDBError::Storage(format!(
                         "invalid search projection line: {line}"
                     )));
                 }
@@ -3920,7 +3920,7 @@ impl SearchIndex {
                     .zip(self.source_graph_commit_epoch)
                     .is_some_and(|(import, source)| import > source))
         {
-            return Err(HawdbError::Storage(
+            return Err(HawDBError::Storage(
                 "invalid registered projection epochs".into(),
             ));
         }
@@ -6569,7 +6569,7 @@ impl MatchedSpanCollector<'_> {
             .collect::<BTreeSet<_>>();
         for term in matching_terms {
             if self.spans.len() >= self.max_spans {
-                return Err(HawdbError::Storage(format!(
+                return Err(HawDBError::Storage(format!(
                     "search matched-span hydration exceeded {} spans",
                     self.max_spans
                 )));
@@ -6580,7 +6580,7 @@ impl MatchedSpanCollector<'_> {
                 .saturating_add(std::mem::size_of::<SearchMatchedSpan>() as u64);
             self.span_bytes = self.span_bytes.saturating_add(required);
             if self.span_bytes > self.max_bytes {
-                return Err(HawdbError::Storage(format!(
+                return Err(HawDBError::Storage(format!(
                     "search matched-span hydration requires {} bytes, exceeding {}",
                     self.span_bytes, self.max_bytes
                 )));
@@ -6925,7 +6925,7 @@ fn decode_embedding(input: &str) -> Result<Option<Vec<f32>>> {
         .split(',')
         .map(|raw| {
             raw.parse::<f32>()
-                .map_err(|_| HawdbError::Storage(format!("invalid embedding value: {raw}")))
+                .map_err(|_| HawDBError::Storage(format!("invalid embedding value: {raw}")))
         })
         .collect::<Result<Vec<_>>>()
         .map(Some)
@@ -6946,7 +6946,7 @@ fn decode_metadata(input: &str) -> Result<BTreeMap<String, String>> {
     }
     for pair in input.split(';') {
         let Some((key, value)) = pair.split_once('=') else {
-            return Err(HawdbError::Storage(format!(
+            return Err(HawDBError::Storage(format!(
                 "invalid metadata pair: {pair}"
             )));
         };
@@ -6968,7 +6968,7 @@ fn decode_search_document_line(line: &str) -> Result<SearchDocument> {
                 metadata: decode_metadata(raw_metadata)?,
             })
         }
-        _ => Err(HawdbError::Storage(format!(
+        _ => Err(HawDBError::Storage(format!(
             "invalid search document line: {line}"
         ))),
     }
@@ -6994,7 +6994,7 @@ fn write_search_segment_payloads(
             }
             let payload = encode_search_snapshot_text(&body)?;
             let length = u64::try_from(payload.len()).map_err(|_| {
-                HawdbError::Storage(format!(
+                HawDBError::Storage(format!(
                     "search segment {} payload exceeds the supported range length",
                     segment.segment_id
                 ))
@@ -7007,7 +7007,7 @@ fn write_search_segment_payloads(
             });
             file.write_all(&payload)?;
             offset = offset.checked_add(length).ok_or_else(|| {
-                HawdbError::Storage("search segment payload artifact length overflow".to_string())
+                HawDBError::Storage("search segment payload artifact length overflow".to_string())
             })?;
         }
         file.sync_all()?;
@@ -7100,7 +7100,7 @@ fn decode_search_segment_descriptor_text(text: &str) -> Result<SearchSegmentDesc
     let (body, checksum) = split_checksum(text)?;
     let actual = checksum_bytes(body.as_bytes());
     if checksum != actual {
-        return Err(HawdbError::Storage(format!(
+        return Err(HawDBError::Storage(format!(
             "search segment descriptor checksum mismatch: expected {checksum}, got {actual}"
         )));
     }
@@ -7163,7 +7163,7 @@ fn decode_search_segment_descriptor_text(text: &str) -> Result<SearchSegmentDesc
             }
             ["field", raw_field, raw_present_count, raw_values] => {
                 let Some(segment) = current_segment.as_mut() else {
-                    return Err(HawdbError::Storage(
+                    return Err(HawDBError::Storage(
                         "search segment descriptor field appeared before segment".to_string(),
                     ));
                 };
@@ -7183,7 +7183,7 @@ fn decode_search_segment_descriptor_text(text: &str) -> Result<SearchSegmentDesc
             ["field", raw_field, raw_present_count, raw_values, raw_numeric_min, raw_numeric_max] =>
             {
                 let Some(segment) = current_segment.as_mut() else {
-                    return Err(HawdbError::Storage(
+                    return Err(HawDBError::Storage(
                         "search segment descriptor field appeared before segment".to_string(),
                     ));
                 };
@@ -7206,7 +7206,7 @@ fn decode_search_segment_descriptor_text(text: &str) -> Result<SearchSegmentDesc
             ["field", raw_field, raw_present_count, raw_values, raw_numeric_min, raw_numeric_max, raw_timestamp_min, raw_timestamp_max] =>
             {
                 let Some(segment) = current_segment.as_mut() else {
-                    return Err(HawdbError::Storage(
+                    return Err(HawDBError::Storage(
                         "search segment descriptor field appeared before segment".to_string(),
                     ));
                 };
@@ -7231,7 +7231,7 @@ fn decode_search_segment_descriptor_text(text: &str) -> Result<SearchSegmentDesc
             }
             [""] => {}
             _ => {
-                return Err(HawdbError::Storage(format!(
+                return Err(HawDBError::Storage(format!(
                     "invalid search segment descriptor line: {line}"
                 )));
             }
@@ -7244,10 +7244,10 @@ fn decode_search_segment_descriptor_text(text: &str) -> Result<SearchSegmentDesc
 
     Ok(SearchSegmentDescriptor {
         target_documents: target_documents.ok_or_else(|| {
-            HawdbError::Storage("search segment descriptor missing target_documents".to_string())
+            HawDBError::Storage("search segment descriptor missing target_documents".to_string())
         })?,
         document_count: document_count.ok_or_else(|| {
-            HawdbError::Storage("search segment descriptor missing document_count".to_string())
+            HawDBError::Storage("search segment descriptor missing document_count".to_string())
         })?,
         segments,
     })
@@ -7259,14 +7259,14 @@ fn validate_search_segment_payload_ranges(segments: &[SearchSegmentDescriptorEnt
         .filter(|segment| segment.payload_range.is_some())
         .count();
     if physical_range_count != 0 && physical_range_count != segments.len() {
-        return Err(HawdbError::Storage(
+        return Err(HawDBError::Storage(
             "search segment descriptor has incomplete physical payload ranges".to_string(),
         ));
     }
     let mut previous_end = 0u64;
     for (expected_id, segment) in segments.iter().enumerate() {
         if segment.segment_id != expected_id as u64 {
-            return Err(HawdbError::Storage(format!(
+            return Err(HawDBError::Storage(format!(
                 "search segment descriptor expected segment id {expected_id}, got {}",
                 segment.segment_id
             )));
@@ -7275,19 +7275,19 @@ fn validate_search_segment_payload_ranges(segments: &[SearchSegmentDescriptorEnt
             continue;
         };
         if range.artifact_id != SEARCH_SEGMENT_PAYLOAD_ARTIFACT_ID {
-            return Err(HawdbError::Storage(format!(
+            return Err(HawDBError::Storage(format!(
                 "search segment {} references unsupported payload artifact {}",
                 segment.segment_id, range.artifact_id
             )));
         }
         if range.offset < previous_end {
-            return Err(HawdbError::Storage(format!(
+            return Err(HawDBError::Storage(format!(
                 "search segment {} payload range overlaps the previous segment",
                 segment.segment_id
             )));
         }
         previous_end = range.offset.checked_add(range.length).ok_or_else(|| {
-            HawdbError::Storage(format!(
+            HawDBError::Storage(format!(
                 "search segment {} payload range overflows",
                 segment.segment_id
             ))
@@ -7315,7 +7315,7 @@ fn decode_search_segment_documents_bounded(
             ["doc", ..] => documents.push(decode_search_document_line(line)?),
             [""] => {}
             _ => {
-                return Err(HawdbError::Storage(format!(
+                return Err(HawDBError::Storage(format!(
                     "invalid search segment payload line: {line}"
                 )));
             }
@@ -7329,7 +7329,7 @@ fn validate_search_segment_documents(
     documents: &[SearchDocument],
 ) -> Result<()> {
     if documents.len() != segment.document_count {
-        return Err(HawdbError::Storage(format!(
+        return Err(HawDBError::Storage(format!(
             "search segment {} decoded {} documents, expected {}",
             segment.segment_id,
             documents.len(),
@@ -7341,13 +7341,13 @@ fn validate_search_segment_documents(
     if first != Some(segment.first_document_id.as_str())
         || last != Some(segment.last_document_id.as_str())
     {
-        return Err(HawdbError::Storage(format!(
+        return Err(HawDBError::Storage(format!(
             "search segment {} document bounds do not match its descriptor",
             segment.segment_id
         )));
     }
     if documents.windows(2).any(|pair| pair[0].id >= pair[1].id) {
-        return Err(HawdbError::Storage(format!(
+        return Err(HawDBError::Storage(format!(
             "search segment {} documents are not strictly ordered",
             segment.segment_id
         )));
@@ -7397,13 +7397,13 @@ fn decode_search_numeric_range(raw_min: &str, raw_max: &str) -> Result<Option<Se
             let min = parse_finite_f64(raw_min, "search segment field numeric min")?;
             let max = parse_finite_f64(raw_max, "search segment field numeric max")?;
             if min > max {
-                return Err(HawdbError::Storage(
+                return Err(HawDBError::Storage(
                     "search segment field numeric min is greater than max".to_string(),
                 ));
             }
             Ok(Some(SearchNumericRange { min, max }))
         }
-        _ => Err(HawdbError::Storage(
+        _ => Err(HawDBError::Storage(
             "search segment field numeric range is incomplete".to_string(),
         )),
     }
@@ -7421,7 +7421,7 @@ fn decode_search_timestamp_range(
             let max_epoch_millis =
                 parse_i64(raw_max, "search segment field timestamp max epoch millis")?;
             if min_epoch_millis > max_epoch_millis {
-                return Err(HawdbError::Storage(
+                return Err(HawDBError::Storage(
                     "search segment field timestamp min is greater than max".to_string(),
                 ));
             }
@@ -7430,7 +7430,7 @@ fn decode_search_timestamp_range(
                 max_epoch_millis,
             }))
         }
-        _ => Err(HawdbError::Storage(
+        _ => Err(HawDBError::Storage(
             "search segment field timestamp range is incomplete".to_string(),
         )),
     }
@@ -7439,11 +7439,11 @@ fn decode_search_timestamp_range(
 fn parse_finite_f64(raw: &str, name: &str) -> Result<f64> {
     let value = raw
         .parse::<f64>()
-        .map_err(|_| HawdbError::Storage(format!("invalid {name}: {raw}")))?;
+        .map_err(|_| HawDBError::Storage(format!("invalid {name}: {raw}")))?;
     if value.is_finite() {
         Ok(value)
     } else {
-        Err(HawdbError::Storage(format!("invalid {name}: {raw}")))
+        Err(HawDBError::Storage(format!("invalid {name}: {raw}")))
     }
 }
 
@@ -7457,7 +7457,7 @@ fn encode_string(input: &str) -> String {
 
 fn decode_string(input: &str) -> Result<String> {
     if !input.len().is_multiple_of(2) {
-        return Err(HawdbError::Storage(format!(
+        return Err(HawDBError::Storage(format!(
             "invalid hex string length: {}",
             input.len()
         )));
@@ -7467,15 +7467,15 @@ fn decode_string(input: &str) -> Result<String> {
         let byte = input
             .get(offset..offset + 2)
             .and_then(|pair| u8::from_str_radix(pair, 16).ok())
-            .ok_or_else(|| HawdbError::Storage(format!("invalid hex string at byte {offset}")))?;
+            .ok_or_else(|| HawDBError::Storage(format!("invalid hex string at byte {offset}")))?;
         bytes.push(byte);
     }
-    String::from_utf8(bytes).map_err(|error| HawdbError::Storage(error.to_string()))
+    String::from_utf8(bytes).map_err(|error| HawDBError::Storage(error.to_string()))
 }
 
 fn split_checksum(text: &str) -> Result<(&str, u64)> {
     let Some((body, footer)) = text.rsplit_once("checksum\t") else {
-        return Err(HawdbError::Storage(
+        return Err(HawDBError::Storage(
             "search projection missing checksum footer".to_string(),
         ));
     };
@@ -7485,7 +7485,7 @@ fn split_checksum(text: &str) -> Result<(&str, u64)> {
 
 fn encode_search_snapshot_text(text: &str) -> Result<Vec<u8>> {
     let compressed = zstd::stream::encode_all(text.as_bytes(), SEARCH_COMPRESSION_LEVEL)
-        .map_err(|error| HawdbError::Storage(format!("zstd compression failed: {error}")))?;
+        .map_err(|error| HawDBError::Storage(format!("zstd compression failed: {error}")))?;
     let compressed_checksum = checksum_bytes(&compressed);
     let uncompressed_checksum = checksum_bytes(text.as_bytes());
     let header = search_snapshot_compression_header(
@@ -7515,7 +7515,7 @@ fn search_snapshot_compression_header(
 fn read_search_snapshot_text(path: &Path) -> Result<String> {
     let bytes = fs::read(path)?;
     if !bytes.starts_with(SEARCH_COMPRESSION_HEADER.as_bytes()) {
-        return Err(HawdbError::Storage(
+        return Err(HawDBError::Storage(
             "search projection is missing the V1 compressed envelope".to_string(),
         ));
     }
@@ -7546,7 +7546,7 @@ fn parse_snapshot_header(header: &str) -> Result<SnapshotHeader> {
         }
         let fields = line.split('\t').collect::<Vec<_>>();
         if !seen_fields.insert(fields[0]) {
-            return Err(HawdbError::Storage(format!(
+            return Err(HawDBError::Storage(format!(
                 "search projection compressed envelope has duplicate field: {}",
                 fields[0]
             )));
@@ -7566,14 +7566,14 @@ fn parse_snapshot_header(header: &str) -> Result<SnapshotHeader> {
                 uncompressed_len = Some(parse_usize(value, "uncompressed length")?);
             }
             _ => {
-                return Err(HawdbError::Storage(format!(
+                return Err(HawDBError::Storage(format!(
                     "search projection compressed envelope has invalid header line: {line}"
                 )));
             }
         }
     }
     if codec != Some("zstd") {
-        return Err(HawdbError::Storage(
+        return Err(HawDBError::Storage(
             "search projection compressed envelope uses unsupported codec".to_string(),
         ));
     }
@@ -7590,12 +7590,12 @@ fn decode_search_snapshot_text_bounded(
     max_uncompressed_bytes: u64,
 ) -> Result<String> {
     let Some(header_end) = bytes.windows(2).position(|window| window == b"\n\n") else {
-        return Err(HawdbError::Storage(
+        return Err(HawDBError::Storage(
             "search projection compressed envelope missing header terminator".to_string(),
         ));
     };
     let header = std::str::from_utf8(&bytes[..header_end]).map_err(|error| {
-        HawdbError::Storage(format!(
+        HawDBError::Storage(format!(
             "search projection compressed envelope header is invalid: {error}"
         ))
     })?;
@@ -7607,39 +7607,39 @@ fn decode_search_snapshot_text_bounded(
         uncompressed_checksum,
     } = parse_snapshot_header(header)?;
     let expected_compressed_len = compressed_len.ok_or_else(|| {
-        HawdbError::Storage(
+        HawDBError::Storage(
             "search projection compressed envelope missing compressed_len".to_string(),
         )
     })?;
     if payload.len() != expected_compressed_len {
-        return Err(HawdbError::Storage(format!(
+        return Err(HawDBError::Storage(format!(
             "search projection compressed length mismatch: expected {expected_compressed_len}, got {}",
             payload.len()
         )));
     }
     let expected_compressed_checksum = compressed_checksum.ok_or_else(|| {
-        HawdbError::Storage(
+        HawDBError::Storage(
             "search projection compressed envelope missing compressed_checksum".to_string(),
         )
     })?;
     let actual_compressed_checksum = checksum_bytes(payload);
     if actual_compressed_checksum != expected_compressed_checksum {
-        return Err(HawdbError::Storage(format!(
+        return Err(HawDBError::Storage(format!(
             "search projection compressed checksum mismatch: expected {expected_compressed_checksum}, got {actual_compressed_checksum}"
         )));
     }
     let expected_uncompressed_len = uncompressed_len.ok_or_else(|| {
-        HawdbError::Storage(
+        HawDBError::Storage(
             "search projection compressed envelope missing uncompressed_len".to_string(),
         )
     })?;
     if expected_uncompressed_len as u64 > max_uncompressed_bytes {
-        return Err(HawdbError::Storage(format!(
+        return Err(HawDBError::Storage(format!(
             "search projection uncompressed payload requires {expected_uncompressed_len} bytes, exceeding {max_uncompressed_bytes}"
         )));
     }
     let decoder = zstd::stream::read::Decoder::new(Cursor::new(payload)).map_err(|error| {
-        HawdbError::Storage(format!(
+        HawDBError::Storage(format!(
             "search projection zstd decompression failed: {error}"
         ))
     })?;
@@ -7650,36 +7650,36 @@ fn decode_search_snapshot_text_bounded(
         .take((expected_uncompressed_len as u64).saturating_add(1))
         .read_to_end(&mut decoded)
         .map_err(|error| {
-            HawdbError::Storage(format!(
+            HawDBError::Storage(format!(
                 "search projection zstd decompression failed: {error}"
             ))
         })?;
     #[cfg(test)]
     compression_tests::record_decoded_bytes(decoded.len());
     if decoded.len() as u64 > max_uncompressed_bytes {
-        return Err(HawdbError::Storage(format!(
+        return Err(HawDBError::Storage(format!(
             "search projection decompressed payload exceeded {max_uncompressed_bytes} bytes"
         )));
     }
     if decoded.len() != expected_uncompressed_len {
-        return Err(HawdbError::Storage(format!(
+        return Err(HawDBError::Storage(format!(
             "search projection uncompressed length mismatch: expected {expected_uncompressed_len}, got {}",
             decoded.len()
         )));
     }
     let expected_uncompressed_checksum = uncompressed_checksum.ok_or_else(|| {
-        HawdbError::Storage(
+        HawDBError::Storage(
             "search projection compressed envelope missing uncompressed_checksum".to_string(),
         )
     })?;
     let actual_uncompressed_checksum = checksum_bytes(&decoded);
     if actual_uncompressed_checksum != expected_uncompressed_checksum {
-        return Err(HawdbError::Storage(format!(
+        return Err(HawDBError::Storage(format!(
             "search projection uncompressed checksum mismatch: expected {expected_uncompressed_checksum}, got {actual_uncompressed_checksum}"
         )));
     }
     String::from_utf8(decoded).map_err(|error| {
-        HawdbError::Storage(format!(
+        HawDBError::Storage(format!(
             "search projection decompressed payload is not valid UTF-8: {error}"
         ))
     })
@@ -7696,19 +7696,19 @@ fn elapsed_micros(started: std::time::Instant) -> u64 {
 fn parse_u64(input: &str, name: &str) -> Result<u64> {
     input
         .parse()
-        .map_err(|_| HawdbError::Storage(format!("invalid {name}: {input}")))
+        .map_err(|_| HawDBError::Storage(format!("invalid {name}: {input}")))
 }
 
 fn parse_i64(input: &str, name: &str) -> Result<i64> {
     input
         .parse()
-        .map_err(|_| HawdbError::Storage(format!("invalid {name}: {input}")))
+        .map_err(|_| HawDBError::Storage(format!("invalid {name}: {input}")))
 }
 
 fn parse_usize(input: &str, name: &str) -> Result<usize> {
     input
         .parse()
-        .map_err(|_| HawdbError::Storage(format!("invalid {name}: {input}")))
+        .map_err(|_| HawDBError::Storage(format!("invalid {name}: {input}")))
 }
 
 #[cfg(test)]
@@ -9910,7 +9910,7 @@ mod tests {
         index
             .upsert(SearchDocument {
                 id: "hawdb-lightning".to_string(),
-                title: "HawdbLightning publishes GraphStream and RelationalStream".to_string(),
+                title: "HawDBLightning publishes GraphStream and RelationalStream".to_string(),
                 content: "Checkpointed snapshots track projection freshness".to_string(),
                 embedding: None,
                 metadata: BTreeMap::new(),
@@ -11381,7 +11381,7 @@ mod tests {
                     descriptor.segments[segment_id].document_count
                 );
                 document_ids.extend(documents.into_iter().map(|document| document.id));
-                Ok::<(), HawdbError>(())
+                Ok::<(), HawDBError>(())
             })
             .unwrap();
 
@@ -12909,7 +12909,7 @@ mod tests {
                 "Entity",
                 BTreeMap::from([
                     ("id".to_string(), Value::String("entity_1".to_string())),
-                    ("name".to_string(), Value::String("Hawdb".to_string())),
+                    ("name".to_string(), Value::String("HawDB".to_string())),
                 ]),
             )
             .unwrap();
@@ -12960,7 +12960,7 @@ mod tests {
                 "Entity",
                 BTreeMap::from([
                     ("id".to_string(), Value::String("entity_1".to_string())),
-                    ("name".to_string(), Value::String("Hawdb".to_string())),
+                    ("name".to_string(), Value::String("HawDB".to_string())),
                 ]),
             )
             .unwrap();

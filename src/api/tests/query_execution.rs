@@ -783,7 +783,7 @@ fn executor_owned_result_delivery_preserves_read_transaction_boundaries() {
                         context.cancellation().cancel();
                         Ok(())
                     } else {
-                        Err(crate::HawdbError::Execution(
+                        Err(crate::HawDBError::Execution(
                             "host consumer failed".to_string(),
                         ))
                     }

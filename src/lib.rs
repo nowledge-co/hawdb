@@ -87,27 +87,27 @@ pub use api::{
     Database, DatabaseConfig, DatabaseReadTransaction, DatabaseTransaction, DerivedArtifactJob,
     DerivedArtifactJobReport, DerivedArtifactJobStatus, ExplainAnalyzeOutput,
     ExternalContentArtifactJobCompletion, ExternalContentArtifactJobSummary,
-    ExternalContentArtifactRuntimeManifest, HawdbLightningBootstrapExport,
-    HawdbLightningBootstrapManifest, HawdbLightningGraphStream,
-    HawdbLightningGraphStreamValidation, HawdbLightningInitialImportApplyReport,
-    HawdbLightningInitialImportCheckpoint, HawdbLightningInitialImportCheckpointProgress,
-    HawdbLightningInitialImportCheckpointProgressReport,
-    HawdbLightningInitialImportCheckpointReadiness,
-    HawdbLightningInitialImportCutoverCatchUpReport, HawdbLightningInitialImportDocumentIdentity,
-    HawdbLightningInitialImportDocumentIdentityCoverage,
-    HawdbLightningInitialImportDocumentIdentityKindReport,
-    HawdbLightningInitialImportDurableBatchAdvanceReport, HawdbLightningInitialImportDurableState,
-    HawdbLightningInitialImportDurableStateCodecReport,
-    HawdbLightningInitialImportDurableStateReport, HawdbLightningInitialImportIdempotencyKey,
-    HawdbLightningInitialImportPlan, HawdbLightningInitialImportReadiness,
-    HawdbLightningInitialImportReadinessInputs, HawdbLightningInitialImportRecoveryReadinessReport,
-    HawdbLightningInitialImportResumeAction, HawdbLightningInitialImportResumeActionKind,
-    HawdbLightningInitialImportSearchProjectionBatchReport,
-    HawdbLightningInitialImportSessionBundleReadiness, HawdbLightningInitialImportSessionReport,
-    HawdbLightningInitialImportSourceBundleReadiness, HawdbLightningInitialImportSourceFingerprint,
-    HawdbLightningInitialImportStartupReadinessReport,
-    HawdbLightningInitialImportStreamingBatchAdvanceReport, HawdbLightningRelationalStream,
-    HawdbLightningRelationalStreamValidation, KnowledgeCandidate, KnowledgeCandidateScoreBreakdown,
+    ExternalContentArtifactRuntimeManifest, HawDBLightningBootstrapExport,
+    HawDBLightningBootstrapManifest, HawDBLightningGraphStream,
+    HawDBLightningGraphStreamValidation, HawDBLightningInitialImportApplyReport,
+    HawDBLightningInitialImportCheckpoint, HawDBLightningInitialImportCheckpointProgress,
+    HawDBLightningInitialImportCheckpointProgressReport,
+    HawDBLightningInitialImportCheckpointReadiness,
+    HawDBLightningInitialImportCutoverCatchUpReport, HawDBLightningInitialImportDocumentIdentity,
+    HawDBLightningInitialImportDocumentIdentityCoverage,
+    HawDBLightningInitialImportDocumentIdentityKindReport,
+    HawDBLightningInitialImportDurableBatchAdvanceReport, HawDBLightningInitialImportDurableState,
+    HawDBLightningInitialImportDurableStateCodecReport,
+    HawDBLightningInitialImportDurableStateReport, HawDBLightningInitialImportIdempotencyKey,
+    HawDBLightningInitialImportPlan, HawDBLightningInitialImportReadiness,
+    HawDBLightningInitialImportReadinessInputs, HawDBLightningInitialImportRecoveryReadinessReport,
+    HawDBLightningInitialImportResumeAction, HawDBLightningInitialImportResumeActionKind,
+    HawDBLightningInitialImportSearchProjectionBatchReport,
+    HawDBLightningInitialImportSessionBundleReadiness, HawDBLightningInitialImportSessionReport,
+    HawDBLightningInitialImportSourceBundleReadiness, HawDBLightningInitialImportSourceFingerprint,
+    HawDBLightningInitialImportStartupReadinessReport,
+    HawDBLightningInitialImportStreamingBatchAdvanceReport, HawDBLightningRelationalStream,
+    HawDBLightningRelationalStreamValidation, KnowledgeCandidate, KnowledgeCandidateScoreBreakdown,
     KnowledgeCandidateScoringPolicy, KnowledgeCandidateSource, KnowledgeEvidence,
     KnowledgeFallbackReasonCode, KnowledgeFanoutReasonCode, KnowledgeFanoutReasonDetail,
     KnowledgeGraphContextPath, KnowledgeGraphPathDirection, KnowledgeGraphSeed,
@@ -198,14 +198,14 @@ pub use crash_recovery_evidence::{
 };
 pub use cypher::RelationshipDirection;
 pub use embedded::{
-    EmbeddedDeploymentProfile, EmbeddedQueryError, EmbeddedRuntimeResources, HawdbEmbedded,
-    HawdbEmbeddedOpenOptions,
+    EmbeddedDeploymentProfile, EmbeddedQueryError, EmbeddedRuntimeResources, HawDBEmbedded,
+    HawDBEmbeddedOpenOptions,
 };
 #[cfg(feature = "tokio-runtime")]
 pub use embedded_tokio::{
-    HawdbTokioEmbedded, HawdbTokioEmbeddedError, TokioQueryBatchStream, TokioQueryStreamOptions,
+    HawDBTokioEmbedded, HawDBTokioEmbeddedError, TokioQueryBatchStream, TokioQueryStreamOptions,
 };
-pub use error::{HawdbError, Result};
+pub use error::{HawDBError, Result};
 pub use executor::{
     QueryRow, QueryRowRef, QueryRows, QuerySchema, ReadExecutionProfile, Row, RowRef,
 };
@@ -238,7 +238,7 @@ pub use hawdb_bootstrap::{
     stage_hawdb_lightning_bootstrap_export_with_optional_storage_recovery,
     sync_bootstrap_directory, verify_hawdb_lightning_published_manifest,
     verify_hawdb_lightning_staging_catalog, write_bootstrap_atomic_file,
-    HawdbLightningPublishOptions, HAWDB_LIGHTNING_STAGING_CATALOG_PROTOCOL_VERSION,
+    HawDBLightningPublishOptions, HAWDB_LIGHTNING_STAGING_CATALOG_PROTOCOL_VERSION,
 };
 pub use hawdb_core::LogicalType;
 pub use hawdb_core::Uuid;
@@ -314,7 +314,7 @@ pub use mem_integration_readiness::{
     BoundedReadAlignmentCutoverReadiness, BoundedReadCutoverReadiness,
     ContentStoreBoundaryCutoverReadiness, GraphReplacementCutoverReadiness,
     GraphRouteAlignmentCutoverReadiness, GraphRouteCutoverReadiness,
-    GraphRouteParityAlignmentCutoverReadiness, HawdbSubmoduleCutoverReadiness,
+    GraphRouteParityAlignmentCutoverReadiness, HawDBSubmoduleCutoverReadiness,
     IntegrationBundleProtocolCutoverReadiness, LegacyCoexistenceCutoverReadiness,
     LibraryReadinessCutoverReadiness, NowledgeMemFinalCutoverPreflightReport,
     NowledgeMemIntegrationCheckReport, NowledgeMemIntegrationNextAction,

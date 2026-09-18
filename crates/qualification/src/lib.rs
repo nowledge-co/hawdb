@@ -28,7 +28,7 @@ pub use release_bundle::*;
 use hawdb::executor::ExecutionMemoryConfig;
 use hawdb::store::MutationLimits;
 use hawdb::{
-    DatabaseConfig, DurabilityPolicy, HawdbEmbedded, HawdbEmbeddedOpenOptions, HawdbTokioEmbedded,
+    DatabaseConfig, DurabilityPolicy, HawDBEmbedded, HawDBEmbeddedOpenOptions, HawDBTokioEmbedded,
     ProcessMemoryProfile, ProcessMemorySnapshot, QueryStreamReport, RuntimeGovernorConfig,
     RuntimeTaskContext, RuntimeWorkRequest, StorageResidencyMode, StorageResidencyReport, Value,
 };
@@ -309,7 +309,7 @@ pub fn run_mixed_soak(config: &MixedSoakConfig) -> Result<MixedSoakReport, Mixed
     let configuration_digest = stable_digest(&serde_json::to_vec(&configuration).map_err(error)?);
     let (prepared_storage, prepared_epoch, dataset_fingerprint) = prepare_fixture(config)?;
     let options = embedded_options(config);
-    let database = HawdbTokioEmbedded::open_owned(options).map_err(error)?;
+    let database = HawDBTokioEmbedded::open_owned(options).map_err(error)?;
     let start_process = ProcessMemorySnapshot::capture().map_err(error)?;
     let runtime_before = database.runtime_snapshot();
     let storage_before =
@@ -456,7 +456,7 @@ fn merge_query_task_outcome(
 }
 
 async fn run_concurrent_workload(
-    database: HawdbTokioEmbedded,
+    database: HawDBTokioEmbedded,
     config: MixedSoakConfig,
 ) -> WorkloadOutcomes {
     let participant_count = config.foreground_workers.saturating_add(2);
@@ -615,7 +615,7 @@ async fn run_concurrent_workload(
 }
 
 async fn stream_query(
-    database: &HawdbTokioEmbedded,
+    database: &HawDBTokioEmbedded,
     cypher: &str,
     parameters: BTreeMap<String, Value>,
     timeout: Duration,
@@ -638,7 +638,7 @@ async fn stream_query(
 fn prepare_fixture(
     config: &MixedSoakConfig,
 ) -> Result<(StorageResidencyReport, u64, String), MixedSoakError> {
-    let mut embedded = HawdbEmbedded::open_with_options(embedded_options(config)).map_err(error)?;
+    let mut embedded = HawDBEmbedded::open_with_options(embedded_options(config)).map_err(error)?;
     let mut fingerprint = StableHasher::new();
     fingerprint.update(config.dataset_id.as_bytes());
     for id in 0..config.node_count {
@@ -664,7 +664,7 @@ fn prepare_fixture(
     Ok((report, epoch, fingerprint.finish()))
 }
 
-fn embedded_options(config: &MixedSoakConfig) -> HawdbEmbeddedOpenOptions {
+fn embedded_options(config: &MixedSoakConfig) -> HawDBEmbeddedOpenOptions {
     let raw_bytes = raw_dataset_bytes(config);
     let batch_payload_bytes =
         usize::try_from((config.runtime_memory_budget_bytes / 16).clamp(8 * 1024, 256 * 1024))
@@ -716,7 +716,7 @@ fn embedded_options(config: &MixedSoakConfig) -> HawdbEmbeddedOpenOptions {
         result_budget_bytes: config.result_budget_bytes,
         ..RuntimeGovernorConfig::shared_host()
     };
-    HawdbEmbeddedOpenOptions::new(&config.database_path)
+    HawDBEmbeddedOpenOptions::new(&config.database_path)
         .with_config(database)
         .with_durability(DurabilityPolicy::SyncOnCheckpoint)
         .with_runtime_governor_config(governor)

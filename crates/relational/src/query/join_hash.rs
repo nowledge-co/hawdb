@@ -2,7 +2,7 @@ use super::{
     bound_join_key, bound_relation_join_key, null_extended_tree_row, predicate_truth,
     relational_key_resident_bytes, typed_row_set_locator, visit_prepared_physical_join_plan_node,
     with_typed_locator_bound_row_for_scan, BindingId, BoundRow, DefaultHasher, ExecutorBinding,
-    Hash, HashMap, Hasher, HawdbError, NonZeroUsize, OperatorMemoryTracker, QueryMemoryClass,
+    Hash, HashMap, Hasher, HawDBError, NonZeroUsize, OperatorMemoryTracker, QueryMemoryClass,
     QueryMemoryLedger, RefCell, RelationalEquiJoinKeys, RelationalIndexRuntime, RelationalKey,
     RelationalLocatorLayout, RelationalOperatorId, RelationalPhysicalJoinExecution,
     RelationalPhysicalJoinNode, RelationalPhysicalOutputSchema, RelationalPhysicalRelation,
@@ -118,7 +118,7 @@ pub(super) fn write_hash_join_spill_record(
         Value::Binary(locator.encode_hash_spill_record()?),
     );
     let slot = runs.get_mut(partition).ok_or_else(|| {
-        HawdbError::Execution(format!(
+        HawDBError::Execution(format!(
             "hash join spill partition {partition} is out of bounds"
         ))
     })?;
@@ -136,7 +136,7 @@ pub(super) fn write_hash_join_spill_record(
         .writer
         .as_mut()
         .ok_or_else(|| {
-            HawdbError::Execution("hash join spill writer is already closed".to_string())
+            HawDBError::Execution("hash join spill writer is already closed".to_string())
         })?
         .write(*next_ordinal, &binding, budget);
     *slot = Some(run);
@@ -177,12 +177,12 @@ pub(super) fn map_hash_join_spill_record<T>(
 
 pub(super) fn hash_join_spill_locator(binding: ExecutorBinding) -> Result<RelationalRowSetLocator> {
     if !binding.nodes.is_empty() || !binding.relationships.is_empty() || binding.values.len() != 1 {
-        return Err(HawdbError::StorageIntegrity(
+        return Err(HawDBError::StorageIntegrity(
             "hash join spill record has an invalid binding shape".to_string(),
         ));
     }
     let Some(Value::Binary(payload)) = binding.values.get(HASH_JOIN_SPILL_BINDING_NAME) else {
-        return Err(HawdbError::StorageIntegrity(
+        return Err(HawDBError::StorageIntegrity(
             "hash join spill record has no typed relational locator".to_string(),
         ));
     };
@@ -217,7 +217,7 @@ pub(super) fn try_insert_hash_join_build(
         tracker.try_charge(row_bytes)?;
         if let Err(error) = rows.try_reserve_exact(1) {
             tracker.release(row_bytes);
-            return Err(HawdbError::Execution(format!(
+            return Err(HawDBError::Execution(format!(
                 "RelationalHashJoinBuild cannot reserve build row: {error}"
             )));
         }
@@ -234,14 +234,14 @@ pub(super) fn try_insert_hash_join_build(
     tracker.try_charge(entry_bytes)?;
     if let Err(error) = build.try_reserve(1) {
         tracker.release(entry_bytes);
-        return Err(HawdbError::Execution(format!(
+        return Err(HawDBError::Execution(format!(
             "RelationalHashJoinBuild cannot reserve hash table: {error}"
         )));
     }
     let mut rows = Vec::new();
     if let Err(error) = rows.try_reserve_exact(1) {
         tracker.release(entry_bytes);
-        return Err(HawdbError::Execution(format!(
+        return Err(HawDBError::Execution(format!(
             "RelationalHashJoinBuild cannot reserve build row: {error}"
         )));
     }
@@ -317,7 +317,7 @@ pub(super) fn relational_physical_relation_locator_layout<'a>(
     relation: &'a RelationalPhysicalRelation,
 ) -> Result<RelationalLocatorLayout<'a>> {
     let schema = state.table_schema(&relation.table).ok_or_else(|| {
-        HawdbError::Semantic(format!("unknown relational table {}", relation.table))
+        HawDBError::Semantic(format!("unknown relational table {}", relation.table))
     })?;
     RelationalLocatorLayout::from_bindings([(
         relation.binding,
@@ -350,7 +350,7 @@ pub(super) fn visit_hash_join<'a>(
     visit: &mut dyn FnMut(BoundRow<'a>) -> Result<bool>,
 ) -> Result<bool> {
     if outer.is_some() {
-        return Err(HawdbError::Execution(
+        return Err(HawDBError::Execution(
             "hash join cannot run below a probe input".to_string(),
         ));
     }
@@ -359,12 +359,12 @@ pub(super) fn visit_hash_join<'a>(
         RelationalPhysicalJoinNode::Relation(right_relation),
     ) = (left, right)
     else {
-        return Err(HawdbError::Execution(
+        return Err(HawDBError::Execution(
             "hash join requires two relation inputs".to_string(),
         ));
     };
     let right_schema = state.table_schema(&right_relation.table).ok_or_else(|| {
-        HawdbError::Semantic(format!("unknown relational table {}", right_relation.table))
+        HawDBError::Semantic(format!("unknown relational table {}", right_relation.table))
     })?;
     let left_locator_layout = relational_physical_relation_locator_layout(state, left_relation)?;
     let right_locator_layout = relational_physical_relation_locator_layout(state, right_relation)?;
@@ -560,7 +560,7 @@ pub(super) fn visit_grace_hash_join<'a>(
     visit: &mut dyn FnMut(BoundRow<'a>) -> Result<bool>,
 ) -> Result<(bool, usize, usize)> {
     let right_schema = state.table_schema(&right_relation.table).ok_or_else(|| {
-        HawdbError::Semantic(format!("unknown relational table {}", right_relation.table))
+        HawDBError::Semantic(format!("unknown relational table {}", right_relation.table))
     })?;
     let candidate_context = HashJoinCandidateContext {
         operator_id,
@@ -697,7 +697,7 @@ pub(super) fn visit_grace_hash_join<'a>(
                     |right_row| {
                         bound_relation_join_key(right_row, right_relation, equi_join_keys)?
                             .ok_or_else(|| {
-                                HawdbError::StorageIntegrity(
+                                HawDBError::StorageIntegrity(
                                     "hash join spill build row has a null join key".to_string(),
                                 )
                             })
@@ -755,7 +755,7 @@ pub(super) fn visit_grace_hash_join<'a>(
                         let left_key =
                             bound_join_key(left_row, right_schema, &equi_join_keys.columns)?
                                 .ok_or_else(|| {
-                                    HawdbError::StorageIntegrity(
+                                    HawDBError::StorageIntegrity(
                                         "hash join spill probe row has a null join key".to_string(),
                                     )
                                 })?;
@@ -781,7 +781,7 @@ pub(super) fn visit_grace_hash_join<'a>(
                                                 equi_join_keys,
                                             )?
                                             else {
-                                                return Err(HawdbError::StorageIntegrity(
+                                                return Err(HawDBError::StorageIntegrity(
                                                     "hash join spill build row has a null join key"
                                                         .to_string(),
                                                 ));

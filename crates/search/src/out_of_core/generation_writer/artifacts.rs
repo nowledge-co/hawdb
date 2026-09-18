@@ -13,7 +13,7 @@ use crate::build_memory::{
 use crate::document_encoding::{
     DescriptorEncoding, DocumentEncoding, SegmentEncoding, SegmentKind, HEX_BUFFER_BYTES,
 };
-use crate::error::{HawdbError, Result};
+use crate::error::{HawDBError, Result};
 use crate::{
     SearchDocument, SearchSegmentDescriptor, SearchSegmentDescriptorEntry,
     SearchSegmentPayloadRange, SEARCH_FILTER_SEGMENT_TARGET_DOCUMENTS,
@@ -125,12 +125,12 @@ impl<'a> SegmentArtifactBuilder<'a> {
         documents
             .try_reserve_exact(SEARCH_FILTER_SEGMENT_TARGET_DOCUMENTS)
             .map_err(|error| {
-                HawdbError::Execution(format!(
+                HawDBError::Execution(format!(
                     "search segment document allocation failed: {error}"
                 ))
             })?;
         if documents.capacity() > SEARCH_FILTER_SEGMENT_TARGET_DOCUMENTS {
-            return Err(HawdbError::Execution(
+            return Err(HawDBError::Execution(
                 "search segment document capacity exceeded admission".into(),
             ));
         }
@@ -227,7 +227,7 @@ impl<'a> SegmentArtifactBuilder<'a> {
             self.flush_segment()?;
         }
         if encoded_bytes.saturating_add(64) > self.options.max_segment_uncompressed_bytes.get() {
-            return Err(HawdbError::Storage(format!(
+            return Err(HawDBError::Storage(format!(
                 "search generation document {} cannot fit the admitted segment buffer",
                 document.id
             )));
@@ -246,7 +246,7 @@ impl<'a> SegmentArtifactBuilder<'a> {
 
     fn check_healthy(&self) -> Result<()> {
         if self.failed {
-            return Err(HawdbError::Storage(
+            return Err(HawDBError::Storage(
                 "search segment writer already failed".into(),
             ));
         }
@@ -289,7 +289,7 @@ impl<'a> SegmentArtifactBuilder<'a> {
         self.document_offset = self
             .document_offset
             .checked_add(document_length)
-            .ok_or_else(|| HawdbError::Storage("search generation payload overflow".to_string()))?;
+            .ok_or_else(|| HawDBError::Storage("search generation payload overflow".to_string()))?;
         drop(document_payload);
 
         let vector_ordinal_base = self.next_vector_ordinal;

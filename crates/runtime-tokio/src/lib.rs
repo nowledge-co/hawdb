@@ -169,12 +169,12 @@ impl Display for TokioRuntimeError {
     fn fmt(&self, formatter: &mut Formatter<'_>) -> fmt::Result {
         match self {
             Self::NestedOwnedRuntime => formatter.write_str(
-                "an owned Hawdb Tokio runtime cannot be created inside an active Tokio runtime",
+                "an owned HawDB Tokio runtime cannot be created inside an active Tokio runtime",
             ),
             Self::BlockOnWithinRuntime => formatter.write_str(
-                "blocking on the Hawdb Tokio adapter is not allowed inside an active Tokio runtime",
+                "blocking on the HawDB Tokio adapter is not allowed inside an active Tokio runtime",
             ),
-            Self::Build(error) => write!(formatter, "failed to build Hawdb Tokio runtime: {error}"),
+            Self::Build(error) => write!(formatter, "failed to build HawDB Tokio runtime: {error}"),
         }
     }
 }

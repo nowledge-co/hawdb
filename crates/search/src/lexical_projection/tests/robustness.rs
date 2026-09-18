@@ -382,7 +382,7 @@ fn spill_reader_rejects_partial_records_but_accepts_record_boundaries() {
             {
                 count += 1;
             }
-            Ok::<_, HawdbError>(count)
+            Ok::<_, HawDBError>(count)
         })();
         if let Some(expected) = boundaries.iter().position(|boundary| *boundary == length) {
             assert_eq!(observed.unwrap(), expected);

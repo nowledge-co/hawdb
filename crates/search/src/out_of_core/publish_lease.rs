@@ -1,6 +1,6 @@
 use crate::build_control::checkpoint;
 use crate::build_memory::{path::OwnedPath, reserved::native_path, BuildMemory};
-use crate::error::{HawdbError, Result};
+use crate::error::{HawDBError, Result};
 use hawdb_core::RuntimeTaskContext;
 use std::fs::{File, OpenOptions, TryLockError};
 use std::path::Path;
@@ -76,8 +76,8 @@ impl SearchProjectionPublishLease {
     }
 }
 
-fn active_publication() -> HawdbError {
-    HawdbError::Storage("another search projection publication is active".into())
+fn active_publication() -> HawDBError {
+    HawDBError::Storage("another search projection publication is active".into())
 }
 
 impl Drop for SearchProjectionPublishLease {

@@ -1,5 +1,5 @@
 use crate::candidate_evidence::nowledge_mem_search_candidate_shadow_evidence_json;
-use hawdb_core::{HawdbError, Result};
+use hawdb_core::{HawDBError, Result};
 use std::path::Path;
 
 pub use crate::candidate_evidence::parse_search_candidate_shadow_probe;
@@ -19,13 +19,13 @@ pub fn run_nowledge_search_candidate_shadow_evidence(
                 require_ready = true;
             }
             value if value.starts_with("--") => {
-                return Err(HawdbError::Semantic(
+                return Err(HawDBError::Semantic(
                     nowledge_search_candidate_shadow_evidence_usage(),
                 ));
             }
             path => {
                 if probe_path.replace(path.to_string()).is_some() {
-                    return Err(HawdbError::Semantic(
+                    return Err(HawDBError::Semantic(
                         nowledge_search_candidate_shadow_evidence_usage(),
                     ));
                 }
@@ -33,7 +33,7 @@ pub fn run_nowledge_search_candidate_shadow_evidence(
         }
     }
     let Some(probe_path) = probe_path else {
-        return Err(HawdbError::Semantic(
+        return Err(HawDBError::Semantic(
             nowledge_search_candidate_shadow_evidence_usage(),
         ));
     };
@@ -47,13 +47,13 @@ pub fn run_nowledge_search_candidate_shadow_evidence(
 
 fn read_json_file(path: &Path) -> Result<serde_json::Value> {
     let content = std::fs::read_to_string(path).map_err(|error| {
-        HawdbError::Execution(format!(
+        HawDBError::Execution(format!(
             "failed to read search candidate shadow probe JSON: {}",
             error.kind()
         ))
     })?;
     serde_json::from_str(&content).map_err(|_| {
-        HawdbError::Semantic(
+        HawDBError::Semantic(
             "failed to parse search candidate shadow probe JSON: invalid_json".to_string(),
         )
     })
@@ -69,7 +69,7 @@ mod tests {
         candidate_evidence::probe_fixtures::ready_probe,
         NOWLEDGE_SEARCH_PROJECTION_SCAN_FILTER_FIELDS,
     };
-    use hawdb_core::HawdbError;
+    use hawdb_core::HawDBError;
     use std::path::PathBuf;
     use std::time::{SystemTime, UNIX_EPOCH};
 
@@ -148,7 +148,7 @@ mod tests {
                 run_nowledge_search_candidate_shadow_evidence(
                     args.into_iter().map(str::to_string),
                 ),
-                Err(HawdbError::Semantic(message))
+                Err(HawDBError::Semantic(message))
                     if message == nowledge_search_candidate_shadow_evidence_usage()
             ));
         }

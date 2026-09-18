@@ -137,13 +137,13 @@ impl row_runtime::RelationalRowStoreReader for RelationalMaterializedReader {
         &self,
         _rows: &Self::TransactionRows,
     ) -> hawdb_core::Result<hawdb_storage::RelationalRowPageSnapshotReader> {
-        Err(hawdb_core::HawdbError::Execution(
+        Err(hawdb_core::HawDBError::Execution(
             "materialized relational reader does not expose transaction rows".to_string(),
         ))
     }
 }
 
-use hawdb_core::{HawdbError, Result, Value};
+use hawdb_core::{HawDBError, Result, Value};
 use hawdb_sql::{SqlColumnDefault, SqlColumnDefinition, SqlDataType, SqlValue};
 use hawdb_storage::{
     RelationalColumnDefault, RelationalColumnSchema, RelationalScalarType, RelationalValue,
@@ -157,7 +157,7 @@ pub fn bind_relational_value(value: SqlValue, parameters: &[Value]) -> Result<Re
             .get(position.saturating_sub(1))
             .cloned()
             .ok_or_else(|| {
-                HawdbError::Semantic(format!("missing PostgreSQL parameter ${position}"))
+                HawDBError::Semantic(format!("missing PostgreSQL parameter ${position}"))
             })?,
     };
     match value {
@@ -168,7 +168,7 @@ pub fn bind_relational_value(value: SqlValue, parameters: &[Value]) -> Result<Re
         Value::String(value) => Ok(RelationalValue::Text(value)),
         Value::Binary(value) => Ok(RelationalValue::Bytea(value)),
         Value::Uuid(value) => Ok(RelationalValue::Uuid(value)),
-        Value::List(_) | Value::Map(_) => Err(HawdbError::Semantic(
+        Value::List(_) | Value::Map(_) => Err(HawDBError::Semantic(
             "relational SQL parameters must be scalar".to_string(),
         )),
     }
@@ -209,7 +209,7 @@ fn compile_schema_value(
     scalar_type: RelationalScalarType,
 ) -> Result<RelationalValue> {
     let SqlValue::Literal(value) = value else {
-        return Err(HawdbError::Semantic(
+        return Err(HawDBError::Semantic(
             "schema defaults cannot contain parameters".to_string(),
         ));
     };
@@ -221,7 +221,7 @@ fn compile_schema_value(
         Value::String(value) => Ok(RelationalValue::Text(value)),
         Value::Binary(value) => Ok(RelationalValue::Bytea(value)),
         Value::Uuid(value) => Ok(RelationalValue::Uuid(value)),
-        Value::List(_) | Value::Map(_) => Err(HawdbError::Semantic(
+        Value::List(_) | Value::Map(_) => Err(HawDBError::Semantic(
             "relational schema defaults must be scalar".to_string(),
         )),
     }
@@ -237,7 +237,7 @@ pub fn coerce_relational_value(
         (RelationalScalarType::Uuid, RelationalValue::Text(value)) => {
             hawdb_core::Uuid::parse_str(&value)
                 .map(RelationalValue::Uuid)
-                .map_err(|_| HawdbError::Semantic(format!("invalid UUID value {value:?}")))
+                .map_err(|_| HawDBError::Semantic(format!("invalid UUID value {value:?}")))
         }
         (RelationalScalarType::Uuid, RelationalValue::Uuid(value)) => {
             Ok(RelationalValue::Uuid(value))
@@ -249,13 +249,13 @@ pub fn coerce_relational_value(
 #[doc(hidden)]
 pub fn reject_non_public_schema(schema: Option<&str>) -> Result<()> {
     if matches!(schema, Some("system" | "information_schema" | "pg_catalog")) {
-        return Err(HawdbError::Semantic(format!(
+        return Err(HawDBError::Semantic(format!(
             "PostgreSQL compatibility catalog {} is read-only",
             schema.unwrap_or_default()
         )));
     }
     if schema.is_some_and(|schema| schema != "public") {
-        return Err(HawdbError::Semantic(
+        return Err(HawDBError::Semantic(
             "relational content tables must use the public schema".to_string(),
         ));
     }

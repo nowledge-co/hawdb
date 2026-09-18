@@ -1,7 +1,7 @@
 //! Migration evidence for the two existing frontends, without changing routing.
 
 use crate::{prepare_postgres_sql, SqlStatement};
-use hawdb_core::HawdbError;
+use hawdb_core::HawDBError;
 use hawdb_sql_syntax::{
     parse_postgres_statement, tokenize, PostgresFromItemSyntax, PostgresStatementSyntax, TokenKind,
 };
@@ -183,8 +183,8 @@ fn production(sql: &str) -> Result<(Outcome, Option<&'static str>), String> {
         }
         Err(error) => {
             let code = match error {
-                HawdbError::Parse(_) => "Parse",
-                HawdbError::Semantic(_) => "Semantic",
+                HawDBError::Parse(_) => "Parse",
+                HawDBError::Semantic(_) => "Semantic",
                 other => {
                     return Err(format!(
                         "unexpected production preparation error: {other:?}"

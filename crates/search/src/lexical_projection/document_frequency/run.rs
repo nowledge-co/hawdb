@@ -41,8 +41,8 @@ impl PostingSize {
             .ok_or_else(Self::overflow)
     }
 
-    fn overflow() -> HawdbError {
-        HawdbError::Storage("lexical spill bytes overflow".into())
+    fn overflow() -> HawDBError {
+        HawDBError::Storage("lexical spill bytes overflow".into())
     }
 }
 
@@ -72,7 +72,7 @@ fn validate(record: &FrequencyRecord, config: LexicalProjectionConfig) -> Result
             .is_none_or(|(_, weight)| weight > 2)
         || record.summary.frequency()? == 0
     {
-        return Err(HawdbError::Storage(
+        return Err(HawDBError::Storage(
             "invalid document frequency spill record".into(),
         ));
     }
@@ -99,7 +99,7 @@ impl<W: Write> RunWriter<W> {
         let records = self
             .records
             .checked_add(1)
-            .ok_or_else(|| HawdbError::Storage("document frequency run count overflow".into()))?;
+            .ok_or_else(|| HawDBError::Storage("document frequency run count overflow".into()))?;
         let (ordinal, unique_weight) = record.summary.first_event.expect("validated first event");
         let mut writer = spill_control::RecordWriter::new(&mut self.writer, &self.control)?;
         write_string(&mut writer, &record.term)?;
@@ -160,7 +160,7 @@ pub(super) fn write_run(
         if let Some(previous) = pending.as_mut() {
             match previous.key().cmp(&record.key()) {
                 std::cmp::Ordering::Greater => {
-                    return Err(HawdbError::Storage(
+                    return Err(HawDBError::Storage(
                         "unordered document frequency run input".into(),
                     ))
                 }
@@ -185,7 +185,7 @@ pub(super) fn write_run(
     pool.bytes = writer.finish()?;
     if let Some(memory) = guard._memory.as_mut() {
         if guard.path.capacity() > memory.bytes() {
-            return Err(HawdbError::Execution(
+            return Err(HawDBError::Execution(
                 "search spill path allocation exceeded its admitted capacity".into(),
             ));
         }
@@ -252,7 +252,7 @@ impl FrequencyRunReader {
         let file = control.with_path(path, || Ok(File::open(path)?))?;
         let length = file.metadata()?.len();
         if length < HEADER.len() as u64 + FOOTER_BYTES || length > config.max_spill_bytes.get() {
-            return Err(HawdbError::Storage(
+            return Err(HawDBError::Storage(
                 "invalid document frequency spill length".into(),
             ));
         }
@@ -261,7 +261,7 @@ impl FrequencyRunReader {
         let mut header = [0u8; 8];
         reader.read_exact(&mut header)?;
         if &header != HEADER {
-            return Err(HawdbError::Storage(
+            return Err(HawDBError::Storage(
                 "document frequency spill header mismatch".into(),
             ));
         }
@@ -289,7 +289,7 @@ impl FrequencyRunReader {
             let records = read_u64(&mut self.reader)?;
             let digest = read_u64(&mut self.reader)?;
             if records != self.records || digest != self.digest.finish() {
-                return Err(HawdbError::Storage(
+                return Err(HawDBError::Storage(
                     "document frequency spill footer mismatch".into(),
                 ));
             }
@@ -303,7 +303,7 @@ impl FrequencyRunReader {
         };
         let length = read_u32(&mut reader)? as usize;
         if length as u64 > self.config.max_term_bytes.get() {
-            return Err(HawdbError::Storage(
+            return Err(HawDBError::Storage(
                 "lexical spill string exceeds its limit".into(),
             ));
         }
@@ -329,7 +329,7 @@ impl FrequencyRunReader {
             .as_ref()
             .is_some_and(|(term, field)| (term.as_str(), *field) >= record.key())
         {
-            return Err(HawdbError::Storage(
+            return Err(HawDBError::Storage(
                 "unordered document frequency spill records".into(),
             ));
         }
@@ -337,7 +337,7 @@ impl FrequencyRunReader {
         self.records = self
             .records
             .checked_add(1)
-            .ok_or_else(|| HawdbError::Storage("document frequency run count overflow".into()))?;
+            .ok_or_else(|| HawDBError::Storage("document frequency run count overflow".into()))?;
         Ok(Some(record))
     }
 }

@@ -1,7 +1,7 @@
 use super::*;
 use crate::build_memory::{checked_add, checked_mul, BuildMemory};
 use crate::build_term::Term;
-use crate::{HawdbError, RuntimeTaskContext};
+use crate::{HawDBError, RuntimeTaskContext};
 use hawdb_executor::QueryMemoryLease;
 use std::collections::hash_map::Entry;
 use std::mem::size_of;
@@ -80,10 +80,10 @@ impl<'a> Dedup<'a> {
             _memory: memory,
         };
         candidate.terms.try_reserve(capacity).map_err(|error| {
-            HawdbError::Execution(format!("reserve search identifier deduplication: {error}"))
+            HawDBError::Execution(format!("reserve search identifier deduplication: {error}"))
         })?;
         if table_bytes::<(Text<'_>, ())>(candidate.terms.capacity())? > bytes {
-            return Err(HawdbError::Execution(
+            return Err(HawDBError::Execution(
                 "search identifier deduplication exceeded admitted capacity".into(),
             ));
         }
@@ -107,7 +107,7 @@ fn table_bytes<T>(capacity: usize) -> Result<usize> {
         checked_mul(capacity, 8)?
             .checked_div(7)
             .and_then(usize::checked_next_power_of_two)
-            .ok_or_else(|| HawdbError::Execution("search dedup capacity overflow".into()))?
+            .ok_or_else(|| HawDBError::Execution("search dedup capacity overflow".into()))?
     };
     checked_add(checked_mul(buckets, checked_add(size_of::<T>(), 1)?)?, 32)
 }

@@ -63,12 +63,12 @@ impl GraphStore {
     ) -> Result<OptimizerStatisticsRefreshReport> {
         options.validate()?;
         if !self.canonical_base_out_of_core {
-            return Err(HawdbError::Execution(
+            return Err(HawDBError::Execution(
                 "external optimizer statistics refresh requires out-of-core storage".to_string(),
             ));
         }
         if self.durable.is_none() {
-            return Err(HawdbError::Execution(
+            return Err(HawDBError::Execution(
                 "external optimizer statistics refresh requires durable storage".to_string(),
             ));
         }
@@ -109,14 +109,14 @@ impl GraphStore {
                 writer.push_relationship_property(relationship.rel_type, property, value)?;
             }
             let source = self.node_owned(relationship.source)?.ok_or_else(|| {
-                HawdbError::Storage(format!(
+                HawDBError::Storage(format!(
                     "optimizer statistics refresh found relationship {} with missing source {}",
                     relationship.id.0, relationship.source.0
                 ))
             })?;
             work.read_node()?;
             let target = self.node_owned(relationship.target)?.ok_or_else(|| {
-                HawdbError::Storage(format!(
+                HawDBError::Storage(format!(
                     "optimizer statistics refresh found relationship {} with missing target {}",
                     relationship.id.0, relationship.target.0
                 ))
@@ -176,7 +176,7 @@ impl GraphStore {
         let basic = self.basic_statistics();
         let (statistics, merge_report) = writer.finish(graph_statistics_from_basic(basic, true))?;
         if source_commit_epoch != self.commit_epoch {
-            return Err(HawdbError::Execution(
+            return Err(HawDBError::Execution(
                 "optimizer statistics refresh source epoch changed before publication".to_string(),
             ));
         }
@@ -252,7 +252,7 @@ fn collect_bounded_path_facts(
             work.read_relationship()?;
             work.expand_path()?;
             let target = store.node_owned(relationship.target)?.ok_or_else(|| {
-                HawdbError::Storage(format!(
+                HawDBError::Storage(format!(
                     "optimizer statistics refresh found relationship {} with missing target {}",
                     relationship.id.0, relationship.target.0
                 ))

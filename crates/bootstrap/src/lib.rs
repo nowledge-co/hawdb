@@ -4,7 +4,7 @@
 //! import-readiness decisions. The embedded facade remains responsible for
 //! extracting a live graph snapshot from its `GraphStore`.
 
-use hawdb_core::{HawdbError, Result, Value};
+use hawdb_core::{HawDBError, Result, Value};
 use hawdb_search::{SearchProjectionDelta, SearchProjectionFreshness, SearchProjectionKind};
 use hawdb_storage::{
     decode_relational_checkpoint, encode_relational_checkpoint, RelationalDecodeLimits,
@@ -48,7 +48,7 @@ pub use developer_staging_import::{
 #[doc(hidden)]
 pub use developer_staging_publish::{
     publish_hawdb_lightning_staging_catalog, publish_hawdb_lightning_staging_catalog_with_options,
-    HawdbLightningPublishOptions,
+    HawDBLightningPublishOptions,
 };
 #[doc(hidden)]
 pub use developer_staging_verification::{
@@ -111,15 +111,15 @@ impl CanonicalGraphSnapshotExport {
 
     pub fn hawdb_lightning_bootstrap_manifest(
         &self,
-        relational_stream: &HawdbLightningRelationalStream,
-    ) -> HawdbLightningBootstrapManifest {
+        relational_stream: &HawDBLightningRelationalStream,
+    ) -> HawDBLightningBootstrapManifest {
         let validation = self.validate();
         let graph_stream_body = encode_hawdb_lightning_graph_stream_body(self);
         let graph_stream_checksum = checksum_bytes(graph_stream_body.as_bytes());
         let graph_stream_byte_len =
             graph_stream_body.len() + format!("checksum\t{graph_stream_checksum}\n").len();
         let relational_validation = relational_stream.validate();
-        let mut manifest = HawdbLightningBootstrapManifest {
+        let mut manifest = HawDBLightningBootstrapManifest {
             protocol_version: HAWDB_LIGHTNING_BOOTSTRAP_PROTOCOL_VERSION,
             database_commit_epoch: self.graph_commit_epoch,
             graph_commit_epoch: self.graph_commit_epoch,
@@ -163,11 +163,11 @@ impl CanonicalGraphSnapshotExport {
         manifest
     }
 
-    pub fn hawdb_lightning_graph_stream(&self) -> HawdbLightningGraphStream {
+    pub fn hawdb_lightning_graph_stream(&self) -> HawDBLightningGraphStream {
         let body = encode_hawdb_lightning_graph_stream_body(self);
         let stream_checksum = checksum_bytes(body.as_bytes());
         let encoded = format!("{body}checksum\t{stream_checksum}\n");
-        HawdbLightningGraphStream {
+        HawDBLightningGraphStream {
             format_version: HAWDB_LIGHTNING_GRAPH_STREAM_FORMAT_VERSION,
             graph_commit_epoch: self.graph_commit_epoch,
             logical_checksum: self.logical_checksum,
@@ -239,22 +239,22 @@ impl CanonicalGraphSnapshotExport {
     }
 }
 
-impl HawdbLightningGraphStream {
+impl HawDBLightningGraphStream {
     pub fn validate_against_manifest(
         &self,
-        manifest: &HawdbLightningBootstrapManifest,
-    ) -> HawdbLightningGraphStreamValidation {
+        manifest: &HawDBLightningBootstrapManifest,
+    ) -> HawDBLightningGraphStreamValidation {
         validate_hawdb_lightning_graph_stream(&self.encoded, Some(manifest))
     }
 }
 
-impl HawdbLightningRelationalStream {
+impl HawDBLightningRelationalStream {
     pub fn from_state(database_commit_epoch: u64, state: &RelationalState) -> Result<Self> {
         state
-            .require_materialized_rows("Hawdb Lightning relational export")
-            .map_err(|error| HawdbError::Storage(error.to_string()))?;
+            .require_materialized_rows("HawDB Lightning relational export")
+            .map_err(|error| HawDBError::Storage(error.to_string()))?;
         let encoded = encode_relational_checkpoint(database_commit_epoch, state)
-            .map_err(|error| HawdbError::Storage(error.to_string()))?;
+            .map_err(|error| HawDBError::Storage(error.to_string()))?;
         let table_count = state.table_schemas().count();
         let row_count = state
             .table_schemas()
@@ -272,14 +272,14 @@ impl HawdbLightningRelationalStream {
         })
     }
 
-    pub fn validate(&self) -> HawdbLightningRelationalStreamValidation {
+    pub fn validate(&self) -> HawDBLightningRelationalStreamValidation {
         validate_hawdb_lightning_relational_stream(&self.encoded, None)
     }
 
     pub fn validate_against_manifest(
         &self,
-        manifest: &HawdbLightningBootstrapManifest,
-    ) -> HawdbLightningRelationalStreamValidation {
+        manifest: &HawDBLightningBootstrapManifest,
+    ) -> HawDBLightningRelationalStreamValidation {
         validate_hawdb_lightning_relational_stream(&self.encoded, Some(manifest))
     }
 }
@@ -291,15 +291,15 @@ pub const HAWDB_LIGHTNING_INITIAL_IMPORT_DURABLE_STATE_PROTOCOL: &str =
     "hawdb-lightning-initial-import-durable-state-v1";
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct HawdbLightningBootstrapExport {
+pub struct HawDBLightningBootstrapExport {
     pub snapshot: CanonicalGraphSnapshotExport,
-    pub manifest: HawdbLightningBootstrapManifest,
-    pub graph_stream: HawdbLightningGraphStream,
-    pub relational_stream: HawdbLightningRelationalStream,
+    pub manifest: HawDBLightningBootstrapManifest,
+    pub graph_stream: HawDBLightningGraphStream,
+    pub relational_stream: HawDBLightningRelationalStream,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct HawdbLightningBootstrapManifest {
+pub struct HawDBLightningBootstrapManifest {
     pub protocol_version: u64,
     pub database_commit_epoch: u64,
     pub graph_commit_epoch: u64,
@@ -320,11 +320,11 @@ pub struct HawdbLightningBootstrapManifest {
     pub node_property_count: usize,
     pub relationship_property_count: usize,
     pub validation: CanonicalGraphSnapshotValidation,
-    pub relational_validation: HawdbLightningRelationalStreamValidation,
+    pub relational_validation: HawDBLightningRelationalStreamValidation,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct HawdbLightningGraphStream {
+pub struct HawDBLightningGraphStream {
     pub format_version: u64,
     pub graph_commit_epoch: u64,
     pub logical_checksum: u64,
@@ -336,7 +336,7 @@ pub struct HawdbLightningGraphStream {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct HawdbLightningRelationalStream {
+pub struct HawDBLightningRelationalStream {
     pub format_version: u64,
     pub database_commit_epoch: u64,
     pub stream_checksum: u64,
@@ -348,7 +348,7 @@ pub struct HawdbLightningRelationalStream {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct HawdbLightningRelationalStreamValidation {
+pub struct HawDBLightningRelationalStreamValidation {
     pub is_valid: bool,
     pub checksum_matches: bool,
     pub format_version_matches: bool,
@@ -365,7 +365,7 @@ pub struct HawdbLightningRelationalStreamValidation {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct HawdbLightningGraphStreamValidation {
+pub struct HawDBLightningGraphStreamValidation {
     pub is_valid: bool,
     pub checksum_matches: bool,
     pub format_version_matches: bool,
@@ -387,7 +387,7 @@ pub struct HawdbLightningGraphStreamValidation {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct HawdbLightningInitialImportReadiness {
+pub struct HawDBLightningInitialImportReadiness {
     pub ready: bool,
     pub manifest_import_ready: bool,
     pub projection_present: bool,
@@ -402,7 +402,7 @@ pub struct HawdbLightningInitialImportReadiness {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct HawdbLightningInitialImportCheckpoint {
+pub struct HawDBLightningInitialImportCheckpoint {
     pub protocol_version: u64,
     pub import_id: String,
     pub task_id: String,
@@ -424,7 +424,7 @@ pub struct HawdbLightningInitialImportCheckpoint {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct HawdbLightningInitialImportIdempotencyKey {
+pub struct HawDBLightningInitialImportIdempotencyKey {
     pub import_id: String,
     pub task_id: String,
     pub fencing_token: String,
@@ -432,10 +432,10 @@ pub struct HawdbLightningInitialImportIdempotencyKey {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct HawdbLightningInitialImportCheckpointReadiness {
+pub struct HawDBLightningInitialImportCheckpointReadiness {
     pub ready: bool,
     pub idempotency_key_present: bool,
-    pub idempotency_key: Option<HawdbLightningInitialImportIdempotencyKey>,
+    pub idempotency_key: Option<HawDBLightningInitialImportIdempotencyKey>,
     pub checkpoint_matches_manifest: bool,
     pub graph_checkpoint_caught_up: bool,
     pub search_projection_applied_caught_up: bool,
@@ -453,7 +453,7 @@ pub struct HawdbLightningInitialImportCheckpointReadiness {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct HawdbLightningInitialImportCheckpointProgress {
+pub struct HawDBLightningInitialImportCheckpointProgress {
     pub applied_graph_commit_epoch: u64,
     pub applied_search_projection_commit_epoch: Option<u64>,
     pub durable_search_projection_commit_epoch: Option<u64>,
@@ -463,34 +463,34 @@ pub struct HawdbLightningInitialImportCheckpointProgress {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct HawdbLightningInitialImportCheckpointProgressReport {
+pub struct HawDBLightningInitialImportCheckpointProgressReport {
     pub accepted: bool,
-    pub checkpoint: HawdbLightningInitialImportCheckpoint,
-    pub readiness: HawdbLightningInitialImportCheckpointReadiness,
-    pub resume_action: HawdbLightningInitialImportResumeAction,
+    pub checkpoint: HawDBLightningInitialImportCheckpoint,
+    pub readiness: HawDBLightningInitialImportCheckpointReadiness,
+    pub resume_action: HawDBLightningInitialImportResumeAction,
     pub blocker_codes: Vec<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct HawdbLightningInitialImportDocumentIdentity {
+pub struct HawDBLightningInitialImportDocumentIdentity {
     pub kind: SearchProjectionKind,
     pub document_id: String,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct HawdbLightningInitialImportDocumentIdentityKindReport {
+pub struct HawDBLightningInitialImportDocumentIdentityKindReport {
     pub kind: SearchProjectionKind,
     pub document_count: usize,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct HawdbLightningInitialImportDocumentIdentityCoverage {
+pub struct HawDBLightningInitialImportDocumentIdentityCoverage {
     pub ready: bool,
     pub document_identity_count: usize,
     pub unique_document_identity_count: usize,
     pub expected_kinds: Vec<SearchProjectionKind>,
     pub observed_kinds: Vec<SearchProjectionKind>,
-    pub kind_reports: Vec<HawdbLightningInitialImportDocumentIdentityKindReport>,
+    pub kind_reports: Vec<HawDBLightningInitialImportDocumentIdentityKindReport>,
     pub missing_kinds: Vec<SearchProjectionKind>,
     pub duplicate_document_ids: Vec<String>,
     pub empty_document_id_count: usize,
@@ -498,7 +498,7 @@ pub struct HawdbLightningInitialImportDocumentIdentityCoverage {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum HawdbLightningInitialImportResumeActionKind {
+pub enum HawDBLightningInitialImportResumeActionKind {
     Start,
     Resume,
     ReadyForCutover,
@@ -506,37 +506,37 @@ pub enum HawdbLightningInitialImportResumeActionKind {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct HawdbLightningInitialImportResumeAction {
-    pub kind: HawdbLightningInitialImportResumeActionKind,
+pub struct HawDBLightningInitialImportResumeAction {
+    pub kind: HawDBLightningInitialImportResumeActionKind,
     pub next_batch: Option<u64>,
-    pub idempotency_key: Option<HawdbLightningInitialImportIdempotencyKey>,
+    pub idempotency_key: Option<HawDBLightningInitialImportIdempotencyKey>,
     pub completed_batches: u64,
     pub total_batches: u64,
     pub blocker_codes: Vec<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct HawdbLightningInitialImportPlan {
+pub struct HawDBLightningInitialImportPlan {
     pub ready_for_database_import: bool,
     pub ready_for_graph_import: bool,
     pub ready_for_cutover: bool,
-    pub graph_stream_validation: HawdbLightningGraphStreamValidation,
-    pub relational_stream_validation: HawdbLightningRelationalStreamValidation,
+    pub graph_stream_validation: HawDBLightningGraphStreamValidation,
+    pub relational_stream_validation: HawDBLightningRelationalStreamValidation,
     pub decoded_snapshot_import_ready: bool,
     pub decoded_graph_commit_epoch: Option<u64>,
     pub decoded_node_count: Option<usize>,
     pub decoded_relationship_count: Option<usize>,
     pub decoded_relational_table_count: Option<usize>,
     pub decoded_relational_row_count: Option<usize>,
-    pub target_readiness: HawdbLightningInitialImportReadiness,
-    pub checkpoint_readiness: Option<HawdbLightningInitialImportCheckpointReadiness>,
-    pub document_identity_coverage: Option<HawdbLightningInitialImportDocumentIdentityCoverage>,
-    pub resume_action: HawdbLightningInitialImportResumeAction,
+    pub target_readiness: HawDBLightningInitialImportReadiness,
+    pub checkpoint_readiness: Option<HawDBLightningInitialImportCheckpointReadiness>,
+    pub document_identity_coverage: Option<HawDBLightningInitialImportDocumentIdentityCoverage>,
+    pub resume_action: HawDBLightningInitialImportResumeAction,
     pub blocker_codes: Vec<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct HawdbLightningInitialImportApplyReport {
+pub struct HawDBLightningInitialImportApplyReport {
     pub applied: bool,
     pub ready_for_cutover: bool,
     pub database_commit_epoch: u64,
@@ -544,12 +544,12 @@ pub struct HawdbLightningInitialImportApplyReport {
     pub relationship_count: usize,
     pub relational_table_count: usize,
     pub relational_row_count: usize,
-    pub plan: HawdbLightningInitialImportPlan,
+    pub plan: HawDBLightningInitialImportPlan,
     pub blocker_codes: Vec<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct HawdbLightningInitialImportSearchProjectionBatchReport {
+pub struct HawDBLightningInitialImportSearchProjectionBatchReport {
     pub ready: bool,
     pub checkpoint_present: bool,
     pub checkpoint_matches_manifest: bool,
@@ -560,35 +560,35 @@ pub struct HawdbLightningInitialImportSearchProjectionBatchReport {
     pub operation_limit_ok: bool,
     pub empty_batch: bool,
     pub delete_count: usize,
-    pub document_identity_coverage: HawdbLightningInitialImportDocumentIdentityCoverage,
+    pub document_identity_coverage: HawDBLightningInitialImportDocumentIdentityCoverage,
     pub source_graph_commit_epoch: Option<u64>,
     pub batch_index: u64,
     pub total_batches: u64,
     pub operation_count: usize,
-    pub checkpoint_progress: Option<HawdbLightningInitialImportCheckpointProgress>,
+    pub checkpoint_progress: Option<HawDBLightningInitialImportCheckpointProgress>,
     pub checkpoint_progress_accepted: bool,
-    pub checkpoint_progress_readiness: Option<HawdbLightningInitialImportCheckpointReadiness>,
-    pub checkpoint_resume_action: Option<HawdbLightningInitialImportResumeAction>,
+    pub checkpoint_progress_readiness: Option<HawDBLightningInitialImportCheckpointReadiness>,
+    pub checkpoint_resume_action: Option<HawDBLightningInitialImportResumeAction>,
     pub checkpoint_progress_blocker_codes: Vec<String>,
     pub blocker_codes: Vec<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct HawdbLightningInitialImportSourceBundleReadiness {
+pub struct HawDBLightningInitialImportSourceBundleReadiness {
     pub ready: bool,
     pub database_source_import_ready: bool,
     pub checkpoint_present: bool,
     pub projection_batch_count: usize,
     pub ready_projection_batch_count: usize,
     pub total_batches: u64,
-    pub source_fingerprint: HawdbLightningInitialImportSourceFingerprint,
-    pub document_identity_coverage: HawdbLightningInitialImportDocumentIdentityCoverage,
-    pub batch_reports: Vec<HawdbLightningInitialImportSearchProjectionBatchReport>,
+    pub source_fingerprint: HawDBLightningInitialImportSourceFingerprint,
+    pub document_identity_coverage: HawDBLightningInitialImportDocumentIdentityCoverage,
+    pub batch_reports: Vec<HawDBLightningInitialImportSearchProjectionBatchReport>,
     pub blocker_codes: Vec<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct HawdbLightningInitialImportSourceFingerprint {
+pub struct HawDBLightningInitialImportSourceFingerprint {
     pub protocol_version: u64,
     pub database_commit_epoch: u64,
     pub graph_commit_epoch: u64,
@@ -605,63 +605,63 @@ pub struct HawdbLightningInitialImportSourceFingerprint {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct HawdbLightningInitialImportDurableState {
-    pub source_fingerprint: HawdbLightningInitialImportSourceFingerprint,
-    pub checkpoint: HawdbLightningInitialImportCheckpoint,
-    pub document_identities: Vec<HawdbLightningInitialImportDocumentIdentity>,
-    pub document_identity_coverage: HawdbLightningInitialImportDocumentIdentityCoverage,
+pub struct HawDBLightningInitialImportDurableState {
+    pub source_fingerprint: HawDBLightningInitialImportSourceFingerprint,
+    pub checkpoint: HawDBLightningInitialImportCheckpoint,
+    pub document_identities: Vec<HawDBLightningInitialImportDocumentIdentity>,
+    pub document_identity_coverage: HawDBLightningInitialImportDocumentIdentityCoverage,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct HawdbLightningInitialImportDurableStateReport {
+pub struct HawDBLightningInitialImportDurableStateReport {
     pub persistable: bool,
     pub ready_for_cutover: bool,
-    pub state: Option<HawdbLightningInitialImportDurableState>,
-    pub checkpoint_readiness: HawdbLightningInitialImportCheckpointReadiness,
-    pub resume_action: HawdbLightningInitialImportResumeAction,
+    pub state: Option<HawDBLightningInitialImportDurableState>,
+    pub checkpoint_readiness: HawDBLightningInitialImportCheckpointReadiness,
+    pub resume_action: HawDBLightningInitialImportResumeAction,
     pub blocker_codes: Vec<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct HawdbLightningInitialImportDurableBatchAdvanceReport {
+pub struct HawDBLightningInitialImportDurableBatchAdvanceReport {
     pub ready: bool,
     pub idempotent_replay: bool,
-    pub batch_report: HawdbLightningInitialImportSearchProjectionBatchReport,
-    pub durable_state_report: HawdbLightningInitialImportDurableStateReport,
+    pub batch_report: HawDBLightningInitialImportSearchProjectionBatchReport,
+    pub durable_state_report: HawDBLightningInitialImportDurableStateReport,
     pub blocker_codes: Vec<String>,
 }
 
 /// Result of accepting one bounded projection page during initial import.
 ///
-/// Unlike [`HawdbLightningInitialImportDurableBatchAdvanceReport`], this
+/// Unlike [`HawDBLightningInitialImportDurableBatchAdvanceReport`], this
 /// report does not require six-kind document coverage before every page. That
 /// coverage remains mandatory for `ready_for_cutover`, while `accepted`
 /// permits a host to persist bounded progress without buffering a complete
 /// LanceDB projection in memory.
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct HawdbLightningInitialImportStreamingBatchAdvanceReport {
+pub struct HawDBLightningInitialImportStreamingBatchAdvanceReport {
     pub accepted: bool,
     pub idempotent_replay: bool,
     pub completed: bool,
     pub ready_for_cutover: bool,
-    pub durable_state_report: HawdbLightningInitialImportDurableStateReport,
+    pub durable_state_report: HawDBLightningInitialImportDurableStateReport,
     pub blocker_codes: Vec<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct HawdbLightningInitialImportSessionReport {
+pub struct HawDBLightningInitialImportSessionReport {
     pub ready_for_database_import: bool,
     pub ready_for_cutover: bool,
     pub durable_state_present: bool,
     pub durable_state_source_matches_manifest: bool,
-    pub plan: HawdbLightningInitialImportPlan,
-    pub durable_state_report: Option<HawdbLightningInitialImportDurableStateReport>,
-    pub next_action: HawdbLightningInitialImportResumeAction,
+    pub plan: HawDBLightningInitialImportPlan,
+    pub durable_state_report: Option<HawDBLightningInitialImportDurableStateReport>,
+    pub next_action: HawDBLightningInitialImportResumeAction,
     pub blocker_codes: Vec<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct HawdbLightningInitialImportCutoverCatchUpReport {
+pub struct HawDBLightningInitialImportCutoverCatchUpReport {
     pub ready: bool,
     pub session_ready_for_cutover: bool,
     pub durable_state_present: bool,
@@ -680,7 +680,7 @@ pub struct HawdbLightningInitialImportCutoverCatchUpReport {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct HawdbLightningInitialImportSessionBundleReadiness {
+pub struct HawDBLightningInitialImportSessionBundleReadiness {
     pub ready: bool,
     pub resumable: bool,
     pub ready_for_cutover: bool,
@@ -693,7 +693,7 @@ pub struct HawdbLightningInitialImportSessionBundleReadiness {
     pub catch_up_present: bool,
     pub catch_up_ready: bool,
     pub cutover_watermark: Option<u64>,
-    pub next_action: HawdbLightningInitialImportResumeAction,
+    pub next_action: HawDBLightningInitialImportResumeAction,
     pub blocker_codes: Vec<String>,
 }
 
@@ -704,41 +704,41 @@ pub struct HawdbLightningInitialImportSessionBundleReadiness {
 /// graph stream, relational stream, manifest, and projection evidence from
 /// different bootstrap exports.
 #[derive(Debug, Clone, Copy)]
-pub struct HawdbLightningInitialImportReadinessInputs<'a> {
+pub struct HawDBLightningInitialImportReadinessInputs<'a> {
     pub encoded_graph_stream: &'a str,
     pub encoded_relational_stream: &'a [u8],
-    pub manifest: &'a HawdbLightningBootstrapManifest,
+    pub manifest: &'a HawDBLightningBootstrapManifest,
     pub projection_batches: &'a [SearchProjectionDelta],
     pub target_projection_freshness: Option<&'a SearchProjectionFreshness>,
     pub live_projection_freshness: Option<&'a SearchProjectionFreshness>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct HawdbLightningInitialImportStartupReadinessReport {
+pub struct HawDBLightningInitialImportStartupReadinessReport {
     pub ready: bool,
-    pub source_bundle: HawdbLightningInitialImportSourceBundleReadiness,
-    pub session: HawdbLightningInitialImportSessionReport,
-    pub cutover_catch_up: Option<HawdbLightningInitialImportCutoverCatchUpReport>,
-    pub readiness: HawdbLightningInitialImportSessionBundleReadiness,
+    pub source_bundle: HawDBLightningInitialImportSourceBundleReadiness,
+    pub session: HawDBLightningInitialImportSessionReport,
+    pub cutover_catch_up: Option<HawDBLightningInitialImportCutoverCatchUpReport>,
+    pub readiness: HawDBLightningInitialImportSessionBundleReadiness,
     pub blocker_codes: Vec<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct HawdbLightningInitialImportDurableStateCodecReport {
+pub struct HawDBLightningInitialImportDurableStateCodecReport {
     pub ready: bool,
     pub protocol: String,
     pub source_fingerprint_matches_manifest: bool,
-    pub state: Option<HawdbLightningInitialImportDurableState>,
+    pub state: Option<HawDBLightningInitialImportDurableState>,
     pub blocker_codes: Vec<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct HawdbLightningInitialImportRecoveryReadinessReport {
+pub struct HawDBLightningInitialImportRecoveryReadinessReport {
     pub ready: bool,
     pub durable_state_payload_present: bool,
-    pub durable_state_codec: Option<HawdbLightningInitialImportDurableStateCodecReport>,
-    pub startup: HawdbLightningInitialImportStartupReadinessReport,
-    pub next_action: HawdbLightningInitialImportResumeAction,
+    pub durable_state_codec: Option<HawDBLightningInitialImportDurableStateCodecReport>,
+    pub startup: HawDBLightningInitialImportStartupReadinessReport,
+    pub next_action: HawDBLightningInitialImportResumeAction,
     pub blocker_codes: Vec<String>,
 }
 
@@ -1026,8 +1026,8 @@ fn canonical_stable_key(value: Option<&Value>) -> String {
 
 pub fn validate_hawdb_lightning_graph_stream(
     encoded: &str,
-    manifest: Option<&HawdbLightningBootstrapManifest>,
-) -> HawdbLightningGraphStreamValidation {
+    manifest: Option<&HawDBLightningBootstrapManifest>,
+) -> HawDBLightningGraphStreamValidation {
     let (body, expected_stream_checksum, mut errors) = split_graph_stream_checksum(encoded);
     let actual_stream_checksum = checksum_bytes(body.as_bytes());
     let checksum_matches = expected_stream_checksum == Some(actual_stream_checksum);
@@ -1097,7 +1097,7 @@ pub fn validate_hawdb_lightning_graph_stream(
         && manifest_matches
         && errors.is_empty();
 
-    HawdbLightningGraphStreamValidation {
+    HawDBLightningGraphStreamValidation {
         is_valid,
         checksum_matches,
         format_version_matches,
@@ -1121,8 +1121,8 @@ pub fn validate_hawdb_lightning_graph_stream(
 
 pub fn validate_hawdb_lightning_relational_stream(
     encoded: &[u8],
-    manifest: Option<&HawdbLightningBootstrapManifest>,
-) -> HawdbLightningRelationalStreamValidation {
+    manifest: Option<&HawDBLightningBootstrapManifest>,
+) -> HawDBLightningRelationalStreamValidation {
     let actual_stream_checksum = checksum_bytes(encoded);
     let expected_stream_checksum = manifest.map(|value| value.relational_stream_checksum);
     let checksum_matches =
@@ -1190,7 +1190,7 @@ pub fn validate_hawdb_lightning_relational_stream(
         && count_matches
         && manifest_matches
         && errors.is_empty();
-    HawdbLightningRelationalStreamValidation {
+    HawDBLightningRelationalStreamValidation {
         is_valid,
         checksum_matches,
         format_version_matches,
@@ -1209,20 +1209,20 @@ pub fn validate_hawdb_lightning_relational_stream(
 
 pub fn parse_hawdb_lightning_graph_stream_export(
     encoded: &str,
-    manifest: Option<&HawdbLightningBootstrapManifest>,
+    manifest: Option<&HawDBLightningBootstrapManifest>,
 ) -> Result<CanonicalGraphSnapshotExport> {
     let validation = validate_hawdb_lightning_graph_stream(encoded, manifest);
     if !validation.is_valid {
-        return Err(HawdbError::Storage(format!(
-            "Hawdb Lightning graph stream is not import ready: {}",
+        return Err(HawDBError::Storage(format!(
+            "HawDB Lightning graph stream is not import ready: {}",
             validation.errors.join("; ")
         )));
     }
     let (body, _, mut errors) = split_graph_stream_checksum(encoded);
     let parsed = parse_hawdb_lightning_graph_stream_body(body, &mut errors);
     if !errors.is_empty() {
-        return Err(HawdbError::Storage(format!(
-            "Hawdb Lightning graph stream parse failed: {}",
+        return Err(HawDBError::Storage(format!(
+            "HawDB Lightning graph stream parse failed: {}",
             errors.join("; ")
         )));
     }
@@ -1239,8 +1239,8 @@ pub fn parse_hawdb_lightning_graph_stream_export(
     };
     let snapshot_validation = export.validate();
     if !snapshot_validation.is_import_ready {
-        return Err(HawdbError::Storage(
-            "Hawdb Lightning graph stream decoded to a snapshot that is not import ready"
+        return Err(HawDBError::Storage(
+            "HawDB Lightning graph stream decoded to a snapshot that is not import ready"
                 .to_string(),
         ));
     }
@@ -1250,11 +1250,11 @@ pub fn parse_hawdb_lightning_graph_stream_export(
 pub fn hawdb_lightning_initial_import_plan(
     encoded_graph_stream: &str,
     encoded_relational_stream: &[u8],
-    manifest: &HawdbLightningBootstrapManifest,
+    manifest: &HawDBLightningBootstrapManifest,
     target_graph_commit_epoch: u64,
     projection_freshness: Option<&SearchProjectionFreshness>,
-    checkpoint: Option<&HawdbLightningInitialImportCheckpoint>,
-) -> HawdbLightningInitialImportPlan {
+    checkpoint: Option<&HawDBLightningInitialImportCheckpoint>,
+) -> HawDBLightningInitialImportPlan {
     hawdb_lightning_initial_import_plan_with_document_identities(
         encoded_graph_stream,
         encoded_relational_stream,
@@ -1269,12 +1269,12 @@ pub fn hawdb_lightning_initial_import_plan(
 pub fn hawdb_lightning_initial_import_plan_with_document_identities(
     encoded_graph_stream: &str,
     encoded_relational_stream: &[u8],
-    manifest: &HawdbLightningBootstrapManifest,
+    manifest: &HawDBLightningBootstrapManifest,
     target_graph_commit_epoch: u64,
     projection_freshness: Option<&SearchProjectionFreshness>,
-    checkpoint: Option<&HawdbLightningInitialImportCheckpoint>,
-    document_identities: Option<&[HawdbLightningInitialImportDocumentIdentity]>,
-) -> HawdbLightningInitialImportPlan {
+    checkpoint: Option<&HawDBLightningInitialImportCheckpoint>,
+    document_identities: Option<&[HawDBLightningInitialImportDocumentIdentity]>,
+) -> HawDBLightningInitialImportPlan {
     let graph_stream_validation =
         validate_hawdb_lightning_graph_stream(encoded_graph_stream, Some(manifest));
     let relational_stream_validation =
@@ -1326,7 +1326,7 @@ pub fn hawdb_lightning_initial_import_plan_with_document_identities(
             .map(|readiness| readiness.ready)
             .unwrap_or(false)
         && document_identities_ready
-        && resume_action.kind == HawdbLightningInitialImportResumeActionKind::ReadyForCutover;
+        && resume_action.kind == HawDBLightningInitialImportResumeActionKind::ReadyForCutover;
     let mut blocker_codes = BTreeSet::new();
     if !graph_stream_validation.is_valid {
         blocker_codes.insert("hawdb_lightning_graph_stream_invalid".to_string());
@@ -1357,19 +1357,19 @@ pub fn hawdb_lightning_initial_import_plan_with_document_identities(
     }
     if ready_for_database_import && !ready_for_cutover {
         match resume_action.kind {
-            HawdbLightningInitialImportResumeActionKind::Start => {
+            HawDBLightningInitialImportResumeActionKind::Start => {
                 blocker_codes.insert("initial_import_not_started".to_string());
             }
-            HawdbLightningInitialImportResumeActionKind::Resume => {
+            HawDBLightningInitialImportResumeActionKind::Resume => {
                 blocker_codes.insert("initial_import_checkpoint_incomplete".to_string());
             }
-            HawdbLightningInitialImportResumeActionKind::Quarantine => {
+            HawDBLightningInitialImportResumeActionKind::Quarantine => {
                 blocker_codes.insert("initial_import_checkpoint_quarantined".to_string());
             }
-            HawdbLightningInitialImportResumeActionKind::ReadyForCutover => {}
+            HawDBLightningInitialImportResumeActionKind::ReadyForCutover => {}
         }
     }
-    HawdbLightningInitialImportPlan {
+    HawDBLightningInitialImportPlan {
         ready_for_database_import,
         ready_for_graph_import,
         ready_for_cutover,
@@ -1390,10 +1390,10 @@ pub fn hawdb_lightning_initial_import_plan_with_document_identities(
 }
 
 pub fn hawdb_lightning_initial_import_readiness(
-    manifest: &HawdbLightningBootstrapManifest,
+    manifest: &HawDBLightningBootstrapManifest,
     target_graph_commit_epoch: u64,
     projection_freshness: Option<&SearchProjectionFreshness>,
-) -> HawdbLightningInitialImportReadiness {
+) -> HawDBLightningInitialImportReadiness {
     let manifest_epoch_matches = manifest.database_commit_epoch == manifest.graph_commit_epoch;
     let manifest_import_ready = manifest.validation.is_import_ready
         && manifest.relational_validation.is_valid
@@ -1445,7 +1445,7 @@ pub fn hawdb_lightning_initial_import_readiness(
         blocker_codes.insert("search_projection_repair_required".to_string());
     }
     let blocker_codes = blocker_codes.into_iter().collect::<Vec<_>>();
-    HawdbLightningInitialImportReadiness {
+    HawDBLightningInitialImportReadiness {
         ready: blocker_codes.is_empty(),
         manifest_import_ready,
         projection_present,
@@ -1461,9 +1461,9 @@ pub fn hawdb_lightning_initial_import_readiness(
 }
 
 pub fn hawdb_lightning_initial_import_checkpoint_readiness(
-    manifest: &HawdbLightningBootstrapManifest,
-    checkpoint: &HawdbLightningInitialImportCheckpoint,
-) -> HawdbLightningInitialImportCheckpointReadiness {
+    manifest: &HawDBLightningBootstrapManifest,
+    checkpoint: &HawDBLightningInitialImportCheckpoint,
+) -> HawDBLightningInitialImportCheckpointReadiness {
     let idempotency_key = hawdb_lightning_initial_import_idempotency_key(checkpoint);
     let idempotency_key_present = idempotency_key.is_some();
     let checkpoint_matches_manifest = checkpoint.protocol_version == 1
@@ -1509,7 +1509,7 @@ pub fn hawdb_lightning_initial_import_checkpoint_readiness(
         blocker_codes.insert("initial_import_document_identities_missing".to_string());
     }
     let blocker_codes = blocker_codes.into_iter().collect::<Vec<_>>();
-    HawdbLightningInitialImportCheckpointReadiness {
+    HawDBLightningInitialImportCheckpointReadiness {
         ready: blocker_codes.is_empty(),
         idempotency_key_present,
         idempotency_key,
@@ -1531,10 +1531,10 @@ pub fn hawdb_lightning_initial_import_checkpoint_readiness(
 }
 
 pub fn hawdb_lightning_initial_import_advance_checkpoint(
-    manifest: &HawdbLightningBootstrapManifest,
-    checkpoint: &HawdbLightningInitialImportCheckpoint,
-    progress: HawdbLightningInitialImportCheckpointProgress,
-) -> HawdbLightningInitialImportCheckpointProgressReport {
+    manifest: &HawDBLightningBootstrapManifest,
+    checkpoint: &HawDBLightningInitialImportCheckpoint,
+    progress: HawDBLightningInitialImportCheckpointProgress,
+) -> HawDBLightningInitialImportCheckpointProgressReport {
     let previous_readiness =
         hawdb_lightning_initial_import_checkpoint_readiness(manifest, checkpoint);
     let mut blocker_codes = BTreeSet::new();
@@ -1574,7 +1574,7 @@ pub fn hawdb_lightning_initial_import_advance_checkpoint(
 
     if !blocker_codes.is_empty() {
         let blocker_codes = blocker_codes.into_iter().collect::<Vec<_>>();
-        return HawdbLightningInitialImportCheckpointProgressReport {
+        return HawDBLightningInitialImportCheckpointProgressReport {
             accepted: false,
             checkpoint: checkpoint.clone(),
             readiness: previous_readiness,
@@ -1583,7 +1583,7 @@ pub fn hawdb_lightning_initial_import_advance_checkpoint(
         };
     }
 
-    let advanced = HawdbLightningInitialImportCheckpoint {
+    let advanced = HawDBLightningInitialImportCheckpoint {
         applied_graph_commit_epoch: progress.applied_graph_commit_epoch,
         applied_search_projection_commit_epoch: progress.applied_search_projection_commit_epoch,
         durable_search_projection_commit_epoch: progress.durable_search_projection_commit_epoch,
@@ -1594,7 +1594,7 @@ pub fn hawdb_lightning_initial_import_advance_checkpoint(
     };
     let readiness = hawdb_lightning_initial_import_checkpoint_readiness(manifest, &advanced);
     let resume_action = hawdb_lightning_initial_import_resume_action(manifest, Some(&advanced));
-    HawdbLightningInitialImportCheckpointProgressReport {
+    HawDBLightningInitialImportCheckpointProgressReport {
         accepted: true,
         checkpoint: advanced,
         readiness,
@@ -1604,12 +1604,12 @@ pub fn hawdb_lightning_initial_import_advance_checkpoint(
 }
 
 pub fn hawdb_lightning_initial_import_search_projection_batch_report(
-    manifest: &HawdbLightningBootstrapManifest,
-    checkpoint: Option<&HawdbLightningInitialImportCheckpoint>,
+    manifest: &HawDBLightningBootstrapManifest,
+    checkpoint: Option<&HawDBLightningInitialImportCheckpoint>,
     delta: &SearchProjectionDelta,
     batch_index: u64,
     total_batches: u64,
-) -> HawdbLightningInitialImportSearchProjectionBatchReport {
+) -> HawDBLightningInitialImportSearchProjectionBatchReport {
     let document_identities = search_projection_delta_document_identities(delta);
     hawdb_lightning_initial_import_search_projection_batch_report_with_document_identities(
         manifest,
@@ -1622,10 +1622,10 @@ pub fn hawdb_lightning_initial_import_search_projection_batch_report(
 }
 
 pub fn hawdb_lightning_initial_import_source_bundle_readiness(
-    manifest: &HawdbLightningBootstrapManifest,
-    checkpoint: Option<&HawdbLightningInitialImportCheckpoint>,
+    manifest: &HawDBLightningBootstrapManifest,
+    checkpoint: Option<&HawDBLightningInitialImportCheckpoint>,
     projection_batches: &[SearchProjectionDelta],
-) -> HawdbLightningInitialImportSourceBundleReadiness {
+) -> HawDBLightningInitialImportSourceBundleReadiness {
     let source_fingerprint = hawdb_lightning_initial_import_source_fingerprint(manifest);
     let total_batches = projection_batches.len() as u64;
     let document_identities = projection_batches
@@ -1677,7 +1677,7 @@ pub fn hawdb_lightning_initial_import_source_bundle_readiness(
         && !projection_batches.is_empty()
         && ready_projection_batch_count == projection_batches.len();
 
-    HawdbLightningInitialImportSourceBundleReadiness {
+    HawDBLightningInitialImportSourceBundleReadiness {
         ready,
         database_source_import_ready,
         checkpoint_present,
@@ -1692,13 +1692,13 @@ pub fn hawdb_lightning_initial_import_source_bundle_readiness(
 }
 
 pub fn hawdb_lightning_initial_import_search_projection_batch_report_with_document_identities(
-    manifest: &HawdbLightningBootstrapManifest,
-    checkpoint: Option<&HawdbLightningInitialImportCheckpoint>,
+    manifest: &HawDBLightningBootstrapManifest,
+    checkpoint: Option<&HawDBLightningInitialImportCheckpoint>,
     delta: &SearchProjectionDelta,
     batch_index: u64,
     total_batches: u64,
-    document_identities: &[HawdbLightningInitialImportDocumentIdentity],
-) -> HawdbLightningInitialImportSearchProjectionBatchReport {
+    document_identities: &[HawDBLightningInitialImportDocumentIdentity],
+) -> HawDBLightningInitialImportSearchProjectionBatchReport {
     let source_graph_commit_epoch_matches =
         delta.source_graph_commit_epoch == Some(manifest.graph_commit_epoch);
     let batch_position_valid = total_batches > 0 && batch_index < total_batches;
@@ -1765,7 +1765,7 @@ pub fn hawdb_lightning_initial_import_search_projection_batch_report_with_docume
             let completed_batches = checkpoint
                 .completed_batches
                 .max(batch_index.saturating_add(1));
-            HawdbLightningInitialImportCheckpointProgress {
+            HawDBLightningInitialImportCheckpointProgress {
                 applied_graph_commit_epoch: checkpoint
                     .applied_graph_commit_epoch
                     .max(manifest.graph_commit_epoch),
@@ -1803,7 +1803,7 @@ pub fn hawdb_lightning_initial_import_search_projection_batch_report_with_docume
     let checkpoint_progress_blocker_codes = checkpoint_progress_report
         .map(|report| report.blocker_codes)
         .unwrap_or_default();
-    HawdbLightningInitialImportSearchProjectionBatchReport {
+    HawDBLightningInitialImportSearchProjectionBatchReport {
         ready,
         checkpoint_present,
         checkpoint_matches_manifest,
@@ -1829,10 +1829,10 @@ pub fn hawdb_lightning_initial_import_search_projection_batch_report_with_docume
 }
 
 pub fn hawdb_lightning_initial_import_durable_state_report(
-    manifest: &HawdbLightningBootstrapManifest,
-    checkpoint: &HawdbLightningInitialImportCheckpoint,
-    document_identities: &[HawdbLightningInitialImportDocumentIdentity],
-) -> HawdbLightningInitialImportDurableStateReport {
+    manifest: &HawDBLightningBootstrapManifest,
+    checkpoint: &HawDBLightningInitialImportCheckpoint,
+    document_identities: &[HawDBLightningInitialImportDocumentIdentity],
+) -> HawDBLightningInitialImportDurableStateReport {
     let checkpoint_readiness =
         hawdb_lightning_initial_import_checkpoint_readiness(manifest, checkpoint);
     let resume_action = hawdb_lightning_initial_import_resume_action(manifest, Some(checkpoint));
@@ -1862,13 +1862,13 @@ pub fn hawdb_lightning_initial_import_durable_state_report(
     }
     let ready_for_cutover =
         persistable && checkpoint_readiness.ready && document_identity_coverage.ready;
-    let state = persistable.then(|| HawdbLightningInitialImportDurableState {
+    let state = persistable.then(|| HawDBLightningInitialImportDurableState {
         source_fingerprint: hawdb_lightning_initial_import_source_fingerprint(manifest),
         checkpoint: checkpoint.clone(),
         document_identities: document_identities.to_vec(),
         document_identity_coverage: document_identity_coverage.clone(),
     });
-    HawdbLightningInitialImportDurableStateReport {
+    HawDBLightningInitialImportDurableStateReport {
         persistable,
         ready_for_cutover,
         state,
@@ -1879,7 +1879,7 @@ pub fn hawdb_lightning_initial_import_durable_state_report(
 }
 
 fn hawdb_lightning_initial_import_durable_state_json(
-    state: &HawdbLightningInitialImportDurableState,
+    state: &HawDBLightningInitialImportDurableState,
 ) -> serde_json::Value {
     serde_json::json!({
         "protocol": HAWDB_LIGHTNING_INITIAL_IMPORT_DURABLE_STATE_PROTOCOL,
@@ -1895,19 +1895,19 @@ fn hawdb_lightning_initial_import_durable_state_json(
 }
 
 pub fn hawdb_lightning_initial_import_encode_durable_state(
-    state: &HawdbLightningInitialImportDurableState,
+    state: &HawDBLightningInitialImportDurableState,
 ) -> Result<String> {
     serde_json::to_string(&hawdb_lightning_initial_import_durable_state_json(state)).map_err(|_| {
-        HawdbError::Execution(
+        HawDBError::Execution(
             "initial import durable state serialization failed: invalid_json".to_string(),
         )
     })
 }
 
 fn hawdb_lightning_initial_import_decode_durable_state_value(
-    manifest: &HawdbLightningBootstrapManifest,
+    manifest: &HawDBLightningBootstrapManifest,
     value: &serde_json::Value,
-) -> Result<HawdbLightningInitialImportDurableStateCodecReport> {
+) -> Result<HawDBLightningInitialImportDurableStateCodecReport> {
     let mut blocker_codes = BTreeSet::new();
     let protocol = required_json_string(value, "protocol")?.to_string();
     if protocol != HAWDB_LIGHTNING_INITIAL_IMPORT_DURABLE_STATE_PROTOCOL {
@@ -1940,7 +1940,7 @@ fn hawdb_lightning_initial_import_decode_durable_state_value(
     let state = (ready && source_fingerprint_matches_manifest)
         .then_some(state_report.state)
         .flatten();
-    Ok(HawdbLightningInitialImportDurableStateCodecReport {
+    Ok(HawDBLightningInitialImportDurableStateCodecReport {
         ready,
         protocol,
         source_fingerprint_matches_manifest,
@@ -1950,22 +1950,22 @@ fn hawdb_lightning_initial_import_decode_durable_state_value(
 }
 
 pub fn hawdb_lightning_initial_import_decode_durable_state(
-    manifest: &HawdbLightningBootstrapManifest,
+    manifest: &HawDBLightningBootstrapManifest,
     raw: &str,
-) -> Result<HawdbLightningInitialImportDurableStateCodecReport> {
+) -> Result<HawDBLightningInitialImportDurableStateCodecReport> {
     let value = serde_json::from_str::<serde_json::Value>(raw).map_err(|_| {
-        HawdbError::Semantic("initial import durable state parse failed: invalid_json".to_string())
+        HawDBError::Semantic("initial import durable state parse failed: invalid_json".to_string())
     })?;
     hawdb_lightning_initial_import_decode_durable_state_value(manifest, &value)
 }
 
 pub fn hawdb_lightning_initial_import_advance_durable_state_with_search_projection_batch(
-    manifest: &HawdbLightningBootstrapManifest,
-    state: &HawdbLightningInitialImportDurableState,
+    manifest: &HawDBLightningBootstrapManifest,
+    state: &HawDBLightningInitialImportDurableState,
     delta: &SearchProjectionDelta,
     batch_index: u64,
     total_batches: u64,
-) -> HawdbLightningInitialImportDurableBatchAdvanceReport {
+) -> HawDBLightningInitialImportDurableBatchAdvanceReport {
     let document_identities = merge_initial_import_document_identities(
         &state.document_identities,
         &search_projection_delta_document_identities(delta),
@@ -2026,7 +2026,7 @@ pub fn hawdb_lightning_initial_import_advance_durable_state_with_search_projecti
         blocker_codes.extend(durable_state_report.blocker_codes.iter().cloned());
     }
     let blocker_codes = blocker_codes.into_iter().collect::<Vec<_>>();
-    HawdbLightningInitialImportDurableBatchAdvanceReport {
+    HawDBLightningInitialImportDurableBatchAdvanceReport {
         ready: blocker_codes.is_empty(),
         idempotent_replay,
         batch_report,
@@ -2041,12 +2041,12 @@ pub fn hawdb_lightning_initial_import_advance_durable_state_with_search_projecti
 /// been scanned, but read cutover remains blocked until the accumulated state
 /// satisfies the normal coverage and checkpoint checks.
 pub fn hawdb_lightning_initial_import_advance_durable_state_streaming(
-    manifest: &HawdbLightningBootstrapManifest,
-    state: &HawdbLightningInitialImportDurableState,
+    manifest: &HawDBLightningBootstrapManifest,
+    state: &HawDBLightningInitialImportDurableState,
     delta: &SearchProjectionDelta,
     batch_index: u64,
     total_batches: u64,
-) -> HawdbLightningInitialImportStreamingBatchAdvanceReport {
+) -> HawDBLightningInitialImportStreamingBatchAdvanceReport {
     let checkpoint_readiness =
         hawdb_lightning_initial_import_checkpoint_readiness(manifest, &state.checkpoint);
     let mut blocker_codes = BTreeSet::new();
@@ -2085,7 +2085,7 @@ pub fn hawdb_lightning_initial_import_advance_durable_state_streaming(
             &state.checkpoint,
             &state.document_identities,
         );
-        return HawdbLightningInitialImportStreamingBatchAdvanceReport {
+        return HawDBLightningInitialImportStreamingBatchAdvanceReport {
             accepted: false,
             idempotent_replay,
             completed: state.checkpoint.completed_batches == state.checkpoint.total_batches,
@@ -2099,7 +2099,7 @@ pub fn hawdb_lightning_initial_import_advance_durable_state_streaming(
         &state.document_identities,
         &search_projection_delta_document_identities(delta),
     );
-    let progress = HawdbLightningInitialImportCheckpointProgress {
+    let progress = HawDBLightningInitialImportCheckpointProgress {
         applied_graph_commit_epoch: state
             .checkpoint
             .applied_graph_commit_epoch
@@ -2119,7 +2119,7 @@ pub fn hawdb_lightning_initial_import_advance_durable_state_streaming(
     let progress_report =
         hawdb_lightning_initial_import_advance_checkpoint(manifest, &state.checkpoint, progress);
     if !progress_report.accepted {
-        return HawdbLightningInitialImportStreamingBatchAdvanceReport {
+        return HawDBLightningInitialImportStreamingBatchAdvanceReport {
             accepted: false,
             idempotent_replay,
             completed: state.checkpoint.completed_batches == state.checkpoint.total_batches,
@@ -2138,7 +2138,7 @@ pub fn hawdb_lightning_initial_import_advance_durable_state_streaming(
         &document_identities,
     );
     let completed = progress_report.checkpoint.completed_batches == total_batches;
-    HawdbLightningInitialImportStreamingBatchAdvanceReport {
+    HawDBLightningInitialImportStreamingBatchAdvanceReport {
         accepted: durable_state_report.persistable,
         idempotent_replay,
         completed,
@@ -2151,11 +2151,11 @@ pub fn hawdb_lightning_initial_import_advance_durable_state_streaming(
 pub fn hawdb_lightning_initial_import_session_report(
     encoded_graph_stream: &str,
     encoded_relational_stream: &[u8],
-    manifest: &HawdbLightningBootstrapManifest,
+    manifest: &HawDBLightningBootstrapManifest,
     target_graph_commit_epoch: u64,
     projection_freshness: Option<&SearchProjectionFreshness>,
-    durable_state: Option<&HawdbLightningInitialImportDurableState>,
-) -> HawdbLightningInitialImportSessionReport {
+    durable_state: Option<&HawDBLightningInitialImportDurableState>,
+) -> HawDBLightningInitialImportSessionReport {
     let checkpoint = durable_state.map(|state| &state.checkpoint);
     let document_identities = durable_state.map(|state| state.document_identities.as_slice());
     let plan = hawdb_lightning_initial_import_plan_with_document_identities(
@@ -2191,8 +2191,8 @@ pub fn hawdb_lightning_initial_import_session_report(
     }
 
     let next_action = if !durable_state_source_matches_manifest {
-        HawdbLightningInitialImportResumeAction {
-            kind: HawdbLightningInitialImportResumeActionKind::Quarantine,
+        HawDBLightningInitialImportResumeAction {
+            kind: HawDBLightningInitialImportResumeActionKind::Quarantine,
             next_batch: None,
             idempotency_key: None,
             completed_batches: durable_state
@@ -2214,7 +2214,7 @@ pub fn hawdb_lightning_initial_import_session_report(
             .as_ref()
             .is_some_and(|report| report.ready_for_cutover);
 
-    HawdbLightningInitialImportSessionReport {
+    HawDBLightningInitialImportSessionReport {
         ready_for_database_import,
         ready_for_cutover,
         durable_state_present: durable_state.is_some(),
@@ -2227,10 +2227,10 @@ pub fn hawdb_lightning_initial_import_session_report(
 }
 
 pub fn hawdb_lightning_initial_import_cutover_catch_up_report(
-    session: &HawdbLightningInitialImportSessionReport,
+    session: &HawDBLightningInitialImportSessionReport,
     live_graph_commit_epoch: u64,
     live_projection_freshness: Option<&SearchProjectionFreshness>,
-) -> HawdbLightningInitialImportCutoverCatchUpReport {
+) -> HawDBLightningInitialImportCutoverCatchUpReport {
     let durable_state = session
         .durable_state_report
         .as_ref()
@@ -2301,7 +2301,7 @@ pub fn hawdb_lightning_initial_import_cutover_catch_up_report(
         blocker_codes.insert("initial_import_live_projection_repair_required".to_string());
     }
 
-    HawdbLightningInitialImportCutoverCatchUpReport {
+    HawDBLightningInitialImportCutoverCatchUpReport {
         ready: blocker_codes.is_empty(),
         session_ready_for_cutover: session.ready_for_cutover,
         durable_state_present: durable_state.is_some(),
@@ -2321,10 +2321,10 @@ pub fn hawdb_lightning_initial_import_cutover_catch_up_report(
 }
 
 pub fn hawdb_lightning_initial_import_session_bundle_readiness(
-    source_bundle: &HawdbLightningInitialImportSourceBundleReadiness,
-    session: &HawdbLightningInitialImportSessionReport,
-    catch_up: Option<&HawdbLightningInitialImportCutoverCatchUpReport>,
-) -> HawdbLightningInitialImportSessionBundleReadiness {
+    source_bundle: &HawDBLightningInitialImportSourceBundleReadiness,
+    session: &HawDBLightningInitialImportSessionReport,
+    catch_up: Option<&HawDBLightningInitialImportCutoverCatchUpReport>,
+) -> HawDBLightningInitialImportSessionBundleReadiness {
     let catch_up_required = session.ready_for_cutover;
     let catch_up_present = catch_up.is_some();
     let catch_up_ready = catch_up.is_some_and(|report| report.ready);
@@ -2333,7 +2333,7 @@ pub fn hawdb_lightning_initial_import_session_bundle_readiness(
         && session.ready_for_database_import
         && session.durable_state_present
         && session.durable_state_source_matches_manifest
-        && session.next_action.kind != HawdbLightningInitialImportResumeActionKind::Quarantine;
+        && session.next_action.kind != HawDBLightningInitialImportResumeActionKind::Quarantine;
     let ready_for_cutover = resumable && session.ready_for_cutover && catch_up_ready;
     let mut blocker_codes = BTreeSet::new();
     if !source_bundle.ready {
@@ -2349,7 +2349,7 @@ pub fn hawdb_lightning_initial_import_session_bundle_readiness(
     if !session.durable_state_source_matches_manifest {
         blocker_codes.insert("initial_import_session_bundle_source_mismatch".to_string());
     }
-    if session.next_action.kind == HawdbLightningInitialImportResumeActionKind::Quarantine {
+    if session.next_action.kind == HawDBLightningInitialImportResumeActionKind::Quarantine {
         blocker_codes.insert("initial_import_session_bundle_quarantine_required".to_string());
     }
     blocker_codes.extend(session.blocker_codes.iter().cloned());
@@ -2367,7 +2367,7 @@ pub fn hawdb_lightning_initial_import_session_bundle_readiness(
     {
         blocker_codes.extend(report.blocker_codes.iter().cloned());
     }
-    HawdbLightningInitialImportSessionBundleReadiness {
+    HawDBLightningInitialImportSessionBundleReadiness {
         ready: blocker_codes.is_empty(),
         resumable,
         ready_for_cutover,
@@ -2386,10 +2386,10 @@ pub fn hawdb_lightning_initial_import_session_bundle_readiness(
 }
 
 pub fn hawdb_lightning_initial_import_startup_readiness(
-    inputs: HawdbLightningInitialImportReadinessInputs<'_>,
+    inputs: HawDBLightningInitialImportReadinessInputs<'_>,
     target_graph_commit_epoch: u64,
-    durable_state: Option<&HawdbLightningInitialImportDurableState>,
-) -> HawdbLightningInitialImportStartupReadinessReport {
+    durable_state: Option<&HawDBLightningInitialImportDurableState>,
+) -> HawDBLightningInitialImportStartupReadinessReport {
     let checkpoint = durable_state.map(|state| &state.checkpoint);
     let source_bundle = hawdb_lightning_initial_import_source_bundle_readiness(
         inputs.manifest,
@@ -2416,7 +2416,7 @@ pub fn hawdb_lightning_initial_import_startup_readiness(
         &session,
         cutover_catch_up.as_ref(),
     );
-    HawdbLightningInitialImportStartupReadinessReport {
+    HawDBLightningInitialImportStartupReadinessReport {
         ready: readiness.ready,
         blocker_codes: readiness.blocker_codes.clone(),
         source_bundle,
@@ -2427,10 +2427,10 @@ pub fn hawdb_lightning_initial_import_startup_readiness(
 }
 
 pub fn hawdb_lightning_initial_import_recovery_readiness(
-    inputs: HawdbLightningInitialImportReadinessInputs<'_>,
+    inputs: HawDBLightningInitialImportReadinessInputs<'_>,
     target_graph_commit_epoch: u64,
     durable_state_payload: Option<&str>,
-) -> HawdbLightningInitialImportRecoveryReadinessReport {
+) -> HawDBLightningInitialImportRecoveryReadinessReport {
     let durable_state_payload_present = durable_state_payload.is_some();
     let mut decode_blocker_codes = BTreeSet::new();
     let durable_state_codec = durable_state_payload.and_then(|payload| {
@@ -2459,8 +2459,8 @@ pub fn hawdb_lightning_initial_import_recovery_readiness(
     );
     let invalid_payload = durable_state_payload_present && durable_state.is_none();
     let next_action = if invalid_payload {
-        HawdbLightningInitialImportResumeAction {
-            kind: HawdbLightningInitialImportResumeActionKind::Quarantine,
+        HawDBLightningInitialImportResumeAction {
+            kind: HawDBLightningInitialImportResumeActionKind::Quarantine,
             next_batch: None,
             idempotency_key: None,
             completed_batches: 0,
@@ -2477,7 +2477,7 @@ pub fn hawdb_lightning_initial_import_recovery_readiness(
         blocker_codes
             .insert("initial_import_recovery_durable_state_quarantine_required".to_string());
     }
-    HawdbLightningInitialImportRecoveryReadinessReport {
+    HawDBLightningInitialImportRecoveryReadinessReport {
         ready: !invalid_payload && startup.ready,
         durable_state_payload_present,
         durable_state_codec,
@@ -2488,7 +2488,7 @@ pub fn hawdb_lightning_initial_import_recovery_readiness(
 }
 
 fn hawdb_lightning_initial_import_source_fingerprint_json(
-    fingerprint: &HawdbLightningInitialImportSourceFingerprint,
+    fingerprint: &HawDBLightningInitialImportSourceFingerprint,
 ) -> serde_json::Value {
     serde_json::json!({
         "protocol_version": fingerprint.protocol_version,
@@ -2508,7 +2508,7 @@ fn hawdb_lightning_initial_import_source_fingerprint_json(
 }
 
 fn hawdb_lightning_initial_import_checkpoint_json(
-    checkpoint: &HawdbLightningInitialImportCheckpoint,
+    checkpoint: &HawDBLightningInitialImportCheckpoint,
 ) -> serde_json::Value {
     serde_json::json!({
         "protocol_version": checkpoint.protocol_version,
@@ -2533,7 +2533,7 @@ fn hawdb_lightning_initial_import_checkpoint_json(
 }
 
 fn hawdb_lightning_initial_import_document_identity_json(
-    identity: &HawdbLightningInitialImportDocumentIdentity,
+    identity: &HawDBLightningInitialImportDocumentIdentity,
 ) -> serde_json::Value {
     serde_json::json!({
         "kind": identity.kind.as_str(),
@@ -2542,7 +2542,7 @@ fn hawdb_lightning_initial_import_document_identity_json(
 }
 
 fn hawdb_lightning_initial_import_document_identity_coverage_json(
-    coverage: &HawdbLightningInitialImportDocumentIdentityCoverage,
+    coverage: &HawDBLightningInitialImportDocumentIdentityCoverage,
 ) -> serde_json::Value {
     serde_json::json!({
         "ready": coverage.ready,
@@ -2580,8 +2580,8 @@ fn hawdb_lightning_initial_import_document_identity_coverage_json(
 
 fn parse_hawdb_lightning_initial_import_source_fingerprint(
     value: &serde_json::Value,
-) -> Result<HawdbLightningInitialImportSourceFingerprint> {
-    Ok(HawdbLightningInitialImportSourceFingerprint {
+) -> Result<HawDBLightningInitialImportSourceFingerprint> {
+    Ok(HawDBLightningInitialImportSourceFingerprint {
         protocol_version: required_json_u64(value, "protocol_version")?,
         database_commit_epoch: required_json_u64(value, "database_commit_epoch")?,
         graph_commit_epoch: required_json_u64(value, "graph_commit_epoch")?,
@@ -2600,8 +2600,8 @@ fn parse_hawdb_lightning_initial_import_source_fingerprint(
 
 fn parse_hawdb_lightning_initial_import_checkpoint(
     value: &serde_json::Value,
-) -> Result<HawdbLightningInitialImportCheckpoint> {
-    Ok(HawdbLightningInitialImportCheckpoint {
+) -> Result<HawDBLightningInitialImportCheckpoint> {
+    Ok(HawDBLightningInitialImportCheckpoint {
         protocol_version: required_json_u64(value, "protocol_version")?,
         import_id: required_json_string(value, "import_id")?.to_string(),
         task_id: required_json_string(value, "task_id")?.to_string(),
@@ -2631,11 +2631,11 @@ fn parse_hawdb_lightning_initial_import_checkpoint(
 
 fn parse_hawdb_lightning_initial_import_document_identities(
     items: &[serde_json::Value],
-) -> Result<Vec<HawdbLightningInitialImportDocumentIdentity>> {
+) -> Result<Vec<HawDBLightningInitialImportDocumentIdentity>> {
     items
         .iter()
         .map(|value| {
-            Ok(HawdbLightningInitialImportDocumentIdentity {
+            Ok(HawDBLightningInitialImportDocumentIdentity {
                 kind: parse_search_projection_kind(required_json_string(value, "kind")?)?,
                 document_id: required_json_string(value, "document_id")?.to_string(),
             })
@@ -2651,7 +2651,7 @@ fn parse_search_projection_kind(raw: &str) -> Result<SearchProjectionKind> {
         "source" => Ok(SearchProjectionKind::Source),
         "source_chunk" => Ok(SearchProjectionKind::SourceChunk),
         "community" => Ok(SearchProjectionKind::Community),
-        _ => Err(HawdbError::Semantic(
+        _ => Err(HawDBError::Semantic(
             "initial import durable state field kind is invalid".to_string(),
         )),
     }
@@ -2712,16 +2712,16 @@ fn optional_json_u64(value: &serde_json::Value, field: &str) -> Result<Option<u6
     }
 }
 
-fn durable_state_codec_invalid_field(field: &str, expected: &str) -> HawdbError {
-    HawdbError::Semantic(format!(
+fn durable_state_codec_invalid_field(field: &str, expected: &str) -> HawDBError {
+    HawDBError::Semantic(format!(
         "initial import durable state field {field} is invalid: expected_{expected}"
     ))
 }
 
 pub fn hawdb_lightning_initial_import_source_fingerprint(
-    manifest: &HawdbLightningBootstrapManifest,
-) -> HawdbLightningInitialImportSourceFingerprint {
-    HawdbLightningInitialImportSourceFingerprint {
+    manifest: &HawDBLightningBootstrapManifest,
+) -> HawDBLightningInitialImportSourceFingerprint {
+    HawDBLightningInitialImportSourceFingerprint {
         protocol_version: manifest.protocol_version,
         database_commit_epoch: manifest.database_commit_epoch,
         graph_commit_epoch: manifest.graph_commit_epoch,
@@ -2739,9 +2739,9 @@ pub fn hawdb_lightning_initial_import_source_fingerprint(
 }
 
 fn merge_initial_import_document_identities(
-    existing: &[HawdbLightningInitialImportDocumentIdentity],
-    incoming: &[HawdbLightningInitialImportDocumentIdentity],
-) -> Vec<HawdbLightningInitialImportDocumentIdentity> {
+    existing: &[HawDBLightningInitialImportDocumentIdentity],
+    incoming: &[HawDBLightningInitialImportDocumentIdentity],
+) -> Vec<HawDBLightningInitialImportDocumentIdentity> {
     let mut identities = Vec::with_capacity(existing.len().saturating_add(incoming.len()));
     let mut seen = BTreeSet::new();
     for identity in existing.iter().chain(incoming.iter()) {
@@ -2754,11 +2754,11 @@ fn merge_initial_import_document_identities(
 
 fn search_projection_delta_document_identities(
     delta: &SearchProjectionDelta,
-) -> Vec<HawdbLightningInitialImportDocumentIdentity> {
+) -> Vec<HawDBLightningInitialImportDocumentIdentity> {
     delta
         .upserts
         .iter()
-        .map(|row| HawdbLightningInitialImportDocumentIdentity {
+        .map(|row| HawDBLightningInitialImportDocumentIdentity {
             kind: row.kind,
             document_id: format!("{}:{}", row.kind.as_str(), row.external_id),
         })
@@ -2766,8 +2766,8 @@ fn search_projection_delta_document_identities(
 }
 
 pub fn hawdb_lightning_initial_import_document_identity_coverage(
-    identities: &[HawdbLightningInitialImportDocumentIdentity],
-) -> HawdbLightningInitialImportDocumentIdentityCoverage {
+    identities: &[HawDBLightningInitialImportDocumentIdentity],
+) -> HawDBLightningInitialImportDocumentIdentityCoverage {
     let expected_kinds = hawdb_lightning_initial_import_required_search_projection_kinds();
     let mut document_ids = BTreeMap::<String, usize>::new();
     let mut kind_counts = BTreeMap::<SearchProjectionKind, usize>::new();
@@ -2786,7 +2786,7 @@ pub fn hawdb_lightning_initial_import_document_identity_coverage(
     let kind_reports = kind_counts
         .iter()
         .map(
-            |(kind, document_count)| HawdbLightningInitialImportDocumentIdentityKindReport {
+            |(kind, document_count)| HawDBLightningInitialImportDocumentIdentityKindReport {
                 kind: *kind,
                 document_count: *document_count,
             },
@@ -2813,7 +2813,7 @@ pub fn hawdb_lightning_initial_import_document_identity_coverage(
         blocker_codes.insert("initial_import_document_identity_duplicate".to_string());
     }
     let blocker_codes = blocker_codes.into_iter().collect::<Vec<_>>();
-    HawdbLightningInitialImportDocumentIdentityCoverage {
+    HawDBLightningInitialImportDocumentIdentityCoverage {
         ready: blocker_codes.is_empty(),
         document_identity_count: identities.len(),
         unique_document_identity_count: document_ids.len(),
@@ -2828,12 +2828,12 @@ pub fn hawdb_lightning_initial_import_document_identity_coverage(
 }
 
 pub fn hawdb_lightning_initial_import_resume_action(
-    manifest: &HawdbLightningBootstrapManifest,
-    checkpoint: Option<&HawdbLightningInitialImportCheckpoint>,
-) -> HawdbLightningInitialImportResumeAction {
+    manifest: &HawDBLightningBootstrapManifest,
+    checkpoint: Option<&HawDBLightningInitialImportCheckpoint>,
+) -> HawDBLightningInitialImportResumeAction {
     let Some(checkpoint) = checkpoint else {
-        return HawdbLightningInitialImportResumeAction {
-            kind: HawdbLightningInitialImportResumeActionKind::Start,
+        return HawDBLightningInitialImportResumeAction {
+            kind: HawDBLightningInitialImportResumeActionKind::Start,
             next_batch: Some(0),
             idempotency_key: None,
             completed_batches: 0,
@@ -2847,21 +2847,21 @@ pub fn hawdb_lightning_initial_import_resume_action(
             || code == "initial_import_checkpoint_idempotency_key_missing"
     });
     let kind = if hard_mismatch {
-        HawdbLightningInitialImportResumeActionKind::Quarantine
+        HawDBLightningInitialImportResumeActionKind::Quarantine
     } else if readiness.ready {
-        HawdbLightningInitialImportResumeActionKind::ReadyForCutover
+        HawDBLightningInitialImportResumeActionKind::ReadyForCutover
     } else {
-        HawdbLightningInitialImportResumeActionKind::Resume
+        HawDBLightningInitialImportResumeActionKind::Resume
     };
     let next_batch = match kind {
-        HawdbLightningInitialImportResumeActionKind::Start => Some(0),
-        HawdbLightningInitialImportResumeActionKind::Resume => {
+        HawDBLightningInitialImportResumeActionKind::Start => Some(0),
+        HawDBLightningInitialImportResumeActionKind::Resume => {
             Some(checkpoint.completed_batches.min(checkpoint.total_batches))
         }
-        HawdbLightningInitialImportResumeActionKind::ReadyForCutover
-        | HawdbLightningInitialImportResumeActionKind::Quarantine => None,
+        HawDBLightningInitialImportResumeActionKind::ReadyForCutover
+        | HawDBLightningInitialImportResumeActionKind::Quarantine => None,
     };
-    HawdbLightningInitialImportResumeAction {
+    HawDBLightningInitialImportResumeAction {
         kind,
         next_batch,
         idempotency_key: readiness.idempotency_key,
@@ -2872,8 +2872,8 @@ pub fn hawdb_lightning_initial_import_resume_action(
 }
 
 fn hawdb_lightning_initial_import_idempotency_key(
-    checkpoint: &HawdbLightningInitialImportCheckpoint,
-) -> Option<HawdbLightningInitialImportIdempotencyKey> {
+    checkpoint: &HawDBLightningInitialImportCheckpoint,
+) -> Option<HawDBLightningInitialImportIdempotencyKey> {
     if checkpoint.import_id.is_empty()
         || checkpoint.task_id.is_empty()
         || checkpoint.fencing_token.is_empty()
@@ -2881,7 +2881,7 @@ fn hawdb_lightning_initial_import_idempotency_key(
     {
         return None;
     }
-    Some(HawdbLightningInitialImportIdempotencyKey {
+    Some(HawDBLightningInitialImportIdempotencyKey {
         import_id: checkpoint.import_id.clone(),
         task_id: checkpoint.task_id.clone(),
         fencing_token: checkpoint.fencing_token.clone(),
@@ -2909,7 +2909,7 @@ fn hawdb_lightning_initial_import_required_search_projection_kinds() -> Vec<Sear
 }
 
 #[derive(Debug, Default)]
-struct ParsedHawdbLightningGraphStream {
+struct ParsedHawDBLightningGraphStream {
     format_version: Option<u64>,
     graph_commit_epoch: Option<u64>,
     logical_checksum: Option<u64>,
@@ -2925,9 +2925,9 @@ struct ParsedHawdbLightningGraphStream {
 fn parse_hawdb_lightning_graph_stream_body(
     body: &str,
     errors: &mut Vec<String>,
-) -> ParsedHawdbLightningGraphStream {
+) -> ParsedHawDBLightningGraphStream {
     let mut cursor = GraphStreamCursor::new(body);
-    let mut parsed = ParsedHawdbLightningGraphStream::default();
+    let mut parsed = ParsedHawDBLightningGraphStream::default();
 
     match cursor.read_line() {
         Some("HAWDB_LIGHTNING_GRAPH_STREAM_V1") => {}

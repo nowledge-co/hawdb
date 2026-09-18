@@ -1,6 +1,6 @@
 use super::{
     encode_block_header, encode_posting, write_string, BlockDescriptor, BlockKind, Digest,
-    HawdbError, Posting, Result, SPILL_IO_BUFFER_BYTES,
+    HawDBError, Posting, Result, SPILL_IO_BUFFER_BYTES,
 };
 use crate::build_control::{checkpoint, CheckedWriter};
 use hawdb_core::RuntimeTaskContext;
@@ -41,7 +41,7 @@ impl<'a> Entries<'a> {
                 .zip(entries.last())
                 .map(|(first, last)| (first.term.as_str(), last.term.as_str())),
         };
-        bounds.ok_or_else(|| HawdbError::Storage("cannot encode an empty lexical block".into()))
+        bounds.ok_or_else(|| HawDBError::Storage("cannot encode an empty lexical block".into()))
     }
 
     fn encode(self, writer: &mut impl Write, generation: u64, block_id: u64) -> Result<()> {
@@ -98,16 +98,16 @@ pub(super) fn write_block_with_context(
     )?;
     let length = counter.0;
     if length > max_bytes {
-        return Err(HawdbError::Storage(format!(
+        return Err(HawDBError::Storage(format!(
             "lexical build produced a {length} byte block, exceeding {max_bytes}"
         )));
     }
     offset
         .checked_add(length)
-        .ok_or_else(|| HawdbError::Storage("lexical block offset exceeds u64".into()))?;
+        .ok_or_else(|| HawDBError::Storage("lexical block offset exceeds u64".into()))?;
     block_id
         .checked_add(1)
-        .ok_or_else(|| HawdbError::Storage("lexical block identity exceeds u64".into()))?;
+        .ok_or_else(|| HawDBError::Storage("lexical block identity exceeds u64".into()))?;
 
     task.map_or(Ok(()), checkpoint)?;
     // The builder admits directory slots and both key copies before this call.

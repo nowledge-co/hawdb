@@ -1,6 +1,6 @@
 use crate::binding::value_payload_bytes;
 use crate::columnar::ColumnarRowRef;
-use hawdb_core::{HawdbError, Result, Value, ValueRef};
+use hawdb_core::{HawDBError, Result, Value, ValueRef};
 use hawdb_plan::{PhysicalOperatorId, PhysicalPlanKind};
 use std::collections::BTreeMap;
 use std::ops::Index;
@@ -22,7 +22,7 @@ impl QuerySchema {
             .iter()
             .find(|column| !unique.insert(column.as_str()))
         {
-            return Err(HawdbError::Semantic(format!(
+            return Err(HawDBError::Semantic(format!(
                 "query result schema contains duplicate column {duplicate}"
             )));
         }
@@ -459,7 +459,7 @@ impl QueryRowsBuilder {
         values: impl IntoIterator<Item = Result<Value>>,
     ) -> Result<()> {
         let schema = self.schema.as_ref().ok_or_else(|| {
-            HawdbError::Execution(
+            HawDBError::Execution(
                 "query result values require a schema before ordinal insertion".to_string(),
             )
         })?;
@@ -476,7 +476,7 @@ impl QueryRowsBuilder {
         let width = self.values.len().saturating_sub(start);
         if width != schema.len() {
             self.values.truncate(start);
-            return Err(HawdbError::Execution(format!(
+            return Err(HawDBError::Execution(format!(
                 "query result row {} has width {width}, expected {}",
                 self.row_count,
                 schema.len()
@@ -496,7 +496,7 @@ impl QueryRowsBuilder {
         }
         let schema = self.schema.as_ref().expect("query result schema is bound");
         if row.len() != schema.len() {
-            return Err(HawdbError::Execution(format!(
+            return Err(HawDBError::Execution(format!(
                 "query result row {} has width {}, expected {}",
                 self.row_count,
                 row.len(),
@@ -509,7 +509,7 @@ impl QueryRowsBuilder {
             .enumerate()
             .find(|(_, (name, expected))| *name != *expected)
         {
-            return Err(HawdbError::Execution(format!(
+            return Err(HawDBError::Execution(format!(
                 "query result row {} column {ordinal} is {name}, expected {expected}",
                 self.row_count
             )));
@@ -1002,7 +1002,7 @@ mod tests {
         assert!(builder
             .try_push_values([
                 Ok(Value::Int(1)),
-                Err(HawdbError::Execution("projection failed".to_string())),
+                Err(HawDBError::Execution("projection failed".to_string())),
             ])
             .is_err());
         builder.push_values([Value::Int(2), Value::Int(3)]).unwrap();

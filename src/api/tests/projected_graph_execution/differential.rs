@@ -3,7 +3,7 @@ use hawdb_analytics::{
     LouvainOptions, PageRankOptions, ProjectedGraph, ProjectionLayout, ProjectionMemoryBudget,
     ProjectionScanControl, ProjectionSource,
 };
-use hawdb_core::{HawdbError, RelTypeId};
+use hawdb_core::{HawDBError, RelTypeId};
 use hawdb_executor::store::{GraphExecutionRead, ScanControl};
 use hawdb_storage::{NodeRecord, RelId, RelRecord};
 use std::path::{Path, PathBuf};
@@ -240,7 +240,7 @@ impl Fixture {
                     &mut |record| {
                         prefix.push(record);
                         if fail {
-                            Err(HawdbError::Semantic(
+                            Err(HawDBError::Semantic(
                                 "relationship callback sentinel".into(),
                             ))
                         } else {
@@ -256,7 +256,7 @@ impl Fixture {
                 match (selected.is_empty(), fail, result) {
                     (true, _, Ok(ScanControl::Continue))
                     | (false, false, Ok(ScanControl::Stop)) => {}
-                    (false, true, Err(HawdbError::Semantic(message))) => {
+                    (false, true, Err(HawDBError::Semantic(message))) => {
                         assert_eq!(message, "relationship callback sentinel", "{receipt}");
                     }
                     (_, _, result) => panic!("unexpected callback result {result:?}: {receipt}"),

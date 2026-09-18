@@ -1,7 +1,7 @@
 //! Pending block and retained directory ownership for one lexical build.
 
 use super::{
-    block_encoding, visit_merged_postings_with_control, BlockDescriptor, Digest, HawdbError,
+    block_encoding, visit_merged_postings_with_control, BlockDescriptor, Digest, HawDBError,
     LexicalProjectionConfig, Posting, Result, SpillControl, TermStatistics, ARTIFACT_HEADER,
     SPILL_IO_BUFFER_BYTES,
 };
@@ -124,7 +124,7 @@ impl ArtifactBuilder {
 
     fn check(&self) -> Result<()> {
         if self.failed {
-            return Err(HawdbError::Storage(
+            return Err(HawDBError::Storage(
                 "lexical artifact builder is poisoned".into(),
             ));
         }
@@ -225,11 +225,11 @@ impl ArtifactBuilder {
                     .document_frequency
                     .checked_add(1)
                     .ok_or_else(|| {
-                        HawdbError::Storage("lexical term document frequency exceeds u64".into())
+                        HawDBError::Storage("lexical term document frequency exceeds u64".into())
                     })?;
             }
             Some(statistics) if statistics.term.as_str() > posting.term.as_str() => {
-                return Err(HawdbError::Storage(
+                return Err(HawDBError::Storage(
                     "lexical merge produced unordered term statistics".into(),
                 ));
             }
@@ -325,7 +325,7 @@ impl ArtifactBuilder {
             digest.update(&scratch[..count]);
             length = length
                 .checked_add(count as u64)
-                .ok_or_else(|| HawdbError::Storage("lexical artifact length exceeds u64".into()))?;
+                .ok_or_else(|| HawDBError::Storage("lexical artifact length exceeds u64".into()))?;
         }
         checkpoint(&self.task)?;
         Ok(ArtifactSummary {

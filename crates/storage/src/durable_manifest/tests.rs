@@ -131,7 +131,7 @@ fn rejected(text: &str) -> String {
     let error = result
         .expect("manifest decoder panicked")
         .expect_err("invalid manifest admitted");
-    assert!(matches!(&error, HawdbError::Storage(_)), "{error:?}");
+    assert!(matches!(&error, HawDBError::Storage(_)), "{error:?}");
     error.to_string()
 }
 

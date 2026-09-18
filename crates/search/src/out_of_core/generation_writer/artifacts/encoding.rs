@@ -1,7 +1,7 @@
 use crate::build_control::{checkpoint, CheckedWriter};
 use crate::build_memory::{reserve_capacity, BuildMemory};
 use crate::document_encoding::{SegmentEncoding, HEX_BUFFER_BYTES};
-use crate::{search_snapshot_compression_header, HawdbError, Result, SEARCH_COMPRESSION_LEVEL};
+use crate::{search_snapshot_compression_header, HawDBError, Result, SEARCH_COMPRESSION_LEVEL};
 use hawdb_core::RuntimeTaskContext;
 use hawdb_executor::QueryMemoryLease;
 use hawdb_integrity::Crc32cHasher;
@@ -47,7 +47,7 @@ pub(super) fn encode_segment_payload_with_context<T: std::borrow::Borrow<crate::
 ) -> Result<CompressedBuffer> {
     checkpoint(task)?;
     if encoding.len() as u64 > max_uncompressed_bytes {
-        return Err(HawdbError::Storage(format!(
+        return Err(HawDBError::Storage(format!(
             "search generation {name} segment {segment_id} requires {} bytes, exceeding {max_uncompressed_bytes}",
             encoding.len(),
         )));
@@ -95,7 +95,7 @@ pub(super) fn encode_segment_payload_with_context<T: std::borrow::Borrow<crate::
         Ok(compressed)
     })();
     result.map_err(|error: io::Error| {
-        HawdbError::Storage(format!(
+        HawDBError::Storage(format!(
             "search generation {name} segment {segment_id} encoding failed: {error}"
         ))
     })

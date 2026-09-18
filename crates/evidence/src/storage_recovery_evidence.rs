@@ -1,5 +1,5 @@
 use crate::inventory::storage_recovery_evidence_health;
-use hawdb_core::{HawdbError, Result};
+use hawdb_core::{HawDBError, Result};
 use std::path::Path;
 
 pub fn nowledge_storage_recovery_evidence_usage() -> String {
@@ -21,7 +21,7 @@ pub fn run_nowledge_storage_recovery_evidence(
             }
             path => {
                 if args.next().is_some() {
-                    return Err(HawdbError::Semantic(
+                    return Err(HawDBError::Semantic(
                         nowledge_storage_recovery_evidence_usage(),
                     ));
                 }
@@ -33,7 +33,7 @@ pub fn run_nowledge_storage_recovery_evidence(
             }
         }
     }
-    Err(HawdbError::Semantic(
+    Err(HawDBError::Semantic(
         nowledge_storage_recovery_evidence_usage(),
     ))
 }
@@ -73,13 +73,13 @@ pub fn nowledge_storage_recovery_evidence_json(
 
 fn read_json_file(path: &Path) -> Result<serde_json::Value> {
     let content = std::fs::read_to_string(path).map_err(|error| {
-        HawdbError::Execution(format!(
+        HawDBError::Execution(format!(
             "failed to read storage recovery report JSON: {}",
             error.kind()
         ))
     })?;
     serde_json::from_str(&content).map_err(|_| {
-        HawdbError::Semantic(
+        HawDBError::Semantic(
             "failed to parse storage recovery report JSON: invalid_json".to_string(),
         )
     })

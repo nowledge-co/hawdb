@@ -88,7 +88,7 @@ pub(super) fn bind<'a>(
         "flag" => (5, RelationalScalarType::Boolean),
         "payload" => (6, RelationalScalarType::Bytea),
         _ => {
-            return Err(HawdbError::Semantic(format!(
+            return Err(HawDBError::Semantic(format!(
                 "unknown test column {}",
                 column.name
             )))

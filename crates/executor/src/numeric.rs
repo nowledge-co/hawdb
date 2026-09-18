@@ -26,7 +26,7 @@ use crate::pipeline::{runtime_checkpoint, BatchControl, BindingBatch};
 use crate::store::{GraphExecutionRead, ScanControl};
 use crate::SharedExecutorPool;
 use crate::{ExecutionLimit, ExecutionMemoryConfig, QueryMemoryLedger};
-use hawdb_core::{Catalog, HawdbError, Result, RuntimeTaskContext, Value};
+use hawdb_core::{Catalog, HawDBError, Result, RuntimeTaskContext, Value};
 use hawdb_plan::{PhysicalPlan, PlanChildren, Predicate, Projection, ProjectionExpression};
 use hawdb_storage::{NodeRecord, ScanPruningReport};
 use lending::{
@@ -416,7 +416,7 @@ impl<'a> NumericFragment<'a> {
                 true,
             )
             .ok_or_else(|| {
-                HawdbError::Execution(format!(
+                HawDBError::Execution(format!(
                     "numeric lending scan scratch requires more than batch_payload_bytes {}",
                     context.memory.batch_payload_bytes
                 ))
@@ -461,7 +461,7 @@ impl<'a> NumericFragment<'a> {
                 Some(worker_limit) => SharedExecutorPool::shared_bounded(worker_limit),
                 None => SharedExecutorPool::shared_default(),
             }
-            .map_err(|error| HawdbError::Execution(error.to_string()))?;
+            .map_err(|error| HawDBError::Execution(error.to_string()))?;
             Some(pool)
         };
         let pool_parallelism = pool
@@ -682,7 +682,7 @@ fn stream_parallel_borrowed_numeric_nodes(
     let wave_capacity = morsel_rows.get().saturating_mul(max_workers);
     let wave_bytes = wave_capacity.saturating_mul(std::mem::size_of::<&NodeRecord>());
     let wave_budget = NonZeroUsize::new(wave_bytes)
-        .ok_or_else(|| HawdbError::Execution("parallel morsel wave has no capacity".to_string()))?;
+        .ok_or_else(|| HawDBError::Execution("parallel morsel wave has no capacity".to_string()))?;
     let wave_account = context.memory_ledger.account(
         crate::QueryMemoryClass::PipelineBatch,
         "columnar morsel input wave",
@@ -1296,19 +1296,19 @@ fn prepare_lending_numeric_morsel(
         schema,
     ) > output_budget_bytes
     {
-        return Err(HawdbError::Execution(format!(
+        return Err(HawDBError::Execution(format!(
             "columnar morsel cannot fit one typed batch within its {output_budget_bytes}-byte reservation"
         )));
     }
     let max_morsel_rows = scan.batch_rows.saturating_mul(DEFAULT_BATCHES_PER_MORSEL);
     if input.len() > max_morsel_rows {
-        return Err(HawdbError::Execution(format!(
+        return Err(HawDBError::Execution(format!(
             "columnar morsel has {} rows, exceeding its {max_morsel_rows}-row typed batch window",
             input.len(),
         )));
     }
     if input.is_empty() {
-        return Err(HawdbError::Execution(
+        return Err(HawDBError::Execution(
             "columnar morsel input is empty".to_string(),
         ));
     }
@@ -1320,7 +1320,7 @@ fn prepare_lending_numeric_morsel(
             prepare_owned_columnar_batch(fragment, rows, scan.needs_node_ids, Arc::clone(schema))?;
         output_bytes = output_bytes.saturating_add(batch.batch.estimated_memory_bytes());
         if output_bytes > output_budget_bytes {
-            return Err(HawdbError::Execution(format!(
+            return Err(HawDBError::Execution(format!(
                 "columnar morsel retained {output_bytes} bytes after admission reserved {output_budget_bytes}"
             )));
         }
@@ -1390,8 +1390,8 @@ fn numeric_morsel_memory(
     }
 }
 
-fn schema_value_mismatch(fragment: NumericFragment<'_>, value: &Value) -> HawdbError {
-    HawdbError::Execution(format!(
+fn schema_value_mismatch(fragment: NumericFragment<'_>, value: &Value) -> HawDBError {
+    HawDBError::Execution(format!(
         "columnar scan found value {value:?} that violates {:?} schema for {}.{}",
         fragment.property_type, fragment.label, fragment.property
     ))

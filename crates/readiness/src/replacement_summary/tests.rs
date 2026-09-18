@@ -2954,7 +2954,7 @@ fn replacement_summary_groups_storage_and_background_blockers() {
             },
             {
                 "action": "run_search_projection_shadow_evidence",
-                "reason": "LanceDB/Hawdb search projection side-by-side evidence is missing or not ready",
+                "reason": "LanceDB/HawDB search projection side-by-side evidence is missing or not ready",
                 "evidence_fields": [
                     "search_projection_shadow_evidence.protocol",
                     "search_projection_shadow_evidence.evidence_source",
@@ -2973,7 +2973,7 @@ fn replacement_summary_groups_storage_and_background_blockers() {
             },
             {
                 "action": "run_search_candidate_shadow_evidence",
-                "reason": "LanceDB/Hawdb search candidate side-by-side evidence is missing or not ready",
+                "reason": "LanceDB/HawDB search candidate side-by-side evidence is missing or not ready",
                 "evidence_fields": [
                     "search_candidate_shadow_evidence.protocol",
                     "search_candidate_shadow_evidence.evidence_source",

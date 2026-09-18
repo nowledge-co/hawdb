@@ -1,6 +1,6 @@
 //! Generated artifact names retain their capacity through publication.
 
-use crate::{build_control::checkpoint, build_memory::BuildMemory, HawdbError, Result};
+use crate::{build_control::checkpoint, build_memory::BuildMemory, HawDBError, Result};
 use hawdb_core::RuntimeTaskContext;
 use hawdb_executor::QueryMemoryLease;
 use std::ops::Deref;
@@ -30,7 +30,7 @@ impl Name {
     ) -> Result<Self> {
         checkpoint(task)?;
         if prefix.len() > 128 - 20 - ".hawdb".len() {
-            return Err(HawdbError::Execution(
+            return Err(HawDBError::Execution(
                 "search artifact prefix exceeds preflight capacity".into(),
             ));
         }
@@ -64,7 +64,7 @@ impl Name {
         };
         checkpoint(task)?;
         if name.value.capacity() > 128 {
-            return Err(HawdbError::Execution(
+            return Err(HawDBError::Execution(
                 "search artifact name exceeded preflight capacity".into(),
             ));
         }

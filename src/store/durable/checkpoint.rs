@@ -5,7 +5,7 @@ use super::{
     load_published_property_projection, CheckpointImage, CheckpointManifestArtifacts,
     DurableArtifactMetadata, DurableManifest, DurableStore, GraphManifestOpenBudget,
 };
-use crate::error::{HawdbError, Result};
+use crate::error::{HawDBError, Result};
 use crate::store::{
     canonical_adjacency_artifact_generation_file, canonical_artifact_generation_file,
     canonical_manifest_generation_file, checkpoint_generation_file, checkpoint_publish_failpoint,
@@ -33,20 +33,20 @@ impl DurableStore {
             .max_checkpoint_encoded_bytes
             .is_some_and(|limit| metadata.len() > limit)
         {
-            return Err(HawdbError::Storage(format!(
+            return Err(HawDBError::Storage(format!(
                 "checkpoint encoded byte limit exceeded: max_checkpoint_encoded_bytes={}",
                 config.max_checkpoint_encoded_bytes.unwrap_or_default()
             )));
         }
         let bytes = fs::read(&self.checkpoint_path)?;
         let expected_len = self.checkpoint_encoded_len.ok_or_else(|| {
-            HawdbError::Storage("checkpoint is missing its encoded length".to_string())
+            HawDBError::Storage("checkpoint is missing its encoded length".to_string())
         })?;
         let expected_checksum = self.checkpoint_encoded_checksum.ok_or_else(|| {
-            HawdbError::Storage("checkpoint is missing its encoded checksum".to_string())
+            HawDBError::Storage("checkpoint is missing its encoded checksum".to_string())
         })?;
         let expected_sha256 = self.checkpoint_encoded_sha256.ok_or_else(|| {
-            HawdbError::Storage("checkpoint is missing its encoded SHA-256".to_string())
+            HawDBError::Storage("checkpoint is missing its encoded SHA-256".to_string())
         })?;
         verify_integrity(
             &bytes,
@@ -90,7 +90,7 @@ impl DurableStore {
         {
             let mut file = File::create(&tmp_path)?;
             encode_relational_checkpoint_to_writer(&mut file, commit_epoch, state, max_bytes)
-                .map_err(|error| HawdbError::Storage(error.to_string()))?;
+                .map_err(|error| HawDBError::Storage(error.to_string()))?;
             file.sync_all()?;
         }
         let (encoded_len, encoded_checksum, encoded_sha256) = file_checksum(&tmp_path)?;
@@ -352,7 +352,7 @@ impl DurableStore {
             (&self.canonical_segments, &self.canonical_adjacency)
             && canonical.manifest().relationship_count != adjacency.relationship_count()
         {
-            return Err(HawdbError::Storage(
+            return Err(HawDBError::Storage(
                 "canonical adjacency relationship count does not match canonical segments"
                     .to_string(),
             ));

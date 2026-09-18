@@ -1,4 +1,4 @@
-use hawdb_core::{HawdbError, LabelId, RelTypeId, Result, RuntimeTaskContext};
+use hawdb_core::{HawDBError, LabelId, RelTypeId, Result, RuntimeTaskContext};
 use hawdb_storage::{NodeId, NodeRecord, RelRecord};
 use std::cmp::Ordering;
 use std::collections::{BTreeMap, BTreeSet};
@@ -1180,7 +1180,7 @@ fn algorithm_checkpoint(task_context: Option<&RuntimeTaskContext>) -> Result<()>
     match task_context {
         Some(task_context) => task_context
             .checkpoint()
-            .map_err(|reason| HawdbError::Execution(format!("runtime task stopped: {reason}"))),
+            .map_err(|reason| HawDBError::Execution(format!("runtime task stopped: {reason}"))),
         None => Ok(()),
     }
 }
@@ -1195,7 +1195,7 @@ fn algorithm_checkpoint_periodically(
     {
         task_context
             .checkpoint()
-            .map_err(|reason| HawdbError::Execution(format!("runtime task stopped: {reason}")))?;
+            .map_err(|reason| HawDBError::Execution(format!("runtime task stopped: {reason}")))?;
     }
     Ok(())
 }

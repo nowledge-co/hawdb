@@ -8,7 +8,7 @@ use super::{ContentStoreRowPageReadPhase, ContentStoreThreadUpsertQualificationR
 use crate::evidence_digest::rows_sha256;
 use crate::ContentStoreSqlCorpus;
 use hawdb::{
-    Database, DatabaseConfig, DurabilityPolicy, HawdbError, QueryOutput, QueryStreamOptions,
+    Database, DatabaseConfig, DurabilityPolicy, HawDBError, QueryOutput, QueryStreamOptions,
     Result, Value,
 };
 use std::collections::BTreeMap;
@@ -90,20 +90,20 @@ pub(super) fn qualify_thread_message_upsert(
     rejected_parameters[4] = Value::String("missing-qualified-upsert-document".to_string());
     let rejection = match transaction.query_sql_with_params(&message.sql, &rejected_parameters) {
         Ok(_) => {
-            return Err(HawdbError::Execution(
+            return Err(HawDBError::Execution(
                 "content-store thread upsert admitted a missing-document foreign key".to_string(),
             ));
         }
         Err(error) => error,
     };
     if !rejection.to_string().contains("foreign key") {
-        return Err(HawdbError::Execution(format!(
+        return Err(HawDBError::Execution(format!(
             "content-store thread upsert expected a foreign-key rejection, got: {rejection}"
         )));
     }
     let after_rejection = transaction.query_sql_with_params(&page.sql, &page_parameters)?;
     if rows_sha256(&after_rejection.rows) != before_rejection_sha256 {
-        return Err(HawdbError::Execution(
+        return Err(HawDBError::Execution(
             "content-store rejected thread upsert changed the accepted transaction workspace"
                 .to_string(),
         ));
@@ -133,9 +133,9 @@ pub(super) fn qualify_thread_message_upsert(
             .len()
             .saturating_add(MESSAGE_B_FINAL_CONTENT.len()),
     )
-    .map_err(|_| HawdbError::Execution("thread upsert payload size overflow".to_string()))?;
+    .map_err(|_| HawDBError::Execution("thread upsert payload size overflow".to_string()))?;
     if item_count != MESSAGE_COUNT_I64 || size_bytes != expected_size_bytes {
-        return Err(HawdbError::Execution(format!(
+        return Err(HawDBError::Execution(format!(
             "content-store thread upsert summary expected count={MESSAGE_COUNT_I64}, bytes={expected_size_bytes}, got count={item_count}, bytes={size_bytes}"
         )));
     }
@@ -162,7 +162,7 @@ pub(super) fn qualify_thread_message_upsert(
 
     let committed_epoch = database.commit_epoch();
     if committed_epoch != base_epoch.saturating_add(1) {
-        return Err(HawdbError::Execution(format!(
+        return Err(HawDBError::Execution(format!(
             "content-store thread upsert published epoch {committed_epoch}, expected {}",
             base_epoch.saturating_add(1)
         )));
@@ -178,7 +178,7 @@ pub(super) fn qualify_thread_message_upsert(
     if live_read.execution.visible_commit_epoch != committed_epoch
         || live_read.execution.overlay_entries == 0
     {
-        return Err(HawdbError::Execution(format!(
+        return Err(HawDBError::Execution(format!(
             "content-store thread upsert live read observed epoch {} and {} overlay entries, expected epoch {committed_epoch} and a non-empty overlay",
             live_read.execution.visible_commit_epoch, live_read.execution.overlay_entries
         )));
@@ -188,7 +188,7 @@ pub(super) fn qualify_thread_message_upsert(
     let checkpoint_generation = database
         .relational_index_shadow_checkpoint_report()
         .ok_or_else(|| {
-            HawdbError::Execution(
+            HawDBError::Execution(
                 "content-store thread upsert checkpoint published no relational generation"
                     .to_string(),
             )
@@ -212,7 +212,7 @@ pub(super) fn qualify_thread_message_upsert(
     if reopened_read.execution.visible_commit_epoch != committed_epoch
         || reopened_read.output_sha256 != live_read.output_sha256
     {
-        return Err(HawdbError::Execution(format!(
+        return Err(HawDBError::Execution(format!(
             "content-store thread upsert changed across checkpoint/reopen: live_epoch={}, reopened_epoch={}, live_digest={}, reopened_digest={}",
             live_read.execution.visible_commit_epoch,
             reopened_read.execution.visible_commit_epoch,
@@ -284,7 +284,7 @@ fn require_graph_state(output: &QueryOutput) -> Result<()> {
         {
             Ok(())
         }
-        rows => Err(HawdbError::Execution(format!(
+        rows => Err(HawDBError::Execution(format!(
             "content-store thread upsert graph identity mismatch: {rows:?}"
         ))),
     }
@@ -305,7 +305,7 @@ fn require_document_state(output: &QueryOutput, item_count: i64, size_bytes: i64
         {
             Ok(())
         }
-        rows => Err(HawdbError::Execution(format!(
+        rows => Err(HawDBError::Execution(format!(
             "content-store thread upsert document state mismatch: {rows:?}"
         ))),
     }
@@ -317,7 +317,7 @@ fn require_message_page(
     expected_second_created_at: &str,
 ) -> Result<()> {
     let [first, second] = output.rows.as_slice() else {
-        return Err(HawdbError::Execution(format!(
+        return Err(HawDBError::Execution(format!(
             "content-store thread upsert expected two messages, got {:?}",
             output.rows
         )));
@@ -361,7 +361,7 @@ fn require_message_identity(
     if matches {
         Ok(())
     } else {
-        Err(HawdbError::Execution(format!(
+        Err(HawDBError::Execution(format!(
             "content-store thread upsert message identity mismatch for {content_message_id}: {row:?}"
         )))
     }
@@ -371,11 +371,11 @@ fn required_i64(output: &QueryOutput, field: &str) -> Result<i64> {
     match output.rows.as_slice() {
         [row] => match row.get(field) {
             Some(Value::Int(value)) => Ok(*value),
-            other => Err(HawdbError::Execution(format!(
+            other => Err(HawDBError::Execution(format!(
                 "content-store thread upsert expected integer {field}, got {other:?}"
             ))),
         },
-        rows => Err(HawdbError::Execution(format!(
+        rows => Err(HawDBError::Execution(format!(
             "content-store thread upsert expected one summary row, got {rows:?}"
         ))),
     }

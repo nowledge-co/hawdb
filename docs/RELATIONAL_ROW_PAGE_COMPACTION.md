@@ -90,7 +90,7 @@ bazel run //crates/fuzz:hawdb_storage_fuzz -- \
   --row-page-compaction --seed 189 --cases 8
 bazel test //crates/fuzz:hawdb_fuzz_tests //crates/fuzz:hawdb_fuzz_cli_tests \
   //:hawdb_linux_ci_fuzz_smoke_test --nocache_test_results
-bazel test //docs/tla:HawdbCowPagePublication_check --nocache_test_results
+bazel test //docs/tla:HawDBCowPagePublication_check --nocache_test_results
 ```
 
 Fuzz is local-only. Existing macOS/Windows storage jobs also execute the facade

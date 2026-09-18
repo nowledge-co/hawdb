@@ -88,7 +88,7 @@ impl GraphStore {
             && relational_transaction.writes.is_empty()
             && append_transaction.writes.is_empty();
         if !read_only && !allow_stale_rebase && self.commit_epoch != transaction.base_commit_epoch {
-            return Err(HawdbError::Execution(format!(
+            return Err(HawDBError::Execution(format!(
                 "transaction snapshot is stale: started at commit epoch {}, current epoch is {}",
                 transaction.base_commit_epoch, self.commit_epoch
             )));
@@ -311,12 +311,12 @@ impl GraphStore {
                     state,
                 } => {
                     let Some(id) = working_catalog.table_id(table_kind, &table) else {
-                        return Err(HawdbError::Storage(format!(
+                        return Err(HawDBError::Storage(format!(
                             "schema table '{table}' does not exist"
                         )));
                     };
                     let Some(descriptor) = working_catalog.table_descriptor(id) else {
-                        return Err(HawdbError::Storage(format!(
+                        return Err(HawDBError::Storage(format!(
                             "schema table '{table}' does not exist"
                         )));
                     };
@@ -341,18 +341,18 @@ impl GraphStore {
                     state,
                 } => {
                     let Some(table_id) = working_catalog.table_id(table_kind, &table) else {
-                        return Err(HawdbError::Storage(format!(
+                        return Err(HawDBError::Storage(format!(
                             "schema table '{table}' does not exist"
                         )));
                     };
                     let Some(id) = working_catalog.property_descriptor_id(table_id, &property)
                     else {
-                        return Err(HawdbError::Storage(format!(
+                        return Err(HawDBError::Storage(format!(
                             "schema property '{table}.{property}' does not exist"
                         )));
                     };
                     let Some(descriptor) = working_catalog.property_descriptor(id) else {
-                        return Err(HawdbError::Storage(format!(
+                        return Err(HawDBError::Storage(format!(
                             "schema property '{table}.{property}' does not exist"
                         )));
                     };
@@ -923,7 +923,7 @@ impl GraphStore {
                             pending_relationship_ids_for_nodes(&pending_relationships, &delete_ids);
                         if !detach && !incident_pending_relationship_ids.is_empty() {
                             let id = delete_ids.first().copied().unwrap_or(NodeId(0));
-                            return Err(HawdbError::Storage(format!(
+                            return Err(HawDBError::Storage(format!(
                                 "node {} has relationships; use DETACH DELETE",
                                 id.0
                             )));
@@ -1109,7 +1109,7 @@ impl GraphStore {
                         pending_relationship_ids_for_nodes(&pending_relationships, &ids);
                     if !request.detach && !incident_pending_relationship_ids.is_empty() {
                         let id = ids.first().copied().unwrap_or(NodeId(0));
-                        return Err(HawdbError::Storage(format!(
+                        return Err(HawDBError::Storage(format!(
                             "node {} has relationships; use DETACH DELETE",
                             id.0
                         )));
@@ -1164,7 +1164,7 @@ impl GraphStore {
                         "max_mutation_affected_rows",
                     )?;
                     let pair_count = sources.len().checked_mul(targets.len()).ok_or_else(|| {
-                        HawdbError::Execution("mutation Cartesian product overflow".to_string())
+                        HawDBError::Execution("mutation Cartesian product overflow".to_string())
                     })?;
                     ensure_additional_mutation_limits(
                         ops.len(),
@@ -1226,7 +1226,7 @@ impl GraphStore {
                         "max_mutation_affected_rows",
                     )?;
                     let pair_count = sources.len().checked_mul(targets.len()).ok_or_else(|| {
-                        HawdbError::Execution("mutation Cartesian product overflow".to_string())
+                        HawDBError::Execution("mutation Cartesian product overflow".to_string())
                     })?;
                     ensure_additional_mutation_limits(
                         ops.len(),
@@ -1356,7 +1356,7 @@ impl GraphStore {
                             .len()
                             .checked_mul(target_ids.len())
                             .ok_or_else(|| {
-                                HawdbError::Execution(
+                                HawDBError::Execution(
                                     "mutation Cartesian product overflow".to_string(),
                                 )
                             })?;
@@ -1486,7 +1486,7 @@ impl GraphStore {
                             .len()
                             .checked_mul(target_ids.len())
                             .ok_or_else(|| {
-                                HawdbError::Execution(
+                                HawDBError::Execution(
                                     "mutation Cartesian product overflow".to_string(),
                                 )
                             })?;
@@ -1761,25 +1761,25 @@ impl GraphStore {
         let next_commit_epoch = self
             .commit_epoch
             .checked_add(1)
-            .ok_or_else(|| HawdbError::Storage("commit epoch overflow".to_string()))?;
+            .ok_or_else(|| HawDBError::Storage("commit epoch overflow".to_string()))?;
         if let Some(transaction) = relational_transaction.filter(|value| !value.writes.is_empty()) {
             let authoritative_index = self.authoritative_relational_constraint_index()?;
             let index_limits = self.relational_index_live_capture_limits();
             let row_limits = self.relational_row_live_capture_limits();
             let staged = if self.relational_state.canonical_row_metadata_only() {
                 let index = authoritative_index.as_ref().ok_or_else(|| {
-                    HawdbError::StorageIntegrity(
+                    HawDBError::StorageIntegrity(
                         "sparse relational live staging requires an authoritative constraint index"
                             .to_string(),
                     )
                 })?;
                 let index_limits = index_limits.ok_or_else(|| {
-                    HawdbError::StorageIntegrity(
+                    HawDBError::StorageIntegrity(
                         "sparse relational live staging requires index capture limits".to_string(),
                     )
                 })?;
                 let row_limits = row_limits.ok_or_else(|| {
-                    HawdbError::StorageIntegrity(
+                    HawDBError::StorageIntegrity(
                         "sparse relational live staging requires row capture limits".to_string(),
                     )
                 })?;
@@ -1841,7 +1841,7 @@ impl GraphStore {
                 replay_access.as_ref(),
                 &staged.primary_key_changes,
             )
-            .map_err(|error| HawdbError::Storage(error.to_string()))?;
+            .map_err(|error| HawDBError::Storage(error.to_string()))?;
             staged_relational_primary_key_changes = Some(encoded.primary_key_changes);
             ops.push(WalOp::Relational {
                 record: Arc::from(encoded.record),
@@ -1854,7 +1854,7 @@ impl GraphStore {
                 .map_err(map_append_staging_error)?;
             let record =
                 encode_append_wal_batch(next_commit_epoch, &prepared.materialized_transaction)
-                    .map_err(|error| HawdbError::Storage(error.to_string()))?;
+                    .map_err(|error| HawDBError::Storage(error.to_string()))?;
             staged_append_state = Some(prepared.state);
             append_mutation_outcomes = prepared.mutation_outcomes;
             ops.push(WalOp::Append {
@@ -2072,7 +2072,7 @@ impl GraphStore {
         )?;
         let projected = current.saturating_add(additional);
         if projected > limit {
-            return Err(HawdbError::Storage(format!(
+            return Err(HawDBError::Storage(format!(
                 "out-of-core mutation delta admission rejected {projected} estimated bytes under the {limit} byte limit; checkpoint the database or raise max_out_of_core_delta_bytes"
             )));
         }
@@ -2082,7 +2082,7 @@ impl GraphStore {
             ..StoragePressureSignals::default()
         });
         if apply_live_backpressure && pressure.state == StoragePressureState::DeferMutation {
-            return Err(HawdbError::Storage(format!(
+            return Err(HawDBError::Storage(format!(
                 "out-of-core mutation deferred by storage pressure at {projected} estimated bytes under the {limit} byte limit; checkpoint the database before retrying"
             )));
         }
@@ -2239,7 +2239,7 @@ impl GraphStore {
                     properties,
                 } => {
                     let label_id = catalog.label_id(label).ok_or_else(|| {
-                        HawdbError::Storage(format!(
+                        HawDBError::Storage(format!(
                             "node label '{label}' is missing during out-of-core validation"
                         ))
                     })?;
@@ -2275,7 +2275,7 @@ impl GraphStore {
                     properties,
                 } => {
                     let rel_type = catalog.rel_type_id(rel_type).ok_or_else(|| {
-                        HawdbError::Storage(format!(
+                        HawDBError::Storage(format!(
                             "relationship type '{rel_type}' is missing during out-of-core validation"
                         ))
                     })?;
@@ -2317,28 +2317,28 @@ impl GraphStore {
     }
 }
 
-fn map_relational_staging_error(error: RelationalError) -> HawdbError {
+fn map_relational_staging_error(error: RelationalError) -> HawDBError {
     match error {
-        RelationalError::Corruption(_) => HawdbError::StorageIntegrity(error.to_string()),
+        RelationalError::Corruption(_) => HawDBError::StorageIntegrity(error.to_string()),
         RelationalError::Admission(_)
         | RelationalError::Schema(_)
         | RelationalError::Constraint(_)
-        | RelationalError::Durability(_) => HawdbError::Storage(error.to_string()),
+        | RelationalError::Durability(_) => HawDBError::Storage(error.to_string()),
     }
 }
 
-fn map_append_staging_error(error: hawdb_storage::AppendTableError) -> HawdbError {
+fn map_append_staging_error(error: hawdb_storage::AppendTableError) -> HawDBError {
     match error {
         hawdb_storage::AppendTableError::SequenceExhausted {
             table,
             watermark,
             requested,
-        } => HawdbError::AppendSequenceExhausted {
+        } => HawDBError::AppendSequenceExhausted {
             table,
             watermark,
             requested,
         },
-        error => HawdbError::Storage(error.to_string()),
+        error => HawDBError::Storage(error.to_string()),
     }
 }
 
@@ -2356,7 +2356,7 @@ mod tests {
 
         assert!(matches!(
             error,
-            HawdbError::AppendSequenceExhausted {
+            HawDBError::AppendSequenceExhausted {
                 table,
                 watermark: i64::MAX,
                 requested: 1,

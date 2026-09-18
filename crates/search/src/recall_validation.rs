@@ -1,5 +1,5 @@
 use super::{SearchRetrieverReport, RABITQ_CANDIDATE_BACKEND};
-use crate::{HawdbError, Result};
+use crate::{HawDBError, Result};
 use hawdb_evidence::production_evidence_blocker_codes;
 use std::collections::BTreeSet;
 
@@ -280,7 +280,7 @@ impl VectorRecallProductionQualificationReport {
         if blockers.is_empty() {
             Ok(())
         } else {
-            Err(HawdbError::Storage(format!(
+            Err(HawDBError::Storage(format!(
                 "RaBitQ projection is not qualified for the current production release: {}",
                 blockers.join(",")
             )))

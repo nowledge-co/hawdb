@@ -36,11 +36,11 @@ impl Options {
         reader: &crate::SearchOutOfCoreReader,
         source_graph_commit_epoch: Option<u64>,
     ) -> Result<()> {
-        use crate::HawdbError;
+        use crate::HawDBError;
         if self.value.source_graph_commit_epoch.is_some()
             && self.value.source_graph_commit_epoch != source_graph_commit_epoch
         {
-            return Err(HawdbError::Storage(
+            return Err(HawDBError::Storage(
                 "search generation update source graph epoch does not match the delta".into(),
             ));
         }
@@ -48,7 +48,7 @@ impl Options {
             && self.value.import_source_graph_commit_epoch
                 != reader.import_source_graph_commit_epoch()
         {
-            return Err(HawdbError::Storage(
+            return Err(HawDBError::Storage(
                 "search generation update import provenance does not match the active generation"
                     .into(),
             ));
@@ -73,13 +73,13 @@ impl Options {
             )
         });
         if requested.is_some() && requested != expected {
-            return Err(HawdbError::Storage(
+            return Err(HawDBError::Storage(
                 "search generation update embedding identity does not match the active generation"
                     .into(),
             ));
         }
         if self.value.analyzer_lexicon != *reader.analyzer_lexicon() {
-            return Err(HawdbError::Storage(
+            return Err(HawDBError::Storage(
                 "search generation update analyzer does not match the active generation".into(),
             ));
         }
