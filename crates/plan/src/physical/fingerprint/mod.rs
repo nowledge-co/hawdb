@@ -10,6 +10,7 @@ use skein_cypher::RelationshipDirection;
 use std::collections::BTreeMap;
 
 mod common;
+mod graph_match;
 mod predicate;
 mod projection;
 
@@ -764,6 +765,15 @@ impl PhysicalPlan {
                 left.write_instance_fingerprint(output);
                 output.push(',');
                 right.write_instance_fingerprint(output);
+                output.push(')');
+            }
+            PhysicalPlan::GraphMatchExec { program, input } => {
+                output.push_str("GraphMatchExec(");
+                graph_match::write_program(output, program);
+                if let Some(input) = input {
+                    output.push(',');
+                    input.write_instance_fingerprint(output);
+                }
                 output.push(')');
             }
             PhysicalPlan::NodeColumnLookupExec {

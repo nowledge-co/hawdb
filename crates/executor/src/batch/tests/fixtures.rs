@@ -6,6 +6,19 @@ use std::collections::BTreeMap;
 pub(super) fn operators() -> Vec<(PhysicalPlan, bool)> {
     vec![
         (
+            PhysicalPlan::GraphMatchExec {
+                program: GraphMatchProgram {
+                    imports: Vec::new(),
+                    introduced: Vec::new(),
+                    steps: Vec::new(),
+                    predicate: None,
+                    optional: false,
+                },
+                input: None,
+            },
+            true,
+        ),
+        (
             PhysicalPlan::CreateNodeLabel {
                 label: String::new(),
             },

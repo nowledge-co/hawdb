@@ -60,6 +60,7 @@ pub enum PhysicalPlanKind {
     DeleteRelationship,
     DeleteRelationshipTargetNodes,
     CreateRelationship,
+    GraphMatchExec,
     EmptyExec,
     SeqNodeScan,
     NodeProjectionScanExec,
@@ -158,6 +159,7 @@ impl PhysicalPlanKind {
             PhysicalPlanKind::DeleteRelationship,
             PhysicalPlanKind::DeleteRelationshipTargetNodes,
             PhysicalPlanKind::CreateRelationship,
+            PhysicalPlanKind::GraphMatchExec,
             PhysicalPlanKind::EmptyExec,
             PhysicalPlanKind::SeqNodeScan,
             PhysicalPlanKind::NodeProjectionScanExec,
@@ -240,6 +242,7 @@ impl PhysicalPlanKind {
             PhysicalPlanKind::DeleteRelationship => "DeleteRelationship",
             PhysicalPlanKind::DeleteRelationshipTargetNodes => "DeleteRelationshipTargetNodes",
             PhysicalPlanKind::CreateRelationship => "CreateRelationship",
+            PhysicalPlanKind::GraphMatchExec => "GraphMatchExec",
             PhysicalPlanKind::EmptyExec => "EmptyExec",
             PhysicalPlanKind::SeqNodeScan => "SeqNodeScan",
             PhysicalPlanKind::NodeProjectionScanExec => "NodeProjectionScanExec",
@@ -321,7 +324,8 @@ impl PhysicalPlanKind {
             | PhysicalPlanKind::IndexNodeCompositeRangeSeek
             | PhysicalPlanKind::IndexNodeRangeSeek
             | PhysicalPlanKind::IndexNodeTextSeek => PhysicalPlanClass::Access,
-            PhysicalPlanKind::AdjacencyExpandExec
+            PhysicalPlanKind::GraphMatchExec
+            | PhysicalPlanKind::AdjacencyExpandExec
             | PhysicalPlanKind::AdjacencyExistsExec
             | PhysicalPlanKind::OptionalDegreeExec
             | PhysicalPlanKind::OptionalRelationshipCountSumExec

@@ -75,7 +75,7 @@ pub fn evaluate_projection_expression(
                 SkeinError::Execution(format!("missing variable '{variable}' during projection"))
             }),
         ProjectionExpression::Property { variable, property } => {
-            if !binding_has_variable(binding, variable) {
+            if !binding_declares_variable(binding, variable) {
                 return Err(SkeinError::Execution(format!(
                     "missing variable '{variable}' during projection"
                 )));
@@ -84,9 +84,21 @@ pub fn evaluate_projection_expression(
                 .cloned()
                 .unwrap_or(Value::Null))
         }
+        ProjectionExpression::Id { variable }
+            if binding.values.get(variable) == Some(&Value::Null)
+                && !binding_has_variable(binding, variable) =>
+        {
+            Ok(Value::Null)
+        }
         ProjectionExpression::Id { variable } => binding_id(binding, variable).ok_or_else(|| {
             SkeinError::Execution(format!("missing variable '{variable}' during projection"))
         }),
+        ProjectionExpression::RelationshipType { variable }
+            if binding.values.get(variable) == Some(&Value::Null)
+                && !binding_has_variable(binding, variable) =>
+        {
+            Ok(Value::Null)
+        }
         ProjectionExpression::RelationshipType { variable } => {
             let relationship = binding.relationships.get(variable).ok_or_else(|| {
                 SkeinError::Execution(format!("missing variable '{variable}' during projection"))
@@ -129,7 +141,7 @@ pub fn evaluate_projection_expression(
             variable,
             property,
         } => {
-            if !binding_has_variable(binding, variable) {
+            if !binding_declares_variable(binding, variable) {
                 return Err(SkeinError::Execution(format!(
                     "missing variable '{variable}' during projection"
                 )));
@@ -148,7 +160,7 @@ pub fn evaluate_projection_expression(
             empty,
             default,
         } => {
-            if !binding_has_variable(binding, variable) {
+            if !binding_declares_variable(binding, variable) {
                 return Err(SkeinError::Execution(format!(
                     "missing variable '{variable}' during projection"
                 )));
@@ -167,7 +179,7 @@ pub fn evaluate_projection_expression(
             property,
             default,
         } => {
-            if !binding_has_variable(binding, variable) {
+            if !binding_declares_variable(binding, variable) {
                 return Err(SkeinError::Execution(format!(
                     "missing variable '{variable}' during projection"
                 )));
@@ -188,7 +200,7 @@ pub fn evaluate_projection_expression(
             non_empty,
             null_or_empty,
         } => {
-            if !binding_has_variable(binding, variable) {
+            if !binding_declares_variable(binding, variable) {
                 return Err(SkeinError::Execution(format!(
                     "missing variable '{variable}' during projection"
                 )));
@@ -208,7 +220,7 @@ pub fn evaluate_projection_expression(
             branches,
             default,
         } => {
-            if !binding_has_variable(binding, variable) {
+            if !binding_declares_variable(binding, variable) {
                 return Err(SkeinError::Execution(format!(
                     "missing variable '{variable}' during projection"
                 )));
@@ -228,7 +240,7 @@ pub fn evaluate_projection_expression(
             property,
             default,
         } => {
-            if !binding_has_variable(binding, variable) {
+            if !binding_declares_variable(binding, variable) {
                 return Err(SkeinError::Execution(format!(
                     "missing variable '{variable}' during projection"
                 )));
@@ -242,7 +254,7 @@ pub fn evaluate_projection_expression(
             }
         }
         ProjectionExpression::CaseCoalesceDifferenceFloorZero { variable, terms } => {
-            if !binding_has_variable(binding, variable) {
+            if !binding_declares_variable(binding, variable) {
                 return Err(SkeinError::Execution(format!(
                     "missing variable '{variable}' during projection"
                 )));
@@ -474,6 +486,10 @@ fn civil_from_days(days: i64) -> (i32, u32, u32) {
     (year as i32, month as u32, day as u32)
 }
 
+fn binding_declares_variable(binding: &Binding, variable: &str) -> bool {
+    binding_has_variable(binding, variable) || binding.values.get(variable) == Some(&Value::Null)
+}
+
 pub fn binding_has_variable(binding: &Binding, variable: &str) -> bool {
     binding.nodes.contains_key(variable) || binding.relationships.contains_key(variable)
 }
@@ -506,6 +522,7 @@ pub fn binding_value(binding: &Binding, catalog: &Catalog, variable: &str) -> Op
                 .get(variable)
                 .map(|relationship| relationship_value(relationship, catalog))
         })
+        .or_else(|| (binding.values.get(variable) == Some(&Value::Null)).then_some(Value::Null))
 }
 
 fn node_value(node: &NodeRecord, catalog: &Catalog) -> Value {

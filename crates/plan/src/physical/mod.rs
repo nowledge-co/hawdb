@@ -359,6 +359,10 @@ pub enum PhysicalPlan {
         target_label: String,
         target_properties: BTreeMap<String, Value>,
     },
+    GraphMatchExec {
+        program: crate::GraphMatchProgram,
+        input: Option<Box<PhysicalPlan>>,
+    },
     EmptyExec,
     SeqNodeScan {
         variable: String,

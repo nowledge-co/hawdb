@@ -80,3 +80,47 @@ fn clock_normalization_preserves_literal_values_in_the_same_time_window() {
     assert_eq!(properties["generated"], skein_core::Value::Int(0));
     assert_eq!(properties["literal"], skein_core::Value::Int(100));
 }
+
+#[test]
+fn ordered_read_pipeline_preserves_corpus_binding_outcomes() {
+    use skein_cypher::ClauseKind;
+    let mut eligible = BTreeMap::new();
+    let mut failures = Vec::new();
+    for line in CASES.lines() {
+        let case: Value = serde_json::from_str(line).unwrap();
+        let kind = case["plan"]["kind"].as_str().unwrap();
+        if !matches!(kind, "golden" | "missing_parameters") {
+            continue;
+        }
+        let query = case["query"].as_str().unwrap();
+        let Ok(pipeline) = skein_cypher::parse_pipeline(query) else {
+            continue;
+        };
+        if !pipeline.clauses.iter().all(|clause| match &clause.kind {
+            ClauseKind::Match { patterns, .. } => {
+                patterns.iter().all(|pattern| pattern.variable.is_none())
+            }
+            ClauseKind::With(_) | ClauseKind::Return(_) => true,
+            _ => false,
+        }) {
+            continue;
+        }
+        *eligible.entry(kind.to_owned()).or_insert(0) += 1;
+        let actual = crate::plan_pipeline_query(query, &parameters(&case["parameters"]));
+        match (kind, actual) {
+            ("golden", Ok(_)) => {}
+            ("missing_parameters", Err(error)) if error.to_string() == case["plan"]["text"] => {}
+            (_, actual) => failures.push(format!(
+                "{}: {actual:?}; expected {}; {query}",
+                case["id"], case["plan"]["text"]
+            )),
+        }
+    }
+    eprintln!(
+        "ordered read bindings: {eligible:?} eligible; {} failures",
+        failures.len()
+    );
+    assert!(failures.is_empty(), "{}", failures.join("\n"));
+    assert_eq!(eligible["golden"], 245);
+    assert_eq!(eligible["missing_parameters"], 710);
+}

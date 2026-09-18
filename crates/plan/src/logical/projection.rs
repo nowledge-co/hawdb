@@ -327,7 +327,7 @@ pub(super) fn plan_return_items_with_columns(
                     )?);
                 }
                 ReturnExpressionKind::Aggregate(_) => {
-                    aggregations.push(plan_aggregation(scope, item)?);
+                    aggregations.push(plan_aggregation_with_columns(scope, column_scope, item)?);
                 }
             }
         }
@@ -801,6 +801,42 @@ pub(super) fn plan_set_value(
     }
 }
 
+pub(super) fn plan_aggregation_with_columns(
+    scope: &BTreeSet<String>,
+    columns: &BTreeSet<String>,
+    item: &ReturnItem,
+) -> Result<Aggregation> {
+    let aggregate = match &item.expression.kind {
+        ReturnExpressionKind::Aggregate(aggregate) => aggregate,
+        _ => return plan_aggregation(scope, item),
+    };
+    let variable = match aggregate {
+        AggregateExpression::CountAll => return plan_aggregation(scope, item),
+        AggregateExpression::CountVariable { variable, .. }
+        | AggregateExpression::CollectVariable { variable, .. }
+        | AggregateExpression::CountProperty { variable, .. }
+        | AggregateExpression::CollectProperty { variable, .. }
+        | AggregateExpression::MinProperty { variable, .. }
+        | AggregateExpression::MaxProperty { variable, .. }
+        | AggregateExpression::AvgProperty { variable, .. } => variable,
+    };
+    if !columns.contains(variable) {
+        return plan_aggregation(scope, item);
+    }
+    let mut scope = scope.clone();
+    scope.insert(variable.clone());
+    let mut result = plan_aggregation(&scope, item)?;
+    result.target = match result.target {
+        AggregateTarget::Variable(column) => AggregateTarget::Column(column),
+        AggregateTarget::Property { variable, property } => AggregateTarget::ColumnProperty {
+            column: variable,
+            property,
+        },
+        other => other,
+    };
+    Ok(result)
+}
+
 pub(super) fn plan_aggregation(scope: &BTreeSet<String>, item: &ReturnItem) -> Result<Aggregation> {
     let AstNode {
         kind: ReturnExpressionKind::Aggregate(value),
@@ -1198,6 +1234,26 @@ pub(super) fn default_aggregation_name(
     target: &AggregateTarget,
     distinct: bool,
 ) -> String {
+    match target {
+        AggregateTarget::Column(column) => {
+            return default_aggregation_name(
+                function,
+                &AggregateTarget::Variable(column.clone()),
+                distinct,
+            )
+        }
+        AggregateTarget::ColumnProperty { column, property } => {
+            return default_aggregation_name(
+                function,
+                &AggregateTarget::Property {
+                    variable: column.clone(),
+                    property: property.clone(),
+                },
+                distinct,
+            )
+        }
+        _ => {}
+    }
     match (function, target) {
         (AggregateFunction::Count, AggregateTarget::All) => "count(*)".to_string(),
         (AggregateFunction::Count, AggregateTarget::Variable(variable)) if distinct => {
@@ -1247,5 +1303,8 @@ pub(super) fn default_aggregation_name(
             format!("collect({variable}.{property})")
         }
         (AggregateFunction::Collect, AggregateTarget::All) => "collect(*)".to_string(),
+        (_, AggregateTarget::Column(_) | AggregateTarget::ColumnProperty { .. }) => {
+            unreachable!("columns normalized before naming")
+        }
     }
 }

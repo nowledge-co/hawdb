@@ -23,6 +23,12 @@ pub use skein_expression::{
 use std::collections::{BTreeMap, BTreeSet};
 
 mod arithmetic;
+mod graph_match;
+mod pipeline;
+mod visibility;
+pub use graph_match::*;
+pub use pipeline::plan_pipeline_query;
+pub use visibility::apply_node_visibility_predicates;
 mod binding;
 mod case;
 mod projection;
@@ -277,6 +283,10 @@ pub enum LogicalPlan {
         rel_type: String,
         rel_properties: BTreeMap<String, Value>,
     },
+    GraphMatch {
+        program: GraphMatchProgram,
+        input: Option<Box<LogicalPlan>>,
+    },
     NodeScan {
         variable: String,
         label: String,
@@ -484,6 +494,8 @@ pub enum AggregateFunction {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum AggregateTarget {
+    Column(String),
+    ColumnProperty { column: String, property: String },
     All,
     Variable(String),
     Property { variable: String, property: String },
