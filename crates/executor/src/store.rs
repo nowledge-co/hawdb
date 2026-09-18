@@ -1,8 +1,8 @@
 //! Storage-neutral graph read contract used by execution operators.
 
-use skein_core::{Catalog, LabelId, RelTypeId, Result};
-use skein_plan::{CompositeRangeSeek, NodeProjectionAccess};
-use skein_storage::{
+use hawdb_core::{Catalog, LabelId, RelTypeId, Result};
+use hawdb_plan::{CompositeRangeSeek, NodeProjectionAccess};
+use hawdb_storage::{
     AdjacencyDirection, GraphMutation, MutationLimits, MutationSummary, NodeId, NodeRecord,
     NodeSetAssignment, ProjectedGraphDefinition, ProjectedNodeRecord, PropertyFilter, RelRecord,
     ScanPredicate, ScanPruningReport, ScanSegmentFallback, SegmentReadExecutionReport,
@@ -31,7 +31,7 @@ pub struct PrunedNodeScan<'a> {
 #[derive(Debug, Clone, PartialEq)]
 pub struct SourceScanCandidateRow {
     pub node_id: u64,
-    pub properties: std::collections::BTreeMap<String, skein_core::Value>,
+    pub properties: std::collections::BTreeMap<String, hawdb_core::Value>,
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -134,7 +134,7 @@ pub trait GraphExecutionRead {
         &self,
         label_id: LabelId,
         property: &str,
-        values: &[skein_core::Value],
+        values: &[hawdb_core::Value],
         required_properties: &BTreeSet<String>,
         consumer: &mut dyn FnMut(ProjectedNodeRecord) -> Result<ScanControl>,
     ) -> Result<ScanControl> {
@@ -153,14 +153,14 @@ pub trait GraphExecutionRead {
         &self,
         label_id: LabelId,
         property: &str,
-        values: &[skein_core::Value],
+        values: &[hawdb_core::Value],
         consumer: &mut dyn FnMut(NodeRecord) -> Result<ScanControl>,
     ) -> Result<ScanControl>;
 
     fn visit_nodes_by_composite_property_owned(
         &self,
         label_id: LabelId,
-        predicates: &[(String, skein_core::Value)],
+        predicates: &[(String, hawdb_core::Value)],
         consumer: &mut dyn FnMut(NodeRecord) -> Result<ScanControl>,
     ) -> Result<ScanControl>;
 
@@ -175,8 +175,8 @@ pub trait GraphExecutionRead {
         &self,
         label_id: LabelId,
         property: &str,
-        lower: Option<&(skein_core::Value, bool)>,
-        upper: Option<&(skein_core::Value, bool)>,
+        lower: Option<&(hawdb_core::Value, bool)>,
+        upper: Option<&(hawdb_core::Value, bool)>,
         consumer: &mut dyn FnMut(NodeRecord) -> Result<ScanControl>,
     ) -> Result<ScanControl>;
 
@@ -194,7 +194,7 @@ pub trait GraphExecutionRead {
         &self,
         predicate: &ScanPredicate,
         limits: SourceScanReadLimits,
-        task_context: Option<&skein_core::RuntimeTaskContext>,
+        task_context: Option<&hawdb_core::RuntimeTaskContext>,
         consumer: &mut dyn FnMut(SourceScanCandidateRow) -> Result<ScanControl>,
     ) -> Result<SourceScanCandidateVisit>;
 

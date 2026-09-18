@@ -1,10 +1,10 @@
 use crate::error::Result;
 use crate::store::{GraphStore, RelationalTransactionRowView};
-use skein_relational::row_runtime::RelationalRowStoreReader;
-use skein_storage::RelationalRowPageSnapshotReader;
+use hawdb_relational::row_runtime::RelationalRowStoreReader;
+use hawdb_storage::RelationalRowPageSnapshotReader;
 
 pub(crate) type RelationalRowReadMode<'a> =
-    skein_relational::row_runtime::RelationalRowReadMode<'a, GraphStore>;
+    hawdb_relational::row_runtime::RelationalRowReadMode<'a, GraphStore>;
 
 impl RelationalRowStoreReader for GraphStore {
     type TransactionRows = RelationalTransactionRowView;

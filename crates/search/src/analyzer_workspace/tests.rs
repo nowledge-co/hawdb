@@ -1,6 +1,6 @@
 use super::*;
 use crate::analyzer_stream::{visit_token_list, visit_token_list_with_workspace};
-use skein_core::RuntimeMemoryReservation;
+use hawdb_core::RuntimeMemoryReservation;
 use std::cell::RefCell;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::Arc;
@@ -60,7 +60,7 @@ fn admitted_tokens_keep_complete_order_and_release_scratch_on_consumer_error() {
                 visit_token_list_with_workspace(text, &analyzer, Some(workspace), |_, _| {
                     count += 1;
                     if count == 2 {
-                        return Err(SkeinError::Execution("consumer stopped".into()));
+                        return Err(HawdbError::Execution("consumer stopped".into()));
                     }
                     Ok(())
                 })
@@ -155,7 +155,7 @@ fn native_join_keeps_the_lease_through_success_error_panic_and_cancellation_tls(
                 });
                 match mode {
                     0 => Ok(()),
-                    1 => Err(SkeinError::Execution("analysis stopped".into())),
+                    1 => Err(HawdbError::Execution("analysis stopped".into())),
                     2 => panic!("analysis panic"),
                     _ => {
                         task.cancellation().cancel();

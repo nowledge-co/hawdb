@@ -1,4 +1,4 @@
-use skein_core::RuntimeCancellationReason;
+use hawdb_core::RuntimeCancellationReason;
 use std::error::Error;
 use std::fmt::{self, Display, Formatter};
 use std::io;

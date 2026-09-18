@@ -1,5 +1,5 @@
 use crate::numeric::default_morsel_cpu_ceiling;
-use skein_qos::{
+use hawdb_qos::{
     RuntimeGovernorLimits, RuntimeGovernorSnapshot, RuntimeWorkKind, RuntimeWorkPriority,
     RuntimeWorkRequest, WorkClass, WorkPriority, WorkRequest,
 };
@@ -140,7 +140,7 @@ pub fn runtime_planning_request(
 mod tests {
     use super::{runtime_planning_request, RuntimeAdmissionPlan, CONTROL_STATEMENT_MEMORY_BYTES};
     use crate::numeric::MAX_MORSEL_PARALLELISM;
-    use skein_qos::{
+    use hawdb_qos::{
         RuntimeGovernorLimits, RuntimeIoReservationScope, RuntimeWorkKind, RuntimeWorkPriority,
         WorkClass, WorkRequest,
     };

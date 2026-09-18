@@ -4,7 +4,7 @@
 //! existing two-column keyset shape qualify. Callers retain residual evaluation,
 //! schema/type checks, parameter binding, index enumeration, and cost selection.
 
-use skein_expression::sql::{
+use hawdb_expression::sql::{
     ExprKind, SqlColumnRef, SqlComparisonOp, SqlOrderDirection, SqlOrderItem, SqlPredicate,
     SqlValue,
 };

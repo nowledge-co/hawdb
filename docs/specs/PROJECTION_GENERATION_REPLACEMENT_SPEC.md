@@ -4,7 +4,7 @@
 
 This specification defines the development-phase embedded library contract for
 owner-scoped replacement of deterministic derived projections. It does not
-authorize Skein in stable or GA Mem artifacts.
+authorize Hawdb in stable or GA Mem artifacts.
 
 The contract coordinates candidate staging, validation, publication, pinned
 reads, recovery, and reclamation. Those operations require a typed Rust API.
@@ -105,7 +105,7 @@ tables MUST have durable DDL and MUST contain no canonical rows, preventing a
 query from silently mixing generation and canonical ownership.
 
 Relational members use the durable table name as the collection, the canonical
-ordered primary-key encoding as the member key, and Skein's versioned
+ordered primary-key encoding as the member key, and Hawdb's versioned
 relational row codec as the payload. Encoding validates the row against the
 durable schema. Decoding independently validates the row shape, scalar types,
 nullability, primary-key encoding, and agreement between the member key and
@@ -138,7 +138,7 @@ active and pinned skips, and whether bounded work remains.
 
 ## Formal refinement and verification
 
-`docs/tla/SkeinProjectionGenerationReplacement.tla` models candidate
+`docs/tla/HawdbProjectionGenerationReplacement.tla` models candidate
 invisibility, sealed-before-publish ordering, expected-head publication,
 generation-pinned readers, crash recovery, and pin-safe reclamation.
 

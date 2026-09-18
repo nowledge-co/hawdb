@@ -11,7 +11,7 @@ use crate::relational::{
     RelationalRow, RelationalTableSchema,
 };
 use crate::{decode_relational_primary_key, encode_relational_primary_key};
-use skein_integrity::{crc32c, Crc32c, IntegrityDigest, IntegrityHasher, Sha256Digest};
+use hawdb_integrity::{crc32c, Crc32c, IntegrityDigest, IntegrityHasher, Sha256Digest};
 use std::collections::{BTreeMap, BTreeSet};
 use std::fmt::{self, Display, Formatter};
 use std::fs::{self, File, OpenOptions};
@@ -103,7 +103,7 @@ pub struct ProjectionGenerationMember {
 /// Encodes one relational row as a storage-neutral projection member.
 ///
 /// The collection is the relational table name, the member key is the
-/// canonical ordered primary-key encoding, and the payload uses Skein's
+/// canonical ordered primary-key encoding, and the payload uses Hawdb's
 /// versioned relational row codec. Query bindings decode the same member
 /// against the durable table schema before exposing it to PostgreSQL SQL.
 pub fn encode_projection_relational_member(
@@ -2167,7 +2167,7 @@ mod tests {
             .expect("system clock")
             .as_nanos();
         std::env::temp_dir().join(format!(
-            "skein-projection-generation-{name}-{}-{nonce}",
+            "hawdb-projection-generation-{name}-{}-{nonce}",
             std::process::id()
         ))
     }

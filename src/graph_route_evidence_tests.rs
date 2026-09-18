@@ -87,7 +87,7 @@ mod tests {
         );
         assert_eq!(
             evidence["routes"][0]["query_reports"][0]["protocol"],
-            "skein-nowledge-mem-query-report-v1"
+            "hawdb-nowledge-mem-query-report-v1"
         );
         assert_eq!(
             evidence["routes"][0]["query_reports"][0]["query_name"],
@@ -1160,7 +1160,7 @@ mod tests {
                     "route": "/graph/overview",
                     "ready": true,
                     "matched_per_million": 999999,
-                    "primary_engine": "skein",
+                    "primary_engine": "hawdb",
                     "shadow_engine": "kuzu"
                 }
             ]
@@ -1247,7 +1247,7 @@ mod tests {
                         "ready": true,
                         "matched_per_million": 1000000,
                         "primary_engine": "kuzu",
-                        "shadow_engine": "skein"
+                        "shadow_engine": "hawdb"
                     })
                 })
                 .collect::<Vec<_>>()
@@ -1260,6 +1260,6 @@ mod tests {
             .duration_since(UNIX_EPOCH)
             .unwrap()
             .as_nanos();
-        std::env::temp_dir().join(format!("skein_{name}_{}_{nanos}", std::process::id()))
+        std::env::temp_dir().join(format!("hawdb_{name}_{}_{nanos}", std::process::id()))
     }
 }

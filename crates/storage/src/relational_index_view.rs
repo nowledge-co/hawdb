@@ -30,7 +30,7 @@ use crate::{
     RelationalIndexShadowError, RelationalIndexShadowManifest, RelationalIndexShadowReader,
     RelationalKey,
 };
-use skein_integrity::Sha256Digest;
+use hawdb_integrity::Sha256Digest;
 use std::{
     collections::{BTreeMap, BTreeSet},
     fmt,

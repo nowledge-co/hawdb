@@ -1,6 +1,6 @@
+use hawdb::{SearchDocument, SearchIndex};
+use hawdb_qos::{ProcessMemoryProfile, ProcessMemorySnapshot};
 use serde_json::json;
-use skein::{SearchDocument, SearchIndex};
-use skein_qos::{ProcessMemoryProfile, ProcessMemorySnapshot};
 use std::collections::BTreeMap;
 use std::time::{Instant, SystemTime, UNIX_EPOCH};
 
@@ -15,12 +15,12 @@ const DEFAULT_DOCUMENTS: usize = if cfg!(debug_assertions) {
 const CONTENT_BYTES: usize = 1024;
 
 fn main() {
-    let document_count = std::env::var("SKEIN_SEARCH_CHECKPOINT_BENCH_DOCUMENTS")
+    let document_count = std::env::var("HAWDB_SEARCH_CHECKPOINT_BENCH_DOCUMENTS")
         .ok()
         .and_then(|value| value.parse().ok())
         .unwrap_or(DEFAULT_DOCUMENTS);
     let path = std::env::temp_dir().join(format!(
-        "skein-search-checkpoint-bench-{}-{}",
+        "hawdb-search-checkpoint-bench-{}-{}",
         std::process::id(),
         SystemTime::now()
             .duration_since(UNIX_EPOCH)

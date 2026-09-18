@@ -2,7 +2,7 @@ use super::*;
 
 pub(super) fn manifest(corpus: &Corpus) -> Check {
     let manifest = &corpus.manifest;
-    if manifest.protocol != "skein-sql-frontend-corpus-v1"
+    if manifest.protocol != "hawdb-sql-frontend-corpus-v1"
         || manifest.audited_base_revision.len() != 40
         || !manifest
             .audited_base_revision
@@ -56,7 +56,7 @@ pub(super) fn manifest(corpus: &Corpus) -> Check {
                 || !waiver.families.contains(&case.family)
                 || !waiver
                     .issue
-                    .starts_with("https://github.com/nowledge-co/skein/issues/")
+                    .starts_with("https://github.com/nowledge-co/hawdb/issues/")
                 || waiver.reason.len() < 40
             {
                 return Err(format!("{}: waiver scope does not match", case.id));

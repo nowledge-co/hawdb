@@ -1,6 +1,6 @@
-# Skein
+# Hawdb
 
-Skein is an embedded Rust graph database intended for the Nowledge local graph
+Hawdb is an embedded Rust graph database intended for the Nowledge local graph
 data plane. It uses Cypher as its query language and a Cascades-style optimizer
 for deterministic, explainable planning.
 
@@ -15,27 +15,27 @@ Build the default embedded library with the repository's locked dependency
 versions:
 
 ```console
-cargo build --locked -p skein
+cargo build --locked -p hawdb
 ```
 
 The default build makes full-text search, vector search, graph analytics, and
 bounded background maintenance available. Build-time availability is only an
 upper bound: the host must also enable a capability through the typed runtime
 configuration. A capability omitted at build time cannot be restored at
-runtime and fails with `SkeinError::CapabilityUnavailable` instead of silently
+runtime and fails with `HawdbError::CapabilityUnavailable` instead of silently
 falling back.
 
 Use a minimal build when the host only needs canonical graph storage, WAL and
 recovery, transactions, parameterized Cypher, and incremental base indexes:
 
 ```console
-cargo build --locked -p skein --no-default-features
+cargo build --locked -p hawdb --no-default-features
 ```
 
 Add back only the capabilities required by a constrained host:
 
 ```console
-cargo build --locked -p skein --no-default-features \
+cargo build --locked -p hawdb --no-default-features \
   --features full-text-search,vector-search
 ```
 
@@ -44,7 +44,7 @@ cargo build --locked -p skein --no-default-features \
 | Feature | Default | Purpose |
 | --- | --- | --- |
 | `full-text-search` | yes | Makes full-text indexing and search available to the runtime capability matrix. |
-| `vector-search` | yes | Enables scalar vector search and Skein's bounded 1- or 4-bit RaBitQ candidate projection. Adaptive selection may use the projection, but final ranking always reads canonical raw vectors. |
+| `vector-search` | yes | Enables scalar vector search and Hawdb's bounded 1- or 4-bit RaBitQ candidate projection. Adaptive selection may use the projection, but final ranking always reads canonical raw vectors. |
 | `graph-analytics` | yes | Makes bounded graph projection and analytics operations available. |
 | `background-maintenance` | yes | Makes QoS-admitted background schema, index, projection, and maintenance work available. |
 | `acl` | no | Compiles the optional access-control capability. The host must still provide fresh policy state and enable it at runtime; enabling this feature alone does not establish an authorization boundary. |
@@ -62,12 +62,12 @@ Compile a nightly non-production monitoring variant with the metrics adapter and
 Tokio integration explicitly:
 
 ```console
-cargo build --locked --release -p skein \
+cargo build --locked --release -p hawdb \
   --features opentelemetry,tokio-runtime
 ```
 
 The nightly host owns the OpenTelemetry SDK, bounded exporter queue, OTLP
-endpoint, credentials, shutdown, and flush lifecycle. Skein only records
+endpoint, credentials, shutdown, and flush lifecycle. Hawdb only records
 low-cardinality metrics through the supplied `Meter` and `TelemetrySink`; it
 does not export query text, parameters, document identifiers, or database paths.
 
@@ -76,7 +76,7 @@ Production packaging must use an explicit feature allowlist and must not use
 outside the production build:
 
 ```console
-cargo build --locked --release -p skein --no-default-features \
+cargo build --locked --release -p hawdb --no-default-features \
   --features background-maintenance,full-text-search,graph-analytics,vector-search
 ```
 
@@ -90,7 +90,7 @@ Build the embedded library and run every Bazel unit-test target with the default
 repository configuration:
 
 ```console
-bazel build //:skein
+bazel build //:hawdb
 bazel test --test_output=errors //...
 ```
 
@@ -133,26 +133,26 @@ Fuzz campaigns keep successful console output quiet and write detailed JSON to
 `--print-report` to explicitly copy the machine-readable report to stdout.
 
 The default `vector-search` implementation keeps raw embeddings canonical and
-publishes an immutable, checksummed `search_rabitq.<generation>.skein`
+publishes an immutable, checksummed `search_rabitq.<generation>.hawdb`
 candidate projection. Projection construction is segment-bounded, filtered
 scans use a compact allowlist bitmap, and the current query kernel is the
 portable scalar reference; AVX2 requests, and NEON requests outside Arm, fail
 closed until native implementations are qualified. Arm's NEON preference uses
 the explicit scalar fallback. Parallel segment scans
-are opt-in through a caller-supplied limit and memory budget; Skein does not
+are opt-in through a caller-supplied limit and memory budget; Hawdb does not
 create a global vector-search thread pool. See
 [`docs/specs/RABITQ_VECTOR_PROJECTION_SPEC.md`](docs/specs/RABITQ_VECTOR_PROJECTION_SPEC.md)
 for the algorithm, recovery, and readiness contract.
 
 ## Production Boundary
 
-Skein is intended to be embedded by Mem as a Rust library. Production callers
-should open Skein in-process and consume typed readiness APIs such as
-`nowledge_mem_final_cutover_preflight`; they should not shell out to the `skein`
+Hawdb is intended to be embedded by Mem as a Rust library. Production callers
+should open Hawdb in-process and consume typed readiness APIs such as
+`nowledge_mem_final_cutover_preflight`; they should not shell out to the `hawdb`
 binary for read routing, migration gates, or previous-wrapper comparison.
 
 Application graph reads and mutations use parameterized Cypher; relational
-operations use PostgreSQL-dialect SQL. Skein does not expose route-shaped
+operations use PostgreSQL-dialect SQL. Hawdb does not expose route-shaped
 `read_graph_*` methods or business-specific CRUD batch facades in release
 builds. Typed APIs are reserved for stable multi-statement kernel boundaries
 such as transactions, recovery, projections, import, bounded retrieval, QoS,
@@ -161,5 +161,5 @@ and readiness. See
 
 Compatibility commands that execute external previous-wrapper or shadow compare
 processes are quarantined as developer/preflight tools. They require
-`SKEIN_ENABLE_COMPATIBILITY_TOOLS=1` and are only for isolated CI, release, or
+`HAWDB_ENABLE_COMPATIBILITY_TOOLS=1` and are only for isolated CI, release, or
 nightly validation against copied data.

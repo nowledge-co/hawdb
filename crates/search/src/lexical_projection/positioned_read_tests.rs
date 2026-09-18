@@ -13,7 +13,7 @@ struct Fixture {
 impl Fixture {
     fn new() -> Self {
         let root = std::env::temp_dir().join(format!(
-            "skein-lexical-positioned-{}-{}",
+            "hawdb-lexical-positioned-{}-{}",
             std::process::id(),
             SEQUENCE.fetch_add(1, Ordering::Relaxed),
         ));
@@ -181,7 +181,7 @@ fn public_concurrent_queries_preserve_results_while_a_new_generation_publishes()
     };
 
     let root = std::env::temp_dir().join(format!(
-        "skein-lexical-public-concurrency-{}-{}",
+        "hawdb-lexical-public-concurrency-{}-{}",
         std::process::id(),
         SEQUENCE.fetch_add(1, Ordering::Relaxed)
     ));

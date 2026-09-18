@@ -20,7 +20,7 @@ fn pages(seed: u64) -> [ImmutableIndexPage; 4] {
                 namespace: "documents".into(),
                 name: format!("index-{seed}"),
             },
-            schema_digest: skein_integrity::integrity_digest(&seed.to_le_bytes()).sha256,
+            schema_digest: hawdb_integrity::integrity_digest(&seed.to_le_bytes()).sha256,
             child: id(2),
             height: 1,
         }),

@@ -16,10 +16,10 @@ fn lexical_manifest_retention_uses_lexical_not_out_of_core_generation() {
             };
             for generation in 1..=8 {
                 let manifest =
-                    CleanupCandidate::parse(format!("search_lexical.manifest.{generation}.skein"))
+                    CleanupCandidate::parse(format!("search_lexical.manifest.{generation}.hawdb"))
                         .unwrap();
                 let artifact =
-                    CleanupCandidate::parse(format!("search_lexical.{generation}.skein")).unwrap();
+                    CleanupCandidate::parse(format!("search_lexical.{generation}.hawdb")).unwrap();
                 assert_eq!(manifest.kind, CleanupArtifactKind::Lexical);
                 assert_eq!(
                     manifest.is_obsolete(generations),
@@ -29,26 +29,26 @@ fn lexical_manifest_retention_uses_lexical_not_out_of_core_generation() {
         }
     }
     let quarantined =
-        CleanupCandidate::parse("search_lexical.manifest.7.skein.corrupt.123.456".to_string())
+        CleanupCandidate::parse("search_lexical.manifest.7.hawdb.corrupt.123.456".to_string())
             .unwrap();
     assert_eq!(quarantined.kind, CleanupArtifactKind::Lexical);
     assert!(quarantined.is_obsolete(SearchProjectionGenerations::default()));
-    assert!(CleanupCandidate::parse("search_lexical.manifest.skein".to_string()).is_none());
+    assert!(CleanupCandidate::parse("search_lexical.manifest.hawdb".to_string()).is_none());
 }
 #[test]
 fn failed_deletion_is_observable_and_retryable_without_removing_previous_generation() {
     let root = test_root("retry");
     fs::create_dir_all(&root).unwrap();
     for name in [
-        "search_lexical.1.skein",
-        "search_lexical.2.skein",
-        "search_lexical.3.skein",
-        "search_rabitq.1.skein",
-        "search_rabitq.2.skein",
-        "search_rabitq.3.skein",
-        "search_projection_segments.1.skein",
-        "search_projection_segments.2.skein",
-        "search_projection_segments.3.skein",
+        "search_lexical.1.hawdb",
+        "search_lexical.2.hawdb",
+        "search_lexical.3.hawdb",
+        "search_rabitq.1.hawdb",
+        "search_rabitq.2.hawdb",
+        "search_rabitq.3.hawdb",
+        "search_projection_segments.1.hawdb",
+        "search_projection_segments.2.hawdb",
+        "search_projection_segments.3.hawdb",
     ] {
         fs::write(root.join(name), b"artifact").unwrap();
     }
@@ -64,7 +64,7 @@ fn failed_deletion_is_observable_and_retryable_without_removing_previous_generat
         generations,
         SearchProjectionCleanupOptions::default(),
         |path| {
-            if path.ends_with("search_lexical.1.skein") {
+            if path.ends_with("search_lexical.1.hawdb") {
                 Err(io::Error::new(io::ErrorKind::PermissionDenied, "pinned"))
             } else {
                 fs::remove_file(path)
@@ -78,12 +78,12 @@ fn failed_deletion_is_observable_and_retryable_without_removing_previous_generat
     assert_eq!(first.pending_after, 1);
     assert!(first.retry_required);
     for name in [
-        "search_lexical.2.skein",
-        "search_lexical.3.skein",
-        "search_rabitq.2.skein",
-        "search_rabitq.3.skein",
-        "search_projection_segments.2.skein",
-        "search_projection_segments.3.skein",
+        "search_lexical.2.hawdb",
+        "search_lexical.3.hawdb",
+        "search_rabitq.2.hawdb",
+        "search_rabitq.3.hawdb",
+        "search_projection_segments.2.hawdb",
+        "search_projection_segments.3.hawdb",
     ] {
         assert!(root.join(name).exists(), "{name} must be retained");
     }
@@ -107,7 +107,7 @@ fn pending_retry_queue_is_bounded_and_reports_overflow() {
     fs::create_dir_all(&root).unwrap();
     for generation in 1..=8 {
         fs::write(
-            root.join(format!("search_lexical.{generation}.skein")),
+            root.join(format!("search_lexical.{generation}.hawdb")),
             b"artifact",
         )
         .unwrap();
@@ -139,7 +139,7 @@ fn pending_retry_queue_is_bounded_and_reports_overflow() {
 fn queued_candidate_is_revalidated_before_retry() {
     let root = test_root("revalidate");
     fs::create_dir_all(&root).unwrap();
-    let artifact = root.join("search_lexical.1.skein");
+    let artifact = root.join("search_lexical.1.hawdb");
     fs::write(&artifact, b"artifact").unwrap();
     let mut state = SearchProjectionCleanupState::default();
     let first = state.run_with_remover(
@@ -173,9 +173,9 @@ fn queued_candidate_is_revalidated_before_retry() {
 fn quarantined_generation_is_deleted_without_removing_the_live_artifact() {
     let root = test_root("quarantine");
     fs::create_dir_all(&root).unwrap();
-    let live = root.join("search_rabitq.7.skein");
-    let quarantined = root.join("search_rabitq.7.skein.corrupt.42.9");
-    let malformed = root.join("search_rabitq.7.skein.corrupt.unknown.9");
+    let live = root.join("search_rabitq.7.hawdb");
+    let quarantined = root.join("search_rabitq.7.hawdb.corrupt.42.9");
+    let malformed = root.join("search_rabitq.7.hawdb.corrupt.unknown.9");
     fs::write(&live, b"live").unwrap();
     fs::write(&quarantined, b"corrupt").unwrap();
     fs::write(&malformed, b"unrecognized").unwrap();
@@ -200,7 +200,7 @@ fn quarantined_generation_is_deleted_without_removing_the_live_artifact() {
 fn test_root(name: &str) -> std::path::PathBuf {
     let sequence = TEST_SEQUENCE.fetch_add(1, Ordering::Relaxed);
     std::env::temp_dir().join(format!(
-        "skein-search-projection-cleanup-{name}-{}-{sequence}",
+        "hawdb-search-projection-cleanup-{name}-{}-{sequence}",
         std::process::id()
     ))
 }

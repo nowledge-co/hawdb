@@ -64,8 +64,8 @@ impl BatchDispatch for BatchExecution<'_, '_> {
     }
 }
 
-pub(super) fn unsupported_batch_operator(plan: &PhysicalPlan) -> SkeinError {
-    SkeinError::Execution(format!(
+pub(super) fn unsupported_batch_operator(plan: &PhysicalPlan) -> HawdbError {
+    HawdbError::Execution(format!(
         "physical operator '{}' does not support batch execution",
         plan.kind().as_str(),
     ))

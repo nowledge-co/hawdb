@@ -4,7 +4,7 @@ use crate::relational::{
     RelationalHydrationBudget, RelationalOverflowConfig, RelationalOverflowReferenceSetBuilder,
     RelationalOverflowReferenceSortConfig, RelationalScalarType, RelationalValue,
 };
-use skein_core::{RuntimeCancellationToken, RuntimeTaskContext};
+use hawdb_core::{RuntimeCancellationToken, RuntimeTaskContext};
 use std::fs::{self, OpenOptions};
 use std::io::{Seek, SeekFrom, Write};
 use std::num::NonZeroU64;
@@ -71,7 +71,7 @@ fn persisted_overflow_candidate_does_not_change_latest_selection() {
     fs::write(
         directory
             .join(RELATIONAL_OVERFLOW_MANIFEST_FILE)
-            .with_extension("skein.tmp"),
+            .with_extension("hawdb.tmp"),
         b"abandoned latest selector",
     )
     .unwrap();
@@ -125,7 +125,7 @@ fn bound_overflow_generation_verifies_the_canonical_manifest_image() {
     ));
 
     let mut wrong_root = report.generation_artifacts;
-    wrong_root.root_set_digest = skein_integrity::integrity_digest(b"wrong overflow root").sha256;
+    wrong_root.root_set_digest = hawdb_integrity::integrity_digest(b"wrong overflow root").sha256;
     assert!(matches!(
         RelationalOverflowRootReader::open_bound_generation(&directory, wrong_root, config),
         Err(RelationalOverflowPublicationError::Corrupt(message))
@@ -710,7 +710,7 @@ fn flip_byte(path: &std::path::Path, offset: u64) {
 fn unique_test_dir(name: &str) -> PathBuf {
     let sequence = TEST_SEQUENCE.fetch_add(1, Ordering::Relaxed);
     std::env::temp_dir().join(format!(
-        "skein-relational-overflow-{name}-{}-{sequence}",
+        "hawdb-relational-overflow-{name}-{}-{sequence}",
         std::process::id()
     ))
 }

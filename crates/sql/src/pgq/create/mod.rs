@@ -7,7 +7,7 @@ mod source;
 use std::collections::{BTreeMap, BTreeSet};
 use std::fmt;
 
-use skein_sql_syntax::{
+use hawdb_sql_syntax::{
     CreatePropertyGraph, ElementExposure, ElementLabel, Identifier, PropertyExposure,
     QualifiedName, Span,
 };

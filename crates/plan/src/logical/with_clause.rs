@@ -5,22 +5,22 @@ pub(super) fn plan_shortest_path_return(
     parameters: &BTreeMap<String, Value>,
 ) -> Result<LogicalPlan> {
     if query.direction == RelationshipDirection::Incoming {
-        return Err(SkeinError::Semantic(
+        return Err(HawdbError::Semantic(
             "ALL SHORTEST path reads do not support incoming-only patterns".to_string(),
         ));
     }
     if !query.source_properties.is_empty() || !query.target_properties.is_empty() {
-        return Err(SkeinError::Semantic(
+        return Err(HawdbError::Semantic(
             "ALL SHORTEST path reads require endpoint ids in WHERE predicates".to_string(),
         ));
     }
     if query.min_hops == 0 || query.max_hops == 0 || query.min_hops > query.max_hops {
-        return Err(SkeinError::Semantic(
+        return Err(HawdbError::Semantic(
             "ALL SHORTEST path reads require a finite positive hop range".to_string(),
         ));
     }
     if query.rel_variable.is_some() && !query.rel_type.is_empty() {
-        return Err(SkeinError::Semantic(
+        return Err(HawdbError::Semantic(
             "ALL SHORTEST path reads do not bind relationship variables".to_string(),
         ));
     }
@@ -50,7 +50,7 @@ pub(super) fn plan_shortest_path_return(
                     property,
                 } => {
                     if path_variable != &query.path_variable {
-                        return Err(SkeinError::Semantic(
+                        return Err(HawdbError::Semantic(
                             "shortest path projection references an unknown path".to_string(),
                         ));
                     }
@@ -60,7 +60,7 @@ pub(super) fn plan_shortest_path_return(
                 }
                 ShortestPathReturnExpression::Length { path_variable } => {
                     if path_variable != &query.path_variable {
-                        return Err(SkeinError::Semantic(
+                        return Err(HawdbError::Semantic(
                             "shortest path projection references an unknown path".to_string(),
                         ));
                     }
@@ -97,12 +97,12 @@ pub(super) fn endpoint_id_value(
     endpoint_name: &str,
 ) -> Result<Value> {
     let Some(predicate) = predicate else {
-        return Err(SkeinError::Semantic(format!(
+        return Err(HawdbError::Semantic(format!(
             "ALL SHORTEST path reads require {endpoint_name} id predicate"
         )));
     };
     find_endpoint_id_value(predicate, variable, parameters)?.ok_or_else(|| {
-        SkeinError::Semantic(format!(
+        HawdbError::Semantic(format!(
             "ALL SHORTEST path reads require {endpoint_name} id equality on '{variable}.id'"
         ))
     })
@@ -138,22 +138,22 @@ pub(super) fn validate_collect_with_match_return(
     collect_with: &WithCollect,
 ) -> Result<()> {
     let Some(expand) = &query.expand else {
-        return Err(SkeinError::Semantic(
+        return Err(HawdbError::Semantic(
             "WITH COLLECT is supported only after a relationship MATCH".to_string(),
         ));
     };
     if query.optional_expand.is_some() || query.optional_with.is_some() {
-        return Err(SkeinError::Semantic(
+        return Err(HawdbError::Semantic(
             "WITH COLLECT cannot be combined with OPTIONAL MATCH".to_string(),
         ));
     }
     if collect_with.group_variable != query.variable {
-        return Err(SkeinError::Semantic(
+        return Err(HawdbError::Semantic(
             "WITH COLLECT must group by the source variable".to_string(),
         ));
     }
     if collect_with.collect_variable != expand.target_variable {
-        return Err(SkeinError::Semantic(
+        return Err(HawdbError::Semantic(
             "WITH COLLECT must collect from the relationship target variable".to_string(),
         ));
     }
@@ -162,12 +162,12 @@ pub(super) fn validate_collect_with_match_return(
         || query.offset.is_some()
         || query.limit.is_some()
     {
-        return Err(SkeinError::Semantic(
+        return Err(HawdbError::Semantic(
             "WITH COLLECT currently supports only a direct RETURN".to_string(),
         ));
     }
     if query.returns.len() != 2 {
-        return Err(SkeinError::Semantic(
+        return Err(HawdbError::Semantic(
             "WITH COLLECT currently supports exactly two RETURN items".to_string(),
         ));
     }
@@ -181,12 +181,12 @@ pub(super) fn validate_collect_with_match_return(
         ..
     } = &group_item.expression
     else {
-        return Err(SkeinError::Semantic(
+        return Err(HawdbError::Semantic(
             "WITH COLLECT RETURN must start with the grouped variable property".to_string(),
         ));
     };
     if variable != &collect_with.group_variable {
-        return Err(SkeinError::Semantic(
+        return Err(HawdbError::Semantic(
             "WITH COLLECT RETURN group property must use the grouped variable".to_string(),
         ));
     }
@@ -196,7 +196,7 @@ pub(super) fn validate_collect_with_match_return(
             kind: ScalarExpressionKind::Variable(variable),
             ..
         }) if variable == &collect_with.alias => Ok(()),
-        _ => Err(SkeinError::Semantic(
+        _ => Err(HawdbError::Semantic(
             "WITH COLLECT RETURN must include the collected alias".to_string(),
         )),
     }
@@ -217,7 +217,7 @@ pub(super) fn plan_collect_with_match_return(
         ..
     } = &group_item.expression
     else {
-        return Err(SkeinError::Semantic(
+        return Err(HawdbError::Semantic(
             "WITH COLLECT RETURN must start with the grouped variable property".to_string(),
         ));
     };
@@ -257,12 +257,12 @@ pub(super) fn validate_with_projection_match_return(
         || query.distinct_with.is_some()
         || query.aggregate_with.is_some()
     {
-        return Err(SkeinError::Semantic(
+        return Err(HawdbError::Semantic(
             "WITH projection currently supports only a direct node MATCH".to_string(),
         ));
     }
     if with_projection.items.len() < 2 {
-        return Err(SkeinError::Semantic(
+        return Err(HawdbError::Semantic(
             "WITH projection requires the source variable and at least one alias".to_string(),
         ));
     }
@@ -275,23 +275,23 @@ pub(super) fn validate_with_projection_match_return(
         ..
     } = &with_projection.items[0].expression
     else {
-        return Err(SkeinError::Semantic(
+        return Err(HawdbError::Semantic(
             "WITH projection must start with the source variable".to_string(),
         ));
     };
     if variable != &query.variable || with_projection.items[0].alias.is_some() {
-        return Err(SkeinError::Semantic(
+        return Err(HawdbError::Semantic(
             "WITH projection must preserve the source variable without alias".to_string(),
         ));
     }
     for item in &with_projection.items[1..] {
         if item.alias.is_none() {
-            return Err(SkeinError::Semantic(
+            return Err(HawdbError::Semantic(
                 "WITH projection expressions require aliases".to_string(),
             ));
         }
         if !return_expression_is_scoped(&item.expression, scope, &BTreeSet::new()) {
-            return Err(SkeinError::Semantic(
+            return Err(HawdbError::Semantic(
                 "WITH projection expression references an unknown variable".to_string(),
             ));
         }
@@ -348,7 +348,7 @@ pub(super) fn validate_distinct_with_match_return(
     distinct_with: &WithDistinctProjection,
 ) -> Result<()> {
     if query.expand.is_none() {
-        return Err(SkeinError::Semantic(
+        return Err(HawdbError::Semantic(
             "WITH DISTINCT is supported only after a relationship MATCH".to_string(),
         ));
     }
@@ -356,7 +356,7 @@ pub(super) fn validate_distinct_with_match_return(
         || query.optional_with.is_some()
         || query.collect_with.is_some()
     {
-        return Err(SkeinError::Semantic(
+        return Err(HawdbError::Semantic(
             "WITH DISTINCT cannot be combined with OPTIONAL MATCH or COLLECT".to_string(),
         ));
     }
@@ -365,18 +365,18 @@ pub(super) fn validate_distinct_with_match_return(
         || query.offset.is_some()
         || query.limit.is_some()
     {
-        return Err(SkeinError::Semantic(
+        return Err(HawdbError::Semantic(
             "WITH DISTINCT currently supports only a direct aggregate RETURN".to_string(),
         ));
     }
     if distinct_with.items.is_empty() {
-        return Err(SkeinError::Semantic(
+        return Err(HawdbError::Semantic(
             "WITH DISTINCT requires at least one projected item".to_string(),
         ));
     }
     for item in &distinct_with.items {
         if item.alias.is_none() {
-            return Err(SkeinError::Semantic(
+            return Err(HawdbError::Semantic(
                 "WITH DISTINCT projection items require aliases".to_string(),
             ));
         }
@@ -390,7 +390,7 @@ pub(super) fn validate_distinct_with_match_return(
                 ..
             }
         ) {
-            return Err(SkeinError::Semantic(
+            return Err(HawdbError::Semantic(
                 "WITH DISTINCT currently supports only property projections".to_string(),
             ));
         }
@@ -404,7 +404,7 @@ pub(super) fn validate_distinct_with_match_return(
             }
         )
     {
-        return Err(SkeinError::Semantic(
+        return Err(HawdbError::Semantic(
             "WITH DISTINCT currently supports only RETURN count(*)".to_string(),
         ));
     }
@@ -444,13 +444,13 @@ pub(super) fn validate_aggregate_with_match_return(
         || query.collect_with.is_some()
         || query.distinct_with.is_some()
     {
-        return Err(SkeinError::Semantic(
+        return Err(HawdbError::Semantic(
             "WITH aggregate cannot be combined with OPTIONAL MATCH, COLLECT, or DISTINCT"
                 .to_string(),
         ));
     }
     if query.distinct {
-        return Err(SkeinError::Semantic(
+        return Err(HawdbError::Semantic(
             "WITH aggregate currently supports direct RETURN with optional LIMIT".to_string(),
         ));
     }
@@ -463,7 +463,7 @@ pub(super) fn validate_aggregate_with_match_return(
         .iter()
         .any(|item| !is_aggregate_return_expression(&item.expression));
     if !has_aggregate || !has_group_key {
-        return Err(SkeinError::Semantic(
+        return Err(HawdbError::Semantic(
             "WITH aggregate requires grouped projections and aggregate items".to_string(),
         ));
     }
@@ -489,7 +489,7 @@ pub(super) fn validate_aggregate_with_match_return(
                 }
             ))
     {
-        return Err(SkeinError::Semantic(
+        return Err(HawdbError::Semantic(
             "WITH aggregate post-aggregation supports only one COUNT(*) projection without MATCH or ORDER BY"
                 .to_string(),
         ));
@@ -501,12 +501,12 @@ pub(super) fn validate_aggregate_with_match_return(
         if let Some(lookup) = &query.post_with_match
             && matches!(&item.expression, AstNode { kind: ReturnExpressionKind::Value(AstNode { kind: ScalarExpressionKind::Variable(variable), .. }), .. } if variable == &lookup.variable)
         {
-            return Err(SkeinError::Semantic(
+            return Err(HawdbError::Semantic(
                 "post-WITH MATCH RETURN does not support whole lookup node projection".to_string(),
             ));
         }
         if !return_expression_is_scoped(&item.expression, &post_lookup_scope, &column_names) {
-            return Err(SkeinError::Semantic(format!(
+            return Err(HawdbError::Semantic(format!(
                 "unknown WITH aggregate return expression {:?}",
                 item.expression
             )));
@@ -520,7 +520,7 @@ pub(super) fn validate_aggregate_with_match_return(
     if let Some(lookup) = &query.post_with_match
         && !column_names.contains(&lookup.column)
     {
-        return Err(SkeinError::Semantic(format!(
+        return Err(HawdbError::Semantic(format!(
             "unknown post-WITH MATCH lookup column '{}'",
             lookup.column
         )));
@@ -529,7 +529,7 @@ pub(super) fn validate_aggregate_with_match_return(
 }
 
 pub(super) fn optional_with_as_aggregate(
-    optional_with: &skein_cypher::OptionalWithAggregate,
+    optional_with: &hawdb_cypher::OptionalWithAggregate,
 ) -> WithAggregateProjection {
     WithAggregateProjection {
         items: vec![
@@ -592,7 +592,7 @@ pub(super) fn validate_with_alias_filter_expression(
             if column_names.contains(column) {
                 Ok(())
             } else {
-                Err(SkeinError::Semantic(format!(
+                Err(HawdbError::Semantic(format!(
                     "unknown WITH filter column '{column}'"
                 )))
             }
@@ -601,7 +601,7 @@ pub(super) fn validate_with_alias_filter_expression(
             if scope.contains(variable) || column_names.contains(variable) {
                 Ok(())
             } else {
-                Err(SkeinError::Semantic(format!(
+                Err(HawdbError::Semantic(format!(
                     "unknown WITH filter variable '{variable}'"
                 )))
             }
@@ -782,7 +782,7 @@ pub(super) fn plan_post_with_node_lookup(
 
 pub(super) fn optional_direct_count_alias(
     query: &MatchReturn,
-    optional: &skein_cypher::OptionalRelationshipExpand,
+    optional: &hawdb_cypher::OptionalRelationshipExpand,
 ) -> Result<Option<String>> {
     let mut count_alias = None;
     let mut has_projection = false;
@@ -821,7 +821,7 @@ pub(super) fn optional_direct_count_alias(
 
 pub(super) fn optional_direct_collect_alias(
     query: &MatchReturn,
-    optional: &skein_cypher::OptionalRelationshipExpand,
+    optional: &hawdb_cypher::OptionalRelationshipExpand,
 ) -> Result<Option<String>> {
     let mut collect_alias = None;
     let mut has_projection = false;
@@ -857,7 +857,7 @@ pub(super) fn optional_direct_collect_alias(
 
 pub(super) fn optional_direct_row_projection(
     query: &MatchReturn,
-    optional: &skein_cypher::OptionalRelationshipExpand,
+    optional: &hawdb_cypher::OptionalRelationshipExpand,
 ) -> bool {
     query.returns.iter().all(|item| {
         optional_direct_row_projection_expression(
@@ -955,7 +955,7 @@ pub(super) fn plan_optional_direct_count_return(
     mut input: LogicalPlan,
     scope: &BTreeSet<String>,
     query: &MatchReturn,
-    optional: &skein_cypher::OptionalRelationshipExpand,
+    optional: &hawdb_cypher::OptionalRelationshipExpand,
     count_alias: String,
     parameters: &BTreeMap<String, Value>,
 ) -> Result<LogicalPlan> {

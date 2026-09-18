@@ -2,7 +2,7 @@
 
 use crate::concurrent::{BoundedOrderedStreamControl, BoundedOrderedStreamReport};
 use crate::{BoundedExecutor, QueryMemoryAccount, QueryMemoryLease, SharedExecutorPool};
-use skein_core::{Result, RuntimeTaskContext, SkeinError};
+use hawdb_core::{HawdbError, Result, RuntimeTaskContext};
 use std::num::NonZeroUsize;
 use std::panic::{catch_unwind, AssertUnwindSafe};
 use std::sync::atomic::{AtomicUsize, Ordering};
@@ -57,7 +57,7 @@ impl MorselAdmission {
 
         let memory_workers = request.memory_budget_bytes.get() / request.bytes_per_worker.get();
         if memory_workers == 0 {
-            return Err(SkeinError::Execution(format!(
+            return Err(HawdbError::Execution(format!(
                 "morsel pipeline {} requires {} bytes for one worker, exceeding memory budget {}",
                 request.pipeline_id.0, request.bytes_per_worker, request.memory_budget_bytes
             )));
@@ -199,7 +199,7 @@ impl SharedPoolMorselScheduler {
             return Ok(Vec::new());
         }
         let max_workers = NonZeroUsize::new(admission.max_workers()).ok_or_else(|| {
-            SkeinError::Execution("non-empty morsel admission reserved no workers".to_string())
+            HawdbError::Execution("non-empty morsel admission reserved no workers".to_string())
         })?;
         let morsels = admission.morsels().collect::<Vec<_>>();
         BoundedExecutor::with_pool(max_workers, self.pool.clone())
@@ -220,19 +220,19 @@ impl SharedPoolMorselScheduler {
     {
         if admission.morsel_count() == 0 {
             context.checkpoint().map_err(|reason| {
-                SkeinError::Execution(format!("runtime task stopped: {reason}"))
+                HawdbError::Execution(format!("runtime task stopped: {reason}"))
             })?;
             return Ok(Vec::new());
         }
         let max_workers = NonZeroUsize::new(admission.max_workers()).ok_or_else(|| {
-            SkeinError::Execution("non-empty morsel admission reserved no workers".to_string())
+            HawdbError::Execution("non-empty morsel admission reserved no workers".to_string())
         })?;
         let morsels = admission.morsels().collect::<Vec<_>>();
         BoundedExecutor::with_pool(max_workers, self.pool.clone())
             .map_ordered_with_context(&morsels, context, |morsel| {
                 execute_catching_panic(&execute, *morsel)
             })
-            .map_err(|reason| SkeinError::Execution(format!("runtime task stopped: {reason}")))?
+            .map_err(|reason| HawdbError::Execution(format!("runtime task stopped: {reason}")))?
             .into_iter()
             .collect()
     }
@@ -259,13 +259,13 @@ impl SharedPoolMorselScheduler {
         if admission.morsel_count() == 0 {
             if let Some(context) = resources.task_context {
                 context.checkpoint().map_err(|reason| {
-                    SkeinError::Execution(format!("runtime task stopped: {reason}"))
+                    HawdbError::Execution(format!("runtime task stopped: {reason}"))
                 })?;
             }
             return Ok(MorselStreamReport::default());
         }
         let max_workers = NonZeroUsize::new(admission.max_workers()).ok_or_else(|| {
-            SkeinError::Execution("non-empty morsel admission reserved no workers".to_string())
+            HawdbError::Execution("non-empty morsel admission reserved no workers".to_string())
         })?;
         let counters = Arc::new(MorselOutputCounters::default());
         let concurrent_report = BoundedExecutor::with_pool(max_workers, self.pool.clone())
@@ -281,7 +281,7 @@ impl SharedPoolMorselScheduler {
                         .reserve(resources.output_reservation_bytes.get())?;
                     let output = execute_catching_panic(&execute, morsel)?;
                     if output.resident_bytes > resources.output_reservation_bytes.get() {
-                        return Err(SkeinError::Execution(format!(
+                        return Err(HawdbError::Execution(format!(
                             "morsel pipeline {} output at ordinal {} uses {} bytes, exceeding its {}-byte reservation",
                             morsel.pipeline_id.0,
                             morsel.ordinal.0,
@@ -306,7 +306,7 @@ impl SharedPoolMorselScheduler {
                     let value = output.take_value();
                     let control = catch_unwind(AssertUnwindSafe(|| consume(morsel, value)))
                         .unwrap_or_else(|_| {
-                            Err(SkeinError::Execution(format!(
+                            Err(HawdbError::Execution(format!(
                                 "morsel pipeline {} consumer panicked at ordinal {}",
                                 morsel.pipeline_id.0, morsel.ordinal.0
                             )))
@@ -428,7 +428,7 @@ fn execute_catching_panic<T>(
     morsel: Morsel,
 ) -> Result<T> {
     catch_unwind(AssertUnwindSafe(|| execute(morsel))).unwrap_or_else(|_| {
-        Err(SkeinError::Execution(format!(
+        Err(HawdbError::Execution(format!(
             "morsel pipeline {} worker panicked at ordinal {}",
             morsel.pipeline_id.0, morsel.ordinal.0
         )))
@@ -543,7 +543,7 @@ mod tests {
     fn shared_pool_scheduler_observes_cancellation_between_morsels() {
         let admission = admit_morsels(request(1025)).unwrap();
         let pool = SharedExecutorPool::new(NonZeroUsize::MIN).unwrap();
-        let token = skein_core::RuntimeCancellationToken::new();
+        let token = hawdb_core::RuntimeCancellationToken::new();
         let context = RuntimeTaskContext::without_deadline(token.clone());
         let error = SharedPoolMorselScheduler::new(pool)
             .execute_with_context(&admission, &context, |morsel| {

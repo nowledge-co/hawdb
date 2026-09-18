@@ -61,7 +61,7 @@ pub struct ReplacementReadinessFamilyEvidenceHealth {
     pub blockers: Vec<String>,
 }
 
-pub const NOWLEDGE_MEM_QUERY_REPORT_PROTOCOL: &str = "skein-nowledge-mem-query-report-v1";
+pub const NOWLEDGE_MEM_QUERY_REPORT_PROTOCOL: &str = "hawdb-nowledge-mem-query-report-v1";
 
 pub const REQUIRED_NOWLEDGE_REPLACEMENT_QUERY_FAMILIES: &[&str] = &[
     "memory_lookup",
@@ -238,7 +238,7 @@ pub fn background_maintenance_evidence_health(
     let protocol_matches = background_maintenance
         .get("protocol")
         .and_then(serde_json::Value::as_str)
-        .map(|protocol| protocol == "skein-background-maintenance-report");
+        .map(|protocol| protocol == "hawdb-background-maintenance-report");
     let total_candidates = background_maintenance
         .get("total_candidates")
         .and_then(serde_json::Value::as_u64);
@@ -630,7 +630,7 @@ pub fn storage_recovery_evidence_health(
     let protocol_matches = storage_recovery
         .get("protocol")
         .and_then(serde_json::Value::as_str)
-        .map(|protocol| protocol == "skein-storage-recovery-report");
+        .map(|protocol| protocol == "hawdb-storage-recovery-report");
     let readiness = storage_recovery.get("readiness");
     let readiness_durable_recovery_observed = readiness
         .and_then(|readiness| readiness.get("durable_recovery_observed"))

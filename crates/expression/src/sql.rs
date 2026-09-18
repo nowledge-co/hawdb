@@ -3,7 +3,7 @@
 //! Syntax acceptance remains the SQL frontend's responsibility. Keeping the
 //! representation here lets optimizer analysis avoid depending on the parser.
 
-use skein_core::Value;
+use hawdb_core::Value;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum SqlValue {
@@ -103,17 +103,17 @@ impl Expr {
         }
     }
 
-    pub fn require_column(&self) -> skein_core::Result<&SqlColumnRef> {
+    pub fn require_column(&self) -> hawdb_core::Result<&SqlColumnRef> {
         self.as_column().ok_or_else(|| {
-            skein_core::SkeinError::Semantic(
+            hawdb_core::HawdbError::Semantic(
                 "this SQL expression position requires a column reference".to_owned(),
             )
         })
     }
 
-    pub fn require_value(&self) -> skein_core::Result<&SqlValue> {
+    pub fn require_value(&self) -> hawdb_core::Result<&SqlValue> {
         self.as_value().ok_or_else(|| {
-            skein_core::SkeinError::Semantic(
+            hawdb_core::HawdbError::Semantic(
                 "this SQL expression position requires a literal or parameter".to_owned(),
             )
         })

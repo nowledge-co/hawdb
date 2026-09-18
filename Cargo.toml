@@ -1,5 +1,5 @@
 [package]
-name = "skein"
+name = "hawdb"
 version = "0.1.0"
 edition = "2024"
 rust-version = "1.97.1"
@@ -10,39 +10,39 @@ chrono = { version = "0.4", default-features = false, features = ["std"] }
 getrandom = "0.4"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
-skein-core = { path = "crates/core" }
-skein-bootstrap = { path = "crates/bootstrap" }
-skein-artifact = { path = "crates/artifact" }
-skein-compat = { path = "crates/compat" }
-skein-nowledge-contracts = { path = "crates/nowledge-contracts" }
-skein-analytics = { path = "crates/analytics" }
-skein-cypher = { path = "crates/cypher" }
-skein-ddl = { path = "crates/ddl" }
-skein-evidence = { path = "crates/evidence" }
-skein-explain = { path = "crates/explain" }
-skein-executor = { path = "crates/executor" }
-skein-expression = { path = "crates/expression" }
-skein-fuzz-contracts = { path = "crates/fuzz-contracts" }
-skein-integrity = { path = "crates/integrity" }
-skein-optimizer = { path = "crates/optimizer" }
-skein-plan = { path = "crates/plan" }
-skein-plan-cache = { path = "crates/plan-cache" }
-skein-qos = { path = "crates/qos" }
-skein-query = { path = "crates/query" }
-skein-query-policy = { path = "crates/query-policy" }
-skein-readiness = { path = "crates/readiness" }
-skein-relational = { path = "crates/relational" }
-skein-resource-profile = { path = "crates/resource-profile" }
-skein-route-ownership = { path = "crates/route-ownership" }
-skein-search = { path = "crates/search", default-features = false }
-skein-runtime-tokio = { path = "crates/runtime-tokio", optional = true }
-skein-sql = { path = "crates/sql" }
-skein-storage = { path = "crates/storage" }
-skein-system-sql = { path = "crates/system-sql" }
-skein-vector-projection = { path = "crates/vector-projection", optional = true }
+hawdb-core = { path = "crates/core" }
+hawdb-bootstrap = { path = "crates/bootstrap" }
+hawdb-artifact = { path = "crates/artifact" }
+hawdb-compat = { path = "crates/compat" }
+hawdb-nowledge-contracts = { path = "crates/nowledge-contracts" }
+hawdb-analytics = { path = "crates/analytics" }
+hawdb-cypher = { path = "crates/cypher" }
+hawdb-ddl = { path = "crates/ddl" }
+hawdb-evidence = { path = "crates/evidence" }
+hawdb-explain = { path = "crates/explain" }
+hawdb-executor = { path = "crates/executor" }
+hawdb-expression = { path = "crates/expression" }
+hawdb-fuzz-contracts = { path = "crates/fuzz-contracts" }
+hawdb-integrity = { path = "crates/integrity" }
+hawdb-optimizer = { path = "crates/optimizer" }
+hawdb-plan = { path = "crates/plan" }
+hawdb-plan-cache = { path = "crates/plan-cache" }
+hawdb-qos = { path = "crates/qos" }
+hawdb-query = { path = "crates/query" }
+hawdb-query-policy = { path = "crates/query-policy" }
+hawdb-readiness = { path = "crates/readiness" }
+hawdb-relational = { path = "crates/relational" }
+hawdb-resource-profile = { path = "crates/resource-profile" }
+hawdb-route-ownership = { path = "crates/route-ownership" }
+hawdb-search = { path = "crates/search", default-features = false }
+hawdb-runtime-tokio = { path = "crates/runtime-tokio", optional = true }
+hawdb-sql = { path = "crates/sql" }
+hawdb-storage = { path = "crates/storage" }
+hawdb-system-sql = { path = "crates/system-sql" }
+hawdb-vector-projection = { path = "crates/vector-projection", optional = true }
 zstd = "0.13"
 unicode-width = "0.2"
-skein-telemetry = { path = "crates/telemetry" }
+hawdb-telemetry = { path = "crates/telemetry" }
 
 [dev-dependencies]
 libc = "0.2"
@@ -54,15 +54,15 @@ default = [
   "graph-analytics",
   "vector-search",
 ]
-acl = ["skein-search/acl"]
-background-maintenance = ["skein-search/background-maintenance"]
-full-text-search = ["skein-search/full-text-search"]
-graph-analytics = ["skein-search/graph-analytics"]
-vector-search = ["skein-search/vector-search", "dep:skein-vector-projection"]
-loom-tests = ["skein-system-sql/loom-tests"]
-opentelemetry = ["skein-telemetry/opentelemetry"]
-qualification = ["skein-search/qualification"]
-tokio-runtime = ["dep:skein-runtime-tokio"]
+acl = ["hawdb-search/acl"]
+background-maintenance = ["hawdb-search/background-maintenance"]
+full-text-search = ["hawdb-search/full-text-search"]
+graph-analytics = ["hawdb-search/graph-analytics"]
+vector-search = ["hawdb-search/vector-search", "dep:hawdb-vector-projection"]
+loom-tests = ["hawdb-system-sql/loom-tests"]
+opentelemetry = ["hawdb-telemetry/opentelemetry"]
+qualification = ["hawdb-search/qualification"]
+tokio-runtime = ["dep:hawdb-runtime-tokio"]
 
 [workspace]
 members = [

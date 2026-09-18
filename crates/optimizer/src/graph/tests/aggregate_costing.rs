@@ -2,8 +2,8 @@ use super::super::{
     CascadesOptimizer, OptimizerCatalog, OptimizerCatalogIndexes, OptimizerCatalogStatistics,
 };
 use crate::{OptimizerConfig, PlanCost};
-use skein_cypher::RelationshipDirection;
-use skein_plan::{
+use hawdb_cypher::RelationshipDirection;
+use hawdb_plan::{
     AggregateFunction, AggregateTarget, Aggregation, LogicalPlan, Projection, ProjectionExpression,
 };
 use std::collections::BTreeMap;

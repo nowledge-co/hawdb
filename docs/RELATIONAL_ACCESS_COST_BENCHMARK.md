@@ -47,7 +47,7 @@ only for benchmark verification and is not part of the executed query.
 
 ## Evidence and assertions
 
-The additive JSON object uses `skein-persisted-relational-access-v2` and records
+The additive JSON object uses `hawdb-persisted-relational-access-v2` and records
 the OS, architecture, smoke/full scale, row count, sample count and cache size.
 For each path it includes:
 
@@ -84,9 +84,9 @@ silently changing a selective index case to a scan still fails the experiment.
 
 ## Interpretation limits
 
-"First query" means first use of a new Skein handle, not cold physical disk.
+"First query" means first use of a new Hawdb handle, not cold physical disk.
 The OS page cache is uncontrolled, the fixture was just written, and earlier
-probes can warm OS caches. File-read counters show reads requested by Skein,
+probes can warm OS caches. File-read counters show reads requested by Hawdb,
 not physical device I/O. Dispersed membership spreads matching rows across
 canonical pages; it does not prove random device access or bypass readahead.
 Query timing includes the profiled execution path's instrumentation.
@@ -154,9 +154,9 @@ configuration for smoke/contract verification:
 
 ```sh
 cargo bench --bench relational_index_access
-bazel run //:skein_bench_relational_index_access
-bazel test //:skein_linux_ci_benchmark_relational_index_access_smoke_test
-bazel test //crates/fuzz:skein_fuzz_tests //crates/fuzz:skein_fuzz_cli_tests //:skein_linux_ci_fuzz_smoke_test
+bazel run //:hawdb_bench_relational_index_access
+bazel test //:hawdb_linux_ci_benchmark_relational_index_access_smoke_test
+bazel test //crates/fuzz:hawdb_fuzz_tests //crates/fuzz:hawdb_fuzz_cli_tests //:hawdb_linux_ci_fuzz_smoke_test
 ```
 
 Negative controls should corrupt a returned payload, change an expected ID,

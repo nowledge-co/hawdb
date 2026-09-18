@@ -9,7 +9,7 @@ use super::{
 use crate::parser::MAX_CYPHER_INPUT_BYTES;
 use crate::ScalarBinaryOp;
 use crate::{AstNode, ReturnExpressionKind, ScalarExpressionKind, ValueExpressionKind};
-use skein_core::Value;
+use hawdb_core::Value;
 
 mod backtracking;
 mod migration_corpus;

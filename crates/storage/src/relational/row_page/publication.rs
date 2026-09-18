@@ -3,7 +3,7 @@ use super::{
     RelationalRowPageLimits,
 };
 use crate::relational::{RelationalOverflowRootBinding, RelationalTableSchema};
-use skein_integrity::Sha256Digest;
+use hawdb_integrity::Sha256Digest;
 use std::fmt;
 use std::num::{NonZeroU32, NonZeroU64, NonZeroUsize};
 use std::path::Path;
@@ -19,7 +19,7 @@ pub(crate) use publisher::acquire_publication_lock;
 pub use publisher::RelationalRowPagePublisher;
 pub use reader::RelationalRowPageRootReader;
 
-pub const RELATIONAL_ROW_PAGE_MANIFEST_FILE: &str = "relational-row-pages.manifest.skein";
+pub const RELATIONAL_ROW_PAGE_MANIFEST_FILE: &str = "relational-row-pages.manifest.hawdb";
 const RELATIONAL_ROW_PAGE_PUBLICATION_LOCK_FILE: &str = "relational-row-pages.lock";
 
 pub const DEFAULT_RELATIONAL_ROW_PAGE_MANIFEST_BYTES: usize = 8 * 1024 * 1024;
@@ -31,19 +31,19 @@ pub const DEFAULT_RELATIONAL_ROW_PAGE_ROOT_KEY_BYTES: u64 = 4 * 1024 * 1024 * 10
 const DEFAULT_RELATIONAL_ROW_PAGE_TABLE_NAME_BYTES: usize = 1024;
 
 pub fn relational_row_page_artifact_file(generation: u64) -> String {
-    format!("relational-row-pages-{generation}.pages.skein")
+    format!("relational-row-pages-{generation}.pages.hawdb")
 }
 
 pub fn relational_row_page_root_descriptor_file(generation: u64) -> String {
-    format!("relational-row-root-{generation}.descriptors.skein")
+    format!("relational-row-root-{generation}.descriptors.hawdb")
 }
 
 pub fn relational_row_page_root_key_file(generation: u64) -> String {
-    format!("relational-row-root-{generation}.keys.skein")
+    format!("relational-row-root-{generation}.keys.hawdb")
 }
 
 pub fn relational_row_page_manifest_generation_file(generation: u64) -> String {
-    format!("relational-row-pages-{generation}.manifest.skein")
+    format!("relational-row-pages-{generation}.manifest.hawdb")
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

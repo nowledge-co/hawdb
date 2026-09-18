@@ -1,6 +1,6 @@
 use super::super::PhysicalPlan;
 use crate::OptimizerContext;
-use skein_plan::LogicalPlan;
+use hawdb_plan::LogicalPlan;
 
 use super::{access, ddl, mutation, procedure, traversal};
 

@@ -1,8 +1,8 @@
 {
-  "protocol": "skein-production-graph-storage-plan-v1",
+  "protocol": "hawdb-production-graph-storage-plan-v1",
   "evidence_binding": {
     "identity": {
-      "source_revision": "replace-with-skein-revision",
+      "source_revision": "replace-with-hawdb-revision",
       "rust_toolchain": "rustc 1.xx.x",
       "target_os": "macos",
       "target_arch": "aarch64",
@@ -20,7 +20,7 @@
     "generated_at_unix_seconds": 1
   },
   "expected_identity": {
-    "source_revision": "replace-with-skein-revision",
+    "source_revision": "replace-with-hawdb-revision",
     "rust_toolchain": "rustc 1.xx.x",
     "target_os": "macos",
     "target_arch": "aarch64",

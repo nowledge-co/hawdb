@@ -1,5 +1,5 @@
 //! This external consumer imports only the embedded facade and the standard library.
-use skein::sql::{
+use hawdb::sql::{
     self, syntax, PgqCreateBindErrorCode, PgqDataType, PgqSourceCatalog, PgqSourceColumnSchema,
     PgqSourceForeignKeySchema, PgqSourceTableSchema, SqlDataType,
 };

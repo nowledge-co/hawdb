@@ -109,7 +109,7 @@ fn public_wrappers_return_the_first_unavailable_capability() {
                 else {
                     continue;
                 };
-                let expected = SkeinError::CapabilityUnavailable { capability };
+                let expected = HawdbError::CapabilityUnavailable { capability };
                 for wrapper in WRAPPERS {
                     assert_eq!(public_wrapper(&index, mode, wrapper).unwrap_err(), expected);
                 }
@@ -175,7 +175,7 @@ fn existing_try_api_is_not_a_drop_in_replacement_for_in_memory_access() {
         }
     }
     let root = Directory(std::env::temp_dir().join(format!(
-        "skein-fallible-contract-{}-{}", std::process::id(),
+        "hawdb-fallible-contract-{}-{}", std::process::id(),
         std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_nanos(),
     )));
     let mut index = SearchIndex::open(&root.0).unwrap();

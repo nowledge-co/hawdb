@@ -1,9 +1,9 @@
 use super::ProductionVectorQualificationReport;
-use skein::ProductionQualificationIdentity;
+use hawdb::ProductionQualificationIdentity;
 use std::collections::BTreeSet;
 
 pub const PRODUCTION_VECTOR_QUALIFICATION_MATRIX_PROTOCOL: &str =
-    "skein-production-vector-qualification-matrix-v1";
+    "hawdb-production-vector-qualification-matrix-v1";
 const REQUIRED_TARGETS: [(&str, &str); 4] = [
     ("linux", "aarch64"),
     ("linux", "x86_64"),

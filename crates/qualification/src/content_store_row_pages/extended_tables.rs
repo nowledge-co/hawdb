@@ -5,7 +5,7 @@ use super::fixture::{
 };
 use super::{ContentStoreRowPageReadPhase, ContentStoreRowPageReadReport};
 use crate::{ContentStoreSqlCorpus, ContentStoreSqlStatementSpec};
-use skein::{Database, QueryStreamOptions, Result, SkeinError, Value};
+use hawdb::{Database, HawdbError, QueryStreamOptions, Result, Value};
 
 type ExtendedReadSpec<'a> = (&'a ContentStoreSqlStatementSpec, Vec<Value>, usize);
 const ANCHOR_OCCURRENCE_SQL: &str = "SELECT anchor_id, content_message_id, message_id FROM content_anchors WHERE owner_kind = $1 AND anchor_kind = $2 ORDER BY anchor_id ASC LIMIT $3";
@@ -27,7 +27,7 @@ pub(super) fn append_runtime_content(
     let source_summary = corpus_statement(corpus, "source_document_payload_summary")?;
     let update_summary = corpus_statement(corpus, "update_content_document_summary")?;
     let next_chunk_count = chunk_position.checked_add(1).ok_or_else(|| {
-        SkeinError::Semantic("content-store chunk count overflowed usize".to_string())
+        HawdbError::Semantic("content-store chunk count overflowed usize".to_string())
     })?;
     let mut transaction = database.begin_transaction();
     transaction.query_with_params(
@@ -57,7 +57,7 @@ pub(super) fn append_runtime_content(
     let item_count = super::fixture::required_i64(&summary, "item_count")?;
     let size_bytes = super::fixture::required_i64(&summary, "size_bytes")?;
     if item_count != i64::try_from(next_chunk_count).unwrap_or(i64::MAX) {
-        return Err(SkeinError::Execution(format!(
+        return Err(HawdbError::Execution(format!(
             "content-store runtime source summary counted {item_count} chunks, expected {next_chunk_count}"
         )));
     }
@@ -103,11 +103,11 @@ pub(super) fn require_source_graph_chunk_count(
         &source_id_parameters(),
     )?;
     let expected = i64::try_from(expected).map_err(|_| {
-        SkeinError::Semantic("content-store chunk count does not fit BIGINT".to_string())
+        HawdbError::Semantic("content-store chunk count does not fit BIGINT".to_string())
     })?;
     match output.rows.as_slice() {
         [row] if row.get("chunk_count") == Some(&Value::Int(expected)) => Ok(()),
-        rows => Err(SkeinError::Execution(format!(
+        rows => Err(HawdbError::Execution(format!(
             "content-store graph Source chunk count mismatch: expected {expected}, got {rows:?}"
         ))),
     }
@@ -122,10 +122,10 @@ pub(super) fn read_pair(
         super::evidence::execute_qualified_read(database, statement, parameters, phase, expected)
     });
     let chunk = reads.next().transpose()?.ok_or_else(|| {
-        SkeinError::Execution("content-store extended read set has no chunk read".to_string())
+        HawdbError::Execution("content-store extended read set has no chunk read".to_string())
     })?;
     let anchor = reads.next().transpose()?.ok_or_else(|| {
-        SkeinError::Execution("content-store extended read set has no anchor read".to_string())
+        HawdbError::Execution("content-store extended read set has no anchor read".to_string())
     })?;
     Ok((chunk, anchor))
 }
@@ -168,10 +168,10 @@ fn require_count(
         },
     )?;
     let expected = i64::try_from(expected)
-        .map_err(|_| SkeinError::Semantic(format!("content-store {column} does not fit BIGINT")))?;
+        .map_err(|_| HawdbError::Semantic(format!("content-store {column} does not fit BIGINT")))?;
     match output.rows.as_slice() {
         [row] if row.get(column) == Some(&Value::Int(expected)) => Ok(()),
-        rows => Err(SkeinError::Execution(format!(
+        rows => Err(HawdbError::Execution(format!(
             "content-store {column} mismatch: expected {expected}, got {rows:?}"
         ))),
     }
@@ -195,19 +195,19 @@ pub(super) fn require_anchor_occurrence_identity(
         },
     )?;
     if output.rows.len() != expected {
-        return Err(SkeinError::Execution(format!(
+        return Err(HawdbError::Execution(format!(
             "content-store occurrence anchor count mismatch: expected {expected}, got {}",
             output.rows.len()
         )));
     }
     for row in &output.rows {
         let Some(Value::String(anchor_id)) = row.get("anchor_id") else {
-            return Err(SkeinError::Execution(
+            return Err(HawdbError::Execution(
                 "content-store occurrence anchor has no anchor_id".to_string(),
             ));
         };
         let Some(Value::String(content_message_id)) = row.get("content_message_id") else {
-            return Err(SkeinError::Execution(format!(
+            return Err(HawdbError::Execution(format!(
                 "content-store anchor {anchor_id} has no occurrence identity"
             )));
         };
@@ -215,7 +215,7 @@ pub(super) fn require_anchor_occurrence_identity(
             .strip_prefix("anchor-")
             .is_some_and(|suffix| content_message_id == &format!("content-message-{suffix}"))
         {
-            return Err(SkeinError::Execution(format!(
+            return Err(HawdbError::Execution(format!(
                 "content-store anchor {anchor_id} points at mismatched occurrence {content_message_id}"
             )));
         }
@@ -231,7 +231,7 @@ pub(super) fn require_anchor_occurrence_identity(
         })
         .count();
     if runtime_legacy_ids != expected_shared_legacy_occurrences {
-        return Err(SkeinError::Execution(format!(
+        return Err(HawdbError::Execution(format!(
             "content-store occurrence fixture expected {expected_shared_legacy_occurrences} anchors sharing one legacy message id, got {runtime_legacy_ids}"
         )));
     }

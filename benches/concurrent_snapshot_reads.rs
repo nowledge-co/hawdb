@@ -1,8 +1,8 @@
 //! Fixed-work SQL reader/writer qualification through the embedded facade.
 //! Request lifetime overlap does not establish parallel engine execution.
 
+use hawdb::{ConcurrentDatabase, Database, QueryOutput, Value};
 use serde_json::{json, Value as JsonValue};
-use skein::{ConcurrentDatabase, Database, QueryOutput, Value};
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Barrier};
 use std::time::{Instant, SystemTime, UNIX_EPOCH};
@@ -83,7 +83,7 @@ impl WorkerMeasurement {
 
 fn main() {
     let root = std::env::temp_dir().join(format!(
-        "skein-concurrent-snapshot-{}-{}",
+        "hawdb-concurrent-snapshot-{}-{}",
         std::process::id(),
         SystemTime::now()
             .duration_since(UNIX_EPOCH)

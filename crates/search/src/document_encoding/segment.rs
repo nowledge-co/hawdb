@@ -33,7 +33,7 @@ impl<'a, T: Borrow<SearchDocument>> SegmentEncoding<'a, T> {
     pub(crate) fn new_with_context(
         documents: &'a [T],
         kind: SegmentKind,
-        task: Option<&skein_core::RuntimeTaskContext>,
+        task: Option<&hawdb_core::RuntimeTaskContext>,
     ) -> Result<Self> {
         let mut length = EncodedLength::default();
         write_segment(
@@ -49,7 +49,7 @@ impl<'a, T: Borrow<SearchDocument>> SegmentEncoding<'a, T> {
             {
                 return error;
             }
-            SkeinError::Storage(format!(
+            HawdbError::Storage(format!(
                 "search {} segment encoded size overflow",
                 kind.name()
             ))
@@ -82,19 +82,19 @@ fn write_segment<T: Borrow<SearchDocument>>(
 ) -> fmt::Result {
     let mut ordinal = match kind {
         SegmentKind::Documents => {
-            sink.write_str("SKEIN_SEARCH_SEGMENT_V1\n")?;
+            sink.write_str("HAWDB_SEARCH_SEGMENT_V1\n")?;
             0
         }
         SegmentKind::Metadata {
             vector_ordinal_base,
         } => {
-            sink.write_str("SKEIN_SEARCH_METADATA_SEGMENT_V1\n")?;
+            sink.write_str("HAWDB_SEARCH_METADATA_SEGMENT_V1\n")?;
             vector_ordinal_base
         }
         SegmentKind::Vectors {
             vector_ordinal_base,
         } => {
-            sink.write_str("SKEIN_SEARCH_VECTOR_SEGMENT_V1\n")?;
+            sink.write_str("HAWDB_SEARCH_VECTOR_SEGMENT_V1\n")?;
             vector_ordinal_base
         }
     };

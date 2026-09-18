@@ -1,8 +1,8 @@
 use super::*;
 use crate::build_control::{checkpoint, CheckedWriter};
 use crate::{SearchSegmentDescriptor, SearchSegmentPayloadRange};
-use skein_core::RuntimeTaskContext;
-use skein_integrity::Crc32cHasher;
+use hawdb_core::RuntimeTaskContext;
+use hawdb_integrity::Crc32cHasher;
 use std::io::Write as _;
 
 pub(crate) struct DescriptorEncoding<'a> {
@@ -56,7 +56,7 @@ impl<'a> DescriptorEncoding<'a> {
             .checked_add(encoding.footer_len)
             .ok_or_else(size_overflow)?;
         if encoding.bytes as u64 > max_bytes {
-            return Err(SkeinError::Storage(format!(
+            return Err(HawdbError::Storage(format!(
                 "search generation descriptor requires {} bytes, exceeding {max_bytes}",
                 encoding.bytes,
             )));
@@ -84,8 +84,8 @@ impl<'a> DescriptorEncoding<'a> {
     }
 }
 
-fn size_overflow() -> SkeinError {
-    SkeinError::Storage("search segment descriptor encoded size overflow".into())
+fn size_overflow() -> HawdbError {
+    HawdbError::Storage("search segment descriptor encoded size overflow".into())
 }
 
 struct DigestWriter(Crc32cHasher);
@@ -104,7 +104,7 @@ impl io::Write for DigestWriter {
 }
 
 fn write_body(sink: &mut impl DocumentSink, descriptor: &SearchSegmentDescriptor) -> fmt::Result {
-    sink.write_str("SKEIN_SEARCH_SEGMENTS_V3\n")?;
+    sink.write_str("HAWDB_SEARCH_SEGMENTS_V3\n")?;
     writeln!(sink, "target_documents\t{}", descriptor.target_documents)?;
     writeln!(sink, "document_count\t{}", descriptor.document_count)?;
     for segment in &descriptor.segments {

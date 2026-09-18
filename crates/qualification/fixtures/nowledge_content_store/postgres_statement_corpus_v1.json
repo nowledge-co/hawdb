@@ -1,7 +1,7 @@
 {
-  "protocol": "skein-nowledge-content-store-sql-corpus-v1",
+  "protocol": "hawdb-nowledge-content-store-sql-corpus-v1",
   "revision": "nowledge-content-store-postgres-v1",
-  "schema_protocol": "skein-nowledge-content-store-schema-v1",
+  "schema_protocol": "hawdb-nowledge-content-store-schema-v1",
   "schema_revision": "nowledge-content-store-schema-v1",
   "source_engine": "sqlite",
   "target_dialect": "postgresql",
@@ -37,7 +37,7 @@
     {"source_path":"nmem-rs/crates/nmem-content/src/write.rs","symbol":"patch_thread_space_ownership","coverage":"covered","statements":["update_owned_document_space_guarded","update_thread_messages_space_guarded"],"note":"The typed row-page qualification proves mixed-source guarded moves, graph/document/message agreement in one transaction, stale-preview preservation, payload identity, live visibility, and checkpoint/reopen identity."},
     {"source_path":"nmem-rs/crates/nmem-content/src/write.rs","symbol":"delete_thread_tail","coverage":"covered","statements":["thread_tail_delete_candidates","delete_thread_tail_anchors","delete_thread_tail_messages","thread_document_payload_summary","update_content_document_summary"],"note":"The typed row-page qualification proves bounded ordered candidate identity, negative-start clamping, empty-tail no-op behavior, graph and relational publication in one mixed durable transaction, rollback atomicity, exact document summary, retained occurrence and anchor payload identity, live tombstones, and checkpoint/reopen identity."},
     {"source_path":"nmem-rs/crates/nmem-content/src/write.rs","symbol":"delete_thread_messages","coverage":"covered","statements":["thread_owned_document_ids","thread_message_document_ids","thread_message_count","delete_anchors_by_document","delete_messages_by_thread","delete_content_document_by_id"],"note":"The typed row-page qualification proves bounded document discovery across an empty owned document and a message-only legacy document, an epoch-preserving preflight for missing and repeated deletes, graph Thread identities and Message nodes plus relational anchors, messages, and empty documents in one mixed durable transaction, rollback atomicity, workspace read-your-own-writes, unrelated payload identity, live tombstones, and checkpoint/reopen identity."},
-    {"source_path":"nmem-rs/crates/nmem-content/src/skein_write.rs","symbol":"create_memory_message_anchors_in_skein_transaction","coverage":"covered","statements":["thread_message_anchor_lookup","upsert_memory_message_anchor"],"note":"The host-owned mixed transaction binds bounded lookups and occurrence-stable anchor upserts atomically."}
+    {"source_path":"nmem-rs/crates/nmem-content/src/hawdb_write.rs","symbol":"create_memory_message_anchors_in_hawdb_transaction","coverage":"covered","statements":["thread_message_anchor_lookup","upsert_memory_message_anchor"],"note":"The host-owned mixed transaction binds bounded lookups and occurrence-stable anchor upserts atomically."}
   ],
   "statements": [
     {

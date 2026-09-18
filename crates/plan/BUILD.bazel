@@ -8,24 +8,24 @@ test_suite(
 )
 
 rust_library(
-    name = "skein_plan",
-    crate_name = "skein_plan",
+    name = "hawdb_plan",
+    crate_name = "hawdb_plan",
     crate_root = "src/lib.rs",
     srcs = glob(["src/**/*.rs"]),
     edition = "2024",
     aliases = aliases(),
     deps = all_crate_deps(normal = True) + [
-        "//crates/core:skein_core",
-        "//crates/cypher:skein_cypher",
-        "//crates/ddl:skein_ddl",
-        "//crates/expression:skein_expression",
+        "//crates/core:hawdb_core",
+        "//crates/cypher:hawdb_cypher",
+        "//crates/ddl:hawdb_ddl",
+        "//crates/expression:hawdb_expression",
     ],
     proc_macro_deps = all_crate_deps(proc_macro = True),
 )
 
 rust_test(
-    name = "skein_plan_tests",
-    crate = ":skein_plan",
+    name = "hawdb_plan_tests",
+    crate = ":hawdb_plan",
     compile_data = ["//crates/cypher:migration_corpus_test_data"],
     edition = "2024",
     aliases = aliases(normal_dev = True, proc_macro_dev = True),
@@ -34,7 +34,7 @@ rust_test(
 )
 
 rust_test(
-    name = "skein_plan_explain_fuzz_tests",
+    name = "hawdb_plan_explain_fuzz_tests",
     compile_data = ["//crates/cypher:migration_corpus_test_data"],
     tags = ["manual"],
     args = [
@@ -43,7 +43,7 @@ rust_test(
         "--ignored",
         "--nocapture",
     ],
-    crate = ":skein_plan",
+    crate = ":hawdb_plan",
     edition = "2024",
     aliases = aliases(normal_dev = True, proc_macro_dev = True),
     deps = all_crate_deps(normal_dev = True),

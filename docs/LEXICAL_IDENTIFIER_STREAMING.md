@@ -1,6 +1,6 @@
 # Incremental identifier analysis
 
-Related issue: [#392](https://github.com/nowledge-co/skein/issues/392).
+Related issue: [#392](https://github.com/nowledge-co/hawdb/issues/392).
 
 The field visitor previously materialized every identifier part and expanded token
 before presenting the first identifier token to admission. An oversized camel-case
@@ -106,9 +106,9 @@ same-target `bazel fetch --force` recovery succeeds. No configuration, workload
 or timeout changes are made.
 
 ```sh
-cargo test -p skein-search --all-features --lib --tests -- --include-ignored
-cargo clippy -p skein-search --all-features --all-targets -- -D warnings
-bazel test //crates/search:presubmit_tests //:skein_unit_tests //:skein_acl_capability_tests //:skein_storage_crash_recovery_tests //crates/fuzz:skein_fuzz_tests //crates/fuzz:skein_fuzz_cli_tests //:skein_linux_ci_fuzz_smoke_test
+cargo test -p hawdb-search --all-features --lib --tests -- --include-ignored
+cargo clippy -p hawdb-search --all-features --all-targets -- -D warnings
+bazel test //crates/search:presubmit_tests //:hawdb_unit_tests //:hawdb_acl_capability_tests //:hawdb_storage_crash_recovery_tests //crates/fuzz:hawdb_fuzz_tests //crates/fuzz:hawdb_fuzz_cli_tests //:hawdb_linux_ci_fuzz_smoke_test
 ```
 
 The allocation regression is an ordinary Bazel search test. Fuzz campaigns remain

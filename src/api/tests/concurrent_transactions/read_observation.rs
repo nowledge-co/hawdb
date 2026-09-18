@@ -91,7 +91,7 @@ fn assert_read_completion_does_not_wait_for_writer(language: ReadLanguage, fails
         ReadLanguage::Cypher => ("create_node", "CREATE (:Memory {id: 3})"),
         ReadLanguage::Sql => ("insert", "INSERT INTO messages (id) VALUES (3)"),
     };
-    let read_digest = skein_query::QueryIdentity::new(language.name(), read_query)
+    let read_digest = hawdb_query::QueryIdentity::new(language.name(), read_query)
         .query_digest()
         .to_string();
     let (writer_started, writer_events) = mpsc::channel();

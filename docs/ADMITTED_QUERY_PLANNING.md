@@ -1,7 +1,7 @@
 # Admitted query planning
 
-The synchronous `SkeinEmbedded` admitted query methods and all
-`SkeinTokioEmbedded` query methods acquire a cheap `Control` permit before
+The synchronous `HawdbEmbedded` admitted query methods and all
+`HawdbTokioEmbedded` query methods acquire a cheap `Control` permit before
 parsing, optimizing, or capturing a planner snapshot. Raw `Database` APIs remain
 available to hosts that provide their own admission boundary.
 
@@ -73,15 +73,15 @@ streaming backpressure, result budgets, and custom mutation classification tests
 remain enabled.
 
 ```sh
-cargo clippy -p skein --all-features --all-targets -- -D warnings
-cargo test -p skein --features tokio-runtime --lib embedded
-cargo test -p skein --features tokio-runtime --lib api::query_runtime
-cargo check -p skein --no-default-features
-bazel test //:skein_unit_tests //:skein_system_sql_loom_tests \
-  //crates/qos:skein_qos_tests //crates/qos:skein_qos_loom_tests \
-  //crates/runtime-tokio:skein_runtime_tokio_tests \
-  //crates/fuzz:skein_fuzz_tests //crates/fuzz:skein_fuzz_cli_tests \
-  //:skein_linux_ci_fuzz_smoke_test --nocache_test_results
+cargo clippy -p hawdb --all-features --all-targets -- -D warnings
+cargo test -p hawdb --features tokio-runtime --lib embedded
+cargo test -p hawdb --features tokio-runtime --lib api::query_runtime
+cargo check -p hawdb --no-default-features
+bazel test //:hawdb_unit_tests //:hawdb_system_sql_loom_tests \
+  //crates/qos:hawdb_qos_tests //crates/qos:hawdb_qos_loom_tests \
+  //crates/runtime-tokio:hawdb_runtime_tokio_tests \
+  //crates/fuzz:hawdb_fuzz_tests //crates/fuzz:hawdb_fuzz_cli_tests \
+  //:hawdb_linux_ci_fuzz_smoke_test --nocache_test_results
 ```
 
 Fuzz remains local-only. This change introduces no runtime, backend, dependency,

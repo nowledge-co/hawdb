@@ -1,5 +1,5 @@
+use hawdb::{SearchIndex, SearchMode};
 use serde_json::json;
-use skein::{SearchIndex, SearchMode};
 use std::time::Instant;
 
 const DEFAULT_CJK_CHARS: usize = if cfg!(debug_assertions) {
@@ -8,8 +8,8 @@ const DEFAULT_CJK_CHARS: usize = if cfg!(debug_assertions) {
     400_000
 };
 
-fn main() -> skein::Result<()> {
-    let character_count = std::env::var("SKEIN_SEARCH_TOKENIZATION_BENCH_CJK_CHARS")
+fn main() -> hawdb::Result<()> {
+    let character_count = std::env::var("HAWDB_SEARCH_TOKENIZATION_BENCH_CJK_CHARS")
         .ok()
         .and_then(|value| value.parse().ok())
         .unwrap_or(DEFAULT_CJK_CHARS);

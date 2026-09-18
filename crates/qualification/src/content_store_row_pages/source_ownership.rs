@@ -7,9 +7,9 @@ use super::source_replacement::seed_source_chunks_for_followup;
 use super::{ContentStoreRowPageReadPhase, ContentStoreSourceOwnershipMoveQualificationReport};
 use crate::evidence_digest::rows_sha256;
 use crate::ContentStoreSqlCorpus;
-use skein::{
-    Database, DatabaseConfig, DurabilityPolicy, QueryOutput, QueryStreamOptions, Result,
-    SkeinError, Value,
+use hawdb::{
+    Database, DatabaseConfig, DurabilityPolicy, HawdbError, QueryOutput, QueryStreamOptions,
+    Result, Value,
 };
 use std::path::Path;
 
@@ -34,7 +34,7 @@ pub(super) fn qualify_source_ownership_move(
     let missing_owner_count = qualify_missing_source_noop(&mut database, corpus)?;
     let missing_owner_epoch_after = database.commit_epoch();
     if missing_owner_epoch_after != missing_owner_epoch_before {
-        return Err(SkeinError::Execution(format!(
+        return Err(HawdbError::Execution(format!(
             "content-store missing source ownership probe changed epoch from {missing_owner_epoch_before} to {missing_owner_epoch_after}"
         )));
     }
@@ -68,10 +68,10 @@ pub(super) fn qualify_source_ownership_move(
         .query_sql_with_params(&count.sql, &[Value::String(SOURCE_OWNER_ID.to_string())])?;
     let moved_chunk_count = required_i64(&count_output, "chunk_count")?;
     let expected_chunk_count = i64::try_from(MOVE_CHUNK_COUNT).map_err(|_| {
-        SkeinError::Semantic("content-store ownership chunk count does not fit BIGINT".to_string())
+        HawdbError::Semantic("content-store ownership chunk count does not fit BIGINT".to_string())
     })?;
     if moved_chunk_count != expected_chunk_count {
-        return Err(SkeinError::Execution(format!(
+        return Err(HawdbError::Execution(format!(
             "content-store source ownership move counted {moved_chunk_count} chunks, expected {MOVE_CHUNK_COUNT}"
         )));
     }
@@ -88,7 +88,7 @@ pub(super) fn qualify_source_ownership_move(
     transaction.commit()?;
     let committed_epoch = database.commit_epoch();
     if committed_epoch <= seed_commit_epoch {
-        return Err(SkeinError::Execution(format!(
+        return Err(HawdbError::Execution(format!(
             "content-store source ownership epoch {committed_epoch} did not advance beyond seed epoch {seed_commit_epoch}"
         )));
     }
@@ -103,7 +103,7 @@ pub(super) fn qualify_source_ownership_move(
     if live_read.execution.visible_commit_epoch != committed_epoch
         || live_read.execution.overlay_entries == 0
     {
-        return Err(SkeinError::Execution(format!(
+        return Err(HawdbError::Execution(format!(
             "content-store source ownership live read used epoch {} and {} overlay entries, expected epoch {committed_epoch} with a non-empty overlay",
             live_read.execution.visible_commit_epoch, live_read.execution.overlay_entries
         )));
@@ -117,7 +117,7 @@ pub(super) fn qualify_source_ownership_move(
     )?;
     let payload_sha256_after_live = source_payload_sha256(&mut database, MOVE_CHUNK_COUNT)?;
     if payload_sha256_after_live != payload_sha256_before {
-        return Err(SkeinError::Execution(
+        return Err(HawdbError::Execution(
             "content-store source ownership move changed chunk payload fields".to_string(),
         ));
     }
@@ -126,7 +126,7 @@ pub(super) fn qualify_source_ownership_move(
     let checkpoint_generation = database
         .relational_index_shadow_checkpoint_report()
         .ok_or_else(|| {
-            SkeinError::Execution(
+            HawdbError::Execution(
                 "content-store source ownership checkpoint did not publish relational indexes"
                     .to_string(),
             )
@@ -149,7 +149,7 @@ pub(super) fn qualify_source_ownership_move(
     if reopened_read.execution.visible_commit_epoch != committed_epoch
         || reopened_read.output_sha256 != live_read.output_sha256
     {
-        return Err(SkeinError::Execution(
+        return Err(HawdbError::Execution(
             "content-store source ownership move changed across checkpoint/reopen".to_string(),
         ));
     }
@@ -162,7 +162,7 @@ pub(super) fn qualify_source_ownership_move(
     )?;
     let payload_sha256_after_reopen = source_payload_sha256(&mut database, MOVE_CHUNK_COUNT)?;
     if payload_sha256_after_reopen != payload_sha256_before {
-        return Err(SkeinError::Execution(
+        return Err(HawdbError::Execution(
             "content-store reopened source ownership move changed chunk payload fields".to_string(),
         ));
     }
@@ -211,7 +211,7 @@ fn qualify_missing_source_noop(
         .query_sql_with_params(&count.sql, &[Value::String(MISSING_SOURCE_ID.to_string())])?;
     let missing_count = required_i64(&output, "chunk_count")?;
     if missing_count != 0 {
-        return Err(SkeinError::Execution(format!(
+        return Err(HawdbError::Execution(format!(
             "content-store missing source ownership probe counted {missing_count} chunks"
         )));
     }
@@ -241,7 +241,7 @@ fn require_source_ownership_state(
         },
     )?;
     let expected_item_count = i64::try_from(expected_chunk_count).map_err(|_| {
-        SkeinError::Semantic("content-store ownership chunk count does not fit BIGINT".to_string())
+        HawdbError::Semantic("content-store ownership chunk count does not fit BIGINT".to_string())
     })?;
     match document.rows.as_slice() {
         [row]
@@ -252,7 +252,7 @@ fn require_source_ownership_state(
                 }) =>
             {}
         rows => {
-            return Err(SkeinError::Execution(format!(
+            return Err(HawdbError::Execution(format!(
                 "content-store source document expected space={expected_space_id}, chunks={expected_item_count}, updated_at={expected_updated_at:?}, got {rows:?}"
             )));
         }
@@ -275,7 +275,7 @@ fn source_payload_sha256(database: &mut Database, expected_rows: usize) -> Resul
         &[
             Value::String(SOURCE_DOCUMENT_ID.to_string()),
             Value::Int(i64::try_from(expected_rows.max(1)).map_err(|_| {
-                SkeinError::Semantic(
+                HawdbError::Semantic(
                     "content-store ownership row limit does not fit BIGINT".to_string(),
                 )
             })?),
@@ -286,7 +286,7 @@ fn source_payload_sha256(database: &mut Database, expected_rows: usize) -> Resul
         },
     )?;
     if output.rows.len() != expected_rows {
-        return Err(SkeinError::Execution(format!(
+        return Err(HawdbError::Execution(format!(
             "content-store source payload probe returned {} rows, expected {expected_rows}",
             output.rows.len()
         )));
@@ -305,7 +305,7 @@ fn require_rows_in_space(
             !matches!(row.get("space_id"), Some(Value::String(space_id)) if space_id == expected_space_id)
         })
     {
-        return Err(SkeinError::Execution(format!(
+        return Err(HawdbError::Execution(format!(
             "content-store source ownership {phase} expected {expected_rows} rows in space {expected_space_id}, got {:?}",
             output.rows
         )));
@@ -320,7 +320,7 @@ fn require_graph_space(
     phase: &str,
 ) -> Result<()> {
     let expected_chunk_count = i64::try_from(expected_chunk_count).map_err(|_| {
-        SkeinError::Semantic("content-store ownership chunk count does not fit BIGINT".to_string())
+        HawdbError::Semantic("content-store ownership chunk count does not fit BIGINT".to_string())
     })?;
     match output.rows.as_slice() {
         [row]
@@ -329,7 +329,7 @@ fn require_graph_space(
         {
             Ok(())
         }
-        rows => Err(SkeinError::Execution(format!(
+        rows => Err(HawdbError::Execution(format!(
             "content-store source ownership {phase} expected graph space={expected_space_id}, chunks={expected_chunk_count}, got {rows:?}"
         ))),
     }

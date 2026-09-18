@@ -108,7 +108,7 @@ fn fields(text: &str) -> Vec<(String, String)> {
 }
 
 fn frame(fields: &[(String, String)]) -> String {
-    let mut body = "SKEIN_MANIFEST_V1\n".to_string();
+    let mut body = "HAWDB_MANIFEST_V1\n".to_string();
     for (key, value) in fields {
         body.push_str(&format!("{key}\t{value}\n"));
     }
@@ -118,7 +118,7 @@ fn frame(fields: &[(String, String)]) -> String {
 fn seal(body: &str) -> String {
     format!(
         "{body}checksum\t{}\n",
-        skein_integrity::checksum_u64(body.as_bytes())
+        hawdb_integrity::checksum_u64(body.as_bytes())
     )
 }
 
@@ -131,7 +131,7 @@ fn rejected(text: &str) -> String {
     let error = result
         .expect("manifest decoder panicked")
         .expect_err("invalid manifest admitted");
-    assert!(matches!(&error, SkeinError::Storage(_)), "{error:?}");
+    assert!(matches!(&error, HawdbError::Storage(_)), "{error:?}");
     error.to_string()
 }
 
@@ -150,11 +150,11 @@ fn frozen_v1_bytes_preserve_all_binding_fields_and_paths() {
     }
     assert_eq!(
         published().checkpoint_path(Path::new("root")),
-        Path::new("root").join("checkpoint.7.skein")
+        Path::new("root").join("checkpoint.7.hawdb")
     );
     assert_eq!(
         published().wal_path(Path::new("root")),
-        Path::new("root").join("wal.7.skein")
+        Path::new("root").join("wal.7.hawdb")
     );
 }
 
@@ -321,16 +321,16 @@ fn compatibility_defaults_and_checksum_guards_remain_exact() {
     // The existing parser also recognizes the suffix of encoded-checksum keys.
     // Removing only the footer therefore reaches checksum validation first.
     assert!(rejected(body).contains("checksum mismatch"));
-    assert!(rejected("SKEIN_MANIFEST_V1\nversion\tskein-storage-v1\n").contains("checksum footer"));
+    assert!(rejected("HAWDB_MANIFEST_V1\nversion\thawdb-storage-v1\n").contains("checksum footer"));
     assert!(rejected(&seal(&body.replacen(
-        "SKEIN_MANIFEST_V1",
+        "HAWDB_MANIFEST_V1",
         "INVALID_HEADER",
         1
     )))
     .contains("V1 format header"));
     assert!(DurableManifest::decode(PUBLISHED.trim_end()).is_ok());
     let mut unsupported = fields(PUBLISHED);
-    replace(&mut unsupported, "version", "skein-storage-v0");
+    replace(&mut unsupported, "version", "hawdb-storage-v0");
     assert!(rejected(&frame(&unsupported)).contains("unsupported storage version"));
 }
 
@@ -415,13 +415,13 @@ fn campaign(seeds: u64, cases_per_seed: usize) -> usize {
 #[test]
 fn file_round_trip_and_failed_publication_preserve_selected_bytes() {
     let directory = TestDirectory::new();
-    let path = directory.0.join("manifest.skein");
+    let path = directory.0.join("manifest.hawdb");
     DurableManifest::default().write(&path).unwrap();
     assert_eq!(fs::read_to_string(&path).unwrap(), INITIAL);
     published().write(&path).unwrap();
     assert_eq!(fs::read_to_string(&path).unwrap(), PUBLISHED);
     assert_eq!(DurableManifest::load(&path).unwrap().encode(), PUBLISHED);
-    let tmp = path.with_extension("skein.tmp");
+    let tmp = path.with_extension("hawdb.tmp");
     assert!(!tmp.exists());
     fs::create_dir(&tmp).unwrap();
     assert!(DurableManifest::default().write(&path).is_err());
@@ -442,7 +442,7 @@ impl TestDirectory {
             .unwrap()
             .as_nanos();
         let path = std::env::temp_dir().join(format!(
-            "skein-durable-manifest-{}-{nonce}",
+            "hawdb-durable-manifest-{}-{nonce}",
             std::process::id()
         ));
         fs::create_dir(&path).unwrap();

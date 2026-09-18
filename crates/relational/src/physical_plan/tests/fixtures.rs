@@ -1,13 +1,13 @@
 use super::*;
-use skein_storage::relational_index_view::{
+use hawdb_storage::relational_index_view::{
     RelationalIndexProbeStatistics, RelationalIndexReadViewReport,
 };
-use skein_storage::{RelationalIndexReadLimits, RelationalIndexShadowError, RelationalValue};
+use hawdb_storage::{RelationalIndexReadLimits, RelationalIndexShadowError, RelationalValue};
 use std::cell::RefCell;
 
 pub(super) fn select(sql: &str) -> SelectStatement {
-    match skein_sql::prepare_postgres_sql(sql).unwrap().statement {
-        skein_sql::SqlStatement::Select(select) => select,
+    match hawdb_sql::prepare_postgres_sql(sql).unwrap().statement {
+        hawdb_sql::SqlStatement::Select(select) => select,
         _ => panic!("expected SELECT"),
     }
 }

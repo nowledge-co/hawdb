@@ -1,7 +1,7 @@
 //! Host-neutral bounded read snapshot reporting contract.
 
 pub const NOWLEDGE_MEM_READ_SNAPSHOT_REPORT_PROTOCOL: &str =
-    "skein-nowledge-mem-read-snapshot-report-v1";
+    "hawdb-nowledge-mem-read-snapshot-report-v1";
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct NowledgeMemReadSnapshotBudget {

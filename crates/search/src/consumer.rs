@@ -1,9 +1,9 @@
 //! Internal projection ownership used by the embedded database facade.
 use super::{SearchIndex, SEARCH_SNAPSHOT_FILE};
-use crate::error::{Result, SkeinError};
+use crate::error::{HawdbError, Result};
 use crate::out_of_core::SearchProjectionPublishLease;
-use skein_core::Uuid;
-use skein_integrity::IntegrityHasher;
+use hawdb_core::Uuid;
+use hawdb_integrity::IntegrityHasher;
 use std::fs::{self, File};
 use std::io::Read;
 use std::path::Path;
@@ -165,7 +165,7 @@ impl ConsumerProjection {
             .consumer_binding
             .as_mut()
             .expect("bound consumer")
-            .checkpoint_uuid = skein_core::uuidv7::generate_uuidv7()?;
+            .checkpoint_uuid = hawdb_core::uuidv7::generate_uuidv7()?;
         self.index.checkpoint_with_lease(true)?;
         Ok(self.receipt())
     }
@@ -179,7 +179,7 @@ impl ConsumerProjection {
             }
             return Err(error.into());
         }
-        skein_storage::durability::sync_parent_directory(destination)?;
+        hawdb_storage::durability::sync_parent_directory(destination)?;
         // Readers hold paths into their generation. Reload those readers while
         // retaining the lease, receipt, and initializer's runtime configuration.
         self.index.path = Some(destination.to_path_buf());
@@ -278,7 +278,7 @@ impl SearchIndex {
                 return Ok(());
             }
         }
-        Err(SkeinError::StorageIntegrity(
+        Err(HawdbError::StorageIntegrity(
             "missing or inconsistent registered vector projection".into(),
         ))
     }
@@ -337,8 +337,8 @@ fn canonical_uuid(raw: &str) -> Result<Uuid> {
     }
     Ok(uuid)
 }
-fn invalid(detail: &str) -> SkeinError {
-    SkeinError::Storage(format!("projection consumer: {detail}"))
+fn invalid(detail: &str) -> HawdbError {
+    HawdbError::Storage(format!("projection consumer: {detail}"))
 }
 
 #[cfg(test)]
@@ -346,17 +346,17 @@ mod tests {
     use super::*;
     fn binding() -> ConsumerBinding {
         ConsumerBinding {
-            database_uuid: skein_core::generate_uuidv7().unwrap(),
-            projection_uuid: skein_core::generate_uuidv7().unwrap(),
+            database_uuid: hawdb_core::generate_uuidv7().unwrap(),
+            projection_uuid: hawdb_core::generate_uuidv7().unwrap(),
             consumer_id: "main".into(),
-            registration_uuid: skein_core::generate_uuidv7().unwrap(),
-            checkpoint_uuid: skein_core::generate_uuidv7().unwrap(),
+            registration_uuid: hawdb_core::generate_uuidv7().unwrap(),
+            checkpoint_uuid: hawdb_core::generate_uuidv7().unwrap(),
         }
     }
     fn directory() -> std::path::PathBuf {
         let root = std::env::temp_dir().join(format!(
-            "skein-owned-projection-{}",
-            skein_core::generate_uuidv7().unwrap()
+            "hawdb-owned-projection-{}",
+            hawdb_core::generate_uuidv7().unwrap()
         ));
         fs::create_dir(&root).unwrap();
         root
@@ -468,8 +468,8 @@ mod tests {
                         policy_epoch: None,
                     }
                 ),
-                Err(SkeinError::CapabilityUnavailable {
-                    capability: skein_core::RuntimeCapability::FullTextSearch
+                Err(HawdbError::CapabilityUnavailable {
+                    capability: hawdb_core::RuntimeCapability::FullTextSearch
                 })
             ));
         }
@@ -511,7 +511,7 @@ mod tests {
         }
         assert!(matches!(
             ConsumerProjection::open(&root),
-            Err(SkeinError::StorageIntegrity(_))
+            Err(HawdbError::StorageIntegrity(_))
         ));
         fs::remove_dir_all(root).unwrap();
     }

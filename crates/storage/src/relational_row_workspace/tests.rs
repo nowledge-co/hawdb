@@ -10,7 +10,7 @@ use crate::{
     RelationalTableSchema, RelationalUpdateAssignment, RelationalUpdateValue, RelationalValue,
     RelationalWrite, SegmentCache, StoreId,
 };
-use skein_core::RuntimeTaskContext;
+use hawdb_core::RuntimeTaskContext;
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicU64, Ordering};
 
@@ -26,7 +26,7 @@ impl TestDirectory {
             .unwrap()
             .as_nanos();
         let path = std::env::temp_dir().join(format!(
-            "skein-row-workspace-{}-{nonce}-{sequence}",
+            "hawdb-row-workspace-{}-{nonce}-{sequence}",
             std::process::id()
         ));
         std::fs::create_dir(&path).expect("create exclusive fixture directory");

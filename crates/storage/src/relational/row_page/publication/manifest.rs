@@ -3,7 +3,7 @@ use super::{
     RelationalRowPagePublicationConfig, RelationalRowPagePublicationError,
     RelationalRowPageRootManifest, RelationalRowPageTableRoot,
 };
-use skein_integrity::{integrity_digest, IntegrityHasher, Sha256Digest, SHA256_BYTES};
+use hawdb_integrity::{integrity_digest, IntegrityHasher, Sha256Digest, SHA256_BYTES};
 use std::fs::{self, File};
 use std::io::Read;
 use std::num::{NonZeroU32, NonZeroU64};

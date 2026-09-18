@@ -6,7 +6,7 @@ use crate::{
     SearchOutOfCoreMetrics, SearchResultSet, VectorRecallValidationReport,
     VECTOR_RECALL_VALIDATION_PROTOCOL,
 };
-use skein_optimizer::AdaptiveVectorBackendPolicy;
+use hawdb_optimizer::AdaptiveVectorBackendPolicy;
 use std::collections::{BTreeMap, BTreeSet};
 
 #[derive(Debug, Clone, Default, PartialEq, Eq)]

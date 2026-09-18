@@ -139,7 +139,7 @@ impl TestRoot {
     fn new() -> Self {
         static SEQUENCE: AtomicU64 = AtomicU64::new(0);
         let path = std::env::temp_dir().join(format!(
-            "skein-compression-admission-{}-{}-{}",
+            "hawdb-compression-admission-{}-{}-{}",
             std::process::id(),
             std::time::SystemTime::now()
                 .duration_since(std::time::UNIX_EPOCH)
@@ -170,7 +170,7 @@ fn public_reopen_rejects_a_false_length_without_inflating_the_whole_snapshot() {
         metadata: BTreeMap::new(),
     };
     let body = format!(
-        "SKEIN_SEARCH_PROJECTION_V1\n{}",
+        "HAWDB_SEARCH_PROJECTION_V1\n{}",
         encode_search_document_line(&document)
     );
     let text = format!("{body}checksum\t{}\n", checksum_bytes(body.as_bytes()));

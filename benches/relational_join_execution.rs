@@ -1,8 +1,8 @@
-use serde_json::json;
-use skein::{
+use hawdb::{
     Database, DatabaseConfig, DatabaseReadTransaction, ProfiledRelationalSqlQueryOutput,
     QueryStreamOptions, RelationalOperatorKind,
 };
+use serde_json::json;
 use std::hint::black_box;
 use std::num::{NonZeroU64, NonZeroUsize};
 use std::path::PathBuf;
@@ -86,7 +86,7 @@ fn main() {
     println!(
         "relational_join_execution {}",
         json!({
-            "protocol": "skein-relational-join-execution-v1",
+            "protocol": "hawdb-relational-join-execution-v1",
             "dataset_rows": DATASET_ROWS,
             "warmups": WARMUPS,
             "samples": SAMPLES,
@@ -314,7 +314,7 @@ fn execute(read: &DatabaseReadTransaction, sql: &str) -> ProfiledRelationalSqlQu
 fn assert_profile_contract(
     profiled: &ProfiledRelationalSqlQueryOutput,
     case: JoinCase,
-) -> &skein::RelationalOperatorCardinalityProfile {
+) -> &hawdb::RelationalOperatorCardinalityProfile {
     let join = profiled
         .profile
         .operator_cardinality_profiles
@@ -366,8 +366,8 @@ fn index_read_metrics(profiled: &ProfiledRelationalSqlQueryOutput) -> serde_json
     })
 }
 
-fn grace_execution_memory(spill_directory: PathBuf) -> skein_executor::ExecutionMemoryConfig {
-    skein_executor::ExecutionMemoryConfig {
+fn grace_execution_memory(spill_directory: PathBuf) -> hawdb_executor::ExecutionMemoryConfig {
+    hawdb_executor::ExecutionMemoryConfig {
         blocking_operator_bytes: NonZeroUsize::new(2 * 1024).expect("non-zero blocking budget"),
         max_spill_bytes: NonZeroU64::new(4 * 1024 * 1024).expect("non-zero spill budget"),
         max_spill_runs: NonZeroUsize::new(64).expect("non-zero spill run budget"),
@@ -376,13 +376,13 @@ fn grace_execution_memory(spill_directory: PathBuf) -> skein_executor::Execution
         max_total_spill_runs: NonZeroUsize::new(64).expect("non-zero total spill run budget"),
         min_spill_free_bytes: NonZeroU64::MIN,
         spill_directory,
-        ..skein_executor::ExecutionMemoryConfig::default()
+        ..hawdb_executor::ExecutionMemoryConfig::default()
     }
 }
 
 fn benchmark_spill_directory() -> PathBuf {
     std::env::temp_dir().join(format!(
-        "skein-relational-join-execution-{}-{}",
+        "hawdb-relational-join-execution-{}-{}",
         std::process::id(),
         SystemTime::now()
             .duration_since(UNIX_EPOCH)

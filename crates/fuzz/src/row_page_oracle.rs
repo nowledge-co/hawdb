@@ -1,8 +1,8 @@
-use serde_json::{json, Value as JsonValue};
-use skein::{
+use hawdb::{
     Database, DatabaseConfig, DatabaseReadTransaction, QueryOutput, RelationalIndexMode,
     RelationalRowPageCompactionConfig, StorageResidencyMode, Value,
 };
+use serde_json::{json, Value as JsonValue};
 use std::collections::BTreeMap;
 use std::error::Error;
 use std::fs;
@@ -10,7 +10,7 @@ use std::num::NonZeroU64;
 use std::path::Path;
 use std::time::{SystemTime, UNIX_EPOCH};
 
-pub const ROW_PAGE_COMPACTION_PROTOCOL: &str = "skein-row-page-compaction-fuzz-v1";
+pub const ROW_PAGE_COMPACTION_PROTOCOL: &str = "hawdb-row-page-compaction-fuzz-v1";
 type Model = Vec<BTreeMap<i64, String>>;
 
 /// A replayable state machine with an independent row model and pinned views.
@@ -20,7 +20,7 @@ pub fn run_row_page_compaction_case(seed: u64) -> Result<JsonValue, String> {
         .unwrap_or_default()
         .as_nanos();
     let path = std::env::temp_dir().join(format!(
-        "skein-row-page-fuzz-{}-{seed}-{nonce}",
+        "hawdb-row-page-fuzz-{}-{seed}-{nonce}",
         std::process::id(),
     ));
     let result = run_case(&path, seed).map_err(|error| format!("row-page seed {seed}: {error}"));
@@ -157,7 +157,7 @@ fn run_case(path: &Path, seed: u64) -> Result<JsonValue, Box<dyn Error>> {
                 let name = entry.file_name();
                 let name = name.to_string_lossy();
                 Ok(bytes
-                    + if name.starts_with("relational-row-pages-") && name.ends_with(".pages.skein")
+                    + if name.starts_with("relational-row-pages-") && name.ends_with(".pages.hawdb")
                     {
                         entry.metadata()?.len()
                     } else {

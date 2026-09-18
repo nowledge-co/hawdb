@@ -3,13 +3,13 @@ use super::{
     ProductionVectorQualificationError, ProductionVectorQueryCase,
 };
 use crate::LatencyPercentiles;
-use serde::Serialize;
-use sha2::{Digest, Sha256};
-use skein::{
+use hawdb::{
     AdaptiveVectorSearchOptions, CompressedVectorSearchMode, RuntimeTaskContext, SearchIndex,
     SearchMode, SearchOutOfCoreReader, SearchQueryOptions, SearchResultSet,
     VectorRecallValidationOptions, VectorRecallValidationReport, VectorSearchKernelPreference,
 };
+use serde::Serialize;
+use sha2::{Digest, Sha256};
 use std::time::Instant;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -204,7 +204,7 @@ pub(super) fn execute_serving_query(
                 limit: config.top_k,
                 offset: 0,
                 rank_window: Some(config.candidate_limit),
-                fusion_weights: skein::SearchFusionWeights::default(),
+                fusion_weights: hawdb::SearchFusionWeights::default(),
                 metadata_filters: query_case.effective_metadata_filters()?,
                 policy_epoch: query_case
                     .access_control
@@ -249,7 +249,7 @@ pub(super) fn execute_query(
                 limit: config.top_k,
                 offset: 0,
                 rank_window: Some(config.candidate_limit),
-                fusion_weights: skein::SearchFusionWeights::default(),
+                fusion_weights: hawdb::SearchFusionWeights::default(),
                 metadata_filters,
                 policy_epoch: query_case
                     .access_control
@@ -370,7 +370,7 @@ pub(super) fn query_options(
         limit: config.top_k,
         offset: 0,
         rank_window: Some(config.candidate_limit),
-        fusion_weights: skein::SearchFusionWeights::default(),
+        fusion_weights: hawdb::SearchFusionWeights::default(),
         metadata_filters: query_case.effective_metadata_filters()?,
         policy_epoch: query_case
             .access_control
@@ -384,7 +384,7 @@ pub(super) fn request_digest(
     config: &ProductionVectorQualificationConfig,
 ) -> String {
     let mut hasher = Sha256::new();
-    hash_field(&mut hasher, b"skein-production-vector-request-v1");
+    hash_field(&mut hasher, b"hawdb-production-vector-request-v1");
     hash_field(&mut hasher, query_case.kind.as_str().as_bytes());
     for value in &query_case.query_embedding {
         hasher.update(value.to_bits().to_le_bytes());
@@ -413,7 +413,7 @@ pub(super) fn request_digest(
 
 pub(super) fn result_digest(result: &SearchResultSet) -> String {
     let mut hasher = Sha256::new();
-    hash_field(&mut hasher, b"skein-production-vector-result-v1");
+    hash_field(&mut hasher, b"hawdb-production-vector-result-v1");
     hasher.update((result.total_hits as u64).to_le_bytes());
     for hit in &result.hits {
         hash_field(&mut hasher, hit.id.as_bytes());
@@ -425,7 +425,7 @@ pub(super) fn result_digest(result: &SearchResultSet) -> String {
 
 pub(super) fn candidate_digest(result: &SearchResultSet) -> String {
     let mut hasher = Sha256::new();
-    hash_field(&mut hasher, b"skein-production-vector-candidates-v1");
+    hash_field(&mut hasher, b"hawdb-production-vector-candidates-v1");
     if let Some(vector) = result
         .retrievers
         .iter()

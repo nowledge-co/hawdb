@@ -2,8 +2,8 @@
 
 use crate::build_control::checkpoint;
 use crate::build_memory::{checked_add, BuildMemory};
-use crate::{Result, RuntimeTaskContext, SkeinError};
-use skein_executor::QueryMemoryLease;
+use crate::{HawdbError, Result, RuntimeTaskContext};
+use hawdb_executor::QueryMemoryLease;
 use std::cell::RefCell;
 use std::mem::size_of;
 
@@ -125,7 +125,7 @@ where
                 work(worker_workspace)
             })
             .map_err(|error| {
-                SkeinError::Execution(format!("search analyzer worker creation failed: {error}"))
+                HawdbError::Execution(format!("search analyzer worker creation failed: {error}"))
             })?;
         match handle.join() {
             Ok(result) => result,
@@ -135,7 +135,7 @@ where
 }
 
 fn required(bytes: Option<usize>) -> Result<usize> {
-    bytes.ok_or_else(|| SkeinError::Execution("search analyzer capacity overflow".into()))
+    bytes.ok_or_else(|| HawdbError::Execution("search analyzer capacity overflow".into()))
 }
 
 #[cfg(test)]

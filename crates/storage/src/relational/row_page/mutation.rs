@@ -9,7 +9,7 @@ use crate::relational::{
     ordered_key::encode_ordered_relational_key, RelationalKey, RelationalRow, RelationalRowChange,
     RelationalRowChangeCaptureLimits,
 };
-use skein_integrity::Sha256Digest;
+use hawdb_integrity::Sha256Digest;
 use std::collections::{BTreeMap, BTreeSet};
 use std::fmt;
 use std::num::{NonZeroU32, NonZeroU64};

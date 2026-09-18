@@ -9,11 +9,11 @@
 //! allocation overhead, if present, shows up in wall-clock throughput and
 //! total bytes materialized.
 
-use serde_json::json;
-use skein_vector_projection::{
+use hawdb_vector_projection::{
     KernelPreference, ProjectionBuildConfig, ProjectionIdentity, ProjectionSearchOptions,
     ProjectionWriter,
 };
+use serde_json::json;
 use std::hint::black_box;
 use std::num::NonZeroUsize;
 use std::time::{Instant, SystemTime, UNIX_EPOCH};
@@ -31,7 +31,7 @@ const SEARCHES: usize = if SMOKE { 4 } else { 200 };
 const WORKERS: [usize; 2] = [1, 4];
 
 fn main() {
-    let dimension = std::env::var("SKEIN_BENCH_VECTOR_DIMENSION")
+    let dimension = std::env::var("HAWDB_BENCH_VECTOR_DIMENSION")
         .ok()
         .and_then(|value| value.parse().ok())
         .unwrap_or(384);
@@ -63,7 +63,7 @@ fn main() {
 
 fn artifact_path() -> std::path::PathBuf {
     std::env::temp_dir().join(format!(
-        "skein-file-projection-scan-{}-{}.bin",
+        "hawdb-file-projection-scan-{}-{}.bin",
         std::process::id(),
         SystemTime::now()
             .duration_since(UNIX_EPOCH)
@@ -75,7 +75,7 @@ fn artifact_path() -> std::path::PathBuf {
 fn build_artifact(
     path: &std::path::Path,
     dimension: usize,
-) -> skein_vector_projection::FileProjection {
+) -> hawdb_vector_projection::FileProjection {
     let config = ProjectionBuildConfig::new(dimension, ProjectionIdentity::new(1))
         .with_segment_rows(SEGMENT_ROWS);
     let mut writer =
@@ -100,7 +100,7 @@ fn vector(id: u64, dimension: usize) -> Vec<f32> {
 }
 
 fn measure(
-    projection: &skein_vector_projection::FileProjection,
+    projection: &hawdb_vector_projection::FileProjection,
     query: &[f32],
     workers: usize,
 ) -> serde_json::Value {

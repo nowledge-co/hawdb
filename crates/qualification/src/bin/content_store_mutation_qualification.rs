@@ -6,16 +6,12 @@ mod qualification_value;
 #[path = "shared/relational_database_input.rs"]
 mod relational_database_input;
 
-use qualification_input::{read_bounded_json, EvidenceBindingInput, ProductionIdentityInput};
-use qualification_value::value_from_json;
-use relational_database_input::DatabaseInput;
-use serde::Deserialize;
-use skein::{
+use hawdb::{
     WalGroupCommitAdaptiveColdStartEvidence, WalGroupCommitAdaptivePolicyEvidence,
     WalGroupCommitAdaptiveSteadyStateEvidence, WalGroupCommitConfig, WalGroupCommitEvidence,
     WalGroupCommitTailLatencyEvidence,
 };
-use skein_qualification::{
+use hawdb_qualification::{
     run_production_content_store_mutation_qualification, ContentStoreResourceProfileKind,
     ProductionContentStoreMutationKind, ProductionContentStoreMutationLatencyReference,
     ProductionContentStoreMutationMatrixCase, ProductionContentStoreMutationOperation,
@@ -26,6 +22,10 @@ use skein_qualification::{
     PRODUCTION_CONTENT_STORE_MUTATION_QUALIFICATION_PROTOCOL,
     PRODUCTION_CONTENT_STORE_WRITER_MATRIX,
 };
+use qualification_input::{read_bounded_json, EvidenceBindingInput, ProductionIdentityInput};
+use qualification_value::value_from_json;
+use relational_database_input::DatabaseInput;
+use serde::Deserialize;
 use std::collections::BTreeMap;
 use std::num::{NonZeroU64, NonZeroUsize};
 use std::path::PathBuf;
@@ -33,7 +33,7 @@ use std::process::ExitCode;
 use std::time::Duration;
 
 const CONTENT_STORE_MUTATION_QUALIFICATION_PLAN_PROTOCOL: &str =
-    "skein-production-content-store-mutation-plan-v1";
+    "hawdb-production-content-store-mutation-plan-v1";
 
 fn main() -> ExitCode {
     match run(std::env::args().skip(1)) {
@@ -65,7 +65,7 @@ fn main() -> ExitCode {
                     "errors": ["qualification_failed"],
                 })
             );
-            eprintln!("skein-content-store-mutation-qualification: {error}");
+            eprintln!("hawdb-content-store-mutation-qualification: {error}");
             ExitCode::from(2)
         }
     }
@@ -73,7 +73,7 @@ fn main() -> ExitCode {
 
 fn run(
     args: impl IntoIterator<Item = String>,
-) -> Result<Option<skein_qualification::ProductionContentStoreMutationQualificationReport>, String>
+) -> Result<Option<hawdb_qualification::ProductionContentStoreMutationQualificationReport>, String>
 {
     let Some(paths) = parse_args(args)? else {
         return Ok(None);
@@ -589,7 +589,7 @@ impl From<WalGroupAdaptivePolicyInput> for WalGroupCommitAdaptivePolicyEvidence 
 }
 
 fn usage() -> &'static str {
-    "usage: skein-content-store-mutation-qualification \
+    "usage: hawdb-content-store-mutation-qualification \
      --source-database-path <read-only-source> --replica-1 <path> \
      --replica-4 <path> --replica-8 <path> --replica-10 <path> \
      --plan-json <path>"
@@ -598,7 +598,7 @@ fn usage() -> &'static str {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use skein::{
+    use hawdb::{
         ProductionQualificationIdentity, RelationalIndexMode, StorageResidencyMode, Value,
         WalGroupCommitActivation, PRODUCTION_QUALIFICATION_POLICY_VERSION,
     };

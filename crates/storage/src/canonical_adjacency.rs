@@ -12,8 +12,8 @@ use crate::{
     PreparedGraphDescriptorTree, RelRecord, SegmentCache, SegmentRangeRead, SegmentReadError,
     SegmentReadRange, StoreId,
 };
-use skein_core::{RelTypeId, Value};
-use skein_integrity::{Crc32cHasher, IntegrityHasher, Sha256Digest};
+use hawdb_core::{RelTypeId, Value};
+use hawdb_integrity::{Crc32cHasher, IntegrityHasher, Sha256Digest};
 use std::cmp::Reverse;
 use std::collections::BinaryHeap;
 use std::error::Error;
@@ -25,10 +25,10 @@ use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 
-const ARTIFACT_HEADER: &[u8; 16] = b"SKEINADJACENCY01";
+const ARTIFACT_HEADER: &[u8; 16] = b"HAWDBADJACENCY01";
 const BLOCK_HEADER: &[u8; 8] = b"SKNADJ01";
 const RUN_HEADER: &[u8; 8] = b"SKNADJR1";
-const MANIFEST_HEADER: &str = "SKEIN_CANONICAL_ADJACENCY_MANIFEST_V1";
+const MANIFEST_HEADER: &str = "HAWDB_CANONICAL_ADJACENCY_MANIFEST_V1";
 const ARTIFACT_ID: u64 = 0x534b_4144_4a41_4331;
 pub const CANONICAL_ADJACENCY_DESCRIPTOR_ARTIFACT_ID: u64 = 0x534b_4744_4144_4a31;
 const BLOCK_ID_BASE: u64 = 1 << 63;
@@ -41,11 +41,11 @@ const DESCRIPTOR_KEY_BYTES: usize = 29;
 const DESCRIPTOR_VALUE_BYTES: usize = 80;
 
 pub fn canonical_adjacency_descriptor_page_file(generation: u64) -> String {
-    format!("adjacency-descriptors-{generation}.pages.skein")
+    format!("adjacency-descriptors-{generation}.pages.hawdb")
 }
 
 pub fn canonical_adjacency_descriptor_root_file(generation: u64) -> String {
-    format!("adjacency-descriptors-{generation}.root.skein")
+    format!("adjacency-descriptors-{generation}.root.hawdb")
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -713,7 +713,7 @@ impl CanonicalAdjacencyWriter {
         }
         runs.compact()?;
 
-        let tmp_path = path.with_extension("skein.tmp");
+        let tmp_path = path.with_extension("hawdb.tmp");
         let result = self.merge_runs(
             &tmp_path,
             generation,
@@ -2474,7 +2474,7 @@ mod tests {
             .unwrap()
             .as_nanos();
         std::env::temp_dir().join(format!(
-            "skein-canonical-adjacency-{name}-{}-{nonce}",
+            "hawdb-canonical-adjacency-{name}-{}-{nonce}",
             std::process::id(),
         ))
     }
@@ -2494,7 +2494,7 @@ mod tests {
         let root = test_path("sparse-dense");
         let _ = fs::remove_dir_all(&root);
         fs::create_dir_all(&root).unwrap();
-        let path = root.join("adjacency.skein");
+        let path = root.join("adjacency.hawdb");
         let config = CanonicalAdjacencyConfig {
             memory_budget_bytes: NonZeroU64::new(128).unwrap(),
             target_block_bytes: NonZeroU64::new(256).unwrap(),
@@ -2604,7 +2604,7 @@ mod tests {
         let root = test_path("descriptor-root");
         let _ = fs::remove_dir_all(&root);
         fs::create_dir_all(&root).unwrap();
-        let adjacency_path = root.join("adjacency.7.skein");
+        let adjacency_path = root.join("adjacency.7.hawdb");
         let descriptor_paths = GraphDescriptorTreePaths::new(
             root.join(canonical_adjacency_descriptor_page_file(7)),
             root.join(canonical_adjacency_descriptor_root_file(7)),
@@ -2664,7 +2664,7 @@ mod tests {
         let root = test_path("immutable-generation");
         let _ = fs::remove_dir_all(&root);
         fs::create_dir_all(&root).unwrap();
-        let adjacency_path = root.join("adjacency.7.skein");
+        let adjacency_path = root.join("adjacency.7.hawdb");
         let descriptor_paths = GraphDescriptorTreePaths::new(
             root.join(canonical_adjacency_descriptor_page_file(7)),
             root.join(canonical_adjacency_descriptor_root_file(7)),
@@ -2718,7 +2718,7 @@ mod tests {
         let root = test_path("demand-reader");
         let _ = fs::remove_dir_all(&root);
         fs::create_dir_all(&root).unwrap();
-        let adjacency_path = root.join("adjacency.7.skein");
+        let adjacency_path = root.join("adjacency.7.hawdb");
         let descriptor_paths = GraphDescriptorTreePaths::new(
             root.join(canonical_adjacency_descriptor_page_file(7)),
             root.join(canonical_adjacency_descriptor_root_file(7)),

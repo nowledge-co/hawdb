@@ -88,7 +88,7 @@ fn controlled_frame_admits_scratch_and_stops_after_a_bounded_write() {
     assert_eq!(memory.ledger.snapshot().used_bytes, 0);
 
     let task = RuntimeTaskContext::default().with_memory_reservation(
-        skein_core::RuntimeMemoryReservation::new(
+        hawdb_core::RuntimeMemoryReservation::new(
             crate::document_encoding::HEX_BUFFER_BYTES as u64 - 1,
             0,
         ),

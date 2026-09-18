@@ -3,12 +3,12 @@
 #[cfg(test)]
 mod tests;
 
-use skein_core::{Result, SkeinError};
-use skein_storage::relational_index_view::{
+use hawdb_core::{HawdbError, Result};
+use hawdb_storage::relational_index_view::{
     RelationalIndexProbeStatistics, RelationalIndexReadViewBackendReport,
     RelationalIndexReadViewReport, RelationalTransactionIndexView,
 };
-use skein_storage::{
+use hawdb_storage::{
     RelationalIndexReadLimits, RelationalIndexShadowError, RelationalKey, RelationalState,
 };
 use std::cell::RefCell;
@@ -49,7 +49,7 @@ pub trait RelationalIndexStoreReader {
         &self,
         table: &str,
         index: &str,
-        scan: &skein_storage::RelationalIndexRangeScan,
+        scan: &hawdb_storage::RelationalIndexRangeScan,
         limits: RelationalIndexReadLimits,
         visit: impl FnMut(&RelationalKey, &RelationalKey) -> bool,
     ) -> Option<std::result::Result<RelationalIndexReadViewReport, RelationalIndexShadowError>>;
@@ -169,7 +169,7 @@ struct RelationalIndexProbe<'input> {
 #[derive(Clone, Copy)]
 enum RelationalIndexProbeSelector<'input> {
     Prefix(&'input RelationalKey),
-    Range(&'input skein_storage::RelationalIndexRangeScan),
+    Range(&'input hawdb_storage::RelationalIndexRangeScan),
 }
 
 impl<'a, R: RelationalIndexStoreReader> RelationalIndexRuntime<'a, R> {
@@ -244,7 +244,7 @@ impl<'a, R: RelationalIndexStoreReader> RelationalIndexRuntime<'a, R> {
         let prefixes = prefixes.into_iter().collect::<Vec<_>>();
         let prefix_width = prefixes[0].0.len();
         if prefixes.iter().any(|prefix| prefix.0.len() != prefix_width) {
-            return Err(SkeinError::Execution(
+            return Err(HawdbError::Execution(
                 "batch index prefixes must have one common key width".to_string(),
             ));
         }
@@ -253,7 +253,7 @@ impl<'a, R: RelationalIndexStoreReader> RelationalIndexRuntime<'a, R> {
                 .iter()
                 .find(|prefix| index_key.0.starts_with(&prefix.0))
                 .ok_or_else(|| {
-                    SkeinError::StorageIntegrity(
+                    HawdbError::StorageIntegrity(
                         "batch index reader emitted a key outside every requested prefix"
                             .to_string(),
                     )
@@ -288,7 +288,7 @@ impl<'a, R: RelationalIndexStoreReader> RelationalIndexRuntime<'a, R> {
         };
         let Some(remaining) = self.remaining_limits() else {
             if authoritative {
-                return Err(SkeinError::Execution(format!(
+                return Err(HawdbError::Execution(format!(
                     "authoritative relational index budget is exhausted before reading {table}.{index}"
                 )));
             }
@@ -348,12 +348,12 @@ impl<'a, R: RelationalIndexStoreReader> RelationalIndexRuntime<'a, R> {
             }
             Some(Err(RelationalIndexShadowError::Admission(_))) => {
                 if produced_provisional_rows {
-                    return Err(SkeinError::Execution(format!(
+                    return Err(HawdbError::Execution(format!(
                         "relational batch index read for {table}.{index} exhausted admission after producing provisional row locators"
                     )));
                 }
                 if authoritative {
-                    return Err(SkeinError::Execution(format!(
+                    return Err(HawdbError::Execution(format!(
                         "authoritative relational batch index read for {table}.{index} was rejected by admission"
                     )));
                 }
@@ -362,12 +362,12 @@ impl<'a, R: RelationalIndexStoreReader> RelationalIndexRuntime<'a, R> {
             }
             Some(Err(RelationalIndexShadowError::MissingIndex { .. })) => {
                 if produced_provisional_rows {
-                    return Err(SkeinError::StorageIntegrity(format!(
+                    return Err(HawdbError::StorageIntegrity(format!(
                         "relational batch index {table}.{index} disappeared after producing provisional row locators"
                     )));
                 }
                 if authoritative {
-                    return Err(SkeinError::StorageIntegrity(format!(
+                    return Err(HawdbError::StorageIntegrity(format!(
                         "authoritative relational index {table}.{index} is missing"
                     )));
                 }
@@ -375,19 +375,19 @@ impl<'a, R: RelationalIndexStoreReader> RelationalIndexRuntime<'a, R> {
                 visit_materialized_prefix_entries_many(state, table, index, &prefixes, &mut visit)
             }
             Some(Err(error @ RelationalIndexShadowError::Corrupt(_))) => {
-                Err(SkeinError::StorageIntegrity(format!(
+                Err(HawdbError::StorageIntegrity(format!(
                     "relational batch index read failed closed for {table}.{index}: {error}"
                 )))
             }
             Some(Err(error @ RelationalIndexShadowError::Durability(_)))
             | Some(Err(error @ RelationalIndexShadowError::StaleGeneration { .. })) => {
-                Err(SkeinError::StorageIntegrity(format!(
+                Err(HawdbError::StorageIntegrity(format!(
                     "relational batch index identity failed closed for {table}.{index}: {error}"
                 )))
             }
             None => {
                 if authoritative {
-                    return Err(SkeinError::StorageIntegrity(format!(
+                    return Err(HawdbError::StorageIntegrity(format!(
                         "authoritative relational index view is unavailable for {table}.{index}"
                     )));
                 }
@@ -402,7 +402,7 @@ impl<'a, R: RelationalIndexStoreReader> RelationalIndexRuntime<'a, R> {
         state: &RelationalState,
         table: &str,
         index: &str,
-        scan: &skein_storage::RelationalIndexRangeScan,
+        scan: &hawdb_storage::RelationalIndexRangeScan,
         mut visit: impl FnMut(&RelationalKey, &RelationalKey) -> Result<bool>,
     ) -> Result<bool> {
         if matches!(
@@ -459,7 +459,7 @@ impl<'a, R: RelationalIndexStoreReader> RelationalIndexRuntime<'a, R> {
         };
         let Some(remaining) = self.remaining_limits() else {
             if authoritative {
-                return Err(SkeinError::Execution(format!(
+                return Err(HawdbError::Execution(format!(
                     "authoritative relational index budget is exhausted before reading {table}.{index}"
                 )));
             }
@@ -520,12 +520,12 @@ impl<'a, R: RelationalIndexStoreReader> RelationalIndexRuntime<'a, R> {
             }
             Some(Err(RelationalIndexShadowError::Admission(_))) => {
                 if produced_provisional_rows {
-                    return Err(SkeinError::Execution(format!(
+                    return Err(HawdbError::Execution(format!(
                         "relational index read for {table}.{index} exhausted admission after producing provisional row locators"
                     )));
                 }
                 if authoritative {
-                    return Err(SkeinError::Execution(format!(
+                    return Err(HawdbError::Execution(format!(
                         "authoritative relational index read for {table}.{index} was rejected by admission"
                     )));
                 }
@@ -534,12 +534,12 @@ impl<'a, R: RelationalIndexStoreReader> RelationalIndexRuntime<'a, R> {
             }
             Some(Err(RelationalIndexShadowError::MissingIndex { .. })) => {
                 if produced_provisional_rows {
-                    return Err(SkeinError::StorageIntegrity(format!(
+                    return Err(HawdbError::StorageIntegrity(format!(
                         "relational index {table}.{index} disappeared after producing provisional row locators"
                     )));
                 }
                 if authoritative {
-                    return Err(SkeinError::StorageIntegrity(format!(
+                    return Err(HawdbError::StorageIntegrity(format!(
                         "authoritative relational index {table}.{index} is missing"
                     )));
                 }
@@ -547,19 +547,19 @@ impl<'a, R: RelationalIndexStoreReader> RelationalIndexRuntime<'a, R> {
                 fallback(visit)
             }
             Some(Err(error @ RelationalIndexShadowError::Corrupt(_))) => {
-                Err(SkeinError::StorageIntegrity(format!(
+                Err(HawdbError::StorageIntegrity(format!(
                     "relational index read failed closed for {table}.{index}: {error}"
                 )))
             }
             Some(Err(error @ RelationalIndexShadowError::Durability(_)))
             | Some(Err(error @ RelationalIndexShadowError::StaleGeneration { .. })) => {
-                Err(SkeinError::StorageIntegrity(format!(
+                Err(HawdbError::StorageIntegrity(format!(
                     "relational index identity failed closed for {table}.{index}: {error}"
                 )))
             }
             None => {
                 if authoritative {
-                    return Err(SkeinError::StorageIntegrity(format!(
+                    return Err(HawdbError::StorageIntegrity(format!(
                         "authoritative relational index view is unavailable for {table}.{index}"
                     )));
                 }
@@ -654,7 +654,7 @@ impl<'a, R: RelationalIndexStoreReader> RelationalIndexRuntime<'a, R> {
             || rows_visited > self.limits.max_rows.get()
             || file_bytes > self.limits.max_file_bytes
         {
-            return Err(SkeinError::Execution(format!(
+            return Err(HawdbError::Execution(format!(
                 "relational index reads exceed the statement budget logical_pages={}/{}, logical_bytes={}/{}, rows={}/{}, file_bytes={}/{}",
                 logical_pages,
                 self.limits.max_pages,
@@ -733,7 +733,7 @@ impl<'a, R: RelationalIndexStoreReader> RelationalIndexRuntime<'a, R> {
                 evidence.exclusive_seek_lookups =
                     checked_add(evidence.exclusive_seek_lookups, 1, "exclusive seek count")?;
             }
-            if scan.direction == skein_storage::RelationalIndexScanDirection::Backward {
+            if scan.direction == hawdb_storage::RelationalIndexScanDirection::Backward {
                 evidence.backward_lookups =
                     checked_add(evidence.backward_lookups, 1, "backward lookup count")?;
             }
@@ -769,7 +769,7 @@ fn visit_materialized_prefix_entries<'state>(
             }
         })
         .ok_or_else(|| {
-            SkeinError::Execution(format!(
+            HawdbError::Execution(format!(
                 "relational index {index} on table {table} is not materialized"
             ))
         })?;
@@ -804,7 +804,7 @@ fn visit_materialized_range_entries<'state>(
     state: &'state RelationalState,
     table: &str,
     index: &str,
-    scan: &skein_storage::RelationalIndexRangeScan,
+    scan: &hawdb_storage::RelationalIndexRangeScan,
     visit: &mut dyn FnMut(&RelationalKey, &RelationalKey) -> Result<bool>,
 ) -> Result<bool> {
     let mut error = None;
@@ -823,7 +823,7 @@ fn visit_materialized_range_entries<'state>(
             }
         })
         .ok_or_else(|| {
-            SkeinError::Execution(format!(
+            HawdbError::Execution(format!(
                 "relational index {index} on table {table} is not materialized"
             ))
         })?;
@@ -856,7 +856,7 @@ fn ensure_identity(
         || evidence.transaction_workspace_lookups != 0)
         && expected != observed
     {
-        return Err(SkeinError::StorageIntegrity(
+        return Err(HawdbError::StorageIntegrity(
             "relational index view identity changed within one SQL statement".to_string(),
         ));
     }
@@ -982,5 +982,5 @@ impl IndexReadMetrics {
 
 fn checked_add(left: usize, right: usize, counter: &str) -> Result<usize> {
     left.checked_add(right)
-        .ok_or_else(|| SkeinError::StorageIntegrity(format!("relational {counter} overflow")))
+        .ok_or_else(|| HawdbError::StorageIntegrity(format!("relational {counter} overflow")))
 }

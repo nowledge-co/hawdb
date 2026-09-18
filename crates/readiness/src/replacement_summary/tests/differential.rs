@@ -237,7 +237,7 @@ fn rejected_mutations() -> Vec<(&'static str, Value, &'static str)> {
         ("/search_projection_shadow_evidence/document_count_parity", json!(false), "search_projection_shadow_evidence"),
         ("/search_candidate_shadow_evidence/primary_only_candidate_count", json!(1), "search_candidate_shadow_evidence"),
         ("/search_route_ownership/lancedb_route_count", json!(1), "search_route_ownership"),
-        ("/active_search_route_ownership/skein_route_count", json!(0), "active_search_route_ownership"),
+        ("/active_search_route_ownership/hawdb_route_count", json!(0), "active_search_route_ownership"),
         ("/active_search_route_readiness/lancedb_handle_required_route_count", json!(1), "active_search_route_readiness"),
         ("/bounded_read_evidence/payload_budget_exceeded", json!(true), "bounded_read_evidence"),
         ("/graph_route_readiness/protocol", json!("wrong-protocol"), "graph_route_readiness"),

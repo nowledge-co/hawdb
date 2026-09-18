@@ -2,7 +2,7 @@ use crate::RuntimeCapability;
 use std::fmt::{Display, Formatter};
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub enum SkeinError {
+pub enum HawdbError {
     Parse(String),
     Semantic(String),
     Storage(String),
@@ -18,17 +18,17 @@ pub enum SkeinError {
     },
 }
 
-impl Display for SkeinError {
+impl Display for HawdbError {
     fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
         match self {
-            SkeinError::Parse(message) => write!(f, "parse error: {message}"),
-            SkeinError::Semantic(message) => write!(f, "semantic error: {message}"),
-            SkeinError::Storage(message) => write!(f, "storage error: {message}"),
-            SkeinError::StorageIntegrity(message) => {
+            HawdbError::Parse(message) => write!(f, "parse error: {message}"),
+            HawdbError::Semantic(message) => write!(f, "semantic error: {message}"),
+            HawdbError::Storage(message) => write!(f, "storage error: {message}"),
+            HawdbError::StorageIntegrity(message) => {
                 write!(f, "storage integrity error: {message}")
             }
-            SkeinError::Execution(message) => write!(f, "execution error: {message}"),
-            SkeinError::AppendSequenceExhausted {
+            HawdbError::Execution(message) => write!(f, "execution error: {message}"),
+            HawdbError::AppendSequenceExhausted {
                 table,
                 watermark,
                 requested,
@@ -36,19 +36,19 @@ impl Display for SkeinError {
                 f,
                 "append commit sequence exhausted for table {table}: watermark={watermark}, requested={requested}"
             ),
-            SkeinError::CapabilityUnavailable { capability } => {
+            HawdbError::CapabilityUnavailable { capability } => {
                 write!(f, "capability unavailable: {}", capability.as_str())
             }
         }
     }
 }
 
-impl std::error::Error for SkeinError {}
+impl std::error::Error for HawdbError {}
 
-pub type Result<T> = std::result::Result<T, SkeinError>;
+pub type Result<T> = std::result::Result<T, HawdbError>;
 
-impl From<std::io::Error> for SkeinError {
+impl From<std::io::Error> for HawdbError {
     fn from(error: std::io::Error) -> Self {
-        SkeinError::Storage(error.to_string())
+        HawdbError::Storage(error.to_string())
     }
 }

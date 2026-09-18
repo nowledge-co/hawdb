@@ -6,16 +6,16 @@
 //! output. Both paths use the same snapshot reader, cache, fields, row order,
 //! and checksums.
 
-use serde_json::json;
-use skein::{Database, DatabaseConfig, Value};
-use skein_core::RuntimeTaskContext;
-use skein_storage::{
+use hawdb::{Database, DatabaseConfig, Value};
+use hawdb_core::RuntimeTaskContext;
+use hawdb_storage::{
     RelationalHydrationBudget, RelationalOverflowPublicationConfig, RelationalOverflowRootReader,
     RelationalProjectedRow, RelationalRowPageProjectedFields, RelationalRowPageProjectedRange,
     RelationalRowPageProjectedRangeFields, RelationalRowPagePublicationConfig,
     RelationalRowPageReadView, RelationalRowPageRootReader, RelationalRowPageSnapshotReadLimits,
     RelationalRowPageSnapshotReader, RelationalValue, RelationalValueRef, SegmentCache, StoreId,
 };
+use serde_json::json;
 use std::alloc::{GlobalAlloc, Layout, System};
 use std::fmt::Write as _;
 use std::hint::black_box;
@@ -105,7 +105,7 @@ fn main() {
     println!(
         "relational_row_page_lending {}",
         json!({
-            "protocol": "skein-relational-row-page-lending-evidence-v1",
+            "protocol": "hawdb-relational-row-page-lending-evidence-v1",
             "rows": ROWS,
             "body_bytes": BODY_BYTES,
             "output_limit": OUTPUT_LIMIT,
@@ -126,7 +126,7 @@ fn main() {
 
 fn measure_point_cache(fixture: &Fixture) -> PointCacheEvidence {
     let (reader, cache) = fixture.fresh_reader();
-    let key = skein_storage::RelationalKey(vec![RelationalValue::Text(row_id(0))]);
+    let key = hawdb_storage::RelationalKey(vec![RelationalValue::Text(row_id(0))]);
     let cold = run_point_cache_probe(&reader, &key);
     let warm = run_point_cache_probe(&reader, &key);
     let resident_bytes = cache.snapshot().resident_bytes;
@@ -147,7 +147,7 @@ fn measure_point_cache(fixture: &Fixture) -> PointCacheEvidence {
 
 fn run_point_cache_probe(
     reader: &RelationalRowPageSnapshotReader,
-    key: &skein_storage::RelationalKey,
+    key: &hawdb_storage::RelationalKey,
 ) -> PointCacheProbe {
     let mut hydration = RelationalHydrationBudget::default();
     let (row, report) = reader
@@ -338,7 +338,7 @@ fn measure_point_lookup(reader: &RelationalRowPageSnapshotReader) -> PointEviden
     let keys = (0..POINT_PROBES)
         .map(|probe| {
             let ordinal = probe.wrapping_mul(2_654_435_761usize) % ROWS;
-            skein_storage::RelationalKey(vec![RelationalValue::Text(row_id(ordinal))])
+            hawdb_storage::RelationalKey(vec![RelationalValue::Text(row_id(ordinal))])
         })
         .collect::<Vec<_>>();
     let mut point_nanos = Vec::with_capacity(SAMPLES);
@@ -400,7 +400,7 @@ fn measure_point_lookup(reader: &RelationalRowPageSnapshotReader) -> PointEviden
 
 fn run_point_reads(
     reader: &RelationalRowPageSnapshotReader,
-    keys: &[skein_storage::RelationalKey],
+    keys: &[hawdb_storage::RelationalKey],
 ) -> PointOutcome {
     let before_allocated = allocated_bytes();
     let started = Instant::now();
@@ -435,7 +435,7 @@ fn run_point_reads(
 
 fn run_exact_range_reads(
     reader: &RelationalRowPageSnapshotReader,
-    keys: &[skein_storage::RelationalKey],
+    keys: &[hawdb_storage::RelationalKey],
 ) -> PointOutcome {
     let before_allocated = allocated_bytes();
     let started = Instant::now();
@@ -571,7 +571,7 @@ struct Fixture {
 impl Fixture {
     fn new() -> Self {
         let directory = std::env::temp_dir().join(format!(
-            "skein-relational-row-page-lending-{}-{}",
+            "hawdb-relational-row-page-lending-{}-{}",
             std::process::id(),
             SystemTime::now()
                 .duration_since(UNIX_EPOCH)

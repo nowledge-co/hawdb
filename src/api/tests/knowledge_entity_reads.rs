@@ -3,7 +3,7 @@ use super::*;
 #[test]
 fn retrieves_knowledge_entity_without_search_projection() {
     let mut db = Database::new();
-    db.query("CREATE (:Entity {id: 'entity_1', name: 'Skein', kind: 'database', score: 7})")
+    db.query("CREATE (:Entity {id: 'entity_1', name: 'Hawdb', kind: 'database', score: 7})")
         .unwrap();
 
     let output = db
@@ -20,7 +20,7 @@ fn retrieves_knowledge_entity_without_search_projection() {
     assert_eq!(entity.external_id.as_deref(), Some("entity_1"));
     assert_eq!(
         entity.properties.get("name"),
-        Some(&Value::String("Skein".to_string()))
+        Some(&Value::String("Hawdb".to_string()))
     );
     assert_eq!(entity.properties.get("score"), Some(&Value::Int(7)));
 }

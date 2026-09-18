@@ -122,7 +122,7 @@ fn explain_analyze_reports_durable_source_segment_pruning() {
         .duration_since(std::time::UNIX_EPOCH)
         .unwrap()
         .as_nanos();
-    let path = std::env::temp_dir().join(format!("skein-source-analyze-{nonce}"));
+    let path = std::env::temp_dir().join(format!("hawdb-source-analyze-{nonce}"));
     let mut db = Database::open(&path).unwrap();
     for id in 0..128 {
         db.query(&format!(
@@ -403,7 +403,7 @@ fn explain_analyze_reports_out_of_core_relationship_projection_pruning() {
         .unwrap()
         .as_nanos();
     let path = std::env::temp_dir().join(format!(
-        "skein-relationship-projection-profile-{}-{nonce}",
+        "hawdb-relationship-projection-profile-{}-{nonce}",
         std::process::id(),
     ));
     let mut db = Database::open_with_config(
@@ -1522,7 +1522,7 @@ fn slow_query_jsonl_export_is_redacted_by_default() {
 
     let jsonl = db.slow_query_log_jsonl().unwrap();
 
-    assert!(jsonl.contains("skein-slow-query-log-event-v1"));
+    assert!(jsonl.contains("hawdb-slow-query-log-event-v1"));
     assert!(jsonl.contains("query_digest"));
     assert!(!jsonl.contains("MATCH"));
     assert!(!jsonl.contains("secret-id"));

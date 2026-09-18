@@ -5,8 +5,8 @@ Status: proposal for review. No code change yet.
 ## Goal
 
 Move the concrete graph engine (`GraphStore` + its `graph_*` / relational-row /
-index-shadow modules, currently in `src/store*`) into `skein-storage`, keeping
-`src` as the query-first facade (`Database`, `NowledgeMemGraph`, `SkeinEmbedded`).
+index-shadow modules, currently in `src/store*`) into `hawdb-storage`, keeping
+`src` as the query-first facade (`Database`, `NowledgeMemGraph`, `HawdbEmbedded`).
 
 `src` must not depend on the concrete store type; it consumes a storage-neutral
 contract. The contract stays internal (`#[doc(hidden)]`), never a host API.
@@ -18,7 +18,7 @@ contract. The contract stays internal (`#[doc(hidden)]`), never a host API.
   `graph_read` / `graph_mutation` / `graph_commit` / `graph_apply` /
   `graph_checkpoint` / `graph_recovery` / `graph_indexes` /
   `graph_columnar_shadow` / `relational_row_pages` / `relational_index_shadow`).
-- `GraphStore` fields are almost all `skein-storage` types
+- `GraphStore` fields are almost all `hawdb-storage` types
   (`CowSegmentedMap`, `RelationalState`, `AppendState`,
   `ColumnarShadowState`-adjacent readers, `Arc<dyn BackgroundWorkAdmission>`, …).
   The only root types are `durable: Option<DurableStore>` and three root state
@@ -30,12 +30,12 @@ contract. The contract stays internal (`#[doc(hidden)]`), never a host API.
 The engine already implements storage-side traits through thin root adapters,
 which is exactly the pattern to extend:
 
-- `skein_analytics::ProjectionSource` (`crates/analytics`) — implemented in
+- `hawdb_analytics::ProjectionSource` (`crates/analytics`) — implemented in
   `src/analytics.rs` via `visit_projection_nodes` / `visit_projection_relationships`.
-- `skein_search::SearchProjectionSource` — implemented in `src/search.rs`.
-- `skein_system_sql::SystemSqlStore` (`crates/system-sql`) — implemented in
+- `hawdb_search::SearchProjectionSource` — implemented in `src/search.rs`.
+- `hawdb_system_sql::SystemSqlStore` (`crates/system-sql`) — implemented in
   `src/store.rs` (`commit_epoch`, `statistics`, `projected_graph_statuses`, …).
-- Host seams are already abstracted: `skein_storage::BackgroundWorkAdmission`
+- Host seams are already abstracted: `hawdb_storage::BackgroundWorkAdmission`
   for the QoS governor, `TelemetrySink` for telemetry.
 
 ## Blockers
@@ -66,13 +66,13 @@ consumes; they are already storage-side.
 ## Proposed phasing
 
 1. Move the three storage-neutral state structs (`ColumnarShadowState`,
-   `RelationalIndexShadowState`, `RelationalRowPageState`) into `skein-storage`
+   `RelationalIndexShadowState`, `RelationalRowPageState`) into `hawdb-storage`
    with their private helpers, leaving `impl GraphStore` glue in root.
-2. Introduce the `GraphEngine` trait in `skein-storage` and implement it for
+2. Introduce the `GraphEngine` trait in `hawdb-storage` and implement it for
    `GraphStore`; switch `Database` to generic-over-`GraphEngine` and remove
    direct concrete-store calls.
 3. Move the durable/checkpoint orchestration behind the checkpoint contract.
-4. Move `GraphStore` + `graph_*` modules into `skein-storage::graph`, leaving
+4. Move `GraphStore` + `graph_*` modules into `hawdb-storage::graph`, leaving
    only the facade and adapters in `src`.
 
 ## Open questions for review
@@ -83,5 +83,5 @@ consumes; they are already storage-side.
 
 ## Verification
 
-Each phase keeps the full `cargo test -p skein --lib` + `cargo test -p
-skein-storage --lib` + bazel root suites green; no public facade change.
+Each phase keeps the full `cargo test -p hawdb --lib` + `cargo test -p
+hawdb-storage --lib` + bazel root suites green; no public facade change.

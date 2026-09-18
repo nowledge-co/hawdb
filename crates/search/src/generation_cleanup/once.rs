@@ -4,8 +4,8 @@ use super::{CleanupCandidate, SearchProjectionCleanupOptions, SearchProjectionGe
 use crate::build_control::checkpoint;
 use crate::build_memory::{directory, BuildMemory};
 use crate::Result;
-use skein_core::RuntimeTaskContext;
-use skein_executor::QueryMemoryLease;
+use hawdb_core::RuntimeTaskContext;
+use hawdb_executor::QueryMemoryLease;
 use std::path::Path;
 use std::{fs, io};
 

@@ -1,7 +1,7 @@
 //! Index sample invalidation for graph node mutations.
 
 use crate::NodeRecord;
-use skein_core::{Catalog, CompositeIndexDescriptor, IndexId, IndexKind, LabelId, Value};
+use hawdb_core::{Catalog, CompositeIndexDescriptor, IndexId, IndexKind, LabelId, Value};
 use std::collections::BTreeMap;
 
 pub fn node_create_index_sample_updates(

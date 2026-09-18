@@ -29,7 +29,7 @@ fn search_projection_evidence_reports_ready_for_complete_probe() {
 fn search_projection_evidence_report_exposes_typed_summary() {
     let report = NowledgeSearchProjectionEvidenceReport::from_probe(&ready_probe());
 
-    assert_eq!(report.protocol, "skein-nowledge-search-projection-evidence");
+    assert_eq!(report.protocol, "hawdb-nowledge-search-projection-evidence");
     assert!(report.ready);
     assert!(report.derived_projection);
     assert!(report.all_tables_covered);
@@ -45,7 +45,7 @@ fn search_projection_evidence_report_exposes_typed_summary() {
     assert!(report.incremental_update_ready);
     assert!(report.source_chunk_ready);
     assert!(report.predicate_pushdown_ready);
-    assert!(report.skein_predicate_pushdown_ready);
+    assert!(report.hawdb_predicate_pushdown_ready);
     assert!(report.production_filter_pruning_ready);
     assert!(report.compressed_vector_projection_required);
     assert!(report.compressed_vector_projection_ready);
@@ -57,13 +57,13 @@ fn search_projection_evidence_report_exposes_typed_summary() {
 fn probe_contract_example_feeds_search_projection_evidence() {
     let contract = nowledge_search_projection_probe_contract_json();
     let example = &contract["example_primary_probe"];
-    let skein_example = &contract["example_skein_probe"];
+    let hawdb_example = &contract["example_hawdb_probe"];
     let evidence = nowledge_search_projection_evidence_json(example);
-    let skein_evidence = nowledge_search_projection_evidence_json(skein_example);
+    let hawdb_evidence = nowledge_search_projection_evidence_json(hawdb_example);
 
     assert_eq!(
         contract["protocol"],
-        "skein-nowledge-search-projection-probe-contract-v1"
+        "hawdb-nowledge-search-projection-probe-contract-v1"
     );
     assert_eq!(example["engine"], "lancedb");
     assert_eq!(
@@ -78,7 +78,7 @@ fn probe_contract_example_feeds_search_projection_evidence() {
         ])
     );
     assert_eq!(
-        contract["required_skein_scan_filter_fields"],
+        contract["required_hawdb_scan_filter_fields"],
         serde_json::json!(NOWLEDGE_SEARCH_PROJECTION_SCAN_FILTER_FIELDS)
     );
     assert!(contract["predicate_pushdown_fields"]
@@ -95,17 +95,17 @@ fn probe_contract_example_feeds_search_projection_evidence() {
     assert_eq!(evidence["predicate_pushdown_ready"], true);
     assert_eq!(evidence["compressed_vector_projection_required"], false);
     assert_eq!(evidence["compressed_vector_projection_ready"], true);
-    assert_eq!(skein_example["engine"], "skein");
-    assert_eq!(skein_evidence["ready"], true);
-    assert_eq!(skein_evidence["skein_predicate_pushdown_ready"], true);
+    assert_eq!(hawdb_example["engine"], "hawdb");
+    assert_eq!(hawdb_evidence["ready"], true);
+    assert_eq!(hawdb_evidence["hawdb_predicate_pushdown_ready"], true);
     assert_eq!(
-        skein_evidence["predicate_pushdown"]["segment_descriptor_scan_filter_fields_ready"],
+        hawdb_evidence["predicate_pushdown"]["segment_descriptor_scan_filter_fields_ready"],
         true
     );
 }
 
 #[test]
-fn search_projection_evidence_requires_compressed_vector_projection_for_skein_probe() {
+fn search_projection_evidence_requires_compressed_vector_projection_for_hawdb_probe() {
     let mut probe = ready_probe();
     probe["compressed_vector_projection"]["ready"] = serde_json::json!(false);
     probe["compressed_vector_projection"]["compiled"] = serde_json::json!(false);
@@ -221,13 +221,13 @@ fn search_projection_evidence_fails_closed_for_missing_predicate_pushdown() {
         report["blocker_codes"],
         serde_json::json!([
             "predicate_pushdown_not_ready",
-            "skein_predicate_pushdown_descriptor_not_ready"
+            "hawdb_predicate_pushdown_descriptor_not_ready"
         ])
     );
 }
 
 #[test]
-fn skein_search_projection_evidence_requires_production_filter_pruning() {
+fn hawdb_search_projection_evidence_requires_production_filter_pruning() {
     let mut probe = ready_probe();
     probe
         .as_object_mut()
@@ -244,12 +244,12 @@ fn skein_search_projection_evidence_requires_production_filter_pruning() {
     );
     assert_eq!(
         report["blocker_codes"],
-        serde_json::json!(["skein_production_filter_pruning_not_ready"])
+        serde_json::json!(["hawdb_production_filter_pruning_not_ready"])
     );
 }
 
 #[test]
-fn skein_search_projection_evidence_rejects_incomplete_production_filter_pruning() {
+fn hawdb_search_projection_evidence_rejects_incomplete_production_filter_pruning() {
     let mut probe = ready_probe();
     probe["production_filter_pruning"]["ready_field_count"] = serde_json::json!(12);
     probe["production_filter_pruning"]["missing_fields"] = serde_json::json!(["event_end"]);
@@ -268,12 +268,12 @@ fn skein_search_projection_evidence_rejects_incomplete_production_filter_pruning
     );
     assert_eq!(
         report["blocker_codes"],
-        serde_json::json!(["skein_production_filter_pruning_not_ready"])
+        serde_json::json!(["hawdb_production_filter_pruning_not_ready"])
     );
 }
 
 #[test]
-fn skein_search_projection_evidence_requires_production_filter_explain_analyze() {
+fn hawdb_search_projection_evidence_requires_production_filter_explain_analyze() {
     let mut probe = ready_probe();
     probe["production_filter_pruning"]["explain_analyze_ready"] = serde_json::json!(false);
 
@@ -287,12 +287,12 @@ fn skein_search_projection_evidence_requires_production_filter_explain_analyze()
     );
     assert_eq!(
         report["blocker_codes"],
-        serde_json::json!(["skein_production_filter_pruning_not_ready"])
+        serde_json::json!(["hawdb_production_filter_pruning_not_ready"])
     );
 }
 
 #[test]
-fn skein_search_projection_evidence_requires_payload_avoidance_samples() {
+fn hawdb_search_projection_evidence_requires_payload_avoidance_samples() {
     let mut probe = ready_probe();
     for sample in probe["production_filter_pruning"]["samples"]
         .as_array_mut()
@@ -319,12 +319,12 @@ fn skein_search_projection_evidence_requires_payload_avoidance_samples() {
     );
     assert_eq!(
         report["blocker_codes"],
-        serde_json::json!(["skein_production_filter_pruning_not_ready"])
+        serde_json::json!(["hawdb_production_filter_pruning_not_ready"])
     );
 }
 
 #[test]
-fn skein_search_projection_evidence_requires_filter_operation_families() {
+fn hawdb_search_projection_evidence_requires_filter_operation_families() {
     let mut probe = ready_probe();
     probe["production_filter_pruning"]["samples"]
         .as_array_mut()
@@ -354,12 +354,12 @@ fn skein_search_projection_evidence_requires_filter_operation_families() {
     );
     assert_eq!(
         report["blocker_codes"],
-        serde_json::json!(["skein_production_filter_pruning_not_ready"])
+        serde_json::json!(["hawdb_production_filter_pruning_not_ready"])
     );
 }
 
 #[test]
-fn skein_search_projection_evidence_requires_normalized_default_equality_flag() {
+fn hawdb_search_projection_evidence_requires_normalized_default_equality_flag() {
     let mut probe = ready_probe();
     let samples = probe["production_filter_pruning"]["samples"]
         .as_array_mut()
@@ -384,12 +384,12 @@ fn skein_search_projection_evidence_requires_normalized_default_equality_flag() 
     );
     assert_eq!(
         report["blocker_codes"],
-        serde_json::json!(["skein_production_filter_pruning_not_ready"])
+        serde_json::json!(["hawdb_production_filter_pruning_not_ready"])
     );
 }
 
 #[test]
-fn skein_search_projection_evidence_requires_descriptor_field_summaries() {
+fn hawdb_search_projection_evidence_requires_descriptor_field_summaries() {
     let mut probe = ready_probe();
     probe["predicate_pushdown"]
         .as_object_mut()
@@ -400,7 +400,7 @@ fn skein_search_projection_evidence_requires_descriptor_field_summaries() {
 
     assert_eq!(report["ready"], false);
     assert_eq!(report["predicate_pushdown_ready"], true);
-    assert_eq!(report["skein_predicate_pushdown_ready"], false);
+    assert_eq!(report["hawdb_predicate_pushdown_ready"], false);
     assert_eq!(
         report["predicate_pushdown"]["segment_descriptor_scan_filter_fields_ready"],
         false
@@ -409,11 +409,11 @@ fn skein_search_projection_evidence_requires_descriptor_field_summaries() {
         .as_array()
         .unwrap()
         .iter()
-        .any(|code| code == "skein_predicate_pushdown_descriptor_not_ready"));
+        .any(|code| code == "hawdb_predicate_pushdown_descriptor_not_ready"));
 }
 
 #[test]
-fn skein_search_projection_evidence_requires_descriptor_field_capabilities() {
+fn hawdb_search_projection_evidence_requires_descriptor_field_capabilities() {
     let mut probe = ready_probe();
     let summaries = probe["predicate_pushdown"]["segment_descriptor_field_summaries"]
         .as_array_mut()
@@ -428,7 +428,7 @@ fn skein_search_projection_evidence_requires_descriptor_field_capabilities() {
 
     assert_eq!(report["ready"], false);
     assert_eq!(report["predicate_pushdown_ready"], true);
-    assert_eq!(report["skein_predicate_pushdown_ready"], false);
+    assert_eq!(report["hawdb_predicate_pushdown_ready"], false);
     assert_eq!(
         report["predicate_pushdown"]["segment_descriptor_scan_filter_fields_ready"],
         false
@@ -445,11 +445,11 @@ fn skein_search_projection_evidence_requires_descriptor_field_capabilities() {
         .as_array()
         .unwrap()
         .iter()
-        .any(|code| code == "skein_predicate_pushdown_descriptor_not_ready"));
+        .any(|code| code == "hawdb_predicate_pushdown_descriptor_not_ready"));
 }
 
 #[test]
-fn skein_search_projection_evidence_requires_descriptor_summary_counts() {
+fn hawdb_search_projection_evidence_requires_descriptor_summary_counts() {
     let mut probe = ready_probe();
     let summaries = probe["predicate_pushdown"]["segment_descriptor_field_summaries"]
         .as_array_mut()
@@ -465,7 +465,7 @@ fn skein_search_projection_evidence_requires_descriptor_summary_counts() {
 
     assert_eq!(report["ready"], false);
     assert_eq!(report["predicate_pushdown_ready"], true);
-    assert_eq!(report["skein_predicate_pushdown_ready"], false);
+    assert_eq!(report["hawdb_predicate_pushdown_ready"], false);
     assert_eq!(
         report["predicate_pushdown"]["segment_descriptor_capabilities_ready"],
         false
@@ -478,11 +478,11 @@ fn skein_search_projection_evidence_requires_descriptor_summary_counts() {
         .as_array()
         .unwrap()
         .iter()
-        .any(|code| code == "skein_predicate_pushdown_descriptor_not_ready"));
+        .any(|code| code == "hawdb_predicate_pushdown_descriptor_not_ready"));
 }
 
 #[test]
-fn skein_search_projection_evidence_requires_unique_key_descriptor_summary() {
+fn hawdb_search_projection_evidence_requires_unique_key_descriptor_summary() {
     let mut probe = ready_probe();
     let summaries = probe["predicate_pushdown"]["segment_descriptor_field_summaries"]
         .as_array_mut()
@@ -497,7 +497,7 @@ fn skein_search_projection_evidence_requires_unique_key_descriptor_summary() {
 
     assert_eq!(report["ready"], false);
     assert_eq!(report["predicate_pushdown_ready"], true);
-    assert_eq!(report["skein_predicate_pushdown_ready"], false);
+    assert_eq!(report["hawdb_predicate_pushdown_ready"], false);
     assert_eq!(
         report["predicate_pushdown"]["segment_descriptor_capabilities_ready"],
         false
@@ -510,7 +510,7 @@ fn skein_search_projection_evidence_requires_unique_key_descriptor_summary() {
         .as_array()
         .unwrap()
         .iter()
-        .any(|code| code == "skein_predicate_pushdown_descriptor_not_ready"));
+        .any(|code| code == "hawdb_predicate_pushdown_descriptor_not_ready"));
 }
 
 #[test]
@@ -521,7 +521,7 @@ fn search_projection_shadow_evidence_reports_ready_for_matching_probes() {
     let report = nowledge_search_projection_shadow_evidence_json(&primary, &shadow);
 
     assert_eq!(report["ready"], true);
-    assert_eq!(report["evidence_source"], "skein-rust-library");
+    assert_eq!(report["evidence_source"], "hawdb-rust-library");
     assert_eq!(report["primary_ready"], true);
     assert_eq!(report["shadow_ready"], true);
     assert_eq!(report["document_count_parity"], true);
@@ -596,7 +596,7 @@ fn search_projection_shadow_evidence_requires_shadow_segment_descriptor() {
         .as_array()
         .unwrap()
         .iter()
-        .any(|code| code == "skein_search_projection_segment_descriptor_missing"));
+        .any(|code| code == "hawdb_search_projection_segment_descriptor_missing"));
 }
 
 #[test]
@@ -629,7 +629,7 @@ fn search_projection_shadow_evidence_requires_shadow_descriptor_field_summaries(
         .as_array()
         .unwrap()
         .iter()
-        .any(|code| code == SKEIN_SEARCH_PROJECTION_SEGMENT_DESCRIPTOR_FIELDS_MISSING));
+        .any(|code| code == HAWDB_SEARCH_PROJECTION_SEGMENT_DESCRIPTOR_FIELDS_MISSING));
 }
 
 #[test]
@@ -678,7 +678,7 @@ fn search_projection_shadow_evidence_fails_closed_on_document_identity_mismatch(
 
 fn ready_probe() -> serde_json::Value {
     serde_json::json!({
-        "engine": "skein",
+        "engine": "hawdb",
         "derived_projection": true,
         "document_count": 6,
         "document_identity": {
@@ -739,7 +739,7 @@ fn ready_probe() -> serde_json::Value {
         },
         "production_filter_pruning": ready_production_filter_pruning_template(),
         "compressed_vector_projection": {
-            "engine": "skein_rabitq_scan",
+            "engine": "hawdb_rabitq_scan",
             "algorithm": "rabitq",
             "compiled": true,
             "ready": true,

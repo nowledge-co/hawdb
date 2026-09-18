@@ -1,32 +1,33 @@
 use super::*;
 use crate::search::{SearchProjectionFreshness, SearchProjectionKind};
 use crate::{
-    parse_skein_lightning_graph_stream_export, skein_lightning_initial_import_advance_checkpoint,
-    skein_lightning_initial_import_advance_durable_state_streaming,
-    skein_lightning_initial_import_advance_durable_state_with_search_projection_batch,
-    skein_lightning_initial_import_checkpoint_readiness,
-    skein_lightning_initial_import_cutover_catch_up_report,
-    skein_lightning_initial_import_decode_durable_state,
-    skein_lightning_initial_import_document_identity_coverage,
-    skein_lightning_initial_import_durable_state_report,
-    skein_lightning_initial_import_encode_durable_state,
-    skein_lightning_initial_import_search_projection_batch_report,
-    skein_lightning_initial_import_search_projection_batch_report_with_document_identities,
-    skein_lightning_initial_import_session_bundle_readiness,
-    skein_lightning_initial_import_session_report,
-    skein_lightning_initial_import_source_bundle_readiness, CanonicalGraphSnapshotExport,
+    hawdb_lightning_initial_import_advance_checkpoint,
+    hawdb_lightning_initial_import_advance_durable_state_streaming,
+    hawdb_lightning_initial_import_advance_durable_state_with_search_projection_batch,
+    hawdb_lightning_initial_import_checkpoint_readiness,
+    hawdb_lightning_initial_import_cutover_catch_up_report,
+    hawdb_lightning_initial_import_decode_durable_state,
+    hawdb_lightning_initial_import_document_identity_coverage,
+    hawdb_lightning_initial_import_durable_state_report,
+    hawdb_lightning_initial_import_encode_durable_state,
+    hawdb_lightning_initial_import_search_projection_batch_report,
+    hawdb_lightning_initial_import_search_projection_batch_report_with_document_identities,
+    hawdb_lightning_initial_import_session_bundle_readiness,
+    hawdb_lightning_initial_import_session_report,
+    hawdb_lightning_initial_import_source_bundle_readiness,
+    parse_hawdb_lightning_graph_stream_export, CanonicalGraphSnapshotExport,
     CanonicalSnapshotIdentityAudit, CanonicalSnapshotNode, CanonicalSnapshotRelationship,
-    SkeinLightningBootstrapManifest, SkeinLightningInitialImportCheckpoint,
-    SkeinLightningInitialImportCheckpointProgress, SkeinLightningInitialImportDocumentIdentity,
-    SkeinLightningInitialImportIdempotencyKey, SkeinLightningInitialImportReadinessInputs,
-    SkeinLightningInitialImportResumeActionKind, SkeinLightningRelationalStream,
+    HawdbLightningBootstrapManifest, HawdbLightningInitialImportCheckpoint,
+    HawdbLightningInitialImportCheckpointProgress, HawdbLightningInitialImportDocumentIdentity,
+    HawdbLightningInitialImportIdempotencyKey, HawdbLightningInitialImportReadinessInputs,
+    HawdbLightningInitialImportResumeActionKind, HawdbLightningRelationalStream,
 };
 use crate::{SearchProjectionDelta, SearchProjectionRow};
 
-fn test_skein_lightning_checkpoint(
-    manifest: &SkeinLightningBootstrapManifest,
-) -> SkeinLightningInitialImportCheckpoint {
-    SkeinLightningInitialImportCheckpoint {
+fn test_hawdb_lightning_checkpoint(
+    manifest: &HawdbLightningBootstrapManifest,
+) -> HawdbLightningInitialImportCheckpoint {
+    HawdbLightningInitialImportCheckpoint {
         protocol_version: 1,
         import_id: "import-1".to_string(),
         task_id: "task-1".to_string(),
@@ -51,14 +52,14 @@ fn test_skein_lightning_checkpoint(
 fn initial_import_document_identity(
     kind: SearchProjectionKind,
     document_id: &str,
-) -> SkeinLightningInitialImportDocumentIdentity {
-    SkeinLightningInitialImportDocumentIdentity {
+) -> HawdbLightningInitialImportDocumentIdentity {
+    HawdbLightningInitialImportDocumentIdentity {
         kind,
         document_id: document_id.to_string(),
     }
 }
 
-fn all_initial_import_document_identities() -> Vec<SkeinLightningInitialImportDocumentIdentity> {
+fn all_initial_import_document_identities() -> Vec<HawdbLightningInitialImportDocumentIdentity> {
     vec![
         initial_import_document_identity(SearchProjectionKind::Memory, "memory:1"),
         initial_import_document_identity(SearchProjectionKind::Message, "message:1"),
@@ -115,7 +116,7 @@ fn canonical_snapshot_from_rows_derives_checksum_and_identity_audit() {
 }
 
 fn initial_import_projection_freshness(
-    manifest: &SkeinLightningBootstrapManifest,
+    manifest: &HawdbLightningBootstrapManifest,
 ) -> SearchProjectionFreshness {
     SearchProjectionFreshness {
         document_count: manifest.node_count + manifest.relationship_count,
@@ -355,7 +356,7 @@ fn persisted_stable_id_mapping_survives_reopen_without_wal_write() {
         let validation = snapshot.validate();
         let wal_after = read_test_wal(&path).unwrap();
 
-        assert!(path.join("stable_ids.skein").exists());
+        assert!(path.join("stable_ids.hawdb").exists());
         assert_eq!(wal_after, wal_before);
         assert!(validation.is_import_ready);
         assert!(validation.stable_identity_ready);
@@ -396,7 +397,7 @@ fn persisted_stable_id_mapping_covers_out_of_core_base_records() {
         let mut db = Database::open_with_config(
             &path,
             DatabaseConfig {
-                storage_residency_mode: skein_storage::StorageResidencyMode::OutOfCore,
+                storage_residency_mode: hawdb_storage::StorageResidencyMode::OutOfCore,
                 ..DatabaseConfig::default()
             },
         )
@@ -422,7 +423,7 @@ fn persisted_stable_id_mapping_covers_out_of_core_base_records() {
         let mut db = Database::open_with_config(
             &path,
             DatabaseConfig {
-                storage_residency_mode: skein_storage::StorageResidencyMode::OutOfCore,
+                storage_residency_mode: hawdb_storage::StorageResidencyMode::OutOfCore,
                 ..DatabaseConfig::default()
             },
         )
@@ -432,7 +433,7 @@ fn persisted_stable_id_mapping_covers_out_of_core_base_records() {
             .expect("durable database has a segment cache")
             .resident_bytes;
         assert!(
-            cache_before_export < skein_storage::DEFAULT_STABLE_IDENTITY_PAGE_BYTES as u64,
+            cache_before_export < hawdb_storage::DEFAULT_STABLE_IDENTITY_PAGE_BYTES as u64,
             "reopen must keep fixed-size stable identity pages cold"
         );
         let reopened = db
@@ -443,7 +444,7 @@ fn persisted_stable_id_mapping_covers_out_of_core_base_records() {
                 .expect("durable database has a segment cache")
                 .resident_bytes
                 >= cache_before_export
-                    .saturating_add(skein_storage::DEFAULT_STABLE_IDENTITY_PAGE_BYTES as u64),
+                    .saturating_add(hawdb_storage::DEFAULT_STABLE_IDENTITY_PAGE_BYTES as u64),
             "explicit export must demand-load the stable identity page"
         );
 
@@ -586,12 +587,12 @@ fn storage_scrub_detects_cold_stable_id_mapping_corruption() {
         db.segment_cache_snapshot()
             .expect("durable database has a segment cache")
             .resident_bytes
-            < skein_storage::DEFAULT_STABLE_IDENTITY_PAGE_BYTES as u64,
+            < hawdb_storage::DEFAULT_STABLE_IDENTITY_PAGE_BYTES as u64,
         "stable identity pages must remain cold before scrub"
     );
-    let mapping_path = path.join("stable_ids.skein");
+    let mapping_path = path.join("stable_ids.hawdb");
     let artifact_path =
-        skein_storage::stable_identity_generation_artifact_path(&mapping_path, 1).unwrap();
+        hawdb_storage::stable_identity_generation_artifact_path(&mapping_path, 1).unwrap();
     let mut bytes = std::fs::read(&artifact_path).unwrap();
     *bytes.last_mut().expect("mapping contains one page") ^= 0x80;
     std::fs::write(&artifact_path, bytes).unwrap();
@@ -632,27 +633,27 @@ fn persisted_stable_id_mapping_respects_read_only_open() {
             .unwrap_err();
 
         assert!(error.to_string().contains("read-only mode"));
-        assert!(!path.join("stable_ids.skein").exists());
+        assert!(!path.join("stable_ids.hawdb").exists());
     }
 
     std::fs::remove_dir_all(path).unwrap();
 }
 
 #[test]
-fn skein_lightning_bootstrap_manifest_reports_ready_database_export() {
-    let path = unique_test_dir("skein_lightning_bootstrap_manifest");
+fn hawdb_lightning_bootstrap_manifest_reports_ready_database_export() {
+    let path = unique_test_dir("hawdb_lightning_bootstrap_manifest");
     {
         let mut db = Database::open(&path).unwrap();
         db.query(
                 "CREATE (:Memory {id: 'root', title: 'Root'})-[:LINKS {weight: 7}]->(:Entity {id: 'mid', name: 'Mid'})",
             )
             .unwrap();
-        let export = db.prepare_skein_lightning_bootstrap_export().unwrap();
+        let export = db.prepare_hawdb_lightning_bootstrap_export().unwrap();
         let manifest = &export.manifest;
 
         assert_eq!(
             manifest.protocol_version,
-            SKEIN_LIGHTNING_BOOTSTRAP_PROTOCOL_VERSION
+            HAWDB_LIGHTNING_BOOTSTRAP_PROTOCOL_VERSION
         );
         assert_eq!(manifest.graph_commit_epoch, 2);
         assert_eq!(manifest.database_commit_epoch, 2);
@@ -685,7 +686,7 @@ fn skein_lightning_bootstrap_manifest_reports_ready_database_export() {
         assert!(export
             .graph_stream
             .encoded
-            .starts_with("SKEIN_LIGHTNING_GRAPH_STREAM_V1\n"));
+            .starts_with("HAWDB_LIGHTNING_GRAPH_STREAM_V1\n"));
         assert!(export.graph_stream.encoded.contains("\nchecksum\t"));
         let stream_validation = export
             .graph_stream
@@ -699,7 +700,7 @@ fn skein_lightning_bootstrap_manifest_reports_ready_database_export() {
             .encoded
             .replace("relationship\t0\t0\t1", "relationship\t0\t0\t99");
         let corrupted_validation =
-            validate_skein_lightning_graph_stream(&corrupted, Some(&export.manifest));
+            validate_hawdb_lightning_graph_stream(&corrupted, Some(&export.manifest));
         assert!(!corrupted_validation.is_valid);
         assert!(!corrupted_validation.checksum_matches);
         assert!(!corrupted_validation.endpoint_integrity);
@@ -708,10 +709,10 @@ fn skein_lightning_bootstrap_manifest_reports_ready_database_export() {
 
     {
         let mut db = Database::open(&path).unwrap();
-        let first = db.prepare_skein_lightning_bootstrap_export().unwrap();
+        let first = db.prepare_hawdb_lightning_bootstrap_export().unwrap();
         db.query("CREATE (:Source {id: 'source-1', path: '/tmp/source.md'})")
             .unwrap();
-        let second = db.prepare_skein_lightning_bootstrap_export().unwrap();
+        let second = db.prepare_hawdb_lightning_bootstrap_export().unwrap();
 
         assert_ne!(
             first.manifest.logical_checksum,
@@ -728,7 +729,7 @@ fn skein_lightning_bootstrap_manifest_reports_ready_database_export() {
 }
 
 #[test]
-fn skein_lightning_graph_stream_decodes_to_import_ready_snapshot() {
+fn hawdb_lightning_graph_stream_decodes_to_import_ready_snapshot() {
     let snapshot = CanonicalGraphSnapshotExport {
         graph_commit_epoch: 42,
         logical_checksum: 0,
@@ -788,16 +789,16 @@ fn skein_lightning_graph_stream_decodes_to_import_ready_snapshot() {
         },
         ..snapshot
     };
-    let relational_stream = SkeinLightningRelationalStream::from_state(
+    let relational_stream = HawdbLightningRelationalStream::from_state(
         snapshot.graph_commit_epoch,
-        &skein_storage::RelationalState::default(),
+        &hawdb_storage::RelationalState::default(),
     )
     .unwrap();
-    let manifest = snapshot.skein_lightning_bootstrap_manifest(&relational_stream);
-    let stream = snapshot.skein_lightning_graph_stream();
+    let manifest = snapshot.hawdb_lightning_bootstrap_manifest(&relational_stream);
+    let stream = snapshot.hawdb_lightning_graph_stream();
 
     let decoded =
-        parse_skein_lightning_graph_stream_export(&stream.encoded, Some(&manifest)).unwrap();
+        parse_hawdb_lightning_graph_stream_export(&stream.encoded, Some(&manifest)).unwrap();
 
     assert_eq!(decoded.graph_commit_epoch, 42);
     assert_eq!(decoded.logical_checksum, snapshot.logical_checksum);
@@ -807,28 +808,28 @@ fn skein_lightning_graph_stream_decodes_to_import_ready_snapshot() {
 }
 
 #[test]
-fn skein_lightning_graph_stream_decode_rejects_manifest_mismatch() {
+fn hawdb_lightning_graph_stream_decode_rejects_manifest_mismatch() {
     let mut db = Database::new();
     db.query("CREATE (:Memory {id: 'root'})-[:LINKS {id: 'rel'}]->(:Entity {id: 'mid'})")
         .unwrap();
-    let export = db.prepare_skein_lightning_bootstrap_export().unwrap();
+    let export = db.prepare_hawdb_lightning_bootstrap_export().unwrap();
     let mut manifest = export.manifest.clone();
     manifest.graph_commit_epoch += 1;
 
     let error =
-        parse_skein_lightning_graph_stream_export(&export.graph_stream.encoded, Some(&manifest))
+        parse_hawdb_lightning_graph_stream_export(&export.graph_stream.encoded, Some(&manifest))
             .unwrap_err();
 
     assert!(error.to_string().contains("graph stream manifest mismatch"));
 }
 
 #[test]
-fn skein_lightning_initial_import_readiness_requires_graph_and_projection_watermarks() {
+fn hawdb_lightning_initial_import_readiness_requires_graph_and_projection_watermarks() {
     let mut db = Database::new();
     db.query("CREATE (:Memory {id: 'root'})-[:LINKS {id: 'rel'}]->(:Entity {id: 'mid'})")
         .unwrap();
     let manifest = db
-        .prepare_skein_lightning_bootstrap_export()
+        .prepare_hawdb_lightning_bootstrap_export()
         .unwrap()
         .manifest;
     let projection = SearchProjectionFreshness {
@@ -846,7 +847,7 @@ fn skein_lightning_initial_import_readiness_requires_graph_and_projection_waterm
         embedding_dimension: Some(3),
     };
 
-    let readiness = db.skein_lightning_initial_import_readiness(&manifest, Some(&projection));
+    let readiness = db.hawdb_lightning_initial_import_readiness(&manifest, Some(&projection));
 
     assert!(readiness.ready);
     assert!(readiness.graph_import_caught_up);
@@ -856,18 +857,18 @@ fn skein_lightning_initial_import_readiness_requires_graph_and_projection_waterm
 }
 
 #[test]
-fn skein_lightning_initial_import_readiness_blocks_missing_or_stale_projection() {
+fn hawdb_lightning_initial_import_readiness_blocks_missing_or_stale_projection() {
     let mut db = Database::new();
     db.query("CREATE (:Memory {id: 'root'})-[:LINKS {id: 'rel'}]->(:Entity {id: 'mid'})")
         .unwrap();
     let manifest = db
-        .prepare_skein_lightning_bootstrap_export()
+        .prepare_hawdb_lightning_bootstrap_export()
         .unwrap()
         .manifest;
     db.query("CREATE (:Memory {id: 'after-bootstrap'})")
         .unwrap();
 
-    let missing = db.skein_lightning_initial_import_readiness(&manifest, None);
+    let missing = db.hawdb_lightning_initial_import_readiness(&manifest, None);
     assert!(!missing.ready);
     assert!(missing
         .blocker_codes
@@ -888,7 +889,7 @@ fn skein_lightning_initial_import_readiness_blocks_missing_or_stale_projection()
         embedding_dimension: None,
     };
 
-    let stale = db.skein_lightning_initial_import_readiness(&manifest, Some(&stale_projection));
+    let stale = db.hawdb_lightning_initial_import_readiness(&manifest, Some(&stale_projection));
 
     assert!(!stale.ready);
     assert_eq!(stale.target_graph_commit_epoch, 2);
@@ -901,23 +902,23 @@ fn skein_lightning_initial_import_readiness_blocks_missing_or_stale_projection()
 }
 
 #[test]
-fn skein_lightning_initial_import_checkpoint_readiness_accepts_matching_checkpoint() {
+fn hawdb_lightning_initial_import_checkpoint_readiness_accepts_matching_checkpoint() {
     let mut db = Database::new();
     db.query("CREATE (:Memory {id: 'root'})-[:LINKS {id: 'rel'}]->(:Entity {id: 'mid'})")
         .unwrap();
     let manifest = db
-        .prepare_skein_lightning_bootstrap_export()
+        .prepare_hawdb_lightning_bootstrap_export()
         .unwrap()
         .manifest;
-    let checkpoint = test_skein_lightning_checkpoint(&manifest);
+    let checkpoint = test_hawdb_lightning_checkpoint(&manifest);
 
-    let readiness = skein_lightning_initial_import_checkpoint_readiness(&manifest, &checkpoint);
+    let readiness = hawdb_lightning_initial_import_checkpoint_readiness(&manifest, &checkpoint);
 
     assert!(readiness.ready);
     assert!(readiness.idempotency_key_present);
     assert_eq!(
         readiness.idempotency_key,
-        Some(SkeinLightningInitialImportIdempotencyKey {
+        Some(HawdbLightningInitialImportIdempotencyKey {
             import_id: "import-1".to_string(),
             task_id: "task-1".to_string(),
             fencing_token: "fence-1".to_string(),
@@ -934,25 +935,25 @@ fn skein_lightning_initial_import_checkpoint_readiness_accepts_matching_checkpoi
 }
 
 #[test]
-fn skein_lightning_initial_import_checkpoint_readiness_blocks_stale_checkpoint() {
+fn hawdb_lightning_initial_import_checkpoint_readiness_blocks_stale_checkpoint() {
     let mut db = Database::new();
     db.query("CREATE (:Memory {id: 'root'})-[:LINKS {id: 'rel'}]->(:Entity {id: 'mid'})")
         .unwrap();
     let manifest = db
-        .prepare_skein_lightning_bootstrap_export()
+        .prepare_hawdb_lightning_bootstrap_export()
         .unwrap()
         .manifest;
-    let checkpoint = SkeinLightningInitialImportCheckpoint {
+    let checkpoint = HawdbLightningInitialImportCheckpoint {
         schema_checksum: manifest.schema_checksum + 1,
         applied_search_projection_commit_epoch: Some(manifest.graph_commit_epoch - 1),
         durable_search_projection_commit_epoch: Some(manifest.graph_commit_epoch - 1),
         completed_batches: 1,
         total_batches: 2,
         document_identity_count: 0,
-        ..test_skein_lightning_checkpoint(&manifest)
+        ..test_hawdb_lightning_checkpoint(&manifest)
     };
 
-    let readiness = skein_lightning_initial_import_checkpoint_readiness(&manifest, &checkpoint);
+    let readiness = hawdb_lightning_initial_import_checkpoint_readiness(&manifest, &checkpoint);
 
     assert!(!readiness.ready);
     assert!(readiness
@@ -973,20 +974,20 @@ fn skein_lightning_initial_import_checkpoint_readiness_blocks_stale_checkpoint()
 }
 
 #[test]
-fn skein_lightning_initial_import_checkpoint_readiness_requires_idempotency_key() {
+fn hawdb_lightning_initial_import_checkpoint_readiness_requires_idempotency_key() {
     let mut db = Database::new();
     db.query("CREATE (:Memory {id: 'root'})-[:LINKS {id: 'rel'}]->(:Entity {id: 'mid'})")
         .unwrap();
     let manifest = db
-        .prepare_skein_lightning_bootstrap_export()
+        .prepare_hawdb_lightning_bootstrap_export()
         .unwrap()
         .manifest;
-    let checkpoint = SkeinLightningInitialImportCheckpoint {
+    let checkpoint = HawdbLightningInitialImportCheckpoint {
         task_id: String::new(),
-        ..test_skein_lightning_checkpoint(&manifest)
+        ..test_hawdb_lightning_checkpoint(&manifest)
     };
 
-    let readiness = skein_lightning_initial_import_checkpoint_readiness(&manifest, &checkpoint);
+    let readiness = hawdb_lightning_initial_import_checkpoint_readiness(&manifest, &checkpoint);
 
     assert!(!readiness.ready);
     assert!(!readiness.idempotency_key_present);
@@ -997,28 +998,28 @@ fn skein_lightning_initial_import_checkpoint_readiness_requires_idempotency_key(
 }
 
 #[test]
-fn skein_lightning_initial_import_checkpoint_progress_advances_monotonically() {
+fn hawdb_lightning_initial_import_checkpoint_progress_advances_monotonically() {
     let mut db = Database::new();
     db.query("CREATE (:Memory {id: 'root'})-[:LINKS {id: 'rel'}]->(:Entity {id: 'mid'})")
         .unwrap();
     let manifest = db
-        .prepare_skein_lightning_bootstrap_export()
+        .prepare_hawdb_lightning_bootstrap_export()
         .unwrap()
         .manifest;
-    let checkpoint = SkeinLightningInitialImportCheckpoint {
+    let checkpoint = HawdbLightningInitialImportCheckpoint {
         applied_graph_commit_epoch: 0,
         applied_search_projection_commit_epoch: None,
         durable_search_projection_commit_epoch: None,
         completed_batches: 1,
         total_batches: 4,
         document_identity_count: 1,
-        ..test_skein_lightning_checkpoint(&manifest)
+        ..test_hawdb_lightning_checkpoint(&manifest)
     };
 
-    let report = skein_lightning_initial_import_advance_checkpoint(
+    let report = hawdb_lightning_initial_import_advance_checkpoint(
         &manifest,
         &checkpoint,
-        SkeinLightningInitialImportCheckpointProgress {
+        HawdbLightningInitialImportCheckpointProgress {
             applied_graph_commit_epoch: manifest.graph_commit_epoch,
             applied_search_projection_commit_epoch: Some(manifest.graph_commit_epoch),
             durable_search_projection_commit_epoch: Some(manifest.graph_commit_epoch),
@@ -1033,7 +1034,7 @@ fn skein_lightning_initial_import_checkpoint_progress_advances_monotonically() {
     assert!(report.readiness.ready);
     assert_eq!(
         report.resume_action.kind,
-        SkeinLightningInitialImportResumeActionKind::ReadyForCutover
+        HawdbLightningInitialImportResumeActionKind::ReadyForCutover
     );
     assert_eq!(report.checkpoint.completed_batches, 4);
     assert_eq!(
@@ -1043,25 +1044,25 @@ fn skein_lightning_initial_import_checkpoint_progress_advances_monotonically() {
 }
 
 #[test]
-fn skein_lightning_initial_import_checkpoint_progress_rejects_regressions() {
+fn hawdb_lightning_initial_import_checkpoint_progress_rejects_regressions() {
     let mut db = Database::new();
     db.query("CREATE (:Memory {id: 'root'})-[:LINKS {id: 'rel'}]->(:Entity {id: 'mid'})")
         .unwrap();
     let manifest = db
-        .prepare_skein_lightning_bootstrap_export()
+        .prepare_hawdb_lightning_bootstrap_export()
         .unwrap()
         .manifest;
-    let checkpoint = SkeinLightningInitialImportCheckpoint {
+    let checkpoint = HawdbLightningInitialImportCheckpoint {
         completed_batches: 3,
         total_batches: 4,
         document_identity_count: 3,
-        ..test_skein_lightning_checkpoint(&manifest)
+        ..test_hawdb_lightning_checkpoint(&manifest)
     };
 
-    let report = skein_lightning_initial_import_advance_checkpoint(
+    let report = hawdb_lightning_initial_import_advance_checkpoint(
         &manifest,
         &checkpoint,
-        SkeinLightningInitialImportCheckpointProgress {
+        HawdbLightningInitialImportCheckpointProgress {
             applied_graph_commit_epoch: 0,
             applied_search_projection_commit_epoch: None,
             durable_search_projection_commit_epoch: Some(manifest.graph_commit_epoch - 1),
@@ -1097,8 +1098,8 @@ fn skein_lightning_initial_import_checkpoint_progress_rejects_regressions() {
 }
 
 #[test]
-fn skein_lightning_initial_import_document_identity_coverage_accepts_all_projection_kinds() {
-    let coverage = skein_lightning_initial_import_document_identity_coverage(&[
+fn hawdb_lightning_initial_import_document_identity_coverage_accepts_all_projection_kinds() {
+    let coverage = hawdb_lightning_initial_import_document_identity_coverage(&[
         initial_import_document_identity(SearchProjectionKind::Memory, "memory:1"),
         initial_import_document_identity(SearchProjectionKind::Message, "message:1"),
         initial_import_document_identity(SearchProjectionKind::Entity, "entity:1"),
@@ -1118,8 +1119,8 @@ fn skein_lightning_initial_import_document_identity_coverage_accepts_all_project
 }
 
 #[test]
-fn skein_lightning_initial_import_document_identity_coverage_fails_closed_for_gaps() {
-    let coverage = skein_lightning_initial_import_document_identity_coverage(&[
+fn hawdb_lightning_initial_import_document_identity_coverage_fails_closed_for_gaps() {
+    let coverage = hawdb_lightning_initial_import_document_identity_coverage(&[
         initial_import_document_identity(SearchProjectionKind::Memory, "shared"),
         initial_import_document_identity(SearchProjectionKind::Message, "shared"),
         initial_import_document_identity(SearchProjectionKind::Entity, "entity:1"),
@@ -1148,40 +1149,40 @@ fn skein_lightning_initial_import_document_identity_coverage_fails_closed_for_ga
 }
 
 #[test]
-fn skein_lightning_initial_import_resume_action_tracks_start_resume_cutover_and_quarantine() {
+fn hawdb_lightning_initial_import_resume_action_tracks_start_resume_cutover_and_quarantine() {
     let mut db = Database::new();
     db.query("CREATE (:Memory {id: 'root'})-[:LINKS {id: 'rel'}]->(:Entity {id: 'mid'})")
         .unwrap();
     let manifest = db
-        .prepare_skein_lightning_bootstrap_export()
+        .prepare_hawdb_lightning_bootstrap_export()
         .unwrap()
         .manifest;
 
-    let start = crate::skein_lightning_initial_import_resume_action(&manifest, None);
+    let start = crate::hawdb_lightning_initial_import_resume_action(&manifest, None);
     assert_eq!(
         start.kind,
-        SkeinLightningInitialImportResumeActionKind::Start
+        HawdbLightningInitialImportResumeActionKind::Start
     );
     assert_eq!(start.next_batch, Some(0));
     assert_eq!(start.idempotency_key, None);
 
-    let partial = SkeinLightningInitialImportCheckpoint {
+    let partial = HawdbLightningInitialImportCheckpoint {
         applied_search_projection_commit_epoch: Some(manifest.graph_commit_epoch - 1),
         durable_search_projection_commit_epoch: Some(manifest.graph_commit_epoch - 1),
         completed_batches: 2,
         total_batches: 4,
         document_identity_count: manifest.node_count,
-        ..test_skein_lightning_checkpoint(&manifest)
+        ..test_hawdb_lightning_checkpoint(&manifest)
     };
-    let resume = crate::skein_lightning_initial_import_resume_action(&manifest, Some(&partial));
+    let resume = crate::hawdb_lightning_initial_import_resume_action(&manifest, Some(&partial));
     assert_eq!(
         resume.kind,
-        SkeinLightningInitialImportResumeActionKind::Resume
+        HawdbLightningInitialImportResumeActionKind::Resume
     );
     assert_eq!(resume.next_batch, Some(2));
     assert_eq!(
         resume.idempotency_key,
-        Some(SkeinLightningInitialImportIdempotencyKey {
+        Some(HawdbLightningInitialImportIdempotencyKey {
             import_id: "import-1".to_string(),
             task_id: "task-1".to_string(),
             fencing_token: "fence-1".to_string(),
@@ -1189,41 +1190,41 @@ fn skein_lightning_initial_import_resume_action_tracks_start_resume_cutover_and_
         })
     );
 
-    let complete = SkeinLightningInitialImportCheckpoint {
+    let complete = HawdbLightningInitialImportCheckpoint {
         applied_search_projection_commit_epoch: Some(manifest.graph_commit_epoch),
         durable_search_projection_commit_epoch: Some(manifest.graph_commit_epoch),
         completed_batches: 4,
         document_identity_count: manifest.node_count + manifest.relationship_count,
         ..partial.clone()
     };
-    let ready = crate::skein_lightning_initial_import_resume_action(&manifest, Some(&complete));
+    let ready = crate::hawdb_lightning_initial_import_resume_action(&manifest, Some(&complete));
     assert_eq!(
         ready.kind,
-        SkeinLightningInitialImportResumeActionKind::ReadyForCutover
+        HawdbLightningInitialImportResumeActionKind::ReadyForCutover
     );
     assert_eq!(ready.next_batch, None);
 
-    let mismatched = SkeinLightningInitialImportCheckpoint {
+    let mismatched = HawdbLightningInitialImportCheckpoint {
         graph_stream_checksum: manifest.graph_stream_checksum + 1,
         ..complete
     };
     let quarantine =
-        crate::skein_lightning_initial_import_resume_action(&manifest, Some(&mismatched));
+        crate::hawdb_lightning_initial_import_resume_action(&manifest, Some(&mismatched));
     assert_eq!(
         quarantine.kind,
-        SkeinLightningInitialImportResumeActionKind::Quarantine
+        HawdbLightningInitialImportResumeActionKind::Quarantine
     );
     assert_eq!(quarantine.next_batch, None);
 
-    let missing_idempotency = SkeinLightningInitialImportCheckpoint {
+    let missing_idempotency = HawdbLightningInitialImportCheckpoint {
         import_id: String::new(),
-        ..test_skein_lightning_checkpoint(&manifest)
+        ..test_hawdb_lightning_checkpoint(&manifest)
     };
     let quarantine =
-        crate::skein_lightning_initial_import_resume_action(&manifest, Some(&missing_idempotency));
+        crate::hawdb_lightning_initial_import_resume_action(&manifest, Some(&missing_idempotency));
     assert_eq!(
         quarantine.kind,
-        SkeinLightningInitialImportResumeActionKind::Quarantine
+        HawdbLightningInitialImportResumeActionKind::Quarantine
     );
     assert!(quarantine
         .blocker_codes
@@ -1232,15 +1233,15 @@ fn skein_lightning_initial_import_resume_action_tracks_start_resume_cutover_and_
 }
 
 #[test]
-fn skein_lightning_initial_import_plan_reports_ready_cutover() {
+fn hawdb_lightning_initial_import_plan_reports_ready_cutover() {
     let mut db = Database::new();
     db.query("CREATE (:Memory {id: 'root'})-[:LINKS {id: 'rel'}]->(:Entity {id: 'mid'})")
         .unwrap();
-    let export = db.prepare_skein_lightning_bootstrap_export().unwrap();
+    let export = db.prepare_hawdb_lightning_bootstrap_export().unwrap();
     let freshness = initial_import_projection_freshness(&export.manifest);
-    let checkpoint = test_skein_lightning_checkpoint(&export.manifest);
+    let checkpoint = test_hawdb_lightning_checkpoint(&export.manifest);
 
-    let plan = db.skein_lightning_initial_import_plan(
+    let plan = db.hawdb_lightning_initial_import_plan(
         &export.graph_stream.encoded,
         &export.relational_stream.encoded,
         &export.manifest,
@@ -1268,22 +1269,22 @@ fn skein_lightning_initial_import_plan_reports_ready_cutover() {
         .is_some_and(|readiness| readiness.ready));
     assert_eq!(
         plan.resume_action.kind,
-        SkeinLightningInitialImportResumeActionKind::ReadyForCutover
+        HawdbLightningInitialImportResumeActionKind::ReadyForCutover
     );
     assert!(plan.blocker_codes.is_empty());
 }
 
 #[test]
-fn skein_lightning_initial_import_plan_accepts_complete_document_identity_coverage() {
+fn hawdb_lightning_initial_import_plan_accepts_complete_document_identity_coverage() {
     let mut db = Database::new();
     db.query("CREATE (:Memory {id: 'root'})-[:LINKS {id: 'rel'}]->(:Entity {id: 'mid'})")
         .unwrap();
-    let export = db.prepare_skein_lightning_bootstrap_export().unwrap();
+    let export = db.prepare_hawdb_lightning_bootstrap_export().unwrap();
     let freshness = initial_import_projection_freshness(&export.manifest);
-    let checkpoint = test_skein_lightning_checkpoint(&export.manifest);
+    let checkpoint = test_hawdb_lightning_checkpoint(&export.manifest);
     let document_identities = all_initial_import_document_identities();
 
-    let plan = db.skein_lightning_initial_import_plan_with_document_identities(
+    let plan = db.hawdb_lightning_initial_import_plan_with_document_identities(
         &export.graph_stream.encoded,
         &export.relational_stream.encoded,
         &export.manifest,
@@ -1302,18 +1303,18 @@ fn skein_lightning_initial_import_plan_accepts_complete_document_identity_covera
 }
 
 #[test]
-fn skein_lightning_initial_import_search_projection_batch_reports_checkpoint_progress() {
+fn hawdb_lightning_initial_import_search_projection_batch_reports_checkpoint_progress() {
     let mut db = Database::new();
     db.query("CREATE (:Memory {id: 'root'})-[:LINKS {id: 'rel'}]->(:Entity {id: 'mid'})")
         .unwrap();
-    let export = db.prepare_skein_lightning_bootstrap_export().unwrap();
-    let checkpoint = SkeinLightningInitialImportCheckpoint {
+    let export = db.prepare_hawdb_lightning_bootstrap_export().unwrap();
+    let checkpoint = HawdbLightningInitialImportCheckpoint {
         completed_batches: 0,
         total_batches: 1,
         document_identity_count: 0,
         applied_search_projection_commit_epoch: None,
         durable_search_projection_commit_epoch: None,
-        ..test_skein_lightning_checkpoint(&export.manifest)
+        ..test_hawdb_lightning_checkpoint(&export.manifest)
     };
     let delta = SearchProjectionDelta {
         upserts: all_initial_import_projection_rows(),
@@ -1322,7 +1323,7 @@ fn skein_lightning_initial_import_search_projection_batch_reports_checkpoint_pro
         source_graph_commit_epoch: Some(export.manifest.graph_commit_epoch),
     };
 
-    let report = skein_lightning_initial_import_search_projection_batch_report(
+    let report = hawdb_lightning_initial_import_search_projection_batch_report(
         &export.manifest,
         Some(&checkpoint),
         &delta,
@@ -1378,12 +1379,12 @@ fn skein_lightning_initial_import_search_projection_batch_reports_checkpoint_pro
             .as_ref()
             .expect("expected checkpoint resume action")
             .kind,
-        SkeinLightningInitialImportResumeActionKind::Resume
+        HawdbLightningInitialImportResumeActionKind::Resume
     );
     assert!(report.checkpoint_progress_blocker_codes.is_empty());
 
     let advanced =
-        skein_lightning_initial_import_advance_checkpoint(&export.manifest, &checkpoint, progress);
+        hawdb_lightning_initial_import_advance_checkpoint(&export.manifest, &checkpoint, progress);
     assert!(advanced.accepted);
     assert_eq!(advanced.checkpoint.completed_batches, 1);
     assert_eq!(
@@ -1393,18 +1394,18 @@ fn skein_lightning_initial_import_search_projection_batch_reports_checkpoint_pro
 }
 
 #[test]
-fn skein_lightning_initial_import_search_projection_batch_reports_cutover_ready_progress() {
+fn hawdb_lightning_initial_import_search_projection_batch_reports_cutover_ready_progress() {
     let mut db = Database::new();
     db.query("CREATE (:Memory {id: 'root'})-[:LINKS {id: 'rel'}]->(:Entity {id: 'mid'})")
         .unwrap();
-    let export = db.prepare_skein_lightning_bootstrap_export().unwrap();
-    let checkpoint = SkeinLightningInitialImportCheckpoint {
+    let export = db.prepare_hawdb_lightning_bootstrap_export().unwrap();
+    let checkpoint = HawdbLightningInitialImportCheckpoint {
         completed_batches: 0,
         total_batches: 1,
         document_identity_count: 0,
         applied_search_projection_commit_epoch: None,
         durable_search_projection_commit_epoch: Some(export.manifest.graph_commit_epoch),
-        ..test_skein_lightning_checkpoint(&export.manifest)
+        ..test_hawdb_lightning_checkpoint(&export.manifest)
     };
     let delta = SearchProjectionDelta {
         upserts: all_initial_import_projection_rows(),
@@ -1413,7 +1414,7 @@ fn skein_lightning_initial_import_search_projection_batch_reports_cutover_ready_
         source_graph_commit_epoch: Some(export.manifest.graph_commit_epoch),
     };
 
-    let report = skein_lightning_initial_import_search_projection_batch_report(
+    let report = hawdb_lightning_initial_import_search_projection_batch_report(
         &export.manifest,
         Some(&checkpoint),
         &delta,
@@ -1436,31 +1437,31 @@ fn skein_lightning_initial_import_search_projection_batch_reports_cutover_ready_
             .as_ref()
             .expect("expected checkpoint resume action")
             .kind,
-        SkeinLightningInitialImportResumeActionKind::ReadyForCutover
+        HawdbLightningInitialImportResumeActionKind::ReadyForCutover
     );
     assert!(report.checkpoint_progress_blocker_codes.is_empty());
 }
 
 #[test]
-fn skein_lightning_initial_import_durable_state_persists_partial_resume_progress() {
+fn hawdb_lightning_initial_import_durable_state_persists_partial_resume_progress() {
     let mut db = Database::new();
     db.query("CREATE (:Memory {id: 'root'})-[:LINKS {id: 'rel'}]->(:Entity {id: 'mid'})")
         .unwrap();
-    let export = db.prepare_skein_lightning_bootstrap_export().unwrap();
-    let checkpoint = SkeinLightningInitialImportCheckpoint {
+    let export = db.prepare_hawdb_lightning_bootstrap_export().unwrap();
+    let checkpoint = HawdbLightningInitialImportCheckpoint {
         completed_batches: 1,
         total_batches: 3,
         document_identity_count: 2,
         applied_search_projection_commit_epoch: Some(export.manifest.graph_commit_epoch),
         durable_search_projection_commit_epoch: None,
-        ..test_skein_lightning_checkpoint(&export.manifest)
+        ..test_hawdb_lightning_checkpoint(&export.manifest)
     };
     let identities = vec![
         initial_import_document_identity(SearchProjectionKind::Memory, "memory:1"),
         initial_import_document_identity(SearchProjectionKind::Message, "message:1"),
     ];
 
-    let report = skein_lightning_initial_import_durable_state_report(
+    let report = hawdb_lightning_initial_import_durable_state_report(
         &export.manifest,
         &checkpoint,
         &identities,
@@ -1470,7 +1471,7 @@ fn skein_lightning_initial_import_durable_state_persists_partial_resume_progress
     assert!(!report.ready_for_cutover);
     assert_eq!(
         report.resume_action.kind,
-        SkeinLightningInitialImportResumeActionKind::Resume
+        HawdbLightningInitialImportResumeActionKind::Resume
     );
     assert!(report
         .blocker_codes
@@ -1487,22 +1488,22 @@ fn skein_lightning_initial_import_durable_state_persists_partial_resume_progress
 }
 
 #[test]
-fn skein_lightning_initial_import_durable_state_reports_cutover_ready_checkpoint() {
+fn hawdb_lightning_initial_import_durable_state_reports_cutover_ready_checkpoint() {
     let mut db = Database::new();
     db.query("CREATE (:Memory {id: 'root'})-[:LINKS {id: 'rel'}]->(:Entity {id: 'mid'})")
         .unwrap();
-    let export = db.prepare_skein_lightning_bootstrap_export().unwrap();
-    let checkpoint = SkeinLightningInitialImportCheckpoint {
+    let export = db.prepare_hawdb_lightning_bootstrap_export().unwrap();
+    let checkpoint = HawdbLightningInitialImportCheckpoint {
         completed_batches: 1,
         total_batches: 1,
         document_identity_count: 6,
         applied_search_projection_commit_epoch: Some(export.manifest.graph_commit_epoch),
         durable_search_projection_commit_epoch: Some(export.manifest.graph_commit_epoch),
-        ..test_skein_lightning_checkpoint(&export.manifest)
+        ..test_hawdb_lightning_checkpoint(&export.manifest)
     };
     let identities = all_initial_import_document_identities();
 
-    let report = skein_lightning_initial_import_durable_state_report(
+    let report = hawdb_lightning_initial_import_durable_state_report(
         &export.manifest,
         &checkpoint,
         &identities,
@@ -1513,7 +1514,7 @@ fn skein_lightning_initial_import_durable_state_reports_cutover_ready_checkpoint
     assert!(report.checkpoint_readiness.ready);
     assert_eq!(
         report.resume_action.kind,
-        SkeinLightningInitialImportResumeActionKind::ReadyForCutover
+        HawdbLightningInitialImportResumeActionKind::ReadyForCutover
     );
     assert!(report.blocker_codes.is_empty());
     let state = report.state.expect("expected persistable durable state");
@@ -1525,20 +1526,20 @@ fn skein_lightning_initial_import_durable_state_reports_cutover_ready_checkpoint
 }
 
 #[test]
-fn skein_lightning_initial_import_durable_state_codec_round_trips_json_string() {
+fn hawdb_lightning_initial_import_durable_state_codec_round_trips_json_string() {
     let mut db = Database::new();
     db.query("CREATE (:Memory {id: 'root'})-[:LINKS {id: 'rel'}]->(:Entity {id: 'mid'})")
         .unwrap();
-    let export = db.prepare_skein_lightning_bootstrap_export().unwrap();
-    let checkpoint = SkeinLightningInitialImportCheckpoint {
+    let export = db.prepare_hawdb_lightning_bootstrap_export().unwrap();
+    let checkpoint = HawdbLightningInitialImportCheckpoint {
         completed_batches: 1,
         total_batches: 1,
         document_identity_count: 6,
         applied_search_projection_commit_epoch: Some(export.manifest.graph_commit_epoch),
         durable_search_projection_commit_epoch: Some(export.manifest.graph_commit_epoch),
-        ..test_skein_lightning_checkpoint(&export.manifest)
+        ..test_hawdb_lightning_checkpoint(&export.manifest)
     };
-    let state = skein_lightning_initial_import_durable_state_report(
+    let state = hawdb_lightning_initial_import_durable_state_report(
         &export.manifest,
         &checkpoint,
         &all_initial_import_document_identities(),
@@ -1546,9 +1547,9 @@ fn skein_lightning_initial_import_durable_state_codec_round_trips_json_string() 
     .state
     .expect("expected persistable durable state");
 
-    let encoded = skein_lightning_initial_import_encode_durable_state(&state).unwrap();
+    let encoded = hawdb_lightning_initial_import_encode_durable_state(&state).unwrap();
     let decoded = db
-        .skein_lightning_initial_import_decode_durable_state(&export.manifest, &encoded)
+        .hawdb_lightning_initial_import_decode_durable_state(&export.manifest, &encoded)
         .unwrap();
 
     assert!(decoded.ready);
@@ -1558,38 +1559,38 @@ fn skein_lightning_initial_import_durable_state_codec_round_trips_json_string() 
 }
 
 #[test]
-fn skein_lightning_initial_import_durable_state_codec_blocks_source_mismatch() {
+fn hawdb_lightning_initial_import_durable_state_codec_blocks_source_mismatch() {
     let mut db = Database::new();
     db.query("CREATE (:Memory {id: 'root'})-[:LINKS {id: 'rel'}]->(:Entity {id: 'mid'})")
         .unwrap();
-    let export = db.prepare_skein_lightning_bootstrap_export().unwrap();
-    let checkpoint = SkeinLightningInitialImportCheckpoint {
+    let export = db.prepare_hawdb_lightning_bootstrap_export().unwrap();
+    let checkpoint = HawdbLightningInitialImportCheckpoint {
         completed_batches: 1,
         total_batches: 1,
         document_identity_count: 6,
         applied_search_projection_commit_epoch: Some(export.manifest.graph_commit_epoch),
         durable_search_projection_commit_epoch: Some(export.manifest.graph_commit_epoch),
-        ..test_skein_lightning_checkpoint(&export.manifest)
+        ..test_hawdb_lightning_checkpoint(&export.manifest)
     };
-    let state = skein_lightning_initial_import_durable_state_report(
+    let state = hawdb_lightning_initial_import_durable_state_report(
         &export.manifest,
         &checkpoint,
         &all_initial_import_document_identities(),
     )
     .state
     .expect("expected persistable durable state");
-    let mut encoded = skein_lightning_initial_import_encode_durable_state(&state).unwrap();
+    let mut encoded = hawdb_lightning_initial_import_encode_durable_state(&state).unwrap();
     let mut value = serde_json::from_str::<serde_json::Value>(&encoded).unwrap();
     value["source_fingerprint"]["schema_checksum"] = serde_json::json!(0);
     encoded = serde_json::to_string(&value).unwrap();
 
-    let decoded = skein_lightning_initial_import_decode_durable_state(
+    let decoded = hawdb_lightning_initial_import_decode_durable_state(
         &export.manifest,
         &serde_json::to_string(&value).unwrap(),
     )
     .unwrap();
     let decoded_from_string = db
-        .skein_lightning_initial_import_decode_durable_state(&export.manifest, &encoded)
+        .hawdb_lightning_initial_import_decode_durable_state(&export.manifest, &encoded)
         .unwrap();
 
     assert!(!decoded.ready);
@@ -1602,13 +1603,13 @@ fn skein_lightning_initial_import_durable_state_codec_blocks_source_mismatch() {
 }
 
 #[test]
-fn skein_lightning_initial_import_durable_state_codec_redacts_malformed_json() {
+fn hawdb_lightning_initial_import_durable_state_codec_redacts_malformed_json() {
     let mut db = Database::new();
     db.query("CREATE (:Memory {id: 'root'})").unwrap();
-    let export = db.prepare_skein_lightning_bootstrap_export().unwrap();
+    let export = db.prepare_hawdb_lightning_bootstrap_export().unwrap();
 
     let error = db
-        .skein_lightning_initial_import_decode_durable_state(&export.manifest, "{")
+        .hawdb_lightning_initial_import_decode_durable_state(&export.manifest, "{")
         .unwrap_err()
         .to_string();
 
@@ -1619,20 +1620,20 @@ fn skein_lightning_initial_import_durable_state_codec_redacts_malformed_json() {
 }
 
 #[test]
-fn skein_lightning_initial_import_session_resumes_from_durable_state() {
+fn hawdb_lightning_initial_import_session_resumes_from_durable_state() {
     let mut db = Database::new();
     db.query("CREATE (:Memory {id: 'root'})-[:LINKS {id: 'rel'}]->(:Entity {id: 'mid'})")
         .unwrap();
-    let export = db.prepare_skein_lightning_bootstrap_export().unwrap();
-    let checkpoint = SkeinLightningInitialImportCheckpoint {
+    let export = db.prepare_hawdb_lightning_bootstrap_export().unwrap();
+    let checkpoint = HawdbLightningInitialImportCheckpoint {
         completed_batches: 1,
         total_batches: 3,
         document_identity_count: 2,
         applied_search_projection_commit_epoch: Some(export.manifest.graph_commit_epoch),
         durable_search_projection_commit_epoch: None,
-        ..test_skein_lightning_checkpoint(&export.manifest)
+        ..test_hawdb_lightning_checkpoint(&export.manifest)
     };
-    let state = skein_lightning_initial_import_durable_state_report(
+    let state = hawdb_lightning_initial_import_durable_state_report(
         &export.manifest,
         &checkpoint,
         &[
@@ -1643,7 +1644,7 @@ fn skein_lightning_initial_import_session_resumes_from_durable_state() {
     .state
     .expect("expected persistable durable state");
 
-    let session = skein_lightning_initial_import_session_report(
+    let session = hawdb_lightning_initial_import_session_report(
         &export.graph_stream.encoded,
         &export.relational_stream.encoded,
         &export.manifest,
@@ -1658,7 +1659,7 @@ fn skein_lightning_initial_import_session_resumes_from_durable_state() {
     assert!(session.durable_state_source_matches_manifest);
     assert_eq!(
         session.next_action.kind,
-        SkeinLightningInitialImportResumeActionKind::Resume
+        HawdbLightningInitialImportResumeActionKind::Resume
     );
     assert_eq!(session.next_action.next_batch, Some(1));
     assert!(session
@@ -1670,20 +1671,20 @@ fn skein_lightning_initial_import_session_resumes_from_durable_state() {
 }
 
 #[test]
-fn skein_lightning_initial_import_session_quarantines_mismatched_durable_state() {
+fn hawdb_lightning_initial_import_session_quarantines_mismatched_durable_state() {
     let mut db = Database::new();
     db.query("CREATE (:Memory {id: 'root'})-[:LINKS {id: 'rel'}]->(:Entity {id: 'mid'})")
         .unwrap();
-    let export = db.prepare_skein_lightning_bootstrap_export().unwrap();
-    let checkpoint = SkeinLightningInitialImportCheckpoint {
+    let export = db.prepare_hawdb_lightning_bootstrap_export().unwrap();
+    let checkpoint = HawdbLightningInitialImportCheckpoint {
         completed_batches: 1,
         total_batches: 1,
         document_identity_count: 6,
         applied_search_projection_commit_epoch: Some(export.manifest.graph_commit_epoch),
         durable_search_projection_commit_epoch: Some(export.manifest.graph_commit_epoch),
-        ..test_skein_lightning_checkpoint(&export.manifest)
+        ..test_hawdb_lightning_checkpoint(&export.manifest)
     };
-    let mut state = skein_lightning_initial_import_durable_state_report(
+    let mut state = hawdb_lightning_initial_import_durable_state_report(
         &export.manifest,
         &checkpoint,
         &all_initial_import_document_identities(),
@@ -1696,7 +1697,7 @@ fn skein_lightning_initial_import_session_quarantines_mismatched_durable_state()
         .saturating_add(1);
     let freshness = initial_import_projection_freshness(&export.manifest);
 
-    let session = skein_lightning_initial_import_session_report(
+    let session = hawdb_lightning_initial_import_session_report(
         &export.graph_stream.encoded,
         &export.relational_stream.encoded,
         &export.manifest,
@@ -1710,7 +1711,7 @@ fn skein_lightning_initial_import_session_quarantines_mismatched_durable_state()
     assert!(!session.durable_state_source_matches_manifest);
     assert_eq!(
         session.next_action.kind,
-        SkeinLightningInitialImportResumeActionKind::Quarantine
+        HawdbLightningInitialImportResumeActionKind::Quarantine
     );
     assert!(session.next_action.next_batch.is_none());
     assert!(session
@@ -1719,13 +1720,13 @@ fn skein_lightning_initial_import_session_quarantines_mismatched_durable_state()
 }
 
 #[test]
-fn skein_lightning_initial_import_cutover_catch_up_accepts_matching_live_watermark() {
+fn hawdb_lightning_initial_import_cutover_catch_up_accepts_matching_live_watermark() {
     let mut db = Database::new();
     db.query("CREATE (:Memory {id: 'root'})-[:LINKS {id: 'rel'}]->(:Entity {id: 'mid'})")
         .unwrap();
-    let export = db.prepare_skein_lightning_bootstrap_export().unwrap();
-    let checkpoint = test_skein_lightning_checkpoint(&export.manifest);
-    let durable_state = skein_lightning_initial_import_durable_state_report(
+    let export = db.prepare_hawdb_lightning_bootstrap_export().unwrap();
+    let checkpoint = test_hawdb_lightning_checkpoint(&export.manifest);
+    let durable_state = hawdb_lightning_initial_import_durable_state_report(
         &export.manifest,
         &checkpoint,
         &all_initial_import_document_identities(),
@@ -1733,7 +1734,7 @@ fn skein_lightning_initial_import_cutover_catch_up_accepts_matching_live_waterma
     .state
     .expect("expected persistable durable state");
     let freshness = initial_import_projection_freshness(&export.manifest);
-    let session = skein_lightning_initial_import_session_report(
+    let session = hawdb_lightning_initial_import_session_report(
         &export.graph_stream.encoded,
         &export.relational_stream.encoded,
         &export.manifest,
@@ -1742,7 +1743,7 @@ fn skein_lightning_initial_import_cutover_catch_up_accepts_matching_live_waterma
         Some(&durable_state),
     );
 
-    let report = skein_lightning_initial_import_cutover_catch_up_report(
+    let report = hawdb_lightning_initial_import_cutover_catch_up_report(
         &session,
         export.manifest.graph_commit_epoch,
         Some(&freshness),
@@ -1761,15 +1762,15 @@ fn skein_lightning_initial_import_cutover_catch_up_accepts_matching_live_waterma
 }
 
 #[test]
-fn skein_lightning_initial_import_session_bundle_readiness_accepts_cutover_ready_session() {
+fn hawdb_lightning_initial_import_session_bundle_readiness_accepts_cutover_ready_session() {
     let mut db = Database::new();
     db.query("CREATE (:Memory {id: 'root'})-[:LINKS {id: 'rel'}]->(:Entity {id: 'mid'})")
         .unwrap();
-    let export = db.prepare_skein_lightning_bootstrap_export().unwrap();
-    let checkpoint = SkeinLightningInitialImportCheckpoint {
+    let export = db.prepare_hawdb_lightning_bootstrap_export().unwrap();
+    let checkpoint = HawdbLightningInitialImportCheckpoint {
         completed_batches: 1,
         total_batches: 1,
-        ..test_skein_lightning_checkpoint(&export.manifest)
+        ..test_hawdb_lightning_checkpoint(&export.manifest)
     };
     let delta = SearchProjectionDelta {
         upserts: all_initial_import_projection_rows(),
@@ -1777,12 +1778,12 @@ fn skein_lightning_initial_import_session_bundle_readiness_accepts_cutover_ready
         max_operations: Some(6),
         source_graph_commit_epoch: Some(export.manifest.graph_commit_epoch),
     };
-    let source_bundle = skein_lightning_initial_import_source_bundle_readiness(
+    let source_bundle = hawdb_lightning_initial_import_source_bundle_readiness(
         &export.manifest,
         Some(&checkpoint),
         &[delta],
     );
-    let durable_state = skein_lightning_initial_import_durable_state_report(
+    let durable_state = hawdb_lightning_initial_import_durable_state_report(
         &export.manifest,
         &checkpoint,
         &all_initial_import_document_identities(),
@@ -1790,7 +1791,7 @@ fn skein_lightning_initial_import_session_bundle_readiness_accepts_cutover_ready
     .state
     .expect("expected persistable durable state");
     let freshness = initial_import_projection_freshness(&export.manifest);
-    let session = skein_lightning_initial_import_session_report(
+    let session = hawdb_lightning_initial_import_session_report(
         &export.graph_stream.encoded,
         &export.relational_stream.encoded,
         &export.manifest,
@@ -1798,13 +1799,13 @@ fn skein_lightning_initial_import_session_bundle_readiness_accepts_cutover_ready
         Some(&freshness),
         Some(&durable_state),
     );
-    let catch_up = skein_lightning_initial_import_cutover_catch_up_report(
+    let catch_up = hawdb_lightning_initial_import_cutover_catch_up_report(
         &session,
         export.manifest.graph_commit_epoch,
         Some(&freshness),
     );
 
-    let readiness = skein_lightning_initial_import_session_bundle_readiness(
+    let readiness = hawdb_lightning_initial_import_session_bundle_readiness(
         &source_bundle,
         &session,
         Some(&catch_up),
@@ -1824,21 +1825,21 @@ fn skein_lightning_initial_import_session_bundle_readiness_accepts_cutover_ready
     );
     assert_eq!(
         readiness.next_action.kind,
-        SkeinLightningInitialImportResumeActionKind::ReadyForCutover
+        HawdbLightningInitialImportResumeActionKind::ReadyForCutover
     );
     assert!(readiness.blocker_codes.is_empty());
 }
 
 #[test]
-fn skein_lightning_initial_import_session_bundle_readiness_requires_catch_up_for_cutover() {
+fn hawdb_lightning_initial_import_session_bundle_readiness_requires_catch_up_for_cutover() {
     let mut db = Database::new();
     db.query("CREATE (:Memory {id: 'root'})-[:LINKS {id: 'rel'}]->(:Entity {id: 'mid'})")
         .unwrap();
-    let export = db.prepare_skein_lightning_bootstrap_export().unwrap();
-    let checkpoint = SkeinLightningInitialImportCheckpoint {
+    let export = db.prepare_hawdb_lightning_bootstrap_export().unwrap();
+    let checkpoint = HawdbLightningInitialImportCheckpoint {
         completed_batches: 1,
         total_batches: 1,
-        ..test_skein_lightning_checkpoint(&export.manifest)
+        ..test_hawdb_lightning_checkpoint(&export.manifest)
     };
     let delta = SearchProjectionDelta {
         upserts: all_initial_import_projection_rows(),
@@ -1846,12 +1847,12 @@ fn skein_lightning_initial_import_session_bundle_readiness_requires_catch_up_for
         max_operations: Some(6),
         source_graph_commit_epoch: Some(export.manifest.graph_commit_epoch),
     };
-    let source_bundle = skein_lightning_initial_import_source_bundle_readiness(
+    let source_bundle = hawdb_lightning_initial_import_source_bundle_readiness(
         &export.manifest,
         Some(&checkpoint),
         &[delta],
     );
-    let durable_state = skein_lightning_initial_import_durable_state_report(
+    let durable_state = hawdb_lightning_initial_import_durable_state_report(
         &export.manifest,
         &checkpoint,
         &all_initial_import_document_identities(),
@@ -1859,7 +1860,7 @@ fn skein_lightning_initial_import_session_bundle_readiness_requires_catch_up_for
     .state
     .expect("expected persistable durable state");
     let freshness = initial_import_projection_freshness(&export.manifest);
-    let session = skein_lightning_initial_import_session_report(
+    let session = hawdb_lightning_initial_import_session_report(
         &export.graph_stream.encoded,
         &export.relational_stream.encoded,
         &export.manifest,
@@ -1869,7 +1870,7 @@ fn skein_lightning_initial_import_session_bundle_readiness_requires_catch_up_for
     );
 
     let readiness =
-        skein_lightning_initial_import_session_bundle_readiness(&source_bundle, &session, None);
+        hawdb_lightning_initial_import_session_bundle_readiness(&source_bundle, &session, None);
 
     assert!(!readiness.ready);
     assert!(readiness.resumable);
@@ -1883,15 +1884,15 @@ fn skein_lightning_initial_import_session_bundle_readiness_requires_catch_up_for
 }
 
 #[test]
-fn skein_lightning_initial_import_startup_readiness_accepts_ready_session() {
+fn hawdb_lightning_initial_import_startup_readiness_accepts_ready_session() {
     let mut db = Database::new();
     db.query("CREATE (:Memory {id: 'root'})-[:LINKS {id: 'rel'}]->(:Entity {id: 'mid'})")
         .unwrap();
-    let export = db.prepare_skein_lightning_bootstrap_export().unwrap();
-    let checkpoint = SkeinLightningInitialImportCheckpoint {
+    let export = db.prepare_hawdb_lightning_bootstrap_export().unwrap();
+    let checkpoint = HawdbLightningInitialImportCheckpoint {
         completed_batches: 1,
         total_batches: 1,
-        ..test_skein_lightning_checkpoint(&export.manifest)
+        ..test_hawdb_lightning_checkpoint(&export.manifest)
     };
     let delta = SearchProjectionDelta {
         upserts: all_initial_import_projection_rows(),
@@ -1899,7 +1900,7 @@ fn skein_lightning_initial_import_startup_readiness_accepts_ready_session() {
         max_operations: Some(6),
         source_graph_commit_epoch: Some(export.manifest.graph_commit_epoch),
     };
-    let durable_state = skein_lightning_initial_import_durable_state_report(
+    let durable_state = hawdb_lightning_initial_import_durable_state_report(
         &export.manifest,
         &checkpoint,
         &all_initial_import_document_identities(),
@@ -1909,8 +1910,8 @@ fn skein_lightning_initial_import_startup_readiness_accepts_ready_session() {
     let freshness = initial_import_projection_freshness(&export.manifest);
 
     let projection_batches = [delta];
-    let report = db.skein_lightning_initial_import_startup_readiness(
-        SkeinLightningInitialImportReadinessInputs {
+    let report = db.hawdb_lightning_initial_import_startup_readiness(
+        HawdbLightningInitialImportReadinessInputs {
             encoded_graph_stream: &export.graph_stream.encoded,
             encoded_relational_stream: &export.relational_stream.encoded,
             manifest: &export.manifest,
@@ -1933,15 +1934,15 @@ fn skein_lightning_initial_import_startup_readiness_accepts_ready_session() {
 }
 
 #[test]
-fn skein_lightning_initial_import_startup_readiness_blocks_live_projection_lag() {
+fn hawdb_lightning_initial_import_startup_readiness_blocks_live_projection_lag() {
     let mut db = Database::new();
     db.query("CREATE (:Memory {id: 'root'})-[:LINKS {id: 'rel'}]->(:Entity {id: 'mid'})")
         .unwrap();
-    let export = db.prepare_skein_lightning_bootstrap_export().unwrap();
-    let checkpoint = SkeinLightningInitialImportCheckpoint {
+    let export = db.prepare_hawdb_lightning_bootstrap_export().unwrap();
+    let checkpoint = HawdbLightningInitialImportCheckpoint {
         completed_batches: 1,
         total_batches: 1,
-        ..test_skein_lightning_checkpoint(&export.manifest)
+        ..test_hawdb_lightning_checkpoint(&export.manifest)
     };
     let delta = SearchProjectionDelta {
         upserts: all_initial_import_projection_rows(),
@@ -1949,7 +1950,7 @@ fn skein_lightning_initial_import_startup_readiness_blocks_live_projection_lag()
         max_operations: Some(6),
         source_graph_commit_epoch: Some(export.manifest.graph_commit_epoch),
     };
-    let durable_state = skein_lightning_initial_import_durable_state_report(
+    let durable_state = hawdb_lightning_initial_import_durable_state_report(
         &export.manifest,
         &checkpoint,
         &all_initial_import_document_identities(),
@@ -1962,8 +1963,8 @@ fn skein_lightning_initial_import_startup_readiness_blocks_live_projection_lag()
         Some(export.manifest.graph_commit_epoch.saturating_sub(1));
 
     let projection_batches = [delta];
-    let report = db.skein_lightning_initial_import_startup_readiness(
-        SkeinLightningInitialImportReadinessInputs {
+    let report = db.hawdb_lightning_initial_import_startup_readiness(
+        HawdbLightningInitialImportReadinessInputs {
             encoded_graph_stream: &export.graph_stream.encoded,
             encoded_relational_stream: &export.relational_stream.encoded,
             manifest: &export.manifest,
@@ -1990,24 +1991,24 @@ fn skein_lightning_initial_import_startup_readiness_blocks_live_projection_lag()
 }
 
 #[test]
-fn skein_lightning_initial_import_recovery_readiness_resumes_encoded_state() {
+fn hawdb_lightning_initial_import_recovery_readiness_resumes_encoded_state() {
     let mut db = Database::new();
     db.query("CREATE (:Memory {id: 'root'})-[:LINKS {id: 'rel'}]->(:Entity {id: 'mid'})")
         .unwrap();
-    let export = db.prepare_skein_lightning_bootstrap_export().unwrap();
-    let checkpoint = SkeinLightningInitialImportCheckpoint {
+    let export = db.prepare_hawdb_lightning_bootstrap_export().unwrap();
+    let checkpoint = HawdbLightningInitialImportCheckpoint {
         completed_batches: 1,
         total_batches: 1,
-        ..test_skein_lightning_checkpoint(&export.manifest)
+        ..test_hawdb_lightning_checkpoint(&export.manifest)
     };
-    let durable_state = skein_lightning_initial_import_durable_state_report(
+    let durable_state = hawdb_lightning_initial_import_durable_state_report(
         &export.manifest,
         &checkpoint,
         &all_initial_import_document_identities(),
     )
     .state
     .expect("expected persistable durable state");
-    let encoded = skein_lightning_initial_import_encode_durable_state(&durable_state).unwrap();
+    let encoded = hawdb_lightning_initial_import_encode_durable_state(&durable_state).unwrap();
     let delta = SearchProjectionDelta {
         upserts: all_initial_import_projection_rows(),
         deletes: Vec::new(),
@@ -2017,8 +2018,8 @@ fn skein_lightning_initial_import_recovery_readiness_resumes_encoded_state() {
     let freshness = initial_import_projection_freshness(&export.manifest);
 
     let projection_batches = [delta];
-    let report = db.skein_lightning_initial_import_recovery_readiness(
-        SkeinLightningInitialImportReadinessInputs {
+    let report = db.hawdb_lightning_initial_import_recovery_readiness(
+        HawdbLightningInitialImportReadinessInputs {
             encoded_graph_stream: &export.graph_stream.encoded,
             encoded_relational_stream: &export.relational_stream.encoded,
             manifest: &export.manifest,
@@ -2037,19 +2038,19 @@ fn skein_lightning_initial_import_recovery_readiness_resumes_encoded_state() {
         .is_some_and(|codec| codec.ready));
     assert_eq!(
         report.next_action.kind,
-        SkeinLightningInitialImportResumeActionKind::ReadyForCutover
+        HawdbLightningInitialImportResumeActionKind::ReadyForCutover
     );
     assert!(report.blocker_codes.is_empty());
 }
 
 #[test]
-fn skein_lightning_initial_import_recovery_readiness_quarantines_invalid_payload() {
+fn hawdb_lightning_initial_import_recovery_readiness_quarantines_invalid_payload() {
     let mut db = Database::new();
     db.query("CREATE (:Memory {id: 'root'})").unwrap();
-    let export = db.prepare_skein_lightning_bootstrap_export().unwrap();
+    let export = db.prepare_hawdb_lightning_bootstrap_export().unwrap();
 
-    let report = db.skein_lightning_initial_import_recovery_readiness(
-        SkeinLightningInitialImportReadinessInputs {
+    let report = db.hawdb_lightning_initial_import_recovery_readiness(
+        HawdbLightningInitialImportReadinessInputs {
             encoded_graph_stream: &export.graph_stream.encoded,
             encoded_relational_stream: &export.relational_stream.encoded,
             manifest: &export.manifest,
@@ -2065,7 +2066,7 @@ fn skein_lightning_initial_import_recovery_readiness_quarantines_invalid_payload
     assert_eq!(report.durable_state_codec, None);
     assert_eq!(
         report.next_action.kind,
-        SkeinLightningInitialImportResumeActionKind::Quarantine
+        HawdbLightningInitialImportResumeActionKind::Quarantine
     );
     assert!(report
         .blocker_codes
@@ -2076,19 +2077,19 @@ fn skein_lightning_initial_import_recovery_readiness_quarantines_invalid_payload
 }
 
 #[test]
-fn skein_lightning_initial_import_recovery_readiness_quarantines_source_mismatch() {
+fn hawdb_lightning_initial_import_recovery_readiness_quarantines_source_mismatch() {
     let mut db = Database::new();
     db.query("CREATE (:Memory {id: 'root'})").unwrap();
-    let export = db.prepare_skein_lightning_bootstrap_export().unwrap();
-    let checkpoint = SkeinLightningInitialImportCheckpoint {
+    let export = db.prepare_hawdb_lightning_bootstrap_export().unwrap();
+    let checkpoint = HawdbLightningInitialImportCheckpoint {
         completed_batches: 1,
         total_batches: 1,
         document_identity_count: 6,
         applied_search_projection_commit_epoch: Some(export.manifest.graph_commit_epoch),
         durable_search_projection_commit_epoch: Some(export.manifest.graph_commit_epoch),
-        ..test_skein_lightning_checkpoint(&export.manifest)
+        ..test_hawdb_lightning_checkpoint(&export.manifest)
     };
-    let durable_state = skein_lightning_initial_import_durable_state_report(
+    let durable_state = hawdb_lightning_initial_import_durable_state_report(
         &export.manifest,
         &checkpoint,
         &all_initial_import_document_identities(),
@@ -2096,14 +2097,14 @@ fn skein_lightning_initial_import_recovery_readiness_quarantines_source_mismatch
     .state
     .expect("expected persistable durable state");
     let mut value = serde_json::from_str::<serde_json::Value>(
-        &skein_lightning_initial_import_encode_durable_state(&durable_state).unwrap(),
+        &hawdb_lightning_initial_import_encode_durable_state(&durable_state).unwrap(),
     )
     .unwrap();
     value["source_fingerprint"]["schema_checksum"] = serde_json::json!(0);
     let encoded = serde_json::to_string(&value).unwrap();
 
-    let report = db.skein_lightning_initial_import_recovery_readiness(
-        SkeinLightningInitialImportReadinessInputs {
+    let report = db.hawdb_lightning_initial_import_recovery_readiness(
+        HawdbLightningInitialImportReadinessInputs {
             encoded_graph_stream: &export.graph_stream.encoded,
             encoded_relational_stream: &export.relational_stream.encoded,
             manifest: &export.manifest,
@@ -2121,7 +2122,7 @@ fn skein_lightning_initial_import_recovery_readiness_quarantines_source_mismatch
         .is_some_and(|codec| !codec.ready));
     assert_eq!(
         report.next_action.kind,
-        SkeinLightningInitialImportResumeActionKind::Quarantine
+        HawdbLightningInitialImportResumeActionKind::Quarantine
     );
     assert!(report
         .blocker_codes
@@ -2129,13 +2130,13 @@ fn skein_lightning_initial_import_recovery_readiness_quarantines_source_mismatch
 }
 
 #[test]
-fn skein_lightning_initial_import_cutover_catch_up_blocks_live_mutation_lag() {
+fn hawdb_lightning_initial_import_cutover_catch_up_blocks_live_mutation_lag() {
     let mut db = Database::new();
     db.query("CREATE (:Memory {id: 'root'})-[:LINKS {id: 'rel'}]->(:Entity {id: 'mid'})")
         .unwrap();
-    let export = db.prepare_skein_lightning_bootstrap_export().unwrap();
-    let checkpoint = test_skein_lightning_checkpoint(&export.manifest);
-    let durable_state = skein_lightning_initial_import_durable_state_report(
+    let export = db.prepare_hawdb_lightning_bootstrap_export().unwrap();
+    let checkpoint = test_hawdb_lightning_checkpoint(&export.manifest);
+    let durable_state = hawdb_lightning_initial_import_durable_state_report(
         &export.manifest,
         &checkpoint,
         &all_initial_import_document_identities(),
@@ -2143,7 +2144,7 @@ fn skein_lightning_initial_import_cutover_catch_up_blocks_live_mutation_lag() {
     .state
     .expect("expected persistable durable state");
     let freshness = initial_import_projection_freshness(&export.manifest);
-    let session = skein_lightning_initial_import_session_report(
+    let session = hawdb_lightning_initial_import_session_report(
         &export.graph_stream.encoded,
         &export.relational_stream.encoded,
         &export.manifest,
@@ -2152,7 +2153,7 @@ fn skein_lightning_initial_import_cutover_catch_up_blocks_live_mutation_lag() {
         Some(&durable_state),
     );
 
-    let report = skein_lightning_initial_import_cutover_catch_up_report(
+    let report = hawdb_lightning_initial_import_cutover_catch_up_report(
         &session,
         export.manifest.graph_commit_epoch + 1,
         Some(&freshness),
@@ -2173,9 +2174,9 @@ fn database_initial_import_cutover_catch_up_uses_current_graph_epoch() {
     source
         .query("CREATE (:Memory {id: 'root'})-[:LINKS {id: 'rel'}]->(:Entity {id: 'mid'})")
         .unwrap();
-    let export = source.prepare_skein_lightning_bootstrap_export().unwrap();
-    let checkpoint = test_skein_lightning_checkpoint(&export.manifest);
-    let durable_state = skein_lightning_initial_import_durable_state_report(
+    let export = source.prepare_hawdb_lightning_bootstrap_export().unwrap();
+    let checkpoint = test_hawdb_lightning_checkpoint(&export.manifest);
+    let durable_state = hawdb_lightning_initial_import_durable_state_report(
         &export.manifest,
         &checkpoint,
         &all_initial_import_document_identities(),
@@ -2185,7 +2186,7 @@ fn database_initial_import_cutover_catch_up_uses_current_graph_epoch() {
     let freshness = initial_import_projection_freshness(&export.manifest);
     let mut target = Database::new();
     target
-        .skein_lightning_initial_import_apply_with_document_identities(
+        .hawdb_lightning_initial_import_apply_with_document_identities(
             &export.graph_stream.encoded,
             &export.relational_stream.encoded,
             &export.manifest,
@@ -2194,7 +2195,7 @@ fn database_initial_import_cutover_catch_up_uses_current_graph_epoch() {
             &all_initial_import_document_identities(),
         )
         .unwrap();
-    let session = skein_lightning_initial_import_session_report(
+    let session = hawdb_lightning_initial_import_session_report(
         &export.graph_stream.encoded,
         &export.relational_stream.encoded,
         &export.manifest,
@@ -2204,7 +2205,7 @@ fn database_initial_import_cutover_catch_up_uses_current_graph_epoch() {
     );
 
     let report =
-        target.skein_lightning_initial_import_cutover_catch_up_report(&session, Some(&freshness));
+        target.hawdb_lightning_initial_import_cutover_catch_up_report(&session, Some(&freshness));
 
     assert!(report.ready);
     assert_eq!(report.live_graph_commit_epoch, target.store.commit_epoch());
@@ -2212,22 +2213,22 @@ fn database_initial_import_cutover_catch_up_uses_current_graph_epoch() {
 }
 
 #[test]
-fn skein_lightning_initial_import_durable_state_rejects_unstable_checkpoint_identity() {
+fn hawdb_lightning_initial_import_durable_state_rejects_unstable_checkpoint_identity() {
     let mut db = Database::new();
     db.query("CREATE (:Memory {id: 'root'})-[:LINKS {id: 'rel'}]->(:Entity {id: 'mid'})")
         .unwrap();
-    let export = db.prepare_skein_lightning_bootstrap_export().unwrap();
-    let checkpoint = SkeinLightningInitialImportCheckpoint {
+    let export = db.prepare_hawdb_lightning_bootstrap_export().unwrap();
+    let checkpoint = HawdbLightningInitialImportCheckpoint {
         import_id: String::new(),
         schema_checksum: export.manifest.schema_checksum + 1,
         completed_batches: 4,
         total_batches: 3,
         document_identity_count: 7,
-        ..test_skein_lightning_checkpoint(&export.manifest)
+        ..test_hawdb_lightning_checkpoint(&export.manifest)
     };
     let identities = all_initial_import_document_identities();
 
-    let report = skein_lightning_initial_import_durable_state_report(
+    let report = hawdb_lightning_initial_import_durable_state_report(
         &export.manifest,
         &checkpoint,
         &identities,
@@ -2251,21 +2252,21 @@ fn skein_lightning_initial_import_durable_state_rejects_unstable_checkpoint_iden
 }
 
 #[test]
-fn skein_lightning_initial_import_durable_state_advances_with_search_projection_batch() {
+fn hawdb_lightning_initial_import_durable_state_advances_with_search_projection_batch() {
     let mut db = Database::new();
     db.query("CREATE (:Memory {id: 'root'})-[:LINKS {id: 'rel'}]->(:Entity {id: 'mid'})")
         .unwrap();
-    let export = db.prepare_skein_lightning_bootstrap_export().unwrap();
-    let checkpoint = SkeinLightningInitialImportCheckpoint {
+    let export = db.prepare_hawdb_lightning_bootstrap_export().unwrap();
+    let checkpoint = HawdbLightningInitialImportCheckpoint {
         completed_batches: 0,
         total_batches: 1,
         document_identity_count: 0,
         applied_search_projection_commit_epoch: None,
         durable_search_projection_commit_epoch: Some(export.manifest.graph_commit_epoch),
-        ..test_skein_lightning_checkpoint(&export.manifest)
+        ..test_hawdb_lightning_checkpoint(&export.manifest)
     };
     let initial =
-        skein_lightning_initial_import_durable_state_report(&export.manifest, &checkpoint, &[])
+        hawdb_lightning_initial_import_durable_state_report(&export.manifest, &checkpoint, &[])
             .state
             .expect("expected persistable initial durable state");
     let delta = SearchProjectionDelta {
@@ -2275,7 +2276,7 @@ fn skein_lightning_initial_import_durable_state_advances_with_search_projection_
         source_graph_commit_epoch: Some(export.manifest.graph_commit_epoch),
     };
 
-    let report = skein_lightning_initial_import_advance_durable_state_with_search_projection_batch(
+    let report = hawdb_lightning_initial_import_advance_durable_state_with_search_projection_batch(
         &export.manifest,
         &initial,
         &delta,
@@ -2302,21 +2303,21 @@ fn skein_lightning_initial_import_durable_state_advances_with_search_projection_
 }
 
 #[test]
-fn skein_lightning_initial_import_streaming_batches_advance_before_final_coverage() {
+fn hawdb_lightning_initial_import_streaming_batches_advance_before_final_coverage() {
     let mut db = Database::new();
     db.query("CREATE (:Memory {id: 'root'})-[:LINKS {id: 'rel'}]->(:Entity {id: 'mid'})")
         .unwrap();
-    let export = db.prepare_skein_lightning_bootstrap_export().unwrap();
-    let checkpoint = SkeinLightningInitialImportCheckpoint {
+    let export = db.prepare_hawdb_lightning_bootstrap_export().unwrap();
+    let checkpoint = HawdbLightningInitialImportCheckpoint {
         completed_batches: 0,
         total_batches: 2,
         document_identity_count: 0,
         applied_search_projection_commit_epoch: None,
         durable_search_projection_commit_epoch: Some(export.manifest.graph_commit_epoch),
-        ..test_skein_lightning_checkpoint(&export.manifest)
+        ..test_hawdb_lightning_checkpoint(&export.manifest)
     };
     let initial =
-        skein_lightning_initial_import_durable_state_report(&export.manifest, &checkpoint, &[])
+        hawdb_lightning_initial_import_durable_state_report(&export.manifest, &checkpoint, &[])
             .state
             .expect("expected persistable initial durable state");
     let mut rows = all_initial_import_projection_rows();
@@ -2327,7 +2328,7 @@ fn skein_lightning_initial_import_streaming_batches_advance_before_final_coverag
         source_graph_commit_epoch: Some(export.manifest.graph_commit_epoch),
     };
 
-    let first_report = skein_lightning_initial_import_advance_durable_state_streaming(
+    let first_report = hawdb_lightning_initial_import_advance_durable_state_streaming(
         &export.manifest,
         &initial,
         &first,
@@ -2351,7 +2352,7 @@ fn skein_lightning_initial_import_streaming_batches_advance_before_final_coverag
         max_operations: Some(5),
         source_graph_commit_epoch: Some(export.manifest.graph_commit_epoch),
     };
-    let second_report = skein_lightning_initial_import_advance_durable_state_streaming(
+    let second_report = hawdb_lightning_initial_import_advance_durable_state_streaming(
         &export.manifest,
         &after_first,
         &second,
@@ -2374,20 +2375,20 @@ fn skein_lightning_initial_import_streaming_batches_advance_before_final_coverag
 }
 
 #[test]
-fn skein_lightning_initial_import_durable_state_treats_completed_batch_as_idempotent_replay() {
+fn hawdb_lightning_initial_import_durable_state_treats_completed_batch_as_idempotent_replay() {
     let mut db = Database::new();
     db.query("CREATE (:Memory {id: 'root'})-[:LINKS {id: 'rel'}]->(:Entity {id: 'mid'})")
         .unwrap();
-    let export = db.prepare_skein_lightning_bootstrap_export().unwrap();
-    let checkpoint = SkeinLightningInitialImportCheckpoint {
+    let export = db.prepare_hawdb_lightning_bootstrap_export().unwrap();
+    let checkpoint = HawdbLightningInitialImportCheckpoint {
         completed_batches: 1,
         total_batches: 1,
         document_identity_count: 6,
         applied_search_projection_commit_epoch: Some(export.manifest.graph_commit_epoch),
         durable_search_projection_commit_epoch: Some(export.manifest.graph_commit_epoch),
-        ..test_skein_lightning_checkpoint(&export.manifest)
+        ..test_hawdb_lightning_checkpoint(&export.manifest)
     };
-    let state = skein_lightning_initial_import_durable_state_report(
+    let state = hawdb_lightning_initial_import_durable_state_report(
         &export.manifest,
         &checkpoint,
         &all_initial_import_document_identities(),
@@ -2401,7 +2402,7 @@ fn skein_lightning_initial_import_durable_state_treats_completed_batch_as_idempo
         source_graph_commit_epoch: Some(export.manifest.graph_commit_epoch),
     };
 
-    let report = skein_lightning_initial_import_advance_durable_state_with_search_projection_batch(
+    let report = hawdb_lightning_initial_import_advance_durable_state_with_search_projection_batch(
         &export.manifest,
         &state,
         &delta,
@@ -2422,21 +2423,21 @@ fn skein_lightning_initial_import_durable_state_treats_completed_batch_as_idempo
 }
 
 #[test]
-fn skein_lightning_initial_import_durable_state_blocks_invalid_batch_advance() {
+fn hawdb_lightning_initial_import_durable_state_blocks_invalid_batch_advance() {
     let mut db = Database::new();
     db.query("CREATE (:Memory {id: 'root'})-[:LINKS {id: 'rel'}]->(:Entity {id: 'mid'})")
         .unwrap();
-    let export = db.prepare_skein_lightning_bootstrap_export().unwrap();
-    let checkpoint = SkeinLightningInitialImportCheckpoint {
+    let export = db.prepare_hawdb_lightning_bootstrap_export().unwrap();
+    let checkpoint = HawdbLightningInitialImportCheckpoint {
         completed_batches: 0,
         total_batches: 1,
         document_identity_count: 0,
         applied_search_projection_commit_epoch: None,
         durable_search_projection_commit_epoch: None,
-        ..test_skein_lightning_checkpoint(&export.manifest)
+        ..test_hawdb_lightning_checkpoint(&export.manifest)
     };
     let state =
-        skein_lightning_initial_import_durable_state_report(&export.manifest, &checkpoint, &[])
+        hawdb_lightning_initial_import_durable_state_report(&export.manifest, &checkpoint, &[])
             .state
             .expect("expected persistable initial durable state");
     let delta = SearchProjectionDelta {
@@ -2449,7 +2450,7 @@ fn skein_lightning_initial_import_durable_state_blocks_invalid_batch_advance() {
         source_graph_commit_epoch: Some(export.manifest.graph_commit_epoch + 1),
     };
 
-    let report = skein_lightning_initial_import_advance_durable_state_with_search_projection_batch(
+    let report = hawdb_lightning_initial_import_advance_durable_state_with_search_projection_batch(
         &export.manifest,
         &state,
         &delta,
@@ -2471,18 +2472,18 @@ fn skein_lightning_initial_import_durable_state_blocks_invalid_batch_advance() {
 }
 
 #[test]
-fn skein_lightning_initial_import_search_projection_batch_accepts_cumulative_identities() {
+fn hawdb_lightning_initial_import_search_projection_batch_accepts_cumulative_identities() {
     let mut db = Database::new();
     db.query("CREATE (:Memory {id: 'root'})-[:LINKS {id: 'rel'}]->(:Entity {id: 'mid'})")
         .unwrap();
-    let export = db.prepare_skein_lightning_bootstrap_export().unwrap();
-    let checkpoint = SkeinLightningInitialImportCheckpoint {
+    let export = db.prepare_hawdb_lightning_bootstrap_export().unwrap();
+    let checkpoint = HawdbLightningInitialImportCheckpoint {
         completed_batches: 1,
         total_batches: 3,
         document_identity_count: 4,
         applied_search_projection_commit_epoch: None,
         durable_search_projection_commit_epoch: None,
-        ..test_skein_lightning_checkpoint(&export.manifest)
+        ..test_hawdb_lightning_checkpoint(&export.manifest)
     };
     let delta = SearchProjectionDelta {
         upserts: vec![
@@ -2496,7 +2497,7 @@ fn skein_lightning_initial_import_search_projection_batch_accepts_cumulative_ide
     let cumulative_identities = all_initial_import_document_identities();
 
     let report =
-        skein_lightning_initial_import_search_projection_batch_report_with_document_identities(
+        hawdb_lightning_initial_import_search_projection_batch_report_with_document_identities(
             &export.manifest,
             Some(&checkpoint),
             &delta,
@@ -2519,11 +2520,11 @@ fn skein_lightning_initial_import_search_projection_batch_accepts_cumulative_ide
 }
 
 #[test]
-fn skein_lightning_initial_import_search_projection_batch_fails_closed() {
+fn hawdb_lightning_initial_import_search_projection_batch_fails_closed() {
     let mut db = Database::new();
     db.query("CREATE (:Memory {id: 'root'})-[:LINKS {id: 'rel'}]->(:Entity {id: 'mid'})")
         .unwrap();
-    let export = db.prepare_skein_lightning_bootstrap_export().unwrap();
+    let export = db.prepare_hawdb_lightning_bootstrap_export().unwrap();
     let delta = SearchProjectionDelta {
         upserts: vec![initial_import_projection_row(
             SearchProjectionKind::Memory,
@@ -2534,7 +2535,7 @@ fn skein_lightning_initial_import_search_projection_batch_fails_closed() {
         source_graph_commit_epoch: Some(export.manifest.graph_commit_epoch + 1),
     };
 
-    let report = skein_lightning_initial_import_search_projection_batch_report(
+    let report = hawdb_lightning_initial_import_search_projection_batch_report(
         &export.manifest,
         None,
         &delta,
@@ -2577,18 +2578,18 @@ fn skein_lightning_initial_import_search_projection_batch_fails_closed() {
 }
 
 #[test]
-fn skein_lightning_initial_import_search_projection_batch_rejects_checkpoint_total_mismatch() {
+fn hawdb_lightning_initial_import_search_projection_batch_rejects_checkpoint_total_mismatch() {
     let mut db = Database::new();
     db.query("CREATE (:Memory {id: 'root'})-[:LINKS {id: 'rel'}]->(:Entity {id: 'mid'})")
         .unwrap();
-    let export = db.prepare_skein_lightning_bootstrap_export().unwrap();
-    let checkpoint = SkeinLightningInitialImportCheckpoint {
+    let export = db.prepare_hawdb_lightning_bootstrap_export().unwrap();
+    let checkpoint = HawdbLightningInitialImportCheckpoint {
         completed_batches: 0,
         total_batches: 2,
         document_identity_count: 0,
         applied_search_projection_commit_epoch: None,
         durable_search_projection_commit_epoch: None,
-        ..test_skein_lightning_checkpoint(&export.manifest)
+        ..test_hawdb_lightning_checkpoint(&export.manifest)
     };
     let delta = SearchProjectionDelta {
         upserts: all_initial_import_projection_rows(),
@@ -2597,7 +2598,7 @@ fn skein_lightning_initial_import_search_projection_batch_rejects_checkpoint_tot
         source_graph_commit_epoch: Some(export.manifest.graph_commit_epoch),
     };
 
-    let report = skein_lightning_initial_import_search_projection_batch_report(
+    let report = hawdb_lightning_initial_import_search_projection_batch_report(
         &export.manifest,
         Some(&checkpoint),
         &delta,
@@ -2621,18 +2622,18 @@ fn skein_lightning_initial_import_search_projection_batch_rejects_checkpoint_tot
 }
 
 #[test]
-fn skein_lightning_initial_import_source_bundle_accepts_graph_and_projection_sources() {
+fn hawdb_lightning_initial_import_source_bundle_accepts_graph_and_projection_sources() {
     let mut db = Database::new();
     db.query("CREATE (:Memory {id: 'root'})-[:LINKS {id: 'rel'}]->(:Entity {id: 'mid'})")
         .unwrap();
-    let export = db.prepare_skein_lightning_bootstrap_export().unwrap();
-    let checkpoint = SkeinLightningInitialImportCheckpoint {
+    let export = db.prepare_hawdb_lightning_bootstrap_export().unwrap();
+    let checkpoint = HawdbLightningInitialImportCheckpoint {
         completed_batches: 0,
         total_batches: 1,
         document_identity_count: 0,
         applied_search_projection_commit_epoch: None,
         durable_search_projection_commit_epoch: None,
-        ..test_skein_lightning_checkpoint(&export.manifest)
+        ..test_hawdb_lightning_checkpoint(&export.manifest)
     };
     let projection_batches = vec![SearchProjectionDelta {
         upserts: all_initial_import_projection_rows(),
@@ -2641,7 +2642,7 @@ fn skein_lightning_initial_import_source_bundle_accepts_graph_and_projection_sou
         source_graph_commit_epoch: Some(export.manifest.graph_commit_epoch),
     }];
 
-    let report = skein_lightning_initial_import_source_bundle_readiness(
+    let report = hawdb_lightning_initial_import_source_bundle_readiness(
         &export.manifest,
         Some(&checkpoint),
         &projection_batches,
@@ -2664,11 +2665,11 @@ fn skein_lightning_initial_import_source_bundle_accepts_graph_and_projection_sou
 }
 
 #[test]
-fn skein_lightning_initial_import_source_bundle_fails_closed_for_source_gaps() {
+fn hawdb_lightning_initial_import_source_bundle_fails_closed_for_source_gaps() {
     let mut db = Database::new();
     db.query("CREATE (:Memory {id: 'root'})-[:LINKS {id: 'rel'}]->(:Entity {id: 'mid'})")
         .unwrap();
-    let export = db.prepare_skein_lightning_bootstrap_export().unwrap();
+    let export = db.prepare_hawdb_lightning_bootstrap_export().unwrap();
     let projection_batches = vec![SearchProjectionDelta {
         upserts: vec![
             initial_import_projection_row(SearchProjectionKind::Memory, "1"),
@@ -2679,7 +2680,7 @@ fn skein_lightning_initial_import_source_bundle_fails_closed_for_source_gaps() {
         source_graph_commit_epoch: Some(export.manifest.graph_commit_epoch + 1),
     }];
 
-    let report = skein_lightning_initial_import_source_bundle_readiness(
+    let report = hawdb_lightning_initial_import_source_bundle_readiness(
         &export.manifest,
         None,
         &projection_batches,
@@ -2704,13 +2705,13 @@ fn skein_lightning_initial_import_source_bundle_fails_closed_for_source_gaps() {
 }
 
 #[test]
-fn skein_lightning_initial_import_plan_blocks_incomplete_document_identity_coverage() {
+fn hawdb_lightning_initial_import_plan_blocks_incomplete_document_identity_coverage() {
     let mut db = Database::new();
     db.query("CREATE (:Memory {id: 'root'})-[:LINKS {id: 'rel'}]->(:Entity {id: 'mid'})")
         .unwrap();
-    let export = db.prepare_skein_lightning_bootstrap_export().unwrap();
+    let export = db.prepare_hawdb_lightning_bootstrap_export().unwrap();
     let freshness = initial_import_projection_freshness(&export.manifest);
-    let checkpoint = test_skein_lightning_checkpoint(&export.manifest);
+    let checkpoint = test_hawdb_lightning_checkpoint(&export.manifest);
     let document_identities = vec![
         initial_import_document_identity(SearchProjectionKind::Memory, "memory:1"),
         initial_import_document_identity(SearchProjectionKind::Message, "message:1"),
@@ -2719,7 +2720,7 @@ fn skein_lightning_initial_import_plan_blocks_incomplete_document_identity_cover
         initial_import_document_identity(SearchProjectionKind::Community, "community:1"),
     ];
 
-    let plan = db.skein_lightning_initial_import_plan_with_document_identities(
+    let plan = db.hawdb_lightning_initial_import_plan_with_document_identities(
         &export.graph_stream.encoded,
         &export.relational_stream.encoded,
         &export.manifest,
@@ -2741,17 +2742,17 @@ fn skein_lightning_initial_import_plan_blocks_incomplete_document_identity_cover
 }
 
 #[test]
-fn skein_lightning_initial_import_plan_fails_closed_for_invalid_stream_and_missing_checkpoint() {
+fn hawdb_lightning_initial_import_plan_fails_closed_for_invalid_stream_and_missing_checkpoint() {
     let mut db = Database::new();
     db.query("CREATE (:Memory {id: 'root'})-[:LINKS {id: 'rel'}]->(:Entity {id: 'mid'})")
         .unwrap();
-    let export = db.prepare_skein_lightning_bootstrap_export().unwrap();
+    let export = db.prepare_hawdb_lightning_bootstrap_export().unwrap();
     let invalid_stream = export
         .graph_stream
         .encoded
         .replace("checksum\t", "bad-checksum\t");
 
-    let plan = db.skein_lightning_initial_import_plan(
+    let plan = db.hawdb_lightning_initial_import_plan(
         &invalid_stream,
         &export.relational_stream.encoded,
         &export.manifest,
@@ -2767,11 +2768,11 @@ fn skein_lightning_initial_import_plan_fails_closed_for_invalid_stream_and_missi
     assert_eq!(plan.checkpoint_readiness, None);
     assert_eq!(
         plan.resume_action.kind,
-        SkeinLightningInitialImportResumeActionKind::Start
+        HawdbLightningInitialImportResumeActionKind::Start
     );
     assert!(plan
         .blocker_codes
-        .contains(&"skein_lightning_graph_stream_invalid".to_string()));
+        .contains(&"hawdb_lightning_graph_stream_invalid".to_string()));
     assert!(plan
         .blocker_codes
         .contains(&"search_projection_missing".to_string()));
@@ -2781,7 +2782,7 @@ fn skein_lightning_initial_import_plan_fails_closed_for_invalid_stream_and_missi
 }
 
 #[test]
-fn skein_lightning_initial_import_apply_imports_database_state_into_empty_target() {
+fn hawdb_lightning_initial_import_apply_imports_database_state_into_empty_target() {
     let mut source = Database::new();
     source
         .query("CREATE (:Memory {id: 'root'})-[:LINKS {weight: 7}]->(:Entity {id: 'mid'})")
@@ -2789,7 +2790,7 @@ fn skein_lightning_initial_import_apply_imports_database_state_into_empty_target
     source
         .query_sql("CREATE TABLE public.messages (id TEXT PRIMARY KEY, body TEXT NOT NULL)")
         .unwrap();
-    let large_body = "skein-lightning-payload".repeat(512);
+    let large_body = "hawdb-lightning-payload".repeat(512);
     source
         .query_sql_with_params(
             "INSERT INTO public.messages (id, body) VALUES ($1, $2)",
@@ -2799,15 +2800,15 @@ fn skein_lightning_initial_import_apply_imports_database_state_into_empty_target
             ],
         )
         .unwrap();
-    let export = source.prepare_skein_lightning_bootstrap_export().unwrap();
+    let export = source.prepare_hawdb_lightning_bootstrap_export().unwrap();
     assert_eq!(export.manifest.relational_table_count, 2);
     assert_eq!(export.manifest.relational_row_count, 2);
     assert_eq!(export.manifest.relational_overflow_segment_count, 1);
-    let path = unique_test_dir("skein_lightning_initial_import_apply");
+    let path = unique_test_dir("hawdb_lightning_initial_import_apply");
     {
         let mut target = Database::open(&path).unwrap();
         let report = target
-            .skein_lightning_initial_import_apply(
+            .hawdb_lightning_initial_import_apply(
                 &export.graph_stream.encoded,
                 &export.relational_stream.encoded,
                 &export.manifest,
@@ -2859,7 +2860,7 @@ fn skein_lightning_initial_import_apply_imports_database_state_into_empty_target
         assert_eq!(rows.rows[0]["body"], Value::String(large_body.clone()));
 
         let retry = reopened
-            .skein_lightning_initial_import_apply(
+            .hawdb_lightning_initial_import_apply(
                 &export.graph_stream.encoded,
                 &export.relational_stream.encoded,
                 &export.manifest,
@@ -2876,7 +2877,7 @@ fn skein_lightning_initial_import_apply_imports_database_state_into_empty_target
     {
         let mut reopened = Database::open(&path).unwrap();
         let retry = reopened
-            .skein_lightning_initial_import_apply(
+            .hawdb_lightning_initial_import_apply(
                 &export.graph_stream.encoded,
                 &export.relational_stream.encoded,
                 &export.manifest,
@@ -2892,7 +2893,7 @@ fn skein_lightning_initial_import_apply_imports_database_state_into_empty_target
             .last_mut()
             .expect("relational stream must not be empty") ^= 0xff;
         let corrupt_retry = reopened
-            .skein_lightning_initial_import_apply(
+            .hawdb_lightning_initial_import_apply(
                 &export.graph_stream.encoded,
                 &corrupt_relational_stream,
                 &export.manifest,
@@ -2903,17 +2904,17 @@ fn skein_lightning_initial_import_apply_imports_database_state_into_empty_target
         assert!(!corrupt_retry.applied);
         assert!(corrupt_retry
             .blocker_codes
-            .contains(&"skein_lightning_database_streams_not_import_ready".to_string()));
+            .contains(&"hawdb_lightning_database_streams_not_import_ready".to_string()));
 
         let mut different_source = Database::new();
         different_source
             .query("CREATE (:Memory {id: 'other'})")
             .unwrap();
         let different_export = different_source
-            .prepare_skein_lightning_bootstrap_export()
+            .prepare_hawdb_lightning_bootstrap_export()
             .unwrap();
         let mismatch = reopened
-            .skein_lightning_initial_import_apply(
+            .hawdb_lightning_initial_import_apply(
                 &different_export.graph_stream.encoded,
                 &different_export.relational_stream.encoded,
                 &different_export.manifest,
@@ -2924,18 +2925,18 @@ fn skein_lightning_initial_import_apply_imports_database_state_into_empty_target
         assert!(!mismatch.applied);
         assert!(mismatch
             .blocker_codes
-            .contains(&"skein_lightning_initial_import_source_fingerprint_mismatch".to_string()));
+            .contains(&"hawdb_lightning_initial_import_source_fingerprint_mismatch".to_string()));
     }
 }
 
 #[test]
-fn skein_lightning_initial_import_rejects_corrupt_relational_stream_atomically() {
+fn hawdb_lightning_initial_import_rejects_corrupt_relational_stream_atomically() {
     let mut source = Database::new();
     source.query("CREATE (:Memory {id: 'root'})").unwrap();
     source
         .query_sql("CREATE TABLE public.messages (id TEXT PRIMARY KEY)")
         .unwrap();
-    let export = source.prepare_skein_lightning_bootstrap_export().unwrap();
+    let export = source.prepare_hawdb_lightning_bootstrap_export().unwrap();
     let mut relational_stream = export.relational_stream.encoded.clone();
     let last = relational_stream
         .last_mut()
@@ -2944,7 +2945,7 @@ fn skein_lightning_initial_import_rejects_corrupt_relational_stream_atomically()
     let mut target = Database::new();
 
     let report = target
-        .skein_lightning_initial_import_apply(
+        .hawdb_lightning_initial_import_apply(
             &export.graph_stream.encoded,
             &relational_stream,
             &export.manifest,
@@ -2959,28 +2960,28 @@ fn skein_lightning_initial_import_rejects_corrupt_relational_stream_atomically()
     assert!(report
         .plan
         .blocker_codes
-        .contains(&"skein_lightning_relational_stream_invalid".to_string()));
+        .contains(&"hawdb_lightning_relational_stream_invalid".to_string()));
     assert!(target.export_canonical_graph_snapshot().nodes.is_empty());
     assert!(target.store.relational_state().is_empty());
 }
 
 #[test]
-fn skein_lightning_initial_import_rejects_stream_without_engine_registry() {
+fn hawdb_lightning_initial_import_rejects_stream_without_engine_registry() {
     let mut source = Database::new();
     source.query("CREATE (:Memory {id: 'root'})").unwrap();
-    let export = source.prepare_skein_lightning_bootstrap_export().unwrap();
-    let relational_stream = SkeinLightningRelationalStream::from_state(
+    let export = source.prepare_hawdb_lightning_bootstrap_export().unwrap();
+    let relational_stream = HawdbLightningRelationalStream::from_state(
         export.manifest.database_commit_epoch,
-        &skein_storage::RelationalState::default(),
+        &hawdb_storage::RelationalState::default(),
     )
     .unwrap();
     let manifest = export
         .snapshot
-        .skein_lightning_bootstrap_manifest(&relational_stream);
+        .hawdb_lightning_bootstrap_manifest(&relational_stream);
     let mut target = Database::new();
 
     let error = target
-        .skein_lightning_initial_import_apply(
+        .hawdb_lightning_initial_import_apply(
             &export.graph_stream.encoded,
             &relational_stream.encoded,
             &manifest,
@@ -2995,19 +2996,19 @@ fn skein_lightning_initial_import_rejects_stream_without_engine_registry() {
 }
 
 #[test]
-fn skein_lightning_initial_import_apply_with_document_identities_reports_cutover_ready() {
+fn hawdb_lightning_initial_import_apply_with_document_identities_reports_cutover_ready() {
     let mut source = Database::new();
     source
         .query("CREATE (:Memory {id: 'root'})-[:LINKS {weight: 7}]->(:Entity {id: 'mid'})")
         .unwrap();
-    let export = source.prepare_skein_lightning_bootstrap_export().unwrap();
+    let export = source.prepare_hawdb_lightning_bootstrap_export().unwrap();
     let freshness = initial_import_projection_freshness(&export.manifest);
-    let checkpoint = test_skein_lightning_checkpoint(&export.manifest);
+    let checkpoint = test_hawdb_lightning_checkpoint(&export.manifest);
     let document_identities = all_initial_import_document_identities();
     let mut target = Database::new();
 
     let report = target
-        .skein_lightning_initial_import_apply_with_document_identities(
+        .hawdb_lightning_initial_import_apply_with_document_identities(
             &export.graph_stream.encoded,
             &export.relational_stream.encoded,
             &export.manifest,
@@ -3028,14 +3029,14 @@ fn skein_lightning_initial_import_apply_with_document_identities_reports_cutover
 }
 
 #[test]
-fn skein_lightning_initial_import_apply_with_document_identities_blocks_cutover_on_gaps() {
+fn hawdb_lightning_initial_import_apply_with_document_identities_blocks_cutover_on_gaps() {
     let mut source = Database::new();
     source
         .query("CREATE (:Memory {id: 'root'})-[:LINKS {weight: 7}]->(:Entity {id: 'mid'})")
         .unwrap();
-    let export = source.prepare_skein_lightning_bootstrap_export().unwrap();
+    let export = source.prepare_hawdb_lightning_bootstrap_export().unwrap();
     let freshness = initial_import_projection_freshness(&export.manifest);
-    let checkpoint = test_skein_lightning_checkpoint(&export.manifest);
+    let checkpoint = test_hawdb_lightning_checkpoint(&export.manifest);
     let document_identities = vec![
         initial_import_document_identity(SearchProjectionKind::Memory, "memory:1"),
         initial_import_document_identity(SearchProjectionKind::Message, "message:1"),
@@ -3046,7 +3047,7 @@ fn skein_lightning_initial_import_apply_with_document_identities_blocks_cutover_
     let mut target = Database::new();
 
     let report = target
-        .skein_lightning_initial_import_apply_with_document_identities(
+        .hawdb_lightning_initial_import_apply_with_document_identities(
             &export.graph_stream.encoded,
             &export.relational_stream.encoded,
             &export.manifest,
@@ -3071,17 +3072,17 @@ fn skein_lightning_initial_import_apply_with_document_identities_blocks_cutover_
 }
 
 #[test]
-fn skein_lightning_initial_import_apply_rejects_non_empty_target_without_writing() {
+fn hawdb_lightning_initial_import_apply_rejects_non_empty_target_without_writing() {
     let mut source = Database::new();
     source
         .query("CREATE (:Memory {id: 'root'})-[:LINKS {weight: 7}]->(:Entity {id: 'mid'})")
         .unwrap();
-    let export = source.prepare_skein_lightning_bootstrap_export().unwrap();
+    let export = source.prepare_hawdb_lightning_bootstrap_export().unwrap();
     let mut target = Database::new();
     target.query("CREATE (:Memory {id: 'existing'})").unwrap();
 
     let report = target
-        .skein_lightning_initial_import_apply(
+        .hawdb_lightning_initial_import_apply(
             &export.graph_stream.encoded,
             &export.relational_stream.encoded,
             &export.manifest,
@@ -3095,24 +3096,24 @@ fn skein_lightning_initial_import_apply_rejects_non_empty_target_without_writing
     assert_eq!(report.relationship_count, 0);
     assert!(report
         .blocker_codes
-        .contains(&"skein_lightning_initial_import_target_not_empty".to_string()));
+        .contains(&"hawdb_lightning_initial_import_target_not_empty".to_string()));
     let snapshot = target.export_canonical_graph_snapshot();
     assert_eq!(snapshot.nodes.len(), 1);
     assert_eq!(snapshot.relationships.len(), 0);
 }
 
 #[test]
-fn skein_lightning_initial_import_rejects_non_empty_relational_target() {
+fn hawdb_lightning_initial_import_rejects_non_empty_relational_target() {
     let mut source = Database::new();
     source.query("CREATE (:Memory {id: 'root'})").unwrap();
-    let export = source.prepare_skein_lightning_bootstrap_export().unwrap();
+    let export = source.prepare_hawdb_lightning_bootstrap_export().unwrap();
     let mut target = Database::new();
     target
         .query_sql("CREATE TABLE public.existing (id TEXT PRIMARY KEY)")
         .unwrap();
 
     let report = target
-        .skein_lightning_initial_import_apply(
+        .hawdb_lightning_initial_import_apply(
             &export.graph_stream.encoded,
             &export.relational_stream.encoded,
             &export.manifest,
@@ -3126,7 +3127,7 @@ fn skein_lightning_initial_import_rejects_non_empty_relational_target() {
     assert_eq!(report.relational_table_count, 1);
     assert!(report
         .blocker_codes
-        .contains(&"skein_lightning_initial_import_target_not_empty".to_string()));
+        .contains(&"hawdb_lightning_initial_import_target_not_empty".to_string()));
     assert!(target.export_canonical_graph_snapshot().nodes.is_empty());
     assert!(
         target
@@ -3141,15 +3142,15 @@ fn skein_lightning_initial_import_rejects_non_empty_relational_target() {
 }
 
 #[test]
-fn skein_lightning_initial_import_rejects_non_empty_graph_schema_target() {
+fn hawdb_lightning_initial_import_rejects_non_empty_graph_schema_target() {
     let mut source = Database::new();
     source.query("CREATE (:Memory {id: 'root'})").unwrap();
-    let export = source.prepare_skein_lightning_bootstrap_export().unwrap();
+    let export = source.prepare_hawdb_lightning_bootstrap_export().unwrap();
     let mut target = Database::new();
     target.query("CREATE NODE TABLE Existing").unwrap();
 
     let report = target
-        .skein_lightning_initial_import_apply(
+        .hawdb_lightning_initial_import_apply(
             &export.graph_stream.encoded,
             &export.relational_stream.encoded,
             &export.manifest,
@@ -3162,21 +3163,21 @@ fn skein_lightning_initial_import_rejects_non_empty_graph_schema_target() {
     assert_eq!(report.node_count, 0);
     assert!(report
         .blocker_codes
-        .contains(&"skein_lightning_initial_import_target_not_empty".to_string()));
+        .contains(&"hawdb_lightning_initial_import_target_not_empty".to_string()));
     assert!(target.catalog.label_id("Existing").is_some());
 }
 
 #[test]
-fn skein_lightning_bootstrap_export_background_plan_uses_import_lane() {
+fn hawdb_lightning_bootstrap_export_background_plan_uses_import_lane() {
     let mut db = Database::new();
     assert!(db
-        .skein_lightning_bootstrap_export_background_work_plan(BackgroundWorkHint::default())
+        .hawdb_lightning_bootstrap_export_background_work_plan(BackgroundWorkHint::default())
         .is_none());
 
     db.query("CREATE (:Memory {id: 'root'})-[:LINKS]->(:Entity {id: 'mid'})")
         .unwrap();
     let plan = db
-        .skein_lightning_bootstrap_export_background_work_plan(BackgroundWorkHint {
+        .hawdb_lightning_bootstrap_export_background_work_plan(BackgroundWorkHint {
             active_topic: true,
             ..BackgroundWorkHint::default()
         })
@@ -3188,13 +3189,13 @@ fn skein_lightning_bootstrap_export_background_plan_uses_import_lane() {
 }
 
 #[test]
-fn skein_lightning_bootstrap_export_background_plan_counts_relational_state() {
+fn hawdb_lightning_bootstrap_export_background_plan_counts_relational_state() {
     let mut db = Database::new();
     db.query_sql("CREATE TABLE public.messages (id TEXT PRIMARY KEY)")
         .unwrap();
 
     let plan = db
-        .skein_lightning_bootstrap_export_background_work_plan(BackgroundWorkHint::default())
+        .hawdb_lightning_bootstrap_export_background_work_plan(BackgroundWorkHint::default())
         .expect("relational state must produce import work");
 
     assert_eq!(plan.request.class, WorkClass::Import);
@@ -3202,8 +3203,8 @@ fn skein_lightning_bootstrap_export_background_plan_counts_relational_state() {
 }
 
 #[test]
-fn skein_lightning_background_bootstrap_export_uses_qos_without_gating_direct_export() {
-    let path = unique_test_dir("skein_lightning_background_export_qos");
+fn hawdb_lightning_background_bootstrap_export_uses_qos_without_gating_direct_export() {
+    let path = unique_test_dir("hawdb_lightning_background_export_qos");
     {
         let mut db = Database::open(&path).unwrap();
         db.query("CREATE (:Memory {id: 'root'})-[:LINKS]->(:Entity {id: 'mid'})")
@@ -3215,26 +3216,26 @@ fn skein_lightning_background_bootstrap_export_uses_qos_without_gating_direct_ex
             ..LocalQosPolicy::default()
         };
         let error = db
-            .prepare_background_skein_lightning_bootstrap_export(&policy, &LocalQosState::default())
+            .prepare_background_hawdb_lightning_bootstrap_export(&policy, &LocalQosState::default())
             .unwrap_err();
 
         assert!(error
             .to_string()
-            .contains("background Skein Lightning bootstrap export deferred"));
-        assert!(!path.join("stable_ids.skein").exists());
+            .contains("background Hawdb Lightning bootstrap export deferred"));
+        assert!(!path.join("stable_ids.hawdb").exists());
 
-        let export = db.prepare_skein_lightning_bootstrap_export().unwrap();
+        let export = db.prepare_hawdb_lightning_bootstrap_export().unwrap();
         assert_eq!(export.manifest.node_count, 2);
         assert_eq!(export.manifest.relationship_count, 1);
-        assert!(path.join("stable_ids.skein").exists());
+        assert!(path.join("stable_ids.hawdb").exists());
     }
 
     std::fs::remove_dir_all(path).unwrap();
 }
 
 #[test]
-fn skein_lightning_scheduled_background_bootstrap_export_releases_import_budget() {
-    let path = unique_test_dir("skein_lightning_scheduled_background_export");
+fn hawdb_lightning_scheduled_background_bootstrap_export_releases_import_budget() {
+    let path = unique_test_dir("hawdb_lightning_scheduled_background_export");
     {
         let mut class_limits = [None; crate::WORK_CLASS_COUNT];
         class_limits[WorkClass::Import.as_index()] = Some(5);
@@ -3257,7 +3258,7 @@ fn skein_lightning_scheduled_background_bootstrap_export_releases_import_budget(
         let scheduler = db.local_qos_scheduler();
 
         let export = db
-            .prepare_scheduled_background_skein_lightning_bootstrap_export()
+            .prepare_scheduled_background_hawdb_lightning_bootstrap_export()
             .unwrap();
 
         assert_eq!(export.manifest.node_count, 2);
@@ -3273,7 +3274,7 @@ fn skein_lightning_scheduled_background_bootstrap_export_releases_import_budget(
 }
 
 #[test]
-fn skein_lightning_graph_stream_validation_skips_length_coded_metadata() {
+fn hawdb_lightning_graph_stream_validation_skips_length_coded_metadata() {
     let mut db = Database::new();
     let root = db
         .store
@@ -3329,7 +3330,7 @@ fn skein_lightning_graph_stream_validation_skips_length_coded_metadata() {
         )
         .unwrap();
 
-    let export = db.prepare_skein_lightning_bootstrap_export().unwrap();
+    let export = db.prepare_hawdb_lightning_bootstrap_export().unwrap();
     let validation = export
         .graph_stream
         .validate_against_manifest(&export.manifest);

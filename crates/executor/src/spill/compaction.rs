@@ -2,7 +2,7 @@
 
 use super::SpillRun;
 use crate::pipeline::runtime_checkpoint;
-use skein_core::{Result, RuntimeTaskContext};
+use hawdb_core::{Result, RuntimeTaskContext};
 use std::num::NonZeroUsize;
 
 pub(crate) fn compact_runs(

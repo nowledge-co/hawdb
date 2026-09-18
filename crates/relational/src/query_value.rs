@@ -1,8 +1,8 @@
 //! Query parameter binding and scalar conversion without row or storage access.
 
-use skein_core::{Result, SkeinError, Value};
-use skein_sql::{Expr, ExprKind, SqlBound, SqlExpression, SqlValue};
-use skein_storage::{RelationalScalarType, RelationalValue, RelationalValueRef};
+use hawdb_core::{HawdbError, Result, Value};
+use hawdb_sql::{Expr, ExprKind, SqlBound, SqlExpression, SqlValue};
+use hawdb_storage::{RelationalScalarType, RelationalValue, RelationalValueRef};
 
 pub fn expression_name(expression: &SqlExpression) -> String {
     match expression {
@@ -31,7 +31,7 @@ pub fn relational_ref_to_value(value: RelationalValueRef<'_>) -> Result<Value> {
         RelationalValueRef::Text(value) => Ok(Value::String(value.to_owned())),
         RelationalValueRef::Bytea(value) => Ok(Value::Binary(value.to_vec())),
         RelationalValueRef::Uuid(value) => Ok(Value::Uuid(value)),
-        RelationalValueRef::Overflow(_) => Err(SkeinError::Execution(
+        RelationalValueRef::Overflow(_) => Err(HawdbError::Execution(
             "overflow value reached projection without hydration".to_string(),
         )),
     }
@@ -47,10 +47,10 @@ pub fn bind_bound(
             SqlBound::Literal(value) => Ok(value),
             SqlBound::Parameter(position) => match parameters.get(position.saturating_sub(1)) {
                 Some(Value::Int(value)) if *value >= 0 => Ok(*value as u64),
-                Some(_) => Err(SkeinError::Semantic(format!(
+                Some(_) => Err(HawdbError::Semantic(format!(
                     "PostgreSQL {name} parameter ${position} must be a non-negative integer"
                 ))),
-                None => Err(SkeinError::Semantic(format!(
+                None => Err(HawdbError::Semantic(format!(
                     "missing PostgreSQL parameter ${position}"
                 ))),
             },
@@ -65,7 +65,7 @@ pub fn bind_sql_value(value: &SqlValue, parameters: &[Value]) -> Result<Value> {
             .get(position.saturating_sub(1))
             .cloned()
             .ok_or_else(|| {
-                SkeinError::Semantic(format!("missing PostgreSQL parameter ${position}"))
+                HawdbError::Semantic(format!("missing PostgreSQL parameter ${position}"))
             }),
     }
 }
@@ -79,7 +79,7 @@ pub fn value_to_relational(value: Value) -> Result<RelationalValue> {
         Value::String(value) => Ok(RelationalValue::Text(value)),
         Value::Binary(value) => Ok(RelationalValue::Bytea(value)),
         Value::Uuid(value) => Ok(RelationalValue::Uuid(value)),
-        Value::List(_) | Value::Map(_) => Err(SkeinError::Semantic(
+        Value::List(_) | Value::Map(_) => Err(HawdbError::Semantic(
             "relational SQL values must be scalar".to_string(),
         )),
     }
@@ -101,7 +101,7 @@ pub fn relational_to_value(value: &RelationalValue) -> Result<Value> {
         RelationalValue::Text(value) => Ok(Value::String(value.clone())),
         RelationalValue::Bytea(value) => Ok(Value::Binary(value.clone())),
         RelationalValue::Uuid(value) => Ok(Value::Uuid(*value)),
-        RelationalValue::Overflow(_) => Err(SkeinError::Execution(
+        RelationalValue::Overflow(_) => Err(HawdbError::Execution(
             "overflow value reached projection without hydration".to_string(),
         )),
     }

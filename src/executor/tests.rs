@@ -30,7 +30,7 @@ fn vector_seed_receives_resolved_runtime_resource_contract() {
                 request.resources.result.max_memory_bytes.get(),
                 request.resources.task_context.is_some(),
             ));
-            Err(SkeinError::Execution(
+            Err(HawdbError::Execution(
                 "recorded external read contract".to_string(),
             ))
         }
@@ -40,20 +40,20 @@ fn vector_seed_receives_resolved_runtime_resource_contract() {
         embedding_parameter: "embedding".to_string(),
         output_external_id: false,
         metadata_filters: BTreeMap::new(),
-        resource_profile: skein_plan::VectorExecutionResourceProfile {
+        resource_profile: hawdb_plan::VectorExecutionResourceProfile {
             priority: 200,
             max_parallelism: 4,
             max_working_memory_bytes: Some(2048),
         },
-        vector_plan: skein_plan::VectorPhysicalPlan::TopK {
+        vector_plan: hawdb_plan::VectorPhysicalPlan::TopK {
             limit: 3,
-            input: Box::new(skein_plan::VectorPhysicalPlan::RawVectorRerank {
+            input: Box::new(hawdb_plan::VectorPhysicalPlan::RawVectorRerank {
                 embedding_dimension: 2,
-                input: Box::new(skein_plan::VectorPhysicalPlan::VectorCandidateScan {
-                    source: skein_plan::VectorCandidateSource::Scalar,
+                input: Box::new(hawdb_plan::VectorPhysicalPlan::VectorCandidateScan {
+                    source: hawdb_plan::VectorCandidateSource::Scalar,
                     embedding_dimension: 2,
                     candidate_limit: 3,
-                    input: Box::new(skein_plan::VectorPhysicalPlan::Filter { fields: Vec::new() }),
+                    input: Box::new(hawdb_plan::VectorPhysicalPlan::Filter { fields: Vec::new() }),
                 }),
             }),
         },
@@ -110,7 +110,7 @@ fn spill_test_config(name: &str) -> ExecutionMemoryConfig {
         min_spill_free_bytes: NonZeroU64::new(1).unwrap(),
         spill_free_space_probe_interval_bytes: NonZeroU64::new(64 * 1024 * 1024).unwrap(),
         spill_orphan_grace_period: std::time::Duration::ZERO,
-        spill_directory: std::env::temp_dir().join(format!("skein-{name}-{nonce}")),
+        spill_directory: std::env::temp_dir().join(format!("hawdb-{name}-{nonce}")),
     }
 }
 
@@ -298,7 +298,7 @@ fn node_projection_scan_omits_unrequested_large_properties() {
     let plan = PhysicalPlan::NodeProjectionScanExec {
         variable: "m".to_string(),
         label: "Memory".to_string(),
-        access: skein_plan::NodeProjectionAccess::LabelScan,
+        access: hawdb_plan::NodeProjectionAccess::LabelScan,
         required_properties: vec!["rank".to_string(), "title".to_string()],
         predicate: Some(Predicate::PropertyCompare {
             variable: "m".to_string(),
@@ -365,7 +365,7 @@ fn indexed_node_projection_keeps_large_properties_out_of_pipeline_batches() {
     let plan = PhysicalPlan::NodeProjectionScanExec {
         variable: "m".to_string(),
         label: "Memory".to_string(),
-        access: skein_plan::NodeProjectionAccess::PropertyValues {
+        access: hawdb_plan::NodeProjectionAccess::PropertyValues {
             property: "stable_id".to_string(),
             values: vec![Value::String("memory:1".to_string())],
         },
@@ -1620,7 +1620,7 @@ fn columnar_numeric_fragment_matches_row_pipeline_and_reports_morsels() {
     let morsel_count = 513usize.div_ceil(morsel_rows);
     let executor_thread_limit = NonZeroUsize::new(2).unwrap();
     let expected_workers =
-        skein_executor::SharedExecutorPool::shared_bounded(executor_thread_limit)
+        hawdb_executor::SharedExecutorPool::shared_bounded(executor_thread_limit)
             .map(|pool| pool.worker_count())
             .unwrap_or(1)
             .min(MAX_MORSEL_PARALLELISM)
@@ -1712,15 +1712,15 @@ fn columnar_numeric_fragment_matches_row_pipeline_and_reports_morsels() {
         vec![
             (
                 0,
-                skein_plan::PhysicalPlanKind::ProjectExec,
+                hawdb_plan::PhysicalPlanKind::ProjectExec,
                 Some(parallel.rows.len()),
             ),
             (
                 1,
-                skein_plan::PhysicalPlanKind::FilterExec,
+                hawdb_plan::PhysicalPlanKind::FilterExec,
                 Some(parallel.rows.len()),
             ),
-            (2, skein_plan::PhysicalPlanKind::SeqNodeScan, Some(513)),
+            (2, hawdb_plan::PhysicalPlanKind::SeqNodeScan, Some(513)),
         ]
     );
     assert_eq!(
@@ -1806,7 +1806,7 @@ fn columnar_numeric_equality_matches_row_pipeline_and_parallelizes() {
     let morsel_count = 513usize.div_ceil(morsel_rows);
     let memory_workers = memory.query_memory_bytes.get()
         / (memory.batch_payload_bytes.get() + morsel_rows * std::mem::size_of::<&NodeRecord>());
-    let expected_workers = skein_executor::SharedExecutorPool::shared_default()
+    let expected_workers = hawdb_executor::SharedExecutorPool::shared_default()
         .map(|pool| pool.worker_count())
         .unwrap_or(1)
         .min(MAX_MORSEL_PARALLELISM)
@@ -1949,7 +1949,7 @@ fn out_of_core_columnar_scan_drops_full_records_before_batching() {
         .duration_since(std::time::UNIX_EPOCH)
         .unwrap()
         .as_nanos();
-    let path = std::env::temp_dir().join(format!("skein-columnar-owned-{nonce}"));
+    let path = std::env::temp_dir().join(format!("hawdb-columnar-owned-{nonce}"));
     let mut catalog = Catalog::default();
     let table = catalog.get_or_create_table(crate::schema::TableKind::Node, "Item");
     catalog.get_or_create_property(table, "score", crate::schema::PropertyType::Int, true);
@@ -2211,7 +2211,7 @@ fn source_segment_scan_uses_checkpoint_sidecar_and_keeps_filter_semantics() {
         .duration_since(std::time::UNIX_EPOCH)
         .unwrap()
         .as_nanos();
-    let path = std::env::temp_dir().join(format!("skein-source-segment-executor-{nonce}"));
+    let path = std::env::temp_dir().join(format!("hawdb-source-segment-executor-{nonce}"));
     let mut catalog = Catalog::default();
     let mut store = GraphStore::open(&path, &mut catalog).unwrap();
     store
@@ -2283,7 +2283,7 @@ fn source_segment_scan_limit_reports_planned_candidates_without_false_pruning() 
         .duration_since(std::time::UNIX_EPOCH)
         .unwrap()
         .as_nanos();
-    let path = std::env::temp_dir().join(format!("skein-source-segment-limit-{nonce}"));
+    let path = std::env::temp_dir().join(format!("hawdb-source-segment-limit-{nonce}"));
     let mut catalog = Catalog::default();
     let mut store = GraphStore::open(&path, &mut catalog).unwrap();
     for id in 0..129 {

@@ -4,16 +4,16 @@
 //! This module owns the portable evidence representation and its reduction so developer
 //! adapters can evaluate serialized reports without depending on the facade crate.
 
-use skein_executor::BlockingOperatorMemoryReport;
-use skein_route_ownership::graph::{
+use hawdb_executor::BlockingOperatorMemoryReport;
+use hawdb_route_ownership::graph::{
     nowledge_mem_graph_read_route_catalog_digest, NOWLEDGE_MEM_GRAPH_READ_ROUTE_CATALOG_VERSION,
     REQUIRED_NOWLEDGE_MEM_BOUNDED_READ_ROUTES,
 };
 use std::collections::BTreeSet;
 
-pub const NOWLEDGE_MEM_READ_REPORT_PROTOCOL: &str = "skein-nowledge-mem-read-report";
+pub const NOWLEDGE_MEM_READ_REPORT_PROTOCOL: &str = "hawdb-nowledge-mem-read-report";
 pub const NOWLEDGE_MEM_BOUNDED_READ_EVIDENCE_PROTOCOL: &str =
-    "skein-nowledge-mem-bounded-read-evidence-v2";
+    "hawdb-nowledge-mem-bounded-read-evidence-v2";
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum NowledgeMemGraphMode {
@@ -104,7 +104,7 @@ pub fn nowledge_mem_bounded_read_evidence_json_with_routes(
     nowledge_mem_bounded_read_evidence_json_with_route_readiness(report, covered_routes, None)
 }
 
-pub use skein_route_ownership::graph::NowledgeMemRouteReadinessSummary;
+pub use hawdb_route_ownership::graph::NowledgeMemRouteReadinessSummary;
 
 pub fn nowledge_mem_bounded_read_evidence_json_with_route_readiness(
     report: &NowledgeMemReadReport,
@@ -307,8 +307,8 @@ mod tests {
         NowledgeMemReadReport, NowledgeMemRouteReadinessSummary,
         NOWLEDGE_MEM_BOUNDED_READ_EVIDENCE_PROTOCOL, NOWLEDGE_MEM_READ_REPORT_PROTOCOL,
     };
-    use skein_executor::BlockingOperatorMemoryReport;
-    use skein_route_ownership::graph::REQUIRED_NOWLEDGE_MEM_BOUNDED_READ_ROUTES;
+    use hawdb_executor::BlockingOperatorMemoryReport;
+    use hawdb_route_ownership::graph::REQUIRED_NOWLEDGE_MEM_BOUNDED_READ_ROUTES;
 
     #[test]
     fn bounded_read_evidence_fails_closed_for_missing_row_cap() {

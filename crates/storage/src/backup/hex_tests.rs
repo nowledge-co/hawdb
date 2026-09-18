@@ -24,7 +24,7 @@ fn persisted_hex_rejects_non_ascii_without_panicking() {
     for input in ["a\u{e9}a", "\u{1f980}", "00a\u{e9}a", "f", "gg", "ff"] {
         let result = std::panic::catch_unwind(|| decode_string(input));
         assert!(result.is_ok(), "decoder panicked for {input:?}");
-        assert!(matches!(result.unwrap(), Err(SkeinError::Storage(_))));
+        assert!(matches!(result.unwrap(), Err(HawdbError::Storage(_))));
     }
 }
 
@@ -44,7 +44,7 @@ impl TestDirectory {
             .unwrap()
             .as_nanos();
         let path =
-            std::env::temp_dir().join(format!("skein-backup-hex-{}-{nonce}", std::process::id()));
+            std::env::temp_dir().join(format!("hawdb-backup-hex-{}-{nonce}", std::process::id()));
         fs::create_dir(&path).unwrap();
         Self(path)
     }
@@ -65,7 +65,7 @@ fn persisted_hex_public_load_rejects_checksum_valid_corruption_without_writes() 
         7,
         11,
         vec![BackupFileEntry {
-            name: "checkpoint.7.skein".to_string(),
+            name: "checkpoint.7.hawdb".to_string(),
             encoded_len: 42,
             encoded_checksum: 9,
             sha256: Sha256Digest::from_bytes([3; 32]),
@@ -76,13 +76,13 @@ fn persisted_hex_public_load_rejects_checksum_valid_corruption_without_writes() 
     assert_eq!(BackupManifest::load(&path).unwrap(), manifest);
     let (body, _) = split_backup_manifest_checksum(&valid).unwrap();
     for invalid in ["a\u{e9}a", "\u{1f980}", "gg", "ff"] {
-        let body = body.replace(&encode_string("checkpoint.7.skein"), invalid);
+        let body = body.replace(&encode_string("checkpoint.7.hawdb"), invalid);
         let corrupt = format!("{body}checksum\t{}\n", checksum_u64(body.as_bytes()));
         fs::write(&path, &corrupt).unwrap();
         let result = std::panic::catch_unwind(|| BackupManifest::load(&path));
         assert!(result.is_ok(), "public load panicked for {invalid:?}");
         let error = result.unwrap().unwrap_err();
-        assert!(matches!(error, SkeinError::Storage(_)));
+        assert!(matches!(error, HawdbError::Storage(_)));
         let expected = if invalid == "ff" {
             "invalid utf-8"
         } else {

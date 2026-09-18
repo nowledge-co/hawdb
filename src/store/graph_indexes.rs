@@ -95,12 +95,12 @@ impl GraphStore {
         state: SchemaObjectState,
     ) -> Result<(TableId, bool)> {
         let Some(id) = catalog.table_id(table_kind, table) else {
-            return Err(SkeinError::Storage(format!(
+            return Err(HawdbError::Storage(format!(
                 "schema table '{table}' does not exist"
             )));
         };
         let Some(descriptor) = catalog.table_descriptor(id) else {
-            return Err(SkeinError::Storage(format!(
+            return Err(HawdbError::Storage(format!(
                 "schema table '{table}' does not exist"
             )));
         };
@@ -126,17 +126,17 @@ impl GraphStore {
         state: SchemaObjectState,
     ) -> Result<(PropertyId, bool)> {
         let Some(table_id) = catalog.table_id(table_kind, table) else {
-            return Err(SkeinError::Storage(format!(
+            return Err(HawdbError::Storage(format!(
                 "schema table '{table}' does not exist"
             )));
         };
         let Some(id) = catalog.property_descriptor_id(table_id, property) else {
-            return Err(SkeinError::Storage(format!(
+            return Err(HawdbError::Storage(format!(
                 "schema property '{table}.{property}' does not exist"
             )));
         };
         let Some(descriptor) = catalog.property_descriptor(id) else {
-            return Err(SkeinError::Storage(format!(
+            return Err(HawdbError::Storage(format!(
                 "schema property '{table}.{property}' does not exist"
             )));
         };
@@ -579,7 +579,7 @@ impl GraphStore {
         properties: &[String],
     ) -> Result<IndexId> {
         if properties.len() < 2 {
-            return Err(SkeinError::Storage(
+            return Err(HawdbError::Storage(
                 "composite index requires at least two properties".to_string(),
             ));
         }
@@ -1136,7 +1136,7 @@ impl GraphStore {
         ops: &[WalOp],
     ) -> Result<()> {
         wal_codec::validate_wal_op_values(ops).map_err(|error| match error {
-            SkeinError::Storage(message) => SkeinError::Semantic(message),
+            HawdbError::Storage(message) => HawdbError::Semantic(message),
             error => error,
         })?;
         self.ensure_out_of_core_delta_admission(ops)?;
@@ -1189,7 +1189,7 @@ impl GraphStore {
             })?;
             if let Some(id) = violation {
                 let label = catalog.label_name(label_id).unwrap_or("<unknown>");
-                return Err(SkeinError::Storage(format!(
+                return Err(HawdbError::Storage(format!(
                     "node property exists constraint violation on :{label}({property}) for node {}",
                     id.0
                 )));
@@ -1238,7 +1238,7 @@ impl GraphStore {
             })?;
             if let Some(id) = violation {
                 let rel_type = catalog.rel_type_name(rel_type_id).unwrap_or("<unknown>");
-                return Err(SkeinError::Storage(format!(
+                return Err(HawdbError::Storage(format!(
                     "relationship property exists constraint violation on :{rel_type}({property}) for relationship {}",
                     id.0
                 )));
@@ -1259,7 +1259,7 @@ impl GraphStore {
                     match self.node_owned(node_id) {
                         Ok(Some(_)) => {}
                         Ok(None) => {
-                            validation_error = Some(SkeinError::Storage(format!(
+                            validation_error = Some(HawdbError::Storage(format!(
                                 "relationship {} references missing {kind} node {}",
                                 relationship.id.0, node_id.0
                             )));
@@ -1277,13 +1277,13 @@ impl GraphStore {
         }
         for relationship in self.relationships.values() {
             if !self.nodes.contains_key(&relationship.source) {
-                return Err(SkeinError::Storage(format!(
+                return Err(HawdbError::Storage(format!(
                     "relationship {} references missing source node {}",
                     relationship.id.0, relationship.source.0
                 )));
             }
             if !self.nodes.contains_key(&relationship.target) {
-                return Err(SkeinError::Storage(format!(
+                return Err(HawdbError::Storage(format!(
                     "relationship {} references missing target node {}",
                     relationship.id.0, relationship.target.0
                 )));

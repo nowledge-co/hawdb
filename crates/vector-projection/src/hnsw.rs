@@ -26,7 +26,7 @@
 
 use crate::error::{ProjectionError, Result};
 use crate::scan::ProjectionHit;
-use skein_core::RuntimeTaskContext;
+use hawdb_core::RuntimeTaskContext;
 use std::cmp::Ordering;
 use std::collections::{BinaryHeap, HashSet};
 
@@ -522,7 +522,7 @@ impl SplitMix64 {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use skein_core::{RuntimeCancellationToken, RuntimeTaskContext};
+    use hawdb_core::{RuntimeCancellationToken, RuntimeTaskContext};
 
     fn axis_vector(dimension: usize, axis: usize) -> Vec<f32> {
         let mut vector = vec![0.0; dimension];

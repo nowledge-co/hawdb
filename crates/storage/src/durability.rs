@@ -248,8 +248,8 @@ mod tests {
     fn durable_replace_publishes_and_replaces_content() {
         let root = unique_test_dir();
         fs::create_dir_all(&root).unwrap();
-        let candidate = root.join("candidate.skein");
-        let published = root.join("published.skein");
+        let candidate = root.join("candidate.hawdb");
+        let published = root.join("published.hawdb");
 
         write_synced(&candidate, b"first");
         durable_replace_file(&candidate, &published).unwrap();
@@ -267,8 +267,8 @@ mod tests {
     #[test]
     fn platform_obstruction_rejects_canonical_row_and_overflow_manifest_replace() {
         for destination_name in [
-            "relational-row-pages-1.manifest.skein",
-            "relational-overflow-1.manifest.skein",
+            "relational-row-pages-1.manifest.hawdb",
+            "relational-overflow-1.manifest.hawdb",
         ] {
             let root = unique_test_dir();
             fs::create_dir_all(&root).unwrap();
@@ -315,7 +315,7 @@ mod tests {
 
     fn unique_test_dir() -> std::path::PathBuf {
         std::env::temp_dir().join(format!(
-            "skein-durable-replace-{}-{}",
+            "hawdb-durable-replace-{}-{}",
             std::process::id(),
             TEST_SEQUENCE.fetch_add(1, Ordering::Relaxed)
         ))

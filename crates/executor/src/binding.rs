@@ -1,8 +1,8 @@
 //! Executor-owned row bindings and deterministic memory accounting.
 
-use skein_core::{LabelId, Value};
-use skein_plan::SortDirection;
-use skein_storage::{NodeRecord, RelRecord};
+use hawdb_core::{LabelId, Value};
+use hawdb_plan::SortDirection;
+use hawdb_storage::{NodeRecord, RelRecord};
 use std::cmp::Ordering;
 use std::collections::BTreeMap;
 
@@ -177,8 +177,8 @@ pub fn value_payload_bytes(value: &Value) -> usize {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use skein_core::RelTypeId;
-    use skein_storage::{NodeId, RelId};
+    use hawdb_core::RelTypeId;
+    use hawdb_storage::{NodeId, RelId};
     use std::collections::BTreeSet;
 
     #[test]

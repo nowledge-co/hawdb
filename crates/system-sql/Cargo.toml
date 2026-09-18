@@ -1,5 +1,5 @@
 [package]
-name = "skein-system-sql"
+name = "hawdb-system-sql"
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
@@ -7,12 +7,12 @@ license.workspace = true
 
 [dependencies]
 serde_json = "1"
-skein-core = { path = "../core" }
-skein-executor = { path = "../executor" }
-skein-plan-cache = { path = "../plan-cache" }
-skein-query = { path = "../query" }
-skein-sql = { path = "../sql" }
-skein-storage = { path = "../storage" }
+hawdb-core = { path = "../core" }
+hawdb-executor = { path = "../executor" }
+hawdb-plan-cache = { path = "../plan-cache" }
+hawdb-query = { path = "../query" }
+hawdb-sql = { path = "../sql" }
+hawdb-storage = { path = "../storage" }
 
 [dev-dependencies]
 loom = "0.7"

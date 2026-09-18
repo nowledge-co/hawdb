@@ -2,7 +2,7 @@ use crate::schema::Catalog;
 use crate::store::GraphStore;
 use crate::Result;
 
-pub use skein_bootstrap::*;
+pub use hawdb_bootstrap::*;
 
 pub(super) fn export_canonical_graph_snapshot_for(
     catalog: &Catalog,

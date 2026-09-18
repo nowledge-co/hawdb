@@ -1,6 +1,6 @@
 //! Source-derived query inventories, independent of fixture execution and cutover policy.
 
-use skein_core::error::{Result, SkeinError};
+use hawdb_core::error::{HawdbError, Result};
 use std::collections::BTreeMap;
 
 mod scanner;
@@ -81,7 +81,7 @@ pub fn build_compatibility_query_inventory(
 ) -> Result<CompatibilityQueryInventory> {
     let name = name.into();
     if name.trim().is_empty() {
-        return Err(SkeinError::Semantic(
+        return Err(HawdbError::Semantic(
             "compatibility query inventory name must not be empty".to_string(),
         ));
     }
@@ -91,24 +91,24 @@ pub fn build_compatibility_query_inventory(
     for call_site in call_sites {
         let check_name = call_site.name.trim();
         if check_name.is_empty() {
-            return Err(SkeinError::Semantic(
+            return Err(HawdbError::Semantic(
                 "compatibility query call site name must not be empty".to_string(),
             ));
         }
         let query_family = call_site.query_family.trim();
         if query_family.is_empty() {
-            return Err(SkeinError::Semantic(format!(
+            return Err(HawdbError::Semantic(format!(
                 "compatibility query call site '{check_name}' has no query family"
             )));
         }
         let source = call_site.source.trim();
         if source.is_empty() {
-            return Err(SkeinError::Semantic(format!(
+            return Err(HawdbError::Semantic(format!(
                 "compatibility query call site '{check_name}' has no source"
             )));
         }
         if let Some(previous_source) = seen.insert(check_name.to_string(), source.to_string()) {
-            return Err(SkeinError::Semantic(format!(
+            return Err(HawdbError::Semantic(format!(
                 "duplicate compatibility query call site '{check_name}' from '{previous_source}' and '{source}'"
             )));
         }
@@ -135,7 +135,7 @@ pub fn build_compatibility_query_inventory_from_json_str(
     artifact: &str,
 ) -> Result<CompatibilityQueryInventory> {
     let value = serde_json::from_str(artifact).map_err(|error| {
-        SkeinError::Semantic(format!(
+        HawdbError::Semantic(format!(
             "failed to parse compatibility query inventory artifact: {error}"
         ))
     })?;
@@ -146,7 +146,7 @@ pub fn build_compatibility_query_inventory_from_json(
     artifact: &serde_json::Value,
 ) -> Result<CompatibilityQueryInventory> {
     let object = artifact.as_object().ok_or_else(|| {
-        SkeinError::Semantic(
+        HawdbError::Semantic(
             "compatibility query inventory artifact must be a JSON object".to_string(),
         )
     })?;
@@ -160,7 +160,7 @@ pub fn build_compatibility_query_inventory_from_json(
             inventory_items_from_json(required_checks)?,
         );
     }
-    Err(SkeinError::Semantic(
+    Err(HawdbError::Semantic(
         "compatibility query inventory artifact must contain 'call_sites' or 'required_checks'"
             .to_string(),
     ))
@@ -184,7 +184,7 @@ fn build_compatibility_query_inventory_from_items(
     items: Vec<CompatibilityQueryInventoryItem>,
 ) -> Result<CompatibilityQueryInventory> {
     if name.trim().is_empty() {
-        return Err(SkeinError::Semantic(
+        return Err(HawdbError::Semantic(
             "compatibility query inventory name must not be empty".to_string(),
         ));
     }
@@ -193,13 +193,13 @@ fn build_compatibility_query_inventory_from_items(
     for item in items {
         let check_name = item.name.trim();
         if check_name.is_empty() {
-            return Err(SkeinError::Semantic(
+            return Err(HawdbError::Semantic(
                 "compatibility query inventory item name must not be empty".to_string(),
             ));
         }
         let query_family = item.query_family.trim();
         if query_family.is_empty() {
-            return Err(SkeinError::Semantic(format!(
+            return Err(HawdbError::Semantic(format!(
                 "compatibility query inventory item '{check_name}' has no query family"
             )));
         }
@@ -212,7 +212,7 @@ fn build_compatibility_query_inventory_from_items(
         let source_label = source.as_deref().unwrap_or("<unknown>");
         if let Some(previous_source) = seen.insert(check_name.to_string(), source_label.to_string())
         {
-            return Err(SkeinError::Semantic(format!(
+            return Err(HawdbError::Semantic(format!(
                 "duplicate compatibility query inventory item '{check_name}' from '{previous_source}' and '{source_label}'"
             )));
         }
@@ -237,7 +237,7 @@ fn build_compatibility_query_inventory_from_items(
 
 fn call_sites_from_json(value: &serde_json::Value) -> Result<Vec<CompatibilityQueryCallSite>> {
     let call_sites = value.as_array().ok_or_else(|| {
-        SkeinError::Semantic(
+        HawdbError::Semantic(
             "compatibility query inventory 'call_sites' must be an array".to_string(),
         )
     })?;
@@ -246,7 +246,7 @@ fn call_sites_from_json(value: &serde_json::Value) -> Result<Vec<CompatibilityQu
         .enumerate()
         .map(|(index, value)| {
             let object = value.as_object().ok_or_else(|| {
-                SkeinError::Semantic(format!(
+                HawdbError::Semantic(format!(
                     "compatibility query call site at index {index} must be a JSON object"
                 ))
             })?;
@@ -267,7 +267,7 @@ fn inventory_items_from_json(
     value: &serde_json::Value,
 ) -> Result<Vec<CompatibilityQueryInventoryItem>> {
     let items = value.as_array().ok_or_else(|| {
-        SkeinError::Semantic(
+        HawdbError::Semantic(
             "compatibility query inventory 'required_checks' must be an array".to_string(),
         )
     })?;
@@ -276,7 +276,7 @@ fn inventory_items_from_json(
         .enumerate()
         .map(|(index, value)| {
             let object = value.as_object().ok_or_else(|| {
-                SkeinError::Semantic(format!(
+                HawdbError::Semantic(format!(
                     "compatibility query inventory item at index {index} must be a JSON object"
                 ))
             })?;
@@ -329,7 +329,7 @@ fn required_string_field<'a>(
         .get(field)
         .and_then(serde_json::Value::as_str)
         .ok_or_else(|| {
-            SkeinError::Semantic(format!(
+            HawdbError::Semantic(format!(
                 "compatibility query inventory artifact field '{field}' must be a string"
             ))
         })
@@ -345,7 +345,7 @@ fn optional_string_field(
             .as_str()
             .map(|value| Some(value.to_string()))
             .ok_or_else(|| {
-                SkeinError::Semantic(format!(
+                HawdbError::Semantic(format!(
                     "compatibility query inventory artifact field '{field}' must be a string"
                 ))
             }),

@@ -1,8 +1,8 @@
 use super::*;
-use skein_core::{PropertyType, SchemaObjectState, TableKind, Value};
-use skein_ddl::{SchemaObjectState as DdlState, SchemaPropertyType, SchemaTableKind};
-use skein_plan::{Predicate, SetAssignment, SetNodePropertiesReturnMode};
-use skein_storage::PropertyFilter;
+use hawdb_core::{PropertyType, SchemaObjectState, TableKind, Value};
+use hawdb_ddl::{SchemaObjectState as DdlState, SchemaPropertyType, SchemaTableKind};
+use hawdb_plan::{Predicate, SetAssignment, SetNodePropertiesReturnMode};
+use hawdb_storage::PropertyFilter;
 use std::collections::BTreeMap;
 
 fn assert_command(plan: PhysicalPlan, expected: GraphMutation) {
@@ -241,7 +241,7 @@ fn check_seed(seed: u64) -> usize {
                 assert!(is_mutation_plan(&plan).unwrap());
                 assert!(matches!(
                     mutation_command(&plan),
-                    Err(SkeinError::Semantic(message))
+                    Err(HawdbError::Semantic(message))
                         if message == "COALESCE node SET is not supported in transactional MATCH SET"
                 ));
             }
@@ -400,7 +400,7 @@ fn check_seed(seed: u64) -> usize {
     };
     assert!(is_mutation_plan(&rejected).unwrap());
     assert!(
-        matches!(mutation_command(&rejected), Err(SkeinError::Execution(message))
+        matches!(mutation_command(&rejected), Err(HawdbError::Execution(message))
         if message == "expression predicates are not supported in property filters")
     );
     checked += 1;

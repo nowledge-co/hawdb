@@ -447,7 +447,7 @@ fn read_transaction_pins_checkpoint_manifest_until_drop() {
             db.query("CREATE (:Memory {id: 2, title: 'Newer commit'})")
                 .unwrap();
             db.checkpoint().unwrap();
-            let manifest = std::fs::read_to_string(path.join("manifest.skein")).unwrap();
+            let manifest = std::fs::read_to_string(path.join("manifest.hawdb")).unwrap();
             assert!(manifest.contains("checkpoint_commit_epoch\t3\n"));
             assert!(manifest.contains("oldest_reader_commit_epoch\t2\n"));
             assert!(manifest.contains("safe_reclaim_commit_epoch\t1\n"));
@@ -461,7 +461,7 @@ fn read_transaction_pins_checkpoint_manifest_until_drop() {
         }
 
         db.checkpoint().unwrap();
-        let manifest = std::fs::read_to_string(path.join("manifest.skein")).unwrap();
+        let manifest = std::fs::read_to_string(path.join("manifest.hawdb")).unwrap();
         assert!(manifest.contains("checkpoint_commit_epoch\t3\n"));
         assert!(manifest.contains("oldest_reader_commit_epoch\tnone\n"));
         assert!(manifest.contains("safe_reclaim_commit_epoch\t3\n"));
@@ -505,16 +505,16 @@ fn out_of_core_reader_pin_retains_its_canonical_generation_until_drop() {
         db.checkpoint().unwrap();
     }
 
-    assert!(path.join("canonical.1.skein").exists());
-    assert!(!path.join("canonical.2.skein").exists());
-    assert!(!path.join("canonical.3.skein").exists());
-    assert!(path.join("canonical.4.skein").exists());
-    assert!(path.join("canonical.5.skein").exists());
-    assert!(path.join("checkpoint.1.skein").exists());
-    assert!(!path.join("checkpoint.2.skein").exists());
-    assert!(!path.join("checkpoint.3.skein").exists());
-    assert!(path.join("checkpoint.4.skein").exists());
-    assert!(path.join("checkpoint.5.skein").exists());
+    assert!(path.join("canonical.1.hawdb").exists());
+    assert!(!path.join("canonical.2.hawdb").exists());
+    assert!(!path.join("canonical.3.hawdb").exists());
+    assert!(path.join("canonical.4.hawdb").exists());
+    assert!(path.join("canonical.5.hawdb").exists());
+    assert!(path.join("checkpoint.1.hawdb").exists());
+    assert!(!path.join("checkpoint.2.hawdb").exists());
+    assert!(!path.join("checkpoint.3.hawdb").exists());
+    assert!(path.join("checkpoint.4.hawdb").exists());
+    assert!(path.join("checkpoint.5.hawdb").exists());
     let pinned = reader
         .query("MATCH (m:Memory) RETURN m.id AS id ORDER BY id")
         .unwrap();
@@ -524,10 +524,10 @@ fn out_of_core_reader_pin_retains_its_canonical_generation_until_drop() {
 
     drop(reader);
     db.checkpoint().unwrap();
-    assert!(!path.join("canonical.1.skein").exists());
-    assert!(!path.join("canonical.4.skein").exists());
-    assert!(path.join("canonical.5.skein").exists());
-    assert!(path.join("canonical.6.skein").exists());
+    assert!(!path.join("canonical.1.hawdb").exists());
+    assert!(!path.join("canonical.4.hawdb").exists());
+    assert!(path.join("canonical.5.hawdb").exists());
+    assert!(path.join("canonical.6.hawdb").exists());
     drop(db);
     std::fs::remove_dir_all(path).unwrap();
 }

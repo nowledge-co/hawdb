@@ -4,7 +4,7 @@
 
 This contract defines the commit-ordered identity feed used to maintain an
 external search projection from canonical graph and relational mutations. The
-feed is part of the embedded Skein library surface. Search documents, lexical
+feed is part of the embedded Hawdb library surface. Search documents, lexical
 segments, embeddings, ranks, and projection-owned watermarks remain derived
 state owned by `SearchIndex`; they MUST NOT become canonical graph or
 relational WAL payloads.
@@ -26,7 +26,7 @@ change a row MUST NOT be emitted. Primary-key-changing updates MUST emit both
 the old and new keys. Identical replacement rows and missing-key deletes MUST
 NOT create false changes.
 
-The reserved `skein_schema_migrations` registry is engine control metadata,
+The reserved `hawdb_schema_migrations` registry is engine control metadata,
 not searchable application content. Its exact key changes MUST be omitted from
 the external search feed so an otherwise graph-only database can use the
 graph-only catch-up helper. Application table changes remain in the unified
@@ -106,7 +106,7 @@ mapping. It is not a CLI, helper-process, or route-specific control plane.
 
 ## Formal refinement
 
-`SkeinProjectionChangefeed.tla` models the following obligations:
+`HawdbProjectionChangefeed.tla` models the following obligations:
 
 - a visible canonical commit is already durable;
 - every relevant committed epoch has either an exact retained change or a

@@ -1,7 +1,7 @@
 //! Execution-report observer contract for host integration.
 
 use crate::BlockingOperatorMemoryReport;
-use skein_storage::ScanPruningReport;
+use hawdb_storage::ScanPruningReport;
 
 mod profile;
 mod query;

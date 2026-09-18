@@ -1,12 +1,12 @@
 use crate::{parse_postgres_sql, prepare_postgres_sql};
-use skein_core::SkeinError;
+use hawdb_core::HawdbError;
 
 fn assert_rejection(sql: &str, expected: &str) {
     for error in [
         parse_postgres_sql(sql).unwrap_err(),
         prepare_postgres_sql(sql).unwrap_err(),
     ] {
-        let SkeinError::Semantic(message) = error else {
+        let HawdbError::Semantic(message) = error else {
             panic!("expected a lowering rejection, got {error:?}");
         };
         assert_eq!(message, expected, "source: {sql}");

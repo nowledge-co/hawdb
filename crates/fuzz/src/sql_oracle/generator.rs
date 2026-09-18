@@ -4,7 +4,7 @@ use super::{
 };
 use crate::predicate_rewrite::PredicateRewriteKind;
 use crate::ResultSemantics;
-use skein::{RelationalJoinPlanningStrategy, Value};
+use hawdb::{RelationalJoinPlanningStrategy, Value};
 use std::collections::BTreeMap;
 
 pub(super) fn generate_sql_case(seed: u64, index: usize, index_enabled: bool) -> SqlFuzzCase {

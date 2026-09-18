@@ -1,11 +1,11 @@
 [package]
-name = "skein-artifact"
+name = "hawdb-artifact"
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
 license.workspace = true
 
 [dependencies]
-skein-core = { path = "../core" }
-skein-executor = { path = "../executor" }
-skein-qos = { path = "../qos" }
+hawdb-core = { path = "../core" }
+hawdb-executor = { path = "../executor" }
+hawdb-qos = { path = "../qos" }

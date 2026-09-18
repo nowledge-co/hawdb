@@ -1,7 +1,9 @@
 use super::{
     nowledge_graph_route_readiness_summary_from_bundle, nowledge_replacement_summary_json,
     nowledge_replacement_summary_json_with_options, NowledgeReplacementSummaryOptions,
-    GRAPH_LAYER_REPLACEMENT_SCOPE, LARGE_BLOB_VALUE_STORE_SCOPE,
+    GRAPH_LAYER_REPLACEMENT_SCOPE, HAWDB_SEARCH_PROJECTION_SEGMENT_DESCRIPTOR_FIELDS_MISSING,
+    HAWDB_SEARCH_PROJECTION_SEGMENT_DESCRIPTOR_MISSING,
+    HAWDB_SEARCH_PROJECTION_SHADOW_EVIDENCE_SOURCE, LARGE_BLOB_VALUE_STORE_SCOPE,
     NOWLEDGE_MEM_ACTIVE_SEARCH_ROUTE_READINESS_PROTOCOL,
     NOWLEDGE_MEM_SEARCH_CANDIDATE_EVIDENCE_ROUTE,
     NOWLEDGE_MEM_SEARCH_CANDIDATE_SHADOW_EVIDENCE_PROTOCOL,
@@ -9,9 +11,7 @@ use super::{
     REQUIRED_NOWLEDGE_MEM_ACTIVE_SEARCH_ROUTES, REQUIRED_NOWLEDGE_MEM_BOUNDED_READ_ROUTES,
     REQUIRED_NOWLEDGE_MEM_SEARCH_ROUTES, REQUIRED_NOWLEDGE_REPLACEMENT_QUERY_FAMILIES,
     SEARCH_PROJECTION_REPLACEMENT_SCOPE, SEARCH_PROJECTION_SHADOW_PUSHDOWN_NOT_READY,
-    SKEIN_SEARCH_PROJECTION_SEGMENT_DESCRIPTOR_FIELDS_MISSING,
-    SKEIN_SEARCH_PROJECTION_SEGMENT_DESCRIPTOR_MISSING,
-    SKEIN_SEARCH_PROJECTION_SHADOW_EVIDENCE_SOURCE, SQLITE_CONTENT_STORE_SCOPE,
+    SQLITE_CONTENT_STORE_SCOPE,
 };
 use crate::graph_route::{NMEM_GRAPH_ROUTE_EVIDENCE_PROTOCOL, NMEM_GRAPH_ROUTE_READINESS_PROTOCOL};
 use crate::graph_summary::nowledge_graph_route_readiness_summary;
@@ -19,14 +19,14 @@ use crate::source_mutation::{
     NOWLEDGE_MEM_SOURCE_MUTATION_DUAL_WRITE_READINESS_PROTOCOL,
     REQUIRED_NOWLEDGE_MEM_SOURCE_MUTATION_FAMILIES,
 };
-use skein_core::GRAPH_RAG_SCHEMA_CONTEXT_PROTOCOL;
-use skein_evidence::replacement_contract::{
+use hawdb_core::GRAPH_RAG_SCHEMA_CONTEXT_PROTOCOL;
+use hawdb_evidence::replacement_contract::{
     NOWLEDGE_GRAPH_ROUTE_WORKLOAD_FIXTURE_PROTOCOL, NOWLEDGE_MEM_SEARCH_CANDIDATE_SHADOW_ENGINE,
     NOWLEDGE_MEM_SEARCH_CANDIDATE_TRACE_EVIDENCE_SOURCE,
     NOWLEDGE_MEM_SEARCH_CANDIDATE_TRACE_PRIMARY_ENGINE,
     NOWLEDGE_MEM_SEARCH_CANDIDATE_TRACE_SHADOW_ENGINE,
 };
-use skein_route_ownership::graph::{
+use hawdb_route_ownership::graph::{
     nowledge_mem_graph_read_route_spec, nowledge_mem_graph_read_route_specs_json,
 };
 
@@ -102,7 +102,7 @@ fn replacement_summary_reports_production_ready_when_all_evidence_is_ready() {
         serde_json::json!({
             "scope": GRAPH_LAYER_REPLACEMENT_SCOPE,
             "replacement_role": "primary_replacement",
-            "storage_owner": "skein",
+            "storage_owner": "hawdb",
         })
     );
     assert_eq!(
@@ -110,7 +110,7 @@ fn replacement_summary_reports_production_ready_when_all_evidence_is_ready() {
         serde_json::json!({
             "scope": SEARCH_PROJECTION_REPLACEMENT_SCOPE,
             "replacement_role": "rebuildable_projection",
-            "storage_owner": "skein",
+            "storage_owner": "hawdb",
         })
     );
     assert_eq!(
@@ -296,7 +296,7 @@ fn replacement_summary_reports_production_ready_when_all_evidence_is_ready() {
     assert_eq!(summary["dual_engine_evidence"]["present"], true);
     assert_eq!(summary["dual_engine_evidence"]["ready"], true);
     assert_eq!(summary["dual_engine_evidence"]["consistent"], true);
-    assert_eq!(summary["dual_engine_evidence"]["primary_engine"], "skein");
+    assert_eq!(summary["dual_engine_evidence"]["primary_engine"], "hawdb");
     assert_eq!(
         summary["dual_engine_evidence"]["shadow_engine"],
         "previous-wrapper"
@@ -318,7 +318,7 @@ fn replacement_summary_reports_production_ready_when_all_evidence_is_ready() {
     assert_eq!(summary["search_projection_shadow_evidence"]["ready"], true);
     assert_eq!(
         summary["search_projection_shadow_evidence"]["evidence_source"],
-        SKEIN_SEARCH_PROJECTION_SHADOW_EVIDENCE_SOURCE
+        HAWDB_SEARCH_PROJECTION_SHADOW_EVIDENCE_SOURCE
     );
     assert_eq!(
         summary["search_projection_shadow_evidence"]["primary_engine"],
@@ -326,7 +326,7 @@ fn replacement_summary_reports_production_ready_when_all_evidence_is_ready() {
     );
     assert_eq!(
         summary["search_projection_shadow_evidence"]["shadow_engine"],
-        "skein"
+        "hawdb"
     );
     assert_eq!(
         summary["search_projection_shadow_evidence"]["table_parity_ready"],
@@ -845,7 +845,7 @@ fn replacement_summary_requires_search_projection_production_filter_pruning() {
     bundle["search_projection_evidence"]["production_filter_pruning_ready"] =
         serde_json::json!(false);
     bundle["search_projection_evidence"]["blocker_codes"] =
-        serde_json::json!(["skein_production_filter_pruning_not_ready"]);
+        serde_json::json!(["hawdb_production_filter_pruning_not_ready"]);
 
     let summary = nowledge_replacement_summary_json(&bundle);
 
@@ -1038,7 +1038,7 @@ fn replacement_summary_requires_search_projection_shadow_pushdown_evidence() {
             .as_array()
             .unwrap()
             .iter()
-            .any(|code| code == SKEIN_SEARCH_PROJECTION_SEGMENT_DESCRIPTOR_MISSING)
+            .any(|code| code == HAWDB_SEARCH_PROJECTION_SEGMENT_DESCRIPTOR_MISSING)
     );
     assert!(summary["missing_evidence"]
         .as_array()
@@ -1078,7 +1078,7 @@ fn replacement_summary_requires_search_projection_shadow_descriptor_fields() {
             .as_array()
             .unwrap()
             .iter()
-            .any(|code| code == SKEIN_SEARCH_PROJECTION_SEGMENT_DESCRIPTOR_FIELDS_MISSING)
+            .any(|code| code == HAWDB_SEARCH_PROJECTION_SEGMENT_DESCRIPTOR_FIELDS_MISSING)
     );
     assert!(summary["missing_evidence"]
         .as_array()
@@ -1127,7 +1127,7 @@ fn replacement_summary_recomputes_search_projection_shadow_descriptor_field_cove
             .as_array()
             .unwrap()
             .iter()
-            .any(|code| code == SKEIN_SEARCH_PROJECTION_SEGMENT_DESCRIPTOR_FIELDS_MISSING)
+            .any(|code| code == HAWDB_SEARCH_PROJECTION_SEGMENT_DESCRIPTOR_FIELDS_MISSING)
     );
 }
 
@@ -1173,7 +1173,7 @@ fn replacement_summary_recomputes_search_projection_shadow_descriptor_capabiliti
             .as_array()
             .unwrap()
             .iter()
-            .any(|code| code == SKEIN_SEARCH_PROJECTION_SEGMENT_DESCRIPTOR_FIELDS_MISSING)
+            .any(|code| code == HAWDB_SEARCH_PROJECTION_SEGMENT_DESCRIPTOR_FIELDS_MISSING)
     );
 }
 
@@ -1220,7 +1220,7 @@ fn replacement_summary_recomputes_search_projection_shadow_descriptor_summary_co
             .as_array()
             .unwrap()
             .iter()
-            .any(|code| code == SKEIN_SEARCH_PROJECTION_SEGMENT_DESCRIPTOR_FIELDS_MISSING)
+            .any(|code| code == HAWDB_SEARCH_PROJECTION_SEGMENT_DESCRIPTOR_FIELDS_MISSING)
     );
 }
 
@@ -1487,7 +1487,7 @@ fn replacement_summary_blocks_production_when_active_search_routes_still_use_lan
     let mut bundle = production_ready_bundle();
     bundle["active_search_route_ownership"]["ready"] = serde_json::json!(false);
     bundle["active_search_route_ownership"]["production_cutover_ready"] = serde_json::json!(false);
-    bundle["active_search_route_ownership"]["skein_route_count"] =
+    bundle["active_search_route_ownership"]["hawdb_route_count"] =
         serde_json::json!(REQUIRED_NOWLEDGE_MEM_ACTIVE_SEARCH_ROUTES.len() - 1);
     bundle["active_search_route_ownership"]["lancedb_route_count"] = serde_json::json!(1);
     bundle["active_search_route_ownership"]["lancedb_routes"] = serde_json::json!(["mcp_search"]);
@@ -2954,7 +2954,7 @@ fn replacement_summary_groups_storage_and_background_blockers() {
             },
             {
                 "action": "run_search_projection_shadow_evidence",
-                "reason": "LanceDB/Skein search projection side-by-side evidence is missing or not ready",
+                "reason": "LanceDB/Hawdb search projection side-by-side evidence is missing or not ready",
                 "evidence_fields": [
                     "search_projection_shadow_evidence.protocol",
                     "search_projection_shadow_evidence.evidence_source",
@@ -2973,7 +2973,7 @@ fn replacement_summary_groups_storage_and_background_blockers() {
             },
             {
                 "action": "run_search_candidate_shadow_evidence",
-                "reason": "LanceDB/Skein search candidate side-by-side evidence is missing or not ready",
+                "reason": "LanceDB/Hawdb search candidate side-by-side evidence is missing or not ready",
                 "evidence_fields": [
                     "search_candidate_shadow_evidence.protocol",
                     "search_candidate_shadow_evidence.evidence_source",
@@ -3019,7 +3019,7 @@ fn replacement_summary_groups_storage_and_background_blockers() {
                     "search_route_ownership.production_cutover_ready",
                     "search_route_ownership.required_route_count",
                     "search_route_ownership.explicit_route_count",
-                    "search_route_ownership.skein_route_count",
+                    "search_route_ownership.hawdb_route_count",
                     "search_route_ownership.lancedb_route_count",
                     "search_route_ownership.missing_required_routes",
                     "search_route_ownership.lancedb_routes",
@@ -3035,7 +3035,7 @@ fn replacement_summary_groups_storage_and_background_blockers() {
                     "active_search_route_ownership.production_cutover_ready",
                     "active_search_route_ownership.required_route_count",
                     "active_search_route_ownership.explicit_route_count",
-                    "active_search_route_ownership.skein_route_count",
+                    "active_search_route_ownership.hawdb_route_count",
                     "active_search_route_ownership.lancedb_route_count",
                     "active_search_route_ownership.missing_required_routes",
                     "active_search_route_ownership.lancedb_routes",
@@ -3052,10 +3052,10 @@ fn replacement_summary_groups_storage_and_background_blockers() {
                     "active_search_route_readiness.required_route_count",
                     "active_search_route_readiness.evidence_route_count",
                     "active_search_route_readiness.ready_route_count",
-                    "active_search_route_readiness.skein_route_count",
+                    "active_search_route_readiness.hawdb_route_count",
                     "active_search_route_readiness.lancedb_handle_required_route_count",
                     "active_search_route_readiness.missing_required_routes",
-                    "active_search_route_readiness.non_skein_routes",
+                    "active_search_route_readiness.non_hawdb_routes",
                     "active_search_route_readiness.lancedb_handle_required_routes",
                     "active_search_route_readiness.candidate_not_ready_routes",
                     "active_search_route_readiness.candidate_identity_not_ready_routes",
@@ -3302,7 +3302,7 @@ fn production_ready_bundle() -> serde_json::Value {
         },
         "dual_engine_evidence": {
             "ready": true,
-            "primary_engine": "skein",
+            "primary_engine": "hawdb",
             "shadow_engine": "previous-wrapper",
             "primary_check_count": 1,
             "shadow_check_count": 1,
@@ -3311,7 +3311,7 @@ fn production_ready_bundle() -> serde_json::Value {
             "matched_per_million": 1_000_000
         },
         "search_projection_evidence": {
-            "protocol": "skein-nowledge-search-projection-evidence",
+            "protocol": "hawdb-nowledge-search-projection-evidence",
             "ready": true,
             "derived_projection": true,
             "all_tables_covered": true,
@@ -3333,11 +3333,11 @@ fn production_ready_bundle() -> serde_json::Value {
             "blocker_codes": []
         },
         "search_projection_shadow_evidence": {
-            "protocol": "skein-nowledge-search-projection-shadow-evidence",
-            "evidence_source": SKEIN_SEARCH_PROJECTION_SHADOW_EVIDENCE_SOURCE,
+            "protocol": "hawdb-nowledge-search-projection-shadow-evidence",
+            "evidence_source": HAWDB_SEARCH_PROJECTION_SHADOW_EVIDENCE_SOURCE,
             "ready": true,
             "primary_engine": "lancedb",
-            "shadow_engine": "skein",
+            "shadow_engine": "hawdb",
             "primary_ready": true,
             "shadow_ready": true,
             "document_count_parity": true,
@@ -3363,11 +3363,11 @@ fn production_ready_bundle() -> serde_json::Value {
             "blocker_codes": []
         },
         "search_candidate_shadow_evidence": {
-            "protocol": "skein-nowledge-search-candidate-shadow-evidence",
-            "route": "/search-index/skein-shadow/candidate-evidence",
+            "protocol": "hawdb-nowledge-search-candidate-shadow-evidence",
+            "route": "/search-index/hawdb-shadow/candidate-evidence",
             "evidence_source": "nmem-rust-bridge",
             "ready": true,
-            "candidate_primary_engine": "skein",
+            "candidate_primary_engine": "hawdb",
             "request_count": 2,
             "primary_candidate_count": 3,
             "shadow_candidate_count": 3,
@@ -3407,7 +3407,7 @@ fn production_ready_bundle() -> serde_json::Value {
         ),
         "active_search_route_readiness": ready_active_search_route_readiness_json(),
         "bounded_read_evidence": {
-            "protocol": "skein-nowledge-mem-bounded-read-evidence-v2",
+            "protocol": "hawdb-nowledge-mem-bounded-read-evidence-v2",
             "mode": "shadow_read_only",
             "max_rows": 512,
             "execution_row_cap": 513,
@@ -3523,10 +3523,10 @@ fn ready_route_ownership_json(routes: &[&str]) -> serde_json::Value {
         "protocol": NOWLEDGE_MEM_SEARCH_ROUTE_OWNERSHIP_PROTOCOL,
         "ready": true,
         "production_cutover_ready": true,
-        "require_all_skein": true,
+        "require_all_hawdb": true,
         "required_route_count": routes.len(),
         "explicit_route_count": routes.len(),
-        "skein_route_count": routes.len(),
+        "hawdb_route_count": routes.len(),
         "lancedb_route_count": 0,
         "missing_required_routes": [],
         "lancedb_routes": [],
@@ -3539,14 +3539,14 @@ fn ready_active_search_route_readiness_json() -> serde_json::Value {
         "protocol": NOWLEDGE_MEM_ACTIVE_SEARCH_ROUTE_READINESS_PROTOCOL,
         "ready": true,
         "production_cutover_ready": true,
-        "require_all_skein": true,
+        "require_all_hawdb": true,
         "required_route_count": REQUIRED_NOWLEDGE_MEM_ACTIVE_SEARCH_ROUTES.len(),
         "evidence_route_count": REQUIRED_NOWLEDGE_MEM_ACTIVE_SEARCH_ROUTES.len(),
         "ready_route_count": REQUIRED_NOWLEDGE_MEM_ACTIVE_SEARCH_ROUTES.len(),
-        "skein_route_count": REQUIRED_NOWLEDGE_MEM_ACTIVE_SEARCH_ROUTES.len(),
+        "hawdb_route_count": REQUIRED_NOWLEDGE_MEM_ACTIVE_SEARCH_ROUTES.len(),
         "lancedb_handle_required_route_count": 0,
         "missing_required_routes": [],
-        "non_skein_routes": [],
+        "non_hawdb_routes": [],
         "lancedb_handle_required_routes": [],
         "candidate_not_ready_routes": [],
         "metadata_pushdown_not_ready_routes": [],
@@ -3644,7 +3644,7 @@ fn ready_query_runtime_preflight() -> serde_json::Value {
         .map(|route| ready_query_runtime_preflight_probe(route))
         .collect::<Vec<_>>();
     serde_json::json!({
-        "protocol": "skein-nowledge-query-runtime-preflight-v1",
+        "protocol": "hawdb-nowledge-query-runtime-preflight-v1",
         "ready": true,
         "database_opened": true,
         "redaction": {

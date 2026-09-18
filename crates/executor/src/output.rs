@@ -31,7 +31,7 @@ impl QueryOutput {
 mod tests {
     use super::*;
     use crate::QueryRowsBuilder;
-    use skein_core::{Value, ValueRef};
+    use hawdb_core::{Value, ValueRef};
 
     #[test]
     fn query_output_preserves_schema_values_and_payload_without_map_materialization() {

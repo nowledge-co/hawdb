@@ -1,8 +1,8 @@
 //! Execution memory defaults and admission estimates.
 
-use skein_core::{Result, RuntimeTaskContext, SkeinError};
-use skein_plan::{PhysicalPlan, PlanChildren, VectorExecutionResourceProfile};
-use skein_storage::MutationLimits;
+use hawdb_core::{HawdbError, Result, RuntimeTaskContext};
+use hawdb_plan::{PhysicalPlan, PlanChildren, VectorExecutionResourceProfile};
+use hawdb_storage::MutationLimits;
 use std::num::{NonZeroU64, NonZeroUsize};
 use std::path::PathBuf;
 use std::time::Duration;
@@ -35,12 +35,12 @@ pub fn enforced_result_memory_budget(
 
 fn runtime_memory_budget(owner: &str, bytes: u64) -> Result<NonZeroUsize> {
     let bytes = usize::try_from(bytes).map_err(|_| {
-        SkeinError::Execution(format!(
+        HawdbError::Execution(format!(
             "runtime-admitted {owner} reservation {bytes} does not fit the executor address space"
         ))
     })?;
     NonZeroUsize::new(bytes).ok_or_else(|| {
-        SkeinError::Execution(format!(
+        HawdbError::Execution(format!(
             "runtime-admitted {owner} reservation must be non-zero"
         ))
     })
@@ -119,14 +119,14 @@ impl Default for ExecutionMemoryConfig {
             )
             .expect("default spill free-space probe interval is non-zero"),
             spill_orphan_grace_period: DEFAULT_SPILL_ORPHAN_GRACE_PERIOD,
-            spill_directory: std::env::temp_dir().join("skein-spill"),
+            spill_directory: std::env::temp_dir().join("hawdb-spill"),
         }
     }
 }
 
 impl ExecutionMemoryConfig {
     /// Returns process-wide spill usage for this configured directory.
-    pub fn spill_pool_snapshot(&self) -> skein_core::Result<crate::SpillPoolSnapshot> {
+    pub fn spill_pool_snapshot(&self) -> hawdb_core::Result<crate::SpillPoolSnapshot> {
         crate::spill::spill_pool_snapshot(self)
     }
 }
@@ -337,7 +337,7 @@ fn usize_to_u64(value: usize) -> u64 {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use skein_plan::Predicate;
+    use hawdb_plan::Predicate;
 
     fn admission_test_config() -> ExecutionMemoryConfig {
         ExecutionMemoryConfig {
@@ -441,15 +441,15 @@ mod tests {
                 max_parallelism: 3,
                 max_working_memory_bytes: Some(2048),
             },
-            vector_plan: skein_plan::VectorPhysicalPlan::TopK {
+            vector_plan: hawdb_plan::VectorPhysicalPlan::TopK {
                 limit: 4,
-                input: Box::new(skein_plan::VectorPhysicalPlan::RawVectorRerank {
+                input: Box::new(hawdb_plan::VectorPhysicalPlan::RawVectorRerank {
                     embedding_dimension: 2,
-                    input: Box::new(skein_plan::VectorPhysicalPlan::VectorCandidateScan {
-                        source: skein_plan::VectorCandidateSource::Scalar,
+                    input: Box::new(hawdb_plan::VectorPhysicalPlan::VectorCandidateScan {
+                        source: hawdb_plan::VectorCandidateSource::Scalar,
                         embedding_dimension: 2,
                         candidate_limit: 4,
-                        input: Box::new(skein_plan::VectorPhysicalPlan::Filter {
+                        input: Box::new(hawdb_plan::VectorPhysicalPlan::Filter {
                             fields: Vec::new(),
                         }),
                     }),

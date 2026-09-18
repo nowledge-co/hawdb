@@ -9,7 +9,7 @@ use super::{
     RelationalValueRef,
 };
 use crate::SegmentBytes;
-use skein_integrity::{IntegrityHasher, Sha256Digest, SHA256_BYTES};
+use hawdb_integrity::{IntegrityHasher, Sha256Digest, SHA256_BYTES};
 use std::fmt;
 use std::num::{NonZeroU64, NonZeroUsize};
 use std::ops::Range;

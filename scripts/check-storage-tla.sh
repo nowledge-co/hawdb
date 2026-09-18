@@ -6,7 +6,7 @@ readonly tla_sha256="936a262061c914694dfd669a543be24573c45d5aa0ff20a8b96b23d01e0
 repository_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 readonly repository_root
 readonly storage_models_file="$repository_root/docs/tla/storage_models.bzl"
-readonly tla_work_root="${TLA_WORK_ROOT:-${RUNNER_TEMP:-${TMPDIR:-/tmp}}/skein-tla}"
+readonly tla_work_root="${TLA_WORK_ROOT:-${RUNNER_TEMP:-${TMPDIR:-/tmp}}/hawdb-tla}"
 readonly downloaded_jar="$tla_work_root/tla2tools-$tla_version.jar"
 
 specifications=()
@@ -58,7 +58,7 @@ readonly -a specifications
 
 model_tlc_args() {
   tlc_args=(-cleanup -workers auto)
-  if [[ "$1" == "SkeinCowPagePublication" ]]; then
+  if [[ "$1" == "HawdbCowPagePublication" ]]; then
     # Match the Bazel action: defer repeated partial-graph liveness scans, not
     # the final check over the complete graph. No model property is disabled.
     tlc_args+=(-lncheck final)
@@ -91,7 +91,7 @@ verify_tlc_log() {
     printf 'TLA+ complete success evidence is missing or contains an error: %s\n' "$result" >&2
     return 1
   }
-  if [[ "${2:-}" == "SkeinCowPagePublication" ]] &&
+  if [[ "${2:-}" == "HawdbCowPagePublication" ]] &&
     ! grep -Fq 'Checking temporal properties for the complete state space' "$result"; then
     printf 'TLA+ final complete-state-space liveness evidence is missing: %s\n' "$result" >&2
     return 1

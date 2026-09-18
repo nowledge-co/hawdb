@@ -1,13 +1,13 @@
-use skein_core::{Result, SkeinError, Value};
-use skein_cypher as cypher;
-use skein_plan::{
+use hawdb_core::{HawdbError, Result, Value};
+use hawdb_cypher as cypher;
+use hawdb_plan::{
     self as planner, LogicalPlan, PhysicalPlan, Predicate, Projection, ProjectionExpression,
     RelationshipCountFilter, SortItem, SortKey,
 };
 use std::collections::BTreeMap;
 
-const PARAMETER_SLOT_NAME_KEY: &str = "\0skein_parameter_slot";
-const PARAMETER_SLOT_PATH_KEY: &str = "\0skein_parameter_path";
+const PARAMETER_SLOT_NAME_KEY: &str = "\0hawdb_parameter_slot";
+const PARAMETER_SLOT_PATH_KEY: &str = "\0hawdb_parameter_path";
 
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
 enum ParameterCacheValue {
@@ -647,41 +647,41 @@ fn bind_physical_plan(plan: &mut PhysicalPlan, parameters: &BTreeMap<String, Val
 }
 
 fn bind_node_projection_access(
-    access: &mut skein_plan::NodeProjectionAccess,
+    access: &mut hawdb_plan::NodeProjectionAccess,
     parameters: &BTreeMap<String, Value>,
 ) -> Result<()> {
     match access {
-        skein_plan::NodeProjectionAccess::LabelScan => Ok(()),
-        skein_plan::NodeProjectionAccess::PropertyValues { values, .. } => {
+        hawdb_plan::NodeProjectionAccess::LabelScan => Ok(()),
+        hawdb_plan::NodeProjectionAccess::PropertyValues { values, .. } => {
             bind_values(values, parameters)
         }
-        skein_plan::NodeProjectionAccess::PropertyUnion { branches } => {
+        hawdb_plan::NodeProjectionAccess::PropertyUnion { branches } => {
             for branch in branches {
                 bind_values(&mut branch.values, parameters)?;
             }
             Ok(())
         }
-        skein_plan::NodeProjectionAccess::CompositeEquality { predicates } => {
+        hawdb_plan::NodeProjectionAccess::CompositeEquality { predicates } => {
             for (_, value) in predicates {
                 bind_value(value, parameters)?;
             }
             Ok(())
         }
-        skein_plan::NodeProjectionAccess::CompositeRange { seek } => {
+        hawdb_plan::NodeProjectionAccess::CompositeRange { seek } => {
             bind_composite_range_seek(seek, parameters)
         }
-        skein_plan::NodeProjectionAccess::PropertyRange { lower, upper, .. } => {
+        hawdb_plan::NodeProjectionAccess::PropertyRange { lower, upper, .. } => {
             for (value, _) in lower.iter_mut().chain(upper.iter_mut()) {
                 bind_value(value, parameters)?;
             }
             Ok(())
         }
-        skein_plan::NodeProjectionAccess::FullText { .. } => Ok(()),
+        hawdb_plan::NodeProjectionAccess::FullText { .. } => Ok(()),
     }
 }
 
 fn bind_composite_range_seek(
-    seek: &mut skein_plan::CompositeRangeSeek,
+    seek: &mut hawdb_plan::CompositeRangeSeek,
     parameters: &BTreeMap<String, Value>,
 ) -> Result<()> {
     for (_, value) in &mut seek.equality_prefix {
@@ -946,15 +946,15 @@ fn bind_value(value: &mut Value, parameters: &BTreeMap<String, Value>) -> Result
     if let Some((name, path)) = marker_name_and_path(value) {
         let mut bound = parameters
             .get(name)
-            .ok_or_else(|| SkeinError::Semantic(format!("missing parameter '${name}'")))?;
+            .ok_or_else(|| HawdbError::Semantic(format!("missing parameter '${name}'")))?;
         for index in path {
             let Value::List(values) = bound else {
-                return Err(SkeinError::Semantic(format!(
+                return Err(HawdbError::Semantic(format!(
                     "parameter '${name}' changed shape while binding a cached plan"
                 )));
             };
             bound = values.get(index).ok_or_else(|| {
-                SkeinError::Semantic(format!(
+                HawdbError::Semantic(format!(
                     "parameter '${name}' changed shape while binding a cached plan"
                 ))
             })?;
@@ -975,10 +975,10 @@ mod tests {
         bind_physical_plan_parameters, parameter_marker, parameterize_logical_plan,
         ParameterCacheValue, PARAMETER_SLOT_NAME_KEY, PARAMETER_SLOT_PATH_KEY,
     };
-    use skein_core::Value;
-    use skein_cypher as cypher;
-    use skein_optimizer::{CascadesOptimizer, OptimizerCatalog};
-    use skein_plan::{
+    use hawdb_core::Value;
+    use hawdb_cypher as cypher;
+    use hawdb_optimizer::{CascadesOptimizer, OptimizerCatalog};
+    use hawdb_plan::{
         CompositeRangeSeek, ExactPropertySeekBranch, LogicalPlanRoot, NodeProjectionAccess,
         PhysicalPlan,
     };
@@ -1005,7 +1005,7 @@ mod tests {
             .iter()
             .map(|(name, value)| (name.clone(), parameter_marker(name, value, &[])))
             .collect();
-        let logical = skein_plan::plan_with_params(&statement, &markers).unwrap();
+        let logical = hawdb_plan::plan_with_params(&statement, &markers).unwrap();
         let root = CascadesOptimizer::default().optimize_root_with_catalog(
             &LogicalPlanRoot::new(logical),
             &OptimizerCatalog::default(),
@@ -1019,7 +1019,7 @@ mod tests {
         let rebound = bind_physical_plan_parameters(&template, &parameters, true).unwrap();
         let text = format!("{rebound:?}");
         assert!(text.contains("SECOND") && text.contains("new"), "{text}");
-        assert!(!text.contains("skein_parameter_slot"), "{text}");
+        assert!(!text.contains("hawdb_parameter_slot"), "{text}");
     }
 
     #[test]
@@ -1047,7 +1047,7 @@ mod tests {
         .unwrap();
 
         assert!(rebound.explain(0).contains("second"));
-        assert!(!rebound.explain(0).contains("skein_parameter_slot"));
+        assert!(!rebound.explain(0).contains("hawdb_parameter_slot"));
     }
 
     #[test]
@@ -1059,11 +1059,11 @@ mod tests {
             value: parameter_marker(parameter, &Value::Int(0), &[]),
         };
         let template = PhysicalPlan::HashJoinExec {
-            left_key: skein_plan::HashJoinKey {
+            left_key: hawdb_plan::HashJoinKey {
                 variable: "a".into(),
                 property: "key".into(),
             },
-            right_key: skein_plan::HashJoinKey {
+            right_key: hawdb_plan::HashJoinKey {
                 variable: "b".into(),
                 property: "key".into(),
             },

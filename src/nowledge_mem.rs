@@ -20,17 +20,17 @@ use crate::{
     cypher, BackgroundMaintenanceKind, BackgroundMaintenanceOptions, BackgroundMaintenanceSummary,
     BackgroundWorkHint, BackgroundWorkPlan, BoundedReadQueryOutput, Database, DatabaseConfig,
     DatabaseReadTransaction, GraphRagGeneratedQuery, GraphRagSchemaContext,
-    GraphRagSchemaContextOptions, KnowledgeRetrievalOutput, KnowledgeRetrievalRequest,
-    LocalQosPolicy, LocalQosState, NowledgeGraphStatement, PlanCacheLookup, QueryOutput,
-    QueryStreamOptions, QueryStreamReport, ReadExecutionProfile, Result,
-    ScheduledSearchProjectionCatchUpReport, SearchDocument, SearchIndex,
+    GraphRagSchemaContextOptions, HawdbError, HawdbLightningBootstrapManifest,
+    HawdbLightningInitialImportApplyReport, HawdbLightningInitialImportCheckpoint,
+    HawdbLightningInitialImportCutoverCatchUpReport, HawdbLightningInitialImportDocumentIdentity,
+    HawdbLightningInitialImportRecoveryReadinessReport, KnowledgeRetrievalOutput,
+    KnowledgeRetrievalRequest, LocalQosPolicy, LocalQosState, NowledgeGraphStatement,
+    PlanCacheLookup, QueryOutput, QueryStreamOptions, QueryStreamReport, ReadExecutionProfile,
+    Result, ScheduledSearchProjectionCatchUpReport, SearchDocument, SearchIndex,
     SearchProjectionCatchUpReport, SearchProjectionChangeBatch,
     SearchProjectionChangefeedReadiness, SearchProjectionDelta, SearchProjectionDeltaReport,
     SearchProjectionFreshness, SearchProjectionGraphDeltaRequest, SearchProjectionProbeOptions,
-    SearchProjectionRelationalDelta, SearchResultSet, SkeinError, SkeinLightningBootstrapManifest,
-    SkeinLightningInitialImportApplyReport, SkeinLightningInitialImportCheckpoint,
-    SkeinLightningInitialImportCutoverCatchUpReport, SkeinLightningInitialImportDocumentIdentity,
-    SkeinLightningInitialImportRecoveryReadinessReport, StorageResourceProfileLimits,
+    SearchProjectionRelationalDelta, SearchResultSet, StorageResourceProfileLimits,
     StorageResourceProfileReport, TelemetrySink, Value, STORAGE_RESOURCE_PROFILE_PROTOCOL,
 };
 use crate::{
@@ -52,40 +52,40 @@ use crate::{
         NowledgeGraphRouteWorkloadFixtureReport, NOWLEDGE_GRAPH_ROUTE_WORKLOAD_FIXTURE_PROTOCOL,
     },
 };
-use skein_core::RuntimeTaskContext;
-use skein_optimizer::AdaptiveVectorBackendPolicy;
-use skein_qos::{
+use hawdb_core::RuntimeTaskContext;
+use hawdb_optimizer::AdaptiveVectorBackendPolicy;
+use hawdb_qos::{
     IoConcurrencyBudget, RuntimeGovernor, RuntimeGovernorConfig, RuntimeGovernorSnapshot,
     RuntimePermit, RuntimeWorkKind, RuntimeWorkPriority, RuntimeWorkRequest, StorageDeviceProfile,
     WorkPriority,
 };
-pub use skein_readiness::bounded_read_evidence::{
+pub use hawdb_readiness::bounded_read_evidence::{
     nowledge_mem_bounded_read_evidence_json,
     nowledge_mem_bounded_read_evidence_json_with_route_readiness,
     nowledge_mem_bounded_read_evidence_json_with_routes, NowledgeMemGraphMode,
     NowledgeMemReadReport, NowledgeMemRouteReadinessSummary,
     NOWLEDGE_MEM_BOUNDED_READ_EVIDENCE_PROTOCOL, NOWLEDGE_MEM_READ_REPORT_PROTOCOL,
 };
-use skein_readiness::nowledge_mem_query_report::nowledge_mem_plan_cache_report;
-pub use skein_readiness::nowledge_mem_query_report::{
+use hawdb_readiness::nowledge_mem_query_report::nowledge_mem_plan_cache_report;
+pub use hawdb_readiness::nowledge_mem_query_report::{
     nowledge_mem_fast_path_classification, NowledgeMemFastPathClassification,
     NowledgeMemQueryApiBehavior, NowledgeMemQueryExecutionPath, NowledgeMemQueryOutput,
     NowledgeMemQueryOutputRowShape, NowledgeMemQueryReport, NowledgeMemQueryReportOptions,
     NOWLEDGE_MEM_QUERY_REPORT_PROTOCOL,
 };
-pub use skein_readiness::query_runtime_preflight::NowledgeQueryRuntimePreflightProbe;
-use skein_readiness::query_runtime_preflight_report::{
-    nowledge_query_runtime_route_coverage, query_runtime_preflight_blocker_codes,
-    query_runtime_probe_blocker_codes, skein_error_class,
+pub use hawdb_readiness::query_runtime_preflight::NowledgeQueryRuntimePreflightProbe;
+use hawdb_readiness::query_runtime_preflight_report::{
+    hawdb_error_class, nowledge_query_runtime_route_coverage,
+    query_runtime_preflight_blocker_codes, query_runtime_probe_blocker_codes,
 };
-pub use skein_readiness::query_runtime_preflight_report::{
+pub use hawdb_readiness::query_runtime_preflight_report::{
     NowledgeQueryRuntimePreflightProbeReport, NowledgeQueryRuntimePreflightRedactionSummary,
     NowledgeQueryRuntimePreflightReport,
 };
-pub use skein_readiness::slow_query::{
+pub use hawdb_readiness::slow_query::{
     NowledgeMemSlowQueryRecord, NowledgeMemSlowQueryReport, NOWLEDGE_MEM_SLOW_QUERY_REPORT_PROTOCOL,
 };
-pub use skein_readiness::{NowledgeMemReadinessAreaMap, NowledgeMemReadinessAreaSummary};
+pub use hawdb_readiness::{NowledgeMemReadinessAreaMap, NowledgeMemReadinessAreaSummary};
 
 #[cfg(test)]
 mod slow_query_facade_tests {
@@ -96,24 +96,24 @@ mod slow_query_facade_tests {
     fn facade_reexports_slow_query_contracts_without_conversion() {
         assert_eq!(
             TypeId::of::<NowledgeMemSlowQueryRecord>(),
-            TypeId::of::<skein_readiness::slow_query::NowledgeMemSlowQueryRecord>(),
+            TypeId::of::<hawdb_readiness::slow_query::NowledgeMemSlowQueryRecord>(),
         );
         assert_eq!(
             TypeId::of::<NowledgeMemSlowQueryReport>(),
-            TypeId::of::<skein_readiness::slow_query::NowledgeMemSlowQueryReport>(),
+            TypeId::of::<hawdb_readiness::slow_query::NowledgeMemSlowQueryReport>(),
         );
         assert_eq!(
             NOWLEDGE_MEM_SLOW_QUERY_REPORT_PROTOCOL,
-            skein_readiness::slow_query::NOWLEDGE_MEM_SLOW_QUERY_REPORT_PROTOCOL,
+            hawdb_readiness::slow_query::NOWLEDGE_MEM_SLOW_QUERY_REPORT_PROTOCOL,
         );
     }
 }
-use skein_search::candidate_evidence::{
+use hawdb_search::candidate_evidence::{
     advised_compressed_vector_search_mode, effective_search_candidate_mode,
     nowledge_mem_search_candidate_report, retrieval_projection_advisor_blocker_codes,
     retrieval_projection_advisor_json,
 };
-pub use skein_search::candidate_evidence::{
+pub use hawdb_search::candidate_evidence::{
     nowledge_mem_search_candidate_shadow_evidence_json, NowledgeMemRetrievalProjectionAdvisor,
     NowledgeMemSearchCandidateFieldSummary, NowledgeMemSearchCandidateFilterPushdownEvidence,
     NowledgeMemSearchCandidateOutput, NowledgeMemSearchCandidateReadinessOptions,
@@ -152,33 +152,33 @@ mod runtime_status_facade_tests {
     fn root_facade_preserves_runtime_status_type_identity() {
         assert_eq!(
             TypeId::of::<NowledgeMemRuntimeStatus>(),
-            TypeId::of::<skein_readiness::nowledge_mem_runtime_status::NowledgeMemRuntimeStatus>()
+            TypeId::of::<hawdb_readiness::nowledge_mem_runtime_status::NowledgeMemRuntimeStatus>()
         );
         assert_eq!(
             TypeId::of::<NowledgeMemProductionStatus>(),
-            TypeId::of::<skein_readiness::nowledge_mem_runtime_status::NowledgeMemProductionStatus>(
+            TypeId::of::<hawdb_readiness::nowledge_mem_runtime_status::NowledgeMemProductionStatus>(
             )
         );
         assert_eq!(
             TypeId::of::<NowledgeMemReadControl>(),
-            TypeId::of::<skein_readiness::nowledge_mem_cutover::NowledgeMemReadControl>()
+            TypeId::of::<hawdb_readiness::nowledge_mem_cutover::NowledgeMemReadControl>()
         );
         assert_eq!(
             TypeId::of::<NowledgeMemWorkControl>(),
-            TypeId::of::<skein_readiness::nowledge_mem_cutover::NowledgeMemWorkControl>()
+            TypeId::of::<hawdb_readiness::nowledge_mem_cutover::NowledgeMemWorkControl>()
         );
         assert_eq!(
             TypeId::of::<NowledgeMemCutoverControls>(),
-            TypeId::of::<skein_readiness::nowledge_mem_cutover::NowledgeMemCutoverControls>()
+            TypeId::of::<hawdb_readiness::nowledge_mem_cutover::NowledgeMemCutoverControls>()
         );
         assert_eq!(
             TypeId::of::<NowledgeMemCutoverControlsReport>(),
-            TypeId::of::<skein_readiness::nowledge_mem_cutover::NowledgeMemCutoverControlsReport>()
+            TypeId::of::<hawdb_readiness::nowledge_mem_cutover::NowledgeMemCutoverControlsReport>()
         );
     }
 }
 
-pub use skein_readiness::nowledge_mem_serving_path::{
+pub use hawdb_readiness::nowledge_mem_serving_path::{
     NowledgeMemServingEntrypoint, NowledgeMemServingPathReadiness,
     NOWLEDGE_MEM_SERVING_PATH_READINESS_PROTOCOL,
 };
@@ -394,14 +394,14 @@ impl NowledgeMemOpenOptions {
             &self.search_projection_open_mode,
         ) {
             (None, NowledgeMemSearchProjectionOpenMode::QualifiedOutOfCore(_)) => {
-                return Err(SkeinError::Semantic(
+                return Err(HawdbError::Semantic(
                     "qualified out-of-core search requires search_projection_path".to_string(),
                 ));
             }
             (Some(_), NowledgeMemSearchProjectionOpenMode::QualifiedOutOfCore(qualified)) => {
                 qualified.expected_identity.validate()?;
                 if self.search_range_read_config.is_some() {
-                    return Err(SkeinError::Semantic(
+                    return Err(HawdbError::Semantic(
                         "search_range_read_config applies only to the full-residency maintenance projection"
                             .to_string(),
                     ));
@@ -410,14 +410,14 @@ impl NowledgeMemOpenOptions {
             _ => {}
         }
         if self.search_projection_path.is_none() && self.search_range_read_config.is_some() {
-            return Err(SkeinError::Semantic(
+            return Err(HawdbError::Semantic(
                 "search_range_read_config requires search_projection_path".to_string(),
             ));
         }
         let mut schema_owners = BTreeSet::new();
         for registry in &self.system_schema_registries {
             if !schema_owners.insert(registry.owner()) {
-                return Err(SkeinError::Semantic(format!(
+                return Err(HawdbError::Semantic(format!(
                     "system schema owner {} is registered more than once",
                     registry.owner()
                 )));
@@ -538,17 +538,17 @@ impl NowledgeMemOpenReport {
     }
 }
 
-pub use skein_readiness::nowledge_mem_runtime_status::{
+pub use hawdb_readiness::nowledge_mem_runtime_status::{
     NowledgeMemProductionStatus, NowledgeMemRuntimeStatus, NOWLEDGE_MEM_PRODUCTION_STATUS_PROTOCOL,
     NOWLEDGE_MEM_RUNTIME_STATUS_PROTOCOL,
 };
 
-pub use skein_readiness::nowledge_mem_cutover::{
+pub use hawdb_readiness::nowledge_mem_cutover::{
     NowledgeMemCutoverControls, NowledgeMemCutoverControlsReport, NowledgeMemReadControl,
     NowledgeMemWorkControl,
 };
 
-pub use skein_nowledge_contracts::{
+pub use hawdb_nowledge_contracts::{
     NowledgeMemReadSnapshotBudget, NowledgeMemReadSnapshotReport,
     NowledgeMemStorageLifecycleActionKind, NowledgeMemStorageLifecycleDecision,
     NowledgeMemStorageRecoveryReport, NOWLEDGE_MEM_READ_SNAPSHOT_REPORT_PROTOCOL,
@@ -564,15 +564,15 @@ mod storage_lifecycle_facade_tests {
     fn facade_reexports_storage_lifecycle_contracts_without_conversion() {
         assert_eq!(
             TypeId::of::<NowledgeMemStorageRecoveryReport>(),
-            TypeId::of::<skein_nowledge_contracts::NowledgeMemStorageRecoveryReport>(),
+            TypeId::of::<hawdb_nowledge_contracts::NowledgeMemStorageRecoveryReport>(),
         );
         assert_eq!(
             TypeId::of::<NowledgeMemStorageLifecycleDecision>(),
-            TypeId::of::<skein_nowledge_contracts::NowledgeMemStorageLifecycleDecision>(),
+            TypeId::of::<hawdb_nowledge_contracts::NowledgeMemStorageLifecycleDecision>(),
         );
         assert_eq!(
             TypeId::of::<NowledgeMemStorageLifecycleActionKind>(),
-            TypeId::of::<skein_nowledge_contracts::NowledgeMemStorageLifecycleActionKind>(),
+            TypeId::of::<hawdb_nowledge_contracts::NowledgeMemStorageLifecycleActionKind>(),
         );
     }
 
@@ -580,20 +580,20 @@ mod storage_lifecycle_facade_tests {
     fn facade_reexports_read_snapshot_contracts_without_conversion() {
         assert_eq!(
             TypeId::of::<NowledgeMemReadSnapshotBudget>(),
-            TypeId::of::<skein_nowledge_contracts::NowledgeMemReadSnapshotBudget>(),
+            TypeId::of::<hawdb_nowledge_contracts::NowledgeMemReadSnapshotBudget>(),
         );
         assert_eq!(
             TypeId::of::<NowledgeMemReadSnapshotReport>(),
-            TypeId::of::<skein_nowledge_contracts::NowledgeMemReadSnapshotReport>(),
+            TypeId::of::<hawdb_nowledge_contracts::NowledgeMemReadSnapshotReport>(),
         );
         assert_eq!(
             NOWLEDGE_MEM_READ_SNAPSHOT_REPORT_PROTOCOL,
-            skein_nowledge_contracts::NOWLEDGE_MEM_READ_SNAPSHOT_REPORT_PROTOCOL,
+            hawdb_nowledge_contracts::NOWLEDGE_MEM_READ_SNAPSHOT_REPORT_PROTOCOL,
         );
     }
 }
 
-pub use skein_readiness::source_mutation::{
+pub use hawdb_readiness::source_mutation::{
     nowledge_mem_source_mutation_dual_write_evidence_all_ready,
     nowledge_mem_source_mutation_dual_write_readiness,
     nowledge_mem_source_mutation_family_requirements, NowledgeMemSourceMutationDualWriteEvidence,
@@ -610,15 +610,15 @@ pub use skein_readiness::source_mutation::{
     REQUIRED_NOWLEDGE_MEM_SOURCE_MUTATION_FAMILIES,
 };
 
-pub const NOWLEDGE_MEM_OPEN_REPORT_PROTOCOL: &str = "skein-nowledge-mem-open-report";
-pub use skein_readiness::previous_wrapper_preflight::{
+pub const NOWLEDGE_MEM_OPEN_REPORT_PROTOCOL: &str = "hawdb-nowledge-mem-open-report";
+pub use hawdb_readiness::previous_wrapper_preflight::{
     NOWLEDGE_MEM_CUTOVER_CONTROLS_PROTOCOL, NOWLEDGE_MEM_LIBRARY_READINESS_PROTOCOL,
     NOWLEDGE_MEM_OPERATIONS_READINESS_PROTOCOL, NOWLEDGE_QUERY_RUNTIME_PREFLIGHT_PROTOCOL,
 };
-pub const NOWLEDGE_MEM_RETRIEVAL_REPORT_PROTOCOL: &str = "skein-nowledge-mem-retrieval-report";
+pub const NOWLEDGE_MEM_RETRIEVAL_REPORT_PROTOCOL: &str = "hawdb-nowledge-mem-retrieval-report";
 pub const NOWLEDGE_MEM_READINESS_DASHBOARD_PROTOCOL: &str =
-    "skein-nowledge-mem-readiness-dashboard-v1";
-pub use skein_route_ownership::graph::{
+    "hawdb-nowledge-mem-readiness-dashboard-v1";
+pub use hawdb_route_ownership::graph::{
     nowledge_mem_graph_read_route_catalog_digest, nowledge_mem_graph_read_route_spec,
     nowledge_mem_graph_read_route_spec_json, nowledge_mem_graph_read_route_specs_json,
     nowledge_mem_required_query_families_for_route, NowledgeMemGraphReadRouteEvidenceKind,
@@ -1058,7 +1058,7 @@ impl NowledgeMemBackgroundMaintenanceReport {
         if let Some(object) = json.as_object_mut() {
             object.insert(
                 "protocol".to_string(),
-                serde_json::Value::String("skein-background-maintenance-report".to_string()),
+                serde_json::Value::String("hawdb-background-maintenance-report".to_string()),
             );
             if let Some(slow_query) = slow_query {
                 object.insert(
@@ -1082,7 +1082,7 @@ impl NowledgeMemBackgroundMaintenanceReport {
         let health = background_maintenance_evidence_health(Some(&json), true);
 
         Self {
-            protocol: "skein-background-maintenance-report".to_string(),
+            protocol: "hawdb-background-maintenance-report".to_string(),
             present: true,
             ready: health.ready,
             total_candidates: summary.total_candidates,
@@ -1434,14 +1434,14 @@ impl NowledgeMemGraph {
                 .config()
                 .max_read_result_payload_bytes
                 .ok_or_else(|| {
-                    SkeinError::Execution(
+                    HawdbError::Execution(
                         "admitted materialized query requires max_read_result_payload_bytes"
                             .to_string(),
                     )
                 })?;
             let configured = u64::try_from(configured).unwrap_or(u64::MAX);
             if configured > governor_budget {
-                return Err(SkeinError::Execution(format!(
+                return Err(HawdbError::Execution(format!(
                     "admitted materialized query payload budget {configured} exceeds runtime result budget {governor_budget}"
                 )));
             }
@@ -1462,7 +1462,7 @@ impl NowledgeMemGraph {
     ) -> Result<RuntimePermit> {
         let admission = self.db.runtime_admission_plan(cypher, parameters)?;
         if admission.is_mutation {
-            return Err(SkeinError::Execution(
+            return Err(HawdbError::Execution(
                 "admitted streaming query must be read-only".to_string(),
             ));
         }
@@ -1472,13 +1472,13 @@ impl NowledgeMemGraph {
         ))
     }
 
-    fn try_admit_runtime(&self, request: skein_qos::RuntimeWorkRequest) -> Result<RuntimePermit> {
+    fn try_admit_runtime(&self, request: hawdb_qos::RuntimeWorkRequest) -> Result<RuntimePermit> {
         self.runtime_governor.try_admit(request).map_err(|error| {
             if error.is_retryable() {
                 self.runtime_governor
                     .record_admission_wait(request, error.code, 0);
             }
-            SkeinError::Execution(error.to_string())
+            HawdbError::Execution(error.to_string())
         })
     }
 
@@ -1496,7 +1496,7 @@ impl NowledgeMemGraph {
             .unwrap_or(governor_budget);
         let admitted = governor_budget.min(configured).min(requested);
         if admitted == 0 {
-            return Err(SkeinError::Execution(
+            return Err(HawdbError::Execution(
                 "admitted streaming query requires a non-zero result byte budget".to_string(),
             ));
         }
@@ -1506,13 +1506,13 @@ impl NowledgeMemGraph {
     fn check_runtime_context(&self, task_context: &RuntimeTaskContext) -> Result<()> {
         task_context.checkpoint().map_err(|reason| {
             self.runtime_governor.record_cancellation(reason);
-            SkeinError::Execution(format!("runtime task {reason}"))
+            HawdbError::Execution(format!("runtime task {reason}"))
         })
     }
 
     fn record_runtime_cancellation(
         &self,
-        error: Option<&SkeinError>,
+        error: Option<&HawdbError>,
         task_context: &RuntimeTaskContext,
     ) {
         if error.is_some()
@@ -2041,7 +2041,7 @@ impl crate::executor::ExternalReadOperator for SearchProjectionExternalReadOpera
                 .into(),
             (None, None) => return Err(missing_search_projection_error()),
             (Some(_), Some(_)) => {
-                return Err(SkeinError::Storage(
+                return Err(HawdbError::Storage(
                     "nowledge mem search projection ownership is ambiguous".to_string(),
                 ));
             }
@@ -2052,7 +2052,7 @@ impl crate::executor::ExternalReadOperator for SearchProjectionExternalReadOpera
             .iter()
             .find(|retriever| retriever.name == "vector")
             .ok_or_else(|| {
-                SkeinError::Execution(
+                HawdbError::Execution(
                     "vector search did not produce a vector retriever report".to_string(),
                 )
             })?;
@@ -2068,7 +2068,7 @@ impl crate::executor::ExternalReadOperator for SearchProjectionExternalReadOpera
                     score: hit.vector_score,
                 })
                 .collect(),
-            report: skein_executor::VectorExecutionReport {
+            report: hawdb_executor::VectorExecutionReport {
                 backend: vector_execution_backend(candidate_score_source),
                 compression_mode: vector_compression_mode(
                     output.report.compressed_vector_search_mode,
@@ -2088,7 +2088,7 @@ impl crate::executor::ExternalReadOperator for SearchProjectionExternalReadOpera
                 returned_count: retriever.candidate_count,
                 raw_vector_bytes_read: retriever.raw_vector_bytes_read,
                 candidate_scan_metrics: retriever.candidate_scan_kernel.as_ref().map(|kernel| {
-                    skein_executor::VectorCandidateScanMetrics {
+                    hawdb_executor::VectorCandidateScanMetrics {
                         kernel: kernel.clone(),
                         worker_count: retriever.candidate_scan_worker_count,
                         segment_count: retriever.candidate_scan_segment_count,
@@ -2117,7 +2117,7 @@ impl crate::executor::ExternalReadOperator for SearchProjectionExternalReadOpera
             .vector_seed_execution_count
             .checked_add(1)
             .ok_or_else(|| {
-                SkeinError::Execution(
+                HawdbError::Execution(
                     "bounded external vector seed execution count overflowed".to_string(),
                 )
             })?;
@@ -2125,85 +2125,85 @@ impl crate::executor::ExternalReadOperator for SearchProjectionExternalReadOpera
     }
 }
 
-fn vector_plan_top_k(plan: &skein_plan::VectorPhysicalPlan) -> Result<usize> {
+fn vector_plan_top_k(plan: &hawdb_plan::VectorPhysicalPlan) -> Result<usize> {
     match plan {
-        skein_plan::VectorPhysicalPlan::TopK { limit, .. } => Ok(*limit),
-        _ => Err(SkeinError::Execution(
+        hawdb_plan::VectorPhysicalPlan::TopK { limit, .. } => Ok(*limit),
+        _ => Err(HawdbError::Execution(
             "vector seed physical plan is missing TopK".to_string(),
         )),
     }
 }
 
 fn vector_plan_candidate_source(
-    plan: &skein_plan::VectorPhysicalPlan,
-) -> Result<skein_plan::VectorCandidateSource> {
+    plan: &hawdb_plan::VectorPhysicalPlan,
+) -> Result<hawdb_plan::VectorCandidateSource> {
     match plan {
-        skein_plan::VectorPhysicalPlan::VectorCandidateScan { source, .. } => Ok(*source),
-        skein_plan::VectorPhysicalPlan::ResidualFilter { input, .. }
-        | skein_plan::VectorPhysicalPlan::RawVectorRerank { input, .. }
-        | skein_plan::VectorPhysicalPlan::TopK { input, .. } => vector_plan_candidate_source(input),
-        skein_plan::VectorPhysicalPlan::Filter { .. } => Err(SkeinError::Execution(
+        hawdb_plan::VectorPhysicalPlan::VectorCandidateScan { source, .. } => Ok(*source),
+        hawdb_plan::VectorPhysicalPlan::ResidualFilter { input, .. }
+        | hawdb_plan::VectorPhysicalPlan::RawVectorRerank { input, .. }
+        | hawdb_plan::VectorPhysicalPlan::TopK { input, .. } => vector_plan_candidate_source(input),
+        hawdb_plan::VectorPhysicalPlan::Filter { .. } => Err(HawdbError::Execution(
             "vector seed physical plan is missing VectorCandidateScan".to_string(),
         )),
     }
 }
 
-fn vector_score_source(value: &str) -> Result<skein_executor::VectorScoreSource> {
+fn vector_score_source(value: &str) -> Result<hawdb_executor::VectorScoreSource> {
     match value {
-        "unavailable" | "none" => Ok(skein_executor::VectorScoreSource::Unavailable),
-        "raw_vector" => Ok(skein_executor::VectorScoreSource::RawVector),
-        "ann_approximate" => Ok(skein_executor::VectorScoreSource::AnnApproximate),
-        "quantized_approximate" => Ok(skein_executor::VectorScoreSource::QuantizedApproximate),
-        _ => Err(SkeinError::Execution(
+        "unavailable" | "none" => Ok(hawdb_executor::VectorScoreSource::Unavailable),
+        "raw_vector" => Ok(hawdb_executor::VectorScoreSource::RawVector),
+        "ann_approximate" => Ok(hawdb_executor::VectorScoreSource::AnnApproximate),
+        "quantized_approximate" => Ok(hawdb_executor::VectorScoreSource::QuantizedApproximate),
+        _ => Err(HawdbError::Execution(
             "vector search returned an unsupported score source".to_string(),
         )),
     }
 }
 
 fn vector_execution_backend(
-    score_source: skein_executor::VectorScoreSource,
-) -> skein_executor::VectorExecutionBackend {
+    score_source: hawdb_executor::VectorScoreSource,
+) -> hawdb_executor::VectorExecutionBackend {
     match score_source {
-        skein_executor::VectorScoreSource::Unavailable => {
-            skein_executor::VectorExecutionBackend::Unavailable
+        hawdb_executor::VectorScoreSource::Unavailable => {
+            hawdb_executor::VectorExecutionBackend::Unavailable
         }
-        skein_executor::VectorScoreSource::RawVector => {
-            skein_executor::VectorExecutionBackend::ScalarFlat
+        hawdb_executor::VectorScoreSource::RawVector => {
+            hawdb_executor::VectorExecutionBackend::ScalarFlat
         }
-        skein_executor::VectorScoreSource::AnnApproximate => {
-            skein_executor::VectorExecutionBackend::AnnProjection
+        hawdb_executor::VectorScoreSource::AnnApproximate => {
+            hawdb_executor::VectorExecutionBackend::AnnProjection
         }
-        skein_executor::VectorScoreSource::QuantizedApproximate => {
-            skein_executor::VectorExecutionBackend::QuantizedProjection
+        hawdb_executor::VectorScoreSource::QuantizedApproximate => {
+            hawdb_executor::VectorExecutionBackend::QuantizedProjection
         }
     }
 }
 
 fn vector_compression_mode(
     mode: CompressedVectorSearchMode,
-) -> skein_executor::VectorCompressionMode {
+) -> hawdb_executor::VectorCompressionMode {
     match mode {
-        CompressedVectorSearchMode::Disabled => skein_executor::VectorCompressionMode::Disabled,
-        CompressedVectorSearchMode::Preferred => skein_executor::VectorCompressionMode::Preferred,
-        CompressedVectorSearchMode::Required => skein_executor::VectorCompressionMode::Required,
+        CompressedVectorSearchMode::Disabled => hawdb_executor::VectorCompressionMode::Disabled,
+        CompressedVectorSearchMode::Preferred => hawdb_executor::VectorCompressionMode::Preferred,
+        CompressedVectorSearchMode::Required => hawdb_executor::VectorCompressionMode::Required,
     }
 }
 
 fn vector_fallback_reason_code(
     code: SearchFallbackReasonCode,
-) -> Option<skein_executor::VectorFallbackReasonCode> {
+) -> Option<hawdb_executor::VectorFallbackReasonCode> {
     match code {
         SearchFallbackReasonCode::VectorDimensionMismatch => {
-            Some(skein_executor::VectorFallbackReasonCode::VectorDimensionMismatch)
+            Some(hawdb_executor::VectorFallbackReasonCode::VectorDimensionMismatch)
         }
         SearchFallbackReasonCode::VectorIndexEmpty => {
-            Some(skein_executor::VectorFallbackReasonCode::VectorIndexEmpty)
+            Some(hawdb_executor::VectorFallbackReasonCode::VectorIndexEmpty)
         }
         SearchFallbackReasonCode::CompressedVectorProjectionUnavailable => {
-            Some(skein_executor::VectorFallbackReasonCode::CompressedVectorProjectionUnavailable)
+            Some(hawdb_executor::VectorFallbackReasonCode::CompressedVectorProjectionUnavailable)
         }
         SearchFallbackReasonCode::QueryEmbeddingMissing => {
-            Some(skein_executor::VectorFallbackReasonCode::QueryEmbeddingMissing)
+            Some(hawdb_executor::VectorFallbackReasonCode::QueryEmbeddingMissing)
         }
         SearchFallbackReasonCode::TextQueryEmpty => None,
     }
@@ -2247,7 +2247,7 @@ impl NowledgeMemReadSnapshot<'_> {
     ) -> Result<QueryOutput> {
         let completed_statement_count =
             self.cypher_statement_count.checked_add(1).ok_or_else(|| {
-                SkeinError::Execution(
+                HawdbError::Execution(
                     "bounded read snapshot Cypher statement count overflowed".to_string(),
                 )
             })?;
@@ -2280,7 +2280,7 @@ impl NowledgeMemReadSnapshot<'_> {
     ) -> Result<QueryOutput> {
         let completed_statement_count =
             self.sql_statement_count.checked_add(1).ok_or_else(|| {
-                SkeinError::Execution(
+                HawdbError::Execution(
                     "bounded read snapshot SQL statement count overflowed".to_string(),
                 )
             })?;
@@ -2327,13 +2327,13 @@ impl NowledgeMemReadSnapshot<'_> {
 
     fn statement_row_budget(&self, requested: usize) -> Result<usize> {
         if requested == 0 {
-            return Err(SkeinError::Execution(
+            return Err(HawdbError::Execution(
                 "bounded read statement requires max_rows greater than zero".to_string(),
             ));
         }
         let remaining = self.budget.max_rows.saturating_sub(self.output_rows);
         if remaining == 0 {
-            return Err(SkeinError::Execution(
+            return Err(HawdbError::Execution(
                 "bounded read snapshot exhausted max_rows".to_string(),
             ));
         }
@@ -2346,7 +2346,7 @@ impl NowledgeMemReadSnapshot<'_> {
             .max_payload_bytes
             .saturating_sub(self.output_payload_bytes);
         if remaining == 0 {
-            return Err(SkeinError::Execution(
+            return Err(HawdbError::Execution(
                 "bounded read snapshot exhausted max_payload_bytes".to_string(),
             ));
         }
@@ -2357,13 +2357,13 @@ impl NowledgeMemReadSnapshot<'_> {
         let output_rows = self.output_rows.saturating_add(rows);
         let output_payload_bytes = self.output_payload_bytes.saturating_add(payload_bytes);
         if output_rows > self.budget.max_rows {
-            return Err(SkeinError::Execution(format!(
+            return Err(HawdbError::Execution(format!(
                 "bounded read snapshot produced {output_rows} rows, exceeding max_rows {}",
                 self.budget.max_rows
             )));
         }
         if output_payload_bytes > self.budget.max_payload_bytes {
-            return Err(SkeinError::Execution(format!(
+            return Err(HawdbError::Execution(format!(
                 "bounded read snapshot produced {output_payload_bytes} payload bytes, exceeding max_payload_bytes {}",
                 self.budget.max_payload_bytes
             )));
@@ -2509,7 +2509,7 @@ impl NowledgeMemEmbeddedStoreHandle {
         max_documents: usize,
     ) -> Result<NowledgeMemSearchHydrationOutput> {
         if document_ids.len() > max_documents {
-            return Err(SkeinError::Execution(format!(
+            return Err(HawdbError::Execution(format!(
                 "search projection document hydration requested {} rows, limit is {max_documents}",
                 document_ids.len()
             )));
@@ -2522,7 +2522,7 @@ impl NowledgeMemEmbeddedStoreHandle {
             .config()
             .max_read_result_payload_bytes
             .ok_or_else(|| {
-                SkeinError::Execution(
+                HawdbError::Execution(
                     "admitted search hydration requires max_read_result_payload_bytes".to_string(),
                 )
             })?;
@@ -2540,7 +2540,7 @@ impl NowledgeMemEmbeddedStoreHandle {
                     payload_bytes =
                         payload_bytes.saturating_add(search_document_payload_bytes(document));
                     if payload_bytes > max_payload_bytes {
-                        return Err(SkeinError::Execution(format!(
+                        return Err(HawdbError::Execution(format!(
                             "search projection document hydration produced {payload_bytes} payload bytes, limit is {max_payload_bytes}"
                         )));
                     }
@@ -2556,7 +2556,7 @@ impl NowledgeMemEmbeddedStoreHandle {
                 if output.metrics.hydrated_bytes
                     > u64::try_from(max_payload_bytes).unwrap_or(u64::MAX)
                 {
-                    return Err(SkeinError::Execution(format!(
+                    return Err(HawdbError::Execution(format!(
                         "search projection document hydration produced {} payload bytes, limit is {max_payload_bytes}",
                         output.metrics.hydrated_bytes
                     )));
@@ -2688,12 +2688,12 @@ impl NowledgeMemEmbeddedStoreHandle {
         operation: impl FnOnce(&mut NowledgeMemReadSnapshot<'_>) -> Result<T>,
     ) -> Result<T> {
         if budget.max_rows == 0 {
-            return Err(SkeinError::Execution(
+            return Err(HawdbError::Execution(
                 "bounded read snapshot requires max_rows greater than zero".to_string(),
             ));
         }
         if budget.max_payload_bytes == 0 {
-            return Err(SkeinError::Execution(
+            return Err(HawdbError::Execution(
                 "bounded read snapshot requires max_payload_bytes greater than zero".to_string(),
             ));
         }
@@ -2707,12 +2707,12 @@ impl NowledgeMemEmbeddedStoreHandle {
             .config()
             .max_read_result_rows
             .ok_or_else(|| {
-                SkeinError::Execution(
+                HawdbError::Execution(
                     "bounded read snapshot requires max_read_result_rows".to_string(),
                 )
             })?;
         if budget.max_rows > configured_rows {
-            return Err(SkeinError::Execution(format!(
+            return Err(HawdbError::Execution(format!(
                 "bounded read snapshot row budget {} exceeds configured limit {configured_rows}",
                 budget.max_rows
             )));
@@ -2752,15 +2752,15 @@ impl NowledgeMemEmbeddedStoreHandle {
         operation(&mut snapshot)
     }
 
-    pub fn skein_lightning_initial_import_apply_with_document_identities(
+    pub fn hawdb_lightning_initial_import_apply_with_document_identities(
         &self,
         encoded_graph_stream: &str,
         encoded_relational_stream: &[u8],
-        manifest: &SkeinLightningBootstrapManifest,
+        manifest: &HawdbLightningBootstrapManifest,
         projection_freshness: Option<&SearchProjectionFreshness>,
-        checkpoint: Option<&SkeinLightningInitialImportCheckpoint>,
-        document_identities: &[SkeinLightningInitialImportDocumentIdentity],
-    ) -> Result<SkeinLightningInitialImportApplyReport> {
+        checkpoint: Option<&HawdbLightningInitialImportCheckpoint>,
+        document_identities: &[HawdbLightningInitialImportDocumentIdentity],
+    ) -> Result<HawdbLightningInitialImportApplyReport> {
         let estimated_input_bytes = encoded_graph_stream
             .len()
             .saturating_add(encoded_relational_stream.len())
@@ -2774,7 +2774,7 @@ impl NowledgeMemEmbeddedStoreHandle {
         self.write_store()?
             .graph_mut()
             .database_mut()
-            .skein_lightning_initial_import_apply_with_document_identities(
+            .hawdb_lightning_initial_import_apply_with_document_identities(
                 encoded_graph_stream,
                 encoded_relational_stream,
                 manifest,
@@ -3055,7 +3055,7 @@ impl NowledgeMemEmbeddedStoreHandle {
         &self,
         controls: NowledgeMemCutoverControls,
         route_ownership: Option<&NowledgeMemRouteOwnershipReadinessReport>,
-        initial_import_cutover_catch_up: Option<&SkeinLightningInitialImportCutoverCatchUpReport>,
+        initial_import_cutover_catch_up: Option<&HawdbLightningInitialImportCutoverCatchUpReport>,
     ) -> Result<NowledgeMemCutoverControlsReport> {
         Ok(self
             .read_store()?
@@ -3070,7 +3070,7 @@ impl NowledgeMemEmbeddedStoreHandle {
         &self,
         controls: NowledgeMemCutoverControls,
         route_ownership: Option<&NowledgeMemRouteOwnershipReadinessReport>,
-        initial_import_recovery: Option<&SkeinLightningInitialImportRecoveryReadinessReport>,
+        initial_import_recovery: Option<&HawdbLightningInitialImportRecoveryReadinessReport>,
     ) -> Result<NowledgeMemCutoverControlsReport> {
         Ok(self
             .read_store()?
@@ -3095,7 +3095,7 @@ impl NowledgeMemEmbeddedStoreHandle {
         &self,
         controls: NowledgeMemCutoverControls,
         route_ownership: Option<&NowledgeMemRouteOwnershipReadinessReport>,
-        initial_import_cutover_catch_up: Option<&SkeinLightningInitialImportCutoverCatchUpReport>,
+        initial_import_cutover_catch_up: Option<&HawdbLightningInitialImportCutoverCatchUpReport>,
     ) -> Result<serde_json::Value> {
         Ok(self
             .read_store()?
@@ -3295,12 +3295,12 @@ impl NowledgeMemEmbeddedStoreHandle {
         let store = self.read_store()?;
         let config = store.graph.database().config();
         let configured_result_bytes = config.max_read_result_payload_bytes.ok_or_else(|| {
-            SkeinError::Execution(
+            HawdbError::Execution(
                 "admitted typed read requires max_read_result_payload_bytes".to_string(),
             )
         })?;
         if max_estimated_payload_bytes > configured_result_bytes {
-            return Err(SkeinError::Execution(format!(
+            return Err(HawdbError::Execution(format!(
                 "typed read payload budget {max_estimated_payload_bytes} exceeds configured limit {configured_result_bytes}"
             )));
         }
@@ -3340,13 +3340,13 @@ impl NowledgeMemEmbeddedStoreHandle {
         let result_bytes = config
             .max_read_result_payload_bytes
             .ok_or_else(|| {
-                SkeinError::Execution(
+                HawdbError::Execution(
                     "admitted typed search requires max_read_result_payload_bytes".to_string(),
                 )
             })
             .and_then(|bytes| {
                 u64::try_from(bytes).map_err(|_| {
-                    SkeinError::Execution(
+                    HawdbError::Execution(
                         "admitted typed search result budget exceeds u64".to_string(),
                     )
                 })
@@ -3386,7 +3386,7 @@ impl NowledgeMemEmbeddedStoreHandle {
                 config.mutation_limits.max_result_payload_bytes.get()
             } else {
                 config.max_read_result_payload_bytes.ok_or_else(|| {
-                    SkeinError::Execution(
+                    HawdbError::Execution(
                         "admitted transaction requires max_read_result_payload_bytes".to_string(),
                     )
                 })?
@@ -3405,13 +3405,13 @@ impl NowledgeMemEmbeddedStoreHandle {
 
     fn read_store(&self) -> Result<RwLockReadGuard<'_, NowledgeMemEmbeddedStore>> {
         self.inner.read().map_err(|_| {
-            SkeinError::Execution("nowledge mem embedded store read lock poisoned".to_string())
+            HawdbError::Execution("nowledge mem embedded store read lock poisoned".to_string())
         })
     }
 
     fn write_store(&self) -> Result<RwLockWriteGuard<'_, NowledgeMemEmbeddedStore>> {
         self.inner.write().map_err(|_| {
-            SkeinError::Execution("nowledge mem embedded store write lock poisoned".to_string())
+            HawdbError::Execution("nowledge mem embedded store write lock poisoned".to_string())
         })
     }
 }
@@ -3546,7 +3546,7 @@ impl NowledgeMemEmbeddedStore {
             NowledgeMemSearchProjectionOpenMode::QualifiedOutOfCore(qualified) => {
                 let graph_commit_epoch = graph.database().commit_epoch();
                 if graph_commit_epoch != qualified.expected_identity.canonical_graph_commit_epoch {
-                    return Err(SkeinError::Storage(format!(
+                    return Err(HawdbError::Storage(format!(
                         "qualified out-of-core search expected canonical graph commit epoch {}, opened graph is at {graph_commit_epoch}",
                         qualified.expected_identity.canonical_graph_commit_epoch
                     )));
@@ -3728,7 +3728,7 @@ impl NowledgeMemEmbeddedStore {
         &self,
         controls: NowledgeMemCutoverControls,
         route_ownership: Option<&NowledgeMemRouteOwnershipReadinessReport>,
-        initial_import_cutover_catch_up: Option<&SkeinLightningInitialImportCutoverCatchUpReport>,
+        initial_import_cutover_catch_up: Option<&HawdbLightningInitialImportCutoverCatchUpReport>,
     ) -> NowledgeMemCutoverControlsReport {
         NowledgeMemCutoverControlsReport::from_production_status(
             controls,
@@ -3741,7 +3741,7 @@ impl NowledgeMemEmbeddedStore {
         &self,
         controls: NowledgeMemCutoverControls,
         route_ownership: Option<&NowledgeMemRouteOwnershipReadinessReport>,
-        initial_import_recovery: Option<&SkeinLightningInitialImportRecoveryReadinessReport>,
+        initial_import_recovery: Option<&HawdbLightningInitialImportRecoveryReadinessReport>,
     ) -> NowledgeMemCutoverControlsReport {
         let recovery_ready = initial_import_recovery.is_some_and(|report| {
             report.ready
@@ -3781,7 +3781,7 @@ impl NowledgeMemEmbeddedStore {
         &self,
         controls: NowledgeMemCutoverControls,
         route_ownership: Option<&NowledgeMemRouteOwnershipReadinessReport>,
-        initial_import_cutover_catch_up: Option<&SkeinLightningInitialImportCutoverCatchUpReport>,
+        initial_import_cutover_catch_up: Option<&HawdbLightningInitialImportCutoverCatchUpReport>,
     ) -> serde_json::Value {
         self.cutover_controls_report_with_initial_import_cutover_catch_up(
             controls,
@@ -4400,8 +4400,8 @@ impl NowledgeMemEmbeddedStore {
             .as_ref()
             .map(StorageResourceProfileReport::json)
             .unwrap_or_else(missing_production_resource_profile_json);
-        let assessment = skein_readiness::library_readiness::assess_nowledge_mem_library_readiness(
-            &skein_readiness::library_readiness::NowledgeMemLibraryReadinessEvidence {
+        let assessment = hawdb_readiness::library_readiness::assess_nowledge_mem_library_readiness(
+            &hawdb_readiness::library_readiness::NowledgeMemLibraryReadinessEvidence {
                 bounded_read_evidence: &bounded_read_evidence,
                 storage_recovery: &storage_recovery,
                 background_maintenance: &background_maintenance,
@@ -4593,12 +4593,12 @@ impl NowledgeMemEmbeddedStore {
     }
 }
 
-fn missing_search_projection_error() -> SkeinError {
-    SkeinError::Storage("nowledge mem search projection is not configured".to_string())
+fn missing_search_projection_error() -> HawdbError {
+    HawdbError::Storage("nowledge mem search projection is not configured".to_string())
 }
 
-fn ambiguous_search_projection_error() -> SkeinError {
-    SkeinError::Storage("nowledge mem search projection ownership is ambiguous".to_string())
+fn ambiguous_search_projection_error() -> HawdbError {
+    HawdbError::Storage("nowledge mem search projection ownership is ambiguous".to_string())
 }
 
 fn require_search_projection_mut(
@@ -4622,11 +4622,11 @@ struct NowledgeMemQueryReportInput<'a> {
 
 fn nowledge_mem_query_report(input: NowledgeMemQueryReportInput<'_>) -> NowledgeMemQueryReport {
     let statement_kind = crate::api::statement_kind(
-        skein_cypher::read_route::query_statement_body(input.statement),
+        hawdb_cypher::read_route::query_statement_body(input.statement),
     );
     let decision = nowledge_mem_fast_path_classification(input.statement);
-    skein_readiness::nowledge_mem_query_report::nowledge_mem_query_report(
-        skein_readiness::nowledge_mem_query_report::NowledgeMemQueryReportInput {
+    hawdb_readiness::nowledge_mem_query_report::nowledge_mem_query_report(
+        hawdb_readiness::nowledge_mem_query_report::NowledgeMemQueryReportInput {
             mode: input.mode,
             statement_kind,
             statement: input.statement,
@@ -4780,7 +4780,7 @@ fn nowledge_query_runtime_probe_report(
             blocking_operator_kinds: Vec::new(),
             scan_pruning_reports: Vec::new(),
             pruned_scan_count: 0,
-            error_class: Some(skein_error_class(&error).to_string()),
+            error_class: Some(hawdb_error_class(&error).to_string()),
             blocker_codes: vec!["query_runtime_failed".to_string()],
         },
     }
@@ -4788,7 +4788,7 @@ fn nowledge_query_runtime_probe_report(
 
 fn missing_search_projection_evidence_json() -> serde_json::Value {
     serde_json::json!({
-        "protocol": "skein-nowledge-search-projection-evidence",
+        "protocol": "hawdb-nowledge-search-projection-evidence",
         "present": false,
         "ready": false,
         "blocker_codes": ["search_projection_not_configured"],
@@ -4797,7 +4797,7 @@ fn missing_search_projection_evidence_json() -> serde_json::Value {
 
 fn missing_search_projection_shadow_evidence_json() -> serde_json::Value {
     serde_json::json!({
-        "protocol": "skein-nowledge-search-projection-shadow-evidence",
+        "protocol": "hawdb-nowledge-search-projection-shadow-evidence",
         "present": false,
         "ready": false,
         "blocker_codes": ["search_projection_not_configured"],
@@ -4806,7 +4806,7 @@ fn missing_search_projection_shadow_evidence_json() -> serde_json::Value {
 
 fn missing_primary_search_projection_probe_json() -> serde_json::Value {
     serde_json::json!({
-        "protocol": "skein-nowledge-search-projection-shadow-evidence",
+        "protocol": "hawdb-nowledge-search-projection-shadow-evidence",
         "present": false,
         "ready": false,
         "blocker_codes": ["primary_search_projection_probe_missing"],
@@ -4877,7 +4877,7 @@ fn query_family_replacement_evidence_json(
         query_family_replacement_readiness_array(replacement_readiness_by_query_family)
     else {
         return serde_json::json!({
-            "protocol": "skein-nowledge-query-family-evidence-v1",
+            "protocol": "hawdb-nowledge-query-family-evidence-v1",
             "present": false,
             "ready": false,
             "required_query_families": REQUIRED_NOWLEDGE_REPLACEMENT_QUERY_FAMILIES,
@@ -4888,7 +4888,7 @@ fn query_family_replacement_evidence_json(
     let health = replacement_readiness_family_evidence_health(Some(families));
     let blocker_codes = query_family_replacement_blocker_codes(&health);
     serde_json::json!({
-        "protocol": "skein-nowledge-query-family-evidence-v1",
+        "protocol": "hawdb-nowledge-query-family-evidence-v1",
         "present": health.present,
         "ready": health.ready,
         "min_replacement_readiness_per_million": health.min_replacement_readiness_per_million,
@@ -4956,7 +4956,7 @@ fn nowledge_mem_graph_route_readiness_json(
     };
 
     let missing_required_routes =
-        skein_readiness::bounded_read_evidence::missing_nowledge_mem_bounded_read_routes(
+        hawdb_readiness::bounded_read_evidence::missing_nowledge_mem_bounded_read_routes(
             &summary.primary_ready_routes,
         );
     let relationship_property_pruning_count_matches = summary
@@ -5007,13 +5007,13 @@ fn missing_search_route_ownership_json() -> serde_json::Value {
         "protocol": NOWLEDGE_MEM_SEARCH_ROUTE_OWNERSHIP_PROTOCOL,
         "ready": false,
         "production_cutover_ready": false,
-        "require_all_skein": true,
+        "require_all_hawdb": true,
         "required_route_count": REQUIRED_NOWLEDGE_MEM_SEARCH_ROUTES.len(),
         "explicit_route_count": 0,
-        "skein_route_count": 0,
+        "hawdb_route_count": 0,
         "lancedb_route_count": 0,
         "routes": [],
-        "skein_routes": [],
+        "hawdb_routes": [],
         "lancedb_routes": [],
         "missing_required_routes": REQUIRED_NOWLEDGE_MEM_SEARCH_ROUTES,
         "unknown_routes": [],
@@ -5028,13 +5028,13 @@ fn missing_active_search_route_ownership_json() -> serde_json::Value {
         "protocol": NOWLEDGE_MEM_SEARCH_ROUTE_OWNERSHIP_PROTOCOL,
         "ready": false,
         "production_cutover_ready": false,
-        "require_all_skein": true,
+        "require_all_hawdb": true,
         "required_route_count": REQUIRED_NOWLEDGE_MEM_ACTIVE_SEARCH_ROUTES.len(),
         "explicit_route_count": 0,
-        "skein_route_count": 0,
+        "hawdb_route_count": 0,
         "lancedb_route_count": 0,
         "routes": [],
-        "skein_routes": [],
+        "hawdb_routes": [],
         "lancedb_routes": [],
         "missing_required_routes": REQUIRED_NOWLEDGE_MEM_ACTIVE_SEARCH_ROUTES,
         "unknown_routes": [],
@@ -5049,11 +5049,11 @@ fn missing_active_search_route_readiness_json() -> serde_json::Value {
         "protocol": NOWLEDGE_MEM_ACTIVE_SEARCH_ROUTE_READINESS_PROTOCOL,
         "ready": false,
         "production_cutover_ready": false,
-        "require_all_skein": true,
+        "require_all_hawdb": true,
         "required_route_count": REQUIRED_NOWLEDGE_MEM_ACTIVE_SEARCH_ROUTES.len(),
         "evidence_route_count": 0,
         "ready_route_count": 0,
-        "skein_route_count": 0,
+        "hawdb_route_count": 0,
         "lancedb_handle_required_route_count": 0,
         "routes": [],
         "ready_routes": [],
@@ -5061,7 +5061,7 @@ fn missing_active_search_route_readiness_json() -> serde_json::Value {
         "unknown_routes": [],
         "duplicate_routes": [],
         "invalid_projection_routes": [],
-        "non_skein_routes": [],
+        "non_hawdb_routes": [],
         "lancedb_handle_required_routes": [],
         "candidate_not_ready_routes": [],
         "candidate_identity_not_ready_routes": [],
@@ -5242,14 +5242,14 @@ fn bounded_nowledge_mem_read_output(
     let report =
         nowledge_mem_read_report(mode, &bounded.output, options, &bounded.execution_profile);
     if report.row_budget_exceeded {
-        return Err(SkeinError::Execution(format!(
+        return Err(HawdbError::Execution(format!(
             "nowledge mem read query returned {} rows, exceeding max_rows {}",
             report.row_count,
             report.max_rows.unwrap_or_default()
         )));
     }
     if report.payload_budget_exceeded {
-        return Err(SkeinError::Execution(format!(
+        return Err(HawdbError::Execution(format!(
             "nowledge mem read query estimated {} payload bytes, exceeding max_estimated_payload_bytes {}",
             report.estimated_payload_bytes,
             report.max_estimated_payload_bytes.unwrap_or_default()
@@ -5279,18 +5279,18 @@ fn streamed_nowledge_mem_read_output(
 }
 
 fn legacy_nowledge_mem_read_error(
-    error: SkeinError,
+    error: HawdbError,
     options: &NowledgeMemReadOptions,
-) -> SkeinError {
+) -> HawdbError {
     let Some(max_payload_bytes) = options.max_estimated_payload_bytes else {
         return error;
     };
     if matches!(
         &error,
-        SkeinError::Execution(message)
+        HawdbError::Execution(message)
             if message.contains(&format!("max_payload_bytes {max_payload_bytes}"))
     ) {
-        return SkeinError::Execution(format!(
+        return HawdbError::Execution(format!(
             "nowledge mem read query payload exceeding max_estimated_payload_bytes {max_payload_bytes}"
         ));
     }
@@ -5362,7 +5362,7 @@ mod tests {
     };
     use crate::mem_integration_readiness::nowledge_mem_final_cutover_preflight;
     use crate::route_ownership::{
-        nowledge_mem_route_ownership_all_legacy, nowledge_mem_route_ownership_all_skein,
+        nowledge_mem_route_ownership_all_hawdb, nowledge_mem_route_ownership_all_legacy,
         nowledge_mem_route_ownership_readiness, NowledgeMemRouteOwnershipPolicy,
     };
     use crate::search::{
@@ -5371,10 +5371,10 @@ mod tests {
         SearchOutOfCoreConfig, SearchTopKScoreParity,
     };
     use crate::search_route_ownership::{
-        nowledge_mem_active_search_route_ownership_all_skein,
+        nowledge_mem_active_search_route_ownership_all_hawdb,
         nowledge_mem_active_search_route_ownership_readiness,
-        nowledge_mem_active_search_route_read_evidence_all_skein_ready,
-        nowledge_mem_active_search_route_readiness, nowledge_mem_search_route_ownership_all_skein,
+        nowledge_mem_active_search_route_read_evidence_all_hawdb_ready,
+        nowledge_mem_active_search_route_readiness, nowledge_mem_search_route_ownership_all_hawdb,
         nowledge_mem_search_route_ownership_readiness,
         NowledgeMemActiveSearchRouteOwnershipReadinessReport,
         NowledgeMemActiveSearchRouteReadinessReport, NowledgeMemSearchRouteOwnershipPolicy,
@@ -5389,17 +5389,17 @@ mod tests {
         BackgroundMaintenanceKind, BackgroundMaintenanceOptions, BackgroundWorkHint, Database,
         DatabaseConfig, GraphRagQueryBinding, GraphRagQueryDraft, GraphRagQueryPattern,
         GraphRagQueryPredicate, GraphRagQueryPredicateOperator, GraphRagQueryProjection,
-        GraphRagSchemaContextOptions, KnowledgeCandidateScoringPolicy, KnowledgeRetrievalRequest,
-        LocalQosPolicy, LocalQosState, NowledgeGraphStatement, ProductionEvidenceBinding,
-        ProductionQualificationIdentity, RecoveryMode, SearchEmbeddingManifest, SearchIndex,
-        SearchMode, SearchProjectionDelta, SearchProjectionFreshness, SearchProjectionKind,
-        SearchProjectionProbeOptions, SearchProjectionRelationalDelta, SearchProjectionRow,
-        SkeinError, SkeinLightningInitialImportCheckpoint,
-        SkeinLightningInitialImportCutoverCatchUpReport,
-        SkeinLightningInitialImportDocumentIdentity, SkeinLightningInitialImportReadinessInputs,
-        StorageOpenTimings, StorageRecoveryReport, StorageResidencyMode,
-        StorageResourceProfileLimits, VectorRecallValidationOptions, VectorRecallValidationReport,
-        WorkClass, PRODUCTION_QUALIFICATION_POLICY_VERSION, VECTOR_RECALL_VALIDATION_PROTOCOL,
+        GraphRagSchemaContextOptions, HawdbError, HawdbLightningInitialImportCheckpoint,
+        HawdbLightningInitialImportCutoverCatchUpReport,
+        HawdbLightningInitialImportDocumentIdentity, HawdbLightningInitialImportReadinessInputs,
+        KnowledgeCandidateScoringPolicy, KnowledgeRetrievalRequest, LocalQosPolicy, LocalQosState,
+        NowledgeGraphStatement, ProductionEvidenceBinding, ProductionQualificationIdentity,
+        RecoveryMode, SearchEmbeddingManifest, SearchIndex, SearchMode, SearchProjectionDelta,
+        SearchProjectionFreshness, SearchProjectionKind, SearchProjectionProbeOptions,
+        SearchProjectionRelationalDelta, SearchProjectionRow, StorageOpenTimings,
+        StorageRecoveryReport, StorageResidencyMode, StorageResourceProfileLimits,
+        VectorRecallValidationOptions, VectorRecallValidationReport, WorkClass,
+        PRODUCTION_QUALIFICATION_POLICY_VERSION, VECTOR_RECALL_VALIDATION_PROTOCOL,
     };
     use std::any::TypeId;
     use std::collections::BTreeMap;
@@ -5428,7 +5428,7 @@ mod tests {
         VectorRecallValidationReport {
             protocol: VECTOR_RECALL_VALIDATION_PROTOCOL.to_string(),
             ready: true,
-            approximate_backend: "skein_rabitq_candidate_projection".to_string(),
+            approximate_backend: "hawdb_rabitq_candidate_projection".to_string(),
             sample_candidate_count: 2,
             requested_sample_count: 2,
             executed_sample_count: 2,
@@ -5474,12 +5474,12 @@ mod tests {
     fn serving_path_readiness_reexports_the_readiness_owner_contract() {
         assert_eq!(
             TypeId::of::<NowledgeMemServingPathReadiness>(),
-            TypeId::of::<skein_readiness::nowledge_mem_serving_path::NowledgeMemServingPathReadiness>(
+            TypeId::of::<hawdb_readiness::nowledge_mem_serving_path::NowledgeMemServingPathReadiness>(
             )
         );
         assert_eq!(
             TypeId::of::<NowledgeMemServingEntrypoint>(),
-            TypeId::of::<skein_readiness::nowledge_mem_serving_path::NowledgeMemServingEntrypoint>(
+            TypeId::of::<hawdb_readiness::nowledge_mem_serving_path::NowledgeMemServingEntrypoint>(
             )
         );
     }
@@ -5507,7 +5507,7 @@ mod tests {
         graph
             .query(
                 "CREATE (:Memory {id: 'memory-1'})\
-                 -[:MENTIONS]->(:Entity {id: 'entity-1', name: 'Skein'})",
+                 -[:MENTIONS]->(:Entity {id: 'entity-1', name: 'Hawdb'})",
             )
             .unwrap();
         let handle =
@@ -5553,7 +5553,7 @@ mod tests {
 
         assert_eq!(
             output.output.rows[0].get("entity_name"),
-            Some(&Value::String("Skein".to_string()))
+            Some(&Value::String("Hawdb".to_string()))
         );
         assert_eq!(output.report.max_rows, Some(2));
         assert!(output.report.row_limit_enforced_before_output);
@@ -6426,12 +6426,12 @@ mod tests {
 
     #[test]
     fn graph_query_rejects_before_mutation_when_runtime_memory_is_unavailable() {
-        let governor = skein_qos::RuntimeGovernor::detect(
-            skein_qos::RuntimeGovernorConfig {
+        let governor = hawdb_qos::RuntimeGovernor::detect(
+            hawdb_qos::RuntimeGovernorConfig {
                 memory_budget_bytes: Some(1),
-                ..skein_qos::RuntimeGovernorConfig::default()
+                ..hawdb_qos::RuntimeGovernorConfig::default()
             },
-            skein_qos::IoConcurrencyBudget::new(1, 1),
+            hawdb_qos::IoConcurrencyBudget::new(1, 1),
         );
         let mut graph = NowledgeMemGraph::from_database_with_runtime_governor(
             Database::new(),
@@ -6460,12 +6460,12 @@ mod tests {
 
     #[test]
     fn embedded_handle_transaction_rejects_before_mutation_without_runtime_memory() {
-        let governor = skein_qos::RuntimeGovernor::detect(
-            skein_qos::RuntimeGovernorConfig {
+        let governor = hawdb_qos::RuntimeGovernor::detect(
+            hawdb_qos::RuntimeGovernorConfig {
                 memory_budget_bytes: Some(1),
-                ..skein_qos::RuntimeGovernorConfig::default()
+                ..hawdb_qos::RuntimeGovernorConfig::default()
             },
-            skein_qos::IoConcurrencyBudget::new(2, 1),
+            hawdb_qos::IoConcurrencyBudget::new(2, 1),
         );
         let graph = NowledgeMemGraph::from_database_with_runtime_governor(
             Database::new(),
@@ -6558,7 +6558,7 @@ mod tests {
         let error = handle
             .with_transaction(|transaction| {
                 transaction.query("CREATE (:Memory {id: 'rolled-back'})")?;
-                Err::<(), _>(crate::SkeinError::Execution(
+                Err::<(), _>(crate::HawdbError::Execution(
                     "injected callback failure".to_string(),
                 ))
             })
@@ -6613,13 +6613,13 @@ mod tests {
 
     #[test]
     fn embedded_handle_search_holds_governed_io_and_result_budget() {
-        let governor = skein_qos::RuntimeGovernor::detect(
-            skein_qos::RuntimeGovernorConfig {
+        let governor = hawdb_qos::RuntimeGovernor::detect(
+            hawdb_qos::RuntimeGovernorConfig {
                 memory_budget_bytes: Some(256 * 1024 * 1024),
                 result_budget_bytes: 64 * 1024 * 1024,
-                ..skein_qos::RuntimeGovernorConfig::default()
+                ..hawdb_qos::RuntimeGovernorConfig::default()
             },
-            skein_qos::IoConcurrencyBudget::new(1, 1),
+            hawdb_qos::IoConcurrencyBudget::new(1, 1),
         );
         let graph = NowledgeMemGraph::from_database_with_runtime_governor(
             Database::new(),
@@ -6667,13 +6667,13 @@ mod tests {
                 .unwrap();
             index.checkpoint().unwrap();
         }
-        let governor = skein_qos::RuntimeGovernor::detect(
-            skein_qos::RuntimeGovernorConfig {
+        let governor = hawdb_qos::RuntimeGovernor::detect(
+            hawdb_qos::RuntimeGovernorConfig {
                 memory_budget_bytes: Some(256 * 1024 * 1024),
                 result_budget_bytes: 64 * 1024 * 1024,
-                ..skein_qos::RuntimeGovernorConfig::default()
+                ..hawdb_qos::RuntimeGovernorConfig::default()
             },
-            skein_qos::IoConcurrencyBudget::new(1, 1),
+            hawdb_qos::IoConcurrencyBudget::new(1, 1),
         );
         let graph = NowledgeMemGraph::from_database_with_runtime_governor(
             Database::new(),
@@ -6705,13 +6705,13 @@ mod tests {
 
     #[test]
     fn embedded_store_clamps_search_io_depth_to_runtime_governor() {
-        let governor = skein_qos::RuntimeGovernor::detect(
-            skein_qos::RuntimeGovernorConfig {
+        let governor = hawdb_qos::RuntimeGovernor::detect(
+            hawdb_qos::RuntimeGovernorConfig {
                 memory_budget_bytes: Some(256 * 1024 * 1024),
                 result_budget_bytes: 64 * 1024 * 1024,
-                ..skein_qos::RuntimeGovernorConfig::default()
+                ..hawdb_qos::RuntimeGovernorConfig::default()
             },
-            skein_qos::IoConcurrencyBudget::new(2, 1),
+            hawdb_qos::IoConcurrencyBudget::new(2, 1),
         );
         let graph = NowledgeMemGraph::from_database_with_runtime_governor(
             Database::new(),
@@ -6781,9 +6781,9 @@ mod tests {
         let mut db = Database::new();
         db.query("CREATE (:Memory {id: 'cancelled-mem'})").unwrap();
         let graph = NowledgeMemGraph::from_database(db, NowledgeMemGraphMode::ShadowReadOnly);
-        let cancellation = skein_core::RuntimeCancellationToken::new();
+        let cancellation = hawdb_core::RuntimeCancellationToken::new();
         cancellation.cancel();
-        let context = skein_core::RuntimeTaskContext::without_deadline(cancellation);
+        let context = hawdb_core::RuntimeTaskContext::without_deadline(cancellation);
 
         let error = graph
             .read_query_with_params_streaming_context(
@@ -7488,7 +7488,7 @@ mod tests {
             .remove("graph_rag_reports");
 
         let blockers =
-            skein_readiness::library_readiness::workload_fixture_readiness_blocker_codes(&evidence);
+            hawdb_readiness::library_readiness::workload_fixture_readiness_blocker_codes(&evidence);
 
         assert!(blockers.contains(&"workload_fixture_graph_rag_not_ready".to_string()));
         assert!(blockers.contains(&"workload_fixture_graph_rag_probe_missing".to_string()));
@@ -7515,7 +7515,7 @@ mod tests {
             .remove("source_projection_reports");
 
         let blockers =
-            skein_readiness::library_readiness::workload_fixture_readiness_blocker_codes(&evidence);
+            hawdb_readiness::library_readiness::workload_fixture_readiness_blocker_codes(&evidence);
 
         assert!(blockers.contains(&"workload_fixture_source_projection_not_ready".to_string()));
         assert!(blockers.contains(&"workload_fixture_source_projection_probe_missing".to_string()));
@@ -7622,7 +7622,7 @@ mod tests {
             .iter()
             .any(|code| code == "search_projection_shadow_document_identity_not_ready"));
         assert!(blocker_codes.iter().any(|code| {
-            code == skein_readiness::library_readiness::SEARCH_PROJECTION_SHADOW_PUSHDOWN_NOT_READY
+            code == hawdb_readiness::library_readiness::SEARCH_PROJECTION_SHADOW_PUSHDOWN_NOT_READY
         }));
         assert!(readiness["blocker_codes"]
             .as_array()
@@ -7755,7 +7755,7 @@ mod tests {
             });
         let json = report.json();
 
-        assert_eq!(report.protocol, "skein-storage-recovery-report");
+        assert_eq!(report.protocol, "hawdb-storage-recovery-report");
         assert!(report.present);
         assert!(report.ready);
         assert!(report.durable_recovery_observed);
@@ -8042,7 +8042,7 @@ mod tests {
         let report = store.storage_recovery_report();
         let json = store.storage_recovery_report_json();
 
-        assert_eq!(report.protocol, "skein-storage-recovery-report");
+        assert_eq!(report.protocol, "hawdb-storage-recovery-report");
         assert!(report.present);
         assert!(!report.ready);
         assert_eq!(
@@ -8287,7 +8287,7 @@ mod tests {
             .unwrap()
             .probe_json(SearchProjectionProbeOptions::default());
 
-        assert_eq!(probe["protocol"], "skein-nowledge-search-projection-probe");
+        assert_eq!(probe["protocol"], "hawdb-nowledge-search-projection-probe");
     }
 
     #[test]
@@ -8316,7 +8316,7 @@ mod tests {
         assert_eq!(report.executed_sample_count, 2);
         assert_eq!(
             report.approximate_backend,
-            "skein_rabitq_candidate_projection"
+            "hawdb_rabitq_candidate_projection"
         );
         assert!(report.validates_required_approximate_backend());
     }
@@ -8354,7 +8354,7 @@ mod tests {
 
         assert_eq!(
             evidence["protocol"],
-            "skein-nowledge-search-projection-evidence"
+            "hawdb-nowledge-search-projection-evidence"
         );
         assert_eq!(evidence["ready"], true, "evidence={evidence:#}");
         assert_eq!(evidence["covered_table_count"], 6);
@@ -8379,7 +8379,7 @@ mod tests {
             })
             .unwrap();
 
-        assert_eq!(report.protocol, "skein-nowledge-search-projection-evidence");
+        assert_eq!(report.protocol, "hawdb-nowledge-search-projection-evidence");
         assert!(report.ready);
         assert!(report.compressed_vector_projection_ready);
         assert!(report.derived_projection);
@@ -8412,7 +8412,7 @@ mod tests {
 
         assert_eq!(
             evidence["protocol"],
-            "skein-nowledge-search-projection-shadow-evidence"
+            "hawdb-nowledge-search-projection-shadow-evidence"
         );
         assert_eq!(evidence["ready"], true, "evidence={evidence:#}");
         assert_eq!(evidence["primary_ready"], true);
@@ -8877,13 +8877,13 @@ mod tests {
                     [row] => match row.get("body") {
                         Some(Value::String(body)) => body.clone(),
                         value => {
-                            return Err(SkeinError::Execution(format!(
+                            return Err(HawdbError::Execution(format!(
                                 "thread_messages body expected STRING, got {value:?}"
                             )));
                         }
                     },
                     rows => {
-                        return Err(SkeinError::Execution(format!(
+                        return Err(HawdbError::Execution(format!(
                             "thread_messages hydration returned {} rows",
                             rows.len()
                         )));
@@ -9035,17 +9035,17 @@ mod tests {
         assert!(status.graph_open);
         assert!(!status.graph_read_only);
         assert!(!status.graph_route_ownership_present);
-        assert!(!status.graph_skein_cutover_effective);
+        assert!(!status.graph_hawdb_cutover_effective);
         assert!(!status.search_projection_open);
-        assert!(!status.search_skein_cutover_effective);
+        assert!(!status.search_hawdb_cutover_effective);
         assert!(status
             .blocker_codes
             .contains(&"graph_route_ownership_missing".to_string()));
         assert!(status
             .blocker_codes
             .contains(&"search_projection_not_open".to_string()));
-        assert_eq!(json["graph"]["skein_cutover_effective"], false);
-        assert_eq!(json["search"]["skein_cutover_effective"], false);
+        assert_eq!(json["graph"]["hawdb_cutover_effective"], false);
+        assert_eq!(json["search"]["hawdb_cutover_effective"], false);
         assert_eq!(json["redaction"]["local_paths_copied"], false);
     }
 
@@ -9064,12 +9064,12 @@ mod tests {
 
         assert!(status.graph_route_ownership_present);
         assert!(status.graph_route_ownership_ready);
-        assert_eq!(status.graph_skein_route_count, 0);
+        assert_eq!(status.graph_hawdb_route_count, 0);
         assert_eq!(
             status.graph_legacy_route_count,
             REQUIRED_NOWLEDGE_MEM_BOUNDED_READ_ROUTES.len()
         );
-        assert!(!status.graph_skein_cutover_effective);
+        assert!(!status.graph_hawdb_cutover_effective);
         assert!(status
             .blocker_codes
             .contains(&"graph_legacy_routes_remaining".to_string()));
@@ -9089,28 +9089,28 @@ mod tests {
             NowledgeMemSearchProjection::from_index(SearchIndex::open(&search_path).unwrap());
         let mut store = NowledgeMemEmbeddedStore::new(graph, Some(projection));
         let route_ownership = nowledge_mem_route_ownership_readiness(
-            &nowledge_mem_route_ownership_all_skein(),
+            &nowledge_mem_route_ownership_all_hawdb(),
             Some(&ready_route_readiness_summary()),
             NowledgeMemRouteOwnershipPolicy::production_cutover(),
         );
 
         let stale = store.production_status(Some(&route_ownership));
-        assert!(stale.graph_skein_cutover_effective);
+        assert!(stale.graph_hawdb_cutover_effective);
         assert!(stale.search_projection_open);
         assert_eq!(stale.search_projection_commit_lag, 2);
         assert!(stale.search_projection_stale);
-        assert!(!stale.search_skein_cutover_effective);
+        assert!(!stale.search_hawdb_cutover_effective);
         assert!(stale
             .blocker_codes
             .contains(&"search_projection_stale".to_string()));
 
         store.catch_up_search_projection(16, 1).unwrap();
         let ready = store.production_status(Some(&route_ownership));
-        assert!(ready.graph_skein_cutover_effective);
+        assert!(ready.graph_hawdb_cutover_effective);
         assert!(ready.search_projection_open);
         assert_eq!(ready.search_projection_commit_lag, 0);
         assert!(!ready.search_projection_stale);
-        assert!(ready.search_skein_cutover_effective);
+        assert!(ready.search_hawdb_cutover_effective);
         assert!(!ready
             .blocker_codes
             .contains(&"search_projection_stale".to_string()));
@@ -9122,7 +9122,7 @@ mod tests {
     }
 
     #[test]
-    fn cutover_controls_keep_legacy_reads_ready_without_skein_ownership() {
+    fn cutover_controls_keep_legacy_reads_ready_without_hawdb_ownership() {
         let graph =
             NowledgeMemGraph::from_database(Database::new(), NowledgeMemGraphMode::WritableCutover);
         let store = NowledgeMemEmbeddedStore::new(graph, None);
@@ -9132,9 +9132,9 @@ mod tests {
 
         assert_eq!(report.protocol, NOWLEDGE_MEM_CUTOVER_CONTROLS_PROTOCOL);
         assert!(report.ready);
-        assert!(!report.graph_read_selected_skein);
+        assert!(!report.graph_read_selected_hawdb);
         assert!(report.graph_read_effective);
-        assert!(!report.search_read_selected_skein);
+        assert!(!report.search_read_selected_hawdb);
         assert!(report.search_read_effective);
         assert!(!report.dual_writes_enabled);
         assert_eq!(json["controls"]["graph_reads"], "legacy");
@@ -9144,7 +9144,7 @@ mod tests {
 
     #[test]
     fn source_mutation_owner_preserves_public_type_identity_and_json() {
-        use skein_readiness::source_mutation as owner;
+        use hawdb_readiness::source_mutation as owner;
 
         let evidence: Vec<NowledgeMemSourceMutationDualWriteEvidence> =
             owner::nowledge_mem_source_mutation_dual_write_evidence_all_ready();
@@ -9173,7 +9173,7 @@ mod tests {
         );
         assert_eq!(
             NOWLEDGE_MEM_SOURCE_MUTATION_DUAL_WRITE_READINESS_PROTOCOL,
-            "skein-nowledge-mem-source-mutation-dual-write-readiness-v1"
+            "hawdb-nowledge-mem-source-mutation-dual-write-readiness-v1"
         );
         assert_eq!(
             crate::NOWLEDGE_MEM_SOURCE_MUTATION_DUAL_WRITE_READINESS_PROTOCOL,
@@ -9215,27 +9215,27 @@ mod tests {
     }
 
     #[test]
-    fn cutover_controls_fail_closed_when_skein_reads_are_not_effective() {
+    fn cutover_controls_fail_closed_when_hawdb_reads_are_not_effective() {
         let graph =
             NowledgeMemGraph::from_database(Database::new(), NowledgeMemGraphMode::WritableCutover);
         let store = NowledgeMemEmbeddedStore::new(graph, None);
 
-        let report = store.cutover_controls_report(NowledgeMemCutoverControls::skein_reads(), None);
+        let report = store.cutover_controls_report(NowledgeMemCutoverControls::hawdb_reads(), None);
 
         assert!(!report.ready);
-        assert!(report.graph_read_selected_skein);
+        assert!(report.graph_read_selected_hawdb);
         assert!(!report.graph_read_effective);
-        assert!(report.search_read_selected_skein);
+        assert!(report.search_read_selected_hawdb);
         assert!(!report.search_read_effective);
         assert!(report.projection_catch_up_enabled);
         assert!(report
             .blocker_codes
-            .contains(&"graph_read_selected_skein_but_not_effective".to_string()));
+            .contains(&"graph_read_selected_hawdb_but_not_effective".to_string()));
         assert!(report
             .blocker_codes
-            .contains(&"search_read_selected_skein_but_not_effective".to_string()));
+            .contains(&"search_read_selected_hawdb_but_not_effective".to_string()));
         assert_eq!(
-            report.json()["production_status"]["graph"]["skein_cutover_effective"],
+            report.json()["production_status"]["graph"]["hawdb_cutover_effective"],
             false
         );
     }
@@ -9265,8 +9265,8 @@ mod tests {
     }
 
     fn ready_initial_import_cutover_catch_up_report(
-    ) -> SkeinLightningInitialImportCutoverCatchUpReport {
-        SkeinLightningInitialImportCutoverCatchUpReport {
+    ) -> HawdbLightningInitialImportCutoverCatchUpReport {
+        HawdbLightningInitialImportCutoverCatchUpReport {
             ready: true,
             session_ready_for_cutover: true,
             durable_state_present: true,
@@ -9286,13 +9286,13 @@ mod tests {
     }
 
     fn ready_initial_import_recovery_report(
-    ) -> crate::SkeinLightningInitialImportRecoveryReadinessReport {
+    ) -> crate::HawdbLightningInitialImportRecoveryReadinessReport {
         let mut source = Database::new();
         source
             .query("CREATE (:Memory {id: 'import-root'})-[:LINKS {id: 'import-rel'}]->(:Entity {id: 'import-entity'})")
             .unwrap();
-        let export = source.prepare_skein_lightning_bootstrap_export().unwrap();
-        let checkpoint = SkeinLightningInitialImportCheckpoint {
+        let export = source.prepare_hawdb_lightning_bootstrap_export().unwrap();
+        let checkpoint = HawdbLightningInitialImportCheckpoint {
             protocol_version: 1,
             import_id: "import-controls".to_string(),
             task_id: "import-controls-task".to_string(),
@@ -9321,12 +9321,12 @@ mod tests {
             SearchProjectionKind::Community,
         ]
         .into_iter()
-        .map(|kind| SkeinLightningInitialImportDocumentIdentity {
+        .map(|kind| HawdbLightningInitialImportDocumentIdentity {
             kind,
             document_id: format!("{}:import", kind.as_str()),
         })
         .collect::<Vec<_>>();
-        let durable_state = crate::skein_lightning_initial_import_durable_state_report(
+        let durable_state = crate::hawdb_lightning_initial_import_durable_state_report(
             &export.manifest,
             &checkpoint,
             &identities,
@@ -9334,7 +9334,7 @@ mod tests {
         .state
         .expect("expected persistable durable state");
         let durable_state_payload =
-            crate::skein_lightning_initial_import_encode_durable_state(&durable_state).unwrap();
+            crate::hawdb_lightning_initial_import_encode_durable_state(&durable_state).unwrap();
         let projection_rows = identities
             .iter()
             .map(|identity| SearchProjectionRow {
@@ -9369,8 +9369,8 @@ mod tests {
         };
 
         let projection_batches = [projection_delta];
-        let recovery = source.skein_lightning_initial_import_recovery_readiness(
-            SkeinLightningInitialImportReadinessInputs {
+        let recovery = source.hawdb_lightning_initial_import_recovery_readiness(
+            HawdbLightningInitialImportReadinessInputs {
                 encoded_graph_stream: &export.graph_stream.encoded,
                 encoded_relational_stream: &export.relational_stream.encoded,
                 manifest: &export.manifest,
@@ -9399,7 +9399,7 @@ mod tests {
         let mut store = NowledgeMemEmbeddedStore::new(graph, Some(projection));
         store.catch_up_search_projection(16, 1).unwrap();
         let route_ownership = nowledge_mem_route_ownership_readiness(
-            &nowledge_mem_route_ownership_all_skein(),
+            &nowledge_mem_route_ownership_all_hawdb(),
             Some(&ready_route_readiness_summary()),
             NowledgeMemRouteOwnershipPolicy::production_cutover(),
         );
@@ -9407,8 +9407,8 @@ mod tests {
             dual_writes: NowledgeMemWorkControl::Enabled,
             initial_import: NowledgeMemWorkControl::Enabled,
             projection_catch_up: NowledgeMemWorkControl::Enabled,
-            graph_reads: super::NowledgeMemReadControl::Skein,
-            search_reads: super::NowledgeMemReadControl::Skein,
+            graph_reads: super::NowledgeMemReadControl::Hawdb,
+            search_reads: super::NowledgeMemReadControl::Hawdb,
         };
         let catch_up = ready_initial_import_cutover_catch_up_report();
 
@@ -9468,7 +9468,7 @@ mod tests {
         let mut store = NowledgeMemEmbeddedStore::new(graph, Some(projection));
         store.catch_up_search_projection(16, 1).unwrap();
         let route_ownership = nowledge_mem_route_ownership_readiness(
-            &nowledge_mem_route_ownership_all_skein(),
+            &nowledge_mem_route_ownership_all_hawdb(),
             Some(&ready_route_readiness_summary()),
             NowledgeMemRouteOwnershipPolicy::production_cutover(),
         );
@@ -9476,8 +9476,8 @@ mod tests {
             dual_writes: NowledgeMemWorkControl::Enabled,
             initial_import: NowledgeMemWorkControl::Enabled,
             projection_catch_up: NowledgeMemWorkControl::Enabled,
-            graph_reads: super::NowledgeMemReadControl::Skein,
-            search_reads: super::NowledgeMemReadControl::Skein,
+            graph_reads: super::NowledgeMemReadControl::Hawdb,
+            search_reads: super::NowledgeMemReadControl::Hawdb,
         };
         let recovery = ready_initial_import_recovery_report();
 
@@ -9521,7 +9521,7 @@ mod tests {
     }
 
     #[test]
-    fn cutover_controls_accept_independent_skein_reads_after_status_is_ready() {
+    fn cutover_controls_accept_independent_hawdb_reads_after_status_is_ready() {
         let root = unique_nowledge_mem_test_dir("cutover_controls_ready_reads");
         let graph_path = root.join("graph");
         let search_path = root.join("search");
@@ -9535,26 +9535,26 @@ mod tests {
         let mut store = NowledgeMemEmbeddedStore::new(graph, Some(projection));
         store.catch_up_search_projection(16, 1).unwrap();
         let route_ownership = nowledge_mem_route_ownership_readiness(
-            &nowledge_mem_route_ownership_all_skein(),
+            &nowledge_mem_route_ownership_all_hawdb(),
             Some(&ready_route_readiness_summary()),
             NowledgeMemRouteOwnershipPolicy::production_cutover(),
         );
 
         let report = store.cutover_controls_report(
-            NowledgeMemCutoverControls::skein_reads(),
+            NowledgeMemCutoverControls::hawdb_reads(),
             Some(&route_ownership),
         );
 
         assert!(report.ready);
-        assert!(report.graph_read_selected_skein);
+        assert!(report.graph_read_selected_hawdb);
         assert!(report.graph_read_effective);
-        assert!(report.search_read_selected_skein);
+        assert!(report.search_read_selected_hawdb);
         assert!(report.search_read_effective);
         assert!(report.dual_writes_enabled);
         assert!(report.projection_catch_up_enabled);
         assert!(report.blocker_codes.is_empty());
         assert_eq!(
-            report.json()["production_status"]["search"]["skein_cutover_effective"],
+            report.json()["production_status"]["search"]["hawdb_cutover_effective"],
             true
         );
         std::fs::remove_dir_all(root).unwrap();
@@ -9861,13 +9861,13 @@ mod tests {
         let db = Database::new();
         let mut graph = NowledgeMemGraph::from_database(db, NowledgeMemGraphMode::WritableCutover);
         graph
-            .query("CREATE (:Memory {id: 'mem-search', title: 'Facade retrieval', content: 'Skein replaces LanceDB retrieval'})")
+            .query("CREATE (:Memory {id: 'mem-search', title: 'Facade retrieval', content: 'Hawdb replaces LanceDB retrieval'})")
             .unwrap();
         graph
-            .query("CREATE (:Entity {id: 'entity-skein', name: 'Skein'})")
+            .query("CREATE (:Entity {id: 'entity-hawdb', name: 'Hawdb'})")
             .unwrap();
         graph
-            .query("MATCH (m:Memory {id: 'mem-search'}), (e:Entity {id: 'entity-skein'}) CREATE (m)-[:MENTIONS]->(e)")
+            .query("MATCH (m:Memory {id: 'mem-search'}), (e:Entity {id: 'entity-hawdb'}) CREATE (m)-[:MENTIONS]->(e)")
             .unwrap();
         let projection = NowledgeMemSearchProjection::from_index(SearchIndex::in_memory());
         let mut store = NowledgeMemEmbeddedStore::new(graph, Some(projection));
@@ -9924,7 +9924,7 @@ mod tests {
         let mut graph =
             NowledgeMemGraph::from_database(Database::new(), NowledgeMemGraphMode::WritableCutover);
         graph
-            .query("CREATE (:Memory {id: 'mem-ooc', title: 'Bounded serving', content: 'Skein out of core retrieval'})")
+            .query("CREATE (:Memory {id: 'mem-ooc', title: 'Bounded serving', content: 'Hawdb out of core retrieval'})")
             .unwrap();
         graph
             .query("CREATE (:Entity {id: 'entity-ooc', name: 'OutOfCore'})")
@@ -9948,7 +9948,7 @@ mod tests {
                         kind: SearchProjectionKind::Memory,
                         external_id: "mem-ooc".to_string(),
                         title: "Bounded serving".to_string(),
-                        body: "Skein out of core retrieval".to_string(),
+                        body: "Hawdb out of core retrieval".to_string(),
                         embedding: Some(vec![1.0, 0.0]),
                         source_id: Some("source-ooc".to_string()),
                         metadata: BTreeMap::from([
@@ -10114,7 +10114,7 @@ mod tests {
             NOWLEDGE_MEM_SEARCH_CANDIDATE_EVIDENCE_SOURCE
         );
         assert_eq!(evidence["request_count"], 1);
-        assert_eq!(evidence["candidate_primary_engine"], "skein");
+        assert_eq!(evidence["candidate_primary_engine"], "hawdb");
         assert_eq!(evidence["candidate_identity"]["ready"], true);
         assert_eq!(evidence["filter_pushdown"]["ready"], true);
         assert_eq!(
@@ -10331,19 +10331,19 @@ mod tests {
         assert_eq!(output.report.vector_execution_reports.len(), 1);
         assert_eq!(
             output.report.vector_execution_reports[0].backend,
-            skein_executor::VectorExecutionBackend::ScalarFlat
+            hawdb_executor::VectorExecutionBackend::ScalarFlat
         );
         assert_eq!(
             output.report.vector_execution_reports[0].compression_mode,
-            skein_executor::VectorCompressionMode::Disabled
+            hawdb_executor::VectorCompressionMode::Disabled
         );
         assert_eq!(
             output.report.vector_execution_reports[0].candidate_source,
-            skein_plan::VectorCandidateSource::Scalar
+            hawdb_plan::VectorCandidateSource::Scalar
         );
         assert_eq!(
             output.report.vector_execution_reports[0].backend_selection_reason,
-            Some(skein_plan::VectorBackendSelectionReason::CompressionDisabled)
+            Some(hawdb_plan::VectorBackendSelectionReason::CompressionDisabled)
         );
         assert_eq!(
             output.report.vector_execution_reports[0].estimated_raw_vector_bytes,
@@ -10355,7 +10355,7 @@ mod tests {
         );
         assert_eq!(
             output.report.vector_execution_reports[0].final_score_source,
-            skein_executor::VectorScoreSource::RawVector
+            hawdb_executor::VectorScoreSource::RawVector
         );
         assert_eq!(
             output.report.vector_execution_reports[0].index_covered_document_count,
@@ -10672,7 +10672,7 @@ mod tests {
         assert_eq!(graph_report.expanded_edge_count, 32);
         assert_eq!(
             graph_report.truncation_reason,
-            Some(skein_executor::GraphExpansionTruncationReason::CandidateLimit)
+            Some(hawdb_executor::GraphExpansionTruncationReason::CandidateLimit)
         );
     }
 
@@ -11745,7 +11745,7 @@ mod tests {
         assert_eq!(output.search.hits[0].id, "memory:mem-vector");
         assert_eq!(
             output.search.retrievers[0].backend,
-            "skein_rabitq_candidate_projection"
+            "hawdb_rabitq_candidate_projection"
         );
         assert_eq!(
             retrieval.report.compressed_vector_search_mode,
@@ -11753,11 +11753,11 @@ mod tests {
         );
         assert_eq!(
             retrieval.report.vector_backend,
-            Some("skein_rabitq_candidate_projection".to_string())
+            Some("hawdb_rabitq_candidate_projection".to_string())
         );
         assert_eq!(
             retrieval.report.json()["vector_backend"],
-            "skein_rabitq_candidate_projection"
+            "hawdb_rabitq_candidate_projection"
         );
 
         std::fs::remove_dir_all(root).unwrap();
@@ -11811,7 +11811,7 @@ mod tests {
                 include_property_index_projection: false,
                 include_search_projection_rebuild: false,
                 include_search_projection_metadata_repair: false,
-                include_skein_lightning_bootstrap_export: false,
+                include_hawdb_lightning_bootstrap_export: false,
                 include_external_content_artifact_jobs: false,
                 ..BackgroundMaintenanceOptions::default()
             },
@@ -11852,14 +11852,14 @@ mod tests {
                 include_property_index_projection: false,
                 include_search_projection_rebuild: false,
                 include_search_projection_metadata_repair: false,
-                include_skein_lightning_bootstrap_export: false,
+                include_hawdb_lightning_bootstrap_export: false,
                 include_external_content_artifact_jobs: false,
                 ..BackgroundMaintenanceOptions::default()
             },
         );
         let json = report.json();
 
-        assert_eq!(report.protocol, "skein-background-maintenance-report");
+        assert_eq!(report.protocol, "hawdb-background-maintenance-report");
         assert!(report.present);
         assert!(report.ready);
         assert_eq!(report.total_candidates, 1);
@@ -11876,7 +11876,7 @@ mod tests {
         assert!(report.memory_budget_bytes.is_some());
         assert!(report.estimated_memory_bytes.is_some());
         assert!(report.blocker_codes.is_empty());
-        assert_eq!(json["protocol"], "skein-background-maintenance-report");
+        assert_eq!(json["protocol"], "hawdb-background-maintenance-report");
         assert_eq!(json["memory_pressure"]["ready"], true);
         assert!(json["memory_pressure"]["budget_bytes"].as_u64().is_some());
         assert!(json["memory_pressure"]["estimated_bytes"]
@@ -11903,7 +11903,7 @@ mod tests {
                 include_search_projection_graph_delta_freshness: false,
                 include_search_projection_rebuild: false,
                 include_search_projection_metadata_repair: false,
-                include_skein_lightning_bootstrap_export: false,
+                include_hawdb_lightning_bootstrap_export: false,
                 include_external_content_artifact_jobs: false,
                 ..BackgroundMaintenanceOptions::default()
             },
@@ -12035,7 +12035,7 @@ mod tests {
 
     fn ready_search_route_ownership() -> NowledgeMemSearchRouteOwnershipReadinessReport {
         nowledge_mem_search_route_ownership_readiness(
-            &nowledge_mem_search_route_ownership_all_skein(),
+            &nowledge_mem_search_route_ownership_all_hawdb(),
             NowledgeMemSearchRouteOwnershipPolicy::production_cutover(),
         )
     }
@@ -12043,14 +12043,14 @@ mod tests {
     fn ready_active_search_route_ownership() -> NowledgeMemActiveSearchRouteOwnershipReadinessReport
     {
         nowledge_mem_active_search_route_ownership_readiness(
-            &nowledge_mem_active_search_route_ownership_all_skein(),
+            &nowledge_mem_active_search_route_ownership_all_hawdb(),
             NowledgeMemSearchRouteOwnershipPolicy::production_cutover(),
         )
     }
 
     fn ready_active_search_route_readiness() -> NowledgeMemActiveSearchRouteReadinessReport {
         nowledge_mem_active_search_route_readiness(
-            &nowledge_mem_active_search_route_read_evidence_all_skein_ready(),
+            &nowledge_mem_active_search_route_read_evidence_all_hawdb_ready(),
             NowledgeMemSearchRouteOwnershipPolicy::production_cutover(),
         )
     }
@@ -12085,7 +12085,7 @@ mod tests {
             .unwrap()
             .as_nanos();
         std::env::temp_dir().join(format!(
-            "skein_nowledge_mem_{name}_{}_{}",
+            "hawdb_nowledge_mem_{name}_{}_{}",
             std::process::id(),
             nanos
         ))

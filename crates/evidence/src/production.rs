@@ -1,5 +1,5 @@
+use hawdb_core::{HawdbError, Result};
 use serde::{Deserialize, Serialize};
-use skein_core::{Result, SkeinError};
 use std::collections::BTreeSet;
 
 pub const PRODUCTION_QUALIFICATION_POLICY_VERSION: u64 = 1;
@@ -26,7 +26,7 @@ impl ProductionQualificationIdentity {
         if blockers.is_empty() {
             Ok(())
         } else {
-            Err(SkeinError::Semantic(format!(
+            Err(HawdbError::Semantic(format!(
                 "invalid production qualification identity: {}",
                 blockers.join(",")
             )))
@@ -106,7 +106,7 @@ impl ProductionEvidenceBinding {
         if blockers.is_empty() {
             Ok(())
         } else {
-            Err(SkeinError::Semantic(format!(
+            Err(HawdbError::Semantic(format!(
                 "production evidence identity mismatch: {}",
                 blockers.join(",")
             )))

@@ -20,9 +20,9 @@ const VECTOR_TABLES: &[&str] = &[
     "source_chunks_index",
 ];
 
-const SKEIN_SEARCH_PROJECTION_SEGMENT_DESCRIPTOR_FIELDS_MISSING: &str =
-    "skein_search_projection_segment_descriptor_fields_missing";
-const SKEIN_SEARCH_PROJECTION_SHADOW_EVIDENCE_SOURCE: &str = "skein-rust-library";
+const HAWDB_SEARCH_PROJECTION_SEGMENT_DESCRIPTOR_FIELDS_MISSING: &str =
+    "hawdb_search_projection_segment_descriptor_fields_missing";
+const HAWDB_SEARCH_PROJECTION_SHADOW_EVIDENCE_SOURCE: &str = "hawdb-rust-library";
 const REQUIRED_VALUE_SUMMARY_FIELDS: &[&str] = &[
     "kind",
     "external_id",
@@ -63,7 +63,7 @@ pub struct NowledgeSearchProjectionEvidenceReport {
     pub incremental_update_ready: bool,
     pub source_chunk_ready: bool,
     pub predicate_pushdown_ready: bool,
-    pub skein_predicate_pushdown_ready: bool,
+    pub hawdb_predicate_pushdown_ready: bool,
     pub production_filter_pruning_ready: bool,
     pub compressed_vector_projection_required: bool,
     pub compressed_vector_projection_ready: bool,
@@ -79,7 +79,7 @@ impl NowledgeSearchProjectionEvidenceReport {
     pub fn from_evidence(evidence: serde_json::Value) -> Self {
         Self {
             protocol: str_path(&evidence, &["protocol"])
-                .unwrap_or("skein-nowledge-search-projection-evidence")
+                .unwrap_or("hawdb-nowledge-search-projection-evidence")
                 .to_string(),
             ready: bool_path(&evidence, &["ready"]).unwrap_or(false),
             derived_projection: bool_path(&evidence, &["derived_projection"]).unwrap_or(false),
@@ -102,9 +102,9 @@ impl NowledgeSearchProjectionEvidenceReport {
             source_chunk_ready: bool_path(&evidence, &["source_chunk_ready"]).unwrap_or(false),
             predicate_pushdown_ready: bool_path(&evidence, &["predicate_pushdown_ready"])
                 .unwrap_or(false),
-            skein_predicate_pushdown_ready: bool_path(
+            hawdb_predicate_pushdown_ready: bool_path(
                 &evidence,
-                &["skein_predicate_pushdown_ready"],
+                &["hawdb_predicate_pushdown_ready"],
             )
             .unwrap_or(false),
             production_filter_pruning_ready: bool_path(
@@ -134,8 +134,8 @@ impl NowledgeSearchProjectionEvidenceReport {
 
 pub fn nowledge_search_projection_probe_contract_json() -> serde_json::Value {
     serde_json::json!({
-        "protocol": "skein-nowledge-search-projection-probe-contract-v1",
-        "purpose": "primary LanceDB and shadow Skein probes must use this shape before search projection shadow evidence can pass",
+        "protocol": "hawdb-nowledge-search-projection-probe-contract-v1",
+        "purpose": "primary LanceDB and shadow Hawdb probes must use this shape before search projection shadow evidence can pass",
         "required_tables": REQUIRED_TABLES,
         "vector_tables": VECTOR_TABLES,
         "required_predicate_pushdown_ops": ["eq", "in", "not_in", "gt", "gte", "lt", "lte"],
@@ -214,7 +214,7 @@ pub fn nowledge_search_projection_probe_contract_json() -> serde_json::Value {
             "missing_fields",
             "samples"
         ],
-        "required_skein_scan_filter_fields": NOWLEDGE_SEARCH_PROJECTION_SCAN_FILTER_FIELDS,
+        "required_hawdb_scan_filter_fields": NOWLEDGE_SEARCH_PROJECTION_SCAN_FILTER_FIELDS,
         "required_segment_descriptor_capabilities": {
             "value_summary_fields": REQUIRED_VALUE_SUMMARY_FIELDS,
             "numeric_range_fields": REQUIRED_NUMERIC_RANGE_FIELDS,
@@ -237,7 +237,7 @@ pub fn nowledge_search_projection_probe_contract_json() -> serde_json::Value {
             "checksum"
         ],
         "example_primary_probe": ready_probe_template("lancedb"),
-        "example_skein_probe": ready_probe_template("skein"),
+        "example_hawdb_probe": ready_probe_template("hawdb"),
     })
 }
 pub fn nowledge_search_projection_evidence_json(probe: &serde_json::Value) -> serde_json::Value {
@@ -276,8 +276,8 @@ pub fn nowledge_search_projection_evidence_json(probe: &serde_json::Value) -> se
     let incremental_update_ready = bool_path(&incremental_update, &["ready"]) == Some(true);
     let predicate_pushdown = predicate_pushdown_report(probe);
     let predicate_pushdown_ready = bool_path(&predicate_pushdown, &["ready"]) == Some(true);
-    let skein_probe = is_skein_search_projection_probe(probe);
-    let skein_predicate_pushdown_ready = !skein_probe
+    let hawdb_probe = is_hawdb_search_projection_probe(probe);
+    let hawdb_predicate_pushdown_ready = !hawdb_probe
         || bool_path(&predicate_pushdown, &["persisted_segment_descriptor_ready"]) == Some(true)
             && bool_path(
                 &predicate_pushdown,
@@ -290,9 +290,9 @@ pub fn nowledge_search_projection_evidence_json(probe: &serde_json::Value) -> se
             && bool_path(&predicate_pushdown, &["segment_document_pruning_ready"]) == Some(true);
     let production_filter_pruning = production_filter_pruning_report(probe);
     let production_filter_pruning_ready =
-        !skein_probe || bool_path(&production_filter_pruning, &["ready"]) == Some(true);
+        !hawdb_probe || bool_path(&production_filter_pruning, &["ready"]) == Some(true);
     let compressed_vector_projection = compressed_vector_projection_report(probe);
-    let compressed_vector_projection_required = vector_ready && skein_probe;
+    let compressed_vector_projection_required = vector_ready && hawdb_probe;
     let compressed_vector_projection_ready = !compressed_vector_projection_required
         || bool_path(&compressed_vector_projection, &["ready"]) == Some(true);
     let derived_projection = bool_path(probe, &["derived_projection"])
@@ -337,11 +337,11 @@ pub fn nowledge_search_projection_evidence_json(probe: &serde_json::Value) -> se
     if !predicate_pushdown_ready {
         blocker_codes.insert("predicate_pushdown_not_ready".to_string());
     }
-    if !skein_predicate_pushdown_ready {
-        blocker_codes.insert("skein_predicate_pushdown_descriptor_not_ready".to_string());
+    if !hawdb_predicate_pushdown_ready {
+        blocker_codes.insert("hawdb_predicate_pushdown_descriptor_not_ready".to_string());
     }
     if !production_filter_pruning_ready {
-        blocker_codes.insert("skein_production_filter_pruning_not_ready".to_string());
+        blocker_codes.insert("hawdb_production_filter_pruning_not_ready".to_string());
     }
     if !compressed_vector_projection_ready {
         blocker_codes.insert("compressed_vector_projection_not_ready".to_string());
@@ -349,7 +349,7 @@ pub fn nowledge_search_projection_evidence_json(probe: &serde_json::Value) -> se
 
     let ready = blocker_codes.is_empty();
     serde_json::json!({
-        "protocol": "skein-nowledge-search-projection-evidence",
+        "protocol": "hawdb-nowledge-search-projection-evidence",
         "ready": ready,
         "derived_projection": derived_projection,
         "all_tables_covered": all_tables_covered,
@@ -366,7 +366,7 @@ pub fn nowledge_search_projection_evidence_json(probe: &serde_json::Value) -> se
         "incremental_update_ready": incremental_update_ready,
         "source_chunk_ready": source_chunk_ready,
         "predicate_pushdown_ready": predicate_pushdown_ready,
-        "skein_predicate_pushdown_ready": skein_predicate_pushdown_ready,
+        "hawdb_predicate_pushdown_ready": hawdb_predicate_pushdown_ready,
         "production_filter_pruning_ready": production_filter_pruning_ready,
         "compressed_vector_projection_required": compressed_vector_projection_required,
         "compressed_vector_projection_ready": compressed_vector_projection_ready,
@@ -448,22 +448,22 @@ pub fn nowledge_search_projection_shadow_evidence_json(
         &["shadow_persisted_segment_descriptor_ready"],
     ) != Some(true)
     {
-        blocker_codes.insert("skein_search_projection_segment_descriptor_missing".to_string());
+        blocker_codes.insert("hawdb_search_projection_segment_descriptor_missing".to_string());
     }
     if bool_path(
         &pushdown_evidence,
         &["shadow_segment_descriptor_scan_filter_fields_ready"],
     ) != Some(true)
     {
-        blocker_codes.insert(SKEIN_SEARCH_PROJECTION_SEGMENT_DESCRIPTOR_FIELDS_MISSING.to_string());
+        blocker_codes.insert(HAWDB_SEARCH_PROJECTION_SEGMENT_DESCRIPTOR_FIELDS_MISSING.to_string());
     }
     let ready = blocker_codes.is_empty();
     serde_json::json!({
-        "protocol": "skein-nowledge-search-projection-shadow-evidence",
-        "evidence_source": SKEIN_SEARCH_PROJECTION_SHADOW_EVIDENCE_SOURCE,
+        "protocol": "hawdb-nowledge-search-projection-shadow-evidence",
+        "evidence_source": HAWDB_SEARCH_PROJECTION_SHADOW_EVIDENCE_SOURCE,
         "ready": ready,
         "primary_engine": str_path(primary_probe, &["engine"]).unwrap_or("lancedb"),
-        "shadow_engine": str_path(shadow_probe, &["engine"]).unwrap_or("skein"),
+        "shadow_engine": str_path(shadow_probe, &["engine"]).unwrap_or("hawdb"),
         "primary_ready": bool_path(&primary_evidence, &["ready"]).unwrap_or(false),
         "shadow_ready": bool_path(&shadow_evidence, &["ready"]).unwrap_or(false),
         "document_count_parity": document_count_parity,
@@ -607,9 +607,9 @@ fn collect_prefixed_evidence_blockers(
     }
 }
 
-fn is_skein_search_projection_probe(probe: &serde_json::Value) -> bool {
-    str_path(probe, &["protocol"]) == Some("skein-nowledge-search-projection-probe")
-        || str_path(probe, &["engine"]) == Some("skein")
+fn is_hawdb_search_projection_probe(probe: &serde_json::Value) -> bool {
+    str_path(probe, &["protocol"]) == Some("hawdb-nowledge-search-projection-probe")
+        || str_path(probe, &["engine"]) == Some("hawdb")
 }
 
 fn compressed_vector_projection_report(probe: &serde_json::Value) -> serde_json::Value {
@@ -692,7 +692,7 @@ fn ready_probe_template(engine: &str) -> serde_json::Value {
         },
         "production_filter_pruning": ready_production_filter_pruning_template(),
         "compressed_vector_projection": {
-            "engine": "skein_rabitq_scan",
+            "engine": "hawdb_rabitq_scan",
             "algorithm": "rabitq",
             "compiled": true,
             "ready": true,

@@ -13,11 +13,11 @@
 //! candidate filters, or production qualification. See
 //! `docs/VECTOR_EXPERIMENT_ROADMAP.md` for the integration gates.
 
-use serde_json::json;
-use skein_vector_projection::{
+use hawdb_vector_projection::{
     HnswBuildConfig, HnswIndex, KernelPreference, ProjectionBuildConfig, ProjectionBuilder,
     ProjectionIdentity, ProjectionSearchOptions,
 };
+use serde_json::json;
 use std::hint::black_box;
 use std::time::Instant;
 
@@ -33,7 +33,7 @@ const QUERY_COUNT: usize = if SMOKE { 5 } else { 50 };
 const EF_SEARCH: usize = 100;
 
 fn main() {
-    let dimension = std::env::var("SKEIN_BENCH_VECTOR_DIMENSION")
+    let dimension = std::env::var("HAWDB_BENCH_VECTOR_DIMENSION")
         .ok()
         .and_then(|value| value.parse().ok())
         .unwrap_or(128);
@@ -115,7 +115,7 @@ fn main() {
 fn build_base(
     entries: &[(u64, Vec<f32>)],
     dimension: usize,
-) -> skein_vector_projection::InMemoryProjection {
+) -> hawdb_vector_projection::InMemoryProjection {
     let config =
         ProjectionBuildConfig::new(dimension, ProjectionIdentity::new(1)).with_segment_rows(1024);
     let mut builder = ProjectionBuilder::new(config).expect("benchmark projection must initialize");

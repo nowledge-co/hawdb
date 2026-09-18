@@ -5,28 +5,28 @@ package(default_visibility = ["//visibility:public"])
 
 test_suite(
     name = "presubmit_tests",
-    tests = [":skein_resource_profile_tests"],
+    tests = [":hawdb_resource_profile_tests"],
 )
 
 rust_library(
-    name = "skein_resource_profile",
-    crate_name = "skein_resource_profile",
+    name = "hawdb_resource_profile",
+    crate_name = "hawdb_resource_profile",
     crate_root = "src/lib.rs",
     srcs = glob(["src/**/*.rs"]),
     edition = "2024",
     aliases = aliases(),
     deps = all_crate_deps(normal = True) + [
-        "//crates/core:skein_core",
-        "//crates/evidence:skein_evidence",
-        "//crates/executor:skein_executor",
-        "//crates/storage:skein_storage",
+        "//crates/core:hawdb_core",
+        "//crates/evidence:hawdb_evidence",
+        "//crates/executor:hawdb_executor",
+        "//crates/storage:hawdb_storage",
     ],
     proc_macro_deps = all_crate_deps(proc_macro = True),
 )
 
 rust_test(
-    name = "skein_resource_profile_tests",
-    crate = ":skein_resource_profile",
+    name = "hawdb_resource_profile_tests",
+    crate = ":hawdb_resource_profile",
     edition = "2024",
     aliases = aliases(normal_dev = True, proc_macro_dev = True),
     deps = all_crate_deps(normal_dev = True),

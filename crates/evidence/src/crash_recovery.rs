@@ -2,7 +2,7 @@ use crate::production::{ProductionEvidenceBinding, ProductionQualificationIdenti
 use std::collections::BTreeSet;
 
 pub const STORAGE_CRASH_RECOVERY_EVIDENCE_PROTOCOL: &str =
-    "skein-storage-crash-recovery-evidence-v1";
+    "hawdb-storage-crash-recovery-evidence-v1";
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
 pub enum StorageCrashPoint {

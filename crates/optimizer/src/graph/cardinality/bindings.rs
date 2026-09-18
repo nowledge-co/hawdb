@@ -1,5 +1,5 @@
 use super::super::{OptimizerCatalog, PhysicalPlan};
-use skein_plan::NodeProjectionAccess;
+use hawdb_plan::NodeProjectionAccess;
 use std::collections::{BTreeMap, BTreeSet};
 
 #[cfg(test)]

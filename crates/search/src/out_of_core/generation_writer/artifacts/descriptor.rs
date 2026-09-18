@@ -5,7 +5,7 @@ use crate::{
     normalized_projection_kind, search_document_field_value, search_field_is_enum_like,
     SearchSegmentFieldSummary,
 };
-use skein_core::RuntimeTaskContext;
+use hawdb_core::RuntimeTaskContext;
 use std::borrow::{Borrow, Cow};
 use std::collections::BTreeMap;
 
@@ -134,7 +134,7 @@ impl DescriptorBudget {
     fn reserve(&mut self, bytes: u64) -> Result<()> {
         let projected = self.bytes.saturating_add(bytes);
         if projected > self.max_bytes {
-            return Err(SkeinError::Storage(format!(
+            return Err(HawdbError::Storage(format!(
                 "search generation descriptor working set requires {projected} bytes, exceeding {}",
                 self.max_bytes
             )));
@@ -196,7 +196,7 @@ fn admitted_summary_value<'a>(
         trimmed.to_lowercase()
     };
     if normalized.capacity() > bytes {
-        return Err(SkeinError::Execution(
+        return Err(HawdbError::Execution(
             "search summary normalization exceeded admission".into(),
         ));
     }

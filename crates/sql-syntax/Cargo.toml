@@ -1,5 +1,5 @@
 [package]
-name = "skein-sql-syntax"
+name = "hawdb-sql-syntax"
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true

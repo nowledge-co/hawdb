@@ -1,5 +1,5 @@
 use crate::{NodeId, RelId};
-use skein_core::RelTypeId;
+use hawdb_core::RelTypeId;
 use std::collections::{btree_map, btree_set, BTreeMap, BTreeSet};
 use std::iter::{FusedIterator, Peekable};
 use std::sync::{Arc, OnceLock};

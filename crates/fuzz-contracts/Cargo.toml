@@ -1,5 +1,5 @@
 [package]
-name = "skein-fuzz-contracts"
+name = "hawdb-fuzz-contracts"
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
@@ -7,4 +7,4 @@ license.workspace = true
 
 [dependencies]
 serde_json = "1"
-skein-core = { path = "../core" }
+hawdb-core = { path = "../core" }

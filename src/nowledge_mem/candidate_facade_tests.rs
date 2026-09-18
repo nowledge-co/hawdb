@@ -1,5 +1,5 @@
 use super::*;
-use skein_search::candidate_evidence as owner;
+use hawdb_search::candidate_evidence as owner;
 
 #[test]
 fn candidate_facade_preserves_owner_types_and_entrypoints() {

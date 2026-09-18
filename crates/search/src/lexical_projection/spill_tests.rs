@@ -12,7 +12,7 @@ impl Fixture {
     fn new() -> Self {
         static SEQUENCE: AtomicU64 = AtomicU64::new(0);
         let root = std::env::temp_dir().join(format!(
-            "skein-spill-admission-{}-{}-{}",
+            "hawdb-spill-admission-{}-{}-{}",
             std::process::id(),
             std::time::SystemTime::now()
                 .duration_since(std::time::UNIX_EPOCH)
@@ -113,7 +113,7 @@ impl SpillIo for ObservedIo {
         let file = File::create(path)?;
         if matches!(self.fault, Fault::CreateAfterFile) {
             self.fired.set(true);
-            return Err(SkeinError::Storage("injected spill create failure".into()));
+            return Err(HawdbError::Storage("injected spill create failure".into()));
         }
         Ok(ObservedWriter {
             file,
@@ -135,7 +135,7 @@ impl SpillIo for ObservedIo {
             if matches!(self.fault, Fault::PanicRemoveAfter(_)) {
                 panic!("injected spill unlink panic");
             }
-            return Err(SkeinError::Storage("injected spill unlink failure".into()));
+            return Err(HawdbError::Storage("injected spill unlink failure".into()));
         }
         fs::remove_file(path)?;
         self.removed += 1;
@@ -498,7 +498,7 @@ fn compaction_read_errors_preserve_cleanup_after_completed_groups() {
 
 #[test]
 fn governed_compaction_faults_and_corruption_release_all_paths_and_capacity() {
-    use skein_core::RuntimeMemoryReservation;
+    use hawdb_core::RuntimeMemoryReservation;
     let populate = |fixture: &Fixture, memory: &BuildMemory, task: &RuntimeTaskContext| {
         let mut pool = SpillRuns::with_context(
             &fixture.0,

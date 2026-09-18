@@ -3,7 +3,7 @@ use crate::wal::binary::{
     decode_binary_wal_record, encode_binary_wal_record, BinaryWalRecordDecode,
 };
 use crate::wal::WalEntry;
-use skein_core::{PropertyType, SchemaObjectState, TableKind, Value};
+use hawdb_core::{PropertyType, SchemaObjectState, TableKind, Value};
 use std::sync::Arc;
 
 type Properties = BTreeMap<String, Value>;

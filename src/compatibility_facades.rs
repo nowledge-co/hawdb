@@ -1,11 +1,11 @@
 //! Compatibility module paths for contracts owned by internal crates.
 //!
-//! The embedded `skein` facade keeps these paths stable while the behavior,
+//! The embedded `hawdb` facade keeps these paths stable while the behavior,
 //! types, and serialization contracts remain owned by their dedicated crates.
 
 /// Compatibility facade for storage-neutral, redacted diagnostic evidence.
 pub mod blackbox {
-    pub use skein_evidence::blackbox::*;
+    pub use hawdb_evidence::blackbox::*;
 
     #[cfg(test)]
     mod tests {
@@ -18,20 +18,20 @@ pub mod blackbox {
             let _: [Report; 4] = [
                 crate::blackbox_report,
                 blackbox_report,
-                skein_evidence::blackbox::blackbox_report,
+                hawdb_evidence::blackbox::blackbox_report,
                 crate::write_blackbox_report_typed,
             ];
             let _: [JsonReport; 4] = [
                 crate::blackbox_report_json,
                 blackbox_report_json,
                 crate::write_blackbox_report,
-                skein_evidence::blackbox::write_blackbox_report,
+                hawdb_evidence::blackbox::write_blackbox_report,
             ];
-            let status: skein_evidence::blackbox::BlackboxRunStatus =
+            let status: hawdb_evidence::blackbox::BlackboxRunStatus =
                 crate::BlackboxRunStatus::Failed;
             assert_eq!(status, BlackboxRunStatus::Failed);
-            assert_eq!(crate::BLACKBOX_REPORT_PROTOCOL, "skein-blackbox-report-v1");
-            assert_eq!(crate::BLACKBOX_EVENT_PROTOCOL, "skein-blackbox-event-v1");
+            assert_eq!(crate::BLACKBOX_REPORT_PROTOCOL, "hawdb-blackbox-report-v1");
+            assert_eq!(crate::BLACKBOX_EVENT_PROTOCOL, "hawdb-blackbox-event-v1");
             for value in [
                 serde_json::Value::Null,
                 serde_json::json!({}),
@@ -42,7 +42,7 @@ pub mod blackbox {
                 assert!(!readiness.ready);
                 assert_eq!(
                     readiness,
-                    skein_evidence::blackbox::blackbox_readiness_from_manifest_json(&value),
+                    hawdb_evidence::blackbox::blackbox_readiness_from_manifest_json(&value),
                 );
                 assert_eq!(
                     readiness,
@@ -55,7 +55,7 @@ pub mod blackbox {
 
 /// Compatibility re-exports for evidence-owned background-maintenance preflight.
 pub mod background_maintenance_evidence {
-    pub use skein_evidence::background_maintenance_evidence::*;
+    pub use hawdb_evidence::background_maintenance_evidence::*;
 
     #[cfg(test)]
     mod tests {
@@ -67,7 +67,7 @@ pub mod background_maintenance_evidence {
                 nowledge_background_maintenance_evidence_json;
             assert!(std::ptr::fn_addr_eq(
                 facade,
-                skein_evidence::background_maintenance_evidence::nowledge_background_maintenance_evidence_json
+                hawdb_evidence::background_maintenance_evidence::nowledge_background_maintenance_evidence_json
                     as fn(_, _) -> _,
             ));
         }
@@ -76,7 +76,7 @@ pub mod background_maintenance_evidence {
 
 /// Compatibility re-exports for the bounded-read evidence CLI adapter.
 pub mod bounded_read_evidence {
-    pub use skein_readiness::bounded_read_evidence_cli::*;
+    pub use hawdb_readiness::bounded_read_evidence_cli::*;
 
     #[cfg(test)]
     mod tests {
@@ -94,20 +94,20 @@ pub mod bounded_read_evidence {
 
 /// Compatibility facade for storage crash-recovery evidence contracts.
 pub mod crash_recovery_evidence {
-    pub use skein_evidence::{
+    pub use hawdb_evidence::{
         StorageCrashCaseEvidence, StorageCrashPoint, StorageCrashRecoveryEvidence,
         STORAGE_CRASH_RECOVERY_EVIDENCE_PROTOCOL,
     };
 }
 
-/// Compatibility facade for `skein-cypher`.
+/// Compatibility facade for `hawdb-cypher`.
 pub mod cypher {
-    pub use skein_cypher::*;
+    pub use hawdb_cypher::*;
 }
 
 /// Compatibility re-exports for readiness-owned graph route CLI adapters.
 pub mod graph_route_readiness {
-    pub use skein_readiness::graph_route_cli::*;
+    pub use hawdb_readiness::graph_route_cli::*;
 
     #[cfg(test)]
     mod tests {
@@ -115,11 +115,11 @@ pub mod graph_route_readiness {
 
         #[test]
         fn root_compatibility_module_preserves_graph_route_readiness_entrypoint() {
-            let facade: fn(&serde_json::Value) -> skein_core::Result<serde_json::Value> =
+            let facade: fn(&serde_json::Value) -> hawdb_core::Result<serde_json::Value> =
                 nowledge_graph_route_readiness_json;
             assert!(std::ptr::fn_addr_eq(
                 facade,
-                skein_readiness::graph_route::nowledge_graph_route_readiness_json as fn(_) -> _,
+                hawdb_readiness::graph_route::nowledge_graph_route_readiness_json as fn(_) -> _,
             ));
         }
     }
@@ -127,11 +127,11 @@ pub mod graph_route_readiness {
 
 /// Compatibility re-exports for readiness-owned integration bundle CLI adapters.
 pub mod mem_integration_bundle {
-    pub use skein_readiness::integration_bundle_cli::*;
+    pub use hawdb_readiness::integration_bundle_cli::*;
 
     #[cfg(test)]
     mod tests {
-        use skein_readiness::integration_bundle_cli;
+        use hawdb_readiness::integration_bundle_cli;
         use std::any::TypeId;
 
         #[test]
@@ -155,7 +155,7 @@ pub mod mem_integration_bundle {
                     as fn(std::vec::IntoIter<String>) -> crate::Result<(serde_json::Value, bool)>,
             ));
 
-            use skein_readiness::graph_summary;
+            use hawdb_readiness::graph_summary;
             assert_eq!(
                 TypeId::of::<crate::GraphRouteReadinessSummary>(),
                 TypeId::of::<graph_summary::GraphRouteReadinessSummary>()
@@ -178,7 +178,7 @@ pub mod mem_integration_bundle {
 
 /// Compatibility re-exports for readiness-owned integration cutover evaluation.
 pub mod mem_integration_readiness {
-    pub use skein_readiness::integration_readiness::*;
+    pub use hawdb_readiness::integration_readiness::*;
 
     #[cfg(test)]
     mod tests {
@@ -190,27 +190,27 @@ pub mod mem_integration_readiness {
                 nowledge_mem_integration_readiness_json;
             assert!(std::ptr::fn_addr_eq(
                 facade,
-                skein_readiness::integration_readiness::nowledge_mem_integration_readiness_json
+                hawdb_readiness::integration_readiness::nowledge_mem_integration_readiness_json
                     as fn(_) -> _,
             ));
         }
     }
 }
 
-/// Compatibility facade for `skein-optimizer`.
+/// Compatibility facade for `hawdb-optimizer`.
 pub mod optimizer {
-    pub use skein_optimizer::*;
-    pub use skein_plan::{PhysicalOperatorDomain, PhysicalPlan, PhysicalPlanChildren};
+    pub use hawdb_optimizer::*;
+    pub use hawdb_plan::{PhysicalOperatorDomain, PhysicalPlan, PhysicalPlanChildren};
 }
 
-/// Compatibility facade for `skein-plan`.
+/// Compatibility facade for `hawdb-plan`.
 pub mod planner {
-    pub use skein_plan::*;
+    pub use hawdb_plan::*;
 }
 
 /// Compatibility re-exports for the readiness-owned previous-wrapper preflight.
 pub mod previous_wrapper_preflight {
-    pub use skein_readiness::previous_wrapper_preflight::*;
+    pub use hawdb_readiness::previous_wrapper_preflight::*;
 
     #[cfg(test)]
     mod tests {
@@ -233,7 +233,7 @@ pub mod previous_wrapper_preflight {
             );
             assert_eq!(
                 NOWLEDGE_PREVIOUS_WRAPPER_PREFLIGHT_PROTOCOL,
-                skein_readiness::previous_wrapper_preflight::NOWLEDGE_PREVIOUS_WRAPPER_PREFLIGHT_PROTOCOL,
+                hawdb_readiness::previous_wrapper_preflight::NOWLEDGE_PREVIOUS_WRAPPER_PREFLIGHT_PROTOCOL,
             );
         }
     }
@@ -241,20 +241,20 @@ pub mod previous_wrapper_preflight {
 
 /// Compatibility facade for production qualification evidence contracts.
 pub mod production_evidence {
-    pub use skein_evidence::{
+    pub use hawdb_evidence::{
         ProductionEvidenceBinding, ProductionQualificationIdentity,
         PRODUCTION_QUALIFICATION_POLICY_VERSION,
     };
 }
 
-/// Compatibility facade for `skein-qos`.
+/// Compatibility facade for `hawdb-qos`.
 pub mod qos {
-    pub use skein_qos::*;
+    pub use hawdb_qos::*;
 }
 
 /// Compatibility re-exports for evidence-owned query-family preflight.
 pub mod query_family_evidence {
-    pub use skein_evidence::query_family_evidence::*;
+    pub use hawdb_evidence::query_family_evidence::*;
 
     #[cfg(test)]
     mod tests {
@@ -266,7 +266,7 @@ pub mod query_family_evidence {
                 nowledge_query_family_evidence_json;
             assert!(std::ptr::fn_addr_eq(
                 facade,
-                skein_evidence::query_family_evidence::nowledge_query_family_evidence_json
+                hawdb_evidence::query_family_evidence::nowledge_query_family_evidence_json
                     as fn(_) -> _,
             ));
         }
@@ -275,8 +275,8 @@ pub mod query_family_evidence {
 
 /// Compatibility facade for graph route ownership and readiness contracts.
 pub mod route_ownership {
-    pub use skein_route_ownership::graph::{
-        nowledge_mem_route_ownership_all_legacy, nowledge_mem_route_ownership_all_skein,
+    pub use hawdb_route_ownership::graph::{
+        nowledge_mem_route_ownership_all_hawdb, nowledge_mem_route_ownership_all_legacy,
         nowledge_mem_route_ownership_for_engine, nowledge_mem_route_ownership_readiness,
         NowledgeMemRouteOwnership, NowledgeMemRouteOwnershipPolicy,
         NowledgeMemRouteOwnershipReadinessReport, NowledgeMemRouteReadEngine,
@@ -286,7 +286,7 @@ pub mod route_ownership {
     #[cfg(test)]
     mod facade_tests {
         use super::*;
-        use skein_route_ownership::graph as owner;
+        use hawdb_route_ownership::graph as owner;
 
         #[test]
         fn ownership_facade_preserves_concrete_types_and_function_signatures() {
@@ -352,7 +352,7 @@ pub mod route_ownership {
 
 /// Compatibility re-exports for search-owned candidate evidence CLI adapters.
 pub mod search_candidate_shadow_evidence {
-    pub use skein_search::candidate_evidence_cli::*;
+    pub use hawdb_search::candidate_evidence_cli::*;
 
     #[cfg(test)]
     mod tests {
@@ -362,12 +362,12 @@ pub mod search_candidate_shadow_evidence {
         fn root_compatibility_module_preserves_candidate_probe_entrypoint() {
             let facade: fn(
                 &serde_json::Value,
-            ) -> skein_core::Result<
-                skein_search::candidate_evidence::NowledgeMemSearchCandidateShadowAccumulator,
+            ) -> hawdb_core::Result<
+                hawdb_search::candidate_evidence::NowledgeMemSearchCandidateShadowAccumulator,
             > = parse_search_candidate_shadow_probe;
             assert!(std::ptr::fn_addr_eq(
                 facade,
-                skein_search::candidate_evidence::parse_search_candidate_shadow_probe as fn(_) -> _,
+                hawdb_search::candidate_evidence::parse_search_candidate_shadow_probe as fn(_) -> _,
             ));
         }
     }
@@ -375,11 +375,11 @@ pub mod search_candidate_shadow_evidence {
 
 /// Compatibility re-exports for search-owned projection evidence CLI adapters.
 pub mod search_projection_evidence {
-    pub use skein_search::projection_evidence_cli::*;
+    pub use hawdb_search::projection_evidence_cli::*;
 
     #[cfg(test)]
     mod tests {
-        use skein_search::projection_evidence_cli;
+        use hawdb_search::projection_evidence_cli;
         use std::any::TypeId;
 
         #[test]
@@ -407,7 +407,7 @@ pub mod search_projection_evidence {
 
 /// Compatibility re-exports for evidence-owned storage-recovery preflight.
 pub mod storage_recovery_evidence {
-    pub use skein_evidence::storage_recovery_evidence::*;
+    pub use hawdb_evidence::storage_recovery_evidence::*;
 
     #[cfg(test)]
     mod tests {
@@ -419,7 +419,7 @@ pub mod storage_recovery_evidence {
                 nowledge_storage_recovery_evidence_json;
             assert!(std::ptr::fn_addr_eq(
                 facade,
-                skein_evidence::storage_recovery_evidence::nowledge_storage_recovery_evidence_json
+                hawdb_evidence::storage_recovery_evidence::nowledge_storage_recovery_evidence_json
                     as fn(_, _) -> _,
             ));
         }

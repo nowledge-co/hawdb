@@ -1,8 +1,8 @@
 # Production Content Store Qualification
 
 This runbook collects read-only and isolated mutation storage evidence from an
-already imported, representative Skein database. It does not import SQLite,
-create replicas, or derive an oracle from Skein itself.
+already imported, representative Hawdb database. It does not import SQLite,
+create replicas, or derive an oracle from Hawdb itself.
 
 ## Preconditions
 
@@ -23,7 +23,7 @@ create replicas, or derive an oracle from Skein itself.
 ## Plan
 
 Write a bounded JSON plan with protocol
-`skein-production-content-store-read-plan-v1`:
+`hawdb-production-content-store-read-plan-v1`:
 
 The checked-in
 [`production_read_plan_example_v1.json`](../crates/qualification/fixtures/nowledge_content_store/production_read_plan_example_v1.json)
@@ -31,10 +31,10 @@ is parser-tested and can be copied as the starting point.
 
 ```json
 {
-  "protocol": "skein-production-content-store-read-plan-v1",
+  "protocol": "hawdb-production-content-store-read-plan-v1",
   "evidence_binding": {
     "identity": {
-      "source_revision": "replace-with-skein-revision",
+      "source_revision": "replace-with-hawdb-revision",
       "rust_toolchain": "rustc 1.xx.x",
       "target_os": "macos",
       "target_arch": "aarch64",
@@ -50,7 +50,7 @@ is parser-tested and can be copied as the starting point.
     "generated_at_unix_seconds": 1
   },
   "expected_identity": {
-    "source_revision": "replace-with-skein-revision",
+    "source_revision": "replace-with-hawdb-revision",
     "rust_toolchain": "rustc 1.xx.x",
     "target_os": "macos",
     "target_arch": "aarch64",
@@ -106,8 +106,8 @@ The example values are placeholders, not accepted release evidence. The
 Plan parsing rejects unknown fields and files larger than 32 MiB.
 
 Use `capability_512_mib` for the separately configured low-memory capability
-run. It sets an explicit 512 MiB Skein runtime ceiling. Use
-`shared_host_8_gib` for the dynamic shared-host policy: Skein derives its budget
+run. It sets an explicit 512 MiB Hawdb runtime ceiling. Use
+`shared_host_8_gib` for the dynamic shared-host policy: Hawdb derives its budget
 from current headroom, caps automatic capacity at 2 GiB, normally operates in
 the 1--2 GiB range, and may fall below that range under pressure. A custom
 profile is represented as:
@@ -124,9 +124,9 @@ profile is represented as:
 ## Execute
 
 ```bash
-cargo run -p skein-qualification \
-  --bin skein-content-store-read-qualification -- \
-  --database-path /path/to/representative.skein \
+cargo run -p hawdb-qualification \
+  --bin hawdb-content-store-read-qualification -- \
+  --database-path /path/to/representative.hawdb \
   --plan-json /path/to/content-store-read-plan.json \
   > content-store-read-evidence.json
 ```
@@ -136,9 +136,9 @@ Run the same representative read corpus again with a plan whose
 that envelope, and whose RSS limit is at most 512 MiB. Retain it separately:
 
 ```bash
-cargo run -p skein-qualification \
-  --bin skein-content-store-read-qualification -- \
-  --database-path /path/to/representative.skein \
+cargo run -p hawdb-qualification \
+  --bin hawdb-content-store-read-qualification -- \
+  --database-path /path/to/representative.hawdb \
   --plan-json /path/to/content-store-512-mib-read-plan.json \
   > content-store-512-mib-read-evidence.json
 ```
@@ -161,20 +161,20 @@ normal shared-host budget.
 Run exact overflow compaction only against an existing caller-owned disposable
 replica. The collector mutates, checkpoints, scrubs, and reopens that directory;
 it never copies or mutates the production source. The bounded plan protocol is
-`skein-production-content-store-overflow-compaction-plan-v1` and must declare
+`hawdb-production-content-store-overflow-compaction-plan-v1` and must declare
 the exact evidence identity, frozen SQL verification cases, database budgets,
 scan/overlay/rewrite/sort/spill bounds, and resource/reclamation limits.
 
 ```bash
-cargo run -p skein-qualification \
-  --bin skein-content-store-overflow-compaction-qualification -- \
-  --replica-path /path/to/disposable-overflow-replica.skein \
+cargo run -p hawdb-qualification \
+  --bin hawdb-content-store-overflow-compaction-qualification -- \
+  --replica-path /path/to/disposable-overflow-replica.hawdb \
   --plan-json /path/to/content-store-overflow-compaction-plan.json \
   > content-store-overflow-compaction-evidence.json
 ```
 
 Retain two independent current-revision reports. The `capability_512_mib` plan
-installs an explicit 512 MiB Skein ceiling and proves the low-memory capability.
+installs an explicit 512 MiB Hawdb ceiling and proves the low-memory capability.
 The `shared_host_8_gib` plan observes an 8 GiB host or cgroup envelope and
 keeps dynamic memory derivation; automatic capacity cannot exceed 2 GiB, while
 pressure may lower the budget below 1 GiB. The release bundle requires both
@@ -192,7 +192,7 @@ cases.
 
 Start from the parser-tested
 [`production_mutation_plan_example_v1.json`](../crates/qualification/fixtures/nowledge_content_store/production_mutation_plan_example_v1.json).
-Its protocol is `skein-production-content-store-mutation-plan-v1`. Replace
+Its protocol is `hawdb-production-content-store-mutation-plan-v1`. Replace
 every placeholder, including all per-writer operation parameters, offline
 verification digests, the accepted commit-latency reference, and the complete
 WAL group-commit evidence. The cases and their workers must be explicit and
@@ -205,13 +205,13 @@ no greater than 2 GiB. The 512 MiB capability profile is a separate explicitly
 configured run, not the shared-host default or a universal capacity limit.
 
 ```bash
-cargo run -p skein-qualification \
-  --bin skein-content-store-mutation-qualification -- \
-  --source-database-path /path/to/read-only-representative.skein \
-  --replica-1 /path/to/disposable-writers-1.skein \
-  --replica-4 /path/to/disposable-writers-4.skein \
-  --replica-8 /path/to/disposable-writers-8.skein \
-  --replica-10 /path/to/disposable-writers-10.skein \
+cargo run -p hawdb-qualification \
+  --bin hawdb-content-store-mutation-qualification -- \
+  --source-database-path /path/to/read-only-representative.hawdb \
+  --replica-1 /path/to/disposable-writers-1.hawdb \
+  --replica-4 /path/to/disposable-writers-4.hawdb \
+  --replica-8 /path/to/disposable-writers-8.hawdb \
+  --replica-10 /path/to/disposable-writers-10.hawdb \
   --plan-json /path/to/content-store-mutation-plan.json \
   > content-store-mutation-evidence.json
 ```

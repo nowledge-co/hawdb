@@ -4,7 +4,7 @@ use super::{
     runtime_checkpoint, RelationalHydrationBudget, RelationalOverflowConfig, RelationalOverflowRef,
 };
 use crate::relational::{RelationalError, RelationalScalarType, RelationalValue};
-use skein_integrity::{crc32c, integrity_digest};
+use hawdb_integrity::{crc32c, integrity_digest};
 use std::io::{Cursor, Read};
 use std::sync::Arc;
 
@@ -95,7 +95,7 @@ pub(crate) fn decode_overflow_envelope(
     reference: &RelationalOverflowRef,
     encoded: &[u8],
     budget: &mut RelationalHydrationBudget,
-    task_context: Option<&skein_core::RuntimeTaskContext>,
+    task_context: Option<&hawdb_core::RuntimeTaskContext>,
 ) -> Result<RelationalValue, RelationalError> {
     runtime_checkpoint(task_context)?;
     let header = decode_header(reference, encoded)?;
@@ -201,7 +201,7 @@ fn decode_header(
 fn decode_zstd(
     payload: &[u8],
     uncompressed_bytes: usize,
-    task_context: Option<&skein_core::RuntimeTaskContext>,
+    task_context: Option<&hawdb_core::RuntimeTaskContext>,
 ) -> Result<Vec<u8>, RelationalError> {
     let decoder = zstd::stream::read::Decoder::new(Cursor::new(payload)).map_err(|error| {
         RelationalError::Corruption(format!("failed to initialize overflow decoder: {error}"))

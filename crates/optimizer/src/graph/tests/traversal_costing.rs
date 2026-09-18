@@ -2,9 +2,9 @@ use super::super::{
     CascadesOptimizer, OptimizerCatalog, OptimizerCatalogIndexes, OptimizerCatalogStatistics,
 };
 use crate::{OptimizerConfig, PlanCost, RuleOutcome};
-use skein_core::Value;
-use skein_cypher::RelationshipDirection;
-use skein_plan::{LogicalPlan, Predicate, Projection, ProjectionExpression, RelationshipCountLeg};
+use hawdb_core::Value;
+use hawdb_cypher::RelationshipDirection;
+use hawdb_plan::{LogicalPlan, Predicate, Projection, ProjectionExpression, RelationshipCountLeg};
 use std::collections::BTreeMap;
 
 #[test]

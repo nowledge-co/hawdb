@@ -6,12 +6,12 @@ use crate::evidence_json::{
 };
 use crate::graph_route::NMEM_GRAPH_ROUTE_EVIDENCE_PROTOCOL;
 use crate::graph_summary::nowledge_graph_route_readiness_summary;
-use skein_core::{Result, SkeinError};
-use skein_route_ownership::graph::{
+use hawdb_core::{HawdbError, Result};
+use hawdb_route_ownership::graph::{
     nowledge_mem_graph_read_route_catalog_digest, NOWLEDGE_MEM_GRAPH_READ_ROUTE_CATALOG_VERSION,
     REQUIRED_NOWLEDGE_MEM_BOUNDED_READ_ROUTES,
 };
-use skein_route_ownership::{
+use hawdb_route_ownership::{
     NOWLEDGE_MEM_ACTIVE_SEARCH_ROUTE_READINESS_PROTOCOL,
     NOWLEDGE_MEM_SEARCH_ROUTE_OWNERSHIP_PROTOCOL, REQUIRED_NOWLEDGE_MEM_ACTIVE_SEARCH_ROUTES,
     REQUIRED_NOWLEDGE_MEM_SEARCH_ROUTES,
@@ -19,10 +19,10 @@ use skein_route_ownership::{
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::Path;
 
-const NOWLEDGE_MEM_SKEIN_INTEGRATION_BUNDLE_PROTOCOL: &str =
-    "nowledge-mem-skein-integration-bundle";
-const SKEIN_NOWLEDGE_QUERY_RUNTIME_PREFLIGHT_PROTOCOL: &str =
-    "skein-nowledge-query-runtime-preflight-v1";
+const NOWLEDGE_MEM_HAWDB_INTEGRATION_BUNDLE_PROTOCOL: &str =
+    "nowledge-mem-hawdb-integration-bundle";
+const HAWDB_NOWLEDGE_QUERY_RUNTIME_PREFLIGHT_PROTOCOL: &str =
+    "hawdb-nowledge-query-runtime-preflight-v1";
 const ROUTE_PARITY_EVIDENCE_SOURCE: &str = "route_parity_evidence";
 const ROUTE_PARITY_FULL_MATCH_PER_MILLION: u64 = 1_000_000;
 
@@ -61,7 +61,7 @@ pub fn nowledge_mem_integration_bundle_json(
     let submodule_commit = require_non_empty(inputs.submodule_commit, "--submodule-commit")?;
     let coexistence_mode = require_non_empty(inputs.coexistence_mode, "--coexistence-mode")?;
     if !matches!(coexistence_mode.as_str(), "shadow" | "side_by_side") {
-        return Err(SkeinError::Semantic(
+        return Err(HawdbError::Semantic(
             "--coexistence-mode must be shadow or side_by_side".to_string(),
         ));
     }
@@ -128,7 +128,7 @@ pub fn nowledge_mem_integration_bundle_json(
     let graph_route_parity_alignment = graph_route_parity_alignment_json(&graph_route_readiness);
 
     Ok(serde_json::json!({
-        "protocol": NOWLEDGE_MEM_SKEIN_INTEGRATION_BUNDLE_PROTOCOL,
+        "protocol": NOWLEDGE_MEM_HAWDB_INTEGRATION_BUNDLE_PROTOCOL,
         "submodule": {
             "present": true,
             "path": sanitize_path_label(&submodule_path),
@@ -456,7 +456,7 @@ fn graph_route_shadow_compare_ready(route: &serde_json::Value) -> bool {
             == Some(ROUTE_PARITY_FULL_MATCH_PER_MILLION)
         && str_path(route, &["shadow_compare", "primary_engine"])
             .is_some_and(is_legacy_graph_engine)
-        && str_path(route, &["shadow_compare", "shadow_engine"]) == Some("skein")
+        && str_path(route, &["shadow_compare", "shadow_engine"]) == Some("hawdb")
         && string_set_path(route, &["shadow_compare", "blocker_codes"]).is_empty()
         && string_set_path(route, &["shadow_compare", "computed_blocker_codes"]).is_empty()
 }
@@ -869,8 +869,8 @@ fn search_route_ownership_alignment_json(
     let ready_matches = bool_path(evidence, &["ready"]) == bool_path(summary, &["ready"]);
     let production_cutover_ready_matches = bool_path(evidence, &["production_cutover_ready"])
         == bool_path(summary, &["production_cutover_ready"]);
-    let require_all_skein_matches =
-        bool_path(evidence, &["require_all_skein"]) == bool_path(summary, &["require_all_skein"]);
+    let require_all_hawdb_matches =
+        bool_path(evidence, &["require_all_hawdb"]) == bool_path(summary, &["require_all_hawdb"]);
     let expected_count = required_routes.len() as u64;
     let required_route_count_matches = u64_path(evidence, &["required_route_count"])
         == u64_path(summary, &["required_route_count"])
@@ -878,9 +878,9 @@ fn search_route_ownership_alignment_json(
     let explicit_route_count_matches = u64_path(evidence, &["explicit_route_count"])
         == u64_path(summary, &["explicit_route_count"])
         && u64_path(evidence, &["explicit_route_count"]) == Some(expected_count);
-    let skein_route_count_matches = u64_path(evidence, &["skein_route_count"])
-        == u64_path(summary, &["skein_route_count"])
-        && u64_path(evidence, &["skein_route_count"]) == Some(expected_count);
+    let hawdb_route_count_matches = u64_path(evidence, &["hawdb_route_count"])
+        == u64_path(summary, &["hawdb_route_count"])
+        && u64_path(evidence, &["hawdb_route_count"]) == Some(expected_count);
     let lancedb_route_count_matches = u64_path(evidence, &["lancedb_route_count"])
         == u64_path(summary, &["lancedb_route_count"])
         && u64_path(evidence, &["lancedb_route_count"]) == Some(0);
@@ -900,11 +900,11 @@ fn search_route_ownership_alignment_json(
         && bool_path(evidence, &["ready"]) == Some(true)
         && production_cutover_ready_matches
         && bool_path(evidence, &["production_cutover_ready"]) == Some(true)
-        && require_all_skein_matches
-        && bool_path(evidence, &["require_all_skein"]) == Some(true)
+        && require_all_hawdb_matches
+        && bool_path(evidence, &["require_all_hawdb"]) == Some(true)
         && required_route_count_matches
         && explicit_route_count_matches
-        && skein_route_count_matches
+        && hawdb_route_count_matches
         && lancedb_route_count_matches
         && missing_required_routes_matches
         && lancedb_routes_matches
@@ -916,10 +916,10 @@ fn search_route_ownership_alignment_json(
         "protocol_matches": protocol_matches,
         "ready_matches": ready_matches,
         "production_cutover_ready_matches": production_cutover_ready_matches,
-        "require_all_skein_matches": require_all_skein_matches,
+        "require_all_hawdb_matches": require_all_hawdb_matches,
         "required_route_count_matches": required_route_count_matches,
         "explicit_route_count_matches": explicit_route_count_matches,
-        "skein_route_count_matches": skein_route_count_matches,
+        "hawdb_route_count_matches": hawdb_route_count_matches,
         "lancedb_route_count_matches": lancedb_route_count_matches,
         "missing_required_routes_matches": missing_required_routes_matches,
         "lancedb_routes_matches": lancedb_routes_matches,
@@ -933,10 +933,10 @@ fn search_route_ownership_alignment_json(
             protocol_matches,
             ready_matches,
             production_cutover_ready_matches,
-            require_all_skein_matches,
+            require_all_hawdb_matches,
             required_route_count_matches,
             explicit_route_count_matches,
-            skein_route_count_matches,
+            hawdb_route_count_matches,
             lancedb_route_count_matches,
             missing_required_routes_matches,
             lancedb_routes_matches,
@@ -953,10 +953,10 @@ fn search_route_ownership_alignment_blockers(
     protocol_matches: bool,
     ready_matches: bool,
     production_cutover_ready_matches: bool,
-    require_all_skein_matches: bool,
+    require_all_hawdb_matches: bool,
     required_route_count_matches: bool,
     explicit_route_count_matches: bool,
-    skein_route_count_matches: bool,
+    hawdb_route_count_matches: bool,
     lancedb_route_count_matches: bool,
     missing_required_routes_matches: bool,
     lancedb_routes_matches: bool,
@@ -981,7 +981,7 @@ fn search_route_ownership_alignment_blockers(
     if !production_cutover_ready_matches {
         blockers.push("search_route_ownership_cutover_ready_mismatch");
     }
-    if !require_all_skein_matches {
+    if !require_all_hawdb_matches {
         blockers.push("search_route_ownership_policy_mismatch");
     }
     if !required_route_count_matches {
@@ -990,8 +990,8 @@ fn search_route_ownership_alignment_blockers(
     if !explicit_route_count_matches {
         blockers.push("search_route_ownership_explicit_count_mismatch");
     }
-    if !skein_route_count_matches {
-        blockers.push("search_route_ownership_skein_count_mismatch");
+    if !hawdb_route_count_matches {
+        blockers.push("search_route_ownership_hawdb_count_mismatch");
     }
     if !lancedb_route_count_matches {
         blockers.push("search_route_ownership_lancedb_count_mismatch");
@@ -1023,8 +1023,8 @@ fn active_search_route_readiness_alignment_json(
     let ready_matches = bool_path(evidence, &["ready"]) == bool_path(summary, &["ready"]);
     let production_cutover_ready_matches = bool_path(evidence, &["production_cutover_ready"])
         == bool_path(summary, &["production_cutover_ready"]);
-    let require_all_skein_matches =
-        bool_path(evidence, &["require_all_skein"]) == bool_path(summary, &["require_all_skein"]);
+    let require_all_hawdb_matches =
+        bool_path(evidence, &["require_all_hawdb"]) == bool_path(summary, &["require_all_hawdb"]);
     let expected_count = REQUIRED_NOWLEDGE_MEM_ACTIVE_SEARCH_ROUTES.len() as u64;
     let required_route_count_matches = u64_path(evidence, &["required_route_count"])
         == u64_path(summary, &["required_route_count"])
@@ -1035,15 +1035,15 @@ fn active_search_route_readiness_alignment_json(
     let ready_route_count_matches = u64_path(evidence, &["ready_route_count"])
         == u64_path(summary, &["ready_route_count"])
         && u64_path(evidence, &["ready_route_count"]) == Some(expected_count);
-    let skein_route_count_matches = u64_path(evidence, &["skein_route_count"])
-        == u64_path(summary, &["skein_route_count"])
-        && u64_path(evidence, &["skein_route_count"]) == Some(expected_count);
+    let hawdb_route_count_matches = u64_path(evidence, &["hawdb_route_count"])
+        == u64_path(summary, &["hawdb_route_count"])
+        && u64_path(evidence, &["hawdb_route_count"]) == Some(expected_count);
     let lancedb_handle_count_matches = u64_path(evidence, &["lancedb_handle_required_route_count"])
         == u64_path(summary, &["lancedb_handle_required_route_count"])
         && u64_path(evidence, &["lancedb_handle_required_route_count"]) == Some(0);
     let missing_required_routes_matches =
         empty_string_set_matches(evidence, summary, "missing_required_routes");
-    let non_skein_routes_matches = empty_string_set_matches(evidence, summary, "non_skein_routes");
+    let non_hawdb_routes_matches = empty_string_set_matches(evidence, summary, "non_hawdb_routes");
     let lancedb_handle_routes_matches =
         empty_string_set_matches(evidence, summary, "lancedb_handle_required_routes");
     let candidate_not_ready_routes_matches =
@@ -1091,7 +1091,7 @@ fn active_search_route_readiness_alignment_json(
         ),
         (
             "active_search_route_readiness_policy_mismatch",
-            require_all_skein_matches,
+            require_all_hawdb_matches,
         ),
         (
             "active_search_route_readiness_required_count_mismatch",
@@ -1106,8 +1106,8 @@ fn active_search_route_readiness_alignment_json(
             ready_route_count_matches,
         ),
         (
-            "active_search_route_readiness_skein_count_mismatch",
-            skein_route_count_matches,
+            "active_search_route_readiness_hawdb_count_mismatch",
+            hawdb_route_count_matches,
         ),
         (
             "active_search_route_readiness_lancedb_handle_count_mismatch",
@@ -1118,8 +1118,8 @@ fn active_search_route_readiness_alignment_json(
             missing_required_routes_matches,
         ),
         (
-            "active_search_route_readiness_non_skein_routes_mismatch",
-            non_skein_routes_matches,
+            "active_search_route_readiness_non_hawdb_routes_mismatch",
+            non_hawdb_routes_matches,
         ),
         (
             "active_search_route_readiness_lancedb_handle_routes_mismatch",
@@ -1177,7 +1177,7 @@ fn active_search_route_readiness_alignment_json(
     let ready = checks.iter().all(|(_, value)| *value)
         && bool_path(evidence, &["ready"]) == Some(true)
         && bool_path(evidence, &["production_cutover_ready"]) == Some(true)
-        && bool_path(evidence, &["require_all_skein"]) == Some(true);
+        && bool_path(evidence, &["require_all_hawdb"]) == Some(true);
     serde_json::json!({
         "ready": ready,
         "evidence_present": evidence_present,
@@ -1185,14 +1185,14 @@ fn active_search_route_readiness_alignment_json(
         "protocol_matches": protocol_matches,
         "ready_matches": ready_matches,
         "production_cutover_ready_matches": production_cutover_ready_matches,
-        "require_all_skein_matches": require_all_skein_matches,
+        "require_all_hawdb_matches": require_all_hawdb_matches,
         "required_route_count_matches": required_route_count_matches,
         "evidence_route_count_matches": evidence_route_count_matches,
         "ready_route_count_matches": ready_route_count_matches,
-        "skein_route_count_matches": skein_route_count_matches,
+        "hawdb_route_count_matches": hawdb_route_count_matches,
         "lancedb_handle_count_matches": lancedb_handle_count_matches,
         "missing_required_routes_matches": missing_required_routes_matches,
-        "non_skein_routes_matches": non_skein_routes_matches,
+        "non_hawdb_routes_matches": non_hawdb_routes_matches,
         "lancedb_handle_routes_matches": lancedb_handle_routes_matches,
         "candidate_not_ready_routes_matches": candidate_not_ready_routes_matches,
         "candidate_identity_not_ready_routes_matches": candidate_identity_not_ready_routes_matches,
@@ -1359,7 +1359,7 @@ fn query_runtime_route_coverage_ready(value: &serde_json::Value) -> Option<bool>
         .count();
     let duplicate_routes = duplicate_routes(&observed_routes);
     Some(
-        str_path(value, &["protocol"]) == Some(SKEIN_NOWLEDGE_QUERY_RUNTIME_PREFLIGHT_PROTOCOL)
+        str_path(value, &["protocol"]) == Some(HAWDB_NOWLEDGE_QUERY_RUNTIME_PREFLIGHT_PROTOCOL)
             && u64_path(value, &["required_route_count"])
                 == Some(REQUIRED_NOWLEDGE_MEM_BOUNDED_READ_ROUTES.len() as u64)
             && u64_path(value, &["covered_route_count"])
@@ -1557,11 +1557,11 @@ fn sanitize_path_label(path: &str) -> String {
 fn require_non_empty(value: Option<String>, flag: &str) -> Result<String> {
     value
         .filter(|value| !value.trim().is_empty())
-        .ok_or_else(|| SkeinError::Semantic(format!("{flag} is required")))
+        .ok_or_else(|| HawdbError::Semantic(format!("{flag} is required")))
 }
 
 fn require_json(value: Option<serde_json::Value>, flag: &str) -> Result<serde_json::Value> {
-    value.ok_or_else(|| SkeinError::Semantic(format!("{flag} is required")))
+    value.ok_or_else(|| HawdbError::Semantic(format!("{flag} is required")))
 }
 
 fn string_set_path(value: &serde_json::Value, path: &[&str]) -> BTreeSet<String> {

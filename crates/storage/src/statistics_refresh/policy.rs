@@ -1,4 +1,4 @@
-use skein_core::{Catalog, LabelId, PropertyType, RelTypeId, TableKind, Value};
+use hawdb_core::{Catalog, LabelId, PropertyType, RelTypeId, TableKind, Value};
 use std::collections::BTreeSet;
 
 const MIN_PROPERTY_HISTOGRAM_VALUES: usize = 128;

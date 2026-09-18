@@ -267,7 +267,7 @@ fn skips_non_production_graph_sources() {
 #[test]
 fn scanned_inventory_stat_error_redacts_path_and_io_details() {
     let root = std::env::temp_dir().join(format!(
-        "skein-nowledge-inventory-secret-missing-{}",
+        "hawdb-nowledge-inventory-secret-missing-{}",
         SystemTime::now()
             .duration_since(UNIX_EPOCH)
             .unwrap()
@@ -291,7 +291,7 @@ fn scanned_inventory_source_read_error_redacts_path_and_io_details() {
     use std::os::unix::fs::PermissionsExt;
 
     let root = std::env::temp_dir().join(format!(
-        "skein-nowledge-inventory-secret-unreadable-{}",
+        "hawdb-nowledge-inventory-secret-unreadable-{}",
         SystemTime::now()
             .duration_since(UNIX_EPOCH)
             .unwrap()

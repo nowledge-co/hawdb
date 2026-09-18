@@ -10,8 +10,8 @@ use crate::{
     PRODUCTION_CONTENT_STORE_STORAGE_QUALIFICATION_PROTOCOL,
     PRODUCTION_CONTENT_STORE_WRITER_MATRIX,
 };
+use hawdb::PRODUCTION_QUALIFICATION_POLICY_VERSION;
 use sha2::{Digest, Sha256};
-use skein::PRODUCTION_QUALIFICATION_POLICY_VERSION;
 
 #[test]
 fn complete_raw_artifact_bundle_is_ready() {
@@ -641,9 +641,9 @@ fn content_store_statement_digest(statement_name: &str, mutation: bool) -> Strin
     let corpus = nowledge_content_store_sql_corpus().unwrap();
     let statement = corpus.statement(statement_name).unwrap();
     let domain = if mutation {
-        b"skein-production-content-store-mutation-statement-v1".as_slice()
+        b"hawdb-production-content-store-mutation-statement-v1".as_slice()
     } else {
-        b"skein-production-content-store-statement-v1".as_slice()
+        b"hawdb-production-content-store-statement-v1".as_slice()
     };
     let mut hasher = Sha256::new();
     hash_bytes(&mut hasher, domain);
@@ -1497,7 +1497,7 @@ fn crash_recovery(identity: &ProductionQualificationIdentity) -> Value {
     })
     .collect::<Vec<_>>();
     serde_json::json!({
-        "protocol": "skein-storage-crash-recovery-evidence-v1",
+        "protocol": "hawdb-storage-crash-recovery-evidence-v1",
         "protocol_version": 1,
         "evidence_binding": binding(identity),
         "expected_identity": identity,
@@ -1546,7 +1546,7 @@ fn graph(identity: &ProductionQualificationIdentity) -> Value {
     let profile_minor_page_faults = split_page_faults.then_some(10u64);
     let profile_major_page_faults = split_page_faults.then_some(0u64);
     serde_json::json!({
-        "protocol": "skein-production-graph-storage-qualification-v1",
+        "protocol": "hawdb-production-graph-storage-qualification-v1",
         "evidence_kind": "representative_production_replica",
         "production_eligible": true,
         "ready": true,
@@ -1636,7 +1636,7 @@ fn graph(identity: &ProductionQualificationIdentity) -> Value {
             "segment_cache_admission_rejection_count": 0,
         },
         "storage_resource_profile": {
-            "protocol": "skein-storage-resource-profile-v2",
+            "protocol": "hawdb-storage-resource-profile-v2",
             "resource_ready": true,
             "ready": true,
             "blocker_codes": [],
@@ -1690,18 +1690,18 @@ fn graph(identity: &ProductionQualificationIdentity) -> Value {
 }
 
 fn graph_index_matrix(identity: &ProductionQualificationIdentity) -> Value {
-    let cases = skein::PersistentGraphIndexClass::ALL
+    let cases = hawdb::PersistentGraphIndexClass::ALL
         .into_iter()
         .map(|class| graph_index_case(identity, class.as_str()))
         .collect::<Vec<_>>();
     serde_json::json!({
-        "protocol": "skein-production-graph-index-qualification-matrix-v1",
+        "protocol": "hawdb-production-graph-index-qualification-matrix-v1",
         "evidence_kind": "representative_production_replica",
         "production_eligible": true,
         "ready": true,
         "blocker_codes": [],
         "qualified_class_count": cases.len(),
-        "required_class_count": skein::PersistentGraphIndexClass::ALL.len(),
+        "required_class_count": hawdb::PersistentGraphIndexClass::ALL.len(),
         "cases": cases,
     })
 }
@@ -1790,13 +1790,13 @@ fn search(identity: &ProductionQualificationIdentity) -> Value {
         })
     };
     serde_json::json!({
-        "protocol": "skein-production-search-out-of-core-qualification-v1",
+        "protocol": "hawdb-production-search-out-of-core-qualification-v1",
         "evidence_kind": "representative_production_search_replica",
         "production_eligible": true,
         "ready": true,
         "blocker_codes": [],
         "qualification": {
-            "protocol": "skein-search-lexical-production-qualification",
+            "protocol": "hawdb-search-lexical-production-qualification",
             "protocol_version": 2,
             "ready": true,
             "blocker_codes": [],
@@ -1862,7 +1862,7 @@ fn search(identity: &ProductionQualificationIdentity) -> Value {
 fn vector(identity: &ProductionQualificationIdentity) -> Value {
     let metrics = |kernel: &str| {
         serde_json::json!({
-            "backend": "skein_rabitq_candidate_projection",
+            "backend": "hawdb_rabitq_candidate_projection",
             "candidate_score_source": "quantized_projection",
             "final_score_source": "raw_vector",
             "kernel": kernel,
@@ -1873,7 +1873,7 @@ fn vector(identity: &ProductionQualificationIdentity) -> Value {
         })
     };
     let serving_metrics = serde_json::json!({
-        "backend": "skein_rabitq_out_of_core_candidate_projection",
+        "backend": "hawdb_rabitq_out_of_core_candidate_projection",
         "candidate_score_source": "quantized_projection",
         "final_score_source": "raw_vector",
         "kernel": "portable",
@@ -1900,7 +1900,7 @@ fn vector(identity: &ProductionQualificationIdentity) -> Value {
         "file_backed": true,
     });
     serde_json::json!({
-        "protocol": "skein-production-vector-qualification-v1",
+        "protocol": "hawdb-production-vector-qualification-v1",
         "evidence_kind": "representative_production_vector_replica",
         "production_eligible": true,
         "ready": true,
@@ -1928,9 +1928,9 @@ fn vector(identity: &ProductionQualificationIdentity) -> Value {
         },
         "recall_evidence": [{
             "report": {
-                "protocol": "skein-vector-recall-validation-v1",
+                "protocol": "hawdb-vector-recall-validation-v1",
                 "ready": true,
-                "approximate_backend": "skein_rabitq_candidate_projection",
+                "approximate_backend": "hawdb_rabitq_candidate_projection",
                 "requested_sample_count": 1,
                 "executed_sample_count": 1,
                 "minimum_recall_per_million": 950_000,
@@ -1990,7 +1990,7 @@ fn vector(identity: &ProductionQualificationIdentity) -> Value {
 fn morsel(identity: &ProductionQualificationIdentity, workers: usize, process_id: u64) -> Value {
     let throughput = u64::try_from(workers).unwrap() * 100;
     serde_json::json!({
-        "protocol": "skein-production-morsel-profile-v1",
+        "protocol": "hawdb-production-morsel-profile-v1",
         "evidence_kind": "representative_production_morsel_profile",
         "production_eligible": true,
         "ready": true,
@@ -2035,7 +2035,7 @@ fn blocking(identity: &ProductionQualificationIdentity) -> Value {
         })
     };
     serde_json::json!({
-        "protocol": "skein-production-blocking-qualification-v1",
+        "protocol": "hawdb-production-blocking-qualification-v1",
         "evidence_kind": "active_route_blocking_operators",
         "production_eligible": true,
         "ready": true,

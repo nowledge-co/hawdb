@@ -1,4 +1,4 @@
-use skein_qualification::nowledge_content_store_sql_corpus_json;
+use hawdb_qualification::nowledge_content_store_sql_corpus_json;
 use std::process::ExitCode;
 
 fn main() -> ExitCode {
@@ -11,7 +11,7 @@ fn main() -> ExitCode {
             ExitCode::SUCCESS
         }
         Err(error) => {
-            eprintln!("skein-content-store-contract: {error}");
+            eprintln!("hawdb-content-store-contract: {error}");
             ExitCode::from(2)
         }
     }
@@ -19,7 +19,7 @@ fn main() -> ExitCode {
 
 fn run(args: impl IntoIterator<Item = String>) -> Result<serde_json::Value, String> {
     if args.into_iter().next().is_some() {
-        return Err("skein-content-store-contract does not accept arguments".to_string());
+        return Err("hawdb-content-store-contract does not accept arguments".to_string());
     }
     nowledge_content_store_sql_corpus_json().map_err(|error| error.to_string())
 }
@@ -34,11 +34,11 @@ mod tests {
 
         assert_eq!(
             json["schema"]["identity"]["protocol"],
-            "skein-nowledge-content-store-schema-v1"
+            "hawdb-nowledge-content-store-schema-v1"
         );
         assert_eq!(
             json["identity"]["protocol"],
-            "skein-nowledge-content-store-sql-corpus-v1"
+            "hawdb-nowledge-content-store-sql-corpus-v1"
         );
     }
 

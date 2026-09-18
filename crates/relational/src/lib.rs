@@ -71,7 +71,7 @@ impl index_runtime::RelationalIndexStoreReader for RelationalMaterializedReader 
         _table: &str,
         _index: &str,
         _prefix_len: usize,
-    ) -> Option<skein_storage::relational_index_view::RelationalIndexProbeStatistics> {
+    ) -> Option<hawdb_storage::relational_index_view::RelationalIndexProbeStatistics> {
         None
     }
 
@@ -79,13 +79,13 @@ impl index_runtime::RelationalIndexStoreReader for RelationalMaterializedReader 
         &self,
         _table: &str,
         _index: &str,
-        _prefix: &skein_storage::RelationalKey,
-        _limits: skein_storage::RelationalIndexReadLimits,
-        _visit: impl FnMut(&skein_storage::RelationalKey, &skein_storage::RelationalKey) -> bool,
+        _prefix: &hawdb_storage::RelationalKey,
+        _limits: hawdb_storage::RelationalIndexReadLimits,
+        _visit: impl FnMut(&hawdb_storage::RelationalKey, &hawdb_storage::RelationalKey) -> bool,
     ) -> Option<
         std::result::Result<
-            skein_storage::relational_index_view::RelationalIndexReadViewReport,
-            skein_storage::RelationalIndexShadowError,
+            hawdb_storage::relational_index_view::RelationalIndexReadViewReport,
+            hawdb_storage::RelationalIndexShadowError,
         >,
     > {
         None
@@ -95,13 +95,13 @@ impl index_runtime::RelationalIndexStoreReader for RelationalMaterializedReader 
         &self,
         _table: &str,
         _index: &str,
-        _prefixes: &[skein_storage::RelationalKey],
-        _limits: skein_storage::RelationalIndexReadLimits,
-        _visit: impl FnMut(&skein_storage::RelationalKey, &skein_storage::RelationalKey) -> bool,
+        _prefixes: &[hawdb_storage::RelationalKey],
+        _limits: hawdb_storage::RelationalIndexReadLimits,
+        _visit: impl FnMut(&hawdb_storage::RelationalKey, &hawdb_storage::RelationalKey) -> bool,
     ) -> Option<
         std::result::Result<
-            skein_storage::relational_index_view::RelationalIndexReadViewReport,
-            skein_storage::RelationalIndexShadowError,
+            hawdb_storage::relational_index_view::RelationalIndexReadViewReport,
+            hawdb_storage::RelationalIndexShadowError,
         >,
     > {
         None
@@ -111,13 +111,13 @@ impl index_runtime::RelationalIndexStoreReader for RelationalMaterializedReader 
         &self,
         _table: &str,
         _index: &str,
-        _scan: &skein_storage::RelationalIndexRangeScan,
-        _limits: skein_storage::RelationalIndexReadLimits,
-        _visit: impl FnMut(&skein_storage::RelationalKey, &skein_storage::RelationalKey) -> bool,
+        _scan: &hawdb_storage::RelationalIndexRangeScan,
+        _limits: hawdb_storage::RelationalIndexReadLimits,
+        _visit: impl FnMut(&hawdb_storage::RelationalKey, &hawdb_storage::RelationalKey) -> bool,
     ) -> Option<
         std::result::Result<
-            skein_storage::relational_index_view::RelationalIndexReadViewReport,
-            skein_storage::RelationalIndexShadowError,
+            hawdb_storage::relational_index_view::RelationalIndexReadViewReport,
+            hawdb_storage::RelationalIndexShadowError,
         >,
     > {
         None
@@ -129,23 +129,23 @@ impl row_runtime::RelationalRowStoreReader for RelationalMaterializedReader {
 
     fn open_relational_row_snapshot_reader(
         &self,
-    ) -> skein_core::Result<Option<skein_storage::RelationalRowPageSnapshotReader>> {
+    ) -> hawdb_core::Result<Option<hawdb_storage::RelationalRowPageSnapshotReader>> {
         Ok(None)
     }
 
     fn open_relational_transaction_row_snapshot_reader(
         &self,
         _rows: &Self::TransactionRows,
-    ) -> skein_core::Result<skein_storage::RelationalRowPageSnapshotReader> {
-        Err(skein_core::SkeinError::Execution(
+    ) -> hawdb_core::Result<hawdb_storage::RelationalRowPageSnapshotReader> {
+        Err(hawdb_core::HawdbError::Execution(
             "materialized relational reader does not expose transaction rows".to_string(),
         ))
     }
 }
 
-use skein_core::{Result, SkeinError, Value};
-use skein_sql::{SqlColumnDefault, SqlColumnDefinition, SqlDataType, SqlValue};
-use skein_storage::{
+use hawdb_core::{HawdbError, Result, Value};
+use hawdb_sql::{SqlColumnDefault, SqlColumnDefinition, SqlDataType, SqlValue};
+use hawdb_storage::{
     RelationalColumnDefault, RelationalColumnSchema, RelationalScalarType, RelationalValue,
 };
 
@@ -157,7 +157,7 @@ pub fn bind_relational_value(value: SqlValue, parameters: &[Value]) -> Result<Re
             .get(position.saturating_sub(1))
             .cloned()
             .ok_or_else(|| {
-                SkeinError::Semantic(format!("missing PostgreSQL parameter ${position}"))
+                HawdbError::Semantic(format!("missing PostgreSQL parameter ${position}"))
             })?,
     };
     match value {
@@ -168,7 +168,7 @@ pub fn bind_relational_value(value: SqlValue, parameters: &[Value]) -> Result<Re
         Value::String(value) => Ok(RelationalValue::Text(value)),
         Value::Binary(value) => Ok(RelationalValue::Bytea(value)),
         Value::Uuid(value) => Ok(RelationalValue::Uuid(value)),
-        Value::List(_) | Value::Map(_) => Err(SkeinError::Semantic(
+        Value::List(_) | Value::Map(_) => Err(HawdbError::Semantic(
             "relational SQL parameters must be scalar".to_string(),
         )),
     }
@@ -209,7 +209,7 @@ fn compile_schema_value(
     scalar_type: RelationalScalarType,
 ) -> Result<RelationalValue> {
     let SqlValue::Literal(value) = value else {
-        return Err(SkeinError::Semantic(
+        return Err(HawdbError::Semantic(
             "schema defaults cannot contain parameters".to_string(),
         ));
     };
@@ -221,7 +221,7 @@ fn compile_schema_value(
         Value::String(value) => Ok(RelationalValue::Text(value)),
         Value::Binary(value) => Ok(RelationalValue::Bytea(value)),
         Value::Uuid(value) => Ok(RelationalValue::Uuid(value)),
-        Value::List(_) | Value::Map(_) => Err(SkeinError::Semantic(
+        Value::List(_) | Value::Map(_) => Err(HawdbError::Semantic(
             "relational schema defaults must be scalar".to_string(),
         )),
     }
@@ -235,9 +235,9 @@ pub fn coerce_relational_value(
 ) -> Result<RelationalValue> {
     match (scalar_type, value) {
         (RelationalScalarType::Uuid, RelationalValue::Text(value)) => {
-            skein_core::Uuid::parse_str(&value)
+            hawdb_core::Uuid::parse_str(&value)
                 .map(RelationalValue::Uuid)
-                .map_err(|_| SkeinError::Semantic(format!("invalid UUID value {value:?}")))
+                .map_err(|_| HawdbError::Semantic(format!("invalid UUID value {value:?}")))
         }
         (RelationalScalarType::Uuid, RelationalValue::Uuid(value)) => {
             Ok(RelationalValue::Uuid(value))
@@ -249,13 +249,13 @@ pub fn coerce_relational_value(
 #[doc(hidden)]
 pub fn reject_non_public_schema(schema: Option<&str>) -> Result<()> {
     if matches!(schema, Some("system" | "information_schema" | "pg_catalog")) {
-        return Err(SkeinError::Semantic(format!(
+        return Err(HawdbError::Semantic(format!(
             "PostgreSQL compatibility catalog {} is read-only",
             schema.unwrap_or_default()
         )));
     }
     if schema.is_some_and(|schema| schema != "public") {
-        return Err(SkeinError::Semantic(
+        return Err(HawdbError::Semantic(
             "relational content tables must use the public schema".to_string(),
         ));
     }
@@ -265,7 +265,7 @@ pub fn reject_non_public_schema(schema: Option<&str>) -> Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use skein_storage::{AppendOrderMode, AppendState, AppendTableSchema};
+    use hawdb_storage::{AppendOrderMode, AppendState, AppendTableSchema};
 
     #[test]
     fn append_select_compiles_from_storage_neutral_sql_ir() {

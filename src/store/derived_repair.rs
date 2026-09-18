@@ -4,9 +4,9 @@ use super::{
     store_id_for_path, DurableManifest, GraphManifestOpenBudget, GraphStore, RecoveryMode,
     SegmentCache, StorageResidencyMode, WalReplayConfig, MANIFEST_FILE,
 };
-use crate::error::{Result, SkeinError};
-use skein_storage::derived_repair::{plan_identity, validate_options, validate_plan};
-pub use skein_storage::{
+use crate::error::{HawdbError, Result};
+use hawdb_storage::derived_repair::{plan_identity, validate_options, validate_plan};
+pub use hawdb_storage::{
     DerivedArtifactHealth, DerivedArtifactHealthReport, DerivedArtifactHealthState,
     DerivedArtifactKind, DerivedArtifactRebuildOptions, DerivedArtifactRepairPlan,
     DerivedArtifactRepairReport, DERIVED_ARTIFACT_REPAIR_PROTOCOL,
@@ -76,7 +76,7 @@ impl DatabaseDoctor {
         let mut inspection = inspect(path, plan.options)?;
         let current_plan = plan_from_inspection(path, &inspection, plan.options)?;
         if current_plan != *plan {
-            return Err(SkeinError::Storage(
+            return Err(HawdbError::Storage(
                 "derived artifact repair plan no longer matches the current database state"
                     .to_string(),
             ));
@@ -103,7 +103,7 @@ impl DatabaseDoctor {
             || published.manifest.checkpoint_commit_epoch != plan.source_commit_epoch
             || published.health.repair_required
         {
-            return Err(SkeinError::Storage(
+            return Err(HawdbError::Storage(
                 "derived artifact rebuild did not publish one healthy target generation; pending audit was retained"
                     .to_string(),
             ));
@@ -118,7 +118,7 @@ pub(super) fn reject_pending_derived_artifact_repair(path: &Path) -> Result<()> 
     if pending.is_empty() {
         return Ok(());
     }
-    Err(SkeinError::Storage(format!(
+    Err(HawdbError::Storage(format!(
         "database has {} interrupted derived artifact repair record(s); finish the repair with DatabaseDoctor before opening the database",
         pending.len()
     )))
@@ -168,17 +168,17 @@ fn validate_canonical_source(
 ) -> Result<(u64, u64, u64)> {
     let logical_bytes = store.estimated_logical_record_bytes();
     if logical_bytes > options.max_source_logical_bytes {
-        return Err(SkeinError::Storage(format!(
+        return Err(HawdbError::Storage(format!(
             "derived repair source byte admission rejected {logical_bytes} bytes under the {} byte limit",
             options.max_source_logical_bytes
         )));
     }
     let mut node_count = 0u64;
     for node in store.node_records_owned() {
-        node.map_err(|error| SkeinError::StorageIntegrity(error.to_string()))?;
+        node.map_err(|error| HawdbError::StorageIntegrity(error.to_string()))?;
         node_count = node_count.saturating_add(1);
         if node_count > options.max_source_records {
-            return Err(SkeinError::Storage(format!(
+            return Err(HawdbError::Storage(format!(
                 "derived repair source record admission exceeded {} records",
                 options.max_source_records
             )));
@@ -186,10 +186,10 @@ fn validate_canonical_source(
     }
     let mut relationship_count = 0u64;
     for relationship in store.relationship_records_owned() {
-        relationship.map_err(|error| SkeinError::StorageIntegrity(error.to_string()))?;
+        relationship.map_err(|error| HawdbError::StorageIntegrity(error.to_string()))?;
         relationship_count = relationship_count.saturating_add(1);
         if node_count.saturating_add(relationship_count) > options.max_source_records {
-            return Err(SkeinError::Storage(format!(
+            return Err(HawdbError::Storage(format!(
                 "derived repair source record admission exceeded {} records",
                 options.max_source_records
             )));
@@ -225,17 +225,17 @@ fn assess_artifacts(
                 &mut open_budget,
             )?
             .ok_or_else(|| {
-                SkeinError::Storage("canonical adjacency publication is missing".to_string())
+                HawdbError::Storage("canonical adjacency publication is missing".to_string())
             })?;
             if reader.relationship_count() != canonical_relationship_count {
-                return Err(SkeinError::Storage(
+                return Err(HawdbError::Storage(
                     "canonical adjacency relationship count mismatch".to_string(),
                 ));
             }
             reader
                 .deep_scrub()
                 .map(|_| ())
-                .map_err(|error| SkeinError::StorageIntegrity(error.to_string()))
+                .map_err(|error| HawdbError::StorageIntegrity(error.to_string()))
         }),
         assess_one(DerivedArtifactKind::PersistentPropertyProjection, || {
             let cache = Arc::new(SegmentCache::new(options.segment_cache_capacity_bytes));
@@ -249,14 +249,14 @@ fn assess_artifacts(
                 &mut open_budget,
             )?
             .ok_or_else(|| {
-                SkeinError::Storage(
+                HawdbError::Storage(
                     "persistent property projection publication is missing".to_string(),
                 )
             })?;
             reader
                 .deep_scrub()
                 .map(|_| ())
-                .map_err(|error| SkeinError::StorageIntegrity(error.to_string()))
+                .map_err(|error| HawdbError::StorageIntegrity(error.to_string()))
         }),
     ]
 }
@@ -292,7 +292,7 @@ fn plan_from_inspection(
         .map(|artifact| artifact.kind)
         .collect::<Vec<_>>();
     if targets.is_empty() {
-        return Err(SkeinError::Storage(
+        return Err(HawdbError::Storage(
             "derived artifact doctor found no repair-required artifact".to_string(),
         ));
     }
@@ -302,7 +302,7 @@ fn plan_from_inspection(
         .saturating_mul(8)
         .max(64 * 1024 * 1024);
     if estimated_temporary_bytes > options.max_temporary_bytes {
-        return Err(SkeinError::Storage(format!(
+        return Err(HawdbError::Storage(format!(
             "derived repair temporary byte admission rejected {estimated_temporary_bytes} estimated bytes under the {} byte limit",
             options.max_temporary_bytes
         )));
@@ -332,7 +332,7 @@ fn plan_from_inspection(
     Ok(plan)
 }
 
-pub(crate) use skein_storage::derived_repair::build_config;
+pub(crate) use hawdb_storage::derived_repair::build_config;
 
 fn validate_source_identity(path: &Path, plan: &DerivedArtifactRepairPlan) -> Result<()> {
     let manifest = file_checksum(&path.join(MANIFEST_FILE))?;
@@ -345,7 +345,7 @@ fn validate_source_identity(path: &Path, plan: &DerivedArtifactRepairPlan) -> Re
         || wal.1 != plan.wal_crc32c
         || wal.2.to_string() != plan.wal_sha256
     {
-        return Err(SkeinError::Storage(
+        return Err(HawdbError::Storage(
             "derived artifact repair source identity changed after planning".to_string(),
         ));
     }

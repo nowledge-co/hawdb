@@ -1,8 +1,8 @@
 use super::*;
 use crate::{visit_plan_with_ids, OptimizerCatalogIndexes, OptimizerCatalogStatistics};
-use skein_core::Value;
-use skein_cypher::RelationshipDirection;
-use skein_plan::{PhysicalPlanKind, Predicate};
+use hawdb_core::Value;
+use hawdb_cypher::RelationshipDirection;
+use hawdb_plan::{PhysicalPlanKind, Predicate};
 use std::collections::BTreeMap;
 
 fn catalog(rows: u64) -> OptimizerCatalog {

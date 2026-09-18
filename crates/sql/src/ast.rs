@@ -1,11 +1,11 @@
-pub use skein_expression::sql::{
+pub use hawdb_expression::sql::{
     Expr, ExprKind, SqlColumnRef, SqlComparisonOp, SqlExpression, SqlFunctionArgument,
     SqlIndexColumn, SqlLikeEscape, SqlNullOrder, SqlOrderDirection, SqlOrderItem, SqlPredicate,
     SqlSourceLocation, SqlSourceSpan, SqlValue,
 };
 
 use caseless::Caseless;
-use skein_core::{LogicalType, Result, SkeinError};
+use hawdb_core::{HawdbError, LogicalType, Result};
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum SqlStatement {
@@ -336,7 +336,7 @@ fn tokenize_like_pattern(
     while let Some(character) = characters.next() {
         if Some(character) == escape {
             let escaped = characters.next().ok_or_else(|| {
-                SkeinError::Semantic("LIKE pattern ends with its escape character".to_string())
+                HawdbError::Semantic("LIKE pattern ends with its escape character".to_string())
             })?;
             push_like_literal(&mut tokens, escaped, case_insensitive);
             continue;

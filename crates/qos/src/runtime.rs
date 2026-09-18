@@ -2,7 +2,7 @@
 
 use crate::resource::RuntimeResourceDetector;
 use crate::{IoConcurrencyBudget, RuntimeMemoryPressure, RuntimeResourceSnapshot};
-use skein_core::{
+use hawdb_core::{
     RuntimeCancellationReason, RuntimeIoWaveController, RuntimeIoWaveError, RuntimeIoWavePermit,
     RuntimeMemoryReservation, RuntimeTaskContext,
 };
@@ -1125,7 +1125,7 @@ fn derive_limits(
 /// The headroom-independent maximum for the current resource snapshot:
 /// explicit configuration and the limit-derived term
 /// (`effective_limit_bytes` = min of cgroup `memory.max`, the kernel hard
-/// limit, and `memory.high`, the throttle threshold Skein honors as its
+/// limit, and `memory.high`, the throttle threshold Hawdb honors as its
 /// policy ceiling), with the fallback when neither is sensed. A request
 /// above this can never be satisfied by waiting, so admission reports it
 /// non-retryable. A resource refresh may change this capacity when the
@@ -1766,7 +1766,7 @@ mod tests {
         assert_eq!(reservation.result_bytes(), 32);
 
         let parent = RuntimeTaskContext::default()
-            .with_memory_reservation(skein_core::RuntimeMemoryReservation::new(64, 64))
+            .with_memory_reservation(hawdb_core::RuntimeMemoryReservation::new(64, 64))
             .with_executor_thread_limit(NonZeroUsize::MIN);
         let bounded = permit.bind_task_context(parent);
         assert_eq!(bounded.executor_thread_limit().unwrap().get(), 1);
@@ -1795,7 +1795,7 @@ mod tests {
                 .bind_task_context(RuntimeTaskContext::default())
                 .try_acquire_io_wave(NonZeroUsize::MIN)
                 .unwrap(),
-            skein_core::RuntimeIoWaveTryAcquire::Pending
+            hawdb_core::RuntimeIoWaveTryAcquire::Pending
         ));
 
         let background = governor
@@ -1848,7 +1848,7 @@ mod tests {
         let next_wave = second_context
             .try_acquire_io_wave(NonZeroUsize::new(4).unwrap())
             .unwrap();
-        let skein_core::RuntimeIoWaveTryAcquire::Acquired(Some(next_wave)) = next_wave else {
+        let hawdb_core::RuntimeIoWaveTryAcquire::Acquired(Some(next_wave)) = next_wave else {
             panic!("released wave capacity must be immediately acquirable");
         };
         assert_eq!(governor.snapshot().active_foreground_io_slots, 4);

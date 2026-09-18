@@ -15,7 +15,7 @@ use crate::{
     ContentDigest, FileSegmentRangeReader, SegmentReadRange, DEFAULT_MAX_CHECKPOINT_ENCODED_BYTES,
     DEFAULT_MAX_WAL_RECORD_BYTES,
 };
-use skein_integrity::{integrity_digest, IntegrityHasher, Sha256Digest, SHA256_BYTES};
+use hawdb_integrity::{integrity_digest, IntegrityHasher, Sha256Digest, SHA256_BYTES};
 use std::collections::{BTreeMap, BTreeSet};
 use std::fs::File;
 use std::io::{Cursor, Read, Seek, SeekFrom, Write};
@@ -857,7 +857,7 @@ impl<'a, W: Write> CheckpointPayloadWriter<'a, W> {
         Ok(())
     }
 
-    fn finish(self) -> (usize, skein_integrity::IntegrityDigest, &'a mut W) {
+    fn finish(self) -> (usize, hawdb_integrity::IntegrityDigest, &'a mut W) {
         (self.payload_bytes, self.hasher.finish(), self.writer)
     }
 }
@@ -885,7 +885,7 @@ fn encode_envelope_header(
     magic: &[u8; 8],
     epoch: u64,
     payload_len: u64,
-    digest: skein_integrity::IntegrityDigest,
+    digest: hawdb_integrity::IntegrityDigest,
 ) {
     output.extend_from_slice(magic);
     output.extend_from_slice(&CODEC_VERSION.to_le_bytes());
@@ -1514,7 +1514,7 @@ struct DecodedOverflowSegment {
     payload_offset: usize,
     len: usize,
     bytes: Option<Vec<u8>>,
-    digest: skein_integrity::IntegrityDigest,
+    digest: hawdb_integrity::IntegrityDigest,
 }
 
 struct Decoder<I> {

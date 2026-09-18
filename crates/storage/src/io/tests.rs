@@ -147,7 +147,7 @@ impl TestFile {
         for _ in 0..128 {
             let sequence = SEQUENCE.fetch_add(1, Ordering::Relaxed);
             let path = std::env::temp_dir().join(format!(
-                "skein-positioned-read-{}-{sequence}",
+                "hawdb-positioned-read-{}-{sequence}",
                 std::process::id()
             ));
             match OpenOptions::new()

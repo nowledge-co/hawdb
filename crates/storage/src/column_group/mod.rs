@@ -20,7 +20,7 @@ pub mod shadow;
 pub mod shadow_metadata;
 pub mod zone;
 
-use skein_core::PropertyId;
+use hawdb_core::PropertyId;
 use std::error::Error;
 use std::fmt::{self, Display, Formatter};
 

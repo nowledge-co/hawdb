@@ -4,7 +4,7 @@ use super::super::physical::{
 };
 use super::*;
 use crate::index_runtime::RelationalIndexReadMode;
-use skein_optimizer::{RelationalCsgCmpJoinImplementation, RelationalEquiJoinAlgorithm};
+use hawdb_optimizer::{RelationalCsgCmpJoinImplementation, RelationalEquiJoinAlgorithm};
 
 pub(super) struct PreparedJoinImplementation {
     pub(super) optimizer: RelationalCsgCmpJoinImplementation,
@@ -28,7 +28,7 @@ impl PreparedJoinImplementation {
             .iter()
             .map(|id| {
                 predicates.get(id).cloned().ok_or_else(|| {
-                    SkeinError::Execution(format!(
+                    HawdbError::Execution(format!(
                         "CSG-CMP implementation selected unknown predicate {}",
                         id.get()
                     ))

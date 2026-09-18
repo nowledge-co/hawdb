@@ -3,14 +3,14 @@
 //! The embedded facade retains command dispatch. This owner evaluates supplied
 //! evidence and provides the same typed and preflight contracts to that facade.
 
-use skein_core::{Result, SkeinError, GRAPH_RAG_SCHEMA_CONTEXT_PROTOCOL};
-use skein_evidence::replacement_contract::{
+use hawdb_core::{HawdbError, Result, GRAPH_RAG_SCHEMA_CONTEXT_PROTOCOL};
+use hawdb_evidence::replacement_contract::{
     NOWLEDGE_GRAPH_ROUTE_WORKLOAD_FIXTURE_PROTOCOL, NOWLEDGE_MEM_SEARCH_CANDIDATE_EVIDENCE_ROUTE,
     NOWLEDGE_MEM_SEARCH_CANDIDATE_EVIDENCE_SOURCE, NOWLEDGE_MEM_SEARCH_CANDIDATE_PRIMARY_ENGINE,
     NOWLEDGE_MEM_SEARCH_CANDIDATE_SHADOW_EVIDENCE_PROTOCOL,
     NOWLEDGE_SEARCH_PROJECTION_SCAN_FILTER_FIELDS,
 };
-use skein_route_ownership::graph::{
+use hawdb_route_ownership::graph::{
     nowledge_mem_graph_read_route_catalog_digest, NOWLEDGE_MEM_GRAPH_READ_ROUTE_CATALOG_VERSION,
     REQUIRED_NOWLEDGE_MEM_BOUNDED_READ_ROUTES,
 };
@@ -18,19 +18,19 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::path::Path;
 
 pub const NOWLEDGE_PREVIOUS_WRAPPER_PREFLIGHT_PROTOCOL: &str =
-    "skein-nowledge-previous-wrapper-preflight-check";
+    "hawdb-nowledge-previous-wrapper-preflight-check";
 pub use crate::bounded_read_evidence::NOWLEDGE_MEM_BOUNDED_READ_EVIDENCE_PROTOCOL;
-pub const NOWLEDGE_MEM_CUTOVER_CONTROLS_PROTOCOL: &str = "skein-nowledge-mem-cutover-controls-v1";
-pub const NOWLEDGE_MEM_LIBRARY_READINESS_PROTOCOL: &str = "skein-nowledge-mem-library-readiness-v1";
+pub const NOWLEDGE_MEM_CUTOVER_CONTROLS_PROTOCOL: &str = "hawdb-nowledge-mem-cutover-controls-v1";
+pub const NOWLEDGE_MEM_LIBRARY_READINESS_PROTOCOL: &str = "hawdb-nowledge-mem-library-readiness-v1";
 pub const NOWLEDGE_MEM_OPERATIONS_READINESS_PROTOCOL: &str =
-    "skein-nowledge-mem-operations-readiness-v1";
+    "hawdb-nowledge-mem-operations-readiness-v1";
 pub const NOWLEDGE_QUERY_RUNTIME_PREFLIGHT_PROTOCOL: &str =
-    "skein-nowledge-query-runtime-preflight-v1";
-const SKEIN_NOWLEDGE_SEARCH_PROJECTION_EVIDENCE_PROTOCOL: &str =
-    "skein-nowledge-search-projection-evidence";
-const SKEIN_NOWLEDGE_SEARCH_PROJECTION_SHADOW_EVIDENCE_PROTOCOL: &str =
-    "skein-nowledge-search-projection-shadow-evidence";
-const SKEIN_SEARCH_PROJECTION_SHADOW_EVIDENCE_SOURCE: &str = "skein-rust-library";
+    "hawdb-nowledge-query-runtime-preflight-v1";
+const HAWDB_NOWLEDGE_SEARCH_PROJECTION_EVIDENCE_PROTOCOL: &str =
+    "hawdb-nowledge-search-projection-evidence";
+const HAWDB_NOWLEDGE_SEARCH_PROJECTION_SHADOW_EVIDENCE_PROTOCOL: &str =
+    "hawdb-nowledge-search-projection-shadow-evidence";
+const HAWDB_SEARCH_PROJECTION_SHADOW_EVIDENCE_SOURCE: &str = "hawdb-rust-library";
 
 #[derive(Debug, Clone)]
 pub struct NowledgePreviousWrapperPreflightInputs {
@@ -64,7 +64,7 @@ impl NowledgePreviousWrapperPreflightInputs {
     ) -> Result<Self> {
         let wrapper_identity = wrapper_identity.into();
         if wrapper_identity.trim().is_empty() {
-            return Err(SkeinError::Semantic(
+            return Err(HawdbError::Semantic(
                 "previous-wrapper preflight wrapper identity must not be empty".to_string(),
             ));
         }
@@ -181,10 +181,10 @@ pub fn run_nowledge_previous_wrapper_preflight_check(
             }
             "--wrapper-identity" => {
                 let value = args.next().ok_or_else(|| {
-                    SkeinError::Semantic(nowledge_previous_wrapper_preflight_check_usage())
+                    HawdbError::Semantic(nowledge_previous_wrapper_preflight_check_usage())
                 })?;
                 if value.trim().is_empty() {
-                    return Err(SkeinError::Semantic(
+                    return Err(HawdbError::Semantic(
                         "--wrapper-identity must not be empty".to_string(),
                     ));
                 }
@@ -192,10 +192,10 @@ pub fn run_nowledge_previous_wrapper_preflight_check(
             }
             "--bundle-dir" => {
                 let value = args.next().ok_or_else(|| {
-                    SkeinError::Semantic(nowledge_previous_wrapper_preflight_check_usage())
+                    HawdbError::Semantic(nowledge_previous_wrapper_preflight_check_usage())
                 })?;
                 if value.trim().is_empty() {
-                    return Err(SkeinError::Semantic(
+                    return Err(HawdbError::Semantic(
                         "--bundle-dir must not be empty".to_string(),
                     ));
                 }
@@ -226,7 +226,7 @@ pub fn run_nowledge_previous_wrapper_preflight_check(
                 inputs.operations_readiness = Some(read_json_arg(&mut args)?);
             }
             _ => {
-                return Err(SkeinError::Semantic(
+                return Err(HawdbError::Semantic(
                     nowledge_previous_wrapper_preflight_check_usage(),
                 ));
             }
@@ -280,18 +280,18 @@ fn fill_bundle_dir_inputs(inputs: &mut CliPreviousWrapperPreflightCheckInputs) -
 fn read_json_arg(args: &mut impl Iterator<Item = String>) -> Result<serde_json::Value> {
     let path = args
         .next()
-        .ok_or_else(|| SkeinError::Semantic(nowledge_previous_wrapper_preflight_check_usage()))?;
+        .ok_or_else(|| HawdbError::Semantic(nowledge_previous_wrapper_preflight_check_usage()))?;
     read_json_file(Path::new(&path))
 }
 
 fn read_json_file(path: &Path) -> Result<serde_json::Value> {
     let raw = std::fs::read_to_string(path).map_err(|_| {
-        SkeinError::Execution(
+        HawdbError::Execution(
             "failed to read previous-wrapper preflight JSON: io_error".to_string(),
         )
     })?;
     serde_json::from_str(&raw).map_err(|_| {
-        SkeinError::Execution(
+        HawdbError::Execution(
             "failed to parse previous-wrapper preflight JSON: invalid_json".to_string(),
         )
     })
@@ -302,31 +302,31 @@ fn cli_inputs_to_typed(
 ) -> Result<NowledgePreviousWrapperPreflightInputs> {
     let wrapper_identity = inputs
         .wrapper_identity
-        .ok_or_else(|| SkeinError::Semantic(nowledge_previous_wrapper_preflight_check_usage()))?;
+        .ok_or_else(|| HawdbError::Semantic(nowledge_previous_wrapper_preflight_check_usage()))?;
     let contract_evidence = inputs
         .contract_evidence
-        .ok_or_else(|| SkeinError::Semantic(nowledge_previous_wrapper_preflight_check_usage()))?;
+        .ok_or_else(|| HawdbError::Semantic(nowledge_previous_wrapper_preflight_check_usage()))?;
     let adapter_smoke = inputs
         .adapter_smoke
-        .ok_or_else(|| SkeinError::Semantic(nowledge_previous_wrapper_preflight_check_usage()))?;
+        .ok_or_else(|| HawdbError::Semantic(nowledge_previous_wrapper_preflight_check_usage()))?;
     let migration_gate = inputs
         .migration_gate
-        .ok_or_else(|| SkeinError::Semantic(nowledge_previous_wrapper_preflight_check_usage()))?;
+        .ok_or_else(|| HawdbError::Semantic(nowledge_previous_wrapper_preflight_check_usage()))?;
     let replacement_summary = inputs
         .replacement_summary
-        .ok_or_else(|| SkeinError::Semantic(nowledge_previous_wrapper_preflight_check_usage()))?;
+        .ok_or_else(|| HawdbError::Semantic(nowledge_previous_wrapper_preflight_check_usage()))?;
     let query_runtime_preflight = inputs
         .query_runtime_preflight
-        .ok_or_else(|| SkeinError::Semantic(nowledge_previous_wrapper_preflight_check_usage()))?;
+        .ok_or_else(|| HawdbError::Semantic(nowledge_previous_wrapper_preflight_check_usage()))?;
     let library_readiness = inputs
         .library_readiness
-        .ok_or_else(|| SkeinError::Semantic(nowledge_previous_wrapper_preflight_check_usage()))?;
+        .ok_or_else(|| HawdbError::Semantic(nowledge_previous_wrapper_preflight_check_usage()))?;
     let cutover_controls = inputs
         .cutover_controls
-        .ok_or_else(|| SkeinError::Semantic(nowledge_previous_wrapper_preflight_check_usage()))?;
+        .ok_or_else(|| HawdbError::Semantic(nowledge_previous_wrapper_preflight_check_usage()))?;
     let operations_readiness = inputs
         .operations_readiness
-        .ok_or_else(|| SkeinError::Semantic(nowledge_previous_wrapper_preflight_check_usage()))?;
+        .ok_or_else(|| HawdbError::Semantic(nowledge_previous_wrapper_preflight_check_usage()))?;
 
     NowledgePreviousWrapperPreflightInputs::new(
         wrapper_identity,
@@ -660,7 +660,7 @@ pub fn nowledge_previous_wrapper_preflight_check(
                 str_path(
                     &replacement_summary,
                     &["search_projection_evidence", "protocol"],
-                ) == Some(SKEIN_NOWLEDGE_SEARCH_PROJECTION_EVIDENCE_PROTOCOL),
+                ) == Some(HAWDB_NOWLEDGE_SEARCH_PROJECTION_EVIDENCE_PROTOCOL),
                 bool_path(
                     &replacement_summary,
                     &["search_projection_evidence", "ready"],
@@ -728,11 +728,11 @@ pub fn nowledge_previous_wrapper_preflight_check(
                 str_path(
                     &replacement_summary,
                     &["search_projection_shadow_evidence", "protocol"],
-                ) == Some(SKEIN_NOWLEDGE_SEARCH_PROJECTION_SHADOW_EVIDENCE_PROTOCOL),
+                ) == Some(HAWDB_NOWLEDGE_SEARCH_PROJECTION_SHADOW_EVIDENCE_PROTOCOL),
                 str_path(
                     &replacement_summary,
                     &["search_projection_shadow_evidence", "evidence_source"],
-                ) == Some(SKEIN_SEARCH_PROJECTION_SHADOW_EVIDENCE_SOURCE),
+                ) == Some(HAWDB_SEARCH_PROJECTION_SHADOW_EVIDENCE_SOURCE),
                 bool_path(
                     &replacement_summary,
                     &["search_projection_shadow_evidence", "ready"],
@@ -1483,14 +1483,14 @@ pub fn nowledge_previous_wrapper_preflight_check(
                 str_path(&cutover_controls, &["protocol"])
                     == Some(NOWLEDGE_MEM_CUTOVER_CONTROLS_PROTOCOL),
                 bool_path(&cutover_controls, &["ready"]) == Some(true),
-                str_path(&cutover_controls, &["controls", "graph_reads"]) == Some("skein"),
-                str_path(&cutover_controls, &["controls", "search_reads"]) == Some("skein"),
+                str_path(&cutover_controls, &["controls", "graph_reads"]) == Some("hawdb"),
+                str_path(&cutover_controls, &["controls", "search_reads"]) == Some("hawdb"),
                 str_path(&cutover_controls, &["controls", "dual_writes"]) == Some("enabled"),
                 str_path(&cutover_controls, &["controls", "projection_catch_up"])
                     == Some("enabled"),
-                bool_path(&cutover_controls, &["graph", "read_selected_skein"]) == Some(true),
+                bool_path(&cutover_controls, &["graph", "read_selected_hawdb"]) == Some(true),
                 bool_path(&cutover_controls, &["graph", "read_effective"]) == Some(true),
-                bool_path(&cutover_controls, &["search", "read_selected_skein"]) == Some(true),
+                bool_path(&cutover_controls, &["search", "read_selected_hawdb"]) == Some(true),
                 bool_path(&cutover_controls, &["search", "read_effective"]) == Some(true),
                 bool_path(&cutover_controls, &["work", "dual_writes_enabled"]) == Some(true),
                 bool_path(&cutover_controls, &["work", "projection_catch_up_enabled"])
@@ -1505,11 +1505,11 @@ pub fn nowledge_previous_wrapper_preflight_check(
                     ) == Some(true),
                 bool_path(
                     &cutover_controls,
-                    &["production_status", "graph", "skein_cutover_effective"],
+                    &["production_status", "graph", "hawdb_cutover_effective"],
                 ) == Some(true),
                 bool_path(
                     &cutover_controls,
-                    &["production_status", "search", "skein_cutover_effective"],
+                    &["production_status", "search", "hawdb_cutover_effective"],
                 ) == Some(true),
                 bool_path(&cutover_controls, &["redaction", "query_text_copied"]) == Some(false),
                 bool_path(&cutover_controls, &["redaction", "parameters_copied"]) == Some(false),
@@ -1522,15 +1522,15 @@ pub fn nowledge_previous_wrapper_preflight_check(
                 "cutover_controls.controls.search_reads",
                 "cutover_controls.controls.dual_writes",
                 "cutover_controls.controls.projection_catch_up",
-                "cutover_controls.graph.read_selected_skein",
+                "cutover_controls.graph.read_selected_hawdb",
                 "cutover_controls.graph.read_effective",
-                "cutover_controls.search.read_selected_skein",
+                "cutover_controls.search.read_selected_hawdb",
                 "cutover_controls.search.read_effective",
                 "cutover_controls.work.dual_writes_enabled",
                 "cutover_controls.work.projection_catch_up_enabled",
                 "cutover_controls.work.initial_import_safe_for_read_cutover",
-                "cutover_controls.production_status.graph.skein_cutover_effective",
-                "cutover_controls.production_status.search.skein_cutover_effective",
+                "cutover_controls.production_status.graph.hawdb_cutover_effective",
+                "cutover_controls.production_status.search.hawdb_cutover_effective",
                 "cutover_controls.redaction.query_text_copied",
                 "cutover_controls.redaction.parameters_copied",
                 "cutover_controls.redaction.local_paths_copied",
@@ -3456,9 +3456,9 @@ mod tests {
     use super::{
         check_by_name, nowledge_previous_wrapper_preflight_check_json,
         run_nowledge_previous_wrapper_preflight_check, PreviousWrapperPreflightCheckInputs,
-        GRAPH_RAG_SCHEMA_CONTEXT_PROTOCOL, SKEIN_NOWLEDGE_SEARCH_PROJECTION_EVIDENCE_PROTOCOL,
-        SKEIN_NOWLEDGE_SEARCH_PROJECTION_SHADOW_EVIDENCE_PROTOCOL,
-        SKEIN_SEARCH_PROJECTION_SHADOW_EVIDENCE_SOURCE,
+        GRAPH_RAG_SCHEMA_CONTEXT_PROTOCOL, HAWDB_NOWLEDGE_SEARCH_PROJECTION_EVIDENCE_PROTOCOL,
+        HAWDB_NOWLEDGE_SEARCH_PROJECTION_SHADOW_EVIDENCE_PROTOCOL,
+        HAWDB_SEARCH_PROJECTION_SHADOW_EVIDENCE_SOURCE,
     };
     use super::{
         nowledge_mem_graph_read_route_catalog_digest,
@@ -3589,7 +3589,7 @@ mod tests {
         assert_release_summary_field(
             summary,
             "search_projection_evidence_protocol",
-            SKEIN_NOWLEDGE_SEARCH_PROJECTION_EVIDENCE_PROTOCOL,
+            HAWDB_NOWLEDGE_SEARCH_PROJECTION_EVIDENCE_PROTOCOL,
         );
         assert_release_summary_field(summary, "search_projection_all_tables_covered", true);
         assert_release_summary_field(summary, "search_projection_covered_table_count", 6);
@@ -3610,12 +3610,12 @@ mod tests {
         assert_release_summary_field(
             summary,
             "search_projection_shadow_evidence_protocol",
-            SKEIN_NOWLEDGE_SEARCH_PROJECTION_SHADOW_EVIDENCE_PROTOCOL,
+            HAWDB_NOWLEDGE_SEARCH_PROJECTION_SHADOW_EVIDENCE_PROTOCOL,
         );
         assert_release_summary_field(
             summary,
             "search_projection_shadow_evidence_source",
-            SKEIN_SEARCH_PROJECTION_SHADOW_EVIDENCE_SOURCE,
+            HAWDB_SEARCH_PROJECTION_SHADOW_EVIDENCE_SOURCE,
         );
         assert_release_summary_field(summary, "search_projection_shadow_primary_ready", true);
         assert_release_summary_field(summary, "search_projection_shadow_shadow_ready", true);
@@ -3822,8 +3822,8 @@ mod tests {
             0,
         );
         assert_release_summary_field(summary, "cutover_controls_ready", true);
-        assert_release_summary_field(summary, "cutover_controls_graph_reads", "skein");
-        assert_release_summary_field(summary, "cutover_controls_search_reads", "skein");
+        assert_release_summary_field(summary, "cutover_controls_graph_reads", "hawdb");
+        assert_release_summary_field(summary, "cutover_controls_search_reads", "hawdb");
         assert_release_summary_field(summary, "cutover_controls_dual_writes_enabled", true);
         assert_release_summary_field(
             summary,
@@ -4182,7 +4182,7 @@ mod tests {
             serde_json::json!([
                 "table_parity_mismatch",
                 "incremental_watermark_mismatch",
-                "skein_search_projection_segment_descriptor_fields_missing"
+                "hawdb_search_projection_segment_descriptor_fields_missing"
             ]);
 
         let report = nowledge_previous_wrapper_preflight_check_json(inputs).unwrap();
@@ -4208,7 +4208,7 @@ mod tests {
             check_by_name(&report, "replacement_summary")["blocker_codes"],
             serde_json::json!([
                 "incremental_watermark_mismatch",
-                "skein_search_projection_segment_descriptor_fields_missing",
+                "hawdb_search_projection_segment_descriptor_fields_missing",
                 "table_parity_mismatch"
             ])
         );
@@ -4221,7 +4221,7 @@ mod tests {
         replacement_summary["search_projection_shadow_evidence"]["pushdown_evidence"]
             ["shadow_segment_descriptor_field_summaries"] = serde_json::json!([]);
         replacement_summary["search_projection_shadow_evidence"]["blocker_codes"] =
-            serde_json::json!(["skein_search_projection_segment_descriptor_fields_missing"]);
+            serde_json::json!(["hawdb_search_projection_segment_descriptor_fields_missing"]);
 
         let report = nowledge_previous_wrapper_preflight_check_json(inputs).unwrap();
 
@@ -4243,7 +4243,7 @@ mod tests {
         );
         assert_eq!(
             check_by_name(&report, "replacement_summary")["blocker_codes"],
-            serde_json::json!(["skein_search_projection_segment_descriptor_fields_missing"])
+            serde_json::json!(["hawdb_search_projection_segment_descriptor_fields_missing"])
         );
     }
 
@@ -4883,10 +4883,10 @@ mod tests {
         let cutover_controls = inputs.cutover_controls.as_mut().unwrap();
         cutover_controls["ready"] = serde_json::json!(false);
         cutover_controls["graph"]["read_effective"] = serde_json::json!(false);
-        cutover_controls["production_status"]["graph"]["skein_cutover_effective"] =
+        cutover_controls["production_status"]["graph"]["hawdb_cutover_effective"] =
             serde_json::json!(false);
         cutover_controls["blocker_codes"] =
-            serde_json::json!(["graph_read_selected_skein_but_not_effective"]);
+            serde_json::json!(["graph_read_selected_hawdb_but_not_effective"]);
 
         let report = nowledge_previous_wrapper_preflight_check_json(inputs).unwrap();
 
@@ -4900,12 +4900,12 @@ mod tests {
             serde_json::json!([
                 "cutover_controls.ready",
                 "cutover_controls.graph.read_effective",
-                "cutover_controls.production_status.graph.skein_cutover_effective"
+                "cutover_controls.production_status.graph.hawdb_cutover_effective"
             ])
         );
         assert_eq!(
             check_by_name(&report, "cutover_controls")["blocker_codes"],
-            serde_json::json!(["graph_read_selected_skein_but_not_effective"])
+            serde_json::json!(["graph_read_selected_hawdb_but_not_effective"])
         );
         assert_release_summary_field(
             &report["release_summary"],
@@ -5549,7 +5549,7 @@ mod tests {
             .duration_since(UNIX_EPOCH)
             .unwrap()
             .as_nanos();
-        std::env::temp_dir().join(format!("skein-{name}-{nanos}"))
+        std::env::temp_dir().join(format!("hawdb-{name}-{nanos}"))
     }
 
     fn write_json(path: PathBuf, value: &serde_json::Value) {
@@ -5687,18 +5687,18 @@ mod tests {
             "protocol": NOWLEDGE_MEM_CUTOVER_CONTROLS_PROTOCOL,
             "ready": true,
             "controls": {
-                "graph_reads": "skein",
-                "search_reads": "skein",
+                "graph_reads": "hawdb",
+                "search_reads": "hawdb",
                 "dual_writes": "enabled",
                 "initial_import": "disabled",
                 "projection_catch_up": "enabled"
             },
             "graph": {
-                "read_selected_skein": true,
+                "read_selected_hawdb": true,
                 "read_effective": true
             },
             "search": {
-                "read_selected_skein": true,
+                "read_selected_hawdb": true,
                 "read_effective": true
             },
             "work": {
@@ -5711,10 +5711,10 @@ mod tests {
             },
             "production_status": {
                 "graph": {
-                    "skein_cutover_effective": true
+                    "hawdb_cutover_effective": true
                 },
                 "search": {
-                    "skein_cutover_effective": true
+                    "hawdb_cutover_effective": true
                 }
             },
             "redaction": {
@@ -5891,7 +5891,7 @@ mod tests {
             .map(|route| ready_query_runtime_preflight_probe(route))
             .collect::<Vec<_>>();
         serde_json::json!({
-            "protocol": "skein-nowledge-query-runtime-preflight-v1",
+            "protocol": "hawdb-nowledge-query-runtime-preflight-v1",
             "ready": true,
             "database_opened": true,
             "redaction": {
@@ -5977,7 +5977,7 @@ mod tests {
 
     fn ready_library_readiness() -> serde_json::Value {
         serde_json::json!({
-            "protocol": "skein-nowledge-mem-library-readiness-v1",
+            "protocol": "hawdb-nowledge-mem-library-readiness-v1",
             "present": true,
             "ready": true,
             "mode": "shadow_read_only",
@@ -5991,7 +5991,7 @@ mod tests {
                 "local_paths_copied": false
             },
             "open_report": {
-                "protocol": "skein-nowledge-mem-open-report",
+                "protocol": "hawdb-nowledge-mem-open-report",
                 "mode": "shadow_read_only",
                 "graph_opened": true,
                 "search_projection_opened": true
@@ -6048,7 +6048,7 @@ mod tests {
 
     fn ready_search_projection_evidence() -> serde_json::Value {
         serde_json::json!({
-            "protocol": SKEIN_NOWLEDGE_SEARCH_PROJECTION_EVIDENCE_PROTOCOL,
+            "protocol": HAWDB_NOWLEDGE_SEARCH_PROJECTION_EVIDENCE_PROTOCOL,
             "present": true,
             "ready": true,
             "derived_projection": true,
@@ -6072,12 +6072,12 @@ mod tests {
 
     fn ready_search_projection_shadow_evidence() -> serde_json::Value {
         serde_json::json!({
-            "protocol": SKEIN_NOWLEDGE_SEARCH_PROJECTION_SHADOW_EVIDENCE_PROTOCOL,
-            "evidence_source": SKEIN_SEARCH_PROJECTION_SHADOW_EVIDENCE_SOURCE,
+            "protocol": HAWDB_NOWLEDGE_SEARCH_PROJECTION_SHADOW_EVIDENCE_PROTOCOL,
+            "evidence_source": HAWDB_SEARCH_PROJECTION_SHADOW_EVIDENCE_SOURCE,
             "present": true,
             "ready": true,
             "primary_engine": "lancedb",
-            "shadow_engine": "skein",
+            "shadow_engine": "hawdb",
             "primary_ready": true,
             "shadow_ready": true,
             "document_count_parity": true,

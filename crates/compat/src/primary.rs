@@ -1,6 +1,6 @@
-use skein_analytics::ProjectedGraph;
-use skein_core::{Result, Value};
-use skein_executor::QueryOutput;
+use hawdb_analytics::ProjectedGraph;
+use hawdb_core::{Result, Value};
+use hawdb_executor::QueryOutput;
 use std::collections::BTreeMap;
 
 /// Internal execution boundary implemented by the embedded facade.

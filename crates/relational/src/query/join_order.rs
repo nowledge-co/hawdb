@@ -12,11 +12,11 @@ use crate::physical_plan::{
     RelationalBaseAccess, RelationalJoinAccess, RelationalJoinAccessCandidate,
     RelationalPhysicalAccess, RelationalPhysicalJoinNode, RelationalPhysicalJoinPlan,
 };
-use skein_core::{Result, SkeinError, Value};
-use skein_expression::{
+use hawdb_core::{HawdbError, Result, Value};
+use hawdb_expression::{
     BindingId, BindingSet, BoundPredicate, BoundScalarExpression, ScalarNullability,
 };
-use skein_optimizer::{
+use hawdb_optimizer::{
     enumerate_relational_csg_cmp_joins_with_implementations, enumerate_relational_inner_joins,
     enumerate_relational_join_rewrites, RelationalAccessPathDescriptor, RelationalAccessPathKind,
     RelationalCsgCmpPlan, RelationalCsgCmpPlanNode, RelationalCsgCmpRightInputPolicy,
@@ -27,22 +27,22 @@ use skein_optimizer::{
     RelationalJoinRewritePlan, RelationalJoinRewriteProblem, RelationalJoinTree,
     RequiredProperties,
 };
-use skein_optimizer::{
+use hawdb_optimizer::{
     RelationalJoinPlanningAttempt, RelationalJoinPlanningOutcome, RelationalJoinPlanningReason,
     RelationalJoinPlanningStrategy, RelationalOperatorId,
 };
-use skein_sql::{Expr, ExprKind};
-use skein_sql::{
+use hawdb_sql::{Expr, ExprKind};
+use hawdb_sql::{
     SelectProjection, SelectStatement, SqlColumnRef, SqlExpression, SqlJoin, SqlJoinKind,
     SqlPredicate, SqlTableName,
 };
 
 mod implementations;
 mod scopes;
+use hawdb_sql::timing::measure_nanos;
+use hawdb_storage::{RelationalState, RelationalTableSchema};
 use implementations::{prepare_join_implementations, PreparedJoinImplementation};
 pub(super) use scopes::bind_from_scopes;
-use skein_sql::timing::measure_nanos;
-use skein_storage::{RelationalState, RelationalTableSchema};
 use std::collections::{BTreeMap, BTreeSet};
 
 pub(super) struct PlannedSelectStatement {
@@ -133,7 +133,7 @@ pub(super) fn plan_select_join_order(
         return Ok(unchanged(select, outcome));
     };
     let Some(initial_tree) = build_initial_join_tree(&relations, &bound_joins.operators) else {
-        return Err(SkeinError::Execution(
+        return Err(HawdbError::Execution(
             "relational join planner invariant violated while building the initial join tree"
                 .to_string(),
         ));
@@ -348,7 +348,7 @@ fn syntax_fallback_outcome(
 ) -> Result<RelationalJoinPlanningOutcome> {
     RelationalJoinPlanningOutcome::fallback_to_syntax(attempts, selected_order, config).ok_or_else(
         || {
-            SkeinError::Execution(
+            HawdbError::Execution(
                 "relational join planner invariant violated: syntax fallback has no fallback-eligible attempt"
                     .to_string(),
             )
@@ -359,8 +359,8 @@ fn syntax_fallback_outcome(
 fn invariant_planning_error(
     strategy: RelationalJoinPlanningStrategy,
     error: &dyn std::fmt::Display,
-) -> SkeinError {
-    SkeinError::Execution(format!(
+) -> HawdbError {
+    HawdbError::Execution(format!(
         "relational join planner invariant violated in {}: {error}",
         strategy.as_str()
     ))
@@ -437,10 +437,10 @@ fn bind_relations<'a>(
         .enumerate()
         .map(|(ordinal, (table, alias))| {
             let binding = BindingId::new(u32::try_from(ordinal).map_err(|_| {
-                SkeinError::Execution("relational join has too many bindings".to_string())
+                HawdbError::Execution("relational join has too many bindings".to_string())
             })?);
             let schema = state.table_schema(&table.name).ok_or_else(|| {
-                SkeinError::Semantic(format!("unknown relational table {}", table.name))
+                HawdbError::Semantic(format!("unknown relational table {}", table.name))
             })?;
             Ok(BoundRelation {
                 binding,
@@ -724,12 +724,12 @@ fn prepare_csg_cmp_select(
     let mut leaves = Vec::new();
     root.visit_relations(&mut |relation| leaves.push(relation.clone()));
     let Some(first) = leaves.first() else {
-        return Err(SkeinError::Execution(
+        return Err(HawdbError::Execution(
             "CSG-CMP selected an empty relational join tree".to_string(),
         ));
     };
     let RelationalPhysicalAccess::Base(base_access) = &first.access else {
-        return Err(SkeinError::Execution(
+        return Err(HawdbError::Execution(
             "CSG-CMP join tree does not start with a base access".to_string(),
         ));
     };
@@ -773,7 +773,7 @@ fn prepare_csg_cmp_node(
             .iter()
             .find(|implementation| implementation.optimizer == **selected)
             .ok_or_else(|| {
-                SkeinError::Execution(
+                HawdbError::Execution(
                     "CSG-CMP selected an unavailable join implementation".to_string(),
                 )
             })?;
@@ -838,7 +838,7 @@ fn prepare_csg_cmp_node(
                 .iter()
                 .map(|id| {
                     predicates.get(id).cloned().ok_or_else(|| {
-                        SkeinError::Execution(format!(
+                        HawdbError::Execution(format!(
                             "CSG-CMP selected unknown relational predicate {}",
                             id.get()
                         ))
@@ -871,7 +871,7 @@ fn selected_materialized_join_display_access(
         .find(|(path, _)| path.descriptor.kind == RelationalAccessPathKind::FullScan)
         .map(|(_, access)| access.clone())
         .ok_or_else(|| {
-            SkeinError::Execution(format!(
+            HawdbError::Execution(format!(
                 "CSG-CMP materialized binding {} has no full-scan display access",
                 binding.get()
             ))
@@ -883,7 +883,7 @@ fn prepare_inner_select(
     relations: &[BoundRelation<'_>],
     predicates: &[BoundJoinPredicate],
     prepared_relations: &[PreparedGraphRelation],
-    plan: skein_optimizer::RelationalJoinPlan,
+    plan: hawdb_optimizer::RelationalJoinPlan,
     join_planning: RelationalJoinPlanningOutcome,
 ) -> Result<PlannedSelectStatement> {
     let reordered = join_planning.join_order_reordered();
@@ -994,7 +994,7 @@ fn prepare_selected_access_plan<'a>(
     base_binding: BindingId,
     base_path: &RelationalJoinAccessPath,
     joins: impl IntoIterator<Item = (BindingId, &'a RelationalJoinAccessPath)>,
-    cost_breakdown: skein_optimizer::PlanCostBreakdown,
+    cost_breakdown: hawdb_optimizer::PlanCostBreakdown,
 ) -> Result<PreparedRelationalAccessPlan> {
     let base_access = selected_base_access(prepared_relations, base_binding, base_path)?;
     let selected_joins = joins.into_iter().collect::<Vec<_>>();
@@ -1028,7 +1028,7 @@ fn selected_base_access(
         .find(|(candidate, _)| candidate == path)
         .map(|(_, access)| access.clone())
         .ok_or_else(|| {
-            SkeinError::Execution(format!(
+            HawdbError::Execution(format!(
                 "optimizer selected an unavailable base access path for binding {}",
                 binding.get()
             ))
@@ -1046,7 +1046,7 @@ fn selected_join_access(
         .find(|(candidate, _)| candidate == path)
         .map(|(_, access)| access.clone())
         .ok_or_else(|| {
-            SkeinError::Execution(format!(
+            HawdbError::Execution(format!(
                 "optimizer selected an unavailable join access path for binding {}",
                 binding.get()
             ))
@@ -1061,7 +1061,7 @@ fn prepared_relation(
         .iter()
         .find(|relation| relation.optimizer_relation.binding == binding)
         .ok_or_else(|| {
-            SkeinError::Execution(format!(
+            HawdbError::Execution(format!(
                 "optimizer selected an unknown relational binding {}",
                 binding.get()
             ))
@@ -1208,11 +1208,11 @@ fn bind_null_rejection_column(
     })
 }
 
-fn bind_null_rejection_value(value: &skein_sql::SqlValue) -> BoundScalarExpression {
+fn bind_null_rejection_value(value: &hawdb_sql::SqlValue) -> BoundScalarExpression {
     match value {
-        skein_sql::SqlValue::Literal(Value::Null) => BoundScalarExpression::LiteralNull,
-        skein_sql::SqlValue::Literal(_) => BoundScalarExpression::LiteralNonNull,
-        skein_sql::SqlValue::Parameter(_) => BoundScalarExpression::Parameter {
+        hawdb_sql::SqlValue::Literal(Value::Null) => BoundScalarExpression::LiteralNull,
+        hawdb_sql::SqlValue::Literal(_) => BoundScalarExpression::LiteralNonNull,
+        hawdb_sql::SqlValue::Parameter(_) => BoundScalarExpression::Parameter {
             nullability: ScalarNullability::MaybeNull,
         },
     }
@@ -1314,10 +1314,10 @@ fn expression_columns_resolve(expression: &SqlExpression, relations: &[BoundRela
 #[cfg(test)]
 mod tests {
     use super::*;
-    use skein_sql::SqlStatement;
+    use hawdb_sql::SqlStatement;
 
     fn select(sql: &str) -> SelectStatement {
-        let prepared = skein_sql::prepare_postgres_sql(sql).expect("valid PostgreSQL SELECT");
+        let prepared = hawdb_sql::prepare_postgres_sql(sql).expect("valid PostgreSQL SELECT");
         let SqlStatement::Select(select) = prepared.statement else {
             panic!("expected SELECT statement");
         };
@@ -1364,7 +1364,7 @@ mod tests {
         .expect_err("invalid optimizer state must fail closed");
         assert!(matches!(
             error,
-            SkeinError::Execution(message)
+            HawdbError::Execution(message)
                 if message.contains("relational join planner invariant violated")
                     && message.contains("inner_join_memo")
         ));
@@ -1377,7 +1377,7 @@ mod tests {
         .expect_err("syntax fallback requires an eligible failed attempt");
         assert!(matches!(
             error,
-            SkeinError::Execution(message)
+            HawdbError::Execution(message)
                 if message.contains("syntax fallback has no fallback-eligible attempt")
         ));
     }
@@ -1456,7 +1456,7 @@ mod tests {
                 )],
             },
         ];
-        let cost_breakdown = skein_optimizer::PlanCostBreakdown::new(35, 40, 0, 0, 0);
+        let cost_breakdown = hawdb_optimizer::PlanCostBreakdown::new(35, 40, 0, 0, 0);
 
         let prepared = prepare_selected_access_plan(
             &prepared_relations,

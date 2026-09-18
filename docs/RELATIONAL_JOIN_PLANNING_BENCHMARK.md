@@ -19,7 +19,7 @@ recomputing current-state binding, access paths, join planning, and execution
 descriptors. A successful CSG-CMP plan must contain exactly one ordered planning
 attempt; an eager `InnerJoinMemo` preflight fails the benchmark.
 
-The JSON report uses protocol `skein-relational-join-planning-v2` and retains:
+The JSON report uses protocol `hawdb-relational-join-planning-v2` and retains:
 
 - table count and SQL byte length;
 - cold parse time;
@@ -49,7 +49,7 @@ v2 as latency measurements. The earlier logical-only expression counts were
 values are machine-local trend evidence and require a
 same-revision, same-target reference before they can enforce a regression
 threshold. They are not representative Mem-replica qualification and do not
-authorize Skein in stable release artifacts.
+authorize Hawdb in stable release artifacts.
 
 ## Verification
 
@@ -58,5 +58,5 @@ smoke runner keeps it in the resource-isolated optimizer benchmark groups:
 
 ```text
 cargo bench --bench relational_join_planning
-bazel run //:skein_bench_relational_join_planning
+bazel run //:hawdb_bench_relational_join_planning
 ```

@@ -2,14 +2,14 @@ use super::{
     require_bool, require_empty_array, require_nonzero, require_string, required_features,
     validate_common_artifact, validate_exact_binding,
 };
+use hawdb::ProductionQualificationIdentity;
 use serde_json::Value;
-use skein::ProductionQualificationIdentity;
 use std::collections::BTreeSet;
 
-const GRAPH_PROTOCOL: &str = "skein-production-graph-storage-qualification-v1";
-const SEARCH_PROTOCOL: &str = "skein-production-search-out-of-core-qualification-v1";
-const SEARCH_QUALIFICATION_PROTOCOL: &str = "skein-search-lexical-production-qualification";
-const STORAGE_PROFILE_PROTOCOL: &str = "skein-storage-resource-profile-v2";
+const GRAPH_PROTOCOL: &str = "hawdb-production-graph-storage-qualification-v1";
+const SEARCH_PROTOCOL: &str = "hawdb-production-search-out-of-core-qualification-v1";
+const SEARCH_QUALIFICATION_PROTOCOL: &str = "hawdb-search-lexical-production-qualification";
+const STORAGE_PROFILE_PROTOCOL: &str = "hawdb-storage-resource-profile-v2";
 const MINIMUM_SEARCH_DOCUMENT_COUNT: u64 = 100_000;
 
 pub(super) fn validate_graph(

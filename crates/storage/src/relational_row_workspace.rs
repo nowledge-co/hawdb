@@ -94,7 +94,7 @@ struct RelationalSparseLiveHydrator<'a> {
     requested_fields: BTreeMap<String, Arc<[usize]>>,
     resolved_probes: BTreeSet<RelationalSparseIndexProbe>,
     hydration: RelationalHydrationBudget,
-    task: skein_core::RuntimeTaskContext,
+    task: hawdb_core::RuntimeTaskContext,
     limits: RelationalRowPageSnapshotReadLimits,
     pages_read: usize,
     rows_decoded: usize,
@@ -139,7 +139,7 @@ impl<'a> RelationalSparseLiveHydrator<'a> {
                 max_memory_bytes: max_bytes,
                 ..RelationalHydrationBudget::default()
             },
-            task: skein_core::RuntimeTaskContext::default(),
+            task: hawdb_core::RuntimeTaskContext::default(),
             limits,
             pages_read: 0,
             rows_decoded: 0,

@@ -35,7 +35,7 @@ fn source_mutation_dual_write_readiness_blocks_composite_source_ingest_gaps() {
         .find(|item| item.family == NOWLEDGE_MEM_SOURCE_MUTATION_FAMILY_INGEST_CREATE)
         .unwrap();
     ingest.payload_frozen = false;
-    ingest.skein_ack_recorded = false;
+    ingest.hawdb_ack_recorded = false;
     ingest.independent_watermarks_recorded = false;
     ingest.replay_idempotent = false;
     ingest.search_projection_payload_frozen = false;
@@ -60,7 +60,7 @@ fn source_mutation_dual_write_readiness_blocks_composite_source_ingest_gaps() {
         .contains(&"source_mutation_dual_write_payload_not_frozen".to_string()));
     assert!(report
         .blocker_codes
-        .contains(&"source_mutation_dual_write_skein_ack_missing".to_string()));
+        .contains(&"source_mutation_dual_write_hawdb_ack_missing".to_string()));
     assert!(report
         .blocker_codes
         .contains(&"source_mutation_dual_write_independent_watermarks_missing".to_string()));

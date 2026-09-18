@@ -1,7 +1,7 @@
 use super::*;
 use crate::PipelineMemoryReport;
-use skein_core::Value;
-use skein_plan::PlanChildren;
+use hawdb_core::Value;
+use hawdb_plan::PlanChildren;
 
 #[test]
 fn query_observers_keep_reports_isolated() {
@@ -54,14 +54,14 @@ fn typed_reports_preserve_contents_order_and_last_vector_count() {
         GraphExpansionTruncationReason, VectorCompressionMode, VectorExecutionBackend,
         VectorExecutionReport, VectorScoreSource,
     };
-    use skein_storage::{ScanPruningStrategy, ScanPruningTargetKind};
+    use hawdb_storage::{ScanPruningStrategy, ScanPruningTargetKind};
 
     let observer = QueryExecutionObserver::default();
     assert_eq!(observer.current_vector_rerank_count(), 0);
     let vector = VectorExecutionReport {
         backend: VectorExecutionBackend::ScalarFlat,
         compression_mode: VectorCompressionMode::Disabled,
-        candidate_source: skein_plan::VectorCandidateSource::Scalar,
+        candidate_source: hawdb_plan::VectorCandidateSource::Scalar,
         backend_selection_reason: None,
         estimated_raw_vector_bytes: Some(128),
         filter_selectivity_per_million: None,

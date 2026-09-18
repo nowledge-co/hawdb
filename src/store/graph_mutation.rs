@@ -99,13 +99,13 @@ impl GraphStore {
         properties: BTreeMap<String, Value>,
     ) -> Result<RelId> {
         if self.node_owned(source)?.is_none() {
-            return Err(SkeinError::Storage(format!(
+            return Err(HawdbError::Storage(format!(
                 "source node {} does not exist",
                 source.0
             )));
         }
         if self.node_owned(target)?.is_none() {
-            return Err(SkeinError::Storage(format!(
+            return Err(HawdbError::Storage(format!(
                 "target node {} does not exist",
                 target.0
             )));
@@ -657,19 +657,19 @@ impl GraphStore {
             .iter()
             .map(|id| {
                 let node = self.node_owned(*id)?.ok_or_else(|| {
-                    SkeinError::Storage(format!("node {} disappeared during property update", id.0))
+                    HawdbError::Storage(format!("node {} disappeared during property update", id.0))
                 })?;
                 let current = match node.properties.get(property) {
                     None | Some(Value::Null) => 0,
                     Some(Value::Int(value)) => *value,
                     Some(value) => {
-                        return Err(SkeinError::Execution(format!(
+                        return Err(HawdbError::Execution(format!(
                             "property increment requires an integer or null value, got {value:?}"
                         )));
                     }
                 };
                 let value = current.checked_add(amount).ok_or_else(|| {
-                    SkeinError::Execution("property increment overflowed i64".to_string())
+                    HawdbError::Execution("property increment overflowed i64".to_string())
                 })?;
                 Ok(WalOp::SetNodeProperty {
                     id: *id,
@@ -750,7 +750,7 @@ impl GraphStore {
             return Ok(Vec::new());
         }
         let operation_count = ids.len().checked_mul(assignments.len()).ok_or_else(|| {
-            SkeinError::Execution("mutation operation count overflow".to_string())
+            HawdbError::Execution("mutation operation count overflow".to_string())
         })?;
         ensure_additional_mutation_limits(0, 0, operation_count, ids.len(), limits)?;
         let ops = self.node_set_property_ops(ids, assignments)?;
@@ -772,7 +772,7 @@ impl GraphStore {
         let mut ops = Vec::with_capacity(ids.len().saturating_mul(assignments.len()));
         for id in ids {
             let node = self.node_owned(*id)?.ok_or_else(|| {
-                SkeinError::Storage(format!("node {} disappeared during property update", id.0))
+                HawdbError::Storage(format!("node {} disappeared during property update", id.0))
             })?;
             for assignment in assignments {
                 let value = evaluate_node_set_value(&node.properties, assignment)?;
@@ -1006,7 +1006,7 @@ impl GraphStore {
                 Ok(Some(target)) if target.labels.contains(&target_label_id) => {
                     ids.insert(relationship.target);
                     if ids.len() > max_ids {
-                        callback_error = Some(SkeinError::Execution(format!(
+                        callback_error = Some(HawdbError::Execution(format!(
                             "mutation would exceed max_mutation_affected_rows {max_ids}"
                         )));
                         return GraphScanControl::Stop;
@@ -1095,7 +1095,7 @@ impl GraphStore {
             }
             ids.push(*target);
             if ids.len() > max_ids {
-                return Err(SkeinError::Execution(format!(
+                return Err(HawdbError::Execution(format!(
                     "mutation would exceed max_mutation_affected_rows {max_ids}"
                 )));
             }
@@ -1295,7 +1295,7 @@ impl GraphStore {
         catalog: &Catalog,
         commit_epoch: u64,
         ops: &[WalOp],
-        relational_primary_key_changes: Option<skein_storage::RelationalPrimaryKeyChangeCapture>,
+        relational_primary_key_changes: Option<hawdb_storage::RelationalPrimaryKeyChangeCapture>,
     ) {
         let mut upsert_node_ids = BTreeSet::new();
         let mut delete_document_ids = BTreeSet::new();
@@ -1307,17 +1307,17 @@ impl GraphStore {
         );
         let relational_primary_key_changes = relational_primary_key_changes.unwrap_or_else(|| {
             let reason = if wal_ops_contain_relational_snapshot(ops) {
-                Some(skein_storage::RelationalPrimaryKeyChangeRebuildReason::SnapshotReplacement)
+                Some(hawdb_storage::RelationalPrimaryKeyChangeRebuildReason::SnapshotReplacement)
             } else if wal_ops_contain_relational_transaction(ops) {
-                Some(skein_storage::RelationalPrimaryKeyChangeRebuildReason::MissingWalCapture)
+                Some(hawdb_storage::RelationalPrimaryKeyChangeRebuildReason::MissingWalCapture)
             } else {
                 None
             };
             match reason {
                 Some(reason) => {
-                    skein_storage::RelationalPrimaryKeyChangeCapture::RequiresRebuild { reason }
+                    hawdb_storage::RelationalPrimaryKeyChangeCapture::RequiresRebuild { reason }
                 }
-                None => skein_storage::RelationalPrimaryKeyChangeCapture::Captured {
+                None => hawdb_storage::RelationalPrimaryKeyChangeCapture::Captured {
                     tables: Vec::new(),
                     encoded_bytes: 0,
                 },
@@ -1348,13 +1348,13 @@ impl GraphStore {
     pub(super) fn relational_primary_key_changes_from_wal_ops(
         &self,
         ops: &[WalOp],
-    ) -> Result<Option<skein_storage::RelationalPrimaryKeyChangeCapture>> {
+    ) -> Result<Option<hawdb_storage::RelationalPrimaryKeyChangeCapture>> {
         let mut captures = Vec::new();
         collect_relational_primary_key_changes_from_wal_ops(ops, &mut captures)?;
         if captures.len() > 1 {
             return Ok(Some(
-                skein_storage::RelationalPrimaryKeyChangeCapture::RequiresRebuild {
-                    reason: skein_storage::RelationalPrimaryKeyChangeRebuildReason::MultipleRelationalTransactions,
+                hawdb_storage::RelationalPrimaryKeyChangeCapture::RequiresRebuild {
+                    reason: hawdb_storage::RelationalPrimaryKeyChangeRebuildReason::MultipleRelationalTransactions,
                 },
             ));
         }
@@ -1728,7 +1728,7 @@ impl GraphStore {
             GraphScanControl::Continue
         })?;
         if exceeded {
-            return Err(SkeinError::Execution(format!(
+            return Err(HawdbError::Execution(format!(
                 "mutation would exceed {limit_name} {max_ids}"
             )));
         }
@@ -1746,7 +1746,7 @@ impl GraphStore {
         let mut ids = self.matching_node_ids_bounded(label_id, filter, max_ids, limit_name)?;
         for id in Self::pending_node_ids_matching(label_id, filter, pending_nodes) {
             if ids.len() == max_ids {
-                return Err(SkeinError::Execution(format!(
+                return Err(HawdbError::Execution(format!(
                     "mutation would exceed {limit_name} {max_ids}"
                 )));
             }
@@ -1786,14 +1786,14 @@ impl GraphStore {
                 let relationship = relationship?;
                 if relationship.source == *id || relationship.target == *id {
                     if !detach {
-                        return Err(SkeinError::Storage(format!(
+                        return Err(HawdbError::Storage(format!(
                             "node {} has relationships; use DETACH DELETE",
                             id.0
                         )));
                     }
                     relationship_ids.insert(relationship.id);
                     if relationship_ids.len().saturating_add(ids.len()) > max_operations {
-                        return Err(SkeinError::Execution(format!(
+                        return Err(HawdbError::Execution(format!(
                             "mutation would exceed max_mutation_operations {max_operations}"
                         )));
                     }
@@ -1801,7 +1801,7 @@ impl GraphStore {
             }
         }
         if ids.len() > max_operations {
-            return Err(SkeinError::Execution(format!(
+            return Err(HawdbError::Execution(format!(
                 "mutation would exceed max_mutation_operations {max_operations}"
             )));
         }
@@ -1815,25 +1815,25 @@ impl GraphStore {
 }
 
 fn omit_internal_search_projection_relational_changes(
-    capture: skein_storage::RelationalPrimaryKeyChangeCapture,
-) -> skein_storage::RelationalPrimaryKeyChangeCapture {
-    let skein_storage::RelationalPrimaryKeyChangeCapture::Captured { mut tables, .. } = capture
+    capture: hawdb_storage::RelationalPrimaryKeyChangeCapture,
+) -> hawdb_storage::RelationalPrimaryKeyChangeCapture {
+    let hawdb_storage::RelationalPrimaryKeyChangeCapture::Captured { mut tables, .. } = capture
     else {
         return capture;
     };
-    tables.retain(|table| table.table != "skein_schema_migrations");
+    tables.retain(|table| table.table != "hawdb_schema_migrations");
     let encoded_bytes = tables.iter().fold(0usize, |total, table| {
         let table_bytes = 4usize.saturating_add(table.table.len());
         table.primary_keys.iter().fold(
             total.saturating_add(table_bytes),
             |table_total, primary_key| {
-                let key_bytes = skein_storage::encode_relational_primary_key(primary_key)
+                let key_bytes = hawdb_storage::encode_relational_primary_key(primary_key)
                     .map_or(0, |encoded| encoded.len());
                 table_total.saturating_add(4).saturating_add(key_bytes)
             },
         )
     });
-    skein_storage::RelationalPrimaryKeyChangeCapture::Captured {
+    hawdb_storage::RelationalPrimaryKeyChangeCapture::Captured {
         tables,
         encoded_bytes,
     }
@@ -1841,23 +1841,23 @@ fn omit_internal_search_projection_relational_changes(
 
 fn collect_relational_primary_key_changes_from_wal_ops(
     ops: &[WalOp],
-    captures: &mut Vec<skein_storage::RelationalPrimaryKeyChangeCapture>,
+    captures: &mut Vec<hawdb_storage::RelationalPrimaryKeyChangeCapture>,
 ) -> Result<()> {
     for op in ops {
         match op {
             WalOp::Relational { record } => {
                 let batch = decode_relational_wal_batch(record, RelationalDecodeLimits::wal())
-                    .map_err(|error| SkeinError::Storage(error.to_string()))?;
+                    .map_err(|error| HawdbError::Storage(error.to_string()))?;
                 captures.push(batch.primary_key_changes.unwrap_or(
-                    skein_storage::RelationalPrimaryKeyChangeCapture::RequiresRebuild {
-                        reason: skein_storage::RelationalPrimaryKeyChangeRebuildReason::MissingWalCapture,
+                    hawdb_storage::RelationalPrimaryKeyChangeCapture::RequiresRebuild {
+                        reason: hawdb_storage::RelationalPrimaryKeyChangeRebuildReason::MissingWalCapture,
                     },
                 ));
             }
             WalOp::RelationalSnapshot { .. } => captures.push(
-                skein_storage::RelationalPrimaryKeyChangeCapture::RequiresRebuild {
+                hawdb_storage::RelationalPrimaryKeyChangeCapture::RequiresRebuild {
                     reason:
-                        skein_storage::RelationalPrimaryKeyChangeRebuildReason::SnapshotReplacement,
+                        hawdb_storage::RelationalPrimaryKeyChangeRebuildReason::SnapshotReplacement,
                 },
             ),
             WalOp::Batch(ops) => {

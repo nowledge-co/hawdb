@@ -1,5 +1,5 @@
 use super::*;
-use skein_integrity::integrity_digest;
+use hawdb_integrity::integrity_digest;
 
 fn page_id(value: u64) -> RelationalRowPageId {
     RelationalRowPageId::new(NonZeroU64::new(value).unwrap())

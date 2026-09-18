@@ -6,8 +6,8 @@ use crate::{
     Distribution, MemoryBudgetClass, OptimizerConfig, OptimizerSearchDirective, PhysicalPlanClass,
     PhysicalPlanKind, ScanPruningSupport, VectorPrecision,
 };
-use skein_core::Value;
-use skein_plan::{
+use hawdb_core::Value;
+use hawdb_plan::{
     AggregateFunction, AggregateTarget, Aggregation, LogicalPlan, NodeProjectionAccess,
     PhysicalOperatorDomain, PhysicalPlan, PhysicalPlanChildren, PhysicalPlanDomainRef, Predicate,
     Projection, ProjectionExpression, SortDirection, SortItem, SortKey,
@@ -110,7 +110,7 @@ fn source_predicate_is_indexed_before_graph_expansion() {
             rel_variable: Some("r".to_string()),
             rel_type: "MENTIONS".to_string(),
             rel_properties: Default::default(),
-            direction: skein_cypher::RelationshipDirection::Outgoing,
+            direction: hawdb_cypher::RelationshipDirection::Outgoing,
             target_variable: "e".to_string(),
             target_label: "Entity".to_string(),
             min_hops: 1,
@@ -164,7 +164,7 @@ fn bound_relationship_exists_lowers_to_an_observable_adjacency_operator() {
         predicate: Predicate::BoundRelationshipExists {
             source_variable: "c".to_string(),
             rel_type: "SYNTHESIZED_FROM".to_string(),
-            direction: skein_cypher::RelationshipDirection::Outgoing,
+            direction: hawdb_cypher::RelationshipDirection::Outgoing,
             target_variable: "s".to_string(),
         },
         input: Box::new(LogicalPlan::Expand {
@@ -173,7 +173,7 @@ fn bound_relationship_exists_lowers_to_an_observable_adjacency_operator() {
             rel_variable: None,
             rel_type: "CRYSTALLIZED_FROM".to_string(),
             rel_properties: Default::default(),
-            direction: skein_cypher::RelationshipDirection::Outgoing,
+            direction: hawdb_cypher::RelationshipDirection::Outgoing,
             target_variable: "s".to_string(),
             target_label: "Memory".to_string(),
             min_hops: 1,
@@ -194,7 +194,7 @@ fn bound_relationship_exists_lowers_to_an_observable_adjacency_operator() {
         PhysicalPlan::AdjacencyExistsExec {
             source_variable,
             rel_type,
-            direction: skein_cypher::RelationshipDirection::Outgoing,
+            direction: hawdb_cypher::RelationshipDirection::Outgoing,
             target_variable,
             input,
         } if source_variable == "c"
@@ -408,7 +408,7 @@ fn unfiltered_relationship_count_uses_exact_count_store() {
             rel_variable: Some("r".to_string()),
             rel_type: "MENTIONS".to_string(),
             rel_properties: BTreeMap::new(),
-            direction: skein_cypher::RelationshipDirection::Outgoing,
+            direction: hawdb_cypher::RelationshipDirection::Outgoing,
             target_variable: "target".to_string(),
             target_label: String::new(),
             min_hops: 1,
@@ -575,7 +575,7 @@ fn scalar_node_projection_decodes_only_required_properties() {
             predicate: Predicate::PropertyCompare {
                 variable: "m".to_string(),
                 property: "rank".to_string(),
-                op: skein_plan::ComparisonOp::Gte,
+                op: hawdb_plan::ComparisonOp::Gte,
                 value: Value::Int(10),
             },
             input: Box::new(LogicalPlan::NodeScan {
@@ -763,13 +763,13 @@ fn composite_range_projection_uses_a_contiguous_equality_prefix() {
         Predicate::PropertyCompare {
             variable: "m".to_string(),
             property: "created_at".to_string(),
-            op: skein_plan::ComparisonOp::Gte,
+            op: hawdb_plan::ComparisonOp::Gte,
             value: Value::Int(100),
         },
         Predicate::PropertyCompare {
             variable: "m".to_string(),
             property: "created_at".to_string(),
-            op: skein_plan::ComparisonOp::Lt,
+            op: hawdb_plan::ComparisonOp::Lt,
             value: Value::Int(200),
         },
     ]);
@@ -857,7 +857,7 @@ fn composite_range_projection_rejects_a_gap_in_the_index_prefix() {
             Predicate::PropertyCompare {
                 variable: "m".to_string(),
                 property: "created_at".to_string(),
-                op: skein_plan::ComparisonOp::Gte,
+                op: hawdb_plan::ComparisonOp::Gte,
                 value: Value::Int(100),
             },
         ]),
@@ -1267,7 +1267,7 @@ fn conjunction_access_path_compares_equality_and_range_candidates_by_total_cost(
             Predicate::PropertyCompare {
                 variable: "m".to_string(),
                 property: "created_at".to_string(),
-                op: skein_plan::ComparisonOp::Gte,
+                op: hawdb_plan::ComparisonOp::Gte,
                 value: Value::Int(99),
             },
         ]),

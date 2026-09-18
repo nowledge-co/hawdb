@@ -3,7 +3,7 @@ use super::*;
 #[test]
 fn deletes_knowledge_entity_through_typed_api() {
     let mut db = Database::new();
-    db.query("CREATE (:Memory {id: 'memory_1', title: 'First'})-[:MENTIONS]->(:Entity {id: 'entity_1', name: 'Skein'})")
+    db.query("CREATE (:Memory {id: 'memory_1', title: 'First'})-[:MENTIONS]->(:Entity {id: 'entity_1', name: 'Hawdb'})")
         .unwrap();
 
     let output = db

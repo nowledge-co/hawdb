@@ -39,12 +39,12 @@ use crate::{
     ExecutionLimit, ExecutionMemoryConfig, ExternalReadOperator, QueryMemoryClass,
     QueryMemoryLedger,
 };
-use skein_core::{Catalog, RelationshipDirection, Result, RuntimeTaskContext, SkeinError, Value};
-use skein_plan::{
+use hawdb_core::{Catalog, HawdbError, RelationshipDirection, Result, RuntimeTaskContext, Value};
+use hawdb_plan::{
     Aggregation, PhysicalPlan, PlanChildren, Predicate, Projection, RelationshipCountLeg, SortItem,
 };
-use skein_storage::{NodeId, NodeRecord, PropertyFilter, ScanPruningReport};
-use skein_storage::{ScanPruningStrategy, ScanPruningTargetKind};
+use hawdb_storage::{NodeId, NodeRecord, PropertyFilter, ScanPruningReport};
+use hawdb_storage::{ScanPruningStrategy, ScanPruningTargetKind};
 use std::collections::BTreeMap;
 use std::num::{NonZeroU64, NonZeroUsize};
 
@@ -184,7 +184,7 @@ impl OptionalDegreeSpec<'_> {
                         0
                     } else {
                         let source = binding.nodes.get(source_variable).ok_or_else(|| {
-                            SkeinError::Execution(format!(
+                            HawdbError::Execution(format!(
                                 "missing variable '{source_variable}' during optional degree"
                             ))
                         })?;
@@ -393,7 +393,7 @@ fn emit_byte_bounded_batches(
     for binding in &batch {
         let binding_bytes = binding_memory_bytes(binding);
         if binding_bytes > max_payload_bytes {
-            return Err(SkeinError::Execution(format!(
+            return Err(HawdbError::Execution(format!(
                 "intermediate row uses {binding_bytes} bytes, exceeding batch_payload_bytes {max_payload_bytes}"
             )));
         }
@@ -414,7 +414,7 @@ fn emit_byte_bounded_batches(
     for binding in batch {
         let binding_bytes = binding_memory_bytes(&binding);
         if binding_bytes > max_payload_bytes {
-            return Err(SkeinError::Execution(format!(
+            return Err(HawdbError::Execution(format!(
                 "intermediate row uses {binding_bytes} bytes, exceeding batch_payload_bytes {max_payload_bytes}"
             )));
         }

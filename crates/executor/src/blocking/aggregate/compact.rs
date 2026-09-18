@@ -1,6 +1,6 @@
 use super::*;
 
-const COMPACT_AGGREGATE_ROW: &str = "__skein_compact_aggregate";
+const COMPACT_AGGREGATE_ROW: &str = "__hawdb_compact_aggregate";
 
 pub(super) fn encode_compact_group_binding(
     key: Vec<Value>,
@@ -99,8 +99,8 @@ fn decode_aggregate_input(value: Value) -> Result<AggregateInput> {
     }
 }
 
-fn invalid_compact_row(reason: &str) -> SkeinError {
-    SkeinError::Execution(format!("AggregateExec compact spill record {reason}"))
+fn invalid_compact_row(reason: &str) -> HawdbError {
+    HawdbError::Execution(format!("AggregateExec compact spill record {reason}"))
 }
 
 #[cfg(test)]

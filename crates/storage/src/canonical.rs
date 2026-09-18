@@ -12,8 +12,8 @@ use crate::{
     PropertySpillReader, PropertySpillWriteOptions, PropertySpillWriteOutput, PropertySpillWriter,
     RelId, RelRecord, SegmentCache, SegmentRangeRead, SegmentReadError, SegmentReadRange, StoreId,
 };
-use skein_core::{LabelId, RelTypeId, Value};
-use skein_integrity::{IntegrityHasher, Sha256Digest};
+use hawdb_core::{LabelId, RelTypeId, Value};
+use hawdb_integrity::{IntegrityHasher, Sha256Digest};
 use std::borrow::Borrow;
 use std::collections::{BTreeMap, BTreeSet};
 use std::error::Error;
@@ -25,8 +25,8 @@ use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 
-const ARTIFACT_HEADER: &[u8; 16] = b"SKEINCANONICAL01";
-const MANIFEST_HEADER_V1: &str = "SKEIN_CANONICAL_MANIFEST_V1";
+const ARTIFACT_HEADER: &[u8; 16] = b"HAWDBCANONICAL01";
+const MANIFEST_HEADER_V1: &str = "HAWDB_CANONICAL_MANIFEST_V1";
 const SEGMENT_HEADER: &[u8; 8] = b"SKNSEG01";
 const ARTIFACT_ID: u64 = 0x534b_4341_4e4f_4e31;
 pub(crate) const MAX_VALUE_DEPTH: usize = 32;
@@ -41,11 +41,11 @@ const DESCRIPTOR_SCAN_BATCH: u64 = 256;
 pub const CANONICAL_SEGMENT_DESCRIPTOR_ARTIFACT_ID: u64 = 0x534b_4341_4e44_5331;
 
 pub fn canonical_segment_descriptor_page_file(generation: u64) -> String {
-    format!("canonical-segment-descriptors-{generation}.pages.skein")
+    format!("canonical-segment-descriptors-{generation}.pages.hawdb")
 }
 
 pub fn canonical_segment_descriptor_root_file(generation: u64) -> String {
-    format!("canonical-segment-descriptors-{generation}.root.skein")
+    format!("canonical-segment-descriptors-{generation}.root.hawdb")
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
@@ -376,7 +376,7 @@ impl PersistentCanonicalSegmentDescriptorTree {
 
     pub fn for_artifact(path: &Path, generation: ManifestGeneration) -> Self {
         let parent = path.parent().unwrap_or_else(|| Path::new("."));
-        let durable_name = format!("canonical.{}.skein", generation.0);
+        let durable_name = format!("canonical.{}.hawdb", generation.0);
         let (page_artifact, root_manifest) = if path
             .file_name()
             .is_some_and(|name| name == durable_name.as_str())
@@ -387,8 +387,8 @@ impl PersistentCanonicalSegmentDescriptorTree {
             )
         } else {
             (
-                path.with_extension("descriptors.pages.skein"),
-                path.with_extension("descriptors.root.skein"),
+                path.with_extension("descriptors.pages.hawdb"),
+                path.with_extension("descriptors.root.hawdb"),
             )
         };
         Self::new(
@@ -860,7 +860,7 @@ impl CanonicalSegmentWriter {
         N: IntoIterator<Item = Result<NodeRecord, CanonicalSegmentError>>,
         R: IntoIterator<Item = Result<RelRecord, CanonicalSegmentError>>,
     {
-        let tmp_path = path.with_extension("skein.tmp");
+        let tmp_path = path.with_extension("hawdb.tmp");
         let source_commit_epoch = generation.0;
         let descriptor_tree =
             create_canonical_descriptor_tree(path, generation, source_commit_epoch)?;
@@ -898,8 +898,8 @@ impl CanonicalSegmentWriter {
         N: IntoIterator<Item = Result<NodeRecord, CanonicalSegmentError>>,
         R: IntoIterator<Item = Result<RelRecord, CanonicalSegmentError>>,
     {
-        let tmp_path = path.with_extension("skein.tmp");
-        let spill_tmp_path = property_spill.artifact_path.with_extension("skein.tmp");
+        let tmp_path = path.with_extension("hawdb.tmp");
+        let spill_tmp_path = property_spill.artifact_path.with_extension("hawdb.tmp");
         let source_commit_epoch = property_spill.source_commit_epoch;
         let descriptor_tree =
             create_canonical_descriptor_tree(path, generation, source_commit_epoch)?;
@@ -3306,7 +3306,7 @@ const RESIDUAL_KEY_ID_FIELD: u32 = 1;
 /// as the length-delimited field body; no second value encoding exists.
 const RESIDUAL_CANONICAL_VALUE_FIELD: u32 = 2;
 
-fn wire_corrupt(error: skein_core::error::SkeinError) -> CanonicalSegmentError {
+fn wire_corrupt(error: hawdb_core::error::HawdbError) -> CanonicalSegmentError {
     CanonicalSegmentError::Corrupt(format!("residual row wire payload is invalid: {error}"))
 }
 
@@ -3635,7 +3635,7 @@ fn decode_value_with_property_spills(
             let length = cursor.read_u32()? as usize;
             Ok(Value::Binary(cursor.read_exact(length)?.to_vec()))
         }
-        9 => Ok(Value::Uuid(skein_core::Uuid::from_bytes(
+        9 => Ok(Value::Uuid(hawdb_core::Uuid::from_bytes(
             cursor
                 .read_exact(16)?
                 .try_into()
@@ -4054,8 +4054,8 @@ mod tests {
         let canonical_path = unique_path("spill_closure_canonical");
         let spill_path = unique_path("spill_closure_values");
         let spill_paths = GraphDescriptorTreePaths::new(
-            spill_path.with_extension("descriptors.pages.skein"),
-            spill_path.with_extension("descriptors.root.skein"),
+            spill_path.with_extension("descriptors.pages.hawdb"),
+            spill_path.with_extension("descriptors.root.hawdb"),
         );
         let spill_config = PropertySpillConfig {
             spill_threshold_bytes: NonZeroU64::new(1).unwrap(),
@@ -4110,11 +4110,11 @@ mod tests {
 
         let short_spill_path = unique_path("spill_closure_short_values");
         let short_spill_paths = GraphDescriptorTreePaths::new(
-            short_spill_path.with_extension("descriptors.pages.skein"),
-            short_spill_path.with_extension("descriptors.root.skein"),
+            short_spill_path.with_extension("descriptors.pages.hawdb"),
+            short_spill_path.with_extension("descriptors.root.hawdb"),
         );
         let mut short_spill_writer = PropertySpillWriter::create(
-            short_spill_path.with_extension("skein.tmp"),
+            short_spill_path.with_extension("hawdb.tmp"),
             generation,
             generation.0,
             spill_config,
@@ -4981,7 +4981,7 @@ mod tests {
             .contains("invalid canonical manifest line"));
         let old_header = reseal_manifest(&encoded, |line| {
             if line == MANIFEST_HEADER_V1 {
-                "SKEIN_CANONICAL_MANIFEST_V2".to_string()
+                "HAWDB_CANONICAL_MANIFEST_V2".to_string()
             } else {
                 line.to_string()
             }
@@ -5211,8 +5211,8 @@ mod tests {
         fn drop(&mut self) {
             for owned in [
                 self.0.clone(),
-                self.0.with_extension("descriptors.pages.skein"),
-                self.0.with_extension("descriptors.root.skein"),
+                self.0.with_extension("descriptors.pages.hawdb"),
+                self.0.with_extension("descriptors.root.hawdb"),
             ] {
                 let _ = std::fs::remove_file(owned);
             }
@@ -5225,7 +5225,7 @@ mod tests {
             .unwrap()
             .as_nanos();
         CanonicalFixturePath(
-            std::env::temp_dir().join(format!("skein-canonical-{name}-{nonce}.skein")),
+            std::env::temp_dir().join(format!("hawdb-canonical-{name}-{nonce}.hawdb")),
         )
     }
 

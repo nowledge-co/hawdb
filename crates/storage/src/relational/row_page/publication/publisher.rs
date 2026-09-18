@@ -14,7 +14,7 @@ use crate::relational::{
     RelationalValue,
 };
 use crate::{durable_replace_file, sync_directory};
-use skein_integrity::{integrity_digest, Sha256Digest};
+use hawdb_integrity::{integrity_digest, Sha256Digest};
 use std::collections::{BTreeMap, BTreeSet};
 use std::fs::{self, File, OpenOptions};
 use std::io::Write;
@@ -103,7 +103,7 @@ impl RelationalRowPagePublisher {
         request: RelationalRowPageGenerationRequest<'_>,
         deltas: Vec<RelationalRowPageTableDelta>,
         config: super::RelationalRowPageRewriteConfig,
-        task: &skein_core::RuntimeTaskContext,
+        task: &hawdb_core::RuntimeTaskContext,
     ) -> Result<RelationalRowPagePublicationReport, RelationalRowPagePublicationError> {
         self.persist_generation_inner(
             GenerationPublication {
@@ -913,11 +913,11 @@ impl PublicationPaths {
             directory.join(relational_row_page_manifest_generation_file(generation));
         let latest_manifest = directory.join(RELATIONAL_ROW_PAGE_MANIFEST_FILE);
         Self {
-            page_tmp: page.with_extension("skein.tmp"),
-            descriptor_tmp: descriptor.with_extension("skein.tmp"),
-            key_tmp: key.with_extension("skein.tmp"),
-            generation_manifest_tmp: generation_manifest.with_extension("skein.tmp"),
-            latest_manifest_tmp: latest_manifest.with_extension("skein.tmp"),
+            page_tmp: page.with_extension("hawdb.tmp"),
+            descriptor_tmp: descriptor.with_extension("hawdb.tmp"),
+            key_tmp: key.with_extension("hawdb.tmp"),
+            generation_manifest_tmp: generation_manifest.with_extension("hawdb.tmp"),
+            latest_manifest_tmp: latest_manifest.with_extension("hawdb.tmp"),
             page,
             descriptor,
             key,

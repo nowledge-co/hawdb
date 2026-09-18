@@ -1,10 +1,10 @@
-use serde::Deserialize;
-use skein::{
+use hawdb::{
     DatabaseConfig, RuntimeGovernorConfig, StorageResidencyMode, StorageResourceProfileLimits,
 };
-use skein_qualification::{
+use hawdb_qualification::{
     CONTENT_STORE_512_MIB_CAPABILITY_BYTES, CONTENT_STORE_SHARED_HOST_MAX_CAPACITY_BYTES,
 };
+use serde::Deserialize;
 use std::num::NonZeroUsize;
 
 #[derive(Debug, Deserialize)]

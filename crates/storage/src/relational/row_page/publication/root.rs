@@ -10,7 +10,7 @@ use crate::relational::{
     ordered_key::encode_ordered_relational_key, ImmutableRelationalRowPage,
     RelationalRowPageLimits, RelationalRowPageView,
 };
-use skein_integrity::{IntegrityHasher, Sha256Digest, SHA256_BYTES};
+use hawdb_integrity::{IntegrityHasher, Sha256Digest, SHA256_BYTES};
 use std::collections::{BTreeMap, BTreeSet};
 use std::fs::File;
 use std::io::{BufWriter, Write};

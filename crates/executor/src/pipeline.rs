@@ -7,8 +7,8 @@ use crate::{
     ExecutionLimit, ExecutionMemoryConfig, QueryMemoryAccount, QueryMemoryClass, QueryMemoryLease,
     QueryMemoryLedger,
 };
-use skein_core::{Catalog, Result, RuntimeTaskContext, SkeinError};
-use skein_plan::PhysicalPlan;
+use hawdb_core::{Catalog, HawdbError, Result, RuntimeTaskContext};
+use hawdb_plan::PhysicalPlan;
 use std::num::NonZeroUsize;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -176,7 +176,7 @@ impl AccountedBindingBatch {
     ) -> Result<BatchControl> {
         let target_bytes = binding_memory_bytes(&binding);
         if target_bytes > self.tracker.budget_bytes {
-            return Err(SkeinError::Execution(format!(
+            return Err(HawdbError::Execution(format!(
                 "intermediate row uses {target_bytes} bytes, exceeding batch_payload_bytes {}",
                 self.tracker.budget_bytes
             )));
@@ -190,7 +190,7 @@ impl AccountedBindingBatch {
         source
             .transfer_to(source_bytes, &mut self.tracker, target_bytes)
             .map_err(|error| {
-                SkeinError::Execution(format!(
+                HawdbError::Execution(format!(
                     "{} output batch could not take ownership of a {target_bytes}-byte binding: {error}",
                     self.operator
                 ))
@@ -206,7 +206,7 @@ impl AccountedBindingBatch {
     ) -> Result<BatchControl> {
         let bytes = binding_memory_bytes(&binding);
         if bytes > self.tracker.budget_bytes {
-            return Err(SkeinError::Execution(format!(
+            return Err(HawdbError::Execution(format!(
                 "intermediate row uses {bytes} bytes, exceeding batch_payload_bytes {}",
                 self.tracker.budget_bytes
             )));
@@ -305,7 +305,7 @@ pub fn runtime_checkpoint(task_context: Option<&RuntimeTaskContext>) -> Result<(
     match task_context {
         Some(task_context) => task_context
             .checkpoint()
-            .map_err(|reason| SkeinError::Execution(format!("runtime task stopped: {reason}"))),
+            .map_err(|reason| HawdbError::Execution(format!("runtime task stopped: {reason}"))),
         None => Ok(()),
     }
 }
@@ -350,7 +350,7 @@ mod tests {
 
     fn binding(value: i64) -> Binding {
         Binding {
-            values: BTreeMap::from([("value".to_string(), skein_core::Value::Int(value))]),
+            values: BTreeMap::from([("value".to_string(), hawdb_core::Value::Int(value))]),
             nodes: BTreeMap::new(),
             relationships: BTreeMap::new(),
         }

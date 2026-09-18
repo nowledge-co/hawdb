@@ -521,7 +521,7 @@ pub fn property_filter_from_predicate(predicate: &Predicate) -> Result<PropertyF
         | Predicate::ExpressionContains { .. }
         | Predicate::ConstantBool(_)
         | Predicate::RelationshipExists { .. }
-        | Predicate::BoundRelationshipExists { .. } => Err(SkeinError::Execution(
+        | Predicate::BoundRelationshipExists { .. } => Err(HawdbError::Execution(
             "expression predicates are not supported in property filters".to_string(),
         )),
         Predicate::PropertyListContains {
@@ -746,7 +746,7 @@ fn property_filter_from_default_expression(
             value: value.clone(),
             negated,
         }),
-        _ => Err(SkeinError::Execution(
+        _ => Err(HawdbError::Execution(
             "expression predicates are not supported in property filters".to_string(),
         )),
     }
@@ -781,7 +781,7 @@ mod tests {
             ProjectionExpression::Literal(Value::Null),
             ProjectionExpression::Lower(Box::new(ProjectionExpression::Left {
                 expression: Box::new(ProjectionExpression::Literal(Value::String(
-                    "SKEIN".to_string(),
+                    "HAWDB".to_string(),
                 ))),
                 length: 3,
             })),

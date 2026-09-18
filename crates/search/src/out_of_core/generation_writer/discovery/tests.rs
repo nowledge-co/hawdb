@@ -3,7 +3,7 @@ use crate::out_of_core::generation_writer::{
     tests::document, tests::test_dir, SearchOutOfCoreGenerationWriter,
 };
 use crate::test_allocation as allocation;
-use skein_core::RuntimeMemoryReservation;
+use hawdb_core::RuntimeMemoryReservation;
 use std::path::PathBuf;
 
 struct Fixture(PathBuf);
@@ -42,13 +42,13 @@ fn discovery_validates_complete_manifests_and_preserves_recovery_rules() {
     fs::write(&manifest, b"corrupt").unwrap();
     // A higher filename with a valid but mismatching body cannot advance recovery.
     fs::copy(
-        fixture.0.join("search_lexical.manifest.1.skein"),
-        fixture.0.join("search_lexical.manifest.99.skein"),
+        fixture.0.join("search_lexical.manifest.1.hawdb"),
+        fixture.0.join("search_lexical.manifest.99.hawdb"),
     )
     .unwrap();
     assert_eq!(next(&fixture.0, u64::MAX, &memory, &task).unwrap(), 2);
     fs::write(
-        fixture.0.join("search_lexical.manifest.1.skein"),
+        fixture.0.join("search_lexical.manifest.1.hawdb"),
         b"corrupt",
     )
     .unwrap();
@@ -73,7 +73,7 @@ fn discovery_resource_failure_and_cancellation_never_reuse_a_generation() {
             }
             assert!(matches!(
                 next(&fixture.0, u64::MAX, &memory, &task),
-                Err(SkeinError::Execution(_))
+                Err(HawdbError::Execution(_))
             ));
             assert_eq!(memory.ledger.snapshot().used_bytes, 0);
         }
@@ -85,7 +85,7 @@ fn discovery_decode_admission_covers_valid_escaped_sequence_and_invalid_json() {
     let _serial = allocation::serial();
     assert_eq!(allocation::live(), 0);
     let fixture = Fixture::new();
-    let bytes = fs::read(fixture.0.join("search_lexical.manifest.1.skein")).unwrap();
+    let bytes = fs::read(fixture.0.join("search_lexical.manifest.1.hawdb")).unwrap();
     let value: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
     let mut cases = vec![bytes];
     for count in [1, 5, 17, 257] {
@@ -117,7 +117,7 @@ fn discovery_decode_admission_covers_valid_escaped_sequence_and_invalid_json() {
         let (limited, task) = context(exact - 1);
         assert!(matches!(
             admitted_manifest_generation(&bytes, &limited, &task),
-            Err(SkeinError::Execution(_))
+            Err(HawdbError::Execution(_))
         ));
     }
     // Active outer decoding and native recovery traversal use the same ledger.

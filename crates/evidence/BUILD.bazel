@@ -8,22 +8,22 @@ test_suite(
 )
 
 rust_library(
-    name = "skein_evidence",
-    crate_name = "skein_evidence",
+    name = "hawdb_evidence",
+    crate_name = "hawdb_evidence",
     crate_root = "src/lib.rs",
     srcs = glob(["src/**/*.rs"]),
     edition = "2024",
     aliases = aliases(),
     deps = all_crate_deps(normal = True) + [
-        "//crates/core:skein_core",
-        "//crates/integrity:skein_integrity",
+        "//crates/core:hawdb_core",
+        "//crates/integrity:hawdb_integrity",
     ],
     proc_macro_deps = all_crate_deps(proc_macro = True),
 )
 
 rust_test(
-    name = "skein_evidence_tests",
-    crate = ":skein_evidence",
+    name = "hawdb_evidence_tests",
+    crate = ":hawdb_evidence",
     edition = "2024",
     aliases = aliases(normal_dev = True, proc_macro_dev = True),
     deps = all_crate_deps(normal_dev = True),
@@ -31,7 +31,7 @@ rust_test(
 )
 
 rust_test(
-    name = "skein_inventory_health_fuzz_tests",
+    name = "hawdb_inventory_health_fuzz_tests",
     tags = ["manual"],
     args = [
         "inventory::differential::inventory_health_differential_campaign",
@@ -39,7 +39,7 @@ rust_test(
         "--ignored",
         "--nocapture",
     ],
-    crate = ":skein_evidence",
+    crate = ":hawdb_evidence",
     edition = "2024",
     aliases = aliases(normal_dev = True, proc_macro_dev = True),
     deps = all_crate_deps(normal_dev = True),
@@ -47,7 +47,7 @@ rust_test(
 )
 
 rust_test(
-    name = "skein_source_inventory_fuzz_tests",
+    name = "hawdb_source_inventory_fuzz_tests",
     tags = ["manual"],
     args = [
         "query_inventory::scanner::differential::source_inventory_differential_campaign",
@@ -55,7 +55,7 @@ rust_test(
         "--ignored",
         "--nocapture",
     ],
-    crate = ":skein_evidence",
+    crate = ":hawdb_evidence",
     edition = "2024",
     aliases = aliases(normal_dev = True, proc_macro_dev = True),
     deps = all_crate_deps(normal_dev = True),
@@ -63,7 +63,7 @@ rust_test(
 )
 
 rust_test(
-    name = "skein_resource_profile_fuzz_tests",
+    name = "hawdb_resource_profile_fuzz_tests",
     tags = ["manual"],
     args = [
         "resource_profile::tests::resource_profile_differential_campaign",
@@ -71,7 +71,7 @@ rust_test(
         "--ignored",
         "--nocapture",
     ],
-    crate = ":skein_evidence",
+    crate = ":hawdb_evidence",
     edition = "2024",
     aliases = aliases(normal_dev = True, proc_macro_dev = True),
     deps = all_crate_deps(normal_dev = True),

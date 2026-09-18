@@ -54,7 +54,7 @@ explicitly creates a detached copy when independent ownership is required.
 The range-reader trait retains its `Sync` bound and returns `SegmentBytes`.
 `SegmentRangeRead.payload`, `SegmentReadPayload.bytes`, and private verified
 row pages retain that same tracked handle. Host implementations can return
-`Ok(owned_vec.into())`; the `skein` facade exports `SegmentBytes` alongside the
+`Ok(owned_vec.into())`; the `hawdb` facade exports `SegmentBytes` alongside the
 range-reader contract. Checkpoint overflow publication retains its existing
 owned Arc output: file-backed envelopes are detached only after the existing
 materialization budget admits them. Ordinary hydration borrows inline bytes
@@ -100,7 +100,7 @@ The extended campaign runs 32,768 serial operations and 65,536 concurrent
 operations. It is manual-only and registered in the existing local fuzz suite:
 
 ```sh
-bazel test //crates/storage:skein_storage_tests //crates/storage:skein_storage_verified_page_cache_fuzz_tests //crates/fuzz:skein_fuzz_tests //crates/fuzz:skein_fuzz_cli_tests //:skein_linux_ci_fuzz_smoke_test --nocache_test_results
+bazel test //crates/storage:hawdb_storage_tests //crates/storage:hawdb_storage_verified_page_cache_fuzz_tests //crates/fuzz:hawdb_fuzz_tests //crates/fuzz:hawdb_fuzz_cli_tests //:hawdb_linux_ci_fuzz_smoke_test --nocache_test_results
 ```
 
 For an identical baseline/candidate release comparison, run the ignored

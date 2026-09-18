@@ -51,7 +51,7 @@
 //!   chain) still holds a valid current-generation fragment, the log was
 //!   damaged in place and the reader fails closed instead.
 
-use skein_core::{Result, SkeinError};
+use hawdb_core::{HawdbError, Result};
 use std::io::Read;
 
 pub const WAL_BINARY_MAGIC: &[u8; 8] = b"SKWALB01";
@@ -67,7 +67,7 @@ const FRAGMENT_LAST: u8 = 4;
 const CRC_MASK_DELTA: u32 = 0xa282_ead8;
 
 fn masked_fragment_crc(fragment_type: u8, generation: u64, payload: &[u8]) -> u32 {
-    let mut hasher = skein_integrity::Crc32cHasher::new();
+    let mut hasher = hawdb_integrity::Crc32cHasher::new();
     hasher.update(&[fragment_type]);
     hasher.update(&generation.to_le_bytes());
     hasher.update(payload);
@@ -82,27 +82,27 @@ pub fn encode_binary_wal_header(generation: u64, start_lsn: u64) -> Vec<u8> {
     header.extend_from_slice(WAL_BINARY_MAGIC);
     header.extend_from_slice(&generation.to_le_bytes());
     header.extend_from_slice(&start_lsn.to_le_bytes());
-    let checksum = skein_integrity::crc32c(&header).get();
+    let checksum = hawdb_integrity::crc32c(&header).get();
     header.extend_from_slice(&checksum.to_le_bytes());
     header
 }
 
 pub fn decode_binary_wal_header(bytes: &[u8]) -> Result<(u64, u64)> {
     if bytes.len() < WAL_BINARY_FILE_HEADER_BYTES {
-        return Err(SkeinError::Storage(
+        return Err(HawdbError::Storage(
             "binary WAL file header is truncated".to_string(),
         ));
     }
     let header = &bytes[..WAL_BINARY_FILE_HEADER_BYTES];
     if &header[..8] != WAL_BINARY_MAGIC {
-        return Err(SkeinError::Storage(
+        return Err(HawdbError::Storage(
             "WAL is missing a supported generation header".to_string(),
         ));
     }
     let expected = u32::from_le_bytes(header[24..28].try_into().expect("4-byte checksum"));
-    let actual = skein_integrity::crc32c(&header[..24]).get();
+    let actual = hawdb_integrity::crc32c(&header[..24]).get();
     if expected != actual {
-        return Err(SkeinError::Storage(format!(
+        return Err(HawdbError::Storage(format!(
             "WAL header checksum mismatch: expected {expected}, got {actual}"
         )));
     }
@@ -521,7 +521,7 @@ impl<R: Read> BinaryWalReader<R> {
             .max_record_bytes
             .is_some_and(|limit| payload_len > limit)
         {
-            return Err(SkeinError::Storage(format!(
+            return Err(HawdbError::Storage(format!(
                 "WAL record byte limit exceeded: max_wal_record_bytes={}",
                 self.max_record_bytes.unwrap_or_default()
             )));

@@ -11,7 +11,7 @@
 
 ## Objective
 
-Replace the Nowledge local Ladybug/Kuzu graph data plane with Skein without
+Replace the Nowledge local Ladybug/Kuzu graph data plane with Hawdb without
 changing the product's graph semantics or coupling canonical graph storage to
 vector search.
 
@@ -26,12 +26,12 @@ Three codebases define the work:
 - `nowledge/mem` defines the compatibility contract through `nmem-graph`, its
   Cypher call sites, schema convergence, recovery behavior, and graph algorithm
   usage.
-- Skein owns the new parser, planner, optimizer, executor, storage format, WAL,
+- Hawdb owns the new parser, planner, optimizer, executor, storage format, WAL,
   checkpoint, and stable embedded API.
 - Chryso is a reference for optimizer structure: memo groups, logical and
   physical rules, physical properties, structured costs, deterministic plan
   fingerprints, and explain traces. SQL-specific operators and statistics are
-  not copied into Skein.
+  not copied into Hawdb.
 
 ## Non-Negotiable Invariants
 
@@ -74,7 +74,7 @@ Three codebases define the work:
 - explicit read and write transactions
 - commit, rollback, and checkpoint
 - bounded resource configuration
-- basic local QoS hooks owned by `skein-qos` for internal background admission,
+- basic local QoS hooks owned by `hawdb-qos` for internal background admission,
   operation budgets, optional per-class background budgets, and deferrable work;
   performance should come from clean architecture and bounded work units before
   low-level tuning
@@ -147,7 +147,7 @@ Exit gate:
 - restart and torn-WAL tests pass
 - one end-to-end indexed query produces a stable physical plan
 
-Status: complete in the initial Skein MVP.
+Status: complete in the initial Hawdb MVP.
 
 ### Phase 1: Compatibility Front Door
 
@@ -321,13 +321,13 @@ Nowledge-owned persistent wrapper command, smoke the external shadow adapter,
 attach storage-recovery and background-maintenance evidence, then run the
 migration gate and replacement summary with fail-closed production readiness.
 Nowledge Mem integration is side-by-side only during this phase: the existing
-Kuzu/Ladybug store remains available while Skein runs as a sibling embedded
+Kuzu/Ladybug store remains available while Hawdb runs as a sibling embedded
 graph store behind explicit adapter flags, shadow comparison, and per-surface
 cutover evidence. Replacement readiness is not permission to delete or replace
 the old database in place; old-store removal requires a later explicit cleanup
 phase after rollback and parity evidence exists. The intended repository
-integration is to add Skein to the Nowledge Mem repository as a Git submodule,
-not to copy Skein source files into the Nowledge Mem tree; adapter code in
+integration is to add Hawdb to the Nowledge Mem repository as a Git submodule,
+not to copy Hawdb source files into the Nowledge Mem tree; adapter code in
 Nowledge Mem should depend on that submodule boundary during shadowing and
 cutover.
 The embedded front door now includes a bounded exact physical-plan LFU cache for
@@ -345,7 +345,7 @@ capacity-pressure events so production explain artifacts can tell
 configuration, statement-shape, admission, and eviction behavior apart without
 parsing optimizer decision strings. `foyer` remains a candidate backend once the
 cache surface is abstracted, but v1 keeps a small in-process LFU cache in the
-`skein-plan-cache` crate to avoid unnecessary runtime/dependency and
+`hawdb-plan-cache` crate to avoid unnecessary runtime/dependency and
 memory-growth risk in embedded deployments while keeping the `Database` facade
 focused on graph-specific cache keys and cached physical plans.
 
@@ -1080,7 +1080,7 @@ references, checksums, parser hints, and projection targets. The default
 graph-kernel runner rejects those jobs while preserving the payload in the job
 report, and `Database::run_next_external_content_artifact_job_with` lets a
 caller-owned content runtime complete parsing/crawling/chunking jobs without
-embedding that runtime in Skein. Successful external content jobs retain the
+embedding that runtime in Hawdb. Successful external content jobs retain the
 runtime's last structured `QueryOutput` on the job ledger so callers can audit
 published projection refs, parser versions, checksums, chunk counts, and other
 small lineage fields without storing large parsed content in the graph kernel.
@@ -1099,7 +1099,7 @@ completion runners preserve the same row shape while charging parser/crawler
 work to the `Import` QoS lane.
 `ExternalContentArtifactRuntimeManifest` lets caller-owned parser/crawler loops
 declare supported actions, required payload keys, runtime version, and estimated
-operation cost so Skein can expose bounded claimable-job views and a matching
+operation cost so Hawdb can expose bounded claimable-job views and a matching
 Import-lane background work plan without treating the manifest as a sandbox or
 execution permission.
 Internal parser/crawler loops can use
@@ -1132,13 +1132,13 @@ query families. It runs setup statements, parameterized Cypher checks, expected
 row comparisons, plan-shape assertions, and projected graph checks through the
 public `Database` facade. The fixture harness also exposes a generic shadow
 engine interface that applies the same setup statements to a second engine,
-compares Cypher check rows against the primary Skein run, compares declared
+compares Cypher check rows against the primary Hawdb run, compares declared
 error classes for failing Cypher checks, compares mutation effects through
 follow-up effect queries, and can compare projected graph outputs from shadow
 engines that implement the projection hook. Engines without that hook still
 report projected graph checks as primary-only. `ExternalShadowCommand` provides
 a JSON-lines process adapter for this interface, so a Ladybug/Kuzu wrapper can
-be attached as a subprocess without linking Kuzu or Python into Skein.
+be attached as a subprocess without linking Kuzu or Python into Hawdb.
 The current fixture covers indexed parameter lookup, null predicates, list
 predicates with pagination, entity alias list lookup, entity reuse lookup reads,
 entity temporal metadata create/update writes, current timestamp writes,
@@ -1303,7 +1303,7 @@ Scope:
   surfaces only for grouped WAL, recovery, admission, generation publication,
   and bounded multi-statement contracts, and route integration work through
   parameterized Cypher, query reports, and the shared planner/executor boundary
-- `skein-cypher` owns syntax-only AST and parser modules, while root
+- `hawdb-cypher` owns syntax-only AST and parser modules, while root
   `src/cypher.rs` remains a compatibility re-export facade
 - Chryso-style rule and cost interfaces
 - crate-owned generic memo storage with root-owned graph expression payloads
@@ -1351,7 +1351,7 @@ Current implemented slice:
   selected input cardinality, so selective seek inputs no longer make the trace
   report full-label expand cost; `selected_plan_cost_breakdown` exposes the
   same selected-plan scalar cost as structured CPU, random-I/O,
-  sequential-I/O, and output-row components from `skein-optimizer`; endpoint
+  sequential-I/O, and output-row components from `hawdb-optimizer`; endpoint
   cartesian products report estimated left/right rows, output rows, and product
   cost
 - `OptimizerTrace::selected_plan_operator_counts` and
@@ -1366,7 +1366,7 @@ Current implemented slice:
   order-preserving unary wrappers are surfaced. This keeps property diagnostics
   typed without overclaiming index or traversal ordering before enforcer rules
   exist
-- `skein-optimizer` owns `OptimizationSearchReport`, `SearchMode`,
+- `hawdb-optimizer` owns `OptimizationSearchReport`, `SearchMode`,
   `RuleEvent`, `RuleOutcome`, `SelectedPlanTrace`, and storage-independent
   rule identity/application/batch-runner abstractions, so group-budget fallback
   warnings, selected-plan trace materialization, deterministic rule ordering,
@@ -1398,7 +1398,7 @@ Current implemented slice:
   the implementation-rule path for the existing cost-based best-candidate
   selection, preserving residual filters and legacy decision strings while
   adding a stable `implementation:node_conjunction_index_seek` rule event
-- `skein explain-json [--params-json <json-object>] <database-path> <cypher>`
+- `hawdb explain-json [--params-json <json-object>] <database-path> <cypher>`
   opens the database read-only and prints the selected plan, fingerprint,
   optimizer search mode, recursive cost, cost breakdown, typed parameter echo,
   effective `WorkRequest` from `SET system.*` or `SET SYSTEM VARIABLE`
@@ -1409,7 +1409,7 @@ Current implemented slice:
   legacy decision strings remain for compatibility, while `rule_events` exposes
   `rule`, `outcome`, and `detail` fields for implementation-rule diagnostics
   without parsing English explain text
-- `skein explain` and `skein explain-analyze` use the same read-only embedded
+- `hawdb explain` and `hawdb explain-analyze` use the same read-only embedded
   API path and print a TiDB-style operator tree table for interactive use;
   unavailable per-operator estimates or runtime counters are rendered as
   `N/A` instead of being inferred from root-level metrics
@@ -1558,7 +1558,7 @@ Remaining Phase 5 work:
 
 ## First Implemented Compatibility Slice: Parameters
 
-Skein now represents a parsed value as either a literal or a named parameter.
+Hawdb now represents a parsed value as either a literal or a named parameter.
 The planner binds parameters into typed values before creating a logical plan.
 The optimizer, executor, and store therefore never handle unresolved parameter
 tokens.

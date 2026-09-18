@@ -8,12 +8,12 @@ use std::collections::BTreeMap;
 fn root_profile_constructor_preserves_public_types_and_defaults() {
     let profile: crate::executor::ReadExecutionProfile =
         crate::executor::read_execution_profile(&PhysicalPlan::EmptyExec, Some(3)).unwrap();
-    let owner: skein_executor::ReadExecutionProfile<crate::store::ScanPruningReport> = profile;
+    let owner: hawdb_executor::ReadExecutionProfile<crate::store::ScanPruningReport> = profile;
     assert_eq!(owner.max_rows, Some(3));
     assert_eq!(owner.detection_row_cap, Some(4));
     assert_eq!(
         owner.pipeline_memory_report,
-        skein_executor::PipelineMemoryReport::default()
+        hawdb_executor::PipelineMemoryReport::default()
     );
 }
 

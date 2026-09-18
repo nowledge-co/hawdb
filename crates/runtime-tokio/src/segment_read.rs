@@ -1,9 +1,9 @@
 use super::TokioRuntimeAdapter;
-use skein_core::{
+use hawdb_core::{
     RuntimeCancellationReason, RuntimeIoWaveError, RuntimeIoWavePermit, RuntimeIoWaveTryAcquire,
     RuntimeTaskContext,
 };
-use skein_storage::{
+use hawdb_storage::{
     SegmentRangeReader, SegmentReadControl, SegmentReadError, SegmentReadExecutionReport,
     SegmentReadPayload, SegmentReadSchedule,
 };
@@ -212,7 +212,7 @@ impl TokioSegmentReadExecutor {
     async fn read_chunk<R, E>(
         &self,
         reader: Arc<R>,
-        ranges: &[skein_storage::SegmentReadRange],
+        ranges: &[hawdb_storage::SegmentReadRange],
         io_permit: Option<Box<dyn RuntimeIoWavePermit>>,
     ) -> Result<Vec<SegmentReadPayload>, TokioSegmentReadExecutionError<E>>
     where
@@ -324,11 +324,11 @@ fn map_runtime_io_error<E>(error: RuntimeIoWaveError) -> TokioSegmentReadExecuti
 #[cfg(test)]
 mod tests {
     use super::*;
-    use skein_qos::{
+    use hawdb_qos::{
         IoConcurrencyBudget, RuntimeGovernor, RuntimeGovernorConfig, RuntimeMemorySnapshot,
         RuntimeResourceBudget, RuntimeResourceSnapshot, RuntimeWorkPriority, RuntimeWorkRequest,
     };
-    use skein_storage::{SegmentReadRange, SegmentReadScheduler};
+    use hawdb_storage::{SegmentReadRange, SegmentReadScheduler};
     use std::convert::Infallible;
     use std::future::{poll_fn, Future};
     use std::sync::atomic::{AtomicUsize, Ordering};
@@ -396,7 +396,7 @@ mod tests {
         fn read_range(
             &self,
             range: &SegmentReadRange,
-        ) -> Result<skein_storage::SegmentBytes, SegmentReadError> {
+        ) -> Result<hawdb_storage::SegmentBytes, SegmentReadError> {
             let active = self.active.fetch_add(1, Ordering::AcqRel) + 1;
             self.peak.fetch_max(active, Ordering::AcqRel);
             self.reads.fetch_add(1, Ordering::AcqRel);
@@ -449,7 +449,7 @@ mod tests {
         fn read_range(
             &self,
             range: &SegmentReadRange,
-        ) -> Result<skein_storage::SegmentBytes, SegmentReadError> {
+        ) -> Result<hawdb_storage::SegmentBytes, SegmentReadError> {
             let active = self.active.fetch_add(1, Ordering::AcqRel) + 1;
             self.reads.fetch_add(1, Ordering::AcqRel);
             self.peak.fetch_max(active, Ordering::AcqRel);
@@ -463,7 +463,7 @@ mod tests {
         fn read_range(
             &self,
             range: &SegmentReadRange,
-        ) -> Result<skein_storage::SegmentBytes, SegmentReadError> {
+        ) -> Result<hawdb_storage::SegmentBytes, SegmentReadError> {
             self.active.fetch_add(1, Ordering::AcqRel);
             let result = if range.artifact_id == 1 {
                 Err(SegmentReadError::ArtifactNotFound {
@@ -483,7 +483,7 @@ mod tests {
         fn read_range(
             &self,
             _range: &SegmentReadRange,
-        ) -> Result<skein_storage::SegmentBytes, SegmentReadError> {
+        ) -> Result<hawdb_storage::SegmentBytes, SegmentReadError> {
             panic!("injected asynchronous segment read panic");
         }
     }
@@ -523,7 +523,7 @@ mod tests {
         }
 
         let runtime = runtime();
-        let token = skein_core::RuntimeCancellationToken::new();
+        let token = hawdb_core::RuntimeCancellationToken::new();
         let context = RuntimeTaskContext::without_deadline(token.child());
         runtime
             .block_on(async {
@@ -607,7 +607,7 @@ mod tests {
     #[test]
     fn cancellation_while_io_is_saturated_does_not_submit_reads() {
         let runtime = runtime();
-        let token = skein_core::RuntimeCancellationToken::new();
+        let token = hawdb_core::RuntimeCancellationToken::new();
         let permit = runtime
             .governor()
             .try_admit(
@@ -773,7 +773,7 @@ mod tests {
         });
         let schedule = SegmentReadScheduler::new(NonZeroUsize::MIN, NonZeroU64::MIN)
             .schedule([SegmentReadRange::new(1, 1, 0, NonZeroU64::MIN)]);
-        let token = skein_core::RuntimeCancellationToken::new();
+        let token = hawdb_core::RuntimeCancellationToken::new();
         token.cancel();
         let context = RuntimeTaskContext::without_deadline(token);
 

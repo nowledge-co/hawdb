@@ -1,9 +1,9 @@
 use std::collections::{BTreeMap, BTreeSet};
 use std::fmt;
 
-use skein_core::{RelationshipDirection, Value};
-use skein_plan::{ComparisonOp, LogicalPlan, Predicate, Projection, ProjectionExpression};
-use skein_sql_syntax::{BinaryOperatorSyntax, GraphEdgeDirection, Span, UnaryOperatorSyntax};
+use hawdb_core::{RelationshipDirection, Value};
+use hawdb_plan::{ComparisonOp, LogicalPlan, Predicate, Projection, ProjectionExpression};
+use hawdb_sql_syntax::{BinaryOperatorSyntax, GraphEdgeDirection, Span, UnaryOperatorSyntax};
 
 use super::{
     BoundPgqExpression, BoundPgqExpressionKind, BoundPgqGraphTable, BoundPgqLiteral,
@@ -50,7 +50,7 @@ impl fmt::Display for PgqLoweringError {
 
 impl std::error::Error for PgqLoweringError {}
 
-/// Lowers the qualified executable SQL/PGQ subset into Skein's shared graph
+/// Lowers the qualified executable SQL/PGQ subset into Hawdb's shared graph
 /// logical operators.
 ///
 /// Shapes without an equivalent shared operator fail here. Syntax nodes never
@@ -242,7 +242,7 @@ impl<'a> SlotBindings<'a> {
             }
             let name = variable.name.clone().unwrap_or_else(|| {
                 unique_internal_name(
-                    format!("__skein_pgq_slot_{}", variable.slot.0),
+                    format!("__hawdb_pgq_slot_{}", variable.slot.0),
                     &mut used_names,
                 )
             });

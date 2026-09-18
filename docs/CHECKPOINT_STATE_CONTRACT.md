@@ -7,7 +7,7 @@ Status: proposal for review. No code change yet.
 Split the root `GraphStore::load_checkpoint` (currently ~580 lines in
 `src/store/graph_recovery.rs`) into a storage-neutral **parse** step and a
 root-owned **apply** step, so the checkpoint text decoder can live in
-`skein-storage` without depending on `GraphStore`.
+`hawdb-storage` without depending on `GraphStore`.
 
 This mirrors the already-landed checkpoint **encode** split (#627): encode is
 `CheckpointImage -> String`, and this adds `String -> DecodedCheckpoint`.
@@ -15,12 +15,12 @@ This mirrors the already-landed checkpoint **encode** split (#627): encode is
 ## Constraints
 
 - **Internal, not public.** `DecodedCheckpoint` and `parse_checkpoint` are
-  `#[doc(hidden)]` / crate-private in `skein-storage`. They are not re-exported
-  as a new host-facing API. Skein's public surface stays query-first
+  `#[doc(hidden)]` / crate-private in `hawdb-storage`. They are not re-exported
+  as a new host-facing API. Hawdb's public surface stays query-first
   (`Database::query`, `execute`, `explain`); this contract only serves the
   recovery reconstruction path.
 - **Byte-identical.** Field names, field order, checksum semantics, and every
-  `SkeinError::Storage` message must remain unchanged. The existing hex-recovery
+  `HawdbError::Storage` message must remain unchanged. The existing hex-recovery
   tests are the acceptance oracle.
 - **Fail-closed.** Any malformed/duplicate/out-of-order line, checksum mismatch,
   or decoded-byte-limit violation fails the open, exactly as today.
@@ -28,7 +28,7 @@ This mirrors the already-landed checkpoint **encode** split (#627): encode is
 ## DecodedCheckpoint
 
 ```rust
-// skein-storage::checkpoint (internal)
+// hawdb-storage::checkpoint (internal)
 #[doc(hidden)]
 pub struct DecodedCheckpoint {
     pub generation: u64,
@@ -38,7 +38,7 @@ pub struct DecodedCheckpoint {
     pub search_projection_change_log_start_epoch: u64,
     pub search_projection_change_log_retained_bytes: u64,
     pub search_projection_graph_changes: Vec<SearchProjectionGraphChange>,
-    pub search_projection_database_identity: Option<skein_core::Uuid>,
+    pub search_projection_database_identity: Option<hawdb_core::Uuid>,
     pub initial_import_source_fingerprint: Option<String>,
     pub nodes: Vec<NodeRecord>,
     pub relationships: Vec<RelRecord>,
@@ -49,13 +49,13 @@ pub struct DecodedCheckpoint {
 Notes:
 
 - `nodes` / `relationships` use the existing `NodeRecord` / `RelRecord` types
-  (already in `skein-storage`). Order is significant and must be preserved.
+  (already in `hawdb-storage`). Order is significant and must be preserved.
 - `catalog` descriptors (labels, rel types, tables, properties, indexes,
   constraints) and `statistics` are **not** held in `DecodedCheckpoint`. They
   are written directly into `&mut Catalog` / `&mut GraphStatistics` parameters
-  because those types are already storage-neutral (`skein-core`).
+  because those types are already storage-neutral (`hawdb-core`).
 
-## Parse (moves to skein-storage)
+## Parse (moves to hawdb-storage)
 
 ```rust
 #[doc(hidden)]
@@ -123,7 +123,7 @@ adjacency reconstruction behavior is unchanged.
 
 ## Verification gates
 
-- `cargo test -p skein --lib checkpoint` (currently 101 passed) must remain green.
-- `cargo test -p skein --lib store::` must remain green.
+- `cargo test -p hawdb --lib checkpoint` (currently 101 passed) must remain green.
+- `cargo test -p hawdb --lib store::` must remain green.
 - The hex-recovery tests (`src/store/tests/hex_recovery_tests.rs`) are the
   byte-format acceptance oracle and must not change.

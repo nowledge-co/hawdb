@@ -2,7 +2,7 @@ use crate::{
     AggregateFunction, AggregateTarget, Aggregation, GraphExpansionBudget, PhysicalPlan, Predicate,
     Projection, ProjectionExpression, SortDirection, SortItem, SortKey,
 };
-use skein_cypher::RelationshipDirection;
+use hawdb_cypher::RelationshipDirection;
 use std::collections::BTreeMap;
 
 struct Fixture {

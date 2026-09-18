@@ -85,7 +85,7 @@ pub(super) fn visit_with_context(
         return Err(error);
     }
     result.map_err(|error| {
-        SkeinError::Storage(format!("search descriptor label traversal failed: {error}"))
+        HawdbError::Storage(format!("search descriptor label traversal failed: {error}"))
     })
 }
 
@@ -208,7 +208,7 @@ mod tests;
 
 #[cfg(test)]
 mod evidence {
-    use skein_core::RuntimeCancellationToken;
+    use hawdb_core::RuntimeCancellationToken;
     use std::cell::RefCell;
     thread_local! { static CANCEL: RefCell<Option<(usize, RuntimeCancellationToken)>> = const { RefCell::new(None) }; }
     pub(super) fn validated_value() {

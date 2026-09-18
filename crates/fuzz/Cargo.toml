@@ -1,6 +1,6 @@
 [package]
-name = "skein-fuzz"
-default-run = "skein-fuzz"
+name = "hawdb-fuzz"
+default-run = "hawdb-fuzz"
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
@@ -8,8 +8,8 @@ license.workspace = true
 
 [dependencies]
 serde_json = "1"
-skein = { path = "../..", default-features = false }
-skein-fuzz-contracts = { path = "../fuzz-contracts" }
+hawdb = { path = "../..", default-features = false }
+hawdb-fuzz-contracts = { path = "../fuzz-contracts" }
 
 [features]
 default = [
@@ -18,25 +18,25 @@ default = [
     "graph-analytics",
     "vector-search",
 ]
-acl = ["skein/acl"]
-background-maintenance = ["skein/background-maintenance"]
-full-text-search = ["skein/full-text-search"]
-graph-analytics = ["skein/graph-analytics"]
-qualification = ["skein/qualification"]
-vector-search = ["skein/vector-search"]
+acl = ["hawdb/acl"]
+background-maintenance = ["hawdb/background-maintenance"]
+full-text-search = ["hawdb/full-text-search"]
+graph-analytics = ["hawdb/graph-analytics"]
+qualification = ["hawdb/qualification"]
+vector-search = ["hawdb/vector-search"]
 
 [[bin]]
-name = "skein-fuzz"
+name = "hawdb-fuzz"
 path = "src/main.rs"
 
 [[bin]]
-name = "skein-storage-fuzz"
+name = "hawdb-storage-fuzz"
 path = "src/storage_main.rs"
 
 [[bin]]
-name = "skein-append-fuzz"
+name = "hawdb-append-fuzz"
 path = "src/append_main.rs"
 
 [[bin]]
-name = "skein-parser-fuzz"
+name = "hawdb-parser-fuzz"
 path = "src/parser_main.rs"

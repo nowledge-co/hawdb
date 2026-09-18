@@ -130,7 +130,7 @@ fn bounded_read_snapshot_coordinates_search_graph_and_relational_queries() {
     let encoded_evidence = evidence.to_string();
     assert_eq!(
         evidence["protocol"],
-        "skein-nowledge-mem-read-snapshot-report-v1"
+        "hawdb-nowledge-mem-read-snapshot-report-v1"
     );
     assert_eq!(evidence["cypher_statement_count"], 2);
     assert_eq!(evidence["sql_statement_count"], 1);

@@ -3,7 +3,7 @@ use crate::{
     plan_class_counts, plan_operator_counts, OperatorCardinalityEstimate, OptimizerContext,
     PlanCostBreakdown, SelectedPlanTrace,
 };
-use skein_plan::PhysicalOperatorId;
+use hawdb_plan::PhysicalOperatorId;
 
 #[cfg(test)]
 mod differential;
@@ -63,7 +63,7 @@ mod tests {
         CascadesOptimizer, OptimizationSearchReport, OptimizerCatalogIndexes,
         OptimizerCatalogStatistics, OptimizerContext,
     };
-    use skein_plan::PhysicalPlanKind;
+    use hawdb_plan::PhysicalPlanKind;
 
     #[test]
     fn selected_trace_derives_cardinality_metadata_once_per_operator() {
@@ -80,10 +80,10 @@ mod tests {
             };
             for _ in 0..depth {
                 plan = PhysicalPlan::FilterExec {
-                    predicate: skein_plan::Predicate::PropertyEq {
+                    predicate: hawdb_plan::Predicate::PropertyEq {
                         variable: "n".to_string(),
                         property: "key".to_string(),
-                        value: skein_core::Value::Int(7),
+                        value: hawdb_core::Value::Int(7),
                     },
                     input: Box::new(plan),
                 };
@@ -118,7 +118,7 @@ mod tests {
                 variable: "n".to_string(),
                 label: "Node".to_string(),
                 property: "score".to_string(),
-                lower: Some((skein_core::Value::Int(5), false)),
+                lower: Some((hawdb_core::Value::Int(5), false)),
                 upper: None,
             };
             for _ in 0..depth {
@@ -168,7 +168,7 @@ mod tests {
         let plan = PhysicalPlan::ProjectExec {
             items: Vec::new(),
             input: Box::new(PhysicalPlan::FilterExec {
-                predicate: skein_plan::Predicate::ConstantBool(false),
+                predicate: hawdb_plan::Predicate::ConstantBool(false),
                 input: Box::new(PhysicalPlan::SeqNodeScan {
                     variable: "n".to_string(),
                     label: "Node".to_string(),
@@ -217,12 +217,12 @@ mod tests {
                 variable: "m".to_string(),
                 label: "Memory".to_string(),
                 property: "score".to_string(),
-                lower: Some((skein_core::Value::Int(cutoff), false)),
+                lower: Some((hawdb_core::Value::Int(cutoff), false)),
                 upper: None,
             }
         }
 
-        let histogram = (0..10).map(skein_core::Value::Int).collect::<Vec<_>>();
+        let histogram = (0..10).map(hawdb_core::Value::Int).collect::<Vec<_>>();
         let catalog = OptimizerCatalog::new(
             OptimizerCatalogIndexes::new([], [], [("Memory".to_string(), "score".to_string())], []),
             OptimizerCatalogStatistics::new(

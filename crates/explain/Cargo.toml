@@ -1,16 +1,16 @@
 [package]
-name = "skein-explain"
+name = "hawdb-explain"
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
 license.workspace = true
 
 [dependencies]
-skein-core = { path = "../core" }
-skein-executor = { path = "../executor" }
-skein-optimizer = { path = "../optimizer" }
-skein-plan = { path = "../plan" }
-skein-plan-cache = { path = "../plan-cache" }
-skein-qos = { path = "../qos" }
-skein-storage = { path = "../storage" }
+hawdb-core = { path = "../core" }
+hawdb-executor = { path = "../executor" }
+hawdb-optimizer = { path = "../optimizer" }
+hawdb-plan = { path = "../plan" }
+hawdb-plan-cache = { path = "../plan-cache" }
+hawdb-qos = { path = "../qos" }
+hawdb-storage = { path = "../storage" }
 unicode-width = "0.2"

@@ -1,7 +1,7 @@
 use super::*;
 use crate::build_memory::directory;
 use crate::test_allocation as allocation;
-use skein_core::RuntimeMemoryReservation;
+use hawdb_core::RuntimeMemoryReservation;
 use std::path::PathBuf;
 
 struct Fixture(PathBuf);
@@ -43,7 +43,7 @@ fn stage_cleanup_retains_workspace_through_full_root_cancellation_and_unwind() {
         let stage = StageDirectory::create(&fixture.0, &memory, &task).unwrap();
         let path = stage.path.to_path_buf();
         for index in 0..129 {
-            fs::write(path.join(format!("generated-{index}.skein")), b"partial").unwrap();
+            fs::write(path.join(format!("generated-{index}.hawdb")), b"partial").unwrap();
         }
         let reserved = memory.ledger.snapshot().used_bytes;
         let held = memory.input.reserve(budget as usize - reserved).unwrap();

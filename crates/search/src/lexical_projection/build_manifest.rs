@@ -7,11 +7,11 @@ use super::{
 };
 use crate::build_control::{checkpoint, temporary::RemoveOnDrop, CheckedWriter};
 use crate::build_memory::{checked_add as add, checked_mul as mul, path::OwnedPath, BuildMemory};
-use crate::{Result, SkeinError};
-use skein_core::RuntimeTaskContext;
-use skein_executor::QueryMemoryLease;
-use skein_integrity::Crc32cHasher;
-use skein_storage::durable_replace_file;
+use crate::{HawdbError, Result};
+use hawdb_core::RuntimeTaskContext;
+use hawdb_executor::QueryMemoryLease;
+use hawdb_integrity::Crc32cHasher;
+use hawdb_storage::durable_replace_file;
 use std::fs::File;
 use std::io::{Read, Seek, SeekFrom, Write};
 use std::mem::size_of;
@@ -41,15 +41,15 @@ impl Paths {
         let mut name_memory = memory.retained.reserve(3 * 128)?;
         let artifact_name = artifact_file(generation);
         if artifact_name.capacity() > 128 {
-            return Err(SkeinError::Execution(
+            return Err(HawdbError::Execution(
                 "lexical artifact name exceeded admission".into(),
             ));
         }
         name_memory.shrink(name_memory.bytes() - artifact_name.capacity());
         let artifact = OwnedPath::join(root, Path::new(&artifact_name), memory, task)?;
-        let artifact_tmp = OwnedPath::with_extension(&artifact, "skein.tmp", memory, task)?;
+        let artifact_tmp = OwnedPath::with_extension(&artifact, "hawdb.tmp", memory, task)?;
         let manifest = OwnedPath::join(root, Path::new(MANIFEST_FILE), memory, task)?;
-        let manifest_tmp = OwnedPath::with_extension(&manifest, "skein.tmp", memory, task)?;
+        let manifest_tmp = OwnedPath::with_extension(&manifest, "hawdb.tmp", memory, task)?;
         Ok(Self {
             artifact_name,
             artifact,
@@ -189,7 +189,7 @@ pub(super) fn finish(
     let decoded = ManifestBody::decode_with_context(&encoded.bytes, Some(task))?;
     let actual = retained_bytes(&decoded, task)?;
     if actual > output_memory.bytes() {
-        return Err(SkeinError::Execution(
+        return Err(HawdbError::Execution(
             "decoded lexical manifest exceeded admission".into(),
         ));
     }
@@ -206,7 +206,7 @@ pub(super) fn finish(
         Some((memory, task)),
         Some(output_memory),
     )?
-    .ok_or_else(|| SkeinError::Storage("built lexical projection identity mismatch".into()))?;
+    .ok_or_else(|| HawdbError::Storage("built lexical projection identity mismatch".into()))?;
     // Both paths and platform rename scratch are admitted before publication.
     let _rename_memory = rename_memory(paths, memory)?;
     checkpoint(task)?;
@@ -258,7 +258,7 @@ fn verify_file_bytes(
     let _scratch = memory.spool.reserve(SPILL_IO_BUFFER_BYTES)?;
     let mut file = File::open(path)?;
     if file.metadata()?.len() != expected.len() as u64 {
-        return Err(SkeinError::Storage(
+        return Err(HawdbError::Storage(
             "private lexical manifest length changed".into(),
         ));
     }
@@ -267,14 +267,14 @@ fn verify_file_bytes(
         checkpoint(task)?;
         file.read_exact(&mut buffer[..chunk.len()])?;
         if &buffer[..chunk.len()] != chunk {
-            return Err(SkeinError::Storage(
+            return Err(HawdbError::Storage(
                 "private lexical manifest bytes changed".into(),
             ));
         }
     }
     checkpoint(task)?;
     if file.read(&mut buffer[..1])? != 0 {
-        return Err(SkeinError::Storage(
+        return Err(HawdbError::Storage(
             "private lexical manifest grew during verification".into(),
         ));
     }
@@ -302,7 +302,7 @@ pub(super) fn file_digest(
         digest.update(&buffer[..count]);
         length = length
             .checked_add(count as u64)
-            .ok_or_else(|| SkeinError::Storage("lexical artifact length exceeds u64".into()))?;
+            .ok_or_else(|| HawdbError::Storage("lexical artifact length exceeds u64".into()))?;
     }
     checkpoint(task)?;
     Ok((length, digest.finish()))

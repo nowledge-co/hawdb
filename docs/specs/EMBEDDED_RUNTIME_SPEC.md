@@ -1,24 +1,24 @@
-# Skein Embedded Runtime Specification
+# Hawdb Embedded Runtime Specification
 
 ## Scope
 
 This specification defines the production contract for concurrent access,
 durability, recovery, incremental indexes, resource scheduling, and
-observability in the embedded Skein library.
+observability in the embedded Hawdb library.
 
-Skein is an in-process library. These capabilities MUST be configured and
+Hawdb is an in-process library. These capabilities MUST be configured and
 invoked through Rust APIs. Production correctness MUST NOT depend on a CLI,
 helper process, or environment-variable control plane.
 
 ## Deployment Profiles
 
-Skein supports two embedded deployment profiles. A profile selects conservative
+Hawdb supports two embedded deployment profiles. A profile selects conservative
 defaults and capability availability; it does not change the durable storage
 format or Cypher semantics.
 
 ### Desktop Bound
 
-`SharedHost` runs inside a host application process on a desktop or server that Skein shares with other workloads. It behaves like a
+`SharedHost` runs inside a host application process on a desktop or server that Hawdb shares with other workloads. It behaves like a
 local MySQL or Neo4j data engine from the application's perspective, but its
 lifecycle, identity, configuration, and telemetry remain owned by the host
 application.
@@ -66,14 +66,14 @@ capability matrix is:
 | Graph analytics | enabled | disabled |
 | Background maintenance | enabled | disabled |
 
-The host MAY override this matrix through `SkeinEmbeddedOpenOptions`. Query
+The host MAY override this matrix through `HawdbEmbeddedOpenOptions`. Query
 capabilities MUST be checked before plan-cache lookup or catalog mutation.
 Background capabilities MUST be checked before QoS admission or artifact
 mutation. Search capability checks MUST happen before selecting a retriever and
 MUST NOT silently substitute a different search mode.
 
 Profile-aware hosts MUST use fallible query and search entry points. A disabled
-operation returns `SkeinError::CapabilityUnavailable` with a typed
+operation returns `HawdbError::CapabilityUnavailable` with a typed
 `RuntimeCapability`; non-fallible search convenience methods are intended only
 for hosts that keep the corresponding capability enabled. Capability settings
 do not alter the durable format, WAL contract, or core Cypher semantics.
@@ -98,7 +98,7 @@ cargo build --no-default-features --features full-text-search,vector-search
 
 Build-time availability is an upper bound on runtime configuration. A host
 cannot re-enable a capability omitted from the build through
-`SkeinEmbeddedOpenOptions`, `DatabaseConfig`, or `SearchIndex`; the effective
+`HawdbEmbeddedOpenOptions`, `DatabaseConfig`, or `SearchIndex`; the effective
 set is `requested AND compiled`. Parser and plan contracts remain present so an
 unavailable query produces the same typed `CapabilityUnavailable` error rather
 than an unknown-syntax error. Core storage, WAL, recovery, parameterized Cypher,
@@ -120,9 +120,9 @@ Relational schema discovery SHOULD use the PostgreSQL-compatible read-only
 `pg_catalog.pg_tables`, and `pg_catalog.pg_indexes` views. Their column names,
 nullability markers, PostgreSQL type names, index presence, and index
 definitions MUST follow PostgreSQL conventions for the relational types and
-indexes Skein supports. The `pg_tables` and `pg_indexes` names MUST also resolve
+indexes Hawdb supports. The `pg_tables` and `pg_indexes` names MUST also resolve
 without qualification, matching PostgreSQL's implicit `pg_catalog` lookup.
-Skein MUST NOT invent unstable PostgreSQL OIDs or imply
+Hawdb MUST NOT invent unstable PostgreSQL OIDs or imply
 server-internal catalog semantics that the embedded runtime does not provide.
 Every virtual catalog table is subject to the configured row and payload
 budgets; exceeding a budget fails the statement instead of returning partial
@@ -154,7 +154,7 @@ closed when either required statement class is absent; a graph-only query
 report cannot stand in for the relational half of the workflow. The report
 MUST NOT retain query text, parameters, result rows, or payload values.
 `NowledgeMemReadSnapshotReport::json` emits the versioned
-`skein-nowledge-mem-read-snapshot-report-v1` representation of exactly those
+`hawdb-nowledge-mem-read-snapshot-report-v1` representation of exactly those
 redacted fields; it is evidence input and does not claim route readiness by
 itself.
 
@@ -162,7 +162,7 @@ Business algorithms that need several independent reads MUST keep those reads
 as small named Cypher statements in the host. When all phases require one graph
 version, the host MUST execute them through one `DatabaseReadTransaction` and
 may record `DatabaseReadTransaction::commit_epoch` with the derived result.
-Skein MUST NOT add an algorithm-specific read DTO merely to assemble those
+Hawdb MUST NOT add an algorithm-specific read DTO merely to assemble those
 statement outputs. PageRank planning, membership, visibility, and central-node
 reads follow this rule; its grouped score-update and clear mutations remain
 typed transaction contracts. GraphMeta state reads also follow this rule:
@@ -171,7 +171,7 @@ batches and deletes remain typed for grouped WAL and mutation validation.
 
 ## Concurrency Model
 
-Skein supports in-process snapshot MVCC. The term MVCC in this specification
+Hawdb supports in-process snapshot MVCC. The term MVCC in this specification
 means immutable published snapshots, copy-on-write transaction workspaces, and
 commit-epoch visibility. It does not mean PostgreSQL-style tuple version
 chains, arbitrary historical `AS OF` reads, or serializable snapshot
@@ -210,7 +210,7 @@ retain the database-wide fallback. Ordinary graph reads remain pinned snapshot
 reads and acquire no logical lock.
 
 Because graph lock identities are derived from the pinned snapshot's concrete
-matches, Skein MUST NOT refresh that snapshot after derivation. If publication
+matches, Hawdb MUST NOT refresh that snapshot after derivation. If publication
 advances before a newly derived graph lock set is admitted, the transaction
 fails closed and must be retried. Property writes covered by a uniqueness
 constraint acquire an exclusive label or relationship-type lock; ordinary
@@ -254,7 +254,7 @@ queries remain out of scope.
 | Graph access-set derivation never refreshes to a different snapshot | `ConcurrentDatabaseTransaction::acquire_graph_statement_locks` | `graph_lock_derivation_rejects_a_changed_snapshot` |
 | A failed graph statement restores only its workspace and lock delta | `GraphMutationSavepoint`, `LockSavepoint` | `failed_graph_statement_restores_workspace_and_statement_locks`, `graph_lock_failure_restores_the_failed_statement_only`, `statement_savepoint_restores_replaced_lock_and_budget` |
 | Deadlock victims terminate and release dependencies | `WaitForGraph`, `ConcurrentDatabaseTransaction::abort_after_lock_failure` | `point_lock_upgrade_cycle_selects_one_deadlock_victim`, `wait_for_graph_detects_a_cycle_with_multiple_blockers` |
-| Uncommitted work is private and a durable commit becomes visible atomically | `DatabaseTransactionState`, `CommitSequencer` | `optimistic_transaction_reads_its_private_workspace`, `SkeinTransactionConcurrency.tla` |
+| Uncommitted work is private and a durable commit becomes visible atomically | `DatabaseTransactionState`, `CommitSequencer` | `optimistic_transaction_reads_its_private_workspace`, `HawdbTransactionConcurrency.tla` |
 
 The implementation-to-model mapping and release model-check requirements live
 in `docs/tla/README.md`. A change to any row in this table MUST update its Rust
@@ -273,7 +273,7 @@ cgroup2 mount root from `/proc/self/mountinfo`; it MUST NOT assume the hierarchy
 is mounted directly below `/sys/fs/cgroup`. Memory sizing uses `memory.max`,
 `memory.high`, `memory.current`, and derived headroom. `memory.max` is the
 kernel hard limit; `memory.high` is the kernel's throttle-and-reclaim
-threshold, not an OOM boundary, and Skein deliberately honors it as its
+threshold, not an OOM boundary, and Hawdb deliberately honors it as its
 policy ceiling. Either MAY therefore bound the stable admission capacity
 (the smaller wins), while the dynamic admission budget additionally tracks
 derived headroom. A request above the stable capacity is rejected
@@ -300,13 +300,13 @@ separate conservative budget and pass QoS admission. Background saturation MUST
 NOT reject an explicit foreground request.
 
 `SharedHost` defaults reserve most process memory for the host application.
-Its stable Skein capacity is one quarter of the effective host or cgroup policy
+Its stable Hawdb capacity is one quarter of the effective host or cgroup policy
 ceiling, and its dynamic budget is further bounded by one quarter of sensed
-headroom. On an 8 GiB machine this yields at most 2 GiB of automatic Skein
+headroom. On an 8 GiB machine this yields at most 2 GiB of automatic Hawdb
 capacity and typically 1--2 GiB of dynamic budget as host headroom changes. The
 budget MAY fall below 1 GiB under pressure; 1 GiB is not a floor. The fraction
 is a conservative default, not a universal limit: explicit host configuration
-and cgroup policy remain authoritative. A separately configured 512 MiB Skein
+and cgroup policy remain authoritative. A separately configured 512 MiB Hawdb
 profile is a supported low-memory capability target, not the default ceiling
 or a minimum required machine size.
 
@@ -473,7 +473,7 @@ or repair marker is active, or the changefeed is not restart-recoverable.
 ## OpenTelemetry
 
 OpenTelemetry support MUST be optional and disabled by default. Enabling it
-MUST occur through a Rust library configuration object. Skein MUST NOT install
+MUST occur through a Rust library configuration object. Hawdb MUST NOT install
 or replace the process-global tracing subscriber implicitly.
 
 The first instrumentation surface SHOULD include:

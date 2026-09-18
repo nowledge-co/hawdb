@@ -1,5 +1,5 @@
 use super::*;
-use skein_optimizer::RelationalOperatorKind;
+use hawdb_optimizer::RelationalOperatorKind;
 
 #[test]
 fn relational_cost_selection_preserves_results_and_reports_actual_access() {

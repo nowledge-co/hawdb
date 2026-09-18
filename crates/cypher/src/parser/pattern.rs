@@ -1,6 +1,6 @@
 use std::collections::{BTreeMap, BTreeSet};
 
-use skein_core::Result;
+use hawdb_core::Result;
 
 use super::super::ast::*;
 use super::Parser;

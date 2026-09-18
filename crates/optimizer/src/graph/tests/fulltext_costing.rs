@@ -3,7 +3,7 @@ use super::super::{
     OptimizerCatalogIndexes, OptimizerCatalogStatistics,
 };
 use crate::OptimizerConfig;
-use skein_plan::{
+use hawdb_plan::{
     LogicalPlan, NodeProjectionAccess, PhysicalPlan, Predicate, Projection, ProjectionExpression,
 };
 use std::collections::BTreeMap;

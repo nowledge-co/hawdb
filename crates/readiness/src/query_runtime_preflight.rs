@@ -1,7 +1,7 @@
 //! Storage-neutral query-runtime preflight protocol models.
 
 use crate::json_parse::{optional_query_name, parse_parameters_json};
-use skein_core::{Result, SkeinError, Value};
+use hawdb_core::{HawdbError, Result, Value};
 use std::collections::BTreeMap;
 
 /// One bounded query probe supplied to the embedded query-runtime preflight.
@@ -102,19 +102,19 @@ fn parse_route_query_probes(
     value: &serde_json::Value,
 ) -> Result<Vec<NowledgeQueryRuntimePreflightProbe>> {
     let object = value.as_object().ok_or_else(|| {
-        SkeinError::Semantic("graph route query inventory route must be a JSON object".to_string())
+        HawdbError::Semantic("graph route query inventory route must be a JSON object".to_string())
     })?;
     let route = object
         .get("route")
         .and_then(serde_json::Value::as_str)
         .ok_or_else(|| {
-            SkeinError::Semantic(
+            HawdbError::Semantic(
                 "graph route query inventory field 'route' must be a string".to_string(),
             )
         })?
         .to_string();
     if route.trim().is_empty() {
-        return Err(SkeinError::Semantic(
+        return Err(HawdbError::Semantic(
             "graph route query inventory route must be non-empty".to_string(),
         ));
     }
@@ -122,7 +122,7 @@ fn parse_route_query_probes(
         .get("queries")
         .and_then(serde_json::Value::as_array)
         .ok_or_else(|| {
-            SkeinError::Semantic(
+            HawdbError::Semantic(
                 "graph route query inventory field 'queries' must be an array".to_string(),
             )
         })?;
@@ -139,12 +139,12 @@ fn parse_route_query_probe(
     query_index: usize,
 ) -> Result<NowledgeQueryRuntimePreflightProbe> {
     let object = value.as_object().ok_or_else(|| {
-        SkeinError::Semantic("graph route query inventory query must be a JSON object".to_string())
+        HawdbError::Semantic("graph route query inventory query must be a JSON object".to_string())
     })?;
     let name =
         optional_query_name(value).unwrap_or_else(|| format!("{route}:query-{}", query_index + 1));
     if name.trim().is_empty() {
-        return Err(SkeinError::Semantic(
+        return Err(HawdbError::Semantic(
             "graph route query inventory query name must be non-empty when provided".to_string(),
         ));
     }
@@ -152,13 +152,13 @@ fn parse_route_query_probe(
         .get("cypher")
         .and_then(serde_json::Value::as_str)
         .ok_or_else(|| {
-            SkeinError::Semantic(
+            HawdbError::Semantic(
                 "graph route query inventory field 'cypher' must be a string".to_string(),
             )
         })?
         .to_string();
     if cypher.trim().is_empty() {
-        return Err(SkeinError::Semantic(
+        return Err(HawdbError::Semantic(
             "graph route query inventory field 'cypher' must be non-empty".to_string(),
         ));
     }
@@ -183,7 +183,7 @@ fn parse_route_query_probe(
 
 fn parse_probe(value: &serde_json::Value) -> Result<NowledgeQueryRuntimePreflightProbe> {
     let object = value.as_object().ok_or_else(|| {
-        SkeinError::Semantic("query runtime probe must be a JSON object".to_string())
+        HawdbError::Semantic("query runtime probe must be a JSON object".to_string())
     })?;
     let name = object
         .get("name")
@@ -194,7 +194,7 @@ fn parse_probe(value: &serde_json::Value) -> Result<NowledgeQueryRuntimePrefligh
         .get("cypher")
         .and_then(serde_json::Value::as_str)
         .ok_or_else(|| {
-            SkeinError::Semantic("query runtime probe field 'cypher' must be a string".to_string())
+            HawdbError::Semantic("query runtime probe field 'cypher' must be a string".to_string())
         })?
         .to_string();
     let parameters = object
@@ -230,7 +230,7 @@ fn optional_string(
         .as_str()
         .map(|value| Some(value.to_string()))
         .ok_or_else(|| {
-            SkeinError::Semantic(format!(
+            HawdbError::Semantic(format!(
                 "query runtime probe field '{field}' must be a string"
             ))
         })
@@ -247,7 +247,7 @@ fn optional_bool(
         return Ok(None);
     }
     value.as_bool().map(Some).ok_or_else(|| {
-        SkeinError::Semantic(format!(
+        HawdbError::Semantic(format!(
             "query runtime probe field '{field}' must be a boolean"
         ))
     })
@@ -264,12 +264,12 @@ fn optional_usize(
         return Ok(None);
     }
     let raw = value.as_u64().ok_or_else(|| {
-        SkeinError::Semantic(format!(
+        HawdbError::Semantic(format!(
             "query runtime probe field '{field}' must be an integer"
         ))
     })?;
     usize::try_from(raw).map(Some).map_err(|_| {
-        SkeinError::Semantic(format!(
+        HawdbError::Semantic(format!(
             "query runtime probe field '{field}' exceeds usize range"
         ))
     })

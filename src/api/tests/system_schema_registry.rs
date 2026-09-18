@@ -30,8 +30,8 @@ fn registry_v2() -> SystemSchemaRegistry {
     )
 }
 
-const SYSTEM_SCHEMA_CRASH_CHILD_ENV: &str = "SKEIN_TEST_SYSTEM_SCHEMA_CRASH_CHILD";
-const SYSTEM_SCHEMA_CRASH_PATH_ENV: &str = "SKEIN_TEST_SYSTEM_SCHEMA_CRASH_PATH";
+const SYSTEM_SCHEMA_CRASH_CHILD_ENV: &str = "HAWDB_TEST_SYSTEM_SCHEMA_CRASH_CHILD";
+const SYSTEM_SCHEMA_CRASH_PATH_ENV: &str = "HAWDB_TEST_SYSTEM_SCHEMA_CRASH_PATH";
 
 #[test]
 fn system_schema_upgrade_crash_child() {
@@ -43,7 +43,7 @@ fn system_schema_upgrade_crash_child() {
             .expect("system schema crash test database path"),
     );
     let point =
-        std::env::var("SKEIN_TEST_PROCESS_CRASH_POINT").expect("system schema crash test point");
+        std::env::var("HAWDB_TEST_PROCESS_CRASH_POINT").expect("system schema crash test point");
     let mut db = Database::open(&path).unwrap();
     db.apply_system_schema_registry(&registry_v2()).unwrap();
     panic!("system schema crash failpoint {point} did not terminate the child process");
@@ -75,7 +75,7 @@ fn application_system_schema_upgrade_crash_recovers_a_consistent_registry_and_sc
             .arg("--nocapture")
             .env(SYSTEM_SCHEMA_CRASH_CHILD_ENV, "1")
             .env(SYSTEM_SCHEMA_CRASH_PATH_ENV, &path)
-            .env("SKEIN_TEST_PROCESS_CRASH_POINT", stage)
+            .env("HAWDB_TEST_PROCESS_CRASH_POINT", stage)
             .status()
             .unwrap();
         assert_eq!(
@@ -112,7 +112,7 @@ fn application_system_schema_upgrade_crash_recovers_a_consistent_registry_and_sc
         let mut reopened = Database::open(&path).unwrap();
         let mut versions = reopened
             .query_sql(
-                "SELECT version FROM skein_schema_migrations WHERE owner = 'nowledge.content_store'",
+                "SELECT version FROM hawdb_schema_migrations WHERE owner = 'nowledge.content_store'",
             )
             .unwrap()
             .rows
@@ -167,11 +167,11 @@ fn engine_system_schema_bootstraps_during_persistent_open() {
     let first_epoch = {
         let mut db = Database::open(&path).unwrap();
         let rows = db
-            .query_sql("SELECT owner, version FROM skein_schema_migrations")
+            .query_sql("SELECT owner, version FROM hawdb_schema_migrations")
             .unwrap()
             .rows;
         assert_eq!(rows.len(), 1);
-        assert_eq!(rows[0]["owner"], Value::String("skein.engine".to_string()));
+        assert_eq!(rows[0]["owner"], Value::String("hawdb.engine".to_string()));
         assert_eq!(rows[0]["version"], Value::Int(1));
         let changefeed = db.search_projection_changefeed_status();
         assert_eq!(changefeed.retained_mutation_count, 0);
@@ -200,7 +200,7 @@ fn read_only_out_of_core_open_validates_system_schema_through_canonical_rows() {
         let mut db = Database::open_with_config(
             &path,
             DatabaseConfig {
-                relational_index_mode: skein_storage::RelationalIndexMode::Shadow,
+                relational_index_mode: hawdb_storage::RelationalIndexMode::Shadow,
                 ..DatabaseConfig::default()
             },
         )
@@ -221,8 +221,8 @@ fn read_only_out_of_core_open_validates_system_schema_through_canonical_rows() {
         &path,
         DatabaseConfig {
             read_only: true,
-            storage_residency_mode: skein_storage::StorageResidencyMode::OutOfCore,
-            relational_index_mode: skein_storage::RelationalIndexMode::Authoritative,
+            storage_residency_mode: hawdb_storage::StorageResidencyMode::OutOfCore,
+            relational_index_mode: hawdb_storage::RelationalIndexMode::Authoritative,
             ..DatabaseConfig::default()
         },
     )
@@ -254,15 +254,15 @@ fn read_only_out_of_core_open_validates_system_schema_through_canonical_rows() {
 fn writable_metadata_only_transaction_checkpoints_rows_and_indexes() {
     let path = unique_test_dir("writable_metadata_only_transaction");
     let config = DatabaseConfig {
-        storage_residency_mode: skein_storage::StorageResidencyMode::OutOfCore,
-        relational_index_mode: skein_storage::RelationalIndexMode::Authoritative,
+        storage_residency_mode: hawdb_storage::StorageResidencyMode::OutOfCore,
+        relational_index_mode: hawdb_storage::RelationalIndexMode::Authoritative,
         ..DatabaseConfig::default()
     };
     {
         let mut db = Database::open_with_config(
             &path,
             DatabaseConfig {
-                relational_index_mode: skein_storage::RelationalIndexMode::Shadow,
+                relational_index_mode: hawdb_storage::RelationalIndexMode::Shadow,
                 ..DatabaseConfig::default()
             },
         )
@@ -536,7 +536,7 @@ fn application_sql_cannot_modify_system_schema_registry() {
     db.apply_system_schema_registry(&registry_v1()).unwrap();
 
     let direct_error = db
-        .query_sql("DELETE FROM skein_schema_migrations WHERE owner = 'nowledge.content_store'")
+        .query_sql("DELETE FROM hawdb_schema_migrations WHERE owner = 'nowledge.content_store'")
         .unwrap_err();
     assert!(direct_error
         .to_string()
@@ -545,7 +545,7 @@ fn application_sql_cannot_modify_system_schema_registry() {
     let mut transaction = db.begin_transaction();
     let transaction_error = transaction
         .query_sql(
-            "UPDATE skein_schema_migrations SET version = 9 WHERE owner = 'nowledge.content_store'",
+            "UPDATE hawdb_schema_migrations SET version = 9 WHERE owner = 'nowledge.content_store'",
         )
         .unwrap_err();
     assert!(transaction_error
@@ -555,7 +555,7 @@ fn application_sql_cannot_modify_system_schema_registry() {
 
     let rows = db
         .query_sql(
-            "SELECT version FROM skein_schema_migrations WHERE owner = 'nowledge.content_store'",
+            "SELECT version FROM hawdb_schema_migrations WHERE owner = 'nowledge.content_store'",
         )
         .unwrap()
         .rows;
@@ -574,7 +574,7 @@ fn application_migration_cannot_modify_system_schema_registry() {
             SystemSchemaMigration::new(
                 2,
                 "rewrite_engine_registry",
-                ["UPDATE skein_schema_migrations SET version = 9 WHERE owner = 'skein.engine'"],
+                ["UPDATE hawdb_schema_migrations SET version = 9 WHERE owner = 'hawdb.engine'"],
             ),
         ],
     );
@@ -592,7 +592,7 @@ fn application_migration_cannot_modify_system_schema_registry() {
 fn application_cannot_claim_the_engine_system_schema_owner() {
     let mut db = Database::new();
     let registry = SystemSchemaRegistry::new(
-        "skein.engine",
+        "hawdb.engine",
         [SystemSchemaMigration::new(
             1,
             "untrusted_engine_schema",

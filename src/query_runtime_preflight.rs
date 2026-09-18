@@ -1,10 +1,10 @@
 use crate::{
-    nowledge_mem_graph_read_route_catalog_digest, DatabaseConfig, NowledgeMemEmbeddedStore,
-    NowledgeMemGraph, NowledgeQueryRuntimePreflightProbe, Result, SkeinError,
+    nowledge_mem_graph_read_route_catalog_digest, DatabaseConfig, HawdbError,
+    NowledgeMemEmbeddedStore, NowledgeMemGraph, NowledgeQueryRuntimePreflightProbe, Result,
     NOWLEDGE_MEM_GRAPH_READ_ROUTE_CATALOG_VERSION,
 };
-pub use skein_readiness::query_runtime_preflight_cli::nowledge_query_runtime_preflight_usage;
-use skein_readiness::query_runtime_preflight_cli::parse_query_runtime_preflight_cli_inputs;
+pub use hawdb_readiness::query_runtime_preflight_cli::nowledge_query_runtime_preflight_usage;
+use hawdb_readiness::query_runtime_preflight_cli::parse_query_runtime_preflight_cli_inputs;
 
 pub fn run_nowledge_query_runtime_preflight(
     args: impl Iterator<Item = String>,
@@ -80,15 +80,15 @@ fn database_open_blocker_codes(probe_count: usize, failed_probe_count: usize) ->
     blockers
 }
 
-fn error_class(error: &SkeinError) -> &'static str {
+fn error_class(error: &HawdbError) -> &'static str {
     match error {
-        SkeinError::Parse(_) => "parse",
-        SkeinError::Semantic(_) => "semantic",
-        SkeinError::Storage(_)
-        | SkeinError::StorageIntegrity(_)
-        | SkeinError::AppendSequenceExhausted { .. } => "storage",
-        SkeinError::Execution(_) => "execution",
-        SkeinError::CapabilityUnavailable { .. } => "capability_unavailable",
+        HawdbError::Parse(_) => "parse",
+        HawdbError::Semantic(_) => "semantic",
+        HawdbError::Storage(_)
+        | HawdbError::StorageIntegrity(_)
+        | HawdbError::AppendSequenceExhausted { .. } => "storage",
+        HawdbError::Execution(_) => "execution",
+        HawdbError::CapabilityUnavailable { .. } => "capability_unavailable",
     }
 }
 
@@ -154,7 +154,7 @@ mod tests {
         assert!(require_ready);
         assert_eq!(
             report["protocol"],
-            "skein-nowledge-query-runtime-preflight-v1"
+            "hawdb-nowledge-query-runtime-preflight-v1"
         );
         assert_eq!(report["ready"], true);
         assert_eq!(
@@ -557,7 +557,7 @@ mod tests {
             .duration_since(UNIX_EPOCH)
             .unwrap()
             .as_nanos();
-        std::env::temp_dir().join(format!("skein_{name}_{}_{nanos}", std::process::id()))
+        std::env::temp_dir().join(format!("hawdb_{name}_{}_{nanos}", std::process::id()))
     }
 
     fn ready_probe(route: &str) -> serde_json::Value {

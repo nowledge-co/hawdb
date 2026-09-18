@@ -1,4 +1,4 @@
-use skein_core::QueryAccessControlContext;
+use hawdb_core::QueryAccessControlContext;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct AccessControlPolicyReadiness {
@@ -54,7 +54,7 @@ pub fn access_control_policy_readiness(
 #[cfg(test)]
 mod tests {
     use super::access_control_policy_readiness;
-    use skein_core::QueryAccessControlContext;
+    use hawdb_core::QueryAccessControlContext;
 
     #[test]
     fn missing_and_stale_policies_fail_closed() {

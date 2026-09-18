@@ -35,15 +35,15 @@ use fixture::{
     bootstrap_checkpoint, corpus_statement, database_config, initial_read_specs,
     thread_page_parameters, QUALIFIED_TABLES,
 };
+use hawdb::{
+    Database, DurabilityPolicy, HawdbError, RelationalIndexMode, Result, StorageOpenTimings,
+};
 use isolation::qualify_content_store_isolation;
 pub use production::*;
 pub use production_mutation::*;
 pub use production_overflow_compaction::*;
 use resource::{qualify_content_store_resources, ContentStoreResourceProbeConfig};
 use serde::Serialize;
-use skein::{
-    Database, DurabilityPolicy, RelationalIndexMode, Result, SkeinError, StorageOpenTimings,
-};
 use source_ownership::qualify_source_ownership_move;
 use source_replacement::qualify_source_chunk_replacement;
 use space_merge_ownership::qualify_space_merge_ownership;
@@ -56,7 +56,7 @@ use thread_upsert::qualify_thread_message_upsert;
 use transaction::qualify_multi_statement_transaction;
 
 pub const CONTENT_STORE_INITIAL_ROW_PAGE_QUALIFICATION_PROTOCOL: &str =
-    "skein-content-store-initial-row-page-qualification-v1";
+    "hawdb-content-store-initial-row-page-qualification-v1";
 pub const CONTENT_STORE_512_MIB_CAPABILITY_BYTES: u64 = 512 * 1024 * 1024;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
@@ -129,35 +129,35 @@ impl ContentStoreInitialRowPageQualificationConfig {
 
     fn validate(&self, corpus: &ContentStoreSqlCorpus) -> Result<()> {
         if self.database_path.exists() {
-            return Err(SkeinError::Semantic(
+            return Err(HawdbError::Semantic(
                 "content-store row-page qualification requires a new database path".to_string(),
             ));
         }
         if self.source_revision.trim().is_empty() {
-            return Err(SkeinError::Semantic(
+            return Err(HawdbError::Semantic(
                 "content-store row-page qualification source revision must not be empty"
                     .to_string(),
             ));
         }
         if self.base_message_count == 0 || self.message_payload_bytes == 0 {
-            return Err(SkeinError::Semantic(
+            return Err(HawdbError::Semantic(
                 "content-store row-page qualification message count and payload must be non-zero"
                     .to_string(),
             ));
         }
         if self.base_chunk_count == 0 || self.chunk_payload_bytes == 0 {
-            return Err(SkeinError::Semantic(
+            return Err(HawdbError::Semantic(
                 "content-store row-page qualification chunk count and payload must be non-zero"
                     .to_string(),
             ));
         }
         if self.segment_cache_capacity_bytes == 0 {
-            return Err(SkeinError::Semantic(
+            return Err(HawdbError::Semantic(
                 "content-store row-page qualification cache capacity must be non-zero".to_string(),
             ));
         }
         if self.configured_available_memory_bytes == 0 {
-            return Err(SkeinError::Semantic(
+            return Err(HawdbError::Semantic(
                 "content-store row-page qualification configured memory must be non-zero"
                     .to_string(),
             ));
@@ -165,25 +165,25 @@ impl ContentStoreInitialRowPageQualificationConfig {
         if self.resource_profile_kind == ContentStoreResourceProfileKind::Capability512Mib
             && self.configured_available_memory_bytes != CONTENT_STORE_512_MIB_CAPABILITY_BYTES
         {
-            return Err(SkeinError::Semantic(format!(
+            return Err(HawdbError::Semantic(format!(
                 "content-store 512 MiB capability profile must declare {CONTENT_STORE_512_MIB_CAPABILITY_BYTES} available bytes"
             )));
         }
         if self.resource_profile_kind == ContentStoreResourceProfileKind::SharedHost8Gib
             && self.configured_available_memory_bytes > CONTENT_STORE_SHARED_HOST_8_GIB_BYTES
         {
-            return Err(SkeinError::Semantic(format!(
+            return Err(HawdbError::Semantic(format!(
                 "content-store shared-host 8 GiB profile cannot declare more than {CONTENT_STORE_SHARED_HOST_8_GIB_BYTES} available bytes"
             )));
         }
         if self.segment_cache_capacity_bytes > self.configured_available_memory_bytes {
-            return Err(SkeinError::Semantic(format!(
+            return Err(HawdbError::Semantic(format!(
                 "content-store row-page qualification cache capacity {} exceeds configured available memory {}",
                 self.segment_cache_capacity_bytes, self.configured_available_memory_bytes
             )));
         }
         if self.resource_read_samples == 0 || self.resource_read_samples > 1024 {
-            return Err(SkeinError::Semantic(
+            return Err(HawdbError::Semantic(
                 "content-store row-page qualification resource read samples must be between 1 and 1024"
                     .to_string(),
             ));
@@ -191,7 +191,7 @@ impl ContentStoreInitialRowPageQualificationConfig {
         let page = corpus_statement(corpus, "thread_messages_page")?;
         let final_message_count = self.base_message_count.saturating_add(3);
         if final_message_count > page.max_rows {
-            return Err(SkeinError::Semantic(format!(
+            return Err(HawdbError::Semantic(format!(
                 "content-store row-page qualification needs {final_message_count} rows but thread_messages_page admits {}",
                 page.max_rows
             )));
@@ -200,12 +200,12 @@ impl ContentStoreInitialRowPageQualificationConfig {
             .message_payload_bytes
             .checked_mul(final_message_count)
             .ok_or_else(|| {
-                SkeinError::Semantic(
+                HawdbError::Semantic(
                     "content-store row-page qualification payload size overflow".to_string(),
                 )
             })?;
         if minimum_payload > page.max_payload_bytes {
-            return Err(SkeinError::Semantic(format!(
+            return Err(HawdbError::Semantic(format!(
                 "content-store row-page qualification message payloads need at least {minimum_payload} bytes but thread_messages_page admits {}",
                 page.max_payload_bytes
             )));
@@ -213,7 +213,7 @@ impl ContentStoreInitialRowPageQualificationConfig {
         let chunks = corpus_statement(corpus, "source_chunks_by_source")?;
         let final_chunk_count = self.base_chunk_count.saturating_add(2);
         if final_chunk_count > chunks.max_rows {
-            return Err(SkeinError::Semantic(format!(
+            return Err(HawdbError::Semantic(format!(
                 "content-store row-page qualification needs {final_chunk_count} chunks but source_chunks_by_source admits {}",
                 chunks.max_rows
             )));
@@ -222,12 +222,12 @@ impl ContentStoreInitialRowPageQualificationConfig {
             .chunk_payload_bytes
             .checked_mul(final_chunk_count)
             .ok_or_else(|| {
-                SkeinError::Semantic(
+                HawdbError::Semantic(
                     "content-store row-page qualification chunk payload size overflow".to_string(),
                 )
             })?;
         if minimum_chunk_payload > chunks.max_payload_bytes {
-            return Err(SkeinError::Semantic(format!(
+            return Err(HawdbError::Semantic(format!(
                 "content-store row-page qualification chunk payloads need at least {minimum_chunk_payload} bytes but source_chunks_by_source admits {}",
                 chunks.max_payload_bytes
             )));
@@ -724,7 +724,7 @@ pub fn run_content_store_initial_row_page_qualification(
     )?;
     let recovery = database.storage_recovery_report();
     if recovery.replayed_wal_entries == 0 {
-        return Err(SkeinError::Execution(
+        return Err(HawdbError::Execution(
             "content-store row-page qualification did not replay the post-checkpoint WAL mutation"
                 .to_string(),
         ));
@@ -738,13 +738,13 @@ pub fn run_content_store_initial_row_page_qualification(
         config.base_message_count + 1,
     )?;
     if wal_recovery_read.execution.delta_generation.is_none() {
-        return Err(SkeinError::Execution(
+        return Err(HawdbError::Execution(
             "content-store row-page qualification WAL read did not use a recovery delta"
                 .to_string(),
         ));
     }
     if wal_recovery_read.execution.visible_commit_epoch != wal_content_commit_epoch {
-        return Err(SkeinError::Execution(format!(
+        return Err(HawdbError::Execution(format!(
             "content-store WAL message read observed epoch {}, expected graph-plus-relational epoch {wal_content_commit_epoch}",
             wal_recovery_read.execution.visible_commit_epoch
         )));
@@ -769,13 +769,13 @@ pub fn run_content_store_initial_row_page_qualification(
             .delta_generation
             .is_none()
     {
-        return Err(SkeinError::Execution(
+        return Err(HawdbError::Execution(
             "content-store extended WAL reads did not use the recovery delta".to_string(),
         ));
     }
     for read in [&wal_recovery_chunk_read, &wal_recovery_anchor_read] {
         if read.execution.visible_commit_epoch != wal_content_commit_epoch {
-            return Err(SkeinError::Execution(format!(
+            return Err(HawdbError::Execution(format!(
                 "content-store WAL statement {} observed epoch {}, expected graph-plus-relational epoch {wal_content_commit_epoch}",
                 read.statement_name, read.execution.visible_commit_epoch
             )));
@@ -799,13 +799,13 @@ pub fn run_content_store_initial_row_page_qualification(
         config.base_message_count + 2,
     )?;
     if live_overlay_read.execution.overlay_entries == 0 {
-        return Err(SkeinError::Execution(
+        return Err(HawdbError::Execution(
             "content-store row-page qualification live read did not use the row overlay"
                 .to_string(),
         ));
     }
     if live_overlay_read.execution.visible_commit_epoch != live_content_commit_epoch {
-        return Err(SkeinError::Execution(format!(
+        return Err(HawdbError::Execution(format!(
             "content-store live message read observed epoch {}, expected graph-plus-relational epoch {live_content_commit_epoch}",
             live_overlay_read.execution.visible_commit_epoch
         )));
@@ -826,13 +826,13 @@ pub fn run_content_store_initial_row_page_qualification(
     if live_overlay_chunk_read.execution.overlay_entries == 0
         || live_overlay_anchor_read.execution.overlay_entries == 0
     {
-        return Err(SkeinError::Execution(
+        return Err(HawdbError::Execution(
             "content-store extended live reads did not use the row overlay".to_string(),
         ));
     }
     for read in [&live_overlay_chunk_read, &live_overlay_anchor_read] {
         if read.execution.visible_commit_epoch != live_content_commit_epoch {
-            return Err(SkeinError::Execution(format!(
+            return Err(HawdbError::Execution(format!(
                 "content-store live statement {} observed epoch {}, expected graph-plus-relational epoch {live_content_commit_epoch}",
                 read.statement_name, read.execution.visible_commit_epoch
             )));

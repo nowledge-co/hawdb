@@ -72,8 +72,8 @@ printf '.\n%s\n' "${workspace_members}" | while IFS= read -r package_dir; do
   fi
 done
 
-if ! has_named_test_suite BUILD.bazel skein_presubmit_crate_tests; then
-  echo "missing canonical crate presubmit suite: //:skein_presubmit_crate_tests" >&2
+if ! has_named_test_suite BUILD.bazel hawdb_presubmit_crate_tests; then
+  echo "missing canonical crate presubmit suite: //:hawdb_presubmit_crate_tests" >&2
   exit 1
 fi
 

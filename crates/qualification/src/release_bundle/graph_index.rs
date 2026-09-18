@@ -2,11 +2,11 @@ use super::{
     graph_search, require_bool, require_empty_array, require_nonzero, require_string,
     validate_common_artifact,
 };
+use hawdb::{PersistentGraphIndexClass, ProductionQualificationIdentity};
 use serde_json::Value;
-use skein::{PersistentGraphIndexClass, ProductionQualificationIdentity};
 use std::collections::BTreeSet;
 
-const MATRIX_PROTOCOL: &str = "skein-production-graph-index-qualification-matrix-v1";
+const MATRIX_PROTOCOL: &str = "hawdb-production-graph-index-qualification-matrix-v1";
 
 pub(super) fn validate_matrix(
     artifact: &Value,

@@ -2,7 +2,7 @@
 
 use serde::{Deserialize, Serialize};
 
-pub const WAL_DOCTOR_REPAIR_PROTOCOL: &str = "skein-wal-doctor-repair-v1";
+pub const WAL_DOCTOR_REPAIR_PROTOCOL: &str = "hawdb-wal-doctor-repair-v1";
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct WalDoctorOptions {

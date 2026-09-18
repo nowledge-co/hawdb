@@ -1,8 +1,8 @@
-use crate::error::{Result, SkeinError};
-use skein_evidence::production_evidence_blocker_codes;
+use crate::error::{HawdbError, Result};
+use hawdb_evidence::production_evidence_blocker_codes;
 
 pub const SEARCH_LEXICAL_QUALIFICATION_PROTOCOL: &str =
-    "skein-search-lexical-production-qualification";
+    "hawdb-search-lexical-production-qualification";
 pub const SEARCH_LEXICAL_QUALIFICATION_PROTOCOL_VERSION: u64 = 2;
 const MINIMUM_DOCUMENT_COUNT: usize = 100_000;
 const MAX_RSS_BUDGET_PER_MILLION: u64 = 1_100_000;
@@ -85,7 +85,7 @@ pub struct SearchLexicalFeasibilityMetrics {
     pub selective_posting_bytes_read: u64,
     pub selective_candidate_postings_visited: u64,
     pub selective_matching_document_count: usize,
-    pub process_memory_capabilities: skein_qos::ProcessMemoryCapabilities,
+    pub process_memory_capabilities: hawdb_qos::ProcessMemoryCapabilities,
     pub total_page_faults: Option<u64>,
     pub minor_page_faults: Option<u64>,
     pub major_page_faults: Option<u64>,
@@ -323,7 +323,7 @@ impl SearchLexicalProductionQualificationReport {
         if blockers.is_empty() {
             Ok(())
         } else {
-            Err(SkeinError::Storage(format!(
+            Err(HawdbError::Storage(format!(
                 "segmented lexical projection is not qualified for production: {}",
                 blockers.join(",")
             )))
@@ -340,7 +340,7 @@ impl SearchLexicalProductionQualificationReport {
         if blockers.is_empty() {
             Ok(())
         } else {
-            Err(SkeinError::Storage(format!(
+            Err(HawdbError::Storage(format!(
                 "segmented lexical projection is not qualified for the current production release: {}",
                 blockers.join(",")
             )))
@@ -579,7 +579,7 @@ mod tests {
             selective_posting_bytes_read: 4096,
             selective_candidate_postings_visited: 32,
             selective_matching_document_count: 16,
-            process_memory_capabilities: skein_qos::ProcessMemoryCapabilities {
+            process_memory_capabilities: hawdb_qos::ProcessMemoryCapabilities {
                 resident_memory: true,
                 total_page_faults: true,
                 split_page_faults: true,

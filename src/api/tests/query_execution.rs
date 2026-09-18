@@ -15,7 +15,7 @@ fn relational_index_read_row_budget_matches_intermediate_limit() {
     assert_eq!(
         limits.index_read.max_pages.get(),
         4_097usize
-            .saturating_mul(skein_storage::DEFAULT_RELATIONAL_INDEX_READ_TREE_HEIGHT as usize)
+            .saturating_mul(hawdb_storage::DEFAULT_RELATIONAL_INDEX_READ_TREE_HEIGHT as usize)
     );
     assert_eq!(
         limits.index_read.max_bytes.get(),
@@ -23,7 +23,7 @@ fn relational_index_read_row_budget_matches_intermediate_limit() {
             .index_read
             .max_pages
             .get()
-            .saturating_mul(skein_storage::DEFAULT_IMMUTABLE_INDEX_PAGE_BYTES)
+            .saturating_mul(hawdb_storage::DEFAULT_IMMUTABLE_INDEX_PAGE_BYTES)
     );
     assert_eq!(
         limits.index_read.max_file_bytes,
@@ -126,7 +126,7 @@ fn durable_source_filter_uses_segment_scan_through_query_runtime() {
         .duration_since(std::time::UNIX_EPOCH)
         .unwrap()
         .as_nanos();
-    let path = std::env::temp_dir().join(format!("skein-source-query-runtime-{nonce}"));
+    let path = std::env::temp_dir().join(format!("hawdb-source-query-runtime-{nonce}"));
     let mut db = Database::open(&path).unwrap();
     db.query("CREATE (:Source {id: 'source-alpha', space_id: 'alpha', source_type: 'file'})")
         .unwrap();
@@ -164,7 +164,7 @@ fn source_segment_scan_falls_back_after_uncheckpointed_mutation() {
         .duration_since(std::time::UNIX_EPOCH)
         .unwrap()
         .as_nanos();
-    let path = std::env::temp_dir().join(format!("skein-source-query-fallback-{nonce}"));
+    let path = std::env::temp_dir().join(format!("hawdb-source-query-fallback-{nonce}"));
     let mut db = Database::open(&path).unwrap();
     db.query("CREATE (:Source {id: 'source-checkpointed', space_id: 'alpha'})")
         .unwrap();
@@ -336,13 +336,13 @@ fn relational_query_index_limits_separate_logical_work_from_file_io() {
     let limits = super::super::relational_query_limits_with_payload(&config, None, None);
     let index = limits.index_read;
     let expected_pages = crate::DEFAULT_MAX_READ_RESULT_ROWS
-        .saturating_mul(skein_storage::DEFAULT_RELATIONAL_INDEX_READ_TREE_HEIGHT as usize);
+        .saturating_mul(hawdb_storage::DEFAULT_RELATIONAL_INDEX_READ_TREE_HEIGHT as usize);
 
     assert_eq!(index.max_rows.get(), crate::DEFAULT_MAX_READ_RESULT_ROWS);
     assert_eq!(index.max_pages.get(), expected_pages);
     assert_eq!(
         index.max_bytes.get(),
-        expected_pages.saturating_mul(skein_storage::DEFAULT_IMMUTABLE_INDEX_PAGE_BYTES)
+        expected_pages.saturating_mul(hawdb_storage::DEFAULT_IMMUTABLE_INDEX_PAGE_BYTES)
     );
     assert_eq!(
         index.max_file_bytes,
@@ -766,7 +766,7 @@ fn executor_owned_result_delivery_preserves_read_transaction_boundaries() {
     }
 
     for cancel in [false, true] {
-        let context = skein_core::RuntimeTaskContext::default();
+        let context = hawdb_core::RuntimeTaskContext::default();
         let mut delivered = Vec::new();
         let error = tx
             .query_with_params_streaming_context(
@@ -783,7 +783,7 @@ fn executor_owned_result_delivery_preserves_read_transaction_boundaries() {
                         context.cancellation().cancel();
                         Ok(())
                     } else {
-                        Err(crate::SkeinError::Execution(
+                        Err(crate::HawdbError::Execution(
                             "host consumer failed".to_string(),
                         ))
                     }

@@ -15,14 +15,14 @@ use crate::{
     RelationalPrimaryKeyChangeCapture, RelationalPrimaryKeyChangeRebuildReason,
     RelationalTablePrimaryKeyChanges, SearchProjectionGraphChange,
 };
-use skein_core::{
-    BasicGraphStatistics, Catalog, ConstraintId, ConstraintSubject, GraphStatistics, IndexId,
-    IndexStatisticsSample, LabelId, PropertyId, RelTypeId, Result, SkeinError, TableId, TableKind,
+use hawdb_core::{
+    BasicGraphStatistics, Catalog, ConstraintId, ConstraintSubject, GraphStatistics, HawdbError,
+    IndexId, IndexStatisticsSample, LabelId, PropertyId, RelTypeId, Result, TableId, TableKind,
     Uuid,
 };
 use std::collections::{BTreeMap, BTreeSet};
 
-pub const CHECKPOINT_HEADER_V1: &str = "SKEIN_CHECKPOINT_V1";
+pub const CHECKPOINT_HEADER_V1: &str = "HAWDB_CHECKPOINT_V1";
 
 pub struct CheckpointImage<'a> {
     pub catalog: &'a Catalog,
@@ -51,7 +51,7 @@ pub fn encode_search_projection_relational_primary_key_changes(
                     .map(|key| {
                         encode_relational_primary_key(key)
                             .map(|encoded| encode_bytes(&encoded))
-                            .map_err(|error| SkeinError::Storage(error.to_string()))
+                            .map_err(|error| HawdbError::Storage(error.to_string()))
                     })
                     .collect::<Result<Vec<_>>>()?;
                 encoded_tables.push(format!(
@@ -96,20 +96,20 @@ fn validate_search_projection_checkpoint_changes(
     changes: &[SearchProjectionGraphChange],
 ) -> Result<()> {
     if start_epoch > checkpoint_commit_epoch {
-        return Err(SkeinError::Storage(format!(
+        return Err(HawdbError::Storage(format!(
             "search projection change log start epoch {start_epoch} exceeds checkpoint commit epoch {checkpoint_commit_epoch}"
         )));
     }
     let mut previous_epoch = start_epoch;
     for change in changes {
         if change.commit_epoch <= previous_epoch {
-            return Err(SkeinError::Storage(format!(
+            return Err(HawdbError::Storage(format!(
                 "search projection change commit epoch {} is not greater than previous epoch {previous_epoch}",
                 change.commit_epoch
             )));
         }
         if change.commit_epoch > checkpoint_commit_epoch {
-            return Err(SkeinError::Storage(format!(
+            return Err(HawdbError::Storage(format!(
                 "search projection change commit epoch {} exceeds checkpoint commit epoch {checkpoint_commit_epoch}",
                 change.commit_epoch
             )));
@@ -119,7 +119,7 @@ fn validate_search_projection_checkpoint_changes(
             .windows(2)
             .all(|pair| pair[0] < pair[1])
         {
-            return Err(SkeinError::Storage(format!(
+            return Err(HawdbError::Storage(format!(
                 "search projection change at commit epoch {} has unordered or duplicate upsert node ids",
                 change.commit_epoch
             )));
@@ -129,7 +129,7 @@ fn validate_search_projection_checkpoint_changes(
             .windows(2)
             .all(|pair| pair[0] < pair[1])
         {
-            return Err(SkeinError::Storage(format!(
+            return Err(HawdbError::Storage(format!(
                 "search projection change at commit epoch {} has unordered or duplicate delete document ids",
                 change.commit_epoch
             )));
@@ -138,7 +138,7 @@ fn validate_search_projection_checkpoint_changes(
             &change.relational_primary_key_changes
         {
             if !tables.windows(2).all(|pair| pair[0].table < pair[1].table) {
-                return Err(SkeinError::Storage(format!(
+                return Err(HawdbError::Storage(format!(
                     "search projection change at commit epoch {} has unordered or duplicate relational tables",
                     change.commit_epoch
                 )));
@@ -147,7 +147,7 @@ fn validate_search_projection_checkpoint_changes(
                 if table.primary_keys.is_empty()
                     || !table.primary_keys.windows(2).all(|pair| pair[0] < pair[1])
                 {
-                    return Err(SkeinError::Storage(format!(
+                    return Err(HawdbError::Storage(format!(
                         "search projection change at commit epoch {} has empty, unordered, or duplicate primary keys for table {}",
                         change.commit_epoch, table.table
                     )));
@@ -472,7 +472,7 @@ pub fn encode_checkpoint_body(image: &CheckpointImage<'_>, generation: u64) -> R
 #[doc(hidden)]
 pub fn split_checkpoint_checksum(text: &str) -> Result<(&str, u64)> {
     let Some((body, footer)) = text.rsplit_once("checksum\t") else {
-        return Err(SkeinError::Storage(
+        return Err(HawdbError::Storage(
             "checkpoint missing checksum footer".to_string(),
         ));
     };
@@ -502,7 +502,7 @@ pub fn relational_checkpoint_metadata(body: &str) -> Result<Option<DurableArtifa
             }
             ["relational_checkpoint_encoded_sha256", raw] if encoded_sha256.is_none() => {
                 encoded_sha256 = Some(raw.parse().map_err(|error| {
-                    SkeinError::Storage(format!(
+                    HawdbError::Storage(format!(
                         "invalid relational checkpoint encoded SHA-256: {error}"
                     ))
                 })?);
@@ -510,7 +510,7 @@ pub fn relational_checkpoint_metadata(body: &str) -> Result<Option<DurableArtifa
             ["relational_checkpoint_encoded_len", _]
             | ["relational_checkpoint_encoded_checksum", _]
             | ["relational_checkpoint_encoded_sha256", _] => {
-                return Err(SkeinError::Storage(
+                return Err(HawdbError::Storage(
                     "checkpoint contains duplicate relational artifact metadata".to_string(),
                 ));
             }
@@ -522,7 +522,7 @@ pub fn relational_checkpoint_metadata(body: &str) -> Result<Option<DurableArtifa
         encoded_checksum,
         encoded_sha256,
     ) {
-        return Err(SkeinError::Storage(
+        return Err(HawdbError::Storage(
             "checkpoint relational artifact metadata is incomplete".to_string(),
         ));
     }
@@ -571,14 +571,14 @@ pub fn decode_search_projection_relational_primary_key_changes(
             Some(RelationalPrimaryKeyChangeRebuildReason::MultipleRelationalTransactions)
         }
         _ => {
-            return Err(SkeinError::Storage(format!(
+            return Err(HawdbError::Storage(format!(
                 "invalid search projection relational change kind: {raw_kind}"
             )))
         }
     };
     if let Some(reason) = rebuild_reason {
         if !raw_changes.is_empty() {
-            return Err(SkeinError::Storage(format!(
+            return Err(HawdbError::Storage(format!(
                 "search projection rebuild marker {raw_kind} contains unexpected key payload"
             )));
         }
@@ -592,13 +592,13 @@ pub fn decode_search_projection_relational_primary_key_changes(
     if !raw_changes.is_empty() {
         for raw_table in raw_changes.split(';') {
             let Some((raw_name, raw_keys)) = raw_table.split_once('=') else {
-                return Err(SkeinError::Storage(format!(
+                return Err(HawdbError::Storage(format!(
                     "invalid search projection relational table change: {raw_table}"
                 )));
             };
             let table = crate::text::decode_string(raw_name)?;
             if raw_keys.is_empty() {
-                return Err(SkeinError::Storage(format!(
+                return Err(HawdbError::Storage(format!(
                     "search projection relational table {table} contains no primary keys"
                 )));
             }
@@ -606,7 +606,7 @@ pub fn decode_search_projection_relational_primary_key_changes(
                 .checked_add(TABLE_FIXED_BYTES)
                 .and_then(|bytes| bytes.checked_add(table.len()))
                 .ok_or_else(|| {
-                    SkeinError::Storage(
+                    HawdbError::Storage(
                         "search projection relational change byte count overflow".to_string(),
                     )
                 })?;
@@ -614,12 +614,12 @@ pub fn decode_search_projection_relational_primary_key_changes(
             for raw_key in raw_keys.split(':') {
                 let key_bytes = crate::text::decode_bytes(raw_key)?;
                 let key = decode_relational_primary_key(&key_bytes)
-                    .map_err(|error| SkeinError::Storage(error.to_string()))?;
+                    .map_err(|error| HawdbError::Storage(error.to_string()))?;
                 encoded_bytes = encoded_bytes
                     .checked_add(KEY_FIXED_BYTES)
                     .and_then(|bytes| bytes.checked_add(key_bytes.len()))
                     .ok_or_else(|| {
-                        SkeinError::Storage(
+                        HawdbError::Storage(
                             "search projection relational change byte count overflow".to_string(),
                         )
                     })?;
@@ -697,7 +697,7 @@ pub fn parse_checkpoint(
     let mut saw_storage_version = false;
     let mut lines = body.lines();
     if lines.next() != Some(CHECKPOINT_HEADER_V1) {
-        return Err(SkeinError::Storage(
+        return Err(HawdbError::Storage(
             "checkpoint is missing the V1 format header".to_string(),
         ));
     }
@@ -706,7 +706,7 @@ pub fn parse_checkpoint(
         match fields.as_slice() {
             ["version", version] => {
                 if saw_storage_version {
-                    return Err(SkeinError::Storage(
+                    return Err(HawdbError::Storage(
                         "checkpoint has duplicate storage version".to_string(),
                     ));
                 }
@@ -733,7 +733,7 @@ pub fn parse_checkpoint(
             | ["relational_checkpoint_encoded_sha256", _] => {}
             ["search_projection_change_log_start_epoch", raw] => {
                 if state.search_projection_change_log_start_epoch.is_some() {
-                    return Err(SkeinError::Storage(
+                    return Err(HawdbError::Storage(
                         "checkpoint contains duplicate search projection change log start epoch"
                             .to_string(),
                     ));
@@ -743,15 +743,15 @@ pub fn parse_checkpoint(
             }
             ["search_projection_database_identity", raw] => {
                 if state.search_projection_database_identity.is_some() {
-                    return Err(SkeinError::Storage(
+                    return Err(HawdbError::Storage(
                         "checkpoint contains duplicate search projection database identity".into(),
                     ));
                 }
                 let identity = raw.parse::<Uuid>().map_err(|_| {
-                    SkeinError::Storage("invalid search projection database identity".into())
+                    HawdbError::Storage("invalid search projection database identity".into())
                 })?;
                 if identity.is_nil() || identity.to_string() != *raw {
-                    return Err(SkeinError::Storage(
+                    return Err(HawdbError::Storage(
                         "noncanonical search projection database identity".into(),
                     ));
                 }
@@ -759,7 +759,7 @@ pub fn parse_checkpoint(
             }
             ["initial_import_source_fingerprint", raw] => {
                 if state.initial_import_source_fingerprint.is_some() {
-                    return Err(SkeinError::Storage(
+                    return Err(HawdbError::Storage(
                         "checkpoint contains duplicate initial import source fingerprint"
                             .to_string(),
                     ));
@@ -788,7 +788,7 @@ pub fn parse_checkpoint(
                     .search_projection_change_log_retained_bytes
                     .checked_add(change.estimated_retained_bytes())
                     .ok_or_else(|| {
-                        SkeinError::Storage(
+                        HawdbError::Storage(
                             "search projection change log retained byte count overflow".to_string(),
                         )
                     })?;
@@ -907,7 +907,7 @@ pub fn parse_checkpoint(
             }
             ["stat_advanced_complete", raw] => {
                 if state.statistics_complete.is_some() {
-                    return Err(SkeinError::Storage(
+                    return Err(HawdbError::Storage(
                         "checkpoint contains duplicate statistics completeness flag".to_string(),
                     ));
                 }
@@ -1153,14 +1153,14 @@ pub fn parse_checkpoint(
             }
             [""] => {}
             _ => {
-                return Err(SkeinError::Storage(format!(
+                return Err(HawdbError::Storage(format!(
                     "invalid checkpoint line: {line}"
                 )));
             }
         }
     }
     if !saw_storage_version {
-        return Err(SkeinError::Storage(
+        return Err(HawdbError::Storage(
             "checkpoint is missing its storage version".to_string(),
         ));
     }

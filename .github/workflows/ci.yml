@@ -27,37 +27,37 @@ jobs:
         uses: dtolnay/rust-toolchain@1.97.1
 
       - name: Check Tokio facade
-        run: cargo check -p skein --features tokio-runtime
+        run: cargo check -p hawdb --features tokio-runtime
 
       - name: Check qualification workload
-        run: cargo check -p skein-qualification
+        run: cargo check -p hawdb-qualification
 
       - name: Test resource detection
-        run: cargo test -p skein-qos resource::tests
+        run: cargo test -p hawdb-qos resource::tests
 
       - name: Test cgroup v2 detection
-        run: cargo test -p skein-cgroup
+        run: cargo test -p hawdb-cgroup
 
       - name: Test expression IR
-        run: cargo test -p skein-expression
+        run: cargo test -p hawdb-expression
 
       - name: Test telemetry contract
-        run: cargo test -p skein-telemetry
+        run: cargo test -p hawdb-telemetry
 
       - name: Test process memory metrics
-        run: cargo test -p skein-qos process_memory::tests
+        run: cargo test -p hawdb-qos process_memory::tests
 
       - name: Test Tokio adapter
-        run: cargo test -p skein-runtime-tokio
+        run: cargo test -p hawdb-runtime-tokio
 
       - name: Test admitted planning
-        run: cargo test -p skein --features tokio-runtime --lib api::query_runtime::tests
+        run: cargo test -p hawdb --features tokio-runtime --lib api::query_runtime::tests
 
       - name: Test synchronous query entrypoints
-        run: cargo test -p skein --features tokio-runtime --lib embedded::tests
+        run: cargo test -p hawdb --features tokio-runtime --lib embedded::tests
 
       - name: Test Tokio query entrypoints
-        run: cargo test -p skein --features tokio-runtime --lib embedded_tokio::tests
+        run: cargo test -p hawdb --features tokio-runtime --lib embedded_tokio::tests
 
   vector-projection-platform:
     name: Vector Projection (${{ matrix.target }})
@@ -83,30 +83,30 @@ jobs:
 
       - name: Check default and minimal feature sets
         run: |
-          cargo check -p skein
-          cargo check -p skein --no-default-features
+          cargo check -p hawdb
+          cargo check -p hawdb --no-default-features
 
       - name: Test search capability feature combinations
         shell: bash
         run: |
           set -euo pipefail
-          cargo test -p skein-search
-          cargo test -p skein-search --no-default-features
-          cargo test -p skein-search --no-default-features --features full-text-search
-          cargo test -p skein-search --no-default-features --features vector-search
-          cargo test -p skein-search --no-default-features --features background-maintenance
-          cargo test -p skein-search --no-default-features --features full-text-search,vector-search
-          cargo test -p skein-search --no-default-features --features full-text-search,background-maintenance
-          cargo test -p skein-search --no-default-features --features vector-search,background-maintenance
+          cargo test -p hawdb-search
+          cargo test -p hawdb-search --no-default-features
+          cargo test -p hawdb-search --no-default-features --features full-text-search
+          cargo test -p hawdb-search --no-default-features --features vector-search
+          cargo test -p hawdb-search --no-default-features --features background-maintenance
+          cargo test -p hawdb-search --no-default-features --features full-text-search,vector-search
+          cargo test -p hawdb-search --no-default-features --features full-text-search,background-maintenance
+          cargo test -p hawdb-search --no-default-features --features vector-search,background-maintenance
 
       - name: Test RaBitQ projection
-        run: cargo test -p skein-vector-projection
+        run: cargo test -p hawdb-vector-projection
 
       - name: Test embedded RaBitQ facade
-        run: cargo test -p skein --lib search::rabitq_projection::tests
+        run: cargo test -p hawdb --lib search::rabitq_projection::tests
 
       - name: Test vector qualification protocol
-        run: cargo test -p skein-qualification production_vector
+        run: cargo test -p hawdb-qualification production_vector
 
   storage-platform:
     name: Storage Platform (${{ matrix.os }})
@@ -123,39 +123,39 @@ jobs:
         uses: dtolnay/rust-toolchain@1.97.1
 
       - name: Test storage artifacts and ownership
-        run: cargo test -p skein-storage
+        run: cargo test -p hawdb-storage
 
       - name: Test durable storage recovery
-        run: cargo test -p skein --features acl --lib api::tests::storage_recovery
+        run: cargo test -p hawdb --features acl --lib api::tests::storage_recovery
 
       - name: Test row-page compaction and reclamation
-        run: cargo test -p skein --features acl --lib row_page_compaction
+        run: cargo test -p hawdb --features acl --lib row_page_compaction
 
       - name: Test out-of-core search projection I/O
-        run: cargo test -p skein --features acl --lib search::out_of_core::tests
+        run: cargo test -p hawdb --features acl --lib search::out_of_core::tests
 
       - name: Capture Windows storage lifecycle evidence
         if: matrix.os == 'windows-latest'
         shell: bash
         env:
-          SKEIN_TEST_RUST_TOOLCHAIN: "1.97.1"
-          SKEIN_TEST_STORAGE_RESOURCE_EVIDENCE_PATH: storage-resource-results/report.json
+          HAWDB_TEST_RUST_TOOLCHAIN: "1.97.1"
+          HAWDB_TEST_STORAGE_RESOURCE_EVIDENCE_PATH: storage-resource-results/report.json
         run: |
           set -euo pipefail
           mkdir -p storage-resource-results
           set +e
-          cargo test -p skein --features acl --lib \
+          cargo test -p hawdb --features acl --lib \
             api::tests::storage_recovery::platform_storage_resource_profile_emits_bound_evidence \
             -- --exact --nocapture 2>&1 \
             | tee storage-resource-results/resource-profile-test-output.txt
           resource_status=${PIPESTATUS[0]}
-          cargo test -p skein --features acl --lib \
+          cargo test -p hawdb --features acl --lib \
             api::tests::storage_recovery::canonical_row_overflow_backup_reopen_and_reclaim_follow_physical_closure \
             -- --exact --nocapture 2>&1 \
             | tee storage-resource-results/row-overflow-lifecycle-test-output.txt
           lifecycle_status=${PIPESTATUS[0]}
           set -e
-          printf '{"protocol":"skein-windows-storage-lifecycle-evidence-v1","source_revision":"%s","runner_os":"%s","resource_profile_test_status":%s,"row_overflow_lifecycle_test_status":%s}\n' \
+          printf '{"protocol":"hawdb-windows-storage-lifecycle-evidence-v1","source_revision":"%s","runner_os":"%s","resource_profile_test_status":%s,"row_overflow_lifecycle_test_status":%s}\n' \
             "$GITHUB_SHA" "$RUNNER_OS" "$resource_status" "$lifecycle_status" \
             > storage-resource-results/manifest.json
           test "$resource_status" -eq 0
@@ -187,13 +187,13 @@ jobs:
       - name: Run subprocess crash matrix
         shell: bash
         env:
-          SKEIN_TEST_RUST_TOOLCHAIN: "1.97.1"
-          SKEIN_TEST_STORAGE_CRASH_EVIDENCE_PATH: storage-crash-results/report.json
+          HAWDB_TEST_RUST_TOOLCHAIN: "1.97.1"
+          HAWDB_TEST_STORAGE_CRASH_EVIDENCE_PATH: storage-crash-results/report.json
         run: |
           set -o pipefail
           mkdir -p storage-crash-results
           set +e
-          cargo test -p skein --features acl --lib \
+          cargo test -p hawdb --features acl --lib \
             api::tests::storage_recovery::subprocess_crash_matrix_recovers_whole_batches_and_artifact_generations \
             -- --nocapture 2>&1 | tee storage-crash-results/test-output.txt
           test_status=${PIPESTATUS[0]}

@@ -1,6 +1,6 @@
 use super::{active_checkpoint_path, read_durable_text, rewrite_checksummed_file, unique_test_dir};
 use crate::{Database, DatabaseConfig, Value};
-use skein_storage::text::encode_properties;
+use hawdb_storage::text::encode_properties;
 use std::collections::BTreeMap;
 use std::path::PathBuf;
 

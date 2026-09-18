@@ -4,60 +4,60 @@
 //! catalog and, when requested, a matching import lifecycle marker.
 
 use crate::{
-    read_skein_lightning_staging_artifact_json, skein_lightning_import_state_marker,
-    sync_bootstrap_directory, verify_skein_lightning_staging_catalog, write_bootstrap_atomic_file,
+    hawdb_lightning_import_state_marker, read_hawdb_lightning_staging_artifact_json,
+    sync_bootstrap_directory, verify_hawdb_lightning_staging_catalog, write_bootstrap_atomic_file,
 };
-use skein_core::{Result, SkeinError};
-use skein_integrity::checksum_u64;
+use hawdb_core::{HawdbError, Result};
+use hawdb_integrity::checksum_u64;
 use std::fs;
 use std::path::Path;
 
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
-pub struct SkeinLightningPublishOptions {
+pub struct HawdbLightningPublishOptions {
     pub require_state_marker: bool,
     pub fencing_token: Option<String>,
     pub expected_database_epoch: Option<u64>,
 }
 
-pub fn publish_skein_lightning_staging_catalog(
+pub fn publish_hawdb_lightning_staging_catalog(
     staging_dir: impl AsRef<Path>,
     publish_dir: impl AsRef<Path>,
 ) -> Result<serde_json::Value> {
-    publish_skein_lightning_staging_catalog_with_options(
+    publish_hawdb_lightning_staging_catalog_with_options(
         staging_dir,
         publish_dir,
-        SkeinLightningPublishOptions::default(),
+        HawdbLightningPublishOptions::default(),
     )
 }
 
-pub fn publish_skein_lightning_staging_catalog_with_options(
+pub fn publish_hawdb_lightning_staging_catalog_with_options(
     staging_dir: impl AsRef<Path>,
     publish_dir: impl AsRef<Path>,
-    options: SkeinLightningPublishOptions,
+    options: HawdbLightningPublishOptions,
 ) -> Result<serde_json::Value> {
     let staging_dir = staging_dir.as_ref();
     let publish_dir = publish_dir.as_ref();
-    let verification = verify_skein_lightning_staging_catalog(staging_dir)?;
+    let verification = verify_hawdb_lightning_staging_catalog(staging_dir)?;
     if verification
         .get("validation_gate")
         .and_then(|gate| gate.get("decision"))
         .and_then(serde_json::Value::as_str)
         != Some("ready")
     {
-        return Err(SkeinError::Execution(
-            "Skein Lightning staging verification is not ready".to_string(),
+        return Err(HawdbError::Execution(
+            "Hawdb Lightning staging verification is not ready".to_string(),
         ));
     }
 
-    let catalog_path = staging_dir.join("skein_lightning_staging_catalog.json");
+    let catalog_path = staging_dir.join("hawdb_lightning_staging_catalog.json");
     let catalog_bytes = fs::read(&catalog_path)?;
     let catalog_checksum = checksum_u64(&catalog_bytes);
     let catalog = serde_json::from_slice::<serde_json::Value>(&catalog_bytes)
-        .map_err(|_| SkeinError::Execution("invalid JSON file: invalid_json".to_string()))?;
-    let manifest = read_skein_lightning_staging_artifact_json(&catalog, staging_dir, "manifest")?;
-    let publish_preflight = skein_lightning_publish_preflight(staging_dir, &manifest, &options)?;
+        .map_err(|_| HawdbError::Execution("invalid JSON file: invalid_json".to_string()))?;
+    let manifest = read_hawdb_lightning_staging_artifact_json(&catalog, staging_dir, "manifest")?;
+    let publish_preflight = hawdb_lightning_publish_preflight(staging_dir, &manifest, &options)?;
     let pointer = serde_json::json!({
-        "protocol": "skein-lightning-published-manifest",
+        "protocol": "hawdb-lightning-published-manifest",
         "protocol_version": 1,
         "state": "PUBLISHED",
         "database_commit_epoch": manifest["database_commit_epoch"].clone(),
@@ -73,14 +73,14 @@ pub fn publish_skein_lightning_staging_catalog_with_options(
         "node_count": manifest["node_count"].clone(),
         "relationship_count": manifest["relationship_count"].clone(),
         "staging_catalog": {
-            "path": "skein_lightning_staging_catalog.json",
+            "path": "hawdb_lightning_staging_catalog.json",
             "checksum": catalog_checksum,
             "byte_len": catalog_bytes.len(),
         },
     });
 
     fs::create_dir_all(publish_dir)?;
-    let pointer_path = publish_dir.join("skein_lightning_published_manifest.json");
+    let pointer_path = publish_dir.join("hawdb_lightning_published_manifest.json");
     if pointer_path.exists() {
         let existing = read_json_file(&pointer_path)?;
         if same_published_manifest_identity(&existing, &pointer) {
@@ -97,8 +97,8 @@ pub fn publish_skein_lightning_staging_catalog_with_options(
             }
             return Ok(report);
         }
-        return Err(SkeinError::Execution(
-            "published Skein Lightning manifest already points to a different snapshot".to_string(),
+        return Err(HawdbError::Execution(
+            "published Hawdb Lightning manifest already points to a different snapshot".to_string(),
         ));
     }
 
@@ -116,22 +116,22 @@ pub fn publish_skein_lightning_staging_catalog_with_options(
     let pointer_bytes = serde_json::to_vec_pretty(&report).unwrap();
     write_bootstrap_atomic_file(
         publish_dir,
-        "skein_lightning_published_manifest.json",
+        "hawdb_lightning_published_manifest.json",
         &pointer_bytes,
     )?;
     sync_bootstrap_directory(publish_dir)?;
     Ok(report)
 }
 
-fn skein_lightning_publish_preflight(
+fn hawdb_lightning_publish_preflight(
     staging_dir: &Path,
     manifest: &serde_json::Value,
-    options: &SkeinLightningPublishOptions,
+    options: &HawdbLightningPublishOptions,
 ) -> Result<serde_json::Value> {
     let mut errors = Vec::new();
     let mut state_errors = Vec::new();
     let state_marker =
-        skein_lightning_import_state_marker(staging_dir, &mut errors, &mut state_errors);
+        hawdb_lightning_import_state_marker(staging_dir, &mut errors, &mut state_errors);
     let marker_present = state_marker
         .get("present")
         .and_then(serde_json::Value::as_bool)
@@ -143,7 +143,7 @@ fn skein_lightning_publish_preflight(
         record_error(
             &mut errors,
             &mut state_errors,
-            "publish requires Skein Lightning import state marker",
+            "publish requires Hawdb Lightning import state marker",
         );
     }
     if marker_present && marker_state != Some("VALIDATING") {
@@ -191,8 +191,8 @@ fn skein_lightning_publish_preflight(
     }
 
     if !errors.is_empty() {
-        return Err(SkeinError::Execution(format!(
-            "Skein Lightning publish preflight blocked: {}",
+        return Err(HawdbError::Execution(format!(
+            "Hawdb Lightning publish preflight blocked: {}",
             errors.join("; ")
         )));
     }
@@ -234,7 +234,7 @@ fn same_published_manifest_identity(left: &serde_json::Value, right: &serde_json
 fn read_json_file(path: &Path) -> Result<serde_json::Value> {
     let bytes = fs::read(path)?;
     serde_json::from_slice(&bytes)
-        .map_err(|_| SkeinError::Execution("invalid JSON file: invalid_json".to_string()))
+        .map_err(|_| HawdbError::Execution("invalid JSON file: invalid_json".to_string()))
 }
 
 fn record_error(errors: &mut Vec<String>, group: &mut Vec<String>, message: impl Into<String>) {

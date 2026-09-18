@@ -2,8 +2,8 @@ use super::{
     Distribution, MemoryBudgetClass, PhysicalPlan, PhysicalProperties, ScanPruningSupport,
     VectorPrecision,
 };
-use skein_plan::write_projection_expression;
-use skein_plan::{SortDirection, SortItem, SortKey};
+use hawdb_plan::write_projection_expression;
+use hawdb_plan::{SortDirection, SortItem, SortKey};
 
 pub(super) fn selected_plan_properties(plan: &PhysicalPlan) -> PhysicalProperties {
     match plan {

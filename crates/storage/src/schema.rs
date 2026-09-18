@@ -1,6 +1,6 @@
 //! Catalog schema helpers used by schema-maintenance operations.
 
-use skein_core::{Catalog, TableId, TableKind};
+use hawdb_core::{Catalog, TableId, TableKind};
 
 /// Ensures the owning label/rel-type and the table descriptor exist.
 pub fn ensure_table_descriptor(catalog: &mut Catalog, kind: TableKind, name: &str) -> TableId {

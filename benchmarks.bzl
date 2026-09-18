@@ -1,7 +1,7 @@
 load("@crate_index//:defs.bzl", "aliases", "all_crate_deps")
 load("@rules_rust//rust:defs.bzl", "rust_binary")
 
-SKEIN_BENCHMARKS = [
+HAWDB_BENCHMARKS = [
     "optimizer_smoke",
     "relational_join_execution",
     "relational_join_planning",
@@ -27,35 +27,35 @@ SKEIN_BENCHMARKS = [
     "wal_group_commit",
 ]
 
-SKEIN_BENCHMARK_TARGETS = [
-    ":skein_bench_%s" % benchmark
-    for benchmark in SKEIN_BENCHMARKS
+HAWDB_BENCHMARK_TARGETS = [
+    ":hawdb_bench_%s" % benchmark
+    for benchmark in HAWDB_BENCHMARKS
 ]
 
 # Local qualification only; these are outside the existing CI smoke dispatch.
-SKEIN_MANUAL_BENCHMARKS = ["concurrent_snapshot_reads"]
+HAWDB_MANUAL_BENCHMARKS = ["concurrent_snapshot_reads"]
 
-def skein_benchmark_binaries(crate_features):
+def hawdb_benchmark_binaries(crate_features):
     benchmark_deps = all_crate_deps(normal = True, normal_dev = True) + [
-        ":skein",
-        "//crates/core:skein_core",
-        "//crates/executor:skein_executor",
-        "//crates/integrity:skein_integrity",
-        "//crates/optimizer:skein_optimizer",
-        "//crates/qos:skein_qos",
-        "//crates/storage:skein_storage",
-        "//crates/vector-projection:skein_vector_projection",
+        ":hawdb",
+        "//crates/core:hawdb_core",
+        "//crates/executor:hawdb_executor",
+        "//crates/integrity:hawdb_integrity",
+        "//crates/optimizer:hawdb_optimizer",
+        "//crates/qos:hawdb_qos",
+        "//crates/storage:hawdb_storage",
+        "//crates/vector-projection:hawdb_vector_projection",
     ]
-    for benchmark in SKEIN_BENCHMARKS + SKEIN_MANUAL_BENCHMARKS:
+    for benchmark in HAWDB_BENCHMARKS + HAWDB_MANUAL_BENCHMARKS:
         rust_binary(
-            name = "skein_bench_%s" % benchmark,
+            name = "hawdb_bench_%s" % benchmark,
             crate_root = "benches/%s.rs" % benchmark,
             crate_features = crate_features,
             srcs = ["benches/%s.rs" % benchmark] + native.glob([
                 "benches/%s/**/*.rs" % benchmark,
             ], allow_empty = True),
             edition = "2024",
-            tags = ["manual"] if benchmark in SKEIN_MANUAL_BENCHMARKS else [],
+            tags = ["manual"] if benchmark in HAWDB_MANUAL_BENCHMARKS else [],
             aliases = aliases(
                 normal = True,
                 normal_dev = True,

@@ -1,4 +1,4 @@
-use crate::{Result, SkeinError};
+use crate::{HawdbError, Result};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub enum RuntimeCapability {
@@ -65,7 +65,7 @@ impl RuntimeCapabilities {
         if self.is_enabled(capability) {
             return Ok(());
         }
-        Err(SkeinError::CapabilityUnavailable { capability })
+        Err(HawdbError::CapabilityUnavailable { capability })
     }
 
     pub const fn with(mut self, capability: RuntimeCapability, enabled: bool) -> Self {
@@ -119,7 +119,7 @@ mod tests {
 
         assert_eq!(
             error,
-            SkeinError::CapabilityUnavailable {
+            HawdbError::CapabilityUnavailable {
                 capability: RuntimeCapability::GraphAnalytics
             }
         );

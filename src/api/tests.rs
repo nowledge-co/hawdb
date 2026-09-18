@@ -1,5 +1,5 @@
 use super::{
-    nowledge_deep_search_graph_seed_limit, validate_skein_lightning_graph_stream,
+    nowledge_deep_search_graph_seed_limit, validate_hawdb_lightning_graph_stream,
     BackgroundMaintenanceKind, BackgroundMaintenanceOptions, CanonicalStableIdMapping, Database,
     DatabaseConfig, DatabaseReadTransaction, DerivedArtifactJobStatus,
     ExternalContentArtifactJobCompletion, ExternalContentArtifactRuntimeManifest,
@@ -73,9 +73,9 @@ use super::{
     KnowledgeThreadMetadataUpdate, KnowledgeTraversalFallbackReasonCode,
     KnowledgeTruncationReasonCode, NowledgeGraphAdapter, NowledgeGraphStatement,
     PlanCacheBypassReason, PlanCacheLookup, QueryOutput, QueryStreamOptions, RecoveryMode,
-    SearchProjectionGraphDeltaRequest, NOWLEDGE_DEEP_SEARCH_FILTERED_RANK_WINDOW,
-    NOWLEDGE_DEEP_SEARCH_GRAPH_CONTEXT_MAX_HOPS, NOWLEDGE_DEEP_SEARCH_MIN_GRAPH_SEED_LIMIT,
-    NOWLEDGE_DEEP_SEARCH_MIN_RANK_WINDOW, SKEIN_LIGHTNING_BOOTSTRAP_PROTOCOL_VERSION,
+    SearchProjectionGraphDeltaRequest, HAWDB_LIGHTNING_BOOTSTRAP_PROTOCOL_VERSION,
+    NOWLEDGE_DEEP_SEARCH_FILTERED_RANK_WINDOW, NOWLEDGE_DEEP_SEARCH_GRAPH_CONTEXT_MAX_HOPS,
+    NOWLEDGE_DEEP_SEARCH_MIN_GRAPH_SEED_LIMIT, NOWLEDGE_DEEP_SEARCH_MIN_RANK_WINDOW,
 };
 use crate::optimizer::PlanCost;
 use crate::qos::{
@@ -1207,7 +1207,7 @@ fn creates_knowledge_entity_batch_through_typed_api() {
                     external_id: "entity_1".to_string(),
                     properties: BTreeMap::from([(
                         "name".to_string(),
-                        Value::String("Skein".to_string()),
+                        Value::String("Hawdb".to_string()),
                     )]),
                 },
             ],
@@ -1365,7 +1365,7 @@ fn typed_knowledge_entity_batch_create_persists_as_one_wal_batch_and_replays() {
                     external_id: "entity_1".to_string(),
                     properties: BTreeMap::from([(
                         "name".to_string(),
-                        Value::String("Skein".to_string()),
+                        Value::String("Hawdb".to_string()),
                     )]),
                 },
             ],
@@ -1487,7 +1487,7 @@ fn knowledge_entity_upsert_rejects_id_mismatch_before_writing() {
 #[test]
 fn knowledge_entity_upsert_does_not_write_projected_idless_identity() {
     let mut db = Database::new();
-    db.query("CREATE (:Entity {name: 'Skein', description: 'old'})")
+    db.query("CREATE (:Entity {name: 'Hawdb', description: 'old'})")
         .unwrap();
 
     let output = db
@@ -9020,9 +9020,9 @@ fn relational_insert_returning_conflicts_cover_checkpoint_base_and_live_delta() 
 #[test]
 fn relational_insert_returning_result_budget_fails_before_staging() {
     let mut db = Database::new_with_config(DatabaseConfig {
-        mutation_limits: skein_storage::MutationLimits {
+        mutation_limits: hawdb_storage::MutationLimits {
             max_result_rows: NonZeroUsize::new(1).unwrap(),
-            ..skein_storage::MutationLimits::default()
+            ..hawdb_storage::MutationLimits::default()
         },
         ..DatabaseConfig::default()
     });
@@ -9050,9 +9050,9 @@ fn relational_insert_returning_result_budget_fails_before_staging() {
 #[test]
 fn relational_insert_returning_payload_budget_fails_before_staging() {
     let mut db = Database::new_with_config(DatabaseConfig {
-        mutation_limits: skein_storage::MutationLimits {
+        mutation_limits: hawdb_storage::MutationLimits {
             max_result_payload_bytes: NonZeroUsize::new(4).unwrap(),
-            ..skein_storage::MutationLimits::default()
+            ..hawdb_storage::MutationLimits::default()
         },
         ..DatabaseConfig::default()
     });
@@ -9183,7 +9183,7 @@ fn unique_test_dir(name: &str) -> std::path::PathBuf {
         .duration_since(std::time::UNIX_EPOCH)
         .unwrap()
         .as_nanos();
-    std::env::temp_dir().join(format!("skein_{name}_{nanos}"))
+    std::env::temp_dir().join(format!("hawdb_{name}_{nanos}"))
 }
 
 fn active_wal_path(path: impl AsRef<std::path::Path>) -> std::path::PathBuf {
@@ -9219,21 +9219,21 @@ fn active_generation_path(
     manifest_field: &str,
     prefix: &str,
 ) -> std::path::PathBuf {
-    let manifest = std::fs::read_to_string(root.join("manifest.skein")).unwrap();
-    assert!(manifest.contains("SKEIN_MANIFEST_V1\n"));
+    let manifest = std::fs::read_to_string(root.join("manifest.hawdb")).unwrap();
+    assert!(manifest.contains("HAWDB_MANIFEST_V1\n"));
     let generation = manifest.lines().find_map(|line| {
         let (field, value) = line.split_once('\t')?;
         (field == manifest_field && value != "none").then_some(value)
     });
     root.join(format!(
-        "{prefix}.{}.skein",
+        "{prefix}.{}.hawdb",
         generation.expect("active generation must exist")
     ))
 }
 
 fn read_test_durable_text(path: &std::path::Path) -> std::io::Result<String> {
     let bytes = std::fs::read(path)?;
-    if !bytes.starts_with(b"SKEIN_COMPRESSED_V1") {
+    if !bytes.starts_with(b"HAWDB_COMPRESSED_V1") {
         return String::from_utf8(bytes)
             .map_err(|error| std::io::Error::new(std::io::ErrorKind::InvalidData, error));
     }

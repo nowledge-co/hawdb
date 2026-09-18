@@ -111,7 +111,7 @@ fn seeded_shortest_paths_match_full_path_bfs_including_order_and_multiplicity() 
         random ^= random << 17;
         random
     };
-    let visible = skein_storage::PropertyFilter::Eq {
+    let visible = hawdb_storage::PropertyFilter::Eq {
         property: "visible".to_string(),
         value: Value::Bool(true),
     };
@@ -279,7 +279,7 @@ fn shortest_path_failures_release_query_memory() {
         if cancelled {
             context.cancellation().cancel();
         }
-        let result = skein_executor::traversal::all_shortest_paths(
+        let result = hawdb_executor::traversal::all_shortest_paths(
             &fixture.store,
             ShortestPathSearch {
                 source: fixture.nodes[0],
@@ -294,7 +294,7 @@ fn shortest_path_failures_release_query_memory() {
             10,
             account,
             Some(&context),
-            &skein_executor::observer::NoopExecutionObserver,
+            &hawdb_executor::observer::NoopExecutionObserver,
         );
         assert!(result.is_err());
         assert_eq!(ledger.snapshot().used_bytes, 0);

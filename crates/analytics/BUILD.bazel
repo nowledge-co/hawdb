@@ -8,20 +8,20 @@ test_suite(
 )
 
 rust_library(
-    name = "skein_analytics",
-    crate_name = "skein_analytics",
+    name = "hawdb_analytics",
+    crate_name = "hawdb_analytics",
     crate_root = "src/lib.rs",
     srcs = glob(["src/**/*.rs"]),
     edition = "2024",
     aliases = aliases(),
     deps = [
-        "//crates/core:skein_core",
-        "//crates/storage:skein_storage",
+        "//crates/core:hawdb_core",
+        "//crates/storage:hawdb_storage",
     ],
 )
 
 rust_test(
-    name = "skein_analytics_tests",
-    crate = ":skein_analytics",
+    name = "hawdb_analytics_tests",
+    crate = ":hawdb_analytics",
     edition = "2024",
 )

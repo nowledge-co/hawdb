@@ -1,5 +1,5 @@
 use super::*;
-use skein_plan::{Aggregation, SortDirection};
+use hawdb_plan::{Aggregation, SortDirection};
 
 fn scan(variable: &str) -> LogicalPlan {
     LogicalPlan::NodeScan {

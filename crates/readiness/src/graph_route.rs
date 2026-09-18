@@ -1,11 +1,11 @@
 //! Storage-independent graph route evidence validation.
 //!
 //! The embedded facade retains file/CLI adapters, database probes and activation.
-use skein_core::{Result, SkeinError};
-use skein_evidence::inventory::{
+use hawdb_core::{HawdbError, Result};
+use hawdb_evidence::inventory::{
     NOWLEDGE_MEM_QUERY_REPORT_PROTOCOL, REQUIRED_NOWLEDGE_REPLACEMENT_QUERY_FAMILIES,
 };
-use skein_route_ownership::graph::{
+use hawdb_route_ownership::graph::{
     nowledge_mem_graph_read_route_catalog_digest, nowledge_mem_graph_read_route_spec,
     nowledge_mem_graph_read_route_specs_json, nowledge_mem_required_query_families_for_route,
     NOWLEDGE_MEM_GRAPH_READ_ROUTE_CATALOG_VERSION, REQUIRED_NOWLEDGE_MEM_BOUNDED_READ_ROUTES,
@@ -553,7 +553,7 @@ impl RouteShadowCompareEvidence {
         {
             blockers.insert("route_parity_primary_engine_mismatch".to_string());
         }
-        if self.shadow_engine.as_deref() != Some("skein") {
+        if self.shadow_engine.as_deref() != Some("hawdb") {
             blockers.insert("route_parity_shadow_engine_mismatch".to_string());
         }
         blockers.extend(self.blocker_codes.iter().cloned());
@@ -962,7 +962,7 @@ fn parse_route_evidence(evidence: &serde_json::Value) -> Result<ParsedRouteEvide
         evidence.get("routes").and_then(serde_json::Value::as_array)
     }
     .ok_or_else(|| {
-        SkeinError::Semantic("graph route evidence JSON must contain a routes array".to_string())
+        HawdbError::Semantic("graph route evidence JSON must contain a routes array".to_string())
     })?;
     Ok(ParsedRouteEvidence {
         protocol,
@@ -975,7 +975,7 @@ fn parse_route_evidence(evidence: &serde_json::Value) -> Result<ParsedRouteEvide
 fn parse_route(value: &serde_json::Value) -> Result<RouteEvidence> {
     let route = str_path(value, &["route"])
         .filter(|route| !route.trim().is_empty())
-        .ok_or_else(|| SkeinError::Semantic("graph route evidence route is required".to_string()))?
+        .ok_or_else(|| HawdbError::Semantic("graph route evidence route is required".to_string()))?
         .to_string();
     let required_query_families = string_array_path(value, &["required_query_families"]);
     let computed_required_query_families = nowledge_mem_required_query_families_for_route(&route)

@@ -2,8 +2,8 @@
 
 use crate::build_memory::shared::Shared;
 use crate::build_memory::{checked_add, BuildMemory};
-use crate::{Result, SkeinError};
-use skein_executor::QueryMemoryLease;
+use crate::{HawdbError, Result};
+use hawdb_executor::QueryMemoryLease;
 use std::borrow::Borrow;
 use std::cmp::Ordering;
 use std::hash::{Hash, Hasher};
@@ -48,7 +48,7 @@ impl Term {
         let mut lease = memory.retained.reserve(checked_add(capacity, header)?)?;
         let text = build();
         if text.capacity() > capacity {
-            return Err(SkeinError::Execution(
+            return Err(HawdbError::Execution(
                 "search term allocation exceeded its admitted capacity".into(),
             ));
         }
@@ -67,7 +67,7 @@ impl Term {
         let mut lease = memory.reserve(Self::reserved_bytes(capacity)?)?;
         let text = build()?;
         if text.capacity() > capacity {
-            return Err(SkeinError::Execution(
+            return Err(HawdbError::Execution(
                 "search spill term allocation exceeded its admitted capacity".into(),
             ));
         }
@@ -128,10 +128,10 @@ impl Term {
     pub(crate) fn into_untracked(self) -> Result<String> {
         match self.0 {
             Value::Untracked(text) => Ok(text),
-            Value::Tracked(_) => Err(SkeinError::Execution(
+            Value::Tracked(_) => Err(HawdbError::Execution(
                 "admitted search term requires an ownership-preserving consumer".into(),
             )),
-            Value::Reserved(_) => Err(SkeinError::Execution(
+            Value::Reserved(_) => Err(HawdbError::Execution(
                 "reserved search term requires an ownership-preserving consumer".into(),
             )),
         }

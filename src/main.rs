@@ -1,33 +1,33 @@
 mod cli;
 
 use cli::fixture_contract::{nowledge_fixture_contract_json, nowledge_fixture_contract_usage};
-use skein::background_maintenance_evidence::run_nowledge_background_maintenance_evidence;
-use skein::bounded_read_evidence::run_nowledge_bounded_read_evidence;
-use skein::graph_route_evidence::run_nowledge_graph_route_evidence;
-use skein::graph_route_readiness::run_nowledge_graph_route_readiness;
-use skein::mem_integration_bundle::run_nowledge_mem_integration_bundle;
-use skein::mem_integration_readiness::{
+use hawdb::background_maintenance_evidence::run_nowledge_background_maintenance_evidence;
+use hawdb::bounded_read_evidence::run_nowledge_bounded_read_evidence;
+use hawdb::graph_route_evidence::run_nowledge_graph_route_evidence;
+use hawdb::graph_route_readiness::run_nowledge_graph_route_readiness;
+use hawdb::mem_integration_bundle::run_nowledge_mem_integration_bundle;
+use hawdb::mem_integration_readiness::{
     nowledge_mem_integration_readiness_json, run_nowledge_mem_integration_readiness,
 };
-use skein::mem_library_readiness::run_nowledge_mem_library_readiness;
-use skein::nowledge_inventory::background_maintenance_summary_to_json;
-use skein::previous_wrapper_preflight::run_nowledge_previous_wrapper_preflight_check;
-use skein::query_family_evidence::run_nowledge_query_family_evidence;
-use skein::query_runtime_preflight::run_nowledge_query_runtime_preflight;
-use skein::replacement_summary::{
+use hawdb::mem_library_readiness::run_nowledge_mem_library_readiness;
+use hawdb::nowledge_inventory::background_maintenance_summary_to_json;
+use hawdb::previous_wrapper_preflight::run_nowledge_previous_wrapper_preflight_check;
+use hawdb::query_family_evidence::run_nowledge_query_family_evidence;
+use hawdb::query_runtime_preflight::run_nowledge_query_runtime_preflight;
+use hawdb::replacement_summary::{
     nowledge_replacement_summary_json, nowledge_replacement_summary_json_with_options,
     nowledge_replacement_summary_usage, NowledgeReplacementSummaryOptions,
 };
-use skein::search_candidate_shadow_evidence::run_nowledge_search_candidate_shadow_evidence;
-use skein::search_projection_evidence::{
+use hawdb::search_candidate_shadow_evidence::run_nowledge_search_candidate_shadow_evidence;
+use hawdb::search_projection_evidence::{
     nowledge_search_projection_probe_contract_json,
-    nowledge_search_projection_probe_contract_usage, run_nowledge_search_projection_evidence,
-    run_nowledge_search_projection_shadow_evidence, run_skein_search_projection_probe,
+    nowledge_search_projection_probe_contract_usage, run_hawdb_search_projection_probe,
+    run_nowledge_search_projection_evidence, run_nowledge_search_projection_shadow_evidence,
 };
 #[cfg(test)]
-use skein::stage_skein_lightning_bootstrap_export;
-use skein::storage_recovery_evidence::run_nowledge_storage_recovery_evidence;
-use skein::{
+use hawdb::stage_hawdb_lightning_bootstrap_export;
+use hawdb::storage_recovery_evidence::run_nowledge_storage_recovery_evidence;
+use hawdb::{
     add_shadow_ready_report, add_shadow_run_report, add_shadow_trace_report,
     assess_external_shadow_cutover_evidence, cutover_evidence_is_eligible,
     enforce_external_shadow_adapter_smoke_requirements, external_shadow_adapter_smoke_fixture,
@@ -36,33 +36,33 @@ use skein::{
     BackgroundMaintenanceOptions, ExternalShadowCutoverEvidence, LocalQosPolicy, LocalQosState,
     WorkClass, WORK_CLASS_COUNT,
 };
-use skein::{
+use hawdb::{
     background_maintenance_evidence_health_from_bundle,
     scan_nowledge_query_inventory_cypher_coverage_detail_to_json,
     scan_nowledge_query_inventory_cypher_coverage_to_json,
     scan_nowledge_query_inventory_cypher_migration_gate_with_options_to_json,
     scan_nowledge_query_inventory_to_json, CanonicalGraphSnapshotValidation,
     CompatibilityRollbackEvidence, Database, DatabaseConfig, ExternalShadowCommand,
-    ExternalShadowReady, NowledgeCypherMigrationGateJsonOptions, NowledgeMemGraph,
-    NowledgeMemGraphMode, NowledgeMemReadOptions, RecoveryMode, Result, SearchIndex, SkeinError,
+    ExternalShadowReady, HawdbError, NowledgeCypherMigrationGateJsonOptions, NowledgeMemGraph,
+    NowledgeMemGraphMode, NowledgeMemReadOptions, RecoveryMode, Result, SearchIndex,
     StorageRecoveryReport, StorageResidencyMode, StorageResourceProfileLimits, Value,
     REQUIRED_EXTERNAL_SHADOW_CAPABILITIES,
 };
-use skein::{
-    endpoint_violations_json, skein_lightning_bootstrap_bundle_json_with_optional_storage_recovery,
-    skein_lightning_bootstrap_manifest_json, skein_lightning_graph_stream_validation_json,
-    skein_lightning_relational_stream_validation_json, stable_identity_audit_json,
-    stage_skein_lightning_bootstrap_export_with_optional_storage_recovery,
-    SkeinLightningPublishOptions,
+use hawdb::{
+    endpoint_violations_json, hawdb_lightning_bootstrap_bundle_json_with_optional_storage_recovery,
+    hawdb_lightning_bootstrap_manifest_json, hawdb_lightning_graph_stream_validation_json,
+    hawdb_lightning_relational_stream_validation_json, stable_identity_audit_json,
+    stage_hawdb_lightning_bootstrap_export_with_optional_storage_recovery,
+    HawdbLightningPublishOptions,
 };
-use skein_evidence::fixture_contract_check::run_nowledge_fixture_contract_command_check;
+use hawdb_evidence::fixture_contract_check::run_nowledge_fixture_contract_command_check;
 use std::collections::BTreeMap;
 use std::fs;
 use std::io::Write;
 use std::path::Path;
 use std::time::Duration;
 
-const SKEIN_ENABLE_COMPATIBILITY_TOOLS_ENV: &str = "SKEIN_ENABLE_COMPATIBILITY_TOOLS";
+const HAWDB_ENABLE_COMPATIBILITY_TOOLS_ENV: &str = "HAWDB_ENABLE_COMPATIBILITY_TOOLS";
 
 fn main() -> Result<()> {
     let mut args = std::env::args().skip(1).peekable();
@@ -90,7 +90,7 @@ fn main() -> Result<()> {
                 .next()
                 .unwrap_or_else(|| "nowledge-memory-core".to_string());
             if args.next().is_some() || fixture_name != "nowledge-memory-core" {
-                return Err(SkeinError::Semantic(nowledge_fixture_contract_usage()));
+                return Err(HawdbError::Semantic(nowledge_fixture_contract_usage()));
             }
             let fixture = nowledge_memory_core_fixture();
             let json = nowledge_fixture_contract_json(&fixture);
@@ -108,7 +108,7 @@ fn main() -> Result<()> {
             {
                 return Ok(());
             }
-            return Err(SkeinError::Execution(
+            return Err(HawdbError::Execution(
                 "fixture contract command check failed".to_string(),
             ));
         }
@@ -121,7 +121,7 @@ fn main() -> Result<()> {
                     .and_then(serde_json::Value::as_bool)
                     != Some(true)
             {
-                return Err(SkeinError::Execution(
+                return Err(HawdbError::Execution(
                     "nowledge graph route readiness is not ready".to_string(),
                 ));
             }
@@ -132,7 +132,7 @@ fn main() -> Result<()> {
             println!("{}", serde_json::to_string_pretty(&json).unwrap());
             if require_ready && json.get("ready").and_then(serde_json::Value::as_bool) != Some(true)
             {
-                return Err(SkeinError::Execution(
+                return Err(HawdbError::Execution(
                     "nowledge graph route evidence is not ready".to_string(),
                 ));
             }
@@ -143,7 +143,7 @@ fn main() -> Result<()> {
             println!("{}", serde_json::to_string_pretty(&json).unwrap());
             if require_ready && json.get("ready").and_then(serde_json::Value::as_bool) != Some(true)
             {
-                return Err(SkeinError::Execution(
+                return Err(HawdbError::Execution(
                     "nowledge previous-wrapper preflight is not ready".to_string(),
                 ));
             }
@@ -154,7 +154,7 @@ fn main() -> Result<()> {
             println!("{}", serde_json::to_string_pretty(&json).unwrap());
             if require_ready && json.get("ready").and_then(serde_json::Value::as_bool) != Some(true)
             {
-                return Err(SkeinError::Execution(
+                return Err(HawdbError::Execution(
                     "nowledge mem integration readiness is not ready".to_string(),
                 ));
             }
@@ -169,7 +169,7 @@ fn main() -> Result<()> {
                     .and_then(serde_json::Value::as_bool)
                     != Some(true)
             {
-                return Err(SkeinError::Execution(
+                return Err(HawdbError::Execution(
                     "nowledge mem integration bundle is not ready".to_string(),
                 ));
             }
@@ -180,7 +180,7 @@ fn main() -> Result<()> {
             println!("{}", serde_json::to_string_pretty(&json).unwrap());
             if require_ready && json.get("ready").and_then(serde_json::Value::as_bool) != Some(true)
             {
-                return Err(SkeinError::Execution(
+                return Err(HawdbError::Execution(
                     "nowledge mem library readiness is not ready".to_string(),
                 ));
             }
@@ -191,7 +191,7 @@ fn main() -> Result<()> {
             println!("{}", serde_json::to_string_pretty(&json).unwrap());
             if require_ready && json.get("ready").and_then(serde_json::Value::as_bool) != Some(true)
             {
-                return Err(SkeinError::Execution(
+                return Err(HawdbError::Execution(
                     "nowledge search projection evidence is not ready".to_string(),
                 ));
             }
@@ -199,7 +199,7 @@ fn main() -> Result<()> {
         }
         if command == "nowledge-search-projection-probe-contract" {
             if args.next().is_some() {
-                return Err(SkeinError::Semantic(
+                return Err(HawdbError::Semantic(
                     nowledge_search_projection_probe_contract_usage(),
                 ));
             }
@@ -207,8 +207,8 @@ fn main() -> Result<()> {
             println!("{}", serde_json::to_string_pretty(&json).unwrap());
             return Ok(());
         }
-        if command == "skein-search-projection-probe" {
-            let json = run_skein_search_projection_probe(args)?;
+        if command == "hawdb-search-projection-probe" {
+            let json = run_hawdb_search_projection_probe(args)?;
             println!("{}", serde_json::to_string_pretty(&json).unwrap());
             return Ok(());
         }
@@ -217,7 +217,7 @@ fn main() -> Result<()> {
             println!("{}", serde_json::to_string_pretty(&json).unwrap());
             if require_ready && json.get("ready").and_then(serde_json::Value::as_bool) != Some(true)
             {
-                return Err(SkeinError::Execution(
+                return Err(HawdbError::Execution(
                     "nowledge search projection shadow evidence is not ready".to_string(),
                 ));
             }
@@ -228,7 +228,7 @@ fn main() -> Result<()> {
             println!("{}", serde_json::to_string_pretty(&json).unwrap());
             if require_ready && json.get("ready").and_then(serde_json::Value::as_bool) != Some(true)
             {
-                return Err(SkeinError::Execution(
+                return Err(HawdbError::Execution(
                     "nowledge search candidate shadow evidence is not ready".to_string(),
                 ));
             }
@@ -239,7 +239,7 @@ fn main() -> Result<()> {
             println!("{}", serde_json::to_string_pretty(&json).unwrap());
             if require_ready && json.get("ready").and_then(serde_json::Value::as_bool) != Some(true)
             {
-                return Err(SkeinError::Execution(
+                return Err(HawdbError::Execution(
                     "nowledge bounded read evidence is not ready".to_string(),
                 ));
             }
@@ -253,21 +253,21 @@ fn main() -> Result<()> {
                     "--params-json" => {
                         args.next();
                         let raw_parameters = args.next().ok_or_else(|| {
-                            SkeinError::Semantic(nowledge_bounded_read_report_usage())
+                            HawdbError::Semantic(nowledge_bounded_read_report_usage())
                         })?;
                         parameters = parse_parameters_json(&raw_parameters)?;
                     }
                     "--max-rows" => {
                         args.next();
                         let raw_limit = args.next().ok_or_else(|| {
-                            SkeinError::Semantic(nowledge_bounded_read_report_usage())
+                            HawdbError::Semantic(nowledge_bounded_read_report_usage())
                         })?;
                         options.max_rows = Some(parse_positive_usize("--max-rows", &raw_limit)?);
                     }
                     "--max-estimated-payload-bytes" => {
                         args.next();
                         let raw_limit = args.next().ok_or_else(|| {
-                            SkeinError::Semantic(nowledge_bounded_read_report_usage())
+                            HawdbError::Semantic(nowledge_bounded_read_report_usage())
                         })?;
                         options.max_estimated_payload_bytes = Some(parse_positive_usize(
                             "--max-estimated-payload-bytes",
@@ -279,12 +279,12 @@ fn main() -> Result<()> {
             }
             let path = args
                 .next()
-                .ok_or_else(|| SkeinError::Semantic(nowledge_bounded_read_report_usage()))?;
+                .ok_or_else(|| HawdbError::Semantic(nowledge_bounded_read_report_usage()))?;
             let query = args
                 .next()
-                .ok_or_else(|| SkeinError::Semantic(nowledge_bounded_read_report_usage()))?;
+                .ok_or_else(|| HawdbError::Semantic(nowledge_bounded_read_report_usage()))?;
             if args.next().is_some() {
-                return Err(SkeinError::Semantic(nowledge_bounded_read_report_usage()));
+                return Err(HawdbError::Semantic(nowledge_bounded_read_report_usage()));
             }
             let json = nowledge_bounded_read_report_json(&path, &query, &parameters, &options)?;
             println!("{}", serde_json::to_string_pretty(&json).unwrap());
@@ -295,7 +295,7 @@ fn main() -> Result<()> {
             println!("{}", serde_json::to_string_pretty(&json).unwrap());
             if require_ready && json.get("ready").and_then(serde_json::Value::as_bool) != Some(true)
             {
-                return Err(SkeinError::Execution(
+                return Err(HawdbError::Execution(
                     "nowledge storage recovery evidence is not ready".to_string(),
                 ));
             }
@@ -306,7 +306,7 @@ fn main() -> Result<()> {
             println!("{}", serde_json::to_string_pretty(&json).unwrap());
             if require_ready && json.get("ready").and_then(serde_json::Value::as_bool) != Some(true)
             {
-                return Err(SkeinError::Execution(
+                return Err(HawdbError::Execution(
                     "nowledge background maintenance evidence is not ready".to_string(),
                 ));
             }
@@ -317,7 +317,7 @@ fn main() -> Result<()> {
             println!("{}", serde_json::to_string_pretty(&json).unwrap());
             if require_ready && json.get("ready").and_then(serde_json::Value::as_bool) != Some(true)
             {
-                return Err(SkeinError::Execution(
+                return Err(HawdbError::Execution(
                     "nowledge query family evidence is not ready".to_string(),
                 ));
             }
@@ -328,7 +328,7 @@ fn main() -> Result<()> {
             println!("{}", serde_json::to_string_pretty(&json).unwrap());
             if require_ready && json.get("ready").and_then(serde_json::Value::as_bool) != Some(true)
             {
-                return Err(SkeinError::Execution(
+                return Err(HawdbError::Execution(
                     "nowledge query runtime preflight is not ready".to_string(),
                 ));
             }
@@ -342,7 +342,7 @@ fn main() -> Result<()> {
                         args.next();
                         let raw_parameters = args
                             .next()
-                            .ok_or_else(|| SkeinError::Semantic(explain_table_usage(&command)))?;
+                            .ok_or_else(|| HawdbError::Semantic(explain_table_usage(&command)))?;
                         parameters = parse_parameters_json(&raw_parameters)?;
                     }
                     _ => break,
@@ -350,12 +350,12 @@ fn main() -> Result<()> {
             }
             let path = args
                 .next()
-                .ok_or_else(|| SkeinError::Semantic(explain_table_usage(&command)))?;
+                .ok_or_else(|| HawdbError::Semantic(explain_table_usage(&command)))?;
             let query = args
                 .next()
-                .ok_or_else(|| SkeinError::Semantic(explain_table_usage(&command)))?;
+                .ok_or_else(|| HawdbError::Semantic(explain_table_usage(&command)))?;
             if args.next().is_some() {
-                return Err(SkeinError::Semantic(explain_table_usage(&command)));
+                return Err(HawdbError::Semantic(explain_table_usage(&command)));
             }
             let mut db = Database::open_with_config(
                 path,
@@ -382,7 +382,7 @@ fn main() -> Result<()> {
                         args.next();
                         let raw_parameters = args
                             .next()
-                            .ok_or_else(|| SkeinError::Semantic(explain_json_usage()))?;
+                            .ok_or_else(|| HawdbError::Semantic(explain_json_usage()))?;
                         parameters = parse_parameters_json(&raw_parameters)?;
                     }
                     _ => break,
@@ -390,12 +390,12 @@ fn main() -> Result<()> {
             }
             let path = args
                 .next()
-                .ok_or_else(|| SkeinError::Semantic(explain_json_usage()))?;
+                .ok_or_else(|| HawdbError::Semantic(explain_json_usage()))?;
             let query = args
                 .next()
-                .ok_or_else(|| SkeinError::Semantic(explain_json_usage()))?;
+                .ok_or_else(|| HawdbError::Semantic(explain_json_usage()))?;
             if args.next().is_some() {
-                return Err(SkeinError::Semantic(explain_json_usage()));
+                return Err(HawdbError::Semantic(explain_json_usage()));
             }
             let db = Database::open_with_config(
                 path,
@@ -418,7 +418,7 @@ fn main() -> Result<()> {
                         args.next();
                         let raw_parameters = args
                             .next()
-                            .ok_or_else(|| SkeinError::Semantic(explain_analyze_json_usage()))?;
+                            .ok_or_else(|| HawdbError::Semantic(explain_analyze_json_usage()))?;
                         parameters = parse_parameters_json(&raw_parameters)?;
                     }
                     _ => break,
@@ -426,12 +426,12 @@ fn main() -> Result<()> {
             }
             let path = args
                 .next()
-                .ok_or_else(|| SkeinError::Semantic(explain_analyze_json_usage()))?;
+                .ok_or_else(|| HawdbError::Semantic(explain_analyze_json_usage()))?;
             let query = args
                 .next()
-                .ok_or_else(|| SkeinError::Semantic(explain_analyze_json_usage()))?;
+                .ok_or_else(|| HawdbError::Semantic(explain_analyze_json_usage()))?;
             if args.next().is_some() {
-                return Err(SkeinError::Semantic(explain_analyze_json_usage()));
+                return Err(HawdbError::Semantic(explain_analyze_json_usage()));
             }
             let mut db = Database::open_with_config(
                 path,
@@ -460,13 +460,13 @@ fn main() -> Result<()> {
                     "--shadow-trace" => {
                         args.next();
                         shadow_trace = Some(args.next().ok_or_else(|| {
-                            SkeinError::Semantic(external_shadow_adapter_smoke_usage())
+                            HawdbError::Semantic(external_shadow_adapter_smoke_usage())
                         })?);
                     }
                     "--shadow-timeout-ms" => {
                         args.next();
                         let raw_timeout = args.next().ok_or_else(|| {
-                            SkeinError::Semantic(external_shadow_adapter_smoke_usage())
+                            HawdbError::Semantic(external_shadow_adapter_smoke_usage())
                         })?;
                         shadow_timeout = Some(parse_shadow_timeout_ms(&raw_timeout)?);
                     }
@@ -475,10 +475,10 @@ fn main() -> Result<()> {
             }
             let shadow_name = args
                 .next()
-                .ok_or_else(|| SkeinError::Semantic(external_shadow_adapter_smoke_usage()))?;
+                .ok_or_else(|| HawdbError::Semantic(external_shadow_adapter_smoke_usage()))?;
             let program = args
                 .next()
-                .ok_or_else(|| SkeinError::Semantic(external_shadow_adapter_smoke_usage()))?;
+                .ok_or_else(|| HawdbError::Semantic(external_shadow_adapter_smoke_usage()))?;
             let program_args = args.collect::<Vec<_>>();
             let shadow_trace_report = shadow_trace.clone();
             let mut shadow = match (shadow_trace, shadow_timeout) {
@@ -559,13 +559,13 @@ fn main() -> Result<()> {
                     "--shadow-trace" => {
                         args.next();
                         shadow_trace = Some(args.next().ok_or_else(|| {
-                            SkeinError::Semantic(nowledge_cypher_migration_gate_usage())
+                            HawdbError::Semantic(nowledge_cypher_migration_gate_usage())
                         })?);
                     }
                     "--shadow-timeout-ms" => {
                         args.next();
                         let raw_timeout = args.next().ok_or_else(|| {
-                            SkeinError::Semantic(nowledge_cypher_migration_gate_usage())
+                            HawdbError::Semantic(nowledge_cypher_migration_gate_usage())
                         })?;
                         shadow_timeout = Some(parse_shadow_timeout_ms(&raw_timeout)?);
                     }
@@ -576,7 +576,7 @@ fn main() -> Result<()> {
                     "--rollback-evidence" => {
                         args.next();
                         rollback_evidence = Some(args.next().ok_or_else(|| {
-                            SkeinError::Semantic(nowledge_cypher_migration_gate_usage())
+                            HawdbError::Semantic(nowledge_cypher_migration_gate_usage())
                         })?);
                     }
                     "--require-storage-recovery-evidence" => {
@@ -590,21 +590,21 @@ fn main() -> Result<()> {
                     "--storage-recovery-report-json" => {
                         args.next();
                         let path = args.next().ok_or_else(|| {
-                            SkeinError::Semantic(nowledge_cypher_migration_gate_usage())
+                            HawdbError::Semantic(nowledge_cypher_migration_gate_usage())
                         })?;
                         storage_recovery = Some(read_json_file(Path::new(&path))?);
                     }
                     "--background-maintenance-report-json" => {
                         args.next();
                         let path = args.next().ok_or_else(|| {
-                            SkeinError::Semantic(nowledge_cypher_migration_gate_usage())
+                            HawdbError::Semantic(nowledge_cypher_migration_gate_usage())
                         })?;
                         background_maintenance = Some(read_json_file(Path::new(&path))?);
                     }
                     "--previous-wrapper-contract-evidence-json" => {
                         args.next();
                         let path = args.next().ok_or_else(|| {
-                            SkeinError::Semantic(nowledge_cypher_migration_gate_usage())
+                            HawdbError::Semantic(nowledge_cypher_migration_gate_usage())
                         })?;
                         previous_wrapper_contract_evidence =
                             Some(read_json_file(Path::new(&path))?);
@@ -614,17 +614,17 @@ fn main() -> Result<()> {
             }
             let root = args
                 .next()
-                .ok_or_else(|| SkeinError::Semantic(nowledge_cypher_migration_gate_usage()))?;
+                .ok_or_else(|| HawdbError::Semantic(nowledge_cypher_migration_gate_usage()))?;
             let shadow_name = args
                 .next()
-                .ok_or_else(|| SkeinError::Semantic(nowledge_cypher_migration_gate_usage()))?;
+                .ok_or_else(|| HawdbError::Semantic(nowledge_cypher_migration_gate_usage()))?;
             let program = args
                 .next()
-                .ok_or_else(|| SkeinError::Semantic(nowledge_cypher_migration_gate_usage()))?;
+                .ok_or_else(|| HawdbError::Semantic(nowledge_cypher_migration_gate_usage()))?;
             let program_args = args.collect::<Vec<_>>();
             let is_self_shadow = is_self_shadow_command(&shadow_name, &program, &program_args);
             if (require_ready || require_cutover_evidence) && !allow_self_shadow && is_self_shadow {
-                return Err(SkeinError::Execution(
+                return Err(HawdbError::Execution(
                     "nowledge migration gate requires a previous-wrapper shadow for required cutover gates; pass --allow-self-shadow only for protocol smoke tests"
                     .to_string(),
                 ));
@@ -697,7 +697,7 @@ fn main() -> Result<()> {
             let rendered = serde_json::to_string_pretty(&json).unwrap();
             println!("{rendered}");
             if require_cutover_evidence && !cutover_evidence_is_eligible(&json) {
-                return Err(SkeinError::Execution(
+                return Err(HawdbError::Execution(
                     "nowledge migration gate lacks eligible cutover evidence".to_string(),
                 ));
             }
@@ -708,7 +708,7 @@ fn main() -> Result<()> {
                     .and_then(serde_json::Value::as_str)
                     != Some("ready")
             {
-                return Err(SkeinError::Execution(
+                return Err(HawdbError::Execution(
                     "nowledge migration gate is blocked".to_string(),
                 ));
             }
@@ -739,7 +739,7 @@ fn main() -> Result<()> {
                     "--max-family-items" => {
                         args.next();
                         let raw_limit = args.next().ok_or_else(|| {
-                            SkeinError::Semantic(nowledge_replacement_summary_usage())
+                            HawdbError::Semantic(nowledge_replacement_summary_usage())
                         })?;
                         options.max_family_items = Some(parse_max_family_items(&raw_limit)?);
                         custom_summary_options = true;
@@ -747,7 +747,7 @@ fn main() -> Result<()> {
                     "--max-blockers" => {
                         args.next();
                         let raw_limit = args.next().ok_or_else(|| {
-                            SkeinError::Semantic(nowledge_replacement_summary_usage())
+                            HawdbError::Semantic(nowledge_replacement_summary_usage())
                         })?;
                         options.max_blockers = Some(parse_max_blockers(&raw_limit)?);
                         custom_summary_options = true;
@@ -755,39 +755,39 @@ fn main() -> Result<()> {
                     "--search-projection-evidence-json" => {
                         args.next();
                         search_projection_evidence_path = Some(args.next().ok_or_else(|| {
-                            SkeinError::Semantic(nowledge_replacement_summary_usage())
+                            HawdbError::Semantic(nowledge_replacement_summary_usage())
                         })?);
                     }
                     "--search-projection-shadow-evidence-json" => {
                         args.next();
                         search_projection_shadow_evidence_path =
                             Some(args.next().ok_or_else(|| {
-                                SkeinError::Semantic(nowledge_replacement_summary_usage())
+                                HawdbError::Semantic(nowledge_replacement_summary_usage())
                             })?);
                     }
                     "--search-candidate-shadow-evidence-json" => {
                         args.next();
                         search_candidate_shadow_evidence_path =
                             Some(args.next().ok_or_else(|| {
-                                SkeinError::Semantic(nowledge_replacement_summary_usage())
+                                HawdbError::Semantic(nowledge_replacement_summary_usage())
                             })?);
                     }
                     "--bounded-read-evidence-json" => {
                         args.next();
                         bounded_read_evidence_path = Some(args.next().ok_or_else(|| {
-                            SkeinError::Semantic(nowledge_replacement_summary_usage())
+                            HawdbError::Semantic(nowledge_replacement_summary_usage())
                         })?);
                     }
                     "--query-runtime-preflight-json" => {
                         args.next();
                         query_runtime_preflight_path = Some(args.next().ok_or_else(|| {
-                            SkeinError::Semantic(nowledge_replacement_summary_usage())
+                            HawdbError::Semantic(nowledge_replacement_summary_usage())
                         })?);
                     }
                     "--query-family-evidence-json" => {
                         args.next();
                         query_family_evidence_path = Some(args.next().ok_or_else(|| {
-                            SkeinError::Semantic(nowledge_replacement_summary_usage())
+                            HawdbError::Semantic(nowledge_replacement_summary_usage())
                         })?);
                     }
                     _ => break,
@@ -795,9 +795,9 @@ fn main() -> Result<()> {
             }
             let bundle_path = args
                 .next()
-                .ok_or_else(|| SkeinError::Semantic(nowledge_replacement_summary_usage()))?;
+                .ok_or_else(|| HawdbError::Semantic(nowledge_replacement_summary_usage()))?;
             if args.next().is_some() {
-                return Err(SkeinError::Semantic(nowledge_replacement_summary_usage()));
+                return Err(HawdbError::Semantic(nowledge_replacement_summary_usage()));
             }
             let mut bundle = read_json_file(Path::new(&bundle_path))?;
             merge_replacement_summary_evidence(
@@ -821,7 +821,7 @@ fn main() -> Result<()> {
                     .and_then(serde_json::Value::as_bool)
                     != Some(true)
             {
-                return Err(SkeinError::Execution(
+                return Err(HawdbError::Execution(
                     "nowledge replacement summary is not production cutover ready".to_string(),
                 ));
             }
@@ -843,7 +843,7 @@ fn main() -> Result<()> {
                     "--max-background-operations" => {
                         args.next();
                         let raw_limit = args.next().ok_or_else(|| {
-                            SkeinError::Semantic(background_maintenance_report_usage())
+                            HawdbError::Semantic(background_maintenance_report_usage())
                         })?;
                         options.policy.max_background_operations =
                             Some(parse_background_maintenance_limit(
@@ -854,7 +854,7 @@ fn main() -> Result<()> {
                     "--max-total-background-operations" => {
                         args.next();
                         let raw_limit = args.next().ok_or_else(|| {
-                            SkeinError::Semantic(background_maintenance_report_usage())
+                            HawdbError::Semantic(background_maintenance_report_usage())
                         })?;
                         options.policy.max_total_background_operations =
                             Some(parse_background_maintenance_limit(
@@ -865,7 +865,7 @@ fn main() -> Result<()> {
                     "--max-projection-background-operations" => {
                         args.next();
                         let raw_limit = args.next().ok_or_else(|| {
-                            SkeinError::Semantic(background_maintenance_report_usage())
+                            HawdbError::Semantic(background_maintenance_report_usage())
                         })?;
                         options.policy.max_background_operations_by_class
                             [WorkClass::Projection.as_index()] =
@@ -879,9 +879,9 @@ fn main() -> Result<()> {
             }
             let path = args
                 .next()
-                .ok_or_else(|| SkeinError::Semantic(background_maintenance_report_usage()))?;
+                .ok_or_else(|| HawdbError::Semantic(background_maintenance_report_usage()))?;
             if args.next().is_some() {
-                return Err(SkeinError::Semantic(background_maintenance_report_usage()));
+                return Err(HawdbError::Semantic(background_maintenance_report_usage()));
             }
             let db = Database::open_with_config(
                 path,
@@ -903,7 +903,7 @@ fn main() -> Result<()> {
                     } else {
                         health.blocker_codes.join(",")
                     };
-                    return Err(SkeinError::Execution(format!(
+                    return Err(HawdbError::Execution(format!(
                         "background maintenance report is not cutover ready: {reason}"
                     )));
                 }
@@ -938,7 +938,7 @@ fn main() -> Result<()> {
                     "--params-json" => {
                         args.next();
                         let raw = args.next().ok_or_else(|| {
-                            SkeinError::Semantic(storage_resource_profile_usage())
+                            HawdbError::Semantic(storage_resource_profile_usage())
                         })?;
                         parameters = parse_parameters_json(&raw)?;
                     }
@@ -995,12 +995,12 @@ fn main() -> Result<()> {
             }
             let path = args
                 .next()
-                .ok_or_else(|| SkeinError::Semantic(storage_resource_profile_usage()))?;
+                .ok_or_else(|| HawdbError::Semantic(storage_resource_profile_usage()))?;
             let cypher = args
                 .next()
-                .ok_or_else(|| SkeinError::Semantic(storage_resource_profile_usage()))?;
+                .ok_or_else(|| HawdbError::Semantic(storage_resource_profile_usage()))?;
             if args.next().is_some() {
-                return Err(SkeinError::Semantic(storage_resource_profile_usage()));
+                return Err(HawdbError::Semantic(storage_resource_profile_usage()));
             }
             let segment_cache_capacity_bytes = required_positive_profile_u64(
                 segment_cache_capacity_bytes,
@@ -1051,7 +1051,7 @@ fn main() -> Result<()> {
             let report = db.storage_resource_profile(&cypher, &parameters, limits)?;
             println!("{}", serde_json::to_string_pretty(&report.json()).unwrap());
             if require_ready && !report.production_ready() {
-                return Err(SkeinError::Execution(format!(
+                return Err(HawdbError::Execution(format!(
                     "storage resource profile is not ready: {}",
                     report.blocker_codes.join(",")
                 )));
@@ -1075,7 +1075,7 @@ fn main() -> Result<()> {
                         args.next();
                         let raw_limit = args
                             .next()
-                            .ok_or_else(|| SkeinError::Semantic(storage_recovery_report_usage()))?;
+                            .ok_or_else(|| HawdbError::Semantic(storage_recovery_report_usage()))?;
                         max_wal_replay_entries = Some(parse_max_wal_replay_entries(&raw_limit)?);
                     }
                     "--require-durable" => {
@@ -1099,9 +1099,9 @@ fn main() -> Result<()> {
             }
             let path = args
                 .next()
-                .ok_or_else(|| SkeinError::Semantic(storage_recovery_report_usage()))?;
+                .ok_or_else(|| HawdbError::Semantic(storage_recovery_report_usage()))?;
             if args.next().is_some() {
-                return Err(SkeinError::Semantic(storage_recovery_report_usage()));
+                return Err(HawdbError::Semantic(storage_recovery_report_usage()));
             }
             let db = Database::open_with_config(
                 path,
@@ -1144,9 +1144,9 @@ fn main() -> Result<()> {
             }
             let path = args
                 .next()
-                .ok_or_else(|| SkeinError::Semantic(validate_canonical_snapshot_usage()))?;
+                .ok_or_else(|| HawdbError::Semantic(validate_canonical_snapshot_usage()))?;
             if args.next().is_some() {
-                return Err(SkeinError::Semantic(validate_canonical_snapshot_usage()));
+                return Err(HawdbError::Semantic(validate_canonical_snapshot_usage()));
             }
             let db = Database::open_with_config(
                 path,
@@ -1166,18 +1166,18 @@ fn main() -> Result<()> {
             );
             println!("{}", serde_json::to_string_pretty(&rendered).unwrap());
             if require_valid && !validation.is_valid {
-                return Err(SkeinError::Execution(
+                return Err(HawdbError::Execution(
                     "canonical snapshot validation failed".to_string(),
                 ));
             }
             if require_import_ready && !validation.is_import_ready {
-                return Err(SkeinError::Execution(
+                return Err(HawdbError::Execution(
                     "canonical snapshot import readiness failed".to_string(),
                 ));
             }
             return Ok(());
         }
-        if command == "skein-lightning-bootstrap-manifest" {
+        if command == "hawdb-lightning-bootstrap-manifest" {
             let mut require_ready = false;
             while let Some(flag) = args.peek() {
                 match flag.as_str() {
@@ -1190,28 +1190,28 @@ fn main() -> Result<()> {
             }
             let path = args
                 .next()
-                .ok_or_else(|| SkeinError::Semantic(skein_lightning_bootstrap_manifest_usage()))?;
+                .ok_or_else(|| HawdbError::Semantic(hawdb_lightning_bootstrap_manifest_usage()))?;
             if args.next().is_some() {
-                return Err(SkeinError::Semantic(
-                    skein_lightning_bootstrap_manifest_usage(),
+                return Err(HawdbError::Semantic(
+                    hawdb_lightning_bootstrap_manifest_usage(),
                 ));
             }
             let mut db = Database::open(path)?;
-            let export = db.prepare_skein_lightning_bootstrap_export()?;
-            let rendered = skein_lightning_bootstrap_manifest_json(&export.manifest);
+            let export = db.prepare_hawdb_lightning_bootstrap_export()?;
+            let rendered = hawdb_lightning_bootstrap_manifest_json(&export.manifest);
             println!("{}", serde_json::to_string_pretty(&rendered).unwrap());
             if require_ready
                 && (!export.manifest.validation.is_import_ready
                     || !export.manifest.relational_validation.is_valid
                     || export.manifest.database_commit_epoch != export.manifest.graph_commit_epoch)
             {
-                return Err(SkeinError::Execution(
-                    "Skein Lightning bootstrap manifest is not import ready".to_string(),
+                return Err(HawdbError::Execution(
+                    "Hawdb Lightning bootstrap manifest is not import ready".to_string(),
                 ));
             }
             return Ok(());
         }
-        if command == "skein-lightning-bootstrap-bundle" {
+        if command == "hawdb-lightning-bootstrap-bundle" {
             let mut require_ready = false;
             while let Some(flag) = args.peek() {
                 match flag.as_str() {
@@ -1224,15 +1224,15 @@ fn main() -> Result<()> {
             }
             let path = args
                 .next()
-                .ok_or_else(|| SkeinError::Semantic(skein_lightning_bootstrap_bundle_usage()))?;
+                .ok_or_else(|| HawdbError::Semantic(hawdb_lightning_bootstrap_bundle_usage()))?;
             if args.next().is_some() {
-                return Err(SkeinError::Semantic(
-                    skein_lightning_bootstrap_bundle_usage(),
+                return Err(HawdbError::Semantic(
+                    hawdb_lightning_bootstrap_bundle_usage(),
                 ));
             }
             let mut db = Database::open(path)?;
-            let export = db.prepare_skein_lightning_bootstrap_export()?;
-            let rendered = skein_lightning_bootstrap_bundle_json_with_storage_recovery(
+            let export = db.prepare_hawdb_lightning_bootstrap_export()?;
+            let rendered = hawdb_lightning_bootstrap_bundle_json_with_storage_recovery(
                 &export,
                 db.storage_version(),
                 &db.storage_recovery_report(),
@@ -1245,13 +1245,13 @@ fn main() -> Result<()> {
                     .and_then(serde_json::Value::as_str)
                     != Some("ready")
             {
-                return Err(SkeinError::Execution(
-                    "Skein Lightning bootstrap bundle is not ready".to_string(),
+                return Err(HawdbError::Execution(
+                    "Hawdb Lightning bootstrap bundle is not ready".to_string(),
                 ));
             }
             return Ok(());
         }
-        if command == "skein-lightning-stage-bootstrap" {
+        if command == "hawdb-lightning-stage-bootstrap" {
             let mut require_ready = false;
             while let Some(flag) = args.peek() {
                 match flag.as_str() {
@@ -1264,16 +1264,16 @@ fn main() -> Result<()> {
             }
             let database_path = args
                 .next()
-                .ok_or_else(|| SkeinError::Semantic(skein_lightning_stage_bootstrap_usage()))?;
+                .ok_or_else(|| HawdbError::Semantic(hawdb_lightning_stage_bootstrap_usage()))?;
             let staging_dir = args
                 .next()
-                .ok_or_else(|| SkeinError::Semantic(skein_lightning_stage_bootstrap_usage()))?;
+                .ok_or_else(|| HawdbError::Semantic(hawdb_lightning_stage_bootstrap_usage()))?;
             if args.next().is_some() {
-                return Err(SkeinError::Semantic(skein_lightning_stage_bootstrap_usage()));
+                return Err(HawdbError::Semantic(hawdb_lightning_stage_bootstrap_usage()));
             }
             let mut db = Database::open(database_path)?;
-            let export = db.prepare_skein_lightning_bootstrap_export()?;
-            let catalog = stage_skein_lightning_bootstrap_export_with_storage_recovery(
+            let export = db.prepare_hawdb_lightning_bootstrap_export()?;
+            let catalog = stage_hawdb_lightning_bootstrap_export_with_storage_recovery(
                 &export,
                 staging_dir,
                 db.storage_version(),
@@ -1287,13 +1287,13 @@ fn main() -> Result<()> {
                     .and_then(serde_json::Value::as_str)
                     != Some("ready")
             {
-                return Err(SkeinError::Execution(
-                    "Skein Lightning staged bootstrap is not ready".to_string(),
+                return Err(HawdbError::Execution(
+                    "Hawdb Lightning staged bootstrap is not ready".to_string(),
                 ));
             }
             return Ok(());
         }
-        if command == "skein-lightning-verify-staging" {
+        if command == "hawdb-lightning-verify-staging" {
             let mut require_ready = false;
             while let Some(flag) = args.peek() {
                 match flag.as_str() {
@@ -1306,11 +1306,11 @@ fn main() -> Result<()> {
             }
             let staging_dir = args
                 .next()
-                .ok_or_else(|| SkeinError::Semantic(skein_lightning_verify_staging_usage()))?;
+                .ok_or_else(|| HawdbError::Semantic(hawdb_lightning_verify_staging_usage()))?;
             if args.next().is_some() {
-                return Err(SkeinError::Semantic(skein_lightning_verify_staging_usage()));
+                return Err(HawdbError::Semantic(hawdb_lightning_verify_staging_usage()));
             }
-            let report = verify_skein_lightning_staging_catalog(staging_dir)?;
+            let report = verify_hawdb_lightning_staging_catalog(staging_dir)?;
             println!("{}", serde_json::to_string_pretty(&report).unwrap());
             if require_ready
                 && report
@@ -1319,19 +1319,19 @@ fn main() -> Result<()> {
                     .and_then(serde_json::Value::as_str)
                     != Some("ready")
             {
-                return Err(SkeinError::Execution(
-                    "Skein Lightning staging verification is not ready".to_string(),
+                return Err(HawdbError::Execution(
+                    "Hawdb Lightning staging verification is not ready".to_string(),
                 ));
             }
             return Ok(());
         }
-        if command == "skein-lightning-publish-staging" {
+        if command == "hawdb-lightning-publish-staging" {
             let (options, staging_dir, publish_dir) =
-                parse_skein_lightning_publish_staging_args(args)?;
-            let report = if options == SkeinLightningPublishOptions::default() {
-                publish_skein_lightning_staging_catalog(staging_dir, publish_dir)?
+                parse_hawdb_lightning_publish_staging_args(args)?;
+            let report = if options == HawdbLightningPublishOptions::default() {
+                publish_hawdb_lightning_staging_catalog(staging_dir, publish_dir)?
             } else {
-                publish_skein_lightning_staging_catalog_with_options(
+                publish_hawdb_lightning_staging_catalog_with_options(
                     staging_dir,
                     publish_dir,
                     options,
@@ -1340,53 +1340,53 @@ fn main() -> Result<()> {
             println!("{}", serde_json::to_string_pretty(&report).unwrap());
             return Ok(());
         }
-        if command == "skein-lightning-verify-published" {
+        if command == "hawdb-lightning-verify-published" {
             let staging_dir = args
                 .next()
-                .ok_or_else(|| SkeinError::Semantic(skein_lightning_verify_published_usage()))?;
+                .ok_or_else(|| HawdbError::Semantic(hawdb_lightning_verify_published_usage()))?;
             let publish_dir = args
                 .next()
-                .ok_or_else(|| SkeinError::Semantic(skein_lightning_verify_published_usage()))?;
+                .ok_or_else(|| HawdbError::Semantic(hawdb_lightning_verify_published_usage()))?;
             if args.next().is_some() {
-                return Err(SkeinError::Semantic(
-                    skein_lightning_verify_published_usage(),
+                return Err(HawdbError::Semantic(
+                    hawdb_lightning_verify_published_usage(),
                 ));
             }
-            let report = verify_skein_lightning_published_manifest(staging_dir, publish_dir)?;
+            let report = verify_hawdb_lightning_published_manifest(staging_dir, publish_dir)?;
             println!("{}", serde_json::to_string_pretty(&report).unwrap());
             return Ok(());
         }
-        if command == "skein-lightning-gc-staging-report" {
+        if command == "hawdb-lightning-gc-staging-report" {
             let staging_dir = args
                 .next()
-                .ok_or_else(|| SkeinError::Semantic(skein_lightning_gc_staging_report_usage()))?;
+                .ok_or_else(|| HawdbError::Semantic(hawdb_lightning_gc_staging_report_usage()))?;
             let publish_dir = args
                 .next()
-                .ok_or_else(|| SkeinError::Semantic(skein_lightning_gc_staging_report_usage()))?;
+                .ok_or_else(|| HawdbError::Semantic(hawdb_lightning_gc_staging_report_usage()))?;
             if args.next().is_some() {
-                return Err(SkeinError::Semantic(
-                    skein_lightning_gc_staging_report_usage(),
+                return Err(HawdbError::Semantic(
+                    hawdb_lightning_gc_staging_report_usage(),
                 ));
             }
-            let report = skein_lightning_gc_staging_report(staging_dir, publish_dir)?;
+            let report = hawdb_lightning_gc_staging_report(staging_dir, publish_dir)?;
             println!("{}", serde_json::to_string_pretty(&report).unwrap());
             return Ok(());
         }
-        if command == "skein-lightning-import-status" {
+        if command == "hawdb-lightning-import-status" {
             let staging_dir = args
                 .next()
-                .ok_or_else(|| SkeinError::Semantic(skein_lightning_import_status_usage()))?;
+                .ok_or_else(|| HawdbError::Semantic(hawdb_lightning_import_status_usage()))?;
             let publish_dir = args
                 .next()
-                .ok_or_else(|| SkeinError::Semantic(skein_lightning_import_status_usage()))?;
+                .ok_or_else(|| HawdbError::Semantic(hawdb_lightning_import_status_usage()))?;
             if args.next().is_some() {
-                return Err(SkeinError::Semantic(skein_lightning_import_status_usage()));
+                return Err(HawdbError::Semantic(hawdb_lightning_import_status_usage()));
             }
-            let report = skein_lightning_import_status(staging_dir, publish_dir)?;
+            let report = hawdb_lightning_import_status(staging_dir, publish_dir)?;
             println!("{}", serde_json::to_string_pretty(&report).unwrap());
             return Ok(());
         }
-        if command == "skein-lightning-graph-stream" {
+        if command == "hawdb-lightning-graph-stream" {
             let mut require_ready = false;
             while let Some(flag) = args.peek() {
                 match flag.as_str() {
@@ -1399,21 +1399,21 @@ fn main() -> Result<()> {
             }
             let path = args
                 .next()
-                .ok_or_else(|| SkeinError::Semantic(skein_lightning_graph_stream_usage()))?;
+                .ok_or_else(|| HawdbError::Semantic(hawdb_lightning_graph_stream_usage()))?;
             if args.next().is_some() {
-                return Err(SkeinError::Semantic(skein_lightning_graph_stream_usage()));
+                return Err(HawdbError::Semantic(hawdb_lightning_graph_stream_usage()));
             }
             let mut db = Database::open(path)?;
-            let export = db.prepare_skein_lightning_bootstrap_export()?;
+            let export = db.prepare_hawdb_lightning_bootstrap_export()?;
             if require_ready && !export.manifest.validation.is_import_ready {
-                return Err(SkeinError::Execution(
-                    "Skein Lightning graph stream is not import ready".to_string(),
+                return Err(HawdbError::Execution(
+                    "Hawdb Lightning graph stream is not import ready".to_string(),
                 ));
             }
             print!("{}", export.graph_stream.encoded);
             return Ok(());
         }
-        if command == "skein-lightning-relational-stream" {
+        if command == "hawdb-lightning-relational-stream" {
             let mut require_ready = false;
             while let Some(flag) = args.peek() {
                 match flag.as_str() {
@@ -1426,26 +1426,26 @@ fn main() -> Result<()> {
             }
             let path = args
                 .next()
-                .ok_or_else(|| SkeinError::Semantic(skein_lightning_relational_stream_usage()))?;
+                .ok_or_else(|| HawdbError::Semantic(hawdb_lightning_relational_stream_usage()))?;
             if args.next().is_some() {
-                return Err(SkeinError::Semantic(
-                    skein_lightning_relational_stream_usage(),
+                return Err(HawdbError::Semantic(
+                    hawdb_lightning_relational_stream_usage(),
                 ));
             }
             let mut db = Database::open(path)?;
-            let export = db.prepare_skein_lightning_bootstrap_export()?;
+            let export = db.prepare_hawdb_lightning_bootstrap_export()?;
             let validation = export
                 .relational_stream
                 .validate_against_manifest(&export.manifest);
             if require_ready && !validation.is_valid {
-                return Err(SkeinError::Execution(
-                    "Skein Lightning relational stream is not import ready".to_string(),
+                return Err(HawdbError::Execution(
+                    "Hawdb Lightning relational stream is not import ready".to_string(),
                 ));
             }
             std::io::stdout().write_all(&export.relational_stream.encoded)?;
             return Ok(());
         }
-        if command == "skein-lightning-verify-export" {
+        if command == "hawdb-lightning-verify-export" {
             let mut require_valid = false;
             while let Some(flag) = args.peek() {
                 match flag.as_str() {
@@ -1458,12 +1458,12 @@ fn main() -> Result<()> {
             }
             let path = args
                 .next()
-                .ok_or_else(|| SkeinError::Semantic(skein_lightning_verify_export_usage()))?;
+                .ok_or_else(|| HawdbError::Semantic(hawdb_lightning_verify_export_usage()))?;
             if args.next().is_some() {
-                return Err(SkeinError::Semantic(skein_lightning_verify_export_usage()));
+                return Err(HawdbError::Semantic(hawdb_lightning_verify_export_usage()));
             }
             let mut db = Database::open(path)?;
-            let export = db.prepare_skein_lightning_bootstrap_export()?;
+            let export = db.prepare_hawdb_lightning_bootstrap_export()?;
             let graph_validation = export
                 .graph_stream
                 .validate_against_manifest(&export.manifest);
@@ -1472,27 +1472,27 @@ fn main() -> Result<()> {
                 .validate_against_manifest(&export.manifest);
             let valid = graph_validation.is_valid && relational_validation.is_valid;
             let rendered = serde_json::json!({
-                "protocol": "skein-lightning-export-validation",
+                "protocol": "hawdb-lightning-export-validation",
                 "valid": valid,
-                "graph_stream_validation": skein_lightning_graph_stream_validation_json(
+                "graph_stream_validation": hawdb_lightning_graph_stream_validation_json(
                     &graph_validation,
                 ),
-                "relational_stream_validation": skein_lightning_relational_stream_validation_json(
+                "relational_stream_validation": hawdb_lightning_relational_stream_validation_json(
                     &relational_validation,
                 ),
             });
             println!("{}", serde_json::to_string_pretty(&rendered).unwrap());
             if require_valid && !valid {
-                return Err(SkeinError::Execution(
-                    "Skein Lightning export validation failed".to_string(),
+                return Err(HawdbError::Execution(
+                    "Hawdb Lightning export validation failed".to_string(),
                 ));
             }
             return Ok(());
         }
-        return Err(SkeinError::Semantic(format!("unknown command '{command}'")));
+        return Err(HawdbError::Semantic(format!("unknown command '{command}'")));
     }
 
-    let path = std::env::temp_dir().join("skein-demo");
+    let path = std::env::temp_dir().join("hawdb-demo");
     let _ = std::fs::remove_dir_all(&path);
     let mut db = Database::open(&path)?;
     db.query("CREATE (:Memory {id: 1, title: 'Graph foundations'})")?;
@@ -1514,25 +1514,25 @@ fn main() -> Result<()> {
 }
 
 fn nowledge_cypher_migration_gate_usage() -> String {
-    "nowledge-cypher-migration-gate is a developer compatibility tool; set SKEIN_ENABLE_COMPATIBILITY_TOOLS=1. Usage: nowledge-cypher-migration-gate requires [--require-ready] [--require-cutover-evidence] [--allow-self-shadow] [--shadow-ready] [--shadow-trace <path>] [--shadow-timeout-ms <ms>] [--require-rollback-evidence] [--rollback-evidence <text>] [--require-storage-recovery-evidence] [--storage-recovery-report-json <path>] [--require-background-maintenance-evidence] [--background-maintenance-report-json <path>] [--previous-wrapper-contract-evidence-json <path>] <root> <shadow-name> <program> [args...]"
+    "nowledge-cypher-migration-gate is a developer compatibility tool; set HAWDB_ENABLE_COMPATIBILITY_TOOLS=1. Usage: nowledge-cypher-migration-gate requires [--require-ready] [--require-cutover-evidence] [--allow-self-shadow] [--shadow-ready] [--shadow-trace <path>] [--shadow-timeout-ms <ms>] [--require-rollback-evidence] [--rollback-evidence <text>] [--require-storage-recovery-evidence] [--storage-recovery-report-json <path>] [--require-background-maintenance-evidence] [--background-maintenance-report-json <path>] [--previous-wrapper-contract-evidence-json <path>] <root> <shadow-name> <program> [args...]"
         .to_string()
 }
 
 fn external_shadow_adapter_smoke_usage() -> String {
-    "external-shadow-adapter-smoke is a developer compatibility tool; set SKEIN_ENABLE_COMPATIBILITY_TOOLS=1. Usage: external-shadow-adapter-smoke requires [--require-previous-wrapper] [--shadow-trace <path>] [--shadow-timeout-ms <ms>] <shadow-name> <program> [args...]"
+    "external-shadow-adapter-smoke is a developer compatibility tool; set HAWDB_ENABLE_COMPATIBILITY_TOOLS=1. Usage: external-shadow-adapter-smoke requires [--require-previous-wrapper] [--shadow-trace <path>] [--shadow-timeout-ms <ms>] <shadow-name> <program> [args...]"
         .to_string()
 }
 
 fn require_developer_compatibility_tool(command: &str) -> Result<()> {
     if compatibility_tools_enabled_from_value(
-        std::env::var(SKEIN_ENABLE_COMPATIBILITY_TOOLS_ENV)
+        std::env::var(HAWDB_ENABLE_COMPATIBILITY_TOOLS_ENV)
             .ok()
             .as_deref(),
     ) {
         return Ok(());
     }
-    Err(SkeinError::Semantic(format!(
-        "{command} is quarantined as a developer compatibility tool; production callers must use Skein library APIs and typed readiness gates. Set {SKEIN_ENABLE_COMPATIBILITY_TOOLS_ENV}=1 only for isolated preflight or CI validation."
+    Err(HawdbError::Semantic(format!(
+        "{command} is quarantined as a developer compatibility tool; production callers must use Hawdb library APIs and typed readiness gates. Set {HAWDB_ENABLE_COMPATIBILITY_TOOLS_ENV}=1 only for isolated preflight or CI validation."
     )))
 }
 
@@ -1590,35 +1590,35 @@ fn background_maintenance_report_usage() -> String {
         .to_string()
 }
 
-fn skein_lightning_bootstrap_manifest_usage() -> String {
-    "skein-lightning-bootstrap-manifest requires [--require-ready] <database-path>".to_string()
+fn hawdb_lightning_bootstrap_manifest_usage() -> String {
+    "hawdb-lightning-bootstrap-manifest requires [--require-ready] <database-path>".to_string()
 }
 
-fn skein_lightning_bootstrap_bundle_usage() -> String {
-    "skein-lightning-bootstrap-bundle requires [--require-ready] <database-path>".to_string()
+fn hawdb_lightning_bootstrap_bundle_usage() -> String {
+    "hawdb-lightning-bootstrap-bundle requires [--require-ready] <database-path>".to_string()
 }
 
-fn skein_lightning_stage_bootstrap_usage() -> String {
-    "skein-lightning-stage-bootstrap requires [--require-ready] <database-path> <staging-dir>"
+fn hawdb_lightning_stage_bootstrap_usage() -> String {
+    "hawdb-lightning-stage-bootstrap requires [--require-ready] <database-path> <staging-dir>"
         .to_string()
 }
 
-fn skein_lightning_verify_staging_usage() -> String {
-    "skein-lightning-verify-staging requires [--require-ready] <staging-dir>".to_string()
+fn hawdb_lightning_verify_staging_usage() -> String {
+    "hawdb-lightning-verify-staging requires [--require-ready] <staging-dir>".to_string()
 }
 
-fn skein_lightning_relational_stream_usage() -> String {
-    "skein-lightning-relational-stream requires [--require-ready] <database-path>".to_string()
+fn hawdb_lightning_relational_stream_usage() -> String {
+    "hawdb-lightning-relational-stream requires [--require-ready] <database-path>".to_string()
 }
 
-fn skein_lightning_publish_staging_usage() -> String {
-    "skein-lightning-publish-staging requires [--require-state-marker] [--fencing-token <token>] [--expected-database-epoch <epoch>] <staging-dir> <publish-dir>".to_string()
+fn hawdb_lightning_publish_staging_usage() -> String {
+    "hawdb-lightning-publish-staging requires [--require-state-marker] [--fencing-token <token>] [--expected-database-epoch <epoch>] <staging-dir> <publish-dir>".to_string()
 }
 
-fn parse_skein_lightning_publish_staging_args(
+fn parse_hawdb_lightning_publish_staging_args(
     args: impl Iterator<Item = String>,
-) -> Result<(SkeinLightningPublishOptions, String, String)> {
-    let mut options = SkeinLightningPublishOptions::default();
+) -> Result<(HawdbLightningPublishOptions, String, String)> {
+    let mut options = HawdbLightningPublishOptions::default();
     let mut positional = Vec::new();
     let mut args = args.peekable();
     while let Some(arg) = args.next() {
@@ -1628,59 +1628,59 @@ fn parse_skein_lightning_publish_staging_args(
             }
             "--fencing-token" => {
                 let Some(value) = args.next() else {
-                    return Err(SkeinError::Semantic(skein_lightning_publish_staging_usage()));
+                    return Err(HawdbError::Semantic(hawdb_lightning_publish_staging_usage()));
                 };
                 options.fencing_token = Some(value);
             }
             "--expected-database-epoch" => {
                 let Some(value) = args.next() else {
-                    return Err(SkeinError::Semantic(skein_lightning_publish_staging_usage()));
+                    return Err(HawdbError::Semantic(hawdb_lightning_publish_staging_usage()));
                 };
                 let epoch = value
                     .parse::<u64>()
-                    .map_err(|_| SkeinError::Semantic(skein_lightning_publish_staging_usage()))?;
+                    .map_err(|_| HawdbError::Semantic(hawdb_lightning_publish_staging_usage()))?;
                 options.expected_database_epoch = Some(epoch);
             }
             value if value.starts_with("--") => {
-                return Err(SkeinError::Semantic(skein_lightning_publish_staging_usage()));
+                return Err(HawdbError::Semantic(hawdb_lightning_publish_staging_usage()));
             }
             value => positional.push(value.to_string()),
         }
     }
     if positional.len() != 2 {
-        return Err(SkeinError::Semantic(skein_lightning_publish_staging_usage()));
+        return Err(HawdbError::Semantic(hawdb_lightning_publish_staging_usage()));
     }
     Ok((options, positional.remove(0), positional.remove(0)))
 }
 
-fn skein_lightning_verify_published_usage() -> String {
-    "skein-lightning-verify-published requires <staging-dir> <publish-dir>".to_string()
+fn hawdb_lightning_verify_published_usage() -> String {
+    "hawdb-lightning-verify-published requires <staging-dir> <publish-dir>".to_string()
 }
 
-fn skein_lightning_gc_staging_report_usage() -> String {
-    "skein-lightning-gc-staging-report requires <staging-dir> <publish-dir>".to_string()
+fn hawdb_lightning_gc_staging_report_usage() -> String {
+    "hawdb-lightning-gc-staging-report requires <staging-dir> <publish-dir>".to_string()
 }
 
-fn skein_lightning_import_status_usage() -> String {
-    "skein-lightning-import-status requires <staging-dir> <publish-dir>".to_string()
+fn hawdb_lightning_import_status_usage() -> String {
+    "hawdb-lightning-import-status requires <staging-dir> <publish-dir>".to_string()
 }
 
-fn skein_lightning_graph_stream_usage() -> String {
-    "skein-lightning-graph-stream requires [--require-ready] <database-path>".to_string()
+fn hawdb_lightning_graph_stream_usage() -> String {
+    "hawdb-lightning-graph-stream requires [--require-ready] <database-path>".to_string()
 }
 
-fn skein_lightning_verify_export_usage() -> String {
-    "skein-lightning-verify-export requires [--require-valid] <database-path>".to_string()
+fn hawdb_lightning_verify_export_usage() -> String {
+    "hawdb-lightning-verify-export requires [--require-valid] <database-path>".to_string()
 }
 
 fn parse_shadow_timeout_ms(raw_timeout: &str) -> Result<Duration> {
     let timeout_ms = raw_timeout.parse::<u64>().map_err(|error| {
-        SkeinError::Semantic(format!(
+        HawdbError::Semantic(format!(
             "invalid --shadow-timeout-ms '{raw_timeout}': {error}"
         ))
     })?;
     if timeout_ms == 0 {
-        return Err(SkeinError::Semantic(
+        return Err(HawdbError::Semantic(
             "--shadow-timeout-ms must be greater than zero".to_string(),
         ));
     }
@@ -1689,12 +1689,12 @@ fn parse_shadow_timeout_ms(raw_timeout: &str) -> Result<Duration> {
 
 fn parse_max_wal_replay_entries(raw_limit: &str) -> Result<usize> {
     let limit = raw_limit.parse::<usize>().map_err(|error| {
-        SkeinError::Semantic(format!(
+        HawdbError::Semantic(format!(
             "invalid --max-wal-replay-entries '{raw_limit}': {error}"
         ))
     })?;
     if limit == 0 {
-        return Err(SkeinError::Semantic(
+        return Err(HawdbError::Semantic(
             "--max-wal-replay-entries must be greater than zero".to_string(),
         ));
     }
@@ -1703,10 +1703,10 @@ fn parse_max_wal_replay_entries(raw_limit: &str) -> Result<usize> {
 
 fn parse_max_family_items(raw_limit: &str) -> Result<usize> {
     let limit = raw_limit.parse::<usize>().map_err(|error| {
-        SkeinError::Semantic(format!("invalid --max-family-items '{raw_limit}': {error}"))
+        HawdbError::Semantic(format!("invalid --max-family-items '{raw_limit}': {error}"))
     })?;
     if limit == 0 {
-        return Err(SkeinError::Semantic(
+        return Err(HawdbError::Semantic(
             "--max-family-items must be greater than zero".to_string(),
         ));
     }
@@ -1715,10 +1715,10 @@ fn parse_max_family_items(raw_limit: &str) -> Result<usize> {
 
 fn parse_max_blockers(raw_limit: &str) -> Result<usize> {
     let limit = raw_limit.parse::<usize>().map_err(|error| {
-        SkeinError::Semantic(format!("invalid --max-blockers '{raw_limit}': {error}"))
+        HawdbError::Semantic(format!("invalid --max-blockers '{raw_limit}': {error}"))
     })?;
     if limit == 0 {
-        return Err(SkeinError::Semantic(
+        return Err(HawdbError::Semantic(
             "--max-blockers must be greater than zero".to_string(),
         ));
     }
@@ -1728,9 +1728,9 @@ fn parse_max_blockers(raw_limit: &str) -> Result<usize> {
 fn parse_positive_usize(flag: &str, raw_value: &str) -> Result<usize> {
     let value = raw_value
         .parse::<usize>()
-        .map_err(|error| SkeinError::Semantic(format!("invalid {flag} '{raw_value}': {error}")))?;
+        .map_err(|error| HawdbError::Semantic(format!("invalid {flag} '{raw_value}': {error}")))?;
     if value == 0 {
-        return Err(SkeinError::Semantic(format!(
+        return Err(HawdbError::Semantic(format!(
             "{flag} must be greater than zero"
         )));
     }
@@ -1743,13 +1743,13 @@ where
 {
     let flag = args
         .next()
-        .ok_or_else(|| SkeinError::Semantic(storage_resource_profile_usage()))?;
+        .ok_or_else(|| HawdbError::Semantic(storage_resource_profile_usage()))?;
     debug_assert_eq!(flag, expected_flag);
     let raw = args
         .next()
-        .ok_or_else(|| SkeinError::Semantic(storage_resource_profile_usage()))?;
+        .ok_or_else(|| HawdbError::Semantic(storage_resource_profile_usage()))?;
     raw.parse::<u64>()
-        .map_err(|error| SkeinError::Semantic(format!("invalid {expected_flag} '{raw}': {error}")))
+        .map_err(|error| HawdbError::Semantic(format!("invalid {expected_flag} '{raw}': {error}")))
 }
 
 fn parse_next_usize_flag<I>(args: &mut std::iter::Peekable<I>, expected_flag: &str) -> Result<usize>
@@ -1758,28 +1758,28 @@ where
 {
     let flag = args
         .next()
-        .ok_or_else(|| SkeinError::Semantic(storage_resource_profile_usage()))?;
+        .ok_or_else(|| HawdbError::Semantic(storage_resource_profile_usage()))?;
     debug_assert_eq!(flag, expected_flag);
     let raw = args
         .next()
-        .ok_or_else(|| SkeinError::Semantic(storage_resource_profile_usage()))?;
+        .ok_or_else(|| HawdbError::Semantic(storage_resource_profile_usage()))?;
     parse_positive_usize(expected_flag, &raw)
 }
 
 fn required_positive_profile_u64(value: Option<u64>, flag: &str) -> Result<u64> {
     match value {
         Some(value) if value > 0 => Ok(value),
-        Some(_) => Err(SkeinError::Semantic(format!(
+        Some(_) => Err(HawdbError::Semantic(format!(
             "{flag} must be greater than zero"
         ))),
-        None => Err(SkeinError::Semantic(format!(
+        None => Err(HawdbError::Semantic(format!(
             "storage-resource-profile is missing {flag}"
         ))),
     }
 }
 
 fn required_profile_usize(value: Option<usize>, flag: &str) -> Result<usize> {
-    value.ok_or_else(|| SkeinError::Semantic(format!("storage-resource-profile is missing {flag}")))
+    value.ok_or_else(|| HawdbError::Semantic(format!("storage-resource-profile is missing {flag}")))
 }
 
 fn merge_replacement_summary_evidence(
@@ -1832,7 +1832,7 @@ fn merge_replacement_summary_evidence(
             .get("replacement_readiness_by_query_family")
             .cloned()
             .ok_or_else(|| {
-                SkeinError::Semantic(
+                HawdbError::Semantic(
                     "query family evidence missing replacement_readiness_by_query_family"
                         .to_string(),
                 )
@@ -1859,7 +1859,7 @@ fn insert_replacement_summary_artifact(
     bundle
         .as_object_mut()
         .ok_or_else(|| {
-            SkeinError::Semantic("replacement summary bundle must be a JSON object".to_string())
+            HawdbError::Semantic("replacement summary bundle must be a JSON object".to_string())
         })?
         .insert(key.to_string(), value);
     Ok(())
@@ -1868,9 +1868,9 @@ fn insert_replacement_summary_artifact(
 fn parse_background_maintenance_limit(flag: &str, raw_limit: &str) -> Result<usize> {
     let limit = raw_limit
         .parse::<usize>()
-        .map_err(|error| SkeinError::Semantic(format!("invalid {flag} '{raw_limit}': {error}")))?;
+        .map_err(|error| HawdbError::Semantic(format!("invalid {flag} '{raw_limit}': {error}")))?;
     if limit == 0 {
-        return Err(SkeinError::Semantic(format!(
+        return Err(HawdbError::Semantic(format!(
             "{flag} must be greater than zero"
         )));
     }
@@ -1905,7 +1905,7 @@ fn enforce_storage_recovery_requirements(
     if blockers.is_empty() {
         return Ok(());
     }
-    Err(SkeinError::Execution(format!(
+    Err(HawdbError::Execution(format!(
         "storage recovery report requirements failed: {}",
         blockers.join("; ")
     )))
@@ -1952,7 +1952,7 @@ fn add_cutover_evidence_report(
     )?;
 
     let object = bundle.as_object_mut().ok_or_else(|| {
-        SkeinError::Execution("migration gate bundle must be a JSON object".to_string())
+        HawdbError::Execution("migration gate bundle must be a JSON object".to_string())
     })?;
     let mut evidence = serde_json::Map::new();
     insert_json(&mut evidence, "eligible", eligible);
@@ -2278,7 +2278,7 @@ fn storage_recovery_report_json(
     report: &StorageRecoveryReport,
 ) -> serde_json::Value {
     serde_json::json!({
-        "protocol": "skein-storage-recovery-report",
+        "protocol": "hawdb-storage-recovery-report",
         "storage_version": storage_version,
         "open_timings": {
             "durable_manifest_open_micros": report.open_timings.durable_manifest_open_micros,
@@ -2341,7 +2341,7 @@ fn background_maintenance_report_json_with_options(
     if let Some(object) = report.as_object_mut() {
         object.insert(
             "protocol".to_string(),
-            serde_json::Value::String("skein-background-maintenance-report".to_string()),
+            serde_json::Value::String("hawdb-background-maintenance-report".to_string()),
         );
         object.insert(
             "slow_query".to_string(),
@@ -2445,88 +2445,88 @@ fn recovery_mode_name(recovery_mode: RecoveryMode) -> &'static str {
     }
 }
 
-fn skein_lightning_bootstrap_bundle_json_with_storage_recovery(
-    export: &skein::SkeinLightningBootstrapExport,
+fn hawdb_lightning_bootstrap_bundle_json_with_storage_recovery(
+    export: &hawdb::HawdbLightningBootstrapExport,
     storage_version: &str,
     storage_recovery: &StorageRecoveryReport,
 ) -> serde_json::Value {
     let storage_recovery_json = storage_recovery_report_json(storage_version, storage_recovery);
-    skein_lightning_bootstrap_bundle_json_with_optional_storage_recovery(
+    hawdb_lightning_bootstrap_bundle_json_with_optional_storage_recovery(
         export,
         Some(storage_recovery_json),
     )
 }
 
-fn stage_skein_lightning_bootstrap_export_with_storage_recovery(
-    export: &skein::SkeinLightningBootstrapExport,
+fn stage_hawdb_lightning_bootstrap_export_with_storage_recovery(
+    export: &hawdb::HawdbLightningBootstrapExport,
     staging_dir: impl AsRef<Path>,
     storage_version: &str,
     storage_recovery: &StorageRecoveryReport,
 ) -> Result<serde_json::Value> {
     let storage_recovery_json = storage_recovery_report_json(storage_version, storage_recovery);
-    stage_skein_lightning_bootstrap_export_with_optional_storage_recovery(
+    stage_hawdb_lightning_bootstrap_export_with_optional_storage_recovery(
         export,
         staging_dir,
         Some(storage_recovery_json),
     )
 }
 
-fn verify_skein_lightning_staging_catalog(
+fn verify_hawdb_lightning_staging_catalog(
     staging_dir: impl AsRef<Path>,
 ) -> Result<serde_json::Value> {
-    skein::verify_skein_lightning_staging_catalog(staging_dir)
+    hawdb::verify_hawdb_lightning_staging_catalog(staging_dir)
 }
 
-fn publish_skein_lightning_staging_catalog(
+fn publish_hawdb_lightning_staging_catalog(
     staging_dir: impl AsRef<Path>,
     publish_dir: impl AsRef<Path>,
 ) -> Result<serde_json::Value> {
-    skein::publish_skein_lightning_staging_catalog(staging_dir, publish_dir)
+    hawdb::publish_hawdb_lightning_staging_catalog(staging_dir, publish_dir)
 }
 
-fn publish_skein_lightning_staging_catalog_with_options(
+fn publish_hawdb_lightning_staging_catalog_with_options(
     staging_dir: impl AsRef<Path>,
     publish_dir: impl AsRef<Path>,
-    options: SkeinLightningPublishOptions,
+    options: HawdbLightningPublishOptions,
 ) -> Result<serde_json::Value> {
-    skein::publish_skein_lightning_staging_catalog_with_options(staging_dir, publish_dir, options)
+    hawdb::publish_hawdb_lightning_staging_catalog_with_options(staging_dir, publish_dir, options)
 }
 
-fn verify_skein_lightning_published_manifest(
-    staging_dir: impl AsRef<Path>,
-    publish_dir: impl AsRef<Path>,
-) -> Result<serde_json::Value> {
-    skein::verify_skein_lightning_published_manifest(staging_dir, publish_dir)
-}
-
-fn skein_lightning_gc_staging_report(
+fn verify_hawdb_lightning_published_manifest(
     staging_dir: impl AsRef<Path>,
     publish_dir: impl AsRef<Path>,
 ) -> Result<serde_json::Value> {
-    skein::skein_lightning_gc_staging_report(staging_dir, publish_dir)
+    hawdb::verify_hawdb_lightning_published_manifest(staging_dir, publish_dir)
 }
 
-fn skein_lightning_import_status(
+fn hawdb_lightning_gc_staging_report(
     staging_dir: impl AsRef<Path>,
     publish_dir: impl AsRef<Path>,
 ) -> Result<serde_json::Value> {
-    skein::skein_lightning_import_status(staging_dir, publish_dir)
+    hawdb::hawdb_lightning_gc_staging_report(staging_dir, publish_dir)
+}
+
+fn hawdb_lightning_import_status(
+    staging_dir: impl AsRef<Path>,
+    publish_dir: impl AsRef<Path>,
+) -> Result<serde_json::Value> {
+    hawdb::hawdb_lightning_import_status(staging_dir, publish_dir)
 }
 
 fn read_json_file(path: &Path) -> Result<serde_json::Value> {
     let bytes = fs::read(path)?;
     serde_json::from_slice(&bytes)
-        .map_err(|_| SkeinError::Execution("invalid JSON file: invalid_json".to_string()))
+        .map_err(|_| HawdbError::Execution("invalid JSON file: invalid_json".to_string()))
 }
 
 fn explain_output_json(
     query: &str,
     parameters: &BTreeMap<String, Value>,
-    output: &skein::api::ExplainOutput,
-    plan_cache_stats: &skein::PlanCacheStats,
+    output: &hawdb::api::ExplainOutput,
+    plan_cache_stats: &hawdb::PlanCacheStats,
 ) -> serde_json::Value {
     explain_diagnostics_json(ExplainDiagnosticsJsonInput {
-        protocol: "skein-explain",
+        protocol: "hawdb-explain",
         query,
         statement_kind: output.statement_kind,
         parameters,
@@ -2540,11 +2540,11 @@ fn explain_output_json(
 fn explain_analyze_output_json(
     query: &str,
     parameters: &BTreeMap<String, Value>,
-    output: &skein::api::ExplainAnalyzeOutput,
-    plan_cache_stats: &skein::PlanCacheStats,
+    output: &hawdb::api::ExplainAnalyzeOutput,
+    plan_cache_stats: &hawdb::PlanCacheStats,
 ) -> serde_json::Value {
     let mut json = explain_diagnostics_json(ExplainDiagnosticsJsonInput {
-        protocol: "skein-explain-analyze",
+        protocol: "hawdb-explain-analyze",
         query,
         statement_kind: output.statement_kind,
         parameters,
@@ -2571,10 +2571,10 @@ struct ExplainDiagnosticsJsonInput<'a> {
     query: &'a str,
     statement_kind: &'static str,
     parameters: &'a BTreeMap<String, Value>,
-    trace: &'a skein::optimizer::OptimizerTrace,
-    work_request: &'a skein::WorkRequest,
-    plan_cache_lookup: skein::PlanCacheLookup,
-    plan_cache_stats: &'a skein::PlanCacheStats,
+    trace: &'a hawdb::optimizer::OptimizerTrace,
+    work_request: &'a hawdb::WorkRequest,
+    plan_cache_lookup: hawdb::PlanCacheLookup,
+    plan_cache_stats: &'a hawdb::PlanCacheStats,
 }
 
 fn explain_diagnostics_json(input: ExplainDiagnosticsJsonInput<'_>) -> serde_json::Value {
@@ -2656,7 +2656,7 @@ fn explain_diagnostics_json(input: ExplainDiagnosticsJsonInput<'_>) -> serde_jso
 }
 
 fn read_execution_profile_json(
-    profile: &skein::executor::ReadExecutionProfile,
+    profile: &hawdb::executor::ReadExecutionProfile,
 ) -> serde_json::Value {
     serde_json::json!({
         "max_rows": profile.max_rows,
@@ -2710,7 +2710,7 @@ fn read_execution_profile_json(
     })
 }
 
-fn scan_pruning_report_json(report: &skein::store::ScanPruningReport) -> serde_json::Value {
+fn scan_pruning_report_json(report: &hawdb::store::ScanPruningReport) -> serde_json::Value {
     serde_json::json!({
         "target_kind": report.target_kind.as_str(),
         "label_id": report.label_id.map(|label_id| label_id.0),
@@ -2726,60 +2726,60 @@ fn scan_pruning_report_json(report: &skein::store::ScanPruningReport) -> serde_j
     })
 }
 
-fn scan_pruning_strategy_json(strategy: &skein::store::ScanPruningStrategy) -> serde_json::Value {
+fn scan_pruning_strategy_json(strategy: &hawdb::store::ScanPruningStrategy) -> serde_json::Value {
     match strategy {
-        skein::store::ScanPruningStrategy::FullLabelScan => {
+        hawdb::store::ScanPruningStrategy::FullLabelScan => {
             serde_json::json!({"kind": "full_label_scan"})
         }
-        skein::store::ScanPruningStrategy::ExactCount => {
+        hawdb::store::ScanPruningStrategy::ExactCount => {
             serde_json::json!({"kind": "exact_count"})
         }
-        skein::store::ScanPruningStrategy::Empty => serde_json::json!({"kind": "empty"}),
-        skein::store::ScanPruningStrategy::IdEq => serde_json::json!({"kind": "id_eq"}),
-        skein::store::ScanPruningStrategy::IdIn => serde_json::json!({"kind": "id_in"}),
-        skein::store::ScanPruningStrategy::IdRange => serde_json::json!({"kind": "id_range"}),
-        skein::store::ScanPruningStrategy::PropertyEq { property } => {
+        hawdb::store::ScanPruningStrategy::Empty => serde_json::json!({"kind": "empty"}),
+        hawdb::store::ScanPruningStrategy::IdEq => serde_json::json!({"kind": "id_eq"}),
+        hawdb::store::ScanPruningStrategy::IdIn => serde_json::json!({"kind": "id_in"}),
+        hawdb::store::ScanPruningStrategy::IdRange => serde_json::json!({"kind": "id_range"}),
+        hawdb::store::ScanPruningStrategy::PropertyEq { property } => {
             serde_json::json!({"kind": "property_eq", "property": property})
         }
-        skein::store::ScanPruningStrategy::PropertyNotEq { property } => {
+        hawdb::store::ScanPruningStrategy::PropertyNotEq { property } => {
             serde_json::json!({"kind": "property_not_eq", "property": property})
         }
-        skein::store::ScanPruningStrategy::PropertyMissingOrNull { property } => {
+        hawdb::store::ScanPruningStrategy::PropertyMissingOrNull { property } => {
             serde_json::json!({"kind": "property_missing_or_null", "property": property})
         }
-        skein::store::ScanPruningStrategy::PropertyExists { property } => {
+        hawdb::store::ScanPruningStrategy::PropertyExists { property } => {
             serde_json::json!({"kind": "property_exists", "property": property})
         }
-        skein::store::ScanPruningStrategy::PropertyDefaultIfNullEq { property } => {
+        hawdb::store::ScanPruningStrategy::PropertyDefaultIfNullEq { property } => {
             serde_json::json!({"kind": "property_default_if_null_eq", "property": property})
         }
-        skein::store::ScanPruningStrategy::PropertyDefaultIfNullNotEq { property } => {
+        hawdb::store::ScanPruningStrategy::PropertyDefaultIfNullNotEq { property } => {
             serde_json::json!({"kind": "property_default_if_null_not_eq", "property": property})
         }
-        skein::store::ScanPruningStrategy::PropertyIn { property } => {
+        hawdb::store::ScanPruningStrategy::PropertyIn { property } => {
             serde_json::json!({"kind": "property_in", "property": property})
         }
-        skein::store::ScanPruningStrategy::CompositePropertyEq { properties } => {
+        hawdb::store::ScanPruningStrategy::CompositePropertyEq { properties } => {
             serde_json::json!({"kind": "composite_property_eq", "properties": properties})
         }
-        skein::store::ScanPruningStrategy::CompositePropertyRange { properties } => {
+        hawdb::store::ScanPruningStrategy::CompositePropertyRange { properties } => {
             serde_json::json!({
                 "kind": "composite_property_range",
                 "properties": properties,
             })
         }
-        skein::store::ScanPruningStrategy::PropertyRange { property } => {
+        hawdb::store::ScanPruningStrategy::PropertyRange { property } => {
             serde_json::json!({"kind": "property_range", "property": property})
         }
-        skein::store::ScanPruningStrategy::FullText { property } => {
+        hawdb::store::ScanPruningStrategy::FullText { property } => {
             serde_json::json!({"kind": "full_text", "property": property})
         }
-        skein::store::ScanPruningStrategy::OrUnion => serde_json::json!({"kind": "or_union"}),
+        hawdb::store::ScanPruningStrategy::OrUnion => serde_json::json!({"kind": "or_union"}),
     }
 }
 
 fn physical_properties_json(
-    properties: &skein::optimizer::PhysicalProperties,
+    properties: &hawdb::optimizer::PhysicalProperties,
 ) -> serde_json::Value {
     serde_json::json!({
         "distribution": distribution_json(&properties.distribution),
@@ -2791,15 +2791,15 @@ fn physical_properties_json(
     })
 }
 
-fn distribution_json(distribution: &skein::optimizer::Distribution) -> serde_json::Value {
+fn distribution_json(distribution: &hawdb::optimizer::Distribution) -> serde_json::Value {
     match distribution {
-        skein::optimizer::Distribution::Any | skein::optimizer::Distribution::Single => {
+        hawdb::optimizer::Distribution::Any | hawdb::optimizer::Distribution::Single => {
             serde_json::json!({
                 "kind": distribution.as_str(),
                 "keys": [],
             })
         }
-        skein::optimizer::Distribution::Hash(keys) => {
+        hawdb::optimizer::Distribution::Hash(keys) => {
             serde_json::json!({
                 "kind": distribution.as_str(),
                 "keys": keys,
@@ -2808,7 +2808,7 @@ fn distribution_json(distribution: &skein::optimizer::Distribution) -> serde_jso
     }
 }
 
-fn optimizer_stage_json(stage: &skein::optimizer::StageTrace) -> serde_json::Value {
+fn optimizer_stage_json(stage: &hawdb::optimizer::StageTrace) -> serde_json::Value {
     let stats = stage.stats();
     serde_json::json!({
         "name": stage.name(),
@@ -2820,7 +2820,7 @@ fn optimizer_stage_json(stage: &skein::optimizer::StageTrace) -> serde_json::Val
     })
 }
 
-fn rule_event_json(event: &skein::optimizer::RuleEvent) -> serde_json::Value {
+fn rule_event_json(event: &hawdb::optimizer::RuleEvent) -> serde_json::Value {
     serde_json::json!({
         "rule": event.rule(),
         "outcome": event.outcome().as_str(),
@@ -2830,10 +2830,10 @@ fn rule_event_json(event: &skein::optimizer::RuleEvent) -> serde_json::Value {
 
 fn parse_parameters_json(raw_parameters: &str) -> Result<BTreeMap<String, Value>> {
     let value = serde_json::from_str::<serde_json::Value>(raw_parameters)
-        .map_err(|error| SkeinError::Semantic(format!("invalid --params-json object: {error}")))?;
+        .map_err(|error| HawdbError::Semantic(format!("invalid --params-json object: {error}")))?;
     let object = value
         .as_object()
-        .ok_or_else(|| SkeinError::Semantic("--params-json must be a JSON object".to_string()))?;
+        .ok_or_else(|| HawdbError::Semantic("--params-json must be a JSON object".to_string()))?;
     object
         .iter()
         .map(|(key, value)| Ok((key.clone(), value_from_json(value)?)))
@@ -2873,7 +2873,7 @@ fn value_from_json(value: &serde_json::Value) -> Result<Value> {
             } else if let Some(value) = value.as_f64() {
                 Ok(Value::Float(value))
             } else {
-                Err(SkeinError::Semantic(format!(
+                Err(HawdbError::Semantic(format!(
                     "unsupported JSON number in --params-json: {value}"
                 )))
             }
@@ -2893,10 +2893,10 @@ fn value_from_json(value: &serde_json::Value) -> Result<Value> {
             if values.len() == 1
                 && let Some(serde_json::Value::String(encoded)) = values.get("$uuid")
             {
-                return skein_core::Uuid::parse_str(encoded)
+                return hawdb_core::Uuid::parse_str(encoded)
                     .map(Value::Uuid)
                     .map_err(|error| {
-                        SkeinError::Semantic(format!("invalid $uuid value: {error}"))
+                        HawdbError::Semantic(format!("invalid $uuid value: {error}"))
                     });
             }
             values
@@ -2910,7 +2910,7 @@ fn value_from_json(value: &serde_json::Value) -> Result<Value> {
 
 fn decode_json_binary(encoded: &str) -> Result<Vec<u8>> {
     if !encoded.len().is_multiple_of(2) {
-        return Err(SkeinError::Semantic(
+        return Err(HawdbError::Semantic(
             "$binary must contain an even number of hex digits".to_string(),
         ));
     }
@@ -2930,7 +2930,7 @@ fn decode_json_hex_digit(digit: u8) -> Result<u8> {
         b'0'..=b'9' => Ok(digit - b'0'),
         b'a'..=b'f' => Ok(digit - b'a' + 10),
         b'A'..=b'F' => Ok(digit - b'A' + 10),
-        _ => Err(SkeinError::Semantic(format!(
+        _ => Err(HawdbError::Semantic(format!(
             "$binary contains invalid hex digit {:?}",
             char::from(digit)
         ))),
@@ -2947,44 +2947,44 @@ mod tests {
         enforce_storage_recovery_requirements, explain_analyze_json_usage,
         explain_analyze_output_json, explain_json_usage, explain_output_json, explain_table_usage,
         external_shadow_adapter_smoke_fixture, external_shadow_adapter_smoke_report_json,
-        is_self_shadow_command, merge_replacement_summary_evidence,
-        nowledge_bounded_read_report_json, nowledge_bounded_read_report_usage,
-        nowledge_cypher_migration_gate_usage, parse_background_maintenance_limit,
-        parse_max_blockers, parse_max_family_items, parse_max_wal_replay_entries,
-        parse_parameters_json, parse_positive_usize, parse_shadow_timeout_ms,
-        publish_skein_lightning_staging_catalog,
-        publish_skein_lightning_staging_catalog_with_options, read_json_file,
-        should_run_shadow_ready, skein_lightning_bootstrap_bundle_json_with_storage_recovery,
-        skein_lightning_bootstrap_bundle_usage, skein_lightning_bootstrap_manifest_json,
-        skein_lightning_bootstrap_manifest_usage, skein_lightning_gc_staging_report,
-        skein_lightning_graph_stream_usage, skein_lightning_graph_stream_validation_json,
-        skein_lightning_import_status, skein_lightning_publish_staging_usage,
-        skein_lightning_relational_stream_usage, skein_lightning_stage_bootstrap_usage,
-        skein_lightning_verify_export_usage, skein_lightning_verify_published_usage,
-        skein_lightning_verify_staging_usage, stable_identity_audit_json,
-        stage_skein_lightning_bootstrap_export,
-        stage_skein_lightning_bootstrap_export_with_storage_recovery, storage_recovery_report_json,
+        hawdb_lightning_bootstrap_bundle_json_with_storage_recovery,
+        hawdb_lightning_bootstrap_bundle_usage, hawdb_lightning_bootstrap_manifest_json,
+        hawdb_lightning_bootstrap_manifest_usage, hawdb_lightning_gc_staging_report,
+        hawdb_lightning_graph_stream_usage, hawdb_lightning_graph_stream_validation_json,
+        hawdb_lightning_import_status, hawdb_lightning_publish_staging_usage,
+        hawdb_lightning_relational_stream_usage, hawdb_lightning_stage_bootstrap_usage,
+        hawdb_lightning_verify_export_usage, hawdb_lightning_verify_published_usage,
+        hawdb_lightning_verify_staging_usage, is_self_shadow_command,
+        merge_replacement_summary_evidence, nowledge_bounded_read_report_json,
+        nowledge_bounded_read_report_usage, nowledge_cypher_migration_gate_usage,
+        parse_background_maintenance_limit, parse_max_blockers, parse_max_family_items,
+        parse_max_wal_replay_entries, parse_parameters_json, parse_positive_usize,
+        parse_shadow_timeout_ms, publish_hawdb_lightning_staging_catalog,
+        publish_hawdb_lightning_staging_catalog_with_options, read_json_file,
+        should_run_shadow_ready, stable_identity_audit_json,
+        stage_hawdb_lightning_bootstrap_export,
+        stage_hawdb_lightning_bootstrap_export_with_storage_recovery, storage_recovery_report_json,
         validate_canonical_snapshot_usage, value_from_json, value_json,
-        verify_skein_lightning_published_manifest, verify_skein_lightning_staging_catalog,
-        BackgroundMaintenanceReportOptions, SkeinLightningPublishOptions,
+        verify_hawdb_lightning_published_manifest, verify_hawdb_lightning_staging_catalog,
+        BackgroundMaintenanceReportOptions, HawdbLightningPublishOptions,
         StorageRecoveryRequirements,
     };
-    use skein::{
+    use hawdb::{
         api::ExplainOutput,
         optimizer::{
             OperatorCardinalityEstimate, OptimizerTrace, PhysicalOperatorId, PhysicalPlan,
             PhysicalPlanKind, PlanCost, PlanCostBreakdown,
         },
     };
-    use skein::{
-        skein_lightning_bootstrap_bundle_json, BackgroundMaintenanceOptions,
+    use hawdb::{
+        hawdb_lightning_bootstrap_bundle_json, BackgroundMaintenanceOptions,
         CanonicalGraphSnapshotValidation, CanonicalSnapshotEndpointViolation,
         CanonicalSnapshotIdentityAudit, CompatibilityCheck, CompatibilityCheckReport,
         CompatibilityShadowCheckReport, CompatibilityShadowReport, CompatibilityShadowStatus,
-        Database, ExternalShadowReady, LocalQosPolicy, NowledgeMemReadOptions, PlanCacheStats,
-        RecoveryMode, SkeinLightningBootstrapManifest, SkeinLightningGraphStreamValidation,
-        SkeinLightningRelationalStreamValidation, StorageRecoveryReport, Value, WorkClass,
-        WorkRequest,
+        Database, ExternalShadowReady, HawdbLightningBootstrapManifest,
+        HawdbLightningGraphStreamValidation, HawdbLightningRelationalStreamValidation,
+        LocalQosPolicy, NowledgeMemReadOptions, PlanCacheStats, RecoveryMode,
+        StorageRecoveryReport, Value, WorkClass, WorkRequest,
     };
     use std::collections::BTreeMap;
     use std::time::{Duration, SystemTime, UNIX_EPOCH};
@@ -2993,7 +2993,7 @@ mod tests {
     fn detects_direct_self_shadow_binary() {
         assert!(is_self_shadow_command(
             "oracle",
-            "target/debug/skein-shadow-self",
+            "target/debug/hawdb-shadow-self",
             &[]
         ));
     }
@@ -3007,7 +3007,7 @@ mod tests {
                 "run".to_string(),
                 "--quiet".to_string(),
                 "--bin".to_string(),
-                "skein-shadow-self".to_string(),
+                "hawdb-shadow-self".to_string(),
                 "--".to_string(),
             ],
         ));
@@ -3113,7 +3113,7 @@ mod tests {
         )
         .unwrap();
 
-        assert_eq!(report["protocol"], "skein-nowledge-mem-read-report");
+        assert_eq!(report["protocol"], "hawdb-nowledge-mem-read-report");
         assert_eq!(report["mode"], "shadow_read_only");
         assert_eq!(report["row_count"], 1);
         assert_eq!(report["max_rows"], 4);
@@ -3161,7 +3161,7 @@ mod tests {
         std::fs::write(
             &search_path,
             serde_json::json!({
-                "protocol": "skein-nowledge-search-projection-evidence-v1",
+                "protocol": "hawdb-nowledge-search-projection-evidence-v1",
                 "ready": true
             })
             .to_string(),
@@ -3170,7 +3170,7 @@ mod tests {
         std::fs::write(
             &shadow_path,
             serde_json::json!({
-                "protocol": "skein-nowledge-search-projection-shadow-evidence",
+                "protocol": "hawdb-nowledge-search-projection-shadow-evidence",
                 "ready": true
             })
             .to_string(),
@@ -3179,7 +3179,7 @@ mod tests {
         std::fs::write(
             &bounded_path,
             serde_json::json!({
-                "protocol": "skein-nowledge-mem-bounded-read-evidence-v2",
+                "protocol": "hawdb-nowledge-mem-bounded-read-evidence-v2",
                 "ready": true
             })
             .to_string(),
@@ -3188,7 +3188,7 @@ mod tests {
         std::fs::write(
             &candidate_shadow_path,
             serde_json::json!({
-                "protocol": "skein-nowledge-search-candidate-shadow-evidence",
+                "protocol": "hawdb-nowledge-search-candidate-shadow-evidence",
                 "ready": true
             })
             .to_string(),
@@ -3197,7 +3197,7 @@ mod tests {
         std::fs::write(
             &query_runtime_path,
             serde_json::json!({
-                "protocol": "skein-nowledge-query-runtime-preflight-v1",
+                "protocol": "hawdb-nowledge-query-runtime-preflight-v1",
                 "ready": true
             })
             .to_string(),
@@ -3206,7 +3206,7 @@ mod tests {
         std::fs::write(
             &family_path,
             serde_json::json!({
-                "protocol": "skein-nowledge-query-family-evidence-v1",
+                "protocol": "hawdb-nowledge-query-family-evidence-v1",
                 "replacement_readiness_by_query_family": [
                     {
                         "query_family": "read",
@@ -3218,7 +3218,7 @@ mod tests {
         )
         .unwrap();
         let mut bundle = serde_json::json!({
-            "protocol": "skein-nowledge-cypher-migration-gate"
+            "protocol": "hawdb-nowledge-cypher-migration-gate"
         });
 
         merge_replacement_summary_evidence(
@@ -3239,7 +3239,7 @@ mod tests {
         assert_eq!(bundle["query_runtime_preflight"]["ready"], true);
         assert_eq!(
             bundle["query_family_evidence"]["protocol"],
-            "skein-nowledge-query-family-evidence-v1"
+            "hawdb-nowledge-query-family-evidence-v1"
         );
         assert_eq!(
             bundle["replacement_readiness_by_query_family"][0]["query_family"],
@@ -3324,9 +3324,9 @@ mod tests {
             }
         });
 
-        add_shadow_run_report(&mut bundle, "skein-shadow-self", true).unwrap();
+        add_shadow_run_report(&mut bundle, "hawdb-shadow-self", true).unwrap();
 
-        assert_eq!(bundle["shadow_run"]["shadow_name"], "skein-shadow-self");
+        assert_eq!(bundle["shadow_run"]["shadow_name"], "hawdb-shadow-self");
         assert_eq!(bundle["shadow_run"]["self_shadow"], true);
         assert_eq!(bundle["shadow_run"]["evidence_kind"], "protocol_smoke");
     }
@@ -3341,7 +3341,7 @@ mod tests {
             check,
             CompatibilityCheck::Cypher(cypher)
                 if cypher.name == "session query returns seeded memory"
-                    && cypher.execution_mode == skein::compat::CypherExecutionMode::Session
+                    && cypher.execution_mode == hawdb::compat::CypherExecutionMode::Session
         )));
         assert!(fixture.checks.iter().any(|check| matches!(
             check,
@@ -3421,7 +3421,7 @@ mod tests {
         assert_eq!(json["dual_engine_evidence"]["ready"], false);
         assert_eq!(
             json["dual_engine_evidence"]["primary_engine"],
-            serde_json::json!("skein")
+            serde_json::json!("hawdb")
         );
         assert_eq!(
             json["dual_engine_evidence"]["shadow_engine"],
@@ -3935,7 +3935,7 @@ mod tests {
             }
         });
         let trace_path = std::env::temp_dir().join(format!(
-            "skein-shadow-trace-report-{}.jsonl",
+            "hawdb-shadow-trace-report-{}.jsonl",
             SystemTime::now()
                 .duration_since(UNIX_EPOCH)
                 .unwrap()
@@ -4055,10 +4055,10 @@ mod tests {
             ..StorageRecoveryReport::default()
         };
 
-        let json = storage_recovery_report_json("skein-storage-v1", &report);
+        let json = storage_recovery_report_json("hawdb-storage-v1", &report);
 
-        assert_eq!(json["protocol"], "skein-storage-recovery-report");
-        assert_eq!(json["storage_version"], "skein-storage-v1");
+        assert_eq!(json["protocol"], "hawdb-storage-recovery-report");
+        assert_eq!(json["storage_version"], "hawdb-storage-v1");
         assert_eq!(json["recovery_mode"], "strict");
         assert_eq!(json["max_wal_replay_entries"], 64);
         assert_eq!(json["checkpoint_epoch"], 2);
@@ -4084,7 +4084,7 @@ mod tests {
             &BackgroundMaintenanceReportOptions::default(),
         );
 
-        assert_eq!(json["protocol"], "skein-background-maintenance-report");
+        assert_eq!(json["protocol"], "hawdb-background-maintenance-report");
         assert_eq!(json["qos_policy"]["background_enabled"], true);
         assert_eq!(json["qos_policy"]["max_background_operations"], 1024);
         assert_eq!(json["qos_state"]["running_background_operations"], 0);
@@ -4115,7 +4115,7 @@ mod tests {
                     include_property_index_projection: false,
                     include_search_projection_rebuild: false,
                     include_search_projection_metadata_repair: false,
-                    include_skein_lightning_bootstrap_export: false,
+                    include_hawdb_lightning_bootstrap_export: false,
                     include_external_content_artifact_jobs: false,
                     ..BackgroundMaintenanceOptions::default()
                 },
@@ -4123,7 +4123,7 @@ mod tests {
             },
         );
 
-        assert_eq!(json["protocol"], "skein-background-maintenance-report");
+        assert_eq!(json["protocol"], "hawdb-background-maintenance-report");
         assert_eq!(
             json["qos_policy"]["max_background_operations_by_class"]["projection"],
             1
@@ -4188,7 +4188,7 @@ mod tests {
             "background_maintenance": report
         });
 
-        let health = skein::background_maintenance_evidence_health_from_bundle(&bundle, true);
+        let health = hawdb::background_maintenance_evidence_health_from_bundle(&bundle, true);
 
         assert!(!health.ready);
         assert_eq!(health.protocol_matches, Some(true));
@@ -4213,11 +4213,11 @@ mod tests {
                 label: "Memory".to_string(),
             },
             work_request: WorkRequest::background(WorkClass::Analytics, 64),
-            plan_cache_lookup: skein::PlanCacheLookup::Miss,
+            plan_cache_lookup: hawdb::PlanCacheLookup::Miss,
             statement_kind: "match_return",
             trace: OptimizerTrace {
                 groups: 1,
-                search_mode: skein::optimizer::SearchMode::Memo,
+                search_mode: hawdb::optimizer::SearchMode::Memo,
                 query_digest: Some("q1:fixture".to_string()),
                 selected_plan: "SeqNodeScan variable=m label=Memory".to_string(),
                 selected_plan_fingerprint: "SeqNodeScan".to_string(),
@@ -4233,13 +4233,13 @@ mod tests {
                     sequential_io: 12,
                     output_rows: 0,
                 },
-                selected_plan_properties: skein::optimizer::PhysicalProperties {
-                    distribution: skein::optimizer::Distribution::Single,
+                selected_plan_properties: hawdb::optimizer::PhysicalProperties {
+                    distribution: hawdb::optimizer::Distribution::Single,
                     ordering: vec!["title asc".to_string()],
                     covering_fields: vec!["Memory.title".to_string()],
-                    scan_pruning: skein::optimizer::ScanPruningSupport::Index,
-                    vector_precision: skein::optimizer::VectorPrecision::NotVector,
-                    memory_budget: skein::optimizer::MemoryBudgetClass::RowLinear,
+                    scan_pruning: hawdb::optimizer::ScanPruningSupport::Index,
+                    vector_precision: hawdb::optimizer::VectorPrecision::NotVector,
+                    memory_budget: hawdb::optimizer::MemoryBudgetClass::RowLinear,
                 },
                 selected_plan_cardinality_estimates: vec![OperatorCardinalityEstimate {
                     operator_id: PhysicalOperatorId::from_ordinal(0),
@@ -4250,15 +4250,15 @@ mod tests {
                 selected_plan_class_counts: class_counts,
                 warnings: vec!["diagnostic warning".to_string()],
                 decisions: vec!["diagnostic decision".to_string()],
-                rule_events: vec![skein::optimizer::RuleEvent::applied(
+                rule_events: vec![hawdb::optimizer::RuleEvent::applied(
                     "implementation:node_equality_index_seek",
                     "priority=100 property=id",
                 )],
-                stage_events: vec![skein::optimizer::OptimizationStage::new(
+                stage_events: vec![hawdb::optimizer::OptimizationStage::new(
                     "physical_search",
-                    skein::optimizer::ApplyOrder::BottomUp,
+                    hawdb::optimizer::ApplyOrder::BottomUp,
                 )
-                .trace(skein::optimizer::StageStats::new(2, 1).with_rule_counts(1, 3))],
+                .trace(hawdb::optimizer::StageStats::new(2, 1).with_rule_counts(1, 3))],
             },
         };
 
@@ -4281,7 +4281,7 @@ mod tests {
             &plan_cache_stats,
         );
 
-        assert_eq!(json["protocol"], "skein-explain");
+        assert_eq!(json["protocol"], "hawdb-explain");
         assert_eq!(json["protocol_version"], 1);
         assert_eq!(json["search_mode"], "memo");
         assert_eq!(json["statement_kind"], "match_return");
@@ -4375,7 +4375,7 @@ mod tests {
             .unwrap();
         let json = explain_analyze_output_json(query, &parameters, &output, &db.plan_cache_stats());
 
-        assert_eq!(json["protocol"], "skein-explain-analyze");
+        assert_eq!(json["protocol"], "hawdb-explain-analyze");
         assert_eq!(json["protocol_version"], 1);
         assert_eq!(json["statement_kind"], "match_return");
         assert_eq!(json["parameters"]["kind"], "note");
@@ -4395,7 +4395,7 @@ mod tests {
     }
 
     #[test]
-    fn parses_explain_json_parameters_as_skein_values() {
+    fn parses_explain_json_parameters_as_hawdb_values() {
         let parameters = parse_parameters_json(
             r#"{"id":42,"needle":"graph","tags":["a","b"],"meta":{"ok":true}}"#,
         )
@@ -4475,7 +4475,7 @@ mod tests {
     }
 
     #[test]
-    fn renders_skein_lightning_bootstrap_manifest_json() {
+    fn renders_hawdb_lightning_bootstrap_manifest_json() {
         let validation = CanonicalGraphSnapshotValidation {
             is_valid: true,
             is_import_ready: true,
@@ -4495,7 +4495,7 @@ mod tests {
             missing_sources: Vec::new(),
             missing_targets: Vec::new(),
         };
-        let manifest = SkeinLightningBootstrapManifest {
+        let manifest = HawdbLightningBootstrapManifest {
             protocol_version: 1,
             database_commit_epoch: 5,
             graph_commit_epoch: 5,
@@ -4516,7 +4516,7 @@ mod tests {
             node_property_count: 6,
             relationship_property_count: 2,
             validation,
-            relational_validation: SkeinLightningRelationalStreamValidation {
+            relational_validation: HawdbLightningRelationalStreamValidation {
                 is_valid: true,
                 checksum_matches: true,
                 format_version_matches: true,
@@ -4533,9 +4533,9 @@ mod tests {
             },
         };
 
-        let json = skein_lightning_bootstrap_manifest_json(&manifest);
+        let json = hawdb_lightning_bootstrap_manifest_json(&manifest);
 
-        assert_eq!(json["protocol"], "skein-lightning-bootstrap");
+        assert_eq!(json["protocol"], "hawdb-lightning-bootstrap");
         assert_eq!(json["protocol_version"], 1);
         assert_eq!(json["database_commit_epoch"], 5);
         assert_eq!(json["graph_commit_epoch"], 5);
@@ -4555,8 +4555,8 @@ mod tests {
     }
 
     #[test]
-    fn renders_skein_lightning_graph_stream_validation_json() {
-        let validation = SkeinLightningGraphStreamValidation {
+    fn renders_hawdb_lightning_graph_stream_validation_json() {
+        let validation = HawdbLightningGraphStreamValidation {
             is_valid: false,
             checksum_matches: false,
             format_version_matches: true,
@@ -4583,7 +4583,7 @@ mod tests {
             errors: vec!["graph stream checksum mismatch".to_string()],
         };
 
-        let json = skein_lightning_graph_stream_validation_json(&validation);
+        let json = hawdb_lightning_graph_stream_validation_json(&validation);
 
         assert_eq!(json["is_valid"], false);
         assert_eq!(json["checksum_matches"], false);
@@ -4598,18 +4598,18 @@ mod tests {
     }
 
     #[test]
-    fn renders_skein_lightning_bootstrap_bundle_json() {
+    fn renders_hawdb_lightning_bootstrap_bundle_json() {
         let mut db = Database::new();
         db.query(
             "CREATE (:Memory {id: 'root', title: 'Root'})-[:LINKS {id: 'edge-root-mid'}]->(:Entity {id: 'mid', name: 'Mid'})",
         )
         .unwrap();
-        let export = db.prepare_skein_lightning_bootstrap_export().unwrap();
+        let export = db.prepare_hawdb_lightning_bootstrap_export().unwrap();
 
-        let json = skein_lightning_bootstrap_bundle_json(&export);
+        let json = hawdb_lightning_bootstrap_bundle_json(&export);
 
-        assert_eq!(json["protocol"], "skein-lightning-bootstrap-bundle");
-        assert_eq!(json["manifest"]["protocol"], "skein-lightning-bootstrap");
+        assert_eq!(json["protocol"], "hawdb-lightning-bootstrap-bundle");
+        assert_eq!(json["manifest"]["protocol"], "hawdb-lightning-bootstrap");
         assert_eq!(json["manifest"]["validation"]["is_import_ready"], true);
         assert_eq!(json["graph_stream_validation"]["is_valid"], true);
         assert_eq!(json["export_gate"]["decision"], "ready");
@@ -4634,22 +4634,22 @@ mod tests {
         let mut db = Database::new();
         db.query("CREATE (:Memory {id: 'root', title: 'Root'})")
             .unwrap();
-        let export = db.prepare_skein_lightning_bootstrap_export().unwrap();
+        let export = db.prepare_hawdb_lightning_bootstrap_export().unwrap();
         let recovery = test_storage_recovery_report(export.manifest.graph_commit_epoch);
 
-        let json = skein_lightning_bootstrap_bundle_json_with_storage_recovery(
+        let json = hawdb_lightning_bootstrap_bundle_json_with_storage_recovery(
             &export,
-            "skein-storage-v1",
+            "hawdb-storage-v1",
             &recovery,
         );
 
         assert_eq!(
             json["storage_recovery"]["protocol"],
-            "skein-storage-recovery-report"
+            "hawdb-storage-recovery-report"
         );
         assert_eq!(
             json["storage_recovery"]["storage_version"],
-            "skein-storage-v1"
+            "hawdb-storage-v1"
         );
         assert_eq!(json["storage_recovery"]["max_wal_replay_entries"], 32);
         assert_eq!(
@@ -4660,22 +4660,22 @@ mod tests {
             json["storage_recovery"]["readiness"]["wal_replay_bounded"],
             true
         );
-        assert_eq!(json["manifest"]["protocol"], "skein-lightning-bootstrap");
+        assert_eq!(json["manifest"]["protocol"], "hawdb-lightning-bootstrap");
         assert_eq!(json["export_gate"]["decision"], "ready");
     }
 
     #[test]
-    fn skein_lightning_bootstrap_bundle_groups_export_gate_blockers() {
+    fn hawdb_lightning_bootstrap_bundle_groups_export_gate_blockers() {
         let mut db = Database::new();
         db.query(
             "CREATE (:Memory {id: 'root', title: 'Root'})-[:LINKS {id: 'edge-root-mid'}]->(:Entity {id: 'mid', name: 'Mid'})",
         )
         .unwrap();
-        let mut export = db.prepare_skein_lightning_bootstrap_export().unwrap();
+        let mut export = db.prepare_hawdb_lightning_bootstrap_export().unwrap();
         export.manifest.validation.is_import_ready = false;
         export.graph_stream.encoded.push_str("corrupt");
 
-        let json = skein_lightning_bootstrap_bundle_json(&export);
+        let json = hawdb_lightning_bootstrap_bundle_json(&export);
 
         assert_eq!(json["export_gate"]["decision"], "blocked");
         assert_eq!(json["export_gate"]["manifest_blockers"], 1);
@@ -4692,18 +4692,18 @@ mod tests {
     }
 
     #[test]
-    fn stages_skein_lightning_bootstrap_export_artifacts() {
+    fn stages_hawdb_lightning_bootstrap_export_artifacts() {
         let mut db = Database::new();
         db.query(
             "CREATE (:Memory {id: 'root', title: 'Root'})-[:LINKS {id: 'edge-root-mid'}]->(:Entity {id: 'mid', name: 'Mid'})",
         )
         .unwrap();
-        let export = db.prepare_skein_lightning_bootstrap_export().unwrap();
-        let staging_dir = unique_main_test_dir("skein_lightning_stage_bootstrap");
+        let export = db.prepare_hawdb_lightning_bootstrap_export().unwrap();
+        let staging_dir = unique_main_test_dir("hawdb_lightning_stage_bootstrap");
 
-        let catalog = stage_skein_lightning_bootstrap_export(&export, &staging_dir).unwrap();
+        let catalog = stage_hawdb_lightning_bootstrap_export(&export, &staging_dir).unwrap();
 
-        assert_eq!(catalog["protocol"], "skein-lightning-staging-catalog");
+        assert_eq!(catalog["protocol"], "hawdb-lightning-staging-catalog");
         assert_eq!(catalog["stage_state"], "READY");
         assert_eq!(catalog["export_gate"]["decision"], "ready");
         assert_eq!(catalog["artifacts"].as_array().unwrap().len(), 4);
@@ -4727,22 +4727,22 @@ mod tests {
         );
         assert_eq!(catalog["artifact_summary"]["kind_counts"]["bundle"], 1);
         assert!(staging_dir
-            .join("skein_lightning_bootstrap_manifest.json")
+            .join("hawdb_lightning_bootstrap_manifest.json")
             .exists());
         assert!(staging_dir
-            .join("skein_lightning_graph_stream.txt")
+            .join("hawdb_lightning_graph_stream.txt")
             .exists());
         assert!(staging_dir
-            .join("skein_lightning_relational_stream.bin")
+            .join("hawdb_lightning_relational_stream.bin")
             .exists());
         assert!(staging_dir
-            .join("skein_lightning_bootstrap_bundle.json")
+            .join("hawdb_lightning_bootstrap_bundle.json")
             .exists());
         assert!(staging_dir
-            .join("skein_lightning_staging_catalog.json")
+            .join("hawdb_lightning_staging_catalog.json")
             .exists());
         let persisted_catalog =
-            std::fs::read_to_string(staging_dir.join("skein_lightning_staging_catalog.json"))
+            std::fs::read_to_string(staging_dir.join("hawdb_lightning_staging_catalog.json"))
                 .unwrap();
         let persisted_catalog =
             serde_json::from_str::<serde_json::Value>(&persisted_catalog).unwrap();
@@ -4752,19 +4752,19 @@ mod tests {
     }
 
     #[test]
-    fn verifies_skein_lightning_staging_catalog() {
+    fn verifies_hawdb_lightning_staging_catalog() {
         let mut db = Database::new();
         db.query(
             "CREATE (:Memory {id: 'root', title: 'Root'})-[:LINKS {id: 'edge-root-mid'}]->(:Entity {id: 'mid', name: 'Mid'})",
         )
         .unwrap();
-        let export = db.prepare_skein_lightning_bootstrap_export().unwrap();
-        let staging_dir = unique_main_test_dir("skein_lightning_verify_staging");
-        stage_skein_lightning_bootstrap_export(&export, &staging_dir).unwrap();
+        let export = db.prepare_hawdb_lightning_bootstrap_export().unwrap();
+        let staging_dir = unique_main_test_dir("hawdb_lightning_verify_staging");
+        stage_hawdb_lightning_bootstrap_export(&export, &staging_dir).unwrap();
 
-        let report = verify_skein_lightning_staging_catalog(&staging_dir).unwrap();
+        let report = verify_hawdb_lightning_staging_catalog(&staging_dir).unwrap();
 
-        assert_eq!(report["protocol"], "skein-lightning-staging-verification");
+        assert_eq!(report["protocol"], "hawdb-lightning-staging-verification");
         assert_eq!(report["validation_gate"]["decision"], "ready");
         assert_eq!(report["artifact_integrity"], true);
         assert_eq!(report["catalog_protocol_matches"], true);
@@ -4797,18 +4797,18 @@ mod tests {
         let mut db = Database::new();
         db.query("CREATE (:Memory {id: 'root', title: 'Root'})")
             .unwrap();
-        let export = db.prepare_skein_lightning_bootstrap_export().unwrap();
+        let export = db.prepare_hawdb_lightning_bootstrap_export().unwrap();
         let recovery = test_storage_recovery_report(export.manifest.graph_commit_epoch);
-        let staging_dir = unique_main_test_dir("skein_lightning_verify_staging_recovery");
-        stage_skein_lightning_bootstrap_export_with_storage_recovery(
+        let staging_dir = unique_main_test_dir("hawdb_lightning_verify_staging_recovery");
+        stage_hawdb_lightning_bootstrap_export_with_storage_recovery(
             &export,
             &staging_dir,
-            "skein-storage-v1",
+            "hawdb-storage-v1",
             &recovery,
         )
         .unwrap();
 
-        let report = verify_skein_lightning_staging_catalog(&staging_dir).unwrap();
+        let report = verify_hawdb_lightning_staging_catalog(&staging_dir).unwrap();
 
         assert_eq!(report["validation_gate"]["decision"], "ready");
         assert_eq!(report["storage_recovery_evidence"]["present"], true);
@@ -4834,24 +4834,24 @@ mod tests {
         let mut db = Database::new();
         db.query("CREATE (:Memory {id: 'root', title: 'Root'})")
             .unwrap();
-        let export = db.prepare_skein_lightning_bootstrap_export().unwrap();
+        let export = db.prepare_hawdb_lightning_bootstrap_export().unwrap();
         let recovery = test_storage_recovery_report(export.manifest.graph_commit_epoch);
-        let staging_dir = unique_main_test_dir("skein_lightning_verify_staging_recovery_tampered");
-        stage_skein_lightning_bootstrap_export_with_storage_recovery(
+        let staging_dir = unique_main_test_dir("hawdb_lightning_verify_staging_recovery_tampered");
+        stage_hawdb_lightning_bootstrap_export_with_storage_recovery(
             &export,
             &staging_dir,
-            "skein-storage-v1",
+            "hawdb-storage-v1",
             &recovery,
         )
         .unwrap();
-        let bundle_path = staging_dir.join("skein_lightning_bootstrap_bundle.json");
+        let bundle_path = staging_dir.join("hawdb_lightning_bootstrap_bundle.json");
         let bundle = std::fs::read_to_string(&bundle_path).unwrap().replace(
             "\"recovered_commit_epoch\": 1",
             "\"recovered_commit_epoch\": 99",
         );
         std::fs::write(&bundle_path, bundle).unwrap();
 
-        let report = verify_skein_lightning_staging_catalog(&staging_dir).unwrap();
+        let report = verify_hawdb_lightning_staging_catalog(&staging_dir).unwrap();
 
         assert_eq!(report["validation_gate"]["decision"], "blocked");
         assert_eq!(report["artifact_integrity"], false);
@@ -4880,16 +4880,16 @@ mod tests {
             "CREATE (:Memory {id: 'root', title: 'Root'})-[:LINKS {id: 'edge-root-mid'}]->(:Entity {id: 'mid', name: 'Mid'})",
         )
         .unwrap();
-        let export = db.prepare_skein_lightning_bootstrap_export().unwrap();
-        let staging_dir = unique_main_test_dir("skein_lightning_verify_staging_catalog_version");
-        stage_skein_lightning_bootstrap_export(&export, &staging_dir).unwrap();
-        let catalog_path = staging_dir.join("skein_lightning_staging_catalog.json");
+        let export = db.prepare_hawdb_lightning_bootstrap_export().unwrap();
+        let staging_dir = unique_main_test_dir("hawdb_lightning_verify_staging_catalog_version");
+        stage_hawdb_lightning_bootstrap_export(&export, &staging_dir).unwrap();
+        let catalog_path = staging_dir.join("hawdb_lightning_staging_catalog.json");
         let catalog = std::fs::read_to_string(&catalog_path)
             .unwrap()
             .replace("\"protocol_version\": 1", "\"protocol_version\": 99");
         std::fs::write(&catalog_path, catalog).unwrap();
 
-        let report = verify_skein_lightning_staging_catalog(&staging_dir).unwrap();
+        let report = verify_hawdb_lightning_staging_catalog(&staging_dir).unwrap();
 
         assert_eq!(report["validation_gate"]["decision"], "blocked");
         assert_eq!(report["catalog_protocol_matches"], true);
@@ -4914,16 +4914,16 @@ mod tests {
             "CREATE (:Memory {id: 'root', title: 'Root'})-[:LINKS {id: 'edge-root-mid'}]->(:Entity {id: 'mid', name: 'Mid'})",
         )
         .unwrap();
-        let export = db.prepare_skein_lightning_bootstrap_export().unwrap();
-        let staging_dir = unique_main_test_dir("skein_lightning_verify_staging_manifest_version");
-        stage_skein_lightning_bootstrap_export(&export, &staging_dir).unwrap();
-        let manifest_path = staging_dir.join("skein_lightning_bootstrap_manifest.json");
+        let export = db.prepare_hawdb_lightning_bootstrap_export().unwrap();
+        let staging_dir = unique_main_test_dir("hawdb_lightning_verify_staging_manifest_version");
+        stage_hawdb_lightning_bootstrap_export(&export, &staging_dir).unwrap();
+        let manifest_path = staging_dir.join("hawdb_lightning_bootstrap_manifest.json");
         let manifest = std::fs::read_to_string(&manifest_path)
             .unwrap()
             .replace("\"protocol_version\": 1", "\"protocol_version\": 99");
         std::fs::write(&manifest_path, manifest).unwrap();
 
-        let report = verify_skein_lightning_staging_catalog(&staging_dir).unwrap();
+        let report = verify_hawdb_lightning_staging_catalog(&staging_dir).unwrap();
 
         assert_eq!(report["validation_gate"]["decision"], "blocked");
         assert_eq!(report["manifest_protocol_version_matches"], false);
@@ -4946,16 +4946,16 @@ mod tests {
             "CREATE (:Memory {id: 'root', title: 'Root'})-[:LINKS {id: 'edge-root-mid'}]->(:Entity {id: 'mid', name: 'Mid'})",
         )
         .unwrap();
-        let export = db.prepare_skein_lightning_bootstrap_export().unwrap();
-        let staging_dir = unique_main_test_dir("skein_lightning_verify_staging_tampered");
-        stage_skein_lightning_bootstrap_export(&export, &staging_dir).unwrap();
-        let graph_stream_path = staging_dir.join("skein_lightning_graph_stream.txt");
+        let export = db.prepare_hawdb_lightning_bootstrap_export().unwrap();
+        let staging_dir = unique_main_test_dir("hawdb_lightning_verify_staging_tampered");
+        stage_hawdb_lightning_bootstrap_export(&export, &staging_dir).unwrap();
+        let graph_stream_path = staging_dir.join("hawdb_lightning_graph_stream.txt");
         let tampered = std::fs::read_to_string(&graph_stream_path)
             .unwrap()
             .replace("relationship\t0\t0\t1", "relationship\t0\t0\t99");
         std::fs::write(&graph_stream_path, tampered).unwrap();
 
-        let report = verify_skein_lightning_staging_catalog(&staging_dir).unwrap();
+        let report = verify_hawdb_lightning_staging_catalog(&staging_dir).unwrap();
 
         assert_eq!(report["validation_gate"]["decision"], "blocked");
         assert_eq!(report["artifact_integrity"], false);
@@ -4995,10 +4995,10 @@ mod tests {
         db.query("CREATE (:Memory {id: 'root'})").unwrap();
         db.query_sql("CREATE TABLE public.messages (id TEXT PRIMARY KEY)")
             .unwrap();
-        let export = db.prepare_skein_lightning_bootstrap_export().unwrap();
-        let staging_dir = unique_main_test_dir("skein_lightning_relational_stream_tampered");
-        stage_skein_lightning_bootstrap_export(&export, &staging_dir).unwrap();
-        let relational_stream_path = staging_dir.join("skein_lightning_relational_stream.bin");
+        let export = db.prepare_hawdb_lightning_bootstrap_export().unwrap();
+        let staging_dir = unique_main_test_dir("hawdb_lightning_relational_stream_tampered");
+        stage_hawdb_lightning_bootstrap_export(&export, &staging_dir).unwrap();
+        let relational_stream_path = staging_dir.join("hawdb_lightning_relational_stream.bin");
         let mut tampered = std::fs::read(&relational_stream_path).unwrap();
         let last = tampered
             .last_mut()
@@ -5006,7 +5006,7 @@ mod tests {
         *last ^= 0xff;
         std::fs::write(&relational_stream_path, tampered).unwrap();
 
-        let report = verify_skein_lightning_staging_catalog(&staging_dir).unwrap();
+        let report = verify_hawdb_lightning_staging_catalog(&staging_dir).unwrap();
 
         assert_eq!(report["validation_gate"]["decision"], "blocked");
         assert_eq!(report["artifact_integrity"], false);
@@ -5028,28 +5028,28 @@ mod tests {
     }
 
     #[test]
-    fn publishes_skein_lightning_staging_catalog_idempotently() {
+    fn publishes_hawdb_lightning_staging_catalog_idempotently() {
         let mut db = Database::new();
         db.query(
             "CREATE (:Memory {id: 'root', title: 'Root'})-[:LINKS {id: 'edge-root-mid'}]->(:Entity {id: 'mid', name: 'Mid'})",
         )
         .unwrap();
-        let export = db.prepare_skein_lightning_bootstrap_export().unwrap();
-        let staging_dir = unique_main_test_dir("skein_lightning_publish_staging");
-        let publish_dir = unique_main_test_dir("skein_lightning_publish_target");
-        stage_skein_lightning_bootstrap_export(&export, &staging_dir).unwrap();
+        let export = db.prepare_hawdb_lightning_bootstrap_export().unwrap();
+        let staging_dir = unique_main_test_dir("hawdb_lightning_publish_staging");
+        let publish_dir = unique_main_test_dir("hawdb_lightning_publish_target");
+        stage_hawdb_lightning_bootstrap_export(&export, &staging_dir).unwrap();
 
         let published =
-            publish_skein_lightning_staging_catalog(&staging_dir, &publish_dir).unwrap();
+            publish_hawdb_lightning_staging_catalog(&staging_dir, &publish_dir).unwrap();
         let idempotent =
-            publish_skein_lightning_staging_catalog(&staging_dir, &publish_dir).unwrap();
+            publish_hawdb_lightning_staging_catalog(&staging_dir, &publish_dir).unwrap();
 
-        assert_eq!(published["protocol"], "skein-lightning-published-manifest");
+        assert_eq!(published["protocol"], "hawdb-lightning-published-manifest");
         assert_eq!(published["state"], "PUBLISHED");
         assert_eq!(published["publish_gate"]["decision"], "published");
         assert_eq!(idempotent["publish_gate"]["decision"], "idempotent");
         assert!(publish_dir
-            .join("skein_lightning_published_manifest.json")
+            .join("hawdb_lightning_published_manifest.json")
             .exists());
 
         std::fs::remove_dir_all(staging_dir).unwrap();
@@ -5063,14 +5063,14 @@ mod tests {
             "CREATE (:Memory {id: 'root', title: 'Root'})-[:LINKS {id: 'edge-root-mid'}]->(:Entity {id: 'mid', name: 'Mid'})",
         )
         .unwrap();
-        let export = db.prepare_skein_lightning_bootstrap_export().unwrap();
-        let staging_dir = unique_main_test_dir("skein_lightning_publish_preflight_staging");
-        let publish_dir = unique_main_test_dir("skein_lightning_publish_preflight_target");
-        stage_skein_lightning_bootstrap_export(&export, &staging_dir).unwrap();
+        let export = db.prepare_hawdb_lightning_bootstrap_export().unwrap();
+        let staging_dir = unique_main_test_dir("hawdb_lightning_publish_preflight_staging");
+        let publish_dir = unique_main_test_dir("hawdb_lightning_publish_preflight_target");
+        stage_hawdb_lightning_bootstrap_export(&export, &staging_dir).unwrap();
         std::fs::write(
-            staging_dir.join("skein_lightning_import_state.json"),
+            staging_dir.join("hawdb_lightning_import_state.json"),
             serde_json::json!({
-                "protocol": "skein-lightning-import-state",
+                "protocol": "hawdb-lightning-import-state",
                 "protocol_version": 1,
                 "import_state": "VALIDATING",
                 "import_id": "import-1",
@@ -5082,10 +5082,10 @@ mod tests {
         )
         .unwrap();
 
-        let published = publish_skein_lightning_staging_catalog_with_options(
+        let published = publish_hawdb_lightning_staging_catalog_with_options(
             &staging_dir,
             &publish_dir,
-            SkeinLightningPublishOptions {
+            HawdbLightningPublishOptions {
                 require_state_marker: true,
                 fencing_token: Some("fence-1".to_string()),
                 expected_database_epoch: Some(export.manifest.graph_commit_epoch),
@@ -5128,15 +5128,15 @@ mod tests {
             "CREATE (:Memory {id: 'root', title: 'Root'})-[:LINKS {id: 'edge-root-mid'}]->(:Entity {id: 'mid', name: 'Mid'})",
         )
         .unwrap();
-        let export = db.prepare_skein_lightning_bootstrap_export().unwrap();
-        let staging_dir = unique_main_test_dir("skein_lightning_publish_missing_marker_staging");
-        let publish_dir = unique_main_test_dir("skein_lightning_publish_missing_marker_target");
-        stage_skein_lightning_bootstrap_export(&export, &staging_dir).unwrap();
+        let export = db.prepare_hawdb_lightning_bootstrap_export().unwrap();
+        let staging_dir = unique_main_test_dir("hawdb_lightning_publish_missing_marker_staging");
+        let publish_dir = unique_main_test_dir("hawdb_lightning_publish_missing_marker_target");
+        stage_hawdb_lightning_bootstrap_export(&export, &staging_dir).unwrap();
 
-        let error = publish_skein_lightning_staging_catalog_with_options(
+        let error = publish_hawdb_lightning_staging_catalog_with_options(
             &staging_dir,
             &publish_dir,
-            SkeinLightningPublishOptions {
+            HawdbLightningPublishOptions {
                 require_state_marker: true,
                 fencing_token: None,
                 expected_database_epoch: None,
@@ -5146,9 +5146,9 @@ mod tests {
 
         assert!(error
             .to_string()
-            .contains("publish requires Skein Lightning import state marker"));
+            .contains("publish requires Hawdb Lightning import state marker"));
         assert!(!publish_dir
-            .join("skein_lightning_published_manifest.json")
+            .join("hawdb_lightning_published_manifest.json")
             .exists());
 
         std::fs::remove_dir_all(staging_dir).unwrap();
@@ -5161,14 +5161,14 @@ mod tests {
             "CREATE (:Memory {id: 'root', title: 'Root'})-[:LINKS {id: 'edge-root-mid'}]->(:Entity {id: 'mid', name: 'Mid'})",
         )
         .unwrap();
-        let export = db.prepare_skein_lightning_bootstrap_export().unwrap();
-        let staging_dir = unique_main_test_dir("skein_lightning_publish_stale_fence_staging");
-        let publish_dir = unique_main_test_dir("skein_lightning_publish_stale_fence_target");
-        stage_skein_lightning_bootstrap_export(&export, &staging_dir).unwrap();
+        let export = db.prepare_hawdb_lightning_bootstrap_export().unwrap();
+        let staging_dir = unique_main_test_dir("hawdb_lightning_publish_stale_fence_staging");
+        let publish_dir = unique_main_test_dir("hawdb_lightning_publish_stale_fence_target");
+        stage_hawdb_lightning_bootstrap_export(&export, &staging_dir).unwrap();
         std::fs::write(
-            staging_dir.join("skein_lightning_import_state.json"),
+            staging_dir.join("hawdb_lightning_import_state.json"),
             serde_json::json!({
-                "protocol": "skein-lightning-import-state",
+                "protocol": "hawdb-lightning-import-state",
                 "protocol_version": 1,
                 "import_state": "VALIDATING",
                 "import_id": "import-1",
@@ -5180,10 +5180,10 @@ mod tests {
         )
         .unwrap();
 
-        let error = publish_skein_lightning_staging_catalog_with_options(
+        let error = publish_hawdb_lightning_staging_catalog_with_options(
             &staging_dir,
             &publish_dir,
-            SkeinLightningPublishOptions {
+            HawdbLightningPublishOptions {
                 require_state_marker: true,
                 fencing_token: Some("stale-fence".to_string()),
                 expected_database_epoch: Some(export.manifest.graph_commit_epoch),
@@ -5195,7 +5195,7 @@ mod tests {
             .to_string()
             .contains("publish fencing token did not match"));
         assert!(!publish_dir
-            .join("skein_lightning_published_manifest.json")
+            .join("hawdb_lightning_published_manifest.json")
             .exists());
 
         std::fs::remove_dir_all(staging_dir).unwrap();
@@ -5208,15 +5208,15 @@ mod tests {
             "CREATE (:Memory {id: 'root', title: 'Root'})-[:LINKS {id: 'edge-root-mid'}]->(:Entity {id: 'mid', name: 'Mid'})",
         )
         .unwrap();
-        let export = db.prepare_skein_lightning_bootstrap_export().unwrap();
-        let staging_dir = unique_main_test_dir("skein_lightning_publish_epoch_staging");
-        let publish_dir = unique_main_test_dir("skein_lightning_publish_epoch_target");
-        stage_skein_lightning_bootstrap_export(&export, &staging_dir).unwrap();
+        let export = db.prepare_hawdb_lightning_bootstrap_export().unwrap();
+        let staging_dir = unique_main_test_dir("hawdb_lightning_publish_epoch_staging");
+        let publish_dir = unique_main_test_dir("hawdb_lightning_publish_epoch_target");
+        stage_hawdb_lightning_bootstrap_export(&export, &staging_dir).unwrap();
 
-        let error = publish_skein_lightning_staging_catalog_with_options(
+        let error = publish_hawdb_lightning_staging_catalog_with_options(
             &staging_dir,
             &publish_dir,
-            SkeinLightningPublishOptions {
+            HawdbLightningPublishOptions {
                 require_state_marker: false,
                 fencing_token: None,
                 expected_database_epoch: Some(export.manifest.graph_commit_epoch + 1),
@@ -5226,7 +5226,7 @@ mod tests {
 
         assert!(error.to_string().contains("expected database epoch"));
         assert!(!publish_dir
-            .join("skein_lightning_published_manifest.json")
+            .join("hawdb_lightning_published_manifest.json")
             .exists());
 
         std::fs::remove_dir_all(staging_dir).unwrap();
@@ -5234,18 +5234,18 @@ mod tests {
 
     #[test]
     fn publish_staging_rejects_different_manifest_overwrite() {
-        let staging_dir = unique_main_test_dir("skein_lightning_publish_staging_conflict_a");
-        let second_staging_dir = unique_main_test_dir("skein_lightning_publish_staging_conflict_b");
-        let publish_dir = unique_main_test_dir("skein_lightning_publish_target_conflict");
+        let staging_dir = unique_main_test_dir("hawdb_lightning_publish_staging_conflict_a");
+        let second_staging_dir = unique_main_test_dir("hawdb_lightning_publish_staging_conflict_b");
+        let publish_dir = unique_main_test_dir("hawdb_lightning_publish_target_conflict");
         let mut first = Database::new();
         first
             .query(
                 "CREATE (:Memory {id: 'root', title: 'Root'})-[:LINKS {id: 'edge-root-mid'}]->(:Entity {id: 'mid', name: 'Mid'})",
             )
             .unwrap();
-        let first_export = first.prepare_skein_lightning_bootstrap_export().unwrap();
-        stage_skein_lightning_bootstrap_export(&first_export, &staging_dir).unwrap();
-        publish_skein_lightning_staging_catalog(&staging_dir, &publish_dir).unwrap();
+        let first_export = first.prepare_hawdb_lightning_bootstrap_export().unwrap();
+        stage_hawdb_lightning_bootstrap_export(&first_export, &staging_dir).unwrap();
+        publish_hawdb_lightning_staging_catalog(&staging_dir, &publish_dir).unwrap();
 
         let mut second = Database::new();
         second
@@ -5256,11 +5256,11 @@ mod tests {
         second
             .query("CREATE (:Source {id: 'source-1', path: '/tmp/source.md'})")
             .unwrap();
-        let second_export = second.prepare_skein_lightning_bootstrap_export().unwrap();
-        stage_skein_lightning_bootstrap_export(&second_export, &second_staging_dir).unwrap();
+        let second_export = second.prepare_hawdb_lightning_bootstrap_export().unwrap();
+        stage_hawdb_lightning_bootstrap_export(&second_export, &second_staging_dir).unwrap();
 
         let error =
-            publish_skein_lightning_staging_catalog(&second_staging_dir, &publish_dir).unwrap_err();
+            publish_hawdb_lightning_staging_catalog(&second_staging_dir, &publish_dir).unwrap_err();
 
         assert!(error.to_string().contains("different snapshot"));
 
@@ -5270,21 +5270,21 @@ mod tests {
     }
 
     #[test]
-    fn verifies_skein_lightning_published_manifest() {
+    fn verifies_hawdb_lightning_published_manifest() {
         let mut db = Database::new();
         db.query(
             "CREATE (:Memory {id: 'root', title: 'Root'})-[:LINKS {id: 'edge-root-mid'}]->(:Entity {id: 'mid', name: 'Mid'})",
         )
         .unwrap();
-        let export = db.prepare_skein_lightning_bootstrap_export().unwrap();
-        let staging_dir = unique_main_test_dir("skein_lightning_verify_published_staging");
-        let publish_dir = unique_main_test_dir("skein_lightning_verify_published_target");
-        stage_skein_lightning_bootstrap_export(&export, &staging_dir).unwrap();
-        publish_skein_lightning_staging_catalog(&staging_dir, &publish_dir).unwrap();
+        let export = db.prepare_hawdb_lightning_bootstrap_export().unwrap();
+        let staging_dir = unique_main_test_dir("hawdb_lightning_verify_published_staging");
+        let publish_dir = unique_main_test_dir("hawdb_lightning_verify_published_target");
+        stage_hawdb_lightning_bootstrap_export(&export, &staging_dir).unwrap();
+        publish_hawdb_lightning_staging_catalog(&staging_dir, &publish_dir).unwrap();
 
-        let report = verify_skein_lightning_published_manifest(&staging_dir, &publish_dir).unwrap();
+        let report = verify_hawdb_lightning_published_manifest(&staging_dir, &publish_dir).unwrap();
 
-        assert_eq!(report["protocol"], "skein-lightning-published-verification");
+        assert_eq!(report["protocol"], "hawdb-lightning-published-verification");
         assert_eq!(report["validation_gate"]["decision"], "ready");
         assert_eq!(report["catalog_checksum_matches"], true);
         assert_eq!(report["catalog_byte_len_matches"], true);
@@ -5303,20 +5303,20 @@ mod tests {
         let mut db = Database::new();
         db.query("CREATE (:Memory {id: 'root', title: 'Root'})")
             .unwrap();
-        let export = db.prepare_skein_lightning_bootstrap_export().unwrap();
+        let export = db.prepare_hawdb_lightning_bootstrap_export().unwrap();
         let recovery = test_storage_recovery_report(export.manifest.graph_commit_epoch);
-        let staging_dir = unique_main_test_dir("skein_lightning_verify_published_recovery");
-        let publish_dir = unique_main_test_dir("skein_lightning_verify_published_recovery_target");
-        stage_skein_lightning_bootstrap_export_with_storage_recovery(
+        let staging_dir = unique_main_test_dir("hawdb_lightning_verify_published_recovery");
+        let publish_dir = unique_main_test_dir("hawdb_lightning_verify_published_recovery_target");
+        stage_hawdb_lightning_bootstrap_export_with_storage_recovery(
             &export,
             &staging_dir,
-            "skein-storage-v1",
+            "hawdb-storage-v1",
             &recovery,
         )
         .unwrap();
-        publish_skein_lightning_staging_catalog(&staging_dir, &publish_dir).unwrap();
+        publish_hawdb_lightning_staging_catalog(&staging_dir, &publish_dir).unwrap();
 
-        let report = verify_skein_lightning_published_manifest(&staging_dir, &publish_dir).unwrap();
+        let report = verify_hawdb_lightning_published_manifest(&staging_dir, &publish_dir).unwrap();
 
         assert_eq!(report["validation_gate"]["decision"], "ready");
         assert_eq!(report["storage_recovery_evidence"]["present"], true);
@@ -5337,19 +5337,19 @@ mod tests {
             "CREATE (:Memory {id: 'root', title: 'Root'})-[:LINKS {id: 'edge-root-mid'}]->(:Entity {id: 'mid', name: 'Mid'})",
         )
         .unwrap();
-        let export = db.prepare_skein_lightning_bootstrap_export().unwrap();
-        let staging_dir = unique_main_test_dir("skein_lightning_verify_published_tampered_staging");
-        let publish_dir = unique_main_test_dir("skein_lightning_verify_published_tampered_target");
-        stage_skein_lightning_bootstrap_export(&export, &staging_dir).unwrap();
-        publish_skein_lightning_staging_catalog(&staging_dir, &publish_dir).unwrap();
-        let catalog_path = staging_dir.join("skein_lightning_staging_catalog.json");
+        let export = db.prepare_hawdb_lightning_bootstrap_export().unwrap();
+        let staging_dir = unique_main_test_dir("hawdb_lightning_verify_published_tampered_staging");
+        let publish_dir = unique_main_test_dir("hawdb_lightning_verify_published_tampered_target");
+        stage_hawdb_lightning_bootstrap_export(&export, &staging_dir).unwrap();
+        publish_hawdb_lightning_staging_catalog(&staging_dir, &publish_dir).unwrap();
+        let catalog_path = staging_dir.join("hawdb_lightning_staging_catalog.json");
         let tampered = std::fs::read_to_string(&catalog_path).unwrap().replace(
             "\"stage_state\": \"READY\"",
             "\"stage_state\": \"QUARANTINED\"",
         );
         std::fs::write(&catalog_path, tampered).unwrap();
 
-        let report = verify_skein_lightning_published_manifest(&staging_dir, &publish_dir).unwrap();
+        let report = verify_hawdb_lightning_published_manifest(&staging_dir, &publish_dir).unwrap();
 
         assert_eq!(report["validation_gate"]["decision"], "blocked");
         assert_eq!(report["catalog_checksum_matches"], false);
@@ -5385,15 +5385,15 @@ mod tests {
             "CREATE (:Memory {id: 'root', title: 'Root'})-[:LINKS {id: 'edge-root-mid'}]->(:Entity {id: 'mid', name: 'Mid'})",
         )
         .unwrap();
-        let export = db.prepare_skein_lightning_bootstrap_export().unwrap();
-        let staging_dir = unique_main_test_dir("skein_lightning_gc_published_staging");
-        let publish_dir = unique_main_test_dir("skein_lightning_gc_published_target");
-        stage_skein_lightning_bootstrap_export(&export, &staging_dir).unwrap();
-        publish_skein_lightning_staging_catalog(&staging_dir, &publish_dir).unwrap();
+        let export = db.prepare_hawdb_lightning_bootstrap_export().unwrap();
+        let staging_dir = unique_main_test_dir("hawdb_lightning_gc_published_staging");
+        let publish_dir = unique_main_test_dir("hawdb_lightning_gc_published_target");
+        stage_hawdb_lightning_bootstrap_export(&export, &staging_dir).unwrap();
+        publish_hawdb_lightning_staging_catalog(&staging_dir, &publish_dir).unwrap();
 
-        let report = skein_lightning_gc_staging_report(&staging_dir, &publish_dir).unwrap();
+        let report = hawdb_lightning_gc_staging_report(&staging_dir, &publish_dir).unwrap();
 
-        assert_eq!(report["protocol"], "skein-lightning-staging-gc-report");
+        assert_eq!(report["protocol"], "hawdb-lightning-staging-gc-report");
         assert_eq!(report["published_pointer_state"], "verified");
         assert_eq!(report["candidate_count"], 5);
         assert_eq!(report["pinned_count"], 5);
@@ -5424,12 +5424,12 @@ mod tests {
             "CREATE (:Memory {id: 'root', title: 'Root'})-[:LINKS {id: 'edge-root-mid'}]->(:Entity {id: 'mid', name: 'Mid'})",
         )
         .unwrap();
-        let export = db.prepare_skein_lightning_bootstrap_export().unwrap();
-        let staging_dir = unique_main_test_dir("skein_lightning_gc_unpublished_staging");
-        let publish_dir = unique_main_test_dir("skein_lightning_gc_unpublished_target");
-        stage_skein_lightning_bootstrap_export(&export, &staging_dir).unwrap();
+        let export = db.prepare_hawdb_lightning_bootstrap_export().unwrap();
+        let staging_dir = unique_main_test_dir("hawdb_lightning_gc_unpublished_staging");
+        let publish_dir = unique_main_test_dir("hawdb_lightning_gc_unpublished_target");
+        stage_hawdb_lightning_bootstrap_export(&export, &staging_dir).unwrap();
 
-        let report = skein_lightning_gc_staging_report(&staging_dir, &publish_dir).unwrap();
+        let report = hawdb_lightning_gc_staging_report(&staging_dir, &publish_dir).unwrap();
 
         assert_eq!(report["published_pointer_state"], "missing");
         assert_eq!(report["candidate_count"], 5);
@@ -5460,19 +5460,19 @@ mod tests {
             "CREATE (:Memory {id: 'root', title: 'Root'})-[:LINKS {id: 'edge-root-mid'}]->(:Entity {id: 'mid', name: 'Mid'})",
         )
         .unwrap();
-        let export = db.prepare_skein_lightning_bootstrap_export().unwrap();
-        let staging_dir = unique_main_test_dir("skein_lightning_gc_tampered_staging");
-        let publish_dir = unique_main_test_dir("skein_lightning_gc_tampered_target");
-        stage_skein_lightning_bootstrap_export(&export, &staging_dir).unwrap();
-        publish_skein_lightning_staging_catalog(&staging_dir, &publish_dir).unwrap();
-        let catalog_path = staging_dir.join("skein_lightning_staging_catalog.json");
+        let export = db.prepare_hawdb_lightning_bootstrap_export().unwrap();
+        let staging_dir = unique_main_test_dir("hawdb_lightning_gc_tampered_staging");
+        let publish_dir = unique_main_test_dir("hawdb_lightning_gc_tampered_target");
+        stage_hawdb_lightning_bootstrap_export(&export, &staging_dir).unwrap();
+        publish_hawdb_lightning_staging_catalog(&staging_dir, &publish_dir).unwrap();
+        let catalog_path = staging_dir.join("hawdb_lightning_staging_catalog.json");
         let tampered = std::fs::read_to_string(&catalog_path).unwrap().replace(
             "\"stage_state\": \"READY\"",
             "\"stage_state\": \"QUARANTINED\"",
         );
         std::fs::write(&catalog_path, tampered).unwrap();
 
-        let report = skein_lightning_gc_staging_report(&staging_dir, &publish_dir).unwrap();
+        let report = hawdb_lightning_gc_staging_report(&staging_dir, &publish_dir).unwrap();
 
         assert_eq!(report["published_pointer_state"], "verification_failed");
         assert_eq!(report["candidate_count"], 5);
@@ -5511,13 +5511,13 @@ mod tests {
 
     #[test]
     fn import_status_reports_created_without_staging_catalog() {
-        let staging_dir = unique_main_test_dir("skein_lightning_status_created_staging");
-        let publish_dir = unique_main_test_dir("skein_lightning_status_created_target");
+        let staging_dir = unique_main_test_dir("hawdb_lightning_status_created_staging");
+        let publish_dir = unique_main_test_dir("hawdb_lightning_status_created_target");
         std::fs::create_dir_all(&staging_dir).unwrap();
 
-        let report = skein_lightning_import_status(&staging_dir, &publish_dir).unwrap();
+        let report = hawdb_lightning_import_status(&staging_dir, &publish_dir).unwrap();
 
-        assert_eq!(report["protocol"], "skein-lightning-import-status");
+        assert_eq!(report["protocol"], "hawdb-lightning-import-status");
         assert_eq!(report["import_state"], "CREATED");
         assert_eq!(report["staging_catalog_present"], false);
         assert_eq!(report["published_pointer_present"], false);
@@ -5539,13 +5539,13 @@ mod tests {
 
     #[test]
     fn import_status_reports_active_state_marker_without_staging_catalog() {
-        let staging_dir = unique_main_test_dir("skein_lightning_status_exporting_marker_staging");
-        let publish_dir = unique_main_test_dir("skein_lightning_status_exporting_marker_target");
+        let staging_dir = unique_main_test_dir("hawdb_lightning_status_exporting_marker_staging");
+        let publish_dir = unique_main_test_dir("hawdb_lightning_status_exporting_marker_target");
         std::fs::create_dir_all(&staging_dir).unwrap();
         std::fs::write(
-            staging_dir.join("skein_lightning_import_state.json"),
+            staging_dir.join("hawdb_lightning_import_state.json"),
             serde_json::json!({
-                "protocol": "skein-lightning-import-state",
+                "protocol": "hawdb-lightning-import-state",
                 "protocol_version": 1,
                 "import_state": "EXPORTING",
                 "import_id": "import-1",
@@ -5557,7 +5557,7 @@ mod tests {
         )
         .unwrap();
 
-        let report = skein_lightning_import_status(&staging_dir, &publish_dir).unwrap();
+        let report = hawdb_lightning_import_status(&staging_dir, &publish_dir).unwrap();
 
         assert_eq!(report["artifact_state"], "CREATED");
         assert_eq!(report["import_state"], "EXPORTING");
@@ -5593,13 +5593,13 @@ mod tests {
 
     #[test]
     fn import_status_summarizes_checkpoint_log_failures() {
-        let staging_dir = unique_main_test_dir("skein_lightning_status_checkpoint_log_staging");
-        let publish_dir = unique_main_test_dir("skein_lightning_status_checkpoint_log_target");
+        let staging_dir = unique_main_test_dir("hawdb_lightning_status_checkpoint_log_staging");
+        let publish_dir = unique_main_test_dir("hawdb_lightning_status_checkpoint_log_target");
         std::fs::create_dir_all(&staging_dir).unwrap();
         std::fs::write(
-            staging_dir.join("skein_lightning_import_state.json"),
+            staging_dir.join("hawdb_lightning_import_state.json"),
             serde_json::json!({
-                "protocol": "skein-lightning-import-state",
+                "protocol": "hawdb-lightning-import-state",
                 "protocol_version": 1,
                 "import_state": "UPLOADING",
                 "import_id": "import-1",
@@ -5611,7 +5611,7 @@ mod tests {
         )
         .unwrap();
         std::fs::write(
-            staging_dir.join("skein_lightning_import_checkpoints.jsonl"),
+            staging_dir.join("hawdb_lightning_import_checkpoints.jsonl"),
             [
                 serde_json::json!({
                     "stage": "source_range_scanned",
@@ -5638,7 +5638,7 @@ mod tests {
         )
         .unwrap();
 
-        let report = skein_lightning_import_status(&staging_dir, &publish_dir).unwrap();
+        let report = hawdb_lightning_import_status(&staging_dir, &publish_dir).unwrap();
 
         assert_eq!(report["import_state"], "UPLOADING");
         assert_eq!(report["checkpoint_log"]["present"], true);
@@ -5708,11 +5708,11 @@ mod tests {
     #[test]
     fn import_status_blocks_checkpoint_log_idempotency_conflict() {
         let staging_dir =
-            unique_main_test_dir("skein_lightning_status_checkpoint_conflict_staging");
-        let publish_dir = unique_main_test_dir("skein_lightning_status_checkpoint_conflict_target");
+            unique_main_test_dir("hawdb_lightning_status_checkpoint_conflict_staging");
+        let publish_dir = unique_main_test_dir("hawdb_lightning_status_checkpoint_conflict_target");
         std::fs::create_dir_all(&staging_dir).unwrap();
         std::fs::write(
-            staging_dir.join("skein_lightning_import_checkpoints.jsonl"),
+            staging_dir.join("hawdb_lightning_import_checkpoints.jsonl"),
             [
                 serde_json::json!({
                     "stage": "object_uploaded",
@@ -5741,7 +5741,7 @@ mod tests {
         )
         .unwrap();
 
-        let report = skein_lightning_import_status(&staging_dir, &publish_dir).unwrap();
+        let report = hawdb_lightning_import_status(&staging_dir, &publish_dir).unwrap();
 
         assert_eq!(
             report["checkpoint_log"]["checkpoint_gate"]["decision"],
@@ -5763,12 +5763,12 @@ mod tests {
     #[test]
     fn import_status_blocks_checkpoint_log_without_object_idempotency_key() {
         let staging_dir =
-            unique_main_test_dir("skein_lightning_status_checkpoint_missing_key_staging");
+            unique_main_test_dir("hawdb_lightning_status_checkpoint_missing_key_staging");
         let publish_dir =
-            unique_main_test_dir("skein_lightning_status_checkpoint_missing_key_target");
+            unique_main_test_dir("hawdb_lightning_status_checkpoint_missing_key_target");
         std::fs::create_dir_all(&staging_dir).unwrap();
         std::fs::write(
-            staging_dir.join("skein_lightning_import_checkpoints.jsonl"),
+            staging_dir.join("hawdb_lightning_import_checkpoints.jsonl"),
             serde_json::json!({
                 "stage": "object_uploaded",
                 "status": "completed",
@@ -5778,7 +5778,7 @@ mod tests {
         )
         .unwrap();
 
-        let report = skein_lightning_import_status(&staging_dir, &publish_dir).unwrap();
+        let report = hawdb_lightning_import_status(&staging_dir, &publish_dir).unwrap();
 
         assert_eq!(report["artifact_state"], "CREATED");
         assert_eq!(
@@ -5809,16 +5809,16 @@ mod tests {
 
     #[test]
     fn import_status_quarantines_pointer_without_staging_catalog() {
-        let staging_dir = unique_main_test_dir("skein_lightning_status_pointer_only_staging");
-        let publish_dir = unique_main_test_dir("skein_lightning_status_pointer_only_target");
+        let staging_dir = unique_main_test_dir("hawdb_lightning_status_pointer_only_staging");
+        let publish_dir = unique_main_test_dir("hawdb_lightning_status_pointer_only_target");
         std::fs::create_dir_all(&publish_dir).unwrap();
         std::fs::write(
-            publish_dir.join("skein_lightning_published_manifest.json"),
+            publish_dir.join("hawdb_lightning_published_manifest.json"),
             "{}",
         )
         .unwrap();
 
-        let report = skein_lightning_import_status(&staging_dir, &publish_dir).unwrap();
+        let report = hawdb_lightning_import_status(&staging_dir, &publish_dir).unwrap();
 
         assert_eq!(report["import_state"], "QUARANTINED");
         assert_eq!(report["staging_catalog_present"], false);
@@ -5862,12 +5862,12 @@ mod tests {
             "CREATE (:Memory {id: 'root', title: 'Root'})-[:LINKS {id: 'edge-root-mid'}]->(:Entity {id: 'mid', name: 'Mid'})",
         )
         .unwrap();
-        let export = db.prepare_skein_lightning_bootstrap_export().unwrap();
-        let staging_dir = unique_main_test_dir("skein_lightning_status_ready_staging");
-        let publish_dir = unique_main_test_dir("skein_lightning_status_ready_target");
-        stage_skein_lightning_bootstrap_export(&export, &staging_dir).unwrap();
+        let export = db.prepare_hawdb_lightning_bootstrap_export().unwrap();
+        let staging_dir = unique_main_test_dir("hawdb_lightning_status_ready_staging");
+        let publish_dir = unique_main_test_dir("hawdb_lightning_status_ready_target");
+        stage_hawdb_lightning_bootstrap_export(&export, &staging_dir).unwrap();
 
-        let report = skein_lightning_import_status(&staging_dir, &publish_dir).unwrap();
+        let report = hawdb_lightning_import_status(&staging_dir, &publish_dir).unwrap();
 
         assert_eq!(report["import_state"], "READY");
         assert_eq!(report["staging_catalog_present"], true);
@@ -5903,19 +5903,19 @@ mod tests {
         let mut db = Database::new();
         db.query("CREATE (:Memory {id: 'root', title: 'Root'})")
             .unwrap();
-        let export = db.prepare_skein_lightning_bootstrap_export().unwrap();
+        let export = db.prepare_hawdb_lightning_bootstrap_export().unwrap();
         let recovery = test_storage_recovery_report(export.manifest.graph_commit_epoch);
-        let staging_dir = unique_main_test_dir("skein_lightning_status_ready_recovery");
-        let publish_dir = unique_main_test_dir("skein_lightning_status_ready_recovery_target");
-        stage_skein_lightning_bootstrap_export_with_storage_recovery(
+        let staging_dir = unique_main_test_dir("hawdb_lightning_status_ready_recovery");
+        let publish_dir = unique_main_test_dir("hawdb_lightning_status_ready_recovery_target");
+        stage_hawdb_lightning_bootstrap_export_with_storage_recovery(
             &export,
             &staging_dir,
-            "skein-storage-v1",
+            "hawdb-storage-v1",
             &recovery,
         )
         .unwrap();
 
-        let report = skein_lightning_import_status(&staging_dir, &publish_dir).unwrap();
+        let report = hawdb_lightning_import_status(&staging_dir, &publish_dir).unwrap();
 
         assert_eq!(report["import_state"], "READY");
         assert_eq!(report["storage_recovery_evidence"]["present"], true);
@@ -5935,13 +5935,13 @@ mod tests {
             "CREATE (:Memory {id: 'root', title: 'Root'})-[:LINKS {id: 'edge-root-mid'}]->(:Entity {id: 'mid', name: 'Mid'})",
         )
         .unwrap();
-        let export = db.prepare_skein_lightning_bootstrap_export().unwrap();
-        let staging_dir = unique_main_test_dir("skein_lightning_status_published_staging");
-        let publish_dir = unique_main_test_dir("skein_lightning_status_published_target");
-        stage_skein_lightning_bootstrap_export(&export, &staging_dir).unwrap();
-        publish_skein_lightning_staging_catalog(&staging_dir, &publish_dir).unwrap();
+        let export = db.prepare_hawdb_lightning_bootstrap_export().unwrap();
+        let staging_dir = unique_main_test_dir("hawdb_lightning_status_published_staging");
+        let publish_dir = unique_main_test_dir("hawdb_lightning_status_published_target");
+        stage_hawdb_lightning_bootstrap_export(&export, &staging_dir).unwrap();
+        publish_hawdb_lightning_staging_catalog(&staging_dir, &publish_dir).unwrap();
 
-        let report = skein_lightning_import_status(&staging_dir, &publish_dir).unwrap();
+        let report = hawdb_lightning_import_status(&staging_dir, &publish_dir).unwrap();
 
         assert_eq!(report["import_state"], "PUBLISHED");
         assert_eq!(report["published_pointer_present"], true);
@@ -5976,20 +5976,20 @@ mod tests {
         let mut db = Database::new();
         db.query("CREATE (:Memory {id: 'root', title: 'Root'})")
             .unwrap();
-        let export = db.prepare_skein_lightning_bootstrap_export().unwrap();
+        let export = db.prepare_hawdb_lightning_bootstrap_export().unwrap();
         let recovery = test_storage_recovery_report(export.manifest.graph_commit_epoch);
-        let staging_dir = unique_main_test_dir("skein_lightning_status_published_recovery");
-        let publish_dir = unique_main_test_dir("skein_lightning_status_published_recovery_target");
-        stage_skein_lightning_bootstrap_export_with_storage_recovery(
+        let staging_dir = unique_main_test_dir("hawdb_lightning_status_published_recovery");
+        let publish_dir = unique_main_test_dir("hawdb_lightning_status_published_recovery_target");
+        stage_hawdb_lightning_bootstrap_export_with_storage_recovery(
             &export,
             &staging_dir,
-            "skein-storage-v1",
+            "hawdb-storage-v1",
             &recovery,
         )
         .unwrap();
-        publish_skein_lightning_staging_catalog(&staging_dir, &publish_dir).unwrap();
+        publish_hawdb_lightning_staging_catalog(&staging_dir, &publish_dir).unwrap();
 
-        let report = skein_lightning_import_status(&staging_dir, &publish_dir).unwrap();
+        let report = hawdb_lightning_import_status(&staging_dir, &publish_dir).unwrap();
 
         assert_eq!(report["import_state"], "PUBLISHED");
         assert_eq!(report["storage_recovery_evidence"]["present"], true);
@@ -6010,18 +6010,18 @@ mod tests {
             "CREATE (:Memory {id: 'root', title: 'Root'})-[:LINKS {id: 'edge-root-mid'}]->(:Entity {id: 'mid', name: 'Mid'})",
         )
         .unwrap();
-        let export = db.prepare_skein_lightning_bootstrap_export().unwrap();
-        let staging_dir = unique_main_test_dir("skein_lightning_status_quarantined_staging");
-        let publish_dir = unique_main_test_dir("skein_lightning_status_quarantined_target");
-        stage_skein_lightning_bootstrap_export(&export, &staging_dir).unwrap();
-        let catalog_path = staging_dir.join("skein_lightning_staging_catalog.json");
+        let export = db.prepare_hawdb_lightning_bootstrap_export().unwrap();
+        let staging_dir = unique_main_test_dir("hawdb_lightning_status_quarantined_staging");
+        let publish_dir = unique_main_test_dir("hawdb_lightning_status_quarantined_target");
+        stage_hawdb_lightning_bootstrap_export(&export, &staging_dir).unwrap();
+        let catalog_path = staging_dir.join("hawdb_lightning_staging_catalog.json");
         let tampered = std::fs::read_to_string(&catalog_path).unwrap().replace(
             "\"stage_state\": \"READY\"",
             "\"stage_state\": \"QUARANTINED\"",
         );
         std::fs::write(&catalog_path, tampered).unwrap();
 
-        let report = skein_lightning_import_status(&staging_dir, &publish_dir).unwrap();
+        let report = hawdb_lightning_import_status(&staging_dir, &publish_dir).unwrap();
 
         assert_eq!(report["import_state"], "QUARANTINED");
         assert_eq!(report["status_gate"]["decision"], "blocked");
@@ -6067,14 +6067,14 @@ mod tests {
             "CREATE (:Memory {id: 'root', title: 'Root'})-[:LINKS {id: 'edge-root-mid'}]->(:Entity {id: 'mid', name: 'Mid'})",
         )
         .unwrap();
-        let export = db.prepare_skein_lightning_bootstrap_export().unwrap();
-        let staging_dir = unique_main_test_dir("skein_lightning_status_canceled_marker_staging");
-        let publish_dir = unique_main_test_dir("skein_lightning_status_canceled_marker_target");
-        stage_skein_lightning_bootstrap_export(&export, &staging_dir).unwrap();
+        let export = db.prepare_hawdb_lightning_bootstrap_export().unwrap();
+        let staging_dir = unique_main_test_dir("hawdb_lightning_status_canceled_marker_staging");
+        let publish_dir = unique_main_test_dir("hawdb_lightning_status_canceled_marker_target");
+        stage_hawdb_lightning_bootstrap_export(&export, &staging_dir).unwrap();
         std::fs::write(
-            staging_dir.join("skein_lightning_import_state.json"),
+            staging_dir.join("hawdb_lightning_import_state.json"),
             serde_json::json!({
-                "protocol": "skein-lightning-import-state",
+                "protocol": "hawdb-lightning-import-state",
                 "protocol_version": 1,
                 "import_state": "CANCELED",
                 "import_id": "import-canceled"
@@ -6083,7 +6083,7 @@ mod tests {
         )
         .unwrap();
 
-        let report = skein_lightning_import_status(&staging_dir, &publish_dir).unwrap();
+        let report = hawdb_lightning_import_status(&staging_dir, &publish_dir).unwrap();
 
         assert_eq!(report["artifact_state"], "READY");
         assert_eq!(report["import_state"], "CANCELED");
@@ -6110,13 +6110,13 @@ mod tests {
 
     #[test]
     fn import_status_blocks_when_resource_retention_cannot_read_candidates() {
-        let staging_dir = unique_main_test_dir("skein_lightning_status_resource_blocked_staging");
-        let publish_dir = unique_main_test_dir("skein_lightning_status_resource_blocked_target");
+        let staging_dir = unique_main_test_dir("hawdb_lightning_status_resource_blocked_staging");
+        let publish_dir = unique_main_test_dir("hawdb_lightning_status_resource_blocked_target");
         std::fs::create_dir_all(&staging_dir).unwrap();
         std::fs::write(
-            staging_dir.join("skein_lightning_staging_catalog.json"),
+            staging_dir.join("hawdb_lightning_staging_catalog.json"),
             serde_json::json!({
-                "protocol": "skein-lightning-staging-catalog",
+                "protocol": "hawdb-lightning-staging-catalog",
                 "stage_state": "READY",
                 "export_gate": {
                     "decision": "ready"
@@ -6126,7 +6126,7 @@ mod tests {
         )
         .unwrap();
 
-        let report = skein_lightning_import_status(&staging_dir, &publish_dir).unwrap();
+        let report = hawdb_lightning_import_status(&staging_dir, &publish_dir).unwrap();
 
         assert_eq!(report["import_state"], "QUARANTINED");
         assert_eq!(report["status_gate"]["decision"], "blocked");
@@ -6157,14 +6157,14 @@ mod tests {
     #[test]
     fn import_status_quarantines_active_state_marker_without_idempotency_key() {
         let staging_dir =
-            unique_main_test_dir("skein_lightning_status_missing_idempotency_marker_staging");
+            unique_main_test_dir("hawdb_lightning_status_missing_idempotency_marker_staging");
         let publish_dir =
-            unique_main_test_dir("skein_lightning_status_missing_idempotency_marker_target");
+            unique_main_test_dir("hawdb_lightning_status_missing_idempotency_marker_target");
         std::fs::create_dir_all(&staging_dir).unwrap();
         std::fs::write(
-            staging_dir.join("skein_lightning_import_state.json"),
+            staging_dir.join("hawdb_lightning_import_state.json"),
             serde_json::json!({
-                "protocol": "skein-lightning-import-state",
+                "protocol": "hawdb-lightning-import-state",
                 "protocol_version": 1,
                 "import_state": "UPLOADING",
                 "import_id": "import-1",
@@ -6174,7 +6174,7 @@ mod tests {
         )
         .unwrap();
 
-        let report = skein_lightning_import_status(&staging_dir, &publish_dir).unwrap();
+        let report = hawdb_lightning_import_status(&staging_dir, &publish_dir).unwrap();
 
         assert_eq!(report["artifact_state"], "CREATED");
         assert_eq!(report["import_state"], "QUARANTINED");
@@ -6208,11 +6208,11 @@ mod tests {
 
     #[test]
     fn import_status_quarantines_invalid_state_marker() {
-        let staging_dir = unique_main_test_dir("skein_lightning_status_invalid_marker_staging");
-        let publish_dir = unique_main_test_dir("skein_lightning_status_invalid_marker_target");
+        let staging_dir = unique_main_test_dir("hawdb_lightning_status_invalid_marker_staging");
+        let publish_dir = unique_main_test_dir("hawdb_lightning_status_invalid_marker_target");
         std::fs::create_dir_all(&staging_dir).unwrap();
         std::fs::write(
-            staging_dir.join("skein_lightning_import_state.json"),
+            staging_dir.join("hawdb_lightning_import_state.json"),
             serde_json::json!({
                 "protocol": "wrong-protocol",
                 "protocol_version": 99,
@@ -6222,7 +6222,7 @@ mod tests {
         )
         .unwrap();
 
-        let report = skein_lightning_import_status(&staging_dir, &publish_dir).unwrap();
+        let report = hawdb_lightning_import_status(&staging_dir, &publish_dir).unwrap();
 
         assert_eq!(report["artifact_state"], "CREATED");
         assert_eq!(report["import_state"], "QUARANTINED");
@@ -6330,61 +6330,61 @@ mod tests {
     }
 
     #[test]
-    fn validates_skein_lightning_bootstrap_manifest_usage_text() {
-        assert!(skein_lightning_bootstrap_manifest_usage().contains("<database-path>"));
-        assert!(skein_lightning_bootstrap_manifest_usage().contains("--require-ready"));
+    fn validates_hawdb_lightning_bootstrap_manifest_usage_text() {
+        assert!(hawdb_lightning_bootstrap_manifest_usage().contains("<database-path>"));
+        assert!(hawdb_lightning_bootstrap_manifest_usage().contains("--require-ready"));
     }
 
     #[test]
-    fn validates_skein_lightning_bootstrap_bundle_usage_text() {
-        assert!(skein_lightning_bootstrap_bundle_usage().contains("<database-path>"));
-        assert!(skein_lightning_bootstrap_bundle_usage().contains("--require-ready"));
+    fn validates_hawdb_lightning_bootstrap_bundle_usage_text() {
+        assert!(hawdb_lightning_bootstrap_bundle_usage().contains("<database-path>"));
+        assert!(hawdb_lightning_bootstrap_bundle_usage().contains("--require-ready"));
     }
 
     #[test]
-    fn validates_skein_lightning_stage_bootstrap_usage_text() {
-        assert!(skein_lightning_stage_bootstrap_usage().contains("<database-path>"));
-        assert!(skein_lightning_stage_bootstrap_usage().contains("<staging-dir>"));
-        assert!(skein_lightning_stage_bootstrap_usage().contains("--require-ready"));
+    fn validates_hawdb_lightning_stage_bootstrap_usage_text() {
+        assert!(hawdb_lightning_stage_bootstrap_usage().contains("<database-path>"));
+        assert!(hawdb_lightning_stage_bootstrap_usage().contains("<staging-dir>"));
+        assert!(hawdb_lightning_stage_bootstrap_usage().contains("--require-ready"));
     }
 
     #[test]
-    fn validates_skein_lightning_verify_staging_usage_text() {
-        assert!(skein_lightning_verify_staging_usage().contains("<staging-dir>"));
-        assert!(skein_lightning_verify_staging_usage().contains("--require-ready"));
+    fn validates_hawdb_lightning_verify_staging_usage_text() {
+        assert!(hawdb_lightning_verify_staging_usage().contains("<staging-dir>"));
+        assert!(hawdb_lightning_verify_staging_usage().contains("--require-ready"));
     }
 
     #[test]
-    fn validates_skein_lightning_publish_staging_usage_text() {
-        assert!(skein_lightning_publish_staging_usage().contains("<staging-dir>"));
-        assert!(skein_lightning_publish_staging_usage().contains("<publish-dir>"));
-        assert!(skein_lightning_publish_staging_usage().contains("--require-state-marker"));
-        assert!(skein_lightning_publish_staging_usage().contains("--fencing-token"));
-        assert!(skein_lightning_publish_staging_usage().contains("--expected-database-epoch"));
+    fn validates_hawdb_lightning_publish_staging_usage_text() {
+        assert!(hawdb_lightning_publish_staging_usage().contains("<staging-dir>"));
+        assert!(hawdb_lightning_publish_staging_usage().contains("<publish-dir>"));
+        assert!(hawdb_lightning_publish_staging_usage().contains("--require-state-marker"));
+        assert!(hawdb_lightning_publish_staging_usage().contains("--fencing-token"));
+        assert!(hawdb_lightning_publish_staging_usage().contains("--expected-database-epoch"));
     }
 
     #[test]
-    fn validates_skein_lightning_verify_published_usage_text() {
-        assert!(skein_lightning_verify_published_usage().contains("<staging-dir>"));
-        assert!(skein_lightning_verify_published_usage().contains("<publish-dir>"));
+    fn validates_hawdb_lightning_verify_published_usage_text() {
+        assert!(hawdb_lightning_verify_published_usage().contains("<staging-dir>"));
+        assert!(hawdb_lightning_verify_published_usage().contains("<publish-dir>"));
     }
 
     #[test]
-    fn validates_skein_lightning_graph_stream_usage_text() {
-        assert!(skein_lightning_graph_stream_usage().contains("<database-path>"));
-        assert!(skein_lightning_graph_stream_usage().contains("--require-ready"));
+    fn validates_hawdb_lightning_graph_stream_usage_text() {
+        assert!(hawdb_lightning_graph_stream_usage().contains("<database-path>"));
+        assert!(hawdb_lightning_graph_stream_usage().contains("--require-ready"));
     }
 
     #[test]
-    fn validates_skein_lightning_relational_stream_usage_text() {
-        assert!(skein_lightning_relational_stream_usage().contains("<database-path>"));
-        assert!(skein_lightning_relational_stream_usage().contains("--require-ready"));
+    fn validates_hawdb_lightning_relational_stream_usage_text() {
+        assert!(hawdb_lightning_relational_stream_usage().contains("<database-path>"));
+        assert!(hawdb_lightning_relational_stream_usage().contains("--require-ready"));
     }
 
     #[test]
-    fn validates_skein_lightning_verify_export_usage_text() {
-        assert!(skein_lightning_verify_export_usage().contains("<database-path>"));
-        assert!(skein_lightning_verify_export_usage().contains("--require-valid"));
+    fn validates_hawdb_lightning_verify_export_usage_text() {
+        assert!(hawdb_lightning_verify_export_usage().contains("<database-path>"));
+        assert!(hawdb_lightning_verify_export_usage().contains("--require-valid"));
     }
 
     #[test]
@@ -6404,12 +6404,12 @@ mod tests {
             crate::external_shadow_adapter_smoke_usage().contains("developer compatibility tool")
         );
         assert!(crate::external_shadow_adapter_smoke_usage()
-            .contains(crate::SKEIN_ENABLE_COMPATIBILITY_TOOLS_ENV));
+            .contains(crate::HAWDB_ENABLE_COMPATIBILITY_TOOLS_ENV));
         assert!(
             crate::nowledge_cypher_migration_gate_usage().contains("developer compatibility tool")
         );
         assert!(crate::nowledge_cypher_migration_gate_usage()
-            .contains(crate::SKEIN_ENABLE_COMPATIBILITY_TOOLS_ENV));
+            .contains(crate::HAWDB_ENABLE_COMPATIBILITY_TOOLS_ENV));
     }
 
     fn test_storage_recovery_report(graph_commit_epoch: u64) -> StorageRecoveryReport {
@@ -6437,7 +6437,7 @@ mod tests {
             .duration_since(UNIX_EPOCH)
             .unwrap()
             .as_nanos();
-        std::env::temp_dir().join(format!("skein-{name}-{nanos}"))
+        std::env::temp_dir().join(format!("hawdb-{name}-{nanos}"))
     }
 
     fn unique_json_file(name: &str) -> std::path::PathBuf {
@@ -6445,7 +6445,7 @@ mod tests {
             .duration_since(UNIX_EPOCH)
             .unwrap()
             .as_nanos();
-        std::env::temp_dir().join(format!("skein-{name}-{nanos}.json"))
+        std::env::temp_dir().join(format!("hawdb-{name}-{nanos}.json"))
     }
 
     fn adapter_smoke_report(

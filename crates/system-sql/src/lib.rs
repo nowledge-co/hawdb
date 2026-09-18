@@ -4,20 +4,20 @@
 //! The embedded facade supplies a snapshot of its live state and retains all
 //! database lifecycle and transaction coordination.
 
-use skein_core::{
-    Catalog, ConstraintKind, ConstraintSubject, GraphStatistics, IndexKind, IndexStatisticsSample,
-    LabelId, PropertyType, RelTypeId, Result, RuntimeCapabilities, SchemaObjectState, SkeinError,
-    TableKind, Value,
+use hawdb_core::{
+    Catalog, ConstraintKind, ConstraintSubject, GraphStatistics, HawdbError, IndexKind,
+    IndexStatisticsSample, LabelId, PropertyType, RelTypeId, Result, RuntimeCapabilities,
+    SchemaObjectState, TableKind, Value,
 };
-use skein_executor::{binding::map_payload_bytes, QueryOutput, Row, VectorExecutionReport};
-use skein_plan_cache::PlanCacheStats;
-use skein_query::QueryIdentity;
-use skein_sql::{Expr, ExprKind};
-use skein_sql::{
+use hawdb_executor::{binding::map_payload_bytes, QueryOutput, Row, VectorExecutionReport};
+use hawdb_plan_cache::PlanCacheStats;
+use hawdb_query::QueryIdentity;
+use hawdb_sql::{Expr, ExprKind};
+use hawdb_sql::{
     SelectProjection, SelectStatement, SqlBound, SqlColumnRef, SqlComparisonOp, SqlOrderDirection,
     SqlOrderItem, SqlPredicate, SqlStatement, SqlValue,
 };
-use skein_storage::{
+use hawdb_storage::{
     AppendOrderMode, AppendState, AppendStorageResidencyReport, ProjectedGraphStatus,
     RelationalColumnDefault, RelationalIndexMode, RelationalScalarType, RelationalState,
     RelationalTableSchema, RelationalValue, SearchProjectionChangefeedStatus, StorageResidencyMode,
@@ -32,7 +32,7 @@ pub const DEFAULT_SLOW_QUERY_LOG_CAPACITY: usize = 256;
 pub const DEFAULT_SLOW_QUERY_LOG_THRESHOLD_MICROS: u128 = 300_000;
 #[doc(hidden)]
 pub const DEFAULT_STATEMENT_SUMMARY_CAPACITY: usize = 256;
-pub const SLOW_QUERY_LOG_EVENT_PROTOCOL: &str = "skein-slow-query-log-event-v1";
+pub const SLOW_QUERY_LOG_EVENT_PROTOCOL: &str = "hawdb-slow-query-log-event-v1";
 const MAX_SLOW_QUERY_TEXT_BYTES: usize = 4096;
 const MAX_STATEMENT_TEXT_BYTES: usize = 4096;
 const MAX_STATEMENT_ERROR_BYTES: usize = 1024;
@@ -302,7 +302,7 @@ pub fn slow_query_log_jsonl(
     for record in records {
         let line = serde_json::to_string(&slow_query_record_json(record, include_query_text))
             .map_err(|error| {
-                SkeinError::Execution(format!("slow query log JSON error: {error}"))
+                HawdbError::Execution(format!("slow query log JSON error: {error}"))
             })?;
         jsonl.push_str(&line);
         jsonl.push('\n');
@@ -556,7 +556,7 @@ pub fn query_sql_with_params<Store: SystemSqlStore>(
         total.saturating_add(map_payload_bytes(row))
     });
     if max_payload_bytes.is_some_and(|limit| payload_bytes > limit) {
-        return Err(SkeinError::Execution(format!(
+        return Err(HawdbError::Execution(format!(
             "SQL query payload uses {payload_bytes} bytes, exceeding max_read_result_payload_bytes {}",
             max_payload_bytes.unwrap_or_default()
         )));
@@ -565,16 +565,16 @@ pub fn query_sql_with_params<Store: SystemSqlStore>(
 }
 
 fn plan_sql(sql_text: &str, parameters: &[Value]) -> Result<SqlLogicalPlan> {
-    let prepared = skein_sql::prepare_postgres_sql(sql_text)?;
+    let prepared = hawdb_sql::prepare_postgres_sql(sql_text)?;
     if prepared.parameters.len() != parameters.len() {
-        return Err(SkeinError::Semantic(format!(
+        return Err(HawdbError::Semantic(format!(
             "PostgreSQL statement requires {} parameters, but {} parameters were supplied",
             prepared.parameters.len(),
             parameters.len()
         )));
     }
     let SqlStatement::Select(select) = prepared.statement else {
-        return Err(SkeinError::Semantic(
+        return Err(HawdbError::Semantic(
             "system SQL only supports SELECT statements".to_string(),
         ));
     };
@@ -604,7 +604,7 @@ fn plan_sql(sql_text: &str, parameters: &[Value]) -> Result<SqlLogicalPlan> {
 
 fn validate_system_select_shape(select: &SelectStatement) -> Result<()> {
     if select.having.is_some() {
-        return Err(SkeinError::Semantic(
+        return Err(HawdbError::Semantic(
             "system SQL does not support HAVING".into(),
         ));
     }
@@ -614,7 +614,7 @@ fn validate_system_select_shape(select: &SelectStatement) -> Result<()> {
         || !select.group_by.is_empty()
         || select.lock_strength.is_some()
     {
-        return Err(SkeinError::Semantic(
+        return Err(HawdbError::Semantic(
             "system SQL does not support DISTINCT, table aliases, joins, GROUP BY, or locking clauses"
                 .to_string(),
         ));
@@ -622,9 +622,9 @@ fn validate_system_select_shape(select: &SelectStatement) -> Result<()> {
     if select
         .order_by
         .iter()
-        .any(|item| item.nulls != skein_sql::SqlNullOrder::DialectDefault)
+        .any(|item| item.nulls != hawdb_sql::SqlNullOrder::DialectDefault)
     {
-        return Err(SkeinError::Semantic(
+        return Err(HawdbError::Semantic(
             "system SQL does not support explicit NULLS FIRST/LAST".to_string(),
         ));
     }
@@ -645,9 +645,9 @@ fn bind_predicate(mut predicate: SqlPredicate, parameters: &[Value]) -> Result<S
         } = &expression.kind
             && let SqlValue::Literal(Value::String(pattern)) = pattern.require_value()?
         {
-            skein_sql::sql_like_matches("", pattern, *escape, *case_insensitive)?;
+            hawdb_sql::sql_like_matches("", pattern, *escape, *case_insensitive)?;
         }
-        Ok::<_, SkeinError>(())
+        Ok::<_, HawdbError>(())
     })?;
     Ok(predicate)
 }
@@ -656,7 +656,7 @@ fn bind_value(value: SqlValue, parameters: &[Value]) -> Result<Value> {
     match value {
         SqlValue::Literal(value) => Ok(value),
         SqlValue::Parameter(position) => parameters.get(position - 1).cloned().ok_or_else(|| {
-            SkeinError::Semantic(format!("missing PostgreSQL parameter ${position}"))
+            HawdbError::Semantic(format!("missing PostgreSQL parameter ${position}"))
         }),
     }
 }
@@ -666,10 +666,10 @@ fn bind_bound(bound: SqlBound, parameters: &[Value], name: &str) -> Result<u64> 
         SqlBound::Literal(value) => Ok(value),
         SqlBound::Parameter(position) => match parameters.get(position - 1) {
             Some(Value::Int(value)) if *value >= 0 => Ok(*value as u64),
-            Some(_) => Err(SkeinError::Semantic(format!(
+            Some(_) => Err(HawdbError::Semantic(format!(
                 "PostgreSQL {name} parameter ${position} must be a non-negative integer"
             ))),
-            None => Err(SkeinError::Semantic(format!(
+            None => Err(HawdbError::Semantic(format!(
                 "missing PostgreSQL parameter ${position}"
             ))),
         },
@@ -749,7 +749,7 @@ fn execute_system_table_scan<Store: SystemSqlStore>(
     if let Some(max_rows) = max_rows
         && rows.len() > max_rows
     {
-        return Err(SkeinError::Execution(format!(
+        return Err(HawdbError::Execution(format!(
                 "SQL query returned more than {max_rows} rows, exceeding max_read_result_rows {max_rows}"
             )));
     }
@@ -761,7 +761,7 @@ fn effective_limit(query_limit: Option<u64>, max_rows: Option<usize>) -> Result<
     let query_limit = query_limit
         .map(|limit| {
             usize::try_from(limit)
-                .map_err(|_| SkeinError::Semantic("SQL LIMIT is too large".to_string()))
+                .map_err(|_| HawdbError::Semantic("SQL LIMIT is too large".to_string()))
         })
         .transpose()?;
     Ok(match (query_limit, max_rows) {
@@ -831,7 +831,7 @@ fn information_schema_table_rows(state: &RelationalState) -> Vec<Row> {
             BTreeMap::from([
                 (
                     "table_catalog".to_string(),
-                    Value::String("skein".to_string()),
+                    Value::String("hawdb".to_string()),
                 ),
                 (
                     "table_schema".to_string(),
@@ -872,7 +872,7 @@ fn information_schema_column_rows(state: &RelationalState) -> Vec<Row> {
                     BTreeMap::from([
                         (
                             "table_catalog".to_string(),
-                            Value::String("skein".to_string()),
+                            Value::String("hawdb".to_string()),
                         ),
                         (
                             "table_schema".to_string(),
@@ -933,7 +933,7 @@ fn information_schema_column_rows(state: &RelationalState) -> Vec<Row> {
                         ("domain_name".to_string(), Value::Null),
                         (
                             "udt_catalog".to_string(),
-                            Value::String("skein".to_string()),
+                            Value::String("hawdb".to_string()),
                         ),
                         (
                             "udt_schema".to_string(),
@@ -1092,7 +1092,7 @@ fn pg_table_rows(state: &RelationalState) -> Vec<Row> {
                     Value::String("public".to_string()),
                 ),
                 ("tablename".to_string(), Value::String(schema.name.clone())),
-                ("tableowner".to_string(), Value::String("skein".to_string())),
+                ("tableowner".to_string(), Value::String("hawdb".to_string())),
                 ("tablespace".to_string(), Value::Null),
                 (
                     "hasindexes".to_string(),
@@ -2099,7 +2099,7 @@ fn predicate_matches(predicate: &SqlPredicate, row: &Row) -> bool {
             else {
                 return false;
             };
-            skein_sql::sql_like_matches(value, pattern, *escape, *case_insensitive)
+            hawdb_sql::sql_like_matches(value, pattern, *escape, *case_insensitive)
                 .is_ok_and(|matched| matched != *negated)
         }
         ExprKind::IsNull {
@@ -2178,7 +2178,7 @@ fn system_table(select: &SelectStatement) -> Result<SystemTable> {
         (Some("pg_catalog"), "pg_indexes") => Ok(SystemTable::PgIndexes),
         (None, "pg_tables") => Ok(SystemTable::PgTables),
         (None, "pg_indexes") => Ok(SystemTable::PgIndexes),
-        _ => Err(SkeinError::Semantic(format!(
+        _ => Err(HawdbError::Semantic(format!(
             "unknown SQL virtual catalog table {}",
             format_table_name(select)
         ))),
@@ -2198,7 +2198,7 @@ fn validate_projection(table: SystemTable, projection: &[SelectProjection]) -> R
                 ..
             } => validate_column(table, name)?,
             SelectProjection::Expression { .. } => {
-                return Err(SkeinError::Semantic(
+                return Err(HawdbError::Semantic(
                     "system SQL aggregate expressions are not supported".to_string(),
                 ));
             }
@@ -2251,7 +2251,7 @@ fn validate_column(table: SystemTable, column: &SqlColumnRef) -> Result<()> {
             SystemTable::PgIndexes => "pg_indexes",
         };
         if qualifier != table_name {
-            return Err(SkeinError::Semantic(format!(
+            return Err(HawdbError::Semantic(format!(
                 "unknown SQL column qualifier {qualifier}"
             )));
         }
@@ -2259,7 +2259,7 @@ fn validate_column(table: SystemTable, column: &SqlColumnRef) -> Result<()> {
     if table_columns(table).contains(&column.name.as_str()) {
         Ok(())
     } else {
-        Err(SkeinError::Semantic(format!(
+        Err(HawdbError::Semantic(format!(
             "unknown SQL column {}",
             column.name
         )))
@@ -2608,7 +2608,7 @@ mod tests {
 
     #[test]
     fn predicate_binding_preserves_source_spans_and_system_null_behavior() {
-        let SqlStatement::Select(select) = skein_sql::prepare_postgres_sql(
+        let SqlStatement::Select(select) = hawdb_sql::prepare_postgres_sql(
             "SELECT value FROM system.plan_cache WHERE \
              (value IN ($1, $2) OR NOT value = $3) AND \
              (metric LIKE $4 OR value IS NULL)",
@@ -3031,9 +3031,9 @@ mod tests {
 #[cfg(all(test, feature = "loom-tests"))]
 pub(crate) mod loom_tests {
     use super::{SlowQueryCompletion, SlowQueryLog, SlowQueryRecord};
+    use hawdb_query::QueryIdentity;
     use loom::sync::{Arc, Mutex};
     use loom::thread;
-    use skein_query::QueryIdentity;
 
     #[test]
     fn slow_query_ring_preserves_bounds_under_modeled_concurrent_access() {

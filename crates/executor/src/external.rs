@@ -4,8 +4,8 @@
 pub mod seed;
 
 use crate::VectorExecutionReport;
-use skein_core::{Result, RuntimeTaskContext, SkeinError};
-use skein_plan::VectorPhysicalPlan;
+use hawdb_core::{HawdbError, Result, RuntimeTaskContext};
+use hawdb_plan::VectorPhysicalPlan;
 use std::collections::BTreeMap;
 use std::mem::size_of;
 use std::num::NonZeroUsize;
@@ -29,7 +29,7 @@ impl ExternalReadResourceContract<'_> {
     pub fn checkpoint(&self) -> Result<()> {
         match self.task_context {
             Some(task_context) => task_context.checkpoint().map_err(|reason| {
-                SkeinError::Execution(format!("external read task stopped: {reason}"))
+                HawdbError::Execution(format!("external read task stopped: {reason}"))
             }),
             None => Ok(()),
         }
@@ -76,7 +76,7 @@ impl VectorSeedExecutionOutput {
 
     pub fn validate_result_budget(&self, budget: ExternalReadResultBudget) -> Result<()> {
         if self.rows.len() > budget.max_rows {
-            return Err(SkeinError::Execution(format!(
+            return Err(HawdbError::Execution(format!(
                 "external vector read returned {} rows, exceeding result row budget {}",
                 self.rows.len(),
                 budget.max_rows
@@ -84,7 +84,7 @@ impl VectorSeedExecutionOutput {
         }
         let memory_bytes = self.estimated_memory_bytes();
         if memory_bytes > budget.max_memory_bytes.get() {
-            return Err(SkeinError::Execution(format!(
+            return Err(HawdbError::Execution(format!(
                 "external vector read returned {memory_bytes} estimated bytes, exceeding result memory budget {}",
                 budget.max_memory_bytes
             )));
@@ -108,7 +108,7 @@ impl ExternalReadOperator for NoExternalReadOperator {
         &mut self,
         _request: VectorSeedExecutionRequest<'_>,
     ) -> Result<VectorSeedExecutionOutput> {
-        Err(SkeinError::Execution(
+        Err(HawdbError::Execution(
             "vector search capability is unavailable without a search projection".to_string(),
         ))
     }
@@ -120,8 +120,8 @@ mod tests {
     use crate::{
         VectorCompressionMode, VectorExecutionBackend, VectorFallbackReasonCode, VectorScoreSource,
     };
-    use skein_core::RuntimeCancellationToken;
-    use skein_plan::VectorCandidateSource;
+    use hawdb_core::RuntimeCancellationToken;
+    use hawdb_plan::VectorCandidateSource;
 
     pub(super) fn empty_report() -> VectorExecutionReport {
         VectorExecutionReport {

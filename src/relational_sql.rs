@@ -1,4 +1,4 @@
-pub(crate) use skein_relational::{
+pub(crate) use hawdb_relational::{
     bind_relational_value, compile_append_explain_sql, compile_append_select_sql,
     compile_append_statement_sql, compile_relational_statement_sql,
     compile_relational_statement_sql_with_result, format_append_explain, project_append_rows,
@@ -12,35 +12,35 @@ mod row_access;
 #[path = "relational_sql/query.rs"]
 mod query;
 
-pub use skein_optimizer::{
+pub use hawdb_optimizer::{
     RelationalJoinPlanningAttempt, RelationalJoinPlanningBudget, RelationalJoinPlanningCost,
     RelationalJoinPlanningDirective, RelationalJoinPlanningFallbackClass,
     RelationalJoinPlanningOutcome, RelationalJoinPlanningReason, RelationalJoinPlanningStatus,
     RelationalJoinPlanningStrategy,
 };
-pub use skein_optimizer::{
+pub use hawdb_optimizer::{
     RelationalOperatorCardinalityProfile, RelationalOperatorId, RelationalOperatorKind,
 };
-pub use skein_sql::RelationalSqlStageTimings;
+pub use hawdb_sql::RelationalSqlStageTimings;
 
-pub(crate) use index_access::RelationalIndexReadMode;
-pub(crate) use row_access::RelationalRowReadMode;
 #[cfg(test)]
-pub(crate) use skein_relational::query::execute_relational_query_sql_with_runtime;
-pub(crate) use skein_relational::query::{
+pub(crate) use hawdb_relational::query::execute_relational_query_sql_with_runtime;
+pub(crate) use hawdb_relational::query::{
     execute_prepared_relational_query_with_resources, RelationalQueryLimits, RelationalQueryOutput,
     RelationalQueryResourceContext,
 };
-pub(crate) use skein_sql::{PreparedRelationalSql, RelationalPlanTemplateCache};
+pub(crate) use hawdb_sql::{PreparedRelationalSql, RelationalPlanTemplateCache};
+pub(crate) use index_access::RelationalIndexReadMode;
+pub(crate) use row_access::RelationalRowReadMode;
 
 pub(crate) type RelationalQueryReadModes<'a> =
-    skein_relational::query::RelationalQueryReadModes<'a, crate::store::GraphStore>;
+    hawdb_relational::query::RelationalQueryReadModes<'a, crate::store::GraphStore>;
 
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::{Database, DatabaseConfig, Value};
-    use skein_storage::{
+    use hawdb_storage::{
         DurabilityPolicy, RelationalColumnSchema, RelationalInsertMode, RelationalRow,
         RelationalScalarType, RelationalStore, RelationalTableSchema, RelationalTransaction,
         RelationalValue, RelationalWrite,
@@ -49,17 +49,17 @@ mod tests {
 
     #[test]
     fn relational_uuid_scalar_preserves_typed_schema_keys_and_queries() {
-        let account_id = skein_core::Uuid::parse_str("018f4e6a-7c1b-7cc8-8f4d-1234567890ab")
+        let account_id = hawdb_core::Uuid::parse_str("018f4e6a-7c1b-7cc8-8f4d-1234567890ab")
             .expect("parse account UUID");
         let account_external_id =
-            skein_core::Uuid::parse_str("018f4e6a-7c1a-79d2-8f4d-1234567890ab")
+            hawdb_core::Uuid::parse_str("018f4e6a-7c1a-79d2-8f4d-1234567890ab")
                 .expect("parse account external UUID");
         let duplicate_account_id =
-            skein_core::Uuid::parse_str("018f4e6a-7c1b-79d2-8f4d-1234567890ab")
+            hawdb_core::Uuid::parse_str("018f4e6a-7c1b-79d2-8f4d-1234567890ab")
                 .expect("parse duplicate account UUID");
-        let first_session = skein_core::Uuid::parse_str("018f4e6a-7c1c-7b45-8f4d-1234567890ab")
+        let first_session = hawdb_core::Uuid::parse_str("018f4e6a-7c1c-7b45-8f4d-1234567890ab")
             .expect("parse first session UUID");
-        let second_session = skein_core::Uuid::parse_str("018f4e6a-7c1d-7b45-8f4d-1234567890ab")
+        let second_session = hawdb_core::Uuid::parse_str("018f4e6a-7c1d-7b45-8f4d-1234567890ab")
             .expect("parse second session UUID");
         let mut database = Database::new();
         database
@@ -187,14 +187,14 @@ mod tests {
 
     #[test]
     fn relational_uuid_scalar_survives_wal_and_checkpoint_reopen() {
-        let value = skein_core::Uuid::parse_str("018f4e6a-7c1e-7d7a-8f4d-1234567890ab")
+        let value = hawdb_core::Uuid::parse_str("018f4e6a-7c1e-7d7a-8f4d-1234567890ab")
             .expect("parse durable UUID");
         let nonce = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
             .expect("system clock")
             .as_nanos();
         let path = std::env::temp_dir().join(format!(
-            "skein-relational-uuid-{nonce}-{}",
+            "hawdb-relational-uuid-{nonce}-{}",
             std::process::id()
         ));
         {
@@ -284,7 +284,7 @@ mod tests {
         assert!(ids[0] < ids[1]);
         ids.iter().copied().for_each(assert_uuidv7);
 
-        let explicit = skein_core::generate_uuidv7().expect("generate explicit UUIDv7");
+        let explicit = hawdb_core::generate_uuidv7().expect("generate explicit UUIDv7");
         let explicit_insert = database
             .query_sql(&format!(
                 "INSERT INTO feeds (id, url) VALUES ('{explicit}', 'https://explicit.example') \
@@ -355,7 +355,7 @@ mod tests {
             .expect("system clock")
             .as_nanos();
         let path = std::env::temp_dir().join(format!(
-            "skein-relational-uuidv7-{nonce}-{}",
+            "hawdb-relational-uuidv7-{nonce}-{}",
             std::process::id()
         ));
         let generated;
@@ -516,7 +516,7 @@ mod tests {
             .expect("system clock")
             .as_nanos();
         let path = std::env::temp_dir().join(format!(
-            "skein-relational-cascade-{nonce}-{}",
+            "hawdb-relational-cascade-{nonce}-{}",
             std::process::id()
         ));
         {
@@ -727,7 +727,7 @@ mod tests {
             .expect("system clock")
             .as_nanos();
         let path = std::env::temp_dir().join(format!(
-            "skein-relational-arithmetic-{nonce}-{}",
+            "hawdb-relational-arithmetic-{nonce}-{}",
             std::process::id()
         ));
         {
@@ -1339,11 +1339,11 @@ mod tests {
             .expect("system clock")
             .as_nanos();
         let path = std::env::temp_dir().join(format!(
-            "skein-relational-keyset-{}-{nonce}",
+            "hawdb-relational-keyset-{}-{nonce}",
             std::process::id()
         ));
         let config = DatabaseConfig {
-            relational_index_mode: skein_storage::RelationalIndexMode::DemandPaged,
+            relational_index_mode: hawdb_storage::RelationalIndexMode::DemandPaged,
             ..DatabaseConfig::default()
         };
         {
@@ -1462,7 +1462,7 @@ mod tests {
                 &path,
                 DurabilityPolicy::default(),
                 DatabaseConfig {
-                    relational_index_mode: skein_storage::RelationalIndexMode::Authoritative,
+                    relational_index_mode: hawdb_storage::RelationalIndexMode::Authoritative,
                     ..DatabaseConfig::default()
                 },
             )
@@ -1693,9 +1693,9 @@ mod tests {
         assert_eq!(
             committed.append_mutations[0].generated_order_keys,
             vec![
-                skein_storage::RelationalKey(vec![RelationalValue::BigInt(1)]),
-                skein_storage::RelationalKey(vec![RelationalValue::BigInt(2)]),
-                skein_storage::RelationalKey(vec![RelationalValue::BigInt(3)]),
+                hawdb_storage::RelationalKey(vec![RelationalValue::BigInt(1)]),
+                hawdb_storage::RelationalKey(vec![RelationalValue::BigInt(2)]),
+                hawdb_storage::RelationalKey(vec![RelationalValue::BigInt(3)]),
             ]
         );
 
@@ -2319,12 +2319,12 @@ mod tests {
             .expect("system clock")
             .as_nanos();
         let path = std::env::temp_dir().join(format!(
-            "skein-relational-sql-demand-index-{}-{nonce}",
+            "hawdb-relational-sql-demand-index-{}-{nonce}",
             std::process::id()
         ));
         let config = DatabaseConfig {
             segment_cache_capacity_bytes: 64 * 1024,
-            relational_index_mode: skein_storage::RelationalIndexMode::DemandPaged,
+            relational_index_mode: hawdb_storage::RelationalIndexMode::DemandPaged,
             ..DatabaseConfig::default()
         };
         let published_generation;
@@ -2635,11 +2635,11 @@ mod tests {
         {
             use std::io::{Read, Seek, SeekFrom, Write};
 
-            let page_bytes = skein_storage::RelationalIndexShadowConfig::default()
+            let page_bytes = hawdb_storage::RelationalIndexShadowConfig::default()
                 .page_limits
                 .max_page_bytes
                 .get() as u64;
-            let artifact = path.join(skein_storage::relational_index_shadow_artifact_file(
+            let artifact = path.join(hawdb_storage::relational_index_shadow_artifact_file(
                 published_generation,
             ));
             let mut file = std::fs::OpenOptions::new()
@@ -2665,7 +2665,7 @@ mod tests {
                 &path,
                 DurabilityPolicy::default(),
                 DatabaseConfig {
-                    relational_index_mode: skein_storage::RelationalIndexMode::DemandPaged,
+                    relational_index_mode: hawdb_storage::RelationalIndexMode::DemandPaged,
                     ..DatabaseConfig::default()
                 },
             )
@@ -2685,7 +2685,7 @@ mod tests {
             .expect("system clock")
             .as_nanos();
         let path = std::env::temp_dir().join(format!(
-            "skein-relational-schema-row-checkpoint-{}-{nonce}",
+            "hawdb-relational-schema-row-checkpoint-{}-{nonce}",
             std::process::id()
         ));
         let mut database = Database::open_with_durability(&path, DurabilityPolicy::default())
@@ -2719,7 +2719,7 @@ mod tests {
             .expect("system clock")
             .as_nanos();
         let path = std::env::temp_dir().join(format!(
-            "skein-relational-blocking-row-budget-{}-{nonce}",
+            "hawdb-relational-blocking-row-budget-{}-{nonce}",
             std::process::id()
         ));
         let mut database = Database::open_with_durability_and_config(
@@ -2761,7 +2761,7 @@ mod tests {
             .expect("system clock")
             .as_nanos();
         let path = std::env::temp_dir().join(format!(
-            "skein-relational-sql-authoritative-index-{}-{nonce}",
+            "hawdb-relational-sql-authoritative-index-{}-{nonce}",
             std::process::id()
         ));
         {
@@ -2769,7 +2769,7 @@ mod tests {
                 &path,
                 DurabilityPolicy::default(),
                 DatabaseConfig {
-                    relational_index_mode: skein_storage::RelationalIndexMode::Shadow,
+                    relational_index_mode: hawdb_storage::RelationalIndexMode::Shadow,
                     ..DatabaseConfig::default()
                 },
             )
@@ -2796,7 +2796,7 @@ mod tests {
                 &path,
                 DurabilityPolicy::default(),
                 DatabaseConfig {
-                    relational_index_mode: skein_storage::RelationalIndexMode::Authoritative,
+                    relational_index_mode: hawdb_storage::RelationalIndexMode::Authoritative,
                     ..DatabaseConfig::default()
                 },
             )
@@ -2815,7 +2815,7 @@ mod tests {
                 &path,
                 DurabilityPolicy::default(),
                 DatabaseConfig {
-                    relational_index_mode: skein_storage::RelationalIndexMode::Authoritative,
+                    relational_index_mode: hawdb_storage::RelationalIndexMode::Authoritative,
                     segment_cache_capacity_bytes: 1,
                     ..DatabaseConfig::default()
                 },
@@ -2842,7 +2842,7 @@ mod tests {
             .expect("system clock")
             .as_nanos();
         let path = std::env::temp_dir().join(format!(
-            "skein-authoritative-transaction-index-{}-{nonce}",
+            "hawdb-authoritative-transaction-index-{}-{nonce}",
             std::process::id()
         ));
         {
@@ -2850,7 +2850,7 @@ mod tests {
                 &path,
                 DurabilityPolicy::default(),
                 DatabaseConfig {
-                    relational_index_mode: skein_storage::RelationalIndexMode::Shadow,
+                    relational_index_mode: hawdb_storage::RelationalIndexMode::Shadow,
                     ..DatabaseConfig::default()
                 },
             )
@@ -2882,7 +2882,7 @@ mod tests {
                 &path,
                 DurabilityPolicy::default(),
                 DatabaseConfig {
-                    relational_index_mode: skein_storage::RelationalIndexMode::Authoritative,
+                    relational_index_mode: hawdb_storage::RelationalIndexMode::Authoritative,
                     ..DatabaseConfig::default()
                 },
             )
@@ -3024,9 +3024,9 @@ mod tests {
             .expect("insert cancellation row");
 
         let read = database.begin_read_transaction();
-        let cancellation = skein_core::RuntimeCancellationToken::new();
+        let cancellation = hawdb_core::RuntimeCancellationToken::new();
         cancellation.cancel();
-        let context = skein_core::RuntimeTaskContext::without_deadline(cancellation);
+        let context = hawdb_core::RuntimeTaskContext::without_deadline(cancellation);
         let error = read
             .query_sql_with_params_options_context(
                 "SELECT body FROM messages WHERE id = $1",
@@ -3227,8 +3227,8 @@ mod tests {
             RelationalJoinPlanningStatus::Selected
         );
 
-        let constrained_context = skein_core::RuntimeTaskContext::default()
-            .with_memory_reservation(skein_core::RuntimeMemoryReservation::new(1, 1));
+        let constrained_context = hawdb_core::RuntimeTaskContext::default()
+            .with_memory_reservation(hawdb_core::RuntimeMemoryReservation::new(1, 1));
         let constrained_read = database.begin_read_transaction_with_context(&constrained_context);
         let error = constrained_read
             .query_sql_with_params_options_with_join_planning(
@@ -3316,7 +3316,7 @@ mod tests {
         assert_eq!(join.table, "profile_parents");
         assert_eq!(
             join.access_path.kind,
-            skein_optimizer::RelationalAccessPathKind::PrimaryKey
+            hawdb_optimizer::RelationalAccessPathKind::PrimaryKey
         );
         assert_eq!(join.estimated_rows, 3);
         assert_eq!(join.actual_rows, Some(3));
@@ -3412,7 +3412,7 @@ mod tests {
                 RelationalRowReadMode::CanonicalMemory,
             ),
             limits,
-            &skein_executor::ExecutionMemoryConfig::default(),
+            &hawdb_executor::ExecutionMemoryConfig::default(),
             None,
         )
         .expect_err("rejected join candidates must consume the work budget");
@@ -3456,11 +3456,11 @@ mod tests {
             .expect("system clock")
             .as_nanos();
         let path = std::env::temp_dir().join(format!(
-            "skein-relational-probe-fanout-{}-{nonce}",
+            "hawdb-relational-probe-fanout-{}-{nonce}",
             std::process::id()
         ));
         let config = DatabaseConfig {
-            relational_index_mode: skein_storage::RelationalIndexMode::Shadow,
+            relational_index_mode: hawdb_storage::RelationalIndexMode::Shadow,
             ..DatabaseConfig::default()
         };
         {
@@ -3567,7 +3567,7 @@ mod tests {
             .expect("system clock")
             .as_nanos();
         let path = std::env::temp_dir().join(format!(
-            "skein-relational-batched-index-row-pages-{}-{nonce}",
+            "hawdb-relational-batched-index-row-pages-{}-{nonce}",
             std::process::id()
         ));
         {
@@ -3575,7 +3575,7 @@ mod tests {
                 &path,
                 DurabilityPolicy::default(),
                 DatabaseConfig {
-                    relational_index_mode: skein_storage::RelationalIndexMode::Shadow,
+                    relational_index_mode: hawdb_storage::RelationalIndexMode::Shadow,
                     ..DatabaseConfig::default()
                 },
             )
@@ -3631,7 +3631,7 @@ mod tests {
                 &path,
                 DurabilityPolicy::default(),
                 DatabaseConfig {
-                    relational_index_mode: skein_storage::RelationalIndexMode::Authoritative,
+                    relational_index_mode: hawdb_storage::RelationalIndexMode::Authoritative,
                     ..DatabaseConfig::default()
                 },
             )
@@ -3705,7 +3705,7 @@ mod tests {
                 &path,
                 DurabilityPolicy::default(),
                 DatabaseConfig {
-                    relational_index_mode: skein_storage::RelationalIndexMode::Authoritative,
+                    relational_index_mode: hawdb_storage::RelationalIndexMode::Authoritative,
                     ..DatabaseConfig::default()
                 },
             )
@@ -4039,7 +4039,7 @@ mod tests {
                     "tablename".to_string(),
                     Value::String("documents".to_string()),
                 ),
-                ("tableowner".to_string(), Value::String("skein".to_string()),),
+                ("tableowner".to_string(), Value::String("hawdb".to_string()),),
             ])]
         );
 
@@ -4252,7 +4252,7 @@ mod tests {
                 RelationalRowReadMode::CanonicalMemory,
             ),
             query_limits(1, 4 * 1024),
-            &skein_executor::ExecutionMemoryConfig::default(),
+            &hawdb_executor::ExecutionMemoryConfig::default(),
             None,
         )
         .expect("composite unique lookup");
@@ -4270,7 +4270,7 @@ mod tests {
                 RelationalRowReadMode::CanonicalMemory,
             ),
             query_limits(1, 64 * 1024),
-            &skein_executor::ExecutionMemoryConfig::default(),
+            &hawdb_executor::ExecutionMemoryConfig::default(),
             None,
         )
         .expect("bounded message page");
@@ -4284,10 +4284,10 @@ mod tests {
         assert_eq!(page.hydration.hydrated_rows, 1);
         assert!(page.hydration.decompressed_bytes > 8 * 1024);
 
-        let locator_constrained_memory = skein_executor::ExecutionMemoryConfig {
+        let locator_constrained_memory = hawdb_executor::ExecutionMemoryConfig {
             batch_payload_bytes: std::num::NonZeroUsize::new(128)
                 .expect("non-zero locator batch budget"),
-            ..skein_executor::ExecutionMemoryConfig::default()
+            ..hawdb_executor::ExecutionMemoryConfig::default()
         };
         let error = execute_relational_query_sql_with_runtime(
             "SELECT id, body FROM messages WHERE stream_id = $1 ORDER BY order_index ASC, id ASC LIMIT $2 OFFSET $3",
@@ -4313,7 +4313,7 @@ mod tests {
                 RelationalRowReadMode::CanonicalMemory,
             ),
             query_limits(16, 64 * 1024),
-            &skein_executor::ExecutionMemoryConfig::default(),
+            &hawdb_executor::ExecutionMemoryConfig::default(),
             None,
         )
         .expect("explain ordered index page");
@@ -4345,9 +4345,9 @@ mod tests {
                 RelationalRowReadMode::CanonicalMemory,
             ),
             RelationalQueryResourceContext::new(
-                skein_optimizer::RelationalJoinEnumerationConfig::default(),
+                hawdb_optimizer::RelationalJoinEnumerationConfig::default(),
                 query_limits(2, 4 * 1024),
-                &skein_executor::ExecutionMemoryConfig::default(),
+                &hawdb_executor::ExecutionMemoryConfig::default(),
                 None,
             )
             .with_join_planning(RelationalJoinPlanningDirective::SyntaxOrder),
@@ -4369,7 +4369,7 @@ mod tests {
                 RelationalRowReadMode::CanonicalMemory,
             ),
             query_limits(1, 4 * 1024),
-            &skein_executor::ExecutionMemoryConfig::default(),
+            &hawdb_executor::ExecutionMemoryConfig::default(),
             None,
         )
         .expect("bounded aggregate");
@@ -4386,7 +4386,7 @@ mod tests {
                 RelationalRowReadMode::CanonicalMemory,
             ),
             query_limits(1, 4 * 1024),
-            &skein_executor::ExecutionMemoryConfig::default(),
+            &hawdb_executor::ExecutionMemoryConfig::default(),
             None,
         )
         .expect("columnar nullable COUNT");
@@ -4401,16 +4401,16 @@ mod tests {
                 RelationalRowReadMode::CanonicalMemory,
             ),
             query_limits(1, 4 * 1024),
-            &skein_executor::ExecutionMemoryConfig::default(),
+            &hawdb_executor::ExecutionMemoryConfig::default(),
             None,
         )
         .expect("row aggregate oracle");
         assert_eq!(summary.rows, row_oracle.rows);
 
-        let aggregate_constrained_memory = skein_executor::ExecutionMemoryConfig {
+        let aggregate_constrained_memory = hawdb_executor::ExecutionMemoryConfig {
             batch_payload_bytes: std::num::NonZeroUsize::new(128)
                 .expect("non-zero aggregate batch budget"),
-            ..skein_executor::ExecutionMemoryConfig::default()
+            ..hawdb_executor::ExecutionMemoryConfig::default()
         };
         let error = execute_relational_query_sql_with_runtime(
             summary_sql,
@@ -4429,10 +4429,10 @@ mod tests {
             .to_string()
             .contains("relational columnar aggregate cannot fit one row"));
 
-        let constrained_memory = skein_executor::ExecutionMemoryConfig {
+        let constrained_memory = hawdb_executor::ExecutionMemoryConfig {
             blocking_operator_bytes: std::num::NonZeroUsize::new(1)
                 .expect("non-zero aggregate memory budget"),
-            ..skein_executor::ExecutionMemoryConfig::default()
+            ..hawdb_executor::ExecutionMemoryConfig::default()
         };
         let error = execute_relational_query_sql_with_runtime(
             summary_sql,
@@ -4465,10 +4465,10 @@ mod tests {
         );
 
         let snapshot = store.snapshot().expect("distinct query snapshot");
-        let constrained_memory = skein_executor::ExecutionMemoryConfig {
+        let constrained_memory = hawdb_executor::ExecutionMemoryConfig {
             batch_payload_bytes: std::num::NonZeroUsize::new(128)
                 .expect("non-zero distinct batch budget"),
-            ..skein_executor::ExecutionMemoryConfig::default()
+            ..hawdb_executor::ExecutionMemoryConfig::default()
         };
         for sql in [
             "SELECT DISTINCT body FROM distinct_values",
@@ -4514,9 +4514,9 @@ mod tests {
             max_output_payload_bytes,
             max_intermediate_rows: 10_000,
             max_candidate_work: 10_000,
-            hydration: skein_storage::RelationalHydrationBudget::default(),
-            index_read: skein_storage::RelationalIndexReadLimits::default(),
-            row_read: skein_storage::RelationalRowPageSnapshotReadLimits::default(),
+            hydration: hawdb_storage::RelationalHydrationBudget::default(),
+            index_read: hawdb_storage::RelationalIndexReadLimits::default(),
+            row_read: hawdb_storage::RelationalRowPageSnapshotReadLimits::default(),
         }
     }
 
@@ -4569,7 +4569,7 @@ mod tests {
                 RelationalRowReadMode::CanonicalMemory,
             ),
             query_limits(8, 64 * 1024),
-            &skein_executor::ExecutionMemoryConfig::default(),
+            &hawdb_executor::ExecutionMemoryConfig::default(),
             None,
         )
         .expect("select source chunks from the selective document outer");
@@ -4622,7 +4622,7 @@ mod tests {
                 RelationalRowReadMode::CanonicalMemory,
             ),
             query_limits(16, 64 * 1024),
-            &skein_executor::ExecutionMemoryConfig::default(),
+            &hawdb_executor::ExecutionMemoryConfig::default(),
             None,
         )
         .expect("explain the selective content store join order");
@@ -4708,7 +4708,7 @@ mod tests {
                 RelationalRowReadMode::CanonicalMemory,
             ),
             query_limits(8, 64 * 1024),
-            &skein_executor::ExecutionMemoryConfig::default(),
+            &hawdb_executor::ExecutionMemoryConfig::default(),
             None,
         )
         .expect("execute memo-selected three-way join order");
@@ -4787,7 +4787,7 @@ mod tests {
                 RelationalRowReadMode::CanonicalMemory,
             ),
             query_limits(8, 64 * 1024),
-            &skein_executor::ExecutionMemoryConfig::default(),
+            &hawdb_executor::ExecutionMemoryConfig::default(),
             None,
         )
         .expect("execute a degenerate inner join through CSG-CMP");
@@ -4827,7 +4827,7 @@ mod tests {
                 RelationalRowReadMode::CanonicalMemory,
             ),
             query_limits(16, 64 * 1024),
-            &skein_executor::ExecutionMemoryConfig::default(),
+            &hawdb_executor::ExecutionMemoryConfig::default(),
             None,
         )
         .expect("explain the degenerate CSG-CMP plan");
@@ -4894,7 +4894,7 @@ mod tests {
                 RelationalRowReadMode::CanonicalMemory,
             ),
             query_limits(8, 64 * 1024),
-            &skein_executor::ExecutionMemoryConfig::default(),
+            &hawdb_executor::ExecutionMemoryConfig::default(),
             None,
         )
         .expect("execute CD-C left-asscom rewrite");
@@ -4993,7 +4993,7 @@ mod tests {
                 RelationalRowReadMode::CanonicalMemory,
             ),
             query_limits(8, 64 * 1024),
-            &skein_executor::ExecutionMemoryConfig::default(),
+            &hawdb_executor::ExecutionMemoryConfig::default(),
             None,
         )
         .expect("execute null-rejection-authorized join rewrite");
@@ -5014,7 +5014,7 @@ mod tests {
                 RelationalRowReadMode::CanonicalMemory,
             ),
             query_limits(16, 64 * 1024),
-            &skein_executor::ExecutionMemoryConfig::default(),
+            &hawdb_executor::ExecutionMemoryConfig::default(),
             None,
         )
         .expect("explain null-rejection-authorized join rewrite");
@@ -5112,20 +5112,20 @@ mod tests {
         );
         let snapshot = store.snapshot().expect("spill fixture snapshot");
         let limits = query_limits(256, 64 * 1024);
-        let memory = skein_executor::ExecutionMemoryConfig {
+        let memory = hawdb_executor::ExecutionMemoryConfig {
             batch_rows: std::num::NonZeroUsize::new(8).expect("non-zero batch rows"),
             blocking_operator_bytes: std::num::NonZeroUsize::new(16 * 1_024)
                 .expect("non-zero blocking memory"),
             min_spill_free_bytes: std::num::NonZeroU64::MIN,
             spill_directory: std::env::temp_dir().join(format!(
-                "skein-relational-spill-{}-{}",
+                "hawdb-relational-spill-{}-{}",
                 std::process::id(),
                 std::time::SystemTime::now()
                     .duration_since(std::time::UNIX_EPOCH)
                     .expect("system clock")
                     .as_nanos()
             )),
-            ..skein_executor::ExecutionMemoryConfig::default()
+            ..hawdb_executor::ExecutionMemoryConfig::default()
         };
 
         let sorted = execute_relational_query_sql_with_runtime(
@@ -5259,10 +5259,10 @@ mod tests {
             .iter()
             .any(|report| report.operator == "SortExec" && report.spill_run_count > 0));
 
-        let explain_cancellation = skein_core::RuntimeCancellationToken::new();
+        let explain_cancellation = hawdb_core::RuntimeCancellationToken::new();
         explain_cancellation.cancel();
         let explain_context =
-            skein_core::RuntimeTaskContext::without_deadline(explain_cancellation);
+            hawdb_core::RuntimeTaskContext::without_deadline(explain_cancellation);
         let explained = execute_relational_query_sql_with_runtime(
             "EXPLAIN SELECT id FROM spill_rows WHERE id = $1",
             &[Value::Int(7)],
@@ -5310,9 +5310,9 @@ mod tests {
                 && !matches!(row.get("disk"), None | Some(Value::Null))
         }));
 
-        let cancellation = skein_core::RuntimeCancellationToken::new();
+        let cancellation = hawdb_core::RuntimeCancellationToken::new();
         cancellation.cancel();
-        let task_context = skein_core::RuntimeTaskContext::without_deadline(cancellation);
+        let task_context = hawdb_core::RuntimeTaskContext::without_deadline(cancellation);
         let error = execute_relational_query_sql_with_runtime(
             "SELECT id FROM spill_rows",
             &[],

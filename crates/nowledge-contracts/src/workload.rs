@@ -325,7 +325,7 @@ mod tests {
     #[test]
     fn workload_report_json_preserves_nested_evidence() {
         let report = NowledgeGraphRouteWorkloadFixtureReport {
-            protocol: "skein-nowledge-graph-route-workload-fixture-v1",
+            protocol: "hawdb-nowledge-graph-route-workload-fixture-v1",
             ready: true,
             route_count: 1,
             query_count: 1,

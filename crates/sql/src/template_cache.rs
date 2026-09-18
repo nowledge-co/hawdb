@@ -1,7 +1,7 @@
 use crate::timing::elapsed_nanos;
 use crate::{prepare_postgres_sql, PreparedPostgresStatement, SqlStatement};
-use skein_core::Result;
-use skein_plan_cache::{LfuCache, PlanCacheStats};
+use hawdb_core::Result;
+use hawdb_plan_cache::{LfuCache, PlanCacheStats};
 use std::sync::{Arc, Mutex, MutexGuard};
 use std::time::Instant;
 

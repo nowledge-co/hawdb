@@ -1,9 +1,9 @@
-use serde_json::json;
-use skein::{
+use hawdb::{
     SearchDocument, SearchEmbeddingManifest, SearchIndex, SearchOutOfCoreGenerationBuildOptions,
     SearchOutOfCoreGenerationWriter, SearchOutOfCoreReader,
 };
-use skein_qos::{ProcessMemoryProfile, ProcessMemorySnapshot};
+use hawdb_qos::{ProcessMemoryProfile, ProcessMemorySnapshot};
+use serde_json::json;
 use std::collections::BTreeMap;
 use std::time::{Instant, SystemTime, UNIX_EPOCH};
 
@@ -18,10 +18,10 @@ const DEFAULT_DOCUMENTS: usize = if cfg!(debug_assertions) {
 };
 const CONTENT_BYTES: usize = 512;
 const EMBEDDING_DIMENSION: usize = 16;
-const MODE_ENV: &str = "SKEIN_SEARCH_GENERATION_BENCH_MODE";
+const MODE_ENV: &str = "HAWDB_SEARCH_GENERATION_BENCH_MODE";
 
 fn main() {
-    let document_count = std::env::var("SKEIN_SEARCH_GENERATION_BENCH_DOCUMENTS")
+    let document_count = std::env::var("HAWDB_SEARCH_GENERATION_BENCH_DOCUMENTS")
         .ok()
         .and_then(|value| value.parse().ok())
         .unwrap_or(DEFAULT_DOCUMENTS);
@@ -31,7 +31,7 @@ fn main() {
         "{MODE_ENV} must be streaming or resident"
     );
     let path = std::env::temp_dir().join(format!(
-        "skein-search-generation-bench-{}-{}",
+        "hawdb-search-generation-bench-{}-{}",
         std::process::id(),
         SystemTime::now()
             .duration_since(UNIX_EPOCH)

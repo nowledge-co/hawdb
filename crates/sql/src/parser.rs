@@ -1,5 +1,5 @@
 use crate::ast::*;
-use skein_core::{Result, SkeinError, Value};
+use hawdb_core::{HawdbError, Result, Value};
 use sqlparser::ast::Spanned;
 use sqlparser::ast::{
     BinaryOperator, Distinct, DuplicateTreatment, Expr, FunctionArg, FunctionArgExpr,
@@ -21,7 +21,7 @@ fn reject_unsupported_clauses(
     clauses: &[(&'static str, bool)],
 ) -> Result<()> {
     if let Some((clause, _)) = clauses.iter().find(|(_, present)| *present) {
-        return Err(SkeinError::Semantic(format!(
+        return Err(HawdbError::Semantic(format!(
             "unsupported PostgreSQL {statement} clause: {clause}"
         )));
     }
@@ -36,9 +36,9 @@ use schema::{
 pub fn parse_postgres_sql(input: &str) -> Result<SqlStatement> {
     let dialect = PostgreSqlDialect {};
     let statements = Parser::parse_sql(&dialect, input)
-        .map_err(|error| SkeinError::Parse(format!("failed to parse PostgreSQL SQL: {error}")))?;
+        .map_err(|error| HawdbError::Parse(format!("failed to parse PostgreSQL SQL: {error}")))?;
     let [statement] = statements.as_slice() else {
-        return Err(SkeinError::Parse(
+        return Err(HawdbError::Parse(
             "expected exactly one PostgreSQL SQL statement".to_string(),
         ));
     };
@@ -64,13 +64,13 @@ fn lower_statement(statement: &ParserStatement) -> Result<SqlStatement> {
                 || format.is_some()
                 || options.as_ref().is_some_and(|options| !options.is_empty())
             {
-                return Err(SkeinError::Semantic(
+                return Err(HawdbError::Semantic(
                     "unsupported PostgreSQL EXPLAIN option".to_string(),
                 ));
             }
             let statement = lower_statement(statement)?;
             if !matches!(statement, SqlStatement::Select(_)) {
-                return Err(SkeinError::Semantic(
+                return Err(HawdbError::Semantic(
                     "EXPLAIN only supports relational SELECT".to_string(),
                 ));
             }
@@ -86,7 +86,7 @@ fn lower_statement(statement: &ParserStatement) -> Result<SqlStatement> {
         ParserStatement::CreateTable(create) => lower_create_table_statement(create),
         ParserStatement::CreateIndex(create) => lower_create_index_statement(create),
         ParserStatement::AlterTable(alter) => lower_alter_table_statement(alter),
-        _ => Err(SkeinError::Semantic(
+        _ => Err(HawdbError::Semantic(
             "unsupported PostgreSQL statement kind".to_string(),
         )),
     }
@@ -100,12 +100,12 @@ fn lower_select_statement(query: &sqlparser::ast::Query) -> Result<SqlStatement>
         || query.format_clause.is_some()
         || !query.pipe_operators.is_empty()
     {
-        return Err(SkeinError::Semantic(
+        return Err(HawdbError::Semantic(
             "unsupported PostgreSQL SELECT clause".to_string(),
         ));
     }
     let SetExpr::Select(select) = query.body.as_ref() else {
-        return Err(SkeinError::Semantic(
+        return Err(HawdbError::Semantic(
             "set operations and nested queries are not supported".to_string(),
         ));
     };
@@ -121,12 +121,12 @@ fn lower_select_statement(query: &sqlparser::ast::Query) -> Result<SqlStatement>
         || select.qualify.is_some()
         || select.value_table_mode.is_some()
     {
-        return Err(SkeinError::Semantic(
+        return Err(HawdbError::Semantic(
             "unsupported PostgreSQL SELECT feature".to_string(),
         ));
     }
     if select.from.is_empty() {
-        return Err(SkeinError::Semantic(
+        return Err(HawdbError::Semantic(
             "PostgreSQL SELECT requires at least one FROM item".to_string(),
         ));
     }
@@ -180,7 +180,7 @@ fn lower_select_statement(query: &sqlparser::ast::Query) -> Result<SqlStatement>
 
 fn lower_lock_strength(locks: &[LockClause]) -> Result<Option<SqlLockStrength>> {
     let ([] | [_]) = locks else {
-        return Err(SkeinError::Semantic(
+        return Err(HawdbError::Semantic(
             "PostgreSQL SELECT supports at most one locking clause".to_string(),
         ));
     };
@@ -188,7 +188,7 @@ fn lower_lock_strength(locks: &[LockClause]) -> Result<Option<SqlLockStrength>> 
         return Ok(None);
     };
     if lock.of.is_some() || lock.nonblock.is_some() {
-        return Err(SkeinError::Semantic(
+        return Err(HawdbError::Semantic(
             "FOR UPDATE/SHARE OF, NOWAIT, and SKIP LOCKED are not supported".to_string(),
         ));
     }
@@ -207,7 +207,7 @@ fn lower_projection(items: &[ParserSelectItem]) -> Result<Vec<SelectProjection>>
             ParserSelectItem::ExprWithAlias { expr, alias } => {
                 lower_projection_expression(expr, Some(normalize_ident(alias)))
             }
-            ParserSelectItem::QualifiedWildcard(_, _) => Err(SkeinError::Semantic(
+            ParserSelectItem::QualifiedWildcard(_, _) => Err(HawdbError::Semantic(
                 "qualified wildcards are not supported".to_string(),
             )),
         })
@@ -226,7 +226,7 @@ fn lower_order_by(order_by: Option<&sqlparser::ast::OrderBy>) -> Result<Vec<SqlO
         return Ok(Vec::new());
     };
     let OrderByKind::Expressions(expressions) = &order_by.kind else {
-        return Err(SkeinError::Semantic(
+        return Err(HawdbError::Semantic(
             "ORDER BY ALL is not supported".to_string(),
         ));
     };
@@ -309,7 +309,7 @@ pub(super) fn lower_expression(expr: &Expr, position: ExpressionPosition) -> Res
             }
             Expr::Function(function) => lower_function_expression(function, position)?,
             _ => {
-                return Err(SkeinError::Semantic(format!(
+                return Err(HawdbError::Semantic(format!(
                     "unsupported PostgreSQL projection expression {expr}"
                 )))
             }
@@ -341,7 +341,7 @@ pub(super) fn lower_expression(expr: &Expr, position: ExpressionPosition) -> Res
                     )?,
                 },
                 _ => {
-                    return Err(SkeinError::Semantic(format!(
+                    return Err(HawdbError::Semantic(format!(
                         "unsupported PostgreSQL predicate operator {op}"
                     )))
                 }
@@ -403,7 +403,7 @@ pub(super) fn lower_expression(expr: &Expr, position: ExpressionPosition) -> Res
             },
             _ if having => lower_expression(expr, HavingScalar)?.kind,
             _ => {
-                return Err(SkeinError::Semantic(format!(
+                return Err(HawdbError::Semantic(format!(
                     "unsupported PostgreSQL predicate expression {expr}"
                 )))
             }
@@ -435,7 +435,7 @@ fn lower_like_expression(
     having: bool,
 ) -> Result<ExprKind> {
     if any {
-        return Err(SkeinError::Semantic(
+        return Err(HawdbError::Semantic(
             "PostgreSQL LIKE ANY is not supported".to_string(),
         ));
     }
@@ -467,7 +467,7 @@ fn lower_like_escape(escape_char: Option<&ParserValue>) -> Result<SqlLikeEscape>
         return Ok(SqlLikeEscape::Character('\\'));
     };
     let Some(escape) = escape_char.clone().into_string() else {
-        return Err(SkeinError::Semantic(
+        return Err(HawdbError::Semantic(
             "LIKE ESCAPE must be a string literal".to_string(),
         ));
     };
@@ -476,7 +476,7 @@ fn lower_like_escape(escape_char: Option<&ParserValue>) -> Result<SqlLikeEscape>
         return Ok(SqlLikeEscape::Disabled);
     };
     if characters.next().is_some() {
-        return Err(SkeinError::Semantic(
+        return Err(HawdbError::Semantic(
             "LIKE ESCAPE must contain at most one Unicode scalar".to_string(),
         ));
     }
@@ -487,7 +487,7 @@ fn lower_distinct(distinct: Option<&Distinct>) -> Result<bool> {
     match distinct {
         None | Some(Distinct::All) => Ok(false),
         Some(Distinct::Distinct) => Ok(true),
-        Some(Distinct::On(_)) => Err(SkeinError::Semantic(
+        Some(Distinct::On(_)) => Err(HawdbError::Semantic(
             "PostgreSQL DISTINCT ON is not supported".to_string(),
         )),
     }
@@ -499,7 +499,7 @@ fn lower_group_by(group_by: &GroupByExpr) -> Result<Vec<SqlColumnRef>> {
             .iter()
             .map(lower_column_expr)
             .collect::<Result<Vec<_>>>(),
-        GroupByExpr::Expressions(_, _) | GroupByExpr::All(_) => Err(SkeinError::Semantic(
+        GroupByExpr::Expressions(_, _) | GroupByExpr::All(_) => Err(HawdbError::Semantic(
             "PostgreSQL GROUP BY modifiers and GROUP BY ALL are not supported".to_string(),
         )),
     }
@@ -507,7 +507,7 @@ fn lower_group_by(group_by: &GroupByExpr) -> Result<Vec<SqlColumnRef>> {
 
 pub(super) fn lower_table_factor(table: &TableFactor) -> Result<(SqlTableName, Option<String>)> {
     let TableFactor::Table { name, alias, .. } = table else {
-        return Err(SkeinError::Semantic(
+        return Err(HawdbError::Semantic(
             "PostgreSQL relational SQL supports base tables only".to_string(),
         ));
     };
@@ -519,7 +519,7 @@ fn lower_table_alias(alias: Option<&TableAlias>) -> Result<Option<String>> {
         return Ok(None);
     };
     if !alias.columns.is_empty() {
-        return Err(SkeinError::Semantic(
+        return Err(HawdbError::Semantic(
             "PostgreSQL table column aliases are not supported".to_string(),
         ));
     }
@@ -548,13 +548,13 @@ fn lower_join(join: &sqlparser::ast::Join, on_scope_start: usize) -> Result<SqlJ
             (SqlJoinKind::Left, constraint)
         }
         other => {
-            return Err(SkeinError::Semantic(format!(
+            return Err(HawdbError::Semantic(format!(
                 "unsupported PostgreSQL join operator {other:?}"
             )));
         }
     };
     let JoinConstraint::On(on) = constraint else {
-        return Err(SkeinError::Semantic(
+        return Err(HawdbError::Semantic(
             "PostgreSQL joins require an ON predicate".to_string(),
         ));
     };
@@ -577,23 +577,23 @@ fn lower_function_expression(
         || function.over.is_some()
         || !function.within_group.is_empty()
     {
-        return Err(SkeinError::Semantic(
+        return Err(HawdbError::Semantic(
             "unsupported PostgreSQL function clause".to_string(),
         ));
     }
     let name_parts = object_name_parts(&function.name)?;
     let [name] = name_parts.as_slice() else {
-        return Err(SkeinError::Semantic(
+        return Err(HawdbError::Semantic(
             "qualified PostgreSQL function names are not supported".to_string(),
         ));
     };
     let FunctionArguments::List(arguments) = &function.args else {
-        return Err(SkeinError::Semantic(
+        return Err(HawdbError::Semantic(
             "PostgreSQL functions require an argument list".to_string(),
         ));
     };
     if !arguments.clauses.is_empty() {
-        return Err(SkeinError::Semantic(
+        return Err(HawdbError::Semantic(
             "PostgreSQL function argument clauses are not supported".to_string(),
         ));
     }
@@ -609,7 +609,7 @@ fn lower_function_expression(
                 lower_expression(expr, argument_position).map(SqlFunctionArgument::Expression)
             }
             FunctionArg::Unnamed(FunctionArgExpr::Wildcard) => Ok(SqlFunctionArgument::Wildcard),
-            _ => Err(SkeinError::Semantic(
+            _ => Err(HawdbError::Semantic(
                 "named and qualified-wildcard PostgreSQL function arguments are not supported"
                     .to_string(),
             )),
@@ -635,10 +635,10 @@ fn lower_function_expression(
                 filter,
             })
         }
-        "max" | "coalesce" | "octet_length" | "uuidv7" => Err(SkeinError::Semantic(
+        "max" | "coalesce" | "octet_length" | "uuidv7" => Err(HawdbError::Semantic(
             "FILTER is supported only for COUNT and SUM aggregates".to_string(),
         )),
-        _ => Err(SkeinError::Semantic(format!(
+        _ => Err(HawdbError::Semantic(format!(
             "unsupported PostgreSQL function {name}"
         ))),
     }
@@ -667,7 +667,7 @@ pub(super) fn lower_table_name(name: &ObjectName) -> Result<SqlTableName> {
             schema: Some(schema.clone()),
             name: name.clone(),
         }),
-        _ => Err(SkeinError::Semantic(
+        _ => Err(HawdbError::Semantic(
             "PostgreSQL SELECT currently supports one- or two-part table names".to_string(),
         )),
     }
@@ -684,11 +684,11 @@ pub(super) fn lower_column_expr(expr: &Expr) -> Result<SqlColumnRef> {
                 qualifier: Some(normalize_ident(qualifier)),
                 name: normalize_ident(name),
             }),
-            _ => Err(SkeinError::Semantic(
+            _ => Err(HawdbError::Semantic(
                 "PostgreSQL SELECT currently supports one- or two-part column names".to_string(),
             )),
         },
-        _ => Err(SkeinError::Semantic(format!(
+        _ => Err(HawdbError::Semantic(format!(
             "expected a column reference, got {expr}"
         ))),
     }
@@ -704,11 +704,11 @@ pub(super) fn lower_literal_expr(expr: &Expr) -> Result<SqlValue> {
         } => match lower_literal_expr(expr)? {
             SqlValue::Literal(Value::Int(value)) => Ok(SqlValue::Literal(Value::Int(-value))),
             SqlValue::Literal(Value::Float(value)) => Ok(SqlValue::Literal(Value::Float(-value))),
-            value => Err(SkeinError::Semantic(format!(
+            value => Err(HawdbError::Semantic(format!(
                 "cannot negate literal value {value}"
             ))),
         },
-        _ => Err(SkeinError::Semantic(format!(
+        _ => Err(HawdbError::Semantic(format!(
             "expected a literal value, got {expr}"
         ))),
     }
@@ -728,7 +728,7 @@ fn lower_value(value: &ValueWithSpan) -> Result<SqlValue> {
             Ok(SqlValue::Literal(Value::String(value.clone())))
         }
         ParserValue::Placeholder(raw) => Ok(SqlValue::Parameter(postgres_parameter_position(raw)?)),
-        _ => Err(SkeinError::Semantic(format!(
+        _ => Err(HawdbError::Semantic(format!(
             "unsupported PostgreSQL literal {value}"
         ))),
     }
@@ -737,11 +737,11 @@ fn lower_value(value: &ValueWithSpan) -> Result<SqlValue> {
 fn lower_number(raw: &str) -> Result<Value> {
     if raw.contains('.') {
         raw.parse::<f64>().map(Value::Float).map_err(|error| {
-            SkeinError::Semantic(format!("invalid PostgreSQL number {raw}: {error}"))
+            HawdbError::Semantic(format!("invalid PostgreSQL number {raw}: {error}"))
         })
     } else {
         raw.parse::<i64>().map(Value::Int).map_err(|error| {
-            SkeinError::Semantic(format!("invalid PostgreSQL integer {raw}: {error}"))
+            HawdbError::Semantic(format!("invalid PostgreSQL integer {raw}: {error}"))
         })
     }
 }
@@ -751,7 +751,7 @@ fn lower_nonnegative_integer_expr(expr: &Expr) -> Result<SqlBound> {
     match value {
         SqlValue::Literal(Value::Int(value)) if value >= 0 => Ok(SqlBound::Literal(value as u64)),
         SqlValue::Parameter(position) => Ok(SqlBound::Parameter(position)),
-        _ => Err(SkeinError::Semantic(
+        _ => Err(HawdbError::Semantic(
             "LIMIT/OFFSET must be non-negative integers or PostgreSQL parameters".to_string(),
         )),
     }
@@ -759,15 +759,15 @@ fn lower_nonnegative_integer_expr(expr: &Expr) -> Result<SqlBound> {
 
 fn postgres_parameter_position(raw: &str) -> Result<usize> {
     let Some(raw) = raw.strip_prefix('$') else {
-        return Err(SkeinError::Semantic(
+        return Err(HawdbError::Semantic(
             "PostgreSQL parameters must use one-based $n syntax".to_string(),
         ));
     };
     let position = raw.parse::<usize>().map_err(|_| {
-        SkeinError::Semantic("PostgreSQL parameters must use one-based $n syntax".to_string())
+        HawdbError::Semantic("PostgreSQL parameters must use one-based $n syntax".to_string())
     })?;
     if position == 0 {
-        return Err(SkeinError::Semantic(
+        return Err(HawdbError::Semantic(
             "PostgreSQL parameters are one-based".to_string(),
         ));
     }
@@ -779,7 +779,7 @@ pub(super) fn object_name_parts(name: &ObjectName) -> Result<Vec<String>> {
         .iter()
         .map(|part| match part {
             ObjectNamePart::Identifier(ident) => Ok(normalize_ident(ident)),
-            _ => Err(SkeinError::Semantic(
+            _ => Err(HawdbError::Semantic(
                 "object name functions are not supported".to_string(),
             )),
         })

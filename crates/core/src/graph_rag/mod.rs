@@ -15,7 +15,7 @@ pub use query_generation::{
 };
 use topology::{common_path_summaries, route_summaries};
 
-pub const GRAPH_RAG_SCHEMA_CONTEXT_PROTOCOL: &str = "skein-graph-rag-schema-context-v1";
+pub const GRAPH_RAG_SCHEMA_CONTEXT_PROTOCOL: &str = "hawdb-graph-rag-schema-context-v1";
 pub const DEFAULT_GRAPH_RAG_MAX_LABELS: usize = 32;
 pub const DEFAULT_GRAPH_RAG_MAX_RELATIONSHIP_TYPES: usize = 32;
 pub const DEFAULT_GRAPH_RAG_MAX_PROPERTIES_PER_SUBJECT: usize = 12;

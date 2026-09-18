@@ -8,12 +8,12 @@
     "lancedb_routes": [],
     "missing_required_routes": [],
     "production_cutover_ready": true,
-    "protocol": "skein-nowledge-mem-search-route-ownership-v1",
+    "protocol": "hawdb-nowledge-mem-search-route-ownership-v1",
     "ready": true,
-    "require_all_skein": true,
+    "require_all_hawdb": true,
     "required_route_count": 8,
-    "skein_route_count": 8,
-    "skein_routes": [
+    "hawdb_route_count": 8,
+    "hawdb_routes": [
       "community_discovery",
       "deep_search_graph_expansion",
       "entity_discovery",
@@ -40,9 +40,9 @@
     "lancedb_handle_required_routes": [],
     "metadata_pushdown_not_ready_routes": [],
     "missing_required_routes": [],
-    "non_skein_routes": [],
+    "non_hawdb_routes": [],
     "production_cutover_ready": true,
-    "protocol": "skein-nowledge-mem-active-search-route-readiness-v1",
+    "protocol": "hawdb-nowledge-mem-active-search-route-readiness-v1",
     "ranking_not_ready_routes": [],
     "ranking_window_not_ready_routes": [],
     "ready": true,
@@ -58,7 +58,7 @@
       "thread_message_fts"
     ],
     "repair_rebuild_markers_not_ready_routes": [],
-    "require_all_skein": true,
+    "require_all_hawdb": true,
     "required_route_count": 8,
     "requirements": [
       {
@@ -174,7 +174,7 @@
         "route": "deep_search_graph_expansion"
       }
     ],
-    "skein_route_count": 8,
+    "hawdb_route_count": 8,
     "unknown_routes": [],
     "zero_vector_semantics_not_ready_routes": []
   },
@@ -252,7 +252,7 @@
       "/entities/{entity_id}/relationships",
       "/agent/evolves"
     ],
-    "protocol": "skein-nowledge-mem-bounded-read-evidence-v2",
+    "protocol": "hawdb-nowledge-mem-bounded-read-evidence-v2",
     "ready": true,
     "relationship_property_pruning_report_count": 0,
     "relationship_property_pruning_required_count": 0,
@@ -557,7 +557,7 @@
           "matched_per_million": 1000000,
           "primary_engine": "kuzu",
           "ready": true,
-          "shadow_engine": "skein",
+          "shadow_engine": "hawdb",
           "source": "route_parity_evidence"
         },
         "shadow_compare_evidence_source": "route_parity_evidence",
@@ -575,7 +575,7 @@
           "matched_per_million": 1000000,
           "primary_engine": "kuzu",
           "ready": true,
-          "shadow_engine": "skein",
+          "shadow_engine": "hawdb",
           "source": "route_parity_evidence"
         },
         "shadow_compare_evidence_source": "route_parity_evidence",
@@ -593,7 +593,7 @@
           "matched_per_million": 1000000,
           "primary_engine": "kuzu",
           "ready": true,
-          "shadow_engine": "skein",
+          "shadow_engine": "hawdb",
           "source": "route_parity_evidence"
         },
         "shadow_compare_evidence_source": "route_parity_evidence",
@@ -611,7 +611,7 @@
           "matched_per_million": 1000000,
           "primary_engine": "kuzu",
           "ready": true,
-          "shadow_engine": "skein",
+          "shadow_engine": "hawdb",
           "source": "route_parity_evidence"
         },
         "shadow_compare_evidence_source": "route_parity_evidence",
@@ -629,7 +629,7 @@
           "matched_per_million": 1000000,
           "primary_engine": "kuzu",
           "ready": true,
-          "shadow_engine": "skein",
+          "shadow_engine": "hawdb",
           "source": "route_parity_evidence"
         },
         "shadow_compare_evidence_source": "route_parity_evidence",
@@ -647,7 +647,7 @@
           "matched_per_million": 1000000,
           "primary_engine": "kuzu",
           "ready": true,
-          "shadow_engine": "skein",
+          "shadow_engine": "hawdb",
           "source": "route_parity_evidence"
         },
         "shadow_compare_evidence_source": "route_parity_evidence",
@@ -665,7 +665,7 @@
           "matched_per_million": 1000000,
           "primary_engine": "kuzu",
           "ready": true,
-          "shadow_engine": "skein",
+          "shadow_engine": "hawdb",
           "source": "route_parity_evidence"
         },
         "shadow_compare_evidence_source": "route_parity_evidence",
@@ -683,7 +683,7 @@
           "matched_per_million": 1000000,
           "primary_engine": "kuzu",
           "ready": true,
-          "shadow_engine": "skein",
+          "shadow_engine": "hawdb",
           "source": "route_parity_evidence"
         },
         "shadow_compare_evidence_source": "route_parity_evidence",
@@ -701,7 +701,7 @@
           "matched_per_million": 1000000,
           "primary_engine": "kuzu",
           "ready": true,
-          "shadow_engine": "skein",
+          "shadow_engine": "hawdb",
           "source": "route_parity_evidence"
         },
         "shadow_compare_evidence_source": "route_parity_evidence",
@@ -719,7 +719,7 @@
           "matched_per_million": 1000000,
           "primary_engine": "kuzu",
           "ready": true,
-          "shadow_engine": "skein",
+          "shadow_engine": "hawdb",
           "source": "route_parity_evidence"
         },
         "shadow_compare_evidence_source": "route_parity_evidence",
@@ -737,7 +737,7 @@
           "matched_per_million": 1000000,
           "primary_engine": "kuzu",
           "ready": true,
-          "shadow_engine": "skein",
+          "shadow_engine": "hawdb",
           "source": "route_parity_evidence"
         },
         "shadow_compare_evidence_source": "route_parity_evidence",
@@ -755,7 +755,7 @@
           "matched_per_million": 1000000,
           "primary_engine": "kuzu",
           "ready": true,
-          "shadow_engine": "skein",
+          "shadow_engine": "hawdb",
           "source": "route_parity_evidence"
         },
         "shadow_compare_evidence_source": "route_parity_evidence",
@@ -773,7 +773,7 @@
           "matched_per_million": 1000000,
           "primary_engine": "kuzu",
           "ready": true,
-          "shadow_engine": "skein",
+          "shadow_engine": "hawdb",
           "source": "route_parity_evidence"
         },
         "shadow_compare_evidence_source": "route_parity_evidence",
@@ -791,7 +791,7 @@
           "matched_per_million": 1000000,
           "primary_engine": "kuzu",
           "ready": true,
-          "shadow_engine": "skein",
+          "shadow_engine": "hawdb",
           "source": "route_parity_evidence"
         },
         "shadow_compare_evidence_source": "route_parity_evidence",
@@ -809,7 +809,7 @@
           "matched_per_million": 1000000,
           "primary_engine": "kuzu",
           "ready": true,
-          "shadow_engine": "skein",
+          "shadow_engine": "hawdb",
           "source": "route_parity_evidence"
         },
         "shadow_compare_evidence_source": "route_parity_evidence",
@@ -827,7 +827,7 @@
           "matched_per_million": 1000000,
           "primary_engine": "kuzu",
           "ready": true,
-          "shadow_engine": "skein",
+          "shadow_engine": "hawdb",
           "source": "route_parity_evidence"
         },
         "shadow_compare_evidence_source": "route_parity_evidence",
@@ -845,7 +845,7 @@
           "matched_per_million": 1000000,
           "primary_engine": "kuzu",
           "ready": true,
-          "shadow_engine": "skein",
+          "shadow_engine": "hawdb",
           "source": "route_parity_evidence"
         },
         "shadow_compare_evidence_source": "route_parity_evidence",
@@ -863,7 +863,7 @@
           "matched_per_million": 1000000,
           "primary_engine": "kuzu",
           "ready": true,
-          "shadow_engine": "skein",
+          "shadow_engine": "hawdb",
           "source": "route_parity_evidence"
         },
         "shadow_compare_evidence_source": "route_parity_evidence",
@@ -881,7 +881,7 @@
           "matched_per_million": 1000000,
           "primary_engine": "kuzu",
           "ready": true,
-          "shadow_engine": "skein",
+          "shadow_engine": "hawdb",
           "source": "route_parity_evidence"
         },
         "shadow_compare_evidence_source": "route_parity_evidence",
@@ -899,7 +899,7 @@
           "matched_per_million": 1000000,
           "primary_engine": "kuzu",
           "ready": true,
-          "shadow_engine": "skein",
+          "shadow_engine": "hawdb",
           "source": "route_parity_evidence"
         },
         "shadow_compare_evidence_source": "route_parity_evidence",
@@ -917,7 +917,7 @@
           "matched_per_million": 1000000,
           "primary_engine": "kuzu",
           "ready": true,
-          "shadow_engine": "skein",
+          "shadow_engine": "hawdb",
           "source": "route_parity_evidence"
         },
         "shadow_compare_evidence_source": "route_parity_evidence",
@@ -935,7 +935,7 @@
           "matched_per_million": 1000000,
           "primary_engine": "kuzu",
           "ready": true,
-          "shadow_engine": "skein",
+          "shadow_engine": "hawdb",
           "source": "route_parity_evidence"
         },
         "shadow_compare_evidence_source": "route_parity_evidence",
@@ -953,7 +953,7 @@
           "matched_per_million": 1000000,
           "primary_engine": "kuzu",
           "ready": true,
-          "shadow_engine": "skein",
+          "shadow_engine": "hawdb",
           "source": "route_parity_evidence"
         },
         "shadow_compare_evidence_source": "route_parity_evidence",
@@ -971,7 +971,7 @@
           "matched_per_million": 1000000,
           "primary_engine": "kuzu",
           "ready": true,
-          "shadow_engine": "skein",
+          "shadow_engine": "hawdb",
           "source": "route_parity_evidence"
         },
         "shadow_compare_evidence_source": "route_parity_evidence",
@@ -989,7 +989,7 @@
           "matched_per_million": 1000000,
           "primary_engine": "kuzu",
           "ready": true,
-          "shadow_engine": "skein",
+          "shadow_engine": "hawdb",
           "source": "route_parity_evidence"
         },
         "shadow_compare_evidence_source": "route_parity_evidence",
@@ -1007,7 +1007,7 @@
           "matched_per_million": 1000000,
           "primary_engine": "kuzu",
           "ready": true,
-          "shadow_engine": "skein",
+          "shadow_engine": "hawdb",
           "source": "route_parity_evidence"
         },
         "shadow_compare_evidence_source": "route_parity_evidence",
@@ -1029,7 +1029,7 @@
     "fixture": "previous_wrapper_preflight",
     "ready": true
   },
-  "protocol": "nowledge-mem-skein-integration-bundle",
+  "protocol": "nowledge-mem-hawdb-integration-bundle",
   "query_runtime_preflight": {
     "blocker_codes": [],
     "covered_route_count": 26,
@@ -1147,7 +1147,7 @@
         "route": "/agent/evolves"
       }
     ],
-    "protocol": "skein-nowledge-query-runtime-preflight-v1",
+    "protocol": "hawdb-nowledge-query-runtime-preflight-v1",
     "ready": true,
     "redaction": {
       "local_paths_copied": false,
@@ -1174,12 +1174,12 @@
       "lancedb_routes": [],
       "missing_required_routes": [],
       "production_cutover_ready": true,
-      "protocol": "skein-nowledge-mem-search-route-ownership-v1",
+      "protocol": "hawdb-nowledge-mem-search-route-ownership-v1",
       "ready": true,
-      "require_all_skein": true,
+      "require_all_hawdb": true,
       "required_route_count": 8,
-      "skein_route_count": 8,
-      "skein_routes": [
+      "hawdb_route_count": 8,
+      "hawdb_routes": [
         "community_discovery",
         "deep_search_graph_expansion",
         "entity_discovery",
@@ -1206,9 +1206,9 @@
       "lancedb_handle_required_routes": [],
       "metadata_pushdown_not_ready_routes": [],
       "missing_required_routes": [],
-      "non_skein_routes": [],
+      "non_hawdb_routes": [],
       "production_cutover_ready": true,
-      "protocol": "skein-nowledge-mem-active-search-route-readiness-v1",
+      "protocol": "hawdb-nowledge-mem-active-search-route-readiness-v1",
       "ranking_not_ready_routes": [],
       "ranking_window_not_ready_routes": [],
       "ready": true,
@@ -1224,7 +1224,7 @@
         "thread_message_fts"
       ],
       "repair_rebuild_markers_not_ready_routes": [],
-      "require_all_skein": true,
+      "require_all_hawdb": true,
       "required_route_count": 8,
       "requirements": [
         {
@@ -1340,7 +1340,7 @@
           "route": "deep_search_graph_expansion"
         }
       ],
-      "skein_route_count": 8,
+      "hawdb_route_count": 8,
       "unknown_routes": [],
       "zero_vector_semantics_not_ready_routes": []
     },
@@ -1414,7 +1414,7 @@
         "/entities/{entity_id}/relationships",
         "/agent/evolves"
       ],
-      "protocol": "skein-nowledge-mem-bounded-read-evidence-v2",
+      "protocol": "hawdb-nowledge-mem-bounded-read-evidence-v2",
       "ready": true,
       "relationship_property_pruning_report_count": 0,
       "relationship_property_pruning_required_count": 0,
@@ -1662,7 +1662,7 @@
             "matched_per_million": 1000000,
             "primary_engine": "kuzu",
             "ready": true,
-            "shadow_engine": "skein",
+            "shadow_engine": "hawdb",
             "source": "route_parity_evidence"
           },
           "shadow_compare_evidence_source": "route_parity_evidence",
@@ -1680,7 +1680,7 @@
             "matched_per_million": 1000000,
             "primary_engine": "kuzu",
             "ready": true,
-            "shadow_engine": "skein",
+            "shadow_engine": "hawdb",
             "source": "route_parity_evidence"
           },
           "shadow_compare_evidence_source": "route_parity_evidence",
@@ -1698,7 +1698,7 @@
             "matched_per_million": 1000000,
             "primary_engine": "kuzu",
             "ready": true,
-            "shadow_engine": "skein",
+            "shadow_engine": "hawdb",
             "source": "route_parity_evidence"
           },
           "shadow_compare_evidence_source": "route_parity_evidence",
@@ -1716,7 +1716,7 @@
             "matched_per_million": 1000000,
             "primary_engine": "kuzu",
             "ready": true,
-            "shadow_engine": "skein",
+            "shadow_engine": "hawdb",
             "source": "route_parity_evidence"
           },
           "shadow_compare_evidence_source": "route_parity_evidence",
@@ -1734,7 +1734,7 @@
             "matched_per_million": 1000000,
             "primary_engine": "kuzu",
             "ready": true,
-            "shadow_engine": "skein",
+            "shadow_engine": "hawdb",
             "source": "route_parity_evidence"
           },
           "shadow_compare_evidence_source": "route_parity_evidence",
@@ -1752,7 +1752,7 @@
             "matched_per_million": 1000000,
             "primary_engine": "kuzu",
             "ready": true,
-            "shadow_engine": "skein",
+            "shadow_engine": "hawdb",
             "source": "route_parity_evidence"
           },
           "shadow_compare_evidence_source": "route_parity_evidence",
@@ -1770,7 +1770,7 @@
             "matched_per_million": 1000000,
             "primary_engine": "kuzu",
             "ready": true,
-            "shadow_engine": "skein",
+            "shadow_engine": "hawdb",
             "source": "route_parity_evidence"
           },
           "shadow_compare_evidence_source": "route_parity_evidence",
@@ -1788,7 +1788,7 @@
             "matched_per_million": 1000000,
             "primary_engine": "kuzu",
             "ready": true,
-            "shadow_engine": "skein",
+            "shadow_engine": "hawdb",
             "source": "route_parity_evidence"
           },
           "shadow_compare_evidence_source": "route_parity_evidence",
@@ -1806,7 +1806,7 @@
             "matched_per_million": 1000000,
             "primary_engine": "kuzu",
             "ready": true,
-            "shadow_engine": "skein",
+            "shadow_engine": "hawdb",
             "source": "route_parity_evidence"
           },
           "shadow_compare_evidence_source": "route_parity_evidence",
@@ -1824,7 +1824,7 @@
             "matched_per_million": 1000000,
             "primary_engine": "kuzu",
             "ready": true,
-            "shadow_engine": "skein",
+            "shadow_engine": "hawdb",
             "source": "route_parity_evidence"
           },
           "shadow_compare_evidence_source": "route_parity_evidence",
@@ -1842,7 +1842,7 @@
             "matched_per_million": 1000000,
             "primary_engine": "kuzu",
             "ready": true,
-            "shadow_engine": "skein",
+            "shadow_engine": "hawdb",
             "source": "route_parity_evidence"
           },
           "shadow_compare_evidence_source": "route_parity_evidence",
@@ -1860,7 +1860,7 @@
             "matched_per_million": 1000000,
             "primary_engine": "kuzu",
             "ready": true,
-            "shadow_engine": "skein",
+            "shadow_engine": "hawdb",
             "source": "route_parity_evidence"
           },
           "shadow_compare_evidence_source": "route_parity_evidence",
@@ -1878,7 +1878,7 @@
             "matched_per_million": 1000000,
             "primary_engine": "kuzu",
             "ready": true,
-            "shadow_engine": "skein",
+            "shadow_engine": "hawdb",
             "source": "route_parity_evidence"
           },
           "shadow_compare_evidence_source": "route_parity_evidence",
@@ -1896,7 +1896,7 @@
             "matched_per_million": 1000000,
             "primary_engine": "kuzu",
             "ready": true,
-            "shadow_engine": "skein",
+            "shadow_engine": "hawdb",
             "source": "route_parity_evidence"
           },
           "shadow_compare_evidence_source": "route_parity_evidence",
@@ -1914,7 +1914,7 @@
             "matched_per_million": 1000000,
             "primary_engine": "kuzu",
             "ready": true,
-            "shadow_engine": "skein",
+            "shadow_engine": "hawdb",
             "source": "route_parity_evidence"
           },
           "shadow_compare_evidence_source": "route_parity_evidence",
@@ -1932,7 +1932,7 @@
             "matched_per_million": 1000000,
             "primary_engine": "kuzu",
             "ready": true,
-            "shadow_engine": "skein",
+            "shadow_engine": "hawdb",
             "source": "route_parity_evidence"
           },
           "shadow_compare_evidence_source": "route_parity_evidence",
@@ -1950,7 +1950,7 @@
             "matched_per_million": 1000000,
             "primary_engine": "kuzu",
             "ready": true,
-            "shadow_engine": "skein",
+            "shadow_engine": "hawdb",
             "source": "route_parity_evidence"
           },
           "shadow_compare_evidence_source": "route_parity_evidence",
@@ -1968,7 +1968,7 @@
             "matched_per_million": 1000000,
             "primary_engine": "kuzu",
             "ready": true,
-            "shadow_engine": "skein",
+            "shadow_engine": "hawdb",
             "source": "route_parity_evidence"
           },
           "shadow_compare_evidence_source": "route_parity_evidence",
@@ -1986,7 +1986,7 @@
             "matched_per_million": 1000000,
             "primary_engine": "kuzu",
             "ready": true,
-            "shadow_engine": "skein",
+            "shadow_engine": "hawdb",
             "source": "route_parity_evidence"
           },
           "shadow_compare_evidence_source": "route_parity_evidence",
@@ -2004,7 +2004,7 @@
             "matched_per_million": 1000000,
             "primary_engine": "kuzu",
             "ready": true,
-            "shadow_engine": "skein",
+            "shadow_engine": "hawdb",
             "source": "route_parity_evidence"
           },
           "shadow_compare_evidence_source": "route_parity_evidence",
@@ -2022,7 +2022,7 @@
             "matched_per_million": 1000000,
             "primary_engine": "kuzu",
             "ready": true,
-            "shadow_engine": "skein",
+            "shadow_engine": "hawdb",
             "source": "route_parity_evidence"
           },
           "shadow_compare_evidence_source": "route_parity_evidence",
@@ -2040,7 +2040,7 @@
             "matched_per_million": 1000000,
             "primary_engine": "kuzu",
             "ready": true,
-            "shadow_engine": "skein",
+            "shadow_engine": "hawdb",
             "source": "route_parity_evidence"
           },
           "shadow_compare_evidence_source": "route_parity_evidence",
@@ -2058,7 +2058,7 @@
             "matched_per_million": 1000000,
             "primary_engine": "kuzu",
             "ready": true,
-            "shadow_engine": "skein",
+            "shadow_engine": "hawdb",
             "source": "route_parity_evidence"
           },
           "shadow_compare_evidence_source": "route_parity_evidence",
@@ -2076,7 +2076,7 @@
             "matched_per_million": 1000000,
             "primary_engine": "kuzu",
             "ready": true,
-            "shadow_engine": "skein",
+            "shadow_engine": "hawdb",
             "source": "route_parity_evidence"
           },
           "shadow_compare_evidence_source": "route_parity_evidence",
@@ -2094,7 +2094,7 @@
             "matched_per_million": 1000000,
             "primary_engine": "kuzu",
             "ready": true,
-            "shadow_engine": "skein",
+            "shadow_engine": "hawdb",
             "source": "route_parity_evidence"
           },
           "shadow_compare_evidence_source": "route_parity_evidence",
@@ -2112,7 +2112,7 @@
             "matched_per_million": 1000000,
             "primary_engine": "kuzu",
             "ready": true,
-            "shadow_engine": "skein",
+            "shadow_engine": "hawdb",
             "source": "route_parity_evidence"
           },
           "shadow_compare_evidence_source": "route_parity_evidence",
@@ -2161,7 +2161,7 @@
       "present": true,
       "probe_count": 26,
       "probe_details_ready": true,
-      "protocol": "skein-nowledge-query-runtime-preflight-v1",
+      "protocol": "hawdb-nowledge-query-runtime-preflight-v1",
       "ready": true,
       "required_covered_routes": [
         "/communities",
@@ -2208,12 +2208,12 @@
       "lancedb_routes": [],
       "missing_required_routes": [],
       "production_cutover_ready": true,
-      "protocol": "skein-nowledge-mem-search-route-ownership-v1",
+      "protocol": "hawdb-nowledge-mem-search-route-ownership-v1",
       "ready": true,
-      "require_all_skein": true,
+      "require_all_hawdb": true,
       "required_route_count": 6,
-      "skein_route_count": 6,
-      "skein_routes": [
+      "hawdb_route_count": 6,
+      "hawdb_routes": [
         "community",
         "entity",
         "memory",
@@ -2237,9 +2237,9 @@
     "protocol_matches": true,
     "ready": true,
     "ready_matches": true,
-    "require_all_skein_matches": true,
+    "require_all_hawdb_matches": true,
     "required_route_count_matches": true,
-    "skein_route_count_matches": true,
+    "hawdb_route_count_matches": true,
     "summary_lancedb_routes": [],
     "summary_present": true
   },
@@ -2259,7 +2259,7 @@
     "lancedb_handle_routes_matches": true,
     "metadata_pushdown_not_ready_routes_matches": true,
     "missing_required_routes_matches": true,
-    "non_skein_routes_matches": true,
+    "non_hawdb_routes_matches": true,
     "production_cutover_ready_matches": true,
     "protocol_matches": true,
     "ranking_not_ready_routes_matches": true,
@@ -2268,9 +2268,9 @@
     "ready_matches": true,
     "ready_route_count_matches": true,
     "repair_rebuild_markers_not_ready_routes_matches": true,
-    "require_all_skein_matches": true,
+    "require_all_hawdb_matches": true,
     "required_route_count_matches": true,
-    "skein_route_count_matches": true,
+    "hawdb_route_count_matches": true,
     "summary_lancedb_handle_required_routes": [],
     "summary_present": true,
     "zero_vector_semantics_not_ready_routes_matches": true
@@ -2489,9 +2489,9 @@
     "protocol_matches": true,
     "ready": true,
     "ready_matches": true,
-    "require_all_skein_matches": true,
+    "require_all_hawdb_matches": true,
     "required_route_count_matches": true,
-    "skein_route_count_matches": true,
+    "hawdb_route_count_matches": true,
     "summary_lancedb_routes": [],
     "summary_present": true
   },
@@ -2512,12 +2512,12 @@
     "lancedb_routes": [],
     "missing_required_routes": [],
     "production_cutover_ready": true,
-    "protocol": "skein-nowledge-mem-search-route-ownership-v1",
+    "protocol": "hawdb-nowledge-mem-search-route-ownership-v1",
     "ready": true,
-    "require_all_skein": true,
+    "require_all_hawdb": true,
     "required_route_count": 6,
-    "skein_route_count": 6,
-    "skein_routes": [
+    "hawdb_route_count": 6,
+    "hawdb_routes": [
       "community",
       "entity",
       "memory",
@@ -2530,7 +2530,7 @@
   "submodule": {
     "blocker_codes": [],
     "commit": "abc1234",
-    "path": "skein",
+    "path": "hawdb",
     "present": true
   }
 }

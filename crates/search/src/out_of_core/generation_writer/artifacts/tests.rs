@@ -1,6 +1,6 @@
 use super::super::tests::{document, test_dir};
 use super::*;
-use skein_core::RuntimeMemoryReservation;
+use hawdb_core::RuntimeMemoryReservation;
 use std::fs;
 
 fn context() -> RuntimeTaskContext {

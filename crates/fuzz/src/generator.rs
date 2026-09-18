@@ -7,7 +7,7 @@ use crate::{
     FuzzCase, GraphPredicateRewriteCase, GraphTlpCase, MetamorphicCase, MetamorphicRelation,
     Mutation, Parameters, QueryInvocation, ResultSemantics,
 };
-use skein::Value;
+use hawdb::Value;
 
 const ENTITY_COUNT: usize = 6;
 

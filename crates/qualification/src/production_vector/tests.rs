@@ -1,5 +1,5 @@
 use super::*;
-use skein::{
+use hawdb::{
     SearchEmbeddingManifest, SearchOutOfCoreGenerationBuildOptions,
     SearchOutOfCoreGenerationWriter, SearchProjectionDelta, SearchProjectionKind,
     SearchProjectionRow, PRODUCTION_QUALIFICATION_POLICY_VERSION,
@@ -75,7 +75,7 @@ fn representative_runner_collects_recall_execution_and_lifecycle_evidence() {
         .iter()
         .all(|evidence| evidence.serving_auto_final_parity
             && evidence.serving_metrics.backend
-                == "skein_rabitq_out_of_core_candidate_projection"));
+                == "hawdb_rabitq_out_of_core_candidate_projection"));
     assert!(report
         .recall_evidence
         .iter()
@@ -303,7 +303,7 @@ fn production_identity(epoch: u64) -> ProductionQualificationIdentity {
 fn test_root(name: &str) -> PathBuf {
     let sequence = TEST_SEQUENCE.fetch_add(1, Ordering::Relaxed);
     std::env::temp_dir().join(format!(
-        "skein-production-vector-qualification-{name}-{}-{sequence}",
+        "hawdb-production-vector-qualification-{name}-{}-{sequence}",
         std::process::id()
     ))
 }

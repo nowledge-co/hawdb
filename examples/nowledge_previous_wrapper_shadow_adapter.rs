@@ -1,8 +1,8 @@
-use skein::{
+use hawdb::{
     external_shadow_json_from_value, external_shadow_value_from_json,
     ExternalShadowProjectGraphReply, ExternalShadowProjectGraphRequest,
     ExternalShadowProtocolBackend, ExternalShadowProtocolServer, ExternalShadowStatementRequest,
-    QueryOutput, Result, SkeinError, Value,
+    HawdbError, QueryOutput, Result, Value,
 };
 use std::collections::BTreeMap;
 use std::io::{self, BufRead, BufReader, Write};
@@ -35,10 +35,10 @@ fn previous_wrapper_from_args() -> Result<PreviousWrapperConfig> {
         match arg.as_str() {
             "--wrapper-identity" => {
                 let Some(value) = args.next() else {
-                    return Err(SkeinError::Semantic(command_usage()));
+                    return Err(HawdbError::Semantic(command_usage()));
                 };
                 if value.trim().is_empty() {
-                    return Err(SkeinError::Semantic(
+                    return Err(HawdbError::Semantic(
                         "--wrapper-identity must not be empty".to_string(),
                     ));
                 }
@@ -46,13 +46,13 @@ fn previous_wrapper_from_args() -> Result<PreviousWrapperConfig> {
             }
             "--command-timeout-ms" => {
                 let Some(value) = args.next() else {
-                    return Err(SkeinError::Semantic(command_usage()));
+                    return Err(HawdbError::Semantic(command_usage()));
                 };
                 timeout = Duration::from_millis(parse_timeout_ms(&value)?);
             }
             "--command" => {
                 let Some(program) = args.next() else {
-                    return Err(SkeinError::Semantic(command_usage()));
+                    return Err(HawdbError::Semantic(command_usage()));
                 };
                 return Ok(PreviousWrapperConfig {
                     adapter: PreviousWrapperAdapter::Command(CommandPreviousWrapper {
@@ -65,7 +65,7 @@ fn previous_wrapper_from_args() -> Result<PreviousWrapperConfig> {
             }
             "--persistent-command" => {
                 let Some(program) = args.next() else {
-                    return Err(SkeinError::Semantic(command_usage()));
+                    return Err(HawdbError::Semantic(command_usage()));
                 };
                 return Ok(PreviousWrapperConfig {
                     adapter: PreviousWrapperAdapter::PersistentCommand(
@@ -74,9 +74,9 @@ fn previous_wrapper_from_args() -> Result<PreviousWrapperConfig> {
                     wrapper_identity,
                 });
             }
-            "--help" | "-h" => return Err(SkeinError::Semantic(command_usage())),
+            "--help" | "-h" => return Err(HawdbError::Semantic(command_usage())),
             other => {
-                return Err(SkeinError::Semantic(format!(
+                return Err(HawdbError::Semantic(format!(
                     "unknown previous-wrapper adapter option '{other}'; {}",
                     command_usage()
                 )));
@@ -91,7 +91,7 @@ fn previous_wrapper_from_args() -> Result<PreviousWrapperConfig> {
 
 fn parse_timeout_ms(value: &str) -> Result<u64> {
     value.parse::<u64>().map_err(|error| {
-        SkeinError::Semantic(format!(
+        HawdbError::Semantic(format!(
             "invalid --command-timeout-ms value '{value}': {error}"
         ))
     })
@@ -228,7 +228,7 @@ impl PreviousWrapperGraph for UnavailablePreviousWrapper {
         _cypher: &str,
         _parameters: &BTreeMap<String, Value>,
     ) -> Result<Vec<JsonRow>> {
-        Err(SkeinError::Execution(
+        Err(HawdbError::Execution(
             "replace UnavailablePreviousWrapper with the Nowledge Kuzu/Ladybug wrapper".to_string(),
         ))
     }
@@ -310,19 +310,19 @@ impl PersistentCommandPreviousWrapper {
             .stderr(Stdio::inherit())
             .spawn()
             .map_err(|error| {
-                SkeinError::Execution(format!(
+                HawdbError::Execution(format!(
                     "failed to spawn persistent previous-wrapper command '{program}': {error}"
                 ))
             })?;
         let stdin = child.stdin.take().ok_or_else(|| {
             let _ = child.kill();
-            SkeinError::Execution(
+            HawdbError::Execution(
                 "persistent previous-wrapper command stdin is not available".to_string(),
             )
         })?;
         let stdout = child.stdout.take().ok_or_else(|| {
             let _ = child.kill();
-            SkeinError::Execution(
+            HawdbError::Execution(
                 "persistent previous-wrapper command stdout is not available".to_string(),
             )
         })?;
@@ -336,29 +336,29 @@ impl PersistentCommandPreviousWrapper {
 
     fn invoke(&mut self, request: serde_json::Value) -> Result<serde_json::Value> {
         writeln!(self.stdin, "{request}").map_err(|error| {
-            SkeinError::Execution(format!(
+            HawdbError::Execution(format!(
                 "failed to write persistent previous-wrapper command request: {error}"
             ))
         })?;
         self.stdin.flush().map_err(|error| {
-            SkeinError::Execution(format!(
+            HawdbError::Execution(format!(
                 "failed to flush persistent previous-wrapper command request: {error}"
             ))
         })?;
         let mut line = String::new();
         let bytes = self.stdout.read_line(&mut line).map_err(|error| {
-            SkeinError::Execution(format!(
+            HawdbError::Execution(format!(
                 "failed to read persistent previous-wrapper command response: {error}"
             ))
         })?;
         if bytes == 0 {
-            return Err(SkeinError::Execution(format!(
+            return Err(HawdbError::Execution(format!(
                 "persistent previous-wrapper command '{}' closed stdout",
                 self.program
             )));
         }
         serde_json::from_str(&line).map_err(|error| {
-            SkeinError::Execution(format!(
+            HawdbError::Execution(format!(
                 "persistent previous-wrapper command returned invalid JSON: {error}; stdout: {}",
                 line.trim()
             ))
@@ -384,7 +384,7 @@ impl CommandPreviousWrapper {
             .stderr(Stdio::piped())
             .spawn()
             .map_err(|error| {
-                SkeinError::Execution(format!(
+                HawdbError::Execution(format!(
                     "failed to spawn previous-wrapper command '{}': {error}",
                     self.program
                 ))
@@ -392,10 +392,10 @@ impl CommandPreviousWrapper {
 
         {
             let mut stdin = child.stdin.take().ok_or_else(|| {
-                SkeinError::Execution("previous-wrapper command stdin is not available".to_string())
+                HawdbError::Execution("previous-wrapper command stdin is not available".to_string())
             })?;
             writeln!(stdin, "{request}").map_err(|error| {
-                SkeinError::Execution(format!(
+                HawdbError::Execution(format!(
                     "failed to write previous-wrapper command request: {error}"
                 ))
             })?;
@@ -403,14 +403,14 @@ impl CommandPreviousWrapper {
 
         let output = self.wait_for_output(child)?;
         if !output.status.success() {
-            return Err(SkeinError::Execution(format!(
+            return Err(HawdbError::Execution(format!(
                 "previous-wrapper command exited with {}; stderr: {}",
                 output.status,
                 String::from_utf8_lossy(&output.stderr).trim()
             )));
         }
         serde_json::from_slice(&output.stdout).map_err(|error| {
-            SkeinError::Execution(format!(
+            HawdbError::Execution(format!(
                 "previous-wrapper command returned invalid JSON: {error}; stdout: {}",
                 String::from_utf8_lossy(&output.stdout).trim()
             ))
@@ -423,7 +423,7 @@ impl CommandPreviousWrapper {
             match child.try_wait() {
                 Ok(Some(_status)) => {
                     return child.wait_with_output().map_err(|error| {
-                        SkeinError::Execution(format!(
+                        HawdbError::Execution(format!(
                             "failed to collect previous-wrapper command output: {error}"
                         ))
                     });
@@ -431,12 +431,12 @@ impl CommandPreviousWrapper {
                 Ok(None) if started_at.elapsed() >= self.timeout => {
                     let _ = child.kill();
                     let output = child.wait_with_output().map_err(|error| {
-                        SkeinError::Execution(format!(
+                        HawdbError::Execution(format!(
                             "previous-wrapper command timed out after {} ms and failed to collect output: {error}",
                             self.timeout.as_millis()
                         ))
                     })?;
-                    return Err(SkeinError::Execution(format!(
+                    return Err(HawdbError::Execution(format!(
                         "previous-wrapper command timed out after {} ms; stderr: {}",
                         self.timeout.as_millis(),
                         String::from_utf8_lossy(&output.stderr).trim()
@@ -445,7 +445,7 @@ impl CommandPreviousWrapper {
                 Ok(None) => thread::sleep(Duration::from_millis(COMMAND_WAIT_POLL_MS)),
                 Err(error) => {
                     let _ = child.kill();
-                    return Err(SkeinError::Execution(format!(
+                    return Err(HawdbError::Execution(format!(
                         "failed to poll previous-wrapper command: {error}"
                     )));
                 }
@@ -494,7 +494,7 @@ fn parameters_json(parameters: &BTreeMap<String, Value>) -> serde_json::Value {
 fn parse_rows_reply(reply: &serde_json::Value, op: &str) -> Result<Vec<JsonRow>> {
     let rows = reply
         .get("rows")
-        .ok_or_else(|| SkeinError::Execution(format!("{op} reply missing rows")))?;
+        .ok_or_else(|| HawdbError::Execution(format!("{op} reply missing rows")))?;
     json_rows(rows, op)
 }
 
@@ -503,7 +503,7 @@ fn parse_session_reply(reply: &serde_json::Value) -> Result<Vec<Vec<JsonRow>>> {
         .get("results")
         .and_then(serde_json::Value::as_array)
         .ok_or_else(|| {
-            SkeinError::Execution("execute_session reply missing results array".to_string())
+            HawdbError::Execution("execute_session reply missing results array".to_string())
         })?;
     results
         .iter()
@@ -536,11 +536,11 @@ fn parse_project_graph_reply(reply: &serde_json::Value) -> Result<ExternalShadow
 
 fn json_rows(rows: &serde_json::Value, context: &str) -> Result<Vec<JsonRow>> {
     rows.as_array()
-        .ok_or_else(|| SkeinError::Execution(format!("{context} rows is not an array")))?
+        .ok_or_else(|| HawdbError::Execution(format!("{context} rows is not an array")))?
         .iter()
         .map(|row| {
             row.as_object()
-                .ok_or_else(|| SkeinError::Execution(format!("{context} row is not a JSON object")))
+                .ok_or_else(|| HawdbError::Execution(format!("{context} row is not a JSON object")))
                 .map(|row| {
                     row.iter()
                         .map(|(key, value)| (key.clone(), value.clone()))
@@ -599,7 +599,7 @@ mod tests {
         let mut server = ExternalShadowProtocolServer::new(backend);
 
         let response = server.handle_request(&serde_json::json!({
-            "protocol_version": skein::EXTERNAL_SHADOW_PROTOCOL_VERSION,
+            "protocol_version": hawdb::EXTERNAL_SHADOW_PROTOCOL_VERSION,
             "op": "ready"
         }));
 
@@ -620,7 +620,7 @@ mod tests {
         let mut server = ExternalShadowProtocolServer::new(backend);
 
         let response = server.handle_request(&serde_json::json!({
-            "protocol_version": skein::EXTERNAL_SHADOW_PROTOCOL_VERSION,
+            "protocol_version": hawdb::EXTERNAL_SHADOW_PROTOCOL_VERSION,
             "op": "execute",
             "cypher": "MATCH (m:Memory {id: $id}) RETURN m.id",
             "parameters": {
@@ -641,7 +641,7 @@ mod tests {
         let mut server = ExternalShadowProtocolServer::new(backend);
 
         let response = server.handle_request(&serde_json::json!({
-            "protocol_version": skein::EXTERNAL_SHADOW_PROTOCOL_VERSION,
+            "protocol_version": hawdb::EXTERNAL_SHADOW_PROTOCOL_VERSION,
             "op": "project_graph"
         }));
 

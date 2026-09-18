@@ -8,13 +8,13 @@ use crate::index_runtime::RelationalIndexExecutionEvidence;
 use crate::query_output::{push_relational_output, RelationalQueryLimits, RelationalQueryOutput};
 use crate::query_value::bind_bound;
 use crate::row_runtime::RelationalRowExecutionEvidence;
-use skein_core::{Result, Value};
-use skein_executor::Row;
-use skein_optimizer::{
+use hawdb_core::{Result, Value};
+use hawdb_executor::Row;
+use hawdb_optimizer::{
     RelationalAccessPathDescriptor, RelationalAccessPathKind, RelationalJoinPlanningOutcome,
     RelationalJoinPlanningStatus, RelationalOperatorCardinalityProfile, RelationalOperatorId,
 };
-use skein_sql::{
+use hawdb_sql::{
     Expr, ExprKind, RelationalSqlStageTimings, SelectProjection, SelectStatement, SqlColumnRef,
     SqlComparisonOp, SqlExpression, SqlFunctionArgument, SqlLikeEscape, SqlOrderDirection,
     SqlPredicate, SqlValue,
@@ -63,7 +63,7 @@ pub fn format_relational_explain(
     predicate_is_covered_by_access: impl Fn(
         Option<&SqlPredicate>,
         &RelationalAccessPathDescriptor,
-        &[skein_sql::SqlOrderItem],
+        &[hawdb_sql::SqlOrderItem],
         &str,
         &str,
     ) -> bool,
@@ -459,7 +459,7 @@ fn relational_index_evidence<'a>(
     descriptor: &RelationalAccessPathDescriptor,
 ) -> Option<&'a RelationalIndexExecutionEvidence> {
     let physical_index = match descriptor.kind {
-        RelationalAccessPathKind::PrimaryKey => skein_storage::RELATIONAL_PRIMARY_INDEX_NAME,
+        RelationalAccessPathKind::PrimaryKey => hawdb_storage::RELATIONAL_PRIMARY_INDEX_NAME,
         RelationalAccessPathKind::Index => descriptor.name.as_str(),
         RelationalAccessPathKind::FullScan => return None,
     };
@@ -572,7 +572,7 @@ fn optional_u64_text(value: Option<u64>) -> String {
         .unwrap_or_else(|| "none".to_string())
 }
 
-fn explain_order_by(order_by: &[skein_sql::SqlOrderItem]) -> String {
+fn explain_order_by(order_by: &[hawdb_sql::SqlOrderItem]) -> String {
     order_by
         .iter()
         .map(|item| {

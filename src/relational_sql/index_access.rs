@@ -1,10 +1,10 @@
 use crate::store::{GraphStore, RelationalIndexProbeStatistics};
-use skein_relational::index_runtime::RelationalIndexStoreReader;
-use skein_storage::relational_index_view::RelationalIndexReadViewReport;
-use skein_storage::{RelationalIndexReadLimits, RelationalIndexShadowError, RelationalKey};
+use hawdb_relational::index_runtime::RelationalIndexStoreReader;
+use hawdb_storage::relational_index_view::RelationalIndexReadViewReport;
+use hawdb_storage::{RelationalIndexReadLimits, RelationalIndexShadowError, RelationalKey};
 
 pub(crate) type RelationalIndexReadMode<'a> =
-    skein_relational::index_runtime::RelationalIndexReadMode<'a, GraphStore>;
+    hawdb_relational::index_runtime::RelationalIndexReadMode<'a, GraphStore>;
 
 impl RelationalIndexStoreReader for GraphStore {
     fn relational_index_probe_statistics(
@@ -48,7 +48,7 @@ impl RelationalIndexStoreReader for GraphStore {
         &self,
         table: &str,
         index: &str,
-        scan: &skein_storage::RelationalIndexRangeScan,
+        scan: &hawdb_storage::RelationalIndexRangeScan,
         limits: RelationalIndexReadLimits,
         visit: impl FnMut(&RelationalKey, &RelationalKey) -> bool,
     ) -> Option<std::result::Result<RelationalIndexReadViewReport, RelationalIndexShadowError>>

@@ -2,7 +2,7 @@ use super::*;
 use crate::binding::Binding;
 use crate::kernel::SpillBudgetTracker;
 use crate::{ExecutionMemoryConfig, QueryMemoryLedger};
-use skein_core::{RuntimeCancellationToken, SkeinError, Value};
+use hawdb_core::{HawdbError, RuntimeCancellationToken, Value};
 use std::num::NonZeroU64;
 use std::panic::{catch_unwind, AssertUnwindSafe};
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -17,7 +17,7 @@ impl Fixture {
         static NEXT: AtomicU64 = AtomicU64::new(0);
         let directory = loop {
             let path = std::env::temp_dir().join(format!(
-                "skein-compaction-oracle-{}-{}",
+                "hawdb-compaction-oracle-{}-{}",
                 std::process::id(),
                 NEXT.fetch_add(1, Ordering::Relaxed)
             ));
@@ -156,7 +156,7 @@ fn check_case(values: Vec<Vec<u64>>, final_count: usize, exit: Exit) {
                     )?;
                     match exit {
                         Exit::Error(at) if index == at => {
-                            return Err(SkeinError::Execution("injected merge failure".into()))
+                            return Err(HawdbError::Execution("injected merge failure".into()))
                         }
                         Exit::Panic(at) if index == at => panic!("injected merge panic"),
                         _ => {}

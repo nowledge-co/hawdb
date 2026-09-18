@@ -4,8 +4,8 @@ use crate::{
     SchemaPropertyType, SchemaTableKind, SetAssignment, SetNodePropertiesReturnMode, SetValue,
     ShortestPathProjection, SortItem,
 };
-use skein_core::Value;
-use skein_cypher::RelationshipDirection;
+use hawdb_core::Value;
+use hawdb_cypher::RelationshipDirection;
 use std::collections::BTreeMap;
 
 mod domain;

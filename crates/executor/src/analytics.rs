@@ -8,13 +8,13 @@ use crate::pipeline::{emit_owned_binding_batches, runtime_checkpoint, BatchContr
 use crate::predicate::node_matches_property_filter;
 use crate::store::{GraphExecutionRead, ScanControl};
 use crate::{ExecutionLimit, ExecutionMemoryConfig, QueryMemoryClass, QueryMemoryLedger};
-use skein_analytics::{
+use hawdb_analytics::{
     LouvainOptions, PageRankOptions, ProjectedGraph, ProjectedGraphExecution, ProjectionLayout,
     ProjectionMemoryBudget,
 };
-use skein_core::{Catalog, Result, RuntimeTaskContext, SkeinError, Value};
-use skein_plan::{GraphAlgorithmKind, Predicate};
-use skein_storage::{NodeRecord, RelRecord};
+use hawdb_core::{Catalog, HawdbError, Result, RuntimeTaskContext, Value};
+use hawdb_plan::{GraphAlgorithmKind, Predicate};
+use hawdb_storage::{NodeRecord, RelRecord};
 use std::collections::BTreeMap;
 
 /// Borrows the existing query/store seams without owning admission or catalog mutation.
@@ -31,7 +31,7 @@ pub struct GraphAlgorithmContext<'a> {
 pub struct GraphAlgorithmSpec<'a> {
     pub algorithm: &'a GraphAlgorithmKind,
     pub graph_name: &'a str,
-    pub options: &'a skein_plan::GraphAlgorithmOptions,
+    pub options: &'a hawdb_plan::GraphAlgorithmOptions,
     pub score_column: &'a str,
     pub node_visibility_predicate: &'a Option<Predicate>,
 }
@@ -51,7 +51,7 @@ impl GraphAlgorithmSpec<'_> {
             node_visibility_predicate,
         } = self;
         let Some(definition) = context.store.projected_graph_definition(graph_name) else {
-            return Err(SkeinError::Execution(format!(
+            return Err(HawdbError::Execution(format!(
                 "projected graph '{graph_name}' does not exist"
             )));
         };
@@ -128,7 +128,7 @@ impl GraphAlgorithmSpec<'_> {
                     let scores = graph.page_rank_with_context(options, context.task_context)?;
                     tracker.release(estimate.algorithm_peak_bytes);
                     let result_bytes =
-                        estimated_vec_memory_bytes::<skein_analytics::PageRankScore>(scores.len());
+                        estimated_vec_memory_bytes::<hawdb_analytics::PageRankScore>(scores.len());
                     charge_graph_algorithm_memory(
                         "PageRank",
                         "materialized result",
@@ -174,7 +174,7 @@ impl GraphAlgorithmSpec<'_> {
                     )?;
                     tracker.release(estimate.algorithm_peak_bytes);
                     let result_bytes = estimated_vec_memory_bytes::<
-                        skein_analytics::HierarchicalCommunityAssignment,
+                        hawdb_analytics::HierarchicalCommunityAssignment,
                     >(assignments.len());
                     charge_graph_algorithm_memory(
                         "Louvain",
@@ -225,7 +225,7 @@ fn charge_graph_algorithm_memory(
     bytes: usize,
 ) -> Result<()> {
     if tracker.would_exceed(bytes) {
-        return Err(SkeinError::Execution(format!(
+        return Err(HawdbError::Execution(format!(
             "GraphAlgorithm {algorithm} {phase} requires {} tracked bytes, exceeding blocking_operator_bytes {}",
             tracker.used_bytes.saturating_add(bytes),
             tracker.budget_bytes,
@@ -277,7 +277,7 @@ pub fn try_projected_graph_with_node_filter(
             layout,
             budget,
         )
-        .map_err(|error| SkeinError::Execution(error.to_string()));
+        .map_err(|error| HawdbError::Execution(error.to_string()));
     }
     let label_ids = node_labels
         .iter()
@@ -291,7 +291,7 @@ pub fn try_projected_graph_with_node_filter(
             layout,
             budget,
         )
-        .map_err(|error| SkeinError::Execution(error.to_string()));
+        .map_err(|error| HawdbError::Execution(error.to_string()));
     }
     let rel_type_ids = rel_types
         .iter()
@@ -305,7 +305,7 @@ pub fn try_projected_graph_with_node_filter(
                 layout,
                 budget,
             )
-            .map_err(|error| SkeinError::Execution(error.to_string()));
+            .map_err(|error| HawdbError::Execution(error.to_string()));
         }
         return ProjectedGraph::try_from_store_labels_without_edges_with_node_filter_and_layout(
             &source,
@@ -314,7 +314,7 @@ pub fn try_projected_graph_with_node_filter(
             layout,
             budget,
         )
-        .map_err(|error| SkeinError::Execution(error.to_string()));
+        .map_err(|error| HawdbError::Execution(error.to_string()));
     }
     ProjectedGraph::try_from_store_labels_and_rel_types_with_node_filter_and_layout(
         &source,
@@ -324,44 +324,44 @@ pub fn try_projected_graph_with_node_filter(
         layout,
         budget,
     )
-    .map_err(|error| SkeinError::Execution(error.to_string()))
+    .map_err(|error| HawdbError::Execution(error.to_string()))
 }
 
 struct GraphExecutionProjectionSource<'a>(&'a dyn GraphExecutionRead);
 
-impl skein_analytics::ProjectionSource for GraphExecutionProjectionSource<'_> {
+impl hawdb_analytics::ProjectionSource for GraphExecutionProjectionSource<'_> {
     fn visit_projection_nodes(
         &self,
-        visitor: &mut dyn FnMut(NodeRecord) -> skein_analytics::ProjectionScanControl,
-    ) -> std::result::Result<skein_analytics::ProjectionScanControl, String> {
+        visitor: &mut dyn FnMut(NodeRecord) -> hawdb_analytics::ProjectionScanControl,
+    ) -> std::result::Result<hawdb_analytics::ProjectionScanControl, String> {
         self.0
             .visit_nodes_owned(None, &mut |node| {
                 Ok(match visitor(node) {
-                    skein_analytics::ProjectionScanControl::Continue => ScanControl::Continue,
-                    skein_analytics::ProjectionScanControl::Stop => ScanControl::Stop,
+                    hawdb_analytics::ProjectionScanControl::Continue => ScanControl::Continue,
+                    hawdb_analytics::ProjectionScanControl::Stop => ScanControl::Stop,
                 })
             })
             .map(|control| match control {
-                ScanControl::Continue => skein_analytics::ProjectionScanControl::Continue,
-                ScanControl::Stop => skein_analytics::ProjectionScanControl::Stop,
+                ScanControl::Continue => hawdb_analytics::ProjectionScanControl::Continue,
+                ScanControl::Stop => hawdb_analytics::ProjectionScanControl::Stop,
             })
             .map_err(|error| error.to_string())
     }
 
     fn visit_projection_relationships(
         &self,
-        visitor: &mut dyn FnMut(RelRecord) -> skein_analytics::ProjectionScanControl,
-    ) -> std::result::Result<skein_analytics::ProjectionScanControl, String> {
+        visitor: &mut dyn FnMut(RelRecord) -> hawdb_analytics::ProjectionScanControl,
+    ) -> std::result::Result<hawdb_analytics::ProjectionScanControl, String> {
         self.0
             .visit_relationships_owned(None, &mut |relationship| {
                 Ok(match visitor(relationship) {
-                    skein_analytics::ProjectionScanControl::Continue => ScanControl::Continue,
-                    skein_analytics::ProjectionScanControl::Stop => ScanControl::Stop,
+                    hawdb_analytics::ProjectionScanControl::Continue => ScanControl::Continue,
+                    hawdb_analytics::ProjectionScanControl::Stop => ScanControl::Stop,
                 })
             })
             .map(|control| match control {
-                ScanControl::Continue => skein_analytics::ProjectionScanControl::Continue,
-                ScanControl::Stop => skein_analytics::ProjectionScanControl::Stop,
+                ScanControl::Continue => hawdb_analytics::ProjectionScanControl::Continue,
+                ScanControl::Stop => hawdb_analytics::ProjectionScanControl::Stop,
             })
             .map_err(|error| error.to_string())
     }

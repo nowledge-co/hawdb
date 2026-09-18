@@ -8,23 +8,23 @@ test_suite(
 )
 
 rust_library(
-    name = "skein_runtime_tokio",
-    crate_name = "skein_runtime_tokio",
+    name = "hawdb_runtime_tokio",
+    crate_name = "hawdb_runtime_tokio",
     crate_root = "src/lib.rs",
     srcs = glob(["src/**/*.rs"]),
     edition = "2024",
     aliases = aliases(),
     deps = all_crate_deps(normal = True) + [
-        "//crates/core:skein_core",
-        "//crates/qos:skein_qos",
-        "//crates/storage:skein_storage",
+        "//crates/core:hawdb_core",
+        "//crates/qos:hawdb_qos",
+        "//crates/storage:hawdb_storage",
     ],
     proc_macro_deps = all_crate_deps(proc_macro = True),
 )
 
 rust_test(
-    name = "skein_runtime_tokio_tests",
-    crate = ":skein_runtime_tokio",
+    name = "hawdb_runtime_tokio_tests",
+    crate = ":hawdb_runtime_tokio",
     edition = "2024",
     aliases = aliases(normal_dev = True, proc_macro_dev = True),
     deps = all_crate_deps(normal_dev = True),

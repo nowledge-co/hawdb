@@ -1,6 +1,6 @@
 use super::predicate::{predicate_comparison_truth, PredicateTruth};
 use super::*;
-use skein_plan::ScalarBinaryOp;
+use hawdb_plan::ScalarBinaryOp;
 
 pub fn insert_projected_value(values: &mut BTreeMap<String, Value>, name: &str, value: Value) {
     let mut candidate = name.to_string();
@@ -72,11 +72,11 @@ pub fn evaluate_projection_expression(
         )),
         ProjectionExpression::Variable { variable } => binding_value(binding, catalog, variable)
             .ok_or_else(|| {
-                SkeinError::Execution(format!("missing variable '{variable}' during projection"))
+                HawdbError::Execution(format!("missing variable '{variable}' during projection"))
             }),
         ProjectionExpression::Property { variable, property } => {
             if !binding_has_variable(binding, variable) {
-                return Err(SkeinError::Execution(format!(
+                return Err(HawdbError::Execution(format!(
                     "missing variable '{variable}' during projection"
                 )));
             }
@@ -85,11 +85,11 @@ pub fn evaluate_projection_expression(
                 .unwrap_or(Value::Null))
         }
         ProjectionExpression::Id { variable } => binding_id(binding, variable).ok_or_else(|| {
-            SkeinError::Execution(format!("missing variable '{variable}' during projection"))
+            HawdbError::Execution(format!("missing variable '{variable}' during projection"))
         }),
         ProjectionExpression::RelationshipType { variable } => {
             let relationship = binding.relationships.get(variable).ok_or_else(|| {
-                SkeinError::Execution(format!("missing variable '{variable}' during projection"))
+                HawdbError::Execution(format!("missing variable '{variable}' during projection"))
             })?;
             Ok(catalog
                 .rel_type_name(relationship.rel_type)
@@ -110,7 +110,7 @@ pub fn evaluate_projection_expression(
             match project_expression_value(expression, catalog, binding)? {
                 Value::Null => Ok(Value::Null),
                 Value::String(value) => Ok(Value::String(value.chars().take(*length).collect())),
-                value => Err(SkeinError::Execution(format!(
+                value => Err(HawdbError::Execution(format!(
                     "LEFT expression requires a string value, got {value:?}"
                 ))),
             }
@@ -119,7 +119,7 @@ pub fn evaluate_projection_expression(
             match project_expression_value(expression, catalog, binding)? {
                 Value::Null => Ok(Value::Null),
                 Value::String(value) => Ok(Value::String(value.to_lowercase())),
-                value => Err(SkeinError::Execution(format!(
+                value => Err(HawdbError::Execution(format!(
                     "LOWER expression requires a string value, got {value:?}"
                 ))),
             }
@@ -130,14 +130,14 @@ pub fn evaluate_projection_expression(
             property,
         } => {
             if !binding_has_variable(binding, variable) {
-                return Err(SkeinError::Execution(format!(
+                return Err(HawdbError::Execution(format!(
                     "missing variable '{variable}' during projection"
                 )));
             }
             match binding_property(binding, variable, property) {
                 Some(Value::Int(nanos)) => Ok(Value::Int(timestamp_date_part(*part, *nanos))),
                 Some(Value::Null) | None => Ok(Value::Null),
-                Some(value) => Err(SkeinError::Execution(format!(
+                Some(value) => Err(HawdbError::Execution(format!(
                     "date_part requires an integer timestamp value, got {value:?}"
                 ))),
             }
@@ -149,7 +149,7 @@ pub fn evaluate_projection_expression(
             default,
         } => {
             if !binding_has_variable(binding, variable) {
-                return Err(SkeinError::Execution(format!(
+                return Err(HawdbError::Execution(format!(
                     "missing variable '{variable}' during projection"
                 )));
             }
@@ -168,7 +168,7 @@ pub fn evaluate_projection_expression(
             default,
         } => {
             if !binding_has_variable(binding, variable) {
-                return Err(SkeinError::Execution(format!(
+                return Err(HawdbError::Execution(format!(
                     "missing variable '{variable}' during projection"
                 )));
             }
@@ -189,7 +189,7 @@ pub fn evaluate_projection_expression(
             null_or_empty,
         } => {
             if !binding_has_variable(binding, variable) {
-                return Err(SkeinError::Execution(format!(
+                return Err(HawdbError::Execution(format!(
                     "missing variable '{variable}' during projection"
                 )));
             }
@@ -209,7 +209,7 @@ pub fn evaluate_projection_expression(
             default,
         } => {
             if !binding_has_variable(binding, variable) {
-                return Err(SkeinError::Execution(format!(
+                return Err(HawdbError::Execution(format!(
                     "missing variable '{variable}' during projection"
                 )));
             }
@@ -229,21 +229,21 @@ pub fn evaluate_projection_expression(
             default,
         } => {
             if !binding_has_variable(binding, variable) {
-                return Err(SkeinError::Execution(format!(
+                return Err(HawdbError::Execution(format!(
                     "missing variable '{variable}' during projection"
                 )));
             }
             match binding_property(binding, variable, property) {
                 Some(Value::String(value)) => Ok(Value::String(value.to_lowercase())),
                 Some(Value::Null) | None => Ok(default.clone()),
-                Some(value) => Err(SkeinError::Execution(format!(
+                Some(value) => Err(HawdbError::Execution(format!(
                     "CASE lower-default requires a string value, got {value:?}"
                 ))),
             }
         }
         ProjectionExpression::CaseCoalesceDifferenceFloorZero { variable, terms } => {
             if !binding_has_variable(binding, variable) {
-                return Err(SkeinError::Execution(format!(
+                return Err(HawdbError::Execution(format!(
                     "missing variable '{variable}' during projection"
                 )));
             }
@@ -253,7 +253,7 @@ pub fn evaluate_projection_expression(
         }
         ProjectionExpression::CaseEntitySearchRank(expression) => {
             if !binding_has_variable(binding, &expression.variable) {
-                return Err(SkeinError::Execution(format!(
+                return Err(HawdbError::Execution(format!(
                     "missing variable '{}' during projection",
                     expression.variable
                 )));
@@ -270,7 +270,7 @@ pub fn evaluate_projection_expression(
                 }
                 None | Some(Value::Null) => false,
                 Some(value) => {
-                    return Err(SkeinError::Execution(format!(
+                    return Err(HawdbError::Execution(format!(
                         "LOWER expression requires a string value, got {value:?}"
                     )))
                 }
@@ -294,7 +294,7 @@ pub fn evaluate_projection_expression(
         }
         ProjectionExpression::CaseColumnSearchRank(expression) => {
             let column = binding.values.get(&expression.column).ok_or_else(|| {
-                SkeinError::Execution(format!(
+                HawdbError::Execution(format!(
                     "missing column '{}' during projection",
                     expression.column
                 ))
@@ -324,7 +324,7 @@ pub fn evaluate_projection_expression(
             default,
         } => {
             let value = binding.values.get(column).ok_or_else(|| {
-                SkeinError::Execution(format!("missing column '{column}' during projection"))
+                HawdbError::Execution(format!("missing column '{column}' during projection"))
             })?;
             let value = match value {
                 Value::Map(values) => values
@@ -333,7 +333,7 @@ pub fn evaluate_projection_expression(
                     .unwrap_or(ValueRef::Null),
                 Value::Null => ValueRef::Null,
                 value => {
-                    return Err(SkeinError::Execution(format!(
+                    return Err(HawdbError::Execution(format!(
                         "column default expression requires a map value, got {value:?}"
                     )));
                 }
@@ -346,7 +346,7 @@ pub fn evaluate_projection_expression(
         }
         ProjectionExpression::ColumnValueDefaultIfNull { column, default } => {
             let value = binding.values.get(column).ok_or_else(|| {
-                SkeinError::Execution(format!("missing column '{column}' during projection"))
+                HawdbError::Execution(format!("missing column '{column}' during projection"))
             })?;
             if value == &Value::Null {
                 Ok(default.clone())
@@ -361,7 +361,7 @@ pub fn evaluate_projection_expression(
             null_or_empty,
         } => {
             let value = binding.values.get(column).ok_or_else(|| {
-                SkeinError::Execution(format!("missing column '{column}' during projection"))
+                HawdbError::Execution(format!("missing column '{column}' during projection"))
             })?;
             if value == &Value::Null || value == empty {
                 Ok(null_or_empty.clone())
@@ -370,16 +370,16 @@ pub fn evaluate_projection_expression(
             }
         }
         ProjectionExpression::Column(name) => binding.values.get(name).cloned().ok_or_else(|| {
-            SkeinError::Execution(format!("missing column '{name}' during projection"))
+            HawdbError::Execution(format!("missing column '{name}' during projection"))
         }),
         ProjectionExpression::ColumnProperty { column, property } => {
             let value = binding.values.get(column).ok_or_else(|| {
-                SkeinError::Execution(format!("missing column '{column}' during projection"))
+                HawdbError::Execution(format!("missing column '{column}' during projection"))
             })?;
             match value {
                 Value::Map(values) => Ok(values.get(property).cloned().unwrap_or(Value::Null)),
                 Value::Null => Ok(Value::Null),
-                value => Err(SkeinError::Execution(format!(
+                value => Err(HawdbError::Execution(format!(
                     "column property projection requires a map value, got {value:?}"
                 ))),
             }
@@ -401,7 +401,7 @@ fn coalesce_difference(
     terms: &[CoalesceDifferenceProjectionTerm],
 ) -> Result<i64> {
     let Some((first, rest)) = terms.split_first() else {
-        return Err(SkeinError::Execution(
+        return Err(HawdbError::Execution(
             "coalesce difference requires at least one term".to_string(),
         ));
     };
@@ -420,7 +420,7 @@ fn coalesce_integer_term(
     match binding_property(binding, variable, &term.property) {
         Some(Value::Int(value)) => Ok(*value),
         Some(Value::Null) | None => integer_value(&term.default, "COALESCE default"),
-        Some(value) => Err(SkeinError::Execution(format!(
+        Some(value) => Err(HawdbError::Execution(format!(
             "COALESCE difference requires integer property '{}.{}', got {value:?}",
             variable, term.property
         ))),
@@ -430,7 +430,7 @@ fn coalesce_integer_term(
 fn integer_value(value: &Value, context: &str) -> Result<i64> {
     match value {
         Value::Int(value) => Ok(*value),
-        value => Err(SkeinError::Execution(format!(
+        value => Err(HawdbError::Execution(format!(
             "{context} requires an integer value, got {value:?}"
         ))),
     }
@@ -575,7 +575,7 @@ fn scalar_truth(value: Value) -> Result<PredicateTruth> {
     match value {
         Value::Bool(value) => Ok(PredicateTruth::from_bool(value)),
         Value::Null => Ok(PredicateTruth::Unknown),
-        value => Err(SkeinError::Execution(format!(
+        value => Err(HawdbError::Execution(format!(
             "CASE condition requires a boolean value, got {value:?}"
         ))),
     }
@@ -695,7 +695,7 @@ mod case_tests {
                     otherwise: Some(Box::new(literal(Value::Int(1)))),
                 };
                 let specialized = ProjectionExpression::CaseColumnSearchRank(Box::new(
-                    skein_plan::CaseColumnSearchRankProjection {
+                    hawdb_plan::CaseColumnSearchRankProjection {
                         column: "value".into(),
                         raw_query: raw.clone(),
                         normalized_query: normalized.clone(),
@@ -755,7 +755,7 @@ mod case_tests {
             otherwise: Some(Box::new(literal(Value::Int(2)))),
         };
         let specialized = ProjectionExpression::CaseEntitySearchRank(Box::new(
-            skein_plan::CaseEntitySearchRankProjection {
+            hawdb_plan::CaseEntitySearchRankProjection {
                 variable: "n".into(),
                 name_property: "name".into(),
                 aliases_property: "aliases".into(),
@@ -790,7 +790,7 @@ mod case_tests {
                 binding.nodes.insert(
                     "n".into(),
                     NodeRecord {
-                        id: skein_storage::NodeId(1),
+                        id: hawdb_storage::NodeId(1),
                         labels: Default::default(),
                         properties,
                     },

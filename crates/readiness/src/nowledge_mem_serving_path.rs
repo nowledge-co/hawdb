@@ -1,5 +1,5 @@
 pub const NOWLEDGE_MEM_SERVING_PATH_READINESS_PROTOCOL: &str =
-    "skein-nowledge-mem-serving-path-readiness-v1";
+    "hawdb-nowledge-mem-serving-path-readiness-v1";
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum NowledgeMemServingEntrypoint {
@@ -157,7 +157,7 @@ mod tests {
             vec!["host_runtime_binding_missing"]
         );
 
-        let bound = unbound.bind_host_runtime("nmem_graph_skein_embedded_runtime");
+        let bound = unbound.bind_host_runtime("nmem_graph_hawdb_embedded_runtime");
         assert!(bound.ready());
         assert!(bound.blocker_codes().is_empty());
         assert_eq!(
@@ -165,7 +165,7 @@ mod tests {
             serde_json::json!({
                 "protocol": NOWLEDGE_MEM_SERVING_PATH_READINESS_PROTOCOL,
                 "entrypoint": "nowledge_mem_embedded_store_handle",
-                "host_runtime_binding": "nmem_graph_skein_embedded_runtime",
+                "host_runtime_binding": "nmem_graph_hawdb_embedded_runtime",
                 "shared_runtime_governor": true,
                 "foreground_parameterized_cypher_admitted": true,
                 "bounded_streaming_read_admitted": true,

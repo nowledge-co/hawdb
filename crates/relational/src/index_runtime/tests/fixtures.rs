@@ -1,7 +1,7 @@
 use super::*;
-use skein_core::Value;
-use skein_storage::relational_index_view::RelationalIndexReadView;
-use skein_storage::{
+use hawdb_core::Value;
+use hawdb_storage::relational_index_view::RelationalIndexReadView;
+use hawdb_storage::{
     RelationalIndexChangeCapture, RelationalIndexShadowConfig, RelationalIndexShadowReader,
     RelationalIndexShadowWriter, RelationalTransaction,
 };
@@ -32,8 +32,8 @@ pub(super) struct Fixture {
 impl Fixture {
     pub fn new() -> Self {
         let directory = std::env::temp_dir().join(format!(
-            "skein-index-runtime-{}",
-            skein_core::generate_uuidv7().unwrap()
+            "hawdb-index-runtime-{}",
+            hawdb_core::generate_uuidv7().unwrap()
         ));
         std::fs::create_dir(&directory).unwrap();
         let mut state = RelationalState::default();
@@ -79,7 +79,7 @@ impl Fixture {
     }
 
     pub fn recovered(&self) -> (Reader, RelationalState, Oracle) {
-        use skein_storage::{
+        use hawdb_storage::{
             RelationalIndexRecoveryBuilder, RelationalIndexRecoveryConfig,
             RelationalIndexRecoveryReader, RelationalRecoveryFence,
             RelationalRecoverySourceIdentity,

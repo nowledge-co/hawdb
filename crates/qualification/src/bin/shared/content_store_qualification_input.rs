@@ -1,11 +1,11 @@
 use super::qualification_value::value_from_json;
-use serde::Deserialize;
-use skein::RuntimeGovernorConfig;
-use skein_qualification::{
+use hawdb::RuntimeGovernorConfig;
+use hawdb_qualification::{
     ContentStoreResourceProfileKind, ProductionContentStoreReadCase,
     ProductionContentStoreResourceLimits, CONTENT_STORE_512_MIB_CAPABILITY_BYTES,
     CONTENT_STORE_SHARED_HOST_8_GIB_BYTES,
 };
+use serde::Deserialize;
 
 #[derive(Debug, Deserialize)]
 #[serde(deny_unknown_fields, rename_all = "snake_case")]

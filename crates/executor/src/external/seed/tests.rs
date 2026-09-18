@@ -1,8 +1,8 @@
 use super::*;
 use crate::external::tests::empty_report;
 use crate::VectorSeedExecutionRow;
-use skein_core::RuntimeCancellationToken;
-use skein_plan::{VectorCandidateSource, VectorExecutionResourceProfile, VectorPhysicalPlan};
+use hawdb_core::RuntimeCancellationToken;
+use hawdb_plan::{VectorCandidateSource, VectorExecutionResourceProfile, VectorPhysicalPlan};
 
 fn nz(bytes: usize) -> NonZeroUsize {
     NonZeroUsize::new(bytes).unwrap()
@@ -198,7 +198,7 @@ fn run(case: Case) -> Outcome {
                     .collect(),
             );
             if case.consumer_error {
-                Err(SkeinError::Execution("consumer failure".to_string()))
+                Err(HawdbError::Execution("consumer failure".to_string()))
             } else if case.consumer_stop {
                 Ok(BatchControl::Stop)
             } else {
@@ -312,10 +312,10 @@ fn embedding_conversion_preserves_bits_errors_and_validation_order() {
             ),
             Err(message) => {
                 let error = actual.unwrap_err();
-                assert!(matches!(error, SkeinError::Semantic(_)));
+                assert!(matches!(error, HawdbError::Semantic(_)));
                 assert_eq!(
                     error.to_string(),
-                    SkeinError::Semantic(format!("vector search parameter '$embedding' {message}"))
+                    HawdbError::Semantic(format!("vector search parameter '$embedding' {message}"))
                         .to_string()
                 );
             }
@@ -418,7 +418,7 @@ fn preflight_zero_limit_and_cancellation_keep_error_precedence() {
     error(
         &run(Case {
             cancel_after: true,
-            response: Err(SkeinError::Execution("host failure".into())),
+            response: Err(HawdbError::Execution("host failure".into())),
             ..Case::default()
         }),
         "host failure",

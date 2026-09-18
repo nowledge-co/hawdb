@@ -4,7 +4,7 @@ use crate::{
     residual_row_properties_encoded_len, write_residual_row_properties, ColumnGroupTableKey,
     ColumnGroupTableKind, StreamedBlob,
 };
-use skein_core::{LabelId, RelTypeId, Result, SkeinError, Value};
+use hawdb_core::{HawdbError, LabelId, RelTypeId, Result, Value};
 use std::collections::BTreeSet;
 
 /// The shadow table key of a node with `labels` (minimum label = primary).
@@ -69,7 +69,7 @@ pub struct ResidualRowBlob<'a> {
 impl<'a> ResidualRowBlob<'a> {
     pub fn new(entries: &'a [(u32, &'a Value)]) -> Result<Self> {
         let encoded_len = residual_row_properties_encoded_len(entries)
-            .map_err(|error| SkeinError::Storage(error.to_string()))?;
+            .map_err(|error| HawdbError::Storage(error.to_string()))?;
         Ok(Self {
             entries,
             encoded_len,

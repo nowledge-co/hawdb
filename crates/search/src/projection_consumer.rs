@@ -1,6 +1,6 @@
 use crate::{SearchIndex, SearchProjectionCatchUpReport};
-use skein_core::{Result, SkeinError};
-use skein_storage::{SearchProjectionChangefeedReadiness, SearchProjectionChangefeedStatus};
+use hawdb_core::{HawdbError, Result};
+use hawdb_storage::{SearchProjectionChangefeedReadiness, SearchProjectionChangefeedStatus};
 use std::fmt;
 use std::num::NonZeroU64;
 
@@ -16,7 +16,7 @@ impl SearchProjectionConsumerId {
                 .bytes()
                 .all(|byte| byte.is_ascii_alphanumeric() || b"._-".contains(&byte))
         {
-            return Err(SkeinError::Semantic(
+            return Err(HawdbError::Semantic(
                 "consumer ID must contain 1-128 ASCII letters, digits, '.', '_' or '-'".into(),
             ));
         }
@@ -127,7 +127,7 @@ pub struct SearchProjectionConsumerCatchUpReport {
 
 #[derive(Debug)]
 pub enum SearchProjectionConsumerError {
-    Database(SkeinError),
+    Database(HawdbError),
     InvalidHandle,
     AlreadyRegistered,
     RegistryFull,
@@ -166,8 +166,8 @@ impl std::error::Error for SearchProjectionConsumerError {
     }
 }
 
-impl From<SkeinError> for SearchProjectionConsumerError {
-    fn from(error: SkeinError) -> Self {
+impl From<HawdbError> for SearchProjectionConsumerError {
+    fn from(error: HawdbError) -> Self {
         Self::Database(error)
     }
 }

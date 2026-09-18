@@ -1,7 +1,7 @@
 use super::*;
-use skein_resource_profile::StorageResourceProfileObservation;
+use hawdb_resource_profile::StorageResourceProfileObservation;
 
-pub use skein_resource_profile::{
+pub use hawdb_resource_profile::{
     StorageResourceProfileLimits, StorageResourceProfileReport, STORAGE_RESOURCE_PROFILE_PROTOCOL,
 };
 
@@ -33,7 +33,7 @@ impl Database {
         evidence_binding.validate_for(&expected_identity)?;
         let commit_epoch = self.commit_epoch();
         if evidence_binding.identity.canonical_graph_commit_epoch != commit_epoch {
-            return Err(SkeinError::Semantic(format!(
+            return Err(HawdbError::Semantic(format!(
                 "production evidence canonical graph commit epoch {} does not match database epoch {commit_epoch}",
                 evidence_binding.identity.canonical_graph_commit_epoch
             )));
@@ -55,12 +55,12 @@ impl Database {
         limits: StorageResourceProfileLimits,
         evidence_binding: crate::ProductionEvidenceBinding,
         expected_identity: crate::ProductionQualificationIdentity,
-        task_context: &skein_core::RuntimeTaskContext,
+        task_context: &hawdb_core::RuntimeTaskContext,
     ) -> Result<StorageResourceProfileReport> {
         evidence_binding.validate_for(&expected_identity)?;
         let commit_epoch = self.commit_epoch();
         if evidence_binding.identity.canonical_graph_commit_epoch != commit_epoch {
-            return Err(SkeinError::Semantic(format!(
+            return Err(HawdbError::Semantic(format!(
                 "production evidence canonical graph commit epoch {} does not match database epoch {commit_epoch}",
                 evidence_binding.identity.canonical_graph_commit_epoch
             )));
@@ -82,7 +82,7 @@ impl Database {
         limits: StorageResourceProfileLimits,
         evidence_binding: Option<crate::ProductionEvidenceBinding>,
         expected_identity: Option<crate::ProductionQualificationIdentity>,
-        task_context: Option<&skein_core::RuntimeTaskContext>,
+        task_context: Option<&hawdb_core::RuntimeTaskContext>,
     ) -> Result<StorageResourceProfileReport> {
         limits.validate()?;
         let canonical_graph_commit_epoch = self.commit_epoch();

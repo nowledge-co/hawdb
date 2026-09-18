@@ -2,11 +2,11 @@ use super::{
     choose_base_access, choose_join_access, elapsed_nanos, measure_nanos,
     plan_relational_field_plan, projection_access_planning, projection_contains_aggregate,
     reject_non_public_schema, resolve_relational_order_target,
-    validate_non_aggregate_coalesce_projections, Instant, PreparedRelationalAccessPlan,
+    validate_non_aggregate_coalesce_projections, HawdbError, Instant, PreparedRelationalAccessPlan,
     PreparedRelationalExecutionDescriptor, PreparedRelationalSelect,
     RelationalAccessPathDescriptor, RelationalBaseAccessPlanning, RelationalJoinPlanningContext,
     RelationalQueryLimits, RelationalQueryReadModes, RelationalQueryStoreReader,
-    RelationalSqlStageTimings, RelationalState, Result, SelectStatement, SkeinError, Value,
+    RelationalSqlStageTimings, RelationalState, Result, SelectStatement, Value,
 };
 pub(super) use crate::field_plan::resolved_access_order_by;
 
@@ -24,7 +24,7 @@ pub(super) fn prepare_relational_select(
     measure_nanos(&mut current_state_bind_nanos, || -> Result<()> {
         reject_non_public_schema(select.from.schema.as_deref())?;
         if state.table_schema(&select.from.name).is_none() {
-            return Err(SkeinError::Semantic(format!(
+            return Err(HawdbError::Semantic(format!(
                 "unknown relational table {}",
                 select.from.name
             )));
@@ -32,7 +32,7 @@ pub(super) fn prepare_relational_select(
         for join in &select.joins {
             reject_non_public_schema(join.table.schema.as_deref())?;
             if state.table_schema(&join.table.name).is_none() {
-                return Err(SkeinError::Semantic(format!(
+                return Err(HawdbError::Semantic(format!(
                     "unknown relational table {}",
                     join.table.name
                 )));
@@ -93,7 +93,7 @@ pub(super) fn prepare_syntax_access_plan(
     limits: RelationalQueryLimits,
 ) -> Result<PreparedRelationalAccessPlan> {
     let base_schema = state.table_schema(&select.from.name).ok_or_else(|| {
-        SkeinError::Semantic(format!("unknown relational table {}", select.from.name))
+        HawdbError::Semantic(format!("unknown relational table {}", select.from.name))
     })?;
     let base_qualifier = select
         .from_alias
@@ -124,7 +124,7 @@ pub(super) fn prepare_syntax_access_plan(
         .iter()
         .map(|join| {
             let join_schema = state.table_schema(&join.table.name).ok_or_else(|| {
-                SkeinError::Semantic(format!("unknown relational table {}", join.table.name))
+                HawdbError::Semantic(format!("unknown relational table {}", join.table.name))
             })?;
             let qualifier = join
                 .alias

@@ -2,8 +2,8 @@
 
 use super::*;
 pub(super) use executor_traversal::ShortestPathSearch;
-use skein_executor::store::GraphExecutionRead;
-use skein_executor::traversal as executor_traversal;
+use hawdb_executor::store::GraphExecutionRead;
+use hawdb_executor::traversal as executor_traversal;
 
 #[cfg(test)]
 pub(super) fn all_shortest_paths(
@@ -26,6 +26,6 @@ pub(super) fn all_shortest_paths(
         result_limit,
         memory_account,
         task_context,
-        &skein_executor::observer::NoopExecutionObserver,
+        &hawdb_executor::observer::NoopExecutionObserver,
     )
 }

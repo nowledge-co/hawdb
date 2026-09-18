@@ -1,5 +1,5 @@
 use super::*;
-use skein_storage::RelationalColumnSchema;
+use hawdb_storage::RelationalColumnSchema;
 
 mod fixtures;
 use fixtures::*;
@@ -186,7 +186,7 @@ fn resolver_call_order_and_first_failure_are_preserved() {
         .push(|column| {
             calls.push((column.qualifier.clone(), column.name.clone()));
             if column.name == "body" {
-                Err(SkeinError::Execution("binding sentinel".into()))
+                Err(HawdbError::Execution("binding sentinel".into()))
             } else {
                 Ok(&value)
             }
@@ -200,7 +200,7 @@ fn resolver_call_order_and_first_failure_are_preserved() {
             (None, "body".into())
         ]
     );
-    assert!(matches!(error, SkeinError::Execution(ref message) if message == "binding sentinel"));
+    assert!(matches!(error, HawdbError::Execution(ref message) if message == "binding sentinel"));
     drop(aggregate);
     assert_eq!(ledger.snapshot().used_bytes, 0);
     let mut count = executor("COUNT(*)", 1, &ledger);
@@ -235,7 +235,7 @@ fn invalid_values_fail_with_existing_semantic_errors_and_release_the_lease() {
         let ledger = ledger();
         let mut aggregate = executor(projection, 1, &ledger);
         let error = aggregate.push(|_| Ok(&value)).unwrap_err();
-        assert!(matches!(error, SkeinError::Semantic(ref message) if message == expected));
+        assert!(matches!(error, HawdbError::Semantic(ref message) if message == expected));
         drop(aggregate);
         assert_eq!(ledger.snapshot().used_bytes, 0);
     }
@@ -259,7 +259,7 @@ fn sum_overflow_is_identical_inside_across_and_at_the_tail_of_batches() {
                 Ok(()) => aggregate.finish().unwrap_err(),
             };
             assert!(
-                matches!(error, SkeinError::Execution(ref message) if message == "BIGINT SUM overflow"),
+                matches!(error, HawdbError::Execution(ref message) if message == "BIGINT SUM overflow"),
                 "batch={batch}: {error}"
             );
             assert_eq!(ledger.snapshot().used_bytes, 0);
@@ -320,7 +320,7 @@ fn batch_admission_is_maximal_at_payload_and_validity_boundaries() {
                     None => {
                         let error = actual.err().expect("one row must be refused");
                         assert!(
-                            matches!(error, SkeinError::Execution(ref message) if message == &format!("relational columnar aggregate cannot fit one row within batch_payload_bytes {limit}"))
+                            matches!(error, HawdbError::Execution(ref message) if message == &format!("relational columnar aggregate cannot fit one row within batch_payload_bytes {limit}"))
                         );
                         assert_eq!(ledger.snapshot().account_count, 0);
                     }
@@ -348,7 +348,7 @@ fn query_memory_admission_is_shared_and_released_on_drop() {
     )
     .err()
     .expect("second lease exceeds shared budget");
-    assert!(matches!(error, SkeinError::Execution(_)));
+    assert!(matches!(error, HawdbError::Execution(_)));
     assert_eq!(ledger.snapshot().used_bytes, bytes);
     drop(first);
     assert_eq!(ledger.snapshot().used_bytes, 0);
@@ -413,12 +413,12 @@ fn columnar_aggregate_differential_smoke() {
 fn columnar_aggregate_differential_campaign() {
     let checks = differential_campaign(128, 64);
     assert_eq!(checks, 32_768);
-    println!("skein-relational-columnar-aggregate-fuzz-v1: 128 seeds, 8192 cases, {checks} complete outcomes");
+    println!("hawdb-relational-columnar-aggregate-fuzz-v1: 128 seeds, 8192 cases, {checks} complete outcomes");
 }
 
 #[test]
 fn recognizes_coalesced_sum_octet_length_as_columnar_aggregate() {
-    let skein_sql::SqlStatement::Select(select) = skein_sql::parse_postgres_sql(
+    let hawdb_sql::SqlStatement::Select(select) = hawdb_sql::parse_postgres_sql(
         "SELECT COALESCE(SUM(OCTET_LENGTH(body)), 0) AS body_bytes FROM documents",
     )
     .expect("parse length aggregate") else {

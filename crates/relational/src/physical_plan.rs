@@ -9,22 +9,22 @@ use crate::field_plan::{
     projection_contains_aggregate, resolved_access_order_by, RelationalFieldPlan,
 };
 use crate::index_runtime::{RelationalIndexReadMode, RelationalIndexStoreReader};
-use skein_core::{Result, SkeinError};
-use skein_expression::BindingId;
-use skein_optimizer::relational_sargability::{
+use hawdb_core::{HawdbError, Result};
+use hawdb_expression::BindingId;
+use hawdb_optimizer::relational_sargability::{
     canonical_keyset_values, collect_conjunctive_join_equalities,
     predicate_is_covered_by_equalities,
 };
-use skein_optimizer::{
+use hawdb_optimizer::{
     estimate_relational_access_path_cost, estimate_relational_join_cost, PlanCostBreakdown,
     RelationalAccessPathDescriptor, RelationalAccessPathKind, RelationalJoinCardinality,
     RelationalJoinPlanningOutcome, RelationalJoinRightInput, RelationalJoinSelectivity,
     RelationalOperatorCardinalityProfile, RelationalOperatorId, RelationalOperatorKind,
 };
-use skein_sql::{
+use hawdb_sql::{
     RelationalSqlStageTimings, SelectStatement, SqlColumnRef, SqlJoinKind, SqlPredicate,
 };
-use skein_storage::{
+use hawdb_storage::{
     RelationalIndexRangeScan, RelationalIndexScanDirection, RelationalKey, RelationalState,
 };
 use std::collections::{BTreeMap, BTreeSet};
@@ -132,7 +132,7 @@ impl RelationalPhysicalOutputSchema {
             .iter()
             .find_map(|binding| (!seen.insert(binding.binding)).then_some(binding.binding))
         {
-            return Err(SkeinError::Execution(format!(
+            return Err(HawdbError::Execution(format!(
                 "physical join output schema repeats binding {}",
                 duplicate.get()
             )));
@@ -147,7 +147,7 @@ impl RelationalPhysicalOutputSchema {
         bindings: impl ExactSizeIterator<Item = RelationalPhysicalOutputBindingRef<'a>>,
     ) -> Result<()> {
         if self.bindings.len() != bindings.len() {
-            return Err(SkeinError::Execution(format!(
+            return Err(HawdbError::Execution(format!(
                 "physical join output schema has {} bindings but executor produced {}",
                 self.bindings.len(),
                 bindings.len()
@@ -163,7 +163,7 @@ impl RelationalPhysicalOutputSchema {
                         || expected.qualifier != actual.qualifier
                 })
         {
-            return Err(SkeinError::Execution(format!(
+            return Err(HawdbError::Execution(format!(
                 "physical join output schema binding {} is {}, but executor produced {}",
                 expected.binding.get(),
                 expected.qualifier,
@@ -315,7 +315,7 @@ impl RelationalPhysicalJoinNode {
                     return Ok(());
                 }
                 let schema = state.table_schema(&relation.table).ok_or_else(|| {
-                    SkeinError::Semantic(format!("unknown relational table {}", relation.table))
+                    HawdbError::Semantic(format!("unknown relational table {}", relation.table))
                 })?;
                 fields.apply_access_coverage(descriptor, &relation.table, schema)
             }
@@ -510,7 +510,7 @@ impl RelationalPhysicalJoinNode {
                     &relation.qualifier,
                 );
                 if relation.output_schema != expected {
-                    return Err(SkeinError::Execution(format!(
+                    return Err(HawdbError::Execution(format!(
                         "physical relation {} has an inconsistent output schema",
                         relation.qualifier
                     )));
@@ -538,14 +538,14 @@ impl RelationalPhysicalJoinNode {
                 match algorithm {
                     RelationalPhysicalJoinAlgorithm::Merge => {
                         if *kind != SqlJoinKind::Inner {
-                            return Err(SkeinError::Execution(
+                            return Err(HawdbError::Execution(
                                 "merge join supports inner joins only".to_string(),
                             ));
                         }
                         let (Self::Relation(left), Self::Relation(right)) =
                             (left.as_ref(), right.as_ref())
                         else {
-                            return Err(SkeinError::Execution(
+                            return Err(HawdbError::Execution(
                                 "merge join requires two relation inputs".to_string(),
                             ));
                         };
@@ -565,21 +565,21 @@ impl RelationalPhysicalJoinNode {
                             .as_ref()
                             .is_none_or(|keys| keys.columns.is_empty())
                         {
-                            return Err(SkeinError::Execution(
+                            return Err(HawdbError::Execution(
                                 "merge join has incompatible ordered inputs".to_string(),
                             ));
                         }
                     }
                     RelationalPhysicalJoinAlgorithm::Hash => {
                         if !matches!(kind, SqlJoinKind::Inner | SqlJoinKind::Left) {
-                            return Err(SkeinError::Execution(
+                            return Err(HawdbError::Execution(
                                 "hash join supports inner and left joins only".to_string(),
                             ));
                         }
                         let (Self::Relation(left), Self::Relation(right)) =
                             (left.as_ref(), right.as_ref())
                         else {
-                            return Err(SkeinError::Execution(
+                            return Err(HawdbError::Execution(
                                 "hash join requires two relation inputs".to_string(),
                             ));
                         };
@@ -595,13 +595,13 @@ impl RelationalPhysicalJoinNode {
                                 .as_ref()
                                 .is_none_or(|keys| keys.columns.is_empty())
                         {
-                            return Err(SkeinError::Execution(
+                            return Err(HawdbError::Execution(
                                 "hash join has incompatible build input".to_string(),
                             ));
                         }
                     }
                     _ if *algorithm != expected_algorithm || equi_join_keys.is_some() => {
-                        return Err(SkeinError::Execution(
+                        return Err(HawdbError::Execution(
                             "physical join algorithm disagrees with its right input".to_string(),
                         ));
                     }
@@ -612,7 +612,7 @@ impl RelationalPhysicalJoinNode {
                     right.output_schema(),
                 )?;
                 if *output_schema != expected_schema {
-                    return Err(SkeinError::Execution(
+                    return Err(HawdbError::Execution(
                         "physical join has an inconsistent output schema".to_string(),
                     ));
                 }
@@ -642,7 +642,7 @@ impl RelationalPhysicalJoinPlan {
     pub fn validate(&self) -> Result<()> {
         self.root.validate()?;
         if self.output_schema != *self.root.output_schema() {
-            return Err(SkeinError::Execution(
+            return Err(HawdbError::Execution(
                 "physical join plan has an inconsistent root output schema".to_string(),
             ));
         }
@@ -856,7 +856,7 @@ impl PreparedRelationalAccessPlan {
         self.physical_join_plan
             .as_mut()
             .ok_or_else(|| {
-                SkeinError::Execution(
+                HawdbError::Execution(
                     "cannot apply relational index coverage before physical planning".to_string(),
                 )
             })?
@@ -1004,14 +1004,14 @@ impl PreparedRelationalAccessPlan {
         for (index, (join, access)) in statement.joins.iter().zip(&self.join_accesses).enumerate() {
             let binding = if let Some(selection) = selection {
                 *selection.join_bindings.get(index).ok_or_else(|| {
-                    SkeinError::Execution(format!(
+                    HawdbError::Execution(format!(
                         "prepared relational join selection has no binding for join {}",
                         index.saturating_add(1)
                     ))
                 })?
             } else {
                 let binding = u32::try_from(index.saturating_add(1)).map_err(|_| {
-                    SkeinError::Execution(
+                    HawdbError::Execution(
                         "relational physical join plan exceeds the binding-id range".to_string(),
                     )
                 })?;
@@ -1049,7 +1049,7 @@ impl PreparedRelationalAccessPlan {
 
     pub fn physical_join_plan(&self) -> Result<&RelationalPhysicalJoinPlan> {
         self.physical_join_plan.as_ref().ok_or_else(|| {
-            SkeinError::Execution(
+            HawdbError::Execution(
                 "prepared relational SELECT has no finalized physical join plan".to_string(),
             )
         })
@@ -1073,7 +1073,7 @@ pub struct RelationalExecutionMemoryShape {
 }
 
 impl RelationalExecutionMemoryShape {
-    pub fn estimated_bytes(self, memory: &skein_executor::ExecutionMemoryConfig) -> usize {
+    pub fn estimated_bytes(self, memory: &hawdb_executor::ExecutionMemoryConfig) -> usize {
         self.pipeline_batch_count
             .saturating_mul(memory.batch_payload_bytes.get())
             .saturating_add(
@@ -1171,14 +1171,14 @@ pub struct PreparedRelationalSelect {
 impl PreparedRelationalSelect {
     pub fn validate(&self) -> Result<()> {
         if self.statement.joins.len() != self.access_plan.join_accesses.len() {
-            return Err(SkeinError::Execution(format!(
+            return Err(HawdbError::Execution(format!(
                 "prepared relational SELECT has {} joins but {} join access paths",
                 self.statement.joins.len(),
                 self.access_plan.join_accesses.len()
             )));
         }
         if !base_access_matches_descriptor(&self.access_plan.base_access) {
-            return Err(SkeinError::Execution(
+            return Err(HawdbError::Execution(
                 "prepared relational SELECT has an inconsistent base access path".to_string(),
             ));
         }
@@ -1188,13 +1188,13 @@ impl PreparedRelationalSelect {
             .iter()
             .any(|access| !join_access_matches_descriptor(access))
         {
-            return Err(SkeinError::Execution(
+            return Err(HawdbError::Execution(
                 "prepared relational SELECT has an inconsistent join access path".to_string(),
             ));
         }
         let physical_plan = self.access_plan.physical_join_plan()?;
         if physical_plan.root.relation_count() != self.statement.joins.len().saturating_add(1) {
-            return Err(SkeinError::Execution(format!(
+            return Err(HawdbError::Execution(format!(
                 "physical relational join plan has {} relations for a {}-join SELECT",
                 physical_plan.root.relation_count(),
                 self.statement.joins.len()
@@ -1208,7 +1208,7 @@ impl PreparedRelationalSelect {
             }
         });
         if let Some(binding) = duplicate {
-            return Err(SkeinError::Execution(format!(
+            return Err(HawdbError::Execution(format!(
                 "physical relational join plan repeats binding {}",
                 binding.get()
             )));
@@ -1218,7 +1218,7 @@ impl PreparedRelationalSelect {
         planned_tree_operator_cardinality_profiles(physical_plan)?;
         if let Some(selection) = &self.access_plan.join_selection {
             if selection.join_bindings.len() != self.statement.joins.len() {
-                return Err(SkeinError::Execution(format!(
+                return Err(HawdbError::Execution(format!(
                     "prepared relational join selection has {} bindings for {} joins",
                     selection.join_bindings.len(),
                     self.statement.joins.len()
@@ -1230,7 +1230,7 @@ impl PreparedRelationalSelect {
                 .iter()
                 .any(|binding| !bindings.insert(*binding))
             {
-                return Err(SkeinError::Execution(
+                return Err(HawdbError::Execution(
                     "prepared relational join selection contains duplicate bindings".to_string(),
                 ));
             }
@@ -1244,7 +1244,7 @@ impl PreparedRelationalSelect {
             )
             .cost;
             if cost.estimated_rows == 0 || cost.cost != component_total {
-                return Err(SkeinError::Execution(
+                return Err(HawdbError::Execution(
                     "prepared relational join selection has an invalid cost breakdown".to_string(),
                 ));
             }
@@ -1252,7 +1252,7 @@ impl PreparedRelationalSelect {
         if self.execution
             != PreparedRelationalExecutionDescriptor::prepare(&self.statement, &self.access_plan)?
         {
-            return Err(SkeinError::Execution(
+            return Err(HawdbError::Execution(
                 "prepared relational SELECT has an inconsistent execution descriptor".to_string(),
             ));
         }
@@ -1276,7 +1276,7 @@ pub fn validate_prepared_physical_join_plan_accesses(
             {
                 Ok(())
             }
-            _ => Err(SkeinError::Execution(format!(
+            _ => Err(HawdbError::Execution(format!(
                 "physical relation {} has an invalid access role",
                 relation.qualifier
             ))),
@@ -1289,7 +1289,7 @@ pub fn validate_prepared_physical_join_plan_accesses(
             ..
         } => {
             if predicates.is_empty() {
-                return Err(SkeinError::Execution(
+                return Err(HawdbError::Execution(
                     "physical join has no predicate".to_string(),
                 ));
             }
@@ -1380,16 +1380,16 @@ pub fn planned_tree_operator_cardinality_profiles(
         } = node
         {
             let index = operator_id.get().checked_sub(1).ok_or_else(|| {
-                SkeinError::Execution("physical join has an invalid operator id".to_string())
+                HawdbError::Execution("physical join has an invalid operator id".to_string())
             })?;
             let slot = profiles.get_mut(index).ok_or_else(|| {
-                SkeinError::Execution(format!(
+                HawdbError::Execution(format!(
                     "physical join operator {} is outside the plan profile",
                     operator_id.get()
                 ))
             })?;
             if slot.is_some() {
-                return Err(SkeinError::Execution(format!(
+                return Err(HawdbError::Execution(format!(
                     "physical join repeats operator {}",
                     operator_id.get()
                 )));
@@ -1408,7 +1408,7 @@ pub fn planned_tree_operator_cardinality_profiles(
         Ok(())
     })?;
     if cost != tree.cost_breakdown {
-        return Err(SkeinError::Execution(
+        return Err(HawdbError::Execution(
             "physical join operator estimates diverge from the selected join cost".to_string(),
         ));
     }
@@ -1417,7 +1417,7 @@ pub fn planned_tree_operator_cardinality_profiles(
         .enumerate()
         .map(|(index, profile)| {
             profile.ok_or_else(|| {
-                SkeinError::Execution(format!(
+                HawdbError::Execution(format!(
                     "physical join plan has no operator profile at index {index}"
                 ))
             })
@@ -1473,7 +1473,7 @@ pub fn estimated_rows_as_usize(rows: u64) -> usize {
 pub fn predicate_is_covered_by_access(
     predicate: Option<&SqlPredicate>,
     access: &RelationalAccessPathDescriptor,
-    order_by: &[skein_sql::SqlOrderItem],
+    order_by: &[hawdb_sql::SqlOrderItem],
     table: &str,
     qualifier: &str,
 ) -> bool {

@@ -18,8 +18,8 @@ filegroup(
 )
 
 rust_library(
-    name = "skein_qualification",
-    crate_name = "skein_qualification",
+    name = "hawdb_qualification",
+    crate_name = "hawdb_qualification",
     crate_root = "src/lib.rs",
     srcs = [
         "src/content_store_memory_profile.rs",
@@ -79,26 +79,26 @@ rust_library(
     edition = "2024",
     aliases = aliases(),
     deps = all_crate_deps(normal = True) + [
-        "//:skein",
-        "//crates/query:skein_query",
+        "//:hawdb",
+        "//crates/query:hawdb_query",
     ],
     proc_macro_deps = all_crate_deps(proc_macro = True),
 )
 
 rust_binary(
-    name = "skein_content_store_contract",
-    crate_name = "skein_content_store_contract",
+    name = "hawdb_content_store_contract",
+    crate_name = "hawdb_content_store_contract",
     crate_root = "src/bin/content_store_contract.rs",
     srcs = ["src/bin/content_store_contract.rs"],
     edition = "2024",
     aliases = aliases(normal = True, proc_macro = True),
-    deps = all_crate_deps(normal = True) + [":skein_qualification"],
+    deps = all_crate_deps(normal = True) + [":hawdb_qualification"],
     proc_macro_deps = all_crate_deps(proc_macro = True),
 )
 
 rust_binary(
-    name = "skein_content_store_memory_qualification",
-    crate_name = "skein_content_store_memory_qualification",
+    name = "hawdb_content_store_memory_qualification",
+    crate_name = "hawdb_content_store_memory_qualification",
     crate_root = "src/bin/content_store_memory_qualification.rs",
     srcs = [
         "src/bin/content_store_memory_qualification.rs",
@@ -108,15 +108,15 @@ rust_binary(
     edition = "2024",
     aliases = aliases(normal = True, proc_macro = True),
     deps = all_crate_deps(normal = True) + [
-        ":skein_qualification",
-        "//:skein",
+        ":hawdb_qualification",
+        "//:hawdb",
     ],
     proc_macro_deps = all_crate_deps(proc_macro = True),
 )
 
 rust_binary(
-    name = "skein_content_store_read_qualification",
-    crate_name = "skein_content_store_read_qualification",
+    name = "hawdb_content_store_read_qualification",
+    crate_name = "hawdb_content_store_read_qualification",
     crate_root = "src/bin/content_store_read_qualification.rs",
     srcs = [
         "src/bin/content_store_read_qualification.rs",
@@ -128,15 +128,15 @@ rust_binary(
     edition = "2024",
     aliases = aliases(normal = True, proc_macro = True),
     deps = all_crate_deps(normal = True) + [
-        ":skein_qualification",
-        "//:skein",
+        ":hawdb_qualification",
+        "//:hawdb",
     ],
     proc_macro_deps = all_crate_deps(proc_macro = True),
 )
 
 rust_binary(
-    name = "skein_content_store_mutation_qualification",
-    crate_name = "skein_content_store_mutation_qualification",
+    name = "hawdb_content_store_mutation_qualification",
+    crate_name = "hawdb_content_store_mutation_qualification",
     crate_root = "src/bin/content_store_mutation_qualification.rs",
     srcs = [
         "src/bin/content_store_mutation_qualification.rs",
@@ -147,15 +147,15 @@ rust_binary(
     edition = "2024",
     aliases = aliases(normal = True, proc_macro = True),
     deps = all_crate_deps(normal = True) + [
-        ":skein_qualification",
-        "//:skein",
+        ":hawdb_qualification",
+        "//:hawdb",
     ],
     proc_macro_deps = all_crate_deps(proc_macro = True),
 )
 
 rust_binary(
-    name = "skein_content_store_overflow_compaction_qualification",
-    crate_name = "skein_content_store_overflow_compaction_qualification",
+    name = "hawdb_content_store_overflow_compaction_qualification",
+    crate_name = "hawdb_content_store_overflow_compaction_qualification",
     crate_root = "src/bin/content_store_overflow_compaction_qualification.rs",
     srcs = [
         "src/bin/content_store_overflow_compaction_qualification.rs",
@@ -167,15 +167,15 @@ rust_binary(
     edition = "2024",
     aliases = aliases(normal = True, proc_macro = True),
     deps = all_crate_deps(normal = True) + [
-        ":skein_qualification",
-        "//:skein",
+        ":hawdb_qualification",
+        "//:hawdb",
     ],
     proc_macro_deps = all_crate_deps(proc_macro = True),
 )
 
 rust_binary(
-    name = "skein_graph_index_qualification",
-    crate_name = "skein_graph_index_qualification",
+    name = "hawdb_graph_index_qualification",
+    crate_name = "hawdb_graph_index_qualification",
     crate_root = "src/bin/graph_index_qualification.rs",
     srcs = [
         "src/bin/graph_index_qualification.rs",
@@ -187,15 +187,15 @@ rust_binary(
     edition = "2024",
     aliases = aliases(normal = True, proc_macro = True),
     deps = all_crate_deps(normal = True) + [
-        ":skein_qualification",
-        "//:skein",
+        ":hawdb_qualification",
+        "//:hawdb",
     ],
     proc_macro_deps = all_crate_deps(proc_macro = True),
 )
 
 rust_binary(
-    name = "skein_graph_storage_qualification",
-    crate_name = "skein_graph_storage_qualification",
+    name = "hawdb_graph_storage_qualification",
+    crate_name = "hawdb_graph_storage_qualification",
     crate_root = "src/bin/graph_storage_qualification.rs",
     srcs = [
         "src/bin/graph_storage_qualification.rs",
@@ -207,20 +207,20 @@ rust_binary(
     edition = "2024",
     aliases = aliases(normal = True, proc_macro = True),
     deps = all_crate_deps(normal = True) + [
-        ":skein_qualification",
-        "//:skein",
+        ":hawdb_qualification",
+        "//:hawdb",
     ],
     proc_macro_deps = all_crate_deps(proc_macro = True),
 )
 
 rust_binary(
-    name = "skein_soak",
-    crate_name = "skein_soak",
+    name = "hawdb_soak",
+    crate_name = "hawdb_soak",
     crate_root = "src/main.rs",
     srcs = ["src/main.rs"],
     edition = "2024",
     aliases = aliases(normal = True, proc_macro = True),
-    deps = all_crate_deps(normal = True) + [":skein_qualification"],
+    deps = all_crate_deps(normal = True) + [":hawdb_qualification"],
     proc_macro_deps = all_crate_deps(proc_macro = True),
 )
 
@@ -233,7 +233,7 @@ _QUALIFICATION_PRODUCTION_TESTS = "production_"
 _QUALIFICATION_RELEASE_BUNDLE_TESTS = "release_bundle::tests::"
 
 rust_test(
-    name = "skein_qualification_misc_tests",
+    name = "hawdb_qualification_misc_tests",
     args = [
         "--skip",
         _QUALIFICATION_CONTENT_STORE_TESTS,
@@ -242,7 +242,7 @@ rust_test(
         "--skip",
         _QUALIFICATION_RELEASE_BUNDLE_TESTS,
     ],
-    crate = ":skein_qualification",
+    crate = ":hawdb_qualification",
     edition = "2024",
     aliases = aliases(normal_dev = True, proc_macro_dev = True),
     deps = all_crate_deps(normal_dev = True),
@@ -250,7 +250,7 @@ rust_test(
 )
 
 rust_test(
-    name = "skein_qualification_content_store_tests",
+    name = "hawdb_qualification_content_store_tests",
     args = [
         _QUALIFICATION_CONTENT_STORE_TESTS,
         "--skip",
@@ -264,7 +264,7 @@ rust_test(
         "--skip",
         _QUALIFICATION_RELEASE_BUNDLE_TESTS,
     ],
-    crate = ":skein_qualification",
+    crate = ":hawdb_qualification",
     edition = "2024",
     aliases = aliases(normal_dev = True, proc_macro_dev = True),
     deps = all_crate_deps(normal_dev = True),
@@ -272,7 +272,7 @@ rust_test(
 )
 
 rust_test(
-    name = "skein_qualification_production_tests",
+    name = "hawdb_qualification_production_tests",
     size = "large",
     args = [
         _QUALIFICATION_PRODUCTION_TESTS,
@@ -281,7 +281,7 @@ rust_test(
         "--skip",
         _QUALIFICATION_RELEASE_BUNDLE_TESTS,
     ],
-    crate = ":skein_qualification",
+    crate = ":hawdb_qualification",
     edition = "2024",
     tags = ["exclusive"],
     aliases = aliases(normal_dev = True, proc_macro_dev = True),
@@ -290,9 +290,9 @@ rust_test(
 )
 
 rust_test(
-    name = "skein_qualification_release_bundle_tests",
+    name = "hawdb_qualification_release_bundle_tests",
     args = [_QUALIFICATION_RELEASE_BUNDLE_TESTS],
-    crate = ":skein_qualification",
+    crate = ":hawdb_qualification",
     edition = "2024",
     aliases = aliases(normal_dev = True, proc_macro_dev = True),
     deps = all_crate_deps(normal_dev = True),
@@ -300,13 +300,13 @@ rust_test(
 )
 
 rust_test(
-    name = "skein_content_store_initial_row_page_qualification_tests",
+    name = "hawdb_content_store_initial_row_page_qualification_tests",
     size = "large",
     args = [
         _INITIAL_CONTENT_STORE_ROW_PAGE_TEST,
         "--exact",
     ],
-    crate = ":skein_qualification",
+    crate = ":hawdb_qualification",
     edition = "2024",
     tags = ["exclusive"],
     aliases = aliases(normal_dev = True, proc_macro_dev = True),
@@ -315,10 +315,10 @@ rust_test(
 )
 
 rust_test(
-    name = "skein_content_store_production_mutation_tests",
+    name = "hawdb_content_store_production_mutation_tests",
     size = "large",
     args = [_PRODUCTION_CONTENT_STORE_MUTATION_TESTS],
-    crate = ":skein_qualification",
+    crate = ":hawdb_qualification",
     edition = "2024",
     tags = ["exclusive"],
     aliases = aliases(normal_dev = True, proc_macro_dev = True),
@@ -327,10 +327,10 @@ rust_test(
 )
 
 rust_test(
-    name = "skein_content_store_production_overflow_compaction_tests",
+    name = "hawdb_content_store_production_overflow_compaction_tests",
     size = "large",
     args = [_PRODUCTION_CONTENT_STORE_OVERFLOW_COMPACTION_TESTS],
-    crate = ":skein_qualification",
+    crate = ":hawdb_qualification",
     edition = "2024",
     tags = ["exclusive"],
     aliases = aliases(normal_dev = True, proc_macro_dev = True),
@@ -339,10 +339,10 @@ rust_test(
 )
 
 rust_test(
-    name = "skein_content_store_production_read_tests",
+    name = "hawdb_content_store_production_read_tests",
     size = "large",
     args = [_PRODUCTION_CONTENT_STORE_READ_TESTS],
-    crate = ":skein_qualification",
+    crate = ":hawdb_qualification",
     edition = "2024",
     tags = ["exclusive"],
     aliases = aliases(normal_dev = True, proc_macro_dev = True),
@@ -351,21 +351,21 @@ rust_test(
 )
 
 test_suite(
-    name = "skein_qualification_tests",
+    name = "hawdb_qualification_tests",
     tests = [
-        ":skein_content_store_initial_row_page_qualification_tests",
-        ":skein_content_store_production_mutation_tests",
-        ":skein_content_store_production_overflow_compaction_tests",
-        ":skein_content_store_production_read_tests",
-        ":skein_qualification_content_store_tests",
-        ":skein_qualification_misc_tests",
-        ":skein_qualification_production_tests",
-        ":skein_qualification_release_bundle_tests",
+        ":hawdb_content_store_initial_row_page_qualification_tests",
+        ":hawdb_content_store_production_mutation_tests",
+        ":hawdb_content_store_production_overflow_compaction_tests",
+        ":hawdb_content_store_production_read_tests",
+        ":hawdb_qualification_content_store_tests",
+        ":hawdb_qualification_misc_tests",
+        ":hawdb_qualification_production_tests",
+        ":hawdb_qualification_release_bundle_tests",
     ],
 )
 
 rust_test(
-    name = "skein_soak_cli_tests",
+    name = "hawdb_soak_cli_tests",
     crate_root = "src/main.rs",
     srcs = ["src/main.rs"],
     edition = "2024",
@@ -375,13 +375,13 @@ rust_test(
         proc_macro = True,
         proc_macro_dev = True,
     ),
-    data = [":skein_soak"],
-    deps = all_crate_deps(normal = True, normal_dev = True) + [":skein_qualification"],
+    data = [":hawdb_soak"],
+    deps = all_crate_deps(normal = True, normal_dev = True) + [":hawdb_qualification"],
     proc_macro_deps = all_crate_deps(proc_macro = True, proc_macro_dev = True),
 )
 
 rust_test(
-    name = "skein_content_store_contract_tests",
+    name = "hawdb_content_store_contract_tests",
     crate_root = "src/bin/content_store_contract.rs",
     srcs = ["src/bin/content_store_contract.rs"],
     edition = "2024",
@@ -391,12 +391,12 @@ rust_test(
         proc_macro = True,
         proc_macro_dev = True,
     ),
-    deps = all_crate_deps(normal = True, normal_dev = True) + [":skein_qualification"],
+    deps = all_crate_deps(normal = True, normal_dev = True) + [":hawdb_qualification"],
     proc_macro_deps = all_crate_deps(proc_macro = True, proc_macro_dev = True),
 )
 
 rust_test(
-    name = "skein_content_store_memory_qualification_cli_tests",
+    name = "hawdb_content_store_memory_qualification_cli_tests",
     crate_root = "src/bin/content_store_memory_qualification.rs",
     srcs = [
         "src/bin/content_store_memory_qualification.rs",
@@ -412,14 +412,14 @@ rust_test(
         proc_macro_dev = True,
     ),
     deps = all_crate_deps(normal = True, normal_dev = True) + [
-        ":skein_qualification",
-        "//:skein",
+        ":hawdb_qualification",
+        "//:hawdb",
     ],
     proc_macro_deps = all_crate_deps(proc_macro = True, proc_macro_dev = True),
 )
 
 rust_test(
-    name = "skein_content_store_read_qualification_cli_tests",
+    name = "hawdb_content_store_read_qualification_cli_tests",
     crate_root = "src/bin/content_store_read_qualification.rs",
     srcs = [
         "src/bin/content_store_read_qualification.rs",
@@ -437,14 +437,14 @@ rust_test(
         proc_macro_dev = True,
     ),
     deps = all_crate_deps(normal = True, normal_dev = True) + [
-        ":skein_qualification",
-        "//:skein",
+        ":hawdb_qualification",
+        "//:hawdb",
     ],
     proc_macro_deps = all_crate_deps(proc_macro = True, proc_macro_dev = True),
 )
 
 rust_test(
-    name = "skein_content_store_overflow_compaction_qualification_cli_tests",
+    name = "hawdb_content_store_overflow_compaction_qualification_cli_tests",
     crate_root = "src/bin/content_store_overflow_compaction_qualification.rs",
     srcs = [
         "src/bin/content_store_overflow_compaction_qualification.rs",
@@ -461,14 +461,14 @@ rust_test(
         proc_macro_dev = True,
     ),
     deps = all_crate_deps(normal = True, normal_dev = True) + [
-        ":skein_qualification",
-        "//:skein",
+        ":hawdb_qualification",
+        "//:hawdb",
     ],
     proc_macro_deps = all_crate_deps(proc_macro = True, proc_macro_dev = True),
 )
 
 rust_test(
-    name = "skein_content_store_mutation_qualification_cli_tests",
+    name = "hawdb_content_store_mutation_qualification_cli_tests",
     crate_root = "src/bin/content_store_mutation_qualification.rs",
     srcs = [
         "src/bin/content_store_mutation_qualification.rs",
@@ -485,14 +485,14 @@ rust_test(
         proc_macro_dev = True,
     ),
     deps = all_crate_deps(normal = True, normal_dev = True) + [
-        ":skein_qualification",
-        "//:skein",
+        ":hawdb_qualification",
+        "//:hawdb",
     ],
     proc_macro_deps = all_crate_deps(proc_macro = True, proc_macro_dev = True),
 )
 
 rust_test(
-    name = "skein_graph_index_qualification_cli_tests",
+    name = "hawdb_graph_index_qualification_cli_tests",
     crate_root = "src/bin/graph_index_qualification.rs",
     srcs = [
         "src/bin/graph_index_qualification.rs",
@@ -510,14 +510,14 @@ rust_test(
         proc_macro_dev = True,
     ),
     deps = all_crate_deps(normal = True, normal_dev = True) + [
-        ":skein_qualification",
-        "//:skein",
+        ":hawdb_qualification",
+        "//:hawdb",
     ],
     proc_macro_deps = all_crate_deps(proc_macro = True, proc_macro_dev = True),
 )
 
 rust_test(
-    name = "skein_graph_storage_qualification_cli_tests",
+    name = "hawdb_graph_storage_qualification_cli_tests",
     crate_root = "src/bin/graph_storage_qualification.rs",
     srcs = [
         "src/bin/graph_storage_qualification.rs",
@@ -535,14 +535,14 @@ rust_test(
         proc_macro_dev = True,
     ),
     deps = all_crate_deps(normal = True, normal_dev = True) + [
-        ":skein_qualification",
-        "//:skein",
+        ":hawdb_qualification",
+        "//:hawdb",
     ],
     proc_macro_deps = all_crate_deps(proc_macro = True, proc_macro_dev = True),
 )
 
 rust_test(
-    name = "skein_release_bundle_cli_tests",
+    name = "hawdb_release_bundle_cli_tests",
     crate_root = "src/bin/release_bundle.rs",
     srcs = ["src/bin/release_bundle.rs"],
     edition = "2024",
@@ -553,8 +553,8 @@ rust_test(
         proc_macro_dev = True,
     ),
     deps = all_crate_deps(normal = True, normal_dev = True) + [
-        ":skein_qualification",
-        "//:skein",
+        ":hawdb_qualification",
+        "//:hawdb",
     ],
     proc_macro_deps = all_crate_deps(proc_macro = True, proc_macro_dev = True),
 )

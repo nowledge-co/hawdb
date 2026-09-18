@@ -8,7 +8,7 @@ repair, checkpoint, or mutate a database.
 This artifact is distinct from the all-class persistent graph-index matrix.
 Use it for a representative business-shaped Cypher traversal that demonstrates
 bounded out-of-core graph execution. Use
-`skein-graph-index-qualification` separately to qualify every persistent index
+`hawdb-graph-index-qualification` separately to qualify every persistent index
 class.
 
 ## Preconditions
@@ -28,7 +28,7 @@ class.
 
 Start from the parser-tested
 [`production_graph_storage_plan_example_v1.json`](../crates/qualification/fixtures/nowledge_graph/production_graph_storage_plan_example_v1.json).
-Its protocol is `skein-production-graph-storage-plan-v1`.
+Its protocol is `hawdb-production-graph-storage-plan-v1`.
 
 Replace the placeholder identity and workload values. The plan declares one
 parameterized Cypher statement, typed parameters, database and execution
@@ -39,18 +39,18 @@ opening the database.
 
 Use `shared_host_8_gib` only with separate evidence that the effective host
 or cgroup limit is 8 GiB. It keeps runtime memory derivation dynamic: automatic
-Skein capacity is capped at 2 GiB, normally moves through roughly 1--2 GiB as
+Hawdb capacity is capped at 2 GiB, normally moves through roughly 1--2 GiB as
 headroom changes, and may fall below that range under pressure. It is not a
 fixed reservation. Use `capability_512_mib` for a separate explicitly bounded
-low-memory capability run. It installs a 512 MiB Skein ceiling; 512 MiB is not
+low-memory capability run. It installs a 512 MiB Hawdb ceiling; 512 MiB is not
 the shared-host default, a universal production cutoff, or a minimum host size.
 
 ## Execute
 
 ```bash
-cargo run -p skein-qualification \
-  --bin skein-graph-storage-qualification -- \
-  --database-path /path/to/read-only-representative.skein \
+cargo run -p hawdb-qualification \
+  --bin hawdb-graph-storage-qualification -- \
+  --database-path /path/to/read-only-representative.hawdb \
   --plan-json /path/to/graph-storage-plan.json \
   > graph-storage-evidence.json
 ```

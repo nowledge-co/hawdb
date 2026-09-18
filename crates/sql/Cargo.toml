@@ -1,5 +1,5 @@
 [package]
-name = "skein-sql"
+name = "hawdb-sql"
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
@@ -7,11 +7,11 @@ license.workspace = true
 
 [dependencies]
 caseless = "0.2.2"
-skein-core = { path = "../core" }
-skein-expression = { path = "../expression" }
-skein-plan = { path = "../plan" }
-skein-plan-cache = { path = "../plan-cache" }
-skein-sql-syntax = { path = "../sql-syntax" }
+hawdb-core = { path = "../core" }
+hawdb-expression = { path = "../expression" }
+hawdb-plan = { path = "../plan" }
+hawdb-plan-cache = { path = "../plan-cache" }
+hawdb-sql-syntax = { path = "../sql-syntax" }
 sqlparser = "0.61"
 
 [dev-dependencies]

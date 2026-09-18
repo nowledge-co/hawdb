@@ -1,10 +1,10 @@
 use super::*;
 use crate::binding::binding_memory_bytes;
 use crate::observer::QueryExecutionReports;
-use skein_analytics::{ProjectionScanControl, ProjectionSource};
-use skein_core::{LabelId, RelTypeId, RuntimeCancellationToken};
-use skein_plan::GraphAlgorithmOptions;
-use skein_storage::{NodeId, ProjectedGraphDefinition, PropertyFilter, RelId};
+use hawdb_analytics::{ProjectionScanControl, ProjectionSource};
+use hawdb_core::{LabelId, RelTypeId, RuntimeCancellationToken};
+use hawdb_plan::GraphAlgorithmOptions;
+use hawdb_storage::{NodeId, ProjectedGraphDefinition, PropertyFilter, RelId};
 use std::cell::Cell;
 use std::collections::BTreeSet;
 use std::num::NonZeroUsize;
@@ -266,7 +266,7 @@ fn run(fixture: &Fixture, options: &RunOptions, task: Option<&RuntimeTaskContext
             match options.exit {
                 Exit::Complete => Ok(BatchControl::Continue),
                 Exit::Stop => Ok(BatchControl::Stop),
-                Exit::Error => Err(SkeinError::StorageIntegrity("consumer sentinel".into())),
+                Exit::Error => Err(HawdbError::StorageIntegrity("consumer sentinel".into())),
             }
         },
     );

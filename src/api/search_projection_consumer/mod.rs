@@ -1,5 +1,5 @@
-pub(super) use skein_search::projection_consumer::ConsumerRegistry;
-pub use skein_search::projection_consumer::{
+pub(super) use hawdb_search::projection_consumer::ConsumerRegistry;
+pub use hawdb_search::projection_consumer::{
     SearchProjectionConsumer, SearchProjectionConsumerCatchUpReport, SearchProjectionConsumerError,
     SearchProjectionConsumerId, SearchProjectionConsumerOptions, SearchProjectionConsumerReadiness,
     SearchProjectionConsumerRebuildReason, SearchProjectionConsumerResult,
@@ -8,12 +8,12 @@ pub use skein_search::projection_consumer::{
 
 use super::Database;
 use crate::{
-    DatabaseReadTransaction, Result, SearchIndex, SearchProjectionCatchUpReport,
-    SearchProjectionChangeBatch, SearchProjectionRelationalDelta, SkeinError,
+    DatabaseReadTransaction, HawdbError, Result, SearchIndex, SearchProjectionCatchUpReport,
+    SearchProjectionChangeBatch, SearchProjectionRelationalDelta,
 };
-use skein_core::uuidv7::generate_uuidv7;
-use skein_search::consumer::{CheckpointReceipt, ConsumerBinding, ConsumerProjection};
-use skein_search::projection_consumer::{Record, MAX_CONSUMERS};
+use hawdb_core::uuidv7::generate_uuidv7;
+use hawdb_search::consumer::{CheckpointReceipt, ConsumerBinding, ConsumerProjection};
+use hawdb_search::projection_consumer::{Record, MAX_CONSUMERS};
 use std::path::{Path, PathBuf};
 use SearchProjectionConsumerError as Error;
 use SearchProjectionConsumerRebuildReason as Reason;
@@ -43,8 +43,8 @@ impl Database {
             );
         }
         let destination = projection_directory.as_ref();
-        if destination.try_exists().map_err(SkeinError::from)? {
-            return Err(SkeinError::Storage(
+        if destination.try_exists().map_err(HawdbError::from)? {
+            return Err(HawdbError::Storage(
                 "consumer projection destination already exists".into(),
             )
             .into());
@@ -54,7 +54,7 @@ impl Database {
             .filter(|path| !path.as_os_str().is_empty())
             .unwrap_or_else(|| Path::new("."));
         if !parent.is_dir() {
-            return Err(SkeinError::Storage("consumer projection parent must exist".into()).into());
+            return Err(HawdbError::Storage("consumer projection parent must exist".into()).into());
         }
         let reinitialize_registry = self.projection_consumers.unavailable
             || self
@@ -75,7 +75,7 @@ impl Database {
             .store
             .commit_epoch()
             .checked_add(options.max_idle_commits().get())
-            .ok_or_else(|| SkeinError::Semantic("consumer expiry epoch overflow".into()))?;
+            .ok_or_else(|| HawdbError::Semantic("consumer expiry epoch overflow".into()))?;
         let database_uuid = match self.store.search_projection_database_identity() {
             Some(identity) => identity,
             None => {
@@ -94,8 +94,8 @@ impl Database {
             registration_uuid,
             checkpoint_uuid: generate_uuidv7()?,
         };
-        let stage = parent.join(format!(".skein-consumer-{registration_uuid}.stage"));
-        std::fs::create_dir(&stage).map_err(SkeinError::from)?;
+        let stage = parent.join(format!(".hawdb-consumer-{registration_uuid}.stage"));
+        std::fs::create_dir(&stage).map_err(HawdbError::from)?;
         let stage_guard = StageDirectory(stage.clone());
         let mut snapshot = self.begin_read_transaction();
         let epoch = snapshot.commit_epoch();
@@ -115,7 +115,7 @@ impl Database {
             }
             Err(error) => {
                 if let Err(cleanup) = stage_guard.cleanup() {
-                    return Err(SkeinError::Storage(format!("consumer initialization failed: {error}; staging cleanup failed: {cleanup}")).into());
+                    return Err(HawdbError::Storage(format!("consumer initialization failed: {error}; staging cleanup failed: {cleanup}")).into());
                 }
                 return Err(error.into());
             }
@@ -161,7 +161,7 @@ impl Database {
         }
         let projection = match ConsumerProjection::open(projection_directory.as_ref()) {
             Ok(projection) => projection,
-            Err(SkeinError::StorageIntegrity(_)) => {
+            Err(HawdbError::StorageIntegrity(_)) => {
                 self.projection_consumers.verified.insert(
                     id.as_str().into(),
                     State::RebuildRequired(Reason::CheckpointMismatch),
@@ -208,7 +208,7 @@ impl Database {
             || max_projection_operations_per_batch == 0
             || max_batches == 0
         {
-            return Err(SkeinError::Semantic(
+            return Err(HawdbError::Semantic(
                 "consumer catch-up budgets must be greater than zero".into(),
             )
             .into());
@@ -284,7 +284,7 @@ impl Database {
             .store
             .commit_epoch()
             .checked_add(record.max_idle_commits)
-            .ok_or_else(|| SkeinError::Semantic("consumer expiry epoch overflow".into()))?;
+            .ok_or_else(|| HawdbError::Semantic("consumer expiry epoch overflow".into()))?;
         self.publish_consumer_registry(&root)?;
         self.search_projection_consumer_status(consumer.id())
     }
@@ -519,7 +519,7 @@ fn publication_failpoint(_stage: PublicationStage) -> Result<()> {
         if crash {
             std::process::exit(86);
         }
-        return Err(SkeinError::Storage(format!(
+        return Err(HawdbError::Storage(format!(
             "injected consumer publication failure at {stage:?}"
         )));
     }

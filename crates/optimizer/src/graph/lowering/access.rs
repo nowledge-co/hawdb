@@ -1,5 +1,5 @@
 use super::super::PhysicalPlan;
-use skein_plan::{ComparisonOp, LogicalPlan, Predicate};
+use hawdb_plan::{ComparisonOp, LogicalPlan, Predicate};
 
 pub(super) fn lower(logical: &LogicalPlan) -> Option<PhysicalPlan> {
     match logical {

@@ -3,9 +3,9 @@ use crate::cardinality_defaults::{
     AGGREGATE_GROUPS_DIVISOR, CONTAINS_SELECTIVITY_DIVISOR, ENDS_WITH_SELECTIVITY_DIVISOR,
     FILTER_SELECTIVITY_DIVISOR, FULL_TEXT_SELECTIVITY_DIVISOR, STARTS_WITH_SELECTIVITY_DIVISOR,
 };
-use skein_core::Value;
-use skein_cypher::RelationshipDirection;
-use skein_plan::{AggregateTarget, Aggregation, Predicate, Projection, ProjectionExpression};
+use hawdb_core::Value;
+use hawdb_cypher::RelationshipDirection;
+use hawdb_plan::{AggregateTarget, Aggregation, Predicate, Projection, ProjectionExpression};
 use std::collections::{BTreeMap, BTreeSet};
 
 mod bindings;

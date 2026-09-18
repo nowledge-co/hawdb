@@ -1,18 +1,18 @@
 # Async Segment I/O
 
-Issue: [#302](https://github.com/nowledge-co/skein/issues/302)
+Issue: [#302](https://github.com/nowledge-co/hawdb/issues/302)
 
-Status: experimental adapter delivered in [#304](https://github.com/nowledge-co/skein/pull/304);
+Status: experimental adapter delivered in [#304](https://github.com/nowledge-co/hawdb/pull/304);
 not active in the query data path.
 
 ## Decision
 
-Skein's portable async segment-read API uses Tokio's bounded blocking lane over
+Hawdb's portable async segment-read API uses Tokio's bounded blocking lane over
 the existing positioned file reader. It does not use `io_uring`, a dedicated
 platform runtime, or a second storage implementation.
 
 This is the same portability model documented by Tokio for ordinary files:
-filesystem syscalls remain blocking and are executed by `spawn_blocking`. Skein
+filesystem syscalls remain blocking and are executed by `spawn_blocking`. Hawdb
 uses `spawn_blocking` directly because `FileSegmentRangeReader` already owns the
 cross-platform positioned-read, cache, digest, and error semantics that
 `tokio::fs::File` would otherwise duplicate.
@@ -21,7 +21,7 @@ The async API is valuable even though the underlying syscall is blocking:
 
 - the host async worker is yielded while the physical read is running;
 - owned and borrowed Tokio runtimes use one integration path;
-- the governor, rather than an additional Rayon pool, bounds Skein's submitted
+- the governor, rather than an additional Rayon pool, bounds Hawdb's submitted
   blocking reads;
 - result ordering, wave byte budgets, cancellation checkpoints, cache behavior,
   and typed read errors stay aligned with the synchronous executor.
@@ -31,17 +31,17 @@ as such.
 
 ## Ownership Boundary
 
-`skein-storage` remains runtime-independent. `SegmentRangeReader` and
+`hawdb-storage` remains runtime-independent. `SegmentRangeReader` and
 `FileSegmentRangeReader` continue to own synchronous positioned reads:
 
 - Unix uses `FileExt::read_at`;
 - Windows uses `FileExt::seek_read`;
 - other supported Rust targets clone, seek, and read the file handle.
 
-`skein-runtime-tokio::TokioSegmentReadExecutor` owns only async scheduling. It
+`hawdb-runtime-tokio::TokioSegmentReadExecutor` owns only async scheduling. It
 accepts an `Arc<R>` where `R: SegmentRangeReader + Send + Sync`, submits bounded
 range reads to the selected Tokio runtime, awaits them, and returns payloads in
-schedule order. The root `skein` facade re-exports this API only with the
+schedule order. The root `hawdb` facade re-exports this API only with the
 `tokio-runtime` feature.
 
 The existing synchronous `SegmentRangeReader` is not by itself an async seam.
@@ -119,7 +119,7 @@ limits, reader, schedule, range geometry, and payload checksum:
 
 ```bash
 cargo bench --bench storage_async_segment_read --features tokio-runtime
-bazel run //:skein_bench_storage_async_segment_read
+bazel run //:hawdb_bench_storage_async_segment_read
 ```
 
 The default workload creates a 640 MiB fixture, reads 8,192 non-coalescing 4 KiB
@@ -133,9 +133,9 @@ Small smoke runs can override the fixture without changing the benchmark
 protocol:
 
 ```bash
-SKEIN_ASYNC_IO_FIXTURE_MIB=8 \
-SKEIN_ASYNC_IO_RANGE_COUNT=256 \
-SKEIN_ASYNC_IO_SAMPLES=1 \
+HAWDB_ASYNC_IO_FIXTURE_MIB=8 \
+HAWDB_ASYNC_IO_RANGE_COUNT=256 \
+HAWDB_ASYNC_IO_SAMPLES=1 \
 cargo bench --bench storage_async_segment_read --features tokio-runtime
 ```
 
@@ -168,9 +168,9 @@ the later Linux baseline is recorded below.
 
 ### Historical Linux Evidence
 
-The [Linux baseline workflow](https://github.com/nowledge-co/skein/actions/runs/33928122832)
+The [Linux baseline workflow](https://github.com/nowledge-co/hawdb/actions/runs/33928122832)
 completed for `3cce649162daa370bfe7382f2131f40794c69a10` during #304. Its
-[measurement receipt](https://github.com/nowledge-co/skein/pull/304#issuecomment-5547435118)
+[measurement receipt](https://github.com/nowledge-co/hawdb/pull/304#issuecomment-5547435118)
 records the same 640 MiB fixture, 8,192 non-coalescing 4 KiB ranges, depths 1/4/16
 and three isolated samples per backend/depth. All 18 samples reported
 `cold_cache_requested=true` and matching payload checksums. This reports the
@@ -189,7 +189,7 @@ being considered for activation.
 
 ## Query Integration Gate
 
-The current `SkeinTokioEmbedded` query path still executes the synchronous
+The current `HawdbTokioEmbedded` query path still executes the synchronous
 query engine through `execute_blocking`. Enabling the new executor there first
 requires an awaitable boundary between physical segment scheduling and payload
 consumption. Until that boundary exists, the synchronous executor remains

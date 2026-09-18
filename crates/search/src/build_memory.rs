@@ -1,11 +1,11 @@
 //! One generation operation owns these accounts across all of its build stages.
 
 use crate::build_control::checkpoint;
-use crate::error::{Result, SkeinError};
+use crate::error::{HawdbError, Result};
 use crate::SearchDocument;
 use crate::SearchProjectionRow;
-use skein_core::RuntimeTaskContext;
-use skein_executor::{QueryMemoryAccount, QueryMemoryClass, QueryMemoryLease, QueryMemoryLedger};
+use hawdb_core::RuntimeTaskContext;
+use hawdb_executor::{QueryMemoryAccount, QueryMemoryClass, QueryMemoryLease, QueryMemoryLedger};
 use std::borrow::Borrow;
 use std::mem::size_of;
 use std::num::NonZeroUsize;
@@ -40,13 +40,13 @@ impl BuildMemory {
             .memory_reservation()
             .map_or(Ok(usize::MAX), |reservation| {
                 usize::try_from(reservation.memory_bytes()).map_err(|_| {
-                    SkeinError::Execution(
+                    HawdbError::Execution(
                         "search build memory reservation does not fit the address space".into(),
                     )
                 })
             })?;
         let limit = NonZeroUsize::new(limit).ok_or_else(|| {
-            SkeinError::Execution("search build has no admitted working memory".into())
+            HawdbError::Execution("search build has no admitted working memory".into())
         })?;
         let ledger = QueryMemoryLedger::new(limit);
         // The ledger retains account metadata until operation end. Reuse these
@@ -165,8 +165,8 @@ pub(crate) fn grow_slots<T>(values: &mut Vec<T>, lease: &mut QueryMemoryLease) -
     Ok(())
 }
 
-fn overflow() -> SkeinError {
-    SkeinError::Execution("search build memory accounting overflow".into())
+fn overflow() -> HawdbError {
+    HawdbError::Execution("search build memory accounting overflow".into())
 }
 
 pub(crate) fn document_bytes(document: &SearchDocument) -> Result<usize> {

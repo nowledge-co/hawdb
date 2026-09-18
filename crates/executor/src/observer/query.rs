@@ -2,8 +2,8 @@
 
 use super::ExecutionObserver;
 use crate::binding::Binding;
-use skein_plan::{visit_plan_with_ids, PhysicalOperatorId, PhysicalPlan};
-use skein_storage::ScanPruningReport;
+use hawdb_plan::{visit_plan_with_ids, PhysicalOperatorId, PhysicalPlan};
+use hawdb_storage::ScanPruningReport;
 use std::cell::RefCell;
 use std::collections::{BTreeMap, BTreeSet};
 

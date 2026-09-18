@@ -2,9 +2,9 @@
 
 use super::compare_value_refs;
 use crate::query_value::{bind_sql_value, value_to_relational};
-use skein_core::{Result, SkeinError, Value};
-use skein_sql::{ExprKind, SqlColumnRef, SqlComparisonOp, SqlLikeEscape, SqlPredicate};
-use skein_storage::{
+use hawdb_core::{HawdbError, Result, Value};
+use hawdb_sql::{ExprKind, SqlColumnRef, SqlComparisonOp, SqlLikeEscape, SqlPredicate};
+use hawdb_storage::{
     RelationalScalarType, RelationalTableSchema, RelationalValue, RelationalValueRef,
 };
 
@@ -100,7 +100,7 @@ impl StreamingPredicate {
                     ExprKind::Column(right) => {
                         let right = bind_streaming_column(right, schema, table, qualifier)?;
                         if schema.columns[left].scalar_type != schema.columns[right].scalar_type {
-                            return Err(SkeinError::Semantic(format!(
+                            return Err(HawdbError::Semantic(format!(
                                 "relational comparison between {} and {} has incompatible scalar types",
                                 schema.columns[left].name, schema.columns[right].name
                             )));
@@ -111,7 +111,7 @@ impl StreamingPredicate {
                             right,
                         })
                     }
-                    _ => Err(SkeinError::Semantic(
+                    _ => Err(HawdbError::Semantic(
                         "unsupported streaming comparison operand".to_owned(),
                     )),
                 }
@@ -148,7 +148,7 @@ impl StreamingPredicate {
             } => {
                 let left = bind_streaming_column(left.require_column()?, schema, table, qualifier)?;
                 if schema.columns[left].scalar_type != RelationalScalarType::Text {
-                    return Err(SkeinError::Semantic(
+                    return Err(HawdbError::Semantic(
                         "LIKE and ILIKE require a TEXT column".to_string(),
                     ));
                 }
@@ -170,7 +170,7 @@ impl StreamingPredicate {
                 column: bind_streaming_column(column.require_column()?, schema, table, qualifier)?,
                 negated: *negated,
             }),
-            _ => Err(SkeinError::Semantic(
+            _ => Err(HawdbError::Semantic(
                 "unsupported streaming predicate expression".to_owned(),
             )),
         }
@@ -232,13 +232,13 @@ impl StreamingPredicate {
                 (RelationalValueRef::Null, _) | (_, RelationalValueRef::Null) => Ok(None),
                 (RelationalValueRef::Text(value), RelationalValueRef::Text(pattern)) => {
                     let matched =
-                        skein_sql::sql_like_matches(value, pattern, *escape, *case_insensitive)?;
+                        hawdb_sql::sql_like_matches(value, pattern, *escape, *case_insensitive)?;
                     Ok(Some(matched != *negated))
                 }
-                (RelationalValueRef::Overflow(_), _) => Err(SkeinError::Execution(
+                (RelationalValueRef::Overflow(_), _) => Err(HawdbError::Execution(
                     "LIKE reached an overflow value without hydration".to_string(),
                 )),
-                _ => Err(SkeinError::Semantic(
+                _ => Err(HawdbError::Semantic(
                     "LIKE and ILIKE require TEXT values".to_string(),
                 )),
             },
@@ -260,13 +260,13 @@ pub fn bind_streaming_column(
         .as_deref()
         .is_some_and(|candidate| candidate != qualifier && candidate != table)
     {
-        return Err(SkeinError::Semantic(format!(
+        return Err(HawdbError::Semantic(format!(
             "column {} is unknown or ambiguous",
             column.name
         )));
     }
     schema.column_position(&column.name).ok_or_else(|| {
-        SkeinError::Semantic(format!("column {} is unknown or ambiguous", column.name))
+        HawdbError::Semantic(format!("column {} is unknown or ambiguous", column.name))
     })
 }
 
@@ -279,7 +279,7 @@ fn validate_value_type(
         .scalar_type()
         .is_some_and(|scalar_type| scalar_type != schema.columns[ordinal].scalar_type)
     {
-        return Err(SkeinError::Semantic(format!(
+        return Err(HawdbError::Semantic(format!(
             "relational comparison on {} has an incompatible scalar type",
             schema.columns[ordinal].name
         )));

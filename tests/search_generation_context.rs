@@ -1,6 +1,6 @@
 //! External embedded-library contract: imports only the facade and std.
 
-use skein::{
+use hawdb::{
     Database, RuntimeCancellationToken, RuntimeMemoryReservation, RuntimeTaskContext,
     SearchAnalyzerLexicon, SearchDocument, SearchEmbeddingManifest, SearchLexicalTermPolicy,
     SearchMode, SearchOutOfCoreConfig, SearchOutOfCoreGenerationBuildOptions,
@@ -20,7 +20,7 @@ impl Directory {
     fn new() -> Self {
         static NEXT: AtomicUsize = AtomicUsize::new(0);
         Self(std::env::temp_dir().join(format!(
-            "skein-facade-generation-{}-{:06}",
+            "hawdb-facade-generation-{}-{:06}",
             std::process::id(),
             NEXT.fetch_add(1, Ordering::Relaxed)
         )))
@@ -147,8 +147,8 @@ fn verify(root: &Path, expected: &BTreeMap<String, SearchDocument>, epoch: u64) 
         let error = result.unwrap_err();
         assert!(matches!(
             error,
-            skein::SkeinError::CapabilityUnavailable {
-                capability: skein::RuntimeCapability::FullTextSearch
+            hawdb::HawdbError::CapabilityUnavailable {
+                capability: hawdb::RuntimeCapability::FullTextSearch
             }
         ));
         error.to_string()
@@ -362,14 +362,14 @@ fn stale_prepared_update_cannot_replace_a_newer_generation() {
     fresh.finish().unwrap();
     // The stale update legitimately still owns its private stage here.
     let active =
-        std::fs::read(root.0.join("search_projection.out_of_core.manifest.skein")).unwrap();
+        std::fs::read(root.0.join("search_projection.out_of_core.manifest.hawdb")).unwrap();
     assert!(stale
         .finish()
         .unwrap_err()
         .to_string()
         .contains("base changed"));
     assert_eq!(
-        std::fs::read(root.0.join("search_projection.out_of_core.manifest.skein")).unwrap(),
+        std::fs::read(root.0.join("search_projection.out_of_core.manifest.hawdb")).unwrap(),
         active
     );
     files(&root.0);

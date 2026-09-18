@@ -6,19 +6,19 @@ use crate::previous_wrapper_preflight::NOWLEDGE_MEM_CUTOVER_CONTROLS_PROTOCOL;
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum NowledgeMemReadControl {
     Legacy,
-    Skein,
+    Hawdb,
 }
 
 impl NowledgeMemReadControl {
     pub const fn as_str(self) -> &'static str {
         match self {
             Self::Legacy => "legacy",
-            Self::Skein => "skein",
+            Self::Hawdb => "hawdb",
         }
     }
 
-    pub const fn selects_skein(self) -> bool {
-        matches!(self, Self::Skein)
+    pub const fn selects_hawdb(self) -> bool {
+        matches!(self, Self::Hawdb)
     }
 }
 
@@ -61,7 +61,7 @@ impl NowledgeMemCutoverControls {
         }
     }
 
-    pub const fn skein_shadow() -> Self {
+    pub const fn hawdb_shadow() -> Self {
         Self {
             graph_reads: NowledgeMemReadControl::Legacy,
             search_reads: NowledgeMemReadControl::Legacy,
@@ -71,10 +71,10 @@ impl NowledgeMemCutoverControls {
         }
     }
 
-    pub const fn skein_reads() -> Self {
+    pub const fn hawdb_reads() -> Self {
         Self {
-            graph_reads: NowledgeMemReadControl::Skein,
-            search_reads: NowledgeMemReadControl::Skein,
+            graph_reads: NowledgeMemReadControl::Hawdb,
+            search_reads: NowledgeMemReadControl::Hawdb,
             dual_writes: NowledgeMemWorkControl::Enabled,
             initial_import: NowledgeMemWorkControl::Disabled,
             projection_catch_up: NowledgeMemWorkControl::Enabled,
@@ -103,9 +103,9 @@ pub struct NowledgeMemCutoverControlsReport {
     pub protocol: String,
     pub ready: bool,
     pub controls: NowledgeMemCutoverControls,
-    pub graph_read_selected_skein: bool,
+    pub graph_read_selected_hawdb: bool,
     pub graph_read_effective: bool,
-    pub search_read_selected_skein: bool,
+    pub search_read_selected_hawdb: bool,
     pub search_read_effective: bool,
     pub dual_writes_enabled: bool,
     pub initial_import_enabled: bool,
@@ -124,8 +124,8 @@ impl NowledgeMemCutoverControlsReport {
         production_status: NowledgeMemProductionStatus,
         initial_import_cutover_catch_up_ready: bool,
     ) -> Self {
-        let graph_read_selected_skein = controls.graph_reads.selects_skein();
-        let search_read_selected_skein = controls.search_reads.selects_skein();
+        let graph_read_selected_hawdb = controls.graph_reads.selects_hawdb();
+        let search_read_selected_hawdb = controls.search_reads.selects_hawdb();
         let dual_writes_enabled = controls.dual_writes.enabled();
         let initial_import_enabled = controls.initial_import.enabled();
         let initial_import_inactive_for_cutover = !initial_import_enabled;
@@ -133,19 +133,19 @@ impl NowledgeMemCutoverControlsReport {
             initial_import_inactive_for_cutover || initial_import_cutover_catch_up_ready;
         let projection_catch_up_enabled = controls.projection_catch_up.enabled();
         let graph_read_effective =
-            !graph_read_selected_skein || production_status.graph_skein_cutover_effective;
+            !graph_read_selected_hawdb || production_status.graph_hawdb_cutover_effective;
         let search_read_effective =
-            !search_read_selected_skein || production_status.search_skein_cutover_effective;
+            !search_read_selected_hawdb || production_status.search_hawdb_cutover_effective;
         let mut blocker_codes = Vec::new();
         if !graph_read_effective {
-            blocker_codes.push("graph_read_selected_skein_but_not_effective".to_string());
+            blocker_codes.push("graph_read_selected_hawdb_but_not_effective".to_string());
         }
         if !search_read_effective {
-            blocker_codes.push("search_read_selected_skein_but_not_effective".to_string());
+            blocker_codes.push("search_read_selected_hawdb_but_not_effective".to_string());
         }
-        if search_read_selected_skein && !projection_catch_up_enabled {
+        if search_read_selected_hawdb && !projection_catch_up_enabled {
             blocker_codes
-                .push("search_read_selected_skein_without_projection_catch_up".to_string());
+                .push("search_read_selected_hawdb_without_projection_catch_up".to_string());
         }
         if initial_import_enabled && !dual_writes_enabled {
             blocker_codes.push("initial_import_enabled_without_dual_writes".to_string());
@@ -158,9 +158,9 @@ impl NowledgeMemCutoverControlsReport {
             protocol: NOWLEDGE_MEM_CUTOVER_CONTROLS_PROTOCOL.to_string(),
             ready: blocker_codes.is_empty(),
             controls,
-            graph_read_selected_skein,
+            graph_read_selected_hawdb,
             graph_read_effective,
-            search_read_selected_skein,
+            search_read_selected_hawdb,
             search_read_effective,
             dual_writes_enabled,
             initial_import_enabled,
@@ -179,11 +179,11 @@ impl NowledgeMemCutoverControlsReport {
             "ready": self.ready,
             "controls": self.controls.json(),
             "graph": {
-                "read_selected_skein": self.graph_read_selected_skein,
+                "read_selected_hawdb": self.graph_read_selected_hawdb,
                 "read_effective": self.graph_read_effective,
             },
             "search": {
-                "read_selected_skein": self.search_read_selected_skein,
+                "read_selected_hawdb": self.search_read_selected_hawdb,
                 "read_effective": self.search_read_effective,
             },
             "work": {
@@ -212,7 +212,7 @@ mod tests {
         bounded_read_evidence::NowledgeMemGraphMode,
         nowledge_mem_runtime_status::{NowledgeMemProductionStatus, NowledgeMemRuntimeStatus},
     };
-    use skein_storage::SearchProjectionChangefeedStatus;
+    use hawdb_storage::SearchProjectionChangefeedStatus;
 
     #[test]
     fn active_import_fails_closed_without_catch_up_evidence() {
@@ -238,7 +238,7 @@ mod tests {
             None,
         );
         let report = NowledgeMemCutoverControlsReport::from_production_status(
-            NowledgeMemCutoverControls::skein_shadow(),
+            NowledgeMemCutoverControls::hawdb_shadow(),
             status,
             false,
         );

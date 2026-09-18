@@ -1,4 +1,4 @@
-# Skein Vectorized Morsel Execution Specification
+# Hawdb Vectorized Morsel Execution Specification
 
 ## Scope
 
@@ -18,7 +18,7 @@ durable representation.
 
 ### Logical types and borrowed values
 
-`skein-core::LogicalType` is the shared semantic type vocabulary for graph
+`hawdb-core::LogicalType` is the shared semantic type vocabulary for graph
 property descriptors, PostgreSQL-compatible relational scalars, planning, and
 execution. Nullability is a separate slot property; `NULL` does not introduce
 another physical column type. Graph `String` and unbounded `Text` remain
@@ -74,7 +74,7 @@ RSS, and payload bytes at the host boundary. A borrowed path that does not
 produce a repeatable end-to-end gain must remain an internal capability rather
 than become the recommended host entrypoint.
 
-`skein-executor` owns the following storage-neutral types:
+`hawdb-executor` owns the following storage-neutral types:
 
 - dense `SlotId` values and a `BindingSchema`;
 - typed `ColumnVector` values with explicit validity;
@@ -177,7 +177,7 @@ Execution profiles MUST expose the root budget, peak aggregate charge,
 completion charge, and account count. Root-budget rejection MUST be
 fail-closed and identify `query_memory_bytes`.
 
-[`../tla/SkeinQueryMemoryLedger.tla`](../tla/SkeinQueryMemoryLedger.tla)
+[`../tla/HawdbQueryMemoryLedger.tla`](../tla/HawdbQueryMemoryLedger.tla)
 models atomic hierarchical reservation, result handoff, and cleanup on
 failure or cancellation.
 
@@ -235,7 +235,7 @@ source, one admitted CPU slot, or insufficient worker memory MUST execute
 serially. CPU slots, memory, cancellation, result bytes, and storage I/O depth
 remain separate admission dimensions.
 
-[`../tla/SkeinBoundedMorselMerge.tla`](../tla/SkeinBoundedMorselMerge.tla)
+[`../tla/HawdbBoundedMorselMerge.tla`](../tla/HawdbBoundedMorselMerge.tla)
 models the sliding issuance window, bounded channel and reorder states,
 deterministic prefix emission, and terminal cleanup after cancellation or a
 worker panic.
@@ -272,14 +272,14 @@ Performance conclusions MUST use optimized builds and MUST include the
 end-to-end result; a faster isolated kernel does not qualify a slower query
 pipeline.
 
-`SKEIN_EXECUTOR_BENCH_MODE=scheduler` isolates shared-pool scheduling.
-`SKEIN_EXECUTOR_BENCH_MODE=micro` isolates the `Int64` and `Float64` comparison
+`HAWDB_EXECUTOR_BENCH_MODE=scheduler` isolates shared-pool scheduling.
+`HAWDB_EXECUTOR_BENCH_MODE=micro` isolates the `Int64` and `Float64` comparison
 kernels while still checking each columnar result against row evaluation. This
 mode is diagnostic evidence only; end-to-end conclusions still require the
 default full mode.
-`SKEIN_EXECUTOR_BENCH_MODE=morsel` exercises the complete streaming production
-fragment with `SKEIN_MORSEL_BENCH_WORKERS` set to 4, 8, or 16. An optional
-`SKEIN_MORSEL_BENCH_ROWS` selects one common dataset size, but the benchmark
+`HAWDB_EXECUTOR_BENCH_MODE=morsel` exercises the complete streaming production
+fragment with `HAWDB_MORSEL_BENCH_WORKERS` set to 4, 8, or 16. An optional
+`HAWDB_MORSEL_BENCH_ROWS` selects one common dataset size, but the benchmark
 MUST reject a size that cannot activate the requested workers under default
 admission. The report MUST include peak queued output count and bytes plus the
 peak reorder-entry count so throughput cannot hide a residency regression.

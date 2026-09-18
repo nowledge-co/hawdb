@@ -15,7 +15,7 @@ use crate::relational::{
     RelationalKey, RelationalOverflowRootReader, RelationalRecoveryFence, RelationalRow,
     RelationalRowPageRootReader, RelationalValue,
 };
-use skein_integrity::{IntegrityDigest, IntegrityHasher};
+use hawdb_integrity::{IntegrityDigest, IntegrityHasher};
 use std::collections::VecDeque;
 use std::fs::File;
 use std::ops::Bound;

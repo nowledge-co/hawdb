@@ -8,7 +8,7 @@ use crate::{
     SEARCH_FILTER_SEGMENT_TARGET_DOCUMENTS,
 };
 #[cfg(feature = "vector-search")]
-use skein_core::{RuntimeCancellationToken, RuntimeTaskContext};
+use hawdb_core::{RuntimeCancellationToken, RuntimeTaskContext};
 use std::collections::BTreeMap;
 use std::time::{SystemTime, UNIX_EPOCH};
 
@@ -397,9 +397,9 @@ fn fused_generation_is_byte_identical_to_three_pass_builds() {
             rabitq_segment_rows: NonZeroUsize::new(3).unwrap(),
             #[cfg(feature = "vector-search")]
             rabitq_bit_width: if case % 2 == 0 {
-                skein_vector_projection::RaBitQBitWidth::One
+                hawdb_vector_projection::RaBitQBitWidth::One
             } else {
-                skein_vector_projection::RaBitQBitWidth::default()
+                hawdb_vector_projection::RaBitQBitWidth::default()
             },
             ..SearchOutOfCoreGenerationBuildOptions::default()
         };
@@ -614,7 +614,7 @@ fn streaming_generation_publishes_reopenable_zero_residency_projection() {
         }),
         lexical_build_memory_bytes: NonZeroU64::new(1024).unwrap(),
         #[cfg(feature = "vector-search")]
-        rabitq_bit_width: skein_vector_projection::RaBitQBitWidth::One,
+        rabitq_bit_width: hawdb_vector_projection::RaBitQBitWidth::One,
         ..SearchOutOfCoreGenerationBuildOptions::default()
     };
     let mut writer = SearchOutOfCoreGenerationWriter::create(&root, options).unwrap();
@@ -705,7 +705,7 @@ fn streaming_generation_publishes_reopenable_zero_residency_projection() {
             .unwrap();
         assert_eq!(
             compressed.result.retrievers[0].backend,
-            "skein_rabitq_out_of_core_candidate_projection"
+            "hawdb_rabitq_out_of_core_candidate_projection"
         );
         assert!(compressed.metrics.rabitq_payload_bytes_read > 0);
         assert!(compressed.result.retrievers[0].reranked_candidate_count <= 16);
@@ -980,7 +980,7 @@ fn rabitq_open_rejects_corruption_and_insufficient_serving_memory() {
     .unwrap_err();
     assert!(admission_error.to_string().contains("serving admission"));
 
-    let artifact = root.join(format!("search_rabitq.{}.skein", report.generation));
+    let artifact = root.join(format!("search_rabitq.{}.hawdb", report.generation));
     let mut bytes = fs::read(&artifact).unwrap();
     *bytes.last_mut().unwrap() ^= 0xff;
     fs::write(&artifact, bytes).unwrap();
@@ -1053,11 +1053,11 @@ fn streaming_generation_limit_failure_cleans_stage_and_preserves_active_generati
     let rejected_generation = first.generation + 1;
     assert!(!root
         .join(format!(
-            "search_projection_segments.{rejected_generation}.skein"
+            "search_projection_segments.{rejected_generation}.hawdb"
         ))
         .exists());
     assert!(!root
-        .join(format!("search_lexical.{rejected_generation}.skein"))
+        .join(format!("search_lexical.{rejected_generation}.hawdb"))
         .exists());
     assert_eq!(stage_directories(&root), 0);
     fs::remove_dir_all(root).unwrap();
@@ -1144,11 +1144,11 @@ fn publication_size_admission_preserves_active_manifest() {
     let rejected_generation = first.generation + 1;
     assert!(!root
         .join(format!(
-            "search_projection_segments.{rejected_generation}.skein"
+            "search_projection_segments.{rejected_generation}.hawdb"
         ))
         .exists());
     assert!(!root
-        .join(format!("search_lexical.{rejected_generation}.skein"))
+        .join(format!("search_lexical.{rejected_generation}.hawdb"))
         .exists());
     assert_eq!(stage_directories(&root), 0);
     fs::remove_dir_all(root).unwrap();
@@ -1167,9 +1167,9 @@ fn streaming_generation_replaces_orphaned_next_generation_artifacts() {
 
     let next_generation = first.generation + 1;
     let descriptor_path = root.join(format!(
-        "search_projection_segments.{next_generation}.skein"
+        "search_projection_segments.{next_generation}.hawdb"
     ));
-    let lexical_path = root.join(format!("search_lexical.{next_generation}.skein"));
+    let lexical_path = root.join(format!("search_lexical.{next_generation}.hawdb"));
     fs::write(&descriptor_path, b"orphaned descriptor").unwrap();
     fs::write(&lexical_path, b"orphaned lexical artifact").unwrap();
 
@@ -1276,7 +1276,7 @@ pub(super) fn test_dir(name: &str) -> PathBuf {
         .unwrap()
         .as_nanos();
     std::env::temp_dir().join(format!(
-        "skein_search_{name}_{}_{}",
+        "hawdb_search_{name}_{}_{}",
         std::process::id(),
         nanos
     ))

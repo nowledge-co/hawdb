@@ -1,10 +1,10 @@
 [package]
-name = "skein-analytics"
+name = "hawdb-analytics"
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
 license.workspace = true
 
 [dependencies]
-skein-core = { path = "../core" }
-skein-storage = { path = "../storage" }
+hawdb-core = { path = "../core" }
+hawdb-storage = { path = "../storage" }

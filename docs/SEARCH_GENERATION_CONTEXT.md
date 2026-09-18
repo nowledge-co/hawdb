@@ -1,13 +1,13 @@
 # Embedded generation context contract
 
-The embedded `skein::SearchOutOfCoreGenerationWriter` exposes two additive methods:
+The embedded `hawdb::SearchOutOfCoreGenerationWriter` exposes two additive methods:
 
 ```rust,ignore
 SearchOutOfCoreGenerationWriter::create_with_context(root, options, task_context)
 SearchOutOfCoreGenerationWriter::prepare_delta_with_context(reader, delta, options, task_context)
 ```
 
-They use the existing `skein::RuntimeTaskContext` type. `create` and `prepare_delta`
+They use the existing `hawdb::RuntimeTaskContext` type. `create` and `prepare_delta`
 retain their default contexts; existing options, reports and query entrypoints
 retain their type identity and behavior. Configure lexical terms and manifest
 bytes through the existing writer methods or reader configuration. No separate

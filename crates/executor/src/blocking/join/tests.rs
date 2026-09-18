@@ -1,7 +1,7 @@
 use super::*;
 use crate::blocking::hash_oracle::{values, Fixture};
-use skein_core::{RuntimeCancellationToken, RuntimeTaskContext};
-use skein_storage::{NodeId, NodeRecord};
+use hawdb_core::{RuntimeCancellationToken, RuntimeTaskContext};
+use hawdb_storage::{NodeId, NodeRecord};
 use std::collections::BTreeSet;
 use std::panic::{catch_unwind, AssertUnwindSafe};
 
@@ -300,7 +300,7 @@ fn graph_hash_join_limit_stop_error_cancel_and_panic_release_ownership() {
                         emitted += batch.len();
                         match mode {
                             1 => Ok(BatchControl::Stop),
-                            2 => Err(SkeinError::Execution("consumer error".into())),
+                            2 => Err(HawdbError::Execution("consumer error".into())),
                             3 => {
                                 token.cancel();
                                 Ok(BatchControl::Continue)
@@ -380,7 +380,7 @@ fn graph_hash_join_rejects_inconsistent_spill_hashes_and_releases_decode_lease()
         let mut tracker = state.replay_tracker();
         assert!(matches!(
             state.read(&mut reader, &mut tracker),
-            Err(SkeinError::StorageIntegrity(_))
+            Err(HawdbError::StorageIntegrity(_))
         ));
         assert_eq!(tracker.used_bytes, 0);
         drop(reader);

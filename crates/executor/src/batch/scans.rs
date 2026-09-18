@@ -23,7 +23,7 @@ pub(super) fn stream_composite_node_seek_batches(
 pub(super) fn stream_composite_node_range_seek_batches(
     variable: &str,
     label: &str,
-    seek: &skein_plan::CompositeRangeSeek,
+    seek: &hawdb_plan::CompositeRangeSeek,
     context: BatchReadContext<'_>,
     execution_limit: ExecutionLimit,
     emit: &mut dyn FnMut(BindingBatch) -> Result<BatchControl>,
@@ -179,7 +179,7 @@ pub(super) fn stream_node_count_batches(
             filtered_out_count: 0,
         });
     let count = i64::try_from(count).map_err(|_| {
-        SkeinError::Execution(format!(
+        HawdbError::Execution(format!(
             "node count for label '{label}' exceeds the supported i64 result range"
         ))
     })?;
@@ -223,7 +223,7 @@ pub(super) fn stream_relationship_count_batches(
             filtered_out_count: 0,
         });
     let count = i64::try_from(count).map_err(|_| {
-        SkeinError::Execution(format!(
+        HawdbError::Execution(format!(
             "relationship count for type '{rel_type}' exceeds the supported i64 result range"
         ))
     })?;

@@ -1,15 +1,15 @@
-use serde_json::json;
-use skein::executor::{
+use hawdb::executor::{
     execute_with_row_limit_profile_and_external_and_memory, ExecutionMemoryConfig,
 };
-use skein::optimizer::PhysicalPlan;
-use skein::planner::{
+use hawdb::optimizer::PhysicalPlan;
+use hawdb::planner::{
     AggregateFunction, AggregateTarget, Aggregation, Projection, ProjectionExpression,
 };
-use skein::schema::Catalog;
-use skein::store::{GraphSnapshotNodeImport, GraphStore, NodeId};
-use skein::Value;
-use skein_executor::external::NoExternalReadOperator;
+use hawdb::schema::Catalog;
+use hawdb::store::{GraphSnapshotNodeImport, GraphStore, NodeId};
+use hawdb::Value;
+use hawdb_executor::external::NoExternalReadOperator;
+use serde_json::json;
 use std::collections::BTreeMap;
 use std::hint::black_box;
 use std::num::{NonZeroU64, NonZeroUsize};
@@ -82,7 +82,7 @@ fn main() {
         }),
     };
     let spill_directory = std::env::temp_dir().join(format!(
-        "skein-aggregate-partial-spill-bench-{}-{}",
+        "hawdb-aggregate-partial-spill-bench-{}-{}",
         std::process::id(),
         SystemTime::now()
             .duration_since(UNIX_EPOCH)

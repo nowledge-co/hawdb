@@ -57,9 +57,9 @@
       "production_cutover_ready": null,
       "protocol": null,
       "ready": false,
-      "require_all_skein": null,
+      "require_all_hawdb": null,
       "required_route_count": null,
-      "skein_route_count": null
+      "hawdb_route_count": null
     },
     "active_search_route_readiness": {
       "blocker_codes": null,
@@ -74,7 +74,7 @@
       "lancedb_handle_required_routes": [],
       "metadata_pushdown_not_ready_routes": [],
       "missing_required_routes": [],
-      "non_skein_routes": [],
+      "non_hawdb_routes": [],
       "present": false,
       "production_cutover_ready": null,
       "protocol": null,
@@ -83,9 +83,9 @@
       "ready": false,
       "ready_route_count": null,
       "repair_rebuild_markers_not_ready_routes": [],
-      "require_all_skein": null,
+      "require_all_hawdb": null,
       "required_route_count": null,
-      "skein_route_count": null,
+      "hawdb_route_count": null,
       "zero_vector_semantics_not_ready_routes": []
     },
     "blocker_summary": {
@@ -680,7 +680,7 @@
           "search_projection_shadow_evidence.incremental_watermark_parity",
           "search_projection_shadow_evidence.blocker_codes"
         ],
-        "reason": "LanceDB/Skein search projection side-by-side evidence is missing or not ready"
+        "reason": "LanceDB/Hawdb search projection side-by-side evidence is missing or not ready"
       },
       {
         "action": "run_search_candidate_shadow_evidence",
@@ -719,7 +719,7 @@
           "search_candidate_shadow_evidence.filter_pushdown.missing_timestamp_range_fields",
           "search_candidate_shadow_evidence.blocker_codes"
         ],
-        "reason": "LanceDB/Skein search candidate side-by-side evidence is missing or not ready"
+        "reason": "LanceDB/Hawdb search candidate side-by-side evidence is missing or not ready"
       },
       {
         "action": "attach_search_route_ownership",
@@ -729,7 +729,7 @@
           "search_route_ownership.production_cutover_ready",
           "search_route_ownership.required_route_count",
           "search_route_ownership.explicit_route_count",
-          "search_route_ownership.skein_route_count",
+          "search_route_ownership.hawdb_route_count",
           "search_route_ownership.lancedb_route_count",
           "search_route_ownership.missing_required_routes",
           "search_route_ownership.lancedb_routes",
@@ -745,7 +745,7 @@
           "active_search_route_ownership.production_cutover_ready",
           "active_search_route_ownership.required_route_count",
           "active_search_route_ownership.explicit_route_count",
-          "active_search_route_ownership.skein_route_count",
+          "active_search_route_ownership.hawdb_route_count",
           "active_search_route_ownership.lancedb_route_count",
           "active_search_route_ownership.missing_required_routes",
           "active_search_route_ownership.lancedb_routes",
@@ -762,10 +762,10 @@
           "active_search_route_readiness.required_route_count",
           "active_search_route_readiness.evidence_route_count",
           "active_search_route_readiness.ready_route_count",
-          "active_search_route_readiness.skein_route_count",
+          "active_search_route_readiness.hawdb_route_count",
           "active_search_route_readiness.lancedb_handle_required_route_count",
           "active_search_route_readiness.missing_required_routes",
-          "active_search_route_readiness.non_skein_routes",
+          "active_search_route_readiness.non_hawdb_routes",
           "active_search_route_readiness.lancedb_handle_required_routes",
           "active_search_route_readiness.candidate_not_ready_routes",
           "active_search_route_readiness.candidate_identity_not_ready_routes",
@@ -918,7 +918,7 @@
     },
     "production_cutover_ready": false,
     "production_replacement_per_million": 0,
-    "protocol": "skein-nowledge-replacement-summary",
+    "protocol": "hawdb-nowledge-replacement-summary",
     "query_runtime_preflight": {
       "blocker_codes": null,
       "covered_route_count": null,
@@ -1002,7 +1002,7 @@
       "graph_layer": {
         "replacement_role": "primary_replacement",
         "scope": "kuzu_ladybug_graph_layer",
-        "storage_owner": "skein"
+        "storage_owner": "hawdb"
       },
       "large_blob_store": {
         "replacement_role": "external_out_of_scope",
@@ -1012,7 +1012,7 @@
       "search_projection": {
         "replacement_role": "rebuildable_projection",
         "scope": "lancedb_search_projection",
-        "storage_owner": "skein"
+        "storage_owner": "hawdb"
       }
     },
     "replacement_readiness_by_query_family": [],
@@ -1104,8 +1104,8 @@
     "search_projection_shadow_evidence": {
       "blocker_codes": [
         "search_projection_shadow_pushdown_evidence_not_ready",
-        "skein_search_projection_segment_descriptor_fields_missing",
-        "skein_search_projection_segment_descriptor_missing"
+        "hawdb_search_projection_segment_descriptor_fields_missing",
+        "hawdb_search_projection_segment_descriptor_missing"
       ],
       "document_count_parity": null,
       "document_identity_parity": null,
@@ -1168,9 +1168,9 @@
       "production_cutover_ready": null,
       "protocol": null,
       "ready": false,
-      "require_all_skein": null,
+      "require_all_hawdb": null,
       "required_route_count": null,
-      "skein_route_count": null
+      "hawdb_route_count": null
     },
     "shadow_evidence": {
       "contract_wrapper_identity": null,

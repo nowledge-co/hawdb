@@ -5,7 +5,7 @@ use super::{
     SqlLockStrength, SqlOrderDirection, SqlStatement, SqlTableName, SqlValue,
 };
 use crate::{Expr, ExprKind};
-use skein_core::Value;
+use hawdb_core::Value;
 
 mod clause_diagnostics;
 mod cross_join;

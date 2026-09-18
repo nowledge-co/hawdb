@@ -1,6 +1,6 @@
 use super::*;
 use crate::{decode_search_document_line, parse_snapshot_header};
-use skein_integrity::Crc32cHasher;
+use hawdb_integrity::Crc32cHasher;
 use std::io::{self, BufRead, BufReader};
 
 const INPUT_BYTES: usize = 8192;
@@ -58,8 +58,8 @@ impl<R: Read> Read for CheckedReader<R> {
     }
 }
 
-fn invalid(reason: impl std::fmt::Display) -> SkeinError {
-    SkeinError::Storage(format!("search hydration {reason}"))
+fn invalid(reason: impl std::fmt::Display) -> HawdbError {
+    HawdbError::Storage(format!("search hydration {reason}"))
 }
 
 #[derive(Debug)]
@@ -239,7 +239,7 @@ fn select_documents(
             Some(line) => line.strip_suffix('\r').unwrap_or(line),
             None => &line,
         };
-        if line.is_empty() || line == "SKEIN_SEARCH_SEGMENT_V1" {
+        if line.is_empty() || line == "HAWDB_SEARCH_SEGMENT_V1" {
             continue;
         }
         let document = decode_search_document_line(line)?;

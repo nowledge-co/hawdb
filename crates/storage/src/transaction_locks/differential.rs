@@ -402,7 +402,7 @@ fn state_campaign(seed: u64, cases: &[Case]) -> usize {
                         held = candidate;
                     } else {
                         let error = result.unwrap_err();
-                        assert!(matches!(error, SkeinError::Execution(_)));
+                        assert!(matches!(error, HawdbError::Execution(_)));
                         assert!(error
                             .to_string()
                             .contains("lock table resource budget exceeded"));
@@ -494,7 +494,7 @@ fn wait_campaign(seed: u64) -> usize {
                 assert_eq!(result.is_err(), cyclic, "seed={seed} step={step} deadlock");
                 if cyclic {
                     let error = result.unwrap_err();
-                    assert!(matches!(error, SkeinError::Execution(_)));
+                    assert!(matches!(error, HawdbError::Execution(_)));
                     let message = error.to_string();
                     let witness: Vec<u64> = message
                         .split("wait cycle: ")
@@ -596,7 +596,7 @@ fn widening_over_byte_budget_preserves_the_original_lock() {
         Bound::Included(text_key("z".repeat(64))),
     );
     let error = table.grant(1, widening.clone()).unwrap_err();
-    assert!(matches!(error, SkeinError::Execution(_)));
+    assert!(matches!(error, HawdbError::Execution(_)));
     assert!(error
         .to_string()
         .contains("lock table resource budget exceeded"));

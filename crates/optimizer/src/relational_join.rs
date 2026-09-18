@@ -5,7 +5,7 @@ use crate::{
     RelationalAccessPathDescriptor, RelationalAccessPathKind, RequiredProperties,
     ScanPruningSupport,
 };
-use skein_expression::{BindingId, BindingSet};
+use hawdb_expression::{BindingId, BindingSet};
 use std::{collections::BTreeMap, error::Error, fmt};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]

@@ -1,5 +1,5 @@
 use super::ast::{CypherQuery, Explain, SetSystemVariable, Statement};
-use skein_core::{Result, SkeinError};
+use hawdb_core::{HawdbError, Result};
 use std::time::Instant;
 
 mod case;
@@ -53,7 +53,7 @@ pub fn parse_profiled(input: &str) -> ParseMeasurement {
 
 fn parse_inner(input: &str) -> Result<Statement> {
     if input.len() > MAX_CYPHER_INPUT_BYTES {
-        return Err(SkeinError::Parse(format!(
+        return Err(HawdbError::Parse(format!(
             "Cypher input exceeds maximum length of {MAX_CYPHER_INPUT_BYTES} bytes"
         )));
     }

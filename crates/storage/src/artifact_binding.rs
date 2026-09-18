@@ -1,7 +1,7 @@
 //! Bound artifact admission and integrity checks for durable storage orchestration.
 
-use skein_core::{Result, SkeinError};
-use skein_integrity::{integrity_digest, Sha256Digest};
+use hawdb_core::{HawdbError, Result};
+use hawdb_integrity::{integrity_digest, Sha256Digest};
 use std::fs::File;
 use std::io::Read;
 use std::path::Path;
@@ -25,10 +25,10 @@ impl GraphManifestOpenBudget {
             .admitted_encoded_bytes
             .checked_add(encoded_bytes)
             .ok_or_else(|| {
-                SkeinError::Storage("aggregate graph manifest open bytes overflow u64".to_string())
+                HawdbError::Storage("aggregate graph manifest open bytes overflow u64".to_string())
             })?;
         if required > self.max_encoded_bytes {
-            return Err(SkeinError::Storage(format!(
+            return Err(HawdbError::Storage(format!(
                 "{artifact} requires {required} aggregate encoded graph manifest bytes during open, exceeding configured limit {}",
                 self.max_encoded_bytes
             )));
@@ -63,7 +63,7 @@ pub fn admit_graph_manifest_binding(
     open_budget: &mut GraphManifestOpenBudget,
 ) -> Result<()> {
     if expected_len > format_max_bytes {
-        return Err(SkeinError::Storage(format!(
+        return Err(HawdbError::Storage(format!(
             "{artifact} exceeds format limit {format_max_bytes} bytes"
         )));
     }
@@ -82,20 +82,20 @@ pub fn read_bound_graph_manifest(
     admit_graph_manifest_binding(expected_len, format_max_bytes, artifact, open_budget)?;
     let read_limit = expected_len
         .checked_add(1)
-        .ok_or_else(|| SkeinError::Storage(format!("{artifact} read limit overflows u64")))?;
+        .ok_or_else(|| HawdbError::Storage(format!("{artifact} read limit overflows u64")))?;
     let file = File::open(path)?;
     let actual_len = file.metadata()?.len();
     if actual_len > expected_len {
-        return Err(SkeinError::Storage(format!(
+        return Err(HawdbError::Storage(format!(
             "{artifact} contains {actual_len} bytes, exceeding its admitted bound {expected_len}"
         )));
     }
     let capacity = usize::try_from(actual_len)
-        .map_err(|_| SkeinError::Storage(format!("{artifact} length does not fit usize")))?;
+        .map_err(|_| HawdbError::Storage(format!("{artifact} length does not fit usize")))?;
     let mut encoded = Vec::with_capacity(capacity);
     file.take(read_limit).read_to_end(&mut encoded)?;
     if encoded.len() as u64 > expected_len {
-        return Err(SkeinError::Storage(format!(
+        return Err(HawdbError::Storage(format!(
             "{artifact} grew beyond its admitted bound {expected_len} during open"
         )));
     }
@@ -118,19 +118,19 @@ pub fn verify_integrity(
 ) -> Result<()> {
     let actual_len = bytes.len() as u64;
     if actual_len != expected_len {
-        return Err(SkeinError::Storage(format!(
+        return Err(HawdbError::Storage(format!(
             "{artifact} encoded length mismatch: expected {expected_len}, got {actual_len}"
         )));
     }
     let actual = integrity_digest(bytes);
     if actual.crc32c.as_u64() != expected_checksum {
-        return Err(SkeinError::Storage(format!(
+        return Err(HawdbError::Storage(format!(
             "{artifact} CRC32C mismatch: expected {expected_checksum}, got {}",
             actual.crc32c
         )));
     }
     if actual.sha256 != expected_sha256 {
-        return Err(SkeinError::Storage(format!(
+        return Err(HawdbError::Storage(format!(
             "{artifact} SHA-256 mismatch: expected {expected_sha256}, got {}",
             actual.sha256
         )));

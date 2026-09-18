@@ -35,8 +35,8 @@ stricter limits cannot inherit the admitting reader's limits.
 ## Local verification
 
 ```bash
-bazel test //crates/storage:skein_storage_tests //crates/storage:skein_storage_verified_page_cache_fuzz_tests //crates/fuzz:skein_fuzz_tests //crates/fuzz:skein_fuzz_cli_tests //:skein_linux_ci_fuzz_smoke_test
-cargo test -p skein-storage --release verified_page_cache_read_benchmark -- --ignored --nocapture
+bazel test //crates/storage:hawdb_storage_tests //crates/storage:hawdb_storage_verified_page_cache_fuzz_tests //crates/fuzz:hawdb_fuzz_tests //crates/fuzz:hawdb_fuzz_cli_tests //:hawdb_linux_ci_fuzz_smoke_test
+cargo test -p hawdb-storage --release verified_page_cache_read_benchmark -- --ignored --nocapture
 ```
 
 The manual differential campaign generates all four index-page kinds, compares

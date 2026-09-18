@@ -1,5 +1,5 @@
 use super::*;
-use skein_core::RuntimeMemoryReservation;
+use hawdb_core::RuntimeMemoryReservation;
 
 fn memory() -> BuildMemory {
     BuildMemory::new(

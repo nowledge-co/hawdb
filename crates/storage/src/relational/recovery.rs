@@ -1,6 +1,6 @@
-use skein_integrity::{IntegrityHasher, Sha256Digest};
+use hawdb_integrity::{IntegrityHasher, Sha256Digest};
 
-const RECOVERY_SOURCE_DOMAIN: &[u8] = b"SKEIN_RELATIONAL_RECOVERY_SOURCE_V1\0";
+const RECOVERY_SOURCE_DOMAIN: &[u8] = b"HAWDB_RELATIONAL_RECOVERY_SOURCE_V1\0";
 pub(crate) const RELATIONAL_RECOVERY_SOURCE_BYTES: usize = 56;
 
 /// Stable identity of the exact WAL record sequence used to build relational

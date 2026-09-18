@@ -31,6 +31,11 @@ pub use graph::{
     OptimizerCatalogIndexes, OptimizerCatalogStatistics, OptimizerIndexStatistics, PhysicalPhase,
     PhysicalPlanRoot, PlanPhase, PlanPhaseKind,
 };
+pub use hawdb_plan::PhysicalPlanNode as PlanNode;
+pub use hawdb_plan::{
+    plan_class_counts, plan_operator_counts, visit_plan, visit_plan_with_ids, PhysicalOperatorId,
+    PhysicalPlanClass, PhysicalPlanKind, PhysicalPlanNode, PlanChildren,
+};
 pub use logical::{LogicalPlanClass, LogicalPlanKind, LogicalPlanNode};
 pub use memo::{GroupId, Memo, MemoGroup};
 pub use predicate::{
@@ -87,11 +92,6 @@ pub use rule::{
 pub use search::{
     OptimizationSearchReport, OptimizerSearchDirective, OptimizerSearchDirectiveError, RuleEvent,
     RuleOutcome, SearchMode, SelectedPlanTrace,
-};
-pub use skein_plan::PhysicalPlanNode as PlanNode;
-pub use skein_plan::{
-    plan_class_counts, plan_operator_counts, visit_plan, visit_plan_with_ids, PhysicalOperatorId,
-    PhysicalPlanClass, PhysicalPlanKind, PhysicalPlanNode, PlanChildren,
 };
 pub use stage::{
     ApplyOrder, OptimizationPipeline, OptimizationStage, PipelineExecution, RuleStage,

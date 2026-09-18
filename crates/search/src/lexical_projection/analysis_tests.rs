@@ -93,14 +93,14 @@ fn identifier_stream_preserves_every_fallible_event_prefix() {
                 let error = visit_token_list(text, &analyzer, |token, occurrence| {
                     callbacks += 1;
                     if actual.len() == stop_after {
-                        return Err(SkeinError::Execution("stop identifier".into()));
+                        return Err(HawdbError::Execution("stop identifier".into()));
                     }
                     actual.push((token, occurrence));
                     Ok(())
                 }).unwrap_err();
                 assert_eq!(actual, expected[..stop_after], "{text}: prefix {stop_after}");
                 assert_eq!(callbacks, stop_after + 1);
-                assert_eq!(error.to_string(), SkeinError::Execution("stop identifier".into()).to_string());
+                assert_eq!(error.to_string(), HawdbError::Execution("stop identifier".into()).to_string());
             }
             let mut actual = Vec::new();
             visit_token_list(text, &analyzer, |token, occurrence| {
@@ -373,13 +373,13 @@ fn visitor_propagates_callback_failure_without_visiting_later_identifiers() {
         &SearchAnalyzerLexicon::empty(),
         |_, _| {
             callbacks += 1;
-            Err(SkeinError::Execution("stop analysis".to_string()))
+            Err(HawdbError::Execution("stop analysis".to_string()))
         },
     )
     .unwrap_err();
     assert_eq!(
         error.to_string(),
-        SkeinError::Execution("stop analysis".to_string()).to_string()
+        HawdbError::Execution("stop analysis".to_string()).to_string()
     );
     assert_eq!(callbacks, 1);
     assert_eq!(
@@ -505,7 +505,7 @@ impl Drop for AnalysisFixtureCleanup {
 #[test]
 fn streamed_frequencies_preserve_persisted_scores_delta_reopen_and_failed_publication() {
     let root = std::env::temp_dir().join(format!(
-        "skein-document-analysis-{}-{}",
+        "hawdb-document-analysis-{}-{}",
         std::process::id(),
         std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)

@@ -235,7 +235,7 @@ mod tests {
 
     #[test]
     fn combined_hasher_matches_independent_digests() {
-        let payload = b"skein-integrity";
+        let payload = b"hawdb-integrity";
         let digest = integrity_digest(payload);
         assert_eq!(digest.crc32c, crc32c(payload));
         assert_eq!(digest.sha256, sha256(payload));

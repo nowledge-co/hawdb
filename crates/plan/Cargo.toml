@@ -1,15 +1,15 @@
 [package]
-name = "skein-plan"
+name = "hawdb-plan"
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
 license.workspace = true
 
 [dependencies]
-skein-core = { path = "../core" }
-skein-cypher = { path = "../cypher" }
-skein-ddl = { path = "../ddl" }
-skein-expression = { path = "../expression" }
+hawdb-core = { path = "../core" }
+hawdb-cypher = { path = "../cypher" }
+hawdb-ddl = { path = "../ddl" }
+hawdb-expression = { path = "../expression" }
 
 [dev-dependencies]
 serde_json = "1"

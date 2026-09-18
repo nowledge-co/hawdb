@@ -1,7 +1,7 @@
 # Cypher migration baseline
 
 These fixtures freeze parser and logical planner behavior before the AST
-restructuring in [issue #158](https://github.com/nowledge-co/skein/issues/158).
+restructuring in [issue #158](https://github.com/nowledge-co/hawdb/issues/158).
 They do not freeze the AST's Debug representation, change query execution, or
 qualify Mem activation. Existing owner and runtime tests remain in place.
 
@@ -12,22 +12,22 @@ qualify Mem activation. Existing owner and runtime tests remain in place.
 | Mem runtime source | 973 | Static literals from the source inventory; callers include legacy Kuzu paths. |
 | Legacy snapshot source | 64 | Queries against the immutable Kuzu bootstrap snapshot. |
 | Mem test source | 6 | Test-only literals, including legacy schema setup. |
-| Skein owner test | 286 | Static inputs from parser tests and four selected runtime test modules. |
-| Skein bound test | 4 | Thread read queries with the actual parameters from existing owner tests. |
+| Hawdb owner test | 286 | Static inputs from parser tests and four selected runtime test modules. |
+| Hawdb bound test | 4 | Thread read queries with the actual parameters from existing owner tests. |
 | Synthetic binding probe | 94 | Explicit artificial parameters for planner migration coverage; these are not observed Mem requests. |
 
 All 1,043 Mem inventory rows at revision
 `5cc46b559383c4a1d945ce7981c12d61fc630678` are retained, including rejected queries.
-The inventory owner is `skein_evidence::query_inventory::scan_nowledge_query_inventory`.
+The inventory owner is `hawdb_evidence::query_inventory::scan_nowledge_query_inventory`.
 Each row was matched unambiguously against independently decoded Rust literals
-using Syn 2.0.118. The scanner's continuation/UTF-8 fix is included in the Skein
+using Syn 2.0.118. The scanner's continuation/UTF-8 fix is included in the Hawdb
 baseline, `fd146ca3bc7df39d9656fb877aa74dcdba5ac9d1`.
 
 The `query` field is the exact decoded literal, including whitespace and trailing
 semicolons. `normalized_query` is retained for matching the existing inventory;
 it must not replace the input under test. Source paths, physical line numbers,
 function/constant names and the 94 Mem source SHA-256 hashes are recorded. The
-manifest also records historical Skein source hashes and examples for all 41
+manifest also records historical Hawdb source hashes and examples for all 41
 pre-migration Statement variants. Those variant names describe historical coverage
 and are not assertions about the new AST representation.
 
@@ -65,5 +65,5 @@ source text and historical provenance when adapting the harness to the new AST.
 Run the default owner and complete local fuzz surface:
 
 ```sh
-bazel test //crates/cypher:presubmit_tests //crates/plan:presubmit_tests //crates/fuzz:skein_fuzz_tests //crates/fuzz:skein_fuzz_cli_tests //:skein_linux_ci_fuzz_smoke_test
+bazel test //crates/cypher:presubmit_tests //crates/plan:presubmit_tests //crates/fuzz:hawdb_fuzz_tests //crates/fuzz:hawdb_fuzz_cli_tests //:hawdb_linux_ci_fuzz_smoke_test
 ```

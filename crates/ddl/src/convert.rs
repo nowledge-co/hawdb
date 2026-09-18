@@ -1,5 +1,5 @@
 use crate::{SchemaObjectState, SchemaPropertyType, SchemaTableKind};
-use skein_core::schema::{PropertyType, TableKind};
+use hawdb_core::schema::{PropertyType, TableKind};
 
 pub const fn table_kind_to_core(kind: SchemaTableKind) -> TableKind {
     match kind {
@@ -22,14 +22,14 @@ pub const fn property_type_to_core(value_type: SchemaPropertyType) -> PropertyTy
 
 pub const fn object_state_to_core(
     state: SchemaObjectState,
-) -> skein_core::schema::SchemaObjectState {
+) -> hawdb_core::schema::SchemaObjectState {
     match state {
-        SchemaObjectState::DeleteOnly => skein_core::schema::SchemaObjectState::DeleteOnly,
-        SchemaObjectState::WriteOnly => skein_core::schema::SchemaObjectState::WriteOnly,
-        SchemaObjectState::Backfill => skein_core::schema::SchemaObjectState::Backfill,
-        SchemaObjectState::Validating => skein_core::schema::SchemaObjectState::Validating,
-        SchemaObjectState::Public => skein_core::schema::SchemaObjectState::Public,
-        SchemaObjectState::Gc => skein_core::schema::SchemaObjectState::Gc,
+        SchemaObjectState::DeleteOnly => hawdb_core::schema::SchemaObjectState::DeleteOnly,
+        SchemaObjectState::WriteOnly => hawdb_core::schema::SchemaObjectState::WriteOnly,
+        SchemaObjectState::Backfill => hawdb_core::schema::SchemaObjectState::Backfill,
+        SchemaObjectState::Validating => hawdb_core::schema::SchemaObjectState::Validating,
+        SchemaObjectState::Public => hawdb_core::schema::SchemaObjectState::Public,
+        SchemaObjectState::Gc => hawdb_core::schema::SchemaObjectState::Gc,
     }
 }
 
@@ -87,7 +87,7 @@ mod tests {
 
     #[test]
     fn maps_all_ddl_object_states_to_core_schema_states() {
-        use skein_core::schema::SchemaObjectState as CoreState;
+        use hawdb_core::schema::SchemaObjectState as CoreState;
 
         for (command, catalog) in [
             (SchemaObjectState::DeleteOnly, CoreState::DeleteOnly),

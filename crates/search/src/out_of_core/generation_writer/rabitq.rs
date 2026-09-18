@@ -4,16 +4,16 @@ use super::{RaBitQGenerationArtifact, SearchOutOfCoreGenerationWriter};
 use crate::build_control::checkpoint;
 use crate::error::Result;
 use crate::SearchDocument;
-use skein_core::RuntimeTaskContext;
+use hawdb_core::RuntimeTaskContext;
 
 #[cfg(feature = "vector-search")]
 use super::rabitq_memory::Admission;
 #[cfg(feature = "vector-search")]
-use super::{artifact_name::Name, context_memory::OwnedPath, SkeinError};
+use super::{artifact_name::Name, context_memory::OwnedPath, HawdbError};
 
 #[cfg(feature = "vector-search")]
 pub(super) struct RaBitQArtifactBuilder {
-    writer: Option<skein_vector_projection::ProjectionWriter>,
+    writer: Option<hawdb_vector_projection::ProjectionWriter>,
     file_name: Name,
     path: OwnedPath,
     expected_documents: usize,
@@ -40,13 +40,13 @@ impl RaBitQArtifactBuilder {
             None
         } else {
             let dimension = input.embedding_dimension.ok_or_else(|| {
-                SkeinError::Storage(
+                HawdbError::Storage(
                     "search generation has vector documents without an embedding dimension"
                         .to_string(),
                 )
             })?;
             let mut memory = Admission::new(&input.options, &path, input.memory.clone())?;
-            let identity = skein_vector_projection::ProjectionIdentity {
+            let identity = hawdb_vector_projection::ProjectionIdentity {
                 generation,
                 source_epoch: input.options.source_graph_commit_epoch,
                 embedding_model: input
@@ -60,7 +60,7 @@ impl RaBitQArtifactBuilder {
                     .as_ref()
                     .and_then(|manifest| manifest.version.clone()),
             };
-            let config = skein_vector_projection::ProjectionBuildConfig::new(dimension, identity)
+            let config = hawdb_vector_projection::ProjectionBuildConfig::new(dimension, identity)
                 .with_bit_width(input.options.rabitq_bit_width)
                 .with_segment_rows(input.options.rabitq_segment_rows.get())
                 .with_max_working_bytes(input.options.rabitq_build_memory_bytes.get())
@@ -73,7 +73,7 @@ impl RaBitQArtifactBuilder {
             admission = Some(memory);
             #[cfg(test)]
             evidence::create();
-            let writer = skein_vector_projection::ProjectionWriter::create(&path, config)
+            let writer = hawdb_vector_projection::ProjectionWriter::create(&path, config)
                 .map_err(rabitq_error)?;
             #[cfg(test)]
             evidence::completed(0);
@@ -94,7 +94,7 @@ impl RaBitQArtifactBuilder {
 
     pub(super) fn push(&mut self, document: &SearchDocument) -> Result<()> {
         if self.failed {
-            return Err(SkeinError::Storage(
+            return Err(HawdbError::Storage(
                 "search RaBitQ writer already failed".to_owned(),
             ));
         }
@@ -109,21 +109,21 @@ impl RaBitQArtifactBuilder {
             return Ok(());
         };
         if self.vector_ordinal >= self.expected_documents as u64 {
-            return Err(SkeinError::Storage(
+            return Err(HawdbError::Storage(
                 "search RaBitQ exceeded the expected vector document count".to_owned(),
             ));
         }
         let next = self
             .vector_ordinal
             .checked_add(1)
-            .ok_or_else(|| SkeinError::Storage("search vector ordinal overflow".to_owned()))?;
+            .ok_or_else(|| HawdbError::Storage("search vector ordinal overflow".to_owned()))?;
         let memory = self.admission.as_mut().ok_or_else(|| {
-            SkeinError::Storage("search RaBitQ has no admitted writer".to_owned())
+            HawdbError::Storage("search RaBitQ has no admitted writer".to_owned())
         })?;
         memory.admit_directory(next as usize / memory.segment_rows)?;
         let _quantization = memory.quantization()?;
         let writer = self.writer.as_mut().ok_or_else(|| {
-            SkeinError::Storage(
+            HawdbError::Storage(
                 "search generation contains unexpected vector documents".to_string(),
             )
         })?;
@@ -142,12 +142,12 @@ impl RaBitQArtifactBuilder {
     pub(super) fn finish(mut self) -> Result<Option<RaBitQGenerationArtifact>> {
         checkpoint(&self.task_context)?;
         if self.failed {
-            return Err(SkeinError::Storage(
+            return Err(HawdbError::Storage(
                 "search RaBitQ writer already failed".to_owned(),
             ));
         }
         if self.vector_ordinal != self.expected_documents as u64 {
-            return Err(SkeinError::Storage(
+            return Err(HawdbError::Storage(
                 "search RaBitQ build did not consume the expected vector document count"
                     .to_string(),
             ));
@@ -190,13 +190,13 @@ impl RaBitQArtifactBuilder {
 }
 
 #[cfg(feature = "vector-search")]
-fn rabitq_error(error: skein_vector_projection::ProjectionError) -> SkeinError {
-    SkeinError::Storage(format!("search RaBitQ projection: {error}"))
+fn rabitq_error(error: hawdb_vector_projection::ProjectionError) -> HawdbError {
+    HawdbError::Storage(format!("search RaBitQ projection: {error}"))
 }
 
 #[cfg(all(test, feature = "vector-search"))]
 pub(super) mod evidence {
-    use skein_core::RuntimeCancellationToken;
+    use hawdb_core::RuntimeCancellationToken;
     use std::cell::{Cell, RefCell};
     thread_local! { static CALLS: Cell<(usize, usize, usize)> = const { Cell::new((0, 0, 0)) }; }
     thread_local! { static REOPENED_BYTES: Cell<usize> = const { Cell::new(0) }; }

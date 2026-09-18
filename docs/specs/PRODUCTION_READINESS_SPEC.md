@@ -1,14 +1,14 @@
-# Skein Production Readiness Specification
+# Hawdb Production Readiness Specification
 
 ## Scope
 
-This specification defines the evidence required before a Skein build may
+This specification defines the evidence required before a Hawdb build may
 serve production traffic or replace an existing Nowledge graph or search read
 owner. It complements the runtime correctness contract in
 `EMBEDDED_RUNTIME_SPEC.md`; passing unit tests or implementing an API does not
 by itself satisfy this specification.
 
-Skein is an embedded Rust library. Production traffic, readiness collection,
+Hawdb is an embedded Rust library. Production traffic, readiness collection,
 and cutover decisions MUST use typed Rust APIs. Command-line programs MAY
 render or transport the same reports for development and CI, but they MUST NOT
 be required by the production serving path.
@@ -38,7 +38,7 @@ readiness requires both.
 
 Every production qualification bundle MUST bind at least:
 
-- Skein source revision and Rust toolchain;
+- Hawdb source revision and Rust toolchain;
 - target OS, architecture, and enabled Cargo features;
 - durable format and schema versions;
 - database configuration digest and deployment profile;
@@ -71,7 +71,7 @@ The preferred executable contract is
 `run_production_graph_storage_qualification`. It opens the representative copy
 through `NowledgeMemEmbeddedStoreHandle`, applies an explicit out-of-core
 `DatabaseConfig`, acquires a runtime-governor permit for every measurement,
-and emits `skein-production-graph-storage-qualification-v1`. The report stores
+and emits `hawdb-production-graph-storage-qualification-v1`. The report stores
 only query and parameter digests, retains every raw cold and warm resource run,
 and derives a reproducible aggregate from that complete series. Each run
 records streaming status, output and intermediate row/payload counts, steady
@@ -108,9 +108,9 @@ Each case serializes both its observed maximum block/byte reads and the
 declared per-run block/byte limits so that a later release process can
 re-evaluate every run without trusting the case's reported readiness.
 
-`skein-graph-index-qualification` is the thin developer and evidence collector
+`hawdb-graph-index-qualification` is the thin developer and evidence collector
 for this typed matrix. It accepts one existing database path separately from a
-bounded `skein-production-graph-index-plan-v1` JSON document. The wrapper MUST
+bounded `hawdb-production-graph-index-plan-v1` JSON document. The wrapper MUST
 derive `ShadowReadOnly + OutOfCore` open options and a read-only
 `DatabaseConfig`; the plan cannot weaken those selectors. It MUST NOT import,
 create, copy, repair, checkpoint, or mutate the representative database.
@@ -136,10 +136,10 @@ non-zero explicit memory ceiling.
 The operational invocation and parser-tested plan are documented in
 [`PRODUCTION_GRAPH_INDEX_QUALIFICATION.md`](../PRODUCTION_GRAPH_INDEX_QUALIFICATION.md).
 
-`skein-graph-storage-qualification` is the corresponding thin collector for
+`hawdb-graph-storage-qualification` is the corresponding thin collector for
 the independent general graph-storage artifact. It accepts one existing
 database path separately from a bounded
-`skein-production-graph-storage-plan-v1` document and MUST construct the same
+`hawdb-production-graph-storage-plan-v1` document and MUST construct the same
 `ShadowReadOnly + OutOfCore` read-only boundary. The plan contains exactly one
 representative parameterized Cypher statement, at least two measurement runs,
 and explicit database, execution, result, intermediate, process-memory, and
@@ -218,7 +218,7 @@ aggregates, per-run block/byte budgets, larger-than-cache residency, and
 cancellation cleanup, and rejects missing or duplicate classes. A top-level
 matrix `ready` value or `qualified_class_count` cannot hide an invalid case.
 
-`skein-qualification-bundle` is a thin CI and release transport over that
+`hawdb-qualification-bundle` is a thin CI and release transport over that
 typed evaluator. It accepts bounded JSON inputs from independently generated
 process and platform artifacts and exits unsuccessfully when the recomputed
 bundle is not ready. It is not a production serving control plane and cannot
@@ -249,7 +249,7 @@ Process resource sampling SHOULD provide:
 - intermediate and output payload bytes;
 - segment-cache residency, misses, evictions, and admission rejections.
 
-`skein-storage-resource-profile-v2` exposes `resource_ready` separately from
+`hawdb-storage-resource-profile-v2` exposes `resource_ready` separately from
 production `ready`. Production readiness additionally requires an exact
 evidence/expected-identity match. `metric_capabilities.total_page_faults`
 applies on Unix and Windows; `metric_capabilities.split_page_faults` is false
@@ -287,7 +287,7 @@ derive a 2 GiB capacity and a dynamic headroom-bound budget. With 4--8 GiB
 available, the report records the nominal 1--2 GiB range. Lower headroom may
 legitimately lower the budget below 1 GiB and MUST NOT invalidate the policy;
 the budget is not a fixed reservation.
-`Capability512Mib` sets an explicit 512 MiB Skein capacity ceiling while still
+`Capability512Mib` sets an explicit 512 MiB Hawdb capacity ceiling while still
 honoring a smaller host or cgroup policy ceiling and dynamic available
 headroom. The policy report MUST be paired with a constrained workload run
 whose peak RSS stays within its declared 512 MiB envelope. This is a supported
@@ -303,9 +303,9 @@ MUST retain dynamic headroom derivation and MUST NOT reject a correct budget
 only because it is below 1 GiB. The capability report MUST install the explicit
 512 MiB ceiling without pretending that the OS limit is 512 MiB.
 
-`skein-content-store-memory-qualification` is a thin evidence collector for
+`hawdb-content-store-memory-qualification` is a thin evidence collector for
 that typed matrix. It accepts one existing storage path separately from a
-bounded `skein-production-content-store-memory-plan-v1` document. The path is
+bounded `hawdb-production-content-store-memory-plan-v1` document. The path is
 used only for storage-device classification and MUST NOT enter retained
 evidence. The collector MUST NOT open, create, copy, repair, checkpoint, or
 mutate a database. Its operational contract is documented in
@@ -326,7 +326,7 @@ is selectable.
 
 The typed entry point is
 `run_production_content_store_storage_qualification`. It MUST open the imported
-Skein copy read-only with authoritative indexes, reopen once per frozen SQL
+Hawdb copy read-only with authoritative indexes, reopen once per frozen SQL
 case, retain distinct cold and warm runs, compare every output with an offline
 digest, obtain one runtime-governor permit per measured read, and redact paths,
 parameters, and rows. The report MUST retain the governor's derived capacity,
@@ -352,13 +352,13 @@ budget is exceeded. Per-run page-fault limits MUST NOT be applied to the
 cumulative lifecycle profile. Synthetic runner tests validate this protocol
 but cannot produce representative-replica evidence.
 
-`skein-content-store-read-qualification` is a thin developer and evidence
+`hawdb-content-store-read-qualification` is a thin developer and evidence
 collector wrapper over the typed runner. It accepts an existing database path
-separately from one bounded `skein-production-content-store-read-plan-v1` JSON
+separately from one bounded `hawdb-production-content-store-read-plan-v1` JSON
 document. The plan fixes the evidence identity, frozen statement names and
 typed parameters, result oracle digests, read/I/O budgets, process limits, and
 one declared resource profile. Unknown fields, an unknown protocol, zero-sized
-database budgets, or values outside Skein's parameter domain MUST be rejected
+database budgets, or values outside Hawdb's parameter domain MUST be rejected
 before the database is opened. The wrapper MUST derive `read_only + OutOfCore +
 Authoritative`; callers cannot weaken those selectors in JSON. The
 `capability_512_mib` profile installs an explicit 512 MiB runtime ceiling, while
@@ -377,10 +377,10 @@ evidence.
 The operational invocation and bounded plan shape are documented in
 [`PRODUCTION_CONTENT_STORE_QUALIFICATION.md`](../PRODUCTION_CONTENT_STORE_QUALIFICATION.md).
 
-`skein-content-store-mutation-qualification` is the corresponding thin
+`hawdb-content-store-mutation-qualification` is the corresponding thin
 developer and evidence collector for the writable matrix. It accepts the
 read-only source and the four 1/4/8/10-writer replica paths separately from one
-bounded `skein-production-content-store-mutation-plan-v1` JSON document. The
+bounded `hawdb-production-content-store-mutation-plan-v1` JSON document. The
 wrapper MUST NOT copy, create, or migrate a replica. The caller MUST provide
 four distinct existing disposable database directories, each separate from
 the source and initialized from the exact expected generation. The typed
@@ -392,7 +392,7 @@ one explicit worker definition per writer, and retain explicit frozen statement
 names, parameters, conflict domains, verification digests, latency limits, and
 the accepted latency-reference identity. It MUST also contain the complete WAL
 group-commit activation evidence. The wrapper MUST construct group commit only
-through the evidence-validating Skein constructors; a JSON boolean or policy
+through the evidence-validating Hawdb constructors; a JSON boolean or policy
 name alone cannot activate it. Unknown fields, incomplete writer matrices,
 invalid numeric bounds, and WAL evidence rejected by the engine MUST fail
 before mutation begins.
@@ -495,8 +495,8 @@ has observed for that directory. `ExecutionMemoryConfig::spill_pool_snapshot`
 exposes active and peak bytes and runs, pending writer bytes, orphan cleanup,
 and deletion failures for readiness and monitoring.
 
-Spill filenames are owned by a versioned Skein namespace. On first use of a
-spill directory in a process, Skein MUST remove only namespace-matching files
+Spill filenames are owned by a versioned Hawdb namespace. On first use of a
+spill directory in a process, Hawdb MUST remove only namespace-matching files
 from earlier process identities whose age reaches
 `spill_orphan_grace_period`; unrelated files and current-process runs MUST
 remain untouched. The default grace period is 24 hours. A failed live-run
@@ -508,10 +508,10 @@ equivalent host-owned admission boundary. Raw database access MAY remain a
 low-level library capability, but its use MUST be reported as non-production
 safe unless the host supplies equivalent global admission.
 
-`skein-embedded-query-path-readiness-v1` reports this boundary without
-claiming traffic readiness. `SkeinEmbedded::query_admitted`, its parameterized
-and task-context variants, and `SkeinTokioEmbedded::query` are
-`admission_safe=true`. `SkeinEmbedded::database`, `database_mut`, and
+`hawdb-embedded-query-path-readiness-v1` reports this boundary without
+claiming traffic readiness. `HawdbEmbedded::query_admitted`, its parameterized
+and task-context variants, and `HawdbTokioEmbedded::query` are
+`admission_safe=true`. `HawdbEmbedded::database`, `database_mut`, and
 `into_database` remain controlled-host and test surfaces; their report is
 `admission_safe=false` with `host_equivalent_governor_not_proven`. An
 admission-safe path is only one input to production qualification and MUST NOT
@@ -533,7 +533,7 @@ store handles participate in the same process-level CPU, memory, result, and
 I/O limits.
 
 The real Mem runtime MUST publish
-`skein-nowledge-mem-serving-path-readiness-v1` from its long-lived
+`hawdb-nowledge-mem-serving-path-readiness-v1` from its long-lived
 `NowledgeMemEmbeddedStoreHandle`. The report MUST bind a non-empty host runtime
 identity and prove shared-governor admission for foreground parameterized
 Cypher, bounded streaming reads, typed mutation, typed analytics, and typed
@@ -553,7 +553,7 @@ pipeline does not spill, and in-flight cancellation completes within its bound.
 It additionally requires zero admission rejection, permit leakage, and
 overcommit. The three profiles MUST come from independent processes and bind the
 same release, dataset, graph epoch, query digest, and parameter digest.
-`skein-production-morsel-matrix-v1` accepts the matrix only when throughput
+`hawdb-production-morsel-matrix-v1` accepts the matrix only when throughput
 improves at every step and caller-declared P99, peak-RSS, and cancellation
 regression budgets hold. A materialized read-only profile is required because
 out-of-core source scans deliberately remain serial until ordered parallel
@@ -562,7 +562,7 @@ range reads have their own correctness contract.
 An asynchronous facade that returns a materialized result remains subject to
 the result budget. A streaming asynchronous API MUST propagate consumer
 backpressure and cancellation without retaining the complete result.
-`SkeinTokioEmbedded::query_stream` and its parameterized/options variants use
+`HawdbTokioEmbedded::query_stream` and its parameterized/options variants use
 the admitted query request, add the bounded channel residency to admitted
 memory, and deliver execution-memory-sized batches through a finite channel.
 The producer retains its runtime permit until the terminal report, observes a
@@ -641,7 +641,7 @@ files. A downstream CI job MUST download and verify the complete artifact
 before the model-check gate succeeds.
 
 The typed crash artifact protocol is
-`skein-storage-crash-recovery-evidence-v1`. Every required crash point MUST
+`hawdb-storage-crash-recovery-evidence-v1`. Every required crash point MUST
 appear for the admitted repetition count and every case MUST prove termination,
 whole-batch recovery, epoch/LSN agreement, endpoint integrity, projection
 watermark integrity, and active artifact-generation integrity. CI MUST retain
@@ -741,7 +741,7 @@ Request-time comparison with the previous engine MUST NOT run on the production
 serving path. Shadow and differential evidence belong to an offline or
 dedicated preflight path.
 
-`skein-search-lexical-production-qualification` version 2 binds the report to
+`hawdb-search-lexical-production-qualification` version 2 binds the report to
 the release identity and to projection generation, source graph epoch,
 document digest, analyzer digest, and embedding model/version/dimension. It
 records target-appropriate process-memory capabilities, text/vector/hybrid
@@ -787,8 +787,8 @@ artifact. The file-backed vector projection generation MUST equal that common
 search generation.
 
 `run_production_vector_qualification` is the typed RaBitQ production
-collector. Its `skein-production-vector-qualification-v1` report wraps the
-bounded `skein-vector-recall-production-qualification-v1` probes and binds
+collector. Its `hawdb-production-vector-qualification-v1` report wraps the
+bounded `hawdb-vector-recall-production-qualification-v1` probes and binds
 them to the current release identity and the opened file projection's
 generation, source graph epoch, raw-vector source digest, payload identity,
 format, algorithm, bit width, dimension, transform seed, embedding
@@ -836,7 +836,7 @@ independent truth oracle; candidate recall remains measured against canonical
 raw-vector truth. The production feature graph, checkpoint, and serving backend
 MUST not depend on a separate vector-quantization runtime.
 
-`skein-production-vector-qualification-matrix-v1` combines independently
+`hawdb-production-vector-qualification-matrix-v1` combines independently
 generated reports and requires matching release and projection identities for
 Linux x86_64, Linux AArch64, macOS AArch64, and Windows x86_64. Every target
 MUST also pass its portable scalar reference comparison. Unit and synthetic
@@ -876,7 +876,7 @@ or probe the previous engine solely to make the selected owner appear healthy.
 ## Release Controls
 
 Branch protection is a delivery-governance control, not a kernel traffic
-readiness prerequisite. It MAY be deferred while Skein is in rapid iteration.
+readiness prerequisite. It MAY be deferred while Hawdb is in rapid iteration.
 An unprotected development branch MUST NOT weaken the evidence required for a
 production release or allow branch state alone to imply production readiness.
 
@@ -885,11 +885,11 @@ checks. Required release checks MUST include formatting, strict lint, workspace
 tests, supported-platform runtime and storage tests, concurrency models, and
 build system parity.
 
-`skein-production-release-control-evidence-v1` is the typed exact-revision CI
+`hawdb-production-release-control-evidence-v1` is the typed exact-revision CI
 input to the final bundle. Every required check MUST record the same full source
 revision as the release identity, a successful conclusion, and the SHA-256 of
 its retained evidence artifact. The final bundle MUST also consume and
-revalidate `skein-storage-crash-recovery-evidence-v1`; a green job name or a
+revalidate `hawdb-storage-crash-recovery-evidence-v1`; a green job name or a
 top-level `ready` value alone cannot satisfy either gate.
 
 Before a general-availability phase, the project SHOULD protect its release

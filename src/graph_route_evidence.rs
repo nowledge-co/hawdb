@@ -1,8 +1,8 @@
 use crate::{NowledgeMemGraph, NowledgeMemQueryReportOptions, Result};
-pub use skein_readiness::graph_route_evidence_cli::nowledge_graph_route_evidence_usage;
-use skein_readiness::graph_route_evidence_cli::parse_graph_route_evidence_cli_inputs;
+pub use hawdb_readiness::graph_route_evidence_cli::nowledge_graph_route_evidence_usage;
+use hawdb_readiness::graph_route_evidence_cli::parse_graph_route_evidence_cli_inputs;
 
-pub use skein_readiness::graph_route_catalog::{
+pub use hawdb_readiness::graph_route_catalog::{
     nowledge_mem_graph_augmentation_state_route_query,
     nowledge_mem_graph_community_members_route_query,
     nowledge_mem_graph_community_recent_memories_route_query,
@@ -39,7 +39,7 @@ pub fn nowledge_graph_route_evidence_json(
     options: NowledgeMemQueryReportOptions,
     route_parity: Option<&RouteParityEvidence>,
 ) -> serde_json::Value {
-    skein_readiness::graph_route_catalog::graph_route_evidence_json(
+    hawdb_readiness::graph_route_catalog::graph_route_evidence_json(
         graph.mode().as_str(),
         route_queries,
         route_parity,
@@ -53,7 +53,7 @@ pub fn nowledge_graph_route_evidence_json(
 
 #[cfg(test)]
 fn query_requirement_blockers(query: &RouteCypherQuery, report: &serde_json::Value) -> Vec<String> {
-    skein_readiness::graph_route_catalog::query_requirement_blockers(query, report)
+    hawdb_readiness::graph_route_catalog::query_requirement_blockers(query, report)
 }
 
 #[cfg(test)]

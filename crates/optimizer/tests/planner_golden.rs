@@ -1,10 +1,10 @@
-use skein_cypher::parse;
-use skein_optimizer::{
+use hawdb_cypher::parse;
+use hawdb_optimizer::{
     plan_vector_search, CascadesOptimizer, LogicalPlanRoot, OptimizerCatalog,
     OptimizerCatalogIndexes, OptimizerCatalogStatistics, OptimizerConfig, OptimizerContext,
     QueryFamily, ResourceHints,
 };
-use skein_plan::{plan, VectorCandidateSource, VectorSearchLogicalPlan};
+use hawdb_plan::{plan, VectorCandidateSource, VectorSearchLogicalPlan};
 
 const QUERY: &str = "MATCH (m:Memory) WHERE m.id = 7 RETURN m.title AS title";
 const EXPECTED: &str = include_str!("golden/indexed_memory_lookup.golden");
@@ -82,10 +82,10 @@ fn filtered_vector_pipeline_matches_planner_golden() {
 
 fn render_planner_golden(
     query: &str,
-    logical: &skein_plan::LogicalPlan,
-    lowering_input: &skein_plan::LogicalPlan,
-    physical: &skein_plan::PhysicalPlan,
-    trace: &skein_optimizer::OptimizerTrace,
+    logical: &hawdb_plan::LogicalPlan,
+    lowering_input: &hawdb_plan::LogicalPlan,
+    physical: &hawdb_plan::PhysicalPlan,
+    trace: &hawdb_optimizer::OptimizerTrace,
 ) -> String {
     let stages = trace
         .stage_events

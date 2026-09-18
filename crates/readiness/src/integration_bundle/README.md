@@ -35,5 +35,5 @@ ordering and blocker multiplicity. No production evaluator is called to build
 expected results at test runtime.
 
 Run the complete local campaign with
-`bazel test //crates/readiness:skein_integration_bundle_fuzz_tests`.
-It is manual and included in `//crates/fuzz:skein_fuzz_tests`, not native CI.
+`bazel test //crates/readiness:hawdb_integration_bundle_fuzz_tests`.
+It is manual and included in `//crates/fuzz:hawdb_fuzz_tests`, not native CI.

@@ -2,7 +2,7 @@
 
 ## Scope
 
-This specification defines Skein's target durable layout for a PC-oriented
+This specification defines Hawdb's target durable layout for a PC-oriented
 embedded database. Canonical graph and relational state is row-oriented,
 page-bounded, and indexed. Primary, unique, secondary, graph-property, and
 adjacency indexes are persistent immutable pages that are read on demand
@@ -14,7 +14,7 @@ artifacts remain valid derived-projection experiments. They MUST NOT become a
 recovery dependency or a second canonical writer without a new specification
 and workload evidence.
 
-Skein has not shipped a durable storage format. This specification therefore
+Hawdb has not shipped a durable storage format. This specification therefore
 defines one destructive v1: readers MUST reject bytes that do not satisfy the
 current v1 contract and MUST NOT add legacy magic, version fallbacks, migration
 branches, or compatibility facades.
@@ -24,7 +24,7 @@ descriptive implementation notes, per [`README.md`](README.md).
 
 ## Goals and non-goals
 
-Skein is an embedded, TP-first knowledge database. Point reads, short
+Hawdb is an embedded, TP-first knowledge database. Point reads, short
 transactions, predictable resident memory, cross-platform recovery, and graph
 locality have priority over scan throughput.
 
@@ -64,7 +64,7 @@ read time. Relationship equality and range predicates over a bound one-hop
 expansion use the same demand-paged artifact when its estimated global posting
 work does not exceed the endpoint adjacency work. Stable-id graph index state
 uses a separately published, fixed-page, demand-read sidecar for the ambiguous
-physical-id mapping needed by Skein Lightning. Relational constraints may opt
+physical-id mapping needed by Hawdb Lightning. Relational constraints may opt
 into the generation-bound authoritative reader, but materialized relational
 postings remain a temporary checkpoint builder and differential oracle until
 the next migration stage removes their ordinary-open residency.
@@ -143,7 +143,7 @@ deduplicates candidate node identities before hydration or output, and retains
 the complete `OR` predicate as residual semantic authority. Its deduplication
 set is charged to the query blocking-state budget. A budget failure aborts the
 query; it MUST NOT fall back to an untracked scan or emit a partial result.
-`SkeinPropertyIndexPruning.tla` models the all-branches-declared admission rule
+`HawdbPropertyIndexPruning.tla` models the all-branches-declared admission rule
 and proves that set-union deduplication preserves full-scan results.
 
 Composite equality indexes reuse that artifact and serving contract. The
@@ -239,7 +239,7 @@ Missing evidence, stale generation evidence, or an index/row generation
 mismatch leaves that class unqualified while other classes may remain
 qualified. Once a selected page reports corruption, the read fails closed and
 the handle is poisoned; it MUST NOT retry through the canonical fallback.
-`SkeinGraphIndexQualification.tla` models this independent evidence gate.
+`HawdbGraphIndexQualification.tla` models this independent evidence gate.
 
 The immutable index-page codec is the first format-only slice of step 1. It
 defines generation-tagged root, interior, leaf, and posting pages. Every page
@@ -686,7 +686,7 @@ string per row reference. The digest is the immutable location identity; a
 publication-generation overflow manifest resolves it to a physical extent, so
 page bytes do not embed a stale file offset.
 
-This is the only version-1 overflow representation. Skein has not shipped a
+This is the only version-1 overflow representation. Hawdb has not shipped a
 prior durable format, so readers MUST NOT recognize or migrate a legacy
 string-digest encoding.
 
@@ -724,10 +724,10 @@ remain a separate activation stage.
 immutable or publish-last artifacts:
 
 ```text
-relational-overflow-{generation}.extents.skein
-relational-overflow-root-{generation}.descriptors.skein
-relational-overflow-{generation}.manifest.skein
-relational-overflow.manifest.skein
+relational-overflow-{generation}.extents.hawdb
+relational-overflow-root-{generation}.descriptors.hawdb
+relational-overflow-{generation}.manifest.hawdb
+relational-overflow.manifest.hawdb
 ```
 
 The extent artifact contains only envelopes first introduced by the new
@@ -757,9 +757,9 @@ lengths. It does not enumerate descriptors or hash extent payloads.
 Publication holds one directory-scoped exclusive lock and synchronizes the new
 extent artifact, descriptor root, and immutable generation manifest in order.
 It then revalidates the caller's selected base. Standalone publication may
-atomically replace `relational-overflow.manifest.skein` last. Canonical
+atomically replace `relational-overflow.manifest.hawdb` last. Canonical
 checkpoint preparation instead stops at `CanonicalSelectionDeferred` and
-returns typed generation artifacts; only `SKEIN_MANIFEST_V1` may select that
+returns typed generation artifacts; only `HAWDB_MANIFEST_V1` may select that
 exact generation together with its row root. A target generation is fresh and
 immutable. A crash or stale publisher can leave only unbound generation
 artifacts. A reader pins one immutable root manifest; reused descriptors retain
@@ -822,8 +822,8 @@ The default operation reserves approximately 154 MiB of working memory: 8 MiB
 for reference sorting, 16 MiB for row overlays, two one-MiB pages, and a
 conservative two-value overflow envelope. This is compatible with the
 separately configured 512 MiB low-memory capability profile, but 512 MiB is
-neither Skein's default nor a universal host limit. On an 8 GiB host, automatic
-Skein capacity remains dynamically bounded to at most 2 GiB and normally falls
+neither Hawdb's default nor a universal host limit. On an 8 GiB host, automatic
+Hawdb capacity remains dynamically bounded to at most 2 GiB and normally falls
 within 1--2 GiB. Scan, spill, and rewrite limits govern I/O and disk work; they
 do not increase the admitted resident-memory reservation. Production-copy RSS,
 page-fault, elapsed-time, write-amplification, and reclaimed-byte evidence
@@ -857,10 +857,10 @@ activation.
 The 512 MiB resource kind is an explicitly configured low-memory capability
 run. It is not selected automatically and does not redefine the shared-host
 capacity policy. The 8 GiB shared-host kind retains dynamic admission and a 2 GiB
-maximum Skein capacity; its measured RSS limits remain separately declared in
+maximum Hawdb capacity; its measured RSS limits remain separately declared in
 the qualification input.
 
-`skein-content-store-overflow-compaction-qualification` is a thin developer
+`hawdb-content-store-overflow-compaction-qualification` is a thin developer
 and evidence wrapper over this typed collector. It accepts exactly one existing
 caller-owned disposable replica plus one bounded JSON plan; it MUST NOT copy,
 create, migrate, or identify the source database in retained output. The plan
@@ -878,11 +878,11 @@ raw policy, generation, digest, resource, or reclamation fields.
 publish-last artifacts:
 
 ```text
-relational-row-pages-{generation}.pages.skein
-relational-row-root-{generation}.descriptors.skein
-relational-row-root-{generation}.keys.skein
-relational-row-pages-{generation}.manifest.skein
-relational-row-pages.manifest.skein
+relational-row-pages-{generation}.pages.hawdb
+relational-row-root-{generation}.descriptors.hawdb
+relational-row-root-{generation}.keys.hawdb
+relational-row-pages-{generation}.manifest.hawdb
+relational-row-pages.manifest.hawdb
 ```
 
 The page artifact contains only dirty page images from the new generation in
@@ -947,12 +947,12 @@ this order:
 5. publish the immutable generation manifest;
 6. re-read and compare the selected latest generation with the caller's
    expected base;
-7. atomically replace `relational-row-pages.manifest.skein` last.
+7. atomically replace `relational-row-pages.manifest.hawdb` last.
 
 Canonical checkpoint preparation uses the same first six steps but calls
 `persist_generation`, records `CanonicalSelectionDeferred`, and returns typed
 generation artifacts instead of updating the independent latest selector. The
-publish-last `SKEIN_MANIFEST_V1` binds the row generation, source commit epoch,
+publish-last `HAWDB_MANIFEST_V1` binds the row generation, source commit epoch,
 root-set digest, generation-manifest length, CRC32C, and SHA-256 together with
 the exact overflow generation. Row and overflow bindings are both mandatory
 for every non-empty canonical checkpoint.
@@ -990,7 +990,7 @@ LatestManifestPublished | CanonicalSelectionDeferred
 
 These events map in order to `BeginCheckpoint`, `PersistCandidatePages`,
 `PersistCandidateRoot`, `PersistCandidateManifest`, the generation fence, and
-`PublishCheckpoint` in `SkeinCowPagePublication.tla`. The canonical trace does
+`PublishCheckpoint` in `HawdbCowPagePublication.tla`. The canonical trace does
 not make the candidate visible at its final publisher event; the outer
 checkpoint manifest selects both roots atomically. Physical page demand reads
 and SQL serving are specified by the later demand/snapshot sections rather
@@ -1053,7 +1053,7 @@ table deltas and copies the complete base root by descriptor, so it writes zero
 new row-page slots. Clean descriptors retain their immutable physical
 generation and slot even while the new logical root is bound to the new outer
 checkpoint and overflow root.
-`SkeinRowPageMutation.tla` covers persistent allocator
+`HawdbRowPageMutation.tla` covers persistent allocator
 monotonicity, split identity, deletion without reuse, one-leaf point mutation,
 pinned-base immutability, and bounded streaming bootstrap.
 
@@ -1063,7 +1063,7 @@ The recovery foundation serves SQL through a mandatory checkpoint-bound row
 and overflow root pair plus its exact recovery/live overlays. Writable checkpoint
 preparation persists both candidates first, verifies their exact generation and
 source commit epoch, and publishes their identities atomically in
-`SKEIN_MANIFEST_V1`. Open never consults either subsystem's independent latest
+`HAWDB_MANIFEST_V1`. Open never consults either subsystem's independent latest
 selector. It opens only the exact bound generations and rejects the database if
 a selected generation manifest is missing, corrupt, or identity-mismatched.
 Unbound future candidates are ignored and reclaimed by writable open.
@@ -1088,7 +1088,7 @@ opens those exact views. Both paths retain complete schemas, exact
 manifest-derived logical row counts, and overflow resolvers while reporting
 zero materialized row count and bytes. SQL, transaction-private reads, later
 schema-stable writable DML, and metadata-only checkpoints must then use the
-pinned row pages and persistent indexes. Differential qualification, Skein
+pinned row pages and persistent indexes. Differential qualification, Hawdb
 Lightning export, schema-changing WAL, and snapshot WAL fail closed until a
 complete canonical checkpoint can be published; they must not treat detached
 rows as an empty database or silently fall back. Derived repair opens retain
@@ -1113,7 +1113,7 @@ candidate runs remain unreachable.
 
 A schema-changing relational record is distinct from an overlay admission
 failure: it requires a new schema-bound canonical row root. During ordinary
-operation Skein stages that requirement before WAL, permits the canonical DDL
+operation Hawdb stages that requirement before WAL, permits the canonical DDL
 to become durable, and then synchronously performs a full-row schema checkpoint
 barrier before returning success. The barrier writes row, overflow, and required
 index candidates before publishing the outer checkpoint manifest last. If the
@@ -1210,7 +1210,7 @@ unreachable and the builder cannot publish a manifest. Changes at or before
 the immutable base epoch and gaps in the global epoch sequence fail closed.
 
 Each run is named
-`relational-row-delta-{base_generation}-{delta_generation}-{ordinal}.run.skein`.
+`relational-row-delta-{base_generation}-{delta_generation}-{ordinal}.run.hawdb`.
 `SKRDLT01` version 1 uses one fixed 176-byte header, a contiguous array of
 80-byte entry descriptors, and contiguous key/row payloads. The header binds
 the base identity, delta generation, schema-set digest, run ordinal, epoch
@@ -1224,8 +1224,8 @@ the configured cumulative run-byte and run-count limits are checked before a
 new candidate file is created.
 
 One generation has both an immutable manifest
-`relational-row-delta-{base_generation}-{delta_generation}.manifest.skein`
-and the publish-last selector `relational-row-delta.manifest.skein`.
+`relational-row-delta-{base_generation}-{delta_generation}.manifest.hawdb`
+and the publish-last selector `relational-row-delta.manifest.hawdb`.
 `SKRDMF01` version 1 has a fixed 304-byte header followed by 48-byte table
 descriptors plus names and 100-byte run descriptors plus lower/upper keys. It
 contains the same 56-byte recovery-source identity used by index recovery and
@@ -1266,7 +1266,7 @@ for folding recovery into a canonical checkpoint.
 The preferred checkpoint-fold threshold is 256 recovery runs; the 4096-run
 limit remains a hard recovery admission bound so delayed maintenance does not
 make an otherwise valid WAL prefix unopenable. The fold publishes a new
-canonical row root and recovery fence. Skein MUST NOT compact an arbitrary
+canonical row root and recovery fence. Hawdb MUST NOT compact an arbitrary
 subset of recovery runs into a replacement run because that would require a
 new manifest-last binding protocol and duplicate-version proof. Operators can
 observe both the threshold and whether it has been crossed through the
@@ -1282,7 +1282,7 @@ Publication is manifest-last:
 4. acquire the row-root publication lock and re-read the latest row root;
 5. acquire the delta publication lock and revalidate the expected previous
    delta generation;
-6. atomically replace `relational-row-delta.manifest.skein` last.
+6. atomically replace `relational-row-delta.manifest.hawdb` last.
 
 The lock order is row root before row delta. A concurrent row-root publisher or
 delta publisher therefore makes the candidate stale rather than allowing a
@@ -1291,7 +1291,7 @@ Crashes before step 6 retain the prior latest manifest and may leave only
 unreachable immutable candidates. A reader pins the immutable generation
 manifest and remains readable after a newer generation publishes.
 
-This is the only relational row-delta representation. Skein has not published
+This is the only relational row-delta representation. Hawdb has not published
 a durable database format, so the reader recognizes no legacy magic, version,
 layout, filename, or migration path. WAL recovery and immutable live views now
 pin `base + delta + live` through this representation. Exact base checkpoint
@@ -1319,9 +1319,9 @@ reclamation remain separate activation contracts.
 
 ### Stable identity export mapping
 
-The physical-id to logical stable-identity mapping used by Skein Lightning is
+The physical-id to logical stable-identity mapping used by Hawdb Lightning is
 not the graph `id` property index. Declared `id` properties use the ordinary
-generation-bound property projection. `stable_ids.skein` exists only for
+generation-bound property projection. `stable_ids.hawdb` exists only for
 records that need a durable export/import identity because their canonical
 property is missing or non-unique. A persisted overlay replaces the ambiguous
 property value for that physical export; mappings that are no longer required
@@ -1447,7 +1447,7 @@ Normal open proceeds in this order:
 4. replay every WAL batch required by strict recovery;
 5. publish the usable in-process root handle.
 
-WAL replay may make total startup slow. Skein MUST NOT skip a valid batch,
+WAL replay may make total startup slow. Hawdb MUST NOT skip a valid batch,
 truncate a durable prefix, or change correctness merely to meet a startup
 latency target.
 
@@ -1584,7 +1584,7 @@ of publication and serving activation:
   retained-closure and reclamation contract is activated;
 - the default page ceiling is 512 KiB and the default descriptor-value ceiling
   is 448 KiB. These are per-page format admissions, not resident-memory policy
-  or evidence that 512 MiB is Skein's default process budget.
+  or evidence that 512 MiB is Hawdb's default process budget.
 
 `ImmutableGraphDescriptorPage` now serves canonical adjacency through a compact,
 generation-bound root selected by the outer durable manifest. Descriptor pages
@@ -1640,7 +1640,7 @@ compact canonical segment manifest:
   the selected spill artifact before accepting canonical record framing;
 
 Publication refines the candidate-data, candidate-page, and publish-root
-transitions of `SkeinGraphDescriptorPaging.tla`; installing the compact manifest
+transitions of `HawdbGraphDescriptorPaging.tla`; installing the compact manifest
 refines the separate activation transition. `RejectDemandAdmission` models the
 non-poisoning resource boundary, while physical corruption follows the modeled
 fail-closed poison transition.
@@ -1687,7 +1687,7 @@ tree for the large-property spill artifact:
   deep scrub, so a missing, different-generation, or out-of-range spill
   reference fails before a backup or scrub is accepted.
 
-The publication and demand-read paths refine `SkeinGraphDescriptorPaging.tla`:
+The publication and demand-read paths refine `HawdbGraphDescriptorPaging.tla`:
 a descriptor root can be published only after its same-generation data artifact
 is durable, open pins the selected generation without warming descriptor pages,
 and a physical demand-read failure makes later reads fail closed.
@@ -1740,7 +1740,7 @@ relationship equality, and relationship range blocks:
   entry, and artifact-byte counts. Backup validation and derived-artifact
   health use this full closure.
 
-`SkeinGraphDescriptorPaging.tla` is instantiated once per descriptor class.
+`HawdbGraphDescriptorPaging.tla` is instantiated once per descriptor class.
 For property projection, the Rust refinement now covers candidate creation,
 durable page completion, publish-last root publication, atomic outer-manifest
 selection, pinned demand readers, bounded page residency, corruption poison,
@@ -1811,7 +1811,7 @@ a codec-test oracle; it is not a durable compatibility path.
 
 ## Demand paging and cache ownership
 
-1. Skein manages page-in/page-out through its own byte-bounded cache. OS swap
+1. Hawdb manages page-in/page-out through its own byte-bounded cache. OS swap
    is neither an accounting mechanism nor a correctness dependency.
 2. The default cross-platform path uses bounded positional file reads. `mmap`,
    `io_uring`, and platform-specific direct I/O are optional evidence-gated
@@ -1981,7 +1981,7 @@ accept a `RuntimeTaskContext` and propagate it through planning, index
 traversal, row hydration, and result construction. A cancelled or expired
 statement MUST leave that pinned transaction usable by a later statement.
 
-This is the only v1 snapshot-composition contract. Skein is not released, so
+This is the only v1 snapshot-composition contract. Hawdb is not released, so
 there is no legacy row-root reader, manifest migration, compatibility fallback,
 or base-only serving mode to preserve. Production SQL now selects the exact
 snapshot reader as its sole ordinary read path. Differential execution remains
@@ -2046,7 +2046,7 @@ transaction locks.
 
 Graph mutation locking uses a two-pass COW protocol. The first pass stages the
 mutation only in the transaction-private workspace and captures its exact WAL
-footprint. Skein restores that statement workspace, acquires the derived
+footprint. Hawdb restores that statement workspace, acquires the derived
 logical identities, and deterministically replays the statement. Node and
 relationship ID allocation locks prevent two pinned snapshots from allocating
 the same physical identity. Shared node-delete guards held by relationship
@@ -2058,7 +2058,7 @@ completely use the database lock.
 
 The concrete graph identities are valid only for the snapshot used by the
 first pass. If the published epoch advances before a newly derived lock set is
-admitted, Skein rejects the transaction instead of refreshing and replaying
+admitted, Hawdb rejects the transaction instead of refreshing and replaying
 against an uncovered access set. A property write covered by a uniqueness
 constraint takes exclusive constraint-subject coverage; a non-unique property
 write retains shared subject coverage plus its exclusive entity lock.
@@ -2138,7 +2138,7 @@ commit acknowledgment does not depend on projection freshness.
 
 ## Formal obligations
 
-`SkeinTransactionConcurrency.tla` already owns the transaction-level subset
+`HawdbTransactionConcurrency.tla` already owns the transaction-level subset
 of this contract. The remaining model names below are planned ownership
 boundaries and MUST land before their corresponding production activation:
 
@@ -2147,39 +2147,39 @@ state transition. Its evidence is exact round-trip, ordered-key differential,
 projected-decode, shared-limit, and corruption testing. Shadow COW publication
 is the first stateful use of these bytes. Its fixed runtime event trace, stale
 generation fence, immutable artifacts, crash boundaries, and pinned
-cross-generation descriptors refine `SkeinCowPagePublication.tla`. WAL recovery
+cross-generation descriptors refine `HawdbCowPagePublication.tla`. WAL recovery
 and serving activation are separate lower-level obligations composed by the
 snapshot runtime. The bounded base-plus-WAL recovery view refines
-`SkeinRowRecovery.tla`; its SQL authority, pre-checkpoint exception,
+`HawdbRowRecovery.tla`; its SQL authority, pre-checkpoint exception,
 schema-checkpoint barrier, and unavailable-reader rejection refine
-`SkeinRelationalRowSnapshotRead.tla`. Its physical one-head-per-source range
+`HawdbRelationalRowSnapshotRead.tla`. Its physical one-head-per-source range
 merge, newest-epoch coalescing, and peak buffer admission refine
-`SkeinRelationalOverlayStreamingMerge.tla`.
-Immutable disk-backed row-delta publication refines `SkeinRowDeltaRuns.tla`;
+`HawdbRelationalOverlayStreamingMerge.tla`.
+Immutable disk-backed row-delta publication refines `HawdbRowDeltaRuns.tla`;
 it remains outside the recovery mount and therefore does not discharge
 checkpoint binding, demand-read, lifecycle, or serving obligations.
 
-- `SkeinTransactionConcurrency.tla`: logical lock namespaces, compatibility,
+- `HawdbTransactionConcurrency.tla`: logical lock namespaces, compatibility,
   wait-for deadlocks, escalation, savepoint release, and durable publication.
-- `SkeinCowPagePublication.tla`: WAL ordering, immutable page publication,
+- `HawdbCowPagePublication.tla`: WAL ordering, immutable page publication,
   reader pins, crash recovery, and reclamation.
-- `SkeinIndexPublication.tla`: atomic row/index root agreement, durable and
+- `HawdbIndexPublication.tla`: atomic row/index root agreement, durable and
   generation-fenced publication, stale-builder rejection, cold open, on-demand
   leaf loading, corrupt-page fail-closed behavior, authoritative constraint
   acceptance/rejection before WAL, durable-before-visible mutation
   publication, row/index visible-epoch agreement, absence of materialized
   postings on authoritative handles, and recovery after a crash between WAL
   durability and in-process publication.
-- `SkeinRelationalIndexShadowPublication.tla`: optional checkpoint-bound
+- `HawdbRelationalIndexShadowPublication.tla`: optional checkpoint-bound
   relational-index identity, complete root-set publication, candidate-failure
   isolation, cold open, and mode-specific corruption handling. Its optional
   candidate contract remains the `Shadow`/`DemandPaged` boundary; the runtime
   authoritative mode strengthens that binding separately.
-- `SkeinIndexRecovery.tla`: base root plus ordered WAL delta equivalence,
+- `HawdbIndexRecovery.tla`: base root plus ordered WAL delta equivalence,
   bounded dirty overlays, immutable candidate generations, crash recovery,
   schema invalidation, no partial replay visibility, and sound exact-key
   constraint qualification only from a current pinned view.
-- `SkeinTransactionIndexOverlay.tla`: pinned committed row/index bases, bounded
+- `HawdbTransactionIndexOverlay.tla`: pinned committed row/index bases, bounded
   transaction-private immutable row/index overlays, version agreement,
   rejected-statement atomicity,
   read-your-own-writes, rollback, and durable-before-visible publication. The
@@ -2239,48 +2239,48 @@ checkpoint binding, demand-read, lifecycle, or serving obligations.
   in one epoch. A shorter replacement proves stale-suffix removal; a rejected
   duplicate order proves statement rollback; an empty replacement proves zero
   rows and counts. Both phases checkpoint, reopen, and retain identical ordered
-  output digests. `SkeinContentSourceReplacement.tla` models this operation.
+  output digests. `HawdbContentSourceReplacement.tla` models this operation.
   Source ownership qualification reseeds an exact chunk set after the empty
   replacement and executes the graph Source and relational document workspace
   updates in one mixed transaction. It proves read-your-own-writes, graph and
   relational owner agreement, unchanged chunk count and payload digest, live
   overlay visibility, checkpoint/reopen identity, and a missing-owner no-op
   that does not advance the commit epoch.
-  `SkeinContentSourceOwnershipMove.tla` models this operation.
+  `HawdbContentSourceOwnershipMove.tla` models this operation.
   Thread ownership qualification seeds rows in different source workspaces,
   moves graph Thread, relational document, and messages through guarded writes
   in one transaction, and keeps a stale-preview row unchanged. It proves
   read-your-own-writes, two successful moves out of three requested moves,
   payload preservation, live overlay visibility, and checkpoint/reopen
-  identity. `SkeinContentThreadOwnershipMove.tla` models the guarded batch.
+  identity. `HawdbContentThreadOwnershipMove.tla` models the guarded batch.
   Space-merge ownership qualification then selects those Threads together with
   a Source under one source-space guard. Eligible graph owners, relational
   documents, messages, and Source chunk views publish at one epoch; the stale
   Thread remains unchanged. Non-ownership payloads and ordered output remain
   identical after checkpoint/reopen.
-  `SkeinContentSpaceMergeOwnership.tla` models this cross-kind batch.
-- `SkeinRowRecovery.tla`: checkpoint-correlated row-root mount, exact ordered
+  `HawdbContentSpaceMergeOwnership.tla` models this cross-kind batch.
+- `HawdbRowRecovery.tla`: checkpoint-correlated row-root mount, exact ordered
   primary-key WAL overlay, graph-only epoch advancement, whole-fragment
   admission, fail-closed invalidation, complete-prefix view publication, cold
   page slots, pinned generation stability, and live invalidation before the
   separate SQL serving refinement.
-- `SkeinRowDeltaRuns.tla`: bounded coalescing and immutable run flush,
+- `HawdbRowDeltaRuns.tla`: bounded coalescing and immutable run flush,
   overflow closure, run-before-generation-manifest durability, row-root and
   previous-delta fencing, exact final row-count publication, manifest-last
   selection, crash isolation, poisoned candidate rejection, and pinned
   generation stability.
-- `SkeinRelationalRowDemandRead.tla`: exact root-generation pinning, cold page
+- `HawdbRelationalRowDemandRead.tla`: exact root-generation pinning, cold page
   residency, ordered streaming, page/byte/row/tree-height/hydration bounds,
   requested-field-only overflow hydration, one-page pins, cancellation and
   panic cleanup, cache eviction safety, and corruption-only poison.
-- `SkeinPageCacheAdmission.tla`: clean immutable page residency, pin-safe
+- `HawdbPageCacheAdmission.tla`: clean immutable page residency, pin-safe
   eviction, cancellation release, caller-carved foreground reserve, corrupt
   admission rejection, cold open, and background hit/admit/bypass progress.
   Dirty row-page publication remains owned by
-  `SkeinCowPagePublication.tla`; it is not inferred from this clean-cache model.
+  `HawdbCowPagePublication.tla`; it is not inferred from this clean-cache model.
 
-Existing `SkeinCompactionVisibility.tla`, `SkeinColumnGroupManifest.tla`, and
-`SkeinColumnarShadowIntegration.tla` continue to prove derived column-group
+Existing `HawdbCompactionVisibility.tla`, `HawdbColumnGroupManifest.tla`, and
+`HawdbColumnarShadowIntegration.tla` continue to prove derived column-group
 behavior. They do not define canonical row/index recovery.
 
 ## Evidence and activation gates

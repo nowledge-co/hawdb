@@ -29,27 +29,27 @@ _SEARCH_BASE_DEPS = [
     "@crate_index//:serde",
     "@crate_index//:serde_json",
     "@crate_index//:zstd",
-    "//crates/core:skein_core",
-    "//crates/evidence:skein_evidence",
-    "//crates/executor:skein_executor",
-    "//crates/integrity:skein_integrity",
-    "//crates/optimizer:skein_optimizer",
-    "//crates/plan:skein_plan",
-    "//crates/qos:skein_qos",
-    "//crates/storage:skein_storage",
-    "//crates/telemetry:skein_telemetry",
+    "//crates/core:hawdb_core",
+    "//crates/evidence:hawdb_evidence",
+    "//crates/executor:hawdb_executor",
+    "//crates/integrity:hawdb_integrity",
+    "//crates/optimizer:hawdb_optimizer",
+    "//crates/plan:hawdb_plan",
+    "//crates/qos:hawdb_qos",
+    "//crates/storage:hawdb_storage",
+    "//crates/telemetry:hawdb_telemetry",
 ]
 
 _SEARCH_VECTOR_DEPS = [
     "@crate_index//:simsimd",
-    "//crates/vector-projection:skein_vector_projection",
+    "//crates/vector-projection:hawdb_vector_projection",
 ]
 
 _SEARCH_DEPS = _SEARCH_BASE_DEPS + _SEARCH_VECTOR_DEPS
 
 rust_library(
-    name = "skein_search",
-    crate_name = "skein_search",
+    name = "hawdb_search",
+    crate_name = "hawdb_search",
     crate_root = "src/lib.rs",
     crate_features = _SEARCH_DEFAULT_FEATURES,
     srcs = glob(["src/**/*.rs"]) + ["tests/support/live_allocation.rs"],
@@ -59,11 +59,11 @@ rust_library(
     proc_macro_deps = all_crate_deps(proc_macro = True),
 )
 
-# Matches `skein-search = { default-features = false }` for embedded hosts
+# Matches `hawdb-search = { default-features = false }` for embedded hosts
 # that own another native vector provider in the same process.
 rust_library(
-    name = "skein_search_minimal",
-    crate_name = "skein_search",
+    name = "hawdb_search_minimal",
+    crate_name = "hawdb_search",
     crate_root = "src/lib.rs",
     srcs = glob(["src/**/*.rs"]) + ["tests/support/live_allocation.rs"],
     edition = "2024",
@@ -78,12 +78,12 @@ rust_library(
     ],
 )
 
-# Match Cargo's explicit `skein-search/acl` forwarding without enabling ACL
+# Match Cargo's explicit `hawdb-search/acl` forwarding without enabling ACL
 # for the default library or introducing a production integration target.
 rust_library(
-    name = "skein_search_acl",
+    name = "hawdb_search_acl",
     testonly = True,
-    crate_name = "skein_search",
+    crate_name = "hawdb_search",
     crate_root = "src/lib.rs",
     crate_features = _SEARCH_DEFAULT_FEATURES + ["acl"],
     srcs = glob(["src/**/*.rs"]) + ["tests/support/live_allocation.rs"],
@@ -100,8 +100,8 @@ rust_library(
 )
 
 rust_test(
-    name = "skein_search_tests",
-    crate = ":skein_search",
+    name = "hawdb_search_tests",
+    crate = ":hawdb_search",
     crate_features = _SEARCH_DEFAULT_FEATURES,
     edition = "2024",
     aliases = aliases(normal_dev = True, proc_macro_dev = True),
@@ -110,7 +110,7 @@ rust_test(
 )
 
 rust_test(
-    name = "skein_search_projection_evidence_fuzz_tests",
+    name = "hawdb_search_projection_evidence_fuzz_tests",
     args = [
         "projection_evidence::differential::search_projection_evidence_differential_campaign",
         "--exact",
@@ -118,7 +118,7 @@ rust_test(
         "--nocapture",
     ],
     tags = ["manual"],
-    crate = ":skein_search",
+    crate = ":hawdb_search",
     crate_features = _SEARCH_DEFAULT_FEATURES,
     edition = "2024",
     aliases = aliases(normal_dev = True, proc_macro_dev = True),
@@ -127,7 +127,7 @@ rust_test(
 )
 
 rust_test(
-    name = "skein_search_candidate_evidence_fuzz_tests",
+    name = "hawdb_search_candidate_evidence_fuzz_tests",
     args = [
         "candidate_evidence::differential::candidate_evidence_differential_campaign",
         "--exact",
@@ -135,7 +135,7 @@ rust_test(
         "--nocapture",
     ],
     tags = ["manual"],
-    crate = ":skein_search",
+    crate = ":hawdb_search",
     crate_features = _SEARCH_DEFAULT_FEATURES,
     edition = "2024",
     aliases = aliases(normal_dev = True, proc_macro_dev = True),
@@ -144,7 +144,7 @@ rust_test(
 )
 
 rust_test(
-    name = "skein_search_lexical_delta_allocation_tests",
+    name = "hawdb_search_lexical_delta_allocation_tests",
     crate_root = "tests/lexical_delta_allocation.rs",
     srcs = [
         "tests/lexical_delta_allocation.rs",
@@ -152,11 +152,11 @@ rust_test(
     ],
     crate_features = _SEARCH_DEFAULT_FEATURES,
     edition = "2024",
-    deps = [":skein_search"],
+    deps = [":hawdb_search"],
 )
 
 rust_test(
-    name = "skein_search_identifier_allocation_tests",
+    name = "hawdb_search_identifier_allocation_tests",
     crate_root = "tests/identifier_allocation.rs",
     srcs = [
         "src/identifier.rs",
@@ -168,25 +168,25 @@ rust_test(
 )
 
 rust_test(
-    name = "skein_search_analyzer_allocation_tests",
+    name = "hawdb_search_analyzer_allocation_tests",
     crate_root = "tests/analyzer_allocation.rs",
     srcs = [
         "tests/analyzer_allocation.rs",
         "tests/support/allocation.rs",
     ],
     edition = "2024",
-    deps = [":skein_search"],
+    deps = [":hawdb_search"],
 )
 
 rust_test(
-    name = "skein_search_term_policy_fuzz_tests",
+    name = "hawdb_search_term_policy_fuzz_tests",
     args = [
         "out_of_core::generation_writer::tests::term_policy::term_policy_lifecycle_differential_campaign",
         "--exact",
         "--ignored",
     ],
     tags = ["manual"],
-    crate = ":skein_search",
+    crate = ":hawdb_search",
     crate_features = _SEARCH_DEFAULT_FEATURES,
     edition = "2024",
     aliases = aliases(normal_dev = True, proc_macro_dev = True),
@@ -195,14 +195,14 @@ rust_test(
 )
 
 rust_test(
-    name = "skein_search_manifest_budget_fuzz_tests",
+    name = "hawdb_search_manifest_budget_fuzz_tests",
     args = [
         "out_of_core::generation_writer::tests::manifest_budget::manifest_budget_lifecycle_campaign",
         "--exact",
         "--ignored",
     ],
     tags = ["manual"],
-    crate = ":skein_search",
+    crate = ":hawdb_search",
     crate_features = _SEARCH_DEFAULT_FEATURES,
     edition = "2024",
     aliases = aliases(normal_dev = True, proc_macro_dev = True),
@@ -211,14 +211,14 @@ rust_test(
 )
 
 rust_test(
-    name = "skein_search_manifest_encoding_fuzz_tests",
+    name = "hawdb_search_manifest_encoding_fuzz_tests",
     args = [
         "lexical_projection::manifest_encoding::tests::manifest_encoding_differential_campaign",
         "--exact",
         "--ignored",
     ],
     tags = ["manual"],
-    crate = ":skein_search",
+    crate = ":hawdb_search",
     crate_features = _SEARCH_DEFAULT_FEATURES,
     edition = "2024",
     aliases = aliases(normal_dev = True, proc_macro_dev = True),
@@ -227,14 +227,14 @@ rust_test(
 )
 
 rust_test(
-    name = "skein_search_block_encoding_fuzz_tests",
+    name = "hawdb_search_block_encoding_fuzz_tests",
     args = [
         "lexical_projection::block_encoding::tests::block_encoding_differential_campaign",
         "--exact",
         "--ignored",
     ],
     tags = ["manual"],
-    crate = ":skein_search",
+    crate = ":hawdb_search",
     crate_features = _SEARCH_DEFAULT_FEATURES,
     edition = "2024",
     aliases = aliases(normal_dev = True, proc_macro_dev = True),
@@ -243,14 +243,14 @@ rust_test(
 )
 
 rust_test(
-    name = "skein_search_bounded_file_fuzz_tests",
+    name = "hawdb_search_bounded_file_fuzz_tests",
     tags = ["manual"],
     args = [
         "bounded_file::tests::bounded_file_differential_campaign",
         "--exact",
         "--ignored",
     ],
-    crate = ":skein_search",
+    crate = ":hawdb_search",
     crate_features = _SEARCH_DEFAULT_FEATURES,
     edition = "2024",
     aliases = aliases(normal_dev = True, proc_macro_dev = True),
@@ -259,14 +259,14 @@ rust_test(
 )
 
 rust_test(
-    name = "skein_search_hex_decoding_fuzz_tests",
+    name = "hawdb_search_hex_decoding_fuzz_tests",
     args = [
         "document_decoding_tests::hex_decoding_differential_campaign",
         "--exact",
         "--ignored",
     ],
     tags = ["manual"],
-    crate = ":skein_search",
+    crate = ":hawdb_search",
     crate_features = _SEARCH_DEFAULT_FEATURES,
     edition = "2024",
     aliases = aliases(normal_dev = True, proc_macro_dev = True),
@@ -275,14 +275,14 @@ rust_test(
 )
 
 rust_test(
-    name = "skein_search_compression_fuzz_tests",
+    name = "hawdb_search_compression_fuzz_tests",
     args = [
         "compression_tests::compressed_envelope_differential_campaign",
         "--exact",
         "--ignored",
     ],
     tags = ["manual"],
-    crate = ":skein_search",
+    crate = ":hawdb_search",
     crate_features = _SEARCH_DEFAULT_FEATURES,
     edition = "2024",
     aliases = aliases(normal_dev = True, proc_macro_dev = True),
@@ -291,14 +291,14 @@ rust_test(
 )
 
 rust_test(
-    name = "skein_search_lexical_spill_fuzz_tests",
+    name = "hawdb_search_lexical_spill_fuzz_tests",
     args = [
         "lexical_projection::spill_tests::fuzz::lexical_spill_admission_differential_campaign",
         "--exact",
         "--ignored",
     ],
     tags = ["manual"],
-    crate = ":skein_search",
+    crate = ":hawdb_search",
     crate_features = _SEARCH_DEFAULT_FEATURES,
     edition = "2024",
     aliases = aliases(normal_dev = True, proc_macro_dev = True),
@@ -308,7 +308,7 @@ rust_test(
 
 # Keep the seeded analyzer campaign on the explicit local fuzz surface.
 rust_test(
-    name = "skein_search_document_analysis_fuzz_tests",
+    name = "hawdb_search_document_analysis_fuzz_tests",
     tags = ["manual"],
     args = [
         "lexical_projection::analysis_tests::document_analysis_differential_campaign",
@@ -316,7 +316,7 @@ rust_test(
         "--ignored",
         "--nocapture",
     ],
-    crate = ":skein_search",
+    crate = ":hawdb_search",
     crate_features = _SEARCH_DEFAULT_FEATURES,
     edition = "2024",
     aliases = aliases(normal_dev = True, proc_macro_dev = True),
@@ -325,14 +325,14 @@ rust_test(
 )
 
 rust_test(
-    name = "skein_search_mini_delta_snapshot_fuzz_tests",
+    name = "hawdb_search_mini_delta_snapshot_fuzz_tests",
     tags = ["manual"],
     args = [
         "lexical_projection::tests::robustness::mini_delta_snapshot_lifecycle_campaign",
         "--exact",
         "--ignored",
     ],
-    crate = ":skein_search",
+    crate = ":hawdb_search",
     crate_features = _SEARCH_DEFAULT_FEATURES,
     edition = "2024",
     aliases = aliases(normal_dev = True, proc_macro_dev = True),
@@ -341,14 +341,14 @@ rust_test(
 )
 
 rust_test(
-    name = "skein_search_document_frequency_fuzz_tests",
+    name = "hawdb_search_document_frequency_fuzz_tests",
     tags = ["manual"],
     args = [
         "lexical_projection::document_frequency::tests::document_frequency_spill_differential_campaign",
         "--exact",
         "--ignored",
     ],
-    crate = ":skein_search",
+    crate = ":hawdb_search",
     crate_features = _SEARCH_DEFAULT_FEATURES,
     edition = "2024",
     aliases = aliases(normal_dev = True, proc_macro_dev = True),
@@ -358,14 +358,14 @@ rust_test(
 
 # Keep spool encoding faults and differential coverage on the local fuzz surface.
 rust_test(
-    name = "skein_search_spool_encoding_fuzz_tests",
+    name = "hawdb_search_spool_encoding_fuzz_tests",
     tags = ["manual"],
     args = [
         "out_of_core::generation_writer::spool::write_tests::spool_encoding_differential_campaign",
         "--exact",
         "--ignored",
     ],
-    crate = ":skein_search",
+    crate = ":hawdb_search",
     crate_features = _SEARCH_DEFAULT_FEATURES,
     edition = "2024",
     aliases = aliases(normal_dev = True, proc_macro_dev = True),
@@ -375,14 +375,14 @@ rust_test(
 
 # Exercise streamed frame parsing independently of the ordinary search matrix.
 rust_test(
-    name = "skein_search_spool_decoding_fuzz_tests",
+    name = "hawdb_search_spool_decoding_fuzz_tests",
     tags = ["manual"],
     args = [
         "out_of_core::generation_writer::spool::decoding::tests::spool_decoding_differential_campaign",
         "--exact",
         "--ignored",
     ],
-    crate = ":skein_search",
+    crate = ":hawdb_search",
     crate_features = _SEARCH_DEFAULT_FEATURES,
     edition = "2024",
     aliases = aliases(normal_dev = True, proc_macro_dev = True),
@@ -392,14 +392,14 @@ rust_test(
 
 # Keep the concurrent lexical read campaign on the explicit local fuzz surface.
 rust_test(
-    name = "skein_search_concurrent_read_fuzz_tests",
+    name = "hawdb_search_concurrent_read_fuzz_tests",
     tags = ["manual"],
     args = [
         "lexical_projection::positioned_read_tests::concurrent_lexical_read_differential_campaign",
         "--exact",
         "--ignored",
     ],
-    crate = ":skein_search",
+    crate = ":hawdb_search",
     crate_features = _SEARCH_DEFAULT_FEATURES,
     edition = "2024",
     aliases = aliases(normal_dev = True, proc_macro_dev = True),
@@ -409,14 +409,14 @@ rust_test(
 
 # Keep the streaming hydration campaign on the explicit local fuzz surface.
 rust_test(
-    name = "skein_search_hydration_fuzz_tests",
+    name = "hawdb_search_hydration_fuzz_tests",
     tags = ["manual"],
     args = [
         "out_of_core::hydration::tests::hydration_differential_campaign",
         "--exact",
         "--ignored",
     ],
-    crate = ":skein_search",
+    crate = ":hawdb_search",
     crate_features = _SEARCH_DEFAULT_FEATURES,
     edition = "2024",
     aliases = aliases(normal_dev = True, proc_macro_dev = True),
@@ -427,8 +427,8 @@ rust_test(
 # Keep optional-capability contracts executable without enabling every feature.
 [
     rust_test(
-        name = "skein_search_%s_tests" % profile,
-        crate_name = "skein_search",
+        name = "hawdb_search_%s_tests" % profile,
+        crate_name = "hawdb_search",
         crate_root = "src/lib.rs",
         crate_features = features,
         srcs = glob(["src/**/*.rs"]) + ["tests/support/live_allocation.rs"],
@@ -455,30 +455,30 @@ rust_test(
 ]
 
 rust_test(
-    name = "skein_search_segment_allocation_tests",
+    name = "hawdb_search_segment_allocation_tests",
     crate_root = "tests/segment_allocation.rs",
     srcs = [
         "tests/segment_allocation.rs",
         "tests/support/allocation.rs",
     ],
     edition = "2024",
-    deps = [":skein_search"],
+    deps = [":hawdb_search"],
 )
 
 rust_test(
-    name = "skein_search_descriptor_allocation_tests",
+    name = "hawdb_search_descriptor_allocation_tests",
     crate_root = "tests/descriptor_allocation.rs",
     srcs = [
         "tests/descriptor_allocation.rs",
         "tests/support/allocation.rs",
     ],
     edition = "2024",
-    deps = [":skein_search"],
+    deps = [":hawdb_search"],
 )
 
 # Qualify opaque analyzer capacity independently of the unit-test allocator.
 rust_test(
-    name = "skein_search_analyzer_workspace_allocation_tests",
+    name = "hawdb_search_analyzer_workspace_allocation_tests",
     crate_root = "tests/analyzer_workspace_allocation.rs",
     srcs = [
         "src/analyzer_workspace/bounds.rs",

@@ -2,7 +2,7 @@ use super::*;
 use crate::{
     checksum_bytes, encode_search_document_line, encode_search_snapshot_text, SearchDocument,
 };
-use skein_core::RuntimeMemoryReservation;
+use hawdb_core::RuntimeMemoryReservation;
 use std::collections::{BTreeMap, BTreeSet};
 use std::io::Cursor;
 
@@ -19,7 +19,7 @@ fn documents(count: usize, bytes: usize) -> Vec<SearchDocument> {
 }
 
 fn fixture(documents: &[SearchDocument]) -> (String, SearchSegmentDescriptorEntry) {
-    let mut text = String::from("SKEIN_SEARCH_SEGMENT_V1\n");
+    let mut text = String::from("HAWDB_SEARCH_SEGMENT_V1\n");
     for document in documents {
         text.push_str(&encode_search_document_line(document));
     }

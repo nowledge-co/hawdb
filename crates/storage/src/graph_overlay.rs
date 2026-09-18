@@ -8,7 +8,7 @@ use crate::{
     CanonicalNodeIterator, CanonicalRelationshipIterator, CanonicalSegmentError, NodeId,
     NodeRecord, RelId, RelRecord,
 };
-use skein_core::{Result, SkeinError};
+use hawdb_core::{HawdbError, Result};
 use std::collections::BTreeSet;
 use std::iter::Peekable;
 
@@ -107,7 +107,7 @@ impl<R: OverlayRecord, B: Iterator<Item = std::result::Result<R, CanonicalSegmen
             .as_mut()
             .and_then(Iterator::next)
             .expect("peeked base record exists")
-            .map_err(|error| SkeinError::StorageIntegrity(error.to_string()))
+            .map_err(|error| HawdbError::StorageIntegrity(error.to_string()))
     }
 }
 

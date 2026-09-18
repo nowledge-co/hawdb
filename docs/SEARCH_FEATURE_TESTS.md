@@ -1,7 +1,7 @@
 # Search Feature Test Contracts
 
 Optional capabilities are admission boundaries, not a reason to suppress all
-storage and analyzer tests. `skein-search` supports independent
+storage and analyzer tests. `hawdb-search` supports independent
 `full-text-search`, `vector-search`, and `background-maintenance` selections.
 Runtime requests are intersected with compiled availability: callers cannot
 enable a capability that was not compiled.
@@ -33,7 +33,7 @@ a forced capability override to make an unsupported positive path succeed.
 
 ## Local Feature Matrix
 
-The baseline for issue [#313](https://github.com/nowledge-co/skein/issues/313) is
+The baseline for issue [#313](https://github.com/nowledge-co/hawdb/issues/313) is
 main `09fa6f616f180616fbd12a902ee2bf557a31eaa6`: minimal search tests reported
 63 passed and 107 failed because optional features were assumed by tests.
 The corrected matrix has these unit-test counts (documentation tests are
@@ -54,26 +54,26 @@ For Cargo, select one feature combination per command so feature unification
 does not silently turn a minimal test into an all-feature test:
 
 ```bash
-cargo test -p skein-search
-cargo test -p skein-search --no-default-features
-cargo test -p skein-search --no-default-features --features full-text-search
-cargo test -p skein-search --no-default-features --features vector-search
-cargo test -p skein-search --no-default-features --features background-maintenance
-cargo test -p skein-search --no-default-features --features full-text-search,vector-search
-cargo test -p skein-search --no-default-features --features full-text-search,background-maintenance
-cargo test -p skein-search --no-default-features --features vector-search,background-maintenance
+cargo test -p hawdb-search
+cargo test -p hawdb-search --no-default-features
+cargo test -p hawdb-search --no-default-features --features full-text-search
+cargo test -p hawdb-search --no-default-features --features vector-search
+cargo test -p hawdb-search --no-default-features --features background-maintenance
+cargo test -p hawdb-search --no-default-features --features full-text-search,vector-search
+cargo test -p hawdb-search --no-default-features --features full-text-search,background-maintenance
+cargo test -p hawdb-search --no-default-features --features vector-search,background-maintenance
 ```
 
 Every Bazel variant compiles the crate's test source directly with its feature
-selection, rather than depending on the default-feature `skein_search` library.
-The targets have prefix `//crates/search:skein_search_`. They are ordinary search
+selection, rather than depending on the default-feature `hawdb_search` library.
+The targets have prefix `//crates/search:hawdb_search_`. They are ordinary search
 tests, not new runtime libraries or production integration points. Development
 dependencies used by fixtures are not evidence about release link exclusion.
 
 ```bash
 bazel test //crates/search:all \
-  //crates/fuzz:skein_fuzz_tests //crates/fuzz:skein_fuzz_cli_tests \
-  //:skein_linux_ci_fuzz_smoke_test
+  //crates/fuzz:hawdb_fuzz_tests //crates/fuzz:hawdb_fuzz_cli_tests \
+  //:hawdb_linux_ci_fuzz_smoke_test
 ```
 
 Keep the fuzz targets local-only. Adding search feature tests does not authorize

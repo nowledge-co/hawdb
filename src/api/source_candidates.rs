@@ -2,7 +2,7 @@ use super::{Database, DatabaseReadTransaction};
 use crate::error::Result;
 use crate::schema::Catalog;
 use crate::store::{GraphStore, SourceScanCandidateRead};
-use skein_storage::{
+use hawdb_storage::{
     render_source_candidate_page, select_source_candidate, validate_source_candidate_scan_request,
     ScanSegmentFallback,
 };
@@ -11,7 +11,7 @@ use std::num::{NonZeroU64, NonZeroUsize};
 const SOURCE_SCAN_IO_DEPTH: usize = 2;
 const SOURCE_SCAN_MAX_COALESCED_BYTES: u64 = 512 * 1024;
 const SOURCE_SCAN_MAX_WAVE_BYTES: u64 = 2 * 1024 * 1024;
-pub use skein_storage::{
+pub use hawdb_storage::{
     SourceCandidateRow as KnowledgeSourceCandidateRow,
     SourceCandidateScanOrigin as KnowledgeSourceCandidateScanOrigin,
     SourceCandidateScanOutput as KnowledgeSourceCandidateScanOutput,
@@ -131,7 +131,7 @@ fn canonical_fallback(
 mod tests {
     use super::*;
     use crate::{DatabaseConfig, StorageResidencyMode, Value};
-    use skein_storage::ScanPredicate;
+    use hawdb_storage::ScanPredicate;
     use std::collections::BTreeMap;
     use std::path::PathBuf;
 
@@ -141,7 +141,7 @@ mod tests {
             .unwrap()
             .as_nanos();
         std::env::temp_dir().join(format!(
-            "skein_source_candidates_{name}_{}_{}",
+            "hawdb_source_candidates_{name}_{}_{}",
             std::process::id(),
             nonce
         ))

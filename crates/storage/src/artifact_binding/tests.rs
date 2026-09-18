@@ -6,7 +6,7 @@ const PAYLOAD: &[u8] = b"123456789";
 
 fn storage_error<T: std::fmt::Debug>(result: Result<T>) -> String {
     let error = result.expect_err("invalid binding admitted");
-    assert!(matches!(&error, SkeinError::Storage(_)), "{error:?}");
+    assert!(matches!(&error, HawdbError::Storage(_)), "{error:?}");
     error.to_string()
 }
 
@@ -348,7 +348,7 @@ impl TestDirectory {
             .as_nanos();
         let sequence = NEXT.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
         let path = std::env::temp_dir().join(format!(
-            "skein-artifact-binding-{}-{nonce}-{sequence}",
+            "hawdb-artifact-binding-{}-{nonce}-{sequence}",
             std::process::id()
         ));
         fs::create_dir(&path).unwrap();

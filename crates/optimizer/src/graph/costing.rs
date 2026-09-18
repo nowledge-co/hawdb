@@ -3,9 +3,9 @@ use super::cardinality::{
     estimate_full_text_rows, estimate_optional_degree_work, PlanBindings,
 };
 use super::{OptimizerCatalog, PhysicalPlan, PlanCost, PlanCostBreakdown};
-use skein_core::Value;
-use skein_cypher::RelationshipDirection;
-use skein_plan::{
+use hawdb_core::Value;
+use hawdb_cypher::RelationshipDirection;
+use hawdb_plan::{
     CompositeRangeSeek, ExactPropertySeekBranch, NodeProjectionAccess, PlanChildren,
     RelationshipCountLeg,
 };
@@ -534,9 +534,9 @@ fn estimate_local_operator_cost(
     }
 }
 
-fn vector_top_k(plan: &skein_plan::VectorPhysicalPlan) -> usize {
+fn vector_top_k(plan: &hawdb_plan::VectorPhysicalPlan) -> usize {
     match plan {
-        skein_plan::VectorPhysicalPlan::TopK { limit, .. } => *limit,
+        hawdb_plan::VectorPhysicalPlan::TopK { limit, .. } => *limit,
         _ => 1,
     }
 }

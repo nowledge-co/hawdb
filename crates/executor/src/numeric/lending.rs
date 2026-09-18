@@ -1,8 +1,8 @@
 use super::{schema_value_mismatch, NumericFragment};
 use crate::columnar::{ValidityBuilder, ValidityView};
-use skein_core::Result;
-use skein_core::Value;
-use skein_storage::NodeRecord;
+use hawdb_core::Result;
+use hawdb_core::Value;
+use hawdb_storage::NodeRecord;
 
 pub(super) fn admitted_numeric_batch_rows(
     configured_rows: usize,
@@ -75,10 +75,10 @@ enum NumericValueBuffer {
 }
 
 impl NumericValueBuffer {
-    fn with_capacity(property_type: skein_core::PropertyType, rows: usize) -> Self {
+    fn with_capacity(property_type: hawdb_core::PropertyType, rows: usize) -> Self {
         match property_type {
-            skein_core::PropertyType::Int => Self::Int(Vec::with_capacity(rows)),
-            skein_core::PropertyType::Float => Self::Float(Vec::with_capacity(rows)),
+            hawdb_core::PropertyType::Int => Self::Int(Vec::with_capacity(rows)),
+            hawdb_core::PropertyType::Float => Self::Float(Vec::with_capacity(rows)),
             _ => unreachable!("numeric fragment eligibility checks the property type"),
         }
     }
@@ -274,7 +274,7 @@ where
 mod tests {
     use super::super::NumericPredicate;
     use super::*;
-    use skein_storage::NodeId;
+    use hawdb_storage::NodeId;
     use std::collections::{BTreeMap, BTreeSet};
 
     #[test]
@@ -300,8 +300,8 @@ mod tests {
         let fragment = NumericFragment {
             label: "Item",
             property: "score",
-            property_type: skein_core::PropertyType::Int,
-            predicate: NumericPredicate::Compare(skein_plan::ComparisonOp::Gte),
+            property_type: hawdb_core::PropertyType::Int,
+            predicate: NumericPredicate::Compare(hawdb_plan::ComparisonOp::Gte),
             expected: crate::columnar::NumericLiteral::Int(0),
             fused_operators: None,
         };
@@ -351,8 +351,8 @@ mod tests {
         let fragment = NumericFragment {
             label: "Item",
             property: "score",
-            property_type: skein_core::PropertyType::Float,
-            predicate: NumericPredicate::Compare(skein_plan::ComparisonOp::Gt),
+            property_type: hawdb_core::PropertyType::Float,
+            predicate: NumericPredicate::Compare(hawdb_plan::ComparisonOp::Gt),
             expected: crate::columnar::NumericLiteral::Float(1.0),
             fused_operators: None,
         };
@@ -372,8 +372,8 @@ mod tests {
         let fragment = NumericFragment {
             label: "Item",
             property: "score",
-            property_type: skein_core::PropertyType::Int,
-            predicate: NumericPredicate::Compare(skein_plan::ComparisonOp::Gte),
+            property_type: hawdb_core::PropertyType::Int,
+            predicate: NumericPredicate::Compare(hawdb_plan::ComparisonOp::Gte),
             expected: crate::columnar::NumericLiteral::Int(2),
             fused_operators: None,
         };

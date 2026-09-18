@@ -3,10 +3,10 @@
 //! This crate owns the typed policy and AST interpretation. The embedded
 //! facade owns session state and turns accepted updates into query results.
 
-use skein_core::{Result, SkeinError, Value};
-use skein_cypher as cypher;
-use skein_optimizer::OptimizerSearchDirective;
-use skein_qos::{WorkClass, WorkPriority, WorkRequest};
+use hawdb_core::{HawdbError, Result, Value};
+use hawdb_cypher as cypher;
+use hawdb_optimizer::OptimizerSearchDirective;
+use hawdb_qos::{WorkClass, WorkPriority, WorkRequest};
 use std::collections::BTreeSet;
 use std::str::FromStr;
 
@@ -75,7 +75,7 @@ pub fn apply_set_system_variable(
             let priority = string_system_variable_value(&set.name, &value)?
                 .parse::<WorkPriority>()
                 .map_err(|_| {
-                    SkeinError::Semantic(
+                    HawdbError::Semantic(
                         "SET system.work_priority accepts foreground or background".to_string(),
                     )
                 })?;
@@ -89,7 +89,7 @@ pub fn apply_set_system_variable(
             let class = string_system_variable_value(&set.name, &value)?
                 .parse::<WorkClass>()
                 .map_err(|_| {
-                    SkeinError::Semantic(
+                    HawdbError::Semantic(
                         "SET system.work_class accepts query, mutation, projection, import, analytics, or shadow"
                             .to_string(),
                     )
@@ -108,7 +108,7 @@ pub fn apply_set_system_variable(
                 value: Value::Int(i64::try_from(estimated_operations).unwrap_or(i64::MAX)),
             })
         }
-        _ => Err(SkeinError::Semantic(format!(
+        _ => Err(HawdbError::Semantic(format!(
             "unknown system variable system.{}",
             set.name
         ))),
@@ -123,7 +123,7 @@ fn apply_system_variable_hints(
     let mut seen = BTreeSet::new();
     for hint in hints {
         if !seen.insert(hint.name.as_str()) {
-            return Err(SkeinError::Semantic(format!(
+            return Err(HawdbError::Semantic(format!(
                 "duplicate CYPHER system hint system.{}",
                 hint.name
             )));
@@ -133,7 +133,7 @@ fn apply_system_variable_hints(
             let value = string_system_variable_value(&hint.name, &value)?;
             statement_variables.optimizer_search = OptimizerSearchDirective::from_str(&value)
                 .map_err(|_| {
-                    SkeinError::Semantic(
+                    HawdbError::Semantic(
                         "CYPHER system.optimizer_search accepts auto, memo, or direct_fallback"
                             .to_string(),
                     )
@@ -151,7 +151,7 @@ pub fn reject_system_variable_parameters(
     if parameters.is_empty() {
         Ok(())
     } else {
-        Err(SkeinError::Semantic(
+        Err(HawdbError::Semantic(
             "SET system variable does not accept parameters".to_string(),
         ))
     }
@@ -185,7 +185,7 @@ pub fn query_statement_variables_for_statement(
 fn literal_system_variable_value(value: &cypher::ValueExpression) -> Result<Value> {
     match &value.kind {
         cypher::ValueExpressionKind::Literal(value) => Ok(value.clone()),
-        _ => Err(SkeinError::Semantic(
+        _ => Err(HawdbError::Semantic(
             "SET system variable requires a literal value".to_string(),
         )),
     }
@@ -194,7 +194,7 @@ fn literal_system_variable_value(value: &cypher::ValueExpression) -> Result<Valu
 fn string_system_variable_value(name: &str, value: &Value) -> Result<String> {
     match value {
         Value::String(value) => Ok(value.to_ascii_lowercase()),
-        _ => Err(SkeinError::Semantic(format!(
+        _ => Err(HawdbError::Semantic(format!(
             "SET system.{name} requires a string value"
         ))),
     }
@@ -203,8 +203,8 @@ fn string_system_variable_value(name: &str, value: &Value) -> Result<String> {
 fn usize_system_variable_value(name: &str, value: &Value) -> Result<usize> {
     match value {
         Value::Int(value) if *value >= 0 => usize::try_from(*value)
-            .map_err(|_| SkeinError::Semantic(format!("SET system.{name} value is too large"))),
-        _ => Err(SkeinError::Semantic(format!(
+            .map_err(|_| HawdbError::Semantic(format!("SET system.{name} value is too large"))),
+        _ => Err(HawdbError::Semantic(format!(
             "SET system.{name} requires a non-negative integer value"
         ))),
     }

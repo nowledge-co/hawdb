@@ -298,7 +298,7 @@ fn read_distinct_run_row(
                 tracker,
                 |ordinal, binding| {
                     let schema_id = schemas.find(&binding).ok_or_else(|| {
-                        SkeinError::Execution(
+                        HawdbError::Execution(
                             "DistinctExec spill record has an unknown schema".to_string(),
                         )
                     })?;
@@ -336,7 +336,7 @@ fn merge_distinct_run_pair(
         .saturating_sub(schemas.memory_bytes);
     let per_row_memory = merge_memory / 2;
     if per_row_memory == 0 {
-        return Err(SkeinError::Execution(
+        return Err(HawdbError::Execution(
             "DistinctExec spill merge requires at least two bytes of blocking memory after schema interning"
                 .to_string(),
         ));

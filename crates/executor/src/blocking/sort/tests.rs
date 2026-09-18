@@ -1,6 +1,6 @@
 use super::*;
 use crate::observer::NoopExecutionObserver;
-use skein_plan::SortKey;
+use hawdb_plan::SortKey;
 use std::num::NonZeroU64;
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicU64, Ordering as AtomicOrdering};
@@ -25,7 +25,7 @@ impl Directory {
         static NEXT: AtomicU64 = AtomicU64::new(0);
         loop {
             let path = std::env::temp_dir().join(format!(
-                "skein-sort-merge-accounts-{}-{}",
+                "hawdb-sort-merge-accounts-{}-{}",
                 std::process::id(),
                 NEXT.fetch_add(1, AtomicOrdering::Relaxed),
             ));
@@ -218,7 +218,7 @@ fn run_case(
     };
     let catalog = Catalog::default();
     let ledger = QueryMemoryLedger::new(memory.query_memory_bytes);
-    let token = skein_core::RuntimeCancellationToken::new();
+    let token = hawdb_core::RuntimeCancellationToken::new();
     let task = RuntimeTaskContext::without_deadline(token.clone());
     let context = BlockingExecutionContext {
         catalog: &catalog,
@@ -245,7 +245,7 @@ fn run_case(
         match case.exit {
             Exit::Complete => Ok(BatchControl::Continue),
             Exit::Stop => Ok(BatchControl::Stop),
-            Exit::Error => Err(SkeinError::Execution(
+            Exit::Error => Err(HawdbError::Execution(
                 "injected merge callback error".to_string(),
             )),
             Exit::Cancel => {

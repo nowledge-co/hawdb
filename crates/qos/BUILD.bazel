@@ -8,22 +8,22 @@ test_suite(
 )
 
 rust_library(
-    name = "skein_qos",
-    crate_name = "skein_qos",
+    name = "hawdb_qos",
+    crate_name = "hawdb_qos",
     crate_root = "src/lib.rs",
     srcs = glob(["src/**/*.rs"]),
     edition = "2024",
     aliases = aliases(),
     deps = all_crate_deps(normal = True) + [
-        "//crates/core:skein_core",
-        "//crates/cgroup:skein_cgroup",
+        "//crates/core:hawdb_core",
+        "//crates/cgroup:hawdb_cgroup",
     ],
     proc_macro_deps = all_crate_deps(proc_macro = True),
 )
 
 rust_test(
-    name = "skein_qos_tests",
-    crate = ":skein_qos",
+    name = "hawdb_qos_tests",
+    crate = ":hawdb_qos",
     edition = "2024",
     aliases = aliases(normal_dev = True, proc_macro_dev = True),
     deps = all_crate_deps(normal_dev = True),
@@ -31,7 +31,7 @@ rust_test(
 )
 
 rust_test(
-    name = "skein_qos_loom_tests",
+    name = "hawdb_qos_loom_tests",
     args = ["loom_tests"],
     crate_features = ["loom-tests"],
     crate_root = "src/lib.rs",
@@ -44,8 +44,8 @@ rust_test(
         proc_macro_dev = True,
     ),
     deps = all_crate_deps(normal = True, normal_dev = True) + [
-        "//crates/cgroup:skein_cgroup",
-        "//crates/core:skein_core",
+        "//crates/cgroup:hawdb_cgroup",
+        "//crates/core:hawdb_core",
     ],
     proc_macro_deps = all_crate_deps(proc_macro = True, proc_macro_dev = True),
     size = "medium",

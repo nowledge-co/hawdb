@@ -6,7 +6,7 @@ use crate::relational::{
     column_positions, index_includes_key, row_key, RelationalIndexDefinition, RelationalIndexRole,
     RelationalIndexRowSource, RelationalTableSchema,
 };
-use skein_integrity::Crc32cHasher;
+use hawdb_integrity::Crc32cHasher;
 use std::cmp::Reverse;
 use std::collections::BinaryHeap;
 use std::fs::{self, File};
@@ -831,7 +831,7 @@ mod tests {
             .unwrap()
             .as_nanos();
         let path = std::env::temp_dir().join(format!(
-            "skein-relational-index-spill-corruption-{}-{nonce}.tmp",
+            "hawdb-relational-index-spill-corruption-{}-{nonce}.tmp",
             std::process::id()
         ));
         let config = RelationalIndexShadowConfig::default();
@@ -874,7 +874,7 @@ mod tests {
             .unwrap()
             .as_nanos();
         let directory = std::env::temp_dir().join(format!(
-            "skein-relational-index-spill-admission-{}-{nonce}",
+            "hawdb-relational-index-spill-admission-{}-{nonce}",
             std::process::id()
         ));
         std::fs::create_dir_all(&directory).expect("create relational index spill fixture");

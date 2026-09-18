@@ -1,7 +1,7 @@
 use super::SearchDocument;
-use crate::error::{Result, SkeinError};
-use skein_core::RuntimeTaskContext;
-use skein_vector_projection::{
+use crate::error::{HawdbError, Result};
+use hawdb_core::RuntimeTaskContext;
+use hawdb_vector_projection::{
     FileProjection, InMemoryProjection, KernelPreference, ProjectionBuildConfig,
     ProjectionBuildReport, ProjectionBuilder, ProjectionError, ProjectionIdentity,
     ProjectionManifest, ProjectionSearchOptions, ProjectionSearchReport, ProjectionWriter,
@@ -88,8 +88,8 @@ enum RaBitQCandidateProjectionStorage {
 
 #[derive(Debug)]
 pub(crate) enum RaBitQCandidateProjectionLoadError {
-    Corrupt(SkeinError),
-    NotApplicable(SkeinError),
+    Corrupt(HawdbError),
+    NotApplicable(HawdbError),
 }
 
 impl RaBitQCandidateProjectionLoadError {
@@ -97,7 +97,7 @@ impl RaBitQCandidateProjectionLoadError {
         matches!(self, Self::Corrupt(_))
     }
 
-    fn into_skein_error(self) -> SkeinError {
+    fn into_hawdb_error(self) -> HawdbError {
         match self {
             Self::Corrupt(error) | Self::NotApplicable(error) => error,
         }
@@ -187,7 +187,7 @@ impl RaBitQCandidateProjection {
         expected_identity: &ProjectionIdentity,
     ) -> Result<Self> {
         Self::load_from_path_classified(artifact_path, documents, expected_identity)
-            .map_err(RaBitQCandidateProjectionLoadError::into_skein_error)
+            .map_err(RaBitQCandidateProjectionLoadError::into_hawdb_error)
     }
 
     pub(crate) fn load_from_path_classified(
@@ -204,32 +204,32 @@ impl RaBitQCandidateProjection {
             .map_err(RaBitQCandidateProjectionLoadError::NotApplicable)?
         else {
             return Err(RaBitQCandidateProjectionLoadError::NotApplicable(
-                SkeinError::Storage(
-                    "Skein RaBitQ projection exists without vector documents".to_string(),
+                HawdbError::Storage(
+                    "Hawdb RaBitQ projection exists without vector documents".to_string(),
                 ),
             ));
         };
         let manifest = projection.manifest();
         if manifest.dimension != dimension {
             return Err(RaBitQCandidateProjectionLoadError::NotApplicable(
-                SkeinError::Storage(format!(
-                    "Skein RaBitQ projection dimension {} does not match search dimension {dimension}",
+                HawdbError::Storage(format!(
+                    "Hawdb RaBitQ projection dimension {} does not match search dimension {dimension}",
                     manifest.dimension
                 )),
             ));
         }
         if &manifest.identity != expected_identity {
             return Err(RaBitQCandidateProjectionLoadError::NotApplicable(
-                SkeinError::Storage(format!(
-                    "Skein RaBitQ projection identity {:?} does not match expected {:?}",
+                HawdbError::Storage(format!(
+                    "Hawdb RaBitQ projection identity {:?} does not match expected {:?}",
                     manifest.identity, expected_identity
                 )),
             ));
         }
         if manifest.document_count != ordinal_to_document_id.len() {
             return Err(RaBitQCandidateProjectionLoadError::NotApplicable(
-                SkeinError::Storage(
-                    "Skein RaBitQ projection vector count does not match search documents"
+                HawdbError::Storage(
+                    "Hawdb RaBitQ projection vector count does not match search documents"
                         .to_string(),
                 ),
             ));
@@ -237,7 +237,7 @@ impl RaBitQCandidateProjection {
         // The canonical search snapshot persists IDs and embeddings. Rebuild
         // its rank-to-ID mapping, then bind it to the artifact's ordered vectors.
         let expected_digest =
-            skein_vector_projection::source_digest(ordinal_to_document_id.iter().enumerate().map(
+            hawdb_vector_projection::source_digest(ordinal_to_document_id.iter().enumerate().map(
                 |(ordinal, document_id)| {
                     (
                         ordinal as u64,
@@ -250,8 +250,8 @@ impl RaBitQCandidateProjection {
             ));
         if manifest.source_digest != expected_digest {
             return Err(RaBitQCandidateProjectionLoadError::NotApplicable(
-                SkeinError::Storage(
-                    "Skein RaBitQ projection source digest does not match search documents"
+                HawdbError::Storage(
+                    "Hawdb RaBitQ projection source digest does not match search documents"
                         .to_string(),
                 ),
             ));
@@ -331,8 +331,8 @@ impl RaBitQCandidateProjection {
             .max_working_bytes
             .checked_sub(allowlist_bytes)
             .ok_or_else(|| {
-                SkeinError::Storage(format!(
-                    "Skein RaBitQ projection allowlist requires {allowlist_bytes} bytes but the search budget is {} bytes",
+                HawdbError::Storage(format!(
+                    "Hawdb RaBitQ projection allowlist requires {allowlist_bytes} bytes but the search budget is {} bytes",
                     options.max_working_bytes
                 ))
             })?;
@@ -368,8 +368,8 @@ impl RaBitQCandidateProjection {
                     .and_then(|ordinal| self.ordinal_to_document_id.get(ordinal))
                     .cloned()
                     .ok_or_else(|| {
-                        SkeinError::Storage(format!(
-                            "Skein RaBitQ projection returned unknown vector ordinal {}",
+                        HawdbError::Storage(format!(
+                            "Hawdb RaBitQ projection returned unknown vector ordinal {}",
                             hit.id
                         ))
                     })?;
@@ -415,8 +415,8 @@ fn validate_and_map_documents(
     // vectorless documents omitted. Ordinals belong only to this generation.
     for (document_id, document) in documents {
         if document_id != &document.id {
-            return Err(SkeinError::Storage(format!(
-                "Skein RaBitQ projection document key {document_id:?} does not match id {:?}",
+            return Err(HawdbError::Storage(format!(
+                "Hawdb RaBitQ projection document key {document_id:?} does not match id {:?}",
                 document.id
             )));
         }
@@ -424,15 +424,15 @@ fn validate_and_map_documents(
             continue;
         };
         if embedding.is_empty() || !embedding.iter().all(|value| value.is_finite()) {
-            return Err(SkeinError::Storage(format!(
-                "Skein RaBitQ projection rejected empty or non-finite embedding for {}",
+            return Err(HawdbError::Storage(format!(
+                "Hawdb RaBitQ projection rejected empty or non-finite embedding for {}",
                 document.id
             )));
         }
         match dimension {
             Some(existing) if existing != embedding.len() => {
-                return Err(SkeinError::Storage(format!(
-                    "Skein RaBitQ projection dimension mismatch: expected {existing}, got {}",
+                return Err(HawdbError::Storage(format!(
+                    "Hawdb RaBitQ projection dimension mismatch: expected {existing}, got {}",
                     embedding.len()
                 )));
             }
@@ -440,7 +440,7 @@ fn validate_and_map_documents(
             None => dimension = Some(embedding.len()),
         }
         let ordinal = u64::try_from(ordinal_to_document_id.len()).map_err(|_| {
-            SkeinError::Storage("Skein RaBitQ projection vector ordinal overflow".to_string())
+            HawdbError::Storage("Hawdb RaBitQ projection vector ordinal overflow".to_string())
         })?;
         ordinal_to_document_id.push(document.id.clone());
         document_to_ordinal.insert(document.id.clone(), ordinal);
@@ -481,8 +481,8 @@ fn classify_load_error(error: ProjectionError) -> RaBitQCandidateProjectionLoadE
     }
 }
 
-fn projection_error(error: skein_vector_projection::ProjectionError) -> SkeinError {
-    SkeinError::Storage(format!("Skein RaBitQ projection: {error}"))
+fn projection_error(error: hawdb_vector_projection::ProjectionError) -> HawdbError {
+    HawdbError::Storage(format!("Hawdb RaBitQ projection: {error}"))
 }
 
 #[cfg(test)]
@@ -500,7 +500,7 @@ mod tests {
         let documents = sample_documents();
         let root = unique_test_dir("roundtrip");
         fs::create_dir_all(&root).unwrap();
-        let artifact = root.join("search_rabitq.1.skein");
+        let artifact = root.join("search_rabitq.1.hawdb");
         let identity = ProjectionIdentity {
             generation: 1,
             source_epoch: Some(9),
@@ -625,7 +625,7 @@ mod tests {
             .unwrap()
             .as_nanos();
         std::env::temp_dir().join(format!(
-            "skein_rabitq_candidate_projection_{name}_{}_{nanos}",
+            "hawdb_rabitq_candidate_projection_{name}_{}_{nanos}",
             std::process::id()
         ))
     }

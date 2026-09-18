@@ -1,7 +1,7 @@
 //! Record predicates shared by graph mutations, execution, and persistent projections.
 
 use crate::PropertyFilter;
-use skein_core::Value;
+use hawdb_core::Value;
 use std::collections::BTreeMap;
 
 pub fn property_filter_matches(

@@ -2,9 +2,9 @@
 
 use crate::build_control::checkpoint;
 use crate::build_memory::{checked_add as add, BuildMemory};
-use crate::{Result, SkeinError};
-use skein_core::RuntimeTaskContext;
-use skein_executor::QueryMemoryLease;
+use crate::{HawdbError, Result};
+use hawdb_core::RuntimeTaskContext;
+use hawdb_executor::QueryMemoryLease;
 use std::io::{self, BufRead, Read};
 use zstd::zstd_safe::{DCtx, InBuffer, OutBuffer, ResetDirective};
 
@@ -38,11 +38,11 @@ impl<'a, R: BufRead> Decoder<'a, R> {
         let context_memory = memory.spool.reserve(CONTEXT_BYTES)?;
         let buffer_memory = memory.spool.reserve(0)?;
         let mut context = DCtx::try_create().ok_or_else(|| {
-            SkeinError::Execution("cannot allocate search hydration decoder".into())
+            HawdbError::Execution("cannot allocate search hydration decoder".into())
         })?;
         context.init().map_err(native_error)?;
         if context.sizeof() > CONTEXT_BYTES {
-            return Err(SkeinError::Execution(
+            return Err(HawdbError::Execution(
                 "search hydration decoder context exceeded admission".into(),
             ));
         }
@@ -160,10 +160,10 @@ fn frame_buffer_bytes(header: &[u8]) -> Result<usize> {
         return Ok(0);
     }
     let content = zstd::zstd_safe::get_frame_content_size(header)
-        .map_err(|_| SkeinError::Storage("invalid search hydration zstd frame header".into()))?;
+        .map_err(|_| HawdbError::Storage("invalid search hydration zstd frame header".into()))?;
     let window = if header[4] & 0x20 != 0 {
         content
-            .ok_or_else(|| SkeinError::Storage("invalid single-segment zstd content size".into()))?
+            .ok_or_else(|| HawdbError::Storage("invalid single-segment zstd content size".into()))?
     } else {
         let descriptor = header[5];
         let base = 1u64 << (10 + (descriptor >> 3));
@@ -171,7 +171,7 @@ fn frame_buffer_bytes(header: &[u8]) -> Result<usize> {
     };
     // Preserve the existing decoder's default limit, including its +1 spelling.
     if window > DEFAULT_MAX_WINDOW {
-        return Err(SkeinError::Storage(
+        return Err(HawdbError::Storage(
             "search hydration zstd window exceeds the native limit".into(),
         ));
     }
@@ -213,7 +213,7 @@ mod tests {
 
     #[test]
     fn decoder_admits_actual_windows_and_rejects_one_short_before_native_growth() {
-        use skein_core::RuntimeMemoryReservation;
+        use hawdb_core::RuntimeMemoryReservation;
         use std::io::Write;
         let original = vec![b'x'; 1023];
         let mut encoder = zstd::stream::write::Encoder::new(Vec::new(), 3).unwrap();

@@ -5,7 +5,7 @@
 //! selected before its writer, demand reader, recovery, and qualification
 //! contracts are complete.
 
-use skein_integrity::{Crc32c, IntegrityHasher, Sha256Digest, SHA256_BYTES};
+use hawdb_integrity::{Crc32c, IntegrityHasher, Sha256Digest, SHA256_BYTES};
 use std::fmt::{self, Display, Formatter};
 use std::num::{NonZeroU64, NonZeroUsize};
 

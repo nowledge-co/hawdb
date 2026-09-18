@@ -5,9 +5,9 @@ use crate::{
     LogicalPlanRoot, OptimizerConfig, OptimizerSearchDirective, OptimizerSearchDirectiveError,
     PlanCost, SearchMode,
 };
-use skein_core::Value;
-use skein_cypher::RelationshipDirection;
-use skein_plan::{LogicalPlan, Predicate, Projection, ProjectionExpression};
+use hawdb_core::Value;
+use hawdb_cypher::RelationshipDirection;
+use hawdb_plan::{LogicalPlan, Predicate, Projection, ProjectionExpression};
 use std::collections::BTreeMap;
 
 #[test]

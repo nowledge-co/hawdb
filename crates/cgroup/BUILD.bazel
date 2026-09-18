@@ -8,8 +8,8 @@ test_suite(
 )
 
 rust_library(
-    name = "skein_cgroup",
-    crate_name = "skein_cgroup",
+    name = "hawdb_cgroup",
+    crate_name = "hawdb_cgroup",
     crate_root = "src/lib.rs",
     srcs = glob(["src/**/*.rs"]),
     edition = "2024",
@@ -19,8 +19,8 @@ rust_library(
 )
 
 rust_test(
-    name = "skein_cgroup_tests",
-    crate = ":skein_cgroup",
+    name = "hawdb_cgroup_tests",
+    crate = ":hawdb_cgroup",
     edition = "2024",
     aliases = aliases(normal_dev = True, proc_macro_dev = True),
     deps = all_crate_deps(normal_dev = True),

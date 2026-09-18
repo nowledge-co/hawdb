@@ -2,7 +2,7 @@ use super::fixtures;
 use super::store::ReadFixture;
 use crate::batch::*;
 use crate::external::NoExternalReadOperator;
-use skein_plan::{ComparisonOp, PhysicalPlanKind, ProjectionExpression, SortDirection, SortKey};
+use hawdb_plan::{ComparisonOp, PhysicalPlanKind, ProjectionExpression, SortDirection, SortKey};
 use std::collections::BTreeSet;
 
 fn wrap(plan: PhysicalPlan, shape: usize) -> PhysicalPlan {
@@ -102,7 +102,7 @@ fn graph_hash_join_executes_residual_before_ordered_offset_limit() {
             label: "Item".into(),
         })
     };
-    let key = |variable: &str| skein_plan::HashJoinKey {
+    let key = |variable: &str| hawdb_plan::HashJoinKey {
         variable: variable.into(),
         property: "score".into(),
     };
@@ -368,7 +368,7 @@ fn check_read_case(seed: usize, batch_rows: usize, shape: usize, exit: Exit) {
                 match exit {
                     Exit::Complete => Ok(BatchControl::Continue),
                     Exit::Stop => Ok(BatchControl::Stop),
-                    Exit::Error => Err(SkeinError::Execution(
+                    Exit::Error => Err(HawdbError::Execution(
                         "dispatch consumer failure".to_string(),
                     )),
                 }
@@ -419,7 +419,7 @@ fn batch_dispatch_preserves_rows_limits_and_consumer_control() {
 #[test]
 fn batch_dispatch_preserves_cancellation_and_byte_budget_errors() {
     let plan = read_plan(0, 0, 0, 3);
-    let cancellation = skein_core::RuntimeCancellationToken::new();
+    let cancellation = hawdb_core::RuntimeCancellationToken::new();
     assert!(cancellation.cancel());
     let task = RuntimeTaskContext::without_deadline(cancellation);
     let error = with_context(&[1, 2, 3], 2, 64 * 1024, Some(&task), |context| {
@@ -506,7 +506,7 @@ fn generic_transform_adapters_preserve_graph_bindings_and_consumer_control() {
                                 match exit {
                                     Exit::Complete => Ok(BatchControl::Continue),
                                     Exit::Stop => Ok(BatchControl::Stop),
-                                    Exit::Error => Err(SkeinError::Execution(
+                                    Exit::Error => Err(HawdbError::Execution(
                                         "transform consumer failure".into(),
                                     )),
                                 }

@@ -2,15 +2,15 @@
 
 use crate::index_runtime::RelationalIndexExecutionEvidence;
 use crate::row_runtime::RelationalRowExecutionEvidence;
-use skein_core::{Result, SkeinError};
-use skein_executor::binding::map_payload_bytes;
-use skein_executor::{BlockingOperatorMemoryReport, QueryRows, Row};
-use skein_optimizer::{
+use hawdb_core::{HawdbError, Result};
+use hawdb_executor::binding::map_payload_bytes;
+use hawdb_executor::{BlockingOperatorMemoryReport, QueryRows, Row};
+use hawdb_optimizer::{
     RelationalAccessPathDescriptor, RelationalJoinPlanningOutcome,
     RelationalOperatorCardinalityProfile,
 };
-use skein_sql::RelationalSqlStageTimings;
-use skein_storage::RelationalHydrationBudget;
+use hawdb_sql::RelationalSqlStageTimings;
+use hawdb_storage::RelationalHydrationBudget;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct RelationalQueryLimits {
@@ -22,8 +22,8 @@ pub struct RelationalQueryLimits {
     /// at relational operator boundaries.
     pub max_candidate_work: usize,
     pub hydration: RelationalHydrationBudget,
-    pub index_read: skein_storage::RelationalIndexReadLimits,
-    pub row_read: skein_storage::RelationalRowPageSnapshotReadLimits,
+    pub index_read: hawdb_storage::RelationalIndexReadLimits,
+    pub row_read: hawdb_storage::RelationalRowPageSnapshotReadLimits,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -48,14 +48,14 @@ pub fn push_relational_output(
     limits: RelationalQueryLimits,
 ) -> Result<()> {
     if output.len() >= limits.max_output_rows {
-        return Err(SkeinError::Execution(format!(
+        return Err(HawdbError::Execution(format!(
             "relational SQL output exceeds max_output_rows {}",
             limits.max_output_rows
         )));
     }
     *payload_bytes = payload_bytes.saturating_add(map_payload_bytes(&row));
     if *payload_bytes > limits.max_output_payload_bytes {
-        return Err(SkeinError::Execution(format!(
+        return Err(HawdbError::Execution(format!(
             "relational SQL output exceeds max_output_payload_bytes {}",
             limits.max_output_payload_bytes
         )));

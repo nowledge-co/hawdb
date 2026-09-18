@@ -1,4 +1,4 @@
-use skein::*;
+use hawdb::*;
 use std::collections::BTreeMap;
 use std::fmt::Debug;
 
@@ -33,7 +33,7 @@ fn required(mode: SearchMode) -> RuntimeCapability {
 fn unavailable<T: Debug>(result: Result<T>, mode: SearchMode) {
     assert_eq!(
         result.unwrap_err(),
-        SkeinError::CapabilityUnavailable {
+        HawdbError::CapabilityUnavailable {
             capability: required(mode)
         }
     );

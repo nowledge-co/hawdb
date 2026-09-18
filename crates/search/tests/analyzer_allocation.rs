@@ -3,7 +3,7 @@
 #[path = "support/allocation.rs"]
 mod allocation;
 
-use skein_search::{
+use hawdb_search::{
     SearchAnalyzerLexicon, SearchDocument, SearchOutOfCoreGenerationBuildOptions,
     SearchOutOfCoreGenerationWriter,
 };
@@ -16,7 +16,7 @@ fn rejected_identifier_stops_before_collecting_all_parts_and_tokens() {
         let source = "alphaBeta".repeat(repeats);
         let source_bytes = source.len();
         let root = std::env::temp_dir().join(format!(
-            "skein-identifier-allocation-{}-{repeats}",
+            "hawdb-identifier-allocation-{}-{repeats}",
             std::process::id(),
         ));
         let mut writer = SearchOutOfCoreGenerationWriter::create(
@@ -41,7 +41,7 @@ fn rejected_identifier_stops_before_collecting_all_parts_and_tokens() {
         assert!(error.contains("lexical term uses"), "{error}");
         assert!(error.contains("exceeding 4096"), "{error}");
         assert!(!root
-            .join("search_projection.out_of_core.manifest.skein")
+            .join("search_projection.out_of_core.manifest.hawdb")
             .exists());
         println!("source_bytes={source_bytes} requested_bytes={requested_bytes}");
         measurements.push((source_bytes, requested_bytes));

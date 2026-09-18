@@ -1,5 +1,5 @@
 use super::*;
-use skein_storage::{
+use hawdb_storage::{
     encode_projection_relational_member, ImmutableRelationalRowPage,
     ProjectionGenerationBatchLimits, ProjectionGenerationBegin, ProjectionGenerationDigestBuilder,
     ProjectionGenerationIdentity, ProjectionGenerationStore, RelationalOverflowPublicationConfig,
@@ -58,8 +58,8 @@ pub(super) fn apply(state: &mut RelationalState, sql: &str, parameters: &[Value]
 }
 
 pub(super) fn fields(sql: &str, state: &RelationalState) -> RelationalFieldPlan {
-    let skein_sql::SqlStatement::Select(select) =
-        skein_sql::prepare_postgres_sql(sql).unwrap().statement
+    let hawdb_sql::SqlStatement::Select(select) =
+        hawdb_sql::prepare_postgres_sql(sql).unwrap().statement
     else {
         panic!("expected SELECT");
     };
@@ -79,8 +79,8 @@ pub(super) struct Fixture {
 impl Fixture {
     pub fn new() -> Self {
         let directory = std::env::temp_dir().join(format!(
-            "skein-row-runtime-{}",
-            skein_core::generate_uuidv7().unwrap()
+            "hawdb-row-runtime-{}",
+            hawdb_core::generate_uuidv7().unwrap()
         ));
         std::fs::create_dir(&directory).unwrap();
         let state = state();

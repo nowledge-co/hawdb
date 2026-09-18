@@ -31,8 +31,8 @@ enum AggregateState {
     },
 }
 
-fn incompatible_partial_states_error() -> SkeinError {
-    SkeinError::Execution("AggregateExec encountered incompatible partial states".to_string())
+fn incompatible_partial_states_error() -> HawdbError {
+    HawdbError::Execution("AggregateExec encountered incompatible partial states".to_string())
 }
 
 #[derive(Default)]
@@ -392,7 +392,7 @@ impl<'a> GroupAccumulator<'a> {
 
     fn update_inputs(&mut self, inputs: Vec<AggregateInput>) -> Result<MemoryDelta> {
         if inputs.len() != self.states.len() {
-            return Err(SkeinError::Execution(
+            return Err(HawdbError::Execution(
                 "AggregateExec compact input width mismatch".to_string(),
             ));
         }
@@ -1082,7 +1082,7 @@ fn update_group_accumulator(
     let delta = accumulator.update(catalog, binding);
     tracker.release(delta.released_bytes);
     if tracker.would_exceed(delta.added_bytes) {
-        return Err(SkeinError::Execution(format!(
+        return Err(HawdbError::Execution(format!(
             "AggregateExec state exceeds blocking_operator_bytes {}",
             tracker.budget_bytes
         )));
@@ -1099,7 +1099,7 @@ fn update_group_accumulator_inputs(
     let delta = accumulator.update_inputs(inputs)?;
     tracker.release(delta.released_bytes);
     if tracker.would_exceed(delta.added_bytes) {
-        return Err(SkeinError::Execution(format!(
+        return Err(HawdbError::Execution(format!(
             "AggregateExec state exceeds blocking_operator_bytes {}",
             tracker.budget_bytes
         )));

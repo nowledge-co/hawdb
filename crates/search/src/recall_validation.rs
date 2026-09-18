@@ -1,11 +1,11 @@
 use super::{SearchRetrieverReport, RABITQ_CANDIDATE_BACKEND};
-use crate::{Result, SkeinError};
-use skein_evidence::production_evidence_blocker_codes;
+use crate::{HawdbError, Result};
+use hawdb_evidence::production_evidence_blocker_codes;
 use std::collections::BTreeSet;
 
-pub const VECTOR_RECALL_VALIDATION_PROTOCOL: &str = "skein-vector-recall-validation-v1";
+pub const VECTOR_RECALL_VALIDATION_PROTOCOL: &str = "hawdb-vector-recall-validation-v1";
 pub const VECTOR_RECALL_PRODUCTION_QUALIFICATION_PROTOCOL: &str =
-    "skein-vector-recall-production-qualification-v1";
+    "hawdb-vector-recall-production-qualification-v1";
 pub const MAX_VECTOR_RECALL_VALIDATION_SAMPLES: usize = 128;
 pub const MAX_VECTOR_RECALL_VALIDATION_TOP_K: usize = 100;
 pub const MAX_VECTOR_RECALL_VALIDATION_CANDIDATE_LIMIT: usize = 1_000;
@@ -280,7 +280,7 @@ impl VectorRecallProductionQualificationReport {
         if blockers.is_empty() {
             Ok(())
         } else {
-            Err(SkeinError::Storage(format!(
+            Err(HawdbError::Storage(format!(
                 "RaBitQ projection is not qualified for the current production release: {}",
                 blockers.join(",")
             )))

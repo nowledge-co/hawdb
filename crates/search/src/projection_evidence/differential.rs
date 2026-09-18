@@ -1,6 +1,6 @@
 use super::*;
+use hawdb_integrity::IntegrityHasher;
 use serde_json::{json, Value as Json};
-use skein_integrity::IntegrityHasher;
 
 // Captured on unchanged main cc36de143a276696c99a6ddba897003dbe9f33e5.
 // These bind the complete ordered input/output corpus, not just ready flags.
@@ -101,7 +101,7 @@ fn model_case(base: &Json, mask: u64, index: usize) -> (Json, Vec<String>) {
         probe["blocker_codes"] = json!(["generated_blocker", "generated_blocker", 17]);
     }
     if bad(17) {
-        probe["protocol"] = json!("skein-nowledge-search-projection-probe");
+        probe["protocol"] = json!("hawdb-nowledge-search-projection-probe");
     }
     if bad(18) {
         let identity = probe
@@ -114,7 +114,7 @@ fn model_case(base: &Json, mask: u64, index: usize) -> (Json, Vec<String>) {
 
     // Derive gates from generated facts, without reading any report or using
     // the production field lists, fallback helpers, or readiness functions.
-    let is_skein = base["engine"] == "skein" || bad(17);
+    let is_hawdb = base["engine"] == "hawdb" || bad(17);
     let all_tables = present.iter().all(|value| *value);
     let fts_ready = (0..6).all(|i| present[i] && fts[i]);
     let vector_ready = [0, 2, 3, 4, 5].iter().all(|&i| present[i] && vector[i]);
@@ -133,15 +133,15 @@ fn model_case(base: &Json, mask: u64, index: usize) -> (Json, Vec<String>) {
         (!source_ready, "source_chunks_index_not_ready"),
         (bad(10), "predicate_pushdown_not_ready"),
         (
-            is_skein && (bad(11) || bad(12)),
-            "skein_predicate_pushdown_descriptor_not_ready",
+            is_hawdb && (bad(11) || bad(12)),
+            "hawdb_predicate_pushdown_descriptor_not_ready",
         ),
         (
-            is_skein && (bad(13) || bad(14)),
-            "skein_production_filter_pruning_not_ready",
+            is_hawdb && (bad(13) || bad(14)),
+            "hawdb_production_filter_pruning_not_ready",
         ),
         (
-            is_skein && vector_ready && bad(15),
+            is_hawdb && vector_ready && bad(15),
             "compressed_vector_projection_not_ready",
         ),
         (bad(16), "generated_blocker"),
@@ -239,7 +239,7 @@ fn count_case(state: &mut u64, case: usize) -> (Json, bool) {
 fn campaign(seeds: u64, expected_digest: &str) {
     let contract = nowledge_search_projection_probe_contract_json();
     let primary = &contract["example_primary_probe"];
-    let bases = [primary, &contract["example_skein_probe"]];
+    let bases = [primary, &contract["example_hawdb_probe"]];
     let mut hasher = IntegrityHasher::new();
     record(&mut hasher, &contract);
     let mut cases = 0;

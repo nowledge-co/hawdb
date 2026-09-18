@@ -5,8 +5,8 @@
 //! rewrites.
 
 pub use crate::logical::{LogicalPlanClass, LogicalPlanKind, LogicalPlanNode};
-pub use skein_plan::PhysicalPlanNode as PlanNode;
-pub use skein_plan::{
+pub use hawdb_plan::PhysicalPlanNode as PlanNode;
+pub use hawdb_plan::{
     plan_class_counts, plan_operator_counts, visit_plan, PhysicalPlanClass, PhysicalPlanKind,
     PhysicalPlanNode, PlanChildren,
 };

@@ -2,7 +2,7 @@ use crate::{
     prepare_postgres_sql, Expr, ExprKind, RelationalPlanTemplateCache, SelectProjection,
     SelectStatement, SqlSourceLocation, SqlSourceSpan, SqlStatement, SqlValue,
 };
-use skein_core::Value;
+use hawdb_core::Value;
 
 fn parse_select(sql: &str) -> SelectStatement {
     let SqlStatement::Select(select) = prepare_postgres_sql(sql).unwrap().statement else {

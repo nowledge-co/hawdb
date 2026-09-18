@@ -1,4 +1,4 @@
 # Storage artifacts are byte-exact test evidence; line-ending normalization
 # would break their embedded checksums.
-*.skein binary
+*.hawdb binary
 fixtures/** binary

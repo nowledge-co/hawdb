@@ -5,7 +5,7 @@ use super::{
 };
 use crate::relational::row_page::{RelationalRowPageRootReader, RelationalRowPageTableRoot};
 use crate::relational::{RelationalRecoverySourceIdentity, RELATIONAL_RECOVERY_SOURCE_BYTES};
-use skein_integrity::{IntegrityDigest, IntegrityHasher, Sha256Digest, SHA256_BYTES};
+use hawdb_integrity::{IntegrityDigest, IntegrityHasher, Sha256Digest, SHA256_BYTES};
 use std::collections::BTreeMap;
 use std::fs::{self, File, OpenOptions};
 use std::io::{Read, Seek, SeekFrom, Write};
@@ -544,7 +544,7 @@ fn decode_run_descriptor(
         descriptor_bytes: read_u64(&fixed[32..40]),
         payload_bytes: read_u64(&fixed[40..48]),
         digest: IntegrityDigest {
-            crc32c: skein_integrity::Crc32c::new(read_u32(&fixed[48..52])),
+            crc32c: hawdb_integrity::Crc32c::new(read_u32(&fixed[48..52])),
             sha256: Sha256Digest::from_bytes(
                 fixed[52..84]
                     .try_into()
@@ -1052,7 +1052,7 @@ pub(super) fn decode_run_header(
     }
     Ok(DecodedRunHeader {
         content_digest: IntegrityDigest {
-            crc32c: skein_integrity::Crc32c::new(read_u32(&encoded[140..144])),
+            crc32c: hawdb_integrity::Crc32c::new(read_u32(&encoded[140..144])),
             sha256: Sha256Digest::from_bytes(
                 encoded[144..176]
                     .try_into()

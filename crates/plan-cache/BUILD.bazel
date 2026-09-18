@@ -8,31 +8,31 @@ test_suite(
 )
 
 rust_library(
-    name = "skein_plan_cache",
-    crate_name = "skein_plan_cache",
+    name = "hawdb_plan_cache",
+    crate_name = "hawdb_plan_cache",
     crate_root = "src/lib.rs",
     srcs = glob(["src/**/*.rs"]),
     edition = "2024",
     aliases = aliases(),
     deps = all_crate_deps(normal = True) + [
-        "//crates/core:skein_core",
-        "//crates/cypher:skein_cypher",
-        "//crates/plan:skein_plan",
+        "//crates/core:hawdb_core",
+        "//crates/cypher:hawdb_cypher",
+        "//crates/plan:hawdb_plan",
     ],
     proc_macro_deps = all_crate_deps(proc_macro = True),
 )
 
 rust_test(
-    name = "skein_plan_cache_tests",
-    crate = ":skein_plan_cache",
+    name = "hawdb_plan_cache_tests",
+    crate = ":hawdb_plan_cache",
     edition = "2024",
     aliases = aliases(normal_dev = True, proc_macro_dev = True),
-    deps = all_crate_deps(normal_dev = True) + ["//crates/optimizer:skein_optimizer"],
+    deps = all_crate_deps(normal_dev = True) + ["//crates/optimizer:hawdb_optimizer"],
     proc_macro_deps = all_crate_deps(proc_macro_dev = True),
 )
 
 rust_test(
-    name = "skein_plan_cache_loom_tests",
+    name = "hawdb_plan_cache_loom_tests",
     args = ["loom_tests"],
     crate_features = ["loom-tests"],
     crate_root = "src/lib.rs",
@@ -45,10 +45,10 @@ rust_test(
         proc_macro_dev = True,
     ),
     deps = all_crate_deps(normal = True, normal_dev = True) + [
-        "//crates/core:skein_core",
-        "//crates/cypher:skein_cypher",
-        "//crates/optimizer:skein_optimizer",
-        "//crates/plan:skein_plan",
+        "//crates/core:hawdb_core",
+        "//crates/cypher:hawdb_cypher",
+        "//crates/optimizer:hawdb_optimizer",
+        "//crates/plan:hawdb_plan",
     ],
     proc_macro_deps = all_crate_deps(proc_macro = True, proc_macro_dev = True),
     size = "medium",

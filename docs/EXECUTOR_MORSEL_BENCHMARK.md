@@ -11,7 +11,7 @@ The micro mode isolates the typed `Int64` and `Float64` comparison kernels and
 checks both results against row evaluation:
 
 ```bash
-SKEIN_EXECUTOR_BENCH_MODE=micro \
+HAWDB_EXECUTOR_BENCH_MODE=micro \
   cargo bench --bench executor_vectorization
 ```
 
@@ -22,8 +22,8 @@ The scheduler mode measures bounded ordered morsel scheduling without graph
 storage or result projection:
 
 ```bash
-SKEIN_EXECUTOR_BENCH_MODE=scheduler \
-  SKEIN_MORSEL_BENCH_WORKERS=4 \
+HAWDB_EXECUTOR_BENCH_MODE=scheduler \
+  HAWDB_MORSEL_BENCH_WORKERS=4 \
   cargo bench --bench executor_vectorization
 ```
 
@@ -33,14 +33,14 @@ admitted and active worker counts:
 
 ```bash
 for workers in 4 8 16; do
-  SKEIN_EXECUTOR_BENCH_MODE=morsel \
-    SKEIN_MORSEL_BENCH_WORKERS="$workers" \
-    SKEIN_MORSEL_BENCH_ROWS=262144 \
+  HAWDB_EXECUTOR_BENCH_MODE=morsel \
+    HAWDB_MORSEL_BENCH_WORKERS="$workers" \
+    HAWDB_MORSEL_BENCH_ROWS=262144 \
     cargo bench --bench executor_vectorization
 done
 ```
 
-`SKEIN_MORSEL_BENCH_ROWS` is optional. The default gives each requested worker
+`HAWDB_MORSEL_BENCH_ROWS` is optional. The default gives each requested worker
 sixteen morsels. An explicit row count is rejected when it cannot activate the
 requested worker count under the default four-morsels-per-worker admission
 rule. The fixture has a numeric predicate field and a 256-byte non-projected
@@ -61,7 +61,7 @@ degrees 1, 32, 1,024, and 100,000 without running the numeric or scheduler
 benchmarks:
 
 ```bash
-SKEIN_EXECUTOR_BENCH_MODE=adjacency \
+HAWDB_EXECUTOR_BENCH_MODE=adjacency \
   cargo bench --bench executor_vectorization
 ```
 
@@ -81,7 +81,7 @@ compares owned `Value` materialization with `ValueRef` consumption over 4,096
 rows carrying 4 KiB UTF-8 values:
 
 ```bash
-SKEIN_EXECUTOR_BENCH_MODE=value-ref \
+HAWDB_EXECUTOR_BENCH_MODE=value-ref \
   cargo bench --bench executor_vectorization
 ```
 

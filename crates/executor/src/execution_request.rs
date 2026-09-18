@@ -2,8 +2,8 @@
 
 use crate::result_delivery::OutputLimits;
 use crate::ExecutionMemoryConfig;
-use skein_core::{RuntimeTaskContext, Value};
-use skein_plan::PhysicalPlan;
+use hawdb_core::{RuntimeTaskContext, Value};
+use hawdb_plan::PhysicalPlan;
 use std::collections::BTreeMap;
 
 #[derive(Clone, Copy)]

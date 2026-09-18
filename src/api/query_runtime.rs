@@ -1,5 +1,5 @@
 use super::*;
-use skein_executor::runtime_admission::{RuntimeAdmissionPlan, CONTROL_STATEMENT_MEMORY_BYTES};
+use hawdb_executor::runtime_admission::{RuntimeAdmissionPlan, CONTROL_STATEMENT_MEMORY_BYTES};
 
 #[cfg_attr(not(feature = "tokio-runtime"), allow(dead_code))]
 pub(crate) struct PreparedRuntimeQuery {
@@ -8,7 +8,7 @@ pub(crate) struct PreparedRuntimeQuery {
     optimized: Option<OptimizedQueryPlan>,
     optimizer_environment: Option<OptimizerEnvironmentKey>,
     admission: RuntimeAdmissionPlan,
-    parse_metrics: skein_cypher::ParseMetrics,
+    parse_metrics: hawdb_cypher::ParseMetrics,
 }
 
 #[cfg_attr(not(feature = "tokio-runtime"), allow(dead_code))]
@@ -72,19 +72,19 @@ impl RuntimePlanningSnapshot {
 pub(super) struct PreparedRuntimeExecution {
     pub(super) statement: cypher::Statement,
     pub(super) optimized: Option<OptimizedQueryPlan>,
-    pub(super) parse_metrics: skein_cypher::ParseMetrics,
+    pub(super) parse_metrics: hawdb_cypher::ParseMetrics,
     pub(super) statement_started: Option<std::time::Instant>,
 }
 
 struct QueryExecutionOptions<'a> {
     capture_trace: bool,
     access_control: Option<QueryAccessControlContext>,
-    task_context: Option<&'a skein_core::RuntimeTaskContext>,
+    task_context: Option<&'a hawdb_core::RuntimeTaskContext>,
 }
 
 pub(super) fn parse_runtime_execution(cypher_text: &str) -> Result<PreparedRuntimeExecution> {
     let statement_started = std::time::Instant::now();
-    let parsed = skein_cypher::parse_profiled(cypher_text);
+    let parsed = hawdb_cypher::parse_profiled(cypher_text);
     Ok(PreparedRuntimeExecution {
         statement: parsed.result?,
         optimized: None,
@@ -222,7 +222,7 @@ impl RuntimePlanningContext<'_> {
         planning_cache: &SharedState<OptimizerPlanningCache>,
     ) -> Result<PreparedRuntimeQuery> {
         self.store.ensure_usable()?;
-        let parsed = skein_cypher::parse_profiled(&cypher_text);
+        let parsed = hawdb_cypher::parse_profiled(&cypher_text);
         let parse_metrics = parsed.metrics;
         let statement = parsed.result?;
         let work_request = query_work_request_for_statement(self.system_variables, &statement)?;
@@ -271,8 +271,8 @@ impl RuntimePlanningContext<'_> {
                     .total_bytes
                 };
                 let mut required_io_slots = 0;
-                skein_plan::visit_plan(&optimized.physical_plan, &mut |node| {
-                    if node.kind() == skein_plan::PhysicalPlanKind::SourceSegmentScan {
+                hawdb_plan::visit_plan(&optimized.physical_plan, &mut |node| {
+                    if node.kind() == hawdb_plan::PhysicalPlanKind::SourceSegmentScan {
                         required_io_slots =
                             required_io_slots.max(crate::executor::SOURCE_SEGMENT_SCAN_IO_DEPTH);
                     }
@@ -405,7 +405,7 @@ impl Database {
     pub fn query_with_context(
         &mut self,
         cypher_text: &str,
-        task_context: &skein_core::RuntimeTaskContext,
+        task_context: &hawdb_core::RuntimeTaskContext,
     ) -> Result<QueryOutput> {
         self.query_with_params_context(cypher_text, &BTreeMap::new(), task_context)
     }
@@ -414,7 +414,7 @@ impl Database {
         &mut self,
         cypher_text: &str,
         parameters: &BTreeMap<String, Value>,
-        task_context: &skein_core::RuntimeTaskContext,
+        task_context: &hawdb_core::RuntimeTaskContext,
     ) -> Result<QueryOutput> {
         self.query_with_params_trace_internal(
             cypher_text,
@@ -431,7 +431,7 @@ impl Database {
         &mut self,
         prepared: PreparedRuntimeQuery,
         parameters: &BTreeMap<String, Value>,
-        task_context: &skein_core::RuntimeTaskContext,
+        task_context: &hawdb_core::RuntimeTaskContext,
     ) -> Result<QueryOutput> {
         let (cypher_text, prepared) = prepared.into_execution(&self.catalog, &self.store);
         let mut external = executor::NoExternalReadOperator;
@@ -471,7 +471,7 @@ impl Database {
         parameters: &BTreeMap<String, Value>,
         capture_trace: bool,
         access_control: Option<QueryAccessControlContext>,
-        task_context: Option<&skein_core::RuntimeTaskContext>,
+        task_context: Option<&hawdb_core::RuntimeTaskContext>,
     ) -> Result<(QueryOutput, QueryExecutionTrace)> {
         let mut external = executor::NoExternalReadOperator;
         self.query_with_params_trace_and_external_with_context(
@@ -491,7 +491,7 @@ impl Database {
         capture_trace: bool,
         external: &mut dyn executor::ExternalReadOperator,
         access_control: Option<QueryAccessControlContext>,
-        task_context: Option<&skein_core::RuntimeTaskContext>,
+        task_context: Option<&hawdb_core::RuntimeTaskContext>,
     ) -> Result<(QueryOutput, QueryExecutionTrace)> {
         self.store.ensure_usable()?;
         self.query_with_params_trace_and_external_prepared(
@@ -569,7 +569,7 @@ impl Database {
         }
         if matches!(body, cypher::Statement::Checkpoint) {
             if !parameters.is_empty() {
-                return Err(SkeinError::Semantic(
+                return Err(HawdbError::Semantic(
                     "CHECKPOINT does not accept parameters".to_string(),
                 ));
             }
@@ -682,7 +682,7 @@ impl Database {
         parameters: &BTreeMap<String, Value>,
         external: &mut dyn executor::ExternalReadOperator,
         access_control: Option<&QueryAccessControlContext>,
-        task_context: Option<&skein_core::RuntimeTaskContext>,
+        task_context: Option<&hawdb_core::RuntimeTaskContext>,
     ) -> Result<QueryOutput> {
         query_runtime_checkpoint(task_context)?;
         let work_request =
@@ -696,7 +696,7 @@ impl Database {
         let inner_statement_kind = statement_kind(statement_body(&explain.statement));
         if explain.analyze {
             if executor::is_mutation_plan(&optimized.physical_plan)? {
-                return Err(SkeinError::Execution(
+                return Err(HawdbError::Execution(
                     "EXPLAIN ANALYZE only supports read queries".to_string(),
                 ));
             }
@@ -748,12 +748,12 @@ impl Database {
 }
 
 pub(super) fn query_runtime_checkpoint(
-    task_context: Option<&skein_core::RuntimeTaskContext>,
+    task_context: Option<&hawdb_core::RuntimeTaskContext>,
 ) -> Result<()> {
     match task_context {
         Some(task_context) => task_context
             .checkpoint()
-            .map_err(|reason| SkeinError::Execution(format!("runtime task stopped: {reason}"))),
+            .map_err(|reason| HawdbError::Execution(format!("runtime task stopped: {reason}"))),
         None => Ok(()),
     }
 }
@@ -810,7 +810,7 @@ mod tests {
 
     #[test]
     fn durable_mutation_planning_preserves_checkpoint_identity() {
-        use skein_storage::StorageResidencyMode;
+        use hawdb_storage::StorageResidencyMode;
 
         for mode in [
             StorageResidencyMode::Materialized,
@@ -821,7 +821,7 @@ mod tests {
                 .unwrap()
                 .as_nanos();
             let path = std::env::temp_dir().join(format!(
-                "skein-planning-durable-{}-{nonce}-{mode:?}",
+                "hawdb-planning-durable-{}-{nonce}-{mode:?}",
                 std::process::id()
             ));
             let config = DatabaseConfig {
@@ -1053,7 +1053,7 @@ mod tests {
             .query_prepared_with_params_context(
                 prepared,
                 &parameters,
-                &skein_core::RuntimeTaskContext::default(),
+                &hawdb_core::RuntimeTaskContext::default(),
             )
             .unwrap();
 

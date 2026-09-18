@@ -3,10 +3,10 @@
 //! Preflight uses the existing storage-neutral execution contracts; the embedding
 //! layer retains transaction admission, atomic commit, and recovery ownership.
 
-use skein_core::{Result, SkeinError};
-use skein_ddl::{object_state_to_core, property_type_to_core, table_kind_to_core};
-use skein_plan::{PhysicalPlan, RelationshipOnCreateValue, SetValue};
-use skein_storage::{
+use hawdb_core::{HawdbError, Result};
+use hawdb_ddl::{object_state_to_core, property_type_to_core, table_kind_to_core};
+use hawdb_plan::{PhysicalPlan, RelationshipOnCreateValue, SetValue};
+use hawdb_storage::{
     ConnectedNodesCreate, GraphMutation, MatchedRelationshipCopyMerge, MatchedRelationshipCreate,
     MatchedRelationshipMerge, MatchedRelationshipRetargetMerge,
     MatchedRelationshipSourceRetargetMerge, NodeSetAssignment, NodeSetValue,
@@ -299,7 +299,7 @@ pub fn mutation_command(plan: &PhysicalPlan) -> Result<Option<GraphMutation>> {
                     property: property.clone(),
                     value: value.clone(),
                 })),
-                SetValue::Coalesce { .. } => Err(SkeinError::Semantic(
+                SetValue::Coalesce { .. } => Err(HawdbError::Semantic(
                     "COALESCE node SET is not supported in transactional MATCH SET".to_string(),
                 )),
                 SetValue::AddInt { amount, .. } => Ok(Some(GraphMutation::SetNodePropertyAddInt {
@@ -535,11 +535,11 @@ pub fn mutation_command(plan: &PhysicalPlan) -> Result<Option<GraphMutation>> {
 pub fn is_mutation_plan(plan: &PhysicalPlan) -> Result<bool> {
     Ok(matches!(
         plan.class(),
-        skein_plan::PhysicalPlanClass::Schema | skein_plan::PhysicalPlanClass::Mutation
+        hawdb_plan::PhysicalPlanClass::Schema | hawdb_plan::PhysicalPlanClass::Mutation
     ))
 }
 
-pub fn node_set_assignment(assignment: &skein_plan::SetAssignment) -> NodeSetAssignment {
+pub fn node_set_assignment(assignment: &hawdb_plan::SetAssignment) -> NodeSetAssignment {
     NodeSetAssignment {
         property: assignment.property.clone(),
         value: node_set_value(&assignment.value),

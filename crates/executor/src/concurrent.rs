@@ -1,5 +1,5 @@
-use skein_core::{
-    Result as SkeinResult, RuntimeCancellationReason, RuntimeTaskContext, SkeinError,
+use hawdb_core::{
+    HawdbError, Result as HawdbResult, RuntimeCancellationReason, RuntimeTaskContext,
 };
 use std::collections::BTreeMap;
 use std::error::Error;
@@ -33,7 +33,7 @@ impl SharedExecutorPool {
     pub fn new(worker_count: NonZeroUsize) -> Result<Self, SharedExecutorPoolError> {
         let inner = rayon::ThreadPoolBuilder::new()
             .num_threads(worker_count.get())
-            .thread_name(|index| format!("skein-executor-{index}"))
+            .thread_name(|index| format!("hawdb-executor-{index}"))
             .build()
             .map_err(|error| SharedExecutorPoolError(error.to_string()))?;
         Ok(Self {
@@ -259,11 +259,11 @@ impl BoundedExecutor {
         context: Option<&RuntimeTaskContext>,
         operation: F,
         mut consume: C,
-    ) -> SkeinResult<BoundedOrderedStreamReport>
+    ) -> HawdbResult<BoundedOrderedStreamReport>
     where
         R: Send,
-        F: Fn(usize) -> SkeinResult<R> + Sync,
-        C: FnMut(usize, R) -> SkeinResult<BoundedOrderedStreamControl>,
+        F: Fn(usize) -> HawdbResult<R> + Sync,
+        C: FnMut(usize, R) -> HawdbResult<BoundedOrderedStreamControl>,
     {
         runtime_checkpoint(context)?;
         if input_count == 0 {
@@ -308,7 +308,7 @@ impl BoundedExecutor {
                     }
                     let output = catch_unwind(AssertUnwindSafe(|| operation(index)))
                         .unwrap_or_else(|_| {
-                            Err(SkeinError::Execution(format!(
+                            Err(HawdbError::Execution(format!(
                                 "bounded executor worker panicked at input index {index}"
                             )))
                         });
@@ -335,7 +335,7 @@ impl BoundedExecutor {
                             Err(error) => break Err(error),
                         };
                         if reorder.insert(index, output).is_some() {
-                            break Err(SkeinError::Execution(format!(
+                            break Err(HawdbError::Execution(format!(
                                 "bounded executor produced duplicate output index {index}"
                             )));
                         }
@@ -347,7 +347,7 @@ impl BoundedExecutor {
                                 consume(next_expected, output)
                             }))
                             .unwrap_or_else(|_| {
-                                Err(SkeinError::Execution(format!(
+                                Err(HawdbError::Execution(format!(
                                     "bounded executor consumer panicked at input index {next_expected}"
                                 )))
                             }) {
@@ -373,7 +373,7 @@ impl BoundedExecutor {
                     }
                     Err(RecvTimeoutError::Timeout) => continue,
                     Err(RecvTimeoutError::Disconnected) => {
-                        break Err(SkeinError::Execution(format!(
+                        break Err(HawdbError::Execution(format!(
                             "bounded executor stopped after {next_expected} of {input_count} ordered outputs"
                         )));
                     }
@@ -418,7 +418,7 @@ struct OrderedWorkState {
 }
 
 enum OrderedWorkerMessage<R> {
-    Output(usize, SkeinResult<R>),
+    Output(usize, HawdbResult<R>),
     Stopped(RuntimeCancellationReason),
 }
 
@@ -427,10 +427,10 @@ fn run_sequential_index_stream<R, F, C>(
     context: Option<&RuntimeTaskContext>,
     operation: &F,
     consume: &mut C,
-) -> SkeinResult<BoundedOrderedStreamReport>
+) -> HawdbResult<BoundedOrderedStreamReport>
 where
-    F: Fn(usize) -> SkeinResult<R> + Sync,
-    C: FnMut(usize, R) -> SkeinResult<BoundedOrderedStreamControl>,
+    F: Fn(usize) -> HawdbResult<R> + Sync,
+    C: FnMut(usize, R) -> HawdbResult<BoundedOrderedStreamControl>,
 {
     let mut report = BoundedOrderedStreamReport::default();
     for index in 0..input_count {
@@ -494,12 +494,12 @@ fn context_checkpoint(
     context.map_or(Ok(()), RuntimeTaskContext::checkpoint)
 }
 
-fn runtime_checkpoint(context: Option<&RuntimeTaskContext>) -> SkeinResult<()> {
+fn runtime_checkpoint(context: Option<&RuntimeTaskContext>) -> HawdbResult<()> {
     context_checkpoint(context).map_err(runtime_stopped_error)
 }
 
-fn runtime_stopped_error(reason: RuntimeCancellationReason) -> SkeinError {
-    SkeinError::Execution(format!("runtime task stopped: {reason}"))
+fn runtime_stopped_error(reason: RuntimeCancellationReason) -> HawdbError {
+    HawdbError::Execution(format!("runtime task stopped: {reason}"))
 }
 
 fn lock_recover<T>(mutex: &Mutex<T>) -> MutexGuard<'_, T> {
@@ -517,7 +517,7 @@ impl Default for BoundedExecutor {
 #[cfg(test)]
 mod tests {
     use super::{BoundedExecutor, SharedExecutorPool, SharedExecutorPoolError};
-    use skein_core::{RuntimeCancellationReason, RuntimeCancellationToken, RuntimeTaskContext};
+    use hawdb_core::{RuntimeCancellationReason, RuntimeCancellationToken, RuntimeTaskContext};
     use std::num::NonZeroUsize;
     use std::sync::atomic::{AtomicUsize, Ordering};
 

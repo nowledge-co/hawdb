@@ -27,7 +27,7 @@ const UNKNOWN: &[&str] = &[
 ];
 const PAYLOAD: u8 = 1;
 const LEGACY_ACK: u8 = 2;
-const SKEIN_ACK: u8 = 4;
+const HAWDB_ACK: u8 = 4;
 const WATERMARKS: u8 = 8;
 const REPLAY: u8 = 16;
 const PROJECTION: u8 = 32;
@@ -44,7 +44,7 @@ impl Row {
             family: self.family.clone(),
             payload_frozen: self.bits & PAYLOAD != 0,
             legacy_ack_recorded: self.bits & LEGACY_ACK != 0,
-            skein_ack_recorded: self.bits & SKEIN_ACK != 0,
+            hawdb_ack_recorded: self.bits & HAWDB_ACK != 0,
             independent_watermarks_recorded: self.bits & WATERMARKS != 0,
             replay_idempotent: self.bits & REPLAY != 0,
             search_projection_payload_frozen: self.bits & PROJECTION != 0,
@@ -56,7 +56,7 @@ impl Row {
             "family": self.family,
             "payload_frozen": self.bits & PAYLOAD != 0,
             "legacy_ack_recorded": self.bits & LEGACY_ACK != 0,
-            "skein_ack_recorded": self.bits & SKEIN_ACK != 0,
+            "hawdb_ack_recorded": self.bits & HAWDB_ACK != 0,
             "independent_watermarks_recorded": self.bits & WATERMARKS != 0,
             "replay_idempotent": self.bits & REPLAY != 0,
             "search_projection_payload_frozen": self.bits & PROJECTION != 0,
@@ -211,7 +211,7 @@ fn reference(rows: &[Row]) -> Value {
     });
     let payload = select(rows, |row| row.bits & PAYLOAD == 0);
     let legacy_ack = select(rows, |row| row.bits & LEGACY_ACK == 0);
-    let skein_ack = select(rows, |row| row.bits & SKEIN_ACK == 0);
+    let hawdb_ack = select(rows, |row| row.bits & HAWDB_ACK == 0);
     let watermarks = select(rows, |row| row.bits & WATERMARKS == 0);
     let replay = select(rows, |row| row.bits & REPLAY == 0);
     let projection = select(rows, |row| {
@@ -249,8 +249,8 @@ fn reference(rows: &[Row]) -> Value {
             "source_mutation_dual_write_legacy_ack_missing",
         ),
         (
-            !skein_ack.is_empty(),
-            "source_mutation_dual_write_skein_ack_missing",
+            !hawdb_ack.is_empty(),
+            "source_mutation_dual_write_hawdb_ack_missing",
         ),
         (
             !watermarks.is_empty(),
@@ -275,7 +275,7 @@ fn reference(rows: &[Row]) -> Value {
     let mut positions = (0..rows.len()).collect::<Vec<_>>();
     positions.sort_unstable_by_key(|&index| (&rows[index].family, index));
     json!({
-        "protocol": "skein-nowledge-mem-source-mutation-dual-write-readiness-v1",
+        "protocol": "hawdb-nowledge-mem-source-mutation-dual-write-readiness-v1",
         "ready": blockers.is_empty(),
         "required_family_count": FAMILIES.len(),
         "evidence_family_count": observed,
@@ -290,7 +290,7 @@ fn reference(rows: &[Row]) -> Value {
         "duplicate_families": duplicates,
         "payload_not_frozen_families": payload,
         "legacy_ack_missing_families": legacy_ack,
-        "skein_ack_missing_families": skein_ack,
+        "hawdb_ack_missing_families": hawdb_ack,
         "independent_watermarks_missing_families": watermarks,
         "replay_not_idempotent_families": replay,
         "search_projection_payload_not_frozen_families": projection,

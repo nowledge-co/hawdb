@@ -1,6 +1,6 @@
 use chrono::DateTime;
+use hawdb_core::Value;
 use roaring::RoaringTreemap;
-use skein_core::Value;
 use std::collections::{BTreeMap, BTreeSet};
 use std::hash::{Hash, Hasher};
 
@@ -48,7 +48,7 @@ pub enum ScanScalar {
     Float(u64),
     String(String),
     Binary(Vec<u8>),
-    Uuid(skein_core::Uuid),
+    Uuid(hawdb_core::Uuid),
 }
 
 impl ScanScalar {

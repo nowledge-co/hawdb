@@ -2,19 +2,19 @@ use super::{
     parameter_digest, runtime_report, validate_production_identity_for_current_target,
     MixedSoakRuntimeReport, ProductionGraphQualificationError,
 };
-use serde::Serialize;
-use skein::executor::ExecutionMemoryConfig;
-use skein::{
+use hawdb::executor::ExecutionMemoryConfig;
+use hawdb::{
     IoConcurrencyBudget, NowledgeGraphStatement, NowledgeMemEmbeddedStoreHandle,
     NowledgeMemGraphMode, NowledgeMemOpenOptions, NowledgeMemReadOptions,
     ProductionEvidenceBinding, ProductionQualificationIdentity, RuntimeGovernor,
     RuntimeGovernorConfig, RuntimeTaskContext, StorageDeviceProfile,
 };
-use skein_query::QueryIdentity;
+use hawdb_query::QueryIdentity;
+use serde::Serialize;
 use std::collections::BTreeSet;
 
 pub const PRODUCTION_BLOCKING_QUALIFICATION_PROTOCOL: &str =
-    "skein-production-blocking-qualification-v1";
+    "hawdb-production-blocking-qualification-v1";
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize)]
 #[serde(rename_all = "snake_case")]
@@ -388,8 +388,8 @@ fn spill_pool_report(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use skein::executor::ExecutionMemoryConfig;
-    use skein::{
+    use hawdb::executor::ExecutionMemoryConfig;
+    use hawdb::{
         Database, DatabaseConfig, StorageResidencyMode, Value,
         PRODUCTION_QUALIFICATION_POLICY_VERSION,
     };
@@ -403,7 +403,7 @@ mod tests {
     fn active_route_evidence_observes_bounded_distinct_and_cartesian_spill() {
         let id = TEST_ID.fetch_add(1, Ordering::SeqCst);
         let root = std::env::temp_dir().join(format!(
-            "skein-production-blocking-{}-{id}",
+            "hawdb-production-blocking-{}-{id}",
             std::process::id()
         ));
         let graph_path = root.join("database");

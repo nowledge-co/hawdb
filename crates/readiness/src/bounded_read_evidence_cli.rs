@@ -2,7 +2,7 @@ use crate::bounded_read_evidence::{
     nowledge_mem_bounded_read_evidence_json_with_route_readiness, NowledgeMemGraphMode,
     NowledgeMemReadReport, NowledgeMemRouteReadinessSummary,
 };
-use skein_core::{Result, SkeinError};
+use hawdb_core::{HawdbError, Result};
 use std::path::Path;
 
 pub fn nowledge_bounded_read_evidence_usage() -> String {
@@ -24,14 +24,14 @@ pub fn run_nowledge_bounded_read_evidence(
             "--covered-route" => {
                 covered_routes.push(
                     args.next().ok_or_else(|| {
-                        SkeinError::Semantic(nowledge_bounded_read_evidence_usage())
+                        HawdbError::Semantic(nowledge_bounded_read_evidence_usage())
                     })?,
                 );
             }
             "--covered-routes-json" => {
                 let path = args
                     .next()
-                    .ok_or_else(|| SkeinError::Semantic(nowledge_bounded_read_evidence_usage()))?;
+                    .ok_or_else(|| HawdbError::Semantic(nowledge_bounded_read_evidence_usage()))?;
                 covered_routes.extend(parse_covered_routes_json(&read_json_file(Path::new(
                     &path,
                 ))?)?);
@@ -39,23 +39,23 @@ pub fn run_nowledge_bounded_read_evidence(
             "--graph-route-readiness-json" => {
                 let path = args
                     .next()
-                    .ok_or_else(|| SkeinError::Semantic(nowledge_bounded_read_evidence_usage()))?;
+                    .ok_or_else(|| HawdbError::Semantic(nowledge_bounded_read_evidence_usage()))?;
                 graph_route_readiness = Some(parse_graph_route_readiness_json(&read_json_file(
                     Path::new(&path),
                 )?)?);
             }
             value if value.starts_with("--") => {
-                return Err(SkeinError::Semantic(nowledge_bounded_read_evidence_usage()));
+                return Err(HawdbError::Semantic(nowledge_bounded_read_evidence_usage()));
             }
             path => {
                 if report_path.replace(path.to_string()).is_some() {
-                    return Err(SkeinError::Semantic(nowledge_bounded_read_evidence_usage()));
+                    return Err(HawdbError::Semantic(nowledge_bounded_read_evidence_usage()));
                 }
             }
         }
     }
     let Some(report_path) = report_path else {
-        return Err(SkeinError::Semantic(nowledge_bounded_read_evidence_usage()));
+        return Err(HawdbError::Semantic(nowledge_bounded_read_evidence_usage()));
     };
     let report = parse_read_report_json(&read_json_file(Path::new(&report_path))?)?;
     if covered_routes.is_empty()
@@ -111,14 +111,14 @@ pub fn parse_read_report_json(value: &serde_json::Value) -> Result<NowledgeMemRe
 
 fn required_blocking_operator_memory_reports(
     value: &serde_json::Value,
-) -> Result<Vec<skein_executor::BlockingOperatorMemoryReport>> {
+) -> Result<Vec<hawdb_executor::BlockingOperatorMemoryReport>> {
     value
         .get("blocking_operator_memory_reports")
         .and_then(serde_json::Value::as_array)
         .ok_or_else(|| invalid_field("blocking_operator_memory_reports", "array"))?
         .iter()
         .map(|report| {
-            Ok(skein_executor::BlockingOperatorMemoryReport {
+            Ok(hawdb_executor::BlockingOperatorMemoryReport {
                 operator: required_string(report, "operator")?.to_string(),
                 budget_bytes: required_usize(report, "budget_bytes")?,
                 peak_tracked_bytes: required_usize(report, "peak_tracked_bytes")?,
@@ -167,7 +167,7 @@ fn parse_mode(value: &str) -> Result<NowledgeMemGraphMode> {
     match value {
         "shadow_read_only" => Ok(NowledgeMemGraphMode::ShadowReadOnly),
         "writable_cutover" => Ok(NowledgeMemGraphMode::WritableCutover),
-        _ => Err(SkeinError::Semantic(format!(
+        _ => Err(HawdbError::Semantic(format!(
             "invalid read report mode: {value}"
         ))),
     }
@@ -209,7 +209,7 @@ fn optional_usize(value: &serde_json::Value, field: &str) -> Result<Option<usize
         .as_u64()
         .ok_or_else(|| invalid_field(field, "integer"))?;
     usize::try_from(raw).map(Some).map_err(|_| {
-        SkeinError::Semantic(format!("read report field '{field}' exceeds usize range"))
+        HawdbError::Semantic(format!("read report field '{field}' exceeds usize range"))
     })
 }
 
@@ -252,23 +252,23 @@ fn required_string_array_items(items: &[serde_json::Value], field: &str) -> Resu
         .collect()
 }
 
-fn invalid_field(field: &str, expected: &str) -> SkeinError {
-    SkeinError::Semantic(format!("read report field '{field}' must be a {expected}"))
+fn invalid_field(field: &str, expected: &str) -> HawdbError {
+    HawdbError::Semantic(format!("read report field '{field}' must be a {expected}"))
 }
 
 fn read_json_file(path: &Path) -> Result<serde_json::Value> {
     let content = std::fs::read_to_string(path).map_err(|_| {
-        SkeinError::Execution("failed to read bounded read report JSON: io_error".to_string())
+        HawdbError::Execution("failed to read bounded read report JSON: io_error".to_string())
     })?;
     serde_json::from_str(&content).map_err(|_| {
-        SkeinError::Semantic("failed to parse bounded read report JSON: invalid_json".to_string())
+        HawdbError::Semantic("failed to parse bounded read report JSON: invalid_json".to_string())
     })
 }
 
 #[cfg(test)]
 mod tests {
     use super::run_nowledge_bounded_read_evidence;
-    use skein_route_ownership::graph::REQUIRED_NOWLEDGE_MEM_BOUNDED_READ_ROUTES;
+    use hawdb_route_ownership::graph::REQUIRED_NOWLEDGE_MEM_BOUNDED_READ_ROUTES;
     use std::path::PathBuf;
     use std::sync::atomic::{AtomicU64, Ordering};
     use std::time::{SystemTime, UNIX_EPOCH};
@@ -302,7 +302,7 @@ mod tests {
         assert!(require_ready);
         assert_eq!(
             evidence["protocol"],
-            "skein-nowledge-mem-bounded-read-evidence-v2"
+            "hawdb-nowledge-mem-bounded-read-evidence-v2"
         );
         assert_eq!(evidence["ready"], true);
         assert_eq!(evidence["mode"], "shadow_read_only");
@@ -520,7 +520,7 @@ mod tests {
 
     fn ready_report() -> serde_json::Value {
         serde_json::json!({
-            "protocol": "skein-nowledge-mem-read-report",
+            "protocol": "hawdb-nowledge-mem-read-report",
             "mode": "shadow_read_only",
             "row_count": 4,
             "max_rows": 512,
@@ -558,7 +558,7 @@ mod tests {
             .as_nanos();
         let counter = TEST_FILE_COUNTER.fetch_add(1, Ordering::Relaxed);
         std::env::temp_dir().join(format!(
-            "skein_{name}_{}_{nanos}_{counter}.json",
+            "hawdb_{name}_{}_{nanos}_{counter}.json",
             std::process::id()
         ))
     }

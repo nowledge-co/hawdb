@@ -10,7 +10,7 @@ use crate::statistics_refresh::{
     MAX_BOUNDED_PATH_STAT_HOPS, MAX_PROPERTY_HISTOGRAM_VALUES,
 };
 use crate::{CowSegmentedMap, NodeId, NodeRecord, RelId, RelRecord};
-use skein_core::{
+use hawdb_core::{
     BasicGraphStatistics, Catalog, GraphStatistics, IndexId, IndexKind, IndexStatisticsSample,
     LabelId, RelTypeId, Value,
 };

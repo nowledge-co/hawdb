@@ -1,6 +1,6 @@
 use crate::CascadesOptimizer;
-use skein_core::SkeinError;
-use skein_plan::{
+use hawdb_core::HawdbError;
+use hawdb_plan::{
     LogicalPlan, PhysicalPlan, SchemaObjectState, SchemaPropertyType, SchemaTableKind,
 };
 
@@ -63,8 +63,8 @@ fn assert_pipeline(
     expected_fingerprint: &str,
     counts: &mut Counts,
 ) {
-    let statement = skein_cypher::parse(input).expect("valid DDL");
-    let logical = skein_plan::plan(&statement).expect("valid DDL plan");
+    let statement = hawdb_cypher::parse(input).expect("valid DDL");
+    let logical = hawdb_plan::plan(&statement).expect("valid DDL plan");
     assert_eq!(logical, expected_logical, "logical DDL: {input}");
     let physical = CascadesOptimizer::default().optimize(&logical);
     assert_eq!(physical, expected_physical, "physical DDL: {input}");
@@ -77,7 +77,7 @@ fn assert_pipeline(
 
     for invalid in [invalid_keyword, &format!("{input} unexpected")] {
         assert!(
-            matches!(skein_cypher::parse(invalid), Err(SkeinError::Parse(_))),
+            matches!(hawdb_cypher::parse(invalid), Err(HawdbError::Parse(_))),
             "expected a parse rejection: {invalid}"
         );
         counts.rejected += 1;

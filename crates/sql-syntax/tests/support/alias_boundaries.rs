@@ -1,6 +1,6 @@
 //! Local regressions and a deterministic campaign for table-alias boundaries.
 
-use skein_sql_syntax::{
+use hawdb_sql_syntax::{
     parse_graph_table, parse_postgres_select, parse_postgres_statement, PostgresFromItemSyntax,
     PostgresStatementSyntax, Span, SyntaxError, SyntaxErrorCode, TableAlias,
 };

@@ -1,14 +1,14 @@
 //! WAL admission, append rollback, group durability and generation preparation.
 
 use super::{DurableStore, WalFreeSpaceProbeState, WAL_FREE_SPACE_PROBE_INTERVAL_BYTES};
-use crate::error::{Result, SkeinError};
+use crate::error::{HawdbError, Result};
 use crate::store::{
     elapsed_micros, encode_binary_wal_header, encode_binary_wal_record, frame_binary_wal_record,
     process_crash_failpoint, sync_parent_dir, wal_generation_file, wal_group_sync_failpoint,
     WalEntry, WalOp, CHECKPOINT_TEMPORARY_SPACE_MULTIPLIER, MIN_CHECKPOINT_TEMPORARY_SPACE_BYTES,
     WAL_BINARY_FILE_HEADER_BYTES,
 };
-use skein_storage::{
+use hawdb_storage::{
     available_storage_space, durable_replace_file, DurabilityPolicy, StorageDebtController,
     StoragePressureSignals, WalAppendTelemetry, WalSyncGroupFlush, WalSyncGroupProgress,
     WalSyncGroupState,
@@ -23,7 +23,7 @@ impl DurableStore {
             return Ok(false);
         }
         if self.wal_sync_group.is_some() {
-            return Err(SkeinError::Storage(
+            return Err(HawdbError::Storage(
                 "nested WAL sync groups are not allowed".to_string(),
             ));
         }
@@ -50,7 +50,7 @@ impl DurableStore {
         wal_group_sync_failpoint()?;
         let started = std::time::Instant::now();
         let file = self.wal_append_file.as_ref().ok_or_else(|| {
-            SkeinError::Storage(
+            HawdbError::Storage(
                 "WAL sync group has entries without an open append handle".to_string(),
             )
         })?;
@@ -86,7 +86,7 @@ impl DurableStore {
             .max_batch_operations
             .is_some_and(|limit| operation_count > limit)
         {
-            return Err(SkeinError::Storage(format!(
+            return Err(HawdbError::Storage(format!(
                 "WAL batch operation limit exceeded before append: max_wal_batch_operations={}",
                 self.max_batch_operations.unwrap_or_default()
             )));
@@ -109,7 +109,7 @@ impl DurableStore {
             .max_record_bytes
             .is_some_and(|limit| payload.len() > limit)
         {
-            return Err(SkeinError::Storage(format!(
+            return Err(HawdbError::Storage(format!(
                 "WAL record byte limit exceeded before append: max_wal_record_bytes={}",
                 self.max_record_bytes.unwrap_or_default()
             )));
@@ -176,12 +176,12 @@ impl DurableStore {
                             if self.wal_bytes > 0 {
                                 self.wal_append_file = Some(Arc::clone(&file));
                             }
-                            Err(SkeinError::Storage(format!(
+                            Err(HawdbError::Storage(format!(
                                 "WAL write failed and was rolled back to byte {}: {error}",
                                 self.wal_bytes
                             )))
                         }
-                        Err(rollback_error) => Err(SkeinError::StorageIntegrity(format!(
+                        Err(rollback_error) => Err(HawdbError::StorageIntegrity(format!(
                             "WAL write failed: {error}; rollback to byte {} failed: {rollback_error}; close and recover the database",
                             self.wal_bytes
                         ))),
@@ -192,7 +192,7 @@ impl DurableStore {
                         if sync_result.is_ok() && !sync_deferred {
                             process_crash_failpoint("after_wal_sync");
                         }
-                        sync_result.map_err(|error| SkeinError::StorageIntegrity(format!(
+                        sync_result.map_err(|error| HawdbError::StorageIntegrity(format!(
                             "WAL append outcome is uncertain after writing the complete record: {error}"
                         )))
                     }
@@ -240,7 +240,7 @@ impl DurableStore {
         // Windows append-only handles do not grant the access required to resize.
         let file = OpenOptions::new().write(true).open(&self.wal_path)?;
         if file.metadata()?.len() < self.wal_bytes {
-            return Err(SkeinError::Storage(
+            return Err(HawdbError::Storage(
                 "WAL lost previously appended bytes before rollback".to_string(),
             ));
         }
@@ -292,18 +292,18 @@ impl DurableStore {
             .join(",");
         let recovery = if pressure
             .reason_codes
-            .contains(&skein_storage::StoragePressureReasonCode::IntegrityPoisoned)
+            .contains(&hawdb_storage::StoragePressureReasonCode::IntegrityPoisoned)
         {
             "close and reopen the database before retrying"
         } else if pressure
             .reason_codes
-            .contains(&skein_storage::StoragePressureReasonCode::FreeSpaceReserve)
+            .contains(&hawdb_storage::StoragePressureReasonCode::FreeSpaceReserve)
         {
             "free storage space before retrying"
         } else {
             "checkpoint the database before retrying"
         };
-        Err(SkeinError::Storage(format!(
+        Err(HawdbError::Storage(format!(
             "WAL append rejected by storage pressure: state={}, projected_wal_bytes={projected_wal_bytes}, max_wal_bytes={}, available_free_space_bytes={}, estimated_checkpoint_temporary_bytes={}, reasons={reasons}; {recovery}",
             pressure.state.as_str(),
             self.max_wal_bytes.unwrap_or_default(),
@@ -325,7 +325,7 @@ impl DurableStore {
             #[cfg(not(test))]
             let available = available_storage_space(&self.root_path);
             let available = available.ok_or_else(|| {
-                SkeinError::Storage(
+                HawdbError::Storage(
                     "WAL append rejected because filesystem free space could not be inspected"
                         .to_string(),
                 )
@@ -413,7 +413,7 @@ impl DurableStore {
         // New WAL generations always use the binary format; an existing
         // text database therefore upgrades at its next checkpoint.
         let wal_path = self.root_path.join(wal_generation_file(generation));
-        let tmp_path = wal_path.with_extension("skein.tmp");
+        let tmp_path = wal_path.with_extension("hawdb.tmp");
         let header = encode_binary_wal_header(generation, self.next_lsn);
         {
             let mut file = File::create(&tmp_path)?;

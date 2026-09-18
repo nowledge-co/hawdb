@@ -8,18 +8,18 @@ test_suite(
 )
 
 rust_library(
-    name = "skein_sql",
-    crate_name = "skein_sql",
+    name = "hawdb_sql",
+    crate_name = "hawdb_sql",
     crate_root = "src/lib.rs",
     srcs = glob(["src/**/*.rs"]),
     edition = "2024",
     aliases = aliases(),
     deps = all_crate_deps(normal = True) + [
-        "//crates/core:skein_core",
-        "//crates/expression:skein_expression",
-        "//crates/plan:skein_plan",
-        "//crates/plan-cache:skein_plan_cache",
-        "//crates/sql-syntax:skein_sql_syntax",
+        "//crates/core:hawdb_core",
+        "//crates/expression:hawdb_expression",
+        "//crates/plan:hawdb_plan",
+        "//crates/plan-cache:hawdb_plan_cache",
+        "//crates/sql-syntax:hawdb_sql_syntax",
     ],
     proc_macro_deps = all_crate_deps(proc_macro = True),
 )
@@ -30,8 +30,8 @@ _SQL_TEST_DATA = glob(["fixtures/frontend_*"]) + [
 ]
 
 rust_test(
-    name = "skein_sql_tests",
-    crate = ":skein_sql",
+    name = "hawdb_sql_tests",
+    crate = ":hawdb_sql",
     compile_data = _SQL_TEST_DATA,
     edition = "2024",
     aliases = aliases(normal_dev = True, proc_macro_dev = True),
@@ -41,7 +41,7 @@ rust_test(
 
 # This campaign runs only when explicitly selected for local fuzz verification.
 rust_test(
-    name = "skein_sql_clause_diagnostics_fuzz_tests",
+    name = "hawdb_sql_clause_diagnostics_fuzz_tests",
     tags = ["manual"],
     args = [
         "parser::clause_tests::clause_diagnostics_campaign",
@@ -49,7 +49,7 @@ rust_test(
         "--ignored",
         "--nocapture",
     ],
-    crate = ":skein_sql",
+    crate = ":hawdb_sql",
     compile_data = _SQL_TEST_DATA,
     edition = "2024",
     aliases = aliases(normal_dev = True, proc_macro_dev = True),
@@ -58,7 +58,7 @@ rust_test(
 )
 
 rust_test(
-    name = "skein_sql_frontend_corpus_fuzz_tests",
+    name = "hawdb_sql_frontend_corpus_fuzz_tests",
     tags = ["manual"],
     args = [
         "tests::frontend_corpus::frontend_corpus_differential_campaign",
@@ -66,7 +66,7 @@ rust_test(
         "--ignored",
         "--nocapture",
     ],
-    crate = ":skein_sql",
+    crate = ":hawdb_sql",
     compile_data = _SQL_TEST_DATA,
     edition = "2024",
     aliases = aliases(normal_dev = True, proc_macro_dev = True),
@@ -75,7 +75,7 @@ rust_test(
 )
 
 rust_test(
-    name = "skein_sql_create_binding_fuzz_tests",
+    name = "hawdb_sql_create_binding_fuzz_tests",
     tags = ["manual"],
     args = [
         "pgq::create::tests::create_binding_differential_campaign",
@@ -83,7 +83,7 @@ rust_test(
         "--ignored",
         "--nocapture",
     ],
-    crate = ":skein_sql",
+    crate = ":hawdb_sql",
     compile_data = _SQL_TEST_DATA,
     edition = "2024",
     aliases = aliases(normal_dev = True, proc_macro_dev = True),

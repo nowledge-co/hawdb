@@ -1,10 +1,10 @@
 //! Root execution orchestration and result-accounting lifecycle.
 
 use super::*;
-pub(super) use skein_executor::execution_request::ExecutionRequest;
-use skein_executor::observer::ExecutionProfileBuilder;
-pub(super) use skein_executor::result_delivery::ConsumerMemoryMode;
-use skein_executor::result_delivery::QueryOutputAccumulator;
+pub(super) use hawdb_executor::execution_request::ExecutionRequest;
+use hawdb_executor::observer::ExecutionProfileBuilder;
+pub(super) use hawdb_executor::result_delivery::ConsumerMemoryMode;
+use hawdb_executor::result_delivery::QueryOutputAccumulator;
 
 pub(super) struct ExecutionResources<'a> {
     catalog: &'a mut Catalog,
@@ -27,10 +27,10 @@ impl<'a> ExecutionResources<'a> {
 }
 
 fn record_process_memory(
-    report: &mut skein_executor::PipelineMemoryReport,
-    process_memory_start: Option<skein_qos::ProcessMemorySnapshot>,
+    report: &mut hawdb_executor::PipelineMemoryReport,
+    process_memory_start: Option<hawdb_qos::ProcessMemorySnapshot>,
 ) {
-    let Ok(process_memory_end) = skein_qos::ProcessMemorySnapshot::capture() else {
+    let Ok(process_memory_end) = hawdb_qos::ProcessMemorySnapshot::capture() else {
         return;
     };
     report.steady_resident_bytes = Some(process_memory_end.resident_bytes);
@@ -39,7 +39,7 @@ fn record_process_memory(
         return;
     };
     let process_memory =
-        skein_qos::ProcessMemoryProfile::between(process_memory_start, process_memory_end);
+        hawdb_qos::ProcessMemoryProfile::between(process_memory_start, process_memory_end);
     report.start_resident_bytes = Some(process_memory.start_resident_bytes);
     report.start_peak_resident_bytes = Some(process_memory.start_peak_resident_bytes);
     report.steady_resident_growth_bytes = Some(process_memory.steady_resident_growth_bytes);
@@ -94,7 +94,7 @@ pub(super) fn execute_profiled_consumer(
         output_memory,
         consumer,
     )?;
-    let process_memory_start = skein_qos::ProcessMemorySnapshot::capture().ok();
+    let process_memory_start = hawdb_qos::ProcessMemorySnapshot::capture().ok();
     let execution_limit = ExecutionLimit::from_user_max_rows(output_limits.max_rows)?;
     let profile = ExecutionProfileBuilder::start(plan, output_limits.max_rows)?;
     let prepared_plan = PreparedPhysicalPlan::prepare(plan, store, memory);
@@ -168,7 +168,7 @@ pub(super) fn execute_profiled_consumer(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use skein_qos::{
+    use hawdb_qos::{
         IoConcurrencyBudget, RuntimeGovernor, RuntimeGovernorConfig, RuntimeMemorySnapshot,
         RuntimeResourceBudget, RuntimeResourceSnapshot, RuntimeWorkRequest,
     };

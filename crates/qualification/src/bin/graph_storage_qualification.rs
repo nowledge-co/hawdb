@@ -10,10 +10,10 @@ mod qualification_value;
 #[path = "graph_storage_qualification/plan.rs"]
 mod plan;
 
-use plan::read_plan;
-use skein_qualification::{
+use hawdb_qualification::{
     run_production_graph_storage_qualification, PRODUCTION_GRAPH_STORAGE_QUALIFICATION_PROTOCOL,
 };
+use plan::read_plan;
 use std::path::PathBuf;
 use std::process::ExitCode;
 
@@ -47,7 +47,7 @@ fn main() -> ExitCode {
                     "errors": ["qualification_failed"],
                 })
             );
-            eprintln!("skein-graph-storage-qualification: {error}");
+            eprintln!("hawdb-graph-storage-qualification: {error}");
             ExitCode::from(2)
         }
     }
@@ -55,7 +55,7 @@ fn main() -> ExitCode {
 
 fn run(
     args: impl IntoIterator<Item = String>,
-) -> Result<Option<skein_qualification::ProductionGraphStorageQualificationReport>, String> {
+) -> Result<Option<hawdb_qualification::ProductionGraphStorageQualificationReport>, String> {
     let Some((database_path, plan_path)) = parse_args(args)? else {
         return Ok(None);
     };
@@ -98,8 +98,8 @@ fn parse_args(
 }
 
 fn usage() -> &'static str {
-    "usage: skein-graph-storage-qualification \
-     --database-path <existing-read-only-skein-directory> --plan-json <path>"
+    "usage: hawdb-graph-storage-qualification \
+     --database-path <existing-read-only-hawdb-directory> --plan-json <path>"
 }
 
 #[cfg(test)]
@@ -130,7 +130,7 @@ mod tests {
     fn plan_protocol_is_stable() {
         assert_eq!(
             plan::GRAPH_STORAGE_QUALIFICATION_PLAN_PROTOCOL,
-            "skein-production-graph-storage-plan-v1"
+            "hawdb-production-graph-storage-plan-v1"
         );
     }
 }

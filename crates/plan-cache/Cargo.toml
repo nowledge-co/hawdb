@@ -1,18 +1,18 @@
 [package]
-name = "skein-plan-cache"
+name = "hawdb-plan-cache"
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
 license.workspace = true
 
 [dependencies]
-skein-core = { path = "../core" }
-skein-cypher = { path = "../cypher" }
-skein-plan = { path = "../plan" }
+hawdb-core = { path = "../core" }
+hawdb-cypher = { path = "../cypher" }
+hawdb-plan = { path = "../plan" }
 
 [dev-dependencies]
 loom = "0.7"
-skein-optimizer = { path = "../optimizer" }
+hawdb-optimizer = { path = "../optimizer" }
 
 [features]
 default = []

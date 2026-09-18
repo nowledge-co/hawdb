@@ -8,21 +8,21 @@ test_suite(
 )
 
 rust_library(
-    name = "skein_fuzz_contracts",
-    crate_name = "skein_fuzz_contracts",
+    name = "hawdb_fuzz_contracts",
+    crate_name = "hawdb_fuzz_contracts",
     crate_root = "src/lib.rs",
     srcs = glob(["src/**/*.rs"]),
     edition = "2024",
     aliases = aliases(),
     deps = all_crate_deps(normal = True) + [
-        "//crates/core:skein_core",
+        "//crates/core:hawdb_core",
     ],
     proc_macro_deps = all_crate_deps(proc_macro = True),
 )
 
 rust_test(
-    name = "skein_fuzz_contracts_tests",
-    crate = ":skein_fuzz_contracts",
+    name = "hawdb_fuzz_contracts_tests",
+    crate = ":hawdb_fuzz_contracts",
     edition = "2024",
     aliases = aliases(normal_dev = True, proc_macro_dev = True),
     deps = all_crate_deps(normal_dev = True),

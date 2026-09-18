@@ -1,5 +1,5 @@
+use hawdb_integrity::{checksum_u64, sha256};
 use serde_json::json;
-use skein_integrity::{checksum_u64, sha256};
 use std::hint::black_box;
 use std::time::{Duration, Instant};
 

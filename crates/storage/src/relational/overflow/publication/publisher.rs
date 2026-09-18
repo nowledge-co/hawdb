@@ -13,7 +13,7 @@ use super::{
 };
 use crate::relational::RelationalError;
 use crate::{durable_replace_file, sync_directory};
-use skein_integrity::{integrity_digest, IntegrityHasher};
+use hawdb_integrity::{integrity_digest, IntegrityHasher};
 use std::fs::{self, File, OpenOptions};
 use std::io::Write;
 use std::path::{Path, PathBuf};
@@ -422,7 +422,7 @@ struct PublicationBuild<'a> {
 struct WrittenArtifacts {
     extent_artifact: RelationalOverflowArtifactMetadata,
     descriptor_artifact: RelationalOverflowArtifactMetadata,
-    root_set_digest: skein_integrity::Sha256Digest,
+    root_set_digest: hawdb_integrity::Sha256Digest,
     extent_count: u64,
     new_extent_count: u64,
     reused_extent_count: u64,
@@ -476,7 +476,7 @@ fn preflight_exact_references(
         RelationalOverflowPublicationError,
     >,
     config: RelationalOverflowPublicationConfig,
-    task: &skein_core::RuntimeTaskContext,
+    task: &hawdb_core::RuntimeTaskContext,
 ) -> Result<ExactReferencePreflight, RelationalOverflowPublicationError> {
     let extent_count = references.report().unique_references;
     if extent_count > config.max_extents.get() {
@@ -590,7 +590,7 @@ struct ExactArtifactWrite<'a> {
     resolve_new: &'a mut NewExtentResolver<'a>,
     generation: u64,
     config: RelationalOverflowPublicationConfig,
-    task: &'a skein_core::RuntimeTaskContext,
+    task: &'a hawdb_core::RuntimeTaskContext,
 }
 
 fn write_exact_artifacts(
@@ -1206,10 +1206,10 @@ impl PublicationPaths {
             directory.join(relational_overflow_manifest_generation_file(generation));
         let latest_manifest = directory.join(RELATIONAL_OVERFLOW_MANIFEST_FILE);
         Self {
-            extent_tmp: extent.with_extension("skein.tmp"),
-            descriptor_tmp: descriptor.with_extension("skein.tmp"),
-            generation_manifest_tmp: generation_manifest.with_extension("skein.tmp"),
-            latest_manifest_tmp: latest_manifest.with_extension("skein.tmp"),
+            extent_tmp: extent.with_extension("hawdb.tmp"),
+            descriptor_tmp: descriptor.with_extension("hawdb.tmp"),
+            generation_manifest_tmp: generation_manifest.with_extension("hawdb.tmp"),
+            latest_manifest_tmp: latest_manifest.with_extension("hawdb.tmp"),
             extent,
             descriptor,
             generation_manifest,

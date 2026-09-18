@@ -1,15 +1,15 @@
-use serde_json::{json, Value as JsonValue};
-use skein::{
+use hawdb::{
     AppendGeneratedRow, AppendOrderMode, AppendTableSchema, AppendTransaction, AppendWrite,
     Database, RelationalColumnSchema, RelationalKey, RelationalRow, RelationalScalarType,
     RelationalValue,
 };
+use serde_json::{json, Value as JsonValue};
 use std::collections::BTreeMap;
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::time::{SystemTime, UNIX_EPOCH};
 
-pub const APPEND_STATE_MACHINE_PROTOCOL: &str = "skein-append-state-machine-fuzz-v1";
+pub const APPEND_STATE_MACHINE_PROTOCOL: &str = "hawdb-append-state-machine-fuzz-v1";
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 struct ModelRow {
@@ -470,7 +470,7 @@ fn verify_tail(
     Ok(())
 }
 
-fn decode_model_row(row: &skein::AppendTableRow) -> Result<ModelRow, String> {
+fn decode_model_row(row: &hawdb::AppendTableRow) -> Result<ModelRow, String> {
     match row.row.values() {
         [RelationalValue::Text(_), RelationalValue::BigInt(sequence), RelationalValue::Text(payload)] => {
             Ok(ModelRow {
@@ -539,7 +539,7 @@ fn unique_path(seed: u64) -> PathBuf {
         .unwrap_or_default()
         .as_nanos();
     std::env::temp_dir().join(format!(
-        "skein-append-state-machine-{}-{seed}-{timestamp}",
+        "hawdb-append-state-machine-{}-{seed}-{timestamp}",
         std::process::id()
     ))
 }

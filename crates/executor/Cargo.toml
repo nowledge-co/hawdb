@@ -1,5 +1,5 @@
 [package]
-name = "skein-executor"
+name = "hawdb-executor"
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
@@ -8,9 +8,9 @@ license.workspace = true
 [dependencies]
 fs2 = "0.4.3"
 rayon = "1.11"
-skein-analytics = { path = "../analytics" }
-skein-core = { path = "../core" }
-skein-ddl = { path = "../ddl" }
-skein-plan = { path = "../plan" }
-skein-qos = { path = "../qos" }
-skein-storage = { path = "../storage" }
+hawdb-analytics = { path = "../analytics" }
+hawdb-core = { path = "../core" }
+hawdb-ddl = { path = "../ddl" }
+hawdb-plan = { path = "../plan" }
+hawdb-qos = { path = "../qos" }
+hawdb-storage = { path = "../storage" }

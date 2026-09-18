@@ -10,8 +10,8 @@
 //! commits its own transaction because per-request durability is the
 //! workload's truth, not an artifact of the harness.
 
+use hawdb::{Database, DatabaseConfig, QueryStreamOptions, RelationalSqlReadProfile, Value};
 use serde_json::json;
-use skein::{Database, DatabaseConfig, QueryStreamOptions, RelationalSqlReadProfile, Value};
 use std::hint::black_box;
 use std::time::{Instant, SystemTime, UNIX_EPOCH};
 
@@ -38,7 +38,7 @@ const INSERT_PERMILLE: u64 = 950;
 
 fn main() {
     let path = std::env::temp_dir().join(format!(
-        "skein-relational-oltp-mix-{}-{}",
+        "hawdb-relational-oltp-mix-{}-{}",
         std::process::id(),
         SystemTime::now()
             .duration_since(UNIX_EPOCH)

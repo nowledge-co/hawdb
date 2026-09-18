@@ -4,7 +4,7 @@ use super::{
     stable_identity_error, CanonicalAdjacencyCheckpointArtifacts, DurableArtifactMetadata,
     DurableManifest, DurableStore, GraphManifestOpenBudget,
 };
-use crate::error::{Result, SkeinError};
+use crate::error::{HawdbError, Result};
 use crate::store::{
     canonical_adjacency_artifact_generation_file, canonical_artifact_generation_file,
     canonical_manifest_generation_file, checksum_bytes, decode_projected_graph_artifacts,
@@ -15,7 +15,7 @@ use crate::store::{
     CANONICAL_MANIFEST_MAX_BYTES, PROPERTY_PROJECTION_MANIFEST_MAX_BYTES,
     PROPERTY_SPILL_MANIFEST_MAX_BYTES,
 };
-use skein_storage::{
+use hawdb_storage::{
     durable_replace_file, CanonicalAdjacencyConfig, CanonicalAdjacencyReader,
     CanonicalAdjacencyWriter, CanonicalSegmentConfig, CanonicalSegmentError,
     CanonicalSegmentManifest, CanonicalSegmentReader, CanonicalSegmentWriter, DurableCompression,
@@ -82,11 +82,11 @@ impl DurableStore {
         let property_descriptor_tree = PersistentPropertySpillDescriptorTree::new(
             GraphDescriptorTreePaths::new(
                 self.root_path
-                    .join(skein_storage::property_spill_descriptor_page_file(
+                    .join(hawdb_storage::property_spill_descriptor_page_file(
                         generation,
                     )),
                 self.root_path
-                    .join(skein_storage::property_spill_descriptor_root_file(
+                    .join(hawdb_storage::property_spill_descriptor_root_file(
                         generation,
                     )),
             ),
@@ -106,16 +106,16 @@ impl DurableStore {
                         descriptor_tree: property_descriptor_tree,
                     },
                 )
-                .map_err(|error| SkeinError::Storage(error.to_string()))?;
+                .map_err(|error| HawdbError::Storage(error.to_string()))?;
         let property_spill_manifest = property_spill_output.manifest;
         let encoded = canonical_manifest
             .encode()
-            .map_err(|error| SkeinError::Storage(error.to_string()))?;
+            .map_err(|error| HawdbError::Storage(error.to_string()))?;
         let metadata = DurableArtifactMetadata::for_bytes(encoded.as_bytes());
         let manifest_path = self
             .root_path
             .join(canonical_manifest_generation_file(generation));
-        let tmp_path = manifest_path.with_extension("skein.tmp");
+        let tmp_path = manifest_path.with_extension("hawdb.tmp");
         {
             let mut file = File::create(&tmp_path)?;
             file.write_all(encoded.as_bytes())?;
@@ -124,11 +124,11 @@ impl DurableStore {
         durable_replace_file(&tmp_path, &manifest_path)?;
         let property_encoded = property_spill_manifest
             .encode()
-            .map_err(|error| SkeinError::Storage(error.to_string()))?;
+            .map_err(|error| HawdbError::Storage(error.to_string()))?;
         let property_manifest_path = self
             .root_path
             .join(property_spill_manifest_generation_file(generation));
-        let property_tmp_path = property_manifest_path.with_extension("skein.tmp");
+        let property_tmp_path = property_manifest_path.with_extension("hawdb.tmp");
         {
             let mut file = File::create(&property_tmp_path)?;
             file.write_all(property_encoded.as_bytes())?;
@@ -150,7 +150,7 @@ impl DurableStore {
     ) -> Result<CanonicalAdjacencyCheckpointArtifacts>
     where
         R: IntoIterator<
-            Item = std::result::Result<RelRecord, skein_storage::CanonicalAdjacencyError>,
+            Item = std::result::Result<RelRecord, hawdb_storage::CanonicalAdjacencyError>,
         >,
     {
         let artifact_path = self
@@ -158,11 +158,11 @@ impl DurableStore {
             .join(canonical_adjacency_artifact_generation_file(generation));
         let descriptor_paths = GraphDescriptorTreePaths::new(
             self.root_path
-                .join(skein_storage::canonical_adjacency_descriptor_page_file(
+                .join(hawdb_storage::canonical_adjacency_descriptor_page_file(
                     generation,
                 )),
             self.root_path
-                .join(skein_storage::canonical_adjacency_descriptor_root_file(
+                .join(hawdb_storage::canonical_adjacency_descriptor_root_file(
                     generation,
                 )),
         );
@@ -180,9 +180,9 @@ impl DurableStore {
                 descriptor_config,
                 relationships,
             )
-            .map_err(|error| SkeinError::Storage(error.to_string()))?;
+            .map_err(|error| HawdbError::Storage(error.to_string()))?;
         let descriptor_tree = output.descriptor_tree.as_ref().ok_or_else(|| {
-            SkeinError::Storage(
+            HawdbError::Storage(
                 "canonical adjacency checkpoint omitted its descriptor root".to_string(),
             )
         })?;
@@ -191,18 +191,18 @@ impl DurableStore {
             .sparse_block_count
             .checked_add(output.report.dense_block_count)
             .ok_or_else(|| {
-                SkeinError::Storage("canonical adjacency descriptor count overflow".to_string())
+                HawdbError::Storage("canonical adjacency descriptor count overflow".to_string())
             })?;
         if descriptor_tree.root.generation != generation
             || descriptor_tree.root.source_commit_epoch != source_commit_epoch
             || descriptor_tree.root.descriptor_count != expected_descriptor_count
         {
-            return Err(SkeinError::Storage(
+            return Err(HawdbError::Storage(
                 "canonical adjacency descriptor root identity is inconsistent".to_string(),
             ));
         }
         let generation_artifacts = output.generation_artifacts().ok_or_else(|| {
-            SkeinError::Storage(
+            HawdbError::Storage(
                 "canonical adjacency checkpoint omitted its generation binding".to_string(),
             )
         })?;
@@ -223,7 +223,7 @@ impl DurableStore {
         N: IntoIterator<
             Item = std::result::Result<
                 PersistentPropertyProjectionRecord,
-                skein_storage::PersistentPropertyProjectionError,
+                hawdb_storage::PersistentPropertyProjectionError,
             >,
         >,
     {
@@ -232,11 +232,11 @@ impl DurableStore {
             .join(property_projection_artifact_generation_file(generation));
         let descriptor_paths = GraphDescriptorTreePaths::new(
             self.root_path
-                .join(skein_storage::property_projection_descriptor_page_file(
+                .join(hawdb_storage::property_projection_descriptor_page_file(
                     generation,
                 )),
             self.root_path
-                .join(skein_storage::property_projection_descriptor_root_file(
+                .join(hawdb_storage::property_projection_descriptor_root_file(
                     generation,
                 )),
         );
@@ -252,26 +252,26 @@ impl DurableStore {
                     GraphDescriptorTreeBuildConfig::default(),
                 ),
             )
-            .map_err(|error| SkeinError::Storage(error.to_string()))?;
+            .map_err(|error| HawdbError::Storage(error.to_string()))?;
         let descriptor_tree = &output.descriptor_tree;
         if descriptor_tree.root.kind != GraphDescriptorKind::PropertyProjection
             || descriptor_tree.root.generation != generation
             || descriptor_tree.root.source_commit_epoch != source_commit_epoch
             || descriptor_tree.root.descriptor_count != output.report.block_count
         {
-            return Err(SkeinError::Storage(
+            return Err(HawdbError::Storage(
                 "property projection descriptor root identity is inconsistent".to_string(),
             ));
         }
         let encoded = output
             .manifest
             .encode()
-            .map_err(|error| SkeinError::Storage(error.to_string()))?;
+            .map_err(|error| HawdbError::Storage(error.to_string()))?;
         let metadata = DurableArtifactMetadata::for_bytes(encoded.as_bytes());
         let manifest_path = self
             .root_path
             .join(property_projection_manifest_generation_file(generation));
-        let tmp_path = manifest_path.with_extension("skein.tmp");
+        let tmp_path = manifest_path.with_extension("hawdb.tmp");
         {
             let mut file = File::create(&tmp_path)?;
             file.write_all(encoded.as_bytes())?;
@@ -292,7 +292,7 @@ impl DurableStore {
     ) -> Result<()> {
         let checksum = checksum_bytes(body.as_bytes());
         let data = format!("{body}checksum\t{checksum}\n");
-        let tmp_path = path.with_extension("skein.tmp");
+        let tmp_path = path.with_extension("hawdb.tmp");
         {
             let mut file = File::create(&tmp_path)?;
             let encoded = encode_durable_text(&data, DurableCompression::default())?;
@@ -322,7 +322,7 @@ impl DurableStore {
                 let (body, checksum) = split_projected_graph_artifact_checksum(&text)?;
                 let actual = checksum_bytes(body.as_bytes());
                 if checksum != actual {
-                    return Err(SkeinError::Storage(format!(
+                    return Err(HawdbError::Storage(format!(
                         "projected graph artifact checksum mismatch: expected {checksum}, got {actual}"
                     )));
                 }
@@ -399,62 +399,62 @@ impl DurableStore {
 
     pub(in crate::store) fn open_bound_relational_overflow(
         &self,
-    ) -> Result<skein_storage::RelationalOverflowRootReader> {
+    ) -> Result<hawdb_storage::RelationalOverflowRootReader> {
         let binding = self
             .relational_overflow_generation_artifacts
             .ok_or_else(|| {
-                SkeinError::Storage(
+                HawdbError::Storage(
                     "published checkpoint has no relational overflow generation binding"
                         .to_string(),
                 )
             })?;
-        let reader = skein_storage::RelationalOverflowRootReader::open_bound_generation(
+        let reader = hawdb_storage::RelationalOverflowRootReader::open_bound_generation(
             &self.root_path,
             binding,
-            skein_storage::RelationalOverflowPublicationConfig::default(),
+            hawdb_storage::RelationalOverflowPublicationConfig::default(),
         )
-        .map_err(|error| SkeinError::Storage(error.to_string()))?;
+        .map_err(|error| HawdbError::Storage(error.to_string()))?;
         Ok(reader)
     }
 
     pub(in crate::store) fn open_bound_relational_row_pages(
         &self,
-        overflow_root: &skein_storage::RelationalOverflowRootReader,
-    ) -> Result<skein_storage::RelationalRowPageRootReader> {
+        overflow_root: &hawdb_storage::RelationalOverflowRootReader,
+    ) -> Result<hawdb_storage::RelationalRowPageRootReader> {
         let binding = self.relational_row_generation_artifacts.ok_or_else(|| {
-            SkeinError::Storage(
+            HawdbError::Storage(
                 "published checkpoint has no relational row-page generation binding".to_string(),
             )
         })?;
-        let reader = skein_storage::RelationalRowPageRootReader::open_bound_generation(
+        let reader = hawdb_storage::RelationalRowPageRootReader::open_bound_generation(
             &self.root_path,
             binding,
-            skein_storage::RelationalRowPagePublicationConfig::default(),
+            hawdb_storage::RelationalRowPagePublicationConfig::default(),
         )
-        .map_err(|error| SkeinError::Storage(error.to_string()))?;
+        .map_err(|error| HawdbError::Storage(error.to_string()))?;
         let manifest = reader.manifest();
         if manifest.source_commit_epoch != binding.source_commit_epoch
             || manifest.root_set_digest != binding.root_set_digest
         {
-            return Err(SkeinError::Storage(
+            return Err(HawdbError::Storage(
                 "relational row-page generation identity differs from canonical binding"
                     .to_string(),
             ));
         }
         if manifest.overflow_root.is_none() {
-            return Err(SkeinError::Storage(
+            return Err(HawdbError::Storage(
                 "canonical relational row-page generation has no overflow binding".to_string(),
             ));
         }
         reader
             .validate_overflow_root(overflow_root)
-            .map_err(|error| SkeinError::Storage(error.to_string()))?;
+            .map_err(|error| HawdbError::Storage(error.to_string()))?;
         Ok(reader)
     }
 }
 
-pub(super) use skein_storage::artifact_binding::admit_graph_manifest_binding;
-use skein_storage::artifact_binding::read_bound_graph_manifest;
+pub(super) use hawdb_storage::artifact_binding::admit_graph_manifest_binding;
+use hawdb_storage::artifact_binding::read_bound_graph_manifest;
 
 pub(super) fn load_published_canonical_segments(
     root: &Path,
@@ -471,7 +471,7 @@ pub(super) fn load_published_canonical_segments(
         return Ok(None);
     };
     let generation = durable_manifest.checkpoint_generation.ok_or_else(|| {
-        SkeinError::Storage(
+        HawdbError::Storage(
             "canonical manifest metadata requires a checkpoint generation".to_string(),
         )
     })?;
@@ -486,18 +486,18 @@ pub(super) fn load_published_canonical_segments(
         open_budget,
     )?;
     let text = std::str::from_utf8(&encoded).map_err(|error| {
-        SkeinError::Storage(format!("canonical manifest is not UTF-8: {error}"))
+        HawdbError::Storage(format!("canonical manifest is not UTF-8: {error}"))
     })?;
     let canonical_manifest = CanonicalSegmentManifest::decode(text)
-        .map_err(|error| SkeinError::Storage(error.to_string()))?;
+        .map_err(|error| HawdbError::Storage(error.to_string()))?;
     if canonical_manifest.generation != ManifestGeneration(generation) {
-        return Err(SkeinError::Storage(format!(
+        return Err(HawdbError::Storage(format!(
             "canonical manifest generation {} does not match durable generation {generation}",
             canonical_manifest.generation.0
         )));
     }
     if canonical_manifest.source_commit_epoch != durable_manifest.checkpoint_commit_epoch {
-        return Err(SkeinError::Storage(format!(
+        return Err(HawdbError::Storage(format!(
             "canonical descriptor source epoch {} does not match durable checkpoint epoch {}",
             canonical_manifest.source_commit_epoch, durable_manifest.checkpoint_commit_epoch
         )));
@@ -535,7 +535,7 @@ pub(super) fn load_published_canonical_segments(
         ),
     }
     .map(Some)
-    .map_err(|error| SkeinError::Storage(error.to_string()))
+    .map_err(|error| HawdbError::Storage(error.to_string()))
 }
 
 fn load_published_property_spills(
@@ -553,7 +553,7 @@ fn load_published_property_spills(
         return Ok(None);
     };
     let generation = durable_manifest.checkpoint_generation.ok_or_else(|| {
-        SkeinError::Storage("property spill metadata requires a checkpoint generation".to_string())
+        HawdbError::Storage("property spill metadata requires a checkpoint generation".to_string())
     })?;
     let manifest_path = root.join(property_spill_manifest_generation_file(generation));
     let encoded = read_bound_graph_manifest(
@@ -566,28 +566,28 @@ fn load_published_property_spills(
         open_budget,
     )?;
     let text = std::str::from_utf8(&encoded).map_err(|error| {
-        SkeinError::Storage(format!("property spill manifest is not UTF-8: {error}"))
+        HawdbError::Storage(format!("property spill manifest is not UTF-8: {error}"))
     })?;
     let manifest = PropertySpillManifest::decode(text)
-        .map_err(|error| SkeinError::Storage(error.to_string()))?;
+        .map_err(|error| HawdbError::Storage(error.to_string()))?;
     if manifest.generation != ManifestGeneration(generation) {
-        return Err(SkeinError::Storage(format!(
+        return Err(HawdbError::Storage(format!(
             "property spill generation {} does not match durable generation {generation}",
             manifest.generation.0
         )));
     }
     if manifest.source_commit_epoch != durable_manifest.checkpoint_commit_epoch {
-        return Err(SkeinError::Storage(format!(
+        return Err(HawdbError::Storage(format!(
             "property spill source epoch {} does not match durable checkpoint epoch {}",
             manifest.source_commit_epoch, durable_manifest.checkpoint_commit_epoch
         )));
     }
     let descriptor_tree = PersistentPropertySpillDescriptorTree::new(
         GraphDescriptorTreePaths::new(
-            root.join(skein_storage::property_spill_descriptor_page_file(
+            root.join(hawdb_storage::property_spill_descriptor_page_file(
                 generation,
             )),
-            root.join(skein_storage::property_spill_descriptor_root_file(
+            root.join(hawdb_storage::property_spill_descriptor_root_file(
                 generation,
             )),
         ),
@@ -610,7 +610,7 @@ fn load_published_property_spills(
         max_block_bytes,
     )
     .map(Some)
-    .map_err(|error| SkeinError::Storage(error.to_string()))
+    .map_err(|error| HawdbError::Storage(error.to_string()))
 }
 
 pub(in crate::store) fn load_published_property_projection(
@@ -628,7 +628,7 @@ pub(in crate::store) fn load_published_property_projection(
         return Ok(None);
     };
     let generation = durable_manifest.checkpoint_generation.ok_or_else(|| {
-        SkeinError::Storage(
+        HawdbError::Storage(
             "property projection metadata requires a checkpoint generation".to_string(),
         )
     })?;
@@ -643,16 +643,16 @@ pub(in crate::store) fn load_published_property_projection(
         open_budget,
     )?;
     let text = std::str::from_utf8(&encoded).map_err(|error| {
-        SkeinError::Storage(format!(
+        HawdbError::Storage(format!(
             "property projection manifest is not UTF-8: {error}"
         ))
     })?;
     let manifest = PersistentPropertyProjectionManifest::decode(text)
-        .map_err(|error| SkeinError::Storage(error.to_string()))?;
+        .map_err(|error| HawdbError::Storage(error.to_string()))?;
     if manifest.generation != ManifestGeneration(generation)
         || manifest.source_commit_epoch != durable_manifest.checkpoint_commit_epoch
     {
-        return Err(SkeinError::Storage(
+        return Err(HawdbError::Storage(
             "property projection generation or source epoch does not match the durable checkpoint"
                 .to_string(),
         ));
@@ -670,10 +670,10 @@ pub(in crate::store) fn load_published_property_projection(
         manifest,
         PersistentPropertyProjectionDescriptorTree::new(
             GraphDescriptorTreePaths::new(
-                root.join(skein_storage::property_projection_descriptor_page_file(
+                root.join(hawdb_storage::property_projection_descriptor_page_file(
                     generation,
                 )),
-                root.join(skein_storage::property_projection_descriptor_root_file(
+                root.join(hawdb_storage::property_projection_descriptor_root_file(
                     generation,
                 )),
             ),
@@ -684,7 +684,7 @@ pub(in crate::store) fn load_published_property_projection(
         max_block_bytes,
     )
     .map(Some)
-    .map_err(|error| SkeinError::Storage(error.to_string()))
+    .map_err(|error| HawdbError::Storage(error.to_string()))
 }
 
 pub(in crate::store) fn load_published_canonical_adjacency(
@@ -698,12 +698,12 @@ pub(in crate::store) fn load_published_canonical_adjacency(
         return Ok(None);
     };
     let generation = durable_manifest.checkpoint_generation.ok_or_else(|| {
-        SkeinError::Storage(
+        HawdbError::Storage(
             "canonical adjacency metadata requires a checkpoint generation".to_string(),
         )
     })?;
     if binding.generation != generation {
-        return Err(SkeinError::Storage(format!(
+        return Err(HawdbError::Storage(format!(
             "canonical adjacency generation {} does not match durable generation {generation}",
             binding.generation
         )));
@@ -714,10 +714,10 @@ pub(in crate::store) fn load_published_canonical_adjacency(
     )?;
     let descriptor_config = GraphDescriptorTreeBuildConfig::default();
     let descriptor_paths = GraphDescriptorTreePaths::new(
-        root.join(skein_storage::canonical_adjacency_descriptor_page_file(
+        root.join(hawdb_storage::canonical_adjacency_descriptor_page_file(
             generation,
         )),
-        root.join(skein_storage::canonical_adjacency_descriptor_root_file(
+        root.join(hawdb_storage::canonical_adjacency_descriptor_root_file(
             generation,
         )),
     );
@@ -731,7 +731,7 @@ pub(in crate::store) fn load_published_canonical_adjacency(
         },
         descriptor_config,
     )
-    .map_err(|error| SkeinError::StorageIntegrity(error.to_string()))?;
+    .map_err(|error| HawdbError::StorageIntegrity(error.to_string()))?;
     let config = CanonicalAdjacencyConfig::default();
     let max_block_bytes = NonZeroU64::new(
         config
@@ -750,5 +750,5 @@ pub(in crate::store) fn load_published_canonical_adjacency(
         max_block_bytes,
     )
     .map(Some)
-    .map_err(|error| SkeinError::StorageIntegrity(error.to_string()))
+    .map_err(|error| HawdbError::StorageIntegrity(error.to_string()))
 }

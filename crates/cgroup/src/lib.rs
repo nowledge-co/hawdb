@@ -400,7 +400,7 @@ mod tests {
         fn new(name: &str, mount_root: &str) -> Self {
             let id = FIXTURE_ID.fetch_add(1, Ordering::SeqCst);
             let root = std::env::temp_dir().join(format!(
-                "skein-cgroup-v2-{name}-{}-{id}",
+                "hawdb-cgroup-v2-{name}-{}-{id}",
                 std::process::id()
             ));
             let mount_point = root.join("cgroup2");

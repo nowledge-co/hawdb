@@ -1,11 +1,11 @@
 //! Persisted SQL access evidence for cost-model calibration, not a cost policy.
 
-use serde_json::json;
-use skein::{
+use hawdb::{
     Database, DatabaseConfig, DatabaseReadTransaction, ProfiledRelationalSqlQueryOutput,
     QueryStreamOptions, RelationalOperatorKind, RelationalSqlReadProfile, Value,
 };
-use skein_storage::{RelationalIndexMode, StorageResidencyMode};
+use hawdb_storage::{RelationalIndexMode, StorageResidencyMode};
+use serde_json::json;
 use std::fmt::Write as _;
 use std::hint::black_box;
 use std::path::{Path, PathBuf};
@@ -116,7 +116,7 @@ pub(super) fn measure() -> serde_json::Value {
         fixture.remove();
     }
     json!({
-        "protocol": "skein-persisted-relational-access-v2",
+        "protocol": "hawdb-persisted-relational-access-v2",
         "os": std::env::consts::OS,
         "architecture": std::env::consts::ARCH,
         "smoke": SMOKE,
@@ -365,7 +365,7 @@ struct Fixture {
 impl Fixture {
     fn new(width: usize, layout: Layout) -> Self {
         let path = std::env::temp_dir().join(format!(
-            "skein-persisted-access-{}-{}-{width}-{}",
+            "hawdb-persisted-access-{}-{}-{width}-{}",
             std::process::id(),
             SystemTime::now()
                 .duration_since(UNIX_EPOCH)

@@ -1,8 +1,6 @@
 use super::{latency_percentiles, runtime_report, LatencyPercentiles, MixedSoakRuntimeReport};
 use crate::evidence_digest::{hash_bytes, hash_value};
-use serde::{Deserialize, Serialize};
-use sha2::{Digest, Sha256};
-use skein::{
+use hawdb::{
     IoConcurrencyBudget, NowledgeGraphStatement, NowledgeMemEmbeddedStoreHandle,
     NowledgeMemGraphMode, NowledgeMemOpenOptions, NowledgeMemReadOptions,
     PersistentGraphIndexClass, ProcessMemoryProfile, ProcessMemorySnapshot,
@@ -10,13 +8,15 @@ use skein::{
     RuntimeGovernor, RuntimeGovernorConfig, RuntimeTaskContext, StorageDeviceProfile,
     StorageResidencyReport, StorageResourceProfileLimits, StorageResourceProfileReport, Value,
 };
-use skein_query::QueryIdentity;
+use hawdb_query::QueryIdentity;
+use serde::{Deserialize, Serialize};
+use sha2::{Digest, Sha256};
 use std::error::Error;
 use std::fmt::{self, Display, Formatter};
 use std::time::Instant;
 
 pub const PRODUCTION_GRAPH_STORAGE_QUALIFICATION_PROTOCOL: &str =
-    "skein-production-graph-storage-qualification-v1";
+    "hawdb-production-graph-storage-qualification-v1";
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ProductionGraphStorageQualificationConfig {
@@ -42,7 +42,7 @@ impl ProductionGraphStorageQualificationConfig {
                 "production graph qualification requires an explicit database config",
             )
         })?;
-        if database_config.storage_residency_mode != skein::StorageResidencyMode::OutOfCore {
+        if database_config.storage_residency_mode != hawdb::StorageResidencyMode::OutOfCore {
             return Err(ProductionGraphQualificationError::new(
                 "production graph qualification requires out-of-core storage",
             ));
@@ -661,7 +661,7 @@ fn stream_graph_result_digest(
     limits: &StorageResourceProfileLimits,
 ) -> Result<(String, usize), ProductionGraphQualificationError> {
     let mut hasher = Sha256::new();
-    hash_bytes(&mut hasher, b"skein-persistent-graph-index-result-v1");
+    hash_bytes(&mut hasher, b"hawdb-persistent-graph-index-result-v1");
     let mut row_count = 0usize;
     let report = store
         .read_query_with_params_streaming(
@@ -892,7 +892,7 @@ pub(crate) fn validate_production_identity_for_current_target(
 
 pub(crate) fn parameter_digest(parameters: &std::collections::BTreeMap<String, Value>) -> String {
     let mut hasher = Sha256::new();
-    hash_bytes(&mut hasher, b"skein-production-query-parameters-v1");
+    hash_bytes(&mut hasher, b"hawdb-production-query-parameters-v1");
     for (name, value) in parameters {
         hash_bytes(&mut hasher, name.as_bytes());
         hash_value(&mut hasher, value);
@@ -903,7 +903,7 @@ pub(crate) fn parameter_digest(parameters: &std::collections::BTreeMap<String, V
 #[cfg(test)]
 mod tests {
     use super::*;
-    use skein::{
+    use hawdb::{
         Database, DatabaseConfig, StorageResidencyMode, PRODUCTION_QUALIFICATION_POLICY_VERSION,
     };
     use std::collections::BTreeMap;
@@ -963,7 +963,7 @@ mod tests {
     fn production_runner_uses_admitted_handle_and_redacts_inputs() {
         let id = TEST_ID.fetch_add(1, Ordering::SeqCst);
         let root = std::env::temp_dir().join(format!(
-            "skein-production-graph-qualification-{}-{id}",
+            "hawdb-production-graph-qualification-{}-{id}",
             std::process::id()
         ));
         let graph_path = root.join("database");
@@ -1017,7 +1017,7 @@ mod tests {
         };
         let expected_output_digest = {
             let mut hasher = Sha256::new();
-            hash_bytes(&mut hasher, b"skein-persistent-graph-index-result-v1");
+            hash_bytes(&mut hasher, b"hawdb-persistent-graph-index-result-v1");
             hash_graph_result_row(
                 &mut hasher,
                 &BTreeMap::from([("memory_id".to_string(), Value::Int(7))]),

@@ -8,8 +8,8 @@ use crate::{
     ProductionMorselMatrixPolicy, PRODUCTION_BLOCKING_QUALIFICATION_PROTOCOL,
     PRODUCTION_MORSEL_PROFILE_PROTOCOL, REQUIRED_PRODUCTION_MORSEL_WORKERS,
 };
+use hawdb::ProductionQualificationIdentity;
 use serde_json::Value;
-use skein::ProductionQualificationIdentity;
 use std::collections::{BTreeMap, BTreeSet};
 
 pub(super) fn evaluate_morsel_matrix(

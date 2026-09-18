@@ -3,8 +3,8 @@
 use super::SearchOutOfCoreGenerationBuildOptions;
 use crate::build_memory::{checked_add, checked_mul, BuildMemory};
 use crate::error::Result;
-use skein_executor::QueryMemoryLease;
-use skein_vector_projection::{ProjectionBuildAdmission, RaBitQBitWidth, SegmentDescriptor};
+use hawdb_executor::QueryMemoryLease;
+use hawdb_vector_projection::{ProjectionBuildAdmission, RaBitQBitWidth, SegmentDescriptor};
 use std::mem::size_of;
 use std::path::Path;
 

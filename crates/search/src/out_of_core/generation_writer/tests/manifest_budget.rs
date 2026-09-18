@@ -86,7 +86,7 @@ fn assert_build_boundaries(label: &str, text: &str) {
     let reference_root = test_dir(label);
     let reference = build(&reference_root, text, 512 * 1024 * 1024).unwrap();
     let exact = reference.lexical_manifest_bytes;
-    let manifest_name = format!("search_lexical.manifest.{}.skein", reference.generation);
+    let manifest_name = format!("search_lexical.manifest.{}.hawdb", reference.generation);
     let expected = fs::read(reference_root.join(&manifest_name)).unwrap();
     assert_eq!(content(&open(&reference_root, exact).unwrap()), text);
     assert!(open(&reference_root, exact - 1).is_err());
@@ -131,7 +131,7 @@ fn manifest_budget_private_loader_checks_the_captured_bytes_against_its_configur
     let root = test_dir("manifest_budget_inner_loader");
     let report = build(&root, "initial", 512 * 1024 * 1024).unwrap();
     let bytes = fs::read(root.join(format!(
-        "search_lexical.manifest.{}.skein",
+        "search_lexical.manifest.{}.hawdb",
         report.generation
     )))
     .unwrap();
@@ -249,13 +249,13 @@ fn manifest_budget_recovery_never_reuses_a_generation_hidden_by_its_limit() {
     let first = build(&root, &original, DEFAULT_MAX_MANIFEST_BYTES).unwrap();
     let old = open(&root, first.lexical_manifest_bytes).unwrap();
     let lexical_path = root.join(format!(
-        "search_lexical.manifest.{}.skein",
+        "search_lexical.manifest.{}.hawdb",
         first.generation
     ));
     let lexical = fs::read(&lexical_path).unwrap();
     fs::write(root.join(OUT_OF_CORE_MANIFEST_FILE), b"invalid manifest").unwrap();
     fs::write(
-        root.join("search_lexical.manifest.999.skein"),
+        root.join("search_lexical.manifest.999.hawdb"),
         b"invalid candidate",
     )
     .unwrap();

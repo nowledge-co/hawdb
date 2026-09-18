@@ -13,7 +13,7 @@ use crate::relational::{
     RelationalValueRef,
 };
 use crate::{SegmentCache, StoreId};
-use skein_core::{RuntimeCancellationReason, RuntimeTaskContext};
+use hawdb_core::{RuntimeCancellationReason, RuntimeTaskContext};
 use std::collections::BTreeMap;
 use std::fmt;
 use std::num::{NonZeroU32, NonZeroUsize};

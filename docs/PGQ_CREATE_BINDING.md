@@ -1,8 +1,8 @@
 # Read-only property graph creation binding
 
 The source catalog and creation binder were approved on September 13, 2026 for
-[#159](https://github.com/nowledge-co/skein/issues/159). They are additive APIs in
-`skein::sql` and `skein_sql`. Existing query binding, execution, parser routing,
+[#159](https://github.com/nowledge-co/hawdb/issues/159). They are additive APIs in
+`hawdb::sql` and `hawdb_sql`. Existing query binding, execution, parser routing,
 and fallback behavior are unchanged. `PgqDataType` adds `Binary` and `Uuid`;
 consumers with exhaustive enum matches must handle these variants.
 
@@ -32,7 +32,7 @@ canonical vertex table; duplicate constraints are still ambiguous.
 
 Explicit endpoint types must match, except that a BigInt edge column can refer
 to a DoublePrecision vertex column. The reverse direction fails. An inferred
-FK must have identical types, following Skein relational metadata. Unused foreign
+FK must have identical types, following Hawdb relational metadata. Unused foreign
 keys do not trigger traversal of other source tables.
 
 Labels shared across elements, including vertices and edges, must expose the
@@ -95,17 +95,17 @@ SQL hashes for all 16 creation cases. Full expected schemas cover accepted
 creation statements. Twenty additional cases record binding errors and profile
 exclusions. Existing 981-case frontend provenance/waiver checks remain intact.
 Owner tests also cover actual relational DDL metadata, followed by parsed
-GRAPH_TABLE binding. The external facade test imports only `skein` and `std`.
+GRAPH_TABLE binding. The external facade test imports only `hawdb` and `std`.
 
-The manual `skein_sql_create_binding_fuzz_tests` target exercises 4,608 explicit
+The manual `hawdb_sql_create_binding_fuzz_tests` target exercises 4,608 explicit
 and inferred endpoint combinations against an independent compatibility matrix.
 It is included in routine local fuzz and excluded from native CI aggregates.
 
 ```sh
-cargo test -p skein-sql -p skein-relational -- --include-ignored
-cargo clippy -p skein-sql -p skein-relational --all-targets -- -D warnings
+cargo test -p hawdb-sql -p hawdb-relational -- --include-ignored
+cargo clippy -p hawdb-sql -p hawdb-relational --all-targets -- -D warnings
 bazel test //crates/sql:presubmit_tests //crates/relational:presubmit_tests \
-  //crates/sql-syntax:presubmit_tests //:skein_unit_tests //:skein_cli_tests \
-  //crates/fuzz:skein_fuzz_tests //crates/fuzz:skein_fuzz_cli_tests \
-  //:skein_linux_ci_fuzz_smoke_test
+  //crates/sql-syntax:presubmit_tests //:hawdb_unit_tests //:hawdb_cli_tests \
+  //crates/fuzz:hawdb_fuzz_tests //crates/fuzz:hawdb_fuzz_cli_tests \
+  //:hawdb_linux_ci_fuzz_smoke_test
 ```

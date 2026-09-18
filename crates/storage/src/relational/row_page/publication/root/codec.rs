@@ -4,7 +4,7 @@ use crate::relational::row_page::publication::{
     RelationalRowPageRootDescriptor, RelationalRowPageRootManifest, RelationalRowPageSlotIntegrity,
 };
 use crate::relational::RelationalRowPageId;
-use skein_integrity::{IntegrityHasher, Sha256Digest};
+use hawdb_integrity::{IntegrityHasher, Sha256Digest};
 use std::fs::File;
 use std::io::{Read, Seek, SeekFrom};
 use std::num::NonZeroU64;

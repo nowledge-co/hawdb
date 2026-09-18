@@ -1,7 +1,7 @@
-use serde_json::json;
-use skein::{
+use hawdb::{
     Database, DatabaseConfig, DurabilityPolicy, RelationalIndexMode, StorageResidencyMode,
 };
+use serde_json::json;
 use std::hint::black_box;
 use std::path::{Path, PathBuf};
 use std::time::{Instant, SystemTime, UNIX_EPOCH};
@@ -195,7 +195,7 @@ fn rows_per_second(batch_size: usize, elapsed_ns: u64) -> f64 {
 
 fn unique_path(name: &str) -> PathBuf {
     std::env::temp_dir().join(format!(
-        "skein-relational-monotonic-append-{name}-{}-{}",
+        "hawdb-relational-monotonic-append-{name}-{}-{}",
         std::process::id(),
         SystemTime::now()
             .duration_since(UNIX_EPOCH)

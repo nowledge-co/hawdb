@@ -5,8 +5,8 @@ use crate::build_control::checkpoint;
 pub(super) use crate::build_memory::path::OwnedPath;
 use crate::build_memory::{checked_add as add, checked_mul as mul, BuildMemory, SET_ENTRY_BYTES};
 use crate::Result;
-use skein_core::RuntimeTaskContext;
-use skein_executor::QueryMemoryLease;
+use hawdb_core::RuntimeTaskContext;
+use hawdb_executor::QueryMemoryLease;
 use std::mem::size_of;
 use std::ops::Deref;
 
@@ -36,11 +36,11 @@ impl Options {
         reader: &crate::SearchOutOfCoreReader,
         source_graph_commit_epoch: Option<u64>,
     ) -> Result<()> {
-        use crate::SkeinError;
+        use crate::HawdbError;
         if self.value.source_graph_commit_epoch.is_some()
             && self.value.source_graph_commit_epoch != source_graph_commit_epoch
         {
-            return Err(SkeinError::Storage(
+            return Err(HawdbError::Storage(
                 "search generation update source graph epoch does not match the delta".into(),
             ));
         }
@@ -48,7 +48,7 @@ impl Options {
             && self.value.import_source_graph_commit_epoch
                 != reader.import_source_graph_commit_epoch()
         {
-            return Err(SkeinError::Storage(
+            return Err(HawdbError::Storage(
                 "search generation update import provenance does not match the active generation"
                     .into(),
             ));
@@ -73,13 +73,13 @@ impl Options {
             )
         });
         if requested.is_some() && requested != expected {
-            return Err(SkeinError::Storage(
+            return Err(HawdbError::Storage(
                 "search generation update embedding identity does not match the active generation"
                     .into(),
             ));
         }
         if self.value.analyzer_lexicon != *reader.analyzer_lexicon() {
-            return Err(SkeinError::Storage(
+            return Err(HawdbError::Storage(
                 "search generation update analyzer does not match the active generation".into(),
             ));
         }

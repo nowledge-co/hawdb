@@ -1,6 +1,6 @@
-use skein_core::Value;
-use skein_cypher::RelationshipDirection;
-use skein_plan::{
+use hawdb_core::Value;
+use hawdb_cypher::RelationshipDirection;
+use hawdb_plan::{
     AggregateFunction, AggregateTarget, Aggregation, CompositeRangeSeek, ExactPropertySeekBranch,
     NodeProjectionAccess, PhysicalPlan, Predicate, Projection, ProjectionExpression,
 };

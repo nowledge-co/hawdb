@@ -16,7 +16,7 @@ pub struct BackgroundWorkRequest {
 /// Arbitrary values are not permits:
 ///
 /// ```compile_fail
-/// use skein_storage::BackgroundWorkPermit;
+/// use hawdb_storage::BackgroundWorkPermit;
 /// let permit: Box<dyn BackgroundWorkPermit> = Box::new(());
 /// ```
 pub trait BackgroundWorkPermit: Debug + Send {}

@@ -1,6 +1,6 @@
 # External Shadow Protocol
 
-Skein uses the external shadow protocol to compare the embedded engine with a
+Hawdb uses the external shadow protocol to compare the embedded engine with a
 previous local graph wrapper during Nowledge migration gates. The protocol is a
 line-delimited JSON request/response stream over child-process stdin/stdout.
 
@@ -16,14 +16,14 @@ one UTF-8 JSON object followed by a newline.
 
 The child process must not write logs or progress messages to stdout. Diagnostic
 output belongs on stderr; malformed stdout is treated as a protocol error and
-Skein includes a bounded stdout line tail in the error for local debugging.
+Hawdb includes a bounded stdout line tail in the error for local debugging.
 
 `request_id` is a monotonically increasing per-process identifier assigned by
-Skein. It matches the external shadow trace `sequence` value for the same
+Hawdb. It matches the external shadow trace `sequence` value for the same
 request.
 
 The child process must keep its graph state for the lifetime of the process.
-Skein sends fixture setup statements and checks to the same process so the
+Hawdb sends fixture setup statements and checks to the same process so the
 shadow engine can model an embedded database instance.
 
 Every request includes:
@@ -52,7 +52,7 @@ statements nested inside `execute_session`.
 
 Responses may include a top-level `request_id` echo. The echo is optional for
 backward compatibility, but when present it must match the request `request_id`.
-Skein rejects mismatched response identifiers as an `execution` error because
+Hawdb rejects mismatched response identifiers as an `execution` error because
 they indicate a stale, reordered, or misrouted shadow response.
 
 Every response must use exactly one envelope shape. `execute`, `execute_session`,
@@ -63,7 +63,7 @@ responses are rejected as protocol errors.
 
 Cypher parameters and result rows use JSON values:
 
-| JSON value | Skein value |
+| JSON value | Hawdb value |
 | --- | --- |
 | `null` | `Null` |
 | `true` or `false` | `Bool` |
@@ -112,12 +112,12 @@ include `execute`, `execute_session`, and `project_graph`; an adapter that canno
 materialize projected graph metadata should still advertise `project_graph` when
 it can return a valid `primary_only` response for that operation.
 `engine_kind` is optional for protocol smoke tests, but migration cutover
-evidence requires `previous_wrapper`. The bundled `skein-shadow-self` adapter
+evidence requires `previous_wrapper`. The bundled `hawdb-shadow-self` adapter
 reports `protocol_smoke`, so it can validate the protocol without being accepted
 as previous-wrapper cutover evidence.
 
 Previous-wrapper adapters should not hand-roll the JSON-lines protocol loop.
-Skein exposes `ExternalShadowProtocolBackend` and
+Hawdb exposes `ExternalShadowProtocolBackend` and
 `ExternalShadowProtocolServer` for wrapper processes: implement the backend
 methods against the existing Kuzu/Ladybug wrapper, return
 `engine_kind() == "previous_wrapper"`, then call `run_json_lines` on stdin and
@@ -138,7 +138,7 @@ cargo run --example nowledge_previous_wrapper_shadow_adapter -- [--command-timeo
 cargo run --example nowledge_previous_wrapper_shadow_adapter -- --persistent-command <program> [args...]
 ```
 
-In this mode the adapter keeps the Skein external-shadow JSON-lines protocol on
+In this mode the adapter keeps the Hawdb external-shadow JSON-lines protocol on
 stdin/stdout and delegates each operation to the command as a separate JSON
 request on the command's stdin. The command should return one JSON value on
 stdout:
@@ -157,7 +157,7 @@ stdout:
 
 The command bridge is intentionally process-owned by Nowledge. It lets the real
 Kuzu/Ladybug wrapper keep its dependencies and transaction/session handling
-outside Skein while still producing `engine_kind: "previous_wrapper"` shadow
+outside Hawdb while still producing `engine_kind: "previous_wrapper"` shadow
 evidence through the shared protocol server. `--command-timeout-ms` bounds each
 delegated command invocation so a hung wrapper fails with a direct adapter error
 instead of only surfacing as an outer shadow request timeout.
@@ -171,10 +171,10 @@ To generate the exact production-shaped fixture contract for a wrapper shim,
 use:
 
 ```text
-skein nowledge-fixture-contract [nowledge-memory-core]
+hawdb nowledge-fixture-contract [nowledge-memory-core]
 ```
 
-The command prints `skein-nowledge-fixture-contract` JSON with the fixture setup
+The command prints `hawdb-nowledge-fixture-contract` JSON with the fixture setup
 statements, each check's Cypher statement, parameters, expected rows or row
 count, execution mode, effect queries, projected-graph requests, and the command
 bridge request/response shapes. It does not open a database or run the shadow
@@ -186,10 +186,10 @@ full migration gate.
 For a command shim that already implements the contract bridge shape, run:
 
 ```text
-skein nowledge-fixture-contract-command-check [--require-full-contract] [--stop-after-first-failure] [--start-check <zero-based-index>] [--check-name <name>] [--max-checks <n>] [--command-timeout-ms <ms>] [--allow-primary-only-project-graph] <contract-json> [--persistent-command] <program> [args...]
+hawdb nowledge-fixture-contract-command-check [--require-full-contract] [--stop-after-first-failure] [--start-check <zero-based-index>] [--check-name <name>] [--max-checks <n>] [--command-timeout-ms <ms>] [--allow-primary-only-project-graph] <contract-json> [--persistent-command] <program> [args...]
 ```
 
-This command reads a `skein-nowledge-fixture-contract` file, invokes the command
+This command reads a `hawdb-nowledge-fixture-contract` file, invokes the command
 shim directly with the exported query/session/project-graph requests, and checks
 the command's JSON rows against the fixture expectations. It is a wrapper
 bring-up diagnostic; production replacement still requires the full
@@ -358,7 +358,7 @@ The `outputs` array must have the same length and order as the request
 the session may write; otherwise it is `read`. Per-statement `access` is
 advisory but stable: previous-wrapper adapters should use `read` for read-only
 Kuzu/Ladybug APIs and `mutation` for serialized write paths. `role` is a
-compatibility-harness context label. Skein reports malformed session outputs
+compatibility-harness context label. Hawdb reports malformed session outputs
 with their zero-based output index so wrapper logs can be aligned with
 `statements[*].context.statement_index`.
 
@@ -455,19 +455,19 @@ Any operation can return an error:
 - `execution`
 
 Unknown classes are treated as `execution`. The message is included in the
-Skein-side error with the shadow engine name.
+Hawdb-side error with the shadow engine name.
 
 ## Adapter Smoke Command
 
 Before running the full Nowledge migration gate, a wrapper can be checked with:
 
 ```text
-SKEIN_ENABLE_COMPATIBILITY_TOOLS=1 skein external-shadow-adapter-smoke [--require-previous-wrapper] [--shadow-trace <path>] [--shadow-timeout-ms <ms>] <shadow-name> <program> [args...]
+HAWDB_ENABLE_COMPATIBILITY_TOOLS=1 hawdb external-shadow-adapter-smoke [--require-previous-wrapper] [--shadow-trace <path>] [--shadow-timeout-ms <ms>] <shadow-name> <program> [args...]
 ```
 
 The smoke command sends `ready`, then runs a minimal fixture that exercises
 `execute_session` and `project_graph`. It prints a
-`skein-external-shadow-adapter-smoke` JSON report with the accepted ready
+`hawdb-external-shadow-adapter-smoke` JSON report with the accepted ready
 metadata, matched check counts, primary-only projection reasons, request count,
 and optional shadow trace summary.
 
@@ -479,14 +479,14 @@ routing before projection metadata parity exists. The production cutover gate
 below still treats primary-only projected graph checks as blockers.
 This command is a quarantined developer/preflight tool. Production serving and
 read routing must use embedded library APIs and typed readiness reports instead
-of invoking the `skein` binary.
+of invoking the `hawdb` binary.
 
 ## Gate Command
 
 The current migration-gate entry point is:
 
 ```text
-SKEIN_ENABLE_COMPATIBILITY_TOOLS=1 skein nowledge-cypher-migration-gate [--require-ready] [--require-cutover-evidence] [--allow-self-shadow] [--shadow-ready] [--shadow-trace <path>] [--shadow-timeout-ms <ms>] [--require-rollback-evidence] [--rollback-evidence <text>] [--require-storage-recovery-evidence] [--storage-recovery-report-json <path>] [--require-background-maintenance-evidence] [--background-maintenance-report-json <path>] <root> <shadow-name> <program> [args...]
+HAWDB_ENABLE_COMPATIBILITY_TOOLS=1 hawdb nowledge-cypher-migration-gate [--require-ready] [--require-cutover-evidence] [--allow-self-shadow] [--shadow-ready] [--shadow-trace <path>] [--shadow-timeout-ms <ms>] [--require-rollback-evidence] [--rollback-evidence <text>] [--require-storage-recovery-evidence] [--storage-recovery-report-json <path>] [--require-background-maintenance-evidence] [--background-maintenance-report-json <path>] <root> <shadow-name> <program> [args...]
 ```
 
 It scans the Nowledge source tree, runs the public Nowledge compatibility
@@ -496,7 +496,7 @@ blocked.
 
 `--require-ready` requires a previous-wrapper shadow by default, sends the
 `ready` preflight before fixture setup, and exits with an error unless the final
-migration gate decision is `ready`. `skein-shadow-self` is allowed only when
+migration gate decision is `ready`. `hawdb-shadow-self` is allowed only when
 `--allow-self-shadow` is passed, and that flag is intended for protocol and CI
 smoke tests, not cutover evidence.
 
@@ -534,7 +534,7 @@ readiness, or any malformed family entry, blocks cutover evidence, so
 automation that primarily reads `cutover_evidence` does not collapse scanner
 coverage and shadow parity into a single global ratio.
 `--storage-recovery-report-json <path>` attaches a JSON report produced by
-`skein storage-recovery-report`. When present, or when
+`hawdb storage-recovery-report`. When present, or when
 `--require-storage-recovery-evidence` is passed, `cutover_evidence` reports
 `storage_recovery_required`, `storage_recovery_present`,
 `storage_recovery_ready`, `storage_recovery_protocol_matches`,
@@ -543,12 +543,12 @@ coverage and shadow parity into a single global ratio.
 `storage_recovery_torn_tail_clean`, `storage_recovery_blocker_codes`, and
 `storage_recovery_blockers`.
 Required storage recovery evidence is ready only when the report protocol
-matches `skein-storage-recovery-report`, durable recovery was observed, a
+matches `hawdb-storage-recovery-report`, durable recovery was observed, a
 checkpoint boundary is present, WAL replay was opened with a configured bound,
 and no torn tail was ignored.
 
 The bundle includes a top-level `background_maintenance` object with the local
-Skein maintenance summary after the compatibility fixture run. It reports
+Hawdb maintenance summary after the compatibility fixture run. It reports
 candidate counts, admitted/deferred/rejected operation totals, stable work
 class/priority/admission strings, reason codes, whether a search projection
 delta candidate carries an executable request, and top-level aggregate counts
@@ -575,7 +575,7 @@ reports `background_maintenance_required`, `background_maintenance_present`,
 `background_maintenance_blocker_codes`, and
 `background_maintenance_blockers`. Required background maintenance evidence is
 ready only when the summary is present, any declared protocol matches
-`skein-background-maintenance-report`, it contains non-empty candidate and
+`hawdb-background-maintenance-report`, it contains non-empty candidate and
 ranked-work counts, all ranked work is background priority, and admission values
 use the stable `admit`, `defer`, or `reject` strings. Legacy fixture-local
 summaries without a `protocol` field remain accepted. Deferred or rejected
@@ -585,11 +585,11 @@ deployments are expected to delay internal work under pressure.
 For standalone resource-readiness preflight, run:
 
 ```text
-skein background-maintenance-report [--require-cutover-ready] <database-path>
+hawdb background-maintenance-report [--require-cutover-ready] <database-path>
 ```
 
 The command opens the database read-only and prints
-`skein-background-maintenance-report` JSON with the same candidate, ranking,
+`hawdb-background-maintenance-report` JSON with the same candidate, ranking,
 admission, and search-projection-delta fields used by the migration-gate
 `background_maintenance` object. `--require-cutover-ready` applies the same
 background-maintenance evidence health rules used by cutover evidence and exits
@@ -604,8 +604,8 @@ For bounded graph-read evidence, first generate a read report and then compile
 it with graph route readiness:
 
 ```text
-skein nowledge-bounded-read-report <database-path> <cypher> > read-report.json
-skein nowledge-bounded-read-evidence \
+hawdb nowledge-bounded-read-report <database-path> <cypher> > read-report.json
+hawdb nowledge-bounded-read-evidence \
   --graph-route-readiness-json graph-route-readiness.json \
   read-report.json > bounded-read-evidence.json
 ```
@@ -622,7 +622,7 @@ single bounded query probe cannot be mistaken for full route cutover coverage.
 
 The embedded library readiness report also accepts query-family replacement
 readiness evidence through `replacement_readiness_by_query_family`. It
-recomputes `skein-nowledge-query-family-evidence-v1` from the family rows and
+recomputes `hawdb-nowledge-query-family-evidence-v1` from the family rows and
 publishes it as `query_family_evidence` plus
 `readiness_by_area.query_family`. Missing, blocked, or malformed query-family
 rows keep library readiness false; callers should pass the same family evidence
@@ -632,14 +632,14 @@ Rust-only harnesses can generate the same library-level artifact without
 manually composing API calls:
 
 ```text
-skein nowledge-mem-library-readiness \
+hawdb nowledge-mem-library-readiness \
   --bounded-probe-json bounded-probe.json \
   --covered-routes-json covered-routes.json \
   --graph-route-readiness-json graph-route-readiness.json \
   --query-family-evidence-json query-family-evidence.json \
   --primary-search-projection-probe-json lancedb-probe.json \
-  --search-projection skein-search-index \
-  skein-graph-db > library-readiness.json
+  --search-projection hawdb-search-index \
+  hawdb-graph-db > library-readiness.json
 ```
 
 The command opens the graph in `shadow_read_only` mode by default, uses the
@@ -651,15 +651,15 @@ background-maintenance readiness must fail the command.
 
 Nightly Mem replacement bundles should include this command output as the
 top-level `library_readiness` object. `nowledge-mem-integration-readiness
---require-ready` treats `skein-nowledge-mem-library-readiness-v1` as required
+--require-ready` treats `hawdb-nowledge-mem-library-readiness-v1` as required
 cutover evidence and fails closed unless the graph store, search projection,
 query families, bounded reads, storage recovery, and background maintenance are
 all ready through the Rust embedded library surface.
 
 Nightly bundles must also include top-level
 `search_candidate_shadow_evidence` for LanceDB candidate-read replacement.
-The evidence must use route `/search-index/skein-shadow/candidate-evidence`,
-source `nmem-rust-bridge`, `candidate_primary_engine: "skein"`, and a
+The evidence must use route `/search-index/hawdb-shadow/candidate-evidence`,
+source `nmem-rust-bridge`, `candidate_primary_engine: "hawdb"`, and a
 non-zero `request_count`. Candidate parity is fail-closed unless
 `primary_candidate_count == shadow_candidate_count`,
 `matched_candidate_count == shadow_candidate_count`, and
@@ -670,16 +670,16 @@ shadow, and matched sets; it must not include raw candidate IDs.
 Rust bridge code should generate this object with
 `nowledge_mem_search_candidate_shadow_evidence_json` and
 `NowledgeMemSearchCandidateShadowEvidence` so `ready` and blocker codes are
-computed by Skein instead of handwritten by the caller.
+computed by Hawdb instead of handwritten by the caller.
 For multi-request bridge runs, prefer
 `NowledgeMemSearchCandidateShadowAccumulator::record_compare_candidate_ids`
-once per LanceDB/Skein candidate comparison and emit `accumulator.json()` at
+once per LanceDB/Hawdb candidate comparison and emit `accumulator.json()` at
 the end. Use `record_compare` only for count-only diagnostics; final
 integration readiness requires candidate identity evidence.
 CLI-based harnesses can emit the same evidence from a minimal probe:
 
 ```text
-skein nowledge-search-candidate-shadow-evidence \
+hawdb nowledge-search-candidate-shadow-evidence \
   --require-ready \
   search-candidate-shadow-probe.json > search-candidate-shadow-evidence.json
 ```
@@ -715,7 +715,7 @@ The probe schema is:
 ```
 
 The CLI does not execute search; it only compiles already-observed LanceDB and
-Skein candidate IDs plus filter-pushdown fields into fail-closed evidence.
+Hawdb candidate IDs plus filter-pushdown fields into fail-closed evidence.
 
 `--require-cutover-evidence` runs the same `ready` preflight and exits with an
 error unless `cutover_evidence.eligible` is true. Use it for isolated release or
@@ -753,7 +753,7 @@ which records `primary_engine`, `shadow_engine`, primary and shadow check
 counts, matched check count, primary-only check count, matched ratio, and a
 `ready` boolean. This is the stable side-by-side evidence field for release
 automation; it makes primary-only or self-shadow protocol smoke visibly
-different from real Skein-vs-previous-wrapper parity.
+different from real Hawdb-vs-previous-wrapper parity.
 The coverage and inventory gate objects also include
 `coverage_by_query_family`, which groups required inventory checks by their
 scanner-assigned query family and reports per-family required, covered, missing,
@@ -777,18 +777,18 @@ For dashboards and release notes that need one conservative replacement number,
 use:
 
 ```text
-skein nowledge-replacement-summary [--require-production-ready] [--compact] [--max-family-items <n>] [--max-blockers <n>] [--search-projection-evidence-json <path>] [--search-projection-shadow-evidence-json <path>] [--search-candidate-shadow-evidence-json <path>] [--bounded-read-evidence-json <path>] [--query-runtime-preflight-json <path>] [--query-family-evidence-json <path>] <migration-gate-json>
+hawdb nowledge-replacement-summary [--require-production-ready] [--compact] [--max-family-items <n>] [--max-blockers <n>] [--search-projection-evidence-json <path>] [--search-projection-shadow-evidence-json <path>] [--search-candidate-shadow-evidence-json <path>] [--bounded-read-evidence-json <path>] [--query-runtime-preflight-json <path>] [--query-family-evidence-json <path>] <migration-gate-json>
 ```
 
 The command reads an existing migration-gate bundle and prints
-`skein-nowledge-replacement-summary` JSON. It keeps scanner coverage,
+`hawdb-nowledge-replacement-summary` JSON. It keeps scanner coverage,
 shadow-parity readiness, and production cutover readiness separate. If the
 bundle lacks eligible `cutover_evidence`, `production_replacement_per_million`
 is `0` even when scanner coverage and shadow matched ratios are complete. If
 the bundle includes `dual_engine_evidence`, the summary copies it into the
 release-facing output and also requires `dual_engine_evidence.ready == true`
 for production readiness. It also requires ready
-`search_candidate_shadow_evidence` for the LanceDB/Skein candidate-read path,
+`search_candidate_shadow_evidence` for the LanceDB/Hawdb candidate-read path,
 including count parity and redacted candidate identity parity. The summary also
 preserves cutover storage/background
 evidence, including background search-projection graph-delta aggregate counts,
@@ -811,7 +811,7 @@ decision.
 
 When the caller requires rollback proof, the migration gate can also carry
 caller-owned rollback evidence through `rollback_required`, `rollback_ready`,
-and `rollback_evidence`. Skein only gates on this supplied evidence; it does not
+and `rollback_evidence`. Hawdb only gates on this supplied evidence; it does not
 open or link the previous graph database. The CLI sets `rollback_required` with
 `--require-rollback-evidence` and marks rollback ready only when
 `--rollback-evidence <text>` is supplied.

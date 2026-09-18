@@ -1,7 +1,7 @@
 use super::Database;
-use crate::error::{Result, SkeinError};
+use crate::error::{HawdbError, Result};
 use crate::value::Value;
-use skein_relational::system_schema::{
+use hawdb_relational::system_schema::{
     decode_applied_system_schema_migration_query_row, engine_system_schema_registry,
     is_engine_system_schema_bootstrap, read_applied_system_schema_migrations,
     state_with_engine_system_schema, validate_applied_system_schema_migrations,
@@ -9,10 +9,10 @@ use skein_relational::system_schema::{
     validate_system_schema_registry, AppliedSystemSchemaMigration, ENGINE_SYSTEM_SCHEMA_OWNER,
     ENGINE_SYSTEM_SCHEMA_REGISTRY_INSERT_SQL, ENGINE_SYSTEM_SCHEMA_REGISTRY_TABLE,
 };
-pub use skein_relational::{
+pub use hawdb_relational::{
     SystemSchemaMigration, SystemSchemaRegistry, SystemSchemaUpgradeReport,
 };
-use skein_storage::RelationalState;
+use hawdb_storage::RelationalState;
 
 impl Database {
     pub(super) fn apply_engine_system_schema(&mut self) -> Result<SystemSchemaUpgradeReport> {
@@ -32,7 +32,7 @@ impl Database {
         if registry.owner() == ENGINE_SYSTEM_SCHEMA_OWNER
             && registry != &engine_system_schema_registry()
         {
-            return Err(SkeinError::Semantic(format!(
+            return Err(HawdbError::Semantic(format!(
                 "system schema owner {ENGINE_SYSTEM_SCHEMA_OWNER} is reserved by the engine"
             )));
         }
@@ -57,7 +57,7 @@ impl Database {
         if registry_table_present {
             validate_engine_system_schema_registry_table(self.store.relational_state())?;
         } else if registry.owner() != ENGINE_SYSTEM_SCHEMA_OWNER {
-            return Err(SkeinError::Storage(
+            return Err(HawdbError::Storage(
                 "system schema registry table is missing after engine bootstrap".to_string(),
             ));
         }
@@ -97,7 +97,7 @@ impl Database {
             });
         }
         if self.config.read_only {
-            return Err(SkeinError::Execution(format!(
+            return Err(HawdbError::Execution(format!(
                 "system schema {} requires upgrade from version {} to {} but the database is read-only",
                 registry.owner(),
                 previous_version,
@@ -116,7 +116,7 @@ impl Database {
                 }
             }
             let version = i64::try_from(migration.version()).map_err(|_| {
-                SkeinError::Semantic(format!(
+                HawdbError::Semantic(format!(
                     "system schema {} migration version {} exceeds BIGINT",
                     registry.owner(),
                     migration.version()
@@ -152,10 +152,10 @@ impl Database {
         max_rows: usize,
     ) -> Result<Vec<AppliedSystemSchemaMigration>> {
         let limit = i64::try_from(max_rows).map_err(|_| {
-            SkeinError::Execution("system schema migration read limit exceeds BIGINT".to_string())
+            HawdbError::Execution("system schema migration read limit exceeds BIGINT".to_string())
         })?;
         let output = self.query_sql_with_params_bounded(
-            "SELECT version, name, checksum FROM skein_schema_migrations \
+            "SELECT version, name, checksum FROM hawdb_schema_migrations \
              WHERE owner = $1 ORDER BY version ASC LIMIT $2",
             &[Value::String(owner.to_string()), Value::Int(limit)],
             Some(max_rows),
@@ -171,11 +171,11 @@ impl Database {
         is_engine_system_schema_bootstrap(self.store.relational_state())
     }
 
-    pub(super) fn validate_skein_lightning_system_schema(state: &RelationalState) -> Result<()> {
+    pub(super) fn validate_hawdb_lightning_system_schema(state: &RelationalState) -> Result<()> {
         validate_engine_system_schema_state(state)
     }
 
-    pub(super) fn skein_lightning_relational_state(&self) -> Result<RelationalState> {
+    pub(super) fn hawdb_lightning_relational_state(&self) -> Result<RelationalState> {
         state_with_engine_system_schema(self.store.relational_state())
     }
 }
@@ -186,9 +186,9 @@ mod facade_tests {
 
     #[test]
     fn facade_reexports_relational_system_schema_contracts_without_conversion() {
-        let _: fn(SystemSchemaMigration) -> skein_relational::SystemSchemaMigration = |value| value;
-        let _: fn(SystemSchemaRegistry) -> skein_relational::SystemSchemaRegistry = |value| value;
-        let _: fn(SystemSchemaUpgradeReport) -> skein_relational::SystemSchemaUpgradeReport =
+        let _: fn(SystemSchemaMigration) -> hawdb_relational::SystemSchemaMigration = |value| value;
+        let _: fn(SystemSchemaRegistry) -> hawdb_relational::SystemSchemaRegistry = |value| value;
+        let _: fn(SystemSchemaUpgradeReport) -> hawdb_relational::SystemSchemaUpgradeReport =
             |value| value;
     }
 }

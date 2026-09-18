@@ -8,32 +8,32 @@ test_suite(
 )
 
 _NOWLEDGE_CONTRACTS_BASE_DEPS = all_crate_deps(normal = True) + [
-    "//crates/core:skein_core",
-    "//crates/qos:skein_qos",
-    "//crates/storage:skein_storage",
+    "//crates/core:hawdb_core",
+    "//crates/qos:hawdb_qos",
+    "//crates/storage:hawdb_storage",
 ]
 
 rust_library(
-    name = "skein_nowledge_contracts",
-    crate_name = "skein_nowledge_contracts",
+    name = "hawdb_nowledge_contracts",
+    crate_name = "hawdb_nowledge_contracts",
     crate_root = "src/lib.rs",
     srcs = glob(["src/**/*.rs"]),
     edition = "2024",
     aliases = aliases(),
-    deps = _NOWLEDGE_CONTRACTS_BASE_DEPS + ["//crates/search:skein_search"],
+    deps = _NOWLEDGE_CONTRACTS_BASE_DEPS + ["//crates/search:hawdb_search"],
     proc_macro_deps = all_crate_deps(proc_macro = True),
 )
 
 # Matches the root facade's no-default-features boundary without linking a
-# second copy of skein_search with incompatible Bazel feature selection.
+# second copy of hawdb_search with incompatible Bazel feature selection.
 rust_library(
-    name = "skein_nowledge_contracts_minimal",
-    crate_name = "skein_nowledge_contracts",
+    name = "hawdb_nowledge_contracts_minimal",
+    crate_name = "hawdb_nowledge_contracts",
     crate_root = "src/lib.rs",
     srcs = glob(["src/**/*.rs"]),
     edition = "2024",
     aliases = aliases(),
-    deps = _NOWLEDGE_CONTRACTS_BASE_DEPS + ["//crates/search:skein_search_minimal"],
+    deps = _NOWLEDGE_CONTRACTS_BASE_DEPS + ["//crates/search:hawdb_search_minimal"],
     proc_macro_deps = all_crate_deps(proc_macro = True),
     visibility = [
         "//:__pkg__",
@@ -43,14 +43,14 @@ rust_library(
 
 # Matches Cargo feature unification for the root ACL qualification target.
 rust_library(
-    name = "skein_nowledge_contracts_acl",
+    name = "hawdb_nowledge_contracts_acl",
     testonly = True,
-    crate_name = "skein_nowledge_contracts",
+    crate_name = "hawdb_nowledge_contracts",
     crate_root = "src/lib.rs",
     srcs = glob(["src/**/*.rs"]),
     edition = "2024",
     aliases = aliases(),
-    deps = _NOWLEDGE_CONTRACTS_BASE_DEPS + ["//crates/search:skein_search_acl"],
+    deps = _NOWLEDGE_CONTRACTS_BASE_DEPS + ["//crates/search:hawdb_search_acl"],
     proc_macro_deps = all_crate_deps(proc_macro = True),
     visibility = [
         "//:__pkg__",
@@ -59,8 +59,8 @@ rust_library(
 )
 
 rust_test(
-    name = "skein_nowledge_contracts_tests",
-    crate = ":skein_nowledge_contracts",
+    name = "hawdb_nowledge_contracts_tests",
+    crate = ":hawdb_nowledge_contracts",
     edition = "2024",
     aliases = aliases(normal_dev = True, proc_macro_dev = True),
     deps = all_crate_deps(normal_dev = True),

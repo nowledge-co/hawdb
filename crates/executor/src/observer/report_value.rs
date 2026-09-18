@@ -4,8 +4,8 @@ use crate::{
     BlockingOperatorMemoryReport, GraphExpansionExecutionReport, PipelineMemoryReport,
     VectorExecutionReport,
 };
-use skein_core::Value;
-use skein_storage::{ScanPruningReport, ScanPruningStrategy};
+use hawdb_core::Value;
+use hawdb_storage::{ScanPruningReport, ScanPruningStrategy};
 use std::collections::BTreeMap;
 
 pub fn blocking_operator_memory_report_value(report: &BlockingOperatorMemoryReport) -> Value {

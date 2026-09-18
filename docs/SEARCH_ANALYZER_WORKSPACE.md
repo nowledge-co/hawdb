@@ -1,6 +1,6 @@
 # Opaque search analyzer ownership
 
-This stage of [#392](https://github.com/nowledge-co/skein/issues/392) extends the
+This stage of [#392](https://github.com/nowledge-co/hawdb/issues/392) extends the
 private generation resource foundation. A generation containing Han characters
 in an analyzed field builds its fused lexical/segment/vector artifacts on one
 operation-owned worker. ASCII-only generations retain their existing execution
@@ -132,14 +132,14 @@ Observed peaks are regression evidence; the component formulas are the admission
 bounds. The test does not infer a universal bound by rounding a sampled peak.
 
 ```sh
-cargo test -p skein-search
-cargo test -p skein-search --no-default-features --lib
-cargo test -p skein-search --test analyzer_workspace_allocation --features regex-automata/dfa-build,regex-automata/dfa-onepass
-cargo clippy -p skein-search --all-targets -- -D warnings
-bazel test //crates/search:all //crates/fuzz:skein_fuzz_tests //crates/fuzz:skein_fuzz_cli_tests //:skein_linux_ci_fuzz_smoke_test
+cargo test -p hawdb-search
+cargo test -p hawdb-search --no-default-features --lib
+cargo test -p hawdb-search --test analyzer_workspace_allocation --features regex-automata/dfa-build,regex-automata/dfa-onepass
+cargo clippy -p hawdb-search --all-targets -- -D warnings
+bazel test //crates/search:all //crates/fuzz:hawdb_fuzz_tests //crates/fuzz:hawdb_fuzz_cli_tests //:hawdb_linux_ci_fuzz_smoke_test
 ```
 
-Skein-owned normalized strings, identifier deduplication and resident frequencies
+Hawdb-owned normalized strings, identifier deduplication and resident frequencies
 now retain their own admission; see [the token ownership contract](SEARCH_TOKEN_OWNERSHIP.md).
 Spill/merge ownership, outer publication and delta hydration are integrated through
 the [context facade](SEARCH_GENERATION_CONTEXT.md). The 4 MiB source guard and

@@ -1,6 +1,6 @@
 #[cfg(feature = "opentelemetry")]
-use skein_qos::RuntimeTelemetryEventKind;
-use skein_qos::{QosTelemetryEvent, QosTelemetrySink, RuntimeTelemetryEvent, RuntimeTelemetrySink};
+use hawdb_qos::RuntimeTelemetryEventKind;
+use hawdb_qos::{QosTelemetryEvent, QosTelemetrySink, RuntimeTelemetryEvent, RuntimeTelemetrySink};
 use std::fmt::Debug;
 use std::sync::Arc;
 
@@ -166,40 +166,40 @@ pub struct OpenTelemetryMetrics {
 impl OpenTelemetryMetrics {
     pub fn new(meter: &opentelemetry::metrics::Meter) -> Self {
         Self {
-            query_count: meter.u64_counter("skein.query.count").build(),
+            query_count: meter.u64_counter("hawdb.query.count").build(),
             query_duration_micros: meter
-                .u64_histogram("skein.query.duration")
+                .u64_histogram("hawdb.query.duration")
                 .with_unit("us")
                 .build(),
             query_parse_nanos: meter
-                .u64_histogram("skein.query.parse.duration")
+                .u64_histogram("hawdb.query.parse.duration")
                 .with_unit("ns")
                 .build(),
-            query_rows: meter.u64_histogram("skein.query.rows").build(),
-            query_intermediate_rows: meter.u64_histogram("skein.query.intermediate.rows").build(),
+            query_rows: meter.u64_histogram("hawdb.query.rows").build(),
+            query_intermediate_rows: meter.u64_histogram("hawdb.query.intermediate.rows").build(),
             query_intermediate_bytes: meter
-                .u64_histogram("skein.query.intermediate.bytes")
+                .u64_histogram("hawdb.query.intermediate.bytes")
                 .build(),
-            query_output_bytes: meter.u64_histogram("skein.query.output.bytes").build(),
-            query_steady_resident_bytes: meter.u64_histogram("skein.query.resident.steady").build(),
-            query_peak_resident_bytes: meter.u64_histogram("skein.query.resident.peak").build(),
-            query_total_page_faults: meter.u64_histogram("skein.query.page_faults.total").build(),
-            query_minor_page_faults: meter.u64_histogram("skein.query.page_faults.minor").build(),
-            query_major_page_faults: meter.u64_histogram("skein.query.page_faults.major").build(),
-            kernel_operation_count: meter.u64_counter("skein.kernel.operation.count").build(),
+            query_output_bytes: meter.u64_histogram("hawdb.query.output.bytes").build(),
+            query_steady_resident_bytes: meter.u64_histogram("hawdb.query.resident.steady").build(),
+            query_peak_resident_bytes: meter.u64_histogram("hawdb.query.resident.peak").build(),
+            query_total_page_faults: meter.u64_histogram("hawdb.query.page_faults.total").build(),
+            query_minor_page_faults: meter.u64_histogram("hawdb.query.page_faults.minor").build(),
+            query_major_page_faults: meter.u64_histogram("hawdb.query.page_faults.major").build(),
+            kernel_operation_count: meter.u64_counter("hawdb.kernel.operation.count").build(),
             kernel_operation_duration_micros: meter
-                .u64_histogram("skein.kernel.operation.duration")
+                .u64_histogram("hawdb.kernel.operation.duration")
                 .with_unit("us")
                 .build(),
-            kernel_operation_items: meter.u64_histogram("skein.kernel.operation.items").build(),
-            kernel_operation_bytes: meter.u64_histogram("skein.kernel.operation.bytes").build(),
+            kernel_operation_items: meter.u64_histogram("hawdb.kernel.operation.items").build(),
+            kernel_operation_bytes: meter.u64_histogram("hawdb.kernel.operation.bytes").build(),
             kernel_operation_fsync_micros: meter
-                .u64_histogram("skein.kernel.operation.fsync_duration")
+                .u64_histogram("hawdb.kernel.operation.fsync_duration")
                 .with_unit("us")
                 .build(),
-            runtime_event_count: meter.u64_counter("skein.runtime.event.count").build(),
+            runtime_event_count: meter.u64_counter("hawdb.runtime.event.count").build(),
             runtime_admission_wait_micros: meter
-                .u64_histogram("skein.runtime.admission.wait.duration")
+                .u64_histogram("hawdb.runtime.admission.wait.duration")
                 .with_unit("us")
                 .build(),
         }
@@ -212,7 +212,7 @@ impl TelemetrySink for OpenTelemetryMetrics {
         use opentelemetry::KeyValue;
 
         let attributes = [
-            KeyValue::new("db.system", "skein"),
+            KeyValue::new("db.system", "hawdb"),
             KeyValue::new("db.query.language", event.query_language.to_string()),
             KeyValue::new("db.operation.name", event.statement_kind.to_string()),
             KeyValue::new("error.type", if event.success { "" } else { "query_error" }),
@@ -250,7 +250,7 @@ impl TelemetrySink for OpenTelemetryMetrics {
         use opentelemetry::KeyValue;
 
         let attributes = [
-            KeyValue::new("db.system", "skein"),
+            KeyValue::new("db.system", "hawdb"),
             KeyValue::new("db.operation.name", event.operation.as_str()),
             KeyValue::new(
                 "error.type",
@@ -276,13 +276,13 @@ impl TelemetrySink for OpenTelemetryMetrics {
         use opentelemetry::KeyValue;
 
         let attributes = [
-            KeyValue::new("db.system", "skein"),
+            KeyValue::new("db.system", "hawdb"),
             KeyValue::new("db.operation.name", "background_qos"),
-            KeyValue::new("skein.qos.phase", event.phase.as_str()),
-            KeyValue::new("skein.qos.outcome", event.outcome.as_str()),
-            KeyValue::new("skein.work.class", event.class.as_str()),
+            KeyValue::new("hawdb.qos.phase", event.phase.as_str()),
+            KeyValue::new("hawdb.qos.outcome", event.outcome.as_str()),
+            KeyValue::new("hawdb.work.class", event.class.as_str()),
             KeyValue::new(
-                "skein.qos.admission_code",
+                "hawdb.qos.admission_code",
                 event.admission_code.map(|code| code.as_str()).unwrap_or(""),
             ),
         ];
@@ -297,25 +297,25 @@ impl TelemetrySink for OpenTelemetryMetrics {
         use opentelemetry::KeyValue;
 
         let attributes = [
-            KeyValue::new("db.system", "skein"),
-            KeyValue::new("skein.runtime.event", event.kind.as_str()),
+            KeyValue::new("db.system", "hawdb"),
+            KeyValue::new("hawdb.runtime.event", event.kind.as_str()),
             KeyValue::new(
-                "skein.work.priority",
+                "hawdb.work.priority",
                 event
                     .priority
                     .map(|priority| priority.as_str())
                     .unwrap_or(""),
             ),
             KeyValue::new(
-                "skein.work.kind",
+                "hawdb.work.kind",
                 event.work_kind.map(|kind| kind.as_str()).unwrap_or(""),
             ),
             KeyValue::new(
-                "skein.runtime.admission_code",
+                "hawdb.runtime.admission_code",
                 event.admission_code.map(|code| code.as_str()).unwrap_or(""),
             ),
             KeyValue::new(
-                "skein.runtime.retryable",
+                "hawdb.runtime.retryable",
                 event
                     .retryable
                     .map(|value| value.to_string())

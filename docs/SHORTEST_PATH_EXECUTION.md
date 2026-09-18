@@ -1,6 +1,6 @@
 # Shortest-path discovery and materialization
 
-Issue: [#222](https://github.com/nowledge-co/skein/issues/222).
+Issue: [#222](https://github.com/nowledge-co/hawdb/issues/222).
 
 `ShortestPathExec` discovers paths one BFS level at a time. It does not keep
 complete path vectors in its frontier. The implementation is private to the
@@ -76,12 +76,12 @@ transient allocation overlap. Existing query ACL and accounted-stream tests
 remain integration gates.
 
 ```sh
-cargo test -p skein-executor
-cargo test -p skein --lib
-cargo test -p skein --lib --features acl shortest_path
-cargo clippy -p skein-executor --all-targets --all-features -- -D warnings
-bazel test //crates/executor:skein_executor_tests //:skein_unit_tests
-bazel test //crates/fuzz:skein_fuzz_tests //crates/fuzz:skein_fuzz_cli_tests //:skein_linux_ci_fuzz_smoke_test
+cargo test -p hawdb-executor
+cargo test -p hawdb --lib
+cargo test -p hawdb --lib --features acl shortest_path
+cargo clippy -p hawdb-executor --all-targets --all-features -- -D warnings
+bazel test //crates/executor:hawdb_executor_tests //:hawdb_unit_tests
+bazel test //crates/fuzz:hawdb_fuzz_tests //crates/fuzz:hawdb_fuzz_cli_tests //:hawdb_linux_ci_fuzz_smoke_test
 ```
 
 Fuzz remains local verification, not a default or dedicated CI job.

@@ -1,5 +1,5 @@
+use hawdb::{QueryRow, QueryRows, Row, Value};
 use sha2::{Digest, Sha256};
-use skein::{QueryRow, QueryRows, Row, Value};
 
 pub(crate) trait EvidenceRows {
     fn row_count(&self) -> usize;
@@ -138,7 +138,7 @@ pub(crate) fn hash_bytes(hasher: &mut Sha256, bytes: &[u8]) {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use skein::Uuid;
+    use hawdb::Uuid;
 
     #[test]
     fn uuid_values_have_a_distinct_canonical_digest() {

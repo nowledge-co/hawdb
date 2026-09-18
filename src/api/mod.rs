@@ -1,6 +1,6 @@
 use crate::analytics::ProjectedGraph;
 use crate::cypher;
-use crate::error::{Result, SkeinError};
+use crate::error::{HawdbError, Result};
 use crate::executor::{self, Row, RowRef};
 use crate::optimizer::{
     CascadesOptimizer, OptimizerConfig, OptimizerContext, OptimizerSearchDirective, OptimizerTrace,
@@ -33,11 +33,11 @@ use crate::store::{
     AppendTableSchema, AppendTransaction, BasicStatisticsConsistencyReport,
     DegreeStatisticsConsistencyReport, DistinctValueStatisticsConsistencyReport, DurabilityPolicy,
     GraphMutationLockFootprint, GraphMutationSavepoint, GraphMutationTransaction,
-    GraphSnapshotNodeImport, GraphSnapshotRelationshipImport, GraphStore, KernelWriteBatch,
-    MutationSummary, NodeId, NodeRecord, OptimizerStatisticsRefreshWork, PreparedCheckpoint,
-    PropertyIndexConsistencyReport, PropertyIndexProjectionRebuildAction, PublishedReadView,
-    RecoveryMode, RelId, RelRecord, SchemaMaintenanceAction, SegmentCacheSnapshot,
-    SkeinSnapshotRowsImport, StorageBackupReport, StoragePressureSnapshot,
+    GraphSnapshotNodeImport, GraphSnapshotRelationshipImport, GraphStore, HawdbSnapshotRowsImport,
+    KernelWriteBatch, MutationSummary, NodeId, NodeRecord, OptimizerStatisticsRefreshWork,
+    PreparedCheckpoint, PropertyIndexConsistencyReport, PropertyIndexProjectionRebuildAction,
+    PublishedReadView, RecoveryMode, RelId, RelRecord, SchemaMaintenanceAction,
+    SegmentCacheSnapshot, StorageBackupReport, StoragePressureSnapshot,
     StorageReclamationWatermark, StorageRecoveryReport, StorageRestoreReport, StorageScrubReport,
     StoreStableIdMapping, WalReplayConfig,
 };
@@ -48,14 +48,14 @@ use crate::telemetry::{
 use crate::value::Value;
 use canonical_snapshot::export_canonical_graph_snapshot_for;
 use explain::{empty_read_execution_profile, explain_analyze_output_row, explain_output_row};
+use hawdb_optimizer::{
+    normalize_search_enum_value, search_field_is_enum_like, SearchPredicate, SearchPredicateOp,
+    SearchPredicateSet,
+};
 use plan_cache::{
     optimized_query_plan_for, statement_uses_plan_cache, OptimizedQueryPlan,
     OptimizerEnvironmentKey, OptimizerPlanningCache, PlanCache, PlanCacheContext, PlanCacheMode,
     PlanTraceMode, DEFAULT_PLAN_CACHE_MAX_ENTRIES,
-};
-use skein_optimizer::{
-    normalize_search_enum_value, search_field_is_enum_like, SearchPredicate, SearchPredicateOp,
-    SearchPredicateSet,
 };
 use std::collections::{BTreeMap, BTreeSet, VecDeque};
 use std::num::NonZeroUsize;
@@ -63,7 +63,7 @@ use std::path::Path;
 use std::sync::{Arc, Mutex, MutexGuard};
 
 #[cfg(not(test))]
-use skein_nowledge_contracts::test_support::graph_read::KnowledgeNeighborDirection;
+use hawdb_nowledge_contracts::test_support::graph_read::KnowledgeNeighborDirection;
 use system_variables::{
     apply_set_system_variable, query_statement_variables_for_statement,
     query_work_request_for_statement, reject_system_variable_parameters,
@@ -90,14 +90,14 @@ mod system_variables;
 mod transaction_locks;
 mod types;
 
-pub(crate) use skein_system_sql as system_sql;
+pub(crate) use hawdb_system_sql as system_sql;
 
+pub(crate) use hawdb_executor::runtime_admission::runtime_planning_request;
+#[cfg(feature = "tokio-runtime")]
+pub(crate) use hawdb_executor::runtime_admission::RuntimeAdmissionPlan;
 pub(crate) use query_runtime::PreparedRuntimeQuery;
 #[cfg(feature = "tokio-runtime")]
 pub(crate) use query_runtime::RuntimePlanningSnapshot;
-pub(crate) use skein_executor::runtime_admission::runtime_planning_request;
-#[cfg(feature = "tokio-runtime")]
-pub(crate) use skein_executor::runtime_admission::RuntimeAdmissionPlan;
 pub use types::*;
 
 const DEFAULT_SEARCH_PROJECTION_CHANGE_LOG_MAX_ENTRIES: usize = 4096;
@@ -109,52 +109,52 @@ pub use artifact_jobs::{
     ExternalContentArtifactRuntimeManifest,
 };
 pub use canonical_snapshot::{
-    parse_skein_lightning_graph_stream_export, skein_lightning_initial_import_advance_checkpoint,
-    skein_lightning_initial_import_advance_durable_state_streaming,
-    skein_lightning_initial_import_advance_durable_state_with_search_projection_batch,
-    skein_lightning_initial_import_checkpoint_readiness,
-    skein_lightning_initial_import_cutover_catch_up_report,
-    skein_lightning_initial_import_decode_durable_state,
-    skein_lightning_initial_import_document_identity_coverage,
-    skein_lightning_initial_import_durable_state_report,
-    skein_lightning_initial_import_encode_durable_state, skein_lightning_initial_import_plan,
-    skein_lightning_initial_import_plan_with_document_identities,
-    skein_lightning_initial_import_readiness, skein_lightning_initial_import_recovery_readiness,
-    skein_lightning_initial_import_resume_action,
-    skein_lightning_initial_import_search_projection_batch_report,
-    skein_lightning_initial_import_search_projection_batch_report_with_document_identities,
-    skein_lightning_initial_import_session_bundle_readiness,
-    skein_lightning_initial_import_session_report,
-    skein_lightning_initial_import_source_bundle_readiness,
-    skein_lightning_initial_import_source_fingerprint,
-    skein_lightning_initial_import_startup_readiness, validate_skein_lightning_graph_stream,
-    validate_skein_lightning_relational_stream, CanonicalGraphSnapshotExport,
-    CanonicalGraphSnapshotValidation, CanonicalSnapshotEndpointViolation,
-    CanonicalSnapshotIdentityAudit, CanonicalSnapshotNode, CanonicalSnapshotRelationship,
-    CanonicalStableIdMapping, SkeinLightningBootstrapExport, SkeinLightningBootstrapManifest,
-    SkeinLightningGraphStream, SkeinLightningGraphStreamValidation,
-    SkeinLightningInitialImportApplyReport, SkeinLightningInitialImportCheckpoint,
-    SkeinLightningInitialImportCheckpointProgress,
-    SkeinLightningInitialImportCheckpointProgressReport,
-    SkeinLightningInitialImportCheckpointReadiness,
-    SkeinLightningInitialImportCutoverCatchUpReport, SkeinLightningInitialImportDocumentIdentity,
-    SkeinLightningInitialImportDocumentIdentityCoverage,
-    SkeinLightningInitialImportDocumentIdentityKindReport,
-    SkeinLightningInitialImportDurableBatchAdvanceReport, SkeinLightningInitialImportDurableState,
-    SkeinLightningInitialImportDurableStateCodecReport,
-    SkeinLightningInitialImportDurableStateReport, SkeinLightningInitialImportIdempotencyKey,
-    SkeinLightningInitialImportPlan, SkeinLightningInitialImportReadiness,
-    SkeinLightningInitialImportReadinessInputs, SkeinLightningInitialImportRecoveryReadinessReport,
-    SkeinLightningInitialImportResumeAction, SkeinLightningInitialImportResumeActionKind,
-    SkeinLightningInitialImportSearchProjectionBatchReport,
-    SkeinLightningInitialImportSessionBundleReadiness, SkeinLightningInitialImportSessionReport,
-    SkeinLightningInitialImportSourceBundleReadiness, SkeinLightningInitialImportSourceFingerprint,
-    SkeinLightningInitialImportStartupReadinessReport,
-    SkeinLightningInitialImportStreamingBatchAdvanceReport, SkeinLightningRelationalStream,
-    SkeinLightningRelationalStreamValidation, SKEIN_LIGHTNING_BOOTSTRAP_PROTOCOL_VERSION,
-    SKEIN_LIGHTNING_GRAPH_STREAM_FORMAT_VERSION,
-    SKEIN_LIGHTNING_INITIAL_IMPORT_DURABLE_STATE_PROTOCOL,
-    SKEIN_LIGHTNING_RELATIONAL_STREAM_FORMAT_VERSION,
+    hawdb_lightning_initial_import_advance_checkpoint,
+    hawdb_lightning_initial_import_advance_durable_state_streaming,
+    hawdb_lightning_initial_import_advance_durable_state_with_search_projection_batch,
+    hawdb_lightning_initial_import_checkpoint_readiness,
+    hawdb_lightning_initial_import_cutover_catch_up_report,
+    hawdb_lightning_initial_import_decode_durable_state,
+    hawdb_lightning_initial_import_document_identity_coverage,
+    hawdb_lightning_initial_import_durable_state_report,
+    hawdb_lightning_initial_import_encode_durable_state, hawdb_lightning_initial_import_plan,
+    hawdb_lightning_initial_import_plan_with_document_identities,
+    hawdb_lightning_initial_import_readiness, hawdb_lightning_initial_import_recovery_readiness,
+    hawdb_lightning_initial_import_resume_action,
+    hawdb_lightning_initial_import_search_projection_batch_report,
+    hawdb_lightning_initial_import_search_projection_batch_report_with_document_identities,
+    hawdb_lightning_initial_import_session_bundle_readiness,
+    hawdb_lightning_initial_import_session_report,
+    hawdb_lightning_initial_import_source_bundle_readiness,
+    hawdb_lightning_initial_import_source_fingerprint,
+    hawdb_lightning_initial_import_startup_readiness, parse_hawdb_lightning_graph_stream_export,
+    validate_hawdb_lightning_graph_stream, validate_hawdb_lightning_relational_stream,
+    CanonicalGraphSnapshotExport, CanonicalGraphSnapshotValidation,
+    CanonicalSnapshotEndpointViolation, CanonicalSnapshotIdentityAudit, CanonicalSnapshotNode,
+    CanonicalSnapshotRelationship, CanonicalStableIdMapping, HawdbLightningBootstrapExport,
+    HawdbLightningBootstrapManifest, HawdbLightningGraphStream,
+    HawdbLightningGraphStreamValidation, HawdbLightningInitialImportApplyReport,
+    HawdbLightningInitialImportCheckpoint, HawdbLightningInitialImportCheckpointProgress,
+    HawdbLightningInitialImportCheckpointProgressReport,
+    HawdbLightningInitialImportCheckpointReadiness,
+    HawdbLightningInitialImportCutoverCatchUpReport, HawdbLightningInitialImportDocumentIdentity,
+    HawdbLightningInitialImportDocumentIdentityCoverage,
+    HawdbLightningInitialImportDocumentIdentityKindReport,
+    HawdbLightningInitialImportDurableBatchAdvanceReport, HawdbLightningInitialImportDurableState,
+    HawdbLightningInitialImportDurableStateCodecReport,
+    HawdbLightningInitialImportDurableStateReport, HawdbLightningInitialImportIdempotencyKey,
+    HawdbLightningInitialImportPlan, HawdbLightningInitialImportReadiness,
+    HawdbLightningInitialImportReadinessInputs, HawdbLightningInitialImportRecoveryReadinessReport,
+    HawdbLightningInitialImportResumeAction, HawdbLightningInitialImportResumeActionKind,
+    HawdbLightningInitialImportSearchProjectionBatchReport,
+    HawdbLightningInitialImportSessionBundleReadiness, HawdbLightningInitialImportSessionReport,
+    HawdbLightningInitialImportSourceBundleReadiness, HawdbLightningInitialImportSourceFingerprint,
+    HawdbLightningInitialImportStartupReadinessReport,
+    HawdbLightningInitialImportStreamingBatchAdvanceReport, HawdbLightningRelationalStream,
+    HawdbLightningRelationalStreamValidation, HAWDB_LIGHTNING_BOOTSTRAP_PROTOCOL_VERSION,
+    HAWDB_LIGHTNING_GRAPH_STREAM_FORMAT_VERSION,
+    HAWDB_LIGHTNING_INITIAL_IMPORT_DURABLE_STATE_PROTOCOL,
+    HAWDB_LIGHTNING_RELATIONAL_STREAM_FORMAT_VERSION,
 };
 pub use concurrent::{
     ConcurrentDatabase, ConcurrentDatabaseTransaction, ConcurrentTransactionMode,
@@ -166,6 +166,13 @@ pub use concurrent::{
     DEFAULT_WAL_GROUP_COMMIT_MAX_BYTES, DEFAULT_WAL_GROUP_COMMIT_MAX_DELAY,
     DEFAULT_WAL_GROUP_COMMIT_MAX_ENTRIES,
 };
+pub use hawdb_core::QueryAccessControlContext;
+pub use hawdb_evidence::AccessControlPolicyReadiness;
+pub use hawdb_executor::{BoundedReadQueryOutput, QueryStreamOptions, QueryStreamReport};
+pub use hawdb_explain::{ExplainAnalyzeOutput, ExplainOutput, NowledgeGraphExplainOutput};
+pub use hawdb_system_sql::{
+    SlowQueryLogExportOptions, SlowQueryLogRecordSummary, SLOW_QUERY_LOG_EVENT_PROTOCOL,
+};
 pub use plan_cache::{PlanCacheBypassReason, PlanCacheLookup, PlanCacheStats};
 pub use resource_profile::{
     StorageResourceProfileLimits, StorageResourceProfileReport, STORAGE_RESOURCE_PROFILE_PROTOCOL,
@@ -174,13 +181,6 @@ pub use search_projection_catch_up::{
     ScheduledSearchProjectionCatchUpReport, SearchProjectionCatchUpReport,
     SearchProjectionCatchUpStopReason,
 };
-pub use skein_core::QueryAccessControlContext;
-pub use skein_evidence::AccessControlPolicyReadiness;
-pub use skein_executor::{BoundedReadQueryOutput, QueryStreamOptions, QueryStreamReport};
-pub use skein_explain::{ExplainAnalyzeOutput, ExplainOutput, NowledgeGraphExplainOutput};
-pub use skein_system_sql::{
-    SlowQueryLogExportOptions, SlowQueryLogRecordSummary, SLOW_QUERY_LOG_EVENT_PROTOCOL,
-};
 pub use source_candidates::{
     KnowledgeSourceCandidateRow, KnowledgeSourceCandidateScanOrigin,
     KnowledgeSourceCandidateScanOutput, KnowledgeSourceCandidateScanRequest,
@@ -188,10 +188,10 @@ pub use source_candidates::{
 pub use system_schema::{SystemSchemaMigration, SystemSchemaRegistry, SystemSchemaUpgradeReport};
 pub use system_variables::QuerySystemVariables;
 
-fn skein_lightning_initial_import_source_fingerprint_key(
-    manifest: &SkeinLightningBootstrapManifest,
+fn hawdb_lightning_initial_import_source_fingerprint_key(
+    manifest: &HawdbLightningBootstrapManifest,
 ) -> String {
-    let fingerprint = skein_lightning_initial_import_source_fingerprint(manifest);
+    let fingerprint = hawdb_lightning_initial_import_source_fingerprint(manifest);
     format!(
         "v{}:{}:{}:{}:{}:{}:{}:{}:{}:{}:{}:{}:{}",
         fingerprint.protocol_version,
@@ -224,9 +224,9 @@ pub struct Database {
     local_qos_scheduler: LocalQosScheduler,
     system_variables: QuerySystemVariables,
     reader_pins: Arc<Mutex<ReaderPins>>,
-    derived_artifact_jobs: skein_artifact::DerivedArtifactJobQueue,
+    derived_artifact_jobs: hawdb_artifact::DerivedArtifactJobQueue,
     telemetry: Option<Arc<dyn TelemetrySink>>,
-    runtime_governor: Option<skein_qos::RuntimeGovernor>,
+    runtime_governor: Option<hawdb_qos::RuntimeGovernor>,
     projection_consumers: search_projection_consumer::ConsumerRegistry,
 }
 
@@ -266,7 +266,7 @@ pub struct DatabaseConfig {
     pub max_read_result_rows: Option<usize>,
     pub max_read_result_payload_bytes: Option<usize>,
     pub execution_memory: executor::ExecutionMemoryConfig,
-    pub mutation_limits: skein_storage::MutationLimits,
+    pub mutation_limits: hawdb_storage::MutationLimits,
     /// Maximum memo groups available to graph and relational optimizer search.
     pub max_optimizer_groups: Option<usize>,
     /// Maximum memo expressions available to relational join enumeration.
@@ -287,7 +287,7 @@ pub struct DatabaseConfig {
     /// Cache hits consume the separately derived logical traversal budget only.
     pub max_relational_index_read_bytes: NonZeroUsize,
     pub max_relational_hydration_bytes: NonZeroUsize,
-    pub storage_residency_mode: skein_storage::StorageResidencyMode,
+    pub storage_residency_mode: hawdb_storage::StorageResidencyMode,
     pub auto_materialize_checkpoint_bytes: u64,
     pub max_out_of_core_delta_bytes: Option<u64>,
     /// Derived columnar shadow double-write: every checkpoint also
@@ -297,14 +297,14 @@ pub struct DatabaseConfig {
     /// never served from the shadow.
     pub graph_columnar_shadow_checkpoint: bool,
     /// Persistent relational-index publication and read activation mode.
-    pub relational_index_mode: skein_storage::RelationalIndexMode,
+    pub relational_index_mode: hawdb_storage::RelationalIndexMode,
     /// Enables the metadata-only monotonic INSERT fast path for RowPage tables.
     /// Disabled by default until workload qualification explicitly activates it.
     pub relational_monotonic_append_fast_path: bool,
     pub max_search_projection_change_log_entries: Option<usize>,
     pub max_search_projection_change_log_bytes: Option<usize>,
     pub search_projection_relational_change_limits:
-        skein_storage::RelationalPrimaryKeyChangeCaptureLimits,
+        hawdb_storage::RelationalPrimaryKeyChangeCaptureLimits,
     /// Maximum entries per graph physical-plan or relational SQL-template cache.
     pub max_plan_cache_entries: Option<usize>,
     pub slow_query_log_capacity: usize,
@@ -313,9 +313,9 @@ pub struct DatabaseConfig {
     /// Background-work policy used for this database's full runtime lifetime
     /// by its shared local QoS scheduler.
     pub local_qos_policy: LocalQosPolicy,
-    pub runtime_capabilities: skein_core::RuntimeCapabilities,
+    pub runtime_capabilities: hawdb_core::RuntimeCapabilities,
     pub compressed_vector_search_mode: CompressedVectorSearchMode,
-    pub adaptive_vector_backend_policy: skein_optimizer::AdaptiveVectorBackendPolicy,
+    pub adaptive_vector_backend_policy: hawdb_optimizer::AdaptiveVectorBackendPolicy,
 }
 
 pub const DEFAULT_MAX_READ_RESULT_ROWS: usize = 100_000;
@@ -348,34 +348,34 @@ fn relational_query_limits_with_payload(
     // reaches its intermediate-row limit can still produce an admitted result.
     let max_row_read_rows = max_intermediate_rows.saturating_add(max_output_rows).max(1);
     let max_scan_pages = max_intermediate_rows
-        .div_ceil(skein_storage::DEFAULT_RELATIONAL_ROW_PAGE_ROWS)
+        .div_ceil(hawdb_storage::DEFAULT_RELATIONAL_ROW_PAGE_ROWS)
         .max(1);
     let max_row_read_pages = max_scan_pages.saturating_add(max_output_rows).max(1);
     let max_row_read_bytes = max_row_read_pages
-        .saturating_mul(skein_storage::DEFAULT_RELATIONAL_ROW_PAGE_BYTES)
+        .saturating_mul(hawdb_storage::DEFAULT_RELATIONAL_ROW_PAGE_BYTES)
         .max(1);
     // Logical index traversal includes cache hits and must scale with the
     // statement's admitted intermediate rows. Physical index reads retain a
     // separate fixed I/O ceiling so a warm cache cannot disable query bounds.
     let max_index_read_pages = max_intermediate_rows
-        .saturating_mul(skein_storage::DEFAULT_RELATIONAL_INDEX_READ_TREE_HEIGHT as usize)
+        .saturating_mul(hawdb_storage::DEFAULT_RELATIONAL_INDEX_READ_TREE_HEIGHT as usize)
         .max(1);
     let max_index_read_bytes = max_index_read_pages
-        .saturating_mul(skein_storage::DEFAULT_IMMUTABLE_INDEX_PAGE_BYTES)
+        .saturating_mul(hawdb_storage::DEFAULT_IMMUTABLE_INDEX_PAGE_BYTES)
         .max(1);
     crate::relational_sql::RelationalQueryLimits {
         max_output_rows,
         max_output_payload_bytes,
         max_intermediate_rows,
         max_candidate_work: max_intermediate_rows,
-        hydration: skein_storage::RelationalHydrationBudget {
+        hydration: hawdb_storage::RelationalHydrationBudget {
             max_rows: max_row_read_rows,
             max_compressed_bytes: config.max_relational_hydration_bytes.get(),
             max_decompressed_bytes: config.max_relational_hydration_bytes.get(),
             max_memory_bytes: config.max_relational_hydration_bytes.get(),
-            ..skein_storage::RelationalHydrationBudget::default()
+            ..hawdb_storage::RelationalHydrationBudget::default()
         },
-        index_read: skein_storage::RelationalIndexReadLimits {
+        index_read: hawdb_storage::RelationalIndexReadLimits {
             max_pages: NonZeroUsize::new(max_index_read_pages)
                 .expect("relational index query page budget is non-zero"),
             max_rows: NonZeroUsize::new(max_intermediate_rows.max(1))
@@ -383,28 +383,28 @@ fn relational_query_limits_with_payload(
             max_bytes: NonZeroUsize::new(max_index_read_bytes)
                 .expect("relational index query byte budget is non-zero"),
             max_file_bytes: config.max_relational_index_read_bytes.get(),
-            ..skein_storage::RelationalIndexReadLimits::default()
+            ..hawdb_storage::RelationalIndexReadLimits::default()
         },
-        row_read: skein_storage::RelationalRowPageSnapshotReadLimits {
-            demand: skein_storage::RelationalRowPageDemandReadLimits {
+        row_read: hawdb_storage::RelationalRowPageSnapshotReadLimits {
+            demand: hawdb_storage::RelationalRowPageDemandReadLimits {
                 max_pages: NonZeroUsize::new(max_row_read_pages)
                     .expect("relational row query page budget is non-zero"),
                 max_rows: NonZeroUsize::new(max_row_read_rows)
                     .expect("relational row query row budget is non-zero"),
                 max_bytes: NonZeroUsize::new(max_row_read_bytes)
                     .expect("relational row query byte budget is non-zero"),
-                ..skein_storage::RelationalRowPageDemandReadLimits::default()
+                ..hawdb_storage::RelationalRowPageDemandReadLimits::default()
             },
-            ..skein_storage::RelationalRowPageSnapshotReadLimits::default()
+            ..hawdb_storage::RelationalRowPageSnapshotReadLimits::default()
         },
     }
 }
 
 fn relational_join_enumeration_config_from_database_config(
     config: &DatabaseConfig,
-) -> skein_optimizer::RelationalJoinEnumerationConfig {
-    let defaults = skein_optimizer::RelationalJoinEnumerationConfig::default();
-    skein_optimizer::RelationalJoinEnumerationConfig {
+) -> hawdb_optimizer::RelationalJoinEnumerationConfig {
+    let defaults = hawdb_optimizer::RelationalJoinEnumerationConfig::default();
+    hawdb_optimizer::RelationalJoinEnumerationConfig {
         max_groups: optimizer_config_from_database_config(config).max_groups,
         max_expressions: config
             .max_relational_join_expressions
@@ -416,7 +416,7 @@ fn relational_query_resource_context<'a>(
     config: &'a DatabaseConfig,
     max_rows: Option<usize>,
     max_payload_bytes: Option<usize>,
-    task_context: Option<&'a skein_core::RuntimeTaskContext>,
+    task_context: Option<&'a hawdb_core::RuntimeTaskContext>,
 ) -> crate::relational_sql::RelationalQueryResourceContext<'a> {
     crate::relational_sql::RelationalQueryResourceContext::new(
         relational_join_enumeration_config_from_database_config(config),
@@ -439,16 +439,16 @@ fn relational_index_read_mode<'a>(
     store: &'a GraphStore,
 ) -> crate::relational_sql::RelationalIndexReadMode<'a> {
     match config.relational_index_mode {
-        skein_storage::RelationalIndexMode::Materialized => {
+        hawdb_storage::RelationalIndexMode::Materialized => {
             crate::relational_sql::RelationalIndexReadMode::Materialized
         }
-        skein_storage::RelationalIndexMode::Shadow => {
+        hawdb_storage::RelationalIndexMode::Shadow => {
             crate::relational_sql::RelationalIndexReadMode::Shadow(store)
         }
-        skein_storage::RelationalIndexMode::DemandPaged => {
+        hawdb_storage::RelationalIndexMode::DemandPaged => {
             crate::relational_sql::RelationalIndexReadMode::DemandPaged(store)
         }
-        skein_storage::RelationalIndexMode::Authoritative => {
+        hawdb_storage::RelationalIndexMode::Authoritative => {
             crate::relational_sql::RelationalIndexReadMode::Authoritative(store)
         }
     }
@@ -461,33 +461,33 @@ impl Default for DatabaseConfig {
             max_read_result_rows: Some(DEFAULT_MAX_READ_RESULT_ROWS),
             max_read_result_payload_bytes: Some(DEFAULT_MAX_READ_RESULT_PAYLOAD_BYTES),
             execution_memory: executor::ExecutionMemoryConfig::default(),
-            mutation_limits: skein_storage::MutationLimits::default(),
+            mutation_limits: hawdb_storage::MutationLimits::default(),
             max_optimizer_groups: None,
             max_relational_join_expressions: None,
             recovery_mode: RecoveryMode::default(),
-            max_wal_replay_entries: Some(skein_storage::DEFAULT_MAX_WAL_REPLAY_ENTRIES),
-            max_wal_replay_bytes: Some(skein_storage::DEFAULT_MAX_WAL_REPLAY_BYTES),
-            max_wal_quarantine_bytes: skein_storage::DEFAULT_MAX_WAL_QUARANTINE_BYTES,
-            max_wal_record_bytes: Some(skein_storage::DEFAULT_MAX_WAL_RECORD_BYTES),
-            max_wal_batch_operations: Some(skein_storage::DEFAULT_MAX_WAL_BATCH_OPERATIONS),
-            max_checkpoint_encoded_bytes: Some(skein_storage::DEFAULT_MAX_CHECKPOINT_ENCODED_BYTES),
-            max_checkpoint_decoded_bytes: Some(skein_storage::DEFAULT_MAX_CHECKPOINT_DECODED_BYTES),
-            segment_cache_capacity_bytes: skein_storage::DEFAULT_SEGMENT_CACHE_CAPACITY_BYTES,
-            max_graph_manifest_open_bytes: skein_storage::DEFAULT_MAX_GRAPH_MANIFEST_OPEN_BYTES,
+            max_wal_replay_entries: Some(hawdb_storage::DEFAULT_MAX_WAL_REPLAY_ENTRIES),
+            max_wal_replay_bytes: Some(hawdb_storage::DEFAULT_MAX_WAL_REPLAY_BYTES),
+            max_wal_quarantine_bytes: hawdb_storage::DEFAULT_MAX_WAL_QUARANTINE_BYTES,
+            max_wal_record_bytes: Some(hawdb_storage::DEFAULT_MAX_WAL_RECORD_BYTES),
+            max_wal_batch_operations: Some(hawdb_storage::DEFAULT_MAX_WAL_BATCH_OPERATIONS),
+            max_checkpoint_encoded_bytes: Some(hawdb_storage::DEFAULT_MAX_CHECKPOINT_ENCODED_BYTES),
+            max_checkpoint_decoded_bytes: Some(hawdb_storage::DEFAULT_MAX_CHECKPOINT_DECODED_BYTES),
+            segment_cache_capacity_bytes: hawdb_storage::DEFAULT_SEGMENT_CACHE_CAPACITY_BYTES,
+            max_graph_manifest_open_bytes: hawdb_storage::DEFAULT_MAX_GRAPH_MANIFEST_OPEN_BYTES,
             max_relational_index_read_bytes: NonZeroUsize::new(
-                skein_storage::DEFAULT_RELATIONAL_INDEX_READ_BYTES,
+                hawdb_storage::DEFAULT_RELATIONAL_INDEX_READ_BYTES,
             )
             .expect("default relational index read byte budget is non-zero"),
             max_relational_hydration_bytes: NonZeroUsize::new(
-                skein_storage::DEFAULT_MAX_RELATIONAL_HYDRATION_BYTES,
+                hawdb_storage::DEFAULT_MAX_RELATIONAL_HYDRATION_BYTES,
             )
             .expect("default relational hydration byte budget is non-zero"),
-            storage_residency_mode: skein_storage::StorageResidencyMode::Auto,
+            storage_residency_mode: hawdb_storage::StorageResidencyMode::Auto,
             auto_materialize_checkpoint_bytes:
-                skein_storage::DEFAULT_AUTO_MATERIALIZE_CHECKPOINT_BYTES,
-            max_out_of_core_delta_bytes: Some(skein_storage::DEFAULT_MAX_OUT_OF_CORE_DELTA_BYTES),
+                hawdb_storage::DEFAULT_AUTO_MATERIALIZE_CHECKPOINT_BYTES,
+            max_out_of_core_delta_bytes: Some(hawdb_storage::DEFAULT_MAX_OUT_OF_CORE_DELTA_BYTES),
             graph_columnar_shadow_checkpoint: false,
-            relational_index_mode: skein_storage::RelationalIndexMode::default(),
+            relational_index_mode: hawdb_storage::RelationalIndexMode::default(),
             relational_monotonic_append_fast_path: false,
             max_search_projection_change_log_entries: Some(
                 DEFAULT_SEARCH_PROJECTION_CHANGE_LOG_MAX_ENTRIES,
@@ -503,7 +503,7 @@ impl Default for DatabaseConfig {
             local_qos_policy: LocalQosPolicy::default(),
             runtime_capabilities: crate::compiled_runtime_capabilities(),
             compressed_vector_search_mode: CompressedVectorSearchMode::Disabled,
-            adaptive_vector_backend_policy: skein_optimizer::AdaptiveVectorBackendPolicy::default(),
+            adaptive_vector_backend_policy: hawdb_optimizer::AdaptiveVectorBackendPolicy::default(),
         }
     }
 }
@@ -521,7 +521,7 @@ pub(crate) fn system_runtime_snapshot(
     )
 }
 
-pub use skein_executor::QueryOutput;
+pub use hawdb_executor::QueryOutput;
 
 /// Deterministic outcome for one relational INSERT, UPDATE, or DELETE statement.
 ///
@@ -550,14 +550,14 @@ pub struct SqlStatementResult {
 pub struct TransactionCommitResult {
     pub output: QueryOutput,
     pub mutations: Vec<RelationalMutationResult>,
-    pub append_mutations: Vec<skein_storage::AppendMutationOutcome>,
+    pub append_mutations: Vec<hawdb_storage::AppendMutationOutcome>,
 }
 
 /// Confirmed generated order-key assignments from one durable append commit.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct AppendCommitResult {
     pub commit_epoch: u64,
-    pub mutations: Vec<skein_storage::AppendMutationOutcome>,
+    pub mutations: Vec<hawdb_storage::AppendMutationOutcome>,
 }
 
 #[cfg(test)]
@@ -583,7 +583,7 @@ impl QueryRowLookup for executor::QueryRowRef<'_> {
 /// generation inside a pinned read transaction.
 ///
 /// The binding is generic rather than route-specific. The application owns the
-/// PostgreSQL DDL for the named tables and the projection version. Skein owns
+/// PostgreSQL DDL for the named tables and the projection version. Hawdb owns
 /// active-generation resolution, pin lifetime, row decoding, and query
 /// admission.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -605,22 +605,22 @@ impl ProjectionRelationalReadBinding {
         let owner_key = owner_key.into();
         let tables = tables.into_iter().map(Into::into).collect::<BTreeSet<_>>();
         if projection.trim().is_empty() {
-            return Err(SkeinError::Semantic(
+            return Err(HawdbError::Semantic(
                 "projection relational binding requires a non-empty projection name".to_string(),
             ));
         }
         if owner_key.is_empty() {
-            return Err(SkeinError::Semantic(
+            return Err(HawdbError::Semantic(
                 "projection relational binding requires a non-empty owner key".to_string(),
             ));
         }
         if projection_version == 0 {
-            return Err(SkeinError::Semantic(
+            return Err(HawdbError::Semantic(
                 "projection relational binding requires a non-zero projection version".to_string(),
             ));
         }
         if tables.is_empty() || tables.iter().any(|table| table.trim().is_empty()) {
-            return Err(SkeinError::Semantic(
+            return Err(HawdbError::Semantic(
                 "projection relational binding requires non-empty table names".to_string(),
             ));
         }
@@ -673,7 +673,7 @@ pub struct DatabaseTransaction<'a> {
     db: &'a mut Database,
     runtime: DatabaseTransactionRuntime,
     state: DatabaseTransactionState,
-    task_context: Option<skein_core::RuntimeTaskContext>,
+    task_context: Option<hawdb_core::RuntimeTaskContext>,
 }
 
 #[derive(Debug)]
@@ -689,10 +689,10 @@ pub(super) struct DatabaseTransactionRuntime {
 #[derive(Debug)]
 pub(super) struct DatabaseTransactionState {
     graph_transaction: Option<GraphMutationTransaction>,
-    relational_transaction: skein_storage::RelationalTransaction,
-    relational_state: skein_storage::RelationalState,
-    append_transaction: skein_storage::AppendTransaction,
-    append_state: skein_storage::AppendState,
+    relational_transaction: hawdb_storage::RelationalTransaction,
+    relational_state: hawdb_storage::RelationalState,
+    append_transaction: hawdb_storage::AppendTransaction,
+    append_state: hawdb_storage::AppendState,
     pending_generated_append_tables: BTreeSet<String>,
     relational_returning: Vec<Option<crate::relational_sql::RelationalReturningProjection>>,
     relational_index:
@@ -702,10 +702,10 @@ pub(super) struct DatabaseTransactionState {
 }
 
 struct SparseRelationalStatementStage {
-    state: skein_storage::RelationalState,
-    mutation_outcomes: Vec<skein_storage::RelationalMutationOutcome>,
-    index_capture: skein_storage::RelationalIndexChangeCapture,
-    row_capture: skein_storage::RelationalRowChangeCapture,
+    state: hawdb_storage::RelationalState,
+    mutation_outcomes: Vec<hawdb_storage::RelationalMutationOutcome>,
+    index_capture: hawdb_storage::RelationalIndexChangeCapture,
+    row_capture: hawdb_storage::RelationalRowChangeCapture,
 }
 
 pub(super) struct GraphTransactionStatementOutcome {
@@ -735,18 +735,18 @@ pub struct DatabaseReadTransaction {
     statement_summary_snapshot: Vec<system_sql::StatementSummaryRecord>,
     config: DatabaseConfig,
     projection_relational: Option<ProjectionRelationalReadSnapshot>,
-    task_context: Option<skein_core::RuntimeTaskContext>,
+    task_context: Option<hawdb_core::RuntimeTaskContext>,
     _pin: ReaderPin,
 }
 
 #[derive(Debug)]
 struct ProjectionRelationalReadSnapshot {
     binding: ProjectionRelationalReadBinding,
-    reader: skein_storage::ProjectionGenerationReader,
+    reader: hawdb_storage::ProjectionGenerationReader,
 }
 
 struct ReadStreamingExecutionContext<'a> {
-    task_context: Option<&'a skein_core::RuntimeTaskContext>,
+    task_context: Option<&'a hawdb_core::RuntimeTaskContext>,
     external: Option<&'a mut dyn executor::ExternalReadOperator>,
     delivery: executor::StreamDelivery,
 }
@@ -816,7 +816,7 @@ impl Default for Database {
             local_qos_scheduler,
             system_variables: QuerySystemVariables::default(),
             reader_pins: Arc::new(Mutex::new(ReaderPins::default())),
-            derived_artifact_jobs: skein_artifact::DerivedArtifactJobQueue::default(),
+            derived_artifact_jobs: hawdb_artifact::DerivedArtifactJobQueue::default(),
             telemetry: None,
             runtime_governor: None,
         }
@@ -828,7 +828,7 @@ impl Database {
     ///
     /// Candidate construction and publication stay on the embedded library
     /// path. In-memory databases do not expose a durable generation catalog.
-    pub fn projection_generation_store(&self) -> Result<skein_storage::ProjectionGenerationStore> {
+    pub fn projection_generation_store(&self) -> Result<hawdb_storage::ProjectionGenerationStore> {
         self.store.projection_generation_store()
     }
 
@@ -837,23 +837,23 @@ impl Database {
     pub fn encode_projection_relational_row(
         &self,
         table: &str,
-        row: skein_storage::RelationalRow,
-    ) -> Result<skein_storage::ProjectionGenerationMember> {
+        row: hawdb_storage::RelationalRow,
+    ) -> Result<hawdb_storage::ProjectionGenerationMember> {
         let schema = self
             .store
             .relational_state()
             .table_schema(table)
             .ok_or_else(|| {
-                SkeinError::Semantic(format!(
+                HawdbError::Semantic(format!(
                     "projection relational table {table} has no durable PostgreSQL schema"
                 ))
             })?;
-        skein_storage::encode_projection_relational_member(schema, row).map_err(|error| match error
+        hawdb_storage::encode_projection_relational_member(schema, row).map_err(|error| match error
         {
-            skein_storage::ProjectionGenerationError::Corruption(message) => {
-                SkeinError::StorageIntegrity(message)
+            hawdb_storage::ProjectionGenerationError::Corruption(message) => {
+                HawdbError::StorageIntegrity(message)
             }
-            error => SkeinError::Execution(error.to_string()),
+            error => HawdbError::Execution(error.to_string()),
         })
     }
 
@@ -897,7 +897,7 @@ impl Database {
             local_qos_scheduler,
             system_variables: QuerySystemVariables::default(),
             reader_pins: Arc::new(Mutex::new(ReaderPins::default())),
-            derived_artifact_jobs: skein_artifact::DerivedArtifactJobQueue::default(),
+            derived_artifact_jobs: hawdb_artifact::DerivedArtifactJobQueue::default(),
             telemetry: None,
             runtime_governor: None,
         }
@@ -925,7 +925,7 @@ impl Database {
 
     pub(crate) fn search_projection_changefeed_status(
         &self,
-    ) -> skein_storage::SearchProjectionChangefeedStatus {
+    ) -> hawdb_storage::SearchProjectionChangefeedStatus {
         self.store.search_projection_changefeed_status()
     }
 
@@ -934,7 +934,7 @@ impl Database {
         search_index: &SearchIndex,
         require_restart_recoverable: bool,
         max_operations: Option<usize>,
-    ) -> skein_storage::SearchProjectionChangefeedReadiness {
+    ) -> hawdb_storage::SearchProjectionChangefeedReadiness {
         let freshness = search_index.projection_freshness();
         self.store
             .search_projection_changefeed_status()
@@ -1028,7 +1028,7 @@ impl Database {
             local_qos_scheduler,
             system_variables: QuerySystemVariables::default(),
             reader_pins: Arc::new(Mutex::new(ReaderPins::default())),
-            derived_artifact_jobs: skein_artifact::DerivedArtifactJobQueue::default(),
+            derived_artifact_jobs: hawdb_artifact::DerivedArtifactJobQueue::default(),
             telemetry: None,
             runtime_governor: None,
         };
@@ -1049,13 +1049,13 @@ impl Database {
         self.local_qos_scheduler.clone()
     }
 
-    pub(crate) fn runtime_capabilities(&self) -> skein_core::RuntimeCapabilities {
+    pub(crate) fn runtime_capabilities(&self) -> hawdb_core::RuntimeCapabilities {
         self.config.runtime_capabilities
     }
 
     pub(super) fn ensure_runtime_capability(
         &self,
-        capability: skein_core::RuntimeCapability,
+        capability: hawdb_core::RuntimeCapability,
     ) -> Result<()> {
         self.config.runtime_capabilities.require(capability)
     }
@@ -1128,13 +1128,13 @@ impl Database {
         let query_result = (|| {
             if matches!(body, cypher::Statement::Checkpoint) {
                 reject_transaction_control_parameters("CHECKPOINT", parameters)?;
-                return Err(SkeinError::Execution(
+                return Err(HawdbError::Execution(
                     "CHECKPOINT is not allowed inside a read-only query runtime".to_string(),
                 ));
             }
             if matches!(body, cypher::Statement::SetSystemVariable(_)) {
                 reject_system_variable_parameters(parameters)?;
-                return Err(SkeinError::Execution(
+                return Err(HawdbError::Execution(
                     "SET system variable is not allowed inside a read-only query runtime"
                         .to_string(),
                 ));
@@ -1147,7 +1147,7 @@ impl Database {
                 None,
             )?;
             if executor::is_mutation_plan(&optimized.physical_plan)? {
-                return Err(SkeinError::Execution(
+                return Err(HawdbError::Execution(
                     "read-only query runtime must not execute a mutation".to_string(),
                 ));
             }
@@ -1179,14 +1179,14 @@ impl Database {
 
     pub fn begin_transaction_with_context(
         &mut self,
-        task_context: &skein_core::RuntimeTaskContext,
+        task_context: &hawdb_core::RuntimeTaskContext,
     ) -> DatabaseTransaction<'_> {
         self.begin_transaction_inner(Some(task_context.clone()))
     }
 
     fn begin_transaction_inner(
         &mut self,
-        task_context: Option<skein_core::RuntimeTaskContext>,
+        task_context: Option<hawdb_core::RuntimeTaskContext>,
     ) -> DatabaseTransaction<'_> {
         let runtime = DatabaseTransactionRuntime::from_database(self);
         let state = DatabaseTransactionState::from_database(self);
@@ -1214,7 +1214,7 @@ impl Database {
 
     pub fn begin_read_transaction_with_context(
         &self,
-        task_context: &skein_core::RuntimeTaskContext,
+        task_context: &hawdb_core::RuntimeTaskContext,
     ) -> DatabaseReadTransaction {
         self.begin_read_transaction_inner(None, Some(task_context.clone()))
     }
@@ -1230,9 +1230,9 @@ impl Database {
         let reader = self
             .projection_generation_store()?
             .open_active(binding.projection(), binding.owner_key())
-            .map_err(|error| SkeinError::Storage(error.to_string()))?;
+            .map_err(|error| HawdbError::Storage(error.to_string()))?;
         if reader.manifest().begin.projection_version != binding.projection_version() {
-            return Err(SkeinError::StorageIntegrity(format!(
+            return Err(HawdbError::StorageIntegrity(format!(
                 "projection {} version {} does not match required version {}",
                 binding.projection(),
                 reader.manifest().begin.projection_version,
@@ -1241,13 +1241,13 @@ impl Database {
         }
         for table in binding.tables() {
             if self.store.relational_state().table_schema(table).is_none() {
-                return Err(SkeinError::Semantic(format!(
+                return Err(HawdbError::Semantic(format!(
                     "projection relational table {table} has no durable PostgreSQL schema"
                 )));
             }
             let canonical_rows = self.store.relational_state().row_count(table);
             if canonical_rows != 0 {
-                return Err(SkeinError::StorageIntegrity(format!(
+                return Err(HawdbError::StorageIntegrity(format!(
                     "projection relational table {table} contains {canonical_rows} canonical rows"
                 )));
             }
@@ -1261,7 +1261,7 @@ impl Database {
     fn begin_read_transaction_inner(
         &self,
         projection_relational: Option<ProjectionRelationalReadSnapshot>,
-        task_context: Option<skein_core::RuntimeTaskContext>,
+        task_context: Option<hawdb_core::RuntimeTaskContext>,
     ) -> DatabaseReadTransaction {
         let (published_read_view, pin) = self.pin_read_view();
         DatabaseReadTransaction {
@@ -1390,7 +1390,7 @@ impl Database {
             access_control.as_ref(),
         )?;
         if executor::is_mutation_plan(&optimized.physical_plan)? {
-            return Err(SkeinError::Execution(
+            return Err(HawdbError::Execution(
                 "EXPLAIN ANALYZE only supports read queries".to_string(),
             ));
         }
@@ -1551,8 +1551,8 @@ impl Database {
     pub fn read_append_partition(
         &self,
         table: &str,
-        partition: &skein_storage::RelationalKey,
-        after: Option<&skein_storage::RelationalKey>,
+        partition: &hawdb_storage::RelationalKey,
+        after: Option<&hawdb_storage::RelationalKey>,
         max_rows: usize,
     ) -> Result<AppendSegmentReadOutput> {
         let max_rows = self
@@ -1569,8 +1569,8 @@ impl Database {
     pub fn read_append_partition_bounded(
         &self,
         table: &str,
-        partition: &skein_storage::RelationalKey,
-        after: Option<&skein_storage::RelationalKey>,
+        partition: &hawdb_storage::RelationalKey,
+        after: Option<&hawdb_storage::RelationalKey>,
         max_rows: usize,
         max_payload_bytes: usize,
     ) -> Result<AppendSegmentReadOutput> {
@@ -1609,14 +1609,14 @@ impl Database {
     ) -> Result<crate::store::RelationalRowPageCompactionReport> {
         self.compact_relational_row_pages_context(
             config,
-            &skein_core::RuntimeTaskContext::default(),
+            &hawdb_core::RuntimeTaskContext::default(),
         )
     }
 
     pub fn compact_relational_row_pages_context(
         &mut self,
         config: crate::store::RelationalRowPageCompactionConfig,
-        task: &skein_core::RuntimeTaskContext,
+        task: &hawdb_core::RuntimeTaskContext,
     ) -> Result<crate::store::RelationalRowPageCompactionReport> {
         self.ensure_writable()?;
         let oldest_reader_epoch = self
@@ -1635,13 +1635,13 @@ impl Database {
         &mut self,
         config: crate::store::RelationalOverflowCompactionConfig,
     ) -> Result<crate::store::RelationalOverflowCompactionReport> {
-        self.compact_relational_overflow_context(config, &skein_core::RuntimeTaskContext::default())
+        self.compact_relational_overflow_context(config, &hawdb_core::RuntimeTaskContext::default())
     }
 
     pub fn compact_relational_overflow_context(
         &mut self,
         config: crate::store::RelationalOverflowCompactionConfig,
-        task: &skein_core::RuntimeTaskContext,
+        task: &hawdb_core::RuntimeTaskContext,
     ) -> Result<crate::store::RelationalOverflowCompactionReport> {
         self.ensure_writable()?;
         let oldest_reader_epoch = self
@@ -1723,10 +1723,10 @@ impl Database {
         let checkpoint = self.checkpoint_internal(None);
         let result = match checkpoint {
             Ok(()) if !self.relational_row_schema_checkpoint_required() => Ok(()),
-            Ok(()) => Err(SkeinError::StorageIntegrity(format!(
+            Ok(()) => Err(HawdbError::StorageIntegrity(format!(
                 "canonical relational row schema checkpoint remained required after {context}"
             ))),
-            Err(error) => Err(SkeinError::StorageIntegrity(format!(
+            Err(error) => Err(HawdbError::StorageIntegrity(format!(
                 "canonical relational row schema checkpoint failed after {context}; the durable WAL remains authoritative and writable reopen will retry: {error}"
             ))),
         };
@@ -1806,9 +1806,9 @@ impl Database {
 
     /// Threads the engine's runtime governor into the storage layer so
     /// background columnar-shadow work can request admission. Called by the
-    /// embedding layers that own the governor (`SkeinEmbedded`,
+    /// embedding layers that own the governor (`HawdbEmbedded`,
     /// `NowledgeMemGraph`); a second governor is never constructed here.
-    pub fn set_runtime_governor(&mut self, governor: skein_qos::RuntimeGovernor) {
+    pub fn set_runtime_governor(&mut self, governor: hawdb_qos::RuntimeGovernor) {
         if let Some(telemetry) = &self.telemetry {
             governor.set_telemetry_sink(Some(runtime_telemetry_sink(telemetry.clone())));
         }
@@ -1851,7 +1851,7 @@ impl Database {
     /// the most recent open.
     pub fn relational_index_recovery_report(
         &self,
-    ) -> Option<&skein_storage::RelationalIndexRecoveryReport> {
+    ) -> Option<&hawdb_storage::RelationalIndexRecoveryReport> {
         self.store.relational_index_recovery_report()
     }
 
@@ -1919,18 +1919,18 @@ impl Database {
         Ok(snapshot.with_stable_id_mapping(&mapping))
     }
 
-    pub fn prepare_skein_lightning_bootstrap_export(
+    pub fn prepare_hawdb_lightning_bootstrap_export(
         &mut self,
-    ) -> Result<SkeinLightningBootstrapExport> {
+    ) -> Result<HawdbLightningBootstrapExport> {
         let snapshot = self.export_canonical_graph_snapshot_with_persisted_stable_ids()?;
-        let relational_state = self.skein_lightning_relational_state()?;
-        let relational_stream = SkeinLightningRelationalStream::from_state(
+        let relational_state = self.hawdb_lightning_relational_state()?;
+        let relational_stream = HawdbLightningRelationalStream::from_state(
             self.store.commit_epoch(),
             &relational_state,
         )?;
-        let manifest = snapshot.skein_lightning_bootstrap_manifest(&relational_stream);
-        let graph_stream = snapshot.skein_lightning_graph_stream();
-        Ok(SkeinLightningBootstrapExport {
+        let manifest = snapshot.hawdb_lightning_bootstrap_manifest(&relational_stream);
+        let graph_stream = snapshot.hawdb_lightning_graph_stream();
+        Ok(HawdbLightningBootstrapExport {
             snapshot,
             manifest,
             graph_stream,
@@ -1938,80 +1938,80 @@ impl Database {
         })
     }
 
-    pub fn skein_lightning_initial_import_readiness(
+    pub fn hawdb_lightning_initial_import_readiness(
         &self,
-        manifest: &SkeinLightningBootstrapManifest,
+        manifest: &HawdbLightningBootstrapManifest,
         projection_freshness: Option<&SearchProjectionFreshness>,
-    ) -> SkeinLightningInitialImportReadiness {
-        skein_lightning_initial_import_readiness(
+    ) -> HawdbLightningInitialImportReadiness {
+        hawdb_lightning_initial_import_readiness(
             manifest,
             self.store.commit_epoch(),
             projection_freshness,
         )
     }
 
-    pub fn skein_lightning_initial_import_cutover_catch_up_report(
+    pub fn hawdb_lightning_initial_import_cutover_catch_up_report(
         &self,
-        session: &SkeinLightningInitialImportSessionReport,
+        session: &HawdbLightningInitialImportSessionReport,
         live_projection_freshness: Option<&SearchProjectionFreshness>,
-    ) -> SkeinLightningInitialImportCutoverCatchUpReport {
-        skein_lightning_initial_import_cutover_catch_up_report(
+    ) -> HawdbLightningInitialImportCutoverCatchUpReport {
+        hawdb_lightning_initial_import_cutover_catch_up_report(
             session,
             self.store.commit_epoch(),
             live_projection_freshness,
         )
     }
 
-    pub fn skein_lightning_initial_import_session_bundle_readiness(
+    pub fn hawdb_lightning_initial_import_session_bundle_readiness(
         &self,
-        source_bundle: &SkeinLightningInitialImportSourceBundleReadiness,
-        session: &SkeinLightningInitialImportSessionReport,
-        catch_up: Option<&SkeinLightningInitialImportCutoverCatchUpReport>,
-    ) -> SkeinLightningInitialImportSessionBundleReadiness {
-        skein_lightning_initial_import_session_bundle_readiness(source_bundle, session, catch_up)
+        source_bundle: &HawdbLightningInitialImportSourceBundleReadiness,
+        session: &HawdbLightningInitialImportSessionReport,
+        catch_up: Option<&HawdbLightningInitialImportCutoverCatchUpReport>,
+    ) -> HawdbLightningInitialImportSessionBundleReadiness {
+        hawdb_lightning_initial_import_session_bundle_readiness(source_bundle, session, catch_up)
     }
 
-    pub fn skein_lightning_initial_import_decode_durable_state(
+    pub fn hawdb_lightning_initial_import_decode_durable_state(
         &self,
-        manifest: &SkeinLightningBootstrapManifest,
+        manifest: &HawdbLightningBootstrapManifest,
         raw: &str,
-    ) -> Result<SkeinLightningInitialImportDurableStateCodecReport> {
-        skein_lightning_initial_import_decode_durable_state(manifest, raw)
+    ) -> Result<HawdbLightningInitialImportDurableStateCodecReport> {
+        hawdb_lightning_initial_import_decode_durable_state(manifest, raw)
     }
 
-    pub fn skein_lightning_initial_import_startup_readiness(
+    pub fn hawdb_lightning_initial_import_startup_readiness(
         &self,
-        inputs: SkeinLightningInitialImportReadinessInputs<'_>,
-        durable_state: Option<&SkeinLightningInitialImportDurableState>,
-    ) -> SkeinLightningInitialImportStartupReadinessReport {
-        skein_lightning_initial_import_startup_readiness(
+        inputs: HawdbLightningInitialImportReadinessInputs<'_>,
+        durable_state: Option<&HawdbLightningInitialImportDurableState>,
+    ) -> HawdbLightningInitialImportStartupReadinessReport {
+        hawdb_lightning_initial_import_startup_readiness(
             inputs,
             self.store.commit_epoch(),
             durable_state,
         )
     }
 
-    pub fn skein_lightning_initial_import_recovery_readiness(
+    pub fn hawdb_lightning_initial_import_recovery_readiness(
         &self,
-        inputs: SkeinLightningInitialImportReadinessInputs<'_>,
+        inputs: HawdbLightningInitialImportReadinessInputs<'_>,
         durable_state_payload: Option<&str>,
-    ) -> SkeinLightningInitialImportRecoveryReadinessReport {
-        skein_lightning_initial_import_recovery_readiness(
+    ) -> HawdbLightningInitialImportRecoveryReadinessReport {
+        hawdb_lightning_initial_import_recovery_readiness(
             inputs,
             self.store.commit_epoch(),
             durable_state_payload,
         )
     }
 
-    pub fn skein_lightning_initial_import_plan(
+    pub fn hawdb_lightning_initial_import_plan(
         &self,
         encoded_graph_stream: &str,
         encoded_relational_stream: &[u8],
-        manifest: &SkeinLightningBootstrapManifest,
+        manifest: &HawdbLightningBootstrapManifest,
         projection_freshness: Option<&SearchProjectionFreshness>,
-        checkpoint: Option<&SkeinLightningInitialImportCheckpoint>,
-    ) -> SkeinLightningInitialImportPlan {
-        skein_lightning_initial_import_plan(
+        checkpoint: Option<&HawdbLightningInitialImportCheckpoint>,
+    ) -> HawdbLightningInitialImportPlan {
+        hawdb_lightning_initial_import_plan(
             encoded_graph_stream,
             encoded_relational_stream,
             manifest,
@@ -2021,16 +2021,16 @@ impl Database {
         )
     }
 
-    pub fn skein_lightning_initial_import_plan_with_document_identities(
+    pub fn hawdb_lightning_initial_import_plan_with_document_identities(
         &self,
         encoded_graph_stream: &str,
         encoded_relational_stream: &[u8],
-        manifest: &SkeinLightningBootstrapManifest,
+        manifest: &HawdbLightningBootstrapManifest,
         projection_freshness: Option<&SearchProjectionFreshness>,
-        checkpoint: Option<&SkeinLightningInitialImportCheckpoint>,
-        document_identities: &[SkeinLightningInitialImportDocumentIdentity],
-    ) -> SkeinLightningInitialImportPlan {
-        skein_lightning_initial_import_plan_with_document_identities(
+        checkpoint: Option<&HawdbLightningInitialImportCheckpoint>,
+        document_identities: &[HawdbLightningInitialImportDocumentIdentity],
+    ) -> HawdbLightningInitialImportPlan {
+        hawdb_lightning_initial_import_plan_with_document_identities(
             encoded_graph_stream,
             encoded_relational_stream,
             manifest,
@@ -2041,15 +2041,15 @@ impl Database {
         )
     }
 
-    pub fn skein_lightning_initial_import_apply(
+    pub fn hawdb_lightning_initial_import_apply(
         &mut self,
         encoded_graph_stream: &str,
         encoded_relational_stream: &[u8],
-        manifest: &SkeinLightningBootstrapManifest,
+        manifest: &HawdbLightningBootstrapManifest,
         projection_freshness: Option<&SearchProjectionFreshness>,
-        checkpoint: Option<&SkeinLightningInitialImportCheckpoint>,
-    ) -> Result<SkeinLightningInitialImportApplyReport> {
-        self.skein_lightning_initial_import_apply_internal(
+        checkpoint: Option<&HawdbLightningInitialImportCheckpoint>,
+    ) -> Result<HawdbLightningInitialImportApplyReport> {
+        self.hawdb_lightning_initial_import_apply_internal(
             encoded_graph_stream,
             encoded_relational_stream,
             manifest,
@@ -2059,16 +2059,16 @@ impl Database {
         )
     }
 
-    pub fn skein_lightning_initial_import_apply_with_document_identities(
+    pub fn hawdb_lightning_initial_import_apply_with_document_identities(
         &mut self,
         encoded_graph_stream: &str,
         encoded_relational_stream: &[u8],
-        manifest: &SkeinLightningBootstrapManifest,
+        manifest: &HawdbLightningBootstrapManifest,
         projection_freshness: Option<&SearchProjectionFreshness>,
-        checkpoint: Option<&SkeinLightningInitialImportCheckpoint>,
-        document_identities: &[SkeinLightningInitialImportDocumentIdentity],
-    ) -> Result<SkeinLightningInitialImportApplyReport> {
-        self.skein_lightning_initial_import_apply_internal(
+        checkpoint: Option<&HawdbLightningInitialImportCheckpoint>,
+        document_identities: &[HawdbLightningInitialImportDocumentIdentity],
+    ) -> Result<HawdbLightningInitialImportApplyReport> {
+        self.hawdb_lightning_initial_import_apply_internal(
             encoded_graph_stream,
             encoded_relational_stream,
             manifest,
@@ -2078,18 +2078,18 @@ impl Database {
         )
     }
 
-    fn skein_lightning_initial_import_apply_internal(
+    fn hawdb_lightning_initial_import_apply_internal(
         &mut self,
         encoded_graph_stream: &str,
         encoded_relational_stream: &[u8],
-        manifest: &SkeinLightningBootstrapManifest,
+        manifest: &HawdbLightningBootstrapManifest,
         projection_freshness: Option<&SearchProjectionFreshness>,
-        checkpoint: Option<&SkeinLightningInitialImportCheckpoint>,
-        document_identities: Option<&[SkeinLightningInitialImportDocumentIdentity]>,
-    ) -> Result<SkeinLightningInitialImportApplyReport> {
+        checkpoint: Option<&HawdbLightningInitialImportCheckpoint>,
+        document_identities: Option<&[HawdbLightningInitialImportDocumentIdentity]>,
+    ) -> Result<HawdbLightningInitialImportApplyReport> {
         self.ensure_writable()?;
         let mut blocker_codes = BTreeSet::new();
-        let plan = skein_lightning_initial_import_plan_with_document_identities(
+        let plan = hawdb_lightning_initial_import_plan_with_document_identities(
             encoded_graph_stream,
             encoded_relational_stream,
             manifest,
@@ -2099,14 +2099,14 @@ impl Database {
             document_identities,
         );
         if !plan.ready_for_database_import {
-            blocker_codes.insert("skein_lightning_database_streams_not_import_ready".to_string());
+            blocker_codes.insert("hawdb_lightning_database_streams_not_import_ready".to_string());
         }
-        let source_fingerprint = skein_lightning_initial_import_source_fingerprint_key(manifest);
+        let source_fingerprint = hawdb_lightning_initial_import_source_fingerprint_key(manifest);
         if let Some(imported_source_fingerprint) = self.store.initial_import_source_fingerprint() {
             if imported_source_fingerprint == source_fingerprint && plan.ready_for_database_import {
                 let (relational_table_count, relational_row_count) =
                     relational_state_counts(self.store.relational_state());
-                return Ok(SkeinLightningInitialImportApplyReport {
+                return Ok(HawdbLightningInitialImportApplyReport {
                     applied: false,
                     ready_for_cutover: plan.ready_for_cutover,
                     database_commit_epoch: self.store.commit_epoch(),
@@ -2120,7 +2120,7 @@ impl Database {
             }
             if imported_source_fingerprint != source_fingerprint {
                 blocker_codes.insert(
-                    "skein_lightning_initial_import_source_fingerprint_mismatch".to_string(),
+                    "hawdb_lightning_initial_import_source_fingerprint_mismatch".to_string(),
                 );
             }
         }
@@ -2133,10 +2133,10 @@ impl Database {
             && relational_target_empty
             && self.catalog.is_empty();
         if !target_empty {
-            blocker_codes.insert("skein_lightning_initial_import_target_not_empty".to_string());
+            blocker_codes.insert("hawdb_lightning_initial_import_target_not_empty".to_string());
         }
         let snapshot = if blocker_codes.is_empty() {
-            Some(parse_skein_lightning_graph_stream_export(
+            Some(parse_hawdb_lightning_graph_stream_export(
                 encoded_graph_stream,
                 Some(manifest),
             )?)
@@ -2145,11 +2145,11 @@ impl Database {
         };
         let relational_state = if blocker_codes.is_empty() {
             Some(
-                skein_storage::decode_relational_checkpoint(
+                hawdb_storage::decode_relational_checkpoint(
                     encoded_relational_stream,
-                    skein_storage::RelationalDecodeLimits::checkpoint(),
+                    hawdb_storage::RelationalDecodeLimits::checkpoint(),
                 )
-                .map_err(|error| SkeinError::Storage(error.to_string()))?
+                .map_err(|error| HawdbError::Storage(error.to_string()))?
                 .state,
             )
         } else {
@@ -2159,7 +2159,7 @@ impl Database {
             for node in &snapshot.nodes {
                 if node.labels.len() != 1 {
                     blocker_codes.insert(
-                        "skein_lightning_initial_import_multi_label_node_unsupported".to_string(),
+                        "hawdb_lightning_initial_import_multi_label_node_unsupported".to_string(),
                     );
                     break;
                 }
@@ -2168,7 +2168,7 @@ impl Database {
         if !blocker_codes.is_empty() {
             let (relational_table_count, relational_row_count) =
                 relational_state_counts(self.store.relational_state());
-            return Ok(SkeinLightningInitialImportApplyReport {
+            return Ok(HawdbLightningInitialImportApplyReport {
                 applied: false,
                 ready_for_cutover: false,
                 database_commit_epoch: self.store.commit_epoch(),
@@ -2183,7 +2183,7 @@ impl Database {
         let snapshot = snapshot.expect("snapshot should be available without import blockers");
         let relational_state =
             relational_state.expect("relational state should be available without import blockers");
-        Self::validate_skein_lightning_system_schema(&relational_state)?;
+        Self::validate_hawdb_lightning_system_schema(&relational_state)?;
         let stable_id_mapping = StoreStableIdMapping {
             node_stable_ids: snapshot
                 .nodes
@@ -2230,9 +2230,9 @@ impl Database {
             })
             .collect::<Result<Vec<GraphSnapshotRelationshipImport>>>()?;
         self.store
-            .import_skein_snapshot_rows_with_source_fingerprint(
+            .import_hawdb_snapshot_rows_with_source_fingerprint(
                 &mut self.catalog,
-                SkeinSnapshotRowsImport {
+                HawdbSnapshotRowsImport {
                     stable_id_mapping,
                     source_fingerprint,
                     nodes: node_rows,
@@ -2241,7 +2241,7 @@ impl Database {
                     target_has_only_engine_bootstrap,
                 },
             )?;
-        let updated_plan = skein_lightning_initial_import_plan_with_document_identities(
+        let updated_plan = hawdb_lightning_initial_import_plan_with_document_identities(
             encoded_graph_stream,
             encoded_relational_stream,
             manifest,
@@ -2252,7 +2252,7 @@ impl Database {
         );
         let (relational_table_count, relational_row_count) =
             relational_state_counts(self.store.relational_state());
-        Ok(SkeinLightningInitialImportApplyReport {
+        Ok(HawdbLightningInitialImportApplyReport {
             applied: true,
             ready_for_cutover: updated_plan.ready_for_cutover,
             database_commit_epoch: self.store.commit_epoch(),
@@ -2265,11 +2265,11 @@ impl Database {
         })
     }
 
-    pub fn skein_lightning_bootstrap_export_background_work_plan(
+    pub fn hawdb_lightning_bootstrap_export_background_work_plan(
         &self,
         hint: BackgroundWorkHint,
     ) -> Option<BackgroundWorkPlan> {
-        let estimated_operations = self.skein_lightning_bootstrap_export_estimated_operations();
+        let estimated_operations = self.hawdb_lightning_bootstrap_export_estimated_operations();
         if estimated_operations == 0 {
             return None;
         }
@@ -2280,35 +2280,35 @@ impl Database {
         ))
     }
 
-    pub fn prepare_background_skein_lightning_bootstrap_export(
+    pub fn prepare_background_hawdb_lightning_bootstrap_export(
         &mut self,
         policy: &LocalQosPolicy,
         state: &LocalQosState,
-    ) -> Result<SkeinLightningBootstrapExport> {
-        self.ensure_runtime_capability(skein_core::RuntimeCapability::BackgroundMaintenance)?;
-        let estimated_operations = self.skein_lightning_bootstrap_export_estimated_operations();
+    ) -> Result<HawdbLightningBootstrapExport> {
+        self.ensure_runtime_capability(hawdb_core::RuntimeCapability::BackgroundMaintenance)?;
+        let estimated_operations = self.hawdb_lightning_bootstrap_export_estimated_operations();
         if estimated_operations == 0 {
-            return self.prepare_skein_lightning_bootstrap_export();
+            return self.prepare_hawdb_lightning_bootstrap_export();
         }
         let request = WorkRequest::background(WorkClass::Import, estimated_operations);
         match policy.admit(state, &request) {
-            QosAdmission::Admit => self.prepare_skein_lightning_bootstrap_export(),
-            QosAdmission::Defer { reason, .. } => Err(SkeinError::Storage(format!(
-                "background Skein Lightning bootstrap export deferred: {reason}"
+            QosAdmission::Admit => self.prepare_hawdb_lightning_bootstrap_export(),
+            QosAdmission::Defer { reason, .. } => Err(HawdbError::Storage(format!(
+                "background Hawdb Lightning bootstrap export deferred: {reason}"
             ))),
-            QosAdmission::Reject { reason, .. } => Err(SkeinError::Storage(format!(
-                "background Skein Lightning bootstrap export rejected: {reason}"
+            QosAdmission::Reject { reason, .. } => Err(HawdbError::Storage(format!(
+                "background Hawdb Lightning bootstrap export rejected: {reason}"
             ))),
         }
     }
 
-    pub fn prepare_scheduled_background_skein_lightning_bootstrap_export(
+    pub fn prepare_scheduled_background_hawdb_lightning_bootstrap_export(
         &mut self,
-    ) -> Result<SkeinLightningBootstrapExport> {
-        self.ensure_runtime_capability(skein_core::RuntimeCapability::BackgroundMaintenance)?;
-        let estimated_operations = self.skein_lightning_bootstrap_export_estimated_operations();
+    ) -> Result<HawdbLightningBootstrapExport> {
+        self.ensure_runtime_capability(hawdb_core::RuntimeCapability::BackgroundMaintenance)?;
+        let estimated_operations = self.hawdb_lightning_bootstrap_export_estimated_operations();
         if estimated_operations == 0 {
-            return self.prepare_skein_lightning_bootstrap_export();
+            return self.prepare_hawdb_lightning_bootstrap_export();
         }
         let scheduler = self.local_qos_scheduler_for_work();
         let permit = match scheduler.try_start(WorkRequest::background(
@@ -2317,24 +2317,24 @@ impl Database {
         )) {
             Ok(permit) => permit,
             Err(QosAdmission::Defer { reason, .. }) => {
-                return Err(SkeinError::Storage(format!(
-                    "background Skein Lightning bootstrap export deferred: {reason}"
+                return Err(HawdbError::Storage(format!(
+                    "background Hawdb Lightning bootstrap export deferred: {reason}"
                 )));
             }
             Err(QosAdmission::Reject { reason, .. }) => {
-                return Err(SkeinError::Storage(format!(
-                    "background Skein Lightning bootstrap export rejected: {reason}"
+                return Err(HawdbError::Storage(format!(
+                    "background Hawdb Lightning bootstrap export rejected: {reason}"
                 )));
             }
             Err(QosAdmission::Admit) => unreachable!("admitted work returns a permit"),
         };
 
-        let result = self.prepare_skein_lightning_bootstrap_export();
+        let result = self.prepare_hawdb_lightning_bootstrap_export();
         permit.finish_with_outcome(result.is_ok());
         result
     }
 
-    fn skein_lightning_bootstrap_export_estimated_operations(&self) -> usize {
+    fn hawdb_lightning_bootstrap_export_estimated_operations(&self) -> usize {
         let statistics = self.store.basic_statistics();
         let graph_total = statistics
             .node_count
@@ -2413,7 +2413,7 @@ impl Database {
         options: &crate::store::OptimizerStatisticsRefreshOptions,
         hint: BackgroundWorkHint,
     ) -> Result<Option<crate::store::OptimizerStatisticsRefreshReport>> {
-        self.ensure_runtime_capability(skein_core::RuntimeCapability::BackgroundMaintenance)?;
+        self.ensure_runtime_capability(hawdb_core::RuntimeCapability::BackgroundMaintenance)?;
         let Some(plan) = self.optimizer_statistics_refresh_background_work_plan(hint) else {
             return Ok(None);
         };
@@ -2421,10 +2421,10 @@ impl Database {
             QosAdmission::Admit => self
                 .refresh_optimizer_statistics_external(options)
                 .map(Some),
-            QosAdmission::Defer { reason, .. } => Err(SkeinError::Storage(format!(
+            QosAdmission::Defer { reason, .. } => Err(HawdbError::Storage(format!(
                 "background optimizer statistics refresh deferred: {reason}"
             ))),
-            QosAdmission::Reject { reason, .. } => Err(SkeinError::Storage(format!(
+            QosAdmission::Reject { reason, .. } => Err(HawdbError::Storage(format!(
                 "background optimizer statistics refresh rejected: {reason}"
             ))),
         }
@@ -2435,7 +2435,7 @@ impl Database {
         options: &crate::store::OptimizerStatisticsRefreshOptions,
         hint: BackgroundWorkHint,
     ) -> Result<Option<crate::store::OptimizerStatisticsRefreshReport>> {
-        self.ensure_runtime_capability(skein_core::RuntimeCapability::BackgroundMaintenance)?;
+        self.ensure_runtime_capability(hawdb_core::RuntimeCapability::BackgroundMaintenance)?;
         let Some(plan) = self.optimizer_statistics_refresh_background_work_plan(hint) else {
             return Ok(None);
         };
@@ -2443,12 +2443,12 @@ impl Database {
         let permit = match scheduler.try_start(plan.request) {
             Ok(permit) => permit,
             Err(QosAdmission::Defer { reason, .. }) => {
-                return Err(SkeinError::Storage(format!(
+                return Err(HawdbError::Storage(format!(
                     "background optimizer statistics refresh deferred: {reason}"
                 )));
             }
             Err(QosAdmission::Reject { reason, .. }) => {
-                return Err(SkeinError::Storage(format!(
+                return Err(HawdbError::Storage(format!(
                     "background optimizer statistics refresh rejected: {reason}"
                 )));
             }
@@ -2512,23 +2512,23 @@ impl Database {
         state: &LocalQosState,
         hint: BackgroundWorkHint,
     ) -> Result<()> {
-        self.ensure_runtime_capability(skein_core::RuntimeCapability::BackgroundMaintenance)?;
+        self.ensure_runtime_capability(hawdb_core::RuntimeCapability::BackgroundMaintenance)?;
         let Some(plan) = self.storage_checkpoint_background_work_plan(hint) else {
             return Ok(());
         };
         match policy.admit(state, &plan.request) {
             QosAdmission::Admit => self.checkpoint(),
-            QosAdmission::Defer { reason, .. } => Err(SkeinError::Storage(format!(
+            QosAdmission::Defer { reason, .. } => Err(HawdbError::Storage(format!(
                 "background storage checkpoint deferred: {reason}"
             ))),
-            QosAdmission::Reject { reason, .. } => Err(SkeinError::Storage(format!(
+            QosAdmission::Reject { reason, .. } => Err(HawdbError::Storage(format!(
                 "background storage checkpoint rejected: {reason}"
             ))),
         }
     }
 
     pub fn checkpoint_scheduled_background(&mut self, hint: BackgroundWorkHint) -> Result<()> {
-        self.ensure_runtime_capability(skein_core::RuntimeCapability::BackgroundMaintenance)?;
+        self.ensure_runtime_capability(hawdb_core::RuntimeCapability::BackgroundMaintenance)?;
         let Some(plan) = self.storage_checkpoint_background_work_plan(hint) else {
             return Ok(());
         };
@@ -2536,12 +2536,12 @@ impl Database {
         let permit = match scheduler.try_start(plan.request) {
             Ok(permit) => permit,
             Err(QosAdmission::Defer { reason, .. }) => {
-                return Err(SkeinError::Storage(format!(
+                return Err(HawdbError::Storage(format!(
                     "background storage checkpoint deferred: {reason}"
                 )));
             }
             Err(QosAdmission::Reject { reason, .. }) => {
-                return Err(SkeinError::Storage(format!(
+                return Err(HawdbError::Storage(format!(
                     "background storage checkpoint rejected: {reason}"
                 )));
             }
@@ -2578,7 +2578,7 @@ impl Database {
         state: &LocalQosState,
         max_estimated_entries: usize,
     ) -> Result<AdjacencyConsolidationReport> {
-        self.ensure_runtime_capability(skein_core::RuntimeCapability::BackgroundMaintenance)?;
+        self.ensure_runtime_capability(hawdb_core::RuntimeCapability::BackgroundMaintenance)?;
         let estimated_entries = self
             .store
             .bounded_adjacency_consolidation_estimated_entries(max_estimated_entries);
@@ -2592,10 +2592,10 @@ impl Database {
             QosAdmission::Admit => {
                 Ok(self.consolidate_bounded_adjacency_deltas(max_estimated_entries))
             }
-            QosAdmission::Defer { reason, .. } => Err(SkeinError::Storage(format!(
+            QosAdmission::Defer { reason, .. } => Err(HawdbError::Storage(format!(
                 "background adjacency consolidation deferred: {reason}"
             ))),
-            QosAdmission::Reject { reason, .. } => Err(SkeinError::Storage(format!(
+            QosAdmission::Reject { reason, .. } => Err(HawdbError::Storage(format!(
                 "background adjacency consolidation rejected: {reason}"
             ))),
         }
@@ -2605,7 +2605,7 @@ impl Database {
         &mut self,
         max_estimated_entries: usize,
     ) -> Result<AdjacencyConsolidationReport> {
-        self.ensure_runtime_capability(skein_core::RuntimeCapability::BackgroundMaintenance)?;
+        self.ensure_runtime_capability(hawdb_core::RuntimeCapability::BackgroundMaintenance)?;
         let estimated_entries = self
             .store
             .bounded_adjacency_consolidation_estimated_entries(max_estimated_entries);
@@ -2619,12 +2619,12 @@ impl Database {
         )) {
             Ok(permit) => permit,
             Err(QosAdmission::Defer { reason, .. }) => {
-                return Err(SkeinError::Storage(format!(
+                return Err(HawdbError::Storage(format!(
                     "background adjacency consolidation deferred: {reason}"
                 )));
             }
             Err(QosAdmission::Reject { reason, .. }) => {
-                return Err(SkeinError::Storage(format!(
+                return Err(HawdbError::Storage(format!(
                     "background adjacency consolidation rejected: {reason}"
                 )));
             }
@@ -2696,7 +2696,7 @@ impl Database {
         state: &LocalQosState,
         max_estimated_operations: usize,
     ) -> Result<QueryOutput> {
-        self.ensure_runtime_capability(skein_core::RuntimeCapability::BackgroundMaintenance)?;
+        self.ensure_runtime_capability(hawdb_core::RuntimeCapability::BackgroundMaintenance)?;
         let estimated_operations = self
             .store
             .bounded_property_index_projection_estimated_operations(
@@ -2711,10 +2711,10 @@ impl Database {
             QosAdmission::Admit => {
                 Ok(self.rebuild_bounded_property_index_projections(max_estimated_operations))
             }
-            QosAdmission::Defer { reason, .. } => Err(SkeinError::Storage(format!(
+            QosAdmission::Defer { reason, .. } => Err(HawdbError::Storage(format!(
                 "background property index projection rebuild deferred: {reason}"
             ))),
-            QosAdmission::Reject { reason, .. } => Err(SkeinError::Storage(format!(
+            QosAdmission::Reject { reason, .. } => Err(HawdbError::Storage(format!(
                 "background property index projection rebuild rejected: {reason}"
             ))),
         }
@@ -2724,7 +2724,7 @@ impl Database {
         &mut self,
         max_estimated_operations: usize,
     ) -> Result<QueryOutput> {
-        self.ensure_runtime_capability(skein_core::RuntimeCapability::BackgroundMaintenance)?;
+        self.ensure_runtime_capability(hawdb_core::RuntimeCapability::BackgroundMaintenance)?;
         let estimated_operations = self
             .store
             .bounded_property_index_projection_estimated_operations(
@@ -2741,12 +2741,12 @@ impl Database {
         )) {
             Ok(permit) => permit,
             Err(QosAdmission::Defer { reason, .. }) => {
-                return Err(SkeinError::Storage(format!(
+                return Err(HawdbError::Storage(format!(
                     "background property index projection rebuild deferred: {reason}"
                 )));
             }
             Err(QosAdmission::Reject { reason, .. }) => {
-                return Err(SkeinError::Storage(format!(
+                return Err(HawdbError::Storage(format!(
                     "background property index projection rebuild rejected: {reason}"
                 )));
             }
@@ -2863,14 +2863,14 @@ impl Database {
         state: &LocalQosState,
         estimated_operations: usize,
     ) -> Result<QueryOutput> {
-        self.ensure_runtime_capability(skein_core::RuntimeCapability::BackgroundMaintenance)?;
+        self.ensure_runtime_capability(hawdb_core::RuntimeCapability::BackgroundMaintenance)?;
         let request = WorkRequest::background(WorkClass::Mutation, estimated_operations);
         match policy.admit(state, &request) {
             QosAdmission::Admit => self.run_schema_maintenance(),
-            QosAdmission::Defer { reason, .. } => Err(SkeinError::Storage(format!(
+            QosAdmission::Defer { reason, .. } => Err(HawdbError::Storage(format!(
                 "background schema maintenance deferred: {reason}"
             ))),
-            QosAdmission::Reject { reason, .. } => Err(SkeinError::Storage(format!(
+            QosAdmission::Reject { reason, .. } => Err(HawdbError::Storage(format!(
                 "background schema maintenance rejected: {reason}"
             ))),
         }
@@ -2882,7 +2882,7 @@ impl Database {
         state: &LocalQosState,
         max_estimated_operations: usize,
     ) -> Result<QueryOutput> {
-        self.ensure_runtime_capability(skein_core::RuntimeCapability::BackgroundMaintenance)?;
+        self.ensure_runtime_capability(hawdb_core::RuntimeCapability::BackgroundMaintenance)?;
         let estimated_operations =
             self.bounded_schema_maintenance_estimated_operations(max_estimated_operations);
         if estimated_operations == 0 {
@@ -2891,10 +2891,10 @@ impl Database {
         let request = WorkRequest::background(WorkClass::Mutation, estimated_operations);
         match policy.admit(state, &request) {
             QosAdmission::Admit => self.run_bounded_schema_maintenance(max_estimated_operations),
-            QosAdmission::Defer { reason, .. } => Err(SkeinError::Storage(format!(
+            QosAdmission::Defer { reason, .. } => Err(HawdbError::Storage(format!(
                 "background schema maintenance deferred: {reason}"
             ))),
-            QosAdmission::Reject { reason, .. } => Err(SkeinError::Storage(format!(
+            QosAdmission::Reject { reason, .. } => Err(HawdbError::Storage(format!(
                 "background schema maintenance rejected: {reason}"
             ))),
         }
@@ -2916,7 +2916,7 @@ impl Database {
         &mut self,
         estimated_operations: usize,
     ) -> Result<QueryOutput> {
-        self.ensure_runtime_capability(skein_core::RuntimeCapability::BackgroundMaintenance)?;
+        self.ensure_runtime_capability(hawdb_core::RuntimeCapability::BackgroundMaintenance)?;
         let scheduler = self.local_qos_scheduler_for_work();
         let permit = match scheduler.try_start(WorkRequest::background(
             WorkClass::Mutation,
@@ -2924,12 +2924,12 @@ impl Database {
         )) {
             Ok(permit) => permit,
             Err(QosAdmission::Defer { reason, .. }) => {
-                return Err(SkeinError::Storage(format!(
+                return Err(HawdbError::Storage(format!(
                     "background schema maintenance deferred: {reason}"
                 )));
             }
             Err(QosAdmission::Reject { reason, .. }) => {
-                return Err(SkeinError::Storage(format!(
+                return Err(HawdbError::Storage(format!(
                     "background schema maintenance rejected: {reason}"
                 )));
             }
@@ -2945,7 +2945,7 @@ impl Database {
         &mut self,
         max_estimated_operations: usize,
     ) -> Result<QueryOutput> {
-        self.ensure_runtime_capability(skein_core::RuntimeCapability::BackgroundMaintenance)?;
+        self.ensure_runtime_capability(hawdb_core::RuntimeCapability::BackgroundMaintenance)?;
         let estimated_operations =
             self.bounded_schema_maintenance_estimated_operations(max_estimated_operations);
         if estimated_operations == 0 {
@@ -2958,12 +2958,12 @@ impl Database {
         )) {
             Ok(permit) => permit,
             Err(QosAdmission::Defer { reason, .. }) => {
-                return Err(SkeinError::Storage(format!(
+                return Err(HawdbError::Storage(format!(
                     "background schema maintenance deferred: {reason}"
                 )));
             }
             Err(QosAdmission::Reject { reason, .. }) => {
-                return Err(SkeinError::Storage(format!(
+                return Err(HawdbError::Storage(format!(
                     "background schema maintenance rejected: {reason}"
                 )));
             }
@@ -3039,7 +3039,7 @@ impl Database {
         state: &LocalQosState,
         options: SearchRebuildOptions,
     ) -> Result<SearchDerivedArtifactReport> {
-        self.ensure_runtime_capability(skein_core::RuntimeCapability::BackgroundMaintenance)?;
+        self.ensure_runtime_capability(hawdb_core::RuntimeCapability::BackgroundMaintenance)?;
         search_index.rebuild_background_derived_artifacts(
             policy,
             state,
@@ -3054,7 +3054,7 @@ impl Database {
         search_index: &mut SearchIndex,
         options: SearchRebuildOptions,
     ) -> Result<SearchDerivedArtifactReport> {
-        self.ensure_runtime_capability(skein_core::RuntimeCapability::BackgroundMaintenance)?;
+        self.ensure_runtime_capability(hawdb_core::RuntimeCapability::BackgroundMaintenance)?;
         let scheduler = self.local_qos_scheduler_for_work();
         search_index.rebuild_scheduled_background_derived_artifacts(
             &scheduler,
@@ -3088,7 +3088,7 @@ impl Database {
         options: MetadataRepairOptions,
         estimated_operations: usize,
     ) -> Result<MetadataRepairSummary> {
-        self.ensure_runtime_capability(skein_core::RuntimeCapability::BackgroundMaintenance)?;
+        self.ensure_runtime_capability(hawdb_core::RuntimeCapability::BackgroundMaintenance)?;
         search_index.repair_background_metadata_from_graph(
             policy,
             state,
@@ -3105,7 +3105,7 @@ impl Database {
         options: MetadataRepairOptions,
         estimated_operations: usize,
     ) -> Result<MetadataRepairSummary> {
-        self.ensure_runtime_capability(skein_core::RuntimeCapability::BackgroundMaintenance)?;
+        self.ensure_runtime_capability(hawdb_core::RuntimeCapability::BackgroundMaintenance)?;
         let scheduler = self.local_qos_scheduler_for_work();
         search_index.repair_scheduled_background_metadata_from_graph(
             &scheduler,
@@ -3206,7 +3206,7 @@ impl Database {
             return Ok(None);
         };
         if batch.has_relational_changes() {
-            return Err(SkeinError::Storage(format!(
+            return Err(HawdbError::Storage(format!(
                 "search projection commits through epoch {} contain relational primary-key changes; use the unified search projection changefeed and publish one combined projection delta",
                 batch.complete_through_commit_epoch().unwrap_or(source_graph_commit_epoch)
             )));
@@ -3225,7 +3225,7 @@ impl Database {
         }
         let change_log_start_epoch = self.store.search_projection_change_log_start_epoch();
         if source_commit_epoch < change_log_start_epoch {
-            return Err(SkeinError::Storage(format!(
+            return Err(HawdbError::Storage(format!(
                 "search projection change log starts at commit epoch {change_log_start_epoch}; requested source commit epoch {source_commit_epoch}; full search projection rebuild required"
             )));
         }
@@ -3233,7 +3233,7 @@ impl Database {
         let mut upsert_node_ids = BTreeSet::new();
         let mut delete_document_ids = BTreeSet::new();
         let mut relational_primary_keys =
-            BTreeMap::<String, BTreeSet<skein_storage::RelationalKey>>::new();
+            BTreeMap::<String, BTreeSet<hawdb_storage::RelationalKey>>::new();
         let mut complete_through_commit_epoch = source_commit_epoch;
         let mut truncated_by_budget = false;
         for change in self
@@ -3241,9 +3241,9 @@ impl Database {
             .search_projection_changes_after(source_commit_epoch)
         {
             let tables = match &change.relational_primary_key_changes {
-                skein_storage::RelationalPrimaryKeyChangeCapture::Captured { tables, .. } => tables,
-                skein_storage::RelationalPrimaryKeyChangeCapture::RequiresRebuild { reason } => {
-                    return Err(SkeinError::Storage(format!(
+                hawdb_storage::RelationalPrimaryKeyChangeCapture::Captured { tables, .. } => tables,
+                hawdb_storage::RelationalPrimaryKeyChangeCapture::RequiresRebuild { reason } => {
+                    return Err(HawdbError::Storage(format!(
                         "search projection relational change at commit epoch {} requires a full rebuild: {reason:?}",
                         change.commit_epoch
                     )));
@@ -3288,7 +3288,7 @@ impl Database {
                 && next_operation_count > limit
             {
                 if complete_through_commit_epoch == source_commit_epoch {
-                    return Err(SkeinError::Storage(format!(
+                    return Err(HawdbError::Storage(format!(
                         "search projection change at commit epoch {} requires {next_operation_count} operations, exceeding configured per-batch limit {limit}",
                         change.commit_epoch
                     )));
@@ -3320,7 +3320,7 @@ impl Database {
             relational_primary_keys
                 .into_iter()
                 .map(
-                    |(table, primary_keys)| skein_storage::RelationalTablePrimaryKeyChanges {
+                    |(table, primary_keys)| hawdb_storage::RelationalTablePrimaryKeyChanges {
                         table,
                         primary_keys: primary_keys.into_iter().collect(),
                     },
@@ -3492,12 +3492,12 @@ impl Database {
             }
         }
 
-        if options.include_skein_lightning_bootstrap_export
+        if options.include_hawdb_lightning_bootstrap_export
             && let Some(plan) =
-                self.skein_lightning_bootstrap_export_background_work_plan(options.hint.clone())
+                self.hawdb_lightning_bootstrap_export_background_work_plan(options.hint.clone())
         {
             candidates.push(BackgroundMaintenanceCandidate::new(
-                BackgroundMaintenanceKind::SkeinLightningBootstrapExport,
+                BackgroundMaintenanceKind::HawdbLightningBootstrapExport,
                 plan,
             ));
         }
@@ -3592,13 +3592,13 @@ impl Database {
             .map(|table| table.primary_keys.len())
             .fold(0usize, usize::saturating_add);
         if relational.processed_primary_key_count != expected_primary_key_count {
-            return Err(SkeinError::Storage(format!(
+            return Err(HawdbError::Storage(format!(
                 "search projection relational delta processed {} primary keys, expected {expected_primary_key_count}; projection watermark was not published",
                 relational.processed_primary_key_count
             )));
         }
         if relational.delta.source_graph_commit_epoch.is_some() {
-            return Err(SkeinError::Storage(
+            return Err(HawdbError::Storage(
                 "search projection relational delta must not publish its own source epoch"
                     .to_string(),
             ));
@@ -3626,7 +3626,7 @@ impl Database {
         state: &LocalQosState,
         delta: SearchProjectionDelta,
     ) -> Result<SearchProjectionDeltaReport> {
-        self.ensure_runtime_capability(skein_core::RuntimeCapability::BackgroundMaintenance)?;
+        self.ensure_runtime_capability(hawdb_core::RuntimeCapability::BackgroundMaintenance)?;
         search_index.apply_background_projection_delta(policy, state, delta)
     }
 
@@ -3637,13 +3637,13 @@ impl Database {
         state: &LocalQosState,
         request: SearchProjectionGraphDeltaRequest,
     ) -> Result<SearchProjectionDeltaReport> {
-        self.ensure_runtime_capability(skein_core::RuntimeCapability::BackgroundMaintenance)?;
+        self.ensure_runtime_capability(hawdb_core::RuntimeCapability::BackgroundMaintenance)?;
         match policy.admit(state, &request.background_work_request()) {
             QosAdmission::Admit => self.apply_search_projection_graph_delta(search_index, request),
-            QosAdmission::Defer { reason, .. } => Err(SkeinError::Storage(format!(
+            QosAdmission::Defer { reason, .. } => Err(HawdbError::Storage(format!(
                 "background search projection graph delta deferred: {reason}"
             ))),
-            QosAdmission::Reject { reason, .. } => Err(SkeinError::Storage(format!(
+            QosAdmission::Reject { reason, .. } => Err(HawdbError::Storage(format!(
                 "background search projection graph delta rejected: {reason}"
             ))),
         }
@@ -3654,7 +3654,7 @@ impl Database {
         search_index: &mut SearchIndex,
         delta: SearchProjectionDelta,
     ) -> Result<SearchProjectionDeltaReport> {
-        self.ensure_runtime_capability(skein_core::RuntimeCapability::BackgroundMaintenance)?;
+        self.ensure_runtime_capability(hawdb_core::RuntimeCapability::BackgroundMaintenance)?;
         let scheduler = self.local_qos_scheduler_for_work();
         search_index.apply_scheduled_background_projection_delta(&scheduler, delta)
     }
@@ -3664,17 +3664,17 @@ impl Database {
         search_index: &mut SearchIndex,
         request: SearchProjectionGraphDeltaRequest,
     ) -> Result<SearchProjectionDeltaReport> {
-        self.ensure_runtime_capability(skein_core::RuntimeCapability::BackgroundMaintenance)?;
+        self.ensure_runtime_capability(hawdb_core::RuntimeCapability::BackgroundMaintenance)?;
         let scheduler = self.local_qos_scheduler_for_work();
         let permit = match scheduler.try_start(request.background_work_request()) {
             Ok(permit) => permit,
             Err(QosAdmission::Defer { reason, .. }) => {
-                return Err(SkeinError::Storage(format!(
+                return Err(HawdbError::Storage(format!(
                     "background search projection graph delta deferred: {reason}"
                 )));
             }
             Err(QosAdmission::Reject { reason, .. }) => {
-                return Err(SkeinError::Storage(format!(
+                return Err(HawdbError::Storage(format!(
                     "background search projection graph delta rejected: {reason}"
                 )));
             }
@@ -4274,7 +4274,7 @@ impl Database {
     fn ensure_writable(&self) -> Result<()> {
         self.store.ensure_usable()?;
         if self.config.read_only {
-            return Err(SkeinError::Execution(
+            return Err(HawdbError::Execution(
                 "database is opened in read-only mode".to_string(),
             ));
         }
@@ -4303,7 +4303,7 @@ struct KnowledgeRetrievalGraphContext<'a> {
     catalog: &'a Catalog,
     store: &'a GraphStore,
     compressed_vector_search_mode: CompressedVectorSearchMode,
-    adaptive_vector_backend_policy: skein_optimizer::AdaptiveVectorBackendPolicy,
+    adaptive_vector_backend_policy: hawdb_optimizer::AdaptiveVectorBackendPolicy,
     query_memory_budget: NonZeroUsize,
     result_payload_budget: usize,
 }
@@ -4369,7 +4369,7 @@ impl KnowledgeRetrievalGraphContext<'_> {
     ) -> Result<KnowledgeRetrievalOutput> {
         let graph_commit_epoch = self.store.commit_epoch();
         let mut pipeline =
-            skein_search::knowledge_retrieval_pipeline::KnowledgeRetrievalPipelineBudget::new(
+            hawdb_search::knowledge_retrieval_pipeline::KnowledgeRetrievalPipelineBudget::new(
                 self.query_memory_budget,
                 self.result_payload_budget,
             )?;
@@ -4858,7 +4858,7 @@ impl KnowledgeRetrievalGraphContext<'_> {
             .iter()
             .map(|seed| {
                 let entity = entities.get(&seed.node_id).cloned().ok_or_else(|| {
-                    SkeinError::StorageIntegrity(format!(
+                    HawdbError::StorageIntegrity(format!(
                         "knowledge retrieval graph seed references missing canonical node {}",
                         seed.node_id.0
                     ))
@@ -4884,7 +4884,7 @@ impl KnowledgeRetrievalGraphContext<'_> {
         let mut entities = BTreeMap::new();
         for node_id in node_ids {
             let Some(node) = self.store.node_owned(*node_id)? else {
-                return Err(SkeinError::StorageIntegrity(format!(
+                return Err(HawdbError::StorageIntegrity(format!(
                     "knowledge retrieval canonical hydration references missing node {}",
                     node_id.0
                 )));
@@ -4903,19 +4903,19 @@ impl KnowledgeRetrievalGraphContext<'_> {
             .store
             .relationship_owned(path.relationship_id)?
             .ok_or_else(|| {
-                SkeinError::StorageIntegrity(format!(
+                HawdbError::StorageIntegrity(format!(
                     "knowledge retrieval graph context references missing relationship {}",
                     path.relationship_id.0
                 ))
             })?;
         let source = entities.get(&path.source_node_id).ok_or_else(|| {
-            SkeinError::StorageIntegrity(format!(
+            HawdbError::StorageIntegrity(format!(
                 "knowledge retrieval graph context references missing source node {}",
                 path.source_node_id.0
             ))
         })?;
         let target = entities.get(&path.target_node_id).ok_or_else(|| {
-            SkeinError::StorageIntegrity(format!(
+            HawdbError::StorageIntegrity(format!(
                 "knowledge retrieval graph context references missing target node {}",
                 path.target_node_id.0
             ))
@@ -5211,7 +5211,7 @@ fn search_hit_payload_bytes(hit: &crate::search::SearchHit) -> usize {
 fn knowledge_entity_payload_bytes(entity: &KnowledgeEntity) -> usize {
     string_slice_bytes(&entity.labels)
         .saturating_add(option_string_bytes(&entity.external_id))
-        .saturating_add(skein_executor::binding::map_payload_bytes(
+        .saturating_add(hawdb_executor::binding::map_payload_bytes(
             &entity.properties,
         ))
 }
@@ -5272,7 +5272,7 @@ fn knowledge_graph_context_path_payload_bytes(path: &KnowledgeGraphContextPath) 
     path.seed_hit_id
         .len()
         .saturating_add(path.relationship_type.len())
-        .saturating_add(skein_executor::binding::map_payload_bytes(
+        .saturating_add(hawdb_executor::binding::map_payload_bytes(
             &path.relationship_properties,
         ))
         .saturating_add(string_slice_bytes(&path.source_labels))
@@ -6349,7 +6349,7 @@ pub(super) fn knowledge_community_entity_visibility_via_query_runtime(
             i64::try_from(entity.entity_node_id)
                 .map(Value::Int)
                 .map_err(|_| {
-                    SkeinError::Execution(format!(
+                    HawdbError::Execution(format!(
                         "entity node id {} exceeds query parameter range",
                         entity.entity_node_id
                     ))
@@ -6458,7 +6458,7 @@ pub(super) fn community_entity_visibility_entity_row_from_query(
     row: impl QueryRowLookup,
 ) -> Result<CommunityEntityVisibilityEntityRow> {
     let community_id = row.get("community_id").cloned().ok_or_else(|| {
-        SkeinError::Execution(
+        HawdbError::Execution(
             "knowledge community entity visibility row is missing community_id".to_string(),
         )
     })?;
@@ -6466,7 +6466,7 @@ pub(super) fn community_entity_visibility_entity_row_from_query(
         .get("entity_node_id")
         .and_then(value_to_non_negative_u64)
         .ok_or_else(|| {
-            SkeinError::Execution(
+            HawdbError::Execution(
                 "knowledge community entity visibility row is missing entity_node_id".to_string(),
             )
         })?;
@@ -6487,7 +6487,7 @@ pub(super) fn community_entity_visibility_memory_row_from_query(
         .get("entity_node_id")
         .and_then(value_to_non_negative_u64)
         .ok_or_else(|| {
-            SkeinError::Execution(
+            HawdbError::Execution(
                 "knowledge community entity visibility memory row is missing entity_node_id"
                     .to_string(),
             )
@@ -6496,7 +6496,7 @@ pub(super) fn community_entity_visibility_memory_row_from_query(
         .get("memory_node_id")
         .and_then(value_to_non_negative_u64)
         .ok_or_else(|| {
-            SkeinError::Execution(
+            HawdbError::Execution(
                 "knowledge community entity visibility memory row is missing memory_node_id"
                     .to_string(),
             )
@@ -6505,7 +6505,7 @@ pub(super) fn community_entity_visibility_memory_row_from_query(
         Some(Value::Bool(value)) => Some(*value),
         Some(Value::Null) | None => None,
         Some(value) => {
-            return Err(SkeinError::Execution(format!(
+            return Err(HawdbError::Execution(format!(
                 "knowledge community entity visibility memory row has non-boolean memory_is_latest: {value:?}"
             )));
         }
@@ -6538,7 +6538,7 @@ pub(super) fn validate_knowledge_community_entity_visibility_request(
     request: &KnowledgeCommunityEntityVisibilityRequest,
 ) -> Result<()> {
     if request.community_ids.is_empty() {
-        return Err(SkeinError::Semantic(
+        return Err(HawdbError::Semantic(
             "knowledge community entity visibility requires non-empty community ids".to_string(),
         ));
     }
@@ -6547,7 +6547,7 @@ pub(super) fn validate_knowledge_community_entity_visibility_request(
         .iter()
         .any(|community_id| community_id == &Value::Null)
     {
-        return Err(SkeinError::Semantic(
+        return Err(HawdbError::Semantic(
             "knowledge community entity visibility requires non-null community ids".to_string(),
         ));
     }
@@ -6612,7 +6612,7 @@ pub(super) fn validate_knowledge_community_memory_list_request(
     request: &KnowledgeCommunityMemoryListRequest,
 ) -> Result<()> {
     if request.community_ids.is_empty() {
-        return Err(SkeinError::Semantic(
+        return Err(HawdbError::Semantic(
             "knowledge community memory list requires non-empty community ids".to_string(),
         ));
     }
@@ -6621,12 +6621,12 @@ pub(super) fn validate_knowledge_community_memory_list_request(
         .iter()
         .any(|community_id| community_id == &Value::Null)
     {
-        return Err(SkeinError::Semantic(
+        return Err(HawdbError::Semantic(
             "knowledge community memory list requires non-null community ids".to_string(),
         ));
     }
     if request.unit_types.iter().any(String::is_empty) {
-        return Err(SkeinError::Semantic(
+        return Err(HawdbError::Semantic(
             "knowledge community memory list requires non-empty unit types".to_string(),
         ));
     }
@@ -6744,13 +6744,13 @@ pub(super) fn knowledge_community_memory_row_from_query(
     source: KnowledgeCommunityMemoryRowSource,
 ) -> Result<KnowledgeCommunityMemoryRow> {
     let community_id = row.get("community_id").cloned().ok_or_else(|| {
-        SkeinError::Execution("knowledge community memory row is missing community_id".to_string())
+        HawdbError::Execution("knowledge community memory row is missing community_id".to_string())
     })?;
     let memory = row
         .get("memory")
         .and_then(knowledge_entity_from_value)
         .ok_or_else(|| {
-            SkeinError::Execution("knowledge community memory row is missing memory".to_string())
+            HawdbError::Execution("knowledge community memory row is missing memory".to_string())
         })?;
     let entity_ids = row
         .get("entity_ids")
@@ -6932,17 +6932,17 @@ pub(super) fn knowledge_crystals_via_query_runtime(
 #[cfg(test)]
 pub(super) fn validate_knowledge_crystal_list_request(request: &KnowledgeCrystalListRequest) -> Result<()> {
     if request.key_match.as_ref().is_some_and(String::is_empty) {
-        return Err(SkeinError::Semantic(
+        return Err(HawdbError::Semantic(
             "knowledge crystal list requires a non-empty key match".to_string(),
         ));
     }
     if request.after_id.as_ref().is_some_and(String::is_empty) {
-        return Err(SkeinError::Semantic(
+        return Err(HawdbError::Semantic(
             "knowledge crystal list requires a non-empty after id".to_string(),
         ));
     }
     if request.key_match.is_some() && request.after_id.is_some() {
-        return Err(SkeinError::Semantic(
+        return Err(HawdbError::Semantic(
             "knowledge crystal list accepts key_match or after_id, not both".to_string(),
         ));
     }
@@ -7012,12 +7012,12 @@ pub(super) fn merge_knowledge_crystal_source_for(
     request: &KnowledgeCrystalSourceMergeRequest,
 ) -> Result<KnowledgeCrystalSourceMergeOutput> {
     if request.crystal_memory_id.is_empty() {
-        return Err(SkeinError::Semantic(
+        return Err(HawdbError::Semantic(
             "knowledge crystal source merge requires a non-empty crystal memory id".to_string(),
         ));
     }
     if request.source_memory_id.is_empty() {
-        return Err(SkeinError::Semantic(
+        return Err(HawdbError::Semantic(
             "knowledge crystal source merge requires a non-empty source memory id".to_string(),
         ));
     }
@@ -7071,7 +7071,7 @@ pub(super) fn validate_knowledge_crystal_source_weight(weight: &Value) -> Result
     if valid {
         Ok(())
     } else {
-        Err(SkeinError::Semantic(
+        Err(HawdbError::Semantic(
             "knowledge crystal source merge requires a numeric finite weight".to_string(),
         ))
     }
@@ -7172,7 +7172,7 @@ pub(super) fn validate_knowledge_crystal_community_list_request(
     match &request.scope {
         KnowledgeCrystalCommunityScope::CommunityIds(community_ids) => {
             if community_ids.is_empty() {
-                return Err(SkeinError::Semantic(
+                return Err(HawdbError::Semantic(
                     "knowledge crystal community list requires non-empty community ids".to_string(),
                 ));
             }
@@ -7180,7 +7180,7 @@ pub(super) fn validate_knowledge_crystal_community_list_request(
                 .iter()
                 .any(|community_id| community_id == &Value::Null)
             {
-                return Err(SkeinError::Semantic(
+                return Err(HawdbError::Semantic(
                     "knowledge crystal community list requires non-null community ids".to_string(),
                 ));
             }
@@ -7221,18 +7221,18 @@ pub(super) fn knowledge_crystal_community_row_from_query(
         .get("crystal_node_id")
         .and_then(value_to_non_negative_u64)
         .ok_or_else(|| {
-            SkeinError::Execution(
+            HawdbError::Execution(
                 "knowledge crystal community row is missing crystal_node_id".to_string(),
             )
         })?;
     let community_id = row.get("community_id").cloned().ok_or_else(|| {
-        SkeinError::Execution("knowledge crystal community row is missing community_id".to_string())
+        HawdbError::Execution("knowledge crystal community row is missing community_id".to_string())
     })?;
     let hit_count = row
         .get("hit_count")
         .and_then(value_to_non_negative_usize)
         .ok_or_else(|| {
-            SkeinError::Execution(
+            HawdbError::Execution(
                 "knowledge crystal community row is missing hit_count".to_string(),
             )
         })?;
@@ -7240,7 +7240,7 @@ pub(super) fn knowledge_crystal_community_row_from_query(
         .get("source_memory_count")
         .and_then(value_to_non_negative_usize)
         .ok_or_else(|| {
-            SkeinError::Execution(
+            HawdbError::Execution(
                 "knowledge crystal community row is missing source_memory_count".to_string(),
             )
         })?;
@@ -7346,7 +7346,7 @@ pub(super) fn validate_knowledge_crystal_source_visibility_request(
     request: &KnowledgeCrystalSourceVisibilityRequest,
 ) -> Result<()> {
     if request.community_ids.is_empty() {
-        return Err(SkeinError::Semantic(
+        return Err(HawdbError::Semantic(
             "knowledge crystal source visibility requires non-empty community ids".to_string(),
         ));
     }
@@ -7355,7 +7355,7 @@ pub(super) fn validate_knowledge_crystal_source_visibility_request(
         .iter()
         .any(|community_id| community_id == &Value::Null)
     {
-        return Err(SkeinError::Semantic(
+        return Err(HawdbError::Semantic(
             "knowledge crystal source visibility requires non-null community ids".to_string(),
         ));
     }
@@ -7370,7 +7370,7 @@ pub(super) fn knowledge_crystal_source_visibility_row_from_query(
         .get("crystal")
         .and_then(knowledge_entity_from_value)
         .ok_or_else(|| {
-            SkeinError::Execution(
+            HawdbError::Execution(
                 "knowledge crystal source visibility row is missing crystal".to_string(),
             )
         })?;
@@ -7378,7 +7378,7 @@ pub(super) fn knowledge_crystal_source_visibility_row_from_query(
         .get("source_memory")
         .and_then(knowledge_entity_from_value)
         .ok_or_else(|| {
-            SkeinError::Execution(
+            HawdbError::Execution(
                 "knowledge crystal source visibility row is missing source_memory".to_string(),
             )
         })?;
@@ -7386,7 +7386,7 @@ pub(super) fn knowledge_crystal_source_visibility_row_from_query(
         .get("entity")
         .and_then(knowledge_entity_from_value)
         .ok_or_else(|| {
-            SkeinError::Execution(
+            HawdbError::Execution(
                 "knowledge crystal source visibility row is missing entity".to_string(),
             )
         })?;
@@ -7395,7 +7395,7 @@ pub(super) fn knowledge_crystal_source_visibility_row_from_query(
         .get("community_id")
         .cloned()
         .ok_or_else(|| {
-            SkeinError::Execution(
+            HawdbError::Execution(
                 "knowledge crystal source visibility row is missing community_id".to_string(),
             )
         })?;
@@ -7586,7 +7586,7 @@ pub(super) fn create_knowledge_entity_batch_for(
 pub(super) fn validate_knowledge_entity_create(request: &KnowledgeEntityCreateRequest) -> Result<()> {
     validate_cypher_identifier(&request.label, "label")?;
     if request.external_id.is_empty() {
-        return Err(SkeinError::Semantic(
+        return Err(HawdbError::Semantic(
             "knowledge entity create requires a non-empty external id".to_string(),
         ));
     }
@@ -7596,7 +7596,7 @@ pub(super) fn validate_knowledge_entity_create(request: &KnowledgeEntityCreateRe
     if let Some(id) = request.properties.get("id") {
         let property_external_id = value_to_external_id(id);
         if property_external_id != request.external_id {
-            return Err(SkeinError::Semantic(format!(
+            return Err(HawdbError::Semantic(format!(
                 "knowledge entity create id property {property_external_id:?} does not match external id {:?}",
                 request.external_id
             )));
@@ -7867,7 +7867,7 @@ pub(super) fn upsert_knowledge_entity_batch_for(
 pub(super) fn validate_knowledge_entity_upsert(request: &KnowledgeEntityUpsertRequest) -> Result<()> {
     validate_cypher_identifier(&request.label, "label")?;
     if request.external_id.is_empty() {
-        return Err(SkeinError::Semantic(
+        return Err(HawdbError::Semantic(
             "knowledge entity upsert requires a non-empty external id".to_string(),
         ));
     }
@@ -7894,7 +7894,7 @@ pub(super) fn validate_knowledge_entity_upsert_properties(
     if let Some(id) = properties.get("id") {
         let property_external_id = value_to_external_id(id);
         if property_external_id != external_id {
-            return Err(SkeinError::Semantic(format!(
+            return Err(HawdbError::Semantic(format!(
                 "knowledge entity upsert {phase} id property {property_external_id:?} does not match external id {external_id:?}"
             )));
         }
@@ -7976,7 +7976,7 @@ pub(super) fn update_scoped_knowledge_properties_for(
 ) -> Result<KnowledgePropertyUpdateOutput> {
     db.ensure_writable()?;
     if request.update.assignments.is_empty() {
-        return Err(SkeinError::Semantic(
+        return Err(HawdbError::Semantic(
             "knowledge property update requires at least one assignment".to_string(),
         ));
     }
@@ -8076,7 +8076,7 @@ pub(super) fn update_scoped_knowledge_properties_batch_for(
     db.ensure_writable()?;
     for update in &request.updates {
         if update.assignments.is_empty() {
-            return Err(SkeinError::Semantic(
+            return Err(HawdbError::Semantic(
                 "knowledge property batch update requires every row to have at least one assignment"
                     .to_string(),
             ));
@@ -8205,7 +8205,7 @@ pub(super) fn move_knowledge_normalized_space_batch_for(
     validate_cypher_identifier(&request.label, "label")?;
     validate_cypher_identifier(&request.identity_property, "identity property")?;
     if request.target_space_id.is_empty() {
-        return Err(SkeinError::Semantic(
+        return Err(HawdbError::Semantic(
             "knowledge normalized space move requires a non-empty target space id".to_string(),
         ));
     }
@@ -8352,7 +8352,7 @@ pub(super) fn touch_knowledge_memory_access_batch_for(
     db.ensure_writable()?;
     for touch in &request.touches {
         if touch.memory_id.is_empty() {
-            return Err(SkeinError::Semantic(
+            return Err(HawdbError::Semantic(
                 "knowledge memory access touch requires a non-empty memory id".to_string(),
             ));
         }
@@ -8360,7 +8360,7 @@ pub(super) fn touch_knowledge_memory_access_batch_for(
             .click_dwell_time_ms
             .is_some_and(|dwell_time_ms| dwell_time_ms < 0)
         {
-            return Err(SkeinError::Semantic(
+            return Err(HawdbError::Semantic(
                 "knowledge memory access touch requires non-negative dwell time".to_string(),
             ));
         }
@@ -8642,17 +8642,17 @@ pub(super) fn update_knowledge_memory_content_batch_for(
 
 pub(super) fn validate_knowledge_memory_content_update(update: &KnowledgeMemoryContentUpdate) -> Result<()> {
     if update.memory_id.is_empty() {
-        return Err(SkeinError::Semantic(
+        return Err(HawdbError::Semantic(
             "knowledge memory content update requires a non-empty memory id".to_string(),
         ));
     }
     if update.unit_type.is_empty() {
-        return Err(SkeinError::Semantic(
+        return Err(HawdbError::Semantic(
             "knowledge memory content update requires a non-empty unit type".to_string(),
         ));
     }
     if update.extraction_method.is_empty() {
-        return Err(SkeinError::Semantic(
+        return Err(HawdbError::Semantic(
             "knowledge memory content update requires a non-empty extraction method".to_string(),
         ));
     }
@@ -8676,7 +8676,7 @@ pub(super) fn validate_finite_numeric_value(value: &Value, message: &str) -> Res
     if valid {
         Ok(())
     } else {
-        Err(SkeinError::Semantic(message.to_string()))
+        Err(HawdbError::Semantic(message.to_string()))
     }
 }
 
@@ -8723,7 +8723,7 @@ pub(super) fn update_knowledge_memory_metadata_batch_for(
     db.ensure_writable()?;
     for update in &request.updates {
         if update.memory_id.is_empty() {
-            return Err(SkeinError::Semantic(
+            return Err(HawdbError::Semantic(
                 "knowledge memory metadata update requires a non-empty memory id".to_string(),
             ));
         }
@@ -8849,7 +8849,7 @@ pub(super) fn update_knowledge_memory_dedup_reviewed_batch_for(
 ) -> Result<KnowledgeMemoryDedupReviewedBatchOutput> {
     db.ensure_writable()?;
     if request.memory_ids.iter().any(String::is_empty) {
-        return Err(SkeinError::Semantic(
+        return Err(HawdbError::Semantic(
             "knowledge memory dedup reviewed update requires non-empty memory ids".to_string(),
         ));
     }
@@ -9076,7 +9076,7 @@ pub(super) fn validate_knowledge_memory_decay_refresh_update(
     update: &KnowledgeMemoryDecayRefreshUpdate,
 ) -> Result<()> {
     if update.memory_id.is_empty() {
-        return Err(SkeinError::Semantic(
+        return Err(HawdbError::Semantic(
             "knowledge memory decay refresh update requires a non-empty memory id".to_string(),
         ));
     }
@@ -9113,13 +9113,13 @@ pub(super) fn adjust_knowledge_source_memory_count_batch_for(
     db.ensure_writable()?;
     for adjustment in &request.adjustments {
         if adjustment.source_id.is_empty() {
-            return Err(SkeinError::Semantic(
+            return Err(HawdbError::Semantic(
                 "knowledge source memory count adjustment requires a non-empty source id"
                     .to_string(),
             ));
         }
         if adjustment.delta == 0 {
-            return Err(SkeinError::Semantic(
+            return Err(HawdbError::Semantic(
                 "knowledge source memory count adjustment requires a non-zero delta".to_string(),
             ));
         }
@@ -9279,12 +9279,12 @@ pub(super) fn update_knowledge_source_lifecycle_batch_for(
     db.ensure_writable()?;
     for update in &request.updates {
         if update.source_id.is_empty() {
-            return Err(SkeinError::Semantic(
+            return Err(HawdbError::Semantic(
                 "knowledge source lifecycle update requires a non-empty source id".to_string(),
             ));
         }
         if update.lifecycle_state.is_empty() {
-            return Err(SkeinError::Semantic(
+            return Err(HawdbError::Semantic(
                 "knowledge source lifecycle update requires a non-empty lifecycle state"
                     .to_string(),
             ));
@@ -9294,7 +9294,7 @@ pub(super) fn update_knowledge_source_lifecycle_batch_for(
             .as_deref()
             .is_some_and(str::is_empty)
         {
-            return Err(SkeinError::Semantic(
+            return Err(HawdbError::Semantic(
                 "knowledge source lifecycle update requires a non-empty current lifecycle state"
                     .to_string(),
             ));
@@ -9303,7 +9303,7 @@ pub(super) fn update_knowledge_source_lifecycle_batch_for(
             .chunk_count
             .is_some_and(|chunk_count| chunk_count < 0)
         {
-            return Err(SkeinError::Semantic(
+            return Err(HawdbError::Semantic(
                 "knowledge source lifecycle update requires non-negative chunk count".to_string(),
             ));
         }
@@ -9467,7 +9467,7 @@ pub(super) fn update_knowledge_source_metadata_batch_for(
     db.ensure_writable()?;
     for update in &request.updates {
         if update.source_id.is_empty() {
-            return Err(SkeinError::Semantic(
+            return Err(HawdbError::Semantic(
                 "knowledge source metadata update requires a non-empty source id".to_string(),
             ));
         }
@@ -9594,18 +9594,18 @@ pub(super) fn update_knowledge_source_parsed_metadata_batch_for(
     db.ensure_writable()?;
     for update in &request.updates {
         if update.source_id.is_empty() {
-            return Err(SkeinError::Semantic(
+            return Err(HawdbError::Semantic(
                 "knowledge source parsed metadata update requires a non-empty source id"
                     .to_string(),
             ));
         }
         if update.sha256.is_empty() {
-            return Err(SkeinError::Semantic(
+            return Err(HawdbError::Semantic(
                 "knowledge source parsed metadata update requires a non-empty sha256".to_string(),
             ));
         }
         if update.size_bytes < 0 {
-            return Err(SkeinError::Semantic(
+            return Err(HawdbError::Semantic(
                 "knowledge source parsed metadata update requires non-negative size bytes"
                     .to_string(),
             ));
@@ -9804,47 +9804,47 @@ pub(super) fn create_knowledge_source_parsed_batch_for(
 
 pub(super) fn validate_knowledge_source_parsed_create(create: &KnowledgeSourceParsedCreate) -> Result<()> {
     if create.source_id.is_empty() {
-        return Err(SkeinError::Semantic(
+        return Err(HawdbError::Semantic(
             "knowledge source parsed create requires a non-empty source id".to_string(),
         ));
     }
     if create.source_type.is_empty() {
-        return Err(SkeinError::Semantic(
+        return Err(HawdbError::Semantic(
             "knowledge source parsed create requires a non-empty source type".to_string(),
         ));
     }
     if create.original_name.is_empty() {
-        return Err(SkeinError::Semantic(
+        return Err(HawdbError::Semantic(
             "knowledge source parsed create requires a non-empty original name".to_string(),
         ));
     }
     if create.mime_type.is_empty() {
-        return Err(SkeinError::Semantic(
+        return Err(HawdbError::Semantic(
             "knowledge source parsed create requires a non-empty mime type".to_string(),
         ));
     }
     if create.parsed_path.is_empty() {
-        return Err(SkeinError::Semantic(
+        return Err(HawdbError::Semantic(
             "knowledge source parsed create requires a non-empty parsed path".to_string(),
         ));
     }
     if create.sha256.is_empty() {
-        return Err(SkeinError::Semantic(
+        return Err(HawdbError::Semantic(
             "knowledge source parsed create requires a non-empty sha256".to_string(),
         ));
     }
     if create.size_bytes < 0 {
-        return Err(SkeinError::Semantic(
+        return Err(HawdbError::Semantic(
             "knowledge source parsed create requires non-negative size bytes".to_string(),
         ));
     }
     if create.version < 1 {
-        return Err(SkeinError::Semantic(
+        return Err(HawdbError::Semantic(
             "knowledge source parsed create requires a positive version".to_string(),
         ));
     }
     if create.space_id.is_empty() {
-        return Err(SkeinError::Semantic(
+        return Err(HawdbError::Semantic(
             "knowledge source parsed create requires a non-empty space id".to_string(),
         ));
     }
@@ -9915,12 +9915,12 @@ pub(super) fn create_knowledge_source_revision_batch_for(
 ) -> Result<KnowledgeSourceRevisionCreateBatchOutput> {
     for create in &request.creates {
         if create.newer_source_id.is_empty() {
-            return Err(SkeinError::Semantic(
+            return Err(HawdbError::Semantic(
                 "knowledge source revision create requires a non-empty newer source id".to_string(),
             ));
         }
         if create.older_source_id.is_empty() {
-            return Err(SkeinError::Semantic(
+            return Err(HawdbError::Semantic(
                 "knowledge source revision create requires a non-empty older source id".to_string(),
             ));
         }
@@ -9996,7 +9996,7 @@ pub(super) fn delete_knowledge_sources_for(
 ) -> Result<KnowledgeSourceDeleteBatchOutput> {
     for source_id in &request.source_ids {
         if source_id.is_empty() {
-            return Err(SkeinError::Semantic(
+            return Err(HawdbError::Semantic(
                 "knowledge source delete requires a non-empty source id".to_string(),
             ));
         }
@@ -10036,7 +10036,7 @@ pub(super) fn delete_knowledge_skills_for(
 ) -> Result<KnowledgeSkillDeleteBatchOutput> {
     for skill_id in &request.skill_ids {
         if skill_id.is_empty() {
-            return Err(SkeinError::Semantic(
+            return Err(HawdbError::Semantic(
                 "knowledge skill delete requires a non-empty skill id".to_string(),
             ));
         }
@@ -10137,17 +10137,17 @@ pub(super) fn validate_knowledge_source_label_assignment(
     assignment: &KnowledgeSourceLabelAssignment,
 ) -> Result<()> {
     if assignment.source_id.is_empty() {
-        return Err(SkeinError::Semantic(
+        return Err(HawdbError::Semantic(
             "knowledge source label assignment requires a non-empty source id".to_string(),
         ));
     }
     if assignment.label_id.is_empty() {
-        return Err(SkeinError::Semantic(
+        return Err(HawdbError::Semantic(
             "knowledge source label assignment requires a non-empty label id".to_string(),
         ));
     }
     if assignment.assigned_by.is_empty() {
-        return Err(SkeinError::Semantic(
+        return Err(HawdbError::Semantic(
             "knowledge source label assignment requires a non-empty assigned_by".to_string(),
         ));
     }
@@ -10207,12 +10207,12 @@ pub(super) fn delete_knowledge_source_labels_batch_for(
 
 pub(super) fn validate_knowledge_source_label_delete(delete: &KnowledgeSourceLabelDelete) -> Result<()> {
     if delete.source_id.is_empty() {
-        return Err(SkeinError::Semantic(
+        return Err(HawdbError::Semantic(
             "knowledge source label delete requires a non-empty source id".to_string(),
         ));
     }
     if delete.label_id.is_empty() {
-        return Err(SkeinError::Semantic(
+        return Err(HawdbError::Semantic(
             "knowledge source label delete requires a non-empty label id".to_string(),
         ));
     }
@@ -10317,12 +10317,12 @@ pub(super) fn update_knowledge_memory_lifecycle_batch_for(
     db.ensure_writable()?;
     for update in &request.updates {
         if update.memory_id.is_empty() {
-            return Err(SkeinError::Semantic(
+            return Err(HawdbError::Semantic(
                 "knowledge memory lifecycle update requires a non-empty memory id".to_string(),
             ));
         }
         if update.lifecycle_state.is_empty() {
-            return Err(SkeinError::Semantic(
+            return Err(HawdbError::Semantic(
                 "knowledge memory lifecycle update requires a non-empty lifecycle state"
                     .to_string(),
             ));
@@ -10455,7 +10455,7 @@ pub(super) fn update_knowledge_memory_latest_batch_for(
     db.ensure_writable()?;
     for update in &request.updates {
         if update.memory_id.is_empty() {
-            return Err(SkeinError::Semantic(
+            return Err(HawdbError::Semantic(
                 "knowledge memory latest update requires a non-empty memory id".to_string(),
             ));
         }
@@ -10649,17 +10649,17 @@ pub(super) fn create_knowledge_memory_evolves_batch_for(
 
 pub(super) fn validate_knowledge_memory_evolves_create(create: &KnowledgeMemoryEvolvesCreate) -> Result<()> {
     if create.older_memory_id.is_empty() {
-        return Err(SkeinError::Semantic(
+        return Err(HawdbError::Semantic(
             "knowledge memory evolves create requires a non-empty older memory id".to_string(),
         ));
     }
     if create.newer_memory_id.is_empty() {
-        return Err(SkeinError::Semantic(
+        return Err(HawdbError::Semantic(
             "knowledge memory evolves create requires a non-empty newer memory id".to_string(),
         ));
     }
     if create.content_relation.is_empty() {
-        return Err(SkeinError::Semantic(
+        return Err(HawdbError::Semantic(
             "knowledge memory evolves create requires a non-empty content relation".to_string(),
         ));
     }
@@ -10670,7 +10670,7 @@ pub(super) fn validate_knowledge_memory_evolves_create(create: &KnowledgeMemoryE
         )?;
     }
     if create.detected_by.as_deref().is_some_and(str::is_empty) {
-        return Err(SkeinError::Semantic(
+        return Err(HawdbError::Semantic(
             "knowledge memory evolves create requires a non-empty detected_by".to_string(),
         ));
     }
@@ -10715,12 +10715,12 @@ pub(super) fn update_knowledge_skill_usage_stats_batch_for(
     db.ensure_writable()?;
     for update in &request.updates {
         if update.skill_id.is_empty() {
-            return Err(SkeinError::Semantic(
+            return Err(HawdbError::Semantic(
                 "knowledge skill usage stats update requires a non-empty skill id".to_string(),
             ));
         }
         if update.use_count < 0 {
-            return Err(SkeinError::Semantic(
+            return Err(HawdbError::Semantic(
                 "knowledge skill usage stats update requires non-negative use count".to_string(),
             ));
         }
@@ -10858,7 +10858,7 @@ pub(super) fn update_knowledge_skill_metadata_batch_for(
     db.ensure_writable()?;
     for update in &request.updates {
         if update.skill_id.is_empty() {
-            return Err(SkeinError::Semantic(
+            return Err(HawdbError::Semantic(
                 "knowledge skill metadata update requires a non-empty skill id".to_string(),
             ));
         }
@@ -10987,7 +10987,7 @@ pub(super) fn validate_skill_success_rate(value: &Value) -> Result<()> {
     if valid {
         Ok(())
     } else {
-        Err(SkeinError::Semantic(
+        Err(HawdbError::Semantic(
             "knowledge skill usage stats update requires success rate between 0 and 1".to_string(),
         ))
     }
@@ -10998,12 +10998,12 @@ pub(super) fn merge_knowledge_skill_source_for(
     request: &KnowledgeSkillSourceMergeRequest,
 ) -> Result<KnowledgeSkillSourceMergeOutput> {
     if request.skill_id.is_empty() {
-        return Err(SkeinError::Semantic(
+        return Err(HawdbError::Semantic(
             "knowledge skill source merge requires a non-empty skill id".to_string(),
         ));
     }
     if request.memory_id.is_empty() {
-        return Err(SkeinError::Semantic(
+        return Err(HawdbError::Semantic(
             "knowledge skill source merge requires a non-empty memory id".to_string(),
         ));
     }
@@ -11057,22 +11057,22 @@ pub(super) fn update_knowledge_skill_lifecycle_batch_for(
     db.ensure_writable()?;
     for update in &request.updates {
         if update.skill_id.is_empty() {
-            return Err(SkeinError::Semantic(
+            return Err(HawdbError::Semantic(
                 "knowledge skill lifecycle update requires a non-empty skill id".to_string(),
             ));
         }
         if update.stage.as_deref().is_some_and(str::is_empty) {
-            return Err(SkeinError::Semantic(
+            return Err(HawdbError::Semantic(
                 "knowledge skill lifecycle update requires a non-empty stage".to_string(),
             ));
         }
         if update.write_origin.as_deref().is_some_and(str::is_empty) {
-            return Err(SkeinError::Semantic(
+            return Err(HawdbError::Semantic(
                 "knowledge skill lifecycle update requires a non-empty write origin".to_string(),
             ));
         }
         if !skill_lifecycle_update_has_business_field(update) {
-            return Err(SkeinError::Semantic(
+            return Err(HawdbError::Semantic(
                 "knowledge skill lifecycle update requires at least one lifecycle field"
                     .to_string(),
             ));
@@ -11249,7 +11249,7 @@ pub(super) fn update_knowledge_thread_metadata_batch_for(
     db.ensure_writable()?;
     for update in &request.updates {
         if update.thread_id.is_empty() {
-            return Err(SkeinError::Semantic(
+            return Err(HawdbError::Semantic(
                 "knowledge thread metadata update requires a non-empty thread id".to_string(),
             ));
         }
@@ -11375,7 +11375,7 @@ pub(super) fn delete_knowledge_threads_for(
 ) -> Result<KnowledgeThreadDeleteBatchOutput> {
     for thread_id in &request.thread_ids {
         if thread_id.is_empty() {
-            return Err(SkeinError::Semantic(
+            return Err(HawdbError::Semantic(
                 "knowledge thread delete requires a non-empty thread id".to_string(),
             ));
         }
@@ -11416,12 +11416,12 @@ pub(super) fn update_knowledge_thread_message_count_batch_for(
     db.ensure_writable()?;
     for update in &request.updates {
         if update.thread_id.is_empty() {
-            return Err(SkeinError::Semantic(
+            return Err(HawdbError::Semantic(
                 "knowledge thread message-count update requires a non-empty thread id".to_string(),
             ));
         }
         if update.message_count < 0 {
-            return Err(SkeinError::Semantic(
+            return Err(HawdbError::Semantic(
                 "knowledge thread message-count update requires non-negative message count"
                     .to_string(),
             ));
@@ -11694,7 +11694,7 @@ pub(super) fn validate_knowledge_thread_identity_delete_request(
 ) -> Result<()> {
     match (&request.identity_key, &request.cascade_keys) {
         (Some(identity_key), None) if !identity_key.is_empty() => Ok(()),
-        (Some(_), None) => Err(SkeinError::Semantic(
+        (Some(_), None) => Err(HawdbError::Semantic(
             "knowledge thread identity delete requires a non-empty identity key".to_string(),
         )),
         (None, Some(keys))
@@ -11704,10 +11704,10 @@ pub(super) fn validate_knowledge_thread_identity_delete_request(
         {
             Ok(())
         }
-        (None, Some(_)) => Err(SkeinError::Semantic(
+        (None, Some(_)) => Err(HawdbError::Semantic(
             "knowledge thread identity cascade delete requires non-empty cascade keys".to_string(),
         )),
-        _ => Err(SkeinError::Semantic(
+        _ => Err(HawdbError::Semantic(
             "knowledge thread identity delete requires exactly one delete mode".to_string(),
         )),
     }
@@ -11842,17 +11842,17 @@ pub(super) fn validate_knowledge_thread_compaction_link_request(
     request: &KnowledgeThreadCompactionLinkRequest,
 ) -> Result<()> {
     if request.thread_id.is_empty() {
-        return Err(SkeinError::Semantic(
+        return Err(HawdbError::Semantic(
             "knowledge thread compaction link create requires a non-empty thread id".to_string(),
         ));
     }
     if request.memory_id.is_empty() {
-        return Err(SkeinError::Semantic(
+        return Err(HawdbError::Semantic(
             "knowledge thread compaction link create requires a non-empty memory id".to_string(),
         ));
     }
     if request.compaction_method.is_empty() {
-        return Err(SkeinError::Semantic(
+        return Err(HawdbError::Semantic(
             "knowledge thread compaction link create requires a non-empty compaction method"
                 .to_string(),
         ));
@@ -11866,7 +11866,7 @@ pub(super) fn delete_knowledge_thread_messages_for(
 ) -> Result<KnowledgeThreadMessageDeleteOutput> {
     db.ensure_writable()?;
     if request.thread_id.is_empty() {
-        return Err(SkeinError::Semantic(
+        return Err(HawdbError::Semantic(
             "knowledge thread message delete requires a non-empty thread id".to_string(),
         ));
     }
@@ -11962,22 +11962,22 @@ pub(super) fn update_knowledge_label_lifecycle_batch_for(
     db.ensure_writable()?;
     for update in &request.updates {
         if update.label_id.is_empty() {
-            return Err(SkeinError::Semantic(
+            return Err(HawdbError::Semantic(
                 "knowledge label lifecycle update requires a non-empty label id".to_string(),
             ));
         }
         if update.name.as_deref().is_some_and(str::is_empty) {
-            return Err(SkeinError::Semantic(
+            return Err(HawdbError::Semantic(
                 "knowledge label lifecycle update requires a non-empty name".to_string(),
             ));
         }
         if update.canonical_name.as_deref().is_some_and(str::is_empty) {
-            return Err(SkeinError::Semantic(
+            return Err(HawdbError::Semantic(
                 "knowledge label lifecycle update requires a non-empty canonical name".to_string(),
             ));
         }
         if !label_lifecycle_update_has_business_field(update) {
-            return Err(SkeinError::Semantic(
+            return Err(HawdbError::Semantic(
                 "knowledge label lifecycle update requires at least one lifecycle field"
                     .to_string(),
             ));
@@ -12237,12 +12237,12 @@ pub(super) fn validate_knowledge_memory_label_delete_request(
     request: &KnowledgeMemoryLabelDeleteRequest,
 ) -> Result<()> {
     if request.memory_id.is_empty() {
-        return Err(SkeinError::Semantic(
+        return Err(HawdbError::Semantic(
             "knowledge memory label delete requires a non-empty memory id".to_string(),
         ));
     }
     if request.label_id.as_deref().is_some_and(str::is_empty) {
-        return Err(SkeinError::Semantic(
+        return Err(HawdbError::Semantic(
             "knowledge memory label delete requires a non-empty label id".to_string(),
         ));
     }
@@ -12472,12 +12472,12 @@ pub(super) fn validate_knowledge_label_memory_transfer_request(
     request: &KnowledgeLabelMemoryTransferRequest,
 ) -> Result<()> {
     if request.source_label_id.is_empty() {
-        return Err(SkeinError::Semantic(
+        return Err(HawdbError::Semantic(
             "knowledge label memory transfer requires a non-empty source label id".to_string(),
         ));
     }
     if request.target_label_id.is_empty() {
-        return Err(SkeinError::Semantic(
+        return Err(HawdbError::Semantic(
             "knowledge label memory transfer requires a non-empty target label id".to_string(),
         ));
     }
@@ -12750,17 +12750,17 @@ pub(super) fn validate_knowledge_memory_label_transfer_request(
     request: &KnowledgeMemoryLabelTransferRequest,
 ) -> Result<()> {
     if request.older_memory_id.is_empty() {
-        return Err(SkeinError::Semantic(
+        return Err(HawdbError::Semantic(
             "knowledge memory label transfer requires a non-empty older memory id".to_string(),
         ));
     }
     if request.newer_memory_id.is_empty() {
-        return Err(SkeinError::Semantic(
+        return Err(HawdbError::Semantic(
             "knowledge memory label transfer requires a non-empty newer memory id".to_string(),
         ));
     }
     if request.space_id.is_empty() {
-        return Err(SkeinError::Semantic(
+        return Err(HawdbError::Semantic(
             "knowledge memory label transfer requires a non-empty space id".to_string(),
         ));
     }
@@ -12963,7 +12963,7 @@ pub(super) fn validate_knowledge_entity_label_list_request(
 ) -> Result<()> {
     validate_cypher_identifier(&request.entity_label, "knowledge entity label")?;
     if request.external_ids.is_empty() {
-        return Err(SkeinError::Semantic(
+        return Err(HawdbError::Semantic(
             "knowledge entity label read requires non-empty external ids".to_string(),
         ));
     }
@@ -12985,7 +12985,7 @@ pub(super) fn validate_knowledge_entity_label_projected_list_request(
             .iter()
             .any(String::is_empty)
     {
-        return Err(SkeinError::Semantic(
+        return Err(HawdbError::Semantic(
             "knowledge entity label projected read requires non-empty property names".to_string(),
         ));
     }
@@ -13072,20 +13072,20 @@ pub(super) fn entity_label_projected_rows_via_query_runtime(
                 .get("label")
                 .and_then(knowledge_entity_from_value)
                 .ok_or_else(|| {
-                    SkeinError::Execution("entity label row is missing label".to_string())
+                    HawdbError::Execution("entity label row is missing label".to_string())
                 })?;
             let relationship = row
                 .get("relationship")
                 .and_then(value_to_map)
                 .ok_or_else(|| {
-                    SkeinError::Execution("entity label row is missing relationship".to_string())
+                    HawdbError::Execution("entity label row is missing relationship".to_string())
                 })?;
             let relationship_id = row
                 .get("relationship_id")
                 .and_then(value_to_non_negative_u64)
                 .or_else(|| relationship.get("_id").and_then(value_to_non_negative_u64))
                 .ok_or_else(|| {
-                    SkeinError::Execution("entity label row is missing relationship_id".to_string())
+                    HawdbError::Execution("entity label row is missing relationship_id".to_string())
                 })?;
             let mut relationship_properties = relationship.clone();
             relationship_properties.remove("_id");
@@ -13129,7 +13129,7 @@ pub(super) fn entity_label_query_output_via_query_runtime(
         BTreeMap::from([(
             "entity_node_id".to_string(),
             Value::Int(i64::try_from(entity_node_id).map_err(|_| {
-                SkeinError::Execution("entity label node id exceeds i64".to_string())
+                HawdbError::Execution("entity label node id exceeds i64".to_string())
             })?),
         )]);
     let query = "MATCH (entity)-[relationship:HAS_LABEL]->(label:Label) \
@@ -13145,7 +13145,7 @@ pub(super) fn entity_label_row_from_query_row(
     let label = row
         .get("label")
         .and_then(knowledge_entity_from_value)
-        .ok_or_else(|| SkeinError::Execution("entity label row is missing label".to_string()))?;
+        .ok_or_else(|| HawdbError::Execution("entity label row is missing label".to_string()))?;
     Ok(KnowledgeEntityLabelRow {
         label_id: knowledge_entity_id_property(&label),
         node_id: label.node_id,
@@ -13169,12 +13169,12 @@ pub(super) fn update_knowledge_pagerank_scores_batch_for(
     for update in &request.updates {
         validate_pagerank_label(update.label.as_str())?;
         if update.external_id.is_empty() {
-            return Err(SkeinError::Semantic(
+            return Err(HawdbError::Semantic(
                 "knowledge pagerank score update requires a non-empty external id".to_string(),
             ));
         }
         if !update.score.is_finite() || update.score < 0.0 {
-            return Err(SkeinError::Semantic(
+            return Err(HawdbError::Semantic(
                 "knowledge pagerank score update requires a finite non-negative score".to_string(),
             ));
         }
@@ -13294,7 +13294,7 @@ pub(super) fn clear_knowledge_pagerank_scores_for(
 ) -> Result<KnowledgePageRankClearOutput> {
     db.ensure_writable()?;
     if request.labels.is_empty() {
-        return Err(SkeinError::Semantic(
+        return Err(HawdbError::Semantic(
             "knowledge pagerank clear requires at least one label".to_string(),
         ));
     }
@@ -13385,7 +13385,7 @@ pub(super) fn clear_knowledge_pagerank_scores_for(
 #[cfg(test)]
 pub(super) fn validate_non_empty_external_ids(external_ids: &[String], message: &str) -> Result<()> {
     if external_ids.iter().any(String::is_empty) {
-        return Err(SkeinError::Semantic(message.to_string()));
+        return Err(HawdbError::Semantic(message.to_string()));
     }
     Ok(())
 }
@@ -13393,7 +13393,7 @@ pub(super) fn validate_non_empty_external_ids(external_ids: &[String], message: 
 pub(super) fn validate_pagerank_label(label: &str) -> Result<()> {
     match label {
         "Memory" | "memory" | "Entity" | "entity" => Ok(()),
-        _ => Err(SkeinError::Semantic(
+        _ => Err(HawdbError::Semantic(
             "knowledge pagerank operations support only Memory and Entity labels".to_string(),
         )),
     }
@@ -13568,17 +13568,17 @@ pub(super) fn validate_knowledge_community_membership_create(
     membership: &KnowledgeCommunityMembershipCreate,
 ) -> Result<()> {
     if membership.entity_id.is_empty() {
-        return Err(SkeinError::Semantic(
+        return Err(HawdbError::Semantic(
             "knowledge community membership create requires a non-empty entity_id".to_string(),
         ));
     }
     if membership.community_id.is_empty() {
-        return Err(SkeinError::Semantic(
+        return Err(HawdbError::Semantic(
             "knowledge community membership create requires a non-empty community_id".to_string(),
         ));
     }
     if !membership.strength.is_finite() {
-        return Err(SkeinError::Semantic(
+        return Err(HawdbError::Semantic(
             "knowledge community membership strength must be finite".to_string(),
         ));
     }
@@ -13686,7 +13686,7 @@ pub(super) fn validate_knowledge_community_request(request: &KnowledgeCommunityR
     if let KnowledgeCommunityLookupKey::Id(id) = &request.key
         && id.is_empty()
     {
-        return Err(SkeinError::Semantic(
+        return Err(HawdbError::Semantic(
             "knowledge community read requires a non-empty id".to_string(),
         ));
     }
@@ -13932,27 +13932,27 @@ pub(super) fn update_knowledge_communities_batch_for(
 
 pub(super) fn validate_knowledge_community_create(create: &KnowledgeCommunityCreate) -> Result<()> {
     if create.id.is_empty() {
-        return Err(SkeinError::Semantic(
+        return Err(HawdbError::Semantic(
             "knowledge community create requires a non-empty id".to_string(),
         ));
     }
     if create.name.is_empty() {
-        return Err(SkeinError::Semantic(
+        return Err(HawdbError::Semantic(
             "knowledge community create requires a non-empty name".to_string(),
         ));
     }
     if create.community_id < 0 {
-        return Err(SkeinError::Semantic(
+        return Err(HawdbError::Semantic(
             "knowledge community create requires non-negative community_id".to_string(),
         ));
     }
     if create.member_count < 0 {
-        return Err(SkeinError::Semantic(
+        return Err(HawdbError::Semantic(
             "knowledge community create requires non-negative member_count".to_string(),
         ));
     }
     if !create.resolution.is_finite() {
-        return Err(SkeinError::Semantic(
+        return Err(HawdbError::Semantic(
             "knowledge community create resolution must be finite".to_string(),
         ));
     }
@@ -13963,12 +13963,12 @@ pub(super) fn validate_knowledge_community_summary_update(
     update: &KnowledgeCommunitySummaryUpdate,
 ) -> Result<()> {
     if update.id.is_empty() {
-        return Err(SkeinError::Semantic(
+        return Err(HawdbError::Semantic(
             "knowledge community summary update requires a non-empty id".to_string(),
         ));
     }
     if update.name.is_empty() {
-        return Err(SkeinError::Semantic(
+        return Err(HawdbError::Semantic(
             "knowledge community summary update requires a non-empty name".to_string(),
         ));
     }
@@ -14086,7 +14086,7 @@ pub(super) fn knowledge_community_cleanup_statement(
     detach: bool,
 ) -> Result<(String, BTreeMap<String, Value>)> {
     let node_id = i64::try_from(node_id.0)
-        .map_err(|_| SkeinError::Semantic("node id does not fit Cypher integer".to_string()))?;
+        .map_err(|_| HawdbError::Semantic("node id does not fit Cypher integer".to_string()))?;
     let verb = if detach { "DETACH DELETE" } else { "DELETE" };
     Ok((
         format!("MATCH (c:Community) WHERE id(c) = $node_id {verb} c"),
@@ -14134,7 +14134,7 @@ pub(super) fn delete_knowledge_graph_meta_for(
 
 pub(super) fn validate_graph_meta_request(request: &KnowledgeGraphMetaRequest) -> Result<()> {
     if request.meta_id.is_empty() {
-        return Err(SkeinError::Semantic(
+        return Err(HawdbError::Semantic(
             "knowledge graph meta request requires a non-empty meta id".to_string(),
         ));
     }
@@ -14145,7 +14145,7 @@ pub(super) fn knowledge_graph_meta_delete_statement(
     node_id: NodeId,
 ) -> Result<(String, BTreeMap<String, Value>)> {
     let node_id = i64::try_from(node_id.0)
-        .map_err(|_| SkeinError::Semantic("node id does not fit Cypher integer".to_string()))?;
+        .map_err(|_| HawdbError::Semantic("node id does not fit Cypher integer".to_string()))?;
     Ok((
         "MATCH (m:GraphMeta) WHERE id(m) = $node_id DELETE m".to_string(),
         BTreeMap::from([("node_id".to_string(), Value::Int(node_id))]),
@@ -14159,19 +14159,19 @@ pub(super) fn stamp_knowledge_graph_meta_batch_for(
     db.ensure_writable()?;
     for stamp in &request.stamps {
         if stamp.meta_id.is_empty() {
-            return Err(SkeinError::Semantic(
+            return Err(HawdbError::Semantic(
                 "knowledge graph meta stamp requires a non-empty meta id".to_string(),
             ));
         }
         if stamp.assignments.is_empty() {
-            return Err(SkeinError::Semantic(
+            return Err(HawdbError::Semantic(
                 "knowledge graph meta stamp requires at least one assignment".to_string(),
             ));
         }
         for property in stamp.assignments.keys() {
             validate_cypher_identifier(property, "property")?;
             if property == "meta_id" {
-                return Err(SkeinError::Semantic(
+                return Err(HawdbError::Semantic(
                     "knowledge graph meta stamp cannot update meta_id".to_string(),
                 ));
             }
@@ -14336,7 +14336,7 @@ pub(super) fn apply_knowledge_schema_migrations_batch_for(
     db.ensure_writable()?;
     for migration in &request.migrations {
         if migration.migration_id.is_empty() {
-            return Err(SkeinError::Semantic(
+            return Err(HawdbError::Semantic(
                 "knowledge schema migration apply requires a non-empty migration id".to_string(),
             ));
         }
@@ -14645,26 +14645,26 @@ pub(super) fn validate_augmentation_job_lifecycle_update(
     update: &KnowledgeAugmentationJobLifecycleUpdate,
 ) -> Result<()> {
     if update.job_id.is_empty() {
-        return Err(SkeinError::Semantic(
+        return Err(HawdbError::Semantic(
             "knowledge augmentation job update requires a non-empty job id".to_string(),
         ));
     }
     match &update.transition {
         KnowledgeAugmentationJobLifecycleTransition::Create { job_type, .. } => {
             if job_type.is_empty() {
-                return Err(SkeinError::Semantic(
+                return Err(HawdbError::Semantic(
                     "knowledge augmentation job create requires a non-empty job type".to_string(),
                 ));
             }
         }
         KnowledgeAugmentationJobLifecycleTransition::UpdateProgress { progress, message } => {
             if !progress.is_finite() || *progress < 0.0 || *progress > 100.0 {
-                return Err(SkeinError::Semantic(
+                return Err(HawdbError::Semantic(
                     "knowledge augmentation job progress requires a finite percentage".to_string(),
                 ));
             }
             if message.is_empty() {
-                return Err(SkeinError::Semantic(
+                return Err(HawdbError::Semantic(
                     "knowledge augmentation job progress requires a non-empty message".to_string(),
                 ));
             }
@@ -14672,7 +14672,7 @@ pub(super) fn validate_augmentation_job_lifecycle_update(
         KnowledgeAugmentationJobLifecycleTransition::MarkFailed { error_message, .. }
             if error_message.is_empty() =>
         {
-            return Err(SkeinError::Semantic(
+            return Err(HawdbError::Semantic(
                 "knowledge augmentation job failure requires a non-empty error message".to_string(),
             ));
         }
@@ -14850,7 +14850,7 @@ pub(super) fn interrupt_knowledge_augmentation_jobs_for(
 ) -> Result<KnowledgeAugmentationJobInterruptOutput> {
     db.ensure_writable()?;
     if request.error_message.is_empty() {
-        return Err(SkeinError::Semantic(
+        return Err(HawdbError::Semantic(
             "knowledge augmentation job interrupt requires a non-empty error message".to_string(),
         ));
     }
@@ -16339,7 +16339,7 @@ pub(super) fn validate_knowledge_relationship_update(
     request: &KnowledgeRelationshipUpdateRequest,
 ) -> Result<()> {
     if request.assignments.is_empty() {
-        return Err(SkeinError::Semantic(
+        return Err(HawdbError::Semantic(
             "knowledge relationship update requires at least one assignment".to_string(),
         ));
     }
@@ -16578,7 +16578,7 @@ pub(super) struct KnowledgeSourceReferenceRelationshipDeleteCandidate {
 
 pub(super) fn validate_source_reference(source_reference: &str, operation: &str) -> Result<()> {
     if source_reference.trim().is_empty() {
-        return Err(SkeinError::Semantic(format!(
+        return Err(HawdbError::Semantic(format!(
             "knowledge {operation} requires a non-empty source_reference"
         )));
     }
@@ -16677,7 +16677,7 @@ pub(super) fn knowledge_source_reference_relationship_delete_statement(
     relationship_id: u64,
 ) -> Result<(String, BTreeMap<String, Value>)> {
     let relationship_id = i64::try_from(relationship_id).map_err(|_| {
-        SkeinError::Semantic("relationship id does not fit Cypher integer".to_string())
+        HawdbError::Semantic("relationship id does not fit Cypher integer".to_string())
     })?;
     Ok((
         "MATCH (:Entity)-[r:RELATES_TO]->(:Entity) WHERE id(r) = $relationship_id DELETE r"
@@ -16695,15 +16695,15 @@ pub(super) fn node_has_external_id_property(node: &NodeRecord, external_id: &str
 pub(super) fn validate_cypher_identifier(value: &str, kind: &str) -> Result<()> {
     let mut chars = value.chars();
     let Some(first) = chars.next() else {
-        return Err(SkeinError::Semantic(format!("{kind} identifier is empty")));
+        return Err(HawdbError::Semantic(format!("{kind} identifier is empty")));
     };
     if !(first == '_' || first.is_ascii_alphabetic()) {
-        return Err(SkeinError::Semantic(format!(
+        return Err(HawdbError::Semantic(format!(
             "{kind} identifier {value:?} must start with an ASCII letter or underscore"
         )));
     }
     if chars.any(|ch| !(ch == '_' || ch.is_ascii_alphanumeric())) {
-        return Err(SkeinError::Semantic(format!(
+        return Err(HawdbError::Semantic(format!(
             "{kind} identifier {value:?} must contain only ASCII letters, digits, or underscores"
         )));
     }
@@ -17115,7 +17115,7 @@ fn knowledge_relationship_rows_via_query_runtime(
     let parameters = BTreeMap::from([(
         "seed_node_id".to_string(),
         Value::Int(i64::try_from(seed_node_id).map_err(|_| {
-            SkeinError::Execution("knowledge relationship seed node id exceeds i64".to_string())
+            HawdbError::Execution("knowledge relationship seed node id exceeds i64".to_string())
         })?),
     )]);
 
@@ -17197,7 +17197,7 @@ fn knowledge_relationship_rows_for_direction_via_query_runtime(
             .get("relationship_id")
             .and_then(value_to_non_negative_u64)
             .ok_or_else(|| {
-                SkeinError::Execution(
+                HawdbError::Execution(
                     "knowledge relationship row is missing relationship_id".to_string(),
                 )
             })?;
@@ -17235,19 +17235,19 @@ fn knowledge_context_path_from_query_row(
         .get("source")
         .and_then(knowledge_entity_from_value)
         .ok_or_else(|| {
-            SkeinError::Execution("knowledge relationship row is missing source map".to_string())
+            HawdbError::Execution("knowledge relationship row is missing source map".to_string())
         })?;
     let target = row
         .get("target")
         .and_then(knowledge_entity_from_value)
         .ok_or_else(|| {
-            SkeinError::Execution("knowledge relationship row is missing target map".to_string())
+            HawdbError::Execution("knowledge relationship row is missing target map".to_string())
         })?;
     let relationship = row
         .get("relationship")
         .and_then(value_to_map)
         .ok_or_else(|| {
-            SkeinError::Execution(
+            HawdbError::Execution(
                 "knowledge relationship row is missing relationship map".to_string(),
             )
         })?;
@@ -17638,7 +17638,7 @@ fn knowledge_path_segments_from_node_via_query_runtime(
     let parameters = BTreeMap::from([(
         "current_node_id".to_string(),
         Value::Int(i64::try_from(current_node_id).map_err(|_| {
-            SkeinError::Execution("knowledge path frontier node id exceeds i64".to_string())
+            HawdbError::Execution("knowledge path frontier node id exceeds i64".to_string())
         })?),
     )]);
     let mut segments = Vec::new();
@@ -17701,7 +17701,7 @@ fn knowledge_path_segments_for_direction_via_query_runtime(
             .get("relationship_id")
             .and_then(value_to_non_negative_u64)
             .ok_or_else(|| {
-                SkeinError::Execution("knowledge path row is missing relationship_id".to_string())
+                HawdbError::Execution("knowledge path row is missing relationship_id".to_string())
             })?;
         if !seen_relationships.insert(relationship_id) {
             continue;
@@ -18011,7 +18011,7 @@ fn expand_knowledge_subgraph_node_via_query_runtime(
     let parameters = BTreeMap::from([(
         "current_node_id".to_string(),
         Value::Int(i64::try_from(context.current_node.0).map_err(|_| {
-            SkeinError::Execution("knowledge subgraph frontier node id exceeds i64".to_string())
+            HawdbError::Execution("knowledge subgraph frontier node id exceeds i64".to_string())
         })?),
     )]);
 
@@ -18092,7 +18092,7 @@ fn knowledge_subgraph_for_direction_via_query_runtime(
             .get("relationship_id")
             .and_then(value_to_non_negative_u64)
             .ok_or_else(|| {
-                SkeinError::Execution(
+                HawdbError::Execution(
                     "knowledge subgraph row is missing relationship_id".to_string(),
                 )
             })?;
@@ -18108,7 +18108,7 @@ fn knowledge_subgraph_for_direction_via_query_runtime(
             }
         }
         .ok_or_else(|| {
-            SkeinError::Execution("knowledge subgraph row is missing next node".to_string())
+            HawdbError::Execution("knowledge subgraph row is missing next node".to_string())
         })?;
         let new_node = !context.seen_nodes.contains(&next_node.node_id);
         if new_node && context.nodes.len() >= context.node_limit {
@@ -18629,7 +18629,7 @@ fn knowledge_induced_edges_via_query_runtime(
                     .iter()
                     .map(|node_id| {
                         i64::try_from(*node_id).map(Value::Int).map_err(|_| {
-                            SkeinError::Execution(
+                            HawdbError::Execution(
                                 "knowledge induced edge node id exceeds i64".to_string(),
                             )
                         })
@@ -18678,7 +18678,7 @@ fn validate_knowledge_induced_edges_request(
     request: &KnowledgeInducedEdgeListRequest,
 ) -> Result<()> {
     if request.external_ids.is_empty() || request.external_ids.iter().any(String::is_empty) {
-        return Err(SkeinError::Semantic(
+        return Err(HawdbError::Semantic(
             "knowledge induced edge read requires non-empty external ids".to_string(),
         ));
     }
@@ -18702,26 +18702,26 @@ fn knowledge_induced_edge_row_from_query_row(
         .get("source")
         .and_then(knowledge_entity_from_value)
         .ok_or_else(|| {
-            SkeinError::Execution("knowledge induced edge row is missing source".to_string())
+            HawdbError::Execution("knowledge induced edge row is missing source".to_string())
         })?;
     let target = row
         .get("target")
         .and_then(knowledge_entity_from_value)
         .ok_or_else(|| {
-            SkeinError::Execution("knowledge induced edge row is missing target".to_string())
+            HawdbError::Execution("knowledge induced edge row is missing target".to_string())
         })?;
     let relationship = row
         .get("relationship")
         .and_then(value_to_map)
         .ok_or_else(|| {
-            SkeinError::Execution("knowledge induced edge row is missing relationship".to_string())
+            HawdbError::Execution("knowledge induced edge row is missing relationship".to_string())
         })?;
     let relationship_id = row
         .get("relationship_id")
         .and_then(value_to_non_negative_u64)
         .or_else(|| relationship.get("_id").and_then(value_to_non_negative_u64))
         .ok_or_else(|| {
-            SkeinError::Execution(
+            HawdbError::Execution(
                 "knowledge induced edge row is missing relationship_id".to_string(),
             )
         })?;
@@ -18753,14 +18753,14 @@ fn search_projection_graph_delta_for(
     if let Some(limit) = request.max_operations
         && operation_count > limit
     {
-        return Err(SkeinError::Storage(format!(
+        return Err(HawdbError::Storage(format!(
                 "search projection graph delta operation count {operation_count} exceeded configured limit {limit}"
             )));
     }
     if let Some(epoch) = request.complete_through_graph_commit_epoch {
         let current_epoch = store.commit_epoch();
         if epoch > current_epoch {
-            return Err(SkeinError::Storage(format!(
+            return Err(HawdbError::Storage(format!(
                 "search projection graph delta complete-through epoch {epoch} is ahead of graph commit epoch {current_epoch}"
             )));
         }
@@ -19238,7 +19238,7 @@ impl DatabaseTransactionRuntime {
     fn ensure_writable(&self, store: &GraphStore) -> Result<()> {
         store.ensure_usable()?;
         if self.config.read_only {
-            return Err(SkeinError::Execution(
+            return Err(HawdbError::Execution(
                 "database is opened in read-only mode".to_string(),
             ));
         }
@@ -19250,9 +19250,9 @@ impl DatabaseTransactionState {
     fn from_database(db: &Database) -> Self {
         Self {
             graph_transaction: Some(db.store.begin_mutation_transaction(&db.catalog)),
-            relational_transaction: skein_storage::RelationalTransaction::default(),
+            relational_transaction: hawdb_storage::RelationalTransaction::default(),
             relational_state: db.store.relational_state().clone(),
-            append_transaction: skein_storage::AppendTransaction::default(),
+            append_transaction: hawdb_storage::AppendTransaction::default(),
             append_state: db.store.append_state().clone(),
             pending_generated_append_tables: BTreeSet::new(),
             relational_returning: Vec::new(),
@@ -19305,10 +19305,10 @@ impl DatabaseTransactionState {
     ) -> Result<&crate::store::RelationalTransactionIndexView> {
         match &self.relational_index {
             Ok(Some(index)) => Ok(index),
-            Ok(None) => Err(SkeinError::StorageIntegrity(
+            Ok(None) => Err(HawdbError::StorageIntegrity(
                 "authoritative transaction index view is unavailable".to_string(),
             )),
-            Err(error) => Err(SkeinError::StorageIntegrity(format!(
+            Err(error) => Err(HawdbError::StorageIntegrity(format!(
                 "authoritative transaction index view could not be pinned: {error}"
             ))),
         }
@@ -19316,13 +19316,13 @@ impl DatabaseTransactionState {
 
     fn stage_sparse_authoritative_relational_statement(
         &self,
-        transaction: skein_storage::RelationalTransaction,
+        transaction: hawdb_storage::RelationalTransaction,
     ) -> Result<Option<SparseRelationalStatementStage>> {
         let rows = match &self.relational_rows {
             Ok(Some(rows)) => rows,
             Ok(None) => return Ok(None),
             Err(error) => {
-                return Err(SkeinError::StorageIntegrity(format!(
+                return Err(HawdbError::StorageIntegrity(format!(
                     "authoritative transaction row view could not be pinned: {error}"
                 )));
             }
@@ -19330,12 +19330,12 @@ impl DatabaseTransactionState {
         let index = match &self.relational_index {
             Ok(Some(index)) => index,
             Ok(None) => {
-                return Err(SkeinError::StorageIntegrity(
+                return Err(HawdbError::StorageIntegrity(
                     "authoritative transaction index view is unavailable".to_string(),
                 ));
             }
             Err(error) => {
-                return Err(SkeinError::StorageIntegrity(format!(
+                return Err(HawdbError::StorageIntegrity(format!(
                     "authoritative transaction index view could not be pinned: {error}"
                 )));
             }
@@ -19369,7 +19369,7 @@ fn execute_graph_transaction_statement(
     cypher_text: &str,
     statement: &cypher::Statement,
     parameters: &BTreeMap<String, Value>,
-    task_context: Option<&skein_core::RuntimeTaskContext>,
+    task_context: Option<&hawdb_core::RuntimeTaskContext>,
 ) -> Result<GraphTransactionStatementOutcome> {
     query_work_request_for_statement(system_variables, statement)?;
     let optimizer_search =
@@ -19395,7 +19395,7 @@ fn execute_graph_transaction_statement(
     if executor::is_mutation_plan(&optimized.physical_plan)? {
         runtime.ensure_writable(transaction.store())?;
         let mutation = executor::mutation_command(&optimized.physical_plan)?.ok_or_else(|| {
-            SkeinError::Execution(
+            HawdbError::Execution(
                 "transaction mutation plan cannot be represented as a staged mutation".to_string(),
             )
         })?;
@@ -19407,7 +19407,7 @@ fn execute_graph_transaction_statement(
             PhysicalPlan::SetNodePropertiesReturn {
                 returns: crate::planner::SetNodePropertiesReturnMode::Count { .. },
                 ..
-            } => skein_storage::MutationLimits {
+            } => hawdb_storage::MutationLimits {
                 max_result_rows: runtime.config.mutation_limits.max_affected_rows,
                 max_result_payload_bytes: std::num::NonZeroUsize::new(usize::MAX)
                     .expect("usize::MAX is non-zero"),
@@ -19495,18 +19495,18 @@ fn execute_database_transaction_query(
     state: &mut DatabaseTransactionState,
     cypher_text: &str,
     parameters: &BTreeMap<String, Value>,
-    task_context: Option<&skein_core::RuntimeTaskContext>,
+    task_context: Option<&hawdb_core::RuntimeTaskContext>,
 ) -> Result<QueryOutput> {
     let statement = cypher::parse(cypher_text)?;
     let body = statement_body(&statement);
     if matches!(body, cypher::Statement::SetSystemVariable(_)) {
         reject_system_variable_parameters(parameters)?;
-        return Err(SkeinError::Execution(
+        return Err(HawdbError::Execution(
             "SET system variable is not allowed inside a transaction".to_string(),
         ));
     }
     if matches!(body, cypher::Statement::Explain(_)) {
-        return Err(SkeinError::Execution(
+        return Err(HawdbError::Execution(
             "EXPLAIN is not allowed inside a transaction".to_string(),
         ));
     }
@@ -19536,12 +19536,12 @@ pub(super) fn execute_concurrent_graph_transaction_query(
     let body = statement_body(&statement);
     if matches!(body, cypher::Statement::SetSystemVariable(_)) {
         reject_system_variable_parameters(parameters)?;
-        return Err(SkeinError::Execution(
+        return Err(HawdbError::Execution(
             "SET system variable is not allowed inside a transaction".to_string(),
         ));
     }
     if matches!(body, cypher::Statement::Explain(_)) {
-        return Err(SkeinError::Execution(
+        return Err(HawdbError::Execution(
             "EXPLAIN is not allowed inside a transaction".to_string(),
         ));
     }
@@ -19567,7 +19567,7 @@ fn execute_database_transaction_sql(
     parameters: &[Value],
     allow_system_schema_registry_write: bool,
     allow_locking_select: bool,
-    task_context: Option<&skein_core::RuntimeTaskContext>,
+    task_context: Option<&hawdb_core::RuntimeTaskContext>,
 ) -> Result<SqlStatementResult> {
     let prepared = runtime.relational_plan_template_cache.prepare(sql_text)?;
     execute_database_transaction_prepared_sql(
@@ -19587,7 +19587,7 @@ fn execute_database_transaction_sql(
 pub(super) struct DatabaseTransactionSqlOptions<'a> {
     allow_system_schema_registry_write: bool,
     allow_locking_select: bool,
-    task_context: Option<&'a skein_core::RuntimeTaskContext>,
+    task_context: Option<&'a hawdb_core::RuntimeTaskContext>,
 }
 
 pub(super) fn execute_database_transaction_prepared_sql(
@@ -19600,12 +19600,12 @@ pub(super) fn execute_database_transaction_prepared_sql(
 ) -> Result<SqlStatementResult> {
     reject_locking_select_without_manager(prepared.statement(), options.allow_locking_select)?;
     if !options.allow_system_schema_registry_write
-        && skein_relational::system_schema::statement_writes_system_schema_registry(
+        && hawdb_relational::system_schema::statement_writes_system_schema_registry(
             prepared.statement(),
         )
     {
-        return Err(SkeinError::Semantic(
-            "skein_schema_migrations is read-only outside system schema upgrade".to_string(),
+        return Err(HawdbError::Semantic(
+            "hawdb_schema_migrations is read-only outside system schema upgrade".to_string(),
         ));
     }
     if matches!(
@@ -19647,7 +19647,7 @@ pub(super) fn execute_database_transaction_prepared_sql(
     if pending_generated_read_table
         .is_some_and(|table| state.pending_generated_append_tables.contains(table))
     {
-        return Err(SkeinError::Execution(format!(
+        return Err(HawdbError::Execution(format!(
             "strict append table {} has uncommitted generated-order rows; reads are unavailable until commit",
             pending_generated_read_table.expect("pending generated table was checked")
         )));
@@ -19744,7 +19744,7 @@ pub(super) fn execute_database_transaction_prepared_sql(
             },
             Ok(None) => crate::relational_sql::RelationalRowReadMode::CanonicalMemory,
             Err(error) => {
-                return Err(SkeinError::StorageIntegrity(format!(
+                return Err(HawdbError::StorageIntegrity(format!(
                     "authoritative transaction row view could not be pinned: {error}"
                 )));
             }
@@ -19782,7 +19782,7 @@ pub(super) fn execute_database_transaction_prepared_sql(
                 .table_schema(&create.table.name)
                 .is_some()
         {
-            return Err(SkeinError::Semantic(format!(
+            return Err(HawdbError::Semantic(format!(
                 "table {} already exists as a RowPage table",
                 create.table.name
             )));
@@ -19791,13 +19791,13 @@ pub(super) fn execute_database_transaction_prepared_sql(
             .append_state
             .stage_provisional_transaction(
                 &transaction,
-                skein_storage::AppendMutationLimits::default(),
+                hawdb_storage::AppendMutationLimits::default(),
             )
             .map_err(map_transaction_append_error)?;
         state
             .pending_generated_append_tables
             .extend(transaction.writes.iter().filter_map(|write| match write {
-                skein_storage::AppendWrite::AppendGenerated { table, rows } if !rows.is_empty() => {
+                hawdb_storage::AppendWrite::AppendGenerated { table, rows } if !rows.is_empty() => {
                     Some(table.clone())
                 }
                 _ => None,
@@ -19810,7 +19810,7 @@ pub(super) fn execute_database_transaction_prepared_sql(
     if let crate::sql::SqlStatement::CreateTable(create) = prepared.statement()
         && state.append_state.schema(&create.table.name).is_some()
     {
-        return Err(SkeinError::Semantic(format!(
+        return Err(HawdbError::Semantic(format!(
             "table {} already exists as a strict append table",
             create.table.name
         )));
@@ -19838,12 +19838,12 @@ pub(super) fn execute_database_transaction_prepared_sql(
             let index = match &mut state.relational_index {
                 Ok(Some(index)) => index,
                 Ok(None) => {
-                    return Err(SkeinError::StorageIntegrity(
+                    return Err(HawdbError::StorageIntegrity(
                         "authoritative transaction index view is unavailable".to_string(),
                     ));
                 }
                 Err(error) => {
-                    return Err(SkeinError::StorageIntegrity(format!(
+                    return Err(HawdbError::StorageIntegrity(format!(
                         "authoritative transaction index view could not be pinned: {error}"
                     )));
                 }
@@ -19852,8 +19852,8 @@ pub(super) fn execute_database_transaction_prepared_sql(
                 .relational_state
                 .stage_transaction_with_authoritative_index_and_outcomes(
                     transaction.clone(),
-                    skein_storage::RelationalMutationLimits::default(),
-                    skein_storage::RelationalOverflowConfig::default(),
+                    hawdb_storage::RelationalMutationLimits::default(),
+                    hawdb_storage::RelationalOverflowConfig::default(),
                     index.capture_limits(),
                     index,
                 )
@@ -19866,13 +19866,13 @@ pub(super) fn execute_database_transaction_prepared_sql(
             .relational_state
             .stage_transaction_with_outcomes(
                 transaction.clone(),
-                skein_storage::RelationalMutationLimits::default(),
-                skein_storage::RelationalOverflowConfig::default(),
+                hawdb_storage::RelationalMutationLimits::default(),
+                hawdb_storage::RelationalOverflowConfig::default(),
             )
             .map_err(map_transaction_relational_error)?
     };
     if mutation_outcomes.len() > 1 {
-        return Err(SkeinError::StorageIntegrity(
+        return Err(HawdbError::StorageIntegrity(
             "one SQL statement produced multiple relational mutation outcomes".to_string(),
         ));
     }
@@ -19892,12 +19892,12 @@ pub(super) fn execute_database_transaction_prepared_sql(
         let rows = match &state.relational_rows {
             Ok(Some(rows)) => rows,
             Ok(None) => {
-                return Err(SkeinError::StorageIntegrity(
+                return Err(HawdbError::StorageIntegrity(
                     "relational row transaction view is unavailable".to_string(),
                 ));
             }
             Err(error) => {
-                return Err(SkeinError::StorageIntegrity(format!(
+                return Err(HawdbError::StorageIntegrity(format!(
                     "relational transaction row view could not be pinned: {error}"
                 )));
             }
@@ -19914,13 +19914,13 @@ pub(super) fn execute_database_transaction_prepared_sql(
             .relational_index
             .as_mut()
             .map_err(|error| {
-                SkeinError::StorageIntegrity(format!(
+                HawdbError::StorageIntegrity(format!(
                     "authoritative transaction index view could not be pinned: {error}"
                 ))
             })?
             .as_mut()
             .ok_or_else(|| {
-                SkeinError::StorageIntegrity(
+                HawdbError::StorageIntegrity(
                     "authoritative transaction index view is unavailable".to_string(),
                 )
             })?
@@ -19956,34 +19956,34 @@ fn sql_query_result(output: QueryOutput) -> SqlStatementResult {
 }
 
 fn project_relational_mutation_outcome(
-    outcome: &skein_storage::RelationalMutationOutcome,
+    outcome: &hawdb_storage::RelationalMutationOutcome,
     returning: Option<&crate::relational_sql::RelationalReturningProjection>,
-    state: &skein_storage::RelationalState,
-    limits: skein_storage::MutationLimits,
+    state: &hawdb_storage::RelationalState,
+    limits: hawdb_storage::MutationLimits,
     provisional: bool,
 ) -> Result<RelationalMutationResult> {
     if outcome.affected_rows > limits.max_affected_rows.get() {
-        return Err(SkeinError::Execution(format!(
+        return Err(HawdbError::Execution(format!(
             "relational mutation affects {} rows, exceeding max_affected_rows {}",
             outcome.affected_rows, limits.max_affected_rows
         )));
     }
     let rows = if let Some(returning) = returning {
         if returning.table != outcome.table {
-            return Err(SkeinError::StorageIntegrity(format!(
+            return Err(HawdbError::StorageIntegrity(format!(
                 "relational mutation outcome for table {} was paired with RETURNING for table {}",
                 outcome.table, returning.table
             )));
         }
         if outcome.rows.len() > limits.max_result_rows.get() {
-            return Err(SkeinError::Execution(format!(
+            return Err(HawdbError::Execution(format!(
                 "relational mutation returns {} rows, exceeding max_result_rows {}",
                 outcome.rows.len(),
                 limits.max_result_rows
             )));
         }
         let schema = state.table_schema(&outcome.table).ok_or_else(|| {
-            SkeinError::StorageIntegrity(format!(
+            HawdbError::StorageIntegrity(format!(
                 "relational mutation outcome references unknown table {}",
                 outcome.table
             ))
@@ -19993,7 +19993,7 @@ fn project_relational_mutation_outcome(
             .iter()
             .map(|column| {
                 schema.column_position(column).ok_or_else(|| {
-                    SkeinError::StorageIntegrity(format!(
+                    HawdbError::StorageIntegrity(format!(
                         "relational mutation outcome references unknown column {column}"
                     ))
                 })
@@ -20011,7 +20011,7 @@ fn project_relational_mutation_outcome(
         }
         let rows = builder.finish();
         if rows.payload_bytes() > limits.max_result_payload_bytes.get() {
-            return Err(SkeinError::Execution(format!(
+            return Err(HawdbError::Execution(format!(
                 "relational mutation result contains {} payload bytes, exceeding max_result_payload_bytes {}",
                 rows.payload_bytes(), limits.max_result_payload_bytes
             )));
@@ -20028,54 +20028,54 @@ fn project_relational_mutation_outcome(
     })
 }
 
-fn relational_value_to_query_value(value: &skein_storage::RelationalValue) -> Result<Value> {
+fn relational_value_to_query_value(value: &hawdb_storage::RelationalValue) -> Result<Value> {
     match value {
-        skein_storage::RelationalValue::Null => Ok(Value::Null),
-        skein_storage::RelationalValue::Boolean(value) => Ok(Value::Bool(*value)),
-        skein_storage::RelationalValue::BigInt(value) => Ok(Value::Int(*value)),
-        skein_storage::RelationalValue::DoublePrecision(value) => Ok(Value::Float(*value)),
-        skein_storage::RelationalValue::Text(value) => Ok(Value::String(value.clone())),
-        skein_storage::RelationalValue::Bytea(value) => Ok(Value::Binary(value.clone())),
-        skein_storage::RelationalValue::Uuid(value) => Ok(Value::Uuid(*value)),
-        skein_storage::RelationalValue::Overflow(_) => Err(SkeinError::StorageIntegrity(
+        hawdb_storage::RelationalValue::Null => Ok(Value::Null),
+        hawdb_storage::RelationalValue::Boolean(value) => Ok(Value::Bool(*value)),
+        hawdb_storage::RelationalValue::BigInt(value) => Ok(Value::Int(*value)),
+        hawdb_storage::RelationalValue::DoublePrecision(value) => Ok(Value::Float(*value)),
+        hawdb_storage::RelationalValue::Text(value) => Ok(Value::String(value.clone())),
+        hawdb_storage::RelationalValue::Bytea(value) => Ok(Value::Binary(value.clone())),
+        hawdb_storage::RelationalValue::Uuid(value) => Ok(Value::Uuid(*value)),
+        hawdb_storage::RelationalValue::Overflow(_) => Err(HawdbError::StorageIntegrity(
             "logical relational mutation outcome contains an overflow reference".to_string(),
         )),
     }
 }
 
-fn map_transaction_append_error(error: skein_storage::AppendTableError) -> SkeinError {
+fn map_transaction_append_error(error: hawdb_storage::AppendTableError) -> HawdbError {
     match error {
-        skein_storage::AppendTableError::SequenceExhausted {
+        hawdb_storage::AppendTableError::SequenceExhausted {
             table,
             watermark,
             requested,
-        } => SkeinError::AppendSequenceExhausted {
+        } => HawdbError::AppendSequenceExhausted {
             table,
             watermark,
             requested,
         },
-        skein_storage::AppendTableError::Corruption(message)
-        | skein_storage::AppendTableError::Durability(message) => {
-            SkeinError::StorageIntegrity(message)
+        hawdb_storage::AppendTableError::Corruption(message)
+        | hawdb_storage::AppendTableError::Durability(message) => {
+            HawdbError::StorageIntegrity(message)
         }
-        error @ (skein_storage::AppendTableError::Admission(_)
-        | skein_storage::AppendTableError::Schema(_)
-        | skein_storage::AppendTableError::Constraint(_)) => {
-            SkeinError::Execution(error.to_string())
+        error @ (hawdb_storage::AppendTableError::Admission(_)
+        | hawdb_storage::AppendTableError::Schema(_)
+        | hawdb_storage::AppendTableError::Constraint(_)) => {
+            HawdbError::Execution(error.to_string())
         }
     }
 }
 
-fn map_transaction_relational_error(error: skein_storage::RelationalError) -> SkeinError {
+fn map_transaction_relational_error(error: hawdb_storage::RelationalError) -> HawdbError {
     match error {
-        skein_storage::RelationalError::Corruption(message)
-        | skein_storage::RelationalError::Durability(message) => {
-            SkeinError::StorageIntegrity(message)
+        hawdb_storage::RelationalError::Corruption(message)
+        | hawdb_storage::RelationalError::Durability(message) => {
+            HawdbError::StorageIntegrity(message)
         }
-        error @ (skein_storage::RelationalError::Admission(_)
-        | skein_storage::RelationalError::Schema(_)
-        | skein_storage::RelationalError::Constraint(_)) => {
-            SkeinError::Execution(error.to_string())
+        error @ (hawdb_storage::RelationalError::Admission(_)
+        | hawdb_storage::RelationalError::Schema(_)
+        | hawdb_storage::RelationalError::Constraint(_)) => {
+            HawdbError::Execution(error.to_string())
         }
     }
 }
@@ -20092,7 +20092,7 @@ fn reject_locking_select_without_manager(
         _ => false,
     };
     if locking_select && !allow_locking_select {
-        return Err(SkeinError::Semantic(
+        return Err(HawdbError::Semantic(
             "FOR UPDATE/SHARE requires a pessimistic concurrent transaction".to_string(),
         ));
     }
@@ -20132,7 +20132,7 @@ fn commit_database_transaction_state(
     };
     db.complete_required_relational_row_checkpoint("transaction commit")?;
     if returning.len() != summary.relational_mutation_outcomes.len() {
-        return Err(SkeinError::StorageIntegrity(format!(
+        return Err(HawdbError::StorageIntegrity(format!(
             "transaction recorded {} relational result projections but committed {} outcomes",
             returning.len(),
             summary.relational_mutation_outcomes.len()
@@ -20276,7 +20276,7 @@ impl DatabaseSession<'_> {
         parameters: &BTreeMap<String, Value>,
     ) -> Result<ExplainOutput> {
         if self.graph_transaction.is_some() {
-            return Err(SkeinError::Execution(
+            return Err(HawdbError::Execution(
                 "EXPLAIN is not allowed inside an active transaction".to_string(),
             ));
         }
@@ -20309,7 +20309,7 @@ impl DatabaseSession<'_> {
             cypher::Statement::BeginTransaction => {
                 reject_transaction_control_parameters("BEGIN TRANSACTION", parameters)?;
                 if self.graph_transaction.is_some() {
-                    return Err(SkeinError::Execution(
+                    return Err(HawdbError::Execution(
                         "transaction is already active".to_string(),
                     ));
                 }
@@ -20329,7 +20329,7 @@ impl DatabaseSession<'_> {
             cypher::Statement::Commit => {
                 reject_transaction_control_parameters("COMMIT", parameters)?;
                 let Some(transaction) = self.graph_transaction.take() else {
-                    return Err(SkeinError::Execution(
+                    return Err(HawdbError::Execution(
                         "COMMIT requires an active transaction".to_string(),
                     ));
                 };
@@ -20338,7 +20338,7 @@ impl DatabaseSession<'_> {
                 let summary = self.db.store.commit_mutation_transaction_and_relational(
                     &mut self.db.catalog,
                     transaction,
-                    skein_storage::RelationalTransaction::default(),
+                    hawdb_storage::RelationalTransaction::default(),
                     self.db.config.mutation_limits,
                 )?;
                 Ok(QueryOutput {
@@ -20348,7 +20348,7 @@ impl DatabaseSession<'_> {
             cypher::Statement::Rollback => {
                 reject_transaction_control_parameters("ROLLBACK", parameters)?;
                 if self.graph_transaction.take().is_none() {
-                    return Err(SkeinError::Execution(
+                    return Err(HawdbError::Execution(
                         "ROLLBACK requires an active transaction".to_string(),
                     ));
                 }
@@ -20358,12 +20358,12 @@ impl DatabaseSession<'_> {
                 })
             }
             cypher::Statement::Checkpoint if self.graph_transaction.is_some() => {
-                Err(SkeinError::Execution(
+                Err(HawdbError::Execution(
                     "CHECKPOINT is not allowed inside an active transaction".to_string(),
                 ))
             }
             cypher::Statement::SetSystemVariable(_) if self.graph_transaction.is_some() => {
-                Err(SkeinError::Execution(
+                Err(HawdbError::Execution(
                     "SET system variable is not allowed inside an active transaction".to_string(),
                 ))
             }
@@ -20372,7 +20372,7 @@ impl DatabaseSession<'_> {
                 apply_set_system_variable(&mut self.system_variables, set)
             }
             cypher::Statement::Explain(_) if self.graph_transaction.is_some() => {
-                Err(SkeinError::Execution(
+                Err(HawdbError::Execution(
                     "EXPLAIN is not allowed inside an active transaction".to_string(),
                 ))
             }
@@ -20420,7 +20420,7 @@ impl DatabaseSession<'_> {
         let inner_statement_kind = statement_kind(statement_body(&explain.statement));
         if explain.analyze {
             if executor::is_mutation_plan(&optimized.physical_plan)? {
-                return Err(SkeinError::Execution(
+                return Err(HawdbError::Execution(
                     "EXPLAIN ANALYZE only supports read queries".to_string(),
                 ));
             }
@@ -20466,7 +20466,7 @@ fn reject_transaction_control_parameters(
     if parameters.is_empty() {
         Ok(())
     } else {
-        Err(SkeinError::Semantic(format!(
+        Err(HawdbError::Semantic(format!(
             "{statement} does not accept parameters"
         )))
     }
@@ -20549,7 +20549,7 @@ fn profiled_relational_sql_output(
 struct DatabaseReadSqlOptions<'a> {
     max_rows: Option<usize>,
     max_payload_bytes: Option<usize>,
-    task_context: &'a skein_core::RuntimeTaskContext,
+    task_context: &'a hawdb_core::RuntimeTaskContext,
     join_planning: RelationalJoinPlanningDirective,
 }
 
@@ -20578,7 +20578,7 @@ impl DatabaseReadTransaction {
         &mut self,
         cypher_text: &str,
         parameters: &BTreeMap<String, Value>,
-        task_context: &skein_core::RuntimeTaskContext,
+        task_context: &hawdb_core::RuntimeTaskContext,
     ) -> Result<QueryOutput> {
         Ok(self
             .query_with_params_bounded_profile_internal(
@@ -20596,7 +20596,7 @@ impl DatabaseReadTransaction {
         &mut self,
         prepared: PreparedRuntimeQuery,
         parameters: &BTreeMap<String, Value>,
-        task_context: &skein_core::RuntimeTaskContext,
+        task_context: &hawdb_core::RuntimeTaskContext,
     ) -> Result<QueryOutput> {
         let (cypher_text, prepared) = prepared.into_execution(&self.catalog, &self.store);
         Ok(self
@@ -20733,7 +20733,7 @@ impl DatabaseReadTransaction {
         cypher_text: &str,
         parameters: &BTreeMap<String, Value>,
         options: QueryStreamOptions,
-        task_context: &skein_core::RuntimeTaskContext,
+        task_context: &hawdb_core::RuntimeTaskContext,
         mut consumer: impl FnMut(Row) -> Result<()>,
     ) -> Result<QueryStreamReport> {
         self.store.ensure_usable()?;
@@ -20782,7 +20782,7 @@ impl DatabaseReadTransaction {
         parameters: &BTreeMap<String, Value>,
         options: QueryStreamOptions,
         delivery: executor::StreamDelivery,
-        task_context: &skein_core::RuntimeTaskContext,
+        task_context: &hawdb_core::RuntimeTaskContext,
         mut consumer: impl FnMut(Row) -> Result<()>,
     ) -> Result<QueryStreamReport> {
         let (cypher_text, prepared) = prepared.into_execution(&self.catalog, &self.store);
@@ -20822,17 +20822,17 @@ impl DatabaseReadTransaction {
         } = prepared;
         let body = statement_body(&statement);
         if matches!(statement, cypher::Statement::Explain(_)) {
-            return Err(SkeinError::Execution(
+            return Err(HawdbError::Execution(
                 "streaming query does not support EXPLAIN".to_string(),
             ));
         }
         if matches!(body, cypher::Statement::Checkpoint) {
-            return Err(SkeinError::Execution(
+            return Err(HawdbError::Execution(
                 "CHECKPOINT is not allowed inside a read transaction".to_string(),
             ));
         }
         if matches!(body, cypher::Statement::SetSystemVariable(_)) {
-            return Err(SkeinError::Execution(
+            return Err(HawdbError::Execution(
                 "SET system variable is not allowed inside a read transaction".to_string(),
             ));
         }
@@ -20847,7 +20847,7 @@ impl DatabaseReadTransaction {
             )?,
         };
         if executor::is_mutation_plan(&optimized.physical_plan)? {
-            return Err(SkeinError::Execution(
+            return Err(HawdbError::Execution(
                 "read transaction query must not be a mutation".to_string(),
             ));
         }
@@ -20900,7 +20900,7 @@ impl DatabaseReadTransaction {
         parameters: &BTreeMap<String, Value>,
         max_rows: Option<usize>,
         access_control: Option<QueryAccessControlContext>,
-        task_context: Option<&skein_core::RuntimeTaskContext>,
+        task_context: Option<&hawdb_core::RuntimeTaskContext>,
     ) -> Result<BoundedReadQueryOutput> {
         self.store.ensure_usable()?;
         self.query_with_params_bounded_profile_prepared_internal(
@@ -20920,7 +20920,7 @@ impl DatabaseReadTransaction {
         parameters: &BTreeMap<String, Value>,
         max_rows: Option<usize>,
         access_control: Option<QueryAccessControlContext>,
-        task_context: Option<&skein_core::RuntimeTaskContext>,
+        task_context: Option<&hawdb_core::RuntimeTaskContext>,
     ) -> Result<BoundedReadQueryOutput> {
         self.store.ensure_usable()?;
         query_runtime::query_runtime_checkpoint(task_context)?;
@@ -20944,13 +20944,13 @@ impl DatabaseReadTransaction {
         }
         if matches!(body, cypher::Statement::Checkpoint) {
             reject_transaction_control_parameters("CHECKPOINT", parameters)?;
-            return Err(SkeinError::Execution(
+            return Err(HawdbError::Execution(
                 "CHECKPOINT is not allowed inside a read transaction".to_string(),
             ));
         }
         if matches!(body, cypher::Statement::SetSystemVariable(_)) {
             reject_system_variable_parameters(parameters)?;
-            return Err(SkeinError::Execution(
+            return Err(HawdbError::Execution(
                 "SET system variable is not allowed inside a read transaction".to_string(),
             ));
         }
@@ -20965,7 +20965,7 @@ impl DatabaseReadTransaction {
             )?,
         };
         if executor::is_mutation_plan(&optimized.physical_plan)? {
-            return Err(SkeinError::Execution(
+            return Err(HawdbError::Execution(
                 "read transaction query must not be a mutation".to_string(),
             ));
         }
@@ -21016,7 +21016,7 @@ impl DatabaseReadTransaction {
         parameters: &BTreeMap<String, Value>,
         max_rows: Option<usize>,
         access_control: Option<QueryAccessControlContext>,
-        task_context: Option<&skein_core::RuntimeTaskContext>,
+        task_context: Option<&hawdb_core::RuntimeTaskContext>,
     ) -> Result<BoundedReadQueryOutput> {
         query_runtime::query_runtime_checkpoint(task_context)?;
         let work_request =
@@ -21030,11 +21030,11 @@ impl DatabaseReadTransaction {
         let inner_statement_kind = statement_kind(statement_body(&explain.statement));
         if executor::is_mutation_plan(&optimized.physical_plan)? {
             if explain.analyze {
-                return Err(SkeinError::Execution(
+                return Err(HawdbError::Execution(
                     "EXPLAIN ANALYZE only supports read queries".to_string(),
                 ));
             }
-            return Err(SkeinError::Execution(
+            return Err(HawdbError::Execution(
                 "read transaction query must not be a mutation".to_string(),
             ));
         }
@@ -21162,7 +21162,7 @@ impl DatabaseReadTransaction {
         options: QueryStreamOptions,
         join_planning: RelationalJoinPlanningDirective,
     ) -> Result<QueryOutput> {
-        let default_context = skein_core::RuntimeTaskContext::default();
+        let default_context = hawdb_core::RuntimeTaskContext::default();
         let task_context = self.task_context.as_ref().unwrap_or(&default_context);
         self.query_sql_with_params_options_context_and_join_planning(
             sql_text,
@@ -21201,7 +21201,7 @@ impl DatabaseReadTransaction {
         options: QueryStreamOptions,
         join_planning: RelationalJoinPlanningDirective,
     ) -> Result<ProfiledRelationalSqlQueryOutput> {
-        let default_context = skein_core::RuntimeTaskContext::default();
+        let default_context = hawdb_core::RuntimeTaskContext::default();
         let task_context = self.task_context.as_ref().unwrap_or(&default_context);
         self.query_sql_with_params_options_profiled_context_and_join_planning(
             sql_text,
@@ -21220,7 +21220,7 @@ impl DatabaseReadTransaction {
         sql_text: &str,
         parameters: &[Value],
         options: QueryStreamOptions,
-        task_context: &skein_core::RuntimeTaskContext,
+        task_context: &hawdb_core::RuntimeTaskContext,
     ) -> Result<ProfiledRelationalSqlQueryOutput> {
         self.query_sql_with_params_options_profiled_context_and_join_planning(
             sql_text,
@@ -21236,7 +21236,7 @@ impl DatabaseReadTransaction {
         sql_text: &str,
         parameters: &[Value],
         options: QueryStreamOptions,
-        task_context: &skein_core::RuntimeTaskContext,
+        task_context: &hawdb_core::RuntimeTaskContext,
         join_planning: RelationalJoinPlanningDirective,
     ) -> Result<ProfiledRelationalSqlQueryOutput> {
         self.store.ensure_usable()?;
@@ -21249,12 +21249,12 @@ impl DatabaseReadTransaction {
         let prepared = self.relational_plan_template_cache.prepare(sql_text)?;
         reject_locking_select_without_manager(prepared.statement(), false)?;
         let crate::sql::SqlStatement::Select(select) = prepared.statement() else {
-            return Err(SkeinError::Semantic(
+            return Err(HawdbError::Semantic(
                 "profiled relational SQL requires SELECT".to_string(),
             ));
         };
         if system_sql::is_virtual_catalog_select(select) {
-            return Err(SkeinError::Semantic(
+            return Err(HawdbError::Semantic(
                 "profiled relational SQL does not support virtual system catalogs".to_string(),
             ));
         }
@@ -21276,7 +21276,7 @@ impl DatabaseReadTransaction {
         sql_text: &str,
         parameters: &[Value],
         options: QueryStreamOptions,
-        task_context: &skein_core::RuntimeTaskContext,
+        task_context: &hawdb_core::RuntimeTaskContext,
     ) -> Result<QueryOutput> {
         self.query_sql_with_params_options_context_and_join_planning(
             sql_text,
@@ -21292,7 +21292,7 @@ impl DatabaseReadTransaction {
         sql_text: &str,
         parameters: &[Value],
         options: QueryStreamOptions,
-        task_context: &skein_core::RuntimeTaskContext,
+        task_context: &hawdb_core::RuntimeTaskContext,
         join_planning: RelationalJoinPlanningDirective,
     ) -> Result<QueryOutput> {
         self.store.ensure_usable()?;
@@ -21323,7 +21323,7 @@ impl DatabaseReadTransaction {
         prepared: crate::relational_sql::PreparedRelationalSql,
     ) -> Result<QueryOutput> {
         self.store.ensure_usable()?;
-        let default_context = skein_core::RuntimeTaskContext::default();
+        let default_context = hawdb_core::RuntimeTaskContext::default();
         let task_context = self.task_context.as_ref().unwrap_or(&default_context);
         query_runtime::query_runtime_checkpoint(Some(task_context))?;
         self.query_sql_with_prepared_params_context_and_join_planning(
@@ -21440,7 +21440,7 @@ impl DatabaseReadTransaction {
         parameters: &[Value],
         max_rows: Option<usize>,
         max_payload_bytes: Option<usize>,
-        task_context: &skein_core::RuntimeTaskContext,
+        task_context: &hawdb_core::RuntimeTaskContext,
         join_planning: RelationalJoinPlanningDirective,
     ) -> Result<ProfiledRelationalSqlQueryOutput> {
         let row_read_mode = match &self.projection_relational {
@@ -21490,7 +21490,7 @@ impl DatabaseReadTransaction {
             query_work_request_for_statement(&QuerySystemVariables::default(), &statement)?;
         let optimized = self.optimized_explain_query_plan(cypher_text, &statement, parameters)?;
         if executor::is_mutation_plan(&optimized.physical_plan)? {
-            return Err(SkeinError::Execution(
+            return Err(HawdbError::Execution(
                 "read transaction query must not be a mutation".to_string(),
             ));
         }
@@ -21682,16 +21682,16 @@ impl DatabaseReadTransaction {
 fn single_import_label(node: &CanonicalSnapshotNode) -> Result<String> {
     match node.labels.as_slice() {
         [label] => Ok(label.clone()),
-        [] => Err(SkeinError::Storage(
-            "Skein Lightning initial import node has no label".to_string(),
+        [] => Err(HawdbError::Storage(
+            "Hawdb Lightning initial import node has no label".to_string(),
         )),
-        _ => Err(SkeinError::Storage(
-            "Skein Lightning initial import multi-label node is unsupported".to_string(),
+        _ => Err(HawdbError::Storage(
+            "Hawdb Lightning initial import multi-label node is unsupported".to_string(),
         )),
     }
 }
 
-fn relational_state_counts(state: &skein_storage::RelationalState) -> (usize, usize) {
+fn relational_state_counts(state: &hawdb_storage::RelationalState) -> (usize, usize) {
     let table_count = state.table_schemas().count();
     let row_count = state
         .table_schemas()

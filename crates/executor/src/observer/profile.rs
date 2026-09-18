@@ -5,9 +5,9 @@
 use super::{blocking_operator_kinds, QueryExecutionObserver, QueryExecutionReports};
 use crate::result_delivery::OutputMetrics;
 use crate::{ExecutionLimit, PipelineMemoryReport, QueryMemoryLedger, ReadExecutionProfile};
-use skein_core::Result;
-use skein_plan::PhysicalPlan;
-use skein_storage::ScanPruningReport;
+use hawdb_core::Result;
+use hawdb_plan::PhysicalPlan;
+use hawdb_storage::ScanPruningReport;
 
 pub fn read_execution_profile(
     plan: &PhysicalPlan,

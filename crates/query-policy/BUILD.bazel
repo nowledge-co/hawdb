@@ -8,24 +8,24 @@ test_suite(
 )
 
 rust_library(
-    name = "skein_query_policy",
-    crate_name = "skein_query_policy",
+    name = "hawdb_query_policy",
+    crate_name = "hawdb_query_policy",
     crate_root = "src/lib.rs",
     srcs = glob(["src/**/*.rs"]),
     edition = "2024",
     aliases = aliases(),
     deps = all_crate_deps(normal = True) + [
-        "//crates/core:skein_core",
-        "//crates/cypher:skein_cypher",
-        "//crates/optimizer:skein_optimizer",
-        "//crates/qos:skein_qos",
+        "//crates/core:hawdb_core",
+        "//crates/cypher:hawdb_cypher",
+        "//crates/optimizer:hawdb_optimizer",
+        "//crates/qos:hawdb_qos",
     ],
     proc_macro_deps = all_crate_deps(proc_macro = True),
 )
 
 rust_test(
-    name = "skein_query_policy_tests",
-    crate = ":skein_query_policy",
+    name = "hawdb_query_policy_tests",
+    crate = ":hawdb_query_policy",
     edition = "2024",
     aliases = aliases(normal_dev = True, proc_macro_dev = True),
     deps = all_crate_deps(normal_dev = True),

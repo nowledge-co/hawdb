@@ -11,22 +11,22 @@ use crate::{
     ContentStoreSqlStatementClassification, ContentStoreSqlStatementKind, LatencyPercentiles,
     CONTENT_STORE_SHARED_HOST_8_GIB_BYTES, CONTENT_STORE_SHARED_HOST_MAX_CAPACITY_BYTES,
 };
-use serde::Serialize;
-use sha2::{Digest, Sha256};
-use skein::{
+use hawdb::{
     ConcurrentDatabase, ConcurrentTransactionOptions, Database, DatabaseConfig, DurabilityPolicy,
-    ProcessMemoryProfile, ProcessMemorySnapshot, ProductionEvidenceBinding,
-    ProductionQualificationIdentity, QueryStreamOptions, RelationalIndexMode, SkeinError,
+    HawdbError, ProcessMemoryProfile, ProcessMemorySnapshot, ProductionEvidenceBinding,
+    ProductionQualificationIdentity, QueryStreamOptions, RelationalIndexMode,
     StoragePressureSnapshot, StorageRecoveryReport, StorageResidencyMode, StorageResidencyReport,
     Value, WalGroupCommitActivation, WalGroupCommitConfig, WalGroupCommitSnapshot,
 };
+use serde::Serialize;
+use sha2::{Digest, Sha256};
 use std::collections::BTreeSet;
 use std::path::PathBuf;
 use std::sync::{Arc, Barrier};
 use std::time::Instant;
 
 pub const PRODUCTION_CONTENT_STORE_MUTATION_QUALIFICATION_PROTOCOL: &str =
-    "skein-production-content-store-mutation-qualification-v1";
+    "hawdb-production-content-store-mutation-qualification-v1";
 pub const PRODUCTION_CONTENT_STORE_WRITER_MATRIX: [usize; 4] = [1, 4, 8, 10];
 pub const MAX_PRODUCTION_COMMIT_P95_REGRESSION_PER_MILLION: u32 = 50_000;
 
@@ -259,7 +259,7 @@ impl ProductionContentStoreMutationQualificationReport {
 
 pub fn run_production_content_store_mutation_qualification(
     config: ProductionContentStoreMutationQualificationConfig,
-) -> Result<ProductionContentStoreMutationQualificationReport, SkeinError> {
+) -> Result<ProductionContentStoreMutationQualificationReport, HawdbError> {
     let corpus = nowledge_content_store_sql_corpus()?;
     validate_config(&config, &corpus)?;
     validate_source_database(&config)?;
@@ -292,7 +292,7 @@ fn run_case(
     config: &ProductionContentStoreMutationQualificationConfig,
     case: &ProductionContentStoreMutationMatrixCase,
     corpus: &ContentStoreSqlCorpus,
-) -> Result<ProductionContentStoreMutationCaseReport, SkeinError> {
+) -> Result<ProductionContentStoreMutationCaseReport, HawdbError> {
     let process_start = ProcessMemorySnapshot::capture()?;
     let database = Database::open_with_durability_and_config(
         &case.replica_path,
@@ -327,13 +327,13 @@ fn run_case(
         let mut runs = Vec::new();
         for handle in handles {
             let writer_runs = handle.join().map_err(|_| {
-                SkeinError::Execution(
+                HawdbError::Execution(
                     "production Content Store mutation worker panicked".to_string(),
                 )
             })??;
             runs.extend(writer_runs);
         }
-        Ok::<_, SkeinError>(runs)
+        Ok::<_, HawdbError>(runs)
     })?;
     let mutation_elapsed_micros = elapsed_micros(mutation_started);
     runs.sort_by_key(|run| (run.writer_index, run.operation_index));
@@ -486,12 +486,12 @@ fn execute_worker(
     writer_index: usize,
     worker: &ProductionContentStoreMutationWorker,
     corpus: &ContentStoreSqlCorpus,
-) -> Result<Vec<ProductionContentStoreMutationRunEvidence>, SkeinError> {
+) -> Result<Vec<ProductionContentStoreMutationRunEvidence>, HawdbError> {
     let mut runs = Vec::with_capacity(worker.operations.len());
     barrier.wait();
     for (operation_index, operation) in worker.operations.iter().enumerate() {
         let statement = corpus.statement(&operation.statement_name).ok_or_else(|| {
-            SkeinError::Semantic(format!(
+            HawdbError::Semantic(format!(
                 "production Content Store mutation references unknown statement {}",
                 operation.statement_name
             ))
@@ -520,7 +520,7 @@ fn verify_cases(
     database: &ConcurrentDatabase,
     case: &ProductionContentStoreMutationMatrixCase,
     corpus: &ContentStoreSqlCorpus,
-) -> Result<Vec<ProductionContentStoreMutationVerificationEvidence>, SkeinError> {
+) -> Result<Vec<ProductionContentStoreMutationVerificationEvidence>, HawdbError> {
     let transaction = database.begin_read_transaction()?;
     case.verification_cases
         .iter()
@@ -528,7 +528,7 @@ fn verify_cases(
             let statement = corpus
                 .statement(&verification.statement_name)
                 .ok_or_else(|| {
-                    SkeinError::Semantic(format!(
+                    HawdbError::Semantic(format!(
                         "production Content Store verification references unknown statement {}",
                         verification.statement_name
                     ))
@@ -557,24 +557,24 @@ fn verify_cases(
 fn validate_config(
     config: &ProductionContentStoreMutationQualificationConfig,
     corpus: &ContentStoreSqlCorpus,
-) -> Result<(), SkeinError> {
+) -> Result<(), HawdbError> {
     validate_production_identity_for_current_target(
         &config.evidence_binding,
         &config.expected_identity,
     )
-    .map_err(|error| SkeinError::Semantic(error.to_string()))?;
+    .map_err(|error| HawdbError::Semantic(error.to_string()))?;
     if config.database_config.read_only
         || config.database_config.storage_residency_mode != StorageResidencyMode::OutOfCore
         || config.database_config.relational_index_mode != RelationalIndexMode::Authoritative
         || config.database_config.segment_cache_capacity_bytes == 0
     {
-        return Err(SkeinError::Semantic(
+        return Err(HawdbError::Semantic(
             "production Content Store mutation replicas require writable out-of-core authoritative storage with a bounded cache"
                 .to_string(),
         ));
     }
     if config.wal_group_commit.activation() != WalGroupCommitActivation::EvidenceValidated {
-        return Err(SkeinError::Semantic(
+        return Err(HawdbError::Semantic(
             "production Content Store mutation qualification requires evidence-validated WAL group commit"
                 .to_string(),
         ));
@@ -582,7 +582,7 @@ fn validate_config(
     if config.max_commit_p95_regression_per_million
         > MAX_PRODUCTION_COMMIT_P95_REGRESSION_PER_MILLION
     {
-        return Err(SkeinError::Semantic(format!(
+        return Err(HawdbError::Semantic(format!(
             "production Content Store commit p95 regression budget must not exceed {MAX_PRODUCTION_COMMIT_P95_REGRESSION_PER_MILLION} per million"
         )));
     }
@@ -593,14 +593,14 @@ fn validate_config(
             != config.expected_identity.dataset_fingerprint
         || config.latency_reference.generated_at_unix_seconds == 0
     {
-        return Err(SkeinError::Semantic(
+        return Err(HawdbError::Semantic(
             "production Content Store commit latency reference must bind a revision and the current configuration and dataset shape"
                 .to_string(),
         ));
     }
     validate_resource_profile(config)?;
     if config.cases.len() != PRODUCTION_CONTENT_STORE_WRITER_MATRIX.len() {
-        return Err(SkeinError::Semantic(
+        return Err(HawdbError::Semantic(
             "production Content Store mutation qualification requires exactly four writer cases"
                 .to_string(),
         ));
@@ -609,7 +609,7 @@ fn validate_config(
     let mut replica_paths = BTreeSet::new();
     let source_path = std::fs::canonicalize(&config.source_database_path)?;
     if !source_path.is_dir() {
-        return Err(SkeinError::Semantic(
+        return Err(HawdbError::Semantic(
             "production Content Store mutation source must be an existing database directory"
                 .to_string(),
         ));
@@ -617,13 +617,13 @@ fn validate_config(
     for case in &config.cases {
         validate_case(case, corpus)?;
         if !writer_counts.insert(case.writer_count) {
-            return Err(SkeinError::Semantic(
+            return Err(HawdbError::Semantic(
                 "production Content Store writer counts must be unique".to_string(),
             ));
         }
         let canonical = std::fs::canonicalize(&case.replica_path)?;
         if !canonical.is_dir() || canonical == source_path || !replica_paths.insert(canonical) {
-            return Err(SkeinError::Semantic(
+            return Err(HawdbError::Semantic(
                 "production Content Store mutation replicas must be distinct existing directories separate from the read-only source"
                     .to_string(),
             ));
@@ -634,7 +634,7 @@ fn validate_config(
             .into_iter()
             .collect::<BTreeSet<_>>()
     {
-        return Err(SkeinError::Semantic(
+        return Err(HawdbError::Semantic(
             "production Content Store mutation writer matrix must be exactly 1, 4, 8, and 10"
                 .to_string(),
         ));
@@ -644,7 +644,7 @@ fn validate_config(
 
 fn validate_source_database(
     config: &ProductionContentStoreMutationQualificationConfig,
-) -> Result<(), SkeinError> {
+) -> Result<(), HawdbError> {
     let mut source_config = config.database_config.clone();
     source_config.read_only = true;
     let source = Database::open_with_durability_and_config(
@@ -661,7 +661,7 @@ fn validate_source_database(
         || evidence.row_canonical_artifact_bytes <= evidence.cache_capacity_bytes
         || evidence.index_canonical_artifact_bytes <= evidence.cache_capacity_bytes
     {
-        return Err(SkeinError::Semantic(
+        return Err(HawdbError::Semantic(
             "production Content Store mutation source identity or larger-than-cache storage view is invalid"
                 .to_string(),
         ));
@@ -674,7 +674,7 @@ fn validate_initial_replica(
     storage: &ProductionContentStoreMutationStorageEvidence,
     pressure: &StoragePressureSnapshot,
     expected_identity: &ProductionQualificationIdentity,
-) -> Result<(), SkeinError> {
+) -> Result<(), HawdbError> {
     if commit_epoch != expected_identity.canonical_graph_commit_epoch
         || !storage_view_current(storage)
         || storage.row_canonical_artifact_bytes <= storage.cache_capacity_bytes
@@ -682,7 +682,7 @@ fn validate_initial_replica(
         || storage.cache_pinned_bytes != 0
         || !pressure.admits_mutation()
     {
-        return Err(SkeinError::Semantic(
+        return Err(HawdbError::Semantic(
             "production Content Store mutation replica failed identity, larger-than-cache, pin, or storage-pressure preflight"
                 .to_string(),
         ));
@@ -692,7 +692,7 @@ fn validate_initial_replica(
 
 fn validate_resource_profile(
     config: &ProductionContentStoreMutationQualificationConfig,
-) -> Result<(), SkeinError> {
+) -> Result<(), HawdbError> {
     if config.configured_available_memory_bytes == 0
         || config.resource_limits.max_steady_resident_bytes == 0
         || config.resource_limits.max_peak_resident_bytes == 0
@@ -702,7 +702,7 @@ fn validate_resource_profile(
         || config.database_config.segment_cache_capacity_bytes
             > config.configured_available_memory_bytes
     {
-        return Err(SkeinError::Semantic(
+        return Err(HawdbError::Semantic(
             "production Content Store mutation memory limits must be non-zero, ordered, and within the declared profile"
                 .to_string(),
         ));
@@ -712,14 +712,14 @@ fn validate_resource_profile(
             if config.configured_available_memory_bytes
                 != CONTENT_STORE_512_MIB_CAPABILITY_BYTES =>
         {
-            Err(SkeinError::Semantic(format!(
+            Err(HawdbError::Semantic(format!(
                 "production Content Store mutation 512 MiB capability must declare {CONTENT_STORE_512_MIB_CAPABILITY_BYTES} bytes"
             )))
         }
         ContentStoreResourceProfileKind::SharedHost8Gib
             if config.configured_available_memory_bytes != CONTENT_STORE_SHARED_HOST_8_GIB_BYTES =>
         {
-            Err(SkeinError::Semantic(format!(
+            Err(HawdbError::Semantic(format!(
                 "production Content Store mutation shared-host profile must declare {CONTENT_STORE_SHARED_HOST_8_GIB_BYTES} bytes"
             )))
         }
@@ -727,7 +727,7 @@ fn validate_resource_profile(
             if config.resource_limits.max_peak_resident_bytes
                 > CONTENT_STORE_SHARED_HOST_MAX_CAPACITY_BYTES =>
         {
-            Err(SkeinError::Semantic(format!(
+            Err(HawdbError::Semantic(format!(
                 "production Content Store mutation shared-host peak RSS budget must not exceed {CONTENT_STORE_SHARED_HOST_MAX_CAPACITY_BYTES} bytes"
             )))
         }
@@ -738,7 +738,7 @@ fn validate_resource_profile(
 fn validate_case(
     case: &ProductionContentStoreMutationMatrixCase,
     corpus: &ContentStoreSqlCorpus,
-) -> Result<(), SkeinError> {
+) -> Result<(), HawdbError> {
     if !case.replica_path.is_dir()
         || case.writer_count == 0
         || case.workers.len() != case.writer_count
@@ -746,7 +746,7 @@ fn validate_case(
         || case.reference_commit_p95_micros == 0
         || case.max_commit_p95_micros == 0
     {
-        return Err(SkeinError::Semantic(
+        return Err(HawdbError::Semantic(
             "production Content Store mutation case has an invalid replica, writer, verification, or latency contract"
                 .to_string(),
         ));
@@ -758,7 +758,7 @@ fn validate_case(
             || !conflict_domains.insert(worker.conflict_domain.as_str())
             || worker.operations.is_empty()
         {
-            return Err(SkeinError::Semantic(
+            return Err(HawdbError::Semantic(
                 "production Content Store mutation workers require unique non-empty conflict domains and operations"
                     .to_string(),
             ));
@@ -767,7 +767,7 @@ fn validate_case(
             .replace(worker.operations.len())
             .is_some_and(|expected| expected != worker.operations.len())
         {
-            return Err(SkeinError::Semantic(
+            return Err(HawdbError::Semantic(
                 "production Content Store mutation workers must execute the same operation count"
                     .to_string(),
             ));
@@ -785,14 +785,14 @@ fn validate_case(
             .into_iter()
             .collect()
         {
-            return Err(SkeinError::Semantic(
+            return Err(HawdbError::Semantic(
                 "every production Content Store mutation worker must execute insert and update operations"
                     .to_string(),
             ));
         }
         for operation in &worker.operations {
             let statement = corpus.statement(&operation.statement_name).ok_or_else(|| {
-                SkeinError::Semantic(format!(
+                HawdbError::Semantic(format!(
                     "production Content Store mutation references unknown statement {}",
                     operation.statement_name
                 ))
@@ -805,7 +805,7 @@ fn validate_case(
         let statement = corpus
             .statement(&verification.statement_name)
             .ok_or_else(|| {
-                SkeinError::Semantic(format!(
+                HawdbError::Semantic(format!(
                     "production Content Store verification references unknown statement {}",
                     verification.statement_name
                 ))
@@ -818,7 +818,7 @@ fn validate_case(
             || verification.expected_output_rows > statement.max_rows
             || !valid_sha256(&verification.expected_output_sha256)
         {
-            return Err(SkeinError::Semantic(
+            return Err(HawdbError::Semantic(
                 "production Content Store mutation verification contract is invalid".to_string(),
             ));
         }
@@ -829,29 +829,29 @@ fn validate_case(
 fn validate_mutation_operation(
     operation: &ProductionContentStoreMutationOperation,
     statement: &crate::ContentStoreSqlStatementSpec,
-) -> Result<(), SkeinError> {
+) -> Result<(), HawdbError> {
     if statement.kind != ContentStoreSqlStatementKind::Mutation
         || statement.classification == ContentStoreSqlStatementClassification::RetainedOnSqlite
         || statement.parameters.len() != operation.parameters.len()
     {
-        return Err(SkeinError::Semantic(format!(
-            "production Content Store operation {} is not a parameter-complete Skein-owned mutation",
+        return Err(HawdbError::Semantic(format!(
+            "production Content Store operation {} is not a parameter-complete Hawdb-owned mutation",
             operation.statement_name
         )));
     }
-    let lowered = skein::sql::parse_postgres_sql(&statement.sql)?;
+    let lowered = hawdb::sql::parse_postgres_sql(&statement.sql)?;
     let kind_matches = matches!(
         (operation.kind, lowered),
         (
             ProductionContentStoreMutationKind::Insert,
-            skein::sql::SqlStatement::Insert(_)
+            hawdb::sql::SqlStatement::Insert(_)
         ) | (
             ProductionContentStoreMutationKind::Update,
-            skein::sql::SqlStatement::Update(_)
+            hawdb::sql::SqlStatement::Update(_)
         )
     );
     if !kind_matches {
-        return Err(SkeinError::Semantic(format!(
+        return Err(HawdbError::Semantic(format!(
             "production Content Store operation {} kind does not match its lowered SQL statement",
             operation.statement_name
         )));
@@ -1103,7 +1103,7 @@ fn recovery_evidence(
 fn wal_group_delta(
     before: WalGroupCommitSnapshot,
     after: WalGroupCommitSnapshot,
-) -> Result<ProductionContentStoreWalGroupEvidence, SkeinError> {
+) -> Result<ProductionContentStoreWalGroupEvidence, HawdbError> {
     Ok(ProductionContentStoreWalGroupEvidence {
         activation: match after.activation {
             WalGroupCommitActivation::Disabled => "disabled",
@@ -1153,9 +1153,9 @@ fn wal_group_delta(
     })
 }
 
-fn monotonic_delta(name: &str, before: u64, after: u64) -> Result<u64, SkeinError> {
+fn monotonic_delta(name: &str, before: u64, after: u64) -> Result<u64, HawdbError> {
     after.checked_sub(before).ok_or_else(|| {
-        SkeinError::Execution(format!(
+        HawdbError::Execution(format!(
             "production Content Store mutation {name} decreased from {before} to {after}"
         ))
     })
@@ -1193,7 +1193,7 @@ fn statement_digest(sql: &str) -> String {
     let mut hasher = Sha256::new();
     hash_bytes(
         &mut hasher,
-        b"skein-production-content-store-mutation-statement-v1",
+        b"hawdb-production-content-store-mutation-statement-v1",
     );
     hash_bytes(&mut hasher, sql.as_bytes());
     format!("sha256:{:x}", hasher.finalize())
@@ -1203,7 +1203,7 @@ fn parameter_digest(parameters: &[Value]) -> String {
     let mut hasher = Sha256::new();
     hash_bytes(
         &mut hasher,
-        b"skein-production-content-store-mutation-parameters-v1",
+        b"hawdb-production-content-store-mutation-parameters-v1",
     );
     hasher.update((parameters.len() as u64).to_le_bytes());
     for value in parameters {
@@ -1227,7 +1227,7 @@ mod tests {
         bootstrap_checkpoint, database_config, THREAD_DOCUMENT_ID, THREAD_STORAGE_ID,
     };
     use crate::ContentStoreInitialRowPageQualificationConfig;
-    use skein::{
+    use hawdb::{
         WalGroupCommitAdaptiveColdStartEvidence, WalGroupCommitAdaptivePolicyEvidence,
         WalGroupCommitAdaptiveSteadyStateEvidence, WalGroupCommitEvidence,
         WalGroupCommitTailLatencyEvidence, PRODUCTION_QUALIFICATION_POLICY_VERSION,
@@ -1244,7 +1244,7 @@ mod tests {
     fn production_mutation_runner_qualifies_isolated_writer_matrix() {
         let id = TEST_ID.fetch_add(1, Ordering::SeqCst);
         let root = std::env::temp_dir().join(format!(
-            "skein-production-content-mutation-{}-{id}",
+            "hawdb-production-content-mutation-{}-{id}",
             std::process::id()
         ));
         std::fs::create_dir_all(&root).unwrap();

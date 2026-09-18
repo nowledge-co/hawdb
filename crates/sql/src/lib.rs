@@ -7,7 +7,7 @@ pub mod template_cache;
 pub mod timing;
 
 pub mod syntax {
-    pub use skein_sql_syntax::*;
+    pub use hawdb_sql_syntax::*;
 }
 
 pub use ast::*;

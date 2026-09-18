@@ -1,13 +1,13 @@
 # Cypher parser benchmark
 
-Skein keeps parser changes evidence-driven. The production benchmark covers
+Hawdb keeps parser changes evidence-driven. The production benchmark covers
 short exact lookup, bounded expansion, aggregate pagination, mutation, and
 query-hint shapes while constructing the complete production AST.
 
 Run the production parser benchmark with:
 
 ```bash
-cargo bench -p skein-cypher --bench cypher_parser
+cargo bench -p hawdb-cypher --bench cypher_parser
 ```
 
 The isolated Yacc experiment compares a generated `lrpar`/`lrlex` parser with

@@ -3,21 +3,21 @@ use super::{
     validate_production_identity_for_current_target, LatencyPercentiles, MixedSoakRuntimeReport,
     ProductionGraphQualificationError,
 };
-use serde::Serialize;
-use skein::{
+use hawdb::{
     IoConcurrencyBudget, NowledgeGraphStatement, NowledgeMemEmbeddedStoreHandle,
     NowledgeMemGraphMode, NowledgeMemOpenOptions, NowledgeMemReadOptions,
     ProductionEvidenceBinding, ProductionQualificationIdentity, QueryStreamReport,
     RuntimeCancellationToken, RuntimeGovernor, RuntimeGovernorConfig, RuntimeTaskContext,
     StorageDeviceProfile, StorageResidencyMode,
 };
-use skein_query::QueryIdentity;
+use hawdb_query::QueryIdentity;
+use serde::Serialize;
 use std::collections::BTreeSet;
 use std::sync::mpsc;
 use std::time::{Duration, Instant};
 
-pub const PRODUCTION_MORSEL_PROFILE_PROTOCOL: &str = "skein-production-morsel-profile-v1";
-pub const PRODUCTION_MORSEL_MATRIX_PROTOCOL: &str = "skein-production-morsel-matrix-v1";
+pub const PRODUCTION_MORSEL_PROFILE_PROTOCOL: &str = "hawdb-production-morsel-profile-v1";
+pub const PRODUCTION_MORSEL_MATRIX_PROTOCOL: &str = "hawdb-production-morsel-matrix-v1";
 pub const REQUIRED_PRODUCTION_MORSEL_WORKERS: [usize; 3] = [4, 8, 16];
 const MIN_PRODUCTION_LATENCY_SAMPLES: usize = 100;
 
@@ -345,10 +345,10 @@ fn run_cancellation_probe(
                     first_row = false;
                     started_sender
                         .send(())
-                        .map_err(|error| skein::SkeinError::Execution(error.to_string()))?;
+                        .map_err(|error| hawdb::HawdbError::Execution(error.to_string()))?;
                     resume_receiver
                         .recv()
-                        .map_err(|error| skein::SkeinError::Execution(error.to_string()))?;
+                        .map_err(|error| hawdb::HawdbError::Execution(error.to_string()))?;
                 }
                 Ok(())
             },
@@ -735,7 +735,7 @@ fn duration_micros(duration: Duration) -> u64 {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use skein::{
+    use hawdb::{
         Database, DatabaseConfig, ProductionQualificationIdentity, Value,
         PRODUCTION_QUALIFICATION_POLICY_VERSION,
     };
@@ -910,7 +910,7 @@ mod tests {
     fn profile_observes_in_flight_cancellation_through_the_mem_handle() {
         let id = TEST_ID.fetch_add(1, Ordering::SeqCst);
         let root = std::env::temp_dir().join(format!(
-            "skein-production-morsel-{}-{id}",
+            "hawdb-production-morsel-{}-{id}",
             std::process::id()
         ));
         let graph_path = root.join("database");

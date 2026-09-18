@@ -1,7 +1,7 @@
 # Concurrent SQL snapshot read benchmark
 
 `benches/concurrent_snapshot_reads.rs` measures the public embedded SQL path for
-[#226](https://github.com/nowledge-co/skein/issues/226). It complements the
+[#226](https://github.com/nowledge-co/hawdb/issues/226). It complements the
 sequential `relational_oltp_mix` and writer-only `wal_group_commit` benchmarks.
 It does not change either workload or their CI dispatch.
 
@@ -41,7 +41,7 @@ Reports retain every request's start offset and duration, all worker lifetimes,
 nearest-rank p50/p95/p99, total throughput and the number of read requests wholly
 inside the writer's lifetime. Request lifetime overlap can include waiting and
 **does not establish simultaneous engine execution**. The regression tests in
-[PR #483](https://github.com/nowledge-co/skein/pull/483) separately prove that
+[PR #483](https://github.com/nowledge-co/hawdb/pull/483) separately prove that
 completion recording can finish while a real writer holds the commit sequencer.
 Initial snapshot acquisition still uses that sequencer.
 
@@ -54,7 +54,7 @@ commit epoch. Recovery checks and fixture copy/open/cleanup are outside timing.
 
 ```sh
 cargo bench --bench concurrent_snapshot_reads
-bazel run //:skein_bench_concurrent_snapshot_reads
+bazel run //:hawdb_bench_concurrent_snapshot_reads
 ```
 
 The Bazel binary is manual and outside the existing CI benchmark dispatch. A

@@ -2,9 +2,9 @@
 
 use super::{checked_add as add, checked_mul as mul, BuildMemory};
 use crate::build_control::checkpoint;
-use crate::{Result, SkeinError};
-use skein_core::RuntimeTaskContext;
-use skein_executor::QueryMemoryLease;
+use crate::{HawdbError, Result};
+use hawdb_core::RuntimeTaskContext;
+use hawdb_executor::QueryMemoryLease;
 use std::mem::size_of;
 use std::ops::Deref;
 use std::path::{Component, Path, PathBuf};
@@ -94,7 +94,7 @@ impl OwnedPath {
         };
         task.map_or(Ok(()), checkpoint)?;
         if owned.value.capacity() > owned._memory.bytes() {
-            return Err(SkeinError::Execution(
+            return Err(HawdbError::Execution(
                 "search writer path exceeds preflight capacity".into(),
             ));
         }
@@ -135,7 +135,7 @@ pub(crate) fn join_bytes(parent: usize, name: usize, verbatim: bool) -> Result<u
 
 #[cfg(test)]
 pub(crate) mod evidence {
-    use skein_core::RuntimeCancellationToken;
+    use hawdb_core::RuntimeCancellationToken;
     use std::cell::{Cell, RefCell};
 
     thread_local! {

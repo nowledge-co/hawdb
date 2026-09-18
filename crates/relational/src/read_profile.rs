@@ -1,6 +1,6 @@
-use skein_executor::{BlockingOperatorMemoryReport, QueryOutput};
-use skein_optimizer::{RelationalJoinPlanningOutcome, RelationalOperatorCardinalityProfile};
-use skein_sql::RelationalSqlStageTimings;
+use hawdb_executor::{BlockingOperatorMemoryReport, QueryOutput};
+use hawdb_optimizer::{RelationalJoinPlanningOutcome, RelationalOperatorCardinalityProfile};
+use hawdb_sql::RelationalSqlStageTimings;
 
 /// Output and execution evidence for a relational SQL read.
 #[derive(Debug, Clone, PartialEq, Eq)]

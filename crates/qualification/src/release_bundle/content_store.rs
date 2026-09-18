@@ -9,9 +9,9 @@ use crate::{
     PRODUCTION_CONTENT_STORE_STORAGE_QUALIFICATION_PROTOCOL,
     PRODUCTION_CONTENT_STORE_WRITER_MATRIX,
 };
+use hawdb::ProductionQualificationIdentity;
 use serde_json::Value;
 use sha2::{Digest, Sha256};
-use skein::ProductionQualificationIdentity;
 use std::collections::{BTreeMap, BTreeSet};
 
 fn validate_read_storage(
@@ -1079,9 +1079,9 @@ fn validate_process(inputs: ProcessValidation<'_>, blockers: &mut Vec<String>) {
 }
 
 pub(super) const READ_STATEMENT_DIGEST_DOMAIN: &[u8] =
-    b"skein-production-content-store-statement-v1";
+    b"hawdb-production-content-store-statement-v1";
 const MUTATION_STATEMENT_DIGEST_DOMAIN: &[u8] =
-    b"skein-production-content-store-mutation-statement-v1";
+    b"hawdb-production-content-store-mutation-statement-v1";
 
 #[derive(Clone, Copy)]
 pub(super) enum StatementRole {
@@ -1113,13 +1113,13 @@ pub(super) fn valid_statement_contract(
             if statement.kind != ContentStoreSqlStatementKind::Mutation {
                 return false;
             }
-            let Ok(lowered) = skein::sql::parse_postgres_sql(&statement.sql) else {
+            let Ok(lowered) = hawdb::sql::parse_postgres_sql(&statement.sql) else {
                 return false;
             };
             matches!(
                 (role, lowered),
-                (StatementRole::Insert, skein::sql::SqlStatement::Insert(_))
-                    | (StatementRole::Update, skein::sql::SqlStatement::Update(_))
+                (StatementRole::Insert, hawdb::sql::SqlStatement::Insert(_))
+                    | (StatementRole::Update, hawdb::sql::SqlStatement::Update(_))
             )
         }
     }

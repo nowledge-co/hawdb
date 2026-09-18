@@ -5,9 +5,9 @@ use crate::build_memory::{
     checked_add as add, checked_mul as mul, document_bytes, projection_row_bytes, shared::Shared,
     AdmittedDocument, BuildMemory, MAP_ENTRY_BYTES,
 };
-use crate::{Result, SearchDocument, SearchProjectionDelta, SearchProjectionRow, SkeinError};
-use skein_core::RuntimeTaskContext;
-use skein_executor::QueryMemoryLease;
+use crate::{HawdbError, Result, SearchDocument, SearchProjectionDelta, SearchProjectionRow};
+use hawdb_core::RuntimeTaskContext;
+use hawdb_executor::QueryMemoryLease;
 use std::collections::VecDeque;
 use std::mem::size_of;
 
@@ -51,10 +51,10 @@ impl Pending {
         let slots = mul(count, size_of::<SearchDocument>())?;
         input.memory.grow(slots)?;
         input.upserts.try_reserve_exact(count).map_err(|error| {
-            SkeinError::Execution(format!("cannot allocate search delta slots: {error}"))
+            HawdbError::Execution(format!("cannot allocate search delta slots: {error}"))
         })?;
         if input.upserts.capacity() > count {
-            return Err(SkeinError::Execution(
+            return Err(HawdbError::Execution(
                 "search delta slots exceeded admission".into(),
             ));
         }
@@ -68,7 +68,7 @@ impl Pending {
             let actual = document_bytes(&document)? - size_of::<SearchDocument>();
             let covered = add(old, extra)?;
             if actual > covered {
-                return Err(SkeinError::Execution(
+                return Err(HawdbError::Execution(
                     "search delta conversion exceeded admission".into(),
                 ));
             }

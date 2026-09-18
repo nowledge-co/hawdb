@@ -1,7 +1,7 @@
 use super::stages::LOGICAL_REWRITE_STAGE;
 use crate::{RuleEvent, StageStats, StageTrace};
-use skein_core::Value;
-use skein_plan::{LogicalPlan, Predicate, Projection, ProjectionExpression};
+use hawdb_core::Value;
+use hawdb_plan::{LogicalPlan, Predicate, Projection, ProjectionExpression};
 use std::collections::{BTreeMap, BTreeSet};
 
 const MAX_FIXED_POINT_PASSES: usize = 16;
@@ -1011,8 +1011,8 @@ fn logical_node_count(plan: &LogicalPlan) -> usize {
 mod tests {
     use super::*;
     use crate::{OptimizationSearchReport, RuleOutcome};
-    use skein_cypher::RelationshipDirection;
-    use skein_plan::{
+    use hawdb_cypher::RelationshipDirection;
+    use hawdb_plan::{
         AggregateFunction, AggregateTarget, Aggregation, SortDirection, SortItem, SortKey,
     };
 

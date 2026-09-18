@@ -11,10 +11,10 @@ use crate::pipeline::runtime_checkpoint;
 use crate::predicate::{label_ids_for_pattern, node_matches_label_pattern};
 use crate::store::{GraphExecutionRead, GraphExecutionWrite, ScanControl};
 use crate::Row;
-use skein_core::{Catalog, Result, RuntimeTaskContext, SkeinError, Value};
-use skein_plan::{PhysicalPlan, Predicate, SetNodePropertiesReturnMode};
-use skein_storage::mutation::evaluate::evaluate_node_set_value;
-use skein_storage::{MutationLimits, NodeId, NodeSetAssignment};
+use hawdb_core::{Catalog, HawdbError, Result, RuntimeTaskContext, Value};
+use hawdb_plan::{PhysicalPlan, Predicate, SetNodePropertiesReturnMode};
+use hawdb_storage::mutation::evaluate::evaluate_node_set_value;
+use hawdb_storage::{MutationLimits, NodeId, NodeSetAssignment};
 use std::collections::BTreeMap;
 
 pub fn execute_mutation_with_store(
@@ -49,7 +49,7 @@ pub fn execute_mutation_with_store(
         Ok(Some(mutation)) => store
             .commit_mutation_with_limits(catalog, mutation, limits)
             .map(|summary| summary.rows),
-        Ok(None) => Err(SkeinError::Execution(
+        Ok(None) => Err(HawdbError::Execution(
             "physical plan is not an executable mutation".to_string(),
         )),
         Err(error) => {
@@ -85,18 +85,18 @@ pub fn project_staged_mutation_return_rows(
             for row in mutation_rows {
                 let id = match row.get("node_id") {
                     Some(Value::Int(id)) => NodeId(u64::try_from(*id).map_err(|_| {
-                        SkeinError::Execution(
+                        HawdbError::Execution(
                             "staged SET RETURN produced a negative node id".to_string(),
                         )
                     })?),
                     _ => {
-                        return Err(SkeinError::Execution(
+                        return Err(HawdbError::Execution(
                             "staged SET RETURN did not produce a node id".to_string(),
                         ));
                     }
                 };
                 let node = store.node_owned(id)?.ok_or_else(|| {
-                    SkeinError::Execution(format!(
+                    HawdbError::Execution(format!(
                         "updated node {} is missing during staged SET RETURN projection",
                         id.0
                     ))
@@ -115,7 +115,7 @@ pub fn project_staged_mutation_return_rows(
                     .collect::<Result<BTreeMap<_, _>>>()?;
                 payload_bytes = payload_bytes.saturating_add(map_payload_bytes(&projected));
                 if payload_bytes > limits.max_result_payload_bytes.get() {
-                    return Err(SkeinError::Execution(format!(
+                    return Err(HawdbError::Execution(format!(
                         "mutation result payload would exceed max_mutation_result_payload_bytes {}",
                         limits.max_result_payload_bytes
                     )));
@@ -130,7 +130,7 @@ pub fn project_staged_mutation_return_rows(
                 Value::Int(i64::try_from(mutation_rows.len()).unwrap_or(i64::MAX)),
             )]);
             if map_payload_bytes(&row) > limits.max_result_payload_bytes.get() {
-                return Err(SkeinError::Execution(format!(
+                return Err(HawdbError::Execution(format!(
                     "mutation result payload would exceed max_mutation_result_payload_bytes {}",
                     limits.max_result_payload_bytes
                 )));
@@ -210,7 +210,7 @@ fn execute_node_mutation_with_limits(
             return Ok(ScanControl::Continue);
         }
         if ids.len() == limits.max_affected_rows.get() {
-            return Err(SkeinError::Execution(format!(
+            return Err(HawdbError::Execution(format!(
                 "mutation would exceed max_mutation_affected_rows {}",
                 limits.max_affected_rows
             )));
@@ -219,7 +219,7 @@ fn execute_node_mutation_with_limits(
         Ok(ScanControl::Continue)
     })?;
     if ids.len() > limits.max_result_rows.get() {
-        return Err(SkeinError::Execution(format!(
+        return Err(HawdbError::Execution(format!(
             "mutation would exceed max_mutation_result_rows {}",
             limits.max_result_rows
         )));
@@ -232,7 +232,7 @@ fn execute_node_mutation_with_limits(
         total.saturating_add(map_payload_bytes(row))
     });
     if payload_bytes > limits.max_result_payload_bytes.get() {
-        return Err(SkeinError::Execution(format!(
+        return Err(HawdbError::Execution(format!(
             "mutation result payload would exceed max_mutation_result_payload_bytes {}",
             limits.max_result_payload_bytes
         )));
@@ -258,7 +258,7 @@ fn execute_set_node_properties_return_with_limits(
     variable: &str,
     label: &str,
     predicate: Option<&Predicate>,
-    assignments: &[skein_plan::SetAssignment],
+    assignments: &[hawdb_plan::SetAssignment],
     returns: &SetNodePropertiesReturnMode,
     catalog: &mut Catalog,
     store: &mut dyn GraphExecutionWrite,
@@ -299,7 +299,7 @@ fn execute_set_node_properties_return_with_limits(
             return Ok(ScanControl::Continue);
         }
         if ids.len() == limits.max_affected_rows.get() {
-            return Err(SkeinError::Execution(format!(
+            return Err(HawdbError::Execution(format!(
                 "mutation would exceed max_mutation_affected_rows {}",
                 limits.max_affected_rows
             )));
@@ -308,7 +308,7 @@ fn execute_set_node_properties_return_with_limits(
         ids.push(id);
         if let SetNodePropertiesReturnMode::Project(returns) = returns {
             if projected_rows.len() == limits.max_result_rows.get() {
-                return Err(SkeinError::Execution(format!(
+                return Err(HawdbError::Execution(format!(
                     "mutation would exceed max_mutation_result_rows {}",
                     limits.max_result_rows
                 )));
@@ -333,7 +333,7 @@ fn execute_set_node_properties_return_with_limits(
                 .collect::<Result<BTreeMap<_, _>>>()?;
             let next_payload = projected_payload_bytes.saturating_add(map_payload_bytes(&values));
             if next_payload > limits.max_result_payload_bytes.get() {
-                return Err(SkeinError::Execution(format!(
+                return Err(HawdbError::Execution(format!(
                     "mutation result payload would exceed max_mutation_result_payload_bytes {}",
                     limits.max_result_payload_bytes
                 )));
@@ -349,7 +349,7 @@ fn execute_set_node_properties_return_with_limits(
         SetNodePropertiesReturnMode::Count { name } => {
             let row = BTreeMap::from([(name.clone(), Value::Int(ids.len() as i64))]);
             if map_payload_bytes(&row) > limits.max_result_payload_bytes.get() {
-                return Err(SkeinError::Execution(format!(
+                return Err(HawdbError::Execution(format!(
                     "mutation result payload would exceed max_mutation_result_payload_bytes {}",
                     limits.max_result_payload_bytes
                 )));
@@ -360,9 +360,9 @@ fn execute_set_node_properties_return_with_limits(
     let operation_count = ids
         .len()
         .checked_mul(assignments.len())
-        .ok_or_else(|| SkeinError::Execution("mutation operation count overflow".to_string()))?;
+        .ok_or_else(|| HawdbError::Execution("mutation operation count overflow".to_string()))?;
     if operation_count > limits.max_operations.get() {
-        return Err(SkeinError::Execution(format!(
+        return Err(HawdbError::Execution(format!(
             "mutation would exceed max_mutation_operations {}",
             limits.max_operations
         )));

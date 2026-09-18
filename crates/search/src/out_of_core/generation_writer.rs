@@ -3,7 +3,7 @@ use crate::build_memory::{
     checked_add, checked_mul, AdmittedDocument, BuildMemory, SET_ENTRY_BYTES, SPOOL_BUFFER_BYTES,
 };
 use crate::document_encoding::DocumentEncoding;
-use crate::error::{Result, SkeinError};
+use crate::error::{HawdbError, Result};
 use crate::generation_cleanup::{
     once::PreparedCleanup, SearchProjectionCleanupOptions, SearchProjectionGenerations,
 };
@@ -19,14 +19,14 @@ use crate::{
     SEARCH_DOCUMENT_ID_FIELD,
 };
 use artifacts::SegmentArtifactBuilder;
+use hawdb_core::RuntimeTaskContext;
+use hawdb_executor::QueryMemoryLease;
+use hawdb_integrity::Crc32cHasher;
 #[cfg(test)]
 use publication::file_len_checksum;
 use publication::{publish_generation, PublishGenerationInput};
 use rabitq::RaBitQArtifactBuilder;
 use serde::Serialize;
-use skein_core::RuntimeTaskContext;
-use skein_executor::QueryMemoryLease;
-use skein_integrity::Crc32cHasher;
 #[cfg(test)]
 pub(crate) use spool::read_evidence as analyzer_read_evidence;
 use spool::{SpoolSource, StageDirectory, SPOOL_FRAME_HEADER_BYTES, SPOOL_HEADER};
@@ -54,8 +54,8 @@ mod tests;
 
 pub use delta::SearchOutOfCoreGenerationUpdate;
 
-const STAGE_METADATA_FILE: &str = "search_projection_metadata_payloads.stage.skein";
-const STAGE_VECTOR_FILE: &str = "search_projection_vector_payloads.stage.skein";
+const STAGE_METADATA_FILE: &str = "search_projection_metadata_payloads.stage.hawdb";
+const STAGE_VECTOR_FILE: &str = "search_projection_vector_payloads.stage.hawdb";
 
 /// Explicit admission limits and immutable identity for a streaming out-of-core build.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -81,7 +81,7 @@ pub struct SearchOutOfCoreGenerationBuildOptions {
     pub rabitq_build_memory_bytes: NonZeroUsize,
     pub rabitq_transform_seed: u64,
     #[cfg(feature = "vector-search")]
-    pub rabitq_bit_width: skein_vector_projection::RaBitQBitWidth,
+    pub rabitq_bit_width: hawdb_vector_projection::RaBitQBitWidth,
     pub source_graph_commit_epoch: Option<u64>,
     pub import_source_graph_commit_epoch: Option<u64>,
     pub embedding_manifest: Option<SearchEmbeddingManifest>,
@@ -113,7 +113,7 @@ impl Default for SearchOutOfCoreGenerationBuildOptions {
             rabitq_build_memory_bytes: NonZeroUsize::new(64 * 1024 * 1024).unwrap(),
             rabitq_transform_seed: 0x534b_4549_4e56_5134,
             #[cfg(feature = "vector-search")]
-            rabitq_bit_width: skein_vector_projection::RaBitQBitWidth::default(),
+            rabitq_bit_width: hawdb_vector_projection::RaBitQBitWidth::default(),
             source_graph_commit_epoch: None,
             import_source_graph_commit_epoch: None,
             embedding_manifest: None,
@@ -277,7 +277,7 @@ impl SearchOutOfCoreGenerationWriter {
         let stage = StageDirectory::create(&root, &memory, &task_context)?;
         let spool_path = context_memory::OwnedPath::join(
             &stage.path,
-            Path::new("documents.spool.skein"),
+            Path::new("documents.spool.hawdb"),
             &memory,
             &task_context,
         )?;
@@ -296,7 +296,7 @@ impl SearchOutOfCoreGenerationWriter {
         if metadata_fields.len() > options.max_metadata_fields.get()
             || metadata_field_bytes > options.max_metadata_field_bytes.get()
         {
-            return Err(SkeinError::Storage(
+            return Err(HawdbError::Storage(
                 "search generation descriptor field admission is smaller than the required field set"
                     .to_string(),
             ));
@@ -360,7 +360,7 @@ impl SearchOutOfCoreGenerationWriter {
     /// include decoded dictionary, analyzer, or other process memory.
     pub fn set_max_lexical_manifest_bytes(&mut self, max_bytes: NonZeroU64) -> Result<()> {
         if max_bytes.get() > isize::MAX as u64 {
-            return Err(SkeinError::Storage(
+            return Err(HawdbError::Storage(
                 "lexical manifest byte budget exceeds isize::MAX".into(),
             ));
         }
@@ -370,7 +370,7 @@ impl SearchOutOfCoreGenerationWriter {
 
     pub fn push(&mut self, document: SearchDocument) -> Result<()> {
         if self.poisoned {
-            return Err(SkeinError::Storage(
+            return Err(HawdbError::Storage(
                 "search generation writer is poisoned after an earlier input failure".to_string(),
             ));
         }
@@ -429,12 +429,12 @@ impl SearchOutOfCoreGenerationWriter {
     ) -> Result<SearchOutOfCoreGenerationBuildReport> {
         checkpoint(&self.task_context)?;
         if self.poisoned {
-            return Err(SkeinError::Storage(
+            return Err(HawdbError::Storage(
                 "cannot finish a poisoned search generation writer".to_string(),
             ));
         }
         let mut spool = self.spool.take().ok_or_else(|| {
-            SkeinError::Storage("search generation spool is already closed".to_string())
+            HawdbError::Storage("search generation spool is already closed".to_string())
         })?;
         spool.flush()?;
         spool.get_ref().sync_all()?;
@@ -444,7 +444,7 @@ impl SearchOutOfCoreGenerationWriter {
         let actual_spool_bytes =
             io::GenerationIo::new(&self.memory, &self.task_context).length(&self.spool_path)?;
         if actual_spool_bytes != self.spool_bytes {
-            return Err(SkeinError::Storage(format!(
+            return Err(HawdbError::Storage(format!(
                 "search generation spool length changed: expected {}, got {actual_spool_bytes}",
                 self.spool_bytes
             )));
@@ -458,7 +458,7 @@ impl SearchOutOfCoreGenerationWriter {
         if let Some(expected) = self.expected_active_generation {
             let actual = discovery::active(&self.root, &self.memory, &self.task_context)?;
             if actual != Some(expected) {
-                return Err(SkeinError::Storage(format!(
+                return Err(HawdbError::Storage(format!(
                     "search generation update base changed before publication: expected {expected}, got {actual:?}"
                 )));
             }
@@ -647,7 +647,7 @@ impl SearchOutOfCoreGenerationWriter {
     fn push_inner(&mut self, document: AdmittedDocument) -> Result<()> {
         checkpoint(&self.task_context)?;
         if document.id.is_empty() {
-            return Err(SkeinError::Storage(
+            return Err(HawdbError::Storage(
                 "search generation document id must not be empty".to_string(),
             ));
         }
@@ -656,14 +656,14 @@ impl SearchOutOfCoreGenerationWriter {
             .as_ref()
             .is_some_and(|previous| previous >= &document.id)
         {
-            return Err(SkeinError::Storage(format!(
+            return Err(HawdbError::Storage(format!(
                 "search generation document ids must be strictly increasing: previous {:?}, next {:?}",
                 self.last_document_id.as_deref().unwrap_or_default(),
                 document.id
             )));
         }
         if self.document_count >= self.options.max_documents.get() {
-            return Err(SkeinError::Storage(format!(
+            return Err(HawdbError::Storage(format!(
                 "search generation exceeds the admitted {} documents",
                 self.options.max_documents
             )));
@@ -676,7 +676,7 @@ impl SearchOutOfCoreGenerationWriter {
         let encoding = DocumentEncoding::new_with_context(&document, Some(&self.task_context))?;
         let record_bytes = encoding.len() as u64;
         if record_bytes > self.options.max_record_bytes.get() {
-            return Err(SkeinError::Storage(format!(
+            return Err(HawdbError::Storage(format!(
                 "search generation document {} requires {record_bytes} encoded bytes, exceeding {}",
                 document.id, self.options.max_record_bytes
             )));
@@ -685,10 +685,10 @@ impl SearchOutOfCoreGenerationWriter {
             .logical_document_bytes
             .checked_add(record_bytes)
             .ok_or_else(|| {
-                SkeinError::Storage("search generation byte count overflow".to_string())
+                HawdbError::Storage("search generation byte count overflow".to_string())
             })?;
         if logical_document_bytes > self.options.max_logical_document_bytes.get() {
-            return Err(SkeinError::Storage(format!(
+            return Err(HawdbError::Storage(format!(
                 "search generation requires {logical_document_bytes} logical bytes, exceeding {}",
                 self.options.max_logical_document_bytes
             )));
@@ -698,10 +698,10 @@ impl SearchOutOfCoreGenerationWriter {
             .checked_add(SPOOL_FRAME_HEADER_BYTES)
             .and_then(|bytes| bytes.checked_add(record_bytes))
             .ok_or_else(|| {
-                SkeinError::Storage("search generation spool size overflow".to_string())
+                HawdbError::Storage("search generation spool size overflow".to_string())
             })?;
         if spool_bytes > self.options.max_spool_bytes.get() {
-            return Err(SkeinError::Storage(format!(
+            return Err(HawdbError::Storage(format!(
                 "search generation spool requires {spool_bytes} bytes, exceeding {}",
                 self.options.max_spool_bytes
             )));
@@ -717,7 +717,7 @@ impl SearchOutOfCoreGenerationWriter {
         if next_field_count > self.options.max_metadata_fields.get()
             || next_field_bytes > self.options.max_metadata_field_bytes.get()
         {
-            return Err(SkeinError::Storage(format!(
+            return Err(HawdbError::Storage(format!(
                 "search generation metadata fields require {next_field_count} fields and {next_field_bytes} bytes, exceeding {} fields or {} bytes",
                 self.options.max_metadata_fields, self.options.max_metadata_field_bytes
             )));
@@ -738,7 +738,7 @@ impl SearchOutOfCoreGenerationWriter {
         )?)?;
         checkpoint(&self.task_context)?;
         let spool = self.spool.as_mut().ok_or_else(|| {
-            SkeinError::Storage("search generation spool is already closed".to_string())
+            HawdbError::Storage("search generation spool is already closed".to_string())
         })?;
         let mut documents_digest = self.documents_digest;
         spool::write_frame_with_context(
@@ -802,7 +802,7 @@ fn build_rabitq_artifact(
         return Ok(None);
     }
     let dimension = embedding_dimension.ok_or_else(|| {
-        SkeinError::Storage(
+        HawdbError::Storage(
             "search generation has vector documents without an embedding dimension".to_string(),
         )
     })?;
@@ -810,19 +810,19 @@ fn build_rabitq_artifact(
     let memory = BuildMemory::new(&task)?;
     let file_name = artifact_name::Name::rabitq(generation, &memory, &task)?;
     let path = stage.join(&file_name);
-    let identity = skein_vector_projection::ProjectionIdentity {
+    let identity = hawdb_vector_projection::ProjectionIdentity {
         generation,
         source_epoch: options.source_graph_commit_epoch,
         embedding_model: embedding_manifest.map(|manifest| manifest.model.clone()),
         embedding_version: embedding_manifest.and_then(|manifest| manifest.version.clone()),
     };
-    let config = skein_vector_projection::ProjectionBuildConfig::new(dimension, identity)
+    let config = hawdb_vector_projection::ProjectionBuildConfig::new(dimension, identity)
         .with_bit_width(options.rabitq_bit_width)
         .with_segment_rows(options.rabitq_segment_rows.get())
         .with_max_working_bytes(options.rabitq_build_memory_bytes.get())
         .with_transform_seed(options.rabitq_transform_seed);
     let mut writer =
-        skein_vector_projection::ProjectionWriter::create(&path, config).map_err(rabitq_error)?;
+        hawdb_vector_projection::ProjectionWriter::create(&path, config).map_err(rabitq_error)?;
     let mut vector_ordinal = 0u64;
     source.scan(&mut |document| {
         let Some(embedding) = document.embedding.as_deref() else {
@@ -833,11 +833,11 @@ fn build_rabitq_artifact(
             .map_err(rabitq_error)?;
         vector_ordinal = vector_ordinal
             .checked_add(1)
-            .ok_or_else(|| SkeinError::Storage("search vector ordinal overflow".to_string()))?;
+            .ok_or_else(|| HawdbError::Storage("search vector ordinal overflow".to_string()))?;
         Ok(())
     })?;
     if vector_ordinal != vector_document_count as u64 {
-        return Err(SkeinError::Storage(
+        return Err(HawdbError::Storage(
             "search RaBitQ build did not consume the expected vector document count".to_string(),
         ));
     }
@@ -869,25 +869,25 @@ fn build_rabitq_artifact(
 }
 
 #[cfg(all(test, feature = "vector-search"))]
-fn rabitq_error(error: skein_vector_projection::ProjectionError) -> SkeinError {
-    SkeinError::Storage(format!("search RaBitQ projection: {error}"))
+fn rabitq_error(error: hawdb_vector_projection::ProjectionError) -> HawdbError {
+    HawdbError::Storage(format!("search RaBitQ projection: {error}"))
 }
 
 fn validate_options(options: &SearchOutOfCoreGenerationBuildOptions) -> Result<()> {
     if options.max_record_bytes.get() > options.max_segment_uncompressed_bytes.get() {
-        return Err(SkeinError::Storage(
+        return Err(HawdbError::Storage(
             "search generation max_record_bytes exceeds max_segment_uncompressed_bytes".to_string(),
         ));
     }
     if options.lexical_max_merge_fan_in.get() < 2 {
-        return Err(SkeinError::Storage(
+        return Err(HawdbError::Storage(
             "search generation lexical merge fan-in must be at least two".to_string(),
         ));
     }
     if let Some(manifest) = &options.embedding_manifest
         && (manifest.model.trim().is_empty() || manifest.dimension == 0)
     {
-        return Err(SkeinError::Storage(
+        return Err(HawdbError::Storage(
             "search generation embedding manifest requires a model and non-zero dimension"
                 .to_string(),
         ));
@@ -904,7 +904,7 @@ fn validate_embedding(
         return Ok(current_dimension);
     };
     if embedding.is_empty() || !embedding.iter().all(|value| value.is_finite()) {
-        return Err(SkeinError::Storage(format!(
+        return Err(HawdbError::Storage(format!(
             "search generation document {} has an empty or non-finite embedding",
             document.id
         )));
@@ -912,7 +912,7 @@ fn validate_embedding(
     if let Some(manifest) = manifest
         && manifest.dimension != embedding.len()
     {
-        return Err(SkeinError::Storage(format!(
+        return Err(HawdbError::Storage(format!(
             "search generation embedding manifest expects dimension {}, document {} has {}",
             manifest.dimension,
             document.id,
@@ -922,7 +922,7 @@ fn validate_embedding(
     if let Some(dimension) = current_dimension
         && dimension != embedding.len()
     {
-        return Err(SkeinError::Storage(format!(
+        return Err(HawdbError::Storage(format!(
             "search generation embedding dimension mismatch: expected {dimension}, document {} has {}",
             document.id,
             embedding.len()

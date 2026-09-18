@@ -17,24 +17,24 @@ use crate::{
     nowledge_content_store_schema_identity, nowledge_content_store_sql_corpus,
     ContentStoreSchemaIdentity, ContentStoreSqlCorpus, ContentStoreSqlCorpusIdentity,
 };
-use serde::Serialize;
-use skein::{
-    Database, DatabaseConfig, DurabilityPolicy, IoConcurrencyBudget, ProcessMemoryProfile,
-    ProcessMemorySnapshot, ProductionEvidenceBinding, ProductionQualificationIdentity,
-    RelationalIndexMode, RelationalOverflowCompactionConfig, RelationalOverflowCompactionReport,
-    RuntimeGovernor, RuntimeGovernorConfig, RuntimeMemorySnapshot, RuntimeWorkRequest, SkeinError,
-    StorageDeviceProfile, StorageReclamationWatermark, StorageResidencyMode, StorageScrubReport,
-    Value,
+use hawdb::{
+    Database, DatabaseConfig, DurabilityPolicy, HawdbError, IoConcurrencyBudget,
+    ProcessMemoryProfile, ProcessMemorySnapshot, ProductionEvidenceBinding,
+    ProductionQualificationIdentity, RelationalIndexMode, RelationalOverflowCompactionConfig,
+    RelationalOverflowCompactionReport, RuntimeGovernor, RuntimeGovernorConfig,
+    RuntimeMemorySnapshot, RuntimeWorkRequest, StorageDeviceProfile, StorageReclamationWatermark,
+    StorageResidencyMode, StorageScrubReport, Value,
 };
+use serde::Serialize;
 use std::collections::BTreeMap;
 use std::path::PathBuf;
 use std::time::Instant;
 
 pub const PRODUCTION_CONTENT_STORE_OVERFLOW_COMPACTION_QUALIFICATION_PROTOCOL: &str =
-    "skein-production-content-store-overflow-compaction-qualification-v1";
+    "hawdb-production-content-store-overflow-compaction-qualification-v1";
 
 const CLEANUP_MARKER_QUERY: &str =
-    "CREATE (:SkeinQualificationMarker {id: $id, purpose: $purpose})";
+    "CREATE (:HawdbQualificationMarker {id: $id, purpose: $purpose})";
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
 pub struct ProductionContentStoreOverflowCompactionLimits {
@@ -63,7 +63,7 @@ pub struct ProductionRelationalOverflowCompactionPolicyEvidence {
 }
 
 impl ProductionRelationalOverflowCompactionPolicyEvidence {
-    fn from_config(config: RelationalOverflowCompactionConfig) -> Result<Self, SkeinError> {
+    fn from_config(config: RelationalOverflowCompactionConfig) -> Result<Self, HawdbError> {
         Ok(Self {
             max_scan_rows: config.max_scan_rows.get(),
             max_scan_pages: config.max_scan_pages.get(),
@@ -289,7 +289,7 @@ impl ProductionContentStoreOverflowCompactionQualificationReport {
 /// copies or opens the source production database.
 pub fn run_production_content_store_overflow_compaction_qualification(
     config: ProductionContentStoreOverflowCompactionQualificationConfig,
-) -> Result<ProductionContentStoreOverflowCompactionQualificationReport, SkeinError> {
+) -> Result<ProductionContentStoreOverflowCompactionQualificationReport, HawdbError> {
     let corpus = nowledge_content_store_sql_corpus()?;
     validate_config(&config, &corpus)?;
 
@@ -301,7 +301,7 @@ pub fn run_production_content_store_overflow_compaction_qualification(
     ));
     let governor = RuntimeGovernor::detect(config.runtime_governor_config, storage_io);
     if config.compaction.admission_bytes()? > governor.snapshot().limits.memory_budget_bytes {
-        return Err(SkeinError::Semantic(
+        return Err(HawdbError::Semantic(
             "production overflow compaction admission exceeds the effective runtime memory budget"
                 .to_string(),
         ));
@@ -469,15 +469,15 @@ pub fn run_production_content_store_overflow_compaction_qualification(
 fn validate_config(
     config: &ProductionContentStoreOverflowCompactionQualificationConfig,
     corpus: &ContentStoreSqlCorpus,
-) -> Result<(), SkeinError> {
+) -> Result<(), HawdbError> {
     if !config.replica_path.is_dir() {
-        return Err(SkeinError::Semantic(
+        return Err(HawdbError::Semantic(
             "production overflow compaction qualification requires an existing replica directory"
                 .to_string(),
         ));
     }
     if config.database_config.read_only {
-        return Err(SkeinError::Semantic(
+        return Err(HawdbError::Semantic(
             "production overflow compaction qualification requires a writable disposable replica"
                 .to_string(),
         ));
@@ -486,7 +486,7 @@ fn validate_config(
         || config.database_config.relational_index_mode != RelationalIndexMode::Authoritative
         || config.database_config.segment_cache_capacity_bytes == 0
     {
-        return Err(SkeinError::Semantic(
+        return Err(HawdbError::Semantic(
             "production overflow compaction qualification requires out-of-core authoritative storage with a non-zero segment cache"
                 .to_string(),
         ));
@@ -501,7 +501,7 @@ fn validate_config(
         &config.evidence_binding,
         &config.expected_identity,
     )
-    .map_err(|error| SkeinError::Semantic(error.to_string()))?;
+    .map_err(|error| HawdbError::Semantic(error.to_string()))?;
     validate_read_cases(
         &config.verification_cases,
         corpus,
@@ -515,7 +515,7 @@ fn validate_config(
         || limits.min_reclaimable_base_extent_count == 0
         || limits.min_physically_removed_extent_bytes == 0
     {
-        return Err(SkeinError::Semantic(
+        return Err(HawdbError::Semantic(
             "production overflow compaction qualification limits must all be non-zero".to_string(),
         ));
     }
@@ -557,7 +557,7 @@ fn verify_cases(
     database_config: &DatabaseConfig,
     phase: ContentStoreRowPageReadPhase,
     blockers: &mut Vec<String>,
-) -> Result<Vec<ProductionContentStoreOverflowVerificationEvidence>, SkeinError> {
+) -> Result<Vec<ProductionContentStoreOverflowVerificationEvidence>, HawdbError> {
     cases
         .iter()
         .map(|case| {
@@ -582,7 +582,7 @@ fn verify_cases(
                     .with_blocking(true),
                 )
                 .map_err(|error| {
-                    SkeinError::Execution(format!(
+                    HawdbError::Execution(format!(
                         "production overflow compaction verification admission failed: {error}"
                     ))
                 })?;
@@ -666,7 +666,7 @@ fn collect_initial_blockers(
 fn publish_cleanup_marker(
     database: &mut Database,
     published_generation: u64,
-) -> Result<u64, SkeinError> {
+) -> Result<u64, HawdbError> {
     let mut parameters = BTreeMap::new();
     parameters.insert(
         "id".to_string(),
@@ -839,7 +839,7 @@ fn removed_overflow_extents(
 }
 
 fn is_overflow_extent(name: &str) -> bool {
-    name.starts_with("relational-overflow-") && name.ends_with(".extents.skein")
+    name.starts_with("relational-overflow-") && name.ends_with(".extents.hawdb")
 }
 
 fn ratio_per_million(numerator: u64, denominator: u64) -> u64 {

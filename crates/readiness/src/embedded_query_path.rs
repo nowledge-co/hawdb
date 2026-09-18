@@ -1,9 +1,9 @@
 //! Readiness contract for embedded query facades.
 
 /// Stable protocol identifier for embedded query-path readiness reports.
-pub const EMBEDDED_QUERY_PATH_READINESS_PROTOCOL: &str = "skein-embedded-query-path-readiness-v1";
+pub const EMBEDDED_QUERY_PATH_READINESS_PROTOCOL: &str = "hawdb-embedded-query-path-readiness-v1";
 
-/// One public query entrypoint exposed by an embedded Skein facade.
+/// One public query entrypoint exposed by an embedded Hawdb facade.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum EmbeddedQueryEntrypoint {
     AdmittedSync,
@@ -14,8 +14,8 @@ pub enum EmbeddedQueryEntrypoint {
 impl EmbeddedQueryEntrypoint {
     pub const fn as_str(self) -> &'static str {
         match self {
-            Self::AdmittedSync => "skein_embedded_admitted",
-            Self::AdmittedTokio => "skein_tokio_embedded_admitted",
+            Self::AdmittedSync => "hawdb_embedded_admitted",
+            Self::AdmittedTokio => "hawdb_tokio_embedded_admitted",
             Self::RawDatabase => "raw_database",
         }
     }

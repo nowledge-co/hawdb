@@ -2,7 +2,7 @@ use super::{
     RelationalError, RelationalOverflowSegment, RelationalProjectedRow, RelationalRow,
     RelationalScalarType, RelationalState, RelationalTableSchema, RelationalValue,
 };
-use skein_integrity::Sha256Digest;
+use hawdb_integrity::Sha256Digest;
 use std::collections::BTreeSet;
 use std::sync::Arc;
 
@@ -126,7 +126,7 @@ pub(super) fn hydrate_row(
     state: &RelationalState,
     row: &RelationalRow,
     budget: &mut RelationalHydrationBudget,
-    task_context: Option<&skein_core::RuntimeTaskContext>,
+    task_context: Option<&hawdb_core::RuntimeTaskContext>,
 ) -> Result<RelationalRow, RelationalError> {
     runtime_checkpoint(task_context)?;
     let mut staged_budget = *budget;
@@ -164,7 +164,7 @@ pub(super) fn hydrate_projected_row(
     table: &str,
     row: &mut RelationalProjectedRow,
     budget: &mut RelationalHydrationBudget,
-    task_context: Option<&skein_core::RuntimeTaskContext>,
+    task_context: Option<&hawdb_core::RuntimeTaskContext>,
 ) -> Result<(), RelationalError> {
     hydrate_projected_row_fields(state, table, row, None, budget, task_context)
 }
@@ -175,7 +175,7 @@ pub(super) fn hydrate_projected_row_fields(
     row: &mut RelationalProjectedRow,
     required_fields: Option<&[usize]>,
     budget: &mut RelationalHydrationBudget,
-    task_context: Option<&skein_core::RuntimeTaskContext>,
+    task_context: Option<&hawdb_core::RuntimeTaskContext>,
 ) -> Result<(), RelationalError> {
     if !row
         .fields
@@ -268,7 +268,7 @@ pub(super) fn hydrate_projected_row_fields(
 }
 
 fn runtime_checkpoint(
-    task_context: Option<&skein_core::RuntimeTaskContext>,
+    task_context: Option<&hawdb_core::RuntimeTaskContext>,
 ) -> Result<(), RelationalError> {
     task_context.map_or(Ok(()), |context| {
         context.checkpoint().map_err(|reason| {

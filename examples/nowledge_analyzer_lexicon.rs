@@ -1,7 +1,7 @@
-use skein::{SearchAnalyzerLexicon, SearchDocument, SearchIndex, SearchMode};
+use hawdb::{SearchAnalyzerLexicon, SearchDocument, SearchIndex, SearchMode};
 use std::collections::BTreeMap;
 
-fn main() -> skein::Result<()> {
+fn main() -> hawdb::Result<()> {
     let mut index = SearchIndex::in_memory().with_analyzer_lexicon(nowledge_application_lexicon());
 
     index

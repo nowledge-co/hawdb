@@ -1,7 +1,7 @@
 use super::*;
 
 impl GraphStore {
-    pub(crate) fn append_state(&self) -> &skein_storage::AppendState {
+    pub(crate) fn append_state(&self) -> &hawdb_storage::AppendState {
         &self.append_state
     }
 
@@ -21,8 +21,8 @@ impl GraphStore {
     pub fn read_append_partition(
         &self,
         table: &str,
-        partition: &skein_storage::RelationalKey,
-        after: Option<&skein_storage::RelationalKey>,
+        partition: &hawdb_storage::RelationalKey,
+        after: Option<&hawdb_storage::RelationalKey>,
         max_rows: usize,
     ) -> Result<AppendSegmentReadOutput> {
         self.read_append_partition_bounded(table, partition, after, max_rows, usize::MAX)
@@ -31,8 +31,8 @@ impl GraphStore {
     pub fn read_append_partition_bounded(
         &self,
         table: &str,
-        partition: &skein_storage::RelationalKey,
-        after: Option<&skein_storage::RelationalKey>,
+        partition: &hawdb_storage::RelationalKey,
+        after: Option<&hawdb_storage::RelationalKey>,
         max_rows: usize,
         max_payload_bytes: usize,
     ) -> Result<AppendSegmentReadOutput> {
@@ -48,21 +48,21 @@ impl GraphStore {
 
     pub(crate) fn read_append_partition_from_state_bounded(
         &self,
-        append_state: &skein_storage::AppendState,
+        append_state: &hawdb_storage::AppendState,
         table: &str,
-        partition: &skein_storage::RelationalKey,
-        after: Option<&skein_storage::RelationalKey>,
+        partition: &hawdb_storage::RelationalKey,
+        after: Option<&hawdb_storage::RelationalKey>,
         max_rows: usize,
         max_payload_bytes: usize,
     ) -> Result<AppendSegmentReadOutput> {
         self.ensure_usable()?;
         if append_state.schema(table).is_none() {
-            return Err(SkeinError::Storage(format!("unknown append table {table}")));
+            return Err(HawdbError::Storage(format!("unknown append table {table}")));
         }
         let mut output = match self.append_generation_reader.as_ref() {
             Some(reader) => reader
                 .read_partition_bounded(table, partition, after, max_rows, max_payload_bytes)
-                .map_err(|error| SkeinError::Storage(error.to_string()))?,
+                .map_err(|error| HawdbError::Storage(error.to_string()))?,
             None => AppendSegmentReadOutput {
                 rows: Vec::new(),
                 report: Default::default(),
@@ -80,12 +80,12 @@ impl GraphStore {
                     .output_payload_bytes
                     .checked_add(row_payload_bytes)
                     .ok_or_else(|| {
-                        skein_storage::AppendTableError::Admission(
+                        hawdb_storage::AppendTableError::Admission(
                             "append read payload size overflow".to_string(),
                         )
                     })?;
                 if next_payload_bytes > max_payload_bytes {
-                    return Err(skein_storage::AppendTableError::Admission(format!(
+                    return Err(hawdb_storage::AppendTableError::Admission(format!(
                         "append read produced {next_payload_bytes} payload bytes, exceeding limit {max_payload_bytes}"
                     )));
                 }
@@ -93,7 +93,7 @@ impl GraphStore {
                 output.report.output_payload_bytes = next_payload_bytes;
                 Ok(())
             })
-            .map_err(|error| SkeinError::Storage(error.to_string()))?;
+            .map_err(|error| HawdbError::Storage(error.to_string()))?;
         merge_live_read_report(
             &mut output.report,
             live.rows_returned,
@@ -140,12 +140,12 @@ impl GraphStore {
     }
 }
 
-pub(crate) use skein_storage::append_table::{append_row_payload_bytes, merge_live_read_report};
+pub(crate) use hawdb_storage::append_table::{append_row_payload_bytes, merge_live_read_report};
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use skein_storage::{
+    use hawdb_storage::{
         RelationalColumnSchema, RelationalInsertMode, RelationalKey, RelationalRow,
         RelationalScalarType, RelationalTableSchema, RelationalValue, RelationalWrite,
     };
@@ -155,7 +155,7 @@ mod tests {
     fn test_dir(name: &str) -> std::path::PathBuf {
         static NEXT: AtomicU64 = AtomicU64::new(0);
         std::env::temp_dir().join(format!(
-            "skein-append-{name}-{}-{}",
+            "hawdb-append-{name}-{}-{}",
             std::process::id(),
             NEXT.fetch_add(1, Ordering::Relaxed)
         ))
@@ -322,8 +322,8 @@ mod tests {
                 })
                 .expect("append checkpoint rows");
             store.checkpoint(&catalog).expect("checkpoint append rows");
-            assert!(path.join("append-1.segment.skein").exists());
-            assert!(path.join("append-1.manifest.skein").exists());
+            assert!(path.join("append-1.segment.hawdb").exists());
+            assert!(path.join("append-1.manifest.hawdb").exists());
             store.scrub_storage().expect("scrub append checkpoint");
             store
                 .backup_to(&catalog, &backup)
@@ -430,10 +430,10 @@ mod tests {
                 .expect("publish checkpoint with pinned generation");
         }
 
-        assert!(path.join("append-1.segment.skein").exists());
-        assert!(!path.join("append-2.segment.skein").exists());
-        assert!(path.join("append-3.segment.skein").exists());
-        assert!(path.join("append-4.segment.skein").exists());
+        assert!(path.join("append-1.segment.hawdb").exists());
+        assert!(!path.join("append-2.segment.hawdb").exists());
+        assert!(path.join("append-3.segment.hawdb").exists());
+        assert!(path.join("append-4.segment.hawdb").exists());
         let pinned_rows = pinned
             .read_append_partition("events", &partition, None, 10)
             .expect("read pinned append generation");
@@ -447,7 +447,7 @@ mod tests {
         store
             .checkpoint(&catalog)
             .expect("checkpoint after pin drop");
-        assert!(!path.join("append-1.segment.skein").exists());
+        assert!(!path.join("append-1.segment.hawdb").exists());
         fs::remove_dir_all(path).expect("remove append store");
     }
 
@@ -497,11 +497,11 @@ mod tests {
                 checkpoint_published
             );
             assert_eq!(
-                path.join("append-1.segment.skein").exists(),
+                path.join("append-1.segment.hawdb").exists(),
                 checkpoint_published
             );
             assert_eq!(
-                path.join("append-1.manifest.skein").exists(),
+                path.join("append-1.manifest.hawdb").exists(),
                 checkpoint_published
             );
             drop(store);
@@ -538,12 +538,12 @@ mod tests {
                     .checkpoint(&catalog)
                     .expect("publish append generation");
             }
-            assert!(path.join("append-1.segment.skein").exists());
-            assert!(!path.join("append-1.manifest.skein").exists());
-            assert!(path.join("append-2.segment.skein").exists());
-            assert!(path.join("append-2.manifest.skein").exists());
-            assert!(path.join("append-3.segment.skein").exists());
-            assert!(path.join("append-3.manifest.skein").exists());
+            assert!(path.join("append-1.segment.hawdb").exists());
+            assert!(!path.join("append-1.manifest.hawdb").exists());
+            assert!(path.join("append-2.segment.hawdb").exists());
+            assert!(path.join("append-2.manifest.hawdb").exists());
+            assert!(path.join("append-3.segment.hawdb").exists());
+            assert!(path.join("append-3.manifest.hawdb").exists());
         }
 
         let mut catalog = Catalog::default();

@@ -12,7 +12,7 @@ fn having_keeps_input_work_and_cancellation_limits_when_all_groups_are_rejected(
         "SELECT join_key FROM batch_outer GROUP BY join_key HAVING FALSE",
         "SELECT COUNT(*) FROM batch_outer o CROSS JOIN batch_inner i HAVING FALSE",
     ] {
-        let SqlStatement::Select(select) = skein_sql::parse_postgres_sql(sql).unwrap() else {
+        let SqlStatement::Select(select) = hawdb_sql::parse_postgres_sql(sql).unwrap() else {
             panic!("expected SELECT")
         };
         let prepared = prepare_relational_select(
@@ -25,7 +25,7 @@ fn having_keeps_input_work_and_cancellation_limits_when_all_groups_are_rejected(
             RelationalSqlStageTimings::default(),
         )
         .unwrap();
-        let memory = skein_executor::ExecutionMemoryConfig::default();
+        let memory = hawdb_executor::ExecutionMemoryConfig::default();
         let run = |limits, context| {
             let admitted = prepared.execution.admit(
                 &state,
@@ -69,8 +69,8 @@ fn having_keeps_input_work_and_cancellation_limits_when_all_groups_are_rejected(
                 "{error}"
             );
         }
-        let cancellation = skein_core::RuntimeCancellationToken::new();
-        let context = skein_core::RuntimeTaskContext::without_deadline(cancellation.clone());
+        let cancellation = hawdb_core::RuntimeCancellationToken::new();
+        let context = hawdb_core::RuntimeTaskContext::without_deadline(cancellation.clone());
         cancellation.cancel();
         let error = run(batched_index_join_limits(), Some(&context)).unwrap_err();
         assert!(error.to_string().contains("cancelled"), "{error}");

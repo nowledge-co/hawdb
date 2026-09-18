@@ -3,8 +3,8 @@ use crate::cardinality_defaults::{
     NULL_SELECTIVITY_DIVISOR_CAP, RANGE_SELECTIVITY_DIVISOR, SAMPLED_HISTOGRAM_MATCH_PSEUDOCOUNT,
     SAMPLED_HISTOGRAM_TOTAL_PSEUDOCOUNT,
 };
-use skein_core::{Catalog, GraphStatistics, IndexKind, Value};
-use skein_plan::ComparisonOp;
+use hawdb_core::{Catalog, GraphStatistics, IndexKind, Value};
+use hawdb_plan::ComparisonOp;
 use std::collections::{BTreeMap, BTreeSet};
 
 #[derive(Debug, Clone, PartialEq, Eq)]

@@ -3,12 +3,12 @@ use super::*;
 #[test]
 fn artifact_job_facade_reexports_owner_contracts() {
     let mut db = Database::new();
-    let owner_job: skein_artifact::DerivedArtifactJob =
+    let owner_job: hawdb_artifact::DerivedArtifactJob =
         db.schedule_external_content_artifact_job("source-1", "parse");
     let facade_job: crate::DerivedArtifactJob = owner_job;
     assert_eq!(facade_job.status, DerivedArtifactJobStatus::Pending);
 
-    let owner_report: skein_artifact::DerivedArtifactJobReport = db
+    let owner_report: hawdb_artifact::DerivedArtifactJobReport = db
         .run_next_external_content_artifact_job_with(|_| {
             Ok(QueryOutput {
                 rows: Vec::new().into(),
@@ -118,7 +118,7 @@ fn failed_external_content_artifact_jobs_are_bounded_and_filtered() {
 
     let first_failure = db
         .run_next_external_content_artifact_job_with(|_| {
-            Err(crate::error::SkeinError::Execution(
+            Err(crate::error::HawdbError::Execution(
                 "source-1 parser failure".to_string(),
             ))
         })
@@ -127,7 +127,7 @@ fn failed_external_content_artifact_jobs_are_bounded_and_filtered() {
     assert_eq!(first_failure.job.id, first.id);
     let second_failure = db
         .run_next_external_content_artifact_job_with(|_| {
-            Err(crate::error::SkeinError::Execution(
+            Err(crate::error::HawdbError::Execution(
                 "source-2 parser failure".to_string(),
             ))
         })
@@ -184,14 +184,14 @@ fn failed_external_content_artifact_jobs_can_be_filtered_by_action() {
     );
 
     db.run_next_external_content_artifact_job_with(|_| {
-        Err(crate::error::SkeinError::Execution(
+        Err(crate::error::HawdbError::Execution(
             "parse failed".to_string(),
         ))
     })
     .unwrap()
     .unwrap();
     db.run_next_external_content_artifact_job_with(|_| {
-        Err(crate::error::SkeinError::Execution(
+        Err(crate::error::HawdbError::Execution(
             "crawl failed".to_string(),
         ))
     })
@@ -339,7 +339,7 @@ fn external_content_artifact_job_summary_counts_runtime_work_only() {
 
     let failed = db
         .run_external_content_artifact_job_with(first.id, |_| {
-            Err(crate::error::SkeinError::Execution(
+            Err(crate::error::HawdbError::Execution(
                 "parser runtime failed".to_string(),
             ))
         })
@@ -644,7 +644,7 @@ fn failed_external_content_artifact_jobs_can_be_retried() {
 
     let failed = db
         .run_next_external_content_artifact_job_with(|_| {
-            Err(crate::error::SkeinError::Execution(
+            Err(crate::error::HawdbError::Execution(
                 "transient parser failure".to_string(),
             ))
         })
@@ -731,7 +731,7 @@ fn failed_external_content_artifact_jobs_can_be_retried_by_action() {
 
     let parse_failure = db
         .run_next_external_content_artifact_job_with(|_| {
-            Err(crate::error::SkeinError::Execution(
+            Err(crate::error::HawdbError::Execution(
                 "parse runtime failed".to_string(),
             ))
         })
@@ -740,7 +740,7 @@ fn failed_external_content_artifact_jobs_can_be_retried_by_action() {
     assert_eq!(parse_failure.job.id, parse.id);
     let crawl_failure = db
         .run_next_external_content_artifact_job_with(|_| {
-            Err(crate::error::SkeinError::Execution(
+            Err(crate::error::HawdbError::Execution(
                 "crawl runtime failed".to_string(),
             ))
         })
@@ -1073,7 +1073,7 @@ fn scheduled_background_external_content_artifact_job_releases_budget_on_runtime
     let report = db
         .run_next_scheduled_background_external_content_artifact_job_with(
             |_| {
-                Err(crate::error::SkeinError::Execution(
+                Err(crate::error::HawdbError::Execution(
                     "parser failed".to_string(),
                 ))
             },
@@ -1173,7 +1173,7 @@ fn scheduled_background_external_content_artifact_job_releases_budget_on_specifi
         .run_scheduled_background_external_content_artifact_job_with(
             job.id,
             |_| {
-                Err(crate::error::SkeinError::Execution(
+                Err(crate::error::HawdbError::Execution(
                     "parser failed".to_string(),
                 ))
             },

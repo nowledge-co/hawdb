@@ -1,16 +1,16 @@
-use serde_json::{json, Value as JsonValue};
-use skein::executor::{
+use hawdb::executor::{
     execute_with_row_consumer_profile_and_external_and_memory, ExecutionMemoryConfig,
     ProfiledQueryStream,
 };
-use skein::optimizer::PhysicalPlan;
-use skein::planner::{GraphExpansionBudget, Projection, ProjectionExpression};
-use skein::schema::Catalog;
-use skein::store::{
+use hawdb::optimizer::PhysicalPlan;
+use hawdb::planner::{GraphExpansionBudget, Projection, ProjectionExpression};
+use hawdb::schema::Catalog;
+use hawdb::store::{
     GraphSnapshotNodeImport, GraphSnapshotRelationshipImport, GraphStore, NodeId, RelId,
 };
-use skein::{RelationshipDirection, Value};
-use skein_executor::external::NoExternalReadOperator;
+use hawdb::{RelationshipDirection, Value};
+use hawdb_executor::external::NoExternalReadOperator;
+use serde_json::{json, Value as JsonValue};
 use std::collections::BTreeMap;
 use std::hint::black_box;
 use std::num::NonZeroUsize;
@@ -29,7 +29,7 @@ pub fn benchmark() -> JsonValue {
         .map(benchmark_degree)
         .collect::<Vec<_>>();
     json!({
-        "protocol": "skein-local-adjacency-limit-benchmark-v1",
+        "protocol": "hawdb-local-adjacency-limit-benchmark-v1",
         "evidence_kind": "local_kernel_diagnostic",
         "production_eligible": false,
         "limit": LIMIT,

@@ -1,4 +1,4 @@
-use skein_sql_syntax::EdgeEndpoint;
+use hawdb_sql_syntax::EdgeEndpoint;
 
 use super::*;
 

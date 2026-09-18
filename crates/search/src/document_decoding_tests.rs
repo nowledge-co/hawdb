@@ -13,7 +13,7 @@ fn malformed_hex_returns_storage_errors_without_panicking() {
     ] {
         let outcome = std::panic::catch_unwind(|| decode_string(input));
         assert!(outcome.is_ok(), "decoder panicked for {input:?}");
-        assert!(matches!(outcome.unwrap(), Err(SkeinError::Storage(_))));
+        assert!(matches!(outcome.unwrap(), Err(HawdbError::Storage(_))));
     }
 }
 
@@ -50,7 +50,7 @@ fn assert_decode(input: &str) {
     let actual = actual.unwrap();
     match reference_decode(input) {
         Some(expected) => assert_eq!(actual.unwrap(), expected),
-        None => assert!(matches!(actual, Err(SkeinError::Storage(_)))),
+        None => assert!(matches!(actual, Err(HawdbError::Storage(_)))),
     }
 }
 
@@ -76,7 +76,7 @@ impl TestRoot {
         static SEQUENCE: AtomicU64 = AtomicU64::new(0);
         let sequence = SEQUENCE.fetch_add(1, AtomicOrdering::Relaxed);
         let path = std::env::temp_dir().join(format!(
-            "skein-hex-decoding-{}-{}-{sequence}",
+            "hawdb-hex-decoding-{}-{}-{sequence}",
             std::process::id(),
             std::time::SystemTime::now()
                 .duration_since(std::time::UNIX_EPOCH)
@@ -95,7 +95,7 @@ impl Drop for TestRoot {
 }
 
 fn snapshot_bytes(record: &str) -> Vec<u8> {
-    let body = format!("SKEIN_SEARCH_PROJECTION_V1\ndoc\t676f6f64\t\t\t\t\n{record}\n");
+    let body = format!("HAWDB_SEARCH_PROJECTION_V1\ndoc\t676f6f64\t\t\t\t\n{record}\n");
     let checksum = checksum_bytes(body.as_bytes());
     encode_search_snapshot_text(&format!("{body}checksum\t{checksum}\n")).unwrap()
 }
@@ -132,7 +132,7 @@ fn reopen_rejects_malformed_hex_even_with_valid_snapshot_checksums() {
         let Err(error) = outcome.unwrap() else {
             panic!("public reopen accepted a malformed persisted field");
         };
-        assert!(matches!(error, SkeinError::Storage(_)));
+        assert!(matches!(error, HawdbError::Storage(_)));
         assert!(error.to_string().contains("invalid hex"));
         assert_eq!(fs::read(&path).unwrap(), corrupt);
     }
@@ -151,7 +151,7 @@ fn malformed_payload_fields_return_errors_without_partial_rows() {
             let metadata = format!("6b={malformed}");
             fields[field] = if field == 5 { &metadata } else { malformed };
             let text = format!(
-                "SKEIN_SEARCH_SEGMENT_V1\ndoc\t676f6f64\t\t\t\t\n{}\n",
+                "HAWDB_SEARCH_SEGMENT_V1\ndoc\t676f6f64\t\t\t\t\n{}\n",
                 fields.join("\t")
             );
             let payload = encode_search_snapshot_text(&text).unwrap();
@@ -159,7 +159,7 @@ fn malformed_payload_fields_return_errors_without_partial_rows() {
             let outcome = std::panic::catch_unwind(|| decode_search_segment_documents(&payload));
             assert!(outcome.is_ok());
             let error = outcome.unwrap().unwrap_err();
-            assert!(matches!(error, SkeinError::Storage(_)));
+            assert!(matches!(error, HawdbError::Storage(_)));
             assert!(error.to_string().contains(if malformed == "ff" {
                 "utf-8"
             } else {
@@ -168,7 +168,7 @@ fn malformed_payload_fields_return_errors_without_partial_rows() {
         }
     }
     let payload = encode_search_snapshot_text(
-        "SKEIN_SEARCH_SEGMENT_V1\ndoc\t676f6f64\t\t\t\t\ndoc\t6964\t\t\t\t6b=76\n",
+        "HAWDB_SEARCH_SEGMENT_V1\ndoc\t676f6f64\t\t\t\t\ndoc\t6964\t\t\t\t6b=76\n",
     )
     .unwrap();
     assert_eq!(decode_search_segment_documents(&payload).unwrap().len(), 2);

@@ -55,13 +55,13 @@ physical alternatives or inventing null-rejection metadata is not part of #214.
   batches, without raising query or optimizer budgets.
 
 ```bash
-cargo test -p skein-optimizer
-cargo test -p skein --lib connected_enumeration
+cargo test -p hawdb-optimizer
+cargo test -p hawdb --lib connected_enumeration
 bazel test --nocache_test_results \
-  //crates/optimizer:skein_optimizer_tests \
-  //crates/optimizer:planner_golden_test //:skein_unit_tests \
-  //crates/fuzz:skein_fuzz_tests //crates/fuzz:skein_fuzz_cli_tests \
-  //:skein_linux_ci_fuzz_smoke_test
+  //crates/optimizer:hawdb_optimizer_tests \
+  //crates/optimizer:planner_golden_test //:hawdb_unit_tests \
+  //crates/fuzz:hawdb_fuzz_tests //crates/fuzz:hawdb_fuzz_cli_tests \
+  //:hawdb_linux_ci_fuzz_smoke_test
 ```
 
 These structural checks do not assert a wall-time or RSS speedup. Fuzz remains a

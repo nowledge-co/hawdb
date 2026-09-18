@@ -3,7 +3,7 @@ use super::{
     Database, QueryOutput, WalGroupCommitConfig, WalGroupCommitDelayPolicy, WalGroupCommitSnapshot,
     WalGroupCommitWaitDecision, DEFAULT_WAL_GROUP_COMMIT_MAX_DELAY,
 };
-use crate::error::{Result, SkeinError};
+use crate::error::{HawdbError, Result};
 use std::collections::VecDeque;
 use std::fmt::{self, Debug, Formatter};
 use std::panic::{catch_unwind, AssertUnwindSafe};
@@ -41,7 +41,7 @@ impl CommitSequencer {
 
     pub(super) fn lock(&self) -> Result<MutexGuard<'_, Database>> {
         self.database.lock().map_err(|_| {
-            SkeinError::Execution("concurrent commit sequencer is poisoned".to_string())
+            HawdbError::Execution("concurrent commit sequencer is poisoned".to_string())
         })
     }
 
@@ -220,7 +220,7 @@ impl CommitSequencer {
             };
             completed.push((
                 request,
-                Err(SkeinError::Execution(
+                Err(HawdbError::Execution(
                     "WAL group commit task panicked before recording a result".to_string(),
                 )),
             ));
@@ -245,7 +245,7 @@ impl CommitSequencer {
                     let message = error.to_string();
                     for (_, result) in completed.iter_mut() {
                         if result.is_ok() {
-                            *result = Err(SkeinError::StorageIntegrity(message.clone()));
+                            *result = Err(HawdbError::StorageIntegrity(message.clone()));
                         }
                     }
                 }
@@ -257,7 +257,7 @@ impl CommitSequencer {
                 );
                 for (_, result) in completed.iter_mut() {
                     if result.is_ok() {
-                        *result = Err(SkeinError::StorageIntegrity(message.clone()));
+                        *result = Err(HawdbError::StorageIntegrity(message.clone()));
                     }
                 }
                 Default::default()
@@ -318,7 +318,7 @@ impl CommitSequencer {
             .map(|request| {
                 (
                     request,
-                    Err(SkeinError::Storage(format!(
+                    Err(HawdbError::Storage(format!(
                         "WAL group commit could not start: {message}"
                     ))),
                 )
@@ -360,7 +360,7 @@ impl QueuedCommit {
             .map_err(|_| group_commit_coordinator_poisoned_error())?
             .take()
             .ok_or_else(|| {
-                SkeinError::Execution("WAL group commit task was already consumed".to_string())
+                HawdbError::Execution("WAL group commit task was already consumed".to_string())
             })
     }
 
@@ -469,7 +469,7 @@ fn fail_completed_commits(
     message: String,
 ) {
     for (_, result) in completed {
-        *result = Err(SkeinError::Storage(message.clone()));
+        *result = Err(HawdbError::Storage(message.clone()));
     }
 }
 
@@ -533,7 +533,7 @@ impl GroupCommitState {
         {
             return Ok(());
         }
-        Err(SkeinError::Execution(
+        Err(HawdbError::Execution(
             "WAL group commit request was dequeued without being completed; \
              the commit sequencer is inconsistent and the database must be \
              closed and reopened"
@@ -821,21 +821,21 @@ impl TransactionIdAllocator {
                 current.checked_add(1)
             })
             .map_err(|_| {
-                SkeinError::Execution("concurrent transaction id space is exhausted".to_string())
+                HawdbError::Execution("concurrent transaction id space is exhausted".to_string())
             })
     }
 }
 
-fn lock_manager_poisoned_error() -> SkeinError {
-    SkeinError::Execution("concurrent lock manager is poisoned".to_string())
+fn lock_manager_poisoned_error() -> HawdbError {
+    HawdbError::Execution("concurrent lock manager is poisoned".to_string())
 }
 
-fn group_commit_coordinator_poisoned_error() -> SkeinError {
-    SkeinError::Execution("WAL group commit coordinator is poisoned".to_string())
+fn group_commit_coordinator_poisoned_error() -> HawdbError {
+    HawdbError::Execution("WAL group commit coordinator is poisoned".to_string())
 }
 
-fn lock_timeout_error(timeout: Duration) -> SkeinError {
-    SkeinError::Execution(format!(
+fn lock_timeout_error(timeout: Duration) -> HawdbError {
+    HawdbError::Execution(format!(
         "transaction lock wait timed out after {} ms",
         timeout.as_millis()
     ))

@@ -4,7 +4,7 @@ use crate::{
     AdjacencyDirection, AdjacencyGroupConsistencyMismatch, AdjacencyGroupKey, AdjacencyLayout,
     AdjacencyPostingList, CowSegment, CowSegmentedMap, NodeId, NodeRecord, RelId, RelRecord,
 };
-use skein_core::{BasicGraphStatistics, LabelId, RelTypeId, Value};
+use hawdb_core::{BasicGraphStatistics, LabelId, RelTypeId, Value};
 use std::collections::{BTreeMap, BTreeSet};
 
 pub const DENSE_ADJACENCY_DEGREE_THRESHOLD: usize = 64;

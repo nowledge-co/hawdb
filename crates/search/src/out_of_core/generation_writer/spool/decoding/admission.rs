@@ -43,12 +43,12 @@ impl<'a> Admission<'a> {
         self.lease.grow(new_bytes)?;
         if let Err(error) = values.try_reserve_exact(capacity - values.len()) {
             self.lease.shrink(new_bytes);
-            return Err(SkeinError::Storage(format!(
+            return Err(HawdbError::Storage(format!(
                 "cannot allocate a decoded field: {error}"
             )));
         }
         if values.capacity() > capacity {
-            return Err(SkeinError::Execution(
+            return Err(HawdbError::Execution(
                 "decoded field capacity exceeded admission".into(),
             ));
         }
@@ -59,7 +59,7 @@ impl<'a> Admission<'a> {
     pub(super) fn admit_field(&self, index: usize) -> Result<()> {
         self.checkpoint()?;
         if index >= self.max_metadata_fields {
-            return Err(SkeinError::Storage(
+            return Err(HawdbError::Storage(
                 "search spool metadata field count exceeds admission".into(),
             ));
         }
@@ -78,7 +78,7 @@ impl<'a> Admission<'a> {
         self.checkpoint()?;
         let actual = document_bytes(document)?;
         if actual > self.lease.bytes() {
-            return Err(SkeinError::Execution(
+            return Err(HawdbError::Execution(
                 "decoded document capacity exceeded admission".into(),
             ));
         }

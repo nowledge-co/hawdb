@@ -3,8 +3,8 @@
 This document records the first slice. The current combined implementation is
 described in [SQL SELECT support](SQL_SELECT_SUPPORT.md).
 
-This is the first execution slice of [#157](https://github.com/nowledge-co/skein/issues/157),
-built on the shared expression IR from [#156](https://github.com/nowledge-co/skein/issues/156).
+This is the first execution slice of [#157](https://github.com/nowledge-co/hawdb/issues/157),
+built on the shared expression IR from [#156](https://github.com/nowledge-co/hawdb/issues/156).
 It adds explicit `CROSS JOIN` between supported base tables through the existing
 embedded SQL entrypoints.
 

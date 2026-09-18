@@ -1,7 +1,7 @@
 use super::*;
 use crate::build_memory::BuildMemory;
 use crate::RuntimeTaskContext;
-use skein_core::RuntimeMemoryReservation;
+use hawdb_core::RuntimeMemoryReservation;
 
 fn memory(bytes: usize) -> BuildMemory {
     BuildMemory::new(

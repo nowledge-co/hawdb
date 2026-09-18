@@ -20,7 +20,7 @@ fn ready() -> Value {
 pub(crate) fn inputs(value: &serde_json::Value) -> IntegrationBundleInputs {
     IntegrationBundleInputs {
         require_ready: false,
-        submodule_path: Some("/redacted/vendor/skein".to_string()),
+        submodule_path: Some("/redacted/vendor/hawdb".to_string()),
         submodule_commit: Some("abc1234".to_string()),
         legacy_data_retained: true,
         legacy_data_deleted: false,
@@ -169,7 +169,7 @@ fn campaign(seeds: u64, cases_per_seed: usize, include_corpus: bool) {
 fn required_inputs_preserve_admission_errors_and_order() {
     let err = nowledge_mem_integration_bundle_json(IntegrationBundleInputs::default()).unwrap_err();
     assert!(
-        matches!(err, skein_core::SkeinError::Semantic(ref message) if message == "--submodule-path is required")
+        matches!(err, hawdb_core::HawdbError::Semantic(ref message) if message == "--submodule-path is required")
     );
     let complete = inputs(&ready());
     type RemoveInput = fn(&mut IntegrationBundleInputs);
@@ -222,7 +222,7 @@ fn required_inputs_preserve_admission_errors_and_order() {
         remove(&mut input);
         let err = nowledge_mem_integration_bundle_json(input).unwrap_err();
         assert!(
-            matches!(err, skein_core::SkeinError::Semantic(ref message) if message == &format!("{flag} is required")),
+            matches!(err, hawdb_core::HawdbError::Semantic(ref message) if message == &format!("{flag} is required")),
             "{flag}: {err:?}"
         );
     }
@@ -230,14 +230,14 @@ fn required_inputs_preserve_admission_errors_and_order() {
         let mut input = complete.clone();
         input.submodule_path = path;
         assert!(
-            matches!(nowledge_mem_integration_bundle_json(input), Err(skein_core::SkeinError::Semantic(message)) if message == "--submodule-path is required")
+            matches!(nowledge_mem_integration_bundle_json(input), Err(hawdb_core::HawdbError::Semantic(message)) if message == "--submodule-path is required")
         );
     }
     let mut input = complete;
     input.coexistence_mode = Some("active".to_string());
     input.content_store_engine = None;
     assert!(
-        matches!(nowledge_mem_integration_bundle_json(input), Err(skein_core::SkeinError::Semantic(message)) if message == "--coexistence-mode must be shadow or side_by_side")
+        matches!(nowledge_mem_integration_bundle_json(input), Err(hawdb_core::HawdbError::Semantic(message)) if message == "--coexistence-mode must be shadow or side_by_side")
     );
 }
 
@@ -290,7 +290,7 @@ fn require_ready_remains_adapter_policy_and_blocker_order_is_stable() {
 #[test]
 fn path_redaction_and_nonempty_strings_are_not_normalized() {
     for (path, label) in [
-        ("/secret/vendor/skein", "skein"),
+        ("/secret/vendor/hawdb", "hawdb"),
         ("/", "<redacted>"),
         ("/secret/ ", "<redacted>"),
         ("relative", "relative"),

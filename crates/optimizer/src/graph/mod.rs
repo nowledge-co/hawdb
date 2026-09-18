@@ -3,7 +3,7 @@ use crate::{
     PhysicalProperties, PlanCost, PlanCostBreakdown, ScanPruningSupport, StageStats,
     VectorPrecision,
 };
-use skein_plan::PhysicalPlan;
+use hawdb_plan::PhysicalPlan;
 
 mod access_path;
 mod cardinality;

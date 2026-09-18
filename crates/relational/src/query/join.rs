@@ -1,14 +1,14 @@
 use super::{
     bound_join_key, visit_base_entries, Binding, BlockingOperatorMemoryReport, BoundRow,
-    QueryMemoryLedger, RefCell, RelationalEquiJoinKeys, RelationalIndexRuntime,
+    HawdbError, QueryMemoryLedger, RefCell, RelationalEquiJoinKeys, RelationalIndexRuntime,
     RelationalJoinAccess, RelationalKey, RelationalPhysicalAccess, RelationalPhysicalJoinNode,
     RelationalPhysicalJoinPlan, RelationalPhysicalRelation, RelationalReadRow,
-    RelationalRowRuntime, RelationalState, RelationalValue, Result, SkeinError,
+    RelationalRowRuntime, RelationalState, RelationalValue, Result,
 };
 
 pub(super) struct RelationalPhysicalJoinExecution<'a> {
     pub(super) tree: &'a RelationalPhysicalJoinPlan,
-    pub(super) memory: &'a skein_executor::ExecutionMemoryConfig,
+    pub(super) memory: &'a hawdb_executor::ExecutionMemoryConfig,
     pub(super) memory_ledger: &'a QueryMemoryLedger,
     pub(super) reports: RefCell<Vec<BlockingOperatorMemoryReport>>,
 }
@@ -77,7 +77,7 @@ pub(super) fn visit_tree_relation_entries<'a>(
         ),
         RelationalPhysicalAccess::Probe(access) => {
             let outer = outer.ok_or_else(|| {
-                SkeinError::Execution(format!(
+                HawdbError::Execution(format!(
                     "physical join probe for {} has no outer row",
                     relation.qualifier
                 ))
@@ -85,7 +85,7 @@ pub(super) fn visit_tree_relation_entries<'a>(
             match &access.access {
                 RelationalJoinAccess::PrimaryKey(columns) => {
                     let schema = state.table_schema(&relation.table).ok_or_else(|| {
-                        SkeinError::Semantic(format!("unknown relational table {}", relation.table))
+                        HawdbError::Semantic(format!("unknown relational table {}", relation.table))
                     })?;
                     let Some(key) = bound_join_key(outer, schema, columns)? else {
                         return Ok(true);
@@ -97,7 +97,7 @@ pub(super) fn visit_tree_relation_entries<'a>(
                 }
                 RelationalJoinAccess::Index { name, columns } => {
                     let schema = state.table_schema(&relation.table).ok_or_else(|| {
-                        SkeinError::Semantic(format!("unknown relational table {}", relation.table))
+                        HawdbError::Semantic(format!("unknown relational table {}", relation.table))
                     })?;
                     let Some(prefix) = bound_join_key(outer, schema, columns)? else {
                         return Ok(true);
@@ -123,7 +123,7 @@ pub(super) fn visit_tree_relation_entries<'a>(
                             };
                             match row {
                             Some(row) => visit(row),
-                            None => Err(SkeinError::StorageIntegrity(format!(
+                            None => Err(HawdbError::StorageIntegrity(format!(
                                 "relational index {name} on table {} points to missing or non-coverable row {key:?}",
                                 relation.table
                             ))),
@@ -156,7 +156,7 @@ pub(super) fn null_extended_tree_row<'a>(
                 row: None,
             }),
             None => {
-                error = Some(SkeinError::Semantic(format!(
+                error = Some(HawdbError::Semantic(format!(
                     "unknown relational table {}",
                     relation.table
                 )));
@@ -177,7 +177,7 @@ pub(super) fn batched_index_probe_key(
     outer: &BoundRow<'_>,
 ) -> Result<Option<RelationalKey>> {
     let RelationalPhysicalAccess::Probe(candidate) = &relation.access else {
-        return Err(SkeinError::Execution(format!(
+        return Err(HawdbError::Execution(format!(
             "batched index join relation {} is not a probe input",
             relation.qualifier
         )));
@@ -187,14 +187,14 @@ pub(super) fn batched_index_probe_key(
             columns
         }
         RelationalJoinAccess::FullScan => {
-            return Err(SkeinError::Execution(format!(
+            return Err(HawdbError::Execution(format!(
                 "batched index join relation {} has a full-scan probe",
                 relation.qualifier
             )));
         }
     };
     let schema = state.table_schema(&relation.table).ok_or_else(|| {
-        SkeinError::Semantic(format!("unknown relational table {}", relation.table))
+        HawdbError::Semantic(format!("unknown relational table {}", relation.table))
     })?;
     bound_join_key(outer, schema, columns)
 }
@@ -209,7 +209,7 @@ pub(super) fn bound_relation_join_key(
         .iter()
         .find(|binding| binding.binding == relation.binding)
         .ok_or_else(|| {
-            SkeinError::Execution(format!(
+            HawdbError::Execution(format!(
                 "equi-join relation {} is missing from its row",
                 relation.qualifier
             ))
@@ -217,7 +217,7 @@ pub(super) fn bound_relation_join_key(
     let mut values = Vec::with_capacity(keys.columns.len());
     for (column, _) in &keys.columns {
         let position = binding.schema.column_position(column).ok_or_else(|| {
-            SkeinError::Semantic(format!(
+            HawdbError::Semantic(format!(
                 "equi-join relation {} has no column {column}",
                 relation.table
             ))

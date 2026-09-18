@@ -9,7 +9,7 @@ use crate::text::{
     encode_u64_vec, parse_u64,
 };
 use crate::NodeId;
-use skein_core::{Result, SkeinError};
+use hawdb_core::{HawdbError, Result};
 use std::collections::BTreeMap;
 
 const PROJECTED_GRAPH_ARTIFACT_VERSION: u64 = 1;
@@ -27,7 +27,7 @@ pub fn encode_projected_graph_artifacts<'a>(
     >,
 ) -> String {
     let mut body = String::new();
-    body.push_str("SKEIN_PROJECTED_GRAPHS_V1\n");
+    body.push_str("HAWDB_PROJECTED_GRAPHS_V1\n");
     body.push_str(&format!(
         "artifact_version\t{PROJECTED_GRAPH_ARTIFACT_VERSION}\n"
     ));
@@ -71,9 +71,9 @@ pub fn decode_projected_graph_artifacts(
 ) -> Result<(u64, BTreeMap<String, ProjectedGraphArtifact>)> {
     let mut lines = body.lines();
     match lines.next() {
-        Some("SKEIN_PROJECTED_GRAPHS_V1") => {}
+        Some("HAWDB_PROJECTED_GRAPHS_V1") => {}
         _ => {
-            return Err(SkeinError::Storage(
+            return Err(HawdbError::Storage(
                 "invalid projected graph artifact header".to_string(),
             ));
         }
@@ -84,7 +84,7 @@ pub fn decode_projected_graph_artifacts(
         "projected graph artifact version",
     )?;
     if artifact_version != PROJECTED_GRAPH_ARTIFACT_VERSION {
-        return Err(SkeinError::Storage(format!(
+        return Err(HawdbError::Storage(format!(
             "unsupported projected graph artifact version: {artifact_version}"
         )));
     }
@@ -117,13 +117,13 @@ pub fn decode_projected_graph_artifacts(
                 let csc_offsets = decode_projected_graph_usize_line(lines.next(), "csc_offsets")?;
                 let csc_sources = decode_projected_graph_usize_line(lines.next(), "csc_sources")?;
                 if nodes.len() as u64 != node_count {
-                    return Err(SkeinError::Storage(format!(
+                    return Err(HawdbError::Storage(format!(
                         "projected graph artifact node count mismatch for {name}"
                     )));
                 }
                 if csr_targets.len() as u64 != edge_count || csc_sources.len() as u64 != edge_count
                 {
-                    return Err(SkeinError::Storage(format!(
+                    return Err(HawdbError::Storage(format!(
                         "projected graph artifact edge count mismatch for {name}"
                     )));
                 }
@@ -134,7 +134,7 @@ pub fn decode_projected_graph_artifacts(
                     csc_offsets,
                     csc_sources,
                 )
-                .map_err(SkeinError::Storage)?;
+                .map_err(HawdbError::Storage)?;
                 artifacts.insert(
                     name,
                     ProjectedGraphArtifact {
@@ -147,7 +147,7 @@ pub fn decode_projected_graph_artifacts(
             }
             [""] => {}
             _ => {
-                return Err(SkeinError::Storage(format!(
+                return Err(HawdbError::Storage(format!(
                     "invalid projected graph artifact line: {line}"
                 )));
             }
@@ -162,14 +162,14 @@ fn decode_projected_graph_u64_header(
     name: &str,
 ) -> Result<u64> {
     let Some(line) = line else {
-        return Err(SkeinError::Storage(format!(
+        return Err(HawdbError::Storage(format!(
             "missing projected graph artifact {expected}"
         )));
     };
     let fields = line.split('\t').collect::<Vec<_>>();
     match fields.as_slice() {
         [field, raw] if *field == expected => parse_u64(raw, name),
-        _ => Err(SkeinError::Storage(format!(
+        _ => Err(HawdbError::Storage(format!(
             "invalid projected graph artifact line: {line}"
         ))),
     }
@@ -177,7 +177,7 @@ fn decode_projected_graph_u64_header(
 
 fn decode_projected_graph_nodes_line(line: Option<&str>) -> Result<Vec<NodeId>> {
     let Some(line) = line else {
-        return Err(SkeinError::Storage(
+        return Err(HawdbError::Storage(
             "missing projected graph artifact nodes line".to_string(),
         ));
     };
@@ -185,7 +185,7 @@ fn decode_projected_graph_nodes_line(line: Option<&str>) -> Result<Vec<NodeId>> 
     match fields.as_slice() {
         ["nodes", raw_values] => decode_u64_vec(raw_values, "projected graph artifact node id")
             .map(|nodes| nodes.into_iter().map(NodeId).collect()),
-        _ => Err(SkeinError::Storage(format!(
+        _ => Err(HawdbError::Storage(format!(
             "invalid projected graph artifact line: {line}"
         ))),
     }
@@ -193,7 +193,7 @@ fn decode_projected_graph_nodes_line(line: Option<&str>) -> Result<Vec<NodeId>> 
 
 fn decode_projected_graph_usize_line(line: Option<&str>, expected: &str) -> Result<Vec<usize>> {
     let Some(line) = line else {
-        return Err(SkeinError::Storage(format!(
+        return Err(HawdbError::Storage(format!(
             "missing projected graph artifact {expected} line"
         )));
     };
@@ -202,7 +202,7 @@ fn decode_projected_graph_usize_line(line: Option<&str>, expected: &str) -> Resu
         [name, raw_values] if *name == expected => {
             decode_usize_vec(raw_values, "projected graph artifact index")
         }
-        _ => Err(SkeinError::Storage(format!(
+        _ => Err(HawdbError::Storage(format!(
             "invalid projected graph artifact line: {line}"
         ))),
     }
@@ -210,7 +210,7 @@ fn decode_projected_graph_usize_line(line: Option<&str>, expected: &str) -> Resu
 
 pub fn split_projected_graph_artifact_checksum(text: &str) -> Result<(&str, u64)> {
     let Some((body, footer)) = text.rsplit_once("checksum\t") else {
-        return Err(SkeinError::Storage(
+        return Err(HawdbError::Storage(
             "projected graph artifact missing checksum footer".to_string(),
         ));
     };
@@ -235,7 +235,7 @@ fn decode_usize_vec(input: &str, name: &str) -> Result<Vec<usize>> {
         .map(|value| {
             value
                 .parse()
-                .map_err(|_| SkeinError::Storage(format!("invalid {name}: {value}")))
+                .map_err(|_| HawdbError::Storage(format!("invalid {name}: {value}")))
         })
         .collect()
 }

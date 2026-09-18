@@ -1,6 +1,6 @@
 //! Qualify the native zstd version used by the admitted build workspaces.
 
-use crate::{Result, SkeinError};
+use crate::{HawdbError, Result};
 
 const QUALIFIED_ZSTD_VERSION: u32 = 10507;
 const _: () = assert!(
@@ -16,7 +16,7 @@ pub(crate) fn require_qualified_zstd(purpose: &'static str) -> Result<()> {
 
 fn validate_version(version: u32, purpose: &str) -> Result<()> {
     if version != QUALIFIED_ZSTD_VERSION {
-        return Err(SkeinError::Execution(format!(
+        return Err(HawdbError::Execution(format!(
             "search zstd {purpose} requires qualification for this version"
         )));
     }
@@ -39,7 +39,7 @@ mod tests {
             ] {
                 assert_eq!(
                     validate_version(version, purpose),
-                    Err(SkeinError::Execution(format!(
+                    Err(HawdbError::Execution(format!(
                         "search zstd {purpose} requires qualification for this version"
                     )))
                 );

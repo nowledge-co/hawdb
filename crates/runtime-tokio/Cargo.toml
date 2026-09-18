@@ -1,12 +1,12 @@
 [package]
-name = "skein-runtime-tokio"
+name = "hawdb-runtime-tokio"
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
 license.workspace = true
 
 [dependencies]
-skein-core = { path = "../core" }
-skein-qos = { path = "../qos" }
-skein-storage = { path = "../storage" }
+hawdb-core = { path = "../core" }
+hawdb-qos = { path = "../qos" }
+hawdb-storage = { path = "../storage" }
 tokio = { version = "1.49", features = ["rt-multi-thread", "sync", "time"] }

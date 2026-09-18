@@ -1,16 +1,16 @@
 [package]
-name = "skein-relational"
+name = "hawdb-relational"
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
 license.workspace = true
 
 [dependencies]
-skein-core = { path = "../core" }
-skein-executor = { path = "../executor" }
-skein-sql = { path = "../sql" }
-skein-expression = { path = "../expression" }
-skein-integrity = { path = "../integrity" }
-skein-optimizer = { path = "../optimizer" }
-skein-plan = { path = "../plan" }
-skein-storage = { path = "../storage" }
+hawdb-core = { path = "../core" }
+hawdb-executor = { path = "../executor" }
+hawdb-sql = { path = "../sql" }
+hawdb-expression = { path = "../expression" }
+hawdb-integrity = { path = "../integrity" }
+hawdb-optimizer = { path = "../optimizer" }
+hawdb-plan = { path = "../plan" }
+hawdb-storage = { path = "../storage" }

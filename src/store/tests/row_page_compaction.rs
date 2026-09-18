@@ -1,11 +1,11 @@
 use super::unique_test_dir;
 use crate::{Database, DatabaseConfig, RelationalRowPageCompactionConfig, Value};
-use skein_storage::{RelationalIndexMode, StorageResidencyMode};
+use hawdb_storage::{RelationalIndexMode, StorageResidencyMode};
 use std::collections::BTreeMap;
 use std::path::Path;
 
 const TABLES: u64 = 16;
-// Database also persists the nonempty skein_schema_migrations registry.
+// Database also persists the nonempty hawdb_schema_migrations registry.
 const LIVE_PAGES: u64 = TABLES + 1;
 
 fn open_config(mode: StorageResidencyMode) -> DatabaseConfig {
@@ -56,7 +56,7 @@ fn physical_page_bytes(path: &Path) -> u64 {
         .filter(|entry| {
             let name = entry.file_name();
             let name = name.to_string_lossy();
-            name.starts_with("relational-row-pages-") && name.ends_with(".pages.skein")
+            name.starts_with("relational-row-pages-") && name.ends_with(".pages.hawdb")
         })
         .map(|entry| entry.metadata().unwrap().len())
         .sum()
@@ -138,7 +138,7 @@ fn row_page_compaction_converges_disk_bytes_and_preserves_pinned_readers() {
 
 #[test]
 fn row_page_compaction_failure_limits_leave_the_generation_retryable() {
-    use skein_core::{RuntimeCancellationToken, RuntimeTaskContext};
+    use hawdb_core::{RuntimeCancellationToken, RuntimeTaskContext};
     use std::num::NonZeroU64;
 
     let path = unique_test_dir("row_page_compaction_limits");
@@ -148,14 +148,14 @@ fn row_page_compaction_failure_limits_leave_the_generation_retryable() {
     let generation = before.base_generation.unwrap() + 1;
     for config in [
         RelationalRowPageCompactionConfig {
-            rewrite: skein_storage::RelationalRowPageRewriteConfig {
+            rewrite: hawdb_storage::RelationalRowPageRewriteConfig {
                 max_scan_pages: NonZeroU64::new(1).unwrap(),
                 ..Default::default()
             },
             ..Default::default()
         },
         RelationalRowPageCompactionConfig {
-            rewrite: skein_storage::RelationalRowPageRewriteConfig {
+            rewrite: hawdb_storage::RelationalRowPageRewriteConfig {
                 max_rewrite_bytes: NonZeroU64::new(1).unwrap(),
                 ..Default::default()
             },
@@ -171,10 +171,10 @@ fn row_page_compaction_failure_limits_leave_the_generation_retryable() {
             before.base_generation
         );
         for artifact in [
-            skein_storage::relational_row_page_manifest_generation_file(generation),
-            skein_storage::relational_row_page_artifact_file(generation),
-            format!("checkpoint.{generation}.skein"),
-            format!("wal.{generation}.skein"),
+            hawdb_storage::relational_row_page_manifest_generation_file(generation),
+            hawdb_storage::relational_row_page_artifact_file(generation),
+            format!("checkpoint.{generation}.hawdb"),
+            format!("wal.{generation}.hawdb"),
             format!(".checkpoint.{generation}.prepare"),
         ] {
             assert!(
@@ -202,15 +202,15 @@ fn row_page_compaction_failure_limits_leave_the_generation_retryable() {
 
 #[test]
 fn row_page_compaction_dirty_and_materialized_limits_release_admission() {
-    use crate::{SkeinEmbedded, SkeinEmbeddedOpenOptions};
-    use skein_qos::RuntimeGovernorConfig;
+    use crate::{HawdbEmbedded, HawdbEmbeddedOpenOptions};
+    use hawdb_qos::RuntimeGovernorConfig;
     use std::num::{NonZeroU64, NonZeroUsize};
 
     let path = unique_test_dir("row_page_compaction_dirty_limits");
     let mode = StorageResidencyMode::Materialized;
     drop(churn_database(&path, mode, 4));
-    let mut engine = SkeinEmbedded::open_with_options(
-        SkeinEmbeddedOpenOptions::new(&path)
+    let mut engine = HawdbEmbedded::open_with_options(
+        HawdbEmbeddedOpenOptions::new(&path)
             .with_config(open_config(mode))
             .with_runtime_governor_config(RuntimeGovernorConfig {
                 cpu_slot_limit: NonZeroUsize::new(1),
@@ -281,7 +281,7 @@ fn row_page_compaction_dirty_and_materialized_limits_release_admission() {
             .join(format!(".checkpoint.{}.prepare", generation + 1))
             .exists());
         assert!(!path
-            .join(skein_storage::relational_row_page_manifest_generation_file(
+            .join(hawdb_storage::relational_row_page_manifest_generation_file(
                 generation + 1
             ))
             .exists());
@@ -364,8 +364,8 @@ fn row_page_compaction_checkpoint_failpoints_recover_one_complete_selection() {
 
 #[test]
 fn row_page_compaction_admits_before_building_and_shares_shadow_capacity() {
-    use crate::{SkeinEmbedded, SkeinEmbeddedOpenOptions};
-    use skein_qos::RuntimeGovernorConfig;
+    use crate::{HawdbEmbedded, HawdbEmbeddedOpenOptions};
+    use hawdb_qos::RuntimeGovernorConfig;
     use std::num::NonZeroUsize;
 
     let path = unique_test_dir("row_page_compaction_admission");
@@ -379,8 +379,8 @@ fn row_page_compaction_admits_before_building_and_shares_shadow_capacity() {
             graph_columnar_shadow_checkpoint: true,
             ..open_config(mode)
         };
-        let mut engine = SkeinEmbedded::open_with_options(
-            SkeinEmbeddedOpenOptions::new(&path)
+        let mut engine = HawdbEmbedded::open_with_options(
+            HawdbEmbeddedOpenOptions::new(&path)
                 .with_config(config)
                 .with_runtime_governor_config(RuntimeGovernorConfig {
                     cpu_slot_limit: NonZeroUsize::new(1),

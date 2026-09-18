@@ -43,7 +43,7 @@ pub(super) fn plan_sort_items(
                         });
                     }
                     if !scope.contains(variable) {
-                        return Err(SkeinError::Semantic(format!(
+                        return Err(HawdbError::Semantic(format!(
                             "unknown variable '{variable}' in order item"
                         )));
                     }
@@ -54,7 +54,7 @@ pub(super) fn plan_sort_items(
                 }
                 OrderExpression::Id { variable } => {
                     if !scope.contains(variable) {
-                        return Err(SkeinError::Semantic(format!(
+                        return Err(HawdbError::Semantic(format!(
                             "unknown variable '{variable}' in order item"
                         )));
                     }
@@ -67,7 +67,7 @@ pub(super) fn plan_sort_items(
                 ),
                 OrderExpression::Column(name) => {
                     if !projection_names.contains(name) {
-                        return Err(SkeinError::Semantic(format!(
+                        return Err(HawdbError::Semantic(format!(
                             "unknown column '{name}' in order item"
                         )));
                     }
@@ -147,7 +147,7 @@ pub(super) fn bind_non_negative_usize(
 ) -> Result<usize> {
     match bind_value(expression, parameters)? {
         Value::Int(value) if value >= 0 => Ok(value as usize),
-        value => Err(SkeinError::Semantic(format!(
+        value => Err(HawdbError::Semantic(format!(
             "{name} must be a non-negative integer, got {value:?}"
         ))),
     }
@@ -161,7 +161,7 @@ pub(super) fn bind_optional_f64(
     match bind_value(expression, parameters)? {
         Value::Float(value) => Ok(value),
         Value::Int(value) => Ok(value as f64),
-        value => Err(SkeinError::Semantic(format!(
+        value => Err(HawdbError::Semantic(format!(
             "{name} must be numeric, got {value:?}"
         ))),
     }
@@ -220,7 +220,7 @@ pub(super) fn planned_sort_scope<'a>(
 }
 
 pub(super) fn plan_set_node_properties_return_mode(
-    update: &skein_cypher::MatchSet,
+    update: &hawdb_cypher::MatchSet,
     returns: &[ReturnItem],
     parameters: &BTreeMap<String, Value>,
 ) -> Result<SetNodePropertiesReturnMode> {
@@ -237,7 +237,7 @@ pub(super) fn plan_set_node_properties_return_mode(
                 distinct,
             }) if !distinct => {
                 if variable != &update.variable {
-                    return Err(SkeinError::Semantic(format!(
+                    return Err(HawdbError::Semantic(format!(
                         "SET RETURN count variable '{variable}' does not match updated variable '{}'",
                         update.variable
                     )));
@@ -356,7 +356,7 @@ pub(super) fn plan_projection_with_columns(
         ..
     } = &item.expression
     else {
-        return Err(SkeinError::Semantic(
+        return Err(HawdbError::Semantic(
             "expected projection return item".to_string(),
         ));
     };
@@ -369,7 +369,7 @@ pub(super) fn plan_projection_with_columns(
                 });
             }
             if !scope.contains(variable) {
-                return Err(SkeinError::Semantic(format!(
+                return Err(HawdbError::Semantic(format!(
                     "unknown variable '{variable}' in return item"
                 )));
             }
@@ -394,7 +394,7 @@ pub(super) fn plan_projection_with_columns(
                 });
             }
             if !scope.contains(variable) {
-                return Err(SkeinError::Semantic(format!(
+                return Err(HawdbError::Semantic(format!(
                     "unknown variable '{variable}' in return item"
                 )));
             }
@@ -408,7 +408,7 @@ pub(super) fn plan_projection_with_columns(
         }
         ScalarExpressionKind::Id(variable) => {
             if !scope.contains(variable) {
-                return Err(SkeinError::Semantic(format!(
+                return Err(HawdbError::Semantic(format!(
                     "unknown variable '{variable}' in return item"
                 )));
             }
@@ -421,7 +421,7 @@ pub(super) fn plan_projection_with_columns(
         }
         ScalarExpressionKind::RelationshipType(variable) => {
             if !scope.contains(variable) {
-                return Err(SkeinError::Semantic(format!(
+                return Err(HawdbError::Semantic(format!(
                     "unknown variable '{variable}' in return item"
                 )));
             }
@@ -479,7 +479,7 @@ pub(super) fn plan_projection_with_columns(
             property,
         } => {
             if !scope.contains(variable) {
-                return Err(SkeinError::Semantic(format!(
+                return Err(HawdbError::Semantic(format!(
                     "unknown variable '{variable}' in return item"
                 )));
             }
@@ -510,7 +510,7 @@ pub(super) fn plan_projection_with_columns(
                 });
             }
             if !scope.contains(variable) {
-                return Err(SkeinError::Semantic(format!(
+                return Err(HawdbError::Semantic(format!(
                     "unknown variable '{variable}' in return item"
                 )));
             }
@@ -530,7 +530,7 @@ pub(super) fn plan_projection_with_columns(
             default,
         } => {
             if !scope.contains(variable) {
-                return Err(SkeinError::Semantic(format!(
+                return Err(HawdbError::Semantic(format!(
                     "unknown variable '{variable}' in return item"
                 )));
             }
@@ -551,7 +551,7 @@ pub(super) fn plan_projection_with_columns(
             null_or_empty,
         } => {
             if !scope.contains(variable) {
-                return Err(SkeinError::Semantic(format!(
+                return Err(HawdbError::Semantic(format!(
                     "unknown variable '{variable}' in return item"
                 )));
             }
@@ -573,7 +573,7 @@ pub(super) fn plan_projection_with_columns(
             default,
         } => {
             if !scope.contains(variable) {
-                return Err(SkeinError::Semantic(format!(
+                return Err(HawdbError::Semantic(format!(
                     "unknown variable '{variable}' in return item"
                 )));
             }
@@ -593,7 +593,7 @@ pub(super) fn plan_projection_with_columns(
             default,
         } => {
             if !scope.contains(variable) {
-                return Err(SkeinError::Semantic(format!(
+                return Err(HawdbError::Semantic(format!(
                     "unknown variable '{variable}' in return item"
                 )));
             }
@@ -608,7 +608,7 @@ pub(super) fn plan_projection_with_columns(
         }
         ScalarExpressionKind::CaseCoalesceDifferenceFloorZero { variable, terms } => {
             if !scope.contains(variable) {
-                return Err(SkeinError::Semantic(format!(
+                return Err(HawdbError::Semantic(format!(
                     "unknown variable '{variable}' in return item"
                 )));
             }
@@ -635,21 +635,21 @@ pub(super) fn plan_projection_with_columns(
 }
 
 pub(super) fn bind_relationship_set_value(
-    value: &skein_cypher::SetValueExpression,
+    value: &hawdb_cypher::SetValueExpression,
     parameters: &BTreeMap<String, Value>,
 ) -> Result<Value> {
     match value {
-        skein_cypher::SetValueExpression::Value(value) => bind_value(value, parameters),
-        skein_cypher::SetValueExpression::Property { .. } => Err(SkeinError::Semantic(
+        hawdb_cypher::SetValueExpression::Value(value) => bind_value(value, parameters),
+        hawdb_cypher::SetValueExpression::Property { .. } => Err(HawdbError::Semantic(
             "relationship property reference SET is only supported by relationship-copy MERGE"
                 .to_string(),
         )),
-        skein_cypher::SetValueExpression::PropertyAdd { .. }
-        | skein_cypher::SetValueExpression::CoalesceProperty { .. }
-        | skein_cypher::SetValueExpression::DecrementFloorZero { .. }
-        | skein_cypher::SetValueExpression::PreserveNewerExisting { .. }
-        | skein_cypher::SetValueExpression::CoalescePropertyAdd { .. } => {
-            Err(SkeinError::Semantic(
+        hawdb_cypher::SetValueExpression::PropertyAdd { .. }
+        | hawdb_cypher::SetValueExpression::CoalesceProperty { .. }
+        | hawdb_cypher::SetValueExpression::DecrementFloorZero { .. }
+        | hawdb_cypher::SetValueExpression::PreserveNewerExisting { .. }
+        | hawdb_cypher::SetValueExpression::CoalescePropertyAdd { .. } => {
+            Err(HawdbError::Semantic(
                 "relationship property increment SET is not supported".to_string(),
             ))
         }
@@ -657,23 +657,23 @@ pub(super) fn bind_relationship_set_value(
 }
 
 pub(super) fn plan_set_value(
-    set: &skein_cypher::SetProperty,
+    set: &hawdb_cypher::SetProperty,
     parameters: &BTreeMap<String, Value>,
 ) -> Result<SetValue> {
     match &set.value {
-        skein_cypher::SetValueExpression::Value(value) => {
+        hawdb_cypher::SetValueExpression::Value(value) => {
             Ok(SetValue::Value(bind_value(value, parameters)?))
         }
-        skein_cypher::SetValueExpression::Property { .. } => Err(SkeinError::Semantic(
+        hawdb_cypher::SetValueExpression::Property { .. } => Err(HawdbError::Semantic(
             "property reference SET is only supported by relationship-copy MERGE".to_string(),
         )),
-        skein_cypher::SetValueExpression::CoalesceProperty {
+        hawdb_cypher::SetValueExpression::CoalesceProperty {
             variable,
             property,
             default,
         } => {
             if variable != &set.variable || property != &set.property {
-                return Err(SkeinError::Semantic(
+                return Err(HawdbError::Semantic(
                     "COALESCE property SET must read the same variable property it writes"
                         .to_string(),
                 ));
@@ -683,20 +683,20 @@ pub(super) fn plan_set_value(
                 default: bind_value(default, parameters)?,
             })
         }
-        skein_cypher::SetValueExpression::PropertyAdd {
+        hawdb_cypher::SetValueExpression::PropertyAdd {
             variable,
             property,
             value,
         } => {
             if variable != &set.variable || property != &set.property {
-                return Err(SkeinError::Semantic(
+                return Err(HawdbError::Semantic(
                     "property increment SET must read the same variable property it writes"
                         .to_string(),
                 ));
             }
             let amount = bind_value(value, parameters)?;
             let Value::Int(amount) = amount else {
-                return Err(SkeinError::Semantic(
+                return Err(HawdbError::Semantic(
                     "property increment SET requires an integer increment".to_string(),
                 ));
             };
@@ -705,9 +705,9 @@ pub(super) fn plan_set_value(
                 amount,
             })
         }
-        skein_cypher::SetValueExpression::DecrementFloorZero { variable, property } => {
+        hawdb_cypher::SetValueExpression::DecrementFloorZero { variable, property } => {
             if variable != &set.variable || property != &set.property {
-                return Err(SkeinError::Semantic(
+                return Err(HawdbError::Semantic(
                     "CASE decrement SET must read the same variable property it writes".to_string(),
                 ));
             }
@@ -715,20 +715,20 @@ pub(super) fn plan_set_value(
                 property: property.clone(),
             })
         }
-        skein_cypher::SetValueExpression::PreserveNewerExisting {
+        hawdb_cypher::SetValueExpression::PreserveNewerExisting {
             variable,
             property,
             incoming,
             preserve,
         } => {
             if variable != &set.variable || property != &set.property {
-                return Err(SkeinError::Semantic(
+                return Err(HawdbError::Semantic(
                     "CASE preserve SET must read the same variable property it writes".to_string(),
                 ));
             }
             let preserve = bind_value(preserve, parameters)?;
             let Value::Bool(preserve) = preserve else {
-                return Err(SkeinError::Semantic(
+                return Err(HawdbError::Semantic(
                     "CASE preserve SET requires a boolean preserve flag".to_string(),
                 ));
             };
@@ -738,28 +738,28 @@ pub(super) fn plan_set_value(
                 preserve,
             })
         }
-        skein_cypher::SetValueExpression::CoalescePropertyAdd {
+        hawdb_cypher::SetValueExpression::CoalescePropertyAdd {
             variable,
             property,
             default,
             value,
         } => {
             if variable != &set.variable || property != &set.property {
-                return Err(SkeinError::Semantic(
+                return Err(HawdbError::Semantic(
                     "property increment SET must read the same variable property it writes"
                         .to_string(),
                 ));
             }
             let default = bind_value(default, parameters)?;
             if default != Value::Int(0) {
-                return Err(SkeinError::Semantic(
+                return Err(HawdbError::Semantic(
                     "COALESCE property increment SET only supports integer zero defaults"
                         .to_string(),
                 ));
             }
             let amount = bind_value(value, parameters)?;
             let Value::Int(amount) = amount else {
-                return Err(SkeinError::Semantic(
+                return Err(HawdbError::Semantic(
                     "property increment SET requires an integer increment".to_string(),
                 ));
             };
@@ -777,7 +777,7 @@ pub(super) fn plan_aggregation(scope: &BTreeSet<String>, item: &ReturnItem) -> R
         ..
     } = &item.expression
     else {
-        return Err(SkeinError::Semantic(
+        return Err(HawdbError::Semantic(
             "expected aggregate return item".to_string(),
         ));
     };
@@ -785,7 +785,7 @@ pub(super) fn plan_aggregation(scope: &BTreeSet<String>, item: &ReturnItem) -> R
         AggregateExpression::CountAll => (AggregateFunction::Count, AggregateTarget::All, false),
         AggregateExpression::CountVariable { variable, distinct } => {
             if !scope.contains(variable) {
-                return Err(SkeinError::Semantic(format!(
+                return Err(HawdbError::Semantic(format!(
                     "unknown variable '{variable}' in return item"
                 )));
             }
@@ -801,7 +801,7 @@ pub(super) fn plan_aggregation(scope: &BTreeSet<String>, item: &ReturnItem) -> R
             distinct,
         } => {
             if !scope.contains(variable) {
-                return Err(SkeinError::Semantic(format!(
+                return Err(HawdbError::Semantic(format!(
                     "unknown variable '{variable}' in return item"
                 )));
             }
@@ -820,7 +820,7 @@ pub(super) fn plan_aggregation(scope: &BTreeSet<String>, item: &ReturnItem) -> R
             distinct,
         } => {
             if !scope.contains(variable) {
-                return Err(SkeinError::Semantic(format!(
+                return Err(HawdbError::Semantic(format!(
                     "unknown variable '{variable}' in return item"
                 )));
             }
@@ -835,7 +835,7 @@ pub(super) fn plan_aggregation(scope: &BTreeSet<String>, item: &ReturnItem) -> R
         }
         AggregateExpression::CollectVariable { variable, distinct } => {
             if !scope.contains(variable) {
-                return Err(SkeinError::Semantic(format!(
+                return Err(HawdbError::Semantic(format!(
                     "unknown variable '{variable}' in return item"
                 )));
             }
@@ -847,7 +847,7 @@ pub(super) fn plan_aggregation(scope: &BTreeSet<String>, item: &ReturnItem) -> R
         }
         AggregateExpression::MinProperty { variable, property } => {
             if !scope.contains(variable) {
-                return Err(SkeinError::Semantic(format!(
+                return Err(HawdbError::Semantic(format!(
                     "unknown variable '{variable}' in return item"
                 )));
             }
@@ -862,7 +862,7 @@ pub(super) fn plan_aggregation(scope: &BTreeSet<String>, item: &ReturnItem) -> R
         }
         AggregateExpression::MaxProperty { variable, property } => {
             if !scope.contains(variable) {
-                return Err(SkeinError::Semantic(format!(
+                return Err(HawdbError::Semantic(format!(
                     "unknown variable '{variable}' in return item"
                 )));
             }
@@ -877,7 +877,7 @@ pub(super) fn plan_aggregation(scope: &BTreeSet<String>, item: &ReturnItem) -> R
         }
         AggregateExpression::AvgProperty { variable, property } => {
             if !scope.contains(variable) {
-                return Err(SkeinError::Semantic(format!(
+                return Err(HawdbError::Semantic(format!(
                     "unknown variable '{variable}' in return item"
                 )));
             }
@@ -923,7 +923,7 @@ pub(super) fn plan_scalar_expression_with_columns(
                 return Ok(ProjectionExpression::Column(variable.clone()));
             }
             if !scope.contains(variable) {
-                return Err(SkeinError::Semantic(format!(
+                return Err(HawdbError::Semantic(format!(
                     "unknown variable '{variable}' in return item"
                 )));
             }
@@ -939,7 +939,7 @@ pub(super) fn plan_scalar_expression_with_columns(
                 });
             }
             if !scope.contains(variable) {
-                return Err(SkeinError::Semantic(format!(
+                return Err(HawdbError::Semantic(format!(
                     "unknown variable '{variable}' in return item"
                 )));
             }
@@ -950,7 +950,7 @@ pub(super) fn plan_scalar_expression_with_columns(
         }
         ScalarExpressionKind::Id(variable) => {
             if !scope.contains(variable) {
-                return Err(SkeinError::Semantic(format!(
+                return Err(HawdbError::Semantic(format!(
                     "unknown variable '{variable}' in return item"
                 )));
             }
@@ -960,7 +960,7 @@ pub(super) fn plan_scalar_expression_with_columns(
         }
         ScalarExpressionKind::RelationshipType(variable) => {
             if !scope.contains(variable) {
-                return Err(SkeinError::Semantic(format!(
+                return Err(HawdbError::Semantic(format!(
                     "unknown variable '{variable}' in return item"
                 )));
             }
@@ -997,7 +997,7 @@ pub(super) fn plan_scalar_expression_with_columns(
             property,
         } => {
             if !scope.contains(variable) {
-                return Err(SkeinError::Semantic(format!(
+                return Err(HawdbError::Semantic(format!(
                     "unknown variable '{variable}' in expression"
                 )));
             }
@@ -1022,7 +1022,7 @@ pub(super) fn plan_scalar_expression_with_columns(
                 });
             }
             if !scope.contains(variable) {
-                return Err(SkeinError::Semantic(format!(
+                return Err(HawdbError::Semantic(format!(
                     "unknown variable '{variable}' in expression"
                 )));
             }
@@ -1039,7 +1039,7 @@ pub(super) fn plan_scalar_expression_with_columns(
             default,
         } => {
             if !scope.contains(variable) {
-                return Err(SkeinError::Semantic(format!(
+                return Err(HawdbError::Semantic(format!(
                     "unknown variable '{variable}' in expression"
                 )));
             }
@@ -1057,7 +1057,7 @@ pub(super) fn plan_scalar_expression_with_columns(
             null_or_empty,
         } => {
             if !scope.contains(variable) {
-                return Err(SkeinError::Semantic(format!(
+                return Err(HawdbError::Semantic(format!(
                     "unknown variable '{variable}' in expression"
                 )));
             }
@@ -1076,7 +1076,7 @@ pub(super) fn plan_scalar_expression_with_columns(
             default,
         } => {
             if !scope.contains(variable) {
-                return Err(SkeinError::Semantic(format!(
+                return Err(HawdbError::Semantic(format!(
                     "unknown variable '{variable}' in expression"
                 )));
             }
@@ -1093,7 +1093,7 @@ pub(super) fn plan_scalar_expression_with_columns(
             default,
         } => {
             if !scope.contains(variable) {
-                return Err(SkeinError::Semantic(format!(
+                return Err(HawdbError::Semantic(format!(
                     "unknown variable '{variable}' in expression"
                 )));
             }
@@ -1105,7 +1105,7 @@ pub(super) fn plan_scalar_expression_with_columns(
         }
         ScalarExpressionKind::CaseCoalesceDifferenceFloorZero { variable, terms } => {
             if !scope.contains(variable) {
-                return Err(SkeinError::Semantic(format!(
+                return Err(HawdbError::Semantic(format!(
                     "unknown variable '{variable}' in expression"
                 )));
             }
@@ -1124,7 +1124,7 @@ pub(super) fn plan_scalar_expression_with_columns(
 }
 
 pub(super) fn bind_coalesce_difference_terms(
-    terms: &[skein_cypher::CoalesceDifferenceTerm],
+    terms: &[hawdb_cypher::CoalesceDifferenceTerm],
     parameters: &BTreeMap<String, Value>,
 ) -> Result<Vec<CoalesceDifferenceProjectionTerm>> {
     terms
@@ -1157,7 +1157,7 @@ pub(super) fn plan_date_part(part: &str) -> Result<DatePart> {
     match part.to_ascii_lowercase().as_str() {
         "year" => Ok(DatePart::Year),
         "month" => Ok(DatePart::Month),
-        _ => Err(SkeinError::Semantic(format!(
+        _ => Err(HawdbError::Semantic(format!(
             "unsupported date_part component '{part}'"
         ))),
     }

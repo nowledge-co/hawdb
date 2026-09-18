@@ -53,7 +53,7 @@ remains bounded. Release evidence uses 32,768 rows, eleven alternating samples,
 and 2,048 point probes. The point evidence reports `latency_gate_required`,
 `latency_admitted`, and `allocation_admitted` so CI failures remain
 diagnosable. The emitted JSON protocol is
-`skein-relational-row-page-lending-evidence-v1`; a rejected gate exits
+`hawdb-relational-row-page-lending-evidence-v1`; a rejected gate exits
 non-zero. The Linux smoke wrapper prints rejected benchmark evidence to the
 test log.
 

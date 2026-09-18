@@ -8,8 +8,8 @@ test_suite(
 )
 
 rust_library(
-    name = "skein_integrity",
-    crate_name = "skein_integrity",
+    name = "hawdb_integrity",
+    crate_name = "hawdb_integrity",
     crate_root = "src/lib.rs",
     srcs = glob(["src/**/*.rs"]),
     edition = "2024",
@@ -19,8 +19,8 @@ rust_library(
 )
 
 rust_test(
-    name = "skein_integrity_tests",
-    crate = ":skein_integrity",
+    name = "hawdb_integrity_tests",
+    crate = ":hawdb_integrity",
     edition = "2024",
     aliases = aliases(normal_dev = True, proc_macro_dev = True),
     deps = all_crate_deps(normal_dev = True),

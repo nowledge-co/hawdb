@@ -4,9 +4,9 @@
 //! import-readiness decisions. The embedded facade remains responsible for
 //! extracting a live graph snapshot from its `GraphStore`.
 
-use skein_core::{Result, SkeinError, Value};
-use skein_search::{SearchProjectionDelta, SearchProjectionFreshness, SearchProjectionKind};
-use skein_storage::{
+use hawdb_core::{HawdbError, Result, Value};
+use hawdb_search::{SearchProjectionDelta, SearchProjectionFreshness, SearchProjectionKind};
+use hawdb_storage::{
     decode_relational_checkpoint, encode_relational_checkpoint, RelationalDecodeLimits,
     RelationalState, StoreStableIdMapping,
 };
@@ -27,33 +27,33 @@ pub mod developer_staging_verification;
 
 #[doc(hidden)]
 pub use developer_json::{
-    endpoint_violations_json, skein_lightning_bootstrap_bundle_json,
-    skein_lightning_bootstrap_bundle_json_with_optional_storage_recovery,
-    skein_lightning_bootstrap_manifest_json, skein_lightning_graph_stream_validation_json,
-    skein_lightning_relational_stream_validation_json, stable_identity_audit_json,
+    endpoint_violations_json, hawdb_lightning_bootstrap_bundle_json,
+    hawdb_lightning_bootstrap_bundle_json_with_optional_storage_recovery,
+    hawdb_lightning_bootstrap_manifest_json, hawdb_lightning_graph_stream_validation_json,
+    hawdb_lightning_relational_stream_validation_json, stable_identity_audit_json,
 };
 #[doc(hidden)]
 pub use developer_staging::{
-    skein_lightning_artifact_summary, stage_skein_lightning_bootstrap_export,
-    stage_skein_lightning_bootstrap_export_with_optional_storage_recovery,
+    hawdb_lightning_artifact_summary, stage_hawdb_lightning_bootstrap_export,
+    stage_hawdb_lightning_bootstrap_export_with_optional_storage_recovery,
     sync_bootstrap_directory, write_bootstrap_atomic_file,
-    SKEIN_LIGHTNING_STAGING_CATALOG_PROTOCOL_VERSION,
+    HAWDB_LIGHTNING_STAGING_CATALOG_PROTOCOL_VERSION,
 };
 #[doc(hidden)]
-pub use developer_staging_gc::skein_lightning_gc_staging_report;
+pub use developer_staging_gc::hawdb_lightning_gc_staging_report;
 #[doc(hidden)]
 pub use developer_staging_import::{
-    skein_lightning_import_state_marker, skein_lightning_import_status,
+    hawdb_lightning_import_state_marker, hawdb_lightning_import_status,
 };
 #[doc(hidden)]
 pub use developer_staging_publish::{
-    publish_skein_lightning_staging_catalog, publish_skein_lightning_staging_catalog_with_options,
-    SkeinLightningPublishOptions,
+    publish_hawdb_lightning_staging_catalog, publish_hawdb_lightning_staging_catalog_with_options,
+    HawdbLightningPublishOptions,
 };
 #[doc(hidden)]
 pub use developer_staging_verification::{
-    read_skein_lightning_staging_artifact_json, verify_skein_lightning_published_manifest,
-    verify_skein_lightning_staging_catalog,
+    read_hawdb_lightning_staging_artifact_json, verify_hawdb_lightning_published_manifest,
+    verify_hawdb_lightning_staging_catalog,
 };
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -109,18 +109,18 @@ impl CanonicalGraphSnapshotExport {
         export
     }
 
-    pub fn skein_lightning_bootstrap_manifest(
+    pub fn hawdb_lightning_bootstrap_manifest(
         &self,
-        relational_stream: &SkeinLightningRelationalStream,
-    ) -> SkeinLightningBootstrapManifest {
+        relational_stream: &HawdbLightningRelationalStream,
+    ) -> HawdbLightningBootstrapManifest {
         let validation = self.validate();
-        let graph_stream_body = encode_skein_lightning_graph_stream_body(self);
+        let graph_stream_body = encode_hawdb_lightning_graph_stream_body(self);
         let graph_stream_checksum = checksum_bytes(graph_stream_body.as_bytes());
         let graph_stream_byte_len =
             graph_stream_body.len() + format!("checksum\t{graph_stream_checksum}\n").len();
         let relational_validation = relational_stream.validate();
-        let mut manifest = SkeinLightningBootstrapManifest {
-            protocol_version: SKEIN_LIGHTNING_BOOTSTRAP_PROTOCOL_VERSION,
+        let mut manifest = HawdbLightningBootstrapManifest {
+            protocol_version: HAWDB_LIGHTNING_BOOTSTRAP_PROTOCOL_VERSION,
             database_commit_epoch: self.graph_commit_epoch,
             graph_commit_epoch: self.graph_commit_epoch,
             logical_checksum: self.logical_checksum,
@@ -163,12 +163,12 @@ impl CanonicalGraphSnapshotExport {
         manifest
     }
 
-    pub fn skein_lightning_graph_stream(&self) -> SkeinLightningGraphStream {
-        let body = encode_skein_lightning_graph_stream_body(self);
+    pub fn hawdb_lightning_graph_stream(&self) -> HawdbLightningGraphStream {
+        let body = encode_hawdb_lightning_graph_stream_body(self);
         let stream_checksum = checksum_bytes(body.as_bytes());
         let encoded = format!("{body}checksum\t{stream_checksum}\n");
-        SkeinLightningGraphStream {
-            format_version: SKEIN_LIGHTNING_GRAPH_STREAM_FORMAT_VERSION,
+        HawdbLightningGraphStream {
+            format_version: HAWDB_LIGHTNING_GRAPH_STREAM_FORMAT_VERSION,
             graph_commit_epoch: self.graph_commit_epoch,
             logical_checksum: self.logical_checksum,
             stream_checksum,
@@ -239,29 +239,29 @@ impl CanonicalGraphSnapshotExport {
     }
 }
 
-impl SkeinLightningGraphStream {
+impl HawdbLightningGraphStream {
     pub fn validate_against_manifest(
         &self,
-        manifest: &SkeinLightningBootstrapManifest,
-    ) -> SkeinLightningGraphStreamValidation {
-        validate_skein_lightning_graph_stream(&self.encoded, Some(manifest))
+        manifest: &HawdbLightningBootstrapManifest,
+    ) -> HawdbLightningGraphStreamValidation {
+        validate_hawdb_lightning_graph_stream(&self.encoded, Some(manifest))
     }
 }
 
-impl SkeinLightningRelationalStream {
+impl HawdbLightningRelationalStream {
     pub fn from_state(database_commit_epoch: u64, state: &RelationalState) -> Result<Self> {
         state
-            .require_materialized_rows("Skein Lightning relational export")
-            .map_err(|error| SkeinError::Storage(error.to_string()))?;
+            .require_materialized_rows("Hawdb Lightning relational export")
+            .map_err(|error| HawdbError::Storage(error.to_string()))?;
         let encoded = encode_relational_checkpoint(database_commit_epoch, state)
-            .map_err(|error| SkeinError::Storage(error.to_string()))?;
+            .map_err(|error| HawdbError::Storage(error.to_string()))?;
         let table_count = state.table_schemas().count();
         let row_count = state
             .table_schemas()
             .map(|schema| state.row_count(&schema.name))
             .sum();
         Ok(Self {
-            format_version: SKEIN_LIGHTNING_RELATIONAL_STREAM_FORMAT_VERSION,
+            format_version: HAWDB_LIGHTNING_RELATIONAL_STREAM_FORMAT_VERSION,
             database_commit_epoch,
             stream_checksum: checksum_bytes(&encoded),
             byte_len: encoded.len(),
@@ -272,34 +272,34 @@ impl SkeinLightningRelationalStream {
         })
     }
 
-    pub fn validate(&self) -> SkeinLightningRelationalStreamValidation {
-        validate_skein_lightning_relational_stream(&self.encoded, None)
+    pub fn validate(&self) -> HawdbLightningRelationalStreamValidation {
+        validate_hawdb_lightning_relational_stream(&self.encoded, None)
     }
 
     pub fn validate_against_manifest(
         &self,
-        manifest: &SkeinLightningBootstrapManifest,
-    ) -> SkeinLightningRelationalStreamValidation {
-        validate_skein_lightning_relational_stream(&self.encoded, Some(manifest))
+        manifest: &HawdbLightningBootstrapManifest,
+    ) -> HawdbLightningRelationalStreamValidation {
+        validate_hawdb_lightning_relational_stream(&self.encoded, Some(manifest))
     }
 }
 
-pub const SKEIN_LIGHTNING_BOOTSTRAP_PROTOCOL_VERSION: u64 = 1;
-pub const SKEIN_LIGHTNING_GRAPH_STREAM_FORMAT_VERSION: u64 = 1;
-pub const SKEIN_LIGHTNING_RELATIONAL_STREAM_FORMAT_VERSION: u64 = 1;
-pub const SKEIN_LIGHTNING_INITIAL_IMPORT_DURABLE_STATE_PROTOCOL: &str =
-    "skein-lightning-initial-import-durable-state-v1";
+pub const HAWDB_LIGHTNING_BOOTSTRAP_PROTOCOL_VERSION: u64 = 1;
+pub const HAWDB_LIGHTNING_GRAPH_STREAM_FORMAT_VERSION: u64 = 1;
+pub const HAWDB_LIGHTNING_RELATIONAL_STREAM_FORMAT_VERSION: u64 = 1;
+pub const HAWDB_LIGHTNING_INITIAL_IMPORT_DURABLE_STATE_PROTOCOL: &str =
+    "hawdb-lightning-initial-import-durable-state-v1";
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct SkeinLightningBootstrapExport {
+pub struct HawdbLightningBootstrapExport {
     pub snapshot: CanonicalGraphSnapshotExport,
-    pub manifest: SkeinLightningBootstrapManifest,
-    pub graph_stream: SkeinLightningGraphStream,
-    pub relational_stream: SkeinLightningRelationalStream,
+    pub manifest: HawdbLightningBootstrapManifest,
+    pub graph_stream: HawdbLightningGraphStream,
+    pub relational_stream: HawdbLightningRelationalStream,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct SkeinLightningBootstrapManifest {
+pub struct HawdbLightningBootstrapManifest {
     pub protocol_version: u64,
     pub database_commit_epoch: u64,
     pub graph_commit_epoch: u64,
@@ -320,11 +320,11 @@ pub struct SkeinLightningBootstrapManifest {
     pub node_property_count: usize,
     pub relationship_property_count: usize,
     pub validation: CanonicalGraphSnapshotValidation,
-    pub relational_validation: SkeinLightningRelationalStreamValidation,
+    pub relational_validation: HawdbLightningRelationalStreamValidation,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct SkeinLightningGraphStream {
+pub struct HawdbLightningGraphStream {
     pub format_version: u64,
     pub graph_commit_epoch: u64,
     pub logical_checksum: u64,
@@ -336,7 +336,7 @@ pub struct SkeinLightningGraphStream {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct SkeinLightningRelationalStream {
+pub struct HawdbLightningRelationalStream {
     pub format_version: u64,
     pub database_commit_epoch: u64,
     pub stream_checksum: u64,
@@ -348,7 +348,7 @@ pub struct SkeinLightningRelationalStream {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct SkeinLightningRelationalStreamValidation {
+pub struct HawdbLightningRelationalStreamValidation {
     pub is_valid: bool,
     pub checksum_matches: bool,
     pub format_version_matches: bool,
@@ -365,7 +365,7 @@ pub struct SkeinLightningRelationalStreamValidation {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct SkeinLightningGraphStreamValidation {
+pub struct HawdbLightningGraphStreamValidation {
     pub is_valid: bool,
     pub checksum_matches: bool,
     pub format_version_matches: bool,
@@ -387,7 +387,7 @@ pub struct SkeinLightningGraphStreamValidation {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct SkeinLightningInitialImportReadiness {
+pub struct HawdbLightningInitialImportReadiness {
     pub ready: bool,
     pub manifest_import_ready: bool,
     pub projection_present: bool,
@@ -402,7 +402,7 @@ pub struct SkeinLightningInitialImportReadiness {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct SkeinLightningInitialImportCheckpoint {
+pub struct HawdbLightningInitialImportCheckpoint {
     pub protocol_version: u64,
     pub import_id: String,
     pub task_id: String,
@@ -424,7 +424,7 @@ pub struct SkeinLightningInitialImportCheckpoint {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct SkeinLightningInitialImportIdempotencyKey {
+pub struct HawdbLightningInitialImportIdempotencyKey {
     pub import_id: String,
     pub task_id: String,
     pub fencing_token: String,
@@ -432,10 +432,10 @@ pub struct SkeinLightningInitialImportIdempotencyKey {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct SkeinLightningInitialImportCheckpointReadiness {
+pub struct HawdbLightningInitialImportCheckpointReadiness {
     pub ready: bool,
     pub idempotency_key_present: bool,
-    pub idempotency_key: Option<SkeinLightningInitialImportIdempotencyKey>,
+    pub idempotency_key: Option<HawdbLightningInitialImportIdempotencyKey>,
     pub checkpoint_matches_manifest: bool,
     pub graph_checkpoint_caught_up: bool,
     pub search_projection_applied_caught_up: bool,
@@ -453,7 +453,7 @@ pub struct SkeinLightningInitialImportCheckpointReadiness {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct SkeinLightningInitialImportCheckpointProgress {
+pub struct HawdbLightningInitialImportCheckpointProgress {
     pub applied_graph_commit_epoch: u64,
     pub applied_search_projection_commit_epoch: Option<u64>,
     pub durable_search_projection_commit_epoch: Option<u64>,
@@ -463,34 +463,34 @@ pub struct SkeinLightningInitialImportCheckpointProgress {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct SkeinLightningInitialImportCheckpointProgressReport {
+pub struct HawdbLightningInitialImportCheckpointProgressReport {
     pub accepted: bool,
-    pub checkpoint: SkeinLightningInitialImportCheckpoint,
-    pub readiness: SkeinLightningInitialImportCheckpointReadiness,
-    pub resume_action: SkeinLightningInitialImportResumeAction,
+    pub checkpoint: HawdbLightningInitialImportCheckpoint,
+    pub readiness: HawdbLightningInitialImportCheckpointReadiness,
+    pub resume_action: HawdbLightningInitialImportResumeAction,
     pub blocker_codes: Vec<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct SkeinLightningInitialImportDocumentIdentity {
+pub struct HawdbLightningInitialImportDocumentIdentity {
     pub kind: SearchProjectionKind,
     pub document_id: String,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct SkeinLightningInitialImportDocumentIdentityKindReport {
+pub struct HawdbLightningInitialImportDocumentIdentityKindReport {
     pub kind: SearchProjectionKind,
     pub document_count: usize,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct SkeinLightningInitialImportDocumentIdentityCoverage {
+pub struct HawdbLightningInitialImportDocumentIdentityCoverage {
     pub ready: bool,
     pub document_identity_count: usize,
     pub unique_document_identity_count: usize,
     pub expected_kinds: Vec<SearchProjectionKind>,
     pub observed_kinds: Vec<SearchProjectionKind>,
-    pub kind_reports: Vec<SkeinLightningInitialImportDocumentIdentityKindReport>,
+    pub kind_reports: Vec<HawdbLightningInitialImportDocumentIdentityKindReport>,
     pub missing_kinds: Vec<SearchProjectionKind>,
     pub duplicate_document_ids: Vec<String>,
     pub empty_document_id_count: usize,
@@ -498,7 +498,7 @@ pub struct SkeinLightningInitialImportDocumentIdentityCoverage {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum SkeinLightningInitialImportResumeActionKind {
+pub enum HawdbLightningInitialImportResumeActionKind {
     Start,
     Resume,
     ReadyForCutover,
@@ -506,37 +506,37 @@ pub enum SkeinLightningInitialImportResumeActionKind {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct SkeinLightningInitialImportResumeAction {
-    pub kind: SkeinLightningInitialImportResumeActionKind,
+pub struct HawdbLightningInitialImportResumeAction {
+    pub kind: HawdbLightningInitialImportResumeActionKind,
     pub next_batch: Option<u64>,
-    pub idempotency_key: Option<SkeinLightningInitialImportIdempotencyKey>,
+    pub idempotency_key: Option<HawdbLightningInitialImportIdempotencyKey>,
     pub completed_batches: u64,
     pub total_batches: u64,
     pub blocker_codes: Vec<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct SkeinLightningInitialImportPlan {
+pub struct HawdbLightningInitialImportPlan {
     pub ready_for_database_import: bool,
     pub ready_for_graph_import: bool,
     pub ready_for_cutover: bool,
-    pub graph_stream_validation: SkeinLightningGraphStreamValidation,
-    pub relational_stream_validation: SkeinLightningRelationalStreamValidation,
+    pub graph_stream_validation: HawdbLightningGraphStreamValidation,
+    pub relational_stream_validation: HawdbLightningRelationalStreamValidation,
     pub decoded_snapshot_import_ready: bool,
     pub decoded_graph_commit_epoch: Option<u64>,
     pub decoded_node_count: Option<usize>,
     pub decoded_relationship_count: Option<usize>,
     pub decoded_relational_table_count: Option<usize>,
     pub decoded_relational_row_count: Option<usize>,
-    pub target_readiness: SkeinLightningInitialImportReadiness,
-    pub checkpoint_readiness: Option<SkeinLightningInitialImportCheckpointReadiness>,
-    pub document_identity_coverage: Option<SkeinLightningInitialImportDocumentIdentityCoverage>,
-    pub resume_action: SkeinLightningInitialImportResumeAction,
+    pub target_readiness: HawdbLightningInitialImportReadiness,
+    pub checkpoint_readiness: Option<HawdbLightningInitialImportCheckpointReadiness>,
+    pub document_identity_coverage: Option<HawdbLightningInitialImportDocumentIdentityCoverage>,
+    pub resume_action: HawdbLightningInitialImportResumeAction,
     pub blocker_codes: Vec<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct SkeinLightningInitialImportApplyReport {
+pub struct HawdbLightningInitialImportApplyReport {
     pub applied: bool,
     pub ready_for_cutover: bool,
     pub database_commit_epoch: u64,
@@ -544,12 +544,12 @@ pub struct SkeinLightningInitialImportApplyReport {
     pub relationship_count: usize,
     pub relational_table_count: usize,
     pub relational_row_count: usize,
-    pub plan: SkeinLightningInitialImportPlan,
+    pub plan: HawdbLightningInitialImportPlan,
     pub blocker_codes: Vec<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct SkeinLightningInitialImportSearchProjectionBatchReport {
+pub struct HawdbLightningInitialImportSearchProjectionBatchReport {
     pub ready: bool,
     pub checkpoint_present: bool,
     pub checkpoint_matches_manifest: bool,
@@ -560,35 +560,35 @@ pub struct SkeinLightningInitialImportSearchProjectionBatchReport {
     pub operation_limit_ok: bool,
     pub empty_batch: bool,
     pub delete_count: usize,
-    pub document_identity_coverage: SkeinLightningInitialImportDocumentIdentityCoverage,
+    pub document_identity_coverage: HawdbLightningInitialImportDocumentIdentityCoverage,
     pub source_graph_commit_epoch: Option<u64>,
     pub batch_index: u64,
     pub total_batches: u64,
     pub operation_count: usize,
-    pub checkpoint_progress: Option<SkeinLightningInitialImportCheckpointProgress>,
+    pub checkpoint_progress: Option<HawdbLightningInitialImportCheckpointProgress>,
     pub checkpoint_progress_accepted: bool,
-    pub checkpoint_progress_readiness: Option<SkeinLightningInitialImportCheckpointReadiness>,
-    pub checkpoint_resume_action: Option<SkeinLightningInitialImportResumeAction>,
+    pub checkpoint_progress_readiness: Option<HawdbLightningInitialImportCheckpointReadiness>,
+    pub checkpoint_resume_action: Option<HawdbLightningInitialImportResumeAction>,
     pub checkpoint_progress_blocker_codes: Vec<String>,
     pub blocker_codes: Vec<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct SkeinLightningInitialImportSourceBundleReadiness {
+pub struct HawdbLightningInitialImportSourceBundleReadiness {
     pub ready: bool,
     pub database_source_import_ready: bool,
     pub checkpoint_present: bool,
     pub projection_batch_count: usize,
     pub ready_projection_batch_count: usize,
     pub total_batches: u64,
-    pub source_fingerprint: SkeinLightningInitialImportSourceFingerprint,
-    pub document_identity_coverage: SkeinLightningInitialImportDocumentIdentityCoverage,
-    pub batch_reports: Vec<SkeinLightningInitialImportSearchProjectionBatchReport>,
+    pub source_fingerprint: HawdbLightningInitialImportSourceFingerprint,
+    pub document_identity_coverage: HawdbLightningInitialImportDocumentIdentityCoverage,
+    pub batch_reports: Vec<HawdbLightningInitialImportSearchProjectionBatchReport>,
     pub blocker_codes: Vec<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct SkeinLightningInitialImportSourceFingerprint {
+pub struct HawdbLightningInitialImportSourceFingerprint {
     pub protocol_version: u64,
     pub database_commit_epoch: u64,
     pub graph_commit_epoch: u64,
@@ -605,63 +605,63 @@ pub struct SkeinLightningInitialImportSourceFingerprint {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct SkeinLightningInitialImportDurableState {
-    pub source_fingerprint: SkeinLightningInitialImportSourceFingerprint,
-    pub checkpoint: SkeinLightningInitialImportCheckpoint,
-    pub document_identities: Vec<SkeinLightningInitialImportDocumentIdentity>,
-    pub document_identity_coverage: SkeinLightningInitialImportDocumentIdentityCoverage,
+pub struct HawdbLightningInitialImportDurableState {
+    pub source_fingerprint: HawdbLightningInitialImportSourceFingerprint,
+    pub checkpoint: HawdbLightningInitialImportCheckpoint,
+    pub document_identities: Vec<HawdbLightningInitialImportDocumentIdentity>,
+    pub document_identity_coverage: HawdbLightningInitialImportDocumentIdentityCoverage,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct SkeinLightningInitialImportDurableStateReport {
+pub struct HawdbLightningInitialImportDurableStateReport {
     pub persistable: bool,
     pub ready_for_cutover: bool,
-    pub state: Option<SkeinLightningInitialImportDurableState>,
-    pub checkpoint_readiness: SkeinLightningInitialImportCheckpointReadiness,
-    pub resume_action: SkeinLightningInitialImportResumeAction,
+    pub state: Option<HawdbLightningInitialImportDurableState>,
+    pub checkpoint_readiness: HawdbLightningInitialImportCheckpointReadiness,
+    pub resume_action: HawdbLightningInitialImportResumeAction,
     pub blocker_codes: Vec<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct SkeinLightningInitialImportDurableBatchAdvanceReport {
+pub struct HawdbLightningInitialImportDurableBatchAdvanceReport {
     pub ready: bool,
     pub idempotent_replay: bool,
-    pub batch_report: SkeinLightningInitialImportSearchProjectionBatchReport,
-    pub durable_state_report: SkeinLightningInitialImportDurableStateReport,
+    pub batch_report: HawdbLightningInitialImportSearchProjectionBatchReport,
+    pub durable_state_report: HawdbLightningInitialImportDurableStateReport,
     pub blocker_codes: Vec<String>,
 }
 
 /// Result of accepting one bounded projection page during initial import.
 ///
-/// Unlike [`SkeinLightningInitialImportDurableBatchAdvanceReport`], this
+/// Unlike [`HawdbLightningInitialImportDurableBatchAdvanceReport`], this
 /// report does not require six-kind document coverage before every page. That
 /// coverage remains mandatory for `ready_for_cutover`, while `accepted`
 /// permits a host to persist bounded progress without buffering a complete
 /// LanceDB projection in memory.
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct SkeinLightningInitialImportStreamingBatchAdvanceReport {
+pub struct HawdbLightningInitialImportStreamingBatchAdvanceReport {
     pub accepted: bool,
     pub idempotent_replay: bool,
     pub completed: bool,
     pub ready_for_cutover: bool,
-    pub durable_state_report: SkeinLightningInitialImportDurableStateReport,
+    pub durable_state_report: HawdbLightningInitialImportDurableStateReport,
     pub blocker_codes: Vec<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct SkeinLightningInitialImportSessionReport {
+pub struct HawdbLightningInitialImportSessionReport {
     pub ready_for_database_import: bool,
     pub ready_for_cutover: bool,
     pub durable_state_present: bool,
     pub durable_state_source_matches_manifest: bool,
-    pub plan: SkeinLightningInitialImportPlan,
-    pub durable_state_report: Option<SkeinLightningInitialImportDurableStateReport>,
-    pub next_action: SkeinLightningInitialImportResumeAction,
+    pub plan: HawdbLightningInitialImportPlan,
+    pub durable_state_report: Option<HawdbLightningInitialImportDurableStateReport>,
+    pub next_action: HawdbLightningInitialImportResumeAction,
     pub blocker_codes: Vec<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct SkeinLightningInitialImportCutoverCatchUpReport {
+pub struct HawdbLightningInitialImportCutoverCatchUpReport {
     pub ready: bool,
     pub session_ready_for_cutover: bool,
     pub durable_state_present: bool,
@@ -680,7 +680,7 @@ pub struct SkeinLightningInitialImportCutoverCatchUpReport {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct SkeinLightningInitialImportSessionBundleReadiness {
+pub struct HawdbLightningInitialImportSessionBundleReadiness {
     pub ready: bool,
     pub resumable: bool,
     pub ready_for_cutover: bool,
@@ -693,7 +693,7 @@ pub struct SkeinLightningInitialImportSessionBundleReadiness {
     pub catch_up_present: bool,
     pub catch_up_ready: bool,
     pub cutover_watermark: Option<u64>,
-    pub next_action: SkeinLightningInitialImportResumeAction,
+    pub next_action: HawdbLightningInitialImportResumeAction,
     pub blocker_codes: Vec<String>,
 }
 
@@ -704,41 +704,41 @@ pub struct SkeinLightningInitialImportSessionBundleReadiness {
 /// graph stream, relational stream, manifest, and projection evidence from
 /// different bootstrap exports.
 #[derive(Debug, Clone, Copy)]
-pub struct SkeinLightningInitialImportReadinessInputs<'a> {
+pub struct HawdbLightningInitialImportReadinessInputs<'a> {
     pub encoded_graph_stream: &'a str,
     pub encoded_relational_stream: &'a [u8],
-    pub manifest: &'a SkeinLightningBootstrapManifest,
+    pub manifest: &'a HawdbLightningBootstrapManifest,
     pub projection_batches: &'a [SearchProjectionDelta],
     pub target_projection_freshness: Option<&'a SearchProjectionFreshness>,
     pub live_projection_freshness: Option<&'a SearchProjectionFreshness>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct SkeinLightningInitialImportStartupReadinessReport {
+pub struct HawdbLightningInitialImportStartupReadinessReport {
     pub ready: bool,
-    pub source_bundle: SkeinLightningInitialImportSourceBundleReadiness,
-    pub session: SkeinLightningInitialImportSessionReport,
-    pub cutover_catch_up: Option<SkeinLightningInitialImportCutoverCatchUpReport>,
-    pub readiness: SkeinLightningInitialImportSessionBundleReadiness,
+    pub source_bundle: HawdbLightningInitialImportSourceBundleReadiness,
+    pub session: HawdbLightningInitialImportSessionReport,
+    pub cutover_catch_up: Option<HawdbLightningInitialImportCutoverCatchUpReport>,
+    pub readiness: HawdbLightningInitialImportSessionBundleReadiness,
     pub blocker_codes: Vec<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct SkeinLightningInitialImportDurableStateCodecReport {
+pub struct HawdbLightningInitialImportDurableStateCodecReport {
     pub ready: bool,
     pub protocol: String,
     pub source_fingerprint_matches_manifest: bool,
-    pub state: Option<SkeinLightningInitialImportDurableState>,
+    pub state: Option<HawdbLightningInitialImportDurableState>,
     pub blocker_codes: Vec<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct SkeinLightningInitialImportRecoveryReadinessReport {
+pub struct HawdbLightningInitialImportRecoveryReadinessReport {
     pub ready: bool,
     pub durable_state_payload_present: bool,
-    pub durable_state_codec: Option<SkeinLightningInitialImportDurableStateCodecReport>,
-    pub startup: SkeinLightningInitialImportStartupReadinessReport,
-    pub next_action: SkeinLightningInitialImportResumeAction,
+    pub durable_state_codec: Option<HawdbLightningInitialImportDurableStateCodecReport>,
+    pub startup: HawdbLightningInitialImportStartupReadinessReport,
+    pub next_action: HawdbLightningInitialImportResumeAction,
     pub blocker_codes: Vec<String>,
 }
 
@@ -874,7 +874,7 @@ fn canonical_graph_snapshot_checksum(
     relationships: &[CanonicalSnapshotRelationship],
 ) -> u64 {
     let mut body = String::new();
-    body.push_str("SKEIN_CANONICAL_GRAPH_SNAPSHOT_V1\n");
+    body.push_str("HAWDB_CANONICAL_GRAPH_SNAPSHOT_V1\n");
     body.push_str(&format!("node_count\t{}\n", nodes.len()));
     for node in nodes {
         body.push_str(&format!("node\t{}\n", node.node_id));
@@ -921,7 +921,7 @@ fn canonical_graph_snapshot_schema_checksum(
         .cloned()
         .collect::<BTreeSet<_>>();
     let mut body = String::new();
-    body.push_str("SKEIN_LIGHTNING_BOOTSTRAP_SCHEMA_V1\n");
+    body.push_str("HAWDB_LIGHTNING_BOOTSTRAP_SCHEMA_V1\n");
     body.push_str(&format!("label_count\t{}\n", labels.len()));
     for label in labels {
         append_canonical_string(&mut body, "label", &label);
@@ -950,7 +950,7 @@ fn canonical_graph_snapshot_schema_checksum(
     checksum_bytes(body.as_bytes())
 }
 
-fn encode_skein_lightning_graph_stream_body(snapshot: &CanonicalGraphSnapshotExport) -> String {
+fn encode_hawdb_lightning_graph_stream_body(snapshot: &CanonicalGraphSnapshotExport) -> String {
     let node_stable_keys = snapshot
         .nodes
         .iter()
@@ -982,10 +982,10 @@ fn encode_skein_lightning_graph_stream_body(snapshot: &CanonicalGraphSnapshotExp
     });
 
     let mut body = String::new();
-    body.push_str("SKEIN_LIGHTNING_GRAPH_STREAM_V1\n");
+    body.push_str("HAWDB_LIGHTNING_GRAPH_STREAM_V1\n");
     body.push_str(&format!(
         "format_version\t{}\n",
-        SKEIN_LIGHTNING_GRAPH_STREAM_FORMAT_VERSION
+        HAWDB_LIGHTNING_GRAPH_STREAM_FORMAT_VERSION
     ));
     body.push_str(&format!(
         "graph_commit_epoch\t{}\n",
@@ -1024,10 +1024,10 @@ fn canonical_stable_key(value: Option<&Value>) -> String {
     key
 }
 
-pub fn validate_skein_lightning_graph_stream(
+pub fn validate_hawdb_lightning_graph_stream(
     encoded: &str,
-    manifest: Option<&SkeinLightningBootstrapManifest>,
-) -> SkeinLightningGraphStreamValidation {
+    manifest: Option<&HawdbLightningBootstrapManifest>,
+) -> HawdbLightningGraphStreamValidation {
     let (body, expected_stream_checksum, mut errors) = split_graph_stream_checksum(encoded);
     let actual_stream_checksum = checksum_bytes(body.as_bytes());
     let checksum_matches = expected_stream_checksum == Some(actual_stream_checksum);
@@ -1035,7 +1035,7 @@ pub fn validate_skein_lightning_graph_stream(
         errors.push("graph stream checksum mismatch".to_string());
     }
 
-    let mut parsed = parse_skein_lightning_graph_stream_body(body, &mut errors);
+    let mut parsed = parse_hawdb_lightning_graph_stream_body(body, &mut errors);
 
     let duplicate_node_ids = duplicate_u64s(parsed.node_ids.iter().copied());
     let duplicate_relationship_ids = duplicate_u64s(parsed.relationship_ids.iter().copied());
@@ -1063,7 +1063,7 @@ pub fn validate_skein_lightning_graph_stream(
         )
         .collect::<Vec<_>>();
     let format_version_matches =
-        parsed.format_version == Some(SKEIN_LIGHTNING_GRAPH_STREAM_FORMAT_VERSION);
+        parsed.format_version == Some(HAWDB_LIGHTNING_GRAPH_STREAM_FORMAT_VERSION);
     let count_matches = parsed.declared_node_count == Some(parsed.node_ids.len() as u64)
         && parsed.declared_relationship_count == Some(parsed.relationship_ids.len() as u64);
     let endpoint_integrity = duplicate_node_ids.is_empty()
@@ -1097,7 +1097,7 @@ pub fn validate_skein_lightning_graph_stream(
         && manifest_matches
         && errors.is_empty();
 
-    SkeinLightningGraphStreamValidation {
+    HawdbLightningGraphStreamValidation {
         is_valid,
         checksum_matches,
         format_version_matches,
@@ -1119,10 +1119,10 @@ pub fn validate_skein_lightning_graph_stream(
     }
 }
 
-pub fn validate_skein_lightning_relational_stream(
+pub fn validate_hawdb_lightning_relational_stream(
     encoded: &[u8],
-    manifest: Option<&SkeinLightningBootstrapManifest>,
-) -> SkeinLightningRelationalStreamValidation {
+    manifest: Option<&HawdbLightningBootstrapManifest>,
+) -> HawdbLightningRelationalStreamValidation {
     let actual_stream_checksum = checksum_bytes(encoded);
     let expected_stream_checksum = manifest.map(|value| value.relational_stream_checksum);
     let checksum_matches =
@@ -1154,7 +1154,7 @@ pub fn validate_skein_lightning_relational_stream(
         }
     };
     let format_version_matches = manifest.is_none_or(|value| {
-        value.relational_stream_format_version == SKEIN_LIGHTNING_RELATIONAL_STREAM_FORMAT_VERSION
+        value.relational_stream_format_version == HAWDB_LIGHTNING_RELATIONAL_STREAM_FORMAT_VERSION
     });
     let epoch_matches = manifest.is_none_or(|value| {
         database_commit_epoch == Some(value.database_commit_epoch)
@@ -1190,7 +1190,7 @@ pub fn validate_skein_lightning_relational_stream(
         && count_matches
         && manifest_matches
         && errors.is_empty();
-    SkeinLightningRelationalStreamValidation {
+    HawdbLightningRelationalStreamValidation {
         is_valid,
         checksum_matches,
         format_version_matches,
@@ -1207,22 +1207,22 @@ pub fn validate_skein_lightning_relational_stream(
     }
 }
 
-pub fn parse_skein_lightning_graph_stream_export(
+pub fn parse_hawdb_lightning_graph_stream_export(
     encoded: &str,
-    manifest: Option<&SkeinLightningBootstrapManifest>,
+    manifest: Option<&HawdbLightningBootstrapManifest>,
 ) -> Result<CanonicalGraphSnapshotExport> {
-    let validation = validate_skein_lightning_graph_stream(encoded, manifest);
+    let validation = validate_hawdb_lightning_graph_stream(encoded, manifest);
     if !validation.is_valid {
-        return Err(SkeinError::Storage(format!(
-            "Skein Lightning graph stream is not import ready: {}",
+        return Err(HawdbError::Storage(format!(
+            "Hawdb Lightning graph stream is not import ready: {}",
             validation.errors.join("; ")
         )));
     }
     let (body, _, mut errors) = split_graph_stream_checksum(encoded);
-    let parsed = parse_skein_lightning_graph_stream_body(body, &mut errors);
+    let parsed = parse_hawdb_lightning_graph_stream_body(body, &mut errors);
     if !errors.is_empty() {
-        return Err(SkeinError::Storage(format!(
-            "Skein Lightning graph stream parse failed: {}",
+        return Err(HawdbError::Storage(format!(
+            "Hawdb Lightning graph stream parse failed: {}",
             errors.join("; ")
         )));
     }
@@ -1239,23 +1239,23 @@ pub fn parse_skein_lightning_graph_stream_export(
     };
     let snapshot_validation = export.validate();
     if !snapshot_validation.is_import_ready {
-        return Err(SkeinError::Storage(
-            "Skein Lightning graph stream decoded to a snapshot that is not import ready"
+        return Err(HawdbError::Storage(
+            "Hawdb Lightning graph stream decoded to a snapshot that is not import ready"
                 .to_string(),
         ));
     }
     Ok(export)
 }
 
-pub fn skein_lightning_initial_import_plan(
+pub fn hawdb_lightning_initial_import_plan(
     encoded_graph_stream: &str,
     encoded_relational_stream: &[u8],
-    manifest: &SkeinLightningBootstrapManifest,
+    manifest: &HawdbLightningBootstrapManifest,
     target_graph_commit_epoch: u64,
     projection_freshness: Option<&SearchProjectionFreshness>,
-    checkpoint: Option<&SkeinLightningInitialImportCheckpoint>,
-) -> SkeinLightningInitialImportPlan {
-    skein_lightning_initial_import_plan_with_document_identities(
+    checkpoint: Option<&HawdbLightningInitialImportCheckpoint>,
+) -> HawdbLightningInitialImportPlan {
+    hawdb_lightning_initial_import_plan_with_document_identities(
         encoded_graph_stream,
         encoded_relational_stream,
         manifest,
@@ -1266,21 +1266,21 @@ pub fn skein_lightning_initial_import_plan(
     )
 }
 
-pub fn skein_lightning_initial_import_plan_with_document_identities(
+pub fn hawdb_lightning_initial_import_plan_with_document_identities(
     encoded_graph_stream: &str,
     encoded_relational_stream: &[u8],
-    manifest: &SkeinLightningBootstrapManifest,
+    manifest: &HawdbLightningBootstrapManifest,
     target_graph_commit_epoch: u64,
     projection_freshness: Option<&SearchProjectionFreshness>,
-    checkpoint: Option<&SkeinLightningInitialImportCheckpoint>,
-    document_identities: Option<&[SkeinLightningInitialImportDocumentIdentity]>,
-) -> SkeinLightningInitialImportPlan {
+    checkpoint: Option<&HawdbLightningInitialImportCheckpoint>,
+    document_identities: Option<&[HawdbLightningInitialImportDocumentIdentity]>,
+) -> HawdbLightningInitialImportPlan {
     let graph_stream_validation =
-        validate_skein_lightning_graph_stream(encoded_graph_stream, Some(manifest));
+        validate_hawdb_lightning_graph_stream(encoded_graph_stream, Some(manifest));
     let relational_stream_validation =
-        validate_skein_lightning_relational_stream(encoded_relational_stream, Some(manifest));
+        validate_hawdb_lightning_relational_stream(encoded_relational_stream, Some(manifest));
     let decoded_snapshot = if graph_stream_validation.is_valid {
-        parse_skein_lightning_graph_stream_export(encoded_graph_stream, Some(manifest)).ok()
+        parse_hawdb_lightning_graph_stream_export(encoded_graph_stream, Some(manifest)).ok()
     } else {
         None
     };
@@ -1302,17 +1302,17 @@ pub fn skein_lightning_initial_import_plan_with_document_identities(
     let decoded_relational_row_count = relational_stream_validation
         .is_valid
         .then_some(relational_stream_validation.row_count);
-    let target_readiness = skein_lightning_initial_import_readiness(
+    let target_readiness = hawdb_lightning_initial_import_readiness(
         manifest,
         target_graph_commit_epoch,
         projection_freshness,
     );
     let checkpoint_readiness = checkpoint.map(|checkpoint| {
-        skein_lightning_initial_import_checkpoint_readiness(manifest, checkpoint)
+        hawdb_lightning_initial_import_checkpoint_readiness(manifest, checkpoint)
     });
     let document_identity_coverage =
-        document_identities.map(skein_lightning_initial_import_document_identity_coverage);
-    let resume_action = skein_lightning_initial_import_resume_action(manifest, checkpoint);
+        document_identities.map(hawdb_lightning_initial_import_document_identity_coverage);
+    let resume_action = hawdb_lightning_initial_import_resume_action(manifest, checkpoint);
     let ready_for_graph_import = graph_stream_validation.is_valid && decoded_snapshot_import_ready;
     let ready_for_database_import = ready_for_graph_import && relational_stream_validation.is_valid;
     let document_identities_ready = document_identity_coverage
@@ -1326,16 +1326,16 @@ pub fn skein_lightning_initial_import_plan_with_document_identities(
             .map(|readiness| readiness.ready)
             .unwrap_or(false)
         && document_identities_ready
-        && resume_action.kind == SkeinLightningInitialImportResumeActionKind::ReadyForCutover;
+        && resume_action.kind == HawdbLightningInitialImportResumeActionKind::ReadyForCutover;
     let mut blocker_codes = BTreeSet::new();
     if !graph_stream_validation.is_valid {
-        blocker_codes.insert("skein_lightning_graph_stream_invalid".to_string());
+        blocker_codes.insert("hawdb_lightning_graph_stream_invalid".to_string());
     }
     if graph_stream_validation.is_valid && !decoded_snapshot_import_ready {
-        blocker_codes.insert("skein_lightning_graph_stream_decode_not_import_ready".to_string());
+        blocker_codes.insert("hawdb_lightning_graph_stream_decode_not_import_ready".to_string());
     }
     if !relational_stream_validation.is_valid {
-        blocker_codes.insert("skein_lightning_relational_stream_invalid".to_string());
+        blocker_codes.insert("hawdb_lightning_relational_stream_invalid".to_string());
     }
     if !target_readiness.ready {
         blocker_codes.extend(target_readiness.blocker_codes.iter().cloned());
@@ -1357,19 +1357,19 @@ pub fn skein_lightning_initial_import_plan_with_document_identities(
     }
     if ready_for_database_import && !ready_for_cutover {
         match resume_action.kind {
-            SkeinLightningInitialImportResumeActionKind::Start => {
+            HawdbLightningInitialImportResumeActionKind::Start => {
                 blocker_codes.insert("initial_import_not_started".to_string());
             }
-            SkeinLightningInitialImportResumeActionKind::Resume => {
+            HawdbLightningInitialImportResumeActionKind::Resume => {
                 blocker_codes.insert("initial_import_checkpoint_incomplete".to_string());
             }
-            SkeinLightningInitialImportResumeActionKind::Quarantine => {
+            HawdbLightningInitialImportResumeActionKind::Quarantine => {
                 blocker_codes.insert("initial_import_checkpoint_quarantined".to_string());
             }
-            SkeinLightningInitialImportResumeActionKind::ReadyForCutover => {}
+            HawdbLightningInitialImportResumeActionKind::ReadyForCutover => {}
         }
     }
-    SkeinLightningInitialImportPlan {
+    HawdbLightningInitialImportPlan {
         ready_for_database_import,
         ready_for_graph_import,
         ready_for_cutover,
@@ -1389,11 +1389,11 @@ pub fn skein_lightning_initial_import_plan_with_document_identities(
     }
 }
 
-pub fn skein_lightning_initial_import_readiness(
-    manifest: &SkeinLightningBootstrapManifest,
+pub fn hawdb_lightning_initial_import_readiness(
+    manifest: &HawdbLightningBootstrapManifest,
     target_graph_commit_epoch: u64,
     projection_freshness: Option<&SearchProjectionFreshness>,
-) -> SkeinLightningInitialImportReadiness {
+) -> HawdbLightningInitialImportReadiness {
     let manifest_epoch_matches = manifest.database_commit_epoch == manifest.graph_commit_epoch;
     let manifest_import_ready = manifest.validation.is_import_ready
         && manifest.relational_validation.is_valid
@@ -1424,10 +1424,10 @@ pub fn skein_lightning_initial_import_readiness(
         .unwrap_or(false);
     let mut blocker_codes = BTreeSet::new();
     if !manifest_import_ready {
-        blocker_codes.insert("skein_lightning_manifest_not_import_ready".to_string());
+        blocker_codes.insert("hawdb_lightning_manifest_not_import_ready".to_string());
     }
     if !manifest_epoch_matches {
-        blocker_codes.insert("skein_lightning_manifest_epoch_mismatch".to_string());
+        blocker_codes.insert("hawdb_lightning_manifest_epoch_mismatch".to_string());
     }
     if !graph_import_caught_up {
         blocker_codes.insert("graph_import_watermark_behind_manifest".to_string());
@@ -1445,7 +1445,7 @@ pub fn skein_lightning_initial_import_readiness(
         blocker_codes.insert("search_projection_repair_required".to_string());
     }
     let blocker_codes = blocker_codes.into_iter().collect::<Vec<_>>();
-    SkeinLightningInitialImportReadiness {
+    HawdbLightningInitialImportReadiness {
         ready: blocker_codes.is_empty(),
         manifest_import_ready,
         projection_present,
@@ -1460,11 +1460,11 @@ pub fn skein_lightning_initial_import_readiness(
     }
 }
 
-pub fn skein_lightning_initial_import_checkpoint_readiness(
-    manifest: &SkeinLightningBootstrapManifest,
-    checkpoint: &SkeinLightningInitialImportCheckpoint,
-) -> SkeinLightningInitialImportCheckpointReadiness {
-    let idempotency_key = skein_lightning_initial_import_idempotency_key(checkpoint);
+pub fn hawdb_lightning_initial_import_checkpoint_readiness(
+    manifest: &HawdbLightningBootstrapManifest,
+    checkpoint: &HawdbLightningInitialImportCheckpoint,
+) -> HawdbLightningInitialImportCheckpointReadiness {
+    let idempotency_key = hawdb_lightning_initial_import_idempotency_key(checkpoint);
     let idempotency_key_present = idempotency_key.is_some();
     let checkpoint_matches_manifest = checkpoint.protocol_version == 1
         && checkpoint.schema_checksum == manifest.schema_checksum
@@ -1509,7 +1509,7 @@ pub fn skein_lightning_initial_import_checkpoint_readiness(
         blocker_codes.insert("initial_import_document_identities_missing".to_string());
     }
     let blocker_codes = blocker_codes.into_iter().collect::<Vec<_>>();
-    SkeinLightningInitialImportCheckpointReadiness {
+    HawdbLightningInitialImportCheckpointReadiness {
         ready: blocker_codes.is_empty(),
         idempotency_key_present,
         idempotency_key,
@@ -1530,13 +1530,13 @@ pub fn skein_lightning_initial_import_checkpoint_readiness(
     }
 }
 
-pub fn skein_lightning_initial_import_advance_checkpoint(
-    manifest: &SkeinLightningBootstrapManifest,
-    checkpoint: &SkeinLightningInitialImportCheckpoint,
-    progress: SkeinLightningInitialImportCheckpointProgress,
-) -> SkeinLightningInitialImportCheckpointProgressReport {
+pub fn hawdb_lightning_initial_import_advance_checkpoint(
+    manifest: &HawdbLightningBootstrapManifest,
+    checkpoint: &HawdbLightningInitialImportCheckpoint,
+    progress: HawdbLightningInitialImportCheckpointProgress,
+) -> HawdbLightningInitialImportCheckpointProgressReport {
     let previous_readiness =
-        skein_lightning_initial_import_checkpoint_readiness(manifest, checkpoint);
+        hawdb_lightning_initial_import_checkpoint_readiness(manifest, checkpoint);
     let mut blocker_codes = BTreeSet::new();
     if !previous_readiness.idempotency_key_present {
         blocker_codes.insert("initial_import_checkpoint_idempotency_key_missing".to_string());
@@ -1574,16 +1574,16 @@ pub fn skein_lightning_initial_import_advance_checkpoint(
 
     if !blocker_codes.is_empty() {
         let blocker_codes = blocker_codes.into_iter().collect::<Vec<_>>();
-        return SkeinLightningInitialImportCheckpointProgressReport {
+        return HawdbLightningInitialImportCheckpointProgressReport {
             accepted: false,
             checkpoint: checkpoint.clone(),
             readiness: previous_readiness,
-            resume_action: skein_lightning_initial_import_resume_action(manifest, Some(checkpoint)),
+            resume_action: hawdb_lightning_initial_import_resume_action(manifest, Some(checkpoint)),
             blocker_codes,
         };
     }
 
-    let advanced = SkeinLightningInitialImportCheckpoint {
+    let advanced = HawdbLightningInitialImportCheckpoint {
         applied_graph_commit_epoch: progress.applied_graph_commit_epoch,
         applied_search_projection_commit_epoch: progress.applied_search_projection_commit_epoch,
         durable_search_projection_commit_epoch: progress.durable_search_projection_commit_epoch,
@@ -1592,9 +1592,9 @@ pub fn skein_lightning_initial_import_advance_checkpoint(
         document_identity_count: progress.document_identity_count,
         ..checkpoint.clone()
     };
-    let readiness = skein_lightning_initial_import_checkpoint_readiness(manifest, &advanced);
-    let resume_action = skein_lightning_initial_import_resume_action(manifest, Some(&advanced));
-    SkeinLightningInitialImportCheckpointProgressReport {
+    let readiness = hawdb_lightning_initial_import_checkpoint_readiness(manifest, &advanced);
+    let resume_action = hawdb_lightning_initial_import_resume_action(manifest, Some(&advanced));
+    HawdbLightningInitialImportCheckpointProgressReport {
         accepted: true,
         checkpoint: advanced,
         readiness,
@@ -1603,15 +1603,15 @@ pub fn skein_lightning_initial_import_advance_checkpoint(
     }
 }
 
-pub fn skein_lightning_initial_import_search_projection_batch_report(
-    manifest: &SkeinLightningBootstrapManifest,
-    checkpoint: Option<&SkeinLightningInitialImportCheckpoint>,
+pub fn hawdb_lightning_initial_import_search_projection_batch_report(
+    manifest: &HawdbLightningBootstrapManifest,
+    checkpoint: Option<&HawdbLightningInitialImportCheckpoint>,
     delta: &SearchProjectionDelta,
     batch_index: u64,
     total_batches: u64,
-) -> SkeinLightningInitialImportSearchProjectionBatchReport {
+) -> HawdbLightningInitialImportSearchProjectionBatchReport {
     let document_identities = search_projection_delta_document_identities(delta);
-    skein_lightning_initial_import_search_projection_batch_report_with_document_identities(
+    hawdb_lightning_initial_import_search_projection_batch_report_with_document_identities(
         manifest,
         checkpoint,
         delta,
@@ -1621,24 +1621,24 @@ pub fn skein_lightning_initial_import_search_projection_batch_report(
     )
 }
 
-pub fn skein_lightning_initial_import_source_bundle_readiness(
-    manifest: &SkeinLightningBootstrapManifest,
-    checkpoint: Option<&SkeinLightningInitialImportCheckpoint>,
+pub fn hawdb_lightning_initial_import_source_bundle_readiness(
+    manifest: &HawdbLightningBootstrapManifest,
+    checkpoint: Option<&HawdbLightningInitialImportCheckpoint>,
     projection_batches: &[SearchProjectionDelta],
-) -> SkeinLightningInitialImportSourceBundleReadiness {
-    let source_fingerprint = skein_lightning_initial_import_source_fingerprint(manifest);
+) -> HawdbLightningInitialImportSourceBundleReadiness {
+    let source_fingerprint = hawdb_lightning_initial_import_source_fingerprint(manifest);
     let total_batches = projection_batches.len() as u64;
     let document_identities = projection_batches
         .iter()
         .flat_map(search_projection_delta_document_identities)
         .collect::<Vec<_>>();
     let document_identity_coverage =
-        skein_lightning_initial_import_document_identity_coverage(&document_identities);
+        hawdb_lightning_initial_import_document_identity_coverage(&document_identities);
     let batch_reports = projection_batches
         .iter()
         .enumerate()
         .map(|(batch_index, delta)| {
-            skein_lightning_initial_import_search_projection_batch_report_with_document_identities(
+            hawdb_lightning_initial_import_search_projection_batch_report_with_document_identities(
                 manifest,
                 checkpoint,
                 delta,
@@ -1677,7 +1677,7 @@ pub fn skein_lightning_initial_import_source_bundle_readiness(
         && !projection_batches.is_empty()
         && ready_projection_batch_count == projection_batches.len();
 
-    SkeinLightningInitialImportSourceBundleReadiness {
+    HawdbLightningInitialImportSourceBundleReadiness {
         ready,
         database_source_import_ready,
         checkpoint_present,
@@ -1691,14 +1691,14 @@ pub fn skein_lightning_initial_import_source_bundle_readiness(
     }
 }
 
-pub fn skein_lightning_initial_import_search_projection_batch_report_with_document_identities(
-    manifest: &SkeinLightningBootstrapManifest,
-    checkpoint: Option<&SkeinLightningInitialImportCheckpoint>,
+pub fn hawdb_lightning_initial_import_search_projection_batch_report_with_document_identities(
+    manifest: &HawdbLightningBootstrapManifest,
+    checkpoint: Option<&HawdbLightningInitialImportCheckpoint>,
     delta: &SearchProjectionDelta,
     batch_index: u64,
     total_batches: u64,
-    document_identities: &[SkeinLightningInitialImportDocumentIdentity],
-) -> SkeinLightningInitialImportSearchProjectionBatchReport {
+    document_identities: &[HawdbLightningInitialImportDocumentIdentity],
+) -> HawdbLightningInitialImportSearchProjectionBatchReport {
     let source_graph_commit_epoch_matches =
         delta.source_graph_commit_epoch == Some(manifest.graph_commit_epoch);
     let batch_position_valid = total_batches > 0 && batch_index < total_batches;
@@ -1707,7 +1707,7 @@ pub fn skein_lightning_initial_import_search_projection_batch_report_with_docume
         .max_operations
         .is_none_or(|limit| operation_count <= limit);
     let checkpoint_readiness = checkpoint.map(|checkpoint| {
-        skein_lightning_initial_import_checkpoint_readiness(manifest, checkpoint)
+        hawdb_lightning_initial_import_checkpoint_readiness(manifest, checkpoint)
     });
     let checkpoint_present = checkpoint.is_some();
     let checkpoint_matches_manifest = checkpoint_readiness
@@ -1722,7 +1722,7 @@ pub fn skein_lightning_initial_import_search_projection_batch_report_with_docume
     let empty_batch = operation_count == 0;
     let delete_count = delta.deletes.len();
     let document_identity_coverage =
-        skein_lightning_initial_import_document_identity_coverage(document_identities);
+        hawdb_lightning_initial_import_document_identity_coverage(document_identities);
     let mut blocker_codes = BTreeSet::new();
     if !checkpoint_present {
         blocker_codes
@@ -1765,7 +1765,7 @@ pub fn skein_lightning_initial_import_search_projection_batch_report_with_docume
             let completed_batches = checkpoint
                 .completed_batches
                 .max(batch_index.saturating_add(1));
-            SkeinLightningInitialImportCheckpointProgress {
+            HawdbLightningInitialImportCheckpointProgress {
                 applied_graph_commit_epoch: checkpoint
                     .applied_graph_commit_epoch
                     .max(manifest.graph_commit_epoch),
@@ -1784,7 +1784,7 @@ pub fn skein_lightning_initial_import_search_projection_batch_report_with_docume
     };
     let checkpoint_progress_report = checkpoint_progress.as_ref().and_then(|progress| {
         checkpoint.map(|checkpoint| {
-            skein_lightning_initial_import_advance_checkpoint(
+            hawdb_lightning_initial_import_advance_checkpoint(
                 manifest,
                 checkpoint,
                 progress.clone(),
@@ -1803,7 +1803,7 @@ pub fn skein_lightning_initial_import_search_projection_batch_report_with_docume
     let checkpoint_progress_blocker_codes = checkpoint_progress_report
         .map(|report| report.blocker_codes)
         .unwrap_or_default();
-    SkeinLightningInitialImportSearchProjectionBatchReport {
+    HawdbLightningInitialImportSearchProjectionBatchReport {
         ready,
         checkpoint_present,
         checkpoint_matches_manifest,
@@ -1828,16 +1828,16 @@ pub fn skein_lightning_initial_import_search_projection_batch_report_with_docume
     }
 }
 
-pub fn skein_lightning_initial_import_durable_state_report(
-    manifest: &SkeinLightningBootstrapManifest,
-    checkpoint: &SkeinLightningInitialImportCheckpoint,
-    document_identities: &[SkeinLightningInitialImportDocumentIdentity],
-) -> SkeinLightningInitialImportDurableStateReport {
+pub fn hawdb_lightning_initial_import_durable_state_report(
+    manifest: &HawdbLightningBootstrapManifest,
+    checkpoint: &HawdbLightningInitialImportCheckpoint,
+    document_identities: &[HawdbLightningInitialImportDocumentIdentity],
+) -> HawdbLightningInitialImportDurableStateReport {
     let checkpoint_readiness =
-        skein_lightning_initial_import_checkpoint_readiness(manifest, checkpoint);
-    let resume_action = skein_lightning_initial_import_resume_action(manifest, Some(checkpoint));
+        hawdb_lightning_initial_import_checkpoint_readiness(manifest, checkpoint);
+    let resume_action = hawdb_lightning_initial_import_resume_action(manifest, Some(checkpoint));
     let document_identity_coverage =
-        skein_lightning_initial_import_document_identity_coverage(document_identities);
+        hawdb_lightning_initial_import_document_identity_coverage(document_identities);
     let mut blocker_codes = BTreeSet::new();
     if !checkpoint_readiness.idempotency_key_present {
         blocker_codes.insert("initial_import_durable_state_idempotency_missing".to_string());
@@ -1862,13 +1862,13 @@ pub fn skein_lightning_initial_import_durable_state_report(
     }
     let ready_for_cutover =
         persistable && checkpoint_readiness.ready && document_identity_coverage.ready;
-    let state = persistable.then(|| SkeinLightningInitialImportDurableState {
-        source_fingerprint: skein_lightning_initial_import_source_fingerprint(manifest),
+    let state = persistable.then(|| HawdbLightningInitialImportDurableState {
+        source_fingerprint: hawdb_lightning_initial_import_source_fingerprint(manifest),
         checkpoint: checkpoint.clone(),
         document_identities: document_identities.to_vec(),
         document_identity_coverage: document_identity_coverage.clone(),
     });
-    SkeinLightningInitialImportDurableStateReport {
+    HawdbLightningInitialImportDurableStateReport {
         persistable,
         ready_for_cutover,
         state,
@@ -1878,57 +1878,57 @@ pub fn skein_lightning_initial_import_durable_state_report(
     }
 }
 
-fn skein_lightning_initial_import_durable_state_json(
-    state: &SkeinLightningInitialImportDurableState,
+fn hawdb_lightning_initial_import_durable_state_json(
+    state: &HawdbLightningInitialImportDurableState,
 ) -> serde_json::Value {
     serde_json::json!({
-        "protocol": SKEIN_LIGHTNING_INITIAL_IMPORT_DURABLE_STATE_PROTOCOL,
-        "source_fingerprint": skein_lightning_initial_import_source_fingerprint_json(&state.source_fingerprint),
-        "checkpoint": skein_lightning_initial_import_checkpoint_json(&state.checkpoint),
+        "protocol": HAWDB_LIGHTNING_INITIAL_IMPORT_DURABLE_STATE_PROTOCOL,
+        "source_fingerprint": hawdb_lightning_initial_import_source_fingerprint_json(&state.source_fingerprint),
+        "checkpoint": hawdb_lightning_initial_import_checkpoint_json(&state.checkpoint),
         "document_identities": state
             .document_identities
             .iter()
-            .map(skein_lightning_initial_import_document_identity_json)
+            .map(hawdb_lightning_initial_import_document_identity_json)
             .collect::<Vec<_>>(),
-        "document_identity_coverage": skein_lightning_initial_import_document_identity_coverage_json(&state.document_identity_coverage),
+        "document_identity_coverage": hawdb_lightning_initial_import_document_identity_coverage_json(&state.document_identity_coverage),
     })
 }
 
-pub fn skein_lightning_initial_import_encode_durable_state(
-    state: &SkeinLightningInitialImportDurableState,
+pub fn hawdb_lightning_initial_import_encode_durable_state(
+    state: &HawdbLightningInitialImportDurableState,
 ) -> Result<String> {
-    serde_json::to_string(&skein_lightning_initial_import_durable_state_json(state)).map_err(|_| {
-        SkeinError::Execution(
+    serde_json::to_string(&hawdb_lightning_initial_import_durable_state_json(state)).map_err(|_| {
+        HawdbError::Execution(
             "initial import durable state serialization failed: invalid_json".to_string(),
         )
     })
 }
 
-fn skein_lightning_initial_import_decode_durable_state_value(
-    manifest: &SkeinLightningBootstrapManifest,
+fn hawdb_lightning_initial_import_decode_durable_state_value(
+    manifest: &HawdbLightningBootstrapManifest,
     value: &serde_json::Value,
-) -> Result<SkeinLightningInitialImportDurableStateCodecReport> {
+) -> Result<HawdbLightningInitialImportDurableStateCodecReport> {
     let mut blocker_codes = BTreeSet::new();
     let protocol = required_json_string(value, "protocol")?.to_string();
-    if protocol != SKEIN_LIGHTNING_INITIAL_IMPORT_DURABLE_STATE_PROTOCOL {
+    if protocol != HAWDB_LIGHTNING_INITIAL_IMPORT_DURABLE_STATE_PROTOCOL {
         blocker_codes.insert("initial_import_durable_state_codec_protocol_mismatch".to_string());
     }
-    let source_fingerprint = parse_skein_lightning_initial_import_source_fingerprint(
+    let source_fingerprint = parse_hawdb_lightning_initial_import_source_fingerprint(
         required_json_object(value, "source_fingerprint")?,
     )?;
     let source_fingerprint_matches_manifest =
-        source_fingerprint == skein_lightning_initial_import_source_fingerprint(manifest);
+        source_fingerprint == hawdb_lightning_initial_import_source_fingerprint(manifest);
     if !source_fingerprint_matches_manifest {
         blocker_codes.insert("initial_import_durable_state_codec_source_mismatch".to_string());
     }
-    let checkpoint = parse_skein_lightning_initial_import_checkpoint(required_json_object(
+    let checkpoint = parse_hawdb_lightning_initial_import_checkpoint(required_json_object(
         value,
         "checkpoint",
     )?)?;
-    let document_identities = parse_skein_lightning_initial_import_document_identities(
+    let document_identities = parse_hawdb_lightning_initial_import_document_identities(
         required_json_array(value, "document_identities")?,
     )?;
-    let state_report = skein_lightning_initial_import_durable_state_report(
+    let state_report = hawdb_lightning_initial_import_durable_state_report(
         manifest,
         &checkpoint,
         &document_identities,
@@ -1940,7 +1940,7 @@ fn skein_lightning_initial_import_decode_durable_state_value(
     let state = (ready && source_fingerprint_matches_manifest)
         .then_some(state_report.state)
         .flatten();
-    Ok(SkeinLightningInitialImportDurableStateCodecReport {
+    Ok(HawdbLightningInitialImportDurableStateCodecReport {
         ready,
         protocol,
         source_fingerprint_matches_manifest,
@@ -1949,29 +1949,29 @@ fn skein_lightning_initial_import_decode_durable_state_value(
     })
 }
 
-pub fn skein_lightning_initial_import_decode_durable_state(
-    manifest: &SkeinLightningBootstrapManifest,
+pub fn hawdb_lightning_initial_import_decode_durable_state(
+    manifest: &HawdbLightningBootstrapManifest,
     raw: &str,
-) -> Result<SkeinLightningInitialImportDurableStateCodecReport> {
+) -> Result<HawdbLightningInitialImportDurableStateCodecReport> {
     let value = serde_json::from_str::<serde_json::Value>(raw).map_err(|_| {
-        SkeinError::Semantic("initial import durable state parse failed: invalid_json".to_string())
+        HawdbError::Semantic("initial import durable state parse failed: invalid_json".to_string())
     })?;
-    skein_lightning_initial_import_decode_durable_state_value(manifest, &value)
+    hawdb_lightning_initial_import_decode_durable_state_value(manifest, &value)
 }
 
-pub fn skein_lightning_initial_import_advance_durable_state_with_search_projection_batch(
-    manifest: &SkeinLightningBootstrapManifest,
-    state: &SkeinLightningInitialImportDurableState,
+pub fn hawdb_lightning_initial_import_advance_durable_state_with_search_projection_batch(
+    manifest: &HawdbLightningBootstrapManifest,
+    state: &HawdbLightningInitialImportDurableState,
     delta: &SearchProjectionDelta,
     batch_index: u64,
     total_batches: u64,
-) -> SkeinLightningInitialImportDurableBatchAdvanceReport {
+) -> HawdbLightningInitialImportDurableBatchAdvanceReport {
     let document_identities = merge_initial_import_document_identities(
         &state.document_identities,
         &search_projection_delta_document_identities(delta),
     );
     let batch_report =
-        skein_lightning_initial_import_search_projection_batch_report_with_document_identities(
+        hawdb_lightning_initial_import_search_projection_batch_report_with_document_identities(
             manifest,
             Some(&state.checkpoint),
             delta,
@@ -1981,26 +1981,26 @@ pub fn skein_lightning_initial_import_advance_durable_state_with_search_projecti
         );
     let idempotent_replay = batch_index < state.checkpoint.completed_batches;
     let durable_state_report = if let Some(progress) = batch_report.checkpoint_progress.as_ref() {
-        let progress_report = skein_lightning_initial_import_advance_checkpoint(
+        let progress_report = hawdb_lightning_initial_import_advance_checkpoint(
             manifest,
             &state.checkpoint,
             progress.clone(),
         );
         if progress_report.accepted {
-            skein_lightning_initial_import_durable_state_report(
+            hawdb_lightning_initial_import_durable_state_report(
                 manifest,
                 &progress_report.checkpoint,
                 &document_identities,
             )
         } else {
-            skein_lightning_initial_import_durable_state_report(
+            hawdb_lightning_initial_import_durable_state_report(
                 manifest,
                 &state.checkpoint,
                 &state.document_identities,
             )
         }
     } else {
-        skein_lightning_initial_import_durable_state_report(
+        hawdb_lightning_initial_import_durable_state_report(
             manifest,
             &state.checkpoint,
             &state.document_identities,
@@ -2026,7 +2026,7 @@ pub fn skein_lightning_initial_import_advance_durable_state_with_search_projecti
         blocker_codes.extend(durable_state_report.blocker_codes.iter().cloned());
     }
     let blocker_codes = blocker_codes.into_iter().collect::<Vec<_>>();
-    SkeinLightningInitialImportDurableBatchAdvanceReport {
+    HawdbLightningInitialImportDurableBatchAdvanceReport {
         ready: blocker_codes.is_empty(),
         idempotent_replay,
         batch_report,
@@ -2040,15 +2040,15 @@ pub fn skein_lightning_initial_import_advance_durable_state_with_search_projecti
 /// coverage: a page can be durably accepted before every projection kind has
 /// been scanned, but read cutover remains blocked until the accumulated state
 /// satisfies the normal coverage and checkpoint checks.
-pub fn skein_lightning_initial_import_advance_durable_state_streaming(
-    manifest: &SkeinLightningBootstrapManifest,
-    state: &SkeinLightningInitialImportDurableState,
+pub fn hawdb_lightning_initial_import_advance_durable_state_streaming(
+    manifest: &HawdbLightningBootstrapManifest,
+    state: &HawdbLightningInitialImportDurableState,
     delta: &SearchProjectionDelta,
     batch_index: u64,
     total_batches: u64,
-) -> SkeinLightningInitialImportStreamingBatchAdvanceReport {
+) -> HawdbLightningInitialImportStreamingBatchAdvanceReport {
     let checkpoint_readiness =
-        skein_lightning_initial_import_checkpoint_readiness(manifest, &state.checkpoint);
+        hawdb_lightning_initial_import_checkpoint_readiness(manifest, &state.checkpoint);
     let mut blocker_codes = BTreeSet::new();
     if !checkpoint_readiness.idempotency_key_present {
         blocker_codes.insert("initial_import_streaming_batch_idempotency_missing".to_string());
@@ -2080,12 +2080,12 @@ pub fn skein_lightning_initial_import_advance_durable_state_streaming(
 
     let idempotent_replay = batch_index < state.checkpoint.completed_batches;
     if !blocker_codes.is_empty() {
-        let durable_state_report = skein_lightning_initial_import_durable_state_report(
+        let durable_state_report = hawdb_lightning_initial_import_durable_state_report(
             manifest,
             &state.checkpoint,
             &state.document_identities,
         );
-        return SkeinLightningInitialImportStreamingBatchAdvanceReport {
+        return HawdbLightningInitialImportStreamingBatchAdvanceReport {
             accepted: false,
             idempotent_replay,
             completed: state.checkpoint.completed_batches == state.checkpoint.total_batches,
@@ -2099,7 +2099,7 @@ pub fn skein_lightning_initial_import_advance_durable_state_streaming(
         &state.document_identities,
         &search_projection_delta_document_identities(delta),
     );
-    let progress = SkeinLightningInitialImportCheckpointProgress {
+    let progress = HawdbLightningInitialImportCheckpointProgress {
         applied_graph_commit_epoch: state
             .checkpoint
             .applied_graph_commit_epoch
@@ -2117,14 +2117,14 @@ pub fn skein_lightning_initial_import_advance_durable_state_streaming(
             .max(document_identities.len()),
     };
     let progress_report =
-        skein_lightning_initial_import_advance_checkpoint(manifest, &state.checkpoint, progress);
+        hawdb_lightning_initial_import_advance_checkpoint(manifest, &state.checkpoint, progress);
     if !progress_report.accepted {
-        return SkeinLightningInitialImportStreamingBatchAdvanceReport {
+        return HawdbLightningInitialImportStreamingBatchAdvanceReport {
             accepted: false,
             idempotent_replay,
             completed: state.checkpoint.completed_batches == state.checkpoint.total_batches,
             ready_for_cutover: false,
-            durable_state_report: skein_lightning_initial_import_durable_state_report(
+            durable_state_report: hawdb_lightning_initial_import_durable_state_report(
                 manifest,
                 &state.checkpoint,
                 &state.document_identities,
@@ -2132,13 +2132,13 @@ pub fn skein_lightning_initial_import_advance_durable_state_streaming(
             blocker_codes: progress_report.blocker_codes,
         };
     }
-    let durable_state_report = skein_lightning_initial_import_durable_state_report(
+    let durable_state_report = hawdb_lightning_initial_import_durable_state_report(
         manifest,
         &progress_report.checkpoint,
         &document_identities,
     );
     let completed = progress_report.checkpoint.completed_batches == total_batches;
-    SkeinLightningInitialImportStreamingBatchAdvanceReport {
+    HawdbLightningInitialImportStreamingBatchAdvanceReport {
         accepted: durable_state_report.persistable,
         idempotent_replay,
         completed,
@@ -2148,17 +2148,17 @@ pub fn skein_lightning_initial_import_advance_durable_state_streaming(
     }
 }
 
-pub fn skein_lightning_initial_import_session_report(
+pub fn hawdb_lightning_initial_import_session_report(
     encoded_graph_stream: &str,
     encoded_relational_stream: &[u8],
-    manifest: &SkeinLightningBootstrapManifest,
+    manifest: &HawdbLightningBootstrapManifest,
     target_graph_commit_epoch: u64,
     projection_freshness: Option<&SearchProjectionFreshness>,
-    durable_state: Option<&SkeinLightningInitialImportDurableState>,
-) -> SkeinLightningInitialImportSessionReport {
+    durable_state: Option<&HawdbLightningInitialImportDurableState>,
+) -> HawdbLightningInitialImportSessionReport {
     let checkpoint = durable_state.map(|state| &state.checkpoint);
     let document_identities = durable_state.map(|state| state.document_identities.as_slice());
-    let plan = skein_lightning_initial_import_plan_with_document_identities(
+    let plan = hawdb_lightning_initial_import_plan_with_document_identities(
         encoded_graph_stream,
         encoded_relational_stream,
         manifest,
@@ -2168,7 +2168,7 @@ pub fn skein_lightning_initial_import_session_report(
         document_identities,
     );
     let durable_state_report = durable_state.map(|state| {
-        skein_lightning_initial_import_durable_state_report(
+        hawdb_lightning_initial_import_durable_state_report(
             manifest,
             &state.checkpoint,
             &state.document_identities,
@@ -2176,7 +2176,7 @@ pub fn skein_lightning_initial_import_session_report(
     });
     let durable_state_source_matches_manifest = durable_state
         .map(|state| {
-            state.source_fingerprint == skein_lightning_initial_import_source_fingerprint(manifest)
+            state.source_fingerprint == hawdb_lightning_initial_import_source_fingerprint(manifest)
         })
         .unwrap_or(true);
     let mut blocker_codes = BTreeSet::new();
@@ -2191,8 +2191,8 @@ pub fn skein_lightning_initial_import_session_report(
     }
 
     let next_action = if !durable_state_source_matches_manifest {
-        SkeinLightningInitialImportResumeAction {
-            kind: SkeinLightningInitialImportResumeActionKind::Quarantine,
+        HawdbLightningInitialImportResumeAction {
+            kind: HawdbLightningInitialImportResumeActionKind::Quarantine,
             next_batch: None,
             idempotency_key: None,
             completed_batches: durable_state
@@ -2214,7 +2214,7 @@ pub fn skein_lightning_initial_import_session_report(
             .as_ref()
             .is_some_and(|report| report.ready_for_cutover);
 
-    SkeinLightningInitialImportSessionReport {
+    HawdbLightningInitialImportSessionReport {
         ready_for_database_import,
         ready_for_cutover,
         durable_state_present: durable_state.is_some(),
@@ -2226,11 +2226,11 @@ pub fn skein_lightning_initial_import_session_report(
     }
 }
 
-pub fn skein_lightning_initial_import_cutover_catch_up_report(
-    session: &SkeinLightningInitialImportSessionReport,
+pub fn hawdb_lightning_initial_import_cutover_catch_up_report(
+    session: &HawdbLightningInitialImportSessionReport,
     live_graph_commit_epoch: u64,
     live_projection_freshness: Option<&SearchProjectionFreshness>,
-) -> SkeinLightningInitialImportCutoverCatchUpReport {
+) -> HawdbLightningInitialImportCutoverCatchUpReport {
     let durable_state = session
         .durable_state_report
         .as_ref()
@@ -2301,7 +2301,7 @@ pub fn skein_lightning_initial_import_cutover_catch_up_report(
         blocker_codes.insert("initial_import_live_projection_repair_required".to_string());
     }
 
-    SkeinLightningInitialImportCutoverCatchUpReport {
+    HawdbLightningInitialImportCutoverCatchUpReport {
         ready: blocker_codes.is_empty(),
         session_ready_for_cutover: session.ready_for_cutover,
         durable_state_present: durable_state.is_some(),
@@ -2320,11 +2320,11 @@ pub fn skein_lightning_initial_import_cutover_catch_up_report(
     }
 }
 
-pub fn skein_lightning_initial_import_session_bundle_readiness(
-    source_bundle: &SkeinLightningInitialImportSourceBundleReadiness,
-    session: &SkeinLightningInitialImportSessionReport,
-    catch_up: Option<&SkeinLightningInitialImportCutoverCatchUpReport>,
-) -> SkeinLightningInitialImportSessionBundleReadiness {
+pub fn hawdb_lightning_initial_import_session_bundle_readiness(
+    source_bundle: &HawdbLightningInitialImportSourceBundleReadiness,
+    session: &HawdbLightningInitialImportSessionReport,
+    catch_up: Option<&HawdbLightningInitialImportCutoverCatchUpReport>,
+) -> HawdbLightningInitialImportSessionBundleReadiness {
     let catch_up_required = session.ready_for_cutover;
     let catch_up_present = catch_up.is_some();
     let catch_up_ready = catch_up.is_some_and(|report| report.ready);
@@ -2333,7 +2333,7 @@ pub fn skein_lightning_initial_import_session_bundle_readiness(
         && session.ready_for_database_import
         && session.durable_state_present
         && session.durable_state_source_matches_manifest
-        && session.next_action.kind != SkeinLightningInitialImportResumeActionKind::Quarantine;
+        && session.next_action.kind != HawdbLightningInitialImportResumeActionKind::Quarantine;
     let ready_for_cutover = resumable && session.ready_for_cutover && catch_up_ready;
     let mut blocker_codes = BTreeSet::new();
     if !source_bundle.ready {
@@ -2349,7 +2349,7 @@ pub fn skein_lightning_initial_import_session_bundle_readiness(
     if !session.durable_state_source_matches_manifest {
         blocker_codes.insert("initial_import_session_bundle_source_mismatch".to_string());
     }
-    if session.next_action.kind == SkeinLightningInitialImportResumeActionKind::Quarantine {
+    if session.next_action.kind == HawdbLightningInitialImportResumeActionKind::Quarantine {
         blocker_codes.insert("initial_import_session_bundle_quarantine_required".to_string());
     }
     blocker_codes.extend(session.blocker_codes.iter().cloned());
@@ -2367,7 +2367,7 @@ pub fn skein_lightning_initial_import_session_bundle_readiness(
     {
         blocker_codes.extend(report.blocker_codes.iter().cloned());
     }
-    SkeinLightningInitialImportSessionBundleReadiness {
+    HawdbLightningInitialImportSessionBundleReadiness {
         ready: blocker_codes.is_empty(),
         resumable,
         ready_for_cutover,
@@ -2385,18 +2385,18 @@ pub fn skein_lightning_initial_import_session_bundle_readiness(
     }
 }
 
-pub fn skein_lightning_initial_import_startup_readiness(
-    inputs: SkeinLightningInitialImportReadinessInputs<'_>,
+pub fn hawdb_lightning_initial_import_startup_readiness(
+    inputs: HawdbLightningInitialImportReadinessInputs<'_>,
     target_graph_commit_epoch: u64,
-    durable_state: Option<&SkeinLightningInitialImportDurableState>,
-) -> SkeinLightningInitialImportStartupReadinessReport {
+    durable_state: Option<&HawdbLightningInitialImportDurableState>,
+) -> HawdbLightningInitialImportStartupReadinessReport {
     let checkpoint = durable_state.map(|state| &state.checkpoint);
-    let source_bundle = skein_lightning_initial_import_source_bundle_readiness(
+    let source_bundle = hawdb_lightning_initial_import_source_bundle_readiness(
         inputs.manifest,
         checkpoint,
         inputs.projection_batches,
     );
-    let session = skein_lightning_initial_import_session_report(
+    let session = hawdb_lightning_initial_import_session_report(
         inputs.encoded_graph_stream,
         inputs.encoded_relational_stream,
         inputs.manifest,
@@ -2405,18 +2405,18 @@ pub fn skein_lightning_initial_import_startup_readiness(
         durable_state,
     );
     let cutover_catch_up = session.ready_for_cutover.then(|| {
-        skein_lightning_initial_import_cutover_catch_up_report(
+        hawdb_lightning_initial_import_cutover_catch_up_report(
             &session,
             target_graph_commit_epoch,
             inputs.live_projection_freshness,
         )
     });
-    let readiness = skein_lightning_initial_import_session_bundle_readiness(
+    let readiness = hawdb_lightning_initial_import_session_bundle_readiness(
         &source_bundle,
         &session,
         cutover_catch_up.as_ref(),
     );
-    SkeinLightningInitialImportStartupReadinessReport {
+    HawdbLightningInitialImportStartupReadinessReport {
         ready: readiness.ready,
         blocker_codes: readiness.blocker_codes.clone(),
         source_bundle,
@@ -2426,15 +2426,15 @@ pub fn skein_lightning_initial_import_startup_readiness(
     }
 }
 
-pub fn skein_lightning_initial_import_recovery_readiness(
-    inputs: SkeinLightningInitialImportReadinessInputs<'_>,
+pub fn hawdb_lightning_initial_import_recovery_readiness(
+    inputs: HawdbLightningInitialImportReadinessInputs<'_>,
     target_graph_commit_epoch: u64,
     durable_state_payload: Option<&str>,
-) -> SkeinLightningInitialImportRecoveryReadinessReport {
+) -> HawdbLightningInitialImportRecoveryReadinessReport {
     let durable_state_payload_present = durable_state_payload.is_some();
     let mut decode_blocker_codes = BTreeSet::new();
     let durable_state_codec = durable_state_payload.and_then(|payload| {
-        match skein_lightning_initial_import_decode_durable_state(inputs.manifest, payload) {
+        match hawdb_lightning_initial_import_decode_durable_state(inputs.manifest, payload) {
             Ok(report) => {
                 if !report.ready {
                     decode_blocker_codes.extend(report.blocker_codes.iter().cloned());
@@ -2452,15 +2452,15 @@ pub fn skein_lightning_initial_import_recovery_readiness(
         .as_ref()
         .filter(|report| report.ready)
         .and_then(|report| report.state.as_ref());
-    let startup = skein_lightning_initial_import_startup_readiness(
+    let startup = hawdb_lightning_initial_import_startup_readiness(
         inputs,
         target_graph_commit_epoch,
         durable_state,
     );
     let invalid_payload = durable_state_payload_present && durable_state.is_none();
     let next_action = if invalid_payload {
-        SkeinLightningInitialImportResumeAction {
-            kind: SkeinLightningInitialImportResumeActionKind::Quarantine,
+        HawdbLightningInitialImportResumeAction {
+            kind: HawdbLightningInitialImportResumeActionKind::Quarantine,
             next_batch: None,
             idempotency_key: None,
             completed_batches: 0,
@@ -2477,7 +2477,7 @@ pub fn skein_lightning_initial_import_recovery_readiness(
         blocker_codes
             .insert("initial_import_recovery_durable_state_quarantine_required".to_string());
     }
-    SkeinLightningInitialImportRecoveryReadinessReport {
+    HawdbLightningInitialImportRecoveryReadinessReport {
         ready: !invalid_payload && startup.ready,
         durable_state_payload_present,
         durable_state_codec,
@@ -2487,8 +2487,8 @@ pub fn skein_lightning_initial_import_recovery_readiness(
     }
 }
 
-fn skein_lightning_initial_import_source_fingerprint_json(
-    fingerprint: &SkeinLightningInitialImportSourceFingerprint,
+fn hawdb_lightning_initial_import_source_fingerprint_json(
+    fingerprint: &HawdbLightningInitialImportSourceFingerprint,
 ) -> serde_json::Value {
     serde_json::json!({
         "protocol_version": fingerprint.protocol_version,
@@ -2507,8 +2507,8 @@ fn skein_lightning_initial_import_source_fingerprint_json(
     })
 }
 
-fn skein_lightning_initial_import_checkpoint_json(
-    checkpoint: &SkeinLightningInitialImportCheckpoint,
+fn hawdb_lightning_initial_import_checkpoint_json(
+    checkpoint: &HawdbLightningInitialImportCheckpoint,
 ) -> serde_json::Value {
     serde_json::json!({
         "protocol_version": checkpoint.protocol_version,
@@ -2532,8 +2532,8 @@ fn skein_lightning_initial_import_checkpoint_json(
     })
 }
 
-fn skein_lightning_initial_import_document_identity_json(
-    identity: &SkeinLightningInitialImportDocumentIdentity,
+fn hawdb_lightning_initial_import_document_identity_json(
+    identity: &HawdbLightningInitialImportDocumentIdentity,
 ) -> serde_json::Value {
     serde_json::json!({
         "kind": identity.kind.as_str(),
@@ -2541,8 +2541,8 @@ fn skein_lightning_initial_import_document_identity_json(
     })
 }
 
-fn skein_lightning_initial_import_document_identity_coverage_json(
-    coverage: &SkeinLightningInitialImportDocumentIdentityCoverage,
+fn hawdb_lightning_initial_import_document_identity_coverage_json(
+    coverage: &HawdbLightningInitialImportDocumentIdentityCoverage,
 ) -> serde_json::Value {
     serde_json::json!({
         "ready": coverage.ready,
@@ -2578,10 +2578,10 @@ fn skein_lightning_initial_import_document_identity_coverage_json(
     })
 }
 
-fn parse_skein_lightning_initial_import_source_fingerprint(
+fn parse_hawdb_lightning_initial_import_source_fingerprint(
     value: &serde_json::Value,
-) -> Result<SkeinLightningInitialImportSourceFingerprint> {
-    Ok(SkeinLightningInitialImportSourceFingerprint {
+) -> Result<HawdbLightningInitialImportSourceFingerprint> {
+    Ok(HawdbLightningInitialImportSourceFingerprint {
         protocol_version: required_json_u64(value, "protocol_version")?,
         database_commit_epoch: required_json_u64(value, "database_commit_epoch")?,
         graph_commit_epoch: required_json_u64(value, "graph_commit_epoch")?,
@@ -2598,10 +2598,10 @@ fn parse_skein_lightning_initial_import_source_fingerprint(
     })
 }
 
-fn parse_skein_lightning_initial_import_checkpoint(
+fn parse_hawdb_lightning_initial_import_checkpoint(
     value: &serde_json::Value,
-) -> Result<SkeinLightningInitialImportCheckpoint> {
-    Ok(SkeinLightningInitialImportCheckpoint {
+) -> Result<HawdbLightningInitialImportCheckpoint> {
+    Ok(HawdbLightningInitialImportCheckpoint {
         protocol_version: required_json_u64(value, "protocol_version")?,
         import_id: required_json_string(value, "import_id")?.to_string(),
         task_id: required_json_string(value, "task_id")?.to_string(),
@@ -2629,13 +2629,13 @@ fn parse_skein_lightning_initial_import_checkpoint(
     })
 }
 
-fn parse_skein_lightning_initial_import_document_identities(
+fn parse_hawdb_lightning_initial_import_document_identities(
     items: &[serde_json::Value],
-) -> Result<Vec<SkeinLightningInitialImportDocumentIdentity>> {
+) -> Result<Vec<HawdbLightningInitialImportDocumentIdentity>> {
     items
         .iter()
         .map(|value| {
-            Ok(SkeinLightningInitialImportDocumentIdentity {
+            Ok(HawdbLightningInitialImportDocumentIdentity {
                 kind: parse_search_projection_kind(required_json_string(value, "kind")?)?,
                 document_id: required_json_string(value, "document_id")?.to_string(),
             })
@@ -2651,7 +2651,7 @@ fn parse_search_projection_kind(raw: &str) -> Result<SearchProjectionKind> {
         "source" => Ok(SearchProjectionKind::Source),
         "source_chunk" => Ok(SearchProjectionKind::SourceChunk),
         "community" => Ok(SearchProjectionKind::Community),
-        _ => Err(SkeinError::Semantic(
+        _ => Err(HawdbError::Semantic(
             "initial import durable state field kind is invalid".to_string(),
         )),
     }
@@ -2712,16 +2712,16 @@ fn optional_json_u64(value: &serde_json::Value, field: &str) -> Result<Option<u6
     }
 }
 
-fn durable_state_codec_invalid_field(field: &str, expected: &str) -> SkeinError {
-    SkeinError::Semantic(format!(
+fn durable_state_codec_invalid_field(field: &str, expected: &str) -> HawdbError {
+    HawdbError::Semantic(format!(
         "initial import durable state field {field} is invalid: expected_{expected}"
     ))
 }
 
-pub fn skein_lightning_initial_import_source_fingerprint(
-    manifest: &SkeinLightningBootstrapManifest,
-) -> SkeinLightningInitialImportSourceFingerprint {
-    SkeinLightningInitialImportSourceFingerprint {
+pub fn hawdb_lightning_initial_import_source_fingerprint(
+    manifest: &HawdbLightningBootstrapManifest,
+) -> HawdbLightningInitialImportSourceFingerprint {
+    HawdbLightningInitialImportSourceFingerprint {
         protocol_version: manifest.protocol_version,
         database_commit_epoch: manifest.database_commit_epoch,
         graph_commit_epoch: manifest.graph_commit_epoch,
@@ -2739,9 +2739,9 @@ pub fn skein_lightning_initial_import_source_fingerprint(
 }
 
 fn merge_initial_import_document_identities(
-    existing: &[SkeinLightningInitialImportDocumentIdentity],
-    incoming: &[SkeinLightningInitialImportDocumentIdentity],
-) -> Vec<SkeinLightningInitialImportDocumentIdentity> {
+    existing: &[HawdbLightningInitialImportDocumentIdentity],
+    incoming: &[HawdbLightningInitialImportDocumentIdentity],
+) -> Vec<HawdbLightningInitialImportDocumentIdentity> {
     let mut identities = Vec::with_capacity(existing.len().saturating_add(incoming.len()));
     let mut seen = BTreeSet::new();
     for identity in existing.iter().chain(incoming.iter()) {
@@ -2754,21 +2754,21 @@ fn merge_initial_import_document_identities(
 
 fn search_projection_delta_document_identities(
     delta: &SearchProjectionDelta,
-) -> Vec<SkeinLightningInitialImportDocumentIdentity> {
+) -> Vec<HawdbLightningInitialImportDocumentIdentity> {
     delta
         .upserts
         .iter()
-        .map(|row| SkeinLightningInitialImportDocumentIdentity {
+        .map(|row| HawdbLightningInitialImportDocumentIdentity {
             kind: row.kind,
             document_id: format!("{}:{}", row.kind.as_str(), row.external_id),
         })
         .collect()
 }
 
-pub fn skein_lightning_initial_import_document_identity_coverage(
-    identities: &[SkeinLightningInitialImportDocumentIdentity],
-) -> SkeinLightningInitialImportDocumentIdentityCoverage {
-    let expected_kinds = skein_lightning_initial_import_required_search_projection_kinds();
+pub fn hawdb_lightning_initial_import_document_identity_coverage(
+    identities: &[HawdbLightningInitialImportDocumentIdentity],
+) -> HawdbLightningInitialImportDocumentIdentityCoverage {
+    let expected_kinds = hawdb_lightning_initial_import_required_search_projection_kinds();
     let mut document_ids = BTreeMap::<String, usize>::new();
     let mut kind_counts = BTreeMap::<SearchProjectionKind, usize>::new();
     let mut empty_document_id_count = 0;
@@ -2786,7 +2786,7 @@ pub fn skein_lightning_initial_import_document_identity_coverage(
     let kind_reports = kind_counts
         .iter()
         .map(
-            |(kind, document_count)| SkeinLightningInitialImportDocumentIdentityKindReport {
+            |(kind, document_count)| HawdbLightningInitialImportDocumentIdentityKindReport {
                 kind: *kind,
                 document_count: *document_count,
             },
@@ -2813,7 +2813,7 @@ pub fn skein_lightning_initial_import_document_identity_coverage(
         blocker_codes.insert("initial_import_document_identity_duplicate".to_string());
     }
     let blocker_codes = blocker_codes.into_iter().collect::<Vec<_>>();
-    SkeinLightningInitialImportDocumentIdentityCoverage {
+    HawdbLightningInitialImportDocumentIdentityCoverage {
         ready: blocker_codes.is_empty(),
         document_identity_count: identities.len(),
         unique_document_identity_count: document_ids.len(),
@@ -2827,13 +2827,13 @@ pub fn skein_lightning_initial_import_document_identity_coverage(
     }
 }
 
-pub fn skein_lightning_initial_import_resume_action(
-    manifest: &SkeinLightningBootstrapManifest,
-    checkpoint: Option<&SkeinLightningInitialImportCheckpoint>,
-) -> SkeinLightningInitialImportResumeAction {
+pub fn hawdb_lightning_initial_import_resume_action(
+    manifest: &HawdbLightningBootstrapManifest,
+    checkpoint: Option<&HawdbLightningInitialImportCheckpoint>,
+) -> HawdbLightningInitialImportResumeAction {
     let Some(checkpoint) = checkpoint else {
-        return SkeinLightningInitialImportResumeAction {
-            kind: SkeinLightningInitialImportResumeActionKind::Start,
+        return HawdbLightningInitialImportResumeAction {
+            kind: HawdbLightningInitialImportResumeActionKind::Start,
             next_batch: Some(0),
             idempotency_key: None,
             completed_batches: 0,
@@ -2841,27 +2841,27 @@ pub fn skein_lightning_initial_import_resume_action(
             blocker_codes: Vec::new(),
         };
     };
-    let readiness = skein_lightning_initial_import_checkpoint_readiness(manifest, checkpoint);
+    let readiness = hawdb_lightning_initial_import_checkpoint_readiness(manifest, checkpoint);
     let hard_mismatch = readiness.blocker_codes.iter().any(|code| {
         code == "initial_import_checkpoint_manifest_mismatch"
             || code == "initial_import_checkpoint_idempotency_key_missing"
     });
     let kind = if hard_mismatch {
-        SkeinLightningInitialImportResumeActionKind::Quarantine
+        HawdbLightningInitialImportResumeActionKind::Quarantine
     } else if readiness.ready {
-        SkeinLightningInitialImportResumeActionKind::ReadyForCutover
+        HawdbLightningInitialImportResumeActionKind::ReadyForCutover
     } else {
-        SkeinLightningInitialImportResumeActionKind::Resume
+        HawdbLightningInitialImportResumeActionKind::Resume
     };
     let next_batch = match kind {
-        SkeinLightningInitialImportResumeActionKind::Start => Some(0),
-        SkeinLightningInitialImportResumeActionKind::Resume => {
+        HawdbLightningInitialImportResumeActionKind::Start => Some(0),
+        HawdbLightningInitialImportResumeActionKind::Resume => {
             Some(checkpoint.completed_batches.min(checkpoint.total_batches))
         }
-        SkeinLightningInitialImportResumeActionKind::ReadyForCutover
-        | SkeinLightningInitialImportResumeActionKind::Quarantine => None,
+        HawdbLightningInitialImportResumeActionKind::ReadyForCutover
+        | HawdbLightningInitialImportResumeActionKind::Quarantine => None,
     };
-    SkeinLightningInitialImportResumeAction {
+    HawdbLightningInitialImportResumeAction {
         kind,
         next_batch,
         idempotency_key: readiness.idempotency_key,
@@ -2871,9 +2871,9 @@ pub fn skein_lightning_initial_import_resume_action(
     }
 }
 
-fn skein_lightning_initial_import_idempotency_key(
-    checkpoint: &SkeinLightningInitialImportCheckpoint,
-) -> Option<SkeinLightningInitialImportIdempotencyKey> {
+fn hawdb_lightning_initial_import_idempotency_key(
+    checkpoint: &HawdbLightningInitialImportCheckpoint,
+) -> Option<HawdbLightningInitialImportIdempotencyKey> {
     if checkpoint.import_id.is_empty()
         || checkpoint.task_id.is_empty()
         || checkpoint.fencing_token.is_empty()
@@ -2881,7 +2881,7 @@ fn skein_lightning_initial_import_idempotency_key(
     {
         return None;
     }
-    Some(SkeinLightningInitialImportIdempotencyKey {
+    Some(HawdbLightningInitialImportIdempotencyKey {
         import_id: checkpoint.import_id.clone(),
         task_id: checkpoint.task_id.clone(),
         fencing_token: checkpoint.fencing_token.clone(),
@@ -2897,7 +2897,7 @@ fn optional_epoch_regressed(previous: Option<u64>, next: Option<u64>) -> bool {
     }
 }
 
-fn skein_lightning_initial_import_required_search_projection_kinds() -> Vec<SearchProjectionKind> {
+fn hawdb_lightning_initial_import_required_search_projection_kinds() -> Vec<SearchProjectionKind> {
     vec![
         SearchProjectionKind::Memory,
         SearchProjectionKind::Message,
@@ -2909,7 +2909,7 @@ fn skein_lightning_initial_import_required_search_projection_kinds() -> Vec<Sear
 }
 
 #[derive(Debug, Default)]
-struct ParsedSkeinLightningGraphStream {
+struct ParsedHawdbLightningGraphStream {
     format_version: Option<u64>,
     graph_commit_epoch: Option<u64>,
     logical_checksum: Option<u64>,
@@ -2922,15 +2922,15 @@ struct ParsedSkeinLightningGraphStream {
     snapshot_relationships: Vec<CanonicalSnapshotRelationship>,
 }
 
-fn parse_skein_lightning_graph_stream_body(
+fn parse_hawdb_lightning_graph_stream_body(
     body: &str,
     errors: &mut Vec<String>,
-) -> ParsedSkeinLightningGraphStream {
+) -> ParsedHawdbLightningGraphStream {
     let mut cursor = GraphStreamCursor::new(body);
-    let mut parsed = ParsedSkeinLightningGraphStream::default();
+    let mut parsed = ParsedHawdbLightningGraphStream::default();
 
     match cursor.read_line() {
-        Some("SKEIN_LIGHTNING_GRAPH_STREAM_V1") => {}
+        Some("HAWDB_LIGHTNING_GRAPH_STREAM_V1") => {}
         Some(line) => {
             errors.push(format!("invalid graph stream header: {line}"));
             return parsed;
@@ -3442,5 +3442,5 @@ fn append_hex(output: &mut String, bytes: &[u8]) {
 }
 
 fn checksum_bytes(bytes: &[u8]) -> u64 {
-    skein_integrity::checksum_u64(bytes)
+    hawdb_integrity::checksum_u64(bytes)
 }

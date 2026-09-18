@@ -1,7 +1,7 @@
 //! Checkpoint-bound backup closure and destination publication.
 
 use super::DurableStore;
-use crate::error::{Result, SkeinError};
+use crate::error::{HawdbError, Result};
 use crate::store::{
     canonical_adjacency_artifact_generation_file, canonical_artifact_generation_file,
     canonical_manifest_generation_file, checkpoint_generation_file, copy_backup_file,
@@ -11,7 +11,7 @@ use crate::store::{
     validate_new_backup_destination, wal_generation_file, BackupManifest, BACKUP_MANIFEST_FILE,
     MANIFEST_FILE, STABLE_ID_MAPPING_FILE,
 };
-use skein_storage::{
+use hawdb_storage::{
     append_generation_manifest_file, append_segment_file, AppendGenerationReader,
     AppendPublicationConfig, StorageBackupReport,
 };
@@ -23,7 +23,7 @@ impl DurableStore {
     pub(in crate::store) fn backup_to(&self, destination: &Path) -> Result<StorageBackupReport> {
         let generation = self.checkpoint_epoch;
         if self.checkpoint_encoded_len.is_none() {
-            return Err(SkeinError::Storage(
+            return Err(HawdbError::Storage(
                 "storage must have a published checkpoint before backup".to_string(),
             ));
         }
@@ -46,8 +46,8 @@ impl DurableStore {
             }
             if let Some(binding) = self.relational_index_generation_artifacts {
                 let page_name =
-                    skein_storage::relational_index_shadow_artifact_file(binding.generation);
-                let manifest_name = skein_storage::relational_index_shadow_manifest_generation_file(
+                    hawdb_storage::relational_index_shadow_artifact_file(binding.generation);
+                let manifest_name = hawdb_storage::relational_index_shadow_manifest_generation_file(
                     binding.generation,
                 );
                 sources.insert(page_name.clone(), self.root_path.join(page_name));
@@ -55,17 +55,17 @@ impl DurableStore {
             }
             if let Some(binding) = self.relational_row_generation_artifacts {
                 for name in [
-                    skein_storage::relational_row_page_root_descriptor_file(binding.generation),
-                    skein_storage::relational_row_page_root_key_file(binding.generation),
-                    skein_storage::relational_row_page_manifest_generation_file(binding.generation),
+                    hawdb_storage::relational_row_page_root_descriptor_file(binding.generation),
+                    hawdb_storage::relational_row_page_root_key_file(binding.generation),
+                    hawdb_storage::relational_row_page_manifest_generation_file(binding.generation),
                 ] {
                     sources.insert(name.clone(), self.root_path.join(name));
                 }
             }
             if let Some(binding) = self.relational_overflow_generation_artifacts {
                 for name in [
-                    skein_storage::relational_overflow_descriptor_file(binding.generation),
-                    skein_storage::relational_overflow_manifest_generation_file(binding.generation),
+                    hawdb_storage::relational_overflow_descriptor_file(binding.generation),
+                    hawdb_storage::relational_overflow_manifest_generation_file(binding.generation),
                 ] {
                     sources.insert(name.clone(), self.root_path.join(name));
                 }
@@ -76,7 +76,7 @@ impl DurableStore {
                     binding,
                     AppendPublicationConfig::default(),
                 )
-                .map_err(|error| SkeinError::Storage(error.to_string()))?;
+                .map_err(|error| HawdbError::Storage(error.to_string()))?;
                 let manifest_name = append_generation_manifest_file(binding.generation);
                 sources.insert(manifest_name.clone(), self.root_path.join(manifest_name));
                 for segment in reader.segment_bindings() {
@@ -92,9 +92,9 @@ impl DurableStore {
                     overflow_extent_generations.insert(descriptor.physical_generation);
                     Ok(())
                 })
-                .map_err(|error| SkeinError::Storage(error.to_string()))?;
+                .map_err(|error| HawdbError::Storage(error.to_string()))?;
             for physical_generation in overflow_extent_generations {
-                let name = skein_storage::relational_overflow_extent_file(physical_generation);
+                let name = hawdb_storage::relational_overflow_extent_file(physical_generation);
                 sources.insert(name.clone(), self.root_path.join(name));
             }
             let row_root = self.open_bound_relational_row_pages(&overflow_root)?;
@@ -111,10 +111,10 @@ impl DurableStore {
                         row_page_generations.insert(descriptor.physical_generation);
                         Ok(())
                     })
-                    .map_err(|error| SkeinError::Storage(error.to_string()))?;
+                    .map_err(|error| HawdbError::Storage(error.to_string()))?;
             }
             for physical_generation in row_page_generations {
-                let name = skein_storage::relational_row_page_artifact_file(physical_generation);
+                let name = hawdb_storage::relational_row_page_artifact_file(physical_generation);
                 sources.insert(name.clone(), self.root_path.join(name));
             }
             if self.canonical_manifest_encoded_len.is_some() {
@@ -129,8 +129,8 @@ impl DurableStore {
                         .join(canonical_manifest_generation_file(generation)),
                 );
                 for name in [
-                    skein_storage::canonical_segment_descriptor_page_file(generation),
-                    skein_storage::canonical_segment_descriptor_root_file(generation),
+                    hawdb_storage::canonical_segment_descriptor_page_file(generation),
+                    hawdb_storage::canonical_segment_descriptor_root_file(generation),
                 ] {
                     sources.insert(name.clone(), self.root_path.join(name));
                 }
@@ -142,8 +142,8 @@ impl DurableStore {
                         .join(canonical_adjacency_artifact_generation_file(generation)),
                 );
                 for name in [
-                    skein_storage::canonical_adjacency_descriptor_page_file(generation),
-                    skein_storage::canonical_adjacency_descriptor_root_file(generation),
+                    hawdb_storage::canonical_adjacency_descriptor_page_file(generation),
+                    hawdb_storage::canonical_adjacency_descriptor_root_file(generation),
                 ] {
                     sources.insert(name.clone(), self.root_path.join(name));
                 }
@@ -160,8 +160,8 @@ impl DurableStore {
                         .join(property_spill_manifest_generation_file(generation)),
                 );
                 for name in [
-                    skein_storage::property_spill_descriptor_page_file(generation),
-                    skein_storage::property_spill_descriptor_root_file(generation),
+                    hawdb_storage::property_spill_descriptor_page_file(generation),
+                    hawdb_storage::property_spill_descriptor_root_file(generation),
                 ] {
                     sources.insert(name.clone(), self.root_path.join(name));
                 }
@@ -178,8 +178,8 @@ impl DurableStore {
                         .join(property_projection_manifest_generation_file(generation)),
                 );
                 for name in [
-                    skein_storage::property_projection_descriptor_page_file(generation),
-                    skein_storage::property_projection_descriptor_root_file(generation),
+                    hawdb_storage::property_projection_descriptor_page_file(generation),
+                    hawdb_storage::property_projection_descriptor_root_file(generation),
                 ] {
                     sources.insert(name.clone(), self.root_path.join(name));
                 }
@@ -194,7 +194,7 @@ impl DurableStore {
                         .file_name()
                         .and_then(|name| name.to_str())
                         .ok_or_else(|| {
-                            SkeinError::Storage(
+                            HawdbError::Storage(
                                 "stable identity generation artifact name is not UTF-8".to_string(),
                             )
                         })?
@@ -206,12 +206,12 @@ impl DurableStore {
                     sources.insert(artifact_name, artifact_path.to_path_buf());
                 }
                 (true, None) => {
-                    return Err(SkeinError::Storage(
+                    return Err(HawdbError::Storage(
                         "stable identity selector exists without a pinned generation".to_string(),
                     ));
                 }
                 (false, Some(_)) => {
-                    return Err(SkeinError::Storage(
+                    return Err(HawdbError::Storage(
                         "pinned stable identity generation has no selector".to_string(),
                     ));
                 }
@@ -234,7 +234,7 @@ impl DurableStore {
                 .files
                 .iter()
                 .try_fold(0u64, |total, file| total.checked_add(file.encoded_len))
-                .ok_or_else(|| SkeinError::Storage("backup byte count overflow".to_string()))?;
+                .ok_or_else(|| HawdbError::Storage("backup byte count overflow".to_string()))?;
             Ok(StorageBackupReport {
                 generation,
                 checkpoint_commit_epoch: self.checkpoint_commit_epoch,

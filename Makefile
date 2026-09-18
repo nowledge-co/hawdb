@@ -49,31 +49,31 @@ FUZZ_CAMPAIGN_EXECUTION_ARGS = $(strip \
 fuzz: fuzz-optimizer fuzz-storage fuzz-append fuzz-parser
 
 fuzz-optimizer:
-	$(BAZEL) run //crates/fuzz:skein_optimizer_fuzz -- $(FUZZ_COMMON_ARGS) $(FUZZ_CAMPAIGN_EXECUTION_ARGS) $(FUZZ_OPTIMIZER_ARGS)
+	$(BAZEL) run //crates/fuzz:hawdb_optimizer_fuzz -- $(FUZZ_COMMON_ARGS) $(FUZZ_CAMPAIGN_EXECUTION_ARGS) $(FUZZ_OPTIMIZER_ARGS)
 
 fuzz-optimizer-resume: FUZZ_RESUME := 1
 fuzz-optimizer-resume: fuzz-optimizer
 
 fuzz-storage:
-	$(BAZEL) run //crates/fuzz:skein_storage_fuzz -- $(FUZZ_COMMON_ARGS) $(FUZZ_STORAGE_ARGS)
+	$(BAZEL) run //crates/fuzz:hawdb_storage_fuzz -- $(FUZZ_COMMON_ARGS) $(FUZZ_STORAGE_ARGS)
 
 fuzz-parser:
-	$(BAZEL) run //crates/fuzz:skein_parser_fuzz -- $(FUZZ_COMMON_ARGS) $(FUZZ_PARSER_ARGS)
+	$(BAZEL) run //crates/fuzz:hawdb_parser_fuzz -- $(FUZZ_COMMON_ARGS) $(FUZZ_PARSER_ARGS)
 
 fuzz-append:
-	$(BAZEL) run //crates/fuzz:skein_append_fuzz -- $(FUZZ_COMMON_ARGS) $(FUZZ_STEPS_ARG) $(FUZZ_CAMPAIGN_EXECUTION_ARGS) $(FUZZ_APPEND_ARGS)
+	$(BAZEL) run //crates/fuzz:hawdb_append_fuzz -- $(FUZZ_COMMON_ARGS) $(FUZZ_STEPS_ARG) $(FUZZ_CAMPAIGN_EXECUTION_ARGS) $(FUZZ_APPEND_ARGS)
 
 fuzz-append-resume: FUZZ_RESUME := 1
 fuzz-append-resume: fuzz-append
 
 fuzz-smoke:
-	$(BAZEL) test //:skein_linux_ci_fuzz_smoke_test
+	$(BAZEL) test //:hawdb_linux_ci_fuzz_smoke_test
 
 fuzz-test:
 	$(BAZEL) test \
-		//crates/fuzz:skein_fuzz_tests \
-		//crates/fuzz:skein_fuzz_cli_tests \
-		//:skein_linux_ci_fuzz_smoke_test
+		//crates/fuzz:hawdb_fuzz_tests \
+		//crates/fuzz:hawdb_fuzz_cli_tests \
+		//:hawdb_linux_ci_fuzz_smoke_test
 
 fuzz-help:
 	@printf '%s\n' \

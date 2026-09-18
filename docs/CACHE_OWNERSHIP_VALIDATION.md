@@ -131,13 +131,13 @@ as an isolated speedup from pin counting.
 Run the identical reader benchmark in each checkout:
 
 ```sh
-cargo test --release -p skein-storage sharded_cache_reader_benchmark -- --ignored --nocapture
+cargo test --release -p hawdb-storage sharded_cache_reader_benchmark -- --ignored --nocapture
 ```
 
 The final local gate uses default Bazel configuration:
 
 ```sh
-bazel test //crates/storage:presubmit_tests //crates/runtime-tokio:presubmit_tests //:skein_unit_tests //:skein_cli_tests //:skein_storage_crash_recovery_tests //crates/fuzz:skein_fuzz_tests //crates/fuzz:skein_fuzz_cli_tests //:skein_linux_ci_fuzz_smoke_test
+bazel test //crates/storage:presubmit_tests //crates/runtime-tokio:presubmit_tests //:hawdb_unit_tests //:hawdb_cli_tests //:hawdb_storage_crash_recovery_tests //crates/fuzz:hawdb_fuzz_tests //crates/fuzz:hawdb_fuzz_cli_tests //:hawdb_linux_ci_fuzz_smoke_test
 ```
 
 Manual campaigns and release benchmarks remain local. No CI job, timeout,

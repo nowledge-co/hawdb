@@ -1,5 +1,5 @@
 //! Rebuildable RaBitQ candidate projections. Applications integrate through
-//! the embedded `skein` facade, not through experimental index primitives.
+//! the embedded `hawdb` facade, not through experimental index primitives.
 //!
 //! # Experimental APIs
 //!
@@ -16,8 +16,8 @@
 //!
 //! Their retention decision, prerequisites, verification gates, and removal
 //! criteria are tracked in the
-//! [vector experiment roadmap](https://github.com/nowledge-co/skein/blob/main/docs/VECTOR_EXPERIMENT_ROADMAP.md)
-//! for [issue #228](https://github.com/nowledge-co/skein/issues/228).
+//! [vector experiment roadmap](https://github.com/nowledge-co/hawdb/blob/main/docs/VECTOR_EXPERIMENT_ROADMAP.md)
+//! for [issue #228](https://github.com/nowledge-co/hawdb/issues/228).
 //! This is not approval to wire them into production or auto-apply advice.
 
 mod advisor;

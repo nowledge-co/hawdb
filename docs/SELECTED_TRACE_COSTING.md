@@ -41,12 +41,12 @@ exactly one cost evaluation per node. It is deliberately not part of ordinary
 Cargo tests or default CI target expansion.
 
 ```sh
-cargo test --locked -p skein-optimizer
-cargo test --locked -p skein-optimizer selected_trace_cost_differential_campaign -- --ignored --nocapture
-cargo clippy --locked -p skein-optimizer --all-targets --all-features -- -D warnings
-bazel test //crates/optimizer:skein_optimizer_tests //crates/optimizer:planner_golden_test //crates/fuzz:skein_fuzz_tests //crates/fuzz:skein_fuzz_cli_tests //:skein_linux_ci_fuzz_smoke_test --nocache_test_results
+cargo test --locked -p hawdb-optimizer
+cargo test --locked -p hawdb-optimizer selected_trace_cost_differential_campaign -- --ignored --nocapture
+cargo clippy --locked -p hawdb-optimizer --all-targets --all-features -- -D warnings
+bazel test //crates/optimizer:hawdb_optimizer_tests //crates/optimizer:planner_golden_test //crates/fuzz:hawdb_fuzz_tests //crates/fuzz:hawdb_fuzz_cli_tests //:hawdb_linux_ci_fuzz_smoke_test --nocache_test_results
 ```
 
 The named manual Bazel campaign is
-`//crates/optimizer:skein_optimizer_trace_cost_fuzz_tests`; the required local
+`//crates/optimizer:hawdb_optimizer_trace_cost_fuzz_tests`; the required local
 fuzz suite includes it. No dedicated or default CI fuzz job is added.

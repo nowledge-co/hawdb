@@ -14,22 +14,22 @@ filegroup(
 )
 
 rust_library(
-    name = "skein_cypher",
-    crate_name = "skein_cypher",
+    name = "hawdb_cypher",
+    crate_name = "hawdb_cypher",
     crate_root = "src/lib.rs",
     srcs = glob(["src/**/*.rs"]),
     edition = "2024",
     aliases = aliases(),
     deps = all_crate_deps(normal = True) + [
-        "//crates/core:skein_core",
-        "//crates/ddl:skein_ddl",
+        "//crates/core:hawdb_core",
+        "//crates/ddl:hawdb_ddl",
     ],
     proc_macro_deps = all_crate_deps(proc_macro = True),
 )
 
 rust_test(
-    name = "skein_cypher_tests",
-    crate = ":skein_cypher",
+    name = "hawdb_cypher_tests",
+    crate = ":hawdb_cypher",
     compile_data = [":migration_corpus_test_data"],
     edition = "2024",
     aliases = aliases(normal_dev = True, proc_macro_dev = True),
@@ -38,7 +38,7 @@ rust_test(
 )
 
 rust_test(
-    name = "skein_cypher_backtracking_fuzz_tests",
+    name = "hawdb_cypher_backtracking_fuzz_tests",
     compile_data = [":migration_corpus_test_data"],
     args = [
         "tests::backtracking::parser_backtracking_differential_campaign",
@@ -46,7 +46,7 @@ rust_test(
         "--ignored",
         "--nocapture",
     ],
-    crate = ":skein_cypher",
+    crate = ":hawdb_cypher",
     edition = "2024",
     aliases = aliases(normal_dev = True, proc_macro_dev = True),
     tags = ["manual"],

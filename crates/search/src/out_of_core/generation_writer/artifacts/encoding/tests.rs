@@ -8,17 +8,17 @@ use std::fmt::Write as _;
 // counting/streaming implementation, including optional vector ordinals.
 fn legacy_text(documents: &[SearchDocument], kind: SegmentKind) -> String {
     let (mut text, mut ordinal) = match kind {
-        SegmentKind::Documents => (String::from("SKEIN_SEARCH_SEGMENT_V1\n"), 0),
+        SegmentKind::Documents => (String::from("HAWDB_SEARCH_SEGMENT_V1\n"), 0),
         SegmentKind::Metadata {
             vector_ordinal_base,
         } => (
-            String::from("SKEIN_SEARCH_METADATA_SEGMENT_V1\n"),
+            String::from("HAWDB_SEARCH_METADATA_SEGMENT_V1\n"),
             vector_ordinal_base,
         ),
         SegmentKind::Vectors {
             vector_ordinal_base,
         } => (
-            String::from("SKEIN_SEARCH_VECTOR_SEGMENT_V1\n"),
+            String::from("HAWDB_SEARCH_VECTOR_SEGMENT_V1\n"),
             vector_ordinal_base,
         ),
     };
@@ -73,7 +73,7 @@ fn check(documents: &[SearchDocument], base: u64) {
         let text = legacy_text(documents, kind);
         let compressed = zstd::stream::encode_all(text.as_bytes(), 3).unwrap();
         let mut expected = format!(
-            "SKEIN_COMPRESSED_V1\ncodec\tzstd\nuncompressed_checksum\t{}\ncompressed_checksum\t{}\nuncompressed_len\t{}\ncompressed_len\t{}\n\n",
+            "HAWDB_COMPRESSED_V1\ncodec\tzstd\nuncompressed_checksum\t{}\ncompressed_checksum\t{}\nuncompressed_len\t{}\ncompressed_len\t{}\n\n",
             crate::checksum_bytes(text.as_bytes()), crate::checksum_bytes(&compressed), text.len(), compressed.len(),
         ).into_bytes();
         expected.extend_from_slice(&compressed);
@@ -249,7 +249,7 @@ fn digest_writer_accounts_only_accepted_bytes_and_propagates_failure() {
 
 fn admitted_context(bytes: usize) -> RuntimeTaskContext {
     RuntimeTaskContext::default()
-        .with_memory_reservation(skein_core::RuntimeMemoryReservation::new(bytes as u64, 0))
+        .with_memory_reservation(hawdb_core::RuntimeMemoryReservation::new(bytes as u64, 0))
 }
 
 #[test]

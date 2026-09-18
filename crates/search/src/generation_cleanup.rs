@@ -5,7 +5,7 @@ use std::num::NonZeroUsize;
 use std::path::Path;
 
 pub const SEARCH_PROJECTION_CLEANUP_PROTOCOL: &str =
-    "skein-search-projection-generation-cleanup-v1";
+    "hawdb-search-projection-generation-cleanup-v1";
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct SearchProjectionCleanupOptions {
@@ -365,7 +365,7 @@ fn defer_candidate(
 
 fn parse_generation(name: &str, prefix: &str) -> Option<u64> {
     name.strip_prefix(prefix)?
-        .strip_suffix(".skein")?
+        .strip_suffix(".hawdb")?
         .parse()
         .ok()
 }

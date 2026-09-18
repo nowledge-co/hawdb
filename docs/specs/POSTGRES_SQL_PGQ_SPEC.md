@@ -1,8 +1,8 @@
-# Skein PostgreSQL SQL/PGQ Compatibility Specification
+# Hawdb PostgreSQL SQL/PGQ Compatibility Specification
 
 ## Scope
 
-Skein supports graph queries through two language surfaces:
+Hawdb supports graph queries through two language surfaces:
 
 - a Cypher-compatible surface for existing embedded graph workloads; and
 - PostgreSQL-dialect SQL, including the SQL/PGQ property-graph extension.
@@ -10,23 +10,23 @@ Skein supports graph queries through two language surfaces:
 The PostgreSQL compatibility baseline is PostgreSQL master commit `3d00537f`.
 The relevant PostgreSQL surface is ISO/IEC 9075-16 SQL/PGQ, expressed through
 `CREATE PROPERTY GRAPH` and `GRAPH_TABLE`. It is not the standalone ISO/IEC
-39075 GQL language. Skein MUST describe this surface as PostgreSQL SQL/PGQ and
+39075 GQL language. Hawdb MUST describe this surface as PostgreSQL SQL/PGQ and
 MUST NOT claim standalone GQL conformance from SQL/PGQ coverage.
 
 This contract is independent from the scoped relational Content Store contract
 in `POSTGRES_RELATIONAL_CONTENT_STORE_SPEC.md`. SQL/PGQ is a general query
-frontend over Skein-owned graph and relational state; it is not a requirement
+frontend over Hawdb-owned graph and relational state; it is not a requirement
 for the first SQLite Content Store cutover.
 
 ## Language And API Boundary
 
 SQL/PGQ statements use the existing `Database::query_sql*`, preparation,
-transaction, streaming, explain, and query-report surfaces. Skein MUST NOT add
+transaction, streaming, explain, and query-report surfaces. Hawdb MUST NOT add
 a route-specific API or a separate production `query_gql` entrypoint for this
 compatibility layer.
 
 Cypher and SQL/PGQ own distinct syntax ASTs. After binding, both MUST lower to
-the same Skein-owned typed expressions, graph logical operators, optimizer,
+the same Hawdb-owned typed expressions, graph logical operators, optimizer,
 physical operators, snapshot, and resource admission. SQL/PGQ MUST NOT be
 implemented by rendering Cypher text, and the executor MUST NOT inspect raw SQL
 or syntax AST nodes.
@@ -50,9 +50,9 @@ relational join interpretation with different semantics.
 
 ## Owned Syntax Frontend
 
-`skein-sql-syntax` owns PostgreSQL-oriented lexical tokens, byte spans, syntax
+`hawdb-sql-syntax` owns PostgreSQL-oriented lexical tokens, byte spans, syntax
 errors, and syntax ASTs. It has no dependency on storage, planning, execution,
-or the embedded facade. `skein-sql` owns semantic lowering and remains the only
+or the embedded facade. `hawdb-sql` owns semantic lowering and remains the only
 SQL dependency exposed to the root crate.
 
 Tokens and syntax nodes retain byte spans into the caller-owned SQL text rather
@@ -78,7 +78,7 @@ owned-parser failure MUST be returned directly and MUST NOT trigger a retry
 through the upstream parser.
 
 PostgreSQL source is a grammar and semantic reference, not copied production
-code. The implementation MUST preserve Skein's Apache-2.0 licensing and MUST
+code. The implementation MUST preserve Hawdb's Apache-2.0 licensing and MUST
 NOT copy PostgreSQL C parser code or generated parser tables. PostgreSQL source
 locations used as the initial reference are:
 
@@ -97,10 +97,10 @@ produce tokens or a structured error without panicking. Token, nesting, and
 input limits MUST be configurable or bounded by the caller's parse budget.
 
 The syntax corpus is adapted from PostgreSQL regression scenarios and records
-the exact upstream revision and source files. Skein may reduce and rename those
+the exact upstream revision and source files. Hawdb may reduce and rename those
 scenarios, but MUST preserve whether PostgreSQL accepts them in raw parsing or
 rejects them later during graph binding. PostgreSQL output strings and C parser
-implementation details are not part of the Skein test contract.
+implementation details are not part of the Hawdb test contract.
 
 ## Property Graph Catalog
 
@@ -183,7 +183,7 @@ failure reason without retaining query parameters or user payloads.
 
 The checked-in SQL/PGQ corpus MUST record the PostgreSQL source revision,
 statement, parameters, expected columns and values, expected error class, and
-the Skein supported-subset classification. Parser acceptance alone is not
+the Hawdb supported-subset classification. Parser acceptance alone is not
 coverage.
 
 Qualification requires:

@@ -11,7 +11,7 @@ impl RecordingEngine {
     fn event(&self, event: String) -> Result<()> {
         self.events.borrow_mut().push(event.clone());
         if self.fail_at.as_ref() == Some(&event) {
-            return Err(SkeinError::Execution(
+            return Err(HawdbError::Execution(
                 "injected primary failure".to_string(),
             ));
         }

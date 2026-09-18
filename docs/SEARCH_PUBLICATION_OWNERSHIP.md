@@ -83,7 +83,7 @@ scratch uses the audited platform bounds above.
 
 Independent baseline artifacts and isolated negative mutations supplement the
 ordinary Cargo and unchanged default Bazel/local-fuzz checks. Qualification logs
-and source receipts are retained under `/tmp/skein-392-publication` on the
+and source receipts are retained under `/tmp/hawdb-392-publication` on the
 validation host. This document does not replace those execution receipts.
 
 Writer cleanup now uses an admitted one-pass owner; see the

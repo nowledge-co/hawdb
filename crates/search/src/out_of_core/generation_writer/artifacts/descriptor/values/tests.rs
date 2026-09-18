@@ -1,6 +1,6 @@
 use super::super::tests::document;
 use super::*;
-use skein_core::RuntimeMemoryReservation;
+use hawdb_core::RuntimeMemoryReservation;
 
 #[test]
 fn escaped_json_scratch_is_bounded_by_one_token_and_is_admitted_before_visiting() {

@@ -3,7 +3,7 @@ use std::hash::{BuildHasher, Hash, Hasher};
 use std::num::NonZeroUsize;
 
 use crate::kernel::OperatorMemoryTracker;
-use skein_core::Result;
+use hawdb_core::Result;
 
 /// Hash the structural key once, including when a probe is followed by a merge
 /// or insertion. Hash collisions never replace full-key equality.
@@ -218,7 +218,7 @@ pub(super) const fn hash_set_capacity_bytes<K>(capacity: usize) -> usize {
 mod tests {
     use super::*;
     use crate::{QueryMemoryClass, QueryMemoryLedger};
-    use skein_core::Value;
+    use hawdb_core::Value;
     use std::collections::{BTreeMap, HashMap};
 
     #[test]

@@ -240,7 +240,7 @@ fn background_maintenance_evidence_health_rejects_foreground_ranked_work() {
 #[test]
 fn background_maintenance_evidence_health_rejects_memory_pressure() {
     let summary = serde_json::json!({
-        "protocol": "skein-background-maintenance-report",
+        "protocol": "hawdb-background-maintenance-report",
         "total_candidates": 1,
         "foreground_admission_probe_ready": true,
         "foreground_admission_probe_admission": "admit",
@@ -281,7 +281,7 @@ fn background_maintenance_evidence_health_rejects_memory_pressure() {
 #[test]
 fn background_maintenance_evidence_health_requires_memory_pressure() {
     let summary = serde_json::json!({
-        "protocol": "skein-background-maintenance-report",
+        "protocol": "hawdb-background-maintenance-report",
         "total_candidates": 1,
         "foreground_admission_probe_ready": true,
         "foreground_admission_probe_admission": "admit",
@@ -315,7 +315,7 @@ fn background_maintenance_evidence_health_requires_memory_pressure() {
 #[test]
 fn background_maintenance_evidence_health_requires_qos_snapshot() {
     let summary = serde_json::json!({
-        "protocol": "skein-background-maintenance-report",
+        "protocol": "hawdb-background-maintenance-report",
         "total_candidates": 1,
         "foreground_admission_probe_ready": true,
         "foreground_admission_probe_admission": "admit",
@@ -349,7 +349,7 @@ fn background_maintenance_evidence_health_requires_qos_snapshot() {
 #[test]
 fn background_maintenance_evidence_health_rejects_unbounded_qos_snapshot() {
     let summary = serde_json::json!({
-        "protocol": "skein-background-maintenance-report",
+        "protocol": "hawdb-background-maintenance-report",
         "total_candidates": 1,
         "foreground_admission_probe_ready": true,
         "foreground_admission_probe_admission": "admit",
@@ -399,7 +399,7 @@ fn background_maintenance_evidence_health_rejects_unbounded_qos_snapshot() {
 #[test]
 fn background_maintenance_evidence_health_requires_foreground_admission_probe() {
     let summary = serde_json::json!({
-        "protocol": "skein-background-maintenance-report",
+        "protocol": "hawdb-background-maintenance-report",
         "total_candidates": 1,
         "memory_pressure": ready_memory_pressure(),
         "qos_snapshot": ready_qos_snapshot(),
@@ -435,7 +435,7 @@ fn background_maintenance_evidence_health_requires_foreground_admission_probe() 
 #[test]
 fn background_maintenance_evidence_health_requires_slow_query_summary() {
     let summary = serde_json::json!({
-        "protocol": "skein-background-maintenance-report",
+        "protocol": "hawdb-background-maintenance-report",
         "total_candidates": 1,
         "foreground_admission_probe_ready": true,
         "foreground_admission_probe_admission": "admit",
@@ -495,7 +495,7 @@ fn storage_recovery_evidence_health_reports_stable_blocker_codes() {
 #[test]
 fn storage_recovery_evidence_health_recomputes_raw_recovery_fields() {
     let report = serde_json::json!({
-        "protocol": "skein-storage-recovery-report",
+        "protocol": "hawdb-storage-recovery-report",
         "durable": true,
         "checkpoint_epoch": 7,
         "checkpoint_commit_epoch": null,

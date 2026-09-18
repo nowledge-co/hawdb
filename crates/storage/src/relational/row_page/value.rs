@@ -1,5 +1,5 @@
 use super::*;
-use skein_core::Uuid;
+use hawdb_core::Uuid;
 
 pub(super) fn encode_row(
     row: &RelationalRow,

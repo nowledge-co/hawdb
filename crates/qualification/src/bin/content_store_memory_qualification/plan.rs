@@ -1,12 +1,12 @@
 use super::qualification_input::{
     read_bounded_json, EvidenceBindingInput, ProductionIdentityInput,
 };
+use hawdb_qualification::ProductionContentStoreMemoryQualificationConfig;
 use serde::Deserialize;
-use skein_qualification::ProductionContentStoreMemoryQualificationConfig;
 use std::path::{Path, PathBuf};
 
 pub(crate) const CONTENT_STORE_MEMORY_QUALIFICATION_PLAN_PROTOCOL: &str =
-    "skein-production-content-store-memory-plan-v1";
+    "hawdb-production-content-store-memory-plan-v1";
 
 pub(crate) fn read_plan(path: &Path) -> Result<ContentStoreMemoryQualificationPlan, String> {
     read_bounded_json(path, "Content Store memory qualification plan")
@@ -77,7 +77,7 @@ mod tests {
             "../../../fixtures/nowledge_content_store/production_memory_plan_example_v1.json"
         ))
         .unwrap();
-        let missing = std::env::temp_dir().join("skein-memory-qualification-missing-path");
+        let missing = std::env::temp_dir().join("hawdb-memory-qualification-missing-path");
         assert!(plan
             .into_config(missing)
             .unwrap_err()

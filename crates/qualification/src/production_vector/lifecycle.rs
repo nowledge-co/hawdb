@@ -6,7 +6,7 @@ use super::{
     ProductionVectorLifecycleReport, ProductionVectorQualificationConfig,
     ProductionVectorQualificationError,
 };
-use skein::{
+use hawdb::{
     AdaptiveVectorSearchOptions, CompressedVectorSearchMode, RuntimeCancellationToken,
     RuntimeTaskContext, SearchIndex, SearchProjectionDelta, SearchResultSet,
     VectorProjectionQualificationIdentity, VectorSearchKernelPreference,
@@ -19,7 +19,7 @@ use std::thread;
 use std::time::Instant;
 
 const RABITQ_ARTIFACT_PREFIX: &str = "search_rabitq.";
-const RABITQ_ARTIFACT_SUFFIX: &str = ".skein";
+const RABITQ_ARTIFACT_SUFFIX: &str = ".hawdb";
 
 pub(super) fn run_lifecycle(
     config: &ProductionVectorQualificationConfig,
@@ -210,7 +210,7 @@ fn execute_preferred(
         .try_search_with_options_adaptive_vector_projection_context(
             "",
             Some(&query_case.query_embedding),
-            skein::SearchMode::Vector,
+            hawdb::SearchMode::Vector,
             query_options(query_case, config)?,
             AdaptiveVectorSearchOptions::new(CompressedVectorSearchMode::Preferred),
             config.execution_options(task_context, VectorSearchKernelPreference::Auto),

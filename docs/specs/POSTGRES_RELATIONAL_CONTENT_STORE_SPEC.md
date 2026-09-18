@@ -1,10 +1,10 @@
-# Skein PostgreSQL-Dialect Relational Content Store Specification
+# Hawdb PostgreSQL-Dialect Relational Content Store Specification
 
 ## Scope
 
-This specification defines Skein's relational storage primitives and the
+This specification defines Hawdb's relational storage primitives and the
 PostgreSQL-dialect SQL subset required to replace the scoped Nowledge SQLite
-Content Store. PostgreSQL is a syntax and semantic reference. Skein MUST NOT
+Content Store. PostgreSQL is a syntax and semantic reference. Hawdb MUST NOT
 require a PostgreSQL server or client library to execute this workload.
 
 The durable migration target is governed by
@@ -23,11 +23,11 @@ The canonical schema scope is:
 - `content_anchors`;
 - `content_migration_state`.
 
-This is the Skein projection of Mem App Content Store schema v4, not a claim
-that every SQLite control table becomes canonical Skein data. The App's
+This is the Hawdb projection of Mem App Content Store schema v4, not a claim
+that every SQLite control table becomes canonical Hawdb data. The App's
 `content_schema_migrations` and `content_mutation_obligations` tables are
 source-only control state. In particular, mutation obligations record delivery
-to Skein; storing them in the destination would make the delivery ledger part
+to Hawdb; storing them in the destination would make the delivery ledger part
 of the dataset it coordinates. The Mem integration contract MUST name these
 tables explicitly and prove that they are excluded from import and full-data
 comparison.
@@ -39,9 +39,9 @@ External artifact and blob files remain outside this contract.
 `crates/qualification/fixtures/nowledge_content_store/content_store_schema_v1.sql`
 is the authoritative initial DDL. It contains executable `CREATE TABLE` and
 `CREATE INDEX` statements and is versioned independently from the workload.
-Skein has not entered production, so the current greenfield baseline may be
-updated destructively when the App schema changes; existing development Skein
-databases must then be recreated. After Skein acquires a production data
+Hawdb has not entered production, so the current greenfield baseline may be
+updated destructively when the App schema changes; existing development Hawdb
+databases must then be recreated. After Hawdb acquires a production data
 compatibility obligation, schema initialization MUST execute this ordered DDL
 or an explicit append-only successor and MUST NOT reconstruct schema from test
 metadata.
@@ -64,14 +64,14 @@ any value differs from the qualified artifact. `covered` callers have a
 complete statement mapping. `partial` callers MUST NOT be treated as
 cutover-ready.
 
-The schema and corpus belong to `skein-qualification`, not the default `skein`
-facade. `skein-content-store-contract` is a thin developer tool over the typed
+The schema and corpus belong to `hawdb-qualification`, not the default `hawdb`
+facade. `hawdb-content-store-contract` is a thin developer tool over the typed
 qualification API. The default embedded database build therefore does not
 carry Mem-specific workload fixtures.
 
 ## SQL Frontend
 
-`skein-sql` owns its SELECT, DDL, and DML AST. Public APIs MUST NOT expose
+`hawdb-sql` owns its SELECT, DDL, and DML AST. Public APIs MUST NOT expose
 third-party parser types. The supported parameter contract uses dense,
 one-based PostgreSQL `$1`, `$2`, ... positions. Preparation MUST reject a zero
 position, a missing position, or supplied parameter cardinality that differs
@@ -405,7 +405,7 @@ Skyline pruning MUST NOT infer them from index shape alone. Base prefix lookup
 and cardinality probes remain bounded by the query intermediate-row admission
 limit.
 
-Content routes MUST remain named parameterized SQL statements; Skein MUST NOT
+Content routes MUST remain named parameterized SQL statements; Hawdb MUST NOT
 add one typed API per route. Production activation still requires the
 identity-bound migration, differential, recovery, representative-load, and
 cross-platform evidence described below; implemented executor mechanics alone
@@ -413,11 +413,11 @@ are not cutover evidence.
 
 Content Store memory evidence separates policy qualification from workload
 qualification. On an 8 GiB shared-host limit, the default governor reserves 75% for
-the host process and derives at most 2 GiB of Skein capacity; sensed available
+the host process and derives at most 2 GiB of Hawdb capacity; sensed available
 headroom normally moves the budget through the 1--2 GiB range and may reduce it
 further under pressure. The 512 MiB capability case is a separately configured
 bounded run. It proves that the bounded workload can execute within an explicit
-512 MiB Skein capacity ceiling; it does not require a 512 MiB host or process
+512 MiB Hawdb capacity ceiling; it does not require a 512 MiB host or process
 limit. A smaller effective host or cgroup ceiling and sensed headroom remain
 authoritative. Neither profile changes SQL semantics or becomes a table-specific
 API.
@@ -425,7 +425,7 @@ API.
 ## Migration Boundary
 
 SQLite snapshotting and `rusqlite` remain in the Nowledge migration adapter.
-Skein MUST NOT acquire SQLite as a production dependency. Migration uses stable
+Hawdb MUST NOT acquire SQLite as a production dependency. Migration uses stable
 keyset pages, durable cursors, idempotent primary-key/content-hash replay, a
 legacy write fence or durable obligation protocol, and differential validation
 before cutover. The source SQLite database remains unchanged until a separately
@@ -472,7 +472,7 @@ view MUST expose graph and relational ownership at the same commit epoch while
 preserving chunk count, ordering, text, token count, metadata, and content
 hashes. A missing Source is an explicit no-op that MUST NOT advance the commit
 epoch. The live row overlay and checkpoint/reopen result MUST have identical
-ordered output and payload digests. `SkeinContentSourceOwnershipMove.tla`
+ordered output and payload digests. `HawdbContentSourceOwnershipMove.tla`
 models the durable publication boundary and the missing-owner no-op.
 
 `patch_thread_space_ownership` is qualified as one bounded guarded batch. Each
@@ -488,7 +488,7 @@ The graph Thread is addressed by its public Thread id, while the relational
 document `owner_id` and message `thread_storage_id` are addressed by the
 distinct storage id. Qualification fixtures MUST keep those identities
 different and verify both mappings explicitly.
-`SkeinContentThreadOwnershipMove.tla` models guarded per-owner staging and the
+`HawdbContentThreadOwnershipMove.tla` models guarded per-owner staging and the
 single durable batch publication.
 
 `patch_moved_space_ownership` extends the same guard to one Space merge that
@@ -498,7 +498,7 @@ epoch. A selected Thread that no longer belongs to the previewed source space
 remains unchanged while the eligible Threads and Source publish through the
 live overlay. The typed evidence records expected space per case,
 the exact document/message update counts, payload digests, and identical
-checkpoint/reopen reads. `SkeinContentSpaceMergeOwnership.tla` proves the
+checkpoint/reopen reads. `HawdbContentSpaceMergeOwnership.tla` proves the
 cross-kind durable batch rather than inferring it from two independent moves.
 
 `upsert_thread_messages` is qualified as one mixed transaction over the graph
@@ -511,7 +511,7 @@ by the conflict clause. A rejected missing-document message MUST leave every
 previously accepted statement in the transaction workspace unchanged. The
 summary count and payload bytes MUST match the final occurrence set before the
 single commit becomes visible. Live row-overlay and checkpoint/reopen reads
-MUST retain identical ordered output. `SkeinContentThreadUpsert.tla` models
+MUST retain identical ordered output. `HawdbContentThreadUpsert.tla` models
 complete durable publication, conflict-time creation identity, and rejected
 statement atomicity.
 
@@ -528,11 +528,11 @@ anchor with a null occurrence id follows only the matching `message_id` at its
 previous order, preventing an anchor from moving to another duplicate message.
 The graph Thread update, storage-owned document UPSERT, message and anchor
 reordering, new message insertion, and exact document summary publish through
-one mixed transaction. The v1 Skein schema has no historical unique-order
+one mixed transaction. The v1 Hawdb schema has no historical unique-order
 migration constraint, so it applies target orders directly rather than using
 SQLite's temporary negative-order displacement. Live overlay and
 checkpoint/reopen output, occurrence identity, and anchor state MUST match.
-`SkeinContentThreadReconcile.tla` models mapping rejection, arbitrary staging,
+`HawdbContentThreadReconcile.tla` models mapping rejection, arbitrary staging,
 anchor-following, immutable preserved payloads, and complete durable
 publication.
 
@@ -551,7 +551,7 @@ changes. Retained messages and anchors MUST preserve their full payload and
 creation identity. The live view MUST expose row tombstones for deleted
 occurrences at the same commit epoch as graph and summary state, and
 checkpoint/reopen MUST preserve the same ordered retained rows and anchor
-state. `SkeinContentThreadTailDelete.tla` models exact tail selection, empty
+state. `HawdbContentThreadTailDelete.tla` models exact tail selection, empty
 no-op behavior, arbitrary partial staging, retained payload identity, and
 durable-before-visible publication.
 
@@ -572,7 +572,7 @@ pre-durability crash expose the complete old state. Publication exposes the
 complete deletion at one epoch, preserves unrelated graph and relational
 payloads byte-for-byte, and leaves a live row tombstone until checkpoint.
 Checkpoint/reopen MUST preserve the same absence and unrelated payload digest.
-`SkeinContentThreadDelete.tla` models exact document discovery, arbitrary
+`HawdbContentThreadDelete.tla` models exact document discovery, arbitrary
 cross-model staging, epoch-preserving preflight no-ops, rollback, atomic
 durable publication, and recovery.
 
@@ -584,7 +584,7 @@ measurements, and cross-platform fault injection remain fail-closed. The runner
 never embeds its database path or payload contents in the serialized report.
 
 `run_production_content_store_storage_qualification` is the typed read-only
-production-copy gate. It opens an already imported Skein replica with an
+production-copy gate. It opens an already imported Hawdb replica with an
 explicit `read_only`, `OutOfCore`, and `Authoritative` configuration. It never
 opens SQLite, imports source rows, writes WAL, checkpoints, or mutates the
 source replica. Every case names one frozen read statement and supplies its
@@ -627,7 +627,7 @@ but MUST NOT compare that aggregate with a per-run limit.
 `SharedHost8Gib`, `Capability512Mib`, and `ConfiguredWorkload` remain
 different evidence profiles. The shared-host profile requires the observed 8 GiB
 effective limit and uses the dynamic governor budget capped at 2 GiB. The 512
-MiB profile requires an explicit 512 MiB Skein governor ceiling, honors any
+MiB profile requires an explicit 512 MiB Hawdb governor ceiling, honors any
 smaller detected host or cgroup ceiling and available headroom, and proves that
 peak RSS remains inside the declared 512 MiB envelope. It does not require the
 host itself to be limited to 512 MiB, and it is not the default or a universal
@@ -638,7 +638,7 @@ evidence.
 
 `run_production_content_store_mutation_qualification` is the separate writable
 production-copy gate. The caller MUST provide one read-only source directory
-and four distinct disposable Skein replicas for exactly 1, 4, 8, and 10
+and four distinct disposable Hawdb replicas for exactly 1, 4, 8, and 10
 writers. The runner canonicalizes every path, opens the source only with
 `read_only`, and rejects any replica that aliases the source or another case.
 It never copies, checkpoints, or mutates the source. Every worker owns one
@@ -671,10 +671,10 @@ inside both the engine total and the caller's enclosing measurement, and the
 release evaluator recomputes that invariant from raw evidence.
 
 The writer matrix uses the same resource-profile meanings as the read-only
-gate. `Capability512Mib` proves that an explicitly configured Skein workload can
+gate. `Capability512Mib` proves that an explicitly configured Hawdb workload can
 complete inside a 512 MiB envelope; it is neither the default capacity nor a
 universal release cutoff. `SharedHost8Gib` continues to mean an 8 GiB host
-whose automatic Skein capacity is dynamically bounded at 2 GiB. Every initial
+whose automatic Hawdb capacity is dynamically bounded at 2 GiB. Every initial
 source and replica row/index artifact MUST exceed the cache, so passing the
 matrix cannot depend on full database residency. Synthetic matrix tests prove
 the isolation, replay, checkpoint, digest, and evidence contracts only; release
@@ -684,7 +684,7 @@ representative production import.
 The final `evaluate_production_release_qualification_bundle` gate requires the
 identity-bound two-policy memory matrix, a read-only production-copy report, a
 separate read-only report with the explicit 512 MiB ceiling, and the four-case
-mutation-replica report. The 8 GiB policy caps automatic Skein capacity at
+mutation-replica report. The 8 GiB policy caps automatic Hawdb capacity at
 2 GiB and derives the effective budget from current headroom; 1--2 GiB is the
 nominal operating range, not a reservation or lower bound. The 512 MiB report
 proves a separate supported capability and cannot stand in for the production

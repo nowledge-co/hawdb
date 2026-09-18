@@ -2,15 +2,15 @@ use super::*;
 use crate::memory::{enforced_query_memory_budget, enforced_result_memory_budget};
 use crate::observer::ExecutionObserver;
 use crate::{ExecutionMemoryConfig, QueryMemoryClass};
-use skein_core::{RuntimeMemoryReservation, RuntimeTaskContext, SkeinError};
+use hawdb_core::{HawdbError, RuntimeMemoryReservation, RuntimeTaskContext};
 use std::num::NonZeroUsize;
 
 fn nonzero(bytes: usize) -> NonZeroUsize {
     NonZeroUsize::new(bytes).unwrap()
 }
 
-fn execution_error(error: SkeinError) -> String {
-    let SkeinError::Execution(message) = error else {
+fn execution_error(error: HawdbError) -> String {
+    let HawdbError::Execution(message) = error else {
         panic!("unexpected error: {error:?}");
     };
     message
@@ -155,7 +155,7 @@ fn events(observer: &QueryExecutionObserver, plan: &PhysicalPlan, rows: usize) {
         GraphExpansionTruncationReason, VectorCompressionMode, VectorExecutionBackend,
         VectorExecutionReport, VectorScoreSource,
     };
-    use skein_storage::{ScanPruningStrategy, ScanPruningTargetKind};
+    use hawdb_storage::{ScanPruningStrategy, ScanPruningTargetKind};
 
     observer.record_operator_start(plan);
     observer.record_operator_output(plan, rows);
@@ -206,7 +206,7 @@ fn events(observer: &QueryExecutionObserver, plan: &PhysicalPlan, rows: usize) {
         observer.record_vector_execution(VectorExecutionReport {
             backend: VectorExecutionBackend::ScalarFlat,
             compression_mode: VectorCompressionMode::Disabled,
-            candidate_source: skein_plan::VectorCandidateSource::Scalar,
+            candidate_source: hawdb_plan::VectorCandidateSource::Scalar,
             backend_selection_reason: None,
             estimated_raw_vector_bytes: Some(128),
             filter_selectivity_per_million: None,

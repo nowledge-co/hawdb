@@ -2,7 +2,7 @@ use jieba_rs::Jieba;
 use std::sync::LazyLock;
 
 pub(super) const ANALYZER_FORMAT_VERSION: &[u8] =
-    b"skein-search-analyzer-v2-jieba-search-han-ngrams";
+    b"hawdb-search-analyzer-v2-jieba-search-han-ngrams";
 
 static CHINESE_TOKENIZER: LazyLock<Jieba> = LazyLock::new(Jieba::new);
 
@@ -52,7 +52,7 @@ pub(super) fn prime_workspace(text: &str) -> super::Result<()> {
     // this worker. The private dictionary is immutable; fail closed if a future
     // dictionary invalidates the dependency qualification fixture.
     if CHINESE_TOKENIZER.has_word(text) {
-        return Err(super::SkeinError::Execution(
+        return Err(super::HawdbError::Execution(
             "search analyzer dictionary invalidated workspace initialization".into(),
         ));
     }

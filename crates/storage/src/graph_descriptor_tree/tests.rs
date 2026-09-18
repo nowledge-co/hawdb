@@ -12,7 +12,7 @@ impl TestDirectory {
     fn new(name: &str) -> Self {
         let sequence = NEXT_DIRECTORY.fetch_add(1, Ordering::Relaxed);
         let path = std::env::temp_dir().join(format!(
-            "skein-graph-descriptor-tree-{name}-{}-{sequence}",
+            "hawdb-graph-descriptor-tree-{name}-{}-{sequence}",
             std::process::id()
         ));
         let _ = fs::remove_dir_all(&path);
@@ -33,8 +33,8 @@ impl Drop for TestDirectory {
 
 fn paths(root: &Path) -> GraphDescriptorTreePaths {
     GraphDescriptorTreePaths::new(
-        root.join("adjacency-descriptors-7.pages.skein"),
-        root.join("adjacency-descriptors-7.root.skein"),
+        root.join("adjacency-descriptors-7.pages.hawdb"),
+        root.join("adjacency-descriptors-7.root.hawdb"),
     )
 }
 
@@ -255,7 +255,7 @@ fn builder_rejects_non_converging_interior_fanout() {
 #[test]
 fn builder_rejects_owned_path_aliases() {
     let directory = TestDirectory::new("path-alias");
-    let artifact = directory.path().join("descriptors.skein");
+    let artifact = directory.path().join("descriptors.hawdb");
     let tree_paths = GraphDescriptorTreePaths::new(&artifact, &artifact);
     let error = GraphDescriptorTreeBuilder::create(
         tree_paths,

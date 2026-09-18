@@ -6,7 +6,7 @@ use std::num::NonZeroU64;
 #[test]
 fn embedded_facade_supports_explicit_lexical_manifest_budget() {
     let root = std::env::temp_dir().join(format!(
-        "skein-manifest-budget-facade-{}-{}",
+        "hawdb-manifest-budget-facade-{}-{}",
         std::process::id(),
         std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)

@@ -1,8 +1,8 @@
 //! Typed columnar batches used by vectorized executor fragments.
 
-use skein_core::{LogicalType, Result, SkeinError, Value, ValueRef};
-use skein_plan::ComparisonOp;
-use skein_storage::{RelationalKey, RelationalValue};
+use hawdb_core::{HawdbError, LogicalType, Result, Value, ValueRef};
+use hawdb_plan::ComparisonOp;
+use hawdb_storage::{RelationalKey, RelationalValue};
 use std::sync::Arc;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
@@ -136,7 +136,7 @@ impl BindingSchema {
     pub fn try_new(slots: Vec<SlotDescriptor>) -> Result<Self> {
         for (index, slot) in slots.iter().enumerate() {
             if slot.id.0 as usize != index {
-                return Err(SkeinError::Execution(format!(
+                return Err(HawdbError::Execution(format!(
                     "columnar schema slot ids must be dense: expected {index}, got {}",
                     slot.id.0
                 )));
@@ -364,7 +364,7 @@ impl ColumnVector {
     pub fn boolean_bytes(values: Vec<u8>, validity: Validity) -> Result<Self> {
         ensure_column_len("Bool", values.len(), validity.len())?;
         if values.iter().any(|value| *value > 1) {
-            return Err(SkeinError::Execution(
+            return Err(HawdbError::Execution(
                 "Bool column contains a value other than 0 or 1".to_string(),
             ));
         }
@@ -510,7 +510,7 @@ impl ColumnVector {
 
 fn ensure_column_len(kind: &str, values: usize, validity: usize) -> Result<()> {
     if values != validity {
-        return Err(SkeinError::Execution(format!(
+        return Err(HawdbError::Execution(format!(
             "{kind} column has {values} values but {validity} validity entries"
         )));
     }
@@ -723,7 +723,7 @@ impl<'a> ColumnarRowRef<'a> {
 impl ColumnarBatch {
     pub fn try_new(schema: Arc<BindingSchema>, columns: Vec<Arc<ColumnVector>>) -> Result<Self> {
         if schema.len() != columns.len() {
-            return Err(SkeinError::Execution(format!(
+            return Err(HawdbError::Execution(format!(
                 "columnar batch has {} slots but {} columns",
                 schema.len(),
                 columns.len()
@@ -732,14 +732,14 @@ impl ColumnarBatch {
         let row_count = columns.first().map_or(0, |column| column.len());
         for (slot, column) in schema.slots().iter().zip(&columns) {
             if column.len() != row_count {
-                return Err(SkeinError::Execution(format!(
+                return Err(HawdbError::Execution(format!(
                     "columnar slot '{}' has {} rows, expected {row_count}",
                     slot.name,
                     column.len()
                 )));
             }
             if !slot.slot_type.accepts(column.column_type()) {
-                return Err(SkeinError::Execution(format!(
+                return Err(HawdbError::Execution(format!(
                     "columnar slot '{}' expects {:?}, got {:?}",
                     slot.name,
                     slot.slot_type,
@@ -787,7 +787,7 @@ impl ColumnarBatch {
 
     pub fn with_selection(mut self, selection: Selection) -> Result<Self> {
         if selection.len() != self.row_count {
-            return Err(SkeinError::Execution(format!(
+            return Err(HawdbError::Execution(format!(
                 "columnar selection has {} rows, expected {}",
                 selection.len(),
                 self.row_count
@@ -802,7 +802,7 @@ impl ColumnarBatch {
         let mut columns = Vec::with_capacity(slots.len());
         for (output_index, slot) in slots.iter().copied().enumerate() {
             let descriptor = self.schema.slot(slot).ok_or_else(|| {
-                SkeinError::Execution(format!("unknown columnar slot {}", slot.0))
+                HawdbError::Execution(format!("unknown columnar slot {}", slot.0))
             })?;
             descriptors.push(SlotDescriptor {
                 id: SlotId(output_index as u32),
@@ -828,7 +828,7 @@ impl ColumnarBatch {
         expected: NumericLiteral,
     ) -> Result<Self> {
         let column = self.column(slot).ok_or_else(|| {
-            SkeinError::Execution(format!("unknown columnar filter slot {}", slot.0))
+            HawdbError::Execution(format!("unknown columnar filter slot {}", slot.0))
         })?;
         let selection = filter_numeric_column(column, &self.selection, predicate, expected)?;
         self.clone().with_selection(selection)
@@ -836,7 +836,7 @@ impl ColumnarBatch {
 
     pub fn filter_boolean(&self, slot: SlotId, expected: bool) -> Result<Self> {
         let column = self.column(slot).ok_or_else(|| {
-            SkeinError::Execution(format!("unknown columnar filter slot {}", slot.0))
+            HawdbError::Execution(format!("unknown columnar filter slot {}", slot.0))
         })?;
         let selection = filter_boolean_column(column, &self.selection, expected)?;
         self.clone().with_selection(selection)
@@ -857,7 +857,7 @@ impl ColumnarBatch {
 
     pub fn count_valid(&self, slot: SlotId) -> Result<usize> {
         let column = self.column(slot).ok_or_else(|| {
-            SkeinError::Execution(format!("unknown columnar aggregate slot {}", slot.0))
+            HawdbError::Execution(format!("unknown columnar aggregate slot {}", slot.0))
         })?;
         Ok(self
             .selection
@@ -868,10 +868,10 @@ impl ColumnarBatch {
 
     pub fn sum_int64(&self, slot: SlotId) -> Result<Option<i64>> {
         let column = self.column(slot).ok_or_else(|| {
-            SkeinError::Execution(format!("unknown columnar aggregate slot {}", slot.0))
+            HawdbError::Execution(format!("unknown columnar aggregate slot {}", slot.0))
         })?;
         let ColumnVector::Int64 { values, validity } = column.as_ref() else {
-            return Err(SkeinError::Execution(format!(
+            return Err(HawdbError::Execution(format!(
                 "columnar SUM requires Int64, got {:?}",
                 column.column_type()
             )));
@@ -881,7 +881,7 @@ impl ColumnarBatch {
             if validity.is_valid(row) {
                 sum =
                     Some(sum.unwrap_or(0).checked_add(values[row]).ok_or_else(|| {
-                        SkeinError::Execution("columnar Int64 SUM overflow".into())
+                        HawdbError::Execution("columnar Int64 SUM overflow".into())
                     })?);
             }
         }
@@ -935,7 +935,7 @@ pub fn filter_numeric_column(
     expected: NumericLiteral,
 ) -> Result<Selection> {
     if column.len() != input.len() {
-        return Err(SkeinError::Execution(format!(
+        return Err(HawdbError::Execution(format!(
             "numeric filter column has {} rows but input selection has {}",
             column.len(),
             input.len()
@@ -948,7 +948,7 @@ pub fn filter_numeric_column(
         ColumnVector::Float64 { values, validity } => {
             filter_float64_values(values, validity, input, predicate, expected)
         }
-        other => Err(SkeinError::Execution(format!(
+        other => Err(HawdbError::Execution(format!(
             "numeric filter requires Int64 or Float64, got {:?}",
             other.column_type()
         ))),
@@ -961,14 +961,14 @@ pub fn filter_boolean_column(
     expected: bool,
 ) -> Result<Selection> {
     if column.len() != input.len() {
-        return Err(SkeinError::Execution(format!(
+        return Err(HawdbError::Execution(format!(
             "boolean filter column has {} rows but input selection has {}",
             column.len(),
             input.len()
         )));
     }
     let ColumnVector::Bool { values, validity } = column else {
-        return Err(SkeinError::Execution(format!(
+        return Err(HawdbError::Execution(format!(
             "boolean filter requires Bool, got {:?}",
             column.column_type()
         )));
@@ -1198,14 +1198,14 @@ fn select_numeric_values<T: Copy>(
     mut matches: impl FnMut(T) -> bool,
 ) -> Result<()> {
     if values.len() != validity.len() {
-        return Err(SkeinError::Execution(format!(
+        return Err(HawdbError::Execution(format!(
             "numeric selection has {} values and {} validity entries",
             values.len(),
             validity.len()
         )));
     }
     if values.len() > u32::MAX as usize {
-        return Err(SkeinError::Execution(format!(
+        return Err(HawdbError::Execution(format!(
             "numeric selection batch has {} rows, exceeding the u32 row index limit",
             values.len()
         )));
@@ -1240,7 +1240,7 @@ fn filter_numeric_values<T: Copy>(
     mut matches: impl FnMut(T) -> bool,
 ) -> Result<Selection> {
     if values.len() != validity.len() || values.len() != input.len() {
-        return Err(SkeinError::Execution(format!(
+        return Err(HawdbError::Execution(format!(
             "numeric filter has {} values, {} validity entries, and {} selected input rows",
             values.len(),
             validity.len(),

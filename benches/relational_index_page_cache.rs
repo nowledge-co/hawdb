@@ -1,5 +1,4 @@
-use serde_json::json;
-use skein_storage::{
+use hawdb_storage::{
     ImmutableIndexPageLimits, RelationalColumnSchema, RelationalIndexReadLimits,
     RelationalIndexSchema, RelationalIndexShadowConfig, RelationalIndexShadowReader,
     RelationalIndexShadowWriter, RelationalInsertMode, RelationalKey, RelationalMutationLimits,
@@ -7,6 +6,7 @@ use skein_storage::{
     RelationalTableSchema, RelationalTransaction, RelationalValue, RelationalWrite, SegmentCache,
     StoreId,
 };
+use serde_json::json;
 use std::hint::black_box;
 use std::num::NonZeroUsize;
 use std::sync::Arc;
@@ -22,7 +22,7 @@ const CACHE_BYTES: u64 = 8 * 1024 * 1024;
 
 fn main() {
     let path = std::env::temp_dir().join(format!(
-        "skein-relational-index-page-cache-{}-{}",
+        "hawdb-relational-index-page-cache-{}-{}",
         std::process::id(),
         SystemTime::now()
             .duration_since(UNIX_EPOCH)
@@ -112,7 +112,7 @@ fn main() {
 fn lookup(
     reader: &RelationalIndexShadowReader,
     key: &RelationalKey,
-) -> (usize, skein_storage::RelationalIndexReadReport) {
+) -> (usize, hawdb_storage::RelationalIndexReadReport) {
     let mut rows = 0usize;
     let report = reader
         .visit_exact_postings(

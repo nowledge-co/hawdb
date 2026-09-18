@@ -217,7 +217,7 @@ fn inventory(seed: usize, layout: usize) -> Vec<NowledgeMemRouteOwnership> {
                 if layout == 0 || (layout == 2 && (index + seed).is_multiple_of(3)) {
                     NowledgeMemRouteReadEngine::Legacy
                 } else {
-                    NowledgeMemRouteReadEngine::Skein
+                    NowledgeMemRouteReadEngine::Hawdb
                 },
             )
         })
@@ -239,7 +239,7 @@ fn inventory(seed: usize, layout: usize) -> Vec<NowledgeMemRouteOwnership> {
         )),
         7 => routes.push(NowledgeMemRouteOwnership::new(
             "/\u{65e5}\u{672c}\u{8a9e}",
-            NowledgeMemRouteReadEngine::Skein,
+            NowledgeMemRouteReadEngine::Hawdb,
         )),
         8 => routes.clear(),
         9 => {
@@ -247,7 +247,7 @@ fn inventory(seed: usize, layout: usize) -> Vec<NowledgeMemRouteOwnership> {
             routes.push(routes[seed % routes.len()].clone());
             routes.push(NowledgeMemRouteOwnership::new(
                 "/unknown",
-                NowledgeMemRouteReadEngine::Skein,
+                NowledgeMemRouteReadEngine::Hawdb,
             ));
             routes.push(NowledgeMemRouteOwnership::new(
                 "/unknown",
@@ -307,7 +307,7 @@ fn sorted_unique(mut names: Vec<String>) -> Vec<String> {
 fn reference(
     routes: &[NowledgeMemRouteOwnership],
     evidence: Option<&NowledgeMemRouteReadinessSummary>,
-    require_all_skein: bool,
+    require_all_hawdb: bool,
 ) -> serde_json::Value {
     let required: Vec<_> = CATALOG.iter().map(|entry| entry.0).collect();
     let missing: Vec<_> = required
@@ -332,15 +332,15 @@ fn reference(
             routes.iter().any(|route| {
                 route.route == **name && route.read_engine == NowledgeMemRouteReadEngine::Legacy
             }) && routes.iter().any(|route| {
-                route.route == **name && route.read_engine == NowledgeMemRouteReadEngine::Skein
+                route.route == **name && route.read_engine == NowledgeMemRouteReadEngine::Hawdb
             })
         })
         .cloned()
         .collect();
-    let skein = sorted_unique(
+    let hawdb = sorted_unique(
         routes
             .iter()
-            .filter(|route| route.read_engine == NowledgeMemRouteReadEngine::Skein)
+            .filter(|route| route.read_engine == NowledgeMemRouteReadEngine::Hawdb)
             .map(|route| route.route.clone())
             .collect(),
     );
@@ -364,7 +364,7 @@ fn reference(
         .into_iter()
         .all(|ready| ready)
     });
-    let not_ready: Vec<_> = skein
+    let not_ready: Vec<_> = hawdb
         .iter()
         .filter(|name| !evidence_ready || !evidence.unwrap().primary_ready_routes.contains(name))
         .cloned()
@@ -379,15 +379,15 @@ fn reference(
         (!duplicates.is_empty(), "route_ownership_duplicate_routes"),
         (!conflicts.is_empty(), "route_ownership_conflicting_routes"),
         (
-            !skein.is_empty() && evidence.is_none(),
+            !hawdb.is_empty() && evidence.is_none(),
             "route_ownership_route_readiness_missing",
         ),
         (
             !not_ready.is_empty(),
-            "route_ownership_skein_routes_not_ready",
+            "route_ownership_hawdb_routes_not_ready",
         ),
         (
-            require_all_skein && !legacy.is_empty(),
+            require_all_hawdb && !legacy.is_empty(),
             "route_ownership_legacy_routes_remaining",
         ),
     ] {
@@ -403,28 +403,28 @@ fn reference(
                 "route": route.route,
                 "read_engine": match route.read_engine {
                     NowledgeMemRouteReadEngine::Legacy => "legacy",
-                    NowledgeMemRouteReadEngine::Skein => "skein",
+                    NowledgeMemRouteReadEngine::Hawdb => "hawdb",
                 },
             })
         })
         .collect();
     serde_json::json!({
-        "protocol": "skein-nowledge-mem-route-ownership-v1",
+        "protocol": "hawdb-nowledge-mem-route-ownership-v1",
         "ready": ready,
         "production_cutover_ready": ready && legacy.is_empty(),
-        "require_all_skein": require_all_skein,
+        "require_all_hawdb": require_all_hawdb,
         "required_route_count": required.len(),
         "explicit_route_count": required.len() - missing.len(),
-        "skein_route_count": skein.len(),
+        "hawdb_route_count": hawdb.len(),
         "legacy_route_count": legacy.len(),
         "routes": assignments,
-        "skein_routes": skein,
+        "hawdb_routes": hawdb,
         "legacy_routes": legacy,
         "missing_required_routes": missing,
         "unknown_routes": unknown,
         "duplicate_routes": duplicates,
         "conflicting_routes": conflicts,
-        "skein_not_ready_routes": not_ready,
+        "hawdb_not_ready_routes": not_ready,
         "route_readiness_present": evidence.is_some(),
         "route_readiness_ready": evidence_ready,
         "route_catalog_version": "nowledge-mem-graph-read-route-catalog-v1",
@@ -440,14 +440,14 @@ fn campaign(seeds: usize) {
             let routes = inventory(seed, layout);
             for state in 0..11 {
                 let evidence = readiness(seed, state);
-                for require_all_skein in [false, true] {
+                for require_all_hawdb in [false, true] {
                     let report = nowledge_mem_route_ownership_readiness(
                         &routes,
                         evidence.as_ref(),
-                        NowledgeMemRouteOwnershipPolicy { require_all_skein },
+                        NowledgeMemRouteOwnershipPolicy { require_all_hawdb },
                     );
-                    assert_eq!(report.json(), reference(&routes, evidence.as_ref(), require_all_skein),
-                        "seed {seed}, layout {layout}, readiness {state}, all_skein {require_all_skein}");
+                    assert_eq!(report.json(), reference(&routes, evidence.as_ref(), require_all_hawdb),
+                        "seed {seed}, layout {layout}, readiness {state}, all_hawdb {require_all_hawdb}");
                     cases += 1;
                 }
             }

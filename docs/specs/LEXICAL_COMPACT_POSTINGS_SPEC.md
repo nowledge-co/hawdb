@@ -2,11 +2,11 @@
 
 ## Implementation Status
 
-This is a design-stage contract with **no implemented surface in the Skein
+This is a design-stage contract with **no implemented surface in the Hawdb
 crates yet**. It defines the target on-disk encoding and read-path contract
-for [#206](https://github.com/nowledge-co/skein/issues/206) (compact
+for [#206](https://github.com/nowledge-co/hawdb/issues/206) (compact
 postings layout) and the encoding it must expose for
-[#292](https://github.com/nowledge-co/skein/issues/292) (block-max pruning)
+[#292](https://github.com/nowledge-co/hawdb/issues/292) (block-max pruning)
 to build on. Nothing here describes shipped behavior. The current lexical
 projection format (`crates/search/src/lexical_projection.rs`,
 `block_encoding.rs`, `manifest_encoding.rs`) is unaffected until an
@@ -27,7 +27,7 @@ and a query pays full decode cost for postings that belong to blocks whose
 key range happens to contain the term but whose entries mostly belong to
 other terms.
 
-Skein's positioning is a fixed small memory budget (0.5-2 GiB) against
+Hawdb's positioning is a fixed small memory budget (0.5-2 GiB) against
 on-disk data that can reach the tens of GB on a home PC — see
 `docs/SEARCH_BUILD_RESOURCE_OWNERSHIP.md` for the resource-accounting
 infrastructure this must plug into. Under that
@@ -238,8 +238,8 @@ run bytes instead of every posting's inline strings).
   postings for generations built after the implementing PR.
 
 ```sh
-cargo test -p skein-search
-cargo test -p skein-search --no-default-features --lib
-cargo clippy -p skein-search --all-targets -- -D warnings
-bazel test //crates/search:all //crates/fuzz:skein_fuzz_tests //crates/fuzz:skein_fuzz_cli_tests //:skein_linux_ci_fuzz_smoke_test
+cargo test -p hawdb-search
+cargo test -p hawdb-search --no-default-features --lib
+cargo clippy -p hawdb-search --all-targets -- -D warnings
+bazel test //crates/search:all //crates/fuzz:hawdb_fuzz_tests //crates/fuzz:hawdb_fuzz_cli_tests //:hawdb_linux_ci_fuzz_smoke_test
 ```

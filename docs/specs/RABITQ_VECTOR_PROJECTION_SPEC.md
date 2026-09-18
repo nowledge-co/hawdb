@@ -2,7 +2,7 @@
 
 ## Scope And Naming
 
-Skein exposes vector retrieval through the default `vector-search` Cargo
+Hawdb exposes vector retrieval through the default `vector-search` Cargo
 feature. `RaBitQ` identifies the 1-bit and 4-bit candidate encodings described
 in this contract. The implementation is native Rust and has no C++ FFI or
 third-party vector-quantization runtime dependency.
@@ -10,8 +10,8 @@ third-party vector-quantization runtime dependency.
 The default is 1-bit standard RaBitQ, matching Faiss `IndexRaBitQ`'s default
 `nb_bits`. The 4-bit multi-bit variant is an explicit build option.
 
-The `skein-vector-projection` crate owns rebuildable vector encodings and scan
-kernels. The embedded `skein` crate remains the supported application facade.
+The `hawdb-vector-projection` crate owns rebuildable vector encodings and scan
+kernels. The embedded `hawdb` crate remains the supported application facade.
 Raw embeddings remain canonical search data; a RaBitQ artifact is a
 derived candidate projection and MUST NOT become the source of truth.
 
@@ -45,10 +45,10 @@ source digest, and generation. Format version 1 uses
 The current calibration value is `none`.
 
 The sign/refinement code representation is intentionally aligned with Faiss
-`IndexRaBitQ`, but Skein stores its reconstruction factors in segment arrays
-rather than inside each Faiss flat code. Skein's signed block-Hadamard transform
+`IndexRaBitQ`, but Hawdb stores its reconstruction factors in segment arrays
+rather than inside each Faiss flat code. Hawdb's signed block-Hadamard transform
 is an explicit pre-transform selected by its manifest; Faiss expects any random
-rotation to be performed externally. Therefore Skein artifacts are not binary
+rotation to be performed externally. Therefore Hawdb artifacts are not binary
 interchangeable with Faiss artifacts even though their packed quantizer planes
 have the same bit order and code semantics. Centroid calibration, other bit
 widths, native SIMD scoring, and ANN integration require production evidence
@@ -112,7 +112,7 @@ not materialize a full-document allowlist. The caller supplies
 `max_working_bytes`, `max_parallelism`, and an optional cancellation context.
 Admission accounts for the global and per-worker TopK, segment buffers, filter
 bitmaps, and bounded worker stacks. Worker count MUST be the minimum of the
-requested parallelism, segment count, and memory-admitted parallelism. Skein
+requested parallelism, segment count, and memory-admitted parallelism. Hawdb
 MUST NOT create a Rayon pool, Tokio runtime, or other global vector-search
 executor.
 
@@ -126,7 +126,7 @@ eligible for automatic dispatch.
 
 ## Artifact And Recovery Contract
 
-Checkpoint publishes `search_rabitq.<generation>.skein` as an immutable
+Checkpoint publishes `search_rabitq.<generation>.hawdb` as an immutable
 generation. Segment payloads precede a checksummed JSON manifest and fixed
 footer. Each segment and the complete payload carry checksums. Publication
 MUST create a unique temporary file, flush it, atomically rename it to a new
@@ -172,7 +172,7 @@ that the same request fails. Adding a native SIMD kernel changes this
 requirement to include ordering-parity execution on each supported SIMD target.
 
 The typed production evidence protocol is
-`skein-vector-recall-production-qualification-v1`. It wraps, but does not
+`hawdb-vector-recall-production-qualification-v1`. It wraps, but does not
 replace, the bounded recall probe. Validation recomputes readiness against the
 currently opened file-backed projection and an explicit current release
 identity; a stale revision, feature set, configuration, dataset fingerprint,
@@ -186,12 +186,12 @@ probe, is capped independently from TopK, and document identifiers are never
 serialized into the qualification report.
 
 The full release collector is `run_production_vector_qualification`, which
-emits `skein-production-vector-qualification-v1`. It adds named unfiltered,
+emits `hawdb-production-vector-qualification-v1`. It adds named unfiltered,
 metadata-filtered, and feature-conditional ACL cases; dispatched-versus-scalar
 candidate parity; execution and process resource metrics; and disposable-copy
 lifecycle probes for incremental updates, checkpoint/reopen, stale readers,
 corruption, cancellation, and mixed foreground/background work. The companion
-`skein-production-vector-qualification-matrix-v1` evaluator requires Linux
+`hawdb-production-vector-qualification-matrix-v1` evaluator requires Linux
 x86_64, Linux AArch64, macOS AArch64, and Windows x86_64 reports bound to the
 same corpus and release identity.
 

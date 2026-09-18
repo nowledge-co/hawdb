@@ -1,4 +1,4 @@
-use skein_sql_syntax::{
+use hawdb_sql_syntax::{
     BinaryOperatorSyntax as Binary, ExpressionKindSyntax as Syntax, ExpressionSyntax,
     LiteralSyntax, UnaryOperatorSyntax as Unary,
 };

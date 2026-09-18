@@ -1,12 +1,12 @@
-# Skein Architecture
+# Hawdb Architecture
 
 ## Goal
 
-Skein is an embedded Rust graph database for Nowledge local runtimes. It is
+Hawdb is an embedded Rust graph database for Nowledge local runtimes. It is
 intended to replace the current Ladybug/Kuzu dependency while preserving the
 Cypher-facing behavior that Nowledge relies on today.
 
-Skein is single-process: one `DatabaseDirectoryLease`-enforced writer per
+Hawdb is single-process: one `DatabaseDirectoryLease`-enforced writer per
 database path (see `specs/EMBEDDED_RUNTIME_SPEC.md`). Thread-safe concurrent
 reads and writes inside that one process are a first-class goal, tracked in
 issue #226. Multi-process writers remain out of scope.
@@ -28,7 +28,7 @@ Nowledge graph data plane:
 - deterministic query planning and explain output
 - graph projection hooks for rebuildable analytics
 
-Cloud remains PostgreSQL-first. Skein is the local embedded graph engine and can
+Cloud remains PostgreSQL-first. Hawdb is the local embedded graph engine and can
 share logical semantics with Cloud projections, but Cloud canonical state should
 continue to live in PostgreSQL facts, edges, jobs, and op-log tables.
 
@@ -42,7 +42,7 @@ continue to live in PostgreSQL facts, edges, jobs, and op-log tables.
 
 ## Compatibility Boundary
 
-Nowledge currently uses the Ladybug fork through the local graph wrapper. Skein
+Nowledge currently uses the Ladybug fork through the local graph wrapper. Hawdb
 must cover the used surface before it can replace that dependency:
 
 - database lifecycle with configurable memory, thread, size, read-only, and
@@ -62,24 +62,24 @@ outside the graph engine.
 
 ## Crate Layout
 
-Skein follows a RisingWave/Chryso-style workspace-and-facade layout. The root
+Hawdb follows a RisingWave/Chryso-style workspace-and-facade layout. The root
 crate remains the stable embedded facade, while implementation crates are split
 out as interfaces harden and dependency direction becomes acyclic. The current
-crate split includes `skein-core` for common graph primitives,
-`skein-cypher` for syntax-only Cypher AST/parser support, `skein-qos` for
+crate split includes `hawdb-core` for common graph primitives,
+`hawdb-cypher` for syntax-only Cypher AST/parser support, `hawdb-qos` for
 local resource classes, background admission, and expected-value ranking,
-`skein-sql-syntax` for dependency-free PostgreSQL token/span ownership and the
-SQL/PGQ syntax AST, `skein-sql` for semantic relational/SQL/PGQ lowering,
-`skein-relational` for storage-neutral RowPage DDL/DML compilation,
+`hawdb-sql-syntax` for dependency-free PostgreSQL token/span ownership and the
+SQL/PGQ syntax AST, `hawdb-sql` for semantic relational/SQL/PGQ lowering,
+`hawdb-relational` for storage-neutral RowPage DDL/DML compilation,
 strict-append statement/access planning, and shared scalar binding,
-`skein-plan` for Cypher logical/physical IR, typed phase roots, deterministic
-fingerprints, explain rendering, and plan-node metadata, and `skein-optimizer`
+`hawdb-plan` for Cypher logical/physical IR, typed phase roots, deterministic
+fingerprints, explain rendering, and plan-node metadata, and `hawdb-optimizer`
 for Cascades primitives plus graph-specific catalog, costing, access-path, and
-lowering logic. `skein-analytics` owns the storage-neutral immutable CSR/CSC
-kernel and deterministic PageRank/Louvain implementations. `skein-evidence`
+lowering logic. `hawdb-analytics` owns the storage-neutral immutable CSR/CSC
+kernel and deterministic PageRank/Louvain implementations. `hawdb-evidence`
 owns release identity validation, storage crash-recovery evidence contracts,
 and source-derived query inventory scanning and artifact models.
-`skein-search` owns lexical/vector search, generation publication, recall
+`hawdb-search` owns lexical/vector search, generation publication, recall
 validation, and the storage-neutral `SearchProjectionSource` boundary.
 Its internal `projection_evidence` module owns the pure probe contract,
 typed evidence report, and primary/shadow qualification reducers alongside
@@ -88,7 +88,7 @@ re-exports the same types and functions while retaining file/CLI wrappers and
 real index checkpoint/reopen integration tests. This adds no separate host
 integration API or dependency from evidence back to search.
 
-The internal `skein-search::candidate_evidence` module owns candidate requests,
+The internal `hawdb-search::candidate_evidence` module owns candidate requests,
 reports and readiness assessment, compressed-retrieval advice, and shadow
 accumulation/probe decoding. These contracts consume search-owned result and
 recall models without depending on the database facade. Root `nowledge_mem`
@@ -97,10 +97,10 @@ query execution, CLI file reads, and overall activation/readiness assembly
 remain in the root. Private model methods are not promoted to new host APIs.
 
 Overall replacement-evidence reduction belongs to
-`skein-readiness::replacement_summary`. It recomputes readiness from supplied
+`hawdb-readiness::replacement_summary`. It recomputes readiness from supplied
 evidence without a database or search-engine dependency; the facade retains
 the existing summary APIs, CLI help, database probes, and activation decisions.
-`skein-evidence::replacement_contract` owns the shared candidate/workload
+`hawdb-evidence::replacement_contract` owns the shared candidate/workload
 protocol identifiers and projection field inventory. Producers re-export the
 same constants, so readiness does not depend on their execution code. Full
 JSON baselines, original reducer tests, and local-only generated campaigns
@@ -128,10 +128,10 @@ crates/
   qualification/       synthetic revision-bound CI qualification workloads
 ```
 
-The public facade should stay in the root `skein` crate. Internal crates should
+The public facade should stay in the root `hawdb` crate. Internal crates should
 be allowed to evolve while the embedded API stays small and stable.
 
-`skein-compat` owns compatibility fixtures and query inventories, row and
+`hawdb-compat` owns compatibility fixtures and query inventories, row and
 projection comparison, migration/cutover evidence assessment, and the existing
 developer external-shadow protocol. This is one cohesive verification boundary,
 not a second database API or a production helper-process control plane. It
@@ -146,7 +146,7 @@ real session rollback, and database-backed shadow integration stay at the
 facade. The complete generated contract campaign is explicit local fuzz only.
 
 Graph route evidence validation belongs to the internal
-`skein-readiness::graph_route` module. It consumes the existing route-ownership
+`hawdb-readiness::graph_route` module. It consumes the existing route-ownership
 catalog and evidence-owned query-report protocol/family inventory without a
 database dependency. Root `graph_route_readiness` retains the public compatibility
 paths and developer file/CLI adapters; database probes, report assembly, and
@@ -156,7 +156,7 @@ root. A local-only generated campaign checks coverage and contradictory readines
 evidence without relaxing any v1 readiness gate.
 
 Logical transaction lock metadata belongs to the internal
-`skein-storage::transaction_locks` module: lock targets and acquisition order,
+`hawdb-storage::transaction_locks` module: lock targets and acquisition order,
 compatibility and coverage, budgeted lock residency and escalation, savepoint
 restoration, and the wait-for graph. `src/api/transaction_locks.rs` retains
 crate-private re-exports with the same concrete types. The root concurrent
@@ -166,7 +166,7 @@ not create a standalone transaction manager or a new host API. Unit tests and
 the explicit local state-machine campaign live with storage; real concurrent
 transaction and key-range integration tests remain at the root boundary.
 
-Owned graph iterators belong to `skein-storage::graph_overlay`. Node and
+Owned graph iterators belong to `hawdb-storage::graph_overlay`. Node and
 relationship wrappers share a private ordered merge kernel over lazy canonical
 records, an already captured ID-ordered delta, and copy-on-write tombstones.
 `GraphStore` still selects the checkpoint reader and captures snapshot state;
@@ -179,7 +179,7 @@ format, or host API. Map-overlay differential tests and real canonical corruptio
 tests live with storage; checkpoint/reopen snapshot coverage stays at the facade.
 
 Source mutation dual-write evidence models and readiness evaluation belong to
-`skein-readiness::source_mutation`. The owner retains the eight-family inventory,
+`hawdb-readiness::source_mutation`. The owner retains the eight-family inventory,
 independent ACK/watermark and replay checks, projection-payload requirements,
 stable evidence ordering, and v1 report serialization. Root `nowledge_mem`
 re-exports the same concrete types and functions; replacement-summary and host
@@ -189,11 +189,11 @@ by itself. Owner tests include full-report bit-matrix and mixed-inventory oracle
 the exhaustive campaign remains explicit local fuzz rather than a CI job.
 
 The existing v1 projected graph artifact text codec belongs to the internal
-`skein-storage::projection::artifact` module, alongside the storage-owned
+`hawdb-storage::projection::artifact` module, alongside the storage-owned
 artifact data and definition types. It consumes one constructed projection at a
 time, preserves the input order and byte format, and validates both adjacency
 views through the existing storage constructor. Shared string and ID list
-codecs live in `skein-storage::text`. The embedded facade retains graph
+codecs live in `hawdb-storage::text`. The embedded facade retains graph
 construction, file publication, checksum verification, epoch/reuse admission,
 and recovery fallback: invalid derived artifacts are discarded by writable
 opens and left untouched by read-only opens. Frozen format tests and an
@@ -201,18 +201,18 @@ independent edge-bag differential campaign live with storage; checksum-valid
 structural corruption, reopen, and rebuild tests remain at the facade.
 
 Graph checkpoint/spill text value, property, and hex codecs belong to the
-internal `skein-storage::text` module. Root storage keeps crate-private
+internal `hawdb-storage::text` module. Root storage keeps crate-private
 compatibility imports, so existing checkpoint, statistics-spill, and recovery
 callers share the same encoding rather than depend on a root implementation.
 The binary WAL codec remains a separate format; ownership migration does not
 normalize legacy text decoding tolerance or change any encoded bytes.
 Pure codec tests and their unchanged differential campaign live with storage.
-The existing root `skein_recovery_text_fuzz_tests` Bazel label forwards through
+The existing root `hawdb_recovery_text_fuzz_tests` Bazel label forwards through
 a manual test suite to that campaign, while public database reopen/no-write
 corruption tests stay at the root integration boundary.
 
 The v1 compressed text envelope belongs to
-`skein-storage::text::envelope`, alongside those logical text codecs.
+`hawdb-storage::text::envelope`, alongside those logical text codecs.
 Checkpoint, projected-graph, Source sidecar, and backup callers keep their
 root-private imports and existing file-selection and admission policies.
 The owner preserves zstd encoding, both CRC checks, header validation order,
@@ -222,7 +222,7 @@ with storage, while actual checkpoint/reopen and rejection-without-write tests
 remain at the facade. No format, resource default, or host API changes here.
 
 The v1 durable manifest codec, artifact-binding validation and atomic manifest
-file replacement belong to `skein-storage::durable_manifest`. Root durable-store
+file replacement belong to `hawdb-storage::durable_manifest`. Root durable-store
 code retains checkpoint preparation, generation selection, directory ownership,
 publication ordering and recovery orchestration, using a crate-private type
 re-export. Field names/order, optional binding groups, checksum and SHA-256
@@ -232,7 +232,7 @@ checksum-valid corruption campaigns without per-case filesystem writes. Real
 file publication failures and database checkpoint/reopen rejection are tested
 separately; the full mutation campaign remains explicit local fuzz.
 
-`skein-storage::statistics_refresh` owns the transient statistics record codec,
+`hawdb-storage::statistics_refresh` owns the transient statistics record codec,
 bounded run sorting and merge, property exclusion, index sampling, histogram
 accumulation, and spill-directory lifetime. Shared eligibility and histogram
 helpers serve both materialized and external refresh paths from that owner.
@@ -245,65 +245,65 @@ across run layouts. Database checkpoint/reopen and failure-before-publication
 tests remain at the root integration boundary.
 
 `src/cypher.rs`, `src/planner.rs`, and `src/optimizer.rs` are compatibility
-re-export facades over their owning crates. `skein-plan` depends only on
-`skein-core`, `skein-cypher`, and `skein-ddl`; `skein-optimizer` depends inward
-on `skein-plan` and remains free of executor and storage implementations.
+re-export facades over their owning crates. `hawdb-plan` depends only on
+`hawdb-core`, `hawdb-cypher`, and `hawdb-ddl`; `hawdb-optimizer` depends inward
+on `hawdb-plan` and remains free of executor and storage implementations.
 
 `src/analytics.rs` is the compatibility facade and the sole adapter from the
-root `GraphStore` to `skein-analytics::ProjectionSource`. The analytics crate
-depends inward on `skein-core` and storage record types, but never on the root
+root `GraphStore` to `hawdb-analytics::ProjectionSource`. The analytics crate
+depends inward on `hawdb-core` and storage record types, but never on the root
 database, WAL, query executor, or embedded runtime. This keeps projection scan
 and recovery ownership in the embedding layer while making the algorithm
 kernel reusable over immutable snapshots.
 
-`src/search.rs` follows the same pattern: it preserves the public `skein` paths
+`src/search.rs` follows the same pattern: it preserves the public `hawdb` paths
 and implements `SearchProjectionSource` for the root `GraphStore`, while index
 state, generation cleanup/publication, query execution, and recall validation
-belong to `skein-search`. Search document identity is a storage protocol and is
-therefore owned by `skein-storage`, preventing storage mutation code from
+belong to `hawdb-search`. Search document identity is a storage protocol and is
+therefore owned by `hawdb-storage`, preventing storage mutation code from
 depending back on the search crate.
 
-`skein-storage::mutation` owns compaction of the staged graph transaction journal:
+`hawdb-storage::mutation` owns compaction of the staged graph transaction journal:
 SETs fold into creates from the same transaction, and deleting those creates
 elides their staged operations. It does not flatten nested batches or interpret
 non-graph WAL operations. The root still owns admission, snapshots, lock
 footprints, ID allocation, commit epochs, WAL publication, and recovery.
 Compaction is an internal ownership seam, not a new host transaction API.
 
-`skein-evidence::inventory` owns the storage-recovery, background-maintenance,
+`hawdb-evidence::inventory` owns the storage-recovery, background-maintenance,
 and query-family evidence health models and JSON validators. The original
-`skein::nowledge_inventory` and crate-root paths re-export the same types and
+`hawdb::nowledge_inventory` and crate-root paths re-export the same types and
 functions. Database probes, coverage report generation, and cutover
 assembly stay in the facade. This boundary does not change optional-evidence
 policy, nested-field precedence, raw replay checks, or ordered blocker output,
 and does not authorize production activation.
 
-The internal `skein-evidence::query_inventory` module owns query inventory
+The internal `hawdb-evidence::query_inventory` module owns query inventory
 models, artifact import/export, Rust source scanning, literal extraction, and
-query classification. The original `skein::compat`, `skein::nowledge_inventory`,
+query classification. The original `hawdb::compat`, `hawdb::nowledge_inventory`,
 and crate-root paths preserve the same types and functions. Scanner ordering,
 line-based identity, source exclusions, artifact validation, and redacted I/O
 errors stay unchanged. Fixture coverage assessment and shadow/cutover execution
 remain root responsibilities; the evidence crate has no database dependency.
 
-`skein-executor::GraphExecutionRead` is the storage-neutral boundary for graph
+`hawdb-executor::GraphExecutionRead` is the storage-neutral boundary for graph
 scan, index seek, traversal, projected-graph lookup, and checkpoint-published
 Source sidecar reads. `GraphExecutionWrite` contains only the bounded mutation
 operations needed after executor preflight. The root executor keeps public
 entrypoints and implements both traits for `GraphStore`; batch and traversal
 kernels do not depend on the concrete store.
 
-The internal `skein-executor::analytics` module owns graph algorithm dispatch,
+The internal `hawdb-executor::analytics` module owns graph algorithm dispatch,
 projection name/visibility selection, the `GraphExecutionRead` projection-source
 adapter, and query-owned projection/scratch/result accounting. It depends inward
-on `skein-analytics`, whose algorithm and immutable-projection implementations
+on `hawdb-analytics`, whose algorithm and immutable-projection implementations
 remain independent of executor. Root execution still registers projected graph
 definitions, owns prepared dispatch and task admission, and validates final
 query results. Unknown requested labels/types retain empty-selection semantics;
 the migration preserves error order, cancellation, and resource limits without
 adding a host-facing API.
 
-`skein-storage::artifact_binding` owns aggregate graph manifest admission,
+`hawdb-storage::artifact_binding` owns aggregate graph manifest admission,
 bound file reads, artifact metadata, and length/CRC32C/SHA-256 validation.
 Root storage retains private compatibility imports and owns database open,
 checkpoint selection, and recovery. Format admission still precedes aggregate
@@ -312,8 +312,8 @@ This ownership move preserves the existing limits, bounded read, validation
 order, and error messages without adding a host-facing API.
 
 Storage-neutral mutation command lowering belongs to the internal
-`skein-executor::mutation` module. It translates physical plans and SET values
-into storage commands using the canonical `skein-ddl` conversions. It also owns
+`hawdb-executor::mutation` module. It translates physical plans and SET values
+into storage commands using the canonical `hawdb-ddl` conversions. It also owns
 executable-predicate scan fallback, bounded SET RETURN preflight, and staged
 RETURN projection through `GraphExecutionRead/Write`. Transaction admission,
 atomic commit, recovery, concrete store integration tests, and public executor
@@ -322,12 +322,12 @@ Translation errors remain distinct from non-mutation plans so fallback and
 failure behavior are unchanged.
 
 SET value evaluation and ordered application to staging property maps belong
-to `skein-storage::mutation::evaluate`. Executor preflight and root mutation
+to `hawdb-storage::mutation::evaluate`. Executor preflight and root mutation
 commit paths share those semantics; the helper itself neither publishes a
 mutation nor rolls back a caller-owned staging map on a later assignment error.
 The embedding store remains responsible for atomic visibility and durability.
 
-Numeric columnar execution belongs to `skein-executor::numeric`, including
+Numeric columnar execution belongs to `hawdb-executor::numeric`, including
 eligibility, lending/owned batch preparation, ordered morsel scheduling, memory
 estimation, and output/report accounting. `src/executor/columnar.rs` adapts the
 root read context to borrowed storage and query resources; it does not implement
@@ -336,16 +336,16 @@ output validation, and its persisted-GraphStore error/cancellation regressions
 remain at that integration boundary. Low-level prepared scan contracts stay
 internal to the embedded implementation rather than becoming host APIs.
 
-`skein-executor::pipeline` owns the recursive `BindingBatchSource` contract and
+`hawdb-executor::pipeline` owns the recursive `BindingBatchSource` contract and
 shared `BatchExecutionContext`; the original blocking paths remain re-exports
 of the same types. Streaming filter, projection, and limit loops live in
-`skein-executor::transform`. Root adapters retain prepared recursive dispatch,
+`hawdb-executor::transform`. Root adapters retain prepared recursive dispatch,
 scan/adjacency and columnar fast paths, and graph predicate evaluation with its
 existing memory account. Sources honor row caps and cancellation, consumers
 validate output, and kernels reserve/release transform batches and propagate
 stop/error. This internal seam does not add a production integration API.
 
-Vector seed execution belongs to the internal `skein-executor::external::seed`
+Vector seed execution belongs to the internal `hawdb-executor::external::seed`
 module: embedding conversion, physical-plan bounds, external resource reservation,
 result validation, report collection, and binding batches share the existing
 external-read, query-ledger, and observer contracts. Root dispatch supplies a
@@ -354,7 +354,7 @@ search projection, task admission, and final query-result validation. This move
 preserves validation order and reservation lifetime; it does not introduce a
 second host API or alter vector search policy.
 
-Query-observer collection also belongs to `skein-executor`: operator identity,
+Query-observer collection also belongs to `hawdb-executor`: operator identity,
 cardinality, pipeline/morsel counters, typed execution reports, and blocking
 operator inventory require only plan, executor, and storage report types.
 `src/executor/observer.rs` retains crate-private compatibility imports. The root
@@ -363,10 +363,10 @@ and process-memory samples; extraction does not move host lifecycle ownership or
 expose a new embedded execution API. Observers must record operator events against
 the same address-stable physical plan used at construction.
 
-`skein-relational` is intentionally narrower than the complete relational
+`hawdb-relational` is intentionally narrower than the complete relational
 runtime. It owns shared scalar/column binding, RowPage DDL/DML transaction
-compilation, and strict-append statement/access-plan compilation over `skein-sql`
-IR and `skein-storage` state. The RowPage compiler returns transaction commands
+compilation, and strict-append statement/access-plan compilation over `hawdb-sql`
+IR and `hawdb-storage` state. The RowPage compiler returns transaction commands
 and optional RETURNING projection metadata; it does not execute transactions,
 publish WAL, or materialize RETURNING rows. Root statement call sites retain
 crate-private compatibility imports, and application schema-registry protection
@@ -376,15 +376,15 @@ moving that composite module earlier would only recreate the root dependency
 fan-out in a new crate.
 
 `src/production_evidence.rs`, `src/crash_recovery_evidence.rs`, and
-`src/blackbox.rs` remain public compatibility facades over `skein-evidence`.
-The evidence crate depends only on `skein-core`, `skein-integrity`, and
+`src/blackbox.rs` remain public compatibility facades over `hawdb-evidence`.
+The evidence crate depends only on `hawdb-core`, `hawdb-integrity`, and
 serialization, so qualification, recovery, and redacted diagnostic tools share
 one protocol implementation without depending on the root database runtime.
 Blocker-code calculation stays inside that contract instead of becoming a
 second public readiness implementation in the facade.
 
 Graph route catalog metadata and ownership readiness belong to the existing
-`skein-route-ownership::graph` module, beside search route ownership. The catalog
+`hawdb-route-ownership::graph` module, beside search route ownership. The catalog
 owns required routes, execution/evidence roles, query-family requirements, and
 its ordered v1 digest. Ownership checks consume a typed readiness summary; they
 do not open a database, execute probes, publish ownership, or activate cutover.
@@ -397,14 +397,14 @@ The next extraction boundaries and their verification gates are tracked in
 must preserve facade paths, feature forwarding, behavior, and test coverage;
 it must not create a second host-facing integration API.
 
-`src/qos.rs` is also a compatibility re-export facade over `skein-qos`. The
+`src/qos.rs` is also a compatibility re-export facade over `hawdb-qos`. The
 QoS crate owns local foreground/background work classes, admission decisions,
 background hints, expected-value ranking, and scheduler state. It must remain
 free of graph storage, search index, planner, and executor dependencies so
 resource policy can be reused by projection, import, schema maintenance, and
 retrieval loops without creating ownership cycles.
 
-The storage split is intentionally transitional. `skein-storage` owns reusable
+The storage split is intentionally transitional. `hawdb-storage` owns reusable
 durability primitives, WAL model/codec and group accounting, immutable snapshot
 coordination, copy-on-write state, artifact naming, backup/doctor protocols,
 canonical segment formats, relational state, storage metrics, and indexes. QoS
@@ -417,7 +417,7 @@ those dependencies have stable inward-facing contracts. This avoids presenting
 the root facade or the internal storage crate as an accidental second
 production API.
 
-`skein-storage::graph_constraints` owns the internal record, snapshot, and
+`hawdb-storage::graph_constraints` owns the internal record, snapshot, and
 scalar-value validation kernels for property types, nullability, existence,
 and uniqueness. Mutation and recovery use the same kernels through private
 root imports. Validation retains catalog visibility rules, exact `Value`
@@ -440,10 +440,10 @@ is defined by `docs/specs/QUERY_FIRST_PUBLIC_API_SPEC.md`.
 `SET SYSTEM VARIABLE estimated_operations` configure the current query
 `WorkRequest` mapping. Per-query `CYPHER system.*` prefixes can override those
 variables for one statement without mutating the session or database defaults.
-`DatabaseSession::explain_query` and `skein explain-json` surface the effective
+`DatabaseSession::explain_query` and `hawdb explain-json` surface the effective
 `WorkRequest` so callers can audit scheduling intent beside optimizer evidence.
 `ExplainOutput` and `ExplainAnalyzeOutput` also implement `Display` with a
-TiDB-style tree table. `skein explain` and `skein explain-analyze` print that
+TiDB-style tree table. `hawdb explain` and `hawdb explain-analyze` print that
 table directly, while the existing JSON commands remain the stable
 machine-readable artifact path. Per-operator row estimates and runtime rows are
 rendered as `N/A` until the executor measures them; root estimates, root output
@@ -478,7 +478,7 @@ canonical cost. Only budget and unsupported-shape failures may continue to a
 fallback strategy. Invalid memo or join-tree state fails closed as an execution
 error instead of becoming a syntax-order plan.
 
-The `skein-fuzz` package is intentionally outside the production dependency
+The `hawdb-fuzz` package is intentionally outside the production dependency
 graph. Its state-aware generator creates a deterministic graph before selecting
 valid query shapes and typed predicates. The plan-differential oracle applies
 the mutations once, pins one read snapshot, and compares memo planning with
@@ -509,11 +509,11 @@ exact typed replay data, a direct `--case-index` reproduction command, and an
 oracle-specific reduced mutation sequence; `src/nowledge_fuzz.rs` remains a
 readiness smoke rather than a semantic oracle.
 
-The `skein-qualification` package is also outside the production dependency
+The `hawdb-qualification` package is also outside the production dependency
 graph. It owns synthetic, revision-bound CI workloads that exercise the public
 embedded facade without turning qualification orchestration into a production
 API. Its mixed-runtime soak creates a controlled larger-than-memory fixture,
-reopens it through `SkeinTokioEmbedded`, and runs admitted foreground streams,
+reopens it through `HawdbTokioEmbedded`, and runs admitted foreground streams,
 background external `DISTINCT`, mutation, and checkpoint work concurrently.
 The typed report retains latency, process-memory, page-fault, spill, cache,
 checkpoint, and runtime-governor measurements. Synthetic reports always carry
@@ -531,7 +531,7 @@ crates/cypher/src/tests.rs     parser coverage for the supported subset
 
 ## Data Model
 
-Skein stores a property graph:
+Hawdb stores a property graph:
 
 - `NodeId`: stable internal node identity
 - `RelId`: stable internal relationship identity
@@ -592,12 +592,12 @@ from planning semantics.
 
 ## PostgreSQL SQL/PGQ Pipeline
 
-Skein also treats PostgreSQL SQL/PGQ as a first-class syntax surface:
+Hawdb also treats PostgreSQL SQL/PGQ as a first-class syntax surface:
 
 ```text
 PostgreSQL SQL with CREATE PROPERTY GRAPH or GRAPH_TABLE
-  -> skein-sql-syntax tokens, spans, and syntax AST
-  -> skein-sql binding and typed GRAPH_TABLE row schema
+  -> hawdb-sql-syntax tokens, spans, and syntax AST
+  -> hawdb-sql binding and typed GRAPH_TABLE row schema
   -> shared graph and relational logical plan
   -> shared optimizer, executor, snapshot, and query admission
   -> rows
@@ -661,7 +661,7 @@ the shared intermediate label and both relationship types. It does not infer
 topology from `GraphRagCommonPathSummary`, because that compact summary does not
 preserve the intermediate node and both edge types.
 
-Skein does not embed an LLM and does not execute generated queries through a
+Hawdb does not embed an LLM and does not execute generated queries through a
 special GraphRAG interpreter. The host submits generated Cypher through the
 normal query runtime, or through a read transaction when it needs an enforced
 read-only snapshot. Parsing, optimization, execution profiling, slow-query
@@ -669,46 +669,46 @@ logging, and blackbox aggregation therefore retain their normal ownership.
 
 ### Cloud semantic seam
 
-Neither the current Cloud adapter nor Skein Cloud runs the Skein embedded
+Neither the current Cloud adapter nor Hawdb Cloud runs the Hawdb embedded
 database. They reuse a narrower, storage-neutral contract:
 
 - a versioned semantic graph catalog for node kinds, relationship endpoint
   types, direction, cardinality, readable properties, derived-field grain, and
   authorization;
 - graph logical operators and semantic-preserving rewrite fixtures;
-- `skein-optimizer` memo/search/report primitives, with backend-specific
+- `hawdb-optimizer` memo/search/report primitives, with backend-specific
   physical rules and cost inputs;
 - a storage-neutral deterministic analytics kernel over immutable CSR/CSC
   snapshots.
 
-The local backend lowers logical operators to Skein scans, indexes, adjacency
+The local backend lowers logical operators to Hawdb scans, indexes, adjacency
 expansion, and the embedded executor. The current Nowledge Cloud adapter lowers
 the same logical operators to workspace-scoped PostgreSQL joins and bounded
-recursive CTEs. The target Skein Cloud backend lowers them to immutable
+recursive CTEs. The target Hawdb Cloud backend lowers them to immutable
 graph-segment scans, topology expansion, distributed joins/path stages, and
 retryable exchanges over a pinned manifest. Physical plans and costs are
 deliberately different; logical rows, cardinality/null semantics,
 authorization, and completeness diagnostics must match.
 
-Skein Cloud stores canonical graph, value, delta, statistics, checkpoint, and
+Hawdb Cloud stores canonical graph, value, delta, statistics, checkpoint, and
 projection objects in S3. Worker-local SSD/NVMe is a digest-verified cache for
 objects and decoded topology/column blocks, never durable database state. A
 write becomes visible only after its S3 objects are verified and metadata Raft
 publishes the manifest pointer. Eviction, worker restart, or complete cache-disk
 loss must preserve committed data and query semantics.
 
-For a Cloud-attached workspace, Skein is an eventually consistent partial
+For a Cloud-attached workspace, Hawdb is an eventually consistent partial
 mirror, not a second canonical writer. The current Cloud adapter is authoritative
-until migration; Skein Cloud becomes the permanent authority after cutover.
+until migration; Hawdb Cloud becomes the permanent authority after cutover.
 Local query eligibility is therefore a semantic coverage check, not merely
 "does this node exist locally." Results must identify the subscription identity
 and epoch, filter digest, materialization scope, applied sequence, canonical
 head, and whether the requested query is complete within that scope. Standalone
 local workspaces remain locally authoritative.
 
-Graph analytics follows the same boundary. Local Skein and small Cloud jobs may
+Graph analytics follows the same boundary. Local Hawdb and small Cloud jobs may
 feed immutable source-epoch snapshots into the shared in-process kernel.
-Distributed Skein Cloud execution shares the algorithm semantics, message
+Distributed Hawdb Cloud execution shares the algorithm semantics, message
 algebra, fixtures, and output contract without sharing the embedded runtime.
 Analytics outputs are rebuildable, versioned projection generations; they
 never enter the local graph WAL or either Cloud canonical mutation log. This
@@ -723,7 +723,7 @@ Statement parsers should compose those helpers rather than open-coding byte
 movement or separator loops. This keeps syntax changes reviewable and avoids
 leaking semantic validation into parsing.
 
-The parser technology choice is deliberately conservative. Skein should not add
+The parser technology choice is deliberately conservative. Hawdb should not add
 a yacc-style generated grammar for the current Nowledge replacement slice. The
 supported Cypher surface is production-query-driven, narrow, and tied to
 planner/executor semantics that are still changing. A generated grammar would
@@ -734,7 +734,7 @@ The preferred direction is closer to RisingWave's newer parser organization:
 keep the top-level statement flow explicit in Rust, keep token/cursor ownership
 separate from AST construction, and use small parser helpers or combinators only
 where they reduce local ambiguity for expressions, lists, and delimited forms.
-Skein can adopt a real lexer or parser-combinator layer later, but only after a
+Hawdb can adopt a real lexer or parser-combinator layer later, but only after a
 Nowledge scanner hit proves that the current cursor helpers are becoming the
 main source of complexity.
 
@@ -783,13 +783,13 @@ order.
 
 ## Physical Plan
 
-Skein currently keeps a public `PhysicalPlan` enum as the embedded facade
+Hawdb currently keeps a public `PhysicalPlan` enum as the embedded facade
 between optimizer and executor. That shape is intentionally compatibility-first:
 it keeps execution, explain output, and deterministic fingerprints stable while
 the Nowledge replacement surface is still growing.
 
 The flat enum is a compatibility surface, not the long-term internal ownership
-boundary. Skein should migrate incrementally toward a statement root that
+boundary. Hawdb should migrate incrementally toward a statement root that
 separates schema, mutation, query, and procedure plans. Query plans should use a
 framework-owned node shape with operator payload, inputs, and physical
 properties kept as separate contracts:
@@ -804,9 +804,9 @@ properties kept as separate contracts:
 - keep query operators as a smaller closed enum with named payload structs;
   keep child topology owned by the query-node representation
 - keep `PhysicalPlanKind`, `PhysicalPlanClass`, `PlanChildren`, `PlanNode`, and
-  plan histogram helpers beside the IR in `skein-plan`
+  plan histogram helpers beside the IR in `hawdb-plan`
 - keep `OptimizationSearchReport`, `SelectedPlanTrace`, memo/rule primitives,
-  and graph-specific costing/lowering in `skein-optimizer`
+  and graph-specific costing/lowering in `hawdb-optimizer`
 - keep deterministic fingerprint helpers split by value, predicate, and
   projection responsibility, and keep access-path candidate composition
   separate from rule execution
@@ -839,16 +839,16 @@ index seeks matter more than full relational join sophistication.
 
 ## Cascades Optimizer
 
-Skein should use a Cascades model similar to Chryso:
+Hawdb should use a Cascades model similar to Chryso:
 
 - `Memo`: stores equivalent plan alternatives. The generic group storage lives
-  in `skein-optimizer`; `skein_optimizer::graph` stores Cypher-specific
+  in `hawdb-optimizer`; `hawdb_optimizer::graph` stores Cypher-specific
   `GroupExpr` payloads in that crate-owned memo. The graph memo currently holds
   one expression per group; it is not an alternative-plan search engine.
 - `Group`: represents a logical equivalence class.
 - `GroupExpr`: stores an operator plus child group references. Graph-specific
   lowering owns this private payload while public logical operators live in
-  `skein-plan`.
+  `hawdb-plan`.
 - `Rule`: transforms logical expressions into equivalent logical alternatives.
 - `ImplementationRule`: maps logical expressions to physical alternatives.
 - `CostModel`: scores physical alternatives using graph statistics. The current
@@ -868,7 +868,7 @@ Skein should use a Cascades model similar to Chryso:
   legacy `OptimizerTrace` surface.
 - `OptimizerTrace`: deterministic diagnostics for rules, groups, candidates,
   costs, warnings, search limits, and selected physical plan operator/class
-  histograms. If a logical plan exceeds `OptimizerConfig::max_groups`, Skein
+  histograms. If a logical plan exceeds `OptimizerConfig::max_groups`, Hawdb
   does not build an oversized memo; it records an informational budget decision
   and resolves logical children directly. Both graph modes call one physical
   lowerer, including the same access-path and bounded-sort alternatives. The
@@ -876,7 +876,7 @@ Skein should use a Cascades model similar to Chryso:
   Explicit `memo` requests still fail if the group allocation exceeds the limit;
   EXPLAIN reports `budget_exceeded` numerically, independently of warnings.
 
-Unlike Chryso, Skein needs graph-specific properties:
+Unlike Chryso, Hawdb needs graph-specific properties:
 
 - bound variables
 - preserved path uniqueness mode
@@ -982,8 +982,8 @@ without adding an ACL layer to the embedded built-in core, while preserving the
 rule that search projections stay outside canonical graph state.
 
 Mem integration should start with side-by-side writes to Kuzu/Ladybug and
-Skein, then select the read engine through runtime configuration. Kuzu/Ladybug
-remains the default read engine until route evidence proves that Skein can
+Hawdb, then select the read engine through runtime configuration. Kuzu/Ladybug
+remains the default read engine until route evidence proves that Hawdb can
 serve that read family. This avoids a large typed facade migration and keeps the
 cutover mechanism simple: write both, read one, compare when requested.
 
@@ -992,7 +992,7 @@ walks Nowledge Rust source files, extracts conservative Cypher string-literal
 call sites, classifies them as read, mutation, schema, procedure, or transaction
 control, and emits the audited `required_checks` JSON artifact. The lower-level
 JSON importer also accepts scanner-shaped `name` plus `call_sites` objects; each
-call site has `name`, `query_family`, `source`, and optional `cypher`. Skein
+call site has `name`, `query_family`, `source`, and optional `cypher`. Hawdb
 validates this through `build_compatibility_query_inventory_from_json`, rejects
 duplicate check names, and can export the audited artifact through
 `compatibility_query_inventory_to_json` for CI reuse. Coverage and shadow gates
@@ -1012,7 +1012,7 @@ and migration gate report helpers; their `decision` fields are lowercase
 `assess_compatibility_migration_gate_bundle`
 packages the four reports into one result, and
 `compatibility_migration_gate_bundle_to_json` preserves the same structure for
-artifact upload. The `SKEIN_ENABLE_COMPATIBILITY_TOOLS=1
+artifact upload. The `HAWDB_ENABLE_COMPATIBILITY_TOOLS=1
 nowledge-cypher-migration-gate [--require-ready]
 [--require-cutover-evidence] [--allow-self-shadow] [--shadow-ready]
 [--shadow-trace <path>] [--shadow-timeout-ms <ms>]
@@ -1032,7 +1032,7 @@ suitable for isolated release or nightly cutover evidence generation. Production
 Mem should consume typed Rust library gates such as
 `nowledge_mem_final_cutover_preflight` instead of invoking this CLI path.
 External shadow adapter smoke reports include a `dual_engine_evidence` object
-that records the Skein primary side, the previous-wrapper shadow side, matched
+that records the Hawdb primary side, the previous-wrapper shadow side, matched
 check count, primary-only count, and readiness. Preflight consumes this field
 when present so release automation can distinguish true side-by-side evidence
 from primary-only protocol smoke.
@@ -1040,11 +1040,11 @@ With `--require-rollback-evidence`, the same gate also requires caller-supplied
 previous-database reopen proof through `--rollback-evidence <text>` before the
 migration decision can be ready.
 With `--require-storage-recovery-evidence`, cutover evidence also requires a
-`skein-storage-recovery-report` artifact from the real database path, including
+`hawdb-storage-recovery-report` artifact from the real database path, including
 durable recovery, checkpoint-boundary, bounded-WAL-replay, and clean-tail
 readiness. With `--require-background-maintenance-evidence`, cutover evidence
 also requires caller-owned maintenance readiness from either the top-level
-fixture summary or a `skein-background-maintenance-report` supplied through
+fixture summary or a `hawdb-background-maintenance-report` supplied through
 `--background-maintenance-report-json`; declared report protocols must match,
 but deferred or rejected background work is not a blocker because foreground
 user work is intentionally ungated by local background budgets.
@@ -1053,7 +1053,7 @@ from the post-fixture local database, including stable QoS admission strings and
 operation totals for caller-owned maintenance loops. These diagnostics are
 reported for scheduling visibility and only affect compatibility readiness when
 the corresponding background-maintenance evidence requirement is enabled.
-`skein-shadow-self` is a JSON-lines self-shadow process for protocol and CLI
+`hawdb-shadow-self` is a JSON-lines self-shadow process for protocol and CLI
 smoke testing; it exercises the process boundary but does not replace the
 required previous-wrapper parity run. The CLI bundle includes `shadow_run`
 metadata with `evidence_kind` set to either `previous_wrapper` or
@@ -1065,13 +1065,13 @@ The process protocol is specified in
 `docs/EXTERNAL_SHADOW_PROTOCOL.md` so previous-wrapper adapters can be
 implemented without depending on internal fixture code.
 
-Cloud integration should not embed Skein as canonical storage. Cloud can reuse
+Cloud integration should not embed Hawdb as canonical storage. Cloud can reuse
 Cypher parsing, logical planning, and graph projection semantics if useful, but
 the execution backend remains PostgreSQL-backed facts and edges.
 
 Search integration should also preserve the current Nowledge boundary: semantic
 and full-text search are rebuildable projections, not source-of-truth graph
-state. Skein therefore keeps `SearchIndex` separate from `GraphStore`. This
+state. Hawdb therefore keeps `SearchIndex` separate from `GraphStore`. This
 allows the graph store to replace Kuzu/Ladybug while the search projection
 replaces LanceDB without coupling vector lifecycle state to canonical graph
 durability.
@@ -1336,7 +1336,7 @@ expansion rechecks canonical scope metadata and propagates `space_id`,
 snapshot epoch, tracked peak, result bytes, and post-TopK hydration counts
 observable. The full contract and its formal refinement are specified in
 `docs/specs/KNOWLEDGE_RETRIEVAL_PIPELINE_SPEC.md` and
-`docs/tla/SkeinKnowledgeRetrievalPipeline.tla`.
+`docs/tla/HawdbKnowledgeRetrievalPipeline.tla`.
 
 The same facade performs bounded multi-hop graph context
 expansion for returned search hits whose projection metadata maps back to a
@@ -1375,7 +1375,7 @@ the QoS ranker prioritize stale graph-derived projection maintenance by expected
 value. This keeps FTS/vector projection maintenance incremental without writing
 search state into the graph WAL.
 
-Skein Lightning bootstrap export follows the same resource boundary for
+Hawdb Lightning bootstrap export follows the same resource boundary for
 embedded deployments. One export pins a shared database commit epoch and emits
 two authoritative logical streams: canonical graph rows and the complete
 relational checkpoint, including SQL schemas, rows, and overflow values. Initial
@@ -1386,12 +1386,12 @@ or analytics projection artifacts are excluded and rebuilt through their normal
 maintenance paths.
 
 A direct caller can still request
-`prepare_skein_lightning_bootstrap_export` without local background admission,
+`prepare_hawdb_lightning_bootstrap_export` without local background admission,
 but caller-owned pre-upload or background import loops can first ask
-`skein_lightning_bootstrap_export_background_work_plan` for an `Import` lane
+`hawdb_lightning_bootstrap_export_background_work_plan` for an `Import` lane
 estimate and then execute through the background or scheduled background export
 facades. The same plan can appear in `background_maintenance_candidates`, so a
-caller-owned multi-queue loop can rank Skein Lightning pre-export against
+caller-owned multi-queue loop can rank Hawdb Lightning pre-export against
 projection, parser, schema, and analytics maintenance before attempting
 admission. Deferred background export does not generate stable-ID mapping files,
 so QoS rejection cannot create partial import state.
@@ -1440,7 +1440,7 @@ Required test suites:
   effective query `WorkRequest` observability
 - transaction commit/rollback tests
 - WAL recovery and checkpoint tests
-- internal Nowledge-shaped compatibility fixtures against the Skein facade
+- internal Nowledge-shaped compatibility fixtures against the Hawdb facade
 - external-process shadow adapter tests for Ladybug/Kuzu wrapper wiring
 - compatibility tests against the current Nowledge Ladybug-backed wrapper
 

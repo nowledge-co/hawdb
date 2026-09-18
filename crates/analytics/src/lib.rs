@@ -1,5 +1,5 @@
-use skein_core::{LabelId, RelTypeId, Result, RuntimeTaskContext, SkeinError};
-use skein_storage::{NodeId, NodeRecord, RelRecord};
+use hawdb_core::{HawdbError, LabelId, RelTypeId, Result, RuntimeTaskContext};
+use hawdb_storage::{NodeId, NodeRecord, RelRecord};
 use std::cmp::Ordering;
 use std::collections::{BTreeMap, BTreeSet};
 use std::fmt::{Display, Formatter};
@@ -1180,7 +1180,7 @@ fn algorithm_checkpoint(task_context: Option<&RuntimeTaskContext>) -> Result<()>
     match task_context {
         Some(task_context) => task_context
             .checkpoint()
-            .map_err(|reason| SkeinError::Execution(format!("runtime task stopped: {reason}"))),
+            .map_err(|reason| HawdbError::Execution(format!("runtime task stopped: {reason}"))),
         None => Ok(()),
     }
 }
@@ -1195,7 +1195,7 @@ fn algorithm_checkpoint_periodically(
     {
         task_context
             .checkpoint()
-            .map_err(|reason| SkeinError::Execution(format!("runtime task stopped: {reason}")))?;
+            .map_err(|reason| HawdbError::Execution(format!("runtime task stopped: {reason}")))?;
     }
     Ok(())
 }
@@ -1346,8 +1346,8 @@ mod tests {
         ProjectedGraphExecution, ProjectionLayout, ProjectionMemoryBudget, ProjectionScanControl,
         ProjectionSource,
     };
-    use skein_core::{Catalog, Value};
-    use skein_storage::{NodeId, NodeRecord, RelId, RelRecord};
+    use hawdb_core::{Catalog, Value};
+    use hawdb_storage::{NodeId, NodeRecord, RelId, RelRecord};
     use std::collections::{BTreeMap, BTreeSet};
     use std::num::NonZeroUsize;
 
@@ -1771,9 +1771,9 @@ mod tests {
             Vec::new(),
         )
         .unwrap();
-        let cancellation = skein_core::RuntimeCancellationToken::new();
+        let cancellation = hawdb_core::RuntimeCancellationToken::new();
         cancellation.cancel();
-        let context = skein_core::RuntimeTaskContext::without_deadline(cancellation);
+        let context = hawdb_core::RuntimeTaskContext::without_deadline(cancellation);
 
         let page_rank_error = graph
             .page_rank_with_context(PageRankOptions::default(), Some(&context))

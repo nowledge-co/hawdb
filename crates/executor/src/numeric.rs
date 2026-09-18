@@ -26,13 +26,13 @@ use crate::pipeline::{runtime_checkpoint, BatchControl, BindingBatch};
 use crate::store::{GraphExecutionRead, ScanControl};
 use crate::SharedExecutorPool;
 use crate::{ExecutionLimit, ExecutionMemoryConfig, QueryMemoryLedger};
+use hawdb_core::{Catalog, HawdbError, Result, RuntimeTaskContext, Value};
+use hawdb_plan::{PhysicalPlan, PlanChildren, Predicate, Projection, ProjectionExpression};
+use hawdb_storage::{NodeRecord, ScanPruningReport};
 use lending::{
     admitted_numeric_batch_rows, LendingBatchCursor, NumericNodeBatch, NumericNodeBatchCursor,
     OwnedNumericBatchBuffer,
 };
-use skein_core::{Catalog, Result, RuntimeTaskContext, SkeinError, Value};
-use skein_plan::{PhysicalPlan, PlanChildren, Predicate, Projection, ProjectionExpression};
-use skein_storage::{NodeRecord, ScanPruningReport};
 use std::borrow::Borrow;
 use std::collections::BTreeMap;
 use std::num::NonZeroUsize;
@@ -72,7 +72,7 @@ const NODE_ID_SLOT: SlotId = SlotId(1);
 pub struct NumericFragment<'a> {
     pub label: &'a str,
     pub property: &'a str,
-    pub property_type: skein_core::PropertyType,
+    pub property_type: hawdb_core::PropertyType,
     pub predicate: NumericPredicate,
     pub expected: NumericLiteral,
     pub fused_operators: Option<FusedNumericOperators<'a>>,
@@ -257,13 +257,13 @@ impl<'a> NumericFragment<'a> {
             return None;
         }
         let expected = NumericLiteral::from_value(value)?;
-        let table_id = catalog.table_id(skein_core::TableKind::Node, label)?;
+        let table_id = catalog.table_id(hawdb_core::TableKind::Node, label)?;
         let descriptor_id = catalog.property_descriptor_id(table_id, property)?;
         let descriptor = catalog.property_descriptor(descriptor_id)?;
-        if descriptor.state != skein_core::SchemaObjectState::Public
+        if descriptor.state != hawdb_core::SchemaObjectState::Public
             || !matches!(
                 descriptor.value_type,
-                skein_core::PropertyType::Int | skein_core::PropertyType::Float
+                hawdb_core::PropertyType::Int | hawdb_core::PropertyType::Float
             )
         {
             return None;
@@ -416,7 +416,7 @@ impl<'a> NumericFragment<'a> {
                 true,
             )
             .ok_or_else(|| {
-                SkeinError::Execution(format!(
+                HawdbError::Execution(format!(
                     "numeric lending scan scratch requires more than batch_payload_bytes {}",
                     context.memory.batch_payload_bytes
                 ))
@@ -461,7 +461,7 @@ impl<'a> NumericFragment<'a> {
                 Some(worker_limit) => SharedExecutorPool::shared_bounded(worker_limit),
                 None => SharedExecutorPool::shared_default(),
             }
-            .map_err(|error| SkeinError::Execution(error.to_string()))?;
+            .map_err(|error| HawdbError::Execution(error.to_string()))?;
             Some(pool)
         };
         let pool_parallelism = pool
@@ -560,10 +560,10 @@ impl<'a> NumericFragment<'a> {
         context
             .observer
             .record_scan_pruning_report(ScanPruningReport {
-                target_kind: skein_storage::ScanPruningTargetKind::Node,
+                target_kind: hawdb_storage::ScanPruningTargetKind::Node,
                 label_id: Some(label_id),
                 rel_type_id: None,
-                strategy: skein_storage::ScanPruningStrategy::FullLabelScan,
+                strategy: hawdb_storage::ScanPruningStrategy::FullLabelScan,
                 pruned: false,
                 exact_empty: candidate_count == 0,
                 candidate_count_before_pruning: candidate_count,
@@ -591,7 +591,7 @@ fn numeric_columnar_schema(
     needs_node_ids: bool,
 ) -> Result<Arc<BindingSchema>> {
     let logical_type = match fragment.property_type {
-        skein_core::PropertyType::Int | skein_core::PropertyType::Float => {
+        hawdb_core::PropertyType::Int | hawdb_core::PropertyType::Float => {
             fragment.property_type.logical_type()
         }
         _ => unreachable!("numeric fragment eligibility checks the property type"),
@@ -655,7 +655,7 @@ struct NumericMorselPreparation<'plan, 'task> {
 fn stream_parallel_borrowed_numeric_nodes(
     fragment: NumericFragment<'_>,
     items: &[Projection],
-    label_id: skein_core::LabelId,
+    label_id: hawdb_core::LabelId,
     morsel_rows: NonZeroUsize,
     lending_scan: LendingNumericScan,
     columnar_schema: Arc<BindingSchema>,
@@ -682,7 +682,7 @@ fn stream_parallel_borrowed_numeric_nodes(
     let wave_capacity = morsel_rows.get().saturating_mul(max_workers);
     let wave_bytes = wave_capacity.saturating_mul(std::mem::size_of::<&NodeRecord>());
     let wave_budget = NonZeroUsize::new(wave_bytes)
-        .ok_or_else(|| SkeinError::Execution("parallel morsel wave has no capacity".to_string()))?;
+        .ok_or_else(|| HawdbError::Execution("parallel morsel wave has no capacity".to_string()))?;
     let wave_account = context.memory_ledger.account(
         crate::QueryMemoryClass::PipelineBatch,
         "columnar morsel input wave",
@@ -767,7 +767,7 @@ fn stream_parallel_borrowed_numeric_nodes(
 fn stream_lending_numeric_nodes(
     fragment: NumericFragment<'_>,
     items: &[Projection],
-    label_id: skein_core::LabelId,
+    label_id: hawdb_core::LabelId,
     scan: LendingNumericScan,
     context: NumericExecutionContext<'_>,
     execution_limit: ExecutionLimit,
@@ -801,7 +801,7 @@ fn stream_lending_numeric_nodes(
 fn stream_borrowed_numeric_nodes(
     fragment: NumericFragment<'_>,
     items: &[Projection],
-    label_id: skein_core::LabelId,
+    label_id: hawdb_core::LabelId,
     context: NumericExecutionContext<'_>,
     execution_limit: ExecutionLimit,
     emit: &mut dyn FnMut(BindingBatch) -> Result<BatchControl>,
@@ -836,7 +836,7 @@ fn stream_borrowed_numeric_nodes(
 pub fn stream_owned_numeric_nodes(
     fragment: NumericFragment<'_>,
     items: &[Projection],
-    label_id: skein_core::LabelId,
+    label_id: hawdb_core::LabelId,
     context: NumericExecutionContext<'_>,
     execution_limit: ExecutionLimit,
     emit: &mut dyn FnMut(BindingBatch) -> Result<BatchControl>,
@@ -904,7 +904,7 @@ pub fn stream_owned_numeric_nodes(
 pub fn stream_owned_typed_numeric_nodes(
     fragment: NumericFragment<'_>,
     items: &[Projection],
-    label_id: skein_core::LabelId,
+    label_id: hawdb_core::LabelId,
     scan: LendingNumericScan,
     context: NumericExecutionContext<'_>,
     execution_limit: ExecutionLimit,
@@ -1127,7 +1127,7 @@ fn prepare_numeric_batch<N: Borrow<NodeRecord>>(
     runtime_checkpoint(task_context)?;
     let mut validity = ValidityBuilder::with_capacity(input.len());
     let selection = match fragment.property_type {
-        skein_core::PropertyType::Int => {
+        hawdb_core::PropertyType::Int => {
             let mut values = Vec::with_capacity(input.len());
             for node in input {
                 let node = node.borrow();
@@ -1149,7 +1149,7 @@ fn prepare_numeric_batch<N: Borrow<NodeRecord>>(
                 &Selection::all(input.len()),
             )?
         }
-        skein_core::PropertyType::Float => {
+        hawdb_core::PropertyType::Float => {
             let mut values = Vec::with_capacity(input.len());
             for node in input {
                 let node = node.borrow();
@@ -1214,7 +1214,7 @@ fn prepare_owned_columnar_batch(
     let mut validity = ValidityBuilder::with_capacity(input.len());
     let mut node_ids = needs_node_ids.then(|| Vec::with_capacity(input.len()));
     let property = match fragment.property_type {
-        skein_core::PropertyType::Int => {
+        hawdb_core::PropertyType::Int => {
             let mut values = Vec::with_capacity(input.len());
             for node in input {
                 if let Some(node_ids) = &mut node_ids {
@@ -1234,7 +1234,7 @@ fn prepare_owned_columnar_batch(
             }
             Arc::new(ColumnVector::int64(values, validity.finish())?)
         }
-        skein_core::PropertyType::Float => {
+        hawdb_core::PropertyType::Float => {
             let mut values = Vec::with_capacity(input.len());
             for node in input {
                 if let Some(node_ids) = &mut node_ids {
@@ -1296,19 +1296,19 @@ fn prepare_lending_numeric_morsel(
         schema,
     ) > output_budget_bytes
     {
-        return Err(SkeinError::Execution(format!(
+        return Err(HawdbError::Execution(format!(
             "columnar morsel cannot fit one typed batch within its {output_budget_bytes}-byte reservation"
         )));
     }
     let max_morsel_rows = scan.batch_rows.saturating_mul(DEFAULT_BATCHES_PER_MORSEL);
     if input.len() > max_morsel_rows {
-        return Err(SkeinError::Execution(format!(
+        return Err(HawdbError::Execution(format!(
             "columnar morsel has {} rows, exceeding its {max_morsel_rows}-row typed batch window",
             input.len(),
         )));
     }
     if input.is_empty() {
-        return Err(SkeinError::Execution(
+        return Err(HawdbError::Execution(
             "columnar morsel input is empty".to_string(),
         ));
     }
@@ -1320,7 +1320,7 @@ fn prepare_lending_numeric_morsel(
             prepare_owned_columnar_batch(fragment, rows, scan.needs_node_ids, Arc::clone(schema))?;
         output_bytes = output_bytes.saturating_add(batch.batch.estimated_memory_bytes());
         if output_bytes > output_budget_bytes {
-            return Err(SkeinError::Execution(format!(
+            return Err(HawdbError::Execution(format!(
                 "columnar morsel retained {output_bytes} bytes after admission reserved {output_budget_bytes}"
             )));
         }
@@ -1390,8 +1390,8 @@ fn numeric_morsel_memory(
     }
 }
 
-fn schema_value_mismatch(fragment: NumericFragment<'_>, value: &Value) -> SkeinError {
-    SkeinError::Execution(format!(
+fn schema_value_mismatch(fragment: NumericFragment<'_>, value: &Value) -> HawdbError {
+    HawdbError::Execution(format!(
         "columnar scan found value {value:?} that violates {:?} schema for {}.{}",
         fragment.property_type, fragment.label, fragment.property
     ))
@@ -1406,11 +1406,11 @@ mod tests {
     };
     use crate::morsel::{MorselAdmission, MorselAdmissionRequest, PipelineId};
     use crate::{ExecutionMemoryConfig, NumericLiteral};
-    use skein_core::PropertyType;
-    use skein_core::Value;
-    use skein_plan::ComparisonOp;
-    use skein_plan::{Projection, ProjectionExpression};
-    use skein_storage::{NodeId, NodeRecord};
+    use hawdb_core::PropertyType;
+    use hawdb_core::Value;
+    use hawdb_plan::ComparisonOp;
+    use hawdb_plan::{Projection, ProjectionExpression};
+    use hawdb_storage::{NodeId, NodeRecord};
     use std::collections::{BTreeMap, BTreeSet};
     use std::num::NonZeroUsize;
 

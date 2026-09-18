@@ -20,7 +20,7 @@
 //!
 //! Column identity: the shadow reserves low column ids for its structural
 //! columns and interns property keys in its **own persistent key
-//! dictionary** (`column-groups/property-keys.skein`) because checkpoints
+//! dictionary** (`column-groups/property-keys.hawdb`) because checkpoints
 //! hold only `&Catalog` and most graph labels have no catalog
 //! `PropertyDescriptor` interning. Dictionary ids are assigned once in
 //! first-seen order and never reused or reordered (§3.5.3(c)); the file is
@@ -33,7 +33,7 @@
 //!   stored bit-preserving as `i64` (`id as i64`; readers reverse it with
 //!   `value as u64`).
 //! - `column id 3`: residual blob column — §3.5.1 field-tagged varint rows
-//!   (`skein-storage`'s `encode/decode_residual_row_properties`): each
+//!   (`hawdb-storage`'s `encode/decode_residual_row_properties`): each
 //!   property is a length-delimited submessage of interned key id plus one
 //!   wire-typed value field, with nested and null values carrying the
 //!   canonical tagged-value codec; unknown field ids are skippable.
@@ -58,7 +58,7 @@
 //! serialization allocations draw from a separate enforced metadata budget
 //! that is included in the same up-front admission.
 //!
-//! Formal-model coverage note: `SkeinColumnarShadowIntegration.tla` models
+//! Formal-model coverage note: `HawdbColumnarShadowIntegration.tla` models
 //! the four-phase publication machine, recovery, and the post-publish
 //! reclamation sweep (`ActiveClosureRetained`: a sweep never removes a
 //! file the active shadow manifest references; the sweep here is exactly
@@ -67,23 +67,23 @@
 //! admission is absent structurally — the builder receives a pre-admitted
 //! [`ColumnarShadowAdmission`] by value and has no governor handle — and
 //! the constrained-governor convergence test proves it; admission
-//! semantics are modeled separately by `SkeinRuntimeAdmission.tla`
+//! semantics are modeled separately by `HawdbRuntimeAdmission.tla`
 //! (landing via another PR).
 
 use super::*;
-use skein_storage::column_group::shadow::{
+use hawdb_storage::column_group::shadow::{
     encode_label_set, estimated_shadow_value_bytes, node_table_key, relationship_table_key,
     ResidualRowBlob,
 };
 #[cfg(test)]
-use skein_storage::column_group::shadow_metadata::DEFAULT_SHADOW_METADATA_BUDGET_BYTES;
+use hawdb_storage::column_group::shadow_metadata::DEFAULT_SHADOW_METADATA_BUDGET_BYTES;
 #[cfg(test)]
-use skein_storage::column_group::shadow_metadata::FIRST_DICTIONARY_COLUMN;
-use skein_storage::column_group::shadow_metadata::{
+use hawdb_storage::column_group::shadow_metadata::FIRST_DICTIONARY_COLUMN;
+use hawdb_storage::column_group::shadow_metadata::{
     shadow_table_layout, ShadowKeyDictionary, ShadowMetadataBudget, ShadowTableLayout,
     TablePropertyTypes, SHADOW_KEY_DICTIONARY_FILE, SHADOW_PASS1_TABLE_OVERHEAD_BYTES,
 };
-use skein_storage::{
+use hawdb_storage::{
     encode_residual_row_properties, ColumnGroupArtifactDescriptor, ColumnGroupError,
     ColumnGroupManifest, ColumnGroupTableDirectory, ColumnGroupTableDirectoryRef,
     ColumnGroupTableKey, ColumnGroupTableKind, ColumnGroupWriter, ColumnarShadowCheckpointReport,
@@ -112,12 +112,12 @@ const SHADOW_ENCODER_SCRATCH_MULTIPLIER: u64 = 2;
 /// allowance, which is what makes the shadow converge on any input.
 const SHADOW_STREAMED_FLUSH_ALLOWANCE_BYTES: u64 = 64 * 1024;
 
-pub(super) use skein_storage::ColumnarShadowState;
+pub(super) use hawdb_storage::ColumnarShadowState;
 #[cfg(test)]
-use skein_storage::DEFAULT_SHADOW_BUFFER_BUDGET_BYTES;
+use hawdb_storage::DEFAULT_SHADOW_BUFFER_BUDGET_BYTES;
 
-fn shadow_error(error: ColumnGroupError) -> SkeinError {
-    SkeinError::Storage(format!("columnar shadow: {error}"))
+fn shadow_error(error: ColumnGroupError) -> HawdbError {
+    HawdbError::Storage(format!("columnar shadow: {error}"))
 }
 
 #[cfg(test)]
@@ -126,12 +126,12 @@ fn decode_varint_u32(bytes: &[u8], position: &mut usize) -> Result<u32> {
     let mut shift = 0u32;
     loop {
         let byte = *bytes.get(*position).ok_or_else(|| {
-            SkeinError::Storage("columnar shadow: label set varint is truncated".to_string())
+            HawdbError::Storage("columnar shadow: label set varint is truncated".to_string())
         })?;
         *position += 1;
         let bits = u32::from(byte & 0x7f);
         if shift >= 32 || (shift == 28 && bits > 0x0f) {
-            return Err(SkeinError::Storage(
+            return Err(HawdbError::Storage(
                 "columnar shadow: label set varint overflows u32".to_string(),
             ));
         }
@@ -173,7 +173,7 @@ fn decode_label_set(bytes: &[u8]) -> Result<BTreeSet<LabelId>> {
 /// byte allowance.
 #[derive(Debug)]
 pub struct ColumnarShadowAdmission {
-    _permit: Option<Box<dyn skein_storage::BackgroundWorkPermit>>,
+    _permit: Option<Box<dyn hawdb_storage::BackgroundWorkPermit>>,
     /// `None` = unmetered; `Some` = the admitted builder-lifetime bytes.
     allowance_bytes: Option<u64>,
 }
@@ -191,7 +191,7 @@ impl ColumnarShadowAdmission {
         }
     }
 
-    fn owned(permit: Box<dyn skein_storage::BackgroundWorkPermit>, allowance_bytes: u64) -> Self {
+    fn owned(permit: Box<dyn hawdb_storage::BackgroundWorkPermit>, allowance_bytes: u64) -> Self {
         Self {
             _permit: Some(permit),
             allowance_bytes: Some(allowance_bytes),
@@ -219,7 +219,7 @@ impl ColumnarShadowAdmission {
         };
         let transient = SHADOW_STREAMED_FLUSH_ALLOWANCE_BYTES.saturating_add(metadata_bytes);
         if transient > allowance {
-            return Err(SkeinError::Storage(format!(
+            return Err(HawdbError::Storage(format!(
                 "columnar shadow streamed flush needs {transient} bytes, \
                  exceeding its admitted {allowance} byte allowance"
             )));
@@ -238,7 +238,7 @@ impl ColumnarShadowAdmission {
             .saturating_mul(1 + SHADOW_ENCODER_SCRATCH_MULTIPLIER)
             .saturating_add(metadata_bytes);
         if transient > allowance {
-            return Err(SkeinError::Storage(format!(
+            return Err(HawdbError::Storage(format!(
                 "columnar shadow flush and metadata need {transient} bytes, exceeding their \
                  admitted {allowance} byte allowance"
             )));
@@ -449,7 +449,7 @@ impl ShadowCheckpointBuilder {
         let mut residual_values = Vec::new();
         for (key, value) in properties {
             let property_id = dictionary.id(&key).ok_or_else(|| {
-                SkeinError::Storage(format!(
+                HawdbError::Storage(format!(
                     "columnar shadow pass 2 encountered property key {key:?} absent from pass 1"
                 ))
             })?;
@@ -475,7 +475,7 @@ impl ShadowCheckpointBuilder {
                 .collect::<Vec<_>>();
             Some(
                 encode_residual_row_properties(&residual_entries)
-                    .map_err(|error| SkeinError::Storage(error.to_string()))?,
+                    .map_err(|error| HawdbError::Storage(error.to_string()))?,
             )
         };
 
@@ -499,7 +499,7 @@ impl ShadowCheckpointBuilder {
                 buffer.targets.push(Value::Int(target as i64));
             }
             ColumnGroupTableKind::Relational => {
-                return Err(SkeinError::Storage(
+                return Err(HawdbError::Storage(
                     "columnar shadow does not cover relational tables".to_string(),
                 ));
             }
@@ -535,7 +535,7 @@ impl ShadowCheckpointBuilder {
         let mut residual_entries: Vec<(u32, &Value)> = Vec::new();
         for (key, value) in properties {
             let property_id = dictionary.id(key).ok_or_else(|| {
-                SkeinError::Storage(format!(
+                HawdbError::Storage(format!(
                     "columnar shadow pass 2 encountered property key {key:?} absent from pass 1"
                 ))
             })?;
@@ -562,7 +562,7 @@ impl ShadowCheckpointBuilder {
             Some(ResidualRowBlob::new(&residual_entries)?)
         };
         let label_slice: Option<&[u8]> = label_set.as_deref();
-        let mut byte_columns: Vec<(PropertyId, &dyn skein_storage::StreamedBlob)> = Vec::new();
+        let mut byte_columns: Vec<(PropertyId, &dyn hawdb_storage::StreamedBlob)> = Vec::new();
         if let Some(label) = &label_slice {
             byte_columns.push((LABEL_SET_COLUMN, label));
         }
@@ -573,14 +573,14 @@ impl ShadowCheckpointBuilder {
             ColumnGroupTableKind::Node => "node",
             ColumnGroupTableKind::Relationship => "relationship",
             ColumnGroupTableKind::Relational => {
-                return Err(SkeinError::Storage(
+                return Err(HawdbError::Storage(
                     "columnar shadow does not cover relational tables".to_string(),
                 ));
             }
         };
         let group_index = self.next_group_index.entry(table).or_insert(0);
         let file_name = format!(
-            "group-{kind_tag}-{}-{}-{}.skein",
+            "group-{kind_tag}-{}-{}-{}.hawdb",
             table.table_id, self.generation.0, group_index
         );
         let path = self.shadow_root.join(&file_name);
@@ -643,14 +643,14 @@ impl ShadowCheckpointBuilder {
             ColumnGroupTableKind::Node => "node",
             ColumnGroupTableKind::Relationship => "relationship",
             ColumnGroupTableKind::Relational => {
-                return Err(SkeinError::Storage(
+                return Err(HawdbError::Storage(
                     "columnar shadow does not cover relational tables".to_string(),
                 ));
             }
         };
         let group_index = self.next_group_index.entry(table).or_insert(0);
         let file_name = format!(
-            "group-{kind_tag}-{}-{}-{}.skein",
+            "group-{kind_tag}-{}-{}-{}.hawdb",
             table.table_id, self.generation.0, group_index
         );
         let mut value_columns: Vec<(PropertyId, Vec<Value>)> = self.layouts[&table]
@@ -737,7 +737,7 @@ impl ShadowCheckpointBuilder {
 /// referenced table directory, group, and deletion-vector file — plus the
 /// key dictionary. The shadow has no readers and no pins, so retaining
 /// only the current closure is safe; the manifest layer stays generic and
-/// this sweep touches only `*.skein` / `*.skein.tmp` names. Removal
+/// this sweep touches only `*.hawdb` / `*.hawdb.tmp` names. Removal
 /// failures are recorded and retried by the next publish (Windows
 /// discipline: a transient sharing violation never fails a publication).
 /// A crash between publish and sweep leaves only unreferenced garbage,
@@ -747,7 +747,7 @@ fn sweep_superseded_shadow_files(
     catalog: &PublishedColumnGroupCatalog,
 ) -> (usize, usize) {
     let mut keep = BTreeSet::new();
-    keep.insert(skein_storage::COLUMN_GROUP_MANIFEST_FILE.to_string());
+    keep.insert(hawdb_storage::COLUMN_GROUP_MANIFEST_FILE.to_string());
     keep.insert(SHADOW_KEY_DICTIONARY_FILE.to_string());
     for reference in catalog.manifest().tables() {
         keep.insert(reference.file_name().to_string());
@@ -770,7 +770,7 @@ fn sweep_superseded_shadow_files(
         let Some(name) = file_name.to_str() else {
             continue;
         };
-        if !(name.ends_with(".skein") || name.ends_with(".skein.tmp")) {
+        if !(name.ends_with(".hawdb") || name.ends_with(".hawdb.tmp")) {
             continue;
         }
         if keep.contains(name) {
@@ -920,14 +920,14 @@ impl GraphStore {
             return Ok(ColumnarShadowAdmission::unmetered());
         };
         let allowance = self.columnar_shadow_admission_bytes();
-        let request = skein_storage::BackgroundWorkRequest {
+        let request = hawdb_storage::BackgroundWorkRequest {
             cpu_slots: 1,
             memory_bytes: allowance,
             io_slots: 1,
         };
         match governor.try_admit(request) {
             Ok(permit) => Ok(ColumnarShadowAdmission::owned(permit, allowance)),
-            Err(error) => Err(SkeinError::Storage(format!(
+            Err(error) => Err(HawdbError::Storage(format!(
                 "columnar shadow build admission denied: {error}"
             ))),
         }
@@ -954,7 +954,7 @@ impl GraphStore {
             return;
         }
         let record_failure = |report: &mut Option<ColumnarShadowCheckpointReport>,
-                              error: SkeinError| {
+                              error: HawdbError| {
             *report = Some(ColumnarShadowCheckpointReport {
                 status: ColumnarShadowCheckpointStatus::Failed {
                     error: error.to_string(),
@@ -1166,7 +1166,7 @@ impl GraphStore {
         let table_count = manifest.tables().len();
         let catalog = manifest.publish(&shadow_root).map_err(shadow_error)?;
         metadata_bytes_written = metadata_bytes_written.saturating_add(
-            fs::metadata(shadow_root.join(skein_storage::COLUMN_GROUP_MANIFEST_FILE))?.len(),
+            fs::metadata(shadow_root.join(hawdb_storage::COLUMN_GROUP_MANIFEST_FILE))?.len(),
         );
         // Strictly after the publish succeeded: best-effort reclamation of
         // everything outside the new catalog's reference closure, so disk
@@ -1207,25 +1207,25 @@ mod tests {
     fn root_facade_preserves_storage_columnar_shadow_contract_identity() {
         assert_eq!(
             TypeId::of::<crate::ColumnarShadowCheckpointStatus>(),
-            TypeId::of::<skein_storage::ColumnarShadowCheckpointStatus>()
+            TypeId::of::<hawdb_storage::ColumnarShadowCheckpointStatus>()
         );
         assert_eq!(
             TypeId::of::<crate::ColumnarShadowCheckpointReport>(),
-            TypeId::of::<skein_storage::ColumnarShadowCheckpointReport>()
+            TypeId::of::<hawdb_storage::ColumnarShadowCheckpointReport>()
         );
         assert_eq!(
             TypeId::of::<crate::ColumnarShadowRecoveryStatus>(),
-            TypeId::of::<skein_storage::ColumnarShadowRecoveryStatus>()
+            TypeId::of::<hawdb_storage::ColumnarShadowRecoveryStatus>()
         );
     }
-    use skein_storage::{decode_residual_row_properties, ColumnGroupReader};
+    use hawdb_storage::{decode_residual_row_properties, ColumnGroupReader};
 
     fn unique_shadow_dir(name: &str) -> PathBuf {
         let nanos = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
             .unwrap()
             .as_nanos();
-        std::env::temp_dir().join(format!("skein_columnar_shadow_{name}_{nanos}"))
+        std::env::temp_dir().join(format!("hawdb_columnar_shadow_{name}_{nanos}"))
     }
 
     fn shadow_replay_config() -> WalReplayConfig {
@@ -1286,7 +1286,7 @@ mod tests {
                 // groups omit an empty residual column entirely).
                 let residual = match reader.read_byte_column(RESIDUAL_COLUMN) {
                     Ok(residual) => residual,
-                    Err(skein_storage::ColumnGroupError::PropertyMissing(_)) => {
+                    Err(hawdb_storage::ColumnGroupError::PropertyMissing(_)) => {
                         vec![None; reader.directory().row_count as usize]
                     }
                     Err(error) => panic!("residual column read failed: {error}"),
@@ -1950,7 +1950,7 @@ mod tests {
             .unwrap();
         let person_table = node_table_key(&BTreeSet::from([catalog.label_id("Person").unwrap()]));
         let shadow_root = root.join(COLUMN_GROUP_SHADOW_DIR);
-        let poison = shadow_root.join(format!("group-node-{}-2-0.skein", person_table.table_id));
+        let poison = shadow_root.join(format!("group-node-{}-2-0.hawdb", person_table.table_id));
         fs::create_dir_all(&poison).unwrap();
 
         // The canonical checkpoint MUST succeed; only the shadow report
@@ -2143,9 +2143,9 @@ mod tests {
         let root = unique_shadow_dir("governor");
         let mut catalog = Catalog::default();
         let mut store = open_shadow_store(&root, &mut catalog);
-        let governor = skein_qos::RuntimeGovernor::detect(
-            skein_qos::RuntimeGovernorConfig::shared_host(),
-            skein_qos::IoConcurrencyBudget::new(2, 1),
+        let governor = hawdb_qos::RuntimeGovernor::detect(
+            hawdb_qos::RuntimeGovernorConfig::shared_host(),
+            hawdb_qos::IoConcurrencyBudget::new(2, 1),
         );
         store.set_runtime_governor(governor.clone());
         store.columnar_shadow.buffer_budget_bytes = 4 * 1024;
@@ -2182,12 +2182,12 @@ mod tests {
         // permit (the nowledge_mem typed checkpoint's background
         // maintenance admission) is held for the whole duration, so any
         // nested admission inside the shadow build could never succeed.
-        let governor = skein_qos::RuntimeGovernor::detect(
-            skein_qos::RuntimeGovernorConfig {
+        let governor = hawdb_qos::RuntimeGovernor::detect(
+            hawdb_qos::RuntimeGovernorConfig {
                 background_task_limit: std::num::NonZeroUsize::new(1),
-                ..skein_qos::RuntimeGovernorConfig::shared_host()
+                ..hawdb_qos::RuntimeGovernorConfig::shared_host()
             },
-            skein_qos::IoConcurrencyBudget::new(2, 1),
+            hawdb_qos::IoConcurrencyBudget::new(2, 1),
         );
         store.set_runtime_governor(governor.clone());
         for index in 0..40u32 {
@@ -2203,7 +2203,7 @@ mod tests {
         assert!(shadow_bytes > 0);
         let _outer_permit = governor
             .try_admit(
-                skein_qos::RuntimeWorkRequest::background_maintenance(shadow_bytes)
+                hawdb_qos::RuntimeWorkRequest::background_maintenance(shadow_bytes)
                     .with_io_slots(1),
             )
             .expect("outer maintenance permit is admitted");
@@ -2243,7 +2243,7 @@ mod tests {
         for entry in fs::read_dir(shadow_root).unwrap().flatten() {
             let name = entry.file_name();
             let Some(name) = name.to_str() else { continue };
-            if name.ends_with(".skein") || name.ends_with(".skein.tmp") {
+            if name.ends_with(".hawdb") || name.ends_with(".hawdb.tmp") {
                 files += 1;
                 bytes += entry.metadata().unwrap().len();
             }
@@ -2304,7 +2304,7 @@ mod tests {
         // Every remaining artifact belongs to the active closure.
         let catalog_on_disk = ColumnGroupManifest::open(&shadow_root).unwrap().unwrap();
         let mut keep = BTreeSet::new();
-        keep.insert(skein_storage::COLUMN_GROUP_MANIFEST_FILE.to_string());
+        keep.insert(hawdb_storage::COLUMN_GROUP_MANIFEST_FILE.to_string());
         keep.insert(SHADOW_KEY_DICTIONARY_FILE.to_string());
         for reference in catalog_on_disk.manifest().tables() {
             keep.insert(reference.file_name().to_string());
@@ -2317,7 +2317,7 @@ mod tests {
         for entry in fs::read_dir(&shadow_root).unwrap().flatten() {
             let name = entry.file_name();
             let Some(name) = name.to_str() else { continue };
-            if name.ends_with(".skein") || name.ends_with(".skein.tmp") {
+            if name.ends_with(".hawdb") || name.ends_with(".hawdb.tmp") {
                 assert!(
                     keep.contains(name),
                     "unreferenced artifact {name} survived the sweep"
@@ -2346,7 +2346,7 @@ mod tests {
         // sweep's remove_file fails on it, which must be recorded — never
         // propagated into the publication result.
         let shadow_root = root.join(COLUMN_GROUP_SHADOW_DIR);
-        let stubborn = shadow_root.join("group-node-999-1-0.skein");
+        let stubborn = shadow_root.join("group-node-999-1-0.hawdb");
         fs::create_dir_all(stubborn.join("occupant")).unwrap();
         store
             .set_node_properties_by_ids(

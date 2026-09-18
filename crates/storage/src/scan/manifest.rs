@@ -209,8 +209,8 @@ fn validate_segments(segments: &[PersistedScanSegment]) -> Result<(), ScanSegmen
 mod tests {
     use super::*;
     use crate::FieldSummary;
+    use hawdb_core::Value;
     use roaring::RoaringTreemap;
-    use skein_core::Value;
 
     fn segment(id: u64, offset: u64, summary: SegmentSummary) -> PersistedScanSegment {
         PersistedScanSegment {

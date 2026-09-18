@@ -2,7 +2,7 @@ use crate::{
     Database, DatabaseConfig, QueryStreamOptions, RelationalJoinPlanningDirective,
     RelationalJoinPlanningReason, RelationalJoinPlanningStrategy, Value,
 };
-use skein_optimizer::RelationalOperatorKind;
+use hawdb_optimizer::RelationalOperatorKind;
 
 #[test]
 fn cost_based_reordering_selects_hash_join_and_matches_syntax_order() {
@@ -114,9 +114,9 @@ fn assert_costed_algorithm(indexed: bool, expected: RelationalOperatorKind, spil
     if !indexed {
         assert!(planned.profile.row_read.rows_visited < syntax.profile.row_read.rows_visited);
     }
-    let cancellation = skein_core::RuntimeCancellationToken::new();
+    let cancellation = hawdb_core::RuntimeCancellationToken::new();
     cancellation.cancel();
-    let context = skein_core::RuntimeTaskContext::without_deadline(cancellation);
+    let context = hawdb_core::RuntimeTaskContext::without_deadline(cancellation);
     assert!(read
         .query_sql_with_params_options_context(sql, &[], QueryStreamOptions::default(), &context)
         .unwrap_err()

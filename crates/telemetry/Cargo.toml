@@ -1,5 +1,5 @@
 [package]
-name = "skein-telemetry"
+name = "hawdb-telemetry"
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
@@ -7,7 +7,7 @@ license.workspace = true
 
 [dependencies]
 opentelemetry = { version = "0.31", default-features = false, features = ["metrics"], optional = true }
-skein-qos = { path = "../qos" }
+hawdb-qos = { path = "../qos" }
 
 [features]
 default = []

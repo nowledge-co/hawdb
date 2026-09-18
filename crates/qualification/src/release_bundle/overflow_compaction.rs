@@ -9,8 +9,8 @@ use crate::{
     CONTENT_STORE_SHARED_HOST_MAX_CAPACITY_BYTES,
     PRODUCTION_CONTENT_STORE_OVERFLOW_COMPACTION_QUALIFICATION_PROTOCOL,
 };
+use hawdb::ProductionQualificationIdentity;
 use serde_json::Value;
-use skein::ProductionQualificationIdentity;
 use std::collections::{BTreeMap, BTreeSet};
 
 const EVIDENCE_KIND: &str = "representative_production_relational_overflow_compaction";

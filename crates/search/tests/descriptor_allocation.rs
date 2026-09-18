@@ -4,7 +4,7 @@
 mod allocation;
 use allocation::measure;
 
-use skein_search::{SearchDocument, SearchOutOfCoreGenerationWriter, SearchOutOfCoreReader};
+use hawdb_search::{SearchDocument, SearchOutOfCoreGenerationWriter, SearchOutOfCoreReader};
 use std::collections::BTreeMap;
 use std::path::PathBuf;
 use std::time::{SystemTime, UNIX_EPOCH};
@@ -19,7 +19,7 @@ impl Drop for TestDirectory {
 
 fn round_trip(bytes: usize, report: bool) -> usize {
     let root = TestDirectory(std::env::temp_dir().join(format!(
-        "skein-descriptor-allocation-{}-{}",
+        "hawdb-descriptor-allocation-{}-{}",
         std::process::id(), SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_nanos(),
     )));
     let mut value = " ".repeat(bytes);
@@ -71,7 +71,7 @@ fn generation_descriptor_avoids_materializing_hex_dictionary() {
 
 fn repeated_labels(count: usize, json: bool) -> (usize, usize) {
     let root = TestDirectory(std::env::temp_dir().join(format!(
-        "skein-descriptor-labels-{}-{}",
+        "hawdb-descriptor-labels-{}-{}",
         std::process::id(),
         SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_nanos(),
     )));

@@ -3,30 +3,30 @@
 //! The report is file-protocol based and fails closed when a published pointer
 //! cannot be verified against its staged catalog.
 
-use crate::{skein_lightning_artifact_summary, verify_skein_lightning_published_manifest};
-use skein_core::{Result, SkeinError};
-use skein_integrity::checksum_u64;
+use crate::{hawdb_lightning_artifact_summary, verify_hawdb_lightning_published_manifest};
+use hawdb_core::{HawdbError, Result};
+use hawdb_integrity::checksum_u64;
 use std::collections::BTreeSet;
 use std::fs;
 use std::path::Path;
 
-pub fn skein_lightning_gc_staging_report(
+pub fn hawdb_lightning_gc_staging_report(
     staging_dir: impl AsRef<Path>,
     publish_dir: impl AsRef<Path>,
 ) -> Result<serde_json::Value> {
     let staging_dir = staging_dir.as_ref();
     let publish_dir = publish_dir.as_ref();
-    let catalog_path = staging_dir.join("skein_lightning_staging_catalog.json");
+    let catalog_path = staging_dir.join("hawdb_lightning_staging_catalog.json");
     let catalog_bytes = fs::read(&catalog_path)?;
     let catalog = serde_json::from_slice::<serde_json::Value>(&catalog_bytes)
-        .map_err(|_| SkeinError::Execution("invalid JSON file: invalid_json".to_string()))?;
-    let candidates = skein_lightning_staging_gc_candidates(&catalog, &catalog_bytes)?;
-    let published_path = publish_dir.join("skein_lightning_published_manifest.json");
+        .map_err(|_| HawdbError::Execution("invalid JSON file: invalid_json".to_string()))?;
+    let candidates = hawdb_lightning_staging_gc_candidates(&catalog, &catalog_bytes)?;
+    let published_path = publish_dir.join("hawdb_lightning_published_manifest.json");
     let mut errors = Vec::new();
     let mut published_pointer_errors = Vec::new();
     let mut pinned_paths = BTreeSet::new();
     let pointer_state = if published_path.exists() {
-        let verification = verify_skein_lightning_published_manifest(staging_dir, publish_dir)?;
+        let verification = verify_hawdb_lightning_published_manifest(staging_dir, publish_dir)?;
         if verification
             .get("validation_gate")
             .and_then(|gate| gate.get("decision"))
@@ -113,27 +113,27 @@ pub fn skein_lightning_gc_staging_report(
                 == Some(true)
         })
         .count();
-    let total_bytes = skein_lightning_sum_artifact_bytes(&candidate_reports, |_| true);
-    let deletable_bytes = skein_lightning_sum_artifact_bytes(&candidate_reports, |candidate| {
+    let total_bytes = hawdb_lightning_sum_artifact_bytes(&candidate_reports, |_| true);
+    let deletable_bytes = hawdb_lightning_sum_artifact_bytes(&candidate_reports, |candidate| {
         candidate
             .get("deletable")
             .and_then(serde_json::Value::as_bool)
             == Some(true)
     });
-    let pinned_bytes = skein_lightning_sum_artifact_bytes(&candidate_reports, |candidate| {
+    let pinned_bytes = hawdb_lightning_sum_artifact_bytes(&candidate_reports, |candidate| {
         candidate
             .get("pinned_by_published_pointer")
             .and_then(serde_json::Value::as_bool)
             == Some(true)
     });
-    let artifact_summary = skein_lightning_artifact_summary(&candidate_reports, "byte_len");
+    let artifact_summary = hawdb_lightning_artifact_summary(&candidate_reports, "byte_len");
     let decision = if errors.is_empty() {
         "ready"
     } else {
         "blocked"
     };
     Ok(serde_json::json!({
-        "protocol": "skein-lightning-staging-gc-report",
+        "protocol": "hawdb-lightning-staging-gc-report",
         "protocol_version": 1,
         "published_pointer_state": pointer_state,
         "candidate_count": candidate_reports.len(),
@@ -153,14 +153,14 @@ pub fn skein_lightning_gc_staging_report(
     }))
 }
 
-fn skein_lightning_staging_gc_candidates(
+fn hawdb_lightning_staging_gc_candidates(
     catalog: &serde_json::Value,
     catalog_bytes: &[u8],
 ) -> Result<Vec<serde_json::Value>> {
     let mut candidates = Vec::new();
     candidates.push(serde_json::json!({
         "kind": "staging_catalog",
-        "path": "skein_lightning_staging_catalog.json",
+        "path": "hawdb_lightning_staging_catalog.json",
         "byte_len": catalog_bytes.len(),
         "checksum": checksum_u64(catalog_bytes),
     }));
@@ -168,19 +168,19 @@ fn skein_lightning_staging_gc_candidates(
         .get("artifacts")
         .and_then(serde_json::Value::as_array)
         .ok_or_else(|| {
-            SkeinError::Execution("staging catalog missing artifacts array".to_string())
+            HawdbError::Execution("staging catalog missing artifacts array".to_string())
         })?;
     for artifact in artifacts {
         let kind = artifact
             .get("kind")
             .and_then(serde_json::Value::as_str)
-            .ok_or_else(|| SkeinError::Execution("staging artifact missing kind".to_string()))?;
+            .ok_or_else(|| HawdbError::Execution("staging artifact missing kind".to_string()))?;
         let path = artifact
             .get("path")
             .and_then(serde_json::Value::as_str)
-            .ok_or_else(|| SkeinError::Execution("staging artifact missing path".to_string()))?;
+            .ok_or_else(|| HawdbError::Execution("staging artifact missing path".to_string()))?;
         if path.contains('/') || path.contains('\\') {
-            return Err(SkeinError::Execution(format!(
+            return Err(HawdbError::Execution(format!(
                 "staging artifact {kind} uses non-local path {path}"
             )));
         }
@@ -194,7 +194,7 @@ fn skein_lightning_staging_gc_candidates(
     Ok(candidates)
 }
 
-fn skein_lightning_sum_artifact_bytes(
+fn hawdb_lightning_sum_artifact_bytes(
     artifacts: &[serde_json::Value],
     predicate: impl Fn(&serde_json::Value) -> bool,
 ) -> u64 {

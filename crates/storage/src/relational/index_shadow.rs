@@ -17,7 +17,7 @@ use crate::{
     IndexPostingPage, IndexRootPage, IndexRowId, ManifestGeneration, RepresentationKind,
     SegmentCache, SegmentCacheError, SegmentCacheKey, StoreId,
 };
-use skein_integrity::{
+use hawdb_integrity::{
     integrity_digest, IntegrityDigest, IntegrityHasher, Sha256Digest, SHA256_BYTES,
 };
 use std::fmt;
@@ -53,7 +53,7 @@ const MANIFEST_INTEGRITY_OFFSET: usize = 120;
 const MANIFEST_HEADER_BYTES: usize = 156;
 const RELATIONAL_INDEX_SHADOW_LOCK_FILE: &str = "relational-index-shadow.lock";
 
-pub const RELATIONAL_INDEX_SHADOW_MANIFEST_FILE: &str = "relational-index-shadow.manifest.skein";
+pub const RELATIONAL_INDEX_SHADOW_MANIFEST_FILE: &str = "relational-index-shadow.manifest.hawdb";
 pub const DEFAULT_RELATIONAL_INDEX_SHADOW_MANIFEST_BYTES: usize = 8 * 1024 * 1024;
 pub const DEFAULT_RELATIONAL_INDEX_SHADOW_ROOTS: usize = 4096;
 pub const DEFAULT_RELATIONAL_INDEX_SHADOW_BUILD_METADATA_BYTES: usize = 64 * 1024 * 1024;
@@ -63,11 +63,11 @@ pub const DEFAULT_RELATIONAL_INDEX_SORT_RUNS: usize = 4096;
 pub const DEFAULT_RELATIONAL_INDEX_SORT_MERGE_FAN_IN: usize = 32;
 
 pub fn relational_index_shadow_artifact_file(generation: u64) -> String {
-    format!("relational-index-shadow-{generation}.pages.skein")
+    format!("relational-index-shadow-{generation}.pages.hawdb")
 }
 
 pub fn relational_index_shadow_manifest_generation_file(generation: u64) -> String {
-    format!("relational-index-shadow-{generation}.manifest.skein")
+    format!("relational-index-shadow-{generation}.manifest.hawdb")
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -1123,8 +1123,8 @@ impl ShadowPublicationPaths {
         let artifact = directory.join(relational_index_shadow_artifact_file(generation));
         let manifest = directory.join(RELATIONAL_INDEX_SHADOW_MANIFEST_FILE);
         Self {
-            artifact_tmp: artifact.with_extension("skein.tmp"),
-            manifest_tmp: manifest.with_extension("skein.tmp"),
+            artifact_tmp: artifact.with_extension("hawdb.tmp"),
+            manifest_tmp: manifest.with_extension("hawdb.tmp"),
             artifact,
             manifest,
         }
@@ -1134,8 +1134,8 @@ impl ShadowPublicationPaths {
         let artifact = directory.join(relational_index_shadow_artifact_file(generation));
         let manifest = directory.join(relational_index_shadow_manifest_generation_file(generation));
         Self {
-            artifact_tmp: artifact.with_extension("skein.tmp"),
-            manifest_tmp: manifest.with_extension("skein.tmp"),
+            artifact_tmp: artifact.with_extension("hawdb.tmp"),
+            manifest_tmp: manifest.with_extension("hawdb.tmp"),
             artifact,
             manifest,
         }
@@ -2377,7 +2377,7 @@ fn catalog_schema_digest(
         })
         .count();
     let mut hasher = IntegrityHasher::new();
-    hasher.update(b"skein-relational-index-catalog-schema-v1\0");
+    hasher.update(b"hawdb-relational-index-catalog-schema-v1\0");
     hasher.update(&(table_count as u64).to_le_bytes());
     let mut previous: Option<(&str, Sha256Digest)> = None;
     for root in roots {
@@ -2405,7 +2405,7 @@ fn catalog_schema_digest(
 
 fn root_set_digest(roots: &[RelationalIndexLogicalRoot]) -> Sha256Digest {
     let mut hasher = IntegrityHasher::new();
-    hasher.update(b"skein-relational-index-required-roots-v2\0");
+    hasher.update(b"hawdb-relational-index-required-roots-v2\0");
     hasher.update(&(roots.len() as u64).to_le_bytes());
     for root in roots {
         hash_manifest_bytes(&mut hasher, root.identity.namespace.as_bytes());

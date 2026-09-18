@@ -1,10 +1,10 @@
-//! External embedded-library callers use only the public Skein facade.
-use skein::{
-    Database, DatabaseReadTransaction, SearchDocument, SearchIndex, SearchProjectionChangeBatch,
-    SearchProjectionConsumerError, SearchProjectionConsumerId, SearchProjectionConsumerOptions,
-    SearchProjectionConsumerRebuildReason, SearchProjectionConsumerState, SearchProjectionDelta,
-    SearchProjectionKind, SearchProjectionRelationalDelta, SearchProjectionRow,
-    SearchRebuildOptions, SkeinError, Value,
+//! External embedded-library callers use only the public Hawdb facade.
+use hawdb::{
+    Database, DatabaseReadTransaction, HawdbError, SearchDocument, SearchIndex,
+    SearchProjectionChangeBatch, SearchProjectionConsumerError, SearchProjectionConsumerId,
+    SearchProjectionConsumerOptions, SearchProjectionConsumerRebuildReason,
+    SearchProjectionConsumerState, SearchProjectionDelta, SearchProjectionKind,
+    SearchProjectionRelationalDelta, SearchProjectionRow, SearchRebuildOptions, Value,
 };
 use std::collections::BTreeMap;
 use std::num::NonZeroU64;
@@ -16,7 +16,7 @@ impl Fixture {
     fn new() -> Self {
         static SEQUENCE: AtomicU64 = AtomicU64::new(0);
         let path = std::env::temp_dir().join(format!(
-            "skein-consumer-facade-{}-{}-{}",
+            "hawdb-consumer-facade-{}-{}-{}",
             std::process::id(),
             std::time::SystemTime::now()
                 .duration_since(std::time::UNIX_EPOCH)
@@ -39,7 +39,7 @@ fn options(commits: u64) -> SearchProjectionConsumerOptions {
 fn initialize(
     snapshot: &mut DatabaseReadTransaction,
     index: &mut SearchIndex,
-) -> skein::Result<()> {
+) -> hawdb::Result<()> {
     snapshot.rebuild_search_projection(index, SearchRebuildOptions { max_rows: Some(16) })?;
     let output = snapshot.query_sql_with_params_bounded(
         "SELECT body FROM consumer_messages WHERE id = $1 LIMIT $2",
@@ -47,7 +47,7 @@ fn initialize(
         Some(1),
     )?;
     let Value::String(body) = &output.rows[0]["body"] else {
-        return Err(SkeinError::Execution("expected message body".into()));
+        return Err(HawdbError::Execution("expected message body".into()));
     };
     index.upsert(SearchDocument {
         id: "message:1".into(),
@@ -60,7 +60,7 @@ fn initialize(
 fn hydrate(
     snapshot: &mut DatabaseReadTransaction,
     batch: &SearchProjectionChangeBatch,
-) -> skein::Result<SearchProjectionRelationalDelta> {
+) -> hawdb::Result<SearchProjectionRelationalDelta> {
     assert_eq!(batch.relational_primary_key_changes().len(), 1);
     assert_eq!(
         batch.relational_primary_key_changes()[0].table,
@@ -76,7 +76,7 @@ fn hydrate(
         Some(1),
     )?;
     let Value::String(body) = &output.rows[0]["body"] else {
-        return Err(SkeinError::Execution("expected message body".into()));
+        return Err(HawdbError::Execution("expected message body".into()));
     };
     Ok(SearchProjectionRelationalDelta {
         processed_primary_key_count: 1,
@@ -205,9 +205,9 @@ fn public_types_validate_ids_and_require_a_durable_source() {
 #[test]
 fn public_zero_retention_and_expiry_report_typed_rebuild_reasons() {
     let fixture = Fixture::new();
-    let config = skein::DatabaseConfig {
+    let config = hawdb::DatabaseConfig {
         max_search_projection_change_log_entries: Some(0),
-        ..skein::DatabaseConfig::default()
+        ..hawdb::DatabaseConfig::default()
     };
     let mut db = Database::open_with_config(fixture.0.join("database"), config).unwrap();
     let id = SearchProjectionConsumerId::new("stalled").unwrap();

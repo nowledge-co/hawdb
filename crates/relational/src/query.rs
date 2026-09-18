@@ -9,36 +9,36 @@ use crate::row_runtime::{
     RelationalReadRow, RelationalRowExecutionEvidence, RelationalRowReadMode, RelationalRowRuntime,
     RelationalRowStoreReader,
 };
-use skein_core::{Catalog, Result, SkeinError, Value};
-use skein_executor::binding::map_payload_bytes;
-use skein_executor::binding::Binding as ExecutorBinding;
-use skein_executor::blocking::{
+use hawdb_core::{Catalog, HawdbError, Result, Value};
+use hawdb_executor::binding::map_payload_bytes;
+use hawdb_executor::binding::Binding as ExecutorBinding;
+use hawdb_executor::blocking::{
     stream_distinct_batches, stream_top_n_batches, BindingBatchSource, BlockingExecutionContext,
 };
-use skein_executor::external_order::ExternalTopN;
-use skein_executor::kernel::{OperatorMemoryTracker, SpillBudgetTracker};
-use skein_executor::observer::ExecutionObserver;
-use skein_executor::pipeline::{AccountedBindingBatch, BatchControl, BindingBatch};
-use skein_executor::spill::{SpillRun, SpillWriter};
-use skein_executor::Row;
-use skein_executor::{
+use hawdb_executor::external_order::ExternalTopN;
+use hawdb_executor::kernel::{OperatorMemoryTracker, SpillBudgetTracker};
+use hawdb_executor::observer::ExecutionObserver;
+use hawdb_executor::pipeline::{AccountedBindingBatch, BatchControl, BindingBatch};
+use hawdb_executor::spill::{SpillRun, SpillWriter};
+use hawdb_executor::Row;
+use hawdb_executor::{
     BindingSchema, BlockingOperatorMemoryReport, ColumnVector, ColumnarBatch, ExecutionLimit,
     QueryMemoryClass, QueryMemoryLease, QueryMemoryLedger, QueryRows, QueryRowsBuilder,
     RelationalRowLocator, SlotDescriptor, SlotId, SlotType,
 };
-use skein_expression::BindingId;
-use skein_optimizer::{
+use hawdb_expression::BindingId;
+use hawdb_optimizer::{
     select_relational_access_path, RelationalAccessPathDescriptor, RelationalAccessPathKind,
     RelationalJoinEnumerationConfig, RelationalJoinPlanningDirective,
 };
-use skein_plan::{PhysicalPlan, SortDirection, SortItem, SortKey};
-use skein_sql::{
+use hawdb_plan::{PhysicalPlan, SortDirection, SortItem, SortKey};
+use hawdb_sql::{
     SelectProjection, SelectStatement, SqlColumnRef, SqlExpression, SqlFunctionArgument,
     SqlJoinKind, SqlNullOrder, SqlOrderDirection, SqlPredicate, SqlStatement, SqlValue,
 };
 #[cfg(test)]
-use skein_storage::RelationalHydrationBudget;
-use skein_storage::{
+use hawdb_storage::RelationalHydrationBudget;
+use hawdb_storage::{
     relational_unique_index_name, RelationalIndexRangeScan, RelationalIndexScanDirection,
     RelationalKey, RelationalScalarType, RelationalState, RelationalTableSchema, RelationalValue,
 };
@@ -49,11 +49,11 @@ use std::num::NonZeroUsize;
 use std::sync::Arc;
 use std::time::Instant;
 
-use skein_optimizer::{
+use hawdb_optimizer::{
     RelationalJoinPlanningOutcome, RelationalOperatorCardinalityProfile, RelationalOperatorId,
 };
-use skein_sql::timing::{elapsed_nanos, measure_nanos};
-use skein_sql::{PreparedRelationalSql, RelationalSqlStageTimings};
+use hawdb_sql::timing::{elapsed_nanos, measure_nanos};
+use hawdb_sql::{PreparedRelationalSql, RelationalSqlStageTimings};
 
 mod join_order;
 use crate::columnar_aggregate::ColumnarAggregateExecutor;
@@ -171,16 +171,16 @@ impl<T> RelationalQueryStoreReader for T where
 pub struct RelationalQueryResourceContext<'a> {
     join_planning: RelationalJoinPlanningContext,
     limits: RelationalQueryLimits,
-    execution_memory: &'a skein_executor::ExecutionMemoryConfig,
-    task_context: Option<&'a skein_core::RuntimeTaskContext>,
+    execution_memory: &'a hawdb_executor::ExecutionMemoryConfig,
+    task_context: Option<&'a hawdb_core::RuntimeTaskContext>,
 }
 
 impl<'a> RelationalQueryResourceContext<'a> {
     pub const fn new(
         join_enumeration: RelationalJoinEnumerationConfig,
         limits: RelationalQueryLimits,
-        execution_memory: &'a skein_executor::ExecutionMemoryConfig,
-        task_context: Option<&'a skein_core::RuntimeTaskContext>,
+        execution_memory: &'a hawdb_executor::ExecutionMemoryConfig,
+        task_context: Option<&'a hawdb_core::RuntimeTaskContext>,
     ) -> Self {
         Self {
             join_planning: RelationalJoinPlanningContext::new(
@@ -225,9 +225,9 @@ struct AdmittedRelationalExecution<'state, 'runtime, R: RelationalQueryStoreRead
     index_read_mode: RelationalIndexReadMode<'state, R>,
     row_read_mode: RelationalRowReadMode<'state, R>,
     limits: RelationalQueryLimits,
-    execution_memory: &'runtime skein_executor::ExecutionMemoryConfig,
+    execution_memory: &'runtime hawdb_executor::ExecutionMemoryConfig,
     memory_ledger: QueryMemoryLedger,
-    task_context: Option<&'runtime skein_core::RuntimeTaskContext>,
+    task_context: Option<&'runtime hawdb_core::RuntimeTaskContext>,
 }
 
 pub struct RelationalQueryReadModes<
@@ -262,7 +262,7 @@ impl RelationalIndexStoreReader for crate::RelationalMaterializedReader {
         _table: &str,
         _index: &str,
         _prefix_len: usize,
-    ) -> Option<skein_storage::relational_index_view::RelationalIndexProbeStatistics> {
+    ) -> Option<hawdb_storage::relational_index_view::RelationalIndexProbeStatistics> {
         None
     }
 
@@ -271,12 +271,12 @@ impl RelationalIndexStoreReader for crate::RelationalMaterializedReader {
         _table: &str,
         _index: &str,
         _prefix: &RelationalKey,
-        _limits: skein_storage::RelationalIndexReadLimits,
+        _limits: hawdb_storage::RelationalIndexReadLimits,
         _visit: impl FnMut(&RelationalKey, &RelationalKey) -> bool,
     ) -> Option<
         std::result::Result<
-            skein_storage::relational_index_view::RelationalIndexReadViewReport,
-            skein_storage::RelationalIndexShadowError,
+            hawdb_storage::relational_index_view::RelationalIndexReadViewReport,
+            hawdb_storage::RelationalIndexShadowError,
         >,
     > {
         None
@@ -287,12 +287,12 @@ impl RelationalIndexStoreReader for crate::RelationalMaterializedReader {
         _table: &str,
         _index: &str,
         _prefixes: &[RelationalKey],
-        _limits: skein_storage::RelationalIndexReadLimits,
+        _limits: hawdb_storage::RelationalIndexReadLimits,
         _visit: impl FnMut(&RelationalKey, &RelationalKey) -> bool,
     ) -> Option<
         std::result::Result<
-            skein_storage::relational_index_view::RelationalIndexReadViewReport,
-            skein_storage::RelationalIndexShadowError,
+            hawdb_storage::relational_index_view::RelationalIndexReadViewReport,
+            hawdb_storage::RelationalIndexShadowError,
         >,
     > {
         None
@@ -302,13 +302,13 @@ impl RelationalIndexStoreReader for crate::RelationalMaterializedReader {
         &self,
         _table: &str,
         _index: &str,
-        _scan: &skein_storage::RelationalIndexRangeScan,
-        _limits: skein_storage::RelationalIndexReadLimits,
+        _scan: &hawdb_storage::RelationalIndexRangeScan,
+        _limits: hawdb_storage::RelationalIndexReadLimits,
         _visit: impl FnMut(&RelationalKey, &RelationalKey) -> bool,
     ) -> Option<
         std::result::Result<
-            skein_storage::relational_index_view::RelationalIndexReadViewReport,
-            skein_storage::RelationalIndexShadowError,
+            hawdb_storage::relational_index_view::RelationalIndexReadViewReport,
+            hawdb_storage::RelationalIndexShadowError,
         >,
     > {
         None
@@ -321,15 +321,15 @@ impl RelationalRowStoreReader for crate::RelationalMaterializedReader {
 
     fn open_relational_row_snapshot_reader(
         &self,
-    ) -> Result<Option<skein_storage::RelationalRowPageSnapshotReader>> {
+    ) -> Result<Option<hawdb_storage::RelationalRowPageSnapshotReader>> {
         Ok(None)
     }
 
     fn open_relational_transaction_row_snapshot_reader(
         &self,
         _rows: &Self::TransactionRows,
-    ) -> Result<skein_storage::RelationalRowPageSnapshotReader> {
-        Err(SkeinError::Execution(
+    ) -> Result<hawdb_storage::RelationalRowPageSnapshotReader> {
+        Err(HawdbError::Execution(
             "materialized relational reader does not expose transaction rows".to_string(),
         ))
     }
@@ -346,7 +346,7 @@ pub fn execute_prepared_relational_query_with_resources<'a, R: RelationalQuerySt
     let parse_nanos = prepared_sql.parse_nanos;
     let prepared = Arc::unwrap_or_clone(prepared_sql.template);
     if prepared.parameters.len() != parameters.len() {
-        return Err(SkeinError::Semantic(format!(
+        return Err(HawdbError::Semantic(format!(
             "PostgreSQL statement requires {} parameters, but {} parameters were supplied",
             prepared.parameters.len(),
             parameters.len()
@@ -373,7 +373,7 @@ pub fn execute_prepared_relational_query_with_resources<'a, R: RelationalQuerySt
         }
         SqlStatement::Explain(explain) => {
             let SqlStatement::Select(select) = *explain.statement else {
-                return Err(SkeinError::Semantic(
+                return Err(HawdbError::Semantic(
                     "EXPLAIN only supports relational SELECT".to_string(),
                 ));
             };
@@ -399,7 +399,7 @@ pub fn execute_prepared_relational_query_with_resources<'a, R: RelationalQuerySt
                 resources.limits,
             )
         }
-        _ => Err(SkeinError::Semantic(
+        _ => Err(HawdbError::Semantic(
             "relational query entrypoint requires SELECT or EXPLAIN SELECT".to_string(),
         )),
     }
@@ -412,11 +412,11 @@ pub fn execute_relational_query_sql_with_runtime<'a, R: RelationalQueryStoreRead
     state: &'a RelationalState,
     read_modes: RelationalQueryReadModes<'a, R>,
     limits: RelationalQueryLimits,
-    execution_memory: &skein_executor::ExecutionMemoryConfig,
-    task_context: Option<&skein_core::RuntimeTaskContext>,
+    execution_memory: &hawdb_executor::ExecutionMemoryConfig,
+    task_context: Option<&hawdb_core::RuntimeTaskContext>,
 ) -> Result<RelationalQueryOutput> {
     let started = Instant::now();
-    let template = Arc::new(skein_sql::prepare_postgres_sql(sql)?);
+    let template = Arc::new(hawdb_sql::prepare_postgres_sql(sql)?);
     let prepared_sql = PreparedRelationalSql {
         template,
         parse_nanos: elapsed_nanos(started),

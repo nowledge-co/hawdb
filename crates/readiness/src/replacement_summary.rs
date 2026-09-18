@@ -13,40 +13,40 @@ use crate::source_mutation::{
     NOWLEDGE_MEM_SOURCE_MUTATION_DUAL_WRITE_READINESS_PROTOCOL,
     REQUIRED_NOWLEDGE_MEM_SOURCE_MUTATION_FAMILIES,
 };
-use skein_core::GRAPH_RAG_SCHEMA_CONTEXT_PROTOCOL;
-use skein_evidence::inventory::{
+use hawdb_core::GRAPH_RAG_SCHEMA_CONTEXT_PROTOCOL;
+use hawdb_evidence::inventory::{
     replacement_readiness_family_evidence_health_from_bundle,
     REQUIRED_NOWLEDGE_REPLACEMENT_QUERY_FAMILIES,
 };
-use skein_evidence::replacement_contract::{
+use hawdb_evidence::replacement_contract::{
     NOWLEDGE_GRAPH_ROUTE_WORKLOAD_FIXTURE_PROTOCOL, NOWLEDGE_MEM_SEARCH_CANDIDATE_EVIDENCE_ROUTE,
     NOWLEDGE_MEM_SEARCH_CANDIDATE_EVIDENCE_SOURCE, NOWLEDGE_MEM_SEARCH_CANDIDATE_PRIMARY_ENGINE,
     NOWLEDGE_MEM_SEARCH_CANDIDATE_SHADOW_EVIDENCE_PROTOCOL,
     NOWLEDGE_SEARCH_PROJECTION_SCAN_FILTER_FIELDS,
 };
-use skein_route_ownership::graph::REQUIRED_NOWLEDGE_MEM_BOUNDED_READ_ROUTES;
-use skein_route_ownership::{
+use hawdb_route_ownership::graph::REQUIRED_NOWLEDGE_MEM_BOUNDED_READ_ROUTES;
+use hawdb_route_ownership::{
     NOWLEDGE_MEM_ACTIVE_SEARCH_ROUTE_READINESS_PROTOCOL,
     NOWLEDGE_MEM_SEARCH_ROUTE_OWNERSHIP_PROTOCOL, REQUIRED_NOWLEDGE_MEM_ACTIVE_SEARCH_ROUTES,
     REQUIRED_NOWLEDGE_MEM_SEARCH_ROUTES,
 };
 use std::collections::{BTreeMap, BTreeSet};
 
-const SKEIN_NOWLEDGE_SEARCH_PROJECTION_EVIDENCE_PROTOCOL: &str =
-    "skein-nowledge-search-projection-evidence";
-const SKEIN_NOWLEDGE_SEARCH_PROJECTION_SHADOW_EVIDENCE_PROTOCOL: &str =
-    "skein-nowledge-search-projection-shadow-evidence";
-const SKEIN_SEARCH_PROJECTION_SHADOW_EVIDENCE_SOURCE: &str = "skein-rust-library";
-const SKEIN_NOWLEDGE_MEM_BOUNDED_READ_EVIDENCE_PROTOCOL: &str =
-    "skein-nowledge-mem-bounded-read-evidence-v2";
-const SKEIN_NOWLEDGE_QUERY_RUNTIME_PREFLIGHT_PROTOCOL: &str =
-    "skein-nowledge-query-runtime-preflight-v1";
+const HAWDB_NOWLEDGE_SEARCH_PROJECTION_EVIDENCE_PROTOCOL: &str =
+    "hawdb-nowledge-search-projection-evidence";
+const HAWDB_NOWLEDGE_SEARCH_PROJECTION_SHADOW_EVIDENCE_PROTOCOL: &str =
+    "hawdb-nowledge-search-projection-shadow-evidence";
+const HAWDB_SEARCH_PROJECTION_SHADOW_EVIDENCE_SOURCE: &str = "hawdb-rust-library";
+const HAWDB_NOWLEDGE_MEM_BOUNDED_READ_EVIDENCE_PROTOCOL: &str =
+    "hawdb-nowledge-mem-bounded-read-evidence-v2";
+const HAWDB_NOWLEDGE_QUERY_RUNTIME_PREFLIGHT_PROTOCOL: &str =
+    "hawdb-nowledge-query-runtime-preflight-v1";
 const SEARCH_PROJECTION_SHADOW_PUSHDOWN_NOT_READY: &str =
     "search_projection_shadow_pushdown_evidence_not_ready";
-const SKEIN_SEARCH_PROJECTION_SEGMENT_DESCRIPTOR_MISSING: &str =
-    "skein_search_projection_segment_descriptor_missing";
-const SKEIN_SEARCH_PROJECTION_SEGMENT_DESCRIPTOR_FIELDS_MISSING: &str =
-    "skein_search_projection_segment_descriptor_fields_missing";
+const HAWDB_SEARCH_PROJECTION_SEGMENT_DESCRIPTOR_MISSING: &str =
+    "hawdb_search_projection_segment_descriptor_missing";
+const HAWDB_SEARCH_PROJECTION_SEGMENT_DESCRIPTOR_FIELDS_MISSING: &str =
+    "hawdb_search_projection_segment_descriptor_fields_missing";
 const REQUIRED_SEARCH_VALUE_SUMMARY_FIELDS: &[&str] = &[
     "kind",
     "external_id",
@@ -263,7 +263,7 @@ pub fn nowledge_replacement_summary_json_with_options(
     });
 
     let mut summary = serde_json::json!({
-        "protocol": "skein-nowledge-replacement-summary",
+        "protocol": "hawdb-nowledge-replacement-summary",
         "business_surface": {
             "covered_per_million": covered_business_surface_per_million,
             "ready": covered_business_surface_per_million == Some(1_000_000),
@@ -546,12 +546,12 @@ fn replacement_boundaries_json() -> serde_json::Value {
         "graph_layer": {
             "scope": GRAPH_LAYER_REPLACEMENT_SCOPE,
             "replacement_role": "primary_replacement",
-            "storage_owner": "skein",
+            "storage_owner": "hawdb",
         },
         "search_projection": {
             "scope": SEARCH_PROJECTION_REPLACEMENT_SCOPE,
             "replacement_role": "rebuildable_projection",
-            "storage_owner": "skein",
+            "storage_owner": "hawdb",
         },
         "content_store": {
             "scope": SQLITE_CONTENT_STORE_SCOPE,
@@ -840,10 +840,10 @@ struct SearchRouteOwnershipSummary {
     present: bool,
     ready: bool,
     production_cutover_ready: Option<bool>,
-    require_all_skein: Option<bool>,
+    require_all_hawdb: Option<bool>,
     required_route_count: Option<u64>,
     explicit_route_count: Option<u64>,
-    skein_route_count: Option<u64>,
+    hawdb_route_count: Option<u64>,
     lancedb_route_count: Option<u64>,
     missing_required_routes: Vec<String>,
     lancedb_routes: Vec<String>,
@@ -855,14 +855,14 @@ struct ActiveSearchRouteReadinessSummary {
     present: bool,
     ready: bool,
     production_cutover_ready: Option<bool>,
-    require_all_skein: Option<bool>,
+    require_all_hawdb: Option<bool>,
     required_route_count: Option<u64>,
     evidence_route_count: Option<u64>,
     ready_route_count: Option<u64>,
-    skein_route_count: Option<u64>,
+    hawdb_route_count: Option<u64>,
     lancedb_handle_required_route_count: Option<u64>,
     missing_required_routes: Vec<String>,
-    non_skein_routes: Vec<String>,
+    non_hawdb_routes: Vec<String>,
     lancedb_handle_required_routes: Vec<String>,
     candidate_not_ready_routes: Vec<String>,
     candidate_identity_not_ready_routes: Vec<String>,
@@ -885,14 +885,14 @@ impl ActiveSearchRouteReadinessSummary {
             "present": self.present,
             "ready": self.ready,
             "production_cutover_ready": self.production_cutover_ready,
-            "require_all_skein": self.require_all_skein,
+            "require_all_hawdb": self.require_all_hawdb,
             "required_route_count": self.required_route_count,
             "evidence_route_count": self.evidence_route_count,
             "ready_route_count": self.ready_route_count,
-            "skein_route_count": self.skein_route_count,
+            "hawdb_route_count": self.hawdb_route_count,
             "lancedb_handle_required_route_count": self.lancedb_handle_required_route_count,
             "missing_required_routes": self.missing_required_routes,
-            "non_skein_routes": self.non_skein_routes,
+            "non_hawdb_routes": self.non_hawdb_routes,
             "lancedb_handle_required_routes": self.lancedb_handle_required_routes,
             "candidate_not_ready_routes": self.candidate_not_ready_routes,
             "candidate_identity_not_ready_routes": self.candidate_identity_not_ready_routes,
@@ -917,10 +917,10 @@ impl SearchRouteOwnershipSummary {
             "present": self.present,
             "ready": self.ready,
             "production_cutover_ready": self.production_cutover_ready,
-            "require_all_skein": self.require_all_skein,
+            "require_all_hawdb": self.require_all_hawdb,
             "required_route_count": self.required_route_count,
             "explicit_route_count": self.explicit_route_count,
-            "skein_route_count": self.skein_route_count,
+            "hawdb_route_count": self.hawdb_route_count,
             "lancedb_route_count": self.lancedb_route_count,
             "missing_required_routes": self.missing_required_routes,
             "lancedb_routes": self.lancedb_routes,
@@ -1157,7 +1157,7 @@ fn search_projection_evidence_summary(
     let compressed_vector_projection_ready =
         json_get_bool_path_from_dynamic(bundle, path, "compressed_vector_projection_ready");
     let ready = present
-        && protocol.as_deref() == Some(SKEIN_NOWLEDGE_SEARCH_PROJECTION_EVIDENCE_PROTOCOL)
+        && protocol.as_deref() == Some(HAWDB_NOWLEDGE_SEARCH_PROJECTION_EVIDENCE_PROTOCOL)
         && derived_projection == Some(true)
         && all_tables_covered == Some(true)
         && covered_table_count.is_some_and(|count| count > 0)
@@ -1235,8 +1235,8 @@ fn search_projection_shadow_evidence_summary(
     let blocker_codes =
         search_projection_shadow_blocker_codes_with_pushdown(bundle, path, &pushdown_evidence);
     let ready = present
-        && protocol.as_deref() == Some(SKEIN_NOWLEDGE_SEARCH_PROJECTION_SHADOW_EVIDENCE_PROTOCOL)
-        && evidence_source.as_deref() == Some(SKEIN_SEARCH_PROJECTION_SHADOW_EVIDENCE_SOURCE)
+        && protocol.as_deref() == Some(HAWDB_NOWLEDGE_SEARCH_PROJECTION_SHADOW_EVIDENCE_PROTOCOL)
+        && evidence_source.as_deref() == Some(HAWDB_SEARCH_PROJECTION_SHADOW_EVIDENCE_SOURCE)
         && primary_ready == Some(true)
         && shadow_ready == Some(true)
         && document_count_parity == Some(true)
@@ -1608,20 +1608,20 @@ fn active_search_route_readiness_summary(
         json_get_str_path_from_dynamic(bundle, &path_refs, "protocol").map(str::to_string);
     let production_cutover_ready =
         json_get_bool_path_from_dynamic(bundle, &path_refs, "production_cutover_ready");
-    let require_all_skein =
-        json_get_bool_path_from_dynamic(bundle, &path_refs, "require_all_skein");
+    let require_all_hawdb =
+        json_get_bool_path_from_dynamic(bundle, &path_refs, "require_all_hawdb");
     let required_route_count =
         json_get_u64_path_from_dynamic(bundle, &path_refs, "required_route_count");
     let evidence_route_count =
         json_get_u64_path_from_dynamic(bundle, &path_refs, "evidence_route_count");
     let ready_route_count = json_get_u64_path_from_dynamic(bundle, &path_refs, "ready_route_count");
-    let skein_route_count = json_get_u64_path_from_dynamic(bundle, &path_refs, "skein_route_count");
+    let hawdb_route_count = json_get_u64_path_from_dynamic(bundle, &path_refs, "hawdb_route_count");
     let lancedb_handle_required_route_count =
         json_get_u64_path_from_dynamic(bundle, &path_refs, "lancedb_handle_required_route_count");
     let missing_required_routes =
         json_get_string_array_path_from_dynamic(bundle, &path_refs, "missing_required_routes");
-    let non_skein_routes =
-        json_get_string_array_path_from_dynamic(bundle, &path_refs, "non_skein_routes");
+    let non_hawdb_routes =
+        json_get_string_array_path_from_dynamic(bundle, &path_refs, "non_hawdb_routes");
     let lancedb_handle_required_routes = json_get_string_array_path_from_dynamic(
         bundle,
         &path_refs,
@@ -1678,14 +1678,14 @@ fn active_search_route_readiness_summary(
     let ready = present
         && protocol.as_deref() == Some(NOWLEDGE_MEM_ACTIVE_SEARCH_ROUTE_READINESS_PROTOCOL)
         && production_cutover_ready == Some(true)
-        && require_all_skein == Some(true)
+        && require_all_hawdb == Some(true)
         && required_route_count == Some(expected_route_count)
         && evidence_route_count == Some(expected_route_count)
         && ready_route_count == Some(expected_route_count)
-        && skein_route_count == Some(expected_route_count)
+        && hawdb_route_count == Some(expected_route_count)
         && lancedb_handle_required_route_count == Some(0)
         && missing_required_routes.is_empty()
-        && non_skein_routes.is_empty()
+        && non_hawdb_routes.is_empty()
         && lancedb_handle_required_routes.is_empty()
         && candidate_not_ready_routes.is_empty()
         && candidate_identity_not_ready_routes.is_empty()
@@ -1705,14 +1705,14 @@ fn active_search_route_readiness_summary(
         present,
         ready,
         production_cutover_ready,
-        require_all_skein,
+        require_all_hawdb,
         required_route_count,
         evidence_route_count,
         ready_route_count,
-        skein_route_count,
+        hawdb_route_count,
         lancedb_handle_required_route_count,
         missing_required_routes,
-        non_skein_routes,
+        non_hawdb_routes,
         lancedb_handle_required_routes,
         candidate_not_ready_routes,
         candidate_identity_not_ready_routes,
@@ -1745,13 +1745,13 @@ fn route_ownership_summary_at(
         json_get_str_path_from_dynamic(bundle, &path_refs, "protocol").map(str::to_string);
     let production_cutover_ready =
         json_get_bool_path_from_dynamic(bundle, &path_refs, "production_cutover_ready");
-    let require_all_skein =
-        json_get_bool_path_from_dynamic(bundle, &path_refs, "require_all_skein");
+    let require_all_hawdb =
+        json_get_bool_path_from_dynamic(bundle, &path_refs, "require_all_hawdb");
     let required_route_count =
         json_get_u64_path_from_dynamic(bundle, &path_refs, "required_route_count");
     let explicit_route_count =
         json_get_u64_path_from_dynamic(bundle, &path_refs, "explicit_route_count");
-    let skein_route_count = json_get_u64_path_from_dynamic(bundle, &path_refs, "skein_route_count");
+    let hawdb_route_count = json_get_u64_path_from_dynamic(bundle, &path_refs, "hawdb_route_count");
     let lancedb_route_count =
         json_get_u64_path_from_dynamic(bundle, &path_refs, "lancedb_route_count");
     let missing_required_routes =
@@ -1763,10 +1763,10 @@ fn route_ownership_summary_at(
     let ready = present
         && protocol.as_deref() == Some(NOWLEDGE_MEM_SEARCH_ROUTE_OWNERSHIP_PROTOCOL)
         && production_cutover_ready == Some(true)
-        && require_all_skein == Some(true)
+        && require_all_hawdb == Some(true)
         && required_route_count == Some(expected_route_count)
         && explicit_route_count == Some(expected_route_count)
-        && skein_route_count == Some(expected_route_count)
+        && hawdb_route_count == Some(expected_route_count)
         && lancedb_route_count == Some(0)
         && missing_required_routes.is_empty()
         && lancedb_routes.is_empty()
@@ -1777,10 +1777,10 @@ fn route_ownership_summary_at(
         present,
         ready,
         production_cutover_ready,
-        require_all_skein,
+        require_all_hawdb,
         required_route_count,
         explicit_route_count,
-        skein_route_count,
+        hawdb_route_count,
         lancedb_route_count,
         missing_required_routes,
         lancedb_routes,
@@ -2180,14 +2180,14 @@ fn search_projection_shadow_blocker_codes_with_pushdown(
         &["shadow_persisted_segment_descriptor_ready"],
     ) != Some(true)
     {
-        blockers.insert(SKEIN_SEARCH_PROJECTION_SEGMENT_DESCRIPTOR_MISSING.to_string());
+        blockers.insert(HAWDB_SEARCH_PROJECTION_SEGMENT_DESCRIPTOR_MISSING.to_string());
     }
     if json_get_bool_path(
         pushdown_evidence,
         &["shadow_segment_descriptor_scan_filter_fields_ready"],
     ) != Some(true)
     {
-        blockers.insert(SKEIN_SEARCH_PROJECTION_SEGMENT_DESCRIPTOR_FIELDS_MISSING.to_string());
+        blockers.insert(HAWDB_SEARCH_PROJECTION_SEGMENT_DESCRIPTOR_FIELDS_MISSING.to_string());
     }
     serde_json::json!(blockers.into_iter().collect::<Vec<_>>())
 }
@@ -2262,7 +2262,7 @@ fn bounded_read_evidence_summary(bundle: &serde_json::Value) -> BoundedReadEvide
     let relationship_property_pruning_counts_match =
         relationship_property_pruning_required_count == relationship_property_pruning_report_count;
     let ready = present
-        && protocol.as_deref() == Some(SKEIN_NOWLEDGE_MEM_BOUNDED_READ_EVIDENCE_PROTOCOL)
+        && protocol.as_deref() == Some(HAWDB_NOWLEDGE_MEM_BOUNDED_READ_EVIDENCE_PROTOCOL)
         && mode == Some("shadow_read_only")
         && max_rows.is_some_and(|value| value > 0)
         && execution_row_cap == max_rows.and_then(|value| value.checked_add(1))
@@ -2359,7 +2359,7 @@ fn query_runtime_preflight_summary(bundle: &serde_json::Value) -> QueryRuntimePr
             .is_none_or(|ready| ready);
     let probe_details_ready = query_runtime_preflight_probe_details_ready(bundle, path);
     let ready = present
-        && protocol.as_deref() == Some(SKEIN_NOWLEDGE_QUERY_RUNTIME_PREFLIGHT_PROTOCOL)
+        && protocol.as_deref() == Some(HAWDB_NOWLEDGE_QUERY_RUNTIME_PREFLIGHT_PROTOCOL)
         && database_opened == Some(true)
         && probe_count.is_some_and(|count| count > 0)
         && passed_probe_count == probe_count
@@ -2858,7 +2858,7 @@ fn nowledge_replacement_next_actions(
     if !inputs.search_projection_shadow_evidence_ready {
         actions.push(next_action(
             "run_search_projection_shadow_evidence",
-            "LanceDB/Skein search projection side-by-side evidence is missing or not ready",
+            "LanceDB/Hawdb search projection side-by-side evidence is missing or not ready",
             [
                 "search_projection_shadow_evidence.protocol",
                 "search_projection_shadow_evidence.evidence_source",
@@ -2879,7 +2879,7 @@ fn nowledge_replacement_next_actions(
     if !inputs.search_candidate_shadow_evidence_ready {
         actions.push(next_action(
             "run_search_candidate_shadow_evidence",
-            "LanceDB/Skein search candidate side-by-side evidence is missing or not ready",
+            "LanceDB/Hawdb search candidate side-by-side evidence is missing or not ready",
             [
                 "search_candidate_shadow_evidence.protocol",
                 "search_candidate_shadow_evidence.evidence_source",
@@ -2927,7 +2927,7 @@ fn nowledge_replacement_next_actions(
                 "search_route_ownership.production_cutover_ready",
                 "search_route_ownership.required_route_count",
                 "search_route_ownership.explicit_route_count",
-                "search_route_ownership.skein_route_count",
+                "search_route_ownership.hawdb_route_count",
                 "search_route_ownership.lancedb_route_count",
                 "search_route_ownership.missing_required_routes",
                 "search_route_ownership.lancedb_routes",
@@ -2945,7 +2945,7 @@ fn nowledge_replacement_next_actions(
                 "active_search_route_ownership.production_cutover_ready",
                 "active_search_route_ownership.required_route_count",
                 "active_search_route_ownership.explicit_route_count",
-                "active_search_route_ownership.skein_route_count",
+                "active_search_route_ownership.hawdb_route_count",
                 "active_search_route_ownership.lancedb_route_count",
                 "active_search_route_ownership.missing_required_routes",
                 "active_search_route_ownership.lancedb_routes",
@@ -2964,10 +2964,10 @@ fn nowledge_replacement_next_actions(
                 "active_search_route_readiness.required_route_count",
                 "active_search_route_readiness.evidence_route_count",
                 "active_search_route_readiness.ready_route_count",
-                "active_search_route_readiness.skein_route_count",
+                "active_search_route_readiness.hawdb_route_count",
                 "active_search_route_readiness.lancedb_handle_required_route_count",
                 "active_search_route_readiness.missing_required_routes",
-                "active_search_route_readiness.non_skein_routes",
+                "active_search_route_readiness.non_hawdb_routes",
                 "active_search_route_readiness.lancedb_handle_required_routes",
                 "active_search_route_readiness.candidate_not_ready_routes",
                 "active_search_route_readiness.candidate_identity_not_ready_routes",

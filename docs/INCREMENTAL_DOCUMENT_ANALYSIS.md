@@ -131,8 +131,8 @@ An actual split-call counter also rejects duplicate decomposition in the field
 visitor, including its early-error path.
 
 ```sh
-cargo test --locked -p skein-search --test identifier_allocation -- --nocapture
-bazel test //crates/search:skein_search_identifier_allocation_tests
+cargo test --locked -p hawdb-search --test identifier_allocation -- --nocapture
+bazel test //crates/search:hawdb_search_identifier_allocation_tests
 ```
 
 The seeded campaign is ignored by ordinary Cargo tests, tagged manual in
@@ -140,7 +140,7 @@ Bazel, and included in the existing explicit local fuzz suite. No CI fuzz job
 or test timeout/resource change is added.
 
 ```sh
-cargo test -p skein-search --all-features -- --include-ignored
-cargo clippy -p skein-search --all-targets --all-features -- -D warnings
-bazel test --nocache_test_results //crates/search:presubmit_tests //:skein_unit_tests //crates/fuzz:skein_fuzz_tests //crates/fuzz:skein_fuzz_cli_tests //:skein_linux_ci_fuzz_smoke_test
+cargo test -p hawdb-search --all-features -- --include-ignored
+cargo clippy -p hawdb-search --all-targets --all-features -- -D warnings
+bazel test --nocache_test_results //crates/search:presubmit_tests //:hawdb_unit_tests //crates/fuzz:hawdb_fuzz_tests //crates/fuzz:hawdb_fuzz_cli_tests //:hawdb_linux_ci_fuzz_smoke_test
 ```

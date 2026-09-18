@@ -1,7 +1,7 @@
 use super::super::*;
 
 #[cfg(test)]
-pub use skein_nowledge_contracts::test_support::analytics::*;
+pub use hawdb_nowledge_contracts::test_support::analytics::*;
 
 pub(crate) struct QueryExecutionTrace {
     pub(crate) statement: cypher::Statement,
@@ -27,9 +27,9 @@ mod facade_tests {
 
     #[test]
     fn facade_reexports_analytics_protocol_models_without_conversion() {
-        let _: fn(KnowledgePageRankScoreUpdate) -> skein_nowledge_contracts::test_support::analytics::KnowledgePageRankScoreUpdate =
+        let _: fn(KnowledgePageRankScoreUpdate) -> hawdb_nowledge_contracts::test_support::analytics::KnowledgePageRankScoreUpdate =
             |value| value;
-        let _: fn(KnowledgeRelationshipDeleteRequest) -> skein_nowledge_contracts::test_support::analytics::KnowledgeRelationshipDeleteRequest =
+        let _: fn(KnowledgeRelationshipDeleteRequest) -> hawdb_nowledge_contracts::test_support::analytics::KnowledgeRelationshipDeleteRequest =
             |value| value;
     }
 }

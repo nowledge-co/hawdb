@@ -3,7 +3,7 @@
 A release run of the unchanged persisted access benchmark at
 `366828ec4133d10aed3b300d93cd2e04bfde5b74` completed on September 14, 2026
 (Asia/Shanghai). The measurements support charging canonical row-fetch work
-separately from scan work in the remaining [#216 cost model](https://github.com/nowledge-co/skein/issues/216).
+separately from scan work in the remaining [#216 cost model](https://github.com/nowledge-co/hawdb/issues/216).
 They also show why selectivity alone cannot predict the faster path across
 cache states and row layouts. This records a baseline; no optimizer policy
 or public interface changes in this delivery.
@@ -31,7 +31,7 @@ defines the fixture and correctness assertions.
   query-execution time. Other host activity and the OS page cache were not
   controlled.
 - All 1,239 tracked source/build file hashes remained unchanged. The fixture
-  retained 8,192 rows, a 64 MiB Skein cache, two body widths, two layouts, five
+  retained 8,192 rows, a 64 MiB Hawdb cache, two body widths, two layouts, five
   shapes, and eleven warm samples. All 480 persisted queries and the four
   original in-memory cases completed; every persisted result's full ID
   multiset and payload matched the oracle. Generated fixture directories
@@ -137,8 +137,8 @@ pending #196 cache-ownership change, which may affect later calibration.
 
 ## Remaining scope
 
-The working set fits the Skein cache, the fixture was freshly written, and
-the OS cache is uncontrolled. First-query reads are requests issued by Skein,
+The working set fits the Hawdb cache, the fixture was freshly written, and
+the OS cache is uncontrolled. First-query reads are requests issued by Hawdb,
 not cold-device I/O. Btrfs compression and readahead further prevent treating
 these byte counts as device transfers. Cache pressure, other storage modes,
 joins, spills and concurrent workloads need separate evidence before a

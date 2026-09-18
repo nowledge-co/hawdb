@@ -10,8 +10,8 @@ use crate::{
     RelationalOverflowGenerationArtifacts, RelationalRowPageArtifactMetadata,
     RelationalRowPageGenerationArtifacts,
 };
-use skein_core::{Result, SkeinError};
-use skein_integrity::{checksum_u64 as checksum_bytes, Sha256Digest};
+use hawdb_core::{HawdbError, Result};
+use hawdb_integrity::{checksum_u64 as checksum_bytes, Sha256Digest};
 use std::collections::BTreeSet;
 use std::fs::{self, File};
 use std::io::Write;
@@ -107,7 +107,7 @@ impl CanonicalAdjacencyGenerationFields {
             return Ok(None);
         }
         if !presence.iter().all(|present| *present) {
-            return Err(SkeinError::Storage(
+            return Err(HawdbError::Storage(
                 "manifest canonical adjacency generation binding is incomplete".to_string(),
             ));
         }
@@ -140,7 +140,7 @@ impl CanonicalAdjacencyGenerationFields {
                         .expect("complete binding has descriptor root CRC32C"),
                 )
                 .map_err(|_| {
-                    SkeinError::Storage(
+                    HawdbError::Storage(
                         "canonical adjacency descriptor root checksum exceeds CRC32C range"
                             .to_string(),
                     )
@@ -171,7 +171,7 @@ impl RelationalRootManifestFields {
             return Ok(false);
         }
         if !presence.iter().all(|present| *present) {
-            return Err(SkeinError::Storage(format!(
+            return Err(HawdbError::Storage(format!(
                 "manifest {artifact} generation binding is incomplete"
             )));
         }
@@ -199,7 +199,7 @@ impl RelationalRootManifestFields {
                         .expect("complete binding has manifest checksum"),
                 )
                 .map_err(|_| {
-                    SkeinError::Storage(
+                    HawdbError::Storage(
                         "relational row-page manifest checksum exceeds CRC32C range".to_string(),
                     )
                 })?,
@@ -231,7 +231,7 @@ impl RelationalRootManifestFields {
                         .expect("complete binding has manifest checksum"),
                 )
                 .map_err(|_| {
-                    SkeinError::Storage("append manifest checksum exceeds CRC32C range".to_string())
+                    HawdbError::Storage("append manifest checksum exceeds CRC32C range".to_string())
                 })?,
                 encoded_sha256: self
                     .manifest_encoded_sha256
@@ -261,7 +261,7 @@ impl RelationalRootManifestFields {
                         .expect("complete binding has manifest checksum"),
                 )
                 .map_err(|_| {
-                    SkeinError::Storage(
+                    HawdbError::Storage(
                         "relational overflow manifest checksum exceeds CRC32C range".to_string(),
                     )
                 })?,
@@ -291,7 +291,7 @@ impl RelationalIndexManifestFields {
             return Ok(None);
         }
         if !presence.iter().all(|present| *present) {
-            return Err(SkeinError::Storage(
+            return Err(HawdbError::Storage(
                 "manifest relational index generation binding is incomplete".to_string(),
             ));
         }
@@ -392,12 +392,12 @@ impl DurableManifest {
 
     pub fn validate(self) -> Result<()> {
         if self.wal_replay_start_lsn == 0 || self.next_lsn == 0 {
-            return Err(SkeinError::Storage(
+            return Err(HawdbError::Storage(
                 "manifest WAL LSN values must be non-zero".to_string(),
             ));
         }
         if self.next_lsn < self.wal_replay_start_lsn {
-            return Err(SkeinError::Storage(format!(
+            return Err(HawdbError::Storage(format!(
                 "manifest next LSN {} precedes replay start LSN {}",
                 self.next_lsn, self.wal_replay_start_lsn
             )));
@@ -407,7 +407,7 @@ impl DurableManifest {
             self.canonical_manifest_encoded_checksum,
             self.canonical_manifest_encoded_sha256,
         ) {
-            return Err(SkeinError::Storage(
+            return Err(HawdbError::Storage(
                 "manifest canonical segment metadata is incomplete".to_string(),
             ));
         }
@@ -416,7 +416,7 @@ impl DurableManifest {
                 || binding.generation != self.checkpoint_epoch
                 || binding.source_commit_epoch != self.checkpoint_commit_epoch
             {
-                return Err(SkeinError::Storage(format!(
+                return Err(HawdbError::Storage(format!(
                     "manifest canonical adjacency generation/epoch {}/{} does not match checkpoint {}/{}",
                     binding.generation,
                     binding.source_commit_epoch,
@@ -427,18 +427,18 @@ impl DurableManifest {
             if binding.adjacency_artifact.encoded_len == 0
                 || binding.descriptor_root_artifact.encoded_len == 0
             {
-                return Err(SkeinError::Storage(
+                return Err(HawdbError::Storage(
                     "manifest canonical adjacency artifacts must not be empty".to_string(),
                 ));
             }
             if binding.entry_count
                 != binding.relationship_count.checked_mul(2).ok_or_else(|| {
-                    SkeinError::Storage(
+                    HawdbError::Storage(
                         "manifest canonical adjacency relationship count overflow".to_string(),
                     )
                 })?
             {
-                return Err(SkeinError::Storage(
+                return Err(HawdbError::Storage(
                     "manifest canonical adjacency entry count must be twice its relationship count"
                         .to_string(),
                 ));
@@ -447,14 +447,14 @@ impl DurableManifest {
         if self.canonical_adjacency_generation_artifacts.is_some()
             && self.canonical_manifest_encoded_len.is_none()
         {
-            return Err(SkeinError::Storage(
+            return Err(HawdbError::Storage(
                 "manifest canonical adjacency requires canonical segments".to_string(),
             ));
         }
         if self.canonical_manifest_encoded_len.is_some()
             && self.canonical_adjacency_generation_artifacts.is_none()
         {
-            return Err(SkeinError::Storage(
+            return Err(HawdbError::Storage(
                 "manifest canonical segments require canonical adjacency".to_string(),
             ));
         }
@@ -463,14 +463,14 @@ impl DurableManifest {
             self.property_spill_manifest_encoded_checksum,
             self.property_spill_manifest_encoded_sha256,
         ) {
-            return Err(SkeinError::Storage(
+            return Err(HawdbError::Storage(
                 "manifest property spill metadata is incomplete".to_string(),
             ));
         }
         if self.property_spill_manifest_encoded_len.is_some()
             && self.canonical_manifest_encoded_len.is_none()
         {
-            return Err(SkeinError::Storage(
+            return Err(HawdbError::Storage(
                 "manifest property spills require canonical segments".to_string(),
             ));
         }
@@ -479,14 +479,14 @@ impl DurableManifest {
             self.property_projection_manifest_encoded_checksum,
             self.property_projection_manifest_encoded_sha256,
         ) {
-            return Err(SkeinError::Storage(
+            return Err(HawdbError::Storage(
                 "manifest property projection metadata is incomplete".to_string(),
             ));
         }
         if self.property_projection_manifest_encoded_len.is_some()
             && self.canonical_manifest_encoded_len.is_none()
         {
-            return Err(SkeinError::Storage(
+            return Err(HawdbError::Storage(
                 "manifest property projections require canonical segments".to_string(),
             ));
         }
@@ -525,20 +525,20 @@ impl DurableManifest {
         ] {
             if let Some((generation, source_commit_epoch, manifest_bytes)) = binding {
                 if generation == 0 {
-                    return Err(SkeinError::Storage(format!(
+                    return Err(HawdbError::Storage(format!(
                         "manifest {artifact} generation must be non-zero"
                     )));
                 }
                 if generation != self.checkpoint_epoch
                     || source_commit_epoch != self.checkpoint_commit_epoch
                 {
-                    return Err(SkeinError::Storage(format!(
+                    return Err(HawdbError::Storage(format!(
                         "manifest {artifact} generation/epoch {generation}/{source_commit_epoch} does not match checkpoint {}/{}",
                         self.checkpoint_epoch, self.checkpoint_commit_epoch
                     )));
                 }
                 if manifest_bytes == 0 {
-                    return Err(SkeinError::Storage(format!(
+                    return Err(HawdbError::Storage(format!(
                         "manifest {artifact} generation manifest must not be empty"
                     )));
                 }
@@ -546,14 +546,14 @@ impl DurableManifest {
         }
         if let Some(binding) = self.relational_index_generation_artifacts {
             if binding.generation == 0 {
-                return Err(SkeinError::Storage(
+                return Err(HawdbError::Storage(
                     "manifest relational index generation must be non-zero".to_string(),
                 ));
             }
             if binding.generation != self.checkpoint_epoch
                 || binding.source_commit_epoch != self.checkpoint_commit_epoch
             {
-                return Err(SkeinError::Storage(format!(
+                return Err(HawdbError::Storage(format!(
                     "manifest relational index generation/epoch {}/{} does not match checkpoint {}/{}",
                     binding.generation,
                     binding.source_commit_epoch,
@@ -562,13 +562,13 @@ impl DurableManifest {
                 )));
             }
             if binding.manifest_artifact.encoded_len == 0 {
-                return Err(SkeinError::Storage(
+                return Err(HawdbError::Storage(
                     "manifest relational index generation manifest must not be empty".to_string(),
                 ));
             }
         }
         if self.wal_generation != self.checkpoint_epoch {
-            return Err(SkeinError::Storage(format!(
+            return Err(HawdbError::Storage(format!(
                 "manifest WAL generation {} does not match checkpoint epoch {}",
                 self.wal_generation, self.checkpoint_epoch
             )));
@@ -576,7 +576,7 @@ impl DurableManifest {
         match self.checkpoint_generation {
             Some(generation) => {
                 if generation != self.checkpoint_epoch {
-                    return Err(SkeinError::Storage(format!(
+                    return Err(HawdbError::Storage(format!(
                             "manifest checkpoint generation {generation} does not match checkpoint epoch {}",
                             self.checkpoint_epoch
                         )));
@@ -585,14 +585,14 @@ impl DurableManifest {
                     || self.checkpoint_encoded_checksum.is_none()
                     || self.checkpoint_encoded_sha256.is_none()
                 {
-                    return Err(SkeinError::Storage(
+                    return Err(HawdbError::Storage(
                         "manifest checkpoint artifact metadata is incomplete".to_string(),
                     ));
                 }
                 if self.relational_row_generation_artifacts.is_none()
                     || self.relational_overflow_generation_artifacts.is_none()
                 {
-                    return Err(SkeinError::Storage(
+                    return Err(HawdbError::Storage(
                         "published checkpoint must bind relational row-page and overflow generations"
                             .to_string(),
                     ));
@@ -619,7 +619,7 @@ impl DurableManifest {
                     || self.relational_index_generation_artifacts.is_some()
                     || self.append_generation_artifacts.is_some()
                 {
-                    return Err(SkeinError::Storage(
+                    return Err(HawdbError::Storage(
                         "manifest without a checkpoint must describe generation zero".to_string(),
                     ));
                 }
@@ -636,13 +636,13 @@ impl DurableManifest {
         let (body, checksum) = split_manifest_checksum(text)?;
         let actual = checksum_bytes(body.as_bytes());
         if checksum != actual {
-            return Err(SkeinError::Storage(format!(
+            return Err(HawdbError::Storage(format!(
                 "manifest checksum mismatch: expected {checksum}, got {actual}"
             )));
         }
         let mut lines = body.lines();
         if lines.next() != Some(MANIFEST_HEADER_V1) {
-            return Err(SkeinError::Storage(
+            return Err(HawdbError::Storage(
                 "manifest is missing the V1 format header".to_string(),
             ));
         }
@@ -660,7 +660,7 @@ impl DurableManifest {
             }
             let field = fields[0];
             if !seen_fields.insert(field) {
-                return Err(SkeinError::Storage(format!(
+                return Err(HawdbError::Storage(format!(
                     "manifest has duplicate field: {field}"
                 )));
             }
@@ -902,7 +902,7 @@ impl DurableManifest {
                         parse_optional_u64(raw, "source scan descriptor checksum")?;
                 }
                 _ => {
-                    return Err(SkeinError::Storage(format!(
+                    return Err(HawdbError::Storage(format!(
                         "invalid manifest line: {line}"
                     )));
                 }
@@ -966,7 +966,7 @@ impl DurableManifest {
             "source_scan_descriptor_checksum",
         ] {
             if !seen_fields.contains(required) {
-                return Err(SkeinError::Storage(format!(
+                return Err(HawdbError::Storage(format!(
                     "manifest is missing required field: {required}"
                 )));
             }
@@ -1271,7 +1271,7 @@ impl DurableManifest {
 
     pub fn write(&self, path: &Path) -> Result<()> {
         let data = self.encode();
-        let tmp_path = path.with_extension("skein.tmp");
+        let tmp_path = path.with_extension("hawdb.tmp");
         {
             let mut file = File::create(&tmp_path)?;
             file.write_all(data.as_bytes())?;
@@ -1282,8 +1282,8 @@ impl DurableManifest {
     }
 }
 
-pub const STORAGE_VERSION: &str = "skein-storage-v1";
-const MANIFEST_HEADER_V1: &str = "SKEIN_MANIFEST_V1";
+pub const STORAGE_VERSION: &str = "hawdb-storage-v1";
+const MANIFEST_HEADER_V1: &str = "HAWDB_MANIFEST_V1";
 
 pub fn safe_reclaim_commit_epoch(
     checkpoint_commit_epoch: u64,
@@ -1296,7 +1296,7 @@ pub fn safe_reclaim_commit_epoch(
 
 fn split_manifest_checksum(text: &str) -> Result<(&str, u64)> {
     let Some((body, footer)) = text.rsplit_once("checksum\t") else {
-        return Err(SkeinError::Storage(
+        return Err(HawdbError::Storage(
             "manifest missing checksum footer".to_string(),
         ));
     };
@@ -1331,7 +1331,7 @@ fn parse_optional_sha256(input: &str, name: &str) -> Result<Option<Sha256Digest>
         input
             .parse()
             .map(Some)
-            .map_err(|error| SkeinError::Storage(format!("invalid {name}: {error}")))
+            .map_err(|error| HawdbError::Storage(format!("invalid {name}: {error}")))
     }
 }
 
@@ -1339,7 +1339,7 @@ pub fn validate_storage_version(version: &str) -> Result<()> {
     if version == STORAGE_VERSION {
         return Ok(());
     }
-    Err(SkeinError::Storage(format!(
+    Err(HawdbError::Storage(format!(
         "unsupported storage version: {version}; expected {STORAGE_VERSION}"
     )))
 }

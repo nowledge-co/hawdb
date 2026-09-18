@@ -1,5 +1,5 @@
 use super::*;
-use skein_core::{RuntimeCancellationToken, RuntimeMemoryReservation};
+use hawdb_core::{RuntimeCancellationToken, RuntimeMemoryReservation};
 use std::io::Cursor;
 
 fn compressed(frames: &[&[u8]]) -> Vec<u8> {
@@ -20,8 +20,8 @@ fn outcome(result: Result<()>) -> &'static str {
 
 #[test]
 fn control_probe_preserves_prefix_semantics_and_multi_frame_bindings() {
-    let plain = b"SKEIN_SEARCH_PROJECTION_V1\nsource_graph_commit_epoch\t1\n";
-    let registered = b"SKEIN_SEARCH_PROJECTION_V1\nprojection_consumer_binding\towner\n";
+    let plain = b"HAWDB_SEARCH_PROJECTION_V1\nsource_graph_commit_epoch\t1\n";
+    let registered = b"HAWDB_SEARCH_PROJECTION_V1\nprojection_consumer_binding\towner\n";
     let mut skipped = compressed(&[&registered[..16]]);
     skipped.extend_from_slice(&0x184d2a5fu32.to_le_bytes());
     skipped.extend_from_slice(&3u32.to_le_bytes());
@@ -35,8 +35,8 @@ fn control_probe_preserves_prefix_semantics_and_multi_frame_bindings() {
         compressed(&[&registered[..16], &registered[16..]]),
         compressed(&[&registered[..37], &registered[37..]]),
         skipped,
-        b"SKEIN_SEARCH_PROJECTION_V1\n".to_vec(),
-        b"SKEIN_SEARCH_PROJECTION_V1\n\xfftail".to_vec(),
+        b"HAWDB_SEARCH_PROJECTION_V1\n".to_vec(),
+        b"HAWDB_SEARCH_PROJECTION_V1\n\xfftail".to_vec(),
         b"wrong header\nsource_graph_commit_epoch\t1\n".to_vec(),
         b"\xff\nsource_graph_commit_epoch\t1\n".to_vec(),
         format!("{SEARCH_COMPRESSION_HEADER}\n").into_bytes(),
@@ -62,7 +62,7 @@ fn control_probe_preserves_prefix_semantics_and_multi_frame_bindings() {
 
 #[test]
 fn control_probe_admits_exact_peak_and_rejects_one_short() {
-    let plain = b"SKEIN_SEARCH_PROJECTION_V1\nsource_graph_commit_epoch\t1\n";
+    let plain = b"HAWDB_SEARCH_PROJECTION_V1\nsource_graph_commit_epoch\t1\n";
     for bytes in [plain.to_vec(), compressed(&[plain])] {
         let task = RuntimeTaskContext::default();
         let memory = BuildMemory::new(&task).unwrap();
@@ -104,7 +104,7 @@ impl Read for CancellingReader<'_> {
 
 #[test]
 fn control_probe_observes_cancellation_during_plain_and_native_input() {
-    let plain = b"SKEIN_SEARCH_PROJECTION_V1\nsource_graph_commit_epoch\t1\n";
+    let plain = b"HAWDB_SEARCH_PROJECTION_V1\nsource_graph_commit_epoch\t1\n";
     let encoded = compressed(&[plain]);
     for (bytes, cancel_after) in [
         (&plain[..], 1),
@@ -154,7 +154,7 @@ fn oracle(input: impl Read) -> Result<()> {
 }
 
 fn oracle_records(first: &str, second: &str) -> Result<()> {
-    if first != "SKEIN_SEARCH_PROJECTION_V1\n" {
+    if first != "HAWDB_SEARCH_PROJECTION_V1\n" {
         return Err(invalid("invalid snapshot header"));
     }
     if second.starts_with("projection_consumer_binding") {

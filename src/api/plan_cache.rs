@@ -3,7 +3,7 @@ use super::{
     QueryAccessControlContext, SharedState,
 };
 use crate::cypher;
-use crate::error::{Result, SkeinError};
+use crate::error::{HawdbError, Result};
 use crate::optimizer::{
     CascadesOptimizer, LogicalPlanRoot, OptimizerCatalog, OptimizerSearchDirective, OptimizerTrace,
     PhysicalPlan,
@@ -12,18 +12,18 @@ use crate::planner::{self, LogicalPlan, Predicate};
 use crate::schema::{Catalog, GraphStatistics, IndexKind};
 use crate::store::GraphStore;
 use crate::value::Value;
-use skein_optimizer::graph::optimizer_catalog_from_graph_statistics;
-use skein_plan_cache::{
+use hawdb_optimizer::graph::optimizer_catalog_from_graph_statistics;
+use hawdb_plan_cache::{
     bind_physical_plan_parameters, parameterize_logical_plan, parameterize_value_list, LfuCache,
     PlanParameterCacheKey,
 };
-pub use skein_plan_cache::{PlanCacheBypassReason, PlanCacheLookup, PlanCacheStats};
+pub use hawdb_plan_cache::{PlanCacheBypassReason, PlanCacheLookup, PlanCacheStats};
 use std::borrow::Cow;
 use std::collections::BTreeMap;
 use std::sync::Arc;
 
 pub(crate) const DEFAULT_PLAN_CACHE_MAX_ENTRIES: usize = 128;
-const ACCESS_CONTROL_VALUES_PARAMETER: &str = "\0skein_access_control_visibility_values";
+const ACCESS_CONTROL_VALUES_PARAMETER: &str = "\0hawdb_access_control_visibility_values";
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(super) enum PlanCacheMode {
@@ -358,7 +358,7 @@ pub(super) fn optimized_query_plan_for(
     trace_mode: PlanTraceMode,
     context: PlanCacheContext<'_>,
 ) -> Result<OptimizedQueryPlan> {
-    let query_identity = skein_query::QueryIdentity::new("cypher", cypher_text);
+    let query_identity = hawdb_query::QueryIdentity::new("cypher", cypher_text);
     let query_optimizer =
         CascadesOptimizer::with_context(context.optimizer.context().clone().with_query_identity(
             query_identity.normalized_query(),
@@ -368,7 +368,7 @@ pub(super) fn optimized_query_plan_for(
         context
             .config
             .runtime_capabilities
-            .require(skein_core::RuntimeCapability::AccessControl)?;
+            .require(hawdb_core::RuntimeCapability::AccessControl)?;
         access_control.validate()?;
     }
     if let Some(capability) = required_runtime_capability(statement_body(statement)) {
@@ -377,7 +377,7 @@ pub(super) fn optimized_query_plan_for(
     let effective_max_optimizer_groups =
         optimizer_config_from_database_config(context.config).max_groups;
     let normalized_plan_cache_query =
-        skein_query::normalize_query_for_plan_cache("cypher", cypher_text);
+        hawdb_query::normalize_query_for_plan_cache("cypher", cypher_text);
     let access_control_cache_key = context.access_control.map(AccessControlPlanCacheKey::from);
     let execution_parameters = parameters_with_access_control(parameters, context.access_control);
     let environment_hint = (cache_mode == PlanCacheMode::Use).then(|| {
@@ -454,7 +454,7 @@ pub(super) fn optimized_query_plan_for(
             context.optimizer_search,
         )
         .map_err(|error| {
-            SkeinError::Execution(format!(
+            HawdbError::Execution(format!(
                 "optimizer search directive could not be honored: {error}"
             ))
         })?;
@@ -556,17 +556,17 @@ fn refresh_plan_trace(
 
 fn required_runtime_capability(
     statement: &cypher::Statement,
-) -> Option<skein_core::RuntimeCapability> {
+) -> Option<hawdb_core::RuntimeCapability> {
     match statement {
         cypher::Statement::CreateFullTextIndex(_) => {
-            Some(skein_core::RuntimeCapability::FullTextSearch)
+            Some(hawdb_core::RuntimeCapability::FullTextSearch)
         }
-        cypher::Statement::VectorSearch(_) => Some(skein_core::RuntimeCapability::VectorSearch),
+        cypher::Statement::VectorSearch(_) => Some(hawdb_core::RuntimeCapability::VectorSearch),
         cypher::Statement::MatchReturn(query) if query.vector_seed.is_some() => {
-            Some(skein_core::RuntimeCapability::VectorSearch)
+            Some(hawdb_core::RuntimeCapability::VectorSearch)
         }
         cypher::Statement::ProjectGraph(_) | cypher::Statement::GraphAlgorithm(_) => {
-            Some(skein_core::RuntimeCapability::GraphAnalytics)
+            Some(hawdb_core::RuntimeCapability::GraphAnalytics)
         }
         _ => None,
     }

@@ -13,35 +13,35 @@ use std::time::{SystemTime, UNIX_EPOCH};
 fn root_facade_preserves_storage_repair_contract_type_identity() {
     assert_eq!(
         TypeId::of::<DerivedArtifactKind>(),
-        TypeId::of::<skein_storage::DerivedArtifactKind>()
+        TypeId::of::<hawdb_storage::DerivedArtifactKind>()
     );
     assert_eq!(
         TypeId::of::<DerivedArtifactHealthState>(),
-        TypeId::of::<skein_storage::DerivedArtifactHealthState>()
+        TypeId::of::<hawdb_storage::DerivedArtifactHealthState>()
     );
     assert_eq!(
         TypeId::of::<DerivedArtifactHealth>(),
-        TypeId::of::<skein_storage::DerivedArtifactHealth>()
+        TypeId::of::<hawdb_storage::DerivedArtifactHealth>()
     );
     assert_eq!(
         TypeId::of::<DerivedArtifactHealthReport>(),
-        TypeId::of::<skein_storage::DerivedArtifactHealthReport>()
+        TypeId::of::<hawdb_storage::DerivedArtifactHealthReport>()
     );
     assert_eq!(
         TypeId::of::<DerivedArtifactRepairPlan>(),
-        TypeId::of::<skein_storage::DerivedArtifactRepairPlan>()
+        TypeId::of::<hawdb_storage::DerivedArtifactRepairPlan>()
     );
     assert_eq!(
         TypeId::of::<DerivedArtifactRebuildOptions>(),
-        TypeId::of::<skein_storage::DerivedArtifactRebuildOptions>()
+        TypeId::of::<hawdb_storage::DerivedArtifactRebuildOptions>()
     );
     assert_eq!(
         TypeId::of::<DerivedArtifactRepairReport>(),
-        TypeId::of::<skein_storage::DerivedArtifactRepairReport>()
+        TypeId::of::<hawdb_storage::DerivedArtifactRepairReport>()
     );
     assert_eq!(
         DerivedArtifactRebuildOptions::default(),
-        skein_storage::DerivedArtifactRebuildOptions::default()
+        hawdb_storage::DerivedArtifactRebuildOptions::default()
     );
 }
 
@@ -135,7 +135,7 @@ fn canonical_corruption_fails_closed_before_repair_is_planned() {
         DerivedArtifactRebuildOptions::default(),
     )
     .unwrap_err();
-    assert!(matches!(error, SkeinError::StorageIntegrity(_)));
+    assert!(matches!(error, HawdbError::StorageIntegrity(_)));
     assert!(pending_record_paths(&path).unwrap().is_empty());
     fs::remove_dir_all(path).unwrap();
 }
@@ -236,7 +236,7 @@ fn unique_test_dir(name: &str) -> PathBuf {
         .unwrap()
         .as_nanos();
     let path = std::env::temp_dir().join(format!(
-        "skein-derived-repair-{name}-{}-{nonce}",
+        "hawdb-derived-repair-{name}-{}-{nonce}",
         std::process::id()
     ));
     fs::create_dir_all(&path).unwrap();

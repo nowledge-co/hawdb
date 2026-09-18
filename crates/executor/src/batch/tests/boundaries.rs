@@ -99,7 +99,7 @@ fn split_batches_keep_live_charges_and_release_on_stop_or_error() {
                 match exit {
                     0 => Ok(BatchControl::Continue),
                     1 => Ok(BatchControl::Stop),
-                    _ => Err(SkeinError::Semantic("consumer sentinel".into())),
+                    _ => Err(HawdbError::Semantic("consumer sentinel".into())),
                 }
             },
         );
@@ -109,7 +109,7 @@ fn split_batches_keep_live_charges_and_release_on_stop_or_error() {
         if exit == 2 {
             assert_eq!(
                 result.unwrap_err(),
-                SkeinError::Semantic("consumer sentinel".into())
+                HawdbError::Semantic("consumer sentinel".into())
             );
         } else {
             assert_eq!(
@@ -204,7 +204,7 @@ fn source_candidates_must_match_the_canonical_node_label_and_properties() {
             } else {
                 assert!(matches!(
                     result.unwrap_err(),
-                    SkeinError::StorageIntegrity(_)
+                    HawdbError::StorageIntegrity(_)
                 ));
                 assert!(actual.is_empty(), "unverified canonical candidate emitted");
             }

@@ -1,5 +1,5 @@
 use super::*;
-use skein_core::{RuntimeCancellationToken, RuntimeMemoryReservation};
+use hawdb_core::{RuntimeCancellationToken, RuntimeMemoryReservation};
 use std::fs;
 use std::mem::size_of;
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -12,7 +12,7 @@ impl Fixture {
     fn new() -> Self {
         static NEXT: AtomicU64 = AtomicU64::new(0);
         let path = std::env::temp_dir().join(format!(
-            "skein-lexical-artifact-memory-{}-{}-{}",
+            "hawdb-lexical-artifact-memory-{}-{}-{}",
             std::process::id(),
             std::time::SystemTime::now()
                 .duration_since(std::time::UNIX_EPOCH)
@@ -26,7 +26,7 @@ impl Fixture {
 
     fn builder(&self, memory: &BuildMemory, task: &RuntimeTaskContext) -> ArtifactBuilder {
         ArtifactBuilder::new_with_context(
-            &self.0.join("artifact.skein"),
+            &self.0.join("artifact.hawdb"),
             7,
             LexicalProjectionConfig::default(),
             memory.clone(),
@@ -129,7 +129,7 @@ fn artifact_merge_uses_its_own_task_and_retains_the_supplied_progress() {
 fn writer_buffer_admission_precedes_file_creation() {
     let fixture = Fixture::new();
     let (memory, task) = context();
-    let path = fixture.0.join("artifact.skein");
+    let path = fixture.0.join("artifact.hawdb");
     let path_bytes = path.as_os_str().as_encoded_bytes().len();
     let blocker = memory
         .input
@@ -182,7 +182,7 @@ fn block_directory_key_denial_precedes_payload_io() {
     let mut builder = fixture.builder(&memory, &task);
     builder.push_document("document", 1).unwrap();
     let buffered = builder.writer.buffer().to_vec();
-    let path = fixture.0.join("artifact.skein");
+    let path = fixture.0.join("artifact.hawdb");
     let physical = fs::read(&path).unwrap();
     let slots = 4 * size_of::<BlockDescriptor>();
     let keys = 2 * "document".len();

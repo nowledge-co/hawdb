@@ -8,21 +8,21 @@ test_suite(
 )
 
 rust_library(
-    name = "skein_telemetry",
-    crate_name = "skein_telemetry",
+    name = "hawdb_telemetry",
+    crate_name = "hawdb_telemetry",
     crate_root = "src/lib.rs",
     srcs = glob(["src/**/*.rs"]),
     edition = "2024",
     aliases = aliases(),
     deps = all_crate_deps(normal = True) + [
-        "//crates/qos:skein_qos",
+        "//crates/qos:hawdb_qos",
     ],
     proc_macro_deps = all_crate_deps(proc_macro = True),
 )
 
 rust_test(
-    name = "skein_telemetry_tests",
-    crate = ":skein_telemetry",
+    name = "hawdb_telemetry_tests",
+    crate = ":hawdb_telemetry",
     edition = "2024",
     aliases = aliases(normal_dev = True, proc_macro_dev = True),
     deps = all_crate_deps(normal_dev = True),

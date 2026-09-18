@@ -2,7 +2,7 @@
 
 `cargo bench --bench relational_monotonic_append` compares the explicit
 RowPage monotonic-append candidate with the default disabled path on the same
-embedded Skein runtime. The benchmark is an admission and latency gate, not a
+embedded Hawdb runtime. The benchmark is an admission and latency gate, not a
 planner-only microbenchmark.
 
 ## Activation Boundary

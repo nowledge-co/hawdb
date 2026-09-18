@@ -2,8 +2,8 @@
 
 use super::checked_add;
 use super::shared::Shared;
-use crate::{Result, SkeinError};
-use skein_executor::{QueryMemoryAccount, QueryMemoryLease};
+use crate::{HawdbError, Result};
+use hawdb_executor::{QueryMemoryAccount, QueryMemoryLease};
 use std::mem::size_of;
 use std::sync::{Mutex, MutexGuard};
 
@@ -76,7 +76,7 @@ impl ReservedMemory {
         let mut state = self.state();
         let required = checked_add(state.used, bytes)?;
         if required > state.capacity {
-            return Err(SkeinError::Execution(format!(
+            return Err(HawdbError::Execution(format!(
                 "search spill progress would use {required} bytes, exceeding its {}-byte reservation",
                 state.capacity,
             )));
@@ -91,7 +91,7 @@ impl ReservedMemory {
         work: impl FnOnce() -> Result<T>,
     ) -> Result<T> {
         if bytes > self.0.scratch_bytes {
-            return Err(SkeinError::Execution(format!(
+            return Err(HawdbError::Execution(format!(
                 "search spill needs {bytes} native path scratch bytes, exceeding its {}-byte reservation",
                 self.0.scratch_bytes,
             )));

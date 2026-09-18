@@ -53,7 +53,7 @@ fn read_modes() -> RelationalQueryReadModes<'static> {
 fn columnar_and_row_aggregation_match_through_real_bindings_and_parameters() {
     let state = state();
     for batch_rows in [1, 7, 64, 65] {
-        let memory = skein_executor::ExecutionMemoryConfig {
+        let memory = hawdb_executor::ExecutionMemoryConfig {
             batch_rows: NonZeroUsize::new(batch_rows).unwrap(),
             ..Default::default()
         };
@@ -133,7 +133,7 @@ fn columnar_aggregation_retains_facade_limits_and_cancellation() {
     let state = state();
     let sql = "SELECT COUNT(*) AS rows, SUM(n) AS total FROM aggregate_records";
     let limits = batched_index_join_limits();
-    let memory = skein_executor::ExecutionMemoryConfig::default();
+    let memory = hawdb_executor::ExecutionMemoryConfig::default();
     for (limits, memory, message) in [
         (
             RelationalQueryLimits {
@@ -161,7 +161,7 @@ fn columnar_aggregation_retains_facade_limits_and_cancellation() {
         ),
         (
             limits,
-            skein_executor::ExecutionMemoryConfig {
+            hawdb_executor::ExecutionMemoryConfig {
                 batch_payload_bytes: NonZeroUsize::MIN,
                 ..memory.clone()
             },
@@ -169,7 +169,7 @@ fn columnar_aggregation_retains_facade_limits_and_cancellation() {
         ),
         (
             limits,
-            skein_executor::ExecutionMemoryConfig {
+            hawdb_executor::ExecutionMemoryConfig {
                 blocking_operator_bytes: NonZeroUsize::MIN,
                 ..memory.clone()
             },
@@ -188,8 +188,8 @@ fn columnar_aggregation_retains_facade_limits_and_cancellation() {
         .unwrap_err();
         assert!(error.to_string().contains(message), "{error}");
     }
-    let cancellation = skein_core::RuntimeCancellationToken::new();
-    let context = skein_core::RuntimeTaskContext::without_deadline(cancellation.clone());
+    let cancellation = hawdb_core::RuntimeCancellationToken::new();
+    let context = hawdb_core::RuntimeTaskContext::without_deadline(cancellation.clone());
     cancellation.cancel();
     let error = execute_relational_query_sql_with_runtime(
         sql,

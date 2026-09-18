@@ -9,19 +9,19 @@ mod qualification_value;
 mod relational_database_input;
 
 use content_store_qualification_input::{ReadCaseInput, ResourceLimitsInput, ResourceProfileInput};
-use qualification_input::{read_bounded_json, EvidenceBindingInput, ProductionIdentityInput};
-use relational_database_input::DatabaseInput;
-use serde::Deserialize;
-use skein_qualification::{
+use hawdb_qualification::{
     run_production_content_store_storage_qualification, ProductionContentStoreOpenCacheLimits,
     ProductionContentStoreStorageQualificationConfig,
     PRODUCTION_CONTENT_STORE_STORAGE_QUALIFICATION_PROTOCOL,
 };
+use qualification_input::{read_bounded_json, EvidenceBindingInput, ProductionIdentityInput};
+use relational_database_input::DatabaseInput;
+use serde::Deserialize;
 use std::path::{Path, PathBuf};
 use std::process::ExitCode;
 
 const CONTENT_STORE_READ_QUALIFICATION_PLAN_PROTOCOL: &str =
-    "skein-production-content-store-read-plan-v1";
+    "hawdb-production-content-store-read-plan-v1";
 
 fn main() -> ExitCode {
     match run(std::env::args().skip(1)) {
@@ -53,7 +53,7 @@ fn main() -> ExitCode {
                     "errors": ["qualification_failed"],
                 })
             );
-            eprintln!("skein-content-store-read-qualification: {error}");
+            eprintln!("hawdb-content-store-read-qualification: {error}");
             ExitCode::from(2)
         }
     }
@@ -61,7 +61,7 @@ fn main() -> ExitCode {
 
 fn run(
     args: impl IntoIterator<Item = String>,
-) -> Result<Option<skein_qualification::ProductionContentStoreStorageQualificationReport>, String> {
+) -> Result<Option<hawdb_qualification::ProductionContentStoreStorageQualificationReport>, String> {
     let Some((database_path, plan_path)) = parse_args(args)? else {
         return Ok(None);
     };
@@ -173,18 +173,18 @@ impl ContentStoreReadQualificationPlan {
 }
 
 fn usage() -> &'static str {
-    "usage: skein-content-store-read-qualification \
-     --database-path <existing-read-only-skein-directory> --plan-json <path>"
+    "usage: hawdb-content-store-read-qualification \
+     --database-path <existing-read-only-hawdb-directory> --plan-json <path>"
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use skein::{
+    use hawdb::{
         ProductionQualificationIdentity, RelationalIndexMode, StorageResidencyMode, Value,
         PRODUCTION_QUALIFICATION_POLICY_VERSION,
     };
-    use skein_qualification::{
+    use hawdb_qualification::{
         ContentStoreResourceProfileKind, CONTENT_STORE_512_MIB_CAPABILITY_BYTES,
         CONTENT_STORE_SHARED_HOST_8_GIB_BYTES,
     };

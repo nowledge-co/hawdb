@@ -1,6 +1,6 @@
-//! Compatibility facade and embedded-store adapter for `skein-analytics`.
+//! Compatibility facade and embedded-store adapter for `hawdb-analytics`.
 
-pub use skein_analytics::{
+pub use hawdb_analytics::{
     CommunityAssignment, GraphAlgorithmMemoryEstimate, HierarchicalCommunityAssignment,
     LouvainOptions, PageRankOptions, PageRankScore, ProjectedGraph, ProjectionLayout,
     ProjectionMemoryAdmissionError, ProjectionMemoryBudget, ProjectionMemoryEstimate,
@@ -12,7 +12,7 @@ use crate::store::{GraphScanControl, GraphStore};
 impl ProjectionSource for GraphStore {
     fn visit_projection_nodes(
         &self,
-        visitor: &mut dyn FnMut(skein_storage::NodeRecord) -> ProjectionScanControl,
+        visitor: &mut dyn FnMut(hawdb_storage::NodeRecord) -> ProjectionScanControl,
     ) -> std::result::Result<ProjectionScanControl, String> {
         self.visit_nodes_owned(None, |node| match visitor(node) {
             ProjectionScanControl::Continue => GraphScanControl::Continue,
@@ -27,7 +27,7 @@ impl ProjectionSource for GraphStore {
 
     fn visit_projection_relationships(
         &self,
-        visitor: &mut dyn FnMut(skein_storage::RelRecord) -> ProjectionScanControl,
+        visitor: &mut dyn FnMut(hawdb_storage::RelRecord) -> ProjectionScanControl,
     ) -> std::result::Result<ProjectionScanControl, String> {
         for relationship in self.relationship_records_owned() {
             let relationship = relationship.map_err(|error| error.to_string())?;

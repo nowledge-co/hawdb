@@ -1,15 +1,14 @@
 use crate::production_graph::validate_production_identity_for_current_target;
 use crate::ContentStoreResourceProfileKind;
-use serde::Serialize;
-use skein::{
-    IoConcurrencyBudget, ProductionEvidenceBinding, ProductionQualificationIdentity,
-    RuntimeGovernor, RuntimeGovernorConfig, RuntimeResourceSnapshot, SkeinError,
-    StorageDeviceProfile,
+use hawdb::{
+    HawdbError, IoConcurrencyBudget, ProductionEvidenceBinding, ProductionQualificationIdentity,
+    RuntimeGovernor, RuntimeGovernorConfig, RuntimeResourceSnapshot, StorageDeviceProfile,
 };
+use serde::Serialize;
 use std::path::PathBuf;
 
 pub const PRODUCTION_CONTENT_STORE_MEMORY_QUALIFICATION_PROTOCOL: &str =
-    "skein-production-content-store-memory-qualification-v1";
+    "hawdb-production-content-store-memory-qualification-v1";
 pub const CONTENT_STORE_SHARED_HOST_8_GIB_BYTES: u64 = 8 * 1024 * 1024 * 1024;
 pub const CONTENT_STORE_SHARED_HOST_NOMINAL_AVAILABLE_BYTES: u64 = 4 * 1024 * 1024 * 1024;
 pub const CONTENT_STORE_SHARED_HOST_NOMINAL_MIN_BUDGET_BYTES: u64 = 1024 * 1024 * 1024;
@@ -78,7 +77,7 @@ pub fn qualify_content_store_memory_profile(
     profile_kind: ContentStoreResourceProfileKind,
     resources: RuntimeResourceSnapshot,
     storage_io: IoConcurrencyBudget,
-) -> Result<ContentStoreMemoryProfileQualificationReport, SkeinError> {
+) -> Result<ContentStoreMemoryProfileQualificationReport, HawdbError> {
     let (
         required_effective_limit_bytes,
         configured_memory_ceiling_bytes,
@@ -95,7 +94,7 @@ pub fn qualify_content_store_memory_profile(
             None,
         ),
         ContentStoreResourceProfileKind::ConfiguredWorkload => {
-            return Err(SkeinError::Semantic(
+            return Err(HawdbError::Semantic(
                 "fixed Content Store memory qualification requires the shared-host 8 GiB or 512 MiB capability profile"
                     .to_string(),
             ));
@@ -193,9 +192,9 @@ pub fn qualify_content_store_memory_profile(
 /// workload reports remain separate release obligations.
 pub fn run_production_content_store_memory_qualification(
     config: ProductionContentStoreMemoryQualificationConfig,
-) -> Result<ProductionContentStoreMemoryQualificationReport, SkeinError> {
+) -> Result<ProductionContentStoreMemoryQualificationReport, HawdbError> {
     if !config.storage_path.exists() {
-        return Err(SkeinError::Semantic(
+        return Err(HawdbError::Semantic(
             "production Content Store memory qualification requires an existing storage path"
                 .to_string(),
         ));
@@ -204,7 +203,7 @@ pub fn run_production_content_store_memory_qualification(
         &config.evidence_binding,
         &config.expected_identity,
     )
-    .map_err(|error| SkeinError::Semantic(error.to_string()))?;
+    .map_err(|error| HawdbError::Semantic(error.to_string()))?;
     let storage_io = IoConcurrencyBudget::shared_host_for_device(StorageDeviceProfile::detect(
         &config.storage_path,
     ));
@@ -219,7 +218,7 @@ fn evaluate_production_content_store_memory_qualification(
     config: ProductionContentStoreMemoryQualificationConfig,
     resources: RuntimeResourceSnapshot,
     storage_io: IoConcurrencyBudget,
-) -> Result<ProductionContentStoreMemoryQualificationReport, SkeinError> {
+) -> Result<ProductionContentStoreMemoryQualificationReport, HawdbError> {
     let shared_host_8_gib = qualify_content_store_memory_profile(
         ContentStoreResourceProfileKind::SharedHost8Gib,
         resources,
@@ -262,7 +261,7 @@ fn scale_memory(bytes: u64, fraction_per_million: u32) -> u64 {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use skein::{
+    use hawdb::{
         RuntimeMemorySnapshot, RuntimeResourceBudget, PRODUCTION_QUALIFICATION_POLICY_VERSION,
     };
     use std::num::NonZeroUsize;

@@ -1,5 +1,5 @@
 use crate::{NodeId, NodeRecord, RelId, RelationalPrimaryKeyChangeCapture};
-use skein_core::{Catalog, SchemaObjectState, Value};
+use hawdb_core::{Catalog, SchemaObjectState, Value};
 use std::collections::BTreeMap;
 
 #[doc(hidden)]
@@ -436,7 +436,7 @@ impl SearchProjectionChangefeedStatus {
 mod tests {
     use super::{projection_document_id_for_node, ProjectedGraphArtifactData};
     use crate::{NodeId, NodeRecord};
-    use skein_core::{Catalog, Value};
+    use hawdb_core::{Catalog, Value};
     use std::collections::{BTreeMap, BTreeSet};
 
     #[test]

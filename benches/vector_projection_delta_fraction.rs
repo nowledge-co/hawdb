@@ -7,11 +7,11 @@
 //! fixed. This sweeps delta fraction against a fixed-size base to show
 //! where that added cost starts to matter relative to plain base search.
 
-use serde_json::json;
-use skein_vector_projection::{
+use hawdb_vector_projection::{
     search_with_delta, DeltaBuffer, KernelPreference, ProjectionBuildConfig, ProjectionBuilder,
     ProjectionIdentity, ProjectionSearchOptions,
 };
+use serde_json::json;
 use std::hint::black_box;
 use std::time::Instant;
 
@@ -25,7 +25,7 @@ const SAMPLES: usize = if SMOKE { 3 } else { 15 };
 const DELTA_FRACTIONS: [f64; 6] = [0.0, 0.01, 0.05, 0.1, 0.2, 0.4];
 
 fn main() {
-    let dimension = std::env::var("SKEIN_BENCH_VECTOR_DIMENSION")
+    let dimension = std::env::var("HAWDB_BENCH_VECTOR_DIMENSION")
         .ok()
         .and_then(|value| value.parse().ok())
         .unwrap_or(384);
@@ -50,7 +50,7 @@ fn main() {
     );
 }
 
-fn build_base(dimension: usize) -> skein_vector_projection::InMemoryProjection {
+fn build_base(dimension: usize) -> hawdb_vector_projection::InMemoryProjection {
     let config =
         ProjectionBuildConfig::new(dimension, ProjectionIdentity::new(1)).with_segment_rows(1024);
     let mut builder = ProjectionBuilder::new(config).expect("benchmark projection must initialize");
@@ -74,7 +74,7 @@ fn vector(id: u64, dimension: usize) -> Vec<f32> {
 }
 
 fn measure(
-    base: &skein_vector_projection::InMemoryProjection,
+    base: &hawdb_vector_projection::InMemoryProjection,
     query: &[f32],
     dimension: usize,
     fraction: f64,

@@ -1,5 +1,5 @@
 [package]
-name = "skein-cypher-yacc-experiment"
+name = "hawdb-cypher-yacc-experiment"
 version = "0.0.0"
 edition = "2024"
 publish = false
@@ -11,7 +11,7 @@ cfgrammar = "0.15"
 lrlex = "0.15"
 lrpar = "0.15"
 serde_json = "1"
-skein-cypher = { path = "../../crates/cypher" }
+hawdb-cypher = { path = "../../crates/cypher" }
 
 [build-dependencies]
 cfgrammar = "0.15"

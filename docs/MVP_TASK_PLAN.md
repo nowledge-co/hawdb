@@ -2,7 +2,7 @@
 
 ## Objective
 
-Build a runnable embedded graph database slice that proves the first Skein
+Build a runnable embedded graph database slice that proves the first Hawdb
 pipeline:
 
 ```text

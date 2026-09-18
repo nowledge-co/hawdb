@@ -1,13 +1,13 @@
 [package]
-name = "skein-cypher"
+name = "hawdb-cypher"
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
 license.workspace = true
 
 [dependencies]
-skein-core = { path = "../core" }
-skein-ddl = { path = "../ddl" }
+hawdb-core = { path = "../core" }
+hawdb-ddl = { path = "../ddl" }
 
 [dev-dependencies]
 serde_json = "1"

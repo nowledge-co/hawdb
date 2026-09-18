@@ -1,12 +1,12 @@
-use skein::executor::{
+use hawdb::executor::{
     execute_with_row_consumer_profile_and_external_and_context_and_memory, ExecutionMemoryConfig,
     ExternalReadOperator, VectorSeedExecutionOutput, VectorSeedExecutionRequest,
 };
-use skein::optimizer::PhysicalPlan;
-use skein::schema::Catalog;
-use skein::store::GraphStore;
-use skein_core::RuntimeTaskContext;
-use skein_executor::{
+use hawdb::optimizer::PhysicalPlan;
+use hawdb::schema::Catalog;
+use hawdb::store::GraphStore;
+use hawdb_core::RuntimeTaskContext;
+use hawdb_executor::{
     execute_morsels_ordered, MorselAdmission, MorselAdmissionRequest, PipelineId,
     SharedExecutorPool, SharedPoolMorselScheduler,
 };
@@ -22,8 +22,8 @@ const SCHEDULER_SAMPLES: usize = 11;
 const PRODUCTION_BATCHES_PER_MORSEL: usize = 16;
 const PRODUCTION_MIN_MORSELS_PER_WORKER: usize = 4;
 const DEFAULT_BENCH_MORSELS_PER_WORKER: usize = 16;
-const MORSEL_WORKERS_ENV: &str = "SKEIN_MORSEL_BENCH_WORKERS";
-const MORSEL_ROWS_ENV: &str = "SKEIN_MORSEL_BENCH_ROWS";
+const MORSEL_WORKERS_ENV: &str = "HAWDB_MORSEL_BENCH_WORKERS";
+const MORSEL_ROWS_ENV: &str = "HAWDB_MORSEL_BENCH_ROWS";
 
 pub(super) fn scheduler_benchmark(requested_workers: NonZeroUsize) -> serde_json::Value {
     let bytes_per_worker = NonZeroUsize::new(64 * 1024).unwrap();
@@ -136,7 +136,7 @@ pub(super) fn benchmark_workers() -> NonZeroUsize {
 }
 
 pub(super) fn benchmark_production_rows(requested_workers: NonZeroUsize) -> usize {
-    let default_rows = skein_executor::memory::DEFAULT_EXECUTION_BATCH_ROWS
+    let default_rows = hawdb_executor::memory::DEFAULT_EXECUTION_BATCH_ROWS
         .saturating_mul(PRODUCTION_BATCHES_PER_MORSEL)
         .saturating_mul(DEFAULT_BENCH_MORSELS_PER_WORKER)
         .saturating_mul(requested_workers.get());
@@ -148,7 +148,7 @@ pub(super) fn benchmark_production_rows(requested_workers: NonZeroUsize) -> usiz
             .unwrap_or_else(|| panic!("{MORSEL_ROWS_ENV} must be a positive integer")),
         Err(_) => default_rows,
     };
-    let minimum_rows = skein_executor::memory::DEFAULT_EXECUTION_BATCH_ROWS
+    let minimum_rows = hawdb_executor::memory::DEFAULT_EXECUTION_BATCH_ROWS
         .saturating_mul(PRODUCTION_BATCHES_PER_MORSEL)
         .saturating_mul(PRODUCTION_MIN_MORSELS_PER_WORKER)
         .saturating_mul(requested_workers.get());
@@ -250,8 +250,8 @@ impl ExternalReadOperator for BenchmarkExternalRead {
     fn execute_vector_seed(
         &mut self,
         _request: VectorSeedExecutionRequest<'_>,
-    ) -> skein::Result<VectorSeedExecutionOutput> {
-        Err(skein::SkeinError::Execution(
+    ) -> hawdb::Result<VectorSeedExecutionOutput> {
+        Err(hawdb::HawdbError::Execution(
             "vector reads are outside the executor vectorization benchmark".to_string(),
         ))
     }

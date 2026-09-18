@@ -1,6 +1,6 @@
 # Vector experiments: retention decision and integration gates
 
-Decision for [#228](https://github.com/nowledge-co/skein/issues/228): **retain the
+Decision for [#228](https://github.com/nowledge-co/hawdb/issues/228): **retain the
 existing exports as explicitly experimental, benchmark-only building blocks**,
 with the prerequisites below. Do not wire them into embedded serving or add new
 experimental features now. This selects the issue's tracking-plan acceptance
@@ -11,7 +11,7 @@ The retention purpose is bounded: keep executable comparison fixtures while
 deciding whether these implementations belong in the actual search path. API
 removal, new public interfaces, and persisted formats require separate review
 and owner approval. No new crate, feature flag, runtime, or CI job is needed for
-this decision. The embedded `skein` library remains the application facade;
+this decision. The embedded `hawdb` library remains the application facade;
 this roadmap grants no stable-release or production-admission permission.
 
 ## Current ownership and consumers
@@ -71,9 +71,9 @@ or a separately approved removal change. This document is not that evidence.
 
 ### 2. Resolve delta identity and tombstones with incremental publication
 
-Owner boundary: derived search persistence in `skein-search`, tracked by
-[#291](https://github.com/nowledge-co/skein/issues/291), after its prerequisite
-[#206](https://github.com/nowledge-co/skein/issues/206) is independently qualified
+Owner boundary: derived search persistence in `hawdb-search`, tracked by
+[#291](https://github.com/nowledge-co/hawdb/issues/291), after its prerequisite
+[#206](https://github.com/nowledge-co/hawdb/issues/206) is independently qualified
 and merged. Do not start an overlapping segment-format implementation here.
 This lane does not require HNSW, and HNSW is not a prerequisite for #291.
 
@@ -165,9 +165,9 @@ executable Rust, the existing vector/search regressions, and mandatory local
 fuzz. These checks validate the retained baseline, not the unchecked gates above:
 
 ```sh
-cargo doc -p skein-vector-projection --no-deps
-bazel test //crates/vector-projection:skein_vector_projection_tests \
-  //crates/search:skein_search_tests \
-  //crates/fuzz:skein_fuzz_tests //crates/fuzz:skein_fuzz_cli_tests \
-  //:skein_linux_ci_fuzz_smoke_test --nocache_test_results
+cargo doc -p hawdb-vector-projection --no-deps
+bazel test //crates/vector-projection:hawdb_vector_projection_tests \
+  //crates/search:hawdb_search_tests \
+  //crates/fuzz:hawdb_fuzz_tests //crates/fuzz:hawdb_fuzz_cli_tests \
+  //:hawdb_linux_ci_fuzz_smoke_test --nocache_test_results
 ```

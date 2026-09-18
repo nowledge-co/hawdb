@@ -15,8 +15,8 @@ use crate::{
     BlockingOperatorMemoryReport, ExecutionLimit, ExecutionMemoryConfig, QueryMemoryAccount,
     QueryMemoryClass, QueryMemoryLedger,
 };
-use skein_core::{Catalog, Result, RuntimeTaskContext, SkeinError, Value};
-use skein_plan::{
+use hawdb_core::{Catalog, HawdbError, Result, RuntimeTaskContext, Value};
+use hawdb_plan::{
     AggregateFunction, AggregateTarget, Aggregation, PhysicalPlan, Projection, SortDirection,
     SortItem,
 };
@@ -551,7 +551,7 @@ mod tests {
         stream_top_n_batches(
             &input,
             &[SortItem {
-                key: skein_plan::SortKey::Column("value".to_string()),
+                key: hawdb_plan::SortKey::Column("value".to_string()),
                 direction: SortDirection::Asc,
             }],
             1,

@@ -8,7 +8,7 @@ fn unique_shadow_dir(name: &str) -> PathBuf {
         .duration_since(std::time::UNIX_EPOCH)
         .unwrap()
         .as_nanos();
-    std::env::temp_dir().join(format!("skein_columnar_shadow_{name}_{nanos}"))
+    std::env::temp_dir().join(format!("hawdb_columnar_shadow_{name}_{nanos}"))
 }
 
 #[test]

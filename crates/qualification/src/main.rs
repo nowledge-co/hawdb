@@ -1,4 +1,4 @@
-use skein_qualification::{run_mixed_soak, MixedSoakConfig, MixedSoakError, MIXED_SOAK_PROTOCOL};
+use hawdb_qualification::{run_mixed_soak, MixedSoakConfig, MixedSoakError, MIXED_SOAK_PROTOCOL};
 use std::path::PathBuf;
 use std::process::ExitCode;
 use std::time::Duration;
@@ -19,7 +19,7 @@ fn main() -> ExitCode {
                     "errors": [error.to_string()],
                 })
             );
-            eprintln!("skein-soak: {error}");
+            eprintln!("hawdb-soak: {error}");
             ExitCode::from(2)
         }
     }
@@ -118,7 +118,7 @@ fn parse_u64(name: &str, value: &str) -> Result<u64, MixedSoakError> {
 }
 
 fn usage() -> &'static str {
-    "usage: skein-soak --path <path> --revision <sha> [--dataset-id <id>] \
+    "usage: hawdb-soak --path <path> --revision <sha> [--dataset-id <id>] \
      [--node-count <usize>] [--payload-bytes <usize>] \
      [--foreground-workers <usize>] [--foreground-rounds <usize>] \
      [--background-rounds <usize>] [--segment-cache-bytes <u64>] \

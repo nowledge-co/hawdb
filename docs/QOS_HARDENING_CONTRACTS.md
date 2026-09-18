@@ -1,6 +1,6 @@
 # QoS hardening contracts
 
-This records the contracts enforced by [issue #197](https://github.com/nowledge-co/skein/issues/197).
+This records the contracts enforced by [issue #197](https://github.com/nowledge-co/hawdb/issues/197).
 
 ## Class and admission policy
 

@@ -21,7 +21,7 @@ test "$1" = -metadir
 test "$3" = -config
 test -f "$4"
 test -f "$5"
-if [[ "$5" == */SkeinCowPagePublication.tla ]]; then
+if [[ "$5" == */HawdbCowPagePublication.tla ]]; then
   test "$final_liveness" = true
   printf '%s\n' 'Checking temporal properties for the complete state space with 2 total distinct states'
 else

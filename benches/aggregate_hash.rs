@@ -1,22 +1,22 @@
 //! Run the identical benchmark on the base and candidate revisions.
 //! Input construction is excluded; ordered output and admission are checked.
 
-use serde_json::json;
-use skein::optimizer::PhysicalPlan;
-use skein::planner::{
+use hawdb::optimizer::PhysicalPlan;
+use hawdb::planner::{
     AggregateFunction, AggregateTarget, Aggregation, Projection, ProjectionExpression,
 };
-use skein_core::{Catalog, Result, Value};
-use skein_executor::binding::Binding;
-use skein_executor::blocking::{
+use hawdb_core::{Catalog, Result, Value};
+use hawdb_executor::binding::Binding;
+use hawdb_executor::blocking::{
     stream_aggregate_batches, BindingBatchSource, BlockingExecutionContext,
 };
-use skein_executor::observer::ExecutionObserver;
-use skein_executor::pipeline::{BatchControl, BindingBatch};
-use skein_executor::{
+use hawdb_executor::observer::ExecutionObserver;
+use hawdb_executor::pipeline::{BatchControl, BindingBatch};
+use hawdb_executor::{
     BlockingOperatorMemoryReport, ExecutionLimit, ExecutionMemoryConfig, QueryMemoryLedger,
 };
-use skein_storage::{NodeId, NodeRecord};
+use hawdb_storage::{NodeId, NodeRecord};
+use serde_json::json;
 use std::cell::RefCell;
 use std::collections::{BTreeMap, BTreeSet};
 use std::hint::black_box;

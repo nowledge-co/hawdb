@@ -1,6 +1,6 @@
 use super::*;
 use crate::evidence_digest::rows_sha256;
-use skein::{QueryStreamOptions, PRODUCTION_QUALIFICATION_POLICY_VERSION};
+use hawdb::{QueryStreamOptions, PRODUCTION_QUALIFICATION_POLICY_VERSION};
 use std::sync::atomic::{AtomicU64, Ordering};
 
 static TEST_ID: AtomicU64 = AtomicU64::new(0);
@@ -8,17 +8,17 @@ static TEST_ID: AtomicU64 = AtomicU64::new(0);
 #[test]
 fn artifact_measurement_counts_growth_and_removed_overflow_files() {
     let before = BTreeMap::from([
-        ("relational-overflow-1.extents.skein".to_string(), 100),
-        ("checkpoint-1.skein".to_string(), 50),
+        ("relational-overflow-1.extents.hawdb".to_string(), 100),
+        ("checkpoint-1.hawdb".to_string(), 50),
     ]);
     let after_compaction = BTreeMap::from([
-        ("relational-overflow-1.extents.skein".to_string(), 100),
-        ("relational-overflow-2.extents.skein".to_string(), 80),
-        ("checkpoint-1.skein".to_string(), 70),
+        ("relational-overflow-1.extents.hawdb".to_string(), 100),
+        ("relational-overflow-2.extents.hawdb".to_string(), 80),
+        ("checkpoint-1.hawdb".to_string(), 70),
     ]);
     let after_cleanup = BTreeMap::from([
-        ("relational-overflow-2.extents.skein".to_string(), 80),
-        ("checkpoint-1.skein".to_string(), 70),
+        ("relational-overflow-2.extents.hawdb".to_string(), 80),
+        ("checkpoint-1.hawdb".to_string(), 70),
     ]);
 
     assert_eq!(created_or_grown_bytes(&before, &after_compaction), 100);
@@ -28,7 +28,7 @@ fn artifact_measurement_counts_growth_and_removed_overflow_files() {
 #[test]
 fn qualification_requires_a_writable_disposable_replica() {
     let path = std::env::temp_dir().join(format!(
-        "skein-overflow-compaction-config-{}",
+        "hawdb-overflow-compaction-config-{}",
         std::process::id()
     ));
     std::fs::create_dir_all(&path).unwrap();
@@ -44,7 +44,7 @@ fn qualification_requires_a_writable_disposable_replica() {
         deployment_profile: "disposable-production-replica".to_string(),
         dataset_fingerprint: "dataset".to_string(),
         canonical_graph_commit_epoch: 1,
-        policy_version: skein::PRODUCTION_QUALIFICATION_POLICY_VERSION,
+        policy_version: hawdb::PRODUCTION_QUALIFICATION_POLICY_VERSION,
     };
     let database_config = DatabaseConfig {
         read_only: true,
@@ -92,7 +92,7 @@ fn qualification_requires_a_writable_disposable_replica() {
 #[test]
 fn qualification_proves_exact_rewrite_physical_reclaim_and_reopen() {
     let path = std::env::temp_dir().join(format!(
-        "skein-overflow-compaction-production-{}-{}",
+        "hawdb-overflow-compaction-production-{}-{}",
         std::process::id(),
         TEST_ID.fetch_add(1, Ordering::SeqCst)
     ));

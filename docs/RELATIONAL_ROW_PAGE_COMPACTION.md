@@ -86,11 +86,11 @@ rewrite budgets, cleanup and reopen. It is part of the existing local fuzz suite
 and exposes deterministic case replay through the existing storage fuzz CLI:
 
 ```sh
-bazel run //crates/fuzz:skein_storage_fuzz -- \
+bazel run //crates/fuzz:hawdb_storage_fuzz -- \
   --row-page-compaction --seed 189 --cases 8
-bazel test //crates/fuzz:skein_fuzz_tests //crates/fuzz:skein_fuzz_cli_tests \
-  //:skein_linux_ci_fuzz_smoke_test --nocache_test_results
-bazel test //docs/tla:SkeinCowPagePublication_check --nocache_test_results
+bazel test //crates/fuzz:hawdb_fuzz_tests //crates/fuzz:hawdb_fuzz_cli_tests \
+  //:hawdb_linux_ci_fuzz_smoke_test --nocache_test_results
+bazel test //docs/tla:HawdbCowPagePublication_check --nocache_test_results
 ```
 
 Fuzz is local-only. Existing macOS/Windows storage jobs also execute the facade

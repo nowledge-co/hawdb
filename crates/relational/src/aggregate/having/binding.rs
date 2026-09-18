@@ -14,7 +14,7 @@ impl ScalarState {
             && !self.coercible
             && !numeric_pair(source, target)
         {
-            return Err(SkeinError::Semantic(
+            return Err(HawdbError::Semantic(
                 "HAVING operands have incompatible scalar types".into(),
             ));
         }
@@ -30,7 +30,7 @@ impl ScalarState {
             match state {
                 AggregateExpressionState::Having(_) => std::mem::size_of::<Value>(),
                 AggregateExpressionState::Constant(value) => {
-                    skein_executor::binding::value_memory_bytes(value)
+                    hawdb_executor::binding::value_memory_bytes(value)
                 }
                 AggregateExpressionState::First { value, .. }
                 | AggregateExpressionState::Numeric { value, .. } => value.as_ref().map_or(
@@ -75,7 +75,7 @@ pub(super) fn comparison_type(inputs: &[&ScalarState]) -> Result<Option<Relation
             if numeric_pair(current, candidate) {
                 target = Some(RelationalScalarType::DoublePrecision);
             } else if !input.coercible {
-                return Err(SkeinError::Semantic(
+                return Err(HawdbError::Semantic(
                     "HAVING operands have incompatible scalar types".into(),
                 ));
             }
@@ -97,7 +97,7 @@ pub(super) fn coerce_value(
         }
         value = crate::coerce_relational_value(value, target)?;
         if value.scalar_type().is_some_and(|actual| actual != target) {
-            return Err(SkeinError::Semantic(
+            return Err(HawdbError::Semantic(
                 "HAVING operands have incompatible scalar types".into(),
             ));
         }
@@ -121,7 +121,7 @@ impl<'a> HavingBindings<'a> {
             .chain(select.joins.iter().map(|join| (&join.table, &join.alias)))
             .map(|(table, alias)| {
                 let schema = state.table_schema(&table.name).ok_or_else(|| {
-                    SkeinError::Semantic(format!("unknown relational table {}", table.name))
+                    HawdbError::Semantic(format!("unknown relational table {}", table.name))
                 })?;
                 Ok((alias.as_deref().unwrap_or(&table.name), schema))
             })
@@ -155,10 +155,10 @@ impl<'a> HavingBindings<'a> {
                         .map(|position| (binding, position))
                 });
         let first = matches.next().ok_or_else(|| {
-            SkeinError::Semantic(format!("unknown HAVING/grouped column {}", column.name))
+            HawdbError::Semantic(format!("unknown HAVING/grouped column {}", column.name))
         })?;
         if matches.next().is_some() {
-            return Err(SkeinError::Semantic(format!(
+            return Err(HawdbError::Semantic(format!(
                 "ambiguous HAVING/grouped column {}",
                 column.name
             )));
@@ -176,7 +176,7 @@ impl<'a> HavingBindings<'a> {
                     .is_some_and(|position| self.group_keys.contains(&(binding, position)))
             });
         if grouped && !self.group_keys.contains(&(binding, position)) && !determined_by_key {
-            return Err(SkeinError::Semantic(format!(
+            return Err(HawdbError::Semantic(format!(
                 "column {} must appear in GROUP BY or an aggregate",
                 column.name
             )));
@@ -198,7 +198,7 @@ impl<'a> HavingBindings<'a> {
                 }
                 _ => {}
             }
-            Ok::<_, SkeinError>(())
+            Ok::<_, HawdbError>(())
         })?;
         let coercible = matches!(expression.kind, ExprKind::Value(_));
         Ok(ScalarState {
@@ -226,20 +226,20 @@ impl<'a> HavingBindings<'a> {
             } => {
                 if name == "coalesce" {
                     if *distinct || filter.is_some() || arguments.is_empty() {
-                        return Err(SkeinError::Semantic(
+                        return Err(HawdbError::Semantic(
                             "COALESCE requires arguments without DISTINCT or FILTER".into(),
                         ));
                     }
                     let mut result = None;
                     for argument in arguments {
                         let SqlFunctionArgument::Expression(expression) = argument else {
-                            return Err(SkeinError::Semantic(
+                            return Err(HawdbError::Semantic(
                                 "COALESCE does not accept wildcard".into(),
                             ));
                         };
                         if let Some(candidate) = self.scalar_type(expression, grouped)? {
                             if result.is_some_and(|current| current != candidate) {
-                                return Err(SkeinError::Semantic(
+                                return Err(HawdbError::Semantic(
                                     "COALESCE arguments have incompatible scalar types".into(),
                                 ));
                             }
@@ -249,7 +249,7 @@ impl<'a> HavingBindings<'a> {
                     return Ok(result);
                 }
                 if !grouped {
-                    return Err(SkeinError::Semantic(
+                    return Err(HawdbError::Semantic(
                         "nested aggregates are not supported".into(),
                     ));
                 }
@@ -262,7 +262,7 @@ impl<'a> HavingBindings<'a> {
                     validator.predicate(filter)?;
                 }
                 let [argument] = arguments.as_slice() else {
-                    return Err(SkeinError::Semantic(
+                    return Err(HawdbError::Semantic(
                         "aggregate requires exactly one argument".into(),
                     ));
                 };
@@ -291,18 +291,18 @@ impl<'a> HavingBindings<'a> {
                                 )
                             })
                         {
-                            return Err(SkeinError::Semantic(
+                            return Err(HawdbError::Semantic(
                                 "SUM requires BIGINT or DOUBLE PRECISION input".into(),
                             ));
                         }
                         Ok(scalar_type)
                     }
-                    _ => Err(SkeinError::Semantic(format!(
+                    _ => Err(HawdbError::Semantic(format!(
                         "unsupported HAVING aggregate {name}"
                     ))),
                 }
             }
-            _ => Err(SkeinError::Semantic(
+            _ => Err(HawdbError::Semantic(
                 "unsupported HAVING scalar expression".into(),
             )),
         }
@@ -325,7 +325,7 @@ impl<'a> HavingBindings<'a> {
                     ..
                 })] = arguments.as_slice()
                 else {
-                    return Err(SkeinError::Semantic(
+                    return Err(HawdbError::Semantic(
                         "OCTET_LENGTH requires exactly one column".into(),
                     ));
                 };
@@ -333,13 +333,13 @@ impl<'a> HavingBindings<'a> {
                     self.column_type(column, false)?,
                     RelationalScalarType::Text | RelationalScalarType::Bytea
                 ) {
-                    return Err(SkeinError::Semantic(
+                    return Err(HawdbError::Semantic(
                         "OCTET_LENGTH requires TEXT or BYTEA input".into(),
                     ));
                 }
                 Ok(Some(RelationalScalarType::BigInt))
             }
-            _ => Err(SkeinError::Semantic(
+            _ => Err(HawdbError::Semantic(
                 "nested or unsupported aggregate input expression".into(),
             )),
         }

@@ -1,9 +1,9 @@
 //! Seeded differential checks against independent ordered-container oracles.
 
 use super::*;
-use skein_core::RuntimeCancellationToken;
-use skein_plan::ProjectionExpression;
-use skein_storage::{NodeId, NodeRecord};
+use hawdb_core::RuntimeCancellationToken;
+use hawdb_plan::ProjectionExpression;
+use hawdb_storage::{NodeId, NodeRecord};
 use std::cell::RefCell;
 use std::collections::BTreeSet;
 use std::num::NonZeroU64;
@@ -58,7 +58,7 @@ impl Fixture {
             batch_rows: NonZeroUsize::new(7).unwrap(),
             min_spill_free_bytes: NonZeroU64::MIN,
             spill_directory: std::env::temp_dir().join(format!(
-                "skein-hash-oracle-{}-{}",
+                "hawdb-hash-oracle-{}-{}",
                 std::process::id(),
                 NEXT.fetch_add(1, AtomicOrdering::Relaxed)
             )),
@@ -561,7 +561,7 @@ fn hash_operators_release_memory_and_runs_on_stop_error_and_cancellation() {
                 context.task_context = Some(&task);
                 let mut emit = |_| {
                     if exit == 1 {
-                        Err(SkeinError::Execution("oracle consumer failure".into()))
+                        Err(HawdbError::Execution("oracle consumer failure".into()))
                     } else {
                         Ok(BatchControl::Stop)
                     }

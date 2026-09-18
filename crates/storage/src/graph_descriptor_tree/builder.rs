@@ -11,7 +11,7 @@ use crate::graph_descriptor_page::{
     GraphDescriptorPageRef, ImmutableGraphDescriptorPage, ImmutableGraphDescriptorPageBody,
     GRAPH_DESCRIPTOR_FIELD_HEADER_BYTES, GRAPH_DESCRIPTOR_PAGE_HEADER_BYTES,
 };
-use skein_integrity::IntegrityHasher;
+use hawdb_integrity::IntegrityHasher;
 use std::collections::BTreeSet;
 use std::fs::{self, File};
 use std::io::{BufReader, BufWriter, Read, Write};

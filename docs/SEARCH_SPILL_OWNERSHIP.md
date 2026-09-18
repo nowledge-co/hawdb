@@ -1,6 +1,6 @@
 # Lexical spill ownership and reserved merge progress
 
-This private stage of [#392](https://github.com/nowledge-co/skein/issues/392)
+This private stage of [#392](https://github.com/nowledge-co/hawdb/issues/392)
 extends [token ownership](SEARCH_TOKEN_OWNERSHIP.md) through document-frequency
 runs and corpus posting merges. Query APIs, token and field semantics, logical
 source/term/token/spill limits, and persisted artifact encodings retain their
@@ -90,10 +90,10 @@ Mutation controls must be built from isolated source trees and separate Cargo
 target directories; never share a positive target with a negative build.
 
 ```sh
-cargo test -p skein-search
-cargo test -p skein-search --no-default-features
-cargo clippy -p skein-search --all-targets -- -D warnings
-bazel test //crates/search:all //crates/fuzz:skein_fuzz_tests //crates/fuzz:skein_fuzz_cli_tests //:skein_linux_ci_fuzz_smoke_test
+cargo test -p hawdb-search
+cargo test -p hawdb-search --no-default-features
+cargo clippy -p hawdb-search --all-targets -- -D warnings
+bazel test //crates/search:all //crates/fuzz:hawdb_fuzz_tests //crates/fuzz:hawdb_fuzz_cli_tests //:hawdb_linux_ci_fuzz_smoke_test
 ```
 
 This establishes progress for an admitted working set and merge topology. A larger

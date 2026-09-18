@@ -1,10 +1,10 @@
 //! Storage record predicates shared by execution operators.
 
-use skein_core::{Catalog, LabelId, Value};
-use skein_plan::ComparisonOp;
-pub use skein_storage::predicate::property_filter_matches as property_filter_matches_values;
-use skein_storage::predicate::{comparable_value_ordering, properties_contain_all};
-use skein_storage::{NodeRecord, PropertyFilter, RelRecord};
+use hawdb_core::{Catalog, LabelId, Value};
+use hawdb_plan::ComparisonOp;
+pub use hawdb_storage::predicate::property_filter_matches as property_filter_matches_values;
+use hawdb_storage::predicate::{comparable_value_ordering, properties_contain_all};
+use hawdb_storage::{NodeRecord, PropertyFilter, RelRecord};
 use std::cmp::Ordering;
 use std::collections::BTreeMap;
 

@@ -1,7 +1,7 @@
-//! In-progress Skein-owned PostgreSQL SQL/PGQ syntax frontend.
+//! In-progress Hawdb-owned PostgreSQL SQL/PGQ syntax frontend.
 //!
 //! This crate owns tokens, byte spans, structured syntax errors, and syntax ASTs.
-//! Semantic binding and logical-plan lowering belong to `skein-sql`.
+//! Semantic binding and logical-plan lowering belong to `hawdb-sql`.
 //!
 //! This frontend is not yet selected by `Database::query_sql*`; the existing
 //! relational execution path still uses upstream `sqlparser`. Syntax acceptance
@@ -13,8 +13,8 @@
 //! qualification required before enabling production routing. Parser selection
 //! must be explicit by statement family, never a retry after another parser fails.
 //!
-//! [SQL/PGQ specification]: https://github.com/nowledge-co/skein/blob/main/docs/specs/POSTGRES_SQL_PGQ_SPEC.md
-//! [implementation and routing checklist]: https://github.com/nowledge-co/skein/blob/main/TODO.md#p1-postgresql-sqlpgq-compatibility
+//! [SQL/PGQ specification]: https://github.com/nowledge-co/hawdb/blob/main/docs/specs/POSTGRES_SQL_PGQ_SPEC.md
+//! [implementation and routing checklist]: https://github.com/nowledge-co/hawdb/blob/main/TODO.md#p1-postgresql-sqlpgq-compatibility
 
 mod ast;
 mod error;

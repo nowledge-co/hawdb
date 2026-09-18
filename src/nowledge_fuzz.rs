@@ -1,11 +1,11 @@
 use crate::{
     Database, NowledgeMemGraph, NowledgeMemGraphMode, NowledgeMemQueryReportOptions, Result,
 };
-use skein_fuzz_contracts::{
+use hawdb_fuzz_contracts::{
     nowledge_query_fuzz_cases, nowledge_query_fuzz_error_class, nowledge_query_fuzz_harness_report,
     NowledgeQueryFuzzCase, NOWLEDGE_QUERY_FUZZ_FIXTURE_MEMORY_COUNT,
 };
-pub use skein_fuzz_contracts::{
+pub use hawdb_fuzz_contracts::{
     NowledgeQueryFuzzCaseReport, NowledgeQueryFuzzHarnessOptions, NowledgeQueryFuzzHarnessReport,
     NOWLEDGE_QUERY_FUZZ_HARNESS_PROTOCOL,
 };

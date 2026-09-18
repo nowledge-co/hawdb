@@ -1,15 +1,15 @@
-use serde_json::json;
-use skein::optimizer::{
+use hawdb::optimizer::{
     CascadesOptimizer, OptimizerCatalog, OptimizerCatalogIndexes, OptimizerCatalogStatistics,
     OptimizerConfig, PlanCost,
 };
-use skein::planner::{
+use hawdb::planner::{
     AggregateFunction, AggregateTarget, Aggregation, ComparisonOp, LogicalPlan, PhysicalPlan,
     Predicate, Projection, ProjectionExpression, RelationshipCountLeg, SortDirection, SortItem,
     SortKey,
 };
-use skein::RelationshipDirection;
-use skein::Value;
+use hawdb::RelationshipDirection;
+use hawdb::Value;
+use serde_json::json;
 use std::collections::BTreeMap;
 use std::time::Instant;
 
@@ -89,7 +89,7 @@ struct OptimizerSmokeCaseReport<'a> {
 }
 
 impl<'a> OptimizerSmokeCaseReport<'a> {
-    fn new(case: &'a OptimizerSmokeCase, trace: &skein::optimizer::OptimizerTrace) -> Self {
+    fn new(case: &'a OptimizerSmokeCase, trace: &hawdb::optimizer::OptimizerTrace) -> Self {
         Self {
             case: case.name,
             groups: trace.groups,
@@ -156,7 +156,7 @@ struct OptimizerSmokeCase {
 fn assert_trace(
     case: &OptimizerSmokeCase,
     plan: &PhysicalPlan,
-    trace: &skein::optimizer::OptimizerTrace,
+    trace: &hawdb::optimizer::OptimizerTrace,
 ) {
     assert!(
         trace.warnings.is_empty(),

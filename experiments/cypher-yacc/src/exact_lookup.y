@@ -1,11 +1,11 @@
 %start Query
 %%
-Query -> Result<Box<skein_cypher::Statement>, String>:
+Query -> Result<Box<hawdb_cypher::Statement>, String>:
       'MATCH' '(' Ident ':' Ident ')' 'WHERE' Property '=' Parameter 'RETURN' Property AliasOpt LimitOpt
       {
           let (predicate_variable, predicate_property) = $8?;
           let (return_variable, return_property) = $12?;
-          Ok(Box::new(skein_cypher::Statement::MatchReturn(Box::new(skein_cypher::MatchReturn {
+          Ok(Box::new(hawdb_cypher::Statement::MatchReturn(Box::new(hawdb_cypher::MatchReturn {
               vector_seed: None,
               variable: $3?,
               label: $5?,
@@ -23,14 +23,14 @@ Query -> Result<Box<skein_cypher::Statement>, String>:
               aggregate_with: None,
               aggregate_with_filter: None,
               post_with_match: None,
-              predicate: Some(skein_cypher::PropertyPredicate::Eq {
+              predicate: Some(hawdb_cypher::PropertyPredicate::Eq {
                   variable: predicate_variable,
                   property: predicate_property,
                   value: $10?,
               }),
               distinct: false,
-              returns: vec![skein_cypher::ReturnItem {
-                  expression: skein_cypher::ReturnExpression::Property {
+              returns: vec![hawdb_cypher::ReturnItem {
+                  expression: hawdb_cypher::ReturnExpression::Property {
                       variable: return_variable,
                       property: return_property,
                   },
@@ -55,12 +55,12 @@ Property -> Result<(String, String), String>:
       Ident '.' Ident { Ok(($1?, $3?)) }
     ;
 
-Parameter -> Result<skein_cypher::ValueExpression, String>:
+Parameter -> Result<hawdb_cypher::ValueExpression, String>:
       'PARAM'
       {
           let lexeme = $1.map_err(|error| format!("parameter lex error: {error:?}"))?;
           let parameter = $lexer.span_str(lexeme.span());
-          Ok(skein_cypher::ValueExpression::Parameter(parameter[1..].to_string()))
+          Ok(hawdb_cypher::ValueExpression::Parameter(parameter[1..].to_string()))
       }
     ;
 
@@ -69,7 +69,7 @@ AliasOpt -> Result<Option<String>, String>:
     | { Ok(None) }
     ;
 
-LimitOpt -> Result<Option<skein_cypher::ValueExpression>, String>:
+LimitOpt -> Result<Option<hawdb_cypher::ValueExpression>, String>:
       'LIMIT' Parameter { Ok(Some($2?)) }
     | { Ok(None) }
     ;

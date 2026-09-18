@@ -1,5 +1,5 @@
 [package]
-name = "skein-core"
+name = "hawdb-core"
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true

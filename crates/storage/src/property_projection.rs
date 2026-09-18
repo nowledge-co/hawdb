@@ -15,8 +15,8 @@ use crate::{
     NodeRecord, PreparedGraphDescriptorTree, RelId, RelRecord, SegmentCache, SegmentRangeRead,
     SegmentReadError, SegmentReadRange, StoreId,
 };
-use skein_core::{LabelId, RelTypeId, Value};
-use skein_integrity::{Crc32cHasher, IntegrityHasher, Sha256Digest};
+use hawdb_core::{LabelId, RelTypeId, Value};
+use hawdb_integrity::{Crc32cHasher, IntegrityHasher, Sha256Digest};
 use std::cmp::Reverse;
 use std::collections::{BTreeMap, BinaryHeap, VecDeque};
 use std::error::Error;
@@ -28,24 +28,24 @@ use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 
-const ARTIFACT_HEADER: &[u8; 16] = b"SKEINPROPINDEX01";
+const ARTIFACT_HEADER: &[u8; 16] = b"HAWDBPROPINDEX01";
 const BLOCK_HEADER: &[u8; 8] = b"SKNIDX01";
 const RUN_HEADER: &[u8; 8] = b"SKNIDXR1";
-const MANIFEST_HEADER: &str = "SKEIN_PROPERTY_PROJECTION_MANIFEST_V1";
+const MANIFEST_HEADER: &str = "HAWDB_PROPERTY_PROJECTION_MANIFEST_V1";
 const ARTIFACT_ID: u64 = 0x534b_5052_4944_5831;
 const DESCRIPTOR_ARTIFACT_ID: u64 = 0x534b_5052_4453_4331;
 const BLOCK_ID_BASE: u64 = 3 << 60;
-const COMPOSITE_PROPERTY_IDENTITY_PREFIX: &str = "skein-composite-property-v1";
+const COMPOSITE_PROPERTY_IDENTITY_PREFIX: &str = "hawdb-composite-property-v1";
 const DESCRIPTOR_VALUE_MAGIC: &[u8; 8] = b"SKPPDSC1";
 const DESCRIPTOR_VALUE_VERSION: u16 = 1;
 const DESCRIPTOR_VALUE_HEADER_BYTES: usize = 68;
 
 pub fn property_projection_descriptor_page_file(generation: u64) -> String {
-    format!("property-index-descriptors-{generation}.pages.skein")
+    format!("property-index-descriptors-{generation}.pages.hawdb")
 }
 
 pub fn property_projection_descriptor_root_file(generation: u64) -> String {
-    format!("property-index-descriptors-{generation}.root.skein")
+    format!("property-index-descriptors-{generation}.root.hawdb")
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
@@ -1059,7 +1059,7 @@ impl PersistentPropertyProjectionWriter {
             runs.spill(&mut chunk)?;
         }
         runs.compact()?;
-        let tmp_path = path.with_extension("skein.tmp");
+        let tmp_path = path.with_extension("hawdb.tmp");
         let output = self.merge_runs(
             &tmp_path,
             generation,
@@ -3137,8 +3137,8 @@ mod tests {
 
     fn test_descriptor_paths(root: &Path, stem: &str) -> GraphDescriptorTreePaths {
         GraphDescriptorTreePaths::new(
-            root.join(format!("{stem}-descriptors.pages.skein")),
-            root.join(format!("{stem}-descriptors.root.skein")),
+            root.join(format!("{stem}-descriptors.pages.hawdb")),
+            root.join(format!("{stem}-descriptors.root.hawdb")),
         )
     }
 
@@ -3225,15 +3225,15 @@ mod tests {
             .unwrap()
             .as_nanos();
         let root = std::env::temp_dir().join(format!(
-            "skein-property-projection-{}-{nonce}",
+            "hawdb-property-projection-{}-{nonce}",
             std::process::id(),
         ));
         let _ = fs::remove_dir_all(&root);
         fs::create_dir_all(&root).unwrap();
-        let path = root.join("projection.skein");
+        let path = root.join("projection.hawdb");
         let descriptor_paths = GraphDescriptorTreePaths::new(
-            root.join("projection-descriptors.pages.skein"),
-            root.join("projection-descriptors.root.skein"),
+            root.join("projection-descriptors.pages.hawdb"),
+            root.join("projection-descriptors.root.hawdb"),
         );
         let config = PersistentPropertyProjectionConfig {
             memory_budget_bytes: NonZeroU64::new(256).unwrap(),
@@ -3499,11 +3499,11 @@ mod tests {
             .unwrap()
             .as_nanos();
         let root = std::env::temp_dir().join(format!(
-            "skein-property-projection-scrub-{}-{nonce}",
+            "hawdb-property-projection-scrub-{}-{nonce}",
             std::process::id(),
         ));
         fs::create_dir_all(&root).unwrap();
-        let path = root.join("projection.skein");
+        let path = root.join("projection.hawdb");
         let descriptor_paths = test_descriptor_paths(&root, "projection");
         let definitions = vec![
             PersistentPropertyProjectionDefinition {
@@ -3625,7 +3625,7 @@ mod tests {
         let error = persistent_composite_property_identity(&["only".to_string()]).unwrap_err();
         assert!(error.to_string().contains("at least two properties"));
         let error =
-            decode_composite_property_identity("skein-composite-property-v1:zz:61").unwrap_err();
+            decode_composite_property_identity("hawdb-composite-property-v1:zz:61").unwrap_err();
         assert!(error.to_string().contains("invalid hexadecimal data"));
     }
 
@@ -3636,11 +3636,11 @@ mod tests {
             .unwrap()
             .as_nanos();
         let root = std::env::temp_dir().join(format!(
-            "skein-composite-range-projection-{}-{nonce}",
+            "hawdb-composite-range-projection-{}-{nonce}",
             std::process::id(),
         ));
         fs::create_dir_all(&root).unwrap();
-        let path = root.join("projection.skein");
+        let path = root.join("projection.hawdb");
         let descriptor_paths = test_descriptor_paths(&root, "projection");
         let properties = vec!["rank".to_string(), "text".to_string()];
         let definition = PersistentPropertyProjectionDefinition {
@@ -3741,11 +3741,11 @@ mod tests {
             .unwrap()
             .as_nanos();
         let root = std::env::temp_dir().join(format!(
-            "skein-oversized-composite-projection-{}-{nonce}",
+            "hawdb-oversized-composite-projection-{}-{nonce}",
             std::process::id(),
         ));
         fs::create_dir_all(&root).unwrap();
-        let path = root.join("projection.skein");
+        let path = root.join("projection.hawdb");
         let descriptor_paths = test_descriptor_paths(&root, "projection");
         let properties = vec!["rank".to_string(), "text".to_string()];
         let definition = PersistentPropertyProjectionDefinition {
@@ -3813,7 +3813,7 @@ mod tests {
             .unwrap()
             .as_nanos();
         let root = std::env::temp_dir().join(format!(
-            "skein-property-projection-definition-budget-{}-{nonce}",
+            "hawdb-property-projection-definition-budget-{}-{nonce}",
             std::process::id(),
         ));
         fs::create_dir_all(&root).unwrap();
@@ -3831,7 +3831,7 @@ mod tests {
                 complete: false,
             },
         ];
-        let count_path = root.join("count.skein");
+        let count_path = root.join("count.hawdb");
         let count_descriptor_paths = test_descriptor_paths(&root, "count");
         let count_error =
             PersistentPropertyProjectionWriter::new(PersistentPropertyProjectionConfig {
@@ -3859,7 +3859,7 @@ mod tests {
         ));
         assert!(!count_path.exists());
 
-        let bytes_path = root.join("bytes.skein");
+        let bytes_path = root.join("bytes.hawdb");
         let bytes_descriptor_paths = test_descriptor_paths(&root, "bytes");
         let bytes_error =
             PersistentPropertyProjectionWriter::new(PersistentPropertyProjectionConfig {

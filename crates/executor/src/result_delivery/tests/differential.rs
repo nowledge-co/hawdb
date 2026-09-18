@@ -11,8 +11,8 @@ enum Failure {
     Cancelled,
 }
 
-fn failure(error: SkeinError) -> Failure {
-    let SkeinError::Execution(message) = error else {
+fn failure(error: HawdbError) -> Failure {
+    let HawdbError::Execution(message) = error else {
         panic!("unexpected error class: {error:?}");
     };
     if message.starts_with("read query returned more than") {
@@ -184,7 +184,7 @@ fn actual(input: &[Row], scenario: Scenario) -> Receipt {
             context.cancellation().cancel();
         }
         if rejected {
-            Err(SkeinError::Execution("consumer rejected row".to_string()))
+            Err(HawdbError::Execution("consumer rejected row".to_string()))
         } else {
             Ok(())
         }
@@ -351,7 +351,7 @@ fn deferred_interruption_drains_pending_rows_and_preserves_lease_until_drop_or_r
                 context.cancellation().cancel();
                 Ok(())
             } else {
-                Err(SkeinError::Execution("consumer rejected row".to_string()))
+                Err(HawdbError::Execution("consumer rejected row".to_string()))
             }
         };
         let mut output = QueryOutputAccumulator::new(

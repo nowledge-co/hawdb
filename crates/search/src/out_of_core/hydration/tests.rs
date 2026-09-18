@@ -13,7 +13,7 @@ pub(super) fn record_inflated_bytes(bytes: u64) {
 fn test_dir() -> PathBuf {
     let sequence = CANDIDATE_SEQUENCE.fetch_add(1, Ordering::Relaxed);
     let root = std::env::temp_dir().join(format!(
-        "skein-streamed-hydration-{}-{sequence}",
+        "hawdb-streamed-hydration-{}-{sequence}",
         std::process::id()
     ));
     fs::create_dir(&root).unwrap();
@@ -64,7 +64,7 @@ fn hydration_retains_one_decoded_document_instead_of_the_segment() {
 }
 
 fn fixture(documents: &[SearchDocument]) -> (String, SearchSegmentDescriptorEntry) {
-    let mut text = String::from("SKEIN_SEARCH_SEGMENT_V1\n");
+    let mut text = String::from("HAWDB_SEARCH_SEGMENT_V1\n");
     for document in documents {
         text.push_str(&crate::encode_search_document_line(document));
     }
@@ -167,7 +167,7 @@ fn streamed_hydration_preserves_legacy_grammar_and_admission() {
         text.clone(),
         text.replace('\n', "\r\n"),
         text.trim_end_matches('\n').to_string(),
-        format!("\n{text}\nSKEIN_SEARCH_SEGMENT_V1\n"),
+        format!("\n{text}\nHAWDB_SEARCH_SEGMENT_V1\n"),
     ] {
         let bytes = encode_search_snapshot_text(&text).unwrap();
         let reference = decode_search_segment_documents_bounded(&bytes, text.len() as u64).unwrap();

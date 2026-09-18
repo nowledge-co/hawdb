@@ -5,11 +5,11 @@ use crate::batch::*;
 use crate::external::NoExternalReadOperator;
 use crate::observer::QueryExecutionReports;
 use crate::Row;
-use skein_analytics::{
+use hawdb_analytics::{
     LouvainOptions, PageRankOptions, ProjectedGraphExecution, ProjectionLayout,
     ProjectionMemoryBudget,
 };
-use skein_plan::GraphAlgorithmKind;
+use hawdb_plan::GraphAlgorithmKind;
 
 fn graph_algorithm_fixture() -> (Catalog, ReadFixture) {
     let mut catalog = Catalog::default();
@@ -23,14 +23,14 @@ fn graph_algorithm_fixture() -> (Catalog, ReadFixture) {
                 properties: BTreeMap::from([("id".to_string(), Value::Int(id as i64 + 1))]),
             })
             .collect(),
-        relationships: vec![skein_storage::RelRecord {
-            id: skein_storage::RelId(0),
+        relationships: vec![hawdb_storage::RelRecord {
+            id: hawdb_storage::RelId(0),
             source: NodeId(0),
             target: NodeId(1),
             rel_type,
             properties: BTreeMap::new(),
         }],
-        definition: Some(skein_storage::ProjectedGraphDefinition {
+        definition: Some(hawdb_storage::ProjectedGraphDefinition {
             node_labels: vec!["Memory".to_string()],
             rel_types: vec!["MENTIONS".to_string()],
         }),
@@ -43,7 +43,7 @@ fn graph_algorithm_plan(algorithm: GraphAlgorithmKind) -> PhysicalPlan {
     PhysicalPlan::GraphAlgorithm {
         algorithm,
         graph_name: "MemoryGraph".to_string(),
-        options: skein_plan::GraphAlgorithmOptions {
+        options: hawdb_plan::GraphAlgorithmOptions {
             damping: None,
             max_iterations: Some(2),
             max_levels: Some(1),
@@ -162,7 +162,7 @@ fn graph_handlers_preserve_rows_limits_consumer_control_and_reports() {
                                 .into_iter()
                                 .take(output_rows.unwrap_or(usize::MAX))
                                 .collect();
-                            let consumer_error = SkeinError::StorageIntegrity(
+                            let consumer_error = HawdbError::StorageIntegrity(
                                 "graph handler consumer sentinel".to_string(),
                             );
                             let result = execute_binding_batches(
@@ -255,7 +255,7 @@ fn graph_handler_errors_release_memory_without_emitting_partial_results() {
 fn graph_handler_cancellation_from_consumer_releases_memory() {
     for algorithm in [GraphAlgorithmKind::PageRank, GraphAlgorithmKind::Louvain] {
         let plan = graph_algorithm_plan(algorithm);
-        let cancellation = skein_core::RuntimeCancellationToken::new();
+        let cancellation = hawdb_core::RuntimeCancellationToken::new();
         let task = RuntimeTaskContext::without_deadline(cancellation.clone());
         let mut calls = 0;
         let (result, _) = with_graph_context(&plan, 1, 4096, Some(&task), |context| {
@@ -269,7 +269,7 @@ fn graph_handler_cancellation_from_consumer_releases_memory() {
         assert_eq!(calls, 1);
         assert_eq!(
             result.unwrap_err(),
-            SkeinError::Execution("runtime task stopped: cancelled".to_string())
+            HawdbError::Execution("runtime task stopped: cancelled".to_string())
         );
     }
 }

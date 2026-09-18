@@ -69,7 +69,7 @@ remain, including cancellation after admission and hot-partition spill.
 Required local verification includes optimizer/root tests and:
 
 ```sh
-bazel test --nocache_test_results //crates/fuzz:skein_fuzz_tests //crates/fuzz:skein_fuzz_cli_tests //:skein_linux_ci_fuzz_smoke_test
+bazel test --nocache_test_results //crates/fuzz:hawdb_fuzz_tests //crates/fuzz:hawdb_fuzz_cli_tests //:hawdb_linux_ci_fuzz_smoke_test
 ```
 
 The fuzz suite contains the SQL join-rewrite differential campaign. Fuzz remains

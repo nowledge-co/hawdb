@@ -1,8 +1,8 @@
 //! Cooperative controls for one mutable projection build, never its readers.
 
-use crate::error::{Result, SkeinError};
-use skein_core::RuntimeTaskContext;
-use skein_integrity::Crc32cHasher;
+use crate::error::{HawdbError, Result};
+use hawdb_core::RuntimeTaskContext;
+use hawdb_integrity::Crc32cHasher;
 use std::io::{self, Write};
 
 pub(crate) mod json;
@@ -13,7 +13,7 @@ pub(crate) fn checkpoint(context: &RuntimeTaskContext) -> Result<()> {
     observation::record();
     context
         .checkpoint()
-        .map_err(|reason| SkeinError::Execution(format!("search generation build {reason}")))
+        .map_err(|reason| HawdbError::Execution(format!("search generation build {reason}")))
 }
 
 pub(crate) fn write_checksummed(

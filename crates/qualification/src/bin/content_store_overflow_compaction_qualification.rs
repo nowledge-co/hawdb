@@ -8,22 +8,22 @@ mod qualification_value;
 mod relational_database_input;
 
 use content_store_qualification_input::{ReadCaseInput, ResourceLimitsInput, ResourceProfileInput};
-use qualification_input::{read_bounded_json, EvidenceBindingInput, ProductionIdentityInput};
-use relational_database_input::DatabaseInput;
-use serde::Deserialize;
-use skein::RelationalOverflowCompactionConfig;
-use skein_qualification::{
+use hawdb::RelationalOverflowCompactionConfig;
+use hawdb_qualification::{
     run_production_content_store_overflow_compaction_qualification,
     ProductionContentStoreOverflowCompactionLimits,
     ProductionContentStoreOverflowCompactionQualificationConfig,
     PRODUCTION_CONTENT_STORE_OVERFLOW_COMPACTION_QUALIFICATION_PROTOCOL,
 };
+use qualification_input::{read_bounded_json, EvidenceBindingInput, ProductionIdentityInput};
+use relational_database_input::DatabaseInput;
+use serde::Deserialize;
 use std::num::{NonZeroU64, NonZeroUsize};
 use std::path::PathBuf;
 use std::process::ExitCode;
 
 const CONTENT_STORE_OVERFLOW_COMPACTION_PLAN_PROTOCOL: &str =
-    "skein-production-content-store-overflow-compaction-plan-v1";
+    "hawdb-production-content-store-overflow-compaction-plan-v1";
 
 fn main() -> ExitCode {
     match run(std::env::args().skip(1)) {
@@ -55,7 +55,7 @@ fn main() -> ExitCode {
                     "errors": ["qualification_failed"],
                 })
             );
-            eprintln!("skein-content-store-overflow-compaction-qualification: {error}");
+            eprintln!("hawdb-content-store-overflow-compaction-qualification: {error}");
             ExitCode::from(2)
         }
     }
@@ -64,7 +64,7 @@ fn main() -> ExitCode {
 fn run(
     args: impl IntoIterator<Item = String>,
 ) -> Result<
-    Option<skein_qualification::ProductionContentStoreOverflowCompactionQualificationReport>,
+    Option<hawdb_qualification::ProductionContentStoreOverflowCompactionQualificationReport>,
     String,
 > {
     let Some((replica_path, plan_path)) = parse_args(args)? else {
@@ -254,17 +254,17 @@ fn nonzero_u64(name: &str, value: u64) -> Result<NonZeroU64, String> {
 }
 
 fn usage() -> &'static str {
-    "usage: skein-content-store-overflow-compaction-qualification \
-     --replica-path <caller-owned-disposable-skein-directory> --plan-json <path>"
+    "usage: hawdb-content-store-overflow-compaction-qualification \
+     --replica-path <caller-owned-disposable-hawdb-directory> --plan-json <path>"
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use skein::{
+    use hawdb::{
         RelationalIndexMode, StorageResidencyMode, PRODUCTION_QUALIFICATION_POLICY_VERSION,
     };
-    use skein_qualification::{
+    use hawdb_qualification::{
         ContentStoreResourceProfileKind, CONTENT_STORE_512_MIB_CAPABILITY_BYTES,
         CONTENT_STORE_SHARED_HOST_8_GIB_BYTES,
     };
@@ -361,7 +361,7 @@ mod tests {
     }
 
     fn valid_plan_json() -> serde_json::Value {
-        let identity = skein::ProductionQualificationIdentity {
+        let identity = hawdb::ProductionQualificationIdentity {
             source_revision: "revision".to_string(),
             rust_toolchain: "rustc".to_string(),
             target_os: std::env::consts::OS.to_string(),

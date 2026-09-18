@@ -1,6 +1,6 @@
 //! Compatibility facade for executor-owned numeric execution.
 
-pub(super) use skein_executor::numeric::{
+pub(super) use hawdb_executor::numeric::{
     default_morsel_parallelism, supports_parallel_morsel_execution,
 };
 

@@ -1,5 +1,5 @@
 [package]
-name = "skein-compat"
+name = "hawdb-compat"
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
@@ -8,8 +8,8 @@ license.workspace = true
 [dependencies]
 serde = "1"
 serde_json = "1"
-skein-analytics = { path = "../analytics" }
-skein-core = { path = "../core" }
-skein-evidence = { path = "../evidence" }
-skein-executor = { path = "../executor" }
-skein-storage = { path = "../storage" }
+hawdb-analytics = { path = "../analytics" }
+hawdb-core = { path = "../core" }
+hawdb-evidence = { path = "../evidence" }
+hawdb-executor = { path = "../executor" }
+hawdb-storage = { path = "../storage" }

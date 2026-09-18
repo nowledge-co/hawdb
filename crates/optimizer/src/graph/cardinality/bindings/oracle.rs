@@ -1,7 +1,7 @@
 //! Original recursive metadata lookups retained only as a differential oracle.
 //! Copied from main f6a8d0b153a6d557ab1bb63f6f43aa77085e3d92.
 use super::super::super::{OptimizerCatalog, PhysicalPlan};
-use skein_plan::NodeProjectionAccess;
+use hawdb_plan::NodeProjectionAccess;
 
 // The fixture vocabulary includes every variable and property queried by its
 // operators. Resolve counts independently of the production borrowed fold.

@@ -22,7 +22,7 @@ impl Fixture {
             .unwrap()
             .as_nanos();
         let directory = std::env::temp_dir().join(format!(
-            "skein-index-view-owner-{}-{nonce}-{}",
+            "hawdb-index-view-owner-{}-{nonce}-{}",
             std::process::id(),
             NEXT_FIXTURE.fetch_add(1, Ordering::Relaxed)
         ));

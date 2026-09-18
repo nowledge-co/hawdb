@@ -60,10 +60,10 @@ smoke suite; it is not a fuzz campaign.
 cargo test --locked --test wal_group_commit_recovery
 cargo clippy --locked --all-features --bench wal_group_commit \
   --test wal_group_commit_recovery -- -D warnings
-bazel test //:skein_wal_group_commit_recovery_tests \
-  //:skein_linux_ci_wal_group_commit_smoke_test
-bazel test //crates/fuzz:skein_fuzz_tests //crates/fuzz:skein_fuzz_cli_tests \
-  //:skein_linux_ci_fuzz_smoke_test
+bazel test //:hawdb_wal_group_commit_recovery_tests \
+  //:hawdb_linux_ci_wal_group_commit_smoke_test
+bazel test //crates/fuzz:hawdb_fuzz_tests //crates/fuzz:hawdb_fuzz_cli_tests \
+  //:hawdb_linux_ci_fuzz_smoke_test
 ```
 
 Issue #442 remains an intermittent-timeout investigation until repeated

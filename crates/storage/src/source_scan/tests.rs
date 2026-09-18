@@ -97,7 +97,7 @@ fn source_candidate_request_keeps_resource_bounds() {
 #[test]
 fn historical_decoder_tolerance_is_not_tightened() {
     let decoded = decode_payload(&reference::envelope(
-        "row\t1\t\n\nSKEIN_SOURCE_SCAN_SEGMENT_V1\n",
+        "row\t1\t\n\nHAWDB_SOURCE_SCAN_SEGMENT_V1\n",
     ))
     .unwrap();
     assert_eq!(
@@ -163,7 +163,7 @@ fn campaign(seeds: u64, cases_per_seed: usize) {
         Value::String("1969-12-31T23:59:59.999Z".into()),
         Value::String("not-a-date".into()),
         Value::Binary(vec![0, 0xff, 0x80]),
-        Value::Uuid(skein_core::Uuid::from_u128(7)),
+        Value::Uuid(hawdb_core::Uuid::from_u128(7)),
         Value::List(vec![
             Value::Null,
             Value::Int(-1),
@@ -281,7 +281,7 @@ fn unpack(bytes: &[u8]) -> String {
     let boundary = bytes.windows(2).position(|pair| pair == b"\n\n").unwrap();
     let header = std::str::from_utf8(&bytes[..boundary]).unwrap();
     let mut lines = header.lines();
-    assert_eq!(lines.next(), Some("SKEIN_COMPRESSED_V1"));
+    assert_eq!(lines.next(), Some("HAWDB_COMPRESSED_V1"));
     let fields = lines
         .map(|line| line.split_once('\t').unwrap())
         .collect::<BTreeMap<_, _>>();
@@ -386,11 +386,11 @@ fn check_projection(nodes: &[NodeRecord], label: Option<LabelId>, epoch: u64, pe
         );
         assert!(!directory
             .path()
-            .join("source_scan_segments.skein.tmp")
+            .join("source_scan_segments.hawdb.tmp")
             .exists());
         assert!(!directory
             .path()
-            .join("source_scan_segment_payloads.skein.tmp")
+            .join("source_scan_segment_payloads.hawdb.tmp")
             .exists());
     }
 }
@@ -519,7 +519,7 @@ fn write_reference(directory: &Path, body: &str, payload: &[u8]) -> u64 {
 
 fn storage_error<T: std::fmt::Debug>(result: Result<T>) -> String {
     match result {
-        Err(SkeinError::Storage(message)) => message,
+        Err(HawdbError::Storage(message)) => message,
         other => panic!("expected storage error, got {other:?}"),
     }
 }
@@ -528,10 +528,10 @@ fn storage_error<T: std::fmt::Debug>(result: Result<T>) -> String {
 fn missing_sidecar_and_stale_epoch_preserve_fallback_and_validation_order() {
     let directory = TestDir::new();
     let path = directory.path();
-    fs::write(path.join("source_scan_segments.skein.tmp"), b"unfinished").unwrap();
+    fs::write(path.join("source_scan_segments.hawdb.tmp"), b"unfinished").unwrap();
     assert!(load(path, 7, 0).unwrap().is_none());
     let (descriptor, checksum) =
-        reference::descriptor_file("SKEIN_SOURCE_SCAN_SEGMENTS_V1\ngraph_epoch\t7\n");
+        reference::descriptor_file("HAWDB_SOURCE_SCAN_SEGMENTS_V1\ngraph_epoch\t7\n");
     fs::write(path.join(SOURCE_SCAN_DESCRIPTOR_FILE), descriptor).unwrap();
     // A stale epoch must not try to open an absent payload; checksum admission still precedes it.
     assert!(load(path, 8, checksum).unwrap().is_none());
@@ -599,15 +599,15 @@ fn descriptor_rejects_malformed_fields_with_stable_errors() {
 fn payload_preserves_order_and_rejects_malformed_rows() {
     for (raw, expected) in [
         (
-            "SKEIN_SOURCE_SCAN_SEGMENT_V1\nrow\t2\t\nrow\t1\t\n",
+            "HAWDB_SOURCE_SCAN_SEGMENT_V1\nrow\t2\t\nrow\t1\t\n",
             "source scan segment rows are not strictly ordered",
         ),
         (
-            "SKEIN_SOURCE_SCAN_SEGMENT_V1\nrow\t1\t\nrow\t1\t\n",
+            "HAWDB_SOURCE_SCAN_SEGMENT_V1\nrow\t1\t\nrow\t1\t\n",
             "source scan segment rows are not strictly ordered",
         ),
         (
-            "SKEIN_SOURCE_SCAN_SEGMENT_V1\nunknown\t1\n",
+            "HAWDB_SOURCE_SCAN_SEGMENT_V1\nunknown\t1\n",
             "invalid source scan segment line: unknown\t1",
         ),
     ] {
@@ -636,7 +636,7 @@ fn payload_preserves_order_and_rejects_malformed_rows() {
 fn load_validates_artifact_ranges_checksums_rows_and_manifest_order() {
     let directory = TestDir::new();
     let path = directory.path();
-    let raw = "SKEIN_SOURCE_SCAN_SEGMENT_V1\nrow\t1\t\n";
+    let raw = "HAWDB_SOURCE_SCAN_SEGMENT_V1\nrow\t1\t\n";
     let payload = reference::envelope(raw);
     let len = payload.len() as u64;
     let crc = reference::crc(&payload);
@@ -696,18 +696,18 @@ fn load_validates_artifact_ranges_checksums_rows_and_manifest_order() {
             "scan segment manifest expected id 0, got 1",
         ),
     ] {
-        let body = format!("SKEIN_SOURCE_SCAN_SEGMENTS_V1\ngraph_epoch\t7\nsegment\t{id}\t{artifact}\t{offset}\t{length}\t{checksum}\t{count}\n");
+        let body = format!("HAWDB_SOURCE_SCAN_SEGMENTS_V1\ngraph_epoch\t7\nsegment\t{id}\t{artifact}\t{offset}\t{length}\t{checksum}\t{count}\n");
         let binding = write_reference(path, &body, &payload);
         assert_eq!(storage_error(load(path, 7, binding)), expected);
     }
-    let body = format!("SKEIN_SOURCE_SCAN_SEGMENTS_V1\ngraph_epoch\t7\nsegment\t0\t1\t0\t{len}\t{crc}\t1\nsegment\t1\t1\t0\t{len}\t{crc}\t1\n");
+    let body = format!("HAWDB_SOURCE_SCAN_SEGMENTS_V1\ngraph_epoch\t7\nsegment\t0\t1\t0\t{len}\t{crc}\t1\nsegment\t1\t1\t0\t{len}\t{crc}\t1\n");
     let binding = write_reference(path, &body, &payload);
     assert_eq!(
         storage_error(load(path, 7, binding)),
         "scan segment manifest has overlapping artifact 1"
     );
     let body = format!(
-        "SKEIN_SOURCE_SCAN_SEGMENTS_V1\ngraph_epoch\t7\nsegment\t0\t1\t0\t{len}\t{crc}\t1\n"
+        "HAWDB_SOURCE_SCAN_SEGMENTS_V1\ngraph_epoch\t7\nsegment\t0\t1\t0\t{len}\t{crc}\t1\n"
     );
     let binding = write_reference(path, &body, &payload);
     assert!(load(path, 7, binding).unwrap().is_some());
@@ -776,7 +776,7 @@ impl TestDir {
             .as_nanos();
         let serial = NEXT.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
         let path = std::env::temp_dir().join(format!(
-            "skein-source-scan-{}-{nonce}-{serial}",
+            "hawdb-source-scan-{}-{nonce}-{serial}",
             std::process::id()
         ));
         fs::create_dir(&path).unwrap();

@@ -8,7 +8,7 @@ const SAMPLES: usize = 11;
 fn main() {
     let cases = cases();
     for case in &cases {
-        skein_cypher::parse(case.query)
+        hawdb_cypher::parse(case.query)
             .unwrap_or_else(|error| panic!("{} benchmark query must parse: {error}", case.name));
     }
 
@@ -22,7 +22,7 @@ fn benchmark_case(case: &Case) -> serde_json::Value {
         let started = Instant::now();
         for _ in 0..ITERATIONS {
             black_box(
-                skein_cypher::parse(black_box(case.query))
+                hawdb_cypher::parse(black_box(case.query))
                     .unwrap_or_else(|error| panic!("{} parse failed: {error}", case.name)),
             );
         }

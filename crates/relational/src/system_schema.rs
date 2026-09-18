@@ -1,18 +1,18 @@
-use skein_core::{Result, SkeinError, Value};
-use skein_executor::QueryRowRef;
-use skein_integrity::IntegrityHasher;
-use skein_sql::SqlStatement;
-use skein_storage::{
+use hawdb_core::{HawdbError, Result, Value};
+use hawdb_executor::QueryRowRef;
+use hawdb_integrity::IntegrityHasher;
+use hawdb_sql::SqlStatement;
+use hawdb_storage::{
     RelationalMutationLimits, RelationalOverflowConfig, RelationalState, RelationalTransaction,
     RelationalValue, RelationalWrite,
 };
 
 #[doc(hidden)]
-pub const ENGINE_SYSTEM_SCHEMA_OWNER: &str = "skein.engine";
+pub const ENGINE_SYSTEM_SCHEMA_OWNER: &str = "hawdb.engine";
 #[doc(hidden)]
-pub const ENGINE_SYSTEM_SCHEMA_REGISTRY_TABLE: &str = "skein_schema_migrations";
+pub const ENGINE_SYSTEM_SCHEMA_REGISTRY_TABLE: &str = "hawdb_schema_migrations";
 #[doc(hidden)]
-pub const ENGINE_SYSTEM_SCHEMA_REGISTRY_TABLE_DDL: &str = "CREATE TABLE skein_schema_migrations (\
+pub const ENGINE_SYSTEM_SCHEMA_REGISTRY_TABLE_DDL: &str = "CREATE TABLE hawdb_schema_migrations (\
     migration_id TEXT PRIMARY KEY, \
     owner TEXT NOT NULL, \
     version BIGINT NOT NULL, \
@@ -20,7 +20,7 @@ pub const ENGINE_SYSTEM_SCHEMA_REGISTRY_TABLE_DDL: &str = "CREATE TABLE skein_sc
     checksum TEXT NOT NULL, \
     UNIQUE (owner, version))";
 #[doc(hidden)]
-pub const ENGINE_SYSTEM_SCHEMA_REGISTRY_INSERT_SQL: &str = "INSERT INTO skein_schema_migrations \
+pub const ENGINE_SYSTEM_SCHEMA_REGISTRY_INSERT_SQL: &str = "INSERT INTO hawdb_schema_migrations \
     (migration_id, owner, version, name, checksum) VALUES ($1, $2, $3, $4, $5)";
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -57,7 +57,7 @@ impl SystemSchemaMigration {
 
     pub fn checksum(&self, owner: &str) -> String {
         let mut hasher = IntegrityHasher::new();
-        hash_component(&mut hasher, b"skein-system-schema-migration-v1");
+        hash_component(&mut hasher, b"hawdb-system-schema-migration-v1");
         hash_component(&mut hasher, owner.as_bytes());
         hash_component(&mut hasher, &self.version.to_le_bytes());
         hash_component(&mut hasher, self.name.as_bytes());
@@ -136,7 +136,7 @@ impl AppliedSystemSchemaMigration {
     }
 }
 
-/// Returns the append-only registry reserved for Skein's own relational
+/// Returns the append-only registry reserved for Hawdb's own relational
 /// bootstrap. Hosts may use separate [`SystemSchemaRegistry`] owners.
 #[doc(hidden)]
 pub fn engine_system_schema_registry() -> SystemSchemaRegistry {
@@ -159,13 +159,13 @@ pub fn validate_system_schema_registry(registry: &SystemSchemaRegistry) -> Resul
             .bytes()
             .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'.' | b'_' | b'-'))
     {
-        return Err(SkeinError::Semantic(
+        return Err(HawdbError::Semantic(
             "system schema owner must contain 1-128 ASCII letters, digits, '.', '_' or '-'"
                 .to_string(),
         ));
     }
     if registry.migrations.is_empty() {
-        return Err(SkeinError::Semantic(format!(
+        return Err(HawdbError::Semantic(format!(
             "system schema {} requires at least one migration",
             registry.owner
         )));
@@ -173,13 +173,13 @@ pub fn validate_system_schema_registry(registry: &SystemSchemaRegistry) -> Resul
     for (index, migration) in registry.migrations.iter().enumerate() {
         let expected = u64::try_from(index).unwrap_or(u64::MAX).saturating_add(1);
         if migration.version != expected {
-            return Err(SkeinError::Semantic(format!(
+            return Err(HawdbError::Semantic(format!(
                 "system schema {} migrations must be contiguous from version 1; expected {}, got {}",
                 registry.owner, expected, migration.version
             )));
         }
         if migration.name.is_empty() || migration.name.len() > 128 {
-            return Err(SkeinError::Semantic(format!(
+            return Err(HawdbError::Semantic(format!(
                 "system schema {} migration {} requires a 1-128 byte name",
                 registry.owner, migration.version
             )));
@@ -190,13 +190,13 @@ pub fn validate_system_schema_registry(registry: &SystemSchemaRegistry) -> Resul
                 .iter()
                 .any(|statement| statement.trim().is_empty())
         {
-            return Err(SkeinError::Semantic(format!(
+            return Err(HawdbError::Semantic(format!(
                 "system schema {} migration {} requires non-empty SQL statements",
                 registry.owner, migration.version
             )));
         }
         i64::try_from(migration.version).map_err(|_| {
-            SkeinError::Semantic(format!(
+            HawdbError::Semantic(format!(
                 "system schema {} migration version {} exceeds BIGINT",
                 registry.owner, migration.version
             ))
@@ -205,7 +205,7 @@ pub fn validate_system_schema_registry(registry: &SystemSchemaRegistry) -> Resul
     Ok(())
 }
 
-/// Identifies statements that may mutate Skein's internal migration registry.
+/// Identifies statements that may mutate Hawdb's internal migration registry.
 ///
 /// The embedded facade owns authorization and transaction handling; the
 /// relational owner defines which SQL AST shapes target the registry.
@@ -229,7 +229,7 @@ pub fn statement_writes_system_schema_registry(statement: &SqlStatement) -> bool
     })
 }
 
-/// Validates the durable shape of Skein's own schema migration registry.
+/// Validates the durable shape of Hawdb's own schema migration registry.
 #[doc(hidden)]
 pub fn validate_engine_system_schema_registry_table(state: &RelationalState) -> Result<()> {
     let expected = crate::compile_relational_statement_sql(
@@ -238,17 +238,17 @@ pub fn validate_engine_system_schema_registry_table(state: &RelationalState) -> 
         &RelationalState::default(),
     )?;
     let Some(RelationalWrite::CreateTable(expected)) = expected.writes.into_iter().next() else {
-        return Err(SkeinError::Execution(
+        return Err(HawdbError::Execution(
             "system schema registry DDL did not compile to CREATE TABLE".to_string(),
         ));
     };
     let actual = state
         .table_schema(ENGINE_SYSTEM_SCHEMA_REGISTRY_TABLE)
         .ok_or_else(|| {
-            SkeinError::Storage("system schema registry table disappeared during open".to_string())
+            HawdbError::Storage("system schema registry table disappeared during open".to_string())
         })?;
     if actual != &expected {
-        return Err(SkeinError::Storage(
+        return Err(HawdbError::Storage(
             "system schema registry table does not match the engine definition".to_string(),
         ));
     }
@@ -282,12 +282,12 @@ pub fn decode_applied_system_schema_migration_query_row(
 ) -> Result<AppliedSystemSchemaMigration> {
     let version = match row.get("version") {
         Some(Value::Int(version)) => u64::try_from(*version).map_err(|_| {
-            SkeinError::Storage(format!(
+            HawdbError::Storage(format!(
                 "system schema {owner} contains a negative migration version"
             ))
         })?,
         _ => {
-            return Err(SkeinError::Storage(format!(
+            return Err(HawdbError::Storage(format!(
                 "system schema {owner} contains an invalid migration version"
             )))
         }
@@ -295,7 +295,7 @@ pub fn decode_applied_system_schema_migration_query_row(
     let name = match row.get("name") {
         Some(Value::String(name)) => name.clone(),
         _ => {
-            return Err(SkeinError::Storage(format!(
+            return Err(HawdbError::Storage(format!(
                 "system schema {owner} contains an invalid migration name"
             )))
         }
@@ -303,7 +303,7 @@ pub fn decode_applied_system_schema_migration_query_row(
     let checksum = match row.get("checksum") {
         Some(Value::String(checksum)) => checksum.clone(),
         _ => {
-            return Err(SkeinError::Storage(format!(
+            return Err(HawdbError::Storage(format!(
                 "system schema {owner} contains an invalid migration checksum"
             )))
         }
@@ -326,12 +326,12 @@ pub fn validate_applied_system_schema_migrations(
         && registry_table_present
         && applied.is_empty()
     {
-        return Err(SkeinError::Storage(
+        return Err(HawdbError::Storage(
             "system schema registry exists without its engine migration record".to_string(),
         ));
     }
     if applied.len() > registry.migrations().len() {
-        return Err(SkeinError::Storage(format!(
+        return Err(HawdbError::Storage(format!(
             "system schema {} is at future version {}, binary supports {}",
             registry.owner(),
             applied
@@ -347,7 +347,7 @@ pub fn validate_applied_system_schema_migrations(
             || actual.name != expected.name()
             || actual.checksum != expected_checksum
         {
-            return Err(SkeinError::Storage(format!(
+            return Err(HawdbError::Storage(format!(
                 "system schema {} migration {} checksum or identity drifted",
                 registry.owner(),
                 actual.version
@@ -357,7 +357,7 @@ pub fn validate_applied_system_schema_migrations(
     Ok(())
 }
 
-/// Validates the state expected by a Skein Lightning relational export.
+/// Validates the state expected by a Hawdb Lightning relational export.
 #[doc(hidden)]
 pub fn validate_engine_system_schema_state(state: &RelationalState) -> Result<()> {
     validate_engine_system_schema_registry_table(state)?;
@@ -366,13 +366,13 @@ pub fn validate_engine_system_schema_state(state: &RelationalState) -> Result<()
     validate_applied_system_schema_migrations(&registry, &applied, true)
 }
 
-/// Creates the Skein registry in a materialized relational snapshot when it
+/// Creates the Hawdb registry in a materialized relational snapshot when it
 /// is absent, or validates the exact existing registry when it is present.
 #[doc(hidden)]
 pub fn state_with_engine_system_schema(state: &RelationalState) -> Result<RelationalState> {
     state
-        .require_materialized_rows("Skein Lightning relational export")
-        .map_err(|error| SkeinError::Storage(error.to_string()))?;
+        .require_materialized_rows("Hawdb Lightning relational export")
+        .map_err(|error| HawdbError::Storage(error.to_string()))?;
     if state
         .table_schema(ENGINE_SYSTEM_SCHEMA_REGISTRY_TABLE)
         .is_some()
@@ -394,7 +394,7 @@ pub fn state_with_engine_system_schema(state: &RelationalState) -> Result<Relati
             RelationalMutationLimits::default(),
             RelationalOverflowConfig::default(),
         )
-        .map_err(|error| SkeinError::Storage(error.to_string()))?;
+        .map_err(|error| HawdbError::Storage(error.to_string()))?;
     let insert = crate::compile_relational_statement_sql(
         ENGINE_SYSTEM_SCHEMA_REGISTRY_INSERT_SQL,
         &[
@@ -418,7 +418,7 @@ pub fn state_with_engine_system_schema(state: &RelationalState) -> Result<Relati
             RelationalMutationLimits::default(),
             RelationalOverflowConfig::default(),
         )
-        .map_err(|error| SkeinError::Storage(error.to_string()))
+        .map_err(|error| HawdbError::Storage(error.to_string()))
 }
 
 /// Returns whether the state consists only of the engine registry bootstrap.
@@ -438,16 +438,16 @@ pub fn is_engine_system_schema_bootstrap(state: &RelationalState) -> Result<bool
 
 fn decode_applied_system_schema_migration_row(
     owner: &str,
-    row: &skein_storage::RelationalRow,
+    row: &hawdb_storage::RelationalRow,
 ) -> Result<AppliedSystemSchemaMigration> {
     let version = match row.values().get(2) {
         Some(RelationalValue::BigInt(version)) => u64::try_from(*version).map_err(|_| {
-            SkeinError::Storage(format!(
+            HawdbError::Storage(format!(
                 "system schema {owner} contains a negative migration version"
             ))
         })?,
         _ => {
-            return Err(SkeinError::Storage(format!(
+            return Err(HawdbError::Storage(format!(
                 "system schema {owner} contains an invalid migration version"
             )))
         }
@@ -455,7 +455,7 @@ fn decode_applied_system_schema_migration_row(
     let name = match row.values().get(3) {
         Some(RelationalValue::Text(name)) => name.clone(),
         _ => {
-            return Err(SkeinError::Storage(format!(
+            return Err(HawdbError::Storage(format!(
                 "system schema {owner} contains an invalid migration name"
             )))
         }
@@ -463,7 +463,7 @@ fn decode_applied_system_schema_migration_row(
     let checksum = match row.values().get(4) {
         Some(RelationalValue::Text(checksum)) => checksum.clone(),
         _ => {
-            return Err(SkeinError::Storage(format!(
+            return Err(HawdbError::Storage(format!(
                 "system schema {owner} contains an invalid migration checksum"
             )))
         }
@@ -489,7 +489,7 @@ mod tests {
         validate_system_schema_registry, SystemSchemaMigration, SystemSchemaRegistry,
         ENGINE_SYSTEM_SCHEMA_OWNER,
     };
-    use skein_storage::RelationalState;
+    use hawdb_storage::RelationalState;
 
     #[test]
     fn migration_checksum_binds_owner_order_and_statement_boundaries() {
@@ -512,7 +512,7 @@ mod tests {
 
         assert_ne!(
             migration.checksum("nowledge.content"),
-            migration.checksum("skein.engine")
+            migration.checksum("hawdb.engine")
         );
         assert_ne!(
             migration.checksum("nowledge.content"),
@@ -568,19 +568,19 @@ mod tests {
 
     #[test]
     fn registry_write_guard_is_limited_to_public_mutations() {
-        let insert = skein_sql::parse_postgres_sql(
-            "INSERT INTO skein_schema_migrations (version, name, checksum) VALUES (1, 'init', 'x')",
+        let insert = hawdb_sql::parse_postgres_sql(
+            "INSERT INTO hawdb_schema_migrations (version, name, checksum) VALUES (1, 'init', 'x')",
         )
         .expect("parse registry insert");
-        let public_create = skein_sql::parse_postgres_sql(
-            "CREATE TABLE public.skein_schema_migrations (version BIGINT)",
+        let public_create = hawdb_sql::parse_postgres_sql(
+            "CREATE TABLE public.hawdb_schema_migrations (version BIGINT)",
         )
         .expect("parse public registry create");
-        let other_schema = skein_sql::parse_postgres_sql(
-            "INSERT INTO archive.skein_schema_migrations (version) VALUES (1)",
+        let other_schema = hawdb_sql::parse_postgres_sql(
+            "INSERT INTO archive.hawdb_schema_migrations (version) VALUES (1)",
         )
         .expect("parse other-schema insert");
-        let read = skein_sql::parse_postgres_sql("SELECT version FROM skein_schema_migrations")
+        let read = hawdb_sql::parse_postgres_sql("SELECT version FROM hawdb_schema_migrations")
             .expect("parse registry read");
 
         assert!(statement_writes_system_schema_registry(&insert));

@@ -1,8 +1,8 @@
 use super::*;
 use crate::lexical_projection::{LexicalProjectionConfig, LexicalProjectionWriter};
 use crate::{SearchDocument, SearchIndex};
-use skein_core::RuntimeMemoryReservation;
-use skein_executor::QueryMemoryLedger;
+use hawdb_core::RuntimeMemoryReservation;
+use hawdb_executor::QueryMemoryLedger;
 use std::cell::RefCell;
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
@@ -89,7 +89,7 @@ impl Directory {
     fn new() -> Self {
         static NEXT: AtomicU64 = AtomicU64::new(0);
         let path = std::env::temp_dir().join(format!(
-            "skein-analyzer-entrypoints-{}-{}",
+            "hawdb-analyzer-entrypoints-{}-{}",
             std::process::id(),
             NEXT.fetch_add(1, Ordering::Relaxed)
         ));

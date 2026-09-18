@@ -9,7 +9,7 @@ use crate::{
     decode_relational_primary_key, encode_relational_primary_key, RelationalHydrationBudget,
     RelationalKey, RelationalOverflowConfig, RelationalRow, RelationalScalarType, RelationalValue,
 };
-use skein_integrity::{integrity_digest, IntegrityHasher, Sha256Digest, SHA256_BYTES};
+use hawdb_integrity::{integrity_digest, IntegrityHasher, Sha256Digest, SHA256_BYTES};
 use std::collections::{BTreeMap, VecDeque};
 use std::fs::File;
 use std::io::{Cursor, Read, Seek, SeekFrom};

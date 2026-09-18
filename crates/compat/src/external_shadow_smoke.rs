@@ -6,7 +6,7 @@ use crate::{
 };
 #[cfg(test)]
 use crate::{CompatibilityCheckReport, CompatibilityShadowCheckReport};
-use skein_core::{Result, SkeinError, Value};
+use hawdb_core::{HawdbError, Result, Value};
 use std::collections::BTreeMap;
 
 #[doc(hidden)]
@@ -85,7 +85,7 @@ pub fn external_shadow_adapter_smoke_report_json(
         && matched_checks == shadow_check_count
         && primary_only_checks == 0;
     let mut json = serde_json::json!({
-        "protocol": "skein-external-shadow-adapter-smoke",
+        "protocol": "hawdb-external-shadow-adapter-smoke",
         "ready": {
             "protocol_version": ready.protocol_version,
             "engine_kind": ready.engine_kind,
@@ -101,7 +101,7 @@ pub fn external_shadow_adapter_smoke_report_json(
         "primary_only_reasons": primary_only_reasons,
         "dual_engine_evidence": {
             "ready": dual_engine_ready,
-            "primary_engine": "skein",
+            "primary_engine": "hawdb",
             "shadow_engine": report.shadow_engine,
             "primary_check_count": primary_check_count,
             "shadow_check_count": shadow_check_count,
@@ -135,13 +135,13 @@ pub fn enforce_external_shadow_adapter_smoke_requirements(
 ) -> Result<()> {
     let missing_capabilities = external_shadow_ready_missing_capabilities(Some(ready));
     if !missing_capabilities.is_empty() {
-        return Err(SkeinError::Execution(format!(
+        return Err(HawdbError::Execution(format!(
             "external shadow adapter smoke missing required capabilities: {}",
             missing_capabilities.join(", ")
         )));
     }
     if require_previous_wrapper && ready.engine_kind.as_deref() != Some("previous_wrapper") {
-        return Err(SkeinError::Execution(
+        return Err(HawdbError::Execution(
             "external shadow adapter smoke requires engine_kind 'previous_wrapper'".to_string(),
         ));
     }
@@ -150,7 +150,7 @@ pub fn enforce_external_shadow_adapter_smoke_requirements(
         .iter()
         .any(|check| check.status == CompatibilityShadowStatus::Matched)
     {
-        return Err(SkeinError::Execution(
+        return Err(HawdbError::Execution(
             "external shadow adapter smoke did not match any shadow checks".to_string(),
         ));
     }
@@ -161,7 +161,7 @@ pub fn enforce_external_shadow_adapter_smoke_requirements(
         .map(|check| check.name.as_str())
         .collect::<Vec<_>>();
     if require_previous_wrapper && !primary_only_checks.is_empty() {
-        return Err(SkeinError::Execution(format!(
+        return Err(HawdbError::Execution(format!(
             "external shadow adapter smoke requires all checks to run on previous-wrapper; primary-only checks: {}",
             primary_only_checks.join(", ")
         )));
@@ -171,7 +171,7 @@ pub fn enforce_external_shadow_adapter_smoke_requirements(
         .iter()
         .any(|check| check.name == "single memory projection")
     {
-        return Err(SkeinError::Execution(
+        return Err(HawdbError::Execution(
             "external shadow adapter smoke did not exercise project_graph".to_string(),
         ));
     }
@@ -190,8 +190,8 @@ pub fn should_run_shadow_ready(
 #[doc(hidden)]
 pub fn is_self_shadow_command(shadow_name: &str, program: &str, program_args: &[String]) -> bool {
     shadow_name == "self"
-        || program.ends_with("skein-shadow-self")
-        || program_args.iter().any(|arg| arg == "skein-shadow-self")
+        || program.ends_with("hawdb-shadow-self")
+        || program_args.iter().any(|arg| arg == "hawdb-shadow-self")
 }
 
 #[cfg(test)]
@@ -203,7 +203,7 @@ mod tests {
     fn detects_self_shadow_commands() {
         assert!(is_self_shadow_command(
             "oracle",
-            "target/debug/skein-shadow-self",
+            "target/debug/hawdb-shadow-self",
             &[]
         ));
         assert!(is_self_shadow_command(
@@ -213,7 +213,7 @@ mod tests {
                 "run".to_string(),
                 "--quiet".to_string(),
                 "--bin".to_string(),
-                "skein-shadow-self".to_string(),
+                "hawdb-shadow-self".to_string(),
                 "--".to_string(),
             ],
         ));
@@ -307,7 +307,7 @@ mod tests {
         let json = external_shadow_adapter_smoke_report_json(&ready, &report, 3, None);
         assert_eq!(json["adapter_smoke_ready"], false);
         assert_eq!(json["dual_engine_evidence"]["ready"], false);
-        assert_eq!(json["dual_engine_evidence"]["primary_engine"], "skein");
+        assert_eq!(json["dual_engine_evidence"]["primary_engine"], "hawdb");
         assert_eq!(
             json["dual_engine_evidence"]["shadow_engine"],
             "legacy-wrapper"

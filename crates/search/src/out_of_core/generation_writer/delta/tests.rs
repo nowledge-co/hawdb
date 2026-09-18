@@ -1,6 +1,6 @@
 use super::*;
 use crate::{SearchProjectionKind, SearchProjectionRow};
-use skein_core::RuntimeMemoryReservation;
+use hawdb_core::RuntimeMemoryReservation;
 use std::collections::BTreeMap;
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicUsize, Ordering};
@@ -11,7 +11,7 @@ impl Fixture {
     fn new() -> Self {
         static SEQUENCE: AtomicUsize = AtomicUsize::new(0);
         let path = std::env::temp_dir().join(format!(
-            "skein-delta-context-{}-{}",
+            "hawdb-delta-context-{}-{}",
             std::process::id(),
             SEQUENCE.fetch_add(1, Ordering::Relaxed)
         ));
@@ -213,7 +213,7 @@ fn delta_finish_rechecks_consumer_ownership_before_publication() {
     use crate::out_of_core::{SearchProjectionPublishLease, OUT_OF_CORE_MANIFEST_FILE};
     use crate::SEARCH_SNAPSHOT_FILE;
 
-    let header = "SKEIN_SEARCH_PROJECTION_V1\nprojection_consumer_binding\towner\n";
+    let header = "HAWDB_SEARCH_PROJECTION_V1\nprojection_consumer_binding\towner\n";
     for with_context in [false, true] {
         for binding in [
             None,

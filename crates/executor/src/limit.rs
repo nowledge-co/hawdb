@@ -1,4 +1,4 @@
-use skein_core::{Result, SkeinError};
+use hawdb_core::{HawdbError, Result};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct ExecutionLimit {
@@ -15,7 +15,7 @@ impl ExecutionLimit {
             return Ok(Self::unlimited());
         };
         let output_rows = max_rows.checked_add(1).ok_or_else(|| {
-            SkeinError::Execution("read query row limit is too large".to_string())
+            HawdbError::Execution("read query row limit is too large".to_string())
         })?;
         Ok(Self {
             output_rows: Some(output_rows),

@@ -2,10 +2,10 @@ use super::production_graph::{
     run_production_graph_storage_qualification, ProductionGraphQualificationError,
     ProductionGraphStorageQualificationConfig, ProductionGraphStorageQualificationReport,
 };
-use skein::PersistentGraphIndexClass;
+use hawdb::PersistentGraphIndexClass;
 
 pub const PRODUCTION_GRAPH_INDEX_QUALIFICATION_MATRIX_PROTOCOL: &str =
-    "skein-production-graph-index-qualification-matrix-v1";
+    "hawdb-production-graph-index-qualification-matrix-v1";
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ProductionGraphIndexQualificationMatrixConfig {
@@ -161,7 +161,7 @@ pub(crate) fn validate_persistent_graph_index_matrix_classes(
 mod tests {
     use super::*;
     use crate::production_graph::PersistentGraphIndexProductionRequirement;
-    use skein::{
+    use hawdb::{
         DatabaseConfig, NowledgeGraphStatement, NowledgeMemGraphMode, NowledgeMemOpenOptions,
         ProductionEvidenceBinding, ProductionQualificationIdentity, RuntimeGovernorConfig,
         StorageResidencyMode, StorageResourceProfileLimits,
@@ -270,7 +270,7 @@ mod tests {
 
     #[test]
     fn production_index_matrix_binds_one_replica_runtime_and_generation() {
-        let path = std::env::temp_dir().join("skein-production-index-matrix-validation");
+        let path = std::env::temp_dir().join("hawdb-production-index-matrix-validation");
         let cases = PersistentGraphIndexClass::ALL
             .into_iter()
             .map(|class| matrix_case_config(&path, class))

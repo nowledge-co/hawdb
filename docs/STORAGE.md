@@ -7,59 +7,59 @@ not an LSM tree and it does not depend on RocksDB or another storage engine.
 
 Files:
 
-- `manifest.skein`: the only published generation pointer. It records the
+- `manifest.hawdb`: the only published generation pointer. It records the
   checkpoint generation, checkpoint commit epoch, canonical artifact metadata,
   WAL generation, durable replay LSN, next LSN, reader watermark, and optional
   Source sidecar publication.
-- `checkpoint.<generation>.skein`: catalog, schema, projection definitions,
+- `checkpoint.<generation>.hawdb`: catalog, schema, projection definitions,
   stable operational metadata, and optimizer statistics for one generation,
   written through the default zstd compression envelope. Canonical graph rows
   are delegated to the generation's canonical artifact.
-- `canonical.<generation>.skein` and
-  `canonical.<generation>.manifest.skein`, plus
-  `canonical-segment-descriptors-<generation>.pages.skein` and
-  `canonical-segment-descriptors-<generation>.root.skein`: immutable ordered
+- `canonical.<generation>.hawdb` and
+  `canonical.<generation>.manifest.hawdb`, plus
+  `canonical-segment-descriptors-<generation>.pages.hawdb` and
+  `canonical-segment-descriptors-<generation>.root.hawdb`: immutable ordered
   node and relationship segments with per-segment digests, record bounds,
   adaptive endpoint Bloom filters, exact-property Bloom summaries, and the
   artifact's property key table. The compact manifest retains only aggregate
   counts and the exact descriptor root. Point, scan, and iterator reads demand
   descriptors without making startup residency depend on segment count.
-- `adjacency.<generation>.skein`,
-  `adjacency-descriptors-<generation>.pages.skein`, and
-  `adjacency-descriptors-<generation>.root.skein`: rebuildable,
+- `adjacency.<generation>.hawdb`,
+  `adjacency-descriptors-<generation>.pages.hawdb`, and
+  `adjacency-descriptors-<generation>.root.hawdb`: rebuildable,
   generation-bound canonical adjacency blocks plus the demand-paged descriptor
   tree used by out-of-core traversal. The outer manifest binds the exact data
   and descriptor-root identities; there is no separate adjacency manifest.
-- `property-index.<generation>.skein`,
-  `property-index.<generation>.manifest.skein`,
-  `property-index-descriptors-<generation>.pages.skein`, and
-  `property-index-descriptors-<generation>.root.skein`: rebuildable,
+- `property-index.<generation>.hawdb`,
+  `property-index.<generation>.manifest.hawdb`,
+  `property-index-descriptors-<generation>.pages.hawdb`, and
+  `property-index-descriptors-<generation>.root.hawdb`: rebuildable,
   generation-bound persistent property projection. Its compact manifest binds
   the exact descriptor root instead of retaining one descriptor per data
   block. Production reads demand-traverse the ordered descriptor prefix and
   fetch only selected data blocks through the shared bounded cache. The
   property spill artifact remains part of canonical checkpoint input and is
   not eligible for derived repair.
-- `properties.<generation>.skein`,
-  `properties.<generation>.manifest.skein`,
-  `property-spill-descriptors-<generation>.pages.skein`, and
-  `property-spill-descriptors-<generation>.root.skein`: canonical large graph
+- `properties.<generation>.hawdb`,
+  `properties.<generation>.manifest.hawdb`,
+  `property-spill-descriptors-<generation>.pages.hawdb`, and
+  `property-spill-descriptors-<generation>.root.hawdb`: canonical large graph
   property values plus a same-generation demand-paged descriptor tree. The data
   artifact becomes durable before descriptor pages and the compact root. The
   compact manifest retains aggregate counts only; point hydration seeks one
   descriptor and reads one selected block without making startup metadata
   resident in proportion to the spill block count.
-- `wal.<generation>.skein`: append-only committed mutation records beginning at
+- `wal.<generation>.hawdb`: append-only committed mutation records beginning at
   the replay LSN published by the manifest. The only v1 encoding uses binary
   fragment framing with the `SKWALB01` file header. Text WAL bytes and unknown
   headers fail closed rather than entering a compatibility or upgrade path.
-- `projected_graphs.skein`: checksummed, checkpoint-generated CSR/CSC
+- `projected_graphs.hawdb`: checksummed, checkpoint-generated CSR/CSC
   projection artifacts derived from persisted projected graph definitions,
   written through the default zstd compression envelope.
-- `stable_ids.skein`: small checksummed selector for the independently
+- `stable_ids.hawdb`: small checksummed selector for the independently
   generated stable-ID export/import mapping used by records whose `id`
   property is missing or non-unique. It binds one immutable
-  `stable_ids.<generation>.skein` artifact. Only the selected generation header
+  `stable_ids.<generation>.hawdb` artifact. Only the selected generation header
   is opened eagerly; fixed-size, independently checksummed mapping pages remain
   cold and are demand-read through the shared segment cache. Old generations
   remain available while pinned and are reclaimed only after the final pin is
@@ -67,7 +67,7 @@ Files:
 
 Recovery:
 
-1. Load `manifest.skein` when present and verify its checksum.
+1. Load `manifest.hawdb` when present and verify its checksum.
 2. Reject unsupported manifest storage versions before using manifest state.
 3. Load the checkpoint generation named by the manifest.
 4. Verify the checkpoint length, CRC32C, and SHA-256 identity.
@@ -90,7 +90,7 @@ Recovery:
 
 Checkpoint publication writes the new canonical artifact, canonical manifest,
 canonical adjacency data, descriptor pages and descriptor root, checkpoint
-image, and next WAL generation before atomically replacing `manifest.skein`.
+image, and next WAL generation before atomically replacing `manifest.hawdb`.
 The manifest's durable replay LSN prevents a crash between checkpoint
 persistence and old-WAL reclamation from replaying checkpointed mutations
 twice. Checkpoint, manifest, and projected graph artifact publication write a
@@ -118,7 +118,7 @@ the graph WAL: first physical export may create mapping entries, but that action
 does not mutate graph records or increase WAL replay work.
 Search projection snapshots use the same temporary-file, file sync, atomic
 rename, and parent-directory sync boundary when `SearchIndex::checkpoint`
-publishes `search_projection.skein`; the snapshot uses the same zstd envelope
+publishes `search_projection.hawdb`; the snapshot uses the same zstd envelope
 by default. The projection remains rebuildable and is not part of canonical
 graph WAL recovery. Snapshot publication streams the header and one encoded
 document record at a time through zstd into a temporary payload, then copies
@@ -216,7 +216,7 @@ The local WAL-tail oracle starts from a fresh database for each seed, records
 the complete pre-batch query result, truncates a fragmented batch at header,
 block, chain-tail, or seeded interior offsets, and checks strict rejection,
 exact prefix recovery, audit bytes, and a subsequent append/reopen. Run it with
-`bazel run //crates/fuzz:skein_storage_fuzz -- --wal-tail --seed 174 --cases 64`;
+`bazel run //crates/fuzz:hawdb_storage_fuzz -- --wal-tail --seed 174 --cases 64`;
 every case report includes a `--case-index` replay command. These campaigns and
 the existing fuzz suites remain local verification, outside CI jobs.
 
@@ -294,7 +294,7 @@ Every durable open acquires an exclusive process-lifetime lease on the database
 directory. The host opens one root `Database` handle and derives sessions,
 transactions, and snapshot readers from that handle. A process-local canonical
 path registry rejects duplicate handles in one application, while the stable
-`owner.skein.lock` sidecar rejects opens from other cooperating applications on
+`owner.hawdb.lock` sidecar rejects opens from other cooperating applications on
 Windows, Linux, and macOS. The sidecar is not canonical state and remains in
 place after close so every process locks the same file. Lock contention fails
 immediately; it never waits, steals ownership, or falls back to unsafe shared
@@ -327,7 +327,7 @@ open is strict: a torn tail or checksum mismatch fails startup without changing
 the WAL. `WalTailRepairPlan` and `WalTailRepairReport` are the separate typed
 doctor evidence. The historical `DoctorRepairTornTail` recovery enum value is
 retained for report compatibility but database open rejects it.
-The CLI command `skein storage-recovery-report [--strict]
+The CLI command `hawdb storage-recovery-report [--strict]
 [--max-wal-replay-entries <n>] [--require-durable]
 [--require-checkpoint-boundary] [--require-bounded-wal-replay]
 [--require-clean-tail] <database-path>` opens an existing database read-only
@@ -520,28 +520,28 @@ The mapping is durable before an initial-import graph WAL batch, so recovery
 cannot expose that batch without its selected identity generation. The default
 `export_canonical_graph_snapshot` remains read-only and does not create
 persistent export metadata.
-`Database::prepare_skein_lightning_bootstrap_export` wraps the same persisted
+`Database::prepare_hawdb_lightning_bootstrap_export` wraps the same persisted
 stable-ID snapshot and the relational state at one database commit epoch in a
-Skein Lightning bootstrap manifest. The authoritative logical payload consists
+Hawdb Lightning bootstrap manifest. The authoritative logical payload consists
 of the GraphStream plus a RelationalStream checkpoint. The latter carries SQL
 table schemas, rows, indexes, constraints, and overflow values. The manifest
 records both stream checksums and byte lengths, their shared database epoch,
 graph schema and row counts, relational table/row/overflow counts, and both
-validation reports. Skein Lightning deliberately excludes WAL history, physical
+validation reports. Hawdb Lightning deliberately excludes WAL history, physical
 pages, adjacency layouts, statistics, caches, and search or analytics projection
 artifacts; those are recovery history or rebuildable physical state rather than
 portable user data. The GraphStream remains deterministic canonical text sorted
 by labels, relationship type, stable IDs, and endpoints.
-The CLI command `skein validate-canonical-snapshot [--require-valid]
+The CLI command `hawdb validate-canonical-snapshot [--require-valid]
 [--require-import-ready] <database-path>` opens the database read-only, exports
 the current canonical snapshot, and prints the validation report as JSON.
 `--require-valid` returns a non-zero status when the snapshot is internally
 inconsistent. `--require-import-ready` additionally requires every node and
 relationship to have unique stable identity, so the export can enter a physical
 import path without first creating an external ID mapping.
-The CLI command `skein skein-lightning-bootstrap-manifest [--require-ready]
+The CLI command `hawdb hawdb-lightning-bootstrap-manifest [--require-ready]
 <database-path>` opens the database read-write, creates or reuses
-`stable_ids.skein`, and prints the bootstrap manifest as JSON. `--require-ready`
+`stable_ids.hawdb`, and prints the bootstrap manifest as JSON. `--require-ready`
 returns a non-zero status if the manifest's embedded validation is not
 import-ready or the relational stream is invalid.
 Normal open validates only the stable-identity selector, selected generation
@@ -550,20 +550,20 @@ mapping pages remain cold and are read through the shared bounded page cache.
 An explicit storage scrub streams every page without cache insertion and
 validates page checksums, global key order, counts, and value encodings while
 retaining at most one page and one decoded value.
-The CLI command `skein skein-lightning-graph-stream [--require-ready]
+The CLI command `hawdb hawdb-lightning-graph-stream [--require-ready]
 <database-path>` uses the same bootstrap export path and prints the deterministic
 GraphStream text. The final `checksum` line covers the stream body and matches
 the manifest's `graph_stream_checksum`.
-`skein skein-lightning-relational-stream [--require-ready] <database-path>`
+`hawdb hawdb-lightning-relational-stream [--require-ready] <database-path>`
 writes the binary relational stream to stdout. It is a component command for
 upload pipelines; consumers must preserve the bytes without text conversion.
-`SkeinLightningGraphStream::validate_against_manifest`,
-`SkeinLightningRelationalStream::validate_against_manifest`, and the CLI command
-`skein skein-lightning-verify-export [--require-valid] <database-path>` verify
+`HawdbLightningGraphStream::validate_against_manifest`,
+`HawdbLightningRelationalStream::validate_against_manifest`, and the CLI command
+`hawdb hawdb-lightning-verify-export [--require-valid] <database-path>` verify
 the local bootstrap artifacts before upload. The report covers GraphStream
 format, checksum, count, and endpoint integrity plus relational checkpoint
 decode, checksum, epoch, table/row/overflow counts, and manifest agreement.
-`skein skein-lightning-bootstrap-bundle [--require-ready] <database-path>`
+`hawdb hawdb-lightning-bootstrap-bundle [--require-ready] <database-path>`
 prints one machine-readable bootstrap evidence bundle containing the manifest,
 both stream validation reports, the source database's open-time storage
 recovery report, and a ready/blocked export gate decision. Use this as the CI or
@@ -576,15 +576,15 @@ keeps a flattened `blockers` list for logs and also reports manifest,
 GraphStream, and RelationalStream blocker counts plus grouped blocker messages
 so import automation can distinguish snapshot readiness failures from stream
 artifact failures without parsing strings.
-`skein skein-lightning-stage-bootstrap [--require-ready] <database-path>
+`hawdb hawdb-lightning-stage-bootstrap [--require-ready] <database-path>
 <staging-dir>` writes a local staging catalog plus manifest, GraphStream,
-`skein_lightning_relational_stream.bin`, and bootstrap bundle artifacts with
+`hawdb_lightning_relational_stream.bin`, and bootstrap bundle artifacts with
 atomic file publication and directory sync. The
 catalog is the v1 local checkpoint boundary for offline bootstrap upload/resume;
 it is outside the graph WAL and does not alter the published graph snapshot. The
 catalog also summarizes staged object count, measured byte count, total bytes,
 average object size, and per-kind object counts for upload observability.
-`skein skein-lightning-verify-staging [--require-ready] <staging-dir>` reopens
+`hawdb hawdb-lightning-verify-staging [--require-ready] <staging-dir>` reopens
 that staging catalog without the source database, verifies artifact byte
 lengths and checksums, recomputes both stream validations, and checks agreement
 between the catalog, manifest, bundle, GraphStream, and RelationalStream
@@ -598,16 +598,16 @@ manifest database epoch, then reports the result in a structured
 and byte metrics from the actually measured artifacts. Unknown staging-catalog
 or bootstrap-manifest protocol versions block validation instead of being read
 on a best-effort basis.
-`skein skein-lightning-publish-staging [--require-state-marker]
+`hawdb hawdb-lightning-publish-staging [--require-state-marker]
 [--fencing-token <token>] [--expected-database-epoch <epoch>] <staging-dir>
 <publish-dir>` verifies a READY staging catalog and atomically writes
-`skein_lightning_published_manifest.json`. Repeating the command for the same
+`hawdb_lightning_published_manifest.json`. Repeating the command for the same
 manifest is idempotent; attempting to publish a different manifest over an
 existing pointer fails instead of overwriting the published database pointer. When
 the optional state-marker/fencing preflight is enabled, publish requires a
 VALIDATING import marker, matching fencing token, and matching staged manifest
 database epoch before writing the pointer.
-`skein skein-lightning-verify-published <staging-dir> <publish-dir>` verifies
+`hawdb hawdb-lightning-verify-published <staging-dir> <publish-dir>` verifies
 that the published pointer still references the staged catalog by byte length
 and checksum, and that the referenced staging catalog still passes the
 source-independent verifier. The report promotes the staging verifier's
@@ -616,21 +616,21 @@ inspect recovery readiness without traversing the nested staging report. Its
 validation gate keeps flat errors and grouped pointer, catalog, and staging
 error arrays so resume automation can distinguish pointer corruption from
 staging catalog drift.
-`skein skein-lightning-gc-staging-report <staging-dir> <publish-dir>` fails
+`hawdb hawdb-lightning-gc-staging-report <staging-dir> <publish-dir>` fails
 closed when a published pointer cannot be verified and groups the propagated
 published-pointer verification errors for cleanup automation. The GC report also
 summarizes total, pinned, and deletable staging bytes so callers can distinguish
 published retention from orphan staging space.
-`skein skein-lightning-import-status <staging-dir> <publish-dir>` summarizes
+`hawdb hawdb-lightning-import-status <staging-dir> <publish-dir>` summarizes
 CREATED/READY/PUBLISHED/QUARANTINED state and can merge an optional
-caller-owned `skein_lightning_import_state.json` marker for
+caller-owned `hawdb_lightning_import_state.json` marker for
 EXPORTING/UPLOADING/MERGING/VALIDATING/FAILED/CANCELED coordinator states. It
 groups presence, staging, published-pointer, state-marker, and resource errors
 for resume automation. Active coordinator states require the marker to carry the
 idempotent retry tuple `import_id`, `task_id`, `fencing_token`, and
 `object_digest`; missing fields quarantine the status report before retry. The
 report can also summarize an optional caller-owned
-`skein_lightning_import_checkpoints.jsonl` append log. Checkpoint entries keep
+`hawdb_lightning_import_checkpoints.jsonl` append log. Checkpoint entries keep
 resume/failure coordinates such as source range, object digest, partition, and
 validation rule; object-level checkpoints must include the same idempotent retry
 tuple before status automation treats them as resumable. Reusing one complete
@@ -692,7 +692,7 @@ which leaves the caller with a full label scan. Declining is what keeps the
 optimization sound: an index that covers only part of the data is safe to
 consult only where its coverage is known to be complete. Results never depend
 on the choice — a query answered from an index returns exactly what the full
-scan would. `docs/tla/SkeinPropertyIndexPruning.tla` models both evaluations
+scan would. `docs/tla/HawdbPropertyIndexPruning.tla` models both evaluations
 side by side and checks them for equality, so a pruning path that read an
 incomplete index would surface as a violated invariant rather than as a
 silently short answer.
@@ -844,7 +844,7 @@ the store maintains the basic counter subset incrementally, recomputes the
 wider live API view from canonical records, and accepts old checkpoints that do
 not contain statistics lines.
 
-Checkpoint also writes `projected_graphs.skein` for every persisted projected
+Checkpoint also writes `projected_graphs.hawdb` for every persisted projected
 graph definition. The artifact records its format version, projection epoch,
 covered commit epoch, node IDs, CSR outgoing offsets and targets, and CSC
 incoming offsets and sources. It is checksum-protected and atomically replaced.
@@ -861,7 +861,7 @@ wraps the same projected graph refresh in a report-oriented orchestration API
 that returns artifact type, name, reusable-state transition, projection epoch,
 commit epoch, and graph cardinalities. Neither path appends WAL, truncates WAL,
 or publishes a new checkpoint manifest; they only advance the projection epoch
-and atomically replace `projected_graphs.skein`.
+and atomically replace `projected_graphs.hawdb`.
 `Database::schedule_derived_artifact_rebuild` and
 `Database::run_next_derived_artifact_job` add a small embedded job state machine
 for these projected graph artifacts. Jobs expose pending/running/succeeded/failed
@@ -884,7 +884,7 @@ through `Database::schema_maintenance_background_work_plan`, which returns a
 descriptor maintenance is pending.
 `LocalQosPolicy::evaluate_background_work` returns the existing admission result
 plus a deterministic expected-value score and reasons, so the caller can rank or
-skip internal background work without moving queue ownership into Skein. If a
+skip internal background work without moving queue ownership into Hawdb. If a
 candidate carries a tenant budget hint below its estimated operations, the
 ranked decision is deferred even when the base background policy would admit it.
 `LocalQosPolicy::rank_background_work` and the matching
@@ -911,10 +911,10 @@ while
 `Database::run_next_external_content_artifact_job_with` and
 `Database::run_external_content_artifact_job_with` let the caller supply the
 content artifact runtime and complete either the next pending job or a specific
-pending job selected from a bounded poll result. Skein records the state
+pending job selected from a bounded poll result. Hawdb records the state
 transition without embedding parsing, crawling, chunking, or large-value runtime
 logic. That runtime reads the payload and publishes rebuildable projections back
-to Skein through caller-owned output. Successful external content jobs keep the
+to Hawdb through caller-owned output. Successful external content jobs keep the
 last structured output rows on the job ledger for lightweight lineage and
 operator audit; large parser results, raw bytes, chunks, and projection payloads
 remain caller-owned artifacts outside the graph kernel. Bounded succeeded-job
@@ -931,7 +931,7 @@ background and scheduled completion runners apply the same standard row shape
 while charging parser/crawler work to the `Import` QoS lane.
 `ExternalContentArtifactRuntimeManifest` lets a caller-owned runtime declare the
 actions it can handle, required payload keys, version, and estimated operation
-cost. Skein uses that manifest only to return bounded claimable-job views and an
+cost. Hawdb uses that manifest only to return bounded claimable-job views and an
 Import-lane background work plan; it is not a sandbox policy and does not grant
 the runtime access to graph-kernel execution.
 Internal parser/crawler loops can use
@@ -1039,7 +1039,7 @@ dictionary per artifact — into a `u32` id in first-seen order, and record
 payloads encode `key id, tagged value` pairs. The manifest publishes the key
 table as `property_key` lines (id plus hex-encoded UTF-8 key bytes, so keys
 containing tabs or newlines survive the tab-separated text format) under the
-`SKEIN_CANONICAL_MANIFEST_V1` header. The mandatory
+`HAWDB_CANONICAL_MANIFEST_V1` header. The mandatory
 `record_layout\tproperty_key_ids` declaration prevents an inline-key artifact
 from being interpreted as the current format. There is no earlier manifest
 decoder or checkpoint upgrade path. A record referencing an id outside the key
@@ -1063,8 +1063,8 @@ metadata with a corrupt manifest or block fails closed.
 ## Segmented Lexical Projection
 
 Persistent search checkpoints publish a rebuildable
-`search_lexical.<generation>.skein` artifact followed by a checksummed
-`search_lexical.manifest.skein`. The manifest binds the artifact to the source
+`search_lexical.<generation>.hawdb` artifact followed by a checksummed
+`search_lexical.manifest.hawdb`. The manifest binds the artifact to the source
 graph epoch, analyzer digest, document snapshot digest, corpus length totals,
 projection-wide per-term document frequencies, and immutable document-length
 and posting blocks. Builds use bounded external sort runs and bounded fan-in
@@ -1090,7 +1090,7 @@ artifact fails closed.
 Checkpoint also publishes immutable, generation-named document descriptor,
 full-document payload, metadata-only sidecar, vector-only sidecar, sidecar
 layout, and lexical manifest artifacts before atomically switching
-`search_projection.out_of_core.manifest.skein`. The checksummed layout binds one
+`search_projection.out_of_core.manifest.hawdb`. The checksummed layout binds one
 metadata and vector range to every descriptor segment. A reader opened before
 the switch remains pinned to its generation; an interrupted publication leaves
 the previous manifest readable. Segment checksums, descriptor, layout, and

@@ -1,7 +1,7 @@
 # SQL HAVING and multiple FROM items
 
-This extends the explicit CROSS JOIN slice of [#157](https://github.com/nowledge-co/skein/issues/157)
-on the expression IR from [#156](https://github.com/nowledge-co/skein/issues/156).
+This extends the explicit CROSS JOIN slice of [#157](https://github.com/nowledge-co/hawdb/issues/157)
+on the expression IR from [#156](https://github.com/nowledge-co/hawdb/issues/156).
 Existing embedded SQL entrypoints execute comma-separated base tables and HAVING.
 The duplicate-result-name requirement remains open, as recorded in the
 [result-column audit](SQL_RESULT_COLUMNS_CONTRACT_AUDIT.md).

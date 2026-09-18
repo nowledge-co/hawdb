@@ -6,8 +6,8 @@ use crate::{
     KnowledgeEntity, KnowledgeFanoutReasonCode, KnowledgeFanoutReasonDetail,
     KnowledgeGraphContextPath,
 };
-use skein_core::Value;
-use skein_search::{SearchCandidateSetReport, SearchRetrieverCandidateSetReport};
+use hawdb_core::Value;
+use hawdb_search::{SearchCandidateSetReport, SearchRetrieverCandidateSetReport};
 use std::collections::BTreeMap;
 use std::str::FromStr;
 

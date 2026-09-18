@@ -15,7 +15,7 @@ use crate::relational::{
     estimated_row_change_encoding_bytes, RelationalKey, RelationalRowChange,
     RelationalRowChangeCapture, RelationalRowChangeCaptureLimits, RelationalValue,
 };
-use skein_integrity::Sha256Digest;
+use hawdb_integrity::Sha256Digest;
 use std::{
     collections::{BTreeMap, BTreeSet},
     fmt,

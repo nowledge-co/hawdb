@@ -3,12 +3,12 @@ use crate::store::{
     PrunedNodeScan, PrunedRelationshipScan, SourceScanCandidateRow, SourceScanCandidateVisit,
     SourceScanReadLimits,
 };
-use skein_core::{LabelId, RelTypeId, RuntimeCancellationToken};
-use skein_plan::{
+use hawdb_core::{LabelId, RelTypeId, RuntimeCancellationToken};
+use hawdb_plan::{
     CompositeRangeSeek, NodeProjectionAccess, Projection, ProjectionExpression, SetAssignment,
     SetValue,
 };
-use skein_storage::{
+use hawdb_storage::{
     AdjacencyDirection, GraphMutation, MutationSummary, NodeRecord, ProjectedGraphDefinition,
     ProjectedNodeRecord, PropertyFilter, RelRecord, ScanPredicate, ScanPruningReport,
 };
@@ -31,8 +31,8 @@ struct RecordingStore {
     write_error: bool,
 }
 
-fn sentinel() -> SkeinError {
-    SkeinError::Execution("injected storage error".into())
+fn sentinel() -> HawdbError {
+    HawdbError::Execution("injected storage error".into())
 }
 
 impl GraphExecutionRead for RecordingStore {
@@ -366,11 +366,11 @@ fn expected_write(kind: usize, ids: Vec<NodeId>) -> Write {
             vec![
                 NodeSetAssignment {
                     property: "score".into(),
-                    value: skein_storage::NodeSetValue::AddInt { amount: 3 },
+                    value: hawdb_storage::NodeSetValue::AddInt { amount: 3 },
                 },
                 NodeSetAssignment {
                     property: "score".into(),
-                    value: skein_storage::NodeSetValue::AddInt { amount: 7 },
+                    value: hawdb_storage::NodeSetValue::AddInt { amount: 7 },
                 },
             ],
         )
@@ -462,7 +462,7 @@ fn campaign(seeds: usize) -> usize {
                         );
                         if injection == 3 {
                             assert!(
-                                matches!(result, Err(SkeinError::Execution(message)) if message == "injected storage error"),
+                                matches!(result, Err(HawdbError::Execution(message)) if message == "injected storage error"),
                                 "{label}"
                             );
                         } else {
@@ -527,13 +527,13 @@ fn direct_command_delegates_limits_and_preserves_store_result() {
     )
     .unwrap_err();
     assert!(
-        matches!(error, SkeinError::Execution(message) if message == "physical plan is not an executable mutation")
+        matches!(error, HawdbError::Execution(message) if message == "physical plan is not an executable mutation")
     );
     assert!(store.writes.is_empty());
     store.write_error = true;
     assert!(
         matches!(execute_mutation_with_store(&command, &mut catalog, &mut store, limits, None),
-        Err(SkeinError::Execution(message)) if message == "injected storage error")
+        Err(HawdbError::Execution(message)) if message == "injected storage error")
     );
     assert_eq!(store.writes.len(), 1);
 }
@@ -588,7 +588,7 @@ fn late_set_return_assignment_error_leaves_source_and_writer_untouched() {
     )
     .unwrap_err();
     assert!(
-        matches!(error, SkeinError::Execution(message) if message == "property increment overflowed i64")
+        matches!(error, HawdbError::Execution(message) if message == "property increment overflowed i64")
     );
     assert_eq!(store.nodes, original);
     assert!(store.writes.is_empty());
@@ -670,7 +670,7 @@ fn staged_return_rejects_invalid_or_missing_node_ids() {
             MutationLimits::default(),
         )
         .unwrap_err();
-        assert!(matches!(error, SkeinError::Execution(message) if message == expected));
+        assert!(matches!(error, HawdbError::Execution(message) if message == expected));
     }
     assert!(store.writes.is_empty());
 }

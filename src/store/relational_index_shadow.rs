@@ -17,25 +17,25 @@ pub use constraint_qualification::{
     RelationalConstraintQualificationProbeReport, RelationalConstraintQualificationReport,
     RelationalConstraintQualificationUse, RELATIONAL_CONSTRAINT_QUALIFICATION_PROTOCOL,
 };
-pub use skein_storage::relational::{
+pub use hawdb_storage::relational::{
     RelationalIndexShadowCheckpointReport, RelationalIndexShadowCheckpointStatus,
     RelationalIndexShadowRecoveryStatus,
 };
-use skein_storage::relational_index_view::{
+use hawdb_storage::relational_index_view::{
     map_index_row_snapshot_error, CanonicalRelationalIndexRowSource,
 };
-pub(crate) use skein_storage::relational_index_view::{
+pub(crate) use hawdb_storage::relational_index_view::{
     RelationalIndexProbeStatistics, RelationalIndexReadView, RelationalTransactionIndexView,
 };
-pub use skein_storage::relational_index_view::{
+pub use hawdb_storage::relational_index_view::{
     RelationalIndexReadViewBackendReport, RelationalIndexReadViewReport,
 };
 
-use super::{GraphStore, SkeinError};
-use skein_integrity::IntegrityHasher;
+use super::{GraphStore, HawdbError};
+use hawdb_integrity::IntegrityHasher;
 #[cfg(test)]
-use skein_storage::{relational_index_shadow_artifact_file, RelationalIndexMode};
-use skein_storage::{
+use hawdb_storage::{relational_index_shadow_artifact_file, RelationalIndexMode};
+use hawdb_storage::{
     relational_index_shadow_manifest_generation_file, RelationalCheckpointIndexLoad,
     RelationalIndexChangeCapture, RelationalIndexChangeCaptureLimits, RelationalIndexRangeScan,
     RelationalIndexReadLimits, RelationalIndexRecoveryBuilder, RelationalIndexRecoveryConfig,
@@ -51,7 +51,7 @@ use skein_storage::{
 };
 use std::{collections::BTreeSet, sync::Arc};
 
-pub use skein_storage::relational_index_view::{
+pub use hawdb_storage::relational_index_view::{
     RelationalIndexQualificationProbe, RelationalIndexQualificationProbeKind,
     RelationalIndexQualificationProbeReport, RelationalIndexViewQualificationOptions,
     RelationalIndexViewQualificationReport, RELATIONAL_INDEX_VIEW_QUALIFICATION_PROTOCOL,
@@ -62,16 +62,16 @@ fn qualification_probe_error(
     table: &str,
     index: &str,
     error: RelationalIndexShadowError,
-) -> SkeinError {
+) -> HawdbError {
     let context = format!(
         "relational index qualification probe {ordinal} on {table}.{index} failed: {error}"
     );
     match error {
-        RelationalIndexShadowError::Corrupt(_) => SkeinError::StorageIntegrity(context),
+        RelationalIndexShadowError::Corrupt(_) => HawdbError::StorageIntegrity(context),
         RelationalIndexShadowError::Admission(_)
         | RelationalIndexShadowError::Durability(_)
         | RelationalIndexShadowError::MissingIndex { .. }
-        | RelationalIndexShadowError::StaleGeneration { .. } => SkeinError::Storage(context),
+        | RelationalIndexShadowError::StaleGeneration { .. } => HawdbError::Storage(context),
     }
 }
 
@@ -117,7 +117,7 @@ fn push_qualification_probe(
 
 fn relational_keys_digest(keys: &[RelationalKey]) -> String {
     let mut hasher = IntegrityHasher::new();
-    hasher.update(b"skein-relational-index-qualification-keys-v1\0");
+    hasher.update(b"hawdb-relational-index-qualification-keys-v1\0");
     hasher.update(&(keys.len() as u64).to_le_bytes());
     for key in keys {
         hasher.update(&(key.0.len() as u64).to_le_bytes());
@@ -178,7 +178,7 @@ pub(super) struct PreparedRelationalIndexCandidate {
     pub(super) report: RelationalIndexShadowCheckpointReport,
 }
 
-pub(super) use skein_storage::relational::{
+pub(super) use hawdb_storage::relational::{
     RelationalIndexLiveUnavailable, RelationalIndexShadowState,
 };
 impl GraphStore {
@@ -335,9 +335,9 @@ impl GraphStore {
 
     fn open_base_relational_index_read_view(
         &self,
-    ) -> Result<Arc<RelationalIndexReadView>, skein_storage::RelationalIndexShadowError> {
+    ) -> Result<Arc<RelationalIndexReadView>, hawdb_storage::RelationalIndexShadowError> {
         let durable = self.durable.as_ref().ok_or_else(|| {
-            skein_storage::RelationalIndexShadowError::Admission(
+            hawdb_storage::RelationalIndexShadowError::Admission(
                 "relational index read view requires a durable store".to_string(),
             )
         })?;
@@ -371,9 +371,9 @@ impl GraphStore {
         &self,
         recovered_commit_epoch: u64,
         expected_recovery_source: RelationalRecoverySourceIdentity,
-    ) -> Result<Arc<RelationalIndexReadView>, skein_storage::RelationalIndexShadowError> {
+    ) -> Result<Arc<RelationalIndexReadView>, hawdb_storage::RelationalIndexShadowError> {
         let durable = self.durable.as_ref().ok_or_else(|| {
-            skein_storage::RelationalIndexShadowError::Admission(
+            hawdb_storage::RelationalIndexShadowError::Admission(
                 "relational index read view requires a durable store".to_string(),
             )
         })?;
@@ -707,12 +707,12 @@ impl GraphStore {
     ) -> crate::Result<RelationalIndexViewQualificationReport> {
         self.relational_state
             .require_materialized_rows("relational index differential qualification")
-            .map_err(|error| SkeinError::Storage(error.to_string()))?;
+            .map_err(|error| HawdbError::Storage(error.to_string()))?;
         let view = self
             .relational_index_shadow
             .current_read_view(self.commit_epoch)
             .ok_or_else(|| {
-                SkeinError::Storage(format!(
+                HawdbError::Storage(format!(
                     "relational index read view is unavailable at commit epoch {}",
                     self.commit_epoch
                 ))
@@ -740,7 +740,7 @@ impl GraphStore {
                 .take(options.max_rows_per_table.get())
             {
                 rows_sampled = rows_sampled.checked_add(1).ok_or_else(|| {
-                    SkeinError::Storage(
+                    HawdbError::Storage(
                         "relational index qualification row sample counter overflow".to_string(),
                     )
                 })?;
@@ -881,7 +881,7 @@ impl GraphStore {
                         limits.max_rows.get().saturating_add(1),
                     )
                     .ok_or_else(|| {
-                        SkeinError::Storage(format!(
+                        HawdbError::Storage(format!(
                             "relational index qualification oracle is missing {}.{}",
                             probe.table, probe.index
                         ))
@@ -898,7 +898,7 @@ impl GraphStore {
                         limits.max_rows.get().saturating_add(1),
                     )
                     .ok_or_else(|| {
-                        SkeinError::Storage(format!(
+                        HawdbError::Storage(format!(
                             "relational index qualification oracle is missing {}.{}",
                             probe.table, probe.index
                         ))
@@ -909,7 +909,7 @@ impl GraphStore {
             }
         };
         if rows.len() > limits.max_rows.get() {
-            return Err(SkeinError::Storage(format!(
+            return Err(HawdbError::Storage(format!(
                 "relational index qualification oracle exceeds row limit {}",
                 limits.max_rows
             )));
@@ -924,7 +924,7 @@ impl GraphStore {
         transaction: RelationalTransaction,
         replay_access: Option<RelationalReplayAccessSet>,
         expected_epoch: u64,
-    ) -> Result<(), skein_storage::RelationalError> {
+    ) -> Result<(), hawdb_storage::RelationalError> {
         let authoritative = self
             .relational_index_shadow
             .mode
@@ -935,7 +935,7 @@ impl GraphStore {
             .as_ref()
             .map(RelationalIndexRecoveryBuilder::capture_limits);
         if authoritative && index_limits.is_none() {
-            return Err(skein_storage::RelationalError::Corruption(
+            return Err(hawdb_storage::RelationalError::Corruption(
                 "authoritative relational index recovery requires a bound base generation and writable recovery-delta builder"
                     .to_string(),
             ));
@@ -944,7 +944,7 @@ impl GraphStore {
         let (next, index_capture, row_capture) = match (index_limits, row_limits) {
             (Some(index_limits), Some(row_limits)) if authoritative => {
                 let replay_access = replay_access.as_ref().ok_or_else(|| {
-                    skein_storage::RelationalError::Corruption(
+                    hawdb_storage::RelationalError::Corruption(
                         "authoritative relational WAL is missing its exact replay access set"
                             .to_string(),
                     )
@@ -1184,8 +1184,8 @@ impl GraphStore {
 mod tests {
     use super::*;
     use crate::schema::Catalog;
-    use skein_storage::relational_index_view::RelationalIndexReadViewKind;
-    use skein_storage::{
+    use hawdb_storage::relational_index_view::RelationalIndexReadViewKind;
+    use hawdb_storage::{
         DurabilityPolicy, RelationalColumnSchema, RelationalConflictAction,
         RelationalForeignKeySchema, RelationalIndexSchema, RelationalInsertMode, RelationalKey,
         RelationalReferentialAction, RelationalRow, RelationalScalarType, RelationalTableSchema,
@@ -1196,7 +1196,7 @@ mod tests {
 
     #[test]
     fn relational_index_facade_reports_keep_storage_type_identity() {
-        use skein_storage::relational_index_view as owner;
+        use hawdb_storage::relational_index_view as owner;
         use std::any::TypeId;
 
         assert_eq!(
@@ -1220,11 +1220,11 @@ mod tests {
             .unwrap()
             .as_nanos();
         let path = std::env::temp_dir().join(format!(
-            "skein-store-relational-index-shadow-{}-{nonce}",
+            "hawdb-store-relational-index-shadow-{}-{nonce}",
             std::process::id()
         ));
         let replay = WalReplayConfig {
-            relational_index_mode: skein_storage::RelationalIndexMode::Shadow,
+            relational_index_mode: hawdb_storage::RelationalIndexMode::Shadow,
             ..WalReplayConfig::default()
         };
         let published_identity;
@@ -1269,11 +1269,11 @@ mod tests {
                             }),
                             RelationalWrite::Insert {
                                 table: "documents".to_string(),
-                                rows: vec![skein_storage::RelationalRow::new(vec![
+                                rows: vec![hawdb_storage::RelationalRow::new(vec![
                                     RelationalValue::Text("doc-1".to_string()),
                                     RelationalValue::Text("owner-1".to_string()),
                                 ])],
-                                mode: skein_storage::RelationalInsertMode::Error,
+                                mode: hawdb_storage::RelationalInsertMode::Error,
                             },
                         ],
                     },
@@ -1394,7 +1394,7 @@ mod tests {
                 &mut catalog,
                 DurabilityPolicy::default(),
                 WalReplayConfig {
-                    relational_index_mode: skein_storage::RelationalIndexMode::DemandPaged,
+                    relational_index_mode: hawdb_storage::RelationalIndexMode::DemandPaged,
                     ..WalReplayConfig::default()
                 },
             )
@@ -1421,11 +1421,11 @@ mod tests {
             .expect("system clock")
             .as_nanos();
         let path = std::env::temp_dir().join(format!(
-            "skein-store-relational-index-candidate-admission-{}-{nonce}",
+            "hawdb-store-relational-index-candidate-admission-{}-{nonce}",
             std::process::id()
         ));
         let replay = WalReplayConfig {
-            relational_index_mode: skein_storage::RelationalIndexMode::Shadow,
+            relational_index_mode: hawdb_storage::RelationalIndexMode::Shadow,
             ..WalReplayConfig::default()
         };
         let oversized_id = "x".repeat(
@@ -1479,7 +1479,7 @@ mod tests {
                 .join(relational_index_shadow_manifest_generation_file(generation))
                 .exists());
             assert!(!path
-                .join(skein_storage::relational_index_shadow_artifact_file(
+                .join(hawdb_storage::relational_index_shadow_artifact_file(
                     generation
                 ))
                 .exists());
@@ -1510,7 +1510,7 @@ mod tests {
             .expect("system clock")
             .as_nanos();
         let path = std::env::temp_dir().join(format!(
-            "skein-store-relational-index-unbound-legacy-{}-{nonce}",
+            "hawdb-store-relational-index-unbound-legacy-{}-{nonce}",
             std::process::id()
         ));
         {
@@ -1544,7 +1544,7 @@ mod tests {
                 .expect("publish legacy unbound candidate");
         }
         assert!(path
-            .join(skein_storage::RELATIONAL_INDEX_SHADOW_MANIFEST_FILE)
+            .join(hawdb_storage::RELATIONAL_INDEX_SHADOW_MANIFEST_FILE)
             .exists());
 
         let mut catalog = Catalog::default();
@@ -1577,14 +1577,14 @@ mod tests {
             .expect("system clock")
             .as_nanos();
         let path = std::env::temp_dir().join(format!(
-            "skein-store-relational-index-bound-backup-{}-{nonce}",
+            "hawdb-store-relational-index-bound-backup-{}-{nonce}",
             std::process::id()
         ));
         let backup = path.with_extension("backup");
         let restored = path.with_extension("restored");
         let corrupt_restored = path.with_extension("corrupt-restored");
         let replay = WalReplayConfig {
-            relational_index_mode: skein_storage::RelationalIndexMode::Shadow,
+            relational_index_mode: hawdb_storage::RelationalIndexMode::Shadow,
             ..WalReplayConfig::default()
         };
         let binding;
@@ -1692,11 +1692,11 @@ mod tests {
             .expect("system clock")
             .as_nanos();
         let path = std::env::temp_dir().join(format!(
-            "skein-store-relational-index-bound-reclaim-{}-{nonce}",
+            "hawdb-store-relational-index-bound-reclaim-{}-{nonce}",
             std::process::id()
         ));
         let replay = WalReplayConfig {
-            relational_index_mode: skein_storage::RelationalIndexMode::Shadow,
+            relational_index_mode: hawdb_storage::RelationalIndexMode::Shadow,
             ..WalReplayConfig::default()
         };
         let mut catalog = Catalog::default();
@@ -1775,11 +1775,11 @@ mod tests {
             .expect("system clock")
             .as_nanos();
         let path = std::env::temp_dir().join(format!(
-            "skein-store-relational-index-abandoned-candidate-{}-{nonce}",
+            "hawdb-store-relational-index-abandoned-candidate-{}-{nonce}",
             std::process::id()
         ));
         let replay = WalReplayConfig {
-            relational_index_mode: skein_storage::RelationalIndexMode::Shadow,
+            relational_index_mode: hawdb_storage::RelationalIndexMode::Shadow,
             ..WalReplayConfig::default()
         };
         let selected_generation;
@@ -1807,11 +1807,11 @@ mod tests {
                     RelationalTransaction {
                         writes: vec![RelationalWrite::Insert {
                             table: "documents".to_string(),
-                            rows: vec![skein_storage::RelationalRow::new(vec![
+                            rows: vec![hawdb_storage::RelationalRow::new(vec![
                                 RelationalValue::Text("doc-2".to_string()),
                                 RelationalValue::Text("owner-2".to_string()),
                             ])],
-                            mode: skein_storage::RelationalInsertMode::Error,
+                            mode: hawdb_storage::RelationalInsertMode::Error,
                         }],
                     },
                 )
@@ -1853,7 +1853,7 @@ mod tests {
                 ))
                 .exists());
             assert!(!path
-                .join(skein_storage::relational_index_shadow_artifact_file(
+                .join(hawdb_storage::relational_index_shadow_artifact_file(
                     abandoned_generation,
                 ))
                 .exists());
@@ -1868,11 +1868,11 @@ mod tests {
             .unwrap()
             .as_nanos();
         let path = std::env::temp_dir().join(format!(
-            "skein-store-relational-index-recovery-{}-{nonce}",
+            "hawdb-store-relational-index-recovery-{}-{nonce}",
             std::process::id()
         ));
         let replay = WalReplayConfig {
-            relational_index_mode: skein_storage::RelationalIndexMode::Shadow,
+            relational_index_mode: hawdb_storage::RelationalIndexMode::Shadow,
             ..WalReplayConfig::default()
         };
         {
@@ -1923,11 +1923,11 @@ mod tests {
                     RelationalTransaction {
                         writes: vec![RelationalWrite::Insert {
                             table: "documents".to_string(),
-                            rows: vec![skein_storage::RelationalRow::new(vec![
+                            rows: vec![hawdb_storage::RelationalRow::new(vec![
                                 RelationalValue::Text("doc-2".to_string()),
                                 RelationalValue::Text("owner-1".to_string()),
                             ])],
-                            mode: skein_storage::RelationalInsertMode::Error,
+                            mode: hawdb_storage::RelationalInsertMode::Error,
                         }],
                     },
                 )
@@ -2047,7 +2047,7 @@ mod tests {
                 )
             }));
             assert!(path
-                .join(skein_storage::RELATIONAL_INDEX_RECOVERY_MANIFEST_FILE)
+                .join(hawdb_storage::RELATIONAL_INDEX_RECOVERY_MANIFEST_FILE)
                 .exists());
         }
         std::fs::remove_dir_all(path).expect("remove recovery replay fixture");
@@ -2060,7 +2060,7 @@ mod tests {
             .unwrap()
             .as_nanos();
         let path = std::env::temp_dir().join(format!(
-            "skein-relational-constraint-qualification-{}-{nonce}",
+            "hawdb-relational-constraint-qualification-{}-{nonce}",
             std::process::id()
         ));
         let replay = WalReplayConfig {
@@ -2118,7 +2118,7 @@ mod tests {
                 })
                 .expect_err("two foreign-key referrers must exhaust a one-row budget");
             assert!(
-                matches!(budget_error, SkeinError::Storage(message) if message.contains("qualification probe"))
+                matches!(budget_error, HawdbError::Storage(message) if message.contains("qualification probe"))
             );
 
             let pinned = Arc::clone(current_index_view(&store));
@@ -2260,7 +2260,7 @@ mod tests {
             .unwrap()
             .as_nanos();
         let path = std::env::temp_dir().join(format!(
-            "skein-relational-constraint-corruption-{}-{nonce}",
+            "hawdb-relational-constraint-corruption-{}-{nonce}",
             std::process::id()
         ));
         let replay = WalReplayConfig {
@@ -2297,7 +2297,7 @@ mod tests {
                 replay,
             )
             .expect("open cold constraint corruption reader");
-            let artifact = path.join(skein_storage::relational_index_shadow_artifact_file(
+            let artifact = path.join(hawdb_storage::relational_index_shadow_artifact_file(
                 generation,
             ));
             let mut file = std::fs::OpenOptions::new()
@@ -2318,7 +2318,7 @@ mod tests {
                 )
                 .expect_err("constraint qualification must reject a corrupt selected page");
             assert!(
-                matches!(error, SkeinError::StorageIntegrity(message) if message.contains("qualification probe"))
+                matches!(error, HawdbError::StorageIntegrity(message) if message.contains("qualification probe"))
             );
             assert_eq!(store.relational_state().row_count("accounts"), 2);
         }
@@ -2332,11 +2332,11 @@ mod tests {
             .unwrap()
             .as_nanos();
         let path = std::env::temp_dir().join(format!(
-            "skein-store-relational-index-schema-recovery-{}-{nonce}",
+            "hawdb-store-relational-index-schema-recovery-{}-{nonce}",
             std::process::id()
         ));
         let replay = WalReplayConfig {
-            relational_index_mode: skein_storage::RelationalIndexMode::Shadow,
+            relational_index_mode: hawdb_storage::RelationalIndexMode::Shadow,
             ..WalReplayConfig::default()
         };
         {
@@ -2421,7 +2421,7 @@ mod tests {
             .expect("system clock")
             .as_nanos();
         let path = std::env::temp_dir().join(format!(
-            "skein-authoritative-relational-index-{}-{nonce}",
+            "hawdb-authoritative-relational-index-{}-{nonce}",
             std::process::id()
         ));
         {
@@ -2500,7 +2500,7 @@ mod tests {
                 },
             );
             assert!(
-                matches!(duplicate, Err(SkeinError::Storage(message)) if message.contains("duplicate key"))
+                matches!(duplicate, Err(HawdbError::Storage(message)) if message.contains("duplicate key"))
             );
             assert_eq!(store.commit_epoch, base_epoch);
             assert_eq!(
@@ -2523,7 +2523,7 @@ mod tests {
                 },
             );
             assert!(
-                matches!(missing_foreign_key, Err(SkeinError::Storage(message)) if message.contains("no visible target"))
+                matches!(missing_foreign_key, Err(HawdbError::Storage(message)) if message.contains("no visible target"))
             );
             assert_eq!(store.commit_epoch, base_epoch);
             assert_eq!(
@@ -2552,7 +2552,7 @@ mod tests {
                 },
             );
             assert!(
-                matches!(live_budget_failure, Err(SkeinError::Storage(message)) if message.contains("capture"))
+                matches!(live_budget_failure, Err(HawdbError::Storage(message)) if message.contains("capture"))
             );
             assert_eq!(store.commit_epoch, base_epoch);
             assert_eq!(
@@ -2655,7 +2655,7 @@ mod tests {
             .expect("system clock")
             .as_nanos();
         let missing_path = std::env::temp_dir().join(format!(
-            "skein-authoritative-missing-index-{}-{nonce}",
+            "hawdb-authoritative-missing-index-{}-{nonce}",
             std::process::id()
         ));
         {
@@ -2693,7 +2693,7 @@ mod tests {
             .contains("authoritative relational index"));
 
         let corrupt_path = std::env::temp_dir().join(format!(
-            "skein-authoritative-corrupt-index-{}-{nonce}",
+            "hawdb-authoritative-corrupt-index-{}-{nonce}",
             std::process::id()
         ));
         let generation;
@@ -2753,7 +2753,7 @@ mod tests {
             .expect("system clock")
             .as_nanos();
         let path = std::env::temp_dir().join(format!(
-            "skein-authoritative-constraint-corruption-{}-{nonce}",
+            "hawdb-authoritative-constraint-corruption-{}-{nonce}",
             std::process::id()
         ));
         let (generation, pages);
@@ -2839,7 +2839,7 @@ mod tests {
                 },
             )
             .expect_err("corrupt authoritative constraint page must reject the mutation");
-        assert!(matches!(error, SkeinError::StorageIntegrity(_)));
+        assert!(matches!(error, HawdbError::StorageIntegrity(_)));
         assert_eq!(store.commit_epoch, epoch);
         assert_eq!(
             store.durable.as_ref().expect("durable store").next_lsn,
@@ -2847,7 +2847,7 @@ mod tests {
         );
         assert!(matches!(
             store.ensure_usable(),
-            Err(SkeinError::StorageIntegrity(_))
+            Err(HawdbError::StorageIntegrity(_))
         ));
 
         drop(file);
@@ -2862,11 +2862,11 @@ mod tests {
             .expect("system clock")
             .as_nanos();
         let path = std::env::temp_dir().join(format!(
-            "skein-live-index-statistics-{}-{nonce}",
+            "hawdb-live-index-statistics-{}-{nonce}",
             std::process::id()
         ));
         let replay = WalReplayConfig {
-            relational_index_mode: skein_storage::RelationalIndexMode::Shadow,
+            relational_index_mode: hawdb_storage::RelationalIndexMode::Shadow,
             ..WalReplayConfig::default()
         };
         let mut catalog = Catalog::default();
@@ -2957,11 +2957,11 @@ mod tests {
                 }),
                 RelationalWrite::Insert {
                     table: "documents".to_string(),
-                    rows: vec![skein_storage::RelationalRow::new(vec![
+                    rows: vec![hawdb_storage::RelationalRow::new(vec![
                         RelationalValue::Text(first_id.to_string()),
                         RelationalValue::Text("owner-1".to_string()),
                     ])],
-                    mode: skein_storage::RelationalInsertMode::Error,
+                    mode: hawdb_storage::RelationalInsertMode::Error,
                 },
             ],
         }

@@ -3,15 +3,15 @@
 use crate::error::Result;
 use crate::schema::Catalog;
 use crate::store::{GraphScanControl, GraphStore};
-use skein_core::{LabelId, RelTypeId};
-use skein_executor::store::{
+use hawdb_core::{LabelId, RelTypeId};
+use hawdb_executor::store::{
     AdjacencyReadMemory, GraphExecutionRead, GraphExecutionWrite, PrunedNodeScan,
     PrunedRelationshipScan, ScanControl, SourceScanCandidateRow, SourceScanCandidateVisit,
     SourceScanReadLimits,
 };
-use skein_executor::QueryMemoryLease;
-use skein_plan::NodeProjectionAccess;
-use skein_storage::{
+use hawdb_executor::QueryMemoryLease;
+use hawdb_plan::NodeProjectionAccess;
+use hawdb_storage::{
     AdjacencyDirection, GraphMutation, MutationLimits, MutationSummary, NodeId, NodeRecord,
     NodeSetAssignment, ProjectedNodeRecord, PropertyFilter, RelId, RelRecord,
 };
@@ -138,7 +138,7 @@ impl GraphExecutionRead for GraphStore {
         &self,
         label_id: LabelId,
         property: &str,
-        values: &[skein_core::Value],
+        values: &[hawdb_core::Value],
         required_properties: &BTreeSet<String>,
         consumer: &mut dyn FnMut(ProjectedNodeRecord) -> Result<ScanControl>,
     ) -> Result<ScanControl> {
@@ -167,7 +167,7 @@ impl GraphExecutionRead for GraphStore {
         &self,
         label_id: LabelId,
         property: &str,
-        values: &[skein_core::Value],
+        values: &[hawdb_core::Value],
         consumer: &mut dyn FnMut(NodeRecord) -> Result<ScanControl>,
     ) -> Result<ScanControl> {
         let mut consumer_error = None;
@@ -190,7 +190,7 @@ impl GraphExecutionRead for GraphStore {
     fn visit_nodes_by_composite_property_owned(
         &self,
         label_id: LabelId,
-        predicates: &[(String, skein_core::Value)],
+        predicates: &[(String, hawdb_core::Value)],
         consumer: &mut dyn FnMut(NodeRecord) -> Result<ScanControl>,
     ) -> Result<ScanControl> {
         adapt_node_consumer(consumer, |consumer| {
@@ -203,7 +203,7 @@ impl GraphExecutionRead for GraphStore {
     fn visit_nodes_by_composite_range_owned(
         &self,
         label_id: LabelId,
-        seek: &skein_plan::CompositeRangeSeek,
+        seek: &hawdb_plan::CompositeRangeSeek,
         consumer: &mut dyn FnMut(NodeRecord) -> Result<ScanControl>,
     ) -> Result<ScanControl> {
         adapt_node_consumer(consumer, |consumer| {
@@ -215,8 +215,8 @@ impl GraphExecutionRead for GraphStore {
         &self,
         label_id: LabelId,
         property: &str,
-        lower: Option<&(skein_core::Value, bool)>,
-        upper: Option<&(skein_core::Value, bool)>,
+        lower: Option<&(hawdb_core::Value, bool)>,
+        upper: Option<&(hawdb_core::Value, bool)>,
         consumer: &mut dyn FnMut(NodeRecord) -> Result<ScanControl>,
     ) -> Result<ScanControl> {
         adapt_node_consumer(consumer, |consumer| {
@@ -243,15 +243,15 @@ impl GraphExecutionRead for GraphStore {
     fn projected_graph_definition(
         &self,
         name: &str,
-    ) -> Option<skein_storage::ProjectedGraphDefinition> {
+    ) -> Option<hawdb_storage::ProjectedGraphDefinition> {
         GraphStore::projected_graph_definition(self, name).cloned()
     }
 
     fn visit_source_scan_candidates(
         &self,
-        predicate: &skein_storage::ScanPredicate,
+        predicate: &hawdb_storage::ScanPredicate,
         limits: SourceScanReadLimits,
-        task_context: Option<&skein_core::RuntimeTaskContext>,
+        task_context: Option<&hawdb_core::RuntimeTaskContext>,
         consumer: &mut dyn FnMut(SourceScanCandidateRow) -> Result<ScanControl>,
     ) -> Result<SourceScanCandidateVisit> {
         let mut consumer_error = None;
@@ -345,7 +345,7 @@ impl GraphExecutionRead for GraphStore {
         direction: AdjacencyDirection,
         filter: &PropertyFilter,
         consumer: &mut dyn FnMut(RelRecord) -> Result<ScanControl>,
-    ) -> Result<(ScanControl, Option<skein_storage::ScanPruningReport>)> {
+    ) -> Result<(ScanControl, Option<hawdb_storage::ScanPruningReport>)> {
         let mut consumer_error = None;
         let (control, report) = GraphStore::visit_adjacent_relationships_with_filter_owned(
             self,
@@ -375,7 +375,7 @@ impl GraphExecutionRead for GraphStore {
         filter: &PropertyFilter,
         memory: AdjacencyReadMemory<'_>,
         consumer: &mut dyn FnMut(RelRecord) -> Result<ScanControl>,
-    ) -> Result<(ScanControl, Option<skein_storage::ScanPruningReport>)> {
+    ) -> Result<(ScanControl, Option<hawdb_storage::ScanPruningReport>)> {
         let mut entries = Vec::new();
         let mut key_lease = memory
             .account
@@ -498,7 +498,7 @@ fn push_ordered_adjacency_entry(
     let entry_bytes = std::mem::size_of::<(NodeId, RelId)>();
     let required_bytes = entries.len().saturating_add(1).saturating_mul(entry_bytes);
     if required_bytes > memory_budget_bytes {
-        return Err(crate::error::SkeinError::Execution(format!(
+        return Err(crate::error::HawdbError::Execution(format!(
             "ordered adjacency keys use {required_bytes} bytes, exceeding blocking_operator_bytes {memory_budget_bytes}"
         )));
     }
@@ -522,7 +522,7 @@ fn emit_ordered_adjacency_entries(
     entries.sort_unstable();
     for (_, relationship_id) in entries {
         let Some(relationship) = store.relationship_owned(relationship_id)? else {
-            return Err(crate::error::SkeinError::StorageIntegrity(format!(
+            return Err(crate::error::HawdbError::StorageIntegrity(format!(
                 "ordered adjacency references missing relationship {}",
                 relationship_id.0
             )));

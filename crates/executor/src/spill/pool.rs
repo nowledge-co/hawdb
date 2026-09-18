@@ -1,5 +1,5 @@
 use crate::ExecutionMemoryConfig;
-use skein_core::{Result, SkeinError};
+use hawdb_core::{HawdbError, Result};
 use std::collections::BTreeMap;
 use std::io::ErrorKind;
 use std::path::{Path, PathBuf};
@@ -7,7 +7,7 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Condvar, Mutex, MutexGuard, OnceLock};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
-pub(super) const SPILL_FILE_PREFIX: &str = "skein-spill-v1-";
+pub(super) const SPILL_FILE_PREFIX: &str = "hawdb-spill-v1-";
 pub(super) const SPILL_FILE_SUFFIX: &str = ".spill";
 static SPILL_POOLS: OnceLock<Mutex<BTreeMap<PathBuf, Arc<SharedSpillPool>>>> = OnceLock::new();
 static PROCESS_MARKER: OnceLock<String> = OnceLock::new();
@@ -120,13 +120,13 @@ impl SpillPool {
         free_space_probe: Arc<dyn SpillSpaceProbe>,
     ) -> Result<Self> {
         std::fs::create_dir_all(&memory.spill_directory).map_err(|error| {
-            SkeinError::Execution(format!(
+            HawdbError::Execution(format!(
                 "failed to create spill directory '{}': {error}",
                 memory.spill_directory.display()
             ))
         })?;
         let directory = std::fs::canonicalize(&memory.spill_directory).map_err(|error| {
-            SkeinError::Execution(format!(
+            HawdbError::Execution(format!(
                 "failed to resolve spill directory '{}': {error}",
                 memory.spill_directory.display()
             ))
@@ -176,7 +176,7 @@ impl SpillPool {
     pub(super) fn begin_run(&self, operator: &str) -> Result<()> {
         let mut state = lock_unpoisoned(&self.shared.state);
         if state.active_runs >= state.limits.max_total_runs {
-            return Err(SkeinError::Execution(format!(
+            return Err(HawdbError::Execution(format!(
                 "{operator} exceeded shared max_total_spill_runs {}",
                 state.limits.max_total_runs
             )));
@@ -200,7 +200,7 @@ impl SpillPool {
             let mut state = lock_unpoisoned(&self.shared.state);
             let next_active = state.active_bytes.saturating_add(bytes);
             if next_active > state.limits.max_total_bytes {
-                return Err(SkeinError::Execution(format!(
+                return Err(HawdbError::Execution(format!(
                     "{operator} exceeded shared max_total_spill_bytes {} (next active total {next_active})",
                     state.limits.max_total_bytes
                 )));
@@ -236,7 +236,7 @@ impl SpillPool {
                             state.free_space_probe_failures.saturating_add(1);
                         self.shared.free_space_probe_ready.notify_all();
                         drop(state);
-                        return Err(SkeinError::Execution(format!(
+                        return Err(HawdbError::Execution(format!(
                             "failed to inspect free space for spill directory '{}': {error}",
                             self.shared.directory.display()
                         )));
@@ -253,7 +253,7 @@ impl SpillPool {
                 .saturating_add(state.unreflected_reserved_bytes)
                 .saturating_add(bytes);
             if available < required {
-                return Err(SkeinError::Execution(format!(
+                return Err(HawdbError::Execution(format!(
                     "{operator} cannot preserve min_spill_free_bytes {}: filesystem has {available} bytes available and {bytes} bytes were requested",
                     state.limits.min_free_bytes
                 )));
@@ -421,7 +421,7 @@ fn cleanup_orphan_files(
     let mut stats = OrphanCleanupStats::default();
     let current_prefix = format!("{SPILL_FILE_PREFIX}{current_process_marker}-");
     let entries = std::fs::read_dir(directory).map_err(|error| {
-        SkeinError::Execution(format!(
+        HawdbError::Execution(format!(
             "failed to inspect spill directory '{}': {error}",
             directory.display()
         ))
@@ -543,7 +543,7 @@ mod tests {
             min_spill_free_bytes: NonZeroU64::new(1).unwrap(),
             spill_free_space_probe_interval_bytes: NonZeroU64::new(probe_interval_bytes).unwrap(),
             spill_directory: std::env::temp_dir().join(format!(
-                "skein-spill-pool-test-{}-{name}-{sequence}",
+                "hawdb-spill-pool-test-{}-{name}-{sequence}",
                 std::process::id()
             )),
             ..ExecutionMemoryConfig::default()

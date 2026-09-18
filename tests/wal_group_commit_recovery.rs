@@ -4,7 +4,7 @@ mod recovery;
 #[cfg(test)]
 mod tests {
     use super::recovery::*;
-    use skein::Database;
+    use hawdb::Database;
     use std::io::Write;
     use std::path::PathBuf;
     use std::sync::atomic::{AtomicUsize, Ordering};
@@ -18,7 +18,7 @@ mod tests {
         fn create(rows: &[(i64, &str)]) -> Self {
             static SEQUENCE: AtomicUsize = AtomicUsize::new(0);
             let path = std::env::temp_dir().join(format!(
-                "skein-wal-benchmark-recovery-{}-{}",
+                "hawdb-wal-benchmark-recovery-{}-{}",
                 std::process::id(),
                 SEQUENCE.fetch_add(1, Ordering::Relaxed),
             ));
@@ -168,7 +168,7 @@ mod tests {
                     .starts_with("wal.")
                     && path
                         .extension()
-                        .is_some_and(|extension| extension == "skein")
+                        .is_some_and(|extension| extension == "hawdb")
             })
             .expect("fixture must retain its WAL");
         std::fs::OpenOptions::new()

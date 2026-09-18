@@ -1,6 +1,6 @@
 use super::*;
-use skein_cypher::ScalarBinaryOp as AstOp;
-use skein_expression::ScalarBinaryOp;
+use hawdb_cypher::ScalarBinaryOp as AstOp;
+use hawdb_expression::ScalarBinaryOp;
 
 pub(super) fn plan_case_scalar(
     scope: &BTreeSet<String>,
@@ -135,7 +135,7 @@ fn specialize_case(
                     } else {
                         "expression"
                     };
-                    return Err(SkeinError::Semantic(format!(
+                    return Err(HawdbError::Semantic(format!(
                         "unknown variable '{variable}' in {position}"
                     )));
                 }
@@ -204,7 +204,7 @@ mod tests {
 
     #[test]
     fn case_shape_specialization_respects_projected_column_shadowing() {
-        let statement = skein_cypher::parse("MATCH (n:Item) RETURN CASE WHEN lower(n.name) = 'first' THEN 0 WHEN lower(n.name) = 'second' THEN 0 WHEN list_contains(n.aliases, 'alias') THEN 1 ELSE 2 END").unwrap();
+        let statement = hawdb_cypher::parse("MATCH (n:Item) RETURN CASE WHEN lower(n.name) = 'first' THEN 0 WHEN lower(n.name) = 'second' THEN 0 WHEN list_contains(n.aliases, 'alias') THEN 1 ELSE 2 END").unwrap();
         let Statement::MatchReturn(query) = statement else {
             panic!("expected MATCH");
         };

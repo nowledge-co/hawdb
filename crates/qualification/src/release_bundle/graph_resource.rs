@@ -3,8 +3,8 @@ use crate::{
     ProductionGraphResourcePhase, ProductionGraphResourceRunEvidence,
     ProductionGraphResourceSummary,
 };
+use hawdb::ProductionQualificationIdentity;
 use serde_json::Value;
-use skein::ProductionQualificationIdentity;
 
 pub(super) fn validate(
     artifact: &Value,

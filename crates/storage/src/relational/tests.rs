@@ -889,7 +889,7 @@ fn sparse_authoritative_recovery_matches_materialized_predicate_replay() {
         .unwrap()
         .as_nanos();
     let directory = std::env::temp_dir().join(format!(
-        "skein-sparse-relational-recovery-{}-{nonce}",
+        "hawdb-sparse-relational-recovery-{}-{nonce}",
         std::process::id()
     ));
     let row_page_config = RelationalRowPagePublicationConfig::default();
@@ -1013,7 +1013,7 @@ fn sparse_live_staging_validates_constraints_without_counting_support_rows() {
         .unwrap()
         .as_nanos();
     let directory = std::env::temp_dir().join(format!(
-        "skein-sparse-relational-live-{}-{nonce}",
+        "hawdb-sparse-relational-live-{}-{nonce}",
         std::process::id()
     ));
     let row_page_config = RelationalRowPagePublicationConfig::default();
@@ -1158,7 +1158,7 @@ fn sparse_live_staging_hydrates_authoritative_unique_conflicts() {
         .unwrap()
         .as_nanos();
     let directory = std::env::temp_dir().join(format!(
-        "skein-sparse-relational-unique-live-{}-{nonce}",
+        "hawdb-sparse-relational-unique-live-{}-{nonce}",
         std::process::id()
     ));
     let row_page_config = RelationalRowPagePublicationConfig::default();
@@ -2890,7 +2890,7 @@ fn checkpoint_file_keeps_overflow_out_of_resident_state_and_checks_size_before_r
     .expect_err("streaming checkpoint writer must enforce its byte admission");
     assert!(matches!(error, RelationalError::Admission(_)));
     let path = std::env::temp_dir().join(format!(
-        "skein-relational-checkpoint-{}-{}.skein",
+        "hawdb-relational-checkpoint-{}-{}.hawdb",
         std::process::id(),
         std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
@@ -3308,7 +3308,7 @@ fn relational_index_shadow_publishes_generation_fenced_cold_pages() {
         .unwrap()
         .as_nanos();
     let directory = std::env::temp_dir().join(format!(
-        "skein-relational-index-shadow-{}-{nonce}",
+        "hawdb-relational-index-shadow-{}-{nonce}",
         std::process::id()
     ));
     let config = RelationalIndexShadowConfig {
@@ -3458,7 +3458,7 @@ fn relational_index_shadow_range_seek_traverses_multiple_pages_in_both_direction
         .unwrap()
         .as_nanos();
     let directory = std::env::temp_dir().join(format!(
-        "skein-relational-index-range-{}-{nonce}",
+        "hawdb-relational-index-range-{}-{nonce}",
         std::process::id()
     ));
     let config = RelationalIndexShadowConfig {
@@ -3605,7 +3605,7 @@ fn relational_index_shadow_publishes_skew_aware_leading_prefix_statistics() {
         .unwrap()
         .as_nanos();
     let directory = std::env::temp_dir().join(format!(
-        "skein-relational-index-statistics-{}-{nonce}",
+        "hawdb-relational-index-statistics-{}-{nonce}",
         std::process::id()
     ));
     let config = RelationalIndexShadowConfig::default();
@@ -3680,7 +3680,7 @@ fn relational_index_bound_open_verifies_one_canonical_manifest_image() {
         .unwrap()
         .as_nanos();
     let directory = std::env::temp_dir().join(format!(
-        "skein-relational-index-bound-{}-{nonce}",
+        "hawdb-relational-index-bound-{}-{nonce}",
         std::process::id()
     ));
     let config = RelationalIndexShadowConfig::default();
@@ -3778,7 +3778,7 @@ fn relational_index_shadow_streams_rows_without_materialized_postings() {
         .unwrap()
         .as_nanos();
     let directory = std::env::temp_dir().join(format!(
-        "skein-relational-index-row-stream-{}-{nonce}",
+        "hawdb-relational-index-row-stream-{}-{nonce}",
         std::process::id()
     ));
     let config = RelationalIndexShadowConfig {
@@ -3871,7 +3871,7 @@ fn relational_index_shadow_rejects_and_cleans_excess_spill_runs() {
         .unwrap()
         .as_nanos();
     let directory = std::env::temp_dir().join(format!(
-        "skein-relational-index-spill-rejection-{}-{nonce}",
+        "hawdb-relational-index-spill-rejection-{}-{nonce}",
         std::process::id()
     ));
     let config = RelationalIndexShadowConfig {
@@ -4002,7 +4002,7 @@ fn required_relational_index_roots_cover_constraints_and_foreign_keys() {
         .unwrap()
         .as_nanos();
     let directory = std::env::temp_dir().join(format!(
-        "skein-relational-required-roots-{}-{nonce}",
+        "hawdb-relational-required-roots-{}-{nonce}",
         std::process::id()
     ));
     let shadow_config = RelationalIndexShadowConfig::default();
@@ -4233,7 +4233,7 @@ fn relational_index_shadow_demand_reads_match_materialized_oracle() {
         .unwrap()
         .as_nanos();
     let directory = std::env::temp_dir().join(format!(
-        "skein-relational-index-demand-read-{}-{nonce}",
+        "hawdb-relational-index-demand-read-{}-{nonce}",
         std::process::id()
     ));
     let config = RelationalIndexShadowConfig {
@@ -4739,7 +4739,7 @@ fn relational_index_wal_deltas_merge_with_cold_base_and_stay_bounded() {
         .unwrap()
         .as_nanos();
     let directory = std::env::temp_dir().join(format!(
-        "skein-relational-index-recovery-{}-{nonce}",
+        "hawdb-relational-index-recovery-{}-{nonce}",
         std::process::id()
     ));
     let shadow_config = RelationalIndexShadowConfig {
@@ -5062,7 +5062,7 @@ fn relational_index_wal_deltas_merge_with_cold_base_and_stay_bounded() {
     )
     .is_err());
     let wrong_source = RelationalRecoverySourceIdentity {
-        record_sequence_sha256: skein_integrity::Sha256Digest::from_bytes([0x5a; 32]),
+        record_sequence_sha256: hawdb_integrity::Sha256Digest::from_bytes([0x5a; 32]),
         ..recovery_source
     };
     assert!(RelationalIndexRecoveryReader::open_latest(
@@ -5897,7 +5897,7 @@ fn canonical_metadata_state(
         .unwrap()
         .as_nanos();
     let directory =
-        std::env::temp_dir().join(format!("skein-{fixture}-{}-{nonce}", std::process::id()));
+        std::env::temp_dir().join(format!("hawdb-{fixture}-{}-{nonce}", std::process::id()));
     let config = RelationalRowPagePublicationConfig::default();
     let deltas = state
         .row_page_snapshot_deltas(1, 1, config)
@@ -5936,7 +5936,7 @@ fn assert_relational_index_artifact_metadata(
     expected: RelationalIndexArtifactMetadata,
 ) {
     let encoded = std::fs::read(path).expect("read relational index generation artifact");
-    let actual = skein_integrity::integrity_digest(&encoded);
+    let actual = hawdb_integrity::integrity_digest(&encoded);
     assert_eq!(expected.encoded_len, encoded.len() as u64);
     assert_eq!(expected.encoded_crc32c, actual.crc32c.as_u64());
     assert_eq!(expected.encoded_sha256, actual.sha256);

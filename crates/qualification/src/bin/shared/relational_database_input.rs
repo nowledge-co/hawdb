@@ -1,5 +1,5 @@
+use hawdb::{DatabaseConfig, RelationalIndexMode, StorageResidencyMode};
 use serde::Deserialize;
-use skein::{DatabaseConfig, RelationalIndexMode, StorageResidencyMode};
 use std::num::NonZeroUsize;
 
 #[derive(Debug, Deserialize)]

@@ -16,9 +16,9 @@ not representative Mem production qualification.
 Run the two modes separately so process high-water RSS remains comparable:
 
 ```bash
-SKEIN_SEARCH_GENERATION_BENCH_MODE=streaming \
+HAWDB_SEARCH_GENERATION_BENCH_MODE=streaming \
   cargo bench --bench search_generation
-SKEIN_SEARCH_GENERATION_BENCH_MODE=resident \
+HAWDB_SEARCH_GENERATION_BENCH_MODE=resident \
   cargo bench --bench search_generation
 ```
 
@@ -50,7 +50,7 @@ and peak RSS, page faults, recovery, and release-bound qualification evidence.
 
 ## Single-Pass Generation Build
 
-Issue [#219](https://github.com/nowledge-co/skein/issues/219) removes repeated
+Issue [#219](https://github.com/nowledge-co/hawdb/issues/219) removes repeated
 source spool decoding. One scan borrows each validated document for lexical
 ingest and RaBitQ encoding, then transfers ownership to the segment builder.
 The segment and RaBitQ builders finish before lexical external merge, releasing
@@ -86,11 +86,11 @@ reduction in physical-device I/O or total build time. Artifact verification,
 lexical spill/merge, output writes, and OS caching are separate costs.
 
 ```bash
-cargo test -p skein-search fused_generation_
-cargo test -p skein-search --no-default-features fused_generation_
-bazel test //crates/search:skein_search_tests //:skein_unit_tests \
-  //crates/fuzz:skein_fuzz_tests //crates/fuzz:skein_fuzz_cli_tests \
-  //:skein_linux_ci_fuzz_smoke_test
+cargo test -p hawdb-search fused_generation_
+cargo test -p hawdb-search --no-default-features fused_generation_
+bazel test //crates/search:hawdb_search_tests //:hawdb_unit_tests \
+  //crates/fuzz:hawdb_fuzz_tests //crates/fuzz:hawdb_fuzz_cli_tests \
+  //:hawdb_linux_ci_fuzz_smoke_test
 ```
 
 ### Local Baseline Comparison

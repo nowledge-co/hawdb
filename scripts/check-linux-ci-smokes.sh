@@ -2,14 +2,14 @@
 set -euo pipefail
 
 if [[ "$#" -lt 8 ]]; then
-  echo "usage: $0 SMOKE SKEIN_CLI SKEIN_SHADOW_SELF PREVIOUS_WRAPPER_ADAPTER APPEND_FUZZ STORAGE_FUZZ OPTIMIZER_FUZZ BENCHMARK..." >&2
+  echo "usage: $0 SMOKE HAWDB_CLI HAWDB_SHADOW_SELF PREVIOUS_WRAPPER_ADAPTER APPEND_FUZZ STORAGE_FUZZ OPTIMIZER_FUZZ BENCHMARK..." >&2
   exit 2
 fi
 
 readonly smoke="$1"
 shift
-readonly skein_cli="$1"
-readonly skein_shadow_self="$2"
+readonly hawdb_cli="$1"
+readonly hawdb_shadow_self="$2"
 readonly previous_wrapper_adapter="$3"
 readonly append_fuzz="$4"
 readonly storage_fuzz="$5"
@@ -23,8 +23,8 @@ readonly row_page_lending_benchmark_index=$((final_optimizer_benchmark_group_sta
 readonly wal_group_commit_benchmark_index=$((${#benchmark_smokes[@]} - 1))
 
 for executable in \
-  "$skein_cli" \
-  "$skein_shadow_self" \
+  "$hawdb_cli" \
+  "$hawdb_shadow_self" \
   "$previous_wrapper_adapter" \
   "$append_fuzz" \
   "$storage_fuzz" \
@@ -37,7 +37,7 @@ for executable in \
 done
 
 readonly work_root="${TEST_TMPDIR:-$(mktemp -d)}"
-export SKEIN_ENABLE_COMPATIBILITY_TOOLS=1
+export HAWDB_ENABLE_COMPATIBILITY_TOOLS=1
 
 run_fuzz_smokes() {
   local root="$work_root/fuzz-smokes"
@@ -71,9 +71,9 @@ run_fuzz_smokes() {
     test ! -s "$stream"
   done
   python3 - \
-    "$root/skein-append-fuzz-seed-7-cases-8-steps-64-cur.json" \
-    "$root/skein-storage-fuzz-seed-7-cases-32-cur.json" \
-    "$root/skein-optimizer-fuzz-seed-7-cases-12-cur.json" <<'PY'
+    "$root/hawdb-append-fuzz-seed-7-cases-8-steps-64-cur.json" \
+    "$root/hawdb-storage-fuzz-seed-7-cases-32-cur.json" \
+    "$root/hawdb-optimizer-fuzz-seed-7-cases-12-cur.json" <<'PY'
 import json
 import sys
 
@@ -84,17 +84,17 @@ with open(sys.argv[2], encoding="utf-8") as file:
 with open(sys.argv[3], encoding="utf-8") as file:
     optimizer = json.load(file)
 
-assert append["protocol"] == "skein-append-state-machine-fuzz-v1"
+assert append["protocol"] == "hawdb-append-state-machine-fuzz-v1"
 assert append["campaign_seed"] == 7
 assert append["case_count"] == 8
 assert append["steps_per_case"] == 64
 assert append["success"] is True
-assert storage["protocol"] == "skein-storage-parser-fuzz-v1"
+assert storage["protocol"] == "hawdb-storage-parser-fuzz-v1"
 assert storage["seed"] == 7
 assert storage["requested_case_count"] == 32
 assert storage["failed_case_count"] == 0
 assert storage["success"] is True
-assert optimizer["protocol"] == "skein-multi-oracle-fuzz-v1"
+assert optimizer["protocol"] == "hawdb-multi-oracle-fuzz-v1"
 assert optimizer["seed"] == 7
 assert optimizer["requested_case_count"] == 12
 assert optimizer["failed_case_count"] == 0
@@ -172,7 +172,7 @@ run_named_optimizer_benchmark_smoke() {
   local selected=-1
   local index
   for index in "${!benchmark_smokes[@]}"; do
-    if [[ "$(basename "${benchmark_smokes[index]}")" == "skein_bench_$name" ]]; then
+    if [[ "$(basename "${benchmark_smokes[index]}")" == "hawdb_bench_$name" ]]; then
       if (( selected >= 0 )); then
         echo "duplicate optimizer benchmark: $name" >&2
         return 2
@@ -201,7 +201,7 @@ run_fixture_contract_smoke() {
   mkdir -p "$root"
   cat > "$root/contract.json" <<'JSON'
 {
-  "protocol": "skein-nowledge-fixture-contract",
+  "protocol": "hawdb-nowledge-fixture-contract",
   "fixture": "mini",
   "check_count": 2,
   "setup": [],
@@ -240,7 +240,7 @@ run_fixture_contract_smoke() {
 }
 JSON
 
-  "$skein_cli" nowledge-fixture-contract-command-check \
+  "$hawdb_cli" nowledge-fixture-contract-command-check \
     --start-check 1 \
     "$root/contract.json" \
     python3 -c 'import json,sys; json.load(sys.stdin); print(json.dumps({"rows": []}))' \
@@ -251,7 +251,7 @@ JSON
   grep -q '"previous_wrapper_contract_evidence"' "$root/selected.json"
   grep -q '"missing_wrapper_identity"' "$root/selected.json"
 
-  if "$skein_cli" nowledge-fixture-contract-command-check \
+  if "$hawdb_cli" nowledge-fixture-contract-command-check \
     --require-full-contract \
     --start-check 1 \
     "$root/contract.json" \
@@ -270,20 +270,20 @@ JSON
 create_demo_database() {
   local root="$1"
   mkdir -p "$root"
-  TMPDIR="$root" "$skein_cli" > "$root/demo.out"
+  TMPDIR="$root" "$hawdb_cli" > "$root/demo.out"
 }
 
 run_storage_recovery_smoke() {
   local root="$work_root/storage-recovery"
   create_demo_database "$root"
-  "$skein_cli" storage-recovery-report \
+  "$hawdb_cli" storage-recovery-report \
     --max-wal-replay-entries 100 \
     --require-durable \
     --require-checkpoint-boundary \
     --require-bounded-wal-replay \
     --require-clean-tail \
-    "$root/skein-demo" > "$root/recovery.json"
-  grep -q '"protocol": "skein-storage-recovery-report"' "$root/recovery.json"
+    "$root/hawdb-demo" > "$root/recovery.json"
+  grep -q '"protocol": "hawdb-storage-recovery-report"' "$root/recovery.json"
   grep -q '"durable_recovery_observed": true' "$root/recovery.json"
   grep -q '"checkpoint_boundary_present": true' "$root/recovery.json"
   grep -q '"wal_replay_bounded": true' "$root/recovery.json"
@@ -293,13 +293,13 @@ run_storage_recovery_smoke() {
 run_background_maintenance_smoke() {
   local root="$work_root/background-maintenance"
   create_demo_database "$root"
-  "$skein_cli" background-maintenance-report \
+  "$hawdb_cli" background-maintenance-report \
     --require-cutover-ready \
-    "$root/skein-demo" > "$root/background.json"
-  grep -q '"protocol": "skein-background-maintenance-report"' "$root/background.json"
+    "$root/hawdb-demo" > "$root/background.json"
+  grep -q '"protocol": "hawdb-background-maintenance-report"' "$root/background.json"
   grep -q '"total_candidates": 4' "$root/background.json"
   grep -q '"kind": "search_projection_graph_delta"' "$root/background.json"
-  grep -q '"kind": "skein_lightning_bootstrap_export"' "$root/background.json"
+  grep -q '"kind": "hawdb_lightning_bootstrap_export"' "$root/background.json"
   grep -q '"priority": "background"' "$root/background.json"
   grep -q '"admission": "admit"' "$root/background.json"
 }
@@ -336,14 +336,14 @@ run_previous_wrapper_adapter_smoke() {
   local root="$work_root/previous-wrapper"
   mkdir -p "$root"
   write_previous_wrapper "$root/previous_wrapper.py"
-  "$skein_cli" external-shadow-adapter-smoke \
+  "$hawdb_cli" external-shadow-adapter-smoke \
     --require-previous-wrapper \
     --shadow-trace "$root/adapter-shadow.jsonl" \
     previous-wrapper \
     "$previous_wrapper_adapter" \
     --persistent-command python3 -u "$root/previous_wrapper.py" \
     > "$root/adapter.json"
-  grep -q '"protocol": "skein-external-shadow-adapter-smoke"' "$root/adapter.json"
+  grep -q '"protocol": "hawdb-external-shadow-adapter-smoke"' "$root/adapter.json"
   grep -q '"engine_kind": "previous_wrapper"' "$root/adapter.json"
   grep -q '"wrapper_identity": null' "$root/adapter.json"
   grep -q '"adapter_smoke_ready": true' "$root/adapter.json"
@@ -462,7 +462,7 @@ for route in routes:
     route_probe["route"] = route
     probes.append(route_probe)
 write("query-runtime-preflight.json", {
-    "protocol": "skein-nowledge-query-runtime-preflight-v1",
+    "protocol": "hawdb-nowledge-query-runtime-preflight-v1",
     "ready": True,
     "database_opened": True,
     "probe_count": len(routes),
@@ -495,7 +495,7 @@ areas = {
     ]
 }
 write("library-readiness.json", {
-    "protocol": "skein-nowledge-mem-library-readiness-v1",
+    "protocol": "hawdb-nowledge-mem-library-readiness-v1",
     "present": True,
     "ready": True,
     "mode": "shadow_read_only",
@@ -503,7 +503,7 @@ write("library-readiness.json", {
     "blocked_area_count": 0,
     "blocker_codes": [],
     "open_report": {
-        "protocol": "skein-nowledge-mem-open-report",
+        "protocol": "hawdb-nowledge-mem-open-report",
         "mode": "shadow_read_only",
         "graph_opened": True,
         "search_projection_opened": True,
@@ -511,17 +511,17 @@ write("library-readiness.json", {
     "readiness_by_area": areas,
 })
 write("cutover-controls.json", {
-    "protocol": "skein-nowledge-mem-cutover-controls-v1",
+    "protocol": "hawdb-nowledge-mem-cutover-controls-v1",
     "ready": True,
     "controls": {
-        "graph_reads": "skein",
-        "search_reads": "skein",
+        "graph_reads": "hawdb",
+        "search_reads": "hawdb",
         "dual_writes": "enabled",
         "initial_import": "disabled",
         "projection_catch_up": "enabled",
     },
-    "graph": {"read_selected_skein": True, "read_effective": True},
-    "search": {"read_selected_skein": True, "read_effective": True},
+    "graph": {"read_selected_hawdb": True, "read_effective": True},
+    "search": {"read_selected_hawdb": True, "read_effective": True},
     "work": {
         "dual_writes_enabled": True,
         "initial_import_enabled": False,
@@ -531,8 +531,8 @@ write("cutover-controls.json", {
         "projection_catch_up_enabled": True,
     },
     "production_status": {
-        "graph": {"skein_cutover_effective": True},
-        "search": {"skein_cutover_effective": True},
+        "graph": {"hawdb_cutover_effective": True},
+        "search": {"hawdb_cutover_effective": True},
     },
     "redaction": {
         "query_text_copied": False,
@@ -542,7 +542,7 @@ write("cutover-controls.json", {
     "blocker_codes": [],
 })
 write("operations-readiness.json", {
-    "protocol": "skein-nowledge-mem-operations-readiness-v1",
+    "protocol": "hawdb-nowledge-mem-operations-readiness-v1",
     "present": True,
     "ready": True,
     "mode": "writable_cutover",
@@ -568,16 +568,16 @@ PY
 run_migration_gate_smoke() {
   local root="$work_root/migration-ready"
   create_demo_database "$root"
-  "$skein_cli" storage-recovery-report \
+  "$hawdb_cli" storage-recovery-report \
     --max-wal-replay-entries 100 \
     --require-durable \
     --require-checkpoint-boundary \
     --require-bounded-wal-replay \
     --require-clean-tail \
-    "$root/skein-demo" > "$root/recovery.json"
-  "$skein_cli" background-maintenance-report \
+    "$root/hawdb-demo" > "$root/recovery.json"
+  "$hawdb_cli" background-maintenance-report \
     --require-cutover-ready \
-    "$root/skein-demo" > "$root/background.json"
+    "$root/hawdb-demo" > "$root/background.json"
   write_migration_evidence "$root"
 
   mkdir -p "$root/crates/nmem-graph/src"
@@ -587,7 +587,7 @@ pub fn query() -> &'static str {
 }
 RS
 
-  "$skein_cli" nowledge-cypher-migration-gate \
+  "$hawdb_cli" nowledge-cypher-migration-gate \
     --require-ready \
     --allow-self-shadow \
     --shadow-ready \
@@ -599,7 +599,7 @@ RS
     --previous-wrapper-contract-evidence-json "$root/previous-wrapper-contract-evidence.json" \
     "$root" \
     self \
-    "$skein_shadow_self" \
+    "$hawdb_shadow_self" \
     > "$root/migration-gate.json"
   grep -q '"decision": "ready"' "$root/migration-gate.json"
   grep -q '"shadow_run"' "$root/migration-gate.json"
@@ -621,7 +621,7 @@ RS
   grep -q '"project_graph"' "$root/migration-gate.json"
   test -s "$root/shadow.jsonl"
 
-  if "$skein_cli" nowledge-replacement-summary \
+  if "$hawdb_cli" nowledge-replacement-summary \
     --require-production-ready \
     "$root/migration-gate.json" \
     > "$root/replacement-summary.json" 2> "$root/replacement.err"; then
@@ -636,11 +636,11 @@ RS
   grep -q '"wrapper_identity": "nowledge-previous-wrapper:ci-smoke"' "$root/replacement-summary.json"
   grep -q "nowledge replacement summary is not production cutover ready" "$root/replacement.err"
 
-  "$skein_cli" nowledge-previous-wrapper-preflight-check \
+  "$hawdb_cli" nowledge-previous-wrapper-preflight-check \
     --wrapper-identity "nowledge-previous-wrapper:ci-smoke" \
     --bundle-dir "$root" \
     > "$root/preflight.json"
-  grep -q '"protocol": "skein-nowledge-previous-wrapper-preflight-check"' "$root/preflight.json"
+  grep -q '"protocol": "hawdb-nowledge-previous-wrapper-preflight-check"' "$root/preflight.json"
   grep -q '"ready": false' "$root/preflight.json"
   grep -q '"migration_gate"' "$root/preflight.json"
   grep -q '"replacement_summary"' "$root/preflight.json"
@@ -681,7 +681,7 @@ assert report["release_summary"]["background_maintenance_executable_search_proje
 assert report["release_summary"]["background_maintenance_admitted_search_projection_graph_delta_count"] >= 0
 PY
 
-  if "$skein_cli" nowledge-previous-wrapper-preflight-check \
+  if "$hawdb_cli" nowledge-previous-wrapper-preflight-check \
     --require-ready \
     --wrapper-identity "nowledge-previous-wrapper:ci-smoke" \
     --bundle-dir "$root" \
@@ -701,12 +701,12 @@ pub fn query() -> &'static str {
     "MATCH (m:Memory) WHERE m.id = $id RETURN m.uncovered_property"
 }
 RS
-  if "$skein_cli" nowledge-cypher-migration-gate \
+  if "$hawdb_cli" nowledge-cypher-migration-gate \
     --require-ready \
     --allow-self-shadow \
     "$root" \
     self \
-    "$skein_shadow_self" \
+    "$hawdb_shadow_self" \
     > "$root/gate.json" 2> "$root/gate.err"; then
     echo "expected blocked migration gate to fail" >&2
     return 1

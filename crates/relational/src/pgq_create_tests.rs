@@ -1,12 +1,12 @@
 //! Adapt real relational DDL metadata to the read-only SQL creation contract.
 
 use crate::compile_relational_statement_sql;
-use skein_sql::{
+use hawdb_sql::{
     bind_postgres_create_property_graph, bind_postgres_graph_tables, syntax, PgqBindingContext,
     PgqCreateBindErrorCode, PgqDataType, PgqSourceCatalog, PgqSourceColumnSchema,
     PgqSourceForeignKeySchema, PgqSourceTableSchema, PropertyGraphCatalog, SqlDataType,
 };
-use skein_storage::{
+use hawdb_storage::{
     RelationalMutationLimits, RelationalOverflowConfig, RelationalScalarType, RelationalState,
 };
 use std::collections::BTreeMap;

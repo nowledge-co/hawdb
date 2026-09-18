@@ -1,8 +1,8 @@
 //! Generated artifact names retain their capacity through publication.
 
-use crate::{build_control::checkpoint, build_memory::BuildMemory, Result, SkeinError};
-use skein_core::RuntimeTaskContext;
-use skein_executor::QueryMemoryLease;
+use crate::{build_control::checkpoint, build_memory::BuildMemory, HawdbError, Result};
+use hawdb_core::RuntimeTaskContext;
+use hawdb_executor::QueryMemoryLease;
 use std::ops::Deref;
 use std::path::Path;
 
@@ -29,12 +29,12 @@ impl Name {
         task: &RuntimeTaskContext,
     ) -> Result<Self> {
         checkpoint(task)?;
-        if prefix.len() > 128 - 20 - ".skein".len() {
-            return Err(SkeinError::Execution(
+        if prefix.len() > 128 - 20 - ".hawdb".len() {
+            return Err(HawdbError::Execution(
                 "search artifact prefix exceeds preflight capacity".into(),
             ));
         }
-        Self::formatted(|| format!("{prefix}{generation}.skein"), memory, task)
+        Self::formatted(|| format!("{prefix}{generation}.hawdb"), memory, task)
     }
 
     pub(super) fn temporary_extension(
@@ -64,7 +64,7 @@ impl Name {
         };
         checkpoint(task)?;
         if name.value.capacity() > 128 {
-            return Err(SkeinError::Execution(
+            return Err(HawdbError::Execution(
                 "search artifact name exceeded preflight capacity".into(),
             ));
         }

@@ -2,8 +2,8 @@
 // Each published artifact uses distinct metadata to expose swapped fields.
 
 pub(super) const INITIAL: &str = concat!(
-    "SKEIN_MANIFEST_V1\n",
-    "version\tskein-storage-v1\n",
+    "HAWDB_MANIFEST_V1\n",
+    "version\thawdb-storage-v1\n",
     "checkpoint_generation\tnone\n",
     "checkpoint_encoded_len\tnone\n",
     "checkpoint_encoded_checksum\tnone\n",
@@ -64,12 +64,12 @@ pub(super) const INITIAL: &str = concat!(
     "next_lsn\t1\n",
     "source_scan_commit_epoch\tnone\n",
     "source_scan_descriptor_checksum\tnone\n",
-    "checksum\t3280083155\n",
+    "checksum\t908625116\n",
 );
 
 pub(super) const PUBLISHED: &str = concat!(
-    "SKEIN_MANIFEST_V1\n",
-    "version\tskein-storage-v1\n",
+    "HAWDB_MANIFEST_V1\n",
+    "version\thawdb-storage-v1\n",
     "checkpoint_generation\t7\n",
     "checkpoint_encoded_len\t101\n",
     "checkpoint_encoded_checksum\t102\n",
@@ -130,5 +130,5 @@ pub(super) const PUBLISHED: &str = concat!(
     "next_lsn\t45\n",
     "source_scan_commit_epoch\t39\n",
     "source_scan_descriptor_checksum\t1001\n",
-    "checksum\t2560703859\n",
+    "checksum\t2768364020\n",
 );

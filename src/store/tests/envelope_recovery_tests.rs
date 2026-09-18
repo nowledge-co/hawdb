@@ -1,7 +1,7 @@
 use super::{active_checkpoint_path, refresh_manifest_checkpoint_metadata, unique_test_dir};
-use crate::{Database, DatabaseConfig, SkeinError, Value};
-use skein_storage::text::envelope::{encode_durable_text, read_durable_text_bytes};
-use skein_storage::DurableCompression;
+use crate::{Database, DatabaseConfig, HawdbError, Value};
+use hawdb_storage::text::envelope::{encode_durable_text, read_durable_text_bytes};
+use hawdb_storage::DurableCompression;
 use std::collections::BTreeMap;
 use std::fs;
 use std::path::{Path, PathBuf};
@@ -48,7 +48,7 @@ fn assert_rejected_without_writes(root: &Path, limit: Option<u64>, expected: &st
             Err(error) => error,
             Ok(_) => panic!("invalid checkpoint admitted"),
         };
-        assert!(matches!(error, SkeinError::Storage(_)));
+        assert!(matches!(error, HawdbError::Storage(_)));
         assert!(error.to_string().contains(expected), "{error}");
         assert_eq!(
             files(root),
@@ -70,7 +70,7 @@ fn storage_owned_envelope_preserves_checkpoint_reopen_and_caller_limits() {
     }
     let checkpoint_path = active_checkpoint_path(&fixture.0);
     let checkpoint = fs::read(&checkpoint_path).unwrap();
-    let manifest = fs::read(fixture.0.join("manifest.skein")).unwrap();
+    let manifest = fs::read(fixture.0.join("manifest.hawdb")).unwrap();
     let text = read_durable_text_bytes(&checkpoint, "checkpoint").unwrap();
     assert_eq!(
         encode_durable_text(&text, DurableCompression::Zstd).unwrap(),
@@ -133,7 +133,7 @@ fn storage_owned_envelope_preserves_checkpoint_reopen_and_caller_limits() {
         refresh_manifest_checkpoint_metadata(&checkpoint_path);
         assert_rejected_without_writes(&fixture.0, limit, expected);
         fs::write(&checkpoint_path, &checkpoint).unwrap();
-        fs::write(fixture.0.join("manifest.skein"), &manifest).unwrap();
+        fs::write(fixture.0.join("manifest.hawdb"), &manifest).unwrap();
     }
     let mut database = Database::open(&fixture.0).unwrap();
     assert_eq!(

@@ -7,7 +7,7 @@ use crate::json_access::{
     string_array_at,
 };
 
-pub const STORAGE_RESOURCE_PROFILE_PROTOCOL: &str = "skein-storage-resource-profile-v2";
+pub const STORAGE_RESOURCE_PROFILE_PROTOCOL: &str = "hawdb-storage-resource-profile-v2";
 
 /// Recomputes readiness from the evidence instead of trusting its ready flags.
 pub fn production_resource_profile_ready(evidence: &serde_json::Value) -> bool {

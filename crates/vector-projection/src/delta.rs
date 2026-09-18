@@ -33,7 +33,7 @@
 
 use crate::error::{ProjectionError, Result};
 use crate::scan::{compare_best, ProjectionHit, ProjectionSearchOptions, ProjectionSearchOutput};
-use skein_core::RuntimeTaskContext;
+use hawdb_core::RuntimeTaskContext;
 use std::collections::HashSet;
 
 const DEFAULT_OPTIMIZE_THRESHOLD: f64 = 0.02;
@@ -557,7 +557,7 @@ mod tests {
 
     #[test]
     fn search_with_delta_honors_a_cancelled_task_context() {
-        use skein_core::{RuntimeCancellationToken, RuntimeTaskContext};
+        use hawdb_core::{RuntimeCancellationToken, RuntimeTaskContext};
 
         let base = sample_base();
         let mut delta = DeltaBuffer::new(4);

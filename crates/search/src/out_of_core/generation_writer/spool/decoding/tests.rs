@@ -71,7 +71,7 @@ fn decode(record: &[u8]) -> Result<SearchDocument> {
 fn admitted_memory(bytes: usize) -> BuildMemory {
     BuildMemory::new(
         &RuntimeTaskContext::default()
-            .with_memory_reservation(skein_core::RuntimeMemoryReservation::new(bytes as u64, 0)),
+            .with_memory_reservation(hawdb_core::RuntimeMemoryReservation::new(bytes as u64, 0)),
     )
     .unwrap()
 }

@@ -1,8 +1,8 @@
 use crate::binding::{binding_payload_bytes, Binding};
 use crate::{QueryMemoryAccount, QueryMemoryLease};
-use skein_core::Result;
-use skein_plan::GraphExpansionBudget;
-use skein_storage::NodeId;
+use hawdb_core::Result;
+use hawdb_plan::GraphExpansionBudget;
+use hawdb_storage::NodeId;
 use std::collections::BTreeSet;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -218,7 +218,7 @@ mod tests {
         let binding = Binding {
             values: std::collections::BTreeMap::from([(
                 "value".to_string(),
-                skein_core::Value::String("payload".to_string()),
+                hawdb_core::Value::String("payload".to_string()),
             )]),
             nodes: std::collections::BTreeMap::new(),
             relationships: std::collections::BTreeMap::new(),
@@ -245,7 +245,7 @@ mod tests {
         let binding = Binding {
             values: std::collections::BTreeMap::from([(
                 "value".to_string(),
-                skein_core::Value::String("payload".to_string()),
+                hawdb_core::Value::String("payload".to_string()),
             )]),
             nodes: std::collections::BTreeMap::new(),
             relationships: std::collections::BTreeMap::new(),

@@ -1,4 +1,4 @@
-use skein_integrity::{IntegrityHasher, Sha256Digest, SHA256_BYTES};
+use hawdb_integrity::{IntegrityHasher, Sha256Digest, SHA256_BYTES};
 use std::fmt;
 use std::num::{NonZeroU64, NonZeroUsize};
 
@@ -1125,7 +1125,7 @@ fn read_u64(bytes: &[u8]) -> u64 {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use skein_integrity::integrity_digest;
+    use hawdb_integrity::integrity_digest;
 
     fn page_id(value: u64) -> IndexPageId {
         IndexPageId::new(NonZeroU64::new(value).unwrap())

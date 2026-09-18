@@ -255,7 +255,7 @@ mod tests {
     #[test]
     fn linux_partition_inherits_queue_evidence_from_parent_device() {
         let root =
-            std::env::temp_dir().join(format!("skein-qos-device-sysfs-{}", std::process::id()));
+            std::env::temp_dir().join(format!("hawdb-qos-device-sysfs-{}", std::process::id()));
         let device = root.join("nvme0n1");
         let partition = device.join("nvme0n1p1");
         let queue = device.join("queue");
@@ -279,7 +279,7 @@ mod tests {
     #[test]
     fn detection_uses_nearest_existing_ancestor() {
         let nested = std::env::temp_dir()
-            .join("skein-device-discovery-missing")
+            .join("hawdb-device-discovery-missing")
             .join("database");
 
         let profile = StorageDeviceProfile::detect(nested);

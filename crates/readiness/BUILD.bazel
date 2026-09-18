@@ -5,18 +5,18 @@ package(default_visibility = ["//visibility:public"])
 
 _READINESS_TEST_DATA = glob(["src/**/*.json", "src/**/*.jsonl"])
 _READINESS_TEST_DEPS = all_crate_deps(normal_dev = True) + [
-    "//crates/search:skein_search",
+    "//crates/search:hawdb_search",
 ]
 
 _READINESS_BASE_DEPS = all_crate_deps(normal = True) + [
-    "//crates/core:skein_core",
-    "//crates/cypher:skein_cypher",
-    "//crates/evidence:skein_evidence",
-    "//crates/executor:skein_executor",
-    "//crates/plan-cache:skein_plan_cache",
-    "//crates/route-ownership:skein_route_ownership",
-    "//crates/system-sql:skein_system_sql",
-    "//crates/storage:skein_storage",
+    "//crates/core:hawdb_core",
+    "//crates/cypher:hawdb_cypher",
+    "//crates/evidence:hawdb_evidence",
+    "//crates/executor:hawdb_executor",
+    "//crates/plan-cache:hawdb_plan_cache",
+    "//crates/route-ownership:hawdb_route_ownership",
+    "//crates/system-sql:hawdb_system_sql",
+    "//crates/storage:hawdb_storage",
 ]
 
 test_suite(
@@ -24,15 +24,15 @@ test_suite(
 )
 
 rust_library(
-    name = "skein_readiness",
-    crate_name = "skein_readiness",
+    name = "hawdb_readiness",
+    crate_name = "hawdb_readiness",
     crate_root = "src/lib.rs",
     srcs = glob(["src/**/*.rs"]),
     edition = "2024",
     aliases = aliases(),
     deps = _READINESS_BASE_DEPS + [
-        "//crates/nowledge-contracts:skein_nowledge_contracts",
-        "//crates/search:skein_search",
+        "//crates/nowledge-contracts:hawdb_nowledge_contracts",
+        "//crates/search:hawdb_search",
     ],
     proc_macro_deps = all_crate_deps(proc_macro = True),
 )
@@ -40,15 +40,15 @@ rust_library(
 # Matches the root facade's no-default-features graph so public contracts are
 # never linked from a second dependency feature variant.
 rust_library(
-    name = "skein_readiness_minimal",
-    crate_name = "skein_readiness",
+    name = "hawdb_readiness_minimal",
+    crate_name = "hawdb_readiness",
     crate_root = "src/lib.rs",
     srcs = glob(["src/**/*.rs"]),
     edition = "2024",
     aliases = aliases(),
     deps = _READINESS_BASE_DEPS + [
-        "//crates/nowledge-contracts:skein_nowledge_contracts_minimal",
-        "//crates/search:skein_search_minimal",
+        "//crates/nowledge-contracts:hawdb_nowledge_contracts_minimal",
+        "//crates/search:hawdb_search_minimal",
     ],
     proc_macro_deps = all_crate_deps(proc_macro = True),
     visibility = ["//:__pkg__"],
@@ -56,23 +56,23 @@ rust_library(
 
 # Matches the ACL qualification graph without enabling ACL for the default crate.
 rust_library(
-    name = "skein_readiness_acl",
+    name = "hawdb_readiness_acl",
     testonly = True,
-    crate_name = "skein_readiness",
+    crate_name = "hawdb_readiness",
     crate_root = "src/lib.rs",
     srcs = glob(["src/**/*.rs"]),
     edition = "2024",
     aliases = aliases(),
     deps = _READINESS_BASE_DEPS + [
-        "//crates/nowledge-contracts:skein_nowledge_contracts_acl",
-        "//crates/search:skein_search_acl",
+        "//crates/nowledge-contracts:hawdb_nowledge_contracts_acl",
+        "//crates/search:hawdb_search_acl",
     ],
     proc_macro_deps = all_crate_deps(proc_macro = True),
     visibility = ["//:__pkg__"],
 )
 
 rust_test(
-    name = "skein_replacement_summary_fuzz_tests",
+    name = "hawdb_replacement_summary_fuzz_tests",
     tags = ["manual"],
     args = [
         "replacement_summary::tests::differential::replacement_summary_differential_campaign",
@@ -80,7 +80,7 @@ rust_test(
         "--ignored",
         "--nocapture",
     ],
-    crate = ":skein_readiness",
+    crate = ":hawdb_readiness",
     compile_data = _READINESS_TEST_DATA,
     edition = "2024",
     aliases = aliases(normal_dev = True, proc_macro_dev = True),
@@ -89,7 +89,7 @@ rust_test(
 )
 
 rust_test(
-    name = "skein_source_mutation_readiness_fuzz_tests",
+    name = "hawdb_source_mutation_readiness_fuzz_tests",
     tags = ["manual"],
     args = [
         "source_mutation::differential::source_mutation_readiness_differential_campaign",
@@ -97,7 +97,7 @@ rust_test(
         "--ignored",
         "--nocapture",
     ],
-    crate = ":skein_readiness",
+    crate = ":hawdb_readiness",
     compile_data = _READINESS_TEST_DATA,
     edition = "2024",
     aliases = aliases(normal_dev = True, proc_macro_dev = True),
@@ -106,8 +106,8 @@ rust_test(
 )
 
 rust_test(
-    name = "skein_readiness_tests",
-    crate = ":skein_readiness",
+    name = "hawdb_readiness_tests",
+    crate = ":hawdb_readiness",
     compile_data = _READINESS_TEST_DATA,
     edition = "2024",
     aliases = aliases(normal_dev = True, proc_macro_dev = True),
@@ -116,7 +116,7 @@ rust_test(
 )
 
 rust_test(
-    name = "skein_graph_route_readiness_fuzz_tests",
+    name = "hawdb_graph_route_readiness_fuzz_tests",
     tags = ["manual"],
     args = [
         "graph_route::differential::graph_route_readiness_differential_campaign",
@@ -124,7 +124,7 @@ rust_test(
         "--ignored",
         "--nocapture",
     ],
-    crate = ":skein_readiness",
+    crate = ":hawdb_readiness",
     compile_data = _READINESS_TEST_DATA,
     edition = "2024",
     aliases = aliases(normal_dev = True, proc_macro_dev = True),
@@ -133,7 +133,7 @@ rust_test(
 )
 
 rust_test(
-    name = "skein_integration_bundle_fuzz_tests",
+    name = "hawdb_integration_bundle_fuzz_tests",
     tags = ["manual"],
     args = [
         "integration_bundle::tests::integration_bundle_differential_campaign",
@@ -141,7 +141,7 @@ rust_test(
         "--ignored",
         "--nocapture",
     ],
-    crate = ":skein_readiness",
+    crate = ":hawdb_readiness",
     compile_data = _READINESS_TEST_DATA,
     edition = "2024",
     aliases = aliases(normal_dev = True, proc_macro_dev = True),

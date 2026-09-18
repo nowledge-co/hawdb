@@ -5,8 +5,8 @@ use crate::{
     RelationshipOnCreateValue, SetAssignment, SetNodePropertiesReturnMode, SetValue, SortDirection,
     SortItem, SortKey,
 };
-use skein_core::Value;
-use skein_cypher::RelationshipDirection;
+use hawdb_core::Value;
+use hawdb_cypher::RelationshipDirection;
 use std::collections::BTreeMap;
 
 mod common;

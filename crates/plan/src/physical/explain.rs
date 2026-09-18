@@ -1,6 +1,6 @@
 use super::{PhysicalPlan, PlanChildren};
 use crate::{SetAssignment, SetNodePropertiesReturnMode, SetValue};
-use skein_cypher::RelationshipDirection;
+use hawdb_cypher::RelationshipDirection;
 
 #[cfg(test)]
 mod allocation_tests;

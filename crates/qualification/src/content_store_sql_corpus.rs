@@ -1,12 +1,12 @@
+use hawdb::{HawdbError, Result};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
-use skein::{Result, SkeinError};
 use std::collections::BTreeSet;
 
 pub const NOWLEDGE_CONTENT_STORE_SQL_CORPUS_PROTOCOL: &str =
-    "skein-nowledge-content-store-sql-corpus-v1";
+    "hawdb-nowledge-content-store-sql-corpus-v1";
 pub const NOWLEDGE_CONTENT_STORE_SQL_CORPUS_REVISION: &str = "nowledge-content-store-postgres-v1";
-pub const NOWLEDGE_CONTENT_STORE_SCHEMA_PROTOCOL: &str = "skein-nowledge-content-store-schema-v1";
+pub const NOWLEDGE_CONTENT_STORE_SCHEMA_PROTOCOL: &str = "hawdb-nowledge-content-store-schema-v1";
 pub const NOWLEDGE_CONTENT_STORE_SCHEMA_REVISION: &str = "nowledge-content-store-schema-v1";
 
 const CORPUS_JSON: &str =
@@ -168,31 +168,31 @@ impl ContentStoreSqlCorpus {
 
     pub fn validate(&self) -> Result<()> {
         if self.protocol != NOWLEDGE_CONTENT_STORE_SQL_CORPUS_PROTOCOL {
-            return Err(SkeinError::Semantic(format!(
+            return Err(HawdbError::Semantic(format!(
                 "content-store SQL corpus protocol mismatch: expected {NOWLEDGE_CONTENT_STORE_SQL_CORPUS_PROTOCOL}, got {}",
                 self.protocol
             )));
         }
         if self.revision != NOWLEDGE_CONTENT_STORE_SQL_CORPUS_REVISION {
-            return Err(SkeinError::Semantic(format!(
+            return Err(HawdbError::Semantic(format!(
                 "content-store SQL corpus revision mismatch: expected {NOWLEDGE_CONTENT_STORE_SQL_CORPUS_REVISION}, got {}",
                 self.revision
             )));
         }
         if self.schema_protocol != NOWLEDGE_CONTENT_STORE_SCHEMA_PROTOCOL {
-            return Err(SkeinError::Semantic(format!(
+            return Err(HawdbError::Semantic(format!(
                 "content-store schema protocol mismatch: expected {NOWLEDGE_CONTENT_STORE_SCHEMA_PROTOCOL}, got {}",
                 self.schema_protocol
             )));
         }
         if self.schema_revision != NOWLEDGE_CONTENT_STORE_SCHEMA_REVISION {
-            return Err(SkeinError::Semantic(format!(
+            return Err(HawdbError::Semantic(format!(
                 "content-store schema revision mismatch: expected {NOWLEDGE_CONTENT_STORE_SCHEMA_REVISION}, got {}",
                 self.schema_revision
             )));
         }
         if self.source_engine != "sqlite" || self.target_dialect != "postgresql" {
-            return Err(SkeinError::Semantic(
+            return Err(HawdbError::Semantic(
                 "content-store SQL corpus must map sqlite to postgresql".to_string(),
             ));
         }
@@ -204,7 +204,7 @@ impl ContentStoreSqlCorpus {
             .collect::<BTreeSet<_>>();
         let required_tables = REQUIRED_TABLES.iter().copied().collect::<BTreeSet<_>>();
         if tables != required_tables {
-            return Err(SkeinError::Semantic(
+            return Err(HawdbError::Semantic(
                 "content-store SQL corpus table set does not match the v1 scope".to_string(),
             ));
         }
@@ -213,7 +213,7 @@ impl ContentStoreSqlCorpus {
         for statement in &self.statements {
             validate_statement(statement)?;
             if !names.insert(statement.name.as_str()) {
-                return Err(SkeinError::Semantic(format!(
+                return Err(HawdbError::Semantic(format!(
                     "content-store SQL corpus contains duplicate statement name {}",
                     statement.name
                 )));
@@ -221,7 +221,7 @@ impl ContentStoreSqlCorpus {
         }
 
         if self.source_inventory.is_empty() {
-            return Err(SkeinError::Semantic(
+            return Err(HawdbError::Semantic(
                 "content-store SQL corpus source inventory must not be empty".to_string(),
             ));
         }
@@ -232,19 +232,19 @@ impl ContentStoreSqlCorpus {
                 || caller.statements.is_empty()
                 || caller.note.is_empty()
             {
-                return Err(SkeinError::Semantic(
+                return Err(HawdbError::Semantic(
                     "content-store caller inventory fields must not be empty".to_string(),
                 ));
             }
             if !callers.insert((caller.source_path.as_str(), caller.symbol.as_str())) {
-                return Err(SkeinError::Semantic(format!(
+                return Err(HawdbError::Semantic(format!(
                     "content-store SQL corpus contains duplicate caller {}::{}",
                     caller.source_path, caller.symbol
                 )));
             }
             for statement in &caller.statements {
                 if !names.contains(statement.as_str()) {
-                    return Err(SkeinError::Semantic(format!(
+                    return Err(HawdbError::Semantic(format!(
                         "content-store caller {} references unknown statement {statement}",
                         caller.symbol
                     )));
@@ -258,7 +258,7 @@ impl ContentStoreSqlCorpus {
                 .iter()
                 .any(|statement| contains_sql_identifier(&statement.sql, table));
             if !data_owned {
-                return Err(SkeinError::Semantic(format!(
+                return Err(HawdbError::Semantic(format!(
                     "content-store SQL corpus does not own data behavior for {table}"
                 )));
             }
@@ -299,7 +299,7 @@ pub fn nowledge_content_store_schema_statements() -> Result<Vec<&'static str>> {
                 .strip_suffix(';')
                 .filter(|statement| !statement.trim().is_empty())
                 .ok_or_else(|| {
-                    SkeinError::Parse(
+                    HawdbError::Parse(
                         "content-store schema statements must be one non-empty semicolon-terminated line"
                             .to_string(),
                     )
@@ -310,7 +310,7 @@ pub fn nowledge_content_store_schema_statements() -> Result<Vec<&'static str>> {
 
 pub fn nowledge_content_store_sql_corpus() -> Result<ContentStoreSqlCorpus> {
     let corpus = serde_json::from_str::<ContentStoreSqlCorpus>(CORPUS_JSON).map_err(|error| {
-        SkeinError::Parse(format!(
+        HawdbError::Parse(format!(
             "failed to parse embedded content-store SQL corpus: {error}"
         ))
     })?;
@@ -326,14 +326,14 @@ pub fn nowledge_content_store_sql_corpus_json() -> Result<serde_json::Value> {
 fn validate_content_store_schema() -> Result<()> {
     let statements = nowledge_content_store_schema_statements()?;
     let mut tables = BTreeSet::new();
-    let mut database = skein::Database::new();
+    let mut database = hawdb::Database::new();
     let mut transaction = database.begin_transaction();
     for statement in statements {
-        let lowered = skein::sql::parse_postgres_sql(statement)?;
-        if let skein::sql::SqlStatement::CreateTable(create) = &lowered {
+        let lowered = hawdb::sql::parse_postgres_sql(statement)?;
+        if let hawdb::sql::SqlStatement::CreateTable(create) = &lowered {
             tables.insert(create.table.name.clone());
-        } else if !matches!(lowered, skein::sql::SqlStatement::CreateIndex(_)) {
-            return Err(SkeinError::Semantic(
+        } else if !matches!(lowered, hawdb::sql::SqlStatement::CreateIndex(_)) {
+            return Err(HawdbError::Semantic(
                 "content-store schema may contain only CREATE TABLE and CREATE INDEX statements"
                     .to_string(),
             ));
@@ -346,7 +346,7 @@ fn validate_content_store_schema() -> Result<()> {
         .map(|table| (*table).to_string())
         .collect::<BTreeSet<_>>();
     if tables != required_tables {
-        return Err(SkeinError::Semantic(
+        return Err(HawdbError::Semantic(
             "content-store schema table set does not match the v1 scope".to_string(),
         ));
     }
@@ -359,12 +359,12 @@ fn sha256_hex(bytes: &[u8]) -> String {
 
 fn validate_statement(statement: &ContentStoreSqlStatementSpec) -> Result<()> {
     if statement.name.is_empty() || statement.sql.trim().is_empty() {
-        return Err(SkeinError::Semantic(
+        return Err(HawdbError::Semantic(
             "content-store SQL corpus statement name and SQL must be non-empty".to_string(),
         ));
     }
     if statement.sql.trim_end().ends_with(';') {
-        return Err(SkeinError::Semantic(format!(
+        return Err(HawdbError::Semantic(format!(
             "content-store SQL statement {} must not contain a trailing semicolon",
             statement.name
         )));
@@ -373,13 +373,13 @@ fn validate_statement(statement: &ContentStoreSqlStatementSpec) -> Result<()> {
     match statement.kind {
         ContentStoreSqlStatementKind::Read => {
             if statement.max_rows == 0 || statement.max_payload_bytes == 0 {
-                return Err(SkeinError::Semantic(format!(
+                return Err(HawdbError::Semantic(format!(
                     "content-store read statement {} must declare non-zero row and payload budgets",
                     statement.name
                 )));
             }
             if statement.result_columns.is_empty() {
-                return Err(SkeinError::Semantic(format!(
+                return Err(HawdbError::Semantic(format!(
                     "content-store read statement {} must declare its result schema",
                     statement.name
                 )));
@@ -387,13 +387,13 @@ fn validate_statement(statement: &ContentStoreSqlStatementSpec) -> Result<()> {
         }
         ContentStoreSqlStatementKind::Mutation => {
             if statement.transaction_group.is_none() {
-                return Err(SkeinError::Semantic(format!(
+                return Err(HawdbError::Semantic(format!(
                     "content-store write statement {} must declare a transaction group",
                     statement.name
                 )));
             }
             if statement.max_rows != 0 || statement.max_payload_bytes != 0 {
-                return Err(SkeinError::Semantic(format!(
+                return Err(HawdbError::Semantic(format!(
                     "content-store write statement {} must not declare read-result budgets",
                     statement.name
                 )));
@@ -407,7 +407,7 @@ fn validate_parameter_positions(statement: &ContentStoreSqlStatementSpec) -> Res
     let positions = postgres_parameter_positions(&statement.sql)?;
     let expected = (1..=statement.parameters.len()).collect::<BTreeSet<_>>();
     if positions != expected {
-        return Err(SkeinError::Semantic(format!(
+        return Err(HawdbError::Semantic(format!(
             "content-store SQL statement {} parameter positions do not match its parameter schema",
             statement.name
         )));
@@ -441,13 +441,13 @@ fn postgres_parameter_positions(sql: &str) -> Result<BTreeSet<usize>> {
                     continue;
                 }
                 let raw = std::str::from_utf8(&bytes[start..end]).map_err(|_| {
-                    SkeinError::Parse("invalid PostgreSQL parameter position".to_string())
+                    HawdbError::Parse("invalid PostgreSQL parameter position".to_string())
                 })?;
                 let position = raw.parse::<usize>().map_err(|_| {
-                    SkeinError::Parse("invalid PostgreSQL parameter position".to_string())
+                    HawdbError::Parse("invalid PostgreSQL parameter position".to_string())
                 })?;
                 if position == 0 {
-                    return Err(SkeinError::Semantic(
+                    return Err(HawdbError::Semantic(
                         "PostgreSQL parameters are one-based".to_string(),
                     ));
                 }
@@ -458,7 +458,7 @@ fn postgres_parameter_positions(sql: &str) -> Result<BTreeSet<usize>> {
         }
     }
     if single_quoted {
-        return Err(SkeinError::Parse(
+        return Err(HawdbError::Parse(
             "content-store SQL statement contains an unterminated string literal".to_string(),
         ));
     }
@@ -519,18 +519,18 @@ mod tests {
     fn embedded_content_store_sql_corpus_lowers_through_postgres_frontend() {
         let corpus = nowledge_content_store_sql_corpus().expect("valid embedded SQL corpus");
         for statement in &corpus.statements {
-            let lowered = skein::sql::parse_postgres_sql(&statement.sql)
+            let lowered = hawdb::sql::parse_postgres_sql(&statement.sql)
                 .unwrap_or_else(|error| panic!("{} failed to lower: {error}", statement.name));
             let kind_matches = matches!(
                 (&statement.kind, lowered),
                 (
                     ContentStoreSqlStatementKind::Read,
-                    skein::sql::SqlStatement::Select(_)
+                    hawdb::sql::SqlStatement::Select(_)
                 ) | (
                     ContentStoreSqlStatementKind::Mutation,
-                    skein::sql::SqlStatement::Insert(_)
-                        | skein::sql::SqlStatement::Update(_)
-                        | skein::sql::SqlStatement::Delete(_)
+                    hawdb::sql::SqlStatement::Insert(_)
+                        | hawdb::sql::SqlStatement::Update(_)
+                        | hawdb::sql::SqlStatement::Delete(_)
                 )
             );
             assert!(
@@ -742,8 +742,8 @@ mod tests {
         assert_eq!(page.ordering, ["order_index ASC", "content_message_id ASC"]);
     }
 
-    fn materialized_content_store() -> skein::Database {
-        let mut database = skein::Database::new();
+    fn materialized_content_store() -> hawdb::Database {
+        let mut database = hawdb::Database::new();
         let mut transaction = database.begin_transaction();
         for statement in
             nowledge_content_store_schema_statements().expect("valid schema statements")
@@ -758,7 +758,7 @@ mod tests {
         database
     }
 
-    fn seed_parent_documents(database: &mut skein::Database) {
+    fn seed_parent_documents(database: &mut hawdb::Database) {
         for position in 1..=32 {
             database
                 .query_sql_with_params(
@@ -766,26 +766,26 @@ mod tests {
                      (content_doc_id, owner_kind, owner_id, space_id, media_type, schema_version, created_at, updated_at) \
                      VALUES ($1, $2, $3, $4, $5, $6, $7, $8)",
                     &[
-                        skein::Value::String(format!("value-{position}")),
-                        skein::Value::String("seed".to_string()),
-                        skein::Value::String(format!("seed-{position}")),
-                        skein::Value::String("default".to_string()),
-                        skein::Value::String("text/plain".to_string()),
-                        skein::Value::Int(1),
-                        skein::Value::String("t0".to_string()),
-                        skein::Value::String("t0".to_string()),
+                        hawdb::Value::String(format!("value-{position}")),
+                        hawdb::Value::String("seed".to_string()),
+                        hawdb::Value::String(format!("seed-{position}")),
+                        hawdb::Value::String("default".to_string()),
+                        hawdb::Value::String("text/plain".to_string()),
+                        hawdb::Value::Int(1),
+                        hawdb::Value::String("t0".to_string()),
+                        hawdb::Value::String("t0".to_string()),
                     ],
                 )
                 .expect("seed parent document");
         }
     }
 
-    fn sample_parameter(data_type: &str, position: usize) -> skein::Value {
+    fn sample_parameter(data_type: &str, position: usize) -> hawdb::Value {
         match data_type {
-            "BOOLEAN" => skein::Value::Bool(false),
-            "BIGINT" => skein::Value::Int(position as i64),
-            "DOUBLE PRECISION" => skein::Value::Float(position as f64),
-            "TEXT" => skein::Value::String(format!("value-{position}")),
+            "BOOLEAN" => hawdb::Value::Bool(false),
+            "BIGINT" => hawdb::Value::Int(position as i64),
+            "DOUBLE PRECISION" => hawdb::Value::Float(position as f64),
+            "TEXT" => hawdb::Value::String(format!("value-{position}")),
             other => panic!("unsupported fixture parameter type {other}"),
         }
     }
@@ -794,9 +794,9 @@ mod tests {
         statement_name: &str,
         data_type: &str,
         position: usize,
-    ) -> skein::Value {
+    ) -> hawdb::Value {
         if statement_name == "upsert_content_document" && data_type == "TEXT" {
-            return skein::Value::String(format!("new-value-{position}"));
+            return hawdb::Value::String(format!("new-value-{position}"));
         }
         sample_parameter(data_type, position)
     }

@@ -1,10 +1,10 @@
 use super::{
     bound_join_key, bound_relation_join_key, bound_row_resident_bytes, predicate_truth,
     relational_key_resident_bytes, visit_prepared_physical_join_plan_node, BindingId, BoundRow,
-    OperatorMemoryTracker, QueryMemoryClass, RefCell, RelationalEquiJoinKeys,
+    HawdbError, OperatorMemoryTracker, QueryMemoryClass, RefCell, RelationalEquiJoinKeys,
     RelationalIndexRuntime, RelationalKey, RelationalOperatorId, RelationalPhysicalJoinExecution,
     RelationalPhysicalJoinNode, RelationalPhysicalOutputSchema, RelationalPipelineState,
-    RelationalRowRuntime, RelationalState, Result, SkeinError, SqlPredicate, Value,
+    RelationalRowRuntime, RelationalState, Result, SqlPredicate, Value,
 };
 
 #[allow(clippy::too_many_arguments)]
@@ -29,7 +29,7 @@ pub(super) fn visit_index_merge_join<'a>(
     visit: &mut dyn FnMut(BoundRow<'a>) -> Result<bool>,
 ) -> Result<bool> {
     if outer.is_some() {
-        return Err(SkeinError::Execution(
+        return Err(HawdbError::Execution(
             "merge join cannot run below a probe input".to_string(),
         ));
     }
@@ -38,12 +38,12 @@ pub(super) fn visit_index_merge_join<'a>(
         RelationalPhysicalJoinNode::Relation(right_relation),
     ) = (left, right)
     else {
-        return Err(SkeinError::Execution(
+        return Err(HawdbError::Execution(
             "merge join requires two relation inputs".to_string(),
         ));
     };
     let right_schema = state.table_schema(&right_relation.table).ok_or_else(|| {
-        SkeinError::Semantic(format!("unknown relational table {}", right_relation.table))
+        HawdbError::Semantic(format!("unknown relational table {}", right_relation.table))
     })?;
     let mut right_rows = Vec::new();
     let mut right_tracker = OperatorMemoryTracker::with_account(
@@ -73,7 +73,7 @@ pub(super) fn visit_index_merge_join<'a>(
                 .as_ref()
                 .is_some_and(|previous| key < *previous)
             {
-                return Err(SkeinError::Execution(
+                return Err(HawdbError::Execution(
                     "merge join right input violates its declared key order".to_string(),
                 ));
             }
@@ -82,7 +82,7 @@ pub(super) fn visit_index_merge_join<'a>(
                 .saturating_add(relational_key_resident_bytes(&key))
                 .saturating_add(std::mem::size_of::<(RelationalKey, BoundRow<'_>)>());
             if right_tracker.would_exceed(bytes) {
-                return Err(SkeinError::Execution(format!(
+                return Err(HawdbError::Execution(format!(
                     "RelationalMergeJoinRightInput state exceeds blocking_operator_bytes {}",
                     execution.memory.blocking_operator_bytes
                 )));
@@ -95,7 +95,7 @@ pub(super) fn visit_index_merge_join<'a>(
     execution
         .reports
         .borrow_mut()
-        .push(skein_executor::blocking::in_memory_report(
+        .push(hawdb_executor::blocking::in_memory_report(
             "RelationalMergeJoinRightInput",
             &right_tracker,
             right_tracker.peak_bytes,
@@ -127,7 +127,7 @@ pub(super) fn visit_index_merge_join<'a>(
                 .as_ref()
                 .is_some_and(|previous| left_key < *previous)
             {
-                return Err(SkeinError::Execution(
+                return Err(HawdbError::Execution(
                     "merge join left input violates its declared key order".to_string(),
                 ));
             }

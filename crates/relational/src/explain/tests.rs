@@ -23,7 +23,7 @@ fn satisfied_order_and_missing_reports_do_not_invent_execution_nodes() {
 
 #[test]
 fn planning_diagnostics_preserve_attempt_order_cost_and_fallback() {
-    use skein_optimizer::{
+    use hawdb_optimizer::{
         RelationalJoinPlanningAttempt, RelationalJoinPlanningCost,
         RelationalJoinPlanningFallbackClass, RelationalJoinPlanningReason,
         RelationalJoinPlanningStrategy,
@@ -67,7 +67,7 @@ fn planning_diagnostics_preserve_attempt_order_cost_and_fallback() {
 }
 mod fixtures;
 use fixtures::*;
-use skein_executor::binding::map_payload_bytes;
+use hawdb_executor::binding::map_payload_bytes;
 use std::cell::Cell;
 
 fn case(seed: usize, index: usize) -> Case {
@@ -209,7 +209,7 @@ fn explain_output_limits_accept_exact_boundary_and_refuse_truncation() {
             )
             .unwrap_err();
             assert!(
-                matches!(error, skein_core::SkeinError::Execution(message) if message == expected)
+                matches!(error, hawdb_core::HawdbError::Execution(message) if message == expected)
             );
         }
     }
@@ -254,7 +254,7 @@ fn output_push_preserves_utf8_and_refusal_accounting() {
     assert_eq!(bytes, 5);
     let error = push_relational_output(row.clone(), &mut output, &mut bytes, exact).unwrap_err();
     assert!(
-        matches!(error, skein_core::SkeinError::Execution(message) if message == "relational SQL output exceeds max_output_rows 1")
+        matches!(error, hawdb_core::HawdbError::Execution(message) if message == "relational SQL output exceeds max_output_rows 1")
     );
     assert_eq!(bytes, 5);
     assert_eq!(output, vec![row.clone()]);
@@ -271,7 +271,7 @@ fn output_push_preserves_utf8_and_refusal_accounting() {
     )
     .unwrap_err();
     assert!(
-        matches!(error, skein_core::SkeinError::Execution(message) if message == "relational SQL output exceeds max_output_payload_bytes 4")
+        matches!(error, hawdb_core::HawdbError::Execution(message) if message == "relational SQL output exceeds max_output_payload_bytes 4")
     );
     assert!(output.is_empty());
     assert_eq!(bytes, 5);

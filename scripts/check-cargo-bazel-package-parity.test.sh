@@ -26,18 +26,18 @@ _CARGO_WORKSPACE_PACKAGES = [
     "crates/member",
 ]
 
-_SKEIN_PRESUBMIT_CRATE_EXCLUSIONS = {}
+_HAWDB_PRESUBMIT_CRATE_EXCLUSIONS = {}
 
 rust_test(
     name = "root_tests",
 )
 
 test_suite(
-    name = "skein_presubmit_crate_tests",
+    name = "hawdb_presubmit_crate_tests",
     tests = [
         "//%s:presubmit_tests" % package
         for package in _CARGO_WORKSPACE_PACKAGES
-        if package not in _SKEIN_PRESUBMIT_CRATE_EXCLUSIONS
+        if package not in _HAWDB_PRESUBMIT_CRATE_EXCLUSIONS
     ],
 )
 EOF
@@ -98,14 +98,14 @@ missing_registration="${fixture_root}/missing-registration"
 make_fixture "${missing_registration}"
 cat >"${missing_registration}/BUILD.bazel" <<'EOF'
 _CARGO_WORKSPACE_PACKAGES = []
-_SKEIN_PRESUBMIT_CRATE_EXCLUSIONS = {}
+_HAWDB_PRESUBMIT_CRATE_EXCLUSIONS = {}
 
 rust_test(
     name = "root_tests",
 )
 
 test_suite(
-    name = "skein_presubmit_crate_tests",
+    name = "hawdb_presubmit_crate_tests",
 )
 EOF
 if "${checker}" "${missing_registration}" >"${fixture_root}/missing-registration.out" 2>&1; then
@@ -122,7 +122,7 @@ _CARGO_WORKSPACE_PACKAGES = [
     "crates/member",
 ]
 
-_SKEIN_PRESUBMIT_CRATE_EXCLUSIONS = {
+_HAWDB_PRESUBMIT_CRATE_EXCLUSIONS = {
     "crates/member": ("local-only", "//crates/member:member_manual_tests"),
 }
 
@@ -131,7 +131,7 @@ rust_test(
 )
 
 test_suite(
-    name = "skein_presubmit_crate_tests",
+    name = "hawdb_presubmit_crate_tests",
 )
 EOF
 cat >"${excluded}/crates/member/BUILD.bazel" <<'EOF'
@@ -149,7 +149,7 @@ _CARGO_WORKSPACE_PACKAGES = [
     "crates/member",
 ]
 
-_SKEIN_PRESUBMIT_CRATE_EXCLUSIONS = {
+_HAWDB_PRESUBMIT_CRATE_EXCLUSIONS = {
     "crates/member": ("periodic", "//crates/member:member_periodic_tests"),
 }
 
@@ -158,7 +158,7 @@ rust_test(
 )
 
 test_suite(
-    name = "skein_presubmit_crate_tests",
+    name = "hawdb_presubmit_crate_tests",
 )
 EOF
 if "${checker}" "${missing_exclusion_target}" >"${fixture_root}/missing-exclusion-target.out" 2>&1; then

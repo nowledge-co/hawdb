@@ -1,10 +1,10 @@
 //! Developer-facing input parsing for the library-readiness preflight.
 //!
 //! Opening the embedded database and executing the bounded probe remain with
-//! the root Skein facade. This module only decodes bounded, redacted inputs.
+//! the root Hawdb facade. This module only decodes bounded, redacted inputs.
 
 use crate::bounded_read_evidence::{NowledgeMemGraphMode, NowledgeMemRouteReadinessSummary};
-use skein_core::{Result, SkeinError, Value};
+use hawdb_core::{HawdbError, Result, Value};
 use std::collections::BTreeMap;
 use std::path::Path;
 
@@ -101,18 +101,18 @@ pub fn parse_nowledge_mem_library_readiness_inputs(
                 )?);
             }
             value if value.starts_with("--") => {
-                return Err(SkeinError::Semantic(nowledge_mem_library_readiness_usage()));
+                return Err(HawdbError::Semantic(nowledge_mem_library_readiness_usage()));
             }
             value => {
                 if graph_path.replace(value.to_string()).is_some() {
-                    return Err(SkeinError::Semantic(nowledge_mem_library_readiness_usage()));
+                    return Err(HawdbError::Semantic(nowledge_mem_library_readiness_usage()));
                 }
             }
         }
     }
 
     let graph_path =
-        graph_path.ok_or_else(|| SkeinError::Semantic(nowledge_mem_library_readiness_usage()))?;
+        graph_path.ok_or_else(|| HawdbError::Semantic(nowledge_mem_library_readiness_usage()))?;
     Ok(NowledgeMemLibraryReadinessCliInputs {
         require_ready,
         mode,
@@ -136,7 +136,7 @@ pub fn parse_mem_library_readiness_mode(raw: &str) -> Result<NowledgeMemGraphMod
     match raw {
         "shadow_read_only" => Ok(NowledgeMemGraphMode::ShadowReadOnly),
         "writable_cutover" => Ok(NowledgeMemGraphMode::WritableCutover),
-        _ => Err(SkeinError::Semantic(format!(
+        _ => Err(HawdbError::Semantic(format!(
             "invalid nowledge mem library readiness mode: {raw}"
         ))),
     }
@@ -147,12 +147,12 @@ pub fn parse_bounded_probe_json(
 ) -> Result<NowledgeMemLibraryReadinessProbe> {
     let object = value
         .as_object()
-        .ok_or_else(|| SkeinError::Semantic("bounded probe JSON must be an object".to_string()))?;
+        .ok_or_else(|| HawdbError::Semantic("bounded probe JSON must be an object".to_string()))?;
     let cypher = object
         .get("cypher")
         .and_then(serde_json::Value::as_str)
         .ok_or_else(|| {
-            SkeinError::Semantic("bounded probe JSON field 'cypher' must be a string".to_string())
+            HawdbError::Semantic("bounded probe JSON field 'cypher' must be a string".to_string())
         })?
         .to_string();
     let parameters = object
@@ -165,7 +165,7 @@ pub fn parse_bounded_probe_json(
 
 pub fn parse_parameters_json(value: &serde_json::Value) -> Result<BTreeMap<String, Value>> {
     let object = value.as_object().ok_or_else(|| {
-        SkeinError::Semantic("bounded probe JSON field 'parameters' must be an object".to_string())
+        HawdbError::Semantic("bounded probe JSON field 'parameters' must be an object".to_string())
     })?;
     object
         .iter()
@@ -183,7 +183,7 @@ pub fn value_from_json(value: &serde_json::Value) -> Result<Value> {
             } else if let Some(value) = value.as_f64() {
                 Ok(Value::Float(value))
             } else {
-                Err(SkeinError::Semantic(format!(
+                Err(HawdbError::Semantic(format!(
                     "unsupported JSON number in bounded probe parameters: {value}"
                 )))
             }
@@ -241,7 +241,7 @@ pub fn parse_mem_library_graph_route_readiness_json(
 
 fn next_arg(args: &mut impl Iterator<Item = String>) -> Result<String> {
     args.next()
-        .ok_or_else(|| SkeinError::Semantic(nowledge_mem_library_readiness_usage()))
+        .ok_or_else(|| HawdbError::Semantic(nowledge_mem_library_readiness_usage()))
 }
 
 fn read_json_arg(args: &mut impl Iterator<Item = String>) -> Result<serde_json::Value> {
@@ -254,7 +254,7 @@ fn required_string_array(value: &serde_json::Value, field: &str) -> Result<Vec<S
         .get(field)
         .and_then(serde_json::Value::as_array)
         .ok_or_else(|| {
-            SkeinError::Semantic(format!(
+            HawdbError::Semantic(format!(
                 "readiness JSON field '{field}' must be a string array"
             ))
         })?;
@@ -263,7 +263,7 @@ fn required_string_array(value: &serde_json::Value, field: &str) -> Result<Vec<S
 
 fn required_string_array_value(value: &serde_json::Value, field: &str) -> Result<Vec<String>> {
     let items = value.as_array().ok_or_else(|| {
-        SkeinError::Semantic(format!(
+        HawdbError::Semantic(format!(
             "readiness JSON field '{field}' must be a string array"
         ))
     })?;
@@ -275,7 +275,7 @@ fn required_string_array_items(items: &[serde_json::Value], field: &str) -> Resu
         .iter()
         .map(|item| {
             item.as_str().map(str::to_string).ok_or_else(|| {
-                SkeinError::Semantic(format!(
+                HawdbError::Semantic(format!(
                     "readiness JSON field '{field}' must be a string array"
                 ))
             })
@@ -288,7 +288,7 @@ fn required_bool(value: &serde_json::Value, field: &str) -> Result<bool> {
         .get(field)
         .and_then(serde_json::Value::as_bool)
         .ok_or_else(|| {
-            SkeinError::Semantic(format!("readiness JSON field '{field}' must be a boolean"))
+            HawdbError::Semantic(format!("readiness JSON field '{field}' must be a boolean"))
         })
 }
 
@@ -297,16 +297,16 @@ fn required_u64(value: &serde_json::Value, field: &str) -> Result<u64> {
         .get(field)
         .and_then(serde_json::Value::as_u64)
         .ok_or_else(|| {
-            SkeinError::Semantic(format!("readiness JSON field '{field}' must be an integer"))
+            HawdbError::Semantic(format!("readiness JSON field '{field}' must be an integer"))
         })
 }
 
 fn parse_positive_usize(flag: &str, value: &str) -> Result<usize> {
     let parsed = value
         .parse::<usize>()
-        .map_err(|_| SkeinError::Semantic(format!("{flag} must be a positive integer")))?;
+        .map_err(|_| HawdbError::Semantic(format!("{flag} must be a positive integer")))?;
     if parsed == 0 {
-        return Err(SkeinError::Semantic(format!(
+        return Err(HawdbError::Semantic(format!(
             "{flag} must be a positive integer"
         )));
     }
@@ -315,13 +315,13 @@ fn parse_positive_usize(flag: &str, value: &str) -> Result<usize> {
 
 fn read_json_file(path: &Path) -> Result<serde_json::Value> {
     let content = std::fs::read_to_string(path).map_err(|error| {
-        SkeinError::Execution(format!(
+        HawdbError::Execution(format!(
             "failed to read nowledge mem library readiness JSON: {}",
             error.kind()
         ))
     })?;
     serde_json::from_str(&content).map_err(|_| {
-        SkeinError::Semantic(
+        HawdbError::Semantic(
             "failed to parse nowledge mem library readiness JSON: invalid_json".to_string(),
         )
     })
@@ -334,7 +334,7 @@ mod tests {
     #[test]
     fn parser_preserves_typed_inputs_and_file_boundaries() {
         let root = std::env::temp_dir().join(format!(
-            "skein_library_readiness_cli_{}_{}",
+            "hawdb_library_readiness_cli_{}_{}",
             std::process::id(),
             std::time::SystemTime::now()
                 .duration_since(std::time::UNIX_EPOCH)

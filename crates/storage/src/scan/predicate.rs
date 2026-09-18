@@ -1,6 +1,6 @@
 use super::{DateTimeMinMax, MembershipVerdict, NumericMinMax, ScanScalar, SegmentSummary};
+use hawdb_core::Value;
 use roaring::RoaringTreemap;
-use skein_core::Value;
 
 #[derive(Debug, Clone, PartialEq)]
 pub struct RangeBound {

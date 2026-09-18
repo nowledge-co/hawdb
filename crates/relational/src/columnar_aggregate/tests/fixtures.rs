@@ -1,5 +1,5 @@
 use super::*;
-use skein_storage::RelationalOverflowRef;
+use hawdb_storage::RelationalOverflowRef;
 
 pub(super) const PROJECTION: &str = "COUNT(*) AS rows, COUNT(r.n) AS present, SUM(n) AS total, COALESCE(SUM(n), NULL, 0, 9) AS fallback, SUM(OCTET_LENGTH(body)) AS body_bytes, SUM(OCTET_LENGTH(payload)) AS payload_bytes, COUNT(body) AS body_present";
 
@@ -8,8 +8,8 @@ pub(super) fn select(projection: &str) -> SelectStatement {
 }
 
 pub(super) fn parse(sql: &str) -> SelectStatement {
-    let skein_sql::SqlStatement::Select(select) =
-        skein_sql::prepare_postgres_sql(sql).unwrap().statement
+    let hawdb_sql::SqlStatement::Select(select) =
+        hawdb_sql::prepare_postgres_sql(sql).unwrap().statement
     else {
         panic!("expected SELECT: {sql}");
     };

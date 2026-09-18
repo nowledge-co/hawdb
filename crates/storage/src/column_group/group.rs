@@ -28,8 +28,8 @@ use crate::durability::durable_replace_file;
 use crate::io::read_exact_at;
 use crate::scan::RangeBound;
 use crate::ManifestGeneration;
-use skein_core::{PropertyId, Value};
-use skein_integrity::crc32c;
+use hawdb_core::{PropertyId, Value};
+use hawdb_integrity::crc32c;
 use std::fs::{self, File};
 use std::io::Write;
 use std::path::Path;
@@ -369,7 +369,7 @@ impl ColumnGroupWriter {
         byte_columns: &[(PropertyId, Vec<Option<Vec<u8>>>)],
     ) -> Result<ColumnGroupDirectory, ColumnGroupError> {
         self.validate(ids, columns, byte_columns)?;
-        let tmp_path = path.with_extension("skein.tmp");
+        let tmp_path = path.with_extension("hawdb.tmp");
         let result = self.write_inner(&tmp_path, group_id, generation, ids, columns, byte_columns);
         let directory = match result {
             Ok(directory) => directory,
@@ -556,7 +556,7 @@ impl StreamedBlob for &[u8] {
 struct StreamingChunkSink<'a> {
     file: &'a mut File,
     offset: u64,
-    hasher: skein_integrity::Crc32cHasher,
+    hasher: hawdb_integrity::Crc32cHasher,
 }
 
 impl<'a> StreamingChunkSink<'a> {
@@ -564,12 +564,12 @@ impl<'a> StreamingChunkSink<'a> {
         Self {
             file,
             offset,
-            hasher: skein_integrity::Crc32cHasher::new(),
+            hasher: hawdb_integrity::Crc32cHasher::new(),
         }
     }
 
     fn begin_chunk(&mut self) {
-        self.hasher = skein_integrity::Crc32cHasher::new();
+        self.hasher = hawdb_integrity::Crc32cHasher::new();
     }
 
     fn chunk_crc32c(&self) -> u32 {
@@ -634,7 +634,7 @@ impl ColumnGroupWriter {
                 )));
             }
         }
-        let tmp_path = path.with_extension("skein.tmp");
+        let tmp_path = path.with_extension("hawdb.tmp");
         let result = self.write_single_row_inner(
             &tmp_path,
             group_id,
@@ -1093,7 +1093,7 @@ impl<S: ColumnGroupByteSource> ColumnGroupReader<S> {
     /// Directory-only pruning: decides from zone maps and null counts
     /// whether the predicate's chunk (or the whole group) can be skipped,
     /// without reading any chunk bytes. Sound by the mirror of the
-    /// `SkeinPropertyIndexPruning` obligation: a skipped chunk never
+    /// `HawdbPropertyIndexPruning` obligation: a skipped chunk never
     /// contains a qualifying row.
     pub fn prune(&self, predicate: &ColumnPredicate) -> ColumnGroupPruneDecision {
         if self.directory.row_count == 0 {
@@ -1197,7 +1197,7 @@ mod tests {
             .duration_since(std::time::UNIX_EPOCH)
             .unwrap()
             .as_nanos();
-        std::env::temp_dir().join(format!("skein-column-group-{name}-{nonce}.skein"))
+        std::env::temp_dir().join(format!("hawdb-column-group-{name}-{nonce}.hawdb"))
     }
 
     fn sample_columns(rows: usize) -> Vec<(PropertyId, Vec<Value>)> {
@@ -1263,7 +1263,7 @@ mod tests {
             Err(ColumnGroupError::PropertyMissing(PropertyId(999)))
         ));
         // No temp file remains after publish.
-        assert!(!path.with_extension("skein.tmp").exists());
+        assert!(!path.with_extension("hawdb.tmp").exists());
         fs::remove_file(path).unwrap();
     }
 

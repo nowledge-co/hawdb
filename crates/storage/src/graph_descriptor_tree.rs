@@ -11,7 +11,7 @@ use crate::graph_descriptor_page::{
     decode_page_ref, encode_page_ref, GraphDescriptorKind, GraphDescriptorPageError,
     GraphDescriptorPageLimits, GraphDescriptorPageRef,
 };
-use skein_integrity::{integrity_digest, Crc32c, IntegrityHasher, Sha256Digest};
+use hawdb_integrity::{integrity_digest, Crc32c, IntegrityHasher, Sha256Digest};
 use std::fmt::{self, Display, Formatter};
 use std::fs::{self, File};
 use std::io::{Read, Write};
@@ -69,11 +69,11 @@ impl GraphDescriptorTreePaths {
     }
 
     fn page_tmp(&self) -> PathBuf {
-        self.page_artifact.with_extension("skein.tmp")
+        self.page_artifact.with_extension("hawdb.tmp")
     }
 
     fn root_tmp(&self) -> PathBuf {
-        self.root_manifest.with_extension("skein.tmp")
+        self.root_manifest.with_extension("hawdb.tmp")
     }
 
     fn ref_run(&self, level: u32) -> PathBuf {
@@ -81,7 +81,7 @@ impl GraphDescriptorTreePaths {
             .page_artifact
             .file_name()
             .and_then(|value| value.to_str())
-            .unwrap_or("graph-descriptors.pages.skein");
+            .unwrap_or("graph-descriptors.pages.hawdb");
         self.page_artifact
             .with_file_name(format!(".{file_name}.refs.{level}.tmp"))
     }

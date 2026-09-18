@@ -1,7 +1,7 @@
-# skein-fuzz
+# hawdb-fuzz
 
-`skein-fuzz` is a development-only correctness harness over Skein's public embedded API. The
-production `skein` crate does not depend on it.
+`hawdb-fuzz` is a development-only correctness harness over Hawdb's public embedded API. The
+production `hawdb` crate does not depend on it.
 
 The [DST scoping recommendation](../../docs/DST_SCOPING.md) explains the existing
 I/O and scheduling seams, the limits of seeded replay, and the decision gates for
@@ -25,7 +25,7 @@ campaign runs nine complementary oracles:
   predicates without implementing another graph executor.
 - The Graph TLP Aggregate oracle runs `count(variable)` over the original match and the same three
   predicate partitions on one pinned snapshot. The original count must equal the checked sum of
-  the partition counts. This follows SQLancer's TLP Aggregate construction and exercises Skein's
+  the partition counts. This follows SQLancer's TLP Aggregate construction and exercises Hawdb's
   aggregate execution path without adding a reference executor or host-side graph semantics.
 - The graph predicate-rewrite oracle cycles through double negation, conjunction idempotence,
   disjunction idempotence, null totality, and the two predicate absorption laws. It
@@ -94,7 +94,7 @@ suites. It keeps the non-ASCII keyword-probe and excessive-nesting regressions a
 alternates arbitrary byte strings with deterministic byte mutations of the corpus. Every input is
 bounded and runs all four frontend entry points on an explicitly bounded worker stack. Parser
 acceptance and rejection are both valid; a panic or stack overflow fails the campaign. The stable
-seed and case index reproduce the exact bytes under `skein-parser-fuzz-v1`:
+seed and case index reproduce the exact bytes under `hawdb-parser-fuzz-v1`:
 
 ```console
 make fuzz-parser FUZZ_SEED=7 FUZZ_CASES=256

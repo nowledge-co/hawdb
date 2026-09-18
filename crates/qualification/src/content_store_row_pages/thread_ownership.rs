@@ -6,9 +6,9 @@ use super::{
 };
 use crate::evidence_digest::rows_sha256;
 use crate::ContentStoreSqlCorpus;
-use skein::{
-    Database, DatabaseConfig, DurabilityPolicy, QueryOutput, QueryStreamOptions, Result,
-    SkeinError, Value,
+use hawdb::{
+    Database, DatabaseConfig, DurabilityPolicy, HawdbError, QueryOutput, QueryStreamOptions,
+    Result, Value,
 };
 use std::collections::BTreeMap;
 use std::path::Path;
@@ -170,7 +170,7 @@ pub(super) fn qualify_thread_ownership_moves(
     transaction.commit()?;
     let committed_epoch = database.commit_epoch();
     if committed_epoch <= seed_commit_epoch {
-        return Err(SkeinError::Execution(format!(
+        return Err(HawdbError::Execution(format!(
             "content-store thread ownership epoch {committed_epoch} did not advance beyond seed epoch {seed_commit_epoch}"
         )));
     }
@@ -191,7 +191,7 @@ pub(super) fn qualify_thread_ownership_moves(
     }
     let payload_sha256_after_live = thread_payload_sha256(&mut database)?;
     if payload_sha256_after_live != payload_sha256_before {
-        return Err(SkeinError::Execution(
+        return Err(HawdbError::Execution(
             "content-store thread ownership move changed document or message payload fields"
                 .to_string(),
         ));
@@ -201,7 +201,7 @@ pub(super) fn qualify_thread_ownership_moves(
     let checkpoint_generation = database
         .relational_index_shadow_checkpoint_report()
         .ok_or_else(|| {
-            SkeinError::Execution(
+            HawdbError::Execution(
                 "content-store thread ownership checkpoint did not publish relational indexes"
                     .to_string(),
             )
@@ -225,7 +225,7 @@ pub(super) fn qualify_thread_ownership_moves(
             || live.expected_space_id != reopened.expected_space_id
             || live.read.output_sha256 != reopened.read.output_sha256
         {
-            return Err(SkeinError::Execution(format!(
+            return Err(HawdbError::Execution(format!(
                 "content-store thread ownership case {} changed across checkpoint/reopen",
                 live.case_name
             )));
@@ -241,7 +241,7 @@ pub(super) fn qualify_thread_ownership_moves(
     }
     let payload_sha256_after_reopen = thread_payload_sha256(&mut database)?;
     if payload_sha256_after_reopen != payload_sha256_before {
-        return Err(SkeinError::Execution(
+        return Err(HawdbError::Execution(
             "content-store reopened thread ownership move changed document or message payload fields"
                 .to_string(),
         ));
@@ -310,7 +310,7 @@ fn read_thread_pages(
                 1,
             )?;
             if read.execution.visible_commit_epoch != expected_epoch {
-                return Err(SkeinError::Execution(format!(
+                return Err(HawdbError::Execution(format!(
                     "content-store thread ownership {} read observed epoch {}, expected {expected_epoch}",
                     fixture.storage_id, read.execution.visible_commit_epoch
                 )));
@@ -392,7 +392,7 @@ fn thread_payload_sha256(database: &mut Database) -> Result<String> {
             },
         )?;
         if document.rows.len() != 1 || message.rows.len() != 1 {
-            return Err(SkeinError::Execution(format!(
+            return Err(HawdbError::Execution(format!(
                 "content-store thread ownership payload probe expected one document and message for {}, got documents={} messages={}",
                 fixture.thread_id,
                 document.rows.len(),
@@ -418,7 +418,7 @@ fn require_graph_state(
         {
             Ok(())
         }
-        rows => Err(SkeinError::Execution(format!(
+        rows => Err(HawdbError::Execution(format!(
             "content-store thread ownership {phase} graph expected space={expected_space_id}, updated_at={expected_updated_at}, got {rows:?}"
         ))),
     }
@@ -439,7 +439,7 @@ fn require_document_relational_state(
         {
             Ok(())
         }
-        rows => Err(SkeinError::Execution(format!(
+        rows => Err(HawdbError::Execution(format!(
             "content-store thread ownership {phase} expected owner={expected_owner_id}, space={expected_space_id}, updated_at={expected_updated_at}, got {rows:?}"
         ))),
     }
@@ -458,7 +458,7 @@ fn require_relational_state(
         {
             Ok(())
         }
-        rows => Err(SkeinError::Execution(format!(
+        rows => Err(HawdbError::Execution(format!(
             "content-store thread ownership {phase} expected space={expected_space_id}, updated_at={expected_updated_at}, got {rows:?}"
         ))),
     }

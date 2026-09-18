@@ -1,5 +1,5 @@
 [package]
-name = "skein-route-ownership"
+name = "hawdb-route-ownership"
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true

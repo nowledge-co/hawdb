@@ -1,5 +1,5 @@
 use crate::inventory::background_maintenance_evidence_health;
-use skein_core::{Result, SkeinError};
+use hawdb_core::{HawdbError, Result};
 use std::path::Path;
 
 pub fn nowledge_background_maintenance_evidence_usage() -> String {
@@ -21,7 +21,7 @@ pub fn run_nowledge_background_maintenance_evidence(
             }
             path => {
                 if args.next().is_some() {
-                    return Err(SkeinError::Semantic(
+                    return Err(HawdbError::Semantic(
                         nowledge_background_maintenance_evidence_usage(),
                     ));
                 }
@@ -33,7 +33,7 @@ pub fn run_nowledge_background_maintenance_evidence(
             }
         }
     }
-    Err(SkeinError::Semantic(
+    Err(HawdbError::Semantic(
         nowledge_background_maintenance_evidence_usage(),
     ))
 }
@@ -47,7 +47,7 @@ pub fn nowledge_background_maintenance_evidence_json(
     insert_json(
         &mut object,
         "protocol",
-        "skein-nowledge-background-maintenance-evidence-v1",
+        "hawdb-nowledge-background-maintenance-evidence-v1",
     );
     insert_json(&mut object, "required", health.required);
     insert_json(&mut object, "present", health.present);
@@ -311,13 +311,13 @@ fn insert_json<T: serde::Serialize>(
 
 fn read_json_file(path: &Path) -> Result<serde_json::Value> {
     let content = std::fs::read_to_string(path).map_err(|error| {
-        SkeinError::Execution(format!(
+        HawdbError::Execution(format!(
             "failed to read background maintenance JSON: {}",
             error.kind()
         ))
     })?;
     serde_json::from_str(&content).map_err(|_| {
-        SkeinError::Semantic(
+        HawdbError::Semantic(
             "failed to parse background maintenance JSON: invalid_json".to_string(),
         )
     })
@@ -344,7 +344,7 @@ mod tests {
         assert!(require_ready);
         assert_eq!(
             evidence["protocol"],
-            "skein-nowledge-background-maintenance-evidence-v1"
+            "hawdb-nowledge-background-maintenance-evidence-v1"
         );
         assert_eq!(evidence["ready"], true);
         assert_eq!(evidence["background_maintenance_required"], true);
@@ -464,7 +464,7 @@ mod tests {
 
     fn ready_summary() -> serde_json::Value {
         serde_json::json!({
-            "protocol": "skein-background-maintenance-report",
+            "protocol": "hawdb-background-maintenance-report",
             "total_candidates": 1,
             "foreground_admission_probe_ready": true,
             "foreground_admission_probe_admission": "admit",
@@ -514,6 +514,6 @@ mod tests {
             .duration_since(UNIX_EPOCH)
             .unwrap()
             .as_nanos();
-        std::env::temp_dir().join(format!("skein_{name}_{}_{nanos}.json", std::process::id()))
+        std::env::temp_dir().join(format!("hawdb_{name}_{}_{nanos}.json", std::process::id()))
     }
 }

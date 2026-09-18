@@ -46,7 +46,7 @@
     "first_query_scope": "new_handle_after_checkpoint_and_reopen",
     "os": "linux",
     "os_page_cache": "uncontrolled_not_cold_disk",
-    "protocol": "skein-persisted-relational-access-v1",
+    "protocol": "hawdb-persisted-relational-access-v1",
     "read_mode": "out_of_core_authoritative",
     "result_validation": "complete_ids_and_payloads_against_fixture_oracle",
     "rows": 8192,

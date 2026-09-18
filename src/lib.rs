@@ -8,7 +8,7 @@ pub mod embedded;
 pub mod embedded_tokio;
 pub mod executor;
 pub mod expression {
-    pub use skein_expression::*;
+    pub use hawdb_expression::*;
 }
 pub mod graph_route_evidence;
 pub mod mem_library_readiness;
@@ -16,13 +16,13 @@ pub mod nowledge_fuzz;
 pub mod nowledge_inventory;
 pub mod nowledge_mem;
 pub mod query {
-    pub use skein_query::*;
+    pub use hawdb_query::*;
 }
 pub mod query_runtime_preflight;
 mod relational_sql;
 pub mod replacement_summary;
 pub mod search;
-pub use skein_route_ownership as search_route_ownership;
+pub use hawdb_route_ownership as search_route_ownership;
 pub mod store;
 pub mod telemetry;
 pub mod workload_fixtures;
@@ -36,19 +36,19 @@ pub use compatibility_facades::{
 };
 
 pub mod error {
-    pub use skein_core::error::*;
+    pub use hawdb_core::error::*;
 }
 
 pub mod schema {
-    pub use skein_core::schema::*;
+    pub use hawdb_core::schema::*;
 }
 
 pub mod value {
-    pub use skein_core::value::*;
+    pub use hawdb_core::value::*;
 }
 
 pub mod sql {
-    pub use skein_sql::*;
+    pub use hawdb_sql::*;
 }
 
 pub use analytics::{
@@ -57,36 +57,57 @@ pub use analytics::{
     ProjectionMemoryBudget, ProjectionMemoryEstimate,
 };
 pub use api::{
-    parse_skein_lightning_graph_stream_export, skein_lightning_initial_import_advance_checkpoint,
-    skein_lightning_initial_import_advance_durable_state_streaming,
-    skein_lightning_initial_import_advance_durable_state_with_search_projection_batch,
-    skein_lightning_initial_import_checkpoint_readiness,
-    skein_lightning_initial_import_cutover_catch_up_report,
-    skein_lightning_initial_import_decode_durable_state,
-    skein_lightning_initial_import_document_identity_coverage,
-    skein_lightning_initial_import_durable_state_report,
-    skein_lightning_initial_import_encode_durable_state, skein_lightning_initial_import_plan,
-    skein_lightning_initial_import_plan_with_document_identities,
-    skein_lightning_initial_import_readiness, skein_lightning_initial_import_recovery_readiness,
-    skein_lightning_initial_import_resume_action,
-    skein_lightning_initial_import_search_projection_batch_report,
-    skein_lightning_initial_import_search_projection_batch_report_with_document_identities,
-    skein_lightning_initial_import_session_bundle_readiness,
-    skein_lightning_initial_import_session_report,
-    skein_lightning_initial_import_source_bundle_readiness,
-    skein_lightning_initial_import_source_fingerprint,
-    skein_lightning_initial_import_startup_readiness, validate_skein_lightning_graph_stream,
-    validate_skein_lightning_relational_stream, AccessControlPolicyReadiness, AppendCommitResult,
-    BackgroundMaintenanceCandidate, BackgroundMaintenanceKind, BackgroundMaintenanceOptions,
-    BackgroundMaintenanceSummary, BackgroundMaintenanceSummaryItem, BlockingOperatorMemoryReport,
-    BoundedReadQueryOutput, CanonicalGraphSnapshotExport, CanonicalGraphSnapshotValidation,
+    hawdb_lightning_initial_import_advance_checkpoint,
+    hawdb_lightning_initial_import_advance_durable_state_streaming,
+    hawdb_lightning_initial_import_advance_durable_state_with_search_projection_batch,
+    hawdb_lightning_initial_import_checkpoint_readiness,
+    hawdb_lightning_initial_import_cutover_catch_up_report,
+    hawdb_lightning_initial_import_decode_durable_state,
+    hawdb_lightning_initial_import_document_identity_coverage,
+    hawdb_lightning_initial_import_durable_state_report,
+    hawdb_lightning_initial_import_encode_durable_state, hawdb_lightning_initial_import_plan,
+    hawdb_lightning_initial_import_plan_with_document_identities,
+    hawdb_lightning_initial_import_readiness, hawdb_lightning_initial_import_recovery_readiness,
+    hawdb_lightning_initial_import_resume_action,
+    hawdb_lightning_initial_import_search_projection_batch_report,
+    hawdb_lightning_initial_import_search_projection_batch_report_with_document_identities,
+    hawdb_lightning_initial_import_session_bundle_readiness,
+    hawdb_lightning_initial_import_session_report,
+    hawdb_lightning_initial_import_source_bundle_readiness,
+    hawdb_lightning_initial_import_source_fingerprint,
+    hawdb_lightning_initial_import_startup_readiness, parse_hawdb_lightning_graph_stream_export,
+    validate_hawdb_lightning_graph_stream, validate_hawdb_lightning_relational_stream,
+    AccessControlPolicyReadiness, AppendCommitResult, BackgroundMaintenanceCandidate,
+    BackgroundMaintenanceKind, BackgroundMaintenanceOptions, BackgroundMaintenanceSummary,
+    BackgroundMaintenanceSummaryItem, BlockingOperatorMemoryReport, BoundedReadQueryOutput,
+    CanonicalGraphSnapshotExport, CanonicalGraphSnapshotValidation,
     CanonicalSnapshotEndpointViolation, CanonicalSnapshotIdentityAudit, CanonicalSnapshotNode,
     CanonicalSnapshotRelationship, CanonicalStableIdMapping, ConcurrentDatabase,
     ConcurrentDatabaseTransaction, ConcurrentTransactionMode, ConcurrentTransactionOptions,
     Database, DatabaseConfig, DatabaseReadTransaction, DatabaseTransaction, DerivedArtifactJob,
     DerivedArtifactJobReport, DerivedArtifactJobStatus, ExplainAnalyzeOutput,
     ExternalContentArtifactJobCompletion, ExternalContentArtifactJobSummary,
-    ExternalContentArtifactRuntimeManifest, KnowledgeCandidate, KnowledgeCandidateScoreBreakdown,
+    ExternalContentArtifactRuntimeManifest, HawdbLightningBootstrapExport,
+    HawdbLightningBootstrapManifest, HawdbLightningGraphStream,
+    HawdbLightningGraphStreamValidation, HawdbLightningInitialImportApplyReport,
+    HawdbLightningInitialImportCheckpoint, HawdbLightningInitialImportCheckpointProgress,
+    HawdbLightningInitialImportCheckpointProgressReport,
+    HawdbLightningInitialImportCheckpointReadiness,
+    HawdbLightningInitialImportCutoverCatchUpReport, HawdbLightningInitialImportDocumentIdentity,
+    HawdbLightningInitialImportDocumentIdentityCoverage,
+    HawdbLightningInitialImportDocumentIdentityKindReport,
+    HawdbLightningInitialImportDurableBatchAdvanceReport, HawdbLightningInitialImportDurableState,
+    HawdbLightningInitialImportDurableStateCodecReport,
+    HawdbLightningInitialImportDurableStateReport, HawdbLightningInitialImportIdempotencyKey,
+    HawdbLightningInitialImportPlan, HawdbLightningInitialImportReadiness,
+    HawdbLightningInitialImportReadinessInputs, HawdbLightningInitialImportRecoveryReadinessReport,
+    HawdbLightningInitialImportResumeAction, HawdbLightningInitialImportResumeActionKind,
+    HawdbLightningInitialImportSearchProjectionBatchReport,
+    HawdbLightningInitialImportSessionBundleReadiness, HawdbLightningInitialImportSessionReport,
+    HawdbLightningInitialImportSourceBundleReadiness, HawdbLightningInitialImportSourceFingerprint,
+    HawdbLightningInitialImportStartupReadinessReport,
+    HawdbLightningInitialImportStreamingBatchAdvanceReport, HawdbLightningRelationalStream,
+    HawdbLightningRelationalStreamValidation, KnowledgeCandidate, KnowledgeCandidateScoreBreakdown,
     KnowledgeCandidateScoringPolicy, KnowledgeCandidateSource, KnowledgeEvidence,
     KnowledgeFallbackReasonCode, KnowledgeFanoutReasonCode, KnowledgeFanoutReasonDetail,
     KnowledgeGraphContextPath, KnowledgeGraphPathDirection, KnowledgeGraphSeed,
@@ -110,39 +131,20 @@ pub use api::{
     SearchProjectionConsumerId, SearchProjectionConsumerOptions, SearchProjectionConsumerReadiness,
     SearchProjectionConsumerRebuildReason, SearchProjectionConsumerResult,
     SearchProjectionConsumerState, SearchProjectionConsumerStatus,
-    SearchProjectionGraphDeltaRequest, SearchProjectionRelationalDelta,
-    SkeinLightningBootstrapExport, SkeinLightningBootstrapManifest, SkeinLightningGraphStream,
-    SkeinLightningGraphStreamValidation, SkeinLightningInitialImportApplyReport,
-    SkeinLightningInitialImportCheckpoint, SkeinLightningInitialImportCheckpointProgress,
-    SkeinLightningInitialImportCheckpointProgressReport,
-    SkeinLightningInitialImportCheckpointReadiness,
-    SkeinLightningInitialImportCutoverCatchUpReport, SkeinLightningInitialImportDocumentIdentity,
-    SkeinLightningInitialImportDocumentIdentityCoverage,
-    SkeinLightningInitialImportDocumentIdentityKindReport,
-    SkeinLightningInitialImportDurableBatchAdvanceReport, SkeinLightningInitialImportDurableState,
-    SkeinLightningInitialImportDurableStateCodecReport,
-    SkeinLightningInitialImportDurableStateReport, SkeinLightningInitialImportIdempotencyKey,
-    SkeinLightningInitialImportPlan, SkeinLightningInitialImportReadiness,
-    SkeinLightningInitialImportReadinessInputs, SkeinLightningInitialImportRecoveryReadinessReport,
-    SkeinLightningInitialImportResumeAction, SkeinLightningInitialImportResumeActionKind,
-    SkeinLightningInitialImportSearchProjectionBatchReport,
-    SkeinLightningInitialImportSessionBundleReadiness, SkeinLightningInitialImportSessionReport,
-    SkeinLightningInitialImportSourceBundleReadiness, SkeinLightningInitialImportSourceFingerprint,
-    SkeinLightningInitialImportStartupReadinessReport,
-    SkeinLightningInitialImportStreamingBatchAdvanceReport, SkeinLightningRelationalStream,
-    SkeinLightningRelationalStreamValidation, SlowQueryLogExportOptions, SlowQueryLogRecordSummary,
-    SqlStatementResult, StorageResourceProfileLimits, StorageResourceProfileReport,
-    SystemSchemaMigration, SystemSchemaRegistry, SystemSchemaUpgradeReport,
-    TransactionCommitResult, WalGroupCommitActivation, WalGroupCommitAdaptiveColdStartEvidence,
-    WalGroupCommitAdaptivePolicyEvidence, WalGroupCommitAdaptiveSteadyStateEvidence,
-    WalGroupCommitConfig, WalGroupCommitDelayPolicy, WalGroupCommitEvidence,
-    WalGroupCommitSnapshot, WalGroupCommitTailLatencyEvidence, WalGroupCommitWaitDecision,
-    DEFAULT_MAX_READ_RESULT_PAYLOAD_BYTES, DEFAULT_MAX_READ_RESULT_ROWS,
-    DEFAULT_PESSIMISTIC_LOCK_TIMEOUT, DEFAULT_WAL_GROUP_COMMIT_MAX_BYTES,
-    DEFAULT_WAL_GROUP_COMMIT_MAX_DELAY, DEFAULT_WAL_GROUP_COMMIT_MAX_ENTRIES,
-    SKEIN_LIGHTNING_BOOTSTRAP_PROTOCOL_VERSION, SKEIN_LIGHTNING_GRAPH_STREAM_FORMAT_VERSION,
-    SKEIN_LIGHTNING_INITIAL_IMPORT_DURABLE_STATE_PROTOCOL,
-    SKEIN_LIGHTNING_RELATIONAL_STREAM_FORMAT_VERSION, SLOW_QUERY_LOG_EVENT_PROTOCOL,
+    SearchProjectionGraphDeltaRequest, SearchProjectionRelationalDelta, SlowQueryLogExportOptions,
+    SlowQueryLogRecordSummary, SqlStatementResult, StorageResourceProfileLimits,
+    StorageResourceProfileReport, SystemSchemaMigration, SystemSchemaRegistry,
+    SystemSchemaUpgradeReport, TransactionCommitResult, WalGroupCommitActivation,
+    WalGroupCommitAdaptiveColdStartEvidence, WalGroupCommitAdaptivePolicyEvidence,
+    WalGroupCommitAdaptiveSteadyStateEvidence, WalGroupCommitConfig, WalGroupCommitDelayPolicy,
+    WalGroupCommitEvidence, WalGroupCommitSnapshot, WalGroupCommitTailLatencyEvidence,
+    WalGroupCommitWaitDecision, DEFAULT_MAX_READ_RESULT_PAYLOAD_BYTES,
+    DEFAULT_MAX_READ_RESULT_ROWS, DEFAULT_PESSIMISTIC_LOCK_TIMEOUT,
+    DEFAULT_WAL_GROUP_COMMIT_MAX_BYTES, DEFAULT_WAL_GROUP_COMMIT_MAX_DELAY,
+    DEFAULT_WAL_GROUP_COMMIT_MAX_ENTRIES, HAWDB_LIGHTNING_BOOTSTRAP_PROTOCOL_VERSION,
+    HAWDB_LIGHTNING_GRAPH_STREAM_FORMAT_VERSION,
+    HAWDB_LIGHTNING_INITIAL_IMPORT_DURABLE_STATE_PROTOCOL,
+    HAWDB_LIGHTNING_RELATIONAL_STREAM_FORMAT_VERSION, SLOW_QUERY_LOG_EVENT_PROTOCOL,
     STORAGE_RESOURCE_PROFILE_PROTOCOL,
 };
 pub use background_maintenance_evidence::nowledge_background_maintenance_evidence_json;
@@ -196,14 +198,14 @@ pub use crash_recovery_evidence::{
 };
 pub use cypher::RelationshipDirection;
 pub use embedded::{
-    EmbeddedDeploymentProfile, EmbeddedQueryError, EmbeddedRuntimeResources, SkeinEmbedded,
-    SkeinEmbeddedOpenOptions,
+    EmbeddedDeploymentProfile, EmbeddedQueryError, EmbeddedRuntimeResources, HawdbEmbedded,
+    HawdbEmbeddedOpenOptions,
 };
 #[cfg(feature = "tokio-runtime")]
 pub use embedded_tokio::{
-    SkeinTokioEmbedded, SkeinTokioEmbeddedError, TokioQueryBatchStream, TokioQueryStreamOptions,
+    HawdbTokioEmbedded, HawdbTokioEmbeddedError, TokioQueryBatchStream, TokioQueryStreamOptions,
 };
-pub use error::{Result, SkeinError};
+pub use error::{HawdbError, Result};
 pub use executor::{
     QueryRow, QueryRowRef, QueryRows, QuerySchema, ReadExecutionProfile, Row, RowRef,
 };
@@ -222,25 +224,97 @@ pub use graph_route_readiness::{
     nowledge_graph_route_readiness_json, NMEM_GRAPH_ROUTE_EVIDENCE_PROTOCOL,
     NMEM_GRAPH_ROUTE_READINESS_PROTOCOL,
 };
+#[doc(hidden)]
+pub use hawdb_bootstrap::{
+    endpoint_violations_json, hawdb_lightning_artifact_summary,
+    hawdb_lightning_bootstrap_bundle_json,
+    hawdb_lightning_bootstrap_bundle_json_with_optional_storage_recovery,
+    hawdb_lightning_bootstrap_manifest_json, hawdb_lightning_gc_staging_report,
+    hawdb_lightning_graph_stream_validation_json, hawdb_lightning_import_state_marker,
+    hawdb_lightning_import_status, hawdb_lightning_relational_stream_validation_json,
+    publish_hawdb_lightning_staging_catalog, publish_hawdb_lightning_staging_catalog_with_options,
+    read_hawdb_lightning_staging_artifact_json, stable_identity_audit_json,
+    stage_hawdb_lightning_bootstrap_export,
+    stage_hawdb_lightning_bootstrap_export_with_optional_storage_recovery,
+    sync_bootstrap_directory, verify_hawdb_lightning_published_manifest,
+    verify_hawdb_lightning_staging_catalog, write_bootstrap_atomic_file,
+    HawdbLightningPublishOptions, HAWDB_LIGHTNING_STAGING_CATALOG_PROTOCOL_VERSION,
+};
+pub use hawdb_core::LogicalType;
+pub use hawdb_core::Uuid;
+pub use hawdb_core::{
+    GraphRagCommonPathSummary, GraphRagGeneratedQuery, GraphRagLabelSummary,
+    GraphRagPropertySubject, GraphRagPropertySummary, GraphRagQueryBinding, GraphRagQueryDraft,
+    GraphRagQueryGenerationError, GraphRagQueryParameterCardinality, GraphRagQueryParameterError,
+    GraphRagQueryParameterRequirement, GraphRagQueryPattern, GraphRagQueryPredicate,
+    GraphRagQueryPredicateOperator, GraphRagQueryProjection, GraphRagRelationshipTypeSummary,
+    GraphRagRouteSummary, GraphRagSchemaContext, GraphRagSchemaContextOptions,
+    GraphRagSchemaContextTruncation, RuntimeCancellationReason, RuntimeCancellationToken,
+    RuntimeCapabilities, RuntimeCapability, RuntimeIoWaveController, RuntimeIoWaveError,
+    RuntimeIoWavePermit, RuntimeIoWaveTryAcquire, RuntimeMemoryReservation, RuntimeTaskContext,
+    DEFAULT_GRAPH_RAG_MAX_COMMON_PATHS, DEFAULT_GRAPH_RAG_MAX_LABELS,
+    DEFAULT_GRAPH_RAG_MAX_PROPERTIES_PER_SUBJECT, DEFAULT_GRAPH_RAG_MAX_RELATIONSHIP_TYPES,
+    DEFAULT_GRAPH_RAG_MAX_ROUTES, GRAPH_RAG_SCHEMA_CONTEXT_PROTOCOL, MAX_GRAPH_RAG_QUERY_LIMIT,
+};
+pub use hawdb_optimizer::{
+    AdaptiveVectorBackendPolicy, Distribution, GroupId, Memo as OptimizerMemo,
+    MemoGroup as OptimizerMemoGroup, PhysicalProperties, RequiredProperties,
+};
+pub use hawdb_qos::{
+    IoConcurrencyBudget, ProcessMemoryCapabilities, ProcessMemoryProfile, ProcessMemorySnapshot,
+    RuntimeAdmissionCode, RuntimeAdmissionError, RuntimeGovernor, RuntimeGovernorConfig,
+    RuntimeGovernorLimits, RuntimeGovernorSnapshot, RuntimeIoReservationScope,
+    RuntimeMemoryPressure, RuntimeMemorySnapshot, RuntimeResourceBudget, RuntimeResourceSnapshot,
+    RuntimeTelemetryEvent, RuntimeTelemetryEventKind, RuntimeTelemetrySink, RuntimeWorkKind,
+    RuntimeWorkPriority, RuntimeWorkRequest, StorageDeviceDiscoverySource, StorageDeviceProfile,
+    StorageMediaKind,
+};
+pub use hawdb_readiness::embedded_query_path::{
+    EmbeddedQueryEntrypoint, EmbeddedQueryPathReadiness, EMBEDDED_QUERY_PATH_READINESS_PROTOCOL,
+};
+pub use hawdb_readiness::query_runtime_preflight::parse_query_runtime_preflight_probes;
+#[cfg(feature = "tokio-runtime")]
+pub use hawdb_runtime_tokio::{
+    TokioRuntimeAdapter, TokioRuntimeConfig, TokioRuntimeError, TokioRuntimeOwnership,
+    TokioSegmentReadExecutionError, TokioSegmentReadExecutor, TokioTaskError,
+};
+pub use hawdb_storage::ScanPredicate;
+pub use hawdb_storage::{
+    decode_projection_relational_member, encode_projection_relational_member,
+    ProjectionGenerationBatchLimits, ProjectionGenerationBegin, ProjectionGenerationCursor,
+    ProjectionGenerationDigestBuilder, ProjectionGenerationError, ProjectionGenerationGcLimits,
+    ProjectionGenerationGcReport, ProjectionGenerationIdentity, ProjectionGenerationManifest,
+    ProjectionGenerationMember, ProjectionGenerationPage, ProjectionGenerationPublishReport,
+    ProjectionGenerationReadLimits, ProjectionGenerationReadReport, ProjectionGenerationReader,
+    ProjectionGenerationSeal, ProjectionGenerationState, ProjectionGenerationStatus,
+    ProjectionGenerationStore, ProjectionGenerationWriter, SealedProjectionGeneration,
+};
+#[cfg(feature = "vector-search")]
+pub use hawdb_vector_projection::{
+    KernelPreference as RaBitQKernelPreference,
+    ProjectionBuildReport as RaBitQCandidateProjectionBuildReport,
+    ProjectionManifest as RaBitQCandidateProjectionManifest,
+    ProjectionSearchReport as RaBitQCandidateScanReport, ScanKernel as RaBitQScanKernel,
+};
 pub use mem_integration_bundle::{nowledge_mem_integration_bundle_json, IntegrationBundleInputs};
 pub use mem_integration_readiness::{
     background_maintenance_cutover_readiness, bounded_read_alignment_cutover_readiness,
     bounded_read_cutover_readiness, content_store_boundary_cutover_readiness,
     graph_replacement_cutover_readiness, graph_route_alignment_cutover_readiness,
     graph_route_cutover_readiness, graph_route_parity_alignment_cutover_readiness,
-    integration_bundle_protocol_cutover_readiness, legacy_coexistence_cutover_readiness,
-    library_readiness_cutover_readiness, nowledge_mem_final_cutover_preflight,
-    nowledge_mem_final_cutover_preflight_json, nowledge_mem_integration_readiness,
-    nowledge_mem_integration_readiness_json, previous_wrapper_preflight_cutover_readiness,
-    query_family_replacement_cutover_readiness,
+    hawdb_submodule_cutover_readiness, integration_bundle_protocol_cutover_readiness,
+    legacy_coexistence_cutover_readiness, library_readiness_cutover_readiness,
+    nowledge_mem_final_cutover_preflight, nowledge_mem_final_cutover_preflight_json,
+    nowledge_mem_integration_readiness, nowledge_mem_integration_readiness_json,
+    previous_wrapper_preflight_cutover_readiness, query_family_replacement_cutover_readiness,
     query_runtime_preflight_alignment_cutover_readiness, query_runtime_preflight_cutover_readiness,
     replacement_summary_protocol_cutover_readiness, route_ownership_cutover_readiness,
     search_candidate_cutover_readiness, search_projection_cutover_readiness,
-    skein_submodule_cutover_readiness, storage_recovery_cutover_readiness,
-    BackgroundMaintenanceCutoverReadiness, BoundedReadAlignmentCutoverReadiness,
-    BoundedReadCutoverReadiness, ContentStoreBoundaryCutoverReadiness,
-    GraphReplacementCutoverReadiness, GraphRouteAlignmentCutoverReadiness,
-    GraphRouteCutoverReadiness, GraphRouteParityAlignmentCutoverReadiness,
+    storage_recovery_cutover_readiness, BackgroundMaintenanceCutoverReadiness,
+    BoundedReadAlignmentCutoverReadiness, BoundedReadCutoverReadiness,
+    ContentStoreBoundaryCutoverReadiness, GraphReplacementCutoverReadiness,
+    GraphRouteAlignmentCutoverReadiness, GraphRouteCutoverReadiness,
+    GraphRouteParityAlignmentCutoverReadiness, HawdbSubmoduleCutoverReadiness,
     IntegrationBundleProtocolCutoverReadiness, LegacyCoexistenceCutoverReadiness,
     LibraryReadinessCutoverReadiness, NowledgeMemFinalCutoverPreflightReport,
     NowledgeMemIntegrationCheckReport, NowledgeMemIntegrationNextAction,
@@ -248,9 +322,9 @@ pub use mem_integration_readiness::{
     QueryFamilyReplacementCutoverReadiness, QueryRuntimePreflightAlignmentCutoverReadiness,
     QueryRuntimePreflightCutoverReadiness, ReplacementSummaryProtocolCutoverReadiness,
     RouteOwnershipCutoverReadiness, SearchCandidateCutoverReadiness,
-    SearchProjectionCutoverReadiness, SkeinSubmoduleCutoverReadiness,
-    StorageRecoveryCutoverReadiness, NOWLEDGE_MEM_FINAL_CUTOVER_PREFLIGHT_PROTOCOL,
-    NOWLEDGE_MEM_INTEGRATION_READINESS_PROTOCOL, NOWLEDGE_MEM_SKEIN_INTEGRATION_BUNDLE_PROTOCOL,
+    SearchProjectionCutoverReadiness, StorageRecoveryCutoverReadiness,
+    NOWLEDGE_MEM_FINAL_CUTOVER_PREFLIGHT_PROTOCOL, NOWLEDGE_MEM_HAWDB_INTEGRATION_BUNDLE_PROTOCOL,
+    NOWLEDGE_MEM_INTEGRATION_READINESS_PROTOCOL,
 };
 pub use mem_library_readiness::{
     parse_bounded_probe_json, parse_mem_library_covered_routes_json,
@@ -364,7 +438,7 @@ pub use replacement_summary::{
     GraphRouteReadinessSummary, NowledgeReplacementSummaryOptions,
 };
 pub use route_ownership::{
-    nowledge_mem_route_ownership_all_legacy, nowledge_mem_route_ownership_all_skein,
+    nowledge_mem_route_ownership_all_hawdb, nowledge_mem_route_ownership_all_legacy,
     nowledge_mem_route_ownership_for_engine, nowledge_mem_route_ownership_readiness,
     NowledgeMemRouteOwnership, NowledgeMemRouteOwnershipPolicy,
     NowledgeMemRouteOwnershipReadinessReport, NowledgeMemRouteReadEngine,
@@ -413,13 +487,13 @@ pub use search_projection_evidence::{
     nowledge_search_projection_probe_contract_json, NowledgeSearchProjectionEvidenceReport,
 };
 pub use search_route_ownership::{
-    active_search_route_read_requirement, nowledge_mem_active_search_route_ownership_all_lancedb,
-    nowledge_mem_active_search_route_ownership_all_skein,
+    active_search_route_read_requirement, nowledge_mem_active_search_route_ownership_all_hawdb,
+    nowledge_mem_active_search_route_ownership_all_lancedb,
     nowledge_mem_active_search_route_ownership_for_engine,
     nowledge_mem_active_search_route_ownership_readiness,
-    nowledge_mem_active_search_route_read_evidence_all_skein_ready,
+    nowledge_mem_active_search_route_read_evidence_all_hawdb_ready,
     nowledge_mem_active_search_route_read_requirements, nowledge_mem_active_search_route_readiness,
-    nowledge_mem_search_route_ownership_all_lancedb, nowledge_mem_search_route_ownership_all_skein,
+    nowledge_mem_search_route_ownership_all_hawdb, nowledge_mem_search_route_ownership_all_lancedb,
     nowledge_mem_search_route_ownership_for_engine, nowledge_mem_search_route_ownership_readiness,
     required_projection_route_for_active_search_route, NowledgeMemActiveSearchRouteOwnership,
     NowledgeMemActiveSearchRouteOwnershipReadinessReport, NowledgeMemActiveSearchRouteReadEvidence,
@@ -438,78 +512,6 @@ pub use search_route_ownership::{
     NOWLEDGE_MEM_SEARCH_ROUTE_MESSAGE, NOWLEDGE_MEM_SEARCH_ROUTE_OWNERSHIP_PROTOCOL,
     NOWLEDGE_MEM_SEARCH_ROUTE_SOURCE, NOWLEDGE_MEM_SEARCH_ROUTE_SOURCE_CHUNK,
     REQUIRED_NOWLEDGE_MEM_ACTIVE_SEARCH_ROUTES, REQUIRED_NOWLEDGE_MEM_SEARCH_ROUTES,
-};
-#[doc(hidden)]
-pub use skein_bootstrap::{
-    endpoint_violations_json, publish_skein_lightning_staging_catalog,
-    publish_skein_lightning_staging_catalog_with_options,
-    read_skein_lightning_staging_artifact_json, skein_lightning_artifact_summary,
-    skein_lightning_bootstrap_bundle_json,
-    skein_lightning_bootstrap_bundle_json_with_optional_storage_recovery,
-    skein_lightning_bootstrap_manifest_json, skein_lightning_gc_staging_report,
-    skein_lightning_graph_stream_validation_json, skein_lightning_import_state_marker,
-    skein_lightning_import_status, skein_lightning_relational_stream_validation_json,
-    stable_identity_audit_json, stage_skein_lightning_bootstrap_export,
-    stage_skein_lightning_bootstrap_export_with_optional_storage_recovery,
-    sync_bootstrap_directory, verify_skein_lightning_published_manifest,
-    verify_skein_lightning_staging_catalog, write_bootstrap_atomic_file,
-    SkeinLightningPublishOptions, SKEIN_LIGHTNING_STAGING_CATALOG_PROTOCOL_VERSION,
-};
-pub use skein_core::LogicalType;
-pub use skein_core::Uuid;
-pub use skein_core::{
-    GraphRagCommonPathSummary, GraphRagGeneratedQuery, GraphRagLabelSummary,
-    GraphRagPropertySubject, GraphRagPropertySummary, GraphRagQueryBinding, GraphRagQueryDraft,
-    GraphRagQueryGenerationError, GraphRagQueryParameterCardinality, GraphRagQueryParameterError,
-    GraphRagQueryParameterRequirement, GraphRagQueryPattern, GraphRagQueryPredicate,
-    GraphRagQueryPredicateOperator, GraphRagQueryProjection, GraphRagRelationshipTypeSummary,
-    GraphRagRouteSummary, GraphRagSchemaContext, GraphRagSchemaContextOptions,
-    GraphRagSchemaContextTruncation, RuntimeCancellationReason, RuntimeCancellationToken,
-    RuntimeCapabilities, RuntimeCapability, RuntimeIoWaveController, RuntimeIoWaveError,
-    RuntimeIoWavePermit, RuntimeIoWaveTryAcquire, RuntimeMemoryReservation, RuntimeTaskContext,
-    DEFAULT_GRAPH_RAG_MAX_COMMON_PATHS, DEFAULT_GRAPH_RAG_MAX_LABELS,
-    DEFAULT_GRAPH_RAG_MAX_PROPERTIES_PER_SUBJECT, DEFAULT_GRAPH_RAG_MAX_RELATIONSHIP_TYPES,
-    DEFAULT_GRAPH_RAG_MAX_ROUTES, GRAPH_RAG_SCHEMA_CONTEXT_PROTOCOL, MAX_GRAPH_RAG_QUERY_LIMIT,
-};
-pub use skein_optimizer::{
-    AdaptiveVectorBackendPolicy, Distribution, GroupId, Memo as OptimizerMemo,
-    MemoGroup as OptimizerMemoGroup, PhysicalProperties, RequiredProperties,
-};
-pub use skein_qos::{
-    IoConcurrencyBudget, ProcessMemoryCapabilities, ProcessMemoryProfile, ProcessMemorySnapshot,
-    RuntimeAdmissionCode, RuntimeAdmissionError, RuntimeGovernor, RuntimeGovernorConfig,
-    RuntimeGovernorLimits, RuntimeGovernorSnapshot, RuntimeIoReservationScope,
-    RuntimeMemoryPressure, RuntimeMemorySnapshot, RuntimeResourceBudget, RuntimeResourceSnapshot,
-    RuntimeTelemetryEvent, RuntimeTelemetryEventKind, RuntimeTelemetrySink, RuntimeWorkKind,
-    RuntimeWorkPriority, RuntimeWorkRequest, StorageDeviceDiscoverySource, StorageDeviceProfile,
-    StorageMediaKind,
-};
-pub use skein_readiness::embedded_query_path::{
-    EmbeddedQueryEntrypoint, EmbeddedQueryPathReadiness, EMBEDDED_QUERY_PATH_READINESS_PROTOCOL,
-};
-pub use skein_readiness::query_runtime_preflight::parse_query_runtime_preflight_probes;
-#[cfg(feature = "tokio-runtime")]
-pub use skein_runtime_tokio::{
-    TokioRuntimeAdapter, TokioRuntimeConfig, TokioRuntimeError, TokioRuntimeOwnership,
-    TokioSegmentReadExecutionError, TokioSegmentReadExecutor, TokioTaskError,
-};
-pub use skein_storage::ScanPredicate;
-pub use skein_storage::{
-    decode_projection_relational_member, encode_projection_relational_member,
-    ProjectionGenerationBatchLimits, ProjectionGenerationBegin, ProjectionGenerationCursor,
-    ProjectionGenerationDigestBuilder, ProjectionGenerationError, ProjectionGenerationGcLimits,
-    ProjectionGenerationGcReport, ProjectionGenerationIdentity, ProjectionGenerationManifest,
-    ProjectionGenerationMember, ProjectionGenerationPage, ProjectionGenerationPublishReport,
-    ProjectionGenerationReadLimits, ProjectionGenerationReadReport, ProjectionGenerationReader,
-    ProjectionGenerationSeal, ProjectionGenerationState, ProjectionGenerationStatus,
-    ProjectionGenerationStore, ProjectionGenerationWriter, SealedProjectionGeneration,
-};
-#[cfg(feature = "vector-search")]
-pub use skein_vector_projection::{
-    KernelPreference as RaBitQKernelPreference,
-    ProjectionBuildReport as RaBitQCandidateProjectionBuildReport,
-    ProjectionManifest as RaBitQCandidateProjectionManifest,
-    ProjectionSearchReport as RaBitQCandidateScanReport, ScanKernel as RaBitQScanKernel,
 };
 pub use storage_recovery_evidence::nowledge_storage_recovery_evidence_json;
 pub use store::{
@@ -627,11 +629,11 @@ mod tests {
     fn crate_root_reexports_embedded_query_readiness_contract() {
         assert_eq!(
             TypeId::of::<EmbeddedQueryEntrypoint>(),
-            TypeId::of::<skein_readiness::embedded_query_path::EmbeddedQueryEntrypoint>()
+            TypeId::of::<hawdb_readiness::embedded_query_path::EmbeddedQueryEntrypoint>()
         );
         assert_eq!(
             TypeId::of::<EmbeddedQueryPathReadiness>(),
-            TypeId::of::<skein_readiness::embedded_query_path::EmbeddedQueryPathReadiness>()
+            TypeId::of::<hawdb_readiness::embedded_query_path::EmbeddedQueryPathReadiness>()
         );
     }
 

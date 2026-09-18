@@ -7,11 +7,11 @@
 //! small segments, and a high worker count, so segments finish and contend
 //! for the merge as fast as possible.
 
-use serde_json::json;
-use skein_vector_projection::{
+use hawdb_vector_projection::{
     KernelPreference, ProjectionBuildConfig, ProjectionBuilder, ProjectionIdentity,
     ProjectionSearchOptions,
 };
+use serde_json::json;
 use std::hint::black_box;
 use std::num::NonZeroUsize;
 use std::time::Instant;
@@ -52,7 +52,7 @@ fn main() {
     );
 }
 
-fn build_projection() -> skein_vector_projection::InMemoryProjection {
+fn build_projection() -> hawdb_vector_projection::InMemoryProjection {
     let config = ProjectionBuildConfig::new(DIMENSION, ProjectionIdentity::new(1))
         .with_segment_rows(SEGMENT_ROWS);
     let mut builder = ProjectionBuilder::new(config).expect("benchmark projection must initialize");
@@ -76,7 +76,7 @@ fn vector(id: u64) -> Vec<f32> {
 }
 
 fn measure(
-    projection: &skein_vector_projection::InMemoryProjection,
+    projection: &hawdb_vector_projection::InMemoryProjection,
     query: &[f32],
     workers: usize,
 ) -> serde_json::Value {

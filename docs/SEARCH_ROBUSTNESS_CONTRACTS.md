@@ -70,7 +70,7 @@ The analyzer fingerprint suffix changes so old derived lexical projections
 are not reused under the new token rules. Stale fingerprints request a rebuild;
 they do not imply corrupt canonical data. No persisted format version changes.
 
-`search_lexical.manifest.<generation>.skein` now belongs to the lexical
+`search_lexical.manifest.<generation>.hawdb` now belongs to the lexical
 retention domain, just like its corresponding artifact. A 512-case matrix with
 different lexical/out-of-core generations checks their identical retention
 decisions; quarantine parsing and the unversioned live manifest remain covered.
@@ -86,8 +86,8 @@ facade results. Existing ordinal differential tests also retain negative
 candidate estimates across resident and file-backed projections.
 
 The private `RaBitQCandidateProjectionStorage` enum is intentionally retained.
-The referenced `SegmentReader` is private to `skein-vector-projection`, not
-`skein-search`; both storage variants already call its shared scan kernel.
+The referenced `SegmentReader` is private to `hawdb-vector-projection`, not
+`hawdb-search`; both storage variants already call its shared scan kernel.
 Two small ownership-dispatch matches do not duplicate the algorithm. Exposing
 scan buffers/per-segment implementation types merely to remove those matches
 would create an unnecessary cross-crate API. This is not the separately
@@ -171,8 +171,8 @@ one-short budgets. Separate tests cover rejected growth without mutation, capaci
 reuse, short writes and I/O errors. Five deliberate faults in raw/compressed
 admission, checksums, ordinals and capacity reuse produce test assertions.
 
-Use `cargo test -p skein-search` and the default Bazel search matrix plus the
-required local fuzz suite. `//crates/search:skein_search_segment_allocation_tests`
+Use `cargo test -p hawdb-search` and the default Bazel search matrix plus the
+required local fuzz suite. `//crates/search:hawdb_search_segment_allocation_tests`
 executes the public regression under Bazel. This slice does not complete the
 large-document lifecycle or replace #206's complete-corpus qualification.
 
@@ -222,7 +222,7 @@ preserves all previous artifacts and reader results, while exact admission
 publishes a readable generation. Six deliberate admission, checksum, dictionary,
 range, materialization and writer-budget faults produce assertions.
 
-`//crates/search:skein_search_descriptor_allocation_tests` exposes the public
+`//crates/search:hawdb_search_descriptor_allocation_tests` exposes the public
 regression through the existing Bazel search matrix. This slice depends on the
 private streaming grammar from PR #485 and does not complete the remaining
 large-document lifecycle or #206's complete-corpus acceptance.
@@ -289,13 +289,13 @@ Bazel target; no new CI or fuzz target is introduced.
 ## Verification
 
 ```bash
-cargo test -p skein-search --lib
-cargo test -p skein-vector-projection
-cargo clippy -p skein-search -p skein-vector-projection --all-targets --all-features -- -D warnings
-bazel test --nocache_test_results //crates/search:skein_search_tests \
-  //crates/vector-projection:skein_vector_projection_tests //:skein_unit_tests \
-  //crates/fuzz:skein_fuzz_tests //crates/fuzz:skein_fuzz_cli_tests \
-  //:skein_linux_ci_fuzz_smoke_test
+cargo test -p hawdb-search --lib
+cargo test -p hawdb-vector-projection
+cargo clippy -p hawdb-search -p hawdb-vector-projection --all-targets --all-features -- -D warnings
+bazel test --nocache_test_results //crates/search:hawdb_search_tests \
+  //crates/vector-projection:hawdb_vector_projection_tests //:hawdb_unit_tests \
+  //crates/fuzz:hawdb_fuzz_tests //crates/fuzz:hawdb_fuzz_cli_tests \
+  //:hawdb_linux_ci_fuzz_smoke_test
 ```
 
 Feature-independent lexical, sampler, classifier, cleanup and scalar-score

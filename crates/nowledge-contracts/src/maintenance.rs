@@ -1,7 +1,7 @@
 //! Host-neutral JSON representation of background-maintenance summaries.
 
 use crate::{BackgroundMaintenanceSummary, BackgroundMaintenanceSummaryItem};
-use skein_qos::{LocalQosClassSnapshot, LocalQosSnapshot};
+use hawdb_qos::{LocalQosClassSnapshot, LocalQosSnapshot};
 
 const BACKGROUND_MAINTENANCE_ESTIMATED_BYTES_PER_OPERATION: u64 = 1024;
 

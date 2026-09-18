@@ -1,5 +1,5 @@
 use crate::{NodeRecord, RelRecord};
-use skein_core::{LabelId, RelTypeId};
+use hawdb_core::{LabelId, RelTypeId};
 
 mod cursor;
 mod manifest;
@@ -92,8 +92,8 @@ pub struct ScanPrunedRelationshipScan<'a> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use hawdb_core::Value;
     use roaring::RoaringTreemap;
-    use skein_core::Value;
 
     #[test]
     fn target_kind_has_stable_storage_name() {

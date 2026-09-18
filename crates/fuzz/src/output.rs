@@ -143,7 +143,7 @@ mod tests {
         let mut stdout = Vec::new();
         let paths = emit_fuzz_report(
             &directory,
-            "skein-test-fuzz",
+            "hawdb-test-fuzz",
             "seed-7-cases-8",
             &json!({"success": true}),
             true,
@@ -154,7 +154,7 @@ mod tests {
 
         assert_eq!(
             paths.current,
-            directory.join("skein-test-fuzz-seed-7-cases-8-cur.json")
+            directory.join("hawdb-test-fuzz-seed-7-cases-8-cur.json")
         );
         assert_eq!(paths.failure, None);
         assert_eq!(
@@ -172,7 +172,7 @@ mod tests {
         let mut stdout = Vec::new();
         let paths = emit_fuzz_report(
             &directory,
-            "skein-test-fuzz",
+            "hawdb-test-fuzz",
             "seed-7-case-3",
             &report,
             false,
@@ -184,7 +184,7 @@ mod tests {
 
         assert_eq!(
             failure,
-            directory.join("skein-test-fuzz-seed-7-case-3-failure.json")
+            directory.join("hawdb-test-fuzz-seed-7-case-3-failure.json")
         );
         assert_eq!(
             fs::read_to_string(paths.current).unwrap(),
@@ -200,7 +200,7 @@ mod tests {
         let mut stdout = Vec::new();
         emit_fuzz_report(
             &directory,
-            "skein-test-fuzz",
+            "hawdb-test-fuzz",
             "seed-7-cases-8",
             &json!({"success": true}),
             true,
@@ -216,7 +216,7 @@ mod tests {
     #[test]
     fn current_report_refresh_is_readable_and_replaces_previous_state() {
         let directory = unique_directory("refresh");
-        let current = fuzz_current_report_path(&directory, "skein-test-fuzz", "seed-7");
+        let current = fuzz_current_report_path(&directory, "hawdb-test-fuzz", "seed-7");
 
         write_fuzz_current_report(&current, &json!({"current_case_index": 3})).unwrap();
         assert_eq!(
@@ -238,7 +238,7 @@ mod tests {
             .unwrap()
             .as_nanos();
         std::env::temp_dir().join(format!(
-            "skein-fuzz-output-{name}-{}-{timestamp}",
+            "hawdb-fuzz-output-{name}-{}-{timestamp}",
             std::process::id()
         ))
     }

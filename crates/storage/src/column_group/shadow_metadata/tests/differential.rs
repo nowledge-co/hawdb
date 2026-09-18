@@ -35,8 +35,8 @@ fn decode(bytes: &[u8]) -> Result<ShadowKeyDictionary> {
     ShadowKeyDictionary::decode(bytes, &mut ShadowMetadataBudget::new(u64::MAX, 0).unwrap())
 }
 
-fn storage_error(error: SkeinError) -> String {
-    let SkeinError::Storage(message) = error else {
+fn storage_error(error: HawdbError) -> String {
+    let HawdbError::Storage(message) = error else {
         panic!("unexpected error: {error:?}");
     };
     message

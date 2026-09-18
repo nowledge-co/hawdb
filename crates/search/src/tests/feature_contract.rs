@@ -92,7 +92,7 @@ fn assert_mode_admission(
     } else {
         let error = result.unwrap_err();
         assert!(
-            matches!(error, SkeinError::CapabilityUnavailable { capability }
+            matches!(error, HawdbError::CapabilityUnavailable { capability }
                 if required.contains(&capability) && !available.is_enabled(capability)),
             "{mode:?}: {error}"
         );
@@ -132,7 +132,7 @@ fn background_delta_obeys_compiled_and_requested_capabilities() {
             } else {
                 assert_eq!(
                     result.unwrap_err(),
-                    SkeinError::CapabilityUnavailable {
+                    HawdbError::CapabilityUnavailable {
                         capability: RuntimeCapability::BackgroundMaintenance
                     }
                 );

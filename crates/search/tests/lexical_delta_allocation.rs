@@ -5,7 +5,7 @@
 mod allocation;
 
 use allocation::measure;
-use skein_search::{SearchDocument, SearchIndex, SearchMode, SearchQueryOptions};
+use hawdb_search::{SearchDocument, SearchIndex, SearchMode, SearchQueryOptions};
 use std::collections::BTreeMap;
 use std::fmt::Write;
 use std::path::PathBuf;
@@ -16,7 +16,7 @@ struct Fixture(PathBuf);
 impl Fixture {
     fn new(terms: usize) -> Self {
         Self(std::env::temp_dir().join(format!(
-            "skein-delta-allocation-{}-{}-{terms}",
+            "hawdb-delta-allocation-{}-{}-{terms}",
             std::process::id(),
             SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_nanos(),
         )))

@@ -1,5 +1,5 @@
-use skein_core::{Result, SkeinError, ValidatedRegex, Value};
-use skein_cypher::{
+use hawdb_core::{HawdbError, Result, ValidatedRegex, Value};
+use hawdb_cypher::{
     AggregateExpression, ComparisonOp as CypherComparisonOp,
     GraphAlgorithmKind as CypherGraphAlgorithmKind,
     GraphAlgorithmOptions as CypherGraphAlgorithmOptions, MatchReturn,
@@ -11,11 +11,11 @@ use skein_cypher::{
     WithAliasFilterExpression, WithAliasFilterOp, WithCollect, WithDistinctProjection,
     WithProjection,
 };
-use skein_cypher::{
+use hawdb_cypher::{
     AstNode, ReturnExpressionKind, ReturnItemKind, ScalarExpressionKind, ValueExpressionKind,
 };
-pub use skein_ddl::{SchemaObjectState, SchemaPropertyType, SchemaTableKind};
-pub use skein_expression::{
+pub use hawdb_ddl::{SchemaObjectState, SchemaPropertyType, SchemaTableKind};
+pub use hawdb_expression::{
     CaseColumnSearchRankProjection, CaseEntitySearchRankProjection,
     CoalesceDifferenceProjectionTerm, ComparisonOp, DatePart, Predicate, ProjectionExpression,
     ScalarBinaryOp,

@@ -21,7 +21,7 @@ fn graph_rag_schema_context_guides_queries_through_the_read_runtime() {
         .unwrap();
     db.query(
         "CREATE (:Memory {id: 'memory-1', private_payload: 'do-not-render'})\
-         -[:MENTIONS {confidence: 0.9}]->(:Entity {id: 'entity-1', name: 'Skein'})",
+         -[:MENTIONS {confidence: 0.9}]->(:Entity {id: 'entity-1', name: 'Hawdb'})",
     )
     .unwrap();
 
@@ -69,7 +69,7 @@ fn graph_rag_schema_context_guides_queries_through_the_read_runtime() {
         .unwrap();
     assert_eq!(
         output.rows[0].get("name"),
-        Some(&Value::String("Skein".to_string()))
+        Some(&Value::String("Hawdb".to_string()))
     );
     assert_eq!(db.slow_query_log_snapshot().len(), slow_query_count + 1);
 
@@ -99,10 +99,10 @@ fn graph_rag_two_hop_draft_runs_through_the_query_runtime() {
     db.query("CREATE PROPERTY ON NODE TABLE Source(uri) TYPE STRING NOT NULL")
         .unwrap();
     db.query(
-        "CREATE (:Memory {id: 'memory-1'})-[:MENTIONS]->(:Entity {id: 'entity-1', name: 'Skein'})",
+        "CREATE (:Memory {id: 'memory-1'})-[:MENTIONS]->(:Entity {id: 'entity-1', name: 'Hawdb'})",
     )
     .unwrap();
-    db.query("CREATE (:Source {id: 'source-1', uri: 'https://example.test/skein'})")
+    db.query("CREATE (:Source {id: 'source-1', uri: 'https://example.test/hawdb'})")
         .unwrap();
     db.query(
         "MATCH (e:Entity {id: 'entity-1'}), (s:Source {id: 'source-1'}) \
@@ -136,19 +136,19 @@ fn graph_rag_two_hop_draft_runs_through_the_query_runtime() {
         })
         .unwrap();
 
-    skein_cypher::parse(generated.cypher()).unwrap();
+    hawdb_cypher::parse(generated.cypher()).unwrap();
     let output = db
         .query_with_params(
             generated.cypher(),
             &BTreeMap::from([(
                 "entity_name".to_string(),
-                Value::String("Skein".to_string()),
+                Value::String("Hawdb".to_string()),
             )]),
         )
         .unwrap();
     assert_eq!(
         output.rows[0].get("source_uri"),
-        Some(&Value::String("https://example.test/skein".to_string()))
+        Some(&Value::String("https://example.test/hawdb".to_string()))
     );
 }
 
@@ -218,7 +218,7 @@ fn graph_rag_generated_predicates_follow_the_cypher_parser_contract() {
             })
             .unwrap();
 
-        skein_cypher::parse(generated.cypher()).unwrap();
+        hawdb_cypher::parse(generated.cypher()).unwrap();
     }
 }
 

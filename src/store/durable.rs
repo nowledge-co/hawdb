@@ -30,10 +30,10 @@ use super::{
     MANIFEST_FILE, PROJECTED_GRAPHS_FILE, PROPERTY_PROJECTION_MANIFEST_MAX_BYTES,
     PROPERTY_SPILL_MANIFEST_MAX_BYTES, STABLE_ID_MAPPING_FILE,
 };
-use crate::error::{Result, SkeinError};
+use crate::error::{HawdbError, Result};
 use crate::schema::GraphStatistics;
-use skein_integrity::Sha256Digest;
-use skein_storage::{
+use hawdb_integrity::Sha256Digest;
+use hawdb_storage::{
     AppendGenerationArtifacts, AppendGenerationReader, CanonicalAdjacencyGenerationArtifacts,
     CanonicalAdjacencyReader, CanonicalSegmentReader, DatabaseDirectoryLease, DurabilityPolicy,
     FileSegmentRangeReader, GraphDescriptorTreeBuildConfig, ManifestGeneration,
@@ -49,8 +49,8 @@ use std::sync::Arc;
 
 const WAL_FREE_SPACE_PROBE_INTERVAL_BYTES: u64 = 64 * 1024 * 1024;
 
-fn stable_identity_error(error: StableIdentityMappingError) -> SkeinError {
-    SkeinError::Storage(error.to_string())
+fn stable_identity_error(error: StableIdentityMappingError) -> HawdbError {
+    HawdbError::Storage(error.to_string())
 }
 
 #[derive(Debug, Clone)]
@@ -94,7 +94,7 @@ pub(super) struct DurableStore {
     pub(super) wal_replay_start_lsn: u64,
     pub(super) next_lsn: u64,
     pub(super) wal_bytes: u64,
-    pub(super) wal_tail_repair: Option<skein_storage::WalTailRepairReport>,
+    pub(super) wal_tail_repair: Option<hawdb_storage::WalTailRepairReport>,
     /// Commit epoch recorded in binary WAL records (spec §3.4.3). Advisory:
     /// replay derives commit epochs from LSN order, exactly as before.
     pub(super) wal_commit_epoch: u64,
@@ -136,7 +136,7 @@ pub(super) struct GenerationReclamationDebt {
     pub(super) pending_bytes: u64,
 }
 
-pub(super) use skein_storage::checkpoint::CheckpointImage;
+pub(super) use hawdb_storage::checkpoint::CheckpointImage;
 
 #[derive(Debug)]
 pub(crate) struct PreparedCheckpoint {
@@ -160,7 +160,7 @@ pub(crate) struct PreparedCheckpoint {
     pub(super) staging_path: PathBuf,
 }
 
-pub(super) use skein_storage::derived_repair::DerivedArtifactBuildConfig;
+pub(super) use hawdb_storage::derived_repair::DerivedArtifactBuildConfig;
 
 #[derive(Debug, Clone, Copy)]
 struct DurableStoreOpenOptions {
@@ -175,7 +175,7 @@ struct DurableStoreOpenOptions {
     automatic_tail_repair: Option<WalReplayConfig>,
 }
 
-pub(super) use skein_storage::artifact_binding::{
+pub(super) use hawdb_storage::artifact_binding::{
     DurableArtifactMetadata, GraphManifestOpenBudget,
 };
 
@@ -211,7 +211,7 @@ impl DurableStore {
         replay_config: WalReplayConfig,
     ) -> Result<Self> {
         if replay_config.max_graph_manifest_open_bytes == 0 {
-            return Err(SkeinError::Storage(
+            return Err(HawdbError::Storage(
                 "max_graph_manifest_open_bytes must be non-zero".to_string(),
             ));
         }
@@ -229,7 +229,7 @@ impl DurableStore {
                 max_record_bytes: replay_config.max_record_bytes,
                 max_batch_operations: replay_config.max_batch_operations,
                 automatic_tail_repair: (replay_config.recovery_mode
-                    == skein_storage::RecoveryMode::AutoRepairTornTail)
+                    == hawdb_storage::RecoveryMode::AutoRepairTornTail)
                     .then_some(replay_config),
             },
         )
@@ -245,13 +245,13 @@ impl DurableStore {
         max_batch_operations: Option<usize>,
     ) -> Result<Self> {
         if !path.exists() {
-            return Err(SkeinError::Storage(format!(
+            return Err(HawdbError::Storage(format!(
                 "read-only database path does not exist: {}",
                 path.display()
             )));
         }
         if !path.is_dir() {
-            return Err(SkeinError::Storage(format!(
+            return Err(HawdbError::Storage(format!(
                 "read-only database path is not a directory: {}",
                 path.display()
             )));
@@ -283,7 +283,7 @@ impl DurableStore {
         max_batch_operations: Option<usize>,
     ) -> Result<Self> {
         if !path.is_dir() {
-            return Err(SkeinError::Storage(format!(
+            return Err(HawdbError::Storage(format!(
                 "derived repair database path is not a directory: {}",
                 path.display()
             )));
@@ -322,12 +322,12 @@ impl DurableStore {
             automatic_tail_repair,
         } = options;
         if max_graph_manifest_open_bytes == 0 {
-            return Err(SkeinError::Storage(
+            return Err(HawdbError::Storage(
                 "max_graph_manifest_open_bytes must be non-zero".to_string(),
             ));
         }
         let directory_lease = DatabaseDirectoryLease::acquire(path)
-            .map_err(|error| SkeinError::Storage(error.to_string()))?;
+            .map_err(|error| HawdbError::Storage(error.to_string()))?;
         if load_rebuildable_artifacts {
             derived_repair::reject_pending_derived_artifact_repair(path)?;
         }
@@ -342,7 +342,7 @@ impl DurableStore {
         let manifest = if manifest_path.exists() {
             DurableManifest::load(&manifest_path)?
         } else if has_storage_artifacts(path)? {
-            return Err(SkeinError::Storage(
+            return Err(HawdbError::Storage(
                 "database has storage artifacts but no durable manifest".to_string(),
             ));
         } else if initialize_if_empty {
@@ -350,7 +350,7 @@ impl DurableStore {
             manifest.write(&manifest_path)?;
             manifest
         } else {
-            return Err(SkeinError::Storage(
+            return Err(HawdbError::Storage(
                 "read-only database directory has no durable manifest".to_string(),
             ));
         };
@@ -400,7 +400,7 @@ impl DurableStore {
         if let (Some(canonical), Some(adjacency)) = (&canonical_segments, &canonical_adjacency)
             && canonical.manifest().relationship_count != adjacency.relationship_count()
         {
-            return Err(SkeinError::Storage(
+            return Err(HawdbError::Storage(
                 "canonical adjacency relationship count does not match canonical segments"
                     .to_string(),
             ));

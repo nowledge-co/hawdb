@@ -4,7 +4,7 @@ use crate::relational_index_view::RelationalIndexReadViewReport;
 use crate::RelationalKey;
 
 pub const RELATIONAL_CONSTRAINT_QUALIFICATION_PROTOCOL: &str =
-    "skein-relational-constraint-qualification-v1";
+    "hawdb-relational-constraint-qualification-v1";
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
 pub enum RelationalConstraintQualificationUse {

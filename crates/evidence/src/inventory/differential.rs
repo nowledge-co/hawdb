@@ -61,7 +61,7 @@ fn recovery_oracle(report: Option<&Value>, required: bool) -> StorageRecoveryEvi
     let flag = |key| report["readiness"][key] == json!(true);
     result.protocol_matches = report["protocol"]
         .as_str()
-        .map(|v| v == "skein-storage-recovery-report");
+        .map(|v| v == "hawdb-storage-recovery-report");
     result.durable_recovery_observed =
         Some(flag("durable_recovery_observed") && report["durable"] == json!(true));
     result.checkpoint_boundary_present = Some(
@@ -142,7 +142,7 @@ fn recovery_cases(seed: u64) -> Vec<Option<Value>> {
         _ => (seed, seed + 1, seed % 13),
     };
     let baseline = json!({
-        "protocol": "skein-storage-recovery-report", "durable": true,
+        "protocol": "hawdb-storage-recovery-report", "durable": true,
         "checkpoint_epoch": checkpoint, "checkpoint_commit_epoch": checkpoint,
         "wal_replay_start_lsn": start, "next_lsn_after_replay": start + count,
         "replayed_wal_entries": count, "max_wal_replay_entries": count,
@@ -327,7 +327,7 @@ fn family_cases(seed: u64) -> Vec<Option<Value>> {
 fn background_baseline(seed: u64, required: bool) -> (Value, BackgroundMaintenanceEvidenceHealth) {
     let operations = seed % 100;
     let report = json!({
-        "protocol": "skein-background-maintenance-report", "total_candidates": 3,
+        "protocol": "hawdb-background-maintenance-report", "total_candidates": 3,
         "foreground_admission_probe_ready": true, "foreground_admission_probe_admission": "admit",
         "memory_pressure": {"ready": true, "budget_bytes": u64::MAX, "estimated_bytes": u64::MAX},
         "qos_snapshot": {"ready": true, "foreground_admitted": true, "background_bounded": true,

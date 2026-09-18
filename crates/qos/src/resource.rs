@@ -2,7 +2,7 @@
 
 use crate::{StorageDeviceProfile, StorageMediaKind};
 #[cfg(any(target_os = "linux", test))]
-use skein_cgroup::{LinuxCgroupSnapshot, LinuxCgroupValue, LinuxCgroupVersion};
+use hawdb_cgroup::{LinuxCgroupSnapshot, LinuxCgroupValue, LinuxCgroupVersion};
 use std::num::NonZeroUsize;
 use sysinfo::System;
 
@@ -309,7 +309,7 @@ fn cgroup_cpu_limits_from(
 /// Whether the sensed cgroup hierarchy carries limits this crate reads.
 ///
 /// Cgroup v1 and hybrid hierarchies are deliberately not parsed. Their
-/// `V1Unsupported` marker means "limits may exist but Skein does not read
+/// `V1Unsupported` marker means "limits may exist but Hawdb does not read
 /// them", not "sensing failed": treating it as a failure would derive a
 /// zero memory capacity and permanently reject every query on such hosts.
 /// Host totals govern instead, and any v1-enforced limit remains the

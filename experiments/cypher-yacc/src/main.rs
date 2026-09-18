@@ -13,13 +13,13 @@ const SAMPLES: usize = 11;
 
 fn main() {
     let lexer_definition = exact_lookup_l::lexerdef();
-    let expected = skein_cypher::parse(QUERY).expect("hand-written parser must accept the probe");
+    let expected = hawdb_cypher::parse(QUERY).expect("hand-written parser must accept the probe");
     let actual =
         parse_yacc_with(&lexer_definition, QUERY).expect("Yacc parser must accept the probe");
     assert_eq!(actual, expected, "Yacc and hand-written ASTs diverged");
 
     let hand_written_ns = median_sample(|| {
-        black_box(skein_cypher::parse(black_box(QUERY)).expect("probe must parse"));
+        black_box(hawdb_cypher::parse(black_box(QUERY)).expect("probe must parse"));
     });
     let yacc_ns = median_sample(|| {
         black_box(parse_yacc_with(&lexer_definition, black_box(QUERY)).expect("probe must parse"));
@@ -41,7 +41,7 @@ fn main() {
 }
 
 #[cfg(test)]
-fn parse_yacc(input: &str) -> Result<skein_cypher::Statement, String> {
+fn parse_yacc(input: &str) -> Result<hawdb_cypher::Statement, String> {
     let lexer_definition = exact_lookup_l::lexerdef();
     parse_yacc_with(&lexer_definition, input)
 }
@@ -49,7 +49,7 @@ fn parse_yacc(input: &str) -> Result<skein_cypher::Statement, String> {
 fn parse_yacc_with(
     lexer_definition: &lrlex::LRNonStreamingLexerDef<lrlex::defaults::DefaultLexerTypes>,
     input: &str,
-) -> Result<skein_cypher::Statement, String> {
+) -> Result<hawdb_cypher::Statement, String> {
     let lexer = lexer_definition.lexer(input);
     let (result, errors) = exact_lookup_y::parse(&lexer);
     if !errors.is_empty() {
@@ -86,7 +86,7 @@ mod tests {
     fn yacc_probe_matches_production_ast() {
         assert_eq!(
             parse_yacc(QUERY).unwrap(),
-            skein_cypher::parse(QUERY).unwrap()
+            hawdb_cypher::parse(QUERY).unwrap()
         );
     }
 

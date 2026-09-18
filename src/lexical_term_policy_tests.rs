@@ -6,7 +6,7 @@ use std::num::NonZeroU64;
 #[test]
 fn embedded_facade_supports_dynamic_lexical_term_policy() {
     let root = std::env::temp_dir().join(format!(
-        "skein-term-policy-facade-{}-{}",
+        "hawdb-term-policy-facade-{}-{}",
         std::process::id(),
         std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)

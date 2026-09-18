@@ -7,7 +7,7 @@
 //! model cannot carry. Zone maps serialize as fixed-size records inside the
 //! group directory so scan planning reads directories, never chunks.
 //!
-//! Pruning soundness contract (mirror of `SkeinPropertyIndexPruning`): every
+//! Pruning soundness contract (mirror of `HawdbPropertyIndexPruning`): every
 //! `may_match_*` method returns `false` only when no row of the chunk can
 //! satisfy the predicate under the value-match semantics documented on
 //! `ColumnPredicate` in `group.rs`.
@@ -15,7 +15,7 @@
 use super::encoding::Cursor;
 use super::{corrupt, ColumnGroupError};
 use crate::scan::{DateTimeMinMax, FieldSummary, NumericMinMax, RangeBound};
-use skein_core::Value;
+use hawdb_core::Value;
 
 /// Serialized size of one zone-map record in the group directory.
 pub const ZONE_MAP_RECORD_BYTES: usize = 88;

@@ -1,10 +1,10 @@
 use crate::build_control::{checkpoint, CheckedWriter};
 use crate::build_memory::{reserve_capacity, BuildMemory};
 use crate::document_encoding::{SegmentEncoding, HEX_BUFFER_BYTES};
-use crate::{search_snapshot_compression_header, Result, SkeinError, SEARCH_COMPRESSION_LEVEL};
-use skein_core::RuntimeTaskContext;
-use skein_executor::QueryMemoryLease;
-use skein_integrity::Crc32cHasher;
+use crate::{search_snapshot_compression_header, HawdbError, Result, SEARCH_COMPRESSION_LEVEL};
+use hawdb_core::RuntimeTaskContext;
+use hawdb_executor::QueryMemoryLease;
+use hawdb_integrity::Crc32cHasher;
 use std::io::{self, Write};
 
 // Pinned zstd 1.5.7, level 3, one worker, no dictionary/LDM/sequence producer.
@@ -47,7 +47,7 @@ pub(super) fn encode_segment_payload_with_context<T: std::borrow::Borrow<crate::
 ) -> Result<CompressedBuffer> {
     checkpoint(task)?;
     if encoding.len() as u64 > max_uncompressed_bytes {
-        return Err(SkeinError::Storage(format!(
+        return Err(HawdbError::Storage(format!(
             "search generation {name} segment {segment_id} requires {} bytes, exceeding {max_uncompressed_bytes}",
             encoding.len(),
         )));
@@ -95,7 +95,7 @@ pub(super) fn encode_segment_payload_with_context<T: std::borrow::Borrow<crate::
         Ok(compressed)
     })();
     result.map_err(|error: io::Error| {
-        SkeinError::Storage(format!(
+        HawdbError::Storage(format!(
             "search generation {name} segment {segment_id} encoding failed: {error}"
         ))
     })
@@ -192,7 +192,7 @@ mod tests;
 
 #[cfg(test)]
 pub(crate) mod evidence {
-    use skein_core::RuntimeCancellationToken;
+    use hawdb_core::RuntimeCancellationToken;
     use std::cell::{Cell, RefCell};
     thread_local! {
         static STARTS: Cell<usize> = const { Cell::new(0) };

@@ -1,8 +1,8 @@
 use crate::ProductionMorselMatrixPolicy;
+use hawdb::{ProductionEvidenceBinding, ProductionQualificationIdentity};
 use serde::Serialize;
 use serde_json::Value;
 use sha2::{Digest, Sha256};
-use skein::{ProductionEvidenceBinding, ProductionQualificationIdentity};
 use std::collections::BTreeSet;
 
 #[path = "release_bundle/content_store.rs"]
@@ -25,9 +25,9 @@ mod runtime;
 mod vector;
 
 pub const PRODUCTION_RELEASE_QUALIFICATION_BUNDLE_PROTOCOL: &str =
-    "skein-production-release-qualification-bundle-v1";
+    "hawdb-production-release-qualification-bundle-v1";
 pub const PRODUCTION_RELEASE_CONTROL_EVIDENCE_PROTOCOL: &str =
-    "skein-production-release-control-evidence-v1";
+    "hawdb-production-release-control-evidence-v1";
 
 pub const REQUIRED_PRODUCTION_RELEASE_CONTROLS: [&str; 9] = [
     "workspace_fmt",

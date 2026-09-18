@@ -5,8 +5,8 @@ use super::{
     CompatibilityCheck, CompatibilityFixture, CompatibilityTolerance, CypherFixtureCheck,
     CypherFixtureStatement, ExpectedRows, ProjectedGraphFixtureCheck,
 };
-use skein_core::Value;
-use skein_executor::Row;
+use hawdb_core::Value;
+use hawdb_executor::Row;
 use std::collections::BTreeMap;
 
 pub fn nowledge_memory_core_fixture() -> CompatibilityFixture {
@@ -6685,12 +6685,12 @@ pub fn nowledge_memory_core_fixture() -> CompatibilityFixture {
                         ("t.created_at", Value::Int(1700000105)),
                         ("t.updated_at", Value::Int(1700000106)),
                         ("t.space_id", Value::String("default".to_string())),
-                        ("t.project", Value::String("skein".to_string())),
+                        ("t.project", Value::String("hawdb".to_string())),
                         ("t.workspace", Value::String("local".to_string())),
                     ])]),
                 )
                 .with_setup_query(CypherFixtureStatement::new(
-                    "CREATE (:Thread {id: 'rest-fs-thread-meta-1', thread_id: 'rest-fs-thread-logical-1', title: 'REST FS Thread Meta', summary: 'meta summary', message_count: 2, source: 'codex', created_at: 1700000105, updated_at: 1700000106, space_id: 'default', project: 'skein', workspace: 'local'})",
+                    "CREATE (:Thread {id: 'rest-fs-thread-meta-1', thread_id: 'rest-fs-thread-logical-1', title: 'REST FS Thread Meta', summary: 'meta summary', message_count: 2, source: 'codex', created_at: 1700000105, updated_at: 1700000106, space_id: 'default', project: 'hawdb', workspace: 'local'})",
                 ))
                 .with_effect_query(
                     CypherFixtureStatement::new(
@@ -7036,7 +7036,7 @@ pub fn nowledge_memory_core_fixture() -> CompatibilityFixture {
                             ("created_at".to_string(), Value::Int(101)),
                             ("updated_at".to_string(), Value::Int(102)),
                             ("space_id".to_string(), Value::String("default".to_string())),
-                            ("project".to_string(), Value::String("skein".to_string())),
+                            ("project".to_string(), Value::String("hawdb".to_string())),
                             ("workspace".to_string(), Value::String("local".to_string())),
                             ("tool_version".to_string(), Value::String("test".to_string())),
                             ("import_date".to_string(), Value::Int(103)),
@@ -7119,14 +7119,14 @@ pub fn nowledge_memory_core_fixture() -> CompatibilityFixture {
                     ),
                     ExpectedRows::Exact(vec![compatibility_row([(
                         "e.name",
-                        Value::String("Skein".to_string()),
+                        Value::String("Hawdb".to_string()),
                     )])]),
                 )
                 .with_setup_query(CypherFixtureStatement::new(
                     "CREATE (:Memory {id: 'memory-entity-list-memory-1', title: 'Entity linked memory'})",
                 ))
                 .with_setup_query(CypherFixtureStatement::new(
-                    "CREATE (:Entity {id: 'memory-entity-list-entity-1', name: 'Skein'})",
+                    "CREATE (:Entity {id: 'memory-entity-list-entity-1', name: 'Hawdb'})",
                 ))
                 .with_setup_query(CypherFixtureStatement::new(
                     "MATCH (m:Memory {id: 'memory-entity-list-memory-1'}), (e:Entity {id: 'memory-entity-list-entity-1'}) CREATE (m)-[:MENTIONS]->(e)",
@@ -13648,7 +13648,7 @@ pub fn nowledge_memory_core_fixture() -> CompatibilityFixture {
                     ExpectedRows::RowCount(1),
                 )
                 .with_setup_query(CypherFixtureStatement::new(
-                    "CREATE (:Thread {id: 'rest-search-thread-1', title: 'Search Thread', source: 'codex', summary: 'thread summary', message_count: 3, project: 'skein', workspace: 'default'})",
+                    "CREATE (:Thread {id: 'rest-search-thread-1', title: 'Search Thread', source: 'codex', summary: 'thread summary', message_count: 3, project: 'hawdb', workspace: 'default'})",
                 ))
                 .with_effect_query(
                     CypherFixtureStatement::new(
@@ -16729,7 +16729,7 @@ pub fn nowledge_memory_core_fixture() -> CompatibilityFixture {
                             ("t.source", Value::String("codex".to_string())),
                             ("t.summary", Value::String("exact thread summary".to_string())),
                             ("t.message_count", Value::Int(1)),
-                            ("t.project", Value::String("skein".to_string())),
+                            ("t.project", Value::String("hawdb".to_string())),
                             ("t.workspace", Value::String("local".to_string())),
                             ("match_level", Value::Int(3)),
                         ]),
@@ -16745,7 +16745,7 @@ pub fn nowledge_memory_core_fixture() -> CompatibilityFixture {
                                 Value::String("title contains query".to_string()),
                             ),
                             ("t.message_count", Value::Null),
-                            ("t.project", Value::String("skein".to_string())),
+                            ("t.project", Value::String("hawdb".to_string())),
                             ("t.workspace", Value::String("local".to_string())),
                             ("match_level", Value::Int(2)),
                         ]),
@@ -16758,20 +16758,20 @@ pub fn nowledge_memory_core_fixture() -> CompatibilityFixture {
                                 Value::String("contains graph thread context".to_string()),
                             ),
                             ("t.message_count", Value::Int(8)),
-                            ("t.project", Value::String("skein".to_string())),
+                            ("t.project", Value::String("hawdb".to_string())),
                             ("t.workspace", Value::String("local".to_string())),
                             ("match_level", Value::Int(1)),
                         ]),
                     ]),
                 )
                 .with_setup_query(CypherFixtureStatement::new(
-                    "CREATE (:Thread {id: 'search-thread-exact', title: 'graph thread', source: 'codex', summary: 'exact thread summary', message_count: 1, project: 'skein', workspace: 'local'})",
+                    "CREATE (:Thread {id: 'search-thread-exact', title: 'graph thread', source: 'codex', summary: 'exact thread summary', message_count: 1, project: 'hawdb', workspace: 'local'})",
                 ))
                 .with_setup_query(CypherFixtureStatement::new(
-                    "CREATE (:Thread {id: 'search-thread-title-contains', title: 'Graph Thread Notes', source: 'codex', summary: 'title contains query', message_count: NULL, project: 'skein', workspace: 'local'})",
+                    "CREATE (:Thread {id: 'search-thread-title-contains', title: 'Graph Thread Notes', source: 'codex', summary: 'title contains query', message_count: NULL, project: 'hawdb', workspace: 'local'})",
                 ))
                 .with_setup_query(CypherFixtureStatement::new(
-                    "CREATE (:Thread {id: 'search-thread-summary', title: NULL, source: 'thread-source', summary: 'contains graph thread context', message_count: 8, project: 'skein', workspace: 'local'})",
+                    "CREATE (:Thread {id: 'search-thread-summary', title: NULL, source: 'thread-source', summary: 'contains graph thread context', message_count: 8, project: 'hawdb', workspace: 'local'})",
                 ))
                 .with_setup_query(CypherFixtureStatement::new(
                     "CREATE (:Thread {id: 'search-thread-workspace', title: NULL, source: 'workspace-source', summary: 'workspace candidate', message_count: 4, project: 'other', workspace: 'graph thread workspace'})",

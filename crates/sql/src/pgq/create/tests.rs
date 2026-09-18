@@ -3,7 +3,7 @@
 //! These tests exercise the explicitly supported six-scalar profile.
 
 use super::*;
-use skein_sql_syntax::{parse_postgres_statement, ExpressionKindSyntax, PostgresStatementSyntax};
+use hawdb_sql_syntax::{parse_postgres_statement, ExpressionKindSyntax, PostgresStatementSyntax};
 
 #[derive(Default, Clone)]
 struct Snapshot(BTreeMap<Vec<String>, PgqSourceTableSchema>);
@@ -109,7 +109,7 @@ fn empty_graph_is_read_only_and_all_six_types_reach_graph_table() {
     catalog.insert(graph);
     let sql = "SELECT * FROM GRAPH_TABLE(g MATCH (v IS vertices)
         COLUMNS (v.id, v.score, v.title, v.enabled, v.payload, v.external_id))";
-    let query = skein_sql_syntax::parse_postgres_select(sql).unwrap();
+    let query = hawdb_sql_syntax::parse_postgres_select(sql).unwrap();
     let bound = super::super::bind_postgres_graph_tables(
         sql,
         &query,
@@ -661,7 +661,7 @@ fn typed_string_public_ast_and_resolved_literal_identity_use_the_six_type_profil
         else {
             panic!()
         };
-        let ExpressionKindSyntax::Literal(skein_sql_syntax::LiteralSyntax::String(value)) =
+        let ExpressionKindSyntax::Literal(hawdb_sql_syntax::LiteralSyntax::String(value)) =
             expression.kind
         else {
             panic!()

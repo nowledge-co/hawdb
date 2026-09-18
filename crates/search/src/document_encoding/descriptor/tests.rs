@@ -6,7 +6,7 @@ use crate::{
 use std::collections::{BTreeMap, BTreeSet};
 
 thread_local! {
-    static CANCEL_DIGEST: std::cell::RefCell<Option<(usize, skein_core::RuntimeCancellationToken)>> = const { std::cell::RefCell::new(None) };
+    static CANCEL_DIGEST: std::cell::RefCell<Option<(usize, hawdb_core::RuntimeCancellationToken)>> = const { std::cell::RefCell::new(None) };
 }
 
 pub(super) fn record_digest(bytes: usize) {
@@ -355,7 +355,7 @@ fn descriptor_short_writes_preserve_prefix_and_error_through_footer() {
 #[test]
 fn descriptor_admission_precedes_opening_or_replacing_files() {
     let root = std::env::temp_dir().join(format!(
-        "skein-descriptor-admission-{}-{}",
+        "hawdb-descriptor-admission-{}-{}",
         std::process::id(),
         std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
@@ -365,7 +365,7 @@ fn descriptor_admission_precedes_opening_or_replacing_files() {
     std::fs::create_dir(&root).unwrap();
     let _cleanup = TestDirectory(root.clone());
     let path = root.join(crate::SEARCH_SEGMENT_DESCRIPTOR_FILE);
-    let tmp = path.with_extension("skein.tmp");
+    let tmp = path.with_extension("hawdb.tmp");
     std::fs::write(&path, b"previous descriptor").unwrap();
     std::fs::write(&tmp, b"previous temporary file").unwrap();
     let descriptor = sample();

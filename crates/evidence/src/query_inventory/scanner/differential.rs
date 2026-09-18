@@ -38,7 +38,7 @@ impl Scratch {
             .unwrap()
             .as_nanos();
         let path = std::env::temp_dir().join(format!(
-            "skein-inventory-oracle-{}-{nonce}-{}",
+            "hawdb-inventory-oracle-{}-{nonce}-{}",
             std::process::id(),
             NEXT.fetch_add(1, Ordering::Relaxed)
         ));

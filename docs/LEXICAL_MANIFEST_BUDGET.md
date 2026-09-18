@@ -42,7 +42,7 @@ September 13, 2026. The qualification harness must apply that cap to both writer
 and reader, with the previously approved 1 MiB term policy:
 
 ```rust
-use skein::{
+use hawdb::{
     SearchLexicalTermPolicy, SearchOutOfCoreConfig,
     SearchOutOfCoreGenerationWriter, SearchOutOfCoreReader,
 };
@@ -72,8 +72,8 @@ dictionary/descriptors, source records, analyzer, blocks, spill and result
 buffers retain separate admission or resident-memory obligations. The term and
 document-source defaults, V1 format, and release policy are unchanged.
 
-The API itself does not satisfy [#206](https://github.com/nowledge-co/skein/issues/206)
-or [#325](https://github.com/nowledge-co/skein/issues/325). Their complete identical
+The API itself does not satisfy [#206](https://github.com/nowledge-co/hawdb/issues/206)
+or [#325](https://github.com/nowledge-co/hawdb/issues/325). Their complete identical
 334,844-document corpus, source hashes, actual posting/dictionary/mapping extents,
 BM25/reopen parity, and original compression criterion still need qualification.
 No filtered or truncated corpus substitutes for that evidence.
@@ -86,11 +86,11 @@ cancelled stages, pinned old readers, and corruption recovery without generation
 reuse. A 64-case local lifecycle campaign varies content and exact byte limits.
 
 ```sh
-cargo test --locked --offline -p skein-search --all-features
-cargo test --locked --offline -p skein-search --all-features manifest_budget -- --include-ignored
-bazel test //crates/search:presubmit_tests //:skein_unit_tests \
-  //crates/fuzz:skein_fuzz_tests //crates/fuzz:skein_fuzz_cli_tests \
-  //:skein_linux_ci_fuzz_smoke_test
+cargo test --locked --offline -p hawdb-search --all-features
+cargo test --locked --offline -p hawdb-search --all-features manifest_budget -- --include-ignored
+bazel test //crates/search:presubmit_tests //:hawdb_unit_tests \
+  //crates/fuzz:hawdb_fuzz_tests //crates/fuzz:hawdb_fuzz_cli_tests \
+  //:hawdb_linux_ci_fuzz_smoke_test
 ```
 
 The lifecycle fuzz target remains manual and local; no CI fuzz job is added.

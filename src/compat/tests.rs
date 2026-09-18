@@ -89,7 +89,7 @@ fn runs_nowledge_shaped_fixture_against_shadow_engine() {
         run_compatibility_fixture_with_shadow(&mut primary, &fixture, &mut shadow).unwrap();
 
     assert_eq!(report.fixture, "nowledge-memory-core");
-    assert_eq!(report.shadow_engine, "skein-shadow");
+    assert_eq!(report.shadow_engine, "hawdb-shadow");
     assert_eq!(report.primary_checks.len(), 644);
     assert_eq!(report.shadow_checks.len(), 644);
     assert_eq!(
@@ -1021,7 +1021,7 @@ struct DatabaseShadowEngine {
 
 impl CompatibilityShadowEngine for DatabaseShadowEngine {
     fn name(&self) -> &str {
-        "skein-shadow"
+        "hawdb-shadow"
     }
 
     fn execute(&mut self, statement: &CypherFixtureStatement) -> Result<QueryOutput> {

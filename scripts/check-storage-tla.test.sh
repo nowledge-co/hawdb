@@ -13,9 +13,9 @@ cp "$source_root/scripts/check-storage-tla.sh" "$fixture/repo/scripts/"
 checker="$fixture/repo/scripts/check-storage-tla.sh"
 revision=0123456789abcdef0123456789abcdef01234567
 digest=936a262061c914694dfd669a543be24573c45d5aa0ff20a8b96b23d01e050e88
-printf 'STORAGE_MODELS = [\n    "Alpha",\n    "SkeinCowPagePublication",\n]\n' \
+printf 'STORAGE_MODELS = [\n    "Alpha",\n    "HawdbCowPagePublication",\n]\n' \
   > "$fixture/repo/docs/tla/storage_models.bzl"
-for model in Alpha SkeinCowPagePublication; do
+for model in Alpha HawdbCowPagePublication; do
   printf '%s\n' "---- MODULE $model ----" '====' > "$fixture/repo/docs/tla/$model.tla"
   printf 'SPECIFICATION Spec\n' > "$fixture/repo/docs/tla/$model.cfg"
   evidence="$fixture/valid/${model}_check.run.tlc-evidence"
@@ -27,7 +27,7 @@ for model in Alpha SkeinCowPagePublication; do
   printf 'ok\n0\n' > "$evidence/result.txt"
   printf '%s\n' "$digest" > "$evidence/tla2tools.sha256"
   printf '%s\n' '-cleanup' '-workers' 'auto' > "$evidence/tlc-args.txt"
-  if [[ "$model" == SkeinCowPagePublication ]]; then
+  if [[ "$model" == HawdbCowPagePublication ]]; then
     printf '%s\n' '-lncheck' 'final' >> "$evidence/tlc-args.txt"
     printf '%s\n' 'Checking temporal properties for the complete state space with 2 total distinct states' \
       'Model checking completed. No error has been found.' 'Finished in 01s' > "$evidence/tlc.log"
@@ -51,7 +51,7 @@ export TLA_WORK_ROOT="$fixture/work-must-not-exist"
 bash "$checker" --collect-bazel-results "$fixture/valid" "$fixture/collected" "$revision"
 bash "$checker" --verify-results "$fixture/collected" "$revision"
 test ! -e "$TLA_WORK_ROOT"
-for model in Alpha SkeinCowPagePublication; do
+for model in Alpha HawdbCowPagePublication; do
   cmp "$fixture/valid/${model}_check.run.tlc-evidence/tlc.log" "$fixture/collected/$model.txt"
   cmp "$fixture/valid/${model}_check.run.tlc-evidence/module.tla" "$fixture/collected/models/$model.tla"
 done
@@ -64,7 +64,7 @@ diff -r "$fixture/collected" "$fixture/cached"
 # independently publish the complete manifest, even if its own models pass.
 mkdir "$fixture/shard0" "$fixture/shard1"
 cp -R "$fixture/valid/Alpha_check.run.tlc-evidence" "$fixture/shard0/"
-cp -R "$fixture/valid/SkeinCowPagePublication_check.run.tlc-evidence" "$fixture/shard1/"
+cp -R "$fixture/valid/HawdbCowPagePublication_check.run.tlc-evidence" "$fixture/shard1/"
 bash "$checker" --collect-bazel-shards "$fixture/merged" "$revision" "$fixture/shard0" "$fixture/shard1"
 diff -r "$fixture/collected" "$fixture/merged"
 expect_failure "$fixture/missing-shard.log" bash "$checker" --collect-bazel-shards \
@@ -92,7 +92,7 @@ for mutation in missing_model missing_log missing_verdict expected_counterexampl
   missing_final_check disabled_liveness default_liveness; do
   candidate="$fixture/$mutation"
   cp -R "$fixture/valid" "$candidate"
-  evidence="$candidate/SkeinCowPagePublication_check.run.tlc-evidence"
+  evidence="$candidate/HawdbCowPagePublication_check.run.tlc-evidence"
   case "$mutation" in
     missing_model) mv "$evidence" "$candidate/undeclared-model" ;;
     missing_log) rm "$evidence/tlc.log" ;;
@@ -125,9 +125,9 @@ for mutation in duplicate unsorted undeclared missing_pair; do
   cp -R "$fixture/repo" "$repo"
   case "$mutation" in
     duplicate) printf '    "Alpha",\n' >> "$repo/docs/tla/storage_models.bzl" ;;
-    unsorted) printf 'STORAGE_MODELS = [\n    "SkeinCowPagePublication",\n    "Alpha",\n]\n' > "$repo/docs/tla/storage_models.bzl" ;;
+    unsorted) printf 'STORAGE_MODELS = [\n    "HawdbCowPagePublication",\n    "Alpha",\n]\n' > "$repo/docs/tla/storage_models.bzl" ;;
     undeclared) cp "$repo/docs/tla/Alpha.tla" "$repo/docs/tla/Gamma.tla" ;;
-    missing_pair) rm "$repo/docs/tla/SkeinCowPagePublication.cfg" ;;
+    missing_pair) rm "$repo/docs/tla/HawdbCowPagePublication.cfg" ;;
   esac
   expect_failure "$fixture/$mutation.log" bash "$repo/scripts/check-storage-tla.sh" --manifest-json "$revision"
 done
@@ -152,7 +152,7 @@ bash "$checker"
 bash "$checker" --verify-results "$TLA_RESULTS_DIR" "$revision"
 test "$(wc -l < "$TLA_TEST_INVOCATIONS" | tr -d ' ')" = 2
 grep -q '/Alpha.tla$' "$TLA_TEST_INVOCATIONS"
-grep -q '/SkeinCowPagePublication.tla$' "$TLA_TEST_INVOCATIONS"
+grep -q '/HawdbCowPagePublication.tla$' "$TLA_TEST_INVOCATIONS"
 export TLA_TEST_FAIL=true
 export TLA_RESULTS_DIR="$fixture/standalone-failure"
 expect_failure "$fixture/standalone-failure.log" bash "$checker"

@@ -3,7 +3,7 @@ use super::*;
 #[test]
 fn retrieves_knowledge_through_database_facade() {
     let mut db = Database::new();
-    db.query("CREATE (:Memory {id: 'mem_1', title: 'Graph retrieval', content: 'Projection freshness and truncation diagnostics', source_id: 'thread_1'})-[:MENTIONS {chunk_index: 3, source_id: 'thread_1'}]->(:Entity {id: 'entity_1', name: 'Skein'})")
+    db.query("CREATE (:Memory {id: 'mem_1', title: 'Graph retrieval', content: 'Projection freshness and truncation diagnostics', source_id: 'thread_1'})-[:MENTIONS {chunk_index: 3, source_id: 'thread_1'}]->(:Entity {id: 'entity_1', name: 'Hawdb'})")
             .unwrap();
     db.query(
             "CREATE (:Memory {id: 'mem_2', title: 'Graph retrieval', content: 'Search result diagnostics'})",

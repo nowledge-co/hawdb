@@ -78,12 +78,12 @@ short writes and random failure positions. It is registered only in the existing
 local Bazel fuzz suite, not CI.
 
 ```sh
-cargo test -p skein-search --all-features -- --include-ignored
-cargo clippy -p skein-search --all-features --all-targets -- -D warnings
+cargo test -p hawdb-search --all-features -- --include-ignored
+cargo clippy -p hawdb-search --all-features --all-targets -- -D warnings
 bazel test --nocache_test_results \
-  //crates/search:presubmit_tests //:skein_unit_tests \
-  //crates/fuzz:skein_fuzz_tests //crates/fuzz:skein_fuzz_cli_tests \
-  //:skein_linux_ci_fuzz_smoke_test
+  //crates/search:presubmit_tests //:hawdb_unit_tests \
+  //crates/fuzz:hawdb_fuzz_tests //crates/fuzz:hawdb_fuzz_cli_tests \
+  //:hawdb_linux_ci_fuzz_smoke_test
 ```
 
 ## Remaining #392 scope

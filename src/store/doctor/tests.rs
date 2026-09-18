@@ -206,7 +206,7 @@ fn unique_test_dir(name: &str) -> PathBuf {
         .unwrap()
         .as_nanos();
     let path = std::env::temp_dir().join(format!(
-        "skein-wal-doctor-{name}-{}-{nonce}",
+        "hawdb-wal-doctor-{name}-{}-{nonce}",
         std::process::id()
     ));
     fs::create_dir_all(&path).unwrap();

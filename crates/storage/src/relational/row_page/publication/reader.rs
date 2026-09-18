@@ -14,7 +14,7 @@ use crate::{
     ContentDigest, ManifestGeneration, RepresentationKind, SegmentCache, SegmentCacheError,
     SegmentCacheKey, StoreId,
 };
-use skein_integrity::integrity_digest;
+use hawdb_integrity::integrity_digest;
 use std::fs::{self, File};
 use std::io::{Read, Seek, SeekFrom};
 use std::path::{Path, PathBuf};

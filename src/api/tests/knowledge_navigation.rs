@@ -3,7 +3,7 @@ use super::*;
 #[test]
 fn knowledge_entity_returns_none_for_missing_seed() {
     let mut db = Database::new();
-    db.query("CREATE (:Entity {id: 'entity_1', name: 'Skein'})")
+    db.query("CREATE (:Entity {id: 'entity_1', name: 'Hawdb'})")
         .unwrap();
 
     let output = db

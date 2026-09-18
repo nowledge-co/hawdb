@@ -1,5 +1,5 @@
 use crate::{Parameters, QueryInvocation, ResultSemantics};
-use skein::Value;
+use hawdb::Value;
 use std::collections::{BTreeMap, BTreeSet};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

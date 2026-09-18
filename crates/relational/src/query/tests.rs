@@ -1,13 +1,13 @@
 use super::preparation::prepare_syntax_access_plan;
 use super::*;
 use crate::compile_relational_statement_sql;
-use skein_core::Value;
-use skein_optimizer::{
+use hawdb_core::Value;
+use hawdb_optimizer::{
     estimate_relational_access_path_cost, estimate_relational_join_cost, RelationalJoinCardinality,
     RelationalJoinPlanningAttempt, RelationalJoinPlanningStrategy, RelationalJoinRightInput,
     RelationalJoinSelectivity, RelationalOperatorKind,
 };
-use skein_storage::{RelationalMutationLimits, RelationalOverflowConfig};
+use hawdb_storage::{RelationalMutationLimits, RelationalOverflowConfig};
 use std::num::{NonZeroU64, NonZeroUsize};
 
 mod columnar_aggregate;
@@ -23,11 +23,11 @@ fn candidate_work_has_an_independent_budget_and_checkpoint() {
         max_intermediate_rows: 1,
         max_candidate_work: 1,
         hydration: RelationalHydrationBudget::default(),
-        index_read: skein_storage::RelationalIndexReadLimits::default(),
-        row_read: skein_storage::RelationalRowPageSnapshotReadLimits::default(),
+        index_read: hawdb_storage::RelationalIndexReadLimits::default(),
+        row_read: hawdb_storage::RelationalRowPageSnapshotReadLimits::default(),
     };
-    let cancellation = skein_core::RuntimeCancellationToken::new();
-    let task_context = skein_core::RuntimeTaskContext::without_deadline(cancellation.clone());
+    let cancellation = hawdb_core::RuntimeCancellationToken::new();
+    let task_context = hawdb_core::RuntimeTaskContext::without_deadline(cancellation.clone());
     let mut pipeline =
         RelationalPipelineState::new(Some(&task_context), limits, NonZeroUsize::MIN, Vec::new());
 
@@ -86,13 +86,13 @@ fn batched_index_join_limits() -> RelationalQueryLimits {
         max_intermediate_rows: 128,
         max_candidate_work: 128,
         hydration: RelationalHydrationBudget::default(),
-        index_read: skein_storage::RelationalIndexReadLimits::default(),
-        row_read: skein_storage::RelationalRowPageSnapshotReadLimits::default(),
+        index_read: hawdb_storage::RelationalIndexReadLimits::default(),
+        row_read: hawdb_storage::RelationalRowPageSnapshotReadLimits::default(),
     }
 }
 
 fn prepare_batched_index_join(state: &RelationalState) -> PreparedRelationalSelect {
-    let prepared_sql = skein_sql::prepare_postgres_sql(
+    let prepared_sql = hawdb_sql::prepare_postgres_sql(
         "SELECT o.id AS outer_id, i.id AS inner_id \
              FROM batch_outer AS o \
              LEFT JOIN batch_inner AS i \
@@ -151,7 +151,7 @@ fn prepare_merge_join_with_index_read_mode(
     state: &RelationalState,
     index_read_mode: RelationalIndexReadMode<'_, crate::RelationalMaterializedReader>,
 ) -> PreparedRelationalSelect {
-    let prepared_sql = skein_sql::prepare_postgres_sql(
+    let prepared_sql = hawdb_sql::prepare_postgres_sql(
         "SELECT l.id AS left_id, r.id AS right_id \
              FROM merge_left AS l \
              INNER JOIN merge_right AS r ON r.join_key = l.join_key \
@@ -210,7 +210,7 @@ fn hash_join_state() -> RelationalState {
 }
 
 fn prepare_hash_join(state: &RelationalState) -> PreparedRelationalSelect {
-    let prepared_sql = skein_sql::prepare_postgres_sql(
+    let prepared_sql = hawdb_sql::prepare_postgres_sql(
         "SELECT l.id AS left_id, r.id AS right_id \
              FROM hash_left AS l \
              INNER JOIN hash_right AS r \
@@ -237,7 +237,7 @@ fn prepare_hash_join(state: &RelationalState) -> PreparedRelationalSelect {
 }
 
 fn prepare_hash_left_join(state: &RelationalState) -> PreparedRelationalSelect {
-    let prepared_sql = skein_sql::prepare_postgres_sql(
+    let prepared_sql = hawdb_sql::prepare_postgres_sql(
         "SELECT l.id AS left_id, r.id AS right_id \
              FROM hash_left AS l \
              LEFT JOIN hash_right AS r \
@@ -263,28 +263,28 @@ fn prepare_hash_left_join(state: &RelationalState) -> PreparedRelationalSelect {
     .expect("prepare hash left join")
 }
 
-fn constrained_hash_join_memory() -> skein_executor::ExecutionMemoryConfig {
-    skein_executor::ExecutionMemoryConfig {
+fn constrained_hash_join_memory() -> hawdb_executor::ExecutionMemoryConfig {
+    hawdb_executor::ExecutionMemoryConfig {
         blocking_operator_bytes: NonZeroUsize::new(512).expect("non-zero blocking budget"),
         max_spill_bytes: NonZeroU64::new(64 * 1024).expect("non-zero spill budget"),
         max_spill_runs: NonZeroUsize::new(4).expect("non-zero spill run budget"),
         min_spill_free_bytes: NonZeroU64::MIN,
         spill_directory: std::env::temp_dir().join(format!(
-            "skein-hash-join-spill-{}-{}",
+            "hawdb-hash-join-spill-{}-{}",
             std::process::id(),
             std::time::SystemTime::now()
                 .duration_since(std::time::UNIX_EPOCH)
                 .expect("system clock")
                 .as_nanos()
         )),
-        ..skein_executor::ExecutionMemoryConfig::default()
+        ..hawdb_executor::ExecutionMemoryConfig::default()
     }
 }
 
 #[test]
 fn relational_ledger_uses_admitted_memory_with_configured_fallback() {
     let state = RelationalState::default();
-    let memory = skein_executor::ExecutionMemoryConfig::default();
+    let memory = hawdb_executor::ExecutionMemoryConfig::default();
     let descriptor = PreparedRelationalExecutionDescriptor {
         mode: PreparedRelationalExecutionMode::StreamingProjection,
         memory_shape: RelationalExecutionMemoryShape {
@@ -293,8 +293,8 @@ fn relational_ledger_uses_admitted_memory_with_configured_fallback() {
         },
     };
     let admitted_bytes = 32 * 1024 * 1024;
-    let task_context = skein_core::RuntimeTaskContext::default().with_memory_reservation(
-        skein_core::RuntimeMemoryReservation::new(admitted_bytes, 1024),
+    let task_context = hawdb_core::RuntimeTaskContext::default().with_memory_reservation(
+        hawdb_core::RuntimeMemoryReservation::new(admitted_bytes, 1024),
     );
     let read_modes = RelationalQueryReadModes::new(
         RelationalIndexReadMode::<crate::RelationalMaterializedReader>::Materialized,
@@ -335,8 +335,8 @@ fn relational_ledger_uses_admitted_memory_with_configured_fallback() {
         memory.query_memory_bytes.get()
     );
 
-    let undersized_context = skein_core::RuntimeTaskContext::default()
-        .with_memory_reservation(skein_core::RuntimeMemoryReservation::new(1, 1));
+    let undersized_context = hawdb_core::RuntimeTaskContext::default()
+        .with_memory_reservation(hawdb_core::RuntimeMemoryReservation::new(1, 1));
     let error = descriptor
         .admit(
             &state,
@@ -381,7 +381,7 @@ fn prepared_index_join_uses_batched_physical_operator_and_profile() {
 fn batched_index_join_preserves_duplicate_probe_keys_and_left_join_nulls() {
     let state = batched_index_join_state();
     let prepared = prepare_batched_index_join(&state);
-    let memory = skein_executor::ExecutionMemoryConfig::default();
+    let memory = hawdb_executor::ExecutionMemoryConfig::default();
     let execution = prepared
         .execution
         .admit(
@@ -446,9 +446,9 @@ fn batched_index_join_preserves_duplicate_probe_keys_and_left_join_nulls() {
 fn batched_index_join_rejects_an_input_row_larger_than_its_batch_budget() {
     let state = batched_index_join_state();
     let prepared = prepare_batched_index_join(&state);
-    let memory = skein_executor::ExecutionMemoryConfig {
+    let memory = hawdb_executor::ExecutionMemoryConfig {
         batch_payload_bytes: NonZeroUsize::new(1).expect("non-zero batch budget"),
-        ..skein_executor::ExecutionMemoryConfig::default()
+        ..hawdb_executor::ExecutionMemoryConfig::default()
     };
     let execution = prepared
         .execution
@@ -527,7 +527,7 @@ fn transaction_workspace_join_keeps_the_batched_index_probe_plan() {
 fn merge_join_reuses_right_key_groups_and_preserves_left_index_order() {
     let state = merge_join_state();
     let prepared = prepare_merge_join(&state);
-    let memory = skein_executor::ExecutionMemoryConfig::default();
+    let memory = hawdb_executor::ExecutionMemoryConfig::default();
     let execution = prepared
         .execution
         .admit(
@@ -586,9 +586,9 @@ fn merge_join_reuses_right_key_groups_and_preserves_left_index_order() {
 fn merge_join_rejects_right_input_that_exceeds_its_blocking_budget() {
     let state = merge_join_state();
     let prepared = prepare_merge_join(&state);
-    let memory = skein_executor::ExecutionMemoryConfig {
+    let memory = hawdb_executor::ExecutionMemoryConfig {
         blocking_operator_bytes: NonZeroUsize::new(1).expect("non-zero blocking budget"),
-        ..skein_executor::ExecutionMemoryConfig::default()
+        ..hawdb_executor::ExecutionMemoryConfig::default()
     };
     let execution = prepared
         .execution
@@ -653,7 +653,7 @@ fn prepared_full_scan_equi_join_uses_hash_operator_and_profile() {
 fn hash_join_preserves_duplicate_build_rows_and_evaluates_full_on_predicates() {
     let state = hash_join_state();
     let prepared = prepare_hash_join(&state);
-    let memory = skein_executor::ExecutionMemoryConfig::default();
+    let memory = hawdb_executor::ExecutionMemoryConfig::default();
     let execution = prepared
         .execution
         .admit(
@@ -781,7 +781,7 @@ fn hash_left_join_null_extends_unmatched_and_null_keys() {
     assert_eq!(*algorithm, RelationalPhysicalJoinAlgorithm::Hash);
     assert_eq!(*kind, SqlJoinKind::Left);
 
-    let memory = skein_executor::ExecutionMemoryConfig::default();
+    let memory = hawdb_executor::ExecutionMemoryConfig::default();
     let execution = prepared
         .execution
         .admit(
@@ -833,12 +833,12 @@ fn hash_left_join_null_extends_unmatched_and_null_keys() {
 fn hash_join_observes_cancellation_after_admission() {
     let state = hash_join_state();
     let prepared = prepare_hash_join(&state);
-    let memory = skein_executor::ExecutionMemoryConfig {
+    let memory = hawdb_executor::ExecutionMemoryConfig {
         batch_rows: NonZeroUsize::MIN,
-        ..skein_executor::ExecutionMemoryConfig::default()
+        ..hawdb_executor::ExecutionMemoryConfig::default()
     };
-    let cancellation = skein_core::RuntimeCancellationToken::new();
-    let task_context = skein_core::RuntimeTaskContext::without_deadline(cancellation.clone());
+    let cancellation = hawdb_core::RuntimeCancellationToken::new();
+    let task_context = hawdb_core::RuntimeTaskContext::without_deadline(cancellation.clone());
     let execution = prepared
         .execution
         .admit(
@@ -894,7 +894,7 @@ fn prepared_bushy_physical_join_plan_materializes_the_composite_right_input_once
             .unwrap_or_else(|error| panic!("failed to apply SQL '{sql}': {error}"));
     }
 
-    let prepared_sql = skein_sql::prepare_postgres_sql(SQL).expect("valid bushy SELECT");
+    let prepared_sql = hawdb_sql::prepare_postgres_sql(SQL).expect("valid bushy SELECT");
     let SqlStatement::Select(select) = prepared_sql.statement else {
         panic!("expected SELECT statement");
     };
@@ -904,8 +904,8 @@ fn prepared_bushy_physical_join_plan_materializes_the_composite_right_input_once
         max_intermediate_rows: 128,
         max_candidate_work: 128,
         hydration: RelationalHydrationBudget::default(),
-        index_read: skein_storage::RelationalIndexReadLimits::default(),
-        row_read: skein_storage::RelationalRowPageSnapshotReadLimits::default(),
+        index_read: hawdb_storage::RelationalIndexReadLimits::default(),
+        row_read: hawdb_storage::RelationalRowPageSnapshotReadLimits::default(),
     };
     let mut binding_nanos = 0;
     let planned = join_order::plan_select_join_order(
@@ -1114,7 +1114,7 @@ fn prepared_bushy_physical_join_plan_materializes_the_composite_right_input_once
         [(0, "a"), (1, "b"), (2, "c"), (3, "d")]
     );
 
-    let memory = skein_executor::ExecutionMemoryConfig::default();
+    let memory = hawdb_executor::ExecutionMemoryConfig::default();
     let resources = RelationalQueryResourceContext::new(
         RelationalJoinEnumerationConfig::default(),
         limits,
@@ -1150,9 +1150,9 @@ fn prepared_bushy_physical_join_plan_materializes_the_composite_right_input_once
                 && report.peak_tracked_bytes > 0
         }));
 
-    let constrained_memory = skein_executor::ExecutionMemoryConfig {
+    let constrained_memory = hawdb_executor::ExecutionMemoryConfig {
         blocking_operator_bytes: NonZeroUsize::new(64).expect("non-zero memory budget"),
-        ..skein_executor::ExecutionMemoryConfig::default()
+        ..hawdb_executor::ExecutionMemoryConfig::default()
     };
     let constrained_resources = RelationalQueryResourceContext::new(
         RelationalJoinEnumerationConfig::default(),
@@ -1233,12 +1233,12 @@ fn physical_schema_adapter_keeps_null_extended_binding_identity_without_hydratio
 fn migrated_plan_admission_retains_cancellation_before_memory_error() {
     let state = batched_index_join_state();
     let prepared = prepare_batched_index_join(&state);
-    let memory = skein_executor::ExecutionMemoryConfig {
+    let memory = hawdb_executor::ExecutionMemoryConfig {
         query_memory_bytes: NonZeroUsize::MIN,
         ..Default::default()
     };
-    let cancellation = skein_core::RuntimeCancellationToken::new();
-    let context = skein_core::RuntimeTaskContext::without_deadline(cancellation.clone());
+    let cancellation = hawdb_core::RuntimeCancellationToken::new();
+    let context = hawdb_core::RuntimeTaskContext::without_deadline(cancellation.clone());
     cancellation.cancel();
     let error = prepared
         .execution

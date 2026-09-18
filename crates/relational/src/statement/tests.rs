@@ -2,18 +2,18 @@ use super::*;
 
 #[test]
 fn relational_ddl_requires_exactly_one_primary_key_declaration() {
-    let missing = skein_sql::prepare_postgres_sql(
+    let missing = hawdb_sql::prepare_postgres_sql(
         "CREATE TABLE documents (id TEXT NOT NULL, payload TEXT NOT NULL)",
     )
     .expect("valid PostgreSQL syntax");
     let error = compile_schema_statement(missing.statement)
-        .expect_err("Skein relational tables require a primary key");
+        .expect_err("Hawdb relational tables require a primary key");
     assert_eq!(
         error,
-        SkeinError::Semantic("relational table documents must declare a primary key".to_string())
+        HawdbError::Semantic("relational table documents must declare a primary key".to_string())
     );
 
-    let duplicate = skein_sql::prepare_postgres_sql(
+    let duplicate = hawdb_sql::prepare_postgres_sql(
         "CREATE TABLE documents (tenant_id TEXT PRIMARY KEY, id TEXT PRIMARY KEY)",
     )
     .expect("parser preserves duplicate declarations for semantic validation");
@@ -21,13 +21,13 @@ fn relational_ddl_requires_exactly_one_primary_key_declaration() {
         .expect_err("multiple primary-key declarations must be rejected");
     assert_eq!(
         error,
-        SkeinError::Semantic("table declares more than one primary key".to_string())
+        HawdbError::Semantic("table declares more than one primary key".to_string())
     );
 }
 
 #[test]
 fn table_level_composite_primary_key_is_not_nullable() {
-    let prepared = skein_sql::prepare_postgres_sql(
+    let prepared = hawdb_sql::prepare_postgres_sql(
         "CREATE TABLE documents (tenant_id TEXT, id TEXT, payload TEXT, \
          PRIMARY KEY (tenant_id, id))",
     )
@@ -96,7 +96,7 @@ fn schema_and_index_compilation_need_no_database_runtime() {
 #[test]
 fn returning_and_scalar_binding_stay_compilation_only() {
     let state = state();
-    let id = skein_core::Uuid::parse_str("018f4e6a-7c1b-7cc8-8f4d-1234567890ab").unwrap();
+    let id = hawdb_core::Uuid::parse_str("018f4e6a-7c1b-7cc8-8f4d-1234567890ab").unwrap();
     let compiled = compile_relational_statement_sql_with_result(
         "INSERT INTO items (body, owner_id, id) VALUES ($1, $2, $3) RETURNING id, owner_id",
         &[

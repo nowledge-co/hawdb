@@ -1,7 +1,6 @@
 use super::{
-    AdmittedRelationalExecution, QueryMemoryLedger, RelationalQueryReadModes,
+    AdmittedRelationalExecution, HawdbError, QueryMemoryLedger, RelationalQueryReadModes,
     RelationalQueryResourceContext, RelationalQueryStoreReader, RelationalState, Result,
-    SkeinError,
 };
 
 pub(super) use crate::physical_plan::*;
@@ -22,8 +21,8 @@ impl RelationalExecutionAdmission for PreparedRelationalExecutionDescriptor {
         read_modes: RelationalQueryReadModes<'state, R>,
         resources: RelationalQueryResourceContext<'runtime>,
     ) -> Result<AdmittedRelationalExecution<'state, 'runtime, R>> {
-        skein_executor::pipeline::runtime_checkpoint(resources.task_context)?;
-        let query_memory_budget = skein_executor::memory::enforced_query_memory_budget(
+        hawdb_executor::pipeline::runtime_checkpoint(resources.task_context)?;
+        let query_memory_budget = hawdb_executor::memory::enforced_query_memory_budget(
             resources.execution_memory,
             resources.task_context,
         )?;
@@ -31,7 +30,7 @@ impl RelationalExecutionAdmission for PreparedRelationalExecutionDescriptor {
             .memory_shape
             .estimated_bytes(resources.execution_memory);
         if estimated_bytes > query_memory_budget.get() {
-            return Err(SkeinError::Execution(format!(
+            return Err(HawdbError::Execution(format!(
                 "prepared relational query requires {estimated_bytes} estimated bytes, exceeding query_memory_bytes {query_memory_budget}"
             )));
         }

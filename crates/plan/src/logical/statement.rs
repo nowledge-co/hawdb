@@ -10,20 +10,20 @@ pub fn plan_with_params(
 ) -> Result<LogicalPlan> {
     match statement {
         Statement::BeginTransaction | Statement::Commit | Statement::Rollback => {
-            Err(SkeinError::Semantic(
+            Err(HawdbError::Semantic(
                 "transaction control is executed by a database session".to_string(),
             ))
         }
-        Statement::Checkpoint => Err(SkeinError::Semantic(
+        Statement::Checkpoint => Err(HawdbError::Semantic(
             "CHECKPOINT is executed by the database session".to_string(),
         )),
-        Statement::CypherQuery(_) => Err(SkeinError::Semantic(
+        Statement::CypherQuery(_) => Err(HawdbError::Semantic(
             "CYPHER system hints are applied before planning".to_string(),
         )),
-        Statement::Explain(_) => Err(SkeinError::Semantic(
+        Statement::Explain(_) => Err(HawdbError::Semantic(
             "EXPLAIN is executed by the database query runtime".to_string(),
         )),
-        Statement::SetSystemVariable(_) => Err(SkeinError::Semantic(
+        Statement::SetSystemVariable(_) => Err(HawdbError::Semantic(
             "SET system variable is executed by the database session".to_string(),
         )),
         Statement::CreateNodeLabel(label) => Ok(LogicalPlan::CreateNodeLabel {
@@ -143,13 +143,13 @@ pub fn plan_with_params(
         }),
         Statement::MatchCreateRelationship(create) => {
             if create.create_source_variable != create.source_variable {
-                return Err(SkeinError::Semantic(format!(
+                return Err(HawdbError::Semantic(format!(
                     "relationship CREATE source variable '{}' does not match bound variable '{}'",
                     create.create_source_variable, create.source_variable
                 )));
             }
             if create.create_target_variable != create.target_variable {
-                return Err(SkeinError::Semantic(format!(
+                return Err(HawdbError::Semantic(format!(
                     "relationship CREATE target variable '{}' does not match bound variable '{}'",
                     create.create_target_variable, create.target_variable
                 )));
@@ -173,13 +173,13 @@ pub fn plan_with_params(
         }
         Statement::MatchMergeRelationship(merge) => {
             if merge.merge_source_variable != merge.source_variable {
-                return Err(SkeinError::Semantic(format!(
+                return Err(HawdbError::Semantic(format!(
                     "relationship MERGE source variable '{}' does not match bound variable '{}'",
                     merge.merge_source_variable, merge.source_variable
                 )));
             }
             if merge.merge_target_variable != merge.target_variable {
-                return Err(SkeinError::Semantic(format!(
+                return Err(HawdbError::Semantic(format!(
                     "relationship MERGE target variable '{}' does not match bound variable '{}'",
                     merge.merge_target_variable, merge.target_variable
                 )));
@@ -212,25 +212,25 @@ pub fn plan_with_params(
                 || merge.expand.min_hops != 1
                 || merge.expand.max_hops != 1
             {
-                return Err(SkeinError::Semantic(
+                return Err(HawdbError::Semantic(
                     "relationship-copy MERGE supports only one-hop outgoing MATCH patterns"
                         .to_string(),
                 ));
             }
             if merge.merge_source_variable != merge.source_variable {
-                return Err(SkeinError::Semantic(format!(
+                return Err(HawdbError::Semantic(format!(
                     "relationship-copy MERGE source variable '{}' does not match bound variable '{}'",
                     merge.merge_source_variable, merge.source_variable
                 )));
             }
             if merge.merge_target_variable != merge.expand.target_variable {
-                return Err(SkeinError::Semantic(format!(
+                return Err(HawdbError::Semantic(format!(
                     "relationship-copy MERGE target variable '{}' does not match bound variable '{}'",
                     merge.merge_target_variable, merge.expand.target_variable
                 )));
             }
             if merge.predicate.is_some() {
-                return Err(SkeinError::Semantic(
+                return Err(HawdbError::Semantic(
                     "relationship-copy MERGE does not support WHERE predicates".to_string(),
                 ));
             }
@@ -258,7 +258,7 @@ pub fn plan_with_params(
                 || merge.expand.min_hops != 1
                 || merge.expand.max_hops != 1
             {
-                return Err(SkeinError::Semantic(
+                return Err(HawdbError::Semantic(
                     "relationship retarget MERGE supports only one-hop outgoing MATCH patterns"
                         .to_string(),
                 ));
@@ -315,7 +315,7 @@ pub fn plan_with_params(
                     on_create_properties,
                 });
             }
-            Err(SkeinError::Semantic(format!(
+            Err(HawdbError::Semantic(format!(
                 "relationship retarget MERGE variables '{}'-'{}' do not match supported bound pairs '{}'-'{}' or '{}'-'{}'",
                 merge.merge_source_variable,
                 merge.merge_target_variable,
@@ -327,34 +327,34 @@ pub fn plan_with_params(
         }
         Statement::MatchSet(update) => {
             if update.sets.is_empty() {
-                return Err(SkeinError::Semantic(
+                return Err(HawdbError::Semantic(
                     "SET requires at least one assignment".to_string(),
                 ));
             }
             if let Some(expand) = &update.expand {
                 if expand.min_hops != 1 || expand.max_hops != 1 {
-                    return Err(SkeinError::Semantic(
+                    return Err(HawdbError::Semantic(
                         "relationship SET supports only one-hop relationship patterns".to_string(),
                     ));
                 }
                 if expand.direction != RelationshipDirection::Outgoing {
-                    return Err(SkeinError::Semantic(
+                    return Err(HawdbError::Semantic(
                         "relationship SET supports only outgoing relationship patterns".to_string(),
                     ));
                 }
                 if expand.rel_type.is_empty() {
-                    return Err(SkeinError::Semantic(
+                    return Err(HawdbError::Semantic(
                         "relationship SET requires a relationship type".to_string(),
                     ));
                 }
                 let Some(rel_variable) = &expand.variable else {
-                    return Err(SkeinError::Semantic(
+                    return Err(HawdbError::Semantic(
                         "relationship SET requires a relationship variable".to_string(),
                     ));
                 };
                 for set in &update.sets {
                     if set.variable != *rel_variable {
-                        return Err(SkeinError::Semantic(format!(
+                        return Err(HawdbError::Semantic(format!(
                             "relationship SET can only update relationship variable '{}', got '{}'",
                             rel_variable, set.variable
                         )));
@@ -425,7 +425,7 @@ pub fn plan_with_params(
             let mut assignments = Vec::with_capacity(update.sets.len());
             for set in &update.sets {
                 if set.variable != update.variable {
-                    return Err(SkeinError::Semantic(format!(
+                    return Err(HawdbError::Semantic(format!(
                         "unknown variable '{}' in set item",
                         set.variable
                     )));
@@ -451,12 +451,12 @@ pub fn plan_with_params(
         Statement::MatchSetReturn(update_return) => {
             let update = &update_return.update;
             if update.expand.is_some() {
-                return Err(SkeinError::Semantic(
+                return Err(HawdbError::Semantic(
                     "SET RETURN supports only single-node MATCH updates".to_string(),
                 ));
             }
             if update.sets.is_empty() {
-                return Err(SkeinError::Semantic(
+                return Err(HawdbError::Semantic(
                     "SET requires at least one assignment".to_string(),
                 ));
             }
@@ -467,7 +467,7 @@ pub fn plan_with_params(
             let mut assignments = Vec::with_capacity(update.sets.len());
             for set in &update.sets {
                 if set.variable != update.variable {
-                    return Err(SkeinError::Semantic(format!(
+                    return Err(HawdbError::Semantic(format!(
                         "unknown variable '{}' in set item",
                         set.variable
                     )));
@@ -495,7 +495,7 @@ pub fn plan_with_params(
         }
         Statement::MatchOptionalRelationshipCountSum(query) => {
             if query.legs.is_empty() {
-                return Err(SkeinError::Semantic(
+                return Err(HawdbError::Semantic(
                     "optional relationship count sum requires at least one count leg".to_string(),
                 ));
             }
@@ -520,31 +520,31 @@ pub fn plan_with_params(
         Statement::MatchDelete(delete) => {
             if let Some(expand) = &delete.expand {
                 if expand.min_hops != 1 || expand.max_hops != 1 {
-                    return Err(SkeinError::Semantic(
+                    return Err(HawdbError::Semantic(
                         "relationship DELETE supports only one-hop relationship patterns"
                             .to_string(),
                     ));
                 }
                 if expand.direction != RelationshipDirection::Outgoing {
-                    return Err(SkeinError::Semantic(
+                    return Err(HawdbError::Semantic(
                         "relationship DELETE supports only outgoing relationship patterns"
                             .to_string(),
                     ));
                 }
                 if expand.rel_type.is_empty() {
-                    return Err(SkeinError::Semantic(
+                    return Err(HawdbError::Semantic(
                         "relationship DELETE requires a relationship type".to_string(),
                     ));
                 }
                 if delete.detach {
                     if delete.delete_variable != expand.target_variable {
-                        return Err(SkeinError::Semantic(format!(
+                        return Err(HawdbError::Semantic(format!(
                             "DETACH DELETE after relationship MATCH can only delete target variable '{}', got '{}'",
                             expand.target_variable, delete.delete_variable
                         )));
                     }
                     if expand.variable.is_some() || !expand.properties.is_empty() {
-                        return Err(SkeinError::Semantic(
+                        return Err(HawdbError::Semantic(
                             "DETACH DELETE after relationship MATCH does not support relationship variables or properties yet".to_string(),
                         ));
                     }
@@ -569,12 +569,12 @@ pub fn plan_with_params(
                     });
                 }
                 let Some(rel_variable) = &expand.variable else {
-                    return Err(SkeinError::Semantic(
+                    return Err(HawdbError::Semantic(
                         "relationship DELETE requires a relationship variable".to_string(),
                     ));
                 };
                 if delete.delete_variable != *rel_variable {
-                    return Err(SkeinError::Semantic(format!(
+                    return Err(HawdbError::Semantic(format!(
                         "relationship DELETE can only delete relationship variable '{}', got '{}'",
                         rel_variable, delete.delete_variable
                     )));
@@ -611,7 +611,7 @@ pub fn plan_with_params(
                 validate_predicate(&scope, predicate)?;
             }
             if delete.delete_variable != delete.variable {
-                return Err(SkeinError::Semantic(format!(
+                return Err(HawdbError::Semantic(format!(
                     "unknown variable '{}' in delete item",
                     delete.delete_variable
                 )));
@@ -639,7 +639,7 @@ pub fn plan_with_params(
         }),
         Statement::MatchNodesReturn(query) => {
             if query.left_variable == query.right_variable {
-                return Err(SkeinError::Semantic(format!(
+                return Err(HawdbError::Semantic(format!(
                     "duplicate node variable '{}' in match pattern",
                     query.left_variable
                 )));
@@ -716,13 +716,13 @@ pub fn plan_with_params(
             if let Some(expand) = &query.expand {
                 scope.insert(expand.target_variable.clone());
                 if !expand.properties.is_empty() && (expand.min_hops != 1 || expand.max_hops != 1) {
-                    return Err(SkeinError::Semantic(
+                    return Err(HawdbError::Semantic(
                         "relationship property patterns are supported only for one-hop patterns"
                             .to_string(),
                     ));
                 }
                 if expand.rel_type.is_empty() && (expand.min_hops != 1 || expand.max_hops != 1) {
-                    return Err(SkeinError::Semantic(
+                    return Err(HawdbError::Semantic(
                         "untyped relationship patterns are supported only for one-hop patterns"
                             .to_string(),
                     ));
@@ -730,7 +730,7 @@ pub fn plan_with_params(
                 if expand.direction != RelationshipDirection::Outgoing
                     && (expand.min_hops != 1 || expand.max_hops != 1)
                 {
-                    return Err(SkeinError::Semantic(
+                    return Err(HawdbError::Semantic(
                         "non-outgoing relationship patterns are supported only for one-hop patterns"
                             .to_string(),
                     ));
@@ -738,14 +738,14 @@ pub fn plan_with_params(
                 if !expand.target_properties.is_empty()
                     && (expand.min_hops != 1 || expand.max_hops != 1)
                 {
-                    return Err(SkeinError::Semantic(
+                    return Err(HawdbError::Semantic(
                         "target node property patterns are supported only for one-hop patterns"
                             .to_string(),
                     ));
                 }
                 if let Some(rel_variable) = &expand.variable {
                     if expand.min_hops != 1 || expand.max_hops != 1 {
-                        return Err(SkeinError::Semantic(
+                        return Err(HawdbError::Semantic(
                             "relationship variables are supported only for one-hop patterns"
                                 .to_string(),
                         ));
@@ -755,13 +755,13 @@ pub fn plan_with_params(
             }
             if let Some(post_expand) = &query.post_match_expand {
                 if !scope.contains(&post_expand.source_variable) {
-                    return Err(SkeinError::Semantic(format!(
+                    return Err(HawdbError::Semantic(format!(
                         "post-MATCH source variable '{}' is not bound",
                         post_expand.source_variable
                     )));
                 }
                 if !post_expand.source_properties.is_empty() {
-                    return Err(SkeinError::Semantic(
+                    return Err(HawdbError::Semantic(
                         "post-MATCH relationship reads do not support source property patterns"
                             .to_string(),
                     ));
@@ -769,7 +769,7 @@ pub fn plan_with_params(
                 if !post_expand.expand.properties.is_empty()
                     && (post_expand.expand.min_hops != 1 || post_expand.expand.max_hops != 1)
                 {
-                    return Err(SkeinError::Semantic(
+                    return Err(HawdbError::Semantic(
                         "post-MATCH relationship property patterns are supported only for one-hop patterns"
                             .to_string(),
                     ));
@@ -777,7 +777,7 @@ pub fn plan_with_params(
                 if !post_expand.expand.target_properties.is_empty()
                     && (post_expand.expand.min_hops != 1 || post_expand.expand.max_hops != 1)
                 {
-                    return Err(SkeinError::Semantic(
+                    return Err(HawdbError::Semantic(
                         "post-MATCH target node property patterns are supported only for one-hop patterns"
                             .to_string(),
                     ));
@@ -785,7 +785,7 @@ pub fn plan_with_params(
                 scope.insert(post_expand.expand.target_variable.clone());
                 if let Some(rel_variable) = &post_expand.expand.variable {
                     if post_expand.expand.min_hops != 1 || post_expand.expand.max_hops != 1 {
-                        return Err(SkeinError::Semantic(
+                        return Err(HawdbError::Semantic(
                             "post-MATCH relationship variables are supported only for one-hop patterns"
                                 .to_string(),
                         ));
@@ -795,7 +795,7 @@ pub fn plan_with_params(
             }
             if let Some(optional) = &query.optional_expand {
                 if !scope.contains(&optional.source_variable) {
-                    return Err(SkeinError::Semantic(format!(
+                    return Err(HawdbError::Semantic(format!(
                         "OPTIONAL MATCH source variable '{}' is not bound",
                         optional.source_variable
                     )));
@@ -806,14 +806,14 @@ pub fn plan_with_params(
                     && optional_direct_collect_alias(query, optional)?.is_none()
                     && !optional_direct_row_projection(query, optional)
                 {
-                    return Err(SkeinError::Semantic(
+                    return Err(HawdbError::Semantic(
                         "OPTIONAL MATCH is currently supported only for COUNT returns, source projections plus one COUNT, source projections plus one COLLECT, or non-aggregate row projections".to_string(),
                     ));
                 }
                 if !optional.expand.properties.is_empty()
                     && (optional.expand.min_hops != 1 || optional.expand.max_hops != 1)
                 {
-                    return Err(SkeinError::Semantic(
+                    return Err(HawdbError::Semantic(
                         "OPTIONAL MATCH relationship property patterns are supported only for one-hop patterns"
                             .to_string(),
                     ));
@@ -826,7 +826,7 @@ pub fn plan_with_params(
             if let Some(optional_with) = &query.optional_with {
                 if let Some(optional) = &query.optional_expand {
                     if optional_with.group_variable != optional.source_variable {
-                        return Err(SkeinError::Semantic(
+                        return Err(HawdbError::Semantic(
                             "OPTIONAL MATCH WITH must group by the optional source variable"
                                 .to_string(),
                         ));
@@ -836,7 +836,7 @@ pub fn plan_with_params(
                         optional.expand.variable.as_deref() == Some(count_variable);
                     let count_matches_target = optional.expand.target_variable == count_variable;
                     if !count_matches_relationship && !count_matches_target {
-                        return Err(SkeinError::Semantic(
+                        return Err(HawdbError::Semantic(
                             "OPTIONAL MATCH WITH COUNT must reference the optional relationship or target variable"
                                 .to_string(),
                         ));
@@ -850,7 +850,7 @@ pub fn plan_with_params(
                             }
                         )
                     }) {
-                        return Err(SkeinError::Semantic(
+                        return Err(HawdbError::Semantic(
                             "OPTIONAL MATCH WITH supports only projection returns".to_string(),
                         ));
                     }
@@ -893,7 +893,7 @@ pub fn plan_with_params(
                 );
             if query.vector_seed.is_some() && vector_seeded_max_hops > MAX_VECTOR_SEEDED_GRAPH_HOPS
             {
-                return Err(SkeinError::Semantic(format!(
+                return Err(HawdbError::Semantic(format!(
                     "vector-seeded graph expansion supports at most {MAX_VECTOR_SEEDED_GRAPH_HOPS} hops"
                 )));
             }

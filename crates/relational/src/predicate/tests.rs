@@ -1,8 +1,8 @@
 use super::*;
 use crate::query_value::*;
 use crate::row_runtime::RelationalReadRowRef;
-use skein_sql::{SqlBound, SqlStatement, SqlValue};
-use skein_storage::{
+use hawdb_sql::{SqlBound, SqlStatement, SqlValue};
+use hawdb_storage::{
     RelationalColumnSchema, RelationalKey, RelationalOverflowRef, RelationalProjectedField,
     RelationalProjectedRow, RelationalTableSchema,
 };
@@ -10,7 +10,7 @@ use std::cell::RefCell;
 
 fn predicate(source: &str) -> SqlPredicate {
     let prepared =
-        skein_sql::prepare_postgres_sql(&format!("SELECT x FROM records AS r WHERE {source}"))
+        hawdb_sql::prepare_postgres_sql(&format!("SELECT x FROM records AS r WHERE {source}"))
             .unwrap_or_else(|error| panic!("{source}: {error}"));
     let SqlStatement::Select(select) = prepared.statement else {
         panic!("expected SELECT");
@@ -122,14 +122,14 @@ fn three_valued_truth_tables_and_resolution_order_are_preserved() {
 #[test]
 fn short_circuit_preserves_resolver_errors_and_in_list_evaluation_order() {
     let value = RelationalValue::BigInt(7);
-    let missing = SkeinError::Execution("column was not hydrated".into());
+    let missing = HawdbError::Execution("column was not hydrated".into());
     for (sql, expected) in [
         ("x = 0 AND y = 1", Ok(Some(false))),
         ("x = 7 OR y = 1", Ok(Some(true))),
         ("x = 7 AND y = 1", Err(missing.clone())),
         (
             "x IN (7, $1)",
-            Err(SkeinError::Semantic(
+            Err(HawdbError::Semantic(
                 "missing PostgreSQL parameter $1".into(),
             )),
         ),
@@ -180,8 +180,8 @@ fn comparison_preserves_scalar_ordering_and_overflow_before_null() {
             Ordering::Less,
         ),
         (
-            RelationalValue::Uuid(skein_core::Uuid::nil()),
-            RelationalValue::Uuid(skein_core::Uuid::nil()),
+            RelationalValue::Uuid(hawdb_core::Uuid::nil()),
+            RelationalValue::Uuid(hawdb_core::Uuid::nil()),
             Ordering::Equal,
         ),
     ];
@@ -210,7 +210,7 @@ fn comparison_preserves_scalar_ordering_and_overflow_before_null() {
     ] {
         assert_eq!(
             compare_values(left, right, SqlComparisonOp::Eq),
-            Err(SkeinError::Execution(
+            Err(HawdbError::Execution(
                 "relational filter or join requires overflow hydration before qualification".into()
             ))
         );
@@ -221,7 +221,7 @@ fn comparison_preserves_scalar_ordering_and_overflow_before_null() {
             &RelationalValue::Text("1".into()),
             SqlComparisonOp::Eq
         ),
-        Err(SkeinError::Semantic(
+        Err(HawdbError::Semantic(
             "relational comparison has incompatible scalar types".into()
         ))
     );
@@ -246,7 +246,7 @@ fn scalar_binding_round_trips_and_keeps_exact_errors() {
         Value::Float(f64::NAN),
         Value::String("naive \u{e9}".into()),
         Value::Binary(vec![0, 128, 255]),
-        Value::Uuid(skein_core::Uuid::nil()),
+        Value::Uuid(hawdb_core::Uuid::nil()),
     ] {
         let relational = value_to_relational(value.clone()).unwrap();
         assert_eq!(relational_to_value(&relational), Ok(value.clone()));
@@ -266,7 +266,7 @@ fn scalar_binding_round_trips_and_keeps_exact_errors() {
     for value in [Value::List(vec![]), Value::Map(Default::default())] {
         assert_eq!(
             value_to_relational(value),
-            Err(SkeinError::Semantic(
+            Err(HawdbError::Semantic(
                 "relational SQL values must be scalar".into()
             ))
         );
@@ -274,7 +274,7 @@ fn scalar_binding_round_trips_and_keeps_exact_errors() {
     for position in [1, usize::MAX] {
         assert_eq!(
             bind_sql_value(&SqlValue::Parameter(position), &[]),
-            Err(SkeinError::Semantic(format!(
+            Err(HawdbError::Semantic(format!(
                 "missing PostgreSQL parameter ${position}"
             )))
         );
@@ -284,7 +284,7 @@ fn scalar_binding_round_trips_and_keeps_exact_errors() {
         Ok(Value::Int(9))
     );
     let overflow = overflow();
-    let expected = Err(SkeinError::Execution(
+    let expected = Err(HawdbError::Execution(
         "overflow value reached projection without hydration".into(),
     ));
     assert_eq!(relational_to_value(&overflow), expected);
@@ -307,7 +307,7 @@ fn bounds_and_uuid_conversion_keep_their_existing_contracts() {
         ] {
             assert_eq!(
                 bind_bound(Some(SqlBound::Parameter(1)), &[value], name),
-                Err(SkeinError::Semantic(format!(
+                Err(HawdbError::Semantic(format!(
                     "PostgreSQL {name} parameter $1 must be a non-negative integer"
                 )))
             );
@@ -320,19 +320,19 @@ fn bounds_and_uuid_conversion_keep_their_existing_contracts() {
         }
         assert_eq!(
             bind_bound(Some(SqlBound::Parameter(2)), &[], name),
-            Err(SkeinError::Semantic(
+            Err(HawdbError::Semantic(
                 "missing PostgreSQL parameter $2".into()
             ))
         );
     }
-    let uuid = skein_core::Uuid::nil();
+    let uuid = hawdb_core::Uuid::nil();
     assert_eq!(
         value_to_relational_as(Value::String(uuid.to_string()), RelationalScalarType::Uuid),
         Ok(RelationalValue::Uuid(uuid))
     );
     assert_eq!(
         value_to_relational_as(Value::String("bad".into()), RelationalScalarType::Uuid),
-        Err(SkeinError::Semantic("invalid UUID value \"bad\"".into()))
+        Err(HawdbError::Semantic("invalid UUID value \"bad\"".into()))
     );
 }
 
@@ -371,7 +371,7 @@ fn like_handles_unicode_escapes_nulls_and_unhydrated_values() {
         (
             overflow(),
             Value::String("%".into()),
-            Err(SkeinError::Execution(
+            Err(HawdbError::Execution(
                 "LIKE reached an overflow value without hydration".into(),
             )),
         ),
@@ -426,7 +426,7 @@ fn streaming_binding_keeps_eager_validation_and_qualifier_errors() {
         );
         assert_eq!(
             bound.err(),
-            Some(SkeinError::Semantic(message.into())),
+            Some(HawdbError::Semantic(message.into())),
             "{source}"
         );
     }
@@ -502,7 +502,7 @@ fn borrowed_row_binding_short_circuits_before_missing_fields() {
 
 #[test]
 fn borrowed_streaming_resolution_keeps_short_circuit_and_error_order() {
-    let missing = SkeinError::Execution("unavailable borrowed ordinal".into());
+    let missing = HawdbError::Execution("unavailable borrowed ordinal".into());
     for (source, expected, ordinals) in [
         ("x = 0 AND body = 'unused'", Ok(Some(false)), vec![0]),
         ("x = 1 OR body = 'unused'", Ok(Some(true)), vec![0]),
@@ -563,27 +563,27 @@ fn internal_operands_preserve_borrows_and_reject_unsupported_shapes() {
         );
         assert_eq!(
             BoundStreamingPredicate::bind(&expression, &[], &schema(), "records", "r").err(),
-            Some(SkeinError::Semantic(
+            Some(HawdbError::Semantic(
                 "unsupported streaming predicate expression".into()
             ))
         );
     }
     assert_eq!(
         predicate_truth_with(&column, &[], &resolver),
-        Err(SkeinError::Semantic(
+        Err(HawdbError::Semantic(
             "unsupported relational predicate expression".into()
         ))
     );
     let unsupported = Expr::unspanned(ExprKind::Not(Box::new(column)));
     assert_eq!(
         predicate_operand(&unsupported, &[], RelationalScalarType::Text, &resolver),
-        Err(SkeinError::Semantic("unsupported predicate operand".into()))
+        Err(HawdbError::Semantic("unsupported predicate operand".into()))
     );
 }
 
 #[test]
 fn uuid_binding_does_not_unify_the_two_existing_paths() {
-    let uuid = skein_core::Uuid::nil();
+    let uuid = hawdb_core::Uuid::nil();
     let value = RelationalValue::Uuid(uuid);
     let parameters = [Value::String(uuid.to_string())];
     let expression = predicate("x = $1");
@@ -597,7 +597,7 @@ fn uuid_binding_does_not_unify_the_two_existing_paths() {
     );
     assert_eq!(
         BoundStreamingPredicate::bind(&expression, &parameters, &schema, "records", "r").err(),
-        Some(SkeinError::Semantic(
+        Some(HawdbError::Semantic(
             "relational comparison on x has an incompatible scalar type".into()
         ))
     );

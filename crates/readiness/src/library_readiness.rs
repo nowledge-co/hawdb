@@ -7,39 +7,39 @@ use crate::bounded_read_evidence::{
     NowledgeMemGraphMode, NOWLEDGE_MEM_BOUNDED_READ_EVIDENCE_PROTOCOL,
 };
 use crate::{NowledgeMemReadinessAreaMap, NowledgeMemReadinessAreaSummary};
-use skein_evidence::inventory::background_maintenance_evidence_health;
-use skein_evidence::json_access::{
+use hawdb_evidence::inventory::background_maintenance_evidence_health;
+use hawdb_evidence::json_access::{
     evidence_bool, evidence_string, evidence_u64, nested_bool, nested_u64, nested_value,
     string_array_at,
 };
-use skein_evidence::replacement_contract::{
+use hawdb_evidence::replacement_contract::{
     NOWLEDGE_GRAPH_ROUTE_WORKLOAD_FIXTURE_PROTOCOL, NOWLEDGE_MEM_SEARCH_CANDIDATE_EVIDENCE_ROUTE,
     NOWLEDGE_MEM_SEARCH_CANDIDATE_EVIDENCE_SOURCE, NOWLEDGE_MEM_SEARCH_CANDIDATE_PRIMARY_ENGINE,
     NOWLEDGE_MEM_SEARCH_CANDIDATE_SHADOW_EVIDENCE_PROTOCOL,
 };
-use skein_evidence::resource_profile::{
+use hawdb_evidence::resource_profile::{
     production_resource_profile_blocker_codes, production_resource_profile_ready,
 };
-use skein_route_ownership::graph::{
+use hawdb_route_ownership::graph::{
     nowledge_mem_graph_read_route_catalog_digest, NOWLEDGE_MEM_GRAPH_READ_ROUTE_CATALOG_VERSION,
 };
-use skein_route_ownership::{
+use hawdb_route_ownership::{
     NOWLEDGE_MEM_ACTIVE_SEARCH_ROUTE_READINESS_PROTOCOL,
     NOWLEDGE_MEM_SEARCH_ROUTE_OWNERSHIP_PROTOCOL,
 };
 use std::collections::BTreeSet;
 
 const NOWLEDGE_SEARCH_PROJECTION_EVIDENCE_PROTOCOL: &str =
-    "skein-nowledge-search-projection-evidence";
+    "hawdb-nowledge-search-projection-evidence";
 const NOWLEDGE_SEARCH_PROJECTION_SHADOW_EVIDENCE_PROTOCOL: &str =
-    "skein-nowledge-search-projection-shadow-evidence";
-const NOWLEDGE_SEARCH_PROJECTION_SHADOW_EVIDENCE_SOURCE: &str = "skein-rust-cli";
+    "hawdb-nowledge-search-projection-shadow-evidence";
+const NOWLEDGE_SEARCH_PROJECTION_SHADOW_EVIDENCE_SOURCE: &str = "hawdb-rust-cli";
 pub const SEARCH_PROJECTION_SHADOW_PUSHDOWN_NOT_READY: &str =
     "search_projection_shadow_pushdown_evidence_not_ready";
-const SKEIN_SEARCH_PROJECTION_SEGMENT_DESCRIPTOR_MISSING: &str =
-    "skein_search_projection_segment_descriptor_missing";
-const SKEIN_SEARCH_PROJECTION_SEGMENT_DESCRIPTOR_FIELDS_MISSING: &str =
-    "skein_search_projection_segment_descriptor_fields_missing";
+const HAWDB_SEARCH_PROJECTION_SEGMENT_DESCRIPTOR_MISSING: &str =
+    "hawdb_search_projection_segment_descriptor_missing";
+const HAWDB_SEARCH_PROJECTION_SEGMENT_DESCRIPTOR_FIELDS_MISSING: &str =
+    "hawdb_search_projection_segment_descriptor_fields_missing";
 
 fn search_route_ownership_ready(evidence: &serde_json::Value) -> bool {
     evidence.get("protocol").and_then(serde_json::Value::as_str)
@@ -529,7 +529,7 @@ fn search_projection_shadow_readiness_blocker_codes(evidence: &serde_json::Value
         ],
     ) != Some(true)
     {
-        blockers.insert(SKEIN_SEARCH_PROJECTION_SEGMENT_DESCRIPTOR_MISSING.to_string());
+        blockers.insert(HAWDB_SEARCH_PROJECTION_SEGMENT_DESCRIPTOR_MISSING.to_string());
     }
     if nested_bool(
         evidence,
@@ -539,7 +539,7 @@ fn search_projection_shadow_readiness_blocker_codes(evidence: &serde_json::Value
         ],
     ) != Some(true)
     {
-        blockers.insert(SKEIN_SEARCH_PROJECTION_SEGMENT_DESCRIPTOR_FIELDS_MISSING.to_string());
+        blockers.insert(HAWDB_SEARCH_PROJECTION_SEGMENT_DESCRIPTOR_FIELDS_MISSING.to_string());
     }
     blockers.into_iter().collect()
 }
@@ -732,7 +732,7 @@ fn search_candidate_shadow_readiness_blocker_codes(evidence: &serde_json::Value)
     if evidence_string(evidence, "candidate_primary_engine")
         != Some(NOWLEDGE_MEM_SEARCH_CANDIDATE_PRIMARY_ENGINE)
     {
-        blockers.insert("search_candidate_primary_engine_not_skein".to_string());
+        blockers.insert("search_candidate_primary_engine_not_hawdb".to_string());
     }
     if !search_candidate_shadow_counts_ready(evidence) {
         blockers.insert("search_candidate_counts_not_ready".to_string());

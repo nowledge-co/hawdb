@@ -1,9 +1,9 @@
 //! Host-neutral Nowledge storage-recovery lifecycle protocol.
 
-use skein_storage::{RecoveryMode, StorageOpenTimings, StorageRecoveryReport};
+use hawdb_storage::{RecoveryMode, StorageOpenTimings, StorageRecoveryReport};
 
 pub const NOWLEDGE_MEM_STORAGE_LIFECYCLE_DECISION_PROTOCOL: &str =
-    "skein-nowledge-mem-storage-lifecycle-decision-v1";
+    "hawdb-nowledge-mem-storage-lifecycle-decision-v1";
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct NowledgeMemStorageRecoveryReport {
@@ -75,7 +75,7 @@ impl NowledgeMemStorageRecoveryReport {
         }
 
         Self {
-            protocol: "skein-storage-recovery-report".to_string(),
+            protocol: "hawdb-storage-recovery-report".to_string(),
             present: true,
             ready: blocker_codes.is_empty(),
             open_timings: report.open_timings,

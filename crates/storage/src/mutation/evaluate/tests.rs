@@ -63,7 +63,7 @@ fn assignment_failure_does_not_publish_or_rollback_a_callers_staging_map() {
     )
     .unwrap_err();
     assert!(
-        matches!(error, SkeinError::Execution(message) if message == "property increment overflowed i64")
+        matches!(error, HawdbError::Execution(message) if message == "property increment overflowed i64")
     );
     assert_eq!(original, properties(Some(Value::Int(1))));
     assert_eq!(staging, properties(Some(Value::Int(i64::MAX))));
@@ -208,7 +208,7 @@ fn campaign(seeds: u64) -> usize {
                 for operation in operations {
                     let actual =
                         evaluate(current.clone(), operation.clone()).map_err(|error| match error {
-                            SkeinError::Execution(message) => message,
+                            HawdbError::Execution(message) => message,
                             error => panic!("unexpected error kind: {error}"),
                         });
                     assert_eq!(

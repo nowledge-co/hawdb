@@ -2,12 +2,12 @@ use super::*;
 use crate::planner::{ComparisonOp, ProjectionExpression, SetAssignment};
 use crate::schema::PropertyType;
 use crate::store::{DurabilityPolicy, StorageResidencyMode, WalReplayConfig};
-use skein_executor::columnar::{NumericLiteral, NumericPredicate};
-use skein_executor::numeric::{
+use hawdb_executor::columnar::{NumericLiteral, NumericPredicate};
+use hawdb_executor::numeric::{
     stream_owned_numeric_nodes, stream_owned_typed_numeric_nodes, LendingNumericScan,
     NumericFragment,
 };
-use skein_storage::artifact_files::canonical_adjacency_artifact_generation_file;
+use hawdb_storage::artifact_files::canonical_adjacency_artifact_generation_file;
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicU64, Ordering};
 
@@ -18,7 +18,7 @@ impl Directory {
         static NEXT: AtomicU64 = AtomicU64::new(0);
         loop {
             let path = std::env::temp_dir().join(format!(
-                "skein-scan-errors-{}-{}",
+                "hawdb-scan-errors-{}-{}",
                 std::process::id(),
                 NEXT.fetch_add(1, Ordering::Relaxed),
             ));
@@ -121,7 +121,7 @@ impl Fixture {
             .map(|entry| entry.unwrap())
             .filter(|entry| {
                 let name = entry.file_name();
-                name == "manifest.skein" || name.to_string_lossy().starts_with("wal.")
+                name == "manifest.hawdb" || name.to_string_lossy().starts_with("wal.")
             })
             .map(|entry| {
                 (
@@ -130,7 +130,7 @@ impl Fixture {
                 )
             })
             .collect();
-        assert!(files.contains_key(&PathBuf::from("manifest.skein")));
+        assert!(files.contains_key(&PathBuf::from("manifest.hawdb")));
         assert!(files.len() >= 2, "snapshot must include a WAL generation");
         files
     }
@@ -151,8 +151,8 @@ enum Exit {
     Cancel,
 }
 
-fn sentinel() -> SkeinError {
-    SkeinError::Semantic("scan callback sentinel".to_string())
+fn sentinel() -> HawdbError {
+    HawdbError::Semantic("scan callback sentinel".to_string())
 }
 
 fn with_context<T>(
@@ -210,7 +210,7 @@ fn scan(
     let label = context.catalog.label_id("Item").unwrap();
     match path {
         Path::Visited => stream_visited_node_batches("n", context, limit, emit, |consumer| {
-            skein_executor::store::GraphExecutionRead::visit_nodes_owned(
+            hawdb_executor::store::GraphExecutionRead::visit_nodes_owned(
                 context.store,
                 Some(label),
                 consumer,
@@ -260,7 +260,7 @@ fn exercise(fixture: &Fixture, path: Path, batch_rows: usize, exit: Exit, exit_a
         query_memory_bytes: NonZeroUsize::new(128 * 1024).unwrap(),
         ..ExecutionMemoryConfig::default()
     };
-    let token = skein_core::RuntimeCancellationToken::new();
+    let token = hawdb_core::RuntimeCancellationToken::new();
     let task = RuntimeTaskContext::without_deadline(token.clone());
     let mut calls = 0;
     let mut values = Vec::new();
@@ -543,7 +543,7 @@ fn mutation_scan_predicate_errors_do_not_commit_partial_writes() {
             &binding(records[1].clone()),
         )
         .unwrap_err();
-        assert!(matches!(expected_error, SkeinError::StorageIntegrity(_)));
+        assert!(matches!(expected_error, HawdbError::StorageIntegrity(_)));
         // The first physical failure poisons the reader. Compare callback
         // propagation with the error from the same subsequent reader state.
         let expected_error = evaluate_predicate(
@@ -680,7 +680,7 @@ fn mutation_preflight_limits_reject_before_wal_changes() {
             for (boundary, limits) in limits {
                 assert_mutation_rejected(&mut fixture, &plan, limits, None, boundary);
             }
-            let token = skein_core::RuntimeCancellationToken::new();
+            let token = hawdb_core::RuntimeCancellationToken::new();
             token.cancel();
             let task = RuntimeTaskContext::without_deadline(token);
             assert_mutation_rejected(

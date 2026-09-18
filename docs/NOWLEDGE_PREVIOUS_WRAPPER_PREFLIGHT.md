@@ -1,18 +1,18 @@
 # Nowledge Previous-Wrapper Preflight
 
-This runbook turns a Nowledge-owned Kuzu/Ladybug wrapper command into Skein
+This runbook turns a Nowledge-owned Kuzu/Ladybug wrapper command into Hawdb
 production-replacement evidence. It is intentionally evidence-first: a passing
 scanner or a passing protocol smoke is not enough for cutover.
 
-This is not a production serving path. Mem should embed Skein as a Rust library
+This is not a production serving path. Mem should embed Hawdb as a Rust library
 and consume typed readiness APIs for startup and read selection. The CLI commands
 used here are quarantined developer/preflight tools and require
-`SKEIN_ENABLE_COMPATIBILITY_TOOLS=1`; the checked-in script sets that variable
-only around the isolated `cargo run --bin skein` calls it owns.
+`HAWDB_ENABLE_COMPATIBILITY_TOOLS=1`; the checked-in script sets that variable
+only around the isolated `cargo run --bin hawdb` calls it owns.
 
 ## Safety Boundary
 
-Never open the live Nowledge Kuzu database from a Skein or ad hoc validation
+Never open the live Nowledge Kuzu database from a Hawdb or ad hoc validation
 tool. Kuzu's writer lock is process-exclusive, and the desktop/server runtime
 may already hold the live handle.
 
@@ -20,7 +20,7 @@ Use a point-in-time copy:
 
 ```bash
 export NMEM_LIVE_DIR="$HOME/Library/Application Support/NowledgeGraph"
-export NMEM_PREFLIGHT_ROOT="/tmp/skein-nowledge-preflight"
+export NMEM_PREFLIGHT_ROOT="/tmp/hawdb-nowledge-preflight"
 
 rm -rf "$NMEM_PREFLIGHT_ROOT"
 mkdir -p "$NMEM_PREFLIGHT_ROOT"
@@ -36,7 +36,7 @@ live application directory.
 
 ## Required Wrapper Command
 
-Skein does not link `nmem-graph`, Kuzu, or Ladybug. Nowledge owns the wrapper
+Hawdb does not link `nmem-graph`, Kuzu, or Ladybug. Nowledge owns the wrapper
 command process and all graph dependencies. The command must read one JSON
 request per line from stdin and write one JSON response per line to stdout.
 
@@ -73,11 +73,11 @@ scripts/nowledge-previous-wrapper-preflight.sh \
   --wrapper-identity "$NOWLEDGE_WRAPPER_IDENTITY" \
   --require-integration-readiness \
   --search-projection-shadow-primary-probe-json "$NMEM_PREFLIGHT_ROOT/lancedb-search-projection-probe.json" \
-  --search-projection-shadow-probe-json "$NMEM_PREFLIGHT_ROOT/skein-search-projection-probe.json" \
+  --search-projection-shadow-probe-json "$NMEM_PREFLIGHT_ROOT/hawdb-search-projection-probe.json" \
   --search-candidate-shadow-probe-json "$NMEM_PREFLIGHT_ROOT/search-candidate-shadow-probe.json" \
   --graph-route-query-json "$NMEM_PREFLIGHT_ROOT/graph-route-queries.json" \
   --graph-route-parity-json "$NMEM_PREFLIGHT_ROOT/graph-route-parity.json" \
-  --integration-submodule-path vendor/skein \
+  --integration-submodule-path vendor/hawdb \
   --integration-legacy-data-retained \
   --integration-coexistence-mode shadow \
   -- "$NOWLEDGE_WRAPPER_COMMAND"
@@ -107,27 +107,27 @@ only when the content copy lives elsewhere.
 
 ## Production Library Embedding
 
-Production nmem should not start Skein by shelling out to this runner or any
-other command. It should embed Skein like SQLite: keep a long-lived Rust handle
+Production nmem should not start Hawdb by shelling out to this runner or any
+other command. It should embed Hawdb like SQLite: keep a long-lived Rust handle
 inside the process and call typed functions directly.
 
 ```rust
-use skein::{
-    BlackboxRunStatus, DatabaseConfig, Result, SkeinEmbedded,
-    SkeinEmbeddedOpenOptions,
+use hawdb::{
+    BlackboxRunStatus, DatabaseConfig, Result, HawdbEmbedded,
+    HawdbEmbeddedOpenOptions,
 };
 
-fn open_skein(path: std::path::PathBuf) -> Result<SkeinEmbedded> {
+fn open_hawdb(path: std::path::PathBuf) -> Result<HawdbEmbedded> {
     let config = DatabaseConfig {
         slow_query_log_threshold_micros: 300_000,
         ..DatabaseConfig::default()
     };
-    SkeinEmbedded::open_with_options(
-        SkeinEmbeddedOpenOptions::new(path).with_config(config),
+    HawdbEmbedded::open_with_options(
+        HawdbEmbeddedOpenOptions::new(path).with_config(config),
     )
 }
 
-fn flush_observability(engine: &SkeinEmbedded, artifact_dir: std::path::PathBuf) -> Result<()> {
+fn flush_observability(engine: &HawdbEmbedded, artifact_dir: std::path::PathBuf) -> Result<()> {
     engine.write_slow_query_log_jsonl(artifact_dir.join("slow-query-log.jsonl"))?;
     engine.write_blackbox_report(
         artifact_dir.clone(),
@@ -148,17 +148,17 @@ redacted slow-query events and does not include query text.
 
 ### Production-copy memory profile
 
-Memory replacement evidence must use a point-in-time Skein copy populated from
+Memory replacement evidence must use a point-in-time Hawdb copy populated from
 the same production snapshot and the same bounded route queries used for parity.
 Run each query family in a fresh process so the process high-water RSS is
 attributable to that workload:
 
 ```bash
-SKEIN_ENABLE_COMPATIBILITY_TOOLS=1 cargo run --quiet --bin skein -- \
+HAWDB_ENABLE_COMPATIBILITY_TOOLS=1 cargo run --quiet --bin hawdb -- \
   nowledge-bounded-read-report \
   --max-rows 512 \
   --max-estimated-payload-bytes 4194304 \
-  "$SKEIN_PRODUCTION_COPY" \
+  "$HAWDB_PRODUCTION_COPY" \
   "$BOUNDED_ROUTE_QUERY"
 ```
 
@@ -174,7 +174,7 @@ Configured buffer-pool sizes are not accepted as memory evidence.
 ## 1. Export The Contract
 
 ```bash
-cargo run --quiet --bin skein -- \
+cargo run --quiet --bin hawdb -- \
   nowledge-fixture-contract nowledge-memory-core \
   > "$NMEM_PREFLIGHT_ROOT/contract.json"
 ```
@@ -186,7 +186,7 @@ projected-graph requests.
 ## 2. Run The Full Wrapper Contract
 
 ```bash
-cargo run --quiet --bin skein -- \
+cargo run --quiet --bin hawdb -- \
   nowledge-fixture-contract-command-check \
   --require-full-contract \
   --wrapper-identity "$NOWLEDGE_WRAPPER_IDENTITY" \
@@ -212,7 +212,7 @@ production migration gate.
 ## 3. Smoke The External Shadow Adapter
 
 ```bash
-cargo run --quiet --bin skein -- \
+cargo run --quiet --bin hawdb -- \
   external-shadow-adapter-smoke \
   --require-previous-wrapper \
   --shadow-trace "$NMEM_PREFLIGHT_ROOT/adapter-shadow.jsonl" \
@@ -240,33 +240,33 @@ replacement evidence by itself.
 
 ## 4. Attach Storage And Background Evidence
 
-Use an isolated Skein database for storage-recovery and background-maintenance
+Use an isolated Hawdb database for storage-recovery and background-maintenance
 evidence:
 
 ```bash
-TMPDIR="$NMEM_PREFLIGHT_ROOT" cargo run --quiet --bin skein -- \
-  > "$NMEM_PREFLIGHT_ROOT/skein-demo.out"
+TMPDIR="$NMEM_PREFLIGHT_ROOT" cargo run --quiet --bin hawdb -- \
+  > "$NMEM_PREFLIGHT_ROOT/hawdb-demo.out"
 
-export SKEIN_PREFLIGHT_DB="$NMEM_PREFLIGHT_ROOT/skein-demo"
+export HAWDB_PREFLIGHT_DB="$NMEM_PREFLIGHT_ROOT/hawdb-demo"
 
-cargo run --quiet --bin skein -- \
+cargo run --quiet --bin hawdb -- \
   storage-recovery-report \
   --max-wal-replay-entries 100 \
   --require-durable \
   --require-checkpoint-boundary \
   --require-bounded-wal-replay \
   --require-clean-tail \
-  "$SKEIN_PREFLIGHT_DB" \
+  "$HAWDB_PREFLIGHT_DB" \
   > "$NMEM_PREFLIGHT_ROOT/storage-recovery.json"
 
-cargo run --quiet --bin skein -- \
+cargo run --quiet --bin hawdb -- \
   background-maintenance-report \
   --require-cutover-ready \
-  "$SKEIN_PREFLIGHT_DB" \
+  "$HAWDB_PREFLIGHT_DB" \
   > "$NMEM_PREFLIGHT_ROOT/background-maintenance.json"
 ```
 
-These reports prove Skein-side recovery and background QoS readiness. They do
+These reports prove Hawdb-side recovery and background QoS readiness. They do
 not prove Nowledge wrapper parity.
 
 ## 5. Run The Migration Gate
@@ -280,7 +280,7 @@ jq '.previous_wrapper_contract_evidence' \
   "$NMEM_PREFLIGHT_ROOT/contract-evidence.json" \
   > "$NMEM_PREFLIGHT_ROOT/previous-wrapper-contract-evidence.json"
 
-cargo run --quiet --bin skein -- \
+cargo run --quiet --bin hawdb -- \
   nowledge-cypher-migration-gate \
   --require-ready \
   --require-cutover-evidence \
@@ -324,20 +324,20 @@ If you have raw probes instead of precompiled evidence, generate the evidence
 files first:
 
 ```bash
-cargo run --quiet --bin skein -- \
+cargo run --quiet --bin hawdb -- \
   nowledge-search-projection-evidence \
   --require-ready \
-  "$NMEM_PREFLIGHT_ROOT/skein-search-projection-probe.json" \
+  "$NMEM_PREFLIGHT_ROOT/hawdb-search-projection-probe.json" \
   > "$NMEM_PREFLIGHT_ROOT/search-projection-evidence.json"
 
-cargo run --quiet --bin skein -- \
+cargo run --quiet --bin hawdb -- \
   nowledge-search-projection-shadow-evidence \
   --require-ready \
   --primary-probe-json "$NMEM_PREFLIGHT_ROOT/lancedb-search-projection-probe.json" \
-  --shadow-probe-json "$NMEM_PREFLIGHT_ROOT/skein-search-projection-probe.json" \
+  --shadow-probe-json "$NMEM_PREFLIGHT_ROOT/hawdb-search-projection-probe.json" \
   > "$NMEM_PREFLIGHT_ROOT/search-projection-shadow-evidence.json"
 
-cargo run --quiet --bin skein -- \
+cargo run --quiet --bin hawdb -- \
   nowledge-search-candidate-shadow-evidence \
   --require-ready \
   "$NMEM_PREFLIGHT_ROOT/search-candidate-shadow-probe.json" \
@@ -345,7 +345,7 @@ cargo run --quiet --bin skein -- \
 ```
 
 ```bash
-cargo run --quiet --bin skein -- \
+cargo run --quiet --bin hawdb -- \
   nowledge-replacement-summary \
   --require-production-ready \
   --query-family-evidence-json "$NMEM_PREFLIGHT_ROOT/query-family-evidence.json" \
@@ -383,15 +383,15 @@ API that Mem will actually call instead of only checking standalone CLI
 artifacts:
 
 ```bash
-cargo run --quiet --bin skein -- \
+cargo run --quiet --bin hawdb -- \
   nowledge-mem-library-readiness \
   --require-ready \
-  --search-projection "$NMEM_PREFLIGHT_ROOT/skein-search-index" \
+  --search-projection "$NMEM_PREFLIGHT_ROOT/hawdb-search-index" \
   --bounded-read-evidence-json "$NMEM_PREFLIGHT_ROOT/bounded-read-evidence.json" \
   --query-family-evidence-json "$NMEM_PREFLIGHT_ROOT/query-family-evidence.json" \
   --search-projection-evidence-json "$NMEM_PREFLIGHT_ROOT/search-projection-evidence.json" \
   --search-projection-shadow-evidence-json "$NMEM_PREFLIGHT_ROOT/search-projection-shadow-evidence.json" \
-  "$NMEM_PREFLIGHT_ROOT/skein-demo" \
+  "$NMEM_PREFLIGHT_ROOT/hawdb-demo" \
   > "$NMEM_PREFLIGHT_ROOT/library-readiness.json"
 ```
 
@@ -405,13 +405,13 @@ The runner can also materialize those search-projection evidence files from
 `--search-projection-shadow-probe-json` inputs. When both a standalone
 projection probe and a shadow probe are present, the standalone probe is used
 for `search-projection-evidence.json`; otherwise the shadow probe is used as
-the Skein-side projection evidence source.
+the Hawdb-side projection evidence source.
 Automatic generation also needs `--library-readiness-search-projection` to
-point at an existing Skein search projection so `open_report` can prove that
+point at an existing Hawdb search projection so `open_report` can prove that
 the embedded library opened both graph and search projection state.
 
 Search projection probes must also publish the scan-pruning contract that Mem
-relies on during the LanceDB replacement path. The Skein probe is not ready
+relies on during the LanceDB replacement path. The Hawdb probe is not ready
 unless `predicate_pushdown.persisted_segment_descriptor_ready == true`,
 `predicate_pushdown.segment_descriptor_scan_filter_fields_ready == true`, and
 `predicate_pushdown.segment_descriptor_field_summaries` covers the required
@@ -429,7 +429,7 @@ segment descriptor metadata instead of only proving row-filter fallback.
 Search projection evidence also recomputes incremental update readiness instead
 of trusting `incremental_update.ready` alone. A ready probe must prove
 `upsert_ready`, `delete_ready`, `watermark_ready`, and a concrete
-`source_graph_commit_epoch`; LanceDB/Skein shadow evidence compares that
+`source_graph_commit_epoch`; LanceDB/Hawdb shadow evidence compares that
 watermark so stale or full-rebuild-only projections do not pass as incremental
 replacement evidence.
 Search projection probes must also include a redacted `document_identity`
@@ -445,7 +445,7 @@ Use the bundle checker to collapse the preflight stage artifacts into one
 release-facing preflight verdict:
 
 ```bash
-cargo run --quiet --bin skein -- \
+cargo run --quiet --bin hawdb -- \
   nowledge-previous-wrapper-preflight-check \
   --require-ready \
   --wrapper-identity "$NOWLEDGE_WRAPPER_IDENTITY" \
@@ -468,7 +468,7 @@ replacement summary must carry `dual_engine_evidence.present == true` and
 It also requires
 `search_projection_shadow_evidence.pushdown_evidence.ready == true`,
 `predicate_pushdown_parity == true`, and shadow segment descriptor scan-filter
-coverage, so LanceDB/Skein shadow parity cannot pass with row-filter fallback
+coverage, so LanceDB/Hawdb shadow parity cannot pass with row-filter fallback
 alone.
 When adapter smoke reports include `dual_engine_evidence`, the verifier also
 requires `dual_engine_evidence.ready == true` so side-by-side cutover evidence
@@ -521,7 +521,7 @@ comparison. The graph route evidence command treats `shadow_compare_ready` in
 the query inventory as local debugging input only; production readiness requires
 an explicit parity artifact. Each route must independently prove full parity:
 `ready: true`, `matched_per_million: 1000000`, a legacy graph primary engine
-(`kuzu`, `ladybug`, or `kuzu/ladybug`), and `shadow_engine: "skein"`.
+(`kuzu`, `ladybug`, or `kuzu/ladybug`), and `shadow_engine: "hawdb"`.
 
 ```json
 {
@@ -532,7 +532,7 @@ an explicit parity artifact. Each route must independently prove full parity:
       "ready": true,
       "matched_per_million": 1000000,
       "primary_engine": "kuzu",
-      "shadow_engine": "skein"
+      "shadow_engine": "hawdb"
     }
   ]
 }
@@ -541,10 +541,10 @@ an explicit parity artifact. Each route must independently prove full parity:
 Generate query-runtime-backed route evidence with:
 
 ```bash
-cargo run --quiet --bin skein -- \
+cargo run --quiet --bin hawdb -- \
   nowledge-graph-route-evidence \
   --route-parity-json "$NMEM_PREFLIGHT_ROOT/graph-route-parity.json" \
-  "$NMEM_PREFLIGHT_ROOT/skein-demo" \
+  "$NMEM_PREFLIGHT_ROOT/hawdb-demo" \
   "$NMEM_PREFLIGHT_ROOT/graph-route-queries.json" \
   > "$NMEM_PREFLIGHT_ROOT/graph-route-evidence.json"
 ```
@@ -552,7 +552,7 @@ cargo run --quiet --bin skein -- \
 Compile readiness with:
 
 ```bash
-cargo run --quiet --bin skein -- \
+cargo run --quiet --bin hawdb -- \
   nowledge-graph-route-readiness \
   --require-ready \
   "$NMEM_PREFLIGHT_ROOT/graph-route-evidence.json" \
@@ -561,7 +561,7 @@ cargo run --quiet --bin skein -- \
 
 The command fails closed when any required Nowledge graph read route is missing,
 when a route has no shadow-compare evidence, when a route is not primary ready,
-or when a ready route lacks `skein-nowledge-mem-query-report-v1` evidence
+or when a ready route lacks `hawdb-nowledge-mem-query-report-v1` evidence
 generated by `NowledgeMemGraph::query_with_report`. Each query report must carry
 stable query identity (`query_name` and `query_index`) and
 profile metadata (`elapsed_micros`, `physical_operator_counts`,
@@ -594,11 +594,11 @@ evidence remains fail-closed.
 
 The graph route report proves route-level query runtime evidence. The query
 runtime preflight independently runs JSON-defined probes through the read-only
-Skein runtime with `EXPLAIN ANALYZE`, then emits plan/profile evidence without
+Hawdb runtime with `EXPLAIN ANALYZE`, then emits plan/profile evidence without
 rows, parameters, or local paths:
 
 ```bash
-cargo run --quiet --bin skein -- \
+cargo run --quiet --bin hawdb -- \
   nowledge-query-runtime-preflight \
   --probe-json "$NMEM_PREFLIGHT_ROOT/graph-route-queries.json" \
   "$NMEM_PREFLIGHT_GRAPH" \
@@ -627,7 +627,7 @@ and prevents a count-only probe summary from being treated as cutover evidence.
 ## 11. Compile The Mem Integration Bundle
 
 The previous-wrapper preflight proves replacement behavior. The Mem integration
-bundle adds the product migration boundary: Skein must be present as a
+bundle adds the product migration boundary: Hawdb must be present as a
 submodule, legacy Kuzu/Ladybug and LanceDB data must still be retained
 side-by-side, and `content.db` must remain available for message and source
 chunk payloads.
@@ -636,11 +636,11 @@ Use the Rust bundle composer directly when debugging this final stage or when
 the earlier preflight artifacts were produced by another harness:
 
 ```bash
-cargo run --quiet --bin skein -- \
+cargo run --quiet --bin hawdb -- \
   nowledge-mem-integration-bundle \
   --require-ready \
-  --submodule-path vendor/skein \
-  --submodule-commit "$(git -C vendor/skein rev-parse --short HEAD)" \
+  --submodule-path vendor/hawdb \
+  --submodule-commit "$(git -C vendor/hawdb rev-parse --short HEAD)" \
   --legacy-data-retained \
   --coexistence-mode shadow \
   --content-store-present \

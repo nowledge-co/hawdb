@@ -3,12 +3,12 @@ use crate::{
     NowledgeMemOpenOptions, NowledgeMemOpenReport, NowledgeMemReadinessOptions, Result,
     SearchProjectionProbeOptions,
 };
-pub use skein_readiness::library_readiness_cli::{
+pub use hawdb_readiness::library_readiness_cli::{
     nowledge_mem_library_readiness_usage, parse_mem_library_covered_routes_json,
     parse_mem_library_graph_route_readiness_json, parse_mem_library_readiness_mode,
     parse_parameters_json, value_from_json,
 };
-use skein_readiness::library_readiness_cli::{
+use hawdb_readiness::library_readiness_cli::{
     parse_bounded_probe_json as parse_owner_bounded_probe_json,
     parse_nowledge_mem_library_readiness_inputs, NowledgeMemLibraryReadinessCliInputs,
 };
@@ -111,7 +111,7 @@ mod tests {
 
     #[test]
     fn parser_facade_reexports_owner_entrypoints() {
-        use skein_readiness::library_readiness_cli as owner;
+        use hawdb_readiness::library_readiness_cli as owner;
 
         let usage: fn() -> String = super::nowledge_mem_library_readiness_usage;
         assert!(std::ptr::fn_addr_eq(
@@ -187,7 +187,7 @@ mod tests {
         assert!(!require_ready);
         assert_eq!(
             readiness["protocol"],
-            "skein-nowledge-mem-library-readiness-v1"
+            "hawdb-nowledge-mem-library-readiness-v1"
         );
         assert_eq!(readiness["ready"], false);
         assert_eq!(readiness["bounded_read_evidence"]["ready"], true);
@@ -334,7 +334,7 @@ mod tests {
         std::fs::write(
             &bounded_evidence_path,
             serde_json::json!({
-                "protocol": "skein-nowledge-mem-bounded-read-evidence-v2",
+                "protocol": "hawdb-nowledge-mem-bounded-read-evidence-v2",
                 "present": true,
                 "ready": true,
                 "blocker_codes": []
@@ -350,7 +350,7 @@ mod tests {
         std::fs::write(
             &search_evidence_path,
             serde_json::json!({
-                "protocol": "skein-nowledge-search-projection-evidence",
+                "protocol": "hawdb-nowledge-search-projection-evidence",
                 "present": true,
                 "ready": true,
                 "blocker_codes": []
@@ -361,7 +361,7 @@ mod tests {
         std::fs::write(
             &search_shadow_evidence_path,
             serde_json::json!({
-                "protocol": "skein-nowledge-search-projection-shadow-evidence",
+                "protocol": "hawdb-nowledge-search-projection-shadow-evidence",
                 "present": true,
                 "ready": true,
                 "blocker_codes": []
@@ -372,12 +372,12 @@ mod tests {
         std::fs::write(
             &search_candidate_shadow_evidence_path,
             serde_json::json!({
-                "protocol": "skein-nowledge-search-candidate-shadow-evidence",
-                "route": "/search-index/skein-shadow/candidate-evidence",
+                "protocol": "hawdb-nowledge-search-candidate-shadow-evidence",
+                "route": "/search-index/hawdb-shadow/candidate-evidence",
                 "evidence_source": "nmem-rust-bridge",
                 "present": true,
                 "ready": true,
-                "candidate_primary_engine": "skein",
+                "candidate_primary_engine": "hawdb",
                 "request_count": 1,
                 "primary_candidate_count": 1,
                 "shadow_candidate_count": 1,
@@ -485,6 +485,6 @@ mod tests {
             .duration_since(UNIX_EPOCH)
             .unwrap()
             .as_nanos();
-        std::env::temp_dir().join(format!("skein_{name}_{}_{nanos}", std::process::id()))
+        std::env::temp_dir().join(format!("hawdb_{name}_{}_{nanos}", std::process::id()))
     }
 }

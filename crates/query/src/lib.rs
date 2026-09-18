@@ -16,13 +16,13 @@ impl QueryIdentity {
         let query_language = query_language.trim().to_ascii_lowercase();
         let normalized_query = normalize_query(&query_language, query_text);
         let query_digest = versioned_hash(
-            "skein-query-digest",
+            "hawdb-query-digest",
             QUERY_DIGEST_PROTOCOL_VERSION,
             "q",
             &[query_language.as_bytes(), normalized_query.as_bytes()],
         );
         let query_text_hash = versioned_hash(
-            "skein-query-text",
+            "hawdb-query-text",
             QUERY_TEXT_HASH_PROTOCOL_VERSION,
             "t",
             &[query_language.as_bytes(), query_text.as_bytes()],

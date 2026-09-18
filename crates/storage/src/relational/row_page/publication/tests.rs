@@ -6,7 +6,7 @@ use crate::relational::{
     RelationalOverflowPublisher, RelationalOverflowRef, RelationalOverflowRootReader,
     RelationalRow, RelationalRowPageEntry, RelationalScalarType, RelationalValue,
 };
-use skein_integrity::integrity_digest;
+use hawdb_integrity::integrity_digest;
 use std::fs::{self, OpenOptions};
 use std::io::{Seek, SeekFrom, Write};
 use std::num::{NonZeroU32, NonZeroU64};
@@ -188,7 +188,7 @@ fn persisted_row_candidate_does_not_change_latest_selection() {
     fs::write(
         directory
             .join(RELATIONAL_ROW_PAGE_MANIFEST_FILE)
-            .with_extension("skein.tmp"),
+            .with_extension("hawdb.tmp"),
         b"abandoned latest selector",
     )
     .unwrap();
@@ -545,7 +545,7 @@ fn assert_candidate_compaction_rewrites_sparse_generation(rewritten: u64) {
     let base = RelationalRowPageRootReader::open_latest(&directory, config)
         .unwrap()
         .unwrap();
-    let task = skein_core::RuntimeTaskContext::default();
+    let task = hawdb_core::RuntimeTaskContext::default();
     let report = publisher
         .persist_generation_compacting(
             RelationalRowPageGenerationRequest {
@@ -639,7 +639,7 @@ fn candidate_compaction_fails_closed_on_limits_cancellation_and_corruption() {
         max_live_ratio_percent: 100,
         ..RelationalRowPageRewriteConfig::default()
     };
-    let task = skein_core::RuntimeTaskContext::default();
+    let task = hawdb_core::RuntimeTaskContext::default();
     for limit in [
         RelationalRowPageRewriteConfig {
             max_live_ratio_percent: 0,
@@ -684,7 +684,7 @@ fn candidate_compaction_fails_closed_on_limits_cancellation_and_corruption() {
     artifact.sync_all().unwrap();
     drop(artifact);
     assert!(
-        matches!(publisher.persist_generation_compacting(request, Vec::new(), rewrite, &skein_core::RuntimeTaskContext::default()),
+        matches!(publisher.persist_generation_compacting(request, Vec::new(), rewrite, &hawdb_core::RuntimeTaskContext::default()),
         Err(RelationalRowPagePublicationError::Corrupt(message)) if message.contains("checksum"))
     );
     assert!(!directory
@@ -725,7 +725,7 @@ fn occupancy_validation_rejects_authenticated_invalid_counts() {
             let live_offset = end - manifest::OCCUPANCY_TRAILER_BYTES - 8;
             encoded[live_offset..live_offset + 8].copy_from_slice(&0u64.to_le_bytes());
         }
-        let mut hasher = skein_integrity::IntegrityHasher::new();
+        let mut hasher = hawdb_integrity::IntegrityHasher::new();
         hasher.update(&encoded[..280]);
         hasher.update(&encoded[manifest::MANIFEST_HEADER_BYTES..]);
         let digest = hasher.finish();
@@ -1566,7 +1566,7 @@ fn schema_digest() -> Sha256Digest {
 
 fn unique_test_dir(label: &str) -> PathBuf {
     std::env::temp_dir().join(format!(
-        "skein-row-page-publication-{label}-{}-{}",
+        "hawdb-row-page-publication-{label}-{}-{}",
         std::process::id(),
         TEST_SEQUENCE.fetch_add(1, Ordering::Relaxed)
     ))

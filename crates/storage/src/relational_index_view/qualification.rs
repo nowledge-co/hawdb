@@ -5,7 +5,7 @@ use crate::{RelationalIndexReadLimits, RelationalKey};
 use std::num::NonZeroUsize;
 
 pub const RELATIONAL_INDEX_VIEW_QUALIFICATION_PROTOCOL: &str =
-    "skein-relational-index-view-qualification-v1";
+    "hawdb-relational-index-view-qualification-v1";
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
 pub enum RelationalIndexQualificationProbeKind {

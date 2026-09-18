@@ -2,14 +2,14 @@ use super::*;
 
 #[test]
 fn compatibility_facade_preserves_types_and_query_output() {
-    let fixture: skein_compat::CompatibilityFixture = crate::nowledge_memory_core_fixture();
+    let fixture: hawdb_compat::CompatibilityFixture = crate::nowledge_memory_core_fixture();
     let _: crate::CompatibilityFixture = fixture;
-    let inventory: skein_compat::CompatibilityQueryInventory =
+    let inventory: hawdb_compat::CompatibilityQueryInventory =
         crate::nowledge_memory_core_inventory();
     let _: crate::CompatibilityQueryInventory = inventory;
     let _: fn(&mut Database, &CompatibilityFixture) -> Result<CompatibilityReport> =
         crate::run_compatibility_fixture;
-    let output: skein_executor::QueryOutput =
+    let output: hawdb_executor::QueryOutput =
         crate::QueryOutput::from_rows(vec![BTreeMap::from([("value".to_string(), Value::Int(7))])]);
     let facade: crate::QueryOutput = output.clone();
     assert_eq!(facade, output);

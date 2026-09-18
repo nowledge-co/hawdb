@@ -8,24 +8,24 @@ test_suite(
 )
 
 rust_library(
-    name = "skein_optimizer",
-    crate_name = "skein_optimizer",
+    name = "hawdb_optimizer",
+    crate_name = "hawdb_optimizer",
     crate_root = "src/lib.rs",
     srcs = glob(["src/**/*.rs"]),
     edition = "2024",
     aliases = aliases(),
     deps = all_crate_deps(normal = True) + [
-        "//crates/core:skein_core",
-        "//crates/cypher:skein_cypher",
-        "//crates/expression:skein_expression",
-        "//crates/plan:skein_plan",
+        "//crates/core:hawdb_core",
+        "//crates/cypher:hawdb_cypher",
+        "//crates/expression:hawdb_expression",
+        "//crates/plan:hawdb_plan",
     ],
     proc_macro_deps = all_crate_deps(proc_macro = True),
 )
 
 rust_test(
-    name = "skein_optimizer_tests",
-    crate = ":skein_optimizer",
+    name = "hawdb_optimizer_tests",
+    crate = ":hawdb_optimizer",
     edition = "2024",
     aliases = aliases(normal_dev = True, proc_macro_dev = True),
     deps = all_crate_deps(normal_dev = True),
@@ -43,16 +43,16 @@ rust_test(
     edition = "2024",
     aliases = aliases(normal_dev = True, proc_macro_dev = True),
     deps = all_crate_deps(normal_dev = True) + [
-        ":skein_optimizer",
-        "//crates/cypher:skein_cypher",
-        "//crates/plan:skein_plan",
+        ":hawdb_optimizer",
+        "//crates/cypher:hawdb_cypher",
+        "//crates/plan:hawdb_plan",
     ],
     proc_macro_deps = all_crate_deps(proc_macro_dev = True),
 )
 
 # Private production costing, exercised only by an explicitly selected campaign.
 rust_test(
-    name = "skein_optimizer_cardinality_metadata_fuzz_tests",
+    name = "hawdb_optimizer_cardinality_metadata_fuzz_tests",
     tags = ["manual"],
     args = [
         "graph::cardinality::bindings::tests::cardinality_metadata_differential_campaign",
@@ -60,7 +60,7 @@ rust_test(
         "--ignored",
         "--nocapture",
     ],
-    crate = ":skein_optimizer",
+    crate = ":hawdb_optimizer",
     edition = "2024",
     aliases = aliases(normal_dev = True, proc_macro_dev = True),
     deps = all_crate_deps(normal_dev = True),
@@ -68,7 +68,7 @@ rust_test(
 )
 
 rust_test(
-    name = "skein_optimizer_cardinality_defaults_fuzz_tests",
+    name = "hawdb_optimizer_cardinality_defaults_fuzz_tests",
     tags = ["manual"],
     args = [
         "graph::tests::cardinality_defaults::cardinality_defaults_differential_campaign",
@@ -76,7 +76,7 @@ rust_test(
         "--ignored",
         "--nocapture",
     ],
-    crate = ":skein_optimizer",
+    crate = ":hawdb_optimizer",
     edition = "2024",
     aliases = aliases(normal_dev = True, proc_macro_dev = True),
     deps = all_crate_deps(normal_dev = True),
@@ -84,7 +84,7 @@ rust_test(
 )
 
 rust_test(
-    name = "skein_optimizer_candidate_fingerprint_fuzz_tests",
+    name = "hawdb_optimizer_candidate_fingerprint_fuzz_tests",
     tags = ["manual"],
     args = [
         "graph::access_path::candidates::tests::candidate_fingerprint_differential_campaign",
@@ -92,7 +92,7 @@ rust_test(
         "--ignored",
         "--nocapture",
     ],
-    crate = ":skein_optimizer",
+    crate = ":hawdb_optimizer",
     edition = "2024",
     aliases = aliases(normal_dev = True, proc_macro_dev = True),
     deps = all_crate_deps(normal_dev = True),
@@ -100,7 +100,7 @@ rust_test(
 )
 
 rust_test(
-    name = "skein_optimizer_trace_cost_fuzz_tests",
+    name = "hawdb_optimizer_trace_cost_fuzz_tests",
     tags = ["manual"],
     args = [
         "graph::selected_trace::differential::selected_trace_cost_differential_campaign",
@@ -108,7 +108,7 @@ rust_test(
         "--ignored",
         "--nocapture",
     ],
-    crate = ":skein_optimizer",
+    crate = ":hawdb_optimizer",
     edition = "2024",
     aliases = aliases(normal_dev = True, proc_macro_dev = True),
     deps = all_crate_deps(normal_dev = True),
@@ -116,7 +116,7 @@ rust_test(
 )
 
 rust_test(
-    name = "skein_optimizer_full_text_cost_fuzz_tests",
+    name = "hawdb_optimizer_full_text_cost_fuzz_tests",
     tags = ["manual"],
     args = [
         "graph::tests::fulltext_costing::full_text_cost_differential_campaign",
@@ -124,7 +124,7 @@ rust_test(
         "--ignored",
         "--nocapture",
     ],
-    crate = ":skein_optimizer",
+    crate = ":hawdb_optimizer",
     edition = "2024",
     aliases = aliases(normal_dev = True, proc_macro_dev = True),
     deps = all_crate_deps(normal_dev = True),
@@ -132,7 +132,7 @@ rust_test(
 )
 
 rust_test(
-    name = "skein_optimizer_ddl_command_fuzz_tests",
+    name = "hawdb_optimizer_ddl_command_fuzz_tests",
     tags = ["manual"],
     args = [
         "graph::tests::ddl::ddl_command_pipeline_campaign",
@@ -140,7 +140,7 @@ rust_test(
         "--ignored",
         "--nocapture",
     ],
-    crate = ":skein_optimizer",
+    crate = ":hawdb_optimizer",
     edition = "2024",
     aliases = aliases(normal_dev = True, proc_macro_dev = True),
     deps = all_crate_deps(normal_dev = True),
@@ -148,7 +148,7 @@ rust_test(
 )
 
 rust_test(
-    name = "skein_optimizer_access_cost_fuzz_tests",
+    name = "hawdb_optimizer_access_cost_fuzz_tests",
     tags = ["manual"],
     args = [
         "relational::cost_tests::access_cost_differential_campaign",
@@ -156,7 +156,7 @@ rust_test(
         "--ignored",
         "--nocapture",
     ],
-    crate = ":skein_optimizer",
+    crate = ":hawdb_optimizer",
     edition = "2024",
     aliases = aliases(normal_dev = True, proc_macro_dev = True),
     deps = all_crate_deps(normal_dev = True),

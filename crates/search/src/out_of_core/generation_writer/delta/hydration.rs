@@ -8,11 +8,11 @@ use crate::build_memory::{
 use crate::out_of_core::hydration::{CheckedReader, RangeReader};
 use crate::out_of_core::search_document_bytes;
 use crate::{
-    parse_snapshot_header, Result, SearchOutOfCoreMetrics, SearchOutOfCoreReader,
-    SearchSegmentDescriptorEntry, SkeinError,
+    parse_snapshot_header, HawdbError, Result, SearchOutOfCoreMetrics, SearchOutOfCoreReader,
+    SearchSegmentDescriptorEntry,
 };
-use skein_core::RuntimeTaskContext;
-use skein_executor::QueryMemoryLease;
+use hawdb_core::RuntimeTaskContext;
+use hawdb_executor::QueryMemoryLease;
 use std::io::{self, BufRead, BufReader, Read};
 
 const INPUT_BYTES: usize = 8192;
@@ -200,7 +200,7 @@ fn read_documents(
             Some(bytes) => bytes.strip_suffix(b"\r").unwrap_or(bytes),
             None => &line.bytes,
         };
-        if bytes.is_empty() || bytes == b"SKEIN_SEARCH_SEGMENT_V1" {
+        if bytes.is_empty() || bytes == b"HAWDB_SEARCH_SEGMENT_V1" {
             continue;
         }
         std::str::from_utf8(bytes).map_err(|_| invalid("document line is not UTF-8"))?;
@@ -297,8 +297,8 @@ impl<R: Read> Read for Controlled<'_, R> {
     }
 }
 
-fn invalid(reason: impl std::fmt::Display) -> SkeinError {
-    SkeinError::Storage(format!("search hydration {reason}"))
+fn invalid(reason: impl std::fmt::Display) -> HawdbError {
+    HawdbError::Storage(format!("search hydration {reason}"))
 }
 
 #[cfg(test)]

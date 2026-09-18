@@ -1,5 +1,5 @@
 use super::*;
-use crate::error::SkeinError;
+use crate::error::HawdbError;
 use crate::{
     ProjectionGenerationBatchLimits, ProjectionGenerationBegin, ProjectionGenerationDigestBuilder,
     ProjectionGenerationIdentity, ProjectionGenerationMember, ProjectionGenerationReadLimits,
@@ -335,7 +335,7 @@ fn projection_relational_reads_pin_one_published_generation_for_postgres_sql() {
     .expect("valid mismatched binding");
     assert!(matches!(
         database.begin_projection_read_transaction(version_mismatch),
-        Err(SkeinError::StorageIntegrity(_))
+        Err(HawdbError::StorageIntegrity(_))
     ));
 
     let parameters = [
@@ -362,7 +362,7 @@ fn projection_relational_reads_pin_one_published_generation_for_postgres_sql() {
             },
         )
         .expect_err("projection payload exhaustion must fail the whole statement");
-    assert!(matches!(budget_error, SkeinError::Execution(_)));
+    assert!(matches!(budget_error, HawdbError::Execution(_)));
 
     let profiled = pinned_generation_two
         .query_sql_with_params_options_profiled(QUERY, &parameters, QueryStreamOptions::default())
@@ -462,7 +462,7 @@ fn projection_relational_reads_pin_one_published_generation_for_postgres_sql() {
     let row_budget_error = constrained_reader
         .query_sql("SELECT COUNT(*) AS count FROM community_entities")
         .expect_err("projection scan row exhaustion must fail the whole statement");
-    assert!(matches!(row_budget_error, SkeinError::Execution(_)));
+    assert!(matches!(row_budget_error, HawdbError::Execution(_)));
     drop(constrained_reader);
     drop(constrained);
 
@@ -481,7 +481,7 @@ fn projection_relational_reads_pin_one_published_generation_for_postgres_sql() {
         .expect_err("bound projection tables must reject canonical rows");
     assert!(matches!(
         mixed_source_error,
-        SkeinError::StorageIntegrity(message) if message.contains("canonical rows")
+        HawdbError::StorageIntegrity(message) if message.contains("canonical rows")
     ));
     drop(mixed_source);
     std::fs::remove_dir_all(path).expect("remove relational projection fixture");

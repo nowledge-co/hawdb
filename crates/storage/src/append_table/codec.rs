@@ -10,7 +10,7 @@ use crate::relational::{
 use crate::{
     RelationalTableSchema, DEFAULT_MAX_WAL_BATCH_OPERATIONS, DEFAULT_MAX_WAL_RECORD_BYTES,
 };
-use skein_integrity::{integrity_digest, SHA256_BYTES};
+use hawdb_integrity::{integrity_digest, SHA256_BYTES};
 
 const APPEND_WAL_MAGIC: &[u8; 8] = b"SKAPWAL1";
 const APPEND_CODEC_VERSION: u16 = 2;

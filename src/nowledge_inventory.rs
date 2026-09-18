@@ -14,18 +14,18 @@ use crate::qos::{LocalQosPolicy, LocalQosState};
 use crate::search::SearchIndex;
 use std::path::Path;
 
-pub use skein_evidence::query_inventory::{
+pub use hawdb_evidence::query_inventory::{
     scan_nowledge_query_inventory, scan_nowledge_query_inventory_to_json,
     scan_nowledge_query_inventory_with_options, NowledgeInventoryScanOptions,
 };
 #[cfg(test)]
 const BACKGROUND_MAINTENANCE_ESTIMATED_BYTES_PER_OPERATION: u64 = 1024;
 
-pub use skein_nowledge_contracts::background_maintenance_summary_to_json;
+pub use hawdb_nowledge_contracts::background_maintenance_summary_to_json;
 
-pub use skein_compat::NowledgeCypherMigrationGateJsonOptions;
+pub use hawdb_compat::NowledgeCypherMigrationGateJsonOptions;
 
-pub use skein_evidence::inventory::{
+pub use hawdb_evidence::inventory::{
     background_maintenance_evidence_health, background_maintenance_evidence_health_from_bundle,
     replacement_readiness_family_evidence_health,
     replacement_readiness_family_evidence_health_from_bundle, storage_recovery_evidence_health,
@@ -37,7 +37,7 @@ pub use skein_evidence::inventory::{
 #[cfg(test)]
 mod facade_tests;
 
-pub use skein_compat::{
+pub use hawdb_compat::{
     scan_nowledge_query_inventory_cypher_coverage_detail_to_json,
     scan_nowledge_query_inventory_cypher_coverage_to_json,
 };
@@ -73,7 +73,7 @@ pub fn scan_nowledge_query_inventory_cypher_migration_gate_with_options_to_json(
     );
     let mut json = compatibility_migration_gate_bundle_to_json(&bundle);
     if let Some(background_maintenance) = options.background_maintenance.as_ref() {
-        skein_compat::nowledge_inventory::migration_gate_json_object(&mut json)?.insert(
+        hawdb_compat::nowledge_inventory::migration_gate_json_object(&mut json)?.insert(
             "background_maintenance".to_string(),
             background_maintenance.clone(),
         );
@@ -81,12 +81,12 @@ pub fn scan_nowledge_query_inventory_cypher_migration_gate_with_options_to_json(
         insert_background_maintenance_summary_json(&mut json, &primary)?;
     }
     if let Some(replacement_readiness) = options.replacement_readiness_by_query_family.as_ref() {
-        skein_compat::nowledge_inventory::migration_gate_json_object(&mut json)?.insert(
+        hawdb_compat::nowledge_inventory::migration_gate_json_object(&mut json)?.insert(
             "replacement_readiness_by_query_family".to_string(),
             replacement_readiness.clone(),
         );
     }
-    skein_compat::nowledge_inventory::augment_nowledge_cypher_migration_gate_json(
+    hawdb_compat::nowledge_inventory::augment_nowledge_cypher_migration_gate_json(
         &mut json,
         &shadow_engine_name,
         options,
@@ -117,7 +117,7 @@ fn insert_background_maintenance_summary_json(
         &LocalQosState::default(),
         Default::default(),
     );
-    skein_compat::nowledge_inventory::migration_gate_json_object(bundle)?.insert(
+    hawdb_compat::nowledge_inventory::migration_gate_json_object(bundle)?.insert(
         "background_maintenance".to_string(),
         background_maintenance_summary_to_json(&summary),
     );
@@ -535,7 +535,7 @@ mod tests {
     #[test]
     fn scanned_cypher_migration_gate_reports_ready_bundle() {
         let root = std::env::temp_dir().join(format!(
-            "skein-nowledge-migration-gate-{}",
+            "hawdb-nowledge-migration-gate-{}",
             SystemTime::now()
                 .duration_since(UNIX_EPOCH)
                 .unwrap()
@@ -701,7 +701,7 @@ mod tests {
     #[test]
     fn scanned_cypher_migration_gate_can_include_shadow_wiring_metadata() {
         let root = std::env::temp_dir().join(format!(
-            "skein-nowledge-migration-gate-metadata-{}",
+            "hawdb-nowledge-migration-gate-metadata-{}",
             SystemTime::now()
                 .duration_since(UNIX_EPOCH)
                 .unwrap()
@@ -753,8 +753,8 @@ mod tests {
                 include_cutover_evidence: true,
                 storage_recovery_required: true,
                 storage_recovery: Some(serde_json::json!({
-                    "protocol": "skein-storage-recovery-report",
-                    "storage_version": "skein-storage-v1",
+                    "protocol": "hawdb-storage-recovery-report",
+                    "storage_version": "hawdb-storage-v1",
                     "durable": true,
                     "checkpoint_epoch": 7,
                     "checkpoint_commit_epoch": 7,
@@ -774,7 +774,7 @@ mod tests {
                 })),
                 background_maintenance_required: true,
                 background_maintenance: Some(serde_json::json!({
-                    "protocol": "skein-background-maintenance-report",
+                    "protocol": "hawdb-background-maintenance-report",
                     "total_candidates": 1,
                     "admitted_count": 1,
                     "deferred_count": 0,
@@ -986,7 +986,7 @@ mod tests {
     #[test]
     fn scanned_cypher_migration_gate_requires_previous_wrapper_ready_engine_kind() {
         let root = std::env::temp_dir().join(format!(
-            "skein-nowledge-migration-gate-engine-kind-{}",
+            "hawdb-nowledge-migration-gate-engine-kind-{}",
             SystemTime::now()
                 .duration_since(UNIX_EPOCH)
                 .unwrap()
@@ -1044,7 +1044,7 @@ mod tests {
     #[test]
     fn scanned_cypher_migration_gate_requires_previous_wrapper_identity() {
         let root = std::env::temp_dir().join(format!(
-            "skein-nowledge-migration-gate-wrapper-identity-{}",
+            "hawdb-nowledge-migration-gate-wrapper-identity-{}",
             SystemTime::now()
                 .duration_since(UNIX_EPOCH)
                 .unwrap()
@@ -1102,7 +1102,7 @@ mod tests {
     #[test]
     fn scanned_cypher_migration_gate_can_use_caller_background_maintenance_report() {
         let root = std::env::temp_dir().join(format!(
-            "skein-nowledge-migration-gate-background-report-{}",
+            "hawdb-nowledge-migration-gate-background-report-{}",
             SystemTime::now()
                 .duration_since(UNIX_EPOCH)
                 .unwrap()
@@ -1139,7 +1139,7 @@ mod tests {
                 include_cutover_evidence: true,
                 background_maintenance_required: true,
                 background_maintenance: Some(serde_json::json!({
-                    "protocol": "skein-background-maintenance-report",
+                    "protocol": "hawdb-background-maintenance-report",
                     "total_candidates": 0,
                     "foreground_admission_probe_ready": true,
                     "foreground_admission_probe_admission": "admit",
@@ -1155,7 +1155,7 @@ mod tests {
 
         assert_eq!(
             bundle["background_maintenance"]["protocol"],
-            "skein-background-maintenance-report"
+            "hawdb-background-maintenance-report"
         );
         assert_eq!(bundle["background_maintenance"]["total_candidates"], 0);
         assert_eq!(bundle["cutover_evidence"]["eligible"], false);
@@ -1238,7 +1238,7 @@ mod tests {
     #[test]
     fn scanned_cypher_migration_gate_blocks_when_required_rollback_evidence_is_missing() {
         let root = std::env::temp_dir().join(format!(
-            "skein-nowledge-migration-gate-rollback-{}",
+            "hawdb-nowledge-migration-gate-rollback-{}",
             SystemTime::now()
                 .duration_since(UNIX_EPOCH)
                 .unwrap()
@@ -1287,7 +1287,7 @@ mod tests {
     #[test]
     fn scanned_cypher_migration_gate_blocks_when_required_storage_recovery_is_missing() {
         let root = std::env::temp_dir().join(format!(
-            "skein-nowledge-migration-gate-storage-recovery-{}",
+            "hawdb-nowledge-migration-gate-storage-recovery-{}",
             SystemTime::now()
                 .duration_since(UNIX_EPOCH)
                 .unwrap()
@@ -1432,7 +1432,7 @@ mod tests {
     #[test]
     fn scanned_inventory_skips_cfg_test_module_literals() {
         let root = std::env::temp_dir().join(format!(
-            "skein-nowledge-inventory-cfg-test-{}",
+            "hawdb-nowledge-inventory-cfg-test-{}",
             SystemTime::now()
                 .duration_since(UNIX_EPOCH)
                 .unwrap()

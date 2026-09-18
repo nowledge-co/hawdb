@@ -17,7 +17,7 @@ pub use cancellation::{
     RuntimeMemoryReservation, RuntimeTaskContext,
 };
 pub use capability::{RuntimeCapabilities, RuntimeCapability};
-pub use error::{Result, SkeinError};
+pub use error::{HawdbError, Result};
 pub use graph::RelationshipDirection;
 pub use graph_rag::{
     build_graph_rag_schema_context, GraphRagCommonPathSummary, GraphRagGeneratedQuery,

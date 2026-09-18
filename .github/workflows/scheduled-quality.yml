@@ -60,7 +60,7 @@ jobs:
           ASAN_OPTIONS: detect_leaks=1:halt_on_error=1
           RUSTFLAGS: -Zsanitizer=address
         run: >-
-          cargo +nightly test -p skein-vector-projection
+          cargo +nightly test -p hawdb-vector-projection
           -Zbuild-std
           --target x86_64-unknown-linux-gnu
           kernel::tests
@@ -71,8 +71,8 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 90
     env:
-      SKEIN_SOAK_NODE_COUNT: ${{ inputs.soak_node_count || '4096' }}
-      SKEIN_SOAK_PAYLOAD_BYTES: ${{ inputs.soak_payload_bytes || '4096' }}
+      HAWDB_SOAK_NODE_COUNT: ${{ inputs.soak_node_count || '4096' }}
+      HAWDB_SOAK_PAYLOAD_BYTES: ${{ inputs.soak_payload_bytes || '4096' }}
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -89,19 +89,19 @@ jobs:
           mkdir -p artifacts/soak
           database_root="$(mktemp -d)"
           soak_status=0
-          if ! cargo run --release -p skein-qualification --bin skein-soak --quiet -- \
+          if ! cargo run --release -p hawdb-qualification --bin hawdb-soak --quiet -- \
             --path "$database_root/database" \
             --revision "$GITHUB_SHA" \
             --dataset-id "scheduled-synthetic-v1" \
-            --node-count "$SKEIN_SOAK_NODE_COUNT" \
-            --payload-bytes "$SKEIN_SOAK_PAYLOAD_BYTES" \
+            --node-count "$HAWDB_SOAK_NODE_COUNT" \
+            --payload-bytes "$HAWDB_SOAK_PAYLOAD_BYTES" \
             > artifacts/soak/report.json \
             2> artifacts/soak/run.log; then
             soak_status=1
           fi
           if ! jq -e \
             --arg revision "$GITHUB_SHA" \
-            '.protocol == "skein-mixed-runtime-soak-v1" and
+            '.protocol == "hawdb-mixed-runtime-soak-v1" and
              .evidence_kind == "synthetic_scheduled_soak" and
              .fixture_setup_path == "controlled_raw_fixture" and
              .production_eligible == false and
@@ -163,7 +163,7 @@ jobs:
             artifacts/async-segment-io/run.log \
             | tail -n 1 > artifacts/async-segment-io/report.json
           jq -e '
-            .protocol == "skein-storage-async-segment-read-spike-v1" and
+            .protocol == "hawdb-storage-async-segment-read-spike-v1" and
             .production_eligible == false and
             .fixture_bytes >= 536870912 and
             .range_bytes == 4096 and

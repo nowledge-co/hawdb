@@ -220,7 +220,7 @@ impl FileProjection {
 
         // SAFETY: the artifact is published via atomic rename and never mutated in
         // place after that point, so external truncation/mutation racing this map is
-        // not part of Skein's supported artifact lifecycle.
+        // not part of Hawdb's supported artifact lifecycle.
         let mmap = Arc::new(unsafe { Mmap::map(&file)? });
 
         verify_projection_payload(&mmap, &manifest)?;
@@ -512,7 +512,7 @@ mod tests {
     fn generation_artifact_round_trips_and_validates_checksums() {
         let root = unique_test_dir("roundtrip");
         fs::create_dir_all(&root).unwrap();
-        let artifact = root.join("search_rabitq.1.skein");
+        let artifact = root.join("search_rabitq.1.hawdb");
         let config = ProjectionBuildConfig::new(8, ProjectionIdentity::new(1)).with_segment_rows(2);
         let mut writer = ProjectionWriter::create(&artifact, config).unwrap();
         writer
@@ -550,7 +550,7 @@ mod tests {
     fn corrupted_segment_fails_closed() {
         let root = unique_test_dir("corruption");
         fs::create_dir_all(&root).unwrap();
-        let artifact = root.join("search_rabitq.1.skein");
+        let artifact = root.join("search_rabitq.1.hawdb");
         let config = ProjectionBuildConfig::new(8, ProjectionIdentity::new(1));
         let mut writer = ProjectionWriter::create(&artifact, config).unwrap();
         writer.push(10, &[1.0; 8]).unwrap();
@@ -569,7 +569,7 @@ mod tests {
     fn repeated_segment_reads_skip_crc_but_explicit_verify_detects_mutation() {
         let root = unique_test_dir("steady-state-checksum");
         fs::create_dir_all(&root).unwrap();
-        let artifact = root.join("search_rabitq.1.skein");
+        let artifact = root.join("search_rabitq.1.hawdb");
         let config = ProjectionBuildConfig::new(8, ProjectionIdentity::new(1));
         let mut writer = ProjectionWriter::create(&artifact, config).unwrap();
         writer.push(10, &[1.0; 8]).unwrap();
@@ -598,7 +598,7 @@ mod tests {
     fn one_bit_generation_uses_one_bit_code_payloads() {
         let root = unique_test_dir("one-bit");
         fs::create_dir_all(&root).unwrap();
-        let artifact = root.join("search_rabitq.1.skein");
+        let artifact = root.join("search_rabitq.1.hawdb");
         let config = ProjectionBuildConfig::new(9, ProjectionIdentity::new(1))
             .with_bit_width(RaBitQBitWidth::One)
             .with_segment_rows(2);
@@ -630,7 +630,7 @@ mod tests {
             .unwrap()
             .as_nanos();
         std::env::temp_dir().join(format!(
-            "skein_vector_projection_{name}_{}_{nanos}",
+            "hawdb_vector_projection_{name}_{}_{nanos}",
             std::process::id()
         ))
     }

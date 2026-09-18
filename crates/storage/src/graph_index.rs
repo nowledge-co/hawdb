@@ -1,7 +1,7 @@
 //! Shared graph property-index map aliases.
 
 use crate::{CowSegment, CowSegmentedMap, NodeId, RelId};
-use skein_core::{LabelId, RelTypeId, Value};
+use hawdb_core::{LabelId, RelTypeId, Value};
 use std::collections::BTreeSet;
 
 pub type CompositePropertyKey = Vec<(String, Value)>;

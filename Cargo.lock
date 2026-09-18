@@ -312,6 +312,429 @@ dependencies = [
 ]
 
 [[package]]
+name = "hawdb"
+version = "0.1.0"
+dependencies = [
+ "chrono",
+ "getrandom",
+ "hawdb-analytics",
+ "hawdb-artifact",
+ "hawdb-bootstrap",
+ "hawdb-compat",
+ "hawdb-core",
+ "hawdb-cypher",
+ "hawdb-ddl",
+ "hawdb-evidence",
+ "hawdb-executor",
+ "hawdb-explain",
+ "hawdb-expression",
+ "hawdb-fuzz-contracts",
+ "hawdb-integrity",
+ "hawdb-nowledge-contracts",
+ "hawdb-optimizer",
+ "hawdb-plan",
+ "hawdb-plan-cache",
+ "hawdb-qos",
+ "hawdb-query",
+ "hawdb-query-policy",
+ "hawdb-readiness",
+ "hawdb-relational",
+ "hawdb-resource-profile",
+ "hawdb-route-ownership",
+ "hawdb-runtime-tokio",
+ "hawdb-search",
+ "hawdb-sql",
+ "hawdb-storage",
+ "hawdb-system-sql",
+ "hawdb-telemetry",
+ "hawdb-vector-projection",
+ "libc",
+ "serde",
+ "serde_json",
+ "unicode-width",
+ "zstd",
+]
+
+[[package]]
+name = "hawdb-analytics"
+version = "0.1.0"
+dependencies = [
+ "hawdb-core",
+ "hawdb-storage",
+]
+
+[[package]]
+name = "hawdb-artifact"
+version = "0.1.0"
+dependencies = [
+ "hawdb-core",
+ "hawdb-executor",
+ "hawdb-qos",
+]
+
+[[package]]
+name = "hawdb-bootstrap"
+version = "0.1.0"
+dependencies = [
+ "hawdb-core",
+ "hawdb-integrity",
+ "hawdb-search",
+ "hawdb-storage",
+ "serde_json",
+]
+
+[[package]]
+name = "hawdb-cgroup"
+version = "0.1.0"
+
+[[package]]
+name = "hawdb-compat"
+version = "0.1.0"
+dependencies = [
+ "hawdb-analytics",
+ "hawdb-core",
+ "hawdb-evidence",
+ "hawdb-executor",
+ "hawdb-storage",
+ "serde",
+ "serde_json",
+]
+
+[[package]]
+name = "hawdb-core"
+version = "0.1.0"
+dependencies = [
+ "getrandom",
+ "regex",
+ "uuid",
+]
+
+[[package]]
+name = "hawdb-cypher"
+version = "0.1.0"
+dependencies = [
+ "hawdb-core",
+ "hawdb-ddl",
+ "serde_json",
+]
+
+[[package]]
+name = "hawdb-ddl"
+version = "0.1.0"
+dependencies = [
+ "hawdb-core",
+]
+
+[[package]]
+name = "hawdb-evidence"
+version = "0.1.0"
+dependencies = [
+ "hawdb-core",
+ "hawdb-integrity",
+ "serde",
+ "serde_json",
+]
+
+[[package]]
+name = "hawdb-executor"
+version = "0.1.0"
+dependencies = [
+ "fs2",
+ "hawdb-analytics",
+ "hawdb-core",
+ "hawdb-ddl",
+ "hawdb-plan",
+ "hawdb-qos",
+ "hawdb-storage",
+ "rayon",
+]
+
+[[package]]
+name = "hawdb-explain"
+version = "0.1.0"
+dependencies = [
+ "hawdb-core",
+ "hawdb-executor",
+ "hawdb-optimizer",
+ "hawdb-plan",
+ "hawdb-plan-cache",
+ "hawdb-qos",
+ "hawdb-storage",
+ "unicode-width",
+]
+
+[[package]]
+name = "hawdb-expression"
+version = "0.1.0"
+dependencies = [
+ "hawdb-core",
+]
+
+[[package]]
+name = "hawdb-fuzz"
+version = "0.1.0"
+dependencies = [
+ "hawdb",
+ "hawdb-fuzz-contracts",
+ "serde_json",
+]
+
+[[package]]
+name = "hawdb-fuzz-contracts"
+version = "0.1.0"
+dependencies = [
+ "hawdb-core",
+ "serde_json",
+]
+
+[[package]]
+name = "hawdb-integrity"
+version = "0.1.0"
+dependencies = [
+ "crc32c",
+ "sha2",
+]
+
+[[package]]
+name = "hawdb-nowledge-contracts"
+version = "0.1.0"
+dependencies = [
+ "hawdb-core",
+ "hawdb-qos",
+ "hawdb-search",
+ "hawdb-storage",
+ "serde",
+ "serde_json",
+]
+
+[[package]]
+name = "hawdb-optimizer"
+version = "0.1.0"
+dependencies = [
+ "hawdb-core",
+ "hawdb-cypher",
+ "hawdb-expression",
+ "hawdb-plan",
+ "serde_json",
+]
+
+[[package]]
+name = "hawdb-plan"
+version = "0.1.0"
+dependencies = [
+ "hawdb-core",
+ "hawdb-cypher",
+ "hawdb-ddl",
+ "hawdb-expression",
+ "serde_json",
+]
+
+[[package]]
+name = "hawdb-plan-cache"
+version = "0.1.0"
+dependencies = [
+ "hawdb-core",
+ "hawdb-cypher",
+ "hawdb-optimizer",
+ "hawdb-plan",
+ "loom",
+]
+
+[[package]]
+name = "hawdb-qos"
+version = "0.1.0"
+dependencies = [
+ "hawdb-cgroup",
+ "hawdb-core",
+ "libc",
+ "loom",
+ "sysinfo",
+ "windows-sys",
+]
+
+[[package]]
+name = "hawdb-qualification"
+version = "0.1.0"
+dependencies = [
+ "hawdb",
+ "hawdb-query",
+ "serde",
+ "serde_json",
+ "sha2",
+ "tokio",
+]
+
+[[package]]
+name = "hawdb-query"
+version = "0.1.0"
+dependencies = [
+ "sha2",
+]
+
+[[package]]
+name = "hawdb-query-policy"
+version = "0.1.0"
+dependencies = [
+ "hawdb-core",
+ "hawdb-cypher",
+ "hawdb-optimizer",
+ "hawdb-qos",
+]
+
+[[package]]
+name = "hawdb-readiness"
+version = "0.1.0"
+dependencies = [
+ "hawdb-core",
+ "hawdb-cypher",
+ "hawdb-evidence",
+ "hawdb-executor",
+ "hawdb-nowledge-contracts",
+ "hawdb-plan-cache",
+ "hawdb-route-ownership",
+ "hawdb-search",
+ "hawdb-storage",
+ "hawdb-system-sql",
+ "serde",
+ "serde_json",
+]
+
+[[package]]
+name = "hawdb-relational"
+version = "0.1.0"
+dependencies = [
+ "hawdb-core",
+ "hawdb-executor",
+ "hawdb-expression",
+ "hawdb-integrity",
+ "hawdb-optimizer",
+ "hawdb-plan",
+ "hawdb-sql",
+ "hawdb-storage",
+]
+
+[[package]]
+name = "hawdb-resource-profile"
+version = "0.1.0"
+dependencies = [
+ "hawdb-core",
+ "hawdb-evidence",
+ "hawdb-executor",
+ "hawdb-storage",
+ "serde_json",
+]
+
+[[package]]
+name = "hawdb-route-ownership"
+version = "0.1.0"
+dependencies = [
+ "serde_json",
+]
+
+[[package]]
+name = "hawdb-runtime-tokio"
+version = "0.1.0"
+dependencies = [
+ "hawdb-core",
+ "hawdb-qos",
+ "hawdb-storage",
+ "tokio",
+]
+
+[[package]]
+name = "hawdb-search"
+version = "0.1.0"
+dependencies = [
+ "chrono",
+ "hawdb-core",
+ "hawdb-evidence",
+ "hawdb-executor",
+ "hawdb-integrity",
+ "hawdb-optimizer",
+ "hawdb-plan",
+ "hawdb-qos",
+ "hawdb-storage",
+ "hawdb-telemetry",
+ "hawdb-vector-projection",
+ "jieba-rs",
+ "regex",
+ "regex-automata",
+ "regex-syntax",
+ "serde",
+ "serde_json",
+ "simsimd",
+ "zstd",
+]
+
+[[package]]
+name = "hawdb-sql"
+version = "0.1.0"
+dependencies = [
+ "caseless",
+ "hawdb-core",
+ "hawdb-expression",
+ "hawdb-plan",
+ "hawdb-plan-cache",
+ "hawdb-sql-syntax",
+ "serde",
+ "serde_json",
+ "sha2",
+ "sqlparser",
+]
+
+[[package]]
+name = "hawdb-sql-syntax"
+version = "0.1.0"
+
+[[package]]
+name = "hawdb-storage"
+version = "0.1.0"
+dependencies = [
+ "chrono",
+ "fs2",
+ "hawdb-core",
+ "hawdb-integrity",
+ "rayon",
+ "roaring",
+ "serde",
+ "serde_json",
+ "zstd",
+]
+
+[[package]]
+name = "hawdb-system-sql"
+version = "0.1.0"
+dependencies = [
+ "hawdb-core",
+ "hawdb-executor",
+ "hawdb-plan-cache",
+ "hawdb-query",
+ "hawdb-sql",
+ "hawdb-storage",
+ "loom",
+ "serde_json",
+]
+
+[[package]]
+name = "hawdb-telemetry"
+version = "0.1.0"
+dependencies = [
+ "hawdb-qos",
+ "opentelemetry",
+]
+
+[[package]]
+name = "hawdb-vector-projection"
+version = "0.1.0"
+dependencies = [
+ "crc32fast",
+ "hawdb-core",
+ "memmap2",
+ "serde",
+ "serde_json",
+]
+
+[[package]]
 name = "include-flate"
 version = "0.3.4"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -871,429 +1294,6 @@ name = "siphasher"
 version = "1.0.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "8ee5873ec9cce0195efcb7a4e9507a04cd49aec9c83d0389df45b1ef7ba2e649"
-
-[[package]]
-name = "skein"
-version = "0.1.0"
-dependencies = [
- "chrono",
- "getrandom",
- "libc",
- "serde",
- "serde_json",
- "skein-analytics",
- "skein-artifact",
- "skein-bootstrap",
- "skein-compat",
- "skein-core",
- "skein-cypher",
- "skein-ddl",
- "skein-evidence",
- "skein-executor",
- "skein-explain",
- "skein-expression",
- "skein-fuzz-contracts",
- "skein-integrity",
- "skein-nowledge-contracts",
- "skein-optimizer",
- "skein-plan",
- "skein-plan-cache",
- "skein-qos",
- "skein-query",
- "skein-query-policy",
- "skein-readiness",
- "skein-relational",
- "skein-resource-profile",
- "skein-route-ownership",
- "skein-runtime-tokio",
- "skein-search",
- "skein-sql",
- "skein-storage",
- "skein-system-sql",
- "skein-telemetry",
- "skein-vector-projection",
- "unicode-width",
- "zstd",
-]
-
-[[package]]
-name = "skein-analytics"
-version = "0.1.0"
-dependencies = [
- "skein-core",
- "skein-storage",
-]
-
-[[package]]
-name = "skein-artifact"
-version = "0.1.0"
-dependencies = [
- "skein-core",
- "skein-executor",
- "skein-qos",
-]
-
-[[package]]
-name = "skein-bootstrap"
-version = "0.1.0"
-dependencies = [
- "serde_json",
- "skein-core",
- "skein-integrity",
- "skein-search",
- "skein-storage",
-]
-
-[[package]]
-name = "skein-cgroup"
-version = "0.1.0"
-
-[[package]]
-name = "skein-compat"
-version = "0.1.0"
-dependencies = [
- "serde",
- "serde_json",
- "skein-analytics",
- "skein-core",
- "skein-evidence",
- "skein-executor",
- "skein-storage",
-]
-
-[[package]]
-name = "skein-core"
-version = "0.1.0"
-dependencies = [
- "getrandom",
- "regex",
- "uuid",
-]
-
-[[package]]
-name = "skein-cypher"
-version = "0.1.0"
-dependencies = [
- "serde_json",
- "skein-core",
- "skein-ddl",
-]
-
-[[package]]
-name = "skein-ddl"
-version = "0.1.0"
-dependencies = [
- "skein-core",
-]
-
-[[package]]
-name = "skein-evidence"
-version = "0.1.0"
-dependencies = [
- "serde",
- "serde_json",
- "skein-core",
- "skein-integrity",
-]
-
-[[package]]
-name = "skein-executor"
-version = "0.1.0"
-dependencies = [
- "fs2",
- "rayon",
- "skein-analytics",
- "skein-core",
- "skein-ddl",
- "skein-plan",
- "skein-qos",
- "skein-storage",
-]
-
-[[package]]
-name = "skein-explain"
-version = "0.1.0"
-dependencies = [
- "skein-core",
- "skein-executor",
- "skein-optimizer",
- "skein-plan",
- "skein-plan-cache",
- "skein-qos",
- "skein-storage",
- "unicode-width",
-]
-
-[[package]]
-name = "skein-expression"
-version = "0.1.0"
-dependencies = [
- "skein-core",
-]
-
-[[package]]
-name = "skein-fuzz"
-version = "0.1.0"
-dependencies = [
- "serde_json",
- "skein",
- "skein-fuzz-contracts",
-]
-
-[[package]]
-name = "skein-fuzz-contracts"
-version = "0.1.0"
-dependencies = [
- "serde_json",
- "skein-core",
-]
-
-[[package]]
-name = "skein-integrity"
-version = "0.1.0"
-dependencies = [
- "crc32c",
- "sha2",
-]
-
-[[package]]
-name = "skein-nowledge-contracts"
-version = "0.1.0"
-dependencies = [
- "serde",
- "serde_json",
- "skein-core",
- "skein-qos",
- "skein-search",
- "skein-storage",
-]
-
-[[package]]
-name = "skein-optimizer"
-version = "0.1.0"
-dependencies = [
- "serde_json",
- "skein-core",
- "skein-cypher",
- "skein-expression",
- "skein-plan",
-]
-
-[[package]]
-name = "skein-plan"
-version = "0.1.0"
-dependencies = [
- "serde_json",
- "skein-core",
- "skein-cypher",
- "skein-ddl",
- "skein-expression",
-]
-
-[[package]]
-name = "skein-plan-cache"
-version = "0.1.0"
-dependencies = [
- "loom",
- "skein-core",
- "skein-cypher",
- "skein-optimizer",
- "skein-plan",
-]
-
-[[package]]
-name = "skein-qos"
-version = "0.1.0"
-dependencies = [
- "libc",
- "loom",
- "skein-cgroup",
- "skein-core",
- "sysinfo",
- "windows-sys",
-]
-
-[[package]]
-name = "skein-qualification"
-version = "0.1.0"
-dependencies = [
- "serde",
- "serde_json",
- "sha2",
- "skein",
- "skein-query",
- "tokio",
-]
-
-[[package]]
-name = "skein-query"
-version = "0.1.0"
-dependencies = [
- "sha2",
-]
-
-[[package]]
-name = "skein-query-policy"
-version = "0.1.0"
-dependencies = [
- "skein-core",
- "skein-cypher",
- "skein-optimizer",
- "skein-qos",
-]
-
-[[package]]
-name = "skein-readiness"
-version = "0.1.0"
-dependencies = [
- "serde",
- "serde_json",
- "skein-core",
- "skein-cypher",
- "skein-evidence",
- "skein-executor",
- "skein-nowledge-contracts",
- "skein-plan-cache",
- "skein-route-ownership",
- "skein-search",
- "skein-storage",
- "skein-system-sql",
-]
-
-[[package]]
-name = "skein-relational"
-version = "0.1.0"
-dependencies = [
- "skein-core",
- "skein-executor",
- "skein-expression",
- "skein-integrity",
- "skein-optimizer",
- "skein-plan",
- "skein-sql",
- "skein-storage",
-]
-
-[[package]]
-name = "skein-resource-profile"
-version = "0.1.0"
-dependencies = [
- "serde_json",
- "skein-core",
- "skein-evidence",
- "skein-executor",
- "skein-storage",
-]
-
-[[package]]
-name = "skein-route-ownership"
-version = "0.1.0"
-dependencies = [
- "serde_json",
-]
-
-[[package]]
-name = "skein-runtime-tokio"
-version = "0.1.0"
-dependencies = [
- "skein-core",
- "skein-qos",
- "skein-storage",
- "tokio",
-]
-
-[[package]]
-name = "skein-search"
-version = "0.1.0"
-dependencies = [
- "chrono",
- "jieba-rs",
- "regex",
- "regex-automata",
- "regex-syntax",
- "serde",
- "serde_json",
- "simsimd",
- "skein-core",
- "skein-evidence",
- "skein-executor",
- "skein-integrity",
- "skein-optimizer",
- "skein-plan",
- "skein-qos",
- "skein-storage",
- "skein-telemetry",
- "skein-vector-projection",
- "zstd",
-]
-
-[[package]]
-name = "skein-sql"
-version = "0.1.0"
-dependencies = [
- "caseless",
- "serde",
- "serde_json",
- "sha2",
- "skein-core",
- "skein-expression",
- "skein-plan",
- "skein-plan-cache",
- "skein-sql-syntax",
- "sqlparser",
-]
-
-[[package]]
-name = "skein-sql-syntax"
-version = "0.1.0"
-
-[[package]]
-name = "skein-storage"
-version = "0.1.0"
-dependencies = [
- "chrono",
- "fs2",
- "rayon",
- "roaring",
- "serde",
- "serde_json",
- "skein-core",
- "skein-integrity",
- "zstd",
-]
-
-[[package]]
-name = "skein-system-sql"
-version = "0.1.0"
-dependencies = [
- "loom",
- "serde_json",
- "skein-core",
- "skein-executor",
- "skein-plan-cache",
- "skein-query",
- "skein-sql",
- "skein-storage",
-]
-
-[[package]]
-name = "skein-telemetry"
-version = "0.1.0"
-dependencies = [
- "opentelemetry",
- "skein-qos",
-]
-
-[[package]]
-name = "skein-vector-projection"
-version = "0.1.0"
-dependencies = [
- "crc32fast",
- "memmap2",
- "serde",
- "serde_json",
- "skein-core",
-]
 
 [[package]]
 name = "slab"

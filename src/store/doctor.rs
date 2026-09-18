@@ -2,13 +2,13 @@ use super::{
     file_checksum, sync_parent_dir, DurableManifest, WalCursorEvent, WalOpenOutcome,
     WalRecordCursor, MANIFEST_FILE,
 };
-use crate::error::{Result, SkeinError};
-use serde::{Deserialize, Serialize};
-use skein_integrity::IntegrityHasher;
-pub use skein_storage::{
+use crate::error::{HawdbError, Result};
+use hawdb_integrity::IntegrityHasher;
+pub use hawdb_storage::{
     DatabaseDirectoryLease, WalDoctorOptions, WalRepairAcknowledgement, WalTailRepairPlan,
     WalTailRepairReason, WalTailRepairReport, WAL_DOCTOR_REPAIR_PROTOCOL,
 };
+use serde::{Deserialize, Serialize};
 use std::fs::{self, File, OpenOptions};
 use std::io::{Read, Seek, SeekFrom};
 use std::path::{Path, PathBuf};
@@ -42,7 +42,7 @@ impl DatabaseDoctor {
         let path = path.as_ref();
         validate_existing_database_directory(path)?;
         let _lease = DatabaseDirectoryLease::acquire(path)
-            .map_err(|error| SkeinError::Storage(error.to_string()))?;
+            .map_err(|error| HawdbError::Storage(error.to_string()))?;
         inspect_wal_tail_locked(path, options)
     }
 
@@ -56,7 +56,7 @@ impl DatabaseDoctor {
         let path = path.as_ref();
         validate_existing_database_directory(path)?;
         let _lease = DatabaseDirectoryLease::acquire(path)
-            .map_err(|error| SkeinError::Storage(error.to_string()))?;
+            .map_err(|error| HawdbError::Storage(error.to_string()))?;
         apply_wal_tail_repair_locked(path, plan, options)
     }
 }
@@ -66,7 +66,7 @@ pub(super) fn reject_pending_wal_doctor_repair(path: &Path) -> Result<()> {
     if pending.is_empty() {
         return Ok(());
     }
-    Err(SkeinError::Storage(format!(
+    Err(HawdbError::Storage(format!(
         "database has {} interrupted WAL doctor repair record(s); finish the repair with DatabaseDoctor before opening the database",
         pending.len()
     )))
@@ -75,7 +75,7 @@ pub(super) fn reject_pending_wal_doctor_repair(path: &Path) -> Result<()> {
 // Callers hold the same directory lease used by explicit doctor operations.
 pub(super) fn resume_automatic_wal_tail_repair_locked(
     path: &Path,
-    config: skein_storage::WalReplayConfig,
+    config: hawdb_storage::WalReplayConfig,
 ) -> Result<Option<WalTailRepairReport>> {
     if pending_repair_records(path)?.is_empty() {
         return Ok(None);
@@ -85,7 +85,7 @@ pub(super) fn resume_automatic_wal_tail_repair_locked(
 
 pub(super) fn automatic_wal_tail_repair_locked(
     path: &Path,
-    config: skein_storage::WalReplayConfig,
+    config: hawdb_storage::WalReplayConfig,
 ) -> Result<WalTailRepairReport> {
     let options = WalDoctorOptions {
         max_wal_bytes: config.max_bytes,
@@ -97,7 +97,7 @@ pub(super) fn automatic_wal_tail_repair_locked(
         .max_bytes
         .is_some_and(|limit| plan.original_wal_len > limit)
     {
-        return Err(SkeinError::Storage(
+        return Err(HawdbError::Storage(
             "automatic WAL repair exceeds the configured replay byte limit".to_string(),
         ));
     }
@@ -108,19 +108,19 @@ pub(super) fn automatic_wal_tail_repair_locked(
             retained_bytes = retained_bytes
                 .checked_add(entry?.metadata()?.len())
                 .ok_or_else(|| {
-                    SkeinError::Storage("doctor quarantine size overflow".to_string())
+                    HawdbError::Storage("doctor quarantine size overflow".to_string())
                 })?;
         }
     }
     if !directory.join(quarantine_file_name(&plan)).exists() {
         retained_bytes = retained_bytes
             .checked_add(plan.original_wal_len)
-            .ok_or_else(|| SkeinError::Storage("doctor quarantine size overflow".to_string()))?;
+            .ok_or_else(|| HawdbError::Storage("doctor quarantine size overflow".to_string()))?;
     }
     // Automatic recovery must preserve prior audit evidence, even when the
     // quarantine budget is exhausted. Explicit doctor repair remains available.
     if retained_bytes > config.max_quarantine_bytes {
-        return Err(SkeinError::Storage(format!(
+        return Err(HawdbError::Storage(format!(
             "automatic WAL repair quarantine byte limit exceeded: required={retained_bytes}, max_wal_quarantine_bytes={}",
             config.max_quarantine_bytes
         )));
@@ -130,13 +130,13 @@ pub(super) fn automatic_wal_tail_repair_locked(
 
 fn validate_existing_database_directory(path: &Path) -> Result<()> {
     if !path.exists() {
-        return Err(SkeinError::Storage(format!(
+        return Err(HawdbError::Storage(format!(
             "database doctor path does not exist: {}",
             path.display()
         )));
     }
     if !path.is_dir() {
-        return Err(SkeinError::Storage(format!(
+        return Err(HawdbError::Storage(format!(
             "database doctor path is not a directory: {}",
             path.display()
         )));
@@ -149,7 +149,7 @@ fn validate_acknowledgement(
     acknowledgement: &WalRepairAcknowledgement,
 ) -> Result<()> {
     if !acknowledgement.accepts(plan) {
-        return Err(SkeinError::Storage(
+        return Err(HawdbError::Storage(
             "WAL doctor repair requires explicit acknowledgement of the exact plan and potential data loss"
                 .to_string(),
         ));
@@ -165,14 +165,14 @@ fn inspect_wal_tail_locked(path: &Path, options: WalDoctorOptions) -> Result<Wal
     let wal_path = manifest.wal_path(path);
     let wal_len = fs::metadata(&wal_path)
         .map_err(|error| {
-            SkeinError::Storage(format!(
+            HawdbError::Storage(format!(
                 "failed to inspect WAL generation {}: {error}",
                 manifest.wal_generation
             ))
         })?
         .len();
     if options.max_wal_bytes.is_some_and(|limit| wal_len > limit) {
-        return Err(SkeinError::Storage(format!(
+        return Err(HawdbError::Storage(format!(
             "WAL doctor byte limit exceeded: max_wal_bytes={}",
             options.max_wal_bytes.unwrap_or_default()
         )));
@@ -181,18 +181,18 @@ fn inspect_wal_tail_locked(path: &Path, options: WalDoctorOptions) -> Result<Wal
     let mut cursor = match WalRecordCursor::open(&wal_path, options.max_record_bytes)? {
         WalOpenOutcome::Cursor(cursor) => cursor,
         WalOpenOutcome::MissingHeader => {
-            return Err(SkeinError::Storage(format!(
+            return Err(HawdbError::Storage(format!(
                 "WAL generation {} is missing its header",
                 manifest.wal_generation
             )));
         }
         WalOpenOutcome::HeaderTorn { .. } => {
-            return Err(SkeinError::Storage(
+            return Err(HawdbError::Storage(
                 "WAL doctor rejected an incomplete WAL header".to_string(),
             ));
         }
         WalOpenOutcome::HeaderCorrupt { reason } => {
-            return Err(SkeinError::Storage(format!(
+            return Err(HawdbError::Storage(format!(
                 "WAL doctor rejected corruption at byte offset 0: {reason}"
             )));
         }
@@ -200,7 +200,7 @@ fn inspect_wal_tail_locked(path: &Path, options: WalDoctorOptions) -> Result<Wal
     if cursor.generation() != manifest.wal_generation
         || cursor.start_lsn() != manifest.wal_replay_start_lsn
     {
-        return Err(SkeinError::Storage(format!(
+        return Err(HawdbError::Storage(format!(
             "WAL header generation/start ({}, {}) does not match manifest ({}, {})",
             cursor.generation(),
             cursor.start_lsn(),
@@ -226,7 +226,7 @@ fn inspect_wal_tail_locked(path: &Path, options: WalDoctorOptions) -> Result<Wal
                 if let Some(pending) = load_matching_pending_record(path, &plan.plan_id)?
                     && pending.plan != plan
                 {
-                    return Err(SkeinError::Storage(
+                    return Err(HawdbError::Storage(
                         "pending WAL doctor repair record does not match the current repair plan"
                             .to_string(),
                     ));
@@ -234,7 +234,7 @@ fn inspect_wal_tail_locked(path: &Path, options: WalDoctorOptions) -> Result<Wal
                 return Ok(plan);
             }
             WalCursorEvent::Corrupt { offset, reason } => {
-                return Err(SkeinError::Storage(format!(
+                return Err(HawdbError::Storage(format!(
                     "WAL doctor rejected corruption at byte offset {offset}: {reason}"
                 )));
             }
@@ -245,7 +245,7 @@ fn inspect_wal_tail_locked(path: &Path, options: WalDoctorOptions) -> Result<Wal
             } => (entry, start_offset),
         };
         if entry.lsn != expected_lsn {
-            return Err(SkeinError::Storage(format!(
+            return Err(HawdbError::Storage(format!(
                 "WAL doctor rejected LSN sequence mismatch at byte offset {record_start}: expected {expected_lsn}, got {}",
                 entry.lsn
             )));
@@ -255,13 +255,13 @@ fn inspect_wal_tail_locked(path: &Path, options: WalDoctorOptions) -> Result<Wal
                 .max_batch_operations
                 .is_some_and(|limit| operations.len() > limit)
         {
-            return Err(SkeinError::Storage(format!(
+            return Err(HawdbError::Storage(format!(
                 "WAL doctor batch operation limit exceeded: max_batch_operations={}",
                 options.max_batch_operations.unwrap_or_default()
             )));
         }
         expected_lsn = expected_lsn.checked_add(1).ok_or_else(|| {
-            SkeinError::Storage("WAL LSN overflow during doctor scan".to_string())
+            HawdbError::Storage("WAL LSN overflow during doctor scan".to_string())
         })?;
     }
 
@@ -269,7 +269,7 @@ fn inspect_wal_tail_locked(path: &Path, options: WalDoctorOptions) -> Result<Wal
         validate_pending_truncated_wal(path, &record)?;
         return Ok(record.plan);
     }
-    Err(SkeinError::Storage(
+    Err(HawdbError::Storage(
         "WAL doctor found no repairable incomplete final record".to_string(),
     ))
 }
@@ -285,7 +285,7 @@ fn build_plan(
     let (manifest_len, manifest_crc32c, manifest_sha256) = file_checksum(manifest_path)?;
     let (actual_wal_len, original_wal_crc32c, original_wal_sha256) = file_checksum(wal_path)?;
     if actual_wal_len != original_wal_len {
-        return Err(SkeinError::Storage(
+        return Err(HawdbError::Storage(
             "WAL changed while the doctor repair plan was being generated".to_string(),
         ));
     }
@@ -334,7 +334,7 @@ fn plan_identity(plan: &WalTailRepairPlan) -> String {
         plan.reason,
         plan.data_loss_possible
     );
-    skein_integrity::integrity_digest(identity.as_bytes())
+    hawdb_integrity::integrity_digest(identity.as_bytes())
         .sha256
         .to_string()
 }
@@ -349,7 +349,7 @@ fn apply_wal_tail_repair_locked(
         || !requested_plan.data_loss_possible
         || requested_plan.discarded_wal_tail_bytes == 0
     {
-        return Err(SkeinError::Storage(
+        return Err(HawdbError::Storage(
             "WAL doctor repair plan identity is invalid".to_string(),
         ));
     }
@@ -357,7 +357,7 @@ fn apply_wal_tail_repair_locked(
     let manifest = DurableManifest::load(&path.join(MANIFEST_FILE))?;
     manifest.validate()?;
     if manifest.wal_generation != requested_plan.wal_generation {
-        return Err(SkeinError::Storage(
+        return Err(HawdbError::Storage(
             "WAL generation changed after the doctor repair plan was created".to_string(),
         ));
     }
@@ -378,20 +378,20 @@ fn apply_wal_tail_repair_locked(
     );
     if retained_matches {
         let pending = pending.ok_or_else(|| {
-            SkeinError::Storage(
+            HawdbError::Storage(
                 "WAL already matches the retained prefix without a pending doctor audit record"
                     .to_string(),
             )
         })?;
         if pending.plan != *requested_plan {
-            return Err(SkeinError::Storage(
+            return Err(HawdbError::Storage(
                 "pending WAL doctor repair record does not match the requested plan".to_string(),
             ));
         }
         return finalize_repair(path, pending, true);
     }
     if !original_matches {
-        return Err(SkeinError::Storage(
+        return Err(HawdbError::Storage(
             "WAL changed after the doctor repair plan was created; no files were modified"
                 .to_string(),
         ));
@@ -399,7 +399,7 @@ fn apply_wal_tail_repair_locked(
 
     let current_plan = inspect_wal_tail_locked(path, options)?;
     if current_plan != *requested_plan {
-        return Err(SkeinError::Storage(
+        return Err(HawdbError::Storage(
             "WAL doctor repair plan no longer matches the current database state".to_string(),
         ));
     }
@@ -408,7 +408,7 @@ fn apply_wal_tail_repair_locked(
     let prepared = match pending {
         Some(record) => {
             if record.plan != *requested_plan {
-                return Err(SkeinError::Storage(
+                return Err(HawdbError::Storage(
                     "pending WAL doctor repair record does not match the requested plan"
                         .to_string(),
                 ));
@@ -429,7 +429,7 @@ fn apply_wal_tail_repair_locked(
         requested_plan.original_wal_crc32c,
         &requested_plan.original_wal_sha256,
     ) {
-        return Err(SkeinError::Storage(
+        return Err(HawdbError::Storage(
             "WAL changed after the doctor repair was prepared; pending audit was retained"
                 .to_string(),
         ));
@@ -446,7 +446,7 @@ fn apply_wal_tail_repair_locked(
         requested_plan.retained_wal_crc32c,
         &requested_plan.retained_wal_sha256,
     ) {
-        return Err(SkeinError::Storage(
+        return Err(HawdbError::Storage(
             "WAL doctor repair produced an unexpected retained WAL identity; pending audit was retained"
                 .to_string(),
         ));
@@ -474,7 +474,7 @@ fn prepare_repair(
             plan.original_wal_crc32c,
             &plan.original_wal_sha256,
         ) {
-            return Err(SkeinError::Storage(
+            return Err(HawdbError::Storage(
                 "existing WAL doctor quarantine file has the wrong identity".to_string(),
             ));
         }
@@ -529,7 +529,7 @@ fn validate_manifest_identity(path: &Path, plan: &WalTailRepairPlan) -> Result<(
     ) {
         Ok(())
     } else {
-        Err(SkeinError::Storage(
+        Err(HawdbError::Storage(
             "durable manifest changed after the WAL doctor repair plan was created".to_string(),
         ))
     }
@@ -541,17 +541,17 @@ fn validate_checkpoint_boundary(path: &Path, manifest: DurableManifest) -> Resul
     };
     let expected_len = manifest
         .checkpoint_encoded_len
-        .ok_or_else(|| SkeinError::Storage("manifest checkpoint length is missing".to_string()))?;
+        .ok_or_else(|| HawdbError::Storage("manifest checkpoint length is missing".to_string()))?;
     let expected_crc32c = manifest
         .checkpoint_encoded_checksum
-        .ok_or_else(|| SkeinError::Storage("manifest checkpoint CRC32C is missing".to_string()))?;
+        .ok_or_else(|| HawdbError::Storage("manifest checkpoint CRC32C is missing".to_string()))?;
     let expected_sha256 = manifest
         .checkpoint_encoded_sha256
-        .ok_or_else(|| SkeinError::Storage("manifest checkpoint SHA-256 is missing".to_string()))?;
+        .ok_or_else(|| HawdbError::Storage("manifest checkpoint SHA-256 is missing".to_string()))?;
     let identity = file_checksum(&manifest.checkpoint_path(path))?;
     if identity.0 != expected_len || identity.1 != expected_crc32c || identity.2 != expected_sha256
     {
-        return Err(SkeinError::Storage(format!(
+        return Err(HawdbError::Storage(format!(
             "WAL doctor rejected checkpoint generation {generation} because its published identity does not match the manifest"
         )));
     }
@@ -560,7 +560,7 @@ fn validate_checkpoint_boundary(path: &Path, manifest: DurableManifest) -> Resul
 
 fn validate_pending_truncated_wal(path: &Path, record: &WalRepairAuditRecord) -> Result<()> {
     if record.state != WalRepairAuditState::Prepared {
-        return Err(SkeinError::Storage(
+        return Err(HawdbError::Storage(
             "pending WAL doctor record has an invalid state".to_string(),
         ));
     }
@@ -573,7 +573,7 @@ fn validate_pending_truncated_wal(path: &Path, record: &WalRepairAuditRecord) ->
         record.plan.retained_wal_crc32c,
         &record.plan.retained_wal_sha256,
     ) {
-        return Err(SkeinError::Storage(
+        return Err(HawdbError::Storage(
             "pending WAL doctor repair does not match the current WAL identity".to_string(),
         ));
     }
@@ -594,7 +594,7 @@ fn validate_quarantine(path: &Path, record: &WalRepairAuditRecord) -> Result<()>
     ) {
         Ok(())
     } else {
-        Err(SkeinError::Storage(
+        Err(HawdbError::Storage(
             "WAL doctor quarantine file does not match the original WAL identity".to_string(),
         ))
     }
@@ -603,7 +603,7 @@ fn validate_quarantine(path: &Path, record: &WalRepairAuditRecord) -> Result<()>
 fn file_prefix_checksum(
     path: &Path,
     limit: u64,
-) -> Result<(u64, u64, skein_integrity::Sha256Digest)> {
+) -> Result<(u64, u64, hawdb_integrity::Sha256Digest)> {
     let mut file = File::open(path)?;
     file.seek(SeekFrom::Start(0))?;
     let mut integrity = IntegrityHasher::new();
@@ -619,7 +619,7 @@ fn file_prefix_checksum(
         total = total.saturating_add(read as u64);
     }
     if total != limit {
-        return Err(SkeinError::Storage(
+        return Err(HawdbError::Storage(
             "WAL ended before the planned retained prefix".to_string(),
         ));
     }
@@ -628,7 +628,7 @@ fn file_prefix_checksum(
 }
 
 fn file_identity_matches(
-    identity: (u64, u64, skein_integrity::Sha256Digest),
+    identity: (u64, u64, hawdb_integrity::Sha256Digest),
     expected_len: u64,
     expected_crc32c: u64,
     expected_sha256: &str,
@@ -640,11 +640,11 @@ fn file_identity_matches(
 
 fn write_audit_record(path: &Path, record: &WalRepairAuditRecord) -> Result<()> {
     let parent = path.parent().ok_or_else(|| {
-        SkeinError::Storage("WAL doctor audit path has no parent directory".to_string())
+        HawdbError::Storage("WAL doctor audit path has no parent directory".to_string())
     })?;
     fs::create_dir_all(parent)?;
     let encoded = serde_json::to_vec_pretty(record).map_err(|error| {
-        SkeinError::Storage(format!("failed to encode WAL doctor audit record: {error}"))
+        HawdbError::Storage(format!("failed to encode WAL doctor audit record: {error}"))
     })?;
     let temp_path = path.with_extension("json.tmp");
     {
@@ -656,8 +656,8 @@ fn write_audit_record(path: &Path, record: &WalRepairAuditRecord) -> Result<()> 
         std::io::Write::write_all(&mut file, &encoded)?;
         file.sync_all()?;
     }
-    skein_storage::durable_replace_file(&temp_path, path)
-        .map_err(|error| SkeinError::Storage(error.to_string()))
+    hawdb_storage::durable_replace_file(&temp_path, path)
+        .map_err(|error| HawdbError::Storage(error.to_string()))
 }
 
 fn pending_repair_records(path: &Path) -> Result<Vec<PathBuf>> {
@@ -685,7 +685,7 @@ fn load_single_pending_record(path: &Path) -> Result<Option<WalRepairAuditRecord
     match records.as_slice() {
         [] => Ok(None),
         [record] => load_audit_record(record).map(Some),
-        _ => Err(SkeinError::Storage(
+        _ => Err(HawdbError::Storage(
             "database has multiple pending WAL doctor repair records".to_string(),
         )),
     }
@@ -701,7 +701,7 @@ fn load_matching_pending_record(
     if record.plan.plan_id == plan_id {
         Ok(Some(record))
     } else {
-        Err(SkeinError::Storage(
+        Err(HawdbError::Storage(
             "database has a pending WAL doctor repair for a different plan".to_string(),
         ))
     }
@@ -710,20 +710,20 @@ fn load_matching_pending_record(
 fn load_audit_record(path: &Path) -> Result<WalRepairAuditRecord> {
     let encoded_len = fs::metadata(path)?.len();
     if encoded_len > MAX_DOCTOR_AUDIT_BYTES {
-        return Err(SkeinError::Storage(format!(
+        return Err(HawdbError::Storage(format!(
             "WAL doctor audit record exceeds the {MAX_DOCTOR_AUDIT_BYTES} byte limit"
         )));
     }
     let encoded = fs::read(path)?;
     let record = serde_json::from_slice::<WalRepairAuditRecord>(&encoded).map_err(|error| {
-        SkeinError::Storage(format!("invalid WAL doctor audit record: {error}"))
+        HawdbError::Storage(format!("invalid WAL doctor audit record: {error}"))
     })?;
     if record.protocol != WAL_DOCTOR_REPAIR_PROTOCOL
         || record.plan.protocol != WAL_DOCTOR_REPAIR_PROTOCOL
         || record.plan.plan_id != plan_identity(&record.plan)
         || record.quarantine_file != quarantine_file_name(&record.plan)
     {
-        return Err(SkeinError::Storage(
+        return Err(HawdbError::Storage(
             "WAL doctor audit record identity is invalid".to_string(),
         ));
     }
@@ -750,7 +750,7 @@ fn applied_record_path(path: &Path, plan: &WalTailRepairPlan) -> PathBuf {
 
 fn quarantine_file_name(plan: &WalTailRepairPlan) -> String {
     format!(
-        "wal.{}.{}.before-repair.skein",
+        "wal.{}.{}.before-repair.hawdb",
         plan.wal_generation, plan.plan_id
     )
 }
@@ -759,7 +759,7 @@ fn file_name(path: &Path) -> Result<String> {
     path.file_name()
         .and_then(|name| name.to_str())
         .map(str::to_string)
-        .ok_or_else(|| SkeinError::Storage("WAL doctor path has no valid file name".to_string()))
+        .ok_or_else(|| HawdbError::Storage("WAL doctor path has no valid file name".to_string()))
 }
 
 #[cfg(test)]

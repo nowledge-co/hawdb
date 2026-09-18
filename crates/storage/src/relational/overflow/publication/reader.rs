@@ -9,7 +9,7 @@ use super::{
     RelationalOverflowRootManifest, RELATIONAL_OVERFLOW_MANIFEST_FILE,
 };
 use crate::relational::{RelationalError, RelationalScalarType, RelationalValue};
-use skein_integrity::{integrity_digest, IntegrityHasher, Sha256Digest};
+use hawdb_integrity::{integrity_digest, IntegrityHasher, Sha256Digest};
 use std::fs::{self, File};
 use std::io::{Read, Seek, SeekFrom};
 use std::path::{Path, PathBuf};
@@ -147,7 +147,7 @@ impl RelationalOverflowRootReader {
         &self,
         reference: &RelationalOverflowRef,
         budget: &mut RelationalHydrationBudget,
-        task_context: Option<&skein_core::RuntimeTaskContext>,
+        task_context: Option<&hawdb_core::RuntimeTaskContext>,
     ) -> Result<RelationalValue, RelationalOverflowPublicationError> {
         let descriptor = self.find_descriptor(reference)?.ok_or(
             RelationalOverflowPublicationError::MissingExtent(reference.digest),

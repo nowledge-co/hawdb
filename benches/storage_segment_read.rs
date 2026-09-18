@@ -1,8 +1,8 @@
-use serde_json::json;
-use skein_storage::{
+use hawdb_storage::{
     FileSegmentRangeReader, SegmentReadExecutor, SegmentReadPool, SegmentReadRange,
     SegmentReadScheduler,
 };
+use serde_json::json;
 use std::hint::black_box;
 use std::num::{NonZeroU64, NonZeroUsize};
 use std::time::{Instant, SystemTime, UNIX_EPOCH};
@@ -15,7 +15,7 @@ const SAMPLES: usize = 5;
 
 fn main() {
     let path = std::env::temp_dir().join(format!(
-        "skein-storage-segment-read-bench-{}-{}",
+        "hawdb-storage-segment-read-bench-{}-{}",
         std::process::id(),
         SystemTime::now()
             .duration_since(UNIX_EPOCH)

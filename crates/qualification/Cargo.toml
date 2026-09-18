@@ -1,5 +1,5 @@
 [package]
-name = "skein-qualification"
+name = "hawdb-qualification"
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
@@ -9,47 +9,47 @@ license.workspace = true
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 sha2 = { version = "0.10", default-features = false }
-skein = { path = "../..", default-features = false, features = ["full-text-search", "tokio-runtime", "vector-search"] }
-skein-query = { path = "../query" }
+hawdb = { path = "../..", default-features = false, features = ["full-text-search", "tokio-runtime", "vector-search"] }
+hawdb-query = { path = "../query" }
 tokio = { version = "1", features = ["rt", "sync", "time"] }
 
 [features]
 default = []
 
 [[bin]]
-name = "skein-soak"
+name = "hawdb-soak"
 path = "src/main.rs"
 
 [[bin]]
-name = "skein-qualification-bundle"
+name = "hawdb-qualification-bundle"
 path = "src/bin/release_bundle.rs"
 
 [[bin]]
-name = "skein-content-store-contract"
+name = "hawdb-content-store-contract"
 path = "src/bin/content_store_contract.rs"
 
 [[bin]]
-name = "skein-content-store-memory-qualification"
+name = "hawdb-content-store-memory-qualification"
 path = "src/bin/content_store_memory_qualification.rs"
 
 [[bin]]
-name = "skein-content-store-read-qualification"
+name = "hawdb-content-store-read-qualification"
 path = "src/bin/content_store_read_qualification.rs"
 
 [[bin]]
-name = "skein-content-store-mutation-qualification"
+name = "hawdb-content-store-mutation-qualification"
 path = "src/bin/content_store_mutation_qualification.rs"
 
 [[bin]]
-name = "skein-content-store-overflow-compaction-qualification"
+name = "hawdb-content-store-overflow-compaction-qualification"
 path = "src/bin/content_store_overflow_compaction_qualification.rs"
 
 [[bin]]
-name = "skein-graph-index-qualification"
+name = "hawdb-graph-index-qualification"
 path = "src/bin/graph_index_qualification.rs"
 
 [[bin]]
-name = "skein-graph-storage-qualification"
+name = "hawdb-graph-storage-qualification"
 path = "src/bin/graph_storage_qualification.rs"
 
 # The aarch64 hardware SHA-256 backend is only reachable through this feature;

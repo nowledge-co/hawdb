@@ -2,7 +2,7 @@ use super::{
     durability, RelationalOverflowArtifactMetadata, RelationalOverflowPublicationConfig,
     RelationalOverflowPublicationError, RelationalOverflowRootManifest,
 };
-use skein_integrity::{integrity_digest, Sha256Digest, SHA256_BYTES};
+use hawdb_integrity::{integrity_digest, Sha256Digest, SHA256_BYTES};
 use std::fs::{self, File};
 use std::io::Read;
 use std::path::Path;

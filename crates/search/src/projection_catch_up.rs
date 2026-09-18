@@ -1,6 +1,6 @@
 use crate::{SearchIndex, SearchProjectionFreshness};
-use skein_core::{Result, SkeinError};
-use skein_qos::{
+use hawdb_core::{HawdbError, Result};
+use hawdb_qos::{
     LocalQosPermit, LocalQosScheduler, QosAdmission, QosAdmissionCode, WorkClass, WorkRequest,
 };
 
@@ -37,18 +37,18 @@ pub fn validate_search_projection_catch_up_request(
     max_batches: usize,
 ) -> Result<()> {
     if !search_index.is_persistent() {
-        return Err(SkeinError::Storage(
+        return Err(HawdbError::Storage(
             "durable search projection catch-up requires a persistent search index".to_string(),
         ));
     }
     if max_operations_per_batch == 0 {
-        return Err(SkeinError::Semantic(
+        return Err(HawdbError::Semantic(
             "search projection catch-up max_operations_per_batch must be greater than zero"
                 .to_string(),
         ));
     }
     if max_batches == 0 {
-        return Err(SkeinError::Semantic(
+        return Err(HawdbError::Semantic(
             "search projection catch-up max_batches must be greater than zero".to_string(),
         ));
     }

@@ -13,7 +13,7 @@ impl Fixture {
     fn new() -> Self {
         static NEXT: AtomicU64 = AtomicU64::new(0);
         let path = std::env::temp_dir().join(format!(
-            "skein-block-encoding-{}-{}-{}",
+            "hawdb-block-encoding-{}-{}-{}",
             std::process::id(),
             std::time::SystemTime::now()
                 .duration_since(std::time::UNIX_EPOCH)
@@ -220,7 +220,7 @@ fn long_fields_are_written_in_bounded_chunks() {
 
 #[test]
 fn cancellation_during_short_writes_or_after_the_last_write_rejects_the_block() {
-    use skein_core::{RuntimeCancellationToken, RuntimeTaskContext};
+    use hawdb_core::{RuntimeCancellationToken, RuntimeTaskContext};
 
     struct CancelWriter {
         output: ObservedWriter,
@@ -331,7 +331,7 @@ fn representation_failures_happen_before_writing() {
 #[test]
 fn artifact_builder_preserves_block_boundaries_and_statistics() {
     let fixture = Fixture::new();
-    let path = fixture.0.join("artifact.skein");
+    let path = fixture.0.join("artifact.hawdb");
     let config = LexicalProjectionConfig {
         target_block_bytes: NonZeroU64::new(24).unwrap(),
         ..Default::default()

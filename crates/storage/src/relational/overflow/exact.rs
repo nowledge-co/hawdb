@@ -3,7 +3,7 @@
 use super::publication::RelationalOverflowPublicationError;
 use super::RelationalOverflowRef;
 use crate::relational::RelationalScalarType;
-use skein_integrity::{Crc32cHasher, Sha256Digest};
+use hawdb_integrity::{Crc32cHasher, Sha256Digest};
 use std::cmp::Reverse;
 use std::collections::BinaryHeap;
 use std::fs::{self, File};
@@ -603,7 +603,7 @@ mod tests {
     fn unique_directory(name: &str) -> PathBuf {
         let sequence = NEXT_DIRECTORY.fetch_add(1, Ordering::Relaxed);
         std::env::temp_dir().join(format!(
-            "skein-overflow-reference-{name}-{}-{sequence}",
+            "hawdb-overflow-reference-{name}-{}-{sequence}",
             std::process::id()
         ))
     }

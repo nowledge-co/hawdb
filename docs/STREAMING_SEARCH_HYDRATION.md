@@ -64,6 +64,6 @@ retained decoded working sets, request order, budgets and pinned old readers.
 The 512-case campaign is explicit and local-only:
 
 ```sh
-bazel test //crates/search:skein_search_hydration_fuzz_tests
-bazel test //crates/fuzz:skein_fuzz_tests //crates/fuzz:skein_fuzz_cli_tests //:skein_linux_ci_fuzz_smoke_test
+bazel test //crates/search:hawdb_search_hydration_fuzz_tests
+bazel test //crates/fuzz:hawdb_fuzz_tests //crates/fuzz:hawdb_fuzz_cli_tests //:hawdb_linux_ci_fuzz_smoke_test
 ```

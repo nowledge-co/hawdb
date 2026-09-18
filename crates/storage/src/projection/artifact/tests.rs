@@ -1,7 +1,7 @@
 use super::*;
 
 const FIXTURE: &str = concat!(
-    "SKEIN_PROJECTED_GRAPHS_V1\n",
+    "HAWDB_PROJECTED_GRAPHS_V1\n",
     "artifact_version\t1\n",
     "projection_epoch\t7\n",
     "commit_epoch\t11\n",
@@ -68,7 +68,7 @@ fn reference_body(
     // Delimit fields and rows independently; do not use the production codec or
     // list helpers to derive the expected bytes.
     let mut rows = vec![
-        vec!["SKEIN_PROJECTED_GRAPHS_V1".into()],
+        vec!["HAWDB_PROJECTED_GRAPHS_V1".into()],
         vec!["artifact_version".into(), "1".into()],
         vec!["projection_epoch".into(), projection_epoch.to_string()],
         vec!["commit_epoch".into(), commit_epoch.to_string()],
@@ -132,7 +132,7 @@ fn encode_one(
 
 fn assert_storage_error<T: std::fmt::Debug>(result: Result<T>, expected: &str) {
     match result {
-        Err(SkeinError::Storage(message)) => assert_eq!(message, expected),
+        Err(HawdbError::Storage(message)) => assert_eq!(message, expected),
         other => panic!("expected storage error {expected:?}, got {other:?}"),
     }
 }
@@ -170,7 +170,7 @@ fn frozen_v1_bytes_and_empty_artifact_roundtrip() {
     );
     assert_eq!(
         encode_projected_graph_artifacts(0, u64::MAX, []),
-        "SKEIN_PROJECTED_GRAPHS_V1\nartifact_version\t1\nprojection_epoch\t0\ncommit_epoch\t18446744073709551615\n",
+        "HAWDB_PROJECTED_GRAPHS_V1\nartifact_version\t1\nprojection_epoch\t0\ncommit_epoch\t18446744073709551615\n",
     );
     for count in [0, 1, 4096] {
         let data = edge_bag_data((0..count).map(NodeId).collect(), &[]);
@@ -248,15 +248,15 @@ fn malformed_headers_fields_and_structure_report_original_errors() {
     let headers = [
         ("", "invalid projected graph artifact header"),
         (
-            "SKEIN_PROJECTED_GRAPHS_V1",
+            "HAWDB_PROJECTED_GRAPHS_V1",
             "missing projected graph artifact artifact_version",
         ),
         (
-            "SKEIN_PROJECTED_GRAPHS_V1\nartifact_version\t1",
+            "HAWDB_PROJECTED_GRAPHS_V1\nartifact_version\t1",
             "missing projected graph artifact projection_epoch",
         ),
         (
-            "SKEIN_PROJECTED_GRAPHS_V1\nartifact_version\t1\nprojection_epoch\t7",
+            "HAWDB_PROJECTED_GRAPHS_V1\nartifact_version\t1\nprojection_epoch\t7",
             "missing projected graph artifact commit_epoch",
         ),
     ];
@@ -452,7 +452,7 @@ fn run_campaign(seeds: u64, steps: usize) -> usize {
             );
             checks += 1;
             let mutations = [
-                replace_line(&expected, 0, "SKEIN_PROJECTED_GRAPHS_V0"),
+                replace_line(&expected, 0, "HAWDB_PROJECTED_GRAPHS_V0"),
                 replace_line(&expected, 1, "artifact_version\t2"),
                 replace_line(&expected, 2, "projection_epoch\t-1"),
                 replace_line(&expected, 3, "commit_epoch\t18446744073709551616"),
@@ -471,7 +471,7 @@ fn run_campaign(seeds: u64, steps: usize) -> usize {
                 assert!(
                     matches!(
                         decode_projected_graph_artifacts(&text),
-                        Err(SkeinError::Storage(_))
+                        Err(HawdbError::Storage(_))
                     ),
                     "accepted mutation={mutation}, seed={seed}, step={step}"
                 );

@@ -5,14 +5,14 @@ use super::qualification_input::{
     read_bounded_json, EvidenceBindingInput, ProductionIdentityInput,
 };
 use super::qualification_value::value_from_json;
+use hawdb::{NowledgeGraphStatement, NowledgeMemGraphMode, NowledgeMemOpenOptions};
+use hawdb_qualification::ProductionGraphStorageQualificationConfig;
 use serde::Deserialize;
-use skein::{NowledgeGraphStatement, NowledgeMemGraphMode, NowledgeMemOpenOptions};
-use skein_qualification::ProductionGraphStorageQualificationConfig;
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 
 pub(crate) const GRAPH_STORAGE_QUALIFICATION_PLAN_PROTOCOL: &str =
-    "skein-production-graph-storage-plan-v1";
+    "hawdb-production-graph-storage-plan-v1";
 
 pub(crate) fn read_plan(path: &Path) -> Result<GraphStorageQualificationPlan, String> {
     read_bounded_json(path, "graph storage qualification plan")
@@ -76,7 +76,7 @@ struct GraphStatementInput {
 
 struct ResolvedGraphStatement {
     statement: NowledgeGraphStatement,
-    limits: skein::StorageResourceProfileLimits,
+    limits: hawdb::StorageResourceProfileLimits,
 }
 
 impl GraphStatementInput {
@@ -105,8 +105,8 @@ impl GraphStatementInput {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use skein::{StorageResidencyMode, PRODUCTION_QUALIFICATION_POLICY_VERSION};
-    use skein_qualification::{
+    use hawdb::{StorageResidencyMode, PRODUCTION_QUALIFICATION_POLICY_VERSION};
+    use hawdb_qualification::{
         CONTENT_STORE_512_MIB_CAPABILITY_BYTES, CONTENT_STORE_SHARED_HOST_MAX_CAPACITY_BYTES,
     };
 

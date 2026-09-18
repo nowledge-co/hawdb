@@ -8,22 +8,22 @@ test_suite(
 )
 
 rust_library(
-    name = "skein_storage",
-    crate_name = "skein_storage",
+    name = "hawdb_storage",
+    crate_name = "hawdb_storage",
     crate_root = "src/lib.rs",
     srcs = glob(["src/**/*.rs"]),
     edition = "2024",
     aliases = aliases(),
     deps = all_crate_deps(normal = True) + [
-        "//crates/core:skein_core",
-        "//crates/integrity:skein_integrity",
+        "//crates/core:hawdb_core",
+        "//crates/integrity:hawdb_integrity",
     ],
     proc_macro_deps = all_crate_deps(proc_macro = True),
 )
 
 rust_test(
-    name = "skein_storage_tests",
-    crate = ":skein_storage",
+    name = "hawdb_storage_tests",
+    crate = ":hawdb_storage",
     edition = "2024",
     aliases = aliases(normal_dev = True, proc_macro_dev = True),
     deps = all_crate_deps(normal_dev = True),
@@ -31,14 +31,14 @@ rust_test(
 )
 
 rust_test(
-    name = "skein_storage_shadow_metadata_fuzz_tests",
+    name = "hawdb_storage_shadow_metadata_fuzz_tests",
     args = [
         "column_group::shadow_metadata::tests::differential::shadow_metadata_differential_campaign",
         "--exact",
         "--ignored",
         "--nocapture",
     ],
-    crate = ":skein_storage",
+    crate = ":hawdb_storage",
     edition = "2024",
     tags = ["manual"],
     aliases = aliases(normal_dev = True, proc_macro_dev = True),
@@ -47,14 +47,14 @@ rust_test(
 )
 
 rust_test(
-    name = "skein_storage_relational_index_view_fuzz_tests",
+    name = "hawdb_storage_relational_index_view_fuzz_tests",
     args = [
         "relational_index_view::tests::relational_index_view_differential_campaign",
         "--exact",
         "--ignored",
         "--nocapture",
     ],
-    crate = ":skein_storage",
+    crate = ":hawdb_storage",
     edition = "2024",
     tags = ["manual"],
     aliases = aliases(normal_dev = True, proc_macro_dev = True),
@@ -63,14 +63,14 @@ rust_test(
 )
 
 rust_test(
-    name = "skein_storage_relational_row_workspace_fuzz_tests",
+    name = "hawdb_storage_relational_row_workspace_fuzz_tests",
     args = [
         "relational_row_workspace::tests::row_workspace_differential_campaign",
         "--exact",
         "--ignored",
         "--nocapture",
     ],
-    crate = ":skein_storage",
+    crate = ":hawdb_storage",
     edition = "2024",
     tags = ["manual"],
     aliases = aliases(normal_dev = True, proc_macro_dev = True),
@@ -79,14 +79,14 @@ rust_test(
 )
 
 rust_test(
-    name = "skein_storage_source_scan_fuzz_tests",
+    name = "hawdb_storage_source_scan_fuzz_tests",
     args = [
         "source_scan::tests::source_scan_differential_campaign",
         "--exact",
         "--ignored",
         "--nocapture",
     ],
-    crate = ":skein_storage",
+    crate = ":hawdb_storage",
     edition = "2024",
     tags = ["manual"],
     aliases = aliases(normal_dev = True, proc_macro_dev = True),
@@ -95,14 +95,14 @@ rust_test(
 )
 
 rust_test(
-    name = "skein_storage_artifact_binding_fuzz_tests",
+    name = "hawdb_storage_artifact_binding_fuzz_tests",
     args = [
         "artifact_binding::tests::artifact_binding_state_machine_campaign",
         "--exact",
         "--ignored",
         "--nocapture",
     ],
-    crate = ":skein_storage",
+    crate = ":hawdb_storage",
     edition = "2024",
     tags = ["manual"],
     aliases = aliases(normal_dev = True, proc_macro_dev = True),
@@ -111,14 +111,14 @@ rust_test(
 )
 
 rust_test(
-    name = "skein_storage_durable_manifest_fuzz_tests",
+    name = "hawdb_storage_durable_manifest_fuzz_tests",
     args = [
         "durable_manifest::tests::durable_manifest_differential_campaign",
         "--exact",
         "--ignored",
         "--nocapture",
     ],
-    crate = ":skein_storage",
+    crate = ":hawdb_storage",
     edition = "2024",
     tags = ["manual"],
     aliases = aliases(normal_dev = True, proc_macro_dev = True),
@@ -127,14 +127,14 @@ rust_test(
 )
 
 rust_test(
-    name = "skein_storage_graph_overlay_fuzz_tests",
+    name = "hawdb_storage_graph_overlay_fuzz_tests",
     args = [
         "graph_overlay::tests::graph_overlay_differential_campaign",
         "--exact",
         "--ignored",
         "--nocapture",
     ],
-    crate = ":skein_storage",
+    crate = ":hawdb_storage",
     edition = "2024",
     tags = ["manual"],
     aliases = aliases(normal_dev = True, proc_macro_dev = True),
@@ -143,14 +143,14 @@ rust_test(
 )
 
 rust_test(
-    name = "skein_storage_projected_artifact_fuzz_tests",
+    name = "hawdb_storage_projected_artifact_fuzz_tests",
     args = [
         "projection::artifact::tests::projected_artifact_differential_campaign",
         "--exact",
         "--ignored",
         "--nocapture",
     ],
-    crate = ":skein_storage",
+    crate = ":hawdb_storage",
     edition = "2024",
     tags = ["manual"],
     aliases = aliases(normal_dev = True, proc_macro_dev = True),
@@ -159,14 +159,14 @@ rust_test(
 )
 
 rust_test(
-    name = "skein_storage_set_value_fuzz_tests",
+    name = "hawdb_storage_set_value_fuzz_tests",
     args = [
         "mutation::evaluate::tests::set_value_differential_campaign",
         "--exact",
         "--ignored",
         "--nocapture",
     ],
-    crate = ":skein_storage",
+    crate = ":hawdb_storage",
     edition = "2024",
     tags = ["manual"],
     aliases = aliases(normal_dev = True, proc_macro_dev = True),
@@ -175,14 +175,14 @@ rust_test(
 )
 
 rust_test(
-    name = "skein_storage_durable_envelope_fuzz_tests",
+    name = "hawdb_storage_durable_envelope_fuzz_tests",
     args = [
         "text::envelope::tests::durable_envelope_differential_campaign",
         "--exact",
         "--ignored",
         "--nocapture",
     ],
-    crate = ":skein_storage",
+    crate = ":hawdb_storage",
     edition = "2024",
     tags = ["manual"],
     aliases = aliases(normal_dev = True, proc_macro_dev = True),
@@ -191,14 +191,14 @@ rust_test(
 )
 
 rust_test(
-    name = "skein_storage_graph_constraints_fuzz_tests",
+    name = "hawdb_storage_graph_constraints_fuzz_tests",
     args = [
         "graph_constraints::tests::graph_constraints_differential_campaign",
         "--exact",
         "--ignored",
         "--nocapture",
     ],
-    crate = ":skein_storage",
+    crate = ":hawdb_storage",
     edition = "2024",
     tags = ["manual"],
     aliases = aliases(normal_dev = True, proc_macro_dev = True),
@@ -207,14 +207,14 @@ rust_test(
 )
 
 rust_test(
-    name = "skein_storage_sharded_cache_fuzz_tests",
+    name = "hawdb_storage_sharded_cache_fuzz_tests",
     args = [
         "cache::shard_tests::sharded_cache_state_machine_campaign",
         "--exact",
         "--ignored",
         "--nocapture",
     ],
-    crate = ":skein_storage",
+    crate = ":hawdb_storage",
     edition = "2024",
     tags = ["manual"],
     aliases = aliases(normal_dev = True, proc_macro_dev = True),
@@ -223,14 +223,14 @@ rust_test(
 )
 
 rust_test(
-    name = "skein_storage_transaction_locks_fuzz_tests",
+    name = "hawdb_storage_transaction_locks_fuzz_tests",
     args = [
         "transaction_locks::differential::transaction_locks_differential_campaign",
         "--exact",
         "--ignored",
         "--nocapture",
     ],
-    crate = ":skein_storage",
+    crate = ":hawdb_storage",
     edition = "2024",
     tags = ["manual"],
     aliases = aliases(normal_dev = True, proc_macro_dev = True),
@@ -239,13 +239,13 @@ rust_test(
 )
 
 rust_test(
-    name = "skein_storage_text_fuzz_tests",
+    name = "hawdb_storage_text_fuzz_tests",
     args = [
         "text::tests::recovery_text_differential_campaign",
         "--exact",
         "--ignored",
     ],
-    crate = ":skein_storage",
+    crate = ":hawdb_storage",
     edition = "2024",
     tags = ["manual"],
     aliases = aliases(normal_dev = True, proc_macro_dev = True),
@@ -254,14 +254,14 @@ rust_test(
 )
 
 rust_test(
-    name = "skein_storage_statistics_refresh_fuzz_tests",
+    name = "hawdb_storage_statistics_refresh_fuzz_tests",
     args = [
         "statistics_refresh::tests::statistics_refresh_differential_campaign",
         "--exact",
         "--ignored",
         "--nocapture",
     ],
-    crate = ":skein_storage",
+    crate = ":hawdb_storage",
     edition = "2024",
     tags = ["manual"],
     aliases = aliases(normal_dev = True, proc_macro_dev = True),
@@ -272,13 +272,13 @@ rust_test(
 # Keep persisted-field differential campaigns on the explicit local surface.
 [
     rust_test(
-        name = "skein_storage_%s_hex_fuzz_tests" % decoder,
+        name = "hawdb_storage_%s_hex_fuzz_tests" % decoder,
         args = [
             "%s::hex_tests::persisted_hex_differential_campaign" % decoder,
             "--exact",
             "--ignored",
         ],
-        crate = ":skein_storage",
+        crate = ":hawdb_storage",
         edition = "2024",
         tags = ["manual"],
         aliases = aliases(normal_dev = True, proc_macro_dev = True),
@@ -289,13 +289,13 @@ rust_test(
 ]
 
 rust_test(
-    name = "skein_storage_file_lock_fuzz_tests",
+    name = "hawdb_storage_file_lock_fuzz_tests",
     args = [
         "publication_lock_state_machine_campaign",
         "--ignored",
         "--nocapture",
     ],
-    crate = ":skein_storage",
+    crate = ":hawdb_storage",
     edition = "2024",
     tags = ["manual"],
     aliases = aliases(normal_dev = True, proc_macro_dev = True),
@@ -304,14 +304,14 @@ rust_test(
 )
 
 rust_test(
-    name = "skein_storage_verified_page_cache_fuzz_tests",
+    name = "hawdb_storage_verified_page_cache_fuzz_tests",
     args = [
         "index_page::verified_cache_tests::verified_page_cache_differential_campaign",
         "--exact",
         "--ignored",
         "--nocapture",
     ],
-    crate = ":skein_storage",
+    crate = ":hawdb_storage",
     edition = "2024",
     tags = ["manual"],
     aliases = aliases(normal_dev = True, proc_macro_dev = True),
@@ -320,14 +320,14 @@ rust_test(
 )
 
 rust_test(
-    name = "skein_storage_positioned_read_fuzz_tests",
+    name = "hawdb_storage_positioned_read_fuzz_tests",
     args = [
         "io::tests::positioned_read_differential_campaign",
         "--exact",
         "--ignored",
         "--nocapture",
     ],
-    crate = ":skein_storage",
+    crate = ":hawdb_storage",
     edition = "2024",
     tags = ["manual"],
     aliases = aliases(normal_dev = True, proc_macro_dev = True),
@@ -336,14 +336,14 @@ rust_test(
 )
 
 rust_test(
-    name = "skein_storage_transaction_compaction_fuzz_tests",
+    name = "hawdb_storage_transaction_compaction_fuzz_tests",
     args = [
         "mutation::compact::tests::transaction_compaction_differential_campaign",
         "--exact",
         "--ignored",
         "--nocapture",
     ],
-    crate = ":skein_storage",
+    crate = ":hawdb_storage",
     edition = "2024",
     tags = ["manual"],
     aliases = aliases(normal_dev = True, proc_macro_dev = True),

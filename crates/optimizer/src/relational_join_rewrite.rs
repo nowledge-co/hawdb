@@ -5,7 +5,7 @@ use crate::{
     RelationalJoinEnumerationConfig, RelationalJoinEnumerationError, RelationalJoinPredicateId,
     RelationalJoinRelation, RequiredProperties,
 };
-use skein_expression::{prove_null_rejecting, BindingId, BindingSet, BoundPredicate};
+use hawdb_expression::{prove_null_rejecting, BindingId, BindingSet, BoundPredicate};
 use std::{
     collections::{BTreeMap, BTreeSet},
     error::Error,
@@ -606,7 +606,7 @@ fn binding_intersection(left: &BindingSet, right: &BindingSet) -> BindingSet {
 mod tests {
     use super::*;
     use crate::{RelationalAccessPathDescriptor, RelationalAccessPathKind};
-    use skein_expression::{BoundScalarExpression, ScalarNullability};
+    use hawdb_expression::{BoundScalarExpression, ScalarNullability};
     use std::collections::BTreeSet;
 
     const A: BindingId = BindingId::new(1);

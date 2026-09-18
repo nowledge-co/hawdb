@@ -398,7 +398,7 @@ fn collect_descriptors(
 
 fn unique_test_dir(label: &str) -> PathBuf {
     std::env::temp_dir().join(format!(
-        "skein-row-page-mutation-{label}-{}-{}",
+        "hawdb-row-page-mutation-{label}-{}-{}",
         std::process::id(),
         TEST_SEQUENCE.fetch_add(1, Ordering::Relaxed)
     ))

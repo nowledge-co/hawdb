@@ -1,11 +1,11 @@
 # Fallible in-memory search wrapper contract
 
 Status: implemented in PR #576 after the owner requested completing the prepared contract.
-Issue: [#564](https://github.com/nowledge-co/skein/issues/564).
+Issue: [#564](https://github.com/nowledge-co/hawdb/issues/564).
 
 ## Contract rationale
 
-Search capability checks return `SkeinError::CapabilityUnavailable`. The former
+Search capability checks return `HawdbError::CapabilityUnavailable`. The former
 infallible in-memory wrappers discarded these errors with `expect`, including
 errors from retrieval graph enrichment and pipeline admission. The public chain
 now propagates these errors to the caller.
@@ -102,10 +102,10 @@ Validation entrypoints:
 
 ```sh
 cargo check --workspace --all-targets --locked
-cargo test -p skein --test fallible_search_contract --locked
-cargo test -p skein --no-default-features --test fallible_search_contract --locked
-bazel test //:skein_fallible_search_contract_tests //:skein_fallible_search_contract_minimal_tests //crates/search:skein_search_tests //crates/search:skein_search_minimal_tests
-bazel test //crates/fuzz:skein_fuzz_tests //crates/fuzz:skein_fuzz_cli_tests //:skein_linux_ci_fuzz_smoke_test
+cargo test -p hawdb --test fallible_search_contract --locked
+cargo test -p hawdb --no-default-features --test fallible_search_contract --locked
+bazel test //:hawdb_fallible_search_contract_tests //:hawdb_fallible_search_contract_minimal_tests //crates/search:hawdb_search_tests //crates/search:hawdb_search_minimal_tests
+bazel test //crates/fuzz:hawdb_fuzz_tests //crates/fuzz:hawdb_fuzz_cli_tests //:hawdb_linux_ci_fuzz_smoke_test
 ```
 
 The broader minimal root suite has historical fixtures that assume optional

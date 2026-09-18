@@ -1,7 +1,7 @@
 use super::*;
 use crate::graph::costing::estimate_physical_plan_cost;
 use crate::{RuleEvent, StageStats};
-use skein_plan::{CompositeRangeSeek, ExactPropertySeekBranch};
+use hawdb_plan::{CompositeRangeSeek, ExactPropertySeekBranch};
 use std::cell::OnceCell;
 
 const MAX_EXACT_UNION_LOOKUP_VALUES: usize = 64;

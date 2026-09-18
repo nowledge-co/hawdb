@@ -4,7 +4,7 @@
 //! Reference files: src/test/regress/sql/graph_table.sql and
 //! src/backend/parser/parse_graphtable.c.
 
-use skein_sql_syntax::parse_postgres_select;
+use hawdb_sql_syntax::parse_postgres_select;
 
 use super::*;
 

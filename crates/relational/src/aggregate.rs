@@ -7,13 +7,13 @@ use crate::predicate::predicate_truth_with;
 use crate::query_value::{
     bind_sql_value, expression_name, relational_to_value, value_to_relational,
 };
-use skein_core::{Result, SkeinError, Value};
-use skein_executor::kernel::{ensure_operator_item_fits, OperatorMemoryTracker};
-use skein_sql::{
+use hawdb_core::{HawdbError, Result, Value};
+use hawdb_executor::kernel::{ensure_operator_item_fits, OperatorMemoryTracker};
+use hawdb_sql::{
     Expr, ExprKind, SelectProjection, SelectStatement, SqlColumnRef, SqlComparisonOp,
     SqlExpression, SqlFunctionArgument, SqlPredicate, SqlValue,
 };
-use skein_storage::{
+use hawdb_storage::{
     RelationalScalarType, RelationalState, RelationalTableSchema, RelationalValue,
 };
 use std::collections::BTreeSet;
@@ -43,7 +43,7 @@ fn evaluate_row_expression<'a>(
         Expr {
             kind: ExprKind::Value(SqlValue::Parameter(position)),
             ..
-        } => Err(SkeinError::Semantic(format!(
+        } => Err(HawdbError::Semantic(format!(
             "aggregate row expression cannot bind parameter ${position}"
         ))),
         Expr {
@@ -61,7 +61,7 @@ fn evaluate_row_expression<'a>(
                 ..
             })] = arguments.as_slice()
             else {
-                return Err(SkeinError::Semantic(
+                return Err(HawdbError::Semantic(
                     "OCTET_LENGTH requires exactly one column".to_string(),
                 ));
             };
@@ -76,7 +76,7 @@ fn evaluate_row_expression<'a>(
                 RelationalValue::Overflow(reference) => Ok(RelationalValue::BigInt(
                     i64::try_from(reference.uncompressed_bytes).unwrap_or(i64::MAX),
                 )),
-                _ => Err(SkeinError::Semantic(
+                _ => Err(HawdbError::Semantic(
                     "OCTET_LENGTH requires TEXT or BYTEA input".to_string(),
                 )),
             }
@@ -84,10 +84,10 @@ fn evaluate_row_expression<'a>(
         Expr {
             kind: ExprKind::Function { name, .. },
             ..
-        } => Err(SkeinError::Semantic(format!(
+        } => Err(HawdbError::Semantic(format!(
             "unsupported aggregate row function {name}"
         ))),
-        _ => Err(SkeinError::Semantic(
+        _ => Err(HawdbError::Semantic(
             "unsupported scalar expression".to_owned(),
         )),
     }

@@ -1,5 +1,5 @@
 {
-  "protocol": "skein-sql-frontend-corpus-v1",
+  "protocol": "hawdb-sql-frontend-corpus-v1",
   "audited_base_revision": "1977888050c405adc873ebcccfec77c3352f4659",
   "case_count": 1007,
   "owned_families": [
@@ -1096,7 +1096,7 @@
         "delete"
       ],
       "direction": "upstream_accepts",
-      "issue": "https://github.com/nowledge-co/skein/issues/159",
+      "issue": "https://github.com/nowledge-co/hawdb/issues/159",
       "reason": "The owned statement router currently supports SELECT and CREATE PROPERTY GRAPH only; DDL/DML remain on the production frontend."
     },
     {
@@ -1105,7 +1105,7 @@
         "explain"
       ],
       "direction": "upstream_accepts",
-      "issue": "https://github.com/nowledge-co/skein/issues/159",
+      "issue": "https://github.com/nowledge-co/hawdb/issues/159",
       "reason": "Owned EXPLAIN routing is not implemented; production EXPLAIN retains its existing read-only contract."
     },
     {
@@ -1114,7 +1114,7 @@
         "select"
       ],
       "direction": "upstream_accepts",
-      "issue": "https://github.com/nowledge-co/skein/issues/159",
+      "issue": "https://github.com/nowledge-co/hawdb/issues/159",
       "reason": "The owned SELECT expression grammar does not yet accept aggregate FILTER in the qualified production shape."
     },
     {
@@ -1123,7 +1123,7 @@
         "select"
       ],
       "direction": "upstream_accepts",
-      "issue": "https://github.com/nowledge-co/skein/issues/159",
+      "issue": "https://github.com/nowledge-co/hawdb/issues/159",
       "reason": "The owned SELECT expression grammar does not yet accept the production LIKE/ILIKE/ESCAPE shape."
     },
     {
@@ -1132,7 +1132,7 @@
         "select"
       ],
       "direction": "upstream_accepts",
-      "issue": "https://github.com/nowledge-co/skein/issues/159",
+      "issue": "https://github.com/nowledge-co/hawdb/issues/159",
       "reason": "The upstream frontend accepts an empty target list while the owned SELECT slice explicitly rejects SELECT FROM source."
     },
     {
@@ -1141,7 +1141,7 @@
         "select"
       ],
       "direction": "upstream_accepts",
-      "issue": "https://github.com/nowledge-co/skein/issues/159",
+      "issue": "https://github.com/nowledge-co/hawdb/issues/159",
       "reason": "The upstream parser accepts these explicit keyword aliases; the owned alias boundary contract explicitly rejects them. PostgreSQL compatibility still needs qualification."
     },
     {
@@ -1151,7 +1151,7 @@
         "create_property_graph"
       ],
       "direction": "owned_accepts",
-      "issue": "https://github.com/nowledge-co/skein/issues/159",
+      "issue": "https://github.com/nowledge-co/hawdb/issues/159",
       "reason": "SQL/PGQ syntax is owned-only; upstream production preparation is not routed to the owned parser. Syntax acceptance does not qualify binding or execution."
     },
     {
@@ -1160,7 +1160,7 @@
         "select"
       ],
       "direction": "owned_accepts",
-      "issue": "https://github.com/nowledge-co/skein/issues/156",
+      "issue": "https://github.com/nowledge-co/hawdb/issues/156",
       "reason": "The production column-anchored predicate/projection AST cannot represent these expressions or scalar predicates. Preserve the expression-refactor gate."
     },
     {
@@ -1169,7 +1169,7 @@
         "select"
       ],
       "direction": "owned_accepts",
-      "issue": "https://github.com/nowledge-co/skein/issues/159",
+      "issue": "https://github.com/nowledge-co/hawdb/issues/159",
       "reason": "The owned syntax retains table column alias lists while production lowering rejects them; binding and result-column semantics remain unqualified."
     },
     {
@@ -1178,7 +1178,7 @@
         "select"
       ],
       "direction": "owned_accepts",
-      "issue": "https://github.com/nowledge-co/skein/issues/159",
+      "issue": "https://github.com/nowledge-co/hawdb/issues/159",
       "reason": "Production preparation validates dense parameter positions after parsing. The owned entry point is syntax-only and does not perform that preparation check."
     }
   ],

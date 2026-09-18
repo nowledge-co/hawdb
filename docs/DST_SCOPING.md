@@ -1,6 +1,6 @@
 # Deterministic storage simulation: scoping decision
 
-Status: recommendation for [issue #301](https://github.com/nowledge-co/skein/issues/301),
+Status: recommendation for [issue #301](https://github.com/nowledge-co/hawdb/issues/301),
 not an approved simulator implementation. Source baseline:
 `23c17ca4d258d51e5425e27e28be8280c5398fa7`.
 
@@ -55,13 +55,13 @@ some combinations. DST is not the first storage or concurrency verification laye
 
 ### Retrospective against actual merged fixes
 
-- [#244 / fix #249](https://github.com/nowledge-co/skein/commit/91f0a73354627fbc308c144e7a21214db6368d4e):
+- [#244 / fix #249](https://github.com/nowledge-co/hawdb/commit/91f0a73354627fbc308c144e7a21214db6368d4e):
   a follower's timeout could see neither queue membership nor an active leader
   after completion. The fix also checks the request's completed result.
   `liveness_check_distinguishes_completed_and_orphaned_requests` now directly
   catches this state. A simulator could explore completion/leadership/timeout
   orderings, but only if it controls those transitions; fake disk bytes cannot.
-- [#174 / fix #305](https://github.com/nowledge-co/skein/commit/43523c9f91944054b153a310962f82355da7c584):
+- [#174 / fix #305](https://github.com/nowledge-co/hawdb/commit/43523c9f91944054b153a310962f82355da7c584):
   incomplete append handling now rolls back to a known prefix or poisons the
   handle when the outcome is uncertain. The
   [`wal_tail` tests](../src/api/tests/storage_recovery/wal_tail.rs) already cover
@@ -70,14 +70,14 @@ some combinations. DST is not the first storage or concurrency verification laye
   varies fragment boundaries and residency modes. DST could combine varying
   short-write offsets with group followers, barrier failures, and restart, beyond
   the fixed partial-write position and authored schedules.
-- [#203 / fix #268](https://github.com/nowledge-co/skein/commit/d0e4742906f8ced610f4be4012df8966654dea64):
+- [#203 / fix #268](https://github.com/nowledge-co/hawdb/commit/d0e4742906f8ced610f4be4012df8966654dea64):
   cached append-handle lifecycle and uncertain durability classification were
   hardened. [`wal_group_sync_failure_rejects_commit_and_poisons_until_reopen`](../src/api/tests/concurrent_transactions.rs)
   already proves that a failed acknowledgment can coexist with a complete record
   recovered later. A simulation oracle must allow that uncertain outcome. The
   same change's nested-batch encoder rejection is a unit/semantic-testing concern,
   not evidence that DST is needed.
-- [#168 / fix #243](https://github.com/nowledge-co/skein/commit/000720daf35cb8e99b6b4dde30c3ad6d3629371a):
+- [#168 / fix #243](https://github.com/nowledge-co/hawdb/commit/000720daf35cb8e99b6b4dde30c3ad6d3629371a):
   reclamation was moved after published in-memory state adoption and made
   retryable maintenance debt. The current
   [`checkpoint_reclamation_failure_is_reported_and_retried_after_publication`](../src/store.rs)
@@ -171,12 +171,12 @@ fresh-state JSON reports. Neither is byte-for-byte full-system replay evidence.
 
 For an initial pilot, keep private store/coordinator access in root `#[cfg(test)]`
 modules and register its manual campaign through the existing Bazel local-fuzz
-suite. Keep public-facade semantic campaigns in `skein-fuzz`. Do not add a
-`skein -> skein-fuzz -> skein` dependency cycle or export internal storage hooks
+suite. Keep public-facade semantic campaigns in `hawdb-fuzz`. Do not add a
+`hawdb -> hawdb-fuzz -> hawdb` dependency cycle or export internal storage hooks
 solely to put a driver in that crate. A later shared helper needs a real ownership
 boundary; a separate simulator crate is not a prerequisite.
 
-A future report can use a distinct proposed `skein-storage-simulation-v1`
+A future report can use a distinct proposed `hawdb-storage-simulation-v1`
 protocol without changing existing v1 campaigns. It must include source revision,
 model/profile identity, generator identity, limits, campaign seed, absolute case
 index, derived seed, decision trace, initial fixture digest, expected/observed
@@ -203,11 +203,11 @@ Use the existing production-boundary tests; a new simulator is not needed to
 prove that the read seam is injectable or that current write regressions exist:
 
 ```sh
-bazel test //crates/storage:skein_storage_tests \
-  //crates/runtime-tokio:skein_runtime_tokio_tests \
-  //:skein_unit_tests //:skein_storage_crash_recovery_tests \
-  //crates/fuzz:skein_fuzz_tests //crates/fuzz:skein_fuzz_cli_tests \
-  //:skein_linux_ci_fuzz_smoke_test --nocache_test_results
+bazel test //crates/storage:hawdb_storage_tests \
+  //crates/runtime-tokio:hawdb_runtime_tokio_tests \
+  //:hawdb_unit_tests //:hawdb_storage_crash_recovery_tests \
+  //crates/fuzz:hawdb_fuzz_tests //crates/fuzz:hawdb_fuzz_cli_tests \
+  //:hawdb_linux_ci_fuzz_smoke_test --nocache_test_results
 ```
 
 Inspect actual test logs, not only suite exit codes. In particular, require the

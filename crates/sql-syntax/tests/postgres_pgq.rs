@@ -3,9 +3,9 @@
 //! Reference revision: PostgreSQL 3d00537feb565c410baf41bb301eee338e4b2317.
 //! Reference files: src/test/regress/sql/create_property_graph.sql and
 //! src/test/regress/sql/graph_table.sql. The cases are reduced and renamed for
-//! Skein; PostgreSQL expected-output text is not copied.
+//! Hawdb; PostgreSQL expected-output text is not copied.
 
-use skein_sql_syntax::{
+use hawdb_sql_syntax::{
     parse_graph_table, parse_pgq_statement, ElementLabel, GraphEdgeDirection,
     GraphPathPrimarySyntax, PgqStatement, PropertyExposure, SyntaxErrorCode,
 };

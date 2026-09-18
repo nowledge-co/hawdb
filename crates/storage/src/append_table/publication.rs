@@ -9,7 +9,7 @@ use super::{
     AppendTableRow, AppendTableSchema, AppendTransaction, AppendWrite,
 };
 use crate::{durable_replace_file, RelationalKey};
-use skein_integrity::{integrity_digest, Sha256Digest, SHA256_BYTES};
+use hawdb_integrity::{integrity_digest, Sha256Digest, SHA256_BYTES};
 use std::collections::BTreeMap;
 use std::fs::{self, File};
 use std::io::{Read, Write};
@@ -23,11 +23,11 @@ const MANIFEST_INTEGRITY_OFFSET: usize = 84;
 const MANIFEST_INTEGRITY_TRAILER_OFFSET: usize = 120;
 
 pub fn append_segment_file(generation: u64) -> String {
-    format!("append-{generation}.segment.skein")
+    format!("append-{generation}.segment.hawdb")
 }
 
 pub fn append_generation_manifest_file(generation: u64) -> String {
-    format!("append-{generation}.manifest.skein")
+    format!("append-{generation}.manifest.hawdb")
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -1038,7 +1038,7 @@ mod tests {
             .duration_since(UNIX_EPOCH)
             .expect("clock after epoch")
             .as_nanos();
-        std::env::temp_dir().join(format!("skein-append-{name}-{nonce}"))
+        std::env::temp_dir().join(format!("hawdb-append-{name}-{nonce}"))
     }
 
     fn schema() -> AppendTableSchema {

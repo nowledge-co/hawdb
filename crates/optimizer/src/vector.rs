@@ -1,5 +1,5 @@
 use crate::{OptimizerContext, VectorPrecision};
-use skein_plan::{
+use hawdb_plan::{
     VectorBackendSelectionReason, VectorCandidateSource, VectorPhysicalPlan,
     VectorSearchLogicalPlan,
 };
@@ -219,8 +219,8 @@ pub struct VectorPlanProperties {
 }
 
 impl VectorPlanProperties {
-    pub fn execution_resource_profile(&self) -> skein_plan::VectorExecutionResourceProfile {
-        skein_plan::VectorExecutionResourceProfile {
+    pub fn execution_resource_profile(&self) -> hawdb_plan::VectorExecutionResourceProfile {
+        hawdb_plan::VectorExecutionResourceProfile {
             priority: self.priority,
             max_parallelism: self.max_parallelism.max(1),
             max_working_memory_bytes: self.max_memory_bytes,
@@ -317,7 +317,7 @@ pub fn validate_vector_pipeline(plan: &VectorPhysicalPlan) -> Result<(), VectorP
 mod tests {
     use super::*;
     use crate::{QueryFamily, ResourceHints};
-    use skein_plan::VectorCandidateSource;
+    use hawdb_plan::VectorCandidateSource;
 
     #[test]
     fn vector_pipeline_enforces_filter_candidate_raw_rerank_top_k() {

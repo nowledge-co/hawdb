@@ -5,22 +5,22 @@
 //! resource limit.
 
 use crate::{
-    skein_lightning_artifact_summary, skein_lightning_graph_stream_validation_json,
-    skein_lightning_relational_stream_validation_json, validate_skein_lightning_graph_stream,
-    validate_skein_lightning_relational_stream, SKEIN_LIGHTNING_BOOTSTRAP_PROTOCOL_VERSION,
-    SKEIN_LIGHTNING_RELATIONAL_STREAM_FORMAT_VERSION,
-    SKEIN_LIGHTNING_STAGING_CATALOG_PROTOCOL_VERSION,
+    hawdb_lightning_artifact_summary, hawdb_lightning_graph_stream_validation_json,
+    hawdb_lightning_relational_stream_validation_json, validate_hawdb_lightning_graph_stream,
+    validate_hawdb_lightning_relational_stream, HAWDB_LIGHTNING_BOOTSTRAP_PROTOCOL_VERSION,
+    HAWDB_LIGHTNING_RELATIONAL_STREAM_FORMAT_VERSION,
+    HAWDB_LIGHTNING_STAGING_CATALOG_PROTOCOL_VERSION,
 };
-use skein_core::{Result, SkeinError};
-use skein_integrity::checksum_u64;
+use hawdb_core::{HawdbError, Result};
+use hawdb_integrity::checksum_u64;
 use std::fs;
 use std::path::Path;
 
-pub fn verify_skein_lightning_staging_catalog(
+pub fn verify_hawdb_lightning_staging_catalog(
     staging_dir: impl AsRef<Path>,
 ) -> Result<serde_json::Value> {
     let staging_dir = staging_dir.as_ref();
-    let catalog_path = staging_dir.join("skein_lightning_staging_catalog.json");
+    let catalog_path = staging_dir.join("hawdb_lightning_staging_catalog.json");
     let catalog = read_json_file(&catalog_path)?;
     let mut errors = Vec::new();
     let mut artifact_errors = Vec::new();
@@ -36,7 +36,7 @@ pub fn verify_skein_lightning_staging_catalog(
     let mut bundle = None;
 
     let catalog_protocol_matches = catalog.get("protocol").and_then(serde_json::Value::as_str)
-        == Some("skein-lightning-staging-catalog");
+        == Some("hawdb-lightning-staging-catalog");
     if !catalog_protocol_matches {
         record_error(
             &mut errors,
@@ -47,7 +47,7 @@ pub fn verify_skein_lightning_staging_catalog(
     let catalog_protocol_version_matches = catalog
         .get("protocol_version")
         .and_then(serde_json::Value::as_u64)
-        == Some(SKEIN_LIGHTNING_STAGING_CATALOG_PROTOCOL_VERSION);
+        == Some(HAWDB_LIGHTNING_STAGING_CATALOG_PROTOCOL_VERSION);
     if !catalog_protocol_version_matches {
         record_error(
             &mut errors,
@@ -179,7 +179,7 @@ pub fn verify_skein_lightning_staging_catalog(
         .as_ref()
         .and_then(|manifest| manifest.get("protocol_version"))
         .and_then(serde_json::Value::as_u64)
-        == Some(SKEIN_LIGHTNING_BOOTSTRAP_PROTOCOL_VERSION);
+        == Some(HAWDB_LIGHTNING_BOOTSTRAP_PROTOCOL_VERSION);
     if !manifest_protocol_version_matches {
         record_error(
             &mut errors,
@@ -190,16 +190,16 @@ pub fn verify_skein_lightning_staging_catalog(
 
     let graph_stream_validation = graph_stream
         .as_ref()
-        .map(|encoded| validate_skein_lightning_graph_stream(encoded, None));
+        .map(|encoded| validate_hawdb_lightning_graph_stream(encoded, None));
     let graph_stream_validation_json = graph_stream_validation
         .as_ref()
-        .map(skein_lightning_graph_stream_validation_json);
+        .map(hawdb_lightning_graph_stream_validation_json);
     let relational_stream_validation = relational_stream
         .as_ref()
-        .map(|encoded| validate_skein_lightning_relational_stream(encoded, None));
+        .map(|encoded| validate_hawdb_lightning_relational_stream(encoded, None));
     let mut relational_stream_validation_json = relational_stream_validation
         .as_ref()
-        .map(skein_lightning_relational_stream_validation_json);
+        .map(hawdb_lightning_relational_stream_validation_json);
     if let (Some(validation), Some(manifest)) = (
         relational_stream_validation_json.as_mut(),
         manifest.as_ref(),
@@ -256,7 +256,7 @@ pub fn verify_skein_lightning_staging_catalog(
                 let matches = manifest
                     .get("relational_stream_format_version")
                     .and_then(serde_json::Value::as_u64)
-                    == Some(SKEIN_LIGHTNING_RELATIONAL_STREAM_FORMAT_VERSION)
+                    == Some(HAWDB_LIGHTNING_RELATIONAL_STREAM_FORMAT_VERSION)
                     && manifest
                         .get("relational_stream_checksum")
                         .and_then(serde_json::Value::as_u64)
@@ -343,7 +343,7 @@ pub fn verify_skein_lightning_staging_catalog(
                 .and_then(serde_json::Value::as_bool)
                 == Some(true)
     });
-    let artifact_summary = skein_lightning_artifact_summary(&artifact_reports, "actual_byte_len");
+    let artifact_summary = hawdb_lightning_artifact_summary(&artifact_reports, "actual_byte_len");
     let catalog_state_ready = catalog
         .get("stage_state")
         .and_then(serde_json::Value::as_str)
@@ -398,9 +398,9 @@ pub fn verify_skein_lightning_staging_catalog(
         "blocked"
     };
     Ok(serde_json::json!({
-        "protocol": "skein-lightning-staging-verification",
-        "protocol_version": SKEIN_LIGHTNING_STAGING_CATALOG_PROTOCOL_VERSION,
-        "catalog_path": "skein_lightning_staging_catalog.json",
+        "protocol": "hawdb-lightning-staging-verification",
+        "protocol_version": HAWDB_LIGHTNING_STAGING_CATALOG_PROTOCOL_VERSION,
+        "catalog_path": "hawdb_lightning_staging_catalog.json",
         "artifact_integrity": artifact_integrity,
         "catalog_protocol_matches": catalog_protocol_matches,
         "catalog_protocol_version_matches": catalog_protocol_version_matches,
@@ -442,7 +442,7 @@ pub fn verify_skein_lightning_staging_catalog(
 fn read_json_file(path: &Path) -> Result<serde_json::Value> {
     let bytes = fs::read(path)?;
     serde_json::from_slice(&bytes)
-        .map_err(|_| SkeinError::Execution("invalid JSON file: invalid_json".to_string()))
+        .map_err(|_| HawdbError::Execution("invalid JSON file: invalid_json".to_string()))
 }
 
 fn record_error(errors: &mut Vec<String>, group: &mut Vec<String>, message: impl Into<String>) {
@@ -478,7 +478,7 @@ fn verify_bundle_storage_recovery_evidence(
     let protocol_matches = storage_recovery
         .get("protocol")
         .and_then(serde_json::Value::as_str)
-        == Some("skein-storage-recovery-report");
+        == Some("hawdb-storage-recovery-report");
     if !protocol_matches {
         record_error(
             errors,
@@ -521,16 +521,16 @@ fn verify_bundle_storage_recovery_evidence(
     }
 }
 
-pub fn verify_skein_lightning_published_manifest(
+pub fn verify_hawdb_lightning_published_manifest(
     staging_dir: impl AsRef<Path>,
     publish_dir: impl AsRef<Path>,
 ) -> Result<serde_json::Value> {
     let staging_dir = staging_dir.as_ref();
     let publish_dir = publish_dir.as_ref();
-    let published_path = publish_dir.join("skein_lightning_published_manifest.json");
+    let published_path = publish_dir.join("hawdb_lightning_published_manifest.json");
     let published = read_json_file(&published_path)?;
-    let staging_verification = verify_skein_lightning_staging_catalog(staging_dir)?;
-    let catalog_path = staging_dir.join("skein_lightning_staging_catalog.json");
+    let staging_verification = verify_hawdb_lightning_staging_catalog(staging_dir)?;
+    let catalog_path = staging_dir.join("hawdb_lightning_staging_catalog.json");
     let catalog_bytes = fs::read(&catalog_path)?;
     let actual_catalog_checksum = checksum_u64(&catalog_bytes);
     let actual_catalog_byte_len = catalog_bytes.len() as u64;
@@ -556,7 +556,7 @@ pub fn verify_skein_lightning_published_manifest(
         .cloned()
         .unwrap_or_else(default_storage_recovery_evidence);
     let catalog = serde_json::from_slice::<serde_json::Value>(&catalog_bytes)
-        .map_err(|_| SkeinError::Execution("invalid JSON file: invalid_json".to_string()))?;
+        .map_err(|_| HawdbError::Execution("invalid JSON file: invalid_json".to_string()))?;
     let manifest = read_staging_artifact_json(&catalog, staging_dir, "manifest")?;
     let pointer_matches_manifest = published.get("database_commit_epoch")
         == manifest.get("database_commit_epoch")
@@ -618,7 +618,7 @@ pub fn verify_skein_lightning_published_manifest(
         "blocked"
     };
     Ok(serde_json::json!({
-        "protocol": "skein-lightning-published-verification",
+        "protocol": "hawdb-lightning-published-verification",
         "protocol_version": 1,
         "pointer_state_published": pointer_state_published,
         "catalog_checksum_matches": catalog_checksum_matches,
@@ -641,7 +641,7 @@ pub fn verify_skein_lightning_published_manifest(
     }))
 }
 
-pub fn read_skein_lightning_staging_artifact_json(
+pub fn read_hawdb_lightning_staging_artifact_json(
     catalog: &serde_json::Value,
     staging_dir: &Path,
     kind: &str,
@@ -658,18 +658,18 @@ fn read_staging_artifact_json(
         .get("artifacts")
         .and_then(serde_json::Value::as_array)
         .ok_or_else(|| {
-            SkeinError::Execution("staging catalog missing artifacts array".to_string())
+            HawdbError::Execution("staging catalog missing artifacts array".to_string())
         })?;
     let artifact = artifacts
         .iter()
         .find(|artifact| artifact.get("kind").and_then(serde_json::Value::as_str) == Some(kind))
-        .ok_or_else(|| SkeinError::Execution(format!("staging catalog missing {kind} artifact")))?;
+        .ok_or_else(|| HawdbError::Execution(format!("staging catalog missing {kind} artifact")))?;
     let path = artifact
         .get("path")
         .and_then(serde_json::Value::as_str)
-        .ok_or_else(|| SkeinError::Execution(format!("staging {kind} artifact missing path")))?;
+        .ok_or_else(|| HawdbError::Execution(format!("staging {kind} artifact missing path")))?;
     if path.contains('/') || path.contains('\\') {
-        return Err(SkeinError::Execution(format!(
+        return Err(HawdbError::Execution(format!(
             "staging {kind} artifact uses non-local path {path}"
         )));
     }
@@ -688,34 +688,34 @@ fn default_storage_recovery_evidence() -> serde_json::Value {
 
 #[cfg(test)]
 mod tests {
-    use super::verify_skein_lightning_staging_catalog;
+    use super::verify_hawdb_lightning_staging_catalog;
     use crate::{
-        stage_skein_lightning_bootstrap_export, CanonicalGraphSnapshotExport,
-        SkeinLightningBootstrapExport, SkeinLightningRelationalStream,
+        stage_hawdb_lightning_bootstrap_export, CanonicalGraphSnapshotExport,
+        HawdbLightningBootstrapExport, HawdbLightningRelationalStream,
     };
-    use skein_storage::RelationalState;
+    use hawdb_storage::RelationalState;
 
     #[test]
     fn verifies_a_staged_export_through_the_bootstrap_owner() {
         let snapshot = CanonicalGraphSnapshotExport::from_rows(7, Vec::new(), Vec::new());
         let relational_stream =
-            SkeinLightningRelationalStream::from_state(7, &RelationalState::default()).unwrap();
-        let manifest = snapshot.skein_lightning_bootstrap_manifest(&relational_stream);
-        let graph_stream = snapshot.skein_lightning_graph_stream();
-        let export = SkeinLightningBootstrapExport {
+            HawdbLightningRelationalStream::from_state(7, &RelationalState::default()).unwrap();
+        let manifest = snapshot.hawdb_lightning_bootstrap_manifest(&relational_stream);
+        let graph_stream = snapshot.hawdb_lightning_graph_stream();
+        let export = HawdbLightningBootstrapExport {
             snapshot,
             manifest,
             graph_stream,
             relational_stream,
         };
         let staging_dir = std::env::temp_dir().join(format!(
-            "skein-bootstrap-staging-verification-{}",
+            "hawdb-bootstrap-staging-verification-{}",
             std::process::id()
         ));
         let _ = std::fs::remove_dir_all(&staging_dir);
-        stage_skein_lightning_bootstrap_export(&export, &staging_dir).unwrap();
+        stage_hawdb_lightning_bootstrap_export(&export, &staging_dir).unwrap();
 
-        let report = verify_skein_lightning_staging_catalog(&staging_dir).unwrap();
+        let report = verify_hawdb_lightning_staging_catalog(&staging_dir).unwrap();
 
         assert_eq!(report["validation_gate"]["decision"], "ready");
         assert_eq!(report["artifact_integrity"], true);

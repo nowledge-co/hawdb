@@ -7,9 +7,9 @@ use super::{
     blocking_operator_memory_report_value, graph_expansion_report_value,
     pipeline_memory_report_value, scan_pruning_report_value, vector_execution_report_value,
 };
-use skein_core::{LabelId, RelTypeId, Value};
-use skein_plan::{VectorBackendSelectionReason, VectorCandidateSource};
-use skein_storage::{ScanPruningReport, ScanPruningStrategy, ScanPruningTargetKind};
+use hawdb_core::{LabelId, RelTypeId, Value};
+use hawdb_plan::{VectorBackendSelectionReason, VectorCandidateSource};
+use hawdb_storage::{ScanPruningReport, ScanPruningStrategy, ScanPruningTargetKind};
 
 // These complete field inventories pin the old facade output, including fields
 // deliberately absent from the value encoding. They are not production helpers.

@@ -4,18 +4,18 @@ use crate::nowledge_mem::{
 };
 use crate::store::DurabilityPolicy;
 use crate::{
-    AdaptiveVectorBackendPolicy, Database, DatabaseConfig, QueryOutput, QueryStreamOptions, Result,
-    RuntimeCapabilities, SearchIndex, SearchRangeReadConfig, SkeinError, Value,
+    AdaptiveVectorBackendPolicy, Database, DatabaseConfig, HawdbError, QueryOutput,
+    QueryStreamOptions, Result, RuntimeCapabilities, SearchIndex, SearchRangeReadConfig, Value,
 };
-use skein_core::{RuntimeCancellationReason, RuntimeTaskContext};
-use skein_qos::{
+use hawdb_core::{RuntimeCancellationReason, RuntimeTaskContext};
+use hawdb_qos::{
     IoConcurrencyBudget, RuntimeAdmissionError, RuntimeGovernor, RuntimeGovernorConfig,
     RuntimeMemorySnapshot, RuntimeResourceBudget, RuntimeResourceSnapshot, StorageDeviceProfile,
 };
 #[cfg(test)]
-use skein_readiness::embedded_query_path::EMBEDDED_QUERY_PATH_READINESS_PROTOCOL;
-use skein_readiness::embedded_query_path::{EmbeddedQueryEntrypoint, EmbeddedQueryPathReadiness};
-use skein_storage::SegmentReadScheduler;
+use hawdb_readiness::embedded_query_path::EMBEDDED_QUERY_PATH_READINESS_PROTOCOL;
+use hawdb_readiness::embedded_query_path::{EmbeddedQueryEntrypoint, EmbeddedQueryPathReadiness};
+use hawdb_storage::SegmentReadScheduler;
 use std::collections::BTreeMap;
 use std::error::Error;
 use std::fmt::{self, Display, Formatter};
@@ -54,7 +54,7 @@ impl EmbeddedRuntimeResources {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct SkeinEmbeddedOpenOptions {
+pub struct HawdbEmbeddedOpenOptions {
     pub path: PathBuf,
     pub config: DatabaseConfig,
     pub durability: DurabilityPolicy,
@@ -66,7 +66,7 @@ pub struct SkeinEmbeddedOpenOptions {
 }
 
 #[derive(Debug)]
-pub struct SkeinEmbedded {
+pub struct HawdbEmbedded {
     path: PathBuf,
     database: Database,
     deployment_profile: EmbeddedDeploymentProfile,
@@ -76,7 +76,7 @@ pub struct SkeinEmbedded {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum EmbeddedQueryError {
-    Database(SkeinError),
+    Database(HawdbError),
     Admission(RuntimeAdmissionError),
     Stopped(RuntimeCancellationReason),
 }
@@ -101,8 +101,8 @@ impl Error for EmbeddedQueryError {
     }
 }
 
-impl From<SkeinError> for EmbeddedQueryError {
-    fn from(error: SkeinError) -> Self {
+impl From<HawdbError> for EmbeddedQueryError {
+    fn from(error: HawdbError) -> Self {
         Self::Database(error)
     }
 }
@@ -113,7 +113,7 @@ impl From<RuntimeAdmissionError> for EmbeddedQueryError {
     }
 }
 
-impl SkeinEmbeddedOpenOptions {
+impl HawdbEmbeddedOpenOptions {
     pub fn new(path: impl Into<PathBuf>) -> Self {
         Self::for_profile(path, EmbeddedDeploymentProfile::SharedHost)
     }
@@ -177,12 +177,12 @@ impl SkeinEmbeddedOpenOptions {
     }
 }
 
-impl SkeinEmbedded {
+impl HawdbEmbedded {
     pub fn open(path: impl AsRef<Path>) -> Result<Self> {
-        Self::open_with_options(SkeinEmbeddedOpenOptions::new(path.as_ref().to_path_buf()))
+        Self::open_with_options(HawdbEmbeddedOpenOptions::new(path.as_ref().to_path_buf()))
     }
 
-    pub fn open_with_options(options: SkeinEmbeddedOpenOptions) -> Result<Self> {
+    pub fn open_with_options(options: HawdbEmbeddedOpenOptions) -> Result<Self> {
         let resource_snapshot_pinned = options.resource_snapshot.is_some();
         let resource_snapshot = options
             .resource_snapshot
@@ -302,7 +302,7 @@ impl SkeinEmbedded {
         self.check_admitted_query_context(task_context)?;
         let planning_request = crate::api::runtime_planning_request(
             cypher_text.len(),
-            skein_qos::RuntimeWorkPriority::Foreground,
+            hawdb_qos::RuntimeWorkPriority::Foreground,
         );
         let admission = {
             let _planning_permit = self.try_admit_query(planning_request)?;
@@ -362,8 +362,8 @@ impl SkeinEmbedded {
 
     fn try_admit_query(
         &self,
-        request: skein_qos::RuntimeWorkRequest,
-    ) -> std::result::Result<skein_qos::RuntimePermit, EmbeddedQueryError> {
+        request: hawdb_qos::RuntimeWorkRequest,
+    ) -> std::result::Result<hawdb_qos::RuntimePermit, EmbeddedQueryError> {
         match self.runtime_governor.try_admit(request) {
             Ok(permit) => Ok(permit),
             Err(error) => {
@@ -452,7 +452,7 @@ fn default_database_config(profile: EmbeddedDeploymentProfile) -> DatabaseConfig
             max_wal_replay_bytes: Some(128 * 1024 * 1024),
             max_wal_record_bytes: Some(4 * 1024 * 1024),
             max_wal_batch_operations: Some(25_000),
-            mutation_limits: skein_storage::MutationLimits {
+            mutation_limits: hawdb_storage::MutationLimits {
                 max_affected_rows: std::num::NonZeroUsize::new(25_000).unwrap(),
                 max_operations: std::num::NonZeroUsize::new(25_000).unwrap(),
                 max_result_rows: std::num::NonZeroUsize::new(512).unwrap(),
@@ -464,7 +464,7 @@ fn default_database_config(profile: EmbeddedDeploymentProfile) -> DatabaseConfig
             max_search_projection_change_log_entries: Some(512),
             max_search_projection_change_log_bytes: Some(8 * 1024 * 1024),
             search_projection_relational_change_limits:
-                skein_storage::RelationalPrimaryKeyChangeCaptureLimits {
+                hawdb_storage::RelationalPrimaryKeyChangeCaptureLimits {
                     max_entries: std::num::NonZeroUsize::new(512).unwrap(),
                     max_bytes: std::num::NonZeroUsize::new(16 * 1024).unwrap(),
                 },
@@ -508,7 +508,7 @@ fn default_runtime_governor_config(profile: EmbeddedDeploymentProfile) -> Runtim
 mod tests {
     use super::*;
     use crate::{
-        NowledgeMemGraphMode, NowledgeMemReadinessOptions, RuntimeCapability, SkeinError, Value,
+        HawdbError, NowledgeMemGraphMode, NowledgeMemReadinessOptions, RuntimeCapability, Value,
         NOWLEDGE_MEM_LIBRARY_READINESS_PROTOCOL,
     };
     use std::collections::BTreeMap;
@@ -522,8 +522,8 @@ mod tests {
         let root = unique_test_dir("embedded-open");
         let db_path = root.join("graph");
         let slow_log_path = root.join("slow-query-log.jsonl");
-        let mut engine = SkeinEmbedded::open_with_options(
-            SkeinEmbeddedOpenOptions::new(&db_path).with_config(DatabaseConfig {
+        let mut engine = HawdbEmbedded::open_with_options(
+            HawdbEmbeddedOpenOptions::new(&db_path).with_config(DatabaseConfig {
                 slow_query_log_threshold_micros: 0,
                 slow_query_log_capacity: 8,
                 ..DatabaseConfig::default()
@@ -547,7 +547,7 @@ mod tests {
         engine.write_slow_query_log_jsonl(&slow_log_path).unwrap();
 
         let slow_log = std::fs::read_to_string(slow_log_path).unwrap();
-        assert!(slow_log.contains("skein-slow-query-log-event-v1"));
+        assert!(slow_log.contains("hawdb-slow-query-log-event-v1"));
         assert!(slow_log.contains("query_digest"));
         assert!(!slow_log.contains("MATCH"));
         assert!(!slow_log.contains("m1"));
@@ -557,7 +557,7 @@ mod tests {
     fn embedded_handle_opens_nowledge_mem_store() {
         let root = unique_test_dir("embedded-nowledge-mem");
         let graph_path = root.join("graph");
-        let (store, open_report) = SkeinEmbedded::open_nowledge_mem(
+        let (store, open_report) = HawdbEmbedded::open_nowledge_mem(
             NowledgeMemOpenOptions::graph_only(&graph_path, NowledgeMemGraphMode::WritableCutover),
         )
         .unwrap();
@@ -576,7 +576,7 @@ mod tests {
 
     #[test]
     fn mobile_profile_uses_bounded_defaults() {
-        let options = SkeinEmbeddedOpenOptions::mobile("mobile.db");
+        let options = HawdbEmbeddedOpenOptions::mobile("mobile.db");
 
         assert_eq!(
             options.deployment_profile,
@@ -616,7 +616,7 @@ mod tests {
 
     #[test]
     fn query_path_readiness_rejects_raw_database_access() {
-        let raw = SkeinEmbedded::raw_database_query_path_readiness();
+        let raw = HawdbEmbedded::raw_database_query_path_readiness();
 
         assert_eq!(raw.protocol, EMBEDDED_QUERY_PATH_READINESS_PROTOCOL);
         assert_eq!(raw.entrypoint, EmbeddedQueryEntrypoint::RawDatabase);
@@ -630,7 +630,7 @@ mod tests {
     #[test]
     fn admitted_sync_queries_hold_runtime_governor_permits() {
         let root = unique_test_dir("embedded-admitted-query");
-        let mut engine = SkeinEmbedded::open(root.join("graph")).unwrap();
+        let mut engine = HawdbEmbedded::open(root.join("graph")).unwrap();
 
         engine
             .query_admitted("CREATE (:Memory {id: 'admitted'})")
@@ -654,13 +654,13 @@ mod tests {
     #[test]
     fn saturated_sync_admission_rejects_before_parsing() {
         let root = unique_test_dir("embedded-planning-gate");
-        let mut engine = SkeinEmbedded::open(root.join("graph")).unwrap();
+        let mut engine = HawdbEmbedded::open(root.join("graph")).unwrap();
         let governor = engine.runtime_governor().clone();
         let busy = governor
             .try_admit(
-                skein_qos::RuntimeWorkRequest::new(
-                    skein_qos::RuntimeWorkPriority::Foreground,
-                    skein_qos::RuntimeWorkKind::Control,
+                hawdb_qos::RuntimeWorkRequest::new(
+                    hawdb_qos::RuntimeWorkPriority::Foreground,
+                    hawdb_qos::RuntimeWorkKind::Control,
                 )
                 .with_cpu_slots(governor.snapshot().limits.effective_cpu_slots.get()),
             )
@@ -688,8 +688,8 @@ mod tests {
             memory_budget_bytes: Some(1),
             ..RuntimeGovernorConfig::default()
         };
-        let mut engine = SkeinEmbedded::open_with_options(
-            SkeinEmbeddedOpenOptions::new(root.join("graph"))
+        let mut engine = HawdbEmbedded::open_with_options(
+            HawdbEmbeddedOpenOptions::new(root.join("graph"))
                 .with_runtime_governor_config(governor),
         )
         .unwrap();
@@ -701,7 +701,7 @@ mod tests {
         assert!(matches!(
             error,
             EmbeddedQueryError::Admission(RuntimeAdmissionError {
-                code: skein_qos::RuntimeAdmissionCode::MemorySaturated,
+                code: hawdb_qos::RuntimeAdmissionCode::MemorySaturated,
                 retryable: false,
                 ..
             })
@@ -717,8 +717,8 @@ mod tests {
     #[test]
     fn admitted_sync_query_reports_pre_execution_cancellation() {
         let root = unique_test_dir("embedded-admission-cancel");
-        let mut engine = SkeinEmbedded::open(root.join("graph")).unwrap();
-        let cancellation = skein_core::RuntimeCancellationToken::new();
+        let mut engine = HawdbEmbedded::open(root.join("graph")).unwrap();
+        let cancellation = hawdb_core::RuntimeCancellationToken::new();
         cancellation.cancel();
         let context = RuntimeTaskContext::without_deadline(cancellation);
 
@@ -737,7 +737,7 @@ mod tests {
 
     #[test]
     fn host_can_override_mobile_runtime_capabilities() {
-        let options = SkeinEmbeddedOpenOptions::mobile("mobile.db").with_runtime_capabilities(
+        let options = HawdbEmbeddedOpenOptions::mobile("mobile.db").with_runtime_capabilities(
             RuntimeCapabilities::mobile_embedded()
                 .with(crate::RuntimeCapability::GraphAnalytics, true),
         );
@@ -750,13 +750,13 @@ mod tests {
     fn explicit_storage_io_budget_overrides_profile_default() {
         let root = unique_test_dir("embedded-io-budget");
         let storage_device = StorageDeviceProfile::host_provided(
-            skein_qos::StorageMediaKind::Rotational,
+            hawdb_qos::StorageMediaKind::Rotational,
             NonZeroUsize::new(1),
         );
-        let options = SkeinEmbeddedOpenOptions::mobile(root.join("graph"))
+        let options = HawdbEmbeddedOpenOptions::mobile(root.join("graph"))
             .with_storage_device_profile(storage_device)
             .with_storage_io_budget(IoConcurrencyBudget::new(7, 2));
-        let engine = SkeinEmbedded::open_with_options(options).unwrap();
+        let engine = HawdbEmbedded::open_with_options(options).unwrap();
 
         assert_eq!(
             engine.deployment_profile(),
@@ -797,11 +797,11 @@ mod tests {
     fn device_profile_drives_default_io_budget_without_cpu_inference() {
         let root = unique_test_dir("embedded-device-profile");
         let storage_device = StorageDeviceProfile::host_provided(
-            skein_qos::StorageMediaKind::NonRotational,
+            hawdb_qos::StorageMediaKind::NonRotational,
             NonZeroUsize::new(12),
         );
-        let engine = SkeinEmbedded::open_with_options(
-            SkeinEmbeddedOpenOptions::new(root.join("graph"))
+        let engine = HawdbEmbedded::open_with_options(
+            HawdbEmbeddedOpenOptions::new(root.join("graph"))
                 .with_storage_device_profile(storage_device),
         )
         .unwrap();
@@ -826,8 +826,8 @@ mod tests {
                 None,
             ),
         );
-        let mut engine = SkeinEmbedded::open_with_options(
-            SkeinEmbeddedOpenOptions::new(root.join("graph"))
+        let mut engine = HawdbEmbedded::open_with_options(
+            HawdbEmbeddedOpenOptions::new(root.join("graph"))
                 .with_resource_snapshot(initial)
                 .with_storage_io_budget(IoConcurrencyBudget::new(8, 2)),
         )
@@ -873,7 +873,7 @@ mod tests {
         let root = unique_test_dir("embedded-profile-compatibility");
         let graph_path = root.join("graph");
         let storage_version = {
-            let mut shared_host = SkeinEmbedded::open(&graph_path).unwrap();
+            let mut shared_host = HawdbEmbedded::open(&graph_path).unwrap();
             shared_host
                 .database_mut()
                 .query("CREATE NODE TABLE Memory")
@@ -900,7 +900,7 @@ mod tests {
 
         {
             let mut mobile =
-                SkeinEmbedded::open_with_options(SkeinEmbeddedOpenOptions::mobile(&graph_path))
+                HawdbEmbedded::open_with_options(HawdbEmbeddedOpenOptions::mobile(&graph_path))
                     .unwrap();
             assert_eq!(mobile.database().storage_version(), storage_version);
             let output = mobile
@@ -921,7 +921,7 @@ mod tests {
                 .unwrap_err();
             assert_eq!(
                 error,
-                SkeinError::CapabilityUnavailable {
+                HawdbError::CapabilityUnavailable {
                     capability: RuntimeCapability::GraphAnalytics
                 }
             );
@@ -941,7 +941,7 @@ mod tests {
                 .unwrap();
         }
 
-        let mut shared_host = SkeinEmbedded::open(&graph_path).unwrap();
+        let mut shared_host = HawdbEmbedded::open(&graph_path).unwrap();
         let output = shared_host
             .database_mut()
             .query("MATCH (m:Memory) RETURN m.id AS id ORDER BY id ASC")
@@ -961,7 +961,7 @@ mod tests {
 
     fn unique_test_dir(prefix: &str) -> PathBuf {
         let id = TEST_COUNTER.fetch_add(1, Ordering::SeqCst);
-        let dir = std::env::temp_dir().join(format!("skein-{prefix}-{}-{id}", std::process::id()));
+        let dir = std::env::temp_dir().join(format!("hawdb-{prefix}-{}-{id}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
         dir
     }

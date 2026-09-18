@@ -1,7 +1,7 @@
 use crate::analytics::{ProjectionLayout, ProjectionMemoryBudget};
 #[cfg(test)]
 use crate::cypher::RelationshipDirection;
-use crate::error::{Result, SkeinError};
+use crate::error::{HawdbError, Result};
 use crate::optimizer::PhysicalPlan;
 #[cfg(test)]
 use crate::planner::GraphAlgorithmKind;
@@ -16,9 +16,9 @@ use crate::store::{
     ScanPruningReport,
 };
 use crate::value::Value;
-use skein_core::RuntimeTaskContext;
-use skein_ddl::{object_state_to_core, property_type_to_core, table_kind_to_core};
-use skein_executor::ExecutionLimit;
+use hawdb_core::RuntimeTaskContext;
+use hawdb_ddl::{object_state_to_core, property_type_to_core, table_kind_to_core};
+use hawdb_executor::ExecutionLimit;
 use std::collections::BTreeMap;
 #[cfg(test)]
 use std::num::NonZeroU64;
@@ -46,6 +46,31 @@ mod vector;
 use batch::*;
 use entrypoint::*;
 use expression::*;
+use hawdb_executor::analytics::try_projected_graph_with_node_filter;
+#[cfg(feature = "tokio-runtime")]
+pub(crate) use hawdb_executor::binding::map_memory_bytes;
+#[cfg(test)]
+pub(crate) use hawdb_executor::binding::map_payload_bytes;
+use hawdb_executor::binding::Binding;
+pub(crate) use hawdb_executor::external::NoExternalReadOperator;
+pub(crate) use hawdb_executor::memory::{
+    enforced_query_memory_budget, enforced_result_memory_budget, estimated_execution_memory,
+    estimated_mutation_memory_bytes, max_external_read_parallelism,
+};
+use hawdb_executor::pipeline::{runtime_checkpoint, BatchControl};
+use hawdb_executor::predicate::{
+    label_ids_for_pattern, node_matches_label_pattern, node_matches_property_filter,
+    property_filter_from_properties,
+};
+use hawdb_executor::QueryMemoryLedger;
+#[cfg(test)]
+use hawdb_executor::{pipeline::BindingBatch, QueryMemoryClass};
+pub use hawdb_executor::{ExecutionMemoryConfig, SpillPoolSnapshot};
+pub use hawdb_executor::{
+    ExternalReadOperator, ExternalReadResourceContract, ExternalReadResultBudget,
+    OperatorCardinalityProfile, VectorSeedExecutionOutput, VectorSeedExecutionRequest,
+    VectorSeedExecutionRow,
+};
 pub(crate) use mutation::project_staged_mutation_return_rows;
 pub use mutation::{execute_mutation_with_limits, is_mutation_plan, mutation_command};
 use mutation::{node_set_assignment, relationship_on_create_property_value};
@@ -53,49 +78,24 @@ use observer::*;
 use read::*;
 #[cfg(test)]
 use scan::*;
-use skein_executor::analytics::try_projected_graph_with_node_filter;
-#[cfg(feature = "tokio-runtime")]
-pub(crate) use skein_executor::binding::map_memory_bytes;
-#[cfg(test)]
-pub(crate) use skein_executor::binding::map_payload_bytes;
-use skein_executor::binding::Binding;
-pub(crate) use skein_executor::external::NoExternalReadOperator;
-pub(crate) use skein_executor::memory::{
-    enforced_query_memory_budget, enforced_result_memory_budget, estimated_execution_memory,
-    estimated_mutation_memory_bytes, max_external_read_parallelism,
-};
-use skein_executor::pipeline::{runtime_checkpoint, BatchControl};
-use skein_executor::predicate::{
-    label_ids_for_pattern, node_matches_label_pattern, node_matches_property_filter,
-    property_filter_from_properties,
-};
-use skein_executor::QueryMemoryLedger;
-#[cfg(test)]
-use skein_executor::{pipeline::BindingBatch, QueryMemoryClass};
-pub use skein_executor::{ExecutionMemoryConfig, SpillPoolSnapshot};
-pub use skein_executor::{
-    ExternalReadOperator, ExternalReadResourceContract, ExternalReadResultBudget,
-    OperatorCardinalityProfile, VectorSeedExecutionOutput, VectorSeedExecutionRequest,
-    VectorSeedExecutionRow,
-};
 #[cfg(test)]
 use traversal::*;
 use vector::*;
 
-pub type Row = skein_executor::Row;
-pub type RowRef<'a> = skein_executor::RowRef<'a>;
-pub type QueryRow = skein_executor::QueryRow;
-pub type QueryRowRef<'a> = skein_executor::QueryRowRef<'a>;
-pub type QueryRows = skein_executor::QueryRows;
-pub type QueryRowsBuilder = skein_executor::QueryRowsBuilder;
-pub type QueryValueRows<'a> = skein_executor::QueryValueRows<'a>;
-pub type QuerySchema = skein_executor::QuerySchema;
-pub type ReadExecutionProfile = skein_executor::ReadExecutionProfile<ScanPruningReport>;
-pub type ProfiledQueryRows = skein_executor::ProfiledQueryRows<ScanPruningReport>;
-pub type ProfiledQueryStream = skein_executor::ProfiledQueryStream<ScanPruningReport>;
-pub(crate) use skein_executor::batch::SOURCE_SEGMENT_SCAN_IO_DEPTH;
-pub(crate) use skein_executor::numeric::MAX_MORSEL_PARALLELISM;
-pub(crate) use skein_executor::result_delivery::StreamDelivery;
+pub type Row = hawdb_executor::Row;
+pub type RowRef<'a> = hawdb_executor::RowRef<'a>;
+pub type QueryRow = hawdb_executor::QueryRow;
+pub type QueryRowRef<'a> = hawdb_executor::QueryRowRef<'a>;
+pub type QueryRows = hawdb_executor::QueryRows;
+pub type QueryRowsBuilder = hawdb_executor::QueryRowsBuilder;
+pub type QueryValueRows<'a> = hawdb_executor::QueryValueRows<'a>;
+pub type QuerySchema = hawdb_executor::QuerySchema;
+pub type ReadExecutionProfile = hawdb_executor::ReadExecutionProfile<ScanPruningReport>;
+pub type ProfiledQueryRows = hawdb_executor::ProfiledQueryRows<ScanPruningReport>;
+pub type ProfiledQueryStream = hawdb_executor::ProfiledQueryStream<ScanPruningReport>;
+pub(crate) use hawdb_executor::batch::SOURCE_SEGMENT_SCAN_IO_DEPTH;
+pub(crate) use hawdb_executor::numeric::MAX_MORSEL_PARALLELISM;
+pub(crate) use hawdb_executor::result_delivery::StreamDelivery;
 
 pub(crate) fn supports_default_morsel_parallelism(plan: &PhysicalPlan, catalog: &Catalog) -> bool {
     columnar::supports_parallel_morsel_execution(plan, catalog)
@@ -104,7 +104,7 @@ pub(crate) fn supports_default_morsel_parallelism(plan: &PhysicalPlan, catalog: 
 pub(crate) fn default_morsel_parallelism(
     plan: &PhysicalPlan,
     catalog: &Catalog,
-    store: &dyn skein_executor::store::GraphExecutionRead,
+    store: &dyn hawdb_executor::store::GraphExecutionRead,
     memory: &ExecutionMemoryConfig,
 ) -> usize {
     columnar::default_morsel_parallelism(plan, catalog, store, memory)
@@ -470,7 +470,7 @@ pub(crate) fn execute_with_row_consumer_profile_with_delivery(
     )
 }
 
-pub use skein_executor::observer::read_execution_profile;
+pub use hawdb_executor::observer::read_execution_profile;
 
 #[cfg(test)]
 #[path = "executor/tests.rs"]

@@ -50,7 +50,7 @@ usage: scripts/nowledge-previous-wrapper-preflight.sh \
   [--integration-content-store-source-chunks-available] \
   -- <wrapper-command> [args...]
 
-Runs the Skein-side Nowledge previous-wrapper production preflight bundle.
+Runs the Hawdb-side Nowledge previous-wrapper production preflight bundle.
 The wrapper command must own all Kuzu/Ladybug dependencies and must read from
 an isolated Nowledge data copy, not from the live application database.
 EOF
@@ -467,8 +467,8 @@ fi
 
 mkdir -p "$preflight_root"
 
-run_skein() {
-  SKEIN_ENABLE_COMPATIBILITY_TOOLS=1 cargo run --quiet --bin skein -- "$@"
+run_hawdb() {
+  HAWDB_ENABLE_COMPATIBILITY_TOOLS=1 cargo run --quiet --bin hawdb -- "$@"
 }
 
 shadow_timeout_args=()
@@ -486,10 +486,10 @@ adapter_command=(
   --persistent-command "${wrapper_command[@]}"
 )
 
-run_skein nowledge-fixture-contract nowledge-memory-core \
+run_hawdb nowledge-fixture-contract nowledge-memory-core \
   > "$preflight_root/contract.json"
 
-run_skein nowledge-fixture-contract-command-check \
+run_hawdb nowledge-fixture-contract-command-check \
   --require-full-contract \
   --wrapper-identity "$wrapper_identity" \
   --previous-wrapper-contract-evidence-output "$preflight_root/previous-wrapper-contract-evidence.json" \
@@ -497,7 +497,7 @@ run_skein nowledge-fixture-contract-command-check \
   --persistent-command "${wrapper_command[@]}" \
   > "$preflight_root/contract-evidence.json"
 
-run_skein external-shadow-adapter-smoke \
+run_hawdb external-shadow-adapter-smoke \
   --require-previous-wrapper \
   --shadow-trace "$preflight_root/adapter-shadow.jsonl" \
   "${shadow_timeout_args[@]}" \
@@ -505,34 +505,34 @@ run_skein external-shadow-adapter-smoke \
   "${adapter_command[@]}" \
   > "$preflight_root/adapter-smoke.json"
 
-TMPDIR="$preflight_root" run_skein > "$preflight_root/skein-demo.out"
-skein_preflight_db="$preflight_root/skein-demo"
+TMPDIR="$preflight_root" run_hawdb > "$preflight_root/hawdb-demo.out"
+hawdb_preflight_db="$preflight_root/hawdb-demo"
 
-run_skein storage-recovery-report \
+run_hawdb storage-recovery-report \
   --max-wal-replay-entries 100 \
   --require-durable \
   --require-checkpoint-boundary \
   --require-bounded-wal-replay \
   --require-clean-tail \
-  "$skein_preflight_db" \
+  "$hawdb_preflight_db" \
   > "$preflight_root/storage-recovery.json"
 
-run_skein nowledge-storage-recovery-evidence \
+run_hawdb nowledge-storage-recovery-evidence \
   --require-ready \
   "$preflight_root/storage-recovery.json" \
   > "$preflight_root/storage-recovery-evidence.json"
 
-run_skein background-maintenance-report \
+run_hawdb background-maintenance-report \
   --require-cutover-ready \
-  "$skein_preflight_db" \
+  "$hawdb_preflight_db" \
   > "$preflight_root/background-maintenance.json"
 
-run_skein nowledge-background-maintenance-evidence \
+run_hawdb nowledge-background-maintenance-evidence \
   --require-ready \
   "$preflight_root/background-maintenance.json" \
   > "$preflight_root/background-maintenance-evidence.json"
 
-run_skein nowledge-cypher-migration-gate \
+run_hawdb nowledge-cypher-migration-gate \
   --require-ready \
   --require-cutover-evidence \
   --shadow-ready \
@@ -548,7 +548,7 @@ run_skein nowledge-cypher-migration-gate \
   "${adapter_command[@]}" \
   > "$preflight_root/migration-gate.json"
 
-run_skein nowledge-query-family-evidence \
+run_hawdb nowledge-query-family-evidence \
   --require-ready \
   "$preflight_root/migration-gate.json" \
   > "$preflight_root/query-family-evidence.json"
@@ -560,16 +560,16 @@ if [[ -z "$graph_route_evidence_json" && -n "$graph_route_query_json" ]]; then
       --route-parity-json "$graph_route_parity_json"
     )
   fi
-  run_skein nowledge-graph-route-evidence \
+  run_hawdb nowledge-graph-route-evidence \
     "${graph_route_evidence_args[@]}" \
-    "${graph_route_database:-$skein_preflight_db}" \
+    "${graph_route_database:-$hawdb_preflight_db}" \
     "$graph_route_query_json" \
     > "$preflight_root/graph-route-evidence.json"
   graph_route_evidence_json="$preflight_root/graph-route-evidence.json"
 fi
 
 if [[ -z "$graph_route_readiness_json" && -n "$graph_route_evidence_json" ]]; then
-  run_skein nowledge-graph-route-readiness \
+  run_hawdb nowledge-graph-route-readiness \
     --require-ready \
     "$graph_route_evidence_json" \
     > "$preflight_root/graph-route-readiness.json"
@@ -584,7 +584,7 @@ if [[ -z "$bounded_read_evidence_json" ]]; then
         --graph-route-readiness-json "$graph_route_readiness_json"
       )
     fi
-    run_skein nowledge-bounded-read-evidence \
+    run_hawdb nowledge-bounded-read-evidence \
       "${bounded_read_evidence_args[@]}" \
       "$bounded_read_report_json" \
       > "$preflight_root/bounded-read-evidence.json"
@@ -602,9 +602,9 @@ if [[ -z "$bounded_read_evidence_json" ]]; then
         --max-estimated-payload-bytes "$bounded_read_max_estimated_payload_bytes"
       )
     fi
-    run_skein nowledge-bounded-read-report \
+    run_hawdb nowledge-bounded-read-report \
       "${bounded_read_report_args[@]}" \
-      "${bounded_read_database:-$skein_preflight_db}" \
+      "${bounded_read_database:-$hawdb_preflight_db}" \
       "$bounded_read_cypher" \
       > "$preflight_root/bounded-read-report.json"
     bounded_read_evidence_args=(--require-ready)
@@ -613,7 +613,7 @@ if [[ -z "$bounded_read_evidence_json" ]]; then
         --graph-route-readiness-json "$graph_route_readiness_json"
       )
     fi
-    run_skein nowledge-bounded-read-evidence \
+    run_hawdb nowledge-bounded-read-evidence \
       "${bounded_read_evidence_args[@]}" \
       "$preflight_root/bounded-read-report.json" \
       > "$preflight_root/bounded-read-evidence.json"
@@ -623,13 +623,13 @@ fi
 
 if [[ -z "$search_projection_evidence_json" ]]; then
   if [[ -n "$search_projection_probe_json" ]]; then
-    run_skein nowledge-search-projection-evidence \
+    run_hawdb nowledge-search-projection-evidence \
       --require-ready \
       "$search_projection_probe_json" \
       > "$preflight_root/search-projection-evidence.json"
     search_projection_evidence_json="$preflight_root/search-projection-evidence.json"
   elif [[ -n "$search_projection_shadow_probe_json" ]]; then
-    run_skein nowledge-search-projection-evidence \
+    run_hawdb nowledge-search-projection-evidence \
       --require-ready \
       "$search_projection_shadow_probe_json" \
       > "$preflight_root/search-projection-evidence.json"
@@ -638,7 +638,7 @@ if [[ -z "$search_projection_evidence_json" ]]; then
 fi
 
 if [[ -z "$search_projection_shadow_evidence_json" && -n "$search_projection_shadow_primary_probe_json" ]]; then
-  run_skein nowledge-search-projection-shadow-evidence \
+  run_hawdb nowledge-search-projection-shadow-evidence \
     --require-ready \
     --primary-probe-json "$search_projection_shadow_primary_probe_json" \
     --shadow-probe-json "$search_projection_shadow_probe_json" \
@@ -647,7 +647,7 @@ if [[ -z "$search_projection_shadow_evidence_json" && -n "$search_projection_sha
 fi
 
 if [[ -z "$search_candidate_shadow_evidence_json" && -n "$search_candidate_shadow_probe_json" ]]; then
-  run_skein nowledge-search-candidate-shadow-evidence \
+  run_hawdb nowledge-search-candidate-shadow-evidence \
     --require-ready \
     "$search_candidate_shadow_probe_json" \
     > "$preflight_root/search-candidate-shadow-evidence.json"
@@ -659,10 +659,10 @@ if [[ -n "$query_runtime_preflight_json" ]]; then
     cp "$query_runtime_preflight_json" "$preflight_root/query-runtime-preflight.json"
   fi
 else
-  run_skein nowledge-query-runtime-preflight \
+  run_hawdb nowledge-query-runtime-preflight \
     --require-ready \
     --probe-json "${query_runtime_probe_json:-$graph_route_query_json}" \
-    "${query_runtime_database:-$skein_preflight_db}" \
+    "${query_runtime_database:-$hawdb_preflight_db}" \
     > "$preflight_root/query-runtime-preflight.json"
 fi
 
@@ -691,7 +691,7 @@ if [[ -n "$bounded_read_evidence_json" ]]; then
   )
 fi
 
-run_skein nowledge-replacement-summary \
+run_hawdb nowledge-replacement-summary \
   --require-production-ready \
   "${replacement_summary_evidence_args[@]}" \
   "$preflight_root/migration-gate.json" \
@@ -725,14 +725,14 @@ else
       --search-projection "$library_readiness_search_projection"
     )
   fi
-  run_skein nowledge-mem-library-readiness \
+  run_hawdb nowledge-mem-library-readiness \
     --require-ready \
     "${library_readiness_args[@]}" \
-    "${library_readiness_graph:-$skein_preflight_db}" \
+    "${library_readiness_graph:-$hawdb_preflight_db}" \
     > "$preflight_root/library-readiness.json"
 fi
 
-run_skein nowledge-previous-wrapper-preflight-check \
+run_hawdb nowledge-previous-wrapper-preflight-check \
   --require-ready \
   --wrapper-identity "$wrapper_identity" \
   --bundle-dir "$preflight_root" \
@@ -768,7 +768,7 @@ if [[ "$require_integration_readiness" == true ]]; then
   if [[ "$integration_content_store_source_chunks_available" == true ]]; then
     integration_bundle_args+=(--content-store-source-chunks-available)
   fi
-  run_skein nowledge-mem-integration-bundle \
+  run_hawdb nowledge-mem-integration-bundle \
     "${integration_bundle_args[@]}" \
     > "$preflight_root/integration-bundle.json"
 fi

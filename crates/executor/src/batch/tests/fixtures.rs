@@ -1,5 +1,5 @@
-use skein_core::{RelationshipDirection, Value};
-use skein_plan::*;
+use hawdb_core::{RelationshipDirection, Value};
+use hawdb_plan::*;
 use std::collections::BTreeMap;
 
 // Explicit expected capability values are independent of the production classifier.
@@ -31,28 +31,28 @@ pub(super) fn operators() -> Vec<(PhysicalPlan, bool)> {
         ),
         (
             PhysicalPlan::CreateProperty {
-                table_kind: skein_plan::SchemaTableKind::Node,
+                table_kind: hawdb_plan::SchemaTableKind::Node,
                 table: String::new(),
                 property: String::new(),
-                value_type: skein_plan::SchemaPropertyType::Any,
+                value_type: hawdb_plan::SchemaPropertyType::Any,
                 nullable: false,
             },
             false,
         ),
         (
             PhysicalPlan::AlterTableState {
-                table_kind: skein_plan::SchemaTableKind::Node,
+                table_kind: hawdb_plan::SchemaTableKind::Node,
                 table: String::new(),
-                state: skein_plan::SchemaObjectState::Public,
+                state: hawdb_plan::SchemaObjectState::Public,
             },
             false,
         ),
         (
             PhysicalPlan::AlterPropertyState {
-                table_kind: skein_plan::SchemaTableKind::Node,
+                table_kind: hawdb_plan::SchemaTableKind::Node,
                 table: String::new(),
                 property: String::new(),
-                state: skein_plan::SchemaObjectState::Public,
+                state: hawdb_plan::SchemaObjectState::Public,
             },
             false,
         ),
@@ -124,7 +124,7 @@ pub(super) fn operators() -> Vec<(PhysicalPlan, bool)> {
             PhysicalPlan::GraphAlgorithm {
                 algorithm: GraphAlgorithmKind::PageRank,
                 graph_name: String::new(),
-                options: skein_plan::GraphAlgorithmOptions {
+                options: hawdb_plan::GraphAlgorithmOptions {
                     damping: None,
                     max_iterations: Some(1),
                     max_levels: Some(1),
@@ -139,8 +139,8 @@ pub(super) fn operators() -> Vec<(PhysicalPlan, bool)> {
                 embedding_parameter: String::new(),
                 output_external_id: false,
                 metadata_filters: BTreeMap::new(),
-                vector_plan: skein_plan::VectorPhysicalPlan::Filter { fields: Vec::new() },
-                resource_profile: skein_plan::VectorExecutionResourceProfile {
+                vector_plan: hawdb_plan::VectorPhysicalPlan::Filter { fields: Vec::new() },
+                resource_profile: hawdb_plan::VectorExecutionResourceProfile {
                     priority: 0,
                     max_parallelism: 1,
                     max_working_memory_bytes: None,
@@ -368,7 +368,7 @@ pub(super) fn operators() -> Vec<(PhysicalPlan, bool)> {
             PhysicalPlan::NodeProjectionScanExec {
                 variable: String::new(),
                 label: String::new(),
-                access: skein_plan::NodeProjectionAccess::LabelScan,
+                access: hawdb_plan::NodeProjectionAccess::LabelScan,
                 required_properties: Vec::new(),
                 predicate: None,
                 items: Vec::new(),
@@ -453,7 +453,7 @@ pub(super) fn operators() -> Vec<(PhysicalPlan, bool)> {
             PhysicalPlan::IndexNodeCompositeRangeSeek {
                 variable: String::new(),
                 label: String::new(),
-                seek: skein_plan::CompositeRangeSeek {
+                seek: hawdb_plan::CompositeRangeSeek {
                     index_properties: vec!["id".to_string()],
                     equality_prefix: Vec::new(),
                     range_property: "id".to_string(),

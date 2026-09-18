@@ -9,8 +9,8 @@ use std::sync::mpsc::{self, RecvTimeoutError};
 use std::thread;
 use std::time::{Duration, Instant};
 
-const CHILD_DIRECTORY: &str = "SKEIN_PUBLICATION_LOCK_TEST_DIRECTORY";
-const CHILD_SIDECAR: &str = "SKEIN_PUBLICATION_LOCK_TEST_SIDECAR";
+const CHILD_DIRECTORY: &str = "HAWDB_PUBLICATION_LOCK_TEST_DIRECTORY";
+const CHILD_SIDECAR: &str = "HAWDB_PUBLICATION_LOCK_TEST_SIDECAR";
 const WAIT_LIMIT: Duration = Duration::from_secs(10);
 const SENTINEL: &[u8] = b"persistent lock sidecar";
 
@@ -201,7 +201,7 @@ impl TestDirectory {
         static NEXT: AtomicU64 = AtomicU64::new(0);
         loop {
             let path = std::env::temp_dir().join(format!(
-                "skein-publication-lock-{}-{}",
+                "hawdb-publication-lock-{}-{}",
                 std::process::id(),
                 NEXT.fetch_add(1, Ordering::Relaxed),
             ));

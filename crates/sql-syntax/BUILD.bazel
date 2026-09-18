@@ -18,16 +18,16 @@ filegroup(
 )
 
 rust_library(
-    name = "skein_sql_syntax",
-    crate_name = "skein_sql_syntax",
+    name = "hawdb_sql_syntax",
+    crate_name = "hawdb_sql_syntax",
     crate_root = "src/lib.rs",
     srcs = glob(["src/**/*.rs"]),
     edition = "2024",
 )
 
 rust_test(
-    name = "skein_sql_syntax_tests",
-    crate = ":skein_sql_syntax",
+    name = "hawdb_sql_syntax_tests",
+    crate = ":hawdb_sql_syntax",
     edition = "2024",
 )
 
@@ -37,7 +37,7 @@ rust_test(
     crate_root = "tests/postgres_pgq.rs",
     srcs = ["tests/postgres_pgq.rs"],
     edition = "2024",
-    deps = [":skein_sql_syntax"],
+    deps = [":hawdb_sql_syntax"],
 )
 
 _POSTGRES_SELECT_TEST_SRCS = [
@@ -51,11 +51,11 @@ rust_test(
     crate_root = "tests/postgres_select_pgq.rs",
     srcs = _POSTGRES_SELECT_TEST_SRCS,
     edition = "2024",
-    deps = [":skein_sql_syntax"],
+    deps = [":hawdb_sql_syntax"],
 )
 
 rust_test(
-    name = "skein_sql_alias_boundary_fuzz_tests",
+    name = "hawdb_sql_alias_boundary_fuzz_tests",
     tags = ["manual"],
     args = [
         "alias_boundaries::table_alias_boundary_differential_campaign",
@@ -67,5 +67,5 @@ rust_test(
     crate_root = "tests/postgres_select_pgq.rs",
     srcs = _POSTGRES_SELECT_TEST_SRCS,
     edition = "2024",
-    deps = [":skein_sql_syntax"],
+    deps = [":hawdb_sql_syntax"],
 )

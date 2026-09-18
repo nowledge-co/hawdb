@@ -1,15 +1,15 @@
-use serde_json::{json, Value};
-use skein::{TokioRuntimeAdapter, TokioRuntimeConfig, TokioSegmentReadExecutor};
-use skein_core::RuntimeTaskContext;
-use skein_qos::{
+use hawdb::{TokioRuntimeAdapter, TokioRuntimeConfig, TokioSegmentReadExecutor};
+use hawdb_core::RuntimeTaskContext;
+use hawdb_qos::{
     IoConcurrencyBudget, ProcessMemoryProfile, ProcessMemorySnapshot, RuntimeGovernor,
     RuntimeGovernorConfig, RuntimeMemorySnapshot, RuntimeResourceBudget, RuntimeResourceSnapshot,
     RuntimeWorkPriority, RuntimeWorkRequest,
 };
-use skein_storage::{
+use hawdb_storage::{
     FileSegmentRangeReader, SegmentReadExecutor, SegmentReadPool, SegmentReadRange,
     SegmentReadSchedule, SegmentReadScheduler,
 };
+use serde_json::{json, Value};
 use std::convert::Infallible;
 use std::env;
 #[cfg(target_os = "linux")]
@@ -102,7 +102,7 @@ fn main() {
     println!(
         "storage_async_segment_read {}",
         json!({
-            "protocol": "skein-storage-async-segment-read-spike-v1",
+            "protocol": "hawdb-storage-async-segment-read-spike-v1",
             "production_eligible": false,
             "fixture_bytes": config.fixture_bytes,
             "range_bytes": RANGE_BYTES,
@@ -119,12 +119,12 @@ fn main() {
 
 impl BenchmarkConfig {
     fn from_env() -> Self {
-        let fixture_mib = parse_positive_env("SKEIN_ASYNC_IO_FIXTURE_MIB", DEFAULT_FIXTURE_MIB);
+        let fixture_mib = parse_positive_env("HAWDB_ASYNC_IO_FIXTURE_MIB", DEFAULT_FIXTURE_MIB);
         let fixture_bytes = fixture_mib
             .checked_mul(1024 * 1024)
             .expect("benchmark fixture size must fit usize");
         let available_ranges = fixture_bytes / RANGE_BYTES;
-        let range_count = parse_positive_env("SKEIN_ASYNC_IO_RANGE_COUNT", DEFAULT_RANGE_COUNT);
+        let range_count = parse_positive_env("HAWDB_ASYNC_IO_RANGE_COUNT", DEFAULT_RANGE_COUNT);
         assert!(
             range_count <= available_ranges,
             "benchmark range count must fit the fixture"
@@ -132,7 +132,7 @@ impl BenchmarkConfig {
         Self {
             fixture_bytes,
             range_count,
-            samples: parse_positive_env("SKEIN_ASYNC_IO_SAMPLES", DEFAULT_SAMPLES),
+            samples: parse_positive_env("HAWDB_ASYNC_IO_SAMPLES", DEFAULT_SAMPLES),
         }
     }
 }
@@ -148,7 +148,7 @@ fn parse_positive_env(name: &str, default: usize) -> usize {
 
 fn unique_fixture_path() -> PathBuf {
     env::temp_dir().join(format!(
-        "skein-storage-async-read-bench-{}-{}",
+        "hawdb-storage-async-read-bench-{}-{}",
         std::process::id(),
         SystemTime::now()
             .duration_since(UNIX_EPOCH)
@@ -274,7 +274,7 @@ fn measure_blocking(path: &Path, depth: NonZeroUsize, schedule: &SegmentReadSche
                             checksum = accumulate_checksum(checksum, &payload);
                             Ok::<(), Infallible>(())
                         })?;
-                    Ok::<_, skein_storage::SegmentReadExecutionError<Infallible>>((
+                    Ok::<_, hawdb_storage::SegmentReadExecutionError<Infallible>>((
                         report.bytes_read,
                         checksum,
                     ))
@@ -307,7 +307,7 @@ fn measure_tokio(path: &Path, depth: NonZeroUsize, schedule: &SegmentReadSchedul
                             Ok::<(), Infallible>(())
                         })
                         .await?;
-                    Ok::<_, skein::TokioSegmentReadExecutionError<Infallible>>((
+                    Ok::<_, hawdb::TokioSegmentReadExecutionError<Infallible>>((
                         report.bytes_read,
                         checksum,
                     ))
@@ -354,7 +354,7 @@ fn benchmark_request(depth: NonZeroUsize) -> RuntimeWorkRequest {
     .with_io_wave_slots(depth.get())
 }
 
-fn accumulate_checksum(current: u64, payload: &skein_storage::SegmentReadPayload) -> u64 {
+fn accumulate_checksum(current: u64, payload: &hawdb_storage::SegmentReadPayload) -> u64 {
     let segment_id = payload
         .range
         .segment_ids

@@ -1,7 +1,7 @@
 use crate::error::{ProjectionError, Result};
 use serde::{Deserialize, Serialize};
 
-pub const PROJECTION_PROTOCOL: &str = "skein-rabitq-projection";
+pub const PROJECTION_PROTOCOL: &str = "hawdb-rabitq-projection";
 pub const PROJECTION_FORMAT_VERSION: u32 = 1;
 pub const DEFAULT_PROJECTION_BIT_WIDTH: u8 = 1;
 pub const PROJECTION_BIT_WIDTH: u8 = DEFAULT_PROJECTION_BIT_WIDTH;

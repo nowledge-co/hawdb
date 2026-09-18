@@ -8,26 +8,26 @@ test_suite(
 )
 
 rust_library(
-    name = "skein_executor",
-    crate_name = "skein_executor",
+    name = "hawdb_executor",
+    crate_name = "hawdb_executor",
     crate_root = "src/lib.rs",
     srcs = glob(["src/**/*.rs"]),
     edition = "2024",
     aliases = aliases(),
     deps = all_crate_deps(normal = True) + [
-        "//crates/analytics:skein_analytics",
-        "//crates/core:skein_core",
-        "//crates/ddl:skein_ddl",
-        "//crates/plan:skein_plan",
-        "//crates/qos:skein_qos",
-        "//crates/storage:skein_storage",
+        "//crates/analytics:hawdb_analytics",
+        "//crates/core:hawdb_core",
+        "//crates/ddl:hawdb_ddl",
+        "//crates/plan:hawdb_plan",
+        "//crates/qos:hawdb_qos",
+        "//crates/storage:hawdb_storage",
     ],
     proc_macro_deps = all_crate_deps(proc_macro = True),
 )
 
 rust_test(
-    name = "skein_executor_unit_tests",
-    crate = ":skein_executor",
+    name = "hawdb_executor_unit_tests",
+    crate = ":hawdb_executor",
     edition = "2024",
     aliases = aliases(normal_dev = True, proc_macro_dev = True),
     deps = all_crate_deps(normal_dev = True),
@@ -35,14 +35,14 @@ rust_test(
 )
 
 rust_test(
-    name = "skein_batch_dispatch_fuzz_tests",
+    name = "hawdb_batch_dispatch_fuzz_tests",
     args = [
         "batch::tests::dispatch::batch_dispatch_campaign",
         "--exact",
         "--ignored",
         "--nocapture",
     ],
-    crate = ":skein_executor",
+    crate = ":hawdb_executor",
     edition = "2024",
     tags = ["manual"],
     aliases = aliases(normal_dev = True, proc_macro_dev = True),
@@ -60,36 +60,36 @@ rust_test(
         edition = "2024",
         aliases = aliases(normal_dev = True, proc_macro_dev = True),
         deps = all_crate_deps(normal_dev = True) + [
-            ":skein_executor",
-            "//crates/core:skein_core",
+            ":hawdb_executor",
+            "//crates/core:hawdb_core",
         ],
         proc_macro_deps = all_crate_deps(proc_macro_dev = True),
     )
     for name, args, tags in [
-        ("skein_morsel_oracle_tests", [], []),
-        ("skein_morsel_oracle_fuzz_tests", ["scheduler_differential_campaign", "--exact", "--ignored", "--nocapture"], ["manual"]),
+        ("hawdb_morsel_oracle_tests", [], []),
+        ("hawdb_morsel_oracle_fuzz_tests", ["scheduler_differential_campaign", "--exact", "--ignored", "--nocapture"], ["manual"]),
     ]
 ]
 
 # The existing CI entrypoint must consume public contracts as well as unit tests.
 test_suite(
-    name = "skein_executor_tests",
+    name = "hawdb_executor_tests",
     tests = [
-        ":skein_executor_unit_tests",
-        ":skein_morsel_oracle_tests",
-        ":skein_query_observer_release_tests",
+        ":hawdb_executor_unit_tests",
+        ":hawdb_morsel_oracle_tests",
+        ":hawdb_query_observer_release_tests",
     ],
 )
 
 rust_test(
-    name = "skein_execution_report_value_fuzz_tests",
+    name = "hawdb_execution_report_value_fuzz_tests",
     args = [
         "observer::report_value::tests::execution_report_value_differential_campaign",
         "--exact",
         "--ignored",
         "--nocapture",
     ],
-    crate = ":skein_executor",
+    crate = ":hawdb_executor",
     edition = "2024",
     tags = ["manual"],
     aliases = aliases(normal_dev = True, proc_macro_dev = True),
@@ -98,14 +98,14 @@ rust_test(
 )
 
 rust_test(
-    name = "skein_execution_lifecycle_fuzz_tests",
+    name = "hawdb_execution_lifecycle_fuzz_tests",
     args = [
         "observer::profile::tests::execution_lifecycle_differential_campaign",
         "--exact",
         "--ignored",
         "--nocapture",
     ],
-    crate = ":skein_executor",
+    crate = ":hawdb_executor",
     edition = "2024",
     tags = ["manual"],
     aliases = aliases(normal_dev = True, proc_macro_dev = True),
@@ -114,14 +114,14 @@ rust_test(
 )
 
 rust_test(
-    name = "skein_result_delivery_fuzz_tests",
+    name = "hawdb_result_delivery_fuzz_tests",
     args = [
         "result_delivery::tests::differential::result_delivery_differential_campaign",
         "--exact",
         "--ignored",
         "--nocapture",
     ],
-    crate = ":skein_executor",
+    crate = ":hawdb_executor",
     edition = "2024",
     tags = ["manual"],
     aliases = aliases(normal_dev = True, proc_macro_dev = True),
@@ -130,14 +130,14 @@ rust_test(
 )
 
 rust_test(
-    name = "skein_numeric_execution_fuzz_tests",
+    name = "hawdb_numeric_execution_fuzz_tests",
     args = [
         "numeric::differential::numeric_execution_differential_campaign",
         "--exact",
         "--ignored",
         "--nocapture",
     ],
-    crate = ":skein_executor",
+    crate = ":hawdb_executor",
     edition = "2024",
     tags = ["manual"],
     aliases = aliases(normal_dev = True, proc_macro_dev = True),
@@ -146,13 +146,13 @@ rust_test(
 )
 
 rust_test(
-    name = "skein_query_observer_release_tests",
+    name = "hawdb_query_observer_release_tests",
     args = [
         "observer::query::tests::query_observer_registration_without_debug_assertions",
         "--exact",
         "--ignored",
     ],
-    crate = ":skein_executor",
+    crate = ":hawdb_executor",
     edition = "2024",
     rustc_flags = ["-Cdebug-assertions=no"],
     aliases = aliases(normal_dev = True, proc_macro_dev = True),
@@ -161,14 +161,14 @@ rust_test(
 )
 
 rust_test(
-    name = "skein_query_observer_fuzz_tests",
+    name = "hawdb_query_observer_fuzz_tests",
     args = [
         "observer::query::tests::query_observer_event_differential_campaign",
         "--exact",
         "--ignored",
         "--nocapture",
     ],
-    crate = ":skein_executor",
+    crate = ":hawdb_executor",
     edition = "2024",
     tags = ["manual"],
     aliases = aliases(normal_dev = True, proc_macro_dev = True),
@@ -177,14 +177,14 @@ rust_test(
 )
 
 rust_test(
-    name = "skein_mutation_lowering_fuzz_tests",
+    name = "hawdb_mutation_lowering_fuzz_tests",
     args = [
         "mutation::tests::mutation_lowering_differential_campaign",
         "--exact",
         "--ignored",
         "--nocapture",
     ],
-    crate = ":skein_executor",
+    crate = ":hawdb_executor",
     edition = "2024",
     tags = ["manual"],
     aliases = aliases(normal_dev = True, proc_macro_dev = True),
@@ -193,14 +193,14 @@ rust_test(
 )
 
 rust_test(
-    name = "skein_mutation_preflight_fuzz_tests",
+    name = "hawdb_mutation_preflight_fuzz_tests",
     args = [
         "mutation::preflight::tests::mutation_preflight_differential_campaign",
         "--exact",
         "--ignored",
         "--nocapture",
     ],
-    crate = ":skein_executor",
+    crate = ":hawdb_executor",
     edition = "2024",
     tags = ["manual"],
     aliases = aliases(normal_dev = True, proc_macro_dev = True),
@@ -209,14 +209,14 @@ rust_test(
 )
 
 rust_test(
-    name = "skein_sort_merge_account_fuzz_tests",
+    name = "hawdb_sort_merge_account_fuzz_tests",
     args = [
         "blocking::sort::tests::sort_merge_account_differential_campaign",
         "--exact",
         "--ignored",
         "--nocapture",
     ],
-    crate = ":skein_executor",
+    crate = ":hawdb_executor",
     edition = "2024",
     tags = ["manual"],
     aliases = aliases(normal_dev = True, proc_macro_dev = True),
@@ -225,14 +225,14 @@ rust_test(
 )
 
 rust_test(
-    name = "skein_transform_fuzz_tests",
+    name = "hawdb_transform_fuzz_tests",
     args = [
         "transform::tests::transform_differential_campaign",
         "--exact",
         "--ignored",
         "--nocapture",
     ],
-    crate = ":skein_executor",
+    crate = ":hawdb_executor",
     edition = "2024",
     tags = ["manual"],
     aliases = aliases(normal_dev = True, proc_macro_dev = True),
@@ -241,14 +241,14 @@ rust_test(
 )
 
 rust_test(
-    name = "skein_graph_algorithm_fuzz_tests",
+    name = "hawdb_graph_algorithm_fuzz_tests",
     args = [
         "analytics::tests::differential::graph_algorithm_differential_campaign",
         "--exact",
         "--ignored",
         "--nocapture",
     ],
-    crate = ":skein_executor",
+    crate = ":hawdb_executor",
     edition = "2024",
     tags = ["manual"],
     aliases = aliases(normal_dev = True, proc_macro_dev = True),
@@ -257,14 +257,14 @@ rust_test(
 )
 
 rust_test(
-    name = "skein_vector_seed_fuzz_tests",
+    name = "hawdb_vector_seed_fuzz_tests",
     args = [
         "external::seed::tests::differential::vector_seed_differential_campaign",
         "--exact",
         "--ignored",
         "--nocapture",
     ],
-    crate = ":skein_executor",
+    crate = ":hawdb_executor",
     edition = "2024",
     tags = ["manual"],
     aliases = aliases(normal_dev = True, proc_macro_dev = True),
@@ -273,14 +273,14 @@ rust_test(
 )
 
 rust_test(
-    name = "skein_spill_compaction_fuzz_tests",
+    name = "hawdb_spill_compaction_fuzz_tests",
     args = [
         "spill::compaction::tests::compaction_differential_campaign",
         "--exact",
         "--ignored",
         "--nocapture",
     ],
-    crate = ":skein_executor",
+    crate = ":hawdb_executor",
     edition = "2024",
     tags = ["manual"],
     aliases = aliases(normal_dev = True, proc_macro_dev = True),
@@ -289,14 +289,14 @@ rust_test(
 )
 
 rust_test(
-    name = "skein_graph_hash_join_fuzz_tests",
+    name = "hawdb_graph_hash_join_fuzz_tests",
     args = [
         "blocking::join::tests::graph_hash_join_differential_campaign",
         "--exact",
         "--ignored",
         "--nocapture",
     ],
-    crate = ":skein_executor",
+    crate = ":hawdb_executor",
     edition = "2024",
     tags = ["manual"],
     aliases = aliases(normal_dev = True, proc_macro_dev = True),

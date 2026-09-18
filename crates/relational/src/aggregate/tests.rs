@@ -100,7 +100,7 @@ fn first_values_and_coalesce_keep_update_and_finish_order() {
         .finish()
         .unwrap_err();
     assert!(
-        matches!(error, SkeinError::Semantic(ref message) if message == "aggregate column has no input row")
+        matches!(error, HawdbError::Semantic(ref message) if message == "aggregate column has no input row")
     );
 }
 
@@ -134,12 +134,12 @@ fn filters_short_circuit_row_access_and_preserve_parameter_failures() {
         .contains("missing PostgreSQL parameter $1"));
     let error = state
         .update(
-            &|_| Err(SkeinError::Execution("row sentinel".into())),
+            &|_| Err(HawdbError::Execution("row sentinel".into())),
             &[Value::Bool(true)],
         )
         .map(|_| ())
         .unwrap_err();
-    assert!(matches!(error, SkeinError::Execution(ref message) if message == "row sentinel"));
+    assert!(matches!(error, HawdbError::Execution(ref message) if message == "row sentinel"));
 }
 
 #[test]
@@ -154,7 +154,7 @@ fn numeric_overflow_and_type_errors_keep_the_prior_state() {
         .map(|_| ())
         .unwrap_err();
         assert!(
-            matches!(error, SkeinError::Execution(ref message) if message == "BIGINT SUM overflow")
+            matches!(error, HawdbError::Execution(ref message) if message == "BIGINT SUM overflow")
         );
         assert_eq!(result, Some(RelationalValue::BigInt(first)));
     }
@@ -167,7 +167,7 @@ fn numeric_overflow_and_type_errors_keep_the_prior_state() {
     .map(|_| ())
     .unwrap_err();
     assert!(
-        matches!(error, SkeinError::Semantic(ref message) if message == "SUM requires BIGINT or DOUBLE PRECISION input")
+        matches!(error, HawdbError::Semantic(ref message) if message == "SUM requires BIGINT or DOUBLE PRECISION input")
     );
     assert_eq!(result, Some(RelationalValue::BigInt(2)));
     let mut result = Some(RelationalValue::DoublePrecision(1.5));
@@ -218,7 +218,7 @@ fn constructor_rejections_keep_exact_aggregate_errors() {
             .err()
             .expect("invalid shape");
         assert!(
-            matches!(error, SkeinError::Semantic(ref actual) if actual == message),
+            matches!(error, HawdbError::Semantic(ref actual) if actual == message),
             "{error}"
         );
     }
@@ -247,7 +247,7 @@ fn row_expressions_keep_metadata_and_parameter_boundaries() {
     })
     .unwrap_err();
     assert!(
-        matches!(error, SkeinError::Semantic(ref message) if message == "aggregate row expression cannot bind parameter $1")
+        matches!(error, HawdbError::Semantic(ref message) if message == "aggregate row expression cannot bind parameter $1")
     );
     let value = RelationalValue::Boolean(true);
     let error = evaluate_row_expression(&expr("OCTET_LENGTH(payload)"), &|_| {
@@ -255,7 +255,7 @@ fn row_expressions_keep_metadata_and_parameter_boundaries() {
     })
     .unwrap_err();
     assert!(
-        matches!(error, SkeinError::Semantic(ref message) if message == "OCTET_LENGTH requires TEXT or BYTEA input")
+        matches!(error, HawdbError::Semantic(ref message) if message == "OCTET_LENGTH requires TEXT or BYTEA input")
     );
 }
 
@@ -286,7 +286,7 @@ fn having_unknown_is_rejected_and_hidden_state_cannot_be_projected() {
         .finish()
         .unwrap_err();
     assert!(
-        matches!(error, SkeinError::Execution(ref message) if message == "HAVING state reached output projection")
+        matches!(error, HawdbError::Execution(ref message) if message == "HAVING state reached output projection")
     );
 }
 
@@ -325,7 +325,7 @@ fn having_group_binding_requires_all_primary_key_columns_and_resolves_aliases() 
     ] {
         let error = validate_having(&select(sql), &[], &state).unwrap_err();
         assert!(
-            matches!(error, SkeinError::Semantic(ref actual) if actual == message),
+            matches!(error, HawdbError::Semantic(ref actual) if actual == message),
             "{sql}: {error}"
         );
     }
@@ -379,11 +379,11 @@ fn having_coercion_and_bound_parameters_remain_consistent() {
 #[test]
 fn state_memory_limits_fail_before_charging_and_release_through_the_ledger() {
     let budget = NonZeroUsize::new(64).unwrap();
-    let ledger = skein_executor::QueryMemoryLedger::new(budget);
+    let ledger = hawdb_executor::QueryMemoryLedger::new(budget);
     let mut tracker = OperatorMemoryTracker::with_account(
         budget,
         ledger.account(
-            skein_executor::QueryMemoryClass::BlockingState,
+            hawdb_executor::QueryMemoryClass::BlockingState,
             "aggregate",
             budget,
         ),
@@ -439,7 +439,7 @@ fn having_boolean_and_uuid_constants_keep_binding_coercion() {
         assert_eq!(!output.is_empty(), value == Value::Bool(true));
     }
     let uuid = "12345678-1234-1234-1234-123456789abc";
-    let value = RelationalValue::Uuid(skein_core::Uuid::parse_str(uuid).unwrap());
+    let value = RelationalValue::Uuid(hawdb_core::Uuid::parse_str(uuid).unwrap());
     let query = select("SELECT COUNT(*) FROM ids HAVING MAX(id) = $1");
     let parameters = [Value::String(uuid.into())];
     validate_having(&query, &parameters, &state).unwrap();
@@ -467,17 +467,17 @@ fn having_boolean_and_uuid_constants_keep_binding_coercion() {
 fn having_validation_preserves_lock_and_projection_error_precedence() {
     let state = state();
     let mut query = select("SELECT COUNT(*) FROM missing HAVING COUNT(*) > 0");
-    query.lock_strength = Some(skein_sql::SqlLockStrength::Share);
+    query.lock_strength = Some(hawdb_sql::SqlLockStrength::Share);
     let error = validate_having(&query, &[], &state).unwrap_err();
     assert!(
-        matches!(error, SkeinError::Semantic(ref message) if message == "HAVING does not support row locking")
+        matches!(error, HawdbError::Semantic(ref message) if message == "HAVING does not support row locking")
     );
     query.having = None;
     validate_having(&query, &[], &state).unwrap();
     let query = select("SELECT * FROM records HAVING COUNT(*) >= 0");
     let error = validate_having(&query, &[], &state).unwrap_err();
     assert!(
-        matches!(error, SkeinError::Semantic(ref message) if message == "aggregate SELECT does not support wildcard projection")
+        matches!(error, HawdbError::Semantic(ref message) if message == "aggregate SELECT does not support wildcard projection")
     );
 }
 
@@ -497,12 +497,12 @@ fn memory_deltas_saturate_and_shared_query_admission_stays_atomic() {
     );
     let delta = AggregateMemoryDelta::between(usize::MAX, 0);
     assert_eq!((delta.added_bytes, delta.released_bytes), (0, usize::MAX));
-    let ledger = skein_executor::QueryMemoryLedger::new(NonZeroUsize::new(40).unwrap());
+    let ledger = hawdb_executor::QueryMemoryLedger::new(NonZeroUsize::new(40).unwrap());
     let budget = NonZeroUsize::new(64).unwrap();
     let mut tracker = OperatorMemoryTracker::with_account(
         budget,
         ledger.account(
-            skein_executor::QueryMemoryClass::BlockingState,
+            hawdb_executor::QueryMemoryClass::BlockingState,
             "aggregate shared",
             budget,
         ),
@@ -564,5 +564,5 @@ fn aggregate_state_differential_smoke() {
 fn aggregate_state_differential_campaign() {
     let checks = differential_campaign(128, 64);
     assert_eq!(checks, 32_768);
-    println!("skein-relational-aggregate-state-fuzz-v1: 128 seeds, 8192 cases, {checks} complete outcomes");
+    println!("hawdb-relational-aggregate-state-fuzz-v1: 128 seeds, 8192 cases, {checks} complete outcomes");
 }

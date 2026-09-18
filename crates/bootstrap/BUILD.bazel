@@ -8,54 +8,54 @@ test_suite(
 )
 
 _BOOTSTRAP_BASE_DEPS = all_crate_deps(normal = True) + [
-    "//crates/core:skein_core",
-    "//crates/integrity:skein_integrity",
-    "//crates/storage:skein_storage",
+    "//crates/core:hawdb_core",
+    "//crates/integrity:hawdb_integrity",
+    "//crates/storage:hawdb_storage",
 ]
 
 rust_library(
-    name = "skein_bootstrap",
-    crate_name = "skein_bootstrap",
+    name = "hawdb_bootstrap",
+    crate_name = "hawdb_bootstrap",
     crate_root = "src/lib.rs",
     srcs = glob(["src/**/*.rs"]),
     edition = "2024",
     aliases = aliases(),
-    deps = _BOOTSTRAP_BASE_DEPS + ["//crates/search:skein_search"],
+    deps = _BOOTSTRAP_BASE_DEPS + ["//crates/search:hawdb_search"],
     proc_macro_deps = all_crate_deps(proc_macro = True),
 )
 
 # Matches the root facade's `--no-default-features` boundary without linking a
-# second copy of `skein_search` with incompatible Bazel feature selection.
+# second copy of `hawdb_search` with incompatible Bazel feature selection.
 rust_library(
-    name = "skein_bootstrap_minimal",
-    crate_name = "skein_bootstrap",
+    name = "hawdb_bootstrap_minimal",
+    crate_name = "hawdb_bootstrap",
     crate_root = "src/lib.rs",
     srcs = glob(["src/**/*.rs"]),
     edition = "2024",
     aliases = aliases(),
-    deps = _BOOTSTRAP_BASE_DEPS + ["//crates/search:skein_search_minimal"],
+    deps = _BOOTSTRAP_BASE_DEPS + ["//crates/search:hawdb_search_minimal"],
     proc_macro_deps = all_crate_deps(proc_macro = True),
     visibility = ["//:__pkg__"],
 )
 
 # Matches Cargo feature unification for the root ACL qualification target
-# without linking a second `skein_search` crate with a different feature set.
+# without linking a second `hawdb_search` crate with a different feature set.
 rust_library(
-    name = "skein_bootstrap_acl",
+    name = "hawdb_bootstrap_acl",
     testonly = True,
-    crate_name = "skein_bootstrap",
+    crate_name = "hawdb_bootstrap",
     crate_root = "src/lib.rs",
     srcs = glob(["src/**/*.rs"]),
     edition = "2024",
     aliases = aliases(),
-    deps = _BOOTSTRAP_BASE_DEPS + ["//crates/search:skein_search_acl"],
+    deps = _BOOTSTRAP_BASE_DEPS + ["//crates/search:hawdb_search_acl"],
     proc_macro_deps = all_crate_deps(proc_macro = True),
     visibility = ["//:__pkg__"],
 )
 
 rust_test(
-    name = "skein_bootstrap_tests",
-    crate = ":skein_bootstrap",
+    name = "hawdb_bootstrap_tests",
+    crate = ":hawdb_bootstrap",
     edition = "2024",
     aliases = aliases(normal_dev = True, proc_macro_dev = True),
     deps = all_crate_deps(normal_dev = True),

@@ -1,5 +1,5 @@
 use crate::analytics::ProjectedGraph;
-use crate::error::{Result, SkeinError};
+use crate::error::{HawdbError, Result};
 use crate::schema::{
     AdvancedStatisticsFreshness, BasicGraphStatistics, Catalog, ConstraintId, GraphStatistics,
     IndexId, IndexKind, IndexStatisticsSample, LabelId, PropertyId, PropertyType, RelTypeId,
@@ -7,20 +7,20 @@ use crate::schema::{
 };
 use crate::telemetry::TelemetrySink;
 use crate::value::Value;
-use skein_core::RuntimeTaskContext;
-use skein_integrity::{checksum_u64, Sha256Digest};
-use skein_storage::mutation::compact_transaction_graph_ops;
-use skein_storage::projection_document_id_for_node as search_projection_document_id_for_node;
+use hawdb_core::RuntimeTaskContext;
+use hawdb_integrity::{checksum_u64, Sha256Digest};
+use hawdb_storage::mutation::compact_transaction_graph_ops;
+use hawdb_storage::projection_document_id_for_node as search_projection_document_id_for_node;
 
 #[derive(Debug)]
-struct RuntimeGovernorBackgroundAdmission(skein_qos::RuntimeGovernor);
+struct RuntimeGovernorBackgroundAdmission(hawdb_qos::RuntimeGovernor);
 
 #[derive(Debug)]
 struct RuntimeGovernorBackgroundPermit {
-    _permit: skein_qos::RuntimePermit,
+    _permit: hawdb_qos::RuntimePermit,
 }
 
-impl skein_storage::BackgroundWorkPermit for RuntimeGovernorBackgroundPermit {}
+impl hawdb_storage::BackgroundWorkPermit for RuntimeGovernorBackgroundPermit {}
 
 struct RootStorageTelemetry(Arc<dyn TelemetrySink>);
 
@@ -30,10 +30,10 @@ impl std::fmt::Debug for RootStorageTelemetry {
     }
 }
 
-impl skein_storage::StorageTelemetrySink for RootStorageTelemetry {
-    fn record_wal_append(&self, event: skein_storage::WalAppendTelemetry) {
-        self.0.record_kernel(skein_telemetry::KernelTelemetry {
-            operation: skein_telemetry::KernelTelemetryOperation::WalAppend,
+impl hawdb_storage::StorageTelemetrySink for RootStorageTelemetry {
+    fn record_wal_append(&self, event: hawdb_storage::WalAppendTelemetry) {
+        self.0.record_kernel(hawdb_telemetry::KernelTelemetry {
+            operation: hawdb_telemetry::KernelTelemetryOperation::WalAppend,
             success: event.success,
             elapsed_micros: event.elapsed_micros,
             item_count: event.operation_count,
@@ -44,25 +44,25 @@ impl skein_storage::StorageTelemetrySink for RootStorageTelemetry {
     }
 }
 
-impl skein_storage::BackgroundWorkAdmission for RuntimeGovernorBackgroundAdmission {
+impl hawdb_storage::BackgroundWorkAdmission for RuntimeGovernorBackgroundAdmission {
     fn try_admit(
         &self,
-        request: skein_storage::BackgroundWorkRequest,
-    ) -> std::result::Result<Box<dyn skein_storage::BackgroundWorkPermit>, String> {
+        request: hawdb_storage::BackgroundWorkRequest,
+    ) -> std::result::Result<Box<dyn hawdb_storage::BackgroundWorkPermit>, String> {
         self.0
-            .try_admit(skein_qos::RuntimeWorkRequest {
-                priority: skein_qos::RuntimeWorkPriority::Background,
-                kind: skein_qos::RuntimeWorkKind::Control,
+            .try_admit(hawdb_qos::RuntimeWorkRequest {
+                priority: hawdb_qos::RuntimeWorkPriority::Background,
+                kind: hawdb_qos::RuntimeWorkKind::Control,
                 cpu_slots: request.cpu_slots,
                 memory_bytes: request.memory_bytes,
                 io_slots: request.io_slots,
-                io_reservation_scope: skein_qos::RuntimeIoReservationScope::Task,
+                io_reservation_scope: hawdb_qos::RuntimeIoReservationScope::Task,
                 result_bytes: 0,
                 blocking: false,
             })
             .map(|permit| {
                 Box::new(RuntimeGovernorBackgroundPermit { _permit: permit })
-                    as Box<dyn skein_storage::BackgroundWorkPermit>
+                    as Box<dyn hawdb_storage::BackgroundWorkPermit>
             })
             .map_err(|error| error.to_string())
     }
@@ -120,23 +120,7 @@ use durable::{
 };
 pub use graph_columnar_shadow::ColumnarShadowAdmission;
 use graph_columnar_shadow::ColumnarShadowState;
-use relational_index_shadow::RelationalIndexShadowState;
-pub use relational_index_shadow::{
-    RelationalConstraintQualificationProbeReport, RelationalConstraintQualificationReport,
-    RelationalConstraintQualificationUse, RelationalIndexQualificationProbeKind,
-    RelationalIndexQualificationProbeReport, RelationalIndexReadViewBackendReport,
-    RelationalIndexReadViewReport, RelationalIndexShadowCheckpointReport,
-    RelationalIndexShadowCheckpointStatus, RelationalIndexShadowRecoveryStatus,
-    RelationalIndexViewQualificationOptions, RelationalIndexViewQualificationReport,
-    RELATIONAL_CONSTRAINT_QUALIFICATION_PROTOCOL, RELATIONAL_INDEX_VIEW_QUALIFICATION_PROTOCOL,
-};
-pub(crate) use relational_index_shadow::{
-    RelationalIndexProbeStatistics, RelationalTransactionIndexView,
-};
-pub use relational_row_pages::RelationalRowPageRecoveryStatus;
-use relational_row_pages::RelationalRowPageState;
-pub(crate) use relational_row_pages::RelationalTransactionRowView;
-use skein_storage::artifact_files::{
+use hawdb_storage::artifact_files::{
     canonical_adjacency_artifact_generation_file, canonical_artifact_generation_file,
     canonical_manifest_generation_file, checkpoint_generation_file,
     cleanup_abandoned_checkpoint_preparations, has_storage_artifacts,
@@ -150,28 +134,28 @@ use skein_storage::artifact_files::{
     relational_checkpoint_generation_file, storage_generation_for_file, store_id_for_path,
     wal_generation_file,
 };
-use skein_storage::graph_constraints::{
+use hawdb_storage::graph_constraints::{
     validate_node_property_exists, validate_node_property_exists_constraints,
     validate_node_record_constraints, validate_property_schema_value, validate_property_schemas,
     validate_relationship_property_exists, validate_relationship_property_exists_constraints,
     validate_relationship_record_constraints, validate_relationship_unique_constraints,
     validate_unique_constraints, validate_unique_property, validate_unique_relationship_property,
 };
-pub(crate) use skein_storage::mutation::evaluate::{
+pub(crate) use hawdb_storage::mutation::evaluate::{
     apply_node_assignments_to_properties, evaluate_node_set_value,
 };
-use skein_storage::predicate::{
+use hawdb_storage::predicate::{
     properties_contain_all, property_filter_matches, range_bounds_match,
 };
-use skein_storage::projection::artifact::{
+use hawdb_storage::projection::artifact::{
     decode_projected_graph_artifacts, split_projected_graph_artifact_checksum,
 };
-pub use skein_storage::scan::{ScanPrunedNodeScan, ScanPrunedRelationshipScan};
-pub(crate) use skein_storage::source_scan;
-pub use skein_storage::source_scan::SourceScanRow;
+pub use hawdb_storage::scan::{ScanPrunedNodeScan, ScanPrunedRelationshipScan};
+pub(crate) use hawdb_storage::source_scan;
+pub use hawdb_storage::source_scan::SourceScanRow;
 #[cfg(test)]
-pub(crate) use skein_storage::statistics::compute_statistics;
-pub(crate) use skein_storage::statistics::{
+pub(crate) use hawdb_storage::statistics::compute_statistics;
+pub(crate) use hawdb_storage::statistics::{
     composite_property_index_key, composite_property_index_unique_values, compute_basic_statistics,
     compute_index_statistics_samples, compute_node_property_distinct_counts_from_index,
     compute_relationship_property_distinct_counts_from_index, compute_statistics_for_catalog,
@@ -179,24 +163,24 @@ pub(crate) use skein_storage::statistics::{
     full_text_query_tokens, graph_statistics_from_basic, recompute_node_property_index,
     recompute_relationship_property_index, scalar_property_index_cardinality,
 };
-use skein_storage::statistics_refresh::{
+use hawdb_storage::statistics_refresh::{
     node_property_supports_optimizer_statistics, MAX_BOUNDED_PATH_STAT_HOPS,
 };
-pub(crate) use skein_storage::statistics_refresh::{
+pub(crate) use hawdb_storage::statistics_refresh::{
     retain_supported_property_statistics, retain_valid_index_statistics_samples,
     OptimizerStatisticsRefreshWork,
 };
 #[cfg(test)]
-use skein_storage::text::encode_properties;
+use hawdb_storage::text::encode_properties;
 #[cfg(test)]
-use skein_storage::text::envelope::DURABLE_COMPRESSION_HEADER;
-pub(crate) use skein_storage::text::envelope::{
+use hawdb_storage::text::envelope::DURABLE_COMPRESSION_HEADER;
+pub(crate) use hawdb_storage::text::envelope::{
     encode_durable_text, read_durable_text_bytes, read_durable_text_bytes_with_limit,
 };
-use skein_storage::GraphIndexReadMetrics;
+use hawdb_storage::GraphIndexReadMetrics;
 #[cfg(test)]
-use skein_storage::COW_MAP_TARGET_SEGMENT_BYTES;
-use skein_storage::{
+use hawdb_storage::COW_MAP_TARGET_SEGMENT_BYTES;
+use hawdb_storage::{
     available_storage_space, copy_backup_file, copy_file_with_checksum, decode_append_wal_batch,
     decode_relational_checkpoint_file_with_index_load,
     decode_relational_checkpoint_with_index_load, decode_relational_wal_batch,
@@ -212,7 +196,7 @@ use skein_storage::{
     RelationalRowPagePublicationConfig, RelationalRowPagePublisher, RelationalSparseLiveStage,
     RelationalState, RelationalTransaction,
 };
-pub use skein_storage::{
+pub use hawdb_storage::{
     AdjacencyDirection, AdjacencyGroupConsistencyMismatch, AdjacencyGroupKey, AdjacencyGroupStats,
     AdjacencyLayout, AppendGeneratedRow, AppendMutationOutcome, AppendOrderMode,
     AppendSegmentReadOutput, AppendStorageResidencyReport, AppendTableRow, AppendTableSchema,
@@ -248,19 +232,35 @@ pub use skein_storage::{
     StorageScrubReport, StoreId, StoreStableIdMapping, WalReplayConfig,
     STORAGE_PRESSURE_DEFER_RATIO_PER_MILLION, STORAGE_PRESSURE_SOFT_RATIO_PER_MILLION,
 };
-pub use skein_storage::{
+pub use hawdb_storage::{
     ColumnarShadowCheckpointReport, ColumnarShadowCheckpointStatus, ColumnarShadowRecoveryStatus,
     COLUMN_GROUP_SHADOW_DIR,
 };
-use skein_storage::{
+use hawdb_storage::{
     CowSegment, CowSegmentedMap, ProjectedGraphArtifact, ProjectedGraphArtifactData,
 };
-pub use skein_storage::{
+pub use hawdb_storage::{
     GraphIndexReadMetricsSnapshot, PersistentGraphIndexClass, PublishedReadView,
 };
-pub use skein_storage::{OptimizerStatisticsRefreshOptions, OptimizerStatisticsRefreshReport};
-pub use skein_storage::{RelationalIndexArtifactMetadata, RelationalIndexGenerationArtifacts};
-pub(crate) use skein_storage::{WalSyncGroupFlush, WalSyncGroupProgress};
+pub use hawdb_storage::{OptimizerStatisticsRefreshOptions, OptimizerStatisticsRefreshReport};
+pub use hawdb_storage::{RelationalIndexArtifactMetadata, RelationalIndexGenerationArtifacts};
+pub(crate) use hawdb_storage::{WalSyncGroupFlush, WalSyncGroupProgress};
+use relational_index_shadow::RelationalIndexShadowState;
+pub use relational_index_shadow::{
+    RelationalConstraintQualificationProbeReport, RelationalConstraintQualificationReport,
+    RelationalConstraintQualificationUse, RelationalIndexQualificationProbeKind,
+    RelationalIndexQualificationProbeReport, RelationalIndexReadViewBackendReport,
+    RelationalIndexReadViewReport, RelationalIndexShadowCheckpointReport,
+    RelationalIndexShadowCheckpointStatus, RelationalIndexShadowRecoveryStatus,
+    RelationalIndexViewQualificationOptions, RelationalIndexViewQualificationReport,
+    RELATIONAL_CONSTRAINT_QUALIFICATION_PROTOCOL, RELATIONAL_INDEX_VIEW_QUALIFICATION_PROTOCOL,
+};
+pub(crate) use relational_index_shadow::{
+    RelationalIndexProbeStatistics, RelationalTransactionIndexView,
+};
+pub use relational_row_pages::RelationalRowPageRecoveryStatus;
+use relational_row_pages::RelationalRowPageState;
+pub(crate) use relational_row_pages::RelationalTransactionRowView;
 use std::collections::{BTreeMap, BTreeSet};
 use std::fs;
 #[cfg(test)]
@@ -280,20 +280,20 @@ use wal_codec::{
     WalOpenOutcome, WalRecordCursor,
 };
 
-use skein_storage::durable_manifest::{safe_reclaim_commit_epoch, STORAGE_VERSION};
-const MANIFEST_FILE: &str = "manifest.skein";
-const PROJECTED_GRAPHS_FILE: &str = "projected_graphs.skein";
-const STABLE_ID_MAPPING_FILE: &str = "stable_ids.skein";
-pub(crate) use skein_storage::checkpoint::{
+use hawdb_storage::durable_manifest::{safe_reclaim_commit_epoch, STORAGE_VERSION};
+const MANIFEST_FILE: &str = "manifest.hawdb";
+const PROJECTED_GRAPHS_FILE: &str = "projected_graphs.hawdb";
+const STABLE_ID_MAPPING_FILE: &str = "stable_ids.hawdb";
+pub(crate) use hawdb_storage::checkpoint::{
     relational_checkpoint_metadata, split_checkpoint_checksum,
 };
-const BACKUP_MANIFEST_FILE: &str = "backup.skein";
+const BACKUP_MANIFEST_FILE: &str = "backup.hawdb";
 const CANONICAL_MANIFEST_MAX_BYTES: u64 = 256 * 1024 * 1024;
 const PROPERTY_SPILL_MANIFEST_MAX_BYTES: u64 = 64 * 1024;
 const PROPERTY_PROJECTION_MANIFEST_MAX_BYTES: u64 = 32 * 1024 * 1024;
 const CHECKPOINT_TEMPORARY_SPACE_MULTIPLIER: u64 = 4;
 const MIN_CHECKPOINT_TEMPORARY_SPACE_BYTES: u64 = 64 * 1024;
-pub use skein_storage::consistency::DENSE_ADJACENCY_DEGREE_THRESHOLD;
+pub use hawdb_storage::consistency::DENSE_ADJACENCY_DEGREE_THRESHOLD;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum CheckpointPublishStage {
@@ -303,7 +303,7 @@ enum CheckpointPublishStage {
 }
 
 #[cfg(test)]
-const PROCESS_CRASH_POINT_ENV: &str = "SKEIN_TEST_PROCESS_CRASH_POINT";
+const PROCESS_CRASH_POINT_ENV: &str = "HAWDB_TEST_PROCESS_CRASH_POINT";
 
 fn process_crash_failpoint(point: &str) {
     #[cfg(test)]
@@ -352,7 +352,7 @@ fn checkpoint_publish_failpoint(stage: CheckpointPublishStage) -> Result<()> {
     }
     #[cfg(test)]
     if CHECKPOINT_FAILPOINT.with(|failpoint| failpoint.get()) == Some(stage) {
-        return Err(SkeinError::Storage(format!(
+        return Err(HawdbError::Storage(format!(
             "injected checkpoint failure at {stage:?}"
         )));
     }
@@ -422,7 +422,7 @@ fn wal_apply_failpoint() -> Result<()> {
             None => false,
         });
         if should_fail {
-            return Err(SkeinError::Storage(
+            return Err(HawdbError::Storage(
                 "injected failure while applying a durable WAL batch".to_string(),
             ));
         }
@@ -498,7 +498,7 @@ pub(crate) fn set_wal_group_sync_failpoint(enabled: bool) {
 fn wal_group_sync_failpoint() -> Result<()> {
     #[cfg(test)]
     if WAL_GROUP_SYNC_FAILPOINT.with(std::cell::Cell::take) {
-        return Err(SkeinError::Storage(
+        return Err(HawdbError::Storage(
             "injected WAL group sync failure".to_string(),
         ));
     }
@@ -510,7 +510,7 @@ type PendingRelationship = (RelId, NodeId, NodeId, RelTypeId, BTreeMap<String, V
 pub type GraphSnapshotNodeImport = (NodeId, String, BTreeMap<String, Value>);
 pub type GraphSnapshotRelationshipImport = (RelId, NodeId, NodeId, String, BTreeMap<String, Value>);
 
-pub(crate) struct SkeinSnapshotRowsImport {
+pub(crate) struct HawdbSnapshotRowsImport {
     pub stable_id_mapping: StoreStableIdMapping,
     pub source_fingerprint: String,
     pub nodes: Vec<GraphSnapshotNodeImport>,
@@ -535,7 +535,7 @@ struct RelationshipMatchRequest<'a> {
     rel_properties: &'a BTreeMap<String, Value>,
 }
 
-pub(crate) use skein_storage::graph_index::{
+pub(crate) use hawdb_storage::graph_index::{
     CompositePropertyIndex, FullTextPropertyIndex, NodePropertyIndex, RelationshipPropertyIndex,
 };
 
@@ -601,18 +601,18 @@ pub(crate) struct GraphMutationLockFootprint {
     pub(crate) adjacency_writes: BTreeSet<GraphAdjacencyLockIdentity>,
 }
 
-pub(crate) use skein_storage::mutation::{
+pub(crate) use hawdb_storage::mutation::{
     ensure_additional_mutation_limits, ensure_mutation_commit_limits, estimated_properties_bytes,
     estimated_value_bytes, remaining_mutation_affected_rows, remaining_mutation_operations,
 };
 
-use skein_storage::consistency::{
+use hawdb_storage::consistency::{
     adjacency_consolidation_plan, adjacency_direction_sort_key, adjacency_layout_for_degree,
     compute_degree_statistics_from_adjacency, compute_degree_statistics_from_relationships,
     maintained_adjacency_groups, recompute_adjacency_groups,
 };
 
-pub use skein_storage::consistency::{
+pub use hawdb_storage::consistency::{
     AdjacencyConsistencyReport, AdjacencyConsolidationCandidate, AdjacencyConsolidationPlan,
     AdjacencyConsolidationReport, BasicStatisticsConsistencyReport,
     DegreeStatisticsConsistencyReport, DegreeStatisticsEntry, DegreeStatisticsKey,
@@ -684,14 +684,14 @@ pub struct GraphStore {
     projected_graph_artifacts: CowSegment<BTreeMap<String, ProjectedGraphArtifact>>,
     stable_id_mapping: CowSegment<StoreStableIdMapping>,
     initial_import_source_fingerprint: Option<String>,
-    search_projection_database_identity: Option<skein_core::Uuid>,
+    search_projection_database_identity: Option<hawdb_core::Uuid>,
     search_projection_change_log_start_epoch: u64,
     search_projection_graph_changes: CowSegment<Vec<SearchProjectionGraphChange>>,
     search_projection_change_log_retained_bytes: usize,
     max_search_projection_change_log_entries: Option<usize>,
     max_search_projection_change_log_bytes: Option<usize>,
     search_projection_primary_key_capture_limits:
-        skein_storage::RelationalPrimaryKeyChangeCaptureLimits,
+        hawdb_storage::RelationalPrimaryKeyChangeCaptureLimits,
     source_scan_manifest: CowSegment<Option<ScanSegmentManifest>>,
     storage_recovery_report: StorageRecoveryReport,
     canonical_base: Option<CanonicalSegmentReader>,
@@ -716,20 +716,20 @@ pub struct GraphStore {
     columnar_shadow: ColumnarShadowState,
     relational_index_shadow: RelationalIndexShadowState,
     relational_row_pages: RelationalRowPageState,
-    projection_generations: Option<skein_storage::ProjectionGenerationStore>,
+    projection_generations: Option<hawdb_storage::ProjectionGenerationStore>,
     /// The engine's runtime governor, threaded down from the embedding
-    /// layer (`SkeinEmbedded` / `NowledgeMemGraph`) so background shadow
+    /// layer (`HawdbEmbedded` / `NowledgeMemGraph`) so background shadow
     /// work can request admission. The store never constructs its own.
-    runtime_governor: Option<Arc<dyn skein_storage::BackgroundWorkAdmission>>,
+    runtime_governor: Option<Arc<dyn hawdb_storage::BackgroundWorkAdmission>>,
     durable: Option<DurableStore>,
 }
 
-impl skein_system_sql::SystemSqlStore for GraphStore {
+impl hawdb_system_sql::SystemSqlStore for GraphStore {
     fn commit_epoch(&self) -> u64 {
         GraphStore::commit_epoch(self)
     }
 
-    fn append_storage_residency_report(&self) -> skein_storage::AppendStorageResidencyReport {
+    fn append_storage_residency_report(&self) -> hawdb_storage::AppendStorageResidencyReport {
         GraphStore::append_storage_residency_report(self)
     }
 
@@ -737,13 +737,13 @@ impl skein_system_sql::SystemSqlStore for GraphStore {
         GraphStore::statistics(self, catalog)
     }
 
-    fn projected_graph_statuses(&self) -> Vec<skein_storage::ProjectedGraphStatus> {
+    fn projected_graph_statuses(&self) -> Vec<hawdb_storage::ProjectedGraphStatus> {
         GraphStore::projected_graph_statuses(self)
     }
 
     fn search_projection_changefeed_status(
         &self,
-    ) -> skein_storage::SearchProjectionChangefeedStatus {
+    ) -> hawdb_storage::SearchProjectionChangefeedStatus {
         GraphStore::search_projection_changefeed_status(self)
     }
 }
@@ -754,19 +754,19 @@ pub enum GraphScanControl {
     Stop,
 }
 
-pub use skein_storage::relational::{
+pub use hawdb_storage::relational::{
     RelationalOverflowCompactionConfig, RelationalOverflowCompactionReport,
     RelationalRowPageCompactionConfig, RelationalRowPageCompactionReport,
 };
-pub use skein_storage::{
+pub use hawdb_storage::{
     RelationalIndexStorageResidencyReport, RelationalRowStorageResidencyReport,
     StorageResidencyReport,
 };
 
-pub use skein_storage::graph_overlay::{GraphNodeIterator, GraphRelationshipIterator};
+pub use hawdb_storage::graph_overlay::{GraphNodeIterator, GraphRelationshipIterator};
 
-fn canonical_segment_error(error: CanonicalSegmentError) -> SkeinError {
-    SkeinError::StorageIntegrity(error.to_string())
+fn canonical_segment_error(error: CanonicalSegmentError) -> HawdbError {
+    HawdbError::StorageIntegrity(error.to_string())
 }
 
 /// Result of reading Source scan sidecar candidates. The rows have passed
@@ -1060,7 +1060,7 @@ fn collect_graph_lock_footprint(
             WalOp::DeleteRelationship { id } => {
                 footprint.relationship_writes.insert(*id);
                 let relationship = before.relationship_owned(*id)?.ok_or_else(|| {
-                    SkeinError::Execution(format!(
+                    HawdbError::Execution(format!(
                         "deleted relationship {} is missing while deriving transaction locks",
                         id.0
                     ))
@@ -1149,13 +1149,13 @@ impl GraphStore {
 
     pub(crate) fn ensure_usable(&self) -> Result<()> {
         if self.integrity_poisoned.load(AtomicOrdering::Acquire) {
-            return Err(SkeinError::Storage(
+            return Err(HawdbError::Storage(
                 "database handle is poisoned after a runtime storage integrity failure; close and reopen the database before issuing more operations"
                     .to_string(),
             ));
         }
         if self.post_wal_apply_poisoned {
-            return Err(SkeinError::Storage(
+            return Err(HawdbError::Storage(
                 "database handle is poisoned after a durable WAL batch failed during in-memory apply; close and reopen the database before issuing more operations"
                     .to_string(),
             ));
@@ -1170,9 +1170,9 @@ impl GraphStore {
 
     pub(crate) fn projection_generation_store(
         &self,
-    ) -> Result<skein_storage::ProjectionGenerationStore> {
+    ) -> Result<hawdb_storage::ProjectionGenerationStore> {
         self.projection_generations.clone().ok_or_else(|| {
-            SkeinError::Storage(
+            HawdbError::Storage(
                 "projection generation catalog requires a durable database".to_string(),
             )
         })
@@ -1183,7 +1183,7 @@ impl GraphStore {
     }
 
     pub(crate) fn poison_on_storage_error<T>(&self, result: &Result<T>) {
-        if matches!(result, Err(SkeinError::StorageIntegrity(_))) {
+        if matches!(result, Err(HawdbError::StorageIntegrity(_))) {
             self.integrity_poisoned.store(true, AtomicOrdering::Release);
         }
     }
@@ -1280,7 +1280,7 @@ impl GraphStore {
         replay_config: WalReplayConfig,
     ) -> Result<Self> {
         if replay_config.recovery_mode == RecoveryMode::DoctorRepairTornTail {
-            return Err(SkeinError::Storage(
+            return Err(HawdbError::Storage(
                 "WAL repair is not available through database open; use DatabaseDoctor to plan and explicitly apply repair before opening in strict mode"
                     .to_string(),
             ));
@@ -1288,7 +1288,7 @@ impl GraphStore {
         if matches!(mode, DurableOpenMode::ExistingOnly)
             && replay_config.recovery_mode == RecoveryMode::AutoRepairTornTail
         {
-            return Err(SkeinError::Storage(
+            return Err(HawdbError::Storage(
                 "automatic WAL tail repair requires a writable database open".to_string(),
             ));
         }
@@ -1340,18 +1340,18 @@ impl GraphStore {
         let projection_generations = if durable.read_only {
             if projection_generation_root.exists() {
                 Some(
-                    skein_storage::ProjectionGenerationStore::open_existing(
+                    hawdb_storage::ProjectionGenerationStore::open_existing(
                         &projection_generation_root,
                     )
-                    .map_err(|error| SkeinError::Storage(error.to_string()))?,
+                    .map_err(|error| HawdbError::Storage(error.to_string()))?,
                 )
             } else {
                 None
             }
         } else {
             Some(
-                skein_storage::ProjectionGenerationStore::open(&projection_generation_root)
-                    .map_err(|error| SkeinError::Storage(error.to_string()))?,
+                hawdb_storage::ProjectionGenerationStore::open(&projection_generation_root)
+                    .map_err(|error| HawdbError::Storage(error.to_string()))?,
             )
         };
         let mut store = Self {
@@ -1454,7 +1454,7 @@ impl GraphStore {
         replay_config: WalReplayConfig,
     ) -> Result<(Self, Catalog, Catalog)> {
         if replay_config.recovery_mode != RecoveryMode::Strict {
-            return Err(SkeinError::Storage(
+            return Err(HawdbError::Storage(
                 "derived repair requires strict WAL replay".to_string(),
             ));
         }
@@ -1484,7 +1484,7 @@ impl GraphStore {
 
     fn enable_derived_repair_writes(&mut self) -> Result<()> {
         let durable = self.durable.as_mut().ok_or_else(|| {
-            SkeinError::Storage("derived repair requires durable storage".to_string())
+            HawdbError::Storage("derived repair requires durable storage".to_string())
         })?;
         durable.read_only = false;
         Ok(())
@@ -1570,7 +1570,7 @@ impl GraphStore {
     pub fn search_projection_changes_after(
         &self,
         commit_epoch: u64,
-    ) -> Vec<skein_storage::SearchProjectionChange> {
+    ) -> Vec<hawdb_storage::SearchProjectionChange> {
         self.search_projection_graph_changes_after(commit_epoch)
     }
 
@@ -1610,14 +1610,14 @@ impl GraphStore {
 
     pub fn set_search_projection_primary_key_capture_limits(
         &mut self,
-        limits: skein_storage::RelationalPrimaryKeyChangeCaptureLimits,
+        limits: hawdb_storage::RelationalPrimaryKeyChangeCaptureLimits,
     ) {
         self.search_projection_primary_key_capture_limits = limits;
         for change in self.search_projection_graph_changes.iter_mut() {
             if change.relational_primary_key_changes.exceeds_limits(limits) {
                 change.relational_primary_key_changes =
-                    skein_storage::RelationalPrimaryKeyChangeCapture::RequiresRebuild {
-                        reason: skein_storage::RelationalPrimaryKeyChangeRebuildReason::CaptureLimitExceeded,
+                    hawdb_storage::RelationalPrimaryKeyChangeCapture::RequiresRebuild {
+                        reason: hawdb_storage::RelationalPrimaryKeyChangeRebuildReason::CaptureLimitExceeded,
                     };
             }
         }
@@ -1642,11 +1642,11 @@ impl GraphStore {
         )
     }
 
-    pub(crate) fn search_projection_database_identity(&self) -> Option<skein_core::Uuid> {
+    pub(crate) fn search_projection_database_identity(&self) -> Option<hawdb_core::Uuid> {
         self.search_projection_database_identity
     }
 
-    pub(crate) fn set_search_projection_database_identity(&mut self, identity: skein_core::Uuid) {
+    pub(crate) fn set_search_projection_database_identity(&mut self, identity: hawdb_core::Uuid) {
         self.search_projection_database_identity = Some(identity);
     }
 
@@ -1672,7 +1672,7 @@ impl GraphStore {
             .as_ref()
             .is_some_and(|durable| durable.read_only)
         {
-            return Err(SkeinError::Storage(
+            return Err(HawdbError::Storage(
                 "stable id mapping persistence is not allowed in read-only mode".to_string(),
             ));
         }
@@ -1695,7 +1695,7 @@ impl GraphStore {
             .as_ref()
             .is_some_and(|durable| durable.read_only)
         {
-            return Err(SkeinError::Storage(
+            return Err(HawdbError::Storage(
                 "stable id mapping persistence is not allowed in read-only mode".to_string(),
             ));
         }
@@ -1800,7 +1800,7 @@ impl GraphStore {
     /// Threads the engine's runtime governor into the store so background
     /// shadow work can request admission (`WorkClass::Shadow`, background
     /// priority). The store never constructs a governor of its own.
-    pub fn set_runtime_governor(&mut self, governor: skein_qos::RuntimeGovernor) {
+    pub fn set_runtime_governor(&mut self, governor: hawdb_qos::RuntimeGovernor) {
         self.runtime_governor = Some(Arc::new(RuntimeGovernorBackgroundAdmission(governor)));
     }
 
@@ -1886,7 +1886,7 @@ pub(crate) fn sync_parent_dir(path: &Path) -> Result<()> {
     Ok(())
 }
 
-pub(crate) use skein_storage::schema::{
+pub(crate) use hawdb_storage::schema::{
     ensure_table_descriptor, reserve_schema_maintenance_budget,
 };
 
@@ -1913,7 +1913,7 @@ fn validate_property_descriptor_with_table_state(
     force: bool,
 ) -> Result<()> {
     let Some(table) = catalog.table_descriptor(table_id) else {
-        return Err(SkeinError::Storage(format!(
+        return Err(HawdbError::Storage(format!(
             "property schema references missing table {}",
             table_id.0
         )));
@@ -1985,13 +1985,13 @@ fn validate_table_descriptor(
     Ok(())
 }
 
-pub(crate) use skein_storage::wal::apply_wal_op_to_snapshot;
+pub(crate) use hawdb_storage::wal::apply_wal_op_to_snapshot;
 fn encode_projected_graph_artifacts(
     catalog: &Catalog,
     store: &GraphStore,
     projection_epoch: u64,
 ) -> String {
-    skein_storage::projection::artifact::encode_projected_graph_artifacts(
+    hawdb_storage::projection::artifact::encode_projected_graph_artifacts(
         projection_epoch,
         store.commit_epoch,
         store.projected_graphs.iter().map(|(name, definition)| {
@@ -2061,7 +2061,7 @@ fn validate_changed_node_uniqueness(
             }
             if let Some(previous) = changed_values.insert(value.clone(), node.id) {
                 let label = catalog.label_name(label_id).unwrap_or("<unknown>");
-                return Err(SkeinError::Storage(format!(
+                return Err(HawdbError::Storage(format!(
                     "unique constraint violation on :{label}({}) for nodes {} and {}",
                     constraint.property, previous.0, node.id.0
                 )));
@@ -2082,7 +2082,7 @@ fn validate_changed_node_uniqueness(
             })?;
             if let Some(existing_id) = violation {
                 let label = catalog.label_name(label_id).unwrap_or("<unknown>");
-                return Err(SkeinError::Storage(format!(
+                return Err(HawdbError::Storage(format!(
                     "unique constraint violation on :{label}({}) for nodes {} and {}",
                     constraint.property, existing_id.0, changed_id.0
                 )));
@@ -2114,7 +2114,7 @@ fn validate_changed_relationship_uniqueness(
             }
             if let Some(previous) = changed_values.insert(value.clone(), relationship.id) {
                 let rel_type = catalog.rel_type_name(rel_type_id).unwrap_or("<unknown>");
-                return Err(SkeinError::Storage(format!(
+                return Err(HawdbError::Storage(format!(
                     "relationship unique constraint violation on :{rel_type}({}) for relationships {} and {}",
                     constraint.property, previous.0, relationship.id.0
                 )));
@@ -2135,7 +2135,7 @@ fn validate_changed_relationship_uniqueness(
             })?;
             if let Some(existing_id) = violation {
                 let rel_type = catalog.rel_type_name(rel_type_id).unwrap_or("<unknown>");
-                return Err(SkeinError::Storage(format!(
+                return Err(HawdbError::Storage(format!(
                     "relationship unique constraint violation on :{rel_type}({}) for relationships {} and {}",
                     constraint.property, existing_id.0, changed_id.0
                 )));
@@ -2176,7 +2176,7 @@ fn validate_unique_property_streaming(
         }
         if let Some(duplicate) = duplicate {
             let label = catalog.label_name(label_id).unwrap_or("<unknown>");
-            validation_error = Some(SkeinError::Storage(format!(
+            validation_error = Some(HawdbError::Storage(format!(
                 "unique constraint violation on :{label}({property}) for nodes {} and {}",
                 node.id.0, duplicate.0
             )));
@@ -2221,7 +2221,7 @@ fn validate_unique_relationship_property_streaming(
         }
         if let Some(duplicate) = duplicate {
             let rel_type = catalog.rel_type_name(rel_type_id).unwrap_or("<unknown>");
-            validation_error = Some(SkeinError::Storage(format!(
+            validation_error = Some(HawdbError::Storage(format!(
                 "relationship unique constraint violation on :{rel_type}({property}) for relationships {} and {}",
                 relationship.id.0, duplicate.0
             )));
@@ -2237,7 +2237,7 @@ fn generated_stable_id(kind: &str, physical_id: u64) -> Value {
     Value::Map(BTreeMap::from([
         (
             "source".to_string(),
-            Value::String("skein-stable-id-v1".to_string()),
+            Value::String("hawdb-stable-id-v1".to_string()),
         ),
         ("kind".to_string(), Value::String(kind.to_string())),
         (
@@ -2433,7 +2433,7 @@ fn relationships_with_pending_matching_bounded(
             properties: relationship.properties.clone(),
         });
         if relationships.len() > max_relationships {
-            return Err(SkeinError::Execution(format!(
+            return Err(HawdbError::Execution(format!(
                 "mutation would exceed max_mutation_affected_rows {max_relationships}"
             )));
         }
@@ -2465,7 +2465,7 @@ fn relationships_with_pending_matching_bounded(
             properties: properties.clone(),
         });
         if relationships.len() > max_relationships {
-            return Err(SkeinError::Execution(format!(
+            return Err(HawdbError::Execution(format!(
                 "mutation would exceed max_mutation_affected_rows {max_relationships}"
             )));
         }
@@ -2578,20 +2578,20 @@ fn validate_search_projection_checkpoint_changes(
     changes: &[SearchProjectionGraphChange],
 ) -> Result<()> {
     if start_epoch > checkpoint_commit_epoch {
-        return Err(SkeinError::Storage(format!(
+        return Err(HawdbError::Storage(format!(
             "search projection change log start epoch {start_epoch} exceeds checkpoint commit epoch {checkpoint_commit_epoch}"
         )));
     }
     let mut previous_epoch = start_epoch;
     for change in changes {
         if change.commit_epoch <= previous_epoch {
-            return Err(SkeinError::Storage(format!(
+            return Err(HawdbError::Storage(format!(
                 "search projection change commit epoch {} is not greater than previous epoch {previous_epoch}",
                 change.commit_epoch
             )));
         }
         if change.commit_epoch > checkpoint_commit_epoch {
-            return Err(SkeinError::Storage(format!(
+            return Err(HawdbError::Storage(format!(
                 "search projection change commit epoch {} exceeds checkpoint commit epoch {checkpoint_commit_epoch}",
                 change.commit_epoch
             )));
@@ -2601,7 +2601,7 @@ fn validate_search_projection_checkpoint_changes(
             .windows(2)
             .all(|pair| pair[0] < pair[1])
         {
-            return Err(SkeinError::Storage(format!(
+            return Err(HawdbError::Storage(format!(
                 "search projection change at commit epoch {} has unordered or duplicate upsert node ids",
                 change.commit_epoch
             )));
@@ -2611,16 +2611,16 @@ fn validate_search_projection_checkpoint_changes(
             .windows(2)
             .all(|pair| pair[0] < pair[1])
         {
-            return Err(SkeinError::Storage(format!(
+            return Err(HawdbError::Storage(format!(
                 "search projection change at commit epoch {} has unordered or duplicate delete document ids",
                 change.commit_epoch
             )));
         }
-        if let skein_storage::RelationalPrimaryKeyChangeCapture::Captured { tables, .. } =
+        if let hawdb_storage::RelationalPrimaryKeyChangeCapture::Captured { tables, .. } =
             &change.relational_primary_key_changes
         {
             if !tables.windows(2).all(|pair| pair[0].table < pair[1].table) {
-                return Err(SkeinError::Storage(format!(
+                return Err(HawdbError::Storage(format!(
                     "search projection change at commit epoch {} has unordered or duplicate relational tables",
                     change.commit_epoch
                 )));
@@ -2629,7 +2629,7 @@ fn validate_search_projection_checkpoint_changes(
                 if table.primary_keys.is_empty()
                     || !table.primary_keys.windows(2).all(|pair| pair[0] < pair[1])
                 {
-                    return Err(SkeinError::Storage(format!(
+                    return Err(HawdbError::Storage(format!(
                         "search projection change at commit epoch {} has empty, unordered, or duplicate primary keys for table {}",
                         change.commit_epoch, table.table
                     )));
@@ -2645,7 +2645,7 @@ pub(crate) fn checksum_bytes(bytes: &[u8]) -> u64 {
     checksum_u64(bytes)
 }
 
-use skein_storage::artifact_binding::verify_integrity;
+use hawdb_storage::artifact_binding::verify_integrity;
 
 fn verify_file_integrity(
     path: &Path,
@@ -2656,17 +2656,17 @@ fn verify_file_integrity(
 ) -> Result<()> {
     let (actual_len, actual_checksum, actual_sha256) = file_checksum(path)?;
     if actual_len != expected_len {
-        return Err(SkeinError::Storage(format!(
+        return Err(HawdbError::Storage(format!(
             "{artifact} encoded length mismatch: expected {expected_len}, got {actual_len}"
         )));
     }
     if actual_checksum != expected_checksum {
-        return Err(SkeinError::Storage(format!(
+        return Err(HawdbError::Storage(format!(
             "{artifact} CRC32C mismatch: expected {expected_checksum}, got {actual_checksum}"
         )));
     }
     if actual_sha256 != expected_sha256 {
-        return Err(SkeinError::Storage(format!(
+        return Err(HawdbError::Storage(format!(
             "{artifact} SHA-256 mismatch: expected {expected_sha256}, got {actual_sha256}"
         )));
     }
@@ -2702,20 +2702,20 @@ mod tests {
         set_wal_apply_failpoint, source_scan, AdjacencyConsolidationPlan, AdjacencyDirection,
         AdjacencyGroupStats, AdjacencyLayout, CheckpointPublishStage, ConnectedNodesCreate,
         CowSegmentedMap, DatabaseDoctor, DegreeStatisticsEntry, DegreeStatisticsKey,
-        DurableCompression, DurableManifest, GraphScanControl, GraphStore, NodeId, NodeRecord,
-        NodeSetAssignment, NodeSetValue, OrderedAdjacencyEntry, PersistentGraphIndexClass,
-        ProjectedGraphDefinition, PropertyFilter, RelId, RelRecord, RelTypeId,
-        RelationalIndexStorageResidencyReport, RelationalRowStorageResidencyReport,
+        DurableCompression, DurableManifest, GraphScanControl, GraphStore, HawdbError, NodeId,
+        NodeRecord, NodeSetAssignment, NodeSetValue, OrderedAdjacencyEntry,
+        PersistentGraphIndexClass, ProjectedGraphDefinition, PropertyFilter, RelId, RelRecord,
+        RelTypeId, RelationalIndexStorageResidencyReport, RelationalRowStorageResidencyReport,
         RelationshipDeleteRequest, ScanPruningStrategy, ScanPruningTargetKind,
-        SearchProjectionGraphChange, SkeinError, SourceScanCandidateLimits,
-        SourceScanCandidateRead, SourceScanCandidateVisit, SourceScanRow, StorageResidencyReport,
-        WalDoctorOptions, WalOp, COW_MAP_TARGET_SEGMENT_BYTES, DENSE_ADJACENCY_DEGREE_THRESHOLD,
-        DURABLE_COMPRESSION_HEADER, MANIFEST_FILE,
+        SearchProjectionGraphChange, SourceScanCandidateLimits, SourceScanCandidateRead,
+        SourceScanCandidateVisit, SourceScanRow, StorageResidencyReport, WalDoctorOptions, WalOp,
+        COW_MAP_TARGET_SEGMENT_BYTES, DENSE_ADJACENCY_DEGREE_THRESHOLD, DURABLE_COMPRESSION_HEADER,
+        MANIFEST_FILE,
     };
     use crate::schema::{Catalog, GraphStatistics, LabelId, PropertyType, TableKind};
     use crate::value::Value;
-    use skein_integrity::integrity_digest;
-    use skein_storage::{
+    use hawdb_integrity::integrity_digest;
+    use hawdb_storage::{
         DurabilityPolicy, GraphMutation, MutationLimits, RelationalColumnSchema,
         RelationalHydrationBudget, RelationalInsertMode, RelationalKey, RelationalRow,
         RelationalScalarType, RelationalTableSchema, RelationalTransaction, RelationalValue,
@@ -2732,15 +2732,15 @@ mod tests {
     fn residency_facade_preserves_storage_type_identity() {
         assert_eq!(
             TypeId::of::<StorageResidencyReport>(),
-            TypeId::of::<skein_storage::StorageResidencyReport>()
+            TypeId::of::<hawdb_storage::StorageResidencyReport>()
         );
         assert_eq!(
             TypeId::of::<RelationalRowStorageResidencyReport>(),
-            TypeId::of::<skein_storage::RelationalRowStorageResidencyReport>()
+            TypeId::of::<hawdb_storage::RelationalRowStorageResidencyReport>()
         );
         assert_eq!(
             TypeId::of::<RelationalIndexStorageResidencyReport>(),
-            TypeId::of::<skein_storage::RelationalIndexStorageResidencyReport>()
+            TypeId::of::<hawdb_storage::RelationalIndexStorageResidencyReport>()
         );
     }
 
@@ -2819,9 +2819,9 @@ mod tests {
             .map(|id| store.relationship_owned(id).unwrap().unwrap())
             .collect::<Vec<_>>();
         let nodes: super::GraphNodeIterator = store.node_records_owned();
-        let nodes: skein_storage::graph_overlay::GraphNodeIterator = nodes;
+        let nodes: hawdb_storage::graph_overlay::GraphNodeIterator = nodes;
         let relationships: super::GraphRelationshipIterator = store.relationship_records_owned();
-        let relationships: skein_storage::graph_overlay::GraphRelationshipIterator = relationships;
+        let relationships: hawdb_storage::graph_overlay::GraphRelationshipIterator = relationships;
 
         store
             .set_node_property(
@@ -2887,11 +2887,11 @@ mod tests {
 
     #[test]
     fn background_storage_permit_retains_governor_resources_until_drop_and_unwind() {
-        use skein_qos::{
+        use hawdb_qos::{
             IoConcurrencyBudget, RuntimeGovernor, RuntimeGovernorConfig, RuntimeMemorySnapshot,
             RuntimeResourceBudget, RuntimeResourceSnapshot,
         };
-        use skein_storage::{BackgroundWorkAdmission, BackgroundWorkRequest};
+        use hawdb_storage::{BackgroundWorkAdmission, BackgroundWorkRequest};
 
         let governor = RuntimeGovernor::new(
             RuntimeGovernorConfig {
@@ -3208,7 +3208,7 @@ mod tests {
                 .expect("commit graph and relational row");
             assert_eq!(store.commit_epoch(), 2);
             store.checkpoint(&catalog).expect("publish checkpoint");
-            assert!(path.join("relational.1.skein").exists());
+            assert!(path.join("relational.1.hawdb").exists());
             assert_eq!(
                 store
                     .relational_state()
@@ -3218,7 +3218,7 @@ mod tests {
             store
                 .backup_to(&catalog, &backup)
                 .expect("back up relational checkpoint");
-            assert!(backup.join("relational.2.skein").exists());
+            assert!(backup.join("relational.2.hawdb").exists());
         }
 
         {
@@ -3347,7 +3347,7 @@ mod tests {
                 .expect("create relational table");
             store.checkpoint(&catalog).expect("publish checkpoint");
 
-            let relational_path = path.join("relational.1.skein");
+            let relational_path = path.join("relational.1.hawdb");
             let mut bytes = fs::read(&relational_path).expect("read relational checkpoint");
             *bytes.last_mut().expect("relational checkpoint payload") ^= 0xff;
             fs::write(&relational_path, bytes).expect("corrupt relational checkpoint");
@@ -3496,7 +3496,7 @@ mod tests {
             .create_node(&mut catalog, "Source", BTreeMap::new())
             .unwrap();
         let target_count =
-            DENSE_ADJACENCY_DEGREE_THRESHOLD + skein_storage::ADJACENCY_DELTA_CONSOLIDATION_ENTRIES;
+            DENSE_ADJACENCY_DEGREE_THRESHOLD + hawdb_storage::ADJACENCY_DELTA_CONSOLIDATION_ENTRIES;
         let targets = (0..target_count)
             .map(|_| {
                 store
@@ -3521,7 +3521,7 @@ mod tests {
         assert_eq!(plan.group_count, 1);
         assert_eq!(
             plan.delta_entry_count,
-            skein_storage::ADJACENCY_DELTA_CONSOLIDATION_ENTRIES
+            hawdb_storage::ADJACENCY_DELTA_CONSOLIDATION_ENTRIES
         );
 
         let deferred =
@@ -3779,47 +3779,47 @@ mod tests {
         assert!(report.generation > 0);
         assert_eq!(report.file_count, 26);
         assert!(backup
-            .join(skein_storage::append_generation_manifest_file(
+            .join(hawdb_storage::append_generation_manifest_file(
                 report.generation
             ))
             .exists());
         assert!(backup
-            .join(skein_storage::canonical_segment_descriptor_page_file(
+            .join(hawdb_storage::canonical_segment_descriptor_page_file(
                 report.generation
             ))
             .exists());
         assert!(backup
-            .join(skein_storage::canonical_segment_descriptor_root_file(
+            .join(hawdb_storage::canonical_segment_descriptor_root_file(
                 report.generation
             ))
             .exists());
         assert!(backup
-            .join(skein_storage::canonical_adjacency_descriptor_page_file(
+            .join(hawdb_storage::canonical_adjacency_descriptor_page_file(
                 report.generation
             ))
             .exists());
         assert!(backup
-            .join(skein_storage::canonical_adjacency_descriptor_root_file(
+            .join(hawdb_storage::canonical_adjacency_descriptor_root_file(
                 report.generation
             ))
             .exists());
         assert!(backup
-            .join(skein_storage::property_projection_descriptor_page_file(
+            .join(hawdb_storage::property_projection_descriptor_page_file(
                 report.generation
             ))
             .exists());
         assert!(backup
-            .join(skein_storage::property_projection_descriptor_root_file(
+            .join(hawdb_storage::property_projection_descriptor_root_file(
                 report.generation
             ))
             .exists());
         assert!(backup
-            .join(skein_storage::property_spill_descriptor_page_file(
+            .join(hawdb_storage::property_spill_descriptor_page_file(
                 report.generation
             ))
             .exists());
         assert!(backup
-            .join(skein_storage::property_spill_descriptor_root_file(
+            .join(hawdb_storage::property_spill_descriptor_root_file(
                 report.generation
             ))
             .exists());
@@ -4084,7 +4084,7 @@ mod tests {
             let residency = store.storage_residency_report();
             assert_eq!(
                 residency.graph_manifest_open_budget_bytes,
-                skein_storage::DEFAULT_MAX_GRAPH_MANIFEST_OPEN_BYTES
+                hawdb_storage::DEFAULT_MAX_GRAPH_MANIFEST_OPEN_BYTES
             );
             assert!(residency.graph_manifest_encoded_bytes > canonical_manifest_bytes);
         }
@@ -4305,13 +4305,13 @@ mod tests {
             let cache_before_scrub = store.segment_cache_snapshot().unwrap();
             let scrub = adjacency.deep_scrub().unwrap();
             assert_eq!(store.segment_cache_snapshot().unwrap(), cache_before_scrub);
-            assert!(!path.join("adjacency.1.manifest.skein").exists());
-            let descriptor_reader = skein_storage::GraphDescriptorTreeRootReader::open(
-                skein_storage::GraphDescriptorTreePaths::new(
-                    path.join(skein_storage::canonical_adjacency_descriptor_page_file(1)),
-                    path.join(skein_storage::canonical_adjacency_descriptor_root_file(1)),
+            assert!(!path.join("adjacency.1.manifest.hawdb").exists());
+            let descriptor_reader = hawdb_storage::GraphDescriptorTreeRootReader::open(
+                hawdb_storage::GraphDescriptorTreePaths::new(
+                    path.join(hawdb_storage::canonical_adjacency_descriptor_page_file(1)),
+                    path.join(hawdb_storage::canonical_adjacency_descriptor_root_file(1)),
                 ),
-                skein_storage::GraphDescriptorTreeBuildConfig::default(),
+                hawdb_storage::GraphDescriptorTreeBuildConfig::default(),
             )
             .unwrap();
             assert_eq!(
@@ -4488,9 +4488,9 @@ mod tests {
         )
         .unwrap();
         fs::remove_file(path.join(canonical_adjacency_artifact_generation_file(1))).unwrap();
-        fs::remove_file(path.join(skein_storage::canonical_adjacency_descriptor_page_file(1)))
+        fs::remove_file(path.join(hawdb_storage::canonical_adjacency_descriptor_page_file(1)))
             .unwrap();
-        fs::remove_file(path.join(skein_storage::canonical_adjacency_descriptor_root_file(1)))
+        fs::remove_file(path.join(hawdb_storage::canonical_adjacency_descriptor_root_file(1)))
             .unwrap();
 
         let mut catalog = Catalog::default();
@@ -4553,13 +4553,13 @@ mod tests {
             assert_eq!(spill_manifest.value_count, 2);
             assert!(spill_manifest.value_bytes > 64 * 1024);
             assert_eq!(spill_manifest.source_commit_epoch, store.commit_epoch());
-            let descriptor_root = skein_storage::GraphDescriptorTreeRootReader::open_bound(
-                skein_storage::GraphDescriptorTreePaths::new(
-                    path.join(skein_storage::property_spill_descriptor_page_file(1)),
-                    path.join(skein_storage::property_spill_descriptor_root_file(1)),
+            let descriptor_root = hawdb_storage::GraphDescriptorTreeRootReader::open_bound(
+                hawdb_storage::GraphDescriptorTreePaths::new(
+                    path.join(hawdb_storage::property_spill_descriptor_page_file(1)),
+                    path.join(hawdb_storage::property_spill_descriptor_root_file(1)),
                 ),
                 spill_manifest.descriptor_generation_artifacts(),
-                skein_storage::GraphDescriptorTreeBuildConfig::default(),
+                hawdb_storage::GraphDescriptorTreeBuildConfig::default(),
             )
             .unwrap();
             assert_eq!(
@@ -4651,7 +4651,7 @@ mod tests {
                 .unwrap();
             store.checkpoint(&catalog).unwrap();
         }
-        fs::remove_file(path.join(skein_storage::property_spill_descriptor_root_file(1))).unwrap();
+        fs::remove_file(path.join(hawdb_storage::property_spill_descriptor_root_file(1))).unwrap();
         let mut catalog = Catalog::default();
         let error = GraphStore::open_with_durability_and_replay_config(
             &path,
@@ -4670,7 +4670,7 @@ mod tests {
 
     #[test]
     fn out_of_core_property_projections_merge_wal_delta_and_fail_closed() {
-        use skein_storage::PersistentPropertyProjectionKind;
+        use hawdb_storage::PersistentPropertyProjectionKind;
         use std::io::{Seek, SeekFrom};
 
         let path = unique_test_dir("property_projection_checkpoint");
@@ -5040,7 +5040,7 @@ mod tests {
 
     #[test]
     fn out_of_core_relationship_property_projection_prunes_and_merges_wal_delta() {
-        use skein_storage::PersistentPropertyProjectionKind;
+        use hawdb_storage::PersistentPropertyProjectionKind;
         use std::io::{Seek, SeekFrom};
 
         let path = unique_test_dir("relationship_property_projection_checkpoint");
@@ -5918,7 +5918,7 @@ mod tests {
                 NonZeroU64::new(1024).unwrap(),
             )
             .expect_err("an admitted streaming read must fail closed on corruption");
-        assert!(matches!(error, SkeinError::StorageIntegrity(_)));
+        assert!(matches!(error, HawdbError::StorageIntegrity(_)));
         std::fs::remove_dir_all(path).unwrap();
     }
 
@@ -6361,7 +6361,7 @@ mod tests {
                     upsert_node_ids: vec![0],
                     delete_document_ids: Vec::new(),
                     relational_primary_key_changes:
-                        skein_storage::RelationalPrimaryKeyChangeCapture::Captured {
+                        hawdb_storage::RelationalPrimaryKeyChangeCapture::Captured {
                             tables: Vec::new(),
                             encoded_bytes: 0,
                         },
@@ -6371,7 +6371,7 @@ mod tests {
                     upsert_node_ids: Vec::new(),
                     delete_document_ids: vec!["memory:deleted-memory".to_string()],
                     relational_primary_key_changes:
-                        skein_storage::RelationalPrimaryKeyChangeCapture::Captured {
+                        hawdb_storage::RelationalPrimaryKeyChangeCapture::Captured {
                             tables: Vec::new(),
                             encoded_bytes: 0,
                         },
@@ -6481,8 +6481,8 @@ mod tests {
         assert!(header.contains("codec\tzstd\n"));
         let checkpoint = read_durable_text(&active_checkpoint_path(&path), "checkpoint").unwrap();
         assert!(checkpoint.contains("commit_epoch\t2\n"));
-        let manifest = std::fs::read_to_string(path.join("manifest.skein")).unwrap();
-        assert!(manifest.contains("SKEIN_MANIFEST_V1\n"));
+        let manifest = std::fs::read_to_string(path.join("manifest.hawdb")).unwrap();
+        assert!(manifest.contains("HAWDB_MANIFEST_V1\n"));
         assert!(manifest.contains("checkpoint_generation\t1\n"));
         assert!(manifest.contains("wal_generation\t1\n"));
         assert!(manifest.contains("checkpoint_epoch\t1\n"));
@@ -6514,13 +6514,13 @@ mod tests {
         assert!(error
             .to_string()
             .contains("checkpoint source changed before publication"));
-        assert!(!path.join("checkpoint.1.skein").exists());
-        assert!(!path.join("wal.1.skein").exists());
+        assert!(!path.join("checkpoint.1.hawdb").exists());
+        assert!(!path.join("wal.1.hawdb").exists());
         assert!(!path
-            .join(skein_storage::canonical_adjacency_descriptor_page_file(1))
+            .join(hawdb_storage::canonical_adjacency_descriptor_page_file(1))
             .exists());
         assert!(!path
-            .join(skein_storage::canonical_adjacency_descriptor_root_file(1))
+            .join(hawdb_storage::canonical_adjacency_descriptor_root_file(1))
             .exists());
         assert!(!path.join(".checkpoint.1.prepare").exists());
         drop(source);
@@ -6549,8 +6549,8 @@ mod tests {
             .unwrap();
         let source = store.checkpoint_source();
         let prepared = source.prepare_checkpoint(&catalog).unwrap().unwrap();
-        assert!(path.join("checkpoint.1.skein").exists());
-        assert!(path.join("wal.1.skein").exists());
+        assert!(path.join("checkpoint.1.hawdb").exists());
+        assert!(path.join("wal.1.hawdb").exists());
         assert!(path.join(".checkpoint.1.prepare").exists());
         drop(prepared);
         drop(source);
@@ -6559,8 +6559,8 @@ mod tests {
         let mut recovered_catalog = Catalog::default();
         let recovered = GraphStore::open(&path, &mut recovered_catalog).unwrap();
         assert_eq!(recovered.commit_epoch(), 1);
-        assert!(!path.join("checkpoint.1.skein").exists());
-        assert!(!path.join("wal.1.skein").exists());
+        assert!(!path.join("checkpoint.1.hawdb").exists());
+        assert!(!path.join("wal.1.hawdb").exists());
         assert!(!path.join(".checkpoint.1.prepare").exists());
         drop(recovered);
         std::fs::remove_dir_all(path).unwrap();
@@ -6613,48 +6613,48 @@ mod tests {
                         generation
                     );
                     assert!(path
-                        .join(skein_storage::canonical_segment_descriptor_page_file(
+                        .join(hawdb_storage::canonical_segment_descriptor_page_file(
                             generation
                         ))
                         .exists());
                     assert!(path
-                        .join(skein_storage::canonical_segment_descriptor_root_file(
+                        .join(hawdb_storage::canonical_segment_descriptor_root_file(
                             generation
                         ))
                         .exists());
                     assert!(path
-                        .join(skein_storage::canonical_adjacency_descriptor_page_file(
+                        .join(hawdb_storage::canonical_adjacency_descriptor_page_file(
                             generation
                         ))
                         .exists());
                     assert!(path
-                        .join(skein_storage::canonical_adjacency_descriptor_root_file(
+                        .join(hawdb_storage::canonical_adjacency_descriptor_root_file(
                             generation
                         ))
                         .exists());
                 }
                 None => {
                     assert!(!path
-                        .join(skein_storage::relational_row_page_manifest_generation_file(
+                        .join(hawdb_storage::relational_row_page_manifest_generation_file(
                             1
                         ))
                         .exists());
                     assert!(!path
-                        .join(skein_storage::relational_overflow_manifest_generation_file(
+                        .join(hawdb_storage::relational_overflow_manifest_generation_file(
                             1
                         ))
                         .exists());
                     assert!(!path
-                        .join(skein_storage::canonical_segment_descriptor_page_file(1))
+                        .join(hawdb_storage::canonical_segment_descriptor_page_file(1))
                         .exists());
                     assert!(!path
-                        .join(skein_storage::canonical_segment_descriptor_root_file(1))
+                        .join(hawdb_storage::canonical_segment_descriptor_root_file(1))
                         .exists());
                     assert!(!path
-                        .join(skein_storage::canonical_adjacency_descriptor_page_file(1))
+                        .join(hawdb_storage::canonical_adjacency_descriptor_page_file(1))
                         .exists());
                     assert!(!path
-                        .join(skein_storage::canonical_adjacency_descriptor_root_file(1))
+                        .join(hawdb_storage::canonical_adjacency_descriptor_root_file(1))
                         .exists());
                 }
             }
@@ -6677,7 +6677,7 @@ mod tests {
         store
             .create_node(&mut catalog, "Memory", properties([("id", Value::Int(3))]))
             .unwrap();
-        set_generation_reclamation_remove_failpoint(Some("checkpoint.1.skein".to_string()));
+        set_generation_reclamation_remove_failpoint(Some("checkpoint.1.hawdb".to_string()));
         let checkpoint_result = store.checkpoint(&catalog);
         set_generation_reclamation_remove_failpoint(None);
         checkpoint_result.unwrap();
@@ -6685,14 +6685,14 @@ mod tests {
         assert_eq!(store.commit_epoch(), 3);
         assert_eq!(store.durable.as_ref().unwrap().checkpoint_epoch, 3);
         assert_eq!(store.scan_nodes(None).count(), 3);
-        assert!(path.join("checkpoint.1.skein").exists());
+        assert!(path.join("checkpoint.1.hawdb").exists());
         let pressure = store.storage_pressure_snapshot(None);
         assert!(pressure.generation_reclamation_retry_required);
         assert_eq!(pressure.generation_reclamation_pending_files, 1);
         assert!(pressure.generation_reclamation_pending_bytes > 0);
         assert!(pressure
             .reason_codes
-            .contains(&skein_storage::StoragePressureReasonCode::GenerationReclamationDebt));
+            .contains(&hawdb_storage::StoragePressureReasonCode::GenerationReclamationDebt));
 
         drop(store);
         let mut recovered_catalog = Catalog::default();
@@ -6705,14 +6705,14 @@ mod tests {
         assert_eq!(recovered.scan_nodes(None).count(), 3);
 
         recovered.checkpoint(&recovered_catalog).unwrap();
-        assert!(!path.join("checkpoint.1.skein").exists());
+        assert!(!path.join("checkpoint.1.hawdb").exists());
         let pressure = recovered.storage_pressure_snapshot(None);
         assert!(!pressure.generation_reclamation_retry_required);
         assert_eq!(pressure.generation_reclamation_pending_files, 0);
         assert_eq!(pressure.generation_reclamation_pending_bytes, 0);
         assert!(!pressure
             .reason_codes
-            .contains(&skein_storage::StoragePressureReasonCode::GenerationReclamationDebt));
+            .contains(&hawdb_storage::StoragePressureReasonCode::GenerationReclamationDebt));
 
         drop(recovered);
         let mut reopened_catalog = Catalog::default();
@@ -6736,99 +6736,99 @@ mod tests {
             store.checkpoint(&catalog).unwrap();
         }
 
-        assert!(!path.join("checkpoint.1.skein").exists());
-        assert!(!path.join("wal.1.skein").exists());
-        assert!(!path.join("canonical.1.skein").exists());
-        assert!(!path.join("canonical.1.manifest.skein").exists());
+        assert!(!path.join("checkpoint.1.hawdb").exists());
+        assert!(!path.join("wal.1.hawdb").exists());
+        assert!(!path.join("canonical.1.hawdb").exists());
+        assert!(!path.join("canonical.1.manifest.hawdb").exists());
         assert!(!path
-            .join(skein_storage::canonical_segment_descriptor_page_file(1))
+            .join(hawdb_storage::canonical_segment_descriptor_page_file(1))
             .exists());
         assert!(!path
-            .join(skein_storage::canonical_segment_descriptor_root_file(1))
+            .join(hawdb_storage::canonical_segment_descriptor_root_file(1))
             .exists());
-        assert!(!path.join("adjacency.1.skein").exists());
-        assert!(!path.join("adjacency.1.manifest.skein").exists());
+        assert!(!path.join("adjacency.1.hawdb").exists());
+        assert!(!path.join("adjacency.1.manifest.hawdb").exists());
         assert!(!path
-            .join(skein_storage::canonical_adjacency_descriptor_page_file(1))
+            .join(hawdb_storage::canonical_adjacency_descriptor_page_file(1))
             .exists());
         assert!(!path
-            .join(skein_storage::canonical_adjacency_descriptor_root_file(1))
+            .join(hawdb_storage::canonical_adjacency_descriptor_root_file(1))
             .exists());
-        assert!(!path.join("properties.1.skein").exists());
-        assert!(!path.join("properties.1.manifest.skein").exists());
-        assert!(!path.join("property-index.1.skein").exists());
-        assert!(!path.join("property-index.1.manifest.skein").exists());
+        assert!(!path.join("properties.1.hawdb").exists());
+        assert!(!path.join("properties.1.manifest.hawdb").exists());
+        assert!(!path.join("property-index.1.hawdb").exists());
+        assert!(!path.join("property-index.1.manifest.hawdb").exists());
         assert!(!path
-            .join(skein_storage::relational_row_page_manifest_generation_file(
+            .join(hawdb_storage::relational_row_page_manifest_generation_file(
                 1
             ))
             .exists());
         assert!(!path
-            .join(skein_storage::relational_overflow_manifest_generation_file(
+            .join(hawdb_storage::relational_overflow_manifest_generation_file(
                 1
             ))
             .exists());
-        assert!(path.join("checkpoint.2.skein").exists());
-        assert!(path.join("wal.2.skein").exists());
-        assert!(path.join("canonical.2.skein").exists());
-        assert!(path.join("canonical.2.manifest.skein").exists());
+        assert!(path.join("checkpoint.2.hawdb").exists());
+        assert!(path.join("wal.2.hawdb").exists());
+        assert!(path.join("canonical.2.hawdb").exists());
+        assert!(path.join("canonical.2.manifest.hawdb").exists());
         assert!(path
-            .join(skein_storage::canonical_segment_descriptor_page_file(2))
+            .join(hawdb_storage::canonical_segment_descriptor_page_file(2))
             .exists());
         assert!(path
-            .join(skein_storage::canonical_segment_descriptor_root_file(2))
+            .join(hawdb_storage::canonical_segment_descriptor_root_file(2))
             .exists());
-        assert!(path.join("adjacency.2.skein").exists());
-        assert!(!path.join("adjacency.2.manifest.skein").exists());
+        assert!(path.join("adjacency.2.hawdb").exists());
+        assert!(!path.join("adjacency.2.manifest.hawdb").exists());
         assert!(path
-            .join(skein_storage::canonical_adjacency_descriptor_page_file(2))
+            .join(hawdb_storage::canonical_adjacency_descriptor_page_file(2))
             .exists());
         assert!(path
-            .join(skein_storage::canonical_adjacency_descriptor_root_file(2))
+            .join(hawdb_storage::canonical_adjacency_descriptor_root_file(2))
             .exists());
-        assert!(path.join("properties.2.skein").exists());
-        assert!(path.join("properties.2.manifest.skein").exists());
-        assert!(path.join("property-index.2.skein").exists());
-        assert!(path.join("property-index.2.manifest.skein").exists());
+        assert!(path.join("properties.2.hawdb").exists());
+        assert!(path.join("properties.2.manifest.hawdb").exists());
+        assert!(path.join("property-index.2.hawdb").exists());
+        assert!(path.join("property-index.2.manifest.hawdb").exists());
         assert!(path
-            .join(skein_storage::relational_row_page_manifest_generation_file(
+            .join(hawdb_storage::relational_row_page_manifest_generation_file(
                 2
             ))
             .exists());
         assert!(path
-            .join(skein_storage::relational_overflow_manifest_generation_file(
+            .join(hawdb_storage::relational_overflow_manifest_generation_file(
                 2
             ))
             .exists());
-        assert!(path.join("checkpoint.3.skein").exists());
-        assert!(path.join("wal.3.skein").exists());
-        assert!(path.join("canonical.3.skein").exists());
-        assert!(path.join("canonical.3.manifest.skein").exists());
+        assert!(path.join("checkpoint.3.hawdb").exists());
+        assert!(path.join("wal.3.hawdb").exists());
+        assert!(path.join("canonical.3.hawdb").exists());
+        assert!(path.join("canonical.3.manifest.hawdb").exists());
         assert!(path
-            .join(skein_storage::canonical_segment_descriptor_page_file(3))
+            .join(hawdb_storage::canonical_segment_descriptor_page_file(3))
             .exists());
         assert!(path
-            .join(skein_storage::canonical_segment_descriptor_root_file(3))
+            .join(hawdb_storage::canonical_segment_descriptor_root_file(3))
             .exists());
-        assert!(path.join("adjacency.3.skein").exists());
-        assert!(!path.join("adjacency.3.manifest.skein").exists());
+        assert!(path.join("adjacency.3.hawdb").exists());
+        assert!(!path.join("adjacency.3.manifest.hawdb").exists());
         assert!(path
-            .join(skein_storage::canonical_adjacency_descriptor_page_file(3))
+            .join(hawdb_storage::canonical_adjacency_descriptor_page_file(3))
             .exists());
         assert!(path
-            .join(skein_storage::canonical_adjacency_descriptor_root_file(3))
+            .join(hawdb_storage::canonical_adjacency_descriptor_root_file(3))
             .exists());
-        assert!(path.join("properties.3.skein").exists());
-        assert!(path.join("properties.3.manifest.skein").exists());
-        assert!(path.join("property-index.3.skein").exists());
-        assert!(path.join("property-index.3.manifest.skein").exists());
+        assert!(path.join("properties.3.hawdb").exists());
+        assert!(path.join("properties.3.manifest.hawdb").exists());
+        assert!(path.join("property-index.3.hawdb").exists());
+        assert!(path.join("property-index.3.manifest.hawdb").exists());
         assert!(path
-            .join(skein_storage::relational_row_page_manifest_generation_file(
+            .join(hawdb_storage::relational_row_page_manifest_generation_file(
                 3
             ))
             .exists());
         assert!(path
-            .join(skein_storage::relational_overflow_manifest_generation_file(
+            .join(hawdb_storage::relational_overflow_manifest_generation_file(
                 3
             ))
             .exists());
@@ -6876,7 +6876,7 @@ mod tests {
                 .unwrap();
             store.checkpoint(&catalog).unwrap();
         }
-        let manifest_path = path.join("manifest.skein");
+        let manifest_path = path.join("manifest.hawdb");
         let manifest = std::fs::read_to_string(&manifest_path).unwrap();
         std::fs::write(
             &manifest_path,
@@ -6902,9 +6902,9 @@ mod tests {
             store.checkpoint(&catalog).unwrap();
         }
         rewrite_checksummed_file(
-            &path.join("manifest.skein"),
-            "version\tskein-storage-v1\n",
-            "version\tskein-storage-v0\n",
+            &path.join("manifest.hawdb"),
+            "version\thawdb-storage-v1\n",
+            "version\thawdb-storage-v0\n",
             "manifest",
         );
 
@@ -6912,7 +6912,7 @@ mod tests {
         let error = GraphStore::open(&path, &mut catalog).unwrap_err();
         assert!(error
             .to_string()
-            .contains("unsupported storage version: skein-storage-v0"));
+            .contains("unsupported storage version: hawdb-storage-v0"));
         std::fs::remove_dir_all(path).unwrap();
     }
 
@@ -6924,8 +6924,8 @@ mod tests {
             GraphStore::open(&path, &mut catalog).unwrap();
         }
         rewrite_checksummed_file(
-            &path.join("manifest.skein"),
-            "SKEIN_MANIFEST_V1\n",
+            &path.join("manifest.hawdb"),
+            "HAWDB_MANIFEST_V1\n",
             "INVALID_MANIFEST_HEADER\n",
             "manifest",
         );
@@ -6944,7 +6944,7 @@ mod tests {
             GraphStore::open(&path, &mut catalog).unwrap();
         }
         rewrite_checksummed_file(
-            &path.join("manifest.skein"),
+            &path.join("manifest.hawdb"),
             "checkpoint_generation\tnone\n",
             "",
             "manifest",
@@ -6969,14 +6969,14 @@ mod tests {
                 .unwrap();
             store.checkpoint(&catalog).unwrap();
         }
-        let manifest_path = path.join("manifest.skein");
+        let manifest_path = path.join("manifest.hawdb");
         let manifest: super::DurableManifest =
-            skein_storage::durable_manifest::DurableManifest::load(&manifest_path).unwrap();
-        let manifest: skein_storage::durable_manifest::DurableManifest = manifest;
+            hawdb_storage::durable_manifest::DurableManifest::load(&manifest_path).unwrap();
+        let manifest: hawdb_storage::durable_manifest::DurableManifest = manifest;
         assert_eq!(manifest.checkpoint_generation, Some(1));
         assert!(manifest.relational_row_generation_artifacts.is_some());
         assert!(manifest.relational_overflow_generation_artifacts.is_some());
-        assert_eq!(manifest.wal_path(&path), path.join("wal.1.skein"));
+        assert_eq!(manifest.wal_path(&path), path.join("wal.1.hawdb"));
         rewrite_checksummed_file(
             &manifest_path,
             "wal_generation\t1\n",
@@ -6989,7 +6989,7 @@ mod tests {
             .to_string();
         let mut catalog = Catalog::default();
         let error = GraphStore::open(&path, &mut catalog).unwrap_err();
-        assert!(matches!(&error, SkeinError::Storage(_)));
+        assert!(matches!(&error, HawdbError::Storage(_)));
         assert!(error
             .to_string()
             .contains("duplicate field: wal_generation"));
@@ -7002,7 +7002,7 @@ mod tests {
     fn single_storage_format_rejects_manifestless_artifacts() {
         let path = unique_test_dir("artifacts_without_manifest");
         std::fs::create_dir_all(&path).unwrap();
-        std::fs::write(path.join("checkpoint.skein"), b"unpublished format").unwrap();
+        std::fs::write(path.join("checkpoint.hawdb"), b"unpublished format").unwrap();
 
         let mut catalog = Catalog::default();
         let error = GraphStore::open(&path, &mut catalog).unwrap_err();
@@ -7025,8 +7025,8 @@ mod tests {
         }
         rewrite_checksummed_file(
             &active_checkpoint_path(&path),
-            "version\tskein-storage-v1\n",
-            "version\tskein-storage-v0\n",
+            "version\thawdb-storage-v1\n",
+            "version\thawdb-storage-v0\n",
             "checkpoint",
         );
 
@@ -7034,7 +7034,7 @@ mod tests {
         let error = GraphStore::open(&path, &mut catalog).unwrap_err();
         assert!(error
             .to_string()
-            .contains("unsupported storage version: skein-storage-v0"));
+            .contains("unsupported storage version: hawdb-storage-v0"));
         std::fs::remove_dir_all(path).unwrap();
     }
 
@@ -7923,7 +7923,7 @@ mod tests {
                 .unwrap();
             store.checkpoint(&catalog).unwrap();
         }
-        let artifact_bytes = std::fs::read(path.join("projected_graphs.skein")).unwrap();
+        let artifact_bytes = std::fs::read(path.join("projected_graphs.hawdb")).unwrap();
         assert!(artifact_bytes.starts_with(DURABLE_COMPRESSION_HEADER.as_bytes()));
         {
             let mut catalog = Catalog::default();
@@ -8295,7 +8295,7 @@ mod tests {
                 properties([("payload", value_at_depth(33))]),
             )
             .unwrap_err();
-        assert!(matches!(error, SkeinError::Semantic(_)));
+        assert!(matches!(error, HawdbError::Semantic(_)));
         assert!(error.to_string().contains("nesting exceeds 32"));
         assert_eq!(store.commit_epoch(), commit_epoch);
         assert_eq!(std::fs::metadata(&wal_path).unwrap().len(), wal_len);
@@ -8323,7 +8323,7 @@ mod tests {
             match missing {
                 "checkpoint" => std::fs::remove_file(active_checkpoint_path(&path)).unwrap(),
                 "wal" => std::fs::remove_file(active_wal_path(&path)).unwrap(),
-                "manifest" => std::fs::remove_file(path.join("manifest.skein")).unwrap(),
+                "manifest" => std::fs::remove_file(path.join("manifest.hawdb")).unwrap(),
                 _ => unreachable!(),
             }
 
@@ -9262,7 +9262,7 @@ mod tests {
             .duration_since(std::time::UNIX_EPOCH)
             .unwrap()
             .as_nanos();
-        std::env::temp_dir().join(format!("skein_store_{name}_{nanos}"))
+        std::env::temp_dir().join(format!("hawdb_store_{name}_{nanos}"))
     }
 
     fn active_wal_path(path: impl AsRef<std::path::Path>) -> std::path::PathBuf {
@@ -9282,14 +9282,14 @@ mod tests {
         manifest_field: &str,
         prefix: &str,
     ) -> std::path::PathBuf {
-        let manifest = std::fs::read_to_string(root.join("manifest.skein")).unwrap();
-        assert!(manifest.contains("SKEIN_MANIFEST_V1\n"));
+        let manifest = std::fs::read_to_string(root.join("manifest.hawdb")).unwrap();
+        assert!(manifest.contains("HAWDB_MANIFEST_V1\n"));
         let generation = manifest.lines().find_map(|line| {
             let (field, value) = line.split_once('\t')?;
             (field == manifest_field && value != "none").then_some(value)
         });
         root.join(format!(
-            "{prefix}.{}.skein",
+            "{prefix}.{}.hawdb",
             generation.expect("active generation must exist")
         ))
     }
@@ -9336,7 +9336,7 @@ mod tests {
 
     fn refresh_manifest_checkpoint_metadata(checkpoint_path: &std::path::Path) {
         let root = checkpoint_path.parent().unwrap();
-        let manifest_path = root.join("manifest.skein");
+        let manifest_path = root.join("manifest.hawdb");
         let manifest = std::fs::read_to_string(&manifest_path).unwrap();
         let (body, _) = manifest.rsplit_once("checksum\t").unwrap();
         let checkpoint = std::fs::read(checkpoint_path).unwrap();

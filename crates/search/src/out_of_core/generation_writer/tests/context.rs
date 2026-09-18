@@ -1,5 +1,5 @@
 use super::*;
-use skein_core::{RuntimeCancellationToken, RuntimeMemoryReservation};
+use hawdb_core::{RuntimeCancellationToken, RuntimeMemoryReservation};
 
 fn context(bytes: u64) -> RuntimeTaskContext {
     RuntimeTaskContext::default().with_memory_reservation(RuntimeMemoryReservation::new(bytes, 0))
@@ -435,7 +435,7 @@ fn deferred_old_generation_cleanup_does_not_fail_a_committed_build() {
     assert_eq!(report.cleanup_deleted_files, 0);
     assert_eq!(report.cleanup_pending_files, 0);
     assert!(report.cleanup_retry_required);
-    assert!(root.join("search_lexical.2.skein").exists());
+    assert!(root.join("search_lexical.2.hawdb").exists());
     assert_eq!(stage_directories(&root), 0);
     assert_eq!(
         memory.ledger.snapshot().used_bytes,
@@ -458,7 +458,7 @@ fn deferred_old_generation_cleanup_does_not_fail_a_committed_build() {
     let report = retry.finish().unwrap();
     assert!(report.cleanup_deleted_files > 0);
     assert!(!report.cleanup_retry_required);
-    assert!(!root.join("search_lexical.2.skein").exists());
+    assert!(!root.join("search_lexical.2.hawdb").exists());
     fs::remove_dir_all(root).unwrap();
 }
 

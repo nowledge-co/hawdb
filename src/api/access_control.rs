@@ -1,6 +1,6 @@
 use super::{Database, QueryAccessControlContext};
-use skein_core::RuntimeCapability;
-use skein_evidence::{access_control_policy_readiness, AccessControlPolicyReadiness};
+use hawdb_core::RuntimeCapability;
+use hawdb_evidence::{access_control_policy_readiness, AccessControlPolicyReadiness};
 
 impl Database {
     pub fn access_control_policy_readiness(

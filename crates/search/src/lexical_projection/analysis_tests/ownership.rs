@@ -1,6 +1,6 @@
 use super::*;
 use crate::analyzer_stream::{visit_admitted_token_list, Control};
-use skein_core::RuntimeMemoryReservation;
+use hawdb_core::RuntimeMemoryReservation;
 
 fn context() -> (RuntimeTaskContext, BuildMemory) {
     let task = RuntimeTaskContext::default()
@@ -29,7 +29,7 @@ fn admitted_events_and_every_rejected_prefix_match_the_legacy_oracle() {
                 let result =
                     visit_admitted_token_list(text, &analyzer, control, |term, occurrence| {
                         if actual.len() == stop_after {
-                            return Err(SkeinError::Execution("consumer stopped".into()));
+                            return Err(HawdbError::Execution("consumer stopped".into()));
                         }
                         actual.push((term, occurrence));
                         Ok(())
@@ -159,7 +159,7 @@ fn resident_frequency_drain_releases_remaining_nodes_on_consumer_error_and_unwin
                     if unwind {
                         panic!("frequency consumer unwind");
                     }
-                    Err(SkeinError::Execution("frequency consumer stopped".into()))
+                    Err(HawdbError::Execution("frequency consumer stopped".into()))
                 },
             )
         }));

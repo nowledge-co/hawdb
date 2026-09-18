@@ -1,5 +1,5 @@
 [package]
-name = "skein-vector-projection"
+name = "hawdb-vector-projection"
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
@@ -10,4 +10,4 @@ crc32fast = "1"
 memmap2 = "0.9.11"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
-skein-core = { path = "../core" }
+hawdb-core = { path = "../core" }

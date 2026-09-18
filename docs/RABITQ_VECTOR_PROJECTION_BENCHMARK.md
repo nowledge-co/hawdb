@@ -33,8 +33,8 @@ change final ranking semantics.
 ## Reproduction
 
 ```bash
-cargo test -p skein-vector-projection
-cargo test -p skein-qualification production_vector
+cargo test -p hawdb-vector-projection
+cargo test -p hawdb-qualification production_vector
 ```
 
 Future benchmark commands and results belong in this document only after their

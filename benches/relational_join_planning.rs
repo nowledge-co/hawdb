@@ -1,9 +1,9 @@
-use serde_json::json;
-use skein::optimizer::RelationalAccessPathKind;
-use skein::{
+use hawdb::optimizer::RelationalAccessPathKind;
+use hawdb::{
     Database, DatabaseConfig, DatabaseReadTransaction, ProfiledRelationalSqlQueryOutput,
     QueryStreamOptions, RelationalJoinPlanningStatus, RelationalJoinPlanningStrategy, Value,
 };
+use serde_json::json;
 use std::hint::black_box;
 
 const MIN_TABLES: usize = 2;
@@ -38,7 +38,7 @@ fn main() {
     println!(
         "relational_join_planning {}",
         json!({
-            "protocol": "skein-relational-join-planning-v2",
+            "protocol": "hawdb-relational-join-planning-v2",
             "table_range": [MIN_TABLES, MAX_TABLES],
             "warmups": WARMUPS,
             "samples": SAMPLES,

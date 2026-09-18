@@ -1,4 +1,4 @@
-use skein_core::{Result, SkeinError};
+use hawdb_core::{HawdbError, Result};
 
 use super::{keyword_matches, Parser};
 
@@ -129,10 +129,10 @@ impl Parser<'_> {
         Some(ch)
     }
 
-    pub(super) fn error(&self, message: &str) -> SkeinError {
+    pub(super) fn error(&self, message: &str) -> HawdbError {
         let (line, column) = self.line_column();
         let near = self.near_fragment();
-        SkeinError::Parse(format!(
+        HawdbError::Parse(format!(
             "{message} at byte {} line {line} column {column} near `{near}`",
             self.pos
         ))

@@ -9,7 +9,7 @@ use crate::{
     RelationalJoinOperatorKind, RelationalJoinPredicateId, RelationalJoinRewriteError,
     RelationalJoinRewriteProblem, RequiredProperties,
 };
-use skein_expression::{BindingId, BindingSet};
+use hawdb_expression::{BindingId, BindingSet};
 
 /// Execution capability for a CSG-CMP join's non-singleton right input.
 ///
@@ -187,7 +187,7 @@ mod tests {
         RelationalAccessPathDescriptor, RelationalAccessPathKind, RelationalJoinEnumerationError,
         RelationalJoinOperator, RelationalJoinRelation, RelationalJoinTree,
     };
-    use skein_expression::{BoundPredicate, BoundScalarExpression, ScalarNullability};
+    use hawdb_expression::{BoundPredicate, BoundScalarExpression, ScalarNullability};
     use std::collections::BTreeSet;
 
     const A: BindingId = BindingId::new(1);

@@ -2,7 +2,7 @@ use super::*;
 use crate::lexical_projection::manifest_encoding::tests::manifest;
 use crate::lexical_projection::{LexicalProjectionWriter, ARTIFACT_HEADER};
 use crate::{SearchAnalyzerLexicon, SearchDocument};
-use skein_core::{RuntimeCancellationToken, RuntimeMemoryReservation};
+use hawdb_core::{RuntimeCancellationToken, RuntimeMemoryReservation};
 use std::cell::RefCell;
 use std::collections::BTreeMap;
 use std::fs;
@@ -56,7 +56,7 @@ impl Fixture {
     fn new() -> Self {
         static NEXT: AtomicU64 = AtomicU64::new(0);
         let path = std::env::temp_dir().join(format!(
-            "skein-build-manifest-{}-{}-{}",
+            "hawdb-build-manifest-{}-{}-{}",
             std::process::id(),
             std::time::SystemTime::now()
                 .duration_since(std::time::UNIX_EPOCH)

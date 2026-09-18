@@ -1,6 +1,6 @@
 //! Crate-private facade for storage-owned transaction lock metadata.
 
-pub(crate) use skein_storage::transaction_locks::{
+pub(crate) use hawdb_storage::transaction_locks::{
     GraphAdjacencyDirection, GraphAllocationKind, LockMode, LockRequest, LockTable, LockTarget,
     WaitForGraph, DEFAULT_LOCK_ESCALATION_ENTRIES_PER_TABLE,
 };
@@ -8,7 +8,7 @@ pub(crate) use skein_storage::transaction_locks::{
 #[cfg(test)]
 mod tests {
     use super::*;
-    use skein_storage::transaction_locks as owner;
+    use hawdb_storage::transaction_locks as owner;
 
     #[test]
     fn facade_preserves_storage_lock_type_identity() {

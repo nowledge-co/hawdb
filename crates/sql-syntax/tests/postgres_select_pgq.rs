@@ -7,7 +7,7 @@
 #[path = "support/alias_boundaries.rs"]
 mod alias_boundaries;
 
-use skein_sql_syntax::{
+use hawdb_sql_syntax::{
     parse_postgres_select, parse_postgres_statement, BinaryOperatorSyntax, ExpressionKindSyntax,
     PostgresFromItemSyntax, PostgresJoinKind, PostgresStatementSyntax, SyntaxErrorCode,
     UnaryOperatorSyntax,

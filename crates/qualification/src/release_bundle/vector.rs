@@ -5,8 +5,8 @@ use super::{
     ProductionVectorMatrixArtifactAssessment,
 };
 use crate::PRODUCTION_VECTOR_QUALIFICATION_PROTOCOL;
+use hawdb::ProductionQualificationIdentity;
 use serde_json::Value;
-use skein::ProductionQualificationIdentity;
 use std::collections::BTreeSet;
 
 const REQUIRED_TARGETS: [(&str, &str); 4] = [
@@ -16,8 +16,8 @@ const REQUIRED_TARGETS: [(&str, &str); 4] = [
     ("windows", "x86_64"),
 ];
 const MINIMUM_VECTOR_DOCUMENT_COUNT: u64 = 100_000;
-const RECALL_PROTOCOL: &str = "skein-vector-recall-validation-v1";
-const RABITQ_BACKEND: &str = "skein_rabitq_candidate_projection";
+const RECALL_PROTOCOL: &str = "hawdb-vector-recall-validation-v1";
+const RABITQ_BACKEND: &str = "hawdb_rabitq_candidate_projection";
 
 pub(super) fn evaluate_matrix(
     artifacts: &[Value],
@@ -445,7 +445,7 @@ fn validate_queries(artifact: &Value, blockers: &mut Vec<String>) {
         require_string(
             case,
             "/serving_metrics/backend",
-            "skein_rabitq_out_of_core_candidate_projection",
+            "hawdb_rabitq_out_of_core_candidate_projection",
             "vector_serving_backend_mismatch",
             blockers,
         );

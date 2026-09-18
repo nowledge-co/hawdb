@@ -11,7 +11,7 @@ use crate::{
     PreparedGraphDescriptorTree, SegmentCache, SegmentRangeRead, SegmentReadError,
     SegmentReadRange, StoreId,
 };
-use skein_integrity::{Crc32cHasher, IntegrityHasher, Sha256Digest};
+use hawdb_integrity::{Crc32cHasher, IntegrityHasher, Sha256Digest};
 use std::error::Error;
 use std::fmt::{self, Display, Formatter};
 use std::fs::{self, File};
@@ -21,9 +21,9 @@ use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 
-const ARTIFACT_HEADER: &[u8; 16] = b"SKEINPROPSPILL01";
+const ARTIFACT_HEADER: &[u8; 16] = b"HAWDBPROPSPILL01";
 const BLOCK_HEADER: &[u8; 8] = b"SKNPRP01";
-const MANIFEST_HEADER: &str = "SKEIN_PROPERTY_SPILL_MANIFEST_V1";
+const MANIFEST_HEADER: &str = "HAWDB_PROPERTY_SPILL_MANIFEST_V1";
 const ARTIFACT_ID: u64 = 0x534b_5052_5350_4c31;
 const DESCRIPTOR_ARTIFACT_ID: u64 = 0x534b_5052_5350_4431;
 const BLOCK_ID_BASE: u64 = 1 << 62;
@@ -34,11 +34,11 @@ const DESCRIPTOR_VALUE_VERSION: u16 = 1;
 const DESCRIPTOR_VALUE_BYTES: usize = 68;
 
 pub fn property_spill_descriptor_page_file(generation: u64) -> String {
-    format!("property-spill-descriptors-{generation}.pages.skein")
+    format!("property-spill-descriptors-{generation}.pages.hawdb")
 }
 
 pub fn property_spill_descriptor_root_file(generation: u64) -> String {
-    format!("property-spill-descriptors-{generation}.root.skein")
+    format!("property-spill-descriptors-{generation}.root.hawdb")
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -1270,13 +1270,13 @@ mod tests {
     #[test]
     fn spill_blocks_round_trip_and_fail_closed_on_corruption() {
         let root = std::env::temp_dir().join(format!(
-            "skein-property-spill-{}-{:?}",
+            "hawdb-property-spill-{}-{:?}",
             std::process::id(),
             std::thread::current().id()
         ));
         let _ = fs::remove_dir_all(&root);
         fs::create_dir_all(&root).unwrap();
-        let path = root.join("properties.skein");
+        let path = root.join("properties.hawdb");
         let config = PropertySpillConfig {
             spill_threshold_bytes: NonZeroU64::new(8).unwrap(),
             target_block_bytes: NonZeroU64::new(160).unwrap(),
@@ -1287,7 +1287,7 @@ mod tests {
             root.join(property_spill_descriptor_root_file(3)),
         );
         let mut writer = PropertySpillWriter::create(
-            path.with_extension("skein.tmp"),
+            path.with_extension("hawdb.tmp"),
             ManifestGeneration(3),
             11,
             config,

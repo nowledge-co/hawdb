@@ -3,7 +3,7 @@ use crate::{
     CanonicalSegmentConfig, CanonicalSegmentReader, CanonicalSegmentWriter, ManifestGeneration,
     SegmentCache, StoreId,
 };
-use skein_core::{LabelId, RelTypeId, Value};
+use hawdb_core::{LabelId, RelTypeId, Value};
 use std::collections::BTreeMap;
 use std::fmt::Debug;
 use std::num::NonZeroU64;
@@ -234,10 +234,10 @@ fn check_failure<R: OverlayRecord + Clone + Debug + Eq>(
         .next()
         .expect("physical error must not disappear")
         .unwrap_err();
-    assert!(matches!(&error, SkeinError::StorageIntegrity(_)));
+    assert!(matches!(&error, HawdbError::StorageIntegrity(_)));
     assert_eq!(
         error.to_string(),
-        SkeinError::StorageIntegrity(CanonicalSegmentError::Corrupt(fault.to_string()).to_string())
+        HawdbError::StorageIntegrity(CanonicalSegmentError::Corrupt(fault.to_string()).to_string())
             .to_string()
     );
     assert_eq!(actual.collect::<Result<Vec<_>>>().unwrap(), after);
@@ -294,11 +294,11 @@ fn corrupt_canonical_file_is_not_hidden_by_delta_or_tombstones() {
         .unwrap();
     assert!(matches!(
         nodes.next(),
-        Some(Err(SkeinError::StorageIntegrity(_)))
+        Some(Err(HawdbError::StorageIntegrity(_)))
     ));
     assert!(matches!(
         relationships.next(),
-        Some(Err(SkeinError::StorageIntegrity(_)))
+        Some(Err(HawdbError::StorageIntegrity(_)))
     ));
     assert!(reader.is_poisoned());
     assert!(relationship_reader.is_poisoned());
@@ -334,11 +334,11 @@ impl Fixture {
             .unwrap()
             .as_nanos();
         let directory = std::env::temp_dir().join(format!(
-            "skein-overlay-{}-{time}-{nonce}",
+            "hawdb-overlay-{}-{time}-{nonce}",
             std::process::id()
         ));
         std::fs::create_dir(&directory).unwrap();
-        let path = directory.join("canonical.skein");
+        let path = directory.join("canonical.hawdb");
         let manifest = CanonicalSegmentWriter::new(CanonicalSegmentConfig::default())
             .write(
                 &path,

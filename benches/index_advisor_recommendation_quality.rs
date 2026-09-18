@@ -10,8 +10,8 @@
 //! action; the report is the fraction of fixtures the default advisor
 //! gets right, plus the losing cases in full.
 
+use hawdb_vector_projection::{IndexAction, IndexAdvisor, WorkloadSample};
 use serde_json::json;
-use skein_vector_projection::{IndexAction, IndexAdvisor, WorkloadSample};
 
 struct Fixture {
     name: &'static str,

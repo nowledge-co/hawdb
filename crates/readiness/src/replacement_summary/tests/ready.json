@@ -7,11 +7,11 @@
       "lancedb_routes": [],
       "missing_required_routes": [],
       "production_cutover_ready": true,
-      "protocol": "skein-nowledge-mem-search-route-ownership-v1",
+      "protocol": "hawdb-nowledge-mem-search-route-ownership-v1",
       "ready": true,
-      "require_all_skein": true,
+      "require_all_hawdb": true,
       "required_route_count": 8,
-      "skein_route_count": 8
+      "hawdb_route_count": 8
     },
     "active_search_route_readiness": {
       "blocker_codes": [],
@@ -22,15 +22,15 @@
       "lancedb_handle_required_routes": [],
       "metadata_pushdown_not_ready_routes": [],
       "missing_required_routes": [],
-      "non_skein_routes": [],
+      "non_hawdb_routes": [],
       "production_cutover_ready": true,
-      "protocol": "skein-nowledge-mem-active-search-route-readiness-v1",
+      "protocol": "hawdb-nowledge-mem-active-search-route-readiness-v1",
       "ranking_not_ready_routes": [],
       "ready": true,
       "ready_route_count": 8,
-      "require_all_skein": true,
+      "require_all_hawdb": true,
       "required_route_count": 8,
-      "skein_route_count": 8
+      "hawdb_route_count": 8
     },
     "bounded_read_evidence": {
       "blocker_codes": [],
@@ -100,7 +100,7 @@
         "/entities/{entity_id}/relationships",
         "/agent/evolves"
       ],
-      "protocol": "skein-nowledge-mem-bounded-read-evidence-v2",
+      "protocol": "hawdb-nowledge-mem-bounded-read-evidence-v2",
       "relationship_property_pruning_report_count": 0,
       "relationship_property_pruning_required_count": 0,
       "route_primary_ready": true,
@@ -158,7 +158,7 @@
       "matched_check_count": 1,
       "matched_per_million": 1000000,
       "primary_check_count": 1,
-      "primary_engine": "skein",
+      "primary_engine": "hawdb",
       "primary_only_check_count": 0,
       "ready": true,
       "shadow_check_count": 1,
@@ -1018,7 +1018,7 @@
           "success": true
         }
       ],
-      "protocol": "skein-nowledge-query-runtime-preflight-v1",
+      "protocol": "hawdb-nowledge-query-runtime-preflight-v1",
       "ready": true,
       "redaction": {
         "local_paths_copied": false,
@@ -1068,7 +1068,7 @@
         "representation": "per_request_sorted_candidate_ids",
         "shadow_checksum": 123
       },
-      "candidate_primary_engine": "skein",
+      "candidate_primary_engine": "hawdb",
       "candidate_readiness": {
         "embedding_identity_ready": true,
         "fail_soft_observed": true,
@@ -1278,14 +1278,14 @@
       "matched_candidate_count": 3,
       "primary_candidate_count": 3,
       "primary_only_candidate_count": 0,
-      "protocol": "skein-nowledge-search-candidate-shadow-evidence",
+      "protocol": "hawdb-nowledge-search-candidate-shadow-evidence",
       "ready": true,
       "request_count": 2,
       "retriever_leg_candidate_counts": {
         "text": 3,
         "vector": 3
       },
-      "route": "/search-index/skein-shadow/candidate-evidence",
+      "route": "/search-index/hawdb-shadow/candidate-evidence",
       "row_count_parity": true,
       "shadow_candidate_count": 3,
       "shadow_scan_field_pruning_ready": true,
@@ -1315,7 +1315,7 @@
       "metadata_repair_marker_ready": true,
       "predicate_pushdown_ready": true,
       "production_filter_pruning_ready": true,
-      "protocol": "skein-nowledge-search-projection-evidence",
+      "protocol": "hawdb-nowledge-search-projection-evidence",
       "ready": true,
       "rebuild_marker_ready": true,
       "required_table_count": 6,
@@ -1327,13 +1327,13 @@
       "document_count_parity": true,
       "document_identity_parity": true,
       "embedding_identity_parity": true,
-      "evidence_source": "skein-rust-library",
+      "evidence_source": "hawdb-rust-library",
       "incremental_watermark_parity": true,
       "lifecycle_parity": true,
       "predicate_pushdown_parity": true,
       "primary_engine": "lancedb",
       "primary_ready": true,
-      "protocol": "skein-nowledge-search-projection-shadow-evidence",
+      "protocol": "hawdb-nowledge-search-projection-shadow-evidence",
       "pushdown_evidence": {
         "predicate_pushdown_parity": true,
         "primary_predicate_pushdown_ready": true,
@@ -1548,7 +1548,7 @@
         "shadow_segment_scanned_document_count": 2
       },
       "ready": true,
-      "shadow_engine": "skein",
+      "shadow_engine": "hawdb",
       "shadow_ready": true,
       "table_parity": {
         "ready": true
@@ -1561,11 +1561,11 @@
       "lancedb_routes": [],
       "missing_required_routes": [],
       "production_cutover_ready": true,
-      "protocol": "skein-nowledge-mem-search-route-ownership-v1",
+      "protocol": "hawdb-nowledge-mem-search-route-ownership-v1",
       "ready": true,
-      "require_all_skein": true,
+      "require_all_hawdb": true,
       "required_route_count": 6,
-      "skein_route_count": 6
+      "hawdb_route_count": 6
     },
     "selected_checks": 2,
     "shadow_ready": {
@@ -1580,7 +1580,7 @@
       "duplicate_families": [],
       "evidence_family_count": 8,
       "missing_required_families": [],
-      "protocol": "skein-nowledge-mem-source-mutation-dual-write-readiness-v1",
+      "protocol": "hawdb-nowledge-mem-source-mutation-dual-write-readiness-v1",
       "ready": true,
       "ready_family_count": 8,
       "required_family_count": 8,
@@ -1615,12 +1615,12 @@
           "row_budget_exceeded": false,
           "row_count": 1,
           "schema_fingerprint": 1001,
-          "schema_protocol": "skein-graph-rag-schema-context-v1",
+          "schema_protocol": "hawdb-graph-rag-schema-context-v1",
           "streaming": false
         }
       ],
       "present": true,
-      "protocol": "skein-nowledge-graph-route-workload-fixture-v1",
+      "protocol": "hawdb-nowledge-graph-route-workload-fixture-v1",
       "query_count": 26,
       "ready": true,
       "route_count": 26,
@@ -1653,11 +1653,11 @@
       "missing_required_routes": [],
       "present": true,
       "production_cutover_ready": true,
-      "protocol": "skein-nowledge-mem-search-route-ownership-v1",
+      "protocol": "hawdb-nowledge-mem-search-route-ownership-v1",
       "ready": true,
-      "require_all_skein": true,
+      "require_all_hawdb": true,
       "required_route_count": 8,
-      "skein_route_count": 8
+      "hawdb_route_count": 8
     },
     "active_search_route_readiness": {
       "blocker_codes": [],
@@ -1672,18 +1672,18 @@
       "lancedb_handle_required_routes": [],
       "metadata_pushdown_not_ready_routes": [],
       "missing_required_routes": [],
-      "non_skein_routes": [],
+      "non_hawdb_routes": [],
       "present": true,
       "production_cutover_ready": true,
-      "protocol": "skein-nowledge-mem-active-search-route-readiness-v1",
+      "protocol": "hawdb-nowledge-mem-active-search-route-readiness-v1",
       "ranking_not_ready_routes": [],
       "ranking_window_not_ready_routes": [],
       "ready": true,
       "ready_route_count": 8,
       "repair_rebuild_markers_not_ready_routes": [],
-      "require_all_skein": true,
+      "require_all_hawdb": true,
       "required_route_count": 8,
-      "skein_route_count": 8,
+      "hawdb_route_count": 8,
       "zero_vector_semantics_not_ready_routes": []
     },
     "blocker_summary": {
@@ -1762,7 +1762,7 @@
         "/entities/{entity_id}/relationships",
         "/agent/evolves"
       ],
-      "protocol": "skein-nowledge-mem-bounded-read-evidence-v2",
+      "protocol": "hawdb-nowledge-mem-bounded-read-evidence-v2",
       "ready": true,
       "relationship_property_pruning_report_count": 0,
       "relationship_property_pruning_required_count": 0,
@@ -1850,7 +1850,7 @@
       "matched_per_million": 1000000,
       "present": true,
       "primary_check_count": 1,
-      "primary_engine": "skein",
+      "primary_engine": "hawdb",
       "primary_only_check_count": 0,
       "ready": true,
       "shadow_check_count": 1,
@@ -2119,7 +2119,7 @@
     },
     "production_cutover_ready": true,
     "production_replacement_per_million": 1000000,
-    "protocol": "skein-nowledge-replacement-summary",
+    "protocol": "hawdb-nowledge-replacement-summary",
     "query_runtime_preflight": {
       "blocker_codes": [],
       "covered_route_count": 26,
@@ -2159,7 +2159,7 @@
       "present": true,
       "probe_count": 26,
       "probe_details_ready": true,
-      "protocol": "skein-nowledge-query-runtime-preflight-v1",
+      "protocol": "hawdb-nowledge-query-runtime-preflight-v1",
       "ready": true,
       "required_covered_routes": [
         "/communities",
@@ -2203,7 +2203,7 @@
       "graph_layer": {
         "replacement_role": "primary_replacement",
         "scope": "kuzu_ladybug_graph_layer",
-        "storage_owner": "skein"
+        "storage_owner": "hawdb"
       },
       "large_blob_store": {
         "replacement_role": "external_out_of_scope",
@@ -2213,7 +2213,7 @@
       "search_projection": {
         "replacement_role": "rebuildable_projection",
         "scope": "lancedb_search_projection",
-        "storage_owner": "skein"
+        "storage_owner": "hawdb"
       }
     },
     "replacement_readiness_by_query_family": [
@@ -2260,7 +2260,7 @@
       "candidate_counts_ready": true,
       "candidate_identity_parity": true,
       "candidate_identity_ready": true,
-      "candidate_primary_engine": "skein",
+      "candidate_primary_engine": "hawdb",
       "embedding_identity_ready": true,
       "evidence_source": "nmem-rust-bridge",
       "fail_soft_observed": true,
@@ -2279,10 +2279,10 @@
       "primary_only_candidate_count": 0,
       "projection_marker_status_visible": true,
       "projection_watermark_ready": true,
-      "protocol": "skein-nowledge-search-candidate-shadow-evidence",
+      "protocol": "hawdb-nowledge-search-candidate-shadow-evidence",
       "ready": true,
       "request_count": 2,
-      "route": "/search-index/skein-shadow/candidate-evidence",
+      "route": "/search-index/hawdb-shadow/candidate-evidence",
       "row_count_parity": true,
       "shadow_candidate_count": 3,
       "shadow_engine": null,
@@ -2310,7 +2310,7 @@
       "predicate_pushdown_ready": true,
       "present": true,
       "production_filter_pruning_ready": true,
-      "protocol": "skein-nowledge-search-projection-evidence",
+      "protocol": "hawdb-nowledge-search-projection-evidence",
       "ready": true,
       "rebuild_marker_ready": true,
       "required_table_count": 6,
@@ -2322,14 +2322,14 @@
       "document_count_parity": true,
       "document_identity_parity": true,
       "embedding_identity_parity": true,
-      "evidence_source": "skein-rust-library",
+      "evidence_source": "hawdb-rust-library",
       "incremental_watermark_parity": true,
       "lifecycle_parity": true,
       "predicate_pushdown_parity": true,
       "present": true,
       "primary_engine": "lancedb",
       "primary_ready": true,
-      "protocol": "skein-nowledge-search-projection-shadow-evidence",
+      "protocol": "hawdb-nowledge-search-projection-shadow-evidence",
       "pushdown_evidence": {
         "missing_numeric_range_fields": [],
         "missing_timestamp_range_fields": [],
@@ -2566,7 +2566,7 @@
         "shadow_segment_scanned_document_count": 2
       },
       "ready": true,
-      "shadow_engine": "skein",
+      "shadow_engine": "hawdb",
       "shadow_ready": true,
       "table_parity_ready": true
     },
@@ -2578,11 +2578,11 @@
       "missing_required_routes": [],
       "present": true,
       "production_cutover_ready": true,
-      "protocol": "skein-nowledge-mem-search-route-ownership-v1",
+      "protocol": "hawdb-nowledge-mem-search-route-ownership-v1",
       "ready": true,
-      "require_all_skein": true,
+      "require_all_hawdb": true,
       "required_route_count": 6,
-      "skein_route_count": 6
+      "hawdb_route_count": 6
     },
     "shadow_evidence": {
       "contract_wrapper_identity": "nowledge-previous-wrapper:test",
@@ -2603,7 +2603,7 @@
       "evidence_family_count": 8,
       "missing_required_families": [],
       "present": true,
-      "protocol": "skein-nowledge-mem-source-mutation-dual-write-readiness-v1",
+      "protocol": "hawdb-nowledge-mem-source-mutation-dual-write-readiness-v1",
       "ready": true,
       "ready_family_count": 8,
       "required_family_count": 8,
@@ -2638,12 +2638,12 @@
           "row_budget_exceeded": false,
           "row_count": 1,
           "schema_fingerprint": 1001,
-          "schema_protocol": "skein-graph-rag-schema-context-v1",
+          "schema_protocol": "hawdb-graph-rag-schema-context-v1",
           "streaming": false
         }
       ],
       "present": true,
-      "protocol": "skein-nowledge-graph-route-workload-fixture-v1",
+      "protocol": "hawdb-nowledge-graph-route-workload-fixture-v1",
       "query_count": 26,
       "ready": true,
       "route_count": 26,

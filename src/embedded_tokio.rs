@@ -1,12 +1,12 @@
 use crate::{
-    EmbeddedQueryEntrypoint, EmbeddedQueryPathReadiness, QueryOutput, QueryStreamOptions,
-    QueryStreamReport, Row, SkeinEmbedded, SkeinEmbeddedOpenOptions, SkeinError, Value,
+    EmbeddedQueryEntrypoint, EmbeddedQueryPathReadiness, HawdbEmbedded, HawdbEmbeddedOpenOptions,
+    HawdbError, QueryOutput, QueryStreamOptions, QueryStreamReport, Row, Value,
 };
-use skein_core::{RuntimeCancellationToken, RuntimeTaskContext};
-use skein_qos::{
+use hawdb_core::{RuntimeCancellationToken, RuntimeTaskContext};
+use hawdb_qos::{
     RuntimeGovernorSnapshot, RuntimeWorkKind, RuntimeWorkPriority, RuntimeWorkRequest,
 };
-use skein_runtime_tokio::{
+use hawdb_runtime_tokio::{
     tokio_bounded_channel, TokioBoundedReceiver, TokioBoundedTrySendError, TokioHandle,
     TokioRuntimeAdapter, TokioRuntimeConfig, TokioRuntimeError, TokioRuntimeOwnership,
     TokioTaskError,
@@ -35,13 +35,13 @@ impl RuntimeQueryInput {
         planning: &crate::api::RuntimePlanningSnapshot,
         admitted: &crate::api::RuntimeAdmissionPlan,
         context: &RuntimeTaskContext,
-    ) -> Result<crate::api::PreparedRuntimeQuery, SkeinError> {
+    ) -> Result<crate::api::PreparedRuntimeQuery, HawdbError> {
         context
             .checkpoint()
-            .map_err(|reason| SkeinError::Execution(format!("runtime task stopped: {reason}")))?;
+            .map_err(|reason| HawdbError::Execution(format!("runtime task stopped: {reason}")))?;
         let prepared = planning.prepare(self.cypher_text.clone(), &self.parameters)?;
         if prepared.admission() != admitted {
-            return Err(SkeinError::Execution(
+            return Err(HawdbError::Execution(
                 "query admission changed during preparation; retry the query".to_string(),
             ));
         }
@@ -50,22 +50,22 @@ impl RuntimeQueryInput {
 }
 
 #[derive(Debug, Clone)]
-pub struct SkeinTokioEmbedded {
-    embedded: Arc<Mutex<SkeinEmbedded>>,
+pub struct HawdbTokioEmbedded {
+    embedded: Arc<Mutex<HawdbEmbedded>>,
     runtime: TokioRuntimeAdapter,
 }
 
 #[derive(Debug)]
-pub enum SkeinTokioEmbeddedError {
-    Database(SkeinError),
+pub enum HawdbTokioEmbeddedError {
+    Database(HawdbError),
     Runtime(TokioRuntimeError),
-    Task(TokioTaskError<SkeinError>),
+    Task(TokioTaskError<HawdbError>),
     StreamingMutation,
     StreamingUnsupported,
     StreamProducerClosed,
 }
 
-impl Display for SkeinTokioEmbeddedError {
+impl Display for HawdbTokioEmbeddedError {
     fn fmt(&self, formatter: &mut Formatter<'_>) -> fmt::Result {
         match self {
             Self::Database(error) => Display::fmt(error, formatter),
@@ -83,7 +83,7 @@ impl Display for SkeinTokioEmbeddedError {
     }
 }
 
-impl Error for SkeinTokioEmbeddedError {
+impl Error for HawdbTokioEmbeddedError {
     fn source(&self) -> Option<&(dyn Error + 'static)> {
         match self {
             Self::Database(error) => Some(error),
@@ -114,7 +114,7 @@ impl Default for TokioQueryStreamOptions {
 enum TokioQueryStreamEvent {
     Batch(Vec<Row>),
     Finished(Box<QueryStreamReport>),
-    Error(SkeinTokioEmbeddedError),
+    Error(HawdbTokioEmbeddedError),
 }
 
 #[derive(Debug)]
@@ -128,7 +128,7 @@ pub struct TokioQueryBatchStream {
 impl TokioQueryBatchStream {
     /// Returns the next batch or an in-band terminal error. A terminal error
     /// can follow batches that were already delivered.
-    pub async fn next_batch(&mut self) -> Result<Option<Vec<Row>>, SkeinTokioEmbeddedError> {
+    pub async fn next_batch(&mut self) -> Result<Option<Vec<Row>>, HawdbTokioEmbeddedError> {
         if self.terminated {
             return Ok(None);
         }
@@ -145,7 +145,7 @@ impl TokioQueryBatchStream {
             }
             None => {
                 self.terminated = true;
-                Err(SkeinTokioEmbeddedError::StreamProducerClosed)
+                Err(HawdbTokioEmbeddedError::StreamProducerClosed)
             }
         }
     }
@@ -164,60 +164,60 @@ impl Drop for TokioQueryBatchStream {
     }
 }
 
-impl From<SkeinError> for SkeinTokioEmbeddedError {
-    fn from(error: SkeinError) -> Self {
+impl From<HawdbError> for HawdbTokioEmbeddedError {
+    fn from(error: HawdbError) -> Self {
         Self::Database(error)
     }
 }
 
-impl From<TokioRuntimeError> for SkeinTokioEmbeddedError {
+impl From<TokioRuntimeError> for HawdbTokioEmbeddedError {
     fn from(error: TokioRuntimeError) -> Self {
         Self::Runtime(error)
     }
 }
 
-impl From<TokioTaskError<SkeinError>> for SkeinTokioEmbeddedError {
-    fn from(error: TokioTaskError<SkeinError>) -> Self {
+impl From<TokioTaskError<HawdbError>> for HawdbTokioEmbeddedError {
+    fn from(error: TokioTaskError<HawdbError>) -> Self {
         Self::Task(error)
     }
 }
 
-impl SkeinTokioEmbedded {
-    pub fn open_owned(options: SkeinEmbeddedOpenOptions) -> Result<Self, SkeinTokioEmbeddedError> {
-        let embedded = SkeinEmbedded::open_with_options(options)?;
+impl HawdbTokioEmbedded {
+    pub fn open_owned(options: HawdbEmbeddedOpenOptions) -> Result<Self, HawdbTokioEmbeddedError> {
+        let embedded = HawdbEmbedded::open_with_options(options)?;
         let config = TokioRuntimeConfig::from_governor(embedded.runtime_governor());
         Self::from_owned(embedded, config)
     }
 
     pub fn open_owned_with_config(
-        options: SkeinEmbeddedOpenOptions,
+        options: HawdbEmbeddedOpenOptions,
         config: TokioRuntimeConfig,
-    ) -> Result<Self, SkeinTokioEmbeddedError> {
-        Self::from_owned(SkeinEmbedded::open_with_options(options)?, config)
+    ) -> Result<Self, HawdbTokioEmbeddedError> {
+        Self::from_owned(HawdbEmbedded::open_with_options(options)?, config)
     }
 
     pub fn open_borrowed(
-        options: SkeinEmbeddedOpenOptions,
+        options: HawdbEmbeddedOpenOptions,
         handle: TokioHandle,
-    ) -> Result<Self, SkeinTokioEmbeddedError> {
-        let embedded = SkeinEmbedded::open_with_options(options)?;
+    ) -> Result<Self, HawdbTokioEmbeddedError> {
+        let embedded = HawdbEmbedded::open_with_options(options)?;
         let config = TokioRuntimeConfig::from_governor(embedded.runtime_governor());
         Ok(Self::from_borrowed(embedded, handle, config))
     }
 
     pub fn open_borrowed_with_config(
-        options: SkeinEmbeddedOpenOptions,
+        options: HawdbEmbeddedOpenOptions,
         handle: TokioHandle,
         config: TokioRuntimeConfig,
-    ) -> Result<Self, SkeinTokioEmbeddedError> {
-        let embedded = SkeinEmbedded::open_with_options(options)?;
+    ) -> Result<Self, HawdbTokioEmbeddedError> {
+        let embedded = HawdbEmbedded::open_with_options(options)?;
         Ok(Self::from_borrowed(embedded, handle, config))
     }
 
     pub fn from_owned(
-        embedded: SkeinEmbedded,
+        embedded: HawdbEmbedded,
         config: TokioRuntimeConfig,
-    ) -> Result<Self, SkeinTokioEmbeddedError> {
+    ) -> Result<Self, HawdbTokioEmbeddedError> {
         let runtime = TokioRuntimeAdapter::owned(embedded.runtime_governor().clone(), config)?;
         Ok(Self {
             embedded: Arc::new(Mutex::new(embedded)),
@@ -226,7 +226,7 @@ impl SkeinTokioEmbedded {
     }
 
     pub fn from_borrowed(
-        embedded: SkeinEmbedded,
+        embedded: HawdbEmbedded,
         handle: TokioHandle,
         config: TokioRuntimeConfig,
     ) -> Self {
@@ -258,11 +258,11 @@ impl SkeinTokioEmbedded {
         lock_embedded(&self.embedded).refresh_runtime_resources()
     }
 
-    pub fn with_embedded<R>(&self, operation: impl FnOnce(&SkeinEmbedded) -> R) -> R {
+    pub fn with_embedded<R>(&self, operation: impl FnOnce(&HawdbEmbedded) -> R) -> R {
         operation(&lock_embedded(&self.embedded))
     }
 
-    pub fn with_embedded_mut<R>(&self, operation: impl FnOnce(&mut SkeinEmbedded) -> R) -> R {
+    pub fn with_embedded_mut<R>(&self, operation: impl FnOnce(&mut HawdbEmbedded) -> R) -> R {
         operation(&mut lock_embedded(&self.embedded))
     }
 
@@ -270,7 +270,7 @@ impl SkeinTokioEmbedded {
         &self,
         cypher_text: impl Into<String>,
         task_context: RuntimeTaskContext,
-    ) -> Result<QueryOutput, SkeinTokioEmbeddedError> {
+    ) -> Result<QueryOutput, HawdbTokioEmbeddedError> {
         self.query_with_params(cypher_text, BTreeMap::new(), task_context)
             .await
     }
@@ -280,7 +280,7 @@ impl SkeinTokioEmbedded {
         cypher_text: impl Into<String>,
         parameters: BTreeMap<String, Value>,
         task_context: RuntimeTaskContext,
-    ) -> Result<QueryOutput, SkeinTokioEmbeddedError> {
+    ) -> Result<QueryOutput, HawdbTokioEmbeddedError> {
         let input = Arc::new(RuntimeQueryInput {
             cypher_text: cypher_text.into(),
             parameters,
@@ -292,7 +292,7 @@ impl SkeinTokioEmbedded {
                 task_context.clone(),
             )
             .await?;
-        let result_budget_bytes = self.with_embedded(SkeinEmbedded::admitted_result_budget_bytes);
+        let result_budget_bytes = self.with_embedded(HawdbEmbedded::admitted_result_budget_bytes);
         let snapshot = self.with_embedded(|embedded| embedded.runtime_governor().snapshot());
         let request = admission.runtime_work_request_for_snapshot(result_budget_bytes, snapshot);
         let request_admission = admission.clone();
@@ -314,7 +314,7 @@ impl SkeinTokioEmbedded {
         parameters: BTreeMap<String, Value>,
         request: RuntimeWorkRequest,
         task_context: RuntimeTaskContext,
-    ) -> Result<QueryOutput, SkeinTokioEmbeddedError> {
+    ) -> Result<QueryOutput, HawdbTokioEmbeddedError> {
         let input = Arc::new(RuntimeQueryInput {
             cypher_text: cypher_text.into(),
             parameters,
@@ -337,7 +337,7 @@ impl SkeinTokioEmbedded {
         let limits = self.with_embedded(|embedded| embedded.runtime_governor().snapshot().limits);
         let minimum_io_slots = admission.runtime_work_request(0, limits).io_slots;
         let request = apply_segment_io_requirement(request, minimum_io_slots);
-        let result_budget_bytes = self.with_embedded(SkeinEmbedded::admitted_result_budget_bytes);
+        let result_budget_bytes = self.with_embedded(HawdbEmbedded::admitted_result_budget_bytes);
         let request = if admission.is_mutation {
             request
         } else if request.result_bytes > 0 {
@@ -359,7 +359,7 @@ impl SkeinTokioEmbedded {
         &self,
         cypher_text: impl Into<String>,
         task_context: RuntimeTaskContext,
-    ) -> Result<TokioQueryBatchStream, SkeinTokioEmbeddedError> {
+    ) -> Result<TokioQueryBatchStream, HawdbTokioEmbeddedError> {
         self.query_stream_with_params_and_options(
             cypher_text,
             BTreeMap::new(),
@@ -374,7 +374,7 @@ impl SkeinTokioEmbedded {
         cypher_text: impl Into<String>,
         parameters: BTreeMap<String, Value>,
         task_context: RuntimeTaskContext,
-    ) -> Result<TokioQueryBatchStream, SkeinTokioEmbeddedError> {
+    ) -> Result<TokioQueryBatchStream, HawdbTokioEmbeddedError> {
         self.query_stream_with_params_and_options(
             cypher_text,
             parameters,
@@ -389,7 +389,7 @@ impl SkeinTokioEmbedded {
         cypher_text: impl Into<String>,
         options: TokioQueryStreamOptions,
         task_context: RuntimeTaskContext,
-    ) -> Result<TokioQueryBatchStream, SkeinTokioEmbeddedError> {
+    ) -> Result<TokioQueryBatchStream, HawdbTokioEmbeddedError> {
         self.query_stream_with_params_and_options(
             cypher_text,
             BTreeMap::new(),
@@ -405,7 +405,7 @@ impl SkeinTokioEmbedded {
         parameters: BTreeMap<String, Value>,
         options: TokioQueryStreamOptions,
         task_context: RuntimeTaskContext,
-    ) -> Result<TokioQueryBatchStream, SkeinTokioEmbeddedError> {
+    ) -> Result<TokioQueryBatchStream, HawdbTokioEmbeddedError> {
         let input = Arc::new(RuntimeQueryInput {
             cypher_text: cypher_text.into(),
             parameters,
@@ -418,13 +418,13 @@ impl SkeinTokioEmbedded {
             )
             .await?;
         if admission.is_mutation {
-            return Err(SkeinTokioEmbeddedError::StreamingMutation);
+            return Err(HawdbTokioEmbeddedError::StreamingMutation);
         }
         if !admission.streaming_eligible {
-            return Err(SkeinTokioEmbeddedError::StreamingUnsupported);
+            return Err(HawdbTokioEmbeddedError::StreamingUnsupported);
         }
 
-        let result_budget_bytes = self.with_embedded(SkeinEmbedded::admitted_result_budget_bytes);
+        let result_budget_bytes = self.with_embedded(HawdbEmbedded::admitted_result_budget_bytes);
         let (max_rows, batch_rows, batch_payload_bytes) = self.with_embedded(|embedded| {
             let config = embedded.database().config();
             (
@@ -469,7 +469,7 @@ impl SkeinTokioEmbedded {
         };
         let execute_stream = move |task_context: &RuntimeTaskContext| {
             let task_context = task_context.clone().with_memory_reservation(
-                skein_core::RuntimeMemoryReservation::new(
+                hawdb_core::RuntimeMemoryReservation::new(
                     selected_executor_memory.load(std::sync::atomic::Ordering::Acquire),
                     request.result_bytes,
                 ),
@@ -498,7 +498,7 @@ impl SkeinTokioEmbedded {
                 |row| {
                     let row_bytes = crate::executor::map_memory_bytes(&row);
                     if row_bytes > batch_payload_bytes {
-                        return Err(SkeinError::Execution(format!(
+                        return Err(HawdbError::Execution(format!(
                             "asynchronous result row uses {row_bytes} bytes, exceeding batch_payload_bytes {batch_payload_bytes}"
                         )));
                     }
@@ -529,7 +529,7 @@ impl SkeinTokioEmbedded {
                 .await;
             let event = match result {
                 Ok(report) => TokioQueryStreamEvent::Finished(Box::new(report)),
-                Err(error) => TokioQueryStreamEvent::Error(SkeinTokioEmbeddedError::Task(error)),
+                Err(error) => TokioQueryStreamEvent::Error(HawdbTokioEmbeddedError::Task(error)),
             };
             let _ = terminal_sender.send(event).await;
         });
@@ -546,7 +546,7 @@ impl SkeinTokioEmbedded {
         input: Arc<RuntimeQueryInput>,
         priority: RuntimeWorkPriority,
         task_context: RuntimeTaskContext,
-    ) -> Result<crate::api::RuntimeAdmissionPlan, SkeinTokioEmbeddedError> {
+    ) -> Result<crate::api::RuntimeAdmissionPlan, HawdbTokioEmbeddedError> {
         let embedded = Arc::clone(&self.embedded);
         self.runtime
             .execute_blocking(
@@ -559,7 +559,7 @@ impl SkeinTokioEmbedded {
                     // Only this fixed-size descriptor may outlive the planning permit.
                     // Parsed and optimized state is dropped before the operation returns.
                     context.checkpoint().map_err(|reason| {
-                        SkeinError::Execution(format!("runtime task stopped: {reason}"))
+                        HawdbError::Execution(format!("runtime task stopped: {reason}"))
                     })?;
                     let prepared =
                         planning.prepare(input.cypher_text.clone(), &input.parameters)?;
@@ -567,7 +567,7 @@ impl SkeinTokioEmbedded {
                 },
             )
             .await
-            .map_err(SkeinTokioEmbeddedError::Task)
+            .map_err(HawdbTokioEmbeddedError::Task)
     }
 
     async fn execute_query_with_request_factory<R>(
@@ -577,9 +577,9 @@ impl SkeinTokioEmbedded {
         request: RuntimeWorkRequest,
         mut request_for_snapshot: R,
         task_context: RuntimeTaskContext,
-    ) -> Result<QueryOutput, SkeinTokioEmbeddedError>
+    ) -> Result<QueryOutput, HawdbTokioEmbeddedError>
     where
-        R: FnMut(skein_qos::RuntimeGovernorSnapshot) -> RuntimeWorkRequest + Send,
+        R: FnMut(hawdb_qos::RuntimeGovernorSnapshot) -> RuntimeWorkRequest + Send,
     {
         let embedded = Arc::clone(&self.embedded);
         let planning_memory_bytes = input.planning_request(request.priority).memory_bytes;
@@ -611,14 +611,14 @@ impl SkeinTokioEmbedded {
                             }
                             // Drop both the stale plan and lock before another planning attempt.
                         }
-                        Err(SkeinError::Execution(
+                        Err(HawdbError::Execution(
                             "database changed during mutation planning; retry the query"
                                 .to_string(),
                         ))
                     },
                 )
                 .await
-                .map_err(SkeinTokioEmbeddedError::Task)
+                .map_err(HawdbTokioEmbeddedError::Task)
         } else {
             let max_rows =
                 self.with_embedded(|embedded| embedded.database().config().max_read_result_rows);
@@ -665,7 +665,7 @@ impl SkeinTokioEmbedded {
                     },
                 )
                 .await
-                .map_err(SkeinTokioEmbeddedError::Task)
+                .map_err(HawdbTokioEmbeddedError::Task)
         }
     }
 }
@@ -682,10 +682,10 @@ fn apply_segment_io_requirement(
 }
 
 fn send_async_query_batch(
-    sender: &skein_runtime_tokio::TokioBoundedSender<TokioQueryStreamEvent>,
+    sender: &hawdb_runtime_tokio::TokioBoundedSender<TokioQueryStreamEvent>,
     batch: &mut Vec<Row>,
     task_context: &RuntimeTaskContext,
-) -> Result<(), SkeinError> {
+) -> Result<(), HawdbError> {
     send_async_query_batch_with_retry(
         sender,
         batch,
@@ -695,17 +695,17 @@ fn send_async_query_batch(
 }
 
 fn send_async_query_batch_with_retry(
-    sender: &skein_runtime_tokio::TokioBoundedSender<TokioQueryStreamEvent>,
+    sender: &hawdb_runtime_tokio::TokioBoundedSender<TokioQueryStreamEvent>,
     batch: &mut Vec<Row>,
-    mut checkpoint: impl FnMut() -> Result<(), skein_core::RuntimeCancellationReason>,
+    mut checkpoint: impl FnMut() -> Result<(), hawdb_core::RuntimeCancellationReason>,
     mut retry_wait: impl FnMut(),
-) -> Result<(), SkeinError> {
+) -> Result<(), HawdbError> {
     let capacity = batch.capacity();
     let ready = std::mem::replace(batch, Vec::with_capacity(capacity));
     let mut event = TokioQueryStreamEvent::Batch(ready);
     loop {
         checkpoint().map_err(|reason| {
-            SkeinError::Execution(format!("asynchronous row producer stopped: {reason}"))
+            HawdbError::Execution(format!("asynchronous row producer stopped: {reason}"))
         })?;
         match sender.try_send(event) {
             Ok(()) => return Ok(()),
@@ -714,7 +714,7 @@ fn send_async_query_batch_with_retry(
                 retry_wait();
             }
             Err(TokioBoundedTrySendError::Closed(_)) => {
-                return Err(SkeinError::Execution(
+                return Err(HawdbError::Execution(
                     "asynchronous row consumer closed".to_string(),
                 ));
             }
@@ -722,7 +722,7 @@ fn send_async_query_batch_with_retry(
     }
 }
 
-fn lock_embedded(embedded: &Mutex<SkeinEmbedded>) -> MutexGuard<'_, SkeinEmbedded> {
+fn lock_embedded(embedded: &Mutex<HawdbEmbedded>) -> MutexGuard<'_, HawdbEmbedded> {
     embedded
         .lock()
         .unwrap_or_else(|poisoned| poisoned.into_inner())
@@ -732,8 +732,8 @@ fn lock_embedded(embedded: &Mutex<SkeinEmbedded>) -> MutexGuard<'_, SkeinEmbedde
 mod tests {
     use super::*;
     use crate::EmbeddedDeploymentProfile;
-    use skein_core::RuntimeCancellationToken;
-    use skein_qos::{RuntimeTelemetryEvent, RuntimeTelemetryEventKind, RuntimeTelemetrySink};
+    use hawdb_core::RuntimeCancellationToken;
+    use hawdb_qos::{RuntimeTelemetryEvent, RuntimeTelemetryEventKind, RuntimeTelemetrySink};
     use std::sync::atomic::{AtomicU64, Ordering};
 
     static TEST_COUNTER: AtomicU64 = AtomicU64::new(0);
@@ -754,7 +754,7 @@ mod tests {
     fn saturated_tokio_entrypoints_wait_before_parsing() {
         let path = unique_test_path("planning-admission-gate");
         let embedded =
-            SkeinTokioEmbedded::open_owned(SkeinEmbeddedOpenOptions::new(&path)).unwrap();
+            HawdbTokioEmbedded::open_owned(HawdbEmbeddedOpenOptions::new(&path)).unwrap();
         let governor = embedded.runtime().governor();
         let busy = governor
             .try_admit(
@@ -783,8 +783,8 @@ mod tests {
                     };
                     assert!(matches!(
                         result,
-                        Err(SkeinTokioEmbeddedError::Task(TokioTaskError::Stopped(
-                            skein_core::RuntimeCancellationReason::DeadlineExceeded
+                        Err(HawdbTokioEmbeddedError::Task(TokioTaskError::Stopped(
+                            hawdb_core::RuntimeCancellationReason::DeadlineExceeded
                         )))
                     ));
                 }
@@ -803,7 +803,7 @@ mod tests {
             .unwrap_err();
         assert!(matches!(
             error,
-            SkeinTokioEmbeddedError::Task(TokioTaskError::Operation(_))
+            HawdbTokioEmbeddedError::Task(TokioTaskError::Operation(_))
         ));
         let snapshot = governor.snapshot();
         assert_eq!(snapshot.admitted_memory_bytes, 0);
@@ -814,27 +814,27 @@ mod tests {
 
     #[test]
     fn custom_request_preserves_task_scope_without_segment_io() {
-        let request = RuntimeWorkRequest::io(skein_qos::RuntimeWorkPriority::Foreground, 1, 0);
+        let request = RuntimeWorkRequest::io(hawdb_qos::RuntimeWorkPriority::Foreground, 1, 0);
 
         let normalized = apply_segment_io_requirement(request, 0);
 
         assert_eq!(normalized.io_slots, 1);
         assert_eq!(
             normalized.io_reservation_scope,
-            skein_qos::RuntimeIoReservationScope::Task
+            hawdb_qos::RuntimeIoReservationScope::Task
         );
     }
 
     #[test]
     fn custom_request_uses_wave_scope_for_segment_io() {
-        let request = RuntimeWorkRequest::io(skein_qos::RuntimeWorkPriority::Foreground, 1, 0);
+        let request = RuntimeWorkRequest::io(hawdb_qos::RuntimeWorkPriority::Foreground, 1, 0);
 
         let normalized = apply_segment_io_requirement(request, 2);
 
         assert_eq!(normalized.io_slots, 2);
         assert_eq!(
             normalized.io_reservation_scope,
-            skein_qos::RuntimeIoReservationScope::Wave
+            hawdb_qos::RuntimeIoReservationScope::Wave
         );
     }
 
@@ -842,7 +842,7 @@ mod tests {
     fn owned_facade_runs_queries_through_the_bounded_adapter() {
         let path = unique_test_path("owned");
         let embedded =
-            SkeinTokioEmbedded::open_owned(SkeinEmbeddedOpenOptions::new(&path)).unwrap();
+            HawdbTokioEmbedded::open_owned(HawdbEmbeddedOpenOptions::new(&path)).unwrap();
         assert_eq!(embedded.ownership(), TokioRuntimeOwnership::Owned);
         let readiness = embedded.admitted_query_path_readiness();
         assert_eq!(readiness.entrypoint, EmbeddedQueryEntrypoint::AdmittedTokio);
@@ -873,19 +873,19 @@ mod tests {
 
     #[test]
     fn checkpointed_and_reopened_facade_accepts_mutations() {
-        use skein_storage::StorageResidencyMode;
+        use hawdb_storage::StorageResidencyMode;
 
         for mode in [
             StorageResidencyMode::Materialized,
             StorageResidencyMode::OutOfCore,
         ] {
             let path = unique_test_path("checkpointed-mutation");
-            let options = SkeinEmbeddedOpenOptions::new(&path).with_config(crate::DatabaseConfig {
+            let options = HawdbEmbeddedOpenOptions::new(&path).with_config(crate::DatabaseConfig {
                 storage_residency_mode: mode,
                 ..crate::DatabaseConfig::default()
             });
             for round in 0..2 {
-                let embedded = SkeinTokioEmbedded::open_owned(options.clone()).unwrap();
+                let embedded = HawdbTokioEmbedded::open_owned(options.clone()).unwrap();
                 embedded
                     .runtime()
                     .block_on(async {
@@ -923,14 +923,14 @@ mod tests {
     fn borrowed_facade_keeps_the_host_runtime_alive() {
         let path = unique_test_path("borrowed");
         let host = tokio_runtime();
-        let embedded = SkeinTokioEmbedded::open_borrowed(
-            SkeinEmbeddedOpenOptions::mobile(&path),
+        let embedded = HawdbTokioEmbedded::open_borrowed(
+            HawdbEmbeddedOpenOptions::mobile(&path),
             host.handle().clone(),
         )
         .unwrap();
         assert_eq!(embedded.ownership(), TokioRuntimeOwnership::Borrowed);
         assert_eq!(
-            embedded.with_embedded(SkeinEmbedded::deployment_profile),
+            embedded.with_embedded(HawdbEmbedded::deployment_profile),
             EmbeddedDeploymentProfile::MobileEmbedded
         );
         host.block_on(embedded.query("CREATE (:Probe {value: 1})", RuntimeTaskContext::default()))
@@ -949,7 +949,7 @@ mod tests {
     #[test]
     fn admission_uses_physical_mutation_semantics() {
         let path = unique_test_path("admission-semantics");
-        let mut embedded = SkeinEmbedded::open(&path).unwrap();
+        let mut embedded = HawdbEmbedded::open(&path).unwrap();
         let create = embedded
             .database_mut()
             .runtime_admission_plan("CREATE (:Probe {value: 1})", &BTreeMap::new())
@@ -959,7 +959,7 @@ mod tests {
             .runtime_admission_plan("MATCH (p:Probe) RETURN p.value AS value", &BTreeMap::new())
             .unwrap();
 
-        assert_eq!(create.work_request.class, skein_qos::WorkClass::Query);
+        assert_eq!(create.work_request.class, hawdb_qos::WorkClass::Query);
         assert!(create.is_mutation);
         assert!(!read.is_mutation);
         assert!(create.estimated_memory_bytes > 0);
@@ -975,14 +975,14 @@ mod tests {
         config.execution_memory.blocking_operator_bytes =
             std::num::NonZeroUsize::new(4096).unwrap();
         config.max_wal_record_bytes = Some(1024);
-        config.mutation_limits = skein_storage::MutationLimits {
+        config.mutation_limits = hawdb_storage::MutationLimits {
             max_affected_rows: std::num::NonZeroUsize::new(3).unwrap(),
             max_operations: std::num::NonZeroUsize::new(2).unwrap(),
             max_result_rows: std::num::NonZeroUsize::new(4).unwrap(),
             max_result_payload_bytes: std::num::NonZeroUsize::new(5).unwrap(),
         };
-        let mut embedded = SkeinEmbedded::open_with_options(
-            SkeinEmbeddedOpenOptions::new(&path).with_config(config),
+        let mut embedded = HawdbEmbedded::open_with_options(
+            HawdbEmbeddedOpenOptions::new(&path).with_config(config),
         )
         .unwrap();
 
@@ -1009,7 +1009,7 @@ mod tests {
     fn cancelled_query_is_rejected_before_database_execution() {
         let path = unique_test_path("cancelled-before-start");
         let embedded =
-            SkeinTokioEmbedded::open_owned(SkeinEmbeddedOpenOptions::new(&path)).unwrap();
+            HawdbTokioEmbedded::open_owned(HawdbEmbeddedOpenOptions::new(&path)).unwrap();
         let token = RuntimeCancellationToken::new();
         token.cancel();
         let result = embedded
@@ -1022,8 +1022,8 @@ mod tests {
 
         assert!(matches!(
             result,
-            Err(SkeinTokioEmbeddedError::Task(TokioTaskError::Stopped(
-                skein_core::RuntimeCancellationReason::Cancelled
+            Err(HawdbTokioEmbeddedError::Task(TokioTaskError::Stopped(
+                hawdb_core::RuntimeCancellationReason::Cancelled
             )))
         ));
         let count = embedded
@@ -1041,7 +1041,7 @@ mod tests {
     fn custom_request_cannot_override_mutation_semantics() {
         let path = unique_test_path("custom-request-mutation");
         let embedded =
-            SkeinTokioEmbedded::open_owned(SkeinEmbeddedOpenOptions::new(&path)).unwrap();
+            HawdbTokioEmbedded::open_owned(HawdbEmbeddedOpenOptions::new(&path)).unwrap();
         let events = Arc::new(RuntimeEvents::default());
         embedded
             .runtime()
@@ -1098,13 +1098,13 @@ mod tests {
     #[test]
     fn default_query_enforces_the_governor_result_byte_budget() {
         let path = unique_test_path("result-byte-budget");
-        let options = SkeinEmbeddedOpenOptions::new(&path).with_runtime_governor_config(
-            skein_qos::RuntimeGovernorConfig {
+        let options = HawdbEmbeddedOpenOptions::new(&path).with_runtime_governor_config(
+            hawdb_qos::RuntimeGovernorConfig {
                 result_budget_bytes: 64,
-                ..skein_qos::RuntimeGovernorConfig::shared_host()
+                ..hawdb_qos::RuntimeGovernorConfig::shared_host()
             },
         );
-        let embedded = SkeinTokioEmbedded::open_owned(options).unwrap();
+        let embedded = HawdbTokioEmbedded::open_owned(options).unwrap();
         embedded
             .runtime()
             .block_on(embedded.query(
@@ -1131,8 +1131,8 @@ mod tests {
         let mut config = crate::DatabaseConfig::default();
         config.execution_memory.batch_rows = NonZeroUsize::new(2).unwrap();
         config.execution_memory.batch_payload_bytes = NonZeroUsize::new(1024).unwrap();
-        let embedded = SkeinTokioEmbedded::open_owned(
-            SkeinEmbeddedOpenOptions::new(&path).with_config(config),
+        let embedded = HawdbTokioEmbedded::open_owned(
+            HawdbEmbeddedOpenOptions::new(&path).with_config(config),
         )
         .unwrap();
         embedded.with_embedded_mut(|embedded| {
@@ -1206,8 +1206,8 @@ mod tests {
         };
         config.execution_memory.batch_rows = NonZeroUsize::new(1).unwrap();
         config.execution_memory.batch_payload_bytes = NonZeroUsize::new(1024).unwrap();
-        let embedded = SkeinTokioEmbedded::open_owned(
-            SkeinEmbeddedOpenOptions::new(&path).with_config(config),
+        let embedded = HawdbTokioEmbedded::open_owned(
+            HawdbEmbeddedOpenOptions::new(&path).with_config(config),
         )
         .unwrap();
         embedded.with_embedded_mut(|embedded| {
@@ -1253,8 +1253,8 @@ mod tests {
         let mut config = crate::DatabaseConfig::default();
         config.execution_memory.batch_rows = NonZeroUsize::new(1).unwrap();
         config.execution_memory.batch_payload_bytes = NonZeroUsize::new(1024).unwrap();
-        let embedded = SkeinTokioEmbedded::open_owned(
-            SkeinEmbeddedOpenOptions::new(&path).with_config(config),
+        let embedded = HawdbTokioEmbedded::open_owned(
+            HawdbEmbeddedOpenOptions::new(&path).with_config(config),
         )
         .unwrap();
         embedded.with_embedded_mut(|embedded| {
@@ -1299,10 +1299,10 @@ mod tests {
 
     #[test]
     fn async_row_batch_retry_observes_deadlines_and_cancellation() {
-        use skein_core::RuntimeCancellationReason;
+        use hawdb_core::RuntimeCancellationReason;
         use std::cell::Cell;
 
-        let runtime = skein_runtime_tokio::TokioRuntimeBuilder::new_current_thread()
+        let runtime = hawdb_runtime_tokio::TokioRuntimeBuilder::new_current_thread()
             .build()
             .unwrap();
         for reason in [
@@ -1340,7 +1340,7 @@ mod tests {
                 .unwrap_err();
                 assert_eq!(retries.get(), retry_limit);
                 assert_eq!(checks.get(), retry_limit + 1);
-                assert!(matches!(error, SkeinError::Execution(message)
+                assert!(matches!(error, HawdbError::Execution(message)
                     if message == format!("asynchronous row producer stopped: {reason}")));
                 assert!(pending.is_empty());
                 drop(sender);
@@ -1353,7 +1353,7 @@ mod tests {
 
     #[test]
     fn async_row_batch_retry_delivers_after_backpressure_is_released() {
-        let runtime = skein_runtime_tokio::TokioRuntimeBuilder::new_current_thread()
+        let runtime = hawdb_runtime_tokio::TokioRuntimeBuilder::new_current_thread()
             .build()
             .unwrap();
         let (sender, mut receiver) = tokio_bounded_channel(NonZeroUsize::MIN);
@@ -1391,8 +1391,8 @@ mod tests {
         let mut config = crate::DatabaseConfig::default();
         config.execution_memory.batch_rows = NonZeroUsize::new(1).unwrap();
         config.execution_memory.batch_payload_bytes = NonZeroUsize::new(1024).unwrap();
-        let embedded = SkeinTokioEmbedded::open_owned(
-            SkeinEmbeddedOpenOptions::new(&path).with_config(config),
+        let embedded = HawdbTokioEmbedded::open_owned(
+            HawdbEmbeddedOpenOptions::new(&path).with_config(config),
         )
         .unwrap();
         embedded.with_embedded_mut(|embedded| {
@@ -1452,8 +1452,8 @@ mod tests {
             };
             assert!(matches!(
                 error,
-                SkeinTokioEmbeddedError::Task(TokioTaskError::Stopped(
-                    skein_core::RuntimeCancellationReason::DeadlineExceeded
+                HawdbTokioEmbeddedError::Task(TokioTaskError::Stopped(
+                    hawdb_core::RuntimeCancellationReason::DeadlineExceeded
                 ))
             ));
             let snapshot = embedded.runtime_snapshot();
@@ -1470,7 +1470,7 @@ mod tests {
     fn asynchronous_row_stream_rejects_mutations() {
         let path = unique_test_path("mutation-row-stream");
         let embedded =
-            SkeinTokioEmbedded::open_owned(SkeinEmbeddedOpenOptions::new(&path)).unwrap();
+            HawdbTokioEmbedded::open_owned(HawdbEmbeddedOpenOptions::new(&path)).unwrap();
         let error = embedded
             .runtime()
             .block_on(
@@ -1479,15 +1479,15 @@ mod tests {
             .unwrap()
             .unwrap_err();
 
-        assert!(matches!(error, SkeinTokioEmbeddedError::StreamingMutation));
+        assert!(matches!(error, HawdbTokioEmbeddedError::StreamingMutation));
         // Classification requires an admitted parse, but execution never starts.
         assert_eq!(embedded.runtime_snapshot().admissions, 1);
         assert_eq!(embedded.runtime_snapshot().completions, 1);
         assert_eq!(embedded.runtime_snapshot().admitted_memory_bytes, 0);
     }
 
-    fn tokio_runtime() -> skein_runtime_tokio::TokioRuntime {
-        skein_runtime_tokio::TokioRuntimeBuilder::new_multi_thread()
+    fn tokio_runtime() -> hawdb_runtime_tokio::TokioRuntime {
+        hawdb_runtime_tokio::TokioRuntimeBuilder::new_multi_thread()
             .enable_time()
             .build()
             .unwrap()
@@ -1496,7 +1496,7 @@ mod tests {
     fn unique_test_path(prefix: &str) -> std::path::PathBuf {
         let id = TEST_COUNTER.fetch_add(1, Ordering::SeqCst);
         std::env::temp_dir().join(format!(
-            "skein-tokio-embedded-{prefix}-{}-{id}",
+            "hawdb-tokio-embedded-{prefix}-{}-{id}",
             std::process::id()
         ))
     }

@@ -10,8 +10,8 @@ use crate::{
         REQUIRED_NOWLEDGE_MEM_SOURCE_MUTATION_FAMILIES,
     },
 };
-use skein_core::{Result, SkeinError};
-use skein_evidence::{
+use hawdb_core::{HawdbError, Result};
+use hawdb_evidence::{
     blackbox::{blackbox_readiness_from_manifest_json, BlackboxReadinessReport},
     inventory::REQUIRED_NOWLEDGE_REPLACEMENT_QUERY_FAMILIES,
     replacement_contract::{
@@ -23,7 +23,7 @@ use skein_evidence::{
     },
     resource_profile::production_resource_profile_ready,
 };
-use skein_route_ownership::graph::{
+use hawdb_route_ownership::graph::{
     nowledge_mem_graph_read_route_catalog_digest, nowledge_mem_required_query_families_for_route,
     NOWLEDGE_MEM_GRAPH_READ_ROUTE_CATALOG_VERSION, NOWLEDGE_MEM_ROUTE_OWNERSHIP_PROTOCOL,
     NOWLEDGE_MEM_SEARCH_ROUTE, REQUIRED_NOWLEDGE_MEM_BOUNDED_READ_ROUTES,
@@ -31,21 +31,21 @@ use skein_route_ownership::graph::{
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::Path;
 
-const SKEIN_NOWLEDGE_REPLACEMENT_SUMMARY_PROTOCOL: &str = "skein-nowledge-replacement-summary";
+const HAWDB_NOWLEDGE_REPLACEMENT_SUMMARY_PROTOCOL: &str = "hawdb-nowledge-replacement-summary";
 const GRAPH_LAYER_REPLACEMENT_SCOPE: &str = "kuzu_ladybug_graph_layer";
 const SEARCH_PROJECTION_REPLACEMENT_SCOPE: &str = "lancedb_search_projection";
 const SQLITE_CONTENT_STORE_SCOPE: &str = "sqlite_content_store";
 const LARGE_BLOB_VALUE_STORE_SCOPE: &str = "large_blob_value_store";
-const SKEIN_NOWLEDGE_SEARCH_PROJECTION_EVIDENCE_PROTOCOL: &str =
-    "skein-nowledge-search-projection-evidence";
-const SKEIN_NOWLEDGE_SEARCH_PROJECTION_SHADOW_EVIDENCE_PROTOCOL: &str =
-    "skein-nowledge-search-projection-shadow-evidence";
-const SKEIN_SEARCH_PROJECTION_SHADOW_EVIDENCE_SOURCE: &str = "skein-rust-library";
-const SKEIN_NOWLEDGE_MEM_BOUNDED_READ_EVIDENCE_PROTOCOL: &str =
-    "skein-nowledge-mem-bounded-read-evidence-v2";
-const SKEIN_NOWLEDGE_QUERY_RUNTIME_PREFLIGHT_PROTOCOL: &str =
-    "skein-nowledge-query-runtime-preflight-v1";
-const SKEIN_NOWLEDGE_MEM_QUERY_REPORT_PROTOCOL: &str = "skein-nowledge-mem-query-report-v1";
+const HAWDB_NOWLEDGE_SEARCH_PROJECTION_EVIDENCE_PROTOCOL: &str =
+    "hawdb-nowledge-search-projection-evidence";
+const HAWDB_NOWLEDGE_SEARCH_PROJECTION_SHADOW_EVIDENCE_PROTOCOL: &str =
+    "hawdb-nowledge-search-projection-shadow-evidence";
+const HAWDB_SEARCH_PROJECTION_SHADOW_EVIDENCE_SOURCE: &str = "hawdb-rust-library";
+const HAWDB_NOWLEDGE_MEM_BOUNDED_READ_EVIDENCE_PROTOCOL: &str =
+    "hawdb-nowledge-mem-bounded-read-evidence-v2";
+const HAWDB_NOWLEDGE_QUERY_RUNTIME_PREFLIGHT_PROTOCOL: &str =
+    "hawdb-nowledge-query-runtime-preflight-v1";
+const HAWDB_NOWLEDGE_MEM_QUERY_REPORT_PROTOCOL: &str = "hawdb-nowledge-mem-query-report-v1";
 const ROUTE_PARITY_EVIDENCE_SOURCE: &str = "route_parity_evidence";
 const ROUTE_PARITY_FULL_MATCH_PER_MILLION: u64 = 1_000_000;
 const FINAL_CATEGORY_STARTUP: &str = "startup";
@@ -61,7 +61,7 @@ const FINAL_CATEGORY_REPLACEMENT_SUMMARY_CUTOVER: &str = "replacement_summary_cu
 const STARTUP_CHECKS: &[&str] = &[
     "integration_bundle_protocol",
     "replacement_summary_protocol",
-    "skein_submodule",
+    "hawdb_submodule",
     "legacy_coexistence",
     "content_store_boundary",
     "previous_wrapper_preflight",
@@ -93,11 +93,11 @@ const BLACKBOX_CHECKS: &[&str] = &["blackbox_redaction", "blackbox_operational_e
 const LIBRARY_ONLY_CHECKS: &[&str] = &["library_readiness", "cutover_controls"];
 
 pub const NOWLEDGE_MEM_INTEGRATION_READINESS_PROTOCOL: &str =
-    "skein-nowledge-mem-integration-readiness";
-pub const NOWLEDGE_MEM_SKEIN_INTEGRATION_BUNDLE_PROTOCOL: &str =
-    "nowledge-mem-skein-integration-bundle";
+    "hawdb-nowledge-mem-integration-readiness";
+pub const NOWLEDGE_MEM_HAWDB_INTEGRATION_BUNDLE_PROTOCOL: &str =
+    "nowledge-mem-hawdb-integration-bundle";
 pub const NOWLEDGE_MEM_FINAL_CUTOVER_PREFLIGHT_PROTOCOL: &str =
-    "skein-nowledge-mem-final-cutover-preflight-v1";
+    "hawdb-nowledge-mem-final-cutover-preflight-v1";
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct NowledgeMemIntegrationCheckReport {
@@ -241,7 +241,7 @@ pub struct ReplacementSummaryProtocolCutoverReadiness {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct SkeinSubmoduleCutoverReadiness {
+pub struct HawdbSubmoduleCutoverReadiness {
     pub present: bool,
     pub path_present: bool,
     pub commit_present: bool,
@@ -327,10 +327,10 @@ pub struct LibraryReadinessCutoverReadiness {
 pub struct CutoverControlsReadiness {
     pub protocol_matches: bool,
     pub ready: bool,
-    pub graph_reads_skein: bool,
+    pub graph_reads_hawdb: bool,
     pub graph_read_effective: bool,
     pub graph_production_status_effective: bool,
-    pub search_reads_skein: bool,
+    pub search_reads_hawdb: bool,
     pub search_read_effective: bool,
     pub search_production_status_effective: bool,
     pub dual_writes_enabled: bool,
@@ -568,16 +568,16 @@ pub struct RouteOwnershipCutoverReadiness {
     pub protocol_matches: bool,
     pub ready: bool,
     pub production_cutover_ready: bool,
-    pub require_all_skein: bool,
+    pub require_all_hawdb: bool,
     pub required_route_count_matches: bool,
     pub explicit_route_count_matches: bool,
-    pub skein_route_count_matches: bool,
+    pub hawdb_route_count_matches: bool,
     pub legacy_route_count_zero: bool,
     pub missing_required_routes_empty: bool,
     pub unknown_routes_empty: bool,
     pub duplicate_routes_empty: bool,
     pub conflicting_routes_empty: bool,
-    pub skein_not_ready_routes_empty: bool,
+    pub hawdb_not_ready_routes_empty: bool,
     pub route_readiness_present: bool,
     pub route_readiness_ready: bool,
     pub search_route_projection_evidence_present: bool,
@@ -595,10 +595,10 @@ pub struct SearchRouteOwnershipAlignmentCutoverReadiness {
     pub protocol_matches: bool,
     pub readiness_matches: bool,
     pub production_cutover_ready_matches: bool,
-    pub require_all_skein_matches: bool,
+    pub require_all_hawdb_matches: bool,
     pub required_route_count_matches: bool,
     pub explicit_route_count_matches: bool,
-    pub skein_route_count_matches: bool,
+    pub hawdb_route_count_matches: bool,
     pub lancedb_route_count_matches: bool,
     pub missing_required_routes_matches: bool,
     pub lancedb_routes_matches: bool,
@@ -614,14 +614,14 @@ pub struct ActiveSearchRouteReadinessAlignmentCutoverReadiness {
     pub protocol_matches: bool,
     pub readiness_matches: bool,
     pub production_cutover_ready_matches: bool,
-    pub require_all_skein_matches: bool,
+    pub require_all_hawdb_matches: bool,
     pub required_route_count_matches: bool,
     pub evidence_route_count_matches: bool,
     pub ready_route_count_matches: bool,
-    pub skein_route_count_matches: bool,
+    pub hawdb_route_count_matches: bool,
     pub lancedb_handle_count_matches: bool,
     pub missing_required_routes_matches: bool,
-    pub non_skein_routes_matches: bool,
+    pub non_hawdb_routes_matches: bool,
     pub lancedb_handle_routes_matches: bool,
     pub candidate_not_ready_routes_matches: bool,
     pub candidate_identity_not_ready_routes_matches: bool,
@@ -699,7 +699,7 @@ impl ReplacementSummaryProtocolCutoverReadiness {
     }
 }
 
-impl SkeinSubmoduleCutoverReadiness {
+impl HawdbSubmoduleCutoverReadiness {
     pub fn evidence_ready(&self) -> bool {
         self.present && self.path_present && self.commit_present
     }
@@ -763,10 +763,10 @@ impl CutoverControlsReadiness {
     pub fn evidence_ready(&self) -> bool {
         self.protocol_matches
             && self.ready
-            && self.graph_reads_skein
+            && self.graph_reads_hawdb
             && self.graph_read_effective
             && self.graph_production_status_effective
-            && self.search_reads_skein
+            && self.search_reads_hawdb
             && self.search_read_effective
             && self.search_production_status_effective
             && self.dual_writes_enabled
@@ -1005,10 +1005,10 @@ impl SearchRouteOwnershipAlignmentCutoverReadiness {
             && self.protocol_matches
             && self.readiness_matches
             && self.production_cutover_ready_matches
-            && self.require_all_skein_matches
+            && self.require_all_hawdb_matches
             && self.required_route_count_matches
             && self.explicit_route_count_matches
-            && self.skein_route_count_matches
+            && self.hawdb_route_count_matches
             && self.lancedb_route_count_matches
             && self.missing_required_routes_matches
             && self.lancedb_routes_matches
@@ -1024,14 +1024,14 @@ impl ActiveSearchRouteReadinessAlignmentCutoverReadiness {
             && self.protocol_matches
             && self.readiness_matches
             && self.production_cutover_ready_matches
-            && self.require_all_skein_matches
+            && self.require_all_hawdb_matches
             && self.required_route_count_matches
             && self.evidence_route_count_matches
             && self.ready_route_count_matches
-            && self.skein_route_count_matches
+            && self.hawdb_route_count_matches
             && self.lancedb_handle_count_matches
             && self.missing_required_routes_matches
-            && self.non_skein_routes_matches
+            && self.non_hawdb_routes_matches
             && self.lancedb_handle_routes_matches
             && self.candidate_not_ready_routes_matches
             && self.candidate_identity_not_ready_routes_matches
@@ -1053,16 +1053,16 @@ impl RouteOwnershipCutoverReadiness {
         self.protocol_matches
             && self.ready
             && self.production_cutover_ready
-            && self.require_all_skein
+            && self.require_all_hawdb
             && self.required_route_count_matches
             && self.explicit_route_count_matches
-            && self.skein_route_count_matches
+            && self.hawdb_route_count_matches
             && self.legacy_route_count_zero
             && self.missing_required_routes_empty
             && self.unknown_routes_empty
             && self.duplicate_routes_empty
             && self.conflicting_routes_empty
-            && self.skein_not_ready_routes_empty
+            && self.hawdb_not_ready_routes_empty
             && self.route_readiness_present
             && self.route_readiness_ready
             && self.search_route_projection_evidence_present
@@ -1165,7 +1165,7 @@ pub fn run_nowledge_mem_integration_readiness(
             }
             path => {
                 if args.next().is_some() {
-                    return Err(SkeinError::Semantic(
+                    return Err(HawdbError::Semantic(
                         nowledge_mem_integration_readiness_usage(),
                     ));
                 }
@@ -1177,7 +1177,7 @@ pub fn run_nowledge_mem_integration_readiness(
             }
         }
     }
-    Err(SkeinError::Semantic(
+    Err(HawdbError::Semantic(
         nowledge_mem_integration_readiness_usage(),
     ))
 }
@@ -1339,7 +1339,7 @@ pub fn nowledge_mem_integration_readiness(
         integration_bundle_protocol_cutover_readiness(bundle);
     let replacement_summary_protocol_readiness =
         replacement_summary_protocol_cutover_readiness(bundle);
-    let skein_submodule_readiness = skein_submodule_cutover_readiness(bundle);
+    let hawdb_submodule_readiness = hawdb_submodule_cutover_readiness(bundle);
     let legacy_coexistence_readiness = legacy_coexistence_cutover_readiness(bundle);
     let content_store_readiness = content_store_boundary_cutover_readiness(bundle);
     let previous_wrapper_readiness = previous_wrapper_preflight_cutover_readiness(bundle);
@@ -1388,9 +1388,9 @@ pub fn nowledge_mem_integration_readiness(
             Vec::new(),
         ),
         check_named_conditions(
-            "skein_submodule",
-            skein_submodule_cutover_conditions(&skein_submodule_readiness),
-            skein_submodule_readiness.blocker_codes.clone(),
+            "hawdb_submodule",
+            hawdb_submodule_cutover_conditions(&hawdb_submodule_readiness),
+            hawdb_submodule_readiness.blocker_codes.clone(),
         ),
         check_named_conditions(
             "legacy_coexistence",
@@ -1559,7 +1559,7 @@ pub fn nowledge_mem_integration_readiness(
             IntegrationGateReadiness {
                 integration_bundle: &integration_bundle_protocol_readiness,
                 replacement_summary_protocol: &replacement_summary_protocol_readiness,
-                submodule: &skein_submodule_readiness,
+                submodule: &hawdb_submodule_readiness,
                 legacy_coexistence: &legacy_coexistence_readiness,
                 content_store: &content_store_readiness,
                 previous_wrapper: &previous_wrapper_readiness,
@@ -1644,8 +1644,8 @@ fn replacement_summary_protocol_cutover_conditions(
     ]
 }
 
-fn skein_submodule_cutover_conditions(
-    readiness: &SkeinSubmoduleCutoverReadiness,
+fn hawdb_submodule_cutover_conditions(
+    readiness: &HawdbSubmoduleCutoverReadiness,
 ) -> Vec<(&'static str, bool)> {
     vec![
         ("submodule.present", readiness.present),
@@ -1704,8 +1704,8 @@ fn route_ownership_cutover_conditions(
             readiness.production_cutover_ready,
         ),
         (
-            "route_ownership.require_all_skein",
-            readiness.require_all_skein,
+            "route_ownership.require_all_hawdb",
+            readiness.require_all_hawdb,
         ),
         (
             "route_ownership.required_route_count",
@@ -1716,8 +1716,8 @@ fn route_ownership_cutover_conditions(
             readiness.explicit_route_count_matches,
         ),
         (
-            "route_ownership.skein_route_count",
-            readiness.skein_route_count_matches,
+            "route_ownership.hawdb_route_count",
+            readiness.hawdb_route_count_matches,
         ),
         (
             "route_ownership.legacy_route_count",
@@ -1740,8 +1740,8 @@ fn route_ownership_cutover_conditions(
             readiness.conflicting_routes_empty,
         ),
         (
-            "route_ownership.skein_not_ready_routes",
-            readiness.skein_not_ready_routes_empty,
+            "route_ownership.hawdb_not_ready_routes",
+            readiness.hawdb_not_ready_routes_empty,
         ),
         (
             "route_ownership.route_readiness_present",
@@ -1829,7 +1829,7 @@ fn blackbox_operational_cutover_conditions(
 struct IntegrationGateReadiness<'a> {
     integration_bundle: &'a IntegrationBundleProtocolCutoverReadiness,
     replacement_summary_protocol: &'a ReplacementSummaryProtocolCutoverReadiness,
-    submodule: &'a SkeinSubmoduleCutoverReadiness,
+    submodule: &'a HawdbSubmoduleCutoverReadiness,
     legacy_coexistence: &'a LegacyCoexistenceCutoverReadiness,
     content_store: &'a ContentStoreBoundaryCutoverReadiness,
     previous_wrapper: &'a PreviousWrapperPreflightCutoverReadiness,
@@ -1867,22 +1867,22 @@ fn next_actions(
     let mut actions = Vec::new();
     if !readiness.integration_bundle.evidence_ready() {
         actions.push(next_action(
-            "regenerate_skein_integration_bundle",
+            "regenerate_hawdb_integration_bundle",
             "Nowledge Mem integration readiness requires the versioned integration bundle protocol",
             ["protocol"],
         ));
     }
     if !readiness.submodule.evidence_ready() {
         actions.push(next_action(
-            "add_skein_submodule",
-            "Nowledge Mem must depend on Skein as a submodule instead of copying sources",
+            "add_hawdb_submodule",
+            "Nowledge Mem must depend on Hawdb as a submodule instead of copying sources",
             ["submodule.present", "submodule.path", "submodule.commit"],
         ));
     }
     if !readiness.legacy_coexistence.evidence_ready() {
         actions.push(next_action(
             "enable_side_by_side_coexistence",
-            "Kuzu/Ladybug and LanceDB must remain available while Skein runs in shadow",
+            "Kuzu/Ladybug and LanceDB must remain available while Hawdb runs in shadow",
             [
                 "coexistence.old_database_retained",
                 "coexistence.mode",
@@ -1923,7 +1923,7 @@ fn next_actions(
     if !readiness.replacement_summary_protocol.evidence_ready() {
         actions.push(next_action(
             "produce_replacement_summary",
-            "replacement summary must use the Skein protocol and explicit replacement boundaries",
+            "replacement summary must use the Hawdb protocol and explicit replacement boundaries",
             [
                 "replacement_summary.protocol",
                 "replacement_summary.replacement_boundaries.graph_layer",
@@ -1971,8 +1971,8 @@ fn next_actions(
     }
     if !readiness.search_candidate.evidence_ready() {
         actions.push(next_action(
-            "enable_skein_search_candidate_primary_reads",
-            "LanceDB replacement must prove memory-hybrid candidate reads are served by Skein before Mem cutover",
+            "enable_hawdb_search_candidate_primary_reads",
+            "LanceDB replacement must prove memory-hybrid candidate reads are served by Hawdb before Mem cutover",
             [
                 "search_candidate_shadow_evidence.protocol",
                 "search_candidate_shadow_evidence.evidence_source",
@@ -2008,7 +2008,7 @@ fn next_actions(
     if !readiness.bounded_read.evidence_ready() {
         actions.push(next_action(
             "attach_bounded_read_profile",
-            "Skein read replacement must prove bounded execution before Mem cutover",
+            "Hawdb read replacement must prove bounded execution before Mem cutover",
             [
                 "replacement_summary.bounded_read_evidence.present",
                 "replacement_summary.bounded_read_evidence.protocol",
@@ -2108,21 +2108,21 @@ fn next_actions(
     if !readiness.route_ownership.evidence_ready() {
         actions.push(next_action(
             "attach_route_ownership_evidence",
-            "Nowledge Mem cutover requires every active read route to be owned by Skein through the embedded library runtime",
+            "Nowledge Mem cutover requires every active read route to be owned by Hawdb through the embedded library runtime",
             [
                 "route_ownership.protocol",
                 "route_ownership.ready",
                 "route_ownership.production_cutover_ready",
-                "route_ownership.require_all_skein",
+                "route_ownership.require_all_hawdb",
                 "route_ownership.required_route_count",
                 "route_ownership.explicit_route_count",
-                "route_ownership.skein_route_count",
+                "route_ownership.hawdb_route_count",
                 "route_ownership.legacy_route_count",
                 "route_ownership.missing_required_routes",
                 "route_ownership.unknown_routes",
                 "route_ownership.duplicate_routes",
                 "route_ownership.conflicting_routes",
-                "route_ownership.skein_not_ready_routes",
+                "route_ownership.hawdb_not_ready_routes",
                 "route_ownership.route_readiness_present",
                 "route_ownership.route_readiness_ready",
                 "route_ownership.route_catalog_version",
@@ -2242,7 +2242,7 @@ fn next_actions(
     if !readiness.library.evidence_ready() {
         actions.push(next_action(
             "attach_library_readiness_evidence",
-            "Nowledge Mem cutover requires the Skein Rust library to open graph, search projection, and required evidence areas",
+            "Nowledge Mem cutover requires the Hawdb Rust library to open graph, search projection, and required evidence areas",
             [
                 "library_readiness.protocol",
                 "library_readiness.ready",
@@ -2256,16 +2256,16 @@ fn next_actions(
     if !readiness.cutover_controls.evidence_ready() {
         actions.push(next_action(
             "attach_cutover_controls_evidence",
-            "Nowledge Mem cutover requires host-owned graph/search read controls to select effective Skein reads with dual writes and projection catch-up enabled",
+            "Nowledge Mem cutover requires host-owned graph/search read controls to select effective Hawdb reads with dual writes and projection catch-up enabled",
             [
                 "cutover_controls.protocol",
                 "cutover_controls.ready",
                 "cutover_controls.controls.graph_reads",
                 "cutover_controls.graph.read_effective",
-                "cutover_controls.production_status.graph.skein_cutover_effective",
+                "cutover_controls.production_status.graph.hawdb_cutover_effective",
                 "cutover_controls.controls.search_reads",
                 "cutover_controls.search.read_effective",
-                "cutover_controls.production_status.search.skein_cutover_effective",
+                "cutover_controls.production_status.search.hawdb_cutover_effective",
                 "cutover_controls.work.dual_writes_enabled",
                 "cutover_controls.work.projection_catch_up_enabled",
                 "cutover_controls.work.initial_import_safe_for_read_cutover",
@@ -2321,7 +2321,7 @@ fn next_actions(
     if !readiness.operations.evidence_ready() {
         actions.push(next_action(
             "attach_operations_readiness_report",
-            "Nowledge Mem cutover requires the embedded Skein library to expose ready lifecycle, recovery, slow-query, background, and projection freshness status",
+            "Nowledge Mem cutover requires the embedded Hawdb library to expose ready lifecycle, recovery, slow-query, background, and projection freshness status",
             [
                 "operations_readiness.protocol",
                 "operations_readiness.present",
@@ -2379,12 +2379,12 @@ fn next_action(
 
 fn read_json_file(path: &Path) -> Result<serde_json::Value> {
     let raw = std::fs::read_to_string(path).map_err(|_| {
-        SkeinError::Execution(
+        HawdbError::Execution(
             "failed to read Nowledge Mem integration bundle: io_error".to_string(),
         )
     })?;
     serde_json::from_str(&raw).map_err(|_| {
-        SkeinError::Execution(
+        HawdbError::Execution(
             "failed to parse Nowledge Mem integration bundle: invalid_json".to_string(),
         )
     })
@@ -2395,7 +2395,7 @@ pub fn integration_bundle_protocol_cutover_readiness(
 ) -> IntegrationBundleProtocolCutoverReadiness {
     IntegrationBundleProtocolCutoverReadiness {
         protocol_matches: str_path(bundle, &["protocol"])
-            == Some(NOWLEDGE_MEM_SKEIN_INTEGRATION_BUNDLE_PROTOCOL),
+            == Some(NOWLEDGE_MEM_HAWDB_INTEGRATION_BUNDLE_PROTOCOL),
     }
 }
 
@@ -2404,7 +2404,7 @@ pub fn replacement_summary_protocol_cutover_readiness(
 ) -> ReplacementSummaryProtocolCutoverReadiness {
     ReplacementSummaryProtocolCutoverReadiness {
         protocol_matches: str_path(bundle, &["replacement_summary", "protocol"])
-            == Some(SKEIN_NOWLEDGE_REPLACEMENT_SUMMARY_PROTOCOL),
+            == Some(HAWDB_NOWLEDGE_REPLACEMENT_SUMMARY_PROTOCOL),
         graph_layer_replacement_scope_ready: replacement_boundary_matches(
             bundle,
             "graph_layer",
@@ -2458,10 +2458,10 @@ fn replacement_boundary_matches(
         ) == Some(replacement_role)
 }
 
-pub fn skein_submodule_cutover_readiness(
+pub fn hawdb_submodule_cutover_readiness(
     bundle: &serde_json::Value,
-) -> SkeinSubmoduleCutoverReadiness {
-    SkeinSubmoduleCutoverReadiness {
+) -> HawdbSubmoduleCutoverReadiness {
+    HawdbSubmoduleCutoverReadiness {
         present: bool_path(bundle, &["submodule", "present"]) == Some(true),
         path_present: non_empty_str_path(bundle, &["submodule", "path"]),
         commit_present: non_empty_str_path(bundle, &["submodule", "commit"]),
@@ -2517,10 +2517,10 @@ pub fn route_ownership_cutover_readiness(
     let route_ownership =
         json_get_path(bundle, &["route_ownership"]).unwrap_or(&serde_json::Value::Null);
     let route_count_summary = route_ownership_count_summary(route_ownership);
-    let search_route_skein_owned =
-        route_ownership_skein_route_present(route_ownership, NOWLEDGE_MEM_SEARCH_ROUTE);
+    let search_route_hawdb_owned =
+        route_ownership_hawdb_route_present(route_ownership, NOWLEDGE_MEM_SEARCH_ROUTE);
     let search_route_projection_evidence_present =
-        !search_route_skein_owned || search_projection_replacement_evidence_present(bundle);
+        !search_route_hawdb_owned || search_projection_replacement_evidence_present(bundle);
     RouteOwnershipCutoverReadiness {
         protocol_matches: str_path(bundle, &["route_ownership", "protocol"])
             == Some(NOWLEDGE_MEM_ROUTE_OWNERSHIP_PROTOCOL),
@@ -2529,7 +2529,7 @@ pub fn route_ownership_cutover_readiness(
             bundle,
             &["route_ownership", "production_cutover_ready"],
         ) == Some(true),
-        require_all_skein: bool_path(bundle, &["route_ownership", "require_all_skein"])
+        require_all_hawdb: bool_path(bundle, &["route_ownership", "require_all_hawdb"])
             == Some(true),
         required_route_count_matches: u64_path(
             bundle,
@@ -2544,9 +2544,9 @@ pub fn route_ownership_cutover_readiness(
             REQUIRED_NOWLEDGE_MEM_BOUNDED_READ_ROUTES.len() as u64
         ) && route_count_summary.explicit_required_route_count
             == REQUIRED_NOWLEDGE_MEM_BOUNDED_READ_ROUTES.len(),
-        skein_route_count_matches: u64_path(bundle, &["route_ownership", "skein_route_count"])
+        hawdb_route_count_matches: u64_path(bundle, &["route_ownership", "hawdb_route_count"])
             == Some(REQUIRED_NOWLEDGE_MEM_BOUNDED_READ_ROUTES.len() as u64)
-            && route_count_summary.skein_route_count
+            && route_count_summary.hawdb_route_count
                 == REQUIRED_NOWLEDGE_MEM_BOUNDED_READ_ROUTES.len(),
         legacy_route_count_zero: u64_path(bundle, &["route_ownership", "legacy_route_count"])
             == Some(0)
@@ -2565,9 +2565,9 @@ pub fn route_ownership_cutover_readiness(
             &["route_ownership", "conflicting_routes"],
         )
         .is_empty(),
-        skein_not_ready_routes_empty: string_array_path(
+        hawdb_not_ready_routes_empty: string_array_path(
             bundle,
-            &["route_ownership", "skein_not_ready_routes"],
+            &["route_ownership", "hawdb_not_ready_routes"],
         )
         .is_empty(),
         route_readiness_present: bool_path(bundle, &["route_ownership", "route_readiness_present"])
@@ -2591,14 +2591,14 @@ pub fn route_ownership_cutover_readiness(
     }
 }
 
-fn route_ownership_skein_route_present(route_ownership: &serde_json::Value, route: &str) -> bool {
+fn route_ownership_hawdb_route_present(route_ownership: &serde_json::Value, route: &str) -> bool {
     route_ownership
         .get("routes")
         .and_then(serde_json::Value::as_array)
         .is_some_and(|routes| {
             routes.iter().any(|entry| {
                 str_path(entry, &["route"]) == Some(route)
-                    && str_path(entry, &["read_engine"]) == Some("skein")
+                    && str_path(entry, &["read_engine"]) == Some("hawdb")
             })
         })
 }
@@ -2631,10 +2631,10 @@ pub fn search_route_ownership_alignment_cutover_readiness(
             field,
             "production_cutover_ready_matches",
         ),
-        require_all_skein_matches: search_route_ownership_alignment_bool(
+        require_all_hawdb_matches: search_route_ownership_alignment_bool(
             bundle,
             field,
-            "require_all_skein_matches",
+            "require_all_hawdb_matches",
         ),
         required_route_count_matches: search_route_ownership_alignment_bool(
             bundle,
@@ -2646,10 +2646,10 @@ pub fn search_route_ownership_alignment_cutover_readiness(
             field,
             "explicit_route_count_matches",
         ),
-        skein_route_count_matches: search_route_ownership_alignment_bool(
+        hawdb_route_count_matches: search_route_ownership_alignment_bool(
             bundle,
             field,
-            "skein_route_count_matches",
+            "hawdb_route_count_matches",
         ),
         lancedb_route_count_matches: search_route_ownership_alignment_bool(
             bundle,
@@ -2699,8 +2699,8 @@ fn search_route_ownership_alignment_cutover_conditions(
             readiness.production_cutover_ready_matches,
         ),
         (
-            fields.require_all_skein_matches,
-            readiness.require_all_skein_matches,
+            fields.require_all_hawdb_matches,
+            readiness.require_all_hawdb_matches,
         ),
         (
             fields.required_route_count_matches,
@@ -2711,8 +2711,8 @@ fn search_route_ownership_alignment_cutover_conditions(
             readiness.explicit_route_count_matches,
         ),
         (
-            fields.skein_route_count_matches,
-            readiness.skein_route_count_matches,
+            fields.hawdb_route_count_matches,
+            readiness.hawdb_route_count_matches,
         ),
         (
             fields.lancedb_route_count_matches,
@@ -2737,10 +2737,10 @@ struct SearchRouteOwnershipAlignmentConditionFields {
     protocol_matches: &'static str,
     readiness_matches: &'static str,
     production_cutover_ready_matches: &'static str,
-    require_all_skein_matches: &'static str,
+    require_all_hawdb_matches: &'static str,
     required_route_count_matches: &'static str,
     explicit_route_count_matches: &'static str,
-    skein_route_count_matches: &'static str,
+    hawdb_route_count_matches: &'static str,
     lancedb_route_count_matches: &'static str,
     missing_required_routes_matches: &'static str,
     lancedb_routes_matches: &'static str,
@@ -2759,10 +2759,10 @@ fn search_route_ownership_alignment_condition_fields(
                 protocol_matches: "replacement_summary_search_route_ownership_alignment.protocol_matches",
                 readiness_matches: "replacement_summary_search_route_ownership_alignment.ready_matches",
                 production_cutover_ready_matches: "replacement_summary_search_route_ownership_alignment.production_cutover_ready_matches",
-                require_all_skein_matches: "replacement_summary_search_route_ownership_alignment.require_all_skein_matches",
+                require_all_hawdb_matches: "replacement_summary_search_route_ownership_alignment.require_all_hawdb_matches",
                 required_route_count_matches: "replacement_summary_search_route_ownership_alignment.required_route_count_matches",
                 explicit_route_count_matches: "replacement_summary_search_route_ownership_alignment.explicit_route_count_matches",
-                skein_route_count_matches: "replacement_summary_search_route_ownership_alignment.skein_route_count_matches",
+                hawdb_route_count_matches: "replacement_summary_search_route_ownership_alignment.hawdb_route_count_matches",
                 lancedb_route_count_matches: "replacement_summary_search_route_ownership_alignment.lancedb_route_count_matches",
                 missing_required_routes_matches: "replacement_summary_search_route_ownership_alignment.missing_required_routes_matches",
                 lancedb_routes_matches: "replacement_summary_search_route_ownership_alignment.lancedb_routes_matches",
@@ -2777,10 +2777,10 @@ fn search_route_ownership_alignment_condition_fields(
                 protocol_matches: "replacement_summary_active_search_route_ownership_alignment.protocol_matches",
                 readiness_matches: "replacement_summary_active_search_route_ownership_alignment.ready_matches",
                 production_cutover_ready_matches: "replacement_summary_active_search_route_ownership_alignment.production_cutover_ready_matches",
-                require_all_skein_matches: "replacement_summary_active_search_route_ownership_alignment.require_all_skein_matches",
+                require_all_hawdb_matches: "replacement_summary_active_search_route_ownership_alignment.require_all_hawdb_matches",
                 required_route_count_matches: "replacement_summary_active_search_route_ownership_alignment.required_route_count_matches",
                 explicit_route_count_matches: "replacement_summary_active_search_route_ownership_alignment.explicit_route_count_matches",
-                skein_route_count_matches: "replacement_summary_active_search_route_ownership_alignment.skein_route_count_matches",
+                hawdb_route_count_matches: "replacement_summary_active_search_route_ownership_alignment.hawdb_route_count_matches",
                 lancedb_route_count_matches: "replacement_summary_active_search_route_ownership_alignment.lancedb_route_count_matches",
                 missing_required_routes_matches: "replacement_summary_active_search_route_ownership_alignment.missing_required_routes_matches",
                 lancedb_routes_matches: "replacement_summary_active_search_route_ownership_alignment.lancedb_routes_matches",
@@ -2795,14 +2795,14 @@ fn search_route_ownership_alignment_condition_fields(
             readiness_matches: "unknown_search_route_ownership_alignment.ready_matches",
             production_cutover_ready_matches:
                 "unknown_search_route_ownership_alignment.production_cutover_ready_matches",
-            require_all_skein_matches:
-                "unknown_search_route_ownership_alignment.require_all_skein_matches",
+            require_all_hawdb_matches:
+                "unknown_search_route_ownership_alignment.require_all_hawdb_matches",
             required_route_count_matches:
                 "unknown_search_route_ownership_alignment.required_route_count_matches",
             explicit_route_count_matches:
                 "unknown_search_route_ownership_alignment.explicit_route_count_matches",
-            skein_route_count_matches:
-                "unknown_search_route_ownership_alignment.skein_route_count_matches",
+            hawdb_route_count_matches:
+                "unknown_search_route_ownership_alignment.hawdb_route_count_matches",
             lancedb_route_count_matches:
                 "unknown_search_route_ownership_alignment.lancedb_route_count_matches",
             missing_required_routes_matches:
@@ -2827,7 +2827,7 @@ pub fn active_search_route_readiness_alignment_cutover_readiness(
             bundle,
             &[FIELD, "production_cutover_ready_matches"],
         ) == Some(true),
-        require_all_skein_matches: bool_path(bundle, &[FIELD, "require_all_skein_matches"])
+        require_all_hawdb_matches: bool_path(bundle, &[FIELD, "require_all_hawdb_matches"])
             == Some(true),
         required_route_count_matches: bool_path(bundle, &[FIELD, "required_route_count_matches"])
             == Some(true),
@@ -2835,7 +2835,7 @@ pub fn active_search_route_readiness_alignment_cutover_readiness(
             == Some(true),
         ready_route_count_matches: bool_path(bundle, &[FIELD, "ready_route_count_matches"])
             == Some(true),
-        skein_route_count_matches: bool_path(bundle, &[FIELD, "skein_route_count_matches"])
+        hawdb_route_count_matches: bool_path(bundle, &[FIELD, "hawdb_route_count_matches"])
             == Some(true),
         lancedb_handle_count_matches: bool_path(bundle, &[FIELD, "lancedb_handle_count_matches"])
             == Some(true),
@@ -2843,7 +2843,7 @@ pub fn active_search_route_readiness_alignment_cutover_readiness(
             bundle,
             &[FIELD, "missing_required_routes_matches"],
         ) == Some(true),
-        non_skein_routes_matches: bool_path(bundle, &[FIELD, "non_skein_routes_matches"])
+        non_hawdb_routes_matches: bool_path(bundle, &[FIELD, "non_hawdb_routes_matches"])
             == Some(true),
         lancedb_handle_routes_matches: bool_path(bundle, &[FIELD, "lancedb_handle_routes_matches"])
             == Some(true),
@@ -2925,8 +2925,8 @@ fn active_search_route_readiness_alignment_cutover_conditions(
             readiness.production_cutover_ready_matches,
         ),
         (
-            "replacement_summary_active_search_route_readiness_alignment.require_all_skein_matches",
-            readiness.require_all_skein_matches,
+            "replacement_summary_active_search_route_readiness_alignment.require_all_hawdb_matches",
+            readiness.require_all_hawdb_matches,
         ),
         (
             "replacement_summary_active_search_route_readiness_alignment.required_route_count_matches",
@@ -2941,8 +2941,8 @@ fn active_search_route_readiness_alignment_cutover_conditions(
             readiness.ready_route_count_matches,
         ),
         (
-            "replacement_summary_active_search_route_readiness_alignment.skein_route_count_matches",
-            readiness.skein_route_count_matches,
+            "replacement_summary_active_search_route_readiness_alignment.hawdb_route_count_matches",
+            readiness.hawdb_route_count_matches,
         ),
         (
             "replacement_summary_active_search_route_readiness_alignment.lancedb_handle_count_matches",
@@ -2953,8 +2953,8 @@ fn active_search_route_readiness_alignment_cutover_conditions(
             readiness.missing_required_routes_matches,
         ),
         (
-            "replacement_summary_active_search_route_readiness_alignment.non_skein_routes_matches",
-            readiness.non_skein_routes_matches,
+            "replacement_summary_active_search_route_readiness_alignment.non_hawdb_routes_matches",
+            readiness.non_hawdb_routes_matches,
         ),
         (
             "replacement_summary_active_search_route_readiness_alignment.lancedb_handle_routes_matches",
@@ -3014,7 +3014,7 @@ fn active_search_route_readiness_alignment_cutover_conditions(
 #[derive(Debug, Default)]
 struct RouteOwnershipCountSummary {
     explicit_required_route_count: usize,
-    skein_route_count: usize,
+    hawdb_route_count: usize,
     legacy_route_count: usize,
 }
 
@@ -3027,7 +3027,7 @@ fn route_ownership_count_summary(value: &serde_json::Value) -> RouteOwnershipCou
         .copied()
         .collect::<BTreeSet<_>>();
     let mut explicit_required_routes = BTreeSet::new();
-    let mut skein_routes = BTreeSet::new();
+    let mut hawdb_routes = BTreeSet::new();
     let mut legacy_routes = BTreeSet::new();
     for route in routes {
         let Some(route_name) = str_path(route, &["route"]) else {
@@ -3037,8 +3037,8 @@ fn route_ownership_count_summary(value: &serde_json::Value) -> RouteOwnershipCou
             explicit_required_routes.insert(route_name);
         }
         match str_path(route, &["read_engine"]) {
-            Some("skein") if required_routes.contains(route_name) => {
-                skein_routes.insert(route_name);
+            Some("hawdb") if required_routes.contains(route_name) => {
+                hawdb_routes.insert(route_name);
             }
             Some("legacy") if required_routes.contains(route_name) => {
                 legacy_routes.insert(route_name);
@@ -3048,7 +3048,7 @@ fn route_ownership_count_summary(value: &serde_json::Value) -> RouteOwnershipCou
     }
     RouteOwnershipCountSummary {
         explicit_required_route_count: explicit_required_routes.len(),
-        skein_route_count: skein_routes.len(),
+        hawdb_route_count: hawdb_routes.len(),
         legacy_route_count: legacy_routes.len(),
     }
 }
@@ -3330,7 +3330,7 @@ pub fn search_projection_cutover_readiness(
                 "search_projection_evidence",
                 "protocol",
             ],
-        ) == Some(SKEIN_NOWLEDGE_SEARCH_PROJECTION_EVIDENCE_PROTOCOL),
+        ) == Some(HAWDB_NOWLEDGE_SEARCH_PROJECTION_EVIDENCE_PROTOCOL),
         evidence_ready: bool_path(
             bundle,
             &["replacement_summary", "search_projection_evidence", "ready"],
@@ -3415,7 +3415,7 @@ pub fn search_projection_cutover_readiness(
                 "protocol",
             ],
         ) == Some(
-            SKEIN_NOWLEDGE_SEARCH_PROJECTION_SHADOW_EVIDENCE_PROTOCOL,
+            HAWDB_NOWLEDGE_SEARCH_PROJECTION_SHADOW_EVIDENCE_PROTOCOL,
         ),
         shadow_evidence_source_matches: str_path(
             bundle,
@@ -3424,7 +3424,7 @@ pub fn search_projection_cutover_readiness(
                 "search_projection_shadow_evidence",
                 "evidence_source",
             ],
-        ) == Some(SKEIN_SEARCH_PROJECTION_SHADOW_EVIDENCE_SOURCE),
+        ) == Some(HAWDB_SEARCH_PROJECTION_SHADOW_EVIDENCE_SOURCE),
         shadow_ready: bool_path(
             bundle,
             &[
@@ -3972,7 +3972,7 @@ pub fn bounded_read_cutover_readiness(bundle: &serde_json::Value) -> BoundedRead
         protocol_matches: str_path(
             bundle,
             &["replacement_summary", "bounded_read_evidence", "protocol"],
-        ) == Some(SKEIN_NOWLEDGE_MEM_BOUNDED_READ_EVIDENCE_PROTOCOL),
+        ) == Some(HAWDB_NOWLEDGE_MEM_BOUNDED_READ_EVIDENCE_PROTOCOL),
         ready: bool_path(
             bundle,
             &["replacement_summary", "bounded_read_evidence", "ready"],
@@ -4807,7 +4807,7 @@ fn graph_route_shadow_compare_ready(route: &serde_json::Value) -> bool {
             == Some(ROUTE_PARITY_FULL_MATCH_PER_MILLION)
         && str_path(route, &["shadow_compare", "primary_engine"])
             .is_some_and(is_legacy_graph_engine)
-        && str_path(route, &["shadow_compare", "shadow_engine"]) == Some("skein")
+        && str_path(route, &["shadow_compare", "shadow_engine"]) == Some("hawdb")
         && string_array_path(route, &["shadow_compare", "blocker_codes"]).is_empty()
         && string_array_path(route, &["shadow_compare", "computed_blocker_codes"]).is_empty()
 }
@@ -4821,7 +4821,7 @@ fn graph_route_query_report_ready(report: &serde_json::Value) -> bool {
         && u64_path(report, &["query_index"]).is_some()
         && str_path(report, &["query_family"])
             .is_some_and(|family| REQUIRED_NOWLEDGE_REPLACEMENT_QUERY_FAMILIES.contains(&family))
-        && str_path(report, &["protocol"]) == Some(SKEIN_NOWLEDGE_MEM_QUERY_REPORT_PROTOCOL)
+        && str_path(report, &["protocol"]) == Some(HAWDB_NOWLEDGE_MEM_QUERY_REPORT_PROTOCOL)
         && bool_path(report, &["ready"]) == Some(true)
         && string_array_path(report, &["blocker_codes"]).is_empty()
         && non_empty_str_path(report, &["statement_kind"])
@@ -5148,7 +5148,7 @@ pub fn query_runtime_preflight_cutover_readiness(
 ) -> QueryRuntimePreflightCutoverReadiness {
     QueryRuntimePreflightCutoverReadiness {
         protocol_matches: str_path(bundle, &["query_runtime_preflight", "protocol"])
-            == Some(SKEIN_NOWLEDGE_QUERY_RUNTIME_PREFLIGHT_PROTOCOL),
+            == Some(HAWDB_NOWLEDGE_QUERY_RUNTIME_PREFLIGHT_PROTOCOL),
         ready: bool_path(bundle, &["query_runtime_preflight", "ready"]) == Some(true),
         database_opened: bool_path(bundle, &["query_runtime_preflight", "database_opened"])
             == Some(true),
@@ -5891,8 +5891,8 @@ pub fn cutover_controls_readiness(bundle: &serde_json::Value) -> CutoverControls
         protocol_matches: str_path(bundle, &["cutover_controls", "protocol"])
             == Some(NOWLEDGE_MEM_CUTOVER_CONTROLS_PROTOCOL),
         ready: bool_path(bundle, &["cutover_controls", "ready"]) == Some(true),
-        graph_reads_skein: str_path(bundle, &["cutover_controls", "controls", "graph_reads"])
-            == Some("skein"),
+        graph_reads_hawdb: str_path(bundle, &["cutover_controls", "controls", "graph_reads"])
+            == Some("hawdb"),
         graph_read_effective: bool_path(bundle, &["cutover_controls", "graph", "read_effective"])
             == Some(true),
         graph_production_status_effective: bool_path(
@@ -5901,11 +5901,11 @@ pub fn cutover_controls_readiness(bundle: &serde_json::Value) -> CutoverControls
                 "cutover_controls",
                 "production_status",
                 "graph",
-                "skein_cutover_effective",
+                "hawdb_cutover_effective",
             ],
         ) == Some(true),
-        search_reads_skein: str_path(bundle, &["cutover_controls", "controls", "search_reads"])
-            == Some("skein"),
+        search_reads_hawdb: str_path(bundle, &["cutover_controls", "controls", "search_reads"])
+            == Some("hawdb"),
         search_read_effective: bool_path(bundle, &["cutover_controls", "search", "read_effective"])
             == Some(true),
         search_production_status_effective: bool_path(
@@ -5914,7 +5914,7 @@ pub fn cutover_controls_readiness(bundle: &serde_json::Value) -> CutoverControls
                 "cutover_controls",
                 "production_status",
                 "search",
-                "skein_cutover_effective",
+                "hawdb_cutover_effective",
             ],
         ) == Some(true),
         dual_writes_enabled,
@@ -5955,26 +5955,26 @@ fn cutover_controls_conditions(readiness: &CutoverControlsReadiness) -> Vec<(&'s
         ("cutover_controls.ready", readiness.ready),
         (
             "cutover_controls.controls.graph_reads",
-            readiness.graph_reads_skein,
+            readiness.graph_reads_hawdb,
         ),
         (
             "cutover_controls.graph.read_effective",
             readiness.graph_read_effective,
         ),
         (
-            "cutover_controls.production_status.graph.skein_cutover_effective",
+            "cutover_controls.production_status.graph.hawdb_cutover_effective",
             readiness.graph_production_status_effective,
         ),
         (
             "cutover_controls.controls.search_reads",
-            readiness.search_reads_skein,
+            readiness.search_reads_hawdb,
         ),
         (
             "cutover_controls.search.read_effective",
             readiness.search_read_effective,
         ),
         (
-            "cutover_controls.production_status.search.skein_cutover_effective",
+            "cutover_controls.production_status.search.hawdb_cutover_effective",
             readiness.search_production_status_effective,
         ),
         (
@@ -6602,13 +6602,12 @@ fn json_get_path<'a>(value: &'a serde_json::Value, path: &[&str]) -> Option<&'a 
 #[cfg(test)]
 mod tests {
     use super::{
-        nowledge_mem_integration_readiness_json, NOWLEDGE_MEM_CUTOVER_CONTROLS_PROTOCOL,
-        NOWLEDGE_MEM_OPERATIONS_READINESS_PROTOCOL,
+        nowledge_mem_integration_readiness_json, HAWDB_SEARCH_PROJECTION_SHADOW_EVIDENCE_SOURCE,
+        NOWLEDGE_MEM_CUTOVER_CONTROLS_PROTOCOL, NOWLEDGE_MEM_OPERATIONS_READINESS_PROTOCOL,
         NOWLEDGE_MEM_SOURCE_MUTATION_DUAL_WRITE_READINESS_PROTOCOL,
         REQUIRED_NOWLEDGE_MEM_SOURCE_MUTATION_FAMILIES,
-        SKEIN_SEARCH_PROJECTION_SHADOW_EVIDENCE_SOURCE,
     };
-    use skein_evidence::replacement_contract::{
+    use hawdb_evidence::replacement_contract::{
         NOWLEDGE_MEM_SEARCH_CANDIDATE_EVIDENCE_ROUTE, NOWLEDGE_MEM_SEARCH_CANDIDATE_SHADOW_ENGINE,
         NOWLEDGE_MEM_SEARCH_CANDIDATE_SHADOW_EVIDENCE_PROTOCOL,
         NOWLEDGE_MEM_SEARCH_CANDIDATE_TRACE_EVIDENCE_SOURCE,
@@ -6616,22 +6615,22 @@ mod tests {
         NOWLEDGE_MEM_SEARCH_CANDIDATE_TRACE_SHADOW_ENGINE,
         NOWLEDGE_SEARCH_PROJECTION_SCAN_FILTER_FIELDS,
     };
-    use skein_route_ownership::graph::{
+    use hawdb_route_ownership::graph::{
         nowledge_mem_graph_read_route_catalog_digest, nowledge_mem_graph_read_route_spec,
-        nowledge_mem_graph_read_route_specs_json, nowledge_mem_route_ownership_all_skein,
+        nowledge_mem_graph_read_route_specs_json, nowledge_mem_route_ownership_all_hawdb,
         nowledge_mem_route_ownership_readiness, NowledgeMemRouteOwnershipPolicy,
         NowledgeMemRouteReadinessSummary, NOWLEDGE_MEM_GRAPH_READ_ROUTE_CATALOG_VERSION,
         REQUIRED_NOWLEDGE_MEM_BOUNDED_READ_ROUTES,
     };
-    use skein_route_ownership::{
-        nowledge_mem_active_search_route_ownership_all_skein,
+    use hawdb_route_ownership::{
+        nowledge_mem_active_search_route_ownership_all_hawdb,
         nowledge_mem_active_search_route_ownership_readiness,
-        nowledge_mem_active_search_route_read_evidence_all_skein_ready,
-        nowledge_mem_active_search_route_readiness, nowledge_mem_search_route_ownership_all_skein,
+        nowledge_mem_active_search_route_read_evidence_all_hawdb_ready,
+        nowledge_mem_active_search_route_readiness, nowledge_mem_search_route_ownership_all_hawdb,
         nowledge_mem_search_route_ownership_readiness, NowledgeMemSearchRouteOwnershipPolicy,
         REQUIRED_NOWLEDGE_MEM_ACTIVE_SEARCH_ROUTES,
     };
-    use skein_search::candidate_evidence::{
+    use hawdb_search::candidate_evidence::{
         nowledge_mem_search_candidate_shadow_evidence_json,
         NowledgeMemSearchCandidateShadowAccumulator,
     };
@@ -6813,7 +6812,7 @@ mod tests {
                 "checksum": 3,
                 "json": {
                     "parse_ready": true,
-                    "protocol": "skein-background-maintenance-report",
+                    "protocol": "hawdb-background-maintenance-report",
                     "ready": true,
                     "blocker_codes": []
                 }
@@ -6911,7 +6910,7 @@ mod tests {
             .as_array()
             .unwrap()
             .iter()
-            .any(|action| action["action"] == "regenerate_skein_integration_bundle"));
+            .any(|action| action["action"] == "regenerate_hawdb_integration_bundle"));
     }
 
     #[test]
@@ -6965,13 +6964,13 @@ mod tests {
         assert_eq!(report["ready"], false);
         assert_eq!(
             report["failed_checks"],
-            serde_json::json!(["skein_submodule", "legacy_coexistence"])
+            serde_json::json!(["hawdb_submodule", "legacy_coexistence"])
         );
         assert!(report["next_actions"]
             .as_array()
             .unwrap()
             .iter()
-            .any(|action| action["action"] == "add_skein_submodule"));
+            .any(|action| action["action"] == "add_hawdb_submodule"));
         assert!(report["next_actions"]
             .as_array()
             .unwrap()
@@ -7049,7 +7048,7 @@ mod tests {
     #[test]
     fn exposes_typed_submodule_and_coexistence_cutover_readiness() {
         let mut bundle = ready_bundle();
-        let submodule = super::skein_submodule_cutover_readiness(&bundle);
+        let submodule = super::hawdb_submodule_cutover_readiness(&bundle);
         let coexistence = super::legacy_coexistence_cutover_readiness(&bundle);
         assert!(submodule.evidence_ready());
         assert!(submodule.present);
@@ -7063,7 +7062,7 @@ mod tests {
         bundle["submodule"]["commit"] = serde_json::json!("");
         bundle["coexistence"]["mode"] = serde_json::json!("replace_in_place");
         bundle["coexistence"]["old_database_deleted"] = serde_json::json!(true);
-        let submodule = super::skein_submodule_cutover_readiness(&bundle);
+        let submodule = super::hawdb_submodule_cutover_readiness(&bundle);
         let coexistence = super::legacy_coexistence_cutover_readiness(&bundle);
         assert!(!submodule.evidence_ready());
         assert!(submodule.present);
@@ -7205,21 +7204,21 @@ mod tests {
     }
 
     #[test]
-    fn typed_route_ownership_cutover_readiness_requires_all_skein_routes() {
+    fn typed_route_ownership_cutover_readiness_requires_all_hawdb_routes() {
         let mut bundle = ready_bundle();
         let typed = super::route_ownership_cutover_readiness(&bundle);
         assert!(typed.evidence_ready());
         assert!(typed.production_cutover_ready);
-        assert!(typed.require_all_skein);
+        assert!(typed.require_all_hawdb);
         assert!(typed.legacy_route_count_zero);
 
         bundle["route_ownership"]["routes"][0]["read_engine"] = serde_json::json!("legacy");
         bundle["route_ownership"]["legacy_route_count"] = serde_json::json!(1);
-        bundle["route_ownership"]["skein_route_count"] =
+        bundle["route_ownership"]["hawdb_route_count"] =
             serde_json::json!(REQUIRED_NOWLEDGE_MEM_BOUNDED_READ_ROUTES.len() - 1);
         bundle["route_ownership"]["legacy_routes"] =
             serde_json::json!([REQUIRED_NOWLEDGE_MEM_BOUNDED_READ_ROUTES[0]]);
-        bundle["route_ownership"]["skein_routes"] =
+        bundle["route_ownership"]["hawdb_routes"] =
             serde_json::json!(&REQUIRED_NOWLEDGE_MEM_BOUNDED_READ_ROUTES[1..]);
         bundle["route_ownership"]["ready"] = serde_json::json!(false);
         bundle["route_ownership"]["production_cutover_ready"] = serde_json::json!(false);
@@ -7230,7 +7229,7 @@ mod tests {
         assert!(!typed.evidence_ready());
         assert!(!typed.ready);
         assert!(!typed.production_cutover_ready);
-        assert!(!typed.skein_route_count_matches);
+        assert!(!typed.hawdb_route_count_matches);
         assert!(!typed.legacy_route_count_zero);
         assert_eq!(
             typed.blocker_codes,
@@ -7239,7 +7238,7 @@ mod tests {
     }
 
     #[test]
-    fn route_ownership_rejects_skein_search_route_without_projection_evidence() {
+    fn route_ownership_rejects_hawdb_search_route_without_projection_evidence() {
         let mut bundle = ready_bundle();
         bundle["replacement_summary"]
             .as_object_mut()
@@ -7289,10 +7288,10 @@ mod tests {
                 "route_ownership.protocol",
                 "route_ownership.ready",
                 "route_ownership.production_cutover_ready",
-                "route_ownership.require_all_skein",
+                "route_ownership.require_all_hawdb",
                 "route_ownership.required_route_count",
                 "route_ownership.explicit_route_count",
-                "route_ownership.skein_route_count",
+                "route_ownership.hawdb_route_count",
                 "route_ownership.legacy_route_count",
                 "route_ownership.route_readiness_present",
                 "route_ownership.route_readiness_ready",
@@ -7374,11 +7373,11 @@ mod tests {
         let mut bundle = ready_bundle();
         bundle["route_ownership"]["routes"][0]["read_engine"] = serde_json::json!("legacy");
         bundle["route_ownership"]["legacy_route_count"] = serde_json::json!(1);
-        bundle["route_ownership"]["skein_route_count"] =
+        bundle["route_ownership"]["hawdb_route_count"] =
             serde_json::json!(REQUIRED_NOWLEDGE_MEM_BOUNDED_READ_ROUTES.len() - 1);
         bundle["route_ownership"]["legacy_routes"] =
             serde_json::json!([REQUIRED_NOWLEDGE_MEM_BOUNDED_READ_ROUTES[0]]);
-        bundle["route_ownership"]["skein_routes"] =
+        bundle["route_ownership"]["hawdb_routes"] =
             serde_json::json!(&REQUIRED_NOWLEDGE_MEM_BOUNDED_READ_ROUTES[1..]);
         bundle["route_ownership"]["ready"] = serde_json::json!(false);
         bundle["route_ownership"]["production_cutover_ready"] = serde_json::json!(false);
@@ -7663,7 +7662,7 @@ mod tests {
     }
 
     #[test]
-    fn requires_skein_search_candidate_primary_engine() {
+    fn requires_hawdb_search_candidate_primary_engine() {
         let mut bundle = ready_bundle();
         bundle["search_candidate_shadow_evidence"]["candidate_primary_engine"] =
             serde_json::json!("lancedb");
@@ -7689,7 +7688,7 @@ mod tests {
             .as_array()
             .unwrap()
             .iter()
-            .any(|action| action["action"] == "enable_skein_search_candidate_primary_reads"));
+            .any(|action| action["action"] == "enable_hawdb_search_candidate_primary_reads"));
     }
 
     #[test]
@@ -8127,7 +8126,7 @@ mod tests {
         bundle["replacement_summary"]["search_projection_shadow_evidence"]["pushdown_evidence"]
             ["shadow_segment_descriptor_scan_filter_fields_ready"] = serde_json::json!(false);
         bundle["replacement_summary"]["search_projection_shadow_evidence"]["blocker_codes"] =
-            serde_json::json!(["skein_search_projection_segment_descriptor_fields_missing"]);
+            serde_json::json!(["hawdb_search_projection_segment_descriptor_fields_missing"]);
 
         let report = nowledge_mem_integration_readiness_json(&bundle);
 
@@ -8138,7 +8137,7 @@ mod tests {
         );
         assert_eq!(
             report["blocker_codes"],
-            serde_json::json!(["skein_search_projection_segment_descriptor_fields_missing"])
+            serde_json::json!(["hawdb_search_projection_segment_descriptor_fields_missing"])
         );
         let search_check = report["checks"]
             .as_array()
@@ -8678,7 +8677,7 @@ mod tests {
         let mut bundle = ready_bundle();
         bundle["bounded_read_evidence"]["ready"] = serde_json::json!(false);
         bundle["bounded_read_evidence"]["blocker_codes"] =
-            serde_json::json!(["skein_shadow_runtime_not_open"]);
+            serde_json::json!(["hawdb_shadow_runtime_not_open"]);
         bundle["replacement_summary_bounded_read_alignment"]["ready"] = serde_json::json!(false);
         bundle["replacement_summary_bounded_read_alignment"]["evidence_ready"] =
             serde_json::json!(false);
@@ -8698,7 +8697,7 @@ mod tests {
             report["blocker_codes"],
             serde_json::json!([
                 "replacement_summary_bounded_read_evidence_mismatch",
-                "skein_shadow_runtime_not_open"
+                "hawdb_shadow_runtime_not_open"
             ])
         );
         let alignment_check = report["checks"]
@@ -9841,7 +9840,7 @@ mod tests {
         bundle["graph_route_readiness"]["routes"][0]["shadow_compare"]["matched_per_million"] =
             serde_json::json!(999999);
         bundle["graph_route_readiness"]["routes"][0]["shadow_compare"]["primary_engine"] =
-            serde_json::json!("skein");
+            serde_json::json!("hawdb");
 
         let report = nowledge_mem_integration_readiness_json(&bundle);
 
@@ -10459,8 +10458,8 @@ mod tests {
         assert!(!typed.evidence_ready());
         assert!(!typed.protocol_matches);
         assert!(!typed.ready);
-        assert!(!typed.graph_reads_skein);
-        assert!(!typed.search_reads_skein);
+        assert!(!typed.graph_reads_hawdb);
+        assert!(!typed.search_reads_hawdb);
 
         let report = nowledge_mem_integration_readiness_json(&bundle);
 
@@ -10482,10 +10481,10 @@ mod tests {
                 "cutover_controls.ready",
                 "cutover_controls.controls.graph_reads",
                 "cutover_controls.graph.read_effective",
-                "cutover_controls.production_status.graph.skein_cutover_effective",
+                "cutover_controls.production_status.graph.hawdb_cutover_effective",
                 "cutover_controls.controls.search_reads",
                 "cutover_controls.search.read_effective",
-                "cutover_controls.production_status.search.skein_cutover_effective",
+                "cutover_controls.production_status.search.hawdb_cutover_effective",
                 "cutover_controls.work.dual_writes_enabled",
                 "cutover_controls.work.projection_catch_up_enabled",
                 "cutover_controls.work.initial_import_safe_for_read_cutover",
@@ -10502,33 +10501,33 @@ mod tests {
     }
 
     #[test]
-    fn cutover_controls_reject_legacy_or_ineffective_skein_reads() {
+    fn cutover_controls_reject_legacy_or_ineffective_hawdb_reads() {
         let mut bundle = ready_bundle();
         bundle["cutover_controls"]["ready"] = serde_json::json!(false);
         bundle["cutover_controls"]["controls"]["graph_reads"] = serde_json::json!("legacy");
         bundle["cutover_controls"]["graph"]["read_effective"] = serde_json::json!(false);
-        bundle["cutover_controls"]["production_status"]["graph"]["skein_cutover_effective"] =
+        bundle["cutover_controls"]["production_status"]["graph"]["hawdb_cutover_effective"] =
             serde_json::json!(false);
         bundle["cutover_controls"]["work"]["projection_catch_up_enabled"] =
             serde_json::json!(false);
         bundle["cutover_controls"]["blocker_codes"] = serde_json::json!([
-            "graph_read_selected_skein_but_not_effective",
-            "search_read_selected_skein_without_projection_catch_up"
+            "graph_read_selected_hawdb_but_not_effective",
+            "search_read_selected_hawdb_without_projection_catch_up"
         ]);
 
         let typed = super::cutover_controls_readiness(&bundle);
         assert!(!typed.evidence_ready());
         assert!(typed.protocol_matches);
         assert!(!typed.ready);
-        assert!(!typed.graph_reads_skein);
+        assert!(!typed.graph_reads_hawdb);
         assert!(!typed.graph_read_effective);
         assert!(!typed.graph_production_status_effective);
         assert!(!typed.projection_catch_up_enabled);
         assert_eq!(
             typed.blocker_codes,
             vec![
-                "graph_read_selected_skein_but_not_effective".to_string(),
-                "search_read_selected_skein_without_projection_catch_up".to_string()
+                "graph_read_selected_hawdb_but_not_effective".to_string(),
+                "search_read_selected_hawdb_without_projection_catch_up".to_string()
             ]
         );
 
@@ -10551,7 +10550,7 @@ mod tests {
                 "cutover_controls.ready",
                 "cutover_controls.controls.graph_reads",
                 "cutover_controls.graph.read_effective",
-                "cutover_controls.production_status.graph.skein_cutover_effective",
+                "cutover_controls.production_status.graph.hawdb_cutover_effective",
                 "cutover_controls.work.projection_catch_up_enabled"
             ])
         );
@@ -11211,10 +11210,10 @@ mod tests {
 
     fn ready_bundle() -> serde_json::Value {
         let mut bundle = serde_json::json!({
-            "protocol": "nowledge-mem-skein-integration-bundle",
+            "protocol": "nowledge-mem-hawdb-integration-bundle",
             "submodule": {
                 "present": true,
-                "path": "vendor/skein",
+                "path": "vendor/hawdb",
                 "commit": "46f8bfb",
                 "blocker_codes": []
             },
@@ -11237,7 +11236,7 @@ mod tests {
                 "failed_checks": []
             },
             "bounded_read_evidence": {
-                "protocol": "skein-nowledge-mem-bounded-read-evidence-v2",
+                "protocol": "hawdb-nowledge-mem-bounded-read-evidence-v2",
                 "ready": true,
                 "mode": "shadow_read_only",
                 "max_rows": 512,
@@ -11281,7 +11280,7 @@ mod tests {
                 "blocker_codes": []
             },
             "replacement_summary": {
-                "protocol": "skein-nowledge-replacement-summary",
+                "protocol": "hawdb-nowledge-replacement-summary",
                 "production_cutover_ready": true,
                 "blocking_categories": [],
                 "missing_evidence": [],
@@ -11310,7 +11309,7 @@ mod tests {
                     "missing_required_query_families": []
                 },
                 "search_projection_evidence": {
-                    "protocol": "skein-nowledge-search-projection-evidence",
+                    "protocol": "hawdb-nowledge-search-projection-evidence",
                     "ready": true,
                     "fts_ready": true,
                     "vector_ready": true,
@@ -11323,8 +11322,8 @@ mod tests {
                     "blocker_codes": []
                 },
                 "search_projection_shadow_evidence": {
-                    "protocol": "skein-nowledge-search-projection-shadow-evidence",
-                    "evidence_source": SKEIN_SEARCH_PROJECTION_SHADOW_EVIDENCE_SOURCE,
+                    "protocol": "hawdb-nowledge-search-projection-shadow-evidence",
+                    "evidence_source": HAWDB_SEARCH_PROJECTION_SHADOW_EVIDENCE_SOURCE,
                     "present": true,
                     "ready": true,
                     "document_count_parity": true,
@@ -11346,7 +11345,7 @@ mod tests {
                     "blocker_codes": []
                 },
                 "bounded_read_evidence": {
-                    "protocol": "skein-nowledge-mem-bounded-read-evidence-v2",
+                    "protocol": "hawdb-nowledge-mem-bounded-read-evidence-v2",
                     "present": true,
                     "ready": true,
                     "mode": "shadow_read_only",
@@ -11401,12 +11400,12 @@ mod tests {
             "graph_layer": {
                 "scope": "kuzu_ladybug_graph_layer",
                 "replacement_role": "primary_replacement",
-                "storage_owner": "skein"
+                "storage_owner": "hawdb"
             },
             "search_projection": {
                 "scope": "lancedb_search_projection",
                 "replacement_role": "rebuildable_projection",
-                "storage_owner": "skein"
+                "storage_owner": "hawdb"
             },
             "content_store": {
                 "scope": "sqlite_content_store",
@@ -11592,7 +11591,7 @@ mod tests {
             "blocker_codes": []
         });
         bundle["query_runtime_preflight"] = serde_json::json!({
-            "protocol": "skein-nowledge-query-runtime-preflight-v1",
+            "protocol": "hawdb-nowledge-query-runtime-preflight-v1",
             "ready": true,
             "database_opened": true,
             "redaction": {
@@ -11732,7 +11731,7 @@ mod tests {
 
     fn ready_route_ownership() -> serde_json::Value {
         nowledge_mem_route_ownership_readiness(
-            &nowledge_mem_route_ownership_all_skein(),
+            &nowledge_mem_route_ownership_all_hawdb(),
             Some(&ready_route_readiness_summary()),
             NowledgeMemRouteOwnershipPolicy::production_cutover(),
         )
@@ -11741,7 +11740,7 @@ mod tests {
 
     fn ready_search_route_ownership() -> serde_json::Value {
         nowledge_mem_search_route_ownership_readiness(
-            &nowledge_mem_search_route_ownership_all_skein(),
+            &nowledge_mem_search_route_ownership_all_hawdb(),
             NowledgeMemSearchRouteOwnershipPolicy::production_cutover(),
         )
         .json()
@@ -11749,7 +11748,7 @@ mod tests {
 
     fn ready_active_search_route_ownership() -> serde_json::Value {
         nowledge_mem_active_search_route_ownership_readiness(
-            &nowledge_mem_active_search_route_ownership_all_skein(),
+            &nowledge_mem_active_search_route_ownership_all_hawdb(),
             NowledgeMemSearchRouteOwnershipPolicy::production_cutover(),
         )
         .json()
@@ -11757,7 +11756,7 @@ mod tests {
 
     fn ready_active_search_route_readiness() -> serde_json::Value {
         nowledge_mem_active_search_route_readiness(
-            &nowledge_mem_active_search_route_read_evidence_all_skein_ready(),
+            &nowledge_mem_active_search_route_read_evidence_all_hawdb_ready(),
             NowledgeMemSearchRouteOwnershipPolicy::production_cutover(),
         )
         .json()
@@ -11771,10 +11770,10 @@ mod tests {
             "protocol_matches": true,
             "ready_matches": true,
             "production_cutover_ready_matches": true,
-            "require_all_skein_matches": true,
+            "require_all_hawdb_matches": true,
             "required_route_count_matches": true,
             "explicit_route_count_matches": true,
-            "skein_route_count_matches": true,
+            "hawdb_route_count_matches": true,
             "lancedb_route_count_matches": true,
             "missing_required_routes_matches": true,
             "lancedb_routes_matches": true,
@@ -11793,14 +11792,14 @@ mod tests {
             "protocol_matches": true,
             "ready_matches": true,
             "production_cutover_ready_matches": true,
-            "require_all_skein_matches": true,
+            "require_all_hawdb_matches": true,
             "required_route_count_matches": true,
             "evidence_route_count_matches": true,
             "ready_route_count_matches": true,
-            "skein_route_count_matches": true,
+            "hawdb_route_count_matches": true,
             "lancedb_handle_count_matches": true,
             "missing_required_routes_matches": true,
-            "non_skein_routes_matches": true,
+            "non_hawdb_routes_matches": true,
             "lancedb_handle_routes_matches": true,
             "candidate_not_ready_routes_matches": true,
             "candidate_identity_not_ready_routes_matches": true,
@@ -11841,7 +11840,7 @@ mod tests {
             .iter()
             .map(|route| {
                 let required_query_families =
-                    skein_route_ownership::graph::nowledge_mem_required_query_families_for_route(
+                    hawdb_route_ownership::graph::nowledge_mem_required_query_families_for_route(
                         route,
                     );
                 let query_family = required_query_families
@@ -11861,7 +11860,7 @@ mod tests {
                         "ready": true,
                         "matched_per_million": 1000000,
                         "primary_engine": "kuzu",
-                        "shadow_engine": "skein",
+                        "shadow_engine": "hawdb",
                         "blocker_codes": [],
                         "computed_blocker_codes": []
                     },
@@ -11950,7 +11949,7 @@ mod tests {
 
     fn ready_query_runtime_summary() -> serde_json::Value {
         serde_json::json!({
-            "protocol": "skein-nowledge-query-runtime-preflight-v1",
+            "protocol": "hawdb-nowledge-query-runtime-preflight-v1",
             "present": true,
             "ready": true,
             "database_opened": true,
@@ -11998,7 +11997,7 @@ mod tests {
             "query_name": "overview-memory-lookup",
             "query_index": 0,
             "query_family": query_family,
-            "protocol": "skein-nowledge-mem-query-report-v1",
+            "protocol": "hawdb-nowledge-mem-query-report-v1",
             "statement_kind": "match_return",
             "execution_path": "fast_path",
             "fast_path_selected": true,
@@ -12043,7 +12042,7 @@ mod tests {
 
     fn ready_library_readiness() -> serde_json::Value {
         serde_json::json!({
-            "protocol": "skein-nowledge-mem-library-readiness-v1",
+            "protocol": "hawdb-nowledge-mem-library-readiness-v1",
             "present": true,
             "ready": true,
             "mode": "shadow_read_only",
@@ -12064,7 +12063,7 @@ mod tests {
                 "spawned_helper_required": false
             },
             "open_report": {
-                "protocol": "skein-nowledge-mem-open-report",
+                "protocol": "hawdb-nowledge-mem-open-report",
                 "mode": "shadow_read_only",
                 "graph_configured": true,
                 "search_projection_configured": true,
@@ -12154,7 +12153,7 @@ mod tests {
 
     fn ready_production_resource_profile() -> serde_json::Value {
         serde_json::json!({
-            "protocol": skein_evidence::resource_profile::STORAGE_RESOURCE_PROFILE_PROTOCOL,
+            "protocol": hawdb_evidence::resource_profile::STORAGE_RESOURCE_PROFILE_PROTOCOL,
             "protocol_version": 2,
             "present": true,
             "resource_ready": true,
@@ -12226,7 +12225,7 @@ mod tests {
             "deployment_profile": "production-replica",
             "dataset_fingerprint": "test-dataset",
             "canonical_graph_commit_epoch": 42,
-            "policy_version": skein_evidence::PRODUCTION_QUALIFICATION_POLICY_VERSION
+            "policy_version": hawdb_evidence::PRODUCTION_QUALIFICATION_POLICY_VERSION
         })
     }
 
@@ -12235,18 +12234,18 @@ mod tests {
             "protocol": NOWLEDGE_MEM_CUTOVER_CONTROLS_PROTOCOL,
             "ready": true,
             "controls": {
-                "graph_reads": "skein",
-                "search_reads": "skein",
+                "graph_reads": "hawdb",
+                "search_reads": "hawdb",
                 "dual_writes": "enabled",
                 "initial_import": "disabled",
                 "projection_catch_up": "enabled"
             },
             "graph": {
-                "read_selected_skein": true,
+                "read_selected_hawdb": true,
                 "read_effective": true
             },
             "search": {
-                "read_selected_skein": true,
+                "read_selected_hawdb": true,
                 "read_effective": true
             },
             "work": {
@@ -12260,10 +12259,10 @@ mod tests {
             "blocker_codes": [],
             "production_status": {
                 "graph": {
-                    "skein_cutover_effective": true
+                    "hawdb_cutover_effective": true
                 },
                 "search": {
-                    "skein_cutover_effective": true
+                    "hawdb_cutover_effective": true
                 },
                 "blocker_codes": []
             },
@@ -12311,7 +12310,7 @@ mod tests {
 
     fn ready_blackbox_manifest() -> serde_json::Value {
         serde_json::json!({
-            "protocol": "skein-blackbox-report-v1",
+            "protocol": "hawdb-blackbox-report-v1",
             "protocol_version": 1,
             "run_id": "integration-ready",
             "run_status": "completed",
@@ -12330,7 +12329,7 @@ mod tests {
                     "checksum": 1,
                     "json": {
                         "parse_ready": true,
-                        "protocol": "skein-nowledge-replacement-summary",
+                        "protocol": "hawdb-nowledge-replacement-summary",
                         "ready": true,
                         "blocker_codes": [],
                         "blocking_categories": [],
@@ -12371,12 +12370,12 @@ mod tests {
             "checksum": 2,
             "json": {
                 "parse_ready": true,
-                "protocol": "skein-background-maintenance-report",
+                "protocol": "hawdb-background-maintenance-report",
                 "ready": true,
                 "blocker_codes": []
             },
             "background_qos": {
-                "protocol": "skein-background-maintenance-report",
+                "protocol": "hawdb-background-maintenance-report",
                 "ready": true,
                 "total_candidates": 1,
                 "admitted_count": 1,
@@ -12402,6 +12401,6 @@ mod tests {
             .duration_since(UNIX_EPOCH)
             .unwrap()
             .as_nanos();
-        std::env::temp_dir().join(format!("skein-{name}-{nanos}"))
+        std::env::temp_dir().join(format!("hawdb-{name}-{nanos}"))
     }
 }

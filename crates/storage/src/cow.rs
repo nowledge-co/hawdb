@@ -2,7 +2,7 @@
 //! snapshots.
 
 use crate::{AdjacencyPostingList, NodeId, NodeRecord, RelId, RelRecord};
-use skein_core::{LabelId, RelTypeId, Value};
+use hawdb_core::{LabelId, RelTypeId, Value};
 use std::collections::{BTreeMap, BTreeSet};
 use std::ops::{Deref, DerefMut};
 use std::sync::Arc;

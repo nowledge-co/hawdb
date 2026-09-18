@@ -10,7 +10,7 @@ use crate::memory::external_read_memory_budget;
 use crate::observer::QueryExecutionObserver;
 use crate::pipeline::{emit_owned_binding_batches, BatchControl, BindingBatch};
 use crate::{ExecutionLimit, ExecutionMemoryConfig, QueryMemoryClass, QueryMemoryLedger};
-use skein_core::{Result, RuntimeTaskContext, SkeinError, Value};
+use hawdb_core::{HawdbError, Result, RuntimeTaskContext, Value};
 use std::cell::RefCell;
 use std::collections::BTreeMap;
 use std::num::NonZeroUsize;
@@ -57,10 +57,10 @@ impl BatchExternalRead for BatchExternalReadAdapter<'_> {
 fn vector_embedding_parameter(
     parameters: &BTreeMap<String, Value>,
     name: &str,
-    vector_plan: &skein_plan::VectorPhysicalPlan,
+    vector_plan: &hawdb_plan::VectorPhysicalPlan,
 ) -> Result<Vec<f32>> {
     let Some(Value::List(values)) = parameters.get(name) else {
-        return Err(SkeinError::Semantic(format!(
+        return Err(HawdbError::Semantic(format!(
             "vector search parameter '${name}' must be a numeric list"
         )));
     };
@@ -72,51 +72,51 @@ fn vector_embedding_parameter(
                 if value.is_finite() {
                     Ok(value)
                 } else {
-                    Err(SkeinError::Semantic(format!(
+                    Err(HawdbError::Semantic(format!(
                         "vector search parameter '${name}' exceeds f32 range"
                     )))
                 }
             }
             Value::Int(value) => Ok(*value as f32),
-            _ => Err(SkeinError::Semantic(format!(
+            _ => Err(HawdbError::Semantic(format!(
                 "vector search parameter '${name}' must contain finite numbers"
             ))),
         })
         .collect::<Result<Vec<_>>>()?;
     let expected_dimension = vector_plan_embedding_dimension(vector_plan);
     if embedding.len() != expected_dimension {
-        return Err(SkeinError::Semantic(format!(
+        return Err(HawdbError::Semantic(format!(
             "vector search parameter '${name}' dimension changed after planning"
         )));
     }
     Ok(embedding)
 }
 
-fn vector_plan_embedding_dimension(plan: &skein_plan::VectorPhysicalPlan) -> usize {
+fn vector_plan_embedding_dimension(plan: &hawdb_plan::VectorPhysicalPlan) -> usize {
     match plan {
-        skein_plan::VectorPhysicalPlan::VectorCandidateScan {
+        hawdb_plan::VectorPhysicalPlan::VectorCandidateScan {
             embedding_dimension,
             ..
         }
-        | skein_plan::VectorPhysicalPlan::RawVectorRerank {
+        | hawdb_plan::VectorPhysicalPlan::RawVectorRerank {
             embedding_dimension,
             ..
         } => *embedding_dimension,
-        skein_plan::VectorPhysicalPlan::ResidualFilter { input, .. }
-        | skein_plan::VectorPhysicalPlan::TopK { input, .. } => {
+        hawdb_plan::VectorPhysicalPlan::ResidualFilter { input, .. }
+        | hawdb_plan::VectorPhysicalPlan::TopK { input, .. } => {
             vector_plan_embedding_dimension(input)
         }
-        skein_plan::VectorPhysicalPlan::Filter { .. } => 0,
+        hawdb_plan::VectorPhysicalPlan::Filter { .. } => 0,
     }
 }
 
-fn vector_plan_top_k(plan: &skein_plan::VectorPhysicalPlan) -> Option<usize> {
+fn vector_plan_top_k(plan: &hawdb_plan::VectorPhysicalPlan) -> Option<usize> {
     match plan {
-        skein_plan::VectorPhysicalPlan::TopK { limit, .. } => Some(*limit),
-        skein_plan::VectorPhysicalPlan::VectorCandidateScan { input, .. }
-        | skein_plan::VectorPhysicalPlan::RawVectorRerank { input, .. }
-        | skein_plan::VectorPhysicalPlan::ResidualFilter { input, .. } => vector_plan_top_k(input),
-        skein_plan::VectorPhysicalPlan::Filter { .. } => None,
+        hawdb_plan::VectorPhysicalPlan::TopK { limit, .. } => Some(*limit),
+        hawdb_plan::VectorPhysicalPlan::VectorCandidateScan { input, .. }
+        | hawdb_plan::VectorPhysicalPlan::RawVectorRerank { input, .. }
+        | hawdb_plan::VectorPhysicalPlan::ResidualFilter { input, .. } => vector_plan_top_k(input),
+        hawdb_plan::VectorPhysicalPlan::Filter { .. } => None,
     }
 }
 
@@ -124,8 +124,8 @@ pub struct VectorSeedScanSpec<'a> {
     pub embedding_parameter: &'a str,
     pub output_external_id: &'a bool,
     pub metadata_filters: &'a BTreeMap<String, String>,
-    pub resource_profile: &'a skein_plan::VectorExecutionResourceProfile,
-    pub vector_plan: &'a skein_plan::VectorPhysicalPlan,
+    pub resource_profile: &'a hawdb_plan::VectorExecutionResourceProfile,
+    pub vector_plan: &'a hawdb_plan::VectorPhysicalPlan,
 }
 
 impl VectorSeedScanSpec<'_> {
@@ -144,7 +144,7 @@ impl VectorSeedScanSpec<'_> {
         } = self;
         let max_rows = vector_plan_top_k(vector_plan)
             .ok_or_else(|| {
-                SkeinError::Execution("vector seed physical plan is missing TopK".to_string())
+                HawdbError::Execution("vector seed physical plan is missing TopK".to_string())
             })?
             .min(execution_limit.output_rows.unwrap_or(usize::MAX));
         if max_rows == 0 {

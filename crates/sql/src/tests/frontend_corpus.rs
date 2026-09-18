@@ -1,12 +1,12 @@
 //! Migration evidence for the two existing frontends, without changing routing.
 
 use crate::{prepare_postgres_sql, SqlStatement};
-use serde::Deserialize;
-use sha2::{Digest, Sha256};
-use skein_core::SkeinError;
-use skein_sql_syntax::{
+use hawdb_core::HawdbError;
+use hawdb_sql_syntax::{
     parse_postgres_statement, tokenize, PostgresFromItemSyntax, PostgresStatementSyntax, TokenKind,
 };
+use serde::Deserialize;
+use sha2::{Digest, Sha256};
 use std::collections::{BTreeMap, BTreeSet};
 
 mod checks;
@@ -183,8 +183,8 @@ fn production(sql: &str) -> Result<(Outcome, Option<&'static str>), String> {
         }
         Err(error) => {
             let code = match error {
-                SkeinError::Parse(_) => "Parse",
-                SkeinError::Semantic(_) => "Semantic",
+                HawdbError::Parse(_) => "Parse",
+                HawdbError::Semantic(_) => "Semantic",
                 other => {
                     return Err(format!(
                         "unexpected production preparation error: {other:?}"

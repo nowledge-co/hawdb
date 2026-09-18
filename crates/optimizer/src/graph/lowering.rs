@@ -17,9 +17,9 @@ use crate::{
     GroupId, Memo, OptimizerContext, OptimizerSearchDirective, OptimizerSearchDirectiveError,
     RuleEvent, RuleOutcome, SelectedPlanTrace, StageTrace,
 };
-use skein_core::Value;
-use skein_cypher::RelationshipDirection;
-use skein_plan::{
+use hawdb_core::Value;
+use hawdb_cypher::RelationshipDirection;
+use hawdb_plan::{
     AggregateFunction, AggregateTarget, GraphExpansionBudget, LogicalPlan, NodeProjectionAccess,
     Predicate, Projection, ProjectionExpression, SortItem, SortKey,
 };
@@ -455,16 +455,16 @@ impl GroupExpr {
 
 fn push_vector_seed_metadata_filter(
     input: &mut PhysicalPlan,
-    predicate: &skein_plan::Predicate,
+    predicate: &hawdb_plan::Predicate,
     decisions: &mut Vec<String>,
 ) {
-    if let skein_plan::Predicate::And(predicates) = predicate {
+    if let hawdb_plan::Predicate::And(predicates) = predicate {
         for predicate in predicates {
             push_vector_seed_metadata_filter(input, predicate, decisions);
         }
         return;
     }
-    let skein_plan::Predicate::PropertyEq {
+    let hawdb_plan::Predicate::PropertyEq {
         variable,
         property,
         value,
@@ -534,18 +534,18 @@ fn attach_metadata_filter_to_vector_seed(
     true
 }
 
-fn attach_vector_filter_field(plan: &mut skein_plan::VectorPhysicalPlan, field: &str) {
+fn attach_vector_filter_field(plan: &mut hawdb_plan::VectorPhysicalPlan, field: &str) {
     match plan {
-        skein_plan::VectorPhysicalPlan::Filter { fields } => {
+        hawdb_plan::VectorPhysicalPlan::Filter { fields } => {
             if !fields.iter().any(|existing| existing == field) {
                 fields.push(field.to_string());
                 fields.sort();
             }
         }
-        skein_plan::VectorPhysicalPlan::VectorCandidateScan { input, .. }
-        | skein_plan::VectorPhysicalPlan::ResidualFilter { input, .. }
-        | skein_plan::VectorPhysicalPlan::RawVectorRerank { input, .. }
-        | skein_plan::VectorPhysicalPlan::TopK { input, .. } => {
+        hawdb_plan::VectorPhysicalPlan::VectorCandidateScan { input, .. }
+        | hawdb_plan::VectorPhysicalPlan::ResidualFilter { input, .. }
+        | hawdb_plan::VectorPhysicalPlan::RawVectorRerank { input, .. }
+        | hawdb_plan::VectorPhysicalPlan::TopK { input, .. } => {
             attach_vector_filter_field(input, field);
         }
     }
@@ -585,13 +585,13 @@ fn vector_seed_top_k(plan: &PhysicalPlan) -> Option<usize> {
     }
 }
 
-fn vector_plan_top_k(plan: &skein_plan::VectorPhysicalPlan) -> Option<usize> {
+fn vector_plan_top_k(plan: &hawdb_plan::VectorPhysicalPlan) -> Option<usize> {
     match plan {
-        skein_plan::VectorPhysicalPlan::TopK { limit, .. } => Some(*limit),
-        skein_plan::VectorPhysicalPlan::VectorCandidateScan { input, .. }
-        | skein_plan::VectorPhysicalPlan::ResidualFilter { input, .. }
-        | skein_plan::VectorPhysicalPlan::RawVectorRerank { input, .. } => vector_plan_top_k(input),
-        skein_plan::VectorPhysicalPlan::Filter { .. } => None,
+        hawdb_plan::VectorPhysicalPlan::TopK { limit, .. } => Some(*limit),
+        hawdb_plan::VectorPhysicalPlan::VectorCandidateScan { input, .. }
+        | hawdb_plan::VectorPhysicalPlan::ResidualFilter { input, .. }
+        | hawdb_plan::VectorPhysicalPlan::RawVectorRerank { input, .. } => vector_plan_top_k(input),
+        hawdb_plan::VectorPhysicalPlan::Filter { .. } => None,
     }
 }
 
@@ -1281,7 +1281,7 @@ fn select_node_projection_scan(
 
 fn select_node_aggregate_required_scan(
     group_keys: &[Projection],
-    items: &[skein_plan::Aggregation],
+    items: &[hawdb_plan::Aggregation],
     input: &PhysicalPlan,
     decisions: &mut Vec<String>,
     stage_events: &mut Vec<StageTrace>,
@@ -1323,7 +1323,7 @@ fn select_node_aggregate_required_scan(
 }
 
 fn collect_aggregate_properties(
-    item: &skein_plan::Aggregation,
+    item: &hawdb_plan::Aggregation,
     variable: &str,
     required: &mut BTreeSet<String>,
 ) -> bool {

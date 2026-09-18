@@ -31,8 +31,8 @@ The encoder uses the caller's admitted cap. The 256 MiB default, term policy,
 and document source limit are unchanged; the separately approved public budget
 contract is documented in [Lexical manifest byte admission](LEXICAL_MANIFEST_BUDGET.md).
 This encoder is a private prerequisite
-for [#392](https://github.com/nowledge-co/skein/issues/392) and
-[#206](https://github.com/nowledge-co/skein/issues/206). It neither admits the
+for [#392](https://github.com/nowledge-co/hawdb/issues/392) and
+[#206](https://github.com/nowledge-co/hawdb/issues/206). It neither admits the
 previously rejected complete-corpus manifest nor establishes the posting
 compression ratio or large-document lifecycle qualification.
 
@@ -46,12 +46,12 @@ serialization errors, and output growth/shrinkage after admission. A separate
 512-case deterministic differential campaign is available for local fuzz runs.
 
 ```sh
-cargo test --locked --offline -p skein-search --all-features
-cargo test --locked --offline -p skein-search --all-features manifest_encoding -- --include-ignored
-cargo clippy --locked --offline -p skein-search --all-features --all-targets -- -D warnings
-bazel test //crates/search:presubmit_tests //:skein_unit_tests \
-  //crates/fuzz:skein_fuzz_tests //crates/fuzz:skein_fuzz_cli_tests \
-  //:skein_linux_ci_fuzz_smoke_test
+cargo test --locked --offline -p hawdb-search --all-features
+cargo test --locked --offline -p hawdb-search --all-features manifest_encoding -- --include-ignored
+cargo clippy --locked --offline -p hawdb-search --all-features --all-targets -- -D warnings
+bazel test //crates/search:presubmit_tests //:hawdb_unit_tests \
+  //crates/fuzz:hawdb_fuzz_tests //crates/fuzz:hawdb_fuzz_cli_tests \
+  //:hawdb_linux_ci_fuzz_smoke_test
 ```
 
 The manifest differential target is manual and belongs to the local fuzz suite;

@@ -1,8 +1,8 @@
-use serde_json::json;
-use skein_vector_projection::{
+use hawdb_vector_projection::{
     KernelPreference, ProjectionBuildConfig, ProjectionBuilder, ProjectionIdentity,
     ProjectionSearchOptions,
 };
+use serde_json::json;
 use std::hint::black_box;
 use std::num::NonZeroUsize;
 use std::time::Instant;
@@ -18,7 +18,7 @@ const KERNELS: [(&str, KernelPreference); 2] = [
 ];
 
 fn main() {
-    let dimension = std::env::var("SKEIN_BENCH_VECTOR_DIMENSION")
+    let dimension = std::env::var("HAWDB_BENCH_VECTOR_DIMENSION")
         .ok()
         .and_then(|value| value.parse().ok())
         .unwrap_or(384);
@@ -54,7 +54,7 @@ fn main() {
     );
 }
 
-fn build_projection(dimension: usize) -> skein_vector_projection::InMemoryProjection {
+fn build_projection(dimension: usize) -> hawdb_vector_projection::InMemoryProjection {
     let config =
         ProjectionBuildConfig::new(dimension, ProjectionIdentity::new(1)).with_segment_rows(1024);
     let mut builder = ProjectionBuilder::new(config).expect("benchmark projection must initialize");
@@ -78,7 +78,7 @@ fn vector(id: u64, dimension: usize) -> Vec<f32> {
 }
 
 fn measure(
-    projection: &skein_vector_projection::InMemoryProjection,
+    projection: &hawdb_vector_projection::InMemoryProjection,
     query: &[f32],
     requested_kernel: &str,
     kernel: KernelPreference,

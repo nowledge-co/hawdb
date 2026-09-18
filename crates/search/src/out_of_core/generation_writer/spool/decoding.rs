@@ -1,5 +1,5 @@
 use super::*;
-use skein_executor::QueryMemoryLease;
+use hawdb_executor::QueryMemoryLease;
 use std::collections::BTreeMap;
 
 mod admission;
@@ -85,8 +85,8 @@ struct FrameReader<'a, R> {
 }
 
 impl<R: Read> FrameReader<'_, R> {
-    fn invalid(&self, reason: impl std::fmt::Display) -> SkeinError {
-        SkeinError::Storage(format!(
+    fn invalid(&self, reason: impl std::fmt::Display) -> HawdbError {
+        HawdbError::Storage(format!(
             "search generation spool record {} {reason}",
             self.ordinal
         ))

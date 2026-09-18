@@ -432,28 +432,28 @@ dependencies = [
 ]
 
 [[package]]
-name = "skein-core"
+name = "hawdb-core"
 version = "0.1.0"
 dependencies = [
  "regex",
 ]
 
 [[package]]
-name = "skein-cypher"
+name = "hawdb-cypher"
 version = "0.1.0"
 dependencies = [
- "skein-core",
+ "hawdb-core",
 ]
 
 [[package]]
-name = "skein-cypher-yacc-experiment"
+name = "hawdb-cypher-yacc-experiment"
 version = "0.0.0"
 dependencies = [
  "cfgrammar",
  "lrlex",
  "lrpar",
  "serde_json",
- "skein-cypher",
+ "hawdb-cypher",
 ]
 
 [[package]]

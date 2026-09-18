@@ -2,7 +2,7 @@ use crate::{
     CompatibilityCheck, CompatibilityFixture, CypherExecutionMode, CypherFixtureStatement,
     ExpectedErrorClass, ExpectedRows, ProjectedGraphFixtureCheck,
 };
-use skein_core::Value;
+use hawdb_core::Value;
 use std::collections::BTreeMap;
 
 pub fn nowledge_fixture_contract_usage() -> String {
@@ -11,7 +11,7 @@ pub fn nowledge_fixture_contract_usage() -> String {
 
 pub fn nowledge_fixture_contract_json(fixture: &CompatibilityFixture) -> serde_json::Value {
     serde_json::json!({
-        "protocol": "skein-nowledge-fixture-contract",
+        "protocol": "hawdb-nowledge-fixture-contract",
         "protocol_version": 1,
         "fixture": fixture.name,
         "setup_count": fixture.setup.len(),
@@ -249,7 +249,7 @@ mod tests {
         let fixture = crate::nowledge_memory_core_fixture();
         let json = nowledge_fixture_contract_json(&fixture);
 
-        assert_eq!(json["protocol"], "skein-nowledge-fixture-contract");
+        assert_eq!(json["protocol"], "hawdb-nowledge-fixture-contract");
         assert_eq!(json["fixture"], "nowledge-memory-core");
         assert_eq!(json["setup_count"], fixture.setup.len());
         assert_eq!(json["check_count"], fixture.checks.len());

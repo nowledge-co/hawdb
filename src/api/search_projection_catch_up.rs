@@ -4,10 +4,10 @@ use crate::search::{
     validate_search_projection_catch_up_request, SearchIndex,
 };
 use crate::{
-    DatabaseReadTransaction, Result, SearchProjectionChangeBatch, SearchProjectionRelationalDelta,
-    SkeinError,
+    DatabaseReadTransaction, HawdbError, Result, SearchProjectionChangeBatch,
+    SearchProjectionRelationalDelta,
 };
-pub use skein_search::{
+pub use hawdb_search::{
     ScheduledSearchProjectionCatchUpReport, SearchProjectionCatchUpReport,
     SearchProjectionCatchUpStopReason,
 };
@@ -43,7 +43,7 @@ impl Database {
     ///
     /// The hydrator receives the exact selected batch and one pinned database
     /// read transaction. It must account for every relational primary key in
-    /// the batch. Skein validates that count before applying either the graph
+    /// the batch. Hawdb validates that count before applying either the graph
     /// or relational delta, then checkpoints the combined projection before
     /// selecting another batch. Hydration errors and incomplete accounting do
     /// not advance the projection watermark.
@@ -82,7 +82,7 @@ impl Database {
     /// Unlike [`Self::catch_up_search_projection_with_relational`], the
     /// hydrator runs for graph-only batches. This supports bounded host-owned
     /// dependency fan-out without moving application projection semantics into
-    /// Skein. The hydrator must still account for every relational primary key
+    /// Hawdb. The hydrator must still account for every relational primary key
     /// in the batch. `max_change_operations_per_batch` bounds changefeed
     /// selection, while `max_projection_operations_per_batch` independently
     /// bounds the combined graph and host-derived projection delta. Hydration
@@ -108,7 +108,7 @@ impl Database {
             max_batches,
         )?;
         if max_projection_operations_per_batch == 0 {
-            return Err(SkeinError::Semantic(
+            return Err(HawdbError::Semantic(
                 "search projection catch-up max_projection_operations_per_batch must be greater than zero"
                     .to_string(),
             ));
@@ -161,7 +161,7 @@ impl Database {
         max_operations_per_batch: usize,
         max_batches: usize,
     ) -> Result<ScheduledSearchProjectionCatchUpReport> {
-        self.ensure_runtime_capability(skein_core::RuntimeCapability::BackgroundMaintenance)?;
+        self.ensure_runtime_capability(hawdb_core::RuntimeCapability::BackgroundMaintenance)?;
         let scheduler = self.local_qos_scheduler_for_work();
         run_scheduled_search_projection_catch_up(
             search_index,

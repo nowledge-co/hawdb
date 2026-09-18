@@ -40,21 +40,21 @@ fn storage_owned_projected_artifact_preserves_structural_corruption_fallback() {
             .rows;
         assert!(db.projected_graph_statuses()[0].reusable);
     }
-    let artifact_path = path.join("projected_graphs.skein");
+    let artifact_path = path.join("projected_graphs.hawdb");
     let original = std::fs::read(&artifact_path).unwrap();
     let text = read_test_durable_text(&artifact_path).unwrap();
     let (body, _) =
-        skein_storage::projection::artifact::split_projected_graph_artifact_checksum(&text)
+        hawdb_storage::projection::artifact::split_projected_graph_artifact_checksum(&text)
             .unwrap();
     let (_, artifacts) =
-        skein_storage::projection::artifact::decode_projected_graph_artifacts(body).unwrap();
+        hawdb_storage::projection::artifact::decode_projected_graph_artifacts(body).unwrap();
     assert_eq!(artifacts["G"].data.nodes, vec![NodeId(0), NodeId(1)]);
     assert_eq!(artifacts["G"].data.csr_targets, vec![1]);
 
     // Repair the inner checksum and the compressed envelope so every mutation
     // reaches the storage-owned structural decoder rather than an outer gate.
     for (from, to) in [
-        ("SKEIN_PROJECTED_GRAPHS_V1", "SKEIN_PROJECTED_GRAPHS_V0"),
+        ("HAWDB_PROJECTED_GRAPHS_V1", "HAWDB_PROJECTED_GRAPHS_V0"),
         ("artifact_version\t1", "artifact_version\t2"),
         ("\t2\t1\n", "\t3\t1\n"),
         ("csr_offsets\t0,1,1", "csr_offsets\t1,1,1"),
@@ -63,11 +63,11 @@ fn storage_owned_projected_artifact_preserves_structural_corruption_fallback() {
     ] {
         assert!(body.contains(from), "missing mutation {from}");
         let damaged_body = body.replacen(from, to, 1);
-        let checksum = skein_integrity::checksum_u64(damaged_body.as_bytes());
+        let checksum = hawdb_integrity::checksum_u64(damaged_body.as_bytes());
         let damaged_text = format!("{damaged_body}checksum\t{checksum}\n");
         let encoded = crate::store::encode_durable_text(
             &damaged_text,
-            skein_storage::DurableCompression::default(),
+            hawdb_storage::DurableCompression::default(),
         )
         .unwrap();
         std::fs::write(&artifact_path, &encoded).unwrap();
@@ -76,7 +76,7 @@ fn storage_owned_projected_artifact_preserves_structural_corruption_fallback() {
             damaged_text
         );
         assert!(
-            skein_storage::projection::artifact::decode_projected_graph_artifacts(&damaged_body)
+            hawdb_storage::projection::artifact::decode_projected_graph_artifacts(&damaged_body)
                 .is_err()
         );
 
@@ -119,7 +119,7 @@ fn storage_owned_projected_artifact_preserves_structural_corruption_fallback() {
             );
         }
         let mut expected = before;
-        expected.remove(std::path::Path::new("projected_graphs.skein"));
+        expected.remove(std::path::Path::new("projected_graphs.hawdb"));
         assert_eq!(
             files(&path),
             expected,
@@ -379,8 +379,8 @@ fn checkpoint_writes_projected_graph_artifacts() {
         db.checkpoint().unwrap();
     }
 
-    let artifact = read_test_durable_text(&path.join("projected_graphs.skein")).unwrap();
-    assert!(artifact.contains("SKEIN_PROJECTED_GRAPHS_V1\n"));
+    let artifact = read_test_durable_text(&path.join("projected_graphs.hawdb")).unwrap();
+    assert!(artifact.contains("HAWDB_PROJECTED_GRAPHS_V1\n"));
     assert!(artifact.contains("artifact_version\t1\n"));
     assert!(artifact.contains("projection_epoch\t1\n"));
     assert!(artifact.contains("commit_epoch\t4\n"));
@@ -742,7 +742,7 @@ fn corrupt_projected_graph_artifacts_do_not_block_recovery() {
         db.checkpoint().unwrap();
     }
 
-    let artifact_path = path.join("projected_graphs.skein");
+    let artifact_path = path.join("projected_graphs.hawdb");
     let artifact = read_test_durable_text(&artifact_path).unwrap();
     std::fs::write(
         &artifact_path,
@@ -773,7 +773,7 @@ fn read_only_open_ignores_corrupt_projected_graph_artifact_without_cleanup() {
         db.checkpoint().unwrap();
     }
 
-    let artifact_path = path.join("projected_graphs.skein");
+    let artifact_path = path.join("projected_graphs.hawdb");
     let artifact = read_test_durable_text(&artifact_path).unwrap();
     std::fs::write(
         &artifact_path,

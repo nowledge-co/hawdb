@@ -1,5 +1,5 @@
 use super::*;
-use skein_plan::HashJoinKey;
+use hawdb_plan::HashJoinKey;
 
 pub(super) fn lower_property_join(
     input: PhysicalPlan,
@@ -119,10 +119,10 @@ fn binds_node(plan: &PhysicalPlan, name: &str) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use skein_plan::{plan, visit_plan, PhysicalPlanKind};
+    use hawdb_plan::{plan, visit_plan, PhysicalPlanKind};
 
     fn optimize(query: &str) -> PhysicalPlan {
-        let logical = plan(&skein_cypher::parse(query).unwrap()).unwrap();
+        let logical = plan(&hawdb_cypher::parse(query).unwrap()).unwrap();
         let (plan, _) = CascadesOptimizer::default()
             .optimize_with_catalog(&logical, &OptimizerCatalog::default());
         plan
@@ -176,7 +176,7 @@ mod tests {
                         variable: "a".into(),
                         property: "key".into(),
                     },
-                    direction: skein_plan::SortDirection::Asc,
+                    direction: hawdb_plan::SortDirection::Asc,
                 }],
                 input: Box::new(LogicalPlan::Filter {
                     predicate: Predicate::And(vec![eq("a", "b"), eq("b", "c")]),

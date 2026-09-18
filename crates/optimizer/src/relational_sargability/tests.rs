@@ -1,7 +1,7 @@
 use super::*;
-use skein_core::Value;
-use skein_expression::sql::SqlNullOrder;
-use skein_expression::sql::{Expr, ExprKind};
+use hawdb_core::Value;
+use hawdb_expression::sql::SqlNullOrder;
+use hawdb_expression::sql::{Expr, ExprKind};
 
 fn column(qualifier: Option<&str>, name: &str) -> SqlColumnRef {
     SqlColumnRef {
@@ -180,9 +180,9 @@ fn keyset_value_identity_ignores_each_occurrences_source_span() {
     let mut column = 1;
     predicate
         .try_visit_mut(&mut |node| {
-            node.span = skein_expression::sql::SqlSourceSpan {
-                start: skein_expression::sql::SqlSourceLocation { line: 1, column },
-                end: skein_expression::sql::SqlSourceLocation {
+            node.span = hawdb_expression::sql::SqlSourceSpan {
+                start: hawdb_expression::sql::SqlSourceLocation { line: 1, column },
+                end: hawdb_expression::sql::SqlSourceLocation {
                     line: 1,
                     column: column + 1,
                 },
@@ -209,7 +209,7 @@ fn arbitrary_comparison_operands_are_not_mistaken_for_index_equalities() {
     let parameter = Expr::value(SqlValue::Parameter(1));
     let function = Expr::unspanned(ExprKind::Function {
         name: "coalesce".to_owned(),
-        arguments: vec![skein_expression::sql::SqlFunctionArgument::Expression(
+        arguments: vec![hawdb_expression::sql::SqlFunctionArgument::Expression(
             column.clone(),
         )],
         distinct: false,

@@ -1,6 +1,6 @@
 use crate::SearchProjectionDelta;
-use skein_qos::{BackgroundWorkHint, BackgroundWorkPlan, WorkClass, WorkRequest};
-use skein_storage::RelationalTablePrimaryKeyChanges;
+use hawdb_qos::{BackgroundWorkHint, BackgroundWorkPlan, WorkClass, WorkRequest};
+use hawdb_storage::RelationalTablePrimaryKeyChanges;
 
 /// A bounded graph-derived delta to apply to a search projection.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
@@ -108,7 +108,7 @@ pub struct SearchProjectionRelationalDelta {
 #[cfg(test)]
 mod tests {
     use super::{SearchProjectionChangeBatch, SearchProjectionGraphDeltaRequest};
-    use skein_qos::{BackgroundWorkHint, WorkClass};
+    use hawdb_qos::{BackgroundWorkHint, WorkClass};
 
     #[test]
     fn graph_delta_request_preserves_projection_admission_boundaries() {

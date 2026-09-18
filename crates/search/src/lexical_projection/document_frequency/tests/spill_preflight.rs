@@ -1,6 +1,6 @@
 use super::*;
 use crate::build_control::observation;
-use skein_core::RuntimeMemoryReservation;
+use hawdb_core::RuntimeMemoryReservation;
 
 fn pool(root: &TestRoot) -> (BuildMemory, SpillRuns) {
     let task = RuntimeTaskContext::with_timeout(std::time::Duration::from_secs(60))

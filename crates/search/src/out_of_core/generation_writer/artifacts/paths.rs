@@ -1,7 +1,7 @@
 use super::*;
 use crate::build_memory::path::OwnedPath;
 use crate::SEARCH_SEGMENT_DESCRIPTOR_FILE;
-use skein_core::RuntimeTaskContext;
+use hawdb_core::RuntimeTaskContext;
 
 pub(super) struct Paths {
     pub(super) document: OwnedPath,
@@ -27,7 +27,7 @@ impl Paths {
             memory,
             task,
         )?;
-        let temporary = OwnedPath::with_extension(&descriptor, "skein.tmp", memory, task)?;
+        let temporary = OwnedPath::with_extension(&descriptor, "hawdb.tmp", memory, task)?;
         Ok(Self {
             document,
             metadata,

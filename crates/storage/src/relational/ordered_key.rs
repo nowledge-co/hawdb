@@ -216,7 +216,7 @@ impl<'a> OrderedKeyDecoder<'a> {
                 )?))
             }
             5 => Ok(RelationalValue::Bytea(self.escaped_bytes(true)?)),
-            6 => Ok(RelationalValue::Uuid(skein_core::Uuid::from_bytes(
+            6 => Ok(RelationalValue::Uuid(hawdb_core::Uuid::from_bytes(
                 self.fixed("UUID value")?,
             ))),
             tag => Err(OrderedRelationalKeyError::Corrupt(format!(
@@ -277,7 +277,7 @@ impl<'a> OrderedKeyDecoder<'a> {
             }
             6 => {
                 *target =
-                    RelationalValue::Uuid(skein_core::Uuid::from_bytes(self.fixed("UUID value")?));
+                    RelationalValue::Uuid(hawdb_core::Uuid::from_bytes(self.fixed("UUID value")?));
             }
             tag => {
                 return Err(OrderedRelationalKeyError::Corrupt(format!(

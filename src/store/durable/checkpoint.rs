@@ -5,7 +5,7 @@ use super::{
     load_published_property_projection, CheckpointImage, CheckpointManifestArtifacts,
     DurableArtifactMetadata, DurableManifest, DurableStore, GraphManifestOpenBudget,
 };
-use crate::error::{Result, SkeinError};
+use crate::error::{HawdbError, Result};
 use crate::store::{
     canonical_adjacency_artifact_generation_file, canonical_artifact_generation_file,
     canonical_manifest_generation_file, checkpoint_generation_file, checkpoint_publish_failpoint,
@@ -16,7 +16,7 @@ use crate::store::{
     remove_source_scan_artifacts, safe_reclaim_commit_epoch, source_scan, sync_parent_dir,
     verify_integrity, wal_generation_file, CheckpointPublishStage, PROJECTED_GRAPHS_FILE,
 };
-use skein_storage::{
+use hawdb_storage::{
     durable_replace_file, encode_relational_checkpoint_to_writer, DurableCompression,
     FileSegmentRangeReader, ManifestGeneration, RelationalDecodeLimits, RelationalState,
     WalReplayConfig,
@@ -33,20 +33,20 @@ impl DurableStore {
             .max_checkpoint_encoded_bytes
             .is_some_and(|limit| metadata.len() > limit)
         {
-            return Err(SkeinError::Storage(format!(
+            return Err(HawdbError::Storage(format!(
                 "checkpoint encoded byte limit exceeded: max_checkpoint_encoded_bytes={}",
                 config.max_checkpoint_encoded_bytes.unwrap_or_default()
             )));
         }
         let bytes = fs::read(&self.checkpoint_path)?;
         let expected_len = self.checkpoint_encoded_len.ok_or_else(|| {
-            SkeinError::Storage("checkpoint is missing its encoded length".to_string())
+            HawdbError::Storage("checkpoint is missing its encoded length".to_string())
         })?;
         let expected_checksum = self.checkpoint_encoded_checksum.ok_or_else(|| {
-            SkeinError::Storage("checkpoint is missing its encoded checksum".to_string())
+            HawdbError::Storage("checkpoint is missing its encoded checksum".to_string())
         })?;
         let expected_sha256 = self.checkpoint_encoded_sha256.ok_or_else(|| {
-            SkeinError::Storage("checkpoint is missing its encoded SHA-256".to_string())
+            HawdbError::Storage("checkpoint is missing its encoded SHA-256".to_string())
         })?;
         verify_integrity(
             &bytes,
@@ -86,11 +86,11 @@ impl DurableStore {
             return Ok(None);
         }
         let max_bytes = RelationalDecodeLimits::checkpoint().max_record_bytes;
-        let tmp_path = path.with_extension("skein.tmp");
+        let tmp_path = path.with_extension("hawdb.tmp");
         {
             let mut file = File::create(&tmp_path)?;
             encode_relational_checkpoint_to_writer(&mut file, commit_epoch, state, max_bytes)
-                .map_err(|error| SkeinError::Storage(error.to_string()))?;
+                .map_err(|error| HawdbError::Storage(error.to_string()))?;
             file.sync_all()?;
         }
         let (encoded_len, encoded_checksum, encoded_sha256) = file_checksum(&tmp_path)?;
@@ -108,11 +108,11 @@ impl DurableStore {
         image: CheckpointImage<'_>,
         generation: u64,
     ) -> Result<DurableArtifactMetadata> {
-        let data = skein_storage::checkpoint::encode_checkpoint_body(&image, generation)?;
+        let data = hawdb_storage::checkpoint::encode_checkpoint_body(&image, generation)?;
         let checksum = checksum_bytes(data.as_bytes());
         let data = format!("{data}checksum\t{checksum}\n");
         let checkpoint_path = self.root_path.join(checkpoint_generation_file(generation));
-        let tmp_path = checkpoint_path.with_extension("skein.tmp");
+        let tmp_path = checkpoint_path.with_extension("hawdb.tmp");
         let encoded = encode_durable_text(&data, DurableCompression::default())?;
         let metadata = DurableArtifactMetadata::for_bytes(&encoded);
         {
@@ -177,28 +177,28 @@ impl DurableStore {
             wal_generation_file(generation),
             canonical_artifact_generation_file(generation),
             canonical_manifest_generation_file(generation),
-            skein_storage::canonical_segment_descriptor_page_file(generation),
-            skein_storage::canonical_segment_descriptor_root_file(generation),
+            hawdb_storage::canonical_segment_descriptor_page_file(generation),
+            hawdb_storage::canonical_segment_descriptor_root_file(generation),
             canonical_adjacency_artifact_generation_file(generation),
-            skein_storage::canonical_adjacency_descriptor_page_file(generation),
-            skein_storage::canonical_adjacency_descriptor_root_file(generation),
+            hawdb_storage::canonical_adjacency_descriptor_page_file(generation),
+            hawdb_storage::canonical_adjacency_descriptor_root_file(generation),
             property_spill_artifact_generation_file(generation),
             property_spill_manifest_generation_file(generation),
-            skein_storage::property_spill_descriptor_page_file(generation),
-            skein_storage::property_spill_descriptor_root_file(generation),
+            hawdb_storage::property_spill_descriptor_page_file(generation),
+            hawdb_storage::property_spill_descriptor_root_file(generation),
             property_projection_artifact_generation_file(generation),
             property_projection_manifest_generation_file(generation),
-            skein_storage::property_projection_descriptor_page_file(generation),
-            skein_storage::property_projection_descriptor_root_file(generation),
-            skein_storage::relational_index_shadow_artifact_file(generation),
-            skein_storage::relational_index_shadow_manifest_generation_file(generation),
-            skein_storage::relational_row_page_artifact_file(generation),
-            skein_storage::relational_row_page_root_descriptor_file(generation),
-            skein_storage::relational_row_page_root_key_file(generation),
-            skein_storage::relational_row_page_manifest_generation_file(generation),
-            skein_storage::relational_overflow_extent_file(generation),
-            skein_storage::relational_overflow_descriptor_file(generation),
-            skein_storage::relational_overflow_manifest_generation_file(generation),
+            hawdb_storage::property_projection_descriptor_page_file(generation),
+            hawdb_storage::property_projection_descriptor_root_file(generation),
+            hawdb_storage::relational_index_shadow_artifact_file(generation),
+            hawdb_storage::relational_index_shadow_manifest_generation_file(generation),
+            hawdb_storage::relational_row_page_artifact_file(generation),
+            hawdb_storage::relational_row_page_root_descriptor_file(generation),
+            hawdb_storage::relational_row_page_root_key_file(generation),
+            hawdb_storage::relational_row_page_manifest_generation_file(generation),
+            hawdb_storage::relational_overflow_extent_file(generation),
+            hawdb_storage::relational_overflow_descriptor_file(generation),
+            hawdb_storage::relational_overflow_manifest_generation_file(generation),
         ] {
             match fs::remove_file(self.root_path.join(file)) {
                 Ok(()) => {}
@@ -352,7 +352,7 @@ impl DurableStore {
             (&self.canonical_segments, &self.canonical_adjacency)
             && canonical.manifest().relationship_count != adjacency.relationship_count()
         {
-            return Err(SkeinError::Storage(
+            return Err(HawdbError::Storage(
                 "canonical adjacency relationship count does not match canonical segments"
                     .to_string(),
             ));

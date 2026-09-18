@@ -1,4 +1,4 @@
-use crate::{Result, SearchDocument, SkeinError};
+use crate::{HawdbError, Result, SearchDocument};
 use std::fmt::{self, Write};
 use std::io;
 
@@ -80,7 +80,7 @@ trait DocumentSink: Write {
 
 struct CheckedSink<'a, S> {
     sink: &'a mut S,
-    task: Option<&'a skein_core::RuntimeTaskContext>,
+    task: Option<&'a hawdb_core::RuntimeTaskContext>,
 }
 
 impl<S> CheckedSink<'_, S> {
@@ -186,7 +186,7 @@ impl<'a> DocumentEncoding<'a> {
 
     pub(super) fn new_with_context(
         document: &'a SearchDocument,
-        task: Option<&skein_core::RuntimeTaskContext>,
+        task: Option<&hawdb_core::RuntimeTaskContext>,
     ) -> Result<Self> {
         let mut length = EncodedLength::default();
         write_document(
@@ -201,7 +201,7 @@ impl<'a> DocumentEncoding<'a> {
             {
                 return error;
             }
-            SkeinError::Storage("search document encoded size overflow".to_string())
+            HawdbError::Storage("search document encoded size overflow".to_string())
         })?;
         Ok(Self {
             document,
@@ -229,7 +229,7 @@ impl<'a> DocumentEncoding<'a> {
         ENCODING_ATTEMPTS.set(ENCODING_ATTEMPTS.get() + 1);
         let mut record = String::new();
         record.try_reserve_exact(self.bytes).map_err(|error| {
-            SkeinError::Storage(format!("cannot allocate search document record: {error}"))
+            HawdbError::Storage(format!("cannot allocate search document record: {error}"))
         })?;
         write_document(&mut record, self.document).expect("writing to a String cannot fail");
         debug_assert_eq!(record.len(), self.bytes);

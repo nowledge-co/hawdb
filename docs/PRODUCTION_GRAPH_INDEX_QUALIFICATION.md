@@ -1,10 +1,10 @@
 # Production Graph Index Qualification
 
 This runbook collects the all-class persistent graph-index artifact from one
-already imported representative Skein database. The collector is a thin
+already imported representative Hawdb database. The collector is a thin
 developer and evidence wrapper over the typed Rust matrix runner. It does not
 import data, build indexes, create a database, or derive the reference oracle
-from Skein.
+from Hawdb.
 
 ## Preconditions
 
@@ -23,7 +23,7 @@ from Skein.
 
 Start from the parser-tested
 [`production_graph_index_plan_example_v1.json`](../crates/qualification/fixtures/nowledge_graph/production_graph_index_plan_example_v1.json).
-Its protocol is `skein-production-graph-index-plan-v1`.
+Its protocol is `hawdb-production-graph-index-plan-v1`.
 
 Replace every identity, query parameter, reference row count, all-zero digest,
 and resource budget. Each query must select its declared index class on the
@@ -62,9 +62,9 @@ the shared-host default or a universal machine requirement.
 ## Execute
 
 ```bash
-cargo run -p skein-qualification \
-  --bin skein-graph-index-qualification -- \
-  --database-path /path/to/read-only-representative.skein \
+cargo run -p hawdb-qualification \
+  --bin hawdb-graph-index-qualification -- \
+  --database-path /path/to/read-only-representative.hawdb \
   --plan-json /path/to/graph-index-plan.json \
   > graph-index-matrix-evidence.json
 ```

@@ -6,9 +6,9 @@ use crate::store::{
     GraphExecutionRead, PrunedNodeScan, PrunedRelationshipScan, SourceScanCandidateRow,
     SourceScanCandidateVisit, SourceScanReadLimits,
 };
-use skein_core::{LabelId, RelTypeId};
-use skein_plan::{CompositeRangeSeek, NodeProjectionAccess};
-use skein_storage::{
+use hawdb_core::{LabelId, RelTypeId};
+use hawdb_plan::{CompositeRangeSeek, NodeProjectionAccess};
+use hawdb_storage::{
     AdjacencyDirection, ProjectedGraphDefinition, ProjectedNodeRecord, RelRecord, ScanPredicate,
 };
 use std::collections::BTreeSet;
@@ -170,7 +170,7 @@ impl GraphExecutionRead for ReadFixture {
             graph_epoch: 1,
             skipped_segment_count: 0,
             candidate_count: candidates.len(),
-            report: skein_storage::SegmentReadExecutionReport {
+            report: hawdb_storage::SegmentReadExecutionReport {
                 wave_count: 1,
                 range_count: 1,
                 bytes_read: 1,

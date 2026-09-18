@@ -1,12 +1,12 @@
 # Cypher Yacc experiment
 
-This standalone package measures a Yacc-generated parser against Skein's
+This standalone package measures a Yacc-generated parser against Hawdb's
 production hand-written parser without adding parser-generator dependencies to
 the workspace build.
 
 The experiment intentionally covers one production-shaped hot path:
 parameterized exact lookup with a projected property, alias, and result limit.
-Both parsers must construct an equal `skein_cypher::Statement` before timing is
+Both parsers must construct an equal `hawdb_cypher::Statement` before timing is
 reported. Any lexer or parser repair is rejected.
 
 Run it with:

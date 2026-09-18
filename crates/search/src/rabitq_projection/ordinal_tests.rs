@@ -37,7 +37,7 @@ fn resident_projection_numbers_only_vector_documents_in_document_id_order() {
     assert_eq!(projection.manifest().document_count, 2);
     assert_eq!(
         projection.manifest().source_digest,
-        skein_vector_projection::source_digest([
+        hawdb_vector_projection::source_digest([
             (0, [1.0, 0.0].as_slice()),
             (1, [0.0, 1.0].as_slice()),
         ])
@@ -97,7 +97,7 @@ fn seeded_resident_and_file_candidates_match_independently_numbered_vectors() {
             )
             .unwrap()
             .unwrap();
-            let path = root.join(format!("{seed}-{bit_width:?}.skein"));
+            let path = root.join(format!("{seed}-{bit_width:?}.hawdb"));
             let written = RaBitQCandidateProjection::write_from_documents(
                 &path,
                 &documents,
@@ -230,7 +230,7 @@ fn resident_and_out_of_core_writers_emit_identical_vector_artifacts() {
                 embedding_model: Some("ordinal-test-model".to_owned()),
                 embedding_version: Some("v1".to_owned()),
             };
-            let path = directory.join("resident.skein");
+            let path = directory.join("resident.hawdb");
             let resident = RaBitQCandidateProjection::write_from_documents(
                 &path,
                 &documents,
@@ -373,7 +373,7 @@ fn checkpoint_reopen_restores_generation_local_mapping_after_mutations() {
 fn load_binds_ordinals_to_the_ordered_vector_stream_without_quarantining_stale_artifacts() {
     let root = super::tests::unique_test_dir("ordinal-applicability");
     fs::create_dir_all(&root).unwrap();
-    let path = root.join("vectors.skein");
+    let path = root.join("vectors.hawdb");
     let identity = ProjectionIdentity::new(9);
     let documents = [
         document("b", Some(vec![1.0, 0.0])),
@@ -450,7 +450,7 @@ fn load_binds_ordinals_to_the_ordered_vector_stream_without_quarantining_stale_a
 
     // Sparse numeric IDs from an earlier derived layout are not corrupt, but
     // must not be interpreted through a new dense mapping.
-    let sparse_path = root.join("sparse.skein");
+    let sparse_path = root.join("sparse.hawdb");
     let mut writer = ProjectionWriter::create(
         &sparse_path,
         ProjectionBuildConfig::new(2, identity.clone()),
@@ -474,7 +474,7 @@ fn load_binds_ordinals_to_the_ordered_vector_stream_without_quarantining_stale_a
 fn ordinal_validation_rejects_invalid_documents_before_creating_artifacts() {
     let root = super::tests::unique_test_dir("ordinal-validation");
     fs::create_dir_all(&root).unwrap();
-    let path = root.join("must-not-exist.skein");
+    let path = root.join("must-not-exist.hawdb");
     let valid = document("a", Some(vec![1.0, 0.0]));
     for invalid in [
         BTreeMap::from([("different-key".to_owned(), valid.clone())]),
@@ -500,7 +500,7 @@ fn ordinal_validation_rejects_invalid_documents_before_creating_artifacts() {
             ProjectionIdentity::new(1),
             RaBitQCandidateProjectionBuildOptions::default(),
         );
-        assert!(matches!(result, Err(SkeinError::Storage(_))));
+        assert!(matches!(result, Err(HawdbError::Storage(_))));
         assert!(!path.exists());
         assert!(RaBitQCandidateProjection::build_from_documents(
             &invalid,

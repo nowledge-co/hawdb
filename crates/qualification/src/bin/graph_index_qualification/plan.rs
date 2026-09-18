@@ -6,20 +6,20 @@ use super::qualification_input::{
     read_bounded_json, EvidenceBindingInput, ProductionIdentityInput,
 };
 use super::qualification_value::value_from_json;
-use serde::Deserialize;
-use skein::{
+use hawdb::{
     NowledgeGraphStatement, NowledgeMemGraphMode, NowledgeMemOpenOptions,
     PersistentGraphIndexClass, RuntimeGovernorConfig,
 };
-use skein_qualification::{
+use hawdb_qualification::{
     PersistentGraphIndexProductionRequirement, ProductionGraphIndexQualificationMatrixConfig,
     ProductionGraphStorageQualificationConfig,
 };
+use serde::Deserialize;
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 
 pub(crate) const GRAPH_INDEX_QUALIFICATION_PLAN_PROTOCOL: &str =
-    "skein-production-graph-index-plan-v1";
+    "hawdb-production-graph-index-plan-v1";
 
 pub(crate) fn read_plan(path: &Path) -> Result<GraphIndexQualificationPlan, String> {
     read_bounded_json(path, "graph index qualification plan")
@@ -71,8 +71,8 @@ impl GraphIndexQualificationPlan {
         let open_options =
             NowledgeMemOpenOptions::graph_only(database_path, NowledgeMemGraphMode::ShadowReadOnly)
                 .with_database_config(database_config);
-        let evidence_binding: skein::ProductionEvidenceBinding = self.evidence_binding.into();
-        let expected_identity: skein::ProductionQualificationIdentity =
+        let evidence_binding: hawdb::ProductionEvidenceBinding = self.evidence_binding.into();
+        let expected_identity: hawdb::ProductionQualificationIdentity =
             self.expected_identity.into();
         let cases = self
             .cases
@@ -112,8 +112,8 @@ impl GraphIndexCaseInput {
         open_options: NowledgeMemOpenOptions,
         runtime_governor_config: RuntimeGovernorConfig,
         process_limits: ResolvedProcessLimits,
-        evidence_binding: skein::ProductionEvidenceBinding,
-        expected_identity: skein::ProductionQualificationIdentity,
+        evidence_binding: hawdb::ProductionEvidenceBinding,
+        expected_identity: hawdb::ProductionQualificationIdentity,
         measurement_runs: usize,
     ) -> Result<ProductionGraphStorageQualificationConfig, String> {
         if self.cypher.trim().is_empty() {
@@ -195,10 +195,10 @@ fn is_sha256_digest(value: &str) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use skein::{
+    use hawdb::{
         NowledgeMemGraphMode, StorageResidencyMode, PRODUCTION_QUALIFICATION_POLICY_VERSION,
     };
-    use skein_qualification::{
+    use hawdb_qualification::{
         CONTENT_STORE_512_MIB_CAPABILITY_BYTES, CONTENT_STORE_SHARED_HOST_MAX_CAPACITY_BYTES,
     };
 

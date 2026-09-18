@@ -8,8 +8,8 @@ use crate::{
     CompatibilityQueryInventoryItem, CompatibilityRollbackEvidence, ExternalShadowReady,
     REQUIRED_EXTERNAL_SHADOW_CAPABILITIES,
 };
-use skein_core::{Result, SkeinError};
-use skein_evidence::{
+use hawdb_core::{HawdbError, Result};
+use hawdb_evidence::{
     inventory::{
         background_maintenance_evidence_health_from_bundle,
         replacement_readiness_family_evidence_health_from_bundle,
@@ -162,7 +162,7 @@ pub fn migration_gate_json_object(
     bundle: &mut serde_json::Value,
 ) -> Result<&mut serde_json::Map<String, serde_json::Value>> {
     bundle.as_object_mut().ok_or_else(|| {
-        SkeinError::Execution("migration gate bundle must be a JSON object".to_string())
+        HawdbError::Execution("migration gate bundle must be a JSON object".to_string())
     })
 }
 
@@ -237,7 +237,7 @@ fn insert_cutover_evidence_json(
         .get("migration_gate")
         .and_then(serde_json::Value::as_object)
         .ok_or_else(|| {
-            SkeinError::Execution("migration gate bundle missing migration_gate".to_string())
+            HawdbError::Execution("migration gate bundle missing migration_gate".to_string())
         })?;
     let migration_gate_ready = migration_gate
         .get("decision")
@@ -718,6 +718,6 @@ mod tests {
             .duration_since(UNIX_EPOCH)
             .unwrap()
             .as_nanos();
-        std::env::temp_dir().join(format!("skein-compat-nowledge-inventory-{name}-{nanos}"))
+        std::env::temp_dir().join(format!("hawdb-compat-nowledge-inventory-{name}-{nanos}"))
     }
 }

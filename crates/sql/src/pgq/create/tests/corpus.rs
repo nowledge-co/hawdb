@@ -68,7 +68,7 @@ fn graph_json(graph: &PropertyGraphSchema) -> Value {
 }
 
 fn check_fixture(fixture: &Value) -> std::result::Result<(), String> {
-    if fixture["protocol"] != "skein-pgq-create-corpus-v1"
+    if fixture["protocol"] != "hawdb-pgq-create-corpus-v1"
         || fixture["postgres_revision"] != "3d00537feb565c410baf41bb301eee338e4b2317"
         || fixture["source_corpus_sha256"] != format!("{:x}", Sha256::digest(FRONTEND.as_bytes()))
     {

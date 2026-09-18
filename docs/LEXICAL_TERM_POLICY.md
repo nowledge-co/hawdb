@@ -1,6 +1,6 @@
 # Host-controlled lexical term admission
 
-Skein's embedded facade exposes `SearchLexicalTermPolicy` for out-of-core
+Hawdb's embedded facade exposes `SearchLexicalTermPolicy` for out-of-core
 generation builds and readers. It limits the UTF-8 bytes of an **analyzed term**,
 including analyzer-generated aliases and compound terms, not the source document.
 The default remains 4,096 bytes. The separate default 4 MiB document-source limit
@@ -15,12 +15,12 @@ admission. The analyzer and v1 artifact representation are unchanged.
 ## Configuration and runtime changes
 
 ```rust
-use skein::{
+use hawdb::{
     SearchLexicalTermPolicy, SearchOutOfCoreGenerationWriter, SearchOutOfCoreReader,
 };
 use std::num::NonZeroU64;
 
-fn example(root: &std::path::Path) -> skein::Result<()> {
+fn example(root: &std::path::Path) -> hawdb::Result<()> {
     let policy = SearchLexicalTermPolicy::new(NonZeroU64::new(8192).unwrap())?;
     let mut writer = SearchOutOfCoreGenerationWriter::create(root, Default::default())?;
 
@@ -92,13 +92,13 @@ Boundary regressions cover 4,095/4,096/4,097/5,202 bytes, configured-limit neigh
 UTF-8 bytes, runtime changes, inherited update snapshots, complete-source hydration,
 multi-run merge, failed publication, corrupt manifest requirements, cancellation,
 and exact/one-short resource budgets. A facade regression imports the API through
-`skein`, not an internal production integration path.
+`hawdb`, not an internal production integration path.
 
 ```sh
-cargo test --locked -p skein-search term_policy
-cargo test --locked -p skein embedded_facade_supports_dynamic_lexical_term_policy
-bazel test //crates/search:skein_search_tests //crates/search:skein_search_term_policy_fuzz_tests
-bazel test //crates/fuzz:skein_fuzz_tests //crates/fuzz:skein_fuzz_cli_tests //:skein_linux_ci_fuzz_smoke_test
+cargo test --locked -p hawdb-search term_policy
+cargo test --locked -p hawdb embedded_facade_supports_dynamic_lexical_term_policy
+bazel test //crates/search:hawdb_search_tests //crates/search:hawdb_search_term_policy_fuzz_tests
+bazel test //crates/fuzz:hawdb_fuzz_tests //crates/fuzz:hawdb_fuzz_cli_tests //:hawdb_linux_ci_fuzz_smoke_test
 ```
 
 The seeded lifecycle campaign is an explicit manual Bazel target, not a CI job.

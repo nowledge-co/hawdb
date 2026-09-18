@@ -5,7 +5,7 @@ use super::{
     RelationalRowPageRewriteConfig,
 };
 use crate::{CanonicalAdjacencyConfig, CanonicalSegmentConfig, PersistentPropertyProjectionConfig};
-use skein_core::{Result, SkeinError};
+use hawdb_core::{HawdbError, Result};
 use std::num::{NonZeroU64, NonZeroUsize};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -65,7 +65,7 @@ impl RelationalRowPageCompactionConfig {
                 bytes.checked_add(canonical.target_segment_bytes.get().saturating_mul(2))
             })
             .ok_or_else(|| {
-                SkeinError::Storage("row-page compaction admission byte count overflow".to_string())
+                HawdbError::Storage("row-page compaction admission byte count overflow".to_string())
             })
     }
 }
@@ -130,12 +130,12 @@ impl RelationalOverflowCompactionConfig {
     pub fn admission_bytes(self) -> Result<u64> {
         let sort_bytes =
             u64::try_from(self.reference_sort.max_memory_bytes.get()).map_err(|_| {
-                SkeinError::Storage(
+                HawdbError::Storage(
                     "overflow compaction sort memory exceeds this target".to_string(),
                 )
             })?;
         let overlay_bytes = u64::try_from(self.max_overlay_bytes.get()).map_err(|_| {
-            SkeinError::Storage(
+            HawdbError::Storage(
                 "overflow compaction overlay memory exceeds this target".to_string(),
             )
         })?;
@@ -149,7 +149,7 @@ impl RelationalOverflowCompactionConfig {
                 )
             })
             .ok_or_else(|| {
-                SkeinError::Storage("overflow compaction admission byte count overflow".to_string())
+                HawdbError::Storage("overflow compaction admission byte count overflow".to_string())
             })
     }
 }

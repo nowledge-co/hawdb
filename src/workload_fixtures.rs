@@ -10,14 +10,14 @@ use crate::{
     RouteQuery, SearchFusionWeights, SearchIndex, SearchMode, SearchPredicatePushdownReport,
     SearchQueryOptions, SearchRebuildOptions, Value, DENSE_ADJACENCY_DEGREE_THRESHOLD,
 };
-use skein_core::{
+use hawdb_core::{
     GraphRagQueryBinding, GraphRagQueryDraft, GraphRagQueryPattern, GraphRagQueryPredicate,
     GraphRagQueryPredicateOperator, GraphRagQueryProjection, GraphRagSchemaContextOptions,
 };
 use std::collections::BTreeMap;
 
-pub use skein_evidence::replacement_contract::NOWLEDGE_GRAPH_ROUTE_WORKLOAD_FIXTURE_PROTOCOL;
-pub use skein_nowledge_contracts::{
+pub use hawdb_evidence::replacement_contract::NOWLEDGE_GRAPH_ROUTE_WORKLOAD_FIXTURE_PROTOCOL;
+pub use hawdb_nowledge_contracts::{
     NowledgeGraphRagWorkloadReport, NowledgeGraphRouteWorkloadBoundedExpansionReport,
     NowledgeGraphRouteWorkloadFixtureOptions, NowledgeGraphRouteWorkloadFixtureReport,
     NowledgeGraphRouteWorkloadQueryReport, NowledgeGraphRouteWorkloadRouteReport,
@@ -537,7 +537,7 @@ fn run_graph_rag_workload_probe(
 
 fn graph_rag_error_report(
     name: &str,
-    context: &skein_core::GraphRagSchemaContext,
+    context: &hawdb_core::GraphRagSchemaContext,
     error_class: &str,
 ) -> NowledgeGraphRagWorkloadReport {
     NowledgeGraphRagWorkloadReport {
@@ -660,15 +660,15 @@ fn seed_search_metadata_workload_fixture(graph: &mut NowledgeMemGraph) -> Result
     Ok(())
 }
 
-fn error_class(error: &crate::SkeinError) -> String {
+fn error_class(error: &crate::HawdbError) -> String {
     match error {
-        crate::SkeinError::Parse(_) => "parse",
-        crate::SkeinError::Semantic(_) => "semantic",
-        crate::SkeinError::Execution(_) => "execution",
-        crate::SkeinError::Storage(_)
-        | crate::SkeinError::StorageIntegrity(_)
-        | crate::SkeinError::AppendSequenceExhausted { .. } => "storage",
-        crate::SkeinError::CapabilityUnavailable { .. } => "capability_unavailable",
+        crate::HawdbError::Parse(_) => "parse",
+        crate::HawdbError::Semantic(_) => "semantic",
+        crate::HawdbError::Execution(_) => "execution",
+        crate::HawdbError::Storage(_)
+        | crate::HawdbError::StorageIntegrity(_)
+        | crate::HawdbError::AppendSequenceExhausted { .. } => "storage",
+        crate::HawdbError::CapabilityUnavailable { .. } => "capability_unavailable",
     }
     .to_string()
 }
@@ -741,40 +741,40 @@ mod tests {
     fn root_facade_preserves_workload_contract_type_identity() {
         assert_eq!(
             TypeId::of::<NowledgeMemQueryExecutionPath>(),
-            TypeId::of::<skein_nowledge_contracts::NowledgeMemQueryExecutionPath>()
+            TypeId::of::<hawdb_nowledge_contracts::NowledgeMemQueryExecutionPath>()
         );
         assert_eq!(
             TypeId::of::<NowledgeGraphRouteWorkloadFixtureOptions>(),
-            TypeId::of::<skein_nowledge_contracts::NowledgeGraphRouteWorkloadFixtureOptions>()
+            TypeId::of::<hawdb_nowledge_contracts::NowledgeGraphRouteWorkloadFixtureOptions>()
         );
         assert_eq!(
             TypeId::of::<NowledgeGraphRouteWorkloadFixtureReport>(),
-            TypeId::of::<skein_nowledge_contracts::NowledgeGraphRouteWorkloadFixtureReport>()
+            TypeId::of::<hawdb_nowledge_contracts::NowledgeGraphRouteWorkloadFixtureReport>()
         );
         assert_eq!(
             TypeId::of::<NowledgeGraphRouteWorkloadBoundedExpansionReport>(),
-            TypeId::of::<skein_nowledge_contracts::NowledgeGraphRouteWorkloadBoundedExpansionReport>(
+            TypeId::of::<hawdb_nowledge_contracts::NowledgeGraphRouteWorkloadBoundedExpansionReport>(
             )
         );
         assert_eq!(
             TypeId::of::<NowledgeSearchMetadataWorkloadReport>(),
-            TypeId::of::<skein_nowledge_contracts::NowledgeSearchMetadataWorkloadReport>()
+            TypeId::of::<hawdb_nowledge_contracts::NowledgeSearchMetadataWorkloadReport>()
         );
         assert_eq!(
             TypeId::of::<NowledgeGraphRagWorkloadReport>(),
-            TypeId::of::<skein_nowledge_contracts::NowledgeGraphRagWorkloadReport>()
+            TypeId::of::<hawdb_nowledge_contracts::NowledgeGraphRagWorkloadReport>()
         );
         assert_eq!(
             TypeId::of::<NowledgeSourceProjectionWorkloadReport>(),
-            TypeId::of::<skein_nowledge_contracts::NowledgeSourceProjectionWorkloadReport>()
+            TypeId::of::<hawdb_nowledge_contracts::NowledgeSourceProjectionWorkloadReport>()
         );
         assert_eq!(
             TypeId::of::<NowledgeGraphRouteWorkloadRouteReport>(),
-            TypeId::of::<skein_nowledge_contracts::NowledgeGraphRouteWorkloadRouteReport>()
+            TypeId::of::<hawdb_nowledge_contracts::NowledgeGraphRouteWorkloadRouteReport>()
         );
         assert_eq!(
             TypeId::of::<NowledgeGraphRouteWorkloadQueryReport>(),
-            TypeId::of::<skein_nowledge_contracts::NowledgeGraphRouteWorkloadQueryReport>()
+            TypeId::of::<hawdb_nowledge_contracts::NowledgeGraphRouteWorkloadQueryReport>()
         );
     }
 

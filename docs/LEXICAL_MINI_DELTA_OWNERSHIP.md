@@ -62,10 +62,10 @@ retaining older snapshots. It remains ignored in ordinary tests and is included
 only in the existing explicit local fuzz suite.
 
 ```sh
-cargo test -p skein-search --all-features -- --include-ignored
-cargo clippy -p skein-search --all-targets --all-features -- -D warnings
+cargo test -p hawdb-search --all-features -- --include-ignored
+cargo clippy -p hawdb-search --all-targets --all-features -- -D warnings
 bazel test //crates/search:presubmit_tests
-bazel test //crates/fuzz:skein_fuzz_tests //crates/fuzz:skein_fuzz_cli_tests //:skein_linux_ci_fuzz_smoke_test
+bazel test //crates/fuzz:hawdb_fuzz_tests //crates/fuzz:hawdb_fuzz_cli_tests //:hawdb_linux_ci_fuzz_smoke_test
 ```
 
 ## Remaining #392 boundaries

@@ -1,4 +1,4 @@
-use skein_sql_syntax::{
+use hawdb_sql_syntax::{
     BinaryOperatorSyntax, GraphEdgeDirection, GraphPatternQuantifier, Span, UnaryOperatorSyntax,
 };
 

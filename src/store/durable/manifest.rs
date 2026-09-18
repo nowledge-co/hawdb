@@ -1,3 +1,3 @@
 //! Compatibility imports for the storage-owned durable manifest.
 
-pub(in crate::store) use skein_storage::durable_manifest::DurableManifest;
+pub(in crate::store) use hawdb_storage::durable_manifest::DurableManifest;

@@ -44,7 +44,7 @@ disagree because of configuration drift.
 
 Statistics for one `(label, property)` or `(relationship type, property)` group
 MUST be complete for the admitted value domain. If any canonical record in a
-group contains an ineligible value, Skein MUST publish none of the following
+group contains an ineligible value, Hawdb MUST publish none of the following
 for that group:
 
 - distinct count
@@ -75,7 +75,7 @@ and optimizer statistics are separate resource domains.
 
 This differs deliberately from PostgreSQL `ANALYZE`, which retains lightweight
 null-fraction and average-width information for wide values while excluding
-large payloads from its detailed value distribution. Skein v1 publishes no
+large payloads from its detailed value distribution. Hawdb v1 publishes no
 generic property group for declared `TEXT` because an embedded PC workload has
 a stricter and less predictable memory envelope. It follows Neo4j's narrower
 graph-planner shape more closely: exact structural counts remain available,
@@ -126,7 +126,7 @@ Required regressions cover:
 - a text value larger than the refresh memory budget does not become a fact
 - external multi-run merge cannot publish facts from an excluded group
 - checkpoint reopen preserves the same eligible statistics
-- `SkeinStatisticsEligibility.tla` proves `VARCHAR` remains publishable while
+- `HawdbStatisticsEligibility.tla` proves `VARCHAR` remains publishable while
   no text, large, or mixed property is published after a complete scan,
   including the case where a compact fact was observed before an unsupported
   value

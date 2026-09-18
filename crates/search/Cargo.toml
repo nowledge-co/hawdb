@@ -1,5 +1,5 @@
 [package]
-name = "skein-search"
+name = "hawdb-search"
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
@@ -16,16 +16,16 @@ serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 simsimd = { version = "6.5", optional = true }
 zstd = "0.13"
-skein-core = { path = "../core" }
-skein-evidence = { path = "../evidence" }
-skein-executor = { path = "../executor" }
-skein-integrity = { path = "../integrity" }
-skein-optimizer = { path = "../optimizer" }
-skein-plan = { path = "../plan" }
-skein-qos = { path = "../qos" }
-skein-storage = { path = "../storage" }
-skein-telemetry = { path = "../telemetry" }
-skein-vector-projection = { path = "../vector-projection", optional = true }
+hawdb-core = { path = "../core" }
+hawdb-evidence = { path = "../evidence" }
+hawdb-executor = { path = "../executor" }
+hawdb-integrity = { path = "../integrity" }
+hawdb-optimizer = { path = "../optimizer" }
+hawdb-plan = { path = "../plan" }
+hawdb-qos = { path = "../qos" }
+hawdb-storage = { path = "../storage" }
+hawdb-telemetry = { path = "../telemetry" }
+hawdb-vector-projection = { path = "../vector-projection", optional = true }
 
 [features]
 default = [
@@ -39,7 +39,7 @@ background-maintenance = []
 full-text-search = []
 graph-analytics = []
 qualification = []
-vector-search = ["dep:simsimd", "dep:skein-vector-projection"]
+vector-search = ["dep:simsimd", "dep:hawdb-vector-projection"]
 
 [dev-dependencies]
-skein-vector-projection = { path = "../vector-projection" }
+hawdb-vector-projection = { path = "../vector-projection" }

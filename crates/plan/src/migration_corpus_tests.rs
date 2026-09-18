@@ -16,7 +16,7 @@ fn migration_corpus_preserves_bindings_and_logical_plans() {
         let query = case["query"].as_str().unwrap();
         let kind = case["plan"]["kind"].as_str().unwrap();
         *outcomes.entry(kind.to_owned()).or_insert(0usize) += 1;
-        let statement = skein_cypher::parse(query);
+        let statement = hawdb_cypher::parse(query);
         if kind == "parse_rejected" {
             assert!(statement.is_err(), "{id}: expected parser rejection");
             continue;
@@ -63,8 +63,8 @@ fn clock_normalization_preserves_literal_values_in_the_same_time_window() {
     let mut plan = crate::LogicalPlan::CreateNode {
         label: "ClockProbe".to_owned(),
         properties: BTreeMap::from([
-            ("generated".to_owned(), skein_core::Value::Int(100)),
-            ("literal".to_owned(), skein_core::Value::Int(100)),
+            ("generated".to_owned(), hawdb_core::Value::Int(100)),
+            ("literal".to_owned(), hawdb_core::Value::Int(100)),
         ]),
     };
     normalize_clock_slots(
@@ -77,6 +77,6 @@ fn clock_normalization_preserves_literal_values_in_the_same_time_window() {
     let crate::LogicalPlan::CreateNode { properties, .. } = plan else {
         unreachable!()
     };
-    assert_eq!(properties["generated"], skein_core::Value::Int(0));
-    assert_eq!(properties["literal"], skein_core::Value::Int(100));
+    assert_eq!(properties["generated"], hawdb_core::Value::Int(0));
+    assert_eq!(properties["literal"], hawdb_core::Value::Int(100));
 }

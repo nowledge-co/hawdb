@@ -7,7 +7,7 @@ impl Fixture {
     fn new() -> Self {
         static SEQUENCE: AtomicU64 = AtomicU64::new(0);
         let path = std::env::temp_dir().join(format!(
-            "skein-term-policy-internal-{}-{}-{}",
+            "hawdb-term-policy-internal-{}-{}-{}",
             std::process::id(),
             std::time::SystemTime::now()
                 .duration_since(std::time::UNIX_EPOCH)
@@ -342,7 +342,7 @@ fn term_policy_cancelled_scan_removes_long_term_staging() {
             13,
             |consume| {
                 consume(&document())?;
-                Err(SkeinError::Execution("cancelled scan".into()))
+                Err(HawdbError::Execution("cancelled scan".into()))
             },
             &Default::default(),
         )

@@ -1,6 +1,6 @@
 # Duplicate SQL result-column contract audit
 
-Issue [#157](https://github.com/nowledge-co/skein/issues/157) requires
+Issue [#157](https://github.com/nowledge-co/hawdb/issues/157) requires
 `SELECT * FROM a, b WHERE a.id = b.id` and `SELECT * FROM a CROSS JOIN b` to execute
 with PostgreSQL-compatible results. HAVING and FROM scope support do not fully
 satisfy the first example when both tables expose `id`.

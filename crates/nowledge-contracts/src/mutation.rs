@@ -3,7 +3,7 @@
 //! The root facade re-exports these only from its cfg(test) API surface.
 
 use crate::test_support::graph_read::KnowledgeEntityRequest;
-use skein_core::Value;
+use hawdb_core::Value;
 use std::collections::BTreeMap;
 
 #[derive(Debug, Clone, PartialEq, Eq)]

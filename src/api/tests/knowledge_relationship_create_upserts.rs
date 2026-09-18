@@ -5,7 +5,7 @@ fn creates_knowledge_relationship_through_typed_api() {
     let mut db = Database::new();
     db.query("CREATE (:Memory {id: 'memory_1', title: 'First'})")
         .unwrap();
-    db.query("CREATE (:Entity {id: 'entity_1', name: 'Skein'})")
+    db.query("CREATE (:Entity {id: 'entity_1', name: 'Hawdb'})")
         .unwrap();
 
     let output = db
@@ -68,7 +68,7 @@ fn scoped_knowledge_relationship_create_does_not_write_filtered_endpoint() {
         "CREATE (:Memory {id: 'memory_1', title: 'First', source_id: 'thread_1', space_id: ''})",
     )
     .unwrap();
-    db.query("CREATE (:Entity {id: 'entity_1', name: 'Skein', space_id: 'default'})")
+    db.query("CREATE (:Entity {id: 'entity_1', name: 'Hawdb', space_id: 'default'})")
         .unwrap();
 
     let output = db

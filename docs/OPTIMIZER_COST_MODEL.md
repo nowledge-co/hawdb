@@ -3,7 +3,7 @@
 `PlanCostBreakdown` stores candidate cardinality, raw logical work components,
 and one saturated scalar total. Cardinality remains independent of weights.
 The initial policy uses CPU = 1, random access = 2, sequential access = 1, and
-output = 1. The constants live in `skein-optimizer/src/cost.rs`.
+output = 1. The constants live in `hawdb-optimizer/src/cost.rs`.
 
 These are planning units, not nanoseconds, bytes, physical pages or a portable
 hardware calibration. Random access has a modest locality penalty; this does

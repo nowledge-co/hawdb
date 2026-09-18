@@ -7,8 +7,8 @@ use crate::relational::{
     RelationalRowPagePublisher, RelationalRowPageRootReader, RelationalRowPageTableDelta,
     RelationalScalarType, RelationalValue,
 };
-use skein_core::{RuntimeCancellationToken, RuntimeTaskContext};
-use skein_integrity::{integrity_digest, Sha256Digest};
+use hawdb_core::{RuntimeCancellationToken, RuntimeTaskContext};
+use hawdb_integrity::{integrity_digest, Sha256Digest};
 use std::collections::BTreeMap;
 use std::fs::{self, OpenOptions};
 use std::io::{Read, Seek, SeekFrom, Write};
@@ -750,7 +750,7 @@ fn flip_byte(path: &std::path::Path, offset: u64) {
 
 fn unique_test_dir(label: &str) -> PathBuf {
     std::env::temp_dir().join(format!(
-        "skein-row-demand-{label}-{}-{}",
+        "hawdb-row-demand-{label}-{}-{}",
         std::process::id(),
         TEST_SEQUENCE.fetch_add(1, Ordering::Relaxed)
     ))

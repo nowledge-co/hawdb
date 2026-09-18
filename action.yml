@@ -1,11 +1,11 @@
-name: Stage Skein source
-description: Stage this pinned Skein revision for an organization workflow.
+name: Stage Hawdb source
+description: Stage this pinned Hawdb revision for an organization workflow.
 
 inputs:
   path:
-    description: Workspace-relative destination for the Skein source tree.
+    description: Workspace-relative destination for the Hawdb source tree.
     required: false
-    default: skein
+    default: hawdb
 
 outputs:
   revision:
@@ -19,20 +19,20 @@ runs:
       id: stage
       shell: bash
       env:
-        SKEIN_DESTINATION: ${{ inputs.path }}
-        SKEIN_SOURCE: ${{ github.action_path }}
-        SKEIN_REVISION: ${{ github.action_ref }}
+        HAWDB_DESTINATION: ${{ inputs.path }}
+        HAWDB_SOURCE: ${{ github.action_path }}
+        HAWDB_REVISION: ${{ github.action_ref }}
       run: |
         set -euo pipefail
-        if [ -e "$SKEIN_DESTINATION" ] && [ ! -d "$SKEIN_DESTINATION" ]; then
-          echo "Destination is not a directory: $SKEIN_DESTINATION" >&2
+        if [ -e "$HAWDB_DESTINATION" ] && [ ! -d "$HAWDB_DESTINATION" ]; then
+          echo "Destination is not a directory: $HAWDB_DESTINATION" >&2
           exit 1
         fi
-        if [ -d "$SKEIN_DESTINATION" ] &&
-          [ -n "$(find "$SKEIN_DESTINATION" -mindepth 1 -maxdepth 1 -print -quit)" ]; then
-          echo "Destination is not empty: $SKEIN_DESTINATION" >&2
+        if [ -d "$HAWDB_DESTINATION" ] &&
+          [ -n "$(find "$HAWDB_DESTINATION" -mindepth 1 -maxdepth 1 -print -quit)" ]; then
+          echo "Destination is not empty: $HAWDB_DESTINATION" >&2
           exit 1
         fi
-        mkdir -p "$SKEIN_DESTINATION"
-        cp -R "$SKEIN_SOURCE"/. "$SKEIN_DESTINATION"/
-        echo "revision=$SKEIN_REVISION" >> "$GITHUB_OUTPUT"
+        mkdir -p "$HAWDB_DESTINATION"
+        cp -R "$HAWDB_SOURCE"/. "$HAWDB_DESTINATION"/
+        echo "revision=$HAWDB_REVISION" >> "$GITHUB_OUTPUT"

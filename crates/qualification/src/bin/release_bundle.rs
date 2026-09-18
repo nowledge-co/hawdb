@@ -1,5 +1,5 @@
-use skein::ProductionQualificationIdentity;
-use skein_qualification::{
+use hawdb::ProductionQualificationIdentity;
+use hawdb_qualification::{
     evaluate_production_release_qualification_bundle, ProductionReleaseQualificationArtifacts,
     ProductionReleaseQualificationPolicy, PRODUCTION_RELEASE_QUALIFICATION_BUNDLE_PROTOCOL,
 };
@@ -39,7 +39,7 @@ fn main() -> ExitCode {
                     "errors": [error],
                 })
             );
-            eprintln!("skein-qualification-bundle: {error}");
+            eprintln!("hawdb-qualification-bundle: {error}");
             ExitCode::from(2)
         }
     }
@@ -47,7 +47,7 @@ fn main() -> ExitCode {
 
 fn run(
     args: impl IntoIterator<Item = String>,
-) -> Result<Option<skein_qualification::ProductionReleaseQualificationBundleReport>, String> {
+) -> Result<Option<hawdb_qualification::ProductionReleaseQualificationBundleReport>, String> {
     let Some(config) = parse_config(args)? else {
         return Ok(None);
     };
@@ -256,7 +256,7 @@ fn parse_bool(name: &str, value: &str) -> Result<bool, String> {
 }
 
 fn usage() -> &'static str {
-    "usage: skein-qualification-bundle \
+    "usage: hawdb-qualification-bundle \
      --expected-identity-json <path> --content-store-memory-profiles-json <path> \
      --content-store-read-json <path> --content-store-512-mib-read-json <path> \
      --content-store-512-mib-overflow-compaction-json <path> \

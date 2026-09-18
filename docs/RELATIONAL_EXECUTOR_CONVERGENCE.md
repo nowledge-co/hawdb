@@ -1,17 +1,17 @@
 # Relational Executor Convergence
 
-Tracking issue: [#215](https://github.com/nowledge-co/skein/issues/215).
+Tracking issue: [#215](https://github.com/nowledge-co/hawdb/issues/215).
 
 ## Scope and status
 
 The first phase splits the relational query implementation into private modules.
 It does not switch algorithms, remove the relational executor, or complete the
-convergence described below. The embedded `skein` facade, SQL semantics, query
+convergence described below. The embedded `hawdb` facade, SQL semantics, query
 limits, planner decisions, and v1 spill encoding remain unchanged.
 
 Convergence means one implementation of each reusable operator, not merely two
 implementations with shared allocation helpers. Move storage-independent kernels
-into the existing `skein-executor` crate, then migrate their consumers and delete
+into the existing `hawdb-executor` crate, then migrate their consumers and delete
 the displaced implementation. Do not add another crate or expose SQL execution
 internals as a production integration API.
 
@@ -74,14 +74,14 @@ equivalence separately from compilation. This phase leaves #215 open.
 Input: isolated relational operators and explicit frontend semantic adapters.
 
 Start with the grace-hash join needed by
-[#184](https://github.com/nowledge-co/skein/issues/184). Establish the common
+[#184](https://github.com/nowledge-co/hawdb/issues/184). Establish the common
 build/probe/spill lifecycle before wiring a graph consumer; do not copy
 `join_hash.rs` into a second permanent implementation. Aggregate extraction must
 likewise reconcile SQL aggregate semantics with executor kernels before reuse.
 
-Keep lowering convergence ([#183](https://github.com/nowledge-co/skein/issues/183))
+Keep lowering convergence ([#183](https://github.com/nowledge-co/hawdb/issues/183))
 and costed algorithm selection
-([#204](https://github.com/nowledge-co/skein/issues/204)) distinct from kernel
+([#204](https://github.com/nowledge-co/hawdb/issues/204)) distinct from kernel
 extraction. Neither a new physical-plan label nor a cost estimate proves that the
 selected runtime operator exists or is shared.
 
@@ -114,10 +114,10 @@ Later semantic changes require new regressions and independent expected results,
 not only agreement between two implementations that share the same kernel.
 
 ```bash
-cargo check -p skein
-cargo check -p skein --no-default-features
-bazel test //:skein_unit_tests
-bazel test //crates/fuzz:skein_fuzz_tests //crates/fuzz:skein_fuzz_cli_tests //:skein_linux_ci_fuzz_smoke_test
+cargo check -p hawdb
+cargo check -p hawdb --no-default-features
+bazel test //:hawdb_unit_tests
+bazel test //crates/fuzz:hawdb_fuzz_tests //crates/fuzz:hawdb_fuzz_cli_tests //:hawdb_linux_ci_fuzz_smoke_test
 cargo fmt --all -- --check
 git diff --check
 ```

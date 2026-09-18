@@ -5,8 +5,8 @@ pub use crate::relational_sql::{
     RelationalJoinPlanningStrategy, RelationalOperatorCardinalityProfile, RelationalOperatorId,
     RelationalOperatorKind, RelationalSqlStageTimings,
 };
-pub use skein_executor::BlockingOperatorMemoryReport;
-pub use skein_relational::{
+pub use hawdb_executor::BlockingOperatorMemoryReport;
+pub use hawdb_relational::{
     ProfiledRelationalSqlQueryOutput, RelationalSqlIndexReadProfile, RelationalSqlReadProfile,
     RelationalSqlRowReadProfile,
 };
@@ -22,13 +22,13 @@ mod tests {
     fn facade_reexports_owner_read_profile_contracts() {
         let _: fn(
             ProfiledRelationalSqlQueryOutput,
-        ) -> skein_relational::ProfiledRelationalSqlQueryOutput = |profile| profile;
-        let _: fn(RelationalSqlReadProfile) -> skein_relational::RelationalSqlReadProfile =
+        ) -> hawdb_relational::ProfiledRelationalSqlQueryOutput = |profile| profile;
+        let _: fn(RelationalSqlReadProfile) -> hawdb_relational::RelationalSqlReadProfile =
             |profile| profile;
         let _: fn(
             RelationalSqlIndexReadProfile,
-        ) -> skein_relational::RelationalSqlIndexReadProfile = |profile| profile;
-        let _: fn(RelationalSqlRowReadProfile) -> skein_relational::RelationalSqlRowReadProfile =
+        ) -> hawdb_relational::RelationalSqlIndexReadProfile = |profile| profile;
+        let _: fn(RelationalSqlRowReadProfile) -> hawdb_relational::RelationalSqlRowReadProfile =
             |profile| profile;
     }
 }

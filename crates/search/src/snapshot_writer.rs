@@ -2,10 +2,10 @@ use super::{
     encode_search_document_line, encode_string, SearchDocument, SearchEmbeddingManifest,
     SEARCH_COMPRESSION_HEADER, SEARCH_COMPRESSION_LEVEL,
 };
-use crate::error::{Result, SkeinError};
+use crate::error::{HawdbError, Result};
+use hawdb_integrity::{Crc32cHasher, IntegrityHasher, Sha256Digest};
+use hawdb_storage::durable_replace_file;
 use serde::Serialize;
-use skein_integrity::{Crc32cHasher, IntegrityHasher, Sha256Digest};
-use skein_storage::durable_replace_file;
 use std::fs::{self, File};
 use std::io::Write;
 use std::path::{Path, PathBuf};
@@ -71,12 +71,12 @@ pub(super) fn write_search_snapshot<'a>(
     consumer_binding: Option<&super::consumer::ConsumerBinding>,
     documents: impl Iterator<Item = &'a SearchDocument>,
 ) -> Result<SearchSnapshotWriteReport> {
-    let compressed_path = target.with_extension("skein.zstd.tmp");
+    let compressed_path = target.with_extension("hawdb.zstd.tmp");
     let mut compressed_guard = TemporaryFile::new(compressed_path.clone());
     let compressed_file = File::create(&compressed_path)?;
     let counted = CountingChecksumWriter::new(compressed_file);
     let mut encoder = zstd::stream::write::Encoder::new(counted, SEARCH_COMPRESSION_LEVEL)
-        .map_err(|error| SkeinError::Storage(format!("zstd compression failed: {error}")))?;
+        .map_err(|error| HawdbError::Storage(format!("zstd compression failed: {error}")))?;
     let mut body_checksum = Crc32cHasher::new();
     let mut uncompressed_checksum = Crc32cHasher::new();
     let mut uncompressed_bytes = 0u64;
@@ -87,7 +87,7 @@ pub(super) fn write_search_snapshot<'a>(
         &mut body_checksum,
         &mut uncompressed_checksum,
         &mut uncompressed_bytes,
-        b"SKEIN_SEARCH_PROJECTION_V1\n",
+        b"HAWDB_SEARCH_PROJECTION_V1\n",
     )?;
     if let Some(binding) = consumer_binding {
         write_body_chunk(
@@ -167,12 +167,12 @@ pub(super) fn write_search_snapshot<'a>(
     )?;
     let counted = encoder
         .finish()
-        .map_err(|error| SkeinError::Storage(format!("zstd compression failed: {error}")))?;
+        .map_err(|error| HawdbError::Storage(format!("zstd compression failed: {error}")))?;
     let (compressed_file, compressed_bytes, compressed_checksum) = counted.finish()?;
     compressed_file.sync_all()?;
     drop(compressed_file);
 
-    let temporary = target.with_extension("skein.tmp");
+    let temporary = target.with_extension("hawdb.tmp");
     let mut target_guard = TemporaryFile::new(temporary.clone());
     let header = format!(
         "{SEARCH_COMPRESSION_HEADER}\ncodec\tzstd\nuncompressed_checksum\t{}\ncompressed_checksum\t{compressed_checksum}\nuncompressed_len\t{uncompressed_bytes}\ncompressed_len\t{compressed_bytes}\n\n",
@@ -188,7 +188,7 @@ pub(super) fn write_search_snapshot<'a>(
         let mut compressed = File::open(&compressed_path)?;
         let copied = std::io::copy(&mut compressed, &mut output)?;
         if copied != compressed_bytes {
-            return Err(SkeinError::Storage(format!(
+            return Err(HawdbError::Storage(format!(
                 "search checkpoint copied {copied} compressed bytes, expected {compressed_bytes}"
             )));
         }
@@ -247,7 +247,7 @@ fn write_envelope_chunk<W: Write>(
     checksum.update(bytes);
     *byte_count = byte_count
         .checked_add(bytes.len() as u64)
-        .ok_or_else(|| SkeinError::Storage("search checkpoint byte count overflow".to_string()))?;
+        .ok_or_else(|| HawdbError::Storage("search checkpoint byte count overflow".to_string()))?;
     Ok(())
 }
 
@@ -324,7 +324,7 @@ mod tests {
     fn streaming_writer_preserves_snapshot_format_without_corpus_materialization() {
         let root = unique_test_dir("streaming_snapshot_writer");
         fs::create_dir_all(&root).unwrap();
-        let target = root.join("search_projection.skein");
+        let target = root.join("search_projection.hawdb");
         let documents = [
             SearchDocument {
                 id: "memory:a".to_string(),
@@ -358,7 +358,7 @@ mod tests {
         .unwrap();
 
         let text = read_search_snapshot_text(&target).unwrap();
-        assert!(text.starts_with("SKEIN_SEARCH_PROJECTION_V1\n"));
+        assert!(text.starts_with("HAWDB_SEARCH_PROJECTION_V1\n"));
         assert!(text.contains("source_graph_commit_epoch\t11\n"));
         assert!(text.contains("import_source_graph_commit_epoch\t7\n"));
         assert!(text.contains("doc\t6d656d6f72793a61\t"));
@@ -366,8 +366,8 @@ mod tests {
         assert_eq!(report.uncompressed_bytes, text.len() as u64);
         assert!(report.compressed_bytes > 0);
         assert!(report.peak_record_bytes < report.uncompressed_bytes);
-        assert!(!target.with_extension("skein.zstd.tmp").exists());
-        assert!(!target.with_extension("skein.tmp").exists());
+        assert!(!target.with_extension("hawdb.zstd.tmp").exists());
+        assert!(!target.with_extension("hawdb.tmp").exists());
         fs::remove_dir_all(root).unwrap();
     }
 
@@ -377,7 +377,7 @@ mod tests {
             .unwrap_or_default()
             .as_nanos();
         std::env::temp_dir().join(format!(
-            "skein-search-snapshot-{name}-{}-{nonce}",
+            "hawdb-search-snapshot-{name}-{}-{nonce}",
             std::process::id()
         ))
     }

@@ -3,7 +3,7 @@ use super::{
     ExpressionPosition,
 };
 use crate::ast::*;
-use skein_core::{Result, SkeinError};
+use hawdb_core::{HawdbError, Result};
 use sqlparser::ast::{
     AlterTableOperation, ColumnOption, CreateTableOptions, DataType, Expr, HiveDistributionStyle,
     ReferentialAction, SqlOption, TableConstraint, ValueWithSpan,
@@ -118,7 +118,7 @@ fn lower_table_storage(options: &CreateTableOptions) -> Result<SqlTableStorage> 
         CreateTableOptions::None => return Ok(SqlTableStorage::RowPage),
         CreateTableOptions::With(options) => options,
         _ => {
-            return Err(SkeinError::Semantic(
+            return Err(HawdbError::Semantic(
                 "PostgreSQL CREATE TABLE storage options require WITH (...)".to_string(),
             ));
         }
@@ -129,7 +129,7 @@ fn lower_table_storage(options: &CreateTableOptions) -> Result<SqlTableStorage> 
     let mut generated_order = None;
     for option in options {
         let SqlOption::KeyValue { key, value } = option else {
-            return Err(SkeinError::Semantic(
+            return Err(HawdbError::Semantic(
                 "PostgreSQL CREATE TABLE storage options require key = value entries".to_string(),
             ));
         };
@@ -156,7 +156,7 @@ fn lower_table_storage(options: &CreateTableOptions) -> Result<SqlTableStorage> 
                 "generated_order",
             )?,
             _ => {
-                return Err(SkeinError::Semantic(format!(
+                return Err(HawdbError::Semantic(format!(
                     "unsupported PostgreSQL CREATE TABLE storage option {name}"
                 )));
             }
@@ -165,20 +165,20 @@ fn lower_table_storage(options: &CreateTableOptions) -> Result<SqlTableStorage> 
     match storage_mode.as_deref() {
         Some("strict_append") => Ok(SqlTableStorage::StrictAppend {
             partition_key: partition_key.ok_or_else(|| {
-                SkeinError::Semantic("strict_append storage requires partition_key".to_string())
+                HawdbError::Semantic("strict_append storage requires partition_key".to_string())
             })?,
             order_key: order_key.ok_or_else(|| {
-                SkeinError::Semantic("strict_append storage requires order_key".to_string())
+                HawdbError::Semantic("strict_append storage requires order_key".to_string())
             })?,
             generated_order: generated_order.unwrap_or_default(),
         }),
-        Some(mode) => Err(SkeinError::Semantic(format!(
+        Some(mode) => Err(HawdbError::Semantic(format!(
             "unsupported PostgreSQL CREATE TABLE storage_mode {mode}"
         ))),
         None if partition_key.is_none() && order_key.is_none() && generated_order.is_none() => {
             Ok(SqlTableStorage::RowPage)
         }
-        None => Err(SkeinError::Semantic(
+        None => Err(HawdbError::Semantic(
             "partition_key, order_key, and generated_order require storage_mode = 'strict_append'"
                 .to_string(),
         )),
@@ -187,7 +187,7 @@ fn lower_table_storage(options: &CreateTableOptions) -> Result<SqlTableStorage> 
 
 fn set_once<T>(slot: &mut Option<T>, value: T, name: &str) -> Result<()> {
     if slot.replace(value).is_some() {
-        return Err(SkeinError::Semantic(format!(
+        return Err(HawdbError::Semantic(format!(
             "PostgreSQL CREATE TABLE storage option {name} is specified more than once"
         )));
     }
@@ -200,7 +200,7 @@ fn lower_storage_mode(value: &Expr) -> Result<String> {
         ..
     }) = value
     else {
-        return Err(SkeinError::Semantic(
+        return Err(HawdbError::Semantic(
             "CREATE TABLE storage_mode must be a string literal".to_string(),
         ));
     };
@@ -213,13 +213,13 @@ fn lower_generated_order(value: &Expr) -> Result<crate::SqlGeneratedOrder> {
         ..
     }) = value
     else {
-        return Err(SkeinError::Semantic(
+        return Err(HawdbError::Semantic(
             "CREATE TABLE generated_order must be a string literal".to_string(),
         ));
     };
     match value.to_ascii_lowercase().as_str() {
         "commit_sequence" => Ok(crate::SqlGeneratedOrder::CommitSequence),
-        value => Err(SkeinError::Semantic(format!(
+        value => Err(HawdbError::Semantic(format!(
             "unsupported strict_append generated_order {value}"
         ))),
     }
@@ -231,12 +231,12 @@ fn lower_storage_key(value: &Expr, name: &str) -> Result<Vec<String>> {
         ..
     }) = value
     else {
-        return Err(SkeinError::Semantic(format!(
+        return Err(HawdbError::Semantic(format!(
             "CREATE TABLE {name} must be a string literal"
         )));
     };
     if value.is_empty() {
-        return Err(SkeinError::Semantic(format!(
+        return Err(HawdbError::Semantic(format!(
             "CREATE TABLE {name} must not contain an empty column name"
         )));
     }
@@ -251,7 +251,7 @@ fn lower_column_definition(column: &sqlparser::ast::ColumnDef) -> Result<SqlColu
     let mut references = None;
     for option in &column.options {
         if option.name.is_some() {
-            return Err(SkeinError::Semantic(
+            return Err(HawdbError::Semantic(
                 "named column constraints are not supported".to_string(),
             ));
         }
@@ -268,7 +268,7 @@ fn lower_column_definition(column: &sqlparser::ast::ColumnDef) -> Result<SqlColu
                 references = Some(lower_foreign_key_reference(reference)?);
             }
             other => {
-                return Err(SkeinError::Semantic(format!(
+                return Err(HawdbError::Semantic(format!(
                     "unsupported PostgreSQL column option {other}"
                 )));
             }
@@ -294,13 +294,13 @@ fn lower_column_default(expr: &Expr) -> Result<SqlColumnDefault> {
             distinct: false,
             filter: None,
         } if name == "uuidv7" && arguments.is_empty() => Ok(SqlColumnDefault::UuidV7),
-        ExprKind::Function { name, .. } => Err(SkeinError::Semantic(format!(
+        ExprKind::Function { name, .. } => Err(HawdbError::Semantic(format!(
             "unsupported PostgreSQL column default function {name}"
         ))),
-        ExprKind::Column(_) => Err(SkeinError::Semantic(
+        ExprKind::Column(_) => Err(HawdbError::Semantic(
             "column defaults cannot reference a column".to_string(),
         )),
-        _ => Err(SkeinError::Semantic(
+        _ => Err(HawdbError::Semantic(
             "unsupported PostgreSQL column default expression".to_owned(),
         )),
     }
@@ -314,7 +314,7 @@ fn lower_data_type(data_type: &DataType) -> Result<SqlDataType> {
         DataType::Text => Ok(SqlDataType::Text),
         DataType::Bytea => Ok(SqlDataType::Bytea),
         DataType::Uuid => Ok(SqlDataType::Uuid),
-        _ => Err(SkeinError::Semantic(format!(
+        _ => Err(HawdbError::Semantic(format!(
             "unsupported PostgreSQL data type {data_type}"
         ))),
     }
@@ -329,7 +329,7 @@ fn lower_table_constraint(constraint: &TableConstraint) -> Result<SqlTableConstr
                 || !constraint.index_options.is_empty()
                 || constraint.characteristics.is_some()
             {
-                return Err(SkeinError::Semantic(
+                return Err(HawdbError::Semantic(
                     "unsupported PRIMARY KEY clause".to_string(),
                 ));
             }
@@ -348,7 +348,7 @@ fn lower_table_constraint(constraint: &TableConstraint) -> Result<SqlTableConstr
                     sqlparser::ast::NullsDistinctOption::None
                 )
             {
-                return Err(SkeinError::Semantic(
+                return Err(HawdbError::Semantic(
                     "unsupported UNIQUE clause".to_string(),
                 ));
             }
@@ -362,7 +362,7 @@ fn lower_table_constraint(constraint: &TableConstraint) -> Result<SqlTableConstr
                 || constraint.match_kind.is_some()
                 || constraint.characteristics.is_some()
             {
-                return Err(SkeinError::Semantic(
+                return Err(HawdbError::Semantic(
                     "unsupported FOREIGN KEY clause".to_string(),
                 ));
             }
@@ -371,7 +371,7 @@ fn lower_table_constraint(constraint: &TableConstraint) -> Result<SqlTableConstr
                 reference: lower_foreign_key_reference(constraint)?,
             })
         }
-        _ => Err(SkeinError::Semantic(
+        _ => Err(HawdbError::Semantic(
             "CHECK and inline index constraints are not supported".to_string(),
         )),
     }
@@ -398,7 +398,7 @@ fn lower_referential_action(action: Option<ReferentialAction>) -> Result<SqlRefe
         ReferentialAction::Restrict => Ok(SqlReferentialAction::Restrict),
         ReferentialAction::Cascade => Ok(SqlReferentialAction::Cascade),
         ReferentialAction::SetNull => Ok(SqlReferentialAction::SetNull),
-        ReferentialAction::SetDefault => Err(SkeinError::Semantic(
+        ReferentialAction::SetDefault => Err(HawdbError::Semantic(
             "ON DELETE/UPDATE SET DEFAULT is not supported".to_string(),
         )),
     }
@@ -416,18 +416,18 @@ pub(super) fn lower_create_index_statement(
         || !create.index_options.is_empty()
         || !create.alter_options.is_empty()
     {
-        return Err(SkeinError::Semantic(
+        return Err(HawdbError::Semantic(
             "unsupported PostgreSQL CREATE INDEX clause".to_string(),
         ));
     }
     let Some(name) = &create.name else {
-        return Err(SkeinError::Semantic(
+        return Err(HawdbError::Semantic(
             "CREATE INDEX requires an explicit name".to_string(),
         ));
     };
     let name_parts = object_name_parts(name)?;
     let [name] = name_parts.as_slice() else {
-        return Err(SkeinError::Semantic(
+        return Err(HawdbError::Semantic(
             "CREATE INDEX names must be unqualified".to_string(),
         ));
     };
@@ -452,7 +452,7 @@ fn lower_index_columns(columns: &[sqlparser::ast::IndexColumn]) -> Result<Vec<St
             if item.direction != SqlOrderDirection::Asc
                 || item.nulls != SqlNullOrder::DialectDefault
             {
-                return Err(SkeinError::Semantic(
+                return Err(HawdbError::Semantic(
                     "constraint columns do not support ordering options".to_string(),
                 ));
             }
@@ -463,7 +463,7 @@ fn lower_index_columns(columns: &[sqlparser::ast::IndexColumn]) -> Result<Vec<St
 
 fn lower_index_order_item(column: &sqlparser::ast::IndexColumn) -> Result<SqlIndexColumn> {
     if column.operator_class.is_some() {
-        return Err(SkeinError::Semantic(
+        return Err(HawdbError::Semantic(
             "index operator classes are not supported".to_string(),
         ));
     }
@@ -490,7 +490,7 @@ pub(super) fn lower_alter_table_statement(
         || alter.on_cluster.is_some()
         || alter.table_type.is_some()
     {
-        return Err(SkeinError::Semantic(
+        return Err(HawdbError::Semantic(
             "unsupported PostgreSQL ALTER TABLE clause".to_string(),
         ));
     }
@@ -501,12 +501,12 @@ pub(super) fn lower_alter_table_statement(
         ..
     }] = alter.operations.as_slice()
     else {
-        return Err(SkeinError::Semantic(
+        return Err(HawdbError::Semantic(
             "ALTER TABLE supports one ADD COLUMN operation".to_string(),
         ));
     };
     if column_position.is_some() {
-        return Err(SkeinError::Semantic(
+        return Err(HawdbError::Semantic(
             "ALTER TABLE column positioning is not supported".to_string(),
         ));
     }

@@ -1,7 +1,7 @@
 load("@crate_index//:defs.bzl", "aliases", "all_crate_deps")
 load("@rules_rust//rust:defs.bzl", "rust_binary", "rust_library", "rust_test")
 load("@rules_shell//shell:sh_test.bzl", "sh_test")
-load("//:benchmarks.bzl", "SKEIN_BENCHMARKS", "SKEIN_BENCHMARK_TARGETS", "skein_benchmark_binaries")
+load("//:benchmarks.bzl", "HAWDB_BENCHMARKS", "HAWDB_BENCHMARK_TARGETS", "hawdb_benchmark_binaries")
 
 package(default_visibility = ["//visibility:public"])
 
@@ -45,16 +45,16 @@ _CARGO_WORKSPACE_PACKAGES = [
 
 # Fuzz remains an explicit local-only campaign until the repository policy
 # assigns it an automated execution lane.
-_SKEIN_PRESUBMIT_CRATE_EXCLUSIONS = {
-    "crates/fuzz": ("local-only", "//crates/fuzz:skein_fuzz_tests"),
+_HAWDB_PRESUBMIT_CRATE_EXCLUSIONS = {
+    "crates/fuzz": ("local-only", "//crates/fuzz:hawdb_fuzz_tests"),
 }
 
 test_suite(
-    name = "skein_presubmit_crate_tests",
+    name = "hawdb_presubmit_crate_tests",
     tests = [
         "//%s:presubmit_tests" % package
         for package in _CARGO_WORKSPACE_PACKAGES
-        if package not in _SKEIN_PRESUBMIT_CRATE_EXCLUSIONS
+        if package not in _HAWDB_PRESUBMIT_CRATE_EXCLUSIONS
     ],
 )
 
@@ -88,7 +88,7 @@ sh_test(
     ],
 )
 
-_SKEIN_SRCS = glob(
+_HAWDB_SRCS = glob(
     ["src/**/*.rs"],
     exclude = [
         "src/bin/**",
@@ -98,61 +98,61 @@ _SKEIN_SRCS = glob(
     "//crates/compat:test_support",
 ]
 
-_SKEIN_COMMON_BASE_DEPS = [
+_HAWDB_COMMON_BASE_DEPS = [
     "@crate_index//:chrono",
     "@crate_index//:getrandom",
     "@crate_index//:serde",
     "@crate_index//:serde_json",
     "@crate_index//:unicode-width",
     "@crate_index//:zstd",
-    "//crates/analytics:skein_analytics",
-    "//crates/artifact:skein_artifact",
-    "//crates/compat:skein_compat",
-    "//crates/core:skein_core",
-    "//crates/cypher:skein_cypher",
-    "//crates/ddl:skein_ddl",
-    "//crates/evidence:skein_evidence",
-    "//crates/explain:skein_explain",
-    "//crates/executor:skein_executor",
-    "//crates/expression:skein_expression",
-    "//crates/fuzz-contracts:skein_fuzz_contracts",
-    "//crates/integrity:skein_integrity",
-    "//crates/optimizer:skein_optimizer",
-    "//crates/plan:skein_plan",
-    "//crates/plan-cache:skein_plan_cache",
-    "//crates/qos:skein_qos",
-    "//crates/query:skein_query",
-    "//crates/query-policy:skein_query_policy",
-    "//crates/relational:skein_relational",
-    "//crates/resource-profile:skein_resource_profile",
-    "//crates/route-ownership:skein_route_ownership",
-    "//crates/sql:skein_sql",
-    "//crates/storage:skein_storage",
-    "//crates/system-sql:skein_system_sql",
-    "//crates/telemetry:skein_telemetry",
+    "//crates/analytics:hawdb_analytics",
+    "//crates/artifact:hawdb_artifact",
+    "//crates/compat:hawdb_compat",
+    "//crates/core:hawdb_core",
+    "//crates/cypher:hawdb_cypher",
+    "//crates/ddl:hawdb_ddl",
+    "//crates/evidence:hawdb_evidence",
+    "//crates/explain:hawdb_explain",
+    "//crates/executor:hawdb_executor",
+    "//crates/expression:hawdb_expression",
+    "//crates/fuzz-contracts:hawdb_fuzz_contracts",
+    "//crates/integrity:hawdb_integrity",
+    "//crates/optimizer:hawdb_optimizer",
+    "//crates/plan:hawdb_plan",
+    "//crates/plan-cache:hawdb_plan_cache",
+    "//crates/qos:hawdb_qos",
+    "//crates/query:hawdb_query",
+    "//crates/query-policy:hawdb_query_policy",
+    "//crates/relational:hawdb_relational",
+    "//crates/resource-profile:hawdb_resource_profile",
+    "//crates/route-ownership:hawdb_route_ownership",
+    "//crates/sql:hawdb_sql",
+    "//crates/storage:hawdb_storage",
+    "//crates/system-sql:hawdb_system_sql",
+    "//crates/telemetry:hawdb_telemetry",
 ]
 
-_SKEIN_FULL_DEPS = _SKEIN_COMMON_BASE_DEPS + [
-    "//crates/bootstrap:skein_bootstrap",
-    "//crates/nowledge-contracts:skein_nowledge_contracts",
-    "//crates/readiness:skein_readiness",
-    "//crates/search:skein_search",
+_HAWDB_FULL_DEPS = _HAWDB_COMMON_BASE_DEPS + [
+    "//crates/bootstrap:hawdb_bootstrap",
+    "//crates/nowledge-contracts:hawdb_nowledge_contracts",
+    "//crates/readiness:hawdb_readiness",
+    "//crates/search:hawdb_search",
 ]
 
-_SKEIN_MINIMAL_DEPS = _SKEIN_COMMON_BASE_DEPS + [
-    "//crates/bootstrap:skein_bootstrap_minimal",
-    "//crates/nowledge-contracts:skein_nowledge_contracts_minimal",
-    "//crates/readiness:skein_readiness_minimal",
-    "//crates/search:skein_search_minimal",
+_HAWDB_MINIMAL_DEPS = _HAWDB_COMMON_BASE_DEPS + [
+    "//crates/bootstrap:hawdb_bootstrap_minimal",
+    "//crates/nowledge-contracts:hawdb_nowledge_contracts_minimal",
+    "//crates/readiness:hawdb_readiness_minimal",
+    "//crates/search:hawdb_search_minimal",
 ]
 
 # crate_universe exposes optional normal dependencies to every Bazel target.
 # Keep the native vector dependency owned by targets that enable vector-search.
-_SKEIN_VECTOR_DEPS = [
-    "//crates/vector-projection:skein_vector_projection",
+_HAWDB_VECTOR_DEPS = [
+    "//crates/vector-projection:hawdb_vector_projection",
 ]
 
-_SKEIN_DEFAULT_FEATURES = [
+_HAWDB_DEFAULT_FEATURES = [
     "background-maintenance",
     "full-text-search",
     "graph-analytics",
@@ -161,76 +161,76 @@ _SKEIN_DEFAULT_FEATURES = [
 ]
 
 rust_library(
-    name = "skein",
-    crate_name = "skein",
+    name = "hawdb",
+    crate_name = "hawdb",
     crate_root = "src/lib.rs",
-    crate_features = _SKEIN_DEFAULT_FEATURES,
-    srcs = _SKEIN_SRCS,
+    crate_features = _HAWDB_DEFAULT_FEATURES,
+    srcs = _HAWDB_SRCS,
     edition = "2024",
     aliases = aliases(),
-    deps = _SKEIN_FULL_DEPS + _SKEIN_VECTOR_DEPS + [
-        "//crates/runtime-tokio:skein_runtime_tokio",
+    deps = _HAWDB_FULL_DEPS + _HAWDB_VECTOR_DEPS + [
+        "//crates/runtime-tokio:hawdb_runtime_tokio",
     ],
     proc_macro_deps = all_crate_deps(proc_macro = True),
 )
 
-# Matches `skein = { default-features = false }` for dependency-boundary checks.
+# Matches `hawdb = { default-features = false }` for dependency-boundary checks.
 rust_library(
-    name = "skein_minimal",
-    crate_name = "skein",
+    name = "hawdb_minimal",
+    crate_name = "hawdb",
     crate_root = "src/lib.rs",
-    srcs = _SKEIN_SRCS,
+    srcs = _HAWDB_SRCS,
     edition = "2024",
     aliases = aliases(),
-    deps = _SKEIN_MINIMAL_DEPS,
+    deps = _HAWDB_MINIMAL_DEPS,
     proc_macro_deps = all_crate_deps(proc_macro = True),
 )
 
 genquery(
-    name = "skein_minimal_simsimd_dependency_path",
-    expression = "somepath(//:skein_minimal, @crate_index//:simsimd)",
+    name = "hawdb_minimal_simsimd_dependency_path",
+    expression = "somepath(//:hawdb_minimal, @crate_index//:simsimd)",
     scope = [
-        ":skein_minimal",
+        ":hawdb_minimal",
         "@crate_index//:simsimd",
     ],
 )
 
 genquery(
-    name = "skein_minimal_vector_projection_dependency_path",
-    expression = "somepath(//:skein_minimal, //crates/vector-projection:skein_vector_projection)",
+    name = "hawdb_minimal_vector_projection_dependency_path",
+    expression = "somepath(//:hawdb_minimal, //crates/vector-projection:hawdb_vector_projection)",
     scope = [
-        ":skein_minimal",
-        "//crates/vector-projection:skein_vector_projection",
+        ":hawdb_minimal",
+        "//crates/vector-projection:hawdb_vector_projection",
     ],
 )
 
 sh_test(
-    name = "skein_minimal_native_vector_boundary_test",
+    name = "hawdb_minimal_native_vector_boundary_test",
     size = "small",
     srcs = ["scripts/check-empty-query-results.sh"],
     args = [
-        "$(rootpath :skein_minimal_simsimd_dependency_path)",
-        "$(rootpath :skein_minimal_vector_projection_dependency_path)",
+        "$(rootpath :hawdb_minimal_simsimd_dependency_path)",
+        "$(rootpath :hawdb_minimal_vector_projection_dependency_path)",
     ],
     data = [
-        ":skein_minimal_simsimd_dependency_path",
-        ":skein_minimal_vector_projection_dependency_path",
+        ":hawdb_minimal_simsimd_dependency_path",
+        ":hawdb_minimal_vector_projection_dependency_path",
     ],
 )
 
-_SKEIN_STORAGE_CRASH_MATRIX_TEST = "api::tests::storage_recovery::subprocess_crash_matrix_recovers_whole_batches_and_artifact_generations"
+_HAWDB_STORAGE_CRASH_MATRIX_TEST = "api::tests::storage_recovery::subprocess_crash_matrix_recovers_whole_batches_and_artifact_generations"
 
 rust_test(
-    name = "skein_unit_fast_tests",
+    name = "hawdb_unit_fast_tests",
     # The remaining root tests can still exceed the 300-second default under
     # Prow contention even after the crash matrix is isolated.
     size = "large",
     args = [
         "--skip",
-        _SKEIN_STORAGE_CRASH_MATRIX_TEST,
+        _HAWDB_STORAGE_CRASH_MATRIX_TEST,
     ],
-    crate = ":skein",
-    crate_features = _SKEIN_DEFAULT_FEATURES,
+    crate = ":hawdb",
+    crate_features = _HAWDB_DEFAULT_FEATURES,
     edition = "2024",
     aliases = aliases(
         normal_dev = True,
@@ -241,14 +241,14 @@ rust_test(
 )
 
 rust_test(
-    name = "skein_unit_storage_crash_matrix_tests",
+    name = "hawdb_unit_storage_crash_matrix_tests",
     size = "large",
     args = [
-        _SKEIN_STORAGE_CRASH_MATRIX_TEST,
+        _HAWDB_STORAGE_CRASH_MATRIX_TEST,
         "--exact",
     ],
-    crate = ":skein",
-    crate_features = _SKEIN_DEFAULT_FEATURES,
+    crate = ":hawdb",
+    crate_features = _HAWDB_DEFAULT_FEATURES,
     edition = "2024",
     aliases = aliases(
         normal_dev = True,
@@ -259,15 +259,15 @@ rust_test(
 )
 
 rust_test(
-    name = "skein_scan_callback_fuzz_tests",
+    name = "hawdb_scan_callback_fuzz_tests",
     args = [
         "executor::columnar::scan_error_tests::scan_callback_differential_campaign",
         "--exact",
         "--ignored",
         "--nocapture",
     ],
-    crate = ":skein",
-    crate_features = _SKEIN_DEFAULT_FEATURES,
+    crate = ":hawdb",
+    crate_features = _HAWDB_DEFAULT_FEATURES,
     edition = "2024",
     tags = ["manual"],
     aliases = aliases(normal_dev = True, proc_macro_dev = True),
@@ -277,21 +277,21 @@ rust_test(
 
 # Preserve the root local-fuzz entrypoint after moving tests to their owner.
 test_suite(
-    name = "skein_batch_dispatch_fuzz_tests",
+    name = "hawdb_batch_dispatch_fuzz_tests",
     tags = ["manual"],
-    tests = ["//crates/executor:skein_batch_dispatch_fuzz_tests"],
+    tests = ["//crates/executor:hawdb_batch_dispatch_fuzz_tests"],
 )
 
 rust_test(
-    name = "skein_graph_projection_residency_fuzz_tests",
+    name = "hawdb_graph_projection_residency_fuzz_tests",
     args = [
         "api::tests::projected_graph_execution::differential::projected_graph_residency_differential_campaign",
         "--exact",
         "--ignored",
         "--nocapture",
     ],
-    crate = ":skein",
-    crate_features = _SKEIN_DEFAULT_FEATURES,
+    crate = ":hawdb",
+    crate_features = _HAWDB_DEFAULT_FEATURES,
     edition = "2024",
     tags = ["manual"],
     aliases = aliases(normal_dev = True, proc_macro_dev = True),
@@ -300,14 +300,14 @@ rust_test(
 )
 
 rust_test(
-    name = "skein_concurrent_key_range_fuzz_tests",
+    name = "hawdb_concurrent_key_range_fuzz_tests",
     args = [
         "api::concurrent::key_range_tests::key_range_differential_campaign",
         "--exact",
         "--ignored",
     ],
-    crate = ":skein",
-    crate_features = _SKEIN_DEFAULT_FEATURES,
+    crate = ":hawdb",
+    crate_features = _HAWDB_DEFAULT_FEATURES,
     edition = "2024",
     tags = ["manual"],
     aliases = aliases(normal_dev = True, proc_macro_dev = True),
@@ -317,95 +317,95 @@ rust_test(
 
 # Preserve the root local-fuzz entrypoint and test_suite expansion after the move.
 test_suite(
-    name = "skein_recovery_text_fuzz_tests",
+    name = "hawdb_recovery_text_fuzz_tests",
     tags = ["manual"],
-    tests = ["//crates/storage:skein_storage_text_fuzz_tests"],
+    tests = ["//crates/storage:hawdb_storage_text_fuzz_tests"],
 )
 
 test_suite(
-    name = "skein_unit_tests",
+    name = "hawdb_unit_tests",
     tests = [
-        ":skein_acl_capability_tests",
-        ":skein_minimal_native_vector_boundary_test",
-        ":skein_pgq_create_binder_tests",
-        ":skein_fallible_search_contract_tests",
-        ":skein_fallible_search_contract_minimal_tests",
-        ":skein_search_generation_context_minimal_tests",
-        ":skein_search_generation_context_tests",
-        ":skein_search_projection_consumer_tests",
-        ":skein_search_projection_consumer_minimal_tests",
-        ":skein_unit_fast_tests",
-        ":skein_unit_storage_crash_matrix_tests",
+        ":hawdb_acl_capability_tests",
+        ":hawdb_minimal_native_vector_boundary_test",
+        ":hawdb_pgq_create_binder_tests",
+        ":hawdb_fallible_search_contract_tests",
+        ":hawdb_fallible_search_contract_minimal_tests",
+        ":hawdb_search_generation_context_minimal_tests",
+        ":hawdb_search_generation_context_tests",
+        ":hawdb_search_projection_consumer_tests",
+        ":hawdb_search_projection_consumer_minimal_tests",
+        ":hawdb_unit_fast_tests",
+        ":hawdb_unit_storage_crash_matrix_tests",
     ],
 )
 
 # External embedded-library consumer; no internal owner imports.
 rust_test(
-    name = "skein_pgq_create_binder_tests",
+    name = "hawdb_pgq_create_binder_tests",
     crate_root = "tests/pgq_create_binder.rs",
     srcs = ["tests/pgq_create_binder.rs"],
     edition = "2024",
-    deps = [":skein"],
+    deps = [":hawdb"],
 )
 
 # External generation consumers in both supported dependency profiles.
 rust_test(
-    name = "skein_search_generation_context_tests",
+    name = "hawdb_search_generation_context_tests",
     crate_root = "tests/search_generation_context.rs",
-    crate_features = _SKEIN_DEFAULT_FEATURES,
+    crate_features = _HAWDB_DEFAULT_FEATURES,
     srcs = ["tests/search_generation_context.rs"],
     edition = "2024",
-    deps = [":skein"],
+    deps = [":hawdb"],
 )
 
 rust_test(
-    name = "skein_search_generation_context_minimal_tests",
+    name = "hawdb_search_generation_context_minimal_tests",
     crate_root = "tests/search_generation_context.rs",
     srcs = ["tests/search_generation_context.rs"],
     edition = "2024",
-    deps = [":skein_minimal"],
+    deps = [":hawdb_minimal"],
 )
 
 # The same public consumer contract is available in both feature profiles.
 rust_test(
-    name = "skein_search_projection_consumer_tests",
+    name = "hawdb_search_projection_consumer_tests",
     crate_root = "tests/search_projection_consumer.rs",
     srcs = ["tests/search_projection_consumer.rs"],
     edition = "2024",
-    deps = [":skein"],
+    deps = [":hawdb"],
 )
 
 rust_test(
-    name = "skein_search_projection_consumer_minimal_tests",
+    name = "hawdb_search_projection_consumer_minimal_tests",
     crate_root = "tests/search_projection_consumer.rs",
     srcs = ["tests/search_projection_consumer.rs"],
     edition = "2024",
-    deps = [":skein_minimal"],
+    deps = [":hawdb_minimal"],
 )
 
 # Reuse the qualification binary without running the full root suite twice.
 sh_test(
-    name = "skein_acl_capability_tests",
+    name = "hawdb_acl_capability_tests",
     size = "small",
     srcs = ["scripts/check-acl-capabilities.sh"],
-    args = ["$(location :skein_storage_crash_recovery_tests)"],
-    data = [":skein_storage_crash_recovery_tests"],
+    args = ["$(location :hawdb_storage_crash_recovery_tests)"],
+    data = [":hawdb_storage_crash_recovery_tests"],
 )
 
 alias(
-    name = "skein_system_sql_loom_tests",
-    actual = "//crates/system-sql:skein_system_sql_loom_tests",
+    name = "hawdb_system_sql_loom_tests",
+    actual = "//crates/system-sql:hawdb_system_sql_loom_tests",
 )
 
-# Matches `cargo test -p skein --features acl --lib` for the storage crash
+# Matches `cargo test -p hawdb --features acl --lib` for the storage crash
 # recovery qualification. Keep this target opt-in because it recompiles the
 # root inline tests under a distinct feature set.
 rust_test(
-    name = "skein_storage_crash_recovery_tests",
+    name = "hawdb_storage_crash_recovery_tests",
     size = "large",
-    crate_name = "skein",
+    crate_name = "hawdb",
     crate_root = "src/lib.rs",
-    srcs = _SKEIN_SRCS,
+    srcs = _HAWDB_SRCS,
     crate_features = [
         "acl",
         "background-maintenance",
@@ -421,43 +421,43 @@ rust_test(
         proc_macro = True,
         proc_macro_dev = True,
     ),
-    # Unlike `crate = ":skein"`, this selects the ACL-enabled dependency graph.
-    deps = _SKEIN_COMMON_BASE_DEPS + _SKEIN_VECTOR_DEPS + all_crate_deps(normal_dev = True) + [
-        "//crates/bootstrap:skein_bootstrap_acl",
-        "//crates/nowledge-contracts:skein_nowledge_contracts_acl",
-        "//crates/readiness:skein_readiness_acl",
-        "//crates/search:skein_search_acl",
+    # Unlike `crate = ":hawdb"`, this selects the ACL-enabled dependency graph.
+    deps = _HAWDB_COMMON_BASE_DEPS + _HAWDB_VECTOR_DEPS + all_crate_deps(normal_dev = True) + [
+        "//crates/bootstrap:hawdb_bootstrap_acl",
+        "//crates/nowledge-contracts:hawdb_nowledge_contracts_acl",
+        "//crates/readiness:hawdb_readiness_acl",
+        "//crates/search:hawdb_search_acl",
     ],
     proc_macro_deps = all_crate_deps(proc_macro = True, proc_macro_dev = True),
 )
 
-_SKEIN_CLI_SRCS = ["src/main.rs"] + glob(["src/cli/**/*.rs"])
+_HAWDB_CLI_SRCS = ["src/main.rs"] + glob(["src/cli/**/*.rs"])
 
-_SKEIN_CLI_DEPS = all_crate_deps(normal = True) + [
-    ":skein",
-    "//crates/compat:skein_compat",
-    "//crates/core:skein_core",
-    "//crates/evidence:skein_evidence",
-    "//crates/integrity:skein_integrity",
-    "//crates/storage:skein_storage",
+_HAWDB_CLI_DEPS = all_crate_deps(normal = True) + [
+    ":hawdb",
+    "//crates/compat:hawdb_compat",
+    "//crates/core:hawdb_core",
+    "//crates/evidence:hawdb_evidence",
+    "//crates/integrity:hawdb_integrity",
+    "//crates/storage:hawdb_storage",
 ]
 
 rust_binary(
-    name = "skein_cli",
+    name = "hawdb_cli",
     crate_root = "src/main.rs",
-    crate_features = _SKEIN_DEFAULT_FEATURES,
-    srcs = _SKEIN_CLI_SRCS,
+    crate_features = _HAWDB_DEFAULT_FEATURES,
+    srcs = _HAWDB_CLI_SRCS,
     edition = "2024",
     aliases = aliases(normal = True, proc_macro = True),
-    deps = _SKEIN_CLI_DEPS,
+    deps = _HAWDB_CLI_DEPS,
     proc_macro_deps = all_crate_deps(proc_macro = True),
 )
 
 rust_test(
-    name = "skein_cli_tests",
+    name = "hawdb_cli_tests",
     crate_root = "src/main.rs",
-    crate_features = _SKEIN_DEFAULT_FEATURES,
-    srcs = _SKEIN_CLI_SRCS,
+    crate_features = _HAWDB_DEFAULT_FEATURES,
+    srcs = _HAWDB_CLI_SRCS,
     edition = "2024",
     aliases = aliases(
         normal = True,
@@ -465,26 +465,26 @@ rust_test(
         proc_macro = True,
         proc_macro_dev = True,
     ),
-    deps = _SKEIN_CLI_DEPS + all_crate_deps(normal_dev = True),
+    deps = _HAWDB_CLI_DEPS + all_crate_deps(normal_dev = True),
     proc_macro_deps = all_crate_deps(proc_macro = True, proc_macro_dev = True),
 )
 
 rust_binary(
-    name = "skein_shadow_self",
-    crate_root = "src/bin/skein-shadow-self.rs",
-    crate_features = _SKEIN_DEFAULT_FEATURES,
-    srcs = ["src/bin/skein-shadow-self.rs"],
+    name = "hawdb_shadow_self",
+    crate_root = "src/bin/hawdb-shadow-self.rs",
+    crate_features = _HAWDB_DEFAULT_FEATURES,
+    srcs = ["src/bin/hawdb-shadow-self.rs"],
     edition = "2024",
     aliases = aliases(normal = True, proc_macro = True),
-    deps = all_crate_deps(normal = True) + [":skein"],
+    deps = all_crate_deps(normal = True) + [":hawdb"],
     proc_macro_deps = all_crate_deps(proc_macro = True),
 )
 
 rust_test(
-    name = "skein_shadow_self_tests",
-    crate_root = "src/bin/skein-shadow-self.rs",
-    crate_features = _SKEIN_DEFAULT_FEATURES,
-    srcs = ["src/bin/skein-shadow-self.rs"],
+    name = "hawdb_shadow_self_tests",
+    crate_root = "src/bin/hawdb-shadow-self.rs",
+    crate_features = _HAWDB_DEFAULT_FEATURES,
+    srcs = ["src/bin/hawdb-shadow-self.rs"],
     edition = "2024",
     aliases = aliases(
         normal = True,
@@ -492,40 +492,40 @@ rust_test(
         proc_macro = True,
         proc_macro_dev = True,
     ),
-    deps = all_crate_deps(normal = True, normal_dev = True) + [":skein"],
+    deps = all_crate_deps(normal = True, normal_dev = True) + [":hawdb"],
     proc_macro_deps = all_crate_deps(proc_macro = True, proc_macro_dev = True),
 )
 
 rust_binary(
     name = "nowledge_previous_wrapper_shadow_adapter",
     crate_root = "examples/nowledge_previous_wrapper_shadow_adapter.rs",
-    crate_features = _SKEIN_DEFAULT_FEATURES,
+    crate_features = _HAWDB_DEFAULT_FEATURES,
     srcs = ["examples/nowledge_previous_wrapper_shadow_adapter.rs"],
     edition = "2024",
     aliases = aliases(normal = True, proc_macro = True),
-    deps = all_crate_deps(normal = True) + [":skein"],
+    deps = all_crate_deps(normal = True) + [":hawdb"],
     proc_macro_deps = all_crate_deps(proc_macro = True),
 )
 
-skein_benchmark_binaries(_SKEIN_DEFAULT_FEATURES)
+hawdb_benchmark_binaries(_HAWDB_DEFAULT_FEATURES)
 
 rust_test(
-    name = "skein_wal_group_commit_recovery_tests",
+    name = "hawdb_wal_group_commit_recovery_tests",
     crate_root = "tests/wal_group_commit_recovery.rs",
     srcs = [
         "benches/wal_group_commit/recovery.rs",
         "tests/wal_group_commit_recovery.rs",
     ],
     edition = "2024",
-    deps = [":skein"],
+    deps = [":hawdb"],
 )
 
 # This exploratory benchmark is intentionally separate from the routine Linux
 # smoke list. It creates an out-of-core fixture and must be run explicitly.
 rust_binary(
-    name = "skein_bench_storage_async_segment_read",
+    name = "hawdb_bench_storage_async_segment_read",
     crate_root = "benches/storage_async_segment_read.rs",
-    crate_features = _SKEIN_DEFAULT_FEATURES,
+    crate_features = _HAWDB_DEFAULT_FEATURES,
     srcs = ["benches/storage_async_segment_read.rs"],
     edition = "2024",
     tags = ["manual"],
@@ -536,11 +536,11 @@ rust_binary(
         proc_macro_dev = True,
     ),
     deps = all_crate_deps(normal = True, normal_dev = True) + [
-        ":skein",
-        "//crates/core:skein_core",
-        "//crates/qos:skein_qos",
-        "//crates/runtime-tokio:skein_runtime_tokio",
-        "//crates/storage:skein_storage",
+        ":hawdb",
+        "//crates/core:hawdb_core",
+        "//crates/qos:hawdb_qos",
+        "//crates/runtime-tokio:hawdb_runtime_tokio",
+        "//crates/storage:hawdb_storage",
     ],
     proc_macro_deps = all_crate_deps(
         proc_macro = True,
@@ -548,36 +548,36 @@ rust_binary(
     ),
 )
 
-_SKEIN_LINUX_CI_SMOKE_ARGS = [
-    "$(location :skein_cli)",
-    "$(location :skein_shadow_self)",
+_HAWDB_LINUX_CI_SMOKE_ARGS = [
+    "$(location :hawdb_cli)",
+    "$(location :hawdb_shadow_self)",
     "$(location :nowledge_previous_wrapper_shadow_adapter)",
-    "$(location //crates/fuzz:skein_append_fuzz)",
-    "$(location //crates/fuzz:skein_storage_fuzz)",
-    "$(location //crates/fuzz:skein_optimizer_fuzz)",
+    "$(location //crates/fuzz:hawdb_append_fuzz)",
+    "$(location //crates/fuzz:hawdb_storage_fuzz)",
+    "$(location //crates/fuzz:hawdb_optimizer_fuzz)",
 ] + [
     "$(location %s)" % target
-    for target in SKEIN_BENCHMARK_TARGETS
+    for target in HAWDB_BENCHMARK_TARGETS
 ]
 
-_SKEIN_LINUX_CI_SMOKE_DATA = [
+_HAWDB_LINUX_CI_SMOKE_DATA = [
     ":nowledge_previous_wrapper_shadow_adapter",
-    ":skein_cli",
-    ":skein_shadow_self",
-    "//crates/fuzz:skein_append_fuzz",
-    "//crates/fuzz:skein_optimizer_fuzz",
-    "//crates/fuzz:skein_storage_fuzz",
-] + SKEIN_BENCHMARK_TARGETS
+    ":hawdb_cli",
+    ":hawdb_shadow_self",
+    "//crates/fuzz:hawdb_append_fuzz",
+    "//crates/fuzz:hawdb_optimizer_fuzz",
+    "//crates/fuzz:hawdb_storage_fuzz",
+] + HAWDB_BENCHMARK_TARGETS
 
 # Optimizer benchmarks emit resource-sensitive evidence. Give each group an
 # independent deadline, but preserve the original serial execution semantics.
 [
     sh_test(
-        name = "skein_linux_ci_%s_smoke_test" % smoke,
+        name = "hawdb_linux_ci_%s_smoke_test" % smoke,
         size = size,
         srcs = ["scripts/check-linux-ci-smokes.sh"],
-        args = [smoke] + _SKEIN_LINUX_CI_SMOKE_ARGS,
-        data = _SKEIN_LINUX_CI_SMOKE_DATA,
+        args = [smoke] + _HAWDB_LINUX_CI_SMOKE_ARGS,
+        data = _HAWDB_LINUX_CI_SMOKE_DATA,
         tags = ["manual"] + extra_tags,
     )
     for smoke, size, extra_tags in [
@@ -598,7 +598,7 @@ _SKEIN_LINUX_CI_SMOKE_DATA = [
 
 # Preserve the CI entrypoint without making six complete benchmarks share one
 # deadline. Each child keeps the original medium deadline and runs exclusively.
-_SKEIN_OPTIMIZER_GROUP_2_BENCHMARKS = [
+_HAWDB_OPTIMIZER_GROUP_2_BENCHMARKS = [
     "index_restart_cost",
     "integrity_checksum",
     "relational_index_access",
@@ -609,44 +609,44 @@ _SKEIN_OPTIMIZER_GROUP_2_BENCHMARKS = [
 
 [
     sh_test(
-        name = "skein_linux_ci_benchmark_%s_smoke_test" % benchmark,
+        name = "hawdb_linux_ci_benchmark_%s_smoke_test" % benchmark,
         size = "medium",
         srcs = ["scripts/check-linux-ci-smokes.sh"],
-        args = ["benchmark:%s" % benchmark] + _SKEIN_LINUX_CI_SMOKE_ARGS,
-        data = _SKEIN_LINUX_CI_SMOKE_DATA,
+        args = ["benchmark:%s" % benchmark] + _HAWDB_LINUX_CI_SMOKE_ARGS,
+        data = _HAWDB_LINUX_CI_SMOKE_DATA,
         tags = [
             "exclusive",
             "manual",
         ],
     )
-    for benchmark in _SKEIN_OPTIMIZER_GROUP_2_BENCHMARKS
+    for benchmark in _HAWDB_OPTIMIZER_GROUP_2_BENCHMARKS
 ]
 
 sh_test(
-    name = "skein_linux_ci_benchmark_dispatch_tests",
+    name = "hawdb_linux_ci_benchmark_dispatch_tests",
     size = "small",
     srcs = ["scripts/check-linux-ci-smokes.test.sh"],
     args = ["$(location scripts/check-linux-ci-smokes.sh)"] +
-           _SKEIN_OPTIMIZER_GROUP_2_BENCHMARKS + ["--"] + SKEIN_BENCHMARKS,
+           _HAWDB_OPTIMIZER_GROUP_2_BENCHMARKS + ["--"] + HAWDB_BENCHMARKS,
     data = ["scripts/check-linux-ci-smokes.sh"],
     tags = ["manual"],
 )
 
 test_suite(
-    name = "skein_linux_ci_optimizer_group_2_smoke_test",
+    name = "hawdb_linux_ci_optimizer_group_2_smoke_test",
     tags = ["manual"],
     tests = [
-        ":skein_linux_ci_benchmark_%s_smoke_test" % benchmark
-        for benchmark in _SKEIN_OPTIMIZER_GROUP_2_BENCHMARKS
-    ] + [":skein_linux_ci_benchmark_dispatch_tests"],
+        ":hawdb_linux_ci_benchmark_%s_smoke_test" % benchmark
+        for benchmark in _HAWDB_OPTIMIZER_GROUP_2_BENCHMARKS
+    ] + [":hawdb_linux_ci_benchmark_dispatch_tests"],
 )
 
 # Fuzz smoke remains available as a standalone local target, but is excluded
 # from the default CI smoke suite.
 test_suite(
-    name = "skein_linux_ci_smoke_tests",
-    tests = [":skein_wal_group_commit_recovery_tests"] + [
-        ":skein_linux_ci_%s_smoke_test" % smoke
+    name = "hawdb_linux_ci_smoke_tests",
+    tests = [":hawdb_wal_group_commit_recovery_tests"] + [
+        ":hawdb_linux_ci_%s_smoke_test" % smoke
         for smoke in [
             "optimizer_summary",
             "optimizer_group_1",
@@ -667,18 +667,18 @@ test_suite(
 
 # Public search error contracts in both embedded dependency profiles.
 rust_test(
-    name = "skein_fallible_search_contract_tests",
+    name = "hawdb_fallible_search_contract_tests",
     crate_root = "tests/fallible_search_contract.rs",
-    crate_features = _SKEIN_DEFAULT_FEATURES,
+    crate_features = _HAWDB_DEFAULT_FEATURES,
     srcs = ["tests/fallible_search_contract.rs"],
     edition = "2024",
-    deps = [":skein"],
+    deps = [":hawdb"],
 )
 
 rust_test(
-    name = "skein_fallible_search_contract_minimal_tests",
+    name = "hawdb_fallible_search_contract_minimal_tests",
     crate_root = "tests/fallible_search_contract.rs",
     srcs = ["tests/fallible_search_contract.rs"],
     edition = "2024",
-    deps = [":skein_minimal"],
+    deps = [":hawdb_minimal"],
 )

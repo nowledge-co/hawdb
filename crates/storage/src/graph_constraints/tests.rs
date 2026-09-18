@@ -34,7 +34,7 @@ fn values() -> Vec<Value> {
         Value::Float(f64::from_bits(0x7ff8_0000_0000_0002)),
         Value::String(String::new()),
         Value::String("value\n\u{e9}".into()),
-        Value::Uuid(skein_core::Uuid::parse_str("01890f3e-0e3c-7f9e-9b23-1bcdef012345").unwrap()),
+        Value::Uuid(hawdb_core::Uuid::parse_str("01890f3e-0e3c-7f9e-9b23-1bcdef012345").unwrap()),
         Value::Binary(vec![0, 255]),
         Value::List(vec![Value::Null]),
         Value::Map(BTreeMap::from([("x".into(), Value::Int(1))])),
@@ -123,7 +123,7 @@ fn scalar_type_matrix_preserves_nullability_and_exact_error_messages() {
                         format!("expected {name}")
                     };
                     match result {
-                        Err(SkeinError::Storage(message)) => assert_eq!(
+                        Err(HawdbError::Storage(message)) => assert_eq!(
                             message,
                             format!("property schema violation on node 7 in Items(key): {reason}")
                         ),
@@ -179,7 +179,7 @@ fn missing_table_or_token_does_not_activate_schema_validation() {
     let nodes = node_map(vec![node(1, 0, None)]);
     let relationships = relationship_map(vec![relationship(1, 0, None)]);
     let mut catalog = Catalog::default();
-    catalog.get_or_create_property(skein_core::TableId(99), "key", PropertyType::Int, false);
+    catalog.get_or_create_property(hawdb_core::TableId(99), "key", PropertyType::Int, false);
     for (kind, name) in [
         (TableKind::Node, "NoLabel"),
         (TableKind::Relationship, "NoType"),
@@ -268,7 +268,7 @@ fn constraint_errors_preserve_subject_and_first_conflicting_ids() {
         (validate_relationship_property_exists(&catalog, &relationships, RelTypeId(0), "missing"), "relationship property exists constraint violation on :LINKS(missing) for relationship 3"),
     ] {
         match result {
-            Err(SkeinError::Storage(message)) => assert_eq!(message, expected),
+            Err(HawdbError::Storage(message)) => assert_eq!(message, expected),
             other => panic!("unexpected constraint result: {other:?}"),
         }
     }
@@ -313,7 +313,7 @@ fn record_validation_reports_schema_errors_before_existence_errors() {
             ),
         ] {
             match result {
-                Err(SkeinError::Storage(message)) => assert_eq!(message, expected),
+                Err(HawdbError::Storage(message)) => assert_eq!(message, expected),
                 other => panic!("unexpected constraint result: {other:?}"),
             }
         }
@@ -422,7 +422,7 @@ fn check_seed(seed: u64) -> usize {
                 "seed={seed}, case={case}, check={name}: {result:?}"
             );
             if let Err(error) = result {
-                assert!(matches!(error, SkeinError::Storage(_)), "{error}");
+                assert!(matches!(error, HawdbError::Storage(_)), "{error}");
             }
             checks += 1;
         };

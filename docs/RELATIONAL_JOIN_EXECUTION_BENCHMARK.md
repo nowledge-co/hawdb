@@ -23,7 +23,7 @@ The deterministic fixture contains four query shapes:
 For each shape, the harness runs one cold execution, three warmups, and 31
 measured executions. Every warm execution must hit the bound-neutral SQL
 template cache and therefore report zero parse time. The JSON protocol is
-`skein-relational-join-execution-v1` and records:
+`hawdb-relational-join-execution-v1` and records:
 
 - cold parse and warm bind, plan, and execute P50/P95/P99 timings;
 - the stable physical join operator ID, selected operator, estimated and actual
@@ -52,7 +52,7 @@ repeatable end-to-end evidence beyond an isolated local timing:
   demonstrates queueing or tail-latency pressure that the current serial read
   path cannot meet.
 
-The benchmark does not authorize Skein in stable release artifacts and does
+The benchmark does not authorize Hawdb in stable release artifacts and does
 not replace the full Mem replacement qualification suite.
 
 ## Verification
@@ -61,5 +61,5 @@ The Cargo and Bazel benchmark registries both include the harness:
 
 ```text
 cargo bench --bench relational_join_execution
-bazel run //:skein_bench_relational_join_execution
+bazel run //:hawdb_bench_relational_join_execution
 ```

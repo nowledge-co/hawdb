@@ -171,7 +171,7 @@ fn expected_rows(graph: &ProjectedGraph, options: &RunOptions) -> (Vec<Binding>,
                     .unwrap_or(PageRankOptions::default().iterations),
             };
             let scores = graph.page_rank_with_context(settings, None).unwrap();
-            let bytes = scores.len() * std::mem::size_of::<skein_analytics::PageRankScore>() * 2;
+            let bytes = scores.len() * std::mem::size_of::<hawdb_analytics::PageRankScore>() * 2;
             let rows = scores
                 .into_iter()
                 .map(|score| {
@@ -202,7 +202,7 @@ fn expected_rows(graph: &ProjectedGraph, options: &RunOptions) -> (Vec<Binding>,
                 .hierarchical_louvain_communities_with_context(settings, None)
                 .unwrap();
             let bytes = assignments.len()
-                * std::mem::size_of::<skein_analytics::HierarchicalCommunityAssignment>()
+                * std::mem::size_of::<hawdb_analytics::HierarchicalCommunityAssignment>()
                 * 2;
             let rows = assignments
                 .into_iter()
@@ -260,7 +260,7 @@ fn check_stream(fixture: &Fixture, options: &RunOptions, only_visible: bool, ide
     assert!(output.reports.graph_expansion.is_empty());
     if !expected.is_empty() && options.exit == Exit::Error {
         assert!(
-            matches!(output.result, Err(SkeinError::StorageIntegrity(ref message)) if message == "consumer sentinel"),
+            matches!(output.result, Err(HawdbError::StorageIntegrity(ref message)) if message == "consumer sentinel"),
             "{identity}"
         );
     } else {

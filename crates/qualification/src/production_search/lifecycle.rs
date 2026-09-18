@@ -2,7 +2,7 @@ use super::{
     elapsed_micros, execute_out_of_core, ProductionSearchLifecycleConfig,
     ProductionSearchLifecycleReport, ProductionSearchQualificationError, ProductionSearchQueryCase,
 };
-use skein::{
+use hawdb::{
     ProcessMemoryProfile, ProcessMemorySnapshot, SearchOutOfCoreConfig,
     SearchOutOfCoreGenerationWriter, SearchOutOfCoreReader, SearchProjectionDelta,
     SearchProjectionQualificationIdentity, SearchResultSet,
@@ -14,9 +14,9 @@ use std::sync::{Arc, Barrier};
 use std::thread;
 use std::time::Instant;
 
-const OUT_OF_CORE_MANIFEST_FILE: &str = "search_projection.out_of_core.manifest.skein";
+const OUT_OF_CORE_MANIFEST_FILE: &str = "search_projection.out_of_core.manifest.hawdb";
 const RABITQ_ARTIFACT_PREFIX: &str = "search_rabitq.";
-const RABITQ_ARTIFACT_SUFFIX: &str = ".skein";
+const RABITQ_ARTIFACT_SUFFIX: &str = ".hawdb";
 
 pub(super) fn run_lifecycle_probes(
     config: &ProductionSearchLifecycleConfig,

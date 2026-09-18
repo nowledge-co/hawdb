@@ -118,7 +118,7 @@ impl SpillRuns {
         }
         if let Some(memory) = &mut guard._memory {
             if guard.path.capacity() > memory.bytes() {
-                return Err(SkeinError::Execution(
+                return Err(HawdbError::Execution(
                     "search spill path allocation exceeded its admitted capacity".into(),
                 ));
             }
@@ -246,7 +246,7 @@ pub(super) fn read_text(
         reader.read_exact(chunk)?;
     }
     String::from_utf8(bytes)
-        .map_err(|error| SkeinError::Storage(format!("invalid lexical spill utf-8: {error}")))
+        .map_err(|error| HawdbError::Storage(format!("invalid lexical spill utf-8: {error}")))
 }
 
 impl AsRef<Path> for RemoveOnDrop {

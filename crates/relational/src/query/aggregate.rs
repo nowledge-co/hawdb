@@ -6,12 +6,12 @@ use super::{
     typed_row_set_locator, visit_relational_rows, with_typed_locator_bound_row_mode,
     AggregateProjectionState, BTreeMap, BatchControl, BlockingExecutionContext, Catalog,
     ColumnarAggregateExecutor, DistinctAggregateValueBatchSource, ExecutionLimit, ExternalTopN,
-    OperatorMemoryTracker, PlannedJoin, QueryMemoryClass, QueryMemoryLedger,
+    HawdbError, OperatorMemoryTracker, PlannedJoin, QueryMemoryClass, QueryMemoryLedger,
     RelationalAccessPathDescriptor, RelationalBaseAccess, RelationalBlockingObserver,
     RelationalIndexRuntime, RelationalJoinPlanningOutcome, RelationalPhysicalJoinExecution,
     RelationalPipelineState, RelationalQueryLimits, RelationalQueryOutput, RelationalRowRuntime,
     RelationalSortKey, RelationalSortRecord, RelationalSqlStageTimings, RelationalState,
-    RelationalTableSchema, RelationalValue, Result, Row, SelectStatement, SkeinError, SqlColumnRef,
+    RelationalTableSchema, RelationalValue, Result, Row, SelectStatement, SqlColumnRef,
     SqlNullOrder, SqlOrderDirection, SqlPredicate, Value,
 };
 pub(super) use crate::field_plan::single_count_distinct_column;
@@ -33,7 +33,7 @@ pub(super) fn execute_aggregate_select<'a>(
     >,
     row_runtime: &RelationalRowRuntime<'a>,
     limits: RelationalQueryLimits,
-    execution_memory: &skein_executor::ExecutionMemoryConfig,
+    execution_memory: &hawdb_executor::ExecutionMemoryConfig,
     memory_ledger: &QueryMemoryLedger,
     access_path: RelationalAccessPathDescriptor,
     join_access_paths: Vec<RelationalAccessPathDescriptor>,
@@ -85,7 +85,7 @@ pub(super) fn execute_aggregate_select<'a>(
         );
     }
     if !select.order_by.is_empty() || select.distinct {
-        return Err(SkeinError::Semantic(
+        return Err(HawdbError::Semantic(
             "aggregate SELECT does not yet support statement DISTINCT or ORDER BY".to_string(),
         ));
     }
@@ -131,20 +131,20 @@ pub(super) fn execute_aggregate_select<'a>(
         let intermediate_rows = pipeline.intermediate_rows;
         let finished = aggregate.finish()?;
         let offset = usize::try_from(bind_bound(select.offset, parameters, "OFFSET")?.unwrap_or(0))
-            .map_err(|_| SkeinError::Semantic("SQL OFFSET is too large".to_string()))?;
+            .map_err(|_| HawdbError::Semantic("SQL OFFSET is too large".to_string()))?;
         let requested = bind_bound(select.limit, parameters, "LIMIT")?
             .map(|value| usize::try_from(value).unwrap_or(usize::MAX))
             .unwrap_or(usize::MAX);
         let mut rows = Vec::new();
         if offset == 0 && requested != 0 {
             if limits.max_output_rows == 0 {
-                return Err(SkeinError::Execution(
+                return Err(HawdbError::Execution(
                     "relational SQL output exceeds max_output_rows 0".to_string(),
                 ));
             }
             let row = finished.into_iter().collect::<Row>();
             if map_payload_bytes(&row) > limits.max_output_payload_bytes {
-                return Err(SkeinError::Execution(format!(
+                return Err(HawdbError::Execution(format!(
                     "relational SQL output exceeds max_output_payload_bytes {}",
                     limits.max_output_payload_bytes
                 )));
@@ -162,7 +162,7 @@ pub(super) fn execute_aggregate_select<'a>(
             join_access_paths,
             index_execution_evidence: index_runtime.evidence(),
             row_execution_evidence: row_runtime.evidence(),
-            blocking_operator_memory_reports: vec![skein_executor::blocking::in_memory_report(
+            blocking_operator_memory_reports: vec![hawdb_executor::blocking::in_memory_report(
                 "RelationalAggregateExec",
                 &memory_tracker,
                 memory_tracker.peak_bytes,
@@ -232,7 +232,7 @@ pub(super) fn execute_aggregate_select<'a>(
     pipeline.finish()?;
     let intermediate_rows = pipeline.intermediate_rows;
     if groups.len() > limits.max_intermediate_rows {
-        return Err(SkeinError::Execution(format!(
+        return Err(HawdbError::Execution(format!(
             "relational aggregate groups exceed max_intermediate_rows {}",
             limits.max_intermediate_rows
         )));
@@ -240,7 +240,7 @@ pub(super) fn execute_aggregate_select<'a>(
     let offset = bind_bound(select.offset, parameters, "OFFSET")?.unwrap_or(0);
     let limit = bind_bound(select.limit, parameters, "LIMIT")?;
     let offset = usize::try_from(offset)
-        .map_err(|_| SkeinError::Semantic("SQL OFFSET is too large".to_string()))?;
+        .map_err(|_| HawdbError::Semantic("SQL OFFSET is too large".to_string()))?;
     let limit = limit
         .map(|value| usize::try_from(value).unwrap_or(usize::MAX))
         .unwrap_or(usize::MAX);
@@ -262,14 +262,14 @@ pub(super) fn execute_aggregate_select<'a>(
         for projection in projections {
             let (name, value) = projection.finish()?;
             if row.insert(name.clone(), value).is_some() {
-                return Err(SkeinError::Semantic(format!(
+                return Err(HawdbError::Semantic(format!(
                     "relational projection contains duplicate output column {name}"
                 )));
             }
         }
         payload_bytes = payload_bytes.saturating_add(map_payload_bytes(&row));
         if payload_bytes > limits.max_output_payload_bytes {
-            return Err(SkeinError::Execution(format!(
+            return Err(HawdbError::Execution(format!(
                 "relational SQL output exceeds max_output_payload_bytes {}",
                 limits.max_output_payload_bytes
             )));
@@ -277,7 +277,7 @@ pub(super) fn execute_aggregate_select<'a>(
         output.push(row);
     }
     if output.len() > limits.max_output_rows {
-        return Err(SkeinError::Execution(format!(
+        return Err(HawdbError::Execution(format!(
             "relational SQL output exceeds max_output_rows {}",
             limits.max_output_rows
         )));
@@ -293,7 +293,7 @@ pub(super) fn execute_aggregate_select<'a>(
         join_access_paths,
         index_execution_evidence: index_runtime.evidence(),
         row_execution_evidence: row_runtime.evidence(),
-        blocking_operator_memory_reports: vec![skein_executor::blocking::in_memory_report(
+        blocking_operator_memory_reports: vec![hawdb_executor::blocking::in_memory_report(
             "RelationalAggregateExec",
             &memory_tracker,
             memory_tracker.peak_bytes,
@@ -323,7 +323,7 @@ pub(super) fn execute_single_count_distinct<'a>(
     >,
     row_runtime: &RelationalRowRuntime<'a>,
     limits: RelationalQueryLimits,
-    execution_memory: &skein_executor::ExecutionMemoryConfig,
+    execution_memory: &hawdb_executor::ExecutionMemoryConfig,
     memory_ledger: &QueryMemoryLedger,
     access_path: RelationalAccessPathDescriptor,
     join_access_paths: Vec<RelationalAccessPathDescriptor>,
@@ -374,13 +374,13 @@ pub(super) fn execute_single_count_distinct<'a>(
         Value::Int(i64::try_from(count).unwrap_or(i64::MAX)),
     )]);
     if map_payload_bytes(&row) > limits.max_output_payload_bytes {
-        return Err(SkeinError::Execution(format!(
+        return Err(HawdbError::Execution(format!(
             "relational SQL output exceeds max_output_payload_bytes {}",
             limits.max_output_payload_bytes
         )));
     }
     if limits.max_output_rows == 0 {
-        return Err(SkeinError::Execution(
+        return Err(HawdbError::Execution(
             "relational SQL output exceeds max_output_rows 0".to_string(),
         ));
     }
@@ -416,24 +416,24 @@ pub(super) fn execute_grouped_aggregate<'a>(
     >,
     row_runtime: &RelationalRowRuntime<'a>,
     limits: RelationalQueryLimits,
-    execution_memory: &skein_executor::ExecutionMemoryConfig,
+    execution_memory: &hawdb_executor::ExecutionMemoryConfig,
     memory_ledger: &QueryMemoryLedger,
     access_path: RelationalAccessPathDescriptor,
     join_access_paths: Vec<RelationalAccessPathDescriptor>,
     join_planning: &RelationalJoinPlanningOutcome,
 ) -> Result<RelationalQueryOutput> {
     if !select.order_by.is_empty() || select.distinct {
-        return Err(SkeinError::Semantic(
+        return Err(HawdbError::Semantic(
             "aggregate SELECT does not yet support statement DISTINCT or ORDER BY".to_string(),
         ));
     }
     let projection_template = super::having::projection_template(select, parameters, state)?;
     let mut offset = usize::try_from(bind_bound(select.offset, parameters, "OFFSET")?.unwrap_or(0))
-        .map_err(|_| SkeinError::Semantic("SQL OFFSET is too large".to_string()))?;
+        .map_err(|_| HawdbError::Semantic("SQL OFFSET is too large".to_string()))?;
     let requested = bind_bound(select.limit, parameters, "LIMIT")?
         .map(|value| {
             usize::try_from(value)
-                .map_err(|_| SkeinError::Semantic("SQL LIMIT is too large".to_string()))
+                .map_err(|_| HawdbError::Semantic("SQL LIMIT is too large".to_string()))
         })
         .transpose()?
         .unwrap_or(usize::MAX);
@@ -563,7 +563,7 @@ pub(super) fn execute_grouped_aggregate<'a>(
     }
     pipeline.finish()?;
     let mut reports = observer.reports.into_inner();
-    reports.push(skein_executor::blocking::in_memory_report(
+    reports.push(hawdb_executor::blocking::in_memory_report(
         "RelationalAggregateExec",
         &tracker,
         tracker.peak_bytes,
@@ -608,7 +608,7 @@ pub(super) fn emit_aggregate_group(
     for projection in projections {
         let (name, value) = projection.finish()?;
         if row.insert(name.clone(), value).is_some() {
-            return Err(SkeinError::Semantic(format!(
+            return Err(HawdbError::Semantic(format!(
                 "relational projection contains duplicate output column {name}"
             )));
         }
@@ -616,4 +616,4 @@ pub(super) fn emit_aggregate_group(
     push_relational_output(row, output, payload_bytes, limits)?;
     Ok(output.len() < requested && output.len() < detection_limit)
 }
-use skein_executor::observer::ExecutionObserver;
+use hawdb_executor::observer::ExecutionObserver;

@@ -1,4 +1,4 @@
-pub use skein_nowledge_contracts::public::*;
+pub use hawdb_nowledge_contracts::public::*;
 
 #[cfg(test)]
 mod facade_tests {
@@ -8,12 +8,12 @@ mod facade_tests {
     fn facade_reexports_nowledge_contract_types() {
         let _: fn(
             KnowledgeRetrievalRequest,
-        ) -> skein_nowledge_contracts::KnowledgeRetrievalRequest = |value| value;
+        ) -> hawdb_nowledge_contracts::KnowledgeRetrievalRequest = |value| value;
         let _: fn(
             BackgroundMaintenanceKind,
-        ) -> skein_nowledge_contracts::BackgroundMaintenanceKind = |value| value;
+        ) -> hawdb_nowledge_contracts::BackgroundMaintenanceKind = |value| value;
         let _: fn(
             KnowledgeGraphContextPath,
-        ) -> skein_nowledge_contracts::KnowledgeGraphContextPath = |value| value;
+        ) -> hawdb_nowledge_contracts::KnowledgeGraphContextPath = |value| value;
     }
 }

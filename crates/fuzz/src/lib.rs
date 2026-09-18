@@ -1,8 +1,8 @@
+use hawdb::api::{Database, DatabaseReadTransaction};
+use hawdb::executor::Row;
+use hawdb::optimizer::OptimizerSearchDirective;
+use hawdb::{HawdbError, Value};
 use serde_json::{json, Map as JsonMap, Value as JsonValue};
-use skein::api::{Database, DatabaseReadTransaction};
-use skein::executor::Row;
-use skein::optimizer::OptimizerSearchDirective;
-use skein::{SkeinError, Value};
 use std::cmp::Ordering;
 use std::collections::{BTreeMap, BTreeSet};
 use std::error::Error;
@@ -26,6 +26,10 @@ use query_ast::QueryAst;
 
 pub use append_oracle::{run_append_state_machine_case, APPEND_STATE_MACHINE_PROTOCOL};
 pub use coverage::PlanCoverageReport;
+pub use hawdb_fuzz_contracts::{
+    NowledgeQueryFuzzCaseReport, NowledgeQueryFuzzHarnessOptions, NowledgeQueryFuzzHarnessReport,
+    NOWLEDGE_QUERY_FUZZ_HARNESS_PROTOCOL,
+};
 pub use output::{
     emit_fuzz_report, fuzz_current_report_path, read_fuzz_current_report,
     write_fuzz_current_report, FuzzReportPaths, DEFAULT_FUZZ_LOG_DIRECTORY,
@@ -36,10 +40,6 @@ pub use parser_oracle::{
     run_parser_fuzz_case, ParserFuzzCase, ParserFuzzObservation, PARSER_FUZZ_PROTOCOL,
 };
 pub use row_page_oracle::{run_row_page_compaction_case, ROW_PAGE_COMPACTION_PROTOCOL};
-pub use skein_fuzz_contracts::{
-    NowledgeQueryFuzzCaseReport, NowledgeQueryFuzzHarnessOptions, NowledgeQueryFuzzHarnessReport,
-    NOWLEDGE_QUERY_FUZZ_HARNESS_PROTOCOL,
-};
 pub use sql_oracle::{
     SqlCaseReport, SqlExecutionObservation, SqlFailureReport, SqlJoinGeneratorProfile,
     SqlJoinRewriteCase, SqlJoinRewriteEvidence, SqlJoinRewriteFailureReport, SqlMutation,
@@ -51,22 +51,22 @@ pub use sql_oracle::{
 pub use wal_tail_oracle::{run_wal_tail_recovery_case, WAL_TAIL_RECOVERY_PROTOCOL};
 
 pub fn compiled_capabilities_json() -> JsonValue {
-    let capabilities = skein::compiled_runtime_capabilities();
+    let capabilities = hawdb::compiled_runtime_capabilities();
     json!({
-        "full_text_search": capabilities.is_enabled(skein::RuntimeCapability::FullTextSearch),
-        "vector_search": capabilities.is_enabled(skein::RuntimeCapability::VectorSearch),
-        "graph_analytics": capabilities.is_enabled(skein::RuntimeCapability::GraphAnalytics),
+        "full_text_search": capabilities.is_enabled(hawdb::RuntimeCapability::FullTextSearch),
+        "vector_search": capabilities.is_enabled(hawdb::RuntimeCapability::VectorSearch),
+        "graph_analytics": capabilities.is_enabled(hawdb::RuntimeCapability::GraphAnalytics),
         "background_maintenance": capabilities
-            .is_enabled(skein::RuntimeCapability::BackgroundMaintenance),
-        "access_control": capabilities.is_enabled(skein::RuntimeCapability::AccessControl),
+            .is_enabled(hawdb::RuntimeCapability::BackgroundMaintenance),
+        "access_control": capabilities.is_enabled(hawdb::RuntimeCapability::AccessControl),
     })
 }
 
 #[cfg(test)]
 mod capability_parity_tests {
-    fn assert_parity(capability: skein::RuntimeCapability, forwarded: bool) {
+    fn assert_parity(capability: hawdb::RuntimeCapability, forwarded: bool) {
         assert_eq!(
-            skein::compiled_runtime_capabilities().is_enabled(capability),
+            hawdb::compiled_runtime_capabilities().is_enabled(capability),
             forwarded,
             "compiled capability {} diverged from the forwarded fuzz feature",
             capability.as_str(),
@@ -74,37 +74,37 @@ mod capability_parity_tests {
     }
 
     #[test]
-    fn forwarded_features_match_compiled_skein_capabilities() {
+    fn forwarded_features_match_compiled_hawdb_capabilities() {
         assert_parity(
-            skein::RuntimeCapability::FullTextSearch,
+            hawdb::RuntimeCapability::FullTextSearch,
             cfg!(feature = "full-text-search"),
         );
         assert_parity(
-            skein::RuntimeCapability::VectorSearch,
+            hawdb::RuntimeCapability::VectorSearch,
             cfg!(feature = "vector-search"),
         );
         assert_parity(
-            skein::RuntimeCapability::GraphAnalytics,
+            hawdb::RuntimeCapability::GraphAnalytics,
             cfg!(feature = "graph-analytics"),
         );
         assert_parity(
-            skein::RuntimeCapability::BackgroundMaintenance,
+            hawdb::RuntimeCapability::BackgroundMaintenance,
             cfg!(feature = "background-maintenance"),
         );
         assert_parity(
-            skein::RuntimeCapability::AccessControl,
+            hawdb::RuntimeCapability::AccessControl,
             cfg!(feature = "acl"),
         );
     }
 }
 
-pub const CAMPAIGN_PROTOCOL: &str = "skein-multi-oracle-fuzz-v1";
-pub const GRAPH_PREDICATE_REWRITE_PROTOCOL: &str = "skein-graph-predicate-rewrite-fuzz-v1";
-pub const GRAPH_TLP_AGGREGATE_PROTOCOL: &str = "skein-graph-tlp-aggregate-fuzz-v1";
-pub const GRAPH_TLP_PROTOCOL: &str = "skein-graph-tlp-fuzz-v1";
-pub const METAMORPHIC_PROTOCOL: &str = "skein-graph-metamorphic-fuzz-v1";
-pub const PLAN_DIFFERENTIAL_PROTOCOL: &str = "skein-plan-differential-fuzz-v1";
-pub const REPLAY_BUNDLE_PROTOCOL: &str = "skein-multi-oracle-replay-v1";
+pub const CAMPAIGN_PROTOCOL: &str = "hawdb-multi-oracle-fuzz-v1";
+pub const GRAPH_PREDICATE_REWRITE_PROTOCOL: &str = "hawdb-graph-predicate-rewrite-fuzz-v1";
+pub const GRAPH_TLP_AGGREGATE_PROTOCOL: &str = "hawdb-graph-tlp-aggregate-fuzz-v1";
+pub const GRAPH_TLP_PROTOCOL: &str = "hawdb-graph-tlp-fuzz-v1";
+pub const METAMORPHIC_PROTOCOL: &str = "hawdb-graph-metamorphic-fuzz-v1";
+pub const PLAN_DIFFERENTIAL_PROTOCOL: &str = "hawdb-plan-differential-fuzz-v1";
+pub const REPLAY_BUNDLE_PROTOCOL: &str = "hawdb-multi-oracle-replay-v1";
 pub(crate) const QUERY_SHAPE_COUNT: usize = 12;
 const DEFAULT_CASE_COUNT: usize = 128;
 const MAX_CASE_COUNT: usize = 10_000;
@@ -1346,7 +1346,7 @@ fn observation_count(observation: &ExecutionObservation) -> Option<u64> {
     u64::try_from(*count).ok()
 }
 
-fn error_observation(phase: &'static str, error: SkeinError) -> ExecutionObservation {
+fn error_observation(phase: &'static str, error: HawdbError) -> ExecutionObservation {
     snapshot_error_observation(None, None, phase, error)
 }
 
@@ -1354,7 +1354,7 @@ fn snapshot_error_observation(
     snapshot_epoch: Option<u64>,
     optimizer_search: Option<String>,
     phase: &'static str,
-    error: SkeinError,
+    error: HawdbError,
 ) -> ExecutionObservation {
     ExecutionObservation {
         snapshot_epoch,
@@ -1366,7 +1366,7 @@ fn snapshot_error_observation(
     }
 }
 
-fn error_outcome(phase: &'static str, error: SkeinError) -> ExecutionOutcome {
+fn error_outcome(phase: &'static str, error: HawdbError) -> ExecutionOutcome {
     ExecutionOutcome::Error {
         phase,
         class: error_class(&error),
@@ -1946,7 +1946,7 @@ pub fn run_campaign_with_case_observer(
             direction_reversal_applicable,
             reproduction_command: (!success).then(|| {
                 format!(
-                    "bazel run //crates/fuzz:skein_optimizer_fuzz -- --seed {} --case-index {index}",
+                    "bazel run //crates/fuzz:hawdb_optimizer_fuzz -- --seed {} --case-index {index}",
                     options.seed
                 )
             }),
@@ -2153,15 +2153,15 @@ fn observes_all_shapes<'a>(observed: impl Iterator<Item = &'a str>, expected: &[
     expected.iter().all(|shape| observed.contains(shape))
 }
 
-fn error_class(error: &SkeinError) -> &'static str {
+fn error_class(error: &HawdbError) -> &'static str {
     match error {
-        SkeinError::Parse(_) => "parse",
-        SkeinError::Semantic(_) => "semantic",
-        SkeinError::Execution(_) => "execution",
-        SkeinError::Storage(_)
-        | SkeinError::StorageIntegrity(_)
-        | SkeinError::AppendSequenceExhausted { .. } => "storage",
-        SkeinError::CapabilityUnavailable { .. } => "capability_unavailable",
+        HawdbError::Parse(_) => "parse",
+        HawdbError::Semantic(_) => "semantic",
+        HawdbError::Execution(_) => "execution",
+        HawdbError::Storage(_)
+        | HawdbError::StorageIntegrity(_)
+        | HawdbError::AppendSequenceExhausted { .. } => "storage",
+        HawdbError::CapabilityUnavailable { .. } => "capability_unavailable",
     }
 }
 
@@ -2347,7 +2347,7 @@ mod tests {
 
     #[test]
     fn typed_value_json_preserves_uuid_values() {
-        let value = skein::Uuid::parse_str("018f4e6a-7c1b-7cc8-8f4d-1234567890ab")
+        let value = hawdb::Uuid::parse_str("018f4e6a-7c1b-7cc8-8f4d-1234567890ab")
             .expect("parse UUID fixture");
         assert_eq!(
             typed_value_json(&Value::Uuid(value)),
@@ -2506,7 +2506,7 @@ mod tests {
                 queries.push(&direction_reversal.query);
             }
             for query in queries {
-                skein::cypher::parse(&query.cypher).unwrap_or_else(|error| {
+                hawdb::cypher::parse(&query.cypher).unwrap_or_else(|error| {
                     panic!("generated query failed to parse: {}: {error}", query.cypher)
                 });
             }

@@ -294,7 +294,7 @@ fn relational_having_reads_hidden_overflow_metadata_and_hydrates_value_compariso
         let mut database = Database::open_with_config(
             &path,
             DatabaseConfig {
-                relational_index_mode: skein_storage::RelationalIndexMode::Shadow,
+                relational_index_mode: hawdb_storage::RelationalIndexMode::Shadow,
                 ..DatabaseConfig::default()
             },
         )
@@ -314,8 +314,8 @@ fn relational_having_reads_hidden_overflow_metadata_and_hydrates_value_compariso
     }
     let config = DatabaseConfig {
         read_only: true,
-        storage_residency_mode: skein_storage::StorageResidencyMode::OutOfCore,
-        relational_index_mode: skein_storage::RelationalIndexMode::Authoritative,
+        storage_residency_mode: hawdb_storage::StorageResidencyMode::OutOfCore,
+        relational_index_mode: hawdb_storage::RelationalIndexMode::Authoritative,
         max_relational_hydration_bytes: std::num::NonZeroUsize::new(32 * 1024).unwrap(),
         ..DatabaseConfig::default()
     };

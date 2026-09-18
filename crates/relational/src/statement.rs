@@ -3,13 +3,13 @@
 use crate::{
     bind_relational_value, coerce_relational_value, compile_column, reject_non_public_schema,
 };
-use skein_core::{Result, SkeinError, Value};
-use skein_sql::{
+use hawdb_core::{HawdbError, Result, Value};
+use hawdb_sql::{
     AlterTableAddColumnStatement, CreateIndexStatement, CreateTableStatement, ExprKind,
     SqlArithmeticOperand, SqlAssignmentValue, SqlComparisonOp, SqlConflictAction, SqlPredicate,
     SqlReferentialAction, SqlStatement, SqlTableConstraint, SqlTableStorage, SqlValue,
 };
-use skein_storage::{
+use hawdb_storage::{
     RelationalBigIntArithmeticOperator, RelationalBigIntOperand, RelationalColumnDefault,
     RelationalColumnSchema, RelationalComparisonOp, RelationalConflictAction,
     RelationalForeignKeySchema, RelationalIndexSchema, RelationalInsertMode, RelationalPredicate,
@@ -45,9 +45,9 @@ pub fn compile_relational_statement_sql_with_result(
     parameters: &[Value],
     state: &RelationalState,
 ) -> Result<CompiledRelationalStatement> {
-    let prepared = skein_sql::prepare_postgres_sql(sql)?;
+    let prepared = hawdb_sql::prepare_postgres_sql(sql)?;
     if prepared.parameters.len() != parameters.len() {
-        return Err(SkeinError::Semantic(format!(
+        return Err(HawdbError::Semantic(format!(
             "PostgreSQL statement requires {} parameters, but {} parameters were supplied",
             prepared.parameters.len(),
             parameters.len()
@@ -76,7 +76,7 @@ fn compile_relational_mutation(
         SqlStatement::Insert(insert) => {
             reject_non_public_schema(insert.table.schema.as_deref())?;
             let schema = state.table_schema(&insert.table.name).ok_or_else(|| {
-                SkeinError::Semantic(format!("unknown relational table {}", insert.table.name))
+                HawdbError::Semantic(format!("unknown relational table {}", insert.table.name))
             })?;
             if !insert.returning.is_empty() {
                 for column in &insert.returning {
@@ -85,13 +85,13 @@ fn compile_relational_mutation(
                         .as_deref()
                         .is_some_and(|qualifier| qualifier != insert.table.name)
                     {
-                        return Err(SkeinError::Semantic(format!(
+                        return Err(HawdbError::Semantic(format!(
                             "INSERT RETURNING has unknown qualifier {qualifier}",
                             qualifier = column.qualifier.as_deref().unwrap_or_default()
                         )));
                     }
                     if schema.column_position(&column.name).is_none() {
-                        return Err(SkeinError::Semantic(format!(
+                        return Err(HawdbError::Semantic(format!(
                             "table {} has no column {}",
                             schema.name, column.name
                         )));
@@ -101,7 +101,7 @@ fn compile_relational_mutation(
                     insert.on_conflict.as_ref().map(|conflict| &conflict.action),
                     Some(SqlConflictAction::DoUpdate(_))
                 ) {
-                    return Err(SkeinError::Semantic(
+                    return Err(HawdbError::Semantic(
                         "INSERT RETURNING with ON CONFLICT DO UPDATE is not supported".to_string(),
                     ));
                 }
@@ -118,10 +118,10 @@ fn compile_relational_mutation(
             let mut unique = std::collections::BTreeSet::new();
             for column in &insert.columns {
                 let position = schema.column_position(column).ok_or_else(|| {
-                    SkeinError::Semantic(format!("table {} has no column {column}", schema.name))
+                    HawdbError::Semantic(format!("table {} has no column {column}", schema.name))
                 })?;
                 if !unique.insert(position) {
-                    return Err(SkeinError::Semantic(format!(
+                    return Err(HawdbError::Semantic(format!(
                         "INSERT column {column} is specified more than once"
                     )));
                 }
@@ -145,7 +145,7 @@ fn compile_relational_mutation(
                             schema.columns[*position].scalar_type,
                         )
                         .map_err(|error| {
-                            SkeinError::Semantic(format!(
+                            HawdbError::Semantic(format!(
                                 "failed to bind INSERT column {column_name}: {error}"
                             ))
                         })?;
@@ -167,7 +167,7 @@ fn compile_relational_mutation(
                                         RelationalUpsertValue::ExcludedColumn(column.name)
                                     }
                                     SqlAssignmentValue::Column(_) => {
-                                        return Err(SkeinError::Semantic(
+                                        return Err(HawdbError::Semantic(
                                             "ON CONFLICT assignments only support EXCLUDED columns"
                                                 .to_string(),
                                         ));
@@ -178,7 +178,7 @@ fn compile_relational_mutation(
                                         )?)
                                     }
                                     SqlAssignmentValue::Arithmetic { .. } => {
-                                        return Err(SkeinError::Semantic(
+                                        return Err(HawdbError::Semantic(
                                             "ON CONFLICT assignments do not support arithmetic expressions"
                                                 .to_string(),
                                         ));
@@ -209,10 +209,10 @@ fn compile_relational_mutation(
         SqlStatement::Delete(delete) => {
             reject_non_public_schema(delete.table.schema.as_deref())?;
             let schema = state.table_schema(&delete.table.name).ok_or_else(|| {
-                SkeinError::Semantic(format!("unknown relational table {}", delete.table.name))
+                HawdbError::Semantic(format!("unknown relational table {}", delete.table.name))
             })?;
             let selection = delete.selection.ok_or_else(|| {
-                SkeinError::Semantic(
+                HawdbError::Semantic(
                     "unbounded relational DELETE requires an explicit qualified workflow"
                         .to_string(),
                 )
@@ -231,10 +231,10 @@ fn compile_relational_mutation(
         SqlStatement::Update(update) => {
             reject_non_public_schema(update.table.schema.as_deref())?;
             let schema = state.table_schema(&update.table.name).ok_or_else(|| {
-                SkeinError::Semantic(format!("unknown relational table {}", update.table.name))
+                HawdbError::Semantic(format!("unknown relational table {}", update.table.name))
             })?;
             let selection = update.selection.ok_or_else(|| {
-                SkeinError::Semantic(
+                HawdbError::Semantic(
                     "unbounded relational UPDATE requires an explicit qualified workflow"
                         .to_string(),
                 )
@@ -244,7 +244,7 @@ fn compile_relational_mutation(
                 .into_iter()
                 .map(|assignment| {
                     if schema.column_position(&assignment.column).is_none() {
-                        return Err(SkeinError::Semantic(format!(
+                        return Err(HawdbError::Semantic(format!(
                             "table {} has no column {}",
                             schema.name, assignment.column
                         )));
@@ -272,7 +272,7 @@ fn compile_relational_mutation(
                             right,
                         } => {
                             if target_type != RelationalScalarType::BigInt {
-                                return Err(SkeinError::Semantic(format!(
+                                return Err(HawdbError::Semantic(format!(
                                     "UPDATE arithmetic assignment target {} must be BIGINT",
                                     assignment.column
                                 )));
@@ -286,10 +286,10 @@ fn compile_relational_mutation(
                                     &update.table.name,
                                 )?,
                                 operator: match operator {
-                                    skein_sql::SqlArithmeticOperator::Add => {
+                                    hawdb_sql::SqlArithmeticOperator::Add => {
                                         RelationalBigIntArithmeticOperator::Add
                                     }
-                                    skein_sql::SqlArithmeticOperator::Subtract => {
+                                    hawdb_sql::SqlArithmeticOperator::Subtract => {
                                         RelationalBigIntArithmeticOperator::Subtract
                                     }
                                 },
@@ -326,7 +326,7 @@ fn compile_relational_mutation(
         | SqlStatement::CreateTable(_)
         | SqlStatement::CreateIndex(_)
         | SqlStatement::AlterTableAddColumn(_) => {
-            return Err(SkeinError::Semantic(
+            return Err(HawdbError::Semantic(
                 "relational mutation entrypoint requires INSERT, UPDATE, or DELETE".to_string(),
             ));
         }
@@ -350,13 +350,13 @@ fn compile_bigint_arithmetic_operand(
         SqlArithmeticOperand::Column(column) => {
             validate_mutation_column(&column, schema, alias, table)?;
             let position = schema.column_position(&column.name).ok_or_else(|| {
-                SkeinError::Semantic(format!(
+                HawdbError::Semantic(format!(
                     "table {} has no column {}",
                     schema.name, column.name
                 ))
             })?;
             if schema.columns[position].scalar_type != RelationalScalarType::BigInt {
-                return Err(SkeinError::Semantic(format!(
+                return Err(HawdbError::Semantic(format!(
                     "UPDATE arithmetic source column {} must be BIGINT",
                     column.name
                 )));
@@ -366,7 +366,7 @@ fn compile_bigint_arithmetic_operand(
         SqlArithmeticOperand::Value(value) => {
             let value = bind_relational_value_as(value, parameters, RelationalScalarType::BigInt)?;
             if !matches!(value, RelationalValue::BigInt(_)) {
-                return Err(SkeinError::Semantic(
+                return Err(HawdbError::Semantic(
                     "UPDATE arithmetic values must be non-null BIGINT scalars".to_string(),
                 ));
             }
@@ -394,7 +394,7 @@ fn compile_mutation_predicate(
         ExprKind::Not(predicate) => RelationalPredicate::Not(Box::new(compile(*predicate)?)),
         ExprKind::Compare { left, op, right } => {
             if right.as_column().is_some() {
-                return Err(SkeinError::Semantic(
+                return Err(HawdbError::Semantic(
                     "single-table mutation predicates do not support column-to-column comparison"
                         .to_owned(),
                 ));
@@ -413,7 +413,7 @@ fn compile_mutation_predicate(
             }
         }
         ExprKind::Like { .. } => {
-            return Err(SkeinError::Semantic(
+            return Err(HawdbError::Semantic(
                 "single-table mutation predicates do not support LIKE or ILIKE".to_string(),
             ));
         }
@@ -445,7 +445,7 @@ fn compile_mutation_predicate(
                 .collect::<Result<Vec<_>>>()?
                 .into_iter();
             let first = predicates.next().ok_or_else(|| {
-                SkeinError::Semantic("mutation IN list must not be empty".to_string())
+                HawdbError::Semantic("mutation IN list must not be empty".to_string())
             })?;
             predicates.fold(first, |left, right| {
                 if negated {
@@ -467,24 +467,24 @@ fn compile_mutation_predicate(
             }
         }
         _ => {
-            return Err(SkeinError::Semantic(
+            return Err(HawdbError::Semantic(
                 "unsupported single-table mutation predicate".to_owned(),
             ))
         }
     })
 }
 
-fn mutation_value_expression(expression: skein_sql::Expr) -> Result<SqlValue> {
+fn mutation_value_expression(expression: hawdb_sql::Expr) -> Result<SqlValue> {
     match expression.kind {
         ExprKind::Value(value) => Ok(value),
-        _ => Err(SkeinError::Semantic(
+        _ => Err(HawdbError::Semantic(
             "mutation predicate requires a literal or parameter".to_owned(),
         )),
     }
 }
 
 fn validate_mutation_column(
-    column: &skein_sql::SqlColumnRef,
+    column: &hawdb_sql::SqlColumnRef,
     schema: &RelationalTableSchema,
     alias: Option<&str>,
     table: &str,
@@ -494,13 +494,13 @@ fn validate_mutation_column(
         .as_deref()
         .is_some_and(|qualifier| Some(qualifier) != alias && qualifier != table)
     {
-        return Err(SkeinError::Semantic(format!(
+        return Err(HawdbError::Semantic(format!(
             "mutation predicate has unknown qualifier {}",
             column.qualifier.as_deref().unwrap_or_default()
         )));
     }
     if schema.column_position(&column.name).is_none() {
-        return Err(SkeinError::Semantic(format!(
+        return Err(HawdbError::Semantic(format!(
             "table {} has no column {}",
             schema.name, column.name
         )));
@@ -526,7 +526,7 @@ fn compile_schema_statement(statement: SqlStatement) -> Result<Vec<RelationalWri
         )]),
         SqlStatement::CreateIndex(create) => Ok(vec![compile_create_index(create)?]),
         SqlStatement::AlterTableAddColumn(alter) => compile_add_column(alter),
-        _ => Err(SkeinError::Semantic(
+        _ => Err(HawdbError::Semantic(
             "content-store schema corpus contains a non-schema statement".to_string(),
         )),
     }
@@ -535,12 +535,12 @@ fn compile_schema_statement(statement: SqlStatement) -> Result<Vec<RelationalWri
 fn compile_create_table(create: CreateTableStatement) -> Result<RelationalTableSchema> {
     reject_non_public_schema(create.table.schema.as_deref())?;
     if !matches!(create.storage, SqlTableStorage::RowPage) {
-        return Err(SkeinError::Semantic(
+        return Err(HawdbError::Semantic(
             "RowPage compiler does not accept a strict append table".to_string(),
         ));
     }
     if create.if_not_exists {
-        return Err(SkeinError::Semantic(
+        return Err(HawdbError::Semantic(
             "content-store schema must not hide drift with IF NOT EXISTS".to_string(),
         ));
     }
@@ -550,7 +550,7 @@ fn compile_create_table(create: CreateTableStatement) -> Result<RelationalTableS
     for column in &create.columns {
         if column.primary_key {
             if !primary_key.is_empty() {
-                return Err(SkeinError::Semantic(
+                return Err(HawdbError::Semantic(
                     "table declares more than one primary key".to_string(),
                 ));
             }
@@ -573,7 +573,7 @@ fn compile_create_table(create: CreateTableStatement) -> Result<RelationalTableS
         match constraint {
             SqlTableConstraint::PrimaryKey(columns) => {
                 if !primary_key.is_empty() {
-                    return Err(SkeinError::Semantic(
+                    return Err(HawdbError::Semantic(
                         "table declares more than one primary key".to_string(),
                     ));
                 }
@@ -592,7 +592,7 @@ fn compile_create_table(create: CreateTableStatement) -> Result<RelationalTableS
         }
     }
     if primary_key.is_empty() {
-        return Err(SkeinError::Semantic(format!(
+        return Err(HawdbError::Semantic(format!(
             "relational table {} must declare a primary key",
             create.table.name
         )));
@@ -605,7 +605,7 @@ fn compile_create_table(create: CreateTableStatement) -> Result<RelationalTableS
     let mut primary_key_columns = std::collections::BTreeSet::new();
     for column in &primary_key {
         if !column_names.contains(column.as_str()) || !primary_key_columns.insert(column.clone()) {
-            return Err(SkeinError::Semantic(format!(
+            return Err(HawdbError::Semantic(format!(
                 "primary key references unknown or duplicate column {column}"
             )));
         }
@@ -637,7 +637,7 @@ fn materialize_column_default(column: &RelationalColumnSchema) -> Result<Relatio
         None => RelationalValue::Null,
         Some(RelationalColumnDefault::Literal(value)) => value.clone(),
         Some(RelationalColumnDefault::UuidV7) => {
-            RelationalValue::Uuid(skein_core::generate_uuidv7()?)
+            RelationalValue::Uuid(hawdb_core::generate_uuidv7()?)
         }
     })
 }
@@ -658,7 +658,7 @@ fn compile_delete_referential_action(
         SqlReferentialAction::NoAction => Ok(RelationalReferentialAction::NoAction),
         SqlReferentialAction::Restrict => Ok(RelationalReferentialAction::Restrict),
         SqlReferentialAction::Cascade => Ok(RelationalReferentialAction::Cascade),
-        SqlReferentialAction::SetNull => Err(SkeinError::Semantic(
+        SqlReferentialAction::SetNull => Err(HawdbError::Semantic(
             "ON DELETE SET NULL is not supported".to_string(),
         )),
     }
@@ -670,7 +670,7 @@ fn compile_update_referential_action(
     match action {
         SqlReferentialAction::NoAction => Ok(RelationalReferentialAction::NoAction),
         SqlReferentialAction::Restrict => Ok(RelationalReferentialAction::Restrict),
-        SqlReferentialAction::Cascade | SqlReferentialAction::SetNull => Err(SkeinError::Semantic(
+        SqlReferentialAction::Cascade | SqlReferentialAction::SetNull => Err(HawdbError::Semantic(
             "ON UPDATE CASCADE and SET NULL are not supported".to_string(),
         )),
     }
@@ -679,7 +679,7 @@ fn compile_update_referential_action(
 fn compile_create_index(create: CreateIndexStatement) -> Result<RelationalWrite> {
     reject_non_public_schema(create.table.schema.as_deref())?;
     if create.if_not_exists {
-        return Err(SkeinError::Semantic(
+        return Err(HawdbError::Semantic(
             "content-store indexes must not hide drift with IF NOT EXISTS".to_string(),
         ));
     }
@@ -700,13 +700,13 @@ fn compile_create_index(create: CreateIndexStatement) -> Result<RelationalWrite>
 fn compile_add_column(alter: AlterTableAddColumnStatement) -> Result<Vec<RelationalWrite>> {
     reject_non_public_schema(alter.table.schema.as_deref())?;
     if alter.if_not_exists {
-        return Err(SkeinError::Semantic(
+        return Err(HawdbError::Semantic(
             "system schema migrations must not hide ADD COLUMN drift with IF NOT EXISTS"
                 .to_string(),
         ));
     }
     if alter.column.primary_key || alter.column.unique || alter.column.references.is_some() {
-        return Err(SkeinError::Semantic(
+        return Err(HawdbError::Semantic(
             "ALTER TABLE ADD COLUMN does not support inline key, unique, or foreign-key constraints"
                 .to_string(),
         ));

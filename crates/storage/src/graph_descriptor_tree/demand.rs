@@ -13,7 +13,7 @@ use crate::{
     content_digest, ManifestGeneration, RepresentationKind, SegmentCache, SegmentCacheError,
     SegmentCacheKey, StoreId,
 };
-use skein_integrity::IntegrityHasher;
+use hawdb_integrity::IntegrityHasher;
 use std::collections::BTreeSet;
 use std::fmt::{self, Debug, Formatter};
 use std::fs::File;

@@ -18,7 +18,7 @@ pub(super) fn unique_test_path(name: impl AsRef<str>) -> std::path::PathBuf {
         .duration_since(UNIX_EPOCH)
         .unwrap()
         .as_nanos();
-    std::env::temp_dir().join(format!("skein-{}-{nonce}", name.as_ref()))
+    std::env::temp_dir().join(format!("hawdb-{}-{nonce}", name.as_ref()))
 }
 
 pub(super) fn row(

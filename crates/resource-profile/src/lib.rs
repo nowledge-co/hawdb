@@ -1,17 +1,17 @@
-//! Typed storage resource-profile evidence for embedded Skein hosts.
+//! Typed storage resource-profile evidence for embedded Hawdb hosts.
 
-use skein_core::{Result, SkeinError};
-use skein_evidence::{
+use hawdb_core::{HawdbError, Result};
+use hawdb_evidence::{
     production_evidence_blocker_codes, ProductionEvidenceBinding, ProductionQualificationIdentity,
 };
-use skein_executor::QueryStreamReport;
-use skein_storage::{
+use hawdb_executor::QueryStreamReport;
+use hawdb_storage::{
     GraphIndexReadMetricsSnapshot, PersistentGraphIndexClass,
     RelationalIndexStorageResidencyReport, RelationalRowStorageResidencyReport,
     StorageResidencyReport,
 };
 
-pub use skein_evidence::resource_profile::STORAGE_RESOURCE_PROFILE_PROTOCOL;
+pub use hawdb_evidence::resource_profile::STORAGE_RESOURCE_PROFILE_PROTOCOL;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct StorageResourceProfileLimits {
@@ -50,7 +50,7 @@ impl StorageResourceProfileLimits {
             ),
         ];
         if let Some((name, _)) = positive.into_iter().find(|(_, value)| *value == 0) {
-            return Err(SkeinError::Semantic(format!(
+            return Err(HawdbError::Semantic(format!(
                 "storage resource profile {name} must be greater than zero"
             )));
         }
@@ -532,7 +532,7 @@ fn graph_index_class_read_json(
 #[cfg(test)]
 mod tests {
     use super::{relational_row_residency_json, StorageResourceProfileLimits};
-    use skein_storage::RelationalRowStorageResidencyReport;
+    use hawdb_storage::RelationalRowStorageResidencyReport;
 
     #[test]
     fn limits_reject_zero_budgets() {

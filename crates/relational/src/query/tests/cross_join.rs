@@ -7,7 +7,7 @@ fn cross_join_preserves_candidate_intermediate_and_cancellation_limits() {
         RelationalIndexReadMode::<crate::RelationalMaterializedReader>::Materialized,
         RelationalRowReadMode::<crate::RelationalMaterializedReader>::CanonicalMemory,
     );
-    let SqlStatement::Select(select) = skein_sql::parse_postgres_sql(
+    let SqlStatement::Select(select) = hawdb_sql::parse_postgres_sql(
         "SELECT o.id AS outer_id, i.id AS inner_id \
          FROM batch_outer o CROSS JOIN batch_inner i",
     )
@@ -28,7 +28,7 @@ fn cross_join_preserves_candidate_intermediate_and_cancellation_limits() {
         prepared.join_planning.strategy,
         RelationalJoinPlanningStrategy::SyntaxOrder
     );
-    let memory = skein_executor::ExecutionMemoryConfig::default();
+    let memory = hawdb_executor::ExecutionMemoryConfig::default();
     let run = |limits, task_context| {
         let admitted = prepared.execution.admit(
             &state,
@@ -71,8 +71,8 @@ fn cross_join_preserves_candidate_intermediate_and_cancellation_limits() {
         let error = run(limits, None).unwrap_err();
         assert!(error.to_string().contains(expected), "{error}");
     }
-    let cancellation = skein_core::RuntimeCancellationToken::new();
-    let context = skein_core::RuntimeTaskContext::without_deadline(cancellation.clone());
+    let cancellation = hawdb_core::RuntimeCancellationToken::new();
+    let context = hawdb_core::RuntimeTaskContext::without_deadline(cancellation.clone());
     cancellation.cancel();
     let error = run(batched_index_join_limits(), Some(&context)).unwrap_err();
     assert!(error.to_string().contains("cancelled"), "{error}");

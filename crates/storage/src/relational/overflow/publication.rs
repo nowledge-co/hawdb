@@ -1,7 +1,7 @@
 //! Manifest-last publication for immutable relational overflow extents.
 
 use super::RelationalOverflowRef;
-use skein_integrity::Sha256Digest;
+use hawdb_integrity::Sha256Digest;
 use std::fmt;
 use std::num::{NonZeroU64, NonZeroUsize};
 use std::sync::Arc;
@@ -13,7 +13,7 @@ mod reader;
 pub use publisher::RelationalOverflowPublisher;
 pub use reader::RelationalOverflowRootReader;
 
-pub const RELATIONAL_OVERFLOW_MANIFEST_FILE: &str = "relational-overflow.manifest.skein";
+pub const RELATIONAL_OVERFLOW_MANIFEST_FILE: &str = "relational-overflow.manifest.hawdb";
 const RELATIONAL_OVERFLOW_PUBLICATION_LOCK_FILE: &str = "relational-overflow.lock";
 
 pub const DEFAULT_RELATIONAL_OVERFLOW_MANIFEST_BYTES: usize = 1024 * 1024;
@@ -22,15 +22,15 @@ pub const DEFAULT_RELATIONAL_OVERFLOW_NEW_EXTENT_BYTES: u64 = 512 * 1024 * 1024;
 const DEFAULT_RELATIONAL_OVERFLOW_DESCRIPTOR_BYTES: u64 = 256 * 1024 * 1024;
 
 pub fn relational_overflow_extent_file(generation: u64) -> String {
-    format!("relational-overflow-{generation}.extents.skein")
+    format!("relational-overflow-{generation}.extents.hawdb")
 }
 
 pub fn relational_overflow_descriptor_file(generation: u64) -> String {
-    format!("relational-overflow-root-{generation}.descriptors.skein")
+    format!("relational-overflow-root-{generation}.descriptors.hawdb")
 }
 
 pub fn relational_overflow_manifest_generation_file(generation: u64) -> String {
-    format!("relational-overflow-{generation}.manifest.skein")
+    format!("relational-overflow-{generation}.manifest.hawdb")
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -198,7 +198,7 @@ pub struct RelationalOverflowExactGenerationRequest<'a> {
     pub base: &'a RelationalOverflowRootReader,
     pub expected_previous_generation: u64,
     pub references: &'a super::RelationalOverflowReferenceSet,
-    pub task: &'a skein_core::RuntimeTaskContext,
+    pub task: &'a hawdb_core::RuntimeTaskContext,
 }
 
 #[derive(Debug)]
@@ -207,7 +207,7 @@ pub enum RelationalOverflowPublicationError {
     Corrupt(String),
     Durability(String),
     MissingExtent(Sha256Digest),
-    Stopped(skein_core::RuntimeCancellationReason),
+    Stopped(hawdb_core::RuntimeCancellationReason),
     StaleGeneration {
         expected_previous: Option<u64>,
         actual_previous: Option<u64>,

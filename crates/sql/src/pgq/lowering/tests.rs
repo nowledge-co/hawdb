@@ -1,8 +1,8 @@
 use std::collections::BTreeMap;
 
-use skein_core::{RelationshipDirection, Value};
-use skein_plan::{LogicalPlan, ProjectionExpression};
-use skein_sql_syntax::parse_postgres_select;
+use hawdb_core::{RelationshipDirection, Value};
+use hawdb_plan::{LogicalPlan, ProjectionExpression};
+use hawdb_sql_syntax::parse_postgres_select;
 
 use super::*;
 use crate::pgq::{
@@ -113,9 +113,9 @@ fn synthesizes_deterministic_names_for_anonymous_elements() {
     else {
         panic!("expected expansion");
     };
-    assert_eq!(source_variable, "__skein_pgq_slot_0");
-    assert_eq!(rel_variable.as_deref(), Some("__skein_pgq_slot_1"));
-    assert_eq!(target_variable, "__skein_pgq_slot_2");
+    assert_eq!(source_variable, "__hawdb_pgq_slot_0");
+    assert_eq!(rel_variable.as_deref(), Some("__hawdb_pgq_slot_1"));
+    assert_eq!(target_variable, "__hawdb_pgq_slot_2");
 }
 
 #[test]

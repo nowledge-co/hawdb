@@ -1,6 +1,6 @@
 use crate::{
     AppendGeneratedRow, AppendTransaction, AppendWrite, ConcurrentDatabase,
-    ConcurrentTransactionOptions, Database, RelationalValue, SkeinError, Value,
+    ConcurrentTransactionOptions, Database, HawdbError, RelationalValue, Value,
     WalGroupCommitActivation, WalGroupCommitAdaptiveColdStartEvidence,
     WalGroupCommitAdaptivePolicyEvidence, WalGroupCommitAdaptiveSteadyStateEvidence,
     WalGroupCommitConfig, WalGroupCommitDelayPolicy, WalGroupCommitEvidence,
@@ -207,7 +207,7 @@ fn optimistic_transactions_prepare_in_parallel_and_reject_the_stale_committer() 
         .iter()
         .find_map(|result| result.as_ref().err())
         .expect("one optimistic transaction must conflict");
-    assert!(matches!(conflict, SkeinError::Execution(_)));
+    assert!(matches!(conflict, HawdbError::Execution(_)));
     assert!(conflict
         .to_string()
         .contains("optimistic transaction conflict"));
@@ -1575,7 +1575,7 @@ fn wal_group_sync_failure_rejects_commit_and_poisons_until_reopen() {
 
     crate::store::set_wal_group_sync_failpoint(true);
     let error = transaction.commit().unwrap_err();
-    assert!(matches!(&error, SkeinError::StorageIntegrity(_)));
+    assert!(matches!(&error, HawdbError::StorageIntegrity(_)));
     assert!(error
         .to_string()
         .contains("WAL group durability barrier failed"));

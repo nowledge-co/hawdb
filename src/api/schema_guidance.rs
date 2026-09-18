@@ -1,7 +1,7 @@
 use super::{BoundedReadQueryOutput, Database, DatabaseReadTransaction, QueryOutput};
-use crate::error::{Result, SkeinError};
+use crate::error::{HawdbError, Result};
 use crate::value::Value;
-use skein_core::{
+use hawdb_core::{
     build_graph_rag_schema_context, GraphRagGeneratedQuery, GraphRagSchemaContext,
     GraphRagSchemaContextOptions,
 };
@@ -57,7 +57,7 @@ impl DatabaseReadTransaction {
             .statistics(&self.catalog)
             .computed_at_commit_epoch;
         if query.context_commit_epoch() != pinned_epoch {
-            return Err(SkeinError::Semantic(format!(
+            return Err(HawdbError::Semantic(format!(
                 "GraphRAG schema context is stale: generated at graph epoch {}, pinned at {}",
                 query.context_commit_epoch(),
                 pinned_epoch
@@ -65,7 +65,7 @@ impl DatabaseReadTransaction {
         }
         query
             .validate_parameters(parameters)
-            .map_err(|error| SkeinError::Semantic(error.to_string()))?;
+            .map_err(|error| HawdbError::Semantic(error.to_string()))?;
         self.query_with_params_bounded_profile(query.cypher(), parameters, max_rows)
     }
 }

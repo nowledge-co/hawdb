@@ -1,7 +1,7 @@
 use super::*;
-use skein_executor::{BlockingOperatorMemoryReport, QueryRows};
-use skein_optimizer::{RelationalJoinEnumerationConfig, RelationalOperatorKind};
-use skein_storage::RelationalHydrationBudget;
+use hawdb_executor::{BlockingOperatorMemoryReport, QueryRows};
+use hawdb_optimizer::{RelationalJoinEnumerationConfig, RelationalOperatorKind};
+use hawdb_storage::RelationalHydrationBudget;
 use std::collections::{BTreeMap, BTreeSet};
 
 type ExpectedNode = (
@@ -26,8 +26,8 @@ pub(super) const QUERIES: [&str; 8] = [
 ];
 
 pub(super) fn select(sql: &str) -> SelectStatement {
-    match skein_sql::prepare_postgres_sql(sql).unwrap().statement {
-        skein_sql::SqlStatement::Select(select) => select,
+    match hawdb_sql::prepare_postgres_sql(sql).unwrap().statement {
+        hawdb_sql::SqlStatement::Select(select) => select,
         _ => panic!("expected SELECT"),
     }
 }
@@ -129,7 +129,7 @@ impl Case {
         let index = |table: &str| RelationalIndexExecutionEvidence {
             table: table.into(),
             index: if self.kind == 1 {
-                skein_storage::RELATIONAL_PRIMARY_INDEX_NAME.into()
+                hawdb_storage::RELATIONAL_PRIMARY_INDEX_NAME.into()
             } else {
                 "idx_x".into()
             },

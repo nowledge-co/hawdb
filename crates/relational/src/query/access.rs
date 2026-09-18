@@ -1,25 +1,25 @@
 pub(super) use crate::physical_plan::predicate_is_covered_by_access;
-pub(super) use skein_optimizer::relational_sargability::collect_conjunctive_join_equalities;
-use skein_optimizer::relational_sargability::{
+pub(super) use hawdb_optimizer::relational_sargability::collect_conjunctive_join_equalities;
+use hawdb_optimizer::relational_sargability::{
     canonical_keyset_values, collect_conjunctive_equalities, predicate_is_covered_by_equalities,
 };
 
 use super::{
     bind_sql_value, relational_unique_index_name, resolve_column, select_relational_access_path,
-    value_to_relational_as, BTreeMap, BTreeSet, BoundRow, PlannedJoin, RelationalAccessCandidate,
-    RelationalAccessPathDescriptor, RelationalAccessPathKind, RelationalBaseAccess,
-    RelationalIndexRangeScan, RelationalIndexReadMode, RelationalIndexRuntime,
-    RelationalIndexScanDirection, RelationalJoinAccess, RelationalJoinAccessCandidate,
-    RelationalKey, RelationalReadRow, RelationalRowReadMode, RelationalRowRuntime, RelationalState,
-    RelationalTableSchema, RelationalValue, Result, SkeinError, SqlColumnRef, SqlNullOrder,
-    SqlOrderDirection, SqlPredicate, Value,
+    value_to_relational_as, BTreeMap, BTreeSet, BoundRow, HawdbError, PlannedJoin,
+    RelationalAccessCandidate, RelationalAccessPathDescriptor, RelationalAccessPathKind,
+    RelationalBaseAccess, RelationalIndexRangeScan, RelationalIndexReadMode,
+    RelationalIndexRuntime, RelationalIndexScanDirection, RelationalJoinAccess,
+    RelationalJoinAccessCandidate, RelationalKey, RelationalReadRow, RelationalRowReadMode,
+    RelationalRowRuntime, RelationalState, RelationalTableSchema, RelationalValue, Result,
+    SqlColumnRef, SqlNullOrder, SqlOrderDirection, SqlPredicate, Value,
 };
 
 pub(super) struct RelationalBaseAccessPlanning<'a, R> {
     pub(super) index_read_mode: RelationalIndexReadMode<'a, R>,
     pub(super) fields: &'a crate::field_plan::RelationalFieldPlan,
     pub(super) predicate: Option<&'a SqlPredicate>,
-    pub(super) order_by: &'a [skein_sql::SqlOrderItem],
+    pub(super) order_by: &'a [hawdb_sql::SqlOrderItem],
     pub(super) prefer_ordered_access: bool,
     pub(super) parameters: &'a [Value],
     pub(super) state: &'a RelationalState,
@@ -90,7 +90,7 @@ pub(super) fn choose_base_access(
             continue;
         }
         if value.scalar_type() != Some(schema.columns[position].scalar_type) {
-            return Err(SkeinError::Semantic(format!(
+            return Err(HawdbError::Semantic(format!(
                 "relational comparison on {} has an incompatible scalar type",
                 column.name
             )));
@@ -201,7 +201,7 @@ pub(super) fn choose_base_access(
         ordered_candidates
     };
     let selected = select_relational_access_path(descriptors)
-        .map_err(|error| SkeinError::Execution(format!("invalid relational access path: {error}")))?
+        .map_err(|error| HawdbError::Execution(format!("invalid relational access path: {error}")))?
         .expect("full scan is always an access-path candidate");
     let position = candidates
         .iter()
@@ -291,7 +291,7 @@ pub(super) fn index_access_candidate(
                 }
             }
             None => {
-                return Err(SkeinError::Execution(format!(
+                return Err(HawdbError::Execution(format!(
                     "relational index {name} on table {table} is not materialized"
                 )));
             }
@@ -324,7 +324,7 @@ pub(super) fn index_access_candidate(
 }
 
 pub(super) fn index_order_prefix(
-    order_by: &[skein_sql::SqlOrderItem],
+    order_by: &[hawdb_sql::SqlOrderItem],
     index_columns: &[String],
     equality_prefix_len: usize,
     schema: &RelationalTableSchema,
@@ -501,7 +501,7 @@ pub(super) fn choose_join_access(
             .iter()
             .map(|candidate| candidate.descriptor.clone()),
     )
-    .map_err(|error| SkeinError::Execution(format!("invalid relational join access: {error}")))?
+    .map_err(|error| HawdbError::Execution(format!("invalid relational join access: {error}")))?
     .expect("full scan is always a join access-path candidate");
     let position = candidates
         .iter()
@@ -601,13 +601,13 @@ pub(super) fn bound_join_key(
             return Ok(None);
         }
         let position = schema.column_position(join_column).ok_or_else(|| {
-            SkeinError::Semantic(format!(
+            HawdbError::Semantic(format!(
                 "relational join table {} has no column {join_column}",
                 schema.name
             ))
         })?;
         if value.scalar_type() != Some(schema.columns[position].scalar_type) {
-            return Err(SkeinError::Semantic(format!(
+            return Err(HawdbError::Semantic(format!(
                 "relational join comparison on {join_column} has an incompatible scalar type"
             )));
         }
@@ -645,7 +645,7 @@ pub(super) fn visit_join_entries<'a>(
             index_runtime.visit_prefix(state, table, name, &prefix, |key| {
                 match row_runtime.read_point(table, key)? {
                     Some(row) => visit(row),
-                    None => Err(SkeinError::StorageIntegrity(format!(
+                    None => Err(HawdbError::StorageIntegrity(format!(
                         "relational index {name} on table {table} points to missing row {key:?}"
                     ))),
                 }
@@ -684,7 +684,7 @@ pub(super) fn visit_base_entries<'a>(
                 };
                 match row {
                     Some(row) => visit(row),
-                    None => Err(SkeinError::StorageIntegrity(format!(
+                    None => Err(HawdbError::StorageIntegrity(format!(
                         "relational index {name} on table {table} points to missing or non-coverable row {key:?}"
                     ))),
                 }

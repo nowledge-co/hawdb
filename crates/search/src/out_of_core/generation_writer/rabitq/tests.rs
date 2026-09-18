@@ -1,8 +1,8 @@
 use super::super::tests::{document, test_dir};
 use super::*;
 use crate::build_memory::BuildMemory;
-use skein_core::RuntimeMemoryReservation;
-use skein_vector_projection::RaBitQBitWidth;
+use hawdb_core::RuntimeMemoryReservation;
+use hawdb_vector_projection::RaBitQBitWidth;
 use std::num::NonZeroUsize;
 use std::path::PathBuf;
 
@@ -53,7 +53,7 @@ impl Fixture {
         self.memory.ledger.snapshot().used_bytes
     }
 
-    fn occupy_remaining(&self) -> skein_executor::QueryMemoryLease {
+    fn occupy_remaining(&self) -> hawdb_executor::QueryMemoryLease {
         self.memory
             .spool
             .reserve(self.budget - self.used())

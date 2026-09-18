@@ -4,7 +4,7 @@ use super::state::{
 };
 use super::*;
 use crate::predicate::predicate_truth_with;
-use skein_sql::{Expr, ExprKind};
+use hawdb_sql::{Expr, ExprKind};
 
 mod binding;
 use binding::{HavingBindings, ScalarState};
@@ -24,7 +24,7 @@ pub fn validate_having(
         return Ok(());
     }
     if select.lock_strength.is_some() {
-        return Err(SkeinError::Semantic(
+        return Err(HawdbError::Semantic(
             "HAVING does not support row locking".into(),
         ));
     }
@@ -35,7 +35,7 @@ pub fn validate_having(
                 bindings.scalar(expression, true)?;
             }
             SelectProjection::Wildcard => {
-                return Err(SkeinError::Semantic(
+                return Err(HawdbError::Semantic(
                     "aggregate SELECT does not support wildcard projection".into(),
                 ))
             }
@@ -63,7 +63,7 @@ pub fn projection_template(
         .iter()
         .map(|projection| {
             let SelectProjection::Expression { expression, alias } = projection else {
-                return Err(SkeinError::Semantic(
+                return Err(HawdbError::Semantic(
                     "aggregate SELECT does not support wildcard projection".into(),
                 ));
             };
@@ -168,7 +168,7 @@ impl HavingState {
                 .parse::<usize>()
                 .ok()
                 .and_then(|index| values.get(index))
-                .ok_or_else(|| SkeinError::Execution("invalid HAVING value slot".into()))?;
+                .ok_or_else(|| HawdbError::Execution("invalid HAVING value slot".into()))?;
             Ok((&slot.0, slot.1))
         })?;
         Ok(truth == Some(true))
@@ -186,7 +186,7 @@ impl Compiler<'_, '_> {
         &mut self,
         mut scalar: ScalarState,
         target: Option<RelationalScalarType>,
-        span: skein_sql::SqlSourceSpan,
+        span: hawdb_sql::SqlSourceSpan,
     ) -> Result<Expr> {
         scalar.coerce(target)?;
         let index = self.slots.len();

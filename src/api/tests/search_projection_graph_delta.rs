@@ -1,6 +1,6 @@
 use super::*;
 use crate::{
-    RelationalValue, SearchProjectionChangeBatch, SearchProjectionRelationalDelta, SkeinError,
+    HawdbError, RelationalValue, SearchProjectionChangeBatch, SearchProjectionRelationalDelta,
 };
 
 fn hydrate_thread_message_changes(
@@ -12,14 +12,14 @@ fn hydrate_thread_message_changes(
     let mut processed_primary_key_count = 0usize;
     for table in batch.relational_primary_key_changes() {
         if table.table != "thread_messages" {
-            return Err(SkeinError::Execution(format!(
+            return Err(HawdbError::Execution(format!(
                 "unsupported relational projection table {}",
                 table.table
             )));
         }
         for key in &table.primary_keys {
             let [RelationalValue::BigInt(message_id)] = key.0.as_slice() else {
-                return Err(SkeinError::Execution(
+                return Err(HawdbError::Execution(
                     "thread_messages projection key must be one BIGINT".to_string(),
                 ));
             };
@@ -31,7 +31,7 @@ fn hydrate_thread_message_changes(
                 [] => deletes.push(format!("message:{message_id}")),
                 [row] => {
                     let Some(Value::String(body)) = row.get("body") else {
-                        return Err(SkeinError::Execution(
+                        return Err(HawdbError::Execution(
                             "thread_messages projection query omitted body".to_string(),
                         ));
                     };
@@ -46,7 +46,7 @@ fn hydrate_thread_message_changes(
                     });
                 }
                 rows => {
-                    return Err(SkeinError::Execution(format!(
+                    return Err(HawdbError::Execution(format!(
                         "thread_messages projection query returned {} rows",
                         rows.len()
                     )));
@@ -67,8 +67,8 @@ fn hydrate_thread_message_changes(
 
 #[test]
 fn database_facade_reexports_search_owned_catch_up_contracts() {
-    fn accepts_owner_report(_: skein_search::SearchProjectionCatchUpReport) {}
-    fn accepts_owner_scheduled_report(_: skein_search::ScheduledSearchProjectionCatchUpReport) {}
+    fn accepts_owner_report(_: hawdb_search::SearchProjectionCatchUpReport) {}
+    fn accepts_owner_scheduled_report(_: hawdb_search::ScheduledSearchProjectionCatchUpReport) {}
 
     let report = crate::SearchProjectionCatchUpReport {
         graph_commit_epoch: 8,
@@ -252,8 +252,8 @@ fn unified_search_projection_changefeed_captures_relational_primary_keys() {
     );
     assert_eq!(
         batch.relational_primary_key_changes()[0].primary_keys,
-        vec![skein_storage::RelationalKey(vec![
-            skein_storage::RelationalValue::BigInt(1)
+        vec![hawdb_storage::RelationalKey(vec![
+            hawdb_storage::RelationalValue::BigInt(1)
         ])]
     );
     assert_eq!(batch.operation_count(), 1);
@@ -346,7 +346,7 @@ fn conflict_noop_returning_does_not_emit_a_relational_changefeed_mutation() {
 fn relational_changefeed_overflow_requires_rebuild_without_rejecting_commit() {
     let mut db = Database::new_with_config(DatabaseConfig {
         search_projection_relational_change_limits:
-            skein_storage::RelationalPrimaryKeyChangeCaptureLimits {
+            hawdb_storage::RelationalPrimaryKeyChangeCaptureLimits {
                 max_entries: NonZeroUsize::new(1).unwrap(),
                 max_bytes: NonZeroUsize::new(1024).unwrap(),
             },
@@ -396,8 +396,8 @@ fn relational_changefeed_resumes_from_wal_after_restart() {
     assert_eq!(batch.relational_primary_key_changes().len(), 1);
     assert_eq!(
         batch.relational_primary_key_changes()[0].primary_keys,
-        vec![skein_storage::RelationalKey(vec![
-            skein_storage::RelationalValue::BigInt(7)
+        vec![hawdb_storage::RelationalKey(vec![
+            hawdb_storage::RelationalValue::BigInt(7)
         ])]
     );
     assert!(db.search_projection_changefeed_status().restart_recoverable);
@@ -428,8 +428,8 @@ fn relational_changefeed_resumes_from_checkpoint_after_restart() {
     assert_eq!(batch.relational_primary_key_changes().len(), 1);
     assert_eq!(
         batch.relational_primary_key_changes()[0].primary_keys,
-        vec![skein_storage::RelationalKey(vec![
-            skein_storage::RelationalValue::BigInt(11)
+        vec![hawdb_storage::RelationalKey(vec![
+            hawdb_storage::RelationalValue::BigInt(11)
         ])]
     );
 
@@ -698,7 +698,7 @@ fn unified_projection_batch_hydrator_failure_keeps_graph_only_watermark_unpublis
             1,
             |_snapshot, batch| {
                 assert!(!batch.has_relational_changes());
-                Err(SkeinError::Execution(
+                Err(HawdbError::Execution(
                     "graph dependency hydration failed".to_string(),
                 ))
             },
@@ -840,7 +840,7 @@ fn unified_projection_catch_up_failure_does_not_publish_watermark() {
 
     let hydration_error = db
         .catch_up_search_projection_with_relational(&mut search_index, 1, 1, |_database, _batch| {
-            Err(SkeinError::Execution(
+            Err(HawdbError::Execution(
                 "relational hydration failed".to_string(),
             ))
         })

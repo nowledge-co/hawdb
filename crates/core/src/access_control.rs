@@ -1,4 +1,4 @@
-use crate::{Result, SkeinError};
+use crate::{HawdbError, Result};
 use std::collections::BTreeSet;
 
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
@@ -50,17 +50,17 @@ impl QueryAccessControlContext {
 
     pub fn validate(&self) -> Result<()> {
         if self.policy_epoch == 0 {
-            return Err(SkeinError::Semantic(
+            return Err(HawdbError::Semantic(
                 "access control policy epoch must be non-zero".to_string(),
             ));
         }
         if self.visibility_property.trim().is_empty() {
-            return Err(SkeinError::Semantic(
+            return Err(HawdbError::Semantic(
                 "access control visibility property must be non-empty".to_string(),
             ));
         }
         if self.allowed_visibility_values.is_empty() {
-            return Err(SkeinError::Semantic(
+            return Err(HawdbError::Semantic(
                 "access control visibility scope must not be empty".to_string(),
             ));
         }
@@ -69,7 +69,7 @@ impl QueryAccessControlContext {
             .iter()
             .any(|value| value.trim().is_empty())
         {
-            return Err(SkeinError::Semantic(
+            return Err(HawdbError::Semantic(
                 "access control visibility scope values must be non-empty".to_string(),
             ));
         }

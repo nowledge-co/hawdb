@@ -5,10 +5,10 @@
 
 use crate::nowledge_mem_query_report::scan_pruning_report_json;
 use crate::query_runtime_preflight::NowledgeQueryRuntimePreflightProbe;
-use skein_core::SkeinError;
-use skein_evidence::inventory::REQUIRED_NOWLEDGE_REPLACEMENT_QUERY_FAMILIES;
-use skein_route_ownership::graph::REQUIRED_NOWLEDGE_MEM_BOUNDED_READ_ROUTES;
-use skein_storage::ScanPruningReport;
+use hawdb_core::HawdbError;
+use hawdb_evidence::inventory::REQUIRED_NOWLEDGE_REPLACEMENT_QUERY_FAMILIES;
+use hawdb_route_ownership::graph::REQUIRED_NOWLEDGE_MEM_BOUNDED_READ_ROUTES;
+use hawdb_storage::ScanPruningReport;
 use std::collections::{BTreeMap, BTreeSet};
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -342,15 +342,15 @@ fn query_runtime_probe_identity_blocker_codes(
 }
 
 #[doc(hidden)]
-pub const fn skein_error_class(error: &SkeinError) -> &'static str {
+pub const fn hawdb_error_class(error: &HawdbError) -> &'static str {
     match error {
-        SkeinError::Parse(_) => "parse",
-        SkeinError::Semantic(_) => "semantic",
-        SkeinError::Storage(_)
-        | SkeinError::StorageIntegrity(_)
-        | SkeinError::AppendSequenceExhausted { .. } => "storage",
-        SkeinError::Execution(_) => "execution",
-        SkeinError::CapabilityUnavailable { .. } => "capability_unavailable",
+        HawdbError::Parse(_) => "parse",
+        HawdbError::Semantic(_) => "semantic",
+        HawdbError::Storage(_)
+        | HawdbError::StorageIntegrity(_)
+        | HawdbError::AppendSequenceExhausted { .. } => "storage",
+        HawdbError::Execution(_) => "execution",
+        HawdbError::CapabilityUnavailable { .. } => "capability_unavailable",
     }
 }
 

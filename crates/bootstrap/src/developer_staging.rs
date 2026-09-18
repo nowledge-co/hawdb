@@ -4,39 +4,39 @@
 //! evidence. This module never opens an embedded database or reads host state.
 
 use crate::{
-    skein_lightning_bootstrap_bundle_json_with_optional_storage_recovery,
-    skein_lightning_bootstrap_manifest_json, skein_lightning_graph_stream_validation_json,
-    skein_lightning_relational_stream_validation_json, SkeinLightningBootstrapExport,
+    hawdb_lightning_bootstrap_bundle_json_with_optional_storage_recovery,
+    hawdb_lightning_bootstrap_manifest_json, hawdb_lightning_graph_stream_validation_json,
+    hawdb_lightning_relational_stream_validation_json, HawdbLightningBootstrapExport,
 };
-use skein_core::Result;
-use skein_integrity::checksum_u64;
-use skein_storage::{durable_replace_file, sync_directory};
+use hawdb_core::Result;
+use hawdb_integrity::checksum_u64;
+use hawdb_storage::{durable_replace_file, sync_directory};
 use std::collections::BTreeMap;
 use std::fs::{self, File};
 use std::io::Write;
 use std::path::Path;
 
-pub const SKEIN_LIGHTNING_STAGING_CATALOG_PROTOCOL_VERSION: u64 = 1;
+pub const HAWDB_LIGHTNING_STAGING_CATALOG_PROTOCOL_VERSION: u64 = 1;
 
-pub fn stage_skein_lightning_bootstrap_export(
-    export: &SkeinLightningBootstrapExport,
+pub fn stage_hawdb_lightning_bootstrap_export(
+    export: &HawdbLightningBootstrapExport,
     staging_dir: impl AsRef<Path>,
 ) -> Result<serde_json::Value> {
-    stage_skein_lightning_bootstrap_export_with_optional_storage_recovery(export, staging_dir, None)
+    stage_hawdb_lightning_bootstrap_export_with_optional_storage_recovery(export, staging_dir, None)
 }
 
-pub fn stage_skein_lightning_bootstrap_export_with_optional_storage_recovery(
-    export: &SkeinLightningBootstrapExport,
+pub fn stage_hawdb_lightning_bootstrap_export_with_optional_storage_recovery(
+    export: &HawdbLightningBootstrapExport,
     staging_dir: impl AsRef<Path>,
     storage_recovery: Option<serde_json::Value>,
 ) -> Result<serde_json::Value> {
     let staging_dir = staging_dir.as_ref();
     fs::create_dir_all(staging_dir)?;
-    let bundle = skein_lightning_bootstrap_bundle_json_with_optional_storage_recovery(
+    let bundle = hawdb_lightning_bootstrap_bundle_json_with_optional_storage_recovery(
         export,
         storage_recovery,
     );
-    let manifest = skein_lightning_bootstrap_manifest_json(&export.manifest);
+    let manifest = hawdb_lightning_bootstrap_manifest_json(&export.manifest);
     let graph_stream_validation = export
         .graph_stream
         .validate_against_manifest(&export.manifest);
@@ -59,22 +59,22 @@ pub fn stage_skein_lightning_bootstrap_export_with_optional_storage_recovery(
     let bundle_bytes = serde_json::to_vec_pretty(&bundle).unwrap();
     let manifest_artifact = write_staging_artifact(
         staging_dir,
-        "skein_lightning_bootstrap_manifest.json",
+        "hawdb_lightning_bootstrap_manifest.json",
         &manifest_bytes,
     )?;
     let graph_stream_artifact = write_staging_artifact(
         staging_dir,
-        "skein_lightning_graph_stream.txt",
+        "hawdb_lightning_graph_stream.txt",
         graph_stream_bytes,
     )?;
     let relational_stream_artifact = write_staging_artifact(
         staging_dir,
-        "skein_lightning_relational_stream.bin",
+        "hawdb_lightning_relational_stream.bin",
         relational_stream_bytes,
     )?;
     let bundle_artifact = write_staging_artifact(
         staging_dir,
-        "skein_lightning_bootstrap_bundle.json",
+        "hawdb_lightning_bootstrap_bundle.json",
         &bundle_bytes,
     )?;
     let artifacts = vec![
@@ -83,10 +83,10 @@ pub fn stage_skein_lightning_bootstrap_export_with_optional_storage_recovery(
         relational_stream_artifact,
         bundle_artifact,
     ];
-    let artifact_summary = skein_lightning_artifact_summary(&artifacts, "byte_len");
+    let artifact_summary = hawdb_lightning_artifact_summary(&artifacts, "byte_len");
     let catalog = serde_json::json!({
-        "protocol": "skein-lightning-staging-catalog",
-        "protocol_version": SKEIN_LIGHTNING_STAGING_CATALOG_PROTOCOL_VERSION,
+        "protocol": "hawdb-lightning-staging-catalog",
+        "protocol_version": HAWDB_LIGHTNING_STAGING_CATALOG_PROTOCOL_VERSION,
         "stage_state": stage_state,
         "database_commit_epoch": export.manifest.database_commit_epoch,
         "graph_commit_epoch": export.manifest.graph_commit_epoch,
@@ -95,13 +95,13 @@ pub fn stage_skein_lightning_bootstrap_export_with_optional_storage_recovery(
         "export_gate": bundle["export_gate"].clone(),
         "artifact_summary": artifact_summary,
         "artifacts": artifacts,
-        "graph_stream_validation": skein_lightning_graph_stream_validation_json(&graph_stream_validation),
-        "relational_stream_validation": skein_lightning_relational_stream_validation_json(&relational_stream_validation),
+        "graph_stream_validation": hawdb_lightning_graph_stream_validation_json(&graph_stream_validation),
+        "relational_stream_validation": hawdb_lightning_relational_stream_validation_json(&relational_stream_validation),
     });
     let catalog_bytes = serde_json::to_vec_pretty(&catalog).unwrap();
     write_staging_artifact(
         staging_dir,
-        "skein_lightning_staging_catalog.json",
+        "hawdb_lightning_staging_catalog.json",
         &catalog_bytes,
     )?;
     sync_bootstrap_directory(staging_dir)?;
@@ -130,7 +130,7 @@ pub fn sync_bootstrap_directory(path: impl AsRef<Path>) -> Result<()> {
     Ok(())
 }
 
-pub fn skein_lightning_artifact_summary(
+pub fn hawdb_lightning_artifact_summary(
     artifacts: &[serde_json::Value],
     byte_len_field: &str,
 ) -> serde_json::Value {
@@ -171,27 +171,27 @@ fn write_staging_artifact(
 ) -> Result<serde_json::Value> {
     write_bootstrap_atomic_file(staging_dir, file_name, bytes)?;
     Ok(serde_json::json!({
-        "kind": skein_lightning_artifact_kind(file_name),
+        "kind": hawdb_lightning_artifact_kind(file_name),
         "path": file_name,
         "byte_len": bytes.len(),
         "checksum": checksum_u64(bytes),
     }))
 }
 
-fn skein_lightning_artifact_kind(file_name: &str) -> &'static str {
+fn hawdb_lightning_artifact_kind(file_name: &str) -> &'static str {
     match file_name {
-        "skein_lightning_bootstrap_manifest.json" => "manifest",
-        "skein_lightning_graph_stream.txt" => "graph_stream",
-        "skein_lightning_relational_stream.bin" => "relational_stream",
-        "skein_lightning_bootstrap_bundle.json" => "bundle",
-        "skein_lightning_staging_catalog.json" => "staging_catalog",
+        "hawdb_lightning_bootstrap_manifest.json" => "manifest",
+        "hawdb_lightning_graph_stream.txt" => "graph_stream",
+        "hawdb_lightning_relational_stream.bin" => "relational_stream",
+        "hawdb_lightning_bootstrap_bundle.json" => "bundle",
+        "hawdb_lightning_staging_catalog.json" => "staging_catalog",
         _ => "unknown",
     }
 }
 
 #[cfg(test)]
 mod tests {
-    use super::skein_lightning_artifact_summary;
+    use super::hawdb_lightning_artifact_summary;
 
     #[test]
     fn artifact_summary_preserves_missing_and_measured_lengths() {
@@ -201,7 +201,7 @@ mod tests {
             serde_json::json!({"kind": "manifest", "byte_len": 8}),
         ];
 
-        let summary = skein_lightning_artifact_summary(&artifacts, "byte_len");
+        let summary = hawdb_lightning_artifact_summary(&artifacts, "byte_len");
 
         assert_eq!(summary["object_count"], 3);
         assert_eq!(summary["measured_object_count"], 2);

@@ -81,20 +81,20 @@ fn generated_append_watermark_survives_checkpoint_and_wal_replay() {
     {
         let mut db = Database::open(&path).unwrap();
         let result = db
-            .append_transaction_with_result(skein_storage::AppendTransaction {
-                writes: vec![skein_storage::AppendWrite::AppendGenerated {
+            .append_transaction_with_result(hawdb_storage::AppendTransaction {
+                writes: vec![hawdb_storage::AppendWrite::AppendGenerated {
                     table: "events".to_string(),
-                    rows: vec![skein_storage::AppendGeneratedRow::new(vec![
-                        skein_storage::RelationalValue::Text("thread-1".to_string()),
-                        skein_storage::RelationalValue::Text("four".to_string()),
+                    rows: vec![hawdb_storage::AppendGeneratedRow::new(vec![
+                        hawdb_storage::RelationalValue::Text("thread-1".to_string()),
+                        hawdb_storage::RelationalValue::Text("four".to_string()),
                     ])],
                 }],
             })
             .unwrap();
         assert_eq!(
             result.mutations[0].generated_order_keys,
-            vec![skein_storage::RelationalKey(vec![
-                skein_storage::RelationalValue::BigInt(4),
+            vec![hawdb_storage::RelationalKey(vec![
+                hawdb_storage::RelationalValue::BigInt(4),
             ])]
         );
         let output = db
@@ -151,7 +151,7 @@ fn wal_pressure_schedules_and_completes_a_bounded_background_checkpoint() {
             include_search_projection_graph_delta_freshness: false,
             include_search_projection_rebuild: false,
             include_search_projection_metadata_repair: false,
-            include_skein_lightning_bootstrap_export: false,
+            include_hawdb_lightning_bootstrap_export: false,
             include_external_content_artifact_jobs: false,
             ..BackgroundMaintenanceOptions::default()
         },
@@ -509,7 +509,7 @@ fn typed_read_fails_closed_when_an_out_of_core_segment_is_corrupted() {
         .unwrap();
     db.checkpoint().unwrap();
 
-    let canonical_path = path.join("canonical.1.skein");
+    let canonical_path = path.join("canonical.1.hawdb");
     let mut bytes = std::fs::read(&canonical_path).unwrap();
     bytes[24] ^= 0xff;
     std::fs::write(&canonical_path, bytes).unwrap();
@@ -557,7 +557,7 @@ fn public_query_fails_closed_when_an_out_of_core_segment_is_corrupted() {
         .unwrap();
     db.checkpoint().unwrap();
 
-    let canonical_path = path.join("canonical.1.skein");
+    let canonical_path = path.join("canonical.1.hawdb");
     let mut bytes = std::fs::read(&canonical_path).unwrap();
     bytes[24] ^= 0xff;
     std::fs::write(&canonical_path, bytes).unwrap();
@@ -752,7 +752,7 @@ fn typed_storage_resource_profile_gates_larger_than_cache_reads() {
 
 #[test]
 fn platform_storage_resource_profile_emits_bound_evidence() {
-    const EVIDENCE_PATH_ENV: &str = "SKEIN_TEST_STORAGE_RESOURCE_EVIDENCE_PATH";
+    const EVIDENCE_PATH_ENV: &str = "HAWDB_TEST_STORAGE_RESOURCE_EVIDENCE_PATH";
 
     let path = unique_test_dir("platform_storage_resource_profile");
     let cache_budget = 1024;
@@ -780,7 +780,7 @@ fn platform_storage_resource_profile_emits_bound_evidence() {
     let identity = crate::ProductionQualificationIdentity {
         source_revision: std::env::var("GITHUB_SHA")
             .unwrap_or_else(|_| "local-test-revision".to_string()),
-        rust_toolchain: std::env::var("SKEIN_TEST_RUST_TOOLCHAIN")
+        rust_toolchain: std::env::var("HAWDB_TEST_RUST_TOOLCHAIN")
             .unwrap_or_else(|_| "local-test-toolchain".to_string()),
         target_os: std::env::consts::OS.to_string(),
         target_arch: std::env::consts::ARCH.to_string(),
@@ -868,7 +868,7 @@ fn external_optimizer_statistics_refresh_spills_and_persists_exact_stats() {
             .unwrap();
         db.query("CREATE (:Entity {id: 'entity:rust', kind: 'language'})")
             .unwrap();
-        db.query("CREATE (:Entity {id: 'entity:skein', kind: 'library'})")
+        db.query("CREATE (:Entity {id: 'entity:hawdb', kind: 'library'})")
             .unwrap();
         db.create_knowledge_relationship(&KnowledgeRelationshipCreateRequest {
             source: KnowledgeEntityRequest {
@@ -890,7 +890,7 @@ fn external_optimizer_statistics_refresh_spills_and_persists_exact_stats() {
             },
             target: KnowledgeEntityRequest {
                 label: "Entity".to_string(),
-                external_id: "entity:skein".to_string(),
+                external_id: "entity:hawdb".to_string(),
             },
             relationship_type: "LINKS".to_string(),
             properties: BTreeMap::from([("weight".to_string(), Value::Int(2))]),
@@ -928,7 +928,7 @@ fn external_optimizer_statistics_refresh_spills_and_persists_exact_stats() {
             },
             target: KnowledgeEntityRequest {
                 label: "Entity".to_string(),
-                external_id: "entity:skein".to_string(),
+                external_id: "entity:hawdb".to_string(),
             },
             relationship_type: "LINKS".to_string(),
             properties: BTreeMap::from([("weight".to_string(), Value::Int(3))]),
@@ -1283,7 +1283,7 @@ fn external_optimizer_statistics_refresh_preserves_spill_limits_and_snapshot() {
     db.checkpoint().unwrap();
     let before = db.statistics();
     let generation = db.storage_residency_report().canonical_generation;
-    let manifest = std::fs::read(path.join("manifest.skein")).unwrap();
+    let manifest = std::fs::read(path.join("manifest.hawdb")).unwrap();
     let wal = read_test_wal(&path).unwrap();
     let spill_root = path.join("statistics-spill");
     for (max_spill_bytes, max_spill_runs, expected) in [
@@ -1308,7 +1308,7 @@ fn external_optimizer_statistics_refresh_preserves_spill_limits_and_snapshot() {
             generation
         );
         assert_eq!(
-            std::fs::read(path.join("manifest.skein")).unwrap(),
+            std::fs::read(path.join("manifest.hawdb")).unwrap(),
             manifest
         );
         assert_eq!(read_test_wal(&path).unwrap(), wal);
@@ -1506,7 +1506,7 @@ fn legacy_text_wal_is_rejected_by_the_single_v1_reader() {
     }
     std::fs::write(
         active_wal_path(&path),
-        b"SKEIN_WAL_V1\t1\t1\t00000000000000000000\n",
+        b"HAWDB_WAL_V1\t1\t1\t00000000000000000000\n",
     )
     .unwrap();
 
@@ -1687,7 +1687,7 @@ fn storage_scrub_streams_strong_artifact_verification_and_poisons_on_corruption(
     assert!(clean.sha256_verified_file_count >= 2);
     assert!(clean.checked_bytes > 0);
 
-    let canonical_path = path.join("canonical.1.skein");
+    let canonical_path = path.join("canonical.1.hawdb");
     let mut bytes = std::fs::read(&canonical_path).unwrap();
     bytes[24] ^= 0xff;
     std::fs::write(&canonical_path, bytes).unwrap();
@@ -1801,12 +1801,12 @@ fn canonical_row_overflow_backup_reopen_and_reclaim_follow_physical_closure() {
         .checkpoint_epoch
         .expect("durable checkpoint generation");
     let first_row_manifest = path.join(
-        skein_storage::relational_row_page_manifest_generation_file(first_generation),
+        hawdb_storage::relational_row_page_manifest_generation_file(first_generation),
     );
     let first_overflow_manifest = path.join(
-        skein_storage::relational_overflow_manifest_generation_file(first_generation),
+        hawdb_storage::relational_overflow_manifest_generation_file(first_generation),
     );
-    let first_overflow_extent = path.join(skein_storage::relational_overflow_extent_file(
+    let first_overflow_extent = path.join(hawdb_storage::relational_overflow_extent_file(
         first_generation,
     ));
     assert!(first_row_manifest.exists());
@@ -1835,7 +1835,7 @@ fn canonical_row_overflow_backup_reopen_and_reclaim_follow_physical_closure() {
     assert!(first_overflow_extent.exists());
     db.backup_to(&backup).unwrap();
     assert!(backup
-        .join(skein_storage::relational_overflow_extent_file(
+        .join(hawdb_storage::relational_overflow_extent_file(
             first_generation
         ))
         .exists());
@@ -1884,7 +1884,7 @@ fn canonical_row_overflow_backup_reopen_and_reclaim_follow_physical_closure() {
 fn relational_storage_residency_tracks_checkpoint_live_and_recovery_views() {
     let path = unique_test_dir("relational_storage_residency");
     let bootstrap_config = DatabaseConfig {
-        relational_index_mode: skein_storage::RelationalIndexMode::Shadow,
+        relational_index_mode: hawdb_storage::RelationalIndexMode::Shadow,
         storage_residency_mode: StorageResidencyMode::OutOfCore,
         segment_cache_capacity_bytes: 64 * 1024,
         ..DatabaseConfig::default()
@@ -1904,7 +1904,7 @@ fn relational_storage_residency_tracks_checkpoint_live_and_recovery_views() {
     drop(db);
 
     let config = DatabaseConfig {
-        relational_index_mode: skein_storage::RelationalIndexMode::Authoritative,
+        relational_index_mode: hawdb_storage::RelationalIndexMode::Authoritative,
         ..bootstrap_config
     };
     let mut db = Database::open_with_config(&path, config.clone()).unwrap();
@@ -1952,7 +1952,7 @@ fn relational_storage_residency_tracks_checkpoint_live_and_recovery_views() {
     assert_eq!(profile["storage"]["relational_rows"]["serving"], true);
     assert_eq!(
         profile["storage"]["relational_rows"]["recovery_delta_checkpoint_runs"],
-        skein_storage::DEFAULT_RELATIONAL_ROW_DELTA_CHECKPOINT_RUNS
+        hawdb_storage::DEFAULT_RELATIONAL_ROW_DELTA_CHECKPOINT_RUNS
     );
     assert_eq!(
         profile["storage"]["relational_rows"]["recovery_delta_checkpoint_recommended"],
@@ -2328,15 +2328,15 @@ fn checkpoint_query_invokes_storage_checkpoint() {
 
     let checkpoint = read_test_durable_text(&active_checkpoint_path(&path)).unwrap();
     assert!(checkpoint.contains("canonical_records\ttrue\n"));
-    assert!(path.join("canonical.1.skein").exists());
+    assert!(path.join("canonical.1.hawdb").exists());
     assert_eq!(read_test_wal(&path).unwrap(), "");
 
     std::fs::remove_dir_all(path).unwrap();
 }
 
-const STORAGE_CRASH_CHILD_ENV: &str = "SKEIN_TEST_STORAGE_CRASH_CHILD";
-const STORAGE_CRASH_PATH_ENV: &str = "SKEIN_TEST_STORAGE_CRASH_PATH";
-const STORAGE_CRASH_EVIDENCE_PATH_ENV: &str = "SKEIN_TEST_STORAGE_CRASH_EVIDENCE_PATH";
+const STORAGE_CRASH_CHILD_ENV: &str = "HAWDB_TEST_STORAGE_CRASH_CHILD";
+const STORAGE_CRASH_PATH_ENV: &str = "HAWDB_TEST_STORAGE_CRASH_PATH";
+const STORAGE_CRASH_EVIDENCE_PATH_ENV: &str = "HAWDB_TEST_STORAGE_CRASH_EVIDENCE_PATH";
 
 #[test]
 fn storage_crash_recovery_child() {
@@ -2346,7 +2346,7 @@ fn storage_crash_recovery_child() {
     let path = std::path::PathBuf::from(
         std::env::var_os(STORAGE_CRASH_PATH_ENV).expect("crash test database path"),
     );
-    let point = std::env::var("SKEIN_TEST_PROCESS_CRASH_POINT").expect("crash point");
+    let point = std::env::var("HAWDB_TEST_PROCESS_CRASH_POINT").expect("crash point");
     let mut db = Database::open_with_config(&path, storage_crash_test_config()).unwrap();
     let mut transaction = db.begin_transaction();
     transaction
@@ -2395,7 +2395,7 @@ fn subprocess_crash_matrix_recovers_whole_batches_and_artifact_generations() {
                 .arg("--nocapture")
                 .env(STORAGE_CRASH_CHILD_ENV, "1")
                 .env(STORAGE_CRASH_PATH_ENV, &path)
-                .env("SKEIN_TEST_PROCESS_CRASH_POINT", stage)
+                .env("HAWDB_TEST_PROCESS_CRASH_POINT", stage)
                 .status()
                 .unwrap();
             assert_eq!(
@@ -2482,7 +2482,7 @@ fn subprocess_crash_matrix_recovers_whole_batches_and_artifact_generations() {
         std::env::var("GITHUB_SHA").unwrap_or_else(|_| "local-test-revision".to_string());
     let identity = crate::ProductionQualificationIdentity {
         source_revision,
-        rust_toolchain: std::env::var("SKEIN_TEST_RUST_TOOLCHAIN")
+        rust_toolchain: std::env::var("HAWDB_TEST_RUST_TOOLCHAIN")
             .unwrap_or_else(|_| "local-test-toolchain".to_string()),
         target_os: std::env::consts::OS.to_string(),
         target_arch: std::env::consts::ARCH.to_string(),

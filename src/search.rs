@@ -1,6 +1,6 @@
 //! Root-facade adapter for the search kernel.
 
-pub use skein_search::*;
+pub use hawdb_search::*;
 
 use crate::error::Result;
 use crate::schema::Catalog;

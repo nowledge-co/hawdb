@@ -1,9 +1,9 @@
 //! Redacted slow-query reporting contract for the embedded readiness surface.
 
 use crate::bounded_read_evidence::NowledgeMemGraphMode;
-use skein_system_sql::SlowQueryLogRecordSummary;
+use hawdb_system_sql::SlowQueryLogRecordSummary;
 
-pub const NOWLEDGE_MEM_SLOW_QUERY_REPORT_PROTOCOL: &str = "skein-nowledge-mem-slow-query-report-v1";
+pub const NOWLEDGE_MEM_SLOW_QUERY_REPORT_PROTOCOL: &str = "hawdb-nowledge-mem-slow-query-report-v1";
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct NowledgeMemSlowQueryRecord {
@@ -115,7 +115,7 @@ impl NowledgeMemSlowQueryReport {
 mod tests {
     use super::{NowledgeMemSlowQueryReport, NOWLEDGE_MEM_SLOW_QUERY_REPORT_PROTOCOL};
     use crate::bounded_read_evidence::NowledgeMemGraphMode;
-    use skein_system_sql::SlowQueryLogRecordSummary;
+    use hawdb_system_sql::SlowQueryLogRecordSummary;
 
     #[test]
     fn report_preserves_summary_aggregates_and_redaction() {

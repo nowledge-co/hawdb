@@ -7,7 +7,7 @@ struct Fixture(PathBuf);
 impl Fixture {
     fn new() -> Self {
         let path =
-            std::env::temp_dir().join(format!("skein-consumer-{}", generate_uuidv7().unwrap()));
+            std::env::temp_dir().join(format!("hawdb-consumer-{}", generate_uuidv7().unwrap()));
         std::fs::create_dir(&path).unwrap();
         Self(path)
     }
@@ -50,39 +50,39 @@ fn catch_up(
 fn search_projection_consumer_facade_preserves_owner_type_identity() {
     assert_eq!(
         TypeId::of::<crate::SearchProjectionConsumerId>(),
-        TypeId::of::<skein_search::projection_consumer::SearchProjectionConsumerId>()
+        TypeId::of::<hawdb_search::projection_consumer::SearchProjectionConsumerId>()
     );
     assert_eq!(
         TypeId::of::<crate::SearchProjectionConsumerOptions>(),
-        TypeId::of::<skein_search::projection_consumer::SearchProjectionConsumerOptions>()
+        TypeId::of::<hawdb_search::projection_consumer::SearchProjectionConsumerOptions>()
     );
     assert_eq!(
         TypeId::of::<crate::SearchProjectionConsumer>(),
-        TypeId::of::<skein_search::projection_consumer::SearchProjectionConsumer>()
+        TypeId::of::<hawdb_search::projection_consumer::SearchProjectionConsumer>()
     );
     assert_eq!(
         TypeId::of::<crate::SearchProjectionConsumerState>(),
-        TypeId::of::<skein_search::projection_consumer::SearchProjectionConsumerState>()
+        TypeId::of::<hawdb_search::projection_consumer::SearchProjectionConsumerState>()
     );
     assert_eq!(
         TypeId::of::<crate::SearchProjectionConsumerRebuildReason>(),
-        TypeId::of::<skein_search::projection_consumer::SearchProjectionConsumerRebuildReason>()
+        TypeId::of::<hawdb_search::projection_consumer::SearchProjectionConsumerRebuildReason>()
     );
     assert_eq!(
         TypeId::of::<crate::SearchProjectionConsumerStatus>(),
-        TypeId::of::<skein_search::projection_consumer::SearchProjectionConsumerStatus>()
+        TypeId::of::<hawdb_search::projection_consumer::SearchProjectionConsumerStatus>()
     );
     assert_eq!(
         TypeId::of::<crate::SearchProjectionConsumerReadiness>(),
-        TypeId::of::<skein_search::projection_consumer::SearchProjectionConsumerReadiness>()
+        TypeId::of::<hawdb_search::projection_consumer::SearchProjectionConsumerReadiness>()
     );
     assert_eq!(
         TypeId::of::<crate::SearchProjectionConsumerCatchUpReport>(),
-        TypeId::of::<skein_search::projection_consumer::SearchProjectionConsumerCatchUpReport>()
+        TypeId::of::<hawdb_search::projection_consumer::SearchProjectionConsumerCatchUpReport>()
     );
     assert_eq!(
         TypeId::of::<crate::SearchProjectionConsumerError>(),
-        TypeId::of::<skein_search::projection_consumer::SearchProjectionConsumerError>()
+        TypeId::of::<hawdb_search::projection_consumer::SearchProjectionConsumerError>()
     );
 }
 
@@ -170,7 +170,7 @@ fn initialization_failure_cleans_stage_and_preserves_existing_destination() {
         options(100),
         |_, index| {
             assert!(index.is_persistent());
-            Err(SkeinError::Execution("incomplete initialization".into()))
+            Err(HawdbError::Execution("incomplete initialization".into()))
         },
     );
     assert!(result.is_err());
@@ -324,7 +324,7 @@ fn expiry_is_inclusive_renewal_is_explicit_and_stale_handles_stay_revoked() {
         catch_up(&mut db, &mut old),
         Err(Error::InvalidHandle)
     ));
-    assert!(fixture.0.join("old/search_projection.skein").exists());
+    assert!(fixture.0.join("old/search_projection.hawdb").exists());
 }
 
 #[test]
@@ -502,7 +502,7 @@ fn overflow_and_hydration_errors_do_not_publish_progress() {
     let receipt = consumer.projection().receipt();
     let before = std::fs::read(fixture.0.join("database/projection_consumers.meta")).unwrap();
     let result = db.catch_up_search_projection_consumer(&mut consumer, 1, 1, 1, |_, _| {
-        Err(SkeinError::Execution("incomplete hydration".into()))
+        Err(HawdbError::Execution("incomplete hydration".into()))
     });
     assert!(result.is_err());
     assert_eq!(consumer.projection().receipt(), receipt);
@@ -520,7 +520,7 @@ fn overflow_and_hydration_errors_do_not_publish_progress() {
 
 #[test]
 fn consumer_crash_child() {
-    let Ok(root) = std::env::var("SKEIN_CONSUMER_CRASH_ROOT") else {
+    let Ok(root) = std::env::var("HAWDB_CONSUMER_CRASH_ROOT") else {
         return;
     };
     let root = Path::new(&root);
@@ -528,7 +528,7 @@ fn consumer_crash_child() {
     let mut consumer = db
         .open_search_projection_consumer(&id("main"), root.join("projection"))
         .unwrap();
-    let stage = match std::env::var("SKEIN_CONSUMER_CRASH_STAGE")
+    let stage = match std::env::var("HAWDB_CONSUMER_CRASH_STAGE")
         .unwrap()
         .as_str()
     {
@@ -566,8 +566,8 @@ fn process_crashes_observe_checkpoint_before_registry_ordering() {
                 "api::search_projection_consumer::tests::consumer_crash_child",
                 "--nocapture",
             ])
-            .env("SKEIN_CONSUMER_CRASH_ROOT", &fixture.0)
-            .env("SKEIN_CONSUMER_CRASH_STAGE", stage)
+            .env("HAWDB_CONSUMER_CRASH_ROOT", &fixture.0)
+            .env("HAWDB_CONSUMER_CRASH_STAGE", stage)
             .status()
             .unwrap();
         assert_eq!(status.code(), Some(86));
@@ -610,7 +610,7 @@ fn missing_mandatory_projection_artifact_requires_rebuild_without_repair() {
     drop(db);
     let descriptor = fixture
         .0
-        .join("projection/search_projection_segments.skein");
+        .join("projection/search_projection_segments.hawdb");
     assert!(descriptor.exists());
     std::fs::remove_file(&descriptor).unwrap();
     let mut db = fixture.database();
@@ -859,7 +859,7 @@ fn foreign_registry_reinitializes_only_after_the_new_projection_is_complete() {
             id("main"),
             fixture.0.join("failed"),
             options(100),
-            |_, _| Err(SkeinError::Execution("incomplete mapping".into()))
+            |_, _| Err(HawdbError::Execution("incomplete mapping".into()))
         )
         .is_err());
     assert_eq!(std::fs::read(&registry).unwrap(), foreign_bytes);

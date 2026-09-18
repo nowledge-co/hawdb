@@ -1,6 +1,6 @@
 use crate::wal::WalOp;
-use skein_core::{
-    PropertyType, Result, SchemaObjectState, SkeinError, TableKind, ValidatedRegex, Value,
+use hawdb_core::{
+    HawdbError, PropertyType, Result, SchemaObjectState, TableKind, ValidatedRegex, Value,
 };
 use std::collections::BTreeMap;
 use std::num::NonZeroUsize;
@@ -412,7 +412,7 @@ pub fn ensure_mutation_commit_limits(
 ) -> Result<()> {
     ensure_additional_mutation_limits(ops.len(), rows.len(), 0, 0, limits)?;
     if rows.len() > limits.max_result_rows.get() {
-        return Err(SkeinError::Execution(format!(
+        return Err(HawdbError::Execution(format!(
             "mutation would exceed max_mutation_result_rows {}",
             limits.max_result_rows
         )));
@@ -425,7 +425,7 @@ pub fn ensure_mutation_commit_limits(
         }))
     });
     if payload_bytes > limits.max_result_payload_bytes.get() as u64 {
-        return Err(SkeinError::Execution(format!(
+        return Err(HawdbError::Execution(format!(
             "mutation result payload would exceed max_mutation_result_payload_bytes {}",
             limits.max_result_payload_bytes
         )));
@@ -442,18 +442,18 @@ pub fn ensure_additional_mutation_limits(
 ) -> Result<()> {
     let next_operations = operation_count
         .checked_add(additional_operations)
-        .ok_or_else(|| SkeinError::Execution("mutation operation count overflow".to_string()))?;
+        .ok_or_else(|| HawdbError::Execution("mutation operation count overflow".to_string()))?;
     if next_operations > limits.max_operations.get() {
-        return Err(SkeinError::Execution(format!(
+        return Err(HawdbError::Execution(format!(
             "mutation would exceed max_mutation_operations {}",
             limits.max_operations
         )));
     }
     let next_affected_rows = affected_row_count
         .checked_add(additional_affected_rows)
-        .ok_or_else(|| SkeinError::Execution("mutation affected-row count overflow".to_string()))?;
+        .ok_or_else(|| HawdbError::Execution("mutation affected-row count overflow".to_string()))?;
     if next_affected_rows > limits.max_affected_rows.get() {
-        return Err(SkeinError::Execution(format!(
+        return Err(HawdbError::Execution(format!(
             "mutation would exceed max_mutation_affected_rows {}",
             limits.max_affected_rows
         )));
@@ -467,7 +467,7 @@ pub fn remaining_mutation_affected_rows(current: usize, limits: MutationLimits) 
         .get()
         .checked_sub(current)
         .ok_or_else(|| {
-            SkeinError::Execution(format!(
+            HawdbError::Execution(format!(
                 "mutation would exceed max_mutation_affected_rows {}",
                 limits.max_affected_rows
             ))
@@ -480,7 +480,7 @@ pub fn remaining_mutation_operations(current: usize, limits: MutationLimits) -> 
         .get()
         .checked_sub(current)
         .ok_or_else(|| {
-            SkeinError::Execution(format!(
+            HawdbError::Execution(format!(
                 "mutation would exceed max_mutation_operations {}",
                 limits.max_operations
             ))

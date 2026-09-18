@@ -1,8 +1,8 @@
 # SQL frontend differential corpus
 
-The ordinary `skein-sql` tests run the same complete SQL text through
-`prepare_postgres_sql` and `skein_sql_syntax::parse_postgres_statement`.
-This originated as the corpus prerequisite for [#159](https://github.com/nowledge-co/skein/issues/159).
+The ordinary `hawdb-sql` tests run the same complete SQL text through
+`prepare_postgres_sql` and `hawdb_sql_syntax::parse_postgres_statement`.
+This originated as the corpus prerequisite for [#159](https://github.com/nowledge-co/hawdb/issues/159).
 It records frontend migration gaps; production routing remains unchanged.
 Creation-binder outcomes are maintained separately in `frontend_create_bindings_v1.json`.
 
@@ -124,24 +124,24 @@ canonical fixture, not rewritten to fit a frontend.
 
 ## Verification
 
-The canonical `//crates/sql:skein_sql_tests` target includes the ordinary corpus
+The canonical `//crates/sql:hawdb_sql_tests` target includes the ordinary corpus
 and negative controls. The latter deliberately remove coverage, provenance or
 waivers, retain stale/unreferenced waivers, alter frozen inputs/parameters and
 change expected frontend errors to prove those checks reject the regression.
 
 ```sh
-cargo test -p skein-sql -p skein-sql-syntax
-cargo clippy -p skein-sql --all-targets -- -D warnings
+cargo test -p hawdb-sql -p hawdb-sql-syntax
+cargo clippy -p hawdb-sql --all-targets -- -D warnings
 bazel test //crates/sql:presubmit_tests //crates/sql-syntax:presubmit_tests
 ```
 
-The local-only `skein_sql_frontend_corpus_fuzz_tests` target runs 4,096 seeded
+The local-only `hawdb_sql_frontend_corpus_fuzz_tests` target runs 4,096 seeded
 case selections with whitespace and line/block-comment prefixes, preserving
 the original SQL bytes and expected contracts. It is tagged `manual`, ignored
 by ordinary Rust tests, and included in the existing local fuzz suite.
 
 ```sh
-cargo test -p skein-sql tests::frontend_corpus::frontend_corpus_differential_campaign -- --exact --ignored
-bazel test //crates/fuzz:skein_fuzz_tests //crates/fuzz:skein_fuzz_cli_tests //:skein_linux_ci_fuzz_smoke_test
-bazel test //:skein_unit_fast_tests //:skein_unit_storage_crash_matrix_tests //:skein_storage_crash_recovery_tests
+cargo test -p hawdb-sql tests::frontend_corpus::frontend_corpus_differential_campaign -- --exact --ignored
+bazel test //crates/fuzz:hawdb_fuzz_tests //crates/fuzz:hawdb_fuzz_cli_tests //:hawdb_linux_ci_fuzz_smoke_test
+bazel test //:hawdb_unit_fast_tests //:hawdb_unit_storage_crash_matrix_tests //:hawdb_storage_crash_recovery_tests
 ```

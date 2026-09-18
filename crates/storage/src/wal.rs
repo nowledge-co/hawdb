@@ -17,10 +17,10 @@ pub use group_commit::{
     DEFAULT_WAL_GROUP_COMMIT_MAX_BYTES, DEFAULT_WAL_GROUP_COMMIT_MAX_DELAY,
     DEFAULT_WAL_GROUP_COMMIT_MAX_ENTRIES,
 };
-use skein_core::{Catalog, Value};
-use skein_core::{PropertyType, SchemaObjectState, TableKind};
-use skein_core::{Result, SkeinError};
-use skein_integrity::{IntegrityHasher, Sha256Digest};
+use hawdb_core::{Catalog, Value};
+use hawdb_core::{HawdbError, Result};
+use hawdb_core::{PropertyType, SchemaObjectState, TableKind};
+use hawdb_integrity::{IntegrityHasher, Sha256Digest};
 use std::collections::BTreeMap;
 use std::collections::BTreeSet;
 use std::fs::{self, File, OpenOptions};
@@ -45,14 +45,14 @@ pub fn quarantine_corrupt_wal(
     }
     let root = path
         .parent()
-        .ok_or_else(|| SkeinError::Storage("WAL path has no database directory".to_string()))?;
+        .ok_or_else(|| HawdbError::Storage("WAL path has no database directory".to_string()))?;
     let quarantine_dir = root.join("quarantine");
     fs::create_dir_all(&quarantine_dir)?;
     crate::sync_parent_directory(&quarantine_dir)?;
 
     let (wal_len, wal_sha256) = wal_file_identity(path)?;
     let quarantine_path = quarantine_dir.join(format!(
-        "wal.{generation}.corrupt.{wal_len}.{wal_sha256}.skein"
+        "wal.{generation}.corrupt.{wal_len}.{wal_sha256}.hawdb"
     ));
     if quarantine_path.exists() && wal_file_identity(&quarantine_path)? != (wal_len, wal_sha256) {
         fs::remove_file(&quarantine_path)?;
@@ -107,7 +107,7 @@ fn wal_file_identity(path: &Path) -> Result<(u64, Sha256Digest)> {
         integrity.update(&buffer[..read]);
         encoded_len = encoded_len
             .checked_add(read as u64)
-            .ok_or_else(|| SkeinError::Storage("WAL quarantine byte count overflow".to_string()))?;
+            .ok_or_else(|| HawdbError::Storage("WAL quarantine byte count overflow".to_string()))?;
     }
     Ok((encoded_len, integrity.finish().sha256))
 }
@@ -152,7 +152,7 @@ fn copy_wal_exclusive(
             if wal_file_identity(destination)? == expected_identity {
                 return Ok(());
             }
-            return Err(SkeinError::Storage(
+            return Err(HawdbError::Storage(
                 "concurrent WAL quarantine copy has the wrong identity".to_string(),
             ));
         }
@@ -170,12 +170,12 @@ fn copy_wal_exclusive(
             destination_file.write_all(&buffer[..read])?;
             integrity.update(&buffer[..read]);
             encoded_len = encoded_len.checked_add(read as u64).ok_or_else(|| {
-                SkeinError::Storage("WAL quarantine byte count overflow".to_string())
+                HawdbError::Storage("WAL quarantine byte count overflow".to_string())
             })?;
         }
         destination_file.sync_all()?;
         if (encoded_len, integrity.finish().sha256) != expected_identity {
-            return Err(SkeinError::Storage(
+            return Err(HawdbError::Storage(
                 "WAL changed while its corrupt content was being quarantined".to_string(),
             ));
         }
@@ -197,7 +197,7 @@ pub fn reject_corrupt_wal_record<T>(
     reason: impl std::fmt::Display,
 ) -> Result<T> {
     quarantine_corrupt_wal(path, generation, read_only, max_quarantine_bytes)?;
-    Err(SkeinError::Storage(format!(
+    Err(HawdbError::Storage(format!(
         "WAL corruption at byte offset {record_start}: {reason}"
     )))
 }
@@ -304,7 +304,7 @@ impl WalRecordCursor {
                 end_offset,
             } => {
                 let payload_len = payload.len() as u64;
-                let payload_sha256 = skein_integrity::sha256(&payload);
+                let payload_sha256 = hawdb_integrity::sha256(&payload);
                 match binary::decode_binary_wal_record(&payload)? {
                     binary::BinaryWalRecordDecode::Entry { entry, .. } => {
                         Ok(WalCursorEvent::Entry {
@@ -484,7 +484,7 @@ pub fn validate_wal_op_values(ops: &[WalOp]) -> Result<()> {
 
 fn validate_wal_value(value: &Value) -> Result<()> {
     crate::canonical::validate_property_value(value).map_err(|error| {
-        SkeinError::Storage(format!(
+        HawdbError::Storage(format!(
             "WAL value violates canonical storage limits: {error}"
         ))
     })
@@ -882,7 +882,7 @@ fn encode_wal_op_for_batch(op: &WalOp) -> Result<String> {
             format!("append,{}", encode_bytes_base64(record))
         }
         WalOp::Batch(_) => {
-            return Err(SkeinError::Storage(
+            return Err(HawdbError::Storage(
                 "nested WAL batches cannot be encoded".to_string(),
             ));
         }
@@ -891,7 +891,7 @@ fn encode_wal_op_for_batch(op: &WalOp) -> Result<String> {
 }
 
 fn checksum_bytes(bytes: &[u8]) -> u64 {
-    skein_integrity::checksum_u64(bytes)
+    hawdb_integrity::checksum_u64(bytes)
 }
 
 fn encode_bytes_base64(input: &[u8]) -> String {

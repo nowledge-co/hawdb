@@ -2,7 +2,7 @@
 //!
 //! Bundle evaluation remains in `integration_bundle`; this module only maps
 //! bounded CLI inputs into that typed contract.
-use skein_core::{Result, SkeinError};
+use hawdb_core::{HawdbError, Result};
 use std::path::Path;
 
 pub use crate::integration_bundle::{
@@ -10,7 +10,7 @@ pub use crate::integration_bundle::{
 };
 
 #[cfg(test)]
-const SKEIN_SEARCH_PROJECTION_SHADOW_EVIDENCE_SOURCE: &str = "skein-rust-library";
+const HAWDB_SEARCH_PROJECTION_SHADOW_EVIDENCE_SOURCE: &str = "hawdb-rust-library";
 pub fn nowledge_mem_integration_bundle_usage() -> String {
     "nowledge-mem-integration-bundle requires [--require-ready] --submodule-path <path> --submodule-commit <commit> --legacy-data-retained --coexistence-mode shadow|side_by_side --content-store-present --content-store-engine sqlite --content-store-messages-available --content-store-source-chunks-available --previous-wrapper-preflight-json <path> --replacement-summary-json <path> --bounded-read-evidence-json <path> --graph-route-readiness-json <path> --route-ownership-json <path> --search-route-ownership-json <path> --active-search-route-ownership-json <path> --active-search-route-readiness-json <path> --query-runtime-preflight-json <path> --search-candidate-shadow-evidence-json <path> --library-readiness-json <path> --cutover-controls-json <path> --operations-readiness-json <path> --blackbox-manifest-json <path>"
         .to_string()
@@ -95,7 +95,7 @@ pub fn run_nowledge_mem_integration_bundle(
                 inputs.blackbox_manifest = Some(read_json_arg(&mut args)?);
             }
             _ => {
-                return Err(SkeinError::Semantic(nowledge_mem_integration_bundle_usage()));
+                return Err(HawdbError::Semantic(nowledge_mem_integration_bundle_usage()));
             }
         }
     }
@@ -111,12 +111,12 @@ fn read_json_arg(args: &mut impl Iterator<Item = String>) -> Result<serde_json::
 
 fn read_json_file(path: &Path) -> Result<serde_json::Value> {
     let raw = std::fs::read_to_string(path).map_err(|_| {
-        SkeinError::Execution(
+        HawdbError::Execution(
             "failed to read Nowledge Mem integration bundle input: io_error".to_string(),
         )
     })?;
     serde_json::from_str(&raw).map_err(|_| {
-        SkeinError::Semantic(
+        HawdbError::Semantic(
             "failed to parse Nowledge Mem integration bundle input: invalid_json".to_string(),
         )
     })
@@ -124,14 +124,14 @@ fn read_json_file(path: &Path) -> Result<serde_json::Value> {
 
 fn next_arg(args: &mut impl Iterator<Item = String>) -> Result<String> {
     args.next()
-        .ok_or_else(|| SkeinError::Semantic(nowledge_mem_integration_bundle_usage()))
+        .ok_or_else(|| HawdbError::Semantic(nowledge_mem_integration_bundle_usage()))
 }
 
 #[cfg(test)]
 mod tests {
     use super::{
         nowledge_mem_integration_bundle_json, IntegrationBundleInputs,
-        SKEIN_SEARCH_PROJECTION_SHADOW_EVIDENCE_SOURCE,
+        HAWDB_SEARCH_PROJECTION_SHADOW_EVIDENCE_SOURCE,
     };
     use crate::{
         integration_readiness::nowledge_mem_integration_readiness_json,
@@ -143,30 +143,30 @@ mod tests {
             REQUIRED_NOWLEDGE_MEM_SOURCE_MUTATION_FAMILIES,
         },
     };
-    use skein_evidence::{
+    use hawdb_evidence::{
         resource_profile::STORAGE_RESOURCE_PROFILE_PROTOCOL,
         PRODUCTION_QUALIFICATION_POLICY_VERSION,
     };
-    use skein_route_ownership::graph::{
+    use hawdb_route_ownership::graph::{
         nowledge_mem_graph_read_route_catalog_digest, nowledge_mem_graph_read_route_spec,
         nowledge_mem_graph_read_route_specs_json, nowledge_mem_required_query_families_for_route,
-        nowledge_mem_route_ownership_all_skein, nowledge_mem_route_ownership_readiness,
+        nowledge_mem_route_ownership_all_hawdb, nowledge_mem_route_ownership_readiness,
         NowledgeMemRouteOwnershipPolicy, NowledgeMemRouteReadinessSummary,
         NOWLEDGE_MEM_GRAPH_READ_ROUTE_CATALOG_VERSION, REQUIRED_NOWLEDGE_MEM_BOUNDED_READ_ROUTES,
     };
-    use skein_route_ownership::{
-        nowledge_mem_active_search_route_ownership_all_skein,
+    use hawdb_route_ownership::{
+        nowledge_mem_active_search_route_ownership_all_hawdb,
         nowledge_mem_active_search_route_ownership_readiness,
-        nowledge_mem_active_search_route_read_evidence_all_skein_ready,
-        nowledge_mem_active_search_route_readiness, nowledge_mem_search_route_ownership_all_skein,
+        nowledge_mem_active_search_route_read_evidence_all_hawdb_ready,
+        nowledge_mem_active_search_route_readiness, nowledge_mem_search_route_ownership_all_hawdb,
         nowledge_mem_search_route_ownership_readiness, NowledgeMemSearchRouteOwnershipPolicy,
         REQUIRED_NOWLEDGE_MEM_ACTIVE_SEARCH_ROUTES, REQUIRED_NOWLEDGE_MEM_SEARCH_ROUTES,
     };
-    use skein_search::candidate_evidence::{
+    use hawdb_search::candidate_evidence::{
         nowledge_mem_search_candidate_shadow_evidence_json,
         NowledgeMemSearchCandidateShadowAccumulator,
     };
-    use skein_search::NOWLEDGE_SEARCH_PROJECTION_SCAN_FILTER_FIELDS;
+    use hawdb_search::NOWLEDGE_SEARCH_PROJECTION_SCAN_FILTER_FIELDS;
     use std::path::PathBuf;
     use std::time::{SystemTime, UNIX_EPOCH};
 
@@ -193,8 +193,8 @@ mod tests {
         let bundle = nowledge_mem_integration_bundle_json(ready_inputs()).unwrap();
         let readiness = nowledge_mem_integration_readiness_json(&bundle);
 
-        assert_eq!(bundle["protocol"], "nowledge-mem-skein-integration-bundle");
-        assert_eq!(bundle["submodule"]["path"], "skein");
+        assert_eq!(bundle["protocol"], "nowledge-mem-hawdb-integration-bundle");
+        assert_eq!(bundle["submodule"]["path"], "hawdb");
         assert_eq!(
             bundle["replacement_summary_bounded_read_alignment"]["ready"],
             true
@@ -240,7 +240,7 @@ mod tests {
         );
         assert_eq!(
             bundle["blackbox_manifest"]["protocol"],
-            "skein-blackbox-report-v1"
+            "hawdb-blackbox-report-v1"
         );
         assert_eq!(
             bundle["cutover_controls"]["protocol"],
@@ -266,7 +266,7 @@ mod tests {
             .unwrap()
             .iter()
             .any(|artifact| artifact["background_qos"]["protocol"]
-                == "skein-background-maintenance-report"));
+                == "hawdb-background-maintenance-report"));
         assert!(bundle["blackbox_manifest"]["artifacts"]
             .as_array()
             .unwrap()
@@ -638,7 +638,7 @@ mod tests {
         inputs.graph_route_readiness.as_mut().unwrap()["routes"][0]["shadow_compare"]
             ["matched_per_million"] = serde_json::json!(999999);
         inputs.graph_route_readiness.as_mut().unwrap()["routes"][0]["shadow_compare"]
-            ["primary_engine"] = serde_json::json!("skein");
+            ["primary_engine"] = serde_json::json!("hawdb");
 
         let bundle = nowledge_mem_integration_bundle_json(inputs).unwrap();
         let readiness = nowledge_mem_integration_readiness_json(&bundle);
@@ -662,7 +662,7 @@ mod tests {
     fn ready_inputs() -> IntegrationBundleInputs {
         IntegrationBundleInputs {
             require_ready: false,
-            submodule_path: Some("/redacted/vendor/skein".to_string()),
+            submodule_path: Some("/redacted/vendor/hawdb".to_string()),
             submodule_commit: Some("abc1234".to_string()),
             legacy_data_retained: true,
             legacy_data_deleted: false,
@@ -697,18 +697,18 @@ mod tests {
             "protocol": NOWLEDGE_MEM_CUTOVER_CONTROLS_PROTOCOL,
             "ready": true,
             "controls": {
-                "graph_reads": "skein",
-                "search_reads": "skein",
+                "graph_reads": "hawdb",
+                "search_reads": "hawdb",
                 "dual_writes": "enabled",
                 "initial_import": "disabled",
                 "projection_catch_up": "enabled"
             },
             "graph": {
-                "read_selected_skein": true,
+                "read_selected_hawdb": true,
                 "read_effective": true
             },
             "search": {
-                "read_selected_skein": true,
+                "read_selected_hawdb": true,
                 "read_effective": true
             },
             "work": {
@@ -722,10 +722,10 @@ mod tests {
             "blocker_codes": [],
             "production_status": {
                 "graph": {
-                    "skein_cutover_effective": true
+                    "hawdb_cutover_effective": true
                 },
                 "search": {
-                    "skein_cutover_effective": true
+                    "hawdb_cutover_effective": true
                 }
             },
             "redaction": {
@@ -772,7 +772,7 @@ mod tests {
 
     fn ready_replacement_summary() -> serde_json::Value {
         let mut summary = serde_json::json!({
-            "protocol": "skein-nowledge-replacement-summary",
+            "protocol": "hawdb-nowledge-replacement-summary",
             "production_cutover_ready": true,
             "blocking_categories": [],
             "missing_evidence": [],
@@ -806,7 +806,7 @@ mod tests {
                 "missing_required_query_families": []
             },
             "search_projection_evidence": {
-                "protocol": "skein-nowledge-search-projection-evidence",
+                "protocol": "hawdb-nowledge-search-projection-evidence",
                 "ready": true,
                 "fts_ready": true,
                 "vector_ready": true,
@@ -819,8 +819,8 @@ mod tests {
                 "blocker_codes": []
             },
             "search_projection_shadow_evidence": {
-                "protocol": "skein-nowledge-search-projection-shadow-evidence",
-                "evidence_source": SKEIN_SEARCH_PROJECTION_SHADOW_EVIDENCE_SOURCE,
+                "protocol": "hawdb-nowledge-search-projection-shadow-evidence",
+                "evidence_source": HAWDB_SEARCH_PROJECTION_SHADOW_EVIDENCE_SOURCE,
                 "present": true,
                 "ready": true,
                 "document_count_parity": true,
@@ -878,12 +878,12 @@ mod tests {
             "graph_layer": {
                 "scope": "kuzu_ladybug_graph_layer",
                 "replacement_role": "primary_replacement",
-                "storage_owner": "skein"
+                "storage_owner": "hawdb"
             },
             "search_projection": {
                 "scope": "lancedb_search_projection",
                 "replacement_role": "rebuildable_projection",
-                "storage_owner": "skein"
+                "storage_owner": "hawdb"
             },
             "content_store": {
                 "scope": "sqlite_content_store",
@@ -940,7 +940,7 @@ mod tests {
 
     fn ready_replacement_summary_query_runtime_preflight() -> serde_json::Value {
         serde_json::json!({
-            "protocol": "skein-nowledge-query-runtime-preflight-v1",
+            "protocol": "hawdb-nowledge-query-runtime-preflight-v1",
             "present": true,
             "ready": true,
             "database_opened": true,
@@ -966,7 +966,7 @@ mod tests {
 
     fn ready_bounded_read_evidence() -> serde_json::Value {
         serde_json::json!({
-            "protocol": "skein-nowledge-mem-bounded-read-evidence-v2",
+            "protocol": "hawdb-nowledge-mem-bounded-read-evidence-v2",
             "present": true,
             "ready": true,
             "route_primary_ready": true,
@@ -999,7 +999,7 @@ mod tests {
 
     fn ready_route_ownership() -> serde_json::Value {
         nowledge_mem_route_ownership_readiness(
-            &nowledge_mem_route_ownership_all_skein(),
+            &nowledge_mem_route_ownership_all_hawdb(),
             Some(&ready_route_readiness_summary()),
             NowledgeMemRouteOwnershipPolicy::production_cutover(),
         )
@@ -1008,7 +1008,7 @@ mod tests {
 
     fn ready_search_route_ownership() -> serde_json::Value {
         nowledge_mem_search_route_ownership_readiness(
-            &nowledge_mem_search_route_ownership_all_skein(),
+            &nowledge_mem_search_route_ownership_all_hawdb(),
             NowledgeMemSearchRouteOwnershipPolicy::production_cutover(),
         )
         .json()
@@ -1016,7 +1016,7 @@ mod tests {
 
     fn ready_active_search_route_ownership() -> serde_json::Value {
         nowledge_mem_active_search_route_ownership_readiness(
-            &nowledge_mem_active_search_route_ownership_all_skein(),
+            &nowledge_mem_active_search_route_ownership_all_hawdb(),
             NowledgeMemSearchRouteOwnershipPolicy::production_cutover(),
         )
         .json()
@@ -1024,7 +1024,7 @@ mod tests {
 
     fn ready_active_search_route_readiness() -> serde_json::Value {
         nowledge_mem_active_search_route_readiness(
-            &nowledge_mem_active_search_route_read_evidence_all_skein_ready(),
+            &nowledge_mem_active_search_route_read_evidence_all_hawdb_ready(),
             NowledgeMemSearchRouteOwnershipPolicy::production_cutover(),
         )
         .json()
@@ -1079,7 +1079,7 @@ mod tests {
                         "ready": true,
                         "matched_per_million": 1000000,
                         "primary_engine": "kuzu",
-                        "shadow_engine": "skein",
+                        "shadow_engine": "hawdb",
                         "blocker_codes": [],
                         "computed_blocker_codes": []
                     }),
@@ -1200,7 +1200,7 @@ mod tests {
             "query_name": "overview-memory-lookup",
             "query_index": 0,
             "query_family": query_family,
-            "protocol": "skein-nowledge-mem-query-report-v1",
+            "protocol": "hawdb-nowledge-mem-query-report-v1",
             "statement_kind": "match_return",
             "execution_path": "fast_path",
             "fast_path_selected": true,
@@ -1285,7 +1285,7 @@ mod tests {
             .map(|route| ready_query_runtime_preflight_probe(route))
             .collect::<Vec<_>>();
         serde_json::json!({
-            "protocol": "skein-nowledge-query-runtime-preflight-v1",
+            "protocol": "hawdb-nowledge-query-runtime-preflight-v1",
             "ready": true,
             "database_opened": true,
             "redaction": {
@@ -1370,7 +1370,7 @@ mod tests {
 
     fn ready_library_readiness() -> serde_json::Value {
         serde_json::json!({
-            "protocol": "skein-nowledge-mem-library-readiness-v1",
+            "protocol": "hawdb-nowledge-mem-library-readiness-v1",
             "present": true,
             "ready": true,
             "ready_area_count": 11,
@@ -1490,7 +1490,7 @@ mod tests {
 
     fn ready_blackbox_manifest() -> serde_json::Value {
         serde_json::json!({
-            "protocol": "skein-blackbox-report-v1",
+            "protocol": "hawdb-blackbox-report-v1",
             "artifact_dir_present": true,
             "artifact_count": 2,
             "events_path": "events.jsonl",
@@ -1512,12 +1512,12 @@ mod tests {
                     "checksum": 2,
                     "json": {
                         "parse_ready": true,
-                        "protocol": "skein-background-maintenance-report",
+                        "protocol": "hawdb-background-maintenance-report",
                         "ready": true,
                         "blocker_codes": []
                     },
                     "background_qos": {
-                        "protocol": "skein-background-maintenance-report",
+                        "protocol": "hawdb-background-maintenance-report",
                         "ready": true,
                         "total_candidates": 1,
                         "admitted_count": 1,
@@ -1551,6 +1551,6 @@ mod tests {
             .duration_since(UNIX_EPOCH)
             .unwrap()
             .as_nanos();
-        std::env::temp_dir().join(format!("skein-{name}-{nanos}"))
+        std::env::temp_dir().join(format!("hawdb-{name}-{nanos}"))
     }
 }

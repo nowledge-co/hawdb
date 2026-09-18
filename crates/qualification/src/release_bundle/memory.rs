@@ -9,8 +9,8 @@ use crate::{
     CONTENT_STORE_SHARED_HOST_NOMINAL_MIN_BUDGET_BYTES,
     PRODUCTION_CONTENT_STORE_MEMORY_QUALIFICATION_PROTOCOL,
 };
+use hawdb::{ProductionQualificationIdentity, RuntimeGovernorConfig};
 use serde_json::Value;
-use skein::{ProductionQualificationIdentity, RuntimeGovernorConfig};
 
 pub(super) fn validate_memory_profiles(
     artifact: &Value,

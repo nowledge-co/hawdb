@@ -1,15 +1,15 @@
 //! Host-neutral runtime and production status for embedded Nowledge Mem.
 //!
-//! The root Skein facade samples graph, storage, and search state. This module
+//! The root Hawdb facade samples graph, storage, and search state. This module
 //! owns the typed reduction into observable readiness contracts.
 
 use crate::bounded_read_evidence::NowledgeMemGraphMode;
-use skein_route_ownership::graph::NowledgeMemRouteOwnershipReadinessReport;
-use skein_search::SearchProjectionFreshness;
-use skein_storage::{SearchProjectionChangefeedStatus, SearchProjectionMutationId};
+use hawdb_route_ownership::graph::NowledgeMemRouteOwnershipReadinessReport;
+use hawdb_search::SearchProjectionFreshness;
+use hawdb_storage::{SearchProjectionChangefeedStatus, SearchProjectionMutationId};
 
-pub const NOWLEDGE_MEM_RUNTIME_STATUS_PROTOCOL: &str = "skein-nowledge-mem-runtime-status-v1";
-pub const NOWLEDGE_MEM_PRODUCTION_STATUS_PROTOCOL: &str = "skein-nowledge-mem-production-status-v1";
+pub const NOWLEDGE_MEM_RUNTIME_STATUS_PROTOCOL: &str = "hawdb-nowledge-mem-runtime-status-v1";
+pub const NOWLEDGE_MEM_PRODUCTION_STATUS_PROTOCOL: &str = "hawdb-nowledge-mem-production-status-v1";
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct NowledgeMemRuntimeStatus {
@@ -72,13 +72,13 @@ pub struct NowledgeMemProductionStatus {
     pub mode: NowledgeMemGraphMode,
     pub graph_open: bool,
     pub graph_read_only: bool,
-    pub graph_skein_cutover_effective: bool,
+    pub graph_hawdb_cutover_effective: bool,
     pub graph_route_ownership_present: bool,
     pub graph_route_ownership_ready: bool,
-    pub graph_skein_route_count: usize,
+    pub graph_hawdb_route_count: usize,
     pub graph_legacy_route_count: usize,
     pub search_projection_open: bool,
-    pub search_skein_cutover_effective: bool,
+    pub search_hawdb_cutover_effective: bool,
     pub graph_commit_epoch: u64,
     pub search_projection_source_graph_commit_epoch: Option<u64>,
     pub search_projection_durable_source_graph_commit_epoch: Option<u64>,
@@ -111,9 +111,9 @@ impl NowledgeMemProductionStatus {
         let graph_route_ownership_present = route_ownership.is_some();
         let graph_route_ownership_ready =
             route_ownership.as_ref().is_some_and(|report| report.ready);
-        let graph_skein_route_count = route_ownership
+        let graph_hawdb_route_count = route_ownership
             .as_ref()
-            .map(|report| report.skein_route_count)
+            .map(|report| report.hawdb_route_count)
             .unwrap_or(0);
         let graph_legacy_route_count = route_ownership
             .as_ref()
@@ -147,11 +147,11 @@ impl NowledgeMemProductionStatus {
             blocker_codes.push("search_projection_changefeed_not_restart_recoverable".to_string());
         }
 
-        let graph_skein_cutover_effective = !graph_read_only
+        let graph_hawdb_cutover_effective = !graph_read_only
             && route_ownership
                 .as_ref()
                 .is_some_and(|report| report.production_cutover_ready);
-        let search_skein_cutover_effective = search_projection_open
+        let search_hawdb_cutover_effective = search_projection_open
             && !search_projection_stale
             && !search_projection_full_reindex_needed
             && !search_projection_metadata_repair_needed
@@ -162,13 +162,13 @@ impl NowledgeMemProductionStatus {
             mode,
             graph_open: true,
             graph_read_only,
-            graph_skein_cutover_effective,
+            graph_hawdb_cutover_effective,
             graph_route_ownership_present,
             graph_route_ownership_ready,
-            graph_skein_route_count,
+            graph_hawdb_route_count,
             graph_legacy_route_count,
             search_projection_open,
-            search_skein_cutover_effective,
+            search_hawdb_cutover_effective,
             graph_commit_epoch: runtime_status.graph_commit_epoch,
             search_projection_source_graph_commit_epoch: freshness
                 .and_then(|freshness| freshness.source_graph_commit_epoch),
@@ -194,16 +194,16 @@ impl NowledgeMemProductionStatus {
             "graph": {
                 "open": self.graph_open,
                 "read_only": self.graph_read_only,
-                "skein_cutover_effective": self.graph_skein_cutover_effective,
+                "hawdb_cutover_effective": self.graph_hawdb_cutover_effective,
                 "route_ownership_present": self.graph_route_ownership_present,
                 "route_ownership_ready": self.graph_route_ownership_ready,
-                "skein_route_count": self.graph_skein_route_count,
+                "hawdb_route_count": self.graph_hawdb_route_count,
                 "legacy_route_count": self.graph_legacy_route_count,
                 "commit_epoch": self.graph_commit_epoch,
             },
             "search": {
                 "projection_open": self.search_projection_open,
-                "skein_cutover_effective": self.search_skein_cutover_effective,
+                "hawdb_cutover_effective": self.search_hawdb_cutover_effective,
                 "source_graph_commit_epoch": self.search_projection_source_graph_commit_epoch,
                 "durable_source_graph_commit_epoch": self.search_projection_durable_source_graph_commit_epoch,
                 "commit_lag": self.search_projection_commit_lag,
@@ -228,7 +228,7 @@ impl NowledgeMemProductionStatus {
 mod tests {
     use super::{NowledgeMemProductionStatus, NowledgeMemRuntimeStatus};
     use crate::bounded_read_evidence::NowledgeMemGraphMode;
-    use skein_storage::{SearchProjectionChangefeedStatus, SearchProjectionMutationId};
+    use hawdb_storage::{SearchProjectionChangefeedStatus, SearchProjectionMutationId};
 
     fn changefeed() -> SearchProjectionChangefeedStatus {
         SearchProjectionChangefeedStatus {
@@ -275,8 +275,8 @@ mod tests {
             None,
         );
 
-        assert!(!status.graph_skein_cutover_effective);
-        assert!(!status.search_skein_cutover_effective);
+        assert!(!status.graph_hawdb_cutover_effective);
+        assert!(!status.search_hawdb_cutover_effective);
         assert!(status
             .blocker_codes
             .contains(&"graph_route_ownership_missing".to_string()));

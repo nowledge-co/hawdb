@@ -80,7 +80,7 @@ fn bounded_encoding_does_not_materialize_large_hex_fields() {
     struct BoundedWriter {
         bytes: usize,
         largest: usize,
-        digest: skein_integrity::Crc32cHasher,
+        digest: hawdb_integrity::Crc32cHasher,
     }
     impl io::Write for BoundedWriter {
         fn write(&mut self, bytes: &[u8]) -> io::Result<usize> {
@@ -101,7 +101,7 @@ fn bounded_encoding_does_not_materialize_large_hex_fields() {
     let mut writer = BoundedWriter {
         bytes: 0,
         largest: 0,
-        digest: skein_integrity::Crc32cHasher::new(),
+        digest: hawdb_integrity::Crc32cHasher::new(),
     };
     DocumentEncoding::new(&document)
         .unwrap()

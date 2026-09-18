@@ -493,7 +493,7 @@ fn migration_gate_bundle_reports_blocked_json() {
     assert_eq!(json["dual_engine_evidence"]["ready"], false);
     assert_eq!(
         json["dual_engine_evidence"]["primary_engine"],
-        serde_json::json!("skein")
+        serde_json::json!("hawdb")
     );
     assert_eq!(
         json["dual_engine_evidence"]["shadow_engine"],

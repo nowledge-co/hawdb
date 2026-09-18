@@ -5,9 +5,9 @@ use super::{
 };
 use crate::evidence_digest::rows_sha256;
 use crate::{elapsed_micros, latency_percentiles, ContentStoreSqlCorpus};
-use skein::{
-    Database, ProcessMemoryProfile, ProcessMemorySnapshot, QueryStreamOptions, Result,
-    RuntimeMemorySnapshot, SkeinError, Value,
+use hawdb::{
+    Database, HawdbError, ProcessMemoryProfile, ProcessMemorySnapshot, QueryStreamOptions, Result,
+    RuntimeMemorySnapshot, Value,
 };
 use std::collections::BTreeMap;
 use std::path::Path;
@@ -18,7 +18,7 @@ pub(super) struct ContentStoreResourceProbeConfig<'a> {
     pub(super) configured_available_memory_bytes: u64,
     pub(super) read_samples: usize,
     pub(super) database_path: &'a Path,
-    pub(super) database_config: &'a skein::DatabaseConfig,
+    pub(super) database_config: &'a hawdb::DatabaseConfig,
     pub(super) message_position: usize,
     pub(super) message_payload_bytes: usize,
 }
@@ -50,7 +50,7 @@ pub(super) fn qualify_content_store_resources(
             database.query_sql_with_params_options(&page.sql, &page_parameters, page_options)?;
         read_latency_micros.push(elapsed_micros(started));
         if output.rows.len() != config.message_position + 1 {
-            return Err(SkeinError::Execution(format!(
+            return Err(HawdbError::Execution(format!(
                 "content-store resource probe returned {} rows, expected {}",
                 output.rows.len(),
                 config.message_position + 1
@@ -61,7 +61,7 @@ pub(super) fn qualify_content_store_resources(
             .as_ref()
             .is_some_and(|expected| expected != &output_sha256)
         {
-            return Err(SkeinError::Execution(
+            return Err(HawdbError::Execution(
                 "content-store resource probe returned unstable read results".to_string(),
             ));
         }
@@ -84,12 +84,12 @@ pub(super) fn qualify_content_store_resources(
     let mutation_latency_micros = elapsed_micros(mutation_started);
     let wal_after = database.storage_pressure_snapshot().wal_bytes;
     let wal_append_bytes = wal_after.checked_sub(wal_before).ok_or_else(|| {
-        SkeinError::Execution(format!(
+        HawdbError::Execution(format!(
             "content-store resource probe observed WAL bytes decrease from {wal_before} to {wal_after} before checkpoint"
         ))
     })?;
     if wal_append_bytes == 0 {
-        return Err(SkeinError::Execution(
+        return Err(HawdbError::Execution(
             "content-store resource probe mutation wrote no WAL bytes".to_string(),
         ));
     }
@@ -103,7 +103,7 @@ pub(super) fn qualify_content_store_resources(
         .filter(|(name, _)| !files_before.contains_key(*name))
         .fold(0u64, |total, (_, bytes)| total.saturating_add(*bytes));
     if new_generation_artifact_bytes == 0 {
-        return Err(SkeinError::Execution(
+        return Err(HawdbError::Execution(
             "content-store resource probe checkpoint published no new generation artifacts"
                 .to_string(),
         ));
@@ -192,7 +192,7 @@ pub(super) fn regular_file_bytes_by_name(path: &Path) -> Result<BTreeMap<String,
         let metadata = entry.metadata()?;
         if metadata.is_file() {
             let name = entry.file_name().into_string().map_err(|_| {
-                SkeinError::Execution(
+                HawdbError::Execution(
                     "content-store resource probe found a non-UTF-8 artifact name".to_string(),
                 )
             })?;
@@ -243,7 +243,7 @@ fn ratio_per_million(numerator: u64, denominator: u64) -> u64 {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use skein::Uuid;
+    use hawdb::Uuid;
 
     #[test]
     fn uuid_payload_size_is_fixed_width() {

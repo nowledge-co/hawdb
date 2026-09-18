@@ -225,7 +225,7 @@ fn mini_delta_snapshot_lifecycle_campaign() {
 fn old_analyzer_fingerprints_are_not_reused_for_supplementary_han_ngrams() {
     let fixture = Fixture::new("analyzer-fingerprint");
     let analyzer = SearchAnalyzerLexicon::empty();
-    let old_digest = checksum(b"skein-search-analyzer-v2-jieba-search");
+    let old_digest = checksum(b"hawdb-search-analyzer-v2-jieba-search");
     let current_digest = analyzer_digest(&analyzer);
     assert_ne!(old_digest, current_digest);
     let old = LexicalProjectionWriter::new(LexicalProjectionConfig::default())
@@ -268,7 +268,7 @@ fn manifest_tampering_is_rejected_even_with_recomputed_envelope_checksum() {
     for case in 0..6 {
         let mut body = fixture.reader.manifest.clone();
         match case {
-            0 => body.artifact_file = "../search_lexical.1.skein".to_string(),
+            0 => body.artifact_file = "../search_lexical.1.hawdb".to_string(),
             1 => body.blocks[0].offset += 1,
             2 => body.document_count += 1,
             3 => body.term_statistics[0].document_frequency += 1,
@@ -382,7 +382,7 @@ fn spill_reader_rejects_partial_records_but_accepts_record_boundaries() {
             {
                 count += 1;
             }
-            Ok::<_, SkeinError>(count)
+            Ok::<_, HawdbError>(count)
         })();
         if let Some(expected) = boundaries.iter().position(|boundary| *boundary == length) {
             assert_eq!(observed.unwrap(), expected);

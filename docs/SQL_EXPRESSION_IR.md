@@ -1,6 +1,6 @@
 # Shared SQL expression IR
 
-Issue [#156](https://github.com/nowledge-co/skein/issues/156) separates expression
+Issue [#156](https://github.com/nowledge-co/hawdb/issues/156) separates expression
 representation from syntax acceptance and index matching. The query entrypoints
 remain `parse_postgres_sql`, `prepare_postgres_sql`, and the existing database
 query APIs. This refactor preserves the production SQL language profile;
@@ -9,8 +9,8 @@ predicates remain separate language work.
 
 ## Representation and source migration
 
-`skein_expression::sql::Expr { kind, span }` is the single owned SQL tree.
-The `skein_sql` facade reexports it. `SqlExpression` and `SqlPredicate` are
+`hawdb_expression::sql::Expr { kind, span }` is the single owned SQL tree.
+The `hawdb_sql` facade reexports it. `SqlExpression` and `SqlPredicate` are
 aliases for `Expr`, preserving import names but not old enum constructors or
 patterns. Consumers match `expression.kind` using `ExprKind`.
 
@@ -57,7 +57,7 @@ and its owned children.
 
 ## Execution and index selection
 
-Sargability extraction lives in `skein_optimizer::relational_sargability` and
+Sargability extraction lives in `hawdb_optimizer::relational_sargability` and
 recognizes the existing bare-column/value equalities, column join equalities,
 and strict two-column keyset cursor. Arbitrary expressions remain residuals;
 OR/NOT boundaries, duplicate constraints and null-order checks are preserved.

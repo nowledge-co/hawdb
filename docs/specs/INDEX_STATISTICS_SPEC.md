@@ -14,11 +14,11 @@ Generic property statistics and index selectivity have different resource
 boundaries. Generic statistics may collect bounded histograms for compact
 scalar and `VARCHAR` values, but declared `TEXT`, list, map, and mixed groups
 are excluded. An explicit index already owns the cost of maintaining its keys,
-so Skein may publish payload-free cardinality metadata for that index without
+so Hawdb may publish payload-free cardinality metadata for that index without
 copying indexed values into a second resident statistics structure.
 
 This follows the useful part of Neo4j's split between exact structural counts
-and index-local samples. Skein does not require a universal `ANALYZE` scan to
+and index-local samples. Hawdb does not require a universal `ANALYZE` scan to
 make an explicit equality or composite index costable.
 
 ## Sample contract
@@ -159,6 +159,6 @@ Required regressions cover:
   out-of-core samples; QoS defer performs no scan, scheduled failure releases
   its permit, and successful refresh removes the candidate
 - checkpoint text and `system.graph_statistics` expose the sample fields
-- `SkeinIndexStatistics.tla` checks coherent resampling, exact zero-churn
+- `HawdbIndexStatistics.tla` checks coherent resampling, exact zero-churn
   samples, update-age accounting, the bounded optimizer admission rule, and
   background permit ownership while direct refresh remains ungated

@@ -1,7 +1,7 @@
 # Durable search projection consumers: proposed public contract
 
 Status: approved by the owner on September 15, 2026; production implementation in progress.
-This proposal addresses [issue #455](https://github.com/nowledge-co/skein/issues/455).
+This proposal addresses [issue #455](https://github.com/nowledge-co/hawdb/issues/455).
 The approved proposal was based on main
 `1d9970f382b1896e3e6d450cef93f8b709192c88` and the private source/state proofs
 described below. Implementation now incorporates main through PR533 using a
@@ -31,7 +31,7 @@ Two alternatives were rejected:
 
 ## Approved public surface
 
-Export these types through `skein`; internal owners remain implementation details:
+Export these types through `hawdb`; internal owners remain implementation details:
 
 - `SearchProjectionConsumerId`: validated owned string, 1-128 ASCII letters,
   digits, `.`, `_` or `-`; `new(value: impl Into<String>) -> Result<Self>` and
@@ -61,7 +61,7 @@ Export these types through `skein`; internal owners remain implementation detail
 - `SearchProjectionConsumerCatchUpReport`: public fields
   `catch_up: SearchProjectionCatchUpReport` and
   `consumer: SearchProjectionConsumerStatus`.
-- `SearchProjectionConsumerError`: `Database(SkeinError)`, `InvalidHandle`,
+- `SearchProjectionConsumerError`: `Database(HawdbError)`, `InvalidHandle`,
   `AlreadyRegistered`, `RegistryFull`, `SourceNotDurable`, or
   `RebuildRequired(SearchProjectionConsumerRebuildReason)`; implements Display
   and Error. `SearchProjectionConsumerResult<T>` aliases Result with this error.
@@ -128,7 +128,7 @@ or a different checkpoint at an already acknowledged epoch is rejected.
 
 Existing status/readiness structs retain their fields and struct-literal
 compatibility. The new reports compose them rather than adding a required field
-to every existing status literal. No new SkeinError variant is required.
+to every existing status literal. No new HawdbError variant is required.
 
 ## Initialization and projection ownership
 
@@ -146,7 +146,7 @@ hydration, row/payload-budget failure and initialization errors.
 The library supplies the source identity and complete-through epoch from that
 pinned transaction; the callback cannot supply an advancement epoch. The
 initializer owns projection semantics, just as the existing batch hydrator does;
-Skein does not infer or validate arbitrary application mapping logic. This is an
+Hawdb does not infer or validate arbitrary application mapping logic. This is an
 explicit initialization contract, not automatic adoption of unknown existing data.
 Initialization does not claim to finish #392/#529's separate SearchIndex memory
 ownership work.
@@ -197,7 +197,7 @@ lifecycle must fail closed; the consumer lifecycle is the explicit opt-in path.
    database UUID, a bounded array of consumer records, their last acknowledged
    binding/checkpoint UUID, snapshot length/SHA-256, durable complete-through
    epoch, idle-commit interval and expiry epoch. Use a UTF-8 JSON envelope with exactly `protocol`, `payload` and
-   `payload_sha256` fields. The protocol is `skein-projection-consumers-v1`.
+   `payload_sha256` fields. The protocol is `hawdb-projection-consumers-v1`.
    `payload` has exactly `database_uuid` and `consumers`; each consumer has exactly
    `id`, `projection_uuid`, `registration_uuid`, `checkpoint_uuid`,
    `snapshot_encoded_len`, `snapshot_sha256`, `durable_complete_through_epoch`,

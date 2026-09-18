@@ -87,7 +87,7 @@ impl CandidateFamily {
                 Self::Range | Self::CompositeRange => Predicate::PropertyCompare {
                     variable: "n".into(),
                     property: property.clone(),
-                    op: skein_plan::ComparisonOp::Gt,
+                    op: hawdb_plan::ComparisonOp::Gt,
                     value: Value::Int(42),
                 },
             });

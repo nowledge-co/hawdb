@@ -1,4 +1,4 @@
-use skein_integrity::checksum_u64;
+use hawdb_integrity::checksum_u64;
 use std::collections::{hash_map::RandomState, BTreeMap, VecDeque};
 use std::error::Error;
 use std::fmt::{self, Display, Formatter};

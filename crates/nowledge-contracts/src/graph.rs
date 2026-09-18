@@ -1,6 +1,6 @@
 use std::collections::BTreeMap;
 
-use skein_core::Value;
+use hawdb_core::Value;
 
 #[derive(Debug, Clone, PartialEq)]
 pub struct KnowledgeEntity {

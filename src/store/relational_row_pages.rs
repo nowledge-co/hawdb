@@ -1,16 +1,16 @@
 //! Shadow recovery state for canonical relational row-page roots.
 
-pub(crate) use skein_storage::relational_row_workspace::RelationalTransactionRowView;
-use skein_storage::relational_row_workspace::{
+pub(crate) use hawdb_storage::relational_row_workspace::RelationalTransactionRowView;
+use hawdb_storage::relational_row_workspace::{
     hydrate_sparse_relational_workspace, nonzero_min, RelationalSparseLiveHydrationOptions,
     RelationalSparseLiveHydrationReport,
 };
-pub(super) use skein_storage::relational_row_workspace::{
+pub(super) use hawdb_storage::relational_row_workspace::{
     RelationalProvenAbsenceConstraintIndex, RelationalSparseLiveWorkspace,
 };
 
 use super::{GraphStore, RelationalOverflowCompactionConfig};
-use skein_storage::{
+use hawdb_storage::{
     RelationalConstraintIndex, RelationalError, RelationalHydrationBudget,
     RelationalIndexChangeCapture, RelationalIndexChangeCaptureLimits, RelationalMutationOutcome,
     RelationalOverflowReferenceSet, RelationalOverflowReferenceSetBuilder,
@@ -31,11 +31,11 @@ use std::num::{NonZeroU64, NonZeroUsize};
 use std::ops::Bound;
 use std::sync::Arc;
 
-pub use skein_storage::relational::RelationalRowPageRecoveryStatus;
+pub use hawdb_storage::relational::RelationalRowPageRecoveryStatus;
 #[cfg(test)]
-use skein_storage::RelationalRowDeltaConfig;
+use hawdb_storage::RelationalRowDeltaConfig;
 
-pub(super) use skein_storage::relational::{
+pub(super) use hawdb_storage::relational::{
     RelationalRowLiveUnavailable, RelationalRowPageServingResources, RelationalRowPageState,
 };
 
@@ -65,14 +65,14 @@ impl GraphStore {
         if self.residency_mode != StorageResidencyMode::OutOfCore
             || !matches!(
                 self.relational_checkpoint_index_load(),
-                skein_storage::RelationalCheckpointIndexLoad::OmitMaterializedPostings
+                hawdb_storage::RelationalCheckpointIndexLoad::OmitMaterializedPostings
             )
             || self.relational_state.is_empty()
         {
             return Ok(());
         }
         self.open_relational_row_snapshot_reader()?.ok_or_else(|| {
-            crate::error::SkeinError::StorageIntegrity(
+            crate::error::HawdbError::StorageIntegrity(
                 "out-of-core relational activation requires a canonical row view".to_string(),
             )
         })?;
@@ -81,7 +81,7 @@ impl GraphStore {
             .residency_report(self.commit_epoch)
             .serving
         {
-            return Err(crate::error::SkeinError::StorageIntegrity(
+            return Err(crate::error::HawdbError::StorageIntegrity(
                 "out-of-core relational activation requires an authoritative index view"
                     .to_string(),
             ));
@@ -94,7 +94,7 @@ impl GraphStore {
             .as_ref()
             .is_some_and(|durable| durable.read_only);
         if !read_only {
-            return Err(crate::error::SkeinError::StorageIntegrity(
+            return Err(crate::error::HawdbError::StorageIntegrity(
                 "writable out-of-core relational activation did not mount canonical metadata-only rows"
                     .to_string(),
             ));
@@ -124,7 +124,7 @@ impl GraphStore {
             || identity.root_set_digest != base_manifest.root_set_digest
             || identity.visible_commit_epoch != source_commit_epoch
         {
-            return Err(crate::error::SkeinError::Storage(format!(
+            return Err(crate::error::HawdbError::Storage(format!(
                 "relational row checkpoint view {identity:?} does not match base {}/{}/{} at source epoch {source_commit_epoch}",
                 base_manifest.generation,
                 base_manifest.source_commit_epoch,
@@ -152,9 +152,9 @@ impl GraphStore {
                     ..self.relational_row_pages.live_limits
                 },
             )
-            .map_err(|error| crate::error::SkeinError::Storage(error.to_string()))?;
+            .map_err(|error| crate::error::HawdbError::Storage(error.to_string()))?;
         let RelationalRowChangeCapture::Captured { changes, .. } = capture else {
-            return Err(crate::error::SkeinError::Storage(
+            return Err(crate::error::HawdbError::Storage(
                 "relational row checkpoint capture was unexpectedly invalidated".to_string(),
             ));
         };
@@ -166,7 +166,7 @@ impl GraphStore {
                 .push(change);
         }
         if changes_by_table.len() > config.max_tables.get() {
-            return Err(crate::error::SkeinError::Storage(format!(
+            return Err(crate::error::HawdbError::Storage(format!(
                 "relational row checkpoint changes reference {} tables, exceeding limit {}",
                 changes_by_table.len(),
                 config.max_tables
@@ -183,7 +183,7 @@ impl GraphStore {
                 .checked_sub(planned_dirty_pages)
                 .and_then(NonZeroUsize::new)
                 .ok_or_else(|| {
-                    crate::error::SkeinError::Storage(format!(
+                    crate::error::HawdbError::Storage(format!(
                         "relational row checkpoint exhausted its {} dirty-page limit before planning table {table}",
                         config.max_dirty_pages
                     ))
@@ -194,7 +194,7 @@ impl GraphStore {
                 .checked_sub(planned_dirty_bytes)
                 .and_then(NonZeroU64::new)
                 .ok_or_else(|| {
-                    crate::error::SkeinError::Storage(format!(
+                    crate::error::HawdbError::Storage(format!(
                         "relational row checkpoint exhausted its {} dirty-byte limit before planning table {table}",
                         config.max_dirty_bytes
                     ))
@@ -209,28 +209,28 @@ impl GraphStore {
                     ..config
                 },
             )
-            .map_err(|error| crate::error::SkeinError::Storage(error.to_string()))?;
+            .map_err(|error| crate::error::HawdbError::Storage(error.to_string()))?;
             let schema = self.relational_state.table_schema(&table).ok_or_else(|| {
-                crate::error::SkeinError::Storage(format!(
+                crate::error::HawdbError::Storage(format!(
                     "relational row checkpoint change references missing table {table}"
                 ))
             })?;
             let schema_digest = self
                 .relational_state
                 .table_schema_digest(&table)
-                .map_err(|error| crate::error::SkeinError::Storage(error.to_string()))?
+                .map_err(|error| crate::error::HawdbError::Storage(error.to_string()))?
                 .ok_or_else(|| {
-                    crate::error::SkeinError::Storage(format!(
+                    crate::error::HawdbError::Storage(format!(
                         "relational row checkpoint cannot derive schema digest for {table}"
                     ))
                 })?;
             let plan = planner
                 .plan_table(&table, schema_digest, schema.columns.len(), changes)
-                .map_err(|error| crate::error::SkeinError::Storage(error.to_string()))?;
+                .map_err(|error| crate::error::HawdbError::Storage(error.to_string()))?;
             planned_dirty_pages = planned_dirty_pages
                 .checked_add(plan.dirty_pages)
                 .ok_or_else(|| {
-                    crate::error::SkeinError::Storage(
+                    crate::error::HawdbError::Storage(
                         "relational row checkpoint dirty-page accounting overflow".to_string(),
                     )
                 })?;
@@ -238,14 +238,14 @@ impl GraphStore {
                 .ok()
                 .and_then(|pages| pages.checked_mul(slot_bytes))
                 .ok_or_else(|| {
-                    crate::error::SkeinError::Storage(
+                    crate::error::HawdbError::Storage(
                         "relational row checkpoint dirty-byte accounting overflow".to_string(),
                     )
                 })?;
             planned_dirty_bytes = planned_dirty_bytes
                 .checked_add(table_dirty_bytes)
                 .ok_or_else(|| {
-                    crate::error::SkeinError::Storage(
+                    crate::error::HawdbError::Storage(
                         "relational row checkpoint dirty-byte accounting overflow".to_string(),
                     )
                 })?;
@@ -266,7 +266,7 @@ impl GraphStore {
         let deltas = self
             .relational_state
             .row_page_snapshot_deltas(generation, source_commit_epoch, config)
-            .map_err(|error| crate::error::SkeinError::Storage(error.to_string()))?;
+            .map_err(|error| crate::error::HawdbError::Storage(error.to_string()))?;
         Ok(RelationalRowPageCheckpointPlan { base: None, deltas })
     }
 
@@ -289,7 +289,7 @@ impl GraphStore {
         if manifest.generation != checkpoint_generation
             || manifest.source_commit_epoch != checkpoint_commit_epoch
         {
-            return Err(crate::error::SkeinError::Storage(format!(
+            return Err(crate::error::HawdbError::Storage(format!(
                 "canonical relational row root {}/{} does not match checkpoint {checkpoint_generation}/{checkpoint_commit_epoch}",
                 manifest.generation, manifest.source_commit_epoch
             )));
@@ -303,7 +303,7 @@ impl GraphStore {
             delta_config,
         )
         .map_err(|error| {
-            crate::error::SkeinError::Storage(format!(
+            crate::error::HawdbError::Storage(format!(
                 "canonical relational row root could not be pinned: {error}"
             ))
         })?;
@@ -439,7 +439,7 @@ impl GraphStore {
             max_memory_bytes: max_bytes,
             ..RelationalHydrationBudget::default()
         };
-        let task = skein_core::RuntimeTaskContext::default();
+        let task = hawdb_core::RuntimeTaskContext::default();
         let mut requested_fields = BTreeMap::<String, Vec<usize>>::new();
         let mut hydrated = Vec::with_capacity(replay_access.entries().len());
         let mut read_bytes = 0usize;
@@ -746,7 +746,7 @@ impl GraphStore {
     ) -> crate::error::Result<()> {
         match publication {
             Some(Ok(view)) if view.identity().visible_commit_epoch == next_epoch => Ok(()),
-            Some(Ok(view)) => Err(crate::error::SkeinError::StorageIntegrity(format!(
+            Some(Ok(view)) => Err(crate::error::HawdbError::StorageIntegrity(format!(
                 "canonical relational row view staged visible epoch {} for commit {next_epoch}",
                 view.identity().visible_commit_epoch
             ))),
@@ -760,14 +760,14 @@ impl GraphStore {
             }
             Some(Err(unavailable)) => match &unavailable.error {
                 RelationalRowPageLiveError::Corrupt(_) => {
-                    Err(crate::error::SkeinError::StorageIntegrity(format!(
+                    Err(crate::error::HawdbError::StorageIntegrity(format!(
                         "canonical relational row view could not stage commit {next_epoch}: {}",
                         unavailable.error
                     )))
                 }
                 RelationalRowPageLiveError::Admission(_)
                 | RelationalRowPageLiveError::Invalidated(_) => {
-                    Err(crate::error::SkeinError::Storage(format!(
+                    Err(crate::error::HawdbError::Storage(format!(
                         "canonical relational row view rejected commit {next_epoch} before WAL append: {}",
                         unavailable.error
                     )))
@@ -778,7 +778,7 @@ impl GraphStore {
                 self.relational_row_pages.recovery_status,
                 RelationalRowPageRecoveryStatus::Missing
             ) => Ok(()),
-            None => Err(crate::error::SkeinError::StorageIntegrity(format!(
+            None => Err(crate::error::HawdbError::StorageIntegrity(format!(
                 "canonical relational row view has no current reader for commit {next_epoch}: {:?}",
                 self.relational_row_pages.recovery_status
             ))),
@@ -1049,7 +1049,7 @@ impl GraphStore {
             .current_read_view(self.commit_epoch)
             .cloned()
             .ok_or_else(|| {
-                crate::error::SkeinError::StorageIntegrity(
+                crate::error::HawdbError::StorageIntegrity(
                     "metadata-only transaction requires a current canonical row view".to_string(),
                 )
             })?;
@@ -1069,7 +1069,7 @@ impl GraphStore {
         else {
             return match &self.relational_row_pages.recovery_status {
                 RelationalRowPageRecoveryStatus::Missing => Ok(None),
-                status => Err(crate::error::SkeinError::StorageIntegrity(format!(
+                status => Err(crate::error::HawdbError::StorageIntegrity(format!(
                     "canonical relational row reader is unavailable at commit epoch {}: {status:?}",
                     self.commit_epoch
                 ))),
@@ -1083,24 +1083,24 @@ impl GraphStore {
         &self,
         generation: u64,
         config: RelationalOverflowCompactionConfig,
-        task: &skein_core::RuntimeTaskContext,
+        task: &hawdb_core::RuntimeTaskContext,
     ) -> crate::error::Result<(
         RelationalOverflowReferenceSet,
         RelationalOverflowClosureScanReport,
     )> {
         if !self.relational_state.canonical_row_metadata_only() {
-            return Err(crate::error::SkeinError::Storage(
+            return Err(crate::error::HawdbError::Storage(
                 "exact overflow compaction requires canonical metadata-only relational rows"
                     .to_string(),
             ));
         }
         task.checkpoint().map_err(|reason| {
-            crate::error::SkeinError::Execution(format!(
+            crate::error::HawdbError::Execution(format!(
                 "relational overflow compaction stopped: {reason}"
             ))
         })?;
         let durable = self.durable.as_ref().ok_or_else(|| {
-            crate::error::SkeinError::Storage(
+            crate::error::HawdbError::Storage(
                 "exact overflow compaction requires durable storage".to_string(),
             )
         })?;
@@ -1108,48 +1108,48 @@ impl GraphStore {
             .relational_row_pages
             .current_read_view(self.commit_epoch)
             .ok_or_else(|| {
-                crate::error::SkeinError::StorageIntegrity(
+                crate::error::HawdbError::StorageIntegrity(
                     "exact overflow compaction requires a current relational row view".to_string(),
                 )
             })?;
         let manifest = view.base().manifest();
         let current_rows = self.relational_state.total_row_count();
         if current_rows > config.max_scan_rows.get() {
-            return Err(crate::error::SkeinError::Storage(format!(
+            return Err(crate::error::HawdbError::Storage(format!(
                 "overflow compaction needs {current_rows} row visits, exceeding limit {}",
                 config.max_scan_rows
             )));
         }
         let root_pages = usize::try_from(manifest.root_page_count).map_err(|_| {
-            crate::error::SkeinError::Storage(
+            crate::error::HawdbError::Storage(
                 "overflow compaction page count exceeds this target".to_string(),
             )
         })?;
         if root_pages > config.max_scan_pages.get() {
-            return Err(crate::error::SkeinError::Storage(format!(
+            return Err(crate::error::HawdbError::Storage(format!(
                 "overflow compaction needs {root_pages} row pages, exceeding limit {}",
                 config.max_scan_pages
             )));
         }
         let page_bytes = usize::try_from(manifest.page_bytes).map_err(|_| {
-            crate::error::SkeinError::Storage(
+            crate::error::HawdbError::Storage(
                 "overflow compaction page size exceeds this target".to_string(),
             )
         })?;
         let estimated_scan_bytes = root_pages.checked_mul(page_bytes).ok_or_else(|| {
-            crate::error::SkeinError::Storage(
+            crate::error::HawdbError::Storage(
                 "overflow compaction scan byte count overflow".to_string(),
             )
         })?;
         if estimated_scan_bytes > config.max_scan_bytes.get() {
-            return Err(crate::error::SkeinError::Storage(format!(
+            return Err(crate::error::HawdbError::Storage(format!(
                 "overflow compaction needs {estimated_scan_bytes} row bytes, exceeding limit {}",
                 config.max_scan_bytes
             )));
         }
 
         let reader = self.open_relational_row_snapshot_reader()?.ok_or_else(|| {
-            crate::error::SkeinError::StorageIntegrity(
+            crate::error::HawdbError::StorageIntegrity(
                 "exact overflow compaction could not open the current row snapshot".to_string(),
             )
         })?;
@@ -1158,13 +1158,13 @@ impl GraphStore {
             generation,
             config.reference_sort,
         )
-        .map_err(|error| crate::error::SkeinError::Storage(error.to_string()))?;
+        .map_err(|error| crate::error::HawdbError::Storage(error.to_string()))?;
         let mut report = RelationalOverflowClosureScanReport::default();
         let mut remaining_overlay_entries = config.max_overlay_entries.get();
         let mut remaining_overlay_bytes = config.max_overlay_bytes.get();
         for schema in self.relational_state.table_schemas() {
             task.checkpoint().map_err(|reason| {
-                crate::error::SkeinError::Execution(format!(
+                crate::error::HawdbError::Execution(format!(
                     "relational overflow compaction stopped: {reason}"
                 ))
             })?;
@@ -1172,24 +1172,24 @@ impl GraphStore {
             let table_root = view
                 .base()
                 .table_root(&schema.name)
-                .map_err(|error| crate::error::SkeinError::StorageIntegrity(error.to_string()))?;
+                .map_err(|error| crate::error::HawdbError::StorageIntegrity(error.to_string()))?;
             let table_pages = usize::try_from(table_root.page_count).map_err(|_| {
-                crate::error::SkeinError::Storage(
+                crate::error::HawdbError::Storage(
                     "overflow compaction table page count exceeds this target".to_string(),
                 )
             })?;
             let table_rows = self.relational_state.row_count(&schema.name);
             let table_bytes = table_pages.checked_mul(page_bytes).ok_or_else(|| {
-                crate::error::SkeinError::Storage(
+                crate::error::HawdbError::Storage(
                     "overflow compaction table read-byte count overflow".to_string(),
                 )
             })?;
             let limits = RelationalRowPageSnapshotReadLimits {
-                demand: skein_storage::RelationalRowPageDemandReadLimits {
+                demand: hawdb_storage::RelationalRowPageDemandReadLimits {
                     max_pages: NonZeroUsize::new(table_pages.max(1)).unwrap(),
                     max_rows: NonZeroUsize::new(table_rows.max(1)).unwrap(),
                     max_bytes: NonZeroUsize::new(table_bytes.max(1)).unwrap(),
-                    ..skein_storage::RelationalRowPageDemandReadLimits::default()
+                    ..hawdb_storage::RelationalRowPageDemandReadLimits::default()
                 },
                 max_overlay_entries: NonZeroUsize::new(remaining_overlay_entries.max(1)).unwrap(),
                 max_overlay_bytes: NonZeroUsize::new(remaining_overlay_bytes.max(1)).unwrap(),
@@ -1222,24 +1222,24 @@ impl GraphStore {
                     schema.name
                 );
                 match error {
-                    skein_storage::RelationalRowPageSnapshotReadError::Corrupt(_)
-                    | skein_storage::RelationalRowPageSnapshotReadError::MissingTable(_) => {
-                        crate::error::SkeinError::StorageIntegrity(message)
+                    hawdb_storage::RelationalRowPageSnapshotReadError::Corrupt(_)
+                    | hawdb_storage::RelationalRowPageSnapshotReadError::MissingTable(_) => {
+                        crate::error::HawdbError::StorageIntegrity(message)
                     }
-                    skein_storage::RelationalRowPageSnapshotReadError::Stopped(_) => {
-                        crate::error::SkeinError::Execution(message)
+                    hawdb_storage::RelationalRowPageSnapshotReadError::Stopped(_) => {
+                        crate::error::HawdbError::Execution(message)
                     }
-                    skein_storage::RelationalRowPageSnapshotReadError::Admission(_)
-                    | skein_storage::RelationalRowPageSnapshotReadError::Durability(_) => {
-                        crate::error::SkeinError::Storage(message)
+                    hawdb_storage::RelationalRowPageSnapshotReadError::Admission(_)
+                    | hawdb_storage::RelationalRowPageSnapshotReadError::Durability(_) => {
+                        crate::error::HawdbError::Storage(message)
                     }
                 }
             })?;
             if let Some(error) = callback_error {
-                return Err(crate::error::SkeinError::Storage(error.to_string()));
+                return Err(crate::error::HawdbError::Storage(error.to_string()));
             }
             if table_report.demand.stopped_early {
-                return Err(crate::error::SkeinError::StorageIntegrity(format!(
+                return Err(crate::error::HawdbError::StorageIntegrity(format!(
                     "exact overflow closure scan stopped before table {} completed",
                     schema.name
                 )));
@@ -1248,7 +1248,7 @@ impl GraphStore {
                 || table_report.demand.compressed_hydration_bytes != 0
                 || table_report.demand.decompressed_hydration_bytes != 0
             {
-                return Err(crate::error::SkeinError::StorageIntegrity(format!(
+                return Err(crate::error::HawdbError::StorageIntegrity(format!(
                     "exact overflow closure scan hydrated payloads for table {}",
                     schema.name
                 )));
@@ -1256,14 +1256,14 @@ impl GraphStore {
             remaining_overlay_entries = remaining_overlay_entries
                 .checked_sub(table_report.overlay_entries)
                 .ok_or_else(|| {
-                    crate::error::SkeinError::Storage(
+                    crate::error::HawdbError::Storage(
                         "overflow compaction overlay entry budget exhausted".to_string(),
                     )
                 })?;
             remaining_overlay_bytes = remaining_overlay_bytes
                 .checked_sub(table_report.overlay_resident_bytes)
                 .ok_or_else(|| {
-                    crate::error::SkeinError::Storage(
+                    crate::error::HawdbError::Storage(
                         "overflow compaction overlay byte budget exhausted".to_string(),
                     )
                 })?;
@@ -1272,7 +1272,7 @@ impl GraphStore {
                 .rows_scanned
                 .checked_add(table_report.demand.rows_emitted)
                 .ok_or_else(|| {
-                    crate::error::SkeinError::Storage(
+                    crate::error::HawdbError::Storage(
                         "overflow compaction row count overflow".to_string(),
                     )
                 })?;
@@ -1280,7 +1280,7 @@ impl GraphStore {
                 .pages_read
                 .checked_add(table_report.demand.pages_read)
                 .ok_or_else(|| {
-                    crate::error::SkeinError::Storage(
+                    crate::error::HawdbError::Storage(
                         "overflow compaction page count overflow".to_string(),
                     )
                 })?;
@@ -1288,7 +1288,7 @@ impl GraphStore {
                 .row_bytes_read
                 .checked_add(table_report.demand.bytes_read)
                 .ok_or_else(|| {
-                    crate::error::SkeinError::Storage(
+                    crate::error::HawdbError::Storage(
                         "overflow compaction read-byte count overflow".to_string(),
                     )
                 })?;
@@ -1297,14 +1297,14 @@ impl GraphStore {
             report.overlay_bytes += table_report.overlay_resident_bytes;
         }
         if report.rows_scanned != current_rows {
-            return Err(crate::error::SkeinError::StorageIntegrity(format!(
+            return Err(crate::error::HawdbError::StorageIntegrity(format!(
                 "exact overflow closure scanned {} rows, expected {current_rows}",
                 report.rows_scanned
             )));
         }
         let references = references
             .finish()
-            .map_err(|error| crate::error::SkeinError::Storage(error.to_string()))?;
+            .map_err(|error| crate::error::HawdbError::Storage(error.to_string()))?;
         report.sort = references.report();
         Ok((references, report))
     }
@@ -1317,7 +1317,7 @@ impl GraphStore {
             .relational_row_pages
             .current_read_view(self.commit_epoch)
         else {
-            return Err(crate::error::SkeinError::StorageIntegrity(
+            return Err(crate::error::HawdbError::StorageIntegrity(
                 "transaction-private row view lost its committed base".to_string(),
             ));
         };
@@ -1328,7 +1328,7 @@ impl GraphStore {
             || committed_identity.root_set_digest != transaction_identity.root_set_digest
             || committed_identity.delta_generation != transaction_identity.delta_generation
         {
-            return Err(crate::error::SkeinError::StorageIntegrity(
+            return Err(crate::error::HawdbError::StorageIntegrity(
                 "transaction-private row view differs from its committed base".to_string(),
             ));
         }
@@ -1344,7 +1344,7 @@ impl GraphStore {
             .serving_resources
             .as_ref()
             .ok_or_else(|| {
-                crate::error::SkeinError::StorageIntegrity(
+                crate::error::HawdbError::StorageIntegrity(
                     "canonical relational row reader has no pinned serving resources".to_string(),
                 )
             })?;
@@ -1356,7 +1356,7 @@ impl GraphStore {
             resources.store_id,
         )
         .map_err(|error| {
-            crate::error::SkeinError::StorageIntegrity(format!(
+            crate::error::HawdbError::StorageIntegrity(format!(
                 "canonical relational row reader could not open: {error}"
             ))
         })
@@ -1432,8 +1432,8 @@ mod tests {
     use super::*;
     use crate::schema::Catalog;
     use crate::store::GraphStore;
-    use skein_core::{RuntimeCancellationToken, RuntimeTaskContext};
-    use skein_storage::{
+    use hawdb_core::{RuntimeCancellationToken, RuntimeTaskContext};
+    use hawdb_storage::{
         relational_overflow_extent_file, relational_overflow_manifest_generation_file,
         relational_row_page_manifest_generation_file, DurabilityPolicy, RelationalColumnDefault,
         RelationalColumnSchema, RelationalComparisonOp, RelationalConflictAction,
@@ -1486,7 +1486,7 @@ mod tests {
         let view = Arc::clone(store.relational_row_pages.read_view.as_ref().unwrap());
         assert!(matches!(
             view.overlay_value("documents", &key(2)).unwrap(),
-            Some(skein_storage::RelationalRowPageRecoveredValue::Present(value))
+            Some(hawdb_storage::RelationalRowPageRecoveredValue::Present(value))
                 if value == row(2, "two")
         ));
         let snapshot = store.snapshot();
@@ -1543,7 +1543,7 @@ mod tests {
         let current = store.relational_row_pages.read_view.as_ref().unwrap();
         assert!(matches!(
             current.overlay_value("documents", &key(3)).unwrap(),
-            Some(skein_storage::RelationalRowPageRecoveredValue::Present(value))
+            Some(hawdb_storage::RelationalRowPageRecoveredValue::Present(value))
                 if value == row(3, "three")
         ));
         assert!(!Arc::ptr_eq(&view, current));
@@ -1572,7 +1572,7 @@ mod tests {
             after_graph_commit
                 .overlay_value("documents", &key(3))
                 .unwrap(),
-            Some(skein_storage::RelationalRowPageRecoveredValue::Present(value))
+            Some(hawdb_storage::RelationalRowPageRecoveredValue::Present(value))
                 if value == row(3, "three")
         ));
 
@@ -1610,7 +1610,7 @@ mod tests {
         assert!(store.relational_row_pages.read_view.is_none());
         assert!(matches!(
             store.open_relational_row_snapshot_reader(),
-            Err(crate::error::SkeinError::StorageIntegrity(_))
+            Err(crate::error::HawdbError::StorageIntegrity(_))
         ));
         assert!(Arc::ptr_eq(
             &pinned_epoch_four,
@@ -2447,7 +2447,7 @@ mod tests {
         );
         assert!(matches!(
             view.overlay_value("documents", &key(2)).unwrap(),
-            Some(skein_storage::RelationalRowPageRecoveredValue::Present(value))
+            Some(hawdb_storage::RelationalRowPageRecoveredValue::Present(value))
                 if value == row(2, "two")
         ));
 
@@ -3010,7 +3010,7 @@ mod tests {
         store.checkpoint(&catalog).unwrap();
         RelationalRowPagePublisher::new(RelationalRowPagePublicationConfig::default())
             .persist_generation(
-                skein_storage::RelationalRowPageGenerationRequest {
+                hawdb_storage::RelationalRowPageGenerationRequest {
                     directory: &path,
                     generation: 3,
                     source_commit_epoch: 2,
@@ -3341,7 +3341,7 @@ mod tests {
             .unwrap()
             .as_nanos();
         std::env::temp_dir().join(format!(
-            "skein-store-relational-row-recovery-{label}-{}-{nonce}",
+            "hawdb-store-relational-row-recovery-{label}-{}-{nonce}",
             std::process::id()
         ))
     }

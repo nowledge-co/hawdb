@@ -6,7 +6,7 @@ use crate::build_memory::{
     decoder::Decoder, path::OwnedPath, reserved::native_path, BuildMemory, SPOOL_BUFFER_BYTES,
 };
 use crate::{Result, SEARCH_COMPRESSION_HEADER, SEARCH_SNAPSHOT_FILE};
-use skein_core::RuntimeTaskContext;
+use hawdb_core::RuntimeTaskContext;
 use std::fs::File;
 use std::io::{self, BufRead, BufReader, Read};
 use std::path::Path;
@@ -71,7 +71,7 @@ fn probe(input: impl Read, memory: &BuildMemory, task: &RuntimeTaskContext) -> R
 }
 
 fn check_control_records(first: &str, second: &[u8]) -> Result<()> {
-    if first != "SKEIN_SEARCH_PROJECTION_V1\n" {
+    if first != "HAWDB_SEARCH_PROJECTION_V1\n" {
         return Err(invalid("invalid snapshot header"));
     }
     // The reserved ASCII prefix is unchanged by the old lossy UTF-8 conversion.

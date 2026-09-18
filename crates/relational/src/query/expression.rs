@@ -1,6 +1,6 @@
 use super::{
-    projection_contains_aggregate, Binding, BoundRow, RelationalScalarType, RelationalState,
-    RelationalValue, Result, Row, SelectProjection, SelectStatement, SkeinError, SqlColumnRef,
+    projection_contains_aggregate, Binding, BoundRow, HawdbError, RelationalScalarType,
+    RelationalState, RelationalValue, Result, Row, SelectProjection, SelectStatement, SqlColumnRef,
     SqlExpression, SqlFunctionArgument, SqlPredicate, SqlValue, Value,
 };
 use crate::predicate::predicate_truth_with;
@@ -8,7 +8,7 @@ pub(super) use crate::query_value::{
     bind_bound, bind_sql_value, expression_name, relational_to_value, value_to_relational,
     value_to_relational_as,
 };
-use skein_sql::{Expr, ExprKind};
+use hawdb_sql::{Expr, ExprKind};
 
 pub(super) fn projection_uses_non_aggregate_coalesce(projection: &[SelectProjection]) -> bool {
     projection.iter().any(|projection| {
@@ -71,31 +71,31 @@ pub(super) fn infer_coalesce_scalar_type(
             ..
         } if name == "coalesce" => {
             if *distinct {
-                return Err(SkeinError::Semantic(
+                return Err(HawdbError::Semantic(
                     "COALESCE does not accept DISTINCT".to_string(),
                 ));
             }
             if filter.is_some() {
-                return Err(SkeinError::Semantic(
+                return Err(HawdbError::Semantic(
                     "COALESCE does not accept FILTER".to_string(),
                 ));
             }
             if arguments.is_empty() {
-                return Err(SkeinError::Semantic(
+                return Err(HawdbError::Semantic(
                     "COALESCE requires at least one argument".to_string(),
                 ));
             }
             let mut scalar_type = None;
             for argument in arguments {
                 let SqlFunctionArgument::Expression(expression) = argument else {
-                    return Err(SkeinError::Semantic(
+                    return Err(HawdbError::Semantic(
                         "COALESCE does not accept wildcard".to_string(),
                     ));
                 };
                 let candidate = infer_coalesce_scalar_type(expression, select, parameters, state)?;
                 if let Some(candidate) = candidate {
                     if scalar_type.is_some_and(|scalar_type| scalar_type != candidate) {
-                        return Err(SkeinError::Semantic(
+                        return Err(HawdbError::Semantic(
                             "COALESCE arguments have incompatible scalar types".to_string(),
                         ));
                     }
@@ -107,10 +107,10 @@ pub(super) fn infer_coalesce_scalar_type(
         Expr {
             kind: ExprKind::Function { name, .. },
             ..
-        } => Err(SkeinError::Semantic(format!(
+        } => Err(HawdbError::Semantic(format!(
             "unsupported COALESCE argument function {name}"
         ))),
-        _ => Err(SkeinError::Semantic(
+        _ => Err(HawdbError::Semantic(
             "unsupported scalar expression".to_owned(),
         )),
     }
@@ -145,10 +145,10 @@ pub(super) fn resolve_projection_column_type(
             .map(|position| schema.columns[position].scalar_type)
     });
     let first = matches.next().ok_or_else(|| {
-        SkeinError::Semantic(format!("column {} is unknown or ambiguous", column.name))
+        HawdbError::Semantic(format!("column {} is unknown or ambiguous", column.name))
     })?;
     if matches.next().is_some() {
-        return Err(SkeinError::Semantic(format!(
+        return Err(HawdbError::Semantic(format!(
             "column {} is unknown or ambiguous",
             column.name
         )));
@@ -197,7 +197,7 @@ pub(super) fn resolve_column_with_type<'a>(
         });
     let mut bindings = bindings.collect::<Vec<_>>();
     if bindings.len() != 1 {
-        return Err(SkeinError::Semantic(format!(
+        return Err(HawdbError::Semantic(format!(
             "column {} is unknown or ambiguous",
             column.name
         )));
@@ -275,7 +275,7 @@ pub(super) fn evaluate_projection_expression(
         Expr {
             kind: ExprKind::Value(SqlValue::Parameter(position)),
             ..
-        } => Err(SkeinError::Semantic(format!(
+        } => Err(HawdbError::Semantic(format!(
             "projection expression cannot bind parameter ${position}"
         ))),
         Expr {
@@ -288,7 +288,7 @@ pub(super) fn evaluate_projection_expression(
                 },
             ..
         } if name == "uuidv7" && arguments.is_empty() => {
-            Ok(RelationalValue::Uuid(skein_core::generate_uuidv7()?))
+            Ok(RelationalValue::Uuid(hawdb_core::generate_uuidv7()?))
         }
         Expr {
             kind:
@@ -303,10 +303,10 @@ pub(super) fn evaluate_projection_expression(
         Expr {
             kind: ExprKind::Function { name, .. },
             ..
-        } => Err(SkeinError::Semantic(format!(
+        } => Err(HawdbError::Semantic(format!(
             "unsupported relational projection function {name}"
         ))),
-        _ => Err(SkeinError::Semantic(
+        _ => Err(HawdbError::Semantic(
             "unsupported projection expression".to_owned(),
         )),
     }
@@ -319,7 +319,7 @@ pub(super) fn evaluate_coalesce(
 ) -> Result<RelationalValue> {
     for argument in arguments {
         let SqlFunctionArgument::Expression(expression) = argument else {
-            return Err(SkeinError::Semantic(
+            return Err(HawdbError::Semantic(
                 "COALESCE does not accept wildcard".to_string(),
             ));
         };
@@ -346,12 +346,12 @@ pub(super) fn evaluate_coalesce(
                 kind: ExprKind::Function { name, .. },
                 ..
             } => {
-                return Err(SkeinError::Semantic(format!(
+                return Err(HawdbError::Semantic(format!(
                     "unsupported COALESCE argument function {name}"
                 )))
             }
             _ => {
-                return Err(SkeinError::Semantic(
+                return Err(HawdbError::Semantic(
                     "unsupported COALESCE argument expression".to_owned(),
                 ))
             }
@@ -381,10 +381,10 @@ pub(super) fn resolve_binding<'a>(
                 .map(|position| (index, binding, position))
         });
     let first = matches.next().ok_or_else(|| {
-        SkeinError::Semantic(format!("unknown relational column {}", column.name))
+        HawdbError::Semantic(format!("unknown relational column {}", column.name))
     })?;
     if matches.next().is_some() {
-        return Err(SkeinError::Semantic(format!(
+        return Err(HawdbError::Semantic(format!(
             "ambiguous relational column {}",
             column.name
         )));
@@ -398,7 +398,7 @@ pub(super) fn projected_value(position: usize, binding: &Binding<'_>) -> Result<
 
 pub(super) fn insert_output(output: &mut Row, name: String, value: Value) -> Result<()> {
     if output.insert(name.clone(), value).is_some() {
-        return Err(SkeinError::Semantic(format!(
+        return Err(HawdbError::Semantic(format!(
             "relational projection contains duplicate output column {name}"
         )));
     }
@@ -407,10 +407,10 @@ pub(super) fn insert_output(output: &mut Row, name: String, value: Value) -> Res
 
 pub(super) fn account_intermediate(total: &mut usize, rows: usize, limit: usize) -> Result<()> {
     *total = total.checked_add(rows).ok_or_else(|| {
-        SkeinError::Execution("relational intermediate row count overflow".to_string())
+        HawdbError::Execution("relational intermediate row count overflow".to_string())
     })?;
     if *total > limit {
-        return Err(SkeinError::Execution(format!(
+        return Err(HawdbError::Execution(format!(
             "relational SQL exceeds max_intermediate_rows {limit}"
         )));
     }
@@ -419,7 +419,7 @@ pub(super) fn account_intermediate(total: &mut usize, rows: usize, limit: usize)
 
 pub(super) fn reject_non_public_schema(schema: Option<&str>) -> Result<()> {
     if schema.is_some_and(|schema| schema != "public") {
-        return Err(SkeinError::Semantic(
+        return Err(HawdbError::Semantic(
             "relational content tables must use the public schema".to_string(),
         ));
     }

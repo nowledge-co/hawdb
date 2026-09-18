@@ -5,8 +5,8 @@ use crate::{
     encode_residual_row_properties, sync_parent_directory, ManifestGeneration, RepresentationKind,
     SegmentCache, SegmentCacheError, SegmentCacheKey, StoreId, StoreStableIdMapping,
 };
-use skein_core::Value;
-use skein_integrity::{IntegrityHasher, SHA256_BYTES};
+use hawdb_core::Value;
+use hawdb_integrity::{IntegrityHasher, SHA256_BYTES};
 use std::cmp::Ordering;
 use std::collections::BTreeMap;
 use std::fmt;
@@ -1815,7 +1815,7 @@ mod tests {
 
     fn test_path(name: &str) -> PathBuf {
         std::env::temp_dir().join(format!(
-            "skein-stable-identity-{name}-{}-{}",
+            "hawdb-stable-identity-{name}-{}-{}",
             std::process::id(),
             TEST_ID.fetch_add(1, Ordering::Relaxed)
         ))

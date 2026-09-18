@@ -28,7 +28,7 @@ impl AggregateProjectionState {
                 name: alias.clone().unwrap_or_else(|| expression_name(expression)),
                 expression: AggregateExpressionState::new(expression, parameters)?,
             }),
-            SelectProjection::Wildcard => Err(SkeinError::Semantic(
+            SelectProjection::Wildcard => Err(HawdbError::Semantic(
                 "aggregate SELECT does not support wildcard projection".to_string(),
             )),
         }
@@ -132,7 +132,7 @@ impl AggregateExpressionState {
             } => match name.as_str() {
                 "count" => {
                     let [argument] = arguments.as_slice() else {
-                        return Err(SkeinError::Semantic(
+                        return Err(HawdbError::Semantic(
                             "COUNT requires exactly one argument".to_string(),
                         ));
                     };
@@ -143,13 +143,13 @@ impl AggregateExpressionState {
                             ..
                         }) => Some(column.clone()),
                         _ => {
-                            return Err(SkeinError::Semantic(
+                            return Err(HawdbError::Semantic(
                                 "COUNT supports wildcard or a column argument".to_string(),
                             ))
                         }
                     };
                     if *distinct && column.is_none() {
-                        return Err(SkeinError::Semantic(
+                        return Err(HawdbError::Semantic(
                             "COUNT(DISTINCT *) is not supported".to_string(),
                         ));
                     }
@@ -162,7 +162,7 @@ impl AggregateExpressionState {
                 }
                 "sum" | "max" => {
                     let [SqlFunctionArgument::Expression(expression)] = arguments.as_slice() else {
-                        return Err(SkeinError::Semantic(
+                        return Err(HawdbError::Semantic(
                             "numeric aggregate requires exactly one expression".to_string(),
                         ));
                     };
@@ -180,7 +180,7 @@ impl AggregateExpressionState {
                 }
                 "coalesce" => {
                     if *distinct {
-                        return Err(SkeinError::Semantic(
+                        return Err(HawdbError::Semantic(
                             "COALESCE does not accept DISTINCT".to_string(),
                         ));
                     }
@@ -188,7 +188,7 @@ impl AggregateExpressionState {
                         .iter()
                         .map(|argument| {
                             let SqlFunctionArgument::Expression(expression) = argument else {
-                                return Err(SkeinError::Semantic(
+                                return Err(HawdbError::Semantic(
                                     "COALESCE does not accept wildcard".to_string(),
                                 ));
                             };
@@ -197,11 +197,11 @@ impl AggregateExpressionState {
                         .collect::<Result<Vec<_>>>()?;
                     Ok(Self::Coalesce(states))
                 }
-                _ => Err(SkeinError::Semantic(format!(
+                _ => Err(HawdbError::Semantic(format!(
                     "unsupported relational aggregate function {name}"
                 ))),
             },
-            _ => Err(SkeinError::Semantic(
+            _ => Err(HawdbError::Semantic(
                 "unsupported aggregate expression".to_owned(),
             )),
         }
@@ -301,14 +301,14 @@ impl AggregateExpressionState {
 
     pub(super) fn finish(self) -> Result<Value> {
         match self {
-            Self::Having(_) => Err(SkeinError::Execution(
+            Self::Having(_) => Err(HawdbError::Execution(
                 "HAVING state reached output projection".into(),
             )),
             Self::Constant(value) => Ok(value),
             Self::First {
                 value: Some(value), ..
             } => relational_to_value(&value),
-            Self::First { value: None, .. } => Err(SkeinError::Semantic(
+            Self::First { value: None, .. } => Err(HawdbError::Semantic(
                 "aggregate column has no input row".to_string(),
             )),
             Self::Count { count, .. } => Ok(Value::Int(i64::try_from(count).unwrap_or(i64::MAX))),
@@ -345,7 +345,7 @@ pub(super) fn update_numeric_aggregate(
         ) => {
             *total = total
                 .checked_add(value)
-                .ok_or_else(|| SkeinError::Execution("BIGINT SUM overflow".to_string()))?;
+                .ok_or_else(|| HawdbError::Execution("BIGINT SUM overflow".to_string()))?;
         }
         (NumericAggregate::Sum, result @ None, RelationalValue::DoublePrecision(value)) => {
             *result = Some(RelationalValue::DoublePrecision(value));
@@ -361,7 +361,7 @@ pub(super) fn update_numeric_aggregate(
         (NumericAggregate::Max, Some(current), value) if value > *current => *current = value,
         (NumericAggregate::Max, Some(_), _) => {}
         (NumericAggregate::Sum, _, _) => {
-            return Err(SkeinError::Semantic(
+            return Err(HawdbError::Semantic(
                 "SUM requires BIGINT or DOUBLE PRECISION input".to_string(),
             ))
         }
@@ -373,7 +373,7 @@ pub(super) fn update_numeric_aggregate(
 pub fn charge_aggregate_memory(bytes: usize, tracker: &mut OperatorMemoryTracker) -> Result<()> {
     ensure_operator_item_fits("RelationalAggregateExec", bytes, tracker)?;
     if tracker.would_exceed(bytes) {
-        return Err(SkeinError::Execution(format!(
+        return Err(HawdbError::Execution(format!(
             "RelationalAggregateExec state exceeds blocking_operator_bytes {}",
             tracker.budget_bytes
         )));
@@ -410,7 +410,7 @@ pub(super) fn aggregate_expression_base_memory_bytes(state: &AggregateExpression
     state_bytes.saturating_add(match state {
         AggregateExpressionState::Having(state) => state.base_memory_bytes(),
         AggregateExpressionState::Constant(value) => {
-            skein_executor::binding::value_memory_bytes(value)
+            hawdb_executor::binding::value_memory_bytes(value)
         }
         AggregateExpressionState::First { column, value } => column_ref_memory_bytes(column)
             .saturating_add(value.as_ref().map_or(0, relational_value_memory_bytes)),
@@ -496,7 +496,7 @@ pub(super) fn sql_predicate_memory_bytes(predicate: &SqlPredicate) -> usize {
 
 pub(super) fn sql_value_memory_bytes(value: &SqlValue) -> usize {
     match value {
-        SqlValue::Literal(value) => skein_executor::binding::value_memory_bytes(value),
+        SqlValue::Literal(value) => hawdb_executor::binding::value_memory_bytes(value),
         SqlValue::Parameter(_) => 0,
     }
 }

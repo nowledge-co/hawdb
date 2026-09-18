@@ -1,18 +1,18 @@
-use skein_core::Value;
-use skein_executor::{
+use hawdb_core::Value;
+use hawdb_executor::{
     observer::{
         blocking_operator_memory_report_value, graph_expansion_report_value,
         pipeline_memory_report_value, scan_pruning_report_value, vector_execution_report_value,
     },
     PipelineMemoryReport, ReadExecutionProfile, Row,
 };
-use skein_optimizer::{
+use hawdb_optimizer::{
     Distribution, OptimizerTrace, PhysicalProperties, PlanCost, PlanCostBreakdown, StageTrace,
 };
-use skein_plan::{visit_plan, NodeProjectionAccess, PhysicalPlan};
-use skein_plan_cache::PlanCacheLookup;
-use skein_qos::WorkRequest;
-use skein_storage::ScanPruningReport;
+use hawdb_plan::{visit_plan, NodeProjectionAccess, PhysicalPlan};
+use hawdb_plan_cache::PlanCacheLookup;
+use hawdb_qos::WorkRequest;
+use hawdb_storage::ScanPruningReport;
 use std::collections::BTreeMap;
 
 /// Inputs for structured embedded `EXPLAIN` output.

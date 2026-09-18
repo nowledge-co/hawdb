@@ -1,6 +1,6 @@
 use super::*;
 use crate::external::NoExternalReadOperator;
-use skein_plan::GraphAlgorithmKind;
+use hawdb_plan::GraphAlgorithmKind;
 use std::cell::Cell;
 
 mod boundaries;
@@ -24,14 +24,14 @@ fn with_context<T>(
                 properties: BTreeMap::from([("id".into(), Value::Int(id as i64 + 1))]),
             })
             .collect(),
-        relationships: vec![skein_storage::RelRecord {
-            id: skein_storage::RelId(0),
+        relationships: vec![hawdb_storage::RelRecord {
+            id: hawdb_storage::RelId(0),
             source: NodeId(0),
             target: NodeId(1),
             rel_type,
             properties: BTreeMap::new(),
         }],
-        definition: Some(skein_storage::ProjectedGraphDefinition {
+        definition: Some(hawdb_storage::ProjectedGraphDefinition {
             node_labels: vec!["Memory".into()],
             rel_types: vec!["MENTIONS".into()],
         }),
@@ -98,7 +98,7 @@ fn graph_handler_checks_cancellation_inside_its_execution_boundary() {
         let plan = PhysicalPlan::GraphAlgorithm {
             algorithm,
             graph_name: "MemoryGraph".into(),
-            options: skein_plan::GraphAlgorithmOptions {
+            options: hawdb_plan::GraphAlgorithmOptions {
                 damping: None,
                 max_iterations: Some(2),
                 max_levels: Some(1),
@@ -106,7 +106,7 @@ fn graph_handler_checks_cancellation_inside_its_execution_boundary() {
             score_column: "score".into(),
             node_visibility_predicate: None,
         };
-        let cancellation = skein_core::RuntimeCancellationToken::new();
+        let cancellation = hawdb_core::RuntimeCancellationToken::new();
         assert!(cancellation.cancel());
         let task = RuntimeTaskContext::without_deadline(cancellation);
         let result = with_context(Some(&task), |context| {
@@ -122,7 +122,7 @@ fn graph_handler_checks_cancellation_inside_its_execution_boundary() {
         });
         assert_eq!(
             result.unwrap_err(),
-            SkeinError::Execution("runtime task stopped: cancelled".to_string())
+            HawdbError::Execution("runtime task stopped: cancelled".to_string())
         );
     }
 }
@@ -164,7 +164,7 @@ mod cancellation_tests {
         let mut external_operator = NoExternalReadOperator;
         let external = BatchExternalReadAdapter::new(&mut external_operator);
         let observer = QueryExecutionObserver::default();
-        let cancellation = skein_core::RuntimeCancellationToken::new();
+        let cancellation = hawdb_core::RuntimeCancellationToken::new();
         let task_context = RuntimeTaskContext::without_deadline(cancellation.clone());
         assert!(cancellation.cancel());
         let context = BatchReadContext {

@@ -29,7 +29,7 @@ fn ready_profile() -> Value {
         "canonical_graph_commit_epoch": 7
     });
     json!({
-        "protocol": "skein-storage-resource-profile-v2", "protocol_version": 2,
+        "protocol": "hawdb-storage-resource-profile-v2", "protocol_version": 2,
         "present": true, "ready": true, "resource_ready": true, "blocker_codes": [],
         "identity_matches_expected": true, "canonical_graph_commit_epoch": 7,
         "evidence_binding": {"identity": identity, "generated_at_unix_seconds": 1},
@@ -187,7 +187,7 @@ fn remove(profile: &mut Value, pointer: &str) {
 fn resource_profile_required_fields_fail_closed_without_coercion() {
     assert_eq!(
         STORAGE_RESOURCE_PROFILE_PROTOCOL,
-        "skein-storage-resource-profile-v2"
+        "hawdb-storage-resource-profile-v2"
     );
     assert_codes(&ready_profile(), []);
     for (path, codes) in required_fields() {

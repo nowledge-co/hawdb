@@ -4,17 +4,17 @@
 //! the portable report shape and JSON encoding used by readiness tooling.
 
 use crate::bounded_read_evidence::NowledgeMemGraphMode;
-use skein_cypher::Statement;
-use skein_executor::{
+use hawdb_cypher::Statement;
+use hawdb_executor::{
     GraphExpansionExecutionReport, PipelineMemoryReport, QueryOutput, ReadExecutionProfile,
     VectorExecutionReport,
 };
-use skein_plan_cache::PlanCacheLookup;
-use skein_storage::{ScanPruningReport, ScanPruningStrategy};
+use hawdb_plan_cache::PlanCacheLookup;
+use hawdb_storage::{ScanPruningReport, ScanPruningStrategy};
 use std::collections::{BTreeMap, BTreeSet};
 
-pub use skein_evidence::inventory::NOWLEDGE_MEM_QUERY_REPORT_PROTOCOL;
-pub use skein_nowledge_contracts::NowledgeMemQueryExecutionPath;
+pub use hawdb_evidence::inventory::NOWLEDGE_MEM_QUERY_REPORT_PROTOCOL;
+pub use hawdb_nowledge_contracts::NowledgeMemQueryExecutionPath;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct NowledgeMemFastPathClassification {
@@ -25,7 +25,7 @@ pub struct NowledgeMemFastPathClassification {
 pub fn nowledge_mem_fast_path_classification(
     statement: &Statement,
 ) -> NowledgeMemFastPathClassification {
-    let shape = skein_cypher::read_route::classify_read_route_shape(statement);
+    let shape = hawdb_cypher::read_route::classify_read_route_shape(statement);
     NowledgeMemFastPathClassification {
         execution_path: if shape.is_fast_path() {
             NowledgeMemQueryExecutionPath::FastPath
@@ -193,7 +193,7 @@ pub struct NowledgeMemQueryApiBehavior {
 
 impl NowledgeMemQueryApiBehavior {
     fn from_statement(statement: &Statement) -> Self {
-        let shape = skein_cypher::read_route::classify_read_route_shape(statement);
+        let shape = hawdb_cypher::read_route::classify_read_route_shape(statement);
         Self {
             include_metadata_false_strips_metadata: true,
             ordering_contract_recorded: true,
@@ -443,7 +443,7 @@ mod tests {
     fn query_execution_path_reexports_the_shared_contract_type() {
         assert_eq!(
             TypeId::of::<NowledgeMemQueryExecutionPath>(),
-            TypeId::of::<skein_nowledge_contracts::NowledgeMemQueryExecutionPath>()
+            TypeId::of::<hawdb_nowledge_contracts::NowledgeMemQueryExecutionPath>()
         );
     }
 
@@ -552,7 +552,7 @@ mod tests {
         );
         assert_eq!(
             nowledge_mem_plan_cache_report(Some(PlanCacheLookup::Bypass(
-                skein_plan_cache::PlanCacheBypassReason::MutationPlanning,
+                hawdb_plan_cache::PlanCacheBypassReason::MutationPlanning,
             ))),
             NowledgeMemPlanCacheReport {
                 cacheable: false,

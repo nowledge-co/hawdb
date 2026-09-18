@@ -4,8 +4,8 @@ use crate::store::{
     PrunedNodeScan, PrunedRelationshipScan, SourceScanCandidateRow, SourceScanCandidateVisit,
     SourceScanReadLimits,
 };
-use skein_plan::{CompositeRangeSeek, NodeProjectionAccess};
-use skein_storage::{
+use hawdb_plan::{CompositeRangeSeek, NodeProjectionAccess};
+use hawdb_storage::{
     ProjectedGraphDefinition, ProjectedNodeRecord, RelId, ScanPredicate, ScanPruningReport,
 };
 use std::cell::Cell;
@@ -57,7 +57,7 @@ impl GraphExecutionRead for ChainStore {
         if self.visits.get() == self.stop_after {
             assert!(!self.panic, "injected adjacency panic");
             if self.failure {
-                return Err(SkeinError::Execution(
+                return Err(HawdbError::Execution(
                     "injected adjacency failure".to_string(),
                 ));
             }
