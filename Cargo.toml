@@ -52,6 +52,7 @@ default = [
   "background-maintenance",
   "full-text-search",
   "graph-analytics",
+  "tokio-runtime",
   "vector-search",
 ]
 acl = ["hawdb-search/acl"]
