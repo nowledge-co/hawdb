@@ -1,0 +1,17 @@
+[header]
+builtin = "Apache-2.0"
+
+[props]
+copyright_owner = "Nowledge"
+inception_year = 2026
+
+[files]
+excludes = [
+    "**/*.toml",
+    "**/*.yml",
+    "**/*.yaml",
+    "**/*.json",
+    "**/*.lock",
+    "**/BUILD.bazel",
+    "**/*.bzl",
+]

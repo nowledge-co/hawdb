@@ -1,3 +1,17 @@
+-- Copyright 2026 Nowledge
+--
+-- Licensed under the Apache License, Version 2.0 (the "License");
+-- you may not use this file except in compliance with the License.
+-- You may obtain a copy of the License at
+--
+--     http://www.apache.org/licenses/LICENSE-2.0
+--
+-- Unless required by applicable law or agreed to in writing, software
+-- distributed under the License is distributed on an "AS IS" BASIS,
+-- WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+-- See the License for the specific language governing permissions and
+-- limitations under the License.
+
 CREATE TABLE content_documents (content_doc_id TEXT PRIMARY KEY, owner_kind TEXT NOT NULL, owner_id TEXT NOT NULL, space_id TEXT NOT NULL DEFAULT 'default', media_type TEXT NOT NULL, blob_path TEXT, sha256 TEXT NOT NULL DEFAULT '', size_bytes BIGINT NOT NULL DEFAULT 0, item_count BIGINT NOT NULL DEFAULT 0, schema_version BIGINT NOT NULL, created_at TEXT NOT NULL, updated_at TEXT NOT NULL, UNIQUE (owner_kind, owner_id));
 CREATE TABLE thread_messages (content_message_id TEXT PRIMARY KEY, message_id TEXT NOT NULL, thread_storage_id TEXT NOT NULL, thread_id TEXT NOT NULL, content_doc_id TEXT NOT NULL REFERENCES content_documents(content_doc_id), space_id TEXT NOT NULL DEFAULT 'default', order_index BIGINT NOT NULL, role TEXT NOT NULL, content TEXT NOT NULL, timestamp TEXT, token_count BIGINT NOT NULL DEFAULT 0, metadata_json TEXT NOT NULL DEFAULT '{}', external_id TEXT NOT NULL DEFAULT '', exclude_from_distillation BOOLEAN NOT NULL DEFAULT FALSE, content_hash TEXT NOT NULL, created_at TEXT NOT NULL, updated_at TEXT NOT NULL);
 CREATE TABLE content_chunks (chunk_id TEXT PRIMARY KEY, content_doc_id TEXT NOT NULL REFERENCES content_documents(content_doc_id), chunk_index BIGINT NOT NULL, text TEXT NOT NULL, char_start BIGINT, char_end BIGINT, token_count BIGINT NOT NULL DEFAULT 0, metadata_json TEXT NOT NULL DEFAULT '{}', content_hash TEXT NOT NULL DEFAULT '', created_at TEXT NOT NULL, updated_at TEXT NOT NULL, UNIQUE (content_doc_id, chunk_index));

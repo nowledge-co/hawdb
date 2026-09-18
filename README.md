@@ -163,3 +163,17 @@ Compatibility commands that execute external previous-wrapper or shadow compare
 processes are quarantined as developer/preflight tools. They require
 `HAWDB_ENABLE_COMPATIBILITY_TOOLS=1` and are only for isolated CI, release, or
 nightly validation against copied data.
+
+## License
+
+HawDB is licensed under the Apache License, Version 2.0. See
+[`LICENSE`](LICENSE) for the full text.
+
+Source files carry the standard Apache-2.0 header. Check or normalize them with
+[hawkeye](https://crates.io/crates/hawkeye) using the repository's
+[`licenserc.toml`](licenserc.toml):
+
+```console
+hawkeye check   # report missing or non-canonical headers
+hawkeye format  # add or repair headers
+```
