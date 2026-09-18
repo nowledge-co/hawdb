@@ -52,6 +52,9 @@ pub fn in_memory_report(
         budget_bytes: tracker.budget_bytes,
         peak_tracked_bytes,
         input_rows,
+        candidate_rows: 0,
+        replay_rows: 0,
+        repartitions: 0,
         max_spill_bytes: memory.max_spill_bytes.get(),
         max_spill_runs: memory.max_spill_runs.get(),
         spilled_bytes: 0,
@@ -73,6 +76,9 @@ pub fn spill_backed_report(
         budget_bytes: tracker.budget_bytes,
         peak_tracked_bytes,
         input_rows,
+        candidate_rows: 0,
+        replay_rows: 0,
+        repartitions: 0,
         max_spill_bytes: spill_budget.max_bytes,
         max_spill_runs: spill_budget.max_runs,
         spilled_bytes: spill_budget.used_bytes,
@@ -322,6 +328,7 @@ fn merge_cartesian_bindings(left: &Binding, right: &Binding) -> Binding {
     }
 }
 
+mod admitted_hash_join;
 mod aggregate;
 mod distinct;
 mod hash_key;
@@ -332,6 +339,10 @@ mod sort;
 
 use hash_key::{hash_entry_overhead, hash_set_capacity_bytes, HashGroups, HashedKey};
 
+pub use admitted_hash_join::{
+    AdmittedHashJoin, AdmittedHashJoinAdapter, AdmittedHashJoinCandidate, AdmittedHashJoinControl,
+    AdmittedHashJoinRecord, AdmittedHashJoinSide, AdmittedHashJoinWork,
+};
 pub use aggregate::*;
 pub use distinct::*;
 pub use join::stream_hash_join_batches;

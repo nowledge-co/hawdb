@@ -277,11 +277,42 @@ fn prepare_hash_left_join(state: &RelationalState) -> PreparedRelationalSelect {
     .expect("prepare hash left join")
 }
 
+fn prepare_hash_left_join_with_rejected_residual(
+    state: &RelationalState,
+) -> PreparedRelationalSelect {
+    let prepared_sql = hawdb_sql::prepare_postgres_sql(
+        "SELECT l.id AS left_id, r.id AS right_id \
+             FROM hash_left AS l \
+             LEFT JOIN hash_right AS r \
+             ON r.join_key = l.join_key AND r.tag = l.tag AND r.value = 'never' \
+             WHERE l.tenant = 'tenant-1'",
+    )
+    .expect("valid residual-rejecting hash left join SELECT");
+    let SqlStatement::Select(select) = prepared_sql.statement else {
+        panic!("expected SELECT statement");
+    };
+    prepare_relational_select(
+        select,
+        &[],
+        state,
+        RelationalQueryReadModes::new(
+            RelationalIndexReadMode::<crate::RelationalMaterializedReader>::Materialized,
+            RelationalRowReadMode::<crate::RelationalMaterializedReader>::CanonicalMemory,
+        ),
+        batched_index_join_limits(),
+        RelationalJoinPlanningContext::default(),
+        RelationalSqlStageTimings::default(),
+    )
+    .expect("prepare residual-rejecting hash left join")
+}
+
 fn constrained_hash_join_memory() -> hawdb_executor::ExecutionMemoryConfig {
     hawdb_executor::ExecutionMemoryConfig {
-        blocking_operator_bytes: NonZeroUsize::new(512).expect("non-zero blocking budget"),
-        max_spill_bytes: NonZeroU64::new(64 * 1024).expect("non-zero spill budget"),
-        max_spill_runs: NonZeroUsize::new(4).expect("non-zero spill run budget"),
+        // Account for the live table, replay record, run metadata, and the
+        // executor's real 8 KiB buffered spill I/O at the same time.
+        blocking_operator_bytes: NonZeroUsize::new(128 * 1024).expect("non-zero blocking budget"),
+        max_spill_bytes: NonZeroU64::new(4 * 1024 * 1024).expect("non-zero spill budget"),
+        max_spill_runs: NonZeroUsize::new(16).expect("non-zero spill run budget"),
         min_spill_free_bytes: NonZeroU64::MIN,
         spill_directory: std::env::temp_dir().join(format!(
             "hawdb-hash-join-spill-{}-{}",
@@ -293,6 +324,24 @@ fn constrained_hash_join_memory() -> hawdb_executor::ExecutionMemoryConfig {
         )),
         ..hawdb_executor::ExecutionMemoryConfig::default()
     }
+}
+
+fn extend_hash_join_hot_build(mut state: RelationalState, rows: usize) -> RelationalState {
+    for i in 0..rows {
+        let sql = format!(
+            "INSERT INTO hash_right (id, join_key, tag, value) VALUES ('right-fill-{i}', 'b', 'gold', 'skip')"
+        );
+        let transaction = compile_relational_statement_sql(&sql, &[], &state)
+            .expect("compile hot hash-join build row");
+        state = state
+            .stage_transaction(
+                transaction,
+                RelationalMutationLimits::default(),
+                RelationalOverflowConfig::default(),
+            )
+            .expect("apply hot hash-join build row");
+    }
+    state
 }
 
 #[test]
@@ -715,14 +764,23 @@ fn hash_join_preserves_duplicate_build_rows_and_evaluates_full_on_predicates() {
     assert!(output
         .blocking_operator_memory_reports
         .iter()
-        .any(|report| report.operator == "RelationalHashJoinBuild"));
+        .any(|report| {
+            report.operator == "RelationalHashJoin"
+                && report.candidate_rows >= 3
+                && report.replay_rows == 0
+        }));
 }
 
 #[test]
 fn hash_join_spills_and_falls_back_for_a_hot_partition() {
-    let state = hash_join_state();
+    let state = extend_hash_join_hot_build(hash_join_state(), 512);
     let prepared = prepare_hash_join(&state);
     let memory = constrained_hash_join_memory();
+    let limits = RelationalQueryLimits {
+        max_intermediate_rows: 16 * 1024,
+        max_candidate_work: 16 * 1024,
+        ..batched_index_join_limits()
+    };
     let execution = prepared
         .execution
         .admit(
@@ -733,7 +791,7 @@ fn hash_join_spills_and_falls_back_for_a_hot_partition() {
             ),
             RelationalQueryResourceContext::new(
                 RelationalJoinEnumerationConfig::default(),
-                batched_index_join_limits(),
+                limits,
                 &memory,
                 None,
             ),
@@ -767,15 +825,43 @@ fn hash_join_spills_and_falls_back_for_a_hot_partition() {
         .blocking_operator_memory_reports
         .iter()
         .any(|report| {
-            report.operator == "RelationalHashJoinGrace"
+            report.operator == "RelationalHashJoin"
                 && report.spilled_rows > 0
                 && report.spill_run_count > 0
+                && report.candidate_rows > 0
+                && report.replay_rows > 0
         }));
-    assert!(output
-        .blocking_operator_memory_reports
-        .iter()
-        .any(|report| report.operator == "RelationalHashJoinGraceHotPartition"));
     std::fs::remove_dir_all(&memory.spill_directory).expect("remove hash join spill fixture");
+}
+
+#[test]
+fn hash_join_rejects_spill_when_io_buffer_is_not_admitted() {
+    let state = hash_join_state();
+    let prepared = prepare_hash_join(&state);
+    let mut memory = constrained_hash_join_memory();
+    memory.blocking_operator_bytes = NonZeroUsize::new(512).expect("non-zero under-budget");
+    let execution = prepared
+        .execution
+        .admit(
+            &state,
+            RelationalQueryReadModes::new(
+                RelationalIndexReadMode::<crate::RelationalMaterializedReader>::Materialized,
+                RelationalRowReadMode::<crate::RelationalMaterializedReader>::CanonicalMemory,
+            ),
+            RelationalQueryResourceContext::new(
+                RelationalJoinEnumerationConfig::default(),
+                batched_index_join_limits(),
+                &memory,
+                None,
+            ),
+        )
+        .expect("admit under-budget hash join");
+    let error = execute_select(&prepared, &[], execution)
+        .expect_err("spill I/O buffer must be admitted before writing a run");
+    assert!(error
+        .to_string()
+        .contains("RelationalHashJoin (blocking_state) would use 8192 bytes"));
+    let _ = std::fs::remove_dir_all(&memory.spill_directory);
 }
 
 #[test]
@@ -841,6 +927,61 @@ fn hash_left_join_null_extends_unmatched_and_null_keys() {
         output.operator_cardinality_profiles[1].operator,
         RelationalOperatorKind::HashJoin
     );
+}
+
+#[test]
+fn hash_left_join_defers_unmatched_rows_across_hot_build_chunks() {
+    let state = extend_hash_join_hot_build(hash_join_state(), 512);
+    let prepared = prepare_hash_left_join_with_rejected_residual(&state);
+    let memory = constrained_hash_join_memory();
+    let limits = RelationalQueryLimits {
+        max_intermediate_rows: 16 * 1024,
+        max_candidate_work: 16 * 1024,
+        ..batched_index_join_limits()
+    };
+    let execution = prepared
+        .execution
+        .admit(
+            &state,
+            RelationalQueryReadModes::new(
+                RelationalIndexReadMode::<crate::RelationalMaterializedReader>::Materialized,
+                RelationalRowReadMode::<crate::RelationalMaterializedReader>::CanonicalMemory,
+            ),
+            RelationalQueryResourceContext::new(
+                RelationalJoinEnumerationConfig::default(),
+                limits,
+                &memory,
+                None,
+            ),
+        )
+        .expect("admit residual-rejecting spill-backed hash left join");
+    let output = execute_select(&prepared, &[], execution)
+        .expect("execute residual-rejecting spill-backed hash left join");
+    let mut rows = output
+        .rows
+        .iter()
+        .map(|row| (row["left_id"].clone(), row["right_id"].clone()))
+        .collect::<Vec<_>>();
+    rows.sort();
+    assert_eq!(
+        rows,
+        vec![
+            (Value::String("left-a".to_string()), Value::Null),
+            (Value::String("left-b".to_string()), Value::Null),
+            (Value::String("left-null".to_string()), Value::Null),
+        ]
+    );
+    assert!(output
+        .blocking_operator_memory_reports
+        .iter()
+        .any(|report| {
+            report.operator == "RelationalHashJoin"
+                && report.spilled_rows > 0
+                && report.replay_rows > 0
+                && report.candidate_rows > 512
+        }));
+    std::fs::remove_dir_all(&memory.spill_directory)
+        .expect("remove residual-rejecting hash join spill fixture");
 }
 
 #[test]

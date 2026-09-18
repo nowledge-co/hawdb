@@ -55,12 +55,15 @@ struct GroupEntry<K, V> {
 }
 
 /// Dense groups keep their keys and states in one sortable allocation. Buckets
-/// contain only chain heads; collisions always compare complete keys. Unlike
-/// collecting a HashMap into a sorted Vec, finishing needs no second array of
-/// group headers. The tracker retains array capacity until that array is freed.
+/// contain chain heads and tails, so collision candidates retain producer order
+/// without scanning unrelated buckets. Collisions always compare complete keys.
+/// Unlike collecting a HashMap into a sorted Vec, finishing needs no second
+/// array of group headers. The tracker retains array capacity until that array
+/// is freed.
 pub(super) struct HashGroups<K, V> {
     entries: Vec<GroupEntry<K, V>>,
     buckets: Vec<Option<NonZeroUsize>>,
+    bucket_tails: Vec<Option<NonZeroUsize>>,
 }
 
 impl<K, V> Default for HashGroups<K, V> {
@@ -68,6 +71,7 @@ impl<K, V> Default for HashGroups<K, V> {
         Self {
             entries: Vec::new(),
             buckets: Vec::new(),
+            bucket_tails: Vec::new(),
         }
     }
 }
@@ -138,7 +142,7 @@ impl<K: Eq, V> HashGroups<K, V> {
     fn array_bytes(capacity: usize) -> usize {
         capacity.saturating_mul(
             std::mem::size_of::<GroupEntry<K, V>>()
-                .saturating_add(std::mem::size_of::<Option<NonZeroUsize>>()),
+                .saturating_add(std::mem::size_of::<Option<NonZeroUsize>>().saturating_mul(2)),
         )
     }
 
@@ -165,20 +169,37 @@ impl<K: Eq, V> HashGroups<K, V> {
             let old_bytes = Self::array_bytes(self.buckets.len());
             let mut entries = Vec::with_capacity(capacity);
             let mut buckets = vec![None; capacity];
+            let mut bucket_tails: Vec<Option<NonZeroUsize>> = vec![None; capacity];
             entries.append(&mut self.entries);
-            for (index, entry) in entries.iter_mut().enumerate() {
-                let bucket = entry.key.hash as usize & (capacity - 1);
-                entry.next = buckets[bucket];
-                buckets[bucket] = NonZeroUsize::new(index + 1);
+            for index in 0..entries.len() {
+                entries[index].next = None;
+                let bucket = entries[index].key.hash as usize & (capacity - 1);
+                let next = NonZeroUsize::new(index + 1);
+                if let Some(tail) = bucket_tails[bucket] {
+                    entries[tail.get() - 1].next = next;
+                } else {
+                    buckets[bucket] = next;
+                }
+                bucket_tails[bucket] = next;
             }
             self.entries = entries;
             self.buckets = buckets;
+            self.bucket_tails = bucket_tails;
             tracker.release(old_bytes);
         }
         let bucket = key.hash as usize & (self.buckets.len() - 1);
-        let next = self.buckets[bucket];
-        self.entries.push(GroupEntry { key, value, next });
-        self.buckets[bucket] = NonZeroUsize::new(self.entries.len());
+        let next = NonZeroUsize::new(self.entries.len() + 1);
+        self.entries.push(GroupEntry {
+            key,
+            value,
+            next: None,
+        });
+        if let Some(tail) = self.bucket_tails[bucket] {
+            self.entries[tail.get() - 1].next = next;
+        } else {
+            self.buckets[bucket] = next;
+        }
+        self.bucket_tails[bucket] = next;
         Ok(())
     }
 }
@@ -188,11 +209,14 @@ impl<K: Ord, V> HashGroups<K, V> {
         let Self {
             mut entries,
             buckets,
+            bucket_tails,
         } = self;
         let released_bytes = buckets
             .len()
+            .saturating_add(bucket_tails.len())
             .saturating_mul(std::mem::size_of::<Option<NonZeroUsize>>());
         drop(buckets);
+        drop(bucket_tails);
         entries.sort_unstable_by(|left, right| left.key.key.cmp(&right.key.key));
         (
             entries
@@ -302,6 +326,13 @@ mod tests {
         }
         *groups.get_mut(&HashedKey { hash: 0, key: 42 }).unwrap() = 999;
         assert_eq!(groups.get(&HashedKey { hash: 0, key: 999 }), None);
+        assert_eq!(
+            groups.hashed_values(0).copied().collect::<Vec<_>>(),
+            keys.iter()
+                .copied()
+                .map(|key| if key == 42 { 999 } else { key * 2 })
+                .collect::<Vec<_>>()
+        );
         let entry_capacity = groups.entries.capacity();
         let (sorted, released_bytes) = groups.into_sorted();
         tracker.release(released_bytes);

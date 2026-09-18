@@ -35,6 +35,12 @@ pub fn blocking_operator_memory_report_value(report: &BlockingOperatorMemoryRepo
         ),
         ("input_rows".to_string(), usize_value(report.input_rows)),
         (
+            "candidate_rows".to_string(),
+            usize_value(report.candidate_rows),
+        ),
+        ("replay_rows".to_string(), usize_value(report.replay_rows)),
+        ("repartitions".to_string(), usize_value(report.repartitions)),
+        (
             "max_spill_bytes".to_string(),
             u64_value(report.max_spill_bytes),
         ),

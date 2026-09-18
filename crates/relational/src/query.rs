@@ -30,10 +30,9 @@ use hawdb_executor::blocking::{
     stream_distinct_batches, stream_top_n_batches, BindingBatchSource, BlockingExecutionContext,
 };
 use hawdb_executor::external_order::ExternalTopN;
-use hawdb_executor::kernel::{OperatorMemoryTracker, SpillBudgetTracker};
+use hawdb_executor::kernel::OperatorMemoryTracker;
 use hawdb_executor::observer::ExecutionObserver;
 use hawdb_executor::pipeline::{AccountedBindingBatch, BatchControl, BindingBatch};
-use hawdb_executor::spill::{SpillRun, SpillWriter};
 use hawdb_executor::Row;
 use hawdb_executor::{
     BindingSchema, BlockingOperatorMemoryReport, ColumnVector, ColumnarBatch, ExecutionLimit,
@@ -57,7 +56,7 @@ use hawdb_storage::{
     RelationalKey, RelationalScalarType, RelationalState, RelationalTableSchema, RelationalValue,
 };
 use std::cell::RefCell;
-use std::collections::{BTreeMap, BTreeSet, HashMap};
+use std::collections::{BTreeMap, BTreeSet};
 use std::hash::{DefaultHasher, Hash, Hasher};
 use std::num::NonZeroUsize;
 use std::sync::Arc;

@@ -814,6 +814,12 @@ pub struct BlockingOperatorMemoryReport {
     pub budget_bytes: usize,
     pub peak_tracked_bytes: usize,
     pub input_rows: usize,
+    /// Equal-hash candidate pairs examined before domain-specific filtering.
+    pub candidate_rows: usize,
+    /// Records decoded from spill runs, including repartition and hot-key replay.
+    pub replay_rows: usize,
+    /// Successful spill-run partition splits.
+    pub repartitions: usize,
     pub max_spill_bytes: u64,
     pub max_spill_runs: usize,
     pub spilled_bytes: u64,

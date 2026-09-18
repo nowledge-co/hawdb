@@ -35,12 +35,14 @@ fn costed_hash_subtree_spills_within_the_existing_budget() {
 
 fn assert_costed_algorithm(indexed: bool, expected: RelationalOperatorKind, spill: bool) {
     let mut config = DatabaseConfig::default();
-    let directory = super::constrained_hash_join_memory()
-        .spill_directory
-        .with_extension(format!("costed-{indexed}-{spill}"));
+    let directory =
+        super::hash_join_spill_directory().with_extension(format!("costed-{indexed}-{spill}"));
     if spill {
         config.execution_memory.blocking_operator_bytes =
-            std::num::NonZeroUsize::new(4096).unwrap();
+            std::num::NonZeroUsize::new(64 * 1024).unwrap();
+        config.execution_memory.max_spill_bytes =
+            std::num::NonZeroU64::new(2 * 1024 * 1024).unwrap();
+        config.execution_memory.max_spill_runs = std::num::NonZeroUsize::new(64).unwrap();
         config.execution_memory.min_spill_free_bytes = std::num::NonZeroU64::MIN;
         config.execution_memory.spill_directory = directory.clone();
     }
@@ -51,8 +53,21 @@ fn assert_costed_algorithm(indexed: bool, expected: RelationalOperatorKind, spil
                 "CREATE TABLE {table} (id BIGINT PRIMARY KEY, k BIGINT)"
             ))
             .unwrap();
-        let values = (0..count)
+        let matching_values = (0..count)
             .map(|id| format!("({id}, {})", id % 8))
+            .collect::<Vec<_>>();
+        let spill_padding_key = match table {
+            "costed_a" => 1024,
+            "costed_b" => 2048,
+            _ => 0,
+        };
+        let spill_padding = (spill && table != "costed_c")
+            .then_some((0..512).map(|offset| format!("({}, {spill_padding_key})", count + offset)))
+            .into_iter()
+            .flatten();
+        let values = matching_values
+            .into_iter()
+            .chain(spill_padding)
             .collect::<Vec<_>>()
             .join(", ");
         database
@@ -143,9 +158,7 @@ fn assert_costed_algorithm(indexed: bool, expected: RelationalOperatorKind, spil
             .profile
             .blocking_operator_memory_reports
             .iter()
-            .any(|report| {
-                report.operator == "RelationalHashJoinGrace" && report.spilled_rows > 0
-            }));
+            .any(|report| { report.operator == "RelationalHashJoin" && report.spilled_rows > 0 }));
     }
     if directory.exists() {
         assert_eq!(std::fs::read_dir(&directory).unwrap().count(), 0);

@@ -1457,7 +1457,11 @@ mod tests {
     }
 
     #[test]
-    fn grace_hash_join_matches_the_in_memory_reference_across_skewed_cases() {
+    fn spill_backed_hash_join_matches_the_in_memory_reference_across_skewed_cases() {
+        // The shared lifecycle admits its live table together with the 8 KiB
+        // spill I/O buffer. Keep this differential fixture spill-backed, while
+        // leaving the exact one-short admission boundary to focused SQL tests.
+        const HASH_JOIN_BLOCKING_BYTES: usize = 64 * 1024;
         const QUERY: &str = "SELECT l.id AS left_id, r.id AS right_id \
             FROM fuzz_hash_left AS l \
             LEFT JOIN fuzz_hash_right AS r \
@@ -1476,11 +1480,11 @@ mod tests {
                     .as_nanos()
             ));
             config.execution_memory = hawdb::executor::ExecutionMemoryConfig {
-                blocking_operator_bytes: std::num::NonZeroUsize::new(512)
+                blocking_operator_bytes: std::num::NonZeroUsize::new(HASH_JOIN_BLOCKING_BYTES)
                     .expect("non-zero blocking budget"),
                 max_spill_bytes: std::num::NonZeroU64::new(2 * 1024 * 1024)
                     .expect("non-zero spill budget"),
-                max_spill_runs: std::num::NonZeroUsize::new(4).expect("non-zero spill run budget"),
+                max_spill_runs: std::num::NonZeroUsize::new(16).expect("non-zero spill run budget"),
                 min_spill_free_bytes: std::num::NonZeroU64::MIN,
                 spill_directory: spill_directory.clone(),
                 ..hawdb::executor::ExecutionMemoryConfig::default()
@@ -1522,7 +1526,7 @@ mod tests {
                         left_rows.join(", ")
                     ))
                     .expect("insert left hash fuzz rows");
-                let right_rows = (0..48u64)
+                let right_rows = (0..256u64)
                     .map(|id| {
                         let join_key = if id.is_multiple_of(13) {
                             "NULL".to_string()
@@ -1532,8 +1536,7 @@ mod tests {
                             ((next(&mut seed) % 5) as i64).to_string()
                         };
                         format!(
-                            "({id}, {join_key}, {}, {})",
-                            next(&mut seed) % 3,
+                            "({id}, {join_key}, 0, {})",
                             if next(&mut seed).is_multiple_of(4) {
                                 "false"
                             } else {

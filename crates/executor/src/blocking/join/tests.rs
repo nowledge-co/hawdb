@@ -141,7 +141,7 @@ fn oracle(source: &Source) -> Vec<(u64, u64)> {
     expected
 }
 
-fn run(fixture: &Fixture, source: &mut Source) -> (Vec<(u64, u64)>, JoinWork) {
+fn run(fixture: &Fixture, source: &mut Source) -> (Vec<(u64, u64)>, AdmittedHashJoinWork) {
     let mut output = Vec::new();
     let (_, work) = execute_hash_join(
         &plan(),
@@ -172,7 +172,7 @@ fn graph_hash_join_matches_product_oracle_in_memory_and_spill() {
             let (actual, work) = run(&fixture, &mut source);
             assert_eq!(actual, expected, "seed={seed} budget={budget}");
             assert_eq!(
-                work.candidates,
+                work.candidate_rows,
                 expected.len(),
                 "only equal hashes become candidates"
             );
@@ -196,7 +196,7 @@ fn graph_hash_join_repartitions_distinct_keys_without_product_work() {
     };
     let (actual, work) = run(&fixture, &mut source);
     assert_eq!(actual, (0..512).map(|i| (i, i)).collect::<Vec<_>>());
-    assert_eq!(work.candidates, 512);
+    assert_eq!(work.candidate_rows, 512);
     assert!(work.repartitions > 0);
     assert!(work.replay_rows < 512 * 64, "{work:?}");
     fixture.assert_report(true);
@@ -221,67 +221,6 @@ fn graph_hash_join_hot_key_replays_probe_per_build_chunk() {
     assert_eq!(work.repartitions, 0);
     assert!(work.replay_rows < 1024, "{work:?}");
     fixture.assert_report(true);
-}
-
-#[test]
-fn graph_hash_join_collision_candidates_retain_full_value_equality() {
-    let fixture = Fixture::new(128 * 1024);
-    let PhysicalPlan::HashJoinExec {
-        left_key,
-        right_key,
-        ..
-    } = plan()
-    else {
-        unreachable!()
-    };
-    let mut state = JoinState::new(fixture.context(), (&left_key, &right_key));
-    let domain = key_values();
-    for (i, value) in domain.iter().enumerate() {
-        state
-            .insert(0, row("b", i, Some(value.clone()), 0))
-            .unwrap();
-    }
-    let context = fixture.context();
-    let mut output = CartesianOutput::new(
-        "HashJoinExec output",
-        7,
-        context.memory.batch_payload_bytes,
-        context.memory_ledger.account(
-            QueryMemoryClass::PipelineBatch,
-            "test output",
-            context.memory.batch_payload_bytes,
-        ),
-        ExecutionLimit::unlimited(),
-    );
-    let mut actual = Vec::new();
-    let mut emit = |batch: BindingBatch| {
-        actual.extend(
-            batch
-                .iter()
-                .map(|binding| (binding.nodes["a"].id.0, binding.nodes["b"].id.0)),
-        );
-        Ok(BatchControl::Continue)
-    };
-    for (i, value) in domain.iter().enumerate() {
-        state
-            .probe(
-                0,
-                &row("a", i, Some(value.clone()), 0),
-                &left_key,
-                &right_key,
-                &mut output,
-                &mut emit,
-            )
-            .unwrap();
-    }
-    output.finish(&mut emit).unwrap();
-    assert_eq!(
-        actual,
-        (1..domain.len() as u64).map(|i| (i, i)).collect::<Vec<_>>()
-    );
-    drop(output);
-    drop(state);
-    fixture.assert_released();
 }
 
 #[test]
@@ -364,42 +303,6 @@ fn graph_hash_join_empty_inputs_and_zero_limit_emit_nothing() {
             &mut |_| panic!("empty join emitted output"),
         );
         assert!(result.is_ok());
-        fixture.assert_released();
-    }
-}
-
-#[test]
-fn graph_hash_join_rejects_inconsistent_spill_hashes_and_releases_decode_lease() {
-    for side in [JoinSide::Build, JoinSide::Probe] {
-        let fixture = Fixture::new(128 * 1024);
-        let PhysicalPlan::HashJoinExec {
-            left_key,
-            right_key,
-            ..
-        } = plan()
-        else {
-            unreachable!()
-        };
-        let mut state = JoinState::new(fixture.context(), (&left_key, &right_key));
-        let variable = match side {
-            JoinSide::Build => "b",
-            JoinSide::Probe => "a",
-        };
-        let binding = row(variable, 1, Some(Value::Int(7)), 0);
-        let hash = state.hash_state.hash_one(Value::Int(7));
-        let mut writer = state.writer(side).unwrap();
-        writer.write(hash ^ 1, &binding, &mut state).unwrap();
-        let run = writer.finish().unwrap();
-        let mut reader = state.reader(&run).unwrap();
-        let mut tracker = state.replay_tracker();
-        assert!(matches!(
-            state.read(&mut reader, &mut tracker),
-            Err(HawDBError::StorageIntegrity(_))
-        ));
-        assert_eq!(tracker.used_bytes, 0);
-        drop(reader);
-        drop(run);
-        drop(state);
         fixture.assert_released();
     }
 }

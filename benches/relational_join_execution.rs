@@ -142,7 +142,7 @@ fn seed_grace_fixture(database: &mut Database) {
             .query_sql(sql)
             .unwrap_or_else(|error| panic!("seed Grace hash benchmark schema: {error}"));
     }
-    insert_hash_rows(database, DATASET_ROWS);
+    insert_hash_rows(database, DATASET_ROWS.saturating_mul(4));
 }
 
 fn insert_batch_rows(database: &mut Database) {
@@ -358,9 +358,8 @@ fn assert_profile_contract(
                 .profile
                 .blocking_operator_memory_reports
                 .iter()
-                .any(|report| report.operator == "RelationalHashJoinGrace"
-                    && report.spilled_rows > 0),
-            "{} must emit Grace spill evidence",
+                .any(|report| report.operator == "RelationalHashJoin" && report.spilled_rows > 0),
+            "{} must emit hash-join spill evidence",
             case.name
         );
     }
@@ -382,7 +381,7 @@ fn index_read_metrics(profiled: &ProfiledRelationalSqlQueryOutput) -> serde_json
 
 fn grace_execution_memory(spill_directory: PathBuf) -> hawdb_executor::ExecutionMemoryConfig {
     hawdb_executor::ExecutionMemoryConfig {
-        blocking_operator_bytes: NonZeroUsize::new(2 * 1024).expect("non-zero blocking budget"),
+        blocking_operator_bytes: NonZeroUsize::new(40 * 1024).expect("non-zero blocking budget"),
         max_spill_bytes: NonZeroU64::new(4 * 1024 * 1024).expect("non-zero spill budget"),
         max_spill_runs: NonZeroUsize::new(64).expect("non-zero spill run budget"),
         max_total_spill_bytes: NonZeroU64::new(4 * 1024 * 1024)

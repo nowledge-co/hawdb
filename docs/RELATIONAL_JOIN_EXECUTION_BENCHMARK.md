@@ -16,9 +16,10 @@ The deterministic fixture contains four query shapes:
   `MergeJoinExec`.
 - `hash` has no usable right-side join index. It must select `HashJoinExec`
   without spill under the default memory configuration.
-- `grace_hash` executes the hash shape with a small blocking-memory budget and
+- `grace_hash` executes the hash shape with an explicitly spill-capable
+  blocking-memory budget and
   a private spill directory. It must select `HashJoinExec` and produce a
-  `RelationalHashJoinGrace` spill report.
+  `RelationalHashJoin` spill report.
 
 For each shape, the harness runs one cold execution, three warmups, and 31
 measured executions. Every warm execution must hit the bound-neutral SQL
@@ -34,7 +35,7 @@ template cache and therefore report zero parse time. The JSON protocol is
 
 The harness fails when an expected physical join path disappears, cardinality
 is not observed, a join is not fully consumed, or the constrained hash case
-does not report a Grace spill. Timings are machine-local trend evidence only;
+does not report a hash-join spill. Timings are machine-local trend evidence only;
 they are not fixed performance thresholds or production qualification.
 
 ## P2 Decision Gate
