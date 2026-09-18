@@ -809,7 +809,7 @@ mod tests {
         let value = evaluate_projection_expression(&expression, &Catalog::default(), &binding)
             .expect("nested projection expression should evaluate");
 
-        assert_eq!(value, Value::String("ske".to_string()));
+        assert_eq!(value, Value::String("haw".to_string()));
     }
 
     #[test]

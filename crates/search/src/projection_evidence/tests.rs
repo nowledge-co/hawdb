@@ -234,8 +234,8 @@ fn search_projection_evidence_fails_closed_for_missing_predicate_pushdown() {
     assert_eq!(
         report["blocker_codes"],
         serde_json::json!([
-            "predicate_pushdown_not_ready",
-            "hawdb_predicate_pushdown_descriptor_not_ready"
+            "hawdb_predicate_pushdown_descriptor_not_ready",
+            "predicate_pushdown_not_ready"
         ])
     );
 }

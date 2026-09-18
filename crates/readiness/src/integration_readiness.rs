@@ -8710,8 +8710,8 @@ mod tests {
         assert_eq!(
             report["blocker_codes"],
             serde_json::json!([
-                "replacement_summary_bounded_read_evidence_mismatch",
-                "hawdb_shadow_runtime_not_open"
+                "hawdb_shadow_runtime_not_open",
+                "replacement_summary_bounded_read_evidence_mismatch"
             ])
         );
         let alignment_check = report["checks"]

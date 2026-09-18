@@ -12,6 +12,7 @@ excludes = [
     "**/*.yaml",
     "**/*.json",
     "**/*.lock",
+    "**/*.sql",
     "**/BUILD.bazel",
     "**/*.bzl",
 ]

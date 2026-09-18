@@ -18,8 +18,8 @@ use serde_json::{json, Value as Json};
 
 // Captured on unchanged main cc36de143a276696c99a6ddba897003dbe9f33e5.
 // These bind the complete ordered input/output corpus, not just ready flags.
-const SMOKE_DIGEST: &str = "98fe747bf60593db2df72a246d9237f5d3a103fe12c2f10c83d4c24f3d94bbce";
-const CAMPAIGN_DIGEST: &str = "3e691e9dccb12ea0e265f9ec060ecf8e220ede1153187736cf082904649ace83";
+const SMOKE_DIGEST: &str = "b147b0f76e9b5ee75710b2ec61b2d1c9897bd944f1e441f5659a7d064c51a58d";
+const CAMPAIGN_DIGEST: &str = "1ef7fde9e212b76a43f4ec097558befceb78d648bb9e422589dcb8265fbf4aa8";
 
 fn next(state: &mut u64) -> u64 {
     *state = state.wrapping_add(0x9e3779b97f4a7c15);

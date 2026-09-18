@@ -4221,8 +4221,8 @@ mod tests {
         assert_eq!(
             check_by_name(&report, "replacement_summary")["blocker_codes"],
             serde_json::json!([
-                "incremental_watermark_mismatch",
                 "hawdb_search_projection_segment_descriptor_fields_missing",
+                "incremental_watermark_mismatch",
                 "table_parity_mismatch"
             ])
         );

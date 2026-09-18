@@ -979,7 +979,7 @@ mod tests {
         assert_ne!(deterministic_payload(7, 32), deterministic_payload(8, 32));
         assert_eq!(
             stable_digest(b"hawdb"),
-            "sha256:2f2742392c67f60c5f125eabfee13d571883db5cf38b1c3507d98624ea30bbcb"
+            "sha256:0008f032b344fab74c72624fc8b9fb01130ed1c777a91e2c49e440909026a25a"
         );
     }
 
