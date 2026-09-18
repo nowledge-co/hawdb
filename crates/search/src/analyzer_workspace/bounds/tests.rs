@@ -176,3 +176,28 @@ fn source_dimensions_and_overflow_fail_closed() {
     assert!(hmm_retained(usize::MAX).is_none());
     assert!(invocation(0, 0).is_some());
 }
+
+#[test]
+fn growing_envelope_covers_minimum_growth_and_replacement() {
+    assert_eq!(growing_bytes(0, 1), Some(32));
+    assert_eq!(growing_bytes(8, 3), Some(96));
+    assert_eq!(growing_bytes(9, 3), Some(108));
+    assert_eq!(growing_bytes(usize::MAX, 1), None);
+}
+
+#[test]
+fn retained_table_envelope_tracks_pinned_bucket_steps() {
+    assert_eq!(retained_hash_table_bytes(0, 24), Some(0));
+    assert_eq!(retained_hash_table_bytes(3, 24), Some(132));
+    assert_eq!(retained_hash_table_bytes(4, 24), Some(232));
+    assert_eq!(retained_hash_table_bytes(8, 24), Some(432));
+    assert_eq!(retained_hash_table_bytes(usize::MAX, 24), None);
+}
+
+#[test]
+fn opaque_table_envelope_retains_its_separate_replacement_model() {
+    assert_eq!(
+        opaque_hash_table_bytes(57, 25),
+        Some(57 * 8 * 25 + OPAQUE_HASH_TABLE_CONTROL_BYTES)
+    );
+}

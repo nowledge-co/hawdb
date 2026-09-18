@@ -21,7 +21,7 @@ use hawdb_executor::QueryMemoryLease;
 use std::cell::RefCell;
 use std::mem::size_of;
 
-mod bounds;
+pub(crate) mod bounds;
 
 const STACK_BYTES: usize = 2 * 1024 * 1024;
 // Fixed std thread/packet/parking bookkeeping, separate from the captured closure

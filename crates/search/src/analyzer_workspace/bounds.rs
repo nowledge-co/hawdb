@@ -16,6 +16,8 @@
 //!
 //! These model Rust allocation requests, including replacement overlap. Process
 //! dictionary residency, allocator overhead and OS thread metadata are separate.
+//! Retained stream tables share this growth arithmetic but remain separately
+//! charged from opaque workspace envelopes.
 //!
 //! A flat workspace allowance cannot bound Jieba's input-sized DAG and HMM
 //! buffers. Keep their capacity-dependent envelopes separate from the fixed
@@ -23,6 +25,10 @@
 //! in `tests/analyzer_workspace_allocation.rs` before changing the exact pins.
 
 const WORD: usize = 8;
+const MIN_GROWING_ELEMENTS: usize = 8;
+const GROWTH_AND_REPLACEMENT_FACTOR: usize = 4;
+const RETAINED_HASH_TABLE_CONTROL_BYTES: usize = 32;
+const OPAQUE_HASH_TABLE_CONTROL_BYTES: usize = 16;
 pub(super) const REGEX_PATTERN: &str = r"([a-zA-Z0-9]+(?:.\d+)?%?)";
 const REGEX_PATTERN_BYTES: usize = REGEX_PATTERN.len();
 const HIR_NODES: usize = 11;
@@ -49,10 +55,44 @@ const REVERSE: Automaton = Automaton {
     epsilon_edges: 91,
 };
 
-// Rust's pinned Vec growth needs at most twice the requested length (or its
-// initial/minimum capacity). Count an old and replacement allocation together.
-fn growing(elements: usize, element_bytes: usize) -> Option<usize> {
-    elements.max(8).checked_mul(4)?.checked_mul(element_bytes)
+/// Bounds a pinned collection that can double while its old allocation is live.
+pub(crate) fn growing_bytes(elements: usize, element_bytes: usize) -> Option<usize> {
+    elements
+        .max(MIN_GROWING_ELEMENTS)
+        .checked_mul(GROWTH_AND_REPLACEMENT_FACTOR)?
+        .checked_mul(element_bytes)
+}
+
+/// Bounds one retained `HashMap` allocation owned by an admission lease.
+pub(crate) fn retained_hash_table_bytes(capacity: usize, entry_bytes: usize) -> Option<usize> {
+    if capacity == 0 {
+        return Some(0);
+    }
+    // Pinned Rust HashMap load factor: three usable slots in four buckets,
+    // otherwise at most seven eighths full. Allow either SIMD control width.
+    let buckets = if capacity < 8 {
+        if capacity <= 3 {
+            4
+        } else {
+            8
+        }
+    } else {
+        capacity
+            .checked_mul(8)?
+            .checked_div(7)?
+            .checked_next_power_of_two()?
+    };
+    buckets
+        .checked_mul(entry_bytes.checked_add(1)?)?
+        .checked_add(RETAINED_HASH_TABLE_CONTROL_BYTES)
+}
+
+// This is intentionally not the retained-table admission above: it applies
+// only to qualified opaque dependencies that can retain a table replacement.
+fn opaque_hash_table_bytes(entries: usize, entry_and_control_bytes: usize) -> Option<usize> {
+    let load_factor_headroom = entries.checked_mul(2)?;
+    growing_bytes(load_factor_headroom, entry_and_control_bytes)?
+        .checked_add(OPAQUE_HASH_TABLE_CONTROL_BYTES)
 }
 
 fn cache(automaton: Automaton) -> Option<usize> {
@@ -61,18 +101,18 @@ fn cache(automaton: Automaton) -> Option<usize> {
     let states = automaton.dfa_states.checked_add(3)?;
     let encoded = automaton.nfa_states.checked_mul(5)?.checked_add(17)?;
     let terms = [
-        growing(states.checked_mul(128)?, 4)?,
-        growing(states, 2 * WORD)?,
-        // HashMap load factor, power-of-two buckets and replacement overlap;
-        // each bucket holds Arc<[u8]>, a u32 ID, alignment and a control byte.
-        states.checked_mul(8 * (3 * WORD + 1))?.checked_add(16)?,
+        growing_bytes(states.checked_mul(128)?, 4)?,
+        growing_bytes(states, 2 * WORD)?,
+        // This opaque cache retains its own replacement envelope. It is not
+        // the precise retained-table admission used by streaming token dedup.
+        opaque_hash_table_bytes(states, 3 * WORD + 1)?,
         // One shared Arc payload per distinct state, including its refcounts.
         states.checked_mul(encoded.checked_add(2 * WORD)?)?,
         automaton.nfa_states.checked_mul(4 * 4)?,
-        growing(automaton.epsilon_edges.checked_add(1)?, 4)?,
-        growing(encoded, 1)?,
+        growing_bytes(automaton.epsilon_edges.checked_add(1)?, 4)?,
+        growing_bytes(encoded, 1)?,
         // Three anchoring modes and all six start-context classes.
-        growing(3 * 6, 4)?,
+        growing_bytes(3 * 6, 4)?,
     ];
     sum(terms)
 }
@@ -82,8 +122,8 @@ pub(super) fn regex_retained() -> Option<usize> {
     // The compiler can emit no more than COMPILER_STATES intermediate states;
     // UTF8_EDGES plus structural nodes bound the sparse/union payloads.
     let immutable = sum([
-        growing(COMPILER_STATES, 4 * WORD)?,
-        growing(UTF8_EDGES + 4 * HIR_NODES, 8)?,
+        growing_bytes(COMPILER_STATES, 4 * WORD)?,
+        growing_bytes(UTF8_EDGES + 4 * HIR_NODES, 8)?,
         (HIR_NODES + 2).checked_mul(256)?,
     ])?;
     sum([cache(FORWARD)?, cache(REVERSE)?, 2 * immutable])
@@ -102,12 +142,12 @@ pub(super) fn regex_construction() -> Option<usize> {
         10_000 * 4 * WORD,
         1_000 * 2 * WORD,
         // Mutable and immutable state arrays can coexist during conversion.
-        2 * growing(COMPILER_STATES, 4 * WORD)?,
+        2 * growing_bytes(COMPILER_STATES, 4 * WORD)?,
         // Cache, unfinished UTF-8 node, mutable state and immutable state.
-        4 * growing(UTF8_EDGES + 4 * COMPILER_STATES, 8)?,
+        4 * growing_bytes(UTF8_EDGES + 4 * COMPILER_STATES, 8)?,
         // Remapping IDs and pending empty-state rewrites.
-        growing(COMPILER_STATES, 4)?,
-        growing(COMPILER_STATES, 2 * WORD)?,
+        growing_bytes(COMPILER_STATES, 4)?,
+        growing_bytes(COMPILER_STATES, 2 * WORD)?,
         (HIR_NODES + 2).checked_mul(256)?,
     ])?;
     // The full DFA is skipped before construction: 46 forward NFA states
@@ -115,11 +155,11 @@ pub(super) fn regex_construction() -> Option<usize> {
     // The optional one-pass attempt has at most one state per NFA state plus
     // DEAD. Include its table, ID worklist/map/remap, DFS stack and sparse set.
     let onepass = sum([
-        growing((FORWARD.nfa_states + 1) * 128, 8)?,
-        3 * growing(FORWARD.nfa_states + 1, 4)?,
-        growing(FORWARD.nfa_states, 2 * WORD)?,
+        growing_bytes((FORWARD.nfa_states + 1) * 128, 8)?,
+        3 * growing_bytes(FORWARD.nfa_states + 1, 4)?,
+        growing_bytes(FORWARD.nfa_states, 2 * WORD)?,
         FORWARD.nfa_states * 2 * 4,
-        growing(2, 4)?,
+        growing_bytes(2, 4)?,
     ])?;
     sum([syntax, 2 * compiler, onepass])
 }
@@ -145,14 +185,14 @@ pub(super) fn invocation(bytes: usize, characters: usize) -> Option<usize> {
     let dag_initial = initial.checked_mul(4)?.clamp(32, 4_000_000);
     let dag_entries = characters.checked_mul(MAX_DICTIONARY_PREFIXES + 1)?;
     sum([
-        growing(character_capacity, 2 * WORD)?, // str_words
-        growing(character_capacity, 6 * WORD)?, // cut output
-        growing(initial.max(bytes.checked_add(1)?), 2 * WORD)?, // route
-        growing(dag_initial.max(dag_entries), 8)?,
-        growing(bytes.checked_add(1)?, WORD)?, // byte-indexed starts
-        growing(32.max(characters), WORD)?,    // touched starts
-        growing(characters.checked_mul(2)?, 6 * WORD)?, // search output
-        growing(characters, WORD)?,            // search word character offsets
+        growing_bytes(character_capacity, 2 * WORD)?, // str_words
+        growing_bytes(character_capacity, 6 * WORD)?, // cut output
+        growing_bytes(initial.max(bytes.checked_add(1)?), 2 * WORD)?, // route
+        growing_bytes(dag_initial.max(dag_entries), 8)?,
+        growing_bytes(bytes.checked_add(1)?, WORD)?, // byte-indexed starts
+        growing_bytes(32.max(characters), WORD)?,    // touched starts
+        growing_bytes(characters.checked_mul(2)?, 6 * WORD)?, // search output
+        growing_bytes(characters, WORD)?,            // search word character offsets
         // The retained lease is grown before calling Jieba. This extra new
         // workspace covers coexistence while old HMM buffers are replaced.
         hmm_retained(characters)?,

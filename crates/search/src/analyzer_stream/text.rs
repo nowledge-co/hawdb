@@ -14,8 +14,10 @@
 
 use super::control::Control;
 use super::*;
+use crate::analyzer_workspace::bounds::growing_bytes;
 use crate::build_memory::{checked_add, checked_mul};
 use crate::build_term::Term;
+use crate::HawDBError;
 use std::borrow::Borrow;
 use std::hash::{Hash, Hasher};
 
@@ -52,8 +54,9 @@ impl<'a> Text<'a> {
             return Ok(Self::Borrowed(text));
         }
         // Pinned Unicode lowercase output uses at most three output bytes per
-        // source byte. Include Vec growth and old/replacement coexistence.
-        let capacity = checked_mul(checked_mul(text.len(), 3)?.max(8), 4)?;
+        // source byte. The shared envelope includes growth and replacement.
+        let capacity = growing_bytes(checked_mul(text.len(), 3)?, 1)
+            .ok_or_else(|| HawDBError::Execution("search lowercase capacity overflow".into()))?;
         control
             .build(capacity, || {
                 if scalar {

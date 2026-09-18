@@ -13,7 +13,7 @@
 // limitations under the License.
 
 use super::*;
-use crate::build_memory::{checked_add, checked_mul, BuildMemory};
+use crate::build_memory::{checked_add, BuildMemory};
 use crate::build_term::Term;
 use crate::{HawDBError, RuntimeTaskContext};
 use hawdb_executor::QueryMemoryLease;
@@ -106,24 +106,8 @@ impl<'a> Dedup<'a> {
 }
 
 fn table_bytes<T>(capacity: usize) -> Result<usize> {
-    if capacity == 0 {
-        return Ok(0);
-    }
-    // Pinned Rust HashMap load factor: three usable slots in four buckets,
-    // otherwise at most seven eighths full. Allow either SIMD control width.
-    let buckets = if capacity < 8 {
-        if capacity <= 3 {
-            4
-        } else {
-            8
-        }
-    } else {
-        checked_mul(capacity, 8)?
-            .checked_div(7)
-            .and_then(usize::checked_next_power_of_two)
-            .ok_or_else(|| HawDBError::Execution("search dedup capacity overflow".into()))?
-    };
-    checked_add(checked_mul(buckets, checked_add(size_of::<T>(), 1)?)?, 32)
+    crate::analyzer_workspace::bounds::retained_hash_table_bytes(capacity, size_of::<T>())
+        .ok_or_else(|| HawDBError::Execution("search dedup capacity overflow".into()))
 }
 
 #[cfg(test)]
