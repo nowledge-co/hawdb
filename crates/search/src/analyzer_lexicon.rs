@@ -38,7 +38,7 @@ pub(super) const CORE_SEMANTIC_ALIAS_RULES: &[(&[&str], &[&str])] = &[
     (&["full_text", "full_text_search", "text_search"], &["fts"]),
     (&["fts"], &["full_text_search", "text_search"]),
     (
-        &["bulk_import", "database_import", "hawdb_import"],
+        &["bulk_import", "database_import", "haw_db", "hawdb_import"],
         &["hawdb_lightning"],
     ),
     (

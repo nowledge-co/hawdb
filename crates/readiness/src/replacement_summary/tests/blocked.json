@@ -1103,9 +1103,9 @@
     },
     "search_projection_shadow_evidence": {
       "blocker_codes": [
-        "search_projection_shadow_pushdown_evidence_not_ready",
         "hawdb_search_projection_segment_descriptor_fields_missing",
-        "hawdb_search_projection_segment_descriptor_missing"
+        "hawdb_search_projection_segment_descriptor_missing",
+        "search_projection_shadow_pushdown_evidence_not_ready"
       ],
       "document_count_parity": null,
       "document_identity_parity": null,

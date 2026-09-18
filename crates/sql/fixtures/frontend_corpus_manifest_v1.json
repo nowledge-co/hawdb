@@ -10,7 +10,7 @@
   "sources": [
     {
       "path": "crates/sql/src/tests.rs",
-      "sha256": "5df364d1bf6f7e471ea7de0ffb3133831d4e12d8121a0b8828873cd052dcebd2",
+      "sha256": "a04066f04e7910b435bc09de59ee2a9e324d6f6de86cd03e258072bd7f0f0830",
       "case_ids": [
         "case-0001",
         "case-0002",
@@ -47,7 +47,7 @@
     },
     {
       "path": "crates/sql/src/tests/clause_diagnostics.rs",
-      "sha256": "4a523c50fdaa3c0b262b2db99180280cab2c62280385bd13fdde3320e7c74e66",
+      "sha256": "ad3b3c41b8b778267a6aa3c5037a84827045de7087bcfcdcb2075613219c586f",
       "case_ids": [
         "case-0032",
         "case-0033",
@@ -60,7 +60,7 @@
     },
     {
       "path": "crates/sql/src/parser/clause_tests.rs",
-      "sha256": "4e67c78a00d8f693d3ec2b5766c565f68ec9fc26db373f17669148cfd5b7fcf7",
+      "sha256": "a7a16125f4a1090464f4ae2fc0bed58f497eaf831473cda593e58a28ec35f036",
       "case_ids": [
         "case-0039",
         "case-0040",
@@ -357,7 +357,7 @@
     },
     {
       "path": "crates/sql-syntax/tests/postgres_pgq.rs",
-      "sha256": "d852c2043eb385d34fc492966745b6e28b48f5b2e408099cff9d407997b924e4",
+      "sha256": "1ac99f15fdeb0058a97e202195a53a7824c09b3f544fe980c562b5c280c5ce6b",
       "case_ids": [
         "case-0042",
         "case-0043",
@@ -401,7 +401,7 @@
     },
     {
       "path": "crates/sql-syntax/tests/postgres_select_pgq.rs",
-      "sha256": "6bb25d38aad037963cd202ce6e3eb6037fb49ff09b2f2240db639376d384c488",
+      "sha256": "2150b1691deba7be8d62c007a39dafe6913bd7728a29f08f499383d9c7e53108",
       "case_ids": [
         "case-0080",
         "case-0081",
@@ -436,7 +436,7 @@
     },
     {
       "path": "crates/sql/src/pgq/tests.rs",
-      "sha256": "8b2aa05c34de2964f64d37665d3ad72debf6ba8413d60b5dccf9c60f7543d20d",
+      "sha256": "c5692770bd0f51233f352f7a2bf8b6497ce6fe3d39d77a5fd399a7c5533ad705",
       "case_ids": [
         "case-0109",
         "case-0110",
@@ -458,7 +458,7 @@
     },
     {
       "path": "crates/sql/src/pgq/lowering/tests.rs",
-      "sha256": "361d80b286a653d76d6c1f847d7f24038afbb858e11aa0f575399de0e849f74c",
+      "sha256": "002923f9e6628becb54013005753c94a7d206fafd494b9de8386683ec362f7e7",
       "case_ids": [
         "case-0125",
         "case-0126",
@@ -471,7 +471,7 @@
     },
     {
       "path": "crates/sql-syntax/tests/support/alias_boundaries.rs",
-      "sha256": "21f03c44e9462adc33796b6919b34e5e15ac708702d7e35cdbe776c302d57845",
+      "sha256": "478a1e30b2e2b62db409f79122296be4bbf68d7610731815b80d5ba9e3107d68",
       "case_ids": [
         "case-0420",
         "case-0421",
@@ -983,7 +983,7 @@
     },
     {
       "path": "crates/qualification/fixtures/nowledge_content_store/postgres_statement_corpus_v1.json",
-      "sha256": "1bceae270388603f801bfe32a39ea7e4fc775e5e14003e2c77cd6c576916a915",
+      "sha256": "2598d4da007e372793cfc4f59e89e62951b1b2b11ec3cfb1a13ee87cfd29a896",
       "case_ids": [
         "case-0926",
         "case-0927",

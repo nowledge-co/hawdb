@@ -1,17 +1,3 @@
-// Copyright 2026 Nowledge
-//
-// Licensed under the Apache License, Version 2.0 (the "License");
-// you may not use this file except in compliance with the License.
-// You may obtain a copy of the License at
-//
-//     http://www.apache.org/licenses/LICENSE-2.0
-//
-// Unless required by applicable law or agreed to in writing, software
-// distributed under the License is distributed on an "AS IS" BASIS,
-// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-// See the License for the specific language governing permissions and
-// limitations under the License.
-
 use hawdb_fuzz::{
     campaign_progress_json, emit_fuzz_report, fuzz_current_report_path, merge_campaign_report_json,
     read_fuzz_current_report, run_campaign_with_case_observer, write_fuzz_current_report,
