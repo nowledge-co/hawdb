@@ -385,6 +385,12 @@ fn collect_projection_columns(
     columns: &mut BTreeSet<String>,
 ) -> bool {
     match expression {
+        ProjectionExpression::Case { .. }
+        | ProjectionExpression::Binary { .. }
+        | ProjectionExpression::Not(_)
+        | ProjectionExpression::IsNull { .. } => {
+            expression.all_children(|child| collect_projection_columns(child, columns))
+        }
         ProjectionExpression::Column(column) => {
             columns.insert(column.clone());
             true
@@ -424,6 +430,12 @@ fn collect_projection_columns(
 
 fn projection_expression_references_column(expression: &ProjectionExpression) -> bool {
     match expression {
+        ProjectionExpression::Case { .. }
+        | ProjectionExpression::Binary { .. }
+        | ProjectionExpression::Not(_)
+        | ProjectionExpression::IsNull { .. } => {
+            !expression.all_children(|child| !projection_expression_references_column(child))
+        }
         ProjectionExpression::Column(_)
         | ProjectionExpression::ColumnDefaultIfNullOrEq { .. }
         | ProjectionExpression::ColumnValueDefaultIfNull { .. }

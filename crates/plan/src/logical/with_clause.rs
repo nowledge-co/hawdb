@@ -639,12 +639,12 @@ pub(super) fn scalar_expression_is_scoped(
         | ScalarExpressionKind::CaseCoalesceDifferenceFloorZero { variable, .. } => {
             column_names.contains(variable) || scope.contains(variable)
         }
-        ScalarExpressionKind::CaseEntitySearchRank(expression) => {
-            column_names.contains(&expression.variable) || scope.contains(&expression.variable)
-        }
-        ScalarExpressionKind::CaseColumnSearchRank(expression) => {
-            column_names.contains(&expression.column)
-        }
+        ScalarExpressionKind::Case { .. }
+        | ScalarExpressionKind::Binary { .. }
+        | ScalarExpressionKind::Not(_)
+        | ScalarExpressionKind::IsNull { .. } => expression
+            .kind
+            .all_children(|child| scalar_expression_is_scoped(child, scope, column_names)),
         ScalarExpressionKind::Value(_) => true,
         ScalarExpressionKind::Coalesce(expressions) => expressions
             .iter()
@@ -911,15 +911,17 @@ pub(super) fn optional_direct_row_projection_value_expression(
                 rel_variable,
             )
         }
-        ScalarExpressionKind::CaseEntitySearchRank(expression) => {
-            optional_direct_row_projection_variable(
-                &expression.variable,
+        ScalarExpressionKind::Case { .. }
+        | ScalarExpressionKind::Binary { .. }
+        | ScalarExpressionKind::Not(_)
+        | ScalarExpressionKind::IsNull { .. } => expression.kind.all_children(|child| {
+            optional_direct_row_projection_value_expression(
+                child,
                 source_variable,
                 target_variable,
                 rel_variable,
             )
-        }
-        ScalarExpressionKind::CaseColumnSearchRank(_) => false,
+        }),
         ScalarExpressionKind::Value(_) => true,
         ScalarExpressionKind::Coalesce(expressions) => expressions.iter().all(|expression| {
             optional_direct_row_projection_value_expression(
@@ -1063,10 +1065,12 @@ pub(super) fn scalar_expression_is_source_only(
         | ScalarExpressionKind::CaseCoalesceDifferenceFloorZero { variable, .. } => {
             variable == source_variable
         }
-        ScalarExpressionKind::CaseEntitySearchRank(expression) => {
-            expression.variable == source_variable
-        }
-        ScalarExpressionKind::CaseColumnSearchRank(_) => false,
+        ScalarExpressionKind::Case { .. }
+        | ScalarExpressionKind::Binary { .. }
+        | ScalarExpressionKind::Not(_)
+        | ScalarExpressionKind::IsNull { .. } => expression
+            .kind
+            .all_children(|child| scalar_expression_is_source_only(child, source_variable)),
         ScalarExpressionKind::Value(_) => true,
         ScalarExpressionKind::Coalesce(expressions) => {
             scalar_expressions_are_source_only(expressions, source_variable)

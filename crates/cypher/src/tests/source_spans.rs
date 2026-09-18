@@ -229,3 +229,97 @@ fn hints_mutation_values_and_case_branches_keep_their_own_ranges() {
     assert_text(&branches[1].1, query, "2");
     assert_text(default, query, "3");
 }
+
+#[test]
+fn general_case_preserves_branch_and_nested_condition_ranges() {
+    let query = "MATCH (n:Item) RETURN CASE WHEN NOT (n.x = $x OR n.y IS NULL) THEN lower(n.name) WHEN n.z CONTAINS 'a' THEN CASE n.id WHEN 1 THEN 'one' END ELSE 'caf\u{e9}' END AS result";
+    let Statement::MatchReturn(parsed) = parse(query).unwrap() else {
+        panic!("expected MATCH");
+    };
+    let ReturnExpressionKind::Value(value) = &parsed.returns[0].expression.kind else {
+        panic!("expected scalar");
+    };
+    let ScalarExpressionKind::Case {
+        operand,
+        branches,
+        otherwise,
+    } = &value.kind
+    else {
+        panic!("expected generic CASE");
+    };
+    assert!(operand.is_none());
+    assert_eq!(branches.len(), 2);
+    assert_text(&branches[0].0, query, "NOT (n.x = $x OR n.y IS NULL)");
+    assert_text(&branches[0].1, query, "lower(n.name)");
+    assert_text(&branches[1].0, query, "n.z CONTAINS 'a'");
+    assert_text(&branches[1].1, query, "CASE n.id WHEN 1 THEN 'one' END");
+    assert_text(otherwise.as_deref().unwrap(), query, "'caf\u{e9}'");
+    let ScalarExpressionKind::Case {
+        operand,
+        branches,
+        otherwise,
+    } = &branches[1].1.kind
+    else {
+        panic!("expected simple CASE");
+    };
+    assert_text(operand.as_deref().unwrap(), query, "n.id");
+    assert_text(&branches[0].0, query, "1");
+    assert_text(&branches[0].1, query, "'one'");
+    assert!(otherwise.is_none());
+}
+
+#[test]
+fn general_case_bounds_boolean_chain_depth_and_rejects_incomplete_branches() {
+    for keyword in [" AND ", " OR "] {
+        let condition = vec!["n.x = 1"; 1000].join(keyword);
+        let query = format!("MATCH (n:Item) RETURN CASE WHEN {condition} THEN 1 END");
+        assert!(parse(&query).is_err());
+    }
+    for expression in [
+        "CASE END",
+        "CASE WHEN n.x THEN END",
+        "CASE WHEN n.x THEN 1 ELSE END",
+        "CASE n.x WHEN 1 THEN 2",
+        "CASE WHEN COUNT(*) > 1 THEN 2 END",
+    ] {
+        assert!(
+            parse(&format!("MATCH (n:Item) RETURN {expression}")).is_err(),
+            "{expression}"
+        );
+    }
+}
+
+#[test]
+fn generic_case_keeps_null_tests_and_timestamp_values_as_source_nodes() {
+    let query = "MATCH (n:Item) RETURN CASE WHEN n.id IS NOT NULL THEN CURRENT_TIMESTAMP() ELSE CAST($fallback AS TIMESTAMP) END";
+    let Statement::MatchReturn(parsed) = parse(query).unwrap() else {
+        panic!("expected MATCH");
+    };
+    let ReturnExpressionKind::Value(expression) = &parsed.returns[0].expression.kind else {
+        panic!("expected scalar");
+    };
+    let ScalarExpressionKind::Case {
+        branches,
+        otherwise,
+        ..
+    } = &expression.kind
+    else {
+        panic!("expected general CASE");
+    };
+    assert_text(&branches[0].0, query, "n.id IS NOT NULL");
+    let ScalarExpressionKind::IsNull {
+        expression,
+        negated,
+    } = &branches[0].0.kind
+    else {
+        panic!("expected null test");
+    };
+    assert!(*negated);
+    assert_text(expression, query, "n.id");
+    assert_text(&branches[0].1, query, "CURRENT_TIMESTAMP()");
+    assert_text(
+        otherwise.as_deref().unwrap(),
+        query,
+        "CAST($fallback AS TIMESTAMP)",
+    );
+}

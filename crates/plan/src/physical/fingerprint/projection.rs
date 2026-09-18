@@ -57,6 +57,48 @@ fn write_projection(output: &mut String, item: &Projection) {
 
 pub fn write_projection_expression(output: &mut String, expression: &ProjectionExpression) {
     match expression {
+        ProjectionExpression::Case {
+            operand,
+            branches,
+            otherwise,
+        } => {
+            output.push_str("Case(");
+            if let Some(operand) = operand {
+                write_projection_expression(output, operand);
+            }
+            output.push(';');
+            for (condition, result) in branches {
+                write_projection_expression(output, condition);
+                output.push(':');
+                write_projection_expression(output, result);
+                output.push(';');
+            }
+            if let Some(otherwise) = otherwise {
+                write_projection_expression(output, otherwise);
+            }
+            output.push(')');
+        }
+        ProjectionExpression::Binary { left, op, right } => {
+            output.push_str(&format!("Binary({op:?},"));
+            write_projection_expression(output, left);
+            output.push(',');
+            write_projection_expression(output, right);
+            output.push(')');
+        }
+        ProjectionExpression::Not(child) => {
+            output.push_str("Not(");
+            write_projection_expression(output, child);
+            output.push(')');
+        }
+        ProjectionExpression::IsNull {
+            expression,
+            negated,
+        } => {
+            output.push_str(if *negated { "IsNotNull(" } else { "IsNull(" });
+            write_projection_expression(output, expression);
+            output.push(')');
+        }
+
         ProjectionExpression::Variable { variable } => {
             write_identifier(output, variable);
         }

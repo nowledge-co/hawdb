@@ -2,6 +2,7 @@ use super::ast::{CypherQuery, Explain, SetSystemVariable, Statement};
 use skein_core::{Result, SkeinError};
 use std::time::Instant;
 
+mod case;
 mod cursor;
 mod ddl;
 mod mutation;

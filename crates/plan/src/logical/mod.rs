@@ -18,15 +18,18 @@ pub use skein_ddl::{SchemaObjectState, SchemaPropertyType, SchemaTableKind};
 pub use skein_expression::{
     CaseColumnSearchRankProjection, CaseEntitySearchRankProjection,
     CoalesceDifferenceProjectionTerm, ComparisonOp, DatePart, Predicate, ProjectionExpression,
+    ScalarBinaryOp,
 };
 use std::collections::{BTreeMap, BTreeSet};
 
 mod binding;
+mod case;
 mod projection;
 mod statement;
 mod with_clause;
 
 use binding::*;
+use case::*;
 use projection::*;
 pub use statement::{plan, plan_with_params};
 use with_clause::*;

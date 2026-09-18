@@ -46,14 +46,14 @@ struct PredicateEvaluationContext<'a> {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum PredicateTruth {
+pub(super) enum PredicateTruth {
     True,
     False,
     Unknown,
 }
 
 impl PredicateTruth {
-    const fn from_bool(value: bool) -> Self {
+    pub(super) const fn from_bool(value: bool) -> Self {
         if value {
             Self::True
         } else {
@@ -61,11 +61,11 @@ impl PredicateTruth {
         }
     }
 
-    const fn is_true(self) -> bool {
+    pub(super) const fn is_true(self) -> bool {
         matches!(self, Self::True)
     }
 
-    const fn not(self) -> Self {
+    pub(super) const fn not(self) -> Self {
         match self {
             Self::True => Self::False,
             Self::False => Self::True,
@@ -73,7 +73,7 @@ impl PredicateTruth {
         }
     }
 
-    const fn and(self, other: Self) -> Self {
+    pub(super) const fn and(self, other: Self) -> Self {
         match (self, other) {
             (Self::False, _) | (_, Self::False) => Self::False,
             (Self::Unknown, _) | (_, Self::Unknown) => Self::Unknown,
@@ -81,7 +81,7 @@ impl PredicateTruth {
         }
     }
 
-    const fn or(self, other: Self) -> Self {
+    pub(super) const fn or(self, other: Self) -> Self {
         match (self, other) {
             (Self::True, _) | (_, Self::True) => Self::True,
             (Self::Unknown, _) | (_, Self::Unknown) => Self::Unknown,
@@ -90,7 +90,7 @@ impl PredicateTruth {
     }
 }
 
-fn predicate_comparison_truth(
+pub(super) fn predicate_comparison_truth(
     actual: Option<&Value>,
     expected: &Value,
     compare: impl FnOnce(&Value, &Value) -> bool,

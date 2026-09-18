@@ -442,6 +442,18 @@ fn marker_use_in_projection_expression(
     safe: bool,
 ) -> MarkerUse {
     let marker_use = match expression {
+        ProjectionExpression::Case { .. }
+        | ProjectionExpression::Binary { .. }
+        | ProjectionExpression::Not(_)
+        | ProjectionExpression::IsNull { .. } => {
+            let mut result = MarkerUse::None;
+            expression.all_children(|child| {
+                result = result.combine(marker_use_in_projection_expression(child, name, safe));
+                true
+            });
+            result
+        }
+
         ProjectionExpression::Literal(value) => values_marker_use([value], name),
         ProjectionExpression::Coalesce(expressions) => {
             expressions
@@ -830,6 +842,12 @@ fn bind_projection_expression(
     parameters: &BTreeMap<String, Value>,
 ) -> Result<()> {
     match expression {
+        ProjectionExpression::Case { .. }
+        | ProjectionExpression::Binary { .. }
+        | ProjectionExpression::Not(_)
+        | ProjectionExpression::IsNull { .. } => expression
+            .try_for_each_child_mut(|child| bind_projection_expression(child, parameters))?,
+
         ProjectionExpression::Literal(value) => bind_value(value, parameters)?,
         ProjectionExpression::Coalesce(expressions) => {
             for expression in expressions {
@@ -965,6 +983,44 @@ mod tests {
         PhysicalPlan,
     };
     use std::collections::BTreeMap;
+
+    #[test]
+    fn general_case_preserves_exact_cache_keys_and_rebinds_explicit_template_slots() {
+        let statement = cypher::parse("MATCH (n:Item) RETURN CASE WHEN n.id = $chosen THEN lower($label) ELSE $fallback END AS result").unwrap();
+        let parameters = BTreeMap::from([
+            ("chosen".into(), Value::Int(1)),
+            ("label".into(), Value::String("FIRST".into())),
+            ("fallback".into(), Value::String("old".into())),
+        ]);
+        let parameterized = parameterize_logical_plan(&statement, &parameters).unwrap();
+        assert_eq!(parameterized.slot_count, 0);
+        assert!(parameterized
+            .cache_key
+            .values
+            .values()
+            .all(|value| matches!(value, ParameterCacheValue::Exact(_))));
+        // Projection parameters keep their existing conservative cache policy.
+        // Explicit templates must nevertheless rebind all scalar descendants.
+        let markers = parameters
+            .iter()
+            .map(|(name, value)| (name.clone(), parameter_marker(name, value, &[])))
+            .collect();
+        let logical = skein_plan::plan_with_params(&statement, &markers).unwrap();
+        let root = CascadesOptimizer::default().optimize_root_with_catalog(
+            &LogicalPlanRoot::new(logical),
+            &OptimizerCatalog::default(),
+        );
+        let (template, _) = root.into_parts();
+        let parameters = BTreeMap::from([
+            ("chosen".into(), Value::Int(2)),
+            ("label".into(), Value::String("SECOND".into())),
+            ("fallback".into(), Value::String("new".into())),
+        ]);
+        let rebound = bind_physical_plan_parameters(&template, &parameters, true).unwrap();
+        let text = format!("{rebound:?}");
+        assert!(text.contains("SECOND") && text.contains("new"), "{text}");
+        assert!(!text.contains("skein_parameter_slot"), "{text}");
+    }
 
     #[test]
     fn equality_parameters_become_rebindable_slots() {

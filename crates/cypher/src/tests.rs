@@ -7,6 +7,7 @@ use super::{
     WithAliasFilterOp,
 };
 use crate::parser::MAX_CYPHER_INPUT_BYTES;
+use crate::ScalarBinaryOp;
 use crate::{AstNode, ReturnExpressionKind, ScalarExpressionKind, ValueExpressionKind};
 use skein_core::Value;
 
@@ -1919,15 +1920,45 @@ fn parses_entity_search_rank_order_item() {
     };
     assert_eq!(query.order_by.len(), 2);
     let OrderExpression::Value(AstNode {
-        kind: ScalarExpressionKind::CaseEntitySearchRank(expression),
+        kind:
+            ScalarExpressionKind::Case {
+                operand,
+                branches,
+                otherwise,
+            },
         ..
     }) = &query.order_by[0].expression
     else {
         panic!("expected entity search rank order expression");
     };
-    assert_eq!(expression.variable, "e");
-    assert_eq!(expression.name_property, "name");
-    assert_eq!(expression.aliases_property, "aliases");
+    assert!(operand.is_none());
+    assert!(otherwise.is_some());
+    assert_eq!(branches.len(), 3);
+    let ScalarExpressionKind::Binary {
+        left,
+        op: ScalarBinaryOp::Eq,
+        ..
+    } = &branches[0].0.kind
+    else {
+        panic!("expected equality");
+    };
+    let ScalarExpressionKind::Lower(name) = &left.kind else {
+        panic!("expected lower");
+    };
+    assert!(
+        matches!(&name.kind, ScalarExpressionKind::Property { variable, property } if variable == "e" && property == "name")
+    );
+    let ScalarExpressionKind::Binary {
+        left,
+        op: ScalarBinaryOp::ListContains,
+        ..
+    } = &branches[2].0.kind
+    else {
+        panic!("expected list containment");
+    };
+    assert!(
+        matches!(&left.kind, ScalarExpressionKind::Property { variable, property } if variable == "e" && property == "aliases")
+    );
     assert_eq!(query.order_by[0].direction, OrderDirection::Asc);
     assert_eq!(query.order_by[1].direction, OrderDirection::Desc);
 }
@@ -1950,7 +1981,7 @@ fn parses_community_search_projection_with_case_aliases() {
     let AstNode {
         kind:
             ReturnExpressionKind::Value(AstNode {
-                kind: ScalarExpressionKind::CaseColumnSearchRank(expression),
+                kind: ScalarExpressionKind::Case { branches, .. },
                 ..
             }),
         ..
@@ -1958,7 +1989,16 @@ fn parses_community_search_projection_with_case_aliases() {
     else {
         panic!("expected column search rank expression");
     };
-    assert_eq!(expression.column, "c_name");
+    assert_eq!(branches.len(), 4);
+    let ScalarExpressionKind::Binary {
+        left,
+        op: ScalarBinaryOp::Eq,
+        ..
+    } = &branches[0].0.kind
+    else {
+        panic!("expected equality");
+    };
+    assert!(matches!(&left.kind, ScalarExpressionKind::Variable(column) if column == "c_name"));
     assert_eq!(
         query.order_by[0].expression,
         OrderExpression::Column("match_level".to_string())

@@ -196,6 +196,21 @@ pub enum ProjectionExpression {
         variable: String,
         terms: Vec<CoalesceDifferenceProjectionTerm>,
     },
+    Case {
+        operand: Option<Box<ProjectionExpression>>,
+        branches: Vec<(ProjectionExpression, ProjectionExpression)>,
+        otherwise: Option<Box<ProjectionExpression>>,
+    },
+    Binary {
+        left: Box<ProjectionExpression>,
+        op: ScalarBinaryOp,
+        right: Box<ProjectionExpression>,
+    },
+    Not(Box<ProjectionExpression>),
+    IsNull {
+        expression: Box<ProjectionExpression>,
+        negated: bool,
+    },
     CaseEntitySearchRank(Box<CaseEntitySearchRankProjection>),
     CaseColumnSearchRank(Box<CaseColumnSearchRankProjection>),
     ColumnDefaultIfNullOrEq {
@@ -219,6 +234,20 @@ pub enum ProjectionExpression {
         column: String,
         property: String,
     },
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ScalarBinaryOp {
+    Eq,
+    NotEq,
+    Lt,
+    Lte,
+    Gt,
+    Gte,
+    Contains,
+    ListContains,
+    And,
+    Or,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -248,6 +277,79 @@ pub struct CaseColumnSearchRankProjection {
 pub struct CoalesceDifferenceProjectionTerm {
     pub property: String,
     pub default: Value,
+}
+
+impl ProjectionExpression {
+    /// Visits immediate scalar children in evaluation order, stopping on false.
+    pub fn all_children(&self, mut visit: impl FnMut(&ProjectionExpression) -> bool) -> bool {
+        match self {
+            Self::Case {
+                operand,
+                branches,
+                otherwise,
+            } => operand
+                .iter()
+                .map(Box::as_ref)
+                .chain(
+                    branches
+                        .iter()
+                        .flat_map(|(condition, result)| [condition, result]),
+                )
+                .chain(otherwise.iter().map(Box::as_ref))
+                .all(visit),
+            Self::Binary { left, right, .. } => visit(left) && visit(right),
+            Self::Not(expression)
+            | Self::IsNull { expression, .. }
+            | Self::Lower(expression)
+            | Self::Left { expression, .. } => visit(expression),
+            Self::Coalesce(expressions) => expressions.iter().all(visit),
+            _ => true,
+        }
+    }
+}
+
+impl ProjectionExpression {
+    /// Mutates immediate scalar children in evaluation order; errors are not rolled back.
+    pub fn try_for_each_child_mut<E>(
+        &mut self,
+        mut visit: impl FnMut(&mut Self) -> Result<(), E>,
+    ) -> Result<(), E> {
+        match self {
+            Self::Case {
+                operand,
+                branches,
+                otherwise,
+            } => {
+                for expression in operand
+                    .iter_mut()
+                    .map(Box::as_mut)
+                    .chain(
+                        branches
+                            .iter_mut()
+                            .flat_map(|(condition, result)| [condition, result]),
+                    )
+                    .chain(otherwise.iter_mut().map(Box::as_mut))
+                {
+                    visit(expression)?;
+                }
+            }
+            Self::Binary { left, right, .. } => {
+                visit(left)?;
+                visit(right)?;
+            }
+            Self::Not(expression)
+            | Self::IsNull { expression, .. }
+            | Self::Lower(expression)
+            | Self::Left { expression, .. } => visit(expression)?,
+            Self::Coalesce(expressions) => {
+                for expression in expressions {
+                    visit(expression)?;
+                }
+            }
+            _ => {}
+        }
+        Ok(())
+    }
 }
 
 #[cfg(test)]

@@ -1,4 +1,6 @@
+use super::predicate::{predicate_comparison_truth, PredicateTruth};
 use super::*;
+use skein_plan::ScalarBinaryOp;
 
 pub fn insert_projected_value(values: &mut BTreeMap<String, Value>, name: &str, value: Value) {
     let mut candidate = name.to_string();
@@ -27,6 +29,47 @@ pub fn evaluate_projection_expression(
     binding: &Binding,
 ) -> Result<Value> {
     match expression {
+        ProjectionExpression::Case {
+            operand,
+            branches,
+            otherwise,
+        } => {
+            let operand = operand
+                .as_deref()
+                .map(|value| project_expression_value(value, catalog, binding))
+                .transpose()?;
+            for (condition, result) in branches {
+                let condition = project_expression_value(condition, catalog, binding)?;
+                let matches = if let Some(operand) = &operand {
+                    predicate_comparison_truth(Some(operand), &condition, |left, right| {
+                        left == right
+                    })
+                    .is_true()
+                } else {
+                    scalar_truth(condition)?.is_true()
+                };
+                if matches {
+                    return project_expression_value(result, catalog, binding);
+                }
+            }
+            otherwise
+                .as_deref()
+                .map(|value| project_expression_value(value, catalog, binding))
+                .transpose()
+                .map(|value| value.unwrap_or(Value::Null))
+        }
+        ProjectionExpression::Binary { left, op, right } => {
+            evaluate_scalar_binary(left, *op, right, catalog, binding)
+        }
+        ProjectionExpression::Not(child) => Ok(truth_value(
+            scalar_truth(project_expression_value(child, catalog, binding)?)?.not(),
+        )),
+        ProjectionExpression::IsNull {
+            expression,
+            negated,
+        } => Ok(Value::Bool(
+            (project_expression_value(expression, catalog, binding)? == Value::Null) != *negated,
+        )),
         ProjectionExpression::Variable { variable } => binding_value(binding, catalog, variable)
             .ok_or_else(|| {
                 SkeinError::Execution(format!("missing variable '{variable}' during projection"))
@@ -225,7 +268,12 @@ pub fn evaluate_projection_expression(
                     matches!(&expression.raw_query, Value::String(query) if lowered == *query)
                         || matches!(&expression.normalized_query, Value::String(query) if lowered == *query)
                 }
-                _ => false,
+                None | Some(Value::Null) => false,
+                Some(value) => {
+                    return Err(SkeinError::Execution(format!(
+                        "LOWER expression requires a string value, got {value:?}"
+                    )))
+                }
             };
             if name_matches {
                 return Ok(expression.exact_rank.clone());
@@ -251,14 +299,16 @@ pub fn evaluate_projection_expression(
                     expression.column
                 ))
             })?;
+            let matches = |query: &Value| {
+                predicate_comparison_truth(Some(column), query, |left, right| left == right)
+                    .is_true()
+            };
+            if matches(&expression.raw_query) || matches(&expression.normalized_query) {
+                return Ok(expression.exact_rank.clone());
+            }
             let Value::String(value) = column else {
                 return Ok(expression.fallback_rank.clone());
             };
-            if matches!(&expression.raw_query, Value::String(query) if value == query)
-                || matches!(&expression.normalized_query, Value::String(query) if value == query)
-            {
-                return Ok(expression.exact_rank.clone());
-            }
             if matches!(&expression.raw_query, Value::String(query) if value.contains(query))
                 || matches!(&expression.normalized_query, Value::String(query) if value.contains(query))
             {
@@ -519,4 +569,318 @@ pub fn binding_identity_key(binding: &Binding, variable: &str) -> Option<(u8, u6
                 .get(variable)
                 .map(|relationship| (1, relationship.id.0))
         })
+}
+
+fn scalar_truth(value: Value) -> Result<PredicateTruth> {
+    match value {
+        Value::Bool(value) => Ok(PredicateTruth::from_bool(value)),
+        Value::Null => Ok(PredicateTruth::Unknown),
+        value => Err(SkeinError::Execution(format!(
+            "CASE condition requires a boolean value, got {value:?}"
+        ))),
+    }
+}
+
+fn truth_value(truth: PredicateTruth) -> Value {
+    match truth {
+        PredicateTruth::True => Value::Bool(true),
+        PredicateTruth::False => Value::Bool(false),
+        PredicateTruth::Unknown => Value::Null,
+    }
+}
+
+fn evaluate_scalar_binary(
+    left: &ProjectionExpression,
+    op: ScalarBinaryOp,
+    right: &ProjectionExpression,
+    catalog: &Catalog,
+    binding: &Binding,
+) -> Result<Value> {
+    let left = project_expression_value(left, catalog, binding)?;
+    if matches!(op, ScalarBinaryOp::And | ScalarBinaryOp::Or) {
+        let left = scalar_truth(left)?;
+        if (op == ScalarBinaryOp::And && left == PredicateTruth::False)
+            || (op == ScalarBinaryOp::Or && left == PredicateTruth::True)
+        {
+            return Ok(truth_value(left));
+        }
+        let right = scalar_truth(project_expression_value(right, catalog, binding)?)?;
+        return Ok(truth_value(if op == ScalarBinaryOp::And {
+            left.and(right)
+        } else {
+            left.or(right)
+        }));
+    }
+    let right = project_expression_value(right, catalog, binding)?;
+    if op == ScalarBinaryOp::ListContains {
+        return Ok(match left {
+            Value::Null => Value::Null,
+            Value::List(values) => Value::Bool(values.contains(&right)),
+            _ => Value::Bool(false),
+        });
+    }
+    Ok(truth_value(predicate_comparison_truth(
+        Some(&left),
+        &right,
+        |left, right| match op {
+            ScalarBinaryOp::Eq => left == right,
+            ScalarBinaryOp::NotEq => left != right,
+            ScalarBinaryOp::Lt => compare_property_values(left, ComparisonOp::Lt, right),
+            ScalarBinaryOp::Lte => compare_property_values(left, ComparisonOp::Lte, right),
+            ScalarBinaryOp::Gt => compare_property_values(left, ComparisonOp::Gt, right),
+            ScalarBinaryOp::Gte => compare_property_values(left, ComparisonOp::Gte, right),
+            ScalarBinaryOp::Contains => {
+                matches!((left, right), (Value::String(left), Value::String(right)) if left.contains(right))
+            }
+            ScalarBinaryOp::ListContains | ScalarBinaryOp::And | ScalarBinaryOp::Or => {
+                unreachable!("handled before comparison")
+            }
+        },
+    )))
+}
+
+#[cfg(test)]
+mod case_tests {
+    use super::*;
+
+    fn literal(value: Value) -> ProjectionExpression {
+        ProjectionExpression::Literal(value)
+    }
+    fn evaluate(expression: &ProjectionExpression) -> Result<Value> {
+        evaluate_projection_expression(
+            expression,
+            &Catalog::default(),
+            &Binding::values(BTreeMap::new()),
+        )
+    }
+    fn invalid() -> ProjectionExpression {
+        ProjectionExpression::Lower(Box::new(literal(Value::Int(7))))
+    }
+
+    #[test]
+    fn derived_column_rank_matches_generic_case_across_types_and_missing_values() {
+        let values = [
+            Value::Null,
+            Value::String("first".into()),
+            Value::String("first second".into()),
+            Value::Int(1),
+            Value::Bool(true),
+            Value::Float(1.5),
+            Value::List(vec![Value::Int(1)]),
+        ];
+        for raw in &values {
+            for normalized in &values {
+                let binary = |op, value: &Value| ProjectionExpression::Binary {
+                    left: Box::new(ProjectionExpression::Column("value".into())),
+                    op,
+                    right: Box::new(literal(value.clone())),
+                };
+                let generic = ProjectionExpression::Case {
+                    operand: None,
+                    branches: vec![
+                        (binary(ScalarBinaryOp::Eq, raw), literal(Value::Int(3))),
+                        (
+                            binary(ScalarBinaryOp::Eq, normalized),
+                            literal(Value::Int(3)),
+                        ),
+                        (
+                            binary(ScalarBinaryOp::Contains, raw),
+                            literal(Value::Int(2)),
+                        ),
+                        (
+                            binary(ScalarBinaryOp::Contains, normalized),
+                            literal(Value::Int(2)),
+                        ),
+                    ],
+                    otherwise: Some(Box::new(literal(Value::Int(1)))),
+                };
+                let specialized = ProjectionExpression::CaseColumnSearchRank(Box::new(
+                    skein_plan::CaseColumnSearchRankProjection {
+                        column: "value".into(),
+                        raw_query: raw.clone(),
+                        normalized_query: normalized.clone(),
+                        exact_rank: Value::Int(3),
+                        contains_rank: Value::Int(2),
+                        fallback_rank: Value::Int(1),
+                    },
+                ));
+                for column in values.iter().map(Some).chain([None]) {
+                    let binding = Binding::values(
+                        column
+                            .map(|value| BTreeMap::from([("value".into(), value.clone())]))
+                            .unwrap_or_default(),
+                    );
+                    let evaluate = |expression| {
+                        evaluate_projection_expression(expression, &Catalog::default(), &binding)
+                            .map_err(|error| error.to_string())
+                    };
+                    assert_eq!(
+                        evaluate(&specialized),
+                        evaluate(&generic),
+                        "raw={raw:?} normalized={normalized:?} column={column:?}"
+                    );
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn derived_entity_rank_matches_generic_case_for_values_nulls_and_errors() {
+        let property = |property: &str| ProjectionExpression::Property {
+            variable: "n".into(),
+            property: property.into(),
+        };
+        let comparison = |query: Value| ProjectionExpression::Binary {
+            left: Box::new(ProjectionExpression::Lower(Box::new(property("name")))),
+            op: ScalarBinaryOp::Eq,
+            right: Box::new(literal(query)),
+        };
+        let raw = Value::String("first".into());
+        let normalized = Value::String("second".into());
+        let alias = Value::String("alias".into());
+        let generic = ProjectionExpression::Case {
+            operand: None,
+            branches: vec![
+                (comparison(raw.clone()), literal(Value::Int(0))),
+                (comparison(normalized.clone()), literal(Value::Int(0))),
+                (
+                    ProjectionExpression::Binary {
+                        left: Box::new(property("aliases")),
+                        op: ScalarBinaryOp::ListContains,
+                        right: Box::new(literal(alias.clone())),
+                    },
+                    literal(Value::Int(1)),
+                ),
+            ],
+            otherwise: Some(Box::new(literal(Value::Int(2)))),
+        };
+        let specialized = ProjectionExpression::CaseEntitySearchRank(Box::new(
+            skein_plan::CaseEntitySearchRankProjection {
+                variable: "n".into(),
+                name_property: "name".into(),
+                aliases_property: "aliases".into(),
+                raw_query: raw,
+                normalized_query: normalized,
+                raw_input: alias.clone(),
+                exact_rank: Value::Int(0),
+                alias_rank: Value::Int(1),
+                fallback_rank: Value::Int(2),
+            },
+        ));
+        for name in [
+            None,
+            Some(Value::Null),
+            Some(Value::String("FIRST".into())),
+            Some(Value::String("SECOND".into())),
+            Some(Value::String("other".into())),
+            Some(Value::Int(5)),
+            Some(Value::Bool(false)),
+        ] {
+            for aliases in [
+                Value::Null,
+                Value::List(vec![alias.clone()]),
+                Value::List(vec![]),
+                Value::Int(7),
+            ] {
+                let mut properties = BTreeMap::from([("aliases".into(), aliases)]);
+                if let Some(name) = &name {
+                    properties.insert("name".into(), name.clone());
+                }
+                let mut binding = Binding::values(BTreeMap::new());
+                binding.nodes.insert(
+                    "n".into(),
+                    NodeRecord {
+                        id: skein_storage::NodeId(1),
+                        labels: Default::default(),
+                        properties,
+                    },
+                );
+                let evaluate = |expression| {
+                    evaluate_projection_expression(expression, &Catalog::default(), &binding)
+                        .map_err(|error| error.to_string())
+                };
+                assert_eq!(evaluate(&specialized), evaluate(&generic));
+            }
+        }
+    }
+
+    #[test]
+    fn case_is_lazy_and_null_does_not_select_a_branch() {
+        let expression = ProjectionExpression::Case {
+            operand: None,
+            branches: vec![
+                (literal(Value::Null), invalid()),
+                (literal(Value::Bool(true)), literal(Value::Int(9))),
+                (invalid(), invalid()),
+            ],
+            otherwise: Some(Box::new(invalid())),
+        };
+        assert_eq!(evaluate(&expression).unwrap(), Value::Int(9));
+        let expression = ProjectionExpression::Case {
+            operand: None,
+            branches: vec![(literal(Value::Bool(false)), invalid())],
+            otherwise: None,
+        };
+        assert_eq!(evaluate(&expression).unwrap(), Value::Null);
+    }
+
+    #[test]
+    fn simple_case_null_does_not_equal_null_and_selected_errors_propagate() {
+        let expression = ProjectionExpression::Case {
+            operand: Some(Box::new(literal(Value::Null))),
+            branches: vec![(literal(Value::Null), invalid())],
+            otherwise: Some(Box::new(literal(Value::Int(4)))),
+        };
+        assert_eq!(evaluate(&expression).unwrap(), Value::Int(4));
+        for condition in [literal(Value::Int(1)), literal(Value::Bool(true))] {
+            let expression = ProjectionExpression::Case {
+                operand: None,
+                branches: vec![(condition, invalid())],
+                otherwise: None,
+            };
+            assert!(evaluate(&expression).is_err());
+        }
+    }
+
+    #[test]
+    fn conditional_boolean_operators_preserve_three_valued_truth_and_short_circuit() {
+        let values = [Value::Bool(false), Value::Bool(true), Value::Null];
+        let and = [
+            [Some(false), Some(false), Some(false)],
+            [Some(false), Some(true), None],
+            [Some(false), None, None],
+        ];
+        let or = [
+            [Some(false), Some(true), None],
+            [Some(true), Some(true), Some(true)],
+            [None, Some(true), None],
+        ];
+        for (op, truth) in [(ScalarBinaryOp::And, and), (ScalarBinaryOp::Or, or)] {
+            for (i, left) in values.iter().enumerate() {
+                for (j, right) in values.iter().enumerate() {
+                    let expression = ProjectionExpression::Binary {
+                        left: Box::new(literal(left.clone())),
+                        op,
+                        right: Box::new(literal(right.clone())),
+                    };
+                    assert_eq!(
+                        evaluate(&expression).unwrap(),
+                        truth[i][j].map(Value::Bool).unwrap_or(Value::Null)
+                    );
+                }
+            }
+        }
+        for (op, left) in [(ScalarBinaryOp::And, false), (ScalarBinaryOp::Or, true)] {
+            let expression = ProjectionExpression::Binary {
+                left: Box::new(literal(Value::Bool(left))),
+                op,
+                right: Box::new(invalid()),
+            };
+            assert_eq!(evaluate(&expression).unwrap(), Value::Bool(left));
+        }
+        assert_eq!(
+            evaluate(&ProjectionExpression::Not(Box::new(literal(Value::Null)))).unwrap(),
+            Value::Null
+        );
+    }
 }

@@ -722,8 +722,21 @@ pub enum ScalarExpressionKind {
         variable: String,
         terms: Vec<CoalesceDifferenceTerm>,
     },
-    CaseEntitySearchRank(Box<CaseEntitySearchRankExpression>),
-    CaseColumnSearchRank(Box<CaseColumnSearchRankExpression>),
+    Case {
+        operand: Option<Box<ScalarExpression>>,
+        branches: Vec<(ScalarExpression, ScalarExpression)>,
+        otherwise: Option<Box<ScalarExpression>>,
+    },
+    Binary {
+        left: Box<ScalarExpression>,
+        op: ScalarBinaryOp,
+        right: Box<ScalarExpression>,
+    },
+    Not(Box<ScalarExpression>),
+    IsNull {
+        expression: Box<ScalarExpression>,
+        negated: bool,
+    },
 }
 
 /// A projection or grouping expression, with aggregation explicit in its type.
@@ -768,27 +781,18 @@ pub enum AggregateExpression {
     },
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct CaseEntitySearchRankExpression {
-    pub variable: String,
-    pub name_property: String,
-    pub aliases_property: String,
-    pub raw_query: ValueExpression,
-    pub normalized_query: ValueExpression,
-    pub raw_input: ValueExpression,
-    pub exact_rank: ValueExpression,
-    pub alias_rank: ValueExpression,
-    pub fallback_rank: ValueExpression,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct CaseColumnSearchRankExpression {
-    pub column: String,
-    pub raw_query: ValueExpression,
-    pub normalized_query: ValueExpression,
-    pub exact_rank: ValueExpression,
-    pub contains_rank: ValueExpression,
-    pub fallback_rank: ValueExpression,
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ScalarBinaryOp {
+    Eq,
+    NotEq,
+    Lt,
+    Lte,
+    Gt,
+    Gte,
+    Contains,
+    ListContains,
+    And,
+    Or,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -826,3 +830,32 @@ pub type ReturnExpression = AstNode<ReturnExpressionKind>;
 pub type ReturnItem = AstNode<ReturnItemKind>;
 
 pub type OrderItem = AstNode<OrderItemKind>;
+
+impl ScalarExpressionKind {
+    /// Visits immediate scalar children in evaluation order, stopping on false.
+    pub fn all_children(&self, mut visit: impl FnMut(&ScalarExpression) -> bool) -> bool {
+        match self {
+            Self::Case {
+                operand,
+                branches,
+                otherwise,
+            } => operand
+                .iter()
+                .map(Box::as_ref)
+                .chain(
+                    branches
+                        .iter()
+                        .flat_map(|(condition, result)| [condition, result]),
+                )
+                .chain(otherwise.iter().map(Box::as_ref))
+                .all(visit),
+            Self::Binary { left, right, .. } => visit(left) && visit(right),
+            Self::Not(expression)
+            | Self::IsNull { expression, .. }
+            | Self::Lower(expression)
+            | Self::Left { expression, .. } => visit(expression),
+            Self::Coalesce(expressions) => expressions.iter().all(visit),
+            _ => true,
+        }
+    }
+}

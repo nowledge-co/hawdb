@@ -1576,6 +1576,11 @@ fn collect_projection_properties(
     required: &mut BTreeSet<String>,
 ) -> bool {
     match expression {
+        ProjectionExpression::Case { .. }
+        | ProjectionExpression::Binary { .. }
+        | ProjectionExpression::Not(_)
+        | ProjectionExpression::IsNull { .. } => expression
+            .all_children(|child| collect_projection_properties(child, variable, required)),
         ProjectionExpression::Variable { .. }
         | ProjectionExpression::RelationshipType { .. }
         | ProjectionExpression::Column(_)

@@ -620,39 +620,11 @@ pub(super) fn plan_projection_with_columns(
                 "case".to_string(),
             )
         }
-        ScalarExpressionKind::CaseEntitySearchRank(expression) => {
-            if !scope.contains(&expression.variable) {
-                return Err(SkeinError::Semantic(format!(
-                    "unknown variable '{}' in return item",
-                    expression.variable
-                )));
-            }
-            (
-                ProjectionExpression::CaseEntitySearchRank(Box::new(
-                    CaseEntitySearchRankProjection {
-                        variable: expression.variable.clone(),
-                        name_property: expression.name_property.clone(),
-                        aliases_property: expression.aliases_property.clone(),
-                        raw_query: bind_value(&expression.raw_query, parameters)?,
-                        normalized_query: bind_value(&expression.normalized_query, parameters)?,
-                        raw_input: bind_value(&expression.raw_input, parameters)?,
-                        exact_rank: bind_value(&expression.exact_rank, parameters)?,
-                        alias_rank: bind_value(&expression.alias_rank, parameters)?,
-                        fallback_rank: bind_value(&expression.fallback_rank, parameters)?,
-                    },
-                )),
-                "case".to_string(),
-            )
-        }
-        ScalarExpressionKind::CaseColumnSearchRank(expression) => (
-            ProjectionExpression::CaseColumnSearchRank(Box::new(CaseColumnSearchRankProjection {
-                column: expression.column.clone(),
-                raw_query: bind_value(&expression.raw_query, parameters)?,
-                normalized_query: bind_value(&expression.normalized_query, parameters)?,
-                exact_rank: bind_value(&expression.exact_rank, parameters)?,
-                contains_rank: bind_value(&expression.contains_rank, parameters)?,
-                fallback_rank: bind_value(&expression.fallback_rank, parameters)?,
-            })),
+        ScalarExpressionKind::Case { .. }
+        | ScalarExpressionKind::Binary { .. }
+        | ScalarExpressionKind::Not(_)
+        | ScalarExpressionKind::IsNull { .. } => (
+            plan_case_scalar(scope, column_scope, value, parameters, true)?,
             "case".to_string(),
         ),
     };
@@ -1142,44 +1114,11 @@ pub(super) fn plan_scalar_expression_with_columns(
                 terms: bind_coalesce_difference_terms(terms, parameters)?,
             })
         }
-        ScalarExpressionKind::CaseEntitySearchRank(expression) => {
-            if !scope.contains(&expression.variable) {
-                return Err(SkeinError::Semantic(format!(
-                    "unknown variable '{}' in expression",
-                    expression.variable
-                )));
-            }
-            Ok(ProjectionExpression::CaseEntitySearchRank(Box::new(
-                CaseEntitySearchRankProjection {
-                    variable: expression.variable.clone(),
-                    name_property: expression.name_property.clone(),
-                    aliases_property: expression.aliases_property.clone(),
-                    raw_query: bind_value(&expression.raw_query, parameters)?,
-                    normalized_query: bind_value(&expression.normalized_query, parameters)?,
-                    raw_input: bind_value(&expression.raw_input, parameters)?,
-                    exact_rank: bind_value(&expression.exact_rank, parameters)?,
-                    alias_rank: bind_value(&expression.alias_rank, parameters)?,
-                    fallback_rank: bind_value(&expression.fallback_rank, parameters)?,
-                },
-            )))
-        }
-        ScalarExpressionKind::CaseColumnSearchRank(expression) => {
-            if !column_scope.contains(&expression.column) {
-                return Err(SkeinError::Semantic(format!(
-                    "unknown column '{}' in expression",
-                    expression.column
-                )));
-            }
-            Ok(ProjectionExpression::CaseColumnSearchRank(Box::new(
-                CaseColumnSearchRankProjection {
-                    column: expression.column.clone(),
-                    raw_query: bind_value(&expression.raw_query, parameters)?,
-                    normalized_query: bind_value(&expression.normalized_query, parameters)?,
-                    exact_rank: bind_value(&expression.exact_rank, parameters)?,
-                    contains_rank: bind_value(&expression.contains_rank, parameters)?,
-                    fallback_rank: bind_value(&expression.fallback_rank, parameters)?,
-                },
-            )))
+        ScalarExpressionKind::Case { .. }
+        | ScalarExpressionKind::Binary { .. }
+        | ScalarExpressionKind::Not(_)
+        | ScalarExpressionKind::IsNull { .. } => {
+            plan_case_scalar(scope, column_scope, expression, parameters, false)
         }
     }
 }

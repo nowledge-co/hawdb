@@ -1346,9 +1346,14 @@ pub(super) fn collect_scalar_expression_variables(
         ScalarExpressionKind::CaseCoalesceDifferenceFloorZero { variable, .. } => {
             variables.insert(variable.clone());
         }
-        ScalarExpressionKind::CaseEntitySearchRank(expression) => {
-            variables.insert(expression.variable.clone());
+        ScalarExpressionKind::Case { .. }
+        | ScalarExpressionKind::Binary { .. }
+        | ScalarExpressionKind::Not(_)
+        | ScalarExpressionKind::IsNull { .. } => {
+            expression.kind.all_children(|child| {
+                collect_scalar_expression_variables(child, variables);
+                true
+            });
         }
-        ScalarExpressionKind::CaseColumnSearchRank(_) => {}
     }
 }
