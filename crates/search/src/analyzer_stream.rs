@@ -24,7 +24,7 @@ mod control;
 mod text;
 use crate::build_term::Term;
 pub(crate) use control::Control;
-use control::Dedup;
+use control::{CheckpointThrottle, Dedup};
 use std::collections::HashMap;
 use text::Text;
 
@@ -90,9 +90,11 @@ pub(crate) fn visit_admitted_token_list(
 ) -> Result<()> {
     let mut current_scope = None;
     let mut seen = Dedup::new();
+    let checkpoints = CheckpointThrottle::new();
+    let control = control.with_checkpoint_throttle(&checkpoints);
     visit_token_events(text, analyzer, control, |token, scope| {
         if current_scope != Some(scope) {
-            seen = Dedup::new();
+            seen.reset();
             current_scope = Some(scope);
         }
         if let Some(token) = seen.insert(token, control)? {
@@ -283,3 +285,6 @@ impl<'text, 'control, F: FnMut(Text<'text>) -> Result<()>> TokenEmitter<'text, '
 thread_local! {
     pub(super) static IDENTIFIER_VISITS: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
 }
+
+#[cfg(test)]
+mod tests;

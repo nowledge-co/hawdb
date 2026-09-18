@@ -17,19 +17,65 @@ use crate::build_memory::{checked_add, checked_mul, BuildMemory};
 use crate::build_term::Term;
 use crate::{HawDBError, RuntimeTaskContext};
 use hawdb_executor::QueryMemoryLease;
+use std::cell::Cell;
 use std::collections::hash_map::Entry;
 use std::mem::size_of;
+
+const CHECKPOINT_STRIDE: usize = 1024;
 
 #[derive(Clone, Copy, Default)]
 pub(crate) struct Control<'a> {
     pub(crate) memory: Option<&'a BuildMemory>,
     pub(crate) task: Option<&'a RuntimeTaskContext>,
     pub(crate) workspace: Option<&'a crate::analyzer_workspace::Workspace>,
+    pub(crate) checkpoint_throttle: Option<&'a CheckpointThrottle>,
 }
 
-impl Control<'_> {
+pub(crate) struct CheckpointThrottle {
+    remaining: Cell<usize>,
+}
+
+impl CheckpointThrottle {
+    pub(crate) fn new() -> Self {
+        Self {
+            remaining: Cell::new(0),
+        }
+    }
+
+    fn check(&self, task: &RuntimeTaskContext) -> Result<()> {
+        let remaining = self.remaining.get();
+        if remaining == 0 {
+            crate::build_control::checkpoint(task)?;
+            self.remaining.set(CHECKPOINT_STRIDE - 1);
+        } else {
+            self.remaining.set(remaining - 1);
+        }
+        Ok(())
+    }
+}
+
+impl<'a> Control<'a> {
+    pub(super) fn with_checkpoint_throttle(self, throttle: &'a CheckpointThrottle) -> Self {
+        Self {
+            checkpoint_throttle: Some(throttle),
+            ..self
+        }
+    }
+
     pub(super) fn check(self) -> Result<()> {
-        self.task.map_or(Ok(()), crate::build_control::checkpoint)
+        let Some(task) = self.task else {
+            return Ok(());
+        };
+        // Cancellation remains immediate at each tokenizer work point. The
+        // deadline path retains bounded latency without calling Instant::now
+        // for every token, suffix and alias.
+        if task.cancellation().is_cancelled() {
+            return crate::build_control::checkpoint(task);
+        }
+        self.checkpoint_throttle.map_or_else(
+            || crate::build_control::checkpoint(task),
+            |throttle| throttle.check(task),
+        )
     }
 
     pub(super) fn copy(self, text: &str) -> Result<Term> {
@@ -56,6 +102,10 @@ impl<'a> Dedup<'a> {
             terms: HashMap::new(),
             _memory: None,
         }
+    }
+
+    pub(super) fn reset(&mut self) {
+        self.terms.clear();
     }
 
     pub(super) fn insert(&mut self, text: Text<'a>, control: Control<'_>) -> Result<Option<Term>> {

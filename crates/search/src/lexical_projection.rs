@@ -1521,6 +1521,7 @@ impl<'workspace> LexicalProjectionWriter<'workspace> {
                     memory: Some(&memory),
                     task: Some(&task),
                     workspace: self.analyzer_workspace,
+                    checkpoint_throttle: None,
                 },
             )?;
             let document_len = analyzed.document_len();

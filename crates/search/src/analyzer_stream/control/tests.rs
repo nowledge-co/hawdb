@@ -94,6 +94,37 @@ fn dedup_shares_owned_text_and_keeps_consumers_alive_after_scope_reset() {
 }
 
 #[test]
+fn dedup_reset_reuses_its_admitted_table_capacity() {
+    let memory = memory();
+    let control = Control {
+        memory: Some(&memory),
+        ..Default::default()
+    };
+    let mut dedup = Dedup::new();
+    for key in ["alpha", "beta", "gamma"] {
+        drop(dedup.insert(Text::Borrowed(key), control).unwrap().unwrap());
+    }
+    let capacity = dedup.terms.capacity();
+    let retained = dedup._memory.as_ref().unwrap().bytes();
+    let before = memory.ledger.snapshot().used_bytes;
+    dedup.reset();
+    assert_eq!(dedup.terms.len(), 0);
+    assert_eq!(dedup.terms.capacity(), capacity);
+    assert_eq!(dedup._memory.as_ref().unwrap().bytes(), retained);
+    assert_eq!(memory.ledger.snapshot().used_bytes, before);
+    drop(
+        dedup
+            .insert(Text::Borrowed("delta"), control)
+            .unwrap()
+            .unwrap(),
+    );
+    assert_eq!(dedup.terms.capacity(), capacity);
+    assert_eq!(dedup._memory.as_ref().unwrap().bytes(), retained);
+    drop(dedup);
+    assert_eq!(memory.ledger.snapshot().used_bytes, 0);
+}
+
+#[test]
 fn lowercase_bounds_cover_every_unicode_scalar_and_contextual_sigma() {
     for scalar in 0..=0x10ffff {
         let Some(ch) = char::from_u32(scalar) else {

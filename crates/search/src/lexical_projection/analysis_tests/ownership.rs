@@ -30,6 +30,7 @@ fn admitted_events_and_every_rejected_prefix_match_the_legacy_oracle() {
         memory: Some(&memory),
         task: Some(&task),
         workspace: None,
+        checkpoint_throttle: None,
     };
     for analyzer in analyzers() {
         for text in [
@@ -81,6 +82,7 @@ fn admitted_token_cancellation_and_unwind_release_all_local_state() {
                     memory: Some(&memory),
                     task: Some(&task),
                     workspace: None,
+                    checkpoint_throttle: None,
                 },
                 |term, _| {
                     callbacks += 1;
@@ -197,6 +199,7 @@ fn admitted_resident_frequencies_match_seeded_legacy_field_semantics() {
         memory: Some(&memory),
         task: Some(&task),
         workspace: None,
+        checkpoint_throttle: None,
     };
     let parts = [
         "Graph",
