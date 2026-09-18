@@ -144,14 +144,15 @@ impl AdmittedHashJoinMemoryLayout {
             NonZeroUsize::new((total / 4).max(1)).expect("staging budget is non-zero");
         let state_budget = NonZeroUsize::new(total.saturating_sub(staging_budget.get()).max(1))
             .expect("state budget is non-zero");
-        // Repartitioning can keep three buffered handles live while a replay
-        // record is decoded. Preserve the table share that bounds spill-run
-        // fanout, and scale each I/O buffer from the admitted state capacity.
+        // Repartitioning can keep table state and three buffered handles live
+        // while replay records are decoded. Preserve the table share that
+        // bounds spill-run fanout, and leave three quarters of the state
+        // account for table state, metadata, and replay by scaling each buffer.
         let table_budget = NonZeroUsize::new((total / 2).max(1)).expect("table budget is non-zero");
         let spill_io_buffer_bytes = NonZeroUsize::new(
             state_budget
                 .get()
-                .saturating_div(8)
+                .saturating_div(12)
                 .clamp(1, SPILL_IO_BUFFER_BYTES),
         )
         .expect("spill buffer is non-zero");
@@ -734,8 +735,16 @@ mod tests {
     }
 
     fn spill_memory(name: &str) -> ExecutionMemoryConfig {
+        spill_memory_with_blocking_budget(name, 128 * 1024)
+    }
+
+    fn spill_memory_with_blocking_budget(
+        name: &str,
+        blocking_operator_bytes: usize,
+    ) -> ExecutionMemoryConfig {
         ExecutionMemoryConfig {
-            blocking_operator_bytes: NonZeroUsize::new(128 * 1024).expect("non-zero budget"),
+            blocking_operator_bytes: NonZeroUsize::new(blocking_operator_bytes)
+                .expect("non-zero budget"),
             max_spill_bytes: std::num::NonZeroU64::new(2 * 1024 * 1024)
                 .expect("non-zero spill budget"),
             max_spill_runs: NonZeroUsize::new(16).expect("non-zero spill run budget"),
@@ -761,7 +770,7 @@ mod tests {
         assert_eq!(layout.staging_budget.get(), 10 * 1024);
         assert_eq!(layout.state_budget.get(), 30 * 1024);
         assert_eq!(layout.table_budget.get(), 20 * 1024);
-        assert_eq!(layout.spill_io_buffer_bytes.get(), 3_840);
+        assert_eq!(layout.spill_io_buffer_bytes.get(), 2_560);
         assert!(layout.spill_io_buffer_bytes.get().saturating_mul(3) < layout.state_budget.get());
     }
 
@@ -830,5 +839,44 @@ mod tests {
         assert_eq!(ledger.snapshot().used_bytes, 0);
         std::fs::remove_dir_all(&memory.spill_directory)
             .expect("remove inconsistent-hash spill fixture");
+    }
+
+    #[test]
+    fn constrained_hot_partition_preflights_live_io_against_table_capacity() {
+        let memory = spill_memory_with_blocking_budget("constrained-hot-partition", 40 * 1024);
+        let ledger = QueryMemoryLedger::new(memory.query_memory_bytes);
+        let mut join = AdmittedHashJoin::new("test", &memory, &ledger, None);
+        let mut adapter = EqualityAdapter {
+            matches: Vec::new(),
+        };
+
+        for _ in 0..64 {
+            join.push_build(AdmittedHashJoinRecord {
+                hash: 0,
+                binding: EqualityAdapter::binding(0, 1_024),
+            })
+            .expect("admit constrained spill-backed build record");
+        }
+        join.finish_build().expect("finish constrained build");
+        for _ in 0..64 {
+            join.push_probe(
+                AdmittedHashJoinRecord {
+                    hash: 0,
+                    binding: EqualityAdapter::binding(0, 0),
+                },
+                &mut adapter,
+            )
+            .expect("admit constrained spill-backed probe record");
+        }
+        join.finish(&mut adapter)
+            .expect("complete constrained hot partition");
+
+        assert_eq!(adapter.matches.len(), 64 * 64);
+        assert!(adapter.matches.iter().all(|value| *value == 0));
+        assert!(join.report().spilled_rows > 0);
+        drop(join);
+        assert_eq!(ledger.snapshot().used_bytes, 0);
+        std::fs::remove_dir_all(&memory.spill_directory)
+            .expect("remove constrained hot-partition fixture");
     }
 }
