@@ -10,7 +10,7 @@
   "sources": [
     {
       "path": "crates/sql/src/tests.rs",
-      "sha256": "a04066f04e7910b435bc09de59ee2a9e324d6f6de86cd03e258072bd7f0f0830",
+      "sha256": "67991100ae6624a8f2aaeabce8f98a40cb1513497448d292c82ea31a77cdd7f6",
       "case_ids": [
         "case-0001",
         "case-0002",
@@ -47,7 +47,7 @@
     },
     {
       "path": "crates/sql/src/tests/clause_diagnostics.rs",
-      "sha256": "ad3b3c41b8b778267a6aa3c5037a84827045de7087bcfcdcb2075613219c586f",
+      "sha256": "19433bb96ee648dd3fce017fbecb94bc7f4358d28ecd6265922cc77de3e24d8c",
       "case_ids": [
         "case-0032",
         "case-0033",
@@ -60,7 +60,7 @@
     },
     {
       "path": "crates/sql/src/parser/clause_tests.rs",
-      "sha256": "a7a16125f4a1090464f4ae2fc0bed58f497eaf831473cda593e58a28ec35f036",
+      "sha256": "58a17f6b03d65ec7d3c1555db8ceab8245d43825d96cc7181c4630c88b9de771",
       "case_ids": [
         "case-0039",
         "case-0040",
@@ -357,7 +357,7 @@
     },
     {
       "path": "crates/sql-syntax/tests/postgres_pgq.rs",
-      "sha256": "1ac99f15fdeb0058a97e202195a53a7824c09b3f544fe980c562b5c280c5ce6b",
+      "sha256": "c3c4d296b620a212a2a663c79fa8f42ec06960188c0979592543f1d6f34f23f2",
       "case_ids": [
         "case-0042",
         "case-0043",
@@ -401,7 +401,7 @@
     },
     {
       "path": "crates/sql-syntax/tests/postgres_select_pgq.rs",
-      "sha256": "2150b1691deba7be8d62c007a39dafe6913bd7728a29f08f499383d9c7e53108",
+      "sha256": "924b8dc8860f24cab7edfaf7b70a06e70bbb3125d6562737f27d90ae9592bbda",
       "case_ids": [
         "case-0080",
         "case-0081",
@@ -436,7 +436,7 @@
     },
     {
       "path": "crates/sql/src/pgq/tests.rs",
-      "sha256": "c5692770bd0f51233f352f7a2bf8b6497ce6fe3d39d77a5fd399a7c5533ad705",
+      "sha256": "5a5f89f6241583a632e1bea09c4ef39a9280b0d61fb95afc51c3e0b6460a9c10",
       "case_ids": [
         "case-0109",
         "case-0110",
@@ -458,7 +458,7 @@
     },
     {
       "path": "crates/sql/src/pgq/lowering/tests.rs",
-      "sha256": "002923f9e6628becb54013005753c94a7d206fafd494b9de8386683ec362f7e7",
+      "sha256": "f0bc02c99a0131e04b00e97c583259a1ca0a1977c8b041d813a820fa9fa2d222",
       "case_ids": [
         "case-0125",
         "case-0126",
@@ -471,7 +471,7 @@
     },
     {
       "path": "crates/sql-syntax/tests/support/alias_boundaries.rs",
-      "sha256": "478a1e30b2e2b62db409f79122296be4bbf68d7610731815b80d5ba9e3107d68",
+      "sha256": "349cc7eab0d972cb42d820c1bb8b51fcc12f47960411a5a37bf9af00d26b9f84",
       "case_ids": [
         "case-0420",
         "case-0421",
@@ -1047,7 +1047,7 @@
     },
     {
       "path": "crates/sql/src/tests/cross_join.rs",
-      "sha256": "e752327fd50d3aa186474b69ee51ef10ec0dcb8ed26a46c4fe495fc6e327b602",
+      "sha256": "cbcfc3e62038dd902d0859cb7f98392aa5f2f4243e46264dbe05b7b0298288b0",
       "case_ids": [
         "case-0982",
         "case-0983",
@@ -1064,7 +1064,7 @@
     },
     {
       "path": "crates/sql/src/tests/having_from.rs",
-      "sha256": "6dc5809d41c641481d6ed6874332daf6bda99d94c6beae05c68850a8a751a408",
+      "sha256": "731fc51e7e6e5e51a54da3b5a5e72aa5ac00772e0ed3eb8a32ceaf9dce5bda97",
       "case_ids": [
         "case-0991",
         "case-0994",
