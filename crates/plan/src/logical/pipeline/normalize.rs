@@ -2,6 +2,7 @@
 
 use super::*;
 
+mod aggregate_projection;
 mod order;
 
 pub(super) fn normalize(plan: LogicalPlan) -> LogicalPlan {
@@ -10,7 +11,9 @@ pub(super) fn normalize(plan: LogicalPlan) -> LogicalPlan {
             program,
             input: None,
         } => {
-            if let Some(plan) = initial_match(&program) {
+            if independent_nodes(&program, None) && program.steps.len() > 1 {
+                node_product(program, None)
+            } else if let Some(plan) = initial_match(&program) {
                 plan
             } else {
                 LogicalPlan::GraphMatch {
@@ -19,19 +22,26 @@ pub(super) fn normalize(plan: LogicalPlan) -> LogicalPlan {
                 }
             }
         }
-        LogicalPlan::GraphMatch { program, input } => LogicalPlan::GraphMatch {
+        LogicalPlan::GraphMatch {
             program,
-            input: input.map(|input| Box::new(normalize(*input))),
-        },
+            input: Some(input),
+        } => {
+            let input = normalize(*input);
+            if independent_nodes(&program, Some(&input)) {
+                node_product(program, Some(input))
+            } else {
+                LogicalPlan::GraphMatch {
+                    program,
+                    input: Some(Box::new(input)),
+                }
+            }
+        }
         LogicalPlan::Project { items, input } => project(items, normalize(*input)),
         LogicalPlan::Filter { predicate, input } => LogicalPlan::Filter {
             predicate,
             input: Box::new(normalize(*input)),
         },
-        LogicalPlan::Sort { items, input } => LogicalPlan::Sort {
-            items,
-            input: Box::new(normalize(*input)),
-        },
+        LogicalPlan::Sort { items, input } => aggregate_projection::sort(items, normalize(*input)),
         LogicalPlan::Aggregate {
             group_keys,
             items,
@@ -70,6 +80,72 @@ pub(super) fn normalize(plan: LogicalPlan) -> LogicalPlan {
         },
         plan => plan,
     }
+}
+
+fn independent_nodes(program: &GraphMatchProgram, input: Option<&LogicalPlan>) -> bool {
+    if program.optional || !program.imports.is_empty() || program.steps.is_empty() {
+        return false;
+    }
+    let mut variables = BTreeSet::new();
+    for step in &program.steps {
+        let GraphMatchStep::Node(node) = step else {
+            return false;
+        };
+        if !variables.insert(node.variable.as_str()) {
+            return false;
+        }
+    }
+    if variables != program.introduced.iter().map(String::as_str).collect() {
+        return false;
+    }
+    // Projection may retain stale native bindings after dropping their logical scope.
+    // Only combine with inputs whose actual native bindings are fully known here.
+    input.is_none_or(|input| disjoint_node_input(input, &variables))
+}
+
+fn disjoint_node_input(input: &LogicalPlan, variables: &BTreeSet<&str>) -> bool {
+    match input {
+        LogicalPlan::NodeScan { variable, .. } => !variables.contains(variable.as_str()),
+        LogicalPlan::Filter { input, .. } => disjoint_node_input(input, variables),
+        LogicalPlan::NodeCartesianProduct { left, right } => {
+            disjoint_node_input(left, variables) && disjoint_node_input(right, variables)
+        }
+        _ => false,
+    }
+}
+
+fn node_product(program: GraphMatchProgram, mut input: Option<LogicalPlan>) -> LogicalPlan {
+    for step in program.steps {
+        let GraphMatchStep::Node(node) = step else {
+            unreachable!()
+        };
+        let predicate = combine_predicates(node_predicates(&node));
+        let mut right = LogicalPlan::NodeScan {
+            variable: node.variable,
+            label: node.label,
+        };
+        if let Some(predicate) = predicate {
+            right = LogicalPlan::Filter {
+                predicate,
+                input: Box::new(right),
+            };
+        }
+        input = Some(match input {
+            Some(left) => LogicalPlan::NodeCartesianProduct {
+                left: Box::new(left),
+                right: Box::new(right),
+            },
+            None => right,
+        });
+    }
+    let mut input = input.expect("at least one independent node pattern");
+    if let Some(predicate) = program.predicate {
+        input = LogicalPlan::Filter {
+            predicate,
+            input: Box::new(input),
+        };
+    }
+    input
 }
 
 fn initial_match(program: &GraphMatchProgram) -> Option<LogicalPlan> {
@@ -155,6 +231,10 @@ fn node_predicates(node: &GraphMatchNode) -> Vec<Predicate> {
 }
 
 fn project(projections: Vec<Projection>, input: LogicalPlan) -> LogicalPlan {
+    let (projections, input) = match aggregate_projection::project(projections, input) {
+        aggregate_projection::ProjectRewrite::Applied(plan) => return plan,
+        aggregate_projection::ProjectRewrite::Unchanged { items, input } => (items, input),
+    };
     if let Some(keys) = order::inline_keys(&projections, &input) {
         return order::remove_hidden_keys(projections.len(), input, keys);
     }

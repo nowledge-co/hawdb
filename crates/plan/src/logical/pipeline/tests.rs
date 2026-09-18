@@ -119,3 +119,69 @@ fn normalization_retains_match_boundaries_and_group_output_order() {
     .unwrap();
     assert!(matches!(plan, LogicalPlan::Aggregate { .. }));
 }
+
+#[test]
+fn projected_entities_only_restore_native_bindings_when_required() {
+    for query in [
+        "MATCH (n:Node) WITH n AS item RETURN item.id",
+        "MATCH (n:Node) WITH n AS item, n.id AS key WHERE key > 0 RETURN item.id ORDER BY key",
+        "MATCH (n:Node) WITH n AS item, COUNT(n) AS count RETURN item.id, count",
+        "MATCH (n:Node) RETURN n ORDER BY n.id",
+    ] {
+        let plan = plan_normalized_pipeline_query(query, &BTreeMap::new()).unwrap();
+        assert!(
+            !format!("{plan:?}").contains("GraphMatch {"),
+            "{query}: {plan:?}"
+        );
+    }
+    for query in [
+        "MATCH (n:Node) WITH n AS item RETURN id(item)",
+        "MATCH (n:Node) WITH n AS item RETURN item._id",
+        "MATCH (n:Node) WITH n AS item WHERE item.id > 0 RETURN item.id",
+        "MATCH (n:Node) WITH n AS item MATCH (item)-[:LINK]->(next:Node) RETURN next.id",
+    ] {
+        let plan = plan_normalized_pipeline_query(query, &BTreeMap::new()).unwrap();
+        assert!(format!("{plan:?}").contains("GraphMatch {"), "{query}");
+    }
+}
+
+#[test]
+fn independent_node_products_do_not_capture_reused_or_dropped_names() {
+    for query in [
+        "MATCH (a:Node), (b:Node) RETURN a.id, b.id",
+        "MATCH (a:Node) MATCH (b:Node) RETURN a.id, b.id",
+    ] {
+        let plan = plan_normalized_pipeline_query(query, &BTreeMap::new()).unwrap();
+        assert!(format!("{plan:?}").contains("NodeCartesianProduct {"));
+        assert!(!format!("{plan:?}").contains("GraphMatch {"));
+    }
+    for query in [
+        "MATCH (n:Node {id: 1}), (n:Node {id: 2}) RETURN n.id",
+        "MATCH (n:Node) WITH n.id AS previous MATCH (n:Node) RETURN n.id",
+    ] {
+        let plan = plan_normalized_pipeline_query(query, &BTreeMap::new()).unwrap();
+        assert!(format!("{plan:?}").contains("GraphMatch {"));
+    }
+}
+
+#[test]
+fn aggregate_projection_movement_requires_infallible_typed_selectors() {
+    let query = "MATCH (n:Node) WITH n.group AS bucket, COUNT(n) AS count RETURN bucket, count ORDER BY bucket LIMIT 1";
+    let plan = plan_normalized_pipeline_query(query, &BTreeMap::new()).unwrap();
+    let LogicalPlan::Limit { input, .. } = plan else {
+        panic!("expected LIMIT")
+    };
+    let LogicalPlan::Project { input, .. } = *input else {
+        panic!("expected selector projection")
+    };
+    assert!(matches!(*input, LogicalPlan::Sort { .. }));
+    let query = "MATCH (n:Node) WITH n.group AS bucket, COUNT(n) AS count RETURN bucket, 10 / (1 - bucket) AS risky ORDER BY bucket LIMIT 1";
+    let plan = plan_normalized_pipeline_query(query, &BTreeMap::new()).unwrap();
+    let LogicalPlan::Limit { input, .. } = plan else {
+        panic!("expected LIMIT")
+    };
+    let LogicalPlan::Sort { input, .. } = *input else {
+        panic!("risky projection must remain before SORT")
+    };
+    assert!(matches!(*input, LogicalPlan::Project { .. }));
+}

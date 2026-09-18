@@ -1,6 +1,7 @@
 use super::*;
 use skein_cypher::{ClauseKind, PathSearch, ProjectionClause, QueryPipeline};
 
+mod imports;
 mod mutation;
 mod normalize;
 mod path;
@@ -36,7 +37,7 @@ enum BindingType {
     UnmaterializedPath,
 }
 
-#[derive(Default)]
+#[derive(Clone, Default)]
 struct Scope(BTreeMap<String, BindingType>);
 
 impl Scope {
@@ -52,7 +53,17 @@ impl Scope {
     fn columns(&self) -> BTreeSet<String> {
         self.0
             .iter()
-            .filter_map(|(name, kind)| matches!(kind, BindingType::Scalar).then_some(name.clone()))
+            .filter_map(|(name, kind)| {
+                matches!(
+                    kind,
+                    BindingType::Scalar
+                        | BindingType::Graph {
+                            column: Some(_),
+                            ..
+                        }
+                )
+                .then_some(name.clone())
+            })
             .collect()
     }
 
@@ -215,6 +226,7 @@ fn bind_read_clauses(
                         "MATCH exceeds maximum pattern depth".to_string(),
                     ));
                 }
+                scope.materialized();
                 let predicate = predicate
                     .as_ref()
                     .map(|predicate| bind_predicate(&predicate.kind, &scope, parameters))
@@ -229,10 +241,11 @@ fn bind_read_clauses(
                     },
                     input: input.map(Box::new),
                 });
-                scope.materialized();
             }
             ClauseKind::With(projection) | ClauseKind::Return(projection) => {
-                let current = restore_bindings(input.take(), &mut scope);
+                let current = input
+                    .take()
+                    .unwrap_or_else(|| restore_bindings(None, &mut Scope::default()));
                 let (next, next_scope) = bind_projection(current, &scope, projection, parameters)?;
                 input = Some(next);
                 scope = next_scope;
@@ -279,7 +292,7 @@ fn restore_bindings(input: Option<LogicalPlan>, scope: &mut Scope) -> LogicalPla
 }
 
 fn bind_projection(
-    input: LogicalPlan,
+    mut input: LogicalPlan,
     scope: &Scope,
     projection: &ProjectionClause,
     parameters: &BTreeMap<String, Value>,
@@ -354,6 +367,8 @@ fn bind_projection(
             }
         }
     }
+    let needed = imports::for_returns(&mut planned, scope)?;
+    input = imports::restore(input, scope, &needed);
     let mut output = planned.into_logical(input);
     if projection.distinct {
         output = LogicalPlan::Distinct {
@@ -361,14 +376,18 @@ fn bind_projection(
         };
     }
     if let Some(predicate) = &projection.predicate {
-        output = restore_bindings(Some(output), &mut output_scope);
+        let mut predicate_scope = output_scope.clone();
+        predicate_scope.materialized();
+        let predicate = bind_predicate(&predicate.kind, &predicate_scope, parameters)?;
+        output = imports::restore(output, &output_scope, &imports::for_predicate(&predicate));
         output = LogicalPlan::Filter {
-            predicate: bind_predicate(&predicate.kind, &output_scope, parameters)?,
+            predicate,
             input: Box::new(output),
         };
     }
     if !sort_items.is_empty() {
-        output = restore_bindings(Some(output), &mut output_scope);
+        let needed = imports::for_sort(&mut sort_items, &output_scope)?;
+        output = imports::restore(output, &output_scope, &needed);
         output = LogicalPlan::Sort {
             items: sort_items,
             input: Box::new(output),
