@@ -211,6 +211,26 @@ fn normalizes_native_expression_order_keys_without_inlining_column_order_keys() 
 }
 
 #[test]
+fn normalizes_native_graph_columns_in_hidden_order_expressions() {
+    let plan = plan_normalized_pipeline_query(
+        "MATCH (s:Source) \
+         WITH s, CASE WHEN s.name IS NOT NULL THEN lower(s.name) ELSE '' END AS search_name \
+         RETURN s.id, search_name \
+         ORDER BY COALESCE(s.memory_count, 0) DESC",
+        &BTreeMap::new(),
+    )
+    .unwrap();
+    let text = format!("{plan:?}");
+    assert!(
+        text.contains(
+            "Expression(Coalesce([Property { variable: \"s\", property: \"memory_count\" }"
+        ),
+        "{text}"
+    );
+    assert!(!text.contains("\\0order."), "{text}");
+}
+
+#[test]
 fn normalizes_a_later_bound_source_match_to_an_expand() {
     let plan = plan_normalized_pipeline_query(
         "MATCH (c:Memory {is_crystal: true})-[:SYNTHESIZED_FROM]->(src:Memory) \
@@ -339,6 +359,39 @@ fn lowers_a_single_optional_relationship_count_to_optional_degree() {
     let text = format!("{reversed_with_filter:?}");
     assert!(text.contains("OptionalDegree {"), "{text}");
     assert!(text.contains("Filter {"), "{text}");
+
+    let searched_entities = plan_pipeline_query(
+        "MATCH (e:Entity) \
+         WHERE lower(e.name) CONTAINS $query \
+         OPTIONAL MATCH (m:Memory)-[:MENTIONS]->(e) \
+         RETURN e.id, COUNT(m) AS memory_count \
+         ORDER BY CASE WHEN lower(e.name) = $query THEN 0 ELSE 1 END ASC, memory_count DESC \
+         LIMIT $limit",
+        &BTreeMap::from([
+            ("query".to_string(), Value::String("entity".to_string())),
+            ("limit".to_string(), Value::Int(2)),
+        ]),
+    )
+    .unwrap();
+    let text = format!("{searched_entities:?}");
+    assert!(text.contains("OptionalDegree {"), "{text}");
+
+    let searched_entities = plan_normalized_pipeline_query(
+        "MATCH (e:Entity) \
+         WHERE lower(e.name) CONTAINS $query \
+         OPTIONAL MATCH (m:Memory)-[:MENTIONS]->(e) \
+         RETURN e.id, COUNT(m) AS memory_count \
+         ORDER BY CASE WHEN lower(e.name) = $query THEN 0 ELSE 1 END ASC, memory_count DESC \
+         LIMIT $limit",
+        &BTreeMap::from([
+            ("query".to_string(), Value::String("entity".to_string())),
+            ("limit".to_string(), Value::Int(2)),
+        ]),
+    )
+    .unwrap();
+    let text = format!("{searched_entities:?}");
+    assert!(text.contains("key: Expression"), "{text}");
+    assert!(!text.contains("\\0order."), "{text}");
 }
 
 #[test]

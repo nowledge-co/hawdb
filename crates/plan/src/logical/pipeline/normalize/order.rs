@@ -27,6 +27,7 @@ pub(super) fn inline_keys(
         if !item.name.starts_with("\0order.") {
             return None;
         }
+        let expression = promote_native_column_properties(&item.expression, input);
         let key = match &item.expression {
             ProjectionExpression::Property { variable, property }
                 if has_native_binding(input, variable) =>
@@ -41,9 +42,7 @@ pub(super) fn inline_keys(
                     variable: variable.clone(),
                 }
             }
-            expression if has_native_bindings(expression, input) => {
-                SortKey::Expression(expression.clone())
-            }
+            _ if has_native_bindings(&expression, input) => SortKey::Expression(expression.clone()),
             _ => return None,
         };
         replacements.insert(&item.name, key);
@@ -83,8 +82,105 @@ fn has_native_binding(input: &LogicalPlan, variable: &str) -> bool {
                 || rel_variable.as_deref() == Some(variable)
                 || has_native_binding(input, variable)
         }
+        LogicalPlan::OptionalDegree {
+            source_variable,
+            input,
+            ..
+        } => variable == source_variable || has_native_binding(input, variable),
         LogicalPlan::Filter { input, .. } => has_native_binding(input, variable),
+        LogicalPlan::Project { items, input } => items.iter().any(|item| {
+            item.name == variable
+                && matches!(
+                    &item.expression,
+                    ProjectionExpression::Variable { variable: source } if source == variable
+                )
+                && has_native_binding(input, variable)
+        }),
         _ => false,
+    }
+}
+
+fn promote_native_column_properties(
+    expression: &ProjectionExpression,
+    input: &LogicalPlan,
+) -> ProjectionExpression {
+    match expression {
+        ProjectionExpression::ColumnProperty { column, property } => {
+            native_column_variable(input, column)
+                .map(|variable| ProjectionExpression::Property {
+                    variable: variable.to_string(),
+                    property: property.clone(),
+                })
+                .unwrap_or_else(|| expression.clone())
+        }
+        ProjectionExpression::Coalesce(expressions) => ProjectionExpression::Coalesce(
+            expressions
+                .iter()
+                .map(|expression| promote_native_column_properties(expression, input))
+                .collect(),
+        ),
+        ProjectionExpression::Left { expression, length } => ProjectionExpression::Left {
+            expression: Box::new(promote_native_column_properties(expression, input)),
+            length: *length,
+        },
+        ProjectionExpression::Lower(expression) => ProjectionExpression::Lower(Box::new(
+            promote_native_column_properties(expression, input),
+        )),
+        ProjectionExpression::Case {
+            operand,
+            branches,
+            otherwise,
+        } => ProjectionExpression::Case {
+            operand: operand
+                .as_deref()
+                .map(|expression| Box::new(promote_native_column_properties(expression, input))),
+            branches: branches
+                .iter()
+                .map(|(condition, result)| {
+                    (
+                        promote_native_column_properties(condition, input),
+                        promote_native_column_properties(result, input),
+                    )
+                })
+                .collect(),
+            otherwise: otherwise
+                .as_deref()
+                .map(|expression| Box::new(promote_native_column_properties(expression, input))),
+        },
+        ProjectionExpression::Binary { left, op, right } => ProjectionExpression::Binary {
+            left: Box::new(promote_native_column_properties(left, input)),
+            op: *op,
+            right: Box::new(promote_native_column_properties(right, input)),
+        },
+        ProjectionExpression::Not(expression) => ProjectionExpression::Not(Box::new(
+            promote_native_column_properties(expression, input),
+        )),
+        ProjectionExpression::IsNull {
+            expression,
+            negated,
+        } => ProjectionExpression::IsNull {
+            expression: Box::new(promote_native_column_properties(expression, input)),
+            negated: *negated,
+        },
+        _ => expression.clone(),
+    }
+}
+
+fn native_column_variable<'a>(input: &'a LogicalPlan, column: &str) -> Option<&'a str> {
+    match input {
+        LogicalPlan::Filter { input, .. } => native_column_variable(input, column),
+        LogicalPlan::Project { items, input } => items
+            .iter()
+            .find(|item| item.name == column)
+            .and_then(|item| match &item.expression {
+                ProjectionExpression::Variable { variable }
+                    if has_native_binding(input, variable) =>
+                {
+                    Some(variable.as_str())
+                }
+                _ => None,
+            }),
+        _ => None,
     }
 }
 
