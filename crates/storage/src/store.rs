@@ -86,9 +86,11 @@ mod append_tables;
 #[path = "store/backup.rs"]
 mod backup;
 #[path = "store/derived_repair.rs"]
-mod derived_repair;
+#[doc(hidden)]
+pub mod derived_repair;
 #[path = "store/doctor.rs"]
-mod doctor;
+#[doc(hidden)]
+pub mod doctor;
 #[path = "store/durable.rs"]
 mod durable;
 #[path = "store/graph_apply.rs"]
@@ -110,7 +112,8 @@ mod graph_recovery;
 #[path = "store/relational_index_shadow.rs"]
 mod relational_index_shadow;
 #[path = "store/relational_row_pages.rs"]
-mod relational_row_pages;
+#[doc(hidden)]
+pub mod relational_row_pages;
 #[path = "store/statistics_refresh.rs"]
 mod statistics_refresh;
 #[path = "store/wal_codec.rs"]
