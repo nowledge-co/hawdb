@@ -25,7 +25,7 @@ use crate::error::{HawDBError, Result};
 use crate::{SearchOutOfCoreMetrics, SearchOutOfCoreReader};
 use hawdb_core::RuntimeTaskContext;
 use hawdb_qos::{BackgroundWorkHint, BackgroundWorkPlan, WorkClass};
-use std::num::{NonZeroU64, NonZeroUsize};
+use std::num::{NonZeroU32, NonZeroU64, NonZeroUsize};
 
 /// Selection limits for one immutable out-of-core segment compaction.
 ///
@@ -33,10 +33,17 @@ use std::num::{NonZeroU64, NonZeroUsize};
 /// complete ordered document range, and publishes one segment at the next
 /// level. `max_input_bytes` accounts for every selected immutable artifact,
 /// including descriptor, payload, lexical, layout, metadata, and vector files.
+/// `level_zero_target_bytes` scales by `level_size_ratio` until the hard input
+/// limit; `level_count` caps promotion; and `crisis_segment_count` permits a
+/// bounded pair merge when normal tier selection cannot reduce fan-out.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct SearchOutOfCoreSegmentCompactionPolicy {
     level_fan_in: NonZeroUsize,
     max_input_bytes: NonZeroU64,
+    level_count: NonZeroU32,
+    level_zero_target_bytes: NonZeroU64,
+    level_size_ratio: NonZeroU64,
+    crisis_segment_count: NonZeroUsize,
 }
 
 impl SearchOutOfCoreSegmentCompactionPolicy {
@@ -54,6 +61,12 @@ impl SearchOutOfCoreSegmentCompactionPolicy {
         Ok(Self {
             level_fan_in,
             max_input_bytes,
+            level_count: NonZeroU32::new(8).unwrap(),
+            // Preserve the original policy unless the host opts into smaller
+            // tier targets.
+            level_zero_target_bytes: max_input_bytes,
+            level_size_ratio: NonZeroU64::new(2).unwrap(),
+            crisis_segment_count: NonZeroUsize::new(16).unwrap(),
         })
     }
 
@@ -64,6 +77,63 @@ impl SearchOutOfCoreSegmentCompactionPolicy {
     pub const fn max_input_bytes(self) -> NonZeroU64 {
         self.max_input_bytes
     }
+
+    pub const fn level_count(self) -> NonZeroU32 {
+        self.level_count
+    }
+
+    pub const fn level_zero_target_bytes(self) -> NonZeroU64 {
+        self.level_zero_target_bytes
+    }
+
+    pub const fn level_size_ratio(self) -> NonZeroU64 {
+        self.level_size_ratio
+    }
+
+    pub const fn crisis_segment_count(self) -> NonZeroUsize {
+        self.crisis_segment_count
+    }
+
+    pub const fn with_level_count(mut self, level_count: NonZeroU32) -> Self {
+        self.level_count = level_count;
+        self
+    }
+
+    pub fn with_level_zero_target_bytes(mut self, target: NonZeroU64) -> Result<Self> {
+        if target.get() > self.max_input_bytes.get() {
+            return Err(HawDBError::Storage(
+                "search segment compaction level-zero target exceeds its input byte budget".into(),
+            ));
+        }
+        self.level_zero_target_bytes = target;
+        Ok(self)
+    }
+
+    pub fn with_level_size_ratio(mut self, ratio: NonZeroU64) -> Result<Self> {
+        if ratio.get() < 2 {
+            return Err(HawDBError::Storage(
+                "search segment compaction level size ratio must be at least two".into(),
+            ));
+        }
+        self.level_size_ratio = ratio;
+        Ok(self)
+    }
+
+    pub const fn with_crisis_segment_count(mut self, threshold: NonZeroUsize) -> Self {
+        self.crisis_segment_count = threshold;
+        self
+    }
+
+    fn level_input_limit(self, level: u32) -> u64 {
+        let mut limit = self.level_zero_target_bytes.get();
+        for _ in 0..level {
+            limit = limit.saturating_mul(self.level_size_ratio.get());
+            if limit >= self.max_input_bytes.get() {
+                return self.max_input_bytes.get();
+            }
+        }
+        limit
+    }
 }
 
 impl Default for SearchOutOfCoreSegmentCompactionPolicy {
@@ -71,6 +141,10 @@ impl Default for SearchOutOfCoreSegmentCompactionPolicy {
         Self {
             level_fan_in: NonZeroUsize::new(2).unwrap(),
             max_input_bytes: NonZeroU64::new(256 * 1024 * 1024).unwrap(),
+            level_count: NonZeroU32::new(8).unwrap(),
+            level_zero_target_bytes: NonZeroU64::new(256 * 1024 * 1024).unwrap(),
+            level_size_ratio: NonZeroU64::new(2).unwrap(),
+            crisis_segment_count: NonZeroUsize::new(16).unwrap(),
         }
     }
 }
@@ -135,6 +209,7 @@ struct Selection {
     end: usize,
     first_segment_id: u64,
     last_segment_id: u64,
+    source_level: u32,
     target_level: u32,
     document_count: usize,
     source_bytes: u64,
@@ -214,43 +289,71 @@ fn select(
     task: &RuntimeTaskContext,
 ) -> Result<Option<Selection>> {
     let fan_in = policy.level_fan_in.get();
+    if let Some(selection) = select_with_fan_in(reader, policy, fan_in, true, task)? {
+        return Ok(Some(selection));
+    }
+    if reader.manifest.segments.len() >= policy.crisis_segment_count.get() {
+        return select_with_fan_in(reader, policy, 2, false, task);
+    }
+    Ok(None)
+}
+
+fn select_with_fan_in(
+    reader: &SearchOutOfCoreReader,
+    policy: SearchOutOfCoreSegmentCompactionPolicy,
+    fan_in: usize,
+    enforce_tier_limit: bool,
+    task: &RuntimeTaskContext,
+) -> Result<Option<Selection>> {
     if reader.manifest.segments.len() < fan_in {
         return Ok(None);
     }
+    let mut selected = None;
     for start in 0..=reader.manifest.segments.len() - fan_in {
         checkpoint(task)?;
-        let selected = &reader.manifest.segments[start..start + fan_in];
-        let source_level = selected[0].level;
-        let Some(target_level) = source_level.checked_add(1) else {
-            continue;
-        };
-        if selected.iter().any(|segment| segment.level != source_level) {
+        let candidates = &reader.manifest.segments[start..start + fan_in];
+        let source_level = candidates[0].level;
+        if candidates
+            .iter()
+            .any(|segment| segment.level != source_level)
+        {
             continue;
         }
-        let source_bytes = selected.iter().try_fold(0u64, |total, segment| {
+        let source_bytes = candidates.iter().try_fold(0u64, |total, segment| {
             total
                 .checked_add(segment_bytes(segment)?)
                 .ok_or_else(|| HawDBError::Storage("search segment byte count overflows".into()))
         })?;
-        if source_bytes > policy.max_input_bytes.get() {
+        if source_bytes > policy.max_input_bytes.get()
+            || (enforce_tier_limit && source_bytes > policy.level_input_limit(source_level))
+        {
             continue;
         }
-        let document_count = selected.iter().try_fold(0usize, |total, segment| {
+        let document_count = candidates.iter().try_fold(0usize, |total, segment| {
             total.checked_add(segment.document_count).ok_or_else(|| {
                 HawDBError::Storage("search segment document count overflows".into())
             })
         })?;
-        return Ok(Some(Selection {
+        let max_level = (policy.level_count.get() - 1).max(source_level);
+        let target_level = source_level.saturating_add(1).min(max_level);
+        let candidate = Selection {
             start,
             end: start + fan_in,
-            first_segment_id: selected[0].segment_id,
-            last_segment_id: selected[selected.len() - 1].segment_id,
+            first_segment_id: candidates[0].segment_id,
+            last_segment_id: candidates[candidates.len() - 1].segment_id,
+            source_level,
             target_level,
             document_count,
             source_bytes,
-        }));
+        };
+        if selected
+            .as_ref()
+            .is_none_or(|current: &Selection| source_level < current.source_level)
+        {
+            selected = Some(candidate);
+        }
     }
-    Ok(None)
+    Ok(selected)
 }
 
 fn segment_bytes(segment: &crate::out_of_core::SearchOutOfCoreSegmentManifest) -> Result<u64> {

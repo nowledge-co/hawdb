@@ -18,7 +18,7 @@ use crate::{
 };
 use hawdb_core::{RuntimeCancellationToken, RuntimeTaskContext};
 use hawdb_qos::{BackgroundWorkHint, WorkClass};
-use std::num::{NonZeroU64, NonZeroUsize};
+use std::num::{NonZeroU32, NonZeroU64, NonZeroUsize};
 use std::path::Path;
 
 fn appended_row(number: usize) -> SearchProjectionRow {
@@ -177,6 +177,63 @@ fn compaction_defers_when_the_selected_artifacts_exceed_its_byte_budget() {
         before
     );
     assert_eq!(stage_directories(&root), 0);
+    drop(reader);
+    fs::remove_dir_all(root).unwrap();
+}
+
+#[test]
+fn tier_configuration_bounds_normal_merges_without_starting_background_work() {
+    let root = append_only_root("compaction_tier_limit", 2);
+    let reader = SearchOutOfCoreReader::open(&root).unwrap();
+    let policy = policy(256 * 1024 * 1024)
+        .with_level_zero_target_bytes(NonZeroU64::new(1).unwrap())
+        .unwrap()
+        .with_level_size_ratio(NonZeroU64::new(4).unwrap())
+        .unwrap()
+        .with_level_count(NonZeroU32::new(3).unwrap())
+        .with_crisis_segment_count(NonZeroUsize::new(8).unwrap());
+    assert_eq!(policy.level_count().get(), 3);
+    assert_eq!(policy.level_zero_target_bytes().get(), 1);
+    assert_eq!(policy.level_size_ratio().get(), 4);
+    assert_eq!(policy.crisis_segment_count().get(), 8);
+    assert!(
+        SearchOutOfCoreGenerationWriter::segment_compaction_work_plan(
+            &reader,
+            policy,
+            BackgroundWorkHint::default(),
+        )
+        .unwrap()
+        .is_none()
+    );
+    assert!(
+        SearchOutOfCoreGenerationWriter::compact_segments(&reader, policy, Default::default(),)
+            .unwrap()
+            .is_none()
+    );
+    drop(reader);
+    fs::remove_dir_all(root).unwrap();
+}
+
+#[test]
+fn crisis_merge_uses_a_bounded_pair_and_does_not_exceed_the_top_level() {
+    let root = append_only_root("compaction_crisis", 2);
+    let reader = SearchOutOfCoreReader::open(&root).unwrap();
+    let policy = SearchOutOfCoreSegmentCompactionPolicy::new(
+        NonZeroUsize::new(3).unwrap(),
+        NonZeroU64::new(256 * 1024 * 1024).unwrap(),
+    )
+    .unwrap()
+    .with_level_count(NonZeroU32::new(1).unwrap())
+    .with_crisis_segment_count(NonZeroUsize::new(2).unwrap());
+    let report =
+        SearchOutOfCoreGenerationWriter::compact_segments(&reader, policy, Default::default())
+            .unwrap()
+            .unwrap();
+    assert_eq!(report.source_segment_count(), 2);
+    let compacted = SearchOutOfCoreReader::open(&root).unwrap();
+    assert_eq!(compacted.manifest.segments.len(), 1);
+    assert_eq!(compacted.manifest.segments[0].level, 0);
+    drop(compacted);
     drop(reader);
     fs::remove_dir_all(root).unwrap();
 }
