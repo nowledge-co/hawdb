@@ -2792,6 +2792,38 @@ impl hawdb_storage::graph_engine::GraphReadEngine for GraphStore {
         GraphStore::storage_pressure_snapshot(self, oldest_reader_commit_epoch)
     }
 
+    fn append_storage_residency_report(&self) -> hawdb_storage::AppendStorageResidencyReport {
+        GraphStore::append_storage_residency_report(self)
+    }
+
+    fn columnar_shadow_admission_bytes(&self) -> u64 {
+        GraphStore::columnar_shadow_admission_bytes(self)
+    }
+
+    fn relational_index_recovery_report(
+        &self,
+    ) -> Option<&hawdb_storage::RelationalIndexRecoveryReport> {
+        GraphStore::relational_index_recovery_report(self)
+    }
+
+    fn relational_index_shadow_checkpoint_report(
+        &self,
+    ) -> Option<&hawdb_storage::relational::RelationalIndexShadowCheckpointReport> {
+        GraphStore::relational_index_shadow_checkpoint_report(self)
+    }
+
+    fn relational_index_shadow_recovery_status(
+        &self,
+    ) -> &hawdb_storage::relational::RelationalIndexShadowRecoveryStatus {
+        GraphStore::relational_index_shadow_recovery_status(self)
+    }
+
+    fn search_projection_changefeed_status(
+        &self,
+    ) -> hawdb_storage::SearchProjectionChangefeedStatus {
+        GraphStore::search_projection_changefeed_status(self)
+    }
+
     fn append_table_schema(&self, table: &str) -> Option<&hawdb_storage::AppendTableSchema> {
         GraphStore::append_table_schema(self, table)
     }

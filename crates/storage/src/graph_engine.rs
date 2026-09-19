@@ -70,6 +70,22 @@ pub trait GraphReadEngine {
         oldest_reader_commit_epoch: Option<u64>,
     ) -> crate::StoragePressureSnapshot;
 
+    fn append_storage_residency_report(&self) -> crate::AppendStorageResidencyReport;
+
+    fn columnar_shadow_admission_bytes(&self) -> u64;
+
+    fn relational_index_recovery_report(&self) -> Option<&crate::RelationalIndexRecoveryReport>;
+
+    fn relational_index_shadow_checkpoint_report(
+        &self,
+    ) -> Option<&crate::relational::RelationalIndexShadowCheckpointReport>;
+
+    fn relational_index_shadow_recovery_status(
+        &self,
+    ) -> &crate::relational::RelationalIndexShadowRecoveryStatus;
+
+    fn search_projection_changefeed_status(&self) -> crate::SearchProjectionChangefeedStatus;
+
     fn append_table_schema(&self, table: &str) -> Option<&AppendTableSchema>;
 
     fn initial_import_source_fingerprint(&self) -> Option<&str>;
