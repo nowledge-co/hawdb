@@ -48,11 +48,20 @@ pub(super) fn normalize(plan: LogicalPlan) -> LogicalPlan {
             group_keys,
             items,
             input,
-        } => LogicalPlan::Aggregate {
-            group_keys,
-            items,
-            input: Box::new(normalize(*input)),
-        },
+        } => {
+            let input = normalize(*input);
+            let input = if group_keys.is_empty() {
+                lower_optional_count_match(&items, &input)
+            } else {
+                None
+            }
+            .unwrap_or(input);
+            LogicalPlan::Aggregate {
+                group_keys,
+                items,
+                input: Box::new(input),
+            }
+        }
         LogicalPlan::Distinct { input } => LogicalPlan::Distinct {
             input: Box::new(normalize(*input)),
         },
@@ -253,6 +262,106 @@ fn reorderable_filter(predicate: &Predicate) -> bool {
         | Predicate::ExpressionNotEq { .. }
         | Predicate::ExpressionCompare { .. }
         | Predicate::ExpressionContains { .. } => false,
+    }
+}
+
+/// A global `COUNT` ignores unmatched rows from an OPTIONAL MATCH. It can
+/// therefore use the existing Expand path when the generic program is exactly
+/// one optional hop and returns no other optional bindings.
+fn lower_optional_count_match(items: &[Aggregation], input: &LogicalPlan) -> Option<LogicalPlan> {
+    let [Aggregation {
+        function: AggregateFunction::Count,
+        target: AggregateTarget::Variable(counted),
+        ..
+    }] = items
+    else {
+        return None;
+    };
+    let LogicalPlan::GraphMatch {
+        program,
+        input: Some(input),
+    } = input
+    else {
+        return None;
+    };
+    if !program.optional || !program.imports.is_empty() || program.predicate.is_some() {
+        return None;
+    }
+    let [GraphMatchStep::Node(first), GraphMatchStep::Expand {
+        source,
+        relationship,
+        rel_type,
+        properties,
+        direction,
+        min_hops: 1,
+        max_hops: 1,
+        target,
+    }] = program.steps.as_slice()
+    else {
+        return None;
+    };
+    let counts_relationship = relationship.as_deref() == Some(counted);
+    let counts_target = target.variable == *counted;
+    let first_is_introduced = program
+        .introduced
+        .iter()
+        .any(|name| name == &first.variable);
+    let target_is_introduced = program
+        .introduced
+        .iter()
+        .any(|name| name == &target.variable);
+    if !first.properties.is_empty() || !target.properties.is_empty() {
+        return None;
+    }
+
+    if source == &first.variable
+        && !first_is_introduced
+        && target_is_introduced
+        && (counts_relationship || counts_target)
+    {
+        return Some(LogicalPlan::Expand {
+            source_variable: first.variable.clone(),
+            source_label: first.label.clone(),
+            rel_variable: relationship.clone(),
+            rel_type: rel_type.clone(),
+            rel_properties: properties.clone(),
+            direction: *direction,
+            target_variable: target.variable.clone(),
+            target_label: target.label.clone(),
+            min_hops: 1,
+            max_hops: 1,
+            optional: false,
+            input: input.clone(),
+        });
+    }
+    if source == &first.variable
+        && first_is_introduced
+        && !target_is_introduced
+        && counts_relationship
+    {
+        return Some(LogicalPlan::Expand {
+            source_variable: target.variable.clone(),
+            source_label: target.label.clone(),
+            rel_variable: relationship.clone(),
+            rel_type: rel_type.clone(),
+            rel_properties: properties.clone(),
+            direction: reverse_direction(*direction),
+            target_variable: first.variable.clone(),
+            target_label: first.label.clone(),
+            min_hops: 1,
+            max_hops: 1,
+            optional: false,
+            input: input.clone(),
+        });
+    }
+    None
+}
+
+fn reverse_direction(direction: RelationshipDirection) -> RelationshipDirection {
+    match direction {
+        RelationshipDirection::Outgoing => RelationshipDirection::Incoming,
+        RelationshipDirection::Incoming => RelationshipDirection::Outgoing,
+        RelationshipDirection::Undirected => RelationshipDirection::Undirected,
     }
 }
 

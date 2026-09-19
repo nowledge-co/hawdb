@@ -257,3 +257,17 @@ fn lowers_a_single_optional_relationship_count_to_optional_degree() {
     .unwrap();
     assert!(format!("{target_count:?}").contains("OptionalDegree {"));
 }
+
+#[test]
+fn normalizes_global_optional_counts_to_expands() {
+    for query in [
+        "MATCH (t:Thread {id: 1}) OPTIONAL MATCH (t)-[:CONTAINS]->(m:Message) RETURN COUNT(m)",
+        "MATCH (t:Thread)-[:CONTAINS]->(m:Message) OPTIONAL MATCH (:Memory)-[r:EXTRACTED_FROM]->(m) RETURN COUNT(r)",
+    ] {
+        let plan = plan_normalized_pipeline_query(query, &BTreeMap::new()).unwrap();
+        let text = format!("{plan:?}");
+        assert!(text.contains("Aggregate {"), "{text}");
+        assert!(text.contains("Expand {"), "{text}");
+        assert!(!text.contains("GraphMatch {"), "{text}");
+    }
+}
