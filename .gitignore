@@ -6,3 +6,4 @@
 /.claude/settings.local.json
 bazel-*
 MODULE.bazel.lock
+.scratch/
