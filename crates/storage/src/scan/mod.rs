@@ -103,6 +103,13 @@ pub struct ScanPrunedRelationshipScan<'a> {
     pub report: ScanPruningReport,
 }
 
+/// Control flow a bounded graph scan visitor returns to the scan driver.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum GraphScanControl {
+    Continue,
+    Stop,
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

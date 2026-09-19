@@ -762,11 +762,7 @@ impl hawdb_system_sql::SystemSqlStore for GraphStore {
     }
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum GraphScanControl {
-    Continue,
-    Stop,
-}
+pub use hawdb_storage::scan::GraphScanControl;
 
 pub use hawdb_storage::relational::{
     RelationalOverflowCompactionConfig, RelationalOverflowCompactionReport,
@@ -2773,6 +2769,14 @@ impl hawdb_storage::graph_engine::GraphReadEngine for GraphStore {
         id: RelId,
     ) -> hawdb_core::Result<Option<hawdb_storage::RelRecord>> {
         GraphStore::relationship_owned(self, id)
+    }
+
+    fn try_visit_nodes_owned(
+        &self,
+        label_id: Option<hawdb_core::LabelId>,
+        consumer: impl FnMut(hawdb_storage::NodeRecord) -> hawdb_core::Result<GraphScanControl>,
+    ) -> hawdb_core::Result<GraphScanControl> {
+        GraphStore::try_visit_nodes_owned(self, label_id, consumer)
     }
 }
 

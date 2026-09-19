@@ -60,6 +60,12 @@ pub trait GraphReadEngine {
     fn is_out_of_core(&self) -> bool;
 
     fn relationship_owned(&self, id: crate::RelId) -> Result<Option<crate::RelRecord>>;
+
+    fn try_visit_nodes_owned(
+        &self,
+        label_id: Option<hawdb_core::LabelId>,
+        consumer: impl FnMut(crate::NodeRecord) -> Result<crate::scan::GraphScanControl>,
+    ) -> Result<crate::scan::GraphScanControl>;
 }
 
 /// Graph write surface the executor drives.
