@@ -36,6 +36,9 @@ pub struct SearchCheckpointReport {
     pub snapshot_peak_record_bytes: u64,
     /// Immutable out-of-core generation published by this checkpoint.
     pub projection_generation: u64,
+    /// Bytes newly written while building and publishing derived search artifacts.
+    /// The snapshot has its own byte counters and is not included here.
+    pub projection_bytes_written: u64,
     /// Whether the snapshot avoided corpus-sized uncompressed and compressed buffers.
     pub snapshot_streamed: bool,
 }
@@ -48,6 +51,7 @@ impl SearchCheckpointReport {
             snapshot_compressed_bytes: 0,
             snapshot_peak_record_bytes: 0,
             projection_generation: 0,
+            projection_bytes_written: 0,
             snapshot_streamed: false,
         }
     }
@@ -64,13 +68,18 @@ pub(super) struct SearchSnapshotWriteReport {
 }
 
 impl SearchSnapshotWriteReport {
-    pub(super) const fn finish(self, projection_generation: u64) -> SearchCheckpointReport {
+    pub(super) const fn finish(
+        self,
+        projection_generation: u64,
+        projection_bytes_written: u64,
+    ) -> SearchCheckpointReport {
         SearchCheckpointReport {
             document_count: self.document_count,
             snapshot_uncompressed_bytes: self.uncompressed_bytes,
             snapshot_compressed_bytes: self.compressed_bytes,
             snapshot_peak_record_bytes: self.peak_record_bytes,
             projection_generation,
+            projection_bytes_written,
             snapshot_streamed: true,
         }
     }

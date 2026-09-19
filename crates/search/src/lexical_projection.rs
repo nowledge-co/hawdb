@@ -987,6 +987,10 @@ impl LexicalProjectionReader {
         self.manifest.generation
     }
 
+    pub(super) fn artifact_len(&self) -> u64 {
+        self.manifest.artifact_len
+    }
+
     pub(super) fn validate_term_limit(&self, max_term_bytes: NonZeroU64) -> Result<()> {
         admit_term_bytes(self.required_term_bytes, max_term_bytes)
     }
