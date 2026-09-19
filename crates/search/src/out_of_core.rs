@@ -356,30 +356,36 @@ impl<S: AsRef<str>> SearchOutOfCoreManifestBody<S> {
     fn validate_names(&self) -> Result<()> {
         if self.format.as_ref() != OUT_OF_CORE_FORMAT
             || self.generation == 0
-            || self.segments.len() != 1
+            || self.segments.is_empty()
         {
             return Err(HawDBError::Storage(
                 "search out-of-core manifest header or segment set is invalid".to_string(),
             ));
         }
-        let segment = &self.segments[0];
-        if segment.segment_id != 0
-            || segment.level != 0
-            || segment.generation != self.generation
-            || segment.document_count != self.document_count
-            || segment.documents_digest != self.documents_digest
-            || segment.source_graph_commit_epoch != self.source_graph_commit_epoch
-        {
+        let mut ids = BTreeSet::new();
+        let mut document_count = 0usize;
+        for segment in &self.segments {
+            if !ids.insert(segment.segment_id) {
+                return Err(HawDBError::Storage(
+                    "search out-of-core manifest has duplicate segment ids".to_string(),
+                ));
+            }
+            document_count = document_count
+                .checked_add(segment.document_count)
+                .ok_or_else(|| {
+                    HawDBError::Storage(
+                        "search out-of-core manifest document count overflows".to_string(),
+                    )
+                })?;
+            segment.validate_names()?;
+        }
+        if document_count != self.document_count {
             return Err(HawDBError::Storage(
-                "search out-of-core manifest and its segment identity disagree".to_string(),
+                "search out-of-core manifest document count does not match its segment set"
+                    .to_string(),
             ));
         }
-        segment.validate_names()
-    }
-
-    fn primary_segment(&self) -> &SearchOutOfCoreSegmentManifest<S> {
-        // validate_names establishes this shape before a manifest reaches a reader.
-        &self.segments[0]
+        Ok(())
     }
 }
 
@@ -756,21 +762,27 @@ impl SearchOutOfCoreReader {
         let manifest_path = root.join(OUT_OF_CORE_MANIFEST_FILE);
         let manifest_bytes = read_bounded_file(&manifest_path, MAX_OUT_OF_CORE_MANIFEST_BYTES)?;
         let manifest = SearchOutOfCoreManifestBody::decode(&manifest_bytes)?;
-        let segment = SearchOutOfCoreSegmentReader::open(
-            &root,
-            &config,
-            &analyzer_lexicon,
-            lexical_term_policy,
-            &manifest,
-            manifest.primary_segment(),
-        )?;
+        let segments = manifest
+            .segments
+            .iter()
+            .map(|segment| {
+                SearchOutOfCoreSegmentReader::open(
+                    &root,
+                    &config,
+                    &analyzer_lexicon,
+                    lexical_term_policy,
+                    &manifest,
+                    segment,
+                )
+            })
+            .collect::<Result<Vec<_>>>()?;
 
         Ok(Self {
             root,
             config,
             analyzer_lexicon,
             manifest,
-            segments: vec![segment],
+            segments,
             lexical_term_policy,
             runtime_capabilities: crate::compiled_runtime_capabilities(),
         })
@@ -1182,6 +1194,17 @@ impl SearchOutOfCoreReader {
         let policy_epoch = access_control
             .map(|access_control| access_control.policy_epoch)
             .or(options.policy_epoch);
+        if self.segments.len() > 1 && mode != SearchMode::Text {
+            return Err(HawDBError::Storage(
+                "multi-segment out-of-core serving currently supports text queries only"
+                    .to_string(),
+            ));
+        }
+        if self.segments.len() > 1 && !metadata_filters.is_empty() {
+            return Err(HawDBError::Storage(
+                "multi-segment out-of-core metadata predicates are not implemented".to_string(),
+            ));
+        }
         let query_terms = self.primary_segment().lexical_projection.tokenize_query(
             query_text,
             &self.analyzer_lexicon,
@@ -1254,36 +1277,50 @@ impl SearchOutOfCoreReader {
             SearchMode::Hybrid => options.rank_window,
             SearchMode::Vector => Some(0),
         };
-        let lexical_report = if text_available && mode != SearchMode::Vector {
-            let lexical_statistics = LexicalCorpusStatistics::aggregate(
-                [self.primary_segment().lexical_projection.as_ref()],
-                &query_terms,
-            )?;
-            Some(
-                self.primary_segment()
-                    .lexical_projection
-                    .score_with_global_statistics(
+        let (text_scores, text_matching_count, lexical_postings_visited, lexical_bytes_read) =
+            if text_available && mode != SearchMode::Vector {
+                let lexical_statistics = LexicalCorpusStatistics::aggregate(
+                    self.segments
+                        .iter()
+                        .map(|segment| segment.lexical_projection.as_ref()),
+                    &query_terms,
+                )?;
+                let mut scores = BTreeMap::new();
+                let mut matching_document_count = 0usize;
+                let mut postings_visited = 0u64;
+                let mut bytes_read = 0u64;
+                for segment in &self.segments {
+                    let report = segment.lexical_projection.score_with_global_statistics(
                         &query_terms,
                         self.lexical_term_policy.max_term_bytes(),
                         retained_text_limit,
                         &lexical_statistics,
                         |id| candidate_set.contains(id, &mut metrics),
-                    )?,
-            )
-        } else {
-            None
-        };
-        let (text_scores, text_matching_count, lexical_postings_visited, lexical_bytes_read) =
-            lexical_report
-                .map(|report| {
-                    (
-                        report.scores,
-                        report.matching_document_count,
-                        report.postings_visited,
-                        report.bytes_read,
-                    )
-                })
-                .unwrap_or_default();
+                    )?;
+                    matching_document_count = matching_document_count
+                        .checked_add(report.matching_document_count)
+                        .ok_or_else(|| {
+                            HawDBError::Storage("search text match count overflow".to_string())
+                        })?;
+                    postings_visited = postings_visited.saturating_add(report.postings_visited);
+                    bytes_read = bytes_read.saturating_add(report.bytes_read);
+                    for (id, score) in report.scores {
+                        if scores.insert(id.clone(), score).is_some() {
+                            return Err(HawDBError::Storage(format!(
+                                "search out-of-core segment set has duplicate document {id}"
+                            )));
+                        }
+                    }
+                }
+                (
+                    scores,
+                    matching_document_count,
+                    postings_visited,
+                    bytes_read,
+                )
+            } else {
+                Default::default()
+            };
 
         let retained_vector_limit = match mode {
             SearchMode::Vector => Some(page_score_limit),
@@ -1689,23 +1726,28 @@ impl SearchOutOfCoreReader {
                 self.config.max_hydrated_documents
             )));
         }
-        let mut segment_documents = BTreeMap::<u64, BTreeSet<String>>::new();
+        let mut segment_documents = BTreeMap::<(usize, u64), BTreeSet<String>>::new();
         for id in document_ids {
-            let segment = self.segment_for_document(id).ok_or_else(|| {
+            let (layer, segment) = self.segment_for_document(id).ok_or_else(|| {
                 HawDBError::Storage(format!(
                     "search document {id} is outside the published document ranges"
                 ))
             })?;
             segment_documents
-                .entry(segment.segment_id)
+                .entry((layer, segment.segment_id))
                 .or_default()
                 .insert(id.clone());
         }
         let mut hydrated = BTreeMap::<String, SearchDocument>::new();
         let mut hydrated_bytes = 0u64;
-        for (segment_id, ids) in segment_documents {
+        for ((layer, segment_id), ids) in segment_documents {
+            let artifact = self.segments.get(layer).ok_or_else(|| {
+                HawDBError::Storage(format!("search hydration references unknown layer {layer}"))
+            })?;
             let segment = self
-                .primary_segment()
+                .segments
+                .get(layer)
+                .expect("layer was checked above")
                 .descriptor
                 .segments
                 .get(segment_id as usize)
@@ -1716,6 +1758,7 @@ impl SearchOutOfCoreReader {
                     ))
                 })?;
             for document in self.read_selected_hydration_segment(
+                artifact,
                 segment,
                 &ids,
                 self.config.max_hydrated_bytes.get() - hydrated_bytes,
@@ -1746,21 +1789,27 @@ impl SearchOutOfCoreReader {
         Ok(hydrated)
     }
 
-    fn segment_for_document(&self, id: &str) -> Option<&SearchSegmentDescriptorEntry> {
-        self.primary_segment()
-            .descriptor
-            .segments
-            .binary_search_by(|segment| {
-                if segment.last_document_id.as_str() < id {
-                    CmpOrdering::Less
-                } else if segment.first_document_id.as_str() > id {
-                    CmpOrdering::Greater
-                } else {
-                    CmpOrdering::Equal
-                }
+    fn segment_for_document(&self, id: &str) -> Option<(usize, &SearchSegmentDescriptorEntry)> {
+        self.segments
+            .iter()
+            .enumerate()
+            .find_map(|(layer, artifact)| {
+                artifact
+                    .descriptor
+                    .segments
+                    .binary_search_by(|segment| {
+                        if segment.last_document_id.as_str() < id {
+                            CmpOrdering::Less
+                        } else if segment.first_document_id.as_str() > id {
+                            CmpOrdering::Greater
+                        } else {
+                            CmpOrdering::Equal
+                        }
+                    })
+                    .ok()
+                    .and_then(|index| artifact.descriptor.segments.get(index))
+                    .map(|segment| (layer, segment))
             })
-            .ok()
-            .and_then(|index| self.primary_segment().descriptor.segments.get(index))
     }
 
     fn require_search_capabilities(&self, mode: SearchMode) -> Result<()> {
@@ -1909,17 +1958,18 @@ impl SearchOutOfCoreReader {
         report: &mut SearchPredicatePushdownReport,
         metrics: &mut SearchOutOfCoreMetrics,
     ) -> Result<CandidateSet> {
-        report.segment_count = self.primary_segment().descriptor.segments.len();
-        report.segment_pruning_candidate_document_count =
-            self.primary_segment().descriptor.document_count;
+        report.segment_count = self
+            .segments
+            .iter()
+            .map(|segment| segment.descriptor.segments.len())
+            .sum();
+        report.segment_pruning_candidate_document_count = self.manifest.document_count;
         report.persisted_segment_descriptor_used = true;
         let mut field_pruning = SearchFieldPruningAccumulator::new(predicates);
 
         if predicates.is_empty() {
             report.field_summaries = field_pruning.into_reports();
-            return Ok(CandidateSet::All(
-                self.primary_segment().descriptor.document_count,
-            ));
+            return Ok(CandidateSet::All(self.manifest.document_count));
         }
 
         fs::create_dir_all(&self.config.spill_directory)?;
@@ -3625,7 +3675,14 @@ mod tests {
         index.upsert(document(0, "team")).unwrap();
         index.checkpoint().unwrap();
         let reader = SearchOutOfCoreReader::open(&path).unwrap();
-        let payload_path = path.join(&reader.manifest.primary_segment().payload_file);
+        let payload_path = path.join(
+            &reader
+                .manifest
+                .segments
+                .first()
+                .expect("manifest has a segment")
+                .payload_file,
+        );
         let mut file = OpenOptions::new()
             .read(true)
             .write(true)
@@ -3656,7 +3713,7 @@ mod tests {
     }
 
     #[test]
-    fn out_of_core_reader_rejects_unimplemented_multi_segment_manifest() {
+    fn out_of_core_reader_rejects_duplicate_manifest_segment_ids() {
         let path = test_dir("multiple-manifest-segments");
         let mut index = SearchIndex::open(&path).unwrap();
         index.upsert(document(0, "team")).unwrap();
@@ -3666,7 +3723,7 @@ mod tests {
         let envelope: SearchOutOfCoreManifestEnvelope =
             serde_json::from_slice(&fs::read(&manifest_path).unwrap()).unwrap();
         let mut body = envelope.body;
-        let duplicate = body.primary_segment().clone();
+        let duplicate = body.segments[0].clone();
         body.segments.push(duplicate);
         let body_bytes = serde_json::to_vec(&body).unwrap();
         let bytes = serde_json::to_vec(&SearchOutOfCoreManifestEnvelope {
@@ -3677,7 +3734,39 @@ mod tests {
         fs::write(&manifest_path, bytes).unwrap();
 
         let error = SearchOutOfCoreReader::open(&path).unwrap_err();
-        assert!(error.to_string().contains("segment set is invalid"));
+        assert!(error.to_string().contains("duplicate segment ids"));
+        fs::remove_dir_all(path).unwrap();
+    }
+
+    #[test]
+    #[cfg(feature = "full-text-search")]
+    fn out_of_core_reader_rejects_duplicate_documents_across_manifest_segments() {
+        let path = test_dir("duplicate-segment-documents");
+        let mut index = SearchIndex::open(&path).unwrap();
+        index.upsert(document(0, "team")).unwrap();
+        index.checkpoint().unwrap();
+
+        let manifest_path = path.join(OUT_OF_CORE_MANIFEST_FILE);
+        let envelope: SearchOutOfCoreManifestEnvelope =
+            serde_json::from_slice(&fs::read(&manifest_path).unwrap()).unwrap();
+        let mut body = envelope.body;
+        let mut duplicate = body.segments[0].clone();
+        duplicate.segment_id = 1;
+        body.segments.push(duplicate);
+        body.document_count = 2;
+        let body_bytes = serde_json::to_vec(&body).unwrap();
+        let bytes = serde_json::to_vec(&SearchOutOfCoreManifestEnvelope {
+            body,
+            checksum: checksum_bytes(&body_bytes),
+        })
+        .unwrap();
+        fs::write(&manifest_path, bytes).unwrap();
+
+        let reader = SearchOutOfCoreReader::open(&path).unwrap();
+        let error = reader
+            .search_with_options("graph", None, SearchMode::Text, options(1, None))
+            .unwrap_err();
+        assert!(error.to_string().contains("duplicate document"));
         fs::remove_dir_all(path).unwrap();
     }
 
@@ -3693,7 +3782,9 @@ mod tests {
             &metadata_path.join(
                 &metadata_reader
                     .manifest
-                    .primary_segment()
+                    .segments
+                    .first()
+                    .expect("manifest has a segment")
                     .metadata_payload_file,
             ),
         );
@@ -3715,7 +3806,14 @@ mod tests {
         vector_index.checkpoint().unwrap();
         let vector_reader = SearchOutOfCoreReader::open(&vector_path).unwrap();
         corrupt_first_byte(
-            &vector_path.join(&vector_reader.manifest.primary_segment().vector_payload_file),
+            &vector_path.join(
+                &vector_reader
+                    .manifest
+                    .segments
+                    .first()
+                    .expect("manifest has a segment")
+                    .vector_payload_file,
+            ),
         );
         let error = vector_reader
             .search_with_options("", Some(&[1.0, 0.5]), SearchMode::Vector, options(0, None))
