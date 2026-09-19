@@ -108,6 +108,7 @@ fn delta_context_survives_prepare_through_finish_and_report_handoff() {
         update.source_read_metrics().hydration_segment_bytes_read,
         legacy_metrics.hydration_segment_bytes_read
     );
+    assert_eq!(update.source_read_metrics().hydrated_documents, base_count);
     assert!(
         update.source_read_metrics().peak_segment_document_bytes
             <= legacy_metrics.peak_segment_document_bytes
