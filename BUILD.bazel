@@ -528,6 +528,35 @@ rust_binary(
     proc_macro_deps = all_crate_deps(proc_macro = True),
 )
 
+# Host-supplied corpora are local qualification inputs, never CI fixtures.
+rust_binary(
+    name = "hawdb_lexical_corpus_qualification",
+    crate_root = "examples/lexical_corpus_qualification.rs",
+    crate_features = _HAWDB_DEFAULT_FEATURES,
+    srcs = ["examples/lexical_corpus_qualification.rs"],
+    edition = "2024",
+    tags = ["manual"],
+    aliases = aliases(normal = True, proc_macro = True),
+    deps = all_crate_deps(normal = True) + [":hawdb"],
+    proc_macro_deps = all_crate_deps(proc_macro = True),
+)
+
+rust_test(
+    name = "hawdb_lexical_corpus_qualification_tests",
+    crate_root = "examples/lexical_corpus_qualification.rs",
+    crate_features = _HAWDB_DEFAULT_FEATURES,
+    srcs = ["examples/lexical_corpus_qualification.rs"],
+    edition = "2024",
+    aliases = aliases(
+        normal = True,
+        normal_dev = True,
+        proc_macro = True,
+        proc_macro_dev = True,
+    ),
+    deps = all_crate_deps(normal = True, normal_dev = True) + [":hawdb"],
+    proc_macro_deps = all_crate_deps(proc_macro = True, proc_macro_dev = True),
+)
+
 hawdb_benchmark_binaries(_HAWDB_DEFAULT_FEATURES)
 
 rust_test(
