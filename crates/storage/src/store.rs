@@ -378,7 +378,6 @@ fn checkpoint_publish_failpoint(stage: CheckpointPublishStage) -> Result<()> {
         }
         CheckpointPublishStage::WalPrepared => {}
     }
-    #[cfg(test)]
     if CHECKPOINT_FAILPOINT.with(|failpoint| failpoint.get()) == Some(stage) {
         return Err(HawDBError::Storage(format!(
             "injected checkpoint failure at {stage:?}"
