@@ -332,11 +332,10 @@ pub enum CheckpointPublishStage {
     ManifestPublished,
 }
 
-#[cfg(test)]
+#[doc(hidden)]
 const PROCESS_CRASH_POINT_ENV: &str = "HAWDB_TEST_PROCESS_CRASH_POINT";
 
 fn process_crash_failpoint(point: &str) {
-    #[cfg(test)]
     if std::env::var(PROCESS_CRASH_POINT_ENV).as_deref() == Ok(point) {
         std::process::exit(86);
     }
@@ -437,7 +436,6 @@ thread_local! {
 }
 
 fn wal_apply_failpoint() -> Result<()> {
-    #[cfg(test)]
     {
         let should_fail = WAL_APPLY_FAILPOINT_REMAINING.with(|remaining| match remaining.get() {
             Some(0) => true,
@@ -524,7 +522,6 @@ pub fn set_wal_group_sync_failpoint(enabled: bool) {
 }
 
 fn wal_group_sync_failpoint() -> Result<()> {
-    #[cfg(test)]
     if WAL_GROUP_SYNC_FAILPOINT.with(std::cell::Cell::take) {
         return Err(HawDBError::Storage(
             "injected WAL group sync failure".to_string(),

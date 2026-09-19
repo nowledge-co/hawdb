@@ -153,7 +153,6 @@ impl DurableStore {
                     if self.wal_bytes == 0 {
                         writer.write_all(&header_bytes)?;
                     }
-                    #[cfg(test)]
                     {
                         if std::env::var(crate::store::PROCESS_CRASH_POINT_ENV).as_deref()
                             == Ok("during_wal_append")
@@ -246,7 +245,6 @@ impl DurableStore {
     }
 
     fn rollback_failed_wal_write(&mut self, created: bool) -> Result<()> {
-        #[cfg(test)]
         if crate::store::WAL_APPEND_FAILURE.take() == Some(crate::store::WalAppendFailure::Rollback)
         {
             return Err(std::io::Error::from(std::io::ErrorKind::PermissionDenied).into());
@@ -399,7 +397,6 @@ impl DurableStore {
     }
 
     fn finish_wal_append(&mut self, file: &File, created: bool) -> Result<u64> {
-        #[cfg(test)]
         if crate::store::WAL_APPEND_FAILURE.take() == Some(crate::store::WalAppendFailure::Sync) {
             return Err(std::io::Error::other("injected WAL sync failure").into());
         }
