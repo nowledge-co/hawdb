@@ -836,11 +836,32 @@ impl StoreTelemetry for GraphStore {
 /// them through the `pub` read/mutation contract would expose them downstream.
 pub(crate) trait InternalGraphEngine {
     fn ensure_usable(&self) -> Result<()>;
+
+    /// Root-shaped adjacency visitor: the embedded facade's helpers use this
+    /// shape (`GraphScanControl`), while the executor crate's own contract
+    /// exposes the same method with `hawdb_executor::store::ScanControl`.
+    fn visit_adjacent_relationships_owned(
+        &self,
+        node_id: NodeId,
+        rel_type: Option<RelTypeId>,
+        direction: AdjacencyDirection,
+        consumer: impl FnMut(RelRecord) -> GraphScanControl,
+    ) -> Result<GraphScanControl>;
 }
 
 impl InternalGraphEngine for GraphStore {
     fn ensure_usable(&self) -> Result<()> {
         GraphStore::ensure_usable(self)
+    }
+
+    fn visit_adjacent_relationships_owned(
+        &self,
+        node_id: NodeId,
+        rel_type: Option<RelTypeId>,
+        direction: AdjacencyDirection,
+        consumer: impl FnMut(RelRecord) -> GraphScanControl,
+    ) -> Result<GraphScanControl> {
+        GraphStore::visit_adjacent_relationships_owned(self, node_id, rel_type, direction, consumer)
     }
 }
 

@@ -6047,7 +6047,7 @@ fn knowledge_graph_seed_matches_filters(
 
 fn try_knowledge_graph_seed_matches_filters(
     catalog: &Catalog,
-    store: &GraphStore,
+    store: &impl crate::executor::ExecutionStore,
     node: &NodeRecord,
     metadata_filters: &BTreeMap<String, String>,
 ) -> Result<bool> {
@@ -6057,7 +6057,7 @@ fn try_knowledge_graph_seed_matches_filters(
 
 fn knowledge_graph_seed_matches_predicates(
     catalog: &Catalog,
-    store: &GraphStore,
+    store: &impl crate::executor::ExecutionStore,
     node: &NodeRecord,
     predicates: &SearchPredicateSet,
 ) -> Result<bool> {
@@ -6074,7 +6074,7 @@ fn knowledge_graph_seed_matches_predicates(
 
 fn knowledge_graph_seed_matches_predicate(
     catalog: &Catalog,
-    store: &GraphStore,
+    store: &impl crate::executor::ExecutionStore,
     node: &NodeRecord,
     predicate: &SearchPredicate,
 ) -> Result<bool> {
@@ -6190,7 +6190,7 @@ fn parse_metadata_filter_number(value: &str) -> Option<f64> {
 
 fn knowledge_graph_seed_filter_values(
     catalog: &Catalog,
-    store: &GraphStore,
+    store: &impl crate::executor::ExecutionStore,
     node: &NodeRecord,
     key: &str,
 ) -> Result<Vec<String>> {
@@ -6217,7 +6217,7 @@ fn knowledge_graph_seed_filter_values(
 
 fn knowledge_graph_seed_business_labels(
     catalog: &Catalog,
-    store: &GraphStore,
+    store: &impl crate::executor::ExecutionStore,
     node: &NodeRecord,
 ) -> Result<Vec<String>> {
     let Some(has_label_type_id) = catalog.rel_type_id("HAS_LABEL") else {
@@ -6229,7 +6229,8 @@ fn knowledge_graph_seed_business_labels(
     let mut labels = BTreeSet::new();
     let mut scan_error = None;
     for direction in [AdjacencyDirection::Outgoing, AdjacencyDirection::Incoming] {
-        store.visit_adjacent_relationships_owned(
+        crate::store::InternalGraphEngine::visit_adjacent_relationships_owned(
+            store,
             node.id,
             Some(has_label_type_id),
             direction,
@@ -18402,7 +18403,7 @@ struct DenseAdjacencyDiagnosticContext<'a> {
 }
 
 fn knowledge_expansion_edges_for_node(
-    store: &GraphStore,
+    store: &impl crate::executor::ExecutionStore,
     node_id: NodeId,
     relationship_type: Option<crate::schema::RelTypeId>,
     requested_direction: KnowledgeNeighborDirection,
@@ -18412,7 +18413,8 @@ fn knowledge_expansion_edges_for_node(
     let mut seen_relationships = BTreeSet::new();
     for adjacency_direction in adjacency_directions_for_request(requested_direction) {
         let mut direction_edges = BTreeMap::new();
-        store.visit_adjacent_relationships_owned(
+        crate::store::InternalGraphEngine::visit_adjacent_relationships_owned(
+            store,
             node_id,
             relationship_type,
             adjacency_direction,
