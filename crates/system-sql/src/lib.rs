@@ -2570,6 +2570,8 @@ fn truncate_utf8(input: &str, max_bytes: usize) -> String {
     input[..end].to_string()
 }
 
+mod graph_store_adapter;
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -3107,4 +3109,3 @@ pub(crate) mod loom_tests {
     }
 }
 
-mod graph_store_adapter;
