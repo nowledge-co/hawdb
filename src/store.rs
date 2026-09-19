@@ -762,6 +762,53 @@ impl hawdb_system_sql::SystemSqlStore for GraphStore {
     }
 }
 
+impl hawdb_storage::graph_engine::GraphMutationEngine for GraphStore {
+    fn plan_schema_maintenance(
+        &self,
+        catalog: &hawdb_core::Catalog,
+    ) -> Vec<hawdb_storage::SchemaMaintenancePlanItem> {
+        GraphStore::plan_schema_maintenance(self, catalog)
+    }
+
+    fn run_schema_maintenance(
+        &mut self,
+        catalog: &mut hawdb_core::Catalog,
+    ) -> hawdb_core::Result<Vec<hawdb_storage::SchemaMaintenanceAction>> {
+        GraphStore::run_schema_maintenance(self, catalog)
+    }
+
+    fn rebuild_projected_graph_artifacts(
+        &mut self,
+        catalog: &hawdb_core::Catalog,
+    ) -> hawdb_core::Result<()> {
+        GraphStore::rebuild_projected_graph_artifacts(self, catalog)
+    }
+
+    fn rebuild_bounded_property_index_projections(
+        &mut self,
+        catalog: &hawdb_core::Catalog,
+        max_estimated_operations: usize,
+    ) -> Vec<hawdb_storage::PropertyIndexProjectionRebuildAction> {
+        GraphStore::rebuild_bounded_property_index_projections(
+            self,
+            catalog,
+            max_estimated_operations,
+        )
+    }
+
+    fn scrub_storage(&mut self) -> hawdb_core::Result<hawdb_storage::StorageScrubReport> {
+        GraphStore::scrub_storage(self)
+    }
+
+    fn backup_to(
+        &mut self,
+        catalog: &hawdb_core::Catalog,
+        destination: impl AsRef<std::path::Path>,
+    ) -> hawdb_core::Result<hawdb_storage::StorageBackupReport> {
+        GraphStore::backup_to(self, catalog, destination)
+    }
+}
+
 pub use hawdb_storage::scan::GraphScanControl;
 
 /// Root-internal engine configuration that must not join the storage contract:

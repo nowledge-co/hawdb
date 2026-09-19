@@ -99,3 +99,34 @@ pub trait GraphReadEngine {
         max_payload_bytes: usize,
     ) -> Result<AppendSegmentReadOutput>;
 }
+
+/// Maintenance/commit surface the embedded facade drives itself.
+///
+/// This deliberately does not restate the execution write contract: statement
+/// execution goes through `hawdb_executor::store::GraphExecutionWrite`
+/// (`commit_mutation_with_limits` and friends). These are the storage-lifecycle
+/// operations the facade schedules directly.
+pub trait GraphMutationEngine {
+    fn plan_schema_maintenance(&self, catalog: &Catalog) -> Vec<crate::SchemaMaintenancePlanItem>;
+
+    fn run_schema_maintenance(
+        &mut self,
+        catalog: &mut Catalog,
+    ) -> Result<Vec<crate::SchemaMaintenanceAction>>;
+
+    fn rebuild_projected_graph_artifacts(&mut self, catalog: &Catalog) -> Result<()>;
+
+    fn rebuild_bounded_property_index_projections(
+        &mut self,
+        catalog: &Catalog,
+        max_estimated_operations: usize,
+    ) -> Vec<crate::PropertyIndexProjectionRebuildAction>;
+
+    fn scrub_storage(&mut self) -> Result<crate::StorageScrubReport>;
+
+    fn backup_to(
+        &mut self,
+        catalog: &Catalog,
+        destination: impl AsRef<std::path::Path>,
+    ) -> Result<crate::StorageBackupReport>;
+}
