@@ -134,11 +134,7 @@ impl PreparedRuntimeQuery {
         )
     }
 
-    pub(super) fn into_execution(
-        self,
-        catalog: &Catalog,
-        _store: &GraphStore,
-    ) -> (String, PreparedRuntimeExecution) {
+    pub(super) fn into_execution(self, catalog: &Catalog) -> (String, PreparedRuntimeExecution) {
         let environment_matches = self
             .optimizer_environment
             .as_ref()
@@ -400,7 +396,7 @@ impl Database {
         prepared: PreparedRuntimeQuery,
         parameters: &BTreeMap<String, Value>,
     ) -> Result<QueryOutput> {
-        let (cypher_text, prepared) = prepared.into_execution(&self.catalog, &self.store);
+        let (cypher_text, prepared) = prepared.into_execution(&self.catalog);
         let mut external = executor::NoExternalReadOperator;
         self.query_with_params_trace_and_external_prepared(
             &cypher_text,
@@ -447,7 +443,7 @@ impl Database {
         parameters: &BTreeMap<String, Value>,
         task_context: &hawdb_core::RuntimeTaskContext,
     ) -> Result<QueryOutput> {
-        let (cypher_text, prepared) = prepared.into_execution(&self.catalog, &self.store);
+        let (cypher_text, prepared) = prepared.into_execution(&self.catalog);
         let mut external = executor::NoExternalReadOperator;
         self.query_with_params_trace_and_external_prepared(
             &cypher_text,
@@ -1008,7 +1004,7 @@ mod tests {
         let (_, reusable) = db
             .prepare_runtime_query(query.to_string(), &parameters)
             .unwrap()
-            .into_execution(&db.catalog, &db.store);
+            .into_execution(&db.catalog);
         assert!(reusable.optimized.is_some());
 
         let reusable_after_data_change = db
@@ -1016,7 +1012,7 @@ mod tests {
             .unwrap();
         db.query("CREATE (:Memory {id: 'newer'})").unwrap();
         let (_, reusable_after_data_change) =
-            reusable_after_data_change.into_execution(&db.catalog, &db.store);
+            reusable_after_data_change.into_execution(&db.catalog);
         assert!(reusable_after_data_change.optimized.is_some());
     }
 
