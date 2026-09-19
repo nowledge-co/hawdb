@@ -271,3 +271,34 @@ fn normalizes_global_optional_counts_to_expands() {
         assert!(!text.contains("GraphMatch {"), "{text}");
     }
 }
+
+#[test]
+fn lowers_two_optional_relationship_counts_to_a_count_sum() {
+    let plan = plan_pipeline_query(
+        "MATCH (e:Entity {id: 1}) \
+         OPTIONAL MATCH (e)-[r1:RELATES_TO]-() \
+         OPTIONAL MATCH ()-[r2:RELATES_TO]->(e) \
+         RETURN (COUNT(DISTINCT r1) + COUNT(DISTINCT r2))",
+        &BTreeMap::new(),
+    )
+    .unwrap();
+    let text = format!("{plan:?}");
+    assert!(text.contains("OptionalRelationshipCountSum {"), "{text}");
+    assert!(text.contains("distinct: true"), "{text}");
+
+    let filtered = plan_pipeline_query(
+        "MATCH (e:Entity {id: $eid}) \
+         OPTIONAL MATCH (e)-[r1:RELATES_TO]-() \
+         WHERE r1.source_reference <> $mid OR r1.source_reference IS NULL OR r1.source_reference = '' \
+         OPTIONAL MATCH ()-[r2:RELATES_TO]->(e) \
+         WHERE r2.source_reference <> $mid OR r2.source_reference IS NULL OR r2.source_reference = '' \
+         RETURN (COUNT(r1) + COUNT(r2))",
+        &BTreeMap::from([
+            ("eid".to_string(), Value::String("entity".to_string())),
+            ("mid".to_string(), Value::String("memory".to_string())),
+        ]),
+    )
+    .unwrap();
+    let text = format!("{filtered:?}");
+    assert!(text.contains("PropertyNotEqOrEmpty"), "{text}");
+}

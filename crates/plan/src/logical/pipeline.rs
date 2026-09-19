@@ -1,5 +1,8 @@
 use super::*;
-use hawdb_cypher::{ClauseKind, PathSearch, ProjectionClause, QueryPipeline};
+use hawdb_cypher::{
+    ArithmeticOp, Clause, ClauseKind, NodePattern, PathSearch, PredicateExpression,
+    ProjectionClause, QueryPipeline,
+};
 
 mod imports;
 mod mutation;
@@ -122,6 +125,9 @@ fn bind_pipeline(
             "query exceeds maximum clause depth".to_string(),
         ));
     }
+    if let Some(plan) = bind_optional_relationship_count_sum(query, parameters) {
+        return plan;
+    }
     if let Some(plan) = bind_optional_degree_pipeline(query, parameters) {
         return plan;
     }
@@ -150,6 +156,278 @@ fn bind_pipeline(
         return path::bind_shortest_path_pipeline(query, parameters);
     }
     bind_read_clauses(&query.clauses, None, Scope::default(), parameters)
+}
+
+fn bind_optional_relationship_count_sum(
+    query: &QueryPipeline,
+    parameters: &BTreeMap<String, Value>,
+) -> Option<Result<LogicalPlan>> {
+    let [initial, first_optional, second_optional, final_return] = query.clauses.as_slice() else {
+        return None;
+    };
+    let ClauseKind::Match {
+        optional: false,
+        patterns,
+        predicate: None,
+    } = &initial.kind
+    else {
+        return None;
+    };
+    let [initial_pattern] = patterns.as_slice() else {
+        return None;
+    };
+    if initial_pattern.variable.is_some() || !initial_pattern.steps.is_empty() {
+        return None;
+    }
+    let source = &initial_pattern.first;
+    if source.anonymous {
+        return None;
+    }
+    let source_properties = match bind_properties(&source.properties, parameters) {
+        Ok(properties) => properties,
+        Err(error) => return Some(Err(error)),
+    };
+    let Some(first_leg) = bind_optional_count_leg(first_optional, source, parameters) else {
+        return None;
+    };
+    let (first_variable, mut first_leg) = match first_leg {
+        Ok(leg) => leg,
+        Err(error) => return Some(Err(error)),
+    };
+    let Some(second_leg) = bind_optional_count_leg(second_optional, source, parameters) else {
+        return None;
+    };
+    let (second_variable, mut second_leg) = match second_leg {
+        Ok(leg) => leg,
+        Err(error) => return Some(Err(error)),
+    };
+    let Some((first_distinct, second_distinct)) =
+        count_sum_return(final_return, &first_variable, &second_variable)
+    else {
+        return None;
+    };
+    first_leg.distinct = first_distinct;
+    second_leg.distinct = second_distinct;
+    Some(Ok(LogicalPlan::OptionalRelationshipCountSum {
+        variable: source.variable.clone(),
+        label: source.label.clone(),
+        properties: source_properties,
+        legs: vec![first_leg, second_leg],
+        output: format!(
+            "(count({}) + count({}))",
+            display_count_variable(&first_variable, first_distinct),
+            display_count_variable(&second_variable, second_distinct)
+        ),
+    }))
+}
+
+fn bind_optional_count_leg(
+    clause: &Clause,
+    source: &NodePattern,
+    parameters: &BTreeMap<String, Value>,
+) -> Option<Result<(String, RelationshipCountLeg)>> {
+    let ClauseKind::Match {
+        optional: true,
+        patterns,
+        predicate,
+    } = &clause.kind
+    else {
+        return None;
+    };
+    let [pattern] = patterns.as_slice() else {
+        return None;
+    };
+    if pattern.variable.is_some() {
+        return None;
+    }
+    let [step] = pattern.steps.as_slice() else {
+        return None;
+    };
+    let relationship = &step.relationship;
+    let Some(variable) = &relationship.variable else {
+        return None;
+    };
+    if relationship.search != PathSearch::All
+        || relationship.min_hops != 1
+        || relationship.max_hops != 1
+        || !relationship.properties.is_empty()
+    {
+        return None;
+    }
+    let direction = if pattern.first.variable == source.variable
+        && pattern.first.label.is_empty()
+        && pattern.first.properties.is_empty()
+        && step.target.anonymous
+        && step.target.properties.is_empty()
+    {
+        relationship.direction
+    } else if step.target.variable == source.variable
+        && step.target.label.is_empty()
+        && step.target.properties.is_empty()
+        && pattern.first.anonymous
+        && pattern.first.properties.is_empty()
+    {
+        reverse_relationship_direction(relationship.direction)
+    } else {
+        return None;
+    };
+    let filter = match bind_optional_count_filter(predicate.as_ref(), variable, parameters) {
+        Some(Ok(filter)) => filter,
+        Some(Err(error)) => return Some(Err(error)),
+        None => return None,
+    };
+    Some(Ok((
+        variable.clone(),
+        RelationshipCountLeg {
+            rel_type: relationship.rel_type.clone(),
+            direction,
+            distinct: false,
+            filter,
+        },
+    )))
+}
+
+fn bind_optional_count_filter(
+    predicate: Option<&PredicateExpression>,
+    relationship_variable: &str,
+    parameters: &BTreeMap<String, Value>,
+) -> Option<Result<Option<RelationshipCountFilter>>> {
+    let Some(predicate) = predicate else {
+        return Some(Ok(None));
+    };
+    let mut terms = Vec::new();
+    collect_or_terms(&predicate.kind, &mut terms);
+    if terms.len() != 3 {
+        return None;
+    }
+    let mut property = None;
+    let mut non_empty = None;
+    let mut saw_null = false;
+    let mut saw_empty = false;
+    for term in &terms {
+        match term {
+            PropertyPredicate::NotEq {
+                variable,
+                property: candidate,
+                value,
+            } if variable == relationship_variable => {
+                if property.is_some_and(|property| property != candidate)
+                    || non_empty.replace(value).is_some()
+                {
+                    return None;
+                }
+                property = Some(candidate);
+            }
+            PropertyPredicate::IsNull {
+                variable,
+                property: candidate,
+            } if variable == relationship_variable => {
+                if property.is_some_and(|property| property != candidate) || saw_null {
+                    return None;
+                }
+                property = Some(candidate);
+                saw_null = true;
+            }
+            PropertyPredicate::Eq {
+                variable,
+                property: candidate,
+                value,
+            } if variable == relationship_variable
+                && matches!(value.kind, ValueExpressionKind::Literal(Value::String(ref value)) if value.is_empty()) =>
+            {
+                if property.is_some_and(|property| property != candidate) || saw_empty {
+                    return None;
+                }
+                property = Some(candidate);
+                saw_empty = true;
+            }
+            _ => return None,
+        }
+    }
+    let (Some(property), Some(value)) = (property, non_empty) else {
+        return None;
+    };
+    if !saw_null || !saw_empty {
+        return None;
+    }
+    Some(bind_value(value, parameters).map(|value| {
+        Some(RelationshipCountFilter::PropertyNotEqOrEmpty {
+            property: property.clone(),
+            value,
+        })
+    }))
+}
+
+fn collect_or_terms<'a>(predicate: &'a PropertyPredicate, terms: &mut Vec<&'a PropertyPredicate>) {
+    match predicate {
+        PropertyPredicate::Or(children) => {
+            for child in children {
+                collect_or_terms(child, terms);
+            }
+        }
+        predicate => terms.push(predicate),
+    }
+}
+
+fn count_sum_return(
+    clause: &Clause,
+    first_variable: &str,
+    second_variable: &str,
+) -> Option<(bool, bool)> {
+    let ClauseKind::Return(projection) = &clause.kind else {
+        return None;
+    };
+    if projection.distinct
+        || projection.predicate.is_some()
+        || !projection.order_by.is_empty()
+        || projection.offset.is_some()
+        || projection.limit.is_some()
+    {
+        return None;
+    }
+    let [item] = projection.items.as_slice() else {
+        return None;
+    };
+    if item.alias.is_some() {
+        return None;
+    }
+    let ReturnExpressionKind::Arithmetic { first, rest } = &item.expression.kind else {
+        return None;
+    };
+    let [(ArithmeticOp::Add, second)] = rest.as_slice() else {
+        return None;
+    };
+    Some((
+        count_variable(first, first_variable)?,
+        count_variable(second, second_variable)?,
+    ))
+}
+
+fn count_variable(expression: &ReturnExpression, variable: &str) -> Option<bool> {
+    let ReturnExpressionKind::Aggregate(AggregateExpression::CountVariable {
+        variable: candidate,
+        distinct,
+    }) = &expression.kind
+    else {
+        return None;
+    };
+    (candidate == variable).then_some(*distinct)
+}
+
+fn display_count_variable(variable: &str, distinct: bool) -> String {
+    if distinct {
+        format!("DISTINCT {variable}")
+    } else {
+        variable.to_string()
+    }
+}
+
+fn reverse_relationship_direction(direction: RelationshipDirection) -> RelationshipDirection {
+    match direction {
+        RelationshipDirection::Outgoing => RelationshipDirection::Incoming,
+        RelationshipDirection::Incoming => RelationshipDirection::Outgoing,
+        RelationshipDirection::Undirected => RelationshipDirection::Undirected,
+    }
 }
 
 fn bind_optional_degree_pipeline(
