@@ -275,13 +275,13 @@ pub use hawdb_optimizer::{
     MemoGroup as OptimizerMemoGroup, PhysicalProperties, RequiredProperties,
 };
 pub use hawdb_qos::{
-    IoConcurrencyBudget, ProcessMemoryCapabilities, ProcessMemoryProfile, ProcessMemorySnapshot,
-    RuntimeAdmissionCode, RuntimeAdmissionError, RuntimeGovernor, RuntimeGovernorConfig,
-    RuntimeGovernorLimits, RuntimeGovernorSnapshot, RuntimeIoReservationScope,
-    RuntimeMemoryPressure, RuntimeMemorySnapshot, RuntimeResourceBudget, RuntimeResourceSnapshot,
-    RuntimeTelemetryEvent, RuntimeTelemetryEventKind, RuntimeTelemetrySink, RuntimeWorkKind,
-    RuntimeWorkPriority, RuntimeWorkRequest, StorageDeviceDiscoverySource, StorageDeviceProfile,
-    StorageMediaKind,
+    IoConcurrencyBudget, ProcessMemoryCapabilities, ProcessMemoryPolicy, ProcessMemoryPolicyConfig,
+    ProcessMemoryPolicySnapshot, ProcessMemoryProfile, ProcessMemorySnapshot, RuntimeAdmissionCode,
+    RuntimeAdmissionError, RuntimeGovernor, RuntimeGovernorConfig, RuntimeGovernorLimits,
+    RuntimeGovernorSnapshot, RuntimeIoReservationScope, RuntimeMemoryPressure,
+    RuntimeMemorySnapshot, RuntimeResourceBudget, RuntimeResourceSnapshot, RuntimeTelemetryEvent,
+    RuntimeTelemetryEventKind, RuntimeTelemetrySink, RuntimeWorkKind, RuntimeWorkPriority,
+    RuntimeWorkRequest, StorageDeviceDiscoverySource, StorageDeviceProfile, StorageMediaKind,
 };
 pub use hawdb_readiness::embedded_query_path::{
     EmbeddedQueryEntrypoint, EmbeddedQueryPathReadiness, EMBEDDED_QUERY_PATH_READINESS_PROTOCOL,
