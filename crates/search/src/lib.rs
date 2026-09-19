@@ -2434,7 +2434,6 @@ impl SearchIndex {
             retained_rabitq: published
                 .as_ref()
                 .map_or_else(Default::default, |value| value.rabitq_generations.clone()),
-            ..Default::default()
         };
         self.cleanup_state
             .lock()
