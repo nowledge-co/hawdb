@@ -2781,6 +2781,91 @@ impl hawdb_storage::graph_engine::GraphReadEngine for GraphStore {
     }
 }
 
+impl hawdb_storage::graph_engine::GraphMutationEngine for GraphStore {
+    fn checkpoint(&mut self, catalog: &hawdb_core::Catalog) -> hawdb_core::Result<()> {
+        GraphStore::checkpoint(self, catalog)
+    }
+
+    fn create_node(
+        &mut self,
+        catalog: &mut hawdb_core::Catalog,
+        label: &str,
+        properties: std::collections::BTreeMap<String, hawdb_core::Value>,
+    ) -> hawdb_core::Result<NodeId> {
+        GraphStore::create_node(self, catalog, label, properties)
+    }
+
+    fn create_node_label(
+        &mut self,
+        catalog: &mut hawdb_core::Catalog,
+        label: &str,
+    ) -> hawdb_core::Result<hawdb_core::LabelId> {
+        GraphStore::create_node_label(self, catalog, label)
+    }
+
+    fn create_node_table(
+        &mut self,
+        catalog: &mut hawdb_core::Catalog,
+        name: &str,
+    ) -> hawdb_core::Result<hawdb_core::TableId> {
+        GraphStore::create_node_table(self, catalog, name)
+    }
+
+    fn create_property_index(
+        &mut self,
+        catalog: &mut hawdb_core::Catalog,
+        label: &str,
+        property: &str,
+    ) -> hawdb_core::Result<hawdb_core::IndexId> {
+        GraphStore::create_property_index(self, catalog, label, property)
+    }
+
+    fn create_composite_property_index(
+        &mut self,
+        catalog: &mut hawdb_core::Catalog,
+        label: &str,
+        properties: &[String],
+    ) -> hawdb_core::Result<hawdb_core::IndexId> {
+        GraphStore::create_composite_property_index(self, catalog, label, properties)
+    }
+
+    fn create_full_text_property_index(
+        &mut self,
+        catalog: &mut hawdb_core::Catalog,
+        label: &str,
+        property: &str,
+    ) -> hawdb_core::Result<hawdb_core::IndexId> {
+        GraphStore::create_full_text_property_index(self, catalog, label, property)
+    }
+
+    fn create_node_property_exists_constraint(
+        &mut self,
+        catalog: &mut hawdb_core::Catalog,
+        label: &str,
+        property: &str,
+    ) -> hawdb_core::Result<hawdb_core::ConstraintId> {
+        GraphStore::create_node_property_exists_constraint(self, catalog, label, property)
+    }
+
+    fn create_connected_nodes(
+        &mut self,
+        catalog: &mut hawdb_core::Catalog,
+        request: hawdb_storage::ConnectedNodesCreate,
+    ) -> hawdb_core::Result<(NodeId, RelId, NodeId)> {
+        GraphStore::create_connected_nodes(self, catalog, request)
+    }
+
+    fn alter_table_state(
+        &mut self,
+        catalog: &mut hawdb_core::Catalog,
+        table_kind: hawdb_core::TableKind,
+        table: &str,
+        state: hawdb_core::SchemaObjectState,
+    ) -> hawdb_core::Result<(hawdb_core::TableId, bool)> {
+        GraphStore::alter_table_state(self, catalog, table_kind, table, state)
+    }
+}
+
 #[cfg(test)]
 mod tests {
     mod checkpoint_parse_order_tests;

@@ -66,3 +66,69 @@ pub trait GraphReadEngine {
 
     fn ensure_usable(&self) -> Result<()>;
 }
+
+/// Graph write surface the executor drives.
+pub trait GraphMutationEngine {
+    fn checkpoint(&mut self, catalog: &Catalog) -> Result<()>;
+
+    fn create_node(
+        &mut self,
+        catalog: &mut Catalog,
+        label: &str,
+        properties: std::collections::BTreeMap<String, hawdb_core::Value>,
+    ) -> Result<crate::NodeId>;
+
+    fn create_node_label(
+        &mut self,
+        catalog: &mut Catalog,
+        label: &str,
+    ) -> Result<hawdb_core::LabelId>;
+
+    fn create_node_table(
+        &mut self,
+        catalog: &mut Catalog,
+        name: &str,
+    ) -> Result<hawdb_core::TableId>;
+
+    fn create_property_index(
+        &mut self,
+        catalog: &mut Catalog,
+        label: &str,
+        property: &str,
+    ) -> Result<hawdb_core::IndexId>;
+
+    fn create_composite_property_index(
+        &mut self,
+        catalog: &mut Catalog,
+        label: &str,
+        properties: &[String],
+    ) -> Result<hawdb_core::IndexId>;
+
+    fn create_full_text_property_index(
+        &mut self,
+        catalog: &mut Catalog,
+        label: &str,
+        property: &str,
+    ) -> Result<hawdb_core::IndexId>;
+
+    fn create_node_property_exists_constraint(
+        &mut self,
+        catalog: &mut Catalog,
+        label: &str,
+        property: &str,
+    ) -> Result<hawdb_core::ConstraintId>;
+
+    fn create_connected_nodes(
+        &mut self,
+        catalog: &mut Catalog,
+        request: crate::ConnectedNodesCreate,
+    ) -> Result<(crate::NodeId, crate::RelId, crate::NodeId)>;
+
+    fn alter_table_state(
+        &mut self,
+        catalog: &mut Catalog,
+        table_kind: hawdb_core::TableKind,
+        table: &str,
+        state: hawdb_core::SchemaObjectState,
+    ) -> Result<(hawdb_core::TableId, bool)>;
+}
