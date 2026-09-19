@@ -60,9 +60,8 @@ fn run_case(seed: u64, case: usize) {
             for _ in 0..random.below(15) {
                 let posting = Posting {
                     term: terms[random.below(terms.len())].into(),
-                    document_id: format!("document-{}", random.below(5)),
+                    ordinal: random.below(5) as u64,
                     term_frequency: 1 + random.below(7) as u32,
-                    document_len: 24 + random.below(3) as u32,
                 };
                 // Only identical postings are deduplicated by this spill
                 // format; different frequencies are not partial-tf reduction.

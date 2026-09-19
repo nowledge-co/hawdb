@@ -13,7 +13,7 @@
 // limitations under the License.
 
 use super::{
-    encode_block_header, encode_posting, write_string, BlockDescriptor, BlockKind, Digest,
+    encode_block_header, posting_codec, write_string, BlockDescriptor, BlockKind, Digest,
     HawDBError, Posting, Result, SPILL_IO_BUFFER_BYTES,
 };
 use crate::build_control::{checkpoint, CheckedWriter};
@@ -68,9 +68,35 @@ impl<'a> Entries<'a> {
                 }
             }
             Self::Postings(entries) => {
-                for posting in entries {
-                    encode_posting(&mut *writer, posting)?;
+                let term = entries
+                    .first()
+                    .expect("posting block is not empty")
+                    .term
+                    .as_str();
+                if entries.iter().any(|posting| posting.term.as_str() != term) {
+                    return Err(HawDBError::Storage(
+                        "lexical posting frame contains multiple terms".into(),
+                    ));
                 }
+                let encoded = posting_codec::encode_by(entries.len(), |index| {
+                    let posting = &entries[index];
+                    posting_codec::Posting {
+                        ordinal: posting.ordinal,
+                        tf: posting.term_frequency,
+                    }
+                })
+                .map_err(|error| {
+                    HawDBError::Storage(format!("invalid lexical posting frame: {error}"))
+                })?;
+                write_string(writer, term)?;
+                writer.write_all(
+                    &u32::try_from(encoded.len())
+                        .map_err(|_| {
+                            HawDBError::Storage("lexical posting frame exceeds u32".into())
+                        })?
+                        .to_le_bytes(),
+                )?;
+                writer.write_all(&encoded)?;
             }
         }
         Ok(())
@@ -144,6 +170,7 @@ pub(super) fn write_block_with_context(
         checksum: output.digest.finish(),
         // The encoding pass above checked the same borrowed entry count.
         entry_count: entries.len() as u32,
+        ordinal_start: 0,
     })
 }
 

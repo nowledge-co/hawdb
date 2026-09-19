@@ -119,7 +119,15 @@ fn term_policy_query_and_delta_exact_memory_boundaries() {
         .iter()
         .filter(|block| block.kind == BlockKind::Postings)
         .collect::<Vec<_>>();
-    let query_bytes = blocks.iter().map(|block| block.length).max().unwrap() * 4
+    let query_bytes = reader
+        .manifest
+        .blocks
+        .iter()
+        .filter(|block| block.kind == BlockKind::Documents)
+        .map(|block| block.length)
+        .max()
+        .unwrap()
+        + blocks.iter().map(|block| block.length).max().unwrap() * 4
         + blocks
             .iter()
             .map(|block| u64::from(block.entry_count))
@@ -260,16 +268,16 @@ fn term_policy_open_checks_dictionary_interior_and_posting_bounds() {
 fn term_policy_merge_heads_share_a_checked_memory_budget() {
     let fixture = Fixture::new();
     let mut runs = SpillRuns::new(&fixture.0, 1, config());
-    let postings = ["a", "b"].map(|id| Posting {
+    let postings = [0, 1].map(|ordinal| Posting {
         term: "x".repeat(5202).into(),
-        document_id: id.into(),
+        ordinal,
         term_frequency: 1,
-        document_len: 1,
     });
     for posting in &postings {
         runs.spill(&mut vec![posting.clone()]).unwrap();
     }
-    let exact_bytes = 2 * Posting::resident_bytes(&postings[0].term, "a");
+    let exact_bytes =
+        Posting::resident_bytes(&postings[0].term) + postings[1].term.len() as u64 + 32;
     let mut actual = Vec::new();
     let exact = LexicalProjectionConfig {
         build_memory_bytes: NonZeroU64::new(exact_bytes).unwrap(),
@@ -293,12 +301,16 @@ fn term_policy_does_not_waive_block_spill_or_source_budgets() {
     let source = document();
     let posting = Posting {
         term: source.content.clone().into(),
-        document_id: source.id.clone(),
+        ordinal: 0,
         term_frequency: 1,
-        document_len: 1,
     };
     let spill_bytes = RUN_HEADER.len() as u64 + posting.encoded_len();
-    let block_bytes = 8 + 8 + 8 + 1 + 4 + posting.encoded_len();
+    let frame = posting_codec::encode_by(1, |_| posting_codec::Posting {
+        ordinal: posting.ordinal,
+        tf: posting.term_frequency,
+    })
+    .unwrap();
+    let block_bytes = 29 + 4 + posting.term.len() as u64 + 4 + frame.len() as u64;
     for (label, exact, short) in [
         (
             "spill",

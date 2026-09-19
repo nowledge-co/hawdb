@@ -32,12 +32,11 @@ fn merge_measurement(per_run: usize, repetitions: usize) {
     const RUNS: usize = 4;
     let mut pending = PendingPostings::new(Some(&memory)).unwrap();
     for run in 0..RUNS {
-        let id = format!("doc-{run:02}");
         for index in 0..per_run {
             let text = format!("term-{index:08}");
-            pool.prepare(text.len(), id.len()).unwrap();
+            pool.prepare(text.len(), 0).unwrap();
             pending
-                .push(Term::copy(&text, Some(&memory)).unwrap(), &id, 1, 1)
+                .push(Term::copy(&text, Some(&memory)).unwrap(), run as u64, 1)
                 .unwrap();
         }
         pending.flush(&mut pool).unwrap();
@@ -50,9 +49,8 @@ fn merge_measurement(per_run: usize, repetitions: usize) {
                 &mut expected,
                 &Posting {
                     term: format!("term-{index:08}").into(),
-                    document_id: format!("doc-{run:02}"),
+                    ordinal: run as u64,
                     term_frequency: 1,
-                    document_len: 1,
                 },
             )
             .unwrap();

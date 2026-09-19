@@ -476,12 +476,7 @@ fn visit_frequencies(
 
 /// A reduced document is already sorted. Stream it without retaining progress
 /// terms in the corpus posting buffer or allocating one document ID per term.
-pub(super) fn spill_postings(
-    run: FrequencyRun,
-    id: &str,
-    document_len: u32,
-    pool: &mut SpillRuns,
-) -> Result<()> {
+pub(super) fn spill_postings(run: FrequencyRun, ordinal: u64, pool: &mut SpillRuns) -> Result<()> {
     // The run writer counted unique terms while reducing sorted fields. Reject
     // size overflow before allocating a name or creating the output file, with
     // no extra read pass. Attempted I/O still consumes its unique sequence even
@@ -489,7 +484,7 @@ pub(super) fn spill_postings(
     pool.check()?;
     checked_spill_bytes(
         pool.bytes,
-        run.posting_size.encoded_bytes(id)?,
+        run.posting_size.encoded_bytes()?,
         pool.config.max_spill_bytes,
     )?;
     let guard = pool.next_guard()?;
@@ -503,14 +498,14 @@ pub(super) fn spill_postings(
     let mut max_posting_bytes = pool.max_posting_bytes;
     let posting_limit = pool.config.build_memory_bytes.get();
     visit_frequencies(&run, pool.config, |term, frequency| {
-        let bytes = Posting::resident_bytes(&term, id);
+        let bytes = Posting::resident_bytes(&term);
         if bytes > posting_limit {
             return Err(HawDBError::Storage(
                 "one lexical posting exceeds the build memory budget".into(),
             ));
         }
         max_posting_bytes = max_posting_bytes.max(bytes);
-        writer.push_parts(&term, id, frequency, document_len)
+        writer.push_parts(&term, ordinal, frequency)
     })?;
     pool.bytes = writer.finish()?;
     pool.max_posting_bytes = max_posting_bytes;

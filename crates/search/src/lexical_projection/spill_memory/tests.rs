@@ -63,9 +63,9 @@ fn populate(pool: &mut SpillRuns, memory: &BuildMemory, runs: usize) {
     let mut buffer = PendingPostings::new(Some(memory)).unwrap();
     for _ in 0..runs {
         for text in ["alpha", "beta", "gamma"] {
-            pool.prepare(text.len(), 8).unwrap();
+            pool.prepare(text.len(), 0).unwrap();
             buffer
-                .push(Term::copy(text, Some(memory)).unwrap(), "document", 2, 6)
+                .push(Term::copy(text, Some(memory)).unwrap(), 0, 2)
                 .unwrap();
         }
         buffer.flush(pool).unwrap();
@@ -110,8 +110,8 @@ fn admitted_corpus_merge_levels_progress_at_a_full_root_and_cover_live_allocatio
             let result = result.and_then(|()| {
                 visit_merged_postings_with_control(&pool.paths, config, &pool.control, |posting| {
                     assert_eq!(posting.term.as_str(), ["alpha", "beta", "gamma"][count]);
-                    assert_eq!(posting.document_id, "document");
-                    assert_eq!((posting.term_frequency, posting.document_len), (2, 6));
+                    assert_eq!(posting.ordinal, 0);
+                    assert_eq!(posting.term_frequency, 2);
                     retained = Some(posting.term.clone());
                     count += 1;
                     Ok(())
@@ -214,19 +214,18 @@ fn admitted_corpus_merge_levels_progress_at_a_full_root_and_cover_live_allocatio
 }
 
 #[test]
-fn decoded_posting_admits_both_strings_and_reader_before_allocation() {
+fn decoded_posting_admits_term_and_reader_before_allocation() {
     let fixture = Fixture::new();
     let path = fixture.0.join("run");
     let mut bytes = RUN_HEADER.to_vec();
     let posting = Posting {
         term: "alpha".into(),
-        document_id: "document".into(),
+        ordinal: 0,
         term_frequency: 2,
-        document_len: 2,
     };
     encode_posting(&mut bytes, &posting).unwrap();
     fs::write(&path, bytes).unwrap();
-    let exact = SPILL_IO_BUFFER_BYTES + Term::reserved_bytes(5).unwrap() + 8;
+    let exact = SPILL_IO_BUFFER_BYTES + Term::reserved_bytes(5).unwrap();
     for short in [0, 1] {
         let (memory, task) = context();
         let progress = ReservedMemory::with_scratch_capacity(
@@ -280,7 +279,7 @@ fn exact_fixture_prepare_cannot_grow_past_its_reserved_capacity() {
 }
 
 #[test]
-fn posting_buffer_admits_slots_and_id_copy_with_exact_and_one_short_root_capacity() {
+fn posting_buffer_admits_slots_with_exact_and_one_short_root_capacity() {
     for short in [0, 1] {
         let (memory, _) = context();
         let term = Term::copy("alpha", Some(&memory)).unwrap();
@@ -288,16 +287,16 @@ fn posting_buffer_admits_slots_and_id_copy_with_exact_and_one_short_root_capacit
         let slots = 4 * size_of::<Posting>();
         let competitor = memory
             .input
-            .reserve(BUDGET - memory.ledger.snapshot().used_bytes - slots - 8 + short)
+            .reserve(BUDGET - memory.ledger.snapshot().used_bytes - slots + short)
             .unwrap();
-        let result = buffer.push(term, "document", 2, 2);
+        let result = buffer.push(term, 0, 2);
         assert_eq!(result.is_ok(), short == 0);
         assert_eq!(buffer.values.len(), usize::from(short == 0));
-        assert_eq!(buffer.slots.as_ref().unwrap().bytes(), slots);
         assert_eq!(
-            buffer.strings.as_ref().unwrap().bytes(),
-            if short == 0 { 8 } else { 0 }
+            buffer.slots.as_ref().unwrap().bytes(),
+            if short == 0 { slots } else { 0 }
         );
+        assert_eq!(buffer.strings.as_ref().unwrap().bytes(), 0);
         drop((buffer, competitor));
         assert_eq!(memory.ledger.snapshot().used_bytes, 0);
     }

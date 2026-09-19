@@ -177,21 +177,15 @@ impl PendingPostings {
         })
     }
 
-    pub(super) fn push(&mut self, term: Term, id: &str, frequency: u32, length: u32) -> Result<()> {
+    pub(super) fn push(&mut self, term: Term, ordinal: u64, frequency: u32) -> Result<()> {
         if let Some(slots) = &mut self.slots {
             grow_slots(&mut self.values, slots)?;
         }
-        if let Some(strings) = &mut self.strings {
-            strings.grow(id.len())?;
-        }
-        self.bytes = self
-            .bytes
-            .saturating_add(Posting::resident_bytes(&term, id));
+        self.bytes = self.bytes.saturating_add(Posting::resident_bytes(&term));
         self.values.push(Posting {
             term,
-            document_id: id.to_owned(),
+            ordinal,
             term_frequency: frequency,
-            document_len: length,
         });
         Ok(())
     }
@@ -212,11 +206,9 @@ impl PendingPostings {
     }
 }
 
-/// The decoded ID dies before its grant. Terms retain their own shared grant.
 #[derive(Debug)]
 pub(super) struct RunPosting {
     pub(super) posting: Posting,
-    pub(super) _id_memory: Option<Grant>,
 }
 
 impl std::ops::Deref for RunPosting {

@@ -158,13 +158,12 @@ impl SpillIo for ObservedIo {
 }
 
 fn postings() -> Vec<Posting> {
-    ["beta", "alpha", "beta", "gamma"]
+    [("beta", 1), ("alpha", 0), ("beta", 1), ("gamma", 2)]
         .into_iter()
-        .map(|term| Posting {
+        .map(|(term, ordinal)| Posting {
             term: term.into(),
-            document_id: "document".into(),
+            ordinal,
             term_frequency: 2,
-            document_len: 6,
         })
         .collect()
 }
@@ -175,12 +174,10 @@ fn reference_run(mut postings: Vec<Posting>) -> Vec<u8> {
     postings.dedup();
     let mut output = b"SKNLEXR1".to_vec();
     for posting in postings {
-        for text in [posting.term.as_str(), posting.document_id.as_str()] {
-            output.extend_from_slice(&(text.len() as u32).to_le_bytes());
-            output.extend_from_slice(text.as_bytes());
-        }
+        output.extend_from_slice(&(posting.term.len() as u32).to_le_bytes());
+        output.extend_from_slice(posting.term.as_bytes());
+        output.extend_from_slice(&posting.ordinal.to_le_bytes());
         output.extend_from_slice(&posting.term_frequency.to_le_bytes());
-        output.extend_from_slice(&posting.document_len.to_le_bytes());
     }
     output
 }
@@ -411,11 +408,7 @@ fn spill_header_and_checked_arithmetic_boundaries_reject_without_output() {
 fn reference_units(input: &[Posting]) -> Vec<usize> {
     let unique = input.iter().collect::<BTreeSet<_>>();
     std::iter::once(8)
-        .chain(
-            unique
-                .into_iter()
-                .map(|posting| 16 + posting.term.len() + posting.document_id.len()),
-        )
+        .chain(unique.into_iter().map(|posting| 16 + posting.term.len()))
         .collect()
 }
 
