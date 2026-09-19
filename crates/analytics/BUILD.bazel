@@ -16,7 +16,6 @@ rust_library(
     aliases = aliases(),
     deps = [
         "//crates/core:hawdb_core",
-        "//crates/storage:hawdb_storage",
     ],
 )
 

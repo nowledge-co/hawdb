@@ -15,8 +15,12 @@ rust_library(
     edition = "2024",
     aliases = aliases(),
     deps = all_crate_deps(normal = True) + [
+        "//crates/analytics:hawdb_analytics",
         "//crates/core:hawdb_core",
         "//crates/integrity:hawdb_integrity",
+        "//crates/plan:hawdb_plan",
+        "//crates/qos:hawdb_qos",
+        "//crates/telemetry:hawdb_telemetry",
     ],
     proc_macro_deps = all_crate_deps(proc_macro = True),
 )
