@@ -1,5 +1,5 @@
 ------------------- MODULE HawDBCowPagePublication -------------------
-EXTENDS Integers, Naturals, FiniteSets
+EXTENDS Integers, Naturals, FiniteSets, TLC
 
 (***************************************************************************)
 (* Canonical row pages use immutable physical identities. A commit becomes  *)
@@ -19,6 +19,11 @@ ASSUME /\ Readers # {}
        /\ MaxEpoch \in Nat \ {0}
        /\ MaxGeneration \in Nat \ {0}
        /\ MaxPage \in Nat \ {0}
+
+(* Readers are interchangeable: every action quantifies over Readers *)
+(* uniformly and no invariant or property singles one out, so this   *)
+(* permutation set is a sound state-space reduction for TLC.         *)
+ReaderSymmetry == Permutations(Readers)
 
 Epochs == 0..MaxEpoch
 CommitEpochs == 1..MaxEpoch
