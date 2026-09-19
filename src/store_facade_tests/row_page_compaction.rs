@@ -12,7 +12,7 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-use super::unique_test_dir;
+use crate::store_facade_tests::unique_test_dir;
 use crate::{Database, DatabaseConfig, RelationalRowPageCompactionConfig, Value};
 use hawdb_storage::{RelationalIndexMode, StorageResidencyMode};
 use std::collections::BTreeMap;

@@ -12,7 +12,9 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-use super::{active_checkpoint_path, refresh_manifest_checkpoint_metadata, unique_test_dir};
+use crate::store_facade_tests::{
+    active_checkpoint_path, refresh_manifest_checkpoint_metadata, unique_test_dir,
+};
 use crate::{Database, DatabaseConfig, HawDBError, Value};
 use hawdb_storage::text::envelope::{encode_durable_text, read_durable_text_bytes};
 use hawdb_storage::DurableCompression;

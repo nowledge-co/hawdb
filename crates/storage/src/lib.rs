@@ -64,7 +64,8 @@ pub mod index_page;
 #[doc(hidden)]
 pub mod io;
 pub mod mutation;
-mod ownership;
+#[doc(hidden)]
+pub mod ownership;
 #[doc(hidden)]
 pub mod predicate;
 pub mod pressure;

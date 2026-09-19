@@ -29,7 +29,8 @@ use std::path::Path;
 use std::sync::Arc;
 
 #[path = "derived_repair/audit.rs"]
-mod audit;
+#[doc(hidden)]
+pub mod audit;
 #[cfg(test)]
 use audit::quarantine_directory;
 use audit::{
@@ -366,6 +367,3 @@ fn validate_source_identity(path: &Path, plan: &DerivedArtifactRepairPlan) -> Re
     Ok(())
 }
 
-#[cfg(test)]
-#[path = "derived_repair/tests.rs"]
-mod tests;

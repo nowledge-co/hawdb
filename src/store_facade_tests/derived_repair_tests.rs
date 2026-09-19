@@ -12,11 +12,18 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-use super::*;
-use crate::store::{
-    canonical_adjacency_artifact_generation_file, canonical_artifact_generation_file,
-    property_projection_artifact_generation_file, set_checkpoint_failpoint, CheckpointPublishStage,
+use crate::store_facade_tests::*;
+use hawdb_storage::derived_repair::*;
+use hawdb_storage::artifact_files::*;
+use hawdb_storage::durable_manifest::*;
+use hawdb_storage::ownership::*;
+use hawdb_core::error::HawDBError;
+use hawdb_storage::store::{
+    set_checkpoint_failpoint, CheckpointPublishStage,
 };
+use hawdb_storage::store::doctor::*;
+use hawdb_storage::store::derived_repair::audit::*;
+use hawdb_storage::store::MANIFEST_FILE;
 use crate::{Database, Value};
 use std::any::TypeId;
 use std::fs;

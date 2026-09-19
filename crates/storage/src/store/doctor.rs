@@ -32,7 +32,8 @@ const DOCTOR_QUARANTINE_DIRECTORY: &str = "quarantine";
 const MAX_DOCTOR_AUDIT_BYTES: u64 = 1024 * 1024;
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-struct WalRepairAuditRecord {
+#[doc(hidden)]
+pub struct WalRepairAuditRecord {
     protocol: String,
     state: WalRepairAuditState,
     plan: WalTailRepairPlan,
@@ -746,7 +747,8 @@ fn load_audit_record(path: &Path) -> Result<WalRepairAuditRecord> {
     Ok(record)
 }
 
-fn doctor_directory(path: &Path) -> PathBuf {
+#[doc(hidden)]
+pub fn doctor_directory(path: &Path) -> PathBuf {
     path.join(DOCTOR_DIRECTORY)
 }
 
@@ -758,7 +760,8 @@ pub fn pending_record_path(path: &Path, plan: &WalTailRepairPlan) -> PathBuf {
     ))
 }
 
-fn applied_record_path(path: &Path, plan: &WalTailRepairPlan) -> PathBuf {
+#[doc(hidden)]
+pub fn applied_record_path(path: &Path, plan: &WalTailRepairPlan) -> PathBuf {
     doctor_directory(path).join(format!(
         "wal.{}.{}.repair.applied.json",
         plan.wal_generation, plan.plan_id
@@ -779,6 +782,3 @@ fn file_name(path: &Path) -> Result<String> {
         .ok_or_else(|| HawDBError::Storage("WAL doctor path has no valid file name".to_string()))
 }
 
-#[cfg(test)]
-#[path = "doctor/tests.rs"]
-mod tests;

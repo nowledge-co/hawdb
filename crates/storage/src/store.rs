@@ -325,7 +325,8 @@ const MIN_CHECKPOINT_TEMPORARY_SPACE_BYTES: u64 = 64 * 1024;
 pub use hawdb_storage::consistency::DENSE_ADJACENCY_DEGREE_THRESHOLD;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum CheckpointPublishStage {
+#[doc(hidden)]
+pub enum CheckpointPublishStage {
     CheckpointPersisted,
     WalPrepared,
     ManifestPublished,
@@ -3082,9 +3083,6 @@ impl hawdb_storage::graph_engine::GraphReadEngine for GraphStore {
 
 #[cfg(test)]
 mod tests {
-    mod checkpoint_parse_order_tests;
-    mod envelope_recovery_tests;
-    mod hex_recovery_tests;
 
     use super::{
         canonical_adjacency_artifact_generation_file, canonical_manifest_generation_file,

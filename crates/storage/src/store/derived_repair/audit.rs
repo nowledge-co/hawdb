@@ -154,7 +154,8 @@ pub(super) fn validate_pending_record(
     Ok(())
 }
 
-pub(super) fn pending_record_paths(path: &Path) -> Result<Vec<PathBuf>> {
+#[doc(hidden)]
+pub fn pending_record_paths(path: &Path) -> Result<Vec<PathBuf>> {
     let doctor = doctor_directory(path);
     if !doctor.exists() {
         return Ok(Vec::new());
@@ -199,7 +200,8 @@ pub(super) fn load_matching_pending_record(
     Ok(Some(record))
 }
 
-pub(super) fn quarantine_directory(path: &Path, plan: &DerivedArtifactRepairPlan) -> PathBuf {
+#[doc(hidden)]
+pub fn quarantine_directory(path: &Path, plan: &DerivedArtifactRepairPlan) -> PathBuf {
     doctor_directory(path)
         .join(DERIVED_QUARANTINE_DIRECTORY)
         .join(&plan.plan_id)
