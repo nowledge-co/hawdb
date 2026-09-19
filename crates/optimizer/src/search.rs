@@ -17,33 +17,10 @@ use crate::properties::PhysicalProperties;
 use crate::stage::StageTrace;
 use crate::trace::{OperatorCardinalityEstimate, OptimizerTrace};
 use std::collections::BTreeMap;
-use std::fmt::{Display, Formatter};
-use std::str::FromStr;
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum SearchMode {
-    Memo,
-    /// Direct child resolution without allocating graph memo groups. The graph
-    /// lowerer considers the same physical alternatives in both modes; this
-    /// legacy name does not imply reduced plan quality.
-    DirectFallback,
-}
-
-#[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
-pub enum OptimizerSearchDirective {
-    #[default]
-    Auto,
-    Memo,
-    DirectFallback,
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum OptimizerSearchDirectiveError {
-    MemoGroupBudgetExceeded {
-        required_groups: usize,
-        max_groups: usize,
-    },
-}
+pub use hawdb_cascades::{
+    OptimizerSearchDirective, OptimizerSearchDirectiveError, RuleEvent, RuleOutcome, SearchMode,
+};
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct OptimizationSearchReport {
@@ -66,21 +43,6 @@ pub struct SelectedPlanTrace {
     pub cardinality_estimates: Vec<OperatorCardinalityEstimate>,
     pub operator_counts: BTreeMap<String, usize>,
     pub class_counts: BTreeMap<String, usize>,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct RuleEvent {
-    rule: String,
-    outcome: RuleOutcome,
-    detail: String,
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum RuleOutcome {
-    Applied,
-    Skipped,
-    Estimated,
-    Selected,
 }
 
 impl OptimizationSearchReport {
@@ -205,162 +167,9 @@ impl OptimizationSearchReport {
     }
 }
 
-impl RuleEvent {
-    pub fn applied(rule: impl Into<String>, detail: impl Into<String>) -> Self {
-        Self::new(rule, RuleOutcome::Applied, detail)
-    }
-
-    pub fn skipped(rule: impl Into<String>, detail: impl Into<String>) -> Self {
-        Self::new(rule, RuleOutcome::Skipped, detail)
-    }
-
-    pub fn estimated(rule: impl Into<String>, detail: impl Into<String>) -> Self {
-        Self::new(rule, RuleOutcome::Estimated, detail)
-    }
-
-    pub fn selected(rule: impl Into<String>, detail: impl Into<String>) -> Self {
-        Self::new(rule, RuleOutcome::Selected, detail)
-    }
-
-    pub fn new(rule: impl Into<String>, outcome: RuleOutcome, detail: impl Into<String>) -> Self {
-        Self {
-            rule: rule.into(),
-            outcome,
-            detail: detail.into(),
-        }
-    }
-
-    pub fn rule(&self) -> &str {
-        &self.rule
-    }
-
-    pub fn outcome(&self) -> RuleOutcome {
-        self.outcome
-    }
-
-    pub fn detail(&self) -> &str {
-        &self.detail
-    }
-
-    pub fn into_decision(self) -> String {
-        format!("{} {}: {}", self.outcome.as_str(), self.rule, self.detail)
-    }
-
-    fn from_decision(decision: &str) -> Option<Self> {
-        let (outcome, rest) = decision.split_once(' ')?;
-        let (rule, detail) = rest.split_once(": ")?;
-        Some(Self::new(
-            rule,
-            outcome.parse::<RuleOutcome>().ok()?,
-            detail,
-        ))
-    }
-}
-
-impl SearchMode {
-    pub fn all() -> &'static [Self] {
-        const ALL: &[SearchMode] = &[SearchMode::Memo, SearchMode::DirectFallback];
-        ALL
-    }
-
-    pub fn as_str(self) -> &'static str {
-        match self {
-            SearchMode::Memo => "memo",
-            SearchMode::DirectFallback => "direct_fallback",
-        }
-    }
-}
-
-impl OptimizerSearchDirective {
-    pub const fn as_str(self) -> &'static str {
-        match self {
-            Self::Auto => "auto",
-            Self::Memo => "memo",
-            Self::DirectFallback => "direct_fallback",
-        }
-    }
-}
-
-impl FromStr for OptimizerSearchDirective {
-    type Err = &'static str;
-
-    fn from_str(value: &str) -> Result<Self, Self::Err> {
-        match value {
-            "auto" => Ok(Self::Auto),
-            "memo" => Ok(Self::Memo),
-            "direct_fallback" => Ok(Self::DirectFallback),
-            _ => Err("unknown optimizer search directive"),
-        }
-    }
-}
-
-impl Display for OptimizerSearchDirectiveError {
-    fn fmt(&self, formatter: &mut Formatter<'_>) -> std::fmt::Result {
-        match self {
-            Self::MemoGroupBudgetExceeded {
-                required_groups,
-                max_groups,
-            } => write!(
-                formatter,
-                "memo search directive requires {required_groups} groups but max_groups is {max_groups}"
-            ),
-        }
-    }
-}
-
-impl std::error::Error for OptimizerSearchDirectiveError {}
-
-impl RuleOutcome {
-    pub fn all() -> &'static [Self] {
-        const ALL: &[RuleOutcome] = &[
-            RuleOutcome::Applied,
-            RuleOutcome::Skipped,
-            RuleOutcome::Estimated,
-            RuleOutcome::Selected,
-        ];
-        ALL
-    }
-
-    pub fn as_str(self) -> &'static str {
-        match self {
-            RuleOutcome::Applied => "apply",
-            RuleOutcome::Skipped => "skip",
-            RuleOutcome::Estimated => "estimate",
-            RuleOutcome::Selected => "selected",
-        }
-    }
-}
-
-impl FromStr for SearchMode {
-    type Err = &'static str;
-
-    fn from_str(value: &str) -> Result<Self, Self::Err> {
-        Self::all()
-            .iter()
-            .copied()
-            .find(|mode| mode.as_str() == value)
-            .ok_or("unknown optimizer search mode")
-    }
-}
-
-impl FromStr for RuleOutcome {
-    type Err = &'static str;
-
-    fn from_str(value: &str) -> Result<Self, Self::Err> {
-        Self::all()
-            .iter()
-            .copied()
-            .find(|outcome| outcome.as_str() == value)
-            .ok_or("unknown optimizer rule outcome")
-    }
-}
-
 #[cfg(test)]
 mod tests {
-    use super::{
-        OptimizationSearchReport, OptimizerSearchDirective, RuleEvent, RuleOutcome, SearchMode,
-        SelectedPlanTrace,
-    };
+    use super::{OptimizationSearchReport, RuleOutcome, SearchMode, SelectedPlanTrace};
     use crate::{ApplyOrder, OptimizationStage, PlanCost, PlanCostBreakdown, StageStats};
     use std::collections::BTreeMap;
 
@@ -392,44 +201,21 @@ mod tests {
     }
 
     #[test]
-    fn optimizer_search_directive_strings_round_trip() {
-        for directive in [
-            OptimizerSearchDirective::Auto,
-            OptimizerSearchDirective::Memo,
-            OptimizerSearchDirective::DirectFallback,
-        ] {
-            assert_eq!(
-                directive.as_str().parse::<OptimizerSearchDirective>(),
-                Ok(directive)
-            );
-        }
-        assert!("unknown".parse::<OptimizerSearchDirective>().is_err());
-    }
+    fn search_report_preserves_structured_rule_events_from_legacy_decisions() {
+        let mut report = OptimizationSearchReport::memo(1);
+        report.push_decision(
+            "apply implementation:node_equality_index_seek: priority=100 property=id",
+        );
+        report.push_decision("choose IndexNodeSeek");
 
-    #[test]
-    fn search_mode_strings_round_trip_for_diagnostics() {
-        for mode in SearchMode::all() {
-            assert_eq!(mode.as_str().parse::<SearchMode>(), Ok(*mode));
-        }
-        assert!("unknown".parse::<SearchMode>().is_err());
-    }
-
-    #[test]
-    fn rule_event_formats_stable_decision_text() {
-        let event = RuleEvent::estimated("index_seek", "rows=1 cost=3");
-
-        assert_eq!(event.rule(), "index_seek");
-        assert_eq!(event.outcome(), RuleOutcome::Estimated);
-        assert_eq!(event.detail(), "rows=1 cost=3");
-        assert_eq!(event.into_decision(), "estimate index_seek: rows=1 cost=3");
-    }
-
-    #[test]
-    fn rule_outcome_strings_round_trip_for_diagnostics() {
-        for outcome in RuleOutcome::all() {
-            assert_eq!(outcome.as_str().parse::<RuleOutcome>(), Ok(*outcome));
-        }
-        assert!("unknown".parse::<RuleOutcome>().is_err());
+        assert_eq!(report.decisions().len(), 2);
+        assert_eq!(report.rule_events().len(), 1);
+        assert_eq!(
+            report.rule_events()[0].rule(),
+            "implementation:node_equality_index_seek"
+        );
+        assert_eq!(report.rule_events()[0].outcome(), RuleOutcome::Applied);
+        assert_eq!(report.rule_events()[0].detail(), "priority=100 property=id");
     }
 
     #[test]
@@ -473,23 +259,5 @@ mod tests {
         );
         assert_eq!(trace.selected_plan_operator_counts["IndexNodeSeek"], 1);
         assert_eq!(trace.selected_plan_class_counts["access"], 1);
-    }
-
-    #[test]
-    fn search_report_preserves_structured_rule_events_from_legacy_decisions() {
-        let mut report = OptimizationSearchReport::memo(1);
-        report.push_decision(
-            "apply implementation:node_equality_index_seek: priority=100 property=id",
-        );
-        report.push_decision("choose IndexNodeSeek");
-
-        assert_eq!(report.decisions().len(), 2);
-        assert_eq!(report.rule_events().len(), 1);
-        assert_eq!(
-            report.rule_events()[0].rule(),
-            "implementation:node_equality_index_seek"
-        );
-        assert_eq!(report.rule_events()[0].outcome(), RuleOutcome::Applied);
-        assert_eq!(report.rule_events()[0].detail(), "priority=100 property=id");
     }
 }

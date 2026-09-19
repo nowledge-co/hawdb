@@ -57,6 +57,7 @@ mod artifacts;
 mod context_memory;
 mod delta;
 mod discovery;
+mod governed;
 mod io;
 mod publication;
 mod rabitq;
@@ -67,6 +68,9 @@ mod spool;
 mod tests;
 
 pub use delta::SearchOutOfCoreGenerationUpdate;
+pub use governed::{
+    GovernedSearchGenerationUpdate, GovernedSearchGenerationWriter, SearchGenerationAdmission,
+};
 
 const STAGE_METADATA_FILE: &str = "search_projection_metadata_payloads.stage.hawdb";
 const STAGE_VECTOR_FILE: &str = "search_projection_vector_payloads.stage.hawdb";

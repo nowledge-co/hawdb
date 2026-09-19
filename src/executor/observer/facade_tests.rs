@@ -12,6 +12,8 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
+#![allow(deprecated)]
+
 use crate::executor::execute_with_row_limit_profile;
 use crate::optimizer::PhysicalPlan;
 use crate::schema::Catalog;

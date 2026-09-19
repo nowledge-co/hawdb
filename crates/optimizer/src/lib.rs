@@ -14,13 +14,19 @@
 
 mod cardinality_defaults;
 pub mod context;
-pub mod cost;
+pub mod cost {
+    pub use hawdb_cascades::cost::*;
+}
 pub mod graph;
 pub mod logical;
-pub mod memo;
+pub mod memo {
+    pub use hawdb_cascades::memo::*;
+}
 pub mod operator;
 pub mod predicate;
-pub mod properties;
+pub mod properties {
+    pub use hawdb_cascades::properties::*;
+}
 pub mod relational;
 pub mod relational_join;
 mod relational_join_cost;
@@ -29,9 +35,13 @@ pub mod relational_join_rewrite;
 pub mod relational_planning;
 pub mod relational_profile;
 pub mod relational_sargability;
-pub mod rule;
+pub mod rule {
+    pub use hawdb_cascades::rule::*;
+}
 pub mod search;
-pub mod stage;
+pub mod stage {
+    pub use hawdb_cascades::stage::*;
+}
 pub mod trace;
 pub mod vector;
 

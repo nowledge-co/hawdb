@@ -29,7 +29,10 @@ pub use hawdb_core::{
     RuntimeCancellationReason, RuntimeCancellationToken, RuntimeIoWaveController,
     RuntimeIoWaveError, RuntimeIoWavePermit, RuntimeIoWaveTryAcquire, RuntimeTaskContext,
 };
-pub use process_memory::{ProcessMemoryCapabilities, ProcessMemoryProfile, ProcessMemorySnapshot};
+pub use process_memory::{
+    ProcessMemoryCapabilities, ProcessMemoryPolicy, ProcessMemoryPolicyConfig,
+    ProcessMemoryPolicySnapshot, ProcessMemoryProfile, ProcessMemorySnapshot,
+};
 pub use resource::{
     IoConcurrencyBudget, RuntimeMemoryPressure, RuntimeMemorySnapshot, RuntimeResourceBudget,
     RuntimeResourceSnapshot,
