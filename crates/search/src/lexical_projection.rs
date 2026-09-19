@@ -212,6 +212,8 @@ struct ManifestBody {
     document_count: u64,
     total_document_len: u64,
     posting_count: u64,
+    legacy_posting_bytes: u64,
+    posting_bytes: u64,
     term_statistics: Vec<TermStatistics>,
     blocks: Vec<BlockDescriptor>,
 }
@@ -247,8 +249,8 @@ impl ManifestBody {
 
     fn validate_with_context(&self, task: Option<&RuntimeTaskContext>) -> Result<()> {
         task.map_or(Ok(()), checkpoint)?;
-        if self.format != "HAWDB_LEXICAL_MANIFEST_V2"
-            || self.layout != "HAWDB_LEXICAL_ORDINAL_V1"
+        if self.format != "HAWDB_LEXICAL_MANIFEST_V3"
+            || self.layout != "HAWDB_LEXICAL_ORDINAL_FST_V1"
             || self.artifact_file != artifact_file(self.generation)
             || Path::new(&self.artifact_file)
                 .file_name()
@@ -265,6 +267,7 @@ impl ManifestBody {
         let mut documents = 0u64;
         let mut previous_document_id: Option<&str> = None;
         let mut postings = 0u64;
+        let mut posting_bytes = 0u64;
         let mut saw_postings = false;
         for block in &self.blocks {
             task.map_or(Ok(()), checkpoint)?;
@@ -315,6 +318,9 @@ impl ManifestBody {
                         ));
                     }
                     postings = postings.saturating_add(u64::from(block.entry_count));
+                    posting_bytes = posting_bytes.checked_add(block.length).ok_or_else(|| {
+                        HawDBError::Storage("lexical posting bytes overflow".to_string())
+                    })?;
                 }
             }
         }
@@ -343,6 +349,11 @@ impl ManifestBody {
             || documents != self.document_count
             || postings != self.posting_count
             || term_postings != self.posting_count
+            || posting_bytes != self.posting_bytes
+            || (self.posting_count == 0
+                && (self.legacy_posting_bytes != 0 || self.posting_bytes != 0))
+            || (self.posting_count > 0
+                && self.legacy_posting_bytes < self.posting_count.saturating_mul(16))
         {
             return Err(HawDBError::Storage(
                 "lexical projection manifest counts are inconsistent".to_string(),
@@ -1131,7 +1142,7 @@ impl LexicalProjectionReader {
         for term in query_terms {
             let df = document_frequency.get(term).copied().unwrap_or(0);
             if df > 0 {
-                streams.push(TermPostingStream::new(self, term, max_term_bytes));
+                streams.push(TermPostingStream::new(self, term));
                 stream_idf.push(idf(document_count, df));
             }
         }
@@ -1262,15 +1273,10 @@ struct TermPostingStream<'a> {
     current: std::vec::IntoIter<Posting>,
     postings_visited: u64,
     bytes_read: u64,
-    max_term_bytes: NonZeroU64,
 }
 
 impl<'a> TermPostingStream<'a> {
-    fn new(
-        projection: &'a LexicalProjectionReader,
-        term: &'a str,
-        max_term_bytes: NonZeroU64,
-    ) -> Self {
+    fn new(projection: &'a LexicalProjectionReader, term: &'a str) -> Self {
         let blocks = projection.posting_blocks(term).collect();
         Self {
             projection,
@@ -1280,7 +1286,6 @@ impl<'a> TermPostingStream<'a> {
             current: Vec::new().into_iter(),
             postings_visited: 0,
             bytes_read: 0,
-            max_term_bytes,
         }
     }
 
@@ -1296,21 +1301,23 @@ impl<'a> TermPostingStream<'a> {
             let bytes = self.projection.read_block(block)?;
             self.bytes_read = self.bytes_read.saturating_add(bytes.len() as u64);
             let mut postings = Vec::new();
-            decode_posting_block(
+            decode_posting_block_for_term(
                 &bytes,
                 self.projection.manifest.generation,
                 block,
-                self.max_term_bytes.get(),
-                |posting| {
-                    if posting.ordinal >= self.projection.manifest.document_count {
+                self.term,
+                |entry| {
+                    if entry.ordinal >= self.projection.manifest.document_count {
                         return Err(HawDBError::Storage(
                             "lexical posting ordinal exceeds its generation".to_string(),
                         ));
                     }
                     self.postings_visited = self.postings_visited.saturating_add(1);
-                    if posting.term.as_str() == self.term {
-                        postings.push(posting);
-                    }
+                    postings.push(Posting {
+                        term: Term::untracked(self.term.to_owned()),
+                        ordinal: entry.ordinal,
+                        term_frequency: entry.tf,
+                    });
                     Ok(())
                 },
             )?;
@@ -1638,10 +1645,10 @@ impl<'workspace> LexicalProjectionWriter<'workspace> {
         let artifact = artifact.finish()?;
         let _format_memory = memory
             .retained
-            .reserve("HAWDB_LEXICAL_MANIFEST_V2HAWDB_LEXICAL_ORDINAL_V1".len())?;
+            .reserve("HAWDB_LEXICAL_MANIFEST_V3HAWDB_LEXICAL_ORDINAL_FST_V1".len())?;
         let manifest = ManifestBody {
-            format: "HAWDB_LEXICAL_MANIFEST_V2".to_string(),
-            layout: "HAWDB_LEXICAL_ORDINAL_V1".to_string(),
+            format: "HAWDB_LEXICAL_MANIFEST_V3".to_string(),
+            layout: "HAWDB_LEXICAL_ORDINAL_FST_V1".to_string(),
             generation,
             source_graph_commit_epoch,
             analyzer_digest,
@@ -1652,6 +1659,8 @@ impl<'workspace> LexicalProjectionWriter<'workspace> {
             document_count,
             total_document_len,
             posting_count: artifact.posting_count,
+            legacy_posting_bytes: artifact.legacy_posting_bytes,
+            posting_bytes: artifact.posting_bytes,
             term_statistics: artifact.term_statistics,
             blocks: artifact.blocks,
         };
@@ -2126,6 +2135,7 @@ fn encode_posting(mut writer: impl Write, posting: &Posting) -> Result<()> {
     Ok(())
 }
 
+#[cfg(test)]
 fn decode_posting_block(
     bytes: &[u8],
     generation: u64,
@@ -2133,57 +2143,198 @@ fn decode_posting_block(
     max_term_bytes: u64,
     mut consumer: impl FnMut(Posting) -> Result<()>,
 ) -> Result<()> {
-    let mut cursor = SliceCursor::new(bytes);
-    let count = decode_block_header(&mut cursor, generation, descriptor, BlockKind::Postings)?;
-    let mut first = None;
-    let mut previous = None;
-    let mut decoded_count = 0u32;
-    while decoded_count < count {
-        let term = cursor.string(max_term_bytes)?;
-        let length = usize::try_from(cursor.u32()?).map_err(|_| {
-            HawDBError::Storage("lexical posting frame length exceeds usize".to_string())
-        })?;
-        if term.is_empty() || length > posting_codec::MAX_BLOCK_BYTES {
-            return Err(HawDBError::Storage(
-                "lexical posting frame has invalid bounds".to_string(),
-            ));
-        }
-        let postings = posting_codec::decode(cursor.bytes(length)?).map_err(|error| {
-            HawDBError::Storage(format!("invalid lexical posting frame: {error}"))
-        })?;
-        let frame_count = u32::try_from(postings.len()).map_err(|_| {
-            HawDBError::Storage("lexical posting frame count exceeds u32".to_string())
-        })?;
-        if frame_count > count - decoded_count {
-            return Err(HawDBError::Storage(
-                "lexical posting frames exceed the block count".to_string(),
-            ));
-        }
-        decoded_count += frame_count;
-        for entry in postings {
-            let posting = Posting {
-                term: Term::untracked(term.clone()),
-                ordinal: entry.ordinal,
-                term_frequency: entry.tf,
-            };
-            if previous.as_ref().is_some_and(|previous: &Posting| {
-                (&previous.term, previous.ordinal) >= (&posting.term, posting.ordinal)
-            }) {
+    let block = split_posting_block(bytes, generation, descriptor)?;
+    dictionary_map(block.dictionary, |dictionary| {
+        use fst::Streamer;
+
+        let mut stream = dictionary.stream();
+        let mut expected_offset = 0usize;
+        let mut decoded_count = 0u32;
+        let mut first = None;
+        let mut previous = None;
+        while let Some((term_bytes, value)) = stream.next() {
+            let term = std::str::from_utf8(term_bytes).map_err(|error| {
+                HawDBError::Storage(format!(
+                    "lexical term dictionary has invalid UTF-8: {error}"
+                ))
+            })?;
+            admit_term_bytes(
+                term.len() as u64,
+                NonZeroU64::new(max_term_bytes).ok_or_else(|| {
+                    HawDBError::Storage("lexical term dictionary has a zero term bound".to_string())
+                })?,
+            )?;
+            let (offset, document_frequency) = unpack_dictionary_value(value)?;
+            if offset != expected_offset || document_frequency > block.count - decoded_count {
                 return Err(HawDBError::Storage(
-                    "lexical posting block is invalid or unordered".to_string(),
+                    "lexical term dictionary offsets are invalid".to_string(),
                 ));
             }
-            if first.is_none() {
-                first = Some(posting.term.as_str().to_owned());
-            }
-            consumer(posting.clone())?;
-            previous = Some(posting);
+            let next_offset =
+                decode_term_frames(block.payload, offset, document_frequency, |entry| {
+                    let posting = Posting {
+                        term: Term::untracked(term.to_owned()),
+                        ordinal: entry.ordinal,
+                        term_frequency: entry.tf,
+                    };
+                    if previous.as_ref().is_some_and(|previous: &Posting| {
+                        (&previous.term, previous.ordinal) >= (&posting.term, posting.ordinal)
+                    }) {
+                        return Err(HawDBError::Storage(
+                            "lexical posting block is invalid or unordered".to_string(),
+                        ));
+                    }
+                    if first.is_none() {
+                        first = Some(posting.term.as_str().to_owned());
+                    }
+                    consumer(posting.clone())?;
+                    previous = Some(posting);
+                    Ok(())
+                })?;
+            expected_offset = next_offset;
+            decoded_count = decoded_count.saturating_add(document_frequency);
         }
+        let previous_term = previous
+            .map(|posting| posting.term.into_untracked())
+            .transpose()?;
+        if decoded_count != block.count || expected_offset != block.payload.len() {
+            return Err(HawDBError::Storage(
+                "lexical term dictionary counts are inconsistent".to_string(),
+            ));
+        }
+        validate_block_tail(SliceCursor::new(&[]), descriptor, first, previous_term)
+    })
+}
+
+fn decode_posting_block_for_term(
+    bytes: &[u8],
+    generation: u64,
+    descriptor: &BlockDescriptor,
+    term: &str,
+    mut consumer: impl FnMut(posting_codec::Posting) -> Result<()>,
+) -> Result<()> {
+    let block = split_posting_block(bytes, generation, descriptor)?;
+    if term < descriptor.min_key.as_str() || term > descriptor.max_key.as_str() {
+        return Err(HawDBError::Storage(
+            "lexical posting block does not cover the requested term".to_string(),
+        ));
     }
-    let previous_term = previous
-        .map(|posting| posting.term.into_untracked())
-        .transpose()?;
-    validate_block_tail(cursor, descriptor, first, previous_term)
+    dictionary_map(block.dictionary, |dictionary| {
+        let Some(value) = dictionary.get(term) else {
+            return Ok(());
+        };
+        let (offset, document_frequency) = unpack_dictionary_value(value)?;
+        if document_frequency > block.count {
+            return Err(HawDBError::Storage(
+                "lexical term dictionary count exceeds its block".to_string(),
+            ));
+        }
+        decode_term_frames(block.payload, offset, document_frequency, |entry| {
+            consumer(entry)
+        })?;
+        Ok(())
+    })
+}
+
+struct PostingBlock<'a> {
+    count: u32,
+    dictionary: &'a [u8],
+    payload: &'a [u8],
+}
+
+fn split_posting_block<'a>(
+    bytes: &'a [u8],
+    generation: u64,
+    descriptor: &BlockDescriptor,
+) -> Result<PostingBlock<'a>> {
+    let mut cursor = SliceCursor::new(bytes);
+    let count = decode_block_header(&mut cursor, generation, descriptor, BlockKind::Postings)?;
+    let dictionary_len = cursor.u32()? as usize;
+    let dictionary = cursor.bytes(dictionary_len)?;
+    let payload = cursor.remaining();
+    if dictionary.is_empty() || payload.is_empty() {
+        return Err(HawDBError::Storage(
+            "lexical posting block has an empty dictionary or payload".to_string(),
+        ));
+    }
+    Ok(PostingBlock {
+        count,
+        dictionary,
+        payload,
+    })
+}
+
+fn dictionary_map<T>(
+    bytes: &[u8],
+    consume: impl FnOnce(&fst::Map<&[u8]>) -> Result<T>,
+) -> Result<T> {
+    std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        let dictionary = fst::Map::new(bytes).map_err(|error| {
+            HawDBError::Storage(format!("invalid lexical term dictionary: {error}"))
+        })?;
+        dictionary.as_fst().verify().map_err(|error| {
+            HawDBError::Storage(format!("invalid lexical term dictionary checksum: {error}"))
+        })?;
+        consume(&dictionary)
+    }))
+    .map_err(|_| {
+        HawDBError::Storage("lexical term dictionary panicked during decoding".to_string())
+    })?
+}
+
+fn unpack_dictionary_value(value: u64) -> Result<(usize, u32)> {
+    let offset = usize::try_from(value >> 32).map_err(|_| {
+        HawDBError::Storage("lexical term dictionary offset exceeds usize".to_string())
+    })?;
+    let document_frequency = value as u32;
+    if document_frequency == 0 {
+        return Err(HawDBError::Storage(
+            "lexical term dictionary has a zero document frequency".to_string(),
+        ));
+    }
+    Ok((offset, document_frequency))
+}
+
+fn decode_term_frames(
+    payload: &[u8],
+    offset: usize,
+    document_frequency: u32,
+    mut consumer: impl FnMut(posting_codec::Posting) -> Result<()>,
+) -> Result<usize> {
+    let mut position = offset;
+    let mut decoded_count = 0u32;
+    let mut previous = None;
+    while decoded_count < document_frequency {
+        let (frame, length) =
+            posting_codec::decode_prefix(payload.get(position..).ok_or_else(|| {
+                HawDBError::Storage("lexical term offset exceeds payload".to_string())
+            })?)
+            .map_err(|error| {
+                HawDBError::Storage(format!("invalid lexical posting frame: {error}"))
+            })?;
+        let frame_count = u32::try_from(frame.len()).map_err(|_| {
+            HawDBError::Storage("lexical posting frame count exceeds u32".to_string())
+        })?;
+        if frame_count > document_frequency - decoded_count {
+            return Err(HawDBError::Storage(
+                "lexical posting frames exceed the term document frequency".to_string(),
+            ));
+        }
+        for entry in frame {
+            if previous.is_some_and(|previous| previous >= entry.ordinal) {
+                return Err(HawDBError::Storage(
+                    "lexical posting frame is invalid or unordered".to_string(),
+                ));
+            }
+            consumer(entry)?;
+            previous = Some(entry.ordinal);
+        }
+        position = position.checked_add(length).ok_or_else(|| {
+            HawDBError::Storage("lexical posting frame offset overflows".to_string())
+        })?;
+        decoded_count = decoded_count.saturating_add(frame_count);
+    }
+    Ok(position)
 }
 
 fn decode_block_header(
@@ -2214,6 +2365,7 @@ fn decode_block_header(
     Ok(count)
 }
 
+#[cfg(test)]
 fn validate_block_tail(
     cursor: SliceCursor<'_>,
     descriptor: &BlockDescriptor,
@@ -2264,6 +2416,10 @@ impl<'a> SliceCursor<'a> {
 
     fn u64(&mut self) -> Result<u64> {
         Ok(u64::from_le_bytes(self.bytes(8)?.try_into().unwrap()))
+    }
+
+    fn remaining(&self) -> &'a [u8] {
+        &self.bytes[self.offset..]
     }
 
     fn string(&mut self, max: u64) -> Result<String> {

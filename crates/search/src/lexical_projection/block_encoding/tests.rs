@@ -12,8 +12,11 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-use super::super::{checksum, ArtifactBuilder, LexicalProjectionConfig, ARTIFACT_HEADER};
+use super::super::{
+    checksum, ArtifactBuilder, LexicalProjectionConfig, LexicalProjectionWriter, ARTIFACT_HEADER,
+};
 use super::*;
+use crate::lexical_projection::{decode_posting_block, decode_posting_block_for_term};
 use crate::{SearchDocument, SearchOutOfCoreGenerationWriter, SearchOutOfCoreReader};
 use std::collections::BTreeMap;
 use std::fs;
@@ -95,44 +98,11 @@ impl Write for ObservedWriter {
 }
 
 // The posting frame codec has independent scalar and corruption coverage. This
-// oracle verifies its placement in the enclosing lexical block grammar.
+// helper lets the write-path tests exercise exact short-write prefixes for the
+// dictionary-bearing enclosing block grammar.
 fn reference(entries: Entries<'_>, generation: u64, block_id: u64) -> Vec<u8> {
-    let mut bytes = b"SKNLEX01".to_vec();
-    bytes.extend_from_slice(&generation.to_le_bytes());
-    bytes.extend_from_slice(&block_id.to_le_bytes());
-    let (tag, count) = match entries {
-        Entries::Documents(values) => (1, values.len()),
-        Entries::Postings(values) => (2, values.len()),
-    };
-    bytes.push(tag);
-    bytes.extend_from_slice(&(count as u32).to_le_bytes());
-    let text = |bytes: &mut Vec<u8>, value: &str| {
-        bytes.extend_from_slice(&(value.len() as u32).to_le_bytes());
-        bytes.extend_from_slice(value.as_bytes());
-    };
-    match entries {
-        Entries::Documents(values) => {
-            for (id, length) in values {
-                text(&mut bytes, id);
-                bytes.extend_from_slice(&length.to_le_bytes());
-            }
-        }
-        Entries::Postings(values) => {
-            let term = values.first().unwrap().term.as_str();
-            assert!(values.iter().all(|posting| posting.term.as_str() == term));
-            text(&mut bytes, term);
-            let frame = posting_codec::encode_by(values.len(), |index| {
-                let posting = &values[index];
-                posting_codec::Posting {
-                    ordinal: posting.ordinal,
-                    tf: posting.term_frequency,
-                }
-            })
-            .unwrap();
-            bytes.extend_from_slice(&(frame.len() as u32).to_le_bytes());
-            bytes.extend_from_slice(&frame);
-        }
-    }
+    let mut bytes = Vec::new();
+    entries.encode(&mut bytes, generation, block_id).unwrap();
     bytes
 }
 
@@ -238,6 +208,66 @@ fn long_fields_are_written_in_bounded_chunks() {
     }];
     assert_wire(Entries::Documents(&documents), 5, 0, usize::MAX);
     assert_wire(Entries::Postings(&postings), 5, 1, 127);
+}
+
+#[test]
+fn posting_dictionary_selects_one_term_and_rejects_damage_without_unwinding() {
+    let values = postings();
+    let mut bytes = Vec::new();
+    let descriptor =
+        write_block(&mut bytes, 7, 2, 24, u64::MAX, Entries::Postings(&values)).unwrap();
+    let mut selected = Vec::new();
+    decode_posting_block_for_term(&bytes, 7, &descriptor, "\u{4e2d}\u{6587}", |posting| {
+        selected.push((posting.ordinal, posting.tf));
+        Ok(())
+    })
+    .unwrap();
+    assert_eq!(selected, vec![(2, u32::MAX)]);
+
+    let mut missing = Vec::new();
+    decode_posting_block_for_term(&bytes, 7, &descriptor, "beta", |posting| {
+        missing.push(posting);
+        Ok(())
+    })
+    .unwrap();
+    assert!(missing.is_empty());
+
+    let mut damaged = bytes.clone();
+    damaged[33] ^= 1;
+    let outcome = std::panic::catch_unwind(|| {
+        decode_posting_block(&damaged, 7, &descriptor, 4096, |_| Ok(()))
+    });
+    assert!(outcome.is_ok());
+    assert!(outcome.unwrap().is_err());
+}
+
+#[test]
+fn manifest_records_compact_posting_bytes_against_legacy_repetition() {
+    let fixture = Fixture::new();
+    let documents = (0..128)
+        .map(|ordinal| SearchDocument {
+            id: format!("document-{ordinal:03}-{}", "x".repeat(512)),
+            title: String::new(),
+            content: "alpha".into(),
+            embedding: None,
+            metadata: BTreeMap::new(),
+        })
+        .collect::<Vec<_>>();
+    let reader = LexicalProjectionWriter::new(Default::default())
+        .write(
+            &fixture.0,
+            1,
+            None,
+            11,
+            13,
+            documents.iter(),
+            &Default::default(),
+        )
+        .unwrap();
+    assert!(reader.manifest.posting_bytes > 0);
+    assert!(
+        reader.manifest.legacy_posting_bytes >= reader.manifest.posting_bytes.saturating_mul(10)
+    );
 }
 
 #[test]
@@ -388,7 +418,8 @@ fn artifact_builder_preserves_block_boundaries_and_statistics() {
         vec![
             (BlockKind::Documents, 2),
             (BlockKind::Documents, 1),
-            (BlockKind::Postings, 2),
+            (BlockKind::Postings, 1),
+            (BlockKind::Postings, 1),
             (BlockKind::Postings, 1),
         ]
     );
