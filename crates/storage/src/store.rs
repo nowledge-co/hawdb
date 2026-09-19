@@ -338,7 +338,6 @@ fn process_crash_failpoint(point: &str) {
     let _ = point;
 }
 
-#[cfg(test)]
 #[derive(Clone, Copy, PartialEq, Eq)]
 #[doc(hidden)]
 pub enum WalAppendFailure {
@@ -347,14 +346,12 @@ pub enum WalAppendFailure {
     Sync,
 }
 
-#[cfg(test)]
 thread_local! {
     static WAL_APPEND_FAILURE: std::cell::Cell<Option<WalAppendFailure>> = const {
         std::cell::Cell::new(None)
     };
 }
 
-#[cfg(test)]
 #[doc(hidden)]
 pub fn set_wal_append_failpoint(failure: WalAppendFailure) {
     WAL_APPEND_FAILURE.set(Some(failure));
@@ -427,7 +424,6 @@ fn set_generation_reclamation_remove_failpoint(file_name: Option<String>) {
     });
 }
 
-#[cfg(test)]
 thread_local! {
     static WAL_APPLY_FAILPOINT_REMAINING: std::cell::Cell<Option<usize>> = const {
         std::cell::Cell::new(None)
@@ -461,7 +457,6 @@ fn wal_apply_failpoint() -> Result<()> {
 /// The on-disk v1 format remains binary; this representation is never read
 /// by recovery. A torn tail ends the rendering, while corruption appends a
 /// terminal marker so damaged-file comparisons remain deterministic.
-#[cfg(test)]
 #[doc(hidden)]
 pub fn render_wal_records_for_test(path: &Path) -> std::io::Result<String> {
     use std::io::{Error, ErrorKind};
@@ -496,9 +491,10 @@ pub fn render_wal_records_for_test(path: &Path) -> std::io::Result<String> {
 /// Test support: appends one well-formed framed record carrying a stale
 /// WAL generation, emulating a recycled-log region past the logical tail.
 /// Recovery must read it as clean end of log.
-#[cfg(test)]
 #[doc(hidden)]
 pub fn append_stale_generation_wal_fragment(path: &Path) -> Result<()> {
+    use std::io::Write as _;
+
     let bytes = fs::read(path)?;
     let (generation, _) = wal_codec::frame::decode_binary_wal_header(&bytes)?;
     let position = bytes.len() as u64 - WAL_BINARY_FILE_HEADER_BYTES as u64;
@@ -508,19 +504,17 @@ pub fn append_stale_generation_wal_fragment(path: &Path) -> Result<()> {
         b"recycled-region-record-from-a-previous-generation",
         position,
     );
-    let mut file = OpenOptions::new().append(true).open(path)?;
+    let mut file = std::fs::OpenOptions::new().append(true).open(path)?;
     file.write_all(&framed)?;
     file.sync_all()?;
     Ok(())
 }
 
-#[cfg(test)]
 #[doc(hidden)]
 pub fn set_wal_apply_failpoint(operations_before_failure: Option<usize>) {
     WAL_APPLY_FAILPOINT_REMAINING.with(|remaining| remaining.set(operations_before_failure));
 }
 
-#[cfg(test)]
 #[doc(hidden)]
 pub fn set_wal_group_sync_failpoint(enabled: bool) {
     WAL_GROUP_SYNC_FAILPOINT.with(|failpoint| failpoint.set(enabled));
