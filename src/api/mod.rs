@@ -19141,6 +19141,7 @@ pub(crate) fn statement_kind(statement: &cypher::Statement) -> &'static str {
         cypher::Statement::MatchThreadRepairStats(_) => "match_thread_repair_stats",
         cypher::Statement::MergeNode(_) => "merge_node",
         cypher::Statement::MergeRelationship(_) => "merge_relationship",
+        cypher::Statement::UnwindMutation(_) => "unwind_mutation",
         cypher::Statement::ProjectGraph(_) => "project_graph",
         cypher::Statement::Rollback => "rollback",
         cypher::Statement::SetSystemVariable(_) => "set_system_variable",
@@ -19414,11 +19415,6 @@ fn execute_graph_transaction_statement(
 
     if executor::is_mutation_plan(&optimized.physical_plan)? {
         runtime.ensure_writable(transaction.store())?;
-        let mutation = executor::mutation_command(&optimized.physical_plan)?.ok_or_else(|| {
-            HawDBError::Execution(
-                "transaction mutation plan cannot be represented as a staged mutation".to_string(),
-            )
-        })?;
         let is_mutation_return = matches!(
             optimized.physical_plan,
             PhysicalPlan::SetNodePropertiesReturn { .. }
@@ -19437,12 +19433,36 @@ fn execute_graph_transaction_statement(
         };
         let statement_savepoint = transaction.savepoint();
         let execution = (|| {
-            let staged = if is_mutation_return {
-                transaction.stage_mutation_without_commit_rows(mutation, mutation_limits)
-            } else {
-                transaction.stage_mutation_with_limits(mutation, mutation_limits)
+            let summary = match &optimized.physical_plan {
+                PhysicalPlan::UnwindMutation {
+                    rows,
+                    variable,
+                    operation,
+                } => transaction.stage_mutations_with_limits(
+                    executor::materialize_unwind_mutations(
+                        rows,
+                        variable,
+                        operation,
+                        mutation_limits,
+                        task_context,
+                    )?,
+                    mutation_limits,
+                )?,
+                _ => {
+                    let mutation = executor::mutation_command(&optimized.physical_plan)?
+                        .ok_or_else(|| {
+                            HawDBError::Execution(
+                                "transaction mutation plan cannot be represented as a staged mutation"
+                                    .to_string(),
+                            )
+                        })?;
+                    if is_mutation_return {
+                        transaction.stage_mutation_without_commit_rows(mutation, mutation_limits)?
+                    } else {
+                        transaction.stage_mutation_with_limits(mutation, mutation_limits)?
+                    }
+                }
             };
-            let summary = staged?;
             let returned_rows = executor::project_staged_mutation_return_rows(
                 &optimized.physical_plan,
                 transaction.catalog(),

@@ -21,6 +21,15 @@ pub fn plan_pipeline_query(
     bind_pipeline(&hawdb_cypher::parse_pipeline(query)?, parameters)
 }
 
+/// Plans a pipeline already parsed through a supported statement entrypoint.
+#[doc(hidden)]
+pub fn plan_parsed_pipeline_query(
+    query: &QueryPipeline,
+    parameters: &BTreeMap<String, Value>,
+) -> Result<LogicalPlan> {
+    bind_pipeline(query, parameters)
+}
+
 /// Migration entrypoint with structural read-plan normalization enabled.
 #[doc(hidden)]
 pub fn plan_normalized_pipeline_query(
@@ -124,6 +133,12 @@ fn bind_pipeline(
         return Err(HawDBError::Semantic(
             "query exceeds maximum clause depth".to_string(),
         ));
+    }
+    if matches!(
+        query.clauses.first().map(|clause| &clause.kind),
+        Some(ClauseKind::Unwind { .. })
+    ) {
+        return mutation::bind_unwind_mutation_pipeline(query, parameters);
     }
     if let Some(plan) = bind_optional_relationship_count_sum(query, parameters) {
         return plan;

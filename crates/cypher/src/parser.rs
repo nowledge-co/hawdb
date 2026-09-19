@@ -100,6 +100,7 @@ enum StatementDispatch {
     Alter,
     Cypher,
     Explain,
+    Unwind,
     Merge,
     Match,
     Set,
@@ -115,6 +116,7 @@ const TOP_LEVEL_STATEMENTS: &[(&str, StatementDispatch)] = &[
     ("ALTER", StatementDispatch::Alter),
     ("CYPHER", StatementDispatch::Cypher),
     ("EXPLAIN", StatementDispatch::Explain),
+    ("UNWIND", StatementDispatch::Unwind),
     ("MERGE", StatementDispatch::Merge),
     ("MATCH", StatementDispatch::Match),
     ("SET", StatementDispatch::Set),
@@ -166,6 +168,7 @@ impl<'a> Parser<'a> {
     }
 
     fn parse_statement_inner(&mut self) -> Result<Statement> {
+        let statement_start = self.checkpoint();
         match self.parse_statement_dispatch()? {
             StatementDispatch::Begin => {
                 self.expect_keyword("TRANSACTION")?;
@@ -175,6 +178,12 @@ impl<'a> Parser<'a> {
             StatementDispatch::Alter => self.parse_alter_statement(),
             StatementDispatch::Cypher => self.parse_cypher_query_statement(),
             StatementDispatch::Explain => self.parse_explain_statement(),
+            StatementDispatch::Unwind => {
+                self.restore(statement_start);
+                Ok(Statement::UnwindMutation(Box::new(
+                    self.parse_query_pipeline()?,
+                )))
+            }
             StatementDispatch::Merge => self.parse_merge_statement(),
             StatementDispatch::Match => self.parse_match_statement(),
             StatementDispatch::Set => self.parse_set_system_variable_statement(),
@@ -203,7 +212,7 @@ impl<'a> Parser<'a> {
     fn parse_statement_dispatch(&mut self) -> Result<StatementDispatch> {
         self.parse_keyword_choice(
             TOP_LEVEL_STATEMENTS,
-            "expected BEGIN, CREATE, ALTER, CYPHER, EXPLAIN, MERGE, MATCH, SET, CALL, CHECKPOINT, COMMIT, or ROLLBACK",
+            "expected BEGIN, CREATE, ALTER, CYPHER, EXPLAIN, UNWIND, MERGE, MATCH, SET, CALL, CHECKPOINT, COMMIT, or ROLLBACK",
         )
     }
 

@@ -18,6 +18,10 @@ pub struct QueryPipelineKind {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ClauseKind {
+    Unwind {
+        source: ValueExpression,
+        variable: String,
+    },
     Match {
         optional: bool,
         patterns: Vec<MatchPattern>,

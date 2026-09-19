@@ -13,12 +13,12 @@
 // limitations under the License.
 
 use super::{
-    parse, parse_profiled, AggregateExpression, AlterPropertyState, AlterTableState, ComparisonOp,
-    CreateCompositeIndex, CreateIndex, CreateProperty, GraphAlgorithm, GraphAlgorithmKind,
-    GraphAlgorithmOptions, OrderDirection, OrderExpression, ProjectGraph, PropertyPredicate,
-    RelationshipDirection, SchemaObjectState, SchemaPropertyType, SchemaTableKind,
-    SetValueExpression, Statement, VectorSearch, WithAliasFilter, WithAliasFilterExpression,
-    WithAliasFilterOp,
+    parse, parse_profiled, AggregateExpression, AlterPropertyState, AlterTableState, ClauseKind,
+    ComparisonOp, CreateCompositeIndex, CreateIndex, CreateProperty, GraphAlgorithm,
+    GraphAlgorithmKind, GraphAlgorithmOptions, OrderDirection, OrderExpression, ProjectGraph,
+    PropertyPredicate, RelationshipDirection, SchemaObjectState, SchemaPropertyType,
+    SchemaTableKind, SetValueExpression, Statement, VectorSearch, WithAliasFilter,
+    WithAliasFilterExpression, WithAliasFilterOp,
 };
 use crate::parser::MAX_CYPHER_INPUT_BYTES;
 use crate::ScalarBinaryOp;
@@ -241,6 +241,26 @@ fn rejects_system_variable_keyword_inside_cypher_hints() {
     .unwrap_err();
 
     assert!(error.to_string().contains("expected '.'"));
+}
+
+#[test]
+fn parses_unwind_mutation_statement_through_the_public_dispatcher() {
+    let statement = parse(
+        "UNWIND $rows AS row MERGE (entity:Entity {id: row.id}) ON CREATE SET entity.name = row.name",
+    )
+    .unwrap();
+    let Statement::UnwindMutation(query) = statement else {
+        panic!("expected UNWIND mutation statement");
+    };
+    assert_eq!(query.clauses.len(), 2);
+    assert!(matches!(
+        query.clauses[0].kind,
+        ClauseKind::Unwind {
+            ref variable,
+            ..
+        } if variable == "row"
+    ));
+    assert!(matches!(query.clauses[1].kind, ClauseKind::Merge { .. }));
 }
 
 #[test]

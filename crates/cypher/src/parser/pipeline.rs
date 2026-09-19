@@ -26,7 +26,9 @@ impl Parser<'_> {
         while !terminal {
             self.skip_ws();
             let clause_start = self.pos;
-            let kind = if self.consume_keyword("MATCH") {
+            let kind = if self.consume_keyword("UNWIND") {
+                self.parse_pipeline_unwind()?
+            } else if self.consume_keyword("MATCH") {
                 self.parse_pipeline_match(false)?
             } else if self.consume_keyword("OPTIONAL") {
                 self.expect_keyword("MATCH")?;
@@ -93,6 +95,19 @@ impl Parser<'_> {
             return Err(self.error("query requires RETURN or a concluding mutation"));
         }
         Ok(self.source_node(QueryPipelineKind { clauses }, start))
+    }
+
+    fn parse_pipeline_unwind(&mut self) -> Result<ClauseKind> {
+        let source = self.parse_value()?;
+        if !matches!(
+            source.kind,
+            ValueExpressionKind::Parameter(_) | ValueExpressionKind::List(_)
+        ) {
+            return Err(self.error("UNWIND accepts only a parameter or list literal source"));
+        }
+        self.expect_keyword("AS")?;
+        let variable = self.parse_ident()?;
+        Ok(ClauseKind::Unwind { source, variable })
     }
 
     fn parse_pipeline_call(&mut self) -> Result<ClauseKind> {
@@ -530,6 +545,48 @@ mod tests {
             parsed.clauses[1].kind,
             ClauseKind::Delete { detach: true, .. }
         ));
+    }
+
+    #[test]
+    fn unwind_is_a_bounded_row_source_clause() {
+        let query = "UNWIND $rows AS row MERGE (entity:Entity {id: row.id}) ON CREATE SET entity.name = row.name";
+        let parsed = parse_pipeline(query).unwrap();
+        assert_eq!(parsed.clauses.len(), 2);
+        let ClauseKind::Unwind { source, variable } = &parsed.clauses[0].kind else {
+            panic!("expected UNWIND")
+        };
+        assert_eq!(variable, "row");
+        assert!(matches!(
+            source.kind,
+            ValueExpressionKind::Parameter(ref parameter) if parameter == "rows"
+        ));
+        let ClauseKind::Merge {
+            pattern, on_create, ..
+        } = &parsed.clauses[1].kind
+        else {
+            panic!("expected MERGE")
+        };
+        assert!(matches!(
+            pattern.first.properties["id"].kind,
+            ValueExpressionKind::BindingProperty {
+                ref variable,
+                ref property,
+            } if variable == "row" && property == "id"
+        ));
+        assert!(matches!(
+            on_create[0].value,
+            SetValueExpression::Property {
+                ref variable,
+                ref property,
+            } if variable == "row" && property == "name"
+        ));
+
+        for query in [
+            "UNWIND range(1, 2) AS row CREATE (n:Node)",
+            "UNWIND row.id AS value CREATE (n:Node)",
+        ] {
+            assert!(parse_pipeline(query).is_err(), "{query}");
+        }
     }
 
     #[test]

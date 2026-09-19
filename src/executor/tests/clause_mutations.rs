@@ -112,3 +112,67 @@ fn clause_mutations_preserve_atomic_failure_parameters_and_recovery() {
     drop(store);
     std::fs::remove_dir_all(path).unwrap();
 }
+
+#[test]
+fn unwind_merge_matches_sequential_bootstrap_rows_and_recovers() {
+    let nonce = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap()
+        .as_nanos();
+    let batch_path = std::env::temp_dir().join(format!("hawdb-unwind-batch-{nonce}"));
+    let sequential_path = std::env::temp_dir().join(format!("hawdb-unwind-sequential-{nonce}"));
+    let rows = vec![
+        BTreeMap::from([
+            ("id".into(), Value::String("entity-1".into())),
+            ("name".into(), Value::String("First".into())),
+            ("rank".into(), Value::Int(3)),
+        ]),
+        BTreeMap::from([
+            ("id".into(), Value::String("entity-2".into())),
+            ("name".into(), Value::String("Second".into())),
+            ("rank".into(), Value::Int(7)),
+        ]),
+    ];
+    let mut batch_catalog = Catalog::default();
+    let mut batch_store = GraphStore::open(&batch_path, &mut batch_catalog).unwrap();
+    run(
+        &mut batch_store,
+        &mut batch_catalog,
+        "UNWIND $rows AS row MERGE (entity:Entity {id: row.id}) ON CREATE SET entity.name = row.name, entity.rank = row.rank",
+        BTreeMap::from([(
+            "rows".into(),
+            Value::List(rows.iter().cloned().map(Value::Map).collect()),
+        )]),
+    )
+    .unwrap();
+    drop(batch_store);
+
+    let mut sequential_catalog = Catalog::default();
+    let mut sequential_store = GraphStore::open(&sequential_path, &mut sequential_catalog).unwrap();
+    for row in &rows {
+        run(
+            &mut sequential_store,
+            &mut sequential_catalog,
+            "MERGE (entity:Entity {id: $id}) ON CREATE SET entity.name = $name, entity.rank = $rank",
+            row.clone(),
+        )
+        .unwrap();
+    }
+    let query = "MATCH (entity:Entity) RETURN entity.id AS id, entity.name AS name, entity.rank AS rank ORDER BY id";
+    let expected = run(
+        &mut sequential_store,
+        &mut sequential_catalog,
+        query,
+        BTreeMap::new(),
+    )
+    .unwrap();
+    drop(sequential_store);
+
+    let mut batch_catalog = Catalog::default();
+    let mut batch_store = GraphStore::open(&batch_path, &mut batch_catalog).unwrap();
+    let actual = run(&mut batch_store, &mut batch_catalog, query, BTreeMap::new()).unwrap();
+    assert_eq!(actual, expected);
+    drop(batch_store);
+    std::fs::remove_dir_all(batch_path).unwrap();
+    std::fs::remove_dir_all(sequential_path).unwrap();
+}

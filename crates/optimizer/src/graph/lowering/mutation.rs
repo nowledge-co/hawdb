@@ -21,6 +21,15 @@ pub(super) fn lower(logical: &LogicalPlan) -> Option<PhysicalPlan> {
             label: label.clone(),
             properties: properties.clone(),
         }),
+        LogicalPlan::UnwindMutation {
+            rows,
+            variable,
+            operation,
+        } => Some(PhysicalPlan::UnwindMutation {
+            rows: rows.clone(),
+            variable: variable.clone(),
+            operation: operation.clone(),
+        }),
         LogicalPlan::MergeNode {
             label,
             match_properties,

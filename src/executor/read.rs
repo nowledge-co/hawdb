@@ -111,6 +111,7 @@ pub(super) fn execute_bindings_with_limit(
         | PhysicalPlan::CreateRelationshipUniqueConstraint { .. }
         | PhysicalPlan::CreateRelationshipPropertyExistsConstraint { .. }
         | PhysicalPlan::CreateNode { .. }
+        | PhysicalPlan::UnwindMutation { .. }
         | PhysicalPlan::MergeNode { .. }
         | PhysicalPlan::MergeRelationship { .. }
         | PhysicalPlan::MergeMatchedRelationship { .. }

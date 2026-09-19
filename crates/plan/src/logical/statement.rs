@@ -40,6 +40,7 @@ pub fn plan_with_params(
         Statement::SetSystemVariable(_) => Err(HawDBError::Semantic(
             "SET system variable is executed by the database session".to_string(),
         )),
+        Statement::UnwindMutation(query) => plan_parsed_pipeline_query(query, parameters),
         Statement::CreateNodeLabel(label) => Ok(LogicalPlan::CreateNodeLabel {
             label: label.clone(),
         }),

@@ -265,6 +265,10 @@ fn estimate_local_operator_cost(
         PhysicalPlan::NodeCountExec { .. } | PhysicalPlan::RelationshipCountExec { .. } => {
             PlanCostBreakdown::new(1, 1, 0, 0, 0)
         }
+        PhysicalPlan::UnwindMutation { rows, .. } => {
+            let row_count = rows.len().max(1) as u64;
+            PlanCostBreakdown::new(row_count, row_count, 0, 0, 0)
+        }
         PhysicalPlan::SeqNodeScan { label, .. } => {
             let rows = catalog.label_count(label);
             node_full_scan_work(rows)

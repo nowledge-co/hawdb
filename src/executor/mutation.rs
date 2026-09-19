@@ -18,7 +18,9 @@ use super::*;
 
 use hawdb_executor::mutation::execute_mutation_with_store;
 pub use hawdb_executor::mutation::project_staged_mutation_return_rows;
-pub use hawdb_executor::mutation::{is_mutation_plan, mutation_command};
+pub use hawdb_executor::mutation::{
+    is_mutation_plan, materialize_unwind_mutations, mutation_command,
+};
 
 pub fn execute_mutation_with_limits(
     plan: &PhysicalPlan,

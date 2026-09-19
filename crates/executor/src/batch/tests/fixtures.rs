@@ -183,6 +183,17 @@ pub(super) fn operators() -> Vec<(PhysicalPlan, bool)> {
             false,
         ),
         (
+            PhysicalPlan::UnwindMutation {
+                rows: Vec::new(),
+                variable: String::new(),
+                operation: BatchMutationOperation::CreateNode {
+                    label: String::new(),
+                    properties: BTreeMap::new(),
+                },
+            },
+            false,
+        ),
+        (
             PhysicalPlan::MergeNode {
                 label: String::new(),
                 match_properties: BTreeMap::new(),
