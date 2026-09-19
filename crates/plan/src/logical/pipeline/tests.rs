@@ -232,3 +232,28 @@ fn chained_match_does_not_move_expression_filters() {
         "{text}"
     );
 }
+
+#[test]
+fn lowers_a_single_optional_relationship_count_to_optional_degree() {
+    let plan = plan_pipeline_query(
+        "MATCH (e:Entity {id: 1}) \
+         OPTIONAL MATCH (e)-[r:RELATES_TO]->(other:Entity) \
+         WITH e, COUNT(r) AS degree \
+         RETURN e.id, degree",
+        &BTreeMap::new(),
+    )
+    .unwrap();
+    let text = format!("{plan:?}");
+    assert!(text.contains("OptionalDegree {"), "{text}");
+    assert!(!text.contains("GraphMatch {"), "{text}");
+
+    let target_count = plan_pipeline_query(
+        "MATCH (e:Entity {id: 1}) \
+         OPTIONAL MATCH (e)-[:RELATES_TO]->(other:Entity) \
+         WITH e, COUNT(other) AS degree \
+         RETURN e.id, degree",
+        &BTreeMap::new(),
+    )
+    .unwrap();
+    assert!(format!("{target_count:?}").contains("OptionalDegree {"));
+}

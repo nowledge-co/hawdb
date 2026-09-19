@@ -122,6 +122,9 @@ fn bind_pipeline(
             "query exceeds maximum clause depth".to_string(),
         ));
     }
+    if let Some(plan) = bind_optional_degree_pipeline(query, parameters) {
+        return plan;
+    }
     if query.clauses.iter().any(|clause| {
         matches!(
             clause.kind,
@@ -147,6 +150,142 @@ fn bind_pipeline(
         return path::bind_shortest_path_pipeline(query, parameters);
     }
     bind_read_clauses(&query.clauses, None, Scope::default(), parameters)
+}
+
+fn bind_optional_degree_pipeline(
+    query: &QueryPipeline,
+    parameters: &BTreeMap<String, Value>,
+) -> Option<Result<LogicalPlan>> {
+    let [initial, optional, with, final_return] = query.clauses.as_slice() else {
+        return None;
+    };
+    let ClauseKind::Match {
+        optional: false,
+        patterns: initial_patterns,
+        ..
+    } = &initial.kind
+    else {
+        return None;
+    };
+    let [initial_pattern] = initial_patterns.as_slice() else {
+        return None;
+    };
+    if initial_pattern.variable.is_some() || !initial_pattern.steps.is_empty() {
+        return None;
+    }
+    let source = &initial_pattern.first;
+    if source.anonymous {
+        return None;
+    }
+
+    let ClauseKind::Match {
+        optional: true,
+        patterns: optional_patterns,
+        predicate: None,
+    } = &optional.kind
+    else {
+        return None;
+    };
+    let [optional_pattern] = optional_patterns.as_slice() else {
+        return None;
+    };
+    if optional_pattern.variable.is_some()
+        || optional_pattern.first.variable != source.variable
+        || !optional_pattern.first.label.is_empty()
+        || !optional_pattern.first.properties.is_empty()
+    {
+        return None;
+    }
+    let [step] = optional_pattern.steps.as_slice() else {
+        return None;
+    };
+    let relationship = &step.relationship;
+    if relationship.search != PathSearch::All
+        || relationship.min_hops != 1
+        || relationship.max_hops != 1
+    {
+        return None;
+    }
+
+    let ClauseKind::With(with_projection) = &with.kind else {
+        return None;
+    };
+    if with_projection.distinct
+        || with_projection.predicate.is_some()
+        || !with_projection.order_by.is_empty()
+        || with_projection.offset.is_some()
+        || with_projection.limit.is_some()
+    {
+        return None;
+    }
+    let [group, count] = with_projection.items.as_slice() else {
+        return None;
+    };
+    if !is_unaliased_variable(group, &source.variable) {
+        return None;
+    }
+    let ReturnExpressionKind::Aggregate(AggregateExpression::CountVariable {
+        variable,
+        distinct: false,
+    }) = &count.expression.kind
+    else {
+        return None;
+    };
+    let counts_relationship = relationship.variable.as_deref() == Some(variable);
+    let counts_target = step.target.variable == *variable;
+    if !counts_relationship && !counts_target {
+        return None;
+    }
+    let Some(alias) = &count.alias else {
+        return None;
+    };
+
+    let ClauseKind::Return(final_projection) = &final_return.kind else {
+        return None;
+    };
+    let initial = match bind_read_clauses(
+        std::slice::from_ref(initial),
+        None,
+        Scope::default(),
+        parameters,
+    ) {
+        Ok(plan) => normalize::normalize(plan),
+        Err(error) => return Some(Err(error)),
+    };
+    let degree = match (|| {
+        Ok(LogicalPlan::OptionalDegree {
+            source_variable: source.variable.clone(),
+            rel_type: relationship.rel_type.clone(),
+            rel_properties: bind_properties(&relationship.properties, parameters)?,
+            direction: relationship.direction,
+            target_label: step.target.label.clone(),
+            target_properties: bind_properties(&step.target.properties, parameters)?,
+            alias: alias.clone(),
+            input: Box::new(initial),
+        })
+    })() {
+        Ok(plan) => plan,
+        Err(error) => return Some(Err(error)),
+    };
+    let mut scope = Scope::default();
+    scope.0.insert(
+        source.variable.clone(),
+        BindingType::Graph {
+            kind: GraphEntityKind::Node,
+            column: None,
+        },
+    );
+    scope.0.insert(alias.clone(), BindingType::Scalar);
+    Some(bind_projection(degree, &scope, final_projection, parameters).map(|(plan, _)| plan))
+}
+
+fn is_unaliased_variable(item: &ReturnItem, variable: &str) -> bool {
+    item.alias.is_none()
+        && matches!(
+            &item.expression.kind,
+            ReturnExpressionKind::Value(expression)
+                if matches!(&expression.kind, ScalarExpressionKind::Variable(name) if name == variable)
+        )
 }
 
 fn bind_read_clauses(
