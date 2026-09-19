@@ -410,7 +410,7 @@ fn scanned_writer_shares_admission_and_keeps_the_previous_projection_on_denial()
             11,
             13,
             |consume| {
-                consume(&document)?;
+                consume(0, &document)?;
                 assert!(used(&memory) > 0);
                 blocker = Some(memory.input.reserve(BUDGET - used(&memory)).unwrap());
                 Ok(())

@@ -82,6 +82,7 @@ members = [
   "crates/fuzz-contracts",
   "crates/fuzz",
   "crates/cgroup",
+  "crates/cascades",
   "crates/integrity",
   "crates/optimizer",
   "crates/plan",

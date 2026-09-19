@@ -383,6 +383,10 @@ dependencies = [
 ]
 
 [[package]]
+name = "hawdb-cascades"
+version = "0.1.0"
+
+[[package]]
 name = "hawdb-cgroup"
 version = "0.1.0"
 
@@ -510,6 +514,7 @@ dependencies = [
 name = "hawdb-optimizer"
 version = "0.1.0"
 dependencies = [
+ "hawdb-cascades",
  "hawdb-core",
  "hawdb-cypher",
  "hawdb-expression",

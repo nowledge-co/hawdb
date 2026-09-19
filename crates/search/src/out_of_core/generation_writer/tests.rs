@@ -112,7 +112,7 @@ fn segment_admission_sizes_documents_without_encoding_them() {
     let options = SearchOutOfCoreGenerationBuildOptions::default();
     let mut builder = SegmentArtifactBuilder::new(&root, 1, &fields, &options).unwrap();
     let attempts = ENCODING_ATTEMPTS.get();
-    builder.push(document(0)).unwrap();
+    builder.push(0, document(0)).unwrap();
     assert_eq!(ENCODING_ATTEMPTS.get(), attempts);
     drop(builder);
     fs::remove_dir_all(root).unwrap();
@@ -315,6 +315,44 @@ fn fused_generation_reads_source_spool_once() {
     assert_eq!(reads, (1, report.spool_bytes));
 }
 
+#[test]
+fn source_document_ordinals_include_documents_without_embeddings() {
+    let root = test_dir("all_document_ordinals");
+    let mut writer = SearchOutOfCoreGenerationWriter::create(
+        &root,
+        SearchOutOfCoreGenerationBuildOptions::default(),
+    )
+    .unwrap();
+    for number in 0..6 {
+        let mut source = document(number);
+        if number % 2 != 0 {
+            source.embedding = None;
+        }
+        writer.push(source).unwrap();
+    }
+
+    let mut observed = Vec::new();
+    let report = writer
+        .finish_with_artifacts(|input, source, generation| {
+            source.scan(&mut |ordinal, document| {
+                observed.push((ordinal, document.id, document.embedding.is_some()));
+                Ok(())
+            })?;
+            input.build_artifacts(source, generation)
+        })
+        .unwrap();
+
+    assert_eq!(
+        observed,
+        (0..6)
+            .map(|number| (number as u64, document(number).id, number % 2 == 0))
+            .collect::<Vec<_>>()
+    );
+    assert_eq!(report.document_count, 6);
+    assert_eq!(report.vector_document_count, 3);
+    fs::remove_dir_all(root).unwrap();
+}
+
 fn three_pass_artifacts(
     input: &SearchOutOfCoreGenerationWriter,
     source: &SpoolSource,
@@ -343,7 +381,7 @@ fn three_pass_artifacts(
         input.options.source_graph_commit_epoch,
         lexical_analyzer_digest(&input.options.analyzer_lexicon),
         input.documents_digest.finish(),
-        |consume| source.scan(&mut |document| consume(&document)),
+        |consume| source.scan(&mut |ordinal, document| consume(ordinal, &document)),
         &input.options.analyzer_lexicon,
     )?;
     drop(lexical);

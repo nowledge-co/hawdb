@@ -37,7 +37,7 @@ fn streamed_spool_scan_rejects_unadmitted_lengths_before_decoding() {
         bytes.extend_from_slice(&0u64.to_le_bytes());
         fs::write(source.path, bytes).unwrap();
         let error = source
-            .scan(&mut |_| panic!("unadmitted record reached a consumer"))
+            .scan(&mut |_, _| panic!("unadmitted record reached a consumer"))
             .unwrap_err();
         assert!(
             error.to_string().contains("outside its admission"),
@@ -57,7 +57,7 @@ fn streamed_spool_scan_rejects_unadmitted_lengths_before_decoding() {
             memory: source.memory.clone(),
         };
         let mut documents = Vec::new();
-        let result = source.scan(&mut |document| {
+        let result = source.scan(&mut |_, document| {
             documents.push(document);
             Ok(())
         });
@@ -112,7 +112,7 @@ fn streamed_spool_syntax_failures_never_emit_bad_rows_or_publish() {
                 fs::write(source.path, bytes)?;
                 let mut consumed = Vec::new();
                 assert!(source
-                    .scan(&mut |document| {
+                    .scan(&mut |_, document| {
                         consumed.push(document);
                         Ok(())
                     })

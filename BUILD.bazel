@@ -8,6 +8,7 @@ package(default_visibility = ["//visibility:public"])
 _CARGO_WORKSPACE_PACKAGES = [
     "crates/analytics",
     "crates/bootstrap",
+    "crates/cascades",
     "crates/artifact",
     "crates/cgroup",
     "crates/compat",
@@ -335,6 +336,7 @@ test_suite(
         ":hawdb_search_projection_consumer_tests",
         ":hawdb_search_projection_consumer_minimal_tests",
         ":hawdb_execution_request_contract_tests",
+        ":hawdb_process_memory_policy_contract_tests",
         ":hawdb_unit_fast_tests",
         ":hawdb_unit_storage_crash_matrix_tests",
     ],
@@ -345,6 +347,15 @@ rust_test(
     name = "hawdb_pgq_create_binder_tests",
     crate_root = "tests/pgq_create_binder.rs",
     srcs = ["tests/pgq_create_binder.rs"],
+    edition = "2024",
+    deps = [":hawdb"],
+)
+
+# External embedded-library consumer for the host-owned RSS policy contract.
+rust_test(
+    name = "hawdb_process_memory_policy_contract_tests",
+    crate_root = "tests/process_memory_policy_contract.rs",
+    srcs = ["tests/process_memory_policy_contract.rs"],
     edition = "2024",
     deps = [":hawdb"],
 )

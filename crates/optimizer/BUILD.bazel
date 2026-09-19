@@ -15,6 +15,7 @@ rust_library(
     edition = "2024",
     aliases = aliases(),
     deps = all_crate_deps(normal = True) + [
+        "//crates/cascades:hawdb_cascades",
         "//crates/core:hawdb_core",
         "//crates/cypher:hawdb_cypher",
         "//crates/expression:hawdb_expression",

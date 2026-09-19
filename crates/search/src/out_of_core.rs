@@ -57,6 +57,7 @@ mod hydration;
 mod publish_lease;
 mod vector_serving;
 pub use generation_writer::{
+    GovernedSearchGenerationUpdate, GovernedSearchGenerationWriter, SearchGenerationAdmission,
     SearchOutOfCoreGenerationBuildOptions, SearchOutOfCoreGenerationBuildReport,
     SearchOutOfCoreGenerationUpdate, SearchOutOfCoreGenerationWriter,
 };

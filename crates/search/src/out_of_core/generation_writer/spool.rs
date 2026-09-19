@@ -131,7 +131,7 @@ impl SpoolSource<'_> {
     #[cfg(test)]
     pub(super) fn scan(
         &self,
-        consumer: &mut dyn FnMut(SearchDocument) -> Result<()>,
+        consumer: &mut dyn FnMut(u64, SearchDocument) -> Result<()>,
     ) -> Result<()> {
         self.scan_with_context(&RuntimeTaskContext::default(), consumer)
     }
@@ -140,18 +140,18 @@ impl SpoolSource<'_> {
     pub(super) fn scan_with_context(
         &self,
         task_context: &RuntimeTaskContext,
-        consumer: &mut dyn FnMut(SearchDocument) -> Result<()>,
+        consumer: &mut dyn FnMut(u64, SearchDocument) -> Result<()>,
     ) -> Result<()> {
-        self.scan_admitted(task_context, &mut |document| {
+        self.scan_admitted(task_context, &mut |ordinal, document| {
             let (document, _lease) = document.into_parts();
-            consumer(document)
+            consumer(ordinal, document)
         })
     }
 
     pub(super) fn scan_admitted(
         &self,
         task_context: &RuntimeTaskContext,
-        consumer: &mut dyn FnMut(AdmittedDocument) -> Result<()>,
+        consumer: &mut dyn FnMut(u64, AdmittedDocument) -> Result<()>,
     ) -> Result<()> {
         checkpoint(task_context)?;
         let _buffer_memory = self.memory.spool.reserve(SPOOL_BUFFER_BYTES)?;
@@ -216,7 +216,10 @@ impl SpoolSource<'_> {
             let previous_id_memory = self.memory.retained.reserve(document.id.len())?;
             previous_id = Some(document.id.clone());
             _previous_id_memory = Some(previous_id_memory);
-            consumer(document)?;
+            let document_ordinal = u64::try_from(ordinal).map_err(|_| {
+                HawDBError::Storage("search document ordinal exceeds u64".to_string())
+            })?;
+            consumer(document_ordinal, document)?;
             checkpoint(task_context)?;
         }
         let mut trailing = [0u8; 1];

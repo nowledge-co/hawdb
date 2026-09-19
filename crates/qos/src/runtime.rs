@@ -14,6 +14,10 @@
 
 #![forbid(unsafe_code)]
 
+use crate::process_memory::{
+    ProcessMemoryAdmissionCode, ProcessMemoryPolicy, ProcessMemoryPolicyNotifier,
+    ProcessMemoryPolicySnapshot, ProcessMemoryReservation,
+};
 use crate::resource::RuntimeResourceDetector;
 use crate::{IoConcurrencyBudget, RuntimeMemoryPressure, RuntimeResourceSnapshot};
 use hawdb_core::{
@@ -432,6 +436,7 @@ struct RuntimeGovernorState {
     resources: RuntimeResourceSnapshot,
     resources_pinned: bool,
     limits: RuntimeGovernorLimits,
+    process_memory_policy: Option<ProcessMemoryPolicy>,
     active_foreground_tasks: usize,
     active_background_tasks: usize,
     active_blocking_tasks: usize,
@@ -552,6 +557,7 @@ pub struct RuntimePermit {
     request: RuntimeWorkRequest,
     executor_thread_limit: NonZeroUsize,
     io_wave_controller: Arc<GovernorIoWaveController>,
+    process_memory_reservation: Option<ProcessMemoryReservation>,
     released: bool,
 }
 
@@ -589,8 +595,31 @@ impl RuntimeGovernor {
         resources: RuntimeResourceSnapshot,
         storage_io: IoConcurrencyBudget,
     ) -> Self {
+        Self::new_inner(config, resources, storage_io, None)
+    }
+
+    /// Creates a governor governed by a host-owned, shareable RSS policy.
+    ///
+    /// The host must update the policy at its selected refresh cadence before
+    /// admission. This constructor does not capture RSS or create a polling
+    /// task, so callers retain ownership of process-wide sampling policy.
+    pub fn new_with_process_memory_policy(
+        config: RuntimeGovernorConfig,
+        resources: RuntimeResourceSnapshot,
+        storage_io: IoConcurrencyBudget,
+        process_memory_policy: ProcessMemoryPolicy,
+    ) -> Self {
+        Self::new_inner(config, resources, storage_io, Some(process_memory_policy))
+    }
+
+    fn new_inner(
+        config: RuntimeGovernorConfig,
+        resources: RuntimeResourceSnapshot,
+        storage_io: IoConcurrencyBudget,
+        process_memory_policy: Option<ProcessMemoryPolicy>,
+    ) -> Self {
         let limits = derive_limits(config, resources, storage_io, 0);
-        Self {
+        let governor = Self {
             inner: Arc::new(RuntimeGovernorInner {
                 config,
                 storage_io,
@@ -598,6 +627,7 @@ impl RuntimeGovernor {
                     resources,
                     resources_pinned: false,
                     limits,
+                    process_memory_policy: process_memory_policy.clone(),
                     active_foreground_tasks: 0,
                     active_background_tasks: 0,
                     active_blocking_tasks: 0,
@@ -620,13 +650,36 @@ impl RuntimeGovernor {
                 resource_detector: Mutex::new(None),
                 telemetry: RwLock::new(None),
             }),
+        };
+        if let Some(process_memory_policy) = process_memory_policy {
+            let notifier: Arc<dyn ProcessMemoryPolicyNotifier> = governor.inner.clone();
+            process_memory_policy.register_notifier(Arc::downgrade(&notifier));
         }
+        governor
     }
 
     pub fn detect(config: RuntimeGovernorConfig, storage_io: IoConcurrencyBudget) -> Self {
         let mut detector = RuntimeResourceDetector::new();
         let resources = detector.detect();
         let governor = Self::new(config, resources, storage_io);
+        *mutex_lock(&governor.inner.resource_detector) = Some(detector);
+        governor
+    }
+
+    /// Detects host resources once and attaches a caller-owned RSS policy.
+    pub fn detect_with_process_memory_policy(
+        config: RuntimeGovernorConfig,
+        storage_io: IoConcurrencyBudget,
+        process_memory_policy: ProcessMemoryPolicy,
+    ) -> Self {
+        let mut detector = RuntimeResourceDetector::new();
+        let resources = detector.detect();
+        let governor = Self::new_with_process_memory_policy(
+            config,
+            resources,
+            storage_io,
+            process_memory_policy,
+        );
         *mutex_lock(&governor.inner.resource_detector) = Some(detector);
         governor
     }
@@ -698,10 +751,46 @@ impl RuntimeGovernor {
             let mut state = mutex_lock(&self.inner.state);
             let queue_error = admission_queue_error(&state, waiter, request, Instant::now());
             let resource_error = admission_error(&state, request);
-            let error = resource_error
+            let process_memory_capacity_error = state
+                .process_memory_policy
+                .as_ref()
+                .filter(|policy| request.reserved_memory_bytes() > policy.resident_limit_bytes())
+                .map(|policy| {
+                    admission_error_value(
+                        RuntimeAdmissionCode::MemorySaturated,
+                        request.reserved_memory_bytes(),
+                        policy.resident_limit_bytes(),
+                        false,
+                    )
+                });
+            let mut error = resource_error
                 .filter(|error| !error.is_retryable())
+                .or(process_memory_capacity_error)
                 .or(queue_error)
                 .or(resource_error);
+            let mut process_memory_reservation = None;
+            if error.is_none()
+                && let Some(process_memory_policy) = state.process_memory_policy.clone()
+            {
+                match process_memory_policy.try_reserve(request.reserved_memory_bytes()) {
+                    Ok(reservation) => process_memory_reservation = Some(reservation),
+                    Err(process_memory_error) => {
+                        error = Some(RuntimeAdmissionError {
+                            code: match process_memory_error.code {
+                                ProcessMemoryAdmissionCode::SampleUnavailable => {
+                                    RuntimeAdmissionCode::MemoryPressure
+                                }
+                                ProcessMemoryAdmissionCode::ResidentLimitExceeded => {
+                                    RuntimeAdmissionCode::MemorySaturated
+                                }
+                            },
+                            requested: process_memory_error.requested,
+                            available: process_memory_error.available,
+                            retryable: process_memory_error.retryable,
+                        });
+                    }
+                }
+            }
             match error {
                 Some(error) => {
                     if error.is_retryable() {
@@ -743,6 +832,7 @@ impl RuntimeGovernor {
                                     available: Condvar::new(),
                                 }),
                             }),
+                            process_memory_reservation,
                             released: false,
                         }),
                         waiter
@@ -901,6 +991,14 @@ impl RuntimeGovernor {
             resources_pinned: state.resources_pinned,
         }
     }
+
+    /// Returns the current state of the attached host-owned RSS policy.
+    pub fn process_memory_policy_snapshot(&self) -> Option<ProcessMemoryPolicySnapshot> {
+        mutex_lock(&self.inner.state)
+            .process_memory_policy
+            .as_ref()
+            .map(ProcessMemoryPolicy::snapshot)
+    }
 }
 
 impl RuntimePermit {
@@ -933,6 +1031,9 @@ impl RuntimePermit {
     fn release_inner(&mut self) {
         if self.released {
             return;
+        }
+        if let Some(process_memory_reservation) = self.process_memory_reservation.take() {
+            process_memory_reservation.release();
         }
         {
             let mut state = mutex_lock(&self.governor.state);
@@ -1097,6 +1198,12 @@ impl RuntimeGovernorInner {
         if let Some(signal) = signal {
             signal.notify();
         }
+    }
+}
+
+impl ProcessMemoryPolicyNotifier for RuntimeGovernorInner {
+    fn notify_process_memory_policy_changed(&self) {
+        self.notify_next_admission_waiter();
     }
 }
 
@@ -1535,7 +1642,11 @@ fn write_lock<T>(lock: &RwLock<T>) -> std::sync::RwLockWriteGuard<'_, T> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::{RuntimeMemorySnapshot, RuntimeResourceBudget};
+    use crate::{
+        ProcessMemoryCapabilities, ProcessMemoryPolicyConfig, ProcessMemorySnapshot,
+        RuntimeMemorySnapshot, RuntimeResourceBudget,
+    };
+    use std::num::NonZeroU64;
     use std::sync::Mutex;
 
     fn resources(cpu: usize, available_memory: u64) -> RuntimeResourceSnapshot {
@@ -1557,6 +1668,116 @@ mod tests {
             resources(cpu, available_memory),
             IoConcurrencyBudget::new(4, 1),
         )
+    }
+
+    fn process_memory_snapshot(resident_bytes: u64) -> ProcessMemorySnapshot {
+        ProcessMemorySnapshot {
+            capabilities: ProcessMemoryCapabilities {
+                resident_memory: true,
+                total_page_faults: false,
+                split_page_faults: false,
+            },
+            resident_bytes,
+            peak_resident_bytes: resident_bytes,
+            total_page_faults: None,
+            minor_page_faults: None,
+            major_page_faults: None,
+        }
+    }
+
+    #[test]
+    fn shared_process_memory_policy_coordinates_governors_without_revoking_permits() {
+        let policy = ProcessMemoryPolicy::new(ProcessMemoryPolicyConfig::new(
+            NonZeroU64::new(100).unwrap(),
+        ));
+        policy.update(process_memory_snapshot(20));
+        let first = RuntimeGovernor::new_with_process_memory_policy(
+            RuntimeGovernorConfig::shared_host(),
+            resources(1, 6 * 1024 * 1024 * 1024),
+            IoConcurrencyBudget::new(4, 1),
+            policy.clone(),
+        );
+        let second = RuntimeGovernor::new_with_process_memory_policy(
+            RuntimeGovernorConfig::shared_host(),
+            resources(1, 6 * 1024 * 1024 * 1024),
+            IoConcurrencyBudget::new(4, 1),
+            policy.clone(),
+        );
+        let request = RuntimeWorkRequest::foreground_query(60, 0).with_blocking(false);
+        let permit = first.try_admit(request).unwrap();
+
+        let error = second
+            .try_admit(RuntimeWorkRequest::foreground_query(30, 0).with_blocking(false))
+            .unwrap_err();
+        assert_eq!(error.code, RuntimeAdmissionCode::MemorySaturated);
+        assert!(error.is_retryable());
+        assert_eq!(first.snapshot().admitted_memory_bytes, 60);
+
+        drop(permit);
+        let second_permit = second
+            .try_admit(RuntimeWorkRequest::foreground_query(30, 0).with_blocking(false))
+            .unwrap();
+        drop(second_permit);
+    }
+
+    #[test]
+    fn process_memory_policy_rejects_over_capacity_requests_before_queueing() {
+        let policy = ProcessMemoryPolicy::new(ProcessMemoryPolicyConfig::new(
+            NonZeroU64::new(100).unwrap(),
+        ));
+        policy.update(process_memory_snapshot(20));
+        let governor = RuntimeGovernor::new_with_process_memory_policy(
+            RuntimeGovernorConfig::shared_host(),
+            resources(1, 6 * 1024 * 1024 * 1024),
+            IoConcurrencyBudget::new(4, 1),
+            policy,
+        );
+        let held = governor
+            .try_admit(RuntimeWorkRequest::foreground_query(0, 0).with_blocking(false))
+            .unwrap();
+        let waiter = governor.admission_waiter(RuntimeWorkPriority::Foreground);
+
+        let error = governor
+            .try_admit_waiter(
+                &waiter,
+                RuntimeWorkRequest::foreground_query(101, 0).with_blocking(false),
+            )
+            .unwrap_err();
+        assert_eq!(error.code, RuntimeAdmissionCode::MemorySaturated);
+        assert!(!error.is_retryable());
+        assert_eq!(governor.snapshot().queued_admission_waiters, 0);
+        drop(held);
+    }
+
+    #[test]
+    fn process_memory_policy_requires_host_sample_without_overriding_pinned_resources() {
+        let policy = ProcessMemoryPolicy::new(ProcessMemoryPolicyConfig::new(
+            NonZeroU64::new(100).unwrap(),
+        ));
+        let pinned = resources(1, 6 * 1024 * 1024 * 1024);
+        let governor = RuntimeGovernor::new_with_process_memory_policy(
+            RuntimeGovernorConfig::shared_host(),
+            pinned,
+            IoConcurrencyBudget::new(4, 1),
+            policy.clone(),
+        );
+        governor.pin_resources();
+        let request = RuntimeWorkRequest::foreground_query(1, 0).with_blocking(false);
+        let error = governor.try_admit(request).unwrap_err();
+        assert_eq!(error.code, RuntimeAdmissionCode::MemoryPressure);
+        assert!(error.is_retryable());
+
+        policy.update(process_memory_snapshot(80));
+        let permit = governor.try_admit(request).unwrap();
+        assert_eq!(governor.snapshot().resources, pinned);
+        assert_eq!(
+            governor
+                .process_memory_policy_snapshot()
+                .unwrap()
+                .sampled_resident_bytes,
+            Some(80)
+        );
+        drop(permit);
     }
 
     #[test]
