@@ -129,4 +129,10 @@ pub trait GraphMutationEngine {
         catalog: &Catalog,
         destination: impl AsRef<std::path::Path>,
     ) -> Result<crate::StorageBackupReport>;
+
+    fn register_projected_graph(
+        &mut self,
+        name: &str,
+        definition: crate::ProjectedGraphDefinition,
+    ) -> Result<()>;
 }

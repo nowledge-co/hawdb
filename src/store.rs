@@ -807,6 +807,14 @@ impl hawdb_storage::graph_engine::GraphMutationEngine for GraphStore {
     ) -> hawdb_core::Result<hawdb_storage::StorageBackupReport> {
         GraphStore::backup_to(self, catalog, destination)
     }
+
+    fn register_projected_graph(
+        &mut self,
+        name: &str,
+        definition: hawdb_storage::ProjectedGraphDefinition,
+    ) -> hawdb_core::Result<()> {
+        GraphStore::register_projected_graph(self, name, definition)
+    }
 }
 
 pub use hawdb_storage::scan::GraphScanControl;
