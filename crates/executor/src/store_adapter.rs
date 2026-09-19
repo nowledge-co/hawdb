@@ -14,16 +14,16 @@
 
 //! Root storage adapter for executor-owned graph read contracts.
 
-use crate::error::Result;
-use crate::schema::Catalog;
-use crate::store::{GraphScanControl, GraphStore};
-use hawdb_core::{LabelId, RelTypeId};
-use hawdb_executor::store::{
+use crate::store::{
     AdjacencyReadMemory, GraphExecutionRead, GraphExecutionWrite, PrunedNodeScan,
     PrunedRelationshipScan, ScanControl, SourceScanCandidateRow, SourceScanCandidateVisit,
     SourceScanReadLimits,
 };
-use hawdb_executor::QueryMemoryLease;
+use hawdb_core::error::Result;
+use hawdb_core::{LabelId, RelTypeId};
+use hawdb_core::schema::Catalog;
+use hawdb_storage::store::{GraphScanControl, GraphStore};
+use crate::QueryMemoryLease;
 use hawdb_plan::NodeProjectionAccess;
 use hawdb_storage::{
     AdjacencyDirection, GraphMutation, MutationLimits, MutationSummary, NodeId, NodeRecord,
@@ -163,17 +163,17 @@ impl GraphExecutionRead for GraphStore {
             property,
             values,
             required_properties,
-            |node| match consumer(node) {
-                Ok(control) => to_store_control(control),
+            &mut |node| match consumer(node) {
+                Ok(control) => Ok(control),
                 Err(error) => {
                     consumer_error = Some(error);
-                    GraphScanControl::Stop
+                    Ok(ScanControl::Stop)
                 }
             },
         )?;
         match consumer_error {
             Some(error) => Err(error),
-            None => Ok(to_execution_control(control)),
+            None => Ok(control),
         }
     }
 
@@ -272,7 +272,7 @@ impl GraphExecutionRead for GraphStore {
         let visit = GraphStore::visit_published_source_scan_candidates_bounded(
             self,
             predicate,
-            crate::store::SourceScanCandidateLimits::bounded(
+            hawdb_storage::store::SourceScanCandidateLimits::bounded(
                 limits.io_depth,
                 limits.max_coalesced_bytes,
                 limits.max_wave_bytes,
@@ -286,7 +286,7 @@ impl GraphExecutionRead for GraphStore {
                 Ok(control) => Ok(to_store_control(control)),
                 Err(error) => {
                     consumer_error = Some(error);
-                    Ok(crate::store::GraphScanControl::Stop)
+                    Ok(hawdb_storage::store::GraphScanControl::Stop)
                 }
             },
         )?;
@@ -294,7 +294,7 @@ impl GraphExecutionRead for GraphStore {
             return Err(error);
         }
         Ok(match visit {
-            crate::store::SourceScanCandidateVisit::Rows {
+            hawdb_storage::store::SourceScanCandidateVisit::Rows {
                 graph_epoch,
                 skipped_segment_count,
                 report,
@@ -305,7 +305,7 @@ impl GraphExecutionRead for GraphStore {
                 report,
                 candidate_count,
             },
-            crate::store::SourceScanCandidateVisit::Fallback(reason) => {
+            hawdb_storage::store::SourceScanCandidateVisit::Fallback(reason) => {
                 SourceScanCandidateVisit::Fallback(reason)
             }
         })
@@ -512,7 +512,7 @@ fn push_ordered_adjacency_entry(
     let entry_bytes = std::mem::size_of::<(NodeId, RelId)>();
     let required_bytes = entries.len().saturating_add(1).saturating_mul(entry_bytes);
     if required_bytes > memory_budget_bytes {
-        return Err(crate::error::HawDBError::Execution(format!(
+        return Err(hawdb_core::error::HawDBError::Execution(format!(
             "ordered adjacency keys use {required_bytes} bytes, exceeding blocking_operator_bytes {memory_budget_bytes}"
         )));
     }
@@ -536,7 +536,7 @@ fn emit_ordered_adjacency_entries(
     entries.sort_unstable();
     for (_, relationship_id) in entries {
         let Some(relationship) = store.relationship_owned(relationship_id)? else {
-            return Err(crate::error::HawDBError::StorageIntegrity(format!(
+            return Err(hawdb_core::error::HawDBError::StorageIntegrity(format!(
                 "ordered adjacency references missing relationship {}",
                 relationship_id.0
             )));

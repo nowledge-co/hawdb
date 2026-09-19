@@ -19,9 +19,6 @@ pub(crate) use hawdb_relational::{
     RelationalReturningProjection,
 };
 
-mod index_access;
-mod row_access;
-
 #[cfg(test)]
 #[path = "relational_sql/query.rs"]
 mod query;
@@ -44,8 +41,8 @@ pub(crate) use hawdb_relational::query::{
     RelationalQueryResourceContext,
 };
 pub(crate) use hawdb_sql::{PreparedRelationalSql, RelationalPlanTemplateCache};
-pub(crate) use index_access::RelationalIndexReadMode;
-pub(crate) use row_access::RelationalRowReadMode;
+pub(crate) use hawdb_relational::index_access::RelationalIndexReadMode;
+pub(crate) use hawdb_relational::row_access::RelationalRowReadMode;
 
 pub(crate) type RelationalQueryReadModes<'a> =
     hawdb_relational::query::RelationalQueryReadModes<'a, crate::store::GraphStore>;

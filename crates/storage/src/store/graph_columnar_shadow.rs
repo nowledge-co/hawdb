@@ -198,7 +198,8 @@ impl ColumnarShadowAdmission {
     /// token's meaning is that admission actually happened, so only code
     /// paths that perform it may issue one — external callers get facades
     /// that admit for themselves.
-    pub(crate) fn pre_admitted(allowance_bytes: u64) -> Self {
+    #[doc(hidden)]
+    pub fn pre_admitted(allowance_bytes: u64) -> Self {
         Self {
             _permit: None,
             allowance_bytes: Some(allowance_bytes),

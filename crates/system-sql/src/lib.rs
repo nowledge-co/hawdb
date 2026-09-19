@@ -3106,3 +3106,5 @@ pub(crate) mod loom_tests {
         }
     }
 }
+
+mod graph_store_adapter;

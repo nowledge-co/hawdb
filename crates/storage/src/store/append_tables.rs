@@ -15,7 +15,8 @@
 use super::*;
 
 impl GraphStore {
-    pub(crate) fn append_state(&self) -> &hawdb_storage::AppendState {
+    #[doc(hidden)]
+    pub fn append_state(&self) -> &hawdb_storage::AppendState {
         &self.append_state
     }
 
@@ -60,7 +61,8 @@ impl GraphStore {
         )
     }
 
-    pub(crate) fn read_append_partition_from_state_bounded(
+    #[doc(hidden)]
+    pub fn read_append_partition_from_state_bounded(
         &self,
         append_state: &hawdb_storage::AppendState,
         table: &str,

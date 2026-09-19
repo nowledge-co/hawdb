@@ -16,7 +16,8 @@ use super::{GraphStore, RelationalIndexReadLimits, RelationalTransactionIndexVie
 use std::sync::Arc;
 
 impl GraphStore {
-    pub(crate) fn begin_authoritative_relational_transaction_index(
+    #[doc(hidden)]
+    pub fn begin_authoritative_relational_transaction_index(
         &self,
     ) -> crate::Result<Option<RelationalTransactionIndexView>> {
         if !self

@@ -19,7 +19,8 @@ use hawdb_storage::statistics_refresh::{
 };
 
 impl GraphStore {
-    pub(crate) fn optimizer_statistics_refresh_work(
+    #[doc(hidden)]
+    pub fn optimizer_statistics_refresh_work(
         &self,
         catalog: &Catalog,
     ) -> Option<OptimizerStatisticsRefreshWork> {
@@ -222,7 +223,8 @@ impl GraphStore {
         })
     }
 
-    pub(crate) fn restore_checkpoint_statistics(
+    #[doc(hidden)]
+    pub fn restore_checkpoint_statistics(
         &mut self,
         statistics: GraphStatistics,
         dirty_state: AdvancedStatisticsDirtyState,
@@ -231,11 +233,13 @@ impl GraphStore {
         self.advanced_statistics_dirty = dirty_state;
     }
 
-    pub(crate) fn checkpoint_statistics_snapshot(&self) -> GraphStatistics {
+    #[doc(hidden)]
+    pub fn checkpoint_statistics_snapshot(&self) -> GraphStatistics {
         self.checkpoint_statistics.clone()
     }
 
-    pub(crate) fn advanced_statistics_dirty_snapshot(&self) -> AdvancedStatisticsDirtyState {
+    #[doc(hidden)]
+    pub fn advanced_statistics_dirty_snapshot(&self) -> AdvancedStatisticsDirtyState {
         self.advanced_statistics_dirty
     }
 }

@@ -12,13 +12,14 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-use crate::store::{GraphStore, RelationalIndexProbeStatistics};
-use hawdb_relational::index_runtime::RelationalIndexStoreReader;
+use crate::index_runtime::RelationalIndexStoreReader;
+use hawdb_storage::store::{GraphStore, RelationalIndexProbeStatistics};
 use hawdb_storage::relational_index_view::RelationalIndexReadViewReport;
 use hawdb_storage::{RelationalIndexReadLimits, RelationalIndexShadowError, RelationalKey};
 
-pub(crate) type RelationalIndexReadMode<'a> =
-    hawdb_relational::index_runtime::RelationalIndexReadMode<'a, GraphStore>;
+#[doc(hidden)]
+pub type RelationalIndexReadMode<'a> =
+    crate::index_runtime::RelationalIndexReadMode<'a, GraphStore>;
 
 impl RelationalIndexStoreReader for GraphStore {
     fn relational_index_probe_statistics(

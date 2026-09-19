@@ -16,4 +16,6 @@ hawdb-core = { path = "../core" }
 hawdb-integrity = { path = "../integrity" }
 hawdb-analytics = { path = "../analytics" }
 hawdb-telemetry = { path = "../telemetry" }
+hawdb-plan = { path = "../plan" }
+hawdb-qos = { path = "../qos" }
 zstd = "0.13"

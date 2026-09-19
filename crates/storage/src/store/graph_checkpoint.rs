@@ -135,7 +135,8 @@ impl GraphStore {
         self.checkpoint_with_reader_epoch(catalog, None)
     }
 
-    pub(crate) fn compact_relational_row_pages(
+    #[doc(hidden)]
+    pub fn compact_relational_row_pages(
         &mut self,
         catalog: &Catalog,
         oldest_reader_commit_epoch: Option<u64>,
@@ -270,7 +271,8 @@ impl GraphStore {
         Ok(report)
     }
 
-    pub(crate) fn compact_relational_overflow(
+    #[doc(hidden)]
+    pub fn compact_relational_overflow(
         &mut self,
         catalog: &Catalog,
         oldest_reader_commit_epoch: Option<u64>,
@@ -418,7 +420,8 @@ impl GraphStore {
         self.publish_prepared_checkpoint(prepared, oldest_reader_commit_epoch)
     }
 
-    pub(crate) fn checkpoint_source(&self) -> Self {
+    #[doc(hidden)]
+    pub fn checkpoint_source(&self) -> Self {
         let mut source = self.snapshot();
         source.durable = self.durable.clone();
         if let Some(durable) = &mut source.durable {
@@ -427,7 +430,8 @@ impl GraphStore {
         source
     }
 
-    pub(crate) fn prepare_checkpoint(
+    #[doc(hidden)]
+    pub fn prepare_checkpoint(
         &self,
         catalog: &Catalog,
     ) -> Result<Option<PreparedCheckpoint>> {
@@ -1011,7 +1015,8 @@ impl GraphStore {
         )
     }
 
-    pub(crate) fn publish_prepared_checkpoint_with_reader_generations(
+    #[doc(hidden)]
+    pub fn publish_prepared_checkpoint_with_reader_generations(
         &mut self,
         prepared: PreparedCheckpoint,
         oldest_reader_commit_epoch: Option<u64>,
@@ -1401,7 +1406,8 @@ impl GraphStore {
         }
     }
 
-    pub(crate) fn checkpoint_estimated_operations(&self) -> usize {
+    #[doc(hidden)]
+    pub fn checkpoint_estimated_operations(&self) -> usize {
         let statistics = self.basic_statistics();
         let graph_operations = statistics
             .node_count

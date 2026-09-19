@@ -12,13 +12,14 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-use crate::error::Result;
-use crate::store::{GraphStore, RelationalTransactionRowView};
-use hawdb_relational::row_runtime::RelationalRowStoreReader;
+use crate::row_runtime::RelationalRowStoreReader;
+use hawdb_core::error::Result;
+use hawdb_storage::store::{GraphStore, RelationalTransactionRowView};
 use hawdb_storage::RelationalRowPageSnapshotReader;
 
-pub(crate) type RelationalRowReadMode<'a> =
-    hawdb_relational::row_runtime::RelationalRowReadMode<'a, GraphStore>;
+#[doc(hidden)]
+pub type RelationalRowReadMode<'a> =
+    crate::row_runtime::RelationalRowReadMode<'a, GraphStore>;
 
 impl RelationalRowStoreReader for GraphStore {
     type TransactionRows = RelationalTransactionRowView;

@@ -153,7 +153,8 @@ pub(super) struct GenerationReclamationDebt {
 pub(super) use hawdb_storage::checkpoint::CheckpointImage;
 
 #[derive(Debug)]
-pub(crate) struct PreparedCheckpoint {
+#[doc(hidden)]
+pub struct PreparedCheckpoint {
     pub(super) source_commit_epoch: u64,
     pub(super) source_checkpoint_epoch: u64,
     pub(super) source_next_lsn: u64,

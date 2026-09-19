@@ -78,7 +78,6 @@ mod mutation;
 mod observer;
 mod read;
 mod scan;
-mod store_adapter;
 #[cfg(test)]
 mod traversal;
 mod vector;

@@ -38,7 +38,8 @@ pub use hawdb_storage::relational::{
 use hawdb_storage::relational_index_view::{
     map_index_row_snapshot_error, CanonicalRelationalIndexRowSource,
 };
-pub(crate) use hawdb_storage::relational_index_view::{
+#[doc(hidden)]
+pub use hawdb_storage::relational_index_view::{
     RelationalIndexProbeStatistics, RelationalIndexReadView, RelationalTransactionIndexView,
 };
 pub use hawdb_storage::relational_index_view::{

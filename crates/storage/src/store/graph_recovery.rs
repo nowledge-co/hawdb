@@ -116,7 +116,8 @@ impl GraphStore {
         Ok(())
     }
 
-    pub(crate) fn import_hawdb_snapshot_rows_with_source_fingerprint(
+    #[doc(hidden)]
+    pub fn import_hawdb_snapshot_rows_with_source_fingerprint(
         &mut self,
         catalog: &mut Catalog,
         import: HawDBSnapshotRowsImport,

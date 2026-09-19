@@ -126,7 +126,8 @@ pub use doctor::{
     DatabaseDoctor, WalDoctorOptions, WalRepairAcknowledgement, WalTailRepairPlan,
     WalTailRepairReason, WalTailRepairReport, WAL_DOCTOR_REPAIR_PROTOCOL,
 };
-pub(crate) use durable::PreparedCheckpoint;
+#[doc(hidden)]
+pub use durable::PreparedCheckpoint;
 use durable::{
     load_published_canonical_adjacency, load_published_property_projection, CheckpointImage,
     CheckpointManifestArtifacts, DerivedArtifactBuildConfig, DurableManifest, DurableOpenMode,
@@ -155,7 +156,8 @@ use hawdb_storage::graph_constraints::{
     validate_relationship_record_constraints, validate_relationship_unique_constraints,
     validate_unique_constraints, validate_unique_property, validate_unique_relationship_property,
 };
-pub(crate) use hawdb_storage::mutation::evaluate::{
+#[doc(hidden)]
+pub use hawdb_storage::mutation::evaluate::{
     apply_node_assignments_to_properties, evaluate_node_set_value,
 };
 use hawdb_storage::predicate::{
@@ -165,11 +167,14 @@ use hawdb_storage::projection::artifact::{
     decode_projected_graph_artifacts, split_projected_graph_artifact_checksum,
 };
 pub use hawdb_storage::scan::{ScanPrunedNodeScan, ScanPrunedRelationshipScan};
-pub(crate) use hawdb_storage::source_scan;
+#[doc(hidden)]
+pub use hawdb_storage::source_scan;
 pub use hawdb_storage::source_scan::SourceScanRow;
 #[cfg(test)]
-pub(crate) use hawdb_storage::statistics::compute_statistics;
-pub(crate) use hawdb_storage::statistics::{
+#[doc(hidden)]
+pub use hawdb_storage::statistics::compute_statistics;
+#[doc(hidden)]
+pub use hawdb_storage::statistics::{
     composite_property_index_key, composite_property_index_unique_values, compute_basic_statistics,
     compute_index_statistics_samples, compute_node_property_distinct_counts_from_index,
     compute_relationship_property_distinct_counts_from_index, compute_statistics_for_catalog,
@@ -180,7 +185,8 @@ pub(crate) use hawdb_storage::statistics::{
 use hawdb_storage::statistics_refresh::{
     node_property_supports_optimizer_statistics, MAX_BOUNDED_PATH_STAT_HOPS,
 };
-pub(crate) use hawdb_storage::statistics_refresh::{
+#[doc(hidden)]
+pub use hawdb_storage::statistics_refresh::{
     retain_supported_property_statistics, retain_valid_index_statistics_samples,
     OptimizerStatisticsRefreshWork,
 };
@@ -188,7 +194,8 @@ pub(crate) use hawdb_storage::statistics_refresh::{
 use hawdb_storage::text::encode_properties;
 #[cfg(test)]
 use hawdb_storage::text::envelope::DURABLE_COMPRESSION_HEADER;
-pub(crate) use hawdb_storage::text::envelope::{
+#[doc(hidden)]
+pub use hawdb_storage::text::envelope::{
     encode_durable_text, read_durable_text_bytes, read_durable_text_bytes_with_limit,
 };
 use hawdb_storage::GraphIndexReadMetrics;
@@ -258,7 +265,8 @@ pub use hawdb_storage::{
 };
 pub use hawdb_storage::{OptimizerStatisticsRefreshOptions, OptimizerStatisticsRefreshReport};
 pub use hawdb_storage::{RelationalIndexArtifactMetadata, RelationalIndexGenerationArtifacts};
-pub(crate) use hawdb_storage::{WalSyncGroupFlush, WalSyncGroupProgress};
+#[doc(hidden)]
+pub use hawdb_storage::{WalSyncGroupFlush, WalSyncGroupProgress};
 use relational_index_shadow::RelationalIndexShadowState;
 pub use relational_index_shadow::{
     RelationalConstraintQualificationProbeReport, RelationalConstraintQualificationReport,
@@ -269,12 +277,14 @@ pub use relational_index_shadow::{
     RelationalIndexViewQualificationOptions, RelationalIndexViewQualificationReport,
     RELATIONAL_CONSTRAINT_QUALIFICATION_PROTOCOL, RELATIONAL_INDEX_VIEW_QUALIFICATION_PROTOCOL,
 };
-pub(crate) use relational_index_shadow::{
+#[doc(hidden)]
+pub use relational_index_shadow::{
     RelationalIndexProbeStatistics, RelationalTransactionIndexView,
 };
 pub use relational_row_pages::RelationalRowPageRecoveryStatus;
 use relational_row_pages::RelationalRowPageState;
-pub(crate) use relational_row_pages::RelationalTransactionRowView;
+#[doc(hidden)]
+pub use relational_row_pages::RelationalTransactionRowView;
 use std::collections::{BTreeMap, BTreeSet};
 use std::fs;
 #[cfg(test)]
@@ -298,7 +308,8 @@ use hawdb_storage::durable_manifest::{safe_reclaim_commit_epoch, STORAGE_VERSION
 const MANIFEST_FILE: &str = "manifest.hawdb";
 const PROJECTED_GRAPHS_FILE: &str = "projected_graphs.hawdb";
 const STABLE_ID_MAPPING_FILE: &str = "stable_ids.hawdb";
-pub(crate) use hawdb_storage::checkpoint::{
+#[doc(hidden)]
+pub use hawdb_storage::checkpoint::{
     relational_checkpoint_metadata, split_checkpoint_checksum,
 };
 const BACKUP_MANIFEST_FILE: &str = "backup.hawdb";
@@ -329,7 +340,8 @@ fn process_crash_failpoint(point: &str) {
 
 #[cfg(test)]
 #[derive(Clone, Copy, PartialEq, Eq)]
-pub(crate) enum WalAppendFailure {
+#[doc(hidden)]
+pub enum WalAppendFailure {
     PartialWrite,
     Rollback,
     Sync,
@@ -343,7 +355,8 @@ thread_local! {
 }
 
 #[cfg(test)]
-pub(crate) fn set_wal_append_failpoint(failure: WalAppendFailure) {
+#[doc(hidden)]
+pub fn set_wal_append_failpoint(failure: WalAppendFailure) {
     WAL_APPEND_FAILURE.set(Some(failure));
 }
 
@@ -449,7 +462,8 @@ fn wal_apply_failpoint() -> Result<()> {
 /// by recovery. A torn tail ends the rendering, while corruption appends a
 /// terminal marker so damaged-file comparisons remain deterministic.
 #[cfg(test)]
-pub(crate) fn render_wal_records_for_test(path: &Path) -> std::io::Result<String> {
+#[doc(hidden)]
+pub fn render_wal_records_for_test(path: &Path) -> std::io::Result<String> {
     use std::io::{Error, ErrorKind};
     let invalid = |reason: String| Error::new(ErrorKind::InvalidData, reason);
     let mut cursor =
@@ -483,7 +497,8 @@ pub(crate) fn render_wal_records_for_test(path: &Path) -> std::io::Result<String
 /// WAL generation, emulating a recycled-log region past the logical tail.
 /// Recovery must read it as clean end of log.
 #[cfg(test)]
-pub(crate) fn append_stale_generation_wal_fragment(path: &Path) -> Result<()> {
+#[doc(hidden)]
+pub fn append_stale_generation_wal_fragment(path: &Path) -> Result<()> {
     let bytes = fs::read(path)?;
     let (generation, _) = wal_codec::frame::decode_binary_wal_header(&bytes)?;
     let position = bytes.len() as u64 - WAL_BINARY_FILE_HEADER_BYTES as u64;
@@ -500,12 +515,14 @@ pub(crate) fn append_stale_generation_wal_fragment(path: &Path) -> Result<()> {
 }
 
 #[cfg(test)]
-pub(crate) fn set_wal_apply_failpoint(operations_before_failure: Option<usize>) {
+#[doc(hidden)]
+pub fn set_wal_apply_failpoint(operations_before_failure: Option<usize>) {
     WAL_APPLY_FAILPOINT_REMAINING.with(|remaining| remaining.set(operations_before_failure));
 }
 
 #[cfg(test)]
-pub(crate) fn set_wal_group_sync_failpoint(enabled: bool) {
+#[doc(hidden)]
+pub fn set_wal_group_sync_failpoint(enabled: bool) {
     WAL_GROUP_SYNC_FAILPOINT.with(|failpoint| failpoint.set(enabled));
 }
 
@@ -524,7 +541,8 @@ type PendingRelationship = (RelId, NodeId, NodeId, RelTypeId, BTreeMap<String, V
 pub type GraphSnapshotNodeImport = (NodeId, String, BTreeMap<String, Value>);
 pub type GraphSnapshotRelationshipImport = (RelId, NodeId, NodeId, String, BTreeMap<String, Value>);
 
-pub(crate) struct HawDBSnapshotRowsImport {
+#[doc(hidden)]
+pub struct HawDBSnapshotRowsImport {
     pub stable_id_mapping: StoreStableIdMapping,
     pub source_fingerprint: String,
     pub nodes: Vec<GraphSnapshotNodeImport>,
@@ -549,7 +567,8 @@ struct RelationshipMatchRequest<'a> {
     rel_properties: &'a BTreeMap<String, Value>,
 }
 
-pub(crate) use hawdb_storage::graph_index::{
+#[doc(hidden)]
+pub use hawdb_storage::graph_index::{
     CompositePropertyIndex, FullTextPropertyIndex, NodePropertyIndex, RelationshipPropertyIndex,
 };
 
@@ -575,7 +594,8 @@ struct MutationCommitOptions<'a> {
 /// by each statement; the live store publishes those operations as one WAL
 /// batch instead of recomputing predicates against the pre-transaction state.
 #[derive(Debug)]
-pub(crate) struct GraphMutationTransaction {
+#[doc(hidden)]
+pub struct GraphMutationTransaction {
     base_commit_epoch: u64,
     catalog: Catalog,
     store: GraphStore,
@@ -584,7 +604,8 @@ pub(crate) struct GraphMutationTransaction {
 }
 
 #[derive(Debug)]
-pub(crate) struct GraphMutationSavepoint {
+#[doc(hidden)]
+pub struct GraphMutationSavepoint {
     catalog: Catalog,
     store: GraphStore,
     op_len: usize,
@@ -592,30 +613,49 @@ pub(crate) struct GraphMutationSavepoint {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
-pub(crate) struct GraphAdjacencyLockIdentity {
-    pub(crate) node_id: NodeId,
-    pub(crate) rel_type: Option<RelTypeId>,
-    pub(crate) direction: AdjacencyDirection,
+#[doc(hidden)]
+pub struct GraphAdjacencyLockIdentity {
+    #[doc(hidden)]
+    pub node_id: NodeId,
+    #[doc(hidden)]
+    pub rel_type: Option<RelTypeId>,
+    #[doc(hidden)]
+    pub direction: AdjacencyDirection,
 }
 
 #[derive(Debug, Default)]
-pub(crate) struct GraphMutationLockFootprint {
-    pub(crate) requires_database_lock: bool,
-    pub(crate) allocates_node_ids: bool,
-    pub(crate) allocates_relationship_ids: bool,
-    pub(crate) node_label_names: BTreeSet<String>,
-    pub(crate) exclusive_node_label_names: BTreeSet<String>,
-    pub(crate) node_label_read_names: BTreeSet<String>,
-    pub(crate) relationship_type_names: BTreeSet<String>,
-    pub(crate) exclusive_relationship_type_names: BTreeSet<String>,
-    pub(crate) node_writes: BTreeSet<NodeId>,
-    pub(crate) relationship_writes: BTreeSet<RelId>,
-    pub(crate) node_delete_guard_reads: BTreeSet<NodeId>,
-    pub(crate) node_delete_guard_writes: BTreeSet<NodeId>,
-    pub(crate) adjacency_writes: BTreeSet<GraphAdjacencyLockIdentity>,
+#[doc(hidden)]
+pub struct GraphMutationLockFootprint {
+    #[doc(hidden)]
+    pub requires_database_lock: bool,
+    #[doc(hidden)]
+    pub allocates_node_ids: bool,
+    #[doc(hidden)]
+    pub allocates_relationship_ids: bool,
+    #[doc(hidden)]
+    pub node_label_names: BTreeSet<String>,
+    #[doc(hidden)]
+    pub exclusive_node_label_names: BTreeSet<String>,
+    #[doc(hidden)]
+    pub node_label_read_names: BTreeSet<String>,
+    #[doc(hidden)]
+    pub relationship_type_names: BTreeSet<String>,
+    #[doc(hidden)]
+    pub exclusive_relationship_type_names: BTreeSet<String>,
+    #[doc(hidden)]
+    pub node_writes: BTreeSet<NodeId>,
+    #[doc(hidden)]
+    pub relationship_writes: BTreeSet<RelId>,
+    #[doc(hidden)]
+    pub node_delete_guard_reads: BTreeSet<NodeId>,
+    #[doc(hidden)]
+    pub node_delete_guard_writes: BTreeSet<NodeId>,
+    #[doc(hidden)]
+    pub adjacency_writes: BTreeSet<GraphAdjacencyLockIdentity>,
 }
 
-pub(crate) use hawdb_storage::mutation::{
+#[doc(hidden)]
+pub use hawdb_storage::mutation::{
     ensure_additional_mutation_limits, ensure_mutation_commit_limits, estimated_properties_bytes,
     estimated_value_bytes, remaining_mutation_affected_rows, remaining_mutation_operations,
 };
@@ -635,7 +675,8 @@ pub use hawdb_storage::consistency::{
 
 /// Mutation domains that invalidate an out-of-core advanced-statistics snapshot.
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
-pub(crate) struct AdvancedStatisticsDirtyState {
+#[doc(hidden)]
+pub struct AdvancedStatisticsDirtyState {
     node_topology: bool,
     relationship_topology: bool,
     node_properties: bool,
@@ -738,30 +779,6 @@ pub struct GraphStore {
     durable: Option<DurableStore>,
 }
 
-impl hawdb_system_sql::SystemSqlStore for GraphStore {
-    fn commit_epoch(&self) -> u64 {
-        GraphStore::commit_epoch(self)
-    }
-
-    fn append_storage_residency_report(&self) -> hawdb_storage::AppendStorageResidencyReport {
-        GraphStore::append_storage_residency_report(self)
-    }
-
-    fn statistics(&self, catalog: &Catalog) -> GraphStatistics {
-        GraphStore::statistics(self, catalog)
-    }
-
-    fn projected_graph_statuses(&self) -> Vec<hawdb_storage::ProjectedGraphStatus> {
-        GraphStore::projected_graph_statuses(self)
-    }
-
-    fn search_projection_changefeed_status(
-        &self,
-    ) -> hawdb_storage::SearchProjectionChangefeedStatus {
-        GraphStore::search_projection_changefeed_status(self)
-    }
-}
-
 impl hawdb_storage::graph_engine::GraphMutationEngine for GraphStore {
     fn plan_schema_maintenance(
         &self,
@@ -821,7 +838,8 @@ pub use hawdb_storage::scan::GraphScanControl;
 
 /// Root-internal engine configuration that must not join the storage contract:
 /// the sink type is a facade observability interface, not a storage concept.
-pub(crate) trait StoreTelemetry {
+#[doc(hidden)]
+pub trait StoreTelemetry {
     fn set_telemetry_sink(&mut self, telemetry: Option<std::sync::Arc<dyn TelemetrySink>>);
 }
 
@@ -834,7 +852,8 @@ impl StoreTelemetry for GraphStore {
 /// Root-internal engine surface that intentionally stays out of the storage
 /// contract: these methods are `pub(crate)` in the root crate, so publishing
 /// them through the `pub` read/mutation contract would expose them downstream.
-pub(crate) trait InternalGraphEngine {
+#[doc(hidden)]
+pub trait InternalGraphEngine {
     fn ensure_usable(&self) -> Result<()>;
 
     /// Root-shaped adjacency visitor: the embedded facade's helpers use this
@@ -987,7 +1006,8 @@ pub enum SourceScanCandidateRead {
 /// returned only before the first row can reach the consumer; failures after
 /// streaming starts are reported as errors so callers never duplicate output.
 #[derive(Debug, Clone, PartialEq)]
-pub(crate) enum SourceScanCandidateVisit {
+#[doc(hidden)]
+pub enum SourceScanCandidateVisit {
     Rows {
         graph_epoch: u64,
         skipped_segment_count: usize,
@@ -998,7 +1018,8 @@ pub(crate) enum SourceScanCandidateVisit {
 }
 
 #[derive(Debug, Clone, Copy)]
-pub(crate) struct SourceScanCandidateLimits {
+#[doc(hidden)]
+pub struct SourceScanCandidateLimits {
     io_depth: NonZeroUsize,
     max_coalesced_bytes: NonZeroU64,
     max_wave_bytes: NonZeroU64,
@@ -1019,7 +1040,8 @@ impl SourceScanCandidateLimits {
         }
     }
 
-    pub(crate) const fn bounded(
+    #[doc(hidden)]
+    pub const fn bounded(
         io_depth: NonZeroUsize,
         max_coalesced_bytes: NonZeroU64,
         max_wave_bytes: NonZeroU64,
@@ -1069,23 +1091,28 @@ impl RelationshipScanPruningCandidate {
 }
 
 impl GraphMutationTransaction {
-    pub(crate) fn is_read_only(&self) -> bool {
+    #[doc(hidden)]
+    pub fn is_read_only(&self) -> bool {
         self.ops.is_empty()
     }
 
-    pub(crate) fn catalog(&self) -> &Catalog {
+    #[doc(hidden)]
+    pub fn catalog(&self) -> &Catalog {
         &self.catalog
     }
 
-    pub(crate) fn store(&self) -> &GraphStore {
+    #[doc(hidden)]
+    pub fn store(&self) -> &GraphStore {
         &self.store
     }
 
-    pub(crate) fn catalog_and_store_mut(&mut self) -> (&mut Catalog, &mut GraphStore) {
+    #[doc(hidden)]
+    pub fn catalog_and_store_mut(&mut self) -> (&mut Catalog, &mut GraphStore) {
         (&mut self.catalog, &mut self.store)
     }
 
-    pub(crate) fn savepoint(&self) -> GraphMutationSavepoint {
+    #[doc(hidden)]
+    pub fn savepoint(&self) -> GraphMutationSavepoint {
         GraphMutationSavepoint {
             catalog: self.catalog.clone(),
             store: self.store.snapshot(),
@@ -1094,14 +1121,16 @@ impl GraphMutationTransaction {
         }
     }
 
-    pub(crate) fn restore(&mut self, savepoint: GraphMutationSavepoint) {
+    #[doc(hidden)]
+    pub fn restore(&mut self, savepoint: GraphMutationSavepoint) {
         self.catalog = savepoint.catalog;
         self.store = savepoint.store;
         self.ops.truncate(savepoint.op_len);
         self.rows.truncate(savepoint.row_len);
     }
 
-    pub(crate) fn lock_footprint_since(
+    #[doc(hidden)]
+    pub fn lock_footprint_since(
         &self,
         savepoint: &GraphMutationSavepoint,
     ) -> Result<GraphMutationLockFootprint> {
@@ -1116,7 +1145,8 @@ impl GraphMutationTransaction {
         Ok(footprint)
     }
 
-    pub(crate) fn stage_mutation_with_limits(
+    #[doc(hidden)]
+    pub fn stage_mutation_with_limits(
         &mut self,
         mutation: GraphMutation,
         limits: MutationLimits,
@@ -1124,7 +1154,8 @@ impl GraphMutationTransaction {
         self.stage_mutation(mutation, limits, true)
     }
 
-    pub(crate) fn stage_mutation_without_commit_rows(
+    #[doc(hidden)]
+    pub fn stage_mutation_without_commit_rows(
         &mut self,
         mutation: GraphMutation,
         limits: MutationLimits,
@@ -1344,7 +1375,8 @@ impl GraphStore {
         Self::default()
     }
 
-    pub(crate) fn ensure_usable(&self) -> Result<()> {
+    #[doc(hidden)]
+    pub fn ensure_usable(&self) -> Result<()> {
         if self.integrity_poisoned.load(AtomicOrdering::Acquire) {
             return Err(HawDBError::Storage(
                 "database handle is poisoned after a runtime storage integrity failure; close and reopen the database before issuing more operations"
@@ -1365,7 +1397,8 @@ impl GraphStore {
         self.post_wal_apply_poisoned
     }
 
-    pub(crate) fn projection_generation_store(
+    #[doc(hidden)]
+    pub fn projection_generation_store(
         &self,
     ) -> Result<hawdb_storage::ProjectionGenerationStore> {
         self.projection_generations.clone().ok_or_else(|| {
@@ -1379,7 +1412,8 @@ impl GraphStore {
         self.post_wal_apply_poisoned || self.integrity_poisoned.load(AtomicOrdering::Acquire)
     }
 
-    pub(crate) fn poison_on_storage_error<T>(&self, result: &Result<T>) {
+    #[doc(hidden)]
+    pub fn poison_on_storage_error<T>(&self, result: &Result<T>) {
         if matches!(result, Err(HawDBError::StorageIntegrity(_))) {
             self.integrity_poisoned.store(true, AtomicOrdering::Release);
         }
@@ -1687,7 +1721,8 @@ impl GraphStore {
         Ok(())
     }
 
-    pub(crate) fn relational_state(&self) -> &RelationalState {
+    #[doc(hidden)]
+    pub fn relational_state(&self) -> &RelationalState {
         &self.relational_state
     }
 
@@ -1715,14 +1750,16 @@ impl GraphStore {
         )
     }
 
-    pub(crate) fn begin_wal_sync_group(&mut self) -> Result<bool> {
+    #[doc(hidden)]
+    pub fn begin_wal_sync_group(&mut self) -> Result<bool> {
         let Some(durable) = &mut self.durable else {
             return Ok(false);
         };
         durable.begin_wal_sync_group()
     }
 
-    pub(crate) fn wal_sync_group_progress(&self) -> WalSyncGroupProgress {
+    #[doc(hidden)]
+    pub fn wal_sync_group_progress(&self) -> WalSyncGroupProgress {
         self.durable
             .as_ref()
             .map_or_else(WalSyncGroupProgress::default, |durable| {
@@ -1730,13 +1767,15 @@ impl GraphStore {
             })
     }
 
-    pub(crate) fn wal_sync_group_active(&self) -> bool {
+    #[doc(hidden)]
+    pub fn wal_sync_group_active(&self) -> bool {
         self.durable
             .as_ref()
             .is_some_and(DurableStore::wal_sync_group_active)
     }
 
-    pub(crate) fn finish_wal_sync_group(&mut self) -> Result<WalSyncGroupFlush> {
+    #[doc(hidden)]
+    pub fn finish_wal_sync_group(&mut self) -> Result<WalSyncGroupFlush> {
         let Some(durable) = &mut self.durable else {
             return Ok(WalSyncGroupFlush::default());
         };
@@ -1839,15 +1878,18 @@ impl GraphStore {
         )
     }
 
-    pub(crate) fn search_projection_database_identity(&self) -> Option<hawdb_core::Uuid> {
+    #[doc(hidden)]
+    pub fn search_projection_database_identity(&self) -> Option<hawdb_core::Uuid> {
         self.search_projection_database_identity
     }
 
-    pub(crate) fn set_search_projection_database_identity(&mut self, identity: hawdb_core::Uuid) {
+    #[doc(hidden)]
+    pub fn set_search_projection_database_identity(&mut self, identity: hawdb_core::Uuid) {
         self.search_projection_database_identity = Some(identity);
     }
 
-    pub(crate) fn search_projection_registry_root(&self) -> Option<&Path> {
+    #[doc(hidden)]
+    pub fn search_projection_registry_root(&self) -> Option<&Path> {
         self.durable.as_ref().map(|durable| durable.root_path())
     }
 
@@ -2078,12 +2120,14 @@ impl GraphStore {
     }
 }
 
-pub(crate) fn sync_parent_dir(path: &Path) -> Result<()> {
+#[doc(hidden)]
+pub fn sync_parent_dir(path: &Path) -> Result<()> {
     sync_parent_directory(path)?;
     Ok(())
 }
 
-pub(crate) use hawdb_storage::schema::{
+#[doc(hidden)]
+pub use hawdb_storage::schema::{
     ensure_table_descriptor, reserve_schema_maintenance_budget,
 };
 
@@ -2182,7 +2226,8 @@ fn validate_table_descriptor(
     Ok(())
 }
 
-pub(crate) use hawdb_storage::wal::apply_wal_op_to_snapshot;
+#[doc(hidden)]
+pub use hawdb_storage::wal::apply_wal_op_to_snapshot;
 fn encode_projected_graph_artifacts(
     catalog: &Catalog,
     store: &GraphStore,
@@ -2838,7 +2883,8 @@ fn validate_search_projection_checkpoint_changes(
     Ok(())
 }
 
-pub(crate) fn checksum_bytes(bytes: &[u8]) -> u64 {
+#[doc(hidden)]
+pub fn checksum_bytes(bytes: &[u8]) -> u64 {
     checksum_u64(bytes)
 }
 

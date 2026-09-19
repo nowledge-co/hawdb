@@ -14,7 +14,8 @@
 
 //! Shadow recovery state for canonical relational row-page roots.
 
-pub(crate) use hawdb_storage::relational_row_workspace::RelationalTransactionRowView;
+#[doc(hidden)]
+pub use hawdb_storage::relational_row_workspace::RelationalTransactionRowView;
 use hawdb_storage::relational_row_workspace::{
     hydrate_sparse_relational_workspace, nonzero_min, RelationalSparseLiveHydrationOptions,
     RelationalSparseLiveHydrationReport,
@@ -71,7 +72,8 @@ pub(super) struct RelationalOverflowClosureScanReport {
 }
 
 impl GraphStore {
-    pub(crate) fn set_relational_monotonic_append_fast_path_enabled(&mut self, enabled: bool) {
+    #[doc(hidden)]
+    pub fn set_relational_monotonic_append_fast_path_enabled(&mut self, enabled: bool) {
         self.relational_row_pages.monotonic_append_fast_path_enabled = enabled;
     }
 
@@ -593,7 +595,8 @@ impl GraphStore {
         )
     }
 
-    pub(crate) fn stage_sparse_relational_transaction_statement(
+    #[doc(hidden)]
+    pub fn stage_sparse_relational_transaction_statement(
         &self,
         state: &RelationalState,
         rows: &RelationalTransactionRowView,
@@ -1040,7 +1043,8 @@ impl GraphStore {
         };
     }
 
-    pub(crate) fn relational_row_schema_checkpoint_required(&self) -> bool {
+    #[doc(hidden)]
+    pub fn relational_row_schema_checkpoint_required(&self) -> bool {
         self.relational_row_pages.schema_checkpoint_required
     }
 
@@ -1052,7 +1056,8 @@ impl GraphStore {
         self.relational_row_pages.recovery_report.as_ref()
     }
 
-    pub(crate) fn begin_authoritative_relational_transaction_rows(
+    #[doc(hidden)]
+    pub fn begin_authoritative_relational_transaction_rows(
         &self,
     ) -> crate::error::Result<Option<RelationalTransactionRowView>> {
         if !self.relational_state.canonical_row_metadata_only() {

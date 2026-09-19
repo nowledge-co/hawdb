@@ -21,38 +21,6 @@ pub use hawdb_analytics::{
     ProjectionScanControl, ProjectionSource,
 };
 
-use crate::store::{GraphScanControl, GraphStore};
-
-impl ProjectionSource for GraphStore {
-    fn visit_projection_nodes(
-        &self,
-        visitor: &mut dyn FnMut(hawdb_storage::NodeRecord) -> ProjectionScanControl,
-    ) -> std::result::Result<ProjectionScanControl, String> {
-        self.visit_nodes_owned(None, |node| match visitor(node) {
-            ProjectionScanControl::Continue => GraphScanControl::Continue,
-            ProjectionScanControl::Stop => GraphScanControl::Stop,
-        })
-        .map(|control| match control {
-            GraphScanControl::Continue => ProjectionScanControl::Continue,
-            GraphScanControl::Stop => ProjectionScanControl::Stop,
-        })
-        .map_err(|error| error.to_string())
-    }
-
-    fn visit_projection_relationships(
-        &self,
-        visitor: &mut dyn FnMut(hawdb_storage::RelRecord) -> ProjectionScanControl,
-    ) -> std::result::Result<ProjectionScanControl, String> {
-        for relationship in self.relationship_records_owned() {
-            let relationship = relationship.map_err(|error| error.to_string())?;
-            if visitor(relationship) == ProjectionScanControl::Stop {
-                return Ok(ProjectionScanControl::Stop);
-            }
-        }
-        Ok(ProjectionScanControl::Continue)
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::{PageRankOptions, ProjectedGraph};

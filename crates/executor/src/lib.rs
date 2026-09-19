@@ -61,6 +61,7 @@ pub mod scan;
 pub mod spill;
 #[doc(hidden)]
 pub mod store;
+mod store_adapter;
 #[doc(hidden)]
 pub mod transform;
 #[doc(hidden)]

@@ -14708,3 +14708,5 @@ mod tests {
         std::env::temp_dir().join(format!("hawdb_search_{name}_{nanos}"))
     }
 }
+
+mod graph_store_adapter;

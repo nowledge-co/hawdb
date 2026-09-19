@@ -2135,7 +2135,8 @@ impl GraphStore {
         )
     }
 
-    pub(crate) fn try_visit_ordered_adjacent_relationships_accounted(
+    #[doc(hidden)]
+    pub fn try_visit_ordered_adjacent_relationships_accounted(
         &self,
         node_id: NodeId,
         rel_type: Option<RelTypeId>,
@@ -3112,7 +3113,8 @@ impl GraphStore {
         )
     }
 
-    pub(crate) fn visit_published_source_scan_candidates_bounded(
+    #[doc(hidden)]
+    pub fn visit_published_source_scan_candidates_bounded(
         &self,
         predicate: &ScanPredicate,
         limits: SourceScanCandidateLimits,

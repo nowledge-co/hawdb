@@ -23,6 +23,10 @@ pub mod columnar_aggregate;
 pub mod field_plan;
 #[doc(hidden)]
 pub mod index_runtime;
+#[doc(hidden)]
+pub mod index_access;
+#[doc(hidden)]
+pub mod row_access;
 mod read_profile;
 mod statement;
 #[doc(hidden)]

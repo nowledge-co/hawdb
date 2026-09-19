@@ -694,6 +694,8 @@ dependencies = [
  "hawdb-analytics",
  "hawdb-core",
  "hawdb-integrity",
+ "hawdb-plan",
+ "hawdb-qos",
  "hawdb-telemetry",
  "rayon",
  "roaring",

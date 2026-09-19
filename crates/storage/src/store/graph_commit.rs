@@ -26,7 +26,8 @@ impl GraphStore {
         self.commit_mutations_with_limits(catalog, mutations, MutationLimits::default())
     }
 
-    pub(crate) fn begin_mutation_transaction(&self, catalog: &Catalog) -> GraphMutationTransaction {
+    #[doc(hidden)]
+    pub fn begin_mutation_transaction(&self, catalog: &Catalog) -> GraphMutationTransaction {
         GraphMutationTransaction {
             base_commit_epoch: self.commit_epoch,
             catalog: catalog.clone(),
@@ -36,7 +37,8 @@ impl GraphStore {
         }
     }
 
-    pub(crate) fn commit_mutation_transaction_and_relational(
+    #[doc(hidden)]
+    pub fn commit_mutation_transaction_and_relational(
         &mut self,
         catalog: &mut Catalog,
         transaction: GraphMutationTransaction,
@@ -53,7 +55,8 @@ impl GraphStore {
         )
     }
 
-    pub(crate) fn commit_mutation_transaction_relational_and_append(
+    #[doc(hidden)]
+    pub fn commit_mutation_transaction_relational_and_append(
         &mut self,
         catalog: &mut Catalog,
         transaction: GraphMutationTransaction,
@@ -71,7 +74,8 @@ impl GraphStore {
         )
     }
 
-    pub(crate) fn commit_rebased_mutation_transaction_relational_and_append(
+    #[doc(hidden)]
+    pub fn commit_rebased_mutation_transaction_relational_and_append(
         &mut self,
         catalog: &mut Catalog,
         transaction: GraphMutationTransaction,
@@ -148,7 +152,8 @@ impl GraphStore {
         self.commit_mutations_internal(catalog, mutations, limits, MutationCommitOptions::default())
     }
 
-    pub(crate) fn commit_relational_transaction(
+    #[doc(hidden)]
+    pub fn commit_relational_transaction(
         &mut self,
         catalog: &mut Catalog,
         transaction: RelationalTransaction,

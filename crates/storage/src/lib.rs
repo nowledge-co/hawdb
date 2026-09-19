@@ -12,6 +12,12 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
+// Let the embedded graph kernel keep addressing this crate as `hawdb_storage`
+// after moving in: its sources predate the move and are kept verbatim.
+extern crate self as hawdb_storage;
+
+pub use hawdb_core::error::{HawDBError, Result};
+
 pub mod adjacency;
 pub mod append_table;
 #[doc(hidden)]
@@ -98,6 +104,7 @@ pub mod stable_identity;
 pub mod statistics;
 #[doc(hidden)]
 pub mod statistics_refresh;
+pub mod store;
 pub mod telemetry;
 #[doc(hidden)]
 pub mod text;
