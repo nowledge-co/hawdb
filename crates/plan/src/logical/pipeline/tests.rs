@@ -227,6 +227,28 @@ fn normalizes_a_later_bound_source_match_to_an_expand() {
 }
 
 #[test]
+fn normalizes_column_constrained_node_matches_to_node_column_lookups() {
+    for query in [
+        "MATCH (a:Source) WITH a.id AS source_id \
+         MATCH (b:Memory) WHERE b.source_id = source_id RETURN b.id",
+        "MATCH (a:Source) WITH a.id AS source_id \
+         OPTIONAL MATCH (b:Memory) WHERE b.source_id = source_id RETURN b.id",
+    ] {
+        let plan = plan_normalized_pipeline_query(query, &BTreeMap::new()).unwrap();
+        assert!(
+            format!("{plan:?}").contains("NodeColumnLookup {"),
+            "{query}"
+        );
+    }
+    let plan = plan_normalized_pipeline_query(
+        "MATCH (b:Memory) WHERE b.source_id = 'source' RETURN b.id",
+        &BTreeMap::new(),
+    )
+    .unwrap();
+    assert!(!format!("{plan:?}").contains("NodeColumnLookup {"));
+}
+
+#[test]
 fn normalizes_distinct_fixed_type_multi_hop_matches_to_expands() {
     let plan = plan_normalized_pipeline_query(
         "MATCH (m:Memory)-[:SYNTHESIZED_FROM]->(src:Memory)-[:MENTIONS]->(e:Entity) \

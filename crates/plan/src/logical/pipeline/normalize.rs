@@ -29,6 +29,8 @@ pub(super) fn normalize(plan: LogicalPlan) -> LogicalPlan {
             let input = normalize(*input);
             if let Some(plan) = chained_match(&program, &input) {
                 plan
+            } else if let Some(plan) = column_node_lookup(&program, input.clone()) {
+                plan
             } else if independent_nodes(&program, Some(&input)) {
                 node_product(program, Some(input))
             } else {
@@ -91,6 +93,37 @@ pub(super) fn normalize(plan: LogicalPlan) -> LogicalPlan {
         },
         plan => plan,
     }
+}
+
+/// A single-node MATCH constrained by an existing scalar can use the bounded
+/// column lookup operator instead of scanning every node and filtering it.
+fn column_node_lookup(program: &GraphMatchProgram, input: LogicalPlan) -> Option<LogicalPlan> {
+    if !program.imports.is_empty() {
+        return None;
+    }
+    let [GraphMatchStep::Node(node)] = program.steps.as_slice() else {
+        return None;
+    };
+    if program.introduced.as_slice() != [node.variable.as_str()] || !node.properties.is_empty() {
+        return None;
+    }
+    let Some(Predicate::ExpressionEq { expression, value }) = &program.predicate else {
+        return None;
+    };
+    let ProjectionExpression::Property { variable, property } = expression else {
+        return None;
+    };
+    let ProjectionExpression::Column(column) = value else {
+        return None;
+    };
+    (variable == &node.variable).then(|| LogicalPlan::NodeColumnLookup {
+        variable: node.variable.clone(),
+        label: node.label.clone(),
+        property: property.clone(),
+        column: column.clone(),
+        optional: program.optional,
+        input: Box::new(input),
+    })
 }
 
 fn independent_nodes(program: &GraphMatchProgram, input: Option<&LogicalPlan>) -> bool {

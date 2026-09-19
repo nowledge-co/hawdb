@@ -315,6 +315,6 @@ fn normalized_pipeline_frozen_plan_coverage() {
             .map(|case| &case["id"])
             .collect::<Vec<_>>()
     );
-    assert_eq!(exact, 363);
-    assert_eq!(differences.len(), 8);
+    assert_eq!(exact, 364);
+    assert_eq!(differences.len(), 7);
 }
