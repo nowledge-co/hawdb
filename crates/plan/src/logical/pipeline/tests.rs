@@ -187,6 +187,30 @@ fn aggregate_projection_movement_requires_infallible_typed_selectors() {
 }
 
 #[test]
+fn normalizes_native_expression_order_keys_without_inlining_column_order_keys() {
+    let plan = plan_normalized_pipeline_query(
+        "MATCH (m:Memory) \
+         RETURN m.id AS id \
+         ORDER BY COALESCE(m.pagerank_score, m.importance, 0.5) DESC",
+        &BTreeMap::new(),
+    )
+    .unwrap();
+    let text = format!("{plan:?}");
+    assert!(
+        text.contains("SortKey::Expression") || text.contains("key: Expression"),
+        "{text}"
+    );
+    assert!(!text.contains("\\0order."), "{text}");
+
+    let plan = plan_normalized_pipeline_query(
+        "MATCH (m:Memory) WITH m AS item, m.id AS id RETURN id ORDER BY COALESCE(item.score, 0)",
+        &BTreeMap::new(),
+    )
+    .unwrap();
+    assert!(format!("{plan:?}").contains("\\0order."));
+}
+
+#[test]
 fn normalizes_a_later_bound_source_match_to_an_expand() {
     let plan = plan_normalized_pipeline_query(
         "MATCH (c:Memory {is_crystal: true})-[:SYNTHESIZED_FROM]->(src:Memory) \

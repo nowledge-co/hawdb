@@ -27,25 +27,25 @@ pub(super) fn inline_keys(
         if !item.name.starts_with("\0order.") {
             return None;
         }
-        let (variable, key) = match &item.expression {
-            ProjectionExpression::Property { variable, property } => (
-                variable,
+        let key = match &item.expression {
+            ProjectionExpression::Property { variable, property }
+                if has_native_binding(input, variable) =>
+            {
                 SortKey::Property {
                     variable: variable.clone(),
                     property: property.clone(),
-                },
-            ),
-            ProjectionExpression::Id { variable } => (
-                variable,
+                }
+            }
+            ProjectionExpression::Id { variable } if has_native_binding(input, variable) => {
                 SortKey::Id {
                     variable: variable.clone(),
-                },
-            ),
+                }
+            }
+            expression if has_native_bindings(expression, input) => {
+                SortKey::Expression(expression.clone())
+            }
             _ => return None,
         };
-        if !has_native_binding(input, variable) {
-            return None;
-        }
         replacements.insert(&item.name, key);
     }
     let mut used = BTreeSet::new();
@@ -85,6 +85,59 @@ fn has_native_binding(input: &LogicalPlan, variable: &str) -> bool {
         }
         LogicalPlan::Filter { input, .. } => has_native_binding(input, variable),
         _ => false,
+    }
+}
+
+fn has_native_bindings(expression: &ProjectionExpression, input: &LogicalPlan) -> bool {
+    match expression {
+        ProjectionExpression::Variable { variable }
+        | ProjectionExpression::Property { variable, .. }
+        | ProjectionExpression::Id { variable }
+        | ProjectionExpression::RelationshipType { variable }
+        | ProjectionExpression::DatePart { variable, .. }
+        | ProjectionExpression::DefaultIfNullOrEq { variable, .. }
+        | ProjectionExpression::DefaultIfNull { variable, .. }
+        | ProjectionExpression::CasePropertyNotNullOrEq { variable, .. }
+        | ProjectionExpression::CasePropertyEqualsRank { variable, .. }
+        | ProjectionExpression::CaseLowerPropertyDefault { variable, .. }
+        | ProjectionExpression::CaseCoalesceDifferenceFloorZero { variable, .. } => {
+            has_native_binding(input, variable)
+        }
+        ProjectionExpression::Literal(_) => true,
+        ProjectionExpression::Coalesce(expressions) => expressions
+            .iter()
+            .all(|expression| has_native_bindings(expression, input)),
+        ProjectionExpression::Left { expression, .. }
+        | ProjectionExpression::Lower(expression)
+        | ProjectionExpression::Not(expression) => has_native_bindings(expression, input),
+        ProjectionExpression::Case {
+            operand,
+            branches,
+            otherwise,
+        } => {
+            operand
+                .as_deref()
+                .is_none_or(|expression| has_native_bindings(expression, input))
+                && branches.iter().all(|(condition, result)| {
+                    has_native_bindings(condition, input) && has_native_bindings(result, input)
+                })
+                && otherwise
+                    .as_deref()
+                    .is_none_or(|expression| has_native_bindings(expression, input))
+        }
+        ProjectionExpression::Binary { left, right, .. } => {
+            has_native_bindings(left, input) && has_native_bindings(right, input)
+        }
+        ProjectionExpression::IsNull { expression, .. } => has_native_bindings(expression, input),
+        ProjectionExpression::CaseEntitySearchRank(rank) => {
+            has_native_binding(input, &rank.variable)
+        }
+        ProjectionExpression::CaseColumnSearchRank(_)
+        | ProjectionExpression::ColumnDefaultIfNullOrEq { .. }
+        | ProjectionExpression::ColumnValueDefaultIfNull { .. }
+        | ProjectionExpression::ColumnValueCasePropertyNotNullOrEq { .. }
+        | ProjectionExpression::Column(_)
+        | ProjectionExpression::ColumnProperty { .. } => false,
     }
 }
 
