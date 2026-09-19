@@ -538,6 +538,7 @@ impl SearchOutOfCoreGenerationWriter {
                 rabitq: rabitq.as_ref().map(|_| generation),
                 rabitq_remove_all: rabitq.is_none(),
                 out_of_core_discovery_failed: false,
+                ..Default::default()
             },
             self.options.cleanup_options,
             &self.task_context,

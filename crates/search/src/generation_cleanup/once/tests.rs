@@ -102,7 +102,7 @@ fn one_shot_counts_match_the_existing_retry_state_without_retaining_candidates()
                 };
                 let expected = SearchProjectionCleanupState::default().run_with_remover(
                     &fixture.0,
-                    generations,
+                    generations.clone(),
                     options,
                     remove,
                 );

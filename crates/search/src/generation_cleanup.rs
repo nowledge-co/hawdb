@@ -121,11 +121,19 @@ impl SearchProjectionCleanupReport {
     }
 }
 
-#[derive(Debug, Clone, Copy, Default)]
+#[derive(Debug, Clone, Default)]
 pub(super) struct SearchProjectionGenerations {
     pub lexical: Option<u64>,
     pub out_of_core: Option<u64>,
     pub rabitq: Option<u64>,
+    /// Artifact generations still referenced by the active manifest.
+    ///
+    /// The current and immediately preceding generation remain eligible for
+    /// the existing recovery policy. This set additionally protects older
+    /// immutable artifacts retained by a multi-segment manifest.
+    pub retained_lexical: BTreeSet<u64>,
+    pub retained_out_of_core: BTreeSet<u64>,
+    pub retained_rabitq: BTreeSet<u64>,
     pub rabitq_remove_all: bool,
     pub out_of_core_discovery_failed: bool,
 }
@@ -182,7 +190,7 @@ impl SearchProjectionCleanupState {
         let mut pending = VecDeque::new();
         for candidate in previous {
             known.insert(candidate.name.clone());
-            if !candidate.is_obsolete(generations) {
+            if !candidate.is_obsolete(&generations) {
                 continue;
             }
             report.eligible_files = report.eligible_files.saturating_add(1);
@@ -215,7 +223,7 @@ impl SearchProjectionCleanupState {
                     let Some(candidate) = CleanupCandidate::parse(name) else {
                         continue;
                     };
-                    if known.contains(&candidate.name) || !candidate.is_obsolete(generations) {
+                    if known.contains(&candidate.name) || !candidate.is_obsolete(&generations) {
                         continue;
                     }
                     report.eligible_files = report.eligible_files.saturating_add(1);
@@ -307,19 +315,27 @@ impl<S: AsRef<str>> CleanupCandidate<S> {
         })
     }
 
-    fn is_obsolete(&self, generations: SearchProjectionGenerations) -> bool {
+    fn is_obsolete(&self, generations: &SearchProjectionGenerations) -> bool {
         if self.quarantined {
             return true;
         }
         match self.kind {
-            CleanupArtifactKind::Lexical => {
-                older_than_previous(self.generation, generations.lexical)
-            }
-            CleanupArtifactKind::OutOfCore => {
-                older_than_previous(self.generation, generations.out_of_core)
-            }
+            CleanupArtifactKind::Lexical => obsolete_generation(
+                self.generation,
+                generations.lexical,
+                &generations.retained_lexical,
+            ),
+            CleanupArtifactKind::OutOfCore => obsolete_generation(
+                self.generation,
+                generations.out_of_core,
+                &generations.retained_out_of_core,
+            ),
             CleanupArtifactKind::RaBitQ if generations.rabitq_remove_all => true,
-            CleanupArtifactKind::RaBitQ => older_than_previous(self.generation, generations.rabitq),
+            CleanupArtifactKind::RaBitQ => obsolete_generation(
+                self.generation,
+                generations.rabitq,
+                &generations.retained_rabitq,
+            ),
         }
     }
 }
@@ -386,6 +402,10 @@ fn parse_generation(name: &str, prefix: &str) -> Option<u64> {
 
 fn older_than_previous(generation: u64, current: Option<u64>) -> bool {
     current.is_some_and(|current| generation < current.saturating_sub(1))
+}
+
+fn obsolete_generation(generation: u64, current: Option<u64>, retained: &BTreeSet<u64>) -> bool {
+    !retained.contains(&generation) && older_than_previous(generation, current)
 }
 
 fn record_failure(report: &mut SearchProjectionCleanupReport, kind: &str) {

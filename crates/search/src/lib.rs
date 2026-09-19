@@ -2425,6 +2425,7 @@ impl SearchIndex {
                 .values()
                 .all(|document| document.embedding.is_none()),
             out_of_core_discovery_failed,
+            ..Default::default()
         };
         self.cleanup_state
             .lock()
