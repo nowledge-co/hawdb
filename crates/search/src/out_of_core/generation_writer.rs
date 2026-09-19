@@ -198,6 +198,7 @@ pub struct SearchOutOfCoreGenerationWriter {
     metadata_fields: BTreeSet<String>,
     metadata_field_bytes: u64,
     expected_active_generation: Option<u64>,
+    append_to_active_generation: Option<u64>,
     poisoned: bool,
     needs_chinese_analyzer: bool,
     task_context: RuntimeTaskContext,
@@ -337,6 +338,7 @@ impl SearchOutOfCoreGenerationWriter {
             metadata_fields,
             metadata_field_bytes,
             expected_active_generation: None,
+            append_to_active_generation: None,
             poisoned: false,
             needs_chinese_analyzer: false,
             task_context,
@@ -410,7 +412,8 @@ impl SearchOutOfCoreGenerationWriter {
     /// Prepares an update governed by the task until finish or drop.
     ///
     /// Uses the same operation contract as [`Self::create_with_context`],
-    /// including input conversion, ordered base hydration and retained reports.
+    /// including input conversion, strict append publication or ordered base
+    /// hydration, and retained reports.
     /// The reader's term policy, manifest budget and generation identity are
     /// captured during preparation. Later reader changes do not affect the
     /// update, and a newer active generation makes its publication fail.
@@ -508,6 +511,7 @@ impl SearchOutOfCoreGenerationWriter {
                 generation,
                 document_count: self.document_count,
                 documents_digest: self.documents_digest.finish(),
+                append_to_active_generation: self.append_to_active_generation,
                 source_graph_commit_epoch: self.options.source_graph_commit_epoch,
                 import_source_graph_commit_epoch: self.options.import_source_graph_commit_epoch,
                 embedding_manifest: self.options.embedding_manifest.as_ref(),
@@ -529,8 +533,29 @@ impl SearchOutOfCoreGenerationWriter {
             crate::generation_cleanup::once::evidence::Point::AfterCommit,
             &self.memory,
         );
-        let cleanup = cleanup.run(
-            &self.root,
+        let cleanup_generations = if self.append_to_active_generation.is_some() {
+            match super::published_artifact_generations(&self.root, &self.options.analyzer_lexicon)
+            {
+                Ok(Some(retained)) => SearchProjectionGenerations {
+                    lexical: Some(lexical_generation),
+                    out_of_core: Some(retained.active_generation),
+                    rabitq: retained.rabitq_generations.last().copied(),
+                    rabitq_remove_all: retained.rabitq_generations.is_empty(),
+                    retained_lexical: retained.lexical_generations,
+                    retained_out_of_core: retained.out_of_core_generations,
+                    retained_rabitq: retained.rabitq_generations,
+                    out_of_core_discovery_failed: false,
+                },
+                Ok(None) | Err(_) => SearchProjectionGenerations {
+                    lexical: Some(lexical_generation),
+                    out_of_core: Some(generation),
+                    rabitq: rabitq.as_ref().map(|_| generation),
+                    rabitq_remove_all: false,
+                    out_of_core_discovery_failed: true,
+                    ..Default::default()
+                },
+            }
+        } else {
             SearchProjectionGenerations {
                 lexical: Some(lexical_generation),
                 out_of_core: Some(generation),
@@ -538,7 +563,11 @@ impl SearchOutOfCoreGenerationWriter {
                 rabitq_remove_all: rabitq.is_none(),
                 out_of_core_discovery_failed: false,
                 ..Default::default()
-            },
+            }
+        };
+        let cleanup = cleanup.run(
+            &self.root,
+            cleanup_generations,
             self.options.cleanup_options,
             &self.task_context,
         );
@@ -546,9 +575,9 @@ impl SearchOutOfCoreGenerationWriter {
         Ok(SearchOutOfCoreGenerationBuildReport {
             generation,
             lexical_generation,
-            document_count: self.document_count,
+            document_count: published.document_count,
             vector_document_count: self.vector_document_count,
-            documents_digest: self.documents_digest.finish(),
+            documents_digest: published.documents_digest,
             logical_document_bytes: self.logical_document_bytes,
             spool_bytes: self.spool_bytes,
             peak_record_bytes: self.peak_record_bytes,

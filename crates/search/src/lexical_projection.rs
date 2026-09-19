@@ -153,6 +153,10 @@ impl DocumentsDigest {
     pub(crate) const fn finish(self) -> u64 {
         self.0
     }
+
+    pub(crate) const fn combine(left: u64, right: u64) -> u64 {
+        left.wrapping_add(right)
+    }
 }
 
 fn document_digest_contribution(checksum: u64, bytes: u64) -> u64 {
@@ -930,6 +934,17 @@ pub(super) struct LexicalProjectionReader {
 }
 
 impl LexicalProjectionReader {
+    pub(crate) fn document_id_bounds(&self) -> Option<(&str, &str)> {
+        let mut blocks = self
+            .manifest
+            .blocks
+            .iter()
+            .filter(|block| block.kind == BlockKind::Documents);
+        let first = blocks.next()?;
+        let last = blocks.next_back().unwrap_or(first);
+        Some((first.min_key.as_str(), last.max_key.as_str()))
+    }
+
     pub(super) fn load(
         root: &Path,
         expected_source_epoch: Option<u64>,

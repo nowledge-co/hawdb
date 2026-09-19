@@ -67,6 +67,92 @@ fn delta() -> SearchProjectionDelta {
 }
 
 #[test]
+fn append_delta_publishes_a_second_artifact_without_hydrating_the_base() {
+    let root = Fixture::new();
+    let reader = SearchOutOfCoreReader::open(&root.0).unwrap();
+    let base_generation = reader.generation();
+    let update = SearchOutOfCoreGenerationWriter::prepare_delta(
+        &reader,
+        SearchProjectionDelta {
+            upserts: vec![row("z"), row("y")],
+            source_graph_commit_epoch: Some(19),
+            ..Default::default()
+        },
+        Default::default(),
+    )
+    .unwrap();
+    assert_eq!(update.delta_report().action, "incremental_segment_append");
+    assert_eq!(update.delta_report().before_document_count, 3);
+    assert_eq!(update.delta_report().after_document_count, 5);
+    assert_eq!(update.source_read_metrics().segment_range_reads, 0);
+    assert_eq!(update.source_read_metrics().segment_bytes_read, 0);
+    assert_eq!(update.source_read_metrics().hydrated_documents, 0);
+
+    let (report, build, source_metrics) = update.finish().unwrap();
+    assert_eq!(report.action, "incremental_segment_append");
+    assert_eq!(build.document_count, 5);
+    assert_eq!(source_metrics.segment_range_reads, 0);
+
+    let reader = SearchOutOfCoreReader::open(&root.0).unwrap();
+    assert_eq!(reader.generation(), build.generation);
+    assert_eq!(reader.document_count(), 5);
+    assert_eq!(reader.source_graph_commit_epoch(), Some(19));
+    assert_eq!(reader.manifest.segments.len(), 2);
+    assert_eq!(reader.manifest.segments[0].generation, base_generation);
+    assert_eq!(reader.manifest.segments[1].generation, build.generation);
+    let ids = ["a", "c", "e", "y", "z"].map(|id| format!("memory:{id}"));
+    assert_eq!(
+        reader.hydrate_documents(&ids).unwrap().documents,
+        ["a", "c", "e", "y", "z"].map(|id| row(id).into_document())
+    );
+    #[cfg(feature = "full-text-search")]
+    {
+        let output = reader
+            .search_with_options(
+                "delta",
+                None,
+                crate::SearchMode::Text,
+                crate::SearchQueryOptions {
+                    limit: 5,
+                    offset: 0,
+                    rank_window: None,
+                    fusion_weights: Default::default(),
+                    metadata_filters: BTreeMap::new(),
+                    policy_epoch: None,
+                },
+            )
+            .unwrap();
+        assert_eq!(output.result.total_hits, 5);
+    }
+}
+
+#[test]
+fn non_append_update_retains_the_ordered_base_hydration_path() {
+    let root = Fixture::new();
+    let reader = SearchOutOfCoreReader::open(&root.0).unwrap();
+    let update = SearchOutOfCoreGenerationWriter::prepare_delta(
+        &reader,
+        SearchProjectionDelta {
+            upserts: vec![row("b")],
+            ..Default::default()
+        },
+        Default::default(),
+    )
+    .unwrap();
+    assert_eq!(update.delta_report().action, "bounded_generation_update");
+    assert_eq!(update.source_read_metrics().hydrated_documents, 3);
+    let (report, build, _) = update.finish().unwrap();
+    assert_eq!(report.after_document_count, 4);
+    assert_eq!(build.document_count, 4);
+    let reader = SearchOutOfCoreReader::open(&root.0).unwrap();
+    let ids = ["a", "b", "c", "e"].map(|id| format!("memory:{id}"));
+    assert_eq!(
+        reader.hydrate_documents(&ids).unwrap().documents,
+        ["a", "b", "c", "e"].map(|id| row(id).into_document())
+    );
+}
+
+#[test]
 fn delta_context_survives_prepare_through_finish_and_report_handoff() {
     let root = Fixture::new();
     let reader = SearchOutOfCoreReader::open(&root.0).unwrap();
