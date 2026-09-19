@@ -46,6 +46,30 @@ pub trait GraphReadEngine {
 
     fn storage_residency_report(&self) -> StorageResidencyReport;
 
+    fn adjacency_consistency_report(&self) -> crate::consistency::AdjacencyConsistencyReport;
+
+    fn adjacency_consolidation_plan(&self) -> crate::consistency::AdjacencyConsolidationPlan;
+
+    fn degree_statistics_consistency_report(
+        &self,
+    ) -> crate::consistency::DegreeStatisticsConsistencyReport;
+
+    fn property_index_consistency_report(
+        &self,
+        catalog: &Catalog,
+    ) -> crate::consistency::PropertyIndexConsistencyReport;
+
+    fn columnar_shadow_checkpoint_report(&self) -> Option<crate::ColumnarShadowCheckpointReport>;
+
+    fn columnar_shadow_recovery_status(&self) -> crate::ColumnarShadowRecoveryStatus;
+
+    fn projected_graph_statuses(&self) -> Vec<crate::ProjectedGraphStatus>;
+
+    fn storage_pressure_snapshot(
+        &self,
+        oldest_reader_commit_epoch: Option<u64>,
+    ) -> crate::StoragePressureSnapshot;
+
     fn append_table_schema(&self, table: &str) -> Option<&AppendTableSchema>;
 
     fn initial_import_source_fingerprint(&self) -> Option<&str>;

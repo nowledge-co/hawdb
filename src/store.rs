@@ -2746,6 +2746,52 @@ impl hawdb_storage::graph_engine::GraphReadEngine for GraphStore {
         GraphStore::storage_residency_report(self)
     }
 
+    fn adjacency_consistency_report(
+        &self,
+    ) -> hawdb_storage::consistency::AdjacencyConsistencyReport {
+        GraphStore::adjacency_consistency_report(self)
+    }
+
+    fn adjacency_consolidation_plan(
+        &self,
+    ) -> hawdb_storage::consistency::AdjacencyConsolidationPlan {
+        GraphStore::adjacency_consolidation_plan(self)
+    }
+
+    fn degree_statistics_consistency_report(
+        &self,
+    ) -> hawdb_storage::consistency::DegreeStatisticsConsistencyReport {
+        GraphStore::degree_statistics_consistency_report(self)
+    }
+
+    fn property_index_consistency_report(
+        &self,
+        catalog: &hawdb_core::Catalog,
+    ) -> hawdb_storage::consistency::PropertyIndexConsistencyReport {
+        GraphStore::property_index_consistency_report(self, catalog)
+    }
+
+    fn columnar_shadow_checkpoint_report(
+        &self,
+    ) -> Option<hawdb_storage::ColumnarShadowCheckpointReport> {
+        GraphStore::columnar_shadow_checkpoint_report(self)
+    }
+
+    fn columnar_shadow_recovery_status(&self) -> hawdb_storage::ColumnarShadowRecoveryStatus {
+        GraphStore::columnar_shadow_recovery_status(self)
+    }
+
+    fn projected_graph_statuses(&self) -> Vec<hawdb_storage::ProjectedGraphStatus> {
+        GraphStore::projected_graph_statuses(self)
+    }
+
+    fn storage_pressure_snapshot(
+        &self,
+        oldest_reader_commit_epoch: Option<u64>,
+    ) -> hawdb_storage::StoragePressureSnapshot {
+        GraphStore::storage_pressure_snapshot(self, oldest_reader_commit_epoch)
+    }
+
     fn append_table_schema(&self, table: &str) -> Option<&hawdb_storage::AppendTableSchema> {
         GraphStore::append_table_schema(self, table)
     }
