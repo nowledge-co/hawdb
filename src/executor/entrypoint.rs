@@ -15,19 +15,23 @@
 //! Root execution orchestration and result-accounting lifecycle.
 
 use super::*;
-pub(super) use hawdb_executor::execution_request::ExecutionRequest;
+use hawdb_executor::execution_request::ExecutionRequest;
 use hawdb_executor::observer::ExecutionProfileBuilder;
 pub(super) use hawdb_executor::result_delivery::ConsumerMemoryMode;
 use hawdb_executor::result_delivery::QueryOutputAccumulator;
 
-pub(super) struct ExecutionResources<'a> {
+/// Host-owned mutable resources required to execute one physical plan.
+///
+/// The resources are borrowed for the duration of the call. The executor does
+/// not retain them or create a process-global execution context.
+pub struct ExecutionResources<'a> {
     catalog: &'a mut Catalog,
     store: &'a mut GraphStore,
     external: &'a mut dyn ExternalReadOperator,
 }
 
 impl<'a> ExecutionResources<'a> {
-    pub(super) fn new(
+    pub fn new(
         catalog: &'a mut Catalog,
         store: &'a mut GraphStore,
         external: &'a mut dyn ExternalReadOperator,
