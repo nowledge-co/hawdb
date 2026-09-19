@@ -153,7 +153,7 @@ pub struct SearchOutOfCoreReader {
     config: SearchOutOfCoreConfig,
     analyzer_lexicon: SearchAnalyzerLexicon,
     manifest: SearchOutOfCoreManifestBody,
-    segment: SearchOutOfCoreSegmentReader,
+    segments: Vec<SearchOutOfCoreSegmentReader>,
     lexical_term_policy: SearchLexicalTermPolicy,
     runtime_capabilities: RuntimeCapabilities,
 }
@@ -164,7 +164,7 @@ pub struct SearchOutOfCoreReader {
 /// from reader-wide identity and admission state is the boundary needed for
 /// incremental segment publication.
 #[derive(Debug)]
-struct SearchOutOfCoreSegmentReader {
+pub(super) struct SearchOutOfCoreSegmentReader {
     descriptor: SearchSegmentDescriptor,
     payload: Arc<File>,
     metadata_payload: Arc<File>,
@@ -770,10 +770,18 @@ impl SearchOutOfCoreReader {
             config,
             analyzer_lexicon,
             manifest,
-            segment,
+            segments: vec![segment],
             lexical_term_policy,
             runtime_capabilities: crate::compiled_runtime_capabilities(),
         })
+    }
+
+    pub(super) fn primary_segment(&self) -> &SearchOutOfCoreSegmentReader {
+        // The V2 manifest validator currently requires one entry. Keeping the
+        // access behind this method lets later readers consume a segment set.
+        self.segments
+            .first()
+            .expect("validated search manifest has one segment")
     }
 
     pub fn lexical_term_policy(&self) -> SearchLexicalTermPolicy {
@@ -786,7 +794,7 @@ impl SearchOutOfCoreReader {
     /// leaves the previous policy intact. Exclusive access prevents changes
     /// during a query; already prepared updates keep their own snapshot.
     pub fn set_lexical_term_policy(&mut self, policy: SearchLexicalTermPolicy) -> Result<()> {
-        self.segment
+        self.primary_segment()
             .lexical_projection
             .validate_term_limit(policy.max_term_bytes())?;
         self.lexical_term_policy = policy;
@@ -863,7 +871,7 @@ impl SearchOutOfCoreReader {
     ) -> Option<super::VectorProjectionQualificationIdentity> {
         #[cfg(feature = "vector-search")]
         {
-            let projection = self.segment.rabitq_projection.as_ref()?;
+            let projection = self.primary_segment().rabitq_projection.as_ref()?;
             let manifest = projection.manifest();
             Some(super::VectorProjectionQualificationIdentity {
                 projection_generation: manifest.identity.generation,
@@ -893,7 +901,7 @@ impl SearchOutOfCoreReader {
     ) -> Option<super::VectorProjectionResourceEvidence> {
         #[cfg(feature = "vector-search")]
         {
-            let projection = self.segment.rabitq_projection.as_ref()?;
+            let projection = self.primary_segment().rabitq_projection.as_ref()?;
             let manifest = projection.manifest();
             let raw_vector_bytes = (manifest.document_count as u64)
                 .saturating_mul(manifest.dimension as u64)
@@ -1099,7 +1107,7 @@ impl SearchOutOfCoreReader {
         consumer: &mut dyn FnMut(SearchDocument) -> Result<()>,
     ) -> Result<SearchOutOfCoreMetrics> {
         let mut metrics = SearchOutOfCoreMetrics::default();
-        for segment in &self.segment.descriptor.segments {
+        for segment in &self.primary_segment().descriptor.segments {
             for document in self.read_hydration_segment(segment, &mut metrics)? {
                 consumer(document)?;
             }
@@ -1174,7 +1182,7 @@ impl SearchOutOfCoreReader {
         let policy_epoch = access_control
             .map(|access_control| access_control.policy_epoch)
             .or(options.policy_epoch);
-        let query_terms = self.segment.lexical_projection.tokenize_query(
+        let query_terms = self.primary_segment().lexical_projection.tokenize_query(
             query_text,
             &self.analyzer_lexicon,
             self.lexical_term_policy.max_term_bytes(),
@@ -1248,11 +1256,11 @@ impl SearchOutOfCoreReader {
         };
         let lexical_report = if text_available && mode != SearchMode::Vector {
             let lexical_statistics = LexicalCorpusStatistics::aggregate(
-                [self.segment.lexical_projection.as_ref()],
+                [self.primary_segment().lexical_projection.as_ref()],
                 &query_terms,
             )?;
             Some(
-                self.segment
+                self.primary_segment()
                     .lexical_projection
                     .score_with_global_statistics(
                         &query_terms,
@@ -1697,7 +1705,7 @@ impl SearchOutOfCoreReader {
         let mut hydrated_bytes = 0u64;
         for (segment_id, ids) in segment_documents {
             let segment = self
-                .segment
+                .primary_segment()
                 .descriptor
                 .segments
                 .get(segment_id as usize)
@@ -1739,7 +1747,7 @@ impl SearchOutOfCoreReader {
     }
 
     fn segment_for_document(&self, id: &str) -> Option<&SearchSegmentDescriptorEntry> {
-        self.segment
+        self.primary_segment()
             .descriptor
             .segments
             .binary_search_by(|segment| {
@@ -1752,7 +1760,7 @@ impl SearchOutOfCoreReader {
                 }
             })
             .ok()
-            .and_then(|index| self.segment.descriptor.segments.get(index))
+            .and_then(|index| self.primary_segment().descriptor.segments.get(index))
     }
 
     fn require_search_capabilities(&self, mode: SearchMode) -> Result<()> {
@@ -1785,7 +1793,7 @@ impl SearchOutOfCoreReader {
             ))
         })?;
         let payload = read_out_of_core_payload_range(
-            &self.segment.payload,
+            &self.primary_segment().payload,
             SearchOutOfCoreRange {
                 offset: range.offset,
                 length: range.length,
@@ -1817,7 +1825,7 @@ impl SearchOutOfCoreReader {
     ) -> Result<Vec<SearchMetadataDocument>> {
         let range = self.layout_range(segment.segment_id)?.metadata;
         let payload = read_out_of_core_payload_range(
-            &self.segment.metadata_payload,
+            &self.primary_segment().metadata_payload,
             range,
             segment.segment_id,
             "metadata",
@@ -1858,7 +1866,7 @@ impl SearchOutOfCoreReader {
     ) -> Result<Vec<SearchVectorDocument>> {
         let range = self.layout_range(segment.segment_id)?.vectors;
         let payload = read_out_of_core_payload_range(
-            &self.segment.vector_payload,
+            &self.primary_segment().vector_payload,
             range,
             segment.segment_id,
             "vector",
@@ -1883,7 +1891,7 @@ impl SearchOutOfCoreReader {
     }
 
     fn layout_range(&self, segment_id: u64) -> Result<&SearchOutOfCoreSegmentLayout> {
-        self.segment
+        self.primary_segment()
             .layout
             .segments
             .get(segment_id as usize)
@@ -1901,14 +1909,17 @@ impl SearchOutOfCoreReader {
         report: &mut SearchPredicatePushdownReport,
         metrics: &mut SearchOutOfCoreMetrics,
     ) -> Result<CandidateSet> {
-        report.segment_count = self.segment.descriptor.segments.len();
-        report.segment_pruning_candidate_document_count = self.segment.descriptor.document_count;
+        report.segment_count = self.primary_segment().descriptor.segments.len();
+        report.segment_pruning_candidate_document_count =
+            self.primary_segment().descriptor.document_count;
         report.persisted_segment_descriptor_used = true;
         let mut field_pruning = SearchFieldPruningAccumulator::new(predicates);
 
         if predicates.is_empty() {
             report.field_summaries = field_pruning.into_reports();
-            return Ok(CandidateSet::All(self.segment.descriptor.document_count));
+            return Ok(CandidateSet::All(
+                self.primary_segment().descriptor.document_count,
+            ));
         }
 
         fs::create_dir_all(&self.config.spill_directory)?;
@@ -1922,9 +1933,9 @@ impl SearchOutOfCoreReader {
         file.write_all(CANDIDATE_FILE_HEADER)?;
         let mut offset = CANDIDATE_FILE_HEADER.len() as u64;
         let mut cardinality = 0usize;
-        let mut blocks = Vec::with_capacity(self.segment.descriptor.segments.len());
+        let mut blocks = Vec::with_capacity(self.primary_segment().descriptor.segments.len());
 
-        for segment in &self.segment.descriptor.segments {
+        for segment in &self.primary_segment().descriptor.segments {
             field_pruning.observe_persisted_segment(segment, predicates);
             if !segment.may_match_predicates(predicates) {
                 report.pruned_segment_count = report.pruned_segment_count.saturating_add(1);

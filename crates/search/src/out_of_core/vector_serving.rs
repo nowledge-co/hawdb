@@ -98,7 +98,7 @@ impl SearchOutOfCoreReader {
             ),
             CompressedVectorSearchMode::Preferred => {
                 #[cfg(feature = "vector-search")]
-                if self.segment.rabitq_projection.is_some() {
+                if self.primary_segment().rabitq_projection.is_some() {
                     return self.scan_rabitq_vector_scores(
                         query_embedding,
                         candidate_set,
@@ -124,7 +124,7 @@ impl SearchOutOfCoreReader {
             }
             CompressedVectorSearchMode::Required => {
                 #[cfg(feature = "vector-search")]
-                if self.segment.rabitq_projection.is_some() {
+                if self.primary_segment().rabitq_projection.is_some() {
                     return self.scan_rabitq_vector_scores(
                         query_embedding,
                         candidate_set,
@@ -159,7 +159,7 @@ impl SearchOutOfCoreReader {
         )?;
         let mut vector_document_count = 0usize;
         let mut segment_scan_count = 0usize;
-        for segment in &self.segment.descriptor.segments {
+        for segment in &self.primary_segment().descriptor.segments {
             checkpoint_vector_task(task_context)?;
             if candidate_set.segment_cardinality(segment.segment_id) == 0 {
                 continue;
@@ -210,9 +210,15 @@ impl SearchOutOfCoreReader {
         metrics: &mut SearchOutOfCoreMetrics,
     ) -> Result<VectorScoreScan> {
         let task_context = vector_execution_options.task_context;
-        let projection = self.segment.rabitq_projection.as_ref().ok_or_else(|| {
-            HawDBError::Storage("search out-of-core RaBitQ projection is unavailable".to_string())
-        })?;
+        let projection = self
+            .primary_segment()
+            .rabitq_projection
+            .as_ref()
+            .ok_or_else(|| {
+                HawDBError::Storage(
+                    "search out-of-core RaBitQ projection is unavailable".to_string(),
+                )
+            })?;
         checkpoint_vector_task(task_context)?;
         let minimum_candidates = retained_limit.unwrap_or(1).max(1);
         if minimum_candidates > self.config.max_vector_candidates.get() {
@@ -299,11 +305,11 @@ impl SearchOutOfCoreReader {
         let mut raw_segment_scan_count = 0usize;
         let mut reranked_candidate_count = 0usize;
         for (layout, segment) in self
-            .segment
+            .primary_segment()
             .layout
             .segments
             .iter()
-            .zip(&self.segment.descriptor.segments)
+            .zip(&self.primary_segment().descriptor.segments)
         {
             checkpoint_vector_task(task_context)?;
             let end = layout
