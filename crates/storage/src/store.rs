@@ -2809,7 +2809,8 @@ fn merge_relationship_row(
     ])
 }
 
-fn read_durable_text(path: &Path, name: &str) -> Result<String> {
+#[doc(hidden)]
+pub fn read_durable_text(path: &Path, name: &str) -> Result<String> {
     let bytes = fs::read(path)?;
     read_durable_text_bytes(&bytes, name)
 }
