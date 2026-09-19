@@ -302,3 +302,23 @@ fn lowers_two_optional_relationship_counts_to_a_count_sum() {
     let text = format!("{filtered:?}");
     assert!(text.contains("PropertyNotEqOrEmpty"), "{text}");
 }
+
+#[test]
+fn derives_thread_repair_stats_only_for_the_complete_fixed_schema_pipeline() {
+    let query = "MATCH (t:Thread) \
+        OPTIONAL MATCH (ti:ThreadIdentity) WHERE ti.thread_node_id = t.id \
+        WITH t, COUNT(ti) AS identity_refs \
+        OPTIONAL MATCH (t)-[:CONTAINS]->(msg:Message) \
+        WITH t, identity_refs, COUNT(msg) AS legacy_messages \
+        OPTIONAL MATCH (t)-[:COMPACTS_TO]->(m:Memory) \
+        RETURN t.id, t.thread_id, \
+            CASE WHEN t.space_id IS NULL OR t.space_id = '' THEN 'default' ELSE t.space_id END, \
+            COALESCE(t.message_count, 0), identity_refs, legacy_messages, COUNT(m) \
+        ORDER BY t.id ASC";
+    let plan = plan_pipeline_query(query, &BTreeMap::new()).unwrap();
+    assert!(matches!(plan, LogicalPlan::ThreadRepairStats { .. }));
+
+    let non_schema_query = query.replace("t.thread_id", "t.id");
+    let plan = plan_pipeline_query(&non_schema_query, &BTreeMap::new()).unwrap();
+    assert!(!matches!(plan, LogicalPlan::ThreadRepairStats { .. }));
+}

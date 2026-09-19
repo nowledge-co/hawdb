@@ -128,6 +128,9 @@ fn bind_pipeline(
     if let Some(plan) = bind_optional_relationship_count_sum(query, parameters) {
         return plan;
     }
+    if let Some(plan) = bind_thread_repair_stats(query) {
+        return Ok(plan);
+    }
     if let Some(plan) = bind_optional_degree_pipeline(query, parameters) {
         return plan;
     }
@@ -420,6 +423,322 @@ fn display_count_variable(variable: &str, distinct: bool) -> String {
     } else {
         variable.to_string()
     }
+}
+
+/// Derives the fixed-schema thread repair summary only after validating every
+/// clause that contributes to the specialized executor's output. Similar
+/// optional-match pipelines keep their general logical representation.
+fn bind_thread_repair_stats(query: &QueryPipeline) -> Option<LogicalPlan> {
+    let [initial, identity_match, first_with, message_match, second_with, memory_match, final_return] =
+        query.clauses.as_slice()
+    else {
+        return None;
+    };
+    let source = required_single_node(initial)?;
+    let (identity, identity_ref_property) = thread_repair_identity_match(identity_match, source)?;
+    if !thread_repair_projection(
+        first_with,
+        source.variable.as_str(),
+        &identity.variable,
+        "identity_refs",
+    ) {
+        return None;
+    }
+    let (message_rel_type, message) = thread_repair_optional_expand(message_match, source)?;
+    if !thread_repair_second_projection(
+        second_with,
+        source.variable.as_str(),
+        "identity_refs",
+        &message.variable,
+        "legacy_messages",
+    ) {
+        return None;
+    }
+    let (memory_rel_type, memory) = thread_repair_optional_expand(memory_match, source)?;
+    thread_repair_return(
+        final_return,
+        source.variable.as_str(),
+        "identity_refs",
+        "legacy_messages",
+        &memory.variable,
+    )?;
+
+    Some(LogicalPlan::ThreadRepairStats {
+        label: source.label.clone(),
+        identity_label: identity.label.clone(),
+        identity_ref_property,
+        thread_id_property: "id".to_string(),
+        message_rel_type,
+        message_label: message.label.clone(),
+        memory_rel_type,
+        memory_label: memory.label.clone(),
+    })
+}
+
+fn required_single_node(clause: &Clause) -> Option<&NodePattern> {
+    let ClauseKind::Match {
+        optional: false,
+        patterns,
+        predicate: None,
+    } = &clause.kind
+    else {
+        return None;
+    };
+    let [pattern] = patterns.as_slice() else {
+        return None;
+    };
+    (!pattern.variable.is_some()
+        && pattern.steps.is_empty()
+        && !pattern.first.anonymous
+        && !pattern.first.variable.is_empty()
+        && pattern.first.properties.is_empty())
+    .then_some(&pattern.first)
+}
+
+fn thread_repair_identity_match<'a>(
+    clause: &'a Clause,
+    source: &NodePattern,
+) -> Option<(&'a NodePattern, String)> {
+    let ClauseKind::Match {
+        optional: true,
+        patterns,
+        predicate: Some(predicate),
+    } = &clause.kind
+    else {
+        return None;
+    };
+    let [pattern] = patterns.as_slice() else {
+        return None;
+    };
+    let identity = &pattern.first;
+    if pattern.variable.is_some()
+        || !pattern.steps.is_empty()
+        || identity.anonymous
+        || identity.variable.is_empty()
+        || identity.properties.len() != 0
+    {
+        return None;
+    }
+    let PropertyPredicate::ExpressionEq { expression, value } = &predicate.kind else {
+        return None;
+    };
+    let (identity_variable, identity_property) = scalar_property(expression)?;
+    (identity_variable == identity.variable
+        && scalar_property(value) == Some((source.variable.as_str(), "id")))
+    .then_some((identity, identity_property.to_string()))
+}
+
+fn thread_repair_optional_expand<'a>(
+    clause: &'a Clause,
+    source: &NodePattern,
+) -> Option<(String, &'a NodePattern)> {
+    let ClauseKind::Match {
+        optional: true,
+        patterns,
+        predicate: None,
+    } = &clause.kind
+    else {
+        return None;
+    };
+    let [pattern] = patterns.as_slice() else {
+        return None;
+    };
+    let [step] = pattern.steps.as_slice() else {
+        return None;
+    };
+    let relationship = &step.relationship;
+    if pattern.variable.is_some()
+        || pattern.first.variable != source.variable
+        || pattern.first.anonymous
+        || !pattern.first.label.is_empty()
+        || !pattern.first.properties.is_empty()
+        || relationship.variable.is_some()
+        || relationship.rel_type.is_empty()
+        || !relationship.properties.is_empty()
+        || relationship.direction != RelationshipDirection::Outgoing
+        || relationship.search != PathSearch::All
+        || relationship.min_hops != 1
+        || relationship.max_hops != 1
+        || step.target.anonymous
+        || step.target.variable.is_empty()
+        || !step.target.properties.is_empty()
+    {
+        return None;
+    }
+    Some((relationship.rel_type.clone(), &step.target))
+}
+
+fn thread_repair_projection(clause: &Clause, source: &str, counted: &str, alias: &str) -> bool {
+    let Some(projection) = plain_with_projection(clause) else {
+        return false;
+    };
+    let [source_item, count] = projection.items.as_slice() else {
+        return false;
+    };
+    is_unaliased_variable(source_item, source) && is_count_alias(count, counted, alias)
+}
+
+fn thread_repair_second_projection(
+    clause: &Clause,
+    source: &str,
+    retained: &str,
+    counted: &str,
+    alias: &str,
+) -> bool {
+    let Some(projection) = plain_with_projection(clause) else {
+        return false;
+    };
+    let [source_item, retained_item, count] = projection.items.as_slice() else {
+        return false;
+    };
+    is_unaliased_variable(source_item, source)
+        && is_unaliased_variable(retained_item, retained)
+        && is_count_alias(count, counted, alias)
+}
+
+fn plain_with_projection(clause: &Clause) -> Option<&ProjectionClause> {
+    let ClauseKind::With(projection) = &clause.kind else {
+        return None;
+    };
+    (!projection.distinct
+        && projection.predicate.is_none()
+        && projection.order_by.is_empty()
+        && projection.offset.is_none()
+        && projection.limit.is_none())
+    .then_some(projection)
+}
+
+fn is_count_alias(item: &ReturnItem, variable: &str, alias: &str) -> bool {
+    item.alias.as_deref() == Some(alias)
+        && matches!(
+            &item.expression.kind,
+            ReturnExpressionKind::Aggregate(AggregateExpression::CountVariable {
+                variable: candidate,
+                distinct: false,
+            }) if candidate == variable
+        )
+}
+
+fn thread_repair_return(
+    clause: &Clause,
+    source: &str,
+    identity_refs: &str,
+    legacy_messages: &str,
+    memory: &str,
+) -> Option<()> {
+    let ClauseKind::Return(projection) = &clause.kind else {
+        return None;
+    };
+    if projection.distinct
+        || projection.predicate.is_some()
+        || projection.offset.is_some()
+        || projection.limit.is_some()
+    {
+        return None;
+    }
+    let [id, thread_id, space_id, message_count, identity, messages, memories] =
+        projection.items.as_slice()
+    else {
+        return None;
+    };
+    if !is_unaliased_property(id, source, "id")
+        || !is_unaliased_property(thread_id, source, "thread_id")
+        || !is_thread_repair_space_id(space_id, source)
+        || !is_thread_repair_message_count(message_count, source)
+        || !is_unaliased_variable(identity, identity_refs)
+        || !is_unaliased_variable(messages, legacy_messages)
+        || !is_count_variable(memories, memory)
+    {
+        return None;
+    }
+    let [order] = projection.order_by.as_slice() else {
+        return None;
+    };
+    matches!(
+        (&order.expression, order.direction),
+        (OrderExpression::Property { variable, property }, hawdb_cypher::OrderDirection::Asc)
+            if variable == source && property == "id"
+    )
+    .then_some(())
+}
+
+fn is_unaliased_property(item: &ReturnItem, variable: &str, property: &str) -> bool {
+    item.alias.is_none()
+        && matches!(
+            &item.expression.kind,
+            ReturnExpressionKind::Value(expression)
+                if scalar_property(expression) == Some((variable, property))
+        )
+}
+
+fn is_thread_repair_space_id(item: &ReturnItem, source: &str) -> bool {
+    if item.alias.is_some() {
+        return false;
+    }
+    let ReturnExpressionKind::Value(expression) = &item.expression.kind else {
+        return false;
+    };
+    matches!(
+        &expression.kind,
+        ScalarExpressionKind::DefaultIfNullOrEq {
+            variable,
+            property,
+            empty,
+            default,
+        } if variable == source
+            && property == "space_id"
+            && is_string_literal(empty, "")
+            && is_string_literal(default, "default")
+    )
+}
+
+fn is_thread_repair_message_count(item: &ReturnItem, source: &str) -> bool {
+    if item.alias.is_some() {
+        return false;
+    }
+    let ReturnExpressionKind::Value(expression) = &item.expression.kind else {
+        return false;
+    };
+    let ScalarExpressionKind::Coalesce(expressions) = &expression.kind else {
+        return false;
+    };
+    let [property, default] = expressions.as_slice() else {
+        return false;
+    };
+    scalar_property(property) == Some((source, "message_count")) && is_int_scalar(default, 0)
+}
+
+fn is_count_variable(item: &ReturnItem, variable: &str) -> bool {
+    item.alias.is_none()
+        && matches!(
+            &item.expression.kind,
+            ReturnExpressionKind::Aggregate(AggregateExpression::CountVariable {
+                variable: candidate,
+                distinct: false,
+            }) if candidate == variable
+        )
+}
+
+fn scalar_property(expression: &ScalarExpression) -> Option<(&str, &str)> {
+    let ScalarExpressionKind::Property { variable, property } = &expression.kind else {
+        return None;
+    };
+    Some((variable, property))
+}
+
+fn is_string_literal(expression: &ValueExpression, expected: &str) -> bool {
+    matches!(
+        &expression.kind,
+        ValueExpressionKind::Literal(Value::String(value)) if value == expected
+    )
+}
+
+fn is_int_scalar(expression: &ScalarExpression, expected: i64) -> bool {
+    matches!(
+        &expression.kind,
+        ScalarExpressionKind::Value(value)
+            if matches!(&value.kind, ValueExpressionKind::Literal(Value::Int(value)) if *value == expected)
+    )
 }
 
 fn reverse_relationship_direction(direction: RelationshipDirection) -> RelationshipDirection {
