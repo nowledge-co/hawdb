@@ -624,10 +624,10 @@ impl SearchOutOfCoreGenerationWriter {
                 lexical_analyzer_digest(&self.options.analyzer_lexicon),
                 self.documents_digest.finish(),
                 |consume| {
-                    source.scan_admitted(&self.task_context, &mut |document| {
-                        consume(&document)?;
+                    source.scan_admitted(&self.task_context, &mut |ordinal, document| {
+                        consume(ordinal, &document)?;
                         vectors.push(&document)?;
-                        segments.push_admitted(document)
+                        segments.push_admitted(ordinal, document)
                     })?;
                     // Drop both writers' buffers before lexical external merge.
                     // All artifacts remain private to the stage until publication.
@@ -838,7 +838,7 @@ fn build_rabitq_artifact(
     let mut writer =
         hawdb_vector_projection::ProjectionWriter::create(&path, config).map_err(rabitq_error)?;
     let mut vector_ordinal = 0u64;
-    source.scan(&mut |document| {
+    source.scan(&mut |_, document| {
         let Some(embedding) = document.embedding.as_deref() else {
             return Ok(());
         };

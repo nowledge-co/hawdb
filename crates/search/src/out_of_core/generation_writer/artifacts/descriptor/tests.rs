@@ -305,7 +305,7 @@ fn descriptor_budget_stops_before_appending_any_segment_payload() {
         ..Default::default()
     };
     let mut builder = SegmentArtifactBuilder::new(&root, 1, &fields, &options).unwrap();
-    builder.push(source.clone()).unwrap();
+    builder.push(0, source.clone()).unwrap();
     builder.flush_segment().unwrap();
     let before = [
         builder.document_file.metadata().unwrap().len(),
@@ -313,7 +313,7 @@ fn descriptor_budget_stops_before_appending_any_segment_payload() {
         builder.vector_file.metadata().unwrap().len(),
     ];
     assert!(before.iter().all(|bytes| *bytes > 0));
-    builder.push(source).unwrap();
+    builder.push(1, source).unwrap();
     assert!(builder
         .flush_segment()
         .unwrap_err()
