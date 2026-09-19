@@ -1,7 +1,7 @@
 use super::*;
 use hawdb_cypher::{
     ArithmeticOp, Clause, ClauseKind, NodePattern, PathSearch, PredicateExpression,
-    ProjectionClause, QueryPipeline,
+    ProjectionClause, QueryPipeline, RelationshipPattern,
 };
 
 mod imports;
@@ -753,6 +753,9 @@ fn bind_optional_degree_pipeline(
     query: &QueryPipeline,
     parameters: &BTreeMap<String, Value>,
 ) -> Option<Result<LogicalPlan>> {
+    if let Some(plan) = bind_direct_optional_degree_pipeline(query, parameters) {
+        return Some(plan);
+    }
     let [initial, optional, with, final_return] = query.clauses.as_slice() else {
         return None;
     };
@@ -775,40 +778,12 @@ fn bind_optional_degree_pipeline(
         return None;
     }
 
-    let ClauseKind::Match {
-        optional: true,
-        patterns: optional_patterns,
-        predicate: None,
-    } = &optional.kind
-    else {
-        return None;
-    };
-    let [optional_pattern] = optional_patterns.as_slice() else {
-        return None;
-    };
-    if optional_pattern.variable.is_some()
-        || optional_pattern.first.variable != source.variable
-        || !optional_pattern.first.label.is_empty()
-        || !optional_pattern.first.properties.is_empty()
-    {
-        return None;
-    }
-    let [step] = optional_pattern.steps.as_slice() else {
-        return None;
-    };
-    let relationship = &step.relationship;
-    if relationship.search != PathSearch::All
-        || relationship.min_hops != 1
-        || relationship.max_hops != 1
-    {
-        return None;
-    }
+    let optional_match = optional_degree_match(optional, source)?;
 
     let ClauseKind::With(with_projection) = &with.kind else {
         return None;
     };
     if with_projection.distinct
-        || with_projection.predicate.is_some()
         || !with_projection.order_by.is_empty()
         || with_projection.offset.is_some()
         || with_projection.limit.is_some()
@@ -828,8 +803,8 @@ fn bind_optional_degree_pipeline(
     else {
         return None;
     };
-    let counts_relationship = relationship.variable.as_deref() == Some(variable);
-    let counts_target = step.target.variable == *variable;
+    let counts_relationship = optional_match.relationship.variable.as_deref() == Some(variable);
+    let counts_target = optional_match.target.variable == *variable;
     if !counts_relationship && !counts_target {
         return None;
     }
@@ -849,18 +824,8 @@ fn bind_optional_degree_pipeline(
         Ok(plan) => normalize::normalize(plan),
         Err(error) => return Some(Err(error)),
     };
-    let degree = match (|| {
-        Ok(LogicalPlan::OptionalDegree {
-            source_variable: source.variable.clone(),
-            rel_type: relationship.rel_type.clone(),
-            rel_properties: bind_properties(&relationship.properties, parameters)?,
-            direction: relationship.direction,
-            target_label: step.target.label.clone(),
-            target_properties: bind_properties(&step.target.properties, parameters)?,
-            alias: alias.clone(),
-            input: Box::new(initial),
-        })
-    })() {
+    let mut degree = match build_optional_degree(initial, source, optional_match, alias, parameters)
+    {
         Ok(plan) => plan,
         Err(error) => return Some(Err(error)),
     };
@@ -873,7 +838,177 @@ fn bind_optional_degree_pipeline(
         },
     );
     scope.0.insert(alias.clone(), BindingType::Scalar);
+    if let Some(predicate) = &with_projection.predicate {
+        let predicate = match bind_predicate(&predicate.kind, &scope, parameters) {
+            Ok(predicate) => predicate,
+            Err(error) => return Some(Err(error)),
+        };
+        degree = LogicalPlan::Filter {
+            predicate,
+            input: Box::new(degree),
+        };
+    }
     Some(bind_projection(degree, &scope, final_projection, parameters).map(|(plan, _)| plan))
+}
+
+fn bind_direct_optional_degree_pipeline(
+    query: &QueryPipeline,
+    parameters: &BTreeMap<String, Value>,
+) -> Option<Result<LogicalPlan>> {
+    let [initial, optional, final_return] = query.clauses.as_slice() else {
+        return None;
+    };
+    let ClauseKind::Match {
+        optional: false,
+        patterns: initial_patterns,
+        ..
+    } = &initial.kind
+    else {
+        return None;
+    };
+    let [initial_pattern] = initial_patterns.as_slice() else {
+        return None;
+    };
+    if initial_pattern.variable.is_some() || !initial_pattern.steps.is_empty() {
+        return None;
+    }
+    let source = &initial_pattern.first;
+    if source.anonymous {
+        return None;
+    }
+    let optional_match = optional_degree_match(optional, source)?;
+    let ClauseKind::Return(final_projection) = &final_return.kind else {
+        return None;
+    };
+    if final_projection.distinct {
+        return None;
+    }
+    let [(count_index, counted, alias)] = final_projection
+        .items
+        .iter()
+        .enumerate()
+        .filter_map(|(index, item)| match &item.expression.kind {
+            ReturnExpressionKind::Aggregate(AggregateExpression::CountVariable {
+                variable,
+                distinct: false,
+            }) => item
+                .alias
+                .as_ref()
+                .map(|alias| (index, variable.as_str(), alias.as_str())),
+            _ => None,
+        })
+        .collect::<Vec<_>>()[..]
+    else {
+        return None;
+    };
+    let counts_relationship = optional_match.relationship.variable.as_deref() == Some(counted);
+    let counts_target = optional_match.target.variable == counted;
+    if !counts_relationship && !counts_target {
+        return None;
+    }
+    let initial = match bind_read_clauses(
+        std::slice::from_ref(initial),
+        None,
+        Scope::default(),
+        parameters,
+    ) {
+        Ok(plan) => normalize::normalize(plan),
+        Err(error) => return Some(Err(error)),
+    };
+    let degree = match build_optional_degree(initial, source, optional_match, alias, parameters) {
+        Ok(plan) => plan,
+        Err(error) => return Some(Err(error)),
+    };
+    let mut projection = final_projection.clone();
+    projection.items[count_index].expression = AstNode::synthetic(ReturnExpressionKind::Value(
+        AstNode::synthetic(ScalarExpressionKind::Variable(alias.to_string())),
+    ));
+    let mut scope = Scope::default();
+    scope.0.insert(
+        source.variable.clone(),
+        BindingType::Graph {
+            kind: GraphEntityKind::Node,
+            column: None,
+        },
+    );
+    scope.0.insert(alias.to_string(), BindingType::Scalar);
+    Some(bind_projection(degree, &scope, &projection, parameters).map(|(plan, _)| plan))
+}
+
+struct OptionalDegreeMatch<'a> {
+    relationship: &'a RelationshipPattern,
+    direction: RelationshipDirection,
+    target: &'a NodePattern,
+}
+
+fn optional_degree_match<'a>(
+    clause: &'a Clause,
+    source: &NodePattern,
+) -> Option<OptionalDegreeMatch<'a>> {
+    let ClauseKind::Match {
+        optional: true,
+        patterns,
+        predicate: None,
+    } = &clause.kind
+    else {
+        return None;
+    };
+    let [pattern] = patterns.as_slice() else {
+        return None;
+    };
+    let [step] = pattern.steps.as_slice() else {
+        return None;
+    };
+    let relationship = &step.relationship;
+    if pattern.variable.is_some()
+        || relationship.search != PathSearch::All
+        || relationship.min_hops != 1
+        || relationship.max_hops != 1
+    {
+        return None;
+    }
+    if pattern.first.variable == source.variable
+        && !pattern.first.anonymous
+        && pattern.first.label.is_empty()
+        && pattern.first.properties.is_empty()
+    {
+        return Some(OptionalDegreeMatch {
+            relationship,
+            direction: relationship.direction,
+            target: &step.target,
+        });
+    }
+    if step.target.variable == source.variable
+        && !step.target.anonymous
+        && step.target.label.is_empty()
+        && step.target.properties.is_empty()
+    {
+        return Some(OptionalDegreeMatch {
+            relationship,
+            direction: reverse_relationship_direction(relationship.direction),
+            target: &pattern.first,
+        });
+    }
+    None
+}
+
+fn build_optional_degree(
+    input: LogicalPlan,
+    source: &NodePattern,
+    optional_match: OptionalDegreeMatch<'_>,
+    alias: &str,
+    parameters: &BTreeMap<String, Value>,
+) -> Result<LogicalPlan> {
+    Ok(LogicalPlan::OptionalDegree {
+        source_variable: source.variable.clone(),
+        rel_type: optional_match.relationship.rel_type.clone(),
+        rel_properties: bind_properties(&optional_match.relationship.properties, parameters)?,
+        direction: optional_match.direction,
+        target_label: optional_match.target.label.clone(),
+        target_properties: bind_properties(&optional_match.target.properties, parameters)?,
+        alias: alias.to_string(),
+        input: Box::new(input),
+    })
 }
 
 fn is_unaliased_variable(item: &ReturnItem, variable: &str) -> bool {

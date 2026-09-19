@@ -256,6 +256,29 @@ fn lowers_a_single_optional_relationship_count_to_optional_degree() {
     )
     .unwrap();
     assert!(format!("{target_count:?}").contains("OptionalDegree {"));
+
+    let reversed_direct_count = plan_pipeline_query(
+        "MATCH (e:Entity) \
+         OPTIONAL MATCH (m:Memory)-[:MENTIONS]->(e) \
+         RETURN e.id, COUNT(m) AS memory_count",
+        &BTreeMap::new(),
+    )
+    .unwrap();
+    let text = format!("{reversed_direct_count:?}");
+    assert!(text.contains("OptionalDegree {"), "{text}");
+    assert!(!text.contains("Aggregate {"), "{text}");
+
+    let reversed_with_filter = plan_pipeline_query(
+        "MATCH (e:Entity) \
+         OPTIONAL MATCH (:Memory)-[r:MENTIONS]->(e) \
+         WITH e, COUNT(r) AS mention_count WHERE mention_count < $after \
+         RETURN e.id, mention_count",
+        &BTreeMap::from([("after".to_string(), Value::Int(2))]),
+    )
+    .unwrap();
+    let text = format!("{reversed_with_filter:?}");
+    assert!(text.contains("OptionalDegree {"), "{text}");
+    assert!(text.contains("Filter {"), "{text}");
 }
 
 #[test]
