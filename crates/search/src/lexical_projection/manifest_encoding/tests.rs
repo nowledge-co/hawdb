@@ -54,7 +54,7 @@ pub(in crate::lexical_projection) fn manifest(mut terms: Vec<String>) -> Manifes
         ]
     };
     ManifestBody {
-        format: "HAWDB_LEXICAL_MANIFEST_V1".into(),
+        format: "HAWDB_LEXICAL_MANIFEST_V2".into(),
         layout: "HAWDB_LEXICAL_ORDINAL_V1".into(),
         generation: 7,
         source_graph_commit_epoch: Some(8),
@@ -148,6 +148,10 @@ fn decode_preserves_checksum_and_schema_rejection() {
         .contains("counts are inconsistent"));
     let error = ManifestBody::decode(&legacy_encode(&invalid)).unwrap_err();
     assert!(error.to_string().contains("counts are inconsistent"));
+
+    let mut previous_layout = manifest(vec!["term".into()]);
+    previous_layout.format = "HAWDB_LEXICAL_MANIFEST_V1".into();
+    assert!(previous_layout.validate().is_err());
 }
 
 #[test]
