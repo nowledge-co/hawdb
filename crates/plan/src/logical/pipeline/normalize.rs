@@ -27,7 +27,9 @@ pub(super) fn normalize(plan: LogicalPlan) -> LogicalPlan {
             input: Some(input),
         } => {
             let input = normalize(*input);
-            if independent_nodes(&program, Some(&input)) {
+            if let Some(plan) = chained_match(&program, &input) {
+                plan
+            } else if independent_nodes(&program, Some(&input)) {
                 node_product(program, Some(input))
             } else {
                 LogicalPlan::GraphMatch {
@@ -148,6 +150,112 @@ fn node_product(program: GraphMatchProgram, mut input: Option<LogicalPlan>) -> L
     input
 }
 
+/// Lowers a later one-hop MATCH whose source is already bound by an earlier
+/// clause. The generic representation includes the source node again so the
+/// binder can validate scope; the conventional plan represents that clause as
+/// one more `Expand` over the prior input.
+fn chained_match(program: &GraphMatchProgram, input: &LogicalPlan) -> Option<LogicalPlan> {
+    if program.optional || !program.imports.is_empty() {
+        return None;
+    }
+    let [GraphMatchStep::Node(source), GraphMatchStep::Expand {
+        source: expand_source,
+        relationship,
+        rel_type,
+        properties,
+        direction,
+        min_hops,
+        max_hops,
+        target,
+    }] = program.steps.as_slice()
+    else {
+        return None;
+    };
+    if expand_source != &source.variable {
+        return None;
+    }
+
+    let mut introduced = BTreeSet::from([target.variable.as_str()]);
+    if let Some(relationship) = relationship {
+        introduced.insert(relationship);
+    }
+    if introduced != program.introduced.iter().map(String::as_str).collect() {
+        return None;
+    }
+
+    let (input, prior_predicate) = match input.clone() {
+        LogicalPlan::Filter { predicate, input } if reorderable_filter(&predicate) => {
+            (*input, Some(predicate))
+        }
+        input => (input, None),
+    };
+    let mut output = LogicalPlan::Expand {
+        source_variable: source.variable.clone(),
+        source_label: source.label.clone(),
+        rel_variable: relationship.clone(),
+        rel_type: rel_type.clone(),
+        rel_properties: properties.clone(),
+        direction: *direction,
+        target_variable: target.variable.clone(),
+        target_label: target.label.clone(),
+        min_hops: *min_hops,
+        max_hops: *max_hops,
+        optional: false,
+        input: Box::new(input),
+    };
+    let mut predicates = node_predicates(source);
+    predicates.extend(node_predicates(target));
+    let predicate =
+        combine_optional_predicates(combine_predicates(predicates), program.predicate.clone());
+    let predicate = match (prior_predicate, predicate) {
+        (Some(prior), Some(predicate)) => combine_predicates(vec![prior, predicate]),
+        (Some(predicate), None) | (None, Some(predicate)) => Some(predicate),
+        (None, None) => None,
+    };
+    if let Some(predicate) = predicate
+        && let Some(predicate) =
+            pushdown_relationship_property_eq_predicates(&mut output, predicate)
+    {
+        output = LogicalPlan::Filter {
+            predicate,
+            input: Box::new(output),
+        };
+    }
+    Some(output)
+}
+
+fn reorderable_filter(predicate: &Predicate) -> bool {
+    match predicate {
+        Predicate::And(children) | Predicate::Or(children) => {
+            children.iter().all(reorderable_filter)
+        }
+        Predicate::Not(child) => reorderable_filter(child),
+        Predicate::ConstantBool(_)
+        | Predicate::IdEq { .. }
+        | Predicate::IdNotEq { .. }
+        | Predicate::IdCompare { .. }
+        | Predicate::IdIn { .. }
+        | Predicate::PropertyEq { .. }
+        | Predicate::PropertyNotEq { .. }
+        | Predicate::PropertyCompare { .. }
+        | Predicate::PropertyListContains { .. }
+        | Predicate::PropertyListContainsLower { .. }
+        | Predicate::PropertyContains { .. }
+        | Predicate::PropertyStartsWith { .. }
+        | Predicate::PropertyEndsWith { .. }
+        | Predicate::PropertyRegexMatch { .. }
+        | Predicate::PropertyIsNull { .. }
+        | Predicate::PropertyIsNotNull { .. }
+        | Predicate::PropertyIn { .. } => true,
+        Predicate::RelationshipExists { .. }
+        | Predicate::BoundRelationshipExists { .. }
+        | Predicate::ExpressionEq { .. }
+        | Predicate::ExpressionNotEq { .. }
+        | Predicate::ExpressionCompare { .. }
+        | Predicate::ExpressionContains { .. } => false,
+    }
+}
+
 fn initial_match(program: &GraphMatchProgram) -> Option<LogicalPlan> {
     if program.optional || !program.imports.is_empty() {
         return None;
@@ -155,9 +263,11 @@ fn initial_match(program: &GraphMatchProgram) -> Option<LogicalPlan> {
     let [GraphMatchStep::Node(first), tail @ ..] = program.steps.as_slice() else {
         return None;
     };
-    // Multiple expansions in one clause have relationship-isomorphism constraints.
-    // Conventional Expand operators do not enforce those across separate operators.
-    if tail.len() > 1 {
+    // Multiple expansions in one clause normally have relationship-isomorphism
+    // constraints that conventional Expand operators cannot express. Fixed,
+    // distinct relationship types cannot alias the same relationship, so that
+    // subset can retain the conventional chain shape safely.
+    if tail.len() > 1 && !has_distinct_fixed_relationship_types(tail) {
         return None;
     }
     let mut introduced = BTreeSet::from([first.variable.as_str()]);
@@ -166,18 +276,23 @@ fn initial_match(program: &GraphMatchProgram) -> Option<LogicalPlan> {
         variable: first.variable.clone(),
         label: first.label.clone(),
     };
-    if let [GraphMatchStep::Expand {
-        source,
-        relationship,
-        rel_type,
-        properties,
-        direction,
-        min_hops,
-        max_hops,
-        target,
-    }] = tail
-    {
-        if source != &first.variable || !introduced.insert(target.variable.as_str()) {
+    let mut source_variable = first.variable.clone();
+    let mut source_label = first.label.clone();
+    for step in tail {
+        let GraphMatchStep::Expand {
+            source,
+            relationship,
+            rel_type,
+            properties,
+            direction,
+            min_hops,
+            max_hops,
+            target,
+        } = step
+        else {
+            return None;
+        };
+        if source != &source_variable || !introduced.insert(target.variable.as_str()) {
             return None;
         }
         if let Some(relationship) = relationship
@@ -187,8 +302,8 @@ fn initial_match(program: &GraphMatchProgram) -> Option<LogicalPlan> {
         }
         predicates.extend(node_predicates(target));
         input = LogicalPlan::Expand {
-            source_variable: source.clone(),
-            source_label: first.label.clone(),
+            source_variable: source_variable.clone(),
+            source_label,
             rel_variable: relationship.clone(),
             rel_type: rel_type.clone(),
             rel_properties: properties.clone(),
@@ -200,8 +315,8 @@ fn initial_match(program: &GraphMatchProgram) -> Option<LogicalPlan> {
             optional: false,
             input: Box::new(input),
         };
-    } else if !tail.is_empty() {
-        return None;
+        source_variable = target.variable.clone();
+        source_label = target.label.clone();
     }
     if introduced != program.introduced.iter().map(String::as_str).collect() {
         return None;
@@ -217,6 +332,16 @@ fn initial_match(program: &GraphMatchProgram) -> Option<LogicalPlan> {
         };
     }
     Some(input)
+}
+
+fn has_distinct_fixed_relationship_types(steps: &[GraphMatchStep]) -> bool {
+    let mut relationship_types = BTreeSet::new();
+    steps.iter().all(|step| {
+        let GraphMatchStep::Expand { rel_type, .. } = step else {
+            return false;
+        };
+        !rel_type.is_empty() && relationship_types.insert(rel_type)
+    })
 }
 
 fn node_predicates(node: &GraphMatchNode) -> Vec<Predicate> {

@@ -185,3 +185,50 @@ fn aggregate_projection_movement_requires_infallible_typed_selectors() {
     };
     assert!(matches!(*input, LogicalPlan::Project { .. }));
 }
+
+#[test]
+fn normalizes_a_later_bound_source_match_to_an_expand() {
+    let plan = plan_normalized_pipeline_query(
+        "MATCH (c:Memory {is_crystal: true})-[:SYNTHESIZED_FROM]->(src:Memory) \
+         MATCH (src)-[:EVOLVES]-(newer:Memory) \
+         WHERE newer.created_at > c.created_at \
+         RETURN newer.id",
+        &BTreeMap::new(),
+    )
+    .unwrap();
+    let text = format!("{plan:?}");
+    assert_eq!(text.matches("Expand {").count(), 2, "{text}");
+    assert!(!text.contains("GraphMatch {"), "{text}");
+    assert!(text.contains("source_variable: \"src\""), "{text}");
+}
+
+#[test]
+fn normalizes_distinct_fixed_type_multi_hop_matches_to_expands() {
+    let plan = plan_normalized_pipeline_query(
+        "MATCH (m:Memory)-[:SYNTHESIZED_FROM]->(src:Memory)-[:MENTIONS]->(e:Entity) \
+         WHERE m.is_crystal = true AND e.community_id IS NOT NULL \
+         RETURN m.id, e.community_id",
+        &BTreeMap::new(),
+    )
+    .unwrap();
+    let text = format!("{plan:?}");
+    assert_eq!(text.matches("Expand {").count(), 2, "{text}");
+    assert!(!text.contains("GraphMatch {"), "{text}");
+}
+
+#[test]
+fn chained_match_does_not_move_expression_filters() {
+    let plan = plan_normalized_pipeline_query(
+        "MATCH (a:Node) WHERE lower(a.name) = 'alpha' \
+         MATCH (a)-[:LINK]->(b:Node) \
+         RETURN b.id",
+        &BTreeMap::new(),
+    )
+    .unwrap();
+    let text = format!("{plan:?}");
+    assert!(text.contains("ExpressionEq"), "{text}");
+    assert!(
+        text.find("Expand {").unwrap() < text.find("Filter {").unwrap(),
+        "{text}"
+    );
+}
