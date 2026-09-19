@@ -2745,6 +2745,40 @@ impl hawdb_storage::graph_engine::GraphReadEngine for GraphStore {
     fn initial_import_source_fingerprint(&self) -> Option<&str> {
         GraphStore::initial_import_source_fingerprint(self)
     }
+
+    fn append_state(&self) -> &hawdb_storage::AppendState {
+        GraphStore::append_state(self)
+    }
+
+    fn relational_state(&self) -> &hawdb_storage::RelationalState {
+        GraphStore::relational_state(self)
+    }
+
+    fn read_append_partition_bounded(
+        &self,
+        table: &str,
+        partition: &hawdb_storage::RelationalKey,
+        after: Option<&hawdb_storage::RelationalKey>,
+        max_rows: usize,
+        max_payload_bytes: usize,
+    ) -> hawdb_core::Result<hawdb_storage::AppendSegmentReadOutput> {
+        GraphStore::read_append_partition_bounded(
+            self,
+            table,
+            partition,
+            after,
+            max_rows,
+            max_payload_bytes,
+        )
+    }
+
+    fn poison_on_storage_error<T>(&self, result: &hawdb_core::Result<T>) {
+        GraphStore::poison_on_storage_error(self, result);
+    }
+
+    fn ensure_usable(&self) -> hawdb_core::Result<()> {
+        GraphStore::ensure_usable(self)
+    }
 }
 
 #[cfg(test)]

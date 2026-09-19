@@ -19,10 +19,10 @@
 //! can be generic over the engine instead of the concrete store.
 
 use crate::{
-    AppendTableSchema, PublishedReadView, SegmentCacheSnapshot, StorageRecoveryReport,
-    StorageResidencyReport,
+    AppendSegmentReadOutput, AppendState, AppendTableSchema, PublishedReadView, RelationalKey,
+    RelationalState, SegmentCacheSnapshot, StorageRecoveryReport, StorageResidencyReport,
 };
-use hawdb_core::{BasicGraphStatistics, Catalog, GraphStatistics};
+use hawdb_core::{BasicGraphStatistics, Catalog, GraphStatistics, Result};
 
 /// Read-only observability surface consumed by the embedded facade.
 pub trait GraphReadEngine {
@@ -47,4 +47,22 @@ pub trait GraphReadEngine {
     fn append_table_schema(&self, table: &str) -> Option<&AppendTableSchema>;
 
     fn initial_import_source_fingerprint(&self) -> Option<&str>;
+
+    fn append_state(&self) -> &AppendState;
+
+    fn relational_state(&self) -> &RelationalState;
+
+    fn read_append_partition_bounded(
+        &self,
+        table: &str,
+        partition: &RelationalKey,
+        after: Option<&RelationalKey>,
+        max_rows: usize,
+        max_payload_bytes: usize,
+    ) -> Result<AppendSegmentReadOutput>;
+
+    /// Fail-closed poison decision taken while serving a read result.
+    fn poison_on_storage_error<T>(&self, result: &Result<T>);
+
+    fn ensure_usable(&self) -> Result<()>;
 }
