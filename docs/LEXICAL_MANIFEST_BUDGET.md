@@ -78,6 +78,11 @@ or [#325](https://github.com/nowledge-co/hawdb/issues/325). Their complete ident
 BM25/reopen parity, and original compression criterion still need qualification.
 No filtered or truncated corpus substitutes for that evidence.
 
+[`SEARCH_LEXICAL_CORPUS_QUALIFICATION.md`](SEARCH_LEXICAL_CORPUS_QUALIFICATION.md)
+defines the developer-only collector and its report-comparison gate. It applies
+the selected writer and reader limits without turning local paths or command
+arguments into a production control plane.
+
 ## Verification
 
 Coverage includes setter rollback, exact/one-short publication and read bounds,
