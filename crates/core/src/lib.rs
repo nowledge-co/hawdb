@@ -20,6 +20,7 @@ pub mod graph;
 pub mod graph_rag;
 pub mod ids;
 pub mod logical_type;
+pub mod projection;
 pub mod regex;
 pub mod schema;
 pub mod uuidv7;
