@@ -13,7 +13,8 @@
 // limitations under the License.
 
 use hawdb::executor::{
-    execute_with_row_limit_profile_and_external_and_memory, ExecutionMemoryConfig,
+    execute_with_request, ExecutionMemoryConfig, ExecutionRequest, ExecutionResources,
+    NoExternalReadOperator,
 };
 use hawdb::optimizer::PhysicalPlan;
 use hawdb::planner::{
@@ -22,7 +23,6 @@ use hawdb::planner::{
 use hawdb::schema::Catalog;
 use hawdb::store::{GraphSnapshotNodeImport, GraphStore, NodeId};
 use hawdb::Value;
-use hawdb_executor::external::NoExternalReadOperator;
 use serde_json::json;
 use std::collections::BTreeMap;
 use std::hint::black_box;
@@ -124,14 +124,10 @@ fn main() {
     for _ in 0..SAMPLES {
         let started = Instant::now();
         let mut external = NoExternalReadOperator;
-        let output = execute_with_row_limit_profile_and_external_and_memory(
-            &plan,
-            &mut catalog,
-            &mut store,
-            &BTreeMap::new(),
-            &mut external,
-            None,
-            &memory,
+        let parameters = BTreeMap::new();
+        let output = execute_with_request(
+            ExecutionRequest::new(&plan, &parameters, &memory),
+            ExecutionResources::new(&mut catalog, &mut store, &mut external),
         )
         .expect("benchmark aggregation must succeed");
         samples.push(started.elapsed().as_nanos());
@@ -154,14 +150,10 @@ fn main() {
     for _ in 0..SAMPLES {
         let started = Instant::now();
         let mut external = NoExternalReadOperator;
-        let output = execute_with_row_limit_profile_and_external_and_memory(
-            &compact_plan,
-            &mut catalog,
-            &mut store,
-            &BTreeMap::new(),
-            &mut external,
-            None,
-            &memory,
+        let parameters = BTreeMap::new();
+        let output = execute_with_request(
+            ExecutionRequest::new(&compact_plan, &parameters, &memory),
+            ExecutionResources::new(&mut catalog, &mut store, &mut external),
         )
         .expect("benchmark compact aggregation must succeed");
         compact_samples.push(started.elapsed().as_nanos());

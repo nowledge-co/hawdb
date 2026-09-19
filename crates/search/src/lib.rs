@@ -195,6 +195,7 @@ pub use lexical_readiness::{
 };
 pub use lexical_term_policy::SearchLexicalTermPolicy;
 pub use out_of_core::{
+    GovernedSearchGenerationUpdate, GovernedSearchGenerationWriter, SearchGenerationAdmission,
     SearchOutOfCoreConfig, SearchOutOfCoreGenerationBuildOptions,
     SearchOutOfCoreGenerationBuildReport, SearchOutOfCoreGenerationUpdate,
     SearchOutOfCoreGenerationWriter, SearchOutOfCoreHydrationOutput, SearchOutOfCoreMetrics,

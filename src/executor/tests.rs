@@ -14,6 +14,8 @@
 
 //! Executor admission, streaming, spill, and graph operator regressions.
 
+#![allow(deprecated)]
+
 use super::*;
 
 #[path = "tests/shortest_path.rs"]

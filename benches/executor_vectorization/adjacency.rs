@@ -13,8 +13,8 @@
 // limitations under the License.
 
 use hawdb::executor::{
-    execute_with_row_consumer_profile_and_external_and_memory, ExecutionMemoryConfig,
-    ProfiledQueryStream,
+    execute_with_request_consumer, ExecutionMemoryConfig, ExecutionRequest, ExecutionResources,
+    NoExternalReadOperator, ProfiledQueryStream,
 };
 use hawdb::optimizer::PhysicalPlan;
 use hawdb::planner::{GraphExpansionBudget, Projection, ProjectionExpression};
@@ -23,7 +23,6 @@ use hawdb::store::{
     GraphSnapshotNodeImport, GraphSnapshotRelationshipImport, GraphStore, NodeId, RelId,
 };
 use hawdb::{RelationshipDirection, Value};
-use hawdb_executor::external::NoExternalReadOperator;
 use serde_json::{json, Value as JsonValue};
 use std::collections::BTreeMap;
 use std::hint::black_box;
@@ -154,20 +153,15 @@ fn execute_probe(
 ) -> (ProfiledQueryStream, usize, u64) {
     let mut output_rows = 0usize;
     let mut checksum = 0u64;
-    let profile = execute_with_row_consumer_profile_and_external_and_memory(
-        plan,
-        catalog,
-        store,
-        &BTreeMap::new(),
-        external,
-        None,
-        None,
+    let parameters = BTreeMap::new();
+    let profile = execute_with_request_consumer(
+        ExecutionRequest::new(plan, &parameters, memory),
+        ExecutionResources::new(catalog, store, external),
         &mut |row| {
             output_rows = output_rows.saturating_add(1);
             checksum = checksum.wrapping_add(output_row_score(&row));
             Ok(())
         },
-        memory,
     )
     .expect("adjacency benchmark execution must succeed");
     (profile, output_rows, checksum)
