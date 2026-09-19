@@ -4316,16 +4316,16 @@ fn effective_database_config(mut config: DatabaseConfig) -> DatabaseConfig {
     config
 }
 
-struct KnowledgeRetrievalGraphContext<'a> {
+struct KnowledgeRetrievalGraphContext<'a, S = GraphStore> {
     catalog: &'a Catalog,
-    store: &'a GraphStore,
+    store: &'a S,
     compressed_vector_search_mode: CompressedVectorSearchMode,
     adaptive_vector_backend_policy: hawdb_optimizer::AdaptiveVectorBackendPolicy,
     query_memory_budget: NonZeroUsize,
     result_payload_budget: usize,
 }
 
-impl KnowledgeRetrievalGraphContext<'_> {
+impl<S: crate::executor::ExecutionStore> KnowledgeRetrievalGraphContext<'_, S> {
     fn retrieve_knowledge(
         &self,
         search_index: &SearchIndex,
@@ -4384,7 +4384,8 @@ impl KnowledgeRetrievalGraphContext<'_> {
         projection_freshness: SearchProjectionFreshness,
         request: &KnowledgeRetrievalRequest,
     ) -> Result<KnowledgeRetrievalOutput> {
-        let graph_commit_epoch = self.store.commit_epoch();
+        let graph_commit_epoch =
+            <S as hawdb_storage::graph_engine::GraphReadEngine>::commit_epoch(&self.store);
         let mut pipeline =
             hawdb_search::knowledge_retrieval_pipeline::KnowledgeRetrievalPipelineBudget::new(
                 self.query_memory_budget,
@@ -4455,9 +4456,10 @@ impl KnowledgeRetrievalGraphContext<'_> {
                 &graph_seed_search.seeds,
                 &graph_context_search.paths,
             )?;
-        let required_projection_commit_epoch = self
-            .store
-            .search_projection_changefeed_status()
+        let required_projection_commit_epoch =
+            <S as hawdb_storage::graph_engine::GraphReadEngine>::search_projection_changefeed_status(
+                &self.store,
+            )
             .required_projection_commit_epoch();
         let retrievers = knowledge_retriever_reports(
             &search,
@@ -4976,7 +4978,7 @@ impl KnowledgeRetrievalGraphContext<'_> {
         let mut candidate_count = 0usize;
         let mut scored = Vec::new();
         let mut scan_error = None;
-        self.store.visit_nodes_owned(None, |node| {
+        crate::store::InternalGraphEngine::visit_nodes_owned(self.store, None, |node| {
             let matches = match try_knowledge_graph_seed_matches_filters(
                 self.catalog,
                 self.store,
@@ -18394,9 +18396,9 @@ struct KnowledgeExpansionEdge {
     relationship: RelRecord,
 }
 
-struct DenseAdjacencyDiagnosticContext<'a> {
+struct DenseAdjacencyDiagnosticContext<'a, S = GraphStore> {
     catalog: &'a Catalog,
-    store: &'a GraphStore,
+    store: &'a S,
     operation: &'a str,
     relationship_type: Option<crate::schema::RelTypeId>,
     requested_direction: KnowledgeNeighborDirection,
@@ -18449,8 +18451,8 @@ fn knowledge_expansion_edges_for_node(
     Ok(edges)
 }
 
-fn record_dense_adjacency_diagnostics(
-    context: DenseAdjacencyDiagnosticContext<'_>,
+fn record_dense_adjacency_diagnostics<S: crate::executor::ExecutionStore>(
+    context: DenseAdjacencyDiagnosticContext<'_, S>,
     node_id: NodeId,
     reported_dense_groups: &mut BTreeSet<String>,
     fanout_reasons: &mut Vec<KnowledgeFanoutReasonDetail>,
@@ -18522,7 +18524,7 @@ fn adjacency_direction_name(adjacency_direction: AdjacencyDirection) -> &'static
 
 fn try_seed_node_by_label_and_external_id(
     catalog: &Catalog,
-    store: &GraphStore,
+    store: &impl crate::executor::ExecutionStore,
     label: &str,
     external_id: &str,
 ) -> Result<Option<NodeRecord>> {
@@ -18534,13 +18536,19 @@ fn try_seed_node_by_label_and_external_id(
     if let Ok(value) = external_id.parse::<i64>() {
         values.push(Value::Int(value));
     }
-    store.visit_nodes_by_property_owned(label_id, "id", &values, |node| {
-        if projected_node_external_id(&node) != external_id {
-            return crate::store::GraphScanControl::Continue;
-        }
-        found = Some(node);
-        crate::store::GraphScanControl::Stop
-    })?;
+    crate::store::InternalGraphEngine::visit_nodes_by_property_owned(
+        store,
+        label_id,
+        "id",
+        &values,
+        |node| {
+            if projected_node_external_id(&node) != external_id {
+                return crate::store::GraphScanControl::Continue;
+            }
+            found = Some(node);
+            crate::store::GraphScanControl::Stop
+        },
+    )?;
     if found.is_some() {
         return Ok(found);
     }

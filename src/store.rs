@@ -847,6 +847,35 @@ pub(crate) trait InternalGraphEngine {
         direction: AdjacencyDirection,
         consumer: impl FnMut(RelRecord) -> GraphScanControl,
     ) -> Result<GraphScanControl>;
+
+    fn visit_nodes_owned(
+        &self,
+        label_id: Option<LabelId>,
+        consumer: impl FnMut(NodeRecord) -> GraphScanControl,
+    ) -> Result<GraphScanControl>;
+
+    fn relationship_owned(&self, id: RelId) -> Result<Option<RelRecord>>;
+
+    fn adjacency_group_stats(
+        &self,
+        node_id: NodeId,
+        rel_type: RelTypeId,
+        direction: AdjacencyDirection,
+    ) -> AdjacencyGroupStats;
+
+    fn adjacency_group_stats_for_node(
+        &self,
+        node_id: NodeId,
+        direction: AdjacencyDirection,
+    ) -> Vec<AdjacencyGroupStats>;
+
+    fn visit_nodes_by_property_owned(
+        &self,
+        label_id: LabelId,
+        property: &str,
+        values: &[Value],
+        consumer: impl FnMut(NodeRecord) -> GraphScanControl,
+    ) -> Result<GraphScanControl>;
 }
 
 impl InternalGraphEngine for GraphStore {
@@ -862,6 +891,45 @@ impl InternalGraphEngine for GraphStore {
         consumer: impl FnMut(RelRecord) -> GraphScanControl,
     ) -> Result<GraphScanControl> {
         GraphStore::visit_adjacent_relationships_owned(self, node_id, rel_type, direction, consumer)
+    }
+
+    fn visit_nodes_owned(
+        &self,
+        label_id: Option<LabelId>,
+        consumer: impl FnMut(NodeRecord) -> GraphScanControl,
+    ) -> Result<GraphScanControl> {
+        GraphStore::visit_nodes_owned(self, label_id, consumer)
+    }
+
+    fn relationship_owned(&self, id: RelId) -> Result<Option<RelRecord>> {
+        GraphStore::relationship_owned(self, id)
+    }
+
+    fn adjacency_group_stats(
+        &self,
+        node_id: NodeId,
+        rel_type: RelTypeId,
+        direction: AdjacencyDirection,
+    ) -> AdjacencyGroupStats {
+        GraphStore::adjacency_group_stats(self, node_id, rel_type, direction)
+    }
+
+    fn adjacency_group_stats_for_node(
+        &self,
+        node_id: NodeId,
+        direction: AdjacencyDirection,
+    ) -> Vec<AdjacencyGroupStats> {
+        GraphStore::adjacency_group_stats_for_node(self, node_id, direction)
+    }
+
+    fn visit_nodes_by_property_owned(
+        &self,
+        label_id: LabelId,
+        property: &str,
+        values: &[Value],
+        consumer: impl FnMut(NodeRecord) -> GraphScanControl,
+    ) -> Result<GraphScanControl> {
+        GraphStore::visit_nodes_by_property_owned(self, label_id, property, values, consumer)
     }
 }
 
