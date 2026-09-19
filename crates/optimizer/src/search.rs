@@ -169,7 +169,7 @@ impl OptimizationSearchReport {
 
 #[cfg(test)]
 mod tests {
-    use super::{OptimizationSearchReport, SearchMode, SelectedPlanTrace};
+    use super::{OptimizationSearchReport, RuleOutcome, SearchMode, SelectedPlanTrace};
     use crate::{ApplyOrder, OptimizationStage, PlanCost, PlanCostBreakdown, StageStats};
     use std::collections::BTreeMap;
 
@@ -198,6 +198,24 @@ mod tests {
             .decisions()
             .iter()
             .any(|decision| decision.contains("explicit optimizer search directive")));
+    }
+
+    #[test]
+    fn search_report_preserves_structured_rule_events_from_legacy_decisions() {
+        let mut report = OptimizationSearchReport::memo(1);
+        report.push_decision(
+            "apply implementation:node_equality_index_seek: priority=100 property=id",
+        );
+        report.push_decision("choose IndexNodeSeek");
+
+        assert_eq!(report.decisions().len(), 2);
+        assert_eq!(report.rule_events().len(), 1);
+        assert_eq!(
+            report.rule_events()[0].rule(),
+            "implementation:node_equality_index_seek"
+        );
+        assert_eq!(report.rule_events()[0].outcome(), RuleOutcome::Applied);
+        assert_eq!(report.rule_events()[0].detail(), "priority=100 property=id");
     }
 
     #[test]

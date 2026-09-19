@@ -226,9 +226,11 @@ mod tests {
         for mode in SearchMode::all() {
             assert_eq!(mode.as_str().parse::<SearchMode>(), Ok(*mode));
         }
+        assert!("unknown".parse::<SearchMode>().is_err());
         for outcome in RuleOutcome::all() {
             assert_eq!(outcome.as_str().parse::<RuleOutcome>(), Ok(*outcome));
         }
+        assert!("unknown".parse::<RuleOutcome>().is_err());
     }
 
     #[test]
