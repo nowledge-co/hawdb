@@ -360,7 +360,6 @@ name = "hawdb-analytics"
 version = "0.1.0"
 dependencies = [
  "hawdb-core",
- "hawdb-storage",
 ]
 
 [[package]]
