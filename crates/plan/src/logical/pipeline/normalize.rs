@@ -29,6 +29,8 @@ pub(super) fn normalize(plan: LogicalPlan) -> LogicalPlan {
             let input = normalize(*input);
             if let Some(plan) = chained_match(&program, &input) {
                 plan
+            } else if let Some(plan) = chained_optional_match(&program, input.clone()) {
+                plan
             } else if let Some(plan) = column_node_lookup(&program, input.clone()) {
                 plan
             } else if independent_nodes(&program, Some(&input)) {
@@ -93,6 +95,50 @@ pub(super) fn normalize(plan: LogicalPlan) -> LogicalPlan {
         },
         plan => plan,
     }
+}
+
+/// A predicate-free optional one-hop MATCH over an existing source binding has
+/// the same null-extending behavior as one optional Expand.
+fn chained_optional_match(program: &GraphMatchProgram, input: LogicalPlan) -> Option<LogicalPlan> {
+    if !program.optional || !program.imports.is_empty() || program.predicate.is_some() {
+        return None;
+    }
+    let [GraphMatchStep::Node(source), GraphMatchStep::Expand {
+        source: expand_source,
+        relationship,
+        rel_type,
+        properties,
+        direction,
+        min_hops,
+        max_hops,
+        target,
+    }] = program.steps.as_slice()
+    else {
+        return None;
+    };
+    if expand_source != &source.variable || !source.properties.is_empty() {
+        return None;
+    }
+    let mut introduced = BTreeSet::from([target.variable.as_str()]);
+    if let Some(relationship) = relationship {
+        introduced.insert(relationship);
+    }
+    (introduced == program.introduced.iter().map(String::as_str).collect()).then(|| {
+        LogicalPlan::Expand {
+            source_variable: source.variable.clone(),
+            source_label: source.label.clone(),
+            rel_variable: relationship.clone(),
+            rel_type: rel_type.clone(),
+            rel_properties: properties.clone(),
+            direction: *direction,
+            target_variable: target.variable.clone(),
+            target_label: target.label.clone(),
+            min_hops: *min_hops,
+            max_hops: *max_hops,
+            optional: true,
+            input: Box::new(input),
+        }
+    })
 }
 
 /// A single-node MATCH constrained by an existing scalar can use the bounded
@@ -310,6 +356,40 @@ fn lower_optional_count_match(items: &[Aggregation], input: &LogicalPlan) -> Opt
     else {
         return None;
     };
+    if let LogicalPlan::Expand {
+        source_variable,
+        source_label,
+        rel_variable,
+        rel_type,
+        rel_properties,
+        direction,
+        target_variable,
+        target_label,
+        min_hops: 1,
+        max_hops: 1,
+        optional: true,
+        input,
+    } = input
+    {
+        let counts_relationship = rel_variable.as_deref() == Some(counted);
+        let counts_target = target_variable == counted;
+        if counts_relationship || counts_target {
+            return Some(LogicalPlan::Expand {
+                source_variable: source_variable.clone(),
+                source_label: source_label.clone(),
+                rel_variable: rel_variable.clone(),
+                rel_type: rel_type.clone(),
+                rel_properties: rel_properties.clone(),
+                direction: *direction,
+                target_variable: target_variable.clone(),
+                target_label: target_label.clone(),
+                min_hops: 1,
+                max_hops: 1,
+                optional: false,
+                input: input.clone(),
+            });
+        }
+    }
     let LogicalPlan::GraphMatch {
         program,
         input: Some(input),

@@ -249,6 +249,20 @@ fn normalizes_column_constrained_node_matches_to_node_column_lookups() {
 }
 
 #[test]
+fn normalizes_predicate_free_optional_matches_to_optional_expands() {
+    let plan = plan_normalized_pipeline_query(
+        "MATCH (m:Memory) OPTIONAL MATCH (m)-[:HAS_LABEL]->(l:Label) \
+         RETURN m.id, COLLECT(DISTINCT l.name) AS labels",
+        &BTreeMap::new(),
+    )
+    .unwrap();
+    let text = format!("{plan:?}");
+    assert!(text.contains("Expand {"), "{text}");
+    assert!(text.contains("optional: true"), "{text}");
+    assert!(!text.contains("GraphMatch {"), "{text}");
+}
+
+#[test]
 fn normalizes_distinct_fixed_type_multi_hop_matches_to_expands() {
     let plan = plan_normalized_pipeline_query(
         "MATCH (m:Memory)-[:SYNTHESIZED_FROM]->(src:Memory)-[:MENTIONS]->(e:Entity) \
@@ -338,6 +352,7 @@ fn normalizes_global_optional_counts_to_expands() {
         assert!(text.contains("Aggregate {"), "{text}");
         assert!(text.contains("Expand {"), "{text}");
         assert!(!text.contains("GraphMatch {"), "{text}");
+        assert!(!text.contains("optional: true"), "{text}");
     }
 }
 

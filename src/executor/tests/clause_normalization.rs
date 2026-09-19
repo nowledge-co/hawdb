@@ -62,6 +62,7 @@ fn structural_read_normalization_preserves_generic_rows_and_pruning() {
         "MATCH (n:Node) WITH n.group AS bucket, COUNT(n) AS count RETURN bucket, count ORDER BY count DESC, bucket ASC LIMIT 2",
         "MATCH (n:Node) WITH n AS item, COUNT(n) AS count RETURN item.id, count ORDER BY count DESC, item.score DESC SKIP 1 LIMIT 2",
         "MATCH (n:Node) WITH n AS item, COUNT(n) AS count ORDER BY count DESC, COALESCE(item.score, -1) DESC LIMIT 2 RETURN item.id, count",
+        "MATCH (n:Node {id: $source}) OPTIONAL MATCH (n)-[:MISSING]->(other:Node) RETURN n.id, COUNT(other) AS missing_count",
     ] {
         let generic = hawdb_plan::plan_pipeline_query(query, &parameters).unwrap();
         let normalized = hawdb_plan::plan_normalized_pipeline_query(query, &parameters).unwrap();
