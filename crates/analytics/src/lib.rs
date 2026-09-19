@@ -12,8 +12,8 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
+use hawdb_core::ids::{NodeId, NodeRecord, RelRecord};
 use hawdb_core::{HawDBError, LabelId, RelTypeId, Result, RuntimeTaskContext};
-use hawdb_storage::{NodeId, NodeRecord, RelRecord};
 use std::cmp::Ordering;
 use std::collections::{BTreeMap, BTreeSet};
 
@@ -21,7 +21,7 @@ const ALGORITHM_CHECKPOINT_INTERVAL: usize = 1024;
 const LOUVAIN_NODE_STATE_BYTES: usize = 384;
 const BTREE_ENTRY_ESTIMATED_BYTES: usize = 64;
 
-pub use hawdb_storage::projection::{ProjectionScanControl, ProjectionSource};
+pub use hawdb_core::projection::{ProjectionScanControl, ProjectionSource};
 
 /// Internal execution seam used by the embedded executor to attach
 /// cancellation without moving runtime orchestration into this crate.
@@ -39,7 +39,7 @@ pub trait ProjectedGraphExecution {
     ) -> Result<Vec<HierarchicalCommunityAssignment>>;
 }
 
-pub use hawdb_storage::projection::{
+pub use hawdb_core::projection::{
     CommunityAssignment, GraphAlgorithmMemoryEstimate, HierarchicalCommunityAssignment,
     LouvainOptions, PageRankOptions, PageRankScore, ProjectionLayout,
     ProjectionMemoryAdmissionError, ProjectionMemoryBudget, ProjectionMemoryEstimate,
@@ -1185,7 +1185,7 @@ mod tests {
         ProjectionSource,
     };
     use hawdb_core::{Catalog, Value};
-    use hawdb_storage::{NodeId, NodeRecord, RelId, RelRecord};
+    use hawdb_core::ids::{NodeId, NodeRecord, RelId, RelRecord};
     use std::collections::{BTreeMap, BTreeSet};
     use std::num::NonZeroUsize;
 

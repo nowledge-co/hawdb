@@ -7,4 +7,3 @@ license.workspace = true
 
 [dependencies]
 hawdb-core = { path = "../core" }
-hawdb-storage = { path = "../storage" }
