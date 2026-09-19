@@ -16,6 +16,8 @@
 
 use std::fmt::Debug;
 
+pub use hawdb_telemetry::*;
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct WalAppendTelemetry {
     pub success: bool,

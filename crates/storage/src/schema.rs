@@ -14,7 +14,7 @@
 
 //! Catalog schema helpers used by schema-maintenance operations.
 
-use hawdb_core::{Catalog, TableId, TableKind};
+pub use hawdb_core::schema::*;
 
 /// Ensures the owning label/rel-type and the table descriptor exist.
 pub fn ensure_table_descriptor(catalog: &mut Catalog, kind: TableKind, name: &str) -> TableId {

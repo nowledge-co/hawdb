@@ -58,6 +58,25 @@ mod ownership;
 pub mod predicate;
 pub mod pressure;
 pub mod projection;
+
+// Compatibility shims so the graph kernel can move into this crate without
+// edit churn: the kernel addresses these items through `crate::error`,
+// `crate::schema`, `crate::value`, `crate::telemetry` and `crate::analytics`,
+// which were root-level re-exports before the move.
+#[doc(hidden)]
+pub mod error {
+    pub use hawdb_core::error::*;
+}
+
+#[doc(hidden)]
+pub mod value {
+    pub use hawdb_core::value::*;
+}
+
+#[doc(hidden)]
+pub mod analytics {
+    pub use hawdb_analytics::*;
+}
 pub mod projection_generation;
 pub mod property_projection;
 pub mod property_spill;
