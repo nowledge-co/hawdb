@@ -38,13 +38,13 @@ pub(super) fn visit(
     consumer: &mut dyn FnMut(AdmittedDocument) -> Result<()>,
 ) -> Result<SearchOutOfCoreMetrics> {
     let mut metrics = SearchOutOfCoreMetrics::default();
-    for segment in &reader.descriptor.segments {
+    for segment in &reader.segment.descriptor.segments {
         checkpoint(task)?;
         let range = segment
             .payload_range
             .ok_or_else(|| invalid("segment has no payload range"))?;
         let input = RangeReader {
-            file: &reader.payload,
+            file: &reader.segment.payload,
             offset: range.offset,
             remaining: range.length,
         };

@@ -95,7 +95,7 @@ impl SearchOutOfCoreReader {
             .payload_range
             .ok_or_else(|| invalid("segment has no payload range"))?;
         let input = RangeReader {
-            file: &self.payload,
+            file: &self.segment.payload,
             offset: range.offset,
             remaining: range.length,
         };
