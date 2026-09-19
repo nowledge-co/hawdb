@@ -830,15 +830,6 @@ impl GraphStore {
         Ok(ids)
     }
 
-    pub(crate) fn delete_node_ids(
-        &mut self,
-        catalog: &mut Catalog,
-        ids: &[NodeId],
-        detach: bool,
-    ) -> Result<Vec<NodeId>> {
-        self.delete_node_ids_with_limits(catalog, ids, detach, MutationLimits::default())
-    }
-
     pub(crate) fn delete_node_ids_with_limits(
         &mut self,
         catalog: &mut Catalog,

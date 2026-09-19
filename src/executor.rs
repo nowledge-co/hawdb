@@ -15,23 +15,21 @@
 use crate::analytics::{ProjectionLayout, ProjectionMemoryBudget};
 #[cfg(test)]
 use crate::cypher::RelationshipDirection;
-use crate::error::{HawDBError, Result};
+#[cfg(test)]
+use crate::error::HawDBError;
+use crate::error::Result;
 use crate::optimizer::PhysicalPlan;
 #[cfg(test)]
 use crate::planner::GraphAlgorithmKind;
-use crate::planner::{Predicate, SetNodePropertiesReturnMode, SetValue};
+#[cfg(test)]
+use crate::planner::Predicate;
+#[cfg(test)]
+use crate::planner::{SetNodePropertiesReturnMode, SetValue};
 use crate::schema::Catalog;
-use crate::store::{
-    ConnectedNodesCreate, GraphScanControl, GraphStore, MatchedRelationshipCopyMerge,
-    MatchedRelationshipCreate, MatchedRelationshipMerge, MatchedRelationshipRetargetMerge,
-    MatchedRelationshipSourceRetargetMerge, MutationLimits, NodeSetAssignment, NodeSetValue,
-    ProjectedGraphDefinition, RelationshipDeleteRequest, RelationshipPropertiesUpdate,
-    RelationshipPropertyUpdate, RelationshipSetAssignment, RelationshipTargetNodeDelete,
-    ScanPruningReport,
-};
+use crate::store::{GraphStore, MutationLimits, ProjectedGraphDefinition, ScanPruningReport};
 use crate::value::Value;
 use hawdb_core::RuntimeTaskContext;
-use hawdb_ddl::{object_state_to_core, property_type_to_core, table_kind_to_core};
+use hawdb_executor::analytics::try_projected_graph_with_node_filter;
 use hawdb_executor::ExecutionLimit;
 use std::collections::BTreeMap;
 #[cfg(test)]
@@ -59,8 +57,8 @@ mod vector;
 
 use batch::*;
 use entrypoint::*;
+#[cfg(test)]
 use expression::*;
-use hawdb_executor::analytics::try_projected_graph_with_node_filter;
 #[cfg(feature = "tokio-runtime")]
 pub(crate) use hawdb_executor::binding::map_memory_bytes;
 #[cfg(test)]
@@ -72,10 +70,6 @@ pub(crate) use hawdb_executor::memory::{
     estimated_mutation_memory_bytes, max_external_read_parallelism,
 };
 use hawdb_executor::pipeline::{runtime_checkpoint, BatchControl};
-use hawdb_executor::predicate::{
-    label_ids_for_pattern, node_matches_label_pattern, node_matches_property_filter,
-    property_filter_from_properties,
-};
 use hawdb_executor::QueryMemoryLedger;
 #[cfg(test)]
 use hawdb_executor::{pipeline::BindingBatch, QueryMemoryClass};
@@ -87,7 +81,6 @@ pub use hawdb_executor::{
 };
 pub(crate) use mutation::project_staged_mutation_return_rows;
 pub use mutation::{execute_mutation_with_limits, is_mutation_plan, mutation_command};
-use mutation::{node_set_assignment, relationship_on_create_property_value};
 use observer::*;
 use read::*;
 #[cfg(test)]

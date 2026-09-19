@@ -14,14 +14,15 @@
 
 //! Root facade wiring for storage-independent expression evaluation.
 
+#[cfg(test)]
 use super::*;
+#[cfg(test)]
 use hawdb_executor::store::GraphExecutionRead;
 
-pub(super) use hawdb_executor::expression::{
-    node_scan_filter_from_predicate, project_value, property_filter_from_predicate,
-    relationship_filter_from_properties_and_predicate,
-};
+#[cfg(test)]
+pub(super) use hawdb_executor::expression::property_filter_from_predicate;
 
+#[cfg(test)]
 pub(super) fn evaluate_predicate(
     predicate: &Predicate,
     catalog: &Catalog,
@@ -41,6 +42,7 @@ pub(super) fn evaluate_predicate(
     )
 }
 
+#[cfg(test)]
 pub(super) fn evaluate_predicate_observed(
     predicate: &Predicate,
     catalog: &Catalog,
