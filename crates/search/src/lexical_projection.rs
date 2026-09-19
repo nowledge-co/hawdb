@@ -1474,8 +1474,11 @@ impl<'workspace> LexicalProjectionWriter<'workspace> {
             analyzer_digest,
             documents_digest,
             |consumer| {
-                for document in documents {
-                    consumer(document)?;
+                for (ordinal, document) in documents.enumerate() {
+                    let ordinal = u64::try_from(ordinal).map_err(|_| {
+                        HawDBError::Storage("lexical document ordinal exceeds u64".to_string())
+                    })?;
+                    consumer(ordinal, document)?;
                 }
                 Ok(())
             },
@@ -1491,7 +1494,7 @@ impl<'workspace> LexicalProjectionWriter<'workspace> {
         source_graph_commit_epoch: Option<u64>,
         analyzer_digest: u64,
         documents_digest: u64,
-        scan: impl FnOnce(&mut dyn FnMut(&SearchDocument) -> Result<()>) -> Result<()>,
+        scan: impl FnOnce(&mut dyn FnMut(u64, &SearchDocument) -> Result<()>) -> Result<()>,
         analyzer: &SearchAnalyzerLexicon,
     ) -> Result<Arc<LexicalProjectionReader>> {
         let (memory, task) = self.context()?;
@@ -1511,7 +1514,12 @@ impl<'workspace> LexicalProjectionWriter<'workspace> {
         let mut chunk = PendingPostings::new(Some(&memory))?;
         let mut document_count = 0u64;
         let mut total_document_len = 0u64;
-        let mut consume = |document: &SearchDocument| -> Result<()> {
+        let mut consume = |ordinal: u64, document: &SearchDocument| -> Result<()> {
+            if ordinal != document_count {
+                return Err(HawDBError::Storage(format!(
+                    "lexical document ordinal {ordinal} does not follow {document_count}"
+                )));
+            }
             let analyzed = document_frequency::analyze_with_control(
                 document,
                 analyzer,

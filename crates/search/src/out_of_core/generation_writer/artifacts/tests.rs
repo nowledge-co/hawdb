@@ -33,7 +33,7 @@ fn finished_layout_keeps_its_capacity_after_segment_state_is_released() {
     let mut builder =
         SegmentArtifactBuilder::new_with_context(&root, 1, &fields, &options, memory.clone(), task)
             .unwrap();
-    builder.push(document(0)).unwrap();
+    builder.push(0, document(0)).unwrap();
     let output = builder.finish(1).unwrap();
     let retained = output.layout.format.capacity()
         + output.layout.segments.capacity() * std::mem::size_of::<SearchOutOfCoreSegmentLayout>();
@@ -53,6 +53,22 @@ fn finished_layout_keeps_its_capacity_after_segment_state_is_released() {
 }
 
 #[test]
+fn segment_builder_rejects_an_ordinal_gap_before_mutating() {
+    let root = test_dir("segment_document_ordinal_gap");
+    fs::create_dir(&root).unwrap();
+    let fields = BTreeSet::new();
+    let options = SearchOutOfCoreGenerationBuildOptions::default();
+    let mut builder = SegmentArtifactBuilder::new(&root, 1, &fields, &options).unwrap();
+
+    let error = builder.push(1, document(0)).unwrap_err();
+
+    assert!(error.to_string().contains("document ordinal"));
+    assert!(builder.documents.is_empty());
+    assert_eq!(builder.next_document_ordinal, 0);
+    fs::remove_dir_all(root).unwrap();
+}
+
+#[test]
 fn partial_segment_io_failure_poisoning_prevents_finish_and_releases_ownership() {
     let root = test_dir("segment_partial_io");
     fs::create_dir(&root).unwrap();
@@ -63,7 +79,7 @@ fn partial_segment_io_failure_poisoning_prevents_finish_and_releases_ownership()
     let mut builder =
         SegmentArtifactBuilder::new_with_context(&root, 1, &fields, &options, memory.clone(), task)
             .unwrap();
-    builder.push(document(0)).unwrap();
+    builder.push(0, document(0)).unwrap();
     // A portable read-only descriptor fails after the document payload write.
     builder.metadata_file = File::open(root.join(STAGE_METADATA_FILE)).unwrap();
     assert!(builder.flush_segment().is_err());
@@ -72,7 +88,7 @@ fn partial_segment_io_failure_poisoning_prevents_finish_and_releases_ownership()
     assert!(builder.descriptor.segments.is_empty());
     assert!(builder.layouts.is_empty());
     assert!(builder
-        .push(document(1))
+        .push(1, document(1))
         .unwrap_err()
         .to_string()
         .contains("already failed"));

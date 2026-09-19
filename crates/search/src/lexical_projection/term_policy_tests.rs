@@ -355,12 +355,31 @@ fn term_policy_cancelled_scan_removes_long_term_staging() {
             11,
             13,
             |consume| {
-                consume(&document())?;
+                consume(0, &document())?;
                 Err(HawDBError::Execution("cancelled scan".into()))
             },
             &Default::default(),
         )
         .unwrap_err();
     assert!(error.to_string().contains("cancelled scan"));
+    assert!(fs::read_dir(&fixture.0).unwrap().next().is_none());
+}
+
+#[test]
+fn scanned_writer_rejects_a_non_dense_document_ordinal() {
+    let fixture = Fixture::new();
+    let error = LexicalProjectionWriter::new(config())
+        .write_scanned(
+            &fixture.0,
+            1,
+            None,
+            11,
+            13,
+            |consume| consume(1, &document()),
+            &Default::default(),
+        )
+        .unwrap_err();
+
+    assert!(error.to_string().contains("lexical document ordinal"));
     assert!(fs::read_dir(&fixture.0).unwrap().next().is_none());
 }

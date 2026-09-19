@@ -13,7 +13,8 @@
 // limitations under the License.
 
 use hawdb::executor::{
-    execute_with_row_limit_profile, ExecutionMemoryConfig, QueryRowRef, QueryRows,
+    execute_with_request, ExecutionMemoryConfig, ExecutionRequest, ExecutionResources,
+    NoExternalReadOperator, QueryRowRef, QueryRows,
 };
 use hawdb::optimizer::PhysicalPlan;
 use hawdb::planner::{ComparisonOp, Predicate, Projection, ProjectionExpression};
@@ -345,9 +346,14 @@ fn end_to_end_benchmark(
     let columnar_plan = projection_plan(compare.clone());
     let comparison = include_vectorization_comparison.then(|| {
         let row_plan = projection_plan(Predicate::And(vec![compare]));
-        let columnar_probe =
-            execute_with_row_limit_profile(&columnar_plan, &mut catalog, &mut store, None)
-                .expect("columnar probe must succeed");
+        let parameters = BTreeMap::new();
+        let memory = ExecutionMemoryConfig::default();
+        let mut external = NoExternalReadOperator;
+        let columnar_probe = execute_with_request(
+            ExecutionRequest::new(&columnar_plan, &parameters, &memory),
+            ExecutionResources::new(&mut catalog, &mut store, &mut external),
+        )
+        .expect("columnar probe must succeed");
         assert!(
             columnar_probe
                 .profile
@@ -355,8 +361,11 @@ fn end_to_end_benchmark(
                 .columnar_batches
                 > 0
         );
-        let row_probe = execute_with_row_limit_profile(&row_plan, &mut catalog, &mut store, None)
-            .expect("row probe must succeed");
+        let row_probe = execute_with_request(
+            ExecutionRequest::new(&row_plan, &parameters, &memory),
+            ExecutionResources::new(&mut catalog, &mut store, &mut external),
+        )
+        .expect("row probe must succeed");
         assert_eq!(row_probe.profile.pipeline_memory_report.columnar_batches, 0);
         assert_eq!(columnar_probe.rows, row_probe.rows);
 
@@ -366,9 +375,11 @@ fn end_to_end_benchmark(
                     ExecutionPath::Row => &row_plan,
                     ExecutionPath::Columnar => &columnar_plan,
                 };
-                let output =
-                    execute_with_row_limit_profile(black_box(plan), &mut catalog, &mut store, None)
-                        .expect("benchmark execution must succeed");
+                let output = execute_with_request(
+                    ExecutionRequest::new(black_box(plan), &parameters, &memory),
+                    ExecutionResources::new(&mut catalog, &mut store, &mut external),
+                )
+                .expect("benchmark execution must succeed");
                 black_box(output_checksum(&output.rows))
             });
 

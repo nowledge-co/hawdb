@@ -625,31 +625,19 @@ impl Database {
                     None,
                 )
             } else {
-                let profiled = match task_context {
-                    Some(task_context) => {
-                        executor::execute_with_output_limits_profile_and_external_and_context_and_memory(
-                            &optimized.physical_plan,
-                            &mut self.catalog,
-                            &mut self.store,
-                            parameters,
-                            external,
-                            self.config.max_read_result_rows,
-                            self.config.max_read_result_payload_bytes,
-                            task_context,
-                            &self.config.execution_memory,
-                        )
-                    }
-                    None => executor::execute_with_output_limits_profile_and_external_and_memory(
+                let profiled = executor::execute_with_request(
+                    executor::ExecutionRequest::new(
                         &optimized.physical_plan,
-                        &mut self.catalog,
-                        &mut self.store,
                         parameters,
-                        external,
+                        &self.config.execution_memory,
+                    )
+                    .with_output_limits(
                         self.config.max_read_result_rows,
                         self.config.max_read_result_payload_bytes,
-                        &self.config.execution_memory,
-                    ),
-                }?;
+                    )
+                    .with_optional_task_context(task_context),
+                    executor::ExecutionResources::new(&mut self.catalog, &mut self.store, external),
+                )?;
                 (profiled.rows, Some(profiled.profile))
             };
             if !is_mutation {
@@ -714,31 +702,19 @@ impl Database {
                     "EXPLAIN ANALYZE only supports read queries".to_string(),
                 ));
             }
-            let profiled = match task_context {
-                Some(task_context) => {
-                    executor::execute_with_output_limits_profile_and_external_and_context_and_memory(
-                        &optimized.physical_plan,
-                        &mut self.catalog,
-                        &mut self.store,
-                        parameters,
-                        external,
-                        self.config.max_read_result_rows,
-                        self.config.max_read_result_payload_bytes,
-                        task_context,
-                        &self.config.execution_memory,
-                    )
-                }
-                None => executor::execute_with_output_limits_profile_and_external_and_memory(
+            let profiled = executor::execute_with_request(
+                executor::ExecutionRequest::new(
                     &optimized.physical_plan,
-                    &mut self.catalog,
-                    &mut self.store,
                     parameters,
-                    external,
+                    &self.config.execution_memory,
+                )
+                .with_output_limits(
                     self.config.max_read_result_rows,
                     self.config.max_read_result_payload_bytes,
-                    &self.config.execution_memory,
-                ),
-            }?;
+                )
+                .with_optional_task_context(task_context),
+                executor::ExecutionResources::new(&mut self.catalog, &mut self.store, external),
+            )?;
             return Ok(QueryOutput {
                 rows: vec![explain_analyze_output_row(
                     &optimized,

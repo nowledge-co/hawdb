@@ -64,7 +64,8 @@ pub(crate) use hawdb_executor::binding::map_memory_bytes;
 #[cfg(test)]
 pub(crate) use hawdb_executor::binding::map_payload_bytes;
 use hawdb_executor::binding::Binding;
-pub(crate) use hawdb_executor::external::NoExternalReadOperator;
+pub use hawdb_executor::execution_request::ExecutionRequest;
+pub use hawdb_executor::external::NoExternalReadOperator;
 pub(crate) use hawdb_executor::memory::{
     enforced_query_memory_budget, enforced_result_memory_budget, estimated_execution_memory,
     estimated_mutation_memory_bytes, max_external_read_parallelism,
@@ -104,6 +105,37 @@ pub(crate) use hawdb_executor::batch::SOURCE_SEGMENT_SCAN_IO_DEPTH;
 pub(crate) use hawdb_executor::numeric::MAX_MORSEL_PARALLELISM;
 pub(crate) use hawdb_executor::result_delivery::StreamDelivery;
 
+pub use entrypoint::ExecutionResources;
+
+/// Executes one request through the public embedded-library execution contract.
+///
+/// The request owns query-specific inputs while [`ExecutionResources`] makes
+/// host-owned mutable state explicit. Output limits are validated before a
+/// materialized result is returned.
+pub fn execute_with_request(
+    request: ExecutionRequest<'_>,
+    resources: ExecutionResources<'_>,
+) -> Result<ProfiledQueryRows> {
+    execute_profiled_rows(request, resources)
+}
+
+/// Executes one request and delivers rows only after result limits validate.
+///
+/// This entrypoint deliberately retains output until validation completes so a
+/// late row or payload limit failure cannot expose a partial consumer result.
+pub fn execute_with_request_consumer(
+    request: ExecutionRequest<'_>,
+    resources: ExecutionResources<'_>,
+    consumer: &mut dyn FnMut(Row) -> Result<()>,
+) -> Result<ProfiledQueryStream> {
+    execute_profiled_consumer(
+        request,
+        resources,
+        ConsumerMemoryMode::DeferredUntilValidated,
+        consumer,
+    )
+}
+
 pub(crate) fn supports_default_morsel_parallelism(plan: &PhysicalPlan, catalog: &Catalog) -> bool {
     columnar::supports_parallel_morsel_execution(plan, catalog)
 }
@@ -122,9 +154,10 @@ pub fn execute(
     catalog: &mut Catalog,
     store: &mut GraphStore,
 ) -> Result<Vec<Row>> {
-    execute_with_row_limit(plan, catalog, store, None)
+    execute_with_row_limit_internal(plan, catalog, store, None, None)
 }
 
+#[deprecated(note = "use execute_with_request")]
 pub fn execute_with_row_limit(
     plan: &PhysicalPlan,
     catalog: &mut Catalog,
@@ -134,6 +167,7 @@ pub fn execute_with_row_limit(
     execute_with_row_limit_internal(plan, catalog, store, max_rows, None)
 }
 
+#[deprecated(note = "use execute_with_request")]
 pub fn execute_with_row_limit_and_context(
     plan: &PhysicalPlan,
     catalog: &mut Catalog,
@@ -169,6 +203,7 @@ fn execute_with_row_limit_internal(
     Ok(rows)
 }
 
+#[deprecated(note = "use execute_with_request")]
 pub fn execute_with_row_limit_profile(
     plan: &PhysicalPlan,
     catalog: &mut Catalog,
@@ -176,16 +211,15 @@ pub fn execute_with_row_limit_profile(
     max_rows: Option<usize>,
 ) -> Result<ProfiledQueryRows> {
     let mut external = NoExternalReadOperator;
-    execute_with_row_limit_profile_and_external(
-        plan,
-        catalog,
-        store,
-        &BTreeMap::new(),
-        &mut external,
-        max_rows,
+    let parameters = BTreeMap::new();
+    let memory = ExecutionMemoryConfig::default();
+    execute_profiled_rows(
+        ExecutionRequest::new(plan, &parameters, &memory).with_output_limits(max_rows, None),
+        ExecutionResources::new(catalog, store, &mut external),
     )
 }
 
+#[deprecated(note = "use execute_with_request")]
 pub fn execute_with_row_limit_profile_and_external(
     plan: &PhysicalPlan,
     catalog: &mut Catalog,
@@ -194,17 +228,14 @@ pub fn execute_with_row_limit_profile_and_external(
     external: &mut dyn ExternalReadOperator,
     max_rows: Option<usize>,
 ) -> Result<ProfiledQueryRows> {
-    execute_with_row_limit_profile_and_external_and_memory(
-        plan,
-        catalog,
-        store,
-        parameters,
-        external,
-        max_rows,
-        &ExecutionMemoryConfig::default(),
+    let memory = ExecutionMemoryConfig::default();
+    execute_profiled_rows(
+        ExecutionRequest::new(plan, parameters, &memory).with_output_limits(max_rows, None),
+        ExecutionResources::new(catalog, store, external),
     )
 }
 
+#[deprecated(note = "use execute_with_request")]
 pub fn execute_with_output_limits_profile_and_external(
     plan: &PhysicalPlan,
     catalog: &mut Catalog,
@@ -214,18 +245,15 @@ pub fn execute_with_output_limits_profile_and_external(
     max_rows: Option<usize>,
     max_payload_bytes: Option<usize>,
 ) -> Result<ProfiledQueryRows> {
-    execute_with_output_limits_profile_and_external_and_memory(
-        plan,
-        catalog,
-        store,
-        parameters,
-        external,
-        max_rows,
-        max_payload_bytes,
-        &ExecutionMemoryConfig::default(),
+    let memory = ExecutionMemoryConfig::default();
+    execute_profiled_rows(
+        ExecutionRequest::new(plan, parameters, &memory)
+            .with_output_limits(max_rows, max_payload_bytes),
+        ExecutionResources::new(catalog, store, external),
     )
 }
 
+#[deprecated(note = "use execute_with_request")]
 #[allow(clippy::too_many_arguments)]
 pub fn execute_with_output_limits_profile_and_external_and_memory(
     plan: &PhysicalPlan,
@@ -237,13 +265,14 @@ pub fn execute_with_output_limits_profile_and_external_and_memory(
     max_payload_bytes: Option<usize>,
     memory: &ExecutionMemoryConfig,
 ) -> Result<ProfiledQueryRows> {
-    execute_profiled_rows(
+    execute_with_request(
         ExecutionRequest::new(plan, parameters, memory)
             .with_output_limits(max_rows, max_payload_bytes),
         ExecutionResources::new(catalog, store, external),
     )
 }
 
+#[deprecated(note = "use execute_with_request")]
 pub fn execute_with_row_limit_profile_and_external_and_memory(
     plan: &PhysicalPlan,
     catalog: &mut Catalog,
@@ -253,12 +282,13 @@ pub fn execute_with_row_limit_profile_and_external_and_memory(
     max_rows: Option<usize>,
     memory: &ExecutionMemoryConfig,
 ) -> Result<ProfiledQueryRows> {
-    execute_profiled_rows(
+    execute_with_request(
         ExecutionRequest::new(plan, parameters, memory).with_output_limits(max_rows, None),
         ExecutionResources::new(catalog, store, external),
     )
 }
 
+#[deprecated(note = "use execute_with_request")]
 pub fn execute_with_row_limit_profile_and_external_and_context(
     plan: &PhysicalPlan,
     catalog: &mut Catalog,
@@ -269,7 +299,7 @@ pub fn execute_with_row_limit_profile_and_external_and_context(
     task_context: &RuntimeTaskContext,
 ) -> Result<ProfiledQueryRows> {
     let memory = ExecutionMemoryConfig::default();
-    execute_profiled_rows(
+    execute_with_request(
         ExecutionRequest::new(plan, parameters, &memory)
             .with_output_limits(max_rows, None)
             .with_task_context(task_context),
@@ -277,6 +307,7 @@ pub fn execute_with_row_limit_profile_and_external_and_context(
     )
 }
 
+#[deprecated(note = "use execute_with_request")]
 #[allow(clippy::too_many_arguments)]
 pub fn execute_with_output_limits_profile_and_external_and_context(
     plan: &PhysicalPlan,
@@ -288,19 +319,16 @@ pub fn execute_with_output_limits_profile_and_external_and_context(
     max_payload_bytes: Option<usize>,
     task_context: &RuntimeTaskContext,
 ) -> Result<ProfiledQueryRows> {
-    execute_with_output_limits_profile_and_external_and_context_and_memory(
-        plan,
-        catalog,
-        store,
-        parameters,
-        external,
-        max_rows,
-        max_payload_bytes,
-        task_context,
-        &ExecutionMemoryConfig::default(),
+    let memory = ExecutionMemoryConfig::default();
+    execute_with_request(
+        ExecutionRequest::new(plan, parameters, &memory)
+            .with_output_limits(max_rows, max_payload_bytes)
+            .with_task_context(task_context),
+        ExecutionResources::new(catalog, store, external),
     )
 }
 
+#[deprecated(note = "use execute_with_request")]
 #[allow(clippy::too_many_arguments)]
 pub fn execute_with_output_limits_profile_and_external_and_context_and_memory(
     plan: &PhysicalPlan,
@@ -313,7 +341,7 @@ pub fn execute_with_output_limits_profile_and_external_and_context_and_memory(
     task_context: &RuntimeTaskContext,
     memory: &ExecutionMemoryConfig,
 ) -> Result<ProfiledQueryRows> {
-    execute_profiled_rows(
+    execute_with_request(
         ExecutionRequest::new(plan, parameters, memory)
             .with_output_limits(max_rows, max_payload_bytes)
             .with_task_context(task_context),
@@ -325,6 +353,7 @@ pub fn execute_with_output_limits_profile_and_external_and_context_and_memory(
 /// consumer. When either output limit is present, rows remain query-owned
 /// until execution validates the complete result against both limits. With
 /// both limits disabled, rows are transferred as they are produced.
+#[deprecated(note = "use execute_with_request_consumer")]
 pub fn execute_with_row_consumer_profile(
     plan: &PhysicalPlan,
     catalog: &mut Catalog,
@@ -335,7 +364,8 @@ pub fn execute_with_row_consumer_profile(
     consumer: &mut dyn FnMut(Row) -> Result<()>,
 ) -> Result<ProfiledQueryStream> {
     let mut external = NoExternalReadOperator;
-    execute_with_row_consumer_profile_and_external(
+    let memory = ExecutionMemoryConfig::default();
+    execute_with_row_consumer_profile_with_delivery(
         plan,
         catalog,
         store,
@@ -344,9 +374,13 @@ pub fn execute_with_row_consumer_profile(
         max_rows,
         max_payload_bytes,
         consumer,
+        None,
+        &memory,
+        StreamDelivery::Validated,
     )
 }
 
+#[deprecated(note = "use execute_with_request_consumer")]
 #[allow(clippy::too_many_arguments)]
 pub fn execute_with_row_consumer_profile_and_external(
     plan: &PhysicalPlan,
@@ -358,7 +392,8 @@ pub fn execute_with_row_consumer_profile_and_external(
     max_payload_bytes: Option<usize>,
     consumer: &mut dyn FnMut(Row) -> Result<()>,
 ) -> Result<ProfiledQueryStream> {
-    execute_with_row_consumer_profile_and_external_and_memory(
+    let memory = ExecutionMemoryConfig::default();
+    execute_with_row_consumer_profile_with_delivery(
         plan,
         catalog,
         store,
@@ -367,10 +402,13 @@ pub fn execute_with_row_consumer_profile_and_external(
         max_rows,
         max_payload_bytes,
         consumer,
-        &ExecutionMemoryConfig::default(),
+        None,
+        &memory,
+        StreamDelivery::Validated,
     )
 }
 
+#[deprecated(note = "use execute_with_request_consumer")]
 #[allow(clippy::too_many_arguments)]
 pub fn execute_with_row_consumer_profile_and_external_and_memory(
     plan: &PhysicalPlan,
@@ -398,6 +436,7 @@ pub fn execute_with_row_consumer_profile_and_external_and_memory(
     )
 }
 
+#[deprecated(note = "use execute_with_request_consumer")]
 #[allow(clippy::too_many_arguments)]
 pub fn execute_with_row_consumer_profile_and_external_and_context(
     plan: &PhysicalPlan,
@@ -410,7 +449,8 @@ pub fn execute_with_row_consumer_profile_and_external_and_context(
     consumer: &mut dyn FnMut(Row) -> Result<()>,
     task_context: &RuntimeTaskContext,
 ) -> Result<ProfiledQueryStream> {
-    execute_with_row_consumer_profile_and_external_and_context_and_memory(
+    let memory = ExecutionMemoryConfig::default();
+    execute_with_row_consumer_profile_with_delivery(
         plan,
         catalog,
         store,
@@ -419,11 +459,13 @@ pub fn execute_with_row_consumer_profile_and_external_and_context(
         max_rows,
         max_payload_bytes,
         consumer,
-        task_context,
-        &ExecutionMemoryConfig::default(),
+        Some(task_context),
+        &memory,
+        StreamDelivery::Validated,
     )
 }
 
+#[deprecated(note = "use execute_with_request_consumer")]
 #[allow(clippy::too_many_arguments)]
 pub fn execute_with_row_consumer_profile_and_external_and_context_and_memory(
     plan: &PhysicalPlan,
