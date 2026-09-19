@@ -19,8 +19,8 @@
 //! can be generic over the engine instead of the concrete store.
 
 use crate::{
-    AppendSegmentReadOutput, AppendState, AppendTableSchema, PublishedReadView, RelationalKey,
-    RelationalState, SegmentCacheSnapshot, StorageRecoveryReport, StorageResidencyReport,
+    AppendSegmentReadOutput, AppendTableSchema, PublishedReadView, RelationalKey,
+    SegmentCacheSnapshot, StorageRecoveryReport, StorageResidencyReport,
 };
 use hawdb_core::{BasicGraphStatistics, Catalog, GraphStatistics, Result};
 
@@ -48,10 +48,6 @@ pub trait GraphReadEngine {
 
     fn initial_import_source_fingerprint(&self) -> Option<&str>;
 
-    fn append_state(&self) -> &AppendState;
-
-    fn relational_state(&self) -> &RelationalState;
-
     fn read_append_partition_bounded(
         &self,
         table: &str,
@@ -60,11 +56,6 @@ pub trait GraphReadEngine {
         max_rows: usize,
         max_payload_bytes: usize,
     ) -> Result<AppendSegmentReadOutput>;
-
-    /// Fail-closed poison decision taken while serving a read result.
-    fn poison_on_storage_error<T>(&self, result: &Result<T>);
-
-    fn ensure_usable(&self) -> Result<()>;
 
     fn is_out_of_core(&self) -> bool;
 
@@ -296,11 +287,4 @@ pub trait GraphMutationEngine {
         name: &str,
         definition: crate::ProjectedGraphDefinition,
     ) -> Result<()>;
-
-    fn delete_node_ids(
-        &mut self,
-        catalog: &mut Catalog,
-        ids: &[crate::NodeId],
-        detach: bool,
-    ) -> Result<Vec<crate::NodeId>>;
 }

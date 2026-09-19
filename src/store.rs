@@ -2746,14 +2746,6 @@ impl hawdb_storage::graph_engine::GraphReadEngine for GraphStore {
         GraphStore::initial_import_source_fingerprint(self)
     }
 
-    fn append_state(&self) -> &hawdb_storage::AppendState {
-        GraphStore::append_state(self)
-    }
-
-    fn relational_state(&self) -> &hawdb_storage::RelationalState {
-        GraphStore::relational_state(self)
-    }
-
     fn read_append_partition_bounded(
         &self,
         table: &str,
@@ -2770,14 +2762,6 @@ impl hawdb_storage::graph_engine::GraphReadEngine for GraphStore {
             max_rows,
             max_payload_bytes,
         )
-    }
-
-    fn poison_on_storage_error<T>(&self, result: &hawdb_core::Result<T>) {
-        GraphStore::poison_on_storage_error(self, result);
-    }
-
-    fn ensure_usable(&self) -> hawdb_core::Result<()> {
-        GraphStore::ensure_usable(self)
     }
 
     fn is_out_of_core(&self) -> bool {
@@ -3091,15 +3075,6 @@ impl hawdb_storage::graph_engine::GraphMutationEngine for GraphStore {
         definition: hawdb_storage::ProjectedGraphDefinition,
     ) -> hawdb_core::Result<()> {
         GraphStore::register_projected_graph(self, name, definition)
-    }
-
-    fn delete_node_ids(
-        &mut self,
-        catalog: &mut hawdb_core::Catalog,
-        ids: &[NodeId],
-        detach: bool,
-    ) -> hawdb_core::Result<Vec<NodeId>> {
-        GraphStore::delete_node_ids(self, catalog, ids, detach)
     }
 }
 
