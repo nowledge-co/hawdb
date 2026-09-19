@@ -16,7 +16,6 @@ use hawdb_core::{HawDBError, LabelId, RelTypeId, Result, RuntimeTaskContext};
 use hawdb_storage::{NodeId, NodeRecord, RelRecord};
 use std::cmp::Ordering;
 use std::collections::{BTreeMap, BTreeSet};
-use std::fmt::{Display, Formatter};
 
 const ALGORITHM_CHECKPOINT_INTERVAL: usize = 1024;
 const LOUVAIN_NODE_STATE_BYTES: usize = 384;
@@ -41,61 +40,10 @@ pub trait ProjectedGraphExecution {
 }
 
 pub use hawdb_storage::projection::{
-    ProjectionLayout, ProjectionMemoryBudget, ProjectionMemoryEstimate,
+    CommunityAssignment, GraphAlgorithmMemoryEstimate, HierarchicalCommunityAssignment,
+    LouvainOptions, PageRankOptions, PageRankScore, ProjectionLayout,
+    ProjectionMemoryAdmissionError, ProjectionMemoryBudget, ProjectionMemoryEstimate,
 };
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct GraphAlgorithmMemoryEstimate {
-    pub projection_bytes: usize,
-    pub algorithm_peak_bytes: usize,
-    pub result_bytes: usize,
-    pub total_peak_bytes: usize,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct ProjectionMemoryAdmissionError {
-    pub estimate: ProjectionMemoryEstimate,
-    pub budget_bytes: usize,
-    pub storage_error: Option<String>,
-}
-
-impl Display for ProjectionMemoryAdmissionError {
-    fn fmt(&self, formatter: &mut Formatter<'_>) -> std::fmt::Result {
-        if let Some(error) = &self.storage_error {
-            return write!(
-                formatter,
-                "analytics projection storage scan failed: {error}"
-            );
-        }
-        write!(
-            formatter,
-            "analytics projection layout '{}' requires an estimated {} bytes for {} nodes and {} relationships, exceeding the {} byte budget",
-            self.estimate.layout.as_str(),
-            self.estimate.estimated_bytes,
-            self.estimate.node_count,
-            self.estimate.relationship_count,
-            self.budget_bytes,
-        )
-    }
-}
-
-impl std::error::Error for ProjectionMemoryAdmissionError {}
-
-impl ProjectionMemoryAdmissionError {
-    fn storage(error: impl Display) -> Self {
-        Self {
-            estimate: ProjectionMemoryEstimate {
-                layout: ProjectionLayout::Bidirectional,
-                node_count: 0,
-                relationship_count: 0,
-                projected_edge_count: 0,
-                estimated_bytes: 0,
-            },
-            budget_bytes: 0,
-            storage_error: Some(error.to_string()),
-        }
-    }
-}
 
 #[derive(Debug, Clone, PartialEq)]
 pub struct ProjectedGraph {
@@ -107,37 +55,6 @@ pub struct ProjectedGraph {
     layout: ProjectionLayout,
     edge_count: usize,
     memory_estimate: ProjectionMemoryEstimate,
-}
-
-#[derive(Debug, Clone, Copy, PartialEq)]
-pub struct PageRankOptions {
-    pub iterations: usize,
-    pub damping: f64,
-}
-
-#[derive(Debug, Clone, Copy, PartialEq)]
-pub struct PageRankScore {
-    pub node: NodeId,
-    pub score: f64,
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct LouvainOptions {
-    pub max_iterations: usize,
-    pub max_levels: usize,
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct CommunityAssignment {
-    pub node: NodeId,
-    pub community: NodeId,
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct HierarchicalCommunityAssignment {
-    pub level: usize,
-    pub node: NodeId,
-    pub community: NodeId,
 }
 
 enum UndirectedNeighborIndexes<'a> {
@@ -152,24 +69,6 @@ impl Iterator for UndirectedNeighborIndexes<'_> {
         match self {
             Self::Projected(iter) => iter.next(),
             Self::Materialized(iter) => iter.next(),
-        }
-    }
-}
-
-impl Default for PageRankOptions {
-    fn default() -> Self {
-        Self {
-            iterations: 20,
-            damping: 0.85,
-        }
-    }
-}
-
-impl Default for LouvainOptions {
-    fn default() -> Self {
-        Self {
-            max_iterations: 20,
-            max_levels: 1,
         }
     }
 }

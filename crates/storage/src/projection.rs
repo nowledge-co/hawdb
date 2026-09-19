@@ -110,6 +110,109 @@ pub struct ProjectionMemoryEstimate {
     pub estimated_bytes: usize,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct GraphAlgorithmMemoryEstimate {
+    pub projection_bytes: usize,
+    pub algorithm_peak_bytes: usize,
+    pub result_bytes: usize,
+    pub total_peak_bytes: usize,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ProjectionMemoryAdmissionError {
+    pub estimate: ProjectionMemoryEstimate,
+    pub budget_bytes: usize,
+    pub storage_error: Option<String>,
+}
+
+impl std::fmt::Display for ProjectionMemoryAdmissionError {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        if let Some(error) = &self.storage_error {
+            return write!(
+                formatter,
+                "analytics projection storage scan failed: {error}"
+            );
+        }
+        write!(
+            formatter,
+            "analytics projection layout '{}' requires an estimated {} bytes for {} nodes and {} relationships, exceeding the {} byte budget",
+            self.estimate.layout.as_str(),
+            self.estimate.estimated_bytes,
+            self.estimate.node_count,
+            self.estimate.relationship_count,
+            self.budget_bytes,
+        )
+    }
+}
+
+impl std::error::Error for ProjectionMemoryAdmissionError {}
+
+#[doc(hidden)]
+impl ProjectionMemoryAdmissionError {
+    pub fn storage(error: impl std::fmt::Display) -> Self {
+        Self {
+            estimate: ProjectionMemoryEstimate {
+                layout: ProjectionLayout::Bidirectional,
+                node_count: 0,
+                relationship_count: 0,
+                projected_edge_count: 0,
+                estimated_bytes: 0,
+            },
+            budget_bytes: 0,
+            storage_error: Some(error.to_string()),
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct PageRankOptions {
+    pub iterations: usize,
+    pub damping: f64,
+}
+
+impl Default for PageRankOptions {
+    fn default() -> Self {
+        Self {
+            iterations: 20,
+            damping: 0.85,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct PageRankScore {
+    pub node: NodeId,
+    pub score: f64,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct LouvainOptions {
+    pub max_iterations: usize,
+    pub max_levels: usize,
+}
+
+impl Default for LouvainOptions {
+    fn default() -> Self {
+        Self {
+            max_iterations: 20,
+            max_levels: 1,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct CommunityAssignment {
+    pub node: NodeId,
+    pub community: NodeId,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct HierarchicalCommunityAssignment {
+    pub level: usize,
+    pub node: NodeId,
+    pub community: NodeId,
+}
+
 /// Stable graph-to-search projection identity owned by the storage contract.
 pub fn projection_document_id_for_node(catalog: &Catalog, node: &NodeRecord) -> Option<String> {
     let kind = node.labels.iter().find_map(|label_id| {
