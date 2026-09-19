@@ -308,7 +308,8 @@ use wal_codec::{
 };
 
 use hawdb_storage::durable_manifest::{safe_reclaim_commit_epoch, STORAGE_VERSION};
-const MANIFEST_FILE: &str = "manifest.hawdb";
+#[doc(hidden)]
+pub const MANIFEST_FILE: &str = "manifest.hawdb";
 const PROJECTED_GRAPHS_FILE: &str = "projected_graphs.hawdb";
 const STABLE_ID_MAPPING_FILE: &str = "stable_ids.hawdb";
 #[doc(hidden)]
@@ -360,7 +361,6 @@ pub fn set_wal_append_failpoint(failure: WalAppendFailure) {
     WAL_APPEND_FAILURE.set(Some(failure));
 }
 
-#[cfg(test)]
 thread_local! {
     static CHECKPOINT_FAILPOINT: std::cell::Cell<Option<CheckpointPublishStage>> = const {
         std::cell::Cell::new(None)
@@ -387,8 +387,8 @@ fn checkpoint_publish_failpoint(stage: CheckpointPublishStage) -> Result<()> {
     Ok(())
 }
 
-#[cfg(test)]
-fn set_checkpoint_failpoint(stage: Option<CheckpointPublishStage>) {
+#[doc(hidden)]
+pub fn set_checkpoint_failpoint(stage: Option<CheckpointPublishStage>) {
     CHECKPOINT_FAILPOINT.with(|failpoint| failpoint.set(stage));
 }
 

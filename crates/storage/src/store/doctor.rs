@@ -468,7 +468,8 @@ fn apply_wal_tail_repair_locked(
     finalize_repair(path, prepared, false)
 }
 
-fn prepare_repair(
+#[doc(hidden)]
+pub fn prepare_repair(
     path: &Path,
     wal_path: &Path,
     plan: &WalTailRepairPlan,
@@ -674,7 +675,8 @@ fn write_audit_record(path: &Path, record: &WalRepairAuditRecord) -> Result<()> 
         .map_err(|error| HawDBError::Storage(error.to_string()))
 }
 
-fn pending_repair_records(path: &Path) -> Result<Vec<PathBuf>> {
+#[doc(hidden)]
+pub fn pending_repair_records(path: &Path) -> Result<Vec<PathBuf>> {
     let doctor_dir = doctor_directory(path);
     if !doctor_dir.exists() {
         return Ok(Vec::new());
@@ -748,7 +750,8 @@ fn doctor_directory(path: &Path) -> PathBuf {
     path.join(DOCTOR_DIRECTORY)
 }
 
-fn pending_record_path(path: &Path, plan: &WalTailRepairPlan) -> PathBuf {
+#[doc(hidden)]
+pub fn pending_record_path(path: &Path, plan: &WalTailRepairPlan) -> PathBuf {
     doctor_directory(path).join(format!(
         "wal.{}.{}.repair.pending.json",
         plan.wal_generation, plan.plan_id
