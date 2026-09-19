@@ -48,6 +48,68 @@ pub trait ProjectionSource {
     ) -> Result<ProjectionScanControl, String>;
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ProjectionLayout {
+    Outgoing,
+    Incoming,
+    Bidirectional,
+    Undirected,
+}
+
+impl ProjectionLayout {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Outgoing => "outgoing",
+            Self::Incoming => "incoming",
+            Self::Bidirectional => "bidirectional",
+            Self::Undirected => "undirected",
+        }
+    }
+
+    #[doc(hidden)]
+    pub fn stores_outgoing(self) -> bool {
+        matches!(
+            self,
+            Self::Outgoing | Self::Bidirectional | Self::Undirected
+        )
+    }
+
+    #[doc(hidden)]
+    pub fn stores_incoming(self) -> bool {
+        matches!(self, Self::Incoming | Self::Bidirectional)
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct ProjectionMemoryBudget {
+    max_bytes: Option<std::num::NonZeroUsize>,
+}
+
+impl ProjectionMemoryBudget {
+    pub const fn unlimited() -> Self {
+        Self { max_bytes: None }
+    }
+
+    pub const fn new(max_bytes: std::num::NonZeroUsize) -> Self {
+        Self {
+            max_bytes: Some(max_bytes),
+        }
+    }
+
+    pub fn max_bytes(self) -> Option<usize> {
+        self.max_bytes.map(std::num::NonZeroUsize::get)
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct ProjectionMemoryEstimate {
+    pub layout: ProjectionLayout,
+    pub node_count: usize,
+    pub relationship_count: usize,
+    pub projected_edge_count: usize,
+    pub estimated_bytes: usize,
+}
+
 /// Stable graph-to-search projection identity owned by the storage contract.
 pub fn projection_document_id_for_node(catalog: &Catalog, node: &NodeRecord) -> Option<String> {
     let kind = node.labels.iter().find_map(|label_id| {
