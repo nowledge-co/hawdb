@@ -59,6 +59,8 @@ mod vector_serving;
 pub use generation_writer::{
     SearchOutOfCoreGenerationBuildOptions, SearchOutOfCoreGenerationBuildReport,
     SearchOutOfCoreGenerationUpdate, SearchOutOfCoreGenerationWriter,
+    SearchOutOfCoreSegmentCompaction, SearchOutOfCoreSegmentCompactionPolicy,
+    SearchOutOfCoreSegmentCompactionReport,
 };
 pub(super) use publish_lease::SearchProjectionPublishLease;
 #[cfg(feature = "vector-search")]

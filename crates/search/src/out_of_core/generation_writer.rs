@@ -37,7 +37,7 @@ use hawdb_core::RuntimeTaskContext;
 use hawdb_executor::QueryMemoryLease;
 #[cfg(test)]
 use publication::file_len_checksum;
-use publication::{publish_generation, PublishGenerationInput};
+use publication::{publish_generation, ActiveManifestUpdate, PublishGenerationInput};
 use rabitq::RaBitQArtifactBuilder;
 use serde::Serialize;
 #[cfg(test)]
@@ -53,6 +53,7 @@ use std::path::PathBuf;
 
 mod artifact_name;
 mod artifacts;
+mod compaction;
 mod context_memory;
 mod delta;
 mod discovery;
@@ -65,6 +66,10 @@ mod spool;
 #[cfg(test)]
 mod tests;
 
+pub use compaction::{
+    SearchOutOfCoreSegmentCompaction, SearchOutOfCoreSegmentCompactionPolicy,
+    SearchOutOfCoreSegmentCompactionReport,
+};
 pub use delta::SearchOutOfCoreGenerationUpdate;
 
 const STAGE_METADATA_FILE: &str = "search_projection_metadata_payloads.stage.hawdb";
@@ -198,7 +203,7 @@ pub struct SearchOutOfCoreGenerationWriter {
     metadata_fields: BTreeSet<String>,
     metadata_field_bytes: u64,
     expected_active_generation: Option<u64>,
-    append_to_active_generation: Option<u64>,
+    active_manifest_update: Option<ActiveManifestUpdate>,
     poisoned: bool,
     needs_chinese_analyzer: bool,
     task_context: RuntimeTaskContext,
@@ -222,6 +227,7 @@ impl std::fmt::Debug for SearchOutOfCoreGenerationWriter {
                 "expected_active_generation",
                 &self.expected_active_generation,
             )
+            .field("active_manifest_update", &self.active_manifest_update)
             .field("poisoned", &self.poisoned)
             .finish_non_exhaustive()
     }
@@ -338,7 +344,7 @@ impl SearchOutOfCoreGenerationWriter {
             metadata_fields,
             metadata_field_bytes,
             expected_active_generation: None,
-            append_to_active_generation: None,
+            active_manifest_update: None,
             poisoned: false,
             needs_chinese_analyzer: false,
             task_context,
@@ -427,6 +433,69 @@ impl SearchOutOfCoreGenerationWriter {
         SearchOutOfCoreGenerationUpdate::prepare(reader, delta, options, task)
     }
 
+    /// Compacts one bounded run of adjacent immutable segments at the same level.
+    ///
+    /// The policy selects at most its configured input-byte budget. The staged
+    /// replacement is published only if the reader generation remains active;
+    /// cancellation or a stale generation leaves the active manifest unchanged.
+    pub fn compact_segments(
+        reader: &super::SearchOutOfCoreReader,
+        policy: SearchOutOfCoreSegmentCompactionPolicy,
+        options: SearchOutOfCoreGenerationBuildOptions,
+    ) -> Result<Option<SearchOutOfCoreSegmentCompactionReport>> {
+        Self::compact_segments_with_context(reader, policy, options, RuntimeTaskContext::default())
+    }
+
+    /// Returns the QoS work plan for the next bounded segment compaction.
+    ///
+    /// The plan performs only manifest selection; it does not read or stage
+    /// source artifacts. If the manifest has no eligible same-level run within
+    /// the policy budget, this returns `None`.
+    pub fn segment_compaction_work_plan(
+        reader: &super::SearchOutOfCoreReader,
+        policy: SearchOutOfCoreSegmentCompactionPolicy,
+        hint: hawdb_qos::BackgroundWorkHint,
+    ) -> Result<Option<hawdb_qos::BackgroundWorkPlan>> {
+        compaction::segment_background_work_plan(reader, policy, hint)
+    }
+
+    /// Compacts segments under the caller's cancellation and resource context.
+    pub fn compact_segments_with_context(
+        reader: &super::SearchOutOfCoreReader,
+        policy: SearchOutOfCoreSegmentCompactionPolicy,
+        options: SearchOutOfCoreGenerationBuildOptions,
+        task: RuntimeTaskContext,
+    ) -> Result<Option<SearchOutOfCoreSegmentCompactionReport>> {
+        compaction::compact(reader, policy, options, task)
+    }
+
+    /// Stages one bounded segment compaction without publishing it.
+    ///
+    /// Call this after the host admits the work plan. Dropping the staged value
+    /// removes its unpublished artifacts.
+    pub fn prepare_segment_compaction(
+        reader: &super::SearchOutOfCoreReader,
+        policy: SearchOutOfCoreSegmentCompactionPolicy,
+        options: SearchOutOfCoreGenerationBuildOptions,
+    ) -> Result<Option<SearchOutOfCoreSegmentCompaction>> {
+        Self::prepare_segment_compaction_with_context(
+            reader,
+            policy,
+            options,
+            RuntimeTaskContext::default(),
+        )
+    }
+
+    /// Stages one bounded segment compaction under the caller's task context.
+    pub fn prepare_segment_compaction_with_context(
+        reader: &super::SearchOutOfCoreReader,
+        policy: SearchOutOfCoreSegmentCompactionPolicy,
+        options: SearchOutOfCoreGenerationBuildOptions,
+        task: RuntimeTaskContext,
+    ) -> Result<Option<SearchOutOfCoreSegmentCompaction>> {
+        compaction::prepare(reader, policy, options, task)
+    }
+
     pub fn finish(self) -> Result<SearchOutOfCoreGenerationBuildReport> {
         self.finish_with_artifacts(|writer, source, generation| {
             if writer.needs_chinese_analyzer {
@@ -511,7 +580,7 @@ impl SearchOutOfCoreGenerationWriter {
                 generation,
                 document_count: self.document_count,
                 documents_digest: self.documents_digest.finish(),
-                append_to_active_generation: self.append_to_active_generation,
+                active_manifest_update: self.active_manifest_update.as_ref(),
                 source_graph_commit_epoch: self.options.source_graph_commit_epoch,
                 import_source_graph_commit_epoch: self.options.import_source_graph_commit_epoch,
                 embedding_manifest: self.options.embedding_manifest.as_ref(),
@@ -533,7 +602,7 @@ impl SearchOutOfCoreGenerationWriter {
             crate::generation_cleanup::once::evidence::Point::AfterCommit,
             &self.memory,
         );
-        let cleanup_generations = if self.append_to_active_generation.is_some() {
+        let cleanup_generations = if self.active_manifest_update.is_some() {
             match super::published_artifact_generations(&self.root, &self.options.analyzer_lexicon)
             {
                 Ok(Some(retained)) => SearchProjectionGenerations {

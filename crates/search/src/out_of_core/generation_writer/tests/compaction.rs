@@ -1,0 +1,235 @@
+// Copyright 2026 Nowledge
+//
+// Licensed under the Apache License, Version 2.0 (the "License");
+// you may not use this file except in compliance with the License.
+// You may obtain a copy of the License at
+//
+//     http://www.apache.org/licenses/LICENSE-2.0
+//
+// Unless required by applicable law or agreed to in writing, software
+// distributed under the License is distributed on an "AS IS" BASIS,
+// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+// See the License for the specific language governing permissions and
+// limitations under the License.
+
+use super::*;
+use crate::{
+    SearchOutOfCoreReader, SearchProjectionDelta, SearchProjectionKind, SearchProjectionRow,
+};
+use hawdb_core::{RuntimeCancellationToken, RuntimeTaskContext};
+use hawdb_qos::{BackgroundWorkHint, WorkClass};
+use std::num::{NonZeroU64, NonZeroUsize};
+use std::path::Path;
+
+fn appended_row(number: usize) -> SearchProjectionRow {
+    SearchProjectionRow {
+        kind: SearchProjectionKind::Memory,
+        external_id: format!("{number:06}"),
+        title: format!("compaction {number}"),
+        body: "immutable append compaction coverage".to_string(),
+        embedding: Some(vec![1.0, number as f32]),
+        source_id: None,
+        metadata: Default::default(),
+    }
+}
+
+fn append(root: &Path, number: usize) {
+    let reader = SearchOutOfCoreReader::open(root).unwrap();
+    let update = SearchOutOfCoreGenerationWriter::prepare_delta(
+        &reader,
+        SearchProjectionDelta {
+            upserts: vec![appended_row(number)],
+            ..Default::default()
+        },
+        Default::default(),
+    )
+    .unwrap();
+    update.finish().unwrap();
+}
+
+fn append_only_root(name: &str, documents: usize) -> PathBuf {
+    assert!(documents >= 1);
+    let root = test_dir(name);
+    let mut writer = SearchOutOfCoreGenerationWriter::create(&root, Default::default()).unwrap();
+    writer.push(document(0)).unwrap();
+    writer.finish().unwrap();
+    for number in 1..documents {
+        append(&root, number);
+    }
+    root
+}
+
+fn policy(bytes: u64) -> SearchOutOfCoreSegmentCompactionPolicy {
+    SearchOutOfCoreSegmentCompactionPolicy::new(
+        NonZeroUsize::new(2).unwrap(),
+        NonZeroU64::new(bytes).unwrap(),
+    )
+    .unwrap()
+}
+
+fn ids(documents: usize) -> Vec<String> {
+    (0..documents)
+        .map(|number| format!("memory:{number:06}"))
+        .collect()
+}
+
+#[test]
+fn compaction_rewrites_a_bounded_append_range_without_changing_reader_results() {
+    let root = append_only_root("compaction_equivalence", 4);
+    let reader = SearchOutOfCoreReader::open(&root).unwrap();
+    assert_eq!(reader.manifest.segments.len(), 4);
+    let ids = ids(4);
+    let before = reader.hydrate_documents(&ids).unwrap().documents;
+    let before_digest = reader.manifest.documents_digest;
+    let work = SearchOutOfCoreGenerationWriter::segment_compaction_work_plan(
+        &reader,
+        policy(256 * 1024 * 1024),
+        BackgroundWorkHint::default(),
+    )
+    .unwrap()
+    .unwrap();
+    assert_eq!(work.request.class, WorkClass::Projection);
+    assert_eq!(work.request.estimated_operations, 2);
+    let report = SearchOutOfCoreGenerationWriter::compact_segments(
+        &reader,
+        policy(256 * 1024 * 1024),
+        Default::default(),
+    )
+    .unwrap()
+    .unwrap();
+    assert_eq!(report.source_segment_count(), 2);
+    assert!(report.source_bytes() > 0);
+    assert_eq!(report.source_read_metrics().hydrated_documents, 2);
+    assert_eq!(report.build().document_count, 4);
+    assert_eq!(report.build().documents_digest, before_digest);
+
+    let compacted = SearchOutOfCoreReader::open(&root).unwrap();
+    assert_eq!(compacted.manifest.segments.len(), 3);
+    assert_eq!(compacted.manifest.segments[0].level, 1);
+    assert_eq!(
+        compacted
+            .manifest
+            .segments
+            .iter()
+            .skip(1)
+            .map(|segment| segment.level)
+            .collect::<Vec<_>>(),
+        vec![0, 0]
+    );
+    assert_eq!(compacted.manifest.documents_digest, before_digest);
+    assert_eq!(compacted.hydrate_documents(&ids).unwrap().documents, before);
+    assert_eq!(reader.hydrate_documents(&ids).unwrap().documents, before);
+    drop(compacted);
+    drop(reader);
+    fs::remove_dir_all(root).unwrap();
+}
+
+#[test]
+fn compaction_promotes_only_complete_same_level_runs() {
+    let root = append_only_root("compaction_levels", 4);
+    for expected_levels in [vec![1, 0, 0], vec![1, 1], vec![2]] {
+        let reader = SearchOutOfCoreReader::open(&root).unwrap();
+        let report = SearchOutOfCoreGenerationWriter::compact_segments(
+            &reader,
+            policy(256 * 1024 * 1024),
+            Default::default(),
+        )
+        .unwrap()
+        .unwrap();
+        assert_eq!(report.source_segment_count(), 2);
+        let reader = SearchOutOfCoreReader::open(&root).unwrap();
+        assert_eq!(
+            reader
+                .manifest
+                .segments
+                .iter()
+                .map(|segment| segment.level)
+                .collect::<Vec<_>>(),
+            expected_levels
+        );
+    }
+    let reader = SearchOutOfCoreReader::open(&root).unwrap();
+    assert!(SearchOutOfCoreGenerationWriter::compact_segments(
+        &reader,
+        policy(256 * 1024 * 1024),
+        Default::default(),
+    )
+    .unwrap()
+    .is_none());
+    drop(reader);
+    fs::remove_dir_all(root).unwrap();
+}
+
+#[test]
+fn compaction_defers_when_the_selected_artifacts_exceed_its_byte_budget() {
+    let root = append_only_root("compaction_budget", 2);
+    let before = fs::read(root.join(OUT_OF_CORE_MANIFEST_FILE)).unwrap();
+    let reader = SearchOutOfCoreReader::open(&root).unwrap();
+    assert!(SearchOutOfCoreGenerationWriter::compact_segments(
+        &reader,
+        policy(1),
+        Default::default(),
+    )
+    .unwrap()
+    .is_none());
+    assert_eq!(
+        fs::read(root.join(OUT_OF_CORE_MANIFEST_FILE)).unwrap(),
+        before
+    );
+    assert_eq!(stage_directories(&root), 0);
+    drop(reader);
+    fs::remove_dir_all(root).unwrap();
+}
+
+#[test]
+fn cancelled_compaction_preserves_the_active_manifest() {
+    let root = append_only_root("compaction_cancel", 2);
+    let before = fs::read(root.join(OUT_OF_CORE_MANIFEST_FILE)).unwrap();
+    let reader = SearchOutOfCoreReader::open(&root).unwrap();
+    let cancellation = RuntimeCancellationToken::new();
+    assert!(cancellation.cancel());
+    let error = SearchOutOfCoreGenerationWriter::compact_segments_with_context(
+        &reader,
+        policy(256 * 1024 * 1024),
+        Default::default(),
+        RuntimeTaskContext::without_deadline(cancellation),
+    )
+    .unwrap_err();
+    assert!(error.to_string().contains("cancel"), "{error}");
+    assert_eq!(
+        fs::read(root.join(OUT_OF_CORE_MANIFEST_FILE)).unwrap(),
+        before
+    );
+    assert_eq!(stage_directories(&root), 0);
+    drop(reader);
+    fs::remove_dir_all(root).unwrap();
+}
+
+#[test]
+fn staged_compaction_rejects_a_newer_active_generation() {
+    let root = append_only_root("compaction_stale", 2);
+    let reader = SearchOutOfCoreReader::open(&root).unwrap();
+    let staged = SearchOutOfCoreGenerationWriter::prepare_segment_compaction(
+        &reader,
+        policy(256 * 1024 * 1024),
+        Default::default(),
+    )
+    .unwrap()
+    .unwrap();
+
+    let mut replacement =
+        SearchOutOfCoreGenerationWriter::create(&root, Default::default()).unwrap();
+    replacement.push(document(50)).unwrap();
+    replacement.finish().unwrap();
+    let active = fs::read(root.join(OUT_OF_CORE_MANIFEST_FILE)).unwrap();
+
+    let error = staged.finish().unwrap_err();
+    assert!(error.to_string().contains("base changed"), "{error}");
+    assert_eq!(
+        fs::read(root.join(OUT_OF_CORE_MANIFEST_FILE)).unwrap(),
+        active
+    );
+    assert_eq!(stage_directories(&root), 0);
+    drop(reader);
+    fs::remove_dir_all(root).unwrap();
+}
