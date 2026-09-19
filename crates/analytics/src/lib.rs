@@ -23,25 +23,7 @@ const ALGORITHM_CHECKPOINT_INTERVAL: usize = 1024;
 const LOUVAIN_NODE_STATE_BYTES: usize = 384;
 const BTREE_ENTRY_ESTIMATED_BYTES: usize = 64;
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum ProjectionScanControl {
-    Continue,
-    Stop,
-}
-
-/// Storage-neutral source consumed while building an immutable analytics
-/// projection. Implementations retain ownership of scan and recovery details.
-pub trait ProjectionSource {
-    fn visit_projection_nodes(
-        &self,
-        visitor: &mut dyn FnMut(NodeRecord) -> ProjectionScanControl,
-    ) -> std::result::Result<ProjectionScanControl, String>;
-
-    fn visit_projection_relationships(
-        &self,
-        visitor: &mut dyn FnMut(RelRecord) -> ProjectionScanControl,
-    ) -> std::result::Result<ProjectionScanControl, String>;
-}
+pub use hawdb_storage::projection::{ProjectionScanControl, ProjectionSource};
 
 /// Internal execution seam used by the embedded executor to attach
 /// cancellation without moving runtime orchestration into this crate.

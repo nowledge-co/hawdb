@@ -25,6 +25,29 @@ pub struct ProjectedGraphDefinition {
     pub rel_types: Vec<String>,
 }
 
+/// Control flow a projection scan visitor returns to the scan driver.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ProjectionScanControl {
+    Continue,
+    Stop,
+}
+
+/// Storage-neutral source consumed while building an immutable projection.
+///
+/// Lives in the storage crate so the graph kernel can materialize projected
+/// graphs without depending on the analytics crate, which depends on storage.
+pub trait ProjectionSource {
+    fn visit_projection_nodes(
+        &self,
+        visitor: &mut dyn FnMut(NodeRecord) -> ProjectionScanControl,
+    ) -> Result<ProjectionScanControl, String>;
+
+    fn visit_projection_relationships(
+        &self,
+        visitor: &mut dyn FnMut(crate::RelRecord) -> ProjectionScanControl,
+    ) -> Result<ProjectionScanControl, String>;
+}
+
 /// Stable graph-to-search projection identity owned by the storage contract.
 pub fn projection_document_id_for_node(catalog: &Catalog, node: &NodeRecord) -> Option<String> {
     let kind = node.labels.iter().find_map(|label_id| {
