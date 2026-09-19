@@ -2951,6 +2951,96 @@ impl hawdb_storage::graph_engine::GraphMutationEngine for GraphStore {
     ) -> hawdb_core::Result<hawdb_core::ConstraintId> {
         GraphStore::create_unique_constraint(self, catalog, label, property)
     }
+
+    fn set_node_property(
+        &mut self,
+        catalog: &mut hawdb_core::Catalog,
+        label: &str,
+        filter: Option<&hawdb_storage::PropertyFilter>,
+        property: &str,
+        value: hawdb_core::Value,
+    ) -> hawdb_core::Result<Vec<NodeId>> {
+        GraphStore::set_node_property(self, catalog, label, filter, property, value)
+    }
+
+    fn set_node_properties(
+        &mut self,
+        catalog: &mut hawdb_core::Catalog,
+        label: &str,
+        filter: Option<&hawdb_storage::PropertyFilter>,
+        assignments: &[hawdb_storage::NodeSetAssignment],
+    ) -> hawdb_core::Result<Vec<NodeId>> {
+        GraphStore::set_node_properties(self, catalog, label, filter, assignments)
+    }
+
+    fn set_node_properties_by_ids(
+        &mut self,
+        catalog: &mut hawdb_core::Catalog,
+        ids: &[NodeId],
+        assignments: &[hawdb_storage::NodeSetAssignment],
+    ) -> hawdb_core::Result<Vec<NodeId>> {
+        GraphStore::set_node_properties_by_ids(self, catalog, ids, assignments)
+    }
+
+    fn set_relationship_property(
+        &mut self,
+        catalog: &mut hawdb_core::Catalog,
+        update: hawdb_storage::RelationshipPropertyUpdate,
+    ) -> hawdb_core::Result<Vec<RelId>> {
+        GraphStore::set_relationship_property(self, catalog, update)
+    }
+
+    fn set_relationship_properties(
+        &mut self,
+        catalog: &mut hawdb_core::Catalog,
+        update: hawdb_storage::RelationshipPropertiesUpdate,
+    ) -> hawdb_core::Result<Vec<RelId>> {
+        GraphStore::set_relationship_properties(self, catalog, update)
+    }
+
+    fn delete_relationships(
+        &mut self,
+        catalog: &mut hawdb_core::Catalog,
+        request: hawdb_storage::RelationshipDeleteRequest,
+    ) -> hawdb_core::Result<Vec<RelId>> {
+        GraphStore::delete_relationships(self, catalog, request)
+    }
+
+    fn delete_relationship_target_nodes(
+        &mut self,
+        catalog: &mut hawdb_core::Catalog,
+        request: hawdb_storage::RelationshipTargetNodeDelete,
+    ) -> hawdb_core::Result<Vec<NodeId>> {
+        GraphStore::delete_relationship_target_nodes(self, catalog, request)
+    }
+
+    fn merge_node(
+        &mut self,
+        catalog: &mut hawdb_core::Catalog,
+        label: &str,
+        match_properties: std::collections::BTreeMap<String, hawdb_core::Value>,
+        on_create_properties: std::collections::BTreeMap<String, hawdb_core::Value>,
+        on_match_assignments: &[hawdb_storage::NodeSetAssignment],
+        post_merge_assignments: &[hawdb_storage::NodeSetAssignment],
+    ) -> hawdb_core::Result<(NodeId, bool)> {
+        GraphStore::merge_node(
+            self,
+            catalog,
+            label,
+            match_properties,
+            on_create_properties,
+            on_match_assignments,
+            post_merge_assignments,
+        )
+    }
+
+    fn merge_connected_nodes(
+        &mut self,
+        catalog: &mut hawdb_core::Catalog,
+        request: hawdb_storage::ConnectedNodesCreate,
+    ) -> hawdb_core::Result<(NodeId, RelId, NodeId, bool)> {
+        GraphStore::merge_connected_nodes(self, catalog, request)
+    }
 }
 
 #[cfg(test)]

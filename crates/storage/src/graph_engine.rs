@@ -198,4 +198,68 @@ pub trait GraphMutationEngine {
         label: &str,
         property: &str,
     ) -> Result<hawdb_core::ConstraintId>;
+
+    fn set_node_property(
+        &mut self,
+        catalog: &mut Catalog,
+        label: &str,
+        filter: Option<&crate::PropertyFilter>,
+        property: &str,
+        value: hawdb_core::Value,
+    ) -> Result<Vec<crate::NodeId>>;
+
+    fn set_node_properties(
+        &mut self,
+        catalog: &mut Catalog,
+        label: &str,
+        filter: Option<&crate::PropertyFilter>,
+        assignments: &[crate::NodeSetAssignment],
+    ) -> Result<Vec<crate::NodeId>>;
+
+    fn set_node_properties_by_ids(
+        &mut self,
+        catalog: &mut Catalog,
+        ids: &[crate::NodeId],
+        assignments: &[crate::NodeSetAssignment],
+    ) -> Result<Vec<crate::NodeId>>;
+
+    fn set_relationship_property(
+        &mut self,
+        catalog: &mut Catalog,
+        update: crate::RelationshipPropertyUpdate,
+    ) -> Result<Vec<crate::RelId>>;
+
+    fn set_relationship_properties(
+        &mut self,
+        catalog: &mut Catalog,
+        update: crate::RelationshipPropertiesUpdate,
+    ) -> Result<Vec<crate::RelId>>;
+
+    fn delete_relationships(
+        &mut self,
+        catalog: &mut Catalog,
+        request: crate::RelationshipDeleteRequest,
+    ) -> Result<Vec<crate::RelId>>;
+
+    fn delete_relationship_target_nodes(
+        &mut self,
+        catalog: &mut Catalog,
+        request: crate::RelationshipTargetNodeDelete,
+    ) -> Result<Vec<crate::NodeId>>;
+
+    fn merge_node(
+        &mut self,
+        catalog: &mut Catalog,
+        label: &str,
+        match_properties: std::collections::BTreeMap<String, hawdb_core::Value>,
+        on_create_properties: std::collections::BTreeMap<String, hawdb_core::Value>,
+        on_match_assignments: &[crate::NodeSetAssignment],
+        post_merge_assignments: &[crate::NodeSetAssignment],
+    ) -> Result<(crate::NodeId, bool)>;
+
+    fn merge_connected_nodes(
+        &mut self,
+        catalog: &mut Catalog,
+        request: crate::ConnectedNodesCreate,
+    ) -> Result<(crate::NodeId, crate::RelId, crate::NodeId, bool)>;
 }
