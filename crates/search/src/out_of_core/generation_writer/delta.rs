@@ -161,6 +161,7 @@ impl SearchOutOfCoreGenerationUpdate {
         &self.delta_report
     }
 
+    /// Metrics for the complete base generation consumed while preparing this update.
     pub fn source_read_metrics(&self) -> &SearchOutOfCoreMetrics {
         &self.source_read_metrics
     }

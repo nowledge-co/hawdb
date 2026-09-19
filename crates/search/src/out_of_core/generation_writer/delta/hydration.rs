@@ -48,6 +48,7 @@ pub(super) fn visit(
             offset: range.offset,
             remaining: range.length,
         };
+        let mut hydrated_documents = 0usize;
         let peak = read_segment(
             input,
             range.length,
@@ -56,7 +57,10 @@ pub(super) fn visit(
             reader.config.max_uncompressed_segment_bytes.get(),
             memory,
             task,
-            consumer,
+            &mut |document| {
+                hydrated_documents = hydrated_documents.saturating_add(1);
+                consumer(document)
+            },
         )?;
         metrics.segment_range_reads = metrics.segment_range_reads.saturating_add(1);
         metrics.segment_bytes_read = metrics.segment_bytes_read.saturating_add(range.length);
@@ -64,6 +68,9 @@ pub(super) fn visit(
             .hydration_segment_bytes_read
             .saturating_add(range.length);
         metrics.peak_segment_document_bytes = metrics.peak_segment_document_bytes.max(peak);
+        metrics.hydrated_documents = metrics
+            .hydrated_documents
+            .saturating_add(hydrated_documents);
     }
     Ok(metrics)
 }
