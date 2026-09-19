@@ -38,7 +38,9 @@ use crate::bounded_file::read_bounded_file;
 use crate::error::{HawDBError, Result};
 #[cfg(test)]
 use crate::{decode_search_segment_documents_bounded, validate_search_segment_documents};
-use crate::{RuntimeCapabilities, RuntimeCapability, SearchLexicalTermPolicy};
+use crate::{
+    RuntimeCapabilities, RuntimeCapability, SearchLexicalSourcePolicy, SearchLexicalTermPolicy,
+};
 use hawdb_storage::durable_replace_file;
 use serde::{Deserialize, Serialize};
 use std::cmp::{Ordering as CmpOrdering, Reverse};
@@ -160,6 +162,7 @@ pub struct SearchOutOfCoreReader {
     vector_payload: Arc<File>,
     layout: SearchOutOfCoreLayoutBody,
     lexical_projection: Arc<LexicalProjectionReader>,
+    lexical_source_policy: SearchLexicalSourcePolicy,
     lexical_term_policy: SearchLexicalTermPolicy,
     #[cfg(feature = "vector-search")]
     rabitq_projection: Option<Arc<hawdb_vector_projection::FileProjection>>,
@@ -542,6 +545,42 @@ impl SearchOutOfCoreReader {
         analyzer_lexicon: SearchAnalyzerLexicon,
         lexical_term_policy: SearchLexicalTermPolicy,
     ) -> Result<Self> {
+        Self::open_with_lexical_policies(
+            path,
+            config,
+            analyzer_lexicon,
+            lexical_term_policy,
+            SearchLexicalSourcePolicy::default(),
+        )
+    }
+
+    /// Opens a generation with an explicit source admission for later updates.
+    pub fn open_with_source_policy(
+        path: impl AsRef<Path>,
+        config: SearchOutOfCoreConfig,
+        analyzer_lexicon: SearchAnalyzerLexicon,
+        lexical_source_policy: SearchLexicalSourcePolicy,
+    ) -> Result<Self> {
+        Self::open_with_lexical_policies(
+            path,
+            config,
+            analyzer_lexicon,
+            SearchLexicalTermPolicy::default(),
+            lexical_source_policy,
+        )
+    }
+
+    /// Opens a generation under host-selected lexical source and term limits.
+    ///
+    /// Source admission governs subsequent writes only; it is never read from
+    /// the artifact, so an artifact cannot widen host input policy.
+    pub fn open_with_lexical_policies(
+        path: impl AsRef<Path>,
+        config: SearchOutOfCoreConfig,
+        analyzer_lexicon: SearchAnalyzerLexicon,
+        lexical_term_policy: SearchLexicalTermPolicy,
+        lexical_source_policy: SearchLexicalSourcePolicy,
+    ) -> Result<Self> {
         let root = path.as_ref().to_path_buf();
         let manifest_path = root.join(OUT_OF_CORE_MANIFEST_FILE);
         let manifest_bytes = read_bounded_file(&manifest_path, MAX_OUT_OF_CORE_MANIFEST_BYTES)?;
@@ -643,6 +682,7 @@ impl SearchOutOfCoreReader {
         let lexical_config = LexicalProjectionConfig {
             max_manifest_bytes: config.max_lexical_manifest_bytes,
             max_term_bytes: lexical_term_policy.max_term_bytes(),
+            max_document_source_bytes: lexical_source_policy.max_document_source_bytes(),
             max_query_score_entries: config.max_score_entries,
             ..LexicalProjectionConfig::default()
         };
@@ -682,6 +722,7 @@ impl SearchOutOfCoreReader {
             vector_payload: Arc::new(vector_payload),
             layout,
             lexical_projection,
+            lexical_source_policy,
             lexical_term_policy,
             #[cfg(feature = "vector-search")]
             rabitq_projection,
@@ -691,6 +732,10 @@ impl SearchOutOfCoreReader {
 
     pub fn lexical_term_policy(&self) -> SearchLexicalTermPolicy {
         self.lexical_term_policy
+    }
+
+    pub fn lexical_source_policy(&self) -> SearchLexicalSourcePolicy {
+        self.lexical_source_policy
     }
 
     /// Changes admission for subsequent queries and prepared updates.
@@ -703,6 +748,14 @@ impl SearchOutOfCoreReader {
             .validate_term_limit(policy.max_term_bytes())?;
         self.lexical_term_policy = policy;
         Ok(())
+    }
+
+    /// Changes source admission for subsequent prepared updates.
+    ///
+    /// This does not affect reading an already published generation because
+    /// source admission is a host-owned write policy.
+    pub fn set_lexical_source_policy(&mut self, policy: SearchLexicalSourcePolicy) {
+        self.lexical_source_policy = policy;
     }
 
     pub fn document_count(&self) -> usize {

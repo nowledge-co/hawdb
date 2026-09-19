@@ -78,6 +78,7 @@ mod lexical_projection;
 mod lexical_readiness;
 #[cfg(all(test, feature = "full-text-search"))]
 mod lexical_snapshot_test_gate;
+mod lexical_source_policy;
 mod lexical_term_policy;
 mod out_of_core;
 mod projection_catch_up;
@@ -193,6 +194,7 @@ pub use lexical_readiness::{
     SearchTopKScoreParity, SEARCH_LEXICAL_QUALIFICATION_PROTOCOL,
     SEARCH_LEXICAL_QUALIFICATION_PROTOCOL_VERSION,
 };
+pub use lexical_source_policy::SearchLexicalSourcePolicy;
 pub use lexical_term_policy::SearchLexicalTermPolicy;
 pub use out_of_core::{
     GovernedSearchGenerationUpdate, GovernedSearchGenerationWriter, SearchGenerationAdmission,

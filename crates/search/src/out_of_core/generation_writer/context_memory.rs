@@ -18,7 +18,7 @@ use super::SearchOutOfCoreGenerationBuildOptions;
 use crate::build_control::checkpoint;
 pub(super) use crate::build_memory::path::OwnedPath;
 use crate::build_memory::{checked_add as add, checked_mul as mul, BuildMemory, SET_ENTRY_BYTES};
-use crate::Result;
+use crate::{Result, SearchLexicalSourcePolicy};
 use hawdb_core::RuntimeTaskContext;
 use hawdb_executor::QueryMemoryLease;
 use std::mem::size_of;
@@ -113,6 +113,10 @@ impl Options {
         self.value.source_graph_commit_epoch = source_graph_commit_epoch;
         self.value.import_source_graph_commit_epoch = reader.import_source_graph_commit_epoch();
         Ok(())
+    }
+
+    pub(super) fn set_lexical_source_policy(&mut self, policy: SearchLexicalSourcePolicy) {
+        self.value.lexical_max_document_source_bytes = policy.max_document_source_bytes();
     }
 }
 
