@@ -48,7 +48,7 @@ pub mod graph_index;
 pub mod graph_index_metrics;
 #[doc(hidden)]
 pub mod graph_overlay;
-pub mod ids;
+pub use hawdb_core::ids;
 pub mod index_page;
 #[doc(hidden)]
 pub mod io;
@@ -205,7 +205,7 @@ pub use graph_descriptor_tree::{
 pub use graph_index_metrics::{
     GraphIndexReadMetrics, GraphIndexReadMetricsSnapshot, PersistentGraphIndexClass,
 };
-pub use ids::{NodeId, NodeRecord, ProjectedNodeRecord, RelId, RelRecord};
+pub use hawdb_core::ids::{NodeId, NodeRecord, ProjectedNodeRecord, RelId, RelRecord};
 pub use index_page::{
     ImmutableIndexPage, ImmutableIndexPageBody, ImmutableIndexPageError, ImmutableIndexPageLimits,
     IndexIdentity, IndexInteriorEntry, IndexInteriorPage, IndexLeafEntry, IndexLeafPage,

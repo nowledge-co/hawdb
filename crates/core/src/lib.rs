@@ -18,6 +18,7 @@ pub mod capability;
 pub mod error;
 pub mod graph;
 pub mod graph_rag;
+pub mod ids;
 pub mod logical_type;
 pub mod regex;
 pub mod schema;
