@@ -333,6 +333,47 @@ fn deletion_rewrites_only_the_current_content_segment_and_updates_manifest_ident
 }
 
 #[test]
+fn same_segment_batch_replaces_and_deletes_without_hydrating_other_artifacts() {
+    let root = Fixture::new();
+    append(&root.0, row("z"));
+    let reader = SearchOutOfCoreReader::open(&root.0).unwrap();
+    let before = reader.manifest.segments.clone();
+    let full_metrics = reader.visit_documents_in_order(&mut |_| Ok(())).unwrap();
+    let mut replacement = row("a");
+    replacement.body = "batched mutation content".to_string();
+    let expected = replacement.clone().into_document();
+
+    let update = SearchOutOfCoreGenerationWriter::prepare_delta(
+        &reader,
+        SearchProjectionDelta {
+            upserts: vec![replacement],
+            deletes: vec!["memory:c".to_string()],
+            ..Default::default()
+        },
+        Default::default(),
+    )
+    .unwrap();
+    assert_eq!(update.delta_report().action, "incremental_segment_replace");
+    assert_eq!(update.delta_report().before_document_count, 4);
+    assert_eq!(update.delta_report().after_document_count, 3);
+    assert_eq!(update.delta_report().upserted_documents, 1);
+    assert_eq!(update.delta_report().deleted_documents, 1);
+    assert_eq!(update.source_read_metrics().hydrated_documents, 3);
+    assert!(update.source_read_metrics().segment_range_reads < full_metrics.segment_range_reads);
+    assert!(update.source_read_metrics().segment_bytes_read < full_metrics.segment_bytes_read);
+    update.finish().unwrap();
+
+    let reader = SearchOutOfCoreReader::open(&root.0).unwrap();
+    assert_eq!(reader.manifest.segments[0].segment_id, before[0].segment_id);
+    assert_eq!(reader.manifest.segments[1].generation, before[1].generation);
+    let ids = ["a", "e", "z"].map(|id| format!("memory:{id}"));
+    assert_eq!(
+        reader.hydrate_documents(&ids).unwrap().documents,
+        vec![expected, row("e").into_document(), row("z").into_document()]
+    );
+}
+
+#[test]
 fn local_replacement_rejects_a_newer_active_generation() {
     let root = Fixture::new();
     append(&root.0, row("z"));
