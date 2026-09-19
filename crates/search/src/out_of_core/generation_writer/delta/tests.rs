@@ -374,6 +374,97 @@ fn same_segment_batch_replaces_and_deletes_without_hydrating_other_artifacts() {
 }
 
 #[test]
+fn contiguous_segment_batch_replaces_only_its_exact_artifact_range() {
+    let root = Fixture::new();
+    append(&root.0, row("y"));
+    append(&root.0, row("z"));
+    let reader = SearchOutOfCoreReader::open(&root.0).unwrap();
+    let before = reader.manifest.segments.clone();
+    let full_metrics = reader.visit_documents_in_order(&mut |_| Ok(())).unwrap();
+    let mut first = row("a");
+    first.body = "range mutation first".to_string();
+    let mut second = row("y");
+    second.body = "range mutation second".to_string();
+    let expected_first = first.clone().into_document();
+    let expected_second = second.clone().into_document();
+
+    let update = SearchOutOfCoreGenerationWriter::prepare_delta(
+        &reader,
+        SearchProjectionDelta {
+            upserts: vec![first, second],
+            ..Default::default()
+        },
+        Default::default(),
+    )
+    .unwrap();
+    assert_eq!(
+        update.delta_report().action,
+        "incremental_segment_range_replace"
+    );
+    assert_eq!(update.delta_report().before_document_count, 5);
+    assert_eq!(update.delta_report().after_document_count, 5);
+    assert_eq!(update.source_read_metrics().hydrated_documents, 4);
+    assert!(update.source_read_metrics().segment_range_reads < full_metrics.segment_range_reads);
+    assert!(update.source_read_metrics().segment_bytes_read < full_metrics.segment_bytes_read);
+    update.finish().unwrap();
+
+    let reader = SearchOutOfCoreReader::open(&root.0).unwrap();
+    assert_eq!(reader.manifest.segments.len(), 2);
+    assert_eq!(
+        reader.manifest.segments[0].segment_id,
+        before
+            .iter()
+            .map(|segment| segment.segment_id)
+            .max()
+            .unwrap()
+            + 1
+    );
+    assert_eq!(reader.manifest.segments[0].level, before[0].level);
+    assert_eq!(reader.manifest.segments[1].segment_id, before[2].segment_id);
+    assert_eq!(reader.manifest.segments[1].generation, before[2].generation);
+    let ids = ["a", "c", "e", "y", "z"].map(|id| format!("memory:{id}"));
+    assert_eq!(
+        reader.hydrate_documents(&ids).unwrap().documents,
+        vec![
+            expected_first,
+            row("c").into_document(),
+            row("e").into_document(),
+            expected_second,
+            row("z").into_document(),
+        ]
+    );
+}
+
+#[test]
+fn noncontiguous_segment_batch_retains_the_full_generation_path() {
+    let root = Fixture::new();
+    append(&root.0, row("y"));
+    append(&root.0, row("z"));
+    let reader = SearchOutOfCoreReader::open(&root.0).unwrap();
+    let full_metrics = reader.visit_documents_in_order(&mut |_| Ok(())).unwrap();
+
+    let update = SearchOutOfCoreGenerationWriter::prepare_delta(
+        &reader,
+        SearchProjectionDelta {
+            upserts: vec![row("a"), row("z")],
+            ..Default::default()
+        },
+        Default::default(),
+    )
+    .unwrap();
+    assert_eq!(update.delta_report().action, "bounded_generation_update");
+    assert_eq!(update.source_read_metrics().hydrated_documents, 5);
+    assert_eq!(
+        update.source_read_metrics().segment_range_reads,
+        full_metrics.segment_range_reads
+    );
+    assert_eq!(
+        update.source_read_metrics().segment_bytes_read,
+        full_metrics.segment_bytes_read
+    );
+}
+
+#[test]
 fn local_replacement_rejects_a_newer_active_generation() {
     let root = Fixture::new();
     append(&root.0, row("z"));
@@ -387,6 +478,37 @@ fn local_replacement_rejects_a_newer_active_generation() {
         Default::default(),
     )
     .unwrap();
+
+    append(&root.0, row("zz"));
+    let active = fs::read(root.0.join(crate::out_of_core::OUT_OF_CORE_MANIFEST_FILE)).unwrap();
+    let error = update.finish().unwrap_err();
+    assert!(error.to_string().contains("base changed"), "{error}");
+    assert_eq!(
+        fs::read(root.0.join(crate::out_of_core::OUT_OF_CORE_MANIFEST_FILE)).unwrap(),
+        active
+    );
+    assert_no_stage(&root.0);
+}
+
+#[test]
+fn contiguous_segment_range_replacement_rejects_a_newer_active_generation() {
+    let root = Fixture::new();
+    append(&root.0, row("y"));
+    append(&root.0, row("z"));
+    let reader = SearchOutOfCoreReader::open(&root.0).unwrap();
+    let update = SearchOutOfCoreGenerationWriter::prepare_delta(
+        &reader,
+        SearchProjectionDelta {
+            upserts: vec![row("a"), row("y")],
+            ..Default::default()
+        },
+        Default::default(),
+    )
+    .unwrap();
+    assert_eq!(
+        update.delta_report().action,
+        "incremental_segment_range_replace"
+    );
 
     append(&root.0, row("zz"));
     let active = fs::read(root.0.join(crate::out_of_core::OUT_OF_CORE_MANIFEST_FILE)).unwrap();

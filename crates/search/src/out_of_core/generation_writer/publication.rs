@@ -41,6 +41,14 @@ pub(super) enum ActiveManifestUpdate {
         expected_document_count: usize,
         expected_documents_digest: u64,
     },
+    ReplaceRange {
+        expected_generation: u64,
+        first_segment_id: u64,
+        last_segment_id: u64,
+        segment_count: usize,
+        expected_document_count: usize,
+        expected_documents_digest: u64,
+    },
     Compact {
         expected_generation: u64,
         first_segment_id: u64,
@@ -329,6 +337,111 @@ pub(super) fn publish_generation(
                     active.documents_digest,
                     segment_id,
                     *target_level,
+                    Some((start, end)),
+                )
+            }
+            Some(ActiveManifestUpdate::ReplaceRange {
+                expected_generation,
+                first_segment_id,
+                last_segment_id,
+                segment_count,
+                expected_document_count,
+                expected_documents_digest,
+            }) => {
+                if *segment_count < 2 {
+                    return Err(HawDBError::Storage(
+                        "search segment range replacement requires at least two source segments"
+                            .into(),
+                    ));
+                }
+                let active_bytes = read_bounded_file(
+                    &input.root.join(OUT_OF_CORE_MANIFEST_FILE),
+                    MAX_OUT_OF_CORE_MANIFEST_BYTES,
+                )?;
+                let active = SearchOutOfCoreManifestBody::decode(&active_bytes)?;
+                if active.generation != *expected_generation {
+                    return Err(HawDBError::Storage(format!(
+                        "search segment range replacement base changed before manifest composition: expected {expected_generation}, got {}",
+                        active.generation
+                    )));
+                }
+                let start = active
+                    .segments
+                    .iter()
+                    .position(|segment| segment.segment_id == *first_segment_id)
+                    .ok_or_else(|| {
+                        HawDBError::Storage(
+                            "search segment range replacement first source segment is no longer active"
+                                .into(),
+                        )
+                    })?;
+                let end = start.checked_add(*segment_count).ok_or_else(|| {
+                    HawDBError::Storage("search segment range replacement range overflows".into())
+                })?;
+                if end > active.segments.len()
+                    || active.segments[end - 1].segment_id != *last_segment_id
+                {
+                    return Err(HawDBError::Storage(
+                        "search segment range replacement selection is no longer active and contiguous"
+                            .into(),
+                    ));
+                }
+                let selected = &active.segments[start..end];
+                let source_level = selected[0].level;
+                if selected.iter().any(|segment| segment.level != source_level) {
+                    return Err(HawDBError::Storage(
+                        "search segment range replacement source levels do not match".into(),
+                    ));
+                }
+                let selected_document_count =
+                    selected.iter().try_fold(0usize, |total, segment| {
+                        total.checked_add(segment.document_count).ok_or_else(|| {
+                            HawDBError::Storage(
+                                "search segment range replacement document count overflows".into(),
+                            )
+                        })
+                    })?;
+                let selected_documents_digest = selected.iter().fold(0u64, |digest, segment| {
+                    DocumentsDigest::combine(digest, segment.documents_digest)
+                });
+                if selected_document_count != *expected_document_count
+                    || selected_documents_digest != *expected_documents_digest
+                {
+                    return Err(HawDBError::Storage(
+                        "search segment range replacement source documents changed before manifest composition"
+                            .into(),
+                    ));
+                }
+                let document_count = active
+                    .document_count
+                    .checked_sub(selected_document_count)
+                    .and_then(|count| count.checked_add(input.document_count))
+                    .ok_or_else(|| {
+                        HawDBError::Storage(
+                            "search segment range replacement document count overflows".into(),
+                        )
+                    })?;
+                let documents_digest = selected
+                    .iter()
+                    .fold(active.documents_digest, |digest, segment| {
+                        DocumentsDigest::replace(digest, segment.documents_digest, 0)
+                    });
+                let documents_digest =
+                    DocumentsDigest::combine(documents_digest, input.documents_digest);
+                let segment_id = active
+                    .segments
+                    .iter()
+                    .map(|segment| segment.segment_id)
+                    .max()
+                    .unwrap_or_default()
+                    .checked_add(1)
+                    .ok_or_else(|| HawDBError::Storage("search segment id overflow".into()))?;
+                (
+                    active.segments,
+                    document_count,
+                    documents_digest,
+                    segment_id,
+                    source_level,
                     Some((start, end)),
                 )
             }
