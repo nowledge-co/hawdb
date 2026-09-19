@@ -764,6 +764,18 @@ impl hawdb_system_sql::SystemSqlStore for GraphStore {
 
 pub use hawdb_storage::scan::GraphScanControl;
 
+/// Root-internal engine configuration that must not join the storage contract:
+/// the sink type is a facade observability interface, not a storage concept.
+pub(crate) trait StoreTelemetry {
+    fn set_telemetry_sink(&mut self, telemetry: Option<std::sync::Arc<dyn TelemetrySink>>);
+}
+
+impl StoreTelemetry for GraphStore {
+    fn set_telemetry_sink(&mut self, telemetry: Option<std::sync::Arc<dyn TelemetrySink>>) {
+        GraphStore::set_telemetry_sink(self, telemetry);
+    }
+}
+
 pub use hawdb_storage::relational::{
     RelationalOverflowCompactionConfig, RelationalOverflowCompactionReport,
     RelationalRowPageCompactionConfig, RelationalRowPageCompactionReport,

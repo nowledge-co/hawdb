@@ -1096,7 +1096,7 @@ impl Database {
                 });
             }
         }
-        self.store.set_telemetry_sink(telemetry.clone());
+        crate::store::StoreTelemetry::set_telemetry_sink(&mut self.store, telemetry.clone());
         self.local_qos_scheduler.set_telemetry_sink(
             telemetry
                 .as_ref()
