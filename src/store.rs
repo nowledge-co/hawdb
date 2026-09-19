@@ -876,6 +876,12 @@ pub(crate) trait InternalGraphEngine {
         values: &[Value],
         consumer: impl FnMut(NodeRecord) -> GraphScanControl,
     ) -> Result<GraphScanControl>;
+
+    fn append_state(&self) -> &hawdb_storage::AppendState;
+
+    fn relational_state(&self) -> &hawdb_storage::RelationalState;
+
+    fn poison_on_storage_error<T>(&self, result: &Result<T>);
 }
 
 impl InternalGraphEngine for GraphStore {
@@ -930,6 +936,18 @@ impl InternalGraphEngine for GraphStore {
         consumer: impl FnMut(NodeRecord) -> GraphScanControl,
     ) -> Result<GraphScanControl> {
         GraphStore::visit_nodes_by_property_owned(self, label_id, property, values, consumer)
+    }
+
+    fn append_state(&self) -> &hawdb_storage::AppendState {
+        GraphStore::append_state(self)
+    }
+
+    fn relational_state(&self) -> &hawdb_storage::RelationalState {
+        GraphStore::relational_state(self)
+    }
+
+    fn poison_on_storage_error<T>(&self, result: &Result<T>) {
+        GraphStore::poison_on_storage_error(self, result);
     }
 }
 

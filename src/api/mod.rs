@@ -740,9 +740,9 @@ pub struct DatabaseSession<'a> {
 }
 
 #[derive(Debug)]
-pub struct DatabaseReadTransaction {
+pub struct DatabaseReadTransaction<S: crate::executor::ExecutionStore = GraphStore> {
     catalog: Catalog,
-    store: GraphStore,
+    store: S,
     published_read_view: PublishedReadView,
     optimizer: CascadesOptimizer,
     plan_cache: SharedState<PlanCache>,
@@ -20580,7 +20580,7 @@ struct DatabaseReadSqlOptions<'a> {
     join_planning: RelationalJoinPlanningDirective,
 }
 
-impl DatabaseReadTransaction {
+impl<S: crate::executor::ExecutionStore> DatabaseReadTransaction<S> {
     pub fn commit_epoch(&self) -> u64 {
         self.published_read_view.visible_commit_epoch()
     }
@@ -21472,19 +21472,19 @@ impl DatabaseReadTransaction {
     ) -> Result<ProfiledRelationalSqlQueryOutput> {
         let row_read_mode = match &self.projection_relational {
             Some(projection) => {
-                crate::relational_sql::RelationalRowReadMode::ProjectionGeneration {
+                hawdb_relational::row_runtime::RelationalRowReadMode::<S>::ProjectionGeneration {
                     store: &self.store,
                     reader: &projection.reader,
                     tables: projection.binding.tables(),
                 }
             }
-            None => crate::relational_sql::RelationalRowReadMode::Store(&self.store),
+            None => hawdb_relational::row_runtime::RelationalRowReadMode::<S>::Store(&self.store),
         };
         let query_result = crate::relational_sql::execute_prepared_relational_query_with_resources(
             prepared,
             parameters,
             self.store.relational_state(),
-            crate::relational_sql::RelationalQueryReadModes::new(
+            hawdb_relational::query::RelationalQueryReadModes::<S>::new(
                 relational_index_read_mode(&self.config, &self.store),
                 row_read_mode,
             ),
@@ -21697,7 +21697,7 @@ impl DatabaseReadTransaction {
 
     #[cfg(test)]
     pub(crate) fn statistics(&self) -> GraphStatistics {
-        self.store.statistics(&self.catalog)
+        <S as hawdb_storage::graph_engine::GraphReadEngine>::statistics(&self.store, &self.catalog)
     }
 
     #[cfg(test)]

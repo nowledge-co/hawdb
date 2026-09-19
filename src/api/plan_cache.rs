@@ -51,9 +51,9 @@ pub(super) enum PlanTraceMode {
     Bound,
 }
 
-pub(super) struct PlanCacheContext<'a> {
+pub(super) struct PlanCacheContext<'a, S = GraphStore> {
     pub(super) catalog: &'a Catalog,
-    pub(super) store: &'a GraphStore,
+    pub(super) store: &'a S,
     pub(super) optimizer: &'a CascadesOptimizer,
     pub(super) config: &'a DatabaseConfig,
     pub(super) cache: &'a SharedState<PlanCache>,
@@ -230,10 +230,10 @@ impl OptimizerPlanningCache {
         self.catalog = None;
     }
 
-    pub(super) fn environment_hint(
+    pub(super) fn environment_hint<R: hawdb_storage::graph_engine::GraphReadEngine>(
         &mut self,
         catalog: &Catalog,
-        store: &GraphStore,
+        store: &R,
     ) -> OptimizerEnvironmentKey {
         // A cache lookup must retain the last published statistics generation:
         // ordinary data commits do not make a physical plan illegal. A cache
@@ -245,10 +245,10 @@ impl OptimizerPlanningCache {
         }
     }
 
-    fn ensure_statistics(
+    fn ensure_statistics<R: hawdb_storage::graph_engine::GraphReadEngine>(
         &mut self,
         catalog: &Catalog,
-        store: &GraphStore,
+        store: &R,
         refresh_for_data_change: bool,
     ) -> StatisticsCacheRefresh {
         let schema = OptimizerSchemaKey::from_catalog(catalog);
@@ -278,10 +278,10 @@ impl OptimizerPlanningCache {
         }
     }
 
-    fn optimizer_catalog(
+    fn optimizer_catalog<R: hawdb_storage::graph_engine::GraphReadEngine>(
         &mut self,
         catalog: &Catalog,
-        store: &GraphStore,
+        store: &R,
     ) -> OptimizerCatalogAccess {
         let mut decisions = Vec::new();
         // This path is reached only after the physical-plan cache missed or
@@ -364,13 +364,13 @@ impl OptimizerPlanningCache {
     }
 }
 
-pub(super) fn optimized_query_plan_for(
+pub(super) fn optimized_query_plan_for<S: crate::executor::ExecutionStore>(
     cypher_text: &str,
     statement: &cypher::Statement,
     parameters: &BTreeMap<String, Value>,
     cache_mode: PlanCacheMode,
     trace_mode: PlanTraceMode,
-    context: PlanCacheContext<'_>,
+    context: PlanCacheContext<'_, S>,
 ) -> Result<OptimizedQueryPlan> {
     let query_identity = hawdb_query::QueryIdentity::new("cypher", cypher_text);
     let query_optimizer =
@@ -545,12 +545,12 @@ fn refresh_materialized_plan_trace(trace: &mut OptimizerTrace, physical_plan: &P
     trace.selected_plan_fingerprint = physical_plan.fingerprint();
 }
 
-fn refresh_plan_trace(
+fn refresh_plan_trace<S: crate::executor::ExecutionStore>(
     optimizer: &CascadesOptimizer,
     trace: &mut OptimizerTrace,
     physical_plan: &PhysicalPlan,
     trace_mode: PlanTraceMode,
-    context: &PlanCacheContext<'_>,
+    context: &PlanCacheContext<'_, S>,
 ) {
     match trace_mode {
         PlanTraceMode::Template => refresh_materialized_plan_trace(trace, physical_plan),
