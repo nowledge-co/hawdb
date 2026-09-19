@@ -2478,8 +2478,9 @@ impl CandidateSet {
     }
 
     #[cfg(feature = "vector-search")]
-    fn vector_ordinals(
+    fn vector_ordinals_for_layer(
         &self,
+        layer: usize,
         max_bytes: u64,
         task_context: Option<&crate::RuntimeTaskContext>,
         metrics: &mut SearchOutOfCoreMetrics,
@@ -2487,7 +2488,7 @@ impl CandidateSet {
         match self {
             Self::All(_) => Ok(None),
             Self::Spilled(set) => set
-                .vector_ordinals(max_bytes, task_context, metrics)
+                .vector_ordinals_for_layer(layer, max_bytes, task_context, metrics)
                 .map(Some),
         }
     }
@@ -2682,13 +2683,22 @@ impl SpilledCandidateSet {
     }
 
     #[cfg(feature = "vector-search")]
-    fn vector_ordinals(
+    fn vector_ordinals_for_layer(
         &self,
+        layer: usize,
         max_bytes: u64,
         task_context: Option<&crate::RuntimeTaskContext>,
         metrics: &mut SearchOutOfCoreMetrics,
     ) -> Result<Vec<u64>> {
-        let ordinal_capacity_bytes = (self.cardinality as u64)
+        let cardinality = self
+            .blocks
+            .iter()
+            .filter(|block| block.layer == layer)
+            .try_fold(0usize, |total, block| total.checked_add(block.cardinality))
+            .ok_or_else(|| {
+                HawDBError::Storage("search vector candidate count overflow".to_string())
+            })?;
+        let ordinal_capacity_bytes = (cardinality as u64)
             .checked_mul(std::mem::size_of::<u64>() as u64)
             .ok_or_else(|| {
                 HawDBError::Storage("search vector allowlist size overflow".to_string())
@@ -2696,6 +2706,7 @@ impl SpilledCandidateSet {
         let max_block_bytes = self
             .blocks
             .iter()
+            .filter(|block| block.layer == layer)
             .map(|block| block.length)
             .max()
             .unwrap_or_default();
@@ -2709,8 +2720,8 @@ impl SpilledCandidateSet {
                 "search vector candidate allowlist and block require {required_working_bytes} bytes, exceeding {max_bytes}"
             )));
         }
-        let mut ordinals = Vec::with_capacity(self.cardinality);
-        for block in &self.blocks {
+        let mut ordinals = Vec::with_capacity(cardinality);
+        for block in self.blocks.iter().filter(|block| block.layer == layer) {
             if let Some(task_context) = task_context {
                 task_context.checkpoint().map_err(|reason| {
                     HawDBError::Execution(format!("search vector task {reason}"))
@@ -3832,7 +3843,7 @@ mod tests {
 
     #[test]
     #[cfg(all(feature = "full-text-search", feature = "vector-search"))]
-    fn out_of_core_multi_segment_vector_and_hybrid_use_scalar_sidecars() {
+    fn out_of_core_multi_segment_vector_and_hybrid_query_all_artifacts() {
         let path = test_dir("multi-segment-vector");
         publish_two_artifact_manifest(&path, document(0, "team"), document(1, "team"));
         let reader = SearchOutOfCoreReader::open(&path).unwrap();
@@ -3869,7 +3880,7 @@ mod tests {
                 "graph",
                 Some(&query_embedding),
                 SearchMode::Hybrid,
-                filtered,
+                filtered.clone(),
             )
             .unwrap();
         assert_eq!(hybrid.result.filtered_document_count, 2);
@@ -3881,27 +3892,42 @@ mod tests {
                 "",
                 Some(&query_embedding),
                 SearchMode::Vector,
-                options(10, None),
+                filtered.clone(),
                 CompressedVectorSearchMode::Preferred,
             )
             .unwrap();
         assert_eq!(preferred.result.total_hits, 2);
-        assert!(preferred
+        assert_eq!(
+            preferred.result.retrievers[0].backend,
+            "hawdb_rabitq_out_of_core_candidate_projection"
+        );
+        assert!(!preferred
             .result
             .fallback_reason_codes
             .contains(&SearchFallbackReasonCode::CompressedVectorProjectionUnavailable));
+        assert_eq!(preferred.metrics.candidate_block_reads, 2);
+        assert!(preferred.metrics.rabitq_payload_bytes_read > 0);
         let required = reader
             .search_with_options_compressed_vector_projection_mode(
                 "",
                 Some(&query_embedding),
                 SearchMode::Vector,
-                options(10, None),
+                filtered,
                 CompressedVectorSearchMode::Required,
             )
-            .unwrap_err();
-        assert!(required
-            .to_string()
-            .contains("layer-qualified vector ordinals are not implemented"));
+            .unwrap();
+        assert_eq!(required.result.total_hits, 2);
+        assert_eq!(
+            required
+                .result
+                .hits
+                .iter()
+                .map(|hit| hit.id.as_str())
+                .collect::<BTreeSet<_>>(),
+            BTreeSet::from(["memory:000", "memory:001"]),
+        );
+        assert_eq!(required.metrics.candidate_block_reads, 2);
+        assert!(required.metrics.rabitq_payload_bytes_read > 0);
         fs::remove_dir_all(path).unwrap();
     }
 
