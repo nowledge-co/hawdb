@@ -38,39 +38,50 @@ pub(super) fn visit(
     consumer: &mut dyn FnMut(AdmittedDocument) -> Result<()>,
 ) -> Result<SearchOutOfCoreMetrics> {
     let mut metrics = SearchOutOfCoreMetrics::default();
-    for segment in &reader.primary_segment().descriptor.segments {
-        checkpoint(task)?;
-        let range = segment
-            .payload_range
-            .ok_or_else(|| invalid("segment has no payload range"))?;
-        let input = RangeReader {
-            file: &reader.primary_segment().payload,
-            offset: range.offset,
-            remaining: range.length,
-        };
-        let mut hydrated_documents = 0usize;
-        let peak = read_segment(
-            input,
-            range.length,
-            range.checksum,
-            segment,
-            reader.config.max_uncompressed_segment_bytes.get(),
-            memory,
-            task,
-            &mut |document| {
-                hydrated_documents = hydrated_documents.saturating_add(1);
-                consumer(document)
-            },
-        )?;
-        metrics.segment_range_reads = metrics.segment_range_reads.saturating_add(1);
-        metrics.segment_bytes_read = metrics.segment_bytes_read.saturating_add(range.length);
-        metrics.hydration_segment_bytes_read = metrics
-            .hydration_segment_bytes_read
-            .saturating_add(range.length);
-        metrics.peak_segment_document_bytes = metrics.peak_segment_document_bytes.max(peak);
-        metrics.hydrated_documents = metrics
-            .hydrated_documents
-            .saturating_add(hydrated_documents);
+    let mut previous_last_document_id = None;
+    for artifact in &reader.segments {
+        for segment in &artifact.descriptor.segments {
+            checkpoint(task)?;
+            if previous_last_document_id
+                .is_some_and(|previous| previous >= segment.first_document_id.as_str())
+            {
+                return Err(invalid(
+                    "search generation update requires manifest artifacts with globally ordered, non-overlapping document ranges",
+                ));
+            }
+            previous_last_document_id = Some(segment.last_document_id.as_str());
+            let range = segment
+                .payload_range
+                .ok_or_else(|| invalid("segment has no payload range"))?;
+            let input = RangeReader {
+                file: &artifact.payload,
+                offset: range.offset,
+                remaining: range.length,
+            };
+            let mut hydrated_documents = 0usize;
+            let peak = read_segment(
+                input,
+                range.length,
+                range.checksum,
+                segment,
+                reader.config.max_uncompressed_segment_bytes.get(),
+                memory,
+                task,
+                &mut |document| {
+                    hydrated_documents = hydrated_documents.saturating_add(1);
+                    consumer(document)
+                },
+            )?;
+            metrics.segment_range_reads = metrics.segment_range_reads.saturating_add(1);
+            metrics.segment_bytes_read = metrics.segment_bytes_read.saturating_add(range.length);
+            metrics.hydration_segment_bytes_read = metrics
+                .hydration_segment_bytes_read
+                .saturating_add(range.length);
+            metrics.peak_segment_document_bytes = metrics.peak_segment_document_bytes.max(peak);
+            metrics.hydrated_documents = metrics
+                .hydrated_documents
+                .saturating_add(hydrated_documents);
+        }
     }
     Ok(metrics)
 }
