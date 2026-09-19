@@ -13,8 +13,8 @@
 // limitations under the License.
 
 use super::lexical_projection::{
-    manifest_generation as lexical_manifest_generation, LexicalMiniDelta, LexicalProjectionConfig,
-    LexicalProjectionReader, DEFAULT_MAX_MANIFEST_BYTES, MANIFEST_FILE,
+    manifest_generation as lexical_manifest_generation, LexicalCorpusStatistics,
+    LexicalProjectionConfig, LexicalProjectionReader, DEFAULT_MAX_MANIFEST_BYTES, MANIFEST_FILE,
 };
 use super::{
     checksum_bytes, cosine_similarity, decode_embedding, decode_metadata,
@@ -1227,13 +1227,21 @@ impl SearchOutOfCoreReader {
             SearchMode::Vector => Some(0),
         };
         let lexical_report = if text_available && mode != SearchMode::Vector {
-            Some(self.segment.lexical_projection.score_with_term_limit(
+            let lexical_statistics = LexicalCorpusStatistics::aggregate(
+                [self.segment.lexical_projection.as_ref()],
                 &query_terms,
-                &LexicalMiniDelta::default(),
-                self.lexical_term_policy.max_term_bytes(),
-                retained_text_limit,
-                |id| candidate_set.contains(id, &mut metrics),
-            )?)
+            )?;
+            Some(
+                self.segment
+                    .lexical_projection
+                    .score_with_global_statistics(
+                        &query_terms,
+                        self.lexical_term_policy.max_term_bytes(),
+                        retained_text_limit,
+                        &lexical_statistics,
+                        |id| candidate_set.contains(id, &mut metrics),
+                    )?,
+            )
         } else {
             None
         };

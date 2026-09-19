@@ -828,6 +828,55 @@ pub(super) struct LexicalQueryReport {
     pub document_bytes_read: u64,
 }
 
+/// Exact corpus statistics for scoring a disjoint lexical artifact set.
+///
+/// A segment reader still owns document and posting I/O, while its score must
+/// use the aggregate live corpus's document count, length and per-term DF.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub(super) struct LexicalCorpusStatistics {
+    document_count: usize,
+    total_document_len: u64,
+    document_frequencies: BTreeMap<String, usize>,
+}
+
+impl LexicalCorpusStatistics {
+    pub(super) fn aggregate<'a>(
+        projections: impl IntoIterator<Item = &'a LexicalProjectionReader>,
+        query_terms: &BTreeSet<String>,
+    ) -> Result<Self> {
+        let mut statistics = Self::default();
+        for projection in projections {
+            statistics.merge(&projection.query_statistics(query_terms))?;
+        }
+        Ok(statistics)
+    }
+
+    pub(super) fn merge(&mut self, other: &Self) -> Result<()> {
+        self.document_count = self
+            .document_count
+            .checked_add(other.document_count)
+            .ok_or_else(|| HawDBError::Storage("lexical corpus document count overflow".into()))?;
+        self.total_document_len = self
+            .total_document_len
+            .checked_add(other.total_document_len)
+            .ok_or_else(|| HawDBError::Storage("lexical corpus length overflow".into()))?;
+        for (term, frequency) in &other.document_frequencies {
+            let entry = self.document_frequencies.entry(term.clone()).or_default();
+            *entry = entry.checked_add(*frequency).ok_or_else(|| {
+                HawDBError::Storage("lexical corpus document frequency overflow".into())
+            })?;
+        }
+        Ok(())
+    }
+
+    fn document_frequency(&self, term: &str) -> usize {
+        self.document_frequencies
+            .get(term)
+            .copied()
+            .unwrap_or_default()
+    }
+}
+
 #[derive(Debug)]
 pub(super) struct LexicalProjectionReader {
     manifest: ManifestBody,
@@ -1040,6 +1089,26 @@ impl LexicalProjectionReader {
         Ok(terms)
     }
 
+    pub(super) fn query_statistics(
+        &self,
+        query_terms: &BTreeSet<String>,
+    ) -> LexicalCorpusStatistics {
+        LexicalCorpusStatistics {
+            document_count: usize::try_from(self.manifest.document_count).unwrap_or(usize::MAX),
+            total_document_len: self.manifest.total_document_len,
+            document_frequencies: query_terms
+                .iter()
+                .map(|term| {
+                    (
+                        term.clone(),
+                        usize::try_from(self.manifest.document_frequency(term))
+                            .unwrap_or(usize::MAX),
+                    )
+                })
+                .collect(),
+        }
+    }
+
     pub(super) fn score(
         &self,
         query_terms: &BTreeSet<String>,
@@ -1062,6 +1131,44 @@ impl LexicalProjectionReader {
         delta: &LexicalMiniDelta,
         max_term_bytes: NonZeroU64,
         retained_score_limit: Option<usize>,
+        allowed: impl FnMut(&str) -> Result<bool>,
+    ) -> Result<LexicalQueryReport> {
+        self.score_with_term_limit_and_statistics(
+            query_terms,
+            delta,
+            max_term_bytes,
+            retained_score_limit,
+            None,
+            allowed,
+        )
+    }
+
+    pub(super) fn score_with_global_statistics(
+        &self,
+        query_terms: &BTreeSet<String>,
+        max_term_bytes: NonZeroU64,
+        retained_score_limit: Option<usize>,
+        statistics: &LexicalCorpusStatistics,
+        allowed: impl FnMut(&str) -> Result<bool>,
+    ) -> Result<LexicalQueryReport> {
+        self.score_with_term_limit_and_statistics(
+            query_terms,
+            &LexicalMiniDelta::default(),
+            max_term_bytes,
+            retained_score_limit,
+            Some(statistics),
+            allowed,
+        )
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn score_with_term_limit_and_statistics(
+        &self,
+        query_terms: &BTreeSet<String>,
+        delta: &LexicalMiniDelta,
+        max_term_bytes: NonZeroU64,
+        retained_score_limit: Option<usize>,
+        global_statistics: Option<&LexicalCorpusStatistics>,
         mut allowed: impl FnMut(&str) -> Result<bool>,
     ) -> Result<LexicalQueryReport> {
         self.validate_term_limit(max_term_bytes)?;
@@ -1120,9 +1227,14 @@ impl LexicalProjectionReader {
                 self.config.query_memory_bytes
             )));
         }
-        let (document_count, total_document_len) = delta.projected_corpus(
-            self.manifest.document_count,
-            self.manifest.total_document_len,
+        let (document_count, total_document_len) = global_statistics.map_or_else(
+            || {
+                delta.projected_corpus(
+                    self.manifest.document_count,
+                    self.manifest.total_document_len,
+                )
+            },
+            |statistics| (statistics.document_count, statistics.total_document_len),
         );
         let mut bytes_read = 0u64;
         if document_count == 0 {
@@ -1133,7 +1245,15 @@ impl LexicalProjectionReader {
         for term in query_terms {
             document_frequency.insert(
                 term.clone(),
-                delta.projected_document_frequency(term, self.manifest.document_frequency(term)),
+                global_statistics.map_or_else(
+                    || {
+                        delta.projected_document_frequency(
+                            term,
+                            self.manifest.document_frequency(term),
+                        )
+                    },
+                    |statistics| statistics.document_frequency(term),
+                ),
             );
         }
         let average_document_len = (total_document_len as f64 / document_count as f64).max(1.0);
@@ -1161,7 +1281,9 @@ impl LexicalProjectionReader {
             let (document_id, document_len) = documents.get(ordinal)?;
             validate_posting_length(&posting, document_len)?;
             let mut score = 0.0;
-            if !delta.overrides(&document_id) && allowed(&document_id)? {
+            if (global_statistics.is_some() || !delta.overrides(&document_id))
+                && allowed(&document_id)?
+            {
                 score += bm25_term_score(
                     stream_idf[stream_index],
                     posting.term_frequency,
@@ -1179,7 +1301,9 @@ impl LexicalProjectionReader {
                 let Reverse((_, next_stream_index, next_posting)) =
                     heap.pop().expect("peeked lexical posting exists");
                 validate_posting_length(&next_posting, document_len)?;
-                if !delta.overrides(&document_id) && allowed(&document_id)? {
+                if (global_statistics.is_some() || !delta.overrides(&document_id))
+                    && allowed(&document_id)?
+                {
                     score += bm25_term_score(
                         stream_idf[next_stream_index],
                         next_posting.term_frequency,
@@ -1199,27 +1323,29 @@ impl LexicalProjectionReader {
             postings_visited = postings_visited.saturating_add(stream.postings_visited);
             bytes_read = bytes_read.saturating_add(stream.bytes_read);
         }
-        for (id, document) in &delta.upserts {
-            if !allowed(id)? {
-                continue;
-            }
-            let mut score = 0.0;
-            for term in query_terms {
-                let Some(frequency) = document.frequencies.get(term) else {
+        if global_statistics.is_none() {
+            for (id, document) in &delta.upserts {
+                if !allowed(id)? {
                     continue;
-                };
-                let df = document_frequency.get(term).copied().unwrap_or(0);
-                if df > 0 {
-                    score += bm25_term_score(
-                        idf(document_count, df),
-                        *frequency,
-                        document.document_len,
-                        average_document_len,
-                    );
                 }
-            }
-            if score > 0.0 {
-                collector.push(id.clone(), score)?;
+                let mut score = 0.0;
+                for term in query_terms {
+                    let Some(frequency) = document.frequencies.get(term) else {
+                        continue;
+                    };
+                    let df = document_frequency.get(term).copied().unwrap_or(0);
+                    if df > 0 {
+                        score += bm25_term_score(
+                            idf(document_count, df),
+                            *frequency,
+                            document.document_len,
+                            average_document_len,
+                        );
+                    }
+                }
+                if score > 0.0 {
+                    collector.push(id.clone(), score)?;
+                }
             }
         }
         let matching_document_count = collector.matching_count;
