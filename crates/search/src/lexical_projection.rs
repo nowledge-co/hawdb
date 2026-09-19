@@ -253,6 +253,7 @@ struct ManifestBody {
     posting_count: u64,
     legacy_posting_bytes: u64,
     posting_bytes: u64,
+    max_term_bytes: u64,
     blocks: Vec<BlockDescriptor>,
 }
 
@@ -265,14 +266,8 @@ struct ManifestEnvelope {
 
 impl ManifestBody {
     fn required_term_bytes(&self, task: Option<&RuntimeTaskContext>) -> Result<u64> {
-        self.blocks
-            .iter()
-            .filter(|block| block.kind == BlockKind::Postings)
-            .flat_map(|block| [block.min_key.len(), block.max_key.len()])
-            .try_fold(0u64, |largest, bytes| {
-                task.map_or(Ok(()), checkpoint)?;
-                Ok(largest.max(bytes as u64))
-            })
+        task.map_or(Ok(()), checkpoint)?;
+        Ok(self.max_term_bytes)
     }
 
     #[cfg(test)]
@@ -282,7 +277,7 @@ impl ManifestBody {
 
     fn validate_with_context(&self, task: Option<&RuntimeTaskContext>) -> Result<()> {
         task.map_or(Ok(()), checkpoint)?;
-        if self.format != "HAWDB_LEXICAL_MANIFEST_V5"
+        if self.format != "HAWDB_LEXICAL_MANIFEST_V6"
             || self.layout != "HAWDB_LEXICAL_ORDINAL_FST_V1"
             || self.artifact_file != artifact_file(self.generation)
             || Path::new(&self.artifact_file)
@@ -301,6 +296,7 @@ impl ManifestBody {
         let mut previous_document_id: Option<&str> = None;
         let mut postings = 0u64;
         let mut posting_bytes = 0u64;
+        let mut boundary_term_bytes = 0u64;
         let mut saw_postings = false;
         for block in &self.blocks {
             task.map_or(Ok(()), checkpoint)?;
@@ -354,6 +350,9 @@ impl ManifestBody {
                     posting_bytes = posting_bytes.checked_add(block.length).ok_or_else(|| {
                         HawDBError::Storage("lexical posting bytes overflow".to_string())
                     })?;
+                    boundary_term_bytes = boundary_term_bytes
+                        .max(block.min_key.len() as u64)
+                        .max(block.max_key.len() as u64);
                 }
             }
         }
@@ -361,6 +360,9 @@ impl ManifestBody {
             || documents != self.document_count
             || postings != self.posting_count
             || posting_bytes != self.posting_bytes
+            || self.max_term_bytes < boundary_term_bytes
+            || (self.posting_count == 0 && self.max_term_bytes != 0)
+            || (self.posting_count > 0 && self.max_term_bytes == 0)
             || (self.posting_count == 0
                 && (self.legacy_posting_bytes != 0 || self.posting_bytes != 0))
             || (self.posting_count > 0
@@ -1875,9 +1877,9 @@ impl<'workspace> LexicalProjectionWriter<'workspace> {
         let artifact = artifact.finish()?;
         let _format_memory = memory
             .retained
-            .reserve("HAWDB_LEXICAL_MANIFEST_V5HAWDB_LEXICAL_ORDINAL_FST_V1".len())?;
+            .reserve("HAWDB_LEXICAL_MANIFEST_V6HAWDB_LEXICAL_ORDINAL_FST_V1".len())?;
         let manifest = ManifestBody {
-            format: "HAWDB_LEXICAL_MANIFEST_V5".to_string(),
+            format: "HAWDB_LEXICAL_MANIFEST_V6".to_string(),
             layout: "HAWDB_LEXICAL_ORDINAL_FST_V1".to_string(),
             generation,
             source_graph_commit_epoch,
@@ -1891,6 +1893,7 @@ impl<'workspace> LexicalProjectionWriter<'workspace> {
             posting_count: artifact.posting_count,
             legacy_posting_bytes: artifact.legacy_posting_bytes,
             posting_bytes: artifact.posting_bytes,
+            max_term_bytes: artifact.max_term_bytes,
             blocks: artifact.blocks,
         };
         let reader = build_manifest::finish(

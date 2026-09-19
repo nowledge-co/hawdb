@@ -24,6 +24,11 @@ use std::cell::Cell;
 pub(in crate::lexical_projection) fn manifest(mut terms: Vec<String>) -> ManifestBody {
     terms.sort();
     terms.dedup();
+    let max_term_bytes = terms
+        .iter()
+        .map(|term| term.len() as u64)
+        .max()
+        .unwrap_or(0);
     let posting_count = terms.len() as u64;
     let header_len = ARTIFACT_HEADER.len() as u64 + 8;
     let blocks = if terms.is_empty() {
@@ -55,7 +60,7 @@ pub(in crate::lexical_projection) fn manifest(mut terms: Vec<String>) -> Manifes
         ]
     };
     ManifestBody {
-        format: "HAWDB_LEXICAL_MANIFEST_V5".into(),
+        format: "HAWDB_LEXICAL_MANIFEST_V6".into(),
         layout: "HAWDB_LEXICAL_ORDINAL_FST_V1".into(),
         generation: 7,
         source_graph_commit_epoch: Some(8),
@@ -69,6 +74,7 @@ pub(in crate::lexical_projection) fn manifest(mut terms: Vec<String>) -> Manifes
         posting_count,
         legacy_posting_bytes: posting_count.saturating_mul(16),
         posting_bytes: if posting_count == 0 { 0 } else { 64 },
+        max_term_bytes,
         blocks,
     }
 }
@@ -118,10 +124,23 @@ fn manifest_wire_and_size_admission_match_the_legacy_envelope() {
         vec!["x".repeat(5202), "\"".repeat(4097)],
     ] {
         let mut body = manifest(terms);
+        assert_eq!(body.required_term_bytes(None).unwrap(), body.max_term_bytes);
         assert_wire_and_admission(&body);
         body.source_graph_commit_epoch = None;
         assert_wire_and_admission(&body);
     }
+}
+
+#[test]
+fn manifest_retains_an_interior_term_length_for_reader_admission() {
+    let longest = "middle".repeat(1024);
+    let body = manifest(vec!["a".into(), longest.clone(), "z".into()]);
+    assert_eq!(body.blocks[1].min_key, "a");
+    assert_eq!(body.blocks[1].max_key, "z");
+    assert_eq!(
+        body.required_term_bytes(None).unwrap(),
+        longest.len() as u64
+    );
 }
 
 #[test]

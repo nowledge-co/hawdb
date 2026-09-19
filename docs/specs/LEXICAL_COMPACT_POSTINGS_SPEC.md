@@ -3,11 +3,14 @@
 ## Implementation Status
 
 The compact lexical format is implemented in the HawDB crates. Current
-development artifacts use `HAWDB_LEXICAL_MANIFEST_V5` with
+development artifacts use `HAWDB_LEXICAL_MANIFEST_V6` with
 `HAWDB_LEXICAL_ORDINAL_FST_V1`: postings use document ordinals and every
-physical postings block has an FST dictionary. V5 removes the manifest-wide
+physical postings block has an FST dictionary. V6 removes the manifest-wide
 term-statistics vector; exact document frequency is derived from the FST
-entries in the relevant blocks. The format remains the basis for
+entries in the relevant blocks. It also persists the maximum encoded term
+length, so reader-side lexical-term policy admission remains valid even when a
+block's lexicographic endpoints are shorter than an interior term. The format
+remains the basis for
 [#206](https://github.com/nowledge-co/hawdb/issues/206) and the future
 [#292](https://github.com/nowledge-co/hawdb/issues/292) pruning work.
 

@@ -48,6 +48,7 @@ pub(super) struct ArtifactBuilder {
     posting_count: u64,
     legacy_posting_bytes: u64,
     posting_bytes: u64,
+    max_term_bytes: u64,
     blocks: Vec<BlockDescriptor>,
     failed: bool,
     task: RuntimeTaskContext,
@@ -68,6 +69,7 @@ pub(super) struct ArtifactSummary {
     pub(super) posting_count: u64,
     pub(super) legacy_posting_bytes: u64,
     pub(super) posting_bytes: u64,
+    pub(super) max_term_bytes: u64,
     pub(super) blocks: Vec<BlockDescriptor>,
     pub(super) memory: DirectoryMemory,
 }
@@ -127,6 +129,7 @@ impl ArtifactBuilder {
             posting_count: 0,
             legacy_posting_bytes: 0,
             posting_bytes: 0,
+            max_term_bytes: 0,
             blocks: Vec::new(),
             failed: false,
             document_slots: memory.retained.reserve(0)?,
@@ -290,6 +293,7 @@ impl ArtifactBuilder {
                 .saturating_add(u64::from(document_id_bytes))
                 .saturating_add(16),
         );
+        self.max_term_bytes = self.max_term_bytes.max(posting.term.len() as u64);
         Ok(())
     }
 
@@ -359,6 +363,7 @@ impl ArtifactBuilder {
             posting_count: self.posting_count,
             legacy_posting_bytes: self.legacy_posting_bytes,
             posting_bytes: self.posting_bytes,
+            max_term_bytes: self.max_term_bytes,
             blocks: self.blocks,
             memory: self.directory_memory,
         })

@@ -218,14 +218,14 @@ fn term_policy_open_checks_dictionary_interior_and_posting_bounds() {
     let fixture = Fixture::new();
     let reader = build(&fixture.0, config()).unwrap();
     let mut dictionary = reader.manifest.clone();
-    // Boundaries alone cannot stand in for the full term dictionary.
+    // The persisted maximum remains authoritative when lexicographic bounds hide an interior term.
     for block in &mut dictionary.blocks {
         if block.kind == BlockKind::Postings {
             block.min_key = "a".into();
             block.max_key = "z".into();
         }
     }
-    let widened = LexicalProjectionReader::load_manifest_bytes(
+    let error = LexicalProjectionReader::load_manifest_bytes(
         &fixture.0,
         &dictionary.encode(DEFAULT_MAX_MANIFEST_BYTES).unwrap(),
         None,
@@ -233,9 +233,8 @@ fn term_policy_open_checks_dictionary_interior_and_posting_bounds() {
         13,
         Default::default(),
     )
-    .unwrap()
-    .unwrap();
-    assert_eq!(widened.required_term_bytes, 1);
+    .unwrap_err();
+    assert!(error.to_string().contains("exceeding 4096"));
     let block = reader
         .manifest
         .blocks
