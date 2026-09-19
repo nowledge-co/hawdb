@@ -26,7 +26,7 @@ pub(super) use hawdb_executor::mutation::{
 pub fn execute_mutation_with_limits(
     plan: &PhysicalPlan,
     catalog: &mut Catalog,
-    store: &mut GraphStore,
+    store: &mut dyn hawdb_executor::store::GraphExecutionWrite,
     limits: MutationLimits,
     task_context: Option<&RuntimeTaskContext>,
 ) -> Result<Vec<Row>> {
