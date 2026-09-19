@@ -44,6 +44,8 @@ pub trait ExecutionStore:
     + hawdb_storage::graph_engine::GraphMutationEngine
     + hawdb_executor::store::GraphExecutionWrite
     + crate::store::InternalGraphEngine
+    + hawdb_analytics::ProjectionSource
+    + hawdb_system_sql::SystemSqlStore
 {
 }
 
@@ -52,6 +54,8 @@ impl<T> ExecutionStore for T where
         + hawdb_storage::graph_engine::GraphMutationEngine
         + hawdb_executor::store::GraphExecutionWrite
         + crate::store::InternalGraphEngine
+        + hawdb_analytics::ProjectionSource
+        + hawdb_system_sql::SystemSqlStore
 {
 }
 
