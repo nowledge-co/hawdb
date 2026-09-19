@@ -334,6 +334,7 @@ test_suite(
         ":hawdb_search_generation_context_tests",
         ":hawdb_search_projection_consumer_tests",
         ":hawdb_search_projection_consumer_minimal_tests",
+        ":hawdb_execution_request_contract_tests",
         ":hawdb_unit_fast_tests",
         ":hawdb_unit_storage_crash_matrix_tests",
     ],
@@ -381,6 +382,15 @@ rust_test(
     srcs = ["tests/search_projection_consumer.rs"],
     edition = "2024",
     deps = [":hawdb_minimal"],
+)
+
+# External embedded-library consumer for the stable execution request contract.
+rust_test(
+    name = "hawdb_execution_request_contract_tests",
+    crate_root = "tests/execution_request_contract.rs",
+    srcs = ["tests/execution_request_contract.rs"],
+    edition = "2024",
+    deps = [":hawdb"],
 )
 
 # Reuse the qualification binary without running the full root suite twice.
@@ -586,7 +596,7 @@ _HAWDB_LINUX_CI_SMOKE_DATA = [
         ("optimizer_group_1", "large", ["exclusive"]),
         ("optimizer_group_3", "medium", ["exclusive"]),
         ("relational_row_page_lending", "medium", ["exclusive"]),
-        ("wal_group_commit", "medium", ["exclusive"]),
+        ("wal_group_commit", "large", ["exclusive"]),
         ("fixture_contract", "medium", []),
         ("storage_recovery", "medium", []),
         ("background_maintenance", "medium", []),

@@ -13,7 +13,7 @@
 // limitations under the License.
 
 use hawdb::executor::{
-    execute_with_row_consumer_profile_and_external_and_context_and_memory, ExecutionMemoryConfig,
+    execute_with_request_consumer, ExecutionMemoryConfig, ExecutionRequest, ExecutionResources,
     ExternalReadOperator, VectorSeedExecutionOutput, VectorSeedExecutionRequest,
 };
 use hawdb::optimizer::PhysicalPlan;
@@ -205,21 +205,15 @@ pub(super) fn stream_probe(
     let mut checksum = 0u64;
     let mut output_rows = 0usize;
     let mut external = BenchmarkExternalRead;
-    let report = execute_with_row_consumer_profile_and_external_and_context_and_memory(
-        plan,
-        catalog,
-        store,
-        &BTreeMap::new(),
-        &mut external,
-        None,
-        None,
+    let parameters = BTreeMap::new();
+    let report = execute_with_request_consumer(
+        ExecutionRequest::new(plan, &parameters, memory).with_task_context(context),
+        ExecutionResources::new(catalog, store, &mut external),
         &mut |row| {
             output_rows = output_rows.saturating_add(1);
             checksum = checksum.wrapping_add(super::output_row_score(&row));
             Ok(())
         },
-        context,
-        memory,
     )
     .expect("morsel production benchmark execution must succeed");
     let spilled_bytes = report
