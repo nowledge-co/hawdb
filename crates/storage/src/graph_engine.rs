@@ -131,4 +131,71 @@ pub trait GraphMutationEngine {
         table: &str,
         state: hawdb_core::SchemaObjectState,
     ) -> Result<(hawdb_core::TableId, bool)>;
+
+    fn add_int_node_property(
+        &mut self,
+        catalog: &mut Catalog,
+        label: &str,
+        filter: Option<&crate::PropertyFilter>,
+        property: &str,
+        amount: i64,
+    ) -> Result<Vec<crate::NodeId>>;
+
+    fn alter_property_state(
+        &mut self,
+        catalog: &mut Catalog,
+        table_kind: hawdb_core::TableKind,
+        table: &str,
+        property: &str,
+        state: hawdb_core::SchemaObjectState,
+    ) -> Result<(hawdb_core::PropertyId, bool)>;
+
+    fn create_property_descriptor(
+        &mut self,
+        catalog: &mut Catalog,
+        table_kind: hawdb_core::TableKind,
+        table: &str,
+        property: &str,
+        value_type: hawdb_core::PropertyType,
+        nullable: bool,
+    ) -> Result<hawdb_core::PropertyId>;
+
+    fn create_range_property_index(
+        &mut self,
+        catalog: &mut Catalog,
+        label: &str,
+        property: &str,
+    ) -> Result<hawdb_core::IndexId>;
+
+    fn create_relationship_table(
+        &mut self,
+        catalog: &mut Catalog,
+        name: &str,
+    ) -> Result<hawdb_core::TableId>;
+
+    fn create_relationship_type(
+        &mut self,
+        catalog: &mut Catalog,
+        rel_type: &str,
+    ) -> Result<hawdb_core::RelTypeId>;
+
+    fn create_relationship_unique_constraint(
+        &mut self,
+        catalog: &mut Catalog,
+        rel_type: &str,
+        property: &str,
+    ) -> Result<hawdb_core::ConstraintId>;
+
+    fn create_relationships_between_matches(
+        &mut self,
+        catalog: &mut Catalog,
+        request: crate::MatchedRelationshipCreate,
+    ) -> Result<Vec<(crate::NodeId, crate::RelId, crate::NodeId)>>;
+
+    fn create_unique_constraint(
+        &mut self,
+        catalog: &mut Catalog,
+        label: &str,
+        property: &str,
+    ) -> Result<hawdb_core::ConstraintId>;
 }

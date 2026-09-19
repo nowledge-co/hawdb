@@ -2864,6 +2864,93 @@ impl hawdb_storage::graph_engine::GraphMutationEngine for GraphStore {
     ) -> hawdb_core::Result<(hawdb_core::TableId, bool)> {
         GraphStore::alter_table_state(self, catalog, table_kind, table, state)
     }
+
+    fn add_int_node_property(
+        &mut self,
+        catalog: &mut hawdb_core::Catalog,
+        label: &str,
+        filter: Option<&hawdb_storage::PropertyFilter>,
+        property: &str,
+        amount: i64,
+    ) -> hawdb_core::Result<Vec<NodeId>> {
+        GraphStore::add_int_node_property(self, catalog, label, filter, property, amount)
+    }
+
+    fn alter_property_state(
+        &mut self,
+        catalog: &mut hawdb_core::Catalog,
+        table_kind: hawdb_core::TableKind,
+        table: &str,
+        property: &str,
+        state: hawdb_core::SchemaObjectState,
+    ) -> hawdb_core::Result<(hawdb_core::PropertyId, bool)> {
+        GraphStore::alter_property_state(self, catalog, table_kind, table, property, state)
+    }
+
+    fn create_property_descriptor(
+        &mut self,
+        catalog: &mut hawdb_core::Catalog,
+        table_kind: hawdb_core::TableKind,
+        table: &str,
+        property: &str,
+        value_type: hawdb_core::PropertyType,
+        nullable: bool,
+    ) -> hawdb_core::Result<hawdb_core::PropertyId> {
+        GraphStore::create_property_descriptor(
+            self, catalog, table_kind, table, property, value_type, nullable,
+        )
+    }
+
+    fn create_range_property_index(
+        &mut self,
+        catalog: &mut hawdb_core::Catalog,
+        label: &str,
+        property: &str,
+    ) -> hawdb_core::Result<hawdb_core::IndexId> {
+        GraphStore::create_range_property_index(self, catalog, label, property)
+    }
+
+    fn create_relationship_table(
+        &mut self,
+        catalog: &mut hawdb_core::Catalog,
+        name: &str,
+    ) -> hawdb_core::Result<hawdb_core::TableId> {
+        GraphStore::create_relationship_table(self, catalog, name)
+    }
+
+    fn create_relationship_type(
+        &mut self,
+        catalog: &mut hawdb_core::Catalog,
+        rel_type: &str,
+    ) -> hawdb_core::Result<hawdb_core::RelTypeId> {
+        GraphStore::create_relationship_type(self, catalog, rel_type)
+    }
+
+    fn create_relationship_unique_constraint(
+        &mut self,
+        catalog: &mut hawdb_core::Catalog,
+        rel_type: &str,
+        property: &str,
+    ) -> hawdb_core::Result<hawdb_core::ConstraintId> {
+        GraphStore::create_relationship_unique_constraint(self, catalog, rel_type, property)
+    }
+
+    fn create_relationships_between_matches(
+        &mut self,
+        catalog: &mut hawdb_core::Catalog,
+        request: hawdb_storage::MatchedRelationshipCreate,
+    ) -> hawdb_core::Result<Vec<(NodeId, RelId, NodeId)>> {
+        GraphStore::create_relationships_between_matches(self, catalog, request)
+    }
+
+    fn create_unique_constraint(
+        &mut self,
+        catalog: &mut hawdb_core::Catalog,
+        label: &str,
+        property: &str,
+    ) -> hawdb_core::Result<hawdb_core::ConstraintId> {
+        GraphStore::create_unique_constraint(self, catalog, label, property)
+    }
 }
 
 #[cfg(test)]
