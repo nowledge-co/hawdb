@@ -448,22 +448,25 @@ fn relational_plan_template_cache_from_database_config(
     ))
 }
 
-fn relational_index_read_mode<'a>(
+fn relational_index_read_mode<
+    'a,
+    R: hawdb_relational::index_runtime::RelationalIndexStoreReader,
+>(
     config: &DatabaseConfig,
-    store: &'a GraphStore,
-) -> crate::relational_sql::RelationalIndexReadMode<'a> {
+    store: &'a R,
+) -> hawdb_relational::index_runtime::RelationalIndexReadMode<'a, R> {
     match config.relational_index_mode {
         hawdb_storage::RelationalIndexMode::Materialized => {
-            crate::relational_sql::RelationalIndexReadMode::Materialized
+            hawdb_relational::index_runtime::RelationalIndexReadMode::Materialized
         }
         hawdb_storage::RelationalIndexMode::Shadow => {
-            crate::relational_sql::RelationalIndexReadMode::Shadow(store)
+            hawdb_relational::index_runtime::RelationalIndexReadMode::Shadow(store)
         }
         hawdb_storage::RelationalIndexMode::DemandPaged => {
-            crate::relational_sql::RelationalIndexReadMode::DemandPaged(store)
+            hawdb_relational::index_runtime::RelationalIndexReadMode::DemandPaged(store)
         }
         hawdb_storage::RelationalIndexMode::Authoritative => {
-            crate::relational_sql::RelationalIndexReadMode::Authoritative(store)
+            hawdb_relational::index_runtime::RelationalIndexReadMode::Authoritative(store)
         }
     }
 }
