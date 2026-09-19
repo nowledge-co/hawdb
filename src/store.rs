@@ -2917,6 +2917,16 @@ impl hawdb_storage::graph_engine::GraphReadEngine for GraphStore {
             max_payload_bytes,
         )
     }
+
+    fn node_records_owned(&self) -> hawdb_storage::graph_overlay::GraphNodeIterator {
+        GraphStore::node_records_owned(self)
+    }
+
+    fn relationship_records_owned(
+        &self,
+    ) -> hawdb_storage::graph_overlay::GraphRelationshipIterator {
+        GraphStore::relationship_records_owned(self)
+    }
 }
 
 #[cfg(test)]

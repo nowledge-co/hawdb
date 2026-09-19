@@ -13,14 +13,13 @@
 // limitations under the License.
 
 use crate::schema::Catalog;
-use crate::store::GraphStore;
 use crate::Result;
 
 pub use hawdb_bootstrap::*;
 
 pub(super) fn export_canonical_graph_snapshot_for(
     catalog: &Catalog,
-    store: &GraphStore,
+    store: &impl hawdb_storage::graph_engine::GraphReadEngine,
 ) -> CanonicalGraphSnapshotExport {
     try_export_canonical_graph_snapshot_for(catalog, store)
         .expect("unchecked canonical snapshot export encountered a storage read error")
@@ -28,7 +27,7 @@ pub(super) fn export_canonical_graph_snapshot_for(
 
 pub(super) fn try_export_canonical_graph_snapshot_for(
     catalog: &Catalog,
-    store: &GraphStore,
+    store: &impl hawdb_storage::graph_engine::GraphReadEngine,
 ) -> Result<CanonicalGraphSnapshotExport> {
     let nodes = store
         .node_records_owned()
