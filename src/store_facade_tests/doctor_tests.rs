@@ -12,7 +12,6 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-use crate::store_facade_tests::*;
 use hawdb_core::schema::Catalog;
 use hawdb_core::value::Value;
 use hawdb_storage::doctor::*;

@@ -830,7 +830,8 @@ impl GraphStore {
         Ok(ids)
     }
 
-    pub(crate) fn delete_node_ids_with_limits(
+    #[doc(hidden)]
+    pub fn delete_node_ids_with_limits(
         &mut self,
         catalog: &mut Catalog,
         ids: &[NodeId],

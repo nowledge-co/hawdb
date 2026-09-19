@@ -41,16 +41,8 @@ pub fn unique_test_dir(name: &str) -> std::path::PathBuf {
     std::env::temp_dir().join(format!("hawdb_store_{name}_{nanos}"))
 }
 
-pub fn active_wal_path(path: impl AsRef<std::path::Path>) -> std::path::PathBuf {
-    active_generation_path(path.as_ref(), "wal_generation", "wal")
-}
-
 pub fn active_checkpoint_path(path: impl AsRef<std::path::Path>) -> std::path::PathBuf {
     active_generation_path(path.as_ref(), "checkpoint_generation", "checkpoint")
-}
-
-pub fn read_test_wal(path: impl AsRef<std::path::Path>) -> std::io::Result<String> {
-    hawdb_storage::store::render_wal_records_for_test(&active_wal_path(path))
 }
 
 pub fn active_generation_path(

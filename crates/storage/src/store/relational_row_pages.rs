@@ -1078,7 +1078,8 @@ impl GraphStore {
         )))
     }
 
-    pub(crate) fn open_relational_row_snapshot_reader(
+    #[doc(hidden)]
+    pub fn open_relational_row_snapshot_reader(
         &self,
     ) -> crate::error::Result<Option<RelationalRowPageSnapshotReader>> {
         let Some(view) = self
@@ -1328,7 +1329,8 @@ impl GraphStore {
         Ok((references, report))
     }
 
-    pub(crate) fn open_relational_transaction_row_snapshot_reader(
+    #[doc(hidden)]
+    pub fn open_relational_transaction_row_snapshot_reader(
         &self,
         rows: &RelationalTransactionRowView,
     ) -> crate::error::Result<RelationalRowPageSnapshotReader> {

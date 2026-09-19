@@ -1053,7 +1053,8 @@ impl GraphStore {
         Ok(GraphScanControl::Continue)
     }
 
-    pub(crate) fn visit_projected_nodes_by_property_owned(
+    #[doc(hidden)]
+    pub fn visit_projected_nodes_by_property_owned(
         &self,
         label_id: LabelId,
         property: &str,

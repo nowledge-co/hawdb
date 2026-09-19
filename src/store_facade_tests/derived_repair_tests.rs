@@ -12,11 +12,9 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-use crate::store_facade_tests::*;
 use hawdb_storage::derived_repair::*;
 use hawdb_storage::artifact_files::*;
 use hawdb_storage::durable_manifest::*;
-use hawdb_storage::ownership::*;
 use hawdb_core::error::HawDBError;
 use hawdb_storage::store::{
     set_checkpoint_failpoint, CheckpointPublishStage,

@@ -163,17 +163,17 @@ impl GraphExecutionRead for GraphStore {
             property,
             values,
             required_properties,
-            &mut |node| match consumer(node) {
-                Ok(control) => Ok(control),
+            |node| match consumer(node) {
+                Ok(control) => to_store_control(control),
                 Err(error) => {
                     consumer_error = Some(error);
-                    Ok(ScanControl::Stop)
+                    GraphScanControl::Stop
                 }
             },
         )?;
         match consumer_error {
             Some(error) => Err(error),
-            None => Ok(control),
+            None => Ok(to_execution_control(control)),
         }
     }
 

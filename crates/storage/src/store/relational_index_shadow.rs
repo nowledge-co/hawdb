@@ -616,7 +616,8 @@ impl GraphStore {
         self.relational_index_shadow.recovery_report.as_ref()
     }
 
-    pub(crate) fn relational_index_probe_statistics(
+    #[doc(hidden)]
+    pub fn relational_index_probe_statistics(
         &self,
         table: &str,
         index: &str,
@@ -649,7 +650,8 @@ impl GraphStore {
         }
     }
 
-    pub(crate) fn visit_relational_index_read_view_prefix_entries(
+    #[doc(hidden)]
+    pub fn visit_relational_index_read_view_prefix_entries(
         &self,
         table: &str,
         index: &str,
@@ -670,7 +672,8 @@ impl GraphStore {
         }
     }
 
-    pub(crate) fn visit_relational_index_read_view_prefix_entries_many(
+    #[doc(hidden)]
+    pub fn visit_relational_index_read_view_prefix_entries_many(
         &self,
         table: &str,
         index: &str,
@@ -693,7 +696,8 @@ impl GraphStore {
         }
     }
 
-    pub(crate) fn visit_relational_index_read_view_range_entries(
+    #[doc(hidden)]
+    pub fn visit_relational_index_read_view_range_entries(
         &self,
         table: &str,
         index: &str,
