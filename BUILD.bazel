@@ -8,6 +8,7 @@ package(default_visibility = ["//visibility:public"])
 _CARGO_WORKSPACE_PACKAGES = [
     "crates/analytics",
     "crates/bootstrap",
+    "crates/cascades",
     "crates/artifact",
     "crates/cgroup",
     "crates/compat",
