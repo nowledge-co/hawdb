@@ -17,6 +17,7 @@
 extern crate self as hawdb_storage;
 
 pub use hawdb_core::error::{HawDBError, Result};
+pub use hawdb_core::value::Value;
 
 pub mod adjacency;
 pub mod append_table;
