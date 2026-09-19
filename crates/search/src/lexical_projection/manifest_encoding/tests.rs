@@ -14,8 +14,8 @@
 
 use super::*;
 use crate::lexical_projection::{
-    artifact_file, BlockDescriptor, BlockKind, ManifestBody, ManifestEnvelope, TermStatistics,
-    ARTIFACT_HEADER, DEFAULT_MAX_MANIFEST_BYTES,
+    artifact_file, BlockDescriptor, BlockKind, ManifestBody, ManifestEnvelope, ARTIFACT_HEADER,
+    DEFAULT_MAX_MANIFEST_BYTES,
 };
 use hawdb_integrity::Crc32cHasher;
 use serde::ser::Error as _;
@@ -55,7 +55,7 @@ pub(in crate::lexical_projection) fn manifest(mut terms: Vec<String>) -> Manifes
         ]
     };
     ManifestBody {
-        format: "HAWDB_LEXICAL_MANIFEST_V4".into(),
+        format: "HAWDB_LEXICAL_MANIFEST_V5".into(),
         layout: "HAWDB_LEXICAL_ORDINAL_FST_V1".into(),
         generation: 7,
         source_graph_commit_epoch: Some(8),
@@ -69,13 +69,6 @@ pub(in crate::lexical_projection) fn manifest(mut terms: Vec<String>) -> Manifes
         posting_count,
         legacy_posting_bytes: posting_count.saturating_mul(16),
         posting_bytes: if posting_count == 0 { 0 } else { 64 },
-        term_statistics: terms
-            .into_iter()
-            .map(|term| TermStatistics {
-                term,
-                document_frequency: 1,
-            })
-            .collect(),
         blocks,
     }
 }
@@ -99,6 +92,9 @@ fn assert_wire_and_admission(body: &ManifestBody) {
     assert_eq!(actual, expected);
     assert_eq!(body.encode(DEFAULT_MAX_MANIFEST_BYTES).unwrap(), expected);
     assert_eq!(ManifestBody::decode(&actual).unwrap(), *body);
+    assert!(!std::str::from_utf8(&actual)
+        .unwrap()
+        .contains("term_statistics"));
     for limit in [0, exact - 1] {
         assert_eq!(
             encode(body, limit).unwrap_err().to_string(),

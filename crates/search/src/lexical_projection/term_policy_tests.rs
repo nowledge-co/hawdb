@@ -225,7 +225,7 @@ fn term_policy_open_checks_dictionary_interior_and_posting_bounds() {
             block.max_key = "z".into();
         }
     }
-    let error = LexicalProjectionReader::load_manifest_bytes(
+    let widened = LexicalProjectionReader::load_manifest_bytes(
         &fixture.0,
         &dictionary.encode(DEFAULT_MAX_MANIFEST_BYTES).unwrap(),
         None,
@@ -233,20 +233,9 @@ fn term_policy_open_checks_dictionary_interior_and_posting_bounds() {
         13,
         Default::default(),
     )
-    .unwrap_err();
-    assert!(error.to_string().contains("exceeding 4096"));
-    let mut bounds = reader.manifest.clone();
-    bounds.term_statistics[0].term = "x".into();
-    let error = LexicalProjectionReader::load_manifest_bytes(
-        &fixture.0,
-        &bounds.encode(DEFAULT_MAX_MANIFEST_BYTES).unwrap(),
-        None,
-        11,
-        13,
-        Default::default(),
-    )
-    .unwrap_err();
-    assert!(error.to_string().contains("exceeding 4096"));
+    .unwrap()
+    .unwrap();
+    assert_eq!(widened.required_term_bytes, 1);
     let block = reader
         .manifest
         .blocks

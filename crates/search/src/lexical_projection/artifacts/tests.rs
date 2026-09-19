@@ -130,8 +130,7 @@ fn artifact_merge_uses_its_own_task_and_retains_the_supplied_progress() {
     builder
         .merge_postings_with_control(&pool.paths, pool.config, &pool.control)
         .unwrap();
-    assert_eq!(builder.term_statistics.len(), 1);
-    assert_eq!(builder.term_statistics[0].term.as_str(), "alpha");
+    assert_eq!(builder.posting_count, 1);
     assert!(pool.check().unwrap_err().to_string().contains("cancel"));
     drop((builder, pool));
     assert_eq!(used(&memory), 0);
@@ -251,18 +250,11 @@ fn pending_capacity_and_summary_directory_follow_payload_lifetimes() {
             .blocks
             .iter()
             .map(|block| block.min_key.capacity() + block.max_key.capacity())
-            .sum::<usize>()
-        + summary.term_statistics.capacity() * size_of::<TermStatistics>()
-        + summary
-            .term_statistics
-            .iter()
-            .map(|entry| entry.term.capacity())
             .sum::<usize>();
     assert_eq!(used(&memory), directory_bytes);
     let blocker = memory.input.reserve(BUDGET - directory_bytes).unwrap();
     assert!(memory.spool.reserve(1).is_err());
     assert_eq!(summary.posting_count, 1);
-    assert_eq!(summary.term_statistics[0].document_frequency, 1);
     drop(summary);
     assert_eq!(used(&memory), blocker.bytes());
     drop(blocker);
@@ -311,23 +303,16 @@ fn cancellation_preserves_uncommitted_block_and_releases_owners() {
 }
 
 #[test]
-fn statistics_and_posting_copies_are_admitted_before_allocating_payloads() {
+fn posting_copies_are_admitted_before_allocating_payloads() {
     let fixture = Fixture::new();
     let posting = Posting {
         term: "alpha".into(),
         ordinal: 0,
         term_frequency: 1,
     };
-    let statistics_slots = 4 * size_of::<TermStatistics>();
-    let statistics = statistics_slots + posting.term.len();
     let posting_slots = 4 * size_of::<Posting>();
-    let capacities = [
-        statistics_slots,
-        statistics,
-        statistics + posting_slots,
-        statistics + posting_slots + posting.term.len(),
-    ];
-    for (phase, required) in capacities.into_iter().enumerate() {
+    let capacities = [posting_slots, posting_slots + posting.term.len()];
+    for required in capacities {
         let (memory, task) = context();
         let mut builder = fixture.builder(&memory, &task);
         let blocker = memory
@@ -340,7 +325,6 @@ fn statistics_and_posting_copies_are_admitted_before_allocating_payloads() {
             .unwrap_err()
             .to_string()
             .contains("query memory"));
-        assert_eq!(builder.term_statistics.len(), usize::from(phase >= 2));
         assert!(builder.posting_pending.is_empty());
         assert_eq!(builder.posting_strings.bytes(), 0);
         assert_eq!(builder.writer.buffer(), buffered);

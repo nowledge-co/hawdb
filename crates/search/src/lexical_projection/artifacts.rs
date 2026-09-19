@@ -17,8 +17,7 @@
 use super::posting_codec;
 use super::{
     block_encoding, visit_merged_postings_with_control, BlockDescriptor, Digest, HawDBError,
-    LexicalProjectionConfig, Posting, Result, SpillControl, TermStatistics, ARTIFACT_HEADER,
-    SPILL_IO_BUFFER_BYTES,
+    LexicalProjectionConfig, Posting, Result, SpillControl, ARTIFACT_HEADER, SPILL_IO_BUFFER_BYTES,
 };
 use crate::build_control::{checkpoint, CheckedWriter};
 use crate::build_memory::{checked_add, grow_slots, path::OwnedPath, BuildMemory};
@@ -49,7 +48,6 @@ pub(super) struct ArtifactBuilder {
     posting_count: u64,
     legacy_posting_bytes: u64,
     posting_bytes: u64,
-    term_statistics: Vec<TermStatistics>,
     blocks: Vec<BlockDescriptor>,
     failed: bool,
     task: RuntimeTaskContext,
@@ -70,14 +68,11 @@ pub(super) struct ArtifactSummary {
     pub(super) posting_count: u64,
     pub(super) legacy_posting_bytes: u64,
     pub(super) posting_bytes: u64,
-    pub(super) term_statistics: Vec<TermStatistics>,
     pub(super) blocks: Vec<BlockDescriptor>,
     pub(super) memory: DirectoryMemory,
 }
 
 pub(super) struct DirectoryMemory {
-    statistics_slots: QueryMemoryLease,
-    statistics_strings: QueryMemoryLease,
     block_slots: QueryMemoryLease,
     block_strings: QueryMemoryLease,
 }
@@ -85,8 +80,6 @@ pub(super) struct DirectoryMemory {
 impl DirectoryMemory {
     fn new(memory: &BuildMemory) -> Result<Self> {
         Ok(Self {
-            statistics_slots: memory.retained.reserve(0)?,
-            statistics_strings: memory.retained.reserve(0)?,
             block_slots: memory.retained.reserve(0)?,
             block_strings: memory.retained.reserve(0)?,
         })
@@ -134,7 +127,6 @@ impl ArtifactBuilder {
             posting_count: 0,
             legacy_posting_bytes: 0,
             posting_bytes: 0,
-            term_statistics: Vec::new(),
             blocks: Vec::new(),
             failed: false,
             document_slots: memory.retained.reserve(0)?,
@@ -284,34 +276,6 @@ impl ArtifactBuilder {
         {
             self.flush_postings()?;
         }
-        match self.term_statistics.last_mut() {
-            Some(statistics) if statistics.term.as_str() == posting.term.as_str() => {
-                statistics.document_frequency = statistics
-                    .document_frequency
-                    .checked_add(1)
-                    .ok_or_else(|| {
-                        HawDBError::Storage("lexical term document frequency exceeds u64".into())
-                    })?;
-            }
-            Some(statistics) if statistics.term.as_str() > posting.term.as_str() => {
-                return Err(HawDBError::Storage(
-                    "lexical merge produced unordered term statistics".into(),
-                ));
-            }
-            _ => {
-                grow_slots(
-                    &mut self.term_statistics,
-                    &mut self.directory_memory.statistics_slots,
-                )?;
-                self.directory_memory
-                    .statistics_strings
-                    .grow(posting.term.len())?;
-                self.term_statistics.push(TermStatistics {
-                    term: posting.term.as_str().to_owned(),
-                    document_frequency: 1,
-                });
-            }
-        }
         grow_slots(&mut self.posting_pending, &mut self.posting_slots)?;
         self.posting_strings
             .grow(posting.term.retained_clone_bytes())?;
@@ -395,7 +359,6 @@ impl ArtifactBuilder {
             posting_count: self.posting_count,
             legacy_posting_bytes: self.legacy_posting_bytes,
             posting_bytes: self.posting_bytes,
-            term_statistics: self.term_statistics,
             blocks: self.blocks,
             memory: self.directory_memory,
         })

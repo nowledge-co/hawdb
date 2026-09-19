@@ -219,8 +219,12 @@ fn global_statistics_preserve_scores_across_disjoint_projection_layers() {
             .collect::<Vec<_>>(),
     );
     let terms = BTreeSet::from(["graph".to_string()]);
-    let statistics =
-        LexicalCorpusStatistics::aggregate([left.as_ref(), right.as_ref()], &terms).unwrap();
+    let statistics = LexicalCorpusStatistics::aggregate(
+        [left.as_ref(), right.as_ref()],
+        &terms,
+        crate::SearchLexicalTermPolicy::default().max_term_bytes(),
+    )
+    .unwrap();
 
     let mut layered_scores = left
         .score_with_global_statistics(
@@ -415,7 +419,7 @@ fn manifest_tampering_is_rejected_even_with_recomputed_envelope_checksum() {
             0 => body.artifact_file = "../search_lexical.1.hawdb".to_string(),
             1 => body.blocks[0].offset += 1,
             2 => body.document_count += 1,
-            3 => body.term_statistics[0].document_frequency += 1,
+            3 => body.blocks[0].entry_count += 1,
             4 => body.blocks[0].length = 0,
             _ => body.format = "unrecognized".to_string(),
         }
