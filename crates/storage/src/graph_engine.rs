@@ -65,6 +65,10 @@ pub trait GraphReadEngine {
     fn poison_on_storage_error<T>(&self, result: &Result<T>);
 
     fn ensure_usable(&self) -> Result<()>;
+
+    fn is_out_of_core(&self) -> bool;
+
+    fn relationship_owned(&self, id: crate::RelId) -> Result<Option<crate::RelRecord>>;
 }
 
 /// Graph write surface the executor drives.
@@ -262,4 +266,41 @@ pub trait GraphMutationEngine {
         catalog: &mut Catalog,
         request: crate::ConnectedNodesCreate,
     ) -> Result<(crate::NodeId, crate::RelId, crate::NodeId, bool)>;
+
+    fn merge_relationships_between_matches(
+        &mut self,
+        catalog: &mut Catalog,
+        request: crate::MatchedRelationshipMerge,
+    ) -> Result<Vec<(crate::NodeId, crate::RelId, crate::NodeId, bool)>>;
+
+    fn merge_relationships_from_matched_relationships(
+        &mut self,
+        catalog: &mut Catalog,
+        request: crate::MatchedRelationshipCopyMerge,
+    ) -> Result<Vec<(crate::NodeId, crate::RelId, crate::NodeId, bool)>>;
+
+    fn merge_relationships_from_matched_target(
+        &mut self,
+        catalog: &mut Catalog,
+        request: crate::MatchedRelationshipSourceRetargetMerge,
+    ) -> Result<Vec<(crate::NodeId, crate::RelId, crate::NodeId, bool)>>;
+
+    fn merge_relationships_to_matched_target(
+        &mut self,
+        catalog: &mut Catalog,
+        request: crate::MatchedRelationshipRetargetMerge,
+    ) -> Result<Vec<(crate::NodeId, crate::RelId, crate::NodeId, bool)>>;
+
+    fn register_projected_graph(
+        &mut self,
+        name: &str,
+        definition: crate::ProjectedGraphDefinition,
+    ) -> Result<()>;
+
+    fn delete_node_ids(
+        &mut self,
+        catalog: &mut Catalog,
+        ids: &[crate::NodeId],
+        detach: bool,
+    ) -> Result<Vec<crate::NodeId>>;
 }

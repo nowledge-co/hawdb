@@ -2779,6 +2779,17 @@ impl hawdb_storage::graph_engine::GraphReadEngine for GraphStore {
     fn ensure_usable(&self) -> hawdb_core::Result<()> {
         GraphStore::ensure_usable(self)
     }
+
+    fn is_out_of_core(&self) -> bool {
+        GraphStore::is_out_of_core(self)
+    }
+
+    fn relationship_owned(
+        &self,
+        id: RelId,
+    ) -> hawdb_core::Result<Option<hawdb_storage::RelRecord>> {
+        GraphStore::relationship_owned(self, id)
+    }
 }
 
 impl hawdb_storage::graph_engine::GraphMutationEngine for GraphStore {
@@ -3040,6 +3051,55 @@ impl hawdb_storage::graph_engine::GraphMutationEngine for GraphStore {
         request: hawdb_storage::ConnectedNodesCreate,
     ) -> hawdb_core::Result<(NodeId, RelId, NodeId, bool)> {
         GraphStore::merge_connected_nodes(self, catalog, request)
+    }
+
+    fn merge_relationships_between_matches(
+        &mut self,
+        catalog: &mut hawdb_core::Catalog,
+        request: hawdb_storage::MatchedRelationshipMerge,
+    ) -> hawdb_core::Result<Vec<(NodeId, RelId, NodeId, bool)>> {
+        GraphStore::merge_relationships_between_matches(self, catalog, request)
+    }
+
+    fn merge_relationships_from_matched_relationships(
+        &mut self,
+        catalog: &mut hawdb_core::Catalog,
+        request: hawdb_storage::MatchedRelationshipCopyMerge,
+    ) -> hawdb_core::Result<Vec<(NodeId, RelId, NodeId, bool)>> {
+        GraphStore::merge_relationships_from_matched_relationships(self, catalog, request)
+    }
+
+    fn merge_relationships_from_matched_target(
+        &mut self,
+        catalog: &mut hawdb_core::Catalog,
+        request: hawdb_storage::MatchedRelationshipSourceRetargetMerge,
+    ) -> hawdb_core::Result<Vec<(NodeId, RelId, NodeId, bool)>> {
+        GraphStore::merge_relationships_from_matched_target(self, catalog, request)
+    }
+
+    fn merge_relationships_to_matched_target(
+        &mut self,
+        catalog: &mut hawdb_core::Catalog,
+        request: hawdb_storage::MatchedRelationshipRetargetMerge,
+    ) -> hawdb_core::Result<Vec<(NodeId, RelId, NodeId, bool)>> {
+        GraphStore::merge_relationships_to_matched_target(self, catalog, request)
+    }
+
+    fn register_projected_graph(
+        &mut self,
+        name: &str,
+        definition: hawdb_storage::ProjectedGraphDefinition,
+    ) -> hawdb_core::Result<()> {
+        GraphStore::register_projected_graph(self, name, definition)
+    }
+
+    fn delete_node_ids(
+        &mut self,
+        catalog: &mut hawdb_core::Catalog,
+        ids: &[NodeId],
+        detach: bool,
+    ) -> hawdb_core::Result<Vec<NodeId>> {
+        GraphStore::delete_node_ids(self, catalog, ids, detach)
     }
 }
 
