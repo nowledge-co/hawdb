@@ -831,6 +831,19 @@ impl StoreTelemetry for GraphStore {
     }
 }
 
+/// Root-internal engine surface that intentionally stays out of the storage
+/// contract: these methods are `pub(crate)` in the root crate, so publishing
+/// them through the `pub` read/mutation contract would expose them downstream.
+pub(crate) trait InternalGraphEngine {
+    fn ensure_usable(&self) -> Result<()>;
+}
+
+impl InternalGraphEngine for GraphStore {
+    fn ensure_usable(&self) -> Result<()> {
+        GraphStore::ensure_usable(self)
+    }
+}
+
 pub use hawdb_storage::relational::{
     RelationalOverflowCompactionConfig, RelationalOverflowCompactionReport,
     RelationalRowPageCompactionConfig, RelationalRowPageCompactionReport,

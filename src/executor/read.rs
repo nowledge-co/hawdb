@@ -19,7 +19,7 @@ use super::*;
 pub(super) fn execute_bindings_with_limit(
     plan: &PhysicalPlan,
     catalog: &mut Catalog,
-    store: &mut GraphStore,
+    store: &mut impl ExecutionStore,
     context: &mut ExecutionContext<'_>,
     execution_limit: ExecutionLimit,
 ) -> Result<Vec<Binding>> {

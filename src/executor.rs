@@ -37,6 +37,24 @@ use std::num::NonZeroU64;
 #[cfg(test)]
 use std::num::NonZeroUsize;
 
+/// Umbrella bound for the engine a root executor entry may drive.
+#[allow(private_bounds)]
+pub trait ExecutionStore:
+    hawdb_storage::graph_engine::GraphReadEngine
+    + hawdb_storage::graph_engine::GraphMutationEngine
+    + hawdb_executor::store::GraphExecutionWrite
+    + crate::store::InternalGraphEngine
+{
+}
+
+impl<T> ExecutionStore for T where
+    T: hawdb_storage::graph_engine::GraphReadEngine
+        + hawdb_storage::graph_engine::GraphMutationEngine
+        + hawdb_executor::store::GraphExecutionWrite
+        + crate::store::InternalGraphEngine
+{
+}
+
 #[cfg(test)]
 use crate::planner::{Aggregation, Projection, RelationshipCountLeg, SortItem};
 #[cfg(test)]
@@ -128,7 +146,7 @@ pub fn execute(
 pub fn execute_with_row_limit(
     plan: &PhysicalPlan,
     catalog: &mut Catalog,
-    store: &mut GraphStore,
+    store: &mut impl ExecutionStore,
     max_rows: Option<usize>,
 ) -> Result<Vec<Row>> {
     execute_with_row_limit_internal(plan, catalog, store, max_rows, None)
@@ -137,7 +155,7 @@ pub fn execute_with_row_limit(
 pub fn execute_with_row_limit_and_context(
     plan: &PhysicalPlan,
     catalog: &mut Catalog,
-    store: &mut GraphStore,
+    store: &mut impl ExecutionStore,
     max_rows: Option<usize>,
     task_context: &RuntimeTaskContext,
 ) -> Result<Vec<Row>> {
@@ -147,7 +165,7 @@ pub fn execute_with_row_limit_and_context(
 fn execute_with_row_limit_internal(
     plan: &PhysicalPlan,
     catalog: &mut Catalog,
-    store: &mut GraphStore,
+    store: &mut impl ExecutionStore,
     max_rows: Option<usize>,
     task_context: Option<&RuntimeTaskContext>,
 ) -> Result<Vec<Row>> {
@@ -172,7 +190,7 @@ fn execute_with_row_limit_internal(
 pub fn execute_with_row_limit_profile(
     plan: &PhysicalPlan,
     catalog: &mut Catalog,
-    store: &mut GraphStore,
+    store: &mut impl ExecutionStore,
     max_rows: Option<usize>,
 ) -> Result<ProfiledQueryRows> {
     let mut external = NoExternalReadOperator;
@@ -189,7 +207,7 @@ pub fn execute_with_row_limit_profile(
 pub fn execute_with_row_limit_profile_and_external(
     plan: &PhysicalPlan,
     catalog: &mut Catalog,
-    store: &mut GraphStore,
+    store: &mut impl ExecutionStore,
     parameters: &BTreeMap<String, Value>,
     external: &mut dyn ExternalReadOperator,
     max_rows: Option<usize>,
@@ -208,7 +226,7 @@ pub fn execute_with_row_limit_profile_and_external(
 pub fn execute_with_output_limits_profile_and_external(
     plan: &PhysicalPlan,
     catalog: &mut Catalog,
-    store: &mut GraphStore,
+    store: &mut impl ExecutionStore,
     parameters: &BTreeMap<String, Value>,
     external: &mut dyn ExternalReadOperator,
     max_rows: Option<usize>,
@@ -230,7 +248,7 @@ pub fn execute_with_output_limits_profile_and_external(
 pub fn execute_with_output_limits_profile_and_external_and_memory(
     plan: &PhysicalPlan,
     catalog: &mut Catalog,
-    store: &mut GraphStore,
+    store: &mut impl ExecutionStore,
     parameters: &BTreeMap<String, Value>,
     external: &mut dyn ExternalReadOperator,
     max_rows: Option<usize>,
@@ -247,7 +265,7 @@ pub fn execute_with_output_limits_profile_and_external_and_memory(
 pub fn execute_with_row_limit_profile_and_external_and_memory(
     plan: &PhysicalPlan,
     catalog: &mut Catalog,
-    store: &mut GraphStore,
+    store: &mut impl ExecutionStore,
     parameters: &BTreeMap<String, Value>,
     external: &mut dyn ExternalReadOperator,
     max_rows: Option<usize>,
@@ -262,7 +280,7 @@ pub fn execute_with_row_limit_profile_and_external_and_memory(
 pub fn execute_with_row_limit_profile_and_external_and_context(
     plan: &PhysicalPlan,
     catalog: &mut Catalog,
-    store: &mut GraphStore,
+    store: &mut impl ExecutionStore,
     parameters: &BTreeMap<String, Value>,
     external: &mut dyn ExternalReadOperator,
     max_rows: Option<usize>,
@@ -281,7 +299,7 @@ pub fn execute_with_row_limit_profile_and_external_and_context(
 pub fn execute_with_output_limits_profile_and_external_and_context(
     plan: &PhysicalPlan,
     catalog: &mut Catalog,
-    store: &mut GraphStore,
+    store: &mut impl ExecutionStore,
     parameters: &BTreeMap<String, Value>,
     external: &mut dyn ExternalReadOperator,
     max_rows: Option<usize>,
@@ -305,7 +323,7 @@ pub fn execute_with_output_limits_profile_and_external_and_context(
 pub fn execute_with_output_limits_profile_and_external_and_context_and_memory(
     plan: &PhysicalPlan,
     catalog: &mut Catalog,
-    store: &mut GraphStore,
+    store: &mut impl ExecutionStore,
     parameters: &BTreeMap<String, Value>,
     external: &mut dyn ExternalReadOperator,
     max_rows: Option<usize>,
@@ -328,7 +346,7 @@ pub fn execute_with_output_limits_profile_and_external_and_context_and_memory(
 pub fn execute_with_row_consumer_profile(
     plan: &PhysicalPlan,
     catalog: &mut Catalog,
-    store: &mut GraphStore,
+    store: &mut impl ExecutionStore,
     parameters: &BTreeMap<String, Value>,
     max_rows: Option<usize>,
     max_payload_bytes: Option<usize>,
@@ -351,7 +369,7 @@ pub fn execute_with_row_consumer_profile(
 pub fn execute_with_row_consumer_profile_and_external(
     plan: &PhysicalPlan,
     catalog: &mut Catalog,
-    store: &mut GraphStore,
+    store: &mut impl ExecutionStore,
     parameters: &BTreeMap<String, Value>,
     external: &mut dyn ExternalReadOperator,
     max_rows: Option<usize>,
@@ -375,7 +393,7 @@ pub fn execute_with_row_consumer_profile_and_external(
 pub fn execute_with_row_consumer_profile_and_external_and_memory(
     plan: &PhysicalPlan,
     catalog: &mut Catalog,
-    store: &mut GraphStore,
+    store: &mut impl ExecutionStore,
     parameters: &BTreeMap<String, Value>,
     external: &mut dyn ExternalReadOperator,
     max_rows: Option<usize>,
@@ -402,7 +420,7 @@ pub fn execute_with_row_consumer_profile_and_external_and_memory(
 pub fn execute_with_row_consumer_profile_and_external_and_context(
     plan: &PhysicalPlan,
     catalog: &mut Catalog,
-    store: &mut GraphStore,
+    store: &mut impl ExecutionStore,
     parameters: &BTreeMap<String, Value>,
     external: &mut dyn ExternalReadOperator,
     max_rows: Option<usize>,
@@ -428,7 +446,7 @@ pub fn execute_with_row_consumer_profile_and_external_and_context(
 pub fn execute_with_row_consumer_profile_and_external_and_context_and_memory(
     plan: &PhysicalPlan,
     catalog: &mut Catalog,
-    store: &mut GraphStore,
+    store: &mut impl ExecutionStore,
     parameters: &BTreeMap<String, Value>,
     external: &mut dyn ExternalReadOperator,
     max_rows: Option<usize>,
@@ -456,7 +474,7 @@ pub fn execute_with_row_consumer_profile_and_external_and_context_and_memory(
 pub(crate) fn execute_with_row_consumer_profile_with_delivery(
     plan: &PhysicalPlan,
     catalog: &mut Catalog,
-    store: &mut GraphStore,
+    store: &mut impl ExecutionStore,
     parameters: &BTreeMap<String, Value>,
     external: &mut dyn ExternalReadOperator,
     max_rows: Option<usize>,
