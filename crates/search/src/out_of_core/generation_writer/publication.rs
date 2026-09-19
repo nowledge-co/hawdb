@@ -35,6 +35,12 @@ pub(super) enum ActiveManifestUpdate {
     Append {
         expected_generation: u64,
     },
+    Replace {
+        expected_generation: u64,
+        segment_id: u64,
+        expected_document_count: usize,
+        expected_documents_digest: u64,
+    },
     Compact {
         expected_generation: u64,
         first_segment_id: u64,
@@ -175,6 +181,65 @@ pub(super) fn publish_generation(
                     segment_id,
                     0,
                     None,
+                )
+            }
+            Some(ActiveManifestUpdate::Replace {
+                expected_generation,
+                segment_id,
+                expected_document_count,
+                expected_documents_digest,
+            }) => {
+                let active_bytes = read_bounded_file(
+                    &input.root.join(OUT_OF_CORE_MANIFEST_FILE),
+                    MAX_OUT_OF_CORE_MANIFEST_BYTES,
+                )?;
+                let active = SearchOutOfCoreManifestBody::decode(&active_bytes)?;
+                if active.generation != *expected_generation {
+                    return Err(HawDBError::Storage(format!(
+                        "search generation update base changed before manifest composition: expected {expected_generation}, got {}",
+                        active.generation
+                    )));
+                }
+                let index = active
+                    .segments
+                    .iter()
+                    .position(|segment| segment.segment_id == *segment_id)
+                    .ok_or_else(|| {
+                        HawDBError::Storage(
+                            "search generation update target segment is no longer active".into(),
+                        )
+                    })?;
+                let previous = &active.segments[index];
+                if previous.document_count != *expected_document_count
+                    || previous.documents_digest != *expected_documents_digest
+                {
+                    return Err(HawDBError::Storage(
+                        "search generation update target segment changed before manifest composition"
+                            .into(),
+                    ));
+                }
+                let document_count = active
+                    .document_count
+                    .checked_sub(previous.document_count)
+                    .and_then(|count| count.checked_add(input.document_count))
+                    .ok_or_else(|| {
+                        HawDBError::Storage(
+                            "search generation update document count overflows".into(),
+                        )
+                    })?;
+                let documents_digest = DocumentsDigest::replace(
+                    active.documents_digest,
+                    previous.documents_digest,
+                    input.documents_digest,
+                );
+                let level = previous.level;
+                (
+                    active.segments,
+                    document_count,
+                    documents_digest,
+                    *segment_id,
+                    level,
+                    Some((index, index + 1)),
                 )
             }
             Some(ActiveManifestUpdate::Compact {

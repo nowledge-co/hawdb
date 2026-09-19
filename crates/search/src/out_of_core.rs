@@ -1200,6 +1200,24 @@ impl SearchOutOfCoreReader {
         Ok(SearchOutOfCoreMutationTargetOutput { targets, metrics })
     }
 
+    /// Resolves the content segment that currently owns one document.
+    ///
+    /// This reads the lexical document-id index but does not hydrate the
+    /// document payload. A caller that rebuilds the selected segment therefore
+    /// pays for the segment stream exactly once.
+    pub(crate) fn resolve_mutation_segment(&self, document_id: &str) -> Result<Option<u64>> {
+        let Some(route) = self.segment_for_document(document_id)? else {
+            return Ok(None);
+        };
+        let artifact = self.segments.get(route.artifact_index).ok_or_else(|| {
+            HawDBError::Storage(format!(
+                "search mutation target references unknown layer {}",
+                route.artifact_index
+            ))
+        })?;
+        Ok(Some(artifact.content_segment_id))
+    }
+
     #[cfg(test)]
     fn visit_documents_in_order(
         &self,
@@ -1927,9 +1945,10 @@ impl SearchOutOfCoreReader {
                     lexical_document_bytes_read: probe.bytes_read,
                 }));
             }
-            return Err(HawDBError::Storage(format!(
-                "search out-of-core descriptor range does not contain document {id}"
-            )));
+            // Descriptor bounds identify a candidate range, not a dense ID
+            // interval. A missing interior ID is valid for a future insertion
+            // and must not be treated as a corrupt published generation.
+            return Ok(None);
         }
         Ok(None)
     }

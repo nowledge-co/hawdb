@@ -157,6 +157,10 @@ impl DocumentsDigest {
     pub(crate) const fn combine(left: u64, right: u64) -> u64 {
         left.wrapping_add(right)
     }
+
+    pub(crate) const fn replace(total: u64, previous: u64, replacement: u64) -> u64 {
+        total.wrapping_sub(previous).wrapping_add(replacement)
+    }
 }
 
 fn document_digest_contribution(checksum: u64, bytes: u64) -> u64 {

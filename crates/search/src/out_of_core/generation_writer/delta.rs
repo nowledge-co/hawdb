@@ -133,6 +133,99 @@ impl SearchOutOfCoreGenerationUpdate {
                 _report_memory: report_memory,
             });
         }
+        if operation_count == 1 {
+            let target_id = input
+                .upserts
+                .front()
+                .map(|document| document.id.as_str())
+                .or_else(|| input.deletes.front().map(String::as_str));
+            let target_segment_id = match target_id {
+                Some(document_id) => reader.resolve_mutation_segment(document_id)?,
+                None => None,
+            };
+            if let Some(target_segment_id) = target_segment_id {
+                let target = reader
+                    .manifest
+                    .segments
+                    .iter()
+                    .find(|segment| segment.segment_id == target_segment_id)
+                    .ok_or_else(|| {
+                        HawDBError::Storage(
+                            "search mutation target segment is not in the active manifest".into(),
+                        )
+                    })?;
+                let target_document_count = target.document_count;
+                let target_documents_digest = target.documents_digest;
+                // An empty artifact has no valid descriptor range. Retain the
+                // established full-generation path for a one-document delete
+                // until removal is an explicit manifest operation.
+                if !input.upserts.is_empty() || target_document_count > 1 {
+                    writer.active_manifest_update = Some(ActiveManifestUpdate::Replace {
+                        expected_generation: reader.generation(),
+                        segment_id: target_segment_id,
+                        expected_document_count: target_document_count,
+                        expected_documents_digest: target_documents_digest,
+                    });
+                    let mut deleted_documents = 0usize;
+                    let source_read_metrics = hydration::visit_content_segment(
+                        reader,
+                        target_segment_id,
+                        &memory,
+                        &task,
+                        &mut |document| {
+                            if input
+                                .upserts
+                                .front()
+                                .is_some_and(|upsert| upsert.id == document.id)
+                            {
+                                writer.push_inner(input.pop_upsert())?;
+                                return Ok(());
+                            }
+                            if input
+                                .deletes
+                                .pop_front_if(|deleted| deleted == &document.id)
+                                .is_some()
+                            {
+                                deleted_documents = deleted_documents.saturating_add(1);
+                                return Ok(());
+                            }
+                            writer.push_inner(document)
+                        },
+                    )?;
+                    if !input.upserts.is_empty() || !input.deletes.is_empty() {
+                        return Err(HawDBError::Storage(
+                            "search mutation target did not contain its requested document".into(),
+                        ));
+                    }
+                    let after_document_count = before_document_count
+                        .checked_sub(target_document_count)
+                        .and_then(|count| count.checked_add(writer.document_count))
+                        .ok_or_else(|| {
+                            HawDBError::Storage(
+                                "search document count overflow during local segment update".into(),
+                            )
+                        })?;
+                    return Ok(Self {
+                        delta_report: SearchProjectionDeltaReport {
+                            artifact_type: "search_projection".to_string(),
+                            name: "search_projection".to_string(),
+                            action: "incremental_segment_replace".to_string(),
+                            before_document_count,
+                            after_document_count,
+                            upserted_documents,
+                            deleted_documents,
+                            operation_count,
+                            source_graph_commit_epoch_before,
+                            source_graph_commit_epoch_after,
+                            source_graph_commit_epoch_updated: epoch_updated,
+                        },
+                        writer,
+                        source_read_metrics,
+                        _report_memory: report_memory,
+                    });
+                }
+            }
+        }
         let mut deleted_documents = 0usize;
         let source_read_metrics = hydration::visit(reader, &memory, &task, &mut |document| {
             while input
