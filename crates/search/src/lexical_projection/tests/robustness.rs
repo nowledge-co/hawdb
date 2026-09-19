@@ -13,6 +13,7 @@
 // limitations under the License.
 
 use super::*;
+use crate::encode_search_document_line;
 
 mod admission;
 
@@ -64,6 +65,33 @@ impl Drop for Fixture {
     fn drop(&mut self) {
         let _ = fs::remove_dir_all(&self.root);
     }
+}
+
+#[test]
+fn documents_digest_is_order_independent_and_reversible() {
+    let first_document = document("a", "graph", "storage");
+    let second_document = document("b", "graph", "memory");
+    let documents = BTreeMap::from([
+        (first_document.id.clone(), first_document.clone()),
+        (second_document.id.clone(), second_document.clone()),
+    ]);
+    let first = encode_search_document_line(&first_document);
+    let second = encode_search_document_line(&second_document);
+
+    let mut forward = DocumentsDigest::default();
+    forward.add_bytes(first.as_bytes());
+    forward.add_bytes(second.as_bytes());
+
+    let mut reverse = DocumentsDigest::default();
+    reverse.add_bytes(second.as_bytes());
+    reverse.add_bytes(first.as_bytes());
+    assert_eq!(forward, reverse);
+    assert_eq!(forward.finish(), documents_digest(&documents));
+
+    reverse.remove_record(checksum(second.as_bytes()), second.len() as u64);
+    let mut only_first = DocumentsDigest::default();
+    only_first.add_bytes(first.as_bytes());
+    assert_eq!(reverse, only_first);
 }
 
 #[test]

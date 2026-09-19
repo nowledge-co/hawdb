@@ -122,10 +122,52 @@ pub(super) fn analyzer_digest(analyzer: &SearchAnalyzerLexicon) -> u64 {
     digest.finish()
 }
 
+/// An order-independent document-set identity used to join immutable search artifacts.
+///
+/// Artifact checksums remain the integrity boundary. This summary is deliberately
+/// reversible so an incremental manifest can add a new segment and remove the
+/// segment it supersedes without re-reading every unchanged document.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub(crate) struct DocumentsDigest(u64);
+
+impl DocumentsDigest {
+    pub(crate) fn add_bytes(&mut self, bytes: &[u8]) {
+        let mut checksum = Digest::new();
+        checksum.update(bytes);
+        self.add_record(checksum.finish(), bytes.len() as u64);
+    }
+
+    pub(crate) fn add_record(&mut self, checksum: u64, bytes: u64) {
+        self.0 = self
+            .0
+            .wrapping_add(document_digest_contribution(checksum, bytes));
+    }
+
+    #[allow(dead_code)]
+    pub(crate) fn remove_record(&mut self, checksum: u64, bytes: u64) {
+        self.0 = self
+            .0
+            .wrapping_sub(document_digest_contribution(checksum, bytes));
+    }
+
+    pub(crate) const fn finish(self) -> u64 {
+        self.0
+    }
+}
+
+fn document_digest_contribution(checksum: u64, bytes: u64) -> u64 {
+    let mut value = checksum ^ bytes.rotate_left(17) ^ 0x9e37_79b9_7f4a_7c15;
+    value ^= value >> 30;
+    value = value.wrapping_mul(0xbf58_476d_1ce4_e5b9);
+    value ^= value >> 27;
+    value = value.wrapping_mul(0x94d0_49bb_1331_11eb);
+    value ^ (value >> 31)
+}
+
 pub(super) fn documents_digest(documents: &BTreeMap<String, SearchDocument>) -> u64 {
-    let mut digest = Digest::new();
+    let mut digest = DocumentsDigest::default();
     for document in documents.values() {
-        digest.update(super::encode_search_document_line(document).as_bytes());
+        digest.add_bytes(super::encode_search_document_line(document).as_bytes());
     }
     digest.finish()
 }
@@ -249,7 +291,7 @@ impl ManifestBody {
 
     fn validate_with_context(&self, task: Option<&RuntimeTaskContext>) -> Result<()> {
         task.map_or(Ok(()), checkpoint)?;
-        if self.format != "HAWDB_LEXICAL_MANIFEST_V3"
+        if self.format != "HAWDB_LEXICAL_MANIFEST_V4"
             || self.layout != "HAWDB_LEXICAL_ORDINAL_FST_V1"
             || self.artifact_file != artifact_file(self.generation)
             || Path::new(&self.artifact_file)
@@ -1775,9 +1817,9 @@ impl<'workspace> LexicalProjectionWriter<'workspace> {
         let artifact = artifact.finish()?;
         let _format_memory = memory
             .retained
-            .reserve("HAWDB_LEXICAL_MANIFEST_V3HAWDB_LEXICAL_ORDINAL_FST_V1".len())?;
+            .reserve("HAWDB_LEXICAL_MANIFEST_V4HAWDB_LEXICAL_ORDINAL_FST_V1".len())?;
         let manifest = ManifestBody {
-            format: "HAWDB_LEXICAL_MANIFEST_V3".to_string(),
+            format: "HAWDB_LEXICAL_MANIFEST_V4".to_string(),
             layout: "HAWDB_LEXICAL_ORDINAL_FST_V1".to_string(),
             generation,
             source_graph_commit_epoch,
