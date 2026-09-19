@@ -2701,6 +2701,44 @@ fn estimated_relationship_record_bytes(relationship: &RelRecord) -> u64 {
     40u64.saturating_add(estimated_properties_bytes(&relationship.properties))
 }
 
+impl hawdb_storage::graph_engine::GraphReadEngine for GraphStore {
+    fn storage_version(&self) -> &'static str {
+        GraphStore::storage_version(self)
+    }
+
+    fn commit_epoch(&self) -> u64 {
+        GraphStore::commit_epoch(self)
+    }
+
+    fn storage_handle_poisoned(&self) -> bool {
+        GraphStore::storage_handle_poisoned(self)
+    }
+
+    fn published_read_view(&self) -> hawdb_storage::PublishedReadView {
+        GraphStore::published_read_view(self)
+    }
+
+    fn basic_statistics(&self) -> hawdb_core::BasicGraphStatistics {
+        GraphStore::basic_statistics(self)
+    }
+
+    fn statistics(&self, catalog: &hawdb_core::Catalog) -> hawdb_core::GraphStatistics {
+        GraphStore::statistics(self, catalog)
+    }
+
+    fn storage_recovery_report(&self) -> hawdb_storage::StorageRecoveryReport {
+        GraphStore::storage_recovery_report(self)
+    }
+
+    fn segment_cache_snapshot(&self) -> Option<hawdb_storage::SegmentCacheSnapshot> {
+        GraphStore::segment_cache_snapshot(self)
+    }
+
+    fn storage_residency_report(&self) -> hawdb_storage::StorageResidencyReport {
+        GraphStore::storage_residency_report(self)
+    }
+}
+
 #[cfg(test)]
 mod tests {
     mod checkpoint_parse_order_tests;
