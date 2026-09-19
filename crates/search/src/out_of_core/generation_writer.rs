@@ -67,8 +67,9 @@ mod spool;
 mod tests;
 
 pub use compaction::{
-    SearchOutOfCoreSegmentCompaction, SearchOutOfCoreSegmentCompactionPolicy,
-    SearchOutOfCoreSegmentCompactionReport,
+    ScheduledSearchOutOfCoreSegmentCompactionReport, SearchOutOfCoreSegmentCompaction,
+    SearchOutOfCoreSegmentCompactionPolicy, SearchOutOfCoreSegmentCompactionReport,
+    SearchOutOfCoreSegmentCompactionStopReason,
 };
 pub use delta::SearchOutOfCoreGenerationUpdate;
 
@@ -467,6 +468,42 @@ impl SearchOutOfCoreGenerationWriter {
         task: RuntimeTaskContext,
     ) -> Result<Option<SearchOutOfCoreSegmentCompactionReport>> {
         compaction::compact(reader, policy, options, task)
+    }
+
+    /// Schedules one bounded segment compaction through a host-owned QoS scheduler.
+    ///
+    /// This method does not create a task or thread. The caller owns execution and
+    /// may use the context-taking form to provide cancellation and resource limits.
+    pub fn compact_scheduled_background_segments(
+        reader: &super::SearchOutOfCoreReader,
+        scheduler: &hawdb_qos::LocalQosScheduler,
+        policy: SearchOutOfCoreSegmentCompactionPolicy,
+        hint: hawdb_qos::BackgroundWorkHint,
+        options: SearchOutOfCoreGenerationBuildOptions,
+    ) -> Result<ScheduledSearchOutOfCoreSegmentCompactionReport> {
+        Self::compact_scheduled_background_segments_with_context(
+            reader,
+            scheduler,
+            policy,
+            hint,
+            options,
+            RuntimeTaskContext::default(),
+        )
+    }
+
+    /// Schedules one bounded segment compaction with caller-owned cancellation and resources.
+    ///
+    /// The scheduler permit is released for every execution result. A defer or
+    /// rejection is returned as a structured stop reason without staging artifacts.
+    pub fn compact_scheduled_background_segments_with_context(
+        reader: &super::SearchOutOfCoreReader,
+        scheduler: &hawdb_qos::LocalQosScheduler,
+        policy: SearchOutOfCoreSegmentCompactionPolicy,
+        hint: hawdb_qos::BackgroundWorkHint,
+        options: SearchOutOfCoreGenerationBuildOptions,
+        task: RuntimeTaskContext,
+    ) -> Result<ScheduledSearchOutOfCoreSegmentCompactionReport> {
+        compaction::scheduled(reader, scheduler, policy, hint, options, task)
     }
 
     /// Stages one bounded segment compaction without publishing it.

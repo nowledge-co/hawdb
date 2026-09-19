@@ -195,11 +195,13 @@ pub use lexical_readiness::{
 };
 pub use lexical_term_policy::SearchLexicalTermPolicy;
 pub use out_of_core::{
-    SearchOutOfCoreConfig, SearchOutOfCoreGenerationBuildOptions,
-    SearchOutOfCoreGenerationBuildReport, SearchOutOfCoreGenerationUpdate,
-    SearchOutOfCoreGenerationWriter, SearchOutOfCoreHydrationOutput, SearchOutOfCoreMetrics,
-    SearchOutOfCoreOutput, SearchOutOfCoreReader, SearchOutOfCoreSegmentCompaction,
+    ScheduledSearchOutOfCoreSegmentCompactionReport, SearchOutOfCoreConfig,
+    SearchOutOfCoreGenerationBuildOptions, SearchOutOfCoreGenerationBuildReport,
+    SearchOutOfCoreGenerationUpdate, SearchOutOfCoreGenerationWriter,
+    SearchOutOfCoreHydrationOutput, SearchOutOfCoreMetrics, SearchOutOfCoreOutput,
+    SearchOutOfCoreReader, SearchOutOfCoreSegmentCompaction,
     SearchOutOfCoreSegmentCompactionPolicy, SearchOutOfCoreSegmentCompactionReport,
+    SearchOutOfCoreSegmentCompactionStopReason,
 };
 // These are internal ownership seams. Hosts continue to use the embedded facade.
 #[doc(hidden)]

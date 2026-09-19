@@ -16,8 +16,12 @@ use super::*;
 use crate::{
     SearchOutOfCoreReader, SearchProjectionDelta, SearchProjectionKind, SearchProjectionRow,
 };
-use hawdb_core::{RuntimeCancellationToken, RuntimeTaskContext};
-use hawdb_qos::{BackgroundWorkHint, WorkClass};
+use hawdb_core::{
+    RuntimeCancellationToken, RuntimeCapabilities, RuntimeCapability, RuntimeTaskContext,
+};
+use hawdb_qos::{
+    BackgroundWorkHint, LocalQosPolicy, LocalQosScheduler, QosAdmissionCode, WorkClass, WorkRequest,
+};
 use std::num::{NonZeroU32, NonZeroU64, NonZeroUsize};
 use std::path::Path;
 
@@ -234,6 +238,209 @@ fn crisis_merge_uses_a_bounded_pair_and_does_not_exceed_the_top_level() {
     assert_eq!(compacted.manifest.segments.len(), 1);
     assert_eq!(compacted.manifest.segments[0].level, 0);
     drop(compacted);
+    drop(reader);
+    fs::remove_dir_all(root).unwrap();
+}
+
+#[test]
+fn scheduled_compaction_tracks_and_releases_the_qos_budget() {
+    let root = append_only_root("scheduled_compaction", 2);
+    let reader = SearchOutOfCoreReader::open(&root).unwrap();
+    let scheduler = LocalQosScheduler::new(LocalQosPolicy {
+        max_background_operations: Some(2),
+        max_total_background_operations: Some(2),
+        ..LocalQosPolicy::default()
+    });
+
+    let report = SearchOutOfCoreGenerationWriter::compact_scheduled_background_segments(
+        &reader,
+        &scheduler,
+        policy(256 * 1024 * 1024),
+        BackgroundWorkHint::default(),
+        Default::default(),
+    )
+    .unwrap();
+
+    assert_eq!(
+        report.stop_reason(),
+        SearchOutOfCoreSegmentCompactionStopReason::Completed
+    );
+    assert_eq!(report.compaction().unwrap().source_segment_count(), 2);
+    assert_eq!(scheduler.state().running_background_operations, 0);
+    let compacted = SearchOutOfCoreReader::open(&root).unwrap();
+    assert_eq!(compacted.manifest.segments.len(), 1);
+    drop(compacted);
+    drop(reader);
+    fs::remove_dir_all(root).unwrap();
+}
+
+#[test]
+fn scheduled_compaction_defers_without_staging_when_the_qos_budget_is_full() {
+    let root = append_only_root("scheduled_compaction_deferred", 2);
+    let reader = SearchOutOfCoreReader::open(&root).unwrap();
+    let before = fs::read(root.join(OUT_OF_CORE_MANIFEST_FILE)).unwrap();
+    let scheduler = LocalQosScheduler::new(LocalQosPolicy {
+        max_background_operations: Some(2),
+        max_total_background_operations: Some(2),
+        ..LocalQosPolicy::default()
+    });
+    let running = scheduler
+        .try_start(WorkRequest::background(WorkClass::Analytics, 1))
+        .unwrap();
+
+    let report = SearchOutOfCoreGenerationWriter::compact_scheduled_background_segments(
+        &reader,
+        &scheduler,
+        policy(256 * 1024 * 1024),
+        BackgroundWorkHint::default(),
+        Default::default(),
+    )
+    .unwrap();
+
+    assert!(matches!(
+        report.stop_reason(),
+        SearchOutOfCoreSegmentCompactionStopReason::Deferred(_)
+    ));
+    assert!(report.compaction().is_none());
+    assert_eq!(scheduler.state().running_background_operations, 1);
+    assert_eq!(
+        fs::read(root.join(OUT_OF_CORE_MANIFEST_FILE)).unwrap(),
+        before
+    );
+    assert_eq!(stage_directories(&root), 0);
+
+    running.finish();
+    drop(reader);
+    fs::remove_dir_all(root).unwrap();
+}
+
+#[test]
+fn scheduled_compaction_honors_tenant_budget_before_acquiring_a_qos_permit() {
+    let root = append_only_root("scheduled_compaction_tenant_budget", 2);
+    let reader = SearchOutOfCoreReader::open(&root).unwrap();
+    let before = fs::read(root.join(OUT_OF_CORE_MANIFEST_FILE)).unwrap();
+    let scheduler = LocalQosScheduler::new(LocalQosPolicy::default());
+
+    let report = SearchOutOfCoreGenerationWriter::compact_scheduled_background_segments(
+        &reader,
+        &scheduler,
+        policy(256 * 1024 * 1024),
+        BackgroundWorkHint {
+            tenant_budget_remaining_operations: Some(1),
+            ..BackgroundWorkHint::default()
+        },
+        Default::default(),
+    )
+    .unwrap();
+
+    assert_eq!(
+        report.stop_reason(),
+        SearchOutOfCoreSegmentCompactionStopReason::Deferred(
+            QosAdmissionCode::TenantBudgetExceeded
+        )
+    );
+    assert!(report.compaction().is_none());
+    assert_eq!(scheduler.state().running_background_operations, 0);
+    assert_eq!(
+        fs::read(root.join(OUT_OF_CORE_MANIFEST_FILE)).unwrap(),
+        before
+    );
+    assert_eq!(stage_directories(&root), 0);
+    drop(reader);
+    fs::remove_dir_all(root).unwrap();
+}
+
+#[test]
+fn scheduled_compaction_releases_its_qos_budget_on_execution_error() {
+    let root = append_only_root("scheduled_compaction_error", 2);
+    let reader = SearchOutOfCoreReader::open(&root).unwrap();
+    let before = fs::read(root.join(OUT_OF_CORE_MANIFEST_FILE)).unwrap();
+    let scheduler = LocalQosScheduler::new(LocalQosPolicy::default());
+    let options = SearchOutOfCoreGenerationBuildOptions {
+        max_generation_bytes: NonZeroU64::new(1).unwrap(),
+        ..Default::default()
+    };
+
+    let error = SearchOutOfCoreGenerationWriter::compact_scheduled_background_segments(
+        &reader,
+        &scheduler,
+        policy(256 * 1024 * 1024),
+        BackgroundWorkHint::default(),
+        options,
+    )
+    .unwrap_err();
+
+    assert!(error.to_string().contains("generation"), "{error}");
+    assert_eq!(scheduler.state().running_background_operations, 0);
+    assert_eq!(
+        fs::read(root.join(OUT_OF_CORE_MANIFEST_FILE)).unwrap(),
+        before
+    );
+    assert_eq!(stage_directories(&root), 0);
+    drop(reader);
+    fs::remove_dir_all(root).unwrap();
+}
+
+#[test]
+fn scheduled_compaction_observes_cancellation_before_qos_admission() {
+    let root = append_only_root("scheduled_compaction_cancel", 2);
+    let reader = SearchOutOfCoreReader::open(&root).unwrap();
+    let before = fs::read(root.join(OUT_OF_CORE_MANIFEST_FILE)).unwrap();
+    let scheduler = LocalQosScheduler::new(LocalQosPolicy::default());
+    let cancellation = RuntimeCancellationToken::new();
+    assert!(cancellation.cancel());
+
+    let error =
+        SearchOutOfCoreGenerationWriter::compact_scheduled_background_segments_with_context(
+            &reader,
+            &scheduler,
+            policy(256 * 1024 * 1024),
+            BackgroundWorkHint::default(),
+            Default::default(),
+            RuntimeTaskContext::without_deadline(cancellation),
+        )
+        .unwrap_err();
+
+    assert!(error.to_string().contains("cancel"), "{error}");
+    assert_eq!(scheduler.state().running_background_operations, 0);
+    assert_eq!(
+        fs::read(root.join(OUT_OF_CORE_MANIFEST_FILE)).unwrap(),
+        before
+    );
+    assert_eq!(stage_directories(&root), 0);
+    drop(reader);
+    fs::remove_dir_all(root).unwrap();
+}
+
+#[test]
+fn scheduled_compaction_requires_background_maintenance_capability() {
+    let root = append_only_root("scheduled_compaction_capability", 2);
+    let mut reader = SearchOutOfCoreReader::open(&root).unwrap();
+    reader.set_runtime_capabilities(
+        RuntimeCapabilities::shared_host().with(RuntimeCapability::BackgroundMaintenance, false),
+    );
+    let before = fs::read(root.join(OUT_OF_CORE_MANIFEST_FILE)).unwrap();
+    let scheduler = LocalQosScheduler::new(LocalQosPolicy::default());
+
+    let error = SearchOutOfCoreGenerationWriter::compact_scheduled_background_segments(
+        &reader,
+        &scheduler,
+        policy(256 * 1024 * 1024),
+        BackgroundWorkHint::default(),
+        Default::default(),
+    )
+    .unwrap_err();
+
+    assert!(
+        error.to_string().contains("background_maintenance"),
+        "{error}"
+    );
+    assert_eq!(scheduler.state().running_background_operations, 0);
+    assert_eq!(
+        fs::read(root.join(OUT_OF_CORE_MANIFEST_FILE)).unwrap(),
+        before
+    );
+    assert_eq!(stage_directories(&root), 0);
     drop(reader);
     fs::remove_dir_all(root).unwrap();
 }

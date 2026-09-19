@@ -23,8 +23,11 @@ use crate::build_control::checkpoint;
 use crate::build_memory::BuildMemory;
 use crate::error::{HawDBError, Result};
 use crate::{SearchOutOfCoreMetrics, SearchOutOfCoreReader};
-use hawdb_core::RuntimeTaskContext;
-use hawdb_qos::{BackgroundWorkHint, BackgroundWorkPlan, WorkClass};
+use hawdb_core::{RuntimeCapability, RuntimeTaskContext};
+use hawdb_qos::{
+    BackgroundWorkHint, BackgroundWorkPlan, LocalQosScheduler, QosAdmission, QosAdmissionCode,
+    WorkClass,
+};
 use std::num::{NonZeroU32, NonZeroU64, NonZeroUsize};
 
 /// Selection limits for one immutable out-of-core segment compaction.
@@ -158,6 +161,30 @@ pub struct SearchOutOfCoreSegmentCompactionReport {
     source_read_metrics: SearchOutOfCoreMetrics,
 }
 
+/// The terminal outcome of one host-scheduled segment compaction attempt.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SearchOutOfCoreSegmentCompactionStopReason {
+    /// The current manifest has no bounded same-level range eligible for compaction.
+    NoEligibleSegments,
+    /// The QoS scheduler deferred the work before it began.
+    Deferred(QosAdmissionCode),
+    /// The QoS scheduler rejected the work before it began.
+    Rejected(QosAdmissionCode),
+    /// The scheduler admitted the work and the attempt completed.
+    Completed,
+}
+
+/// Result of one host-scheduled segment compaction attempt.
+///
+/// The host owns task execution and can use the supplied task context to cancel
+/// an admitted compaction. This type records scheduler decisions separately
+/// from execution errors returned by the scheduling API.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ScheduledSearchOutOfCoreSegmentCompactionReport {
+    compaction: Option<SearchOutOfCoreSegmentCompactionReport>,
+    stop_reason: SearchOutOfCoreSegmentCompactionStopReason,
+}
+
 /// A staged, bounded immutable segment compaction.
 ///
 /// Dropping this value discards its unpublished stage. `finish` rechecks the
@@ -203,6 +230,16 @@ impl SearchOutOfCoreSegmentCompactionReport {
     }
 }
 
+impl ScheduledSearchOutOfCoreSegmentCompactionReport {
+    pub const fn compaction(&self) -> Option<&SearchOutOfCoreSegmentCompactionReport> {
+        self.compaction.as_ref()
+    }
+
+    pub const fn stop_reason(&self) -> SearchOutOfCoreSegmentCompactionStopReason {
+        self.stop_reason
+    }
+}
+
 #[derive(Debug)]
 struct Selection {
     start: usize,
@@ -234,6 +271,65 @@ pub(super) fn compact(
 ) -> Result<Option<SearchOutOfCoreSegmentCompactionReport>> {
     prepare(reader, policy, options, task)?
         .map_or(Ok(None), |compaction| compaction.finish().map(Some))
+}
+
+pub(super) fn scheduled(
+    reader: &SearchOutOfCoreReader,
+    scheduler: &LocalQosScheduler,
+    policy: SearchOutOfCoreSegmentCompactionPolicy,
+    hint: BackgroundWorkHint,
+    options: SearchOutOfCoreGenerationBuildOptions,
+    task: RuntimeTaskContext,
+) -> Result<ScheduledSearchOutOfCoreSegmentCompactionReport> {
+    reader
+        .runtime_capabilities
+        .require(RuntimeCapability::BackgroundMaintenance)?;
+    checkpoint(&task)?;
+
+    let Some(plan) = segment_background_work_plan(reader, policy, hint)? else {
+        return Ok(ScheduledSearchOutOfCoreSegmentCompactionReport {
+            compaction: None,
+            stop_reason: SearchOutOfCoreSegmentCompactionStopReason::NoEligibleSegments,
+        });
+    };
+    match scheduler.evaluate_background_work(&plan).admission {
+        QosAdmission::Admit => {}
+        QosAdmission::Defer { code, .. } => {
+            return Ok(ScheduledSearchOutOfCoreSegmentCompactionReport {
+                compaction: None,
+                stop_reason: SearchOutOfCoreSegmentCompactionStopReason::Deferred(code),
+            });
+        }
+        QosAdmission::Reject { code, .. } => {
+            return Ok(ScheduledSearchOutOfCoreSegmentCompactionReport {
+                compaction: None,
+                stop_reason: SearchOutOfCoreSegmentCompactionStopReason::Rejected(code),
+            });
+        }
+    }
+
+    let permit = match scheduler.try_start(plan.request) {
+        Ok(permit) => permit,
+        Err(QosAdmission::Defer { code, .. }) => {
+            return Ok(ScheduledSearchOutOfCoreSegmentCompactionReport {
+                compaction: None,
+                stop_reason: SearchOutOfCoreSegmentCompactionStopReason::Deferred(code),
+            });
+        }
+        Err(QosAdmission::Reject { code, .. }) => {
+            return Ok(ScheduledSearchOutOfCoreSegmentCompactionReport {
+                compaction: None,
+                stop_reason: SearchOutOfCoreSegmentCompactionStopReason::Rejected(code),
+            });
+        }
+        Err(QosAdmission::Admit) => unreachable!("admitted work returns a permit"),
+    };
+    let result = compact(reader, policy, options, task);
+    permit.finish_with_outcome(result.is_ok());
+    Ok(ScheduledSearchOutOfCoreSegmentCompactionReport {
+        compaction: result?,
+        stop_reason: SearchOutOfCoreSegmentCompactionStopReason::Completed,
+    })
 }
 
 pub(super) fn prepare(

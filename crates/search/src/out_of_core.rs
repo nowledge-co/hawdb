@@ -57,10 +57,11 @@ mod hydration;
 mod publish_lease;
 mod vector_serving;
 pub use generation_writer::{
-    SearchOutOfCoreGenerationBuildOptions, SearchOutOfCoreGenerationBuildReport,
-    SearchOutOfCoreGenerationUpdate, SearchOutOfCoreGenerationWriter,
-    SearchOutOfCoreSegmentCompaction, SearchOutOfCoreSegmentCompactionPolicy,
-    SearchOutOfCoreSegmentCompactionReport,
+    ScheduledSearchOutOfCoreSegmentCompactionReport, SearchOutOfCoreGenerationBuildOptions,
+    SearchOutOfCoreGenerationBuildReport, SearchOutOfCoreGenerationUpdate,
+    SearchOutOfCoreGenerationWriter, SearchOutOfCoreSegmentCompaction,
+    SearchOutOfCoreSegmentCompactionPolicy, SearchOutOfCoreSegmentCompactionReport,
+    SearchOutOfCoreSegmentCompactionStopReason,
 };
 pub(super) use publish_lease::SearchProjectionPublishLease;
 #[cfg(feature = "vector-search")]
