@@ -47,8 +47,8 @@ pub(crate) use hawdb_sql::{PreparedRelationalSql, RelationalPlanTemplateCache};
 pub(crate) use index_access::RelationalIndexReadMode;
 pub(crate) use row_access::RelationalRowReadMode;
 
-pub(crate) type RelationalQueryReadModes<'a> =
-    hawdb_relational::query::RelationalQueryReadModes<'a, crate::store::GraphStore>;
+pub(crate) type RelationalQueryReadModes<'a, R = crate::store::GraphStore> =
+    hawdb_relational::query::RelationalQueryReadModes<'a, R>;
 
 #[cfg(test)]
 mod tests {

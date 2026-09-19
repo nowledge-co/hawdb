@@ -17,8 +17,8 @@ use hawdb_relational::index_runtime::RelationalIndexStoreReader;
 use hawdb_storage::relational_index_view::RelationalIndexReadViewReport;
 use hawdb_storage::{RelationalIndexReadLimits, RelationalIndexShadowError, RelationalKey};
 
-pub(crate) type RelationalIndexReadMode<'a> =
-    hawdb_relational::index_runtime::RelationalIndexReadMode<'a, GraphStore>;
+pub(crate) type RelationalIndexReadMode<'a, R = GraphStore> =
+    hawdb_relational::index_runtime::RelationalIndexReadMode<'a, R>;
 
 impl RelationalIndexStoreReader for GraphStore {
     fn relational_index_probe_statistics(

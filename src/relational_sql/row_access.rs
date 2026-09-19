@@ -17,8 +17,8 @@ use crate::store::{GraphStore, RelationalTransactionRowView};
 use hawdb_relational::row_runtime::RelationalRowStoreReader;
 use hawdb_storage::RelationalRowPageSnapshotReader;
 
-pub(crate) type RelationalRowReadMode<'a> =
-    hawdb_relational::row_runtime::RelationalRowReadMode<'a, GraphStore>;
+pub(crate) type RelationalRowReadMode<'a, R = GraphStore> =
+    hawdb_relational::row_runtime::RelationalRowReadMode<'a, R>;
 
 impl RelationalRowStoreReader for GraphStore {
     type TransactionRows = RelationalTransactionRowView;
