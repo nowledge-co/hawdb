@@ -18,7 +18,15 @@ pub fn plan_pipeline_query(
     query: &str,
     parameters: &BTreeMap<String, Value>,
 ) -> Result<LogicalPlan> {
-    bind_pipeline(&hawdb_cypher::parse_pipeline(query)?, parameters)
+    plan_pipeline(&hawdb_cypher::parse_pipeline(query)?, parameters)
+}
+
+#[doc(hidden)]
+pub fn plan_pipeline(
+    query: &QueryPipeline,
+    parameters: &BTreeMap<String, Value>,
+) -> Result<LogicalPlan> {
+    bind_pipeline(query, parameters)
 }
 
 /// Migration entrypoint with structural read-plan normalization enabled.

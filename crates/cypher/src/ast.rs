@@ -52,13 +52,13 @@ pub enum Statement {
     CreateRelationship(CreateRelationship),
     MergeNode(MergeNode),
     MergeRelationship(CreateRelationship),
+    Pipeline(Box<QueryPipeline>),
     MatchReturn(Box<MatchReturn>),
     ShortestPathReturn(Box<ShortestPathReturn>),
     MatchNodesReturn(MatchNodesReturn),
     MatchSet(MatchSet),
     MatchSetReturn(MatchSetReturn),
     MatchOptionalRelationshipCountSum(MatchOptionalRelationshipCountSum),
-    MatchThreadRepairStats(MatchThreadRepairStats),
     MatchDelete(MatchDelete),
     MatchCreateRelationship(MatchCreateRelationship),
     MatchMergeRelationship(MatchMergeRelationship),
@@ -380,20 +380,6 @@ pub enum OptionalRelationshipCountFilter {
         property: String,
         value: ValueExpression,
     },
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct MatchThreadRepairStats {
-    pub variable: String,
-    pub label: String,
-    pub identity_variable: String,
-    pub identity_label: String,
-    pub identity_ref_property: String,
-    pub thread_id_property: String,
-    pub message_rel_type: String,
-    pub message_label: String,
-    pub memory_rel_type: String,
-    pub memory_label: String,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]

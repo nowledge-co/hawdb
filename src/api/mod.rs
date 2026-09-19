@@ -19138,7 +19138,7 @@ pub(crate) fn statement_kind(statement: &cypher::Statement) -> &'static str {
         cypher::Statement::MatchReturn(_) => "match_return",
         cypher::Statement::MatchSet(_) => "match_set",
         cypher::Statement::MatchSetReturn(_) => "match_set_return",
-        cypher::Statement::MatchThreadRepairStats(_) => "match_thread_repair_stats",
+        cypher::Statement::Pipeline(_) => "pipeline",
         cypher::Statement::MergeNode(_) => "merge_node",
         cypher::Statement::MergeRelationship(_) => "merge_relationship",
         cypher::Statement::ProjectGraph(_) => "project_graph",

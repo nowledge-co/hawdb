@@ -716,7 +716,7 @@ mod migration_audit {
             let family = match statement {
                 Statement::MatchReturn(_) => "match_return",
                 Statement::MatchNodesReturn(_) => "match_nodes_return",
-                Statement::MatchThreadRepairStats(_) => "thread_repair",
+                Statement::Pipeline(_) => "pipeline",
                 Statement::MatchOptionalRelationshipCountSum(_) => "optional_count_sum",
                 Statement::ShortestPathReturn(_) => "shortest_path",
                 Statement::MatchSet(_) | Statement::MatchSetReturn(_) => "match_set",

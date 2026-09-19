@@ -166,6 +166,9 @@ impl<'a> Parser<'a> {
     }
 
     fn parse_statement_inner(&mut self) -> Result<Statement> {
+        if let Some(statement) = self.parse_multi_stage_pipeline_statement() {
+            return Ok(statement);
+        }
         match self.parse_statement_dispatch()? {
             StatementDispatch::Begin => {
                 self.expect_keyword("TRANSACTION")?;
@@ -183,6 +186,26 @@ impl<'a> Parser<'a> {
             StatementDispatch::Commit => Ok(Statement::Commit),
             StatementDispatch::Rollback => Ok(Statement::Rollback),
         }
+    }
+
+    fn parse_multi_stage_pipeline_statement(&mut self) -> Option<Statement> {
+        let checkpoint = self.checkpoint();
+        let pipeline = self.parse_query_pipeline();
+        let is_multi_stage = pipeline.as_ref().is_ok_and(|pipeline| {
+            pipeline
+                .clauses
+                .iter()
+                .filter(|clause| matches!(clause.kind, crate::ClauseKind::With(_)))
+                .count()
+                >= 2
+        });
+        if is_multi_stage {
+            return pipeline
+                .ok()
+                .map(|pipeline| Statement::Pipeline(Box::new(pipeline)));
+        }
+        self.restore(checkpoint);
+        None
     }
 
     pub(super) fn with_recursion<T>(

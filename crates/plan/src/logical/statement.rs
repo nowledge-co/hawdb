@@ -119,6 +119,7 @@ pub fn plan_with_params(
             node_visibility_predicate: None,
         }),
         Statement::VectorSearch(search) => bind_vector_seed(search, parameters, false),
+        Statement::Pipeline(query) => super::pipeline::plan_pipeline(query, parameters),
         Statement::CreateNode(node) => Ok(LogicalPlan::CreateNode {
             label: node.label.clone(),
             properties: bind_properties(&node.properties, parameters)?,
@@ -524,16 +525,6 @@ pub fn plan_with_params(
                 output: query.output.clone(),
             })
         }
-        Statement::MatchThreadRepairStats(query) => Ok(LogicalPlan::ThreadRepairStats {
-            label: query.label.clone(),
-            identity_label: query.identity_label.clone(),
-            identity_ref_property: query.identity_ref_property.clone(),
-            thread_id_property: query.thread_id_property.clone(),
-            message_rel_type: query.message_rel_type.clone(),
-            message_label: query.message_label.clone(),
-            memory_rel_type: query.memory_rel_type.clone(),
-            memory_label: query.memory_label.clone(),
-        }),
         Statement::MatchDelete(delete) => {
             if let Some(expand) = &delete.expand {
                 if expand.min_hops != 1 || expand.max_hops != 1 {
