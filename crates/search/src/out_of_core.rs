@@ -569,6 +569,153 @@ impl SearchOutOfCoreLayoutBody {
     }
 }
 
+impl SearchOutOfCoreSegmentReader {
+    fn open(
+        root: &Path,
+        config: &SearchOutOfCoreConfig,
+        analyzer_lexicon: &SearchAnalyzerLexicon,
+        lexical_term_policy: SearchLexicalTermPolicy,
+        active_manifest: &SearchOutOfCoreManifestBody,
+        manifest: &SearchOutOfCoreSegmentManifest,
+    ) -> Result<Self> {
+        let descriptor_bytes = read_bound_artifact(
+            &root.join(&manifest.descriptor_file),
+            manifest.descriptor_len,
+            manifest.descriptor_checksum,
+            config.max_descriptor_bytes.get(),
+            "search segment descriptor",
+        )?;
+        let descriptor_text = std::str::from_utf8(&descriptor_bytes).map_err(|error| {
+            HawDBError::Storage(format!("search segment descriptor is not UTF-8: {error}"))
+        })?;
+        let descriptor = decode_search_segment_descriptor_text(descriptor_text)?;
+        if descriptor.document_count != manifest.document_count {
+            return Err(HawDBError::Storage(format!(
+                "search out-of-core manifest expects {} documents, descriptor has {}",
+                manifest.document_count, descriptor.document_count
+            )));
+        }
+        for segment in &descriptor.segments {
+            let range = segment.payload_range.ok_or_else(|| {
+                HawDBError::Storage(format!(
+                    "search segment {} has no physical payload range",
+                    segment.segment_id
+                ))
+            })?;
+            if range.length > config.max_compressed_segment_bytes.get() {
+                return Err(HawDBError::Storage(format!(
+                    "search segment {} requires {} compressed bytes, exceeding {}",
+                    segment.segment_id, range.length, config.max_compressed_segment_bytes
+                )));
+            }
+            if range.offset.saturating_add(range.length) > manifest.payload_len {
+                return Err(HawDBError::Storage(format!(
+                    "search segment {} exceeds the published payload length",
+                    segment.segment_id
+                )));
+            }
+        }
+
+        let payload_path = root.join(&manifest.payload_file);
+        let payload = File::open(&payload_path)?;
+        if payload.metadata()?.len() != manifest.payload_len {
+            return Err(HawDBError::Storage(
+                "search out-of-core payload length mismatch".to_string(),
+            ));
+        }
+
+        let layout_bytes = read_bound_artifact(
+            &root.join(&manifest.layout_file),
+            manifest.layout_len,
+            manifest.layout_checksum,
+            config.max_descriptor_bytes.get(),
+            "search out-of-core layout",
+        )?;
+        let layout = SearchOutOfCoreLayoutBody::decode(&layout_bytes)?;
+        layout.validate(
+            manifest,
+            &descriptor,
+            config.max_compressed_segment_bytes.get(),
+        )?;
+        if manifest.rabitq_vector_document_count
+            != manifest.rabitq_artifact_file.as_ref().map(|_| {
+                layout
+                    .segments
+                    .iter()
+                    .map(|segment| segment.vectors.entry_count)
+                    .sum()
+            })
+        {
+            return Err(HawDBError::Storage(
+                "search out-of-core RaBitQ vector count does not match the sidecar layout"
+                    .to_string(),
+            ));
+        }
+
+        let metadata_payload = open_exact_length_artifact(
+            &root.join(&manifest.metadata_payload_file),
+            manifest.metadata_payload_len,
+            "search out-of-core metadata payload",
+        )?;
+        let vector_payload = open_exact_length_artifact(
+            &root.join(&manifest.vector_payload_file),
+            manifest.vector_payload_len,
+            "search out-of-core vector payload",
+        )?;
+
+        let lexical_manifest_path = root.join(&manifest.lexical_manifest_file);
+        let lexical_manifest_bytes = read_bound_artifact(
+            &lexical_manifest_path,
+            manifest.lexical_manifest_len,
+            manifest.lexical_manifest_checksum,
+            config.max_lexical_manifest_bytes.get(),
+            "search lexical manifest",
+        )?;
+        let lexical_config = LexicalProjectionConfig {
+            max_manifest_bytes: config.max_lexical_manifest_bytes,
+            max_term_bytes: lexical_term_policy.max_term_bytes(),
+            max_query_score_entries: config.max_score_entries,
+            ..LexicalProjectionConfig::default()
+        };
+        let lexical_projection = LexicalProjectionReader::load_manifest_bytes(
+            root,
+            &lexical_manifest_bytes,
+            manifest.source_graph_commit_epoch,
+            lexical_analyzer_digest(analyzer_lexicon),
+            manifest.documents_digest,
+            lexical_config,
+        )?
+        .ok_or_else(|| {
+            HawDBError::Storage(
+                "published search lexical projection does not match the out-of-core manifest"
+                    .to_string(),
+            )
+        })?;
+        drop(lexical_manifest_bytes);
+
+        #[cfg(feature = "vector-search")]
+        let rabitq_projection = open_rabitq_projection(
+            root,
+            active_manifest,
+            manifest,
+            config.max_vector_search_working_bytes.get(),
+        )?;
+        #[cfg(not(feature = "vector-search"))]
+        verify_rabitq_artifact(&root, manifest)?;
+
+        Ok(Self {
+            descriptor,
+            payload: Arc::new(payload),
+            metadata_payload: Arc::new(metadata_payload),
+            vector_payload: Arc::new(vector_payload),
+            layout,
+            lexical_projection,
+            #[cfg(feature = "vector-search")]
+            rabitq_projection,
+        })
+    }
+}
+
 impl SearchOutOfCoreReader {
     pub fn open(path: impl AsRef<Path>) -> Result<Self> {
         Self::open_with_config_and_analyzer(
@@ -609,148 +756,21 @@ impl SearchOutOfCoreReader {
         let manifest_path = root.join(OUT_OF_CORE_MANIFEST_FILE);
         let manifest_bytes = read_bounded_file(&manifest_path, MAX_OUT_OF_CORE_MANIFEST_BYTES)?;
         let manifest = SearchOutOfCoreManifestBody::decode(&manifest_bytes)?;
-        let segment_manifest = manifest.primary_segment();
-
-        let descriptor_bytes = read_bound_artifact(
-            &root.join(&segment_manifest.descriptor_file),
-            segment_manifest.descriptor_len,
-            segment_manifest.descriptor_checksum,
-            config.max_descriptor_bytes.get(),
-            "search segment descriptor",
-        )?;
-        let descriptor_text = std::str::from_utf8(&descriptor_bytes).map_err(|error| {
-            HawDBError::Storage(format!("search segment descriptor is not UTF-8: {error}"))
-        })?;
-        let descriptor = decode_search_segment_descriptor_text(descriptor_text)?;
-        if descriptor.document_count != segment_manifest.document_count {
-            return Err(HawDBError::Storage(format!(
-                "search out-of-core manifest expects {} documents, descriptor has {}",
-                segment_manifest.document_count, descriptor.document_count
-            )));
-        }
-        for segment in &descriptor.segments {
-            let range = segment.payload_range.ok_or_else(|| {
-                HawDBError::Storage(format!(
-                    "search segment {} has no physical payload range",
-                    segment.segment_id
-                ))
-            })?;
-            if range.length > config.max_compressed_segment_bytes.get() {
-                return Err(HawDBError::Storage(format!(
-                    "search segment {} requires {} compressed bytes, exceeding {}",
-                    segment.segment_id, range.length, config.max_compressed_segment_bytes
-                )));
-            }
-            if range.offset.saturating_add(range.length) > segment_manifest.payload_len {
-                return Err(HawDBError::Storage(format!(
-                    "search segment {} exceeds the published payload length",
-                    segment.segment_id
-                )));
-            }
-        }
-
-        let payload_path = root.join(&segment_manifest.payload_file);
-        let payload = File::open(&payload_path)?;
-        if payload.metadata()?.len() != segment_manifest.payload_len {
-            return Err(HawDBError::Storage(
-                "search out-of-core payload length mismatch".to_string(),
-            ));
-        }
-
-        let layout_bytes = read_bound_artifact(
-            &root.join(&segment_manifest.layout_file),
-            segment_manifest.layout_len,
-            segment_manifest.layout_checksum,
-            config.max_descriptor_bytes.get(),
-            "search out-of-core layout",
-        )?;
-        let layout = SearchOutOfCoreLayoutBody::decode(&layout_bytes)?;
-        layout.validate(
-            segment_manifest,
-            &descriptor,
-            config.max_compressed_segment_bytes.get(),
-        )?;
-        if segment_manifest.rabitq_vector_document_count
-            != segment_manifest.rabitq_artifact_file.as_ref().map(|_| {
-                layout
-                    .segments
-                    .iter()
-                    .map(|segment| segment.vectors.entry_count)
-                    .sum()
-            })
-        {
-            return Err(HawDBError::Storage(
-                "search out-of-core RaBitQ vector count does not match the sidecar layout"
-                    .to_string(),
-            ));
-        }
-
-        let metadata_payload = open_exact_length_artifact(
-            &root.join(&segment_manifest.metadata_payload_file),
-            segment_manifest.metadata_payload_len,
-            "search out-of-core metadata payload",
-        )?;
-        let vector_payload = open_exact_length_artifact(
-            &root.join(&segment_manifest.vector_payload_file),
-            segment_manifest.vector_payload_len,
-            "search out-of-core vector payload",
-        )?;
-
-        let lexical_manifest_path = root.join(&segment_manifest.lexical_manifest_file);
-        let lexical_manifest_bytes = read_bound_artifact(
-            &lexical_manifest_path,
-            segment_manifest.lexical_manifest_len,
-            segment_manifest.lexical_manifest_checksum,
-            config.max_lexical_manifest_bytes.get(),
-            "search lexical manifest",
-        )?;
-        let lexical_config = LexicalProjectionConfig {
-            max_manifest_bytes: config.max_lexical_manifest_bytes,
-            max_term_bytes: lexical_term_policy.max_term_bytes(),
-            max_query_score_entries: config.max_score_entries,
-            ..LexicalProjectionConfig::default()
-        };
-        let lexical_projection = LexicalProjectionReader::load_manifest_bytes(
+        let segment = SearchOutOfCoreSegmentReader::open(
             &root,
-            &lexical_manifest_bytes,
-            segment_manifest.source_graph_commit_epoch,
-            lexical_analyzer_digest(&analyzer_lexicon),
-            segment_manifest.documents_digest,
-            lexical_config,
-        )?
-        .ok_or_else(|| {
-            HawDBError::Storage(
-                "published search lexical projection does not match the out-of-core manifest"
-                    .to_string(),
-            )
-        })?;
-        drop(lexical_manifest_bytes);
-
-        #[cfg(feature = "vector-search")]
-        let rabitq_projection = open_rabitq_projection(
-            &root,
+            &config,
+            &analyzer_lexicon,
+            lexical_term_policy,
             &manifest,
-            segment_manifest,
-            config.max_vector_search_working_bytes.get(),
+            manifest.primary_segment(),
         )?;
-        #[cfg(not(feature = "vector-search"))]
-        verify_rabitq_artifact(&root, segment_manifest)?;
 
         Ok(Self {
             root,
             config,
             analyzer_lexicon,
             manifest,
-            segment: SearchOutOfCoreSegmentReader {
-                descriptor,
-                payload: Arc::new(payload),
-                metadata_payload: Arc::new(metadata_payload),
-                vector_payload: Arc::new(vector_payload),
-                layout,
-                lexical_projection,
-                #[cfg(feature = "vector-search")]
-                rabitq_projection,
-            },
+            segment,
             lexical_term_policy,
             runtime_capabilities: crate::compiled_runtime_capabilities(),
         })
