@@ -1087,6 +1087,12 @@ fn add_out_of_core_metrics(
     aggregate.segment_bytes_read = aggregate
         .segment_bytes_read
         .saturating_add(metrics.segment_bytes_read);
+    aggregate.lexical_document_block_reads = aggregate
+        .lexical_document_block_reads
+        .saturating_add(metrics.lexical_document_block_reads);
+    aggregate.lexical_document_bytes_read = aggregate
+        .lexical_document_bytes_read
+        .saturating_add(metrics.lexical_document_bytes_read);
     aggregate.metadata_segment_bytes_read = aggregate
         .metadata_segment_bytes_read
         .saturating_add(metrics.metadata_segment_bytes_read);
@@ -1163,6 +1169,8 @@ fn out_of_core_metrics_json(metrics: &SearchOutOfCoreMetrics) -> serde_json::Val
     serde_json::json!({
         "segment_range_reads": metrics.segment_range_reads,
         "segment_bytes_read": metrics.segment_bytes_read,
+        "lexical_document_block_reads": metrics.lexical_document_block_reads,
+        "lexical_document_bytes_read": metrics.lexical_document_bytes_read,
         "metadata_segment_bytes_read": metrics.metadata_segment_bytes_read,
         "vector_segment_bytes_read": metrics.vector_segment_bytes_read,
         "hydration_segment_bytes_read": metrics.hydration_segment_bytes_read,
@@ -1190,6 +1198,33 @@ mod tests {
     use std::sync::atomic::{AtomicU64, Ordering};
 
     static TEST_SEQUENCE: AtomicU64 = AtomicU64::new(0);
+
+    #[test]
+    fn out_of_core_metric_aggregation_and_json_include_lexical_document_reads() {
+        let mut aggregate = SearchOutOfCoreMetrics::default();
+        add_out_of_core_metrics(
+            &mut aggregate,
+            &SearchOutOfCoreMetrics {
+                lexical_document_block_reads: 2,
+                lexical_document_bytes_read: 128,
+                ..Default::default()
+            },
+        );
+        add_out_of_core_metrics(
+            &mut aggregate,
+            &SearchOutOfCoreMetrics {
+                lexical_document_block_reads: 3,
+                lexical_document_bytes_read: 512,
+                ..Default::default()
+            },
+        );
+
+        assert_eq!(aggregate.lexical_document_block_reads, 5);
+        assert_eq!(aggregate.lexical_document_bytes_read, 640);
+        let json = out_of_core_metrics_json(&aggregate);
+        assert_eq!(json["lexical_document_block_reads"], 5);
+        assert_eq!(json["lexical_document_bytes_read"], 640);
+    }
 
     #[test]
     fn representative_runner_collects_parity_and_lifecycle_evidence() {
