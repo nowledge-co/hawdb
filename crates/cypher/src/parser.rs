@@ -21,6 +21,8 @@ mod cursor;
 mod ddl;
 mod mutation;
 mod pattern;
+mod pipeline;
+pub use pipeline::parse_pipeline;
 mod predicate;
 mod procedure;
 mod projection;

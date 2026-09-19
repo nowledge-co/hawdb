@@ -542,7 +542,8 @@ pub fn mutation_command(plan: &PhysicalPlan) -> Result<Option<GraphMutation>> {
         | PhysicalPlan::LimitExec { .. }
         | PhysicalPlan::ProjectGraph { .. }
         | PhysicalPlan::GraphAlgorithm { .. }
-        | PhysicalPlan::VectorSeedScan { .. } => Ok(None),
+        | PhysicalPlan::VectorSeedScan { .. }
+        | PhysicalPlan::GraphMatchExec { .. } => Ok(None),
     }
 }
 

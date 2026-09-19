@@ -23,83 +23,7 @@ impl Parser<'_> {
         loop {
             self.skip_ws();
             let item_start = self.pos;
-            let expression = if self.consume_keyword("COUNT") {
-                self.expect_char('(')?;
-                let distinct = self.consume_keyword("DISTINCT");
-                let expression = if self.consume_char('*') {
-                    if distinct {
-                        return Err(self.error("COUNT(DISTINCT *) is not supported"));
-                    }
-                    ReturnExpressionKind::Aggregate(AggregateExpression::CountAll)
-                } else {
-                    let variable = self.parse_ident()?;
-                    if self.consume_char('.') {
-                        ReturnExpressionKind::Aggregate(AggregateExpression::CountProperty {
-                            variable,
-                            property: self.parse_ident()?,
-                            distinct,
-                        })
-                    } else {
-                        ReturnExpressionKind::Aggregate(AggregateExpression::CountVariable {
-                            variable,
-                            distinct,
-                        })
-                    }
-                };
-                self.expect_char(')')?;
-                expression
-            } else if self.consume_keyword("MIN") {
-                self.expect_char('(')?;
-                let variable = self.parse_ident()?;
-                self.expect_char('.')?;
-                let property = self.parse_ident()?;
-                self.expect_char(')')?;
-                ReturnExpressionKind::Aggregate(AggregateExpression::MinProperty {
-                    variable,
-                    property,
-                })
-            } else if self.consume_keyword("MAX") {
-                self.expect_char('(')?;
-                let variable = self.parse_ident()?;
-                self.expect_char('.')?;
-                let property = self.parse_ident()?;
-                self.expect_char(')')?;
-                ReturnExpressionKind::Aggregate(AggregateExpression::MaxProperty {
-                    variable,
-                    property,
-                })
-            } else if self.consume_keyword("AVG") {
-                self.expect_char('(')?;
-                let variable = self.parse_ident()?;
-                self.expect_char('.')?;
-                let property = self.parse_ident()?;
-                self.expect_char(')')?;
-                ReturnExpressionKind::Aggregate(AggregateExpression::AvgProperty {
-                    variable,
-                    property,
-                })
-            } else if self.consume_keyword("COLLECT") {
-                self.expect_char('(')?;
-                let distinct = self.consume_keyword("DISTINCT");
-                let variable = self.parse_ident()?;
-                if self.consume_char('.') {
-                    let property = self.parse_ident()?;
-                    self.expect_char(')')?;
-                    ReturnExpressionKind::Aggregate(AggregateExpression::CollectProperty {
-                        variable,
-                        property,
-                        distinct,
-                    })
-                } else {
-                    self.expect_char(')')?;
-                    ReturnExpressionKind::Aggregate(AggregateExpression::CollectVariable {
-                        variable,
-                        distinct,
-                    })
-                }
-            } else {
-                ReturnExpressionKind::Value(self.parse_scalar_expression()?)
-            };
+            let expression = self.parse_return_atom()?;
             let expression = self.source_node(expression, item_start);
             let alias = if self.consume_keyword("AS") {
                 Some(self.parse_ident()?)
@@ -113,6 +37,89 @@ impl Parser<'_> {
             }
         }
         Ok(items)
+    }
+
+    pub(super) fn parse_return_atom(&mut self) -> Result<ReturnExpressionKind> {
+        Ok(if self.consume_aggregate_function_name("COUNT") {
+            self.expect_char('(')?;
+            let distinct = self.consume_keyword("DISTINCT");
+            let expression = if self.consume_char('*') {
+                if distinct {
+                    return Err(self.error("COUNT(DISTINCT *) is not supported"));
+                }
+                ReturnExpressionKind::Aggregate(AggregateExpression::CountAll)
+            } else {
+                let variable = self.parse_ident()?;
+                if self.consume_char('.') {
+                    ReturnExpressionKind::Aggregate(AggregateExpression::CountProperty {
+                        variable,
+                        property: self.parse_ident()?,
+                        distinct,
+                    })
+                } else {
+                    ReturnExpressionKind::Aggregate(AggregateExpression::CountVariable {
+                        variable,
+                        distinct,
+                    })
+                }
+            };
+            self.expect_char(')')?;
+            expression
+        } else if self.consume_aggregate_function_name("MIN") {
+            self.expect_char('(')?;
+            let variable = self.parse_ident()?;
+            self.expect_char('.')?;
+            let property = self.parse_ident()?;
+            self.expect_char(')')?;
+            ReturnExpressionKind::Aggregate(AggregateExpression::MinProperty { variable, property })
+        } else if self.consume_aggregate_function_name("MAX") {
+            self.expect_char('(')?;
+            let variable = self.parse_ident()?;
+            self.expect_char('.')?;
+            let property = self.parse_ident()?;
+            self.expect_char(')')?;
+            ReturnExpressionKind::Aggregate(AggregateExpression::MaxProperty { variable, property })
+        } else if self.consume_aggregate_function_name("AVG") {
+            self.expect_char('(')?;
+            let variable = self.parse_ident()?;
+            self.expect_char('.')?;
+            let property = self.parse_ident()?;
+            self.expect_char(')')?;
+            ReturnExpressionKind::Aggregate(AggregateExpression::AvgProperty { variable, property })
+        } else if self.consume_aggregate_function_name("COLLECT") {
+            self.expect_char('(')?;
+            let distinct = self.consume_keyword("DISTINCT");
+            let variable = self.parse_ident()?;
+            if self.consume_char('.') {
+                let property = self.parse_ident()?;
+                self.expect_char(')')?;
+                ReturnExpressionKind::Aggregate(AggregateExpression::CollectProperty {
+                    variable,
+                    property,
+                    distinct,
+                })
+            } else {
+                self.expect_char(')')?;
+                ReturnExpressionKind::Aggregate(AggregateExpression::CollectVariable {
+                    variable,
+                    distinct,
+                })
+            }
+        } else {
+            ReturnExpressionKind::Value(self.parse_scalar_expression()?)
+        })
+    }
+
+    fn consume_aggregate_function_name(&mut self, name: &str) -> bool {
+        let checkpoint = self.checkpoint();
+        if self.consume_keyword(name) {
+            self.skip_ws();
+            if self.peek_char() == Some('(') {
+                return true;
+            }
+        }
+        self.restore(checkpoint);
+        false
     }
 
     pub(super) fn parse_order_items(&mut self) -> Result<Vec<OrderItem>> {

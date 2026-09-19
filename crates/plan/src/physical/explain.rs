@@ -379,6 +379,9 @@ impl PhysicalPlan {
             PhysicalPlan::NodeCartesianProductExec { .. } => {
                 format!("{pad}NodeCartesianProductExec")
             }
+            PhysicalPlan::GraphMatchExec { program, .. } => {
+                format!("{pad}GraphMatchExec optional={} steps={:?} imports={:?} introduced={:?} predicate={:?}", program.optional, program.steps, program.imports, program.introduced, program.predicate)
+            }
             PhysicalPlan::NodeColumnLookupExec {
                 variable,
                 label,

@@ -90,6 +90,40 @@ impl<'a> PlanBindings<'a> {
                     .node_populations
                     .insert(variable, NodePopulation::Label(label));
             }
+            PhysicalPlan::GraphMatchExec { program, .. } => {
+                for variable in program
+                    .introduced
+                    .iter()
+                    .chain(program.imports.iter().map(|import| &import.variable))
+                {
+                    bindings
+                        .covered_properties
+                        .retain(|(name, _)| *name != variable);
+                    bindings.node_labels.remove(variable.as_str());
+                    bindings.node_populations.remove(variable.as_str());
+                    bindings.relationship_types.remove(variable.as_str());
+                }
+                for step in &program.steps {
+                    let node = match step {
+                        hawdb_plan::GraphMatchStep::Node(node) => node,
+                        hawdb_plan::GraphMatchStep::Expand {
+                            target,
+                            relationship,
+                            rel_type,
+                            ..
+                        } => {
+                            if let Some(variable) = relationship {
+                                bindings.relationship_types.insert(variable, rel_type);
+                            }
+                            target
+                        }
+                    };
+                    bindings.node_labels.insert(&node.variable, &node.label);
+                    bindings
+                        .node_populations
+                        .insert(&node.variable, NodePopulation::Label(&node.label));
+                }
+            }
             PhysicalPlan::NodeColumnLookupExec {
                 variable, label, ..
             } => {

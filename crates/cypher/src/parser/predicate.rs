@@ -34,9 +34,13 @@ enum PropertyPredicateRight {
 
 impl Parser<'_> {
     pub(super) fn parse_property_predicate(&mut self) -> Result<PropertyPredicate> {
-        let mut predicates = vec![self.parse_property_conjunction()?];
+        self.parse_predicate(false)
+    }
+
+    pub(super) fn parse_predicate(&mut self, allow_columns: bool) -> Result<PropertyPredicate> {
+        let mut predicates = vec![self.parse_property_conjunction(allow_columns)?];
         while self.consume_keyword("OR") {
-            predicates.push(self.parse_property_conjunction()?);
+            predicates.push(self.parse_property_conjunction(allow_columns)?);
         }
         if predicates.len() == 1 {
             Ok(predicates.remove(0))
@@ -45,10 +49,10 @@ impl Parser<'_> {
         }
     }
 
-    pub(super) fn parse_property_conjunction(&mut self) -> Result<PropertyPredicate> {
-        let mut predicates = vec![self.parse_property_predicate_atom()?];
+    fn parse_property_conjunction(&mut self, allow_columns: bool) -> Result<PropertyPredicate> {
+        let mut predicates = vec![self.parse_property_predicate_atom(allow_columns)?];
         while self.consume_keyword("AND") {
-            predicates.push(self.parse_property_predicate_atom()?);
+            predicates.push(self.parse_property_predicate_atom(allow_columns)?);
         }
         if predicates.len() == 1 {
             Ok(predicates.remove(0))
@@ -57,15 +61,18 @@ impl Parser<'_> {
         }
     }
 
-    pub(super) fn parse_property_predicate_atom(&mut self) -> Result<PropertyPredicate> {
-        self.with_recursion(|parser| parser.parse_property_predicate_atom_inner())
+    fn parse_property_predicate_atom(&mut self, allow_columns: bool) -> Result<PropertyPredicate> {
+        self.with_recursion(|parser| parser.parse_property_predicate_atom_inner(allow_columns))
     }
 
-    fn parse_property_predicate_atom_inner(&mut self) -> Result<PropertyPredicate> {
+    fn parse_property_predicate_atom_inner(
+        &mut self,
+        allow_columns: bool,
+    ) -> Result<PropertyPredicate> {
         self.skip_ws();
         if self.consume_keyword("NOT") {
             return Ok(PropertyPredicate::Not(Box::new(
-                self.parse_property_predicate_atom()?,
+                self.parse_property_predicate_atom(allow_columns)?,
             )));
         }
         if self.peek_char() == Some('(') && self.looks_like_relationship_exists_predicate() {
@@ -81,7 +88,7 @@ impl Parser<'_> {
             return self.parse_expression_predicate(expression);
         }
         if self.consume_char('(') {
-            let predicate = self.parse_property_predicate()?;
+            let predicate = self.parse_predicate(allow_columns)?;
             self.expect_char(')')?;
             return Ok(predicate);
         }
@@ -164,6 +171,14 @@ impl Parser<'_> {
             self.expect_char(')')?;
             return self.parse_id_predicate(variable);
         }
+        self.skip_ws();
+        if allow_columns && self.peek_char() != Some('.') {
+            let expression = self.source_node(
+                ScalarExpressionKind::Variable(variable),
+                expression_start.pos,
+            );
+            return self.parse_expression_predicate(expression);
+        }
         self.expect_char('.')?;
         let property = self.parse_ident()?;
         let property_span = self.source_span(expression_start.pos);
@@ -217,7 +232,7 @@ impl Parser<'_> {
             })
         } else if self.consume_char('<') {
             if self.consume_char('>') {
-                return match self.parse_property_predicate_right()? {
+                return match self.parse_property_predicate_right(allow_columns)? {
                     PropertyPredicateRight::Value(value) => Ok(PropertyPredicate::NotEq {
                         variable,
                         property,
@@ -239,7 +254,7 @@ impl Parser<'_> {
             } else {
                 ComparisonOp::Lt
             };
-            match self.parse_property_predicate_right()? {
+            match self.parse_property_predicate_right(allow_columns)? {
                 PropertyPredicateRight::Value(value) => Ok(PropertyPredicate::Compare {
                     variable,
                     property,
@@ -263,7 +278,7 @@ impl Parser<'_> {
             } else {
                 ComparisonOp::Gt
             };
-            match self.parse_property_predicate_right()? {
+            match self.parse_property_predicate_right(allow_columns)? {
                 PropertyPredicateRight::Value(value) => Ok(PropertyPredicate::Compare {
                     variable,
                     property,
@@ -283,7 +298,7 @@ impl Parser<'_> {
             }
         } else {
             self.expect_char('=')?;
-            match self.parse_property_predicate_right()? {
+            match self.parse_property_predicate_right(allow_columns)? {
                 PropertyPredicateRight::Value(value) => Ok(PropertyPredicate::Eq {
                     variable,
                     property,
@@ -300,7 +315,10 @@ impl Parser<'_> {
         }
     }
 
-    fn parse_property_predicate_right(&mut self) -> Result<PropertyPredicateRight> {
+    fn parse_property_predicate_right(
+        &mut self,
+        allow_columns: bool,
+    ) -> Result<PropertyPredicateRight> {
         self.skip_ws();
         let value_start = self.checkpoint();
         if matches!(self.peek_char(), Some(ch) if ch.is_ascii_alphabetic() || ch == '_') {
@@ -313,6 +331,13 @@ impl Parser<'_> {
                 )));
             }
             self.restore(value_start);
+        }
+        if allow_columns {
+            let expression = self.parse_case_scalar()?;
+            return Ok(match expression.kind {
+                ScalarExpressionKind::Value(value) => PropertyPredicateRight::Value(value),
+                _ => PropertyPredicateRight::Expression(expression),
+            });
         }
         self.parse_value().map(PropertyPredicateRight::Value)
     }
@@ -586,10 +611,19 @@ impl Parser<'_> {
     }
 
     pub(super) fn parse_match_relationship_pattern(&mut self) -> Result<MatchRelationshipPattern> {
+        self.parse_match_relationship_pattern_with_search(false)
+            .map(|(pattern, _)| pattern)
+    }
+
+    pub(super) fn parse_match_relationship_pattern_with_search(
+        &mut self,
+        allow_shortest: bool,
+    ) -> Result<(MatchRelationshipPattern, PathSearch)> {
         self.expect_char('[')?;
         let (variable, rel_type) = if self.consume_char(':') {
             (None, self.parse_ident()?)
-        } else if self.peek_char() == Some(']') {
+        } else if self.peek_char() == Some(']') || (allow_shortest && self.peek_char() == Some('*'))
+        {
             (None, String::new())
         } else {
             let variable = self.parse_ident()?;
@@ -600,7 +634,12 @@ impl Parser<'_> {
             };
             (Some(variable), rel_type)
         };
+        let mut search = PathSearch::All;
         let (min_hops, max_hops) = if self.consume_char('*') {
+            if allow_shortest && self.consume_keyword("ALL") {
+                self.expect_keyword("SHORTEST")?;
+                search = PathSearch::AllShortest;
+            }
             self.parse_bounded_hops()?
         } else {
             (1, 1)
@@ -612,7 +651,7 @@ impl Parser<'_> {
             BTreeMap::new()
         };
         self.expect_char(']')?;
-        Ok((variable, rel_type, properties, min_hops, max_hops))
+        Ok(((variable, rel_type, properties, min_hops, max_hops), search))
     }
 
     pub(super) fn parse_bounded_hops(&mut self) -> Result<(usize, usize)> {

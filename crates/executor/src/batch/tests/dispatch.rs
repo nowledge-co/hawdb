@@ -46,7 +46,7 @@ fn admission_covers_every_physical_operator_and_descendant_position() {
     assert_eq!(kinds, PhysicalPlanKind::all().iter().copied().collect());
     assert_eq!(
         fixtures.iter().filter(|(_, supported)| *supported).count(),
-        31
+        32
     );
     for (plan, expected) in fixtures {
         for shape in 0..4 {

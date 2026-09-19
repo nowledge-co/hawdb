@@ -386,6 +386,15 @@ fn write_aggregation(output: &mut String, item: &Aggregation) {
         output.push_str("distinct ");
     }
     match &item.target {
+        AggregateTarget::Column(column) => {
+            output.push_str("column:");
+            write_identifier(output, column);
+        }
+        AggregateTarget::ColumnProperty { column, property } => {
+            output.push_str("column_property:");
+            write_identifier(output, column);
+            write_identifier(output, property);
+        }
         AggregateTarget::All => output.push('*'),
         AggregateTarget::Variable(variable) => write_identifier(output, variable),
         AggregateTarget::Property { variable, property } => {

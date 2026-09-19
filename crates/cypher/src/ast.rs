@@ -12,6 +12,9 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
+mod pipeline;
+pub use pipeline::*;
+
 mod source;
 pub use source::{AstNode, SourceSpan};
 
@@ -758,6 +761,20 @@ pub enum ScalarExpressionKind {
 pub enum ReturnExpressionKind {
     Value(ScalarExpression),
     Aggregate(AggregateExpression),
+    Arithmetic {
+        first: Box<ReturnExpression>,
+        rest: Vec<(ArithmeticOp, ReturnExpression)>,
+    },
+    Path(ShortestPathReturnExpression),
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ArithmeticOp {
+    Add,
+    Subtract,
+    Multiply,
+    Divide,
+    Remainder,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]

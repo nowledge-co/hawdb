@@ -67,6 +67,7 @@ pub(super) fn execute_bindings_with_limit(
         | PhysicalPlan::SeqNodeScan { .. }
         | PhysicalPlan::NodeProjectionScanExec { .. }
         | PhysicalPlan::SourceSegmentScan { .. }
+        | PhysicalPlan::GraphMatchExec { .. }
         | PhysicalPlan::NodeColumnLookupExec { .. }
         | PhysicalPlan::IndexNodeSeek { .. }
         | PhysicalPlan::IndexNodeMultiSeek { .. }

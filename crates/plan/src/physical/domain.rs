@@ -137,7 +137,8 @@ impl PhysicalPlan {
             | PhysicalPlan::IndexNodeTextSeek { .. } => {
                 PhysicalPlanDomainRef::Access(AccessPhysicalPlanRef::new(self))
             }
-            PhysicalPlan::AdjacencyExpandExec { .. }
+            PhysicalPlan::GraphMatchExec { .. }
+            | PhysicalPlan::AdjacencyExpandExec { .. }
             | PhysicalPlan::AdjacencyExistsExec { .. }
             | PhysicalPlan::OptionalDegreeExec { .. }
             | PhysicalPlan::OptionalRelationshipCountSumExec { .. }

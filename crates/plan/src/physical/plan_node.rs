@@ -80,6 +80,7 @@ impl PhysicalPlan {
                 PhysicalPlanKind::DeleteRelationshipTargetNodes
             }
             PhysicalPlan::CreateRelationship { .. } => PhysicalPlanKind::CreateRelationship,
+            PhysicalPlan::GraphMatchExec { .. } => PhysicalPlanKind::GraphMatchExec,
             PhysicalPlan::EmptyExec => PhysicalPlanKind::EmptyExec,
             PhysicalPlan::SeqNodeScan { .. } => PhysicalPlanKind::SeqNodeScan,
             PhysicalPlan::NodeProjectionScanExec { .. } => PhysicalPlanKind::NodeProjectionScanExec,
@@ -124,6 +125,9 @@ impl PhysicalPlan {
 
     pub fn children(&self) -> PhysicalPlanChildren<'_> {
         match self {
+            PhysicalPlan::GraphMatchExec { input, .. } => input
+                .as_deref()
+                .map_or(PlanChildren::None, PlanChildren::Unary),
             PhysicalPlan::NodeCartesianProductExec { left, right }
             | PhysicalPlan::HashJoinExec { left, right, .. } => PlanChildren::Binary(left, right),
             PhysicalPlan::NodeColumnLookupExec { input, .. }
