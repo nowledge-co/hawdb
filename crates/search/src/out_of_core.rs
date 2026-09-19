@@ -66,7 +66,7 @@ use vector_serving::vector_projection_error;
 use vector_serving::VectorScoreScan;
 
 const OUT_OF_CORE_MANIFEST_FILE: &str = "search_projection.out_of_core.manifest.hawdb";
-const OUT_OF_CORE_FORMAT: &str = "HAWDB_SEARCH_OUT_OF_CORE_V1";
+const OUT_OF_CORE_FORMAT: &str = "HAWDB_SEARCH_OUT_OF_CORE_V2";
 const OUT_OF_CORE_LAYOUT_FORMAT: &str = "HAWDB_SEARCH_OUT_OF_CORE_LAYOUT_V1";
 const MAX_OUT_OF_CORE_MANIFEST_BYTES: u64 = 1024 * 1024;
 const MAX_MARKER_BYTES: u64 = 64 * 1024;
@@ -186,6 +186,27 @@ pub(super) struct PublishedOutOfCoreProjection {
 struct SearchOutOfCoreManifestBody<S = String> {
     format: S,
     generation: u64,
+    segments: Vec<SearchOutOfCoreSegmentManifest<S>>,
+    document_count: usize,
+    documents_digest: u64,
+    source_graph_commit_epoch: Option<u64>,
+    import_source_graph_commit_epoch: Option<u64>,
+    embedding_model: Option<S>,
+    embedding_version: Option<S>,
+    embedding_dimension: Option<usize>,
+}
+
+/// One immutable artifact closure selected by an out-of-core manifest.
+///
+/// Segment-local identity stays with the files it validates. The active
+/// manifest owns the logical projection identity and will eventually select
+/// multiple entries as an incremental segment set.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(deny_unknown_fields, bound(deserialize = "S: Deserialize<'de>"))]
+struct SearchOutOfCoreSegmentManifest<S = String> {
+    segment_id: u64,
+    level: u32,
+    generation: u64,
     descriptor_file: S,
     descriptor_len: u64,
     descriptor_checksum: u64,
@@ -218,10 +239,6 @@ struct SearchOutOfCoreManifestBody<S = String> {
     document_count: usize,
     documents_digest: u64,
     source_graph_commit_epoch: Option<u64>,
-    import_source_graph_commit_epoch: Option<u64>,
-    embedding_model: Option<S>,
-    embedding_version: Option<S>,
-    embedding_dimension: Option<usize>,
 }
 
 #[derive(Debug, Serialize, Deserialize)]
@@ -337,9 +354,40 @@ impl SearchOutOfCoreManifestBody {
 
 impl<S: AsRef<str>> SearchOutOfCoreManifestBody<S> {
     fn validate_names(&self) -> Result<()> {
-        if self.format.as_ref() != OUT_OF_CORE_FORMAT || self.generation == 0 {
+        if self.format.as_ref() != OUT_OF_CORE_FORMAT
+            || self.generation == 0
+            || self.segments.len() != 1
+        {
             return Err(HawDBError::Storage(
-                "search out-of-core manifest header is invalid".to_string(),
+                "search out-of-core manifest header or segment set is invalid".to_string(),
+            ));
+        }
+        let segment = &self.segments[0];
+        if segment.segment_id != 0
+            || segment.level != 0
+            || segment.generation != self.generation
+            || segment.document_count != self.document_count
+            || segment.documents_digest != self.documents_digest
+            || segment.source_graph_commit_epoch != self.source_graph_commit_epoch
+        {
+            return Err(HawDBError::Storage(
+                "search out-of-core manifest and its segment identity disagree".to_string(),
+            ));
+        }
+        segment.validate_names()
+    }
+
+    fn primary_segment(&self) -> &SearchOutOfCoreSegmentManifest<S> {
+        // validate_names establishes this shape before a manifest reaches a reader.
+        &self.segments[0]
+    }
+}
+
+impl<S: AsRef<str>> SearchOutOfCoreSegmentManifest<S> {
+    fn validate_names(&self) -> Result<()> {
+        if self.generation == 0 {
+            return Err(HawDBError::Storage(
+                "search out-of-core segment generation is invalid".to_string(),
             ));
         }
         for name in [
@@ -458,7 +506,7 @@ impl SearchOutOfCoreLayoutBody {
 
     fn validate(
         &self,
-        manifest: &SearchOutOfCoreManifestBody,
+        manifest: &SearchOutOfCoreSegmentManifest,
         descriptor: &SearchSegmentDescriptor,
         max_compressed_segment_bytes: u64,
     ) -> Result<()> {
@@ -561,11 +609,12 @@ impl SearchOutOfCoreReader {
         let manifest_path = root.join(OUT_OF_CORE_MANIFEST_FILE);
         let manifest_bytes = read_bounded_file(&manifest_path, MAX_OUT_OF_CORE_MANIFEST_BYTES)?;
         let manifest = SearchOutOfCoreManifestBody::decode(&manifest_bytes)?;
+        let segment_manifest = manifest.primary_segment();
 
         let descriptor_bytes = read_bound_artifact(
-            &root.join(&manifest.descriptor_file),
-            manifest.descriptor_len,
-            manifest.descriptor_checksum,
+            &root.join(&segment_manifest.descriptor_file),
+            segment_manifest.descriptor_len,
+            segment_manifest.descriptor_checksum,
             config.max_descriptor_bytes.get(),
             "search segment descriptor",
         )?;
@@ -573,10 +622,10 @@ impl SearchOutOfCoreReader {
             HawDBError::Storage(format!("search segment descriptor is not UTF-8: {error}"))
         })?;
         let descriptor = decode_search_segment_descriptor_text(descriptor_text)?;
-        if descriptor.document_count != manifest.document_count {
+        if descriptor.document_count != segment_manifest.document_count {
             return Err(HawDBError::Storage(format!(
                 "search out-of-core manifest expects {} documents, descriptor has {}",
-                manifest.document_count, descriptor.document_count
+                segment_manifest.document_count, descriptor.document_count
             )));
         }
         for segment in &descriptor.segments {
@@ -592,7 +641,7 @@ impl SearchOutOfCoreReader {
                     segment.segment_id, range.length, config.max_compressed_segment_bytes
                 )));
             }
-            if range.offset.saturating_add(range.length) > manifest.payload_len {
+            if range.offset.saturating_add(range.length) > segment_manifest.payload_len {
                 return Err(HawDBError::Storage(format!(
                     "search segment {} exceeds the published payload length",
                     segment.segment_id
@@ -600,29 +649,29 @@ impl SearchOutOfCoreReader {
             }
         }
 
-        let payload_path = root.join(&manifest.payload_file);
+        let payload_path = root.join(&segment_manifest.payload_file);
         let payload = File::open(&payload_path)?;
-        if payload.metadata()?.len() != manifest.payload_len {
+        if payload.metadata()?.len() != segment_manifest.payload_len {
             return Err(HawDBError::Storage(
                 "search out-of-core payload length mismatch".to_string(),
             ));
         }
 
         let layout_bytes = read_bound_artifact(
-            &root.join(&manifest.layout_file),
-            manifest.layout_len,
-            manifest.layout_checksum,
+            &root.join(&segment_manifest.layout_file),
+            segment_manifest.layout_len,
+            segment_manifest.layout_checksum,
             config.max_descriptor_bytes.get(),
             "search out-of-core layout",
         )?;
         let layout = SearchOutOfCoreLayoutBody::decode(&layout_bytes)?;
         layout.validate(
-            &manifest,
+            segment_manifest,
             &descriptor,
             config.max_compressed_segment_bytes.get(),
         )?;
-        if manifest.rabitq_vector_document_count
-            != manifest.rabitq_artifact_file.as_ref().map(|_| {
+        if segment_manifest.rabitq_vector_document_count
+            != segment_manifest.rabitq_artifact_file.as_ref().map(|_| {
                 layout
                     .segments
                     .iter()
@@ -637,21 +686,21 @@ impl SearchOutOfCoreReader {
         }
 
         let metadata_payload = open_exact_length_artifact(
-            &root.join(&manifest.metadata_payload_file),
-            manifest.metadata_payload_len,
+            &root.join(&segment_manifest.metadata_payload_file),
+            segment_manifest.metadata_payload_len,
             "search out-of-core metadata payload",
         )?;
         let vector_payload = open_exact_length_artifact(
-            &root.join(&manifest.vector_payload_file),
-            manifest.vector_payload_len,
+            &root.join(&segment_manifest.vector_payload_file),
+            segment_manifest.vector_payload_len,
             "search out-of-core vector payload",
         )?;
 
-        let lexical_manifest_path = root.join(&manifest.lexical_manifest_file);
+        let lexical_manifest_path = root.join(&segment_manifest.lexical_manifest_file);
         let lexical_manifest_bytes = read_bound_artifact(
             &lexical_manifest_path,
-            manifest.lexical_manifest_len,
-            manifest.lexical_manifest_checksum,
+            segment_manifest.lexical_manifest_len,
+            segment_manifest.lexical_manifest_checksum,
             config.max_lexical_manifest_bytes.get(),
             "search lexical manifest",
         )?;
@@ -664,9 +713,9 @@ impl SearchOutOfCoreReader {
         let lexical_projection = LexicalProjectionReader::load_manifest_bytes(
             &root,
             &lexical_manifest_bytes,
-            manifest.source_graph_commit_epoch,
+            segment_manifest.source_graph_commit_epoch,
             lexical_analyzer_digest(&analyzer_lexicon),
-            manifest.documents_digest,
+            segment_manifest.documents_digest,
             lexical_config,
         )?
         .ok_or_else(|| {
@@ -681,10 +730,11 @@ impl SearchOutOfCoreReader {
         let rabitq_projection = open_rabitq_projection(
             &root,
             &manifest,
+            segment_manifest,
             config.max_vector_search_working_bytes.get(),
         )?;
         #[cfg(not(feature = "vector-search"))]
-        verify_rabitq_artifact(&root, &manifest)?;
+        verify_rabitq_artifact(&root, segment_manifest)?;
 
         Ok(Self {
             root,
@@ -728,14 +778,16 @@ impl SearchOutOfCoreReader {
     }
 
     pub fn projection_payload_bytes(&self) -> u64 {
-        self.manifest
-            .descriptor_len
-            .saturating_add(self.manifest.payload_len)
-            .saturating_add(self.manifest.metadata_payload_len)
-            .saturating_add(self.manifest.vector_payload_len)
-            .saturating_add(self.manifest.layout_len)
-            .saturating_add(self.manifest.lexical_manifest_len)
-            .saturating_add(self.manifest.rabitq_artifact_len.unwrap_or_default())
+        self.manifest.segments.iter().fold(0u64, |total, segment| {
+            total
+                .saturating_add(segment.descriptor_len)
+                .saturating_add(segment.payload_len)
+                .saturating_add(segment.metadata_payload_len)
+                .saturating_add(segment.vector_payload_len)
+                .saturating_add(segment.layout_len)
+                .saturating_add(segment.lexical_manifest_len)
+                .saturating_add(segment.rabitq_artifact_len.unwrap_or_default())
+        })
     }
 
     #[doc(hidden)]
@@ -1931,7 +1983,7 @@ impl SearchOutOfCoreReader {
     }
 }
 
-fn verify_rabitq_artifact(root: &Path, manifest: &SearchOutOfCoreManifestBody) -> Result<()> {
+fn verify_rabitq_artifact(root: &Path, manifest: &SearchOutOfCoreSegmentManifest) -> Result<()> {
     let Some(file_name) = manifest.rabitq_artifact_file.as_deref() else {
         return Ok(());
     };
@@ -1953,7 +2005,8 @@ fn verify_rabitq_artifact(root: &Path, manifest: &SearchOutOfCoreManifestBody) -
 #[cfg(feature = "vector-search")]
 fn open_rabitq_projection(
     root: &Path,
-    manifest: &SearchOutOfCoreManifestBody,
+    active_manifest: &SearchOutOfCoreManifestBody,
+    manifest: &SearchOutOfCoreSegmentManifest,
     max_working_bytes: usize,
 ) -> Result<Option<Arc<hawdb_vector_projection::FileProjection>>> {
     verify_rabitq_artifact(root, manifest)?;
@@ -1970,18 +2023,18 @@ fn open_rabitq_projection(
     }
     let projection = hawdb_vector_projection::FileProjection::open(root.join(file_name))
         .map_err(vector_projection_error)?;
-    let projection_manifest = projection.manifest();
+    let artifact_manifest = projection.manifest();
     let expected_identity = hawdb_vector_projection::ProjectionIdentity {
         generation: manifest.generation,
         source_epoch: manifest.source_graph_commit_epoch,
-        embedding_model: manifest.embedding_model.clone(),
-        embedding_version: manifest.embedding_version.clone(),
+        embedding_model: active_manifest.embedding_model.clone(),
+        embedding_version: active_manifest.embedding_version.clone(),
     };
-    if projection_manifest.identity != expected_identity
-        || Some(projection_manifest.dimension) != manifest.embedding_dimension
-        || Some(projection_manifest.document_count) != manifest.rabitq_vector_document_count
-        || Some(projection_manifest.source_digest) != manifest.rabitq_source_digest
-        || Some(projection_manifest.payload_checksum) != manifest.rabitq_payload_checksum
+    if artifact_manifest.identity != expected_identity
+        || Some(artifact_manifest.dimension) != active_manifest.embedding_dimension
+        || Some(artifact_manifest.document_count) != manifest.rabitq_vector_document_count
+        || Some(artifact_manifest.source_digest) != manifest.rabitq_source_digest
+        || Some(artifact_manifest.payload_checksum) != manifest.rabitq_payload_checksum
     {
         return Err(HawDBError::Storage(
             "search out-of-core RaBitQ identity does not match its generation".to_string(),
@@ -2083,31 +2136,39 @@ pub(super) fn publish_out_of_core_projection(
     let manifest = SearchOutOfCoreManifestBody {
         format: OUT_OF_CORE_FORMAT.to_string(),
         generation,
-        descriptor_file,
-        descriptor_len: descriptor_bytes.len() as u64,
-        descriptor_checksum: checksum_bytes(&descriptor_bytes),
-        payload_file,
-        payload_len: fs::metadata(root.join(format!(
-            "search_projection_segment_payloads.{generation}.hawdb"
-        )))?
-        .len(),
-        metadata_payload_file,
-        metadata_payload_len,
-        vector_payload_file,
-        vector_payload_len,
-        layout_file,
-        layout_len: layout_bytes.len() as u64,
-        layout_checksum: checksum_bytes(&layout_bytes),
-        lexical_manifest_file,
-        lexical_manifest_len: lexical_manifest_bytes.len() as u64,
-        lexical_manifest_checksum: checksum_bytes(&lexical_manifest_bytes),
-        rabitq_artifact_file: None,
-        rabitq_artifact_len: None,
-        rabitq_artifact_checksum: None,
-        rabitq_source_digest: None,
-        rabitq_vector_document_count: None,
-        rabitq_payload_checksum: None,
-        rabitq_peak_build_working_bytes: None,
+        segments: vec![SearchOutOfCoreSegmentManifest {
+            segment_id: 0,
+            level: 0,
+            generation,
+            descriptor_file,
+            descriptor_len: descriptor_bytes.len() as u64,
+            descriptor_checksum: checksum_bytes(&descriptor_bytes),
+            payload_file,
+            payload_len: fs::metadata(root.join(format!(
+                "search_projection_segment_payloads.{generation}.hawdb"
+            )))?
+            .len(),
+            metadata_payload_file,
+            metadata_payload_len,
+            vector_payload_file,
+            vector_payload_len,
+            layout_file,
+            layout_len: layout_bytes.len() as u64,
+            layout_checksum: checksum_bytes(&layout_bytes),
+            lexical_manifest_file,
+            lexical_manifest_len: lexical_manifest_bytes.len() as u64,
+            lexical_manifest_checksum: checksum_bytes(&lexical_manifest_bytes),
+            rabitq_artifact_file: None,
+            rabitq_artifact_len: None,
+            rabitq_artifact_checksum: None,
+            rabitq_source_digest: None,
+            rabitq_vector_document_count: None,
+            rabitq_payload_checksum: None,
+            rabitq_peak_build_working_bytes: None,
+            document_count: index.documents.len(),
+            documents_digest: lexical_documents_digest(&index.documents),
+            source_graph_commit_epoch: index.source_graph_commit_epoch,
+        }],
         document_count: index.documents.len(),
         documents_digest: lexical_documents_digest(&index.documents),
         source_graph_commit_epoch: index.source_graph_commit_epoch,
@@ -3525,7 +3586,7 @@ mod tests {
         index.upsert(document(0, "team")).unwrap();
         index.checkpoint().unwrap();
         let reader = SearchOutOfCoreReader::open(&path).unwrap();
-        let payload_path = path.join(&reader.manifest.payload_file);
+        let payload_path = path.join(&reader.manifest.primary_segment().payload_file);
         let mut file = OpenOptions::new()
             .read(true)
             .write(true)
@@ -3556,6 +3617,32 @@ mod tests {
     }
 
     #[test]
+    fn out_of_core_reader_rejects_unimplemented_multi_segment_manifest() {
+        let path = test_dir("multiple-manifest-segments");
+        let mut index = SearchIndex::open(&path).unwrap();
+        index.upsert(document(0, "team")).unwrap();
+        index.checkpoint().unwrap();
+
+        let manifest_path = path.join(OUT_OF_CORE_MANIFEST_FILE);
+        let envelope: SearchOutOfCoreManifestEnvelope =
+            serde_json::from_slice(&fs::read(&manifest_path).unwrap()).unwrap();
+        let mut body = envelope.body;
+        let duplicate = body.primary_segment().clone();
+        body.segments.push(duplicate);
+        let body_bytes = serde_json::to_vec(&body).unwrap();
+        let bytes = serde_json::to_vec(&SearchOutOfCoreManifestEnvelope {
+            body,
+            checksum: checksum_bytes(&body_bytes),
+        })
+        .unwrap();
+        fs::write(&manifest_path, bytes).unwrap();
+
+        let error = SearchOutOfCoreReader::open(&path).unwrap_err();
+        assert!(error.to_string().contains("segment set is invalid"));
+        fs::remove_dir_all(path).unwrap();
+    }
+
+    #[test]
     #[cfg(all(feature = "full-text-search", feature = "vector-search"))]
     fn out_of_core_sidecar_corruption_fails_closed_in_the_consuming_stage() {
         let metadata_path = test_dir("metadata-corruption");
@@ -3563,7 +3650,14 @@ mod tests {
         metadata_index.upsert(document(0, "team")).unwrap();
         metadata_index.checkpoint().unwrap();
         let metadata_reader = SearchOutOfCoreReader::open(&metadata_path).unwrap();
-        corrupt_first_byte(&metadata_path.join(&metadata_reader.manifest.metadata_payload_file));
+        corrupt_first_byte(
+            &metadata_path.join(
+                &metadata_reader
+                    .manifest
+                    .primary_segment()
+                    .metadata_payload_file,
+            ),
+        );
         let mut filtered = options(0, None);
         filtered
             .metadata_filters
@@ -3581,7 +3675,9 @@ mod tests {
         vector_index.upsert(document(0, "team")).unwrap();
         vector_index.checkpoint().unwrap();
         let vector_reader = SearchOutOfCoreReader::open(&vector_path).unwrap();
-        corrupt_first_byte(&vector_path.join(&vector_reader.manifest.vector_payload_file));
+        corrupt_first_byte(
+            &vector_path.join(&vector_reader.manifest.primary_segment().vector_payload_file),
+        );
         let error = vector_reader
             .search_with_options("", Some(&[1.0, 0.5]), SearchMode::Vector, options(0, None))
             .unwrap_err();
