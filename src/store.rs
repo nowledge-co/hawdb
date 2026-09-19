@@ -2737,6 +2737,14 @@ impl hawdb_storage::graph_engine::GraphReadEngine for GraphStore {
     fn storage_residency_report(&self) -> hawdb_storage::StorageResidencyReport {
         GraphStore::storage_residency_report(self)
     }
+
+    fn append_table_schema(&self, table: &str) -> Option<&hawdb_storage::AppendTableSchema> {
+        GraphStore::append_table_schema(self, table)
+    }
+
+    fn initial_import_source_fingerprint(&self) -> Option<&str> {
+        GraphStore::initial_import_source_fingerprint(self)
+    }
 }
 
 #[cfg(test)]

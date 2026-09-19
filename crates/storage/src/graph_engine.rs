@@ -19,7 +19,8 @@
 //! can be generic over the engine instead of the concrete store.
 
 use crate::{
-    PublishedReadView, SegmentCacheSnapshot, StorageRecoveryReport, StorageResidencyReport,
+    AppendTableSchema, PublishedReadView, SegmentCacheSnapshot, StorageRecoveryReport,
+    StorageResidencyReport,
 };
 use hawdb_core::{BasicGraphStatistics, Catalog, GraphStatistics};
 
@@ -42,4 +43,8 @@ pub trait GraphReadEngine {
     fn segment_cache_snapshot(&self) -> Option<SegmentCacheSnapshot>;
 
     fn storage_residency_report(&self) -> StorageResidencyReport;
+
+    fn append_table_schema(&self, table: &str) -> Option<&AppendTableSchema>;
+
+    fn initial_import_source_fingerprint(&self) -> Option<&str>;
 }
