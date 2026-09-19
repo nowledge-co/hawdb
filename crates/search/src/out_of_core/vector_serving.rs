@@ -98,7 +98,7 @@ impl SearchOutOfCoreReader {
             ),
             CompressedVectorSearchMode::Preferred => {
                 #[cfg(feature = "vector-search")]
-                if self.primary_segment().rabitq_projection.is_some() {
+                if self.segments.len() == 1 && self.primary_segment().rabitq_projection.is_some() {
                     return self.scan_rabitq_vector_scores(
                         query_embedding,
                         candidate_set,
@@ -116,15 +116,18 @@ impl SearchOutOfCoreReader {
                 )?;
                 scan.fallback_reason_codes
                     .push(SearchFallbackReasonCode::CompressedVectorProjectionUnavailable);
-                scan.fallback_reasons.push(
+                scan.fallback_reasons.push(if self.segments.len() > 1 {
+                    "multi-segment out-of-core RaBitQ serving is unavailable until vector ordinals are layer-qualified; used exact scalar vector segments"
+                        .to_string()
+                } else {
                     "out-of-core RaBitQ projection is not attached to this generation; used exact scalar vector segments"
-                        .to_string(),
-                );
+                        .to_string()
+                });
                 Ok(scan)
             }
             CompressedVectorSearchMode::Required => {
                 #[cfg(feature = "vector-search")]
-                if self.primary_segment().rabitq_projection.is_some() {
+                if self.segments.len() == 1 && self.primary_segment().rabitq_projection.is_some() {
                     return self.scan_rabitq_vector_scores(
                         query_embedding,
                         candidate_set,
@@ -134,8 +137,12 @@ impl SearchOutOfCoreReader {
                     );
                 }
                 Err(HawDBError::Storage(
-                    "out-of-core RaBitQ projection is required but unavailable for this generation"
-                        .to_string(),
+                    if self.segments.len() > 1 {
+                        "multi-segment out-of-core RaBitQ serving is required but layer-qualified vector ordinals are not implemented"
+                    } else {
+                        "out-of-core RaBitQ projection is required but unavailable for this generation"
+                    }
+                    .to_string(),
                 ))
             }
         }
@@ -159,29 +166,31 @@ impl SearchOutOfCoreReader {
         )?;
         let mut vector_document_count = 0usize;
         let mut segment_scan_count = 0usize;
-        for segment in &self.primary_segment().descriptor.segments {
-            checkpoint_vector_task(task_context)?;
-            if candidate_set.segment_cardinality(segment.segment_id) == 0 {
-                continue;
-            }
-            segment_scan_count = segment_scan_count.saturating_add(1);
-            let documents = self.read_vector_segment(segment, metrics)?;
-            for document in &documents {
-                if !candidate_set.contains(&document.id, metrics)? {
+        for (layer, artifact) in self.segments.iter().enumerate() {
+            for segment in &artifact.descriptor.segments {
+                checkpoint_vector_task(task_context)?;
+                if candidate_set.segment_cardinality(layer, segment.segment_id) == 0 {
                     continue;
                 }
-                let embedding = document.embedding.as_slice();
-                if embedding.len() != query_embedding.len() || embedding.is_empty() {
-                    continue;
-                }
-                vector_document_count = vector_document_count.saturating_add(1);
-                metrics.vector_bytes_read = metrics.vector_bytes_read.saturating_add(
-                    (embedding.len() as u64).saturating_mul(std::mem::size_of::<f32>() as u64),
-                );
-                if let Some(score) = cosine_similarity(query_embedding, embedding)
-                    && score > 0.0
-                {
-                    collector.push(document.id.clone(), score)?;
+                segment_scan_count = segment_scan_count.saturating_add(1);
+                let documents = self.read_vector_segment(artifact, segment, metrics)?;
+                for document in &documents {
+                    if !candidate_set.contains(&document.id, metrics)? {
+                        continue;
+                    }
+                    let embedding = document.embedding.as_slice();
+                    if embedding.len() != query_embedding.len() || embedding.is_empty() {
+                        continue;
+                    }
+                    vector_document_count = vector_document_count.saturating_add(1);
+                    metrics.vector_bytes_read = metrics.vector_bytes_read.saturating_add(
+                        (embedding.len() as u64).saturating_mul(std::mem::size_of::<f32>() as u64),
+                    );
+                    if let Some(score) = cosine_similarity(query_embedding, embedding)
+                        && score > 0.0
+                    {
+                        collector.push(document.id.clone(), score)?;
+                    }
                 }
             }
         }
@@ -322,7 +331,7 @@ impl SearchOutOfCoreReader {
                 continue;
             }
             raw_segment_scan_count = raw_segment_scan_count.saturating_add(1);
-            for document in self.read_vector_segment(segment, metrics)? {
+            for document in self.read_vector_segment(self.primary_segment(), segment, metrics)? {
                 if selected_ordinals[start_index..end_index]
                     .binary_search(&document.vector_ordinal)
                     .is_err()

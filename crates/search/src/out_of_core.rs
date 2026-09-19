@@ -1196,12 +1196,6 @@ impl SearchOutOfCoreReader {
         let policy_epoch = access_control
             .map(|access_control| access_control.policy_epoch)
             .or(options.policy_epoch);
-        if self.segments.len() > 1 && mode != SearchMode::Text {
-            return Err(HawDBError::Storage(
-                "multi-segment out-of-core serving currently supports text queries only"
-                    .to_string(),
-            ));
-        }
         let query_terms = self.primary_segment().lexical_projection.tokenize_query(
             query_text,
             &self.analyzer_lexicon,
@@ -1908,12 +1902,14 @@ impl SearchOutOfCoreReader {
 
     fn read_vector_segment(
         &self,
+        artifact: &SearchOutOfCoreSegmentReader,
         segment: &SearchSegmentDescriptorEntry,
         metrics: &mut SearchOutOfCoreMetrics,
     ) -> Result<Vec<SearchVectorDocument>> {
-        let range = self.layout_range(segment.segment_id)?.vectors;
+        let layout = Self::artifact_layout_range(artifact, segment.segment_id)?;
+        let range = layout.vectors;
         let payload = read_out_of_core_payload_range(
-            &self.primary_segment().vector_payload,
+            &artifact.vector_payload,
             range,
             segment.segment_id,
             "vector",
@@ -1932,13 +1928,9 @@ impl SearchOutOfCoreReader {
             &text,
             segment,
             range.entry_count,
-            self.layout_range(segment.segment_id)?.vector_ordinal_base,
+            layout.vector_ordinal_base,
             self.manifest.embedding_dimension,
         )
-    }
-
-    fn layout_range(&self, segment_id: u64) -> Result<&SearchOutOfCoreSegmentLayout> {
-        Self::artifact_layout_range(self.primary_segment(), segment_id)
     }
 
     fn artifact_layout_range(
@@ -2473,13 +2465,13 @@ impl CandidateSet {
         }
     }
 
-    fn segment_cardinality(&self, segment_id: u64) -> usize {
+    fn segment_cardinality(&self, layer: usize, segment_id: u64) -> usize {
         match self {
             Self::All(_) => usize::MAX,
             Self::Spilled(set) => set
                 .blocks
-                .get(segment_id as usize)
-                .filter(|block| block.segment_id == segment_id)
+                .iter()
+                .find(|block| block.layer == layer && block.segment_id == segment_id)
                 .map(|block| block.cardinality)
                 .unwrap_or(0),
         }
@@ -3757,13 +3749,15 @@ mod tests {
         fs::remove_dir_all(path).unwrap();
     }
 
-    #[test]
     #[cfg(feature = "full-text-search")]
-    fn out_of_core_multi_segment_metadata_filter_reads_each_artifact() {
-        let path = test_dir("multi-segment-metadata-filter");
+    fn publish_two_artifact_manifest(
+        path: &Path,
+        initial_document: SearchDocument,
+        next_document: SearchDocument,
+    ) {
         let mut initial =
-            SearchOutOfCoreGenerationWriter::create(&path, Default::default()).unwrap();
-        initial.push(document(0, "team")).unwrap();
+            SearchOutOfCoreGenerationWriter::create(path, Default::default()).unwrap();
+        initial.push(initial_document).unwrap();
         initial.finish().unwrap();
 
         let manifest_path = path.join(OUT_OF_CORE_MANIFEST_FILE);
@@ -3776,8 +3770,8 @@ mod tests {
             .next()
             .expect("initial manifest has one segment");
 
-        let mut next = SearchOutOfCoreGenerationWriter::create(&path, Default::default()).unwrap();
-        next.push(document(1, "team")).unwrap();
+        let mut next = SearchOutOfCoreGenerationWriter::create(path, Default::default()).unwrap();
+        next.push(next_document).unwrap();
         next.finish().unwrap();
 
         let next_manifest: SearchOutOfCoreManifestEnvelope =
@@ -3797,6 +3791,13 @@ mod tests {
             .unwrap(),
         )
         .unwrap();
+    }
+
+    #[test]
+    #[cfg(feature = "full-text-search")]
+    fn out_of_core_multi_segment_metadata_filter_reads_each_artifact() {
+        let path = test_dir("multi-segment-metadata-filter");
+        publish_two_artifact_manifest(&path, document(0, "team"), document(1, "team"));
 
         let reader = SearchOutOfCoreReader::open(&path).unwrap();
         let mut filtered = options(10, None);
@@ -3826,6 +3827,81 @@ mod tests {
             2
         );
         assert_eq!(output.metrics.candidate_block_reads, 2);
+        fs::remove_dir_all(path).unwrap();
+    }
+
+    #[test]
+    #[cfg(all(feature = "full-text-search", feature = "vector-search"))]
+    fn out_of_core_multi_segment_vector_and_hybrid_use_scalar_sidecars() {
+        let path = test_dir("multi-segment-vector");
+        publish_two_artifact_manifest(&path, document(0, "team"), document(1, "team"));
+        let reader = SearchOutOfCoreReader::open(&path).unwrap();
+        let query_embedding = [1.0, 16.0];
+        let mut filtered = options(10, None);
+        filtered
+            .metadata_filters
+            .insert("space_id".to_string(), "team".to_string());
+
+        let vector = reader
+            .search_with_options(
+                "",
+                Some(&query_embedding),
+                SearchMode::Vector,
+                filtered.clone(),
+            )
+            .unwrap();
+        assert_eq!(vector.result.filtered_document_count, 2);
+        assert_eq!(vector.result.total_hits, 2);
+        assert_eq!(
+            vector
+                .result
+                .hits
+                .iter()
+                .map(|hit| hit.id.as_str())
+                .collect::<BTreeSet<_>>(),
+            BTreeSet::from(["memory:000", "memory:001"]),
+        );
+        assert_eq!(vector.metrics.candidate_block_reads, 2);
+        assert!(vector.metrics.vector_segment_bytes_read > 0);
+
+        let hybrid = reader
+            .search_with_options(
+                "graph",
+                Some(&query_embedding),
+                SearchMode::Hybrid,
+                filtered,
+            )
+            .unwrap();
+        assert_eq!(hybrid.result.filtered_document_count, 2);
+        assert_eq!(hybrid.result.total_hits, 2);
+        assert!(hybrid.metrics.vector_segment_bytes_read > 0);
+
+        let preferred = reader
+            .search_with_options_compressed_vector_projection_mode(
+                "",
+                Some(&query_embedding),
+                SearchMode::Vector,
+                options(10, None),
+                CompressedVectorSearchMode::Preferred,
+            )
+            .unwrap();
+        assert_eq!(preferred.result.total_hits, 2);
+        assert!(preferred
+            .result
+            .fallback_reason_codes
+            .contains(&SearchFallbackReasonCode::CompressedVectorProjectionUnavailable));
+        let required = reader
+            .search_with_options_compressed_vector_projection_mode(
+                "",
+                Some(&query_embedding),
+                SearchMode::Vector,
+                options(10, None),
+                CompressedVectorSearchMode::Required,
+            )
+            .unwrap_err();
+        assert!(required
+            .to_string()
+            .contains("layer-qualified vector ordinals are not implemented"));
         fs::remove_dir_all(path).unwrap();
     }
 
