@@ -15,6 +15,10 @@
 use super::{BoundedScoreCollector, CandidateSet, SearchOutOfCoreMetrics, SearchOutOfCoreReader};
 use crate::error::{HawDBError, Result};
 use crate::{cosine_similarity, CompressedVectorSearchMode, SearchFallbackReasonCode};
+#[cfg(feature = "vector-search")]
+use std::cmp::{Ordering, Reverse};
+#[cfg(feature = "vector-search")]
+use std::collections::BinaryHeap;
 use std::collections::{BTreeMap, BTreeSet};
 #[cfg(feature = "vector-search")]
 use std::num::NonZeroUsize;
@@ -23,6 +27,85 @@ const VECTOR_SCORE_ENTRY_WORKING_BYTES: usize = 128;
 
 fn admitted_score_entries(configured_max_entries: usize, working_bytes: usize) -> usize {
     configured_max_entries.min(working_bytes / VECTOR_SCORE_ENTRY_WORKING_BYTES)
+}
+
+#[cfg(feature = "vector-search")]
+#[derive(Debug)]
+struct LayeredProjectionHit {
+    layer: usize,
+    ordinal: u64,
+    score: f32,
+}
+
+#[cfg(feature = "vector-search")]
+impl PartialEq for LayeredProjectionHit {
+    fn eq(&self, other: &Self) -> bool {
+        self.layer == other.layer
+            && self.ordinal == other.ordinal
+            && self.score.to_bits() == other.score.to_bits()
+    }
+}
+
+#[cfg(feature = "vector-search")]
+impl Eq for LayeredProjectionHit {}
+
+#[cfg(feature = "vector-search")]
+impl PartialOrd for LayeredProjectionHit {
+    fn partial_cmp(&self, other: &Self) -> Option<Ordering> {
+        Some(self.cmp(other))
+    }
+}
+
+#[cfg(feature = "vector-search")]
+impl Ord for LayeredProjectionHit {
+    fn cmp(&self, other: &Self) -> Ordering {
+        self.score
+            .total_cmp(&other.score)
+            .then_with(|| other.layer.cmp(&self.layer))
+            .then_with(|| other.ordinal.cmp(&self.ordinal))
+    }
+}
+
+#[cfg(feature = "vector-search")]
+struct BoundedLayeredProjectionHits {
+    limit: usize,
+    heap: BinaryHeap<Reverse<LayeredProjectionHit>>,
+}
+
+#[cfg(feature = "vector-search")]
+impl BoundedLayeredProjectionHits {
+    fn new(limit: usize) -> Self {
+        Self {
+            limit,
+            heap: BinaryHeap::with_capacity(limit),
+        }
+    }
+
+    fn push(&mut self, candidate: LayeredProjectionHit) {
+        if self.limit == 0 {
+            return;
+        }
+        if self.heap.len() < self.limit {
+            self.heap.push(Reverse(candidate));
+        } else if self
+            .heap
+            .peek()
+            .is_some_and(|Reverse(worst)| candidate.cmp(worst).is_gt())
+        {
+            self.heap.pop();
+            self.heap.push(Reverse(candidate));
+        }
+    }
+
+    fn finish(self) -> Vec<LayeredProjectionHit> {
+        let mut hits = self
+            .heap
+            .into_iter()
+            .map(|Reverse(hit)| hit)
+            .collect::<Vec<_>>();
+        hits.sort_by(|left, right| right.cmp(left));
+        hits
+    }
 }
 
 #[derive(Debug, Clone)]
@@ -98,7 +181,11 @@ impl SearchOutOfCoreReader {
             ),
             CompressedVectorSearchMode::Preferred => {
                 #[cfg(feature = "vector-search")]
-                if self.segments.len() == 1 && self.primary_segment().rabitq_projection.is_some() {
+                if self
+                    .segments
+                    .iter()
+                    .all(|artifact| artifact.rabitq_projection.is_some())
+                {
                     return self.scan_rabitq_vector_scores(
                         query_embedding,
                         candidate_set,
@@ -116,18 +203,19 @@ impl SearchOutOfCoreReader {
                 )?;
                 scan.fallback_reason_codes
                     .push(SearchFallbackReasonCode::CompressedVectorProjectionUnavailable);
-                scan.fallback_reasons.push(if self.segments.len() > 1 {
-                    "multi-segment out-of-core RaBitQ serving is unavailable until vector ordinals are layer-qualified; used exact scalar vector segments"
-                        .to_string()
-                } else {
-                    "out-of-core RaBitQ projection is not attached to this generation; used exact scalar vector segments"
-                        .to_string()
-                });
+                scan.fallback_reasons.push(
+                    "one or more out-of-core artifacts do not attach a RaBitQ projection; used exact scalar vector segments"
+                        .to_string(),
+                );
                 Ok(scan)
             }
             CompressedVectorSearchMode::Required => {
                 #[cfg(feature = "vector-search")]
-                if self.segments.len() == 1 && self.primary_segment().rabitq_projection.is_some() {
+                if self
+                    .segments
+                    .iter()
+                    .all(|artifact| artifact.rabitq_projection.is_some())
+                {
                     return self.scan_rabitq_vector_scores(
                         query_embedding,
                         candidate_set,
@@ -137,12 +225,8 @@ impl SearchOutOfCoreReader {
                     );
                 }
                 Err(HawDBError::Storage(
-                    if self.segments.len() > 1 {
-                        "multi-segment out-of-core RaBitQ serving is required but layer-qualified vector ordinals are not implemented"
-                    } else {
-                        "out-of-core RaBitQ projection is required but unavailable for this generation"
-                    }
-                    .to_string(),
+                    "out-of-core RaBitQ projection is required but unavailable for one or more artifacts"
+                        .to_string(),
                 ))
             }
         }
@@ -233,16 +317,8 @@ impl SearchOutOfCoreReader {
         vector_execution_options: super::VectorSearchExecutionOptions<'_>,
         metrics: &mut SearchOutOfCoreMetrics,
     ) -> Result<VectorScoreScan> {
+        self.require_compatible_rabitq_projections()?;
         let task_context = vector_execution_options.task_context;
-        let projection = self
-            .primary_segment()
-            .rabitq_projection
-            .as_ref()
-            .ok_or_else(|| {
-                HawDBError::Storage(
-                    "search out-of-core RaBitQ projection is unavailable".to_string(),
-                )
-            })?;
         checkpoint_vector_task(task_context)?;
         let minimum_candidates = retained_limit.unwrap_or(1).max(1);
         if minimum_candidates > self.config.max_vector_candidates.get() {
@@ -251,151 +327,261 @@ impl SearchOutOfCoreReader {
                 self.config.max_vector_candidates
             )));
         }
-        let candidate_limit = self
-            .config
-            .max_vector_candidates
-            .get()
-            .min(projection.manifest().document_count.max(1));
+        let candidate_limit = self.config.max_vector_candidates.get();
         let total_working_bytes = self
             .config
             .max_vector_search_working_bytes
             .get()
             .min(vector_execution_options.max_working_bytes);
-        let allowlist =
-            candidate_set.vector_ordinals(total_working_bytes as u64, task_context, metrics)?;
-        let allowlist_bytes = allowlist.as_ref().map_or(0usize, |ids| {
-            ids.capacity().saturating_mul(std::mem::size_of::<u64>())
-        });
+        // The projection can return one local top-k while the global heap is
+        // retained. Sorting the heap also transiently materializes a second
+        // layered vector, so reserve both representations before dispatch.
+        let selected_candidate_entry_bytes = std::mem::size_of::<LayeredProjectionHit>()
+            .saturating_mul(2)
+            .saturating_add(
+                std::mem::size_of::<hawdb_vector_projection::ProjectionHit>().saturating_mul(2),
+            );
+        let selected_candidate_bytes = candidate_limit
+            .checked_mul(selected_candidate_entry_bytes)
+            .ok_or_else(|| {
+                HawDBError::Storage("search RaBitQ candidate size overflow".to_string())
+            })?;
         let scan_working_bytes = total_working_bytes
-            .checked_sub(allowlist_bytes)
+            .checked_sub(selected_candidate_bytes)
             .ok_or_else(|| {
                 HawDBError::Storage(format!(
-                    "search vector allowlist requires {allowlist_bytes} bytes, exceeding {total_working_bytes}"
+                    "search RaBitQ retained candidates require {selected_candidate_bytes} bytes, exceeding {total_working_bytes}"
                 ))
             })?;
-        let mut search_options = hawdb_vector_projection::ProjectionSearchOptions::new()
-            .with_max_parallelism(
-                NonZeroUsize::new(
-                    self.config
-                        .max_vector_search_parallelism
-                        .get()
-                        .min(vector_execution_options.max_parallelism.get()),
+        let mut selected = BoundedLayeredProjectionHits::new(candidate_limit);
+        let mut vector_document_count = 0usize;
+        let mut generated_candidate_count = 0usize;
+        let mut candidate_scan_worker_count = 0usize;
+        let mut candidate_scan_segment_count = 0usize;
+        let mut candidate_scan_scanned_segment_count = 0usize;
+        let mut candidate_scan_scored_document_count = 0usize;
+        let mut candidate_scan_filtered_document_count = 0usize;
+        let mut candidate_scan_scanned_block_count = 0usize;
+        let mut candidate_scan_skipped_block_count = 0usize;
+        let mut candidate_scan_payload_bytes_read = 0u64;
+        let mut candidate_scan_admitted_working_bytes = 0usize;
+        let mut candidate_scan_kernel = None;
+
+        for (layer, artifact) in self.segments.iter().enumerate() {
+            checkpoint_vector_task(task_context)?;
+            let projection = artifact.rabitq_projection.as_ref().ok_or_else(|| {
+                HawDBError::Storage(format!(
+                    "search out-of-core layer {layer} has no RaBitQ projection"
+                ))
+            })?;
+            let allowlist = candidate_set.vector_ordinals_for_layer(
+                layer,
+                scan_working_bytes as u64,
+                task_context,
+                metrics,
+            )?;
+            let allowlist_bytes = allowlist.as_ref().map_or(0usize, |ids| {
+                ids.capacity().saturating_mul(std::mem::size_of::<u64>())
+            });
+            let projection_working_bytes = scan_working_bytes
+                .checked_sub(allowlist_bytes)
+                .ok_or_else(|| {
+                    HawDBError::Storage(format!(
+                        "search vector layer {layer} allowlist requires {allowlist_bytes} bytes, exceeding {scan_working_bytes}"
+                    ))
+                })?;
+            let mut search_options = hawdb_vector_projection::ProjectionSearchOptions::new()
+                .with_max_parallelism(
+                    NonZeroUsize::new(
+                        self.config
+                            .max_vector_search_parallelism
+                            .get()
+                            .min(vector_execution_options.max_parallelism.get()),
+                    )
+                    .expect("out-of-core vector parallelism is non-zero"),
                 )
-                .expect("out-of-core vector parallelism is non-zero"),
-            )
-            .with_max_working_bytes(scan_working_bytes)
-            .with_kernel(vector_execution_options.kernel.projection_preference());
-        if let Some(allowlist) = allowlist.as_deref() {
-            search_options = search_options.with_allowed_ids(allowlist);
+                .with_max_working_bytes(projection_working_bytes)
+                .with_kernel(vector_execution_options.kernel.projection_preference());
+            if let Some(allowlist) = allowlist.as_deref() {
+                search_options = search_options.with_allowed_ids(allowlist);
+            }
+            if let Some(task_context) = task_context {
+                search_options = search_options.with_task_context(task_context);
+            }
+            let output = projection
+                .search(
+                    query_embedding,
+                    candidate_limit.min(projection.manifest().document_count.max(1)),
+                    search_options,
+                )
+                .map_err(vector_projection_error)?;
+            let projection_report = output.report;
+            metrics.rabitq_payload_bytes_read = metrics
+                .rabitq_payload_bytes_read
+                .saturating_add(projection_report.payload_bytes_read);
+            vector_document_count =
+                vector_document_count.saturating_add(projection.manifest().document_count);
+            generated_candidate_count =
+                generated_candidate_count.saturating_add(projection_report.candidate_count);
+            candidate_scan_worker_count =
+                candidate_scan_worker_count.saturating_add(projection_report.worker_count);
+            candidate_scan_segment_count =
+                candidate_scan_segment_count.saturating_add(projection_report.segment_count);
+            candidate_scan_scanned_segment_count = candidate_scan_scanned_segment_count
+                .saturating_add(projection_report.scanned_segment_count);
+            candidate_scan_scored_document_count = candidate_scan_scored_document_count
+                .saturating_add(projection_report.scored_document_count);
+            candidate_scan_filtered_document_count = candidate_scan_filtered_document_count
+                .saturating_add(projection_report.filtered_document_count);
+            candidate_scan_scanned_block_count = candidate_scan_scanned_block_count
+                .saturating_add(projection_report.scanned_block_count);
+            candidate_scan_skipped_block_count = candidate_scan_skipped_block_count
+                .saturating_add(projection_report.skipped_block_count);
+            candidate_scan_payload_bytes_read = candidate_scan_payload_bytes_read
+                .saturating_add(projection_report.payload_bytes_read);
+            candidate_scan_admitted_working_bytes = candidate_scan_admitted_working_bytes.max(
+                projection_report
+                    .admitted_working_bytes
+                    .saturating_add(allowlist_bytes),
+            );
+            candidate_scan_kernel
+                .get_or_insert_with(|| projection_report.kernel.as_str().to_string());
+            for hit in output.hits {
+                selected.push(LayeredProjectionHit {
+                    layer,
+                    ordinal: hit.id,
+                    score: hit.score,
+                });
+            }
         }
-        if let Some(task_context) = task_context {
-            search_options = search_options.with_task_context(task_context);
-        }
-        let output = projection
-            .search(query_embedding, candidate_limit, search_options)
-            .map_err(vector_projection_error)?;
-        let projection_report = output.report;
-        metrics.rabitq_payload_bytes_read = metrics
-            .rabitq_payload_bytes_read
-            .saturating_add(projection_report.payload_bytes_read);
-        let mut selected_ordinals = output
-            .hits
-            .into_iter()
-            .map(|hit| hit.id)
-            .collect::<Vec<_>>();
-        selected_ordinals.sort_unstable();
-        if selected_ordinals.windows(2).any(|pair| pair[0] >= pair[1]) {
+
+        let mut selected = selected.finish();
+        selected.sort_by(|left, right| {
+            left.layer
+                .cmp(&right.layer)
+                .then_with(|| left.ordinal.cmp(&right.ordinal))
+        });
+        if selected
+            .windows(2)
+            .any(|pair| pair[0].layer == pair[1].layer && pair[0].ordinal == pair[1].ordinal)
+        {
             return Err(HawDBError::Storage(
-                "search RaBitQ projection returned duplicate candidate ordinals".to_string(),
+                "search RaBitQ projections returned duplicate layer ordinals".to_string(),
             ));
         }
 
-        let retained_working_bytes = allowlist_bytes.saturating_add(
-            selected_ordinals
-                .capacity()
-                .saturating_mul(std::mem::size_of::<u64>()),
-        );
-        let score_working_bytes = total_working_bytes
-            .checked_sub(retained_working_bytes)
-            .ok_or_else(|| {
-                HawDBError::Storage(format!(
-                    "search vector retained candidates require {retained_working_bytes} bytes, exceeding {total_working_bytes}"
-                ))
-            })?;
         let mut collector = BoundedScoreCollector::new(
             retained_limit,
-            admitted_score_entries(self.config.max_score_entries.get(), score_working_bytes),
+            admitted_score_entries(self.config.max_score_entries.get(), scan_working_bytes),
         )?;
         let mut raw_segment_scan_count = 0usize;
         let mut reranked_candidate_count = 0usize;
-        for (layout, segment) in self
-            .primary_segment()
-            .layout
-            .segments
-            .iter()
-            .zip(&self.primary_segment().descriptor.segments)
-        {
-            checkpoint_vector_task(task_context)?;
-            let end = layout
-                .vector_ordinal_base
-                .saturating_add(layout.vectors.entry_count as u64);
-            let start_index =
-                selected_ordinals.partition_point(|ordinal| *ordinal < layout.vector_ordinal_base);
-            let end_index = selected_ordinals.partition_point(|ordinal| *ordinal < end);
-            if start_index == end_index {
-                continue;
-            }
-            raw_segment_scan_count = raw_segment_scan_count.saturating_add(1);
-            for document in self.read_vector_segment(self.primary_segment(), segment, metrics)? {
-                if selected_ordinals[start_index..end_index]
-                    .binary_search(&document.vector_ordinal)
-                    .is_err()
-                {
+        let mut selected_start = 0usize;
+        while selected_start < selected.len() {
+            let layer = selected[selected_start].layer;
+            let selected_end = selected[selected_start..]
+                .partition_point(|candidate| candidate.layer == layer)
+                .saturating_add(selected_start);
+            let selected_layer = &selected[selected_start..selected_end];
+            let artifact = self.segments.get(layer).ok_or_else(|| {
+                HawDBError::Storage(format!(
+                    "search RaBitQ candidate references unknown layer {layer}"
+                ))
+            })?;
+            for (layout, segment) in artifact
+                .layout
+                .segments
+                .iter()
+                .zip(&artifact.descriptor.segments)
+            {
+                checkpoint_vector_task(task_context)?;
+                let end = layout
+                    .vector_ordinal_base
+                    .saturating_add(layout.vectors.entry_count as u64);
+                let start_index = selected_layer
+                    .partition_point(|candidate| candidate.ordinal < layout.vector_ordinal_base);
+                let end_index = selected_layer.partition_point(|candidate| candidate.ordinal < end);
+                if start_index == end_index {
                     continue;
                 }
-                metrics.vector_bytes_read = metrics.vector_bytes_read.saturating_add(
-                    (document.embedding.len() as u64)
-                        .saturating_mul(std::mem::size_of::<f32>() as u64),
-                );
-                reranked_candidate_count = reranked_candidate_count.saturating_add(1);
-                if let Some(score) = cosine_similarity(query_embedding, &document.embedding)
-                    && score > 0.0
-                {
-                    collector.push(document.id, score)?;
+                raw_segment_scan_count = raw_segment_scan_count.saturating_add(1);
+                for document in self.read_vector_segment(artifact, segment, metrics)? {
+                    if selected_layer[start_index..end_index]
+                        .binary_search_by_key(&document.vector_ordinal, |candidate| {
+                            candidate.ordinal
+                        })
+                        .is_err()
+                    {
+                        continue;
+                    }
+                    metrics.vector_bytes_read = metrics.vector_bytes_read.saturating_add(
+                        (document.embedding.len() as u64)
+                            .saturating_mul(std::mem::size_of::<f32>() as u64),
+                    );
+                    reranked_candidate_count = reranked_candidate_count.saturating_add(1);
+                    if let Some(score) = cosine_similarity(query_embedding, &document.embedding)
+                        && score > 0.0
+                    {
+                        collector.push(document.id, score)?;
+                    }
                 }
             }
+            selected_start = selected_end;
         }
-        if reranked_candidate_count != selected_ordinals.len() {
+        if reranked_candidate_count != selected.len() {
             return Err(HawDBError::Storage(format!(
                 "search RaBitQ raw rerank hydrated {reranked_candidate_count} of {} candidates",
-                selected_ordinals.len()
+                selected.len()
             )));
         }
         let matching_count = collector.matching_count;
         Ok(VectorScoreScan {
             scores: collector.finish(),
             matching_count,
-            vector_document_count: projection.manifest().document_count,
+            vector_document_count,
             segment_scan_count: raw_segment_scan_count,
             backend: "hawdb_rabitq_out_of_core_candidate_projection".to_string(),
             candidate_score_source: "quantized_projection".to_string(),
-            generated_candidate_count: projection_report.candidate_count,
+            generated_candidate_count,
             reranked_candidate_count,
-            candidate_scan_kernel: Some(projection_report.kernel.as_str().to_string()),
-            candidate_scan_worker_count: projection_report.worker_count,
-            candidate_scan_segment_count: projection_report.segment_count,
-            candidate_scan_scanned_segment_count: projection_report.scanned_segment_count,
-            candidate_scan_scored_document_count: projection_report.scored_document_count,
-            candidate_scan_filtered_document_count: projection_report.filtered_document_count,
-            candidate_scan_scanned_block_count: projection_report.scanned_block_count,
-            candidate_scan_skipped_block_count: projection_report.skipped_block_count,
-            candidate_scan_payload_bytes_read: projection_report.payload_bytes_read,
-            candidate_scan_admitted_working_bytes: projection_report
-                .admitted_working_bytes
-                .saturating_add(allowlist_bytes),
+            candidate_scan_kernel,
+            candidate_scan_worker_count,
+            candidate_scan_segment_count,
+            candidate_scan_scanned_segment_count,
+            candidate_scan_scored_document_count,
+            candidate_scan_filtered_document_count,
+            candidate_scan_scanned_block_count,
+            candidate_scan_skipped_block_count,
+            candidate_scan_payload_bytes_read,
+            candidate_scan_admitted_working_bytes: candidate_scan_admitted_working_bytes
+                .saturating_add(selected_candidate_bytes),
             fallback_reason_codes: Vec::new(),
             fallback_reasons: Vec::new(),
         })
+    }
+
+    #[cfg(feature = "vector-search")]
+    fn require_compatible_rabitq_projections(&self) -> Result<()> {
+        let mut reference = None;
+        for (layer, artifact) in self.segments.iter().enumerate() {
+            let projection = artifact.rabitq_projection.as_ref().ok_or_else(|| {
+                HawDBError::Storage(format!(
+                    "search out-of-core layer {layer} has no RaBitQ projection"
+                ))
+            })?;
+            let manifest = projection.manifest();
+            let identity = (manifest.bit_width, manifest.transform_seed);
+            if let Some(reference) = reference
+                && identity != reference
+            {
+                return Err(HawDBError::Storage(
+                    "search multi-segment RaBitQ projections require matching bit widths and transform seeds"
+                        .to_string(),
+                ));
+            }
+            reference = Some(identity);
+        }
+        Ok(())
     }
 }
 
@@ -412,4 +598,29 @@ pub(super) fn vector_projection_error(
     error: hawdb_vector_projection::ProjectionError,
 ) -> HawDBError {
     HawDBError::Storage(format!("search RaBitQ projection: {error}"))
+}
+
+#[cfg(all(test, feature = "vector-search"))]
+mod tests {
+    use super::{BoundedLayeredProjectionHits, LayeredProjectionHit};
+
+    #[test]
+    fn layered_projection_hits_evict_the_lower_scored_layer() {
+        let mut hits = BoundedLayeredProjectionHits::new(1);
+        hits.push(LayeredProjectionHit {
+            layer: 0,
+            ordinal: 0,
+            score: 1.0,
+        });
+        hits.push(LayeredProjectionHit {
+            layer: 1,
+            ordinal: 0,
+            score: 2.0,
+        });
+
+        let hits = hits.finish();
+        assert_eq!(hits.len(), 1);
+        assert_eq!(hits[0].layer, 1);
+        assert_eq!(hits[0].ordinal, 0);
+    }
 }
