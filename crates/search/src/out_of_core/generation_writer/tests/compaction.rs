@@ -19,9 +19,9 @@ use crate::{
 use hawdb_core::{
     RuntimeCancellationToken, RuntimeCapabilities, RuntimeCapability, RuntimeTaskContext,
 };
-use hawdb_qos::{
-    BackgroundWorkHint, LocalQosPolicy, LocalQosScheduler, QosAdmissionCode, WorkClass, WorkRequest,
-};
+use hawdb_qos::{BackgroundWorkHint, LocalQosPolicy, LocalQosScheduler, WorkClass};
+#[cfg(feature = "background-maintenance")]
+use hawdb_qos::{QosAdmissionCode, WorkRequest};
 use std::num::{NonZeroU32, NonZeroU64, NonZeroUsize};
 use std::path::Path;
 
@@ -243,6 +243,7 @@ fn crisis_merge_uses_a_bounded_pair_and_does_not_exceed_the_top_level() {
 }
 
 #[test]
+#[cfg(feature = "background-maintenance")]
 fn scheduled_compaction_tracks_and_releases_the_qos_budget() {
     let root = append_only_root("scheduled_compaction", 2);
     let reader = SearchOutOfCoreReader::open(&root).unwrap();
@@ -275,6 +276,7 @@ fn scheduled_compaction_tracks_and_releases_the_qos_budget() {
 }
 
 #[test]
+#[cfg(feature = "background-maintenance")]
 fn scheduled_compaction_defers_without_staging_when_the_qos_budget_is_full() {
     let root = append_only_root("scheduled_compaction_deferred", 2);
     let reader = SearchOutOfCoreReader::open(&root).unwrap();
@@ -315,6 +317,7 @@ fn scheduled_compaction_defers_without_staging_when_the_qos_budget_is_full() {
 }
 
 #[test]
+#[cfg(feature = "background-maintenance")]
 fn scheduled_compaction_honors_tenant_budget_before_acquiring_a_qos_permit() {
     let root = append_only_root("scheduled_compaction_tenant_budget", 2);
     let reader = SearchOutOfCoreReader::open(&root).unwrap();
@@ -351,6 +354,7 @@ fn scheduled_compaction_honors_tenant_budget_before_acquiring_a_qos_permit() {
 }
 
 #[test]
+#[cfg(feature = "background-maintenance")]
 fn scheduled_compaction_releases_its_qos_budget_on_execution_error() {
     let root = append_only_root("scheduled_compaction_error", 2);
     let reader = SearchOutOfCoreReader::open(&root).unwrap();
@@ -382,6 +386,7 @@ fn scheduled_compaction_releases_its_qos_budget_on_execution_error() {
 }
 
 #[test]
+#[cfg(feature = "background-maintenance")]
 fn scheduled_compaction_observes_cancellation_before_qos_admission() {
     let root = append_only_root("scheduled_compaction_cancel", 2);
     let reader = SearchOutOfCoreReader::open(&root).unwrap();
