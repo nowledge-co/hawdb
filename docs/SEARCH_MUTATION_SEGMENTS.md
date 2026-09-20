@@ -40,8 +40,11 @@ specific document in that segment.
 
 A content segment is an immutable, independently selectable artifact closure:
 
-- ordered documents, descriptor, payload, metadata, vector, lexical, and
-  optional RaBitQ artifacts;
+- documents whose UTF-8 `document_id` values are strictly increasing within the
+  segment, with each segment range strictly after the preceding active segment
+  range in manifest order; replacements must preserve this invariant from #696;
+- descriptor, payload, metadata, vector, lexical, and optional RaBitQ
+  artifacts;
 - a stable `segment_id` and publication generation;
 - document count and reversible document-set digest contribution;
 - per-segment lexical statistics and vector ordinal mapping.
@@ -130,6 +133,17 @@ No mutation artifact is selectable before the manifest replacement. A cancelled,
 failed, or stale preparation deletes its private stage and leaves the active
 manifest unchanged. Existing readers retain their complete old closure until
 their pins are released.
+
+## TLA+ verification boundary
+
+The TLA+ model is deliberately deferred to delivery 2, when mutation runs first
+become persistent manifest artifacts. That delivery must add a model and
+registered configuration before it can proceed to delivery 3. The model must
+cover target binding, stale preparation rejection, publish-last recovery, and
+reader pins retaining a complete selected closure; its mutation and compaction
+actions must also prove that an active target cannot be orphaned. Mutation runs
+must not become selectable or serve requests before that model and its configured
+checks pass.
 
 ## Compaction
 

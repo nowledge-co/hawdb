@@ -1163,13 +1163,8 @@ impl SearchOutOfCoreReader {
                 "search hydration document ids must be unique".to_string(),
             ));
         }
-        let targets = self.resolve_mutation_targets(&requested)?;
-        let mut metrics = targets.metrics;
-        let mut hydrated = targets
-            .targets
-            .into_iter()
-            .map(|(id, target)| (id, target.document))
-            .collect::<BTreeMap<_, _>>();
+        let mut metrics = SearchOutOfCoreMetrics::default();
+        let mut hydrated = self.load_documents(&requested, &mut metrics)?;
         let documents = document_ids
             .iter()
             .map(|id| {
@@ -1799,7 +1794,7 @@ impl SearchOutOfCoreReader {
         metrics: &mut SearchOutOfCoreMetrics,
     ) -> Result<BTreeMap<String, SearchDocument>> {
         Ok(self
-            .load_mutation_targets(document_ids, metrics)?
+            .load_document_targets(document_ids, metrics, "hydration")?
             .into_iter()
             .map(|(id, target)| (id, target.document))
             .collect())
@@ -1810,9 +1805,18 @@ impl SearchOutOfCoreReader {
         document_ids: &BTreeSet<String>,
         metrics: &mut SearchOutOfCoreMetrics,
     ) -> Result<BTreeMap<String, SearchOutOfCoreMutationTarget>> {
+        self.load_document_targets(document_ids, metrics, "mutation target resolution")
+    }
+
+    fn load_document_targets(
+        &self,
+        document_ids: &BTreeSet<String>,
+        metrics: &mut SearchOutOfCoreMetrics,
+        operation: &str,
+    ) -> Result<BTreeMap<String, SearchOutOfCoreMutationTarget>> {
         if document_ids.len() > self.config.max_hydrated_documents.get() {
             return Err(HawDBError::Storage(format!(
-                "search hydration requires {} documents, exceeding {}",
+                "search {operation} requires {} documents, exceeding {}",
                 document_ids.len(),
                 self.config.max_hydrated_documents
             )));
@@ -1840,7 +1844,9 @@ impl SearchOutOfCoreReader {
         let mut hydrated_bytes = 0u64;
         for ((layer, segment_id), ids) in segment_documents {
             let artifact = self.segments.get(layer).ok_or_else(|| {
-                HawDBError::Storage(format!("search hydration references unknown layer {layer}"))
+                HawDBError::Storage(format!(
+                    "search {operation} references unknown layer {layer}"
+                ))
             })?;
             let segment = self
                 .segments
@@ -1852,7 +1858,7 @@ impl SearchOutOfCoreReader {
                 .filter(|segment| segment.segment_id == segment_id)
                 .ok_or_else(|| {
                     HawDBError::Storage(format!(
-                        "search hydration references unknown segment {segment_id}"
+                        "search {operation} references unknown segment {segment_id}"
                     ))
                 })?;
             for document in self.read_selected_hydration_segment(
@@ -1869,7 +1875,7 @@ impl SearchOutOfCoreReader {
                     })?;
                 if hydrated_bytes > self.config.max_hydrated_bytes.get() {
                     return Err(HawDBError::Storage(format!(
-                        "search hydration requires {hydrated_bytes} bytes, exceeding {}",
+                        "search {operation} requires {hydrated_bytes} bytes, exceeding {}",
                         self.config.max_hydrated_bytes
                     )));
                 }
@@ -1885,14 +1891,14 @@ impl SearchOutOfCoreReader {
                     .is_some()
                 {
                     return Err(HawDBError::Storage(format!(
-                        "search mutation target resolution found duplicate document {id}"
+                        "search {operation} found duplicate document {id}"
                     )));
                 }
             }
         }
         if targets.len() != document_ids.len() {
             return Err(HawDBError::Storage(format!(
-                "search hydration found {} of {} requested documents",
+                "search {operation} found {} of {} requested documents",
                 targets.len(),
                 document_ids.len()
             )));
