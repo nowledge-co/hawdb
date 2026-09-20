@@ -791,11 +791,11 @@ impl SearchOutOfCoreReader {
     }
 
     pub(super) fn primary_segment(&self) -> &SearchOutOfCoreSegmentReader {
-        // The V2 manifest validator currently requires one entry. Keeping the
-        // access behind this method lets later readers consume a segment set.
+        // Logical-manifest metadata remains shared. Any data-plane operation
+        // must iterate the complete artifact set instead of using this helper.
         self.segments
             .first()
-            .expect("validated search manifest has one segment")
+            .expect("validated search manifest has at least one segment")
     }
 
     pub fn lexical_term_policy(&self) -> SearchLexicalTermPolicy {
@@ -808,9 +808,11 @@ impl SearchOutOfCoreReader {
     /// leaves the previous policy intact. Exclusive access prevents changes
     /// during a query; already prepared updates keep their own snapshot.
     pub fn set_lexical_term_policy(&mut self, policy: SearchLexicalTermPolicy) -> Result<()> {
-        self.primary_segment()
-            .lexical_projection
-            .validate_term_limit(policy.max_term_bytes())?;
+        for artifact in &self.segments {
+            artifact
+                .lexical_projection
+                .validate_term_limit(policy.max_term_bytes())?;
+        }
         self.lexical_term_policy = policy;
         Ok(())
     }
@@ -1121,9 +1123,11 @@ impl SearchOutOfCoreReader {
         consumer: &mut dyn FnMut(SearchDocument) -> Result<()>,
     ) -> Result<SearchOutOfCoreMetrics> {
         let mut metrics = SearchOutOfCoreMetrics::default();
-        for segment in &self.primary_segment().descriptor.segments {
-            for document in self.read_hydration_segment(segment, &mut metrics)? {
-                consumer(document)?;
+        for artifact in &self.segments {
+            for segment in &artifact.descriptor.segments {
+                for document in self.read_hydration_segment(artifact, segment, &mut metrics)? {
+                    consumer(document)?;
+                }
             }
         }
         Ok(metrics)
@@ -1850,6 +1854,7 @@ impl SearchOutOfCoreReader {
     #[cfg(test)]
     fn read_hydration_segment(
         &self,
+        artifact: &SearchOutOfCoreSegmentReader,
         segment: &SearchSegmentDescriptorEntry,
         metrics: &mut SearchOutOfCoreMetrics,
     ) -> Result<Vec<SearchDocument>> {
@@ -1860,7 +1865,7 @@ impl SearchOutOfCoreReader {
             ))
         })?;
         let payload = read_out_of_core_payload_range(
-            &self.primary_segment().payload,
+            &artifact.payload,
             SearchOutOfCoreRange {
                 offset: range.offset,
                 length: range.length,
@@ -3757,7 +3762,7 @@ mod tests {
 
     #[test]
     #[cfg(feature = "full-text-search")]
-    fn out_of_core_reader_rejects_duplicate_documents_across_manifest_segments() {
+    fn out_of_core_reader_and_generation_update_reject_duplicate_manifest_documents() {
         let path = test_dir("duplicate-segment-documents");
         let mut index = SearchIndex::open(&path).unwrap();
         index.upsert(document(0, "team")).unwrap();
@@ -3777,7 +3782,7 @@ mod tests {
             checksum: checksum_bytes(&body_bytes),
         })
         .unwrap();
-        fs::write(&manifest_path, bytes).unwrap();
+        fs::write(&manifest_path, &bytes).unwrap();
 
         let reader = SearchOutOfCoreReader::open(&path).unwrap();
         let error = reader
@@ -3795,6 +3800,16 @@ mod tests {
                 .unwrap_err();
             assert!(error.to_string().contains("duplicate document"));
         }
+        let error = SearchOutOfCoreGenerationWriter::prepare_delta(
+            &reader,
+            crate::SearchProjectionDelta::default(),
+            Default::default(),
+        )
+        .unwrap_err();
+        assert!(error
+            .to_string()
+            .contains("globally ordered, non-overlapping document ranges"));
+        assert_eq!(fs::read(&manifest_path).unwrap(), bytes);
         fs::remove_dir_all(path).unwrap();
     }
 
@@ -3856,6 +3871,51 @@ mod tests {
             .unwrap(),
         )
         .unwrap();
+    }
+
+    #[test]
+    #[cfg(feature = "full-text-search")]
+    fn out_of_core_generation_update_retains_every_ordered_manifest_artifact() {
+        let path = test_dir("multi-segment-generation-update");
+        publish_two_artifact_manifest(&path, document(0, "team"), document(1, "team"));
+        let reader = SearchOutOfCoreReader::open(&path).unwrap();
+        let appended = crate::SearchProjectionRow {
+            kind: crate::SearchProjectionKind::Memory,
+            external_id: "002".to_string(),
+            title: "added graph document".to_string(),
+            body: "storage memory document 2".to_string(),
+            embedding: Some(vec![3.0, 14.0]),
+            source_id: None,
+            metadata: BTreeMap::from([("space_id".to_string(), "team".to_string())]),
+        };
+        let expected_appended = appended.clone().into_document();
+        let update = SearchOutOfCoreGenerationWriter::prepare_delta(
+            &reader,
+            crate::SearchProjectionDelta {
+                upserts: vec![appended],
+                ..Default::default()
+            },
+            Default::default(),
+        )
+        .unwrap();
+        assert_eq!(update.delta_report().before_document_count, 2);
+        assert_eq!(update.source_read_metrics().hydrated_documents, 2);
+        let (_, build, _) = update.finish().unwrap();
+        assert_eq!(build.document_count, 3);
+
+        let reader = SearchOutOfCoreReader::open(&path).unwrap();
+        assert_eq!(
+            reader
+                .hydrate_documents(&[
+                    "memory:000".to_string(),
+                    "memory:001".to_string(),
+                    "memory:002".to_string(),
+                ])
+                .unwrap()
+                .documents,
+            vec![document(0, "team"), document(1, "team"), expected_appended],
+        );
+        fs::remove_dir_all(path).unwrap();
     }
 
     #[test]
