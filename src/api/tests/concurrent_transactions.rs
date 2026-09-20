@@ -1547,7 +1547,7 @@ fn wal_group_commit_assigns_generated_order_in_serial_commit_order() {
 }
 
 #[test]
-fn generated_order_retries_after_optimistic_conflict_and_matches_pessimistic_commit() {
+fn generated_order_appends_from_one_optimistic_snapshot_follow_commit_order() {
     let mut database = Database::new();
     database
         .query_sql(
@@ -1568,7 +1568,7 @@ fn generated_order_retries_after_optimistic_conflict_and_matches_pessimistic_com
     let mut first = db
         .begin_transaction(ConcurrentTransactionOptions::optimistic())
         .unwrap();
-    let mut stale = db
+    let mut second = db
         .begin_transaction(ConcurrentTransactionOptions::optimistic())
         .unwrap();
     first
@@ -1576,9 +1576,9 @@ fn generated_order_retries_after_optimistic_conflict_and_matches_pessimistic_com
             "INSERT INTO events (stream_id, payload) VALUES ('thread-1', 'optimistic-first')",
         )
         .unwrap();
-    stale
+    second
         .query_sql(
-            "INSERT INTO events (stream_id, payload) VALUES ('thread-2', 'optimistic-stale')",
+            "INSERT INTO events (stream_id, payload) VALUES ('thread-2', 'optimistic-second')",
         )
         .unwrap();
 
@@ -1587,28 +1587,9 @@ fn generated_order_retries_after_optimistic_conflict_and_matches_pessimistic_com
         first.append_mutations[0].generated_order_keys,
         vec![crate::RelationalKey(vec![RelationalValue::BigInt(1)])]
     );
-    let conflict = stale.commit_with_result().unwrap_err();
-    assert!(matches!(
-        conflict,
-        HawDBError::TransactionConflict {
-            read_epoch: 1,
-            committed_epoch: 2,
-            ..
-        }
-    ));
-    assert!(conflict.is_retryable_transaction_conflict());
-
-    let mut retry = db
-        .begin_transaction(ConcurrentTransactionOptions::optimistic())
-        .unwrap();
-    retry
-        .query_sql(
-            "INSERT INTO events (stream_id, payload) VALUES ('thread-2', 'optimistic-retry')",
-        )
-        .unwrap();
-    let retry = retry.commit_with_result().unwrap();
+    let second = second.commit_with_result().unwrap();
     assert_eq!(
-        retry.append_mutations[0].generated_order_keys,
+        second.append_mutations[0].generated_order_keys,
         vec![crate::RelationalKey(vec![RelationalValue::BigInt(2)])]
     );
 
