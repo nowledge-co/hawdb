@@ -43,11 +43,14 @@ mod block_encoding;
 use artifacts::ArtifactBuilder;
 mod build_manifest;
 mod document_frequency;
+mod documents;
+use documents::DocumentLookup;
 mod spill_control;
 use spill_control::Control as SpillControl;
 mod spill_memory;
 use spill_memory::{PendingPostings, RunPosting};
 mod manifest_encoding;
+mod posting_codec;
 
 #[cfg(test)]
 mod positioned_read_tests;
@@ -184,6 +187,7 @@ struct BlockDescriptor {
     length: u64,
     checksum: u64,
     entry_count: u32,
+    ordinal_start: u64,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -197,6 +201,7 @@ struct TermStatistics {
 #[serde(deny_unknown_fields)]
 struct ManifestBody {
     format: String,
+    layout: String,
     generation: u64,
     source_graph_commit_epoch: Option<u64>,
     analyzer_digest: u64,
@@ -242,7 +247,8 @@ impl ManifestBody {
 
     fn validate_with_context(&self, task: Option<&RuntimeTaskContext>) -> Result<()> {
         task.map_or(Ok(()), checkpoint)?;
-        if self.format != "HAWDB_LEXICAL_MANIFEST_V1"
+        if self.format != "HAWDB_LEXICAL_MANIFEST_V2"
+            || self.layout != "HAWDB_LEXICAL_ORDINAL_V1"
             || self.artifact_file != artifact_file(self.generation)
             || Path::new(&self.artifact_file)
                 .file_name()
@@ -257,7 +263,9 @@ impl ManifestBody {
         let mut previous_end = ARTIFACT_HEADER.len() as u64 + 8;
         let mut previous = None;
         let mut documents = 0u64;
+        let mut previous_document_id: Option<&str> = None;
         let mut postings = 0u64;
+        let mut saw_postings = false;
         for block in &self.blocks {
             task.map_or(Ok(()), checkpoint)?;
             if block.length == 0
@@ -282,9 +290,30 @@ impl ManifestBody {
             })?;
             match block.kind {
                 BlockKind::Documents => {
-                    documents = documents.saturating_add(u64::from(block.entry_count));
+                    if saw_postings
+                        || block.ordinal_start != documents
+                        || previous_document_id.is_some_and(|id| id >= block.min_key.as_str())
+                    {
+                        return Err(HawDBError::Storage(
+                            "lexical document ranges are not contiguous or ordered".to_string(),
+                        ));
+                    }
+                    previous_document_id = Some(&block.max_key);
+                    documents = documents
+                        .checked_add(u64::from(block.entry_count))
+                        .ok_or_else(|| {
+                            HawDBError::Storage(
+                                "lexical document ordinal range overflows".to_string(),
+                            )
+                        })?;
                 }
                 BlockKind::Postings => {
+                    saw_postings = true;
+                    if block.ordinal_start != 0 {
+                        return Err(HawDBError::Storage(
+                            "lexical posting block has a document mapping ordinal".to_string(),
+                        ));
+                    }
                     postings = postings.saturating_add(u64::from(block.entry_count));
                 }
             }
@@ -357,24 +386,21 @@ impl ManifestBody {
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
 struct Posting {
     term: Term,
-    document_id: String,
+    ordinal: u64,
     term_frequency: u32,
-    document_len: u32,
 }
 
 impl Posting {
-    fn resident_bytes(term: &str, document_id: &str) -> u64 {
-        32u64
-            .saturating_add(term.len() as u64)
-            .saturating_add(document_id.len() as u64)
+    fn resident_bytes(term: &str) -> u64 {
+        (std::mem::size_of::<Self>() as u64).saturating_add(term.len() as u64)
     }
 
     fn encoded_len(&self) -> u64 {
-        Self::encoded_parts_len(self.term.len(), self.document_id.len())
+        Self::encoded_parts_len(self.term.len())
     }
 
-    fn encoded_parts_len(term: usize, id: usize) -> u64 {
-        (term as u64).saturating_add(id as u64).saturating_add(16)
+    fn encoded_parts_len(term: usize) -> u64 {
+        (term as u64).saturating_add(16)
     }
 }
 
@@ -788,6 +814,7 @@ pub(super) struct LexicalQueryReport {
     pub matching_document_count: usize,
     pub postings_visited: u64,
     pub bytes_read: u64,
+    pub document_bytes_read: u64,
 }
 
 #[derive(Debug)]
@@ -1036,33 +1063,42 @@ impl LexicalProjectionReader {
         if query_terms.is_empty() {
             return Ok(LexicalQueryReport::default());
         }
-        let admitted_stream_bytes = query_terms.iter().fold(0u64, |bytes, term| {
-            let (max_block, max_entries, references) = self.posting_blocks(term).fold(
-                (0u64, 0u64, 0u64),
-                |(max, entries, count), block| {
-                    (
-                        max.max(block.length),
-                        entries.max(u64::from(block.entry_count)),
-                        count.saturating_add(1),
+        let document_mapping_bytes = self
+            .manifest
+            .blocks
+            .iter()
+            .filter(|block| block.kind == BlockKind::Documents)
+            .map(|block| block.length)
+            .max()
+            .unwrap_or(0);
+        let admitted_stream_bytes =
+            document_mapping_bytes.saturating_add(query_terms.iter().fold(0u64, |bytes, term| {
+                let (max_block, max_entries, references) = self.posting_blocks(term).fold(
+                    (0u64, 0u64, 0u64),
+                    |(max, entries, count), block| {
+                        (
+                            max.max(block.length),
+                            entries.max(u64::from(block.entry_count)),
+                            count.saturating_add(1),
+                        )
+                    },
+                );
+                // Reserve actual validated posting and document block extents,
+                // old/new decoded Vec capacity during block transitions,
+                // encoded/decoded strings and heap keys, pointer-vector growth,
+                // and retained query term copies.
+                bytes
+                    .saturating_add(max_block.saturating_mul(4))
+                    .saturating_add(
+                        max_entries.saturating_mul(4 * std::mem::size_of::<Posting>() as u64),
                     )
-                },
-            );
-            // Reserve the actual validated block extent, not the reader's
-            // ceiling: otherwise charging keys makes the default 32-term
-            // boundary fail even for tiny blocks. Reserve old/new decoded Vec
-            // capacity during block transitions, encoded/decoded strings and
-            // heap keys, pointer-vector growth, and retained query term copies.
-            bytes
-                .saturating_add(max_block.saturating_mul(4))
-                .saturating_add(
-                    max_entries.saturating_mul(4 * std::mem::size_of::<Posting>() as u64),
-                )
-                .saturating_add(
-                    references.saturating_mul(2 * std::mem::size_of::<&BlockDescriptor>() as u64),
-                )
-                .saturating_add((term.len() as u64).saturating_mul(3))
-                .saturating_add(32)
-        });
+                    .saturating_add(
+                        references
+                            .saturating_mul(2 * std::mem::size_of::<&BlockDescriptor>() as u64),
+                    )
+                    .saturating_add((term.len() as u64).saturating_mul(3))
+                    .saturating_add(32)
+            }));
         if admitted_stream_bytes > self.config.query_memory_bytes.get() {
             return Err(HawDBError::Storage(format!(
                 "lexical query streams require {admitted_stream_bytes} bytes, exceeding {}",
@@ -1100,40 +1136,44 @@ impl LexicalProjectionReader {
             }
         }
         let mut heap = BinaryHeap::new();
+        let mut documents = DocumentLookup::new(self);
         for (index, stream) in streams.iter_mut().enumerate() {
             if let Some(posting) = stream.next()? {
-                heap.push(Reverse((posting.document_id.clone(), index, posting)));
+                heap.push(Reverse((posting.ordinal, index, posting)));
             }
         }
-        while let Some(Reverse((document_id, stream_index, posting))) = heap.pop() {
+        while let Some(Reverse((ordinal, stream_index, posting))) = heap.pop() {
+            let (document_id, document_len) = documents.get(ordinal)?;
+            validate_posting_length(&posting, document_len)?;
             let mut score = 0.0;
             if !delta.overrides(&document_id) && allowed(&document_id)? {
                 score += bm25_term_score(
                     stream_idf[stream_index],
                     posting.term_frequency,
-                    posting.document_len,
+                    document_len,
                     average_document_len,
                 );
             }
             if let Some(next) = streams[stream_index].next()? {
-                heap.push(Reverse((next.document_id.clone(), stream_index, next)));
+                heap.push(Reverse((next.ordinal, stream_index, next)));
             }
             while heap
                 .peek()
-                .is_some_and(|Reverse((next_id, _, _))| next_id == &document_id)
+                .is_some_and(|Reverse((next_ordinal, _, _))| *next_ordinal == ordinal)
             {
                 let Reverse((_, next_stream_index, next_posting)) =
                     heap.pop().expect("peeked lexical posting exists");
+                validate_posting_length(&next_posting, document_len)?;
                 if !delta.overrides(&document_id) && allowed(&document_id)? {
                     score += bm25_term_score(
                         stream_idf[next_stream_index],
                         next_posting.term_frequency,
-                        next_posting.document_len,
+                        document_len,
                         average_document_len,
                     );
                 }
                 if let Some(next) = streams[next_stream_index].next()? {
-                    heap.push(Reverse((next.document_id.clone(), next_stream_index, next)));
+                    heap.push(Reverse((next.ordinal, next_stream_index, next)));
                 }
             }
             if score > 0.0 {
@@ -1173,7 +1213,8 @@ impl LexicalProjectionReader {
             scores,
             matching_document_count,
             postings_visited,
-            bytes_read,
+            bytes_read: bytes_read.saturating_add(documents.bytes_read),
+            document_bytes_read: documents.bytes_read,
         })
     }
 
@@ -1202,6 +1243,15 @@ impl LexicalProjectionReader {
         }
         Ok(bytes)
     }
+}
+
+fn validate_posting_length(posting: &Posting, document_len: u32) -> Result<()> {
+    if posting.term_frequency > document_len {
+        return Err(HawDBError::Storage(
+            "lexical term frequency exceeds its document length".to_string(),
+        ));
+    }
+    Ok(())
 }
 
 struct TermPostingStream<'a> {
@@ -1252,6 +1302,11 @@ impl<'a> TermPostingStream<'a> {
                 block,
                 self.max_term_bytes.get(),
                 |posting| {
+                    if posting.ordinal >= self.projection.manifest.document_count {
+                        return Err(HawDBError::Storage(
+                            "lexical posting ordinal exceeds its generation".to_string(),
+                        ));
+                    }
                     self.postings_visited = self.postings_visited.saturating_add(1);
                     if posting.term.as_str() == self.term {
                         postings.push(posting);
@@ -1514,11 +1569,23 @@ impl<'workspace> LexicalProjectionWriter<'workspace> {
         let mut chunk = PendingPostings::new(Some(&memory))?;
         let mut document_count = 0u64;
         let mut total_document_len = 0u64;
+        let mut previous_document_id = None::<String>;
         let mut consume = |ordinal: u64, document: &SearchDocument| -> Result<()> {
             if ordinal != document_count {
                 return Err(HawDBError::Storage(format!(
                     "lexical document ordinal {ordinal} does not follow {document_count}"
                 )));
+            }
+            let next_document_count = document_count.checked_add(1).ok_or_else(|| {
+                HawDBError::Storage("lexical document ordinal overflow".to_string())
+            })?;
+            if previous_document_id
+                .as_ref()
+                .is_some_and(|previous| previous >= &document.id)
+            {
+                return Err(HawDBError::Storage(
+                    "lexical documents must have strictly increasing IDs".to_string(),
+                ));
             }
             let analyzed = document_frequency::analyze_with_control(
                 document,
@@ -1533,16 +1600,17 @@ impl<'workspace> LexicalProjectionWriter<'workspace> {
                 },
             )?;
             let document_len = analyzed.document_len();
-            document_count = document_count.saturating_add(1);
+            document_count = next_document_count;
+            previous_document_id = Some(document.id.clone());
             total_document_len = total_document_len.saturating_add(u64::from(document_len));
-            artifact.push_document(&document.id, document_len)?;
+            artifact.push_document(ordinal, &document.id, document_len)?;
             if let document_frequency::AnalyzedDocument::Spilled { run, .. } = analyzed {
                 chunk.flush(&mut runs)?;
-                document_frequency::spill_postings(run, &document.id, document_len, &mut runs)?;
+                document_frequency::spill_postings(run, ordinal, &mut runs)?;
             } else {
                 analyzed.visit(self.config, |term, term_frequency, retained| {
                     runs.prepare(term.len(), document.id.len())?;
-                    let bytes = Posting::resident_bytes(&term, &document.id);
+                    let bytes = Posting::resident_bytes(&term);
                     let posting_limit = self
                         .config
                         .build_memory_bytes
@@ -1557,7 +1625,7 @@ impl<'workspace> LexicalProjectionWriter<'workspace> {
                     {
                         chunk.flush(&mut runs)?;
                     }
-                    chunk.push(term, &document.id, term_frequency, document_len)
+                    chunk.push(term, ordinal, term_frequency)
                 })?;
             }
             Ok(())
@@ -1568,9 +1636,12 @@ impl<'workspace> LexicalProjectionWriter<'workspace> {
         runs.compact()?;
         artifact.merge_postings_with_control(&runs.paths, self.config, &runs.control)?;
         let artifact = artifact.finish()?;
-        let _format_memory = memory.retained.reserve("HAWDB_LEXICAL_MANIFEST_V1".len())?;
+        let _format_memory = memory
+            .retained
+            .reserve("HAWDB_LEXICAL_MANIFEST_V2HAWDB_LEXICAL_ORDINAL_V1".len())?;
         let manifest = ManifestBody {
-            format: "HAWDB_LEXICAL_MANIFEST_V1".to_string(),
+            format: "HAWDB_LEXICAL_MANIFEST_V2".to_string(),
+            layout: "HAWDB_LEXICAL_ORDINAL_V1".to_string(),
             generation,
             source_graph_commit_epoch,
             analyzer_digest,
@@ -1710,22 +1781,16 @@ impl<W: Write> SpillRunWriter<W> {
     }
 
     fn push(&mut self, posting: &Posting) -> Result<()> {
-        self.push_parts(
-            &posting.term,
-            &posting.document_id,
-            posting.term_frequency,
-            posting.document_len,
-        )
+        self.push_parts(&posting.term, posting.ordinal, posting.term_frequency)
     }
 
-    fn push_parts(&mut self, term: &str, id: &str, frequency: u32, length: u32) -> Result<()> {
-        let bytes = Posting::encoded_parts_len(term.len(), id.len());
+    fn push_parts(&mut self, term: &str, ordinal: u64, frequency: u32) -> Result<()> {
+        let bytes = Posting::encoded_parts_len(term.len());
         let total_bytes = checked_spill_bytes(self.total_bytes, bytes, self.limit)?;
         let mut writer = spill_control::RecordWriter::new(&mut self.writer, &self.control)?;
         write_string(&mut writer, term)?;
-        write_string(&mut writer, id)?;
+        writer.write_all(&ordinal.to_le_bytes())?;
         writer.write_all(&frequency.to_le_bytes())?;
-        writer.write_all(&length.to_le_bytes())?;
         self.total_bytes = total_bytes;
         Ok(())
     }
@@ -1780,7 +1845,7 @@ impl SpillRuns {
             |bytes, posting| checked_spill_bytes(bytes, posting.encoded_len(), limit),
         )?;
         for posting in postings.iter() {
-            self.prepare(posting.term.len(), posting.document_id.len())?;
+            self.prepare(posting.term.len(), 0)?;
         }
         let guard = self.next_guard()?;
         let mut writer = SpillRunWriter::create(&guard.path, self.bytes, limit, io, &self.control)?;
@@ -1791,7 +1856,7 @@ impl SpillRuns {
         self.max_posting_bytes = self.max_posting_bytes.max(
             postings
                 .iter()
-                .map(|posting| Posting::resident_bytes(&posting.term, &posting.document_id))
+                .map(|posting| Posting::resident_bytes(&posting.term))
                 .max()
                 .unwrap_or(0),
         );
@@ -1927,23 +1992,18 @@ impl RunReader {
         let term = self.control.build_term(length, || {
             spill_memory::read_text(&mut self.reader, length, &self.control)
         })?;
-        let id_length = read_optional_length(
-            &mut self.reader,
-            (1024 * 1024).min(available_strings.saturating_sub(term.len() as u64)),
-        )?
-        .ok_or_else(|| HawDBError::Storage("lexical spill run is truncated".into()))?;
-        let id_memory = self.control.reserve(id_length)?;
-        let document_id = spill_memory::read_text(&mut self.reader, id_length, &self.control)?;
+        let mut ordinal = [0u8; 8];
+        self.reader.read_exact(&mut ordinal)?;
         let term_frequency = read_u32(&mut self.reader)?;
-        let document_len = read_u32(&mut self.reader)?;
+        if term_frequency == 0 {
+            return Err(HawDBError::Storage("invalid lexical spill posting".into()));
+        }
         Ok(Some(RunPosting {
             posting: Posting {
                 term,
-                document_id,
+                ordinal: u64::from_le_bytes(ordinal),
                 term_frequency,
-                document_len,
             },
-            _id_memory: id_memory,
         }))
     }
 }
@@ -2009,7 +2069,7 @@ fn visit_merged_postings_with_control(
                 .get()
                 .saturating_sub(resident_bytes),
         )? {
-            resident_bytes += Posting::resident_bytes(&posting.term, &posting.document_id);
+            resident_bytes += Posting::resident_bytes(&posting.term);
             heap.push(Reverse((posting, index)));
         }
     }
@@ -2019,11 +2079,11 @@ fn visit_merged_postings_with_control(
         if previous.as_ref() != Some(&posting) {
             consume(&posting)?;
             if let Some(previous) = previous.take() {
-                resident_bytes -= Posting::resident_bytes(&previous.term, &previous.document_id);
+                resident_bytes -= Posting::resident_bytes(&previous.term);
             }
             previous = Some(posting);
         } else {
-            resident_bytes -= Posting::resident_bytes(&posting.term, &posting.document_id);
+            resident_bytes -= Posting::resident_bytes(&posting.term);
         }
         if let Some(next) = readers[index].next(
             config
@@ -2031,7 +2091,7 @@ fn visit_merged_postings_with_control(
                 .get()
                 .saturating_sub(resident_bytes),
         )? {
-            resident_bytes += Posting::resident_bytes(&next.term, &next.document_id);
+            resident_bytes += Posting::resident_bytes(&next.term);
             heap.push(Reverse((next, index)));
         }
     }
@@ -2058,11 +2118,11 @@ fn encode_block_header(
     Ok(())
 }
 
+#[cfg(test)]
 fn encode_posting(mut writer: impl Write, posting: &Posting) -> Result<()> {
     write_string(&mut writer, &posting.term)?;
-    write_string(&mut writer, &posting.document_id)?;
+    writer.write_all(&posting.ordinal.to_le_bytes())?;
     writer.write_all(&posting.term_frequency.to_le_bytes())?;
-    writer.write_all(&posting.document_len.to_le_bytes())?;
     Ok(())
 }
 
@@ -2077,28 +2137,48 @@ fn decode_posting_block(
     let count = decode_block_header(&mut cursor, generation, descriptor, BlockKind::Postings)?;
     let mut first = None;
     let mut previous = None;
-    for _ in 0..count {
-        let posting = Posting {
-            term: Term::untracked(cursor.string(max_term_bytes)?),
-            document_id: cursor.string(1024 * 1024)?,
-            term_frequency: cursor.u32()?,
-            document_len: cursor.u32()?,
-        };
-        if posting.term_frequency == 0
-            || posting.document_len == 0
-            || previous
-                .as_ref()
-                .is_some_and(|previous: &Posting| previous >= &posting)
-        {
+    let mut decoded_count = 0u32;
+    while decoded_count < count {
+        let term = cursor.string(max_term_bytes)?;
+        let length = usize::try_from(cursor.u32()?).map_err(|_| {
+            HawDBError::Storage("lexical posting frame length exceeds usize".to_string())
+        })?;
+        if term.is_empty() || length > posting_codec::MAX_BLOCK_BYTES {
             return Err(HawDBError::Storage(
-                "lexical posting block is invalid or unordered".to_string(),
+                "lexical posting frame has invalid bounds".to_string(),
             ));
         }
-        if first.is_none() {
-            first = Some(posting.term.as_str().to_owned());
+        let postings = posting_codec::decode(cursor.bytes(length)?).map_err(|error| {
+            HawDBError::Storage(format!("invalid lexical posting frame: {error}"))
+        })?;
+        let frame_count = u32::try_from(postings.len()).map_err(|_| {
+            HawDBError::Storage("lexical posting frame count exceeds u32".to_string())
+        })?;
+        if frame_count > count - decoded_count {
+            return Err(HawDBError::Storage(
+                "lexical posting frames exceed the block count".to_string(),
+            ));
         }
-        consumer(posting.clone())?;
-        previous = Some(posting);
+        decoded_count += frame_count;
+        for entry in postings {
+            let posting = Posting {
+                term: Term::untracked(term.clone()),
+                ordinal: entry.ordinal,
+                term_frequency: entry.tf,
+            };
+            if previous.as_ref().is_some_and(|previous: &Posting| {
+                (&previous.term, previous.ordinal) >= (&posting.term, posting.ordinal)
+            }) {
+                return Err(HawDBError::Storage(
+                    "lexical posting block is invalid or unordered".to_string(),
+                ));
+            }
+            if first.is_none() {
+                first = Some(posting.term.as_str().to_owned());
+            }
+            consumer(posting.clone())?;
+            previous = Some(posting);
+        }
     }
     let previous_term = previous
         .map(|posting| posting.term.into_untracked())
@@ -2348,7 +2428,11 @@ mod tests {
             .score(&terms, &LexicalMiniDelta::default(), None, |_| Ok(true))
             .unwrap();
         assert_eq!(reader.manifest.document_frequency("graph"), 2);
-        assert_eq!(report.bytes_read, term_posting_bytes(&reader, "graph"));
+        assert!(report.document_bytes_read > 0);
+        assert_eq!(
+            report.bytes_read,
+            term_posting_bytes(&reader, "graph") + report.document_bytes_read
+        );
         let corpus = super::super::TextCorpusStats::from_documents(documents.values(), &analyzer);
         for document in documents.values() {
             let expected = super::super::bm25_score(&terms, document, &corpus, &analyzer);
@@ -2373,7 +2457,7 @@ mod tests {
     }
 
     #[test]
-    fn filtered_scores_use_manifest_corpus_without_reading_document_blocks() {
+    fn filtered_scores_read_document_blocks_for_exact_lengths() {
         let root = projection_root("filtered-manifest-corpus");
         let _ = fs::remove_dir_all(&root);
         fs::create_dir_all(&root).unwrap();
@@ -2402,12 +2486,16 @@ mod tests {
         let expected = super::super::bm25_score(&terms, &documents["a"], &corpus, &analyzer);
         assert_eq!(report.scores, BTreeMap::from([("a".to_string(), expected)]));
         assert_eq!(allowed_calls.get(), 2);
-        assert_eq!(report.bytes_read, term_posting_bytes(&reader, "graph"));
+        assert!(report.document_bytes_read > 0);
+        assert_eq!(
+            report.bytes_read,
+            term_posting_bytes(&reader, "graph") + report.document_bytes_read
+        );
         fs::remove_dir_all(root).unwrap();
     }
 
     #[test]
-    fn delta_scores_do_not_read_document_blocks() {
+    fn delta_scores_read_document_blocks_for_exact_lengths() {
         let root = projection_root("delta-postings-only");
         let _ = fs::remove_dir_all(&root);
         fs::create_dir_all(&root).unwrap();
@@ -2429,7 +2517,11 @@ mod tests {
         let report = reader.score(&terms, &delta, None, |_| Ok(true)).unwrap();
 
         assert_eq!(report.scores.keys().collect::<Vec<_>>(), vec!["a", "c"]);
-        assert_eq!(report.bytes_read, term_posting_bytes(&reader, "graph"));
+        assert!(report.document_bytes_read > 0);
+        assert_eq!(
+            report.bytes_read,
+            term_posting_bytes(&reader, "graph") + report.document_bytes_read
+        );
         fs::remove_dir_all(root).unwrap();
     }
 
@@ -2471,7 +2563,11 @@ mod tests {
             super::super::TextCorpusStats::from_documents(current_documents.into_iter(), &analyzer);
         let expected = super::super::bm25_score(&terms, &inserted, &corpus, &analyzer);
         assert_eq!(report.scores, BTreeMap::from([("d".to_string(), expected)]));
-        assert_eq!(report.bytes_read, term_posting_bytes(&reader, "graph"));
+        assert!(report.document_bytes_read > 0);
+        assert_eq!(
+            report.bytes_read,
+            term_posting_bytes(&reader, "graph") + report.document_bytes_read
+        );
         fs::remove_dir_all(root).unwrap();
     }
 

@@ -94,7 +94,8 @@ impl Write for ObservedWriter {
     }
 }
 
-// Independent legacy wire oracle; do not use the production encoding helpers.
+// The posting frame codec has independent scalar and corruption coverage. This
+// oracle verifies its placement in the enclosing lexical block grammar.
 fn reference(entries: Entries<'_>, generation: u64, block_id: u64) -> Vec<u8> {
     let mut bytes = b"SKNLEX01".to_vec();
     bytes.extend_from_slice(&generation.to_le_bytes());
@@ -117,12 +118,19 @@ fn reference(entries: Entries<'_>, generation: u64, block_id: u64) -> Vec<u8> {
             }
         }
         Entries::Postings(values) => {
-            for posting in values {
-                text(&mut bytes, &posting.term);
-                text(&mut bytes, &posting.document_id);
-                bytes.extend_from_slice(&posting.term_frequency.to_le_bytes());
-                bytes.extend_from_slice(&posting.document_len.to_le_bytes());
-            }
+            let term = values.first().unwrap().term.as_str();
+            assert!(values.iter().all(|posting| posting.term.as_str() == term));
+            text(&mut bytes, term);
+            let frame = posting_codec::encode_by(values.len(), |index| {
+                let posting = &values[index];
+                posting_codec::Posting {
+                    ordinal: posting.ordinal,
+                    tf: posting.term_frequency,
+                }
+            })
+            .unwrap();
+            bytes.extend_from_slice(&(frame.len() as u32).to_le_bytes());
+            bytes.extend_from_slice(&frame);
         }
     }
     bytes
@@ -188,21 +196,18 @@ fn postings() -> Vec<Posting> {
     vec![
         Posting {
             term: "alpha".into(),
-            document_id: "a".into(),
+            ordinal: 0,
             term_frequency: 3,
-            document_len: 9,
         },
         Posting {
             term: "alpha".into(),
-            document_id: "b".into(),
+            ordinal: 1,
             term_frequency: 2,
-            document_len: 7,
         },
         Posting {
             term: "\u{4e2d}\u{6587}".into(),
-            document_id: "z\u{e9}".into(),
+            ordinal: 2,
             term_frequency: u32::MAX,
-            document_len: u32::MAX,
         },
     ]
 }
@@ -211,7 +216,11 @@ fn postings() -> Vec<Posting> {
 fn blocks_preserve_wire_descriptors_and_exact_admission() {
     let documents = vec![("a".into(), 0), ("z\u{e9}".into(), u32::MAX)];
     let postings = postings();
-    for entries in [Entries::Documents(&documents), Entries::Postings(&postings)] {
+    for entries in [
+        Entries::Documents(&documents),
+        Entries::Postings(&postings[..2]),
+        Entries::Postings(&postings[2..]),
+    ] {
         for short_write in [1, 2, 7, usize::MAX] {
             assert_wire(entries, u64::MAX, 19, short_write);
         }
@@ -224,9 +233,8 @@ fn long_fields_are_written_in_bounded_chunks() {
     let documents = vec![(id.clone(), 1)];
     let postings = vec![Posting {
         term: id.clone().into(),
-        document_id: id,
+        ordinal: 0,
         term_frequency: 1,
-        document_len: 1,
     }];
     assert_wire(Entries::Documents(&documents), 5, 0, usize::MAX);
     assert_wire(Entries::Postings(&postings), 5, 1, 127);
@@ -291,7 +299,11 @@ fn cancellation_during_short_writes_or_after_the_last_write_rejects_the_block() 
 fn every_write_fault_preserves_only_the_written_prefix() {
     let documents = vec![("doc-\u{4e2d}".into(), 3), ("doc-z".into(), 9)];
     let postings = postings();
-    for entries in [Entries::Documents(&documents), Entries::Postings(&postings)] {
+    for entries in [
+        Entries::Documents(&documents),
+        Entries::Postings(&postings[..2]),
+        Entries::Postings(&postings[2..]),
+    ] {
         let expected = reference(entries, 7, 2);
         for cut in 0..expected.len() {
             for zero in [false, true] {
@@ -356,8 +368,8 @@ fn artifact_builder_preserves_block_boundaries_and_statistics() {
         ("b".into(), 7),
         ("z\u{e9}".into(), u32::MAX),
     ];
-    for (id, length) in &documents {
-        builder.push_document(id, *length).unwrap();
+    for (ordinal, (id, length)) in documents.iter().enumerate() {
+        builder.push_document(ordinal as u64, id, *length).unwrap();
     }
     builder.finish_documents().unwrap();
     let postings = postings();
@@ -376,8 +388,7 @@ fn artifact_builder_preserves_block_boundaries_and_statistics() {
         vec![
             (BlockKind::Documents, 2),
             (BlockKind::Documents, 1),
-            (BlockKind::Postings, 1),
-            (BlockKind::Postings, 1),
+            (BlockKind::Postings, 2),
             (BlockKind::Postings, 1),
         ]
     );
@@ -512,11 +523,18 @@ fn campaign(cases: usize) {
             .collect::<Vec<_>>();
         let postings = documents
             .iter()
-            .map(|(id, length)| Posting {
+            .enumerate()
+            .map(|(ordinal, _)| Posting {
                 term: format!("term-{}-\u{1f980}", next() % 7).into(),
-                document_id: id.clone(),
+                ordinal: ordinal as u64,
                 term_frequency: next() as u32,
-                document_len: *length,
+            })
+            .collect::<Vec<_>>();
+        let postings = postings
+            .into_iter()
+            .map(|posting| Posting {
+                term: "term".into(),
+                ..posting
             })
             .collect::<Vec<_>>();
         for entries in [Entries::Documents(&documents), Entries::Postings(&postings)] {

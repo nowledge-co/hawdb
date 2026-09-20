@@ -46,6 +46,7 @@ impl PhysicalPlan {
             PhysicalPlan::GraphAlgorithm { .. } => PhysicalPlanKind::GraphAlgorithm,
             PhysicalPlan::VectorSeedScan { .. } => PhysicalPlanKind::VectorSeedScan,
             PhysicalPlan::CreateNode { .. } => PhysicalPlanKind::CreateNode,
+            PhysicalPlan::UnwindMutation { .. } => PhysicalPlanKind::UnwindMutationExec,
             PhysicalPlan::MergeNode { .. } => PhysicalPlanKind::MergeNode,
             PhysicalPlan::MergeRelationship { .. } => PhysicalPlanKind::MergeRelationship,
             PhysicalPlan::MergeMatchedRelationship { .. } => {
@@ -80,6 +81,7 @@ impl PhysicalPlan {
                 PhysicalPlanKind::DeleteRelationshipTargetNodes
             }
             PhysicalPlan::CreateRelationship { .. } => PhysicalPlanKind::CreateRelationship,
+            PhysicalPlan::GraphMatchExec { .. } => PhysicalPlanKind::GraphMatchExec,
             PhysicalPlan::EmptyExec => PhysicalPlanKind::EmptyExec,
             PhysicalPlan::SeqNodeScan { .. } => PhysicalPlanKind::SeqNodeScan,
             PhysicalPlan::NodeProjectionScanExec { .. } => PhysicalPlanKind::NodeProjectionScanExec,
@@ -124,6 +126,9 @@ impl PhysicalPlan {
 
     pub fn children(&self) -> PhysicalPlanChildren<'_> {
         match self {
+            PhysicalPlan::GraphMatchExec { input, .. } => input
+                .as_deref()
+                .map_or(PlanChildren::None, PlanChildren::Unary),
             PhysicalPlan::NodeCartesianProductExec { left, right }
             | PhysicalPlan::HashJoinExec { left, right, .. } => PlanChildren::Binary(left, right),
             PhysicalPlan::NodeColumnLookupExec { input, .. }
@@ -156,6 +161,7 @@ impl PhysicalPlan {
             | PhysicalPlan::GraphAlgorithm { .. }
             | PhysicalPlan::VectorSeedScan { .. }
             | PhysicalPlan::CreateNode { .. }
+            | PhysicalPlan::UnwindMutation { .. }
             | PhysicalPlan::MergeNode { .. }
             | PhysicalPlan::MergeRelationship { .. }
             | PhysicalPlan::MergeMatchedRelationship { .. }

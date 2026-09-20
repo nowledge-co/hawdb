@@ -388,10 +388,10 @@ fn admitted_frequency_run_and_reader_retain_control_after_the_pool_drops() {
 fn spilled_postings_enforce_the_logical_budget_and_clean_partial_output() {
     use hawdb_core::RuntimeMemoryReservation;
 
-    let id = "source";
-    // The logical posting unit includes 32 bytes besides the term and ID.
+    // The logical posting unit includes its compact ordinal and frequency.
     let long_term = "z".repeat(262);
-    for (limit, accepted) in [(300, true), (299, false)] {
+    let posting_limit = Posting::resident_bytes(&long_term);
+    for (limit, accepted) in [(posting_limit, true), (posting_limit - 1, false)] {
         let root = TestRoot::new();
         let task = RuntimeTaskContext::default()
             .with_memory_reservation(RuntimeMemoryReservation::new(256 * 1024, 0));
@@ -401,7 +401,7 @@ fn spilled_postings_enforce_the_logical_budget_and_clean_partial_output() {
             ..Default::default()
         };
         let mut pool = SpillRuns::with_context(&root.0, 1, config, memory.clone(), task).unwrap();
-        pool.prepare(long_term.len(), id.len()).unwrap();
+        pool.prepare(long_term.len(), 0).unwrap();
         let records = [("alpha", 2), (long_term.as_str(), 3)].map(|(text, weight)| {
             let mut summary = PartialFieldFrequency::default();
             summary.push(1, TokenOccurrence::Repeated, weight).unwrap();
@@ -418,7 +418,7 @@ fn spilled_postings_enforce_the_logical_budget_and_clean_partial_output() {
         let input_bytes = pool.bytes;
         assert_eq!(root.entries(), 1);
 
-        let result = spill_postings(run, id, 5, &mut pool);
+        let result = spill_postings(run, 5, &mut pool);
         assert_eq!(result.is_ok(), accepted, "limit={limit}: {result:?}");
         assert_eq!(pool.sequence, 2, "the output run must have been created");
         assert!(!input_path.exists());
@@ -426,16 +426,15 @@ fn spilled_postings_enforce_the_logical_budget_and_clean_partial_output() {
             result.unwrap();
             assert_eq!(pool.paths.len(), 1);
             assert_eq!(root.entries(), 1);
-            assert_eq!(pool.max_posting_bytes, limit);
+            assert_eq!(pool.max_posting_bytes, posting_limit);
             assert!(pool.bytes > input_bytes);
             let mut reader =
                 RunReader::open_with_control(&pool.paths[0].path, config, &pool.control).unwrap();
             for (term, frequency) in [("alpha", 2), (long_term.as_str(), 3)] {
                 let posting = reader.next(limit).unwrap().unwrap();
                 assert_eq!(posting.term.as_str(), term);
-                assert_eq!(posting.document_id, id);
+                assert_eq!(posting.ordinal, 5);
                 assert_eq!(posting.term_frequency, frequency);
-                assert_eq!(posting.document_len, 5);
             }
             assert!(reader.next(limit).unwrap().is_none());
         } else {
@@ -611,9 +610,8 @@ fn run_quotas_are_shared_with_existing_posting_spills() {
     .unwrap();
     let mut postings = vec![Posting {
         term: "alpha".into(),
-        document_id: "one".into(),
+        ordinal: 0,
         term_frequency: 2,
-        document_len: 2,
     }];
     assert!(pool
         .spill(&mut postings)
@@ -678,12 +676,12 @@ fn assert_full_postings(
     let mut expected = BTreeMap::new();
     let mut expected_df = BTreeMap::<String, u64>::new();
     let mut total_len = 0u64;
-    for document in documents {
+    for (ordinal, document) in documents.iter().enumerate() {
         let (frequencies, length) = reference_frequencies(document, analyzer);
         total_len += u64::from(length);
         for (term, frequency) in frequencies {
             *expected_df.entry(term.clone()).or_default() += 1;
-            expected.insert((term, document.id.clone()), (frequency, length));
+            expected.insert((term, ordinal as u64), frequency);
         }
     }
     let mut actual = BTreeMap::new();
@@ -700,8 +698,8 @@ fn assert_full_postings(
             |posting| {
                 assert!(actual
                     .insert(
-                        (posting.term.into_untracked()?, posting.document_id),
-                        (posting.term_frequency, posting.document_len)
+                        (posting.term.into_untracked()?, posting.ordinal),
+                        posting.term_frequency
                     )
                     .is_none());
                 Ok(())

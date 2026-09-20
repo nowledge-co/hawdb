@@ -14,6 +14,7 @@
 
 //! Pending block and retained directory ownership for one lexical build.
 
+use super::posting_codec;
 use super::{
     block_encoding, visit_merged_postings_with_control, BlockDescriptor, Digest, HawDBError,
     LexicalProjectionConfig, Posting, Result, SpillControl, TermStatistics, ARTIFACT_HEADER,
@@ -41,6 +42,7 @@ pub(super) struct ArtifactBuilder {
     next_block_id: u64,
     document_pending: Vec<(String, u32)>,
     document_pending_bytes: u64,
+    document_count: u64,
     posting_pending: Vec<Posting>,
     posting_pending_bytes: u64,
     posting_count: u64,
@@ -119,6 +121,7 @@ impl ArtifactBuilder {
             next_block_id: 0,
             document_pending: Vec::new(),
             document_pending_bytes: 0,
+            document_count: 0,
             posting_pending: Vec::new(),
             posting_pending_bytes: 0,
             posting_count: 0,
@@ -145,14 +148,26 @@ impl ArtifactBuilder {
         checkpoint(&self.task)
     }
 
-    pub(super) fn push_document(&mut self, id: &str, length: u32) -> Result<()> {
+    pub(super) fn push_document(&mut self, ordinal: u64, id: &str, length: u32) -> Result<()> {
         self.check()?;
-        let result = self.push_document_inner(id, length);
+        let result = self.push_document_inner(ordinal, id, length);
         self.failed = result.is_err();
         result
     }
 
-    fn push_document_inner(&mut self, id: &str, length: u32) -> Result<()> {
+    fn push_document_inner(&mut self, ordinal: u64, id: &str, length: u32) -> Result<()> {
+        let expected_ordinal = self
+            .document_count
+            .checked_add(self.document_pending.len() as u64)
+            .ok_or_else(|| {
+                HawDBError::Storage("lexical document ordinal range overflows".into())
+            })?;
+        if ordinal != expected_ordinal {
+            return Err(HawDBError::Storage(format!(
+                "lexical document ordinal {ordinal} does not follow {}",
+                expected_ordinal
+            )));
+        }
         let bytes = 4u64.saturating_add(id.len() as u64).saturating_add(4);
         if !self.document_pending.is_empty()
             && self.document_pending_bytes.saturating_add(bytes)
@@ -184,7 +199,7 @@ impl ArtifactBuilder {
         self.directory_memory
             .block_strings
             .grow(checked_add(min.len(), max.len())?)?;
-        let descriptor = block_encoding::write_block_with_context(
+        let mut descriptor = block_encoding::write_block_with_context(
             &mut self.writer,
             self.generation,
             self.next_block_id,
@@ -193,7 +208,14 @@ impl ArtifactBuilder {
             entries,
             Some(&self.task),
         )?;
+        descriptor.ordinal_start = self.document_count;
         self.commit_block(descriptor);
+        self.document_count = self
+            .document_count
+            .checked_add(self.document_pending.len() as u64)
+            .ok_or_else(|| {
+                HawDBError::Storage("lexical document ordinal range overflows".into())
+            })?;
         self.document_pending.clear();
         self.document_strings.shrink(self.document_strings.bytes());
         self.document_pending_bytes = 0;
@@ -233,6 +255,14 @@ impl ArtifactBuilder {
     }
 
     fn push_posting_inner(&mut self, posting: &Posting) -> Result<()> {
+        if self.posting_pending.len() == posting_codec::BLOCK_LEN
+            || self
+                .posting_pending
+                .last()
+                .is_some_and(|previous| previous.term != posting.term)
+        {
+            self.flush_postings()?;
+        }
         match self.term_statistics.last_mut() {
             Some(statistics) if statistics.term.as_str() == posting.term.as_str() => {
                 statistics.document_frequency = statistics
@@ -261,23 +291,14 @@ impl ArtifactBuilder {
                 });
             }
         }
-        let bytes = posting.encoded_len();
-        if !self.posting_pending.is_empty()
-            && self.posting_pending_bytes.saturating_add(bytes)
-                > self.config.target_block_bytes.get()
-        {
-            self.flush_postings()?;
-        }
+        let bytes = Posting::resident_bytes(&posting.term);
         grow_slots(&mut self.posting_pending, &mut self.posting_slots)?;
-        self.posting_strings.grow(checked_add(
-            posting.term.retained_clone_bytes(),
-            posting.document_id.len(),
-        )?)?;
+        self.posting_strings
+            .grow(posting.term.retained_clone_bytes())?;
         self.posting_pending.push(Posting {
             term: posting.term.clone_for_retention(),
-            document_id: posting.document_id.clone(),
+            ordinal: posting.ordinal,
             term_frequency: posting.term_frequency,
-            document_len: posting.document_len,
         });
         self.posting_pending_bytes = self.posting_pending_bytes.saturating_add(bytes);
         Ok(())

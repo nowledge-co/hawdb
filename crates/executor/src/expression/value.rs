@@ -1,17 +1,3 @@
-// Copyright 2026 Nowledge
-//
-// Licensed under the Apache License, Version 2.0 (the "License");
-// you may not use this file except in compliance with the License.
-// You may obtain a copy of the License at
-//
-//     http://www.apache.org/licenses/LICENSE-2.0
-//
-// Unless required by applicable law or agreed to in writing, software
-// distributed under the License is distributed on an "AS IS" BASIS,
-// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-// See the License for the specific language governing permissions and
-// limitations under the License.
-
 use super::predicate::{predicate_comparison_truth, PredicateTruth};
 use super::*;
 use hawdb_plan::ScalarBinaryOp;
@@ -89,7 +75,7 @@ pub fn evaluate_projection_expression(
                 HawDBError::Execution(format!("missing variable '{variable}' during projection"))
             }),
         ProjectionExpression::Property { variable, property } => {
-            if !binding_has_variable(binding, variable) {
+            if !binding_declares_variable(binding, variable) {
                 return Err(HawDBError::Execution(format!(
                     "missing variable '{variable}' during projection"
                 )));
@@ -98,9 +84,21 @@ pub fn evaluate_projection_expression(
                 .cloned()
                 .unwrap_or(Value::Null))
         }
+        ProjectionExpression::Id { variable }
+            if binding.values.get(variable) == Some(&Value::Null)
+                && !binding_has_variable(binding, variable) =>
+        {
+            Ok(Value::Null)
+        }
         ProjectionExpression::Id { variable } => binding_id(binding, variable).ok_or_else(|| {
             HawDBError::Execution(format!("missing variable '{variable}' during projection"))
         }),
+        ProjectionExpression::RelationshipType { variable }
+            if binding.values.get(variable) == Some(&Value::Null)
+                && !binding_has_variable(binding, variable) =>
+        {
+            Ok(Value::Null)
+        }
         ProjectionExpression::RelationshipType { variable } => {
             let relationship = binding.relationships.get(variable).ok_or_else(|| {
                 HawDBError::Execution(format!("missing variable '{variable}' during projection"))
@@ -143,7 +141,7 @@ pub fn evaluate_projection_expression(
             variable,
             property,
         } => {
-            if !binding_has_variable(binding, variable) {
+            if !binding_declares_variable(binding, variable) {
                 return Err(HawDBError::Execution(format!(
                     "missing variable '{variable}' during projection"
                 )));
@@ -162,7 +160,7 @@ pub fn evaluate_projection_expression(
             empty,
             default,
         } => {
-            if !binding_has_variable(binding, variable) {
+            if !binding_declares_variable(binding, variable) {
                 return Err(HawDBError::Execution(format!(
                     "missing variable '{variable}' during projection"
                 )));
@@ -181,7 +179,7 @@ pub fn evaluate_projection_expression(
             property,
             default,
         } => {
-            if !binding_has_variable(binding, variable) {
+            if !binding_declares_variable(binding, variable) {
                 return Err(HawDBError::Execution(format!(
                     "missing variable '{variable}' during projection"
                 )));
@@ -202,7 +200,7 @@ pub fn evaluate_projection_expression(
             non_empty,
             null_or_empty,
         } => {
-            if !binding_has_variable(binding, variable) {
+            if !binding_declares_variable(binding, variable) {
                 return Err(HawDBError::Execution(format!(
                     "missing variable '{variable}' during projection"
                 )));
@@ -222,7 +220,7 @@ pub fn evaluate_projection_expression(
             branches,
             default,
         } => {
-            if !binding_has_variable(binding, variable) {
+            if !binding_declares_variable(binding, variable) {
                 return Err(HawDBError::Execution(format!(
                     "missing variable '{variable}' during projection"
                 )));
@@ -242,7 +240,7 @@ pub fn evaluate_projection_expression(
             property,
             default,
         } => {
-            if !binding_has_variable(binding, variable) {
+            if !binding_declares_variable(binding, variable) {
                 return Err(HawDBError::Execution(format!(
                     "missing variable '{variable}' during projection"
                 )));
@@ -256,7 +254,7 @@ pub fn evaluate_projection_expression(
             }
         }
         ProjectionExpression::CaseCoalesceDifferenceFloorZero { variable, terms } => {
-            if !binding_has_variable(binding, variable) {
+            if !binding_declares_variable(binding, variable) {
                 return Err(HawDBError::Execution(format!(
                     "missing variable '{variable}' during projection"
                 )));
@@ -488,6 +486,10 @@ fn civil_from_days(days: i64) -> (i32, u32, u32) {
     (year as i32, month as u32, day as u32)
 }
 
+fn binding_declares_variable(binding: &Binding, variable: &str) -> bool {
+    binding_has_variable(binding, variable) || binding.values.get(variable) == Some(&Value::Null)
+}
+
 pub fn binding_has_variable(binding: &Binding, variable: &str) -> bool {
     binding.nodes.contains_key(variable) || binding.relationships.contains_key(variable)
 }
@@ -520,6 +522,7 @@ pub fn binding_value(binding: &Binding, catalog: &Catalog, variable: &str) -> Op
                 .get(variable)
                 .map(|relationship| relationship_value(relationship, catalog))
         })
+        .or_else(|| (binding.values.get(variable) == Some(&Value::Null)).then_some(Value::Null))
 }
 
 fn node_value(node: &NodeRecord, catalog: &Catalog) -> Value {
@@ -626,6 +629,16 @@ fn evaluate_scalar_binary(
         }));
     }
     let right = project_expression_value(right, catalog, binding)?;
+    if matches!(
+        op,
+        ScalarBinaryOp::Add
+            | ScalarBinaryOp::Subtract
+            | ScalarBinaryOp::Multiply
+            | ScalarBinaryOp::Divide
+            | ScalarBinaryOp::Remainder
+    ) {
+        return evaluate_arithmetic(left, op, right);
+    }
     if op == ScalarBinaryOp::ListContains {
         return Ok(match left {
             Value::Null => Value::Null,
@@ -646,11 +659,66 @@ fn evaluate_scalar_binary(
             ScalarBinaryOp::Contains => {
                 matches!((left, right), (Value::String(left), Value::String(right)) if left.contains(right))
             }
-            ScalarBinaryOp::ListContains | ScalarBinaryOp::And | ScalarBinaryOp::Or => {
+            ScalarBinaryOp::ListContains
+            | ScalarBinaryOp::And
+            | ScalarBinaryOp::Or
+            | ScalarBinaryOp::Add
+            | ScalarBinaryOp::Subtract
+            | ScalarBinaryOp::Multiply
+            | ScalarBinaryOp::Divide
+            | ScalarBinaryOp::Remainder => {
                 unreachable!("handled before comparison")
             }
         },
     )))
+}
+
+fn evaluate_arithmetic(left: Value, op: ScalarBinaryOp, right: Value) -> Result<Value> {
+    if matches!(left, Value::Null) || matches!(right, Value::Null) {
+        return Ok(Value::Null);
+    }
+    if let (Value::Int(left), Value::Int(right)) = (&left, &right) {
+        if matches!(op, ScalarBinaryOp::Divide | ScalarBinaryOp::Remainder) && *right == 0 {
+            return Err(HawDBError::Execution("division by zero".to_string()));
+        }
+        let value = match op {
+            ScalarBinaryOp::Add => left.checked_add(*right),
+            ScalarBinaryOp::Subtract => left.checked_sub(*right),
+            ScalarBinaryOp::Multiply => left.checked_mul(*right),
+            ScalarBinaryOp::Divide => left.checked_div(*right),
+            ScalarBinaryOp::Remainder => left.checked_rem(*right),
+            _ => unreachable!("arithmetic operators only"),
+        };
+        return value
+            .map(Value::Int)
+            .ok_or_else(|| HawDBError::Execution("integer arithmetic overflow".to_string()));
+    }
+    let numeric = |value| match value {
+        Value::Int(value) => Ok(value as f64),
+        Value::Float(value) => Ok(value),
+        _ => Err(HawDBError::Execution(
+            "arithmetic requires numeric operands".to_string(),
+        )),
+    };
+    let left = numeric(left)?;
+    let right = numeric(right)?;
+    if matches!(op, ScalarBinaryOp::Divide | ScalarBinaryOp::Remainder) && right == 0.0 {
+        return Err(HawDBError::Execution("division by zero".to_string()));
+    }
+    let value = match op {
+        ScalarBinaryOp::Add => left + right,
+        ScalarBinaryOp::Subtract => left - right,
+        ScalarBinaryOp::Multiply => left * right,
+        ScalarBinaryOp::Divide => left / right,
+        ScalarBinaryOp::Remainder => left % right,
+        _ => unreachable!("arithmetic operators only"),
+    };
+    if !value.is_finite() {
+        return Err(HawDBError::Execution(
+            "non-finite arithmetic result".to_string(),
+        ));
+    }
+    Ok(Value::Float(value))
 }
 
 #[cfg(test)]
@@ -896,5 +964,126 @@ mod case_tests {
             evaluate(&ProjectionExpression::Not(Box::new(literal(Value::Null)))).unwrap(),
             Value::Null
         );
+    }
+}
+
+#[cfg(test)]
+mod arithmetic_tests {
+    use super::*;
+
+    #[test]
+    fn arithmetic_preserves_numeric_types_and_nulls() {
+        for (op, left, right, expected) in [
+            (
+                ScalarBinaryOp::Add,
+                Value::Int(2),
+                Value::Int(3),
+                Value::Int(5),
+            ),
+            (
+                ScalarBinaryOp::Subtract,
+                Value::Int(2),
+                Value::Int(3),
+                Value::Int(-1),
+            ),
+            (
+                ScalarBinaryOp::Multiply,
+                Value::Int(2),
+                Value::Int(3),
+                Value::Int(6),
+            ),
+            (
+                ScalarBinaryOp::Divide,
+                Value::Int(7),
+                Value::Int(3),
+                Value::Int(2),
+            ),
+            (
+                ScalarBinaryOp::Remainder,
+                Value::Int(-7),
+                Value::Int(3),
+                Value::Int(-1),
+            ),
+            (
+                ScalarBinaryOp::Add,
+                Value::Float(1.5),
+                Value::Int(2),
+                Value::Float(3.5),
+            ),
+            (
+                ScalarBinaryOp::Divide,
+                Value::Int(7),
+                Value::Float(2.0),
+                Value::Float(3.5),
+            ),
+            (
+                ScalarBinaryOp::Multiply,
+                Value::Int(7),
+                Value::Null,
+                Value::Null,
+            ),
+            (ScalarBinaryOp::Add, Value::Null, Value::Int(7), Value::Null),
+        ] {
+            assert_eq!(evaluate_arithmetic(left, op, right).unwrap(), expected);
+        }
+    }
+
+    #[test]
+    fn arithmetic_errors_propagate_through_projection() {
+        let catalog = Catalog::default();
+        let binding = Binding::values(BTreeMap::new());
+        for (op, left, right, message) in [
+            (
+                ScalarBinaryOp::Add,
+                Value::Int(i64::MAX),
+                Value::Int(1),
+                "overflow",
+            ),
+            (
+                ScalarBinaryOp::Divide,
+                Value::Int(i64::MIN),
+                Value::Int(-1),
+                "overflow",
+            ),
+            (
+                ScalarBinaryOp::Remainder,
+                Value::Int(i64::MIN),
+                Value::Int(-1),
+                "overflow",
+            ),
+            (
+                ScalarBinaryOp::Divide,
+                Value::Int(1),
+                Value::Int(0),
+                "division by zero",
+            ),
+            (
+                ScalarBinaryOp::Remainder,
+                Value::Float(1.0),
+                Value::Float(-0.0),
+                "division by zero",
+            ),
+            (
+                ScalarBinaryOp::Add,
+                Value::String("1".to_string()),
+                Value::Int(1),
+                "numeric operands",
+            ),
+            (
+                ScalarBinaryOp::Multiply,
+                Value::Float(f64::MAX),
+                Value::Float(2.0),
+                "non-finite",
+            ),
+        ] {
+            let expression = ProjectionExpression::Binary {
+                left: Box::new(ProjectionExpression::Literal(left)),
+                op,
+                right: Box::new(ProjectionExpression::Literal(right)),
+            };
+            let error =
+                evaluate_projection_expression(&expression, &catalog, &binding).unwrap_err();
+            assert!(error.to_string().contains(message), "{error}");
+        }
     }
 }

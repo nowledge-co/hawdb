@@ -20,6 +20,7 @@ use std::cell::Cell;
 mod boundaries;
 mod dispatch;
 mod fixtures;
+mod graph_match;
 mod handlers;
 mod store;
 

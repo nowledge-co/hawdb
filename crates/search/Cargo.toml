@@ -6,6 +6,7 @@ rust-version.workspace = true
 license.workspace = true
 
 [dependencies]
+bitpacking = { version = "=0.9.3", default-features = false, features = ["bitpacker4x"] }
 chrono = { version = "0.4", default-features = false, features = ["std"] }
 # Opaque analyzer capacity bounds are qualified against this dependency set.
 jieba-rs = "=0.10.3"

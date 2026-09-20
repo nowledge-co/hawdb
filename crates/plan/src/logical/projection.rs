@@ -1,17 +1,3 @@
-// Copyright 2026 Nowledge
-//
-// Licensed under the Apache License, Version 2.0 (the "License");
-// you may not use this file except in compliance with the License.
-// You may obtain a copy of the License at
-//
-//     http://www.apache.org/licenses/LICENSE-2.0
-//
-// Unless required by applicable law or agreed to in writing, software
-// distributed under the License is distributed on an "AS IS" BASIS,
-// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-// See the License for the specific language governing permissions and
-// limitations under the License.
-
 use super::*;
 
 pub(super) fn plan_comparison_op(op: CypherComparisonOp) -> ComparisonOp {
@@ -187,6 +173,11 @@ pub(super) enum PlannedReturns {
         group_keys: Vec<Projection>,
         items: Vec<Aggregation>,
     },
+    AggregateProjection {
+        group_keys: Vec<Projection>,
+        items: Vec<Aggregation>,
+        projections: Vec<Projection>,
+    },
 }
 
 impl PlannedReturns {
@@ -203,6 +194,9 @@ impl PlannedReturns {
                 names.extend(items.iter().map(|item| item.name.clone()));
                 names
             }
+            PlannedReturns::AggregateProjection { projections, .. } => {
+                projections.iter().map(|item| item.name.clone()).collect()
+            }
         }
     }
 
@@ -216,6 +210,18 @@ impl PlannedReturns {
                 group_keys,
                 items,
                 input: Box::new(input),
+            },
+            PlannedReturns::AggregateProjection {
+                group_keys,
+                items,
+                projections,
+            } => LogicalPlan::Project {
+                items: projections,
+                input: Box::new(LogicalPlan::Aggregate {
+                    group_keys,
+                    items,
+                    input: Box::new(input),
+                }),
             },
         }
     }
@@ -234,7 +240,7 @@ pub(super) fn planned_sort_scope<'a>(
 }
 
 pub(super) fn plan_set_node_properties_return_mode(
-    update: &hawdb_cypher::MatchSet,
+    updated_variable: &str,
     returns: &[ReturnItem],
     parameters: &BTreeMap<String, Value>,
 ) -> Result<SetNodePropertiesReturnMode> {
@@ -250,10 +256,10 @@ pub(super) fn plan_set_node_properties_return_mode(
                 variable,
                 distinct,
             }) if !distinct => {
-                if variable != &update.variable {
+                if variable != updated_variable {
                     return Err(HawDBError::Semantic(format!(
                         "SET RETURN count variable '{variable}' does not match updated variable '{}'",
-                        update.variable
+                        updated_variable
                     )));
                 }
                 return Ok(SetNodePropertiesReturnMode::Count {
@@ -266,7 +272,7 @@ pub(super) fn plan_set_node_properties_return_mode(
             _ => {}
         }
     }
-    let scope = BTreeSet::from([update.variable.clone()]);
+    let scope = BTreeSet::from([updated_variable.to_string()]);
     let projections = returns
         .iter()
         .map(|item| plan_projection(&scope, item, parameters))
@@ -288,6 +294,14 @@ pub(super) fn plan_return_items_with_columns(
     items: &[ReturnItem],
     parameters: &BTreeMap<String, Value>,
 ) -> Result<PlannedReturns> {
+    if items.iter().any(|item| {
+        matches!(
+            item.expression.kind,
+            ReturnExpressionKind::Arithmetic { .. }
+        )
+    }) {
+        return super::arithmetic::plan_composed_returns(scope, column_scope, items, parameters);
+    }
     let has_aggregate = items.iter().any(|item| {
         matches!(
             item.expression,
@@ -302,7 +316,9 @@ pub(super) fn plan_return_items_with_columns(
         let mut aggregations = Vec::new();
         for item in items {
             match &item.expression.kind {
-                ReturnExpressionKind::Value(_) => {
+                ReturnExpressionKind::Value(_)
+                | ReturnExpressionKind::Path(_)
+                | ReturnExpressionKind::Arithmetic { .. } => {
                     group_keys.push(plan_projection_with_columns(
                         scope,
                         column_scope,
@@ -311,7 +327,7 @@ pub(super) fn plan_return_items_with_columns(
                     )?);
                 }
                 ReturnExpressionKind::Aggregate(_) => {
-                    aggregations.push(plan_aggregation(scope, item)?);
+                    aggregations.push(plan_aggregation_with_columns(scope, column_scope, item)?);
                 }
             }
         }
@@ -785,6 +801,42 @@ pub(super) fn plan_set_value(
     }
 }
 
+pub(super) fn plan_aggregation_with_columns(
+    scope: &BTreeSet<String>,
+    columns: &BTreeSet<String>,
+    item: &ReturnItem,
+) -> Result<Aggregation> {
+    let aggregate = match &item.expression.kind {
+        ReturnExpressionKind::Aggregate(aggregate) => aggregate,
+        _ => return plan_aggregation(scope, item),
+    };
+    let variable = match aggregate {
+        AggregateExpression::CountAll => return plan_aggregation(scope, item),
+        AggregateExpression::CountVariable { variable, .. }
+        | AggregateExpression::CollectVariable { variable, .. }
+        | AggregateExpression::CountProperty { variable, .. }
+        | AggregateExpression::CollectProperty { variable, .. }
+        | AggregateExpression::MinProperty { variable, .. }
+        | AggregateExpression::MaxProperty { variable, .. }
+        | AggregateExpression::AvgProperty { variable, .. } => variable,
+    };
+    if !columns.contains(variable) {
+        return plan_aggregation(scope, item);
+    }
+    let mut scope = scope.clone();
+    scope.insert(variable.clone());
+    let mut result = plan_aggregation(&scope, item)?;
+    result.target = match result.target {
+        AggregateTarget::Variable(column) => AggregateTarget::Column(column),
+        AggregateTarget::Property { variable, property } => AggregateTarget::ColumnProperty {
+            column: variable,
+            property,
+        },
+        other => other,
+    };
+    Ok(result)
+}
+
 pub(super) fn plan_aggregation(scope: &BTreeSet<String>, item: &ReturnItem) -> Result<Aggregation> {
     let AstNode {
         kind: ReturnExpressionKind::Aggregate(value),
@@ -1182,6 +1234,26 @@ pub(super) fn default_aggregation_name(
     target: &AggregateTarget,
     distinct: bool,
 ) -> String {
+    match target {
+        AggregateTarget::Column(column) => {
+            return default_aggregation_name(
+                function,
+                &AggregateTarget::Variable(column.clone()),
+                distinct,
+            )
+        }
+        AggregateTarget::ColumnProperty { column, property } => {
+            return default_aggregation_name(
+                function,
+                &AggregateTarget::Property {
+                    variable: column.clone(),
+                    property: property.clone(),
+                },
+                distinct,
+            )
+        }
+        _ => {}
+    }
     match (function, target) {
         (AggregateFunction::Count, AggregateTarget::All) => "count(*)".to_string(),
         (AggregateFunction::Count, AggregateTarget::Variable(variable)) if distinct => {
@@ -1231,5 +1303,8 @@ pub(super) fn default_aggregation_name(
             format!("collect({variable}.{property})")
         }
         (AggregateFunction::Collect, AggregateTarget::All) => "collect(*)".to_string(),
+        (_, AggregateTarget::Column(_) | AggregateTarget::ColumnProperty { .. }) => {
+            unreachable!("columns normalized before naming")
+        }
     }
 }

@@ -79,13 +79,12 @@ fn retained_artifact_terms_release_merge_progress_after_the_input_drops() {
     let original = term.as_ptr();
     let posting = Posting {
         term,
-        document_id: "document".into(),
+        ordinal: 0,
         term_frequency: 2,
-        document_len: 2,
     };
     builder.push_posting(&posting).unwrap();
     assert_ne!(builder.posting_pending[0].term.as_ptr(), original);
-    assert_eq!(builder.posting_strings.bytes(), 5 + 8);
+    assert_eq!(builder.posting_strings.bytes(), 5);
     assert!(progress.reserve(1).is_err());
     drop(posting);
     drop(
@@ -113,20 +112,19 @@ fn artifact_merge_uses_its_own_task_and_retains_the_supplied_progress() {
         spill_task.clone(),
     )
     .unwrap();
-    pool.prepare(5, 8).unwrap();
+    pool.prepare(5, 0).unwrap();
     let mut pending = PendingPostings::new(Some(&memory)).unwrap();
     pending
         .push(
             crate::build_term::Term::copy("alpha", Some(&memory)).unwrap(),
-            "document",
-            1,
+            0,
             1,
         )
         .unwrap();
     pending.flush(&mut pool).unwrap();
     drop(pending);
     let mut builder = fixture.builder(&memory, &task);
-    builder.push_document("document", 1).unwrap();
+    builder.push_document(0, "document", 1).unwrap();
     builder.finish_documents().unwrap();
     spill_task.cancellation().cancel();
     builder
@@ -172,7 +170,7 @@ fn document_copy_denial_poisoning_retains_only_admitted_slots() {
         .reserve(BUDGET - initial - slots - id.len() + 1)
         .unwrap();
     assert!(builder
-        .push_document(id, 1)
+        .push_document(0, id, 1)
         .unwrap_err()
         .to_string()
         .contains("query memory"));
@@ -181,7 +179,7 @@ fn document_copy_denial_poisoning_retains_only_admitted_slots() {
     assert_eq!(builder.document_strings.bytes(), 0);
     drop(blocker);
     assert!(builder
-        .push_document(id, 1)
+        .push_document(0, id, 1)
         .unwrap_err()
         .to_string()
         .contains("poisoned"));
@@ -194,7 +192,7 @@ fn block_directory_key_denial_precedes_payload_io() {
     let fixture = Fixture::new();
     let (memory, task) = context();
     let mut builder = fixture.builder(&memory, &task);
-    builder.push_document("document", 1).unwrap();
+    builder.push_document(0, "document", 1).unwrap();
     let buffered = builder.writer.buffer().to_vec();
     let path = fixture.0.join("artifact.hawdb");
     let physical = fs::read(&path).unwrap();
@@ -227,7 +225,7 @@ fn pending_capacity_and_summary_directory_follow_payload_lifetimes() {
     let fixture = Fixture::new();
     let (memory, task) = context();
     let mut builder = fixture.builder(&memory, &task);
-    builder.push_document("a", 2).unwrap();
+    builder.push_document(0, "a", 2).unwrap();
     builder.finish_documents().unwrap();
     assert_eq!(builder.document_strings.bytes(), 0);
     assert_eq!(
@@ -237,9 +235,8 @@ fn pending_capacity_and_summary_directory_follow_payload_lifetimes() {
     assert_ne!(builder.document_pending.capacity(), 0);
     let posting = Posting {
         term: "alpha".into(),
-        document_id: "a".into(),
+        ordinal: 0,
         term_frequency: 2,
-        document_len: 2,
     };
     builder.push_posting(&posting).unwrap();
     builder.merge_postings(&[], Default::default()).unwrap();
@@ -279,7 +276,7 @@ fn failed_payload_io_poisoning_prevents_continuing_the_artifact() {
     let (memory, task) = context();
     let mut builder = fixture.builder(&memory, &task);
     builder
-        .push_document(&"x".repeat(SPILL_IO_BUFFER_BYTES * 2), 1)
+        .push_document(0, &"x".repeat(SPILL_IO_BUFFER_BYTES * 2), 1)
         .unwrap();
     builder.writer.flush().unwrap();
     // A read-only file deterministically fails when the block reaches the device.
@@ -288,7 +285,7 @@ fn failed_payload_io_poisoning_prevents_continuing_the_artifact() {
     assert!(builder.finish_documents().is_err());
     assert!(builder.blocks.is_empty());
     assert!(builder
-        .push_document("later", 1)
+        .push_document(1, "later", 1)
         .unwrap_err()
         .to_string()
         .contains("poisoned"));
@@ -303,7 +300,7 @@ fn cancellation_preserves_uncommitted_block_and_releases_owners() {
     let task = RuntimeTaskContext::without_deadline(cancellation.clone());
     let memory = BuildMemory::new(&task).unwrap();
     let mut builder = fixture.builder(&memory, &task);
-    builder.push_document("document", 1).unwrap();
+    builder.push_document(0, "document", 1).unwrap();
     let offset = builder.offset;
     cancellation.cancel();
     assert!(builder.finish_documents().is_err());
@@ -318,9 +315,8 @@ fn statistics_and_posting_copies_are_admitted_before_allocating_payloads() {
     let fixture = Fixture::new();
     let posting = Posting {
         term: "alpha".into(),
-        document_id: "document".into(),
+        ordinal: 0,
         term_frequency: 1,
-        document_len: 1,
     };
     let statistics_slots = 4 * size_of::<TermStatistics>();
     let statistics = statistics_slots + posting.term.len();
@@ -329,7 +325,7 @@ fn statistics_and_posting_copies_are_admitted_before_allocating_payloads() {
         statistics_slots,
         statistics,
         statistics + posting_slots,
-        statistics + posting_slots + posting.term.len() + posting.document_id.len(),
+        statistics + posting_slots + posting.term.len(),
     ];
     for (phase, required) in capacities.into_iter().enumerate() {
         let (memory, task) = context();
@@ -438,13 +434,12 @@ fn retained_artifact_shares_a_tracked_resident_term_and_its_admission() {
     let address = term.as_ptr();
     let posting = Posting {
         term,
-        document_id: "document".into(),
+        ordinal: 0,
         term_frequency: 2,
-        document_len: 2,
     };
     builder.push_posting(&posting).unwrap();
     assert_eq!(builder.posting_pending[0].term.as_ptr(), address);
-    assert_eq!(builder.posting_strings.bytes(), posting.document_id.len());
+    assert_eq!(builder.posting_strings.bytes(), 0);
     let before = used(&memory);
     drop(posting);
     assert_eq!(used(&memory), before);

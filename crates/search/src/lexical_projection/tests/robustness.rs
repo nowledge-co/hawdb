@@ -372,14 +372,13 @@ fn spill_reader_rejects_partial_records_but_accepts_record_boundaries() {
     let path = fixture.root.join("run.tmp");
     let mut bytes = RUN_HEADER.to_vec();
     let mut boundaries = vec![bytes.len()];
-    for id in ["a", "b"] {
+    for ordinal in 0..2 {
         encode_posting(
             &mut bytes,
             &Posting {
                 term: "graph".into(),
-                document_id: id.to_string(),
+                ordinal,
                 term_frequency: 1,
-                document_len: 2,
             },
         )
         .unwrap();
@@ -420,11 +419,16 @@ fn failed_build_budgets_preserve_publication_and_remove_temporaries() {
     let manifest = fs::read(fixture.root.join(MANIFEST_FILE)).unwrap();
     let artifact = fs::read(fixture.root.join(artifact_file(1))).unwrap();
     let base = LexicalProjectionConfig::default();
-    // Keep the 144-byte admission limit and force multiple posting runs without
-    // failing earlier on the newly accounted per-term field markers.
-    let spill_documents = ["a", "b", "c"]
+    // Keep the small admission limit and force multiple posting runs.
+    let spill_documents = ["a", "b"]
         .into_iter()
-        .map(|id| (id.to_string(), document(id, "red", "blue")))
+        .map(|id| {
+            let content = (0..512)
+                .map(|index| format!("term{id}{index:04}"))
+                .collect::<Vec<_>>()
+                .join(" ");
+            (id.to_string(), document(id, "red", &content))
+        })
         .collect::<BTreeMap<_, _>>();
     let limits = [
         (
@@ -437,7 +441,7 @@ fn failed_build_budgets_preserve_publication_and_remove_temporaries() {
         ),
         (
             LexicalProjectionConfig {
-                build_memory_bytes: NonZeroU64::new(144).unwrap(),
+                build_memory_bytes: NonZeroU64::new(80 * 1024).unwrap(),
                 max_spill_runs: NonZeroUsize::MIN,
                 ..base
             },
@@ -515,12 +519,11 @@ fn compaction_charges_output_runs_and_cleans_up_when_budget_is_exhausted() {
         ..LexicalProjectionConfig::default()
     };
     let mut runs = SpillRuns::new(&fixture.root, 2, config);
-    for id in ["a", "b", "c"] {
+    for ordinal in 0..3 {
         runs.spill(&mut vec![Posting {
             term: "graph".into(),
-            document_id: id.to_string(),
+            ordinal,
             term_frequency: 1,
-            document_len: 1,
         }])
         .unwrap();
     }

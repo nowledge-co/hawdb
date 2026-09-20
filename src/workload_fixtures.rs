@@ -678,7 +678,9 @@ fn error_class(error: &crate::HawDBError) -> String {
     match error {
         crate::HawDBError::Parse(_) => "parse",
         crate::HawDBError::Semantic(_) => "semantic",
-        crate::HawDBError::Execution(_) => "execution",
+        crate::HawDBError::Execution(_) | crate::HawDBError::TransactionConflict { .. } => {
+            "execution"
+        }
         crate::HawDBError::Storage(_)
         | crate::HawDBError::StorageIntegrity(_)
         | crate::HawDBError::AppendSequenceExhausted { .. } => "storage",

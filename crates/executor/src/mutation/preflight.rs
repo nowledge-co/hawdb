@@ -17,7 +17,7 @@
 //! The store retains transaction admission, atomic commit, and WAL ownership.
 
 use super::{mutation_command, node_set_assignment, node_set_value};
-use crate::binding::{map_payload_bytes, Binding};
+use crate::binding::{map_payload_bytes, value_payload_bytes, Binding};
 use crate::expression::{evaluate_predicate, project_value};
 use crate::memory::DEFAULT_EXECUTION_BATCH_ROWS;
 use crate::observer::NoopExecutionObserver;
@@ -26,9 +26,12 @@ use crate::predicate::{label_ids_for_pattern, node_matches_label_pattern};
 use crate::store::{GraphExecutionRead, GraphExecutionWrite, ScanControl};
 use crate::Row;
 use hawdb_core::{Catalog, HawDBError, Result, RuntimeTaskContext, Value};
-use hawdb_plan::{PhysicalPlan, Predicate, SetNodePropertiesReturnMode};
+use hawdb_plan::{
+    BatchMutationOperation, BatchMutationValue, PhysicalPlan, Predicate,
+    SetNodePropertiesReturnMode,
+};
 use hawdb_storage::mutation::evaluate::evaluate_node_set_value;
-use hawdb_storage::{MutationLimits, NodeId, NodeSetAssignment};
+use hawdb_storage::{GraphMutation, MutationLimits, NodeId, NodeSetAssignment};
 use std::collections::BTreeMap;
 
 pub fn execute_mutation_with_store(
@@ -39,6 +42,22 @@ pub fn execute_mutation_with_store(
     task_context: Option<&RuntimeTaskContext>,
 ) -> Result<Vec<Row>> {
     runtime_checkpoint(task_context)?;
+    if let PhysicalPlan::UnwindMutation {
+        rows,
+        variable,
+        operation,
+    } = plan
+    {
+        return execute_unwind_mutation_with_limits(
+            rows,
+            variable,
+            operation,
+            catalog,
+            store,
+            limits,
+            task_context,
+        );
+    }
     if let PhysicalPlan::SetNodePropertiesReturn {
         variable,
         label,
@@ -76,6 +95,107 @@ pub fn execute_mutation_with_store(
             }
         }
     }
+}
+
+fn execute_unwind_mutation_with_limits(
+    rows: &[Value],
+    variable: &str,
+    operation: &BatchMutationOperation,
+    catalog: &mut Catalog,
+    store: &mut dyn GraphExecutionWrite,
+    limits: MutationLimits,
+    task_context: Option<&RuntimeTaskContext>,
+) -> Result<Vec<Row>> {
+    let mutations = materialize_unwind_mutations(rows, variable, operation, limits, task_context)?;
+    if mutations.is_empty() {
+        return Ok(Vec::new());
+    }
+    store
+        .commit_mutations_with_limits(catalog, mutations, limits)
+        .map(|summary| summary.rows)
+}
+
+/// Resolves every bounded `UNWIND` row before any graph state is changed.
+///
+/// Callers that own a graph transaction use this to retain the statement
+/// savepoint contract while staging the entire batch as one storage mutation.
+pub fn materialize_unwind_mutations(
+    rows: &[Value],
+    variable: &str,
+    operation: &BatchMutationOperation,
+    limits: MutationLimits,
+    task_context: Option<&RuntimeTaskContext>,
+) -> Result<Vec<GraphMutation>> {
+    if rows.len() > limits.max_operations.get() {
+        return Err(HawDBError::Execution(format!(
+            "UNWIND batch would exceed max_mutation_operations {}",
+            limits.max_operations
+        )));
+    }
+    let mut input_payload_bytes = 0usize;
+    let mut mutations = Vec::with_capacity(rows.len());
+    for (index, row) in rows.iter().enumerate() {
+        if index.is_multiple_of(DEFAULT_EXECUTION_BATCH_ROWS) {
+            runtime_checkpoint(task_context)?;
+        }
+        input_payload_bytes = input_payload_bytes.saturating_add(value_payload_bytes(row));
+        if input_payload_bytes > limits.max_result_payload_bytes.get() {
+            return Err(HawDBError::Execution(format!(
+                "UNWIND batch input would exceed max_mutation_result_payload_bytes {}",
+                limits.max_result_payload_bytes
+            )));
+        }
+        mutations.push(resolve_unwind_mutation(operation, variable, row)?);
+    }
+    Ok(mutations)
+}
+
+fn resolve_unwind_mutation(
+    operation: &BatchMutationOperation,
+    variable: &str,
+    row: &Value,
+) -> Result<GraphMutation> {
+    match operation {
+        BatchMutationOperation::CreateNode { label, properties } => Ok(GraphMutation::CreateNode {
+            label: label.clone(),
+            properties: resolve_unwind_properties(properties, variable, row)?,
+        }),
+        BatchMutationOperation::MergeNode {
+            label,
+            match_properties,
+            on_create_properties,
+        } => Ok(GraphMutation::MergeNode {
+            label: label.clone(),
+            match_properties: resolve_unwind_properties(match_properties, variable, row)?,
+            on_create_properties: resolve_unwind_properties(on_create_properties, variable, row)?,
+            on_match_assignments: Vec::new(),
+            post_merge_assignments: Vec::new(),
+        }),
+    }
+}
+
+fn resolve_unwind_properties(
+    properties: &BTreeMap<String, BatchMutationValue>,
+    variable: &str,
+    row: &Value,
+) -> Result<BTreeMap<String, Value>> {
+    properties
+        .iter()
+        .map(|(property, value)| {
+            let value = match value {
+                BatchMutationValue::Static(value) => value.clone(),
+                BatchMutationValue::RowProperty(row_property) => {
+                    let Value::Map(values) = row else {
+                        return Err(HawDBError::Semantic(format!(
+                            "UNWIND row for '{variable}.{row_property}' must be a map"
+                        )));
+                    };
+                    values.get(row_property).cloned().unwrap_or(Value::Null)
+                }
+            };
+            Ok((property.clone(), value))
+        })
+        .collect()
 }
 
 pub fn project_staged_mutation_return_rows(

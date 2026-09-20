@@ -309,6 +309,17 @@ pub fn visit_one_hop_relationships_with_budget(
     observer: &dyn ExecutionObserver,
     consumer: &mut dyn FnMut(RelRecord, NodeRecord) -> Result<ScanControl>,
 ) -> Result<ScanControl> {
+    visit_one_hop_relationships_with_context(store, spec, memory, observer, None, consumer)
+}
+
+pub(crate) fn visit_one_hop_relationships_with_context(
+    store: &dyn GraphExecutionRead,
+    spec: OneHopRelationshipSpec<'_>,
+    memory: AdjacencyReadMemory<'_>,
+    observer: &dyn ExecutionObserver,
+    task_context: Option<&hawdb_core::RuntimeTaskContext>,
+    consumer: &mut dyn FnMut(RelRecord, NodeRecord) -> Result<ScanControl>,
+) -> Result<ScanControl> {
     let relationship_filter = combine_property_filters(
         property_filter_from_properties(spec.rel_properties),
         spec.relationship_scan_filter.cloned(),
@@ -345,6 +356,7 @@ pub fn visit_one_hop_relationships_with_budget(
                                skip_undirected_self_loops: bool|
      -> Result<ScanControl> {
         let mut visit = |relationship: RelRecord| {
+            crate::pipeline::runtime_checkpoint(task_context)?;
             if skip_undirected_self_loops
                 && relationship.source == spec.source
                 && relationship.target == spec.source

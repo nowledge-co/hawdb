@@ -481,7 +481,7 @@ pub use search::{
     SearchEmptyReasonCode, SearchFallbackReasonCode, SearchFusionWeights,
     SearchGenerationAdmission, SearchHit, SearchIndex, SearchLexicalFeasibilityCoverage,
     SearchLexicalFeasibilityMetrics, SearchLexicalProductionQualificationReport,
-    SearchLexicalTermPolicy, SearchMode, SearchOutOfCoreConfig,
+    SearchLexicalSourcePolicy, SearchLexicalTermPolicy, SearchMode, SearchOutOfCoreConfig,
     SearchOutOfCoreGenerationBuildOptions, SearchOutOfCoreGenerationBuildReport,
     SearchOutOfCoreGenerationUpdate, SearchOutOfCoreGenerationWriter,
     SearchOutOfCoreHydrationOutput, SearchOutOfCoreMetrics, SearchOutOfCoreOutput,
@@ -591,6 +591,9 @@ pub use workload_fixtures::{
 
 #[cfg(test)]
 mod lexical_term_policy_tests;
+
+#[cfg(test)]
+mod lexical_source_policy_tests;
 
 #[cfg(test)]
 mod lexical_manifest_budget_tests;

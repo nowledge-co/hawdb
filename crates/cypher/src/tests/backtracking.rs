@@ -13,9 +13,10 @@
 // limitations under the License.
 
 use super::*;
+use crate::ClauseKind;
 
 #[test]
-fn failed_thread_repair_probe_preserves_anonymous_variable_numbering() {
+fn failed_optional_match_parse_preserves_anonymous_variable_numbering() {
     for (prefix, next_id) in [
         ("MATCH (e:Entity)", 0),
         ("MATCH (:Source)-[:LINKS]->(e:Entity)", 1),
@@ -35,8 +36,8 @@ fn failed_thread_repair_probe_preserves_anonymous_variable_numbering() {
 }
 
 #[test]
-fn successful_thread_repair_probe_keeps_its_parsed_statement() {
-    let statement = parse(
+fn multi_stage_thread_repair_query_uses_the_pipeline_ast() {
+    let query =
         "MATCH (t:Thread) OPTIONAL MATCH (ti:ThreadIdentity) WHERE ti.thread_node_id = t.id \
          WITH t, COUNT(ti) AS identity_refs \
          OPTIONAL MATCH (t)-[:CONTAINS]->(msg:Message) \
@@ -45,15 +46,29 @@ fn successful_thread_repair_probe_keeps_its_parsed_statement() {
          RETURN t.id, t.thread_id, \
          CASE WHEN t.space_id IS NULL OR t.space_id = '' THEN 'default' ELSE t.space_id END, \
          COALESCE(t.message_count, 0), identity_refs, legacy_messages, COUNT(m) \
-         ORDER BY t.id ASC",
-    )
-    .unwrap();
-    let Statement::MatchThreadRepairStats(query) = statement else {
-        panic!("successful probe fell through: {statement:?}");
+         ORDER BY t.id ASC";
+    let expected = crate::parse_pipeline(query).unwrap();
+    let statement = parse(query).unwrap();
+    let Statement::Pipeline(query) = statement else {
+        panic!("multi-stage query fell through: {statement:?}");
     };
-    assert_eq!(query.identity_variable, "ti");
-    assert_eq!(query.message_label, "Message");
-    assert_eq!(query.memory_label, "Memory");
+    assert_eq!(*query, expected);
+    assert_eq!(query.clauses.len(), 7);
+    assert!(matches!(
+        query.clauses[1].kind,
+        ClauseKind::Match { optional: true, ref patterns, .. }
+            if patterns[0].first.variable == "ti" && patterns[0].first.label == "ThreadIdentity"
+    ));
+    assert!(matches!(
+        query.clauses[3].kind,
+        ClauseKind::Match { optional: true, ref patterns, .. }
+            if patterns[0].steps[0].target.variable == "msg" && patterns[0].steps[0].target.label == "Message"
+    ));
+    assert!(matches!(
+        query.clauses[5].kind,
+        ClauseKind::Match { optional: true, ref patterns, .. }
+            if patterns[0].steps[0].target.variable == "m" && patterns[0].steps[0].target.label == "Memory"
+    ));
 }
 
 fn variant(index: &mut usize, count: usize) -> usize {

@@ -54,7 +54,7 @@ impl Parser<'_> {
         }))
     }
 
-    fn parse_vector_search(&mut self) -> Result<Statement> {
+    pub(super) fn parse_vector_search_arguments(&mut self) -> Result<VectorSearch> {
         let embedding = self.parse_value()?;
         let mut top_k = None;
         loop {
@@ -74,7 +74,11 @@ impl Parser<'_> {
                 return Err(self.error("unsupported vector search option"));
             }
         }
-        let search = VectorSearch { embedding, top_k };
+        Ok(VectorSearch { embedding, top_k })
+    }
+
+    fn parse_vector_search(&mut self) -> Result<Statement> {
+        let search = self.parse_vector_search_arguments()?;
         self.skip_ws();
         if self.consume_keyword("YIELD") {
             self.skip_ws();

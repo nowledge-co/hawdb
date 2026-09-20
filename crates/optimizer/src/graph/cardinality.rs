@@ -112,7 +112,9 @@ pub(super) fn estimate_aggregate_work_rows(
                         None
                     }
                 }
-                AggregateTarget::All => None,
+                AggregateTarget::All
+                | AggregateTarget::Column(_)
+                | AggregateTarget::ColumnProperty { .. } => None,
             }
         })
         .fold(0_u64, |sum, distinct_count| {

@@ -51,7 +51,7 @@ impl Parser<'_> {
         })
     }
 
-    fn parse_case_scalar(&mut self) -> Result<ScalarExpression> {
+    pub(super) fn parse_case_scalar(&mut self) -> Result<ScalarExpression> {
         self.skip_ws();
         let start = self.checkpoint();
         if self.next_keyword_is("CURRENT_TIMESTAMP")

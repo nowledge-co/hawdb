@@ -22,7 +22,7 @@ fn pool(root: &TestRoot) -> (BuildMemory, SpillRuns) {
     let memory = BuildMemory::new(&task).unwrap();
     let mut pool =
         SpillRuns::with_context(&root.0, 1, Default::default(), memory.clone(), task).unwrap();
-    pool.prepare(5, 6).unwrap();
+    pool.prepare(5, 0).unwrap();
     (memory, pool)
 }
 
@@ -51,16 +51,15 @@ fn streamed_posting_size_is_exact_after_duplicate_fields_and_pair_merge() {
                     "frequency records checkpointed per field: {checks}"
                 );
             }
-            let id = "source";
             let expected = RUN_HEADER.len() as u64
-                + Posting::encoded_parts_len(5, id.len())
-                + Posting::encoded_parts_len(4, id.len());
-            assert_eq!(run.posting_size.encoded_bytes(id).unwrap(), expected);
+                + Posting::encoded_parts_len(5)
+                + Posting::encoded_parts_len(4);
+            assert_eq!(run.posting_size.encoded_bytes().unwrap(), expected);
             let bytes = pool.bytes;
             let sequence = pool.sequence;
             pool.config.max_spill_bytes = NonZeroU64::new(bytes + expected - short).unwrap();
             pool.config.max_spill_runs = NonZeroUsize::new(sequence + 1).unwrap();
-            let result = spill_postings(run, id, if merge { 8 } else { 4 }, &mut pool);
+            let result = spill_postings(run, if merge { 8 } else { 4 }, &mut pool);
             if short == 0 {
                 result.unwrap();
                 assert_eq!(pool.sequence, sequence + 1);
@@ -109,7 +108,7 @@ fn failed_creation_does_not_reuse_a_path_when_cleanup_also_fails() {
     let blocked = root.0.join(".search-lexical.1.1.tmp");
     fs::create_dir(&blocked).unwrap();
     let bytes = pool.bytes;
-    assert!(spill_postings(run, "source", 4, &mut pool).is_err());
+    assert!(spill_postings(run, 4, &mut pool).is_err());
     assert_eq!(pool.bytes, bytes);
     assert_eq!(pool.sequence, 2);
     assert!(pool.paths.is_empty());

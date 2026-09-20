@@ -364,6 +364,13 @@ fn stage_rule_counts(stage_events: &[StageTrace]) -> (usize, usize) {
 impl GroupExpr {
     fn from_logical(logical: &LogicalPlan, memo: &mut GraphMemo) -> Self {
         match logical {
+            LogicalPlan::GraphMatch { input, .. } => Self {
+                logical: logical.clone(),
+                children: input
+                    .iter()
+                    .map(|input| insert_logical_group(memo, input))
+                    .collect(),
+            },
             LogicalPlan::CreateNodeLabel { .. }
             | LogicalPlan::CreateRelationshipType { .. }
             | LogicalPlan::CreateNodeTable { .. }
@@ -383,6 +390,7 @@ impl GroupExpr {
             | LogicalPlan::GraphAlgorithm { .. }
             | LogicalPlan::VectorSeed { .. }
             | LogicalPlan::CreateNode { .. }
+            | LogicalPlan::UnwindMutation { .. }
             | LogicalPlan::MergeNode { .. }
             | LogicalPlan::MergeRelationship { .. }
             | LogicalPlan::MergeMatchedRelationship { .. }
@@ -624,6 +632,9 @@ fn graph_expansion_budget(top_k: usize, max_hops: usize) -> GraphExpansionBudget
 
 fn logical_group_count(logical: &LogicalPlan) -> usize {
     match logical {
+        LogicalPlan::GraphMatch { input, .. } => {
+            1 + input.as_deref().map(logical_group_count).unwrap_or(0)
+        }
         LogicalPlan::Limit { limit: Some(0), .. } => 1,
         LogicalPlan::Limit {
             limit: Some(_),
@@ -667,6 +678,7 @@ fn logical_group_count(logical: &LogicalPlan) -> usize {
         | LogicalPlan::GraphAlgorithm { .. }
         | LogicalPlan::VectorSeed { .. }
         | LogicalPlan::CreateNode { .. }
+        | LogicalPlan::UnwindMutation { .. }
         | LogicalPlan::MergeNode { .. }
         | LogicalPlan::MergeRelationship { .. }
         | LogicalPlan::MergeMatchedRelationship { .. }
@@ -746,6 +758,19 @@ fn lower_logical(
         return plan;
     }
     match logical {
+        LogicalPlan::GraphMatch { program, input } => PhysicalPlan::GraphMatchExec {
+            program: program.clone(),
+            input: input.as_ref().map(|input| {
+                Box::new(children.lower(
+                    input,
+                    0,
+                    catalog,
+                    optimizer_context,
+                    decisions,
+                    stage_events,
+                ))
+            }),
+        },
         LogicalPlan::NodeCartesianProduct { left, right } => {
             let left = children.lower(left, 0, catalog, optimizer_context, decisions, stage_events);
             let right = children.lower(
@@ -1064,7 +1089,9 @@ fn select_node_count_fast_path(
         && match &item.target {
             AggregateTarget::All => !item.distinct,
             AggregateTarget::Variable(target) => target == variable,
-            AggregateTarget::Property { .. } => false,
+            AggregateTarget::Property { .. }
+            | AggregateTarget::Column(_)
+            | AggregateTarget::ColumnProperty { .. } => false,
         };
     if !exact_node_count {
         return None;
@@ -1135,7 +1162,9 @@ fn select_relationship_count_fast_path(
         && match &item.target {
             AggregateTarget::All => true,
             AggregateTarget::Variable(target) => rel_variable.as_ref() == Some(target),
-            AggregateTarget::Property { .. } => false,
+            AggregateTarget::Property { .. }
+            | AggregateTarget::Column(_)
+            | AggregateTarget::ColumnProperty { .. } => false,
         };
     if !exact_relationship_count {
         return None;

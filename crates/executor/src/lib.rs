@@ -31,6 +31,7 @@ pub mod external;
 #[doc(hidden)]
 pub mod external_order;
 pub mod graph;
+mod graph_match;
 #[doc(hidden)]
 pub mod kernel;
 pub mod limit;

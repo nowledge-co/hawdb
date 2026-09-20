@@ -38,6 +38,7 @@ pub(in crate::lexical_projection) fn manifest(mut terms: Vec<String>) -> Manifes
                 length: 64,
                 checksum: u64::MAX,
                 entry_count: 1,
+                ordinal_start: 0,
             },
             BlockDescriptor {
                 block_id: 1,
@@ -48,11 +49,13 @@ pub(in crate::lexical_projection) fn manifest(mut terms: Vec<String>) -> Manifes
                 length: 64,
                 checksum: 0,
                 entry_count: terms.len() as u32,
+                ordinal_start: 0,
             },
         ]
     };
     ManifestBody {
-        format: "HAWDB_LEXICAL_MANIFEST_V1".into(),
+        format: "HAWDB_LEXICAL_MANIFEST_V2".into(),
+        layout: "HAWDB_LEXICAL_ORDINAL_V1".into(),
         generation: 7,
         source_graph_commit_epoch: Some(8),
         analyzer_digest: u64::MAX,
@@ -145,6 +148,25 @@ fn decode_preserves_checksum_and_schema_rejection() {
         .contains("counts are inconsistent"));
     let error = ManifestBody::decode(&legacy_encode(&invalid)).unwrap_err();
     assert!(error.to_string().contains("counts are inconsistent"));
+
+    let mut previous_layout = manifest(vec!["term".into()]);
+    previous_layout.format = "HAWDB_LEXICAL_MANIFEST_V1".into();
+    assert!(previous_layout.validate().is_err());
+}
+
+#[test]
+fn manifest_rejects_document_blocks_after_postings() {
+    let mut body = manifest(vec!["term".into()]);
+    let mut documents = body.blocks.remove(0);
+    let mut postings = body.blocks.remove(0);
+    let header_len = ARTIFACT_HEADER.len() as u64 + 8;
+    postings.block_id = 0;
+    postings.offset = header_len;
+    documents.block_id = 1;
+    documents.offset = header_len + postings.length;
+    body.blocks = vec![postings, documents];
+
+    assert!(body.validate().is_err());
 }
 
 struct ChangingBody {

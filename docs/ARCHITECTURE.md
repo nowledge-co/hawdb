@@ -943,18 +943,20 @@ Transactions should expose:
 - rollback
 - checkpoint
 
-The embedded runtime uses immutable snapshot/COW MVCC under one active root
+The embedded runtime uses immutable snapshot/COW state under one active root
 handle. `Database` retains a single mutable owner, while `ConcurrentDatabase`
 allows optimistic or pessimistic transactions to prepare concurrently and
 serializes the durable commit/publication decision. Optimistic validation is
-currently coarse first-committer-wins by commit epoch. Ordinary relational
-SELECT statements remain snapshot reads. Explicit `FOR SHARE`/`FOR UPDATE`
-and DML use primary-key point/range locks when their access span is known and
-a bounded table-lock fallback otherwise; lock acquisition is deterministic,
-memory-bounded, and may escalate narrow locks. Cypher currently uses the
-database fallback. This is
-an in-process concurrency contract, not tuple-version MVCC, arbitrary
-time-travel, general serializable isolation, or multi-process writing.
+currently coarse first-committer-wins by commit epoch. The planned per-key
+MVCC validation and its storage/recovery boundaries are specified in
+[`MVCC_COMMIT_VALIDATION_PROTOCOL.md`](MVCC_COMMIT_VALIDATION_PROTOCOL.md);
+they are not active yet. Ordinary relational SELECT statements remain snapshot
+reads. Explicit `FOR SHARE`/`FOR UPDATE` and DML use primary-key point/range
+locks when their access span is known and a bounded table-lock fallback
+otherwise; lock acquisition is deterministic, memory-bounded, and may escalate
+narrow locks. Cypher currently uses the database fallback. This is an
+in-process concurrency contract, not tuple-version MVCC, arbitrary time-travel,
+general serializable isolation, or multi-process writing.
 
 ## Nowledge Integration
 

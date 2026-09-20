@@ -2171,7 +2171,7 @@ fn error_class(error: &HawDBError) -> &'static str {
     match error {
         HawDBError::Parse(_) => "parse",
         HawDBError::Semantic(_) => "semantic",
-        HawDBError::Execution(_) => "execution",
+        HawDBError::Execution(_) | HawDBError::TransactionConflict { .. } => "execution",
         HawDBError::Storage(_)
         | HawDBError::StorageIntegrity(_)
         | HawDBError::AppendSequenceExhausted { .. } => "storage",

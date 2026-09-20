@@ -47,9 +47,9 @@ impl PostingSize {
         Ok(())
     }
 
-    pub(super) fn encoded_bytes(&self, id: &str) -> Result<u64> {
+    pub(super) fn encoded_bytes(&self) -> Result<u64> {
         self.terms
-            .checked_mul(Posting::encoded_parts_len(0, id.len()))
+            .checked_mul(Posting::encoded_parts_len(0))
             .and_then(|bytes| bytes.checked_add(self.term_bytes))
             .and_then(|bytes| bytes.checked_add(RUN_HEADER.len() as u64))
             .ok_or_else(Self::overflow)

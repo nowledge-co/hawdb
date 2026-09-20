@@ -578,6 +578,7 @@ struct MutationCommitOptions<'a> {
     relational: Option<RelationalTransaction>,
     append: Option<AppendTransaction>,
     preserve_single_create_wal: bool,
+    mvcc_read_epoch: Option<u64>,
     captured_graph_ops: Option<&'a mut Vec<WalOp>>,
 }
 
@@ -718,6 +719,7 @@ pub struct GraphStore {
     next_node_id: u64,
     next_rel_id: u64,
     commit_epoch: u64,
+    version_index: hawdb_storage::version::VersionIndex,
     nodes: CowSegmentedMap<NodeId, NodeRecord>,
     relationships: CowSegmentedMap<RelId, RelRecord>,
     basic_statistics: BasicGraphStatistics,
@@ -1145,7 +1147,15 @@ impl GraphMutationTransaction {
         mutation: GraphMutation,
         limits: MutationLimits,
     ) -> Result<MutationSummary> {
-        self.stage_mutation(mutation, limits, true)
+        self.stage_mutations_with_limits(vec![mutation], limits)
+    }
+
+    pub(crate) fn stage_mutations_with_limits(
+        &mut self,
+        mutations: Vec<GraphMutation>,
+        limits: MutationLimits,
+    ) -> Result<MutationSummary> {
+        self.stage_mutations(mutations, limits, true)
     }
 
     #[doc(hidden)]
@@ -1154,19 +1164,26 @@ impl GraphMutationTransaction {
         mutation: GraphMutation,
         limits: MutationLimits,
     ) -> Result<MutationSummary> {
-        self.stage_mutation(mutation, limits, false)
+        self.stage_mutations(vec![mutation], limits, false)
     }
 
-    fn stage_mutation(
+    fn stage_mutations(
         &mut self,
-        mutation: GraphMutation,
+        mutations: Vec<GraphMutation>,
         limits: MutationLimits,
         retain_commit_rows: bool,
     ) -> Result<MutationSummary> {
+        if mutations.is_empty() {
+            return Ok(MutationSummary {
+                rows: Vec::new(),
+                relational_mutation_outcomes: Vec::new(),
+                append_mutation_outcomes: Vec::new(),
+            });
+        }
         let mut captured_ops = Vec::new();
         let summary = self.store.commit_mutations_internal(
             &mut self.catalog,
-            vec![mutation],
+            mutations,
             limits,
             MutationCommitOptions {
                 captured_graph_ops: Some(&mut captured_ops),
@@ -1583,6 +1600,7 @@ impl GraphStore {
             next_node_id: 0,
             next_rel_id: 0,
             commit_epoch: 0,
+            version_index: hawdb_storage::version::VersionIndex::default(),
             nodes: CowSegmentedMap::default(),
             relationships: CowSegmentedMap::default(),
             basic_statistics: BasicGraphStatistics::default(),
@@ -1972,6 +1990,7 @@ impl GraphStore {
             next_node_id: self.next_node_id,
             next_rel_id: self.next_rel_id,
             commit_epoch: self.commit_epoch,
+            version_index: self.version_index.clone(),
             nodes: self.nodes.clone(),
             relationships: self.relationships.clone(),
             basic_statistics: self.basic_statistics.clone(),

@@ -810,6 +810,17 @@ fn dispatch_batch_operator<D: BatchDispatch>(plan: &PhysicalPlan, dispatch: D) -
                 stream_hash_join_batches(plan, context, execution_limit, emit)
             })
         }
+        PhysicalPlan::GraphMatchExec { program, input } => {
+            dispatch.supported(|context, execution_limit, emit| {
+                stream_graph_match_batches(
+                    program,
+                    input.as_deref(),
+                    context,
+                    execution_limit,
+                    emit,
+                )
+            })
+        }
         PhysicalPlan::NodeCartesianProductExec { left, right } => {
             dispatch.supported(|context, execution_limit, emit| {
                 stream_cartesian_product_batches(left, right, context, execution_limit, emit)
@@ -882,6 +893,7 @@ fn dispatch_batch_operator<D: BatchDispatch>(plan: &PhysicalPlan, dispatch: D) -
         | PhysicalPlan::CreateRelationshipPropertyExistsConstraint { .. }
         | PhysicalPlan::ProjectGraph { .. }
         | PhysicalPlan::CreateNode { .. }
+        | PhysicalPlan::UnwindMutation { .. }
         | PhysicalPlan::MergeNode { .. }
         | PhysicalPlan::MergeRelationship { .. }
         | PhysicalPlan::MergeMatchedRelationship { .. }
