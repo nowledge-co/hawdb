@@ -1320,11 +1320,12 @@ impl SearchOutOfCoreReader {
                         .iter()
                         .map(|segment| segment.lexical_projection.as_ref()),
                     &query_terms,
+                    self.lexical_term_policy.max_term_bytes(),
                 )?;
                 let mut scores = BTreeMap::new();
                 let mut matching_document_count = 0usize;
                 let mut postings_visited = 0u64;
-                let mut bytes_read = 0u64;
+                let mut bytes_read = lexical_statistics.bytes_read();
                 for segment in &self.segments {
                     let report = segment.lexical_projection.score_with_global_statistics(
                         &query_terms,
