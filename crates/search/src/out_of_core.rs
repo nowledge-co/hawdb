@@ -1719,15 +1719,35 @@ impl SearchOutOfCoreReader {
         }
         let mut segment_documents = BTreeMap::<(usize, u64), BTreeSet<String>>::new();
         for id in document_ids {
-            let (layer, segment) = self.segment_for_document(id).ok_or_else(|| {
-                HawDBError::Storage(format!(
+            let mut found = false;
+            for (layer, artifact) in self.segments.iter().enumerate() {
+                let Ok(index) = artifact.descriptor.segments.binary_search_by(|segment| {
+                    if segment.last_document_id.as_str() < id {
+                        CmpOrdering::Less
+                    } else if segment.first_document_id.as_str() > id {
+                        CmpOrdering::Greater
+                    } else {
+                        CmpOrdering::Equal
+                    }
+                }) else {
+                    continue;
+                };
+                let segment = artifact
+                    .descriptor
+                    .segments
+                    .get(index)
+                    .expect("binary search returned an existing descriptor segment");
+                found = true;
+                segment_documents
+                    .entry((layer, segment.segment_id))
+                    .or_default()
+                    .insert(id.clone());
+            }
+            if !found {
+                return Err(HawDBError::Storage(format!(
                     "search document {id} is outside the published document ranges"
-                ))
-            })?;
-            segment_documents
-                .entry((layer, segment.segment_id))
-                .or_default()
-                .insert(id.clone());
+                )));
+            }
         }
         let mut hydrated = BTreeMap::<String, SearchDocument>::new();
         let mut hydrated_bytes = 0u64;
@@ -1766,7 +1786,13 @@ impl SearchOutOfCoreReader {
                         self.config.max_hydrated_bytes
                     )));
                 }
-                hydrated.insert(document.id.clone(), document);
+                let document_id = document.id.clone();
+                if hydrated.insert(document_id.clone(), document).is_some() {
+                    return Err(HawDBError::Storage(format!(
+                        "search out-of-core segment set has duplicate document {}",
+                        document_id
+                    )));
+                }
             }
         }
         if hydrated.len() != document_ids.len() {
@@ -1780,6 +1806,7 @@ impl SearchOutOfCoreReader {
         Ok(hydrated)
     }
 
+    #[cfg(test)]
     fn segment_for_document(&self, id: &str) -> Option<(usize, &SearchSegmentDescriptorEntry)> {
         self.segments
             .iter()
@@ -3757,6 +3784,17 @@ mod tests {
             .search_with_options("graph", None, SearchMode::Text, options(1, None))
             .unwrap_err();
         assert!(error.to_string().contains("duplicate document"));
+        let error = reader
+            .hydrate_documents(&[document(0, "team").id])
+            .unwrap_err();
+        assert!(error.to_string().contains("duplicate document"));
+        #[cfg(feature = "vector-search")]
+        {
+            let error = reader
+                .search_with_options("", Some(&[1.0, 16.0]), SearchMode::Vector, options(1, None))
+                .unwrap_err();
+            assert!(error.to_string().contains("duplicate document"));
+        }
         fs::remove_dir_all(path).unwrap();
     }
 
@@ -3874,6 +3912,13 @@ mod tests {
         );
         assert_eq!(vector.metrics.candidate_block_reads, 2);
         assert!(vector.metrics.vector_segment_bytes_read > 0);
+
+        let limited = reader
+            .search_with_options("", Some(&[16.0, 1.0]), SearchMode::Vector, options(1, None))
+            .unwrap();
+        assert_eq!(limited.result.total_hits, 2);
+        assert_eq!(limited.result.hits.len(), 1);
+        assert_eq!(limited.result.hits[0].id, "memory:001");
 
         let hybrid = reader
             .search_with_options(
