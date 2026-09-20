@@ -19,12 +19,20 @@ use super::{
 use crate::build_control::checkpoint;
 use crate::build_memory::BuildMemory;
 use crate::error::{HawDBError, Result};
+use crate::lexical_projection::{
+    analyzer_digest as lexical_analyzer_digest, document_digest, document_retraction_with_context,
+    LexicalProjectionConfig,
+};
+use crate::out_of_core::mutation_run::{
+    SearchMutationOperation, SearchMutationRetraction, SearchMutationRunEntry,
+};
 use crate::{
     SearchDocument, SearchOutOfCoreGenerationBuildReport, SearchOutOfCoreMetrics,
     SearchOutOfCoreReader, SearchProjectionDelta, SearchProjectionDeltaReport,
 };
 use hawdb_core::RuntimeTaskContext;
 use hawdb_executor::QueryMemoryLease;
+use std::collections::BTreeSet;
 
 mod input;
 
@@ -72,10 +80,142 @@ impl LocalMutationTarget {
 #[derive(Debug)]
 pub struct SearchOutOfCoreGenerationUpdate {
     writer: SearchOutOfCoreGenerationWriter,
+    mutation_run: Option<MutationRunUpdate>,
     delta_report: SearchProjectionDeltaReport,
     source_read_metrics: SearchOutOfCoreMetrics,
     // The owned public report is handed to its caller only after finish returns.
     _report_memory: QueryMemoryLease,
+}
+
+#[derive(Debug)]
+struct MutationRunUpdate {
+    expected_generation: u64,
+    entries: Vec<SearchMutationRunEntry>,
+    max_bytes: u64,
+    max_generation_bytes: u64,
+    lexical_generation: u64,
+    source_graph_commit_epoch: Option<u64>,
+    embedding_dimension: Option<usize>,
+}
+
+impl MutationRunUpdate {
+    fn prepare(
+        reader: &SearchOutOfCoreReader,
+        input: &input::Input,
+        writer: &SearchOutOfCoreGenerationWriter,
+        source_graph_commit_epoch: Option<u64>,
+    ) -> Result<Option<(Self, SearchOutOfCoreMetrics)>> {
+        if !input.upserts.is_empty() || input.deletes.is_empty() {
+            return Ok(None);
+        }
+        let mut document_ids = BTreeSet::new();
+        for document_id in &input.deletes {
+            if reader.resolve_mutation_segment(document_id)?.is_none() {
+                return Ok(None);
+            }
+            document_ids.insert(document_id.clone());
+        }
+        let targets = reader.resolve_mutation_targets(&document_ids)?;
+        let lexical_config = LexicalProjectionConfig {
+            max_manifest_bytes: reader.config().max_lexical_manifest_bytes,
+            max_term_bytes: reader.lexical_term_policy().max_term_bytes(),
+            ..LexicalProjectionConfig::default()
+        };
+        let mut entries = Vec::with_capacity(targets.targets.len());
+        for (document_id, target) in targets.targets {
+            let retraction = document_retraction_with_context(
+                &target.document,
+                reader.analyzer_lexicon(),
+                lexical_config,
+                &writer.memory,
+                &writer.task_context,
+            )?;
+            entries.push(SearchMutationRunEntry {
+                document_id,
+                target_segment_id: target.content_segment_id,
+                operation: SearchMutationOperation::Delete,
+                retraction: SearchMutationRetraction {
+                    documents_digest: document_digest(&target.document),
+                    lexical_document_len: retraction.document_len,
+                    unique_terms: retraction.unique_terms,
+                },
+            });
+        }
+        let lexical_generation = reader
+            .manifest
+            .segments
+            .iter()
+            .map(|segment| segment.generation)
+            .max()
+            .expect("validated search manifest has at least one content segment");
+        Ok(Some((
+            Self {
+                expected_generation: reader.generation(),
+                entries,
+                max_bytes: reader.config().max_mutation_run_bytes.get(),
+                max_generation_bytes: writer.options.max_generation_bytes.get(),
+                lexical_generation,
+                source_graph_commit_epoch,
+                embedding_dimension: reader.manifest.embedding_dimension,
+            },
+            targets.metrics,
+        )))
+    }
+
+    fn finish(
+        self,
+        writer: SearchOutOfCoreGenerationWriter,
+    ) -> Result<SearchOutOfCoreGenerationBuildReport> {
+        let published =
+            super::super::publish_mutation_run(super::super::PublishMutationRunInput {
+                root: &writer.root,
+                expected_generation: self.expected_generation,
+                analyzer_digest: lexical_analyzer_digest(&writer.options.analyzer_lexicon),
+                source_graph_commit_epoch: self.source_graph_commit_epoch,
+                entries: self.entries,
+                max_bytes: self.max_bytes,
+                max_generation_bytes: self.max_generation_bytes,
+                memory: &writer.memory,
+                task: &writer.task_context,
+            })?;
+        let source_graph_commit_epoch = writer.options.source_graph_commit_epoch;
+        drop(writer);
+        // Mutation publication creates no content, lexical, or vector artifact.
+        // Keep the newest retained lexical generation as the report's active
+        // lexical identity and report zero bytes for artifact classes absent
+        // from this mutation-only publication.
+        Ok(SearchOutOfCoreGenerationBuildReport {
+            generation: published.generation,
+            lexical_generation: self.lexical_generation,
+            document_count: published.document_count,
+            vector_document_count: 0,
+            documents_digest: published.documents_digest,
+            logical_document_bytes: 0,
+            spool_bytes: 0,
+            peak_record_bytes: 0,
+            peak_segment_document_count: 0,
+            peak_segment_encoded_bytes: 0,
+            descriptor_working_bytes: 0,
+            descriptor_bytes: 0,
+            document_payload_bytes: 0,
+            metadata_payload_bytes: 0,
+            vector_payload_bytes: 0,
+            lexical_artifact_bytes: 0,
+            lexical_manifest_bytes: 0,
+            rabitq_artifact_bytes: 0,
+            rabitq_source_digest: None,
+            rabitq_peak_build_working_bytes: 0,
+            manifest_bytes: published.manifest_bytes,
+            generation_bytes: published.bytes_written,
+            source_graph_commit_epoch,
+            embedding_dimension: self.embedding_dimension,
+            resident_document_count: 0,
+            active_manifest_published_last: true,
+            cleanup_deleted_files: 0,
+            cleanup_pending_files: 0,
+            cleanup_retry_required: false,
+        })
+    }
 }
 
 impl SearchOutOfCoreGenerationUpdate {
@@ -139,6 +279,39 @@ impl SearchOutOfCoreGenerationUpdate {
         writer.set_lexical_term_policy(reader.lexical_term_policy());
         writer.set_max_lexical_manifest_bytes(reader.config().max_lexical_manifest_bytes)?;
         writer.expected_active_generation = Some(reader.generation());
+        if let Some((mutation_run, source_read_metrics)) =
+            MutationRunUpdate::prepare(reader, &input, &writer, source_graph_commit_epoch_after)?
+        {
+            let deleted_documents = mutation_run.entries.len();
+            let after_document_count = before_document_count
+                .checked_sub(deleted_documents)
+                .ok_or_else(|| HawDBError::Storage("search document count underflow".into()))?;
+            return Ok(Self {
+                mutation_run: Some(mutation_run),
+                delta_report: SearchProjectionDeltaReport {
+                    artifact_type: "search_projection".to_string(),
+                    name: "search_projection".to_string(),
+                    action: "incremental_mutation_run_delete".to_string(),
+                    before_document_count,
+                    after_document_count,
+                    upserted_documents: 0,
+                    deleted_documents,
+                    operation_count,
+                    source_graph_commit_epoch_before,
+                    source_graph_commit_epoch_after,
+                    source_graph_commit_epoch_updated: epoch_updated,
+                },
+                writer,
+                source_read_metrics,
+                _report_memory: report_memory,
+            });
+        }
+        if operation_count > 0 && !reader.manifest.mutation_runs.is_empty() {
+            return Err(HawDBError::Storage(
+                "search incremental update with active mutation runs requires target-aware replacement support"
+                    .to_string(),
+            ));
+        }
         let can_append = input
             .upserts
             .front()
@@ -154,6 +327,7 @@ impl SearchOutOfCoreGenerationUpdate {
                 expected_generation: reader.generation(),
             });
             return Ok(Self {
+                mutation_run: None,
                 delta_report: SearchProjectionDeltaReport {
                     artifact_type: "search_projection".to_string(),
                     name: "search_projection".to_string(),
@@ -220,6 +394,7 @@ impl SearchOutOfCoreGenerationUpdate {
                         )
                     })?;
                 return Ok(Self {
+                    mutation_run: None,
                     delta_report: SearchProjectionDeltaReport {
                         artifact_type: "search_projection".to_string(),
                         name: "search_projection".to_string(),
@@ -280,6 +455,7 @@ impl SearchOutOfCoreGenerationUpdate {
         checkpoint(&task)?;
 
         Ok(Self {
+            mutation_run: None,
             delta_report: SearchProjectionDeltaReport {
                 artifact_type: "search_projection".to_string(),
                 name: "search_projection".to_string(),
@@ -318,8 +494,18 @@ impl SearchOutOfCoreGenerationUpdate {
         SearchOutOfCoreGenerationBuildReport,
         SearchOutOfCoreMetrics,
     )> {
-        let build_report = self.writer.finish()?;
-        Ok((self.delta_report, build_report, self.source_read_metrics))
+        let Self {
+            writer,
+            mutation_run,
+            delta_report,
+            source_read_metrics,
+            _report_memory,
+        } = self;
+        let build_report = match mutation_run {
+            Some(mutation_run) => mutation_run.finish(writer)?,
+            None => writer.finish()?,
+        };
+        Ok((delta_report, build_report, source_read_metrics))
     }
 }
 

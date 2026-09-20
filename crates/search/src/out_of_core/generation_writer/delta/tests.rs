@@ -13,11 +13,13 @@
 // limitations under the License.
 
 use super::*;
-use crate::lexical_projection::DocumentsDigest;
+use crate::lexical_projection::{document_digest, DocumentsDigest};
+use crate::out_of_core::OUT_OF_CORE_MANIFEST_FILE;
 use crate::{SearchProjectionKind, SearchProjectionRow};
 use hawdb_core::RuntimeMemoryReservation;
 use std::collections::{BTreeMap, BTreeSet};
 use std::fs;
+use std::num::NonZeroU64;
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicUsize, Ordering};
 
@@ -276,13 +278,279 @@ fn replacement_rewrites_only_the_current_content_segment() {
 }
 
 #[test]
-fn deletion_rewrites_only_the_current_content_segment_and_updates_manifest_identity() {
+fn deletion_publishes_a_mutation_run_without_rewriting_content_segments() {
     let root = Fixture::new();
     append(&root.0, row("z"));
     let reader = SearchOutOfCoreReader::open(&root.0).unwrap();
+    let old_reader = SearchOutOfCoreReader::open(&root.0).unwrap();
     let before = reader.manifest.clone();
     let full_metrics = reader.visit_documents_in_order(&mut |_| Ok(())).unwrap();
 
+    let update = SearchOutOfCoreGenerationWriter::prepare_delta(
+        &reader,
+        SearchProjectionDelta {
+            deletes: vec!["memory:c".to_string()],
+            source_graph_commit_epoch: Some(19),
+            ..Default::default()
+        },
+        Default::default(),
+    )
+    .unwrap();
+    assert_eq!(
+        update.delta_report().action,
+        "incremental_mutation_run_delete"
+    );
+    assert_eq!(update.delta_report().before_document_count, 4);
+    assert_eq!(update.delta_report().after_document_count, 3);
+    assert_eq!(update.delta_report().deleted_documents, 1);
+    assert_eq!(update.source_read_metrics().hydrated_documents, 1);
+    assert!(update.source_read_metrics().segment_range_reads < full_metrics.segment_range_reads);
+    assert!(update.source_read_metrics().segment_bytes_read < full_metrics.segment_bytes_read);
+    let (_, build, _) = update.finish().unwrap();
+    assert_eq!(build.document_count, 3);
+    assert_eq!(build.generation, before.generation + 1);
+    assert!(old_reader
+        .hydrate_documents(&["memory:c".to_string()])
+        .is_ok());
+
+    let reader = SearchOutOfCoreReader::open(&root.0).unwrap();
+    assert_eq!(reader.manifest.segments.len(), before.segments.len());
+    for (actual, previous) in reader.manifest.segments.iter().zip(&before.segments) {
+        assert_eq!(actual.segment_id, previous.segment_id);
+        assert_eq!(actual.generation, previous.generation);
+        assert_eq!(actual.descriptor_file, previous.descriptor_file);
+        assert_eq!(actual.payload_file, previous.payload_file);
+        assert_eq!(actual.documents_digest, previous.documents_digest);
+    }
+    assert_eq!(reader.manifest.mutation_runs.len(), 1);
+    assert_eq!(
+        reader.manifest.mutation_runs[0].generation,
+        build.generation
+    );
+    assert!(root.0.join(&reader.manifest.mutation_runs[0].file).exists());
+    assert_eq!(
+        reader.manifest.documents_digest,
+        DocumentsDigest::replace(
+            before.documents_digest,
+            document_digest(&row("c").into_document()),
+            0,
+        )
+    );
+    assert_eq!(reader.source_graph_commit_epoch(), Some(19));
+    let ids = ["a", "e", "z"].map(|id| format!("memory:{id}"));
+    assert_eq!(
+        reader.hydrate_documents(&ids).unwrap().documents,
+        ["a", "e", "z"].map(|id| row(id).into_document())
+    );
+    assert!(reader.hydrate_documents(&["memory:c".to_string()]).is_err());
+}
+
+#[test]
+fn delete_batch_publishes_one_k_sized_mutation_run() {
+    let root = Fixture::new();
+    let reader = SearchOutOfCoreReader::open(&root.0).unwrap();
+    let update = SearchOutOfCoreGenerationWriter::prepare_delta(
+        &reader,
+        SearchProjectionDelta {
+            deletes: vec!["memory:a".to_string(), "memory:c".to_string()],
+            ..Default::default()
+        },
+        Default::default(),
+    )
+    .unwrap();
+    assert_eq!(
+        update.delta_report().action,
+        "incremental_mutation_run_delete"
+    );
+    assert_eq!(update.delta_report().deleted_documents, 2);
+    assert_eq!(update.source_read_metrics().hydrated_documents, 2);
+    let (_, build, _) = update.finish().unwrap();
+
+    let reader = SearchOutOfCoreReader::open(&root.0).unwrap();
+    assert_eq!(build.document_count, 1);
+    assert_eq!(reader.manifest.mutation_runs.len(), 1);
+    assert_eq!(reader.manifest.mutation_runs[0].entry_count, 2);
+    assert_eq!(
+        reader
+            .hydrate_documents(&["memory:e".to_string()])
+            .unwrap()
+            .documents,
+        vec![row("e").into_document()]
+    );
+    assert!(reader.hydrate_documents(&["memory:a".to_string()]).is_err());
+    assert!(reader.hydrate_documents(&["memory:c".to_string()]).is_err());
+}
+
+#[test]
+fn successive_deletes_publish_separate_visible_mutation_runs() {
+    let root = Fixture::new();
+    let first = SearchOutOfCoreReader::open(&root.0).unwrap();
+    SearchOutOfCoreGenerationWriter::prepare_delta(
+        &first,
+        SearchProjectionDelta {
+            deletes: vec!["memory:a".to_string()],
+            ..Default::default()
+        },
+        Default::default(),
+    )
+    .unwrap()
+    .finish()
+    .unwrap();
+
+    let second = SearchOutOfCoreReader::open(&root.0).unwrap();
+    SearchOutOfCoreGenerationWriter::prepare_delta(
+        &second,
+        SearchProjectionDelta {
+            deletes: vec!["memory:c".to_string()],
+            ..Default::default()
+        },
+        Default::default(),
+    )
+    .unwrap()
+    .finish()
+    .unwrap();
+
+    let reader = SearchOutOfCoreReader::open(&root.0).unwrap();
+    assert_eq!(reader.document_count(), 1);
+    assert_eq!(reader.manifest.mutation_runs.len(), 2);
+    assert_eq!(
+        reader
+            .hydrate_documents(&["memory:e".to_string()])
+            .unwrap()
+            .documents,
+        vec![row("e").into_document()]
+    );
+}
+
+#[test]
+fn stale_mutation_run_publication_preserves_the_newer_visible_generation() {
+    let root = Fixture::new();
+    let reader = SearchOutOfCoreReader::open(&root.0).unwrap();
+    let newer = SearchOutOfCoreGenerationWriter::prepare_delta(
+        &reader,
+        SearchProjectionDelta {
+            deletes: vec!["memory:a".to_string()],
+            ..Default::default()
+        },
+        Default::default(),
+    )
+    .unwrap();
+    let stale = SearchOutOfCoreGenerationWriter::prepare_delta(
+        &reader,
+        SearchProjectionDelta {
+            deletes: vec!["memory:c".to_string()],
+            ..Default::default()
+        },
+        Default::default(),
+    )
+    .unwrap();
+
+    newer.finish().unwrap();
+    let manifest_path = root.0.join(OUT_OF_CORE_MANIFEST_FILE);
+    let active = fs::read(&manifest_path).unwrap();
+    let error = stale.finish().unwrap_err();
+    assert!(error
+        .to_string()
+        .contains("base changed before publication"));
+    assert_eq!(fs::read(&manifest_path).unwrap(), active);
+
+    let reader = SearchOutOfCoreReader::open(&root.0).unwrap();
+    assert!(reader.hydrate_documents(&["memory:a".to_string()]).is_err());
+    assert_eq!(
+        reader
+            .hydrate_documents(&["memory:c".to_string()])
+            .unwrap()
+            .documents,
+        vec![row("c").into_document()]
+    );
+}
+
+#[test]
+fn active_mutation_runs_reject_unsupported_replacement_paths() {
+    let root = Fixture::new();
+    let reader = SearchOutOfCoreReader::open(&root.0).unwrap();
+    SearchOutOfCoreGenerationWriter::prepare_delta(
+        &reader,
+        SearchProjectionDelta {
+            deletes: vec!["memory:c".to_string()],
+            ..Default::default()
+        },
+        Default::default(),
+    )
+    .unwrap()
+    .finish()
+    .unwrap();
+
+    let reader = SearchOutOfCoreReader::open(&root.0).unwrap();
+    let error = SearchOutOfCoreGenerationWriter::prepare_delta(
+        &reader,
+        SearchProjectionDelta {
+            upserts: vec![row("e")],
+            ..Default::default()
+        },
+        Default::default(),
+    )
+    .unwrap_err();
+    assert!(error
+        .to_string()
+        .contains("requires target-aware replacement support"));
+}
+
+#[test]
+fn active_mutation_runs_reject_compaction_before_admission_or_publication() {
+    let root = Fixture::new();
+    append(&root.0, row("z"));
+    let reader = SearchOutOfCoreReader::open(&root.0).unwrap();
+    SearchOutOfCoreGenerationWriter::prepare_delta(
+        &reader,
+        SearchProjectionDelta {
+            deletes: vec!["memory:c".to_string()],
+            ..Default::default()
+        },
+        Default::default(),
+    )
+    .unwrap()
+    .finish()
+    .unwrap();
+
+    let reader = SearchOutOfCoreReader::open(&root.0).unwrap();
+    let manifest_path = root.0.join(OUT_OF_CORE_MANIFEST_FILE);
+    let before = fs::read(&manifest_path).unwrap();
+    let policy = crate::SearchOutOfCoreSegmentCompactionPolicy::default();
+    let error = SearchOutOfCoreGenerationWriter::segment_compaction_work_plan(
+        &reader,
+        policy,
+        Default::default(),
+    )
+    .unwrap_err();
+    assert!(error
+        .to_string()
+        .contains("requires target-aware replacement support"));
+    let error =
+        SearchOutOfCoreGenerationWriter::compact_segments(&reader, policy, Default::default())
+            .unwrap_err();
+    assert!(error
+        .to_string()
+        .contains("requires target-aware replacement support"));
+    assert_eq!(fs::read(&manifest_path).unwrap(), before);
+
+    let reader = SearchOutOfCoreReader::open(&root.0).unwrap();
+    assert!(reader.hydrate_documents(&["memory:c".to_string()]).is_err());
+}
+
+#[test]
+fn mutation_run_publication_rejects_the_reader_byte_budget_before_manifest_commit() {
+    let root = Fixture::new();
+    let manifest_path = root.0.join(OUT_OF_CORE_MANIFEST_FILE);
+    let before = fs::read(&manifest_path).unwrap();
+    let reader = SearchOutOfCoreReader::open_with_config(
+        &root.0,
+        crate::SearchOutOfCoreConfig {
+            max_mutation_run_bytes: NonZeroU64::new(1).unwrap(),
+            ..Default::default()
+        },
+    )
+    .unwrap();
     let update = SearchOutOfCoreGenerationWriter::prepare_delta(
         &reader,
         SearchProjectionDelta {
@@ -292,44 +560,42 @@ fn deletion_rewrites_only_the_current_content_segment_and_updates_manifest_ident
         Default::default(),
     )
     .unwrap();
-    assert_eq!(update.delta_report().action, "incremental_segment_replace");
-    assert_eq!(update.delta_report().before_document_count, 4);
-    assert_eq!(update.delta_report().after_document_count, 3);
-    assert_eq!(update.delta_report().deleted_documents, 1);
-    assert_eq!(update.source_read_metrics().hydrated_documents, 3);
-    assert!(update.source_read_metrics().segment_range_reads < full_metrics.segment_range_reads);
-    assert!(update.source_read_metrics().segment_bytes_read < full_metrics.segment_bytes_read);
-    let (_, build, _) = update.finish().unwrap();
-    assert_eq!(build.document_count, 3);
+    let error = update.finish().unwrap_err();
+    assert!(error.to_string().contains("mutation-run requires"));
+    assert_eq!(fs::read(&manifest_path).unwrap(), before);
+    assert!(!fs::read_dir(&root.0).unwrap().any(|entry| entry
+        .unwrap()
+        .file_name()
+        .to_string_lossy()
+        .starts_with("search_projection_mutation_run.")));
+}
 
+#[test]
+fn mutation_run_publication_respects_the_writer_generation_budget() {
+    let root = Fixture::new();
+    let manifest_path = root.0.join(OUT_OF_CORE_MANIFEST_FILE);
+    let before = fs::read(&manifest_path).unwrap();
     let reader = SearchOutOfCoreReader::open(&root.0).unwrap();
-    assert_eq!(reader.manifest.segments.len(), 2);
-    assert_eq!(
-        reader.manifest.segments[0].segment_id,
-        before.segments[0].segment_id
-    );
-    assert_eq!(
-        reader.manifest.segments[1].generation,
-        before.segments[1].generation
-    );
-    assert_eq!(
-        reader.manifest.segments[1].payload_file,
-        before.segments[1].payload_file
-    );
-    assert_eq!(
-        reader.manifest.documents_digest,
-        DocumentsDigest::replace(
-            before.documents_digest,
-            before.segments[0].documents_digest,
-            reader.manifest.segments[0].documents_digest,
-        )
-    );
-    let ids = ["a", "e", "z"].map(|id| format!("memory:{id}"));
-    assert_eq!(
-        reader.hydrate_documents(&ids).unwrap().documents,
-        ["a", "e", "z"].map(|id| row(id).into_document())
-    );
-    assert!(reader.hydrate_documents(&["memory:c".to_string()]).is_err());
+    let update = SearchOutOfCoreGenerationWriter::prepare_delta(
+        &reader,
+        SearchProjectionDelta {
+            deletes: vec!["memory:c".to_string()],
+            ..Default::default()
+        },
+        SearchOutOfCoreGenerationBuildOptions {
+            max_generation_bytes: NonZeroU64::MIN,
+            ..Default::default()
+        },
+    )
+    .unwrap();
+    let error = update.finish().unwrap_err();
+    assert!(error.to_string().contains("published bytes"));
+    assert_eq!(fs::read(&manifest_path).unwrap(), before);
+    assert!(!fs::read_dir(&root.0).unwrap().any(|entry| entry
+        .unwrap()
+        .file_name()
+        .to_string_lossy()
+        .starts_with("search_projection_mutation_run.")));
 }
 
 #[test]
