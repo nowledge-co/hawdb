@@ -257,6 +257,7 @@ pub(super) fn segment_background_work_plan(
     policy: SearchOutOfCoreSegmentCompactionPolicy,
     hint: BackgroundWorkHint,
 ) -> Result<Option<BackgroundWorkPlan>> {
+    reject_active_mutation_runs(reader)?;
     let task = RuntimeTaskContext::default();
     Ok(select(reader, policy, &task)?.map(|selection| {
         BackgroundWorkPlan::background(WorkClass::Projection, selection.document_count, hint)
@@ -339,6 +340,7 @@ pub(super) fn prepare(
     task: RuntimeTaskContext,
 ) -> Result<Option<SearchOutOfCoreSegmentCompaction>> {
     checkpoint(&task)?;
+    reject_active_mutation_runs(reader)?;
     let Some(selection) = select(reader, policy, &task)? else {
         return Ok(None);
     };
@@ -377,6 +379,16 @@ pub(super) fn prepare(
         source_bytes: selection.source_bytes,
         source_read_metrics,
     }))
+}
+
+fn reject_active_mutation_runs(reader: &SearchOutOfCoreReader) -> Result<()> {
+    if reader.manifest.mutation_runs.is_empty() {
+        return Ok(());
+    }
+    Err(HawDBError::Storage(
+        "search segment compaction with active mutation runs requires target-aware replacement support"
+            .to_string(),
+    ))
 }
 
 fn select(

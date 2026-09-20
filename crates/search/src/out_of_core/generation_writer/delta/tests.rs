@@ -497,6 +497,48 @@ fn active_mutation_runs_reject_unsupported_replacement_paths() {
 }
 
 #[test]
+fn active_mutation_runs_reject_compaction_before_admission_or_publication() {
+    let root = Fixture::new();
+    append(&root.0, row("z"));
+    let reader = SearchOutOfCoreReader::open(&root.0).unwrap();
+    SearchOutOfCoreGenerationWriter::prepare_delta(
+        &reader,
+        SearchProjectionDelta {
+            deletes: vec!["memory:c".to_string()],
+            ..Default::default()
+        },
+        Default::default(),
+    )
+    .unwrap()
+    .finish()
+    .unwrap();
+
+    let reader = SearchOutOfCoreReader::open(&root.0).unwrap();
+    let manifest_path = root.0.join(OUT_OF_CORE_MANIFEST_FILE);
+    let before = fs::read(&manifest_path).unwrap();
+    let policy = crate::SearchOutOfCoreSegmentCompactionPolicy::default();
+    let error = SearchOutOfCoreGenerationWriter::segment_compaction_work_plan(
+        &reader,
+        policy,
+        Default::default(),
+    )
+    .unwrap_err();
+    assert!(error
+        .to_string()
+        .contains("requires target-aware replacement support"));
+    let error =
+        SearchOutOfCoreGenerationWriter::compact_segments(&reader, policy, Default::default())
+            .unwrap_err();
+    assert!(error
+        .to_string()
+        .contains("requires target-aware replacement support"));
+    assert_eq!(fs::read(&manifest_path).unwrap(), before);
+
+    let reader = SearchOutOfCoreReader::open(&root.0).unwrap();
+    assert!(reader.hydrate_documents(&["memory:c".to_string()]).is_err());
+}
+
+#[test]
 fn mutation_run_publication_rejects_the_reader_byte_budget_before_manifest_commit() {
     let root = Fixture::new();
     let manifest_path = root.0.join(OUT_OF_CORE_MANIFEST_FILE);
