@@ -12,7 +12,10 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-use super::{SearchOutOfCoreGenerationBuildOptions, SearchOutOfCoreGenerationWriter};
+use super::{
+    publication::ActiveManifestUpdate, SearchOutOfCoreGenerationBuildOptions,
+    SearchOutOfCoreGenerationWriter,
+};
 use crate::build_control::checkpoint;
 use crate::build_memory::BuildMemory;
 use crate::error::{HawDBError, Result};
@@ -25,7 +28,7 @@ use hawdb_executor::QueryMemoryLease;
 
 mod input;
 
-mod hydration;
+pub(super) mod hydration;
 
 #[derive(Debug)]
 pub struct SearchOutOfCoreGenerationUpdate {
@@ -108,7 +111,9 @@ impl SearchOutOfCoreGenerationUpdate {
             while !input.upserts.is_empty() {
                 writer.push_inner(input.pop_upsert())?;
             }
-            writer.append_to_active_generation = Some(reader.generation());
+            writer.active_manifest_update = Some(ActiveManifestUpdate::Append {
+                expected_generation: reader.generation(),
+            });
             return Ok(Self {
                 delta_report: SearchProjectionDeltaReport {
                     artifact_type: "search_projection".to_string(),

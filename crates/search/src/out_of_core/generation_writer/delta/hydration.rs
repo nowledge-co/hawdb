@@ -37,9 +37,23 @@ pub(super) fn visit(
     task: &RuntimeTaskContext,
     consumer: &mut dyn FnMut(AdmittedDocument) -> Result<()>,
 ) -> Result<SearchOutOfCoreMetrics> {
+    visit_range(reader, 0, reader.segments.len(), memory, task, consumer)
+}
+
+pub(in crate::out_of_core::generation_writer) fn visit_range(
+    reader: &SearchOutOfCoreReader,
+    start: usize,
+    end: usize,
+    memory: &BuildMemory,
+    task: &RuntimeTaskContext,
+    consumer: &mut dyn FnMut(AdmittedDocument) -> Result<()>,
+) -> Result<SearchOutOfCoreMetrics> {
+    let artifacts = reader.segments.get(start..end).ok_or_else(|| {
+        invalid("search generation update selected an invalid manifest artifact range")
+    })?;
     let mut metrics = SearchOutOfCoreMetrics::default();
     let mut previous_last_document_id = None;
-    for artifact in &reader.segments {
+    for artifact in artifacts {
         for segment in &artifact.descriptor.segments {
             checkpoint(task)?;
             if previous_last_document_id

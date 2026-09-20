@@ -26,6 +26,7 @@ use hawdb_core::{RuntimeCancellationToken, RuntimeTaskContext};
 use std::collections::BTreeMap;
 use std::time::{SystemTime, UNIX_EPOCH};
 
+mod compaction;
 mod context;
 mod manifest_budget;
 mod spool_decoding;

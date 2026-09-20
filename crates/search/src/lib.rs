@@ -198,7 +198,8 @@ pub use out_of_core::{
     SearchOutOfCoreConfig, SearchOutOfCoreGenerationBuildOptions,
     SearchOutOfCoreGenerationBuildReport, SearchOutOfCoreGenerationUpdate,
     SearchOutOfCoreGenerationWriter, SearchOutOfCoreHydrationOutput, SearchOutOfCoreMetrics,
-    SearchOutOfCoreOutput, SearchOutOfCoreReader,
+    SearchOutOfCoreOutput, SearchOutOfCoreReader, SearchOutOfCoreSegmentCompaction,
+    SearchOutOfCoreSegmentCompactionPolicy, SearchOutOfCoreSegmentCompactionReport,
 };
 // These are internal ownership seams. Hosts continue to use the embedded facade.
 #[doc(hidden)]
