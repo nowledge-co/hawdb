@@ -46,6 +46,7 @@ hawdb-telemetry = { path = "crates/telemetry" }
 
 [dev-dependencies]
 libc = "0.2"
+hawdb-storage = { path = "crates/storage", features = ["test-support"] }
 
 [features]
 default = [
@@ -63,6 +64,7 @@ vector-search = ["hawdb-search/vector-search", "dep:hawdb-vector-projection"]
 loom-tests = ["hawdb-system-sql/loom-tests"]
 opentelemetry = ["hawdb-telemetry/opentelemetry"]
 qualification = ["hawdb-search/qualification"]
+test-support = ["hawdb-storage/test-support"]
 tokio-runtime = ["dep:hawdb-runtime-tokio"]
 
 [workspace]

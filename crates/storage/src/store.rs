@@ -342,6 +342,7 @@ fn process_crash_failpoint(point: &str) {
     let _ = point;
 }
 
+#[cfg(any(test, feature = "test-support"))]
 #[derive(Clone, Copy, PartialEq, Eq)]
 #[doc(hidden)]
 pub enum WalAppendFailure {
@@ -350,17 +351,20 @@ pub enum WalAppendFailure {
     Sync,
 }
 
+#[cfg(any(test, feature = "test-support"))]
 thread_local! {
     static WAL_APPEND_FAILURE: std::cell::Cell<Option<WalAppendFailure>> = const {
         std::cell::Cell::new(None)
     };
 }
 
+#[cfg(any(test, feature = "test-support"))]
 #[doc(hidden)]
 pub fn set_wal_append_failpoint(failure: WalAppendFailure) {
     WAL_APPEND_FAILURE.set(Some(failure));
 }
 
+#[cfg(any(test, feature = "test-support"))]
 thread_local! {
     static CHECKPOINT_FAILPOINT: std::cell::Cell<Option<CheckpointPublishStage>> = const {
         std::cell::Cell::new(None)
@@ -377,15 +381,16 @@ fn checkpoint_publish_failpoint(stage: CheckpointPublishStage) -> Result<()> {
         }
         CheckpointPublishStage::WalPrepared => {}
     }
+    #[cfg(any(test, feature = "test-support"))]
     if CHECKPOINT_FAILPOINT.with(|failpoint| failpoint.get()) == Some(stage) {
         return Err(HawDBError::Storage(format!(
             "injected checkpoint failure at {stage:?}"
         )));
     }
-    let _ = stage;
     Ok(())
 }
 
+#[cfg(any(test, feature = "test-support"))]
 #[doc(hidden)]
 pub fn set_checkpoint_failpoint(stage: Option<CheckpointPublishStage>) {
     CHECKPOINT_FAILPOINT.with(|failpoint| failpoint.set(stage));
@@ -1150,7 +1155,8 @@ impl GraphMutationTransaction {
         self.stage_mutations_with_limits(vec![mutation], limits)
     }
 
-    pub(crate) fn stage_mutations_with_limits(
+    #[doc(hidden)]
+    pub fn stage_mutations_with_limits(
         &mut self,
         mutations: Vec<GraphMutation>,
         limits: MutationLimits,

@@ -147,6 +147,19 @@ _HAWDB_MINIMAL_DEPS = _HAWDB_COMMON_BASE_DEPS + [
     "//crates/search:hawdb_search_minimal",
 ]
 
+_HAWDB_COMMON_TEST_SUPPORT_DEPS = [
+    dep
+    for dep in _HAWDB_COMMON_BASE_DEPS
+    if dep != "//crates/storage:hawdb_storage"
+] + ["//crates/storage:hawdb_storage_test_support"]
+
+_HAWDB_FULL_TEST_SUPPORT_DEPS = _HAWDB_COMMON_TEST_SUPPORT_DEPS + [
+    "//crates/bootstrap:hawdb_bootstrap",
+    "//crates/nowledge-contracts:hawdb_nowledge_contracts",
+    "//crates/readiness:hawdb_readiness",
+    "//crates/search:hawdb_search",
+]
+
 # crate_universe exposes optional normal dependencies to every Bazel target.
 # Keep the native vector dependency owned by targets that enable vector-search.
 _HAWDB_VECTOR_DEPS = [
@@ -161,6 +174,8 @@ _HAWDB_DEFAULT_FEATURES = [
     "vector-search",
 ]
 
+_HAWDB_DEFAULT_TEST_FEATURES = _HAWDB_DEFAULT_FEATURES + ["test-support"]
+
 rust_library(
     name = "hawdb",
     crate_name = "hawdb",
@@ -170,6 +185,20 @@ rust_library(
     edition = "2024",
     aliases = aliases(),
     deps = _HAWDB_FULL_DEPS + _HAWDB_VECTOR_DEPS + [
+        "//crates/runtime-tokio:hawdb_runtime_tokio",
+    ],
+    proc_macro_deps = all_crate_deps(proc_macro = True),
+)
+
+rust_library(
+    name = "hawdb_test_support",
+    crate_name = "hawdb",
+    crate_root = "src/lib.rs",
+    crate_features = _HAWDB_DEFAULT_TEST_FEATURES,
+    srcs = _HAWDB_SRCS,
+    edition = "2024",
+    aliases = aliases(),
+    deps = _HAWDB_FULL_TEST_SUPPORT_DEPS + _HAWDB_VECTOR_DEPS + [
         "//crates/runtime-tokio:hawdb_runtime_tokio",
     ],
     proc_macro_deps = all_crate_deps(proc_macro = True),
@@ -230,8 +259,8 @@ rust_test(
         "--skip",
         _HAWDB_STORAGE_CRASH_MATRIX_TEST,
     ],
-    crate = ":hawdb",
-    crate_features = _HAWDB_DEFAULT_FEATURES,
+    crate = ":hawdb_test_support",
+    crate_features = _HAWDB_DEFAULT_TEST_FEATURES,
     edition = "2024",
     aliases = aliases(
         normal_dev = True,
@@ -248,8 +277,8 @@ rust_test(
         _HAWDB_STORAGE_CRASH_MATRIX_TEST,
         "--exact",
     ],
-    crate = ":hawdb",
-    crate_features = _HAWDB_DEFAULT_FEATURES,
+    crate = ":hawdb_test_support",
+    crate_features = _HAWDB_DEFAULT_TEST_FEATURES,
     edition = "2024",
     aliases = aliases(
         normal_dev = True,
@@ -267,8 +296,8 @@ rust_test(
         "--ignored",
         "--nocapture",
     ],
-    crate = ":hawdb",
-    crate_features = _HAWDB_DEFAULT_FEATURES,
+    crate = ":hawdb_test_support",
+    crate_features = _HAWDB_DEFAULT_TEST_FEATURES,
     edition = "2024",
     tags = ["manual"],
     aliases = aliases(normal_dev = True, proc_macro_dev = True),
@@ -291,8 +320,8 @@ rust_test(
         "--ignored",
         "--nocapture",
     ],
-    crate = ":hawdb",
-    crate_features = _HAWDB_DEFAULT_FEATURES,
+    crate = ":hawdb_test_support",
+    crate_features = _HAWDB_DEFAULT_TEST_FEATURES,
     edition = "2024",
     tags = ["manual"],
     aliases = aliases(normal_dev = True, proc_macro_dev = True),
@@ -307,8 +336,8 @@ rust_test(
         "--exact",
         "--ignored",
     ],
-    crate = ":hawdb",
-    crate_features = _HAWDB_DEFAULT_FEATURES,
+    crate = ":hawdb_test_support",
+    crate_features = _HAWDB_DEFAULT_TEST_FEATURES,
     edition = "2024",
     tags = ["manual"],
     aliases = aliases(normal_dev = True, proc_macro_dev = True),
@@ -432,6 +461,7 @@ rust_test(
         "background-maintenance",
         "full-text-search",
         "graph-analytics",
+        "test-support",
         "vector-search",
     ],
     edition = "2024",
@@ -443,7 +473,7 @@ rust_test(
         proc_macro_dev = True,
     ),
     # Unlike `crate = ":hawdb"`, this selects the ACL-enabled dependency graph.
-    deps = _HAWDB_COMMON_BASE_DEPS + _HAWDB_VECTOR_DEPS + all_crate_deps(normal_dev = True) + [
+    deps = _HAWDB_COMMON_TEST_SUPPORT_DEPS + _HAWDB_VECTOR_DEPS + all_crate_deps(normal_dev = True) + [
         "//crates/bootstrap:hawdb_bootstrap_acl",
         "//crates/nowledge-contracts:hawdb_nowledge_contracts_acl",
         "//crates/readiness:hawdb_readiness_acl",

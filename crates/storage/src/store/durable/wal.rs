@@ -160,22 +160,25 @@ impl DurableStore {
                             writer.write_all(&record_bytes[..record_bytes.len() / 2])?;
                             process_crash_failpoint("during_wal_append");
                         }
-                        if matches!(
-                            crate::store::WAL_APPEND_FAILURE.get(),
-                            Some(
-                                crate::store::WalAppendFailure::PartialWrite
-                                    | crate::store::WalAppendFailure::Rollback
-                            )
-                        ) {
-                            writer.write_all(&record_bytes[..record_bytes.len() / 2])?;
-                            if crate::store::WAL_APPEND_FAILURE.get()
-                                == Some(crate::store::WalAppendFailure::PartialWrite)
-                            {
-                                crate::store::WAL_APPEND_FAILURE.take();
+                        #[cfg(any(test, feature = "test-support"))]
+                        {
+                            if matches!(
+                                crate::store::WAL_APPEND_FAILURE.get(),
+                                Some(
+                                    crate::store::WalAppendFailure::PartialWrite
+                                        | crate::store::WalAppendFailure::Rollback
+                                )
+                            ) {
+                                writer.write_all(&record_bytes[..record_bytes.len() / 2])?;
+                                if crate::store::WAL_APPEND_FAILURE.get()
+                                    == Some(crate::store::WalAppendFailure::PartialWrite)
+                                {
+                                    crate::store::WAL_APPEND_FAILURE.take();
+                                }
+                                return Err(
+                                    std::io::Error::from(std::io::ErrorKind::StorageFull).into()
+                                );
                             }
-                            return Err(
-                                std::io::Error::from(std::io::ErrorKind::StorageFull).into()
-                            );
                         }
                     }
                     writer.write_all(&record_bytes)?;
@@ -245,6 +248,7 @@ impl DurableStore {
     }
 
     fn rollback_failed_wal_write(&mut self, created: bool) -> Result<()> {
+        #[cfg(any(test, feature = "test-support"))]
         if crate::store::WAL_APPEND_FAILURE.take() == Some(crate::store::WalAppendFailure::Rollback)
         {
             return Err(std::io::Error::from(std::io::ErrorKind::PermissionDenied).into());
@@ -397,6 +401,7 @@ impl DurableStore {
     }
 
     fn finish_wal_append(&mut self, file: &File, created: bool) -> Result<u64> {
+        #[cfg(any(test, feature = "test-support"))]
         if crate::store::WAL_APPEND_FAILURE.take() == Some(crate::store::WalAppendFailure::Sync) {
             return Err(std::io::Error::other("injected WAL sync failure").into());
         }

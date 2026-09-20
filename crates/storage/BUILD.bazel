@@ -25,6 +25,25 @@ rust_library(
     proc_macro_deps = all_crate_deps(proc_macro = True),
 )
 
+rust_library(
+    name = "hawdb_storage_test_support",
+    crate_name = "hawdb_storage",
+    crate_root = "src/lib.rs",
+    crate_features = ["test-support"],
+    srcs = glob(["src/**/*.rs"]),
+    edition = "2024",
+    aliases = aliases(),
+    deps = all_crate_deps(normal = True) + [
+        "//crates/analytics:hawdb_analytics",
+        "//crates/core:hawdb_core",
+        "//crates/integrity:hawdb_integrity",
+        "//crates/plan:hawdb_plan",
+        "//crates/qos:hawdb_qos",
+        "//crates/telemetry:hawdb_telemetry",
+    ],
+    proc_macro_deps = all_crate_deps(proc_macro = True),
+)
+
 rust_test(
     name = "hawdb_storage_tests",
     crate = ":hawdb_storage",
