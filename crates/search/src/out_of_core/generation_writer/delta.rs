@@ -306,12 +306,6 @@ impl SearchOutOfCoreGenerationUpdate {
                 _report_memory: report_memory,
             });
         }
-        if operation_count > 0 && !reader.manifest.mutation_runs.is_empty() {
-            return Err(HawDBError::Storage(
-                "search incremental update with active mutation runs requires target-aware replacement support"
-                    .to_string(),
-            ));
-        }
         let can_append = input
             .upserts
             .front()
@@ -345,6 +339,12 @@ impl SearchOutOfCoreGenerationUpdate {
                 source_read_metrics: SearchOutOfCoreMetrics::default(),
                 _report_memory: report_memory,
             });
+        }
+        if operation_count > 0 && !reader.manifest.mutation_runs.is_empty() {
+            return Err(HawDBError::Storage(
+                "search incremental update with active mutation runs requires target-aware replacement support"
+                    .to_string(),
+            ));
         }
         if let Some(target) = local_mutation_target(reader, &input)? {
             // An empty artifact has no valid descriptor range. Retain the
