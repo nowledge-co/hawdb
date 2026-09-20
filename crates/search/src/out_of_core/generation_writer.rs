@@ -24,8 +24,8 @@ use crate::generation_cleanup::{
 #[cfg(test)]
 use crate::lexical_projection::artifact_file as lexical_artifact_file;
 use crate::lexical_projection::{
-    analyzer_digest as lexical_analyzer_digest, LexicalProjectionConfig, LexicalProjectionWriter,
-    DEFAULT_MAX_MANIFEST_BYTES, MANIFEST_FILE as LEXICAL_MANIFEST_FILE,
+    analyzer_digest as lexical_analyzer_digest, DocumentsDigest, LexicalProjectionConfig,
+    LexicalProjectionWriter, DEFAULT_MAX_MANIFEST_BYTES, MANIFEST_FILE as LEXICAL_MANIFEST_FILE,
 };
 use crate::{
     SearchAnalyzerLexicon, SearchDocument, SearchEmbeddingManifest, SearchLexicalTermPolicy,
@@ -35,7 +35,6 @@ use crate::{
 use artifacts::SegmentArtifactBuilder;
 use hawdb_core::RuntimeTaskContext;
 use hawdb_executor::QueryMemoryLease;
-use hawdb_integrity::Crc32cHasher;
 #[cfg(test)]
 use publication::file_len_checksum;
 use publication::{publish_generation, PublishGenerationInput};
@@ -195,7 +194,7 @@ pub struct SearchOutOfCoreGenerationWriter {
     spool_bytes: u64,
     peak_record_bytes: u64,
     embedding_dimension: Option<usize>,
-    documents_digest: Crc32cHasher,
+    documents_digest: DocumentsDigest,
     metadata_fields: BTreeSet<String>,
     metadata_field_bytes: u64,
     expected_active_generation: Option<u64>,
@@ -334,7 +333,7 @@ impl SearchOutOfCoreGenerationWriter {
             spool_bytes: SPOOL_HEADER.len() as u64,
             peak_record_bytes: 0,
             embedding_dimension,
-            documents_digest: Crc32cHasher::new(),
+            documents_digest: DocumentsDigest::default(),
             metadata_fields,
             metadata_field_bytes,
             expected_active_generation: None,
@@ -538,6 +537,7 @@ impl SearchOutOfCoreGenerationWriter {
                 rabitq: rabitq.as_ref().map(|_| generation),
                 rabitq_remove_all: rabitq.is_none(),
                 out_of_core_discovery_failed: false,
+                ..Default::default()
             },
             self.options.cleanup_options,
             &self.task_context,

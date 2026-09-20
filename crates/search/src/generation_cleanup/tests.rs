@@ -36,8 +36,8 @@ fn lexical_manifest_retention_uses_lexical_not_out_of_core_generation() {
                     CleanupCandidate::parse(format!("search_lexical.{generation}.hawdb")).unwrap();
                 assert_eq!(manifest.kind, CleanupArtifactKind::Lexical);
                 assert_eq!(
-                    manifest.is_obsolete(generations),
-                    artifact.is_obsolete(generations)
+                    manifest.is_obsolete(&generations),
+                    artifact.is_obsolete(&generations)
                 );
             }
         }
@@ -46,8 +46,58 @@ fn lexical_manifest_retention_uses_lexical_not_out_of_core_generation() {
         CleanupCandidate::parse("search_lexical.manifest.7.hawdb.corrupt.123.456".to_string())
             .unwrap();
     assert_eq!(quarantined.kind, CleanupArtifactKind::Lexical);
-    assert!(quarantined.is_obsolete(SearchProjectionGenerations::default()));
+    assert!(quarantined.is_obsolete(&SearchProjectionGenerations::default()));
     assert!(CleanupCandidate::parse("search_lexical.manifest.hawdb".to_string()).is_none());
+}
+
+#[test]
+fn retained_generation_sets_preserve_manifest_referenced_artifacts() {
+    let root = test_root("retained-generations");
+    fs::create_dir_all(&root).unwrap();
+    for generation in [1, 2, 5, 8, 9, 10] {
+        for prefix in [
+            "search_lexical.",
+            "search_lexical.manifest.",
+            "search_rabitq.",
+            "search_projection_segments.",
+            "search_projection_segment_payloads.",
+        ] {
+            fs::write(
+                root.join(format!("{prefix}{generation}.hawdb")),
+                b"artifact",
+            )
+            .unwrap();
+        }
+    }
+    let retained = std::collections::BTreeSet::from([2, 5]);
+    let generations = SearchProjectionGenerations {
+        lexical: Some(10),
+        out_of_core: Some(10),
+        rabitq: Some(10),
+        retained_lexical: retained.clone(),
+        retained_out_of_core: retained.clone(),
+        retained_rabitq: retained,
+        ..Default::default()
+    };
+
+    let report = SearchProjectionCleanupState::default().run(
+        &root,
+        generations,
+        SearchProjectionCleanupOptions::default(),
+    );
+    assert_eq!(report.deleted_files, 10);
+    for generation in [2, 5, 9, 10] {
+        for prefix in [
+            "search_lexical.",
+            "search_lexical.manifest.",
+            "search_rabitq.",
+            "search_projection_segments.",
+            "search_projection_segment_payloads.",
+        ] {
+            assert!(root.join(format!("{prefix}{generation}.hawdb")).exists());
+        }
+    }
+    fs::remove_dir_all(root).unwrap();
 }
 #[test]
 fn failed_deletion_is_observable_and_retryable_without_removing_previous_generation() {
@@ -75,7 +125,7 @@ fn failed_deletion_is_observable_and_retryable_without_removing_previous_generat
     let mut state = SearchProjectionCleanupState::default();
     let first = state.run_with_remover(
         &root,
-        generations,
+        generations.clone(),
         SearchProjectionCleanupOptions::default(),
         |path| {
             if path.ends_with("search_lexical.1.hawdb") {

@@ -111,7 +111,7 @@ impl PreparedCleanup {
             let Some(candidate) = CleanupCandidate::parse(name) else {
                 continue;
             };
-            if !candidate.is_obsolete(generations) {
+            if !candidate.is_obsolete(&generations) {
                 continue;
             }
             if attempts == options.max_delete_attempts.get() {

@@ -55,7 +55,7 @@ pub(in crate::lexical_projection) fn manifest(mut terms: Vec<String>) -> Manifes
         ]
     };
     ManifestBody {
-        format: "HAWDB_LEXICAL_MANIFEST_V3".into(),
+        format: "HAWDB_LEXICAL_MANIFEST_V4".into(),
         layout: "HAWDB_LEXICAL_ORDINAL_FST_V1".into(),
         generation: 7,
         source_graph_commit_epoch: Some(8),

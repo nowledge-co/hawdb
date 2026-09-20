@@ -2401,9 +2401,9 @@ impl SearchIndex {
         let Some(path) = &self.path else {
             return self.projection_cleanup_report();
         };
-        let (out_of_core_generation, out_of_core_discovery_failed) =
-            match out_of_core::published_generation(path, &self.analyzer_lexicon) {
-                Ok(generation) => (generation, false),
+        let (published, out_of_core_discovery_failed) =
+            match out_of_core::published_artifact_generations(path, &self.analyzer_lexicon) {
+                Ok(generations) => (generations, false),
                 Err(_) => (None, true),
             };
         let generations = SearchProjectionGenerations {
@@ -2413,7 +2413,7 @@ impl SearchIndex {
                 .unwrap_or_else(|poisoned| poisoned.into_inner())
                 .as_ref()
                 .map(|projection| projection.generation()),
-            out_of_core: out_of_core_generation,
+            out_of_core: published.as_ref().map(|value| value.active_generation),
             #[cfg(feature = "vector-search")]
             rabitq: self
                 .rabitq_projection()
@@ -2425,6 +2425,15 @@ impl SearchIndex {
                 .values()
                 .all(|document| document.embedding.is_none()),
             out_of_core_discovery_failed,
+            retained_lexical: published
+                .as_ref()
+                .map_or_else(Default::default, |value| value.lexical_generations.clone()),
+            retained_out_of_core: published.as_ref().map_or_else(Default::default, |value| {
+                value.out_of_core_generations.clone()
+            }),
+            retained_rabitq: published
+                .as_ref()
+                .map_or_else(Default::default, |value| value.rabitq_generations.clone()),
         };
         self.cleanup_state
             .lock()

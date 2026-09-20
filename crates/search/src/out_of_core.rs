@@ -66,7 +66,7 @@ use vector_serving::vector_projection_error;
 use vector_serving::VectorScoreScan;
 
 const OUT_OF_CORE_MANIFEST_FILE: &str = "search_projection.out_of_core.manifest.hawdb";
-const OUT_OF_CORE_FORMAT: &str = "HAWDB_SEARCH_OUT_OF_CORE_V2";
+const OUT_OF_CORE_FORMAT: &str = "HAWDB_SEARCH_OUT_OF_CORE_V3";
 const OUT_OF_CORE_LAYOUT_FORMAT: &str = "HAWDB_SEARCH_OUT_OF_CORE_LAYOUT_V1";
 const MAX_OUT_OF_CORE_MANIFEST_BYTES: u64 = 1024 * 1024;
 const MAX_MARKER_BYTES: u64 = 64 * 1024;
@@ -2191,10 +2191,17 @@ fn file_len_checksum_streaming(path: &Path) -> Result<(u64, u64)> {
     Ok((actual_len, hasher.finish()))
 }
 
-pub(super) fn published_generation(
+pub(super) struct PublishedArtifactGenerations {
+    pub(super) active_generation: u64,
+    pub(super) lexical_generations: BTreeSet<u64>,
+    pub(super) out_of_core_generations: BTreeSet<u64>,
+    pub(super) rabitq_generations: BTreeSet<u64>,
+}
+
+pub(super) fn published_artifact_generations(
     root: &Path,
     analyzer_lexicon: &SearchAnalyzerLexicon,
-) -> Result<Option<u64>> {
+) -> Result<Option<PublishedArtifactGenerations>> {
     let manifest_path = root.join(OUT_OF_CORE_MANIFEST_FILE);
     if !manifest_path.exists() {
         return Ok(None);
@@ -2204,7 +2211,22 @@ pub(super) fn published_generation(
         SearchOutOfCoreConfig::default(),
         analyzer_lexicon.clone(),
     )?;
-    Ok(Some(reader.generation()))
+    let mut lexical_generations = BTreeSet::new();
+    let mut out_of_core_generations = BTreeSet::new();
+    let mut rabitq_generations = BTreeSet::new();
+    for artifact in &reader.manifest.segments {
+        lexical_generations.insert(artifact.generation);
+        out_of_core_generations.insert(artifact.generation);
+        if artifact.rabitq_artifact_file.is_some() {
+            rabitq_generations.insert(artifact.generation);
+        }
+    }
+    Ok(Some(PublishedArtifactGenerations {
+        active_generation: reader.generation(),
+        lexical_generations,
+        out_of_core_generations,
+        rabitq_generations,
+    }))
 }
 
 pub(super) fn publish_out_of_core_projection(
@@ -3842,6 +3864,26 @@ mod tests {
             .unwrap(),
         )
         .unwrap();
+    }
+
+    #[test]
+    #[cfg(feature = "full-text-search")]
+    fn published_artifact_generations_track_every_manifest_artifact() {
+        let path = test_dir("published-artifact-generations");
+        publish_two_artifact_manifest(&path, document(0, "team"), document(1, "team"));
+
+        let generations = published_artifact_generations(&path, &SearchAnalyzerLexicon::default())
+            .unwrap()
+            .unwrap();
+        assert_eq!(generations.active_generation, 2);
+        assert_eq!(generations.lexical_generations, BTreeSet::from([1, 2]));
+        assert_eq!(generations.out_of_core_generations, BTreeSet::from([1, 2]));
+        #[cfg(feature = "vector-search")]
+        assert_eq!(generations.rabitq_generations, BTreeSet::from([1, 2]));
+        #[cfg(not(feature = "vector-search"))]
+        assert!(generations.rabitq_generations.is_empty());
+
+        fs::remove_dir_all(path).unwrap();
     }
 
     #[test]
