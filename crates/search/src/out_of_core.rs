@@ -158,6 +158,22 @@ pub struct SearchOutOfCoreHydrationOutput {
     pub metrics: SearchOutOfCoreMetrics,
 }
 
+/// A current document together with the immutable content segment that owns it.
+///
+/// Mutation preparation uses this identity to rewrite the affected content
+/// segment instead of applying a generation-wide tombstone.
+#[derive(Debug, Clone, PartialEq)]
+pub(crate) struct SearchOutOfCoreMutationTarget {
+    pub(crate) content_segment_id: u64,
+    pub(crate) document: SearchDocument,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub(crate) struct SearchOutOfCoreMutationTargetOutput {
+    pub(crate) targets: BTreeMap<String, SearchOutOfCoreMutationTarget>,
+    pub(crate) metrics: SearchOutOfCoreMetrics,
+}
+
 #[derive(Debug)]
 pub struct SearchOutOfCoreReader {
     root: PathBuf,
@@ -176,6 +192,7 @@ pub struct SearchOutOfCoreReader {
 /// incremental segment publication.
 #[derive(Debug)]
 pub(super) struct SearchOutOfCoreSegmentReader {
+    content_segment_id: u64,
     descriptor: SearchSegmentDescriptor,
     payload: Arc<File>,
     metadata_payload: Arc<File>,
@@ -723,6 +740,7 @@ impl SearchOutOfCoreSegmentReader {
         verify_rabitq_artifact(root, manifest)?;
 
         Ok(Self {
+            content_segment_id: manifest.segment_id,
             descriptor,
             payload: Arc::new(payload),
             metadata_payload: Arc::new(metadata_payload),
@@ -1145,8 +1163,13 @@ impl SearchOutOfCoreReader {
                 "search hydration document ids must be unique".to_string(),
             ));
         }
-        let mut metrics = SearchOutOfCoreMetrics::default();
-        let mut hydrated = self.load_documents(&requested, &mut metrics)?;
+        let targets = self.resolve_mutation_targets(&requested)?;
+        let mut metrics = targets.metrics;
+        let mut hydrated = targets
+            .targets
+            .into_iter()
+            .map(|(id, target)| (id, target.document))
+            .collect::<BTreeMap<_, _>>();
         let documents = document_ids
             .iter()
             .map(|id| {
@@ -1159,6 +1182,22 @@ impl SearchOutOfCoreReader {
             .collect::<Result<Vec<_>>>()?;
         metrics.hydrated_documents = documents.len();
         Ok(SearchOutOfCoreHydrationOutput { documents, metrics })
+    }
+
+    /// Resolves the current content segment for each requested document.
+    ///
+    /// The input is a `BTreeSet` so mutation preparation receives a unique,
+    /// deterministic document-id order. Resolution performs the same bounded
+    /// physical hydration as serving, while retaining the manifest segment
+    /// identity required for a segment-local replacement or delete.
+    pub(crate) fn resolve_mutation_targets(
+        &self,
+        document_ids: &BTreeSet<String>,
+    ) -> Result<SearchOutOfCoreMutationTargetOutput> {
+        let mut metrics = SearchOutOfCoreMetrics::default();
+        let targets = self.load_mutation_targets(document_ids, &mut metrics)?;
+        metrics.hydrated_documents = targets.len();
+        Ok(SearchOutOfCoreMutationTargetOutput { targets, metrics })
     }
 
     #[cfg(test)]
@@ -1759,6 +1798,18 @@ impl SearchOutOfCoreReader {
         document_ids: &BTreeSet<String>,
         metrics: &mut SearchOutOfCoreMetrics,
     ) -> Result<BTreeMap<String, SearchDocument>> {
+        Ok(self
+            .load_mutation_targets(document_ids, metrics)?
+            .into_iter()
+            .map(|(id, target)| (id, target.document))
+            .collect())
+    }
+
+    fn load_mutation_targets(
+        &self,
+        document_ids: &BTreeSet<String>,
+        metrics: &mut SearchOutOfCoreMetrics,
+    ) -> Result<BTreeMap<String, SearchOutOfCoreMutationTarget>> {
         if document_ids.len() > self.config.max_hydrated_documents.get() {
             return Err(HawDBError::Storage(format!(
                 "search hydration requires {} documents, exceeding {}",
@@ -1785,7 +1836,7 @@ impl SearchOutOfCoreReader {
                 .or_default()
                 .insert(id.clone());
         }
-        let mut hydrated = BTreeMap::<String, SearchDocument>::new();
+        let mut targets = BTreeMap::<String, SearchOutOfCoreMutationTarget>::new();
         let mut hydrated_bytes = 0u64;
         for ((layer, segment_id), ids) in segment_documents {
             let artifact = self.segments.get(layer).ok_or_else(|| {
@@ -1822,24 +1873,32 @@ impl SearchOutOfCoreReader {
                         self.config.max_hydrated_bytes
                     )));
                 }
-                let document_id = document.id.clone();
-                if hydrated.insert(document_id.clone(), document).is_some() {
+                let id = document.id.clone();
+                if targets
+                    .insert(
+                        id.clone(),
+                        SearchOutOfCoreMutationTarget {
+                            content_segment_id: artifact.content_segment_id,
+                            document,
+                        },
+                    )
+                    .is_some()
+                {
                     return Err(HawDBError::Storage(format!(
-                        "search out-of-core segment set has duplicate document {}",
-                        document_id
+                        "search mutation target resolution found duplicate document {id}"
                     )));
                 }
             }
         }
-        if hydrated.len() != document_ids.len() {
+        if targets.len() != document_ids.len() {
             return Err(HawDBError::Storage(format!(
                 "search hydration found {} of {} requested documents",
-                hydrated.len(),
+                targets.len(),
                 document_ids.len()
             )));
         }
         metrics.hydrated_bytes = hydrated_bytes;
-        Ok(hydrated)
+        Ok(targets)
     }
 
     fn segment_for_document(&self, id: &str) -> Result<Option<SearchDocumentSegmentRoute<'_>>> {

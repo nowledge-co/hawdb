@@ -15,7 +15,7 @@
 use super::*;
 use crate::{SearchProjectionKind, SearchProjectionRow};
 use hawdb_core::RuntimeMemoryReservation;
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicUsize, Ordering};
 
@@ -149,6 +149,48 @@ fn non_append_update_retains_the_ordered_base_hydration_path() {
     assert_eq!(
         reader.hydrate_documents(&ids).unwrap().documents,
         ["a", "b", "c", "e"].map(|id| row(id).into_document())
+    );
+}
+
+#[test]
+fn mutation_target_resolution_binds_documents_to_their_manifest_content_segment() {
+    let root = Fixture::new();
+    let reader = SearchOutOfCoreReader::open(&root.0).unwrap();
+    let update = SearchOutOfCoreGenerationWriter::prepare_delta(
+        &reader,
+        SearchProjectionDelta {
+            upserts: vec![row("z")],
+            ..Default::default()
+        },
+        Default::default(),
+    )
+    .unwrap();
+    update.finish().unwrap();
+
+    let reader = SearchOutOfCoreReader::open(&root.0).unwrap();
+    let targets = reader
+        .resolve_mutation_targets(&BTreeSet::from([
+            "memory:a".to_string(),
+            "memory:z".to_string(),
+        ]))
+        .unwrap();
+    assert_eq!(targets.metrics.hydrated_documents, 2);
+    assert_eq!(targets.metrics.segment_range_reads, 2);
+    assert_eq!(
+        targets.targets["memory:a"].content_segment_id,
+        reader.manifest.segments[0].segment_id
+    );
+    assert_eq!(
+        targets.targets["memory:a"].document,
+        row("a").into_document()
+    );
+    assert_eq!(
+        targets.targets["memory:z"].content_segment_id,
+        reader.manifest.segments[1].segment_id
+    );
+    assert_eq!(
+        targets.targets["memory:z"].document,
+        row("z").into_document()
     );
 }
 
