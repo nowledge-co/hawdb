@@ -2447,6 +2447,10 @@ fn record_relational_version_writes(
     }
     if changes_schema {
         record_live_version(writes, VersionKey::Schema)?;
+        // Preserve the legacy database-wide guard for projection, import, and
+        // snapshot replacement operations whose relational footprint is not
+        // represented as individual keys.
+        record_live_version(writes, VersionKey::Database)?;
     }
     let (
         Some(RelationalIndexChangeCapture::Captured {
@@ -2671,6 +2675,35 @@ fn map_append_staging_error(error: hawdb_storage::AppendTableError) -> HawDBErro
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn relational_schema_writes_keep_the_database_guard_with_exact_row_capture() {
+        let mut writes = VersionWriteSet::default();
+        let captured_rows = RelationalPrimaryKeyChangeCapture::Captured {
+            tables: vec![hawdb_storage::RelationalTablePrimaryKeyChanges {
+                table: "items".to_string(),
+                primary_keys: vec![hawdb_storage::RelationalKey(Vec::new())],
+            }],
+            encoded_bytes: 0,
+        };
+        record_relational_version_writes(
+            &mut writes,
+            None,
+            None,
+            None,
+            Some(&captured_rows),
+            true,
+            true,
+        )
+        .expect("record mixed schema version writes");
+
+        assert!(writes.contains_key(&VersionKey::Schema));
+        assert!(writes.contains_key(&VersionKey::Database));
+        assert!(writes.contains_key(&VersionKey::RelationalRow {
+            table: "items".to_string(),
+            primary_key: hawdb_storage::RelationalKey(Vec::new()),
+        }));
+    }
 
     #[test]
     fn append_sequence_exhaustion_remains_structured_at_the_facade_boundary() {

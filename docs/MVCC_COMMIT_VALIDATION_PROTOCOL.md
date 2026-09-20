@@ -45,7 +45,7 @@ time-travel API. Its variants cover every canonical mutation domain:
 | Unique/index entry | Table identity, index identity, and encoded index key | Concurrent inserts or key changes must preserve uniqueness. |
 | Foreign-key target | Referenced table and key | Delete and referencing insert must validate the same constraint identity. |
 | Append allocation | Commit sequencer | Generated keys are allocated from the current append state during serialized commit, so disjoint append batches do not carry a table-wide optimistic version key. |
-| Schema/catalog | One schema identity | DDL, constraint, and index changes invalidate every workspace built from the old catalog. |
+| Schema/catalog | One schema identity plus a database guard | DDL, constraint, and index changes invalidate every workspace built from the old catalog. The database guard keeps DDL mutually exclusive with broad projection, import, and snapshot-replacement operations whose relational footprint is not individually derived. |
 | Conservative access | Table or database identity | Unknown graph predicates, joins, and unbounded access sets stay correct before narrower derivation exists. |
 
 An operation may produce more than one key. For example, deleting a graph node
