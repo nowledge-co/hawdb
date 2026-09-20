@@ -35,6 +35,7 @@ pub(super) struct ReadFixture {
     pub(super) out_of_core: bool,
     pub(super) source_candidates: Option<Vec<SourceScanCandidateRow>>,
     pub(super) source_reads: Cell<usize>,
+    pub(super) adjacency_cancellation: Option<hawdb_core::RuntimeCancellationToken>,
 }
 
 impl GraphExecutionRead for ReadFixture {
@@ -55,12 +56,27 @@ impl GraphExecutionRead for ReadFixture {
     }
     fn visit_adjacent_relationships_owned(
         &self,
-        _node_id: NodeId,
-        _: Option<RelTypeId>,
-        _direction: AdjacencyDirection,
-        _consumer: &mut dyn FnMut(RelRecord) -> Result<ScanControl>,
+        node_id: NodeId,
+        rel_type: Option<RelTypeId>,
+        direction: AdjacencyDirection,
+        consumer: &mut dyn FnMut(RelRecord) -> Result<ScanControl>,
     ) -> Result<ScanControl> {
-        panic!("unexpected batch test store read: visit_adjacent_relationships_owned")
+        for relationship in &self.relationships {
+            if let Some(token) = &self.adjacency_cancellation {
+                token.cancel();
+            }
+            let adjacent = match direction {
+                AdjacencyDirection::Outgoing => relationship.source == node_id,
+                AdjacencyDirection::Incoming => relationship.target == node_id,
+            };
+            if adjacent
+                && rel_type.is_none_or(|id| relationship.rel_type == id)
+                && consumer(relationship.clone())? == ScanControl::Stop
+            {
+                return Ok(ScanControl::Stop);
+            }
+        }
+        Ok(ScanControl::Continue)
     }
     fn scan_nodes_borrowed<'a>(
         &'a self,

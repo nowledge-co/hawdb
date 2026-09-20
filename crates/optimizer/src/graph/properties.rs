@@ -21,6 +21,12 @@ use hawdb_plan::{SortDirection, SortItem, SortKey};
 
 pub(super) fn selected_plan_properties(plan: &PhysicalPlan) -> PhysicalProperties {
     match plan {
+        PhysicalPlan::GraphMatchExec { .. } => PhysicalProperties {
+            distribution: Distribution::Single,
+            vector_precision: VectorPrecision::NotVector,
+            memory_budget: MemoryBudgetClass::RowLinear,
+            ..PhysicalProperties::default()
+        },
         PhysicalPlan::EmptyExec => PhysicalProperties {
             distribution: Distribution::Single,
             scan_pruning: ScanPruningSupport::ExactEmpty,

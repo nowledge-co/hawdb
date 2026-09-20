@@ -1,27 +1,13 @@
-// Copyright 2026 Nowledge
-//
-// Licensed under the Apache License, Version 2.0 (the "License");
-// you may not use this file except in compliance with the License.
-// You may obtain a copy of the License at
-//
-//     http://www.apache.org/licenses/LICENSE-2.0
-//
-// Unless required by applicable law or agreed to in writing, software
-// distributed under the License is distributed on an "AS IS" BASIS,
-// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-// See the License for the specific language governing permissions and
-// limitations under the License.
-
 use hawdb_core::{HawDBError, Result, Value};
 use hawdb_cypher as cypher;
 use hawdb_plan::{
-    self as planner, LogicalPlan, PhysicalPlan, Predicate, Projection, ProjectionExpression,
-    RelationshipCountFilter, SortItem, SortKey,
+    self as planner, GraphMatchStep, LogicalPlan, PhysicalPlan, Predicate, Projection,
+    ProjectionExpression, RelationshipCountFilter, SortItem, SortKey,
 };
 use std::collections::BTreeMap;
 
-const PARAMETER_SLOT_NAME_KEY: &str = "\0hawdb_parameter_slot";
-const PARAMETER_SLOT_PATH_KEY: &str = "\0hawdb_parameter_path";
+const PARAMETER_SLOT_NAME_KEY: &str = "\0skein_parameter_slot";
+const PARAMETER_SLOT_PATH_KEY: &str = "\0skein_parameter_path";
 
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
 enum ParameterCacheValue {
@@ -302,6 +288,28 @@ fn marker_use_in_logical_plan(plan: &LogicalPlan, name: &str) -> MarkerUse {
         LogicalPlan::NodeCartesianProduct { left, right } => {
             marker_use_in_logical_plan(left, name).combine(marker_use_in_logical_plan(right, name))
         }
+        LogicalPlan::GraphMatch { program, input } => {
+            let mut marker_use = input.as_ref().map_or(MarkerUse::None, |input| {
+                marker_use_in_logical_plan(input, name)
+            });
+            for step in &program.steps {
+                let node = match step {
+                    GraphMatchStep::Node(node) => node,
+                    GraphMatchStep::Expand {
+                        target, properties, ..
+                    } => {
+                        marker_use =
+                            marker_use.combine(values_marker_use(properties.values(), name));
+                        target
+                    }
+                };
+                marker_use = marker_use.combine(values_marker_use(node.properties.values(), name));
+            }
+            if let Some(predicate) = &program.predicate {
+                marker_use = marker_use.combine(marker_use_in_predicate(predicate, name));
+            }
+            marker_use
+        }
         LogicalPlan::NodeColumnLookup { input, .. }
         | LogicalPlan::Distinct { input }
         | LogicalPlan::Limit { input, .. } => marker_use_in_logical_plan(input, name),
@@ -566,6 +574,24 @@ fn bind_physical_plan(plan: &mut PhysicalPlan, parameters: &BTreeMap<String, Val
         | PhysicalPlan::HashJoinExec { left, right, .. } => {
             bind_physical_plan(left, parameters)?;
             bind_physical_plan(right, parameters)?;
+        }
+        PhysicalPlan::GraphMatchExec { program, input } => {
+            for step in &mut program.steps {
+                let node = match step {
+                    GraphMatchStep::Node(node) => node,
+                    GraphMatchStep::Expand {
+                        target, properties, ..
+                    } => {
+                        bind_value_map(properties, parameters)?;
+                        target
+                    }
+                };
+                bind_value_map(&mut node.properties, parameters)?;
+            }
+            bind_optional_predicate(&mut program.predicate, parameters)?;
+            if let Some(input) = input {
+                bind_physical_plan(input, parameters)?;
+            }
         }
         PhysicalPlan::NodeColumnLookupExec { input, .. }
         | PhysicalPlan::DistinctExec { input }
@@ -986,8 +1012,9 @@ fn bind_value(value: &mut Value, parameters: &BTreeMap<String, Value>) -> Result
 #[cfg(test)]
 mod tests {
     use super::{
-        bind_physical_plan_parameters, parameter_marker, parameterize_logical_plan,
-        ParameterCacheValue, PARAMETER_SLOT_NAME_KEY, PARAMETER_SLOT_PATH_KEY,
+        bind_physical_plan_parameters, marker_use_in_logical_plan, parameter_marker,
+        parameterize_logical_plan, MarkerUse, ParameterCacheValue, PARAMETER_SLOT_NAME_KEY,
+        PARAMETER_SLOT_PATH_KEY,
     };
     use hawdb_core::Value;
     use hawdb_cypher as cypher;
@@ -1034,6 +1061,55 @@ mod tests {
         let text = format!("{rebound:?}");
         assert!(text.contains("SECOND") && text.contains("new"), "{text}");
         assert!(!text.contains("hawdb_parameter_slot"), "{text}");
+    }
+
+    #[test]
+    fn clause_match_rebinds_every_step_predicate_and_input() {
+        let query = "MATCH (a:Item {id: $a}) OPTIONAL MATCH (a)-[r:LINK {code: $code}]->(b:Item {id: $b}) WHERE b.visible = $visible RETURN b";
+        let slots = ["a", "b", "code", "visible"];
+        let parameters = slots
+            .into_iter()
+            .map(|name| {
+                (
+                    name.to_string(),
+                    parameter_marker(name, &Value::Int(0), &[]),
+                )
+            })
+            .collect();
+        let logical = hawdb_plan::plan_pipeline_query(query, &parameters).unwrap();
+        for name in slots {
+            assert_eq!(
+                marker_use_in_logical_plan(&logical, name),
+                MarkerUse::Safe,
+                "{name}"
+            );
+        }
+        let optimize = |logical| {
+            CascadesOptimizer::default()
+                .optimize_root_with_catalog(
+                    &LogicalPlanRoot::new(logical),
+                    &OptimizerCatalog::default(),
+                )
+                .into_parts()
+                .0
+        };
+        let template = optimize(logical);
+        let original = template.instance_fingerprint();
+        for base in [10, 20] {
+            let parameters = slots
+                .into_iter()
+                .enumerate()
+                .map(|(index, name)| (name.to_string(), Value::Int(base + index as i64)))
+                .collect();
+            let rebound = bind_physical_plan_parameters(&template, &parameters, true).unwrap();
+            let fresh = optimize(hawdb_plan::plan_pipeline_query(query, &parameters).unwrap());
+            assert_eq!(rebound.instance_fingerprint(), fresh.instance_fingerprint());
+            assert!(!rebound
+                .instance_fingerprint()
+                .contains("hawdb_parameter_slot"));
+        }
+        assert_eq!(template.instance_fingerprint(), original);
+        assert!(bind_physical_plan_parameters(&template, &BTreeMap::new(), true).is_err());
     }
 
     #[test]

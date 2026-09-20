@@ -7,6 +7,7 @@ license.workspace = true
 
 [dependencies]
 serde_json = "1"
+hawdb-cascades = { path = "../cascades" }
 hawdb-core = { path = "../core" }
 hawdb-cypher = { path = "../cypher" }
 hawdb-expression = { path = "../expression" }

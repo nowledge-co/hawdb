@@ -137,6 +137,7 @@ impl SearchOutOfCoreGenerationUpdate {
             memory.clone(),
         )?;
         writer.set_lexical_term_policy(reader.lexical_term_policy());
+        writer.set_lexical_source_policy(reader.lexical_source_policy());
         writer.set_max_lexical_manifest_bytes(reader.config().max_lexical_manifest_bytes)?;
         writer.expected_active_generation = Some(reader.generation());
         let can_append = input

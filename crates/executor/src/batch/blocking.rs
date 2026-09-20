@@ -21,6 +21,25 @@ struct RecursiveBindingBatchSource<'a> {
     context: BatchReadContext<'a>,
 }
 
+pub(super) fn stream_graph_match_batches(
+    program: &hawdb_plan::GraphMatchProgram,
+    input: Option<&PhysicalPlan>,
+    context: BatchReadContext<'_>,
+    execution_limit: ExecutionLimit,
+    emit: &mut dyn FnMut(BindingBatch) -> Result<BatchControl>,
+) -> Result<BatchControl> {
+    let mut source = RecursiveBindingBatchSource { context };
+    crate::graph_match::stream_graph_match(
+        program,
+        input,
+        &mut source,
+        context.store,
+        context.kernel_context(),
+        execution_limit,
+        emit,
+    )
+}
+
 pub(super) fn stream_hash_join_batches(
     plan: &PhysicalPlan,
     context: BatchReadContext<'_>,

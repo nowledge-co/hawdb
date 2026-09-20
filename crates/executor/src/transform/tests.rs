@@ -422,3 +422,61 @@ fn pipeline_and_blocking_paths_share_context_and_source_identity() {
         );
     });
 }
+
+#[test]
+fn aggregate_arithmetic_projects_one_row_for_empty_global_input() {
+    use crate::blocking::stream_aggregate_batches;
+    use hawdb_plan::{AggregateFunction, AggregateTarget, Aggregation, ScalarBinaryOp};
+
+    for row_count in [0, 1, 5] {
+        with_context(2, 64 * 1024, |context| {
+            let mut source = Source::new(rows(row_count, 0), 2);
+            let mut aggregate_rows = Vec::new();
+            stream_aggregate_batches(
+                &PhysicalPlan::EmptyExec,
+                &[],
+                &[Aggregation {
+                    function: AggregateFunction::Count,
+                    target: AggregateTarget::All,
+                    distinct: false,
+                    name: "\0aggregate.0".to_string(),
+                }],
+                &mut source,
+                context,
+                ExecutionLimit::unlimited(),
+                &mut |batch| {
+                    aggregate_rows.extend(batch);
+                    Ok(BatchControl::Continue)
+                },
+            )
+            .unwrap();
+            assert_eq!(aggregate_rows.len(), 1);
+            let mut aggregate = Source::new(aggregate_rows, 2);
+            let mut output = Vec::new();
+            stream_projection_batches(
+                &[Projection {
+                    name: "total".to_string(),
+                    expression: ProjectionExpression::Binary {
+                        left: Box::new(ProjectionExpression::Column("\0aggregate.0".to_string())),
+                        op: ScalarBinaryOp::Add,
+                        right: Box::new(ProjectionExpression::Literal(Value::Int(1))),
+                    },
+                }],
+                &PhysicalPlan::EmptyExec,
+                &mut aggregate,
+                context,
+                ExecutionLimit::unlimited(),
+                &mut |batch| {
+                    output.extend(batch);
+                    Ok(BatchControl::Continue)
+                },
+            )
+            .unwrap();
+            assert_eq!(output.len(), 1);
+            assert_eq!(
+                output[0].values,
+                BTreeMap::from([("total".to_string(), Value::Int(row_count as i64 + 1))])
+            );
+        });
+    }
+}

@@ -1202,7 +1202,7 @@ fn error_class(error: &HawDBError) -> &'static str {
         HawDBError::Storage(_)
         | HawDBError::StorageIntegrity(_)
         | HawDBError::AppendSequenceExhausted { .. } => "storage",
-        HawDBError::Execution(_) => "execution",
+        HawDBError::Execution(_) | HawDBError::TransactionConflict { .. } => "execution",
         HawDBError::CapabilityUnavailable { .. } => "capability_unavailable",
     }
 }

@@ -20,6 +20,7 @@ use crate::{
     WalGroupCommitConfig, WalGroupCommitDelayPolicy, WalGroupCommitEvidence,
     WalGroupCommitTailLatencyEvidence, WalGroupCommitWaitDecision,
 };
+use std::collections::BTreeMap;
 use std::num::{NonZeroU64, NonZeroUsize};
 use std::sync::{mpsc, Arc, Barrier, Condvar, Mutex};
 use std::time::Duration;
@@ -194,7 +195,7 @@ fn autocommit_explain_of_a_mutation_remains_non_mutating() {
 }
 
 #[test]
-fn optimistic_transactions_prepare_in_parallel_and_reject_the_stale_committer() {
+fn optimistic_transactions_prepare_in_parallel_and_reject_the_conflicting_committer() {
     let db = Database::new().into_concurrent();
     let barrier = Arc::new(Barrier::new(2));
     let handles = (1..=2)
@@ -221,16 +222,70 @@ fn optimistic_transactions_prepare_in_parallel_and_reject_the_stale_committer() 
         .iter()
         .find_map(|result| result.as_ref().err())
         .expect("one optimistic transaction must conflict");
-    assert!(matches!(conflict, HawDBError::Execution(_)));
-    assert!(conflict
-        .to_string()
-        .contains("optimistic transaction conflict"));
+    assert!(matches!(
+        conflict,
+        HawDBError::TransactionConflict {
+            read_epoch: 0,
+            committed_epoch: 1,
+            ..
+        }
+    ));
+    assert!(conflict.is_retryable_transaction_conflict());
 
     let output = db
         .query("MATCH (m:Memory) RETURN m.id AS id ORDER BY id")
         .unwrap();
     assert_eq!(output.rows.len(), 1);
     assert_eq!(db.commit_epoch().unwrap(), 1);
+}
+
+#[test]
+fn optimistic_transactions_commit_disjoint_graph_updates_from_one_snapshot() {
+    let db = Database::new().into_concurrent();
+    db.query("CREATE (:Memory {id: 'left', state: 'before'})")
+        .unwrap();
+    db.query("CREATE (:Memory {id: 'right', state: 'before'})")
+        .unwrap();
+
+    let mut left = db
+        .begin_transaction(ConcurrentTransactionOptions::optimistic())
+        .unwrap();
+    let mut right = db
+        .begin_transaction(ConcurrentTransactionOptions::optimistic())
+        .unwrap();
+    left.query("MATCH (m:Memory) WHERE m.id = 'left' SET m.state = 'left-committed'")
+        .unwrap();
+    right
+        .query("MATCH (m:Memory) WHERE m.id = 'right' SET m.state = 'right-committed'")
+        .unwrap();
+
+    left.commit().unwrap();
+    right.commit().unwrap();
+
+    let rows = db
+        .query("MATCH (m:Memory) RETURN m.id AS id, m.state AS state ORDER BY id")
+        .unwrap()
+        .rows;
+    assert_eq!(
+        rows,
+        vec![
+            BTreeMap::from([
+                ("id".to_string(), Value::String("left".to_string())),
+                (
+                    "state".to_string(),
+                    Value::String("left-committed".to_string()),
+                ),
+            ]),
+            BTreeMap::from([
+                ("id".to_string(), Value::String("right".to_string())),
+                (
+                    "state".to_string(),
+                    Value::String("right-committed".to_string()),
+                ),
+            ]),
+        ]
+    );
+    assert_eq!(db.commit_epoch().unwrap(), 4);
 }
 
 #[test]
@@ -1461,11 +1516,16 @@ fn generated_order_retries_after_optimistic_conflict_and_matches_pessimistic_com
         first.append_mutations[0].generated_order_keys,
         vec![crate::RelationalKey(vec![RelationalValue::BigInt(1)])]
     );
-    assert!(stale
-        .commit_with_result()
-        .unwrap_err()
-        .to_string()
-        .contains("optimistic transaction conflict"));
+    let conflict = stale.commit_with_result().unwrap_err();
+    assert!(matches!(
+        conflict,
+        HawDBError::TransactionConflict {
+            read_epoch: 1,
+            committed_epoch: 2,
+            ..
+        }
+    ));
+    assert!(conflict.is_retryable_transaction_conflict());
 
     let mut retry = db
         .begin_transaction(ConcurrentTransactionOptions::optimistic())

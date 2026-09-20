@@ -14,16 +14,17 @@
 
 use super::{NodeProjectionAccess, PhysicalPlan, PlanChildren};
 use crate::{
-    AggregateFunction, AggregateTarget, Aggregation, ComparisonOp, GraphAlgorithmKind, Predicate,
-    Projection, ProjectionExpression, RelationshipCountFilter, RelationshipCountLeg,
-    RelationshipOnCreateValue, SetAssignment, SetNodePropertiesReturnMode, SetValue, SortDirection,
-    SortItem, SortKey,
+    AggregateFunction, AggregateTarget, Aggregation, BatchMutationOperation, BatchMutationValue,
+    ComparisonOp, GraphAlgorithmKind, Predicate, Projection, ProjectionExpression,
+    RelationshipCountFilter, RelationshipCountLeg, RelationshipOnCreateValue, SetAssignment,
+    SetNodePropertiesReturnMode, SetValue, SortDirection, SortItem, SortKey,
 };
 use hawdb_core::Value;
 use hawdb_cypher::RelationshipDirection;
 use std::collections::BTreeMap;
 
 mod common;
+mod graph_match;
 mod predicate;
 mod projection;
 
@@ -279,6 +280,25 @@ impl PhysicalPlan {
                 write_identifier(output, label);
                 output.push(',');
                 write_properties(output, properties);
+                output.push(')');
+            }
+            PhysicalPlan::UnwindMutation {
+                rows,
+                variable,
+                operation,
+            } => {
+                output.push_str("UnwindMutation(");
+                write_identifier(output, variable);
+                output.push(',');
+                output.push('[');
+                for (index, row) in rows.iter().enumerate() {
+                    if index > 0 {
+                        output.push(',');
+                    }
+                    write_value(output, row);
+                }
+                output.push_str("],");
+                write_batch_mutation_operation(output, operation);
                 output.push(')');
             }
             PhysicalPlan::MergeNode {
@@ -780,6 +800,15 @@ impl PhysicalPlan {
                 right.write_instance_fingerprint(output);
                 output.push(')');
             }
+            PhysicalPlan::GraphMatchExec { program, input } => {
+                output.push_str("GraphMatchExec(");
+                graph_match::write_program(output, program);
+                if let Some(input) = input {
+                    output.push(',');
+                    input.write_instance_fingerprint(output);
+                }
+                output.push(')');
+            }
             PhysicalPlan::NodeColumnLookupExec {
                 variable,
                 label,
@@ -1260,6 +1289,53 @@ impl PhysicalPlan {
             }
         }
     }
+}
+
+fn write_batch_mutation_operation(output: &mut String, operation: &BatchMutationOperation) {
+    match operation {
+        BatchMutationOperation::CreateNode { label, properties } => {
+            output.push_str("CreateNode(");
+            write_identifier(output, label);
+            output.push(',');
+            write_batch_mutation_properties(output, properties);
+            output.push(')');
+        }
+        BatchMutationOperation::MergeNode {
+            label,
+            match_properties,
+            on_create_properties,
+        } => {
+            output.push_str("MergeNode(");
+            write_identifier(output, label);
+            output.push(',');
+            write_batch_mutation_properties(output, match_properties);
+            output.push(',');
+            write_batch_mutation_properties(output, on_create_properties);
+            output.push(')');
+        }
+    }
+}
+
+fn write_batch_mutation_properties(
+    output: &mut String,
+    properties: &BTreeMap<String, BatchMutationValue>,
+) {
+    output.push('{');
+    for (index, (key, value)) in properties.iter().enumerate() {
+        if index > 0 {
+            output.push(',');
+        }
+        write_identifier(output, key);
+        output.push('=');
+        match value {
+            BatchMutationValue::Static(value) => write_value(output, value),
+            BatchMutationValue::RowProperty(property) => {
+                output.push_str("row.");
+                write_identifier(output, property);
+            }
+        }
+    }
+    output.push('}');
 }
 
 fn write_node_projection_access(output: &mut String, access: &NodeProjectionAccess) {

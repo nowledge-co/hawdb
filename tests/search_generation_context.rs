@@ -15,15 +15,17 @@
 //! External embedded-library contract: imports only the facade and std.
 
 use hawdb::{
-    Database, RuntimeCancellationToken, RuntimeMemoryReservation, RuntimeTaskContext,
-    SearchAnalyzerLexicon, SearchDocument, SearchEmbeddingManifest, SearchLexicalTermPolicy,
+    Database, IoConcurrencyBudget, RuntimeCancellationToken, RuntimeGovernor,
+    RuntimeGovernorConfig, RuntimeMemoryReservation, RuntimeMemorySnapshot, RuntimeResourceBudget,
+    RuntimeResourceSnapshot, RuntimeTaskContext, RuntimeWorkRequest, SearchAnalyzerLexicon,
+    SearchDocument, SearchEmbeddingManifest, SearchGenerationAdmission, SearchLexicalTermPolicy,
     SearchMode, SearchOutOfCoreConfig, SearchOutOfCoreGenerationBuildOptions,
     SearchOutOfCoreGenerationBuildReport, SearchOutOfCoreGenerationWriter, SearchOutOfCoreReader,
     SearchProjectionConsumerId, SearchProjectionConsumerOptions, SearchProjectionDelta,
     SearchProjectionKind, SearchProjectionRow, SearchQueryOptions, SearchRebuildOptions,
 };
 use std::collections::BTreeMap;
-use std::num::NonZeroU64;
+use std::num::{NonZeroU64, NonZeroUsize};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::time::Instant;
@@ -57,6 +59,27 @@ fn context(bytes: u64) -> RuntimeTaskContext {
 
 fn admitted() -> RuntimeTaskContext {
     context(128 * 1024 * 1024)
+}
+
+fn generation_governor() -> RuntimeGovernor {
+    let resources = RuntimeResourceSnapshot::from_parts(
+        RuntimeResourceBudget::from_limits(NonZeroUsize::new(2).unwrap(), None, None),
+        RuntimeMemorySnapshot::from_limits(
+            Some(1024 * 1024 * 1024),
+            Some(1024 * 1024 * 1024),
+            None,
+            None,
+            None,
+        ),
+    );
+    RuntimeGovernor::new(
+        RuntimeGovernorConfig {
+            memory_budget_bytes: Some(128 * 1024 * 1024),
+            ..RuntimeGovernorConfig::shared_host()
+        },
+        resources,
+        IoConcurrencyBudget::new(2, 1),
+    )
 }
 
 fn identity() -> SearchEmbeddingManifest {
@@ -568,4 +591,57 @@ fn governed_writer_preserves_registered_consumer_and_releases_publication() {
     assert!(consumer.search_index().document("memory:next").is_some());
     assert!(consumer.search_index().document("memory:outside").is_none());
     files(&projection);
+}
+
+#[test]
+fn governor_admission_covers_complete_generation_and_update_lifetimes() {
+    let root = Directory::new();
+    let governor = generation_governor();
+    let request = RuntimeWorkRequest::background_maintenance(64 * 1024 * 1024)
+        .with_io_wave_slots(NonZeroUsize::MIN.get());
+
+    let admission = SearchGenerationAdmission::acquire(&governor, request).unwrap();
+    assert_eq!(admission.request(), request);
+    let mut writer = admission.create_writer(&root.0, options()).unwrap();
+    assert_eq!(
+        governor.snapshot().admitted_memory_bytes,
+        request.memory_bytes
+    );
+    writer
+        .writer_mut()
+        .push(row("a", 101).into_document())
+        .unwrap();
+    assert_eq!(
+        writer.writer().lexical_term_policy(),
+        SearchLexicalTermPolicy::default()
+    );
+    assert_eq!(writer.finish().unwrap().document_count, 1);
+    assert_eq!(governor.snapshot().admitted_memory_bytes, 0);
+
+    let reader = SearchOutOfCoreReader::open(&root.0).unwrap();
+    let admission = SearchGenerationAdmission::acquire(&governor, request).unwrap();
+    let update = admission
+        .prepare_update(&reader, delta("b", 102), update_options())
+        .unwrap();
+    assert_eq!(update.update().delta_report().upserted_documents, 1);
+    assert_eq!(
+        governor.snapshot().admitted_memory_bytes,
+        request.memory_bytes
+    );
+    drop(reader);
+    let (_, report, _) = update.finish().unwrap();
+    assert_eq!(report.document_count, 2);
+    assert_eq!(governor.snapshot().admitted_memory_bytes, 0);
+
+    let cancellation = RuntimeCancellationToken::new();
+    cancellation.cancel();
+    let admission = SearchGenerationAdmission::acquire(&governor, request).unwrap();
+    assert!(admission
+        .create_writer_with_context(
+            &root.0,
+            options(),
+            RuntimeTaskContext::without_deadline(cancellation),
+        )
+        .is_err());
+    assert_eq!(governor.snapshot().admitted_memory_bytes, 0);
 }

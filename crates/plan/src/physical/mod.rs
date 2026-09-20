@@ -13,10 +13,10 @@
 // limitations under the License.
 
 use crate::{
-    Aggregation, GraphAlgorithmKind, GraphAlgorithmOptions, Predicate, Projection,
-    RelationshipCountLeg, RelationshipOnCreateValue, RelationshipSetAssignment, SchemaObjectState,
-    SchemaPropertyType, SchemaTableKind, SetAssignment, SetNodePropertiesReturnMode, SetValue,
-    ShortestPathProjection, SortItem,
+    Aggregation, BatchMutationOperation, GraphAlgorithmKind, GraphAlgorithmOptions, Predicate,
+    Projection, RelationshipCountLeg, RelationshipOnCreateValue, RelationshipSetAssignment,
+    SchemaObjectState, SchemaPropertyType, SchemaTableKind, SetAssignment,
+    SetNodePropertiesReturnMode, SetValue, ShortestPathProjection, SortItem,
 };
 use hawdb_core::Value;
 use hawdb_cypher::RelationshipDirection;
@@ -220,6 +220,11 @@ pub enum PhysicalPlan {
         label: String,
         properties: BTreeMap<String, Value>,
     },
+    UnwindMutation {
+        rows: Vec<Value>,
+        variable: String,
+        operation: BatchMutationOperation,
+    },
     MergeNode {
         label: String,
         match_properties: BTreeMap<String, Value>,
@@ -372,6 +377,10 @@ pub enum PhysicalPlan {
         rel_properties: BTreeMap<String, Value>,
         target_label: String,
         target_properties: BTreeMap<String, Value>,
+    },
+    GraphMatchExec {
+        program: crate::GraphMatchProgram,
+        input: Option<Box<PhysicalPlan>>,
     },
     EmptyExec,
     SeqNodeScan {

@@ -18,7 +18,7 @@ mod parser;
 pub mod read_route;
 
 pub use ast::*;
-pub use parser::{parse, parse_profiled, ParseMeasurement, ParseMetrics};
+pub use parser::{parse, parse_pipeline, parse_profiled, ParseMeasurement, ParseMetrics};
 
 #[cfg(test)]
 mod tests;

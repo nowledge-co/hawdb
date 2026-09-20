@@ -333,6 +333,22 @@ fn aggregate_property_value(target: &AggregateTarget, binding: &Binding) -> Opti
 
 fn aggregate_input(item: &Aggregation, catalog: &Catalog, binding: &Binding) -> AggregateInput {
     match &item.target {
+        AggregateTarget::Column(column) => binding
+            .values
+            .get(column)
+            .filter(|value| *value != &Value::Null)
+            .cloned()
+            .map_or(AggregateInput::Missing, AggregateInput::Value),
+        AggregateTarget::ColumnProperty { column, property } => binding
+            .values
+            .get(column)
+            .and_then(|value| match value {
+                Value::Map(values) => values.get(property),
+                _ => None,
+            })
+            .filter(|value| *value != &Value::Null)
+            .cloned()
+            .map_or(AggregateInput::Missing, AggregateInput::Value),
         AggregateTarget::All => AggregateInput::Present,
         AggregateTarget::Variable(variable) => match item.function {
             AggregateFunction::Count if item.distinct => binding_identity_key(binding, variable)

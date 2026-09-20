@@ -265,6 +265,10 @@ fn estimate_local_operator_cost(
         PhysicalPlan::NodeCountExec { .. } | PhysicalPlan::RelationshipCountExec { .. } => {
             PlanCostBreakdown::new(1, 1, 0, 0, 0)
         }
+        PhysicalPlan::UnwindMutation { rows, .. } => {
+            let row_count = rows.len().max(1) as u64;
+            PlanCostBreakdown::new(row_count, row_count, 0, 0, 0)
+        }
         PhysicalPlan::SeqNodeScan { label, .. } => {
             let rows = catalog.label_count(label);
             node_full_scan_work(rows)
@@ -319,6 +323,25 @@ fn estimate_local_operator_cost(
             let left_cost = inputs[0].expect("left input cost");
             let right_cost = inputs[1].expect("right input cost");
             combine_node_cartesian_product_cost(left_cost, right_cost)
+        }
+        PhysicalPlan::GraphMatchExec { program, .. } => {
+            let base = inputs[0].unwrap_or_else(|| PlanCostBreakdown::new(1, 0, 0, 0, 0));
+            let mut rows = base.estimated_rows;
+            let mut work = rows;
+            let mut bound = std::collections::BTreeSet::new();
+            for step in &program.steps {
+                let (node, expanding) = match step {
+                    hawdb_plan::GraphMatchStep::Node(node) => (node, false),
+                    hawdb_plan::GraphMatchStep::Expand { target, .. } => (target, true),
+                };
+                let newly_bound =
+                    bound.insert(&node.variable) && program.introduced.contains(&node.variable);
+                if expanding || newly_bound {
+                    rows = rows.saturating_mul(catalog.label_count(&node.label).max(1));
+                }
+                work = work.saturating_add(rows);
+            }
+            base.with_random_io(rows, work, 0)
         }
         PhysicalPlan::NodeColumnLookupExec { label, .. } => {
             let input_cost = inputs[0].expect("unary input cost");

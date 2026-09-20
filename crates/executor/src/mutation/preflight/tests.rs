@@ -19,8 +19,8 @@ use crate::store::{
 };
 use hawdb_core::{LabelId, RelTypeId, RuntimeCancellationToken};
 use hawdb_plan::{
-    CompositeRangeSeek, NodeProjectionAccess, Projection, ProjectionExpression, SetAssignment,
-    SetValue,
+    BatchMutationOperation, BatchMutationValue, CompositeRangeSeek, NodeProjectionAccess,
+    PhysicalPlan, Projection, ProjectionExpression, SetAssignment, SetValue,
 };
 use hawdb_storage::{
     AdjacencyDirection, GraphMutation, MutationSummary, NodeRecord, ProjectedGraphDefinition,
@@ -32,6 +32,7 @@ use std::num::NonZeroUsize;
 #[derive(Debug, PartialEq, Eq)]
 enum Write {
     Commit(Box<GraphMutation>),
+    CommitBatch(Vec<GraphMutation>),
     Set(Vec<NodeId>, Vec<NodeSetAssignment>),
     Delete(Vec<NodeId>, bool),
 }
@@ -47,6 +48,115 @@ struct RecordingStore {
 
 fn sentinel() -> HawDBError {
     HawDBError::Execution("injected storage error".into())
+}
+
+#[test]
+fn unwind_mutations_preflight_every_row_and_publish_one_batch() {
+    let operation = BatchMutationOperation::MergeNode {
+        label: "Entity".into(),
+        match_properties: BTreeMap::from([(
+            "id".into(),
+            BatchMutationValue::RowProperty("id".into()),
+        )]),
+        on_create_properties: BTreeMap::from([(
+            "name".into(),
+            BatchMutationValue::RowProperty("name".into()),
+        )]),
+    };
+    let plan = PhysicalPlan::UnwindMutation {
+        rows: vec![
+            Value::Map(BTreeMap::from([
+                ("id".into(), Value::String("one".into())),
+                ("name".into(), Value::String("First".into())),
+            ])),
+            Value::Map(BTreeMap::from([
+                ("id".into(), Value::String("two".into())),
+                ("name".into(), Value::String("Second".into())),
+            ])),
+        ],
+        variable: "row".into(),
+        operation: operation.clone(),
+    };
+    let mut catalog = Catalog::default();
+    let mut store = RecordingStore::default();
+    let rows = execute_mutation_with_store(
+        &plan,
+        &mut catalog,
+        &mut store,
+        MutationLimits::default(),
+        None,
+    )
+    .unwrap();
+    assert_eq!(
+        rows,
+        vec![BTreeMap::from([("committed".into(), Value::Bool(true))])]
+    );
+    let [(write, _)] = store.writes.as_slice() else {
+        panic!("expected exactly one storage write")
+    };
+    let Write::CommitBatch(mutations) = write else {
+        panic!("expected one batch commit")
+    };
+    assert_eq!(mutations.len(), 2);
+    assert!(matches!(
+        &mutations[0],
+        GraphMutation::MergeNode {
+            label,
+            match_properties,
+            on_create_properties,
+            ..
+        } if label == "Entity"
+            && match_properties.get("id") == Some(&Value::String("one".into()))
+            && on_create_properties.get("name") == Some(&Value::String("First".into()))
+    ));
+
+    let invalid = PhysicalPlan::UnwindMutation {
+        rows: vec![
+            Value::Map(BTreeMap::from([("id".into(), Value::String("one".into()))])),
+            Value::Int(2),
+        ],
+        variable: "row".into(),
+        operation: operation.clone(),
+    };
+    let mut store = RecordingStore::default();
+    let error = execute_mutation_with_store(
+        &invalid,
+        &mut Catalog::default(),
+        &mut store,
+        MutationLimits::default(),
+        None,
+    )
+    .unwrap_err();
+    assert!(error.to_string().contains("must be a map"), "{error}");
+    assert!(store.writes.is_empty());
+
+    let input_over_budget = PhysicalPlan::UnwindMutation {
+        rows: vec![Value::Map(BTreeMap::from([(
+            "id".into(),
+            Value::String("one".into()),
+        )]))],
+        variable: "row".into(),
+        operation,
+    };
+    let mut store = RecordingStore::default();
+    let error = execute_mutation_with_store(
+        &input_over_budget,
+        &mut Catalog::default(),
+        &mut store,
+        MutationLimits {
+            max_result_payload_bytes: NonZeroUsize::new(1).unwrap(),
+            ..MutationLimits::default()
+        },
+        None,
+    )
+    .unwrap_err();
+    assert!(
+        error
+            .to_string()
+            .contains("UNWIND batch input would exceed"),
+        "{error}"
+    );
+    assert!(store.writes.is_empty());
 }
 
 impl GraphExecutionRead for RecordingStore {
@@ -232,6 +342,23 @@ impl GraphExecutionWrite for RecordingStore {
     ) -> Result<MutationSummary> {
         self.writes
             .push((Write::Commit(Box::new(mutation)), limits));
+        if self.write_error {
+            return Err(sentinel());
+        }
+        Ok(MutationSummary {
+            rows: vec![BTreeMap::from([("committed".into(), Value::Bool(true))])],
+            relational_mutation_outcomes: vec![],
+            append_mutation_outcomes: vec![],
+        })
+    }
+
+    fn commit_mutations_with_limits(
+        &mut self,
+        _: &mut Catalog,
+        mutations: Vec<GraphMutation>,
+        limits: MutationLimits,
+    ) -> Result<MutationSummary> {
+        self.writes.push((Write::CommitBatch(mutations), limits));
         if self.write_error {
             return Err(sentinel());
         }

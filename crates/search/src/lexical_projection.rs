@@ -281,7 +281,7 @@ impl ManifestBody {
 
     fn validate_with_context(&self, task: Option<&RuntimeTaskContext>) -> Result<()> {
         task.map_or(Ok(()), checkpoint)?;
-        if self.format != "HAWDB_LEXICAL_MANIFEST_V6"
+        if self.format != "HAWDB_LEXICAL_MANIFEST_V2"
             || self.layout != "HAWDB_LEXICAL_ORDINAL_FST_V1"
             || self.artifact_file != artifact_file(self.generation)
             || Path::new(&self.artifact_file)
@@ -1881,9 +1881,9 @@ impl<'workspace> LexicalProjectionWriter<'workspace> {
         let artifact = artifact.finish()?;
         let _format_memory = memory
             .retained
-            .reserve("HAWDB_LEXICAL_MANIFEST_V6HAWDB_LEXICAL_ORDINAL_FST_V1".len())?;
+            .reserve("HAWDB_LEXICAL_MANIFEST_V2HAWDB_LEXICAL_ORDINAL_FST_V1".len())?;
         let manifest = ManifestBody {
-            format: "HAWDB_LEXICAL_MANIFEST_V6".to_string(),
+            format: "HAWDB_LEXICAL_MANIFEST_V2".to_string(),
             layout: "HAWDB_LEXICAL_ORDINAL_FST_V1".to_string(),
             generation,
             source_graph_commit_epoch,

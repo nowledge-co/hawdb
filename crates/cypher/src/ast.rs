@@ -12,6 +12,9 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
+mod pipeline;
+pub use pipeline::*;
+
 mod source;
 pub use source::{AstNode, SourceSpan};
 
@@ -26,6 +29,12 @@ pub enum Statement {
     Checkpoint,
     CypherQuery(Box<CypherQuery>),
     Explain(Box<Explain>),
+    /// A bounded row source followed by one mutation clause.
+    ///
+    /// The ordered-clause pipeline remains opt-in while it is being migrated.
+    /// `UNWIND` is its first public statement entrypoint because its row source
+    /// must be planned and admitted as one atomic mutation batch.
+    UnwindMutation(Box<QueryPipeline>),
     Commit,
     CreateNodeLabel(String),
     CreateRelationshipType(String),
@@ -49,13 +58,13 @@ pub enum Statement {
     CreateRelationship(CreateRelationship),
     MergeNode(MergeNode),
     MergeRelationship(CreateRelationship),
+    Pipeline(Box<QueryPipeline>),
     MatchReturn(Box<MatchReturn>),
     ShortestPathReturn(Box<ShortestPathReturn>),
     MatchNodesReturn(MatchNodesReturn),
     MatchSet(MatchSet),
     MatchSetReturn(MatchSetReturn),
     MatchOptionalRelationshipCountSum(MatchOptionalRelationshipCountSum),
-    MatchThreadRepairStats(MatchThreadRepairStats),
     MatchDelete(MatchDelete),
     MatchCreateRelationship(MatchCreateRelationship),
     MatchMergeRelationship(MatchMergeRelationship),
@@ -380,20 +389,6 @@ pub enum OptionalRelationshipCountFilter {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct MatchThreadRepairStats {
-    pub variable: String,
-    pub label: String,
-    pub identity_variable: String,
-    pub identity_label: String,
-    pub identity_ref_property: String,
-    pub thread_id_property: String,
-    pub message_rel_type: String,
-    pub message_label: String,
-    pub memory_rel_type: String,
-    pub memory_label: String,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct MatchDelete {
     pub variable: String,
     pub label: String,
@@ -663,6 +658,7 @@ pub enum ValueExpressionKind {
     Literal(Value),
     Parameter(String),
     List(Vec<ValueExpression>),
+    BindingProperty { variable: String, property: String },
     CurrentTimestamp,
     Timestamp(Box<ValueExpression>),
 }
@@ -758,6 +754,20 @@ pub enum ScalarExpressionKind {
 pub enum ReturnExpressionKind {
     Value(ScalarExpression),
     Aggregate(AggregateExpression),
+    Arithmetic {
+        first: Box<ReturnExpression>,
+        rest: Vec<(ArithmeticOp, ReturnExpression)>,
+    },
+    Path(ShortestPathReturnExpression),
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ArithmeticOp {
+    Add,
+    Subtract,
+    Multiply,
+    Divide,
+    Remainder,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]

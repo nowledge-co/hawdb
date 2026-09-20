@@ -275,13 +275,13 @@ pub use hawdb_optimizer::{
     MemoGroup as OptimizerMemoGroup, PhysicalProperties, RequiredProperties,
 };
 pub use hawdb_qos::{
-    IoConcurrencyBudget, ProcessMemoryCapabilities, ProcessMemoryProfile, ProcessMemorySnapshot,
-    RuntimeAdmissionCode, RuntimeAdmissionError, RuntimeGovernor, RuntimeGovernorConfig,
-    RuntimeGovernorLimits, RuntimeGovernorSnapshot, RuntimeIoReservationScope,
-    RuntimeMemoryPressure, RuntimeMemorySnapshot, RuntimeResourceBudget, RuntimeResourceSnapshot,
-    RuntimeTelemetryEvent, RuntimeTelemetryEventKind, RuntimeTelemetrySink, RuntimeWorkKind,
-    RuntimeWorkPriority, RuntimeWorkRequest, StorageDeviceDiscoverySource, StorageDeviceProfile,
-    StorageMediaKind,
+    IoConcurrencyBudget, ProcessMemoryCapabilities, ProcessMemoryPolicy, ProcessMemoryPolicyConfig,
+    ProcessMemoryPolicySnapshot, ProcessMemoryProfile, ProcessMemorySnapshot, RuntimeAdmissionCode,
+    RuntimeAdmissionError, RuntimeGovernor, RuntimeGovernorConfig, RuntimeGovernorLimits,
+    RuntimeGovernorSnapshot, RuntimeIoReservationScope, RuntimeMemoryPressure,
+    RuntimeMemorySnapshot, RuntimeResourceBudget, RuntimeResourceSnapshot, RuntimeTelemetryEvent,
+    RuntimeTelemetryEventKind, RuntimeTelemetrySink, RuntimeWorkKind, RuntimeWorkPriority,
+    RuntimeWorkRequest, StorageDeviceDiscoverySource, StorageDeviceProfile, StorageMediaKind,
 };
 pub use hawdb_readiness::embedded_query_path::{
     EmbeddedQueryEntrypoint, EmbeddedQueryPathReadiness, EMBEDDED_QUERY_PATH_READINESS_PROTOCOL,
@@ -470,16 +470,18 @@ pub use search::rabitq_projection::{
     RaBitQCandidateProjectionBuildOptions, RaBitQCandidateScanOptions,
 };
 pub use search::{
-    AdaptiveVectorSearchOptions, CompressedVectorSearchMode, MetadataRepairOptions,
-    MetadataRepairSummary, SearchAccessControlContext, SearchAnalyzerLexicon,
-    SearchCandidateSetReport, SearchCheckpointReport, SearchDerivedArtifactReport, SearchDocument,
-    SearchEmbeddingManifest, SearchEmptyReasonCode, SearchFallbackReasonCode, SearchFusionWeights,
-    SearchHit, SearchIndex, SearchLexicalFeasibilityCoverage, SearchLexicalFeasibilityMetrics,
-    SearchLexicalProductionQualificationReport, SearchLexicalTermPolicy, SearchMode,
-    SearchOutOfCoreConfig, SearchOutOfCoreGenerationBuildOptions,
-    SearchOutOfCoreGenerationBuildReport, SearchOutOfCoreGenerationUpdate,
-    SearchOutOfCoreGenerationWriter, SearchOutOfCoreHydrationOutput, SearchOutOfCoreMetrics,
-    SearchOutOfCoreOutput, SearchOutOfCoreReader, SearchOutOfCoreSegmentCompaction,
+    AdaptiveVectorSearchOptions, CompressedVectorSearchMode, GovernedSearchGenerationUpdate,
+    GovernedSearchGenerationWriter, MetadataRepairOptions, MetadataRepairSummary,
+    SearchAccessControlContext, SearchAnalyzerLexicon, SearchCandidateSetReport,
+    SearchCheckpointReport, SearchDerivedArtifactReport, SearchDocument, SearchEmbeddingManifest,
+    SearchEmptyReasonCode, SearchFallbackReasonCode, SearchFusionWeights,
+    SearchGenerationAdmission, SearchHit, SearchIndex, SearchLexicalFeasibilityCoverage,
+    SearchLexicalFeasibilityMetrics, SearchLexicalProductionQualificationReport,
+    SearchLexicalSourcePolicy, SearchLexicalTermPolicy, SearchMode, SearchOutOfCoreConfig,
+    SearchOutOfCoreGenerationBuildOptions, SearchOutOfCoreGenerationBuildReport,
+    SearchOutOfCoreGenerationUpdate, SearchOutOfCoreGenerationWriter,
+    SearchOutOfCoreHydrationOutput, SearchOutOfCoreMetrics, SearchOutOfCoreOutput,
+    SearchOutOfCoreReader, SearchOutOfCoreSegmentCompaction,
     SearchOutOfCoreSegmentCompactionPolicy, SearchOutOfCoreSegmentCompactionReport,
     SearchPredicateFieldPruningReport, SearchPredicatePushdownReport,
     SearchProjectionCleanupOptions, SearchProjectionCleanupReport, SearchProjectionDelta,
@@ -587,6 +589,9 @@ pub use workload_fixtures::{
 
 #[cfg(test)]
 mod lexical_term_policy_tests;
+
+#[cfg(test)]
+mod lexical_source_policy_tests;
 
 #[cfg(test)]
 mod lexical_manifest_budget_tests;

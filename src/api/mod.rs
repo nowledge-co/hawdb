@@ -1167,13 +1167,17 @@ impl Database {
             }
             let mut catalog = self.catalog.clone();
             let mut store = self.store.snapshot();
-            let rows = executor::execute_with_row_limit(
-                &optimized.physical_plan,
-                &mut catalog,
-                &mut store,
-                max_rows,
+            let parameters = BTreeMap::new();
+            let memory = executor::ExecutionMemoryConfig::default();
+            let mut external = executor::NoExternalReadOperator;
+            let profiled = executor::execute_with_request(
+                executor::ExecutionRequest::new(&optimized.physical_plan, &parameters, &memory)
+                    .with_output_limits(max_rows, None),
+                executor::ExecutionResources::new(&mut catalog, &mut store, &mut external),
             )?;
-            Ok(QueryOutput { rows: rows.into() })
+            Ok(QueryOutput {
+                rows: profiled.rows,
+            })
         })();
         self.store.poison_on_storage_error(&query_result);
         self.record_statement_execution(
@@ -1409,15 +1413,17 @@ impl Database {
             ));
         }
         let mut external = executor::NoExternalReadOperator;
-        let profiled = executor::execute_with_output_limits_profile_and_external_and_memory(
-            &optimized.physical_plan,
-            &mut self.catalog,
-            &mut self.store,
-            parameters,
-            &mut external,
-            self.config.max_read_result_rows,
-            self.config.max_read_result_payload_bytes,
-            &self.config.execution_memory,
+        let profiled = executor::execute_with_request(
+            executor::ExecutionRequest::new(
+                &optimized.physical_plan,
+                parameters,
+                &self.config.execution_memory,
+            )
+            .with_output_limits(
+                self.config.max_read_result_rows,
+                self.config.max_read_result_payload_bytes,
+            ),
+            executor::ExecutionResources::new(&mut self.catalog, &mut self.store, &mut external),
         );
         self.store.poison_on_storage_error(&profiled);
         let profiled = profiled?;
@@ -19132,9 +19138,10 @@ pub(crate) fn statement_kind(statement: &cypher::Statement) -> &'static str {
         cypher::Statement::MatchReturn(_) => "match_return",
         cypher::Statement::MatchSet(_) => "match_set",
         cypher::Statement::MatchSetReturn(_) => "match_set_return",
-        cypher::Statement::MatchThreadRepairStats(_) => "match_thread_repair_stats",
+        cypher::Statement::Pipeline(_) => "pipeline",
         cypher::Statement::MergeNode(_) => "merge_node",
         cypher::Statement::MergeRelationship(_) => "merge_relationship",
+        cypher::Statement::UnwindMutation(_) => "unwind_mutation",
         cypher::Statement::ProjectGraph(_) => "project_graph",
         cypher::Statement::Rollback => "rollback",
         cypher::Statement::SetSystemVariable(_) => "set_system_variable",
@@ -19408,11 +19415,6 @@ fn execute_graph_transaction_statement(
 
     if executor::is_mutation_plan(&optimized.physical_plan)? {
         runtime.ensure_writable(transaction.store())?;
-        let mutation = executor::mutation_command(&optimized.physical_plan)?.ok_or_else(|| {
-            HawDBError::Execution(
-                "transaction mutation plan cannot be represented as a staged mutation".to_string(),
-            )
-        })?;
         let is_mutation_return = matches!(
             optimized.physical_plan,
             PhysicalPlan::SetNodePropertiesReturn { .. }
@@ -19431,12 +19433,36 @@ fn execute_graph_transaction_statement(
         };
         let statement_savepoint = transaction.savepoint();
         let execution = (|| {
-            let staged = if is_mutation_return {
-                transaction.stage_mutation_without_commit_rows(mutation, mutation_limits)
-            } else {
-                transaction.stage_mutation_with_limits(mutation, mutation_limits)
+            let summary = match &optimized.physical_plan {
+                PhysicalPlan::UnwindMutation {
+                    rows,
+                    variable,
+                    operation,
+                } => transaction.stage_mutations_with_limits(
+                    executor::materialize_unwind_mutations(
+                        rows,
+                        variable,
+                        operation,
+                        mutation_limits,
+                        task_context,
+                    )?,
+                    mutation_limits,
+                )?,
+                _ => {
+                    let mutation = executor::mutation_command(&optimized.physical_plan)?
+                        .ok_or_else(|| {
+                            HawDBError::Execution(
+                                "transaction mutation plan cannot be represented as a staged mutation"
+                                    .to_string(),
+                            )
+                        })?;
+                    if is_mutation_return {
+                        transaction.stage_mutation_without_commit_rows(mutation, mutation_limits)?
+                    } else {
+                        transaction.stage_mutation_with_limits(mutation, mutation_limits)?
+                    }
+                }
             };
-            let summary = staged?;
             let returned_rows = executor::project_staged_mutation_return_rows(
                 &optimized.physical_plan,
                 transaction.catalog(),
@@ -19467,31 +19493,19 @@ fn execute_graph_transaction_statement(
     let query_result = {
         let (catalog, store) = transaction.catalog_and_store_mut();
         let mut external = executor::NoExternalReadOperator;
-        let profiled = match task_context {
-            Some(task_context) => {
-                executor::execute_with_output_limits_profile_and_external_and_context_and_memory(
-                    &optimized.physical_plan,
-                    catalog,
-                    store,
-                    parameters,
-                    &mut external,
-                    runtime.config.max_read_result_rows,
-                    runtime.config.max_read_result_payload_bytes,
-                    task_context,
-                    &runtime.config.execution_memory,
-                )
-            }
-            None => executor::execute_with_output_limits_profile_and_external_and_memory(
+        let profiled = executor::execute_with_request(
+            executor::ExecutionRequest::new(
                 &optimized.physical_plan,
-                catalog,
-                store,
                 parameters,
-                &mut external,
+                &runtime.config.execution_memory,
+            )
+            .with_output_limits(
                 runtime.config.max_read_result_rows,
                 runtime.config.max_read_result_payload_bytes,
-                &runtime.config.execution_memory,
-            ),
-        };
+            )
+            .with_optional_task_context(task_context),
+            executor::ExecutionResources::new(catalog, store, &mut external),
+        );
         profiled.map(|profiled| QueryOutput {
             rows: profiled.rows,
         })
@@ -20439,15 +20453,21 @@ impl DatabaseSession<'_> {
                 ));
             }
             let mut external = executor::NoExternalReadOperator;
-            let profiled = executor::execute_with_output_limits_profile_and_external_and_memory(
-                &optimized.physical_plan,
-                &mut self.db.catalog,
-                &mut self.db.store,
-                parameters,
-                &mut external,
-                self.db.config.max_read_result_rows,
-                self.db.config.max_read_result_payload_bytes,
-                &self.db.config.execution_memory,
+            let profiled = executor::execute_with_request(
+                executor::ExecutionRequest::new(
+                    &optimized.physical_plan,
+                    parameters,
+                    &self.db.config.execution_memory,
+                )
+                .with_output_limits(
+                    self.db.config.max_read_result_rows,
+                    self.db.config.max_read_result_payload_bytes,
+                ),
+                executor::ExecutionResources::new(
+                    &mut self.db.catalog,
+                    &mut self.db.store,
+                    &mut external,
+                ),
             );
             self.db.store.poison_on_storage_error(&profiled);
             let profiled = profiled?;
@@ -20983,35 +21003,17 @@ impl DatabaseReadTransaction {
                 "read transaction query must not be a mutation".to_string(),
             ));
         }
-        let profiled = match task_context {
-            Some(task_context) => {
-                let mut external = executor::NoExternalReadOperator;
-                executor::execute_with_output_limits_profile_and_external_and_context_and_memory(
-                    &optimized.physical_plan,
-                    &mut self.catalog,
-                    &mut self.store,
-                    parameters,
-                    &mut external,
-                    max_rows,
-                    max_payload_bytes,
-                    task_context,
-                    &self.config.execution_memory,
-                )
-            }
-            None => {
-                let mut external = executor::NoExternalReadOperator;
-                executor::execute_with_output_limits_profile_and_external_and_memory(
-                    &optimized.physical_plan,
-                    &mut self.catalog,
-                    &mut self.store,
-                    parameters,
-                    &mut external,
-                    max_rows,
-                    max_payload_bytes,
-                    &self.config.execution_memory,
-                )
-            }
-        };
+        let mut external = executor::NoExternalReadOperator;
+        let profiled = executor::execute_with_request(
+            executor::ExecutionRequest::new(
+                &optimized.physical_plan,
+                parameters,
+                &self.config.execution_memory,
+            )
+            .with_output_limits(max_rows, max_payload_bytes)
+            .with_optional_task_context(task_context),
+            executor::ExecutionResources::new(&mut self.catalog, &mut self.store, &mut external),
+        );
         self.store.poison_on_storage_error(&profiled);
         let profiled = profiled?;
         query_runtime::query_runtime_checkpoint(task_context)?;
@@ -21053,35 +21055,21 @@ impl DatabaseReadTransaction {
             ));
         }
         if explain.analyze {
-            let profiled = match task_context {
-                Some(task_context) => {
-                    let mut external = executor::NoExternalReadOperator;
-                    executor::execute_with_output_limits_profile_and_external_and_context_and_memory(
-                        &optimized.physical_plan,
-                        &mut self.catalog,
-                        &mut self.store,
-                        parameters,
-                        &mut external,
-                        max_rows,
-                        self.config.max_read_result_payload_bytes,
-                        task_context,
-                        &self.config.execution_memory,
-                    )
-                }
-                None => {
-                    let mut external = executor::NoExternalReadOperator;
-                    executor::execute_with_output_limits_profile_and_external_and_memory(
-                        &optimized.physical_plan,
-                        &mut self.catalog,
-                        &mut self.store,
-                        parameters,
-                        &mut external,
-                        max_rows,
-                        self.config.max_read_result_payload_bytes,
-                        &self.config.execution_memory,
-                    )
-                }
-            };
+            let mut external = executor::NoExternalReadOperator;
+            let profiled = executor::execute_with_request(
+                executor::ExecutionRequest::new(
+                    &optimized.physical_plan,
+                    parameters,
+                    &self.config.execution_memory,
+                )
+                .with_output_limits(max_rows, self.config.max_read_result_payload_bytes)
+                .with_optional_task_context(task_context),
+                executor::ExecutionResources::new(
+                    &mut self.catalog,
+                    &mut self.store,
+                    &mut external,
+                ),
+            );
             self.store.poison_on_storage_error(&profiled);
             let profiled = profiled?;
             query_runtime::query_runtime_checkpoint(task_context)?;

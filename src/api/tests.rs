@@ -346,6 +346,97 @@ fn database_session_reads_own_writes_inside_transaction() {
 }
 
 #[test]
+fn public_unwind_mutation_batches_direct_and_transactional_bootstrap_rows() {
+    let nonce = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap()
+        .as_nanos();
+    let path = std::env::temp_dir().join(format!("hawdb-public-unwind-{nonce}"));
+    let query = "UNWIND $rows AS row MERGE (entity:Entity {id: row.id}) ON CREATE SET entity.name = row.name";
+    let rows = |entries: &[(&str, &str)]| {
+        Value::List(
+            entries
+                .iter()
+                .map(|(id, name)| {
+                    Value::Map(BTreeMap::from([
+                        ("id".to_string(), Value::String((*id).to_string())),
+                        ("name".to_string(), Value::String((*name).to_string())),
+                    ]))
+                })
+                .collect(),
+        )
+    };
+    let mut db = Database::open(&path).unwrap();
+    db.query_with_params(
+        query,
+        &BTreeMap::from([(
+            "rows".to_string(),
+            rows(&[("one", "First"), ("two", "Second")]),
+        )]),
+    )
+    .unwrap();
+
+    let mut transaction = db.begin_transaction();
+    let error = transaction
+        .query_with_params(
+            query,
+            &BTreeMap::from([(
+                "rows".to_string(),
+                Value::List(vec![
+                    Value::Map(BTreeMap::from([
+                        ("id".to_string(), Value::String("three".to_string())),
+                        ("name".to_string(), Value::String("Third".to_string())),
+                    ])),
+                    Value::Int(4),
+                ]),
+            )]),
+        )
+        .unwrap_err();
+    assert!(error.to_string().contains("must be a map"), "{error}");
+    assert_eq!(
+        transaction
+            .query("MATCH (entity:Entity) RETURN entity.id AS id ORDER BY id")
+            .unwrap()
+            .rows
+            .len(),
+        2
+    );
+
+    transaction
+        .query_with_params(
+            query,
+            &BTreeMap::from([(
+                "rows".to_string(),
+                rows(&[("three", "Third"), ("four", "Fourth")]),
+            )]),
+        )
+        .unwrap();
+    assert_eq!(
+        transaction
+            .query("MATCH (entity:Entity) RETURN entity.id AS id ORDER BY id")
+            .unwrap()
+            .rows
+            .len(),
+        4
+    );
+    transaction.commit().unwrap();
+
+    drop(db);
+    let mut db = Database::open(&path).unwrap();
+
+    let output = db
+        .query("MATCH (entity:Entity) RETURN entity.id AS id, entity.name AS name ORDER BY id")
+        .unwrap();
+    assert_eq!(output.rows.len(), 4);
+    assert_eq!(
+        output.rows[2].get("name"),
+        Some(&Value::String("Third".to_string()))
+    );
+    drop(db);
+    std::fs::remove_dir_all(path).unwrap();
+}
+
+#[test]
 fn returns_relationship_endpoint_properties() {
     let mut db = Database::new();
     db.query("CREATE (:Entity {id: 'left'})-[:RELATES_TO]->(:Entity {id: 'right'})")

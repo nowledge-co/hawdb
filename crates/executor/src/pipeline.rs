@@ -218,7 +218,30 @@ impl AccountedBindingBatch {
         binding: Binding,
         emit: &mut dyn FnMut(BindingBatch) -> Result<BatchControl>,
     ) -> Result<BatchControl> {
-        let bytes = binding_memory_bytes(&binding);
+        if self.reserve_row(binding_memory_bytes(&binding), emit)? == BatchControl::Stop {
+            return Ok(BatchControl::Stop);
+        }
+        self.bindings.push(binding);
+        Ok(BatchControl::Continue)
+    }
+
+    pub(crate) fn push_cloned(
+        &mut self,
+        binding: &Binding,
+        emit: &mut dyn FnMut(BindingBatch) -> Result<BatchControl>,
+    ) -> Result<BatchControl> {
+        if self.reserve_row(binding_memory_bytes(binding), emit)? == BatchControl::Stop {
+            return Ok(BatchControl::Stop);
+        }
+        self.bindings.push(binding.clone());
+        Ok(BatchControl::Continue)
+    }
+
+    fn reserve_row(
+        &mut self,
+        bytes: usize,
+        emit: &mut dyn FnMut(BindingBatch) -> Result<BatchControl>,
+    ) -> Result<BatchControl> {
         if bytes > self.tracker.budget_bytes {
             return Err(HawDBError::Execution(format!(
                 "intermediate row uses {bytes} bytes, exceeding batch_payload_bytes {}",
@@ -232,7 +255,6 @@ impl AccountedBindingBatch {
             return Ok(BatchControl::Stop);
         }
         self.tracker.try_charge(bytes)?;
-        self.bindings.push(binding);
         Ok(BatchControl::Continue)
     }
 

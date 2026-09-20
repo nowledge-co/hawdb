@@ -28,9 +28,9 @@ use crate::lexical_projection::{
     LexicalProjectionWriter, DEFAULT_MAX_MANIFEST_BYTES, MANIFEST_FILE as LEXICAL_MANIFEST_FILE,
 };
 use crate::{
-    SearchAnalyzerLexicon, SearchDocument, SearchEmbeddingManifest, SearchLexicalTermPolicy,
-    NOWLEDGE_MEMORY_MATERIALIZED_METADATA_PATHS, NOWLEDGE_SEARCH_PROJECTION_SCAN_FILTER_FIELDS,
-    SEARCH_DOCUMENT_ID_FIELD,
+    SearchAnalyzerLexicon, SearchDocument, SearchEmbeddingManifest, SearchLexicalSourcePolicy,
+    SearchLexicalTermPolicy, NOWLEDGE_MEMORY_MATERIALIZED_METADATA_PATHS,
+    NOWLEDGE_SEARCH_PROJECTION_SCAN_FILTER_FIELDS, SEARCH_DOCUMENT_ID_FIELD,
 };
 use artifacts::SegmentArtifactBuilder;
 use hawdb_core::RuntimeTaskContext;
@@ -57,6 +57,7 @@ mod compaction;
 mod context_memory;
 mod delta;
 mod discovery;
+mod governed;
 mod io;
 mod publication;
 mod rabitq;
@@ -72,6 +73,9 @@ pub use compaction::{
     SearchOutOfCoreSegmentCompactionStopReason,
 };
 pub use delta::SearchOutOfCoreGenerationUpdate;
+pub use governed::{
+    GovernedSearchGenerationUpdate, GovernedSearchGenerationWriter, SearchGenerationAdmission,
+};
 
 const STAGE_METADATA_FILE: &str = "search_projection_metadata_payloads.stage.hawdb";
 const STAGE_VECTOR_FILE: &str = "search_projection_vector_payloads.stage.hawdb";
@@ -278,6 +282,29 @@ impl SearchOutOfCoreGenerationWriter {
         Ok(writer)
     }
 
+    /// Creates a writer with an explicit host-selected lexical source bound.
+    pub fn create_with_source_policy(
+        root: impl AsRef<Path>,
+        mut options: SearchOutOfCoreGenerationBuildOptions,
+        lexical_source_policy: SearchLexicalSourcePolicy,
+    ) -> Result<Self> {
+        options.lexical_max_document_source_bytes =
+            lexical_source_policy.max_document_source_bytes();
+        Self::create(root, options)
+    }
+
+    /// Creates a writer with explicit host-selected lexical source and term bounds.
+    pub fn create_with_lexical_policies(
+        root: impl AsRef<Path>,
+        options: SearchOutOfCoreGenerationBuildOptions,
+        lexical_term_policy: SearchLexicalTermPolicy,
+        lexical_source_policy: SearchLexicalSourcePolicy,
+    ) -> Result<Self> {
+        let mut writer = Self::create_with_source_policy(root, options, lexical_source_policy)?;
+        writer.set_lexical_term_policy(lexical_term_policy);
+        Ok(writer)
+    }
+
     // Delta admission creates the same root before converting input rows.
     fn create_with_memory(
         root: impl AsRef<Path>,
@@ -360,6 +387,11 @@ impl SearchOutOfCoreGenerationWriter {
         self.lexical_term_policy
     }
 
+    pub fn lexical_source_policy(&self) -> SearchLexicalSourcePolicy {
+        SearchLexicalSourcePolicy::new(self.options.lexical_max_document_source_bytes)
+            .expect("validated lexical source policy")
+    }
+
     /// Changes the policy used by `finish` to analyze the complete staged corpus.
     ///
     /// `push` only spools documents. Lowering this bound can make `finish` fail;
@@ -367,6 +399,15 @@ impl SearchOutOfCoreGenerationWriter {
     /// Exclusive access prevents a policy change during finalization.
     pub fn set_lexical_term_policy(&mut self, policy: SearchLexicalTermPolicy) {
         self.lexical_term_policy = policy;
+    }
+
+    /// Changes the source admission used by the final lexical analysis.
+    ///
+    /// The complete staged corpus is revalidated during `finish`; a lower
+    /// policy therefore fails publication atomically rather than truncating a
+    /// document that was accepted by `push`.
+    pub fn set_lexical_source_policy(&mut self, policy: SearchLexicalSourcePolicy) {
+        self.options.set_lexical_source_policy(policy);
     }
 
     /// Returns the encoded lexical manifest byte budget, initially 256 MiB.
@@ -1023,6 +1064,7 @@ fn rabitq_error(error: hawdb_vector_projection::ProjectionError) -> HawDBError {
 }
 
 fn validate_options(options: &SearchOutOfCoreGenerationBuildOptions) -> Result<()> {
+    SearchLexicalSourcePolicy::new(options.lexical_max_document_source_bytes)?;
     if options.max_record_bytes.get() > options.max_segment_uncompressed_bytes.get() {
         return Err(HawDBError::Storage(
             "search generation max_record_bytes exceeds max_segment_uncompressed_bytes".to_string(),

@@ -38,7 +38,9 @@ use crate::bounded_file::read_bounded_file;
 use crate::error::{HawDBError, Result};
 #[cfg(test)]
 use crate::{decode_search_segment_documents_bounded, validate_search_segment_documents};
-use crate::{RuntimeCapabilities, RuntimeCapability, SearchLexicalTermPolicy};
+use crate::{
+    RuntimeCapabilities, RuntimeCapability, SearchLexicalSourcePolicy, SearchLexicalTermPolicy,
+};
 use hawdb_storage::durable_replace_file;
 use serde::{Deserialize, Serialize};
 use std::cmp::{Ordering as CmpOrdering, Reverse};
@@ -58,11 +60,12 @@ mod mutation_run;
 mod publish_lease;
 mod vector_serving;
 pub use generation_writer::{
-    ScheduledSearchOutOfCoreSegmentCompactionReport, SearchOutOfCoreGenerationBuildOptions,
-    SearchOutOfCoreGenerationBuildReport, SearchOutOfCoreGenerationUpdate,
-    SearchOutOfCoreGenerationWriter, SearchOutOfCoreSegmentCompaction,
-    SearchOutOfCoreSegmentCompactionPolicy, SearchOutOfCoreSegmentCompactionReport,
-    SearchOutOfCoreSegmentCompactionStopReason,
+    GovernedSearchGenerationUpdate, GovernedSearchGenerationWriter,
+    ScheduledSearchOutOfCoreSegmentCompactionReport, SearchGenerationAdmission,
+    SearchOutOfCoreGenerationBuildOptions, SearchOutOfCoreGenerationBuildReport,
+    SearchOutOfCoreGenerationUpdate, SearchOutOfCoreGenerationWriter,
+    SearchOutOfCoreSegmentCompaction, SearchOutOfCoreSegmentCompactionPolicy,
+    SearchOutOfCoreSegmentCompactionReport, SearchOutOfCoreSegmentCompactionStopReason,
 };
 pub(super) use publish_lease::SearchProjectionPublishLease;
 #[cfg(feature = "vector-search")]
@@ -188,6 +191,7 @@ pub struct SearchOutOfCoreReader {
     // Mutation runs are admitted and validated at open. Serving consumes this
     // closure only after the shared visibility path is installed.
     _mutation_runs: Vec<mutation_run::SearchMutationRun>,
+    lexical_source_policy: SearchLexicalSourcePolicy,
     lexical_term_policy: SearchLexicalTermPolicy,
     runtime_capabilities: RuntimeCapabilities,
 }
@@ -665,6 +669,7 @@ impl SearchOutOfCoreSegmentReader {
         root: &Path,
         config: &SearchOutOfCoreConfig,
         analyzer_lexicon: &SearchAnalyzerLexicon,
+        lexical_source_policy: SearchLexicalSourcePolicy,
         lexical_term_policy: SearchLexicalTermPolicy,
         active_manifest: &SearchOutOfCoreManifestBody,
         manifest: &SearchOutOfCoreSegmentManifest,
@@ -767,6 +772,7 @@ impl SearchOutOfCoreSegmentReader {
         let lexical_config = LexicalProjectionConfig {
             max_manifest_bytes: config.max_lexical_manifest_bytes,
             max_term_bytes: lexical_term_policy.max_term_bytes(),
+            max_document_source_bytes: lexical_source_policy.max_document_source_bytes(),
             max_query_score_entries: config.max_score_entries,
             ..LexicalProjectionConfig::default()
         };
@@ -846,6 +852,42 @@ impl SearchOutOfCoreReader {
         analyzer_lexicon: SearchAnalyzerLexicon,
         lexical_term_policy: SearchLexicalTermPolicy,
     ) -> Result<Self> {
+        Self::open_with_lexical_policies(
+            path,
+            config,
+            analyzer_lexicon,
+            lexical_term_policy,
+            SearchLexicalSourcePolicy::default(),
+        )
+    }
+
+    /// Opens a generation with an explicit source admission for later updates.
+    pub fn open_with_source_policy(
+        path: impl AsRef<Path>,
+        config: SearchOutOfCoreConfig,
+        analyzer_lexicon: SearchAnalyzerLexicon,
+        lexical_source_policy: SearchLexicalSourcePolicy,
+    ) -> Result<Self> {
+        Self::open_with_lexical_policies(
+            path,
+            config,
+            analyzer_lexicon,
+            SearchLexicalTermPolicy::default(),
+            lexical_source_policy,
+        )
+    }
+
+    /// Opens a generation with explicit host-selected lexical policies.
+    ///
+    /// Source admission governs subsequent writes only; it is never read from
+    /// the artifact, so an artifact cannot widen host input policy.
+    pub fn open_with_lexical_policies(
+        path: impl AsRef<Path>,
+        config: SearchOutOfCoreConfig,
+        analyzer_lexicon: SearchAnalyzerLexicon,
+        lexical_term_policy: SearchLexicalTermPolicy,
+        lexical_source_policy: SearchLexicalSourcePolicy,
+    ) -> Result<Self> {
         let root = path.as_ref().to_path_buf();
         let manifest_path = root.join(OUT_OF_CORE_MANIFEST_FILE);
         let manifest_bytes = read_bounded_file(&manifest_path, MAX_OUT_OF_CORE_MANIFEST_BYTES)?;
@@ -858,6 +900,7 @@ impl SearchOutOfCoreReader {
                     &root,
                     &config,
                     &analyzer_lexicon,
+                    lexical_source_policy,
                     lexical_term_policy,
                     &manifest,
                     segment,
@@ -885,6 +928,7 @@ impl SearchOutOfCoreReader {
             manifest,
             segments,
             _mutation_runs: mutation_runs,
+            lexical_source_policy,
             lexical_term_policy,
             runtime_capabilities: crate::compiled_runtime_capabilities(),
         })
@@ -902,6 +946,10 @@ impl SearchOutOfCoreReader {
         self.lexical_term_policy
     }
 
+    pub fn lexical_source_policy(&self) -> SearchLexicalSourcePolicy {
+        self.lexical_source_policy
+    }
+
     /// Changes admission for subsequent queries and prepared updates.
     ///
     /// Lowering below the open generation's actual term requirement fails and
@@ -915,6 +963,14 @@ impl SearchOutOfCoreReader {
         }
         self.lexical_term_policy = policy;
         Ok(())
+    }
+
+    /// Changes source admission for later generation updates.
+    ///
+    /// This does not affect reading an already published generation because
+    /// source admission is a host-owned write policy.
+    pub fn set_lexical_source_policy(&mut self, policy: SearchLexicalSourcePolicy) {
+        self.lexical_source_policy = policy;
     }
 
     pub fn document_count(&self) -> usize {

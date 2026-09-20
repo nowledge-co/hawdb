@@ -29,6 +29,7 @@ use std::time::{SystemTime, UNIX_EPOCH};
 mod compaction;
 mod context;
 mod manifest_budget;
+mod source_policy;
 mod spool_decoding;
 mod spool_encoding;
 mod term_policy;

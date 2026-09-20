@@ -96,6 +96,12 @@ impl Parser<'_> {
                 self.expect_char(')')?;
                 Ok(ValueExpressionKind::Timestamp(Box::new(value)))
             }
+            Some(ch) if ch.is_ascii_alphabetic() || ch == '_' => {
+                let variable = self.parse_ident()?;
+                self.expect_char('.')?;
+                let property = self.parse_ident()?;
+                Ok(ValueExpressionKind::BindingProperty { variable, property })
+            }
             _ => Err(self.error("expected value")),
         }
     }

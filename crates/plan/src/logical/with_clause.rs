@@ -633,7 +633,13 @@ pub(super) fn return_expression_is_scoped(
         ReturnExpressionKind::Value(expression) => {
             scalar_expression_is_scoped(expression, scope, column_names)
         }
-        ReturnExpressionKind::Aggregate(_) => false,
+        ReturnExpressionKind::Arithmetic { first, rest } => {
+            return_expression_is_scoped(first, scope, column_names)
+                && rest.iter().all(|(_, expression)| {
+                    return_expression_is_scoped(expression, scope, column_names)
+                })
+        }
+        ReturnExpressionKind::Path(_) | ReturnExpressionKind::Aggregate(_) => false,
     }
 }
 
@@ -827,7 +833,9 @@ pub(super) fn optional_direct_count_alias(
                 }
                 has_projection = true;
             }
-            ReturnExpressionKind::Aggregate(_) => return Ok(None),
+            ReturnExpressionKind::Aggregate(_)
+            | ReturnExpressionKind::Arithmetic { .. }
+            | ReturnExpressionKind::Path(_) => return Ok(None),
         }
     }
     Ok(if has_projection { count_alias } else { None })
@@ -863,7 +871,9 @@ pub(super) fn optional_direct_collect_alias(
                 }
                 has_projection = true;
             }
-            ReturnExpressionKind::Aggregate(_) => return Ok(None),
+            ReturnExpressionKind::Aggregate(_)
+            | ReturnExpressionKind::Arithmetic { .. }
+            | ReturnExpressionKind::Path(_) => return Ok(None),
         }
     }
     Ok(if has_projection { collect_alias } else { None })
@@ -896,7 +906,9 @@ pub(super) fn optional_direct_row_projection_expression(
             target_variable,
             rel_variable,
         ),
-        ReturnExpressionKind::Aggregate(_) => false,
+        ReturnExpressionKind::Aggregate(_)
+        | ReturnExpressionKind::Arithmetic { .. }
+        | ReturnExpressionKind::Path(_) => false,
     }
 }
 

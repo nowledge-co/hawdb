@@ -106,6 +106,7 @@ impl PhysicalPlan {
                 PhysicalPlanDomainRef::Schema(SchemaPhysicalPlanRef::new(self))
             }
             PhysicalPlan::CreateNode { .. }
+            | PhysicalPlan::UnwindMutation { .. }
             | PhysicalPlan::MergeNode { .. }
             | PhysicalPlan::MergeRelationship { .. }
             | PhysicalPlan::MergeMatchedRelationship { .. }
@@ -137,7 +138,8 @@ impl PhysicalPlan {
             | PhysicalPlan::IndexNodeTextSeek { .. } => {
                 PhysicalPlanDomainRef::Access(AccessPhysicalPlanRef::new(self))
             }
-            PhysicalPlan::AdjacencyExpandExec { .. }
+            PhysicalPlan::GraphMatchExec { .. }
+            | PhysicalPlan::AdjacencyExpandExec { .. }
             | PhysicalPlan::AdjacencyExistsExec { .. }
             | PhysicalPlan::OptionalDegreeExec { .. }
             | PhysicalPlan::OptionalRelationshipCountSumExec { .. }

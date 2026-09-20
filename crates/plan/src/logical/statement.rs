@@ -40,6 +40,7 @@ pub fn plan_with_params(
         Statement::SetSystemVariable(_) => Err(HawDBError::Semantic(
             "SET system variable is executed by the database session".to_string(),
         )),
+        Statement::UnwindMutation(query) => plan_parsed_pipeline_query(query, parameters),
         Statement::CreateNodeLabel(label) => Ok(LogicalPlan::CreateNodeLabel {
             label: label.clone(),
         }),
@@ -119,6 +120,7 @@ pub fn plan_with_params(
             node_visibility_predicate: None,
         }),
         Statement::VectorSearch(search) => bind_vector_seed(search, parameters, false),
+        Statement::Pipeline(query) => super::pipeline::plan_pipeline(query, parameters),
         Statement::CreateNode(node) => Ok(LogicalPlan::CreateNode {
             label: node.label.clone(),
             properties: bind_properties(&node.properties, parameters)?,
@@ -491,8 +493,11 @@ pub fn plan_with_params(
                     value: plan_set_value(set, parameters)?,
                 });
             }
-            let returns =
-                plan_set_node_properties_return_mode(update, &update_return.returns, parameters)?;
+            let returns = plan_set_node_properties_return_mode(
+                &update.variable,
+                &update_return.returns,
+                parameters,
+            )?;
             Ok(LogicalPlan::SetNodePropertiesReturn {
                 variable: update.variable.clone(),
                 label: update.label.clone(),
@@ -521,16 +526,6 @@ pub fn plan_with_params(
                 output: query.output.clone(),
             })
         }
-        Statement::MatchThreadRepairStats(query) => Ok(LogicalPlan::ThreadRepairStats {
-            label: query.label.clone(),
-            identity_label: query.identity_label.clone(),
-            identity_ref_property: query.identity_ref_property.clone(),
-            thread_id_property: query.thread_id_property.clone(),
-            message_rel_type: query.message_rel_type.clone(),
-            message_label: query.message_label.clone(),
-            memory_rel_type: query.memory_rel_type.clone(),
-            memory_label: query.memory_label.clone(),
-        }),
         Statement::MatchDelete(delete) => {
             if let Some(expand) = &delete.expand {
                 if expand.min_hops != 1 || expand.max_hops != 1 {

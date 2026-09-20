@@ -155,6 +155,13 @@ impl PhysicalPlan {
             PhysicalPlan::CreateNode { label, .. } => {
                 format!("{pad}CreateNode label={label}")
             }
+            PhysicalPlan::UnwindMutation {
+                rows,
+                variable,
+                operation,
+            } => {
+                format!("{pad}UnwindMutationExec rows={} variable={variable} operation={operation:?}", rows.len())
+            }
             PhysicalPlan::MergeNode { label, .. } => {
                 format!("{pad}MergeNode label={label}")
             }
@@ -378,6 +385,9 @@ impl PhysicalPlan {
             }
             PhysicalPlan::NodeCartesianProductExec { .. } => {
                 format!("{pad}NodeCartesianProductExec")
+            }
+            PhysicalPlan::GraphMatchExec { program, .. } => {
+                format!("{pad}GraphMatchExec optional={} steps={:?} imports={:?} introduced={:?} predicate={:?}", program.optional, program.steps, program.imports, program.introduced, program.predicate)
             }
             PhysicalPlan::NodeColumnLookupExec {
                 variable,
