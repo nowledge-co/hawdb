@@ -223,7 +223,8 @@ pub(super) fn publish_generation(
                 }
                 let selected = &active.segments[start..end];
                 let source_level = selected[0].level;
-                if source_level.checked_add(1) != Some(*target_level)
+                if (*target_level != source_level
+                    && *target_level != source_level.saturating_add(1))
                     || selected.iter().any(|segment| segment.level != source_level)
                 {
                     return Err(HawDBError::Storage(
