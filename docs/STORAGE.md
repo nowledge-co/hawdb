@@ -285,6 +285,14 @@ validation and the durable publication order still run against current state.
 Both transaction modes retain one WAL order, durable-before-publish, and one
 commit epoch per transaction.
 
+Per-key MVCC validation is not active yet. The current commit-epoch check cannot
+distinguish unrelated mutations, so a newer commit may still reject a transaction
+whose logical write set is disjoint. [`MVCC_COMMIT_VALIDATION_PROTOCOL.md`](MVCC_COMMIT_VALIDATION_PROTOCOL.md)
+defines the required storage-owned version identities, validation-before-WAL
+publication sequence, recovery rule, and reader-pin-bounded tombstone cleanup.
+It is the implementation baseline for #231; #232 may move transaction bodies
+out of the sequencer only after that protocol is implemented and verified.
+
 Coordinator waits record every blocker in a multi-owner wait-for graph. Adding
 dependencies that close a cycle aborts the current waiter as the deterministic
 deadlock victim and releases all of its locks. Wakeup, timeout, commit,
