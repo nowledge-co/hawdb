@@ -86,8 +86,8 @@ fn controlled_frame_admits_scratch_and_stops_after_a_bounded_write() {
     let memory = BuildMemory::new(&task).unwrap();
     let document = source(0, "body ".repeat(32 * 1024));
     let encoding = DocumentEncoding::new(&document).unwrap();
-    let mut digest = Crc32cHasher::new();
-    digest.update(b"earlier records");
+    let mut digest = DocumentsDigest::default();
+    digest.add_bytes(b"earlier records");
     let before = digest.finish();
     let mut output = CancellingWriter {
         bytes: Vec::new(),
@@ -121,10 +121,10 @@ fn spool_frame_preserves_wire_and_digest_at_every_failed_write_boundary() {
     let record = legacy_record(&document);
     let expected = legacy_frame(&record);
     let encoding = DocumentEncoding::new(&document).unwrap();
-    let mut initial = Crc32cHasher::new();
-    initial.update(b"earlier records");
+    let mut initial = DocumentsDigest::default();
+    initial.add_bytes(b"earlier records");
     let mut complete = initial;
-    complete.update(&record);
+    complete.add_bytes(&record);
     for boundary in 0..=expected.len() {
         let mut output = FaultWriter {
             bytes: Vec::new(),
@@ -160,8 +160,8 @@ fn spool_frame_unwind_does_not_commit_document_digest() {
         }
     }
     let document = source(0, "body".into());
-    let mut digest = Crc32cHasher::new();
-    digest.update(b"prefix");
+    let mut digest = DocumentsDigest::default();
+    digest.add_bytes(b"prefix");
     let before = digest.finish();
     let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
         write_frame(
@@ -180,8 +180,8 @@ fn spool_encoding_differential_campaign() {
     let mut random = 0x392_5a001_u64;
     let mut actual = Vec::new();
     let mut expected = Vec::new();
-    let mut digest = Crc32cHasher::new();
-    let mut reference = Crc32cHasher::new();
+    let mut digest = DocumentsDigest::default();
+    let mut reference = DocumentsDigest::default();
     for seed in 0..256 {
         random ^= random << 13;
         random ^= random >> 7;
@@ -205,7 +205,7 @@ fn spool_encoding_differential_campaign() {
             interrupted: seed % 2 == 0,
         };
         write_frame(&mut output, &encoding, &mut digest).unwrap();
-        reference.update(&record);
+        reference.add_bytes(&record);
         assert_eq!(digest.finish(), reference.finish(), "seed={seed}");
         assert_eq!(output.bytes, frame, "seed={seed}");
         actual.extend(output.bytes);

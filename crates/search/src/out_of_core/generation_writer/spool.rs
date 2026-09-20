@@ -18,6 +18,7 @@ use crate::build_memory::{AdmittedDocument, BuildMemory, SPOOL_BUFFER_BYTES};
 use crate::checksum_bytes;
 use crate::document_encoding::DocumentEncoding;
 use crate::error::{HawDBError, Result};
+use crate::lexical_projection::DocumentsDigest;
 use crate::SearchDocument;
 use hawdb_core::RuntimeTaskContext;
 use hawdb_integrity::Crc32cHasher;
@@ -32,13 +33,11 @@ static GENERATION_WRITER_SEQUENCE: AtomicU64 = AtomicU64::new(0);
 
 struct FrameDigests {
     record: Crc32cHasher,
-    documents: Crc32cHasher,
 }
 
 impl Write for FrameDigests {
     fn write(&mut self, bytes: &[u8]) -> io::Result<usize> {
         self.record.update(bytes);
-        self.documents.update(bytes);
         Ok(bytes.len())
     }
 
@@ -52,7 +51,7 @@ impl Write for FrameDigests {
 pub(super) fn write_frame(
     output: &mut impl Write,
     encoding: &DocumentEncoding<'_>,
-    documents_digest: &mut Crc32cHasher,
+    documents_digest: &mut DocumentsDigest,
 ) -> Result<()> {
     write_frame_inner(output, encoding, documents_digest, None)
 }
@@ -60,7 +59,7 @@ pub(super) fn write_frame(
 pub(super) fn write_frame_with_context(
     output: &mut impl Write,
     encoding: &DocumentEncoding<'_>,
-    documents_digest: &mut Crc32cHasher,
+    documents_digest: &mut DocumentsDigest,
     memory: &BuildMemory,
     task: &RuntimeTaskContext,
 ) -> Result<()> {
@@ -74,7 +73,7 @@ pub(super) fn write_frame_with_context(
 fn write_frame_inner(
     output: &mut impl Write,
     encoding: &DocumentEncoding<'_>,
-    documents_digest: &mut Crc32cHasher,
+    documents_digest: &mut DocumentsDigest,
     task: Option<&RuntimeTaskContext>,
 ) -> Result<()> {
     // The existing format places the checksum before the payload. A bounded
@@ -82,7 +81,6 @@ fn write_frame_inner(
     // borrowed source cannot change between the two encoding passes.
     let mut digests = FrameDigests {
         record: Crc32cHasher::new(),
-        documents: *documents_digest,
     };
     encoding.write_to(&mut CheckedWriter::new(&mut digests, task))?;
     let mut output = CheckedWriter::new(output, task);
@@ -90,7 +88,7 @@ fn write_frame_inner(
     output.write_all(&digests.record.finish().to_le_bytes())?;
     encoding.write_to(&mut output)?;
     // Failed or partial writes must not commit a new logical stream identity.
-    *documents_digest = digests.documents;
+    documents_digest.add_record(digests.record.finish(), encoding.len() as u64);
     Ok(())
 }
 

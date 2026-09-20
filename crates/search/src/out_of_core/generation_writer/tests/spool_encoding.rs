@@ -30,7 +30,7 @@ fn public_generation_spools_without_record_materialization_and_reopens() {
         .collect::<Vec<_>>();
     let mut writer = SearchOutOfCoreGenerationWriter::create(&root, Default::default()).unwrap();
     let mut expected = SPOOL_HEADER.to_vec();
-    let mut digest = Crc32cHasher::new();
+    let mut digest = DocumentsDigest::default();
     let mut largest_record = 0;
     for document in &documents {
         let record = legacy_encode(document);
@@ -38,7 +38,7 @@ fn public_generation_spools_without_record_materialization_and_reopens() {
         expected.extend_from_slice(&(record.len() as u64).to_le_bytes());
         expected.extend_from_slice(&checksum_bytes(record.as_bytes()).to_le_bytes());
         expected.extend_from_slice(record.as_bytes());
-        digest.update(record.as_bytes());
+        digest.add_bytes(record.as_bytes());
         let allocated = ENCODING_ATTEMPTS.get();
         let streamed = STREAMING_ATTEMPTS.get();
         writer.push(document.clone()).unwrap();
@@ -54,6 +54,14 @@ fn public_generation_spools_without_record_materialization_and_reopens() {
     assert!(largest_read > 0);
     assert!(largest_read <= 8192, "unbounded spool read: {largest_read}");
     assert_eq!(report.documents_digest, digest.finish());
+    let expected_documents = documents
+        .iter()
+        .map(|document| (document.id.clone(), document.clone()))
+        .collect();
+    assert_eq!(
+        report.documents_digest,
+        crate::lexical_projection::documents_digest(&expected_documents)
+    );
     assert_eq!(report.spool_bytes, expected.len() as u64);
     assert_eq!(report.document_count, documents.len());
     assert_eq!(report.peak_record_bytes, largest_record);
@@ -96,7 +104,7 @@ fn spool_write_and_deferred_flush_failures_preserve_the_active_generation() {
             assert_eq!(writer.document_count, 0);
             assert_eq!(
                 writer.documents_digest.finish(),
-                Crc32cHasher::new().finish()
+                DocumentsDigest::default().finish()
             );
             assert!(writer
                 .push(document(2))
