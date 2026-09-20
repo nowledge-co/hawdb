@@ -3649,7 +3649,7 @@ mod tests {
             .unwrap_err();
         assert!(memory_error
             .to_string()
-            .contains("admitted 0 score entries"));
+            .contains("uniqueness check exceeds the admitted working memory"));
 
         let cancellation = crate::RuntimeCancellationToken::new();
         let task_context = crate::RuntimeTaskContext::without_deadline(cancellation.clone());
