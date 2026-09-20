@@ -58,6 +58,7 @@ fn hydration_retains_one_decoded_document_instead_of_the_segment() {
         reader
             .segment_for_document(&expected.id)
             .unwrap()
+            .1
             .document_count
             > 1
     );
@@ -411,8 +412,15 @@ fn public_hydration_rejects_damaged_tail_without_writing_artifacts() {
     writer.push(document(1)).unwrap();
     writer.finish().unwrap();
     let reader = SearchOutOfCoreReader::open(&root).unwrap();
-    assert_eq!(reader.segment.descriptor.segments.len(), 1);
-    let path = root.join(&reader.manifest.primary_segment().payload_file);
+    assert_eq!(reader.primary_segment().descriptor.segments.len(), 1);
+    let path = root.join(
+        &reader
+            .manifest
+            .segments
+            .first()
+            .expect("manifest has a segment")
+            .payload_file,
+    );
     let valid = fs::read(&path).unwrap();
     let mut damaged = valid.clone();
     *damaged.last_mut().unwrap() ^= 1;

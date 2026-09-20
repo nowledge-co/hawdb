@@ -197,7 +197,14 @@ fn delta_context_corrupt_base_never_publishes_partial_spool() {
     use std::io::{Seek, SeekFrom, Write};
     let root = Fixture::new();
     let reader = SearchOutOfCoreReader::open(&root.0).unwrap();
-    let path = root.0.join(&reader.manifest.primary_segment().payload_file);
+    let path = root.0.join(
+        &reader
+            .manifest
+            .segments
+            .first()
+            .expect("manifest has a segment")
+            .payload_file,
+    );
     let bytes = std::fs::read(&path).unwrap();
     let mut file = std::fs::OpenOptions::new().write(true).open(&path).unwrap();
     file.seek(SeekFrom::End(-1)).unwrap();

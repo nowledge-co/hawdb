@@ -86,6 +86,7 @@ struct Selection {
 impl SearchOutOfCoreReader {
     pub(super) fn read_selected_hydration_segment(
         &self,
+        artifact: &super::SearchOutOfCoreSegmentReader,
         segment: &SearchSegmentDescriptorEntry,
         ids: &BTreeSet<String>,
         remaining_bytes: u64,
@@ -95,7 +96,7 @@ impl SearchOutOfCoreReader {
             .payload_range
             .ok_or_else(|| invalid("segment has no payload range"))?;
         let input = RangeReader {
-            file: &self.segment.payload,
+            file: &artifact.payload,
             offset: range.offset,
             remaining: range.length,
         };
