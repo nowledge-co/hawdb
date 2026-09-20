@@ -54,6 +54,7 @@ mod generation_writer;
 #[cfg(test)]
 pub(crate) use generation_writer::analyzer_read_evidence;
 mod hydration;
+mod mutation_run;
 mod publish_lease;
 mod vector_serving;
 pub use generation_writer::{
@@ -81,6 +82,8 @@ pub struct SearchOutOfCoreConfig {
     pub max_compressed_segment_bytes: NonZeroU64,
     pub max_uncompressed_segment_bytes: NonZeroU64,
     pub max_descriptor_bytes: NonZeroU64,
+    /// Caller-selected bound for one decoded mutation-run artifact.
+    pub max_mutation_run_bytes: NonZeroU64,
     /// Caller-selected encoded lexical manifest limit, including private decoding.
     /// Prepared generation updates inherit this limit and require it to fit `isize`.
     pub max_lexical_manifest_bytes: NonZeroU64,
@@ -103,6 +106,7 @@ impl Default for SearchOutOfCoreConfig {
             max_compressed_segment_bytes: NonZeroU64::new(64 * 1024 * 1024).unwrap(),
             max_uncompressed_segment_bytes: NonZeroU64::new(256 * 1024 * 1024).unwrap(),
             max_descriptor_bytes: NonZeroU64::new(256 * 1024 * 1024).unwrap(),
+            max_mutation_run_bytes: NonZeroU64::new(64 * 1024 * 1024).unwrap(),
             max_lexical_manifest_bytes: NonZeroU64::new(DEFAULT_MAX_MANIFEST_BYTES).unwrap(),
             max_candidate_spill_bytes: NonZeroU64::new(4 * 1024 * 1024 * 1024).unwrap(),
             max_candidate_block_bytes: NonZeroU64::new(16 * 1024 * 1024).unwrap(),
@@ -181,6 +185,9 @@ pub struct SearchOutOfCoreReader {
     analyzer_lexicon: SearchAnalyzerLexicon,
     manifest: SearchOutOfCoreManifestBody,
     segments: Vec<SearchOutOfCoreSegmentReader>,
+    // Mutation runs are admitted and validated at open. Serving consumes this
+    // closure only after the shared visibility path is installed.
+    _mutation_runs: Vec<mutation_run::SearchMutationRun>,
     lexical_term_policy: SearchLexicalTermPolicy,
     runtime_capabilities: RuntimeCapabilities,
 }
@@ -215,6 +222,8 @@ struct SearchOutOfCoreManifestBody<S = String> {
     format: S,
     generation: u64,
     segments: Vec<SearchOutOfCoreSegmentManifest<S>>,
+    #[serde(default)]
+    mutation_runs: Vec<SearchOutOfCoreMutationRunManifest<S>>,
     document_count: usize,
     documents_digest: u64,
     source_graph_commit_epoch: Option<u64>,
@@ -267,6 +276,22 @@ struct SearchOutOfCoreSegmentManifest<S = String> {
     document_count: usize,
     documents_digest: u64,
     source_graph_commit_epoch: Option<u64>,
+}
+
+/// One immutable mutation artifact selected by the active manifest.
+///
+/// The artifact carries the target-specific retractions that will later drive
+/// shared visibility and live corpus statistics. Its identity remains separate
+/// from content segments because a delete may publish no replacement content.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(deny_unknown_fields, bound(deserialize = "S: Deserialize<'de>"))]
+struct SearchOutOfCoreMutationRunManifest<S = String> {
+    generation: u64,
+    file: S,
+    len: u64,
+    checksum: u64,
+    entry_count: usize,
+    analyzer_digest: u64,
 }
 
 #[derive(Debug, Serialize, Deserialize)]
@@ -391,14 +416,14 @@ impl<S: AsRef<str>> SearchOutOfCoreManifestBody<S> {
             ));
         }
         let mut ids = BTreeSet::new();
-        let mut document_count = 0usize;
+        let mut content_document_count = 0usize;
         for segment in &self.segments {
             if !ids.insert(segment.segment_id) {
                 return Err(HawDBError::Storage(
                     "search out-of-core manifest has duplicate segment ids".to_string(),
                 ));
             }
-            document_count = document_count
+            content_document_count = content_document_count
                 .checked_add(segment.document_count)
                 .ok_or_else(|| {
                     HawDBError::Storage(
@@ -407,9 +432,41 @@ impl<S: AsRef<str>> SearchOutOfCoreManifestBody<S> {
                 })?;
             segment.validate_names()?;
         }
-        if document_count != self.document_count {
+        let mut mutation_generations = BTreeSet::new();
+        for run in &self.mutation_runs {
+            if run.generation > self.generation || !mutation_generations.insert(run.generation) {
+                return Err(HawDBError::Storage(
+                    "search out-of-core manifest has an invalid mutation-run generation"
+                        .to_string(),
+                ));
+            }
+            run.validate_names()?;
+        }
+        if self.document_count > content_document_count
+            || (self.mutation_runs.is_empty() && content_document_count != self.document_count)
+        {
             return Err(HawDBError::Storage(
-                "search out-of-core manifest document count does not match its segment set"
+                "search out-of-core manifest document count does not match its artifact closure"
+                    .to_string(),
+            ));
+        }
+        Ok(())
+    }
+}
+
+impl<S: AsRef<str>> SearchOutOfCoreMutationRunManifest<S> {
+    fn validate_names(&self) -> Result<()> {
+        if self.generation == 0 || self.len == 0 || self.entry_count == 0 {
+            return Err(HawDBError::Storage(
+                "search out-of-core mutation-run manifest metadata is invalid".to_string(),
+            ));
+        }
+        let name = self.file.as_ref();
+        if Path::new(name).file_name().and_then(|value| value.to_str()) != Some(name)
+            || name != mutation_run::artifact_file(self.generation)
+        {
+            return Err(HawDBError::Storage(
+                "search out-of-core manifest contains an invalid mutation-run artifact name"
                     .to_string(),
             ));
         }
@@ -807,6 +864,19 @@ impl SearchOutOfCoreReader {
                 )
             })
             .collect::<Result<Vec<_>>>()?;
+        let mutation_runs = manifest
+            .mutation_runs
+            .iter()
+            .map(|run| {
+                mutation_run::SearchMutationRun::open(
+                    &root,
+                    run,
+                    config.max_mutation_run_bytes.get(),
+                    lexical_analyzer_digest(&analyzer_lexicon),
+                )
+            })
+            .collect::<Result<Vec<_>>>()?;
+        mutation_run::validate_closure(&manifest, &mutation_runs)?;
 
         Ok(Self {
             root,
@@ -814,6 +884,7 @@ impl SearchOutOfCoreReader {
             analyzer_lexicon,
             manifest,
             segments,
+            _mutation_runs: mutation_runs,
             lexical_term_policy,
             runtime_capabilities: crate::compiled_runtime_capabilities(),
         })
@@ -2347,6 +2418,13 @@ pub(super) fn published_artifact_generations(
             rabitq_generations.insert(artifact.generation);
         }
     }
+    out_of_core_generations.extend(
+        reader
+            .manifest
+            .mutation_runs
+            .iter()
+            .map(|run| run.generation),
+    );
     Ok(Some(PublishedArtifactGenerations {
         active_generation: reader.generation(),
         lexical_generations,
@@ -2442,6 +2520,7 @@ pub(super) fn publish_out_of_core_projection(
             documents_digest: lexical_documents_digest(&index.documents),
             source_graph_commit_epoch: index.source_graph_commit_epoch,
         }],
+        mutation_runs: Vec::new(),
         document_count: index.documents.len(),
         documents_digest: lexical_documents_digest(&index.documents),
         source_graph_commit_epoch: index.source_graph_commit_epoch,
@@ -3990,6 +4069,129 @@ mod tests {
             .unwrap(),
         )
         .unwrap();
+    }
+
+    fn install_delete_mutation_run(
+        path: &Path,
+        document: &SearchDocument,
+        target_segment_id: u64,
+        run_generation: u64,
+    ) {
+        let manifest_path = path.join(OUT_OF_CORE_MANIFEST_FILE);
+        let envelope: SearchOutOfCoreManifestEnvelope =
+            serde_json::from_slice(&fs::read(&manifest_path).unwrap()).unwrap();
+        let mut manifest = envelope.body;
+        manifest.generation = run_generation;
+        let analyzer_digest = lexical_analyzer_digest(&SearchAnalyzerLexicon::default());
+        let document_digest =
+            lexical_documents_digest(&BTreeMap::from([(document.id.clone(), document.clone())]));
+        let run_body = mutation_run::SearchMutationRunBody::new(
+            manifest.generation,
+            analyzer_digest,
+            vec![mutation_run::SearchMutationRunEntry {
+                document_id: document.id.clone(),
+                target_segment_id,
+                operation: mutation_run::SearchMutationOperation::Delete,
+                retraction: mutation_run::SearchMutationRetraction {
+                    documents_digest: document_digest,
+                    lexical_document_len: 5,
+                    unique_terms: vec!["graph".to_string(), "memory".to_string()],
+                },
+            }],
+        )
+        .unwrap();
+        let run_bytes = run_body.encode().unwrap();
+        let run_file = mutation_run::artifact_file(manifest.generation);
+        fs::write(path.join(&run_file), &run_bytes).unwrap();
+        manifest.mutation_runs = vec![SearchOutOfCoreMutationRunManifest {
+            generation: manifest.generation,
+            file: run_file,
+            len: run_bytes.len() as u64,
+            checksum: checksum_bytes(&run_bytes),
+            entry_count: 1,
+            analyzer_digest,
+        }];
+        manifest.document_count = manifest.document_count.checked_sub(1).unwrap();
+        manifest.documents_digest = crate::lexical_projection::DocumentsDigest::replace(
+            manifest.documents_digest,
+            document_digest,
+            0,
+        );
+        let body_bytes = serde_json::to_vec(&manifest).unwrap();
+        fs::write(
+            manifest_path,
+            serde_json::to_vec(&SearchOutOfCoreManifestEnvelope {
+                body: manifest,
+                checksum: checksum_bytes(&body_bytes),
+            })
+            .unwrap(),
+        )
+        .unwrap();
+    }
+
+    #[test]
+    fn out_of_core_reader_validates_mutation_run_artifact_closure() {
+        let path = test_dir("mutation-run-artifact-closure");
+        let document = document(0, "team");
+        let mut index = SearchIndex::open(&path).unwrap();
+        index.upsert(document.clone()).unwrap();
+        index.checkpoint().unwrap();
+        install_delete_mutation_run(&path, &document, 0, 2);
+
+        // This cut validates publication state only. Shared serving visibility
+        // is installed with the mutation writer in the next delivery.
+        let manifest: SearchOutOfCoreManifestEnvelope =
+            serde_json::from_slice(&fs::read(path.join(OUT_OF_CORE_MANIFEST_FILE)).unwrap())
+                .unwrap();
+        let limited = SearchOutOfCoreReader::open_with_config(
+            &path,
+            SearchOutOfCoreConfig {
+                max_mutation_run_bytes: NonZeroU64::new(manifest.body.mutation_runs[0].len - 1)
+                    .unwrap(),
+                ..SearchOutOfCoreConfig::default()
+            },
+        )
+        .unwrap_err();
+        assert!(limited
+            .to_string()
+            .contains("mutation-run artifact exceeds the configured read budget"));
+        assert_eq!(
+            SearchOutOfCoreReader::open(&path).unwrap().document_count(),
+            0
+        );
+        let generations = published_artifact_generations(&path, &SearchAnalyzerLexicon::default())
+            .unwrap()
+            .unwrap();
+        assert_eq!(generations.active_generation, 2);
+        assert_eq!(generations.lexical_generations, BTreeSet::from([1]));
+        assert_eq!(generations.out_of_core_generations, BTreeSet::from([1, 2]));
+
+        fs::write(
+            path.join(&manifest.body.mutation_runs[0].file),
+            b"corrupt mutation run",
+        )
+        .unwrap();
+        let error = SearchOutOfCoreReader::open(&path).unwrap_err();
+        assert!(error
+            .to_string()
+            .contains("mutation-run artifact length or checksum mismatch"));
+        fs::remove_dir_all(path).unwrap();
+    }
+
+    #[test]
+    fn out_of_core_reader_rejects_mutation_runs_targeting_inactive_segments() {
+        let path = test_dir("mutation-run-inactive-target");
+        let document = document(0, "team");
+        let mut index = SearchIndex::open(&path).unwrap();
+        index.upsert(document.clone()).unwrap();
+        index.checkpoint().unwrap();
+        install_delete_mutation_run(&path, &document, 99, 2);
+
+        let error = SearchOutOfCoreReader::open(&path).unwrap_err();
+        assert!(error
+            .to_string()
+            .contains("targets a segment outside the active manifest"));
+        fs::remove_dir_all(path).unwrap();
     }
 
     #[test]
