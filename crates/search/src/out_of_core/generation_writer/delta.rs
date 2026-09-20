@@ -30,6 +30,45 @@ mod input;
 
 pub(super) mod hydration;
 
+#[derive(Debug, Clone, Copy)]
+struct LocalMutationTarget {
+    start: usize,
+    end: usize,
+    first_segment_id: u64,
+    last_segment_id: u64,
+    document_count: usize,
+    documents_digest: u64,
+}
+
+impl LocalMutationTarget {
+    fn active_manifest_update(self, expected_generation: u64) -> ActiveManifestUpdate {
+        if self.end - self.start == 1 {
+            return ActiveManifestUpdate::Replace {
+                expected_generation,
+                segment_id: self.first_segment_id,
+                expected_document_count: self.document_count,
+                expected_documents_digest: self.documents_digest,
+            };
+        }
+        ActiveManifestUpdate::ReplaceRange {
+            expected_generation,
+            first_segment_id: self.first_segment_id,
+            last_segment_id: self.last_segment_id,
+            segment_count: self.end - self.start,
+            expected_document_count: self.document_count,
+            expected_documents_digest: self.documents_digest,
+        }
+    }
+
+    fn action(self) -> &'static str {
+        if self.end - self.start == 1 {
+            "incremental_segment_replace"
+        } else {
+            "incremental_segment_range_replace"
+        }
+    }
+}
+
 #[derive(Debug)]
 pub struct SearchOutOfCoreGenerationUpdate {
     writer: SearchOutOfCoreGenerationWriter,
@@ -133,6 +172,73 @@ impl SearchOutOfCoreGenerationUpdate {
                 _report_memory: report_memory,
             });
         }
+        if let Some(target) = local_mutation_target(reader, &input)? {
+            // An empty artifact has no valid descriptor range. Retain the
+            // established full-generation path until removal is an explicit
+            // manifest operation.
+            if target.document_count > input.deletes.len() {
+                writer.active_manifest_update =
+                    Some(target.active_manifest_update(reader.generation()));
+                let mut deleted_documents = 0usize;
+                let source_read_metrics = hydration::visit_range(
+                    reader,
+                    target.start,
+                    target.end,
+                    &memory,
+                    &task,
+                    &mut |document| {
+                        if input
+                            .upserts
+                            .front()
+                            .is_some_and(|upsert| upsert.id == document.id)
+                        {
+                            writer.push_inner(input.pop_upsert())?;
+                            return Ok(());
+                        }
+                        if input
+                            .deletes
+                            .pop_front_if(|deleted| deleted == &document.id)
+                            .is_some()
+                        {
+                            deleted_documents = deleted_documents.saturating_add(1);
+                            return Ok(());
+                        }
+                        writer.push_inner(document)
+                    },
+                )?;
+                if !input.upserts.is_empty() || !input.deletes.is_empty() {
+                    return Err(HawDBError::Storage(
+                        "search mutation target did not contain its requested document".into(),
+                    ));
+                }
+                let after_document_count = before_document_count
+                    .checked_sub(target.document_count)
+                    .and_then(|count| count.checked_add(writer.document_count))
+                    .ok_or_else(|| {
+                        HawDBError::Storage(
+                            "search document count overflow during local segment update".into(),
+                        )
+                    })?;
+                return Ok(Self {
+                    delta_report: SearchProjectionDeltaReport {
+                        artifact_type: "search_projection".to_string(),
+                        name: "search_projection".to_string(),
+                        action: target.action().to_string(),
+                        before_document_count,
+                        after_document_count,
+                        upserted_documents,
+                        deleted_documents,
+                        operation_count,
+                        source_graph_commit_epoch_before,
+                        source_graph_commit_epoch_after,
+                        source_graph_commit_epoch_updated: epoch_updated,
+                    },
+                    writer,
+                    source_read_metrics,
+                    _report_memory: report_memory,
+                });
+            }
+        }
         let mut deleted_documents = 0usize;
         let source_read_metrics = hydration::visit(reader, &memory, &task, &mut |document| {
             while input
@@ -215,6 +321,67 @@ impl SearchOutOfCoreGenerationUpdate {
         let build_report = self.writer.finish()?;
         Ok((self.delta_report, build_report, self.source_read_metrics))
     }
+}
+
+fn local_mutation_target(
+    reader: &SearchOutOfCoreReader,
+    input: &input::Input,
+) -> Result<Option<LocalMutationTarget>> {
+    let mut target_indices = Vec::new();
+    for document_id in input
+        .upserts
+        .iter()
+        .map(|document| document.id.as_str())
+        .chain(input.deletes.iter().map(String::as_str))
+    {
+        let Some(segment_id) = reader.resolve_mutation_segment(document_id)? else {
+            return Ok(None);
+        };
+        let index = reader
+            .manifest
+            .segments
+            .iter()
+            .position(|segment| segment.segment_id == segment_id)
+            .ok_or_else(|| {
+                HawDBError::Storage(
+                    "search mutation target segment is not in the active manifest".into(),
+                )
+            })?;
+        target_indices.push(index);
+    }
+    target_indices.sort_unstable();
+    target_indices.dedup();
+    let Some(&start) = target_indices.first() else {
+        return Ok(None);
+    };
+    let end = target_indices
+        .last()
+        .and_then(|last| last.checked_add(1))
+        .ok_or_else(|| HawDBError::Storage("search mutation target range overflows".into()))?;
+    if end - start != target_indices.len() {
+        return Ok(None);
+    }
+    let segments = &reader.manifest.segments[start..end];
+    let level = segments[0].level;
+    if segments.iter().any(|segment| segment.level != level) {
+        return Ok(None);
+    }
+    let document_count = segments.iter().try_fold(0usize, |total, segment| {
+        total.checked_add(segment.document_count).ok_or_else(|| {
+            HawDBError::Storage("search mutation target document count overflows".into())
+        })
+    })?;
+    let documents_digest = segments.iter().fold(0u64, |digest, segment| {
+        crate::lexical_projection::DocumentsDigest::combine(digest, segment.documents_digest)
+    });
+    Ok(Some(LocalMutationTarget {
+        start,
+        end,
+        first_segment_id: segments[0].segment_id,
+        last_segment_id: segments[segments.len() - 1].segment_id,
+        document_count,
+        documents_digest,
+    }))
 }
 
 fn validate_delta_ids(

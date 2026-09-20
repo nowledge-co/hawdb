@@ -13,9 +13,11 @@
 // limitations under the License.
 
 use super::*;
+use crate::lexical_projection::DocumentsDigest;
 use crate::{SearchProjectionKind, SearchProjectionRow};
 use hawdb_core::RuntimeMemoryReservation;
 use std::collections::{BTreeMap, BTreeSet};
+use std::fs;
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicUsize, Ordering};
 
@@ -64,6 +66,20 @@ fn delta() -> SearchProjectionDelta {
         source_graph_commit_epoch: Some(19),
         ..Default::default()
     }
+}
+
+fn append(root: &PathBuf, document: SearchProjectionRow) {
+    let reader = SearchOutOfCoreReader::open(root).unwrap();
+    let update = SearchOutOfCoreGenerationWriter::prepare_delta(
+        &reader,
+        SearchProjectionDelta {
+            upserts: vec![document],
+            ..Default::default()
+        },
+        Default::default(),
+    )
+    .unwrap();
+    update.finish().unwrap();
 }
 
 #[test]
@@ -155,17 +171,7 @@ fn non_append_update_retains_the_ordered_base_hydration_path() {
 #[test]
 fn mutation_target_resolution_binds_documents_to_their_manifest_content_segment() {
     let root = Fixture::new();
-    let reader = SearchOutOfCoreReader::open(&root.0).unwrap();
-    let update = SearchOutOfCoreGenerationWriter::prepare_delta(
-        &reader,
-        SearchProjectionDelta {
-            upserts: vec![row("z")],
-            ..Default::default()
-        },
-        Default::default(),
-    )
-    .unwrap();
-    update.finish().unwrap();
+    append(&root.0, row("z"));
 
     let reader = SearchOutOfCoreReader::open(&root.0).unwrap();
     let targets = reader
@@ -192,6 +198,355 @@ fn mutation_target_resolution_binds_documents_to_their_manifest_content_segment(
         targets.targets["memory:z"].document,
         row("z").into_document()
     );
+}
+
+#[test]
+fn replacement_rewrites_only_the_current_content_segment() {
+    let root = Fixture::new();
+    append(&root.0, row("z"));
+    let reader = SearchOutOfCoreReader::open(&root.0).unwrap();
+    let before = reader.manifest.segments.clone();
+    let full_metrics = reader.visit_documents_in_order(&mut |_| Ok(())).unwrap();
+    let mut replacement = row("c");
+    replacement.title = "updated c".to_string();
+    replacement.body = "fresh mutation content".to_string();
+    let expected = replacement.clone().into_document();
+
+    let update = SearchOutOfCoreGenerationWriter::prepare_delta(
+        &reader,
+        SearchProjectionDelta {
+            upserts: vec![replacement],
+            ..Default::default()
+        },
+        Default::default(),
+    )
+    .unwrap();
+    assert_eq!(update.delta_report().action, "incremental_segment_replace");
+    assert_eq!(update.delta_report().before_document_count, 4);
+    assert_eq!(update.delta_report().after_document_count, 4);
+    assert_eq!(update.source_read_metrics().hydrated_documents, 3);
+    assert!(update.source_read_metrics().segment_range_reads < full_metrics.segment_range_reads);
+    assert!(update.source_read_metrics().segment_bytes_read < full_metrics.segment_bytes_read);
+    let (_, build, _) = update.finish().unwrap();
+    assert_eq!(build.document_count, 4);
+
+    let reader = SearchOutOfCoreReader::open(&root.0).unwrap();
+    assert_eq!(reader.manifest.segments.len(), 2);
+    assert_eq!(reader.manifest.segments[0].segment_id, before[0].segment_id);
+    assert_eq!(reader.manifest.segments[0].level, before[0].level);
+    assert_ne!(
+        reader.manifest.segments[0].payload_file,
+        before[0].payload_file
+    );
+    assert_eq!(reader.manifest.segments[1].generation, before[1].generation);
+    assert_eq!(
+        reader.manifest.segments[1].payload_file,
+        before[1].payload_file
+    );
+    let ids = ["a", "c", "e", "z"].map(|id| format!("memory:{id}"));
+    assert_eq!(
+        reader.hydrate_documents(&ids).unwrap().documents,
+        vec![
+            row("a").into_document(),
+            expected,
+            row("e").into_document(),
+            row("z").into_document()
+        ]
+    );
+    #[cfg(feature = "full-text-search")]
+    {
+        let output = reader
+            .search_with_options(
+                "fresh",
+                None,
+                crate::SearchMode::Text,
+                crate::SearchQueryOptions {
+                    limit: 5,
+                    offset: 0,
+                    rank_window: None,
+                    fusion_weights: Default::default(),
+                    metadata_filters: BTreeMap::new(),
+                    policy_epoch: None,
+                },
+            )
+            .unwrap();
+        assert_eq!(output.result.total_hits, 1);
+        assert_eq!(output.result.hits[0].id, "memory:c");
+    }
+}
+
+#[test]
+fn deletion_rewrites_only_the_current_content_segment_and_updates_manifest_identity() {
+    let root = Fixture::new();
+    append(&root.0, row("z"));
+    let reader = SearchOutOfCoreReader::open(&root.0).unwrap();
+    let before = reader.manifest.clone();
+    let full_metrics = reader.visit_documents_in_order(&mut |_| Ok(())).unwrap();
+
+    let update = SearchOutOfCoreGenerationWriter::prepare_delta(
+        &reader,
+        SearchProjectionDelta {
+            deletes: vec!["memory:c".to_string()],
+            ..Default::default()
+        },
+        Default::default(),
+    )
+    .unwrap();
+    assert_eq!(update.delta_report().action, "incremental_segment_replace");
+    assert_eq!(update.delta_report().before_document_count, 4);
+    assert_eq!(update.delta_report().after_document_count, 3);
+    assert_eq!(update.delta_report().deleted_documents, 1);
+    assert_eq!(update.source_read_metrics().hydrated_documents, 3);
+    assert!(update.source_read_metrics().segment_range_reads < full_metrics.segment_range_reads);
+    assert!(update.source_read_metrics().segment_bytes_read < full_metrics.segment_bytes_read);
+    let (_, build, _) = update.finish().unwrap();
+    assert_eq!(build.document_count, 3);
+
+    let reader = SearchOutOfCoreReader::open(&root.0).unwrap();
+    assert_eq!(reader.manifest.segments.len(), 2);
+    assert_eq!(
+        reader.manifest.segments[0].segment_id,
+        before.segments[0].segment_id
+    );
+    assert_eq!(
+        reader.manifest.segments[1].generation,
+        before.segments[1].generation
+    );
+    assert_eq!(
+        reader.manifest.segments[1].payload_file,
+        before.segments[1].payload_file
+    );
+    assert_eq!(
+        reader.manifest.documents_digest,
+        DocumentsDigest::replace(
+            before.documents_digest,
+            before.segments[0].documents_digest,
+            reader.manifest.segments[0].documents_digest,
+        )
+    );
+    let ids = ["a", "e", "z"].map(|id| format!("memory:{id}"));
+    assert_eq!(
+        reader.hydrate_documents(&ids).unwrap().documents,
+        ["a", "e", "z"].map(|id| row(id).into_document())
+    );
+    assert!(reader.hydrate_documents(&["memory:c".to_string()]).is_err());
+}
+
+#[test]
+fn same_segment_batch_replaces_and_deletes_without_hydrating_other_artifacts() {
+    let root = Fixture::new();
+    append(&root.0, row("z"));
+    let reader = SearchOutOfCoreReader::open(&root.0).unwrap();
+    let before = reader.manifest.segments.clone();
+    let full_metrics = reader.visit_documents_in_order(&mut |_| Ok(())).unwrap();
+    let mut replacement = row("a");
+    replacement.body = "batched mutation content".to_string();
+    let expected = replacement.clone().into_document();
+
+    let update = SearchOutOfCoreGenerationWriter::prepare_delta(
+        &reader,
+        SearchProjectionDelta {
+            upserts: vec![replacement],
+            deletes: vec!["memory:c".to_string()],
+            ..Default::default()
+        },
+        Default::default(),
+    )
+    .unwrap();
+    assert_eq!(update.delta_report().action, "incremental_segment_replace");
+    assert_eq!(update.delta_report().before_document_count, 4);
+    assert_eq!(update.delta_report().after_document_count, 3);
+    assert_eq!(update.delta_report().upserted_documents, 1);
+    assert_eq!(update.delta_report().deleted_documents, 1);
+    assert_eq!(update.source_read_metrics().hydrated_documents, 3);
+    assert!(update.source_read_metrics().segment_range_reads < full_metrics.segment_range_reads);
+    assert!(update.source_read_metrics().segment_bytes_read < full_metrics.segment_bytes_read);
+    update.finish().unwrap();
+
+    let reader = SearchOutOfCoreReader::open(&root.0).unwrap();
+    assert_eq!(reader.manifest.segments[0].segment_id, before[0].segment_id);
+    assert_eq!(reader.manifest.segments[1].generation, before[1].generation);
+    let ids = ["a", "e", "z"].map(|id| format!("memory:{id}"));
+    assert_eq!(
+        reader.hydrate_documents(&ids).unwrap().documents,
+        vec![expected, row("e").into_document(), row("z").into_document()]
+    );
+}
+
+#[test]
+fn contiguous_segment_batch_replaces_only_its_exact_artifact_range() {
+    let root = Fixture::new();
+    append(&root.0, row("y"));
+    append(&root.0, row("z"));
+    let reader = SearchOutOfCoreReader::open(&root.0).unwrap();
+    let before = reader.manifest.segments.clone();
+    let full_metrics = reader.visit_documents_in_order(&mut |_| Ok(())).unwrap();
+    let mut first = row("a");
+    first.body = "range mutation first".to_string();
+    let mut second = row("y");
+    second.body = "range mutation second".to_string();
+    let expected_first = first.clone().into_document();
+    let expected_second = second.clone().into_document();
+
+    let update = SearchOutOfCoreGenerationWriter::prepare_delta(
+        &reader,
+        SearchProjectionDelta {
+            upserts: vec![first, second],
+            ..Default::default()
+        },
+        Default::default(),
+    )
+    .unwrap();
+    assert_eq!(
+        update.delta_report().action,
+        "incremental_segment_range_replace"
+    );
+    assert_eq!(update.delta_report().before_document_count, 5);
+    assert_eq!(update.delta_report().after_document_count, 5);
+    assert_eq!(update.source_read_metrics().hydrated_documents, 4);
+    assert!(update.source_read_metrics().segment_range_reads < full_metrics.segment_range_reads);
+    assert!(update.source_read_metrics().segment_bytes_read < full_metrics.segment_bytes_read);
+    update.finish().unwrap();
+
+    let reader = SearchOutOfCoreReader::open(&root.0).unwrap();
+    assert_eq!(reader.manifest.segments.len(), 2);
+    assert_eq!(
+        reader.manifest.segments[0].segment_id,
+        before
+            .iter()
+            .map(|segment| segment.segment_id)
+            .max()
+            .unwrap()
+            + 1
+    );
+    assert_eq!(reader.manifest.segments[0].level, before[0].level);
+    assert_eq!(reader.manifest.segments[1].segment_id, before[2].segment_id);
+    assert_eq!(reader.manifest.segments[1].generation, before[2].generation);
+    let ids = ["a", "c", "e", "y", "z"].map(|id| format!("memory:{id}"));
+    assert_eq!(
+        reader.hydrate_documents(&ids).unwrap().documents,
+        vec![
+            expected_first,
+            row("c").into_document(),
+            row("e").into_document(),
+            expected_second,
+            row("z").into_document(),
+        ]
+    );
+}
+
+#[test]
+fn noncontiguous_segment_batch_retains_the_full_generation_path() {
+    let root = Fixture::new();
+    append(&root.0, row("y"));
+    append(&root.0, row("z"));
+    let reader = SearchOutOfCoreReader::open(&root.0).unwrap();
+    let full_metrics = reader.visit_documents_in_order(&mut |_| Ok(())).unwrap();
+
+    let update = SearchOutOfCoreGenerationWriter::prepare_delta(
+        &reader,
+        SearchProjectionDelta {
+            upserts: vec![row("a"), row("z")],
+            ..Default::default()
+        },
+        Default::default(),
+    )
+    .unwrap();
+    assert_eq!(update.delta_report().action, "bounded_generation_update");
+    assert_eq!(update.source_read_metrics().hydrated_documents, 5);
+    assert_eq!(
+        update.source_read_metrics().segment_range_reads,
+        full_metrics.segment_range_reads
+    );
+    assert_eq!(
+        update.source_read_metrics().segment_bytes_read,
+        full_metrics.segment_bytes_read
+    );
+}
+
+#[test]
+fn local_replacement_rejects_a_newer_active_generation() {
+    let root = Fixture::new();
+    append(&root.0, row("z"));
+    let reader = SearchOutOfCoreReader::open(&root.0).unwrap();
+    let update = SearchOutOfCoreGenerationWriter::prepare_delta(
+        &reader,
+        SearchProjectionDelta {
+            upserts: vec![row("c")],
+            ..Default::default()
+        },
+        Default::default(),
+    )
+    .unwrap();
+
+    append(&root.0, row("zz"));
+    let active = fs::read(root.0.join(crate::out_of_core::OUT_OF_CORE_MANIFEST_FILE)).unwrap();
+    let error = update.finish().unwrap_err();
+    assert!(error.to_string().contains("base changed"), "{error}");
+    assert_eq!(
+        fs::read(root.0.join(crate::out_of_core::OUT_OF_CORE_MANIFEST_FILE)).unwrap(),
+        active
+    );
+    assert_no_stage(&root.0);
+}
+
+#[test]
+fn contiguous_segment_range_replacement_rejects_a_newer_active_generation() {
+    let root = Fixture::new();
+    append(&root.0, row("y"));
+    append(&root.0, row("z"));
+    let reader = SearchOutOfCoreReader::open(&root.0).unwrap();
+    let update = SearchOutOfCoreGenerationWriter::prepare_delta(
+        &reader,
+        SearchProjectionDelta {
+            upserts: vec![row("a"), row("y")],
+            ..Default::default()
+        },
+        Default::default(),
+    )
+    .unwrap();
+    assert_eq!(
+        update.delta_report().action,
+        "incremental_segment_range_replace"
+    );
+
+    append(&root.0, row("zz"));
+    let active = fs::read(root.0.join(crate::out_of_core::OUT_OF_CORE_MANIFEST_FILE)).unwrap();
+    let error = update.finish().unwrap_err();
+    assert!(error.to_string().contains("base changed"), "{error}");
+    assert_eq!(
+        fs::read(root.0.join(crate::out_of_core::OUT_OF_CORE_MANIFEST_FILE)).unwrap(),
+        active
+    );
+    assert_no_stage(&root.0);
+}
+
+#[test]
+fn cancelled_local_replacement_preserves_the_active_manifest() {
+    let root = Fixture::new();
+    append(&root.0, row("z"));
+    let reader = SearchOutOfCoreReader::open(&root.0).unwrap();
+    let before = fs::read(root.0.join(crate::out_of_core::OUT_OF_CORE_MANIFEST_FILE)).unwrap();
+    let task = RuntimeTaskContext::default();
+    let update = SearchOutOfCoreGenerationWriter::prepare_delta_with_context(
+        &reader,
+        SearchProjectionDelta {
+            upserts: vec![row("c")],
+            ..Default::default()
+        },
+        Default::default(),
+        task.clone(),
+    )
+    .unwrap();
+    assert!(task.cancellation().cancel());
+
+    let error = update.finish().unwrap_err();
+    assert!(error.to_string().contains("cancel"), "{error}");
+    assert_eq!(
+        fs::read(root.0.join(crate::out_of_core::OUT_OF_CORE_MANIFEST_FILE)).unwrap(),
+        before
+    );
+    assert_no_stage(&root.0);
 }
 
 #[test]

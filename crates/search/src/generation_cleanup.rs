@@ -281,6 +281,7 @@ impl<S: AsRef<str>> CleanupCandidate<S> {
             "search_projection_metadata_payloads.",
             "search_projection_vector_payloads.",
             "search_projection_out_of_core_layout.",
+            "search_projection_mutation_run.",
         ];
         let (artifact_name, quarantined) = match quarantined_artifact_name(name.as_ref()) {
             Some(artifact_name) => (artifact_name, true),
