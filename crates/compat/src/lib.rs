@@ -424,7 +424,7 @@ impl ExpectedErrorClass {
             HawDBError::Storage(_)
             | HawDBError::StorageIntegrity(_)
             | HawDBError::AppendSequenceExhausted { .. } => Self::Storage,
-            HawDBError::Execution(_) => Self::Execution,
+            HawDBError::Execution(_) | HawDBError::TransactionConflict { .. } => Self::Execution,
             HawDBError::CapabilityUnavailable { .. } => Self::CapabilityUnavailable,
         }
     }

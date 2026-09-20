@@ -565,6 +565,7 @@ struct MutationCommitOptions<'a> {
     relational: Option<RelationalTransaction>,
     append: Option<AppendTransaction>,
     preserve_single_create_wal: bool,
+    mvcc_read_epoch: Option<u64>,
     captured_graph_ops: Option<&'a mut Vec<WalOp>>,
 }
 
@@ -683,6 +684,7 @@ pub struct GraphStore {
     next_node_id: u64,
     next_rel_id: u64,
     commit_epoch: u64,
+    version_index: hawdb_storage::version::VersionIndex,
     nodes: CowSegmentedMap<NodeId, NodeRecord>,
     relationships: CowSegmentedMap<RelId, RelRecord>,
     basic_statistics: BasicGraphStatistics,
@@ -1427,6 +1429,7 @@ impl GraphStore {
             next_node_id: 0,
             next_rel_id: 0,
             commit_epoch: 0,
+            version_index: hawdb_storage::version::VersionIndex::default(),
             nodes: CowSegmentedMap::default(),
             relationships: CowSegmentedMap::default(),
             basic_statistics: BasicGraphStatistics::default(),
@@ -1808,6 +1811,7 @@ impl GraphStore {
             next_node_id: self.next_node_id,
             next_rel_id: self.next_rel_id,
             commit_epoch: self.commit_epoch,
+            version_index: self.version_index.clone(),
             nodes: self.nodes.clone(),
             relationships: self.relationships.clone(),
             basic_statistics: self.basic_statistics.clone(),

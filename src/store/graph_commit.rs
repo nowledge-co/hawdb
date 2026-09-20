@@ -15,7 +15,8 @@
 //! Mutation transaction commit paths and out-of-core delta admission for [`GraphStore`].
 
 use super::*;
-use hawdb_storage::RelationalError;
+use hawdb_storage::version::{VersionConflict, VersionKey, VersionWriteSet};
+use hawdb_storage::{wal::WalOp, RelationalError};
 
 impl GraphStore {
     pub fn commit_mutations(
@@ -101,12 +102,8 @@ impl GraphStore {
         let read_only = transaction.ops.is_empty()
             && relational_transaction.writes.is_empty()
             && append_transaction.writes.is_empty();
-        if !read_only && !allow_stale_rebase && self.commit_epoch != transaction.base_commit_epoch {
-            return Err(HawDBError::Execution(format!(
-                "transaction snapshot is stale: started at commit epoch {}, current epoch is {}",
-                transaction.base_commit_epoch, self.commit_epoch
-            )));
-        }
+        let mvcc_read_epoch =
+            (!read_only && !allow_stale_rebase).then_some(transaction.base_commit_epoch);
         let ops = compact_transaction_graph_ops(transaction.ops);
         self.commit_prepared_mutation_ops(
             catalog,
@@ -117,6 +114,7 @@ impl GraphStore {
             MutationCommitOptions {
                 relational: Some(relational_transaction),
                 append: Some(append_transaction),
+                mvcc_read_epoch,
                 ..MutationCommitOptions::default()
             },
         )
@@ -1758,6 +1756,7 @@ impl GraphStore {
             relational: relational_transaction,
             append: append_transaction,
             preserve_single_create_wal,
+            mvcc_read_epoch,
             captured_graph_ops,
         } = options;
         self.ensure_usable()?;
@@ -1882,6 +1881,10 @@ impl GraphStore {
                 append_mutation_outcomes,
             });
         }
+        let version_writes = self.version_writes_for_ops(&ops)?;
+        if let Some(read_epoch) = mvcc_read_epoch {
+            self.validate_version_writes(&version_writes, read_epoch)?;
+        }
         let staged_relational_index_publication = self.stage_relational_index_live_publication(
             next_commit_epoch,
             staged_relational_index_capture,
@@ -1930,6 +1933,7 @@ impl GraphStore {
             }
         }
         self.commit_epoch = next_commit_epoch;
+        self.version_index.apply(&version_writes, next_commit_epoch);
         self.publish_relational_index_live_view(staged_relational_index_publication);
         self.publish_relational_row_live_view(staged_relational_row_publication);
         Ok(MutationSummary {
@@ -1937,6 +1941,47 @@ impl GraphStore {
             relational_mutation_outcomes,
             append_mutation_outcomes,
         })
+    }
+
+    fn validate_version_writes(&self, writes: &VersionWriteSet, read_epoch: u64) -> Result<()> {
+        if let Some(conflict) = self.version_index.first_conflict(writes, read_epoch) {
+            return Err(transaction_conflict_error(read_epoch, conflict));
+        }
+        for key in [VersionKey::Database, VersionKey::Schema] {
+            if writes.contains_key(&key) && self.commit_epoch > read_epoch {
+                return Err(transaction_conflict_error(
+                    read_epoch,
+                    VersionConflict {
+                        key,
+                        committed_epoch: self.commit_epoch,
+                    },
+                ));
+            }
+            if let Some(stamp) = self.version_index.stamp(&key)
+                && stamp.commit_epoch > read_epoch
+            {
+                return Err(transaction_conflict_error(
+                    read_epoch,
+                    VersionConflict {
+                        key,
+                        committed_epoch: stamp.commit_epoch,
+                    },
+                ));
+            }
+        }
+        Ok(())
+    }
+
+    fn version_writes_for_ops(&self, ops: &[WalOp]) -> Result<VersionWriteSet> {
+        let mut writes = VersionWriteSet::default();
+        let mut created_relationships = BTreeMap::new();
+        collect_version_writes(
+            &mut writes,
+            ops,
+            &mut created_relationships,
+            &self.relationships,
+        )?;
+        Ok(writes)
     }
 
     fn apply_pending_node_assignments(
@@ -2329,6 +2374,141 @@ impl GraphStore {
         }
         Ok(())
     }
+}
+
+fn transaction_conflict_error(read_epoch: u64, conflict: VersionConflict) -> HawDBError {
+    HawDBError::TransactionConflict {
+        read_epoch,
+        committed_epoch: conflict.committed_epoch,
+        key: version_key_kind(&conflict.key).to_string(),
+    }
+}
+
+fn version_key_kind(key: &VersionKey) -> &'static str {
+    match key {
+        VersionKey::Database => "database",
+        VersionKey::Schema => "schema",
+        VersionKey::GraphNode(_) => "graph_node",
+        VersionKey::GraphRelationship(_) => "graph_relationship",
+        VersionKey::GraphAdjacency { .. } => "graph_adjacency",
+        VersionKey::RelationalRow { .. } => "relational_row",
+        VersionKey::RelationalIndex { .. } => "relational_index",
+        VersionKey::ForeignKey { .. } => "foreign_key",
+        VersionKey::AppendTable(_) => "append_table",
+    }
+}
+
+fn collect_version_writes(
+    writes: &mut VersionWriteSet,
+    ops: &[WalOp],
+    created_relationships: &mut BTreeMap<RelId, (NodeId, NodeId)>,
+    relationships: &CowSegmentedMap<RelId, RelRecord>,
+) -> Result<()> {
+    for op in ops {
+        match op {
+            WalOp::CreateNode { id, .. } | WalOp::SetNodeProperty { id, .. } => {
+                record_live_version(writes, VersionKey::GraphNode(*id))?;
+            }
+            WalOp::DeleteNode { id } => {
+                record_tombstone_version(writes, VersionKey::GraphNode(*id))?;
+            }
+            WalOp::CreateRelationship {
+                id, source, target, ..
+            } => {
+                created_relationships.insert(*id, (*source, *target));
+                record_live_version(writes, VersionKey::GraphRelationship(*id))?;
+                record_live_version(
+                    writes,
+                    VersionKey::GraphAdjacency {
+                        node_id: *source,
+                        direction: AdjacencyDirection::Outgoing,
+                    },
+                )?;
+                record_live_version(
+                    writes,
+                    VersionKey::GraphAdjacency {
+                        node_id: *target,
+                        direction: AdjacencyDirection::Incoming,
+                    },
+                )?;
+            }
+            WalOp::SetRelationshipProperty { id, .. } => {
+                record_live_version(writes, VersionKey::GraphRelationship(*id))?;
+            }
+            WalOp::DeleteRelationship { id } => {
+                record_tombstone_version(writes, VersionKey::GraphRelationship(*id))?;
+                let endpoints = created_relationships.remove(id).or_else(|| {
+                    relationships
+                        .get(id)
+                        .map(|relationship| (relationship.source, relationship.target))
+                });
+                if let Some((source, target)) = endpoints {
+                    record_live_version(
+                        writes,
+                        VersionKey::GraphAdjacency {
+                            node_id: source,
+                            direction: AdjacencyDirection::Outgoing,
+                        },
+                    )?;
+                    record_live_version(
+                        writes,
+                        VersionKey::GraphAdjacency {
+                            node_id: target,
+                            direction: AdjacencyDirection::Incoming,
+                        },
+                    )?;
+                } else {
+                    // A cold out-of-core relationship has not been hydrated at
+                    // validation time, so its endpoint footprint is unknown.
+                    // The coarse stamp preserves correctness until the exact
+                    // durable identity map is available.
+                    record_live_version(writes, VersionKey::Database)?;
+                }
+            }
+            WalOp::CreateNodeLabel { .. }
+            | WalOp::CreateRelationshipType { .. }
+            | WalOp::CreateNodeTable { .. }
+            | WalOp::CreateRelationshipTable { .. }
+            | WalOp::CreateProperty { .. }
+            | WalOp::AlterTableState { .. }
+            | WalOp::AlterPropertyState { .. }
+            | WalOp::GcTableDescriptor { .. }
+            | WalOp::GcPropertyDescriptor { .. }
+            | WalOp::CreateIndex { .. }
+            | WalOp::CreateCompositeIndex { .. }
+            | WalOp::CreateRangeIndex { .. }
+            | WalOp::CreateFullTextIndex { .. }
+            | WalOp::CreateUniqueConstraint { .. }
+            | WalOp::CreateNodePropertyExistsConstraint { .. }
+            | WalOp::CreateRelationshipUniqueConstraint { .. }
+            | WalOp::CreateRelationshipPropertyExistsConstraint { .. } => {
+                record_live_version(writes, VersionKey::Schema)?;
+            }
+            WalOp::ProjectGraph { .. }
+            | WalOp::MarkInitialImportSource { .. }
+            | WalOp::Relational { .. }
+            | WalOp::RelationalSnapshot { .. }
+            | WalOp::Append { .. } => {
+                record_live_version(writes, VersionKey::Database)?;
+            }
+            WalOp::Batch(ops) => {
+                collect_version_writes(writes, ops, created_relationships, relationships)?;
+            }
+        }
+    }
+    Ok(())
+}
+
+fn record_live_version(writes: &mut VersionWriteSet, key: VersionKey) -> Result<()> {
+    writes
+        .record_live(key)
+        .map_err(|error| HawDBError::Execution(error.to_string()))
+}
+
+fn record_tombstone_version(writes: &mut VersionWriteSet, key: VersionKey) -> Result<()> {
+    writes
+        .record_tombstone(key)
+        .map_err(|error| HawDBError::Execution(error.to_string()))
 }
 
 fn map_relational_staging_error(error: RelationalError) -> HawDBError {
