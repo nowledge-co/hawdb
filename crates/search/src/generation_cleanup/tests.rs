@@ -61,6 +61,7 @@ fn retained_generation_sets_preserve_manifest_referenced_artifacts() {
             "search_rabitq.",
             "search_projection_segments.",
             "search_projection_segment_payloads.",
+            "search_projection_mutation_run.",
         ] {
             fs::write(
                 root.join(format!("{prefix}{generation}.hawdb")),
@@ -85,7 +86,7 @@ fn retained_generation_sets_preserve_manifest_referenced_artifacts() {
         generations,
         SearchProjectionCleanupOptions::default(),
     );
-    assert_eq!(report.deleted_files, 10);
+    assert_eq!(report.deleted_files, 12);
     for generation in [2, 5, 9, 10] {
         for prefix in [
             "search_lexical.",
@@ -93,6 +94,7 @@ fn retained_generation_sets_preserve_manifest_referenced_artifacts() {
             "search_rabitq.",
             "search_projection_segments.",
             "search_projection_segment_payloads.",
+            "search_projection_mutation_run.",
         ] {
             assert!(root.join(format!("{prefix}{generation}.hawdb")).exists());
         }
