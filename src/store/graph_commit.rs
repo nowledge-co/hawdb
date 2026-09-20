@@ -16,7 +16,10 @@
 
 use super::*;
 use hawdb_storage::version::{VersionConflict, VersionKey, VersionWriteSet};
-use hawdb_storage::{wal::WalOp, RelationalError};
+use hawdb_storage::{
+    wal::WalOp, AppendTransaction, AppendWrite, RelationalError, RelationalIndexChangeCapture,
+    RelationalIndexChangeKind, RelationalPrimaryKeyChangeCapture, RelationalRowChangeCapture,
+};
 
 impl GraphStore {
     pub fn commit_mutations(
@@ -1768,17 +1771,28 @@ impl GraphStore {
         let mut staged_relational_index_capture = None;
         let mut staged_relational_row_capture = None;
         let mut staged_relational_primary_key_changes = None;
+        let mut staged_relational_version_primary_key_changes = None;
         let mut relational_mutation_outcomes = Vec::new();
         let mut append_mutation_outcomes = Vec::new();
         let mut staged_append_state = None;
+        let mut staged_append_transaction = None;
+        let mut has_relational_writes = false;
+        let mut relational_changes_schema = false;
         let next_commit_epoch = self
             .commit_epoch
             .checked_add(1)
             .ok_or_else(|| HawDBError::Storage("commit epoch overflow".to_string()))?;
         if let Some(transaction) = relational_transaction.filter(|value| !value.writes.is_empty()) {
+            has_relational_writes = true;
+            relational_changes_schema = transaction.changes_schema();
             let authoritative_index = self.authoritative_relational_constraint_index()?;
-            let index_limits = self.relational_index_live_capture_limits();
-            let row_limits = self.relational_row_live_capture_limits();
+            let live_index_limits = self.relational_index_live_capture_limits();
+            let live_row_limits = self.relational_row_live_capture_limits();
+            // MVCC needs an exact, bounded write-set even when no relational
+            // live view is currently published. A capture that exceeds these
+            // bounds is represented explicitly and falls back to table scope.
+            let index_limits = live_index_limits.unwrap_or_default();
+            let row_limits = live_row_limits.unwrap_or_default();
             let staged = if self.relational_state.canonical_row_metadata_only() {
                 let index = authoritative_index.as_ref().ok_or_else(|| {
                     HawDBError::StorageIntegrity(
@@ -1786,12 +1800,12 @@ impl GraphStore {
                             .to_string(),
                     )
                 })?;
-                let index_limits = index_limits.ok_or_else(|| {
+                let index_limits = live_index_limits.ok_or_else(|| {
                     HawDBError::StorageIntegrity(
                         "sparse relational live staging requires index capture limits".to_string(),
                     )
                 })?;
-                let row_limits = row_limits.ok_or_else(|| {
+                let row_limits = live_row_limits.ok_or_else(|| {
                     HawDBError::StorageIntegrity(
                         "sparse relational live staging requires row capture limits".to_string(),
                     )
@@ -1829,8 +1843,8 @@ impl GraphStore {
                         transaction.clone(),
                         self.relational_mutation_limits,
                         self.relational_overflow_config,
-                        index_limits,
-                        row_limits,
+                        Some(index_limits),
+                        Some(row_limits),
                         self.search_projection_primary_key_capture_limits,
                         authoritative_index
                             .as_ref()
@@ -1841,6 +1855,8 @@ impl GraphStore {
             staged_relational_state = Some(staged.state);
             staged_relational_index_capture = staged.index_capture;
             staged_relational_row_capture = staged.row_capture;
+            staged_relational_version_primary_key_changes =
+                Some(staged.version_key_primary_key_changes);
             relational_mutation_outcomes = staged.mutation_outcomes;
             let replay_access = staged.replay_access.filter(|_| {
                 matches!(
@@ -1865,11 +1881,12 @@ impl GraphStore {
                 .append_state
                 .prepare_transaction(&transaction, self.append_mutation_limits)
                 .map_err(map_append_staging_error)?;
-            let record =
-                encode_append_wal_batch(next_commit_epoch, &prepared.materialized_transaction)
-                    .map_err(|error| HawDBError::Storage(error.to_string()))?;
+            let materialized_transaction = prepared.materialized_transaction;
+            let record = encode_append_wal_batch(next_commit_epoch, &materialized_transaction)
+                .map_err(|error| HawDBError::Storage(error.to_string()))?;
             staged_append_state = Some(prepared.state);
             append_mutation_outcomes = prepared.mutation_outcomes;
+            staged_append_transaction = Some(materialized_transaction);
             ops.push(WalOp::Append {
                 record: Arc::from(record),
             });
@@ -1881,7 +1898,16 @@ impl GraphStore {
                 append_mutation_outcomes,
             });
         }
-        let version_writes = self.version_writes_for_ops(&ops)?;
+        let version_writes = self.version_writes_for_ops(
+            &ops,
+            staged_relational_index_capture.as_ref(),
+            staged_relational_row_capture.as_ref(),
+            staged_relational_primary_key_changes.as_ref(),
+            staged_relational_version_primary_key_changes.as_ref(),
+            has_relational_writes,
+            relational_changes_schema,
+            staged_append_transaction.as_ref(),
+        )?;
         if let Some(read_epoch) = mvcc_read_epoch {
             self.validate_version_writes(&version_writes, read_epoch)?;
         }
@@ -1957,22 +1983,21 @@ impl GraphStore {
                     },
                 ));
             }
-            if let Some(stamp) = self.version_index.stamp(&key)
-                && stamp.commit_epoch > read_epoch
-            {
-                return Err(transaction_conflict_error(
-                    read_epoch,
-                    VersionConflict {
-                        key,
-                        committed_epoch: stamp.commit_epoch,
-                    },
-                ));
-            }
         }
         Ok(())
     }
 
-    fn version_writes_for_ops(&self, ops: &[WalOp]) -> Result<VersionWriteSet> {
+    fn version_writes_for_ops(
+        &self,
+        ops: &[WalOp],
+        relational_index_capture: Option<&RelationalIndexChangeCapture>,
+        relational_row_capture: Option<&RelationalRowChangeCapture>,
+        relational_primary_key_changes: Option<&RelationalPrimaryKeyChangeCapture>,
+        relational_version_primary_key_changes: Option<&RelationalPrimaryKeyChangeCapture>,
+        has_relational_writes: bool,
+        relational_changes_schema: bool,
+        append_transaction: Option<&AppendTransaction>,
+    ) -> Result<VersionWriteSet> {
         let mut writes = VersionWriteSet::default();
         let mut created_relationships = BTreeMap::new();
         collect_version_writes(
@@ -1981,6 +2006,16 @@ impl GraphStore {
             &mut created_relationships,
             &self.relationships,
         )?;
+        record_relational_version_writes(
+            &mut writes,
+            relational_index_capture,
+            relational_row_capture,
+            relational_primary_key_changes,
+            relational_version_primary_key_changes,
+            has_relational_writes,
+            relational_changes_schema,
+        )?;
+        record_append_version_writes(&mut writes, append_transaction)?;
         Ok(writes)
     }
 
@@ -2391,11 +2426,113 @@ fn version_key_kind(key: &VersionKey) -> &'static str {
         VersionKey::GraphNode(_) => "graph_node",
         VersionKey::GraphRelationship(_) => "graph_relationship",
         VersionKey::GraphAdjacency { .. } => "graph_adjacency",
+        VersionKey::RelationalTable(_) => "relational_table",
         VersionKey::RelationalRow { .. } => "relational_row",
         VersionKey::RelationalIndex { .. } => "relational_index",
         VersionKey::ForeignKey { .. } => "foreign_key",
-        VersionKey::AppendTable(_) => "append_table",
     }
+}
+
+fn record_relational_version_writes(
+    writes: &mut VersionWriteSet,
+    index_capture: Option<&RelationalIndexChangeCapture>,
+    row_capture: Option<&RelationalRowChangeCapture>,
+    primary_key_changes: Option<&RelationalPrimaryKeyChangeCapture>,
+    version_key_primary_key_changes: Option<&RelationalPrimaryKeyChangeCapture>,
+    has_writes: bool,
+    changes_schema: bool,
+) -> Result<()> {
+    if !has_writes {
+        return Ok(());
+    }
+    if changes_schema {
+        record_live_version(writes, VersionKey::Schema)?;
+        // Preserve the legacy database-wide guard for projection, import, and
+        // snapshot replacement operations whose relational footprint is not
+        // represented as individual keys.
+        record_live_version(writes, VersionKey::Database)?;
+    }
+    let (
+        Some(RelationalIndexChangeCapture::Captured {
+            changes: index_changes,
+            ..
+        }),
+        Some(RelationalRowChangeCapture::Captured {
+            changes: row_changes,
+            ..
+        }),
+    ) = (index_capture, row_capture)
+    else {
+        if let Some(RelationalPrimaryKeyChangeCapture::Captured { tables, .. }) =
+            version_key_primary_key_changes
+        {
+            for table in tables {
+                for primary_key in &table.primary_keys {
+                    record_live_version(
+                        writes,
+                        VersionKey::RelationalRow {
+                            table: table.table.clone(),
+                            primary_key: primary_key.clone(),
+                        },
+                    )?;
+                }
+            }
+            return Ok(());
+        }
+        let Some(RelationalPrimaryKeyChangeCapture::Captured { tables, .. }) = primary_key_changes
+        else {
+            return record_live_version(writes, VersionKey::Database);
+        };
+        for table in tables {
+            record_live_version(writes, VersionKey::RelationalTable(table.table.clone()))?;
+        }
+        return Ok(());
+    };
+    for change in row_changes {
+        let key = VersionKey::RelationalRow {
+            table: change.table.clone(),
+            primary_key: change.primary_key.clone(),
+        };
+        if change.row.is_some() {
+            record_live_version(writes, key)?;
+        } else {
+            record_tombstone_version(writes, key)?;
+        }
+    }
+    for change in index_changes {
+        let key = VersionKey::RelationalIndex {
+            table: change.table.clone(),
+            index: change.index.clone(),
+            key: change.index_key.clone(),
+        };
+        if change.kind == RelationalIndexChangeKind::Insert {
+            record_live_version(writes, key)?;
+        } else {
+            record_tombstone_version(writes, key)?;
+        }
+    }
+    Ok(())
+}
+
+fn record_append_version_writes(
+    writes: &mut VersionWriteSet,
+    transaction: Option<&AppendTransaction>,
+) -> Result<()> {
+    let Some(transaction) = transaction else {
+        return Ok(());
+    };
+    for write in &transaction.writes {
+        match write {
+            AppendWrite::CreateTable { .. } => record_live_version(writes, VersionKey::Schema)?,
+            // Append rows are allocated against the live append state inside
+            // the commit sequencer. They do not overwrite a snapshot-derived
+            // row, so a table-wide optimistic stamp would only reject safe,
+            // disjoint appends. The append state remains authoritative for
+            // ordering and generated-key allocation.
+            AppendWrite::Append { .. } | AppendWrite::AppendGenerated { .. } => {}
+        }
+    }
+    Ok(())
 }
 
 fn collect_version_writes(
@@ -2486,11 +2623,10 @@ fn collect_version_writes(
             }
             WalOp::ProjectGraph { .. }
             | WalOp::MarkInitialImportSource { .. }
-            | WalOp::Relational { .. }
-            | WalOp::RelationalSnapshot { .. }
-            | WalOp::Append { .. } => {
+            | WalOp::RelationalSnapshot { .. } => {
                 record_live_version(writes, VersionKey::Database)?;
             }
+            WalOp::Relational { .. } | WalOp::Append { .. } => {}
             WalOp::Batch(ops) => {
                 collect_version_writes(writes, ops, created_relationships, relationships)?;
             }
@@ -2539,6 +2675,35 @@ fn map_append_staging_error(error: hawdb_storage::AppendTableError) -> HawDBErro
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn relational_schema_writes_keep_the_database_guard_with_exact_row_capture() {
+        let mut writes = VersionWriteSet::default();
+        let captured_rows = RelationalPrimaryKeyChangeCapture::Captured {
+            tables: vec![hawdb_storage::RelationalTablePrimaryKeyChanges {
+                table: "items".to_string(),
+                primary_keys: vec![hawdb_storage::RelationalKey(Vec::new())],
+            }],
+            encoded_bytes: 0,
+        };
+        record_relational_version_writes(
+            &mut writes,
+            None,
+            None,
+            None,
+            Some(&captured_rows),
+            true,
+            true,
+        )
+        .expect("record mixed schema version writes");
+
+        assert!(writes.contains_key(&VersionKey::Schema));
+        assert!(writes.contains_key(&VersionKey::Database));
+        assert!(writes.contains_key(&VersionKey::RelationalRow {
+            table: "items".to_string(),
+            primary_key: hawdb_storage::RelationalKey(Vec::new()),
+        }));
+    }
 
     #[test]
     fn append_sequence_exhaustion_remains_structured_at_the_facade_boundary() {

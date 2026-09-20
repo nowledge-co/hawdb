@@ -37,6 +37,7 @@ pub enum VersionKey {
         node_id: NodeId,
         direction: AdjacencyDirection,
     },
+    RelationalTable(String),
     RelationalRow {
         table: String,
         primary_key: RelationalKey,
@@ -50,7 +51,6 @@ pub enum VersionKey {
         table: String,
         key: RelationalKey,
     },
-    AppendTable(String),
 }
 
 impl CowPageWeight for VersionKey {
@@ -60,6 +60,7 @@ impl CowPageWeight for VersionKey {
             Self::Database | Self::Schema => base,
             Self::GraphNode(_) | Self::GraphRelationship(_) => base,
             Self::GraphAdjacency { .. } => base,
+            Self::RelationalTable(table) => base.saturating_add(table.len()),
             Self::RelationalRow { table, primary_key } => base
                 .saturating_add(table.len())
                 .saturating_add(relational_key_bytes(primary_key)),
@@ -70,7 +71,6 @@ impl CowPageWeight for VersionKey {
             Self::ForeignKey { table, key } => base
                 .saturating_add(table.len())
                 .saturating_add(relational_key_bytes(key)),
-            Self::AppendTable(table) => base.saturating_add(table.len()),
         }
     }
 }

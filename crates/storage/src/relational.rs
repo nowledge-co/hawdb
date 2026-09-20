@@ -837,6 +837,9 @@ pub struct RelationalTransactionStageResult {
     pub row_capture: Option<RelationalRowChangeCapture>,
     pub replay_access: Option<RelationalReplayAccessSet>,
     pub primary_key_changes: RelationalPrimaryKeyChangeCapture,
+    /// Exact changed primary keys retained for commit validation even when a
+    /// schema rewrite requires projection consumers to rebuild.
+    pub version_key_primary_key_changes: RelationalPrimaryKeyChangeCapture,
     pub mutation_outcomes: Vec<RelationalMutationOutcome>,
 }
 
@@ -2143,6 +2146,7 @@ impl RelationalState {
             row_capture,
             replay_access,
             primary_key_changes,
+            version_key_primary_key_changes,
             mutation_outcomes,
         } = apply_transaction_inner(
             self,
@@ -2166,6 +2170,8 @@ impl RelationalState {
             replay_access,
             primary_key_changes: primary_key_changes
                 .expect("primary-key change capture was requested for this transaction"),
+            version_key_primary_key_changes: version_key_primary_key_changes
+                .expect("version-key primary-key capture was requested for this transaction"),
             mutation_outcomes,
         })
     }
@@ -3131,6 +3137,7 @@ impl RelationalState {
             row_capture,
             replay_access,
             primary_key_changes,
+            version_key_primary_key_changes,
             mutation_outcomes,
         } = workspace.stage_transaction_with_primary_key_changes(
             transaction,
@@ -3160,6 +3167,7 @@ impl RelationalState {
             row_capture,
             replay_access: Some(replay_access),
             primary_key_changes,
+            version_key_primary_key_changes,
             mutation_outcomes,
         })
     }
@@ -4531,6 +4539,7 @@ struct TransactionApplyResult {
     row_capture: Option<RelationalRowChangeCapture>,
     replay_access: Option<RelationalReplayAccessSet>,
     primary_key_changes: Option<RelationalPrimaryKeyChangeCapture>,
+    version_key_primary_key_changes: Option<RelationalPrimaryKeyChangeCapture>,
     mutation_outcomes: Vec<RelationalMutationOutcome>,
 }
 
@@ -5109,6 +5118,15 @@ fn apply_transaction_inner(
             capture_limits,
         )
     });
+    let version_key_primary_key_changes = primary_key_capture_limits.map(|capture_limits| {
+        capture_relational_primary_key_changes(
+            state,
+            &next,
+            &changed_keys,
+            &BTreeSet::new(),
+            capture_limits,
+        )
+    });
     let replay_access = if let Some(mut tracker) = replay_access_tracker {
         tracker.record_changed_keys(&changed_keys)?;
         Some(tracker.finish())
@@ -5145,6 +5163,7 @@ fn apply_transaction_inner(
         row_capture,
         replay_access,
         primary_key_changes,
+        version_key_primary_key_changes,
         mutation_outcomes,
     })
 }

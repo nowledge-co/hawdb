@@ -240,6 +240,77 @@ fn optimistic_transactions_prepare_in_parallel_and_reject_the_conflicting_commit
 }
 
 #[test]
+fn optimistic_graph_write_ignores_an_unrelated_schema_stamp() {
+    let database = Database::new().into_concurrent();
+    database
+        .query("CREATE (:Memory {id: 1, state: 'before'})")
+        .expect("create graph fixture");
+    let mut graph = database
+        .begin_transaction(ConcurrentTransactionOptions::optimistic())
+        .expect("begin optimistic graph transaction");
+    graph
+        .query("MATCH (m:Memory {id: 1}) SET m.state = 'after'")
+        .expect("stage graph update");
+
+    database
+        .query_sql("CREATE TABLE unrelated (id BIGINT PRIMARY KEY)")
+        .expect("commit unrelated schema change");
+    graph
+        .commit()
+        .expect("unrelated schema stamp must not reject graph-only write");
+}
+
+#[test]
+fn optimistic_transactions_commit_append_batches_from_one_snapshot() {
+    let database = Database::new().into_concurrent();
+    database
+        .query_sql(
+            "CREATE TABLE events (\
+               stream_id TEXT NOT NULL, \
+               sequence BIGINT NOT NULL, \
+               payload TEXT NOT NULL\
+             ) WITH (\
+               storage_mode = 'strict_append', \
+               partition_key = 'stream_id', \
+               order_key = 'sequence'\
+             )",
+        )
+        .expect("create strict append table");
+    let mut first = database
+        .begin_transaction(ConcurrentTransactionOptions::optimistic())
+        .expect("begin first optimistic transaction");
+    let mut second = database
+        .begin_transaction(ConcurrentTransactionOptions::optimistic())
+        .expect("begin second optimistic transaction");
+    first
+        .query_sql(
+            "INSERT INTO events (stream_id, sequence, payload) \
+             VALUES ('stream', 1, 'first')",
+        )
+        .expect("stage first append batch");
+    second
+        .query_sql(
+            "INSERT INTO events (stream_id, sequence, payload) \
+             VALUES ('stream', 2, 'second')",
+        )
+        .expect("stage second append batch");
+
+    first.commit().expect("commit first append batch");
+    second.commit().expect("commit second append batch");
+    assert_eq!(
+        database
+            .query_sql(
+                "SELECT sequence FROM events WHERE stream_id = 'stream' \
+                 ORDER BY sequence LIMIT 10",
+            )
+            .expect("read committed append batches")
+            .rows
+            .len(),
+        2
+    );
+}
+
+#[test]
 fn optimistic_transactions_commit_disjoint_graph_updates_from_one_snapshot() {
     let db = Database::new().into_concurrent();
     db.query("CREATE (:Memory {id: 'left', state: 'before'})")
@@ -1476,7 +1547,7 @@ fn wal_group_commit_assigns_generated_order_in_serial_commit_order() {
 }
 
 #[test]
-fn generated_order_retries_after_optimistic_conflict_and_matches_pessimistic_commit() {
+fn generated_order_appends_from_one_optimistic_snapshot_follow_commit_order() {
     let mut database = Database::new();
     database
         .query_sql(
@@ -1497,7 +1568,7 @@ fn generated_order_retries_after_optimistic_conflict_and_matches_pessimistic_com
     let mut first = db
         .begin_transaction(ConcurrentTransactionOptions::optimistic())
         .unwrap();
-    let mut stale = db
+    let mut second = db
         .begin_transaction(ConcurrentTransactionOptions::optimistic())
         .unwrap();
     first
@@ -1505,9 +1576,9 @@ fn generated_order_retries_after_optimistic_conflict_and_matches_pessimistic_com
             "INSERT INTO events (stream_id, payload) VALUES ('thread-1', 'optimistic-first')",
         )
         .unwrap();
-    stale
+    second
         .query_sql(
-            "INSERT INTO events (stream_id, payload) VALUES ('thread-2', 'optimistic-stale')",
+            "INSERT INTO events (stream_id, payload) VALUES ('thread-2', 'optimistic-second')",
         )
         .unwrap();
 
@@ -1516,28 +1587,9 @@ fn generated_order_retries_after_optimistic_conflict_and_matches_pessimistic_com
         first.append_mutations[0].generated_order_keys,
         vec![crate::RelationalKey(vec![RelationalValue::BigInt(1)])]
     );
-    let conflict = stale.commit_with_result().unwrap_err();
-    assert!(matches!(
-        conflict,
-        HawDBError::TransactionConflict {
-            read_epoch: 1,
-            committed_epoch: 2,
-            ..
-        }
-    ));
-    assert!(conflict.is_retryable_transaction_conflict());
-
-    let mut retry = db
-        .begin_transaction(ConcurrentTransactionOptions::optimistic())
-        .unwrap();
-    retry
-        .query_sql(
-            "INSERT INTO events (stream_id, payload) VALUES ('thread-2', 'optimistic-retry')",
-        )
-        .unwrap();
-    let retry = retry.commit_with_result().unwrap();
+    let second = second.commit_with_result().unwrap();
     assert_eq!(
-        retry.append_mutations[0].generated_order_keys,
+        second.append_mutations[0].generated_order_keys,
         vec![crate::RelationalKey(vec![RelationalValue::BigInt(2)])]
     );
 
