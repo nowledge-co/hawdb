@@ -893,6 +893,7 @@ fn dispatch_batch_operator<D: BatchDispatch>(plan: &PhysicalPlan, dispatch: D) -
         | PhysicalPlan::CreateRelationshipPropertyExistsConstraint { .. }
         | PhysicalPlan::ProjectGraph { .. }
         | PhysicalPlan::CreateNode { .. }
+        | PhysicalPlan::UnwindMutation { .. }
         | PhysicalPlan::MergeNode { .. }
         | PhysicalPlan::MergeRelationship { .. }
         | PhysicalPlan::MergeMatchedRelationship { .. }

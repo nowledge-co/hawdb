@@ -33,7 +33,9 @@ use crate::expression::{
 use crate::predicate::property_filter_from_properties;
 
 mod preflight;
-pub use preflight::{execute_mutation_with_store, project_staged_mutation_return_rows};
+pub use preflight::{
+    execute_mutation_with_store, materialize_unwind_mutations, project_staged_mutation_return_rows,
+};
 
 pub fn mutation_command(plan: &PhysicalPlan) -> Result<Option<GraphMutation>> {
     match plan {
@@ -543,6 +545,7 @@ pub fn mutation_command(plan: &PhysicalPlan) -> Result<Option<GraphMutation>> {
         | PhysicalPlan::ProjectGraph { .. }
         | PhysicalPlan::GraphAlgorithm { .. }
         | PhysicalPlan::VectorSeedScan { .. }
+        | PhysicalPlan::UnwindMutation { .. }
         | PhysicalPlan::GraphMatchExec { .. } => Ok(None),
     }
 }

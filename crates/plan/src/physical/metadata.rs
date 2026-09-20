@@ -58,6 +58,7 @@ pub enum PhysicalPlanKind {
     GraphAlgorithm,
     VectorSeedScan,
     CreateNode,
+    UnwindMutationExec,
     MergeNode,
     MergeRelationship,
     MergeMatchedRelationship,
@@ -157,6 +158,7 @@ impl PhysicalPlanKind {
             PhysicalPlanKind::GraphAlgorithm,
             PhysicalPlanKind::VectorSeedScan,
             PhysicalPlanKind::CreateNode,
+            PhysicalPlanKind::UnwindMutationExec,
             PhysicalPlanKind::MergeNode,
             PhysicalPlanKind::MergeRelationship,
             PhysicalPlanKind::MergeMatchedRelationship,
@@ -234,6 +236,7 @@ impl PhysicalPlanKind {
             PhysicalPlanKind::GraphAlgorithm => "GraphAlgorithm",
             PhysicalPlanKind::VectorSeedScan => "VectorSeedScan",
             PhysicalPlanKind::CreateNode => "CreateNode",
+            PhysicalPlanKind::UnwindMutationExec => "UnwindMutationExec",
             PhysicalPlanKind::MergeNode => "MergeNode",
             PhysicalPlanKind::MergeRelationship => "MergeRelationship",
             PhysicalPlanKind::MergeMatchedRelationship => "MergeMatchedRelationship",
@@ -311,6 +314,7 @@ impl PhysicalPlanKind {
                 PhysicalPlanClass::Schema
             }
             PhysicalPlanKind::CreateNode
+            | PhysicalPlanKind::UnwindMutationExec
             | PhysicalPlanKind::MergeNode
             | PhysicalPlanKind::MergeRelationship
             | PhysicalPlanKind::MergeMatchedRelationship

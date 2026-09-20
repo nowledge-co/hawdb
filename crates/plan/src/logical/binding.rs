@@ -578,6 +578,9 @@ pub(super) fn bind_value(
             .map(|value| bind_value(value, parameters))
             .collect::<Result<Vec<_>>>()
             .map(Value::List),
+        ValueExpressionKind::BindingProperty { variable, property } => Err(HawDBError::Semantic(
+            format!("row-bound value '{variable}.{property}' requires an UNWIND mutation context"),
+        )),
         ValueExpressionKind::CurrentTimestamp => Ok(current_timestamp_value()),
         ValueExpressionKind::Timestamp(value) => {
             bind_value(value, parameters).and_then(timestamp_value)

@@ -41,7 +41,9 @@ mod graph_match;
 mod pipeline;
 mod visibility;
 pub use graph_match::*;
-pub use pipeline::{plan_normalized_pipeline_query, plan_pipeline_query};
+pub use pipeline::{
+    plan_normalized_pipeline_query, plan_parsed_pipeline_query, plan_pipeline_query,
+};
 pub use visibility::apply_node_visibility_predicates;
 mod binding;
 mod case;
@@ -56,6 +58,27 @@ pub use statement::{plan, plan_with_params};
 use with_clause::*;
 
 const MAX_VECTOR_SEEDED_GRAPH_HOPS: usize = 2;
+
+/// A mutation property resolved from one bounded `UNWIND` row.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum BatchMutationValue {
+    Static(Value),
+    RowProperty(String),
+}
+
+/// The mutation operations currently fed by a bounded `UNWIND` row source.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum BatchMutationOperation {
+    CreateNode {
+        label: String,
+        properties: BTreeMap<String, BatchMutationValue>,
+    },
+    MergeNode {
+        label: String,
+        match_properties: BTreeMap<String, BatchMutationValue>,
+        on_create_properties: BTreeMap<String, BatchMutationValue>,
+    },
+}
 
 #[derive(Debug, Clone, PartialEq)]
 pub enum LogicalPlan {
@@ -142,6 +165,11 @@ pub enum LogicalPlan {
     CreateNode {
         label: String,
         properties: BTreeMap<String, Value>,
+    },
+    UnwindMutation {
+        rows: Vec<Value>,
+        variable: String,
+        operation: BatchMutationOperation,
     },
     MergeNode {
         label: String,

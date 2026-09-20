@@ -1,7 +1,10 @@
 //! Bind mutation clauses directly to the existing atomic storage commands.
 
 use super::*;
-use hawdb_cypher::{Clause, MatchPattern, NodePattern, RelationshipPattern};
+use hawdb_cypher::{
+    Clause, MatchPattern, NodePattern, RelationshipPattern, SetValueExpression, ValueExpression,
+    ValueExpressionKind,
+};
 
 mod node;
 mod relationship;
@@ -26,6 +29,169 @@ impl MutationInput<'_> {
             [pattern] => Ok(pattern),
             _ => Err(unsupported("mutation requires one bound MATCH pattern")),
         }
+    }
+}
+
+pub(super) fn bind_unwind_mutation_pipeline(
+    query: &QueryPipeline,
+    parameters: &BTreeMap<String, Value>,
+) -> Result<LogicalPlan> {
+    let [unwind, mutation] = query.clauses.as_slice() else {
+        return Err(unsupported(
+            "UNWIND mutations require exactly one following mutation clause",
+        ));
+    };
+    let ClauseKind::Unwind { source, variable } = &unwind.kind else {
+        unreachable!("UNWIND binding requires an UNWIND first clause")
+    };
+    let rows = bind_unwind_rows(source, parameters)?;
+    let operation = match &mutation.kind {
+        ClauseKind::Create(patterns) => {
+            let [pattern] = patterns.as_slice() else {
+                return Err(unsupported("UNWIND CREATE requires one node pattern"));
+            };
+            require_unbound_path(pattern)?;
+            if !pattern.steps.is_empty() {
+                return Err(unsupported(
+                    "UNWIND CREATE currently supports one node pattern",
+                ));
+            }
+            require_node_label(&pattern.first)?;
+            BatchMutationOperation::CreateNode {
+                label: pattern.first.label.clone(),
+                properties: bind_batch_properties(&pattern.first.properties, variable, parameters)?,
+            }
+        }
+        ClauseKind::Merge {
+            pattern,
+            on_create,
+            on_match,
+        } => {
+            require_unbound_path(pattern)?;
+            if !pattern.steps.is_empty() {
+                return Err(unsupported(
+                    "UNWIND MERGE currently supports one node pattern",
+                ));
+            }
+            if !on_match.is_empty() {
+                return Err(unsupported(
+                    "UNWIND MERGE does not support ON MATCH assignments yet",
+                ));
+            }
+            let node = &pattern.first;
+            require_node_label(node)?;
+            BatchMutationOperation::MergeNode {
+                label: node.label.clone(),
+                match_properties: bind_batch_properties(&node.properties, variable, parameters)?,
+                on_create_properties: bind_batch_on_create_properties(
+                    (!node.anonymous).then_some(node.variable.as_str()),
+                    on_create,
+                    variable,
+                    parameters,
+                )?,
+            }
+        }
+        ClauseKind::Set(_) | ClauseKind::Delete { .. } => {
+            return Err(unsupported(
+                "UNWIND SET and DELETE require a bound mutation target and are not supported yet",
+            ));
+        }
+        _ => {
+            return Err(unsupported(
+                "UNWIND must be followed by CREATE, MERGE, SET, or DELETE",
+            ))
+        }
+    };
+    Ok(LogicalPlan::UnwindMutation {
+        rows,
+        variable: variable.clone(),
+        operation,
+    })
+}
+
+fn bind_unwind_rows(
+    source: &ValueExpression,
+    parameters: &BTreeMap<String, Value>,
+) -> Result<Vec<Value>> {
+    let Value::List(rows) = bind_value(source, parameters)? else {
+        return Err(HawDBError::Semantic(
+            "UNWIND source must resolve to a list value".to_string(),
+        ));
+    };
+    Ok(rows)
+}
+
+fn bind_batch_properties(
+    properties: &BTreeMap<String, ValueExpression>,
+    row_variable: &str,
+    parameters: &BTreeMap<String, Value>,
+) -> Result<BTreeMap<String, BatchMutationValue>> {
+    properties
+        .iter()
+        .map(|(property, value)| {
+            Ok((
+                property.clone(),
+                bind_batch_value(value, row_variable, parameters)?,
+            ))
+        })
+        .collect()
+}
+
+fn bind_batch_on_create_properties(
+    node_variable: Option<&str>,
+    sets: &[SetProperty],
+    row_variable: &str,
+    parameters: &BTreeMap<String, Value>,
+) -> Result<BTreeMap<String, BatchMutationValue>> {
+    if sets.is_empty() {
+        return Ok(BTreeMap::new());
+    }
+    let Some(node_variable) = node_variable else {
+        return Err(HawDBError::Semantic(
+            "UNWIND MERGE ON CREATE SET requires a bound node variable".to_string(),
+        ));
+    };
+    sets.iter()
+        .map(|set| {
+            if set.variable != node_variable {
+                return Err(HawDBError::Semantic(format!(
+                    "UNWIND MERGE ON CREATE SET variable '{}' does not match bound variable '{node_variable}'",
+                    set.variable
+                )));
+            }
+            let value = match &set.value {
+                SetValueExpression::Value(value) => {
+                    bind_batch_value(value, row_variable, parameters)?
+                }
+                SetValueExpression::Property { variable, property } if variable == row_variable => {
+                    BatchMutationValue::RowProperty(property.clone())
+                }
+                _ => {
+                    return Err(HawDBError::Semantic(
+                        "UNWIND MERGE ON CREATE SET supports row values only".to_string(),
+                    ))
+                }
+            };
+            Ok((set.property.clone(), value))
+        })
+        .collect()
+}
+
+fn bind_batch_value(
+    value: &ValueExpression,
+    row_variable: &str,
+    parameters: &BTreeMap<String, Value>,
+) -> Result<BatchMutationValue> {
+    match &value.kind {
+        ValueExpressionKind::BindingProperty { variable, property } => {
+            if variable != row_variable {
+                return Err(HawDBError::Semantic(format!(
+                    "UNWIND mutation value '{variable}.{property}' does not reference row variable '{row_variable}'"
+                )));
+            }
+            Ok(BatchMutationValue::RowProperty(property.clone()))
+        }
+        _ => bind_value(value, parameters).map(BatchMutationValue::Static),
     }
 }
 

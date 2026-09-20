@@ -390,6 +390,7 @@ impl GroupExpr {
             | LogicalPlan::GraphAlgorithm { .. }
             | LogicalPlan::VectorSeed { .. }
             | LogicalPlan::CreateNode { .. }
+            | LogicalPlan::UnwindMutation { .. }
             | LogicalPlan::MergeNode { .. }
             | LogicalPlan::MergeRelationship { .. }
             | LogicalPlan::MergeMatchedRelationship { .. }
@@ -677,6 +678,7 @@ fn logical_group_count(logical: &LogicalPlan) -> usize {
         | LogicalPlan::GraphAlgorithm { .. }
         | LogicalPlan::VectorSeed { .. }
         | LogicalPlan::CreateNode { .. }
+        | LogicalPlan::UnwindMutation { .. }
         | LogicalPlan::MergeNode { .. }
         | LogicalPlan::MergeRelationship { .. }
         | LogicalPlan::MergeMatchedRelationship { .. }

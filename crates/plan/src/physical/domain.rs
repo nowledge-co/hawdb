@@ -106,6 +106,7 @@ impl PhysicalPlan {
                 PhysicalPlanDomainRef::Schema(SchemaPhysicalPlanRef::new(self))
             }
             PhysicalPlan::CreateNode { .. }
+            | PhysicalPlan::UnwindMutation { .. }
             | PhysicalPlan::MergeNode { .. }
             | PhysicalPlan::MergeRelationship { .. }
             | PhysicalPlan::MergeMatchedRelationship { .. }

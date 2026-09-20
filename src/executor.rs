@@ -81,7 +81,9 @@ pub use hawdb_executor::{
     VectorSeedExecutionRow,
 };
 pub(crate) use mutation::project_staged_mutation_return_rows;
-pub use mutation::{execute_mutation_with_limits, is_mutation_plan, mutation_command};
+pub use mutation::{
+    execute_mutation_with_limits, is_mutation_plan, materialize_unwind_mutations, mutation_command,
+};
 use observer::*;
 use read::*;
 #[cfg(test)]

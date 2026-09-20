@@ -29,6 +29,12 @@ pub enum Statement {
     Checkpoint,
     CypherQuery(Box<CypherQuery>),
     Explain(Box<Explain>),
+    /// A bounded row source followed by one mutation clause.
+    ///
+    /// The ordered-clause pipeline remains opt-in while it is being migrated.
+    /// `UNWIND` is its first public statement entrypoint because its row source
+    /// must be planned and admitted as one atomic mutation batch.
+    UnwindMutation(Box<QueryPipeline>),
     Commit,
     CreateNodeLabel(String),
     CreateRelationshipType(String),
@@ -652,6 +658,7 @@ pub enum ValueExpressionKind {
     Literal(Value),
     Parameter(String),
     List(Vec<ValueExpression>),
+    BindingProperty { variable: String, property: String },
     CurrentTimestamp,
     Timestamp(Box<ValueExpression>),
 }

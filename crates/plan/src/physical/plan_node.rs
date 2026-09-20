@@ -46,6 +46,7 @@ impl PhysicalPlan {
             PhysicalPlan::GraphAlgorithm { .. } => PhysicalPlanKind::GraphAlgorithm,
             PhysicalPlan::VectorSeedScan { .. } => PhysicalPlanKind::VectorSeedScan,
             PhysicalPlan::CreateNode { .. } => PhysicalPlanKind::CreateNode,
+            PhysicalPlan::UnwindMutation { .. } => PhysicalPlanKind::UnwindMutationExec,
             PhysicalPlan::MergeNode { .. } => PhysicalPlanKind::MergeNode,
             PhysicalPlan::MergeRelationship { .. } => PhysicalPlanKind::MergeRelationship,
             PhysicalPlan::MergeMatchedRelationship { .. } => {
@@ -160,6 +161,7 @@ impl PhysicalPlan {
             | PhysicalPlan::GraphAlgorithm { .. }
             | PhysicalPlan::VectorSeedScan { .. }
             | PhysicalPlan::CreateNode { .. }
+            | PhysicalPlan::UnwindMutation { .. }
             | PhysicalPlan::MergeNode { .. }
             | PhysicalPlan::MergeRelationship { .. }
             | PhysicalPlan::MergeMatchedRelationship { .. }

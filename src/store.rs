@@ -993,7 +993,15 @@ impl GraphMutationTransaction {
         mutation: GraphMutation,
         limits: MutationLimits,
     ) -> Result<MutationSummary> {
-        self.stage_mutation(mutation, limits, true)
+        self.stage_mutations_with_limits(vec![mutation], limits)
+    }
+
+    pub(crate) fn stage_mutations_with_limits(
+        &mut self,
+        mutations: Vec<GraphMutation>,
+        limits: MutationLimits,
+    ) -> Result<MutationSummary> {
+        self.stage_mutations(mutations, limits, true)
     }
 
     pub(crate) fn stage_mutation_without_commit_rows(
@@ -1001,19 +1009,26 @@ impl GraphMutationTransaction {
         mutation: GraphMutation,
         limits: MutationLimits,
     ) -> Result<MutationSummary> {
-        self.stage_mutation(mutation, limits, false)
+        self.stage_mutations(vec![mutation], limits, false)
     }
 
-    fn stage_mutation(
+    fn stage_mutations(
         &mut self,
-        mutation: GraphMutation,
+        mutations: Vec<GraphMutation>,
         limits: MutationLimits,
         retain_commit_rows: bool,
     ) -> Result<MutationSummary> {
+        if mutations.is_empty() {
+            return Ok(MutationSummary {
+                rows: Vec::new(),
+                relational_mutation_outcomes: Vec::new(),
+                append_mutation_outcomes: Vec::new(),
+            });
+        }
         let mut captured_ops = Vec::new();
         let summary = self.store.commit_mutations_internal(
             &mut self.catalog,
-            vec![mutation],
+            mutations,
             limits,
             MutationCommitOptions {
                 captured_graph_ops: Some(&mut captured_ops),

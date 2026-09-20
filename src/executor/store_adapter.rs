@@ -471,6 +471,15 @@ impl GraphExecutionWrite for GraphStore {
         GraphStore::commit_mutation_with_limits(self, catalog, mutation, limits)
     }
 
+    fn commit_mutations_with_limits(
+        &mut self,
+        catalog: &mut Catalog,
+        mutations: Vec<GraphMutation>,
+        limits: MutationLimits,
+    ) -> Result<MutationSummary> {
+        GraphStore::commit_mutations_with_limits(self, catalog, mutations, limits)
+    }
+
     fn set_node_properties_by_ids_with_limits(
         &mut self,
         catalog: &mut Catalog,

@@ -281,6 +281,13 @@ pub trait GraphExecutionWrite: GraphExecutionRead {
         limits: MutationLimits,
     ) -> Result<MutationSummary>;
 
+    fn commit_mutations_with_limits(
+        &mut self,
+        catalog: &mut Catalog,
+        mutations: Vec<GraphMutation>,
+        limits: MutationLimits,
+    ) -> Result<MutationSummary>;
+
     fn set_node_properties_by_ids_with_limits(
         &mut self,
         catalog: &mut Catalog,
