@@ -154,7 +154,15 @@ pub(super) fn publish_generation(
         Some(task),
         "search out-of-core layout",
     )?;
-    let (mut segments, document_count, documents_digest, segment_id, level, compact_range) =
+    let (
+        mut segments,
+        mutation_runs,
+        document_count,
+        documents_digest,
+        segment_id,
+        level,
+        compact_range,
+    ) =
         match input.active_manifest_update {
             Some(ActiveManifestUpdate::Append {
                 expected_generation,
@@ -184,6 +192,7 @@ pub(super) fn publish_generation(
                     .ok_or_else(|| HawDBError::Storage("search segment id overflow".into()))?;
                 (
                     active.segments,
+                    active.mutation_runs,
                     document_count,
                     DocumentsDigest::combine(active.documents_digest, input.documents_digest),
                     segment_id,
@@ -208,6 +217,7 @@ pub(super) fn publish_generation(
                         active.generation
                     )));
                 }
+                reject_active_mutation_runs(&active)?;
                 let index = active
                     .segments
                     .iter()
@@ -243,6 +253,7 @@ pub(super) fn publish_generation(
                 let level = previous.level;
                 (
                     active.segments,
+                    Vec::new(),
                     document_count,
                     documents_digest,
                     *segment_id,
@@ -273,6 +284,7 @@ pub(super) fn publish_generation(
                         active.generation
                     )));
                 }
+                reject_active_mutation_runs(&active)?;
                 let start = active
                     .segments
                     .iter()
@@ -333,6 +345,7 @@ pub(super) fn publish_generation(
                     .ok_or_else(|| HawDBError::Storage("search segment id overflow".into()))?;
                 (
                     active.segments,
+                    Vec::new(),
                     active.document_count,
                     active.documents_digest,
                     segment_id,
@@ -365,6 +378,7 @@ pub(super) fn publish_generation(
                         active.generation
                     )));
                 }
+                reject_active_mutation_runs(&active)?;
                 let start = active
                     .segments
                     .iter()
@@ -438,6 +452,7 @@ pub(super) fn publish_generation(
                     .ok_or_else(|| HawDBError::Storage("search segment id overflow".into()))?;
                 (
                     active.segments,
+                    Vec::new(),
                     document_count,
                     documents_digest,
                     segment_id,
@@ -446,6 +461,7 @@ pub(super) fn publish_generation(
                 )
             }
             None => (
+                Vec::new(),
                 Vec::new(),
                 input.document_count,
                 input.documents_digest,
@@ -497,7 +513,7 @@ pub(super) fn publish_generation(
         format: OUT_OF_CORE_FORMAT.to_string(),
         generation,
         segments,
-        mutation_runs: Vec::new(),
+        mutation_runs,
         document_count,
         documents_digest,
         source_graph_commit_epoch: input.source_graph_commit_epoch,
@@ -636,6 +652,16 @@ pub(super) fn publish_generation(
         document_count,
         documents_digest,
     })
+}
+
+fn reject_active_mutation_runs(active: &SearchOutOfCoreManifestBody) -> Result<()> {
+    if active.mutation_runs.is_empty() {
+        return Ok(());
+    }
+    Err(HawDBError::Storage(
+        "search manifest rewrite with active mutation runs requires target-aware replacement support"
+            .to_string(),
+    ))
 }
 
 #[cfg(test)]

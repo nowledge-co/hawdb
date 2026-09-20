@@ -166,7 +166,9 @@ The first `prepare_delta` publication cut is delete-only. It resolves each
 visible target, writes one bounded mutation run, then publishes the manifest
 last. Existing content segments remain unchanged. A later update or replacement
 that would need target-aware vector or duplicate-ID handling fails closed until
-that path is implemented; a further visible delete may append another run.
+that path is implemented; a further visible delete may append another run. A
+strictly ordered append keeps the active mutation-run references because its
+new segment cannot contain an existing retraction target.
 
 ## Verification matrix
 

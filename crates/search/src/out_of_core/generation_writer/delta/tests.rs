@@ -497,6 +497,68 @@ fn active_mutation_runs_reject_unsupported_replacement_paths() {
 }
 
 #[test]
+fn append_after_a_mutation_run_preserves_existing_retractions() {
+    let root = Fixture::new();
+    append(&root.0, row("z"));
+    let reader = SearchOutOfCoreReader::open(&root.0).unwrap();
+    SearchOutOfCoreGenerationWriter::prepare_delta(
+        &reader,
+        SearchProjectionDelta {
+            deletes: vec!["memory:c".to_string()],
+            ..Default::default()
+        },
+        Default::default(),
+    )
+    .unwrap()
+    .finish()
+    .unwrap();
+
+    let reader = SearchOutOfCoreReader::open(&root.0).unwrap();
+    let before = reader.manifest.clone();
+    let update = SearchOutOfCoreGenerationWriter::prepare_delta(
+        &reader,
+        SearchProjectionDelta {
+            upserts: vec![row("zz")],
+            ..Default::default()
+        },
+        Default::default(),
+    )
+    .unwrap();
+    assert_eq!(update.delta_report().action, "incremental_segment_append");
+    assert_eq!(update.source_read_metrics().hydrated_documents, 0);
+    let (_, build, _) = update.finish().unwrap();
+
+    let reader = SearchOutOfCoreReader::open(&root.0).unwrap();
+    assert_eq!(build.document_count, 4);
+    assert_eq!(reader.manifest.segments.len(), before.segments.len() + 1);
+    assert_eq!(
+        reader.manifest.mutation_runs.len(),
+        before.mutation_runs.len()
+    );
+    let actual_run = &reader.manifest.mutation_runs[0];
+    let previous_run = &before.mutation_runs[0];
+    assert_eq!(actual_run.generation, previous_run.generation);
+    assert_eq!(actual_run.file, previous_run.file);
+    assert_eq!(actual_run.len, previous_run.len);
+    assert_eq!(actual_run.checksum, previous_run.checksum);
+    assert_eq!(actual_run.entry_count, previous_run.entry_count);
+    assert_eq!(actual_run.analyzer_digest, previous_run.analyzer_digest);
+    assert_eq!(
+        reader.manifest.documents_digest,
+        DocumentsDigest::combine(
+            before.documents_digest,
+            document_digest(&row("zz").into_document())
+        )
+    );
+    let ids = ["a", "e", "z", "zz"].map(|id| format!("memory:{id}"));
+    assert_eq!(
+        reader.hydrate_documents(&ids).unwrap().documents,
+        ["a", "e", "z", "zz"].map(|id| row(id).into_document())
+    );
+    assert!(reader.hydrate_documents(&["memory:c".to_string()]).is_err());
+}
+
+#[test]
 fn active_mutation_runs_reject_compaction_before_admission_or_publication() {
     let root = Fixture::new();
     append(&root.0, row("z"));
