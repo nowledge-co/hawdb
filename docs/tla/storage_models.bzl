@@ -31,6 +31,7 @@ STORAGE_MODELS = [
     "HawDBIndexStatistics",
     "HawDBKnowledgeRetrievalPipeline",
     "HawDBMemoryTierRelease",
+    "HawDBMvccCommitValidation",
     "HawDBOverflowExactCompaction",
     "HawDBOverflowPublication",
     "HawDBPageCacheAdmission",

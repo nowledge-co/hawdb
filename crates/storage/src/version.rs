@@ -51,7 +51,6 @@ pub enum VersionKey {
         table: String,
         key: RelationalKey,
     },
-    AppendTable(String),
 }
 
 impl CowPageWeight for VersionKey {
@@ -72,7 +71,6 @@ impl CowPageWeight for VersionKey {
             Self::ForeignKey { table, key } => base
                 .saturating_add(table.len())
                 .saturating_add(relational_key_bytes(key)),
-            Self::AppendTable(table) => base.saturating_add(table.len()),
         }
     }
 }

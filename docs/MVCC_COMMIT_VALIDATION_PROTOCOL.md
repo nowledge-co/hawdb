@@ -1,7 +1,7 @@
 # MVCC Commit Validation Protocol
 
-Status: design baseline for #231. No per-key version validation is implemented
-yet.
+Status: implementation contract for #231. Per-key validation is introduced in
+reviewable slices; activation still requires every verification gate below.
 
 ## Purpose and boundary
 
@@ -44,7 +44,7 @@ time-travel API. Its variants cover every canonical mutation domain:
 | Relational row | Table identity plus primary key | Row update, delete, and primary-key insert conflict at row granularity. |
 | Unique/index entry | Table identity, index identity, and encoded index key | Concurrent inserts or key changes must preserve uniqueness. |
 | Foreign-key target | Referenced table and key | Delete and referencing insert must validate the same constraint identity. |
-| Append sequence | Table identity | Generated-key allocation is one ordered state per table. |
+| Append allocation | Commit sequencer | Generated keys are allocated from the current append state during serialized commit, so disjoint append batches do not carry a table-wide optimistic version key. |
 | Schema/catalog | One schema identity | DDL, constraint, and index changes invalidate every workspace built from the old catalog. |
 | Conservative access | Table or database identity | Unknown graph predicates, joins, and unbounded access sets stay correct before narrower derivation exists. |
 
@@ -98,10 +98,10 @@ leaves the published root and `VersionIndex` unchanged.
    the transaction read epoch, current epoch, and the conflicting internal key
    class. Do not append a WAL entry, advance an epoch, or publish workspace
    state.
-5. Recheck graph constraints, relational constraints, and append sequence
-   allocation against the same live root used for validation. Their identities
-   are already members of the write set, but constraint evaluation remains the
-   authoritative semantic check.
+5. Recheck graph and relational constraints against the same live root used
+   for validation. Allocate append sequence values from that live root while
+   holding the commit sequencer; append ordering remains the authoritative
+   semantic check and does not introduce a table-wide optimistic conflict.
 6. Build the existing canonical WAL batch. The batch and its stamp update have
    one candidate commit epoch.
 7. Append and durably sync the WAL batch using the existing group-commit

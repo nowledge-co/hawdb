@@ -240,6 +240,77 @@ fn optimistic_transactions_prepare_in_parallel_and_reject_the_conflicting_commit
 }
 
 #[test]
+fn optimistic_graph_write_ignores_an_unrelated_schema_stamp() {
+    let database = Database::new().into_concurrent();
+    database
+        .query("CREATE (:Memory {id: 1, state: 'before'})")
+        .expect("create graph fixture");
+    let mut graph = database
+        .begin_transaction(ConcurrentTransactionOptions::optimistic())
+        .expect("begin optimistic graph transaction");
+    graph
+        .query("MATCH (m:Memory {id: 1}) SET m.state = 'after'")
+        .expect("stage graph update");
+
+    database
+        .query_sql("CREATE TABLE unrelated (id BIGINT PRIMARY KEY)")
+        .expect("commit unrelated schema change");
+    graph
+        .commit()
+        .expect("unrelated schema stamp must not reject graph-only write");
+}
+
+#[test]
+fn optimistic_transactions_commit_append_batches_from_one_snapshot() {
+    let database = Database::new().into_concurrent();
+    database
+        .query_sql(
+            "CREATE TABLE events (\
+               stream_id TEXT NOT NULL, \
+               sequence BIGINT NOT NULL, \
+               payload TEXT NOT NULL\
+             ) WITH (\
+               storage_mode = 'strict_append', \
+               partition_key = 'stream_id', \
+               order_key = 'sequence'\
+             )",
+        )
+        .expect("create strict append table");
+    let mut first = database
+        .begin_transaction(ConcurrentTransactionOptions::optimistic())
+        .expect("begin first optimistic transaction");
+    let mut second = database
+        .begin_transaction(ConcurrentTransactionOptions::optimistic())
+        .expect("begin second optimistic transaction");
+    first
+        .query_sql(
+            "INSERT INTO events (stream_id, sequence, payload) \
+             VALUES ('stream', 1, 'first')",
+        )
+        .expect("stage first append batch");
+    second
+        .query_sql(
+            "INSERT INTO events (stream_id, sequence, payload) \
+             VALUES ('stream', 2, 'second')",
+        )
+        .expect("stage second append batch");
+
+    first.commit().expect("commit first append batch");
+    second.commit().expect("commit second append batch");
+    assert_eq!(
+        database
+            .query_sql(
+                "SELECT sequence FROM events WHERE stream_id = 'stream' \
+                 ORDER BY sequence LIMIT 10",
+            )
+            .expect("read committed append batches")
+            .rows
+            .len(),
+        2
+    );
+}
+
+#[test]
 fn optimistic_transactions_commit_disjoint_graph_updates_from_one_snapshot() {
     let db = Database::new().into_concurrent();
     db.query("CREATE (:Memory {id: 'left', state: 'before'})")

@@ -1504,6 +1504,7 @@ impl GraphStore {
         let mut storage_recovery_report = store.replay_wal(catalog, replay_config)?;
         let wal_replay_micros = elapsed_micros(wal_replay_started);
         let post_replay_open_started = std::time::Instant::now();
+        store.rebuild_version_index_after_recovery(catalog);
         store.validate_authoritative_relational_index_open()?;
         store.validate_relationship_endpoints()?;
         store.refresh_basic_statistics_epoch();
@@ -1519,6 +1520,42 @@ impl GraphStore {
         };
         store.storage_recovery_report = storage_recovery_report;
         Ok((store, checkpoint_catalog))
+    }
+
+    fn rebuild_version_index_after_recovery(&mut self, catalog: &Catalog) {
+        if self.commit_epoch == 0 {
+            self.version_index = hawdb_storage::version::VersionIndex::default();
+            return;
+        }
+
+        let mut keys = Vec::new();
+        for (id, _) in self.nodes.iter() {
+            keys.push(hawdb_storage::version::VersionKey::GraphNode(*id));
+        }
+        for (id, relationship) in self.relationships.iter() {
+            keys.push(hawdb_storage::version::VersionKey::GraphRelationship(*id));
+            keys.push(hawdb_storage::version::VersionKey::GraphAdjacency {
+                node_id: relationship.source,
+                direction: hawdb_storage::AdjacencyDirection::Outgoing,
+            });
+            keys.push(hawdb_storage::version::VersionKey::GraphAdjacency {
+                node_id: relationship.target,
+                direction: hawdb_storage::AdjacencyDirection::Incoming,
+            });
+        }
+        for schema in self.relational_state.table_schemas() {
+            keys.push(hawdb_storage::version::VersionKey::RelationalTable(
+                schema.name.clone(),
+            ));
+        }
+        if !catalog.is_empty() || !self.append_state.schemas().is_empty() {
+            keys.push(hawdb_storage::version::VersionKey::Schema);
+        }
+        if keys.is_empty() {
+            keys.push(hawdb_storage::version::VersionKey::Database);
+        }
+        self.version_index =
+            hawdb_storage::version::VersionIndex::from_live_keys_at_epoch(keys, self.commit_epoch);
     }
 
     fn open_for_derived_repair(
@@ -3950,6 +3987,44 @@ mod tests {
             assert_eq!(rels.len(), 1);
             assert_eq!(rels[0].target, NodeId(1));
             assert_eq!(rels[0].properties.get("weight"), Some(&Value::Int(7)));
+        }
+        std::fs::remove_dir_all(path).unwrap();
+    }
+
+    #[test]
+    fn reopen_rebuilds_version_index_from_recovered_graph_state() {
+        let path = unique_test_dir("version_index_recovery");
+        let commit_epoch;
+        {
+            let mut catalog = Catalog::default();
+            let mut store = GraphStore::open(&path, &mut catalog).unwrap();
+            let first = store
+                .create_node(&mut catalog, "Memory", properties([("id", Value::Int(1))]))
+                .unwrap();
+            store.checkpoint(&catalog).unwrap();
+            let second = store
+                .create_node(&mut catalog, "Memory", properties([("id", Value::Int(2))]))
+                .unwrap();
+            commit_epoch = store.commit_epoch();
+            assert_eq!((first, second), (NodeId(0), NodeId(1)));
+        }
+        {
+            let mut catalog = Catalog::default();
+            let store = GraphStore::open(&path, &mut catalog).unwrap();
+            assert_eq!(
+                store
+                    .version_index
+                    .stamp(&hawdb_storage::version::VersionKey::GraphNode(NodeId(0)))
+                    .map(|stamp| stamp.commit_epoch),
+                Some(commit_epoch)
+            );
+            assert_eq!(
+                store
+                    .version_index
+                    .stamp(&hawdb_storage::version::VersionKey::GraphNode(NodeId(1)))
+                    .map(|stamp| stamp.commit_epoch),
+                Some(commit_epoch)
+            );
         }
         std::fs::remove_dir_all(path).unwrap();
     }

@@ -85,6 +85,65 @@ fn optimistic_transactions_commit_disjoint_relational_tables_from_one_snapshot()
     );
 }
 
+#[test]
+fn optimistic_transactions_commit_disjoint_rows_from_one_snapshot() {
+    let database = mutation_fixture().into_concurrent();
+    let mut first = database
+        .begin_transaction(ConcurrentTransactionOptions::optimistic())
+        .expect("begin first optimistic transaction");
+    let mut second = database
+        .begin_transaction(ConcurrentTransactionOptions::optimistic())
+        .expect("begin second optimistic transaction");
+    first
+        .query_sql_with_result("UPDATE items SET state = 'first' WHERE id = 1")
+        .expect("stage first row update");
+    second
+        .query_sql_with_result("UPDATE items SET state = 'second' WHERE id = 2")
+        .expect("stage second row update");
+
+    assert_commit_outcome(
+        first.commit_with_result().expect("commit first row update"),
+        1,
+    );
+    assert_commit_outcome(
+        second
+            .commit_with_result()
+            .expect("commit second row update"),
+        1,
+    );
+}
+
+#[test]
+fn mixed_schema_and_row_writes_stamp_the_changed_row() {
+    let database = mutation_fixture().into_concurrent();
+    let mut schema_and_row = database
+        .begin_transaction(ConcurrentTransactionOptions::optimistic())
+        .expect("begin schema and row transaction");
+    let mut stale_row = database
+        .begin_transaction(ConcurrentTransactionOptions::optimistic())
+        .expect("begin stale row transaction");
+    schema_and_row
+        .query_sql_with_result("ALTER TABLE items ADD COLUMN note TEXT")
+        .expect("stage schema change");
+    schema_and_row
+        .query_sql_with_result("UPDATE items SET state = 'schema-winner' WHERE id = 1")
+        .expect("stage row update beside schema change");
+    stale_row
+        .query_sql_with_result("UPDATE items SET state = 'stale' WHERE id = 1")
+        .expect("stage stale row update");
+
+    schema_and_row
+        .commit()
+        .expect("commit schema and row changes");
+    let conflict = stale_row
+        .commit()
+        .expect_err("same row must retain a version stamp beside DDL");
+    assert!(matches!(
+        conflict,
+        HawDBError::TransactionConflict { key, .. } if key == "relational_row"
+    ));
+}
+
 fn assert_statement_outcome(result: SqlStatementResult, affected_rows: usize) {
     let mutation = result.mutation.expect("provisional mutation outcome");
     assert_eq!(mutation.affected_rows, affected_rows);
@@ -273,8 +332,8 @@ fn concurrent_update_delete_outcomes_cover_retry_and_both_transaction_modes() {
         1,
     );
     database
-        .query_sql("INSERT INTO items (id, state) VALUES (4, 'winner')")
-        .expect("advance the durable commit epoch");
+        .query_sql("UPDATE items SET state = 'winner' WHERE id = 3")
+        .expect("commit a competing update for the same row");
     let conflict = stale
         .commit_with_result()
         .expect_err("stale optimistic outcome must not be confirmed");
@@ -284,7 +343,7 @@ fn concurrent_update_delete_outcomes_cover_retry_and_both_transaction_modes() {
             read_epoch: 4,
             committed_epoch: 5,
             key,
-        } if key == "relational_table"
+        } if key == "relational_row"
     ));
     assert!(conflict.is_retryable_transaction_conflict());
 
