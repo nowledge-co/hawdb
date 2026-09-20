@@ -1821,7 +1821,13 @@ impl SearchOutOfCoreReader {
                         self.config.max_hydrated_bytes
                     )));
                 }
-                hydrated.insert(document.id.clone(), document);
+                let document_id = document.id.clone();
+                if hydrated.insert(document_id.clone(), document).is_some() {
+                    return Err(HawDBError::Storage(format!(
+                        "search out-of-core segment set has duplicate document {}",
+                        document_id
+                    )));
+                }
             }
         }
         if hydrated.len() != document_ids.len() {
@@ -1836,6 +1842,8 @@ impl SearchOutOfCoreReader {
     }
 
     fn segment_for_document(&self, id: &str) -> Result<Option<SearchDocumentSegmentRoute<'_>>> {
+        let mut route = None;
+        let mut lexical_document_bytes_read = 0u64;
         for (artifact_index, artifact) in self.segments.iter().enumerate() {
             let Ok(index) = artifact.descriptor.segments.binary_search_by(|segment| {
                 if segment.last_document_id.as_str() < id {
@@ -1854,18 +1862,24 @@ impl SearchOutOfCoreReader {
                 .get(index)
                 .expect("binary search returned an existing descriptor segment");
             let probe = artifact.lexical_projection.probe_document_id(id)?;
-            if probe.present {
-                return Ok(Some(SearchDocumentSegmentRoute {
-                    artifact_index,
-                    segment,
-                    lexical_document_bytes_read: probe.bytes_read,
-                }));
+            lexical_document_bytes_read =
+                lexical_document_bytes_read.saturating_add(probe.bytes_read);
+            if !probe.present {
+                continue;
             }
-            return Err(HawDBError::Storage(format!(
-                "search out-of-core descriptor range does not contain document {id}"
-            )));
+            if route.replace((artifact_index, segment)).is_some() {
+                return Err(HawDBError::Storage(format!(
+                    "search out-of-core segment set has duplicate document {id}"
+                )));
+            }
         }
-        Ok(None)
+        Ok(
+            route.map(|(artifact_index, segment)| SearchDocumentSegmentRoute {
+                artifact_index,
+                segment,
+                lexical_document_bytes_read,
+            }),
+        )
     }
 
     fn require_search_capabilities(&self, mode: SearchMode) -> Result<()> {
@@ -3845,6 +3859,17 @@ mod tests {
             .search_with_options("graph", None, SearchMode::Text, options(1, None))
             .unwrap_err();
         assert!(error.to_string().contains("duplicate document"));
+        let error = reader
+            .hydrate_documents(&[document(0, "team").id])
+            .unwrap_err();
+        assert!(error.to_string().contains("duplicate document"));
+        #[cfg(feature = "vector-search")]
+        {
+            let error = reader
+                .search_with_options("", Some(&[1.0, 16.0]), SearchMode::Vector, options(1, None))
+                .unwrap_err();
+            assert!(error.to_string().contains("duplicate document"));
+        }
         let error = SearchOutOfCoreGenerationWriter::prepare_delta(
             &reader,
             crate::SearchProjectionDelta::default(),
@@ -3864,8 +3889,24 @@ mod tests {
         initial_document: SearchDocument,
         next_document: SearchDocument,
     ) {
-        let mut initial =
-            SearchOutOfCoreGenerationWriter::create(path, Default::default()).unwrap();
+        publish_two_artifact_manifest_with_options(
+            path,
+            initial_document,
+            Default::default(),
+            next_document,
+            Default::default(),
+        );
+    }
+
+    #[cfg(feature = "full-text-search")]
+    fn publish_two_artifact_manifest_with_options(
+        path: &Path,
+        initial_document: SearchDocument,
+        initial_options: SearchOutOfCoreGenerationBuildOptions,
+        next_document: SearchDocument,
+        next_options: SearchOutOfCoreGenerationBuildOptions,
+    ) {
+        let mut initial = SearchOutOfCoreGenerationWriter::create(path, initial_options).unwrap();
         initial.push(initial_document).unwrap();
         initial.finish().unwrap();
 
@@ -3879,7 +3920,7 @@ mod tests {
             .next()
             .expect("initial manifest has one segment");
 
-        let mut next = SearchOutOfCoreGenerationWriter::create(path, Default::default()).unwrap();
+        let mut next = SearchOutOfCoreGenerationWriter::create(path, next_options).unwrap();
         next.push(next_document).unwrap();
         next.finish().unwrap();
 
@@ -4041,6 +4082,13 @@ mod tests {
         assert_eq!(vector.metrics.candidate_block_reads, 2);
         assert!(vector.metrics.vector_segment_bytes_read > 0);
 
+        let limited = reader
+            .search_with_options("", Some(&[16.0, 1.0]), SearchMode::Vector, options(1, None))
+            .unwrap();
+        assert_eq!(limited.result.total_hits, 2);
+        assert_eq!(limited.result.hits.len(), 1);
+        assert_eq!(limited.result.hits[0].id, "memory:001");
+
         let hybrid = reader
             .search_with_options(
                 "graph",
@@ -4094,6 +4142,55 @@ mod tests {
         );
         assert_eq!(required.metrics.candidate_block_reads, 2);
         assert!(required.metrics.rabitq_payload_bytes_read > 0);
+
+        let mut limited_config = SearchOutOfCoreConfig::default();
+        limited_config.max_vector_candidates = std::num::NonZeroUsize::new(1).unwrap();
+        let limited_reader =
+            SearchOutOfCoreReader::open_with_config(&path, limited_config).unwrap();
+        let limited = limited_reader
+            .search_with_options_compressed_vector_projection_mode(
+                "",
+                Some(&[16.0, 1.0]),
+                SearchMode::Vector,
+                options(1, None),
+                CompressedVectorSearchMode::Required,
+            )
+            .unwrap();
+        assert_eq!(limited.result.total_hits, 1);
+        assert_eq!(limited.result.hits.len(), 1);
+        fs::remove_dir_all(path).unwrap();
+    }
+
+    #[test]
+    #[cfg(all(feature = "full-text-search", feature = "vector-search"))]
+    fn out_of_core_multi_segment_rabitq_rejects_mixed_quantization() {
+        let path = test_dir("multi-segment-rabitq-mixed-quantization");
+        publish_two_artifact_manifest_with_options(
+            &path,
+            document(0, "team"),
+            SearchOutOfCoreGenerationBuildOptions {
+                rabitq_transform_seed: 1,
+                ..Default::default()
+            },
+            document(1, "team"),
+            SearchOutOfCoreGenerationBuildOptions {
+                rabitq_transform_seed: 2,
+                ..Default::default()
+            },
+        );
+        let reader = SearchOutOfCoreReader::open(&path).unwrap();
+        let error = reader
+            .search_with_options_compressed_vector_projection_mode(
+                "",
+                Some(&[1.0, 16.0]),
+                SearchMode::Vector,
+                options(1, None),
+                CompressedVectorSearchMode::Required,
+            )
+            .unwrap_err();
+        assert!(error
+            .to_string()
+            .contains("matching bit widths and transform seeds"));
         fs::remove_dir_all(path).unwrap();
     }
 
