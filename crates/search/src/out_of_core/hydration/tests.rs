@@ -412,7 +412,7 @@ fn public_hydration_rejects_damaged_tail_without_writing_artifacts() {
     writer.finish().unwrap();
     let reader = SearchOutOfCoreReader::open(&root).unwrap();
     assert_eq!(reader.segment.descriptor.segments.len(), 1);
-    let path = root.join(&reader.manifest.payload_file);
+    let path = root.join(&reader.manifest.primary_segment().payload_file);
     let valid = fs::read(&path).unwrap();
     let mut damaged = valid.clone();
     *damaged.last_mut().unwrap() ^= 1;

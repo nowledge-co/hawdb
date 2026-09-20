@@ -123,6 +123,74 @@ fn assert_delta_snapshot(
 }
 
 #[test]
+fn global_statistics_preserve_scores_across_disjoint_projection_layers() {
+    let root = projection_root("global-statistics");
+    let left_root = root.join("left");
+    let right_root = root.join("right");
+    let merged_root = root.join("merged");
+    fs::create_dir_all(&left_root).unwrap();
+    fs::create_dir_all(&right_root).unwrap();
+    fs::create_dir_all(&merged_root).unwrap();
+
+    let analyzer = SearchAnalyzerLexicon::default();
+    let left_documents = [
+        document("a", "graph graph", "storage"),
+        document("b", "graph", "memory"),
+    ];
+    let right_documents = [
+        document("c", "graph", "graph graph graph"),
+        document("d", "database", "storage"),
+    ];
+    let reader = |root: &Path, documents: &[SearchDocument]| {
+        LexicalProjectionWriter::new(LexicalProjectionConfig::default())
+            .write(root, 1, Some(7), 11, 13, documents.iter(), &analyzer)
+            .unwrap()
+    };
+    let left = reader(&left_root, &left_documents);
+    let right = reader(&right_root, &right_documents);
+    let merged = reader(
+        &merged_root,
+        &left_documents
+            .iter()
+            .chain(&right_documents)
+            .cloned()
+            .collect::<Vec<_>>(),
+    );
+    let terms = BTreeSet::from(["graph".to_string()]);
+    let statistics =
+        LexicalCorpusStatistics::aggregate([left.as_ref(), right.as_ref()], &terms).unwrap();
+
+    let mut layered_scores = left
+        .score_with_global_statistics(
+            &terms,
+            crate::SearchLexicalTermPolicy::default().max_term_bytes(),
+            None,
+            &statistics,
+            |_| Ok(true),
+        )
+        .unwrap()
+        .scores;
+    layered_scores.extend(
+        right
+            .score_with_global_statistics(
+                &terms,
+                crate::SearchLexicalTermPolicy::default().max_term_bytes(),
+                None,
+                &statistics,
+                |_| Ok(true),
+            )
+            .unwrap()
+            .scores,
+    );
+    let merged_scores = merged
+        .score(&terms, &LexicalMiniDelta::default(), None, |_| Ok(true))
+        .unwrap()
+        .scores;
+    assert_eq!(layered_scores, merged_scores);
+    fs::remove_dir_all(root).unwrap();
+}
+
+#[test]
 fn retained_delta_snapshots_survive_mutations_and_budget_rejection() {
     let fixture = Fixture::new("delta-snapshots");
     let config = LexicalProjectionConfig::default();
