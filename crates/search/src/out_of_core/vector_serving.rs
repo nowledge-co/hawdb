@@ -17,9 +17,9 @@ use crate::error::{HawDBError, Result};
 use crate::{cosine_similarity, CompressedVectorSearchMode, SearchFallbackReasonCode};
 #[cfg(feature = "vector-search")]
 use std::cmp::{Ordering, Reverse};
-use std::collections::{BTreeMap, BTreeSet};
 #[cfg(feature = "vector-search")]
 use std::collections::BinaryHeap;
+use std::collections::{BTreeMap, BTreeSet};
 #[cfg(feature = "vector-search")]
 use std::num::NonZeroUsize;
 
@@ -317,6 +317,7 @@ impl SearchOutOfCoreReader {
         vector_execution_options: super::VectorSearchExecutionOptions<'_>,
         metrics: &mut SearchOutOfCoreMetrics,
     ) -> Result<VectorScoreScan> {
+        self.require_compatible_rabitq_projections()?;
         let task_context = vector_execution_options.task_context;
         checkpoint_vector_task(task_context)?;
         let minimum_candidates = retained_limit.unwrap_or(1).max(1);
@@ -558,6 +559,30 @@ impl SearchOutOfCoreReader {
             fallback_reasons: Vec::new(),
         })
     }
+
+    #[cfg(feature = "vector-search")]
+    fn require_compatible_rabitq_projections(&self) -> Result<()> {
+        let mut reference = None;
+        for (layer, artifact) in self.segments.iter().enumerate() {
+            let projection = artifact.rabitq_projection.as_ref().ok_or_else(|| {
+                HawDBError::Storage(format!(
+                    "search out-of-core layer {layer} has no RaBitQ projection"
+                ))
+            })?;
+            let manifest = projection.manifest();
+            let identity = (manifest.bit_width, manifest.transform_seed);
+            if let Some(reference) = reference
+                && identity != reference
+            {
+                return Err(HawDBError::Storage(
+                    "search multi-segment RaBitQ projections require matching bit widths and transform seeds"
+                        .to_string(),
+                ));
+            }
+            reference = Some(identity);
+        }
+        Ok(())
+    }
 }
 
 fn checkpoint_vector_task(task_context: Option<&crate::RuntimeTaskContext>) -> Result<()> {
@@ -573,4 +598,29 @@ pub(super) fn vector_projection_error(
     error: hawdb_vector_projection::ProjectionError,
 ) -> HawDBError {
     HawDBError::Storage(format!("search RaBitQ projection: {error}"))
+}
+
+#[cfg(all(test, feature = "vector-search"))]
+mod tests {
+    use super::{BoundedLayeredProjectionHits, LayeredProjectionHit};
+
+    #[test]
+    fn layered_projection_hits_evict_the_lower_scored_layer() {
+        let mut hits = BoundedLayeredProjectionHits::new(1);
+        hits.push(LayeredProjectionHit {
+            layer: 0,
+            ordinal: 0,
+            score: 1.0,
+        });
+        hits.push(LayeredProjectionHit {
+            layer: 1,
+            ordinal: 0,
+            score: 2.0,
+        });
+
+        let hits = hits.finish();
+        assert_eq!(hits.len(), 1);
+        assert_eq!(hits[0].layer, 1);
+        assert_eq!(hits[0].ordinal, 0);
+    }
 }

@@ -3804,8 +3804,24 @@ mod tests {
         initial_document: SearchDocument,
         next_document: SearchDocument,
     ) {
-        let mut initial =
-            SearchOutOfCoreGenerationWriter::create(path, Default::default()).unwrap();
+        publish_two_artifact_manifest_with_options(
+            path,
+            initial_document,
+            Default::default(),
+            next_document,
+            Default::default(),
+        );
+    }
+
+    #[cfg(feature = "full-text-search")]
+    fn publish_two_artifact_manifest_with_options(
+        path: &Path,
+        initial_document: SearchDocument,
+        initial_options: SearchOutOfCoreGenerationBuildOptions,
+        next_document: SearchDocument,
+        next_options: SearchOutOfCoreGenerationBuildOptions,
+    ) {
+        let mut initial = SearchOutOfCoreGenerationWriter::create(path, initial_options).unwrap();
         initial.push(initial_document).unwrap();
         initial.finish().unwrap();
 
@@ -3819,7 +3835,7 @@ mod tests {
             .next()
             .expect("initial manifest has one segment");
 
-        let mut next = SearchOutOfCoreGenerationWriter::create(path, Default::default()).unwrap();
+        let mut next = SearchOutOfCoreGenerationWriter::create(path, next_options).unwrap();
         next.push(next_document).unwrap();
         next.finish().unwrap();
 
@@ -3973,6 +3989,55 @@ mod tests {
         );
         assert_eq!(required.metrics.candidate_block_reads, 2);
         assert!(required.metrics.rabitq_payload_bytes_read > 0);
+
+        let mut limited_config = SearchOutOfCoreConfig::default();
+        limited_config.max_vector_candidates = std::num::NonZeroUsize::new(1).unwrap();
+        let limited_reader =
+            SearchOutOfCoreReader::open_with_config(&path, limited_config).unwrap();
+        let limited = limited_reader
+            .search_with_options_compressed_vector_projection_mode(
+                "",
+                Some(&[16.0, 1.0]),
+                SearchMode::Vector,
+                options(1, None),
+                CompressedVectorSearchMode::Required,
+            )
+            .unwrap();
+        assert_eq!(limited.result.total_hits, 1);
+        assert_eq!(limited.result.hits.len(), 1);
+        fs::remove_dir_all(path).unwrap();
+    }
+
+    #[test]
+    #[cfg(all(feature = "full-text-search", feature = "vector-search"))]
+    fn out_of_core_multi_segment_rabitq_rejects_mixed_quantization() {
+        let path = test_dir("multi-segment-rabitq-mixed-quantization");
+        publish_two_artifact_manifest_with_options(
+            &path,
+            document(0, "team"),
+            SearchOutOfCoreGenerationBuildOptions {
+                rabitq_transform_seed: 1,
+                ..Default::default()
+            },
+            document(1, "team"),
+            SearchOutOfCoreGenerationBuildOptions {
+                rabitq_transform_seed: 2,
+                ..Default::default()
+            },
+        );
+        let reader = SearchOutOfCoreReader::open(&path).unwrap();
+        let error = reader
+            .search_with_options_compressed_vector_projection_mode(
+                "",
+                Some(&[1.0, 16.0]),
+                SearchMode::Vector,
+                options(1, None),
+                CompressedVectorSearchMode::Required,
+            )
+            .unwrap_err();
+        assert!(error
+            .to_string()
+            .contains("matching bit widths and transform seeds"));
         fs::remove_dir_all(path).unwrap();
     }
 
