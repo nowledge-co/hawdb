@@ -66,6 +66,40 @@ impl Drop for Fixture {
     }
 }
 
+#[test]
+fn document_membership_reads_a_validated_mapping_block() {
+    let fixture = Fixture::new("document-membership");
+    let a = fixture.reader.probe_document_id("a").unwrap();
+    let b = fixture.reader.probe_document_id("b").unwrap();
+    let absent = fixture.reader.probe_document_id("aa").unwrap();
+    let out_of_range = fixture.reader.probe_document_id("c").unwrap();
+    assert!(a.present);
+    assert!(b.present);
+    assert!(!absent.present);
+    assert!(!out_of_range.present);
+
+    let block = fixture
+        .reader
+        .manifest
+        .blocks
+        .iter()
+        .find(|block| block.kind == BlockKind::Documents)
+        .unwrap();
+    let path = fixture.root.join(&fixture.reader.manifest.artifact_file);
+    let mut artifact = fs::OpenOptions::new().write(true).open(&path).unwrap();
+    artifact.seek(SeekFrom::Start(block.offset)).unwrap();
+    artifact.write_all(&[0]).unwrap();
+    artifact.sync_all().unwrap();
+
+    assert_eq!(a.bytes_read, block.length);
+    assert_eq!(b.bytes_read, block.length);
+    assert_eq!(absent.bytes_read, block.length);
+    assert_eq!(out_of_range.bytes_read, 0);
+
+    let error = fixture.reader.probe_document_id("a").unwrap_err();
+    assert!(error.to_string().contains("checksum mismatch"));
+}
+
 fn assert_delta_snapshot(
     fixture: &Fixture,
     delta: &LexicalMiniDelta,

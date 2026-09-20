@@ -58,7 +58,8 @@ fn hydration_retains_one_decoded_document_instead_of_the_segment() {
         reader
             .segment_for_document(&expected.id)
             .unwrap()
-            .1
+            .unwrap()
+            .segment
             .document_count
             > 1
     );
@@ -74,6 +75,8 @@ fn hydration_retains_one_decoded_document_instead_of_the_segment() {
         output.metrics.peak_segment_document_bytes,
         search_document_bytes(&expected)
     );
+    assert_eq!(output.metrics.lexical_document_block_reads, 1);
+    assert!(output.metrics.lexical_document_bytes_read > 0);
     drop(reader);
     fs::remove_dir_all(root).unwrap();
 }

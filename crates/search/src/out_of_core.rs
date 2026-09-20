@@ -120,6 +120,8 @@ impl Default for SearchOutOfCoreConfig {
 pub struct SearchOutOfCoreMetrics {
     pub segment_range_reads: u64,
     pub segment_bytes_read: u64,
+    pub lexical_document_block_reads: u64,
+    pub lexical_document_bytes_read: u64,
     pub metadata_segment_bytes_read: u64,
     pub vector_segment_bytes_read: u64,
     pub hydration_segment_bytes_read: u64,
@@ -133,6 +135,12 @@ pub struct SearchOutOfCoreMetrics {
     pub rabitq_payload_bytes_read: u64,
     pub hydrated_documents: usize,
     pub hydrated_bytes: u64,
+}
+
+struct SearchDocumentSegmentRoute<'a> {
+    artifact_index: usize,
+    segment: &'a SearchSegmentDescriptorEntry,
+    lexical_document_bytes_read: u64,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -1723,13 +1731,20 @@ impl SearchOutOfCoreReader {
         }
         let mut segment_documents = BTreeMap::<(usize, u64), BTreeSet<String>>::new();
         for id in document_ids {
-            let (layer, segment) = self.segment_for_document(id).ok_or_else(|| {
+            let route = self.segment_for_document(id)?.ok_or_else(|| {
                 HawDBError::Storage(format!(
                     "search document {id} is outside the published document ranges"
                 ))
             })?;
+            if route.lexical_document_bytes_read > 0 {
+                metrics.lexical_document_block_reads =
+                    metrics.lexical_document_block_reads.saturating_add(1);
+                metrics.lexical_document_bytes_read = metrics
+                    .lexical_document_bytes_read
+                    .saturating_add(route.lexical_document_bytes_read);
+            }
             segment_documents
-                .entry((layer, segment.segment_id))
+                .entry((route.artifact_index, route.segment.segment_id))
                 .or_default()
                 .insert(id.clone());
         }
@@ -1784,27 +1799,37 @@ impl SearchOutOfCoreReader {
         Ok(hydrated)
     }
 
-    fn segment_for_document(&self, id: &str) -> Option<(usize, &SearchSegmentDescriptorEntry)> {
-        self.segments
-            .iter()
-            .enumerate()
-            .find_map(|(layer, artifact)| {
-                artifact
-                    .descriptor
-                    .segments
-                    .binary_search_by(|segment| {
-                        if segment.last_document_id.as_str() < id {
-                            CmpOrdering::Less
-                        } else if segment.first_document_id.as_str() > id {
-                            CmpOrdering::Greater
-                        } else {
-                            CmpOrdering::Equal
-                        }
-                    })
-                    .ok()
-                    .and_then(|index| artifact.descriptor.segments.get(index))
-                    .map(|segment| (layer, segment))
-            })
+    fn segment_for_document(&self, id: &str) -> Result<Option<SearchDocumentSegmentRoute<'_>>> {
+        for (artifact_index, artifact) in self.segments.iter().enumerate() {
+            let Ok(index) = artifact.descriptor.segments.binary_search_by(|segment| {
+                if segment.last_document_id.as_str() < id {
+                    CmpOrdering::Less
+                } else if segment.first_document_id.as_str() > id {
+                    CmpOrdering::Greater
+                } else {
+                    CmpOrdering::Equal
+                }
+            }) else {
+                continue;
+            };
+            let segment = artifact
+                .descriptor
+                .segments
+                .get(index)
+                .expect("binary search returned an existing descriptor segment");
+            let probe = artifact.lexical_projection.probe_document_id(id)?;
+            if probe.present {
+                return Ok(Some(SearchDocumentSegmentRoute {
+                    artifact_index,
+                    segment,
+                    lexical_document_bytes_read: probe.bytes_read,
+                }));
+            }
+            return Err(HawDBError::Storage(format!(
+                "search out-of-core descriptor range does not contain document {id}"
+            )));
+        }
+        Ok(None)
     }
 
     fn require_search_capabilities(&self, mode: SearchMode) -> Result<()> {

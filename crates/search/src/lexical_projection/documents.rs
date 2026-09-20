@@ -17,6 +17,12 @@ use super::{
     SliceCursor,
 };
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct DocumentIdProbe {
+    pub present: bool,
+    pub bytes_read: u64,
+}
+
 /// One bounded mapping block serves the monotonically increasing posting merge.
 pub(super) struct DocumentLookup<'a> {
     projection: &'a LexicalProjectionReader,
@@ -85,6 +91,59 @@ impl<'a> DocumentLookup<'a> {
                 return Ok((id, length));
             }
         }
+    }
+}
+
+impl LexicalProjectionReader {
+    /// Probes one document ID through its bounded, file-backed mapping block.
+    ///
+    /// The manifest keeps document blocks ordered by their ID bounds, so a
+    /// membership probe reads at most one already-admitted block. This keeps
+    /// callers from retaining a complete artifact ID set merely to resolve a
+    /// newer segment's version of a document.
+    pub(crate) fn probe_document_id(&self, document_id: &str) -> Result<DocumentIdProbe> {
+        let blocks = &self.manifest.blocks;
+        let index = blocks.partition_point(|block| {
+            block.kind == BlockKind::Documents && block.max_key.as_str() < document_id
+        });
+        let Some(block) = blocks.get(index) else {
+            return Ok(DocumentIdProbe {
+                present: false,
+                bytes_read: 0,
+            });
+        };
+        if block.kind != BlockKind::Documents || block.min_key.as_str() > document_id {
+            return Ok(DocumentIdProbe {
+                present: false,
+                bytes_read: 0,
+            });
+        }
+
+        let bytes = self.read_block(block)?;
+        let bytes_read = bytes.len() as u64;
+        validate_document_block(&bytes, self.manifest.generation, block)?;
+        let mut cursor = SliceCursor::new(&bytes);
+        let count = decode_block_header(
+            &mut cursor,
+            self.manifest.generation,
+            block,
+            BlockKind::Documents,
+        )?;
+        for _ in 0..count {
+            let id = cursor.string(1024 * 1024)?;
+            let ordering = id.as_str().cmp(document_id);
+            if ordering.is_ge() {
+                return Ok(DocumentIdProbe {
+                    present: ordering.is_eq(),
+                    bytes_read,
+                });
+            }
+            let _length = cursor.u32()?;
+        }
+        Ok(DocumentIdProbe {
+            present: false,
+            bytes_read,
+        })
     }
 }
 
