@@ -14466,6 +14466,166 @@ mod tests {
 
     #[test]
     #[cfg(feature = "full-text-search")]
+    fn multi_segment_bm25_scores_match_a_single_segment_baseline() {
+        let baseline_path = unique_test_dir("single_segment_bm25_baseline");
+        let segmented_path = unique_test_dir("multi_segment_bm25_differential");
+        let documents = [
+            SearchProjectionRow {
+                kind: SearchProjectionKind::Memory,
+                external_id: "a-graph-storage".to_string(),
+                title: "Graph Graph storage engine".to_string(),
+                body: "durable graph storage".to_string(),
+                embedding: None,
+                source_id: None,
+                metadata: BTreeMap::from([("space_id".to_string(), "team".to_string())]),
+            },
+            SearchProjectionRow {
+                kind: SearchProjectionKind::Memory,
+                external_id: "b-graph-query".to_string(),
+                title: "Graph query planner".to_string(),
+                body: "query graph graph optimization".to_string(),
+                embedding: None,
+                source_id: None,
+                metadata: BTreeMap::from([("space_id".to_string(), "team".to_string())]),
+            },
+            SearchProjectionRow {
+                kind: SearchProjectionKind::Memory,
+                external_id: "c-storage-reader".to_string(),
+                title: "Storage reader".to_string(),
+                body: "bounded storage cache".to_string(),
+                embedding: None,
+                source_id: None,
+                metadata: BTreeMap::from([("space_id".to_string(), "team".to_string())]),
+            },
+            SearchProjectionRow {
+                kind: SearchProjectionKind::Memory,
+                external_id: "d-private-graph".to_string(),
+                title: "Graph Graph private".to_string(),
+                body: "private graph material".to_string(),
+                embedding: None,
+                source_id: None,
+                metadata: BTreeMap::from([("space_id".to_string(), "private".to_string())]),
+            },
+        ];
+        let replacement = SearchProjectionRow {
+            kind: SearchProjectionKind::Memory,
+            external_id: "b-graph-query".to_string(),
+            title: "Graph storage planner".to_string(),
+            body: "durable graph storage update".to_string(),
+            embedding: None,
+            source_id: None,
+            metadata: BTreeMap::from([("space_id".to_string(), "team".to_string())]),
+        };
+        let deleted_id = documents[3].clone().into_document().id;
+        let options = SearchQueryOptions {
+            limit: 10,
+            offset: 0,
+            rank_window: Some(10),
+            fusion_weights: SearchFusionWeights::default(),
+            metadata_filters: BTreeMap::new(),
+            policy_epoch: None,
+        };
+        let mut baseline_writer =
+            SearchOutOfCoreGenerationWriter::create(&baseline_path, Default::default()).unwrap();
+        for document in [
+            documents[0].clone(),
+            replacement.clone(),
+            documents[2].clone(),
+        ] {
+            baseline_writer.push(document.into_document()).unwrap();
+        }
+        baseline_writer.finish().unwrap();
+
+        let mut initial_writer =
+            SearchOutOfCoreGenerationWriter::create(&segmented_path, Default::default()).unwrap();
+        initial_writer
+            .push(documents[0].clone().into_document())
+            .unwrap();
+        initial_writer.finish().unwrap();
+        for document in documents.iter().skip(1).cloned() {
+            let reader = SearchOutOfCoreReader::open(&segmented_path).unwrap();
+            let update = SearchOutOfCoreGenerationWriter::prepare_delta(
+                &reader,
+                SearchProjectionDelta {
+                    upserts: vec![document],
+                    ..Default::default()
+                },
+                Default::default(),
+            )
+            .unwrap();
+            update.finish().unwrap();
+        }
+        let reader = SearchOutOfCoreReader::open(&segmented_path).unwrap();
+        assert_eq!(reader.artifact_count(), documents.len());
+        let update = SearchOutOfCoreGenerationWriter::prepare_delta(
+            &reader,
+            SearchProjectionDelta {
+                upserts: vec![replacement],
+                ..Default::default()
+            },
+            Default::default(),
+        )
+        .unwrap();
+        update.finish().unwrap();
+
+        let reader = SearchOutOfCoreReader::open(&segmented_path).unwrap();
+        let update = SearchOutOfCoreGenerationWriter::prepare_delta(
+            &reader,
+            SearchProjectionDelta {
+                deletes: vec![deleted_id],
+                ..Default::default()
+            },
+            Default::default(),
+        )
+        .unwrap();
+        update.finish().unwrap();
+
+        let baseline = SearchOutOfCoreReader::open(&baseline_path).unwrap();
+        let segmented = SearchOutOfCoreReader::open(&segmented_path).unwrap();
+        assert_eq!(segmented.document_count(), 3);
+
+        let filtered_options = SearchQueryOptions {
+            metadata_filters: BTreeMap::from([("space_id".to_string(), "team".to_string())]),
+            ..options.clone()
+        };
+        for (query, options) in [
+            ("graph", options.clone()),
+            ("graph storage", filtered_options),
+            ("absent", options),
+        ] {
+            let expected = baseline
+                .search_with_options(query, None, SearchMode::Text, options.clone())
+                .unwrap()
+                .result;
+            let actual = segmented
+                .search_with_options(query, None, SearchMode::Text, options)
+                .unwrap()
+                .result;
+            assert_eq!(actual.total_hits, expected.total_hits, "query: {query}");
+            assert_eq!(actual.truncated, expected.truncated, "query: {query}");
+            assert_eq!(
+                actual
+                    .hits
+                    .iter()
+                    .map(|hit| (&hit.id, hit.score, hit.text_rank))
+                    .collect::<Vec<_>>(),
+                expected
+                    .hits
+                    .iter()
+                    .map(|hit| (&hit.id, hit.score, hit.text_rank))
+                    .collect::<Vec<_>>(),
+                "query: {query}"
+            );
+        }
+
+        drop(segmented);
+        drop(baseline);
+        fs::remove_dir_all(segmented_path).unwrap();
+        fs::remove_dir_all(baseline_path).unwrap();
+    }
+
+    #[test]
+    #[cfg(feature = "full-text-search")]
     fn segmented_lexical_projection_reopens_with_chinese_search_terms() {
         let path = unique_test_dir("segmented_lexical_projection_chinese");
         let term = "\u{5206}\u{5e03}\u{5f0f}\u{7cfb}\u{7edf}";
