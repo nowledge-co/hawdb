@@ -2,17 +2,21 @@
 
 ## Implementation Status
 
-This is a design-stage contract with **no implemented surface in the HawDB
-crates yet**. It defines the target on-disk encoding and read-path contract
-for [#206](https://github.com/nowledge-co/hawdb/issues/206) (compact
-postings layout) and the encoding it must expose for
-[#292](https://github.com/nowledge-co/hawdb/issues/292) (block-max pruning)
-to build on. Nothing here describes shipped behavior. The current lexical
-projection format (`crates/search/src/lexical_projection.rs`,
-`block_encoding.rs`, `manifest_encoding.rs`) is unaffected until an
-implementation lands under a new manifest format version, following the
-existing generation model: a new generation, never an in-place migration of
-an existing artifact.
+The compact lexical format is implemented in the HawDB crates. Current
+development artifacts use `HAWDB_LEXICAL_MANIFEST_V6` with
+`HAWDB_LEXICAL_ORDINAL_FST_V1`: postings use document ordinals and every
+physical postings block has an FST dictionary. V6 removes the manifest-wide
+term-statistics vector; exact document frequency is derived from the FST
+entries in the relevant blocks. It also persists the maximum encoded term
+length, so reader-side lexical-term policy admission remains valid even when a
+block's lexicographic endpoints are shorter than an interior term. The format
+remains the basis for
+[#206](https://github.com/nowledge-co/hawdb/issues/206) and the future
+[#292](https://github.com/nowledge-co/hawdb/issues/292) pruning work.
+
+HawDB is still in its development-only storage phase. A format change creates
+a new greenfield baseline and development artifacts must be recreated; readers
+fail closed for any format tag they do not recognize.
 
 ## Scope and Motivation
 
@@ -52,10 +56,10 @@ follow-on optimization.
   is grafted onto the specific read paths #206 and #292 already need. A
   generalized encoding-aware compute layer is out of scope unless a third
   consumer independently needs the same shape.
-- **No in-place migration.** An existing generation's artifact and manifest
-  remain readable under their current format version forever. A build under
-  this spec always starts a new generation; reopening an old generation uses
-  the old decode path unchanged.
+- **No compatibility migration.** Development artifacts are derived data and
+  are recreated when the manifest format changes. A reader rejects older or
+  newer unrecognized format tags rather than interpreting them under a
+  mismatched layout.
 - **No change to logical limits or query semantics.** `max_term_bytes`,
   `max_document_tokens`, `mini_delta_bytes`, BM25 parameters, and the
   existing finite term/source policies are unchanged. The mini-delta overlay
@@ -126,20 +130,16 @@ never requires resolving or copying a document-ID string.**
 
 ### Per-Block Term Dictionary
 
-Each postings block gains a dictionary section, written after its posting
-runs, mapping every distinct term in the block to:
+Each postings block has an FST dictionary section before its posting frames.
+The FST maps every distinct term in the block to a packed 64-bit value:
 
 ```text
-term: length-prefixed UTF-8 string  // unchanged wire representation
-run_offset: varint                  // byte offset of the run within this block
-run_posting_count: varint
-document_frequency: varint          // folds in what TermStatistics carries today
-max_term_frequency: varint          // reserved for #292; block-local upper bound
-                                     // over this run's term_frequency values
+high 32 bits: run byte offset within the frame payload
+low 32 bits: document frequency for this block and term
 ```
 
-This replaces two things at once, closing both #206's fix #3 and its stated
-DF-double-read resolution:
+This establishes #206's compact dictionary and FST-derived document-frequency
+path:
 
 - **Block-level key bounds remain** (`BlockDescriptor.min_key`/`max_key`,
   unchanged) as the coarse first-pass filter deciding which blocks to open at
@@ -150,14 +150,12 @@ DF-double-read resolution:
   entry per distinct term, not per posting), looks up the query term, and if
   present, seeks directly to `run_offset` and decodes exactly that run — no
   other term's postings in the block are touched.
-- The top-level manifest's `Vec<TermStatistics>` (`ManifestBody.term_statistics`,
-  `lexical_projection.rs:171`) is retired for compact-format generations; a
-  term's `document_frequency` comes from summing its per-block dictionary
-  entries across the manifest's blocks. Manifest sizing/decode-budget
-  accounting (`docs/SEARCH_BUILD_RESOURCE_OWNERSHIP.md`'s manifest decode
-  boundary) MUST account for the dictionary sections the same way it
-  accounts for `term_statistics` today — this is a redistribution of that
-  same budgeted data, not new unbounded growth.
+- V5 retires the top-level manifest's `Vec<TermStatistics>` entirely. A
+  term's exact `document_frequency` comes from summing its FST entries across
+  relevant blocks. The statistics scan reads each selected physical block at
+  most once, verifies the full block checksum, and charges those bytes to the
+  query report. Its single temporary block buffer must fit the query-memory
+  budget.
 
 ### Format Versioning
 
@@ -174,10 +172,11 @@ existing fail-closed posture for manifest validation, unchanged.
 This section is normative for both this spec's own read path and for #292,
 which depends on it.
 
-- **A block's dictionary decodes at most once per query per block**, even
-  when the query has multiple terms that both hash into the same block's key
-  range. Implementations MUST cache the decoded dictionary for the duration
-  of one block's processing within one query, not re-decode it per term.
+- **The statistics scan decodes a block's dictionary at most once per query
+  per block**, even when several query terms share its key range. Reusing that
+  dictionary lease for the subsequent scoring pass remains follow-up work;
+  the current implementation validates and reads the physical block again for
+  each selected posting stream.
 - **A run decodes only when its term matches a query term.** Blocks (or,
   once dictionaries are in place, individual runs within an opened block)
   whose dictionary entry does not match any query term MUST NOT have their

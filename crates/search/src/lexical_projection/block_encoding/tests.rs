@@ -385,7 +385,7 @@ fn representation_failures_happen_before_writing() {
 }
 
 #[test]
-fn artifact_builder_preserves_block_boundaries_and_statistics() {
+fn artifact_builder_preserves_block_boundaries_and_posting_bytes() {
     let fixture = Fixture::new();
     let path = fixture.0.join("artifact.hawdb");
     let config = LexicalProjectionConfig {
@@ -455,14 +455,6 @@ fn artifact_builder_preserves_block_boundaries_and_statistics() {
     assert_eq!(document_index, documents.len());
     assert_eq!(posting_index, postings.len());
     assert_eq!(summary.posting_count, 3);
-    assert_eq!(
-        summary
-            .term_statistics
-            .iter()
-            .map(|value| (value.term.as_str(), value.document_frequency))
-            .collect::<Vec<_>>(),
-        vec![("alpha", 2), ("\u{4e2d}\u{6587}", 1)]
-    );
 }
 
 #[test]

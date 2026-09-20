@@ -104,12 +104,33 @@ fn discovery_decode_admission_covers_valid_escaped_sequence_and_invalid_json() {
     let mut cases = vec![bytes];
     for count in [1, 5, 17, 257] {
         let mut changed = value.clone();
-        changed["body"]["term_statistics"] = serde_json::Value::Array((0..count).map(|index| serde_json::json!({"term":format!("{index:04}{}", "\\\"\n".repeat(65)), "document_frequency":1})).collect());
+        let template = changed["body"]["blocks"][0].clone();
+        changed["body"]["blocks"] = serde_json::Value::Array(
+            (0..count)
+                .map(|index| {
+                    let mut block = template.clone();
+                    block["min_key"] =
+                        serde_json::json!(format!("{index:04}{}", "\\\"\n".repeat(65)));
+                    block["max_key"] = block["min_key"].clone();
+                    block
+                })
+                .collect(),
+        );
         cases.push(serde_json::to_vec(&changed).unwrap());
         // Derived struct visitors also accept sequence representations.
-        let terms = changed["body"]["term_statistics"].as_array_mut().unwrap();
-        for term in terms {
-            *term = serde_json::json!([term["term"], term["document_frequency"]]);
+        let blocks = changed["body"]["blocks"].as_array_mut().unwrap();
+        for block in blocks {
+            *block = serde_json::json!([
+                block["block_id"],
+                block["kind"],
+                block["min_key"],
+                block["max_key"],
+                block["offset"],
+                block["length"],
+                block["checksum"],
+                block["entry_count"],
+                block["ordinal_start"],
+            ]);
         }
         cases.push(serde_json::to_vec(&changed).unwrap());
     }

@@ -14,15 +14,16 @@
 
 use super::super::{
     SearchOutOfCoreLayoutBody, SearchOutOfCoreManifestBody, SearchOutOfCoreSegmentManifest,
-    OUT_OF_CORE_FORMAT, OUT_OF_CORE_MANIFEST_FILE,
+    MAX_OUT_OF_CORE_MANIFEST_BYTES, OUT_OF_CORE_FORMAT, OUT_OF_CORE_MANIFEST_FILE,
 };
 use super::{
     artifact_name::Name, RaBitQGenerationArtifact, STAGE_METADATA_FILE, STAGE_VECTOR_FILE,
 };
+use crate::bounded_file::read_bounded_file;
 use crate::build_control::json;
 use crate::build_memory::BuildMemory;
 use crate::error::{HawDBError, Result};
-use crate::lexical_projection::MANIFEST_FILE as LEXICAL_MANIFEST_FILE;
+use crate::lexical_projection::{DocumentsDigest, MANIFEST_FILE as LEXICAL_MANIFEST_FILE};
 use crate::{SearchEmbeddingManifest, SEARCH_SEGMENT_DESCRIPTOR_FILE, SEARCH_SEGMENT_PAYLOAD_FILE};
 use hawdb_core::RuntimeTaskContext;
 use std::path::Path;
@@ -35,6 +36,7 @@ pub(super) struct PublishGenerationInput<'a> {
     pub(super) generation: u64,
     pub(super) document_count: usize,
     pub(super) documents_digest: u64,
+    pub(super) append_to_active_generation: Option<u64>,
     pub(super) source_graph_commit_epoch: Option<u64>,
     pub(super) import_source_graph_commit_epoch: Option<u64>,
     pub(super) embedding_manifest: Option<&'a SearchEmbeddingManifest>,
@@ -51,6 +53,8 @@ pub(super) struct PublishGenerationInput<'a> {
 pub(super) struct PublishedGeneration {
     pub(super) manifest_bytes: u64,
     pub(super) generation_bytes: u64,
+    pub(super) document_count: usize,
+    pub(super) documents_digest: u64,
 }
 
 pub(super) fn publish_generation(
@@ -122,51 +126,90 @@ pub(super) fn publish_generation(
         Some(task),
         "search out-of-core layout",
     )?;
-    let manifest = SearchOutOfCoreManifestBody {
-        format: OUT_OF_CORE_FORMAT,
+    let (mut segments, document_count, documents_digest, segment_id) = match input
+        .append_to_active_generation
+    {
+        Some(expected_generation) => {
+            let active_bytes = read_bounded_file(
+                &input.root.join(OUT_OF_CORE_MANIFEST_FILE),
+                MAX_OUT_OF_CORE_MANIFEST_BYTES,
+            )?;
+            let active = SearchOutOfCoreManifestBody::decode(&active_bytes)?;
+            if active.generation != expected_generation {
+                return Err(HawDBError::Storage(format!(
+                        "search generation update base changed before manifest composition: expected {expected_generation}, got {}",
+                        active.generation
+                    )));
+            }
+            let document_count = active
+                .document_count
+                .checked_add(input.document_count)
+                .ok_or_else(|| HawDBError::Storage("search document count overflow".into()))?;
+            let segment_id = active
+                .segments
+                .iter()
+                .map(|segment| segment.segment_id)
+                .max()
+                .unwrap_or_default()
+                .checked_add(1)
+                .ok_or_else(|| HawDBError::Storage("search segment id overflow".into()))?;
+            (
+                active.segments,
+                document_count,
+                DocumentsDigest::combine(active.documents_digest, input.documents_digest),
+                segment_id,
+            )
+        }
+        None => (Vec::new(), input.document_count, input.documents_digest, 0),
+    };
+    segments.push(SearchOutOfCoreSegmentManifest {
+        segment_id,
+        level: 0,
         generation,
-        segments: vec![SearchOutOfCoreSegmentManifest {
-            segment_id: 0,
-            level: 0,
-            generation,
-            descriptor_file: descriptor_file.as_str(),
-            descriptor_len,
-            descriptor_checksum,
-            payload_file: payload_file.as_str(),
-            payload_len,
-            metadata_payload_file: metadata_payload_file.as_str(),
-            metadata_payload_len,
-            vector_payload_file: vector_payload_file.as_str(),
-            vector_payload_len,
-            layout_file: layout_file.as_str(),
-            layout_len: layout.len() as u64,
-            layout_checksum: layout.checksum(),
-            lexical_manifest_file: lexical_manifest_file.as_str(),
-            lexical_manifest_len,
-            lexical_manifest_checksum,
-            rabitq_artifact_file: input.rabitq.map(|artifact| artifact.file_name.as_str()),
-            rabitq_artifact_len: input.rabitq.map(|artifact| artifact.artifact_bytes),
-            rabitq_artifact_checksum: input.rabitq.map(|artifact| artifact.artifact_checksum),
-            rabitq_source_digest: input.rabitq.map(|artifact| artifact.source_digest),
-            rabitq_vector_document_count: input.rabitq.map(|artifact| artifact.document_count),
-            rabitq_payload_checksum: input.rabitq.map(|artifact| artifact.payload_checksum),
-            rabitq_peak_build_working_bytes: input
-                .rabitq
-                .map(|artifact| artifact.peak_build_working_bytes),
-            document_count: input.document_count,
-            documents_digest: input.documents_digest,
-            source_graph_commit_epoch: input.source_graph_commit_epoch,
-        }],
+        descriptor_file: descriptor_file.as_str().to_string(),
+        descriptor_len,
+        descriptor_checksum,
+        payload_file: payload_file.as_str().to_string(),
+        payload_len,
+        metadata_payload_file: metadata_payload_file.as_str().to_string(),
+        metadata_payload_len,
+        vector_payload_file: vector_payload_file.as_str().to_string(),
+        vector_payload_len,
+        layout_file: layout_file.as_str().to_string(),
+        layout_len: layout.len() as u64,
+        layout_checksum: layout.checksum(),
+        lexical_manifest_file: lexical_manifest_file.as_str().to_string(),
+        lexical_manifest_len,
+        lexical_manifest_checksum,
+        rabitq_artifact_file: input
+            .rabitq
+            .map(|artifact| artifact.file_name.as_str().to_string()),
+        rabitq_artifact_len: input.rabitq.map(|artifact| artifact.artifact_bytes),
+        rabitq_artifact_checksum: input.rabitq.map(|artifact| artifact.artifact_checksum),
+        rabitq_source_digest: input.rabitq.map(|artifact| artifact.source_digest),
+        rabitq_vector_document_count: input.rabitq.map(|artifact| artifact.document_count),
+        rabitq_payload_checksum: input.rabitq.map(|artifact| artifact.payload_checksum),
+        rabitq_peak_build_working_bytes: input
+            .rabitq
+            .map(|artifact| artifact.peak_build_working_bytes),
         document_count: input.document_count,
         documents_digest: input.documents_digest,
+        source_graph_commit_epoch: input.source_graph_commit_epoch,
+    });
+    let manifest = SearchOutOfCoreManifestBody {
+        format: OUT_OF_CORE_FORMAT.to_string(),
+        generation,
+        segments,
+        document_count,
+        documents_digest,
         source_graph_commit_epoch: input.source_graph_commit_epoch,
         import_source_graph_commit_epoch: input.import_source_graph_commit_epoch,
         embedding_model: input
             .embedding_manifest
-            .map(|manifest| manifest.model.as_str()),
+            .map(|manifest| manifest.model.clone()),
         embedding_version: input
             .embedding_manifest
-            .and_then(|manifest| manifest.version.as_deref()),
+            .and_then(|manifest| manifest.version.clone()),
         embedding_dimension: input
             .embedding_manifest
             .map(|manifest| manifest.dimension)
@@ -292,6 +335,8 @@ pub(super) fn publish_generation(
     Ok(PublishedGeneration {
         manifest_bytes: manifest_bytes.bytes.len() as u64,
         generation_bytes,
+        document_count,
+        documents_digest,
     })
 }
 

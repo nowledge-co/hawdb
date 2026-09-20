@@ -97,6 +97,37 @@ impl SearchOutOfCoreGenerationUpdate {
         writer.set_lexical_term_policy(reader.lexical_term_policy());
         writer.set_max_lexical_manifest_bytes(reader.config().max_lexical_manifest_bytes)?;
         writer.expected_active_generation = Some(reader.generation());
+        let can_append = input
+            .upserts
+            .front()
+            .map_or(Ok(false), |upsert| reader.can_append_after(&upsert.id))?;
+        if input.deletes.is_empty() && can_append {
+            let after_document_count = before_document_count
+                .checked_add(upserted_documents)
+                .ok_or_else(|| HawDBError::Storage("search document count overflow".into()))?;
+            while !input.upserts.is_empty() {
+                writer.push_inner(input.pop_upsert())?;
+            }
+            writer.append_to_active_generation = Some(reader.generation());
+            return Ok(Self {
+                delta_report: SearchProjectionDeltaReport {
+                    artifact_type: "search_projection".to_string(),
+                    name: "search_projection".to_string(),
+                    action: "incremental_segment_append".to_string(),
+                    before_document_count,
+                    after_document_count,
+                    upserted_documents,
+                    deleted_documents: 0,
+                    operation_count,
+                    source_graph_commit_epoch_before,
+                    source_graph_commit_epoch_after,
+                    source_graph_commit_epoch_updated: epoch_updated,
+                },
+                writer,
+                source_read_metrics: SearchOutOfCoreMetrics::default(),
+                _report_memory: report_memory,
+            });
+        }
         let mut deleted_documents = 0usize;
         let source_read_metrics = hydration::visit(reader, &memory, &task, &mut |document| {
             while input
@@ -161,7 +192,10 @@ impl SearchOutOfCoreGenerationUpdate {
         &self.delta_report
     }
 
-    /// Metrics for the complete base generation consumed while preparing this update.
+    /// Metrics for base artifacts consumed while preparing this update.
+    ///
+    /// A strictly appended delta does not read base payloads, so all source
+    /// read counters are zero for that path.
     pub fn source_read_metrics(&self) -> &SearchOutOfCoreMetrics {
         &self.source_read_metrics
     }

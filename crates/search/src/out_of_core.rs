@@ -855,6 +855,39 @@ impl SearchOutOfCoreReader {
         self.manifest.source_graph_commit_epoch
     }
 
+    pub(super) fn can_append_after(&self, first_document_id: &str) -> Result<bool> {
+        let mut previous_last_document_id = None;
+        for artifact in &self.segments {
+            let descriptor_first = artifact.descriptor.segments.first();
+            let descriptor_last = artifact.descriptor.segments.last();
+            let lexical_bounds = artifact.lexical_projection.document_id_bounds();
+            match (descriptor_first, descriptor_last, lexical_bounds) {
+                (None, None, None) => continue,
+                (Some(first), Some(last), Some((lexical_first, lexical_last)))
+                    if first.first_document_id == lexical_first
+                        && last.last_document_id == lexical_last => {}
+                _ => {
+                    return Err(HawDBError::Storage(
+                        "search generation update requires descriptor and lexical document ranges to agree"
+                            .to_string(),
+                    ));
+                }
+            }
+            for segment in &artifact.descriptor.segments {
+                if previous_last_document_id
+                    .is_some_and(|previous| previous >= segment.first_document_id.as_str())
+                {
+                    return Err(HawDBError::Storage(
+                        "search generation update requires manifest artifacts with globally ordered, non-overlapping document ranges"
+                            .to_string(),
+                    ));
+                }
+                previous_last_document_id = Some(segment.last_document_id.as_str());
+            }
+        }
+        Ok(previous_last_document_id.is_none_or(|previous| previous < first_document_id))
+    }
+
     pub fn import_source_graph_commit_epoch(&self) -> Option<u64> {
         self.manifest.import_source_graph_commit_epoch
     }
@@ -1287,11 +1320,12 @@ impl SearchOutOfCoreReader {
                         .iter()
                         .map(|segment| segment.lexical_projection.as_ref()),
                     &query_terms,
+                    self.lexical_term_policy.max_term_bytes(),
                 )?;
                 let mut scores = BTreeMap::new();
                 let mut matching_document_count = 0usize;
                 let mut postings_visited = 0u64;
-                let mut bytes_read = 0u64;
+                let mut bytes_read = lexical_statistics.bytes_read();
                 for segment in &self.segments {
                     let report = segment.lexical_projection.score_with_global_statistics(
                         &query_terms,
@@ -3912,11 +3946,14 @@ mod tests {
         )
         .unwrap();
         assert_eq!(update.delta_report().before_document_count, 2);
-        assert_eq!(update.source_read_metrics().hydrated_documents, 2);
+        assert_eq!(update.delta_report().action, "incremental_segment_append");
+        assert_eq!(update.source_read_metrics().hydrated_documents, 0);
+        assert_eq!(update.source_read_metrics().segment_range_reads, 0);
         let (_, build, _) = update.finish().unwrap();
         assert_eq!(build.document_count, 3);
 
         let reader = SearchOutOfCoreReader::open(&path).unwrap();
+        assert_eq!(reader.manifest.segments.len(), 3);
         assert_eq!(
             reader
                 .hydrate_documents(&[

@@ -711,15 +711,11 @@ fn assert_full_postings(
     assert_eq!(reader.manifest.document_count, documents.len() as u64);
     assert_eq!(reader.manifest.total_document_len, total_len);
     assert_eq!(reader.manifest.posting_count, actual.len() as u64);
-    assert_eq!(
-        reader
-            .manifest
-            .term_statistics
-            .iter()
-            .map(|stats| (stats.term.clone(), stats.document_frequency))
-            .collect::<BTreeMap<_, _>>(),
-        expected_df
-    );
+    let mut actual_df = BTreeMap::new();
+    for (term, _) in actual.keys() {
+        *actual_df.entry(term.clone()).or_default() += 1;
+    }
+    assert_eq!(actual_df, expected_df);
 }
 
 #[test]

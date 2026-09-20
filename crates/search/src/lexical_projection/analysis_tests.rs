@@ -569,7 +569,16 @@ fn streamed_frequencies_preserve_persisted_scores_delta_reopen_and_failed_public
             .values()
             .filter(|document| reference_document_tokens(document, &analyzer).contains(term))
             .count();
-        assert_eq!(reader.manifest.document_frequency(term), expected_df as u64);
+        assert_eq!(
+            reader
+                .query_statistics(
+                    &BTreeSet::from([term.clone()]),
+                    reader.config.max_term_bytes,
+                )
+                .unwrap()
+                .document_frequency(term),
+            expected_df as u64
+        );
     }
     let mut delta = Arc::new(LexicalMiniDelta::default());
     assert_projection_scores(&reader, &delta, &documents, &analyzer, &terms);

@@ -88,7 +88,7 @@ pub(super) fn admitted_manifest_generation(
 ) -> Result<Option<u64>> {
     let capacity = crate::build_control::json::decode_capacity(
         bytes,
-        std::mem::size_of::<BlockDescriptor>().max(std::mem::size_of::<TermStatistics>()),
+        std::mem::size_of::<BlockDescriptor>(),
         2,
         task,
     )?;
@@ -152,6 +152,10 @@ impl DocumentsDigest {
 
     pub(crate) const fn finish(self) -> u64 {
         self.0
+    }
+
+    pub(crate) const fn combine(left: u64, right: u64) -> u64 {
+        left.wrapping_add(right)
     }
 }
 
@@ -234,13 +238,6 @@ struct BlockDescriptor {
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
-struct TermStatistics {
-    term: String,
-    document_frequency: u64,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
 struct ManifestBody {
     format: String,
     layout: String,
@@ -256,7 +253,7 @@ struct ManifestBody {
     posting_count: u64,
     legacy_posting_bytes: u64,
     posting_bytes: u64,
-    term_statistics: Vec<TermStatistics>,
+    max_term_bytes: u64,
     blocks: Vec<BlockDescriptor>,
 }
 
@@ -269,19 +266,8 @@ struct ManifestEnvelope {
 
 impl ManifestBody {
     fn required_term_bytes(&self, task: Option<&RuntimeTaskContext>) -> Result<u64> {
-        self.term_statistics
-            .iter()
-            .map(|statistics| statistics.term.len())
-            .chain(
-                self.blocks
-                    .iter()
-                    .filter(|block| block.kind == BlockKind::Postings)
-                    .flat_map(|block| [block.min_key.len(), block.max_key.len()]),
-            )
-            .try_fold(0u64, |largest, bytes| {
-                task.map_or(Ok(()), checkpoint)?;
-                Ok(largest.max(bytes as u64))
-            })
+        task.map_or(Ok(()), checkpoint)?;
+        Ok(self.max_term_bytes)
     }
 
     #[cfg(test)]
@@ -291,7 +277,7 @@ impl ManifestBody {
 
     fn validate_with_context(&self, task: Option<&RuntimeTaskContext>) -> Result<()> {
         task.map_or(Ok(()), checkpoint)?;
-        if self.format != "HAWDB_LEXICAL_MANIFEST_V4"
+        if self.format != "HAWDB_LEXICAL_MANIFEST_V6"
             || self.layout != "HAWDB_LEXICAL_ORDINAL_FST_V1"
             || self.artifact_file != artifact_file(self.generation)
             || Path::new(&self.artifact_file)
@@ -310,6 +296,7 @@ impl ManifestBody {
         let mut previous_document_id: Option<&str> = None;
         let mut postings = 0u64;
         let mut posting_bytes = 0u64;
+        let mut boundary_term_bytes = 0u64;
         let mut saw_postings = false;
         for block in &self.blocks {
             task.map_or(Ok(()), checkpoint)?;
@@ -363,35 +350,19 @@ impl ManifestBody {
                     posting_bytes = posting_bytes.checked_add(block.length).ok_or_else(|| {
                         HawDBError::Storage("lexical posting bytes overflow".to_string())
                     })?;
+                    boundary_term_bytes = boundary_term_bytes
+                        .max(block.min_key.len() as u64)
+                        .max(block.max_key.len() as u64);
                 }
             }
-        }
-        let mut previous_term: Option<&str> = None;
-        let mut term_postings = 0u64;
-        for statistics in &self.term_statistics {
-            task.map_or(Ok(()), checkpoint)?;
-            if statistics.term.is_empty()
-                || statistics.document_frequency == 0
-                || previous_term.is_some_and(|previous| previous >= statistics.term.as_str())
-            {
-                return Err(HawDBError::Storage(
-                    "lexical projection term statistics are invalid or unordered".to_string(),
-                ));
-            }
-            term_postings = term_postings
-                .checked_add(statistics.document_frequency)
-                .ok_or_else(|| {
-                    HawDBError::Storage(
-                        "lexical projection term document frequency overflows".to_string(),
-                    )
-                })?;
-            previous_term = Some(&statistics.term);
         }
         if previous_end != self.artifact_len
             || documents != self.document_count
             || postings != self.posting_count
-            || term_postings != self.posting_count
             || posting_bytes != self.posting_bytes
+            || self.max_term_bytes < boundary_term_bytes
+            || (self.posting_count == 0 && self.max_term_bytes != 0)
+            || (self.posting_count > 0 && self.max_term_bytes == 0)
             || (self.posting_count == 0
                 && (self.legacy_posting_bytes != 0 || self.posting_bytes != 0))
             || (self.posting_count > 0
@@ -426,13 +397,6 @@ impl ManifestBody {
         }
         envelope.body.validate_with_context(task)?;
         Ok(envelope.body)
-    }
-
-    fn document_frequency(&self, term: &str) -> u64 {
-        self.term_statistics
-            .binary_search_by(|statistics| statistics.term.as_str().cmp(term))
-            .ok()
-            .map_or(0, |index| self.term_statistics[index].document_frequency)
     }
 }
 
@@ -878,17 +842,19 @@ pub(super) struct LexicalQueryReport {
 pub(super) struct LexicalCorpusStatistics {
     document_count: usize,
     total_document_len: u64,
-    document_frequencies: BTreeMap<String, usize>,
+    document_frequencies: BTreeMap<String, u64>,
+    bytes_read: u64,
 }
 
 impl LexicalCorpusStatistics {
     pub(super) fn aggregate<'a>(
         projections: impl IntoIterator<Item = &'a LexicalProjectionReader>,
         query_terms: &BTreeSet<String>,
+        max_term_bytes: NonZeroU64,
     ) -> Result<Self> {
         let mut statistics = Self::default();
         for projection in projections {
-            statistics.merge(&projection.query_statistics(query_terms))?;
+            statistics.merge(&projection.query_statistics(query_terms, max_term_bytes)?)?;
         }
         Ok(statistics)
     }
@@ -902,6 +868,7 @@ impl LexicalCorpusStatistics {
             .total_document_len
             .checked_add(other.total_document_len)
             .ok_or_else(|| HawDBError::Storage("lexical corpus length overflow".into()))?;
+        self.bytes_read = self.bytes_read.saturating_add(other.bytes_read);
         for (term, frequency) in &other.document_frequencies {
             let entry = self.document_frequencies.entry(term.clone()).or_default();
             *entry = entry.checked_add(*frequency).ok_or_else(|| {
@@ -911,11 +878,15 @@ impl LexicalCorpusStatistics {
         Ok(())
     }
 
-    fn document_frequency(&self, term: &str) -> usize {
+    fn document_frequency(&self, term: &str) -> u64 {
         self.document_frequencies
             .get(term)
             .copied()
             .unwrap_or_default()
+    }
+
+    pub(super) const fn bytes_read(&self) -> u64 {
+        self.bytes_read
     }
 }
 
@@ -930,6 +901,17 @@ pub(super) struct LexicalProjectionReader {
 }
 
 impl LexicalProjectionReader {
+    pub(crate) fn document_id_bounds(&self) -> Option<(&str, &str)> {
+        let mut blocks = self
+            .manifest
+            .blocks
+            .iter()
+            .filter(|block| block.kind == BlockKind::Documents);
+        let first = blocks.next()?;
+        let last = blocks.next_back().unwrap_or(first);
+        Some((first.min_key.as_str(), last.max_key.as_str()))
+    }
+
     pub(super) fn load(
         root: &Path,
         expected_source_epoch: Option<u64>,
@@ -1134,21 +1116,90 @@ impl LexicalProjectionReader {
     pub(super) fn query_statistics(
         &self,
         query_terms: &BTreeSet<String>,
-    ) -> LexicalCorpusStatistics {
-        LexicalCorpusStatistics {
+        max_term_bytes: NonZeroU64,
+    ) -> Result<LexicalCorpusStatistics> {
+        self.validate_term_limit(max_term_bytes)?;
+        if query_terms.len() > self.config.max_query_terms.get() {
+            return Err(HawDBError::Storage(format!(
+                "lexical query produced {} terms, exceeding {}",
+                query_terms.len(),
+                self.config.max_query_terms
+            )));
+        }
+        for term in query_terms {
+            admit_term_bytes(term.len() as u64, max_term_bytes)?;
+        }
+        let relevant_block_bytes = self
+            .manifest
+            .blocks
+            .iter()
+            .filter(|block| {
+                block.kind == BlockKind::Postings
+                    && query_terms.iter().any(|term| {
+                        term.as_str() >= block.min_key.as_str()
+                            && term.as_str() <= block.max_key.as_str()
+                    })
+            })
+            .map(|block| block.length)
+            .max()
+            .unwrap_or_default();
+        if relevant_block_bytes > self.config.query_memory_bytes.get() {
+            return Err(HawDBError::Storage(format!(
+                "lexical query statistics require {relevant_block_bytes} bytes, exceeding {}",
+                self.config.query_memory_bytes
+            )));
+        }
+        let mut document_frequencies = query_terms
+            .iter()
+            .map(|term| (term.clone(), 0u64))
+            .collect::<BTreeMap<_, _>>();
+        let mut bytes_read = 0u64;
+        for block in &self.manifest.blocks {
+            if block.kind != BlockKind::Postings
+                || !query_terms.iter().any(|term| {
+                    term.as_str() >= block.min_key.as_str()
+                        && term.as_str() <= block.max_key.as_str()
+                })
+            {
+                continue;
+            }
+            let bytes = self.read_block(block)?;
+            bytes_read = bytes_read.saturating_add(bytes.len() as u64);
+            let posting_block = split_posting_block(&bytes, self.manifest.generation, block)?;
+            dictionary_map(posting_block.dictionary, |dictionary| {
+                for term in query_terms.iter().filter(|term| {
+                    term.as_str() >= block.min_key.as_str()
+                        && term.as_str() <= block.max_key.as_str()
+                }) {
+                    let Some(value) = dictionary.get(term) else {
+                        continue;
+                    };
+                    let (_, document_frequency) = unpack_dictionary_value(value)?;
+                    if document_frequency > posting_block.count {
+                        return Err(HawDBError::Storage(
+                            "lexical term dictionary count exceeds its block".to_string(),
+                        ));
+                    }
+                    let entry = document_frequencies
+                        .get_mut(term)
+                        .expect("query term was inserted before block lookup");
+                    *entry = entry
+                        .checked_add(u64::from(document_frequency))
+                        .ok_or_else(|| {
+                            HawDBError::Storage(
+                                "lexical term document frequency overflows".to_string(),
+                            )
+                        })?;
+                }
+                Ok(())
+            })?;
+        }
+        Ok(LexicalCorpusStatistics {
             document_count: usize::try_from(self.manifest.document_count).unwrap_or(usize::MAX),
             total_document_len: self.manifest.total_document_len,
-            document_frequencies: query_terms
-                .iter()
-                .map(|term| {
-                    (
-                        term.clone(),
-                        usize::try_from(self.manifest.document_frequency(term))
-                            .unwrap_or(usize::MAX),
-                    )
-                })
-                .collect(),
-        }
+            document_frequencies,
+            bytes_read,
+        })
     }
 
     pub(super) fn score(
@@ -1269,6 +1320,10 @@ impl LexicalProjectionReader {
                 self.config.query_memory_bytes
             )));
         }
+        let local_statistics = global_statistics
+            .is_none()
+            .then(|| self.query_statistics(query_terms, max_term_bytes))
+            .transpose()?;
         let (document_count, total_document_len) = global_statistics.map_or_else(
             || {
                 delta.projected_corpus(
@@ -1278,7 +1333,9 @@ impl LexicalProjectionReader {
             },
             |statistics| (statistics.document_count, statistics.total_document_len),
         );
-        let mut bytes_read = 0u64;
+        let mut bytes_read = local_statistics
+            .as_ref()
+            .map_or(0, |statistics| statistics.bytes_read);
         if document_count == 0 {
             return Ok(LexicalQueryReport::default());
         }
@@ -1287,15 +1344,18 @@ impl LexicalProjectionReader {
         for term in query_terms {
             document_frequency.insert(
                 term.clone(),
-                global_statistics.map_or_else(
-                    || {
-                        delta.projected_document_frequency(
-                            term,
-                            self.manifest.document_frequency(term),
-                        )
-                    },
-                    |statistics| statistics.document_frequency(term),
-                ),
+                match global_statistics {
+                    Some(statistics) => {
+                        usize::try_from(statistics.document_frequency(term)).unwrap_or(usize::MAX)
+                    }
+                    None => delta.projected_document_frequency(
+                        term,
+                        local_statistics
+                            .as_ref()
+                            .expect("local statistics are present without global statistics")
+                            .document_frequency(term),
+                    ),
+                },
             );
         }
         let average_document_len = (total_document_len as f64 / document_count as f64).max(1.0);
@@ -1817,9 +1877,9 @@ impl<'workspace> LexicalProjectionWriter<'workspace> {
         let artifact = artifact.finish()?;
         let _format_memory = memory
             .retained
-            .reserve("HAWDB_LEXICAL_MANIFEST_V4HAWDB_LEXICAL_ORDINAL_FST_V1".len())?;
+            .reserve("HAWDB_LEXICAL_MANIFEST_V6HAWDB_LEXICAL_ORDINAL_FST_V1".len())?;
         let manifest = ManifestBody {
-            format: "HAWDB_LEXICAL_MANIFEST_V4".to_string(),
+            format: "HAWDB_LEXICAL_MANIFEST_V6".to_string(),
             layout: "HAWDB_LEXICAL_ORDINAL_FST_V1".to_string(),
             generation,
             source_graph_commit_epoch,
@@ -1833,7 +1893,7 @@ impl<'workspace> LexicalProjectionWriter<'workspace> {
             posting_count: artifact.posting_count,
             legacy_posting_bytes: artifact.legacy_posting_bytes,
             posting_bytes: artifact.posting_bytes,
-            term_statistics: artifact.term_statistics,
+            max_term_bytes: artifact.max_term_bytes,
             blocks: artifact.blocks,
         };
         let reader = build_manifest::finish(
@@ -2755,11 +2815,17 @@ mod tests {
         let report = reader
             .score(&terms, &LexicalMiniDelta::default(), None, |_| Ok(true))
             .unwrap();
-        assert_eq!(reader.manifest.document_frequency("graph"), 2);
+        assert_eq!(
+            reader
+                .query_statistics(&terms, config.max_term_bytes)
+                .unwrap()
+                .document_frequency("graph"),
+            2
+        );
         assert!(report.document_bytes_read > 0);
         assert_eq!(
             report.bytes_read,
-            term_posting_bytes(&reader, "graph") + report.document_bytes_read
+            term_posting_bytes(&reader, "graph").saturating_mul(2) + report.document_bytes_read
         );
         let corpus = super::super::TextCorpusStats::from_documents(documents.values(), &analyzer);
         for document in documents.values() {
@@ -2775,12 +2841,62 @@ mod tests {
         assert_eq!(reopened.generation(), 1);
         let mut invalid_manifest = reopened.manifest.clone();
         invalid_manifest
-            .term_statistics
+            .blocks
             .iter_mut()
-            .find(|statistics| statistics.term == "graph")
+            .find(|block| block.kind == BlockKind::Postings)
             .unwrap()
-            .document_frequency += 1;
+            .entry_count += 1;
         assert!(invalid_manifest.validate().is_err());
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn statistics_scan_reads_each_matching_block_once_and_obeys_query_budget() {
+        let root = projection_root("statistics-block-budget");
+        let _ = fs::remove_dir_all(&root);
+        fs::create_dir_all(&root).unwrap();
+        let analyzer = SearchAnalyzerLexicon::default();
+        let config = LexicalProjectionConfig {
+            target_block_bytes: NonZeroU64::new(1024).unwrap(),
+            max_block_bytes: NonZeroU64::new(2048).unwrap(),
+            ..LexicalProjectionConfig::default()
+        };
+        let documents = [
+            document("a", "Graph storage", "database"),
+            document("b", "Storage", "memory"),
+        ];
+        let mut reader = LexicalProjectionWriter::new(config)
+            .write(&root, 1, None, 11, 13, documents.iter(), &analyzer)
+            .unwrap();
+        let terms = BTreeSet::from(["graph".to_string(), "storage".to_string()]);
+        let statistics = reader
+            .query_statistics(&terms, config.max_term_bytes)
+            .unwrap();
+        let expected_bytes = reader
+            .manifest
+            .blocks
+            .iter()
+            .filter(|block| {
+                block.kind == BlockKind::Postings
+                    && terms.iter().any(|term| {
+                        term.as_str() >= block.min_key.as_str()
+                            && term.as_str() <= block.max_key.as_str()
+                    })
+            })
+            .map(|block| block.length)
+            .sum::<u64>();
+        assert!(expected_bytes > 1);
+        assert_eq!(statistics.document_frequency("graph"), 1);
+        assert_eq!(statistics.document_frequency("storage"), 2);
+        assert_eq!(statistics.bytes_read(), expected_bytes);
+
+        Arc::get_mut(&mut reader).unwrap().config.query_memory_bytes =
+            NonZeroU64::new(expected_bytes - 1).unwrap();
+        assert!(reader
+            .query_statistics(&terms, config.max_term_bytes)
+            .unwrap_err()
+            .to_string()
+            .contains("query statistics require"));
         fs::remove_dir_all(root).unwrap();
     }
 
@@ -2817,7 +2933,7 @@ mod tests {
         assert!(report.document_bytes_read > 0);
         assert_eq!(
             report.bytes_read,
-            term_posting_bytes(&reader, "graph") + report.document_bytes_read
+            term_posting_bytes(&reader, "graph").saturating_mul(2) + report.document_bytes_read
         );
         fs::remove_dir_all(root).unwrap();
     }
@@ -2848,13 +2964,13 @@ mod tests {
         assert!(report.document_bytes_read > 0);
         assert_eq!(
             report.bytes_read,
-            term_posting_bytes(&reader, "graph") + report.document_bytes_read
+            term_posting_bytes(&reader, "graph").saturating_mul(2) + report.document_bytes_read
         );
         fs::remove_dir_all(root).unwrap();
     }
 
     #[test]
-    fn mini_delta_updates_persisted_term_statistics_without_a_counting_pass() {
+    fn mini_delta_recomputes_persisted_document_frequency_from_fst_blocks() {
         let root = projection_root("delta-term-statistics");
         let _ = fs::remove_dir_all(&root);
         fs::create_dir_all(&root).unwrap();
@@ -2894,7 +3010,7 @@ mod tests {
         assert!(report.document_bytes_read > 0);
         assert_eq!(
             report.bytes_read,
-            term_posting_bytes(&reader, "graph") + report.document_bytes_read
+            term_posting_bytes(&reader, "graph").saturating_mul(2) + report.document_bytes_read
         );
         fs::remove_dir_all(root).unwrap();
     }

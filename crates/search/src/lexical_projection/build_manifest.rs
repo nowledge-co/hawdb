@@ -16,7 +16,7 @@
 
 use super::{
     artifact_file, artifacts::DirectoryMemory, manifest_encoding, BlockDescriptor,
-    LexicalProjectionConfig, LexicalProjectionReader, ManifestBody, TermStatistics, MANIFEST_FILE,
+    LexicalProjectionConfig, LexicalProjectionReader, ManifestBody, MANIFEST_FILE,
     SPILL_IO_BUFFER_BYTES,
 };
 use crate::build_control::{checkpoint, temporary::RemoveOnDrop, CheckedWriter};
@@ -89,14 +89,9 @@ impl DecodePlan {
         let mut strings = add(body.format.len(), body.artifact_file.len())?;
         let mut largest = body.format.len().max(body.artifact_file.len()).max(64);
         for value in body
-            .term_statistics
+            .blocks
             .iter()
-            .map(|value| value.term.as_str())
-            .chain(
-                body.blocks
-                    .iter()
-                    .flat_map(|block| [block.min_key.as_str(), block.max_key.as_str()]),
-            )
+            .flat_map(|block| [block.min_key.as_str(), block.max_key.as_str()])
         {
             checkpoint(task)?;
             strings = add(strings, value.len())?;
@@ -104,15 +99,11 @@ impl DecodePlan {
         }
         // serde Vec uses geometric growth (minimum four slots); include both
         // old and replacement capacities. String visitors copy decoded slices.
-        let statistics = mul(
-            mul(body.term_statistics.len().max(4), 3)?,
-            size_of::<TermStatistics>(),
-        )?;
         let blocks = mul(
             mul(body.blocks.len().max(4), 3)?,
             size_of::<BlockDescriptor>(),
         )?;
-        let output_bytes = add(add(strings, add(statistics, blocks)?)?, reader_bytes())?;
+        let output_bytes = add(add(strings, blocks)?, reader_bytes())?;
         // SliceRead reuses escaped-string scratch. Include realloc overlap and
         // the generated filename used by schema validation before releasing it.
         let scratch_bytes = add(mul(largest.max(8), 3)?, 3 * 128)?;
@@ -134,21 +125,12 @@ fn retained_bytes(body: &ManifestBody, task: &RuntimeTaskContext) -> Result<usiz
     )?;
     bytes = add(
         bytes,
-        mul(body.term_statistics.capacity(), size_of::<TermStatistics>())?,
-    )?;
-    bytes = add(
-        bytes,
         mul(body.blocks.capacity(), size_of::<BlockDescriptor>())?,
     )?;
     for capacity in body
-        .term_statistics
+        .blocks
         .iter()
-        .map(|value| value.term.capacity())
-        .chain(
-            body.blocks
-                .iter()
-                .flat_map(|block| [block.min_key.capacity(), block.max_key.capacity()]),
-        )
+        .flat_map(|block| [block.min_key.capacity(), block.max_key.capacity()])
     {
         checkpoint(task)?;
         bytes = add(bytes, capacity)?;
