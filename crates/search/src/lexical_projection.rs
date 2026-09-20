@@ -180,6 +180,12 @@ pub(super) fn documents_digest(documents: &BTreeMap<String, SearchDocument>) -> 
     digest.finish()
 }
 
+pub(crate) fn document_digest(document: &SearchDocument) -> u64 {
+    let mut digest = DocumentsDigest::default();
+    digest.add_bytes(super::encode_search_document_line(document).as_bytes());
+    digest.finish()
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(super) struct LexicalProjectionConfig {
     pub max_manifest_bytes: NonZeroU64,
@@ -433,6 +439,12 @@ struct DeltaDocument {
     base: Option<Arc<BaseDocumentTerms>>,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(super) struct LexicalDocumentRetraction {
+    pub(super) document_len: u64,
+    pub(super) unique_terms: Vec<String>,
+}
+
 impl DeltaDocument {
     fn total_resident_bytes(&self) -> u64 {
         self.resident_bytes
@@ -628,6 +640,40 @@ fn analyze_delta_document(
         });
     }
     analyze_delta_document_with_workspace(document, analyzer, config, None)
+}
+
+#[cfg(test)]
+pub(super) fn document_retraction(
+    document: &SearchDocument,
+    analyzer: &SearchAnalyzerLexicon,
+    config: LexicalProjectionConfig,
+) -> Result<LexicalDocumentRetraction> {
+    let document = analyze_delta_document(document, analyzer, config)?;
+    Ok(LexicalDocumentRetraction {
+        document_len: u64::from(document.document_len),
+        unique_terms: document.frequencies.into_keys().collect(),
+    })
+}
+
+pub(super) fn document_retraction_with_context(
+    document: &SearchDocument,
+    analyzer: &SearchAnalyzerLexicon,
+    config: LexicalProjectionConfig,
+    memory: &BuildMemory,
+    task: &RuntimeTaskContext,
+) -> Result<LexicalDocumentRetraction> {
+    admit_document_source(document, config)?;
+    let document = if crate::analyzer_workspace::document_needs_workspace(document) {
+        crate::analyzer_workspace::run(memory, task, |workspace| {
+            analyze_delta_document_with_workspace(document, analyzer, config, Some(workspace))
+        })?
+    } else {
+        analyze_delta_document_with_workspace(document, analyzer, config, None)?
+    };
+    Ok(LexicalDocumentRetraction {
+        document_len: u64::from(document.document_len),
+        unique_terms: document.frequencies.into_keys().collect(),
+    })
 }
 
 fn analyze_delta_document_with_workspace(
@@ -877,6 +923,39 @@ impl LexicalCorpusStatistics {
             let entry = self.document_frequencies.entry(term.clone()).or_default();
             *entry = entry.checked_add(*frequency).ok_or_else(|| {
                 HawDBError::Storage("lexical corpus document frequency overflow".into())
+            })?;
+        }
+        Ok(())
+    }
+
+    pub(super) fn retract_document(
+        &mut self,
+        document_len: u64,
+        unique_terms: &[String],
+        query_terms: &BTreeSet<String>,
+    ) -> Result<()> {
+        self.document_count = self.document_count.checked_sub(1).ok_or_else(|| {
+            HawDBError::Storage("lexical corpus retractions exceed its document count".into())
+        })?;
+        self.total_document_len = self
+            .total_document_len
+            .checked_sub(document_len)
+            .ok_or_else(|| {
+                HawDBError::Storage("lexical corpus retractions exceed its total length".into())
+            })?;
+        for term in unique_terms
+            .iter()
+            .filter(|term| query_terms.contains(*term))
+        {
+            let frequency = self.document_frequencies.get_mut(term).ok_or_else(|| {
+                HawDBError::Storage(
+                    "lexical corpus retraction term is missing from query statistics".into(),
+                )
+            })?;
+            *frequency = frequency.checked_sub(1).ok_or_else(|| {
+                HawDBError::Storage(
+                    "lexical corpus retractions exceed a query term document frequency".into(),
+                )
             })?;
         }
         Ok(())

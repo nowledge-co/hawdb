@@ -18,7 +18,7 @@ use super::{checksum_bytes, SearchOutOfCoreManifestBody, SearchOutOfCoreMutation
 use crate::bounded_file::read_bounded_file;
 use crate::error::{HawDBError, Result};
 use serde::{Deserialize, Serialize};
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet};
 use std::path::Path;
 
 const MUTATION_RUN_FORMAT: &str = "HAWDB_SEARCH_MUTATION_RUN_V1";
@@ -73,8 +73,13 @@ pub(super) struct SearchMutationRun {
     body: SearchMutationRunBody,
 }
 
+#[derive(Debug, Default)]
+pub(super) struct SearchMutationVisibility {
+    hidden_document_ids: BTreeMap<u64, BTreeSet<String>>,
+    retractions: Vec<SearchMutationRetraction>,
+}
+
 impl SearchMutationRunBody {
-    #[cfg(test)]
     pub(super) fn new(
         generation: u64,
         analyzer_digest: u64,
@@ -90,7 +95,6 @@ impl SearchMutationRunBody {
         Ok(body)
     }
 
-    #[cfg(test)]
     pub(super) fn encode(&self) -> Result<Vec<u8>> {
         self.validate()?;
         let body = serde_json::to_vec(self).map_err(|error| {
@@ -105,6 +109,10 @@ impl SearchMutationRunBody {
                 "failed to encode search mutation-run envelope: {error}"
             ))
         })
+    }
+
+    pub(super) fn entries(&self) -> &[SearchMutationRunEntry] {
+        &self.entries
     }
 
     fn validate(&self) -> Result<()> {
@@ -192,7 +200,53 @@ impl SearchMutationRun {
     }
 
     pub(super) fn entries(&self) -> &[SearchMutationRunEntry] {
-        &self.body.entries
+        self.body.entries()
+    }
+}
+
+impl SearchMutationVisibility {
+    pub(super) fn from_runs(runs: &[SearchMutationRun]) -> Result<Self> {
+        let mut visibility = Self::default();
+        for run in runs {
+            for entry in run.entries() {
+                let hidden_ids = visibility
+                    .hidden_document_ids
+                    .entry(entry.target_segment_id)
+                    .or_default();
+                if !hidden_ids.insert(entry.document_id.clone()) {
+                    return Err(HawDBError::Storage(
+                        "search mutation visibility has duplicate retraction targets".to_string(),
+                    ));
+                }
+                visibility.retractions.push(entry.retraction.clone());
+            }
+        }
+        Ok(visibility)
+    }
+
+    pub(super) fn has_retractions(&self) -> bool {
+        !self.retractions.is_empty()
+    }
+
+    pub(super) fn is_visible(&self, segment_id: u64, document_id: &str) -> bool {
+        self.hidden_document_ids
+            .get(&segment_id)
+            .is_none_or(|ids| !ids.contains(document_id))
+    }
+
+    pub(super) fn apply_lexical_retractions(
+        &self,
+        statistics: &mut crate::lexical_projection::LexicalCorpusStatistics,
+        query_terms: &BTreeSet<String>,
+    ) -> Result<()> {
+        for retraction in &self.retractions {
+            statistics.retract_document(
+                retraction.lexical_document_len,
+                &retraction.unique_terms,
+                query_terms,
+            )?;
+        }
+        Ok(())
     }
 }
 

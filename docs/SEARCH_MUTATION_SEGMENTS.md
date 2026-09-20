@@ -162,6 +162,12 @@ Each delivery remains a separate reviewable change. Later cuts must not expose
 mutation artifacts to serving before the shared visibility and statistic
 contracts are complete.
 
+The first `prepare_delta` publication cut is delete-only. It resolves each
+visible target, writes one bounded mutation run, then publishes the manifest
+last. Existing content segments remain unchanged. A later update or replacement
+that would need target-aware vector or duplicate-ID handling fails closed until
+that path is implemented; a further visible delete may append another run.
+
 ## Verification matrix
 
 - Differential: build the same logical corpus as one segment and as append,

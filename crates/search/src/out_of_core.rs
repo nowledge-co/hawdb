@@ -35,6 +35,8 @@ use super::{
     SEARCH_SEGMENT_PAYLOAD_FILE,
 };
 use crate::bounded_file::read_bounded_file;
+use crate::build_control::checkpoint;
+use crate::build_memory::BuildMemory;
 use crate::error::{HawDBError, Result};
 #[cfg(test)]
 use crate::{decode_search_segment_documents_bounded, validate_search_segment_documents};
@@ -185,9 +187,7 @@ pub struct SearchOutOfCoreReader {
     analyzer_lexicon: SearchAnalyzerLexicon,
     manifest: SearchOutOfCoreManifestBody,
     segments: Vec<SearchOutOfCoreSegmentReader>,
-    // Mutation runs are admitted and validated at open. Serving consumes this
-    // closure only after the shared visibility path is installed.
-    _mutation_runs: Vec<mutation_run::SearchMutationRun>,
+    mutation_visibility: mutation_run::SearchMutationVisibility,
     lexical_term_policy: SearchLexicalTermPolicy,
     runtime_capabilities: RuntimeCapabilities,
 }
@@ -214,6 +214,27 @@ pub(super) struct SearchOutOfCoreSegmentReader {
 pub(super) struct PublishedOutOfCoreProjection {
     pub(super) generation: u64,
     pub(super) bytes_written: u64,
+}
+
+#[derive(Debug, Clone, Copy)]
+pub(in crate::out_of_core) struct PublishedMutationRun {
+    pub(in crate::out_of_core) generation: u64,
+    pub(in crate::out_of_core) bytes_written: u64,
+    pub(in crate::out_of_core) manifest_bytes: u64,
+    pub(in crate::out_of_core) document_count: usize,
+    pub(in crate::out_of_core) documents_digest: u64,
+}
+
+pub(in crate::out_of_core) struct PublishMutationRunInput<'a> {
+    pub(in crate::out_of_core) root: &'a Path,
+    pub(in crate::out_of_core) expected_generation: u64,
+    pub(in crate::out_of_core) analyzer_digest: u64,
+    pub(in crate::out_of_core) source_graph_commit_epoch: Option<u64>,
+    pub(in crate::out_of_core) entries: Vec<mutation_run::SearchMutationRunEntry>,
+    pub(in crate::out_of_core) max_bytes: u64,
+    pub(in crate::out_of_core) max_generation_bytes: u64,
+    pub(in crate::out_of_core) memory: &'a BuildMemory,
+    pub(in crate::out_of_core) task: &'a crate::RuntimeTaskContext,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -877,6 +898,8 @@ impl SearchOutOfCoreReader {
             })
             .collect::<Result<Vec<_>>>()?;
         mutation_run::validate_closure(&manifest, &mutation_runs)?;
+        let mutation_visibility =
+            mutation_run::SearchMutationVisibility::from_runs(&mutation_runs)?;
 
         Ok(Self {
             root,
@@ -884,7 +907,7 @@ impl SearchOutOfCoreReader {
             analyzer_lexicon,
             manifest,
             segments,
-            _mutation_runs: mutation_runs,
+            mutation_visibility,
             lexical_term_policy,
             runtime_capabilities: crate::compiled_runtime_capabilities(),
         })
@@ -1334,6 +1357,12 @@ impl SearchOutOfCoreReader {
                 .require(RuntimeCapability::AccessControl)?;
         }
         self.require_search_capabilities(mode)?;
+        if self.mutation_visibility.has_retractions() && mode != SearchMode::Text {
+            return Err(HawDBError::Storage(
+                "search mutation-run visibility is not implemented for vector retrieval"
+                    .to_string(),
+            ));
+        }
         let page_score_limit = options
             .offset
             .checked_add(options.limit)
@@ -1451,13 +1480,15 @@ impl SearchOutOfCoreReader {
         };
         let (text_scores, text_matching_count, lexical_postings_visited, lexical_bytes_read) =
             if text_available && mode != SearchMode::Vector {
-                let lexical_statistics = LexicalCorpusStatistics::aggregate(
+                let mut lexical_statistics = LexicalCorpusStatistics::aggregate(
                     self.segments
                         .iter()
                         .map(|segment| segment.lexical_projection.as_ref()),
                     &query_terms,
                     self.lexical_term_policy.max_term_bytes(),
                 )?;
+                self.mutation_visibility
+                    .apply_lexical_retractions(&mut lexical_statistics, &query_terms)?;
                 let mut scores = BTreeMap::new();
                 let mut matching_document_count = 0usize;
                 let mut postings_visited = 0u64;
@@ -1468,7 +1499,15 @@ impl SearchOutOfCoreReader {
                         self.lexical_term_policy.max_term_bytes(),
                         retained_text_limit,
                         &lexical_statistics,
-                        |id| candidate_set.contains(id, &mut metrics),
+                        |id| {
+                            if !self
+                                .mutation_visibility
+                                .is_visible(segment.content_segment_id, id)
+                            {
+                                return Ok(false);
+                            }
+                            candidate_set.contains(id, &mut metrics)
+                        },
                     )?;
                     matching_document_count = matching_document_count
                         .checked_add(report.matching_document_count)
@@ -2018,7 +2057,11 @@ impl SearchOutOfCoreReader {
             let probe = artifact.lexical_projection.probe_document_id(id)?;
             lexical_document_bytes_read =
                 lexical_document_bytes_read.saturating_add(probe.bytes_read);
-            if !probe.present {
+            if !probe.present
+                || !self
+                    .mutation_visibility
+                    .is_visible(artifact.content_segment_id, id)
+            {
                 continue;
             }
             if route.replace((artifact_index, segment)).is_some() {
@@ -2240,6 +2283,12 @@ impl SearchOutOfCoreReader {
                 let mut encoded = Vec::new();
                 let mut block_cardinality = 0usize;
                 for document in documents {
+                    if !self
+                        .mutation_visibility
+                        .is_visible(artifact.content_segment_id, &document.id)
+                    {
+                        continue;
+                    }
                     let candidate = SearchDocument {
                         id: document.id,
                         title: String::new(),
@@ -2550,6 +2599,102 @@ pub(super) fn publish_out_of_core_projection(
     Ok(PublishedOutOfCoreProjection {
         generation,
         bytes_written: bytes_written.saturating_add(manifest_bytes.len() as u64),
+    })
+}
+
+pub(in crate::out_of_core) fn publish_mutation_run(
+    input: PublishMutationRunInput<'_>,
+) -> Result<PublishedMutationRun> {
+    let PublishMutationRunInput {
+        root,
+        expected_generation,
+        analyzer_digest,
+        source_graph_commit_epoch,
+        entries,
+        max_bytes,
+        max_generation_bytes,
+        memory,
+        task,
+    } = input;
+    checkpoint(task)?;
+    let _publish_lease = SearchProjectionPublishLease::acquire_with_context(root, memory, task)?;
+    let manifest_path = root.join(OUT_OF_CORE_MANIFEST_FILE);
+    let manifest_bytes = read_bounded_file(&manifest_path, MAX_OUT_OF_CORE_MANIFEST_BYTES)?;
+    let mut manifest = SearchOutOfCoreManifestBody::decode(&manifest_bytes)?;
+    if manifest.generation != expected_generation {
+        return Err(HawDBError::Storage(format!(
+            "search mutation-run base changed before publication: expected {expected_generation}, got {}",
+            manifest.generation
+        )));
+    }
+    let generation = manifest.generation.checked_add(1).ok_or_else(|| {
+        HawDBError::Storage("search mutation-run generation overflow".to_string())
+    })?;
+    let run_body = mutation_run::SearchMutationRunBody::new(generation, analyzer_digest, entries)?;
+    let run_bytes = run_body.encode()?;
+    if run_bytes.len() as u64 > max_bytes {
+        return Err(HawDBError::Storage(format!(
+            "search mutation-run requires {} bytes, exceeding the configured publication budget {max_bytes}",
+            run_bytes.len()
+        )));
+    }
+    let run_file = mutation_run::artifact_file(generation);
+    let entry_count = run_body.entries().len();
+    let mut document_count = manifest.document_count;
+    let mut documents_digest = manifest.documents_digest;
+    for entry in run_body.entries() {
+        document_count = document_count.checked_sub(1).ok_or_else(|| {
+            HawDBError::Storage(
+                "search mutation-run retractions exceed the active document count".to_string(),
+            )
+        })?;
+        documents_digest = crate::lexical_projection::DocumentsDigest::replace(
+            documents_digest,
+            entry.retraction.documents_digest,
+            0,
+        );
+    }
+    manifest.generation = generation;
+    manifest.document_count = document_count;
+    manifest.documents_digest = documents_digest;
+    manifest.source_graph_commit_epoch = source_graph_commit_epoch;
+    manifest
+        .mutation_runs
+        .push(SearchOutOfCoreMutationRunManifest {
+            generation,
+            file: run_file.clone(),
+            len: run_bytes.len() as u64,
+            checksum: checksum_bytes(&run_bytes),
+            entry_count,
+            analyzer_digest,
+        });
+    manifest.mutation_runs.sort_by_key(|run| run.generation);
+    let manifest_bytes = manifest.encode()?;
+    if manifest_bytes.len() as u64 > MAX_OUT_OF_CORE_MANIFEST_BYTES {
+        return Err(HawDBError::Storage(format!(
+            "search mutation-run manifest requires {} bytes, exceeding the {} byte read budget",
+            manifest_bytes.len(),
+            MAX_OUT_OF_CORE_MANIFEST_BYTES
+        )));
+    }
+    let generation_bytes = (run_bytes.len() as u64)
+        .checked_add(manifest_bytes.len() as u64)
+        .ok_or_else(|| HawDBError::Storage("search mutation-run size overflow".to_string()))?;
+    if generation_bytes > max_generation_bytes {
+        return Err(HawDBError::Storage(format!(
+            "search mutation-run requires {generation_bytes} published bytes, exceeding {max_generation_bytes}"
+        )));
+    }
+    checkpoint(task)?;
+    let bytes_written = write_generation_artifact(&root.join(&run_file), &run_bytes)?;
+    checkpoint(task)?;
+    let manifest_bytes_written = write_generation_artifact(&manifest_path, &manifest_bytes)?;
+    Ok(PublishedMutationRun {
+        generation,
+        bytes_written: bytes_written.saturating_add(manifest_bytes_written),
+        manifest_bytes: manifest_bytes_written,
+        document_count,
+        documents_digest,
     })
 }
 
@@ -4117,6 +4262,12 @@ mod tests {
         let mut manifest = envelope.body;
         manifest.generation = run_generation;
         let analyzer_digest = lexical_analyzer_digest(&SearchAnalyzerLexicon::default());
+        let lexical_retraction = crate::lexical_projection::document_retraction(
+            document,
+            &SearchAnalyzerLexicon::default(),
+            LexicalProjectionConfig::default(),
+        )
+        .unwrap();
         let document_digest =
             lexical_documents_digest(&BTreeMap::from([(document.id.clone(), document.clone())]));
         let run_body = mutation_run::SearchMutationRunBody::new(
@@ -4128,8 +4279,8 @@ mod tests {
                 operation: mutation_run::SearchMutationOperation::Delete,
                 retraction: mutation_run::SearchMutationRetraction {
                     documents_digest: document_digest,
-                    lexical_document_len: 5,
-                    unique_terms: vec!["graph".to_string(), "memory".to_string()],
+                    lexical_document_len: lexical_retraction.document_len,
+                    unique_terms: lexical_retraction.unique_terms,
                 },
             }],
         )
@@ -4172,8 +4323,6 @@ mod tests {
         index.checkpoint().unwrap();
         install_delete_mutation_run(&path, &document, 0, 2);
 
-        // This cut validates publication state only. Shared serving visibility
-        // is installed with the mutation writer in the next delivery.
         let manifest: SearchOutOfCoreManifestEnvelope =
             serde_json::from_slice(&fs::read(path.join(OUT_OF_CORE_MANIFEST_FILE)).unwrap())
                 .unwrap();
@@ -4209,6 +4358,79 @@ mod tests {
         assert!(error
             .to_string()
             .contains("mutation-run artifact length or checksum mismatch"));
+        fs::remove_dir_all(path).unwrap();
+    }
+
+    #[test]
+    #[cfg(feature = "full-text-search")]
+    fn mutation_run_retractions_match_the_live_text_corpus() {
+        let path = test_dir("mutation-run-text-visibility");
+        let baseline_path = test_dir("mutation-run-text-baseline");
+        let deleted = document(0, "team");
+        let retained = document(1, "private");
+
+        let mut index = SearchIndex::open(&path).unwrap();
+        index.upsert(deleted.clone()).unwrap();
+        index.upsert(retained.clone()).unwrap();
+        index.checkpoint().unwrap();
+        install_delete_mutation_run(&path, &deleted, 0, 2);
+
+        let mut baseline = SearchIndex::open(&baseline_path).unwrap();
+        baseline.upsert(retained).unwrap();
+        baseline.checkpoint().unwrap();
+
+        let reader = SearchOutOfCoreReader::open(&path).unwrap();
+        let baseline_reader = SearchOutOfCoreReader::open(&baseline_path).unwrap();
+        let actual = reader
+            .search_with_options("graph", None, SearchMode::Text, options(10, None))
+            .unwrap();
+        let expected = baseline_reader
+            .search_with_options("graph", None, SearchMode::Text, options(10, None))
+            .unwrap();
+        assert_search_parity(&expected.result, &actual.result);
+        assert_eq!(actual.result.hits[0].id, "memory:001");
+        assert!(reader
+            .hydrate_documents(std::slice::from_ref(&deleted.id))
+            .unwrap_err()
+            .to_string()
+            .contains("outside the published document ranges"));
+
+        let mut filtered = options(10, None);
+        filtered
+            .metadata_filters
+            .insert("space_id".to_string(), "team".to_string());
+        let filtered = reader
+            .search_with_options("graph", None, SearchMode::Text, filtered)
+            .unwrap();
+        assert_eq!(filtered.result.filtered_document_count, 0);
+        assert_eq!(filtered.result.total_hits, 0);
+
+        fs::remove_dir_all(path).unwrap();
+        fs::remove_dir_all(baseline_path).unwrap();
+    }
+
+    #[test]
+    #[cfg(all(feature = "full-text-search", feature = "vector-search"))]
+    fn mutation_run_retractions_fail_closed_for_vector_retrieval() {
+        let path = test_dir("mutation-run-vector-retrieval");
+        let deleted = document(0, "team");
+        let mut index = SearchIndex::open(&path).unwrap();
+        index.upsert(deleted.clone()).unwrap();
+        index.checkpoint().unwrap();
+        install_delete_mutation_run(&path, &deleted, 0, 2);
+
+        let error = SearchOutOfCoreReader::open(&path)
+            .unwrap()
+            .search_with_options(
+                "",
+                Some(&[1.0, 16.0]),
+                SearchMode::Vector,
+                options(10, None),
+            )
+            .unwrap_err();
+        assert!(error
+            .to_string()
+            .contains("mutation-run visibility is not implemented for vector retrieval"));
         fs::remove_dir_all(path).unwrap();
     }
 
