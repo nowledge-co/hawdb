@@ -180,6 +180,12 @@ pub(super) fn documents_digest(documents: &BTreeMap<String, SearchDocument>) -> 
     digest.finish()
 }
 
+pub(crate) fn document_digest(document: &SearchDocument) -> u64 {
+    let mut digest = DocumentsDigest::default();
+    digest.add_bytes(super::encode_search_document_line(document).as_bytes());
+    digest.finish()
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(super) struct LexicalProjectionConfig {
     pub max_manifest_bytes: NonZeroU64,
@@ -433,7 +439,6 @@ struct DeltaDocument {
     base: Option<Arc<BaseDocumentTerms>>,
 }
 
-#[cfg(test)]
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(super) struct LexicalDocumentRetraction {
     pub(super) document_len: u64,
@@ -644,6 +649,27 @@ pub(super) fn document_retraction(
     config: LexicalProjectionConfig,
 ) -> Result<LexicalDocumentRetraction> {
     let document = analyze_delta_document(document, analyzer, config)?;
+    Ok(LexicalDocumentRetraction {
+        document_len: u64::from(document.document_len),
+        unique_terms: document.frequencies.into_keys().collect(),
+    })
+}
+
+pub(super) fn document_retraction_with_context(
+    document: &SearchDocument,
+    analyzer: &SearchAnalyzerLexicon,
+    config: LexicalProjectionConfig,
+    memory: &BuildMemory,
+    task: &RuntimeTaskContext,
+) -> Result<LexicalDocumentRetraction> {
+    admit_document_source(document, config)?;
+    let document = if crate::analyzer_workspace::document_needs_workspace(document) {
+        crate::analyzer_workspace::run(memory, task, |workspace| {
+            analyze_delta_document_with_workspace(document, analyzer, config, Some(workspace))
+        })?
+    } else {
+        analyze_delta_document_with_workspace(document, analyzer, config, None)?
+    };
     Ok(LexicalDocumentRetraction {
         document_len: u64::from(document.document_len),
         unique_terms: document.frequencies.into_keys().collect(),

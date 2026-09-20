@@ -35,6 +35,8 @@ use super::{
     SEARCH_SEGMENT_PAYLOAD_FILE,
 };
 use crate::bounded_file::read_bounded_file;
+use crate::build_control::checkpoint;
+use crate::build_memory::BuildMemory;
 use crate::error::{HawDBError, Result};
 #[cfg(test)]
 use crate::{decode_search_segment_documents_bounded, validate_search_segment_documents};
@@ -212,6 +214,27 @@ pub(super) struct SearchOutOfCoreSegmentReader {
 pub(super) struct PublishedOutOfCoreProjection {
     pub(super) generation: u64,
     pub(super) bytes_written: u64,
+}
+
+#[derive(Debug, Clone, Copy)]
+pub(in crate::out_of_core) struct PublishedMutationRun {
+    pub(in crate::out_of_core) generation: u64,
+    pub(in crate::out_of_core) bytes_written: u64,
+    pub(in crate::out_of_core) manifest_bytes: u64,
+    pub(in crate::out_of_core) document_count: usize,
+    pub(in crate::out_of_core) documents_digest: u64,
+}
+
+pub(in crate::out_of_core) struct PublishMutationRunInput<'a> {
+    pub(in crate::out_of_core) root: &'a Path,
+    pub(in crate::out_of_core) expected_generation: u64,
+    pub(in crate::out_of_core) analyzer_digest: u64,
+    pub(in crate::out_of_core) source_graph_commit_epoch: Option<u64>,
+    pub(in crate::out_of_core) entries: Vec<mutation_run::SearchMutationRunEntry>,
+    pub(in crate::out_of_core) max_bytes: u64,
+    pub(in crate::out_of_core) max_generation_bytes: u64,
+    pub(in crate::out_of_core) memory: &'a BuildMemory,
+    pub(in crate::out_of_core) task: &'a crate::RuntimeTaskContext,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -2571,6 +2594,102 @@ pub(super) fn publish_out_of_core_projection(
     Ok(PublishedOutOfCoreProjection {
         generation,
         bytes_written: bytes_written.saturating_add(manifest_bytes.len() as u64),
+    })
+}
+
+pub(in crate::out_of_core) fn publish_mutation_run(
+    input: PublishMutationRunInput<'_>,
+) -> Result<PublishedMutationRun> {
+    let PublishMutationRunInput {
+        root,
+        expected_generation,
+        analyzer_digest,
+        source_graph_commit_epoch,
+        entries,
+        max_bytes,
+        max_generation_bytes,
+        memory,
+        task,
+    } = input;
+    checkpoint(task)?;
+    let _publish_lease = SearchProjectionPublishLease::acquire_with_context(root, memory, task)?;
+    let manifest_path = root.join(OUT_OF_CORE_MANIFEST_FILE);
+    let manifest_bytes = read_bounded_file(&manifest_path, MAX_OUT_OF_CORE_MANIFEST_BYTES)?;
+    let mut manifest = SearchOutOfCoreManifestBody::decode(&manifest_bytes)?;
+    if manifest.generation != expected_generation {
+        return Err(HawDBError::Storage(format!(
+            "search mutation-run base changed before publication: expected {expected_generation}, got {}",
+            manifest.generation
+        )));
+    }
+    let generation = manifest.generation.checked_add(1).ok_or_else(|| {
+        HawDBError::Storage("search mutation-run generation overflow".to_string())
+    })?;
+    let run_body = mutation_run::SearchMutationRunBody::new(generation, analyzer_digest, entries)?;
+    let run_bytes = run_body.encode()?;
+    if run_bytes.len() as u64 > max_bytes {
+        return Err(HawDBError::Storage(format!(
+            "search mutation-run requires {} bytes, exceeding the configured publication budget {max_bytes}",
+            run_bytes.len()
+        )));
+    }
+    let run_file = mutation_run::artifact_file(generation);
+    let entry_count = run_body.entries().len();
+    let mut document_count = manifest.document_count;
+    let mut documents_digest = manifest.documents_digest;
+    for entry in run_body.entries() {
+        document_count = document_count.checked_sub(1).ok_or_else(|| {
+            HawDBError::Storage(
+                "search mutation-run retractions exceed the active document count".to_string(),
+            )
+        })?;
+        documents_digest = crate::lexical_projection::DocumentsDigest::replace(
+            documents_digest,
+            entry.retraction.documents_digest,
+            0,
+        );
+    }
+    manifest.generation = generation;
+    manifest.document_count = document_count;
+    manifest.documents_digest = documents_digest;
+    manifest.source_graph_commit_epoch = source_graph_commit_epoch;
+    manifest
+        .mutation_runs
+        .push(SearchOutOfCoreMutationRunManifest {
+            generation,
+            file: run_file.clone(),
+            len: run_bytes.len() as u64,
+            checksum: checksum_bytes(&run_bytes),
+            entry_count,
+            analyzer_digest,
+        });
+    manifest.mutation_runs.sort_by_key(|run| run.generation);
+    let manifest_bytes = manifest.encode()?;
+    if manifest_bytes.len() as u64 > MAX_OUT_OF_CORE_MANIFEST_BYTES {
+        return Err(HawDBError::Storage(format!(
+            "search mutation-run manifest requires {} bytes, exceeding the {} byte read budget",
+            manifest_bytes.len(),
+            MAX_OUT_OF_CORE_MANIFEST_BYTES
+        )));
+    }
+    let generation_bytes = (run_bytes.len() as u64)
+        .checked_add(manifest_bytes.len() as u64)
+        .ok_or_else(|| HawDBError::Storage("search mutation-run size overflow".to_string()))?;
+    if generation_bytes > max_generation_bytes {
+        return Err(HawDBError::Storage(format!(
+            "search mutation-run requires {generation_bytes} published bytes, exceeding {max_generation_bytes}"
+        )));
+    }
+    checkpoint(task)?;
+    let bytes_written = write_generation_artifact(&root.join(&run_file), &run_bytes)?;
+    checkpoint(task)?;
+    let manifest_bytes_written = write_generation_artifact(&manifest_path, &manifest_bytes)?;
+    Ok(PublishedMutationRun {
+        generation,
+        bytes_written: bytes_written.saturating_add(manifest_bytes_written),
+        manifest_bytes: manifest_bytes_written,
+        document_count,
+        documents_digest,
     })
 }
 

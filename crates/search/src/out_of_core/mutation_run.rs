@@ -80,7 +80,6 @@ pub(super) struct SearchMutationVisibility {
 }
 
 impl SearchMutationRunBody {
-    #[cfg(test)]
     pub(super) fn new(
         generation: u64,
         analyzer_digest: u64,
@@ -96,7 +95,6 @@ impl SearchMutationRunBody {
         Ok(body)
     }
 
-    #[cfg(test)]
     pub(super) fn encode(&self) -> Result<Vec<u8>> {
         self.validate()?;
         let body = serde_json::to_vec(self).map_err(|error| {
@@ -111,6 +109,10 @@ impl SearchMutationRunBody {
                 "failed to encode search mutation-run envelope: {error}"
             ))
         })
+    }
+
+    pub(super) fn entries(&self) -> &[SearchMutationRunEntry] {
+        &self.entries
     }
 
     fn validate(&self) -> Result<()> {
@@ -198,7 +200,7 @@ impl SearchMutationRun {
     }
 
     pub(super) fn entries(&self) -> &[SearchMutationRunEntry] {
-        &self.body.entries
+        self.body.entries()
     }
 }
 
