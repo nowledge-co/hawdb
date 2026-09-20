@@ -164,7 +164,7 @@ _HAWDB_TEST_SUPPORT_DEV_DEPS = [
     dep
     for dep in all_crate_deps(normal_dev = True)
     if dep != "//crates/storage:hawdb_storage"
-]
+] + ["//crates/storage:hawdb_storage_test_support"]
 
 # crate_universe exposes optional normal dependencies to every Bazel target.
 # Keep the native vector dependency owned by targets that enable vector-search.
