@@ -160,6 +160,12 @@ _HAWDB_FULL_TEST_SUPPORT_DEPS = _HAWDB_COMMON_TEST_SUPPORT_DEPS + [
     "//crates/search:hawdb_search",
 ]
 
+_HAWDB_TEST_SUPPORT_DEV_DEPS = [
+    dep
+    for dep in all_crate_deps(normal_dev = True)
+    if dep != "//crates/storage:hawdb_storage"
+]
+
 # crate_universe exposes optional normal dependencies to every Bazel target.
 # Keep the native vector dependency owned by targets that enable vector-search.
 _HAWDB_VECTOR_DEPS = [
@@ -266,7 +272,7 @@ rust_test(
         normal_dev = True,
         proc_macro_dev = True,
     ),
-    deps = all_crate_deps(normal_dev = True),
+    deps = _HAWDB_TEST_SUPPORT_DEV_DEPS,
     proc_macro_deps = all_crate_deps(proc_macro_dev = True),
 )
 
@@ -284,7 +290,7 @@ rust_test(
         normal_dev = True,
         proc_macro_dev = True,
     ),
-    deps = all_crate_deps(normal_dev = True),
+    deps = _HAWDB_TEST_SUPPORT_DEV_DEPS,
     proc_macro_deps = all_crate_deps(proc_macro_dev = True),
 )
 
@@ -301,7 +307,7 @@ rust_test(
     edition = "2024",
     tags = ["manual"],
     aliases = aliases(normal_dev = True, proc_macro_dev = True),
-    deps = all_crate_deps(normal_dev = True),
+    deps = _HAWDB_TEST_SUPPORT_DEV_DEPS,
     proc_macro_deps = all_crate_deps(proc_macro_dev = True),
 )
 
@@ -325,7 +331,7 @@ rust_test(
     edition = "2024",
     tags = ["manual"],
     aliases = aliases(normal_dev = True, proc_macro_dev = True),
-    deps = all_crate_deps(normal_dev = True),
+    deps = _HAWDB_TEST_SUPPORT_DEV_DEPS,
     proc_macro_deps = all_crate_deps(proc_macro_dev = True),
 )
 
@@ -341,7 +347,7 @@ rust_test(
     edition = "2024",
     tags = ["manual"],
     aliases = aliases(normal_dev = True, proc_macro_dev = True),
-    deps = all_crate_deps(normal_dev = True),
+    deps = _HAWDB_TEST_SUPPORT_DEV_DEPS,
     proc_macro_deps = all_crate_deps(proc_macro_dev = True),
 )
 
@@ -473,7 +479,7 @@ rust_test(
         proc_macro_dev = True,
     ),
     # Unlike `crate = ":hawdb"`, this selects the ACL-enabled dependency graph.
-    deps = _HAWDB_COMMON_TEST_SUPPORT_DEPS + _HAWDB_VECTOR_DEPS + all_crate_deps(normal_dev = True) + [
+    deps = _HAWDB_COMMON_TEST_SUPPORT_DEPS + _HAWDB_VECTOR_DEPS + _HAWDB_TEST_SUPPORT_DEV_DEPS + [
         "//crates/bootstrap:hawdb_bootstrap_acl",
         "//crates/nowledge-contracts:hawdb_nowledge_contracts_acl",
         "//crates/readiness:hawdb_readiness_acl",
