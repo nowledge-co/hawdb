@@ -52,7 +52,7 @@ pub(in crate::out_of_core::generation_writer) fn visit_content_segment(
         .iter()
         .position(|artifact| artifact.content_segment_id == content_segment_id)
         .ok_or_else(|| {
-            invalid(&format!(
+            invalid(format!(
                 "search generation update selected inactive content segment {content_segment_id}"
             ))
         })?;
