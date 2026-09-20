@@ -15,7 +15,7 @@
 use super::{BoundedScoreCollector, CandidateSet, SearchOutOfCoreMetrics, SearchOutOfCoreReader};
 use crate::error::{HawDBError, Result};
 use crate::{cosine_similarity, CompressedVectorSearchMode, SearchFallbackReasonCode};
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 #[cfg(feature = "vector-search")]
 use std::num::NonZeroUsize;
 
@@ -157,15 +157,19 @@ impl SearchOutOfCoreReader {
         metrics: &mut SearchOutOfCoreMetrics,
     ) -> Result<VectorScoreScan> {
         let task_context = vector_execution_options.task_context;
-        let mut collector = BoundedScoreCollector::new(
-            retained_limit,
-            admitted_score_entries(
-                self.config.max_score_entries.get(),
-                vector_execution_options.max_working_bytes,
-            ),
-        )?;
+        let max_scored_documents = admitted_score_entries(
+            self.config.max_score_entries.get(),
+            vector_execution_options.max_working_bytes,
+        ) / 2;
+        if max_scored_documents == 0 {
+            return Err(HawDBError::Storage(
+                "search vector uniqueness check exceeds the admitted working memory".to_string(),
+            ));
+        }
+        let mut collector = BoundedScoreCollector::new(retained_limit, max_scored_documents)?;
         let mut vector_document_count = 0usize;
         let mut segment_scan_count = 0usize;
+        let mut scored_document_ids = BTreeSet::new();
         for (layer, artifact) in self.segments.iter().enumerate() {
             for segment in &artifact.descriptor.segments {
                 checkpoint_vector_task(task_context)?;
@@ -181,6 +185,17 @@ impl SearchOutOfCoreReader {
                     let embedding = document.embedding.as_slice();
                     if embedding.len() != query_embedding.len() || embedding.is_empty() {
                         continue;
+                    }
+                    if !scored_document_ids.insert(document.id.clone()) {
+                        return Err(HawDBError::Storage(format!(
+                            "search out-of-core segment set has duplicate document {}",
+                            document.id
+                        )));
+                    }
+                    if scored_document_ids.len() > max_scored_documents {
+                        return Err(HawDBError::Storage(format!(
+                            "search vector uniqueness check requires more than {max_scored_documents} document ids"
+                        )));
                     }
                     vector_document_count = vector_document_count.saturating_add(1);
                     metrics.vector_bytes_read = metrics.vector_bytes_read.saturating_add(

@@ -3777,6 +3777,13 @@ mod tests {
             .hydrate_documents(&[document(0, "team").id])
             .unwrap_err();
         assert!(error.to_string().contains("duplicate document"));
+        #[cfg(feature = "vector-search")]
+        {
+            let error = reader
+                .search_with_options("", Some(&[1.0, 16.0]), SearchMode::Vector, options(1, None))
+                .unwrap_err();
+            assert!(error.to_string().contains("duplicate document"));
+        }
         fs::remove_dir_all(path).unwrap();
     }
 
@@ -3894,6 +3901,13 @@ mod tests {
         );
         assert_eq!(vector.metrics.candidate_block_reads, 2);
         assert!(vector.metrics.vector_segment_bytes_read > 0);
+
+        let limited = reader
+            .search_with_options("", Some(&[16.0, 1.0]), SearchMode::Vector, options(1, None))
+            .unwrap();
+        assert_eq!(limited.result.total_hits, 2);
+        assert_eq!(limited.result.hits.len(), 1);
+        assert_eq!(limited.result.hits[0].id, "memory:001");
 
         let hybrid = reader
             .search_with_options(
