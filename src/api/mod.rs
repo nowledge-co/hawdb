@@ -21093,7 +21093,12 @@ impl<S: crate::executor::ExecutionStore> DatabaseReadTransaction<S> {
             execution_profile: empty_read_execution_profile(),
         })
     }
+}
 
+impl<S> DatabaseReadTransaction<S>
+where
+    S: crate::executor::ExecutionStore + hawdb_system_sql::SystemSqlStore,
+{
     pub fn query_sql(&self, sql_text: &str) -> Result<QueryOutput> {
         self.query_sql_bounded(sql_text, self.config.max_read_result_rows)
     }
@@ -21469,7 +21474,9 @@ impl<S: crate::executor::ExecutionStore> DatabaseReadTransaction<S> {
         query_runtime::query_runtime_checkpoint(Some(task_context))?;
         Ok(profiled_relational_sql_output(output))
     }
+}
 
+impl<S: crate::executor::ExecutionStore> DatabaseReadTransaction<S> {
     pub fn explain_query(&self, cypher_text: &str) -> Result<ExplainOutput> {
         self.explain_query_with_params(cypher_text, &BTreeMap::new())
     }
@@ -21588,7 +21595,12 @@ impl<S: crate::executor::ExecutionStore> DatabaseReadTransaction<S> {
             },
         )
     }
+}
 
+impl<S> DatabaseReadTransaction<S>
+where
+    S: crate::executor::ExecutionStore + hawdb_analytics::ProjectionSource,
+{
     pub fn project_graph(&self, rel_type: Option<&str>) -> ProjectedGraph {
         match rel_type {
             Some(name) => self
@@ -21599,7 +21611,9 @@ impl<S: crate::executor::ExecutionStore> DatabaseReadTransaction<S> {
             None => ProjectedGraph::from_store(&self.store, None),
         }
     }
+}
 
+impl<S: crate::executor::ExecutionStore> DatabaseReadTransaction<S> {
     pub fn export_canonical_graph_snapshot(&self) -> CanonicalGraphSnapshotExport {
         export_canonical_graph_snapshot_for(&self.catalog, &self.store)
     }
@@ -21607,7 +21621,12 @@ impl<S: crate::executor::ExecutionStore> DatabaseReadTransaction<S> {
     pub fn try_export_canonical_graph_snapshot(&self) -> Result<CanonicalGraphSnapshotExport> {
         canonical_snapshot::try_export_canonical_graph_snapshot_for(&self.catalog, &self.store)
     }
+}
 
+impl<S> DatabaseReadTransaction<S>
+where
+    S: crate::executor::ExecutionStore + hawdb_search::SearchProjectionSource,
+{
     pub fn rebuild_search_projection(
         &self,
         search_index: &mut SearchIndex,
@@ -21623,7 +21642,9 @@ impl<S: crate::executor::ExecutionStore> DatabaseReadTransaction<S> {
     ) -> Result<MetadataRepairSummary> {
         search_index.repair_metadata_from_graph(&self.catalog, &self.store, options)
     }
+}
 
+impl<S: crate::executor::ExecutionStore> DatabaseReadTransaction<S> {
     /// Retrieves from resident search payloads, propagating search and graph/pipeline errors.
     pub fn retrieve_knowledge(
         &self,

@@ -44,11 +44,8 @@ pub trait ExecutionStore:
     + hawdb_storage::graph_engine::GraphMutationEngine
     + hawdb_executor::store::GraphExecutionWrite
     + crate::store::InternalGraphEngine
-    + hawdb_analytics::ProjectionSource
-    + hawdb_system_sql::SystemSqlStore
     + hawdb_relational::row_runtime::RelationalRowStoreReader
     + hawdb_relational::index_runtime::RelationalIndexStoreReader
-    + hawdb_search::SearchProjectionSource
 {
 }
 
@@ -57,11 +54,8 @@ impl<T> ExecutionStore for T where
         + hawdb_storage::graph_engine::GraphMutationEngine
         + hawdb_executor::store::GraphExecutionWrite
         + crate::store::InternalGraphEngine
-        + hawdb_analytics::ProjectionSource
-        + hawdb_system_sql::SystemSqlStore
         + hawdb_relational::row_runtime::RelationalRowStoreReader
         + hawdb_relational::index_runtime::RelationalIndexStoreReader
-        + hawdb_search::SearchProjectionSource
 {
 }
 
