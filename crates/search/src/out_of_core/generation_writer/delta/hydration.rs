@@ -40,25 +40,6 @@ pub(super) fn visit(
     visit_range(reader, 0, reader.segments.len(), memory, task, consumer)
 }
 
-pub(in crate::out_of_core::generation_writer) fn visit_content_segment(
-    reader: &SearchOutOfCoreReader,
-    content_segment_id: u64,
-    memory: &BuildMemory,
-    task: &RuntimeTaskContext,
-    consumer: &mut dyn FnMut(AdmittedDocument) -> Result<()>,
-) -> Result<SearchOutOfCoreMetrics> {
-    let index = reader
-        .segments
-        .iter()
-        .position(|artifact| artifact.content_segment_id == content_segment_id)
-        .ok_or_else(|| {
-            invalid(format!(
-                "search generation update selected inactive content segment {content_segment_id}"
-            ))
-        })?;
-    visit_range(reader, index, index + 1, memory, task, consumer)
-}
-
 pub(in crate::out_of_core::generation_writer) fn visit_range(
     reader: &SearchOutOfCoreReader,
     start: usize,
