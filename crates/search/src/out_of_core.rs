@@ -872,6 +872,11 @@ impl SearchOutOfCoreReader {
         self.manifest.generation
     }
 
+    #[cfg(all(test, feature = "full-text-search"))]
+    pub(crate) fn artifact_count(&self) -> usize {
+        self.manifest.segments.len()
+    }
+
     pub fn source_graph_commit_epoch(&self) -> Option<u64> {
         self.manifest.source_graph_commit_epoch
     }
