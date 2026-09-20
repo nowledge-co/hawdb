@@ -497,6 +497,7 @@ pub(super) fn publish_generation(
         format: OUT_OF_CORE_FORMAT.to_string(),
         generation,
         segments,
+        mutation_runs: Vec::new(),
         document_count,
         documents_digest,
         source_graph_commit_epoch: input.source_graph_commit_epoch,
