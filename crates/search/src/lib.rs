@@ -14507,6 +14507,16 @@ mod tests {
                 metadata: BTreeMap::from([("space_id".to_string(), "private".to_string())]),
             },
         ];
+        let replacement = SearchProjectionRow {
+            kind: SearchProjectionKind::Memory,
+            external_id: "b-graph-query".to_string(),
+            title: "Graph storage planner".to_string(),
+            body: "durable graph storage update".to_string(),
+            embedding: None,
+            source_id: None,
+            metadata: BTreeMap::from([("space_id".to_string(), "team".to_string())]),
+        };
+        let deleted_id = documents[3].clone().into_document().id;
         let options = SearchQueryOptions {
             limit: 10,
             offset: 0,
@@ -14517,7 +14527,11 @@ mod tests {
         };
         let mut baseline_writer =
             SearchOutOfCoreGenerationWriter::create(&baseline_path, Default::default()).unwrap();
-        for document in documents.iter().cloned() {
+        for document in [
+            documents[0].clone(),
+            replacement.clone(),
+            documents[2].clone(),
+        ] {
             baseline_writer.push(document.into_document()).unwrap();
         }
         baseline_writer.finish().unwrap();
@@ -14541,9 +14555,34 @@ mod tests {
             .unwrap();
             update.finish().unwrap();
         }
+        let reader = SearchOutOfCoreReader::open(&segmented_path).unwrap();
+        assert_eq!(reader.artifact_count(), documents.len());
+        let update = SearchOutOfCoreGenerationWriter::prepare_delta(
+            &reader,
+            SearchProjectionDelta {
+                upserts: vec![replacement],
+                ..Default::default()
+            },
+            Default::default(),
+        )
+        .unwrap();
+        update.finish().unwrap();
+
+        let reader = SearchOutOfCoreReader::open(&segmented_path).unwrap();
+        let update = SearchOutOfCoreGenerationWriter::prepare_delta(
+            &reader,
+            SearchProjectionDelta {
+                deletes: vec![deleted_id],
+                ..Default::default()
+            },
+            Default::default(),
+        )
+        .unwrap();
+        update.finish().unwrap();
+
         let baseline = SearchOutOfCoreReader::open(&baseline_path).unwrap();
         let segmented = SearchOutOfCoreReader::open(&segmented_path).unwrap();
-        assert_eq!(segmented.artifact_count(), documents.len());
+        assert_eq!(segmented.document_count(), 3);
 
         let filtered_options = SearchQueryOptions {
             metadata_filters: BTreeMap::from([("space_id".to_string(), "team".to_string())]),
