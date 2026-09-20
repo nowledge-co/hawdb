@@ -17,9 +17,9 @@ use crate::error::{HawDBError, Result};
 use crate::{cosine_similarity, CompressedVectorSearchMode, SearchFallbackReasonCode};
 #[cfg(feature = "vector-search")]
 use std::cmp::{Ordering, Reverse};
-use std::collections::BTreeMap;
 #[cfg(feature = "vector-search")]
 use std::collections::BinaryHeap;
+use std::collections::{BTreeMap, BTreeSet};
 #[cfg(feature = "vector-search")]
 use std::num::NonZeroUsize;
 
@@ -241,15 +241,19 @@ impl SearchOutOfCoreReader {
         metrics: &mut SearchOutOfCoreMetrics,
     ) -> Result<VectorScoreScan> {
         let task_context = vector_execution_options.task_context;
-        let mut collector = BoundedScoreCollector::new(
-            retained_limit,
-            admitted_score_entries(
-                self.config.max_score_entries.get(),
-                vector_execution_options.max_working_bytes,
-            ),
-        )?;
+        let max_scored_documents = admitted_score_entries(
+            self.config.max_score_entries.get(),
+            vector_execution_options.max_working_bytes,
+        ) / 2;
+        if max_scored_documents == 0 {
+            return Err(HawDBError::Storage(
+                "search vector uniqueness check exceeds the admitted working memory".to_string(),
+            ));
+        }
+        let mut collector = BoundedScoreCollector::new(retained_limit, max_scored_documents)?;
         let mut vector_document_count = 0usize;
         let mut segment_scan_count = 0usize;
+        let mut scored_document_ids = BTreeSet::new();
         for (layer, artifact) in self.segments.iter().enumerate() {
             for segment in &artifact.descriptor.segments {
                 checkpoint_vector_task(task_context)?;
@@ -265,6 +269,17 @@ impl SearchOutOfCoreReader {
                     let embedding = document.embedding.as_slice();
                     if embedding.len() != query_embedding.len() || embedding.is_empty() {
                         continue;
+                    }
+                    if !scored_document_ids.insert(document.id.clone()) {
+                        return Err(HawDBError::Storage(format!(
+                            "search out-of-core segment set has duplicate document {}",
+                            document.id
+                        )));
+                    }
+                    if scored_document_ids.len() > max_scored_documents {
+                        return Err(HawDBError::Storage(format!(
+                            "search vector uniqueness check requires more than {max_scored_documents} document ids"
+                        )));
                     }
                     vector_document_count = vector_document_count.saturating_add(1);
                     metrics.vector_bytes_read = metrics.vector_bytes_read.saturating_add(
@@ -302,6 +317,7 @@ impl SearchOutOfCoreReader {
         vector_execution_options: super::VectorSearchExecutionOptions<'_>,
         metrics: &mut SearchOutOfCoreMetrics,
     ) -> Result<VectorScoreScan> {
+        self.require_compatible_rabitq_projections()?;
         let task_context = vector_execution_options.task_context;
         checkpoint_vector_task(task_context)?;
         let minimum_candidates = retained_limit.unwrap_or(1).max(1);
@@ -543,6 +559,30 @@ impl SearchOutOfCoreReader {
             fallback_reasons: Vec::new(),
         })
     }
+
+    #[cfg(feature = "vector-search")]
+    fn require_compatible_rabitq_projections(&self) -> Result<()> {
+        let mut reference = None;
+        for (layer, artifact) in self.segments.iter().enumerate() {
+            let projection = artifact.rabitq_projection.as_ref().ok_or_else(|| {
+                HawDBError::Storage(format!(
+                    "search out-of-core layer {layer} has no RaBitQ projection"
+                ))
+            })?;
+            let manifest = projection.manifest();
+            let identity = (manifest.bit_width, manifest.transform_seed);
+            if let Some(reference) = reference
+                && identity != reference
+            {
+                return Err(HawDBError::Storage(
+                    "search multi-segment RaBitQ projections require matching bit widths and transform seeds"
+                        .to_string(),
+                ));
+            }
+            reference = Some(identity);
+        }
+        Ok(())
+    }
 }
 
 fn checkpoint_vector_task(task_context: Option<&crate::RuntimeTaskContext>) -> Result<()> {
@@ -558,4 +598,29 @@ pub(super) fn vector_projection_error(
     error: hawdb_vector_projection::ProjectionError,
 ) -> HawDBError {
     HawDBError::Storage(format!("search RaBitQ projection: {error}"))
+}
+
+#[cfg(all(test, feature = "vector-search"))]
+mod tests {
+    use super::{BoundedLayeredProjectionHits, LayeredProjectionHit};
+
+    #[test]
+    fn layered_projection_hits_evict_the_lower_scored_layer() {
+        let mut hits = BoundedLayeredProjectionHits::new(1);
+        hits.push(LayeredProjectionHit {
+            layer: 0,
+            ordinal: 0,
+            score: 1.0,
+        });
+        hits.push(LayeredProjectionHit {
+            layer: 1,
+            ordinal: 0,
+            score: 2.0,
+        });
+
+        let hits = hits.finish();
+        assert_eq!(hits.len(), 1);
+        assert_eq!(hits[0].layer, 1);
+        assert_eq!(hits[0].ordinal, 0);
+    }
 }
