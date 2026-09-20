@@ -164,7 +164,11 @@ _HAWDB_TEST_SUPPORT_DEV_DEPS = [
     dep
     for dep in all_crate_deps(normal_dev = True)
     if dep != "//crates/storage:hawdb_storage"
-] + ["//crates/storage:hawdb_storage_test_support"]
+]
+
+_HAWDB_ROOT_TEST_SUPPORT_DEV_DEPS = _HAWDB_TEST_SUPPORT_DEV_DEPS + [
+    "//crates/storage:hawdb_storage_test_support",
+]
 
 # crate_universe exposes optional normal dependencies to every Bazel target.
 # Keep the native vector dependency owned by targets that enable vector-search.
@@ -272,7 +276,7 @@ rust_test(
         normal_dev = True,
         proc_macro_dev = True,
     ),
-    deps = _HAWDB_TEST_SUPPORT_DEV_DEPS,
+    deps = _HAWDB_ROOT_TEST_SUPPORT_DEV_DEPS,
     proc_macro_deps = all_crate_deps(proc_macro_dev = True),
 )
 
@@ -290,7 +294,7 @@ rust_test(
         normal_dev = True,
         proc_macro_dev = True,
     ),
-    deps = _HAWDB_TEST_SUPPORT_DEV_DEPS,
+    deps = _HAWDB_ROOT_TEST_SUPPORT_DEV_DEPS,
     proc_macro_deps = all_crate_deps(proc_macro_dev = True),
 )
 
@@ -307,7 +311,7 @@ rust_test(
     edition = "2024",
     tags = ["manual"],
     aliases = aliases(normal_dev = True, proc_macro_dev = True),
-    deps = _HAWDB_TEST_SUPPORT_DEV_DEPS,
+    deps = _HAWDB_ROOT_TEST_SUPPORT_DEV_DEPS,
     proc_macro_deps = all_crate_deps(proc_macro_dev = True),
 )
 
@@ -331,7 +335,7 @@ rust_test(
     edition = "2024",
     tags = ["manual"],
     aliases = aliases(normal_dev = True, proc_macro_dev = True),
-    deps = _HAWDB_TEST_SUPPORT_DEV_DEPS,
+    deps = _HAWDB_ROOT_TEST_SUPPORT_DEV_DEPS,
     proc_macro_deps = all_crate_deps(proc_macro_dev = True),
 )
 
@@ -347,7 +351,7 @@ rust_test(
     edition = "2024",
     tags = ["manual"],
     aliases = aliases(normal_dev = True, proc_macro_dev = True),
-    deps = _HAWDB_TEST_SUPPORT_DEV_DEPS,
+    deps = _HAWDB_ROOT_TEST_SUPPORT_DEV_DEPS,
     proc_macro_deps = all_crate_deps(proc_macro_dev = True),
 )
 
