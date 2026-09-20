@@ -638,20 +638,15 @@ impl ConcurrentDatabaseTransaction {
         let mut state = self.state.take_for_commit();
         let committed_result = Arc::new(Mutex::new(None));
         let result_slot = Arc::clone(&committed_result);
-        let result = inner
-            .commits
-            .execute_grouped(move |database| {
-                let result =
-                    commit_database_transaction_state(database, &mut state, allow_stale_rebase)?;
-                let output = result.output.clone();
-                *result_slot.lock().map_err(|_| {
-                    HawDBError::Execution(
-                        "concurrent transaction result slot is poisoned".to_string(),
-                    )
-                })? = Some(result);
-                Ok(output)
-            })
-            .map_err(|error| self.map_commit_error(error));
+        let result = inner.commits.execute_grouped(move |database| {
+            let result =
+                commit_database_transaction_state(database, &mut state, allow_stale_rebase)?;
+            let output = result.output.clone();
+            *result_slot.lock().map_err(|_| {
+                HawDBError::Execution("concurrent transaction result slot is poisoned".to_string())
+            })? = Some(result);
+            Ok(output)
+        });
         self.inner.locks.release(self.transaction_id);
         self.finished = true;
         result?;
@@ -786,18 +781,6 @@ impl ConcurrentDatabaseTransaction {
             )));
         }
         Ok(())
-    }
-
-    fn map_commit_error(&self, error: HawDBError) -> HawDBError {
-        if self.options.mode == ConcurrentTransactionMode::Optimistic
-            && error.to_string().contains("transaction snapshot is stale")
-        {
-            return HawDBError::Execution(format!(
-                "optimistic transaction conflict for transaction {}: {}",
-                self.transaction_id, error
-            ));
-        }
-        error
     }
 
     fn finish_without_commit(&mut self) {

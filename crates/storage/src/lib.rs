@@ -85,6 +85,8 @@ pub mod text;
 #[doc(hidden)]
 pub mod transaction_locks;
 #[doc(hidden)]
+pub mod version;
+#[doc(hidden)]
 pub mod wal;
 pub mod wire;
 

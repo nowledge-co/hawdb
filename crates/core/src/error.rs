@@ -22,6 +22,11 @@ pub enum HawDBError {
     Storage(String),
     StorageIntegrity(String),
     Execution(String),
+    TransactionConflict {
+        read_epoch: u64,
+        committed_epoch: u64,
+        key: String,
+    },
     AppendSequenceExhausted {
         table: String,
         watermark: i64,
@@ -42,6 +47,14 @@ impl Display for HawDBError {
                 write!(f, "storage integrity error: {message}")
             }
             HawDBError::Execution(message) => write!(f, "execution error: {message}"),
+            HawDBError::TransactionConflict {
+                read_epoch,
+                committed_epoch,
+                key,
+            } => write!(
+                f,
+                "transaction conflict on {key}: transaction read epoch {read_epoch}, conflicting commit epoch {committed_epoch}"
+            ),
             HawDBError::AppendSequenceExhausted {
                 table,
                 watermark,
@@ -58,6 +71,12 @@ impl Display for HawDBError {
 }
 
 impl std::error::Error for HawDBError {}
+
+impl HawDBError {
+    pub const fn is_retryable_transaction_conflict(&self) -> bool {
+        matches!(self, Self::TransactionConflict { .. })
+    }
+}
 
 pub type Result<T> = std::result::Result<T, HawDBError>;
 

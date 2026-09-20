@@ -13,7 +13,9 @@
 // limitations under the License.
 
 use super::*;
-use crate::{ConcurrentTransactionOptions, SqlStatementResult, TransactionCommitResult};
+use crate::{
+    ConcurrentTransactionOptions, HawDBError, SqlStatementResult, TransactionCommitResult,
+};
 use std::time::Duration;
 
 fn mutation_fixture() -> Database {
@@ -228,9 +230,15 @@ fn concurrent_update_delete_outcomes_cover_retry_and_both_transaction_modes() {
     let conflict = stale
         .commit_with_result()
         .expect_err("stale optimistic outcome must not be confirmed");
-    assert!(conflict
-        .to_string()
-        .contains("optimistic transaction conflict"));
+    assert!(matches!(
+        &conflict,
+        HawDBError::TransactionConflict {
+            read_epoch: 4,
+            committed_epoch: 5,
+            key,
+        } if key == "database"
+    ));
+    assert!(conflict.is_retryable_transaction_conflict());
 
     let mut retry = database
         .begin_transaction(ConcurrentTransactionOptions::optimistic())
