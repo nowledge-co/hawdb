@@ -13,7 +13,9 @@
 // limitations under the License.
 
 use super::*;
+#[cfg(feature = "test-support")]
 use crate::store::{set_wal_append_failpoint, WalAppendFailure};
+#[cfg(feature = "test-support")]
 use crate::HawDBError;
 use std::fs;
 use std::path::Path;
@@ -66,6 +68,7 @@ fn assert_repair_evidence(path: &Path, original: &[u8]) {
     assert_eq!(fs::read(quarantine).unwrap(), original);
 }
 
+#[cfg(feature = "test-support")]
 #[test]
 fn partial_write_rolls_back_and_next_commit_succeeds() {
     for baseline in [false, true] {
@@ -119,6 +122,7 @@ fn partial_write_rolls_back_and_next_commit_succeeds() {
     }
 }
 
+#[cfg(feature = "test-support")]
 #[test]
 fn first_failed_append_can_reopen_without_repair() {
     let path = unique_test_dir("first_wal_write_failure");
@@ -132,6 +136,7 @@ fn first_failed_append_can_reopen_without_repair() {
     fs::remove_dir_all(path).unwrap();
 }
 
+#[cfg(feature = "test-support")]
 #[test]
 fn partial_write_keeps_earlier_group_entries_flushable() {
     let path = unique_test_dir("wal_group_write_rollback");
@@ -159,6 +164,7 @@ fn partial_write_keeps_earlier_group_entries_flushable() {
     fs::remove_dir_all(path).unwrap();
 }
 
+#[cfg(feature = "test-support")]
 #[test]
 fn rollback_and_sync_failures_poison_the_handle() {
     for failure in [WalAppendFailure::Rollback, WalAppendFailure::Sync] {

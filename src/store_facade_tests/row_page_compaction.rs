@@ -323,6 +323,7 @@ fn row_page_compaction_dirty_and_materialized_limits_release_admission() {
     std::fs::remove_dir_all(path).unwrap();
 }
 
+#[cfg(feature = "test-support")]
 #[test]
 fn row_page_compaction_checkpoint_failpoints_recover_one_complete_selection() {
     use crate::store::{set_checkpoint_failpoint, CheckpointPublishStage};

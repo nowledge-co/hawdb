@@ -16,9 +16,8 @@ use hawdb_storage::derived_repair::*;
 use hawdb_storage::artifact_files::*;
 use hawdb_storage::durable_manifest::*;
 use hawdb_core::error::HawDBError;
-use hawdb_storage::store::{
-    set_checkpoint_failpoint, CheckpointPublishStage,
-};
+#[cfg(feature = "test-support")]
+use hawdb_storage::store::{set_checkpoint_failpoint, CheckpointPublishStage};
 use hawdb_storage::store::doctor::*;
 use hawdb_storage::store::derived_repair::audit::*;
 use hawdb_storage::store::MANIFEST_FILE;
@@ -183,6 +182,7 @@ fn source_budget_rejects_before_repair_audit_or_publication() {
     fs::remove_dir_all(path).unwrap();
 }
 
+#[cfg(feature = "test-support")]
 #[test]
 fn manifest_published_interruption_blocks_open_and_finalizes_idempotently() {
     let path = checkpointed_database("interrupted");
