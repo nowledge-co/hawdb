@@ -305,12 +305,17 @@ fn term_policy_does_not_waive_block_spill_or_source_budgets() {
         term_frequency: 1,
     };
     let spill_bytes = RUN_HEADER.len() as u64 + posting.encoded_len();
-    let frame = posting_codec::encode_by(1, |_| posting_codec::Posting {
-        ordinal: posting.ordinal,
-        tf: posting.term_frequency,
-    })
+    let mut block = Vec::new();
+    block_encoding::write_block(
+        &mut block,
+        1,
+        0,
+        0,
+        u64::MAX,
+        block_encoding::Entries::Postings(std::slice::from_ref(&posting)),
+    )
     .unwrap();
-    let block_bytes = 29 + 4 + posting.term.len() as u64 + 4 + frame.len() as u64;
+    let block_bytes = block.len() as u64;
     for (label, exact, short) in [
         (
             "spill",

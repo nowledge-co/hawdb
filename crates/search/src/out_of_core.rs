@@ -166,6 +166,12 @@ pub struct SearchOutOfCoreReader {
     runtime_capabilities: RuntimeCapabilities,
 }
 
+#[derive(Debug, Clone, Copy)]
+pub(super) struct PublishedOutOfCoreProjection {
+    pub(super) generation: u64,
+    pub(super) bytes_written: u64,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 struct SearchOutOfCoreManifestBody<S = String> {
@@ -2008,7 +2014,10 @@ pub(super) fn published_generation(
     Ok(Some(reader.generation()))
 }
 
-pub(super) fn publish_out_of_core_projection(index: &SearchIndex, root: &Path) -> Result<u64> {
+pub(super) fn publish_out_of_core_projection(
+    index: &SearchIndex,
+    root: &Path,
+) -> Result<PublishedOutOfCoreProjection> {
     let descriptor = read_search_segment_descriptor(root)?.ok_or_else(|| {
         HawDBError::Storage("search segment descriptor is missing after checkpoint".to_string())
     })?;
@@ -2024,18 +2033,18 @@ pub(super) fn publish_out_of_core_projection(index: &SearchIndex, root: &Path) -
     let vector_payload_file = format!("search_projection_vector_payloads.{generation}.hawdb");
     let layout_file = format!("search_projection_out_of_core_layout.{generation}.hawdb");
     let lexical_manifest_file = format!("search_lexical.manifest.{generation}.hawdb");
-    publish_generation_link(
+    let mut bytes_written = publish_generation_link(
         &root.join(SEARCH_SEGMENT_DESCRIPTOR_FILE),
         &root.join(&descriptor_file),
     )?;
-    publish_generation_link(
+    bytes_written = bytes_written.saturating_add(publish_generation_link(
         &root.join(SEARCH_SEGMENT_PAYLOAD_FILE),
         &root.join(&payload_file),
-    )?;
-    publish_generation_link(
+    )?);
+    bytes_written = bytes_written.saturating_add(publish_generation_link(
         &root.join(MANIFEST_FILE),
         &root.join(&lexical_manifest_file),
-    )?;
+    )?);
 
     let (layout, metadata_payload_len, vector_payload_len) = write_out_of_core_sidecars(
         index,
@@ -2045,7 +2054,13 @@ pub(super) fn publish_out_of_core_projection(index: &SearchIndex, root: &Path) -
         &root.join(&vector_payload_file),
     )?;
     let layout_bytes = layout.encode()?;
-    write_generation_artifact(&root.join(&layout_file), &layout_bytes)?;
+    bytes_written = bytes_written.saturating_add(write_generation_artifact(
+        &root.join(&layout_file),
+        &layout_bytes,
+    )?);
+    bytes_written = bytes_written
+        .saturating_add(metadata_payload_len)
+        .saturating_add(vector_payload_len);
 
     let descriptor_bytes = fs::read(root.join(&descriptor_file))?;
     let lexical_manifest_bytes = fs::read(root.join(&lexical_manifest_file))?;
@@ -2090,13 +2105,17 @@ pub(super) fn publish_out_of_core_projection(index: &SearchIndex, root: &Path) -
     };
     let manifest_path = root.join(OUT_OF_CORE_MANIFEST_FILE);
     let tmp_path = manifest_path.with_extension(format!("tmp.{generation}"));
+    let manifest_bytes = manifest.encode()?;
     {
         let mut file = File::create(&tmp_path)?;
-        file.write_all(&manifest.encode()?)?;
+        file.write_all(&manifest_bytes)?;
         file.sync_all()?;
     }
     durable_replace_file(&tmp_path, &manifest_path)?;
-    Ok(generation)
+    Ok(PublishedOutOfCoreProjection {
+        generation,
+        bytes_written: bytes_written.saturating_add(manifest_bytes.len() as u64),
+    })
 }
 
 fn write_out_of_core_sidecars(
@@ -3022,22 +3041,23 @@ fn latest_recoverable_lexical_generation(root: &Path, max_manifest_bytes: u64) -
     Ok(latest)
 }
 
-fn publish_generation_link(source: &Path, target: &Path) -> Result<()> {
+fn publish_generation_link(source: &Path, target: &Path) -> Result<u64> {
     let tmp = temporary_artifact_path(target);
     let mut guard = CandidateFileGuard::new(tmp.clone());
-    match fs::hard_link(source, &tmp) {
-        Ok(()) => {}
+    let bytes_written = match fs::hard_link(source, &tmp) {
+        Ok(()) => 0,
         Err(_) => {
-            fs::copy(source, &tmp)?;
+            let copied = fs::copy(source, &tmp)?;
             File::open(&tmp)?.sync_all()?;
+            copied
         }
-    }
+    };
     durable_replace_file(&tmp, target)?;
     guard.disarm();
-    Ok(())
+    Ok(bytes_written)
 }
 
-fn write_generation_artifact(target: &Path, bytes: &[u8]) -> Result<()> {
+fn write_generation_artifact(target: &Path, bytes: &[u8]) -> Result<u64> {
     let tmp = temporary_artifact_path(target);
     let mut guard = CandidateFileGuard::new(tmp.clone());
     {
@@ -3047,7 +3067,7 @@ fn write_generation_artifact(target: &Path, bytes: &[u8]) -> Result<()> {
     }
     durable_replace_file(&tmp, target)?;
     guard.disarm();
-    Ok(())
+    Ok(bytes.len() as u64)
 }
 
 fn temporary_artifact_path(target: &Path) -> PathBuf {

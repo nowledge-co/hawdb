@@ -24,6 +24,7 @@ use std::cell::Cell;
 pub(in crate::lexical_projection) fn manifest(mut terms: Vec<String>) -> ManifestBody {
     terms.sort();
     terms.dedup();
+    let posting_count = terms.len() as u64;
     let header_len = ARTIFACT_HEADER.len() as u64 + 8;
     let blocks = if terms.is_empty() {
         Vec::new()
@@ -54,8 +55,8 @@ pub(in crate::lexical_projection) fn manifest(mut terms: Vec<String>) -> Manifes
         ]
     };
     ManifestBody {
-        format: "HAWDB_LEXICAL_MANIFEST_V2".into(),
-        layout: "HAWDB_LEXICAL_ORDINAL_V1".into(),
+        format: "HAWDB_LEXICAL_MANIFEST_V3".into(),
+        layout: "HAWDB_LEXICAL_ORDINAL_FST_V1".into(),
         generation: 7,
         source_graph_commit_epoch: Some(8),
         analyzer_digest: u64::MAX,
@@ -65,7 +66,9 @@ pub(in crate::lexical_projection) fn manifest(mut terms: Vec<String>) -> Manifes
         artifact_checksum: u64::MAX,
         document_count: u64::from(!terms.is_empty()),
         total_document_len: terms.len() as u64,
-        posting_count: terms.len() as u64,
+        posting_count,
+        legacy_posting_bytes: posting_count.saturating_mul(16),
+        posting_bytes: if posting_count == 0 { 0 } else { 64 },
         term_statistics: terms
             .into_iter()
             .map(|term| TermStatistics {
@@ -149,8 +152,16 @@ fn decode_preserves_checksum_and_schema_rejection() {
     let error = ManifestBody::decode(&legacy_encode(&invalid)).unwrap_err();
     assert!(error.to_string().contains("counts are inconsistent"));
 
+    let mut invalid_bytes = manifest(vec!["term".into()]);
+    invalid_bytes.posting_bytes += 1;
+    assert!(invalid_bytes
+        .encode(DEFAULT_MAX_MANIFEST_BYTES)
+        .unwrap_err()
+        .to_string()
+        .contains("counts are inconsistent"));
+
     let mut previous_layout = manifest(vec!["term".into()]);
-    previous_layout.format = "HAWDB_LEXICAL_MANIFEST_V1".into();
+    previous_layout.format = "HAWDB_LEXICAL_MANIFEST_V2".into();
     assert!(previous_layout.validate().is_err());
 }
 

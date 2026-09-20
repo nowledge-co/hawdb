@@ -2463,11 +2463,17 @@ impl SearchIndex {
                 self.consumer_binding.as_ref(),
                 self.documents.values(),
             )?;
-            self.write_segment_artifacts(path)?;
-            self.write_lexical_projection(path)?;
-            let projection_generation = out_of_core::publish_out_of_core_projection(self, path)?;
+            let segment_bytes_written = self.write_segment_artifacts(path)?;
+            let lexical_bytes_written = self.write_lexical_projection(path)?;
+            let publication = out_of_core::publish_out_of_core_projection(self, path)?;
             #[cfg(feature = "vector-search")]
-            self.write_rabitq_projection(path)?;
+            let rabitq_bytes_written = self.write_rabitq_projection(path)?;
+            #[cfg(not(feature = "vector-search"))]
+            let rabitq_bytes_written = 0;
+            let projection_bytes_written = segment_bytes_written
+                .saturating_add(lexical_bytes_written)
+                .saturating_add(publication.bytes_written)
+                .saturating_add(rabitq_bytes_written);
             *self
                 .durable_source_graph_commit_epoch
                 .lock()
@@ -2487,14 +2493,16 @@ impl SearchIndex {
                         sha256: snapshot.encoded_sha256.to_string(),
                     });
             }
-            Ok(snapshot.finish(projection_generation))
+            Ok(snapshot.finish(publication.generation, projection_bytes_written))
         })();
         if let Some(telemetry) = &self.telemetry {
             let (byte_count, generation) = result
                 .as_ref()
                 .map(|report| {
                     (
-                        report.snapshot_compressed_bytes,
+                        report
+                            .snapshot_compressed_bytes
+                            .saturating_add(report.projection_bytes_written),
                         Some(report.projection_generation),
                     )
                 })
@@ -2512,7 +2520,7 @@ impl SearchIndex {
         result
     }
 
-    fn write_lexical_projection(&self, path: &Path) -> Result<()> {
+    fn write_lexical_projection(&self, path: &Path) -> Result<u64> {
         let generation =
             out_of_core::next_generation(path, self.lexical_config.max_manifest_bytes.get())?;
         let projection = LexicalProjectionWriter::new(self.lexical_config).write(
@@ -2524,19 +2532,22 @@ impl SearchIndex {
             self.documents.values(),
             &self.analyzer_lexicon,
         )?;
+        let bytes_written = projection
+            .artifact_len()
+            .saturating_add(fs::metadata(path.join(lexical_projection::MANIFEST_FILE))?.len());
         self.replace_lexical_projection(Some(projection));
-        Ok(())
+        Ok(bytes_written)
     }
 
     #[cfg(feature = "vector-search")]
-    fn write_rabitq_projection(&self, path: &Path) -> Result<()> {
+    fn write_rabitq_projection(&self, path: &Path) -> Result<u64> {
         if self
             .documents
             .values()
             .all(|document| document.embedding.is_none())
         {
             self.invalidate_rabitq_projection();
-            return Ok(());
+            return Ok(0);
         }
         let loaded_generation = self
             .rabitq_projection()
@@ -2559,11 +2570,12 @@ impl SearchIndex {
                     .to_string(),
             )
         })?;
+        let bytes_written = fs::metadata(&artifact_path)?.len();
         *self
             .rabitq_projection
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner()) = Some(Arc::new(projection));
-        Ok(())
+        Ok(bytes_written)
     }
 
     /// Searches resident documents, returning unavailable-capability and execution errors.
@@ -3964,10 +3976,13 @@ impl SearchIndex {
         Ok(())
     }
 
-    fn write_segment_artifacts(&self, path: &Path) -> Result<()> {
+    fn write_segment_artifacts(&self, path: &Path) -> Result<u64> {
         let mut descriptor = SearchSegmentDescriptor::build(&self.documents);
         write_search_segment_payloads(path, &self.documents, &mut descriptor)?;
-        write_search_segment_descriptor(path, &descriptor)
+        let descriptor_bytes =
+            write_search_segment_descriptor_bounded(path, &descriptor, u64::MAX)?;
+        let payload_bytes = fs::metadata(path.join(SEARCH_SEGMENT_PAYLOAD_FILE))?.len();
+        Ok(descriptor_bytes.saturating_add(payload_bytes))
     }
 
     fn marker_path(&self, name: &str) -> Option<PathBuf> {
@@ -10456,6 +10471,7 @@ mod tests {
             assert!(report.snapshot_compressed_bytes > 0);
             assert!(report.snapshot_peak_record_bytes > 0);
             assert!(report.projection_generation > 0);
+            assert!(report.projection_bytes_written > 0);
         }
         {
             let index = SearchIndex::open(&path).unwrap();
@@ -10496,7 +10512,8 @@ mod tests {
                 index.projection_freshness().source_graph_commit_epoch,
                 Some(store.commit_epoch())
             );
-            index.checkpoint().unwrap();
+            let report = index.checkpoint_with_report().unwrap();
+            assert!(report.projection_bytes_written > 0);
         }
         {
             let index = SearchIndex::open(&path).unwrap();
@@ -10530,6 +10547,17 @@ mod tests {
         let snapshot = read_search_snapshot_text(&path.join(SEARCH_SNAPSHOT_FILE)).unwrap();
         assert!(snapshot.contains("source_graph_commit_epoch\t1\n"));
         std::fs::remove_dir_all(path).unwrap();
+    }
+
+    #[test]
+    fn in_memory_checkpoint_reports_no_projection_writes() {
+        let index = SearchIndex::in_memory();
+
+        let report = index.checkpoint_with_report().unwrap();
+
+        assert_eq!(report.projection_generation, 0);
+        assert_eq!(report.projection_bytes_written, 0);
+        assert!(!report.snapshot_streamed);
     }
 
     #[test]

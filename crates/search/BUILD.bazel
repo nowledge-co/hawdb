@@ -23,6 +23,7 @@ _SEARCH_DEFAULT_FEATURES = [
 _SEARCH_BASE_DEPS = [
     "@crate_index//:bitpacking",
     "@crate_index//:chrono",
+    "@crate_index//:fst",
     "@crate_index//:jieba-rs",
     "@crate_index//:regex",
     "@crate_index//:regex-automata",

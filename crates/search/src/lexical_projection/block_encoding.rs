@@ -17,6 +17,7 @@ use super::{
     HawDBError, Posting, Result, SPILL_IO_BUFFER_BYTES,
 };
 use crate::build_control::{checkpoint, CheckedWriter};
+use fst::MapBuilder;
 use hawdb_core::RuntimeTaskContext;
 use std::io::{self, Write};
 
@@ -67,40 +68,64 @@ impl<'a> Entries<'a> {
                     writer.write_all(&length.to_le_bytes())?;
                 }
             }
-            Self::Postings(entries) => {
-                let term = entries
-                    .first()
-                    .expect("posting block is not empty")
-                    .term
-                    .as_str();
-                if entries.iter().any(|posting| posting.term.as_str() != term) {
-                    return Err(HawDBError::Storage(
-                        "lexical posting frame contains multiple terms".into(),
-                    ));
-                }
-                let encoded = posting_codec::encode_by(entries.len(), |index| {
-                    let posting = &entries[index];
-                    posting_codec::Posting {
-                        ordinal: posting.ordinal,
-                        tf: posting.term_frequency,
-                    }
-                })
-                .map_err(|error| {
-                    HawDBError::Storage(format!("invalid lexical posting frame: {error}"))
-                })?;
-                write_string(writer, term)?;
-                writer.write_all(
-                    &u32::try_from(encoded.len())
-                        .map_err(|_| {
-                            HawDBError::Storage("lexical posting frame exceeds u32".into())
-                        })?
-                        .to_le_bytes(),
-                )?;
-                writer.write_all(&encoded)?;
-            }
+            Self::Postings(entries) => encode_postings(entries, writer)?,
         }
         Ok(())
     }
+}
+
+fn encode_postings(entries: &[Posting], writer: &mut impl Write) -> Result<()> {
+    let mut dictionary = MapBuilder::memory();
+    let mut frames = Vec::new();
+    let mut start = 0usize;
+    let mut previous_term: Option<&str> = None;
+    while start < entries.len() {
+        let term = entries[start].term.as_str();
+        if term.is_empty() || previous_term.is_some_and(|previous| previous >= term) {
+            return Err(HawDBError::Storage(
+                "lexical posting terms are invalid or unordered".into(),
+            ));
+        }
+        let mut end = start + 1;
+        while end < entries.len() && entries[end].term.as_str() == term {
+            end += 1;
+        }
+        let frame = posting_codec::encode_by(end - start, |index| {
+            let posting = &entries[start + index];
+            posting_codec::Posting {
+                ordinal: posting.ordinal,
+                tf: posting.term_frequency,
+            }
+        })
+        .map_err(|error| HawDBError::Storage(format!("invalid lexical posting frame: {error}")))?;
+        let offset = u32::try_from(frames.len())
+            .map_err(|_| HawDBError::Storage("lexical posting payload exceeds u32".into()))?;
+        let document_frequency = u32::try_from(end - start).map_err(|_| {
+            HawDBError::Storage("lexical posting document frequency exceeds u32".into())
+        })?;
+        dictionary
+            .insert(
+                term,
+                (u64::from(offset) << 32) | u64::from(document_frequency),
+            )
+            .map_err(|error| {
+                HawDBError::Storage(format!("invalid lexical term dictionary: {error}"))
+            })?;
+        frames.extend_from_slice(&frame);
+        previous_term = Some(term);
+        start = end;
+    }
+    let dictionary = dictionary.into_inner().map_err(|error| {
+        HawDBError::Storage(format!("invalid lexical term dictionary: {error}"))
+    })?;
+    writer.write_all(
+        &u32::try_from(dictionary.len())
+            .map_err(|_| HawDBError::Storage("lexical term dictionary exceeds u32".into()))?
+            .to_le_bytes(),
+    )?;
+    writer.write_all(&dictionary)?;
+    writer.write_all(&frames)?;
+    Ok(())
 }
 
 #[cfg(test)]

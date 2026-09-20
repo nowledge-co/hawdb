@@ -2,17 +2,22 @@
 
 ## Implementation Status
 
-This is a design-stage contract with **no implemented surface in the HawDB
-crates yet**. It defines the target on-disk encoding and read-path contract
-for [#206](https://github.com/nowledge-co/hawdb/issues/206) (compact
-postings layout) and the encoding it must expose for
-[#292](https://github.com/nowledge-co/hawdb/issues/292) (block-max pruning)
-to build on. Nothing here describes shipped behavior. The current lexical
-projection format (`crates/search/src/lexical_projection.rs`,
-`block_encoding.rs`, `manifest_encoding.rs`) is unaffected until an
-implementation lands under a new manifest format version, following the
-existing generation model: a new generation, never an in-place migration of
-an existing artifact.
+This contract defines the target encoding and read-path behavior for
+[#206](https://github.com/nowledge-co/hawdb/issues/206) (compact postings)
+and [#292](https://github.com/nowledge-co/hawdb/issues/292) (block-max
+pruning). The open [#681](https://github.com/nowledge-co/hawdb/pull/681) →
+[#682](https://github.com/nowledge-co/hawdb/pull/682) stack implements the
+first vertical slice: generation-local `u64` document ordinals, bounded
+document mapping blocks, 128-entry bitpacked frames with varint fallbacks,
+and an FST from a term to its frame offset and document frequency within a
+physical posting block.
+
+That stack is not complete #206 delivery. It still retains the manifest
+`TermStatistics` vector, resolves document IDs for the current string-based
+filter callback during scoring, does not cache a block dictionary across every
+query term, and has no representative-corpus qualification. It only creates
+new development generations: V1/V2 artifacts fail closed and are rebuilt;
+there is no production compatibility migration.
 
 ## Scope and Motivation
 
@@ -65,7 +70,7 @@ follow-on optimization.
 
 ## Document Ordinal Assignment
 
-Each lexical generation assigns a dense, contiguous `DocumentOrdinal(u32)`
+Each lexical generation assigns a dense, contiguous `DocumentOrdinal(u64)`
 per document, `0..document_count`, in the same ascending-ID order the
 `Documents` blocks (`BlockKind::Documents`, `block_encoding.rs`) already
 write. This reuses an established pattern in this codebase — the out-of-core
@@ -96,50 +101,54 @@ by sharing a numbering space.
 
 ### Varint and Delta Format
 
-Unsigned integers (`DocumentOrdinal` deltas, per-posting `term_frequency`,
-`document_len`, dictionary offsets) encode as unsigned LEB128: 7 bits of
-payload per byte, high bit set on all but the final byte. This is a
-well-understood, allocation-free, self-describing format requiring no new
-external dependency.
+Short frames and full frames whose ordinal gaps exceed `u32` encode ordinal
+deltas and term frequencies as unsigned LEB128: 7 bits of payload per byte,
+high bit set on all but the final byte. A full 128-entry frame with `u32`
+gaps uses `bitpacking` for its delta and term-frequency lanes. Both modes are
+lossless; the wide mode preserves the full `u64` ordinal domain.
 
 ### Posting List Layout
 
-A posting block's entries for one term are a **run**: the term string is
-recorded once (via the term dictionary below, not inline per posting), and
-the run's postings are sorted ascending by `DocumentOrdinal` — a new sort
-key replacing today's implicit document-ID-string order within a term. Each
-posting in a run encodes as:
+A posting block holds one or more term **runs**. A term is recorded once in
+the FST dictionary below, not inline per posting; its run remains sorted by
+`DocumentOrdinal`. Full runs are partitioned into 128-entry frames. Each
+frame records its first and last `u64` ordinal, its entry count, a reserved
+`u16` maximum term frequency, and either packed delta/term-frequency lanes or
+a varint payload.
 
 ```text
-delta_ordinal: varint   // DocumentOrdinal - previous run entry's DocumentOrdinal
-                         // (first entry: DocumentOrdinal - 0)
-term_frequency: varint
-document_len: varint    // unchanged semantics from today's u32 field
+first_ordinal: u64
+last_ordinal: u64
+entry_count: u16
+max_term_frequency: u16 // `u16::MAX` means at least this value, not an upper bound
+payload: packed u32 lanes or canonical varints
 ```
 
 `document_id: String` is dropped from the per-posting record entirely. A
-consumer that needs the string ID (only true for postings that survive
-filtering into the final top-k, or that a diagnostic explicitly requests)
-resolves it lazily via the ordinal → ID mapping described above. This is the
-core encoding-aware-scan property: **decoding a posting's rank contribution
-never requires resolving or copying a document-ID string.**
+reader resolves the document ID and authoritative document length through the
+ordinal mapping. The current `allowed(&str)` interface still requires that
+resolution while scoring. Deferring it to caller-visible hits requires a
+future ordinal-aware filtering contract.
 
 ### Per-Block Term Dictionary
 
-Each postings block gains a dictionary section, written after its posting
-runs, mapping every distinct term in the block to:
+Each postings block writes a dictionary section before its contiguous frame
+payload. The section is a length-prefixed `fst::Map` mapping every distinct
+term in the block to a packed value:
 
 ```text
-term: length-prefixed UTF-8 string  // unchanged wire representation
-run_offset: varint                  // byte offset of the run within this block
-run_posting_count: varint
-document_frequency: varint          // folds in what TermStatistics carries today
-max_term_frequency: varint          // reserved for #292; block-local upper bound
-                                     // over this run's term_frequency values
+dictionary_len: u32
+dictionary: fst::Map<term, value>
+value.high_u32: frame offset within the payload
+value.low_u32: document frequency for the term in this block
+frames: concatenated compact frames
 ```
 
-This replaces two things at once, closing both #206's fix #3 and its stated
-DF-double-read resolution:
+The frame header owns the reserved `max_term_frequency` rather than the FST
+value. A stored `u16::MAX` must be treated conservatively by future pruning:
+it is a saturation marker, not a finite upper bound.
+
+This removes linear term filtering within an opened block:
 
 - **Block-level key bounds remain** (`BlockDescriptor.min_key`/`max_key`,
   unchanged) as the coarse first-pass filter deciding which blocks to open at
@@ -150,44 +159,35 @@ DF-double-read resolution:
   entry per distinct term, not per posting), looks up the query term, and if
   present, seeks directly to `run_offset` and decodes exactly that run — no
   other term's postings in the block are touched.
-- The top-level manifest's `Vec<TermStatistics>` (`ManifestBody.term_statistics`,
-  `lexical_projection.rs:171`) is retired for compact-format generations; a
-  term's `document_frequency` comes from summing its per-block dictionary
-  entries across the manifest's blocks. Manifest sizing/decode-budget
-  accounting (`docs/SEARCH_BUILD_RESOURCE_OWNERSHIP.md`'s manifest decode
-  boundary) MUST account for the dictionary sections the same way it
-  accounts for `term_statistics` today — this is a redistribution of that
-  same budgeted data, not new unbounded growth.
+- The current implementation retains the top-level `Vec<TermStatistics>` for
+  corpus statistics. Retiring it and summing bounded per-block FST metadata is
+  a remaining #206 step, with matching manifest admission accounting.
 
 ### Format Versioning
 
-`ManifestBody.format` gains a new value (the existing field is already a
-string tag, not a fixed enum, so this is additive). A manifest at the new
-format version implies compact postings and per-block dictionaries for every
-`Postings` block it references; there is no mixed-format manifest. Readers
-MUST reject a manifest whose `format` they do not recognize rather than
-attempt to interpret its blocks under the wrong layout — this is the
-existing fail-closed posture for manifest validation, unchanged.
+`HAWDB_LEXICAL_MANIFEST_V3` with
+`HAWDB_LEXICAL_ORDINAL_FST_V1` implies compact frames and a per-block FST for
+every `Postings` block; there is no mixed-format manifest. Readers reject an
+unknown format or layout rather than interpreting blocks with the wrong wire
+grammar. Earlier development formats fail closed and must be rebuilt.
 
 ## Encoding-Aware Scan Contract
 
 This section is normative for both this spec's own read path and for #292,
 which depends on it.
 
-- **A block's dictionary decodes at most once per query per block**, even
-  when the query has multiple terms that both hash into the same block's key
-  range. Implementations MUST cache the decoded dictionary for the duration
-  of one block's processing within one query, not re-decode it per term.
+- **A block's dictionary decodes at most once per query per block** remains a
+  #206 completion requirement. The current per-term streams perform direct
+  FST lookup and avoid unrelated frames, but they do not yet share a
+  dictionary lease across query terms.
 - **A run decodes only when its term matches a query term.** Blocks (or,
   once dictionaries are in place, individual runs within an opened block)
   whose dictionary entry does not match any query term MUST NOT have their
   posting bytes read past the dictionary lookup.
-- **Document-ID string resolution is deferred to the final hit set.**
-  Scoring, top-k ranking, and BM25 accumulation operate entirely on
-  `DocumentOrdinal` and the decoded `term_frequency`/`document_len` fields.
-  Only postings that survive into the caller-visible result (or are needed
-  for the `allowed()` filter callback — see below) resolve their ordinal to
-  a document-ID string, via the `Documents` blocks' existing decode path.
+- **Document-ID string resolution is deferred to the final hit set** is a
+  target rather than current behavior. Scoring already operates on ordinals
+  and term frequency, but the existing `allowed(&str)` callback forces an ID
+  lookup for candidates before it can decide visibility.
 - **Filtering (`allowed()` callbacks — ACL/metadata) currently takes a
   `&str` document ID.** This spec requires either (a) widening the filter
   contract to accept `DocumentOrdinal` with the string resolved once and
@@ -196,11 +196,10 @@ which depends on it.
   ordinal-only property intact for the (common) case where a candidate is
   filtered out, avoiding a string resolution that scoring didn't otherwise
   need. This is an open decision for the implementing PR, not resolved here.
-- **`max_term_frequency` is reserved, not consumed, by this spec.** This
-  spec's own scan path does not do block-skip scoring; it populates the
-  field so #292 can implement WAND-style pruning against it without a
-  further format bump. #292's differential-test and `blocks_skipped`
-  observability requirements apply once that layer lands, not to this one.
+- **`max_term_frequency` is reserved, not consumed, by this layout.** #292
+  must treat the saturated `u16::MAX` marker as unbounded when deriving a
+  WAND upper bound. Its differential-test and `blocks_skipped` requirements
+  remain future work.
 
 ## Resource Contract
 
@@ -232,10 +231,9 @@ run bytes instead of every posting's inline strings).
   regression that silently falls back to per-posting term filtering (instead
   of using the dictionary) is visible in existing benchmark/qualification
   tooling, not just in a targeted unit test.
-- **Reopen/generation compatibility**: a generation written under the
-  current format remains fully readable after this lands (no manifest
-  format bump forces a rebuild); a reopened index only produces compact
-  postings for generations built after the implementing PR.
+- **Reopen/generation compatibility**: a V3 generation reopens only through
+  the V3 decoder. Earlier development generations are rejected and rebuilt;
+  no compatibility path is required before HawDB enters production.
 
 ```sh
 cargo test -p hawdb-search

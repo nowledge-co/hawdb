@@ -42,10 +42,13 @@ pub(super) struct ArtifactBuilder {
     next_block_id: u64,
     document_pending: Vec<(String, u32)>,
     document_pending_bytes: u64,
+    document_id_bytes: Vec<u32>,
     document_count: u64,
     posting_pending: Vec<Posting>,
     posting_pending_bytes: u64,
     posting_count: u64,
+    legacy_posting_bytes: u64,
+    posting_bytes: u64,
     term_statistics: Vec<TermStatistics>,
     blocks: Vec<BlockDescriptor>,
     failed: bool,
@@ -55,6 +58,7 @@ pub(super) struct ArtifactBuilder {
     _writer_memory: QueryMemoryLease,
     document_slots: QueryMemoryLease,
     document_strings: QueryMemoryLease,
+    document_id_slots: QueryMemoryLease,
     posting_slots: QueryMemoryLease,
     posting_strings: QueryMemoryLease,
     directory_memory: DirectoryMemory,
@@ -64,6 +68,8 @@ pub(super) struct ArtifactSummary {
     pub(super) len: u64,
     pub(super) checksum: u64,
     pub(super) posting_count: u64,
+    pub(super) legacy_posting_bytes: u64,
+    pub(super) posting_bytes: u64,
     pub(super) term_statistics: Vec<TermStatistics>,
     pub(super) blocks: Vec<BlockDescriptor>,
     pub(super) memory: DirectoryMemory,
@@ -121,15 +127,19 @@ impl ArtifactBuilder {
             next_block_id: 0,
             document_pending: Vec::new(),
             document_pending_bytes: 0,
+            document_id_bytes: Vec::new(),
             document_count: 0,
             posting_pending: Vec::new(),
             posting_pending_bytes: 0,
             posting_count: 0,
+            legacy_posting_bytes: 0,
+            posting_bytes: 0,
             term_statistics: Vec::new(),
             blocks: Vec::new(),
             failed: false,
             document_slots: memory.retained.reserve(0)?,
             document_strings: memory.retained.reserve(0)?,
+            document_id_slots: memory.retained.reserve(0)?,
             posting_slots: memory.retained.reserve(0)?,
             posting_strings: memory.retained.reserve(0)?,
             directory_memory: DirectoryMemory::new(&memory)?,
@@ -177,6 +187,10 @@ impl ArtifactBuilder {
         }
         grow_slots(&mut self.document_pending, &mut self.document_slots)?;
         self.document_strings.grow(id.len())?;
+        let id_bytes = u32::try_from(id.len())
+            .map_err(|_| HawDBError::Storage("lexical document ID exceeds u32".into()))?;
+        grow_slots(&mut self.document_id_bytes, &mut self.document_id_slots)?;
+        self.document_id_bytes.push(id_bytes);
         self.document_pending.push((id.to_owned(), length));
         self.document_pending_bytes = self.document_pending_bytes.saturating_add(bytes);
         Ok(())
@@ -255,11 +269,18 @@ impl ArtifactBuilder {
     }
 
     fn push_posting_inner(&mut self, posting: &Posting) -> Result<()> {
+        let document_id_bytes =
+            self.document_id_bytes
+                .get(usize::try_from(posting.ordinal).map_err(|_| {
+                    HawDBError::Storage("lexical posting ordinal exceeds usize".into())
+                })?)
+                .copied()
+                .unwrap_or(0);
+        let bytes = Posting::resident_bytes(&posting.term);
         if self.posting_pending.len() == posting_codec::BLOCK_LEN
-            || self
-                .posting_pending
-                .last()
-                .is_some_and(|previous| previous.term != posting.term)
+            || (!self.posting_pending.is_empty()
+                && self.posting_pending_bytes.saturating_add(bytes)
+                    > self.config.target_block_bytes.get())
         {
             self.flush_postings()?;
         }
@@ -291,7 +312,6 @@ impl ArtifactBuilder {
                 });
             }
         }
-        let bytes = Posting::resident_bytes(&posting.term);
         grow_slots(&mut self.posting_pending, &mut self.posting_slots)?;
         self.posting_strings
             .grow(posting.term.retained_clone_bytes())?;
@@ -301,6 +321,11 @@ impl ArtifactBuilder {
             term_frequency: posting.term_frequency,
         });
         self.posting_pending_bytes = self.posting_pending_bytes.saturating_add(bytes);
+        self.legacy_posting_bytes = self.legacy_posting_bytes.saturating_add(
+            (posting.term.len() as u64)
+                .saturating_add(u64::from(document_id_bytes))
+                .saturating_add(16),
+        );
         Ok(())
     }
 
@@ -326,6 +351,7 @@ impl ArtifactBuilder {
         self.posting_count = self
             .posting_count
             .saturating_add(self.posting_pending.len() as u64);
+        self.posting_bytes = self.posting_bytes.saturating_add(descriptor.length);
         self.commit_block(descriptor);
         self.posting_pending.clear();
         self.posting_strings.shrink(self.posting_strings.bytes());
@@ -367,6 +393,8 @@ impl ArtifactBuilder {
             len: length,
             checksum: digest.finish(),
             posting_count: self.posting_count,
+            legacy_posting_bytes: self.legacy_posting_bytes,
+            posting_bytes: self.posting_bytes,
             term_statistics: self.term_statistics,
             blocks: self.blocks,
             memory: self.directory_memory,

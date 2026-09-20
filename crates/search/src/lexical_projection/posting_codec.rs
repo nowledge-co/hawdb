@@ -139,8 +139,17 @@ pub(super) fn encode_by(count: usize, posting: impl Fn(usize) -> Posting) -> Res
     Ok(bytes)
 }
 
+#[cfg(test)]
 pub(super) fn decode(bytes: &[u8]) -> Result<Vec<Posting>> {
-    if !(HEADER_LEN..=MAX_BLOCK_BYTES).contains(&bytes.len()) || &bytes[..4] != b"LXP1" {
+    let (postings, length) = decode_prefix(bytes)?;
+    if length != bytes.len() {
+        return Err("trailing frame bytes");
+    }
+    Ok(postings)
+}
+
+pub(super) fn decode_prefix(bytes: &[u8]) -> Result<(Vec<Posting>, usize)> {
+    if bytes.len() < HEADER_LEN || &bytes[..4] != b"LXP1" {
         return Err("invalid block envelope");
     }
     let count = usize::from(u16::from_le_bytes(bytes[4..6].try_into().unwrap()));
@@ -151,15 +160,19 @@ pub(super) fn decode(bytes: &[u8]) -> Result<Vec<Posting>> {
     let base = u64::from_le_bytes(bytes[12..20].try_into().unwrap());
     let last = u64::from_le_bytes(bytes[20..28].try_into().unwrap());
     let size = u32::from_le_bytes(bytes[28..32].try_into().unwrap()) as usize;
-    if !(1..=BLOCK_LEN).contains(&count)
-        || size != bytes.len() - HEADER_LEN
+    let length = HEADER_LEN
+        .checked_add(size)
+        .ok_or("frame length overflows")?;
+    if !(HEADER_LEN..=MAX_BLOCK_BYTES).contains(&length)
+        || bytes.len() < length
+        || !(1..=BLOCK_LEN).contains(&count)
         || bytes[11] != 0
         || last < base
         || max_tf == 0
     {
         return Err("invalid block header");
     }
-    let payload = &bytes[HEADER_LEN..];
+    let payload = &bytes[HEADER_LEN..length];
     let mut deltas = [0u32; BLOCK_LEN];
     let mut frequencies = [0u32; BLOCK_LEN];
     match mode {
@@ -204,7 +217,7 @@ pub(super) fn decode(bytes: &[u8]) -> Result<Vec<Posting>> {
     {
         return Err("inconsistent posting summary");
     }
-    Ok(output)
+    Ok((output, length))
 }
 
 #[cfg(test)]
