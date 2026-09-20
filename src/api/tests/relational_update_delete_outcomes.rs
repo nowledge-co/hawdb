@@ -14,7 +14,7 @@
 
 use super::*;
 use crate::{
-    ConcurrentTransactionOptions, HawDBError, SqlStatementResult, TransactionCommitResult,
+    ConcurrentTransactionOptions, HawDBError, SqlStatementResult, TransactionCommitResult, Value,
 };
 use std::time::Duration;
 
@@ -35,6 +35,54 @@ fn mutation_fixture() -> Database {
         )
         .expect("insert items");
     database
+}
+
+#[test]
+fn optimistic_transactions_commit_disjoint_relational_tables_from_one_snapshot() {
+    let mut database = Database::new();
+    for table in ["left_items", "right_items"] {
+        database
+            .query_sql(&format!(
+                "CREATE TABLE {table} (id BIGINT PRIMARY KEY, state TEXT NOT NULL)"
+            ))
+            .unwrap();
+        database
+            .query_sql(&format!(
+                "INSERT INTO {table} (id, state) VALUES (1, 'before')"
+            ))
+            .unwrap();
+    }
+    let database = database.into_concurrent();
+    let mut left = database
+        .begin_transaction(ConcurrentTransactionOptions::optimistic())
+        .unwrap();
+    let mut right = database
+        .begin_transaction(ConcurrentTransactionOptions::optimistic())
+        .unwrap();
+    left.query_sql_with_result("UPDATE left_items SET state = 'left' WHERE id = 1")
+        .unwrap();
+    right
+        .query_sql_with_result("UPDATE right_items SET state = 'right' WHERE id = 1")
+        .unwrap();
+
+    assert_commit_outcome(left.commit_with_result().unwrap(), 1);
+    assert_commit_outcome(right.commit_with_result().unwrap(), 1);
+    assert_eq!(
+        database
+            .query_sql("SELECT state FROM left_items WHERE id = 1")
+            .unwrap()
+            .rows[0]
+            .get("state"),
+        Some(&Value::String("left".to_string()))
+    );
+    assert_eq!(
+        database
+            .query_sql("SELECT state FROM right_items WHERE id = 1")
+            .unwrap()
+            .rows[0]
+            .get("state"),
+        Some(&Value::String("right".to_string()))
+    );
 }
 
 fn assert_statement_outcome(result: SqlStatementResult, affected_rows: usize) {
@@ -236,7 +284,7 @@ fn concurrent_update_delete_outcomes_cover_retry_and_both_transaction_modes() {
             read_epoch: 4,
             committed_epoch: 5,
             key,
-        } if key == "database"
+        } if key == "relational_table"
     ));
     assert!(conflict.is_retryable_transaction_conflict());
 
