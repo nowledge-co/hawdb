@@ -600,4 +600,66 @@ mod tests {
         assert_eq!(result, Err(RuntimeCancellationReason::Cancelled));
         assert_eq!(visited.load(Ordering::SeqCst), 1);
     }
+
+    #[test]
+    fn map_ordered_matches_the_sequential_fallback_under_reversed_durations() {
+        let inputs = [0_usize, 1, 2, 3, 4, 5];
+        let operation = |value: &usize| {
+            std::thread::sleep(std::time::Duration::from_millis(
+                (inputs.len() - 1 - value) as u64 * 4,
+            ));
+            value * value
+        };
+        let sequential = BoundedExecutor {
+            max_parallelism: NonZeroUsize::new(2).unwrap(),
+            pool: Err(SharedExecutorPoolError("injected failure".to_string())),
+        };
+        let expected = sequential.map_ordered(&inputs, operation);
+
+        let completed = AtomicUsize::new(0);
+        let output = BoundedExecutor::new(NonZeroUsize::MIN).map_ordered(&inputs, |value| {
+            completed.fetch_add(1, Ordering::SeqCst);
+            operation(value)
+        });
+
+        assert_eq!(output, expected);
+        assert_eq!(output, inputs.map(|value| value * value));
+        assert_eq!(completed.load(Ordering::SeqCst), inputs.len());
+    }
+
+    #[test]
+    fn controlled_map_ordered_matches_the_uncontrolled_output() {
+        let inputs = [4_usize, 3, 2, 1];
+        let operation = |value: &usize| {
+            std::thread::sleep(std::time::Duration::from_millis(*value as u64 * 3));
+            value + 10
+        };
+        let uncontrolled = BoundedExecutor::new(NonZeroUsize::MIN).map_ordered(&inputs, operation);
+        let context = RuntimeTaskContext::without_deadline(RuntimeCancellationToken::new());
+
+        let controlled = BoundedExecutor::new(NonZeroUsize::MIN)
+            .map_ordered_with_context(&inputs, &context, operation);
+
+        assert_eq!(controlled, Ok(uncontrolled));
+    }
+
+    #[test]
+    fn controlled_map_ordered_rejects_a_cancelled_context_before_running_work() {
+        let token = RuntimeCancellationToken::new();
+        token.cancel();
+        let context = RuntimeTaskContext::without_deadline(token);
+        let visited = AtomicUsize::new(0);
+
+        let result = BoundedExecutor::new(NonZeroUsize::MIN).map_ordered_with_context(
+            &[1, 2, 3],
+            &context,
+            |value| {
+                visited.fetch_add(1, Ordering::SeqCst);
+                value * 2
+            },
+        );
+
+        assert_eq!(result, Err(RuntimeCancellationReason::Cancelled));
+        assert_eq!(visited.load(Ordering::SeqCst), 0);
+    }
 }
