@@ -4,6 +4,9 @@ version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
 license.workspace = true
+description.workspace = true
+repository.workspace = true
+homepage.workspace = true
 
 [features]
 test-support = []
@@ -15,10 +18,10 @@ rayon = "1.11"
 roaring = "0.10"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
-hawdb-core = { path = "../core" }
-hawdb-integrity = { path = "../integrity" }
-hawdb-analytics = { path = "../analytics" }
-hawdb-telemetry = { path = "../telemetry" }
-hawdb-plan = { path = "../plan" }
-hawdb-qos = { path = "../qos" }
+hawdb-core = { path = "../core", version = "0.2.0" }
+hawdb-integrity = { path = "../integrity", version = "0.2.0" }
+hawdb-analytics = { path = "../analytics", version = "0.2.0" }
+hawdb-telemetry = { path = "../telemetry", version = "0.2.0" }
+hawdb-plan = { path = "../plan", version = "0.2.0" }
+hawdb-qos = { path = "../qos", version = "0.2.0" }
 zstd = "0.13"

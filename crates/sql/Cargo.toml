@@ -4,14 +4,17 @@ version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
 license.workspace = true
+description.workspace = true
+repository.workspace = true
+homepage.workspace = true
 
 [dependencies]
 caseless = "0.2.2"
-hawdb-core = { path = "../core" }
-hawdb-expression = { path = "../expression" }
-hawdb-plan = { path = "../plan" }
-hawdb-plan-cache = { path = "../plan-cache" }
-hawdb-sql-syntax = { path = "../sql-syntax" }
+hawdb-core = { path = "../core", version = "0.2.0" }
+hawdb-expression = { path = "../expression", version = "0.2.0" }
+hawdb-plan = { path = "../plan", version = "0.2.0" }
+hawdb-plan-cache = { path = "../plan-cache", version = "0.2.0" }
+hawdb-sql-syntax = { path = "../sql-syntax", version = "0.2.0" }
 sqlparser = "0.61"
 
 [dev-dependencies]

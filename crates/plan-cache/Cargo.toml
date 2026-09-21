@@ -4,15 +4,18 @@ version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
 license.workspace = true
+description.workspace = true
+repository.workspace = true
+homepage.workspace = true
 
 [dependencies]
-hawdb-core = { path = "../core" }
-hawdb-cypher = { path = "../cypher" }
-hawdb-plan = { path = "../plan" }
+hawdb-core = { path = "../core", version = "0.2.0" }
+hawdb-cypher = { path = "../cypher", version = "0.2.0" }
+hawdb-plan = { path = "../plan", version = "0.2.0" }
 
 [dev-dependencies]
 loom = "0.7"
-hawdb-optimizer = { path = "../optimizer" }
+hawdb-optimizer = { path = "../optimizer", version = "0.2.0" }
 
 [features]
 default = []

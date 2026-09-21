@@ -4,13 +4,17 @@ version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
 license.workspace = true
+description.workspace = true
+repository.workspace = true
+homepage.workspace = true
+publish = false
 
 [dependencies]
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 sha2 = { version = "0.10", default-features = false }
-hawdb = { path = "../..", default-features = false, features = ["full-text-search", "tokio-runtime", "vector-search"] }
-hawdb-query = { path = "../query" }
+hawdb = { path = "../..", version = "0.2.0", default-features = false, features = ["full-text-search", "tokio-runtime", "vector-search"] }
+hawdb-query = { path = "../query", version = "0.2.0" }
 tokio = { version = "1", features = ["rt", "sync", "time"] }
 
 [features]

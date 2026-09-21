@@ -4,8 +4,11 @@ version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
 license.workspace = true
+description.workspace = true
+repository.workspace = true
+homepage.workspace = true
 
 [dependencies]
-hawdb-core = { path = "../core" }
-hawdb-executor = { path = "../executor" }
-hawdb-qos = { path = "../qos" }
+hawdb-core = { path = "../core", version = "0.2.0" }
+hawdb-executor = { path = "../executor", version = "0.2.0" }
+hawdb-qos = { path = "../qos", version = "0.2.0" }

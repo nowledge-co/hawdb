@@ -4,6 +4,9 @@ version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
 license.workspace = true
+description.workspace = true
+repository.workspace = true
+homepage.workspace = true
 
 [dependencies]
 bitpacking = { version = "=0.9.3", default-features = false, features = ["bitpacker4x"] }
@@ -18,16 +21,16 @@ serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 simsimd = { version = "6.5", optional = true }
 zstd = "0.13"
-hawdb-core = { path = "../core" }
-hawdb-evidence = { path = "../evidence" }
-hawdb-executor = { path = "../executor" }
-hawdb-integrity = { path = "../integrity" }
-hawdb-optimizer = { path = "../optimizer" }
-hawdb-plan = { path = "../plan" }
-hawdb-qos = { path = "../qos" }
-hawdb-storage = { path = "../storage" }
-hawdb-telemetry = { path = "../telemetry" }
-hawdb-vector-projection = { path = "../vector-projection", optional = true }
+hawdb-core = { path = "../core", version = "0.2.0" }
+hawdb-evidence = { path = "../evidence", version = "0.2.0" }
+hawdb-executor = { path = "../executor", version = "0.2.0" }
+hawdb-integrity = { path = "../integrity", version = "0.2.0" }
+hawdb-optimizer = { path = "../optimizer", version = "0.2.0" }
+hawdb-plan = { path = "../plan", version = "0.2.0" }
+hawdb-qos = { path = "../qos", version = "0.2.0" }
+hawdb-storage = { path = "../storage", version = "0.2.0" }
+hawdb-telemetry = { path = "../telemetry", version = "0.2.0" }
+hawdb-vector-projection = { path = "../vector-projection", version = "0.2.0", optional = true }
 
 [features]
 default = [
@@ -44,4 +47,4 @@ qualification = []
 vector-search = ["dep:simsimd", "dep:hawdb-vector-projection"]
 
 [dev-dependencies]
-hawdb-vector-projection = { path = "../vector-projection" }
+hawdb-vector-projection = { path = "../vector-projection", version = "0.2.0" }

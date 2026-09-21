@@ -4,13 +4,16 @@ version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
 license.workspace = true
+description.workspace = true
+repository.workspace = true
+homepage.workspace = true
 
 [dependencies]
-hawdb-core = { path = "../core" }
-hawdb-executor = { path = "../executor" }
-hawdb-sql = { path = "../sql" }
-hawdb-expression = { path = "../expression" }
-hawdb-integrity = { path = "../integrity" }
-hawdb-optimizer = { path = "../optimizer" }
-hawdb-plan = { path = "../plan" }
-hawdb-storage = { path = "../storage" }
+hawdb-core = { path = "../core", version = "0.2.0" }
+hawdb-executor = { path = "../executor", version = "0.2.0" }
+hawdb-sql = { path = "../sql", version = "0.2.0" }
+hawdb-expression = { path = "../expression", version = "0.2.0" }
+hawdb-integrity = { path = "../integrity", version = "0.2.0" }
+hawdb-optimizer = { path = "../optimizer", version = "0.2.0" }
+hawdb-plan = { path = "../plan", version = "0.2.0" }
+hawdb-storage = { path = "../storage", version = "0.2.0" }
