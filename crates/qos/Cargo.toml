@@ -9,8 +9,8 @@ repository.workspace = true
 homepage.workspace = true
 
 [dependencies]
-hawdb-core = { path = "../core", version = "0.2.0" }
-hawdb-cgroup = { path = "../cgroup", version = "0.2.0" }
+hawdb-core = { path = "../core", version = "0.3.0" }
+hawdb-cgroup = { path = "../cgroup", version = "0.3.0" }
 sysinfo = { version = "0.38", default-features = false, features = ["system"] }
 
 [target.'cfg(unix)'.dependencies]

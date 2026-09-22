@@ -11,13 +11,13 @@ homepage.workspace = true
 [dependencies]
 serde = "1"
 serde_json = "1"
-hawdb-core = { path = "../core", version = "0.2.0" }
-hawdb-cypher = { path = "../cypher", version = "0.2.0" }
-hawdb-evidence = { path = "../evidence", version = "0.2.0" }
-hawdb-executor = { path = "../executor", version = "0.2.0" }
-hawdb-nowledge-contracts = { path = "../nowledge-contracts", version = "0.2.0" }
-hawdb-plan-cache = { path = "../plan-cache", version = "0.2.0" }
-hawdb-route-ownership = { path = "../route-ownership", version = "0.2.0" }
-hawdb-system-sql = { path = "../system-sql", version = "0.2.0" }
-hawdb-search = { path = "../search", version = "0.2.0", default-features = false }
-hawdb-storage = { path = "../storage", version = "0.2.0" }
+hawdb-core = { path = "../core", version = "0.3.0" }
+hawdb-cypher = { path = "../cypher", version = "0.3.0" }
+hawdb-evidence = { path = "../evidence", version = "0.3.0" }
+hawdb-executor = { path = "../executor", version = "0.3.0" }
+hawdb-nowledge-contracts = { path = "../nowledge-contracts", version = "0.3.0" }
+hawdb-plan-cache = { path = "../plan-cache", version = "0.3.0" }
+hawdb-route-ownership = { path = "../route-ownership", version = "0.3.0" }
+hawdb-system-sql = { path = "../system-sql", version = "0.3.0" }
+hawdb-search = { path = "../search", version = "0.3.0", default-features = false }
+hawdb-storage = { path = "../storage", version = "0.3.0" }

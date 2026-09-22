@@ -10,7 +10,7 @@ homepage.workspace = true
 
 [dependencies]
 opentelemetry = { version = "0.31", default-features = false, features = ["metrics"], optional = true }
-hawdb-qos = { path = "../qos", version = "0.2.0" }
+hawdb-qos = { path = "../qos", version = "0.3.0" }
 
 [features]
 default = []

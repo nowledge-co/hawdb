@@ -13,8 +13,8 @@ publish = false
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 sha2 = { version = "0.10", default-features = false }
-hawdb = { path = "../..", version = "0.2.0", default-features = false, features = ["full-text-search", "tokio-runtime", "vector-search"] }
-hawdb-query = { path = "../query", version = "0.2.0" }
+hawdb = { path = "../..", version = "0.3.0", default-features = false, features = ["full-text-search", "tokio-runtime", "vector-search"] }
+hawdb-query = { path = "../query", version = "0.3.0" }
 tokio = { version = "1", features = ["rt", "sync", "time"] }
 
 [features]

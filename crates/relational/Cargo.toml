@@ -9,11 +9,11 @@ repository.workspace = true
 homepage.workspace = true
 
 [dependencies]
-hawdb-core = { path = "../core", version = "0.2.0" }
-hawdb-executor = { path = "../executor", version = "0.2.0" }
-hawdb-sql = { path = "../sql", version = "0.2.0" }
-hawdb-expression = { path = "../expression", version = "0.2.0" }
-hawdb-integrity = { path = "../integrity", version = "0.2.0" }
-hawdb-optimizer = { path = "../optimizer", version = "0.2.0" }
-hawdb-plan = { path = "../plan", version = "0.2.0" }
-hawdb-storage = { path = "../storage", version = "0.2.0" }
+hawdb-core = { path = "../core", version = "0.3.0" }
+hawdb-executor = { path = "../executor", version = "0.3.0" }
+hawdb-sql = { path = "../sql", version = "0.3.0" }
+hawdb-expression = { path = "../expression", version = "0.3.0" }
+hawdb-integrity = { path = "../integrity", version = "0.3.0" }
+hawdb-optimizer = { path = "../optimizer", version = "0.3.0" }
+hawdb-plan = { path = "../plan", version = "0.3.0" }
+hawdb-storage = { path = "../storage", version = "0.3.0" }

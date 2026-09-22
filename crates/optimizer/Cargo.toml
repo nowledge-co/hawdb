@@ -10,8 +10,8 @@ homepage.workspace = true
 
 [dependencies]
 serde_json = "1"
-hawdb-cascades = { path = "../cascades", version = "0.2.0" }
-hawdb-core = { path = "../core", version = "0.2.0" }
-hawdb-cypher = { path = "../cypher", version = "0.2.0" }
-hawdb-expression = { path = "../expression", version = "0.2.0" }
-hawdb-plan = { path = "../plan", version = "0.2.0" }
+hawdb-cascades = { path = "../cascades", version = "0.3.0" }
+hawdb-core = { path = "../core", version = "0.3.0" }
+hawdb-cypher = { path = "../cypher", version = "0.3.0" }
+hawdb-expression = { path = "../expression", version = "0.3.0" }
+hawdb-plan = { path = "../plan", version = "0.3.0" }

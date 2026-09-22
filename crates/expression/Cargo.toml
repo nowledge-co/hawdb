@@ -9,4 +9,4 @@ repository.workspace = true
 homepage.workspace = true
 
 [dependencies]
-hawdb-core = { path = "../core", version = "0.2.0" }
+hawdb-core = { path = "../core", version = "0.3.0" }

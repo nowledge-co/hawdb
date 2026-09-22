@@ -10,7 +10,7 @@ homepage.workspace = true
 
 [dependencies]
 serde_json = "1"
-hawdb-core = { path = "../core", version = "0.2.0" }
-hawdb-integrity = { path = "../integrity", version = "0.2.0" }
-hawdb-search = { path = "../search", version = "0.2.0", default-features = false }
-hawdb-storage = { path = "../storage", version = "0.2.0" }
+hawdb-core = { path = "../core", version = "0.3.0" }
+hawdb-integrity = { path = "../integrity", version = "0.3.0" }
+hawdb-search = { path = "../search", version = "0.3.0", default-features = false }
+hawdb-storage = { path = "../storage", version = "0.3.0" }

@@ -10,12 +10,12 @@ homepage.workspace = true
 
 [dependencies]
 serde_json = "1"
-hawdb-core = { path = "../core", version = "0.2.0" }
-hawdb-executor = { path = "../executor", version = "0.2.0" }
-hawdb-plan-cache = { path = "../plan-cache", version = "0.2.0" }
-hawdb-query = { path = "../query", version = "0.2.0" }
-hawdb-sql = { path = "../sql", version = "0.2.0" }
-hawdb-storage = { path = "../storage", version = "0.2.0" }
+hawdb-core = { path = "../core", version = "0.3.0" }
+hawdb-executor = { path = "../executor", version = "0.3.0" }
+hawdb-plan-cache = { path = "../plan-cache", version = "0.3.0" }
+hawdb-query = { path = "../query", version = "0.3.0" }
+hawdb-sql = { path = "../sql", version = "0.3.0" }
+hawdb-storage = { path = "../storage", version = "0.3.0" }
 
 [dev-dependencies]
 loom = "0.7"
