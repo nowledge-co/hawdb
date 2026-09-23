@@ -498,3 +498,68 @@ fn checkpoint_persists_index_descriptors_and_statistics() {
     }
     std::fs::remove_dir_all(path).unwrap();
 }
+
+#[test]
+fn external_optimizer_statistics_refresh_truncates_bounded_paths_instead_of_failing() {
+    let path = unique_test_dir("external_optimizer_statistics_bounded_path_truncation");
+    let spill_root = path.join("statistics-spill");
+    let mut db = Database::open_with_config(
+        &path,
+        DatabaseConfig {
+            storage_residency_mode: crate::StorageResidencyMode::OutOfCore,
+            ..DatabaseConfig::default()
+        },
+    )
+    .unwrap();
+    // 12-node complete digraph with self-loops: 144 edges and
+    // 12 + 144 + 1728 = 1884 bounded-path expansions per source.
+    for id in 0..12 {
+        db.query(&format!("CREATE (:Dense {{id: {id}}})")).unwrap();
+    }
+    for source in 0..12 {
+        for target in 0..12 {
+            db.query(&format!(
+                "MATCH (a:Dense {{id: {source}}}), (b:Dense {{id: {target}}}) CREATE (a)-[:LINK]->(b)"
+            ))
+            .unwrap();
+        }
+    }
+    db.checkpoint().unwrap();
+    let options = |max_path_expansions| crate::OptimizerStatisticsRefreshOptions {
+        memory_budget_bytes: 16 * 1024 * 1024,
+        max_spill_bytes: 256 * 1024 * 1024,
+        max_spill_runs: 1024,
+        max_input_records: 1_000_000,
+        max_generated_facts: 1_000_000,
+        max_path_expansions,
+        spill_directory: spill_root.clone(),
+    };
+
+    let report = db
+        .refresh_optimizer_statistics_external(&options(1_000_000))
+        .unwrap();
+    assert!(!report.bounded_path_truncated);
+    assert!(report.bounded_path_group_count > 0);
+    assert!(!db.statistics().bounded_path_counts.is_empty());
+
+    let report = db
+        .refresh_optimizer_statistics_external(&options(500))
+        .unwrap();
+    assert!(report.bounded_path_truncated);
+    assert_eq!(report.bounded_path_group_count, 0);
+    assert!(report.path_group_count > 0);
+    let statistics = db.statistics();
+    assert!(statistics.bounded_path_counts.is_empty());
+    assert!(statistics.bounded_path_source_distinct_counts.is_empty());
+    assert!(statistics.bounded_path_target_distinct_counts.is_empty());
+    assert!(!statistics.path_counts.is_empty());
+    assert_eq!(std::fs::read_dir(&spill_root).unwrap().count(), 0);
+
+    let explained = db
+        .explain_query("MATCH (a:Dense)-[:LINK*1..3]->(b:Dense) RETURN b.id AS id")
+        .unwrap();
+    assert!(!explained.trace.decisions.is_empty());
+
+    drop(db);
+    std::fs::remove_dir_all(path).unwrap();
+}

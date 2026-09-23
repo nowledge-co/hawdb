@@ -98,6 +98,11 @@ pub struct OptimizerStatisticsRefreshReport {
     pub index_sample_count: usize,
     pub path_group_count: usize,
     pub bounded_path_group_count: usize,
+    /// True when `max_path_expansions` stopped bounded-path enumeration early.
+    /// Truncated runs publish empty bounded-path maps: partial prefixes would
+    /// be mistaken for exact counts, so consumers fall back to heuristic
+    /// estimates instead.
+    pub bounded_path_truncated: bool,
     pub checkpoint_persisted: bool,
 }
 
@@ -122,6 +127,7 @@ impl OptimizerStatisticsRefreshReport {
             "index_sample_count": self.index_sample_count,
             "path_group_count": self.path_group_count,
             "bounded_path_group_count": self.bounded_path_group_count,
+            "bounded_path_truncated": self.bounded_path_truncated,
             "checkpoint_persisted": self.checkpoint_persisted,
         })
     }
@@ -142,6 +148,7 @@ pub struct OptimizerStatisticsRefreshAccounting<'a> {
     node_records_read: u64,
     relationship_records_read: u64,
     path_expansions: u64,
+    bounded_path_exhausted: bool,
 }
 
 impl<'a> OptimizerStatisticsRefreshAccounting<'a> {
@@ -151,6 +158,7 @@ impl<'a> OptimizerStatisticsRefreshAccounting<'a> {
             node_records_read: 0,
             relationship_records_read: 0,
             path_expansions: 0,
+            bounded_path_exhausted: false,
         }
     }
 
@@ -164,15 +172,21 @@ impl<'a> OptimizerStatisticsRefreshAccounting<'a> {
         self.check_input_budget()
     }
 
+    /// Counts one bounded-path edge expansion. Exceeding
+    /// `max_path_expansions` marks enumeration as exhausted instead of
+    /// failing the refresh: bounded-path statistics are auxiliary, so a
+    /// truncated run discards their maps and still publishes every other
+    /// statistic. `max_input_records` remains the hard work bound.
     pub fn expand_path(&mut self) -> Result<()> {
         self.path_expansions = self.path_expansions.saturating_add(1);
         if self.path_expansions > self.options.max_path_expansions {
-            return Err(HawDBError::Execution(format!(
-                "optimizer statistics refresh exceeded max_path_expansions {}",
-                self.options.max_path_expansions
-            )));
+            self.bounded_path_exhausted = true;
         }
         Ok(())
+    }
+
+    pub const fn bounded_path_exhausted(&self) -> bool {
+        self.bounded_path_exhausted
     }
 
     pub const fn node_records_read(&self) -> u64 {

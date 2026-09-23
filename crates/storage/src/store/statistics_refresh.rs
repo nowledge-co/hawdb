@@ -185,11 +185,20 @@ impl GraphStore {
                     )?;
                 }
             }
+            if work.bounded_path_exhausted() {
+                return Ok(GraphScanControl::Stop);
+            }
             Ok(GraphScanControl::Continue)
         })?;
 
         let basic = self.basic_statistics();
-        let (statistics, merge_report) = writer.finish(graph_statistics_from_basic(basic, true))?;
+        let (mut statistics, merge_report) =
+            writer.finish(graph_statistics_from_basic(basic, true))?;
+        if work.bounded_path_exhausted() {
+            statistics.bounded_path_counts.clear();
+            statistics.bounded_path_source_distinct_counts.clear();
+            statistics.bounded_path_target_distinct_counts.clear();
+        }
         if source_commit_epoch != self.commit_epoch {
             return Err(HawDBError::Execution(
                 "optimizer statistics refresh source epoch changed before publication".to_string(),
@@ -219,6 +228,7 @@ impl GraphStore {
             index_sample_count: self.checkpoint_statistics.index_samples.len(),
             path_group_count: self.checkpoint_statistics.path_counts.len(),
             bounded_path_group_count: self.checkpoint_statistics.bounded_path_counts.len(),
+            bounded_path_truncated: work.bounded_path_exhausted(),
             checkpoint_persisted: false,
         })
     }
@@ -259,7 +269,7 @@ fn collect_bounded_path_facts(
     writer: &mut StatsRunWriter<'_>,
     work: &mut OptimizerStatisticsRefreshAccounting<'_>,
 ) -> Result<()> {
-    if hop > MAX_BOUNDED_PATH_STAT_HOPS {
+    if work.bounded_path_exhausted() || hop > MAX_BOUNDED_PATH_STAT_HOPS {
         return Ok(());
     }
     store.try_visit_adjacent_relationships_owned(
@@ -269,6 +279,9 @@ fn collect_bounded_path_facts(
         |relationship| {
             work.read_relationship()?;
             work.expand_path()?;
+            if work.bounded_path_exhausted() {
+                return Ok(GraphScanControl::Stop);
+            }
             let target = store.node_owned(relationship.target)?.ok_or_else(|| {
                 HawDBError::Storage(format!(
                     "optimizer statistics refresh found relationship {} with missing target {}",
@@ -299,6 +312,9 @@ fn collect_bounded_path_facts(
                 })?;
             }
             collect_bounded_path_facts(store, relationship.target, hop + 1, spec, writer, work)?;
+            if work.bounded_path_exhausted() {
+                return Ok(GraphScanControl::Stop);
+            }
             Ok(GraphScanControl::Continue)
         },
     )?;

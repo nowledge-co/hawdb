@@ -898,7 +898,12 @@ fn refresh_resource_contract_rejects_invalid_limits_and_preserves_accounting_bou
 
     let mut path_accounting = OptimizerStatisticsRefreshAccounting::new(&options);
     path_accounting.expand_path().unwrap();
-    assert_execution_error(path_accounting.expand_path(), "max_path_expansions 1");
+    assert!(!path_accounting.bounded_path_exhausted());
+    path_accounting.expand_path().unwrap();
+    assert!(path_accounting.bounded_path_exhausted());
+    path_accounting.expand_path().unwrap();
+    assert!(path_accounting.bounded_path_exhausted());
+    assert_eq!(path_accounting.path_expansions(), 3);
 }
 
 #[test]
@@ -920,6 +925,7 @@ fn refresh_report_keeps_the_stable_json_protocol() {
         index_sample_count: 59,
         path_group_count: 61,
         bounded_path_group_count: 67,
+        bounded_path_truncated: true,
         checkpoint_persisted: true,
     };
     assert_eq!(
@@ -927,5 +933,6 @@ fn refresh_report_keeps_the_stable_json_protocol() {
         "hawdb-optimizer-statistics-refresh-v1"
     );
     assert_eq!(report.json()["node_records_read"], 11);
+    assert_eq!(report.json()["bounded_path_truncated"], true);
     assert_eq!(report.json()["checkpoint_persisted"], true);
 }
