@@ -1,0 +1,5 @@
+blank_issues_enabled: false
+contact_links:
+  - name: Contribution guide
+    url: https://github.com/nowledge-co/hawdb/blob/main/CONTRIBUTING.md
+    about: Read the build, reporting, testing, and review guidelines before contributing.

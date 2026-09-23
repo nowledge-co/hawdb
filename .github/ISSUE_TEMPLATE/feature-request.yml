@@ -1,0 +1,33 @@
+name: Feature request
+description: Propose a new embedded database capability.
+labels: [enhancement]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Search existing issues and the development plan first. Describe the host application's need before proposing an API.
+        Use a title such as `cypher: support a bounded query shape needed by graph navigation`.
+  - type: textarea
+    id: problem
+    attributes:
+      label: User problem and use case
+      description: What should a host application be able to do? Include the concrete workload and current limitation or workaround.
+    validations:
+      required: true
+  - type: textarea
+    id: outcome
+    attributes:
+      label: Desired behavior and acceptance criteria
+      description: Describe observable success, supported inputs, important limits, and what is outside this proposal.
+    validations:
+      required: true
+  - type: textarea
+    id: proposal
+    attributes:
+      label: Proposed interface and alternatives
+      description: Optional parameterized Cypher/SQL or Rust API sketch. Explain whether existing query/runtime capabilities can express the behavior, and compare alternatives or workarounds.
+  - type: textarea
+    id: impact
+    attributes:
+      label: Compatibility, resources, and validation
+      description: Note any public API, feature/dependency, persistent-format, recovery, or CPU/memory/I/O implications you know. Suggest how to verify the outcome; maintainers can help fill in unknowns.

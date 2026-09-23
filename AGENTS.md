@@ -53,6 +53,7 @@
 
 ## PR and Branch Workflow
 
+- Follow `CONTRIBUTING.md` and the templates in `.github/ISSUE_TEMPLATE/` and `.github/PULL_REQUEST_TEMPLATE.md` for issue and PR content, titles, validation evidence, and review dispositions.
 - Every PR must target `main` directly. Do not stack a PR's branch on top of another PR's branch as its base.
 - Stacking causes real problems in this repo's merge flow: a PR merged into a non-`main` base only lands in that feature branch, not in `main`, even though it shows as `MERGED`. If the upstream PR later gets retargeted straight to `main` and merges there, the downstream branch is silently orphaned — it no longer has any path back to `main` until someone notices and retargets it by hand.
 - If work is naturally sequential, land each piece as its own PR against `main` before starting the next one, or keep it as commits within a single PR instead of a chain of branches.

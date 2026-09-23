@@ -1,0 +1,48 @@
+name: Performance issue
+description: Report a slowdown, resource regression, or measured optimization opportunity.
+labels: [enhancement]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Search existing issues first. Use a title such as `optimizer: statistics refresh dominates small writes`.
+        A small reproducible workload is more useful than a single timing. Use synthetic data and sanitized evidence.
+  - type: textarea
+    id: problem
+    attributes:
+      label: Workload and impact
+      description: Describe the host workload, affected operation, observed limitation, and desired outcome. State whether this is a regression or an optimization opportunity.
+    validations:
+      required: true
+  - type: textarea
+    id: reproduction
+    attributes:
+      label: Reproduction and dataset
+      description: Provide a runnable benchmark or Rust/query sequence, schema and indexes, fixture generator or seed, data size and shape, batch size, concurrency, and warmup procedure. Include small and bulk cases where relevant.
+    validations:
+      required: true
+  - type: textarea
+    id: measurements
+    attributes:
+      label: Measurements and baseline
+      description: Record baseline and affected/candidate revisions, exact commands, repetitions, units, and results. Include latency/throughput, CPU, memory, I/O, or work counts as relevant. If no baseline is available, say so and report the evidence you have.
+      placeholder: |
+        Baseline revision / result:
+        Affected or candidate revision / result:
+        Command and number of repetitions:
+        Cold or warm cache:
+        Query results or invariants checked:
+    validations:
+      required: true
+  - type: textarea
+    id: environment
+    attributes:
+      label: Environment and configuration
+      description: Include OS/architecture, CPU/RAM/storage, Rust toolchain, build profile, Cargo features, storage residency, durability settings, and relevant DatabaseConfig limits. Mark unknown details explicitly.
+    validations:
+      required: true
+  - type: textarea
+    id: analysis
+    attributes:
+      label: Analysis and proposed scope
+      description: Optional profile, explain trace, suspected complexity, proposed optimization, and tradeoffs. Identify the active workload it helps and cases it could make worse; a fix is not required to report an issue.

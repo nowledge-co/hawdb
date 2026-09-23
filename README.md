@@ -8,6 +8,8 @@ See [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) for the current design.
 The staged implementation and compatibility gates are tracked in
 [docs/EMBEDDED_DEVELOPMENT_PLAN.md](docs/EMBEDDED_DEVELOPMENT_PLAN.md).
 Open development work is tracked in [TODO.md](TODO.md).
+For issue reports, pull requests, and validation expectations, read
+[CONTRIBUTING.md](CONTRIBUTING.md).
 
 ## Building
 
@@ -106,7 +108,7 @@ target before running the reviewed target lists, so a newly added crate cannot
 be silently omitted from Bazel testing.
 
 Bazel unit tests complement rather than replace Cargo feature-matrix, doctest,
-ignored resource-profile, Loom, scheduled fuzz, and release soak jobs. Those
+ignored resource-profile, Loom, explicit local fuzz, and release soak checks. Those
 remain separate gates because they require different features, platforms, or
 runtime inputs.
 

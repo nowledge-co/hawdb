@@ -1,0 +1,61 @@
+name: Bug report
+description: Report incorrect results, errors, crashes, or recovery failures.
+labels: [bug]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Search open and closed issues first. Use a title such as `storage: rejected batch becomes visible after reopen`.
+        Prefer synthetic fixtures. Remove credentials and personal data from queries, logs, and database artifacts.
+  - type: input
+    id: revision
+    attributes:
+      label: HawDB version or commit
+      description: Include the crate version or full commit SHA; add the last known working revision if available.
+    validations:
+      required: true
+  - type: textarea
+    id: reproduction
+    attributes:
+      label: Minimal reproduction
+      description: Include setup, schema, small fixture, Rust API calls or parameterized Cypher/SQL, and execution order. For intermittent failures, describe attempted reproduction and frequency.
+    validations:
+      required: true
+  - type: textarea
+    id: expected
+    attributes:
+      label: Expected behavior
+      description: State the expected rows, error, or invariant.
+    validations:
+      required: true
+  - type: textarea
+    id: actual
+    attributes:
+      label: Actual behavior
+      description: Include the observed rows, exact error, panic, or hang. Explain how it differs from the expected behavior.
+    validations:
+      required: true
+  - type: textarea
+    id: environment
+    attributes:
+      label: Environment and configuration
+      description: Include what you know; write unknown for unavailable details.
+      placeholder: |
+        OS / CPU architecture:
+        Rust toolchain and Cargo features:
+        Build profile and command:
+        In-memory or persistent database:
+        Storage residency (Auto / Materialized / OutOfCore):
+        Relevant DatabaseConfig, resource limits, and transaction/concurrency settings:
+    validations:
+      required: true
+  - type: textarea
+    id: recovery
+    attributes:
+      label: Persistence and recovery context
+      description: For storage failures, describe the commit/checkpoint/reopen sequence, whether the write was acknowledged, and whether the failure follows a crash, cancellation, or rejected transaction. Otherwise leave empty.
+  - type: textarea
+    id: evidence
+    attributes:
+      label: Additional evidence
+      description: Sanitized backtrace, explain output, logs, regression test, or minimized fuzz seed and replay command. Distinguish observations from suspected causes.

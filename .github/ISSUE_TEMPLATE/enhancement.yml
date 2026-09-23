@@ -1,0 +1,30 @@
+name: Enhancement or maintenance
+description: Improve existing behavior, tests, documentation, or maintainability.
+labels: [enhancement]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Search existing issues first. Use the bug form for incorrect behavior and the performance form for measured resource or latency problems.
+        Use a title such as `storage: share constraint validation rules between commit paths`.
+  - type: textarea
+    id: context
+    attributes:
+      label: Current behavior and motivation
+      description: Identify the relevant component, source or documentation, and the concrete problem with the current approach.
+    validations:
+      required: true
+  - type: textarea
+    id: change
+    attributes:
+      label: Proposed change and scope
+      description: Describe the smallest useful change, the invariants it must preserve, and any alternatives considered.
+    validations:
+      required: true
+  - type: textarea
+    id: acceptance
+    attributes:
+      label: Acceptance criteria and validation
+      description: Explain how a reviewer can determine that this is complete. Name relevant tests, documentation checks, or observable outcomes; note known compatibility and resource risks.
+    validations:
+      required: true
