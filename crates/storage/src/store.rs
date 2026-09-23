@@ -9810,18 +9810,178 @@ mod tests {
         let mut catalog = Catalog::default();
         let mut store = GraphStore::open(&path, &mut catalog).unwrap();
         // Pre-existing duplicates before the constraint exists.
-        for _ in 0..2 {
-            store
-                .create_node(&mut catalog, "T", properties([("k", Value::Int(1))]))
-                .unwrap();
-        }
-        // CreateUniqueConstraint is a schema op: touched-record collection
-        // returns None, so commit-time validation must cover all records.
-        let error = store
+        let first = store
+            .create_node(&mut catalog, "T", properties([("k", Value::Int(1))]))
+            .unwrap();
+        store
+            .create_node(&mut catalog, "T", properties([("k", Value::Int(1))]))
+            .unwrap();
+        // Register the constraint in the catalog directly so commit-time
+        // validation sees the post-DDL schema. create_unique_constraint()
+        // validates separately and would reject before ever reaching
+        // validate_constraints_for_ops.
+        let label_id = catalog.label_id("T").unwrap();
+        catalog.get_or_create_unique_constraint(label_id, "k");
+        // A commit batch mixing data and DDL must not enter delta validation:
+        // the violation lives in records this commit did not touch.
+        let ops = [WalOp::Batch(vec![
+            WalOp::SetNodeProperty {
+                id: first,
+                property: "unrelated".to_string(),
+                value: Value::Int(9),
+            },
+            WalOp::CreateUniqueConstraint {
+                label: "T".to_string(),
+                property: "k".to_string(),
+            },
+        ])];
+        let error = store.validate_constraints_for_ops(&catalog, &ops).unwrap_err();
+        assert!(error.to_string().contains("unique constraint"));
+        let _ = std::fs::remove_dir_all(&path);
+    }
+
+    #[test]
+    fn delta_validation_catches_touched_vs_touched_unique_violation() {
+        let path = unique_test_dir("delta_touched_pair");
+        let mut catalog = Catalog::default();
+        let mut store = GraphStore::open(&path, &mut catalog).unwrap();
+        store
             .create_unique_constraint(&mut catalog, "T", "k")
+            .unwrap();
+        // Two colliding creates inside one commit: both records are touched,
+        // so the conflict exists only within the touched set itself.
+        let ops = [
+            WalOp::CreateNode {
+                id: NodeId(1),
+                label: "T".to_string(),
+                properties: properties([("k", Value::Int(1))]),
+            },
+            WalOp::CreateNode {
+                id: NodeId(2),
+                label: "T".to_string(),
+                properties: properties([("k", Value::Int(1))]),
+            },
+        ];
+        let error = store.validate_constraints_for_ops(&catalog, &ops).unwrap_err();
+        assert!(error.to_string().contains("unique constraint"));
+        let _ = std::fs::remove_dir_all(&path);
+    }
+
+    #[test]
+    fn delta_validation_catches_relationship_unique_violation() {
+        let path = unique_test_dir("delta_rel_unique");
+        let mut catalog = Catalog::default();
+        let mut store = GraphStore::open(&path, &mut catalog).unwrap();
+        let a = store
+            .create_node(&mut catalog, "T", properties([]))
+            .unwrap();
+        let b = store
+            .create_node(&mut catalog, "T", properties([]))
+            .unwrap();
+        store
+            .create_relationship_unique_constraint(&mut catalog, "R", "k")
+            .unwrap();
+        store
+            .create_relationship(&mut catalog, a, b, "R", properties([("k", Value::Int(1))]))
+            .unwrap();
+        let error = store
+            .create_relationship(&mut catalog, a, b, "R", properties([("k", Value::Int(1))]))
             .unwrap_err();
         assert!(error.to_string().contains("unique constraint"));
         let _ = std::fs::remove_dir_all(&path);
+    }
+
+    #[test]
+    fn delta_unique_validation_handles_bulk_touched_sets() {
+        let path = unique_test_dir("delta_bulk_touched");
+        let mut catalog = Catalog::default();
+        let mut store = GraphStore::open(&path, &mut catalog).unwrap();
+        store
+            .create_unique_constraint(&mut catalog, "T", "k")
+            .unwrap();
+        let mut ids = Vec::new();
+        for i in 0..2000 {
+            ids.push(
+                store
+                    .create_node(&mut catalog, "T", properties([("k", Value::Int(i))]))
+                    .unwrap(),
+            );
+        }
+        // A bulk SET touching every record stays correct: re-setting each
+        // node to its own value must pass, while one colliding write must
+        // still be caught among thousands of touched records.
+        let rewrites: Vec<WalOp> = ids
+            .iter()
+            .enumerate()
+            .map(|(i, id)| WalOp::SetNodeProperty {
+                id: *id,
+                property: "k".to_string(),
+                value: Value::Int(i as i64),
+            })
+            .collect();
+        store.validate_constraints_for_ops(&catalog, &rewrites).unwrap();
+
+        let mut colliding = rewrites.clone();
+        colliding.push(WalOp::SetNodeProperty {
+            id: ids[0],
+            property: "k".to_string(),
+            value: Value::Int(1999),
+        });
+        let error = store
+            .validate_constraints_for_ops(&catalog, &colliding)
+            .unwrap_err();
+        assert!(error.to_string().contains("unique constraint"));
+        let _ = std::fs::remove_dir_all(&path);
+    }
+
+    /// Timing evidence for the delta unique validators: K=1 single-record
+    /// commits must stay far below the full scan, while K=N bulk commits must
+    /// not exceed the full validator's bound. Run with --ignored --nocapture.
+    #[test]
+    #[ignore = "timing probe for delta vs full unique validation"]
+    fn delta_unique_validation_scaling_probe() {
+        use crate::graph_constraints::TouchedRecords;
+        use std::time::Instant;
+        for n in [1_000usize, 2_000] {
+            let path = unique_test_dir(&format!("delta_unique_scaling_{n}"));
+            let mut catalog = Catalog::default();
+            let mut store = GraphStore::open(&path, &mut catalog).unwrap();
+            store
+                .create_unique_constraint(&mut catalog, "T", "k")
+                .unwrap();
+            let mut ids = Vec::with_capacity(n);
+            for i in 0..n {
+                ids.push(
+                    store
+                        .create_node(&mut catalog, "T", properties([("k", Value::Int(i as i64))]))
+                        .unwrap(),
+                );
+            }
+            // K=1: one touched record against the post-image.
+            let single = TouchedRecords {
+                nodes: BTreeSet::from([ids[n - 1]]),
+                relationships: BTreeSet::new(),
+            };
+            let t = Instant::now();
+            super::validate_unique_constraints(&catalog, &store.nodes).unwrap();
+            let full_1 = t.elapsed();
+            let t = Instant::now();
+            super::validate_unique_constraints_for_records(&catalog, &store.nodes, &single)
+                .unwrap();
+            let delta_1 = t.elapsed();
+            // K=N: every record touched by a bulk SET on the constrained key.
+            let bulk = TouchedRecords {
+                nodes: ids.iter().copied().collect(),
+                relationships: BTreeSet::new(),
+            };
+            let t = Instant::now();
+            super::validate_unique_constraints_for_records(&catalog, &store.nodes, &bulk).unwrap();
+            let delta_n = t.elapsed();
+            eprintln!(
+                "n={n} K=1: full={full_1:?} delta={delta_1:?} | K=N: delta={delta_n:?} (full={full_1:?})"
+            );
+            let _ = std::fs::remove_dir_all(&path);
+        }
     }
 
     #[test]

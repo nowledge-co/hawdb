@@ -510,6 +510,12 @@ pub fn validate_property_schemas_for_records(
 
 /// Delta unique validation: a violation can only involve a touched record's
 /// constrained value colliding with another record carrying the same value.
+///
+/// Costs O(N log K) per constraint (K touched records, N records): one pass
+/// collects the constrained post-image values of touched records, a second
+/// single scan compares every other record's value against that map. This is
+/// never worse than the full validator's O(N log N) — bulk commits where K
+/// approaches N degenerate to the same bound instead of quadratic K*N scans.
 pub fn validate_unique_constraints_for_records(
     catalog: &Catalog,
     nodes: &CowSegmentedMap<NodeId, NodeRecord>,
@@ -519,6 +525,7 @@ pub fn validate_unique_constraints_for_records(
         let ConstraintSubject::Node(label_id) = constraint.subject else {
             continue;
         };
+        let mut touched_values = BTreeMap::<&Value, NodeId>::new();
         for node_id in &touched.nodes {
             let Some(node) = nodes.get(node_id) else {
                 continue;
@@ -532,24 +539,38 @@ pub fn validate_unique_constraints_for_records(
             if value == &Value::Null {
                 continue;
             }
-            for other in nodes.values() {
-                if other.id == *node_id || !other.labels.contains(&label_id) {
-                    continue;
-                }
-                if other.properties.get(&constraint.property) == Some(value) {
-                    let label = catalog.label_name(label_id).unwrap_or("<unknown>");
-                    return Err(HawDBError::Storage(format!(
-                        "unique constraint violation on :{label}({}) for nodes {} and {}",
-                        constraint.property, other.id.0, node.id.0
-                    )));
-                }
+            if let Some(previous) = touched_values.insert(value, node.id) {
+                let label = catalog.label_name(label_id).unwrap_or("<unknown>");
+                return Err(HawDBError::Storage(format!(
+                    "unique constraint violation on :{label}({}) for nodes {} and {}",
+                    constraint.property, previous.0, node.id.0
+                )));
+            }
+        }
+        if touched_values.is_empty() {
+            continue;
+        }
+        for node in nodes.values() {
+            if touched.nodes.contains(&node.id) || !node.labels.contains(&label_id) {
+                continue;
+            }
+            let Some(value) = node.properties.get(&constraint.property) else {
+                continue;
+            };
+            if let Some(touched_id) = touched_values.get(value) {
+                let label = catalog.label_name(label_id).unwrap_or("<unknown>");
+                return Err(HawDBError::Storage(format!(
+                    "unique constraint violation on :{label}({}) for nodes {} and {}",
+                    constraint.property, node.id.0, touched_id.0
+                )));
             }
         }
     }
     Ok(())
 }
 
-/// Delta variant of `validate_relationship_unique_constraints`.
+/// Delta variant of `validate_relationship_unique_constraints`, with the same
+/// O(N log K) two-pass structure as `validate_unique_constraints_for_records`.
 pub fn validate_relationship_unique_constraints_for_records(
     catalog: &Catalog,
     relationships: &CowSegmentedMap<RelId, RelRecord>,
@@ -559,6 +580,7 @@ pub fn validate_relationship_unique_constraints_for_records(
         let ConstraintSubject::Relationship(rel_type_id) = constraint.subject else {
             continue;
         };
+        let mut touched_values = BTreeMap::<&Value, RelId>::new();
         for rel_id in &touched.relationships {
             let Some(relationship) = relationships.get(rel_id) else {
                 continue;
@@ -572,17 +594,32 @@ pub fn validate_relationship_unique_constraints_for_records(
             if value == &Value::Null {
                 continue;
             }
-            for other in relationships.values() {
-                if other.id == *rel_id || other.rel_type != rel_type_id {
-                    continue;
-                }
-                if other.properties.get(&constraint.property) == Some(value) {
-                    let rel_type = catalog.rel_type_name(rel_type_id).unwrap_or("<unknown>");
-                    return Err(HawDBError::Storage(format!(
-                        "relationship unique constraint violation on :{rel_type}({}) for relationships {} and {}",
-                        constraint.property, other.id.0, relationship.id.0
-                    )));
-                }
+            if let Some(previous) = touched_values.insert(value, relationship.id) {
+                let rel_type = catalog.rel_type_name(rel_type_id).unwrap_or("<unknown>");
+                return Err(HawDBError::Storage(format!(
+                    "relationship unique constraint violation on :{rel_type}({}) for relationships {} and {}",
+                    constraint.property, previous.0, relationship.id.0
+                )));
+            }
+        }
+        if touched_values.is_empty() {
+            continue;
+        }
+        for relationship in relationships.values() {
+            if touched.relationships.contains(&relationship.id)
+                || relationship.rel_type != rel_type_id
+            {
+                continue;
+            }
+            let Some(value) = relationship.properties.get(&constraint.property) else {
+                continue;
+            };
+            if let Some(touched_id) = touched_values.get(value) {
+                let rel_type = catalog.rel_type_name(rel_type_id).unwrap_or("<unknown>");
+                return Err(HawDBError::Storage(format!(
+                    "relationship unique constraint violation on :{rel_type}({}) for relationships {} and {}",
+                    constraint.property, relationship.id.0, touched_id.0
+                )));
             }
         }
     }
