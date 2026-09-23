@@ -22,6 +22,7 @@ use crate::{
 };
 use hawdb_core::{HawDBError, Result};
 use std::num::NonZeroUsize;
+use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
 
 pub struct OperatorMemoryTracker {
     pub budget_bytes: usize,
@@ -131,12 +132,26 @@ pub struct SpillBudgetTracker {
     pool: std::result::Result<SpillPool, String>,
     pub max_bytes: u64,
     pub max_runs: usize,
-    pub used_bytes: u64,
-    pub run_count: usize,
+    used_bytes: AtomicU64,
+    run_count: AtomicUsize,
     staging_account: Option<QueryMemoryAccount>,
 }
 
 impl SpillBudgetTracker {
+    pub fn used_bytes(&self) -> u64 {
+        self.used_bytes.load(Ordering::Acquire)
+    }
+
+    pub fn run_count(&self) -> usize {
+        self.run_count.load(Ordering::Acquire)
+    }
+
+    #[cfg(test)]
+    pub(crate) fn seed_usage(&self, used_bytes: u64, run_count: usize) {
+        self.used_bytes.store(used_bytes, Ordering::Release);
+        self.run_count.store(run_count, Ordering::Release);
+    }
+
     pub(crate) fn staging_peak_bytes(&self) -> usize {
         self.staging_account
             .as_ref()
@@ -149,8 +164,8 @@ impl SpillBudgetTracker {
             pool: SpillPool::open(memory).map_err(|error| error.to_string()),
             max_bytes: memory.max_spill_bytes.get(),
             max_runs: memory.max_spill_runs.get(),
-            used_bytes: 0,
-            run_count: 0,
+            used_bytes: AtomicU64::new(0),
+            run_count: AtomicUsize::new(0),
             staging_account: None,
         }
     }
@@ -191,7 +206,7 @@ impl SpillBudgetTracker {
             .transpose()
     }
 
-    pub fn create_run(&mut self, file_operator: &str) -> Result<(SpillRun, SpillWriter)> {
+    pub fn create_run(&self, file_operator: &str) -> Result<(SpillRun, SpillWriter)> {
         self.create_run_with_buffer_bytes(
             file_operator,
             NonZeroUsize::new(crate::spill::SPILL_IO_BUFFER_BYTES)
@@ -200,42 +215,113 @@ impl SpillBudgetTracker {
     }
 
     pub(crate) fn create_run_with_buffer_bytes(
-        &mut self,
+        &self,
         file_operator: &str,
         buffer_bytes: NonZeroUsize,
     ) -> Result<(SpillRun, SpillWriter)> {
-        if self.run_count >= self.max_runs {
-            return Err(HawDBError::Execution(format!(
-                "{} exceeded max_spill_runs {}",
-                self.operator, self.max_runs
-            )));
-        }
         let pool = self.pool.as_ref().map_err(|error| {
             HawDBError::Execution(format!("{} spill pool unavailable: {error}", self.operator))
         })?;
-        let run = SpillRun::create_with_buffer_bytes(pool.clone(), file_operator, buffer_bytes)?;
-        self.run_count = self.run_count.saturating_add(1);
-        Ok(run)
+        let mut current = self.run_count.load(Ordering::Acquire);
+        loop {
+            if current >= self.max_runs {
+                return Err(HawDBError::Execution(format!(
+                    "{} exceeded max_spill_runs {}",
+                    self.operator, self.max_runs
+                )));
+            }
+            match self.run_count.compare_exchange_weak(
+                current,
+                current + 1,
+                Ordering::AcqRel,
+                Ordering::Acquire,
+            ) {
+                Ok(_) => break,
+                Err(observed) => current = observed,
+            }
+        }
+        match SpillRun::create_with_buffer_bytes(pool.clone(), file_operator, buffer_bytes) {
+            Ok(run) => Ok(run),
+            Err(error) => {
+                // A run that never opened must not consume its slot.
+                self.run_count.fetch_sub(1, Ordering::AcqRel);
+                Err(error)
+            }
+        }
     }
 
-    pub(crate) fn reserve_write(&self, bytes: u64) -> Result<SpillWriteReservation> {
-        let next = self.used_bytes.saturating_add(bytes);
-        if next > self.max_bytes {
-            return Err(HawDBError::Execution(format!(
-                "{} exceeded max_spill_bytes {} (next total {})",
-                self.operator, self.max_bytes, next
-            )));
+    /// Reserves one spill write against both the operator byte budget and the
+    /// shared pool. The returned guard returns the operator bytes when the
+    /// write fails before committing, so concurrent writers cannot double
+    /// spend the budget.
+    pub(crate) fn reserve_write(
+        &self,
+        bytes: u64,
+    ) -> Result<(SpillWriteReservation, SpillBudgetReservation<'_>)> {
+        let mut current = self.used_bytes.load(Ordering::Acquire);
+        loop {
+            let next = current.saturating_add(bytes);
+            if next > self.max_bytes {
+                return Err(HawDBError::Execution(format!(
+                    "{} exceeded max_spill_bytes {} (next total {})",
+                    self.operator, self.max_bytes, next
+                )));
+            }
+            match self.used_bytes.compare_exchange_weak(
+                current,
+                next,
+                Ordering::AcqRel,
+                Ordering::Acquire,
+            ) {
+                Ok(_) => break,
+                Err(observed) => current = observed,
+            }
         }
-        self.pool
+        let pool = self
+            .pool
             .as_ref()
             .map_err(|error| {
                 HawDBError::Execution(format!("{} spill pool unavailable: {error}", self.operator))
             })?
-            .reserve_bytes(self.operator, bytes)
+            .reserve_bytes(self.operator, bytes);
+        match pool {
+            Ok(reservation) => Ok((
+                reservation,
+                SpillBudgetReservation {
+                    tracker: self,
+                    bytes,
+                    committed: false,
+                },
+            )),
+            Err(error) => {
+                self.used_bytes.fetch_sub(bytes, Ordering::AcqRel);
+                Err(error)
+            }
+        }
     }
+}
 
-    pub(crate) fn commit_write(&mut self, bytes: u64) {
-        self.used_bytes = self.used_bytes.saturating_add(bytes);
+/// Returns an operator's reserved spill bytes when a write fails before it
+/// commits; committing keeps the reservation for the rest of the query.
+pub(crate) struct SpillBudgetReservation<'a> {
+    tracker: &'a SpillBudgetTracker,
+    bytes: u64,
+    committed: bool,
+}
+
+impl SpillBudgetReservation<'_> {
+    pub(crate) fn commit(mut self) {
+        self.committed = true;
+    }
+}
+
+impl Drop for SpillBudgetReservation<'_> {
+    fn drop(&mut self) {
+        if !self.committed {
+            self.tracker
+                .used_bytes
+                .fetch_sub(self.bytes, Ordering::AcqRel);
+        }
     }
 }
 

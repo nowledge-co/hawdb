@@ -81,8 +81,8 @@ pub fn spill_backed_report(
         repartitions: 0,
         max_spill_bytes: spill_budget.max_bytes,
         max_spill_runs: spill_budget.max_runs,
-        spilled_bytes: spill_budget.used_bytes,
-        spill_run_count: spill_budget.run_count,
+        spilled_bytes: spill_budget.used_bytes(),
+        spill_run_count: spill_budget.run_count(),
         spilled_rows,
     }
 }
@@ -398,9 +398,8 @@ mod tests {
         let memory = ExecutionMemoryConfig::default();
         let mut tracker = OperatorMemoryTracker::new(memory.blocking_operator_bytes);
         tracker.try_charge(64).unwrap();
-        let mut spill = SpillBudgetTracker::new("SortExec", &memory);
-        spill.used_bytes = 128;
-        spill.run_count = 1;
+        let spill = SpillBudgetTracker::new("SortExec", &memory);
+        spill.seed_usage(128, 1);
 
         let report = spill_backed_report("SortExec", &tracker, 96, 10, &spill, 8);
 

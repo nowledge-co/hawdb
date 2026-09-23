@@ -321,8 +321,8 @@ impl<'a> AdmittedHashJoin<'a> {
             repartitions: self.work.repartitions,
             max_spill_bytes: self.spill.max_bytes,
             max_spill_runs: self.spill.max_runs,
-            spilled_bytes: self.spill.used_bytes,
-            spill_run_count: self.spill.run_count,
+            spilled_bytes: self.spill.used_bytes(),
+            spill_run_count: self.spill.run_count(),
             spilled_rows: self.work.spilled_rows,
         }
     }

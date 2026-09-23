@@ -125,7 +125,7 @@ impl SpillWriter {
         &mut self,
         ordinal: u64,
         binding: &Binding,
-        spill_budget: &mut SpillBudgetTracker,
+        spill_budget: &SpillBudgetTracker,
     ) -> Result<u64> {
         let encoded_len = binding_record_encoded_len(binding)?;
         let _staging_lease = spill_budget.reserve_staging(encoded_len)?;
@@ -142,7 +142,7 @@ impl SpillWriter {
             HawDBError::Execution("spill record exceeds the supported size".to_string())
         })?;
         let record_bytes = payload_len.saturating_add(8);
-        let reservation = spill_budget.reserve_write(record_bytes)?;
+        let (reservation, budget_reservation) = spill_budget.reserve_write(record_bytes)?;
         self.writer
             .write_all(&payload_len.to_le_bytes())
             .and_then(|_| self.writer.write_all(&payload))
@@ -150,20 +150,20 @@ impl SpillWriter {
                 HawDBError::Execution(format!("failed to write spill run: {error}"))
             })?;
         reservation.commit(&self.lease);
-        spill_budget.commit_write(record_bytes);
+        budget_reservation.commit();
         Ok(record_bytes)
     }
 
     pub(crate) fn write_record_payload(
         &mut self,
         payload: &[u8],
-        spill_budget: &mut SpillBudgetTracker,
+        spill_budget: &SpillBudgetTracker,
     ) -> Result<u64> {
         let payload_len = u64::try_from(payload.len()).map_err(|_| {
             HawDBError::Execution("spill record exceeds the supported size".to_string())
         })?;
         let record_bytes = payload_len.saturating_add(8);
-        let reservation = spill_budget.reserve_write(record_bytes)?;
+        let (reservation, budget_reservation) = spill_budget.reserve_write(record_bytes)?;
         self.writer
             .write_all(&payload_len.to_le_bytes())
             .and_then(|_| self.writer.write_all(payload))
@@ -171,7 +171,7 @@ impl SpillWriter {
                 HawDBError::Execution(format!("failed to write spill run: {error}"))
             })?;
         reservation.commit(&self.lease);
-        spill_budget.commit_write(record_bytes);
+        budget_reservation.commit();
         Ok(record_bytes)
     }
 
