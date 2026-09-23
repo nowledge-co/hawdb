@@ -15,7 +15,7 @@
 use super::expression::resolve_column_with_type;
 use super::{
     aggregate_group_base_memory_bytes, bind_bound, charge_aggregate_memory, map_payload_bytes,
-    push_relational_output, relational_input_plan, relational_locator_layout,
+    push_relational_output, relational_locator_layout,
     relational_physical_join_plan_locator_layout, resolve_column, stream_distinct_batches,
     typed_row_set_locator, visit_relational_rows, with_typed_locator_bound_row_mode,
     AggregateProjectionState, BTreeMap, BatchControl, BlockingExecutionContext, Catalog,
@@ -343,7 +343,7 @@ pub(super) fn execute_single_count_distinct<'a>(
     join_access_paths: Vec<RelationalAccessPathDescriptor>,
     join_planning: &RelationalJoinPlanningOutcome,
 ) -> Result<RelationalQueryOutput> {
-    let input_plan = relational_input_plan();
+    let input_plan = ();
     let catalog = Catalog::default();
     let observer = RelationalBlockingObserver::default();
     let task_context = pipeline.task_context;

@@ -44,7 +44,7 @@ use hawdb_optimizer::{
     select_relational_access_path, RelationalAccessPathDescriptor, RelationalAccessPathKind,
     RelationalJoinEnumerationConfig, RelationalJoinPlanningDirective,
 };
-use hawdb_plan::{PhysicalPlan, SortDirection, SortItem, SortKey};
+use hawdb_plan::{SortDirection, SortItem, SortKey};
 use hawdb_sql::{
     SelectProjection, SelectStatement, SqlColumnRef, SqlExpression, SqlFunctionArgument,
     SqlJoinKind, SqlNullOrder, SqlOrderDirection, SqlPredicate, SqlStatement, SqlValue,
@@ -151,8 +151,8 @@ use preparation::{prepare_relational_select, prepared_access_descriptors};
 
 mod projection;
 use projection::{
-    execute_blocking_projection, push_relational_output, relational_input_plan,
-    DistinctAggregateValueBatchSource, RelationalBlockingObserver, StreamingProjectionOutput,
+    execute_blocking_projection, push_relational_output, DistinctAggregateValueBatchSource,
+    RelationalBlockingObserver, StreamingProjectionOutput,
 };
 
 mod streaming_projection;

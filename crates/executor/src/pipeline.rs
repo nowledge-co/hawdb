@@ -35,10 +35,16 @@ pub type BindingBatch = Vec<Binding>;
 
 /// Recursively executes an input while honoring the requested row cap and
 /// propagating consumer stop/error without emitting subsequent batches.
-pub trait BindingBatchSource {
+///
+/// Generic over the plan-node type `P` so a caller that does not walk a
+/// `hawdb_plan::PhysicalPlan` tree (e.g. `hawdb-relational`, which drives its
+/// own row sources) can implement this against a zero-sized marker instead of
+/// fabricating a placeholder graph plan node. Graph call sites are unaffected
+/// by the default.
+pub trait BindingBatchSource<P = PhysicalPlan> {
     fn execute(
         &mut self,
-        input: &PhysicalPlan,
+        input: &P,
         execution_limit: ExecutionLimit,
         emit: &mut dyn FnMut(BindingBatch) -> Result<BatchControl>,
     ) -> Result<BatchControl>;

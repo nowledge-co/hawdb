@@ -66,9 +66,9 @@ struct DistinctOperator<'a> {
     input_rows: u64,
 }
 
-pub fn stream_distinct_batches(
-    input: &PhysicalPlan,
-    source: &mut dyn BindingBatchSource,
+pub fn stream_distinct_batches<P>(
+    input: &P,
+    source: &mut dyn BindingBatchSource<P>,
     context: BlockingExecutionContext<'_>,
     execution_limit: ExecutionLimit,
     emit: &mut dyn FnMut(BindingBatch) -> Result<BatchControl>,

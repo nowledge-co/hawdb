@@ -241,12 +241,12 @@ impl<'plan, 'runtime> SortOperator<'plan, 'runtime> {
 }
 
 #[allow(clippy::too_many_arguments)]
-pub fn stream_top_n_batches(
-    input: &PhysicalPlan,
+pub fn stream_top_n_batches<P>(
+    input: &P,
     items: &[SortItem],
     offset: usize,
     limit: usize,
-    source: &mut dyn BindingBatchSource,
+    source: &mut dyn BindingBatchSource<P>,
     context: BlockingExecutionContext<'_>,
     execution_limit: ExecutionLimit,
     emit: &mut dyn FnMut(BindingBatch) -> Result<BatchControl>,

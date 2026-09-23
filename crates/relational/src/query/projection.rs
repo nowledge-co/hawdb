@@ -19,7 +19,7 @@ use super::{
     typed_row_set_locator, visit_relational_rows, AccountedBindingBatch, BatchControl,
     BindingBatch, BindingBatchSource, BlockingExecutionContext, BlockingOperatorMemoryReport,
     BoundRow, Catalog, ExecutionLimit, ExecutionObserver, ExecutorBinding, ExternalTopN,
-    HawDBError, NonZeroUsize, PhysicalPlan, PlannedJoin, QueryMemoryLedger, QueryRows, RefCell,
+    HawDBError, NonZeroUsize, PlannedJoin, QueryMemoryLedger, QueryRows, RefCell,
     RelationalBaseAccess, RelationalIndexRuntime, RelationalOrderTarget,
     RelationalPhysicalJoinExecution, RelationalPipelineState, RelationalQueryLimits,
     RelationalRowRuntime, RelationalSortKey, RelationalSortRecord, RelationalState,
@@ -93,12 +93,12 @@ pub(super) struct DistinctAggregateValueBatchSource<
     pub(super) memory_ledger: &'pipeline QueryMemoryLedger,
 }
 
-impl<R: crate::index_runtime::RelationalIndexStoreReader> BindingBatchSource
+impl<R: crate::index_runtime::RelationalIndexStoreReader> BindingBatchSource<()>
     for DistinctAggregateValueBatchSource<'_, '_, R>
 {
     fn execute(
         &mut self,
-        _input: &PhysicalPlan,
+        _input: &(),
         _execution_limit: ExecutionLimit,
         emit: &mut dyn FnMut(BindingBatch) -> Result<BatchControl>,
     ) -> Result<BatchControl> {
@@ -146,12 +146,12 @@ impl<R: crate::index_runtime::RelationalIndexStoreReader> BindingBatchSource
     }
 }
 
-impl<R: crate::index_runtime::RelationalIndexStoreReader> BindingBatchSource
+impl<R: crate::index_runtime::RelationalIndexStoreReader> BindingBatchSource<()>
     for ProjectedBatchSource<'_, '_, R>
 {
     fn execute(
         &mut self,
-        _input: &PhysicalPlan,
+        _input: &(),
         _execution_limit: ExecutionLimit,
         emit: &mut dyn FnMut(BindingBatch) -> Result<BatchControl>,
     ) -> Result<BatchControl> {
@@ -195,8 +195,8 @@ impl<R: crate::index_runtime::RelationalIndexStoreReader> BindingBatchSource
 }
 
 pub(super) struct DistinctBatchSource<'a> {
-    pub(super) input: &'a mut dyn BindingBatchSource,
-    pub(super) input_plan: &'a PhysicalPlan,
+    pub(super) input: &'a mut dyn BindingBatchSource<()>,
+    pub(super) input_plan: &'a (),
     pub(super) catalog: &'a Catalog,
     pub(super) memory: &'a hawdb_executor::ExecutionMemoryConfig,
     pub(super) memory_ledger: &'a QueryMemoryLedger,
@@ -204,10 +204,10 @@ pub(super) struct DistinctBatchSource<'a> {
     pub(super) observer: &'a dyn ExecutionObserver,
 }
 
-impl BindingBatchSource for DistinctBatchSource<'_> {
+impl BindingBatchSource<()> for DistinctBatchSource<'_> {
     fn execute(
         &mut self,
-        _input: &PhysicalPlan,
+        _input: &(),
         execution_limit: ExecutionLimit,
         emit: &mut dyn FnMut(BindingBatch) -> Result<BatchControl>,
     ) -> Result<BatchControl> {
@@ -228,14 +228,14 @@ impl BindingBatchSource for DistinctBatchSource<'_> {
 }
 
 pub(super) struct ProjectedSortKeyBatchSource<'a> {
-    pub(super) input: &'a mut dyn BindingBatchSource,
+    pub(super) input: &'a mut dyn BindingBatchSource<()>,
     pub(super) order_columns: &'a [(String, hawdb_sql::SqlOrderItem)],
 }
 
-impl BindingBatchSource for ProjectedSortKeyBatchSource<'_> {
+impl BindingBatchSource<()> for ProjectedSortKeyBatchSource<'_> {
     fn execute(
         &mut self,
-        input_plan: &PhysicalPlan,
+        input_plan: &(),
         execution_limit: ExecutionLimit,
         emit: &mut dyn FnMut(BindingBatch) -> Result<BatchControl>,
     ) -> Result<BatchControl> {
@@ -293,7 +293,7 @@ pub(super) fn execute_blocking_projection<'a>(
         .transpose()?
         .unwrap_or(usize::MAX);
     let detection_limit = requested.min(limits.max_output_rows.saturating_add(1));
-    let input_plan = relational_input_plan();
+    let input_plan = ();
     let catalog = Catalog::default();
     let observer = RelationalBlockingObserver::default();
     let task_context = pipeline.task_context;
@@ -527,17 +527,10 @@ pub(super) fn consume_projected_batch(
     Ok(BatchControl::Continue)
 }
 
-pub(super) fn relational_input_plan() -> PhysicalPlan {
-    PhysicalPlan::SeqNodeScan {
-        variable: "__relational_input".to_string(),
-        label: String::new(),
-    }
-}
-
 #[allow(clippy::too_many_arguments)]
 pub(super) fn execute_relational_order(
-    input_plan: &PhysicalPlan,
-    source: &mut dyn BindingBatchSource,
+    input_plan: &(),
+    source: &mut dyn BindingBatchSource<()>,
     select: &SelectStatement,
     offset: usize,
     limit: usize,
