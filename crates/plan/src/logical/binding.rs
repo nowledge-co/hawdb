@@ -589,8 +589,8 @@ pub(super) fn bind_value(
 }
 
 pub(super) fn current_timestamp_value() -> Value {
-    let nanos = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
+    let nanos = hawdb_core::time::SystemTime::now()
+        .duration_since(hawdb_core::time::UNIX_EPOCH)
         .map(|duration| duration.as_nanos().min(i64::MAX as u128) as i64)
         .unwrap_or(0);
     Value::Int(nanos)

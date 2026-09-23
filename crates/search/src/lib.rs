@@ -2068,7 +2068,7 @@ impl SearchIndex {
         options: SearchRebuildOptions,
     ) -> Result<SearchRebuildSummary> {
         self.require_owned_mutation_or_unregistered()?;
-        let started = std::time::Instant::now();
+        let started = hawdb_core::time::Instant::now();
         let mut next_documents = BTreeMap::new();
         let mut scanned_nodes = 0;
 
@@ -2237,7 +2237,7 @@ impl SearchIndex {
         options: MetadataRepairOptions,
     ) -> Result<MetadataRepairSummary> {
         self.require_owned_mutation_or_unregistered()?;
-        let started = std::time::Instant::now();
+        let started = hawdb_core::time::Instant::now();
         let mut repairs = Vec::new();
         let mut scanned_nodes = 0;
         let mut missing_documents = 0;
@@ -2460,7 +2460,7 @@ impl SearchIndex {
         let Some(path) = &self.path else {
             return Ok(SearchCheckpointReport::in_memory(self.documents.len()));
         };
-        let started = std::time::Instant::now();
+        let started = hawdb_core::time::Instant::now();
         let result = (|| {
             let _publish_lease = if registered {
                 None
@@ -7733,7 +7733,7 @@ fn checksum_bytes(bytes: &[u8]) -> u64 {
     checksum_u64(bytes)
 }
 
-fn elapsed_micros(started: std::time::Instant) -> u64 {
+fn elapsed_micros(started: hawdb_core::time::Instant) -> u64 {
     started.elapsed().as_micros().min(u64::MAX as u128) as u64
 }
 
