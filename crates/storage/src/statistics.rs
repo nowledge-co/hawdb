@@ -468,6 +468,11 @@ pub struct BoundedPathStatistics {
     pub counts: BTreeMap<(LabelId, RelTypeId, LabelId, usize), u64>,
     pub source_distinct_counts: BTreeMap<(LabelId, RelTypeId, LabelId, usize), u64>,
     pub target_distinct_counts: BTreeMap<(LabelId, RelTypeId, LabelId, usize), u64>,
+    /// True when the global visit budget stopped enumeration early. Truncated
+    /// runs publish no path statistics: partial prefixes would be mistaken for
+    /// exact counts by consumers, so the maps are left empty and callers fall
+    /// back to heuristic estimates.
+    pub truncated: bool,
 }
 
 pub fn compute_bounded_path_statistics(
@@ -485,9 +490,12 @@ pub fn compute_bounded_path_statistics(
         .keys()
         .map(|(_, rel_type)| *rel_type)
         .collect::<BTreeSet<_>>();
-    for source in nodes.values() {
+    'sources: for source in nodes.values() {
         for source_label in &source.labels {
             for rel_type in &rel_types {
+                if accumulator.exhausted {
+                    break 'sources;
+                }
                 context.collect(
                     source.id,
                     source.id,
@@ -498,6 +506,12 @@ pub fn compute_bounded_path_statistics(
                 );
             }
         }
+    }
+    if accumulator.exhausted {
+        return BoundedPathStatistics {
+            truncated: true,
+            ..BoundedPathStatistics::default()
+        };
     }
     BoundedPathStatistics {
         counts: accumulator.counts,
@@ -511,6 +525,7 @@ pub fn compute_bounded_path_statistics(
             .into_iter()
             .map(|(path, targets)| (path, targets.len() as u64))
             .collect(),
+        truncated: false,
     }
 }
 
@@ -526,6 +541,9 @@ struct BoundedPathStatAccumulator {
     sources: BTreeMap<(LabelId, RelTypeId, LabelId, usize), BTreeSet<NodeId>>,
     targets: BTreeMap<(LabelId, RelTypeId, LabelId, usize), BTreeSet<NodeId>>,
     visits: usize,
+    /// Set once the global visit budget is spent; stops every remaining
+    /// enumeration, including the outer source x label x rel_type loops.
+    exhausted: bool,
 }
 
 impl BoundedPathStatContext<'_> {
@@ -538,7 +556,7 @@ impl BoundedPathStatContext<'_> {
         hop: usize,
         accumulator: &mut BoundedPathStatAccumulator,
     ) {
-        if hop > self.max_hops || accumulator.visits >= MAX_BOUNDED_PATH_STAT_VISITS {
+        if hop > self.max_hops || accumulator.exhausted {
             return;
         }
         let Some(targets) = self.outgoing_by_source_type.get(&(current, rel_type)) else {
@@ -546,6 +564,7 @@ impl BoundedPathStatContext<'_> {
         };
         for target_id in targets {
             if accumulator.visits >= MAX_BOUNDED_PATH_STAT_VISITS {
+                accumulator.exhausted = true;
                 return;
             }
             accumulator.visits += 1;
@@ -590,41 +609,63 @@ mod tests {
         }
     }
 
-    /// A hub graph whose uncapped 3-hop enumeration would exceed the visit
-    /// budget must truncate instead of doing O(degree^hops) work.
+    /// A complete directed graph of 30 vertices needs 30+900+27_000 = 27,930
+    /// visits per source — under the budget — but 30 * 27,930 = 837,900 across
+    /// all sources. Only a *global* budget truncates this; a per-source cap
+    /// would not. Truncated runs publish no partial path statistics.
     #[test]
     fn bounded_path_statistics_respect_global_visit_budget() {
-        const DEGREE: u64 = 50; // hub->50 mids->50 leaves each => ~127k visits uncapped
+        const SIZE: u64 = 30;
         let rel_type = RelTypeId(0);
 
         let mut nodes = CowSegmentedMap::default();
         let mut outgoing: BTreeMap<(NodeId, RelTypeId), Vec<NodeId>> = BTreeMap::new();
-        let hub = NodeId(0);
-        nodes.insert(hub, node(0));
-        let mut hub_targets = Vec::new();
-        for m in 1..=DEGREE {
-            let mid = NodeId(m);
-            nodes.insert(mid, node(m));
-            hub_targets.push(mid);
-            let leaf_targets: Vec<NodeId> = (0..DEGREE)
-                .map(|l| {
-                    let leaf = NodeId(1_000_000 + m * DEGREE + l);
-                    nodes.insert(leaf, node(leaf.0));
-                    leaf
-                })
-                .collect();
-            outgoing.insert((mid, rel_type), leaf_targets);
+        let all: Vec<NodeId> = (0..SIZE).map(NodeId).collect();
+        for id in 0..SIZE {
+            nodes.insert(NodeId(id), node(id));
+            outgoing.insert((NodeId(id), rel_type), all.clone());
         }
-        outgoing.insert((hub, rel_type), hub_targets);
 
         let stats = compute_bounded_path_statistics(
             &nodes,
             &outgoing,
             MAX_BOUNDED_PATH_STAT_HOPS,
         );
-        // Single-label targets => one count entry per traversed edge.
-        let total_visits: u64 = stats.counts.values().sum();
-        assert!(total_visits <= MAX_BOUNDED_PATH_STAT_VISITS as u64);
-        assert!(total_visits > 0);
+        assert!(stats.truncated);
+        assert!(stats.counts.is_empty());
+        assert!(stats.source_distinct_counts.is_empty());
+        assert!(stats.target_distinct_counts.is_empty());
+    }
+
+    /// Below the budget the pass must still publish exact counts and distinct
+    /// source/target cardinalities. Chain A -> B -> C -> D gives per-hop
+    /// counts 3, 2, 1 with three sources and three targets at hop 1.
+    #[test]
+    fn bounded_path_statistics_below_budget_stay_exact() {
+        let rel_type = RelTypeId(0);
+        let label = LabelId(0);
+
+        let mut nodes = CowSegmentedMap::default();
+        let mut outgoing: BTreeMap<(NodeId, RelTypeId), Vec<NodeId>> = BTreeMap::new();
+        for id in 0..4u64 {
+            nodes.insert(NodeId(id), node(id));
+        }
+        for (from, to) in [(0u64, 1u64), (1, 2), (2, 3)] {
+            outgoing.insert((NodeId(from), rel_type), vec![NodeId(to)]);
+        }
+
+        let stats = compute_bounded_path_statistics(
+            &nodes,
+            &outgoing,
+            MAX_BOUNDED_PATH_STAT_HOPS,
+        );
+        assert!(!stats.truncated);
+        assert_eq!(stats.counts[&(label, rel_type, label, 1)], 3);
+        assert_eq!(stats.counts[&(label, rel_type, label, 2)], 2);
+        assert_eq!(stats.counts[&(label, rel_type, label, 3)], 1);
+        assert_eq!(stats.source_distinct_counts[&(label, rel_type, label, 1)], 3);
+        assert_eq!(stats.target_distinct_counts[&(label, rel_type, label, 1)], 3);
+        assert_eq!(stats.source_distinct_counts[&(label, rel_type, label, 3)], 1);
+        assert_eq!(stats.target_distinct_counts[&(label, rel_type, label, 3)], 1);
     }
 }
