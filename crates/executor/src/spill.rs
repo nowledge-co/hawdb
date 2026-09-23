@@ -873,7 +873,7 @@ mod tests {
             ),
         );
         tracker.try_charge(100).unwrap();
-        let mut spill_budget = SpillBudgetTracker::with_ledger("Test", &memory, &ledger);
+        let spill_budget = SpillBudgetTracker::with_ledger("Test", &memory, &ledger);
         let (run, mut writer) = spill_budget.create_run("query-ledger").unwrap();
         let binding = Binding {
             values: BTreeMap::from([("payload".to_string(), Value::String("x".repeat(64)))]),
@@ -881,7 +881,7 @@ mod tests {
             relationships: BTreeMap::new(),
         };
 
-        let error = writer.write(0, &binding, &mut spill_budget).unwrap_err();
+        let error = writer.write(0, &binding, &spill_budget).unwrap_err();
 
         assert!(
             error.to_string().contains("query_memory_bytes 200"),
@@ -901,14 +901,14 @@ mod tests {
         memory.query_memory_bytes = NonZeroUsize::new(300).unwrap();
         memory.blocking_operator_bytes = NonZeroUsize::new(300).unwrap();
         let ledger = QueryMemoryLedger::new(memory.query_memory_bytes);
-        let mut spill_budget = SpillBudgetTracker::with_ledger("Test", &memory, &ledger);
+        let spill_budget = SpillBudgetTracker::with_ledger("Test", &memory, &ledger);
         let binding = Binding {
             values: BTreeMap::from([("payload".to_string(), Value::String("x".repeat(64)))]),
             nodes: BTreeMap::new(),
             relationships: BTreeMap::new(),
         };
         let (run, mut writer) = spill_budget.create_run("decode-query-ledger").unwrap();
-        writer.write(0, &binding, &mut spill_budget).unwrap();
+        writer.write(0, &binding, &spill_budget).unwrap();
         writer.finish().unwrap();
 
         let mut retained = OperatorMemoryTracker::with_account(
@@ -1010,9 +1010,9 @@ mod tests {
             )]),
         };
         let memory = test_memory("codec");
-        let mut spill_budget = SpillBudgetTracker::new("CodecTest", &memory);
+        let spill_budget = SpillBudgetTracker::new("CodecTest", &memory);
         let (run, mut writer) = spill_budget.create_run("codec-test").unwrap();
-        writer.write(42, &binding, &mut spill_budget).unwrap();
+        writer.write(42, &binding, &spill_budget).unwrap();
         writer.finish().unwrap();
         let mut reader = run.reader().unwrap();
         assert_eq!(
@@ -1074,20 +1074,20 @@ mod tests {
     fn shared_pool_rejects_concurrent_bytes_above_global_budget() {
         let mut memory = test_memory("global-bytes");
         memory.max_total_spill_bytes = NonZeroU64::new(80).unwrap();
-        let mut first_budget = SpillBudgetTracker::new("First", &memory);
+        let first_budget = SpillBudgetTracker::new("First", &memory);
         let (first_run, mut first_writer) = first_budget.create_run("first").unwrap();
         first_writer
-            .write(0, &empty_binding(), &mut first_budget)
+            .write(0, &empty_binding(), &first_budget)
             .unwrap();
         first_writer.finish().unwrap();
 
-        let mut second_budget = SpillBudgetTracker::new("Second", &memory);
+        let second_budget = SpillBudgetTracker::new("Second", &memory);
         let (second_run, mut second_writer) = second_budget.create_run("second").unwrap();
         second_writer
-            .write(0, &empty_binding(), &mut second_budget)
+            .write(0, &empty_binding(), &second_budget)
             .unwrap();
         let error = second_writer
-            .write(1, &empty_binding(), &mut second_budget)
+            .write(1, &empty_binding(), &second_budget)
             .unwrap_err();
         assert!(error
             .to_string()
@@ -1110,11 +1110,11 @@ mod tests {
     fn shared_pool_releases_run_quota_when_run_is_removed() {
         let mut memory = test_memory("global-runs");
         memory.max_total_spill_runs = NonZeroUsize::new(1).unwrap();
-        let mut first_budget = SpillBudgetTracker::new("First", &memory);
+        let first_budget = SpillBudgetTracker::new("First", &memory);
         let (first_run, first_writer) = first_budget.create_run("first").unwrap();
         first_writer.finish().unwrap();
 
-        let mut second_budget = SpillBudgetTracker::new("Second", &memory);
+        let second_budget = SpillBudgetTracker::new("Second", &memory);
         let error = match second_budget.create_run("second") {
             Ok(_) => panic!("shared run budget should reject a second live run"),
             Err(error) => error,
@@ -1128,13 +1128,36 @@ mod tests {
     }
 
     #[test]
+    fn reserve_write_rolls_back_operator_bytes_when_pool_is_unavailable() {
+        let memory = test_memory("pool-unavailable");
+        // A regular file occupies the spill directory path, so SpillPool::open's
+        // create_dir_all fails during construction and the tracker's `pool`
+        // stays `Err` for its whole lifetime.
+        std::fs::write(&memory.spill_directory, b"not a directory").unwrap();
+        let tracker = SpillBudgetTracker::new("PoolUnavailable", &memory);
+
+        let error = match tracker.reserve_write(1024) {
+            Ok(_) => panic!("reserve_write should fail when the spill pool is unavailable"),
+            Err(error) => error,
+        };
+        assert!(error.to_string().contains("spill pool unavailable"));
+        assert_eq!(
+            tracker.used_bytes(),
+            0,
+            "a reservation that fails because the pool is unavailable must not leak operator bytes"
+        );
+
+        std::fs::remove_file(&memory.spill_directory).unwrap();
+    }
+
+    #[test]
     fn shared_pool_preserves_configured_free_space() {
         let mut memory = test_memory("free-space");
         memory.min_spill_free_bytes = NonZeroU64::new(u64::MAX).unwrap();
-        let mut spill_budget = SpillBudgetTracker::new("FreeSpace", &memory);
+        let spill_budget = SpillBudgetTracker::new("FreeSpace", &memory);
         let (run, mut writer) = spill_budget.create_run("free-space").unwrap();
         let error = writer
-            .write(0, &empty_binding(), &mut spill_budget)
+            .write(0, &empty_binding(), &spill_budget)
             .unwrap_err();
         assert!(error.to_string().contains("min_spill_free_bytes"));
         drop(writer);

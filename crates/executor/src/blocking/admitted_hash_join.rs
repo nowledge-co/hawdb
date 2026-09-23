@@ -655,7 +655,7 @@ impl JoinWriter {
         state: &mut AdmittedHashJoin<'_>,
     ) -> Result<()> {
         runtime_checkpoint(state.task_context)?;
-        self.writer.write(hash, binding, &mut state.spill)?;
+        self.writer.write(hash, binding, &state.spill)?;
         self.run.hash_or |= hash;
         self.run.hash_and &= hash;
         self.run.rows = self.run.rows.saturating_add(1);

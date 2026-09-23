@@ -277,14 +277,17 @@ impl SpillBudgetTracker {
                 Err(observed) => current = observed,
             }
         }
-        let pool = self
-            .pool
-            .as_ref()
-            .map_err(|error| {
-                HawDBError::Execution(format!("{} spill pool unavailable: {error}", self.operator))
-            })?
-            .reserve_bytes(self.operator, bytes);
-        match pool {
+        let pool = match self.pool.as_ref() {
+            Ok(pool) => pool,
+            Err(error) => {
+                self.used_bytes.fetch_sub(bytes, Ordering::AcqRel);
+                return Err(HawDBError::Execution(format!(
+                    "{} spill pool unavailable: {error}",
+                    self.operator
+                )));
+            }
+        };
+        match pool.reserve_bytes(self.operator, bytes) {
             Ok(reservation) => Ok((
                 reservation,
                 SpillBudgetReservation {
@@ -303,6 +306,7 @@ impl SpillBudgetTracker {
 
 /// Returns an operator's reserved spill bytes when a write fails before it
 /// commits; committing keeps the reservation for the rest of the query.
+#[must_use]
 pub(crate) struct SpillBudgetReservation<'a> {
     tracker: &'a SpillBudgetTracker,
     bytes: u64,

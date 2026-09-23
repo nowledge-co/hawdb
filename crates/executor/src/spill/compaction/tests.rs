@@ -166,7 +166,7 @@ fn check_case(values: Vec<Vec<u64>>, final_count: usize, exit: Exit) {
                     writer.write(
                         value,
                         &Binding::scalar("value", Value::Int(value as i64)),
-                        &mut budget,
+                        &budget,
                     )?;
                     match exit {
                         Exit::Error(at) if index == at => {
