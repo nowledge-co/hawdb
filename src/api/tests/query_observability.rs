@@ -2103,8 +2103,8 @@ fn plan_fingerprint_excludes_bound_values_but_instance_fingerprint_retains_them(
 }
 
 /// Wiring check: the configured commit lag must reach the inline query path,
-/// not just `ensure_statistics` unit calls. With lag=4, four commits keep the
-/// statistics cache hot; the fifth planning call sees lag=4 and recomputes.
+/// not just `ensure_statistics` unit calls. With lag=4, up to four commits
+/// of staleness are tolerated; the window is exceeded once lag reaches 5.
 #[test]
 fn configured_commit_lag_defers_statistics_refresh_on_query_path() {
     let mut db = Database::new_with_config(DatabaseConfig {
@@ -2115,16 +2115,29 @@ fn configured_commit_lag_defers_statistics_refresh_on_query_path() {
     db.explain_query("MATCH (m:Memory) RETURN m.id AS id")
         .unwrap();
 
-    // Five commits carry the epoch past the window; each write's own planning
-    // sees a pre-commit epoch, so none of them recompute statistics.
+    // Five commits leave lag == 4, still inside the tolerated window; each
+    // write's own planning sees a pre-commit epoch, so none recompute.
     for id in 0..5 {
         db.query(&format!("CREATE (:Memory {{id: {id}}})"))
             .unwrap();
     }
-    // A fresh query shape misses the plan cache and reaches optimizer_catalog:
-    // the lag boundary is crossed here, so this planning call recomputes.
-    let boundary = db
+    let within_boundary = db
         .explain_query("MATCH (m:Memory) RETURN m.id AS id, m.title AS title")
+        .unwrap();
+    assert!(
+        within_boundary
+            .trace
+            .decisions
+            .iter()
+            .any(|decision| decision.contains("optimizer statistics cache hit")),
+        "{:?}",
+        within_boundary.trace.decisions
+    );
+
+    // One more commit pushes lag to 5 > 4: the next fresh plan recomputes.
+    db.query("CREATE (:Memory {id: 5})").unwrap();
+    let boundary = db
+        .explain_query("MATCH (m:Memory) RETURN m.title AS title, m.id AS id")
         .unwrap();
     assert!(
         boundary
@@ -2138,12 +2151,12 @@ fn configured_commit_lag_defers_statistics_refresh_on_query_path() {
 
     // Two more commits sit below the new refresh point: the next fresh plan
     // hits the cached statistics.
-    for id in 5..7 {
+    for id in 6..8 {
         db.query(&format!("CREATE (:Memory {{id: {id}}})"))
             .unwrap();
     }
     let within = db
-        .explain_query("MATCH (m:Memory) RETURN m.title AS title, m.id AS id")
+        .explain_query("MATCH (m:Memory) RETURN m.title AS title")
         .unwrap();
     assert!(
         within
@@ -2157,5 +2170,5 @@ fn configured_commit_lag_defers_statistics_refresh_on_query_path() {
 
     // Stale statistics only affect plan choice: results stay correct.
     let output = db.query("MATCH (m:Memory) RETURN m.id AS id").unwrap();
-    assert_eq!(output.rows.len(), 7);
+    assert_eq!(output.rows.len(), 8);
 }
