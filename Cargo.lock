@@ -633,7 +633,6 @@ dependencies = [
  "hawdb-expression",
  "hawdb-integrity",
  "hawdb-optimizer",
- "hawdb-plan",
  "hawdb-sql",
  "hawdb-storage",
 ]

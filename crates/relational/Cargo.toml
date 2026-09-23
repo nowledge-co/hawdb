@@ -15,5 +15,4 @@ hawdb-sql = { path = "../sql", version = "0.3.0" }
 hawdb-expression = { path = "../expression", version = "0.3.0" }
 hawdb-integrity = { path = "../integrity", version = "0.3.0" }
 hawdb-optimizer = { path = "../optimizer", version = "0.3.0" }
-hawdb-plan = { path = "../plan", version = "0.3.0" }
 hawdb-storage = { path = "../storage", version = "0.3.0" }

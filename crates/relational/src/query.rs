@@ -39,12 +39,11 @@ use hawdb_executor::{
     QueryMemoryClass, QueryMemoryLease, QueryMemoryLedger, QueryRows, QueryRowsBuilder,
     RelationalRowLocator, SlotDescriptor, SlotId, SlotType,
 };
-use hawdb_expression::BindingId;
+use hawdb_expression::{BindingId, SortDirection, SortItem, SortKey};
 use hawdb_optimizer::{
     select_relational_access_path, RelationalAccessPathDescriptor, RelationalAccessPathKind,
     RelationalJoinEnumerationConfig, RelationalJoinPlanningDirective,
 };
-use hawdb_plan::{SortDirection, SortItem, SortKey};
 use hawdb_sql::{
     SelectProjection, SelectStatement, SqlColumnRef, SqlExpression, SqlFunctionArgument,
     SqlJoinKind, SqlNullOrder, SqlOrderDirection, SqlPredicate, SqlStatement, SqlValue,

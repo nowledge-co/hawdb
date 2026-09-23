@@ -357,6 +357,26 @@ impl ProjectionExpression {
     }
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SortItem {
+    pub key: SortKey,
+    pub direction: SortDirection,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum SortKey {
+    Property { variable: String, property: String },
+    Id { variable: String },
+    Expression(ProjectionExpression),
+    Column(String),
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SortDirection {
+    Asc,
+    Desc,
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

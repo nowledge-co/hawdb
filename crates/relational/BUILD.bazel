@@ -37,7 +37,6 @@ rust_library(
         "//crates/expression:hawdb_expression",
         "//crates/integrity:hawdb_integrity",
         "//crates/optimizer:hawdb_optimizer",
-        "//crates/plan:hawdb_plan",
         "//crates/storage:hawdb_storage",
     ],
     proc_macro_deps = all_crate_deps(proc_macro = True),
