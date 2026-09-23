@@ -59,6 +59,13 @@
 - Stacking causes real problems in this repo's merge flow: a PR merged into a non-`main` base only lands in that feature branch, not in `main`, even though it shows as `MERGED`. If the upstream PR later gets retargeted straight to `main` and merges there, the downstream branch is silently orphaned — it no longer has any path back to `main` until someone notices and retargets it by hand.
 - If work is naturally sequential, land each piece as its own PR against `main` before starting the next one, or keep it as commits within a single PR instead of a chain of branches.
 
+## Required Pre-commit Lint Checks
+
+- Before every commit, run `cargo fmt --all -- --check` and `cargo clippy --locked --workspace --all-targets --all-features -- -D warnings` with the repository's pinned Rust toolchain. Both checks must pass on the final changes before committing.
+- Fix all formatting and Clippy diagnostics found by these checks, including problems in existing code outside the current diff. Do not dismiss a failure as pre-existing, disable a lint, add suppression attributes, or weaken the check to obtain a pass.
+- When changing target-specific code, also run strict Clippy for the affected supported target and feature configuration. For the minimal browser WASM runtime, use the compiler and archiver setup in `docs/WASM.md` and run `cargo clippy --locked -p hawdb --no-default-features --target wasm32-unknown-unknown --lib --test in_memory_portable -- -D warnings`.
+- After fixes, rerun the affected checks and appropriate regression tests. Record the commands and results in the PR. If an environment or toolchain problem prevents a required check from passing, report the blocker and leave the changes uncommitted until it is resolved; passing CI or unrelated tests does not replace these checks.
+
 ## Local Fuzz Verification
 
 - Keep fuzz targets available through Bazel, but do not add them to default or dedicated CI jobs.
