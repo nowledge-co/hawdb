@@ -1162,11 +1162,41 @@ impl GraphStore {
         for op in ops {
             apply_wal_op_to_snapshot(catalog, &mut nodes, &mut relationships, op);
         }
-        validate_unique_constraints(catalog, &nodes)?;
-        validate_relationship_unique_constraints(catalog, &relationships)?;
-        validate_node_property_exists_constraints(catalog, &nodes)?;
-        validate_relationship_property_exists_constraints(catalog, &relationships)?;
-        validate_property_schemas(catalog, &nodes, &relationships)
+        match wal_ops_touched_records(ops) {
+            // Pure graph-data commits validate only the records they touched:
+            // pre-existing records were already valid and unchanged.
+            Some(touched) => {
+                validate_unique_constraints_for_records(catalog, &nodes, &touched)?;
+                validate_relationship_unique_constraints_for_records(
+                    catalog,
+                    &relationships,
+                    &touched,
+                )?;
+                validate_node_property_exists_constraints_for_records(
+                    catalog, &nodes, &touched,
+                )?;
+                validate_relationship_property_exists_constraints_for_records(
+                    catalog,
+                    &relationships,
+                    &touched,
+                )?;
+                validate_property_schemas_for_records(
+                    catalog,
+                    &nodes,
+                    &relationships,
+                    &touched,
+                )
+            }
+            // Schema/DDL or unrecognized ops require full validation: new
+            // constraints and property types apply to pre-existing records.
+            None => {
+                validate_unique_constraints(catalog, &nodes)?;
+                validate_relationship_unique_constraints(catalog, &relationships)?;
+                validate_node_property_exists_constraints(catalog, &nodes)?;
+                validate_relationship_property_exists_constraints(catalog, &relationships)?;
+                validate_property_schemas(catalog, &nodes, &relationships)
+            }
+        }
     }
 
     pub(super) fn validate_unique_constraint(

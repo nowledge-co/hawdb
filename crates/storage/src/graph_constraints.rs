@@ -17,12 +17,60 @@
 //! These are internal validation kernels. Root storage retains transaction
 //! orchestration, concrete out-of-core scans, and the WAL/publication boundary.
 
-use crate::{CowSegmentedMap, NodeId, NodeRecord, RelId, RelRecord};
+use crate::{CowSegmentedMap, NodeId, NodeRecord, RelId, RelRecord, wal::WalOp};
 use hawdb_core::{
     Catalog, ConstraintSubject, HawDBError, LabelId, PropertyType, RelTypeId, Result,
     SchemaObjectState, TableKind, Value,
 };
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
+
+/// Graph records a commit's ops can affect. Delta validation is sound because
+/// pre-existing records were already valid: only touched records can carry a
+/// newly introduced violation.
+#[derive(Debug, Default)]
+pub struct TouchedRecords {
+    pub nodes: BTreeSet<NodeId>,
+    pub relationships: BTreeSet<RelId>,
+}
+
+/// Collects touched records for delta validation. Returns `None` when any op
+/// is not pure graph data — schema/DDL changes (new constraints, property
+/// types) apply to pre-existing records and therefore require full
+/// validation.
+pub fn wal_ops_touched_records(ops: &[WalOp]) -> Option<TouchedRecords> {
+    let mut touched = TouchedRecords::default();
+    for op in ops {
+        collect_touched_records(op, &mut touched)?;
+    }
+    Some(touched)
+}
+
+fn collect_touched_records(op: &WalOp, touched: &mut TouchedRecords) -> Option<()> {
+    match op {
+        WalOp::CreateNode { id, .. }
+        | WalOp::SetNodeProperty { id, .. }
+        | WalOp::DeleteNode { id } => {
+            touched.nodes.insert(*id);
+        }
+        WalOp::CreateRelationship { id, .. }
+        | WalOp::SetRelationshipProperty { id, .. }
+        | WalOp::DeleteRelationship { id } => {
+            touched.relationships.insert(*id);
+        }
+        WalOp::Batch(ops) => {
+            for op in ops {
+                collect_touched_records(op, touched)?;
+            }
+        }
+        WalOp::ProjectGraph { .. }
+        | WalOp::MarkInitialImportSource { .. }
+        | WalOp::Relational { .. }
+        | WalOp::RelationalSnapshot { .. }
+        | WalOp::Append { .. } => {}
+        _ => return None,
+    }
+    Some(())
+}
 
 pub fn validate_property_schemas(
     catalog: &Catalog,
@@ -391,6 +439,215 @@ pub fn validate_unique_relationship_property(
                 "relationship unique constraint violation on :{rel_type}({property}) for relationships {} and {}",
                 previous.0, relationship.id.0
             )));
+        }
+    }
+    Ok(())
+}
+
+/// Delta variant of `validate_property_schemas`: checks only the post-images
+/// of touched records against their tables' public property descriptors.
+pub fn validate_property_schemas_for_records(
+    catalog: &Catalog,
+    nodes: &CowSegmentedMap<NodeId, NodeRecord>,
+    relationships: &CowSegmentedMap<RelId, RelRecord>,
+    touched: &TouchedRecords,
+) -> Result<()> {
+    for property in catalog.property_descriptors() {
+        if property.state != SchemaObjectState::Public {
+            continue;
+        }
+        let Some(table) = catalog.table_descriptor(property.table_id) else {
+            continue;
+        };
+        if table.state != SchemaObjectState::Public {
+            continue;
+        }
+        match table.kind {
+            TableKind::Node => {
+                let Some(label_id) = catalog.label_id(&table.name) else {
+                    continue;
+                };
+                for node_id in &touched.nodes {
+                    let Some(node) = nodes.get(node_id) else {
+                        continue;
+                    };
+                    if node.labels.contains(&label_id) {
+                        validate_property_schema_value(
+                            &table.name,
+                            &property.name,
+                            property.value_type,
+                            property.nullable,
+                            node.properties.get(&property.name),
+                            &format!("node {}", node.id.0),
+                        )?;
+                    }
+                }
+            }
+            TableKind::Relationship => {
+                let Some(rel_type_id) = catalog.rel_type_id(&table.name) else {
+                    continue;
+                };
+                for rel_id in &touched.relationships {
+                    let Some(relationship) = relationships.get(rel_id) else {
+                        continue;
+                    };
+                    if relationship.rel_type == rel_type_id {
+                        validate_property_schema_value(
+                            &table.name,
+                            &property.name,
+                            property.value_type,
+                            property.nullable,
+                            relationship.properties.get(&property.name),
+                            &format!("relationship {}", relationship.id.0),
+                        )?;
+                    }
+                }
+            }
+        }
+    }
+    Ok(())
+}
+
+/// Delta unique validation: a violation can only involve a touched record's
+/// constrained value colliding with another record carrying the same value.
+pub fn validate_unique_constraints_for_records(
+    catalog: &Catalog,
+    nodes: &CowSegmentedMap<NodeId, NodeRecord>,
+    touched: &TouchedRecords,
+) -> Result<()> {
+    for constraint in catalog.unique_constraints() {
+        let ConstraintSubject::Node(label_id) = constraint.subject else {
+            continue;
+        };
+        for node_id in &touched.nodes {
+            let Some(node) = nodes.get(node_id) else {
+                continue;
+            };
+            if !node.labels.contains(&label_id) {
+                continue;
+            }
+            let Some(value) = node.properties.get(&constraint.property) else {
+                continue;
+            };
+            if value == &Value::Null {
+                continue;
+            }
+            for other in nodes.values() {
+                if other.id == *node_id || !other.labels.contains(&label_id) {
+                    continue;
+                }
+                if other.properties.get(&constraint.property) == Some(value) {
+                    let label = catalog.label_name(label_id).unwrap_or("<unknown>");
+                    return Err(HawDBError::Storage(format!(
+                        "unique constraint violation on :{label}({}) for nodes {} and {}",
+                        constraint.property, other.id.0, node.id.0
+                    )));
+                }
+            }
+        }
+    }
+    Ok(())
+}
+
+/// Delta variant of `validate_relationship_unique_constraints`.
+pub fn validate_relationship_unique_constraints_for_records(
+    catalog: &Catalog,
+    relationships: &CowSegmentedMap<RelId, RelRecord>,
+    touched: &TouchedRecords,
+) -> Result<()> {
+    for constraint in catalog.relationship_unique_constraints() {
+        let ConstraintSubject::Relationship(rel_type_id) = constraint.subject else {
+            continue;
+        };
+        for rel_id in &touched.relationships {
+            let Some(relationship) = relationships.get(rel_id) else {
+                continue;
+            };
+            if relationship.rel_type != rel_type_id {
+                continue;
+            }
+            let Some(value) = relationship.properties.get(&constraint.property) else {
+                continue;
+            };
+            if value == &Value::Null {
+                continue;
+            }
+            for other in relationships.values() {
+                if other.id == *rel_id || other.rel_type != rel_type_id {
+                    continue;
+                }
+                if other.properties.get(&constraint.property) == Some(value) {
+                    let rel_type = catalog.rel_type_name(rel_type_id).unwrap_or("<unknown>");
+                    return Err(HawDBError::Storage(format!(
+                        "relationship unique constraint violation on :{rel_type}({}) for relationships {} and {}",
+                        constraint.property, other.id.0, relationship.id.0
+                    )));
+                }
+            }
+        }
+    }
+    Ok(())
+}
+
+/// Delta variant of `validate_node_property_exists_constraints`.
+pub fn validate_node_property_exists_constraints_for_records(
+    catalog: &Catalog,
+    nodes: &CowSegmentedMap<NodeId, NodeRecord>,
+    touched: &TouchedRecords,
+) -> Result<()> {
+    for constraint in catalog.node_property_exists_constraints() {
+        let ConstraintSubject::Node(label_id) = constraint.subject else {
+            continue;
+        };
+        for node_id in &touched.nodes {
+            let Some(node) = nodes.get(node_id) else {
+                continue;
+            };
+            if !node.labels.contains(&label_id) {
+                continue;
+            }
+            match node.properties.get(&constraint.property) {
+                Some(value) if value != &Value::Null => {}
+                _ => {
+                    let label = catalog.label_name(label_id).unwrap_or("<unknown>");
+                    return Err(HawDBError::Storage(format!(
+                        "node property exists constraint violation on :{label}({}) for node {}",
+                        constraint.property, node.id.0
+                    )));
+                }
+            }
+        }
+    }
+    Ok(())
+}
+
+/// Delta variant of `validate_relationship_property_exists_constraints`.
+pub fn validate_relationship_property_exists_constraints_for_records(
+    catalog: &Catalog,
+    relationships: &CowSegmentedMap<RelId, RelRecord>,
+    touched: &TouchedRecords,
+) -> Result<()> {
+    for constraint in catalog.relationship_property_exists_constraints() {
+        let ConstraintSubject::Relationship(rel_type_id) = constraint.subject else {
+            continue;
+        };
+        for rel_id in &touched.relationships {
+            let Some(relationship) = relationships.get(rel_id) else {
+                continue;
+            };
+            if relationship.rel_type != rel_type_id {
+                continue;
+            }
+            match relationship.properties.get(&constraint.property) {
+                Some(value) if value != &Value::Null => {}
+                _ => {
+                    let rel_type = catalog.rel_type_name(rel_type_id).unwrap_or("<unknown>");
+                    return Err(HawDBError::Storage(format!(
+                        "relationship property exists constraint violation on :{rel_type}({}) for relationship {}",
+                        constraint.property, relationship.id.0
+                    )));
+                }
+            }
         }
     }
     Ok(())

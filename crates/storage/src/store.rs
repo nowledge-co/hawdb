@@ -154,10 +154,15 @@ use hawdb_storage::artifact_files::{
 };
 use hawdb_storage::graph_constraints::{
     validate_node_property_exists, validate_node_property_exists_constraints,
-    validate_node_record_constraints, validate_property_schema_value, validate_property_schemas,
-    validate_relationship_property_exists, validate_relationship_property_exists_constraints,
+    validate_node_property_exists_constraints_for_records, validate_node_record_constraints,
+    validate_property_schema_value, validate_property_schemas,
+    validate_property_schemas_for_records, validate_relationship_property_exists,
+    validate_relationship_property_exists_constraints,
+    validate_relationship_property_exists_constraints_for_records,
     validate_relationship_record_constraints, validate_relationship_unique_constraints,
-    validate_unique_constraints, validate_unique_property, validate_unique_relationship_property,
+    validate_relationship_unique_constraints_for_records, validate_unique_constraints,
+    validate_unique_constraints_for_records, validate_unique_property,
+    validate_unique_relationship_property, wal_ops_touched_records,
 };
 #[doc(hidden)]
 pub use hawdb_storage::mutation::evaluate::{
@@ -9777,5 +9782,80 @@ mod tests {
             format!("{rewritten_body}checksum\t{checksum}\n"),
         )
         .unwrap();
+    }
+
+    #[test]
+    fn delta_validation_still_catches_touched_unique_violation() {
+        let path = unique_test_dir("delta_unique_violation");
+        let mut catalog = Catalog::default();
+        let mut store = GraphStore::open(&path, &mut catalog).unwrap();
+        store
+            .create_unique_constraint(&mut catalog, "T", "k")
+            .unwrap();
+        store
+            .create_node(&mut catalog, "T", properties([("k", Value::Int(1))]))
+            .unwrap();
+        // The second insert is the touched record; the first is untouched.
+        // Delta validation must still compare against the full graph.
+        let error = store
+            .create_node(&mut catalog, "T", properties([("k", Value::Int(1))]))
+            .unwrap_err();
+        assert!(error.to_string().contains("unique constraint"));
+        let _ = std::fs::remove_dir_all(&path);
+    }
+
+    #[test]
+    fn ddl_ops_fall_back_to_full_validation() {
+        let path = unique_test_dir("ddl_full_validation");
+        let mut catalog = Catalog::default();
+        let mut store = GraphStore::open(&path, &mut catalog).unwrap();
+        // Pre-existing duplicates before the constraint exists.
+        for _ in 0..2 {
+            store
+                .create_node(&mut catalog, "T", properties([("k", Value::Int(1))]))
+                .unwrap();
+        }
+        // CreateUniqueConstraint is a schema op: touched-record collection
+        // returns None, so commit-time validation must cover all records.
+        let error = store
+            .create_unique_constraint(&mut catalog, "T", "k")
+            .unwrap_err();
+        assert!(error.to_string().contains("unique constraint"));
+        let _ = std::fs::remove_dir_all(&path);
+    }
+
+    #[test]
+    fn wal_ops_touched_records_scopes_pure_data_and_rejects_ddl() {
+        use super::wal_ops_touched_records;
+
+        let data = [
+            WalOp::CreateNode {
+                id: NodeId(1),
+                label: "T".to_string(),
+                properties: BTreeMap::new(),
+            },
+            WalOp::SetNodeProperty {
+                id: NodeId(2),
+                property: "k".to_string(),
+                value: Value::Int(1),
+            },
+        ];
+        let touched = wal_ops_touched_records(&data).unwrap();
+        assert!(touched.nodes.contains(&NodeId(1)));
+        assert!(touched.nodes.contains(&NodeId(2)));
+        assert!(touched.relationships.is_empty());
+
+        let ddl = [
+            WalOp::CreateNode {
+                id: NodeId(1),
+                label: "T".to_string(),
+                properties: BTreeMap::new(),
+            },
+            WalOp::CreateUniqueConstraint {
+                label: "T".to_string(),
+                property: "k".to_string(),
+            },
+        ];
+        assert!(wal_ops_touched_records(&ddl).is_none());
     }
 }
