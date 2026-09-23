@@ -1128,6 +1128,50 @@ mod tests {
     }
 
     #[test]
+    fn reserve_write_rejects_overflow_without_changing_existing_usage() {
+        for pool_limit in [1, 32] {
+            let mut memory = test_memory("operator-byte-overflow");
+            memory.max_spill_bytes = NonZeroU64::new(u64::MAX).unwrap();
+            memory.max_total_spill_bytes = NonZeroU64::new(pool_limit).unwrap();
+            let tracker = SpillBudgetTracker::new("Overflow", &memory);
+            // Model cumulative usage near the limit without writing exabytes.
+            tracker.seed_usage(u64::MAX - 8, 0);
+
+            let result = tracker.reserve_write(16);
+            assert!(
+                result.is_err(),
+                "overflow must fail even when the pool has room"
+            );
+            assert_eq!(tracker.used_bytes(), u64::MAX - 8);
+            let error = result.err().unwrap();
+            assert!(error.to_string().contains("max_spill_bytes"));
+            let snapshot = memory.spill_pool_snapshot().unwrap();
+            assert_eq!(snapshot.active_bytes, 0);
+            assert_eq!(snapshot.pending_write_bytes, 0);
+            std::fs::remove_dir(&memory.spill_directory).unwrap();
+        }
+    }
+
+    #[test]
+    fn reserve_write_at_u64_limit_rolls_back_exactly() {
+        let mut memory = test_memory("operator-byte-limit");
+        memory.max_spill_bytes = NonZeroU64::new(u64::MAX).unwrap();
+        let tracker = SpillBudgetTracker::new("Boundary", &memory);
+        tracker.seed_usage(u64::MAX - 8, 0);
+
+        let reservation = tracker.reserve_write(8).unwrap();
+        assert_eq!(tracker.used_bytes(), u64::MAX);
+        assert!(tracker.reserve_write(1).is_err());
+        assert_eq!(tracker.used_bytes(), u64::MAX);
+        drop(reservation);
+        assert_eq!(tracker.used_bytes(), u64::MAX - 8);
+        let snapshot = memory.spill_pool_snapshot().unwrap();
+        assert_eq!(snapshot.active_bytes, 0);
+        assert_eq!(snapshot.pending_write_bytes, 0);
+        std::fs::remove_dir(&memory.spill_directory).unwrap();
+    }
+
+    #[test]
     fn reserve_write_rolls_back_operator_bytes_when_pool_is_unavailable() {
         let memory = test_memory("pool-unavailable");
         // A regular file occupies the spill directory path, so SpillPool::open's

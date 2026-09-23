@@ -260,7 +260,12 @@ impl SpillBudgetTracker {
     ) -> Result<(SpillWriteReservation, SpillBudgetReservation<'_>)> {
         let mut current = self.used_bytes.load(Ordering::Acquire);
         loop {
-            let next = current.saturating_add(bytes);
+            let next = current.checked_add(bytes).ok_or_else(|| {
+                HawDBError::Execution(format!(
+                    "{} exceeded max_spill_bytes {} (byte count overflow)",
+                    self.operator, self.max_bytes
+                ))
+            })?;
             if next > self.max_bytes {
                 return Err(HawDBError::Execution(format!(
                     "{} exceeded max_spill_bytes {} (next total {})",
