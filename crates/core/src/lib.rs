@@ -23,6 +23,7 @@ pub mod logical_type;
 pub mod projection;
 pub mod regex;
 pub mod schema;
+pub mod time;
 pub mod uuidv7;
 pub mod value;
 

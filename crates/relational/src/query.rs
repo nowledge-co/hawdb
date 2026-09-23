@@ -23,6 +23,7 @@ use crate::row_runtime::{
     RelationalReadRow, RelationalRowExecutionEvidence, RelationalRowReadMode, RelationalRowRuntime,
     RelationalRowStoreReader,
 };
+use hawdb_core::time::Instant;
 use hawdb_core::{Catalog, HawDBError, Result, Value};
 use hawdb_executor::binding::map_payload_bytes;
 use hawdb_executor::binding::Binding as ExecutorBinding;
@@ -59,7 +60,6 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::hash::{DefaultHasher, Hash, Hasher};
 use std::num::NonZeroUsize;
 use std::sync::Arc;
-use std::time::Instant;
 
 use hawdb_optimizer::{
     RelationalJoinPlanningOutcome, RelationalOperatorCardinalityProfile, RelationalOperatorId,

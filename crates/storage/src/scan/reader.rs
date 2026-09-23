@@ -25,8 +25,10 @@ use std::fmt::{self, Display, Formatter};
 use std::fs::File;
 use std::num::NonZeroU64;
 use std::num::NonZeroUsize;
+#[cfg(not(all(target_arch = "wasm32", target_os = "unknown")))]
 use std::panic::{catch_unwind, AssertUnwindSafe};
 use std::path::PathBuf;
+#[cfg(not(all(target_arch = "wasm32", target_os = "unknown")))]
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex, OnceLock};
 
@@ -330,6 +332,7 @@ pub struct SegmentReadExecutionReport {
 
 #[derive(Clone)]
 pub struct SegmentReadPool {
+    #[cfg(not(all(target_arch = "wasm32", target_os = "unknown")))]
     inner: Arc<rayon::ThreadPool>,
     worker_count: NonZeroUsize,
 }
@@ -344,6 +347,14 @@ impl fmt::Debug for SegmentReadPool {
 }
 
 impl SegmentReadPool {
+    #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
+    pub fn new(_worker_count: NonZeroUsize) -> Result<Self, SegmentReadPoolError> {
+        Ok(Self {
+            worker_count: NonZeroUsize::MIN,
+        })
+    }
+
+    #[cfg(not(all(target_arch = "wasm32", target_os = "unknown")))]
     pub fn new(worker_count: NonZeroUsize) -> Result<Self, SegmentReadPoolError> {
         let inner = rayon::ThreadPoolBuilder::new()
             .num_threads(worker_count.get())
@@ -379,6 +390,25 @@ impl SegmentReadPool {
             .clone()
     }
 
+    #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
+    fn read_wave<R: SegmentRangeReader>(
+        &self,
+        reader: &R,
+        ranges: &[SegmentReadRange],
+        _max_parallelism: NonZeroUsize,
+    ) -> Vec<Result<SegmentReadPayload, SegmentReadError>> {
+        ranges
+            .iter()
+            .map(|range| {
+                reader.read_range(range).map(|bytes| SegmentReadPayload {
+                    range: range.clone(),
+                    bytes,
+                })
+            })
+            .collect()
+    }
+
+    #[cfg(not(all(target_arch = "wasm32", target_os = "unknown")))]
     fn read_wave<R: SegmentRangeReader>(
         &self,
         reader: &R,

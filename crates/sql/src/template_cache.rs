@@ -14,10 +14,10 @@
 
 use crate::timing::elapsed_nanos;
 use crate::{prepare_postgres_sql, PreparedPostgresStatement, SqlStatement};
+use hawdb_core::time::Instant;
 use hawdb_core::Result;
 use hawdb_plan_cache::{LfuCache, PlanCacheStats};
 use std::sync::{Arc, Mutex, MutexGuard};
-use std::time::Instant;
 
 #[doc(hidden)]
 #[derive(Debug, Clone)]

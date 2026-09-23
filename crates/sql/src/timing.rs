@@ -34,13 +34,13 @@ impl RelationalSqlStageTimings {
 }
 
 #[doc(hidden)]
-pub fn elapsed_nanos(started: std::time::Instant) -> u64 {
+pub fn elapsed_nanos(started: hawdb_core::time::Instant) -> u64 {
     u64::try_from(started.elapsed().as_nanos()).unwrap_or(u64::MAX)
 }
 
 #[doc(hidden)]
 pub fn measure_nanos<T>(nanos: &mut u64, operation: impl FnOnce() -> T) -> T {
-    let started = std::time::Instant::now();
+    let started = hawdb_core::time::Instant::now();
     let output = operation();
     *nanos = nanos.saturating_add(elapsed_nanos(started));
     output

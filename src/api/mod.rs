@@ -983,6 +983,11 @@ impl Database {
         durability: DurabilityPolicy,
         config: DatabaseConfig,
     ) -> Result<Self> {
+        if cfg!(all(target_arch = "wasm32", target_os = "unknown")) {
+            return Err(HawDBError::Storage(
+                "persistent storage is unavailable in browser WASM; use Database::new()".into(),
+            ));
+        }
         let config = effective_database_config(config);
         let local_qos_scheduler = LocalQosScheduler::new(config.local_qos_policy);
         let mut catalog = Catalog::default();
@@ -1139,7 +1144,7 @@ impl Database {
         parameters: &BTreeMap<String, Value>,
         max_rows: Option<usize>,
     ) -> Result<QueryOutput> {
-        let started = std::time::Instant::now();
+        let started = hawdb_core::time::Instant::now();
         let statement = cypher::parse(cypher_text)?;
         let body = statement_body(&statement);
         let query_result = (|| {
@@ -1700,7 +1705,7 @@ impl Database {
         shadow_admission: Option<crate::store::ColumnarShadowAdmission>,
     ) -> Result<()> {
         self.ensure_writable()?;
-        let started = std::time::Instant::now();
+        let started = hawdb_core::time::Instant::now();
         let durable = self.store.storage_recovery_report().durable;
         let prepared = self.checkpoint_source()?.prepare()?;
         let result = match prepared {
@@ -18922,7 +18927,7 @@ impl ReaderPins {
     }
 }
 
-fn elapsed_micros(started: std::time::Instant) -> u64 {
+fn elapsed_micros(started: hawdb_core::time::Instant) -> u64 {
     started.elapsed().as_micros().min(u64::MAX as u128) as u64
 }
 

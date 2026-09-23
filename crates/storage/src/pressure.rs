@@ -288,7 +288,15 @@ fn pressure_ratio(value: u64, limit: Option<u64>) -> Option<u32> {
 }
 
 pub fn available_storage_space(path: impl AsRef<Path>) -> Option<u64> {
-    fs2::available_space(path.as_ref()).ok()
+    #[cfg(not(all(target_arch = "wasm32", target_os = "unknown")))]
+    {
+        fs2::available_space(path.as_ref()).ok()
+    }
+    #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
+    {
+        let _ = path;
+        None
+    }
 }
 
 fn classify_limit(

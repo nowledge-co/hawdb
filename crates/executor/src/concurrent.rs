@@ -44,6 +44,15 @@ impl fmt::Debug for SharedExecutorPool {
 }
 
 impl SharedExecutorPool {
+    #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
+    pub fn new(_worker_count: NonZeroUsize) -> Result<Self, SharedExecutorPoolError> {
+        // Select the existing bounded sequential paths without attempting a spawn.
+        Err(SharedExecutorPoolError(
+            "browser WASM uses serial execution".into(),
+        ))
+    }
+
+    #[cfg(not(all(target_arch = "wasm32", target_os = "unknown")))]
     pub fn new(worker_count: NonZeroUsize) -> Result<Self, SharedExecutorPoolError> {
         let inner = rayon::ThreadPoolBuilder::new()
             .num_threads(worker_count.get())

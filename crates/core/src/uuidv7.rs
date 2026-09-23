@@ -13,9 +13,9 @@
 // limitations under the License.
 
 use crate::error::{HawDBError, Result};
+use crate::time::{SystemTime, UNIX_EPOCH};
 use crate::Uuid;
 use std::sync::Mutex;
-use std::time::{SystemTime, UNIX_EPOCH};
 
 const NANOS_PER_MILLISECOND: u128 = 1_000_000;
 const MAX_UNIX_MILLISECONDS: u128 = (1_u128 << 48) - 1;

@@ -18,6 +18,7 @@ use super::{
     WalGroupCommitWaitDecision, DEFAULT_WAL_GROUP_COMMIT_MAX_DELAY,
 };
 use crate::error::{HawDBError, Result};
+use hawdb_core::time::{Duration, Instant};
 use std::collections::VecDeque;
 use std::fmt::{self, Debug, Formatter};
 use std::panic::{catch_unwind, AssertUnwindSafe};
@@ -25,7 +26,6 @@ use std::sync::atomic::{AtomicU64, Ordering};
 #[cfg(test)]
 use std::sync::Barrier;
 use std::sync::{Arc, Condvar, Mutex, MutexGuard};
-use std::time::{Duration, Instant};
 
 const ADAPTIVE_FSYNC_BUCKET_COUNT: usize = 100;
 const ADAPTIVE_FSYNC_BUCKET_DURATION: Duration = Duration::from_millis(100);

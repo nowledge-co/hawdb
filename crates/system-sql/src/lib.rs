@@ -18,6 +18,7 @@
 //! The embedded facade supplies a snapshot of its live state and retains all
 //! database lifecycle and transaction coordination.
 
+use hawdb_core::time::{SystemTime, UNIX_EPOCH};
 use hawdb_core::{
     Catalog, ConstraintKind, ConstraintSubject, GraphStatistics, HawDBError, IndexKind,
     IndexStatisticsSample, LabelId, PropertyType, RelTypeId, Result, RuntimeCapabilities,
@@ -38,7 +39,6 @@ use hawdb_storage::{
 };
 use std::cmp::Ordering;
 use std::collections::{BTreeMap, VecDeque};
-use std::time::{SystemTime, UNIX_EPOCH};
 
 #[doc(hidden)]
 pub const DEFAULT_SLOW_QUERY_LOG_CAPACITY: usize = 256;
@@ -3108,4 +3108,3 @@ pub(crate) mod loom_tests {
         }
     }
 }
-

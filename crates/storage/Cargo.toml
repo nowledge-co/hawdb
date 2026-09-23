@@ -13,7 +13,6 @@ test-support = []
 
 [dependencies]
 chrono = { version = "0.4", default-features = false, features = ["std"] }
-fs2 = "0.4.3"
 rayon = "1.11"
 roaring = "0.10"
 serde = { version = "1", features = ["derive"] }
@@ -25,3 +24,6 @@ hawdb-telemetry = { path = "../telemetry", version = "0.3.0" }
 hawdb-plan = { path = "../plan", version = "0.3.0" }
 hawdb-qos = { path = "../qos", version = "0.3.0" }
 zstd = "0.13"
+
+[target.'cfg(not(all(target_arch = "wasm32", target_os = "unknown")))'.dependencies]
+fs2 = "0.4.3"

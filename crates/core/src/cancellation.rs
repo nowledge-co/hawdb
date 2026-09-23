@@ -12,6 +12,7 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
+use crate::time::{Duration, Instant};
 use std::collections::BTreeMap;
 use std::error::Error;
 use std::fmt::Debug;
@@ -22,7 +23,6 @@ use std::pin::Pin;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, Weak};
 use std::task::{Context, Poll, Waker};
-use std::time::{Duration, Instant};
 
 #[derive(Debug, Clone)]
 pub struct RuntimeCancellationToken {

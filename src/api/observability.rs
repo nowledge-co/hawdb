@@ -65,7 +65,7 @@ impl StatementRecordingTarget<'_> {
         query_language: &str,
         query_text: &str,
         statement_kind: &str,
-        started: std::time::Instant,
+        started: hawdb_core::time::Instant,
         result: std::result::Result<&QueryOutput, &HawDBError>,
         context: StatementExecutionContext<'_>,
     ) {
@@ -152,7 +152,7 @@ impl StatementRecorder {
         query_language: &str,
         query_text: &str,
         statement_kind: &str,
-        started: std::time::Instant,
+        started: hawdb_core::time::Instant,
         result: std::result::Result<&QueryOutput, &HawDBError>,
         context: StatementExecutionContext<'_>,
     ) {
@@ -188,7 +188,7 @@ impl Database {
         query_language: &str,
         query_text: &str,
         statement_kind: &str,
-        started: std::time::Instant,
+        started: hawdb_core::time::Instant,
         result: std::result::Result<&QueryOutput, &HawDBError>,
         context: StatementExecutionContext<'_>,
     ) {
@@ -253,7 +253,7 @@ impl Database {
         options: QueryStreamOptions,
     ) -> Result<QueryOutput> {
         self.store.ensure_usable()?;
-        let started = std::time::Instant::now();
+        let started = hawdb_core::time::Instant::now();
         let max_rows =
             super::restrictive_query_limit(self.config.max_read_result_rows, options.max_rows);
         let max_payload_bytes = super::restrictive_query_limit(
@@ -278,7 +278,7 @@ impl Database {
         prepared: crate::relational_sql::PreparedRelationalSql,
     ) -> Result<QueryOutput> {
         self.store.ensure_usable()?;
-        let started = std::time::Instant::now();
+        let started = hawdb_core::time::Instant::now();
         self.query_sql_with_prepared_params_inner(
             sql_text,
             parameters,
@@ -296,7 +296,7 @@ impl Database {
         prepared: crate::relational_sql::PreparedRelationalSql,
         max_rows: Option<usize>,
         max_payload_bytes: Option<usize>,
-        started: std::time::Instant,
+        started: hawdb_core::time::Instant,
     ) -> Result<QueryOutput> {
         let statement_kind = sql_statement_kind(prepared.statement());
         let query_result = (|| {

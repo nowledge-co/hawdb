@@ -259,7 +259,7 @@ pub use hawdb_bootstrap::{
     HawDBLightningPublishOptions, HAWDB_LIGHTNING_STAGING_CATALOG_PROTOCOL_VERSION,
 };
 pub use hawdb_core::LogicalType;
-pub use hawdb_core::Uuid;
+pub use hawdb_core::{time, Uuid};
 pub use hawdb_core::{
     GraphRagCommonPathSummary, GraphRagGeneratedQuery, GraphRagLabelSummary,
     GraphRagPropertySubject, GraphRagPropertySummary, GraphRagQueryBinding, GraphRagQueryDraft,

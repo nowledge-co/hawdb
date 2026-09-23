@@ -19,10 +19,10 @@ mod process_memory;
 mod resource;
 mod runtime;
 
+use hawdb_core::time::Instant;
 use std::fmt::Debug;
 use std::str::FromStr;
 use std::sync::{Arc, Mutex, RwLock};
-use std::time::Instant;
 
 pub use device::{StorageDeviceDiscoverySource, StorageDeviceProfile, StorageMediaKind};
 pub use hawdb_core::{

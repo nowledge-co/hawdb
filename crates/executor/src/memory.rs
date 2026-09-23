@@ -133,7 +133,11 @@ impl Default for ExecutionMemoryConfig {
             )
             .expect("default spill free-space probe interval is non-zero"),
             spill_orphan_grace_period: DEFAULT_SPILL_ORPHAN_GRACE_PERIOD,
+            #[cfg(not(all(target_arch = "wasm32", target_os = "unknown")))]
             spill_directory: std::env::temp_dir().join("hawdb-spill"),
+            // Browser queries are memory-only. Do not call the unsupported temp_dir().
+            #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
+            spill_directory: PathBuf::new(),
         }
     }
 }

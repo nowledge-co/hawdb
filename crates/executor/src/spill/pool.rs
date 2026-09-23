@@ -115,7 +115,18 @@ struct FileSystemSpillSpaceProbe;
 
 impl SpillSpaceProbe for FileSystemSpillSpaceProbe {
     fn available_space(&self, directory: &Path) -> std::io::Result<u64> {
-        fs2::available_space(directory)
+        #[cfg(not(all(target_arch = "wasm32", target_os = "unknown")))]
+        {
+            fs2::available_space(directory)
+        }
+        #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
+        {
+            let _ = directory;
+            Err(std::io::Error::new(
+                std::io::ErrorKind::Unsupported,
+                "disk spill is unavailable in browser WASM",
+            ))
+        }
     }
 }
 
@@ -126,6 +137,11 @@ pub(crate) struct SpillPool {
 
 impl SpillPool {
     pub(crate) fn open(memory: &ExecutionMemoryConfig) -> Result<Self> {
+        if cfg!(all(target_arch = "wasm32", target_os = "unknown")) {
+            return Err(HawDBError::Execution(
+                "disk spill is unavailable in browser WASM".into(),
+            ));
+        }
         Self::open_with_probe(memory, Arc::new(FileSystemSpillSpaceProbe))
     }
 

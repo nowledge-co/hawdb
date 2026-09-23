@@ -36,6 +36,7 @@ use crate::sql::{
 };
 use crate::store::DurabilityPolicy;
 use crate::value::Value;
+use hawdb_core::time::{Duration, Instant};
 use hawdb_storage::{
     AppendTransaction, RelationalConflictAction, RelationalIndexRole, RelationalKey, RelationalRow,
     RelationalState, RelationalTableSchema, RelationalTransaction, RelationalValue,
@@ -55,7 +56,6 @@ use std::path::Path;
 #[cfg(test)]
 use std::sync::{mpsc::Sender, Barrier, Condvar};
 use std::sync::{Arc, Mutex};
-use std::time::{Duration, Instant};
 
 pub const DEFAULT_PESSIMISTIC_LOCK_TIMEOUT: Duration = Duration::from_secs(5);
 

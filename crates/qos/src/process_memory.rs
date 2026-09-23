@@ -12,10 +12,10 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
+use hawdb_core::time::{Duration, Instant};
 use std::fmt::{self, Debug, Formatter};
 use std::io;
 use std::num::NonZeroU64;
-use std::time::{Duration, Instant};
 use std::{
     collections::BTreeMap,
     sync::{Arc, Mutex, Weak},

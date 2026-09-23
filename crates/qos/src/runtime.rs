@@ -20,6 +20,7 @@ use crate::process_memory::{
 };
 use crate::resource::RuntimeResourceDetector;
 use crate::{IoConcurrencyBudget, RuntimeMemoryPressure, RuntimeResourceSnapshot};
+use hawdb_core::time::{Duration, Instant};
 use hawdb_core::{
     RuntimeCancellationReason, RuntimeIoWaveController, RuntimeIoWaveError, RuntimeIoWavePermit,
     RuntimeMemoryReservation, RuntimeTaskContext,
@@ -32,7 +33,6 @@ use std::num::NonZeroUsize;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Condvar, Mutex, RwLock};
 use std::task::{Poll, Waker};
-use std::time::{Duration, Instant};
 
 const PER_MILLION: u64 = 1_000_000;
 const SHARED_HOST_MEMORY_FRACTION_PER_MILLION: u32 = 250_000;

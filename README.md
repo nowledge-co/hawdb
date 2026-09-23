@@ -88,6 +88,8 @@ artifacts.
 
 ### Bazel validation
 
+For the experimental in-memory browser WASM target, see [the WASM guide](docs/WASM.md).
+
 Build the embedded library and run every Bazel unit-test target with the default
 repository configuration:
 

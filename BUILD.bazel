@@ -351,6 +351,15 @@ test_suite(
 
 # External embedded-library consumer; no internal owner imports.
 rust_test(
+    name = "hawdb_in_memory_portable_tests",
+    crate_root = "tests/in_memory_portable.rs",
+    srcs = ["tests/in_memory_portable.rs"],
+    edition = "2024",
+    deps = [":hawdb_minimal"],
+)
+
+# External embedded-library consumer; no internal owner imports.
+rust_test(
     name = "hawdb_pgq_create_binder_tests",
     crate_root = "tests/pgq_create_binder.rs",
     srcs = ["tests/pgq_create_binder.rs"],

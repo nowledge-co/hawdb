@@ -13,8 +13,8 @@
 // limitations under the License.
 
 use super::ast::{CypherQuery, Explain, SetSystemVariable, Statement};
+use hawdb_core::time::Instant;
 use hawdb_core::{HawDBError, Result};
-use std::time::Instant;
 
 mod case;
 mod cursor;

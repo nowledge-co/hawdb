@@ -87,7 +87,7 @@ pub(super) struct PreparedRuntimeExecution {
     pub(super) statement: cypher::Statement,
     pub(super) optimized: Option<OptimizedQueryPlan>,
     pub(super) parse_metrics: hawdb_cypher::ParseMetrics,
-    pub(super) statement_started: Option<std::time::Instant>,
+    pub(super) statement_started: Option<hawdb_core::time::Instant>,
 }
 
 struct QueryExecutionOptions<'a> {
@@ -97,7 +97,7 @@ struct QueryExecutionOptions<'a> {
 }
 
 pub(super) fn parse_runtime_execution(cypher_text: &str) -> Result<PreparedRuntimeExecution> {
-    let statement_started = std::time::Instant::now();
+    let statement_started = hawdb_core::time::Instant::now();
     let parsed = hawdb_cypher::parse_profiled(cypher_text);
     Ok(PreparedRuntimeExecution {
         statement: parsed.result?,
@@ -530,7 +530,7 @@ impl Database {
             access_control,
             task_context,
         } = options;
-        let execution_started = std::time::Instant::now();
+        let execution_started = hawdb_core::time::Instant::now();
         self.store.ensure_usable()?;
         query_runtime_checkpoint(task_context)?;
         let PreparedRuntimeExecution {
