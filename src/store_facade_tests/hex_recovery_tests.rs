@@ -12,10 +12,10 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
+use crate::error::HawDBError;
 use crate::store_facade_tests::{
     active_checkpoint_path, read_durable_text, rewrite_checksummed_file, unique_test_dir,
 };
-use crate::error::HawDBError;
 use crate::value::Value;
 use crate::{Database, DatabaseConfig};
 use hawdb_storage::text::encode_string;

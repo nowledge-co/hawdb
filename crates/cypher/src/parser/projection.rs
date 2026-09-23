@@ -408,9 +408,9 @@ impl Parser<'_> {
         Ok(ScalarExpressionKind::CasePropertyNotNullOrEq {
             variable,
             property,
-            empty,
-            non_empty,
-            null_or_empty,
+            empty: Box::new(empty),
+            non_empty: Box::new(non_empty),
+            null_or_empty: Box::new(null_or_empty),
         })
     }
 

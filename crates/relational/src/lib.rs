@@ -22,12 +22,12 @@ pub mod columnar_aggregate;
 #[doc(hidden)]
 pub mod field_plan;
 #[doc(hidden)]
-pub mod index_runtime;
-#[doc(hidden)]
 pub mod index_access;
 #[doc(hidden)]
-pub mod row_access;
+pub mod index_runtime;
 mod read_profile;
+#[doc(hidden)]
+pub mod row_access;
 mod statement;
 #[doc(hidden)]
 pub mod system_schema;

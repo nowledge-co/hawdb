@@ -90,6 +90,22 @@ observed impact rather than from the amount of code involved.
 
 ## Validation and evidence
 
+Install [prek](https://prek.j178.dev/installation/) and enable the repository's
+pre-commit hooks once in your clone:
+
+```console
+prek install
+prek run --all-files
+```
+
+The hooks in `prek.toml` check formatting first, then run strict Clippy for the
+whole workspace with all targets and features. Both run on every commit,
+including documentation-only commits; a failure blocks the commit. They use
+the repository's pinned Rust toolchain and do not rewrite files. Fix formatting
+with `cargo fmt --all`, resolve Clippy diagnostics (including existing ones),
+and stage the fixes before retrying. Target-specific checks such as browser
+WASM Clippy and the regression/fuzz checks below remain required when applicable.
+
 Use the toolchain pinned in [rust-toolchain.toml](rust-toolchain.toml), locked
 dependencies, and the default Bazel configuration. The [README](README.md#building)
 documents the build and feature surfaces. Register new tests in the appropriate

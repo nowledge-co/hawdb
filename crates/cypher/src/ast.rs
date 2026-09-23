@@ -713,9 +713,9 @@ pub enum ScalarExpressionKind {
     CasePropertyNotNullOrEq {
         variable: String,
         property: String,
-        empty: ValueExpression,
-        non_empty: ValueExpression,
-        null_or_empty: ValueExpression,
+        empty: Box<ValueExpression>,
+        non_empty: Box<ValueExpression>,
+        null_or_empty: Box<ValueExpression>,
     },
     CasePropertyEqualsRank {
         variable: String,

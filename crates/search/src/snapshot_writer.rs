@@ -191,9 +191,11 @@ pub(super) fn write_search_snapshot<'a>(
     let counted = encoder
         .finish()
         .map_err(|error| HawDBError::Storage(format!("zstd compression failed: {error}")))?;
-    let (compressed_file, compressed_bytes, compressed_checksum) = counted.finish()?;
-    compressed_file.sync_all()?;
-    drop(compressed_file);
+    let (compressed_bytes, compressed_checksum) = {
+        let (compressed_file, compressed_bytes, compressed_checksum) = counted.finish()?;
+        compressed_file.sync_all()?;
+        (compressed_bytes, compressed_checksum)
+    };
 
     let temporary = target.with_extension("hawdb.tmp");
     let mut target_guard = TemporaryFile::new(temporary.clone());

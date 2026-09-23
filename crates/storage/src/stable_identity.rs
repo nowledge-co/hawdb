@@ -285,47 +285,49 @@ impl StableIdentityMappingWriter {
         let artifact_path = stable_identity_generation_artifact_path(path, generation)?;
         let temporary = temporary_path(&artifact_path, ".tmp")?;
         remove_abandoned_candidate(path, &artifact_path, config)?;
-        let mut file = OpenOptions::new()
-            .create(true)
-            .truncate(true)
-            .read(true)
-            .write(true)
-            .open(&temporary)
-            .map_err(durability("create stable identity candidate"))?;
-        file.write_all(&[0; FILE_HEADER_BYTES])
-            .map_err(durability("reserve stable identity header"))?;
-        let summary = {
-            let mut pages = StableIdentityPageWriter::new(&mut file, generation, config);
-            for (key, value) in entries {
-                pages.push(key, value)?;
+        let (header, encoded_len) = {
+            let mut file = OpenOptions::new()
+                .create(true)
+                .truncate(true)
+                .read(true)
+                .write(true)
+                .open(&temporary)
+                .map_err(durability("create stable identity candidate"))?;
+            file.write_all(&[0; FILE_HEADER_BYTES])
+                .map_err(durability("reserve stable identity header"))?;
+            let summary = {
+                let mut pages = StableIdentityPageWriter::new(&mut file, generation, config);
+                for (key, value) in entries {
+                    pages.push(key, value)?;
+                }
+                pages.finish()?
+            };
+            let header = StableIdentityMappingHeader {
+                generation,
+                covered_commit_epoch,
+                page_bytes: config.page_bytes.get() as u64,
+                page_count: summary.page_count,
+                node_count: summary.node_count,
+                relationship_count: summary.relationship_count,
+            };
+            file.seek(SeekFrom::Start(0))
+                .map_err(durability("seek stable identity header"))?;
+            file.write_all(&encode_header(header))
+                .map_err(durability("write stable identity header"))?;
+            file.sync_all()
+                .map_err(durability("sync stable identity candidate"))?;
+            let encoded_len = expected_file_len(header)?;
+            let actual_len = file
+                .metadata()
+                .map_err(durability("inspect stable identity candidate"))?
+                .len();
+            if actual_len != encoded_len {
+                return Err(StableIdentityMappingError::Corrupt(format!(
+                    "candidate length mismatch: expected {encoded_len}, got {actual_len}"
+                )));
             }
-            pages.finish()?
+            (header, encoded_len)
         };
-        let header = StableIdentityMappingHeader {
-            generation,
-            covered_commit_epoch,
-            page_bytes: config.page_bytes.get() as u64,
-            page_count: summary.page_count,
-            node_count: summary.node_count,
-            relationship_count: summary.relationship_count,
-        };
-        file.seek(SeekFrom::Start(0))
-            .map_err(durability("seek stable identity header"))?;
-        file.write_all(&encode_header(header))
-            .map_err(durability("write stable identity header"))?;
-        file.sync_all()
-            .map_err(durability("sync stable identity candidate"))?;
-        let encoded_len = expected_file_len(header)?;
-        let actual_len = file
-            .metadata()
-            .map_err(durability("inspect stable identity candidate"))?
-            .len();
-        if actual_len != encoded_len {
-            return Err(StableIdentityMappingError::Corrupt(format!(
-                "candidate length mismatch: expected {encoded_len}, got {actual_len}"
-            )));
-        }
-        drop(file);
         durable_replace_file(&temporary, &artifact_path).map_err(|error| {
             StableIdentityMappingError::Durability(format!(
                 "publish stable identity generation artifact: {error}"
@@ -336,19 +338,20 @@ impl StableIdentityMappingWriter {
             encoded_len,
         };
         let selector_temporary = temporary_path(path, ".selector.tmp")?;
-        let mut selector_file = OpenOptions::new()
-            .create(true)
-            .truncate(true)
-            .write(true)
-            .open(&selector_temporary)
-            .map_err(durability("create stable identity selector candidate"))?;
-        selector_file
-            .write_all(&encode_selector(selector))
-            .map_err(durability("write stable identity selector candidate"))?;
-        selector_file
-            .sync_all()
-            .map_err(durability("sync stable identity selector candidate"))?;
-        drop(selector_file);
+        {
+            let mut selector_file = OpenOptions::new()
+                .create(true)
+                .truncate(true)
+                .write(true)
+                .open(&selector_temporary)
+                .map_err(durability("create stable identity selector candidate"))?;
+            selector_file
+                .write_all(&encode_selector(selector))
+                .map_err(durability("write stable identity selector candidate"))?;
+            selector_file
+                .sync_all()
+                .map_err(durability("sync stable identity selector candidate"))?;
+        }
         durable_replace_file(&selector_temporary, path).map_err(|error| {
             StableIdentityMappingError::Durability(format!(
                 "publish stable identity selector: {error}"

@@ -213,25 +213,18 @@ fn bind_optional_relationship_count_sum(
         Ok(properties) => properties,
         Err(error) => return Some(Err(error)),
     };
-    let Some(first_leg) = bind_optional_count_leg(first_optional, source, parameters) else {
-        return None;
-    };
+    let first_leg = bind_optional_count_leg(first_optional, source, parameters)?;
     let (first_variable, mut first_leg) = match first_leg {
         Ok(leg) => leg,
         Err(error) => return Some(Err(error)),
     };
-    let Some(second_leg) = bind_optional_count_leg(second_optional, source, parameters) else {
-        return None;
-    };
+    let second_leg = bind_optional_count_leg(second_optional, source, parameters)?;
     let (second_variable, mut second_leg) = match second_leg {
         Ok(leg) => leg,
         Err(error) => return Some(Err(error)),
     };
-    let Some((first_distinct, second_distinct)) =
-        count_sum_return(final_return, &first_variable, &second_variable)
-    else {
-        return None;
-    };
+    let (first_distinct, second_distinct) =
+        count_sum_return(final_return, &first_variable, &second_variable)?;
     first_leg.distinct = first_distinct;
     second_leg.distinct = second_distinct;
     Some(Ok(LogicalPlan::OptionalRelationshipCountSum {
@@ -538,7 +531,7 @@ fn thread_repair_identity_match<'a>(
         || !pattern.steps.is_empty()
         || identity.anonymous
         || identity.variable.is_empty()
-        || identity.properties.len() != 0
+        || !identity.properties.is_empty()
     {
         return None;
     }

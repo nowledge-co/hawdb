@@ -2631,87 +2631,87 @@ fn write_out_of_core_sidecars(
     let vector_tmp = temporary_artifact_path(vector_path);
     let mut metadata_guard = CandidateFileGuard::new(metadata_tmp.clone());
     let mut vector_guard = CandidateFileGuard::new(vector_tmp.clone());
-    let mut metadata_file = File::create(&metadata_tmp)?;
-    let mut vector_file = File::create(&vector_tmp)?;
     let mut metadata_offset = 0u64;
     let mut vector_offset = 0u64;
     let mut vector_ordinal = 0u64;
     let mut layouts = Vec::with_capacity(descriptor.segments.len());
+    {
+        let mut metadata_file = File::create(&metadata_tmp)?;
+        let mut vector_file = File::create(&vector_tmp)?;
 
-    for segment in &descriptor.segments {
-        let documents = index
-            .documents
-            .range(segment.first_document_id.clone()..=segment.last_document_id.clone())
-            .map(|(_, document)| document)
-            .collect::<Vec<_>>();
-        if documents.len() != segment.document_count {
-            return Err(HawDBError::Storage(format!(
-                "search sidecar segment {} has {} documents, expected {}",
-                segment.segment_id,
-                documents.len(),
-                segment.document_count
-            )));
-        }
-
-        let mut metadata_body = String::from("HAWDB_SEARCH_METADATA_SEGMENT_V1\n");
-        let mut vector_body = String::from("HAWDB_SEARCH_VECTOR_SEGMENT_V1\n");
-        let mut vector_count = 0usize;
-        for document in documents {
-            let document_vector_ordinal = document.embedding.as_ref().map(|_| vector_ordinal);
-            metadata_body.push_str(&format!(
-                "meta\t{}\t{}\t{}\n",
-                encode_string(&document.id),
-                document_vector_ordinal
-                    .map(|ordinal| ordinal.to_string())
-                    .unwrap_or_else(|| "-".to_string()),
-                encode_metadata(&document.metadata)
-            ));
-            if let Some(embedding) = document.embedding.as_deref() {
-                if embedding.is_empty() {
-                    return Err(HawDBError::Storage(format!(
-                        "search document {} has an empty embedding",
-                        document.id
-                    )));
-                }
-                vector_body.push_str(&format!(
-                    "vector\t{}\t{}\t{}\n",
-                    vector_ordinal,
-                    encode_string(&document.id),
-                    encode_embedding(Some(embedding))
-                ));
-                vector_count = vector_count.saturating_add(1);
-                vector_ordinal = vector_ordinal.checked_add(1).ok_or_else(|| {
-                    HawDBError::Storage("search vector ordinal overflow".to_string())
-                })?;
+        for segment in &descriptor.segments {
+            let documents = index
+                .documents
+                .range(segment.first_document_id.clone()..=segment.last_document_id.clone())
+                .map(|(_, document)| document)
+                .collect::<Vec<_>>();
+            if documents.len() != segment.document_count {
+                return Err(HawDBError::Storage(format!(
+                    "search sidecar segment {} has {} documents, expected {}",
+                    segment.segment_id,
+                    documents.len(),
+                    segment.document_count
+                )));
             }
+
+            let mut metadata_body = String::from("HAWDB_SEARCH_METADATA_SEGMENT_V1\n");
+            let mut vector_body = String::from("HAWDB_SEARCH_VECTOR_SEGMENT_V1\n");
+            let mut vector_count = 0usize;
+            for document in documents {
+                let document_vector_ordinal = document.embedding.as_ref().map(|_| vector_ordinal);
+                metadata_body.push_str(&format!(
+                    "meta\t{}\t{}\t{}\n",
+                    encode_string(&document.id),
+                    document_vector_ordinal
+                        .map(|ordinal| ordinal.to_string())
+                        .unwrap_or_else(|| "-".to_string()),
+                    encode_metadata(&document.metadata)
+                ));
+                if let Some(embedding) = document.embedding.as_deref() {
+                    if embedding.is_empty() {
+                        return Err(HawDBError::Storage(format!(
+                            "search document {} has an empty embedding",
+                            document.id
+                        )));
+                    }
+                    vector_body.push_str(&format!(
+                        "vector\t{}\t{}\t{}\n",
+                        vector_ordinal,
+                        encode_string(&document.id),
+                        encode_embedding(Some(embedding))
+                    ));
+                    vector_count = vector_count.saturating_add(1);
+                    vector_ordinal = vector_ordinal.checked_add(1).ok_or_else(|| {
+                        HawDBError::Storage("search vector ordinal overflow".to_string())
+                    })?;
+                }
+            }
+
+            let metadata_payload = encode_search_snapshot_text(&metadata_body)?;
+            let vector_payload = encode_search_snapshot_text(&vector_body)?;
+            let metadata = append_sidecar_payload(
+                &mut metadata_file,
+                &mut metadata_offset,
+                &metadata_payload,
+                segment.document_count,
+            )?;
+            let vectors = append_sidecar_payload(
+                &mut vector_file,
+                &mut vector_offset,
+                &vector_payload,
+                vector_count,
+            )?;
+            layouts.push(SearchOutOfCoreSegmentLayout {
+                segment_id: segment.segment_id,
+                vector_ordinal_base: vector_ordinal.saturating_sub(vector_count as u64),
+                metadata,
+                vectors,
+            });
         }
 
-        let metadata_payload = encode_search_snapshot_text(&metadata_body)?;
-        let vector_payload = encode_search_snapshot_text(&vector_body)?;
-        let metadata = append_sidecar_payload(
-            &mut metadata_file,
-            &mut metadata_offset,
-            &metadata_payload,
-            segment.document_count,
-        )?;
-        let vectors = append_sidecar_payload(
-            &mut vector_file,
-            &mut vector_offset,
-            &vector_payload,
-            vector_count,
-        )?;
-        layouts.push(SearchOutOfCoreSegmentLayout {
-            segment_id: segment.segment_id,
-            vector_ordinal_base: vector_ordinal.saturating_sub(vector_count as u64),
-            metadata,
-            vectors,
-        });
+        metadata_file.sync_all()?;
+        vector_file.sync_all()?;
     }
-
-    metadata_file.sync_all()?;
-    vector_file.sync_all()?;
-    drop(metadata_file);
-    drop(vector_file);
     durable_replace_file(&metadata_tmp, metadata_path)?;
     metadata_guard.disarm();
     durable_replace_file(&vector_tmp, vector_path)?;
@@ -4495,8 +4495,10 @@ mod tests {
         assert_eq!(required.metrics.candidate_block_reads, 2);
         assert!(required.metrics.rabitq_payload_bytes_read > 0);
 
-        let mut limited_config = SearchOutOfCoreConfig::default();
-        limited_config.max_vector_candidates = std::num::NonZeroUsize::new(1).unwrap();
+        let limited_config = SearchOutOfCoreConfig {
+            max_vector_candidates: std::num::NonZeroUsize::new(1).unwrap(),
+            ..SearchOutOfCoreConfig::default()
+        };
         let limited_reader =
             SearchOutOfCoreReader::open_with_config(&path, limited_config).unwrap();
         let limited = limited_reader

@@ -1184,8 +1184,8 @@ mod tests {
         ProjectedGraphExecution, ProjectionLayout, ProjectionMemoryBudget, ProjectionScanControl,
         ProjectionSource,
     };
-    use hawdb_core::{Catalog, Value};
     use hawdb_core::ids::{NodeId, NodeRecord, RelId, RelRecord};
+    use hawdb_core::{Catalog, Value};
     use std::collections::{BTreeMap, BTreeSet};
     use std::num::NonZeroUsize;
 

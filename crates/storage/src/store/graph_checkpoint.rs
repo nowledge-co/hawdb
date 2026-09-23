@@ -431,10 +431,7 @@ impl GraphStore {
     }
 
     #[doc(hidden)]
-    pub fn prepare_checkpoint(
-        &self,
-        catalog: &Catalog,
-    ) -> Result<Option<PreparedCheckpoint>> {
+    pub fn prepare_checkpoint(&self, catalog: &Catalog) -> Result<Option<PreparedCheckpoint>> {
         self.prepare_checkpoint_with_build_config(catalog, DerivedArtifactBuildConfig::default())
     }
 

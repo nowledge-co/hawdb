@@ -1,0 +1,24 @@
+default_stages = ["pre-commit"]
+default_install_hook_types = ["pre-commit"]
+fail_fast = true
+
+[[repos]]
+repo = "local"
+
+[[repos.hooks]]
+id = "cargo-fmt"
+name = "Cargo format check (workspace)"
+entry = "cargo fmt --all -- --check"
+language = "system"
+pass_filenames = false
+always_run = true
+priority = 0
+
+[[repos.hooks]]
+id = "cargo-clippy"
+name = "Cargo Clippy (workspace, all targets and features)"
+entry = "cargo clippy --locked --workspace --all-targets --all-features -- -D warnings"
+language = "system"
+pass_filenames = false
+always_run = true
+priority = 1

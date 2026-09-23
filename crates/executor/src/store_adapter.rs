@@ -19,12 +19,12 @@ use crate::store::{
     PrunedRelationshipScan, ScanControl, SourceScanCandidateRow, SourceScanCandidateVisit,
     SourceScanReadLimits,
 };
-use hawdb_core::error::Result;
-use hawdb_core::{LabelId, RelTypeId};
-use hawdb_core::schema::Catalog;
-use hawdb_storage::store::{GraphScanControl, GraphStore};
 use crate::QueryMemoryLease;
+use hawdb_core::error::Result;
+use hawdb_core::schema::Catalog;
+use hawdb_core::{LabelId, RelTypeId};
 use hawdb_plan::NodeProjectionAccess;
+use hawdb_storage::store::{GraphScanControl, GraphStore};
 use hawdb_storage::{
     AdjacencyDirection, GraphMutation, MutationLimits, MutationSummary, NodeId, NodeRecord,
     NodeSetAssignment, ProjectedNodeRecord, PropertyFilter, RelId, RelRecord,

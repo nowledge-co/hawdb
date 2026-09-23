@@ -31,8 +31,6 @@ use std::sync::Arc;
 #[path = "derived_repair/audit.rs"]
 #[doc(hidden)]
 pub mod audit;
-#[cfg(test)]
-use audit::quarantine_directory;
 use audit::{
     finalize_repair, load_matching_pending_record, load_single_pending_record,
     pending_record_paths, prepare_repair, validate_pending_record,
@@ -366,4 +364,3 @@ fn validate_source_identity(path: &Path, plan: &DerivedArtifactRepairPlan) -> Re
     }
     Ok(())
 }
-

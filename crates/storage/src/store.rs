@@ -286,19 +286,13 @@ pub use relational_index_shadow::{
     RELATIONAL_CONSTRAINT_QUALIFICATION_PROTOCOL, RELATIONAL_INDEX_VIEW_QUALIFICATION_PROTOCOL,
 };
 #[doc(hidden)]
-pub use relational_index_shadow::{
-    RelationalIndexProbeStatistics, RelationalTransactionIndexView,
-};
+pub use relational_index_shadow::{RelationalIndexProbeStatistics, RelationalTransactionIndexView};
 pub use relational_row_pages::RelationalRowPageRecoveryStatus;
 use relational_row_pages::RelationalRowPageState;
 #[doc(hidden)]
 pub use relational_row_pages::RelationalTransactionRowView;
 use std::collections::{BTreeMap, BTreeSet};
 use std::fs;
-#[cfg(test)]
-use std::fs::OpenOptions;
-#[cfg(test)]
-use std::io::Write;
 use std::num::{NonZeroU64, NonZeroUsize};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering as AtomicOrdering};
@@ -318,9 +312,7 @@ pub const MANIFEST_FILE: &str = "manifest.hawdb";
 const PROJECTED_GRAPHS_FILE: &str = "projected_graphs.hawdb";
 const STABLE_ID_MAPPING_FILE: &str = "stable_ids.hawdb";
 #[doc(hidden)]
-pub use hawdb_storage::checkpoint::{
-    relational_checkpoint_metadata, split_checkpoint_checksum,
-};
+pub use hawdb_storage::checkpoint::{relational_checkpoint_metadata, split_checkpoint_checksum};
 const BACKUP_MANIFEST_FILE: &str = "backup.hawdb";
 const CANONICAL_MANIFEST_MAX_BYTES: u64 = 256 * 1024 * 1024;
 const PROPERTY_SPILL_MANIFEST_MAX_BYTES: u64 = 64 * 1024;
@@ -1420,9 +1412,7 @@ impl GraphStore {
     }
 
     #[doc(hidden)]
-    pub fn projection_generation_store(
-        &self,
-    ) -> Result<hawdb_storage::ProjectionGenerationStore> {
+    pub fn projection_generation_store(&self) -> Result<hawdb_storage::ProjectionGenerationStore> {
         self.projection_generations.clone().ok_or_else(|| {
             HawDBError::Storage(
                 "projection generation catalog requires a durable database".to_string(),
@@ -2151,9 +2141,7 @@ pub fn sync_parent_dir(path: &Path) -> Result<()> {
 }
 
 #[doc(hidden)]
-pub use hawdb_storage::schema::{
-    ensure_table_descriptor, reserve_schema_maintenance_budget,
-};
+pub use hawdb_storage::schema::{ensure_table_descriptor, reserve_schema_maintenance_budget};
 
 fn validate_property_descriptor(
     catalog: &Catalog,
@@ -9835,7 +9823,9 @@ mod tests {
                 property: "k".to_string(),
             },
         ])];
-        let error = store.validate_constraints_for_ops(&catalog, &ops).unwrap_err();
+        let error = store
+            .validate_constraints_for_ops(&catalog, &ops)
+            .unwrap_err();
         assert!(error.to_string().contains("unique constraint"));
         let _ = std::fs::remove_dir_all(&path);
     }
@@ -9862,7 +9852,9 @@ mod tests {
                 properties: properties([("k", Value::Int(1))]),
             },
         ];
-        let error = store.validate_constraints_for_ops(&catalog, &ops).unwrap_err();
+        let error = store
+            .validate_constraints_for_ops(&catalog, &ops)
+            .unwrap_err();
         assert!(error.to_string().contains("unique constraint"));
         let _ = std::fs::remove_dir_all(&path);
     }
@@ -9919,7 +9911,9 @@ mod tests {
                 value: Value::Int(i as i64),
             })
             .collect();
-        store.validate_constraints_for_ops(&catalog, &rewrites).unwrap();
+        store
+            .validate_constraints_for_ops(&catalog, &rewrites)
+            .unwrap();
 
         let mut colliding = rewrites.clone();
         colliding.push(WalOp::SetNodeProperty {

@@ -13,8 +13,8 @@
 // limitations under the License.
 
 use crate::index_runtime::RelationalIndexStoreReader;
-use hawdb_storage::store::{GraphStore, RelationalIndexProbeStatistics};
 use hawdb_storage::relational_index_view::RelationalIndexReadViewReport;
+use hawdb_storage::store::{GraphStore, RelationalIndexProbeStatistics};
 use hawdb_storage::{RelationalIndexReadLimits, RelationalIndexShadowError, RelationalKey};
 
 #[doc(hidden)]

@@ -17,7 +17,7 @@
 //! These are internal validation kernels. Root storage retains transaction
 //! orchestration, concrete out-of-core scans, and the WAL/publication boundary.
 
-use crate::{CowSegmentedMap, NodeId, NodeRecord, RelId, RelRecord, wal::WalOp};
+use crate::{wal::WalOp, CowSegmentedMap, NodeId, NodeRecord, RelId, RelRecord};
 use hawdb_core::{
     Catalog, ConstraintSubject, HawDBError, LabelId, PropertyType, RelTypeId, Result,
     SchemaObjectState, TableKind, Value,

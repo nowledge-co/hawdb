@@ -18,10 +18,10 @@ extern crate self as hawdb_storage;
 
 pub use hawdb_core::error::{HawDBError, Result};
 pub use hawdb_core::value::Value;
+pub use hawdb_storage::relational::RelationalRowPageCompactionConfig;
 pub use relational_index_view::{
     RelationalIndexReadViewBackendReport, RelationalIndexReadViewReport,
 };
-pub use hawdb_storage::relational::RelationalRowPageCompactionConfig;
 
 pub mod adjacency;
 pub mod append_table;

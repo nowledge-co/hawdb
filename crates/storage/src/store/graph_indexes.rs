@@ -1172,20 +1172,13 @@ impl GraphStore {
                     &relationships,
                     &touched,
                 )?;
-                validate_node_property_exists_constraints_for_records(
-                    catalog, &nodes, &touched,
-                )?;
+                validate_node_property_exists_constraints_for_records(catalog, &nodes, &touched)?;
                 validate_relationship_property_exists_constraints_for_records(
                     catalog,
                     &relationships,
                     &touched,
                 )?;
-                validate_property_schemas_for_records(
-                    catalog,
-                    &nodes,
-                    &relationships,
-                    &touched,
-                )
+                validate_property_schemas_for_records(catalog, &nodes, &relationships, &touched)
             }
             // Schema/DDL or unrecognized ops require full validation: new
             // constraints and property types apply to pre-existing records.

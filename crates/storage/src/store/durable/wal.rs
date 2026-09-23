@@ -254,17 +254,18 @@ impl DurableStore {
             return Err(std::io::Error::from(std::io::ErrorKind::PermissionDenied).into());
         }
         // Windows append-only handles do not grant the access required to resize.
-        let file = OpenOptions::new().write(true).open(&self.wal_path)?;
-        if file.metadata()?.len() < self.wal_bytes {
-            return Err(HawDBError::Storage(
-                "WAL lost previously appended bytes before rollback".to_string(),
-            ));
+        {
+            let file = OpenOptions::new().write(true).open(&self.wal_path)?;
+            if file.metadata()?.len() < self.wal_bytes {
+                return Err(HawDBError::Storage(
+                    "WAL lost previously appended bytes before rollback".to_string(),
+                ));
+            }
+            file.set_len(self.wal_bytes)?;
+            file.sync_all()?;
         }
-        file.set_len(self.wal_bytes)?;
-        file.sync_all()?;
         if created {
             if self.wal_bytes == 0 {
-                drop(file);
                 fs::remove_file(&self.wal_path)?;
             }
             sync_parent_dir(&self.wal_path)?;

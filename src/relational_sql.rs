@@ -34,15 +34,15 @@ pub use hawdb_optimizer::{
 };
 pub use hawdb_sql::RelationalSqlStageTimings;
 
+pub(crate) use hawdb_relational::index_access::RelationalIndexReadMode;
 #[cfg(test)]
 pub(crate) use hawdb_relational::query::execute_relational_query_sql_with_runtime;
 pub(crate) use hawdb_relational::query::{
     execute_prepared_relational_query_with_resources, RelationalQueryLimits, RelationalQueryOutput,
     RelationalQueryResourceContext,
 };
-pub(crate) use hawdb_sql::{PreparedRelationalSql, RelationalPlanTemplateCache};
-pub(crate) use hawdb_relational::index_access::RelationalIndexReadMode;
 pub(crate) use hawdb_relational::row_access::RelationalRowReadMode;
+pub(crate) use hawdb_sql::{PreparedRelationalSql, RelationalPlanTemplateCache};
 
 pub(crate) type RelationalQueryReadModes<'a> =
     hawdb_relational::query::RelationalQueryReadModes<'a, crate::store::GraphStore>;

@@ -156,7 +156,7 @@ fn copy_wal_exclusive(
     expected_identity: (u64, Sha256Digest),
 ) -> Result<()> {
     let mut source = File::open(source)?;
-    let mut destination_file = match OpenOptions::new()
+    let destination_file = match OpenOptions::new()
         .write(true)
         .create_new(true)
         .open(destination)
@@ -173,6 +173,7 @@ fn copy_wal_exclusive(
         Err(error) => return Err(error.into()),
     };
     let copy_result = (|| {
+        let mut destination_file = destination_file;
         let mut integrity = IntegrityHasher::new();
         let mut encoded_len = 0u64;
         let mut buffer = vec![0u8; 1024 * 1024];
@@ -196,7 +197,6 @@ fn copy_wal_exclusive(
         Ok(())
     })();
     if copy_result.is_err() {
-        drop(destination_file);
         let _ = fs::remove_file(destination);
     }
     copy_result

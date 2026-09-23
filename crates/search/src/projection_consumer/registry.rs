@@ -155,14 +155,16 @@ impl ConsumerRegistry {
             Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
             Err(error) => return Err(error.into()),
         }
-        let mut file = OpenOptions::new()
-            .write(true)
-            .create_new(true)
-            .open(&temporary)?;
-        let guard = Temporary(temporary.clone());
-        file.write_all(&bytes)?;
-        file.sync_all()?;
-        drop(file);
+        let guard = {
+            let mut file = OpenOptions::new()
+                .write(true)
+                .create_new(true)
+                .open(&temporary)?;
+            let guard = Temporary(temporary.clone());
+            file.write_all(&bytes)?;
+            file.sync_all()?;
+            guard
+        };
         before_replace()?;
         hawdb_storage::durable_replace_file(&temporary, &target)?;
         drop(guard);

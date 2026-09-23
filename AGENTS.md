@@ -61,6 +61,7 @@
 
 ## Required Pre-commit Lint Checks
 
+- Enable the repository's `prek.toml` hooks with `prek install`. Use `prek run --all-files` to run the formatting and native Clippy checks explicitly; the hooks also run automatically at pre-commit. Target-specific checks remain additional requirements.
 - Before every commit, run `cargo fmt --all -- --check` and `cargo clippy --locked --workspace --all-targets --all-features -- -D warnings` with the repository's pinned Rust toolchain. Both checks must pass on the final changes before committing.
 - Fix all formatting and Clippy diagnostics found by these checks, including problems in existing code outside the current diff. Do not dismiss a failure as pre-existing, disable a lint, add suppression attributes, or weaken the check to obtain a pass.
 - When changing target-specific code, also run strict Clippy for the affected supported target and feature configuration. For the minimal browser WASM runtime, use the compiler and archiver setup in `docs/WASM.md` and run `cargo clippy --locked -p hawdb --no-default-features --target wasm32-unknown-unknown --lib --test in_memory_portable -- -D warnings`.

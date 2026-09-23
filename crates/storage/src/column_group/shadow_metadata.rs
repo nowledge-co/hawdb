@@ -351,10 +351,11 @@ impl ShadowKeyDictionary {
         let path = shadow_root.join(SHADOW_KEY_DICTIONARY_FILE);
         let tmp_path = shadow_root.join(format!(".{SHADOW_KEY_DICTIONARY_FILE}.tmp"));
         let result = (|| -> Result<()> {
-            let mut file = File::create(&tmp_path)?;
-            file.write_all(&bytes)?;
-            file.sync_all()?;
-            drop(file);
+            {
+                let mut file = File::create(&tmp_path)?;
+                file.write_all(&bytes)?;
+                file.sync_all()?;
+            }
             durable_replace_file(&tmp_path, &path)?;
             Ok(())
         })();

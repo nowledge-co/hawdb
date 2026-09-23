@@ -664,27 +664,29 @@ impl ProjectionGenerationStore {
                 if path.with_extension(MANIFEST_SUFFIX).exists() {
                     continue;
                 }
-                let mut file = OpenOptions::new().read(true).open(&path)?;
-                let (begin, _) = match read_data_header(&mut file) {
-                    Ok(header) => header,
-                    Err(_) => continue,
+                let bytes = {
+                    let mut file = OpenOptions::new().read(true).open(&path)?;
+                    let (begin, _) = match read_data_header(&mut file) {
+                        Ok(header) => header,
+                        Err(_) => continue,
+                    };
+                    let key = identity_key(&begin.identity);
+                    if shared.open_writers.contains(&key) {
+                        continue;
+                    }
+                    if report.generations_reclaimed >= limits.max_generations_to_reclaim.get() {
+                        report.backlog_remaining = true;
+                        break;
+                    }
+                    let bytes = file.metadata()?.len();
+                    if report.bytes_reclaimed.saturating_add(bytes)
+                        > u64::try_from(limits.max_bytes_to_reclaim.get()).unwrap_or(u64::MAX)
+                    {
+                        report.backlog_remaining = true;
+                        break;
+                    }
+                    bytes
                 };
-                let key = identity_key(&begin.identity);
-                if shared.open_writers.contains(&key) {
-                    continue;
-                }
-                if report.generations_reclaimed >= limits.max_generations_to_reclaim.get() {
-                    report.backlog_remaining = true;
-                    break;
-                }
-                let bytes = file.metadata()?.len();
-                if report.bytes_reclaimed.saturating_add(bytes)
-                    > u64::try_from(limits.max_bytes_to_reclaim.get()).unwrap_or(u64::MAX)
-                {
-                    report.backlog_remaining = true;
-                    break;
-                }
-                drop(file);
                 fs::remove_file(&path)?;
                 report.generations_reclaimed = report.generations_reclaimed.saturating_add(1);
                 report.bytes_reclaimed = report.bytes_reclaimed.saturating_add(bytes);

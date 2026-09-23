@@ -4396,7 +4396,7 @@ impl<S: crate::executor::ExecutionStore> KnowledgeRetrievalGraphContext<'_, S> {
         request: &KnowledgeRetrievalRequest,
     ) -> Result<KnowledgeRetrievalOutput> {
         let graph_commit_epoch =
-            <S as hawdb_storage::graph_engine::GraphReadEngine>::commit_epoch(&self.store);
+            <S as hawdb_storage::graph_engine::GraphReadEngine>::commit_epoch(self.store);
         let mut pipeline =
             hawdb_search::knowledge_retrieval_pipeline::KnowledgeRetrievalPipelineBudget::new(
                 self.query_memory_budget,
@@ -4469,7 +4469,7 @@ impl<S: crate::executor::ExecutionStore> KnowledgeRetrievalGraphContext<'_, S> {
             )?;
         let required_projection_commit_epoch =
             <S as hawdb_storage::graph_engine::GraphReadEngine>::search_projection_changefeed_status(
-                &self.store,
+                self.store,
             )
             .required_projection_commit_epoch();
         let retrievers = knowledge_retriever_reports(

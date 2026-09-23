@@ -168,9 +168,10 @@ fn segment_read_waves_keep_order_and_budget_on_the_serial_backend() {
 #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
 #[test]
 fn persistent_open_is_rejected() {
-    let error = Database::open("browser-database")
-        .err()
-        .expect("persistent open must fail");
+    let error = match Database::open("browser-database") {
+        Ok(_) => panic!("persistent open must fail"),
+        Err(error) => error,
+    };
     assert!(error
         .to_string()
         .contains("persistent storage is unavailable"));

@@ -231,6 +231,10 @@ impl VersionIndex {
         self.stamps.len()
     }
 
+    pub fn is_empty(&self) -> bool {
+        self.stamps.is_empty()
+    }
+
     pub fn stamp(&self, key: &VersionKey) -> Option<VersionStamp> {
         self.stamps.get(key).copied()
     }
@@ -369,6 +373,6 @@ mod tests {
 
     #[test]
     fn default_limit_tracks_the_wal_batch_admission_limit() {
-        assert!(DEFAULT_MAX_VERSION_WRITE_SET_ENTRIES > 0);
+        const { assert!(DEFAULT_MAX_VERSION_WRITE_SET_ENTRIES > 0) };
     }
 }

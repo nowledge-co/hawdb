@@ -781,4 +781,3 @@ fn file_name(path: &Path) -> Result<String> {
         .map(str::to_string)
         .ok_or_else(|| HawDBError::Storage("WAL doctor path has no valid file name".to_string()))
 }
-
