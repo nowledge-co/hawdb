@@ -35,7 +35,7 @@ mod policy;
 pub use policy::{
     adaptive_histogram_sample_limit, node_property_supports_optimizer_statistics,
     relationship_property_supports_optimizer_statistics, sample_histogram_values,
-    MAX_BOUNDED_PATH_STAT_HOPS, MAX_PROPERTY_HISTOGRAM_VALUES,
+    MAX_BOUNDED_PATH_STAT_HOPS, MAX_BOUNDED_PATH_STAT_VISITS, MAX_PROPERTY_HISTOGRAM_VALUES,
 };
 
 /// Resource limits for one external optimizer-statistics refresh.

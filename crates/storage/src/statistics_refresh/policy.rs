@@ -22,6 +22,11 @@ const MID_PROPERTY_HISTOGRAM_DISTINCT_VALUES: usize = 1_024;
 const MAX_PROPERTY_HISTOGRAM_DISTINCT_VALUES: usize = 4_096;
 pub const MAX_BOUNDED_PATH_STAT_HOPS: usize = 3;
 
+/// Total edge traversals allowed while collecting bounded-path statistics.
+/// Statistics are cardinality estimates for plan choice, so truncating a hot
+/// graph's enumeration is preferable to unbounded O(degree^hops) work.
+pub const MAX_BOUNDED_PATH_STAT_VISITS: usize = 100_000;
+
 fn property_value_supports_optimizer_statistics(value: &Value) -> bool {
     match value {
         Value::Null

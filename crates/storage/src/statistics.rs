@@ -21,7 +21,7 @@ use crate::graph_index::{CompositePropertyIndex, NodePropertyIndex, Relationship
 use crate::statistics_refresh::{
     adaptive_histogram_sample_limit, node_property_supports_optimizer_statistics,
     relationship_property_supports_optimizer_statistics, sample_histogram_values,
-    MAX_BOUNDED_PATH_STAT_HOPS, MAX_PROPERTY_HISTOGRAM_VALUES,
+    MAX_BOUNDED_PATH_STAT_HOPS, MAX_BOUNDED_PATH_STAT_VISITS, MAX_PROPERTY_HISTOGRAM_VALUES,
 };
 use crate::{CowSegmentedMap, NodeId, NodeRecord, RelId, RelRecord};
 use hawdb_core::{
@@ -525,6 +525,7 @@ struct BoundedPathStatAccumulator {
     counts: BTreeMap<(LabelId, RelTypeId, LabelId, usize), u64>,
     sources: BTreeMap<(LabelId, RelTypeId, LabelId, usize), BTreeSet<NodeId>>,
     targets: BTreeMap<(LabelId, RelTypeId, LabelId, usize), BTreeSet<NodeId>>,
+    visits: usize,
 }
 
 impl BoundedPathStatContext<'_> {
@@ -537,13 +538,17 @@ impl BoundedPathStatContext<'_> {
         hop: usize,
         accumulator: &mut BoundedPathStatAccumulator,
     ) {
-        if hop > self.max_hops {
+        if hop > self.max_hops || accumulator.visits >= MAX_BOUNDED_PATH_STAT_VISITS {
             return;
         }
         let Some(targets) = self.outgoing_by_source_type.get(&(current, rel_type)) else {
             return;
         };
         for target_id in targets {
+            if accumulator.visits >= MAX_BOUNDED_PATH_STAT_VISITS {
+                return;
+            }
+            accumulator.visits += 1;
             let Some(target) = self.nodes.get(target_id) else {
                 continue;
             };
@@ -570,5 +575,56 @@ impl BoundedPathStatContext<'_> {
                 accumulator,
             );
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn node(id: u64) -> NodeRecord {
+        NodeRecord {
+            id: NodeId(id),
+            labels: BTreeSet::from([LabelId(0)]),
+            properties: BTreeMap::new(),
+        }
+    }
+
+    /// A hub graph whose uncapped 3-hop enumeration would exceed the visit
+    /// budget must truncate instead of doing O(degree^hops) work.
+    #[test]
+    fn bounded_path_statistics_respect_global_visit_budget() {
+        const DEGREE: u64 = 50; // hub->50 mids->50 leaves each => ~127k visits uncapped
+        let rel_type = RelTypeId(0);
+
+        let mut nodes = CowSegmentedMap::default();
+        let mut outgoing: BTreeMap<(NodeId, RelTypeId), Vec<NodeId>> = BTreeMap::new();
+        let hub = NodeId(0);
+        nodes.insert(hub, node(0));
+        let mut hub_targets = Vec::new();
+        for m in 1..=DEGREE {
+            let mid = NodeId(m);
+            nodes.insert(mid, node(m));
+            hub_targets.push(mid);
+            let leaf_targets: Vec<NodeId> = (0..DEGREE)
+                .map(|l| {
+                    let leaf = NodeId(1_000_000 + m * DEGREE + l);
+                    nodes.insert(leaf, node(leaf.0));
+                    leaf
+                })
+                .collect();
+            outgoing.insert((mid, rel_type), leaf_targets);
+        }
+        outgoing.insert((hub, rel_type), hub_targets);
+
+        let stats = compute_bounded_path_statistics(
+            &nodes,
+            &outgoing,
+            MAX_BOUNDED_PATH_STAT_HOPS,
+        );
+        // Single-label targets => one count entry per traversed edge.
+        let total_visits: u64 = stats.counts.values().sum();
+        assert!(total_visits <= MAX_BOUNDED_PATH_STAT_VISITS as u64);
+        assert!(total_visits > 0);
     }
 }
