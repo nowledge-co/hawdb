@@ -8,12 +8,16 @@ See CONTRIBUTING.md for scope, evidence, and review expectations.
 ### Issue
 
 <!--
-Behavior changes link an issue: close #123 if this PR completes its acceptance
-criteria, or ref #123 for partial/related work. Create the issue first if needed.
-Docs-only and mechanical maintenance may use None with a short reason.
+Every PR must link an existing, relevant issue, including documentation and
+mechanical maintenance PRs. Search existing issues and create one first if needed.
+Use close #123 only when this PR fully resolves the issue and completes all of
+its acceptance criteria. Otherwise use ref #123 and explain the remaining work.
+For multiple issues, choose each relationship explicitly: close #123, ref #456.
+Replace the placeholder below. None, missing references, and placeholders are
+not accepted. Reviewers must verify the issue and relationship before approval.
 -->
 
-Issue Number: close #xxx
+Issue Number: ref #xxx
 
 ### Problem and context
 

@@ -41,10 +41,19 @@ observed impact rather than from the amount of code involved.
 1. Fork the repository if needed and create a branch from current `main`.
    Every PR targets `main` directly. Keep sequential work in one coherent PR,
    or land each independent piece before starting its dependent PR.
-2. Link an issue for behavior changes. Use `Issue Number: close #123` only when
-   this PR completes that issue's acceptance criteria; use `ref #123` for
-   partial or related work. Docs-only and mechanical maintenance may use
-   `Issue Number: None` with a one-line explanation.
+2. Every PR must link at least one existing issue that describes the problem
+   or requested change, including documentation-only and mechanical maintenance
+   PRs. Search existing issues and create one before opening the PR if none fits.
+   The PR description must include an `Issue Number:` line:
+
+   - Use `Issue Number: close #123` only when the PR fully resolves the issue
+     and completes all of its acceptance criteria.
+   - Use `Issue Number: ref #123` for partial or related work that leaves the
+     issue open. Explain the remaining work in the PR description.
+   - For multiple issues, choose the relationship for each explicitly, for
+     example `Issue Number: close #123, ref #456`.
+
+   `None`, missing references, and unreplaced placeholders are not accepted.
 3. Keep changes focused and fill in the [PR template](.github/PULL_REQUEST_TEMPLATE.md).
    Explain the problem, mechanism, important tradeoffs, tests, and compatibility
    impact. Large public API or persistent-format proposals should be discussed
@@ -142,6 +151,11 @@ CPU/memory/I/O measurements as applicable; debug timings and operation counts
 are supporting evidence, not interchangeable with release workload measurements.
 
 ## Review and merge
+
+Before approving a PR, verify that its `Issue Number:` line references an
+existing, relevant issue and that each `close` or `ref` relationship matches
+the delivered scope. Request an issue or a corrected relationship when this
+requirement is not met; documentation and maintenance PRs follow the same rule.
 
 Reviewers explain findings with the trigger, violated invariant or measurable
 impact, relevant source path, and a focused correction or validation request.
