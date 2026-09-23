@@ -23,7 +23,7 @@ use crate::optimizer::{
     PhysicalPlan,
 };
 use crate::planner::{self, LogicalPlan, Predicate};
-use crate::schema::{Catalog, GraphStatistics, IndexKind};
+use crate::schema::{Catalog, GraphStatistics, IndexKind, PropertyType, TableKind};
 use crate::store::GraphStore;
 use crate::value::Value;
 use hawdb_optimizer::graph::optimizer_catalog_from_graph_statistics;
@@ -120,6 +120,26 @@ struct OptimizerSchemaKey {
     range_indexes: Vec<(String, String)>,
     full_text_indexes: Vec<(String, String)>,
     composite_indexes: Vec<(String, Vec<String>)>,
+    /// Declared property descriptors, because declaring or altering a
+    /// property's type/nullability/state changes which properties are
+    /// eligible for optimizer statistics even when labels and indexes are
+    /// unchanged. Without them a descriptor DDL inside the commit-lag window
+    /// would leave now-ineligible statistics cached.
+    property_descriptors: Vec<SchemaPropertyDescriptor>,
+}
+
+/// Property-descriptor identity for [`OptimizerSchemaKey`].
+/// `SchemaObjectState` has no `Ord`/`Hash`, so its discriminant is carried as
+/// `u8`.
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
+struct SchemaPropertyDescriptor {
+    table: String,
+    table_kind: TableKind,
+    property: String,
+    value_type: PropertyType,
+    nullable: bool,
+    property_state: u8,
+    table_state: u8,
 }
 
 #[derive(Debug, Clone)]
@@ -199,6 +219,22 @@ impl OptimizerSchemaKey {
                     .map(|label| (label.to_string(), index.properties.clone()))
             })
             .collect();
+        let mut property_descriptors = catalog
+            .property_descriptors()
+            .filter_map(|property| {
+                let table = catalog.table_descriptor(property.table_id)?;
+                Some(SchemaPropertyDescriptor {
+                    table: table.name.clone(),
+                    table_kind: table.kind,
+                    property: property.name.clone(),
+                    value_type: property.value_type,
+                    nullable: property.nullable,
+                    property_state: property.state as u8,
+                    table_state: table.state as u8,
+                })
+            })
+            .collect::<Vec<_>>();
+        property_descriptors.sort();
         Self {
             labels,
             relationship_types,
@@ -206,6 +242,7 @@ impl OptimizerSchemaKey {
             range_indexes,
             full_text_indexes,
             composite_indexes,
+            property_descriptors,
         }
     }
 }
@@ -254,11 +291,19 @@ impl OptimizerPlanningCache {
     ) -> StatisticsCacheRefresh {
         let schema = OptimizerSchemaKey::from_catalog(catalog);
         let source_graph_commit_epoch = store.commit_epoch();
-        let commit_lag = source_graph_commit_epoch
-            .saturating_sub(self.statistics_source_graph_commit_epoch.unwrap_or(0));
+        let statistics_epoch = self.statistics_source_graph_commit_epoch;
+        let commit_lag = source_graph_commit_epoch.saturating_sub(statistics_epoch.unwrap_or(0));
+        // A backwards move means this call plans against an older retained
+        // snapshot than the cached statistics were computed from (the planning
+        // cache is shared across snapshots). Refresh regardless of the lag so
+        // the snapshot sees statistics computed from its own graph state —
+        // saturating_sub alone would report zero lag and skip the refresh.
+        let epoch_regressed =
+            statistics_epoch.is_some_and(|epoch| source_graph_commit_epoch < epoch);
         let refresh_statistics = self.statistics.is_none()
             || self.statistics_schema.as_ref() != Some(&schema)
-            || (refresh_for_data_change && commit_lag >= max_commit_lag.unwrap_or(1).max(1));
+            || (refresh_for_data_change
+                && (epoch_regressed || commit_lag >= max_commit_lag.unwrap_or(1).max(1)));
         if !refresh_statistics {
             return StatisticsCacheRefresh::default();
         }
@@ -731,6 +776,103 @@ mod tests {
         store.create_node(&mut catalog, "T", node_props(9)).unwrap();
         let refresh = cache.ensure_statistics(&catalog, &store, true, None);
         assert!(refresh.snapshot_refreshed);
+
+        // Some(0) is identical to None.
+        store.create_node(&mut catalog, "T", node_props(10)).unwrap();
+        let refresh = cache.ensure_statistics(&catalog, &store, true, Some(0));
+        assert!(refresh.snapshot_refreshed);
+
+        // Some(1) refreshes as soon as the epoch moves by one commit.
+        store.create_node(&mut catalog, "T", node_props(11)).unwrap();
+        let refresh = cache.ensure_statistics(&catalog, &store, true, Some(1));
+        assert!(refresh.snapshot_refreshed);
+
+        // An unchanged epoch never refreshes, whatever the lag.
+        let refresh = cache.ensure_statistics(&catalog, &store, true, Some(1));
+        assert!(!refresh.snapshot_refreshed);
+
+        // A second lag window applies after a refresh: commits below the
+        // threshold since the last refresh do not recompute.
+        let stats_epoch = cache.statistics_source_graph_commit_epoch.unwrap();
+        for i in 12..16 {
+            store.create_node(&mut catalog, "T", node_props(i)).unwrap();
+        }
+        assert!(store.commit_epoch() - stats_epoch < 8);
+        let refresh = cache.ensure_statistics(&catalog, &store, true, Some(8));
+        assert!(!refresh.snapshot_refreshed);
+
+        let _ = std::fs::remove_dir_all(&path);
+    }
+
+    /// The planning cache is shared across snapshots: a call planning against
+    /// a retained older snapshot must refresh, since the cached statistics
+    /// describe a newer graph than that snapshot can see — under every lag
+    /// setting, including the legacy `None`.
+    #[test]
+    fn statistics_commit_lag_refreshes_for_older_snapshots() {
+        let path = unique_test_dir("stats_older_snapshot");
+        let mut catalog = Catalog::default();
+        let mut store = GraphStore::open(&path, &mut catalog).unwrap();
+        store.create_node(&mut catalog, "T", node_props(0)).unwrap();
+        let snapshot = store.snapshot();
+        store.create_node(&mut catalog, "T", node_props(1)).unwrap();
+        assert!(snapshot.commit_epoch() < store.commit_epoch());
+
+        for lag in [None, Some(0), Some(8)] {
+            let mut cache = OptimizerPlanningCache::default();
+            let refresh = cache.ensure_statistics(&catalog, &store, true, lag);
+            assert!(refresh.snapshot_refreshed, "lag={lag:?} populate");
+            let refresh = cache.ensure_statistics(&catalog, &snapshot, true, lag);
+            assert!(refresh.snapshot_refreshed, "lag={lag:?} older snapshot");
+            assert_eq!(
+                cache.statistics_source_graph_commit_epoch,
+                Some(snapshot.commit_epoch()),
+                "lag={lag:?}"
+            );
+        }
+        let _ = std::fs::remove_dir_all(&path);
+    }
+
+    /// Declaring a property descriptor inside the lag window changes which
+    /// properties are eligible for statistics: a previously undeclared string
+    /// keeps a cached histogram that a TEXT declaration makes ineligible. The
+    /// schema key must notice even though labels and indexes are unchanged.
+    #[test]
+    fn descriptor_ddl_inside_lag_window_refreshes_statistics() {
+        let path = unique_test_dir("stats_descriptor_ddl");
+        let mut catalog = Catalog::default();
+        let mut store = GraphStore::open(&path, &mut catalog).unwrap();
+        let mut cache = OptimizerPlanningCache::default();
+
+        let mut props = node_props(0);
+        props.insert("s".to_string(), Value::String("x".to_string()));
+        store.create_node(&mut catalog, "T", props).unwrap();
+        let label_id = catalog.label_id("T").unwrap();
+
+        let refresh = cache.ensure_statistics(&catalog, &store, true, Some(8));
+        assert!(refresh.snapshot_refreshed);
+        let stats = cache.statistics.as_ref().unwrap();
+        let key = (label_id, "s".to_string());
+        assert!(stats.property_histograms.contains_key(&key));
+        assert!(stats.property_distinct_counts.contains_key(&key));
+
+        // The TEXT declaration commits once — well inside the lag window —
+        // but makes the property ineligible for statistics.
+        store
+            .create_property_descriptor(
+                &mut catalog,
+                TableKind::Node,
+                "T",
+                "s",
+                PropertyType::Text,
+                true,
+            )
+            .unwrap();
+        let refresh = cache.ensure_statistics(&catalog, &store, true, Some(8));
+        assert!(refresh.snapshot_refreshed);
+        let stats = cache.statistics.as_ref().unwrap();
+        assert!(!stats.property_histograms.contains_key(&key));
+        assert!(!stats.property_distinct_counts.contains_key(&key));
 
         let _ = std::fs::remove_dir_all(&path);
     }
