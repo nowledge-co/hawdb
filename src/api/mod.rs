@@ -321,6 +321,12 @@ pub struct DatabaseConfig {
         hawdb_storage::RelationalPrimaryKeyChangeCaptureLimits,
     /// Maximum entries per graph physical-plan or relational SQL-template cache.
     pub max_plan_cache_entries: Option<usize>,
+    /// Commit-epoch lag tolerated before the inline query path recomputes
+    /// optimizer statistics. `None` or `Some(0)` refreshes on every committed
+    /// data change (freshest plans). Larger values amortize statistics
+    /// recomputation over write-heavy workloads; stale statistics only affect
+    /// plan choice, never correctness.
+    pub optimizer_statistics_inline_commit_lag: Option<u64>,
     pub slow_query_log_capacity: usize,
     pub slow_query_log_threshold_micros: u128,
     pub statement_summary_capacity: usize,
@@ -514,6 +520,7 @@ impl Default for DatabaseConfig {
             ),
             search_projection_relational_change_limits: Default::default(),
             max_plan_cache_entries: Some(DEFAULT_PLAN_CACHE_MAX_ENTRIES),
+            optimizer_statistics_inline_commit_lag: None,
             slow_query_log_capacity: system_sql::DEFAULT_SLOW_QUERY_LOG_CAPACITY,
             slow_query_log_threshold_micros: system_sql::DEFAULT_SLOW_QUERY_LOG_THRESHOLD_MICROS,
             statement_summary_capacity: system_sql::DEFAULT_STATEMENT_SUMMARY_CAPACITY,

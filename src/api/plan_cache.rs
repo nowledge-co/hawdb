@@ -238,7 +238,7 @@ impl OptimizerPlanningCache {
         // A cache lookup must retain the last published statistics generation:
         // ordinary data commits do not make a physical plan illegal. A cache
         // miss refreshes the snapshot before choosing a new plan instead.
-        self.ensure_statistics(catalog, store, false);
+        self.ensure_statistics(catalog, store, false, None);
         OptimizerEnvironmentKey {
             schema: OptimizerSchemaKey::from_catalog(catalog),
             statistics_generation: self.statistics_generation,
@@ -250,13 +250,15 @@ impl OptimizerPlanningCache {
         catalog: &Catalog,
         store: &R,
         refresh_for_data_change: bool,
+        max_commit_lag: Option<u64>,
     ) -> StatisticsCacheRefresh {
         let schema = OptimizerSchemaKey::from_catalog(catalog);
         let source_graph_commit_epoch = store.commit_epoch();
+        let commit_lag = source_graph_commit_epoch
+            .saturating_sub(self.statistics_source_graph_commit_epoch.unwrap_or(0));
         let refresh_statistics = self.statistics.is_none()
             || self.statistics_schema.as_ref() != Some(&schema)
-            || (refresh_for_data_change
-                && self.statistics_source_graph_commit_epoch != Some(source_graph_commit_epoch));
+            || (refresh_for_data_change && commit_lag >= max_commit_lag.unwrap_or(1).max(1));
         if !refresh_statistics {
             return StatisticsCacheRefresh::default();
         }
@@ -282,12 +284,13 @@ impl OptimizerPlanningCache {
         &mut self,
         catalog: &Catalog,
         store: &R,
+        statistics_commit_lag: Option<u64>,
     ) -> OptimizerCatalogAccess {
         let mut decisions = Vec::new();
         // This path is reached only after the physical-plan cache missed or
         // was intentionally bypassed, so cost-based planning must observe the
-        // latest committed graph statistics.
-        let refresh = self.ensure_statistics(catalog, store, true);
+        // latest committed graph statistics, bounded by the configured lag.
+        let refresh = self.ensure_statistics(catalog, store, true, statistics_commit_lag);
         if refresh.snapshot_refreshed {
             let statistics = self
                 .statistics
@@ -456,10 +459,11 @@ pub(super) fn optimized_query_plan_for<S: crate::executor::ExecutionStore>(
             cache_mode == PlanCacheMode::Use,
         );
     }
-    let catalog_access = context
-        .planning_cache
-        .borrow_mut()
-        .optimizer_catalog(context.catalog, context.store);
+    let catalog_access = context.planning_cache.borrow_mut().optimizer_catalog(
+        context.catalog,
+        context.store,
+        context.config.optimizer_statistics_inline_commit_lag,
+    );
     let logical_root = LogicalPlanRoot::new(logical);
     let physical_root = query_optimizer
         .optimize_root_with_catalog_and_directive(
@@ -558,7 +562,11 @@ fn refresh_plan_trace<S: crate::executor::ExecutionStore>(
             let catalog = context
                 .planning_cache
                 .borrow_mut()
-                .optimizer_catalog(context.catalog, context.store)
+                .optimizer_catalog(
+                    context.catalog,
+                    context.store,
+                    context.config.optimizer_statistics_inline_commit_lag,
+                )
                 .catalog;
             optimizer.refresh_trace_for_physical_plan(trace, physical_plan, &catalog);
             trace.decisions.push(
@@ -664,5 +672,66 @@ pub(super) fn statement_uses_plan_cache(statement: &cypher::Statement) -> bool {
         | cypher::Statement::Pipeline(_)
         | cypher::Statement::GraphAlgorithm(_) => true,
         _ => false,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::collections::BTreeMap;
+
+    fn unique_test_dir(name: &str) -> std::path::PathBuf {
+        let nanos = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        std::env::temp_dir().join(format!("hawdb_{name}_{nanos}"))
+    }
+
+    fn node_props(i: i64) -> BTreeMap<String, Value> {
+        BTreeMap::from([("k".to_string(), Value::Int(i))])
+    }
+
+    #[test]
+    fn statistics_commit_lag_defers_refresh_until_threshold() {
+        let path = unique_test_dir("stats_commit_lag");
+        let mut catalog = Catalog::default();
+        let mut store = GraphStore::open(&path, &mut catalog).unwrap();
+        let mut cache = OptimizerPlanningCache::default();
+
+        // Seed the label first: a new label mutates the schema, and schema
+        // changes legitimately force a refresh regardless of the lag window.
+        store.create_node(&mut catalog, "T", node_props(0)).unwrap();
+
+        // First call always computes: there is no snapshot yet.
+        let refresh = cache.ensure_statistics(&catalog, &store, true, Some(8));
+        assert!(refresh.snapshot_refreshed);
+        let stats_epoch = cache.statistics_source_graph_commit_epoch.unwrap();
+
+        // Commits below the lag threshold must not recompute.
+        for i in 1..5 {
+            store.create_node(&mut catalog, "T", node_props(i)).unwrap();
+        }
+        assert!(store.commit_epoch() - stats_epoch < 8);
+        let refresh = cache.ensure_statistics(&catalog, &store, true, Some(8));
+        assert!(!refresh.snapshot_refreshed);
+        assert_eq!(
+            cache.statistics_source_graph_commit_epoch.unwrap(),
+            stats_epoch
+        );
+
+        // Reaching the threshold recomputes.
+        for i in 5..9 {
+            store.create_node(&mut catalog, "T", node_props(i)).unwrap();
+        }
+        let refresh = cache.ensure_statistics(&catalog, &store, true, Some(8));
+        assert!(refresh.snapshot_refreshed);
+
+        // None preserves the legacy refresh-on-every-commit behavior.
+        store.create_node(&mut catalog, "T", node_props(9)).unwrap();
+        let refresh = cache.ensure_statistics(&catalog, &store, true, None);
+        assert!(refresh.snapshot_refreshed);
+
+        let _ = std::fs::remove_dir_all(&path);
     }
 }
