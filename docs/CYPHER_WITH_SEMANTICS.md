@@ -1,7 +1,7 @@
 # WITH identity and pagination boundaries
 
 [Issue #757](https://github.com/nowledge-co/hawdb/issues/757) corrects two legacy
-planning paths discovered while auditing the clause-pipeline migration in
+planning paths and a subsequent-aggregation window error discovered while auditing the clause-pipeline migration in
 [issue #158](https://github.com/nowledge-co/hawdb/issues/158). This does not enable
 the generic pipeline for every statement or finish the AST migration.
 
@@ -50,10 +50,20 @@ lookup computes J(W(S(G))). These are not generally equal:
   are not interchangeable with groups.
 
 The parser now retains `with_order_by`, `with_offset` and `with_limit` when a
-post-WITH lookup exists. `order_by`, `offset` and `limit` continue to describe
+post-WITH lookup or RETURN aggregate exists. `order_by`, `offset` and `limit` continue to describe
 RETURN. The planner applies the WITH window before `NodeColumnLookup` and the
 RETURN window after it. Existing restrictions on simultaneously specifying the
 same window component in both clauses remain unchanged.
+
+A subsequent global aggregate is another cardinality boundary. Let A(G) return
+one row containing |G|, including when G is empty. For n groups and nonnegative
+offset o and limit k, A(W(o,k)(G)) must return exactly one row with count
+min(k, max(0, n-o)). Conversely, W(o,k)(A(G)) either retains or drops the one
+count row and, if retained, its count is n. In particular, WITH LIMIT 0 followed
+by RETURN COUNT(*) returns a zero count; RETURN COUNT(*) LIMIT 0 returns no row.
+The planner therefore applies retained WITH windows before the second Aggregate,
+while final RETURN windows remain above it. This also preserves WITH ordering
+before group selection rather than treating it as an order on the final count.
 
 This is a source-linked deductive argument, not a machine-checked proof of the
 Rust implementation. It assumes the existing aggregate, lookup, sort and limit
@@ -71,6 +81,8 @@ The embedded aggregate regressions cover:
   without a property index;
 - the opposite WITH-before-lookup window, which must still return two rows;
 - required lookup filtering and optional NULL extension before final LIMIT.
+- all 16 SKIP/LIMIT pairs around a second COUNT aggregation, independently
+  checking both WITH-before-count and RETURN-after-count placement.
 
 The original code failed the equal-property grouping and final-LIMIT tests.
 Parser tests separately pin which AST fields retain each clause's window.

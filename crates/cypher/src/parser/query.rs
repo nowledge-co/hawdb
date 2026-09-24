@@ -453,9 +453,13 @@ impl Parser<'_> {
         }
         let distinct = self.consume_keyword("DISTINCT");
         let returns = self.parse_return_items()?;
-        // A later MATCH can change cardinality. Preserve the lexical WITH
+        // A later MATCH or aggregate can change cardinality. Preserve the lexical WITH
         // window separately from RETURN's window instead of folding them.
-        let retain_with_window = with_clause.with_projection.is_some() || post_with_match.is_some();
+        let retain_with_window = with_clause.with_projection.is_some()
+            || post_with_match.is_some()
+            || returns
+                .iter()
+                .any(|item| matches!(item.expression.kind, ReturnExpressionKind::Aggregate(_)));
         let order_by = if self.consume_keyword("ORDER") {
             if !with_order_by.is_empty() {
                 return Err(self.error("ORDER BY is already attached to WITH"));

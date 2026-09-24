@@ -714,6 +714,35 @@ pub(super) fn plan_aggregate_with_match_return(
             input: Box::new(input),
         };
     }
+    if !query.with_order_by.is_empty() {
+        input = LogicalPlan::Sort {
+            items: plan_sort_items(
+                &BTreeSet::new(),
+                &column_names,
+                &query.with_order_by,
+                parameters,
+            )?,
+            input: Box::new(input),
+        };
+    }
+    let with_offset = query
+        .with_offset
+        .as_ref()
+        .map(|offset| bind_pagination_value(offset, parameters, "offset"))
+        .transpose()?
+        .unwrap_or(0);
+    let with_limit = query
+        .with_limit
+        .as_ref()
+        .map(|limit| bind_pagination_value(limit, parameters, "limit"))
+        .transpose()?;
+    if with_offset > 0 || with_limit.is_some() {
+        input = LogicalPlan::Limit {
+            offset: with_offset,
+            limit: with_limit,
+            input: Box::new(input),
+        };
+    }
     if query
         .returns
         .iter()
@@ -749,35 +778,6 @@ pub(super) fn plan_aggregate_with_match_return(
         return Ok(input);
     }
     if let Some(lookup) = &query.post_with_match {
-        if !query.with_order_by.is_empty() {
-            input = LogicalPlan::Sort {
-                items: plan_sort_items(
-                    &BTreeSet::new(),
-                    &column_names,
-                    &query.with_order_by,
-                    parameters,
-                )?,
-                input: Box::new(input),
-            };
-        }
-        let with_offset = query
-            .with_offset
-            .as_ref()
-            .map(|offset| bind_pagination_value(offset, parameters, "offset"))
-            .transpose()?
-            .unwrap_or(0);
-        let with_limit = query
-            .with_limit
-            .as_ref()
-            .map(|limit| bind_pagination_value(limit, parameters, "limit"))
-            .transpose()?;
-        if with_offset > 0 || with_limit.is_some() {
-            input = LogicalPlan::Limit {
-                offset: with_offset,
-                limit: with_limit,
-                input: Box::new(input),
-            };
-        }
         // A lookup can expand one group into several rows (or remove it).
         // Final ordering and pagination belong above that cardinality change.
         input = plan_post_with_node_lookup(input, lookup);

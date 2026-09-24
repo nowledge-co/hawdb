@@ -15,6 +15,43 @@
 use super::*;
 
 #[test]
+fn with_window_precedes_count_of_groups() {
+    let mut db = Database::new();
+    db.query("CREATE (:Entity {kind: 'a'})").unwrap();
+    db.query("CREATE (:Entity {kind: 'b'})").unwrap();
+    for offset in 0..=3 {
+        for limit in 0..=3 {
+            let output = db.query_with_params(
+                "MATCH (e:Entity) WITH e.kind AS kind, COUNT(*) AS n SKIP $offset LIMIT $limit RETURN COUNT(*) AS groups",
+                &BTreeMap::from([
+                    ("offset".into(), Value::Int(offset)),
+                    ("limit".into(), Value::Int(limit)),
+                ]),
+            ).unwrap();
+            assert_eq!(output.rows.len(), 1, "offset={offset}, limit={limit}");
+            assert_eq!(
+                output.rows[0].get("groups"),
+                Some(&Value::Int((2_i64 - offset).max(0).min(limit)))
+            );
+            let after_count = db.query_with_params(
+                "MATCH (e:Entity) WITH e.kind AS kind, COUNT(*) AS n RETURN COUNT(*) AS groups SKIP $offset LIMIT $limit",
+                &BTreeMap::from([
+                    ("offset".into(), Value::Int(offset)),
+                    ("limit".into(), Value::Int(limit)),
+                ]),
+            ).unwrap();
+            assert_eq!(
+                after_count.rows.len(),
+                usize::from(offset == 0 && limit > 0)
+            );
+            if let Some(row) = after_count.rows.first() {
+                assert_eq!(row.get("groups"), Some(&Value::Int(2)));
+            }
+        }
+    }
+}
+
+#[test]
 fn with_collect_preserves_distinct_nodes_with_the_same_projected_property() {
     let mut db = Database::new();
     db.query("CREATE (:Memory {id: 'same'})-[:SYNTHESIZED_FROM]->(:Memory {id: 'left'})")
