@@ -482,7 +482,8 @@ impl GraphStore {
     pub(super) fn apply_wal_op(&mut self, catalog: &mut Catalog, op: WalOp) -> Result<()> {
         let result = self.apply_wal_op_inner(catalog, op);
         if result.is_err() && self.durable.is_some() {
-            self.post_wal_apply_poisoned = true;
+            self.post_wal_apply_poisoned
+                .store(true, AtomicOrdering::Release);
         }
         result
     }

@@ -143,12 +143,25 @@ request/output DTOs MUST NOT be added to the embedded facade.
 
 A bounded workflow combining Cypher and PostgreSQL reads MUST use one
 `NowledgeMemReadSnapshot` through `with_bounded_graph_read_snapshot` or
-`with_bounded_read_snapshot`. The graph-only entrypoint pins the graph and
-relational state under the embedded store lock, then releases that lock before
-executing the callback. Its resource-admission permit remains live until the
-callback finishes. Writers may commit while the snapshot retains its original
-values and commit epoch. Acquiring a new snapshot still waits for an active
-write transaction; this is not a lock-free admission promise.
+`with_bounded_read_snapshot`. The graph-only entrypoint and `with_read_transaction` acquire the last committed
+canonical view through a short publication lock after admission by the existing
+runtime governor. A writer staging graph and SQL changes MUST NOT block new
+canonical snapshot acquisition for its entire transaction. Each reader owns a
+query context while sharing the immutable view's generation pin. Writers publish
+one consistent catalog, graph, and relational snapshot before returning their
+result. A subsequent reader observes that commit; earlier readers retain their
+original values and commit epoch. Checkpoints MUST refresh the physical view even
+when the logical epoch is unchanged. Replacing the current view releases only
+its own pin reference; the last fork releases the old generation for reclamation.
+
+Fatal canonical integrity or post-WAL apply failures invalidate both current
+storage and previously captured snapshots until close and reopen. The read
+callback's successful return MUST recheck this shared fault state, including a
+fault observed while a writer still holds its guard. Writer unwinding invalidates
+the published source. Ordinary rollback and recoverable append failures preserve
+the last committed state and permit later work. Publication retains the current
+COW roots and one current pin; compaction paths that use only the oldest logical
+epoch may conservatively postpone reclamation until a later checkpoint.
 
 `with_bounded_read_snapshot` additionally pins the configured search projection
 and retains the store read lock through the callback. Graph-only snapshots MUST

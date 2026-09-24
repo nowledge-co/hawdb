@@ -450,6 +450,23 @@ impl GraphStore {
         exact_overflow: Option<ExactRelationalOverflowCheckpoint<'_>>,
         row_compaction: Option<RelationalRowCompactionCheckpoint<'_>>,
     ) -> Result<Option<PreparedCheckpoint>> {
+        let result = self.prepare_checkpoint_with_maintenance_inner(
+            catalog,
+            build_config,
+            exact_overflow,
+            row_compaction,
+        );
+        self.poison_on_storage_error(&result);
+        result
+    }
+
+    fn prepare_checkpoint_with_maintenance_inner(
+        &self,
+        catalog: &Catalog,
+        build_config: DerivedArtifactBuildConfig,
+        exact_overflow: Option<ExactRelationalOverflowCheckpoint<'_>>,
+        row_compaction: Option<RelationalRowCompactionCheckpoint<'_>>,
+    ) -> Result<Option<PreparedCheckpoint>> {
         let Some(durable) = self.durable.as_ref() else {
             return Ok(None);
         };
@@ -478,25 +495,37 @@ impl GraphStore {
             )
         });
         let merged_nodes = self.canonical_base.as_ref().map(|_| {
-            self.node_records_owned().map(|record| {
-                record.map_err(|error| CanonicalSegmentError::Source(error.to_string()))
-            })
+            self.node_records_owned()
+                .inspect(|record| self.poison_on_storage_error(record))
+                .map(|record| {
+                    record.map_err(|error| CanonicalSegmentError::Source(error.to_string()))
+                })
         });
         let property_projection_records = self.canonical_base.as_ref().map(|_| {
-            let nodes = self.node_records_owned().map(|record| {
-                record
-                    .map(PersistentPropertyProjectionRecord::Node)
-                    .map_err(|error| {
-                        hawdb_storage::PersistentPropertyProjectionError::Source(error.to_string())
-                    })
-            });
-            let relationships = self.relationship_records_owned().map(|record| {
-                record
-                    .map(PersistentPropertyProjectionRecord::Relationship)
-                    .map_err(|error| {
-                        hawdb_storage::PersistentPropertyProjectionError::Source(error.to_string())
-                    })
-            });
+            let nodes = self
+                .node_records_owned()
+                .inspect(|record| self.poison_on_storage_error(record))
+                .map(|record| {
+                    record
+                        .map(PersistentPropertyProjectionRecord::Node)
+                        .map_err(|error| {
+                            hawdb_storage::PersistentPropertyProjectionError::Source(
+                                error.to_string(),
+                            )
+                        })
+                });
+            let relationships = self
+                .relationship_records_owned()
+                .inspect(|record| self.poison_on_storage_error(record))
+                .map(|record| {
+                    record
+                        .map(PersistentPropertyProjectionRecord::Relationship)
+                        .map_err(|error| {
+                            hawdb_storage::PersistentPropertyProjectionError::Source(
+                                error.to_string(),
+                            )
+                        })
+                });
             nodes.chain(relationships)
         });
         let mut property_projection_definitions = Vec::new();
@@ -564,16 +593,20 @@ impl GraphStore {
             }
         }
         let merged_relationships = self.canonical_base.as_ref().map(|_| {
-            self.relationship_records_owned().map(|record| {
-                record.map_err(|error| CanonicalSegmentError::Source(error.to_string()))
-            })
+            self.relationship_records_owned()
+                .inspect(|record| self.poison_on_storage_error(record))
+                .map(|record| {
+                    record.map_err(|error| CanonicalSegmentError::Source(error.to_string()))
+                })
         });
         let adjacency_relationships = self.canonical_base.as_ref().map(|_| {
-            self.relationship_records_owned().map(|record| {
-                record.map_err(|error| {
-                    hawdb_storage::CanonicalAdjacencyError::Source(error.to_string())
+            self.relationship_records_owned()
+                .inspect(|record| self.poison_on_storage_error(record))
+                .map(|record| {
+                    record.map_err(|error| {
+                        hawdb_storage::CanonicalAdjacencyError::Source(error.to_string())
+                    })
                 })
-            })
         });
         let commit_epoch = self.commit_epoch;
         let checkpoint_statistics = if checkpoint_out_of_core && !self.canonical_base_out_of_core {
@@ -1029,6 +1062,23 @@ impl GraphStore {
     }
 
     fn publish_prepared_checkpoint_with_reclamation(
+        &mut self,
+        prepared: PreparedCheckpoint,
+        oldest_reader_commit_epoch: Option<u64>,
+        pinned_reader_generations: Option<&BTreeSet<u64>>,
+        shadow_admission: Option<ColumnarShadowAdmission>,
+    ) -> Result<()> {
+        let result = self.publish_prepared_checkpoint_with_reclamation_inner(
+            prepared,
+            oldest_reader_commit_epoch,
+            pinned_reader_generations,
+            shadow_admission,
+        );
+        self.poison_on_storage_error(&result);
+        result
+    }
+
+    fn publish_prepared_checkpoint_with_reclamation_inner(
         &mut self,
         prepared: PreparedCheckpoint,
         oldest_reader_commit_epoch: Option<u64>,

@@ -230,7 +230,7 @@ fn wal_pressure_rejects_before_append_and_leaves_no_partial_mutation() {
 }
 
 #[test]
-fn post_wal_apply_failure_poisons_handle_until_reopen() {
+fn user_rejects_existing_snapshots_after_post_wal_failure_until_reopen() {
     let path = unique_test_dir("post_wal_apply_poison");
     let mut db = Database::open(&path).unwrap();
     let mut stable_read = db.begin_read_transaction();
@@ -248,10 +248,12 @@ fn post_wal_apply_failure_poisons_handle_until_reopen() {
         .to_string()
         .contains("injected failure while applying a durable WAL batch"));
     assert!(db.storage_handle_poisoned());
-    let stable_output = stable_read
+    // A fatal durable outcome invalidates the entire live handle family,
+    // including views captured before the failed apply.
+    let stable_error = stable_read
         .query("MATCH (m:Memory) RETURN m.id AS id")
-        .unwrap();
-    assert!(stable_output.rows.is_empty());
+        .unwrap_err();
+    assert!(stable_error.to_string().contains("close and reopen"));
     let read_error = db
         .query("MATCH (m:Memory) RETURN m.id AS id ORDER BY id")
         .unwrap_err();
@@ -2563,5 +2565,69 @@ fn storage_crash_test_config() -> DatabaseConfig {
         storage_residency_mode: StorageResidencyMode::OutOfCore,
         segment_cache_capacity_bytes: 1024 * 1024,
         ..DatabaseConfig::default()
+    }
+}
+
+#[test]
+fn user_invalidates_old_snapshots_when_checkpoint_or_projection_reads_corrupt_canonical_data() {
+    for checkpoint in [false, true] {
+        // Given a previously captured snapshot of an out-of-core canonical store.
+        let path = unique_test_dir("checkpoint_projection_snapshot_poison");
+        let mut db = Database::open_with_config(
+            &path,
+            DatabaseConfig {
+                storage_residency_mode: StorageResidencyMode::OutOfCore,
+                ..DatabaseConfig::default()
+            },
+        )
+        .unwrap();
+        db.query("CREATE (:Memory {id: 'one', title: 'Canonical'})")
+            .unwrap();
+        let created = db
+            .query("MATCH (m:Memory) RETURN id(m) AS node_id")
+            .unwrap();
+        let Some(Value::Int(node_id)) = created.rows[0].get("node_id") else {
+            panic!("expected node id")
+        };
+        let node_id = *node_id as u64;
+        db.query_sql("CREATE TABLE snapshot_probe (id BIGINT PRIMARY KEY)")
+            .unwrap();
+        db.checkpoint().unwrap();
+        let snapshot = db.begin_read_transaction();
+        snapshot
+            .query_sql("SELECT id FROM snapshot_probe WHERE id = 1")
+            .expect("healthy snapshot probe succeeds before canonical corruption");
+        let canonical = path.join("canonical.1.hawdb");
+        let mut bytes = std::fs::read(&canonical).unwrap();
+        bytes[24] ^= 0xff;
+        std::fs::write(canonical, bytes).unwrap();
+        // When a checkpoint or projection-delta build detects the canonical corruption.
+        let result = if checkpoint {
+            db.checkpoint()
+        } else {
+            db.build_search_projection_graph_delta(&SearchProjectionGraphDeltaRequest {
+                upsert_node_ids: vec![node_id],
+                max_operations: Some(1),
+                ..SearchProjectionGraphDeltaRequest::default()
+            })
+            .map(|_| ())
+        };
+        let error = result.unwrap_err();
+        assert!(
+            error
+                .to_string()
+                .contains("failed content digest verification"),
+            "{error}"
+        );
+        assert!(db.storage_handle_poisoned());
+        // Then a query of the independent empty SQL table fails without reading the damaged graph segment.
+        assert!(snapshot
+            .query_sql("SELECT id FROM snapshot_probe WHERE id = 1")
+            .unwrap_err()
+            .to_string()
+            .contains("close and reopen"));
+        drop(snapshot);
+        drop(db);
+        std::fs::remove_dir_all(path).unwrap();
     }
 }

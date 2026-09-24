@@ -145,7 +145,7 @@ pub use hawdb_search::candidate_evidence::{
 use std::collections::{BTreeMap, BTreeSet};
 use std::mem::size_of;
 use std::path::{Path, PathBuf};
-use std::sync::{Arc, RwLock, RwLockReadGuard, RwLockWriteGuard};
+use std::sync::{Arc, Mutex, MutexGuard, RwLock, RwLockReadGuard, RwLockWriteGuard};
 use std::time::Instant;
 
 #[cfg(test)]
@@ -2234,6 +2234,60 @@ pub struct NowledgeMemEmbeddedStore {
 #[derive(Debug, Clone)]
 pub struct NowledgeMemEmbeddedStoreHandle {
     inner: Arc<RwLock<NowledgeMemEmbeddedStore>>,
+    published_read: Arc<Mutex<Option<PublishedCanonicalRead>>>,
+}
+
+#[derive(Debug)]
+struct PublishedCanonicalRead {
+    snapshot: crate::api::DatabaseReadSnapshot,
+    governor: RuntimeGovernor,
+}
+
+impl PublishedCanonicalRead {
+    fn capture(store: &NowledgeMemEmbeddedStore) -> Self {
+        Self {
+            snapshot: store.graph.database().read_snapshot(),
+            governor: store.graph.runtime_governor().clone(),
+        }
+    }
+}
+
+struct EmbeddedStoreWriteGuard<'a> {
+    store: RwLockWriteGuard<'a, NowledgeMemEmbeddedStore>,
+    published: &'a Mutex<Option<PublishedCanonicalRead>>,
+}
+
+impl std::ops::Deref for EmbeddedStoreWriteGuard<'_> {
+    type Target = NowledgeMemEmbeddedStore;
+
+    fn deref(&self) -> &Self::Target {
+        &self.store
+    }
+}
+
+impl std::ops::DerefMut for EmbeddedStoreWriteGuard<'_> {
+    fn deref_mut(&mut self) -> &mut Self::Target {
+        &mut self.store
+    }
+}
+
+impl Drop for EmbeddedStoreWriteGuard<'_> {
+    fn drop(&mut self) {
+        // Capture before publication and before releasing the writer guard.
+        // Refresh even when a checkpoint changes only the physical generation.
+        let next =
+            (!std::thread::panicking()).then(|| PublishedCanonicalRead::capture(&self.store));
+        let previous = std::mem::replace(
+            &mut *self
+                .published
+                .lock()
+                .unwrap_or_else(|error| error.into_inner()),
+            next,
+        );
+        // Releasing the last generation pin can acquire the pin registry lock.
+        // Keep that destructor outside the publication critical section.
+        drop(previous);
+    }
 }
 
 pub struct NowledgeMemReadSnapshot<'a> {
@@ -2422,8 +2476,10 @@ impl<'a> NowledgeMemReadSnapshot<'a> {
 
 impl NowledgeMemEmbeddedStoreHandle {
     pub fn new(store: NowledgeMemEmbeddedStore) -> Self {
+        let published_read = PublishedCanonicalRead::capture(&store);
         Self {
             inner: Arc::new(RwLock::new(store)),
+            published_read: Arc::new(Mutex::new(Some(published_read))),
         }
     }
 
@@ -2695,16 +2751,15 @@ impl NowledgeMemEmbeddedStoreHandle {
             .graph_mut()
             .database_mut()
             .begin_transaction_with_context(&task_context);
-        match operation(&mut transaction) {
-            Ok(output) => {
-                transaction.commit()?;
-                Ok(output)
-            }
+        let result = match operation(&mut transaction) {
+            Ok(output) => transaction.commit().map(|_| output),
             Err(error) => {
                 transaction.rollback();
                 Err(error)
             }
-        }
+        };
+        store.graph.database().poison_on_storage_error(&result);
+        result
     }
 
     /// Executes a caller-owned group of bounded Cypher reads against one
@@ -2714,16 +2769,10 @@ impl NowledgeMemEmbeddedStoreHandle {
         max_estimated_payload_bytes: usize,
         operation: impl FnOnce(&mut crate::DatabaseReadTransaction) -> Result<T>,
     ) -> Result<T> {
-        let permit = self.admit_typed_read(max_estimated_payload_bytes)?;
-        let task_context = permit.bind_task_context(RuntimeTaskContext::default());
-        let _permit = permit;
-        let store = self.read_store()?;
-        let mut transaction = store
-            .graph()
-            .database()
-            .begin_read_transaction_with_context(&task_context);
-        drop(store);
-        operation(&mut transaction)
+        let (_permit, mut transaction) =
+            self.canonical_read_transaction(max_estimated_payload_bytes, None)?;
+        let result = operation(&mut transaction);
+        self.finish_canonical_read(result)
     }
 
     /// Executes App-owned Cypher and PostgreSQL reads against one immutable
@@ -2737,8 +2786,8 @@ impl NowledgeMemEmbeddedStoreHandle {
         self.with_bounded_read_snapshot_kind(budget, true, operation)
     }
 
-    /// Executes bounded graph and relational reads without retaining the store
-    /// lock during the callback. Writers can commit while this snapshot lives.
+    /// Executes bounded graph and relational reads from the published committed
+    /// view. Acquisition and callback execution can overlap a staging writer.
     ///
     /// External search projections are deliberately unavailable: vector queries
     /// fail and the report contains no projection epochs. Use
@@ -2767,6 +2816,12 @@ impl NowledgeMemEmbeddedStoreHandle {
                 "bounded read snapshot requires max_payload_bytes greater than zero".to_string(),
             ));
         }
+        if !pin_projection {
+            let (_permit, transaction) =
+                self.canonical_read_transaction(budget.max_payload_bytes, Some(budget.max_rows))?;
+            let mut snapshot = NowledgeMemReadSnapshot::new(transaction, budget, None, None);
+            return self.finish_canonical_read(operation(&mut snapshot));
+        }
         let permit = self.admit_typed_read(budget.max_payload_bytes)?;
         let task_context = permit.bind_task_context(RuntimeTaskContext::default());
         let _permit = permit;
@@ -2791,11 +2846,6 @@ impl NowledgeMemEmbeddedStoreHandle {
             .graph
             .database()
             .begin_read_transaction_with_context(&task_context);
-        if !pin_projection {
-            let mut snapshot = NowledgeMemReadSnapshot::new(transaction, budget, None, None);
-            drop(store);
-            return operation(&mut snapshot);
-        }
         let mut snapshot = NowledgeMemReadSnapshot::new(
             transaction,
             budget,
@@ -3346,25 +3396,75 @@ impl NowledgeMemEmbeddedStoreHandle {
 
     fn admit_typed_read(&self, max_estimated_payload_bytes: usize) -> Result<RuntimePermit> {
         let store = self.read_store()?;
-        let config = store.graph.database().config();
-        let configured_result_bytes = config.max_read_result_payload_bytes.ok_or_else(|| {
-            HawDBError::Execution(
-                "admitted typed read requires max_read_result_payload_bytes".to_string(),
+        let request =
+            typed_read_request(store.graph.database().config(), max_estimated_payload_bytes)?;
+        store.graph.try_admit_runtime(request)
+    }
+
+    fn lock_published_read(&self) -> Result<MutexGuard<'_, Option<PublishedCanonicalRead>>> {
+        self.published_read.lock().map_err(|_| {
+            HawDBError::Execution("embedded snapshot publication lock poisoned".to_string())
+        })
+    }
+
+    fn canonical_read_transaction(
+        &self,
+        max_estimated_payload_bytes: usize,
+        max_rows: Option<usize>,
+    ) -> Result<(RuntimePermit, crate::DatabaseReadTransaction)> {
+        // Admission emits host telemetry. Never invoke it while holding the
+        // publication lock: a sink may reenter the embedded handle.
+        let (governor, request) = {
+            let published = self.lock_published_read()?;
+            let published = published.as_ref().ok_or_else(|| {
+                HawDBError::Execution("nowledge mem embedded store read lock poisoned".to_string())
+            })?;
+            published.snapshot.ensure_usable()?;
+            (
+                published.governor.clone(),
+                typed_read_request(published.snapshot.config(), max_estimated_payload_bytes)?,
             )
+        };
+        let permit = governor.try_admit(request).map_err(|error| {
+            if error.is_retryable() {
+                governor.record_admission_wait(request, error.code, 0);
+            }
+            HawDBError::Execution(error.to_string())
         })?;
-        if max_estimated_payload_bytes > configured_result_bytes {
-            return Err(HawDBError::Execution(format!(
-                "typed read payload budget {max_estimated_payload_bytes} exceeds configured limit {configured_result_bytes}"
-            )));
+        // Capture after admission so a write completed during admission is visible.
+        // This guard must also drop before the permit on every error path.
+        let published = self.lock_published_read()?;
+        let published = published.as_ref().ok_or_else(|| {
+            HawDBError::Execution("nowledge mem embedded store read lock poisoned".to_string())
+        })?;
+        published.snapshot.ensure_usable()?;
+        let config = published.snapshot.config();
+        if let Some(max_rows) = max_rows {
+            let configured_rows = config.max_read_result_rows.ok_or_else(|| {
+                HawDBError::Execution(
+                    "bounded read snapshot requires max_read_result_rows".to_string(),
+                )
+            })?;
+            if max_rows > configured_rows {
+                return Err(HawDBError::Execution(format!(
+                    "bounded read snapshot row budget {max_rows} exceeds configured limit {configured_rows}"
+                )));
+            }
         }
-        let result_bytes = u64::try_from(configured_result_bytes).unwrap_or(u64::MAX);
-        let working_memory_bytes =
-            u64::try_from(config.execution_memory.query_memory_bytes.get()).unwrap_or(u64::MAX);
-        store.graph.try_admit_runtime(
-            RuntimeWorkRequest::foreground_query(working_memory_bytes, result_bytes)
-                .with_io_slots(1)
-                .with_blocking(true),
-        )
+        let task_context = permit.bind_task_context(RuntimeTaskContext::default());
+        let transaction = published.snapshot.begin_read_transaction(&task_context)?;
+        Ok((permit, transaction))
+    }
+
+    fn finish_canonical_read<T>(&self, result: Result<T>) -> Result<T> {
+        if result.is_ok() {
+            let published = self.lock_published_read()?;
+            let published = published.as_ref().ok_or_else(|| {
+                HawDBError::Execution("nowledge mem embedded store read lock poisoned".to_string())
+            })?;
+            published.snapshot.ensure_usable()?;
+        }
+        result
     }
 
     fn admit_typed_maintenance(
@@ -3462,11 +3562,39 @@ impl NowledgeMemEmbeddedStoreHandle {
         })
     }
 
-    fn write_store(&self) -> Result<RwLockWriteGuard<'_, NowledgeMemEmbeddedStore>> {
-        self.inner.write().map_err(|_| {
+    fn write_store(&self) -> Result<EmbeddedStoreWriteGuard<'_>> {
+        let store = self.inner.write().map_err(|_| {
             HawDBError::Execution("nowledge mem embedded store write lock poisoned".to_string())
+        })?;
+        Ok(EmbeddedStoreWriteGuard {
+            store,
+            published: &self.published_read,
         })
     }
+}
+
+fn typed_read_request(
+    config: &DatabaseConfig,
+    max_estimated_payload_bytes: usize,
+) -> Result<RuntimeWorkRequest> {
+    let configured_result_bytes = config.max_read_result_payload_bytes.ok_or_else(|| {
+        HawDBError::Execution(
+            "admitted typed read requires max_read_result_payload_bytes".to_string(),
+        )
+    })?;
+    if max_estimated_payload_bytes > configured_result_bytes {
+        return Err(HawDBError::Execution(format!(
+                "typed read payload budget {max_estimated_payload_bytes} exceeds configured limit {configured_result_bytes}"
+            )));
+    }
+    let result_bytes = u64::try_from(configured_result_bytes).unwrap_or(u64::MAX);
+    let working_memory_bytes =
+        u64::try_from(config.execution_memory.query_memory_bytes.get()).unwrap_or(u64::MAX);
+    Ok(
+        RuntimeWorkRequest::foreground_query(working_memory_bytes, result_bytes)
+            .with_io_slots(1)
+            .with_blocking(true),
+    )
 }
 
 fn search_projection_delta_bytes(delta: &SearchProjectionDelta) -> usize {
