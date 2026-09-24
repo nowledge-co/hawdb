@@ -15,7 +15,7 @@
 use super::stages::LOGICAL_REWRITE_STAGE;
 use crate::{RuleEvent, StageStats, StageTrace};
 use hawdb_core::Value;
-use hawdb_plan::{LogicalPlan, Predicate, Projection, ProjectionExpression};
+use hawdb_plan_cypher::{LogicalPlan, Predicate, Projection, ProjectionExpression};
 use std::collections::{BTreeMap, BTreeSet};
 
 const MAX_FIXED_POINT_PASSES: usize = 16;
@@ -1033,7 +1033,7 @@ mod tests {
     use super::*;
     use crate::{OptimizationSearchReport, RuleOutcome};
     use hawdb_cypher::RelationshipDirection;
-    use hawdb_plan::{
+    use hawdb_plan_cypher::{
         AggregateFunction, AggregateTarget, Aggregation, SortDirection, SortItem, SortKey,
     };
 

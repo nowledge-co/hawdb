@@ -23,7 +23,7 @@ use crate::QueryMemoryLease;
 use hawdb_core::error::Result;
 use hawdb_core::schema::Catalog;
 use hawdb_core::{LabelId, RelTypeId};
-use hawdb_plan::NodeProjectionAccess;
+use hawdb_plan_cypher::NodeProjectionAccess;
 use hawdb_storage::store::{GraphScanControl, GraphStore};
 use hawdb_storage::{
     AdjacencyDirection, GraphMutation, MutationLimits, MutationSummary, NodeId, NodeRecord,
@@ -217,7 +217,7 @@ impl GraphExecutionRead for GraphStore {
     fn visit_nodes_by_composite_range_owned(
         &self,
         label_id: LabelId,
-        seek: &hawdb_plan::CompositeRangeSeek,
+        seek: &hawdb_plan_cypher::CompositeRangeSeek,
         consumer: &mut dyn FnMut(NodeRecord) -> Result<ScanControl>,
     ) -> Result<ScanControl> {
         adapt_node_consumer(consumer, |consumer| {

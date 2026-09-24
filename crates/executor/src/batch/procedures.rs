@@ -27,7 +27,7 @@ pub(super) struct ShortestPathSpec<'a> {
     pub(super) target_visibility_predicate: &'a Option<Predicate>,
     pub(super) min_hops: &'a usize,
     pub(super) max_hops: &'a usize,
-    pub(super) returns: &'a [hawdb_plan::ShortestPathProjection],
+    pub(super) returns: &'a [hawdb_plan_cypher::ShortestPathProjection],
 }
 
 impl ShortestPathSpec<'_> {

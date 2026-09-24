@@ -23,8 +23,8 @@ use hawdb_executor::{
 use hawdb_optimizer::{
     Distribution, OptimizerTrace, PhysicalProperties, PlanCost, PlanCostBreakdown, StageTrace,
 };
-use hawdb_plan::{visit_plan, NodeProjectionAccess, PhysicalPlan};
 use hawdb_plan_cache::PlanCacheLookup;
+use hawdb_plan_cypher::{visit_plan, NodeProjectionAccess, PhysicalPlan};
 use hawdb_qos::WorkRequest;
 use hawdb_storage::ScanPruningReport;
 use std::collections::BTreeMap;

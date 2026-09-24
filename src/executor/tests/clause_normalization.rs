@@ -64,8 +64,8 @@ fn structural_read_normalization_preserves_generic_rows_and_pruning() {
         "MATCH (n:Node) WITH n AS item, COUNT(n) AS count ORDER BY count DESC, COALESCE(item.score, -1) DESC LIMIT 2 RETURN item.id, count",
         "MATCH (n:Node {id: $source}) OPTIONAL MATCH (n)-[:MISSING]->(other:Node) RETURN n.id, COUNT(other) AS missing_count",
     ] {
-        let generic = hawdb_plan::plan_pipeline_query(query, &parameters).unwrap();
-        let normalized = hawdb_plan::plan_normalized_pipeline_query(query, &parameters).unwrap();
+        let generic = hawdb_plan_cypher::plan_pipeline_query(query, &parameters).unwrap();
+        let normalized = hawdb_plan_cypher::plan_normalized_pipeline_query(query, &parameters).unwrap();
         let mut outputs = Vec::new();
         for logical in [generic, normalized] {
             let physical = hawdb_optimizer::CascadesOptimizer::default().optimize(&logical);
@@ -77,7 +77,7 @@ fn structural_read_normalization_preserves_generic_rows_and_pruning() {
         }
         assert_eq!(outputs[0], outputs[1], "{query}");
     }
-    let logical = hawdb_plan::plan_normalized_pipeline_query(
+    let logical = hawdb_plan_cypher::plan_normalized_pipeline_query(
         "MATCH (n:Node {id: $source}) RETURN n.id AS id",
         &parameters,
     )
@@ -103,8 +103,8 @@ fn structural_read_normalization_preserves_generic_rows_and_pruning() {
     assert_eq!(output.rows[0].get("id"), Some(&Value::Int(0)));
     let query = "MATCH (n:Node) WITH n.group AS bucket, COUNT(n) AS count RETURN bucket, 10 / (1 - bucket) AS risky ORDER BY bucket LIMIT 1";
     for binder in [
-        hawdb_plan::plan_pipeline_query,
-        hawdb_plan::plan_normalized_pipeline_query,
+        hawdb_plan_cypher::plan_pipeline_query,
+        hawdb_plan_cypher::plan_normalized_pipeline_query,
     ] {
         let logical = binder(query, &BTreeMap::new()).unwrap();
         let physical = hawdb_optimizer::CascadesOptimizer::default().optimize(&logical);
@@ -152,8 +152,8 @@ fn projected_entities_preserve_user_properties_that_share_metadata_names() {
         .unwrap();
     let query = "MATCH (a:Node {id: 1})-[e:LINK]->(b:Node) WITH a AS node, e AS edge, COUNT(b) AS count RETURN node._id AS user_id, node.labels AS user_labels, id(node) AS native_id, edge._id AS edge_id, edge.type AS user_type, type(edge) AS native_type, edge.source_id AS user_source, id(edge) AS native_edge_id, count";
     for binder in [
-        hawdb_plan::plan_pipeline_query,
-        hawdb_plan::plan_normalized_pipeline_query,
+        hawdb_plan_cypher::plan_pipeline_query,
+        hawdb_plan_cypher::plan_normalized_pipeline_query,
     ] {
         let logical = binder(query, &BTreeMap::new()).unwrap();
         let physical = hawdb_optimizer::CascadesOptimizer::default().optimize(&logical);

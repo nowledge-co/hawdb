@@ -16,7 +16,9 @@ use super::fixtures;
 use super::store::ReadFixture;
 use crate::batch::*;
 use crate::external::NoExternalReadOperator;
-use hawdb_plan::{ComparisonOp, PhysicalPlanKind, ProjectionExpression, SortDirection, SortKey};
+use hawdb_plan_cypher::{
+    ComparisonOp, PhysicalPlanKind, ProjectionExpression, SortDirection, SortKey,
+};
 use std::collections::BTreeSet;
 
 fn wrap(plan: PhysicalPlan, shape: usize) -> PhysicalPlan {
@@ -116,7 +118,7 @@ fn graph_hash_join_executes_residual_before_ordered_offset_limit() {
             label: "Item".into(),
         })
     };
-    let key = |variable: &str| hawdb_plan::HashJoinKey {
+    let key = |variable: &str| hawdb_plan_cypher::HashJoinKey {
         variable: variable.into(),
         property: "score".into(),
     };

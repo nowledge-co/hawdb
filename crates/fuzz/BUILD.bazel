@@ -118,7 +118,7 @@ test_suite(
         "//crates/optimizer:hawdb_optimizer_ddl_command_fuzz_tests",
         "//crates/optimizer:hawdb_optimizer_full_text_cost_fuzz_tests",
         "//crates/optimizer:hawdb_optimizer_trace_cost_fuzz_tests",
-        "//crates/plan:hawdb_plan_explain_fuzz_tests",
+        "//crates/plan-cypher:hawdb_plan_cypher_explain_fuzz_tests",
         "//crates/readiness:hawdb_graph_route_readiness_fuzz_tests",
         "//crates/readiness:hawdb_integration_bundle_fuzz_tests",
         "//crates/readiness:hawdb_replacement_summary_fuzz_tests",

@@ -23,7 +23,7 @@ use hawdb_analytics::{
     LouvainOptions, PageRankOptions, ProjectedGraphExecution, ProjectionLayout,
     ProjectionMemoryBudget,
 };
-use hawdb_plan::GraphAlgorithmKind;
+use hawdb_plan_cypher::GraphAlgorithmKind;
 
 fn graph_algorithm_fixture() -> (Catalog, ReadFixture) {
     let mut catalog = Catalog::default();
@@ -57,7 +57,7 @@ fn graph_algorithm_plan(algorithm: GraphAlgorithmKind) -> PhysicalPlan {
     PhysicalPlan::GraphAlgorithm {
         algorithm,
         graph_name: "MemoryGraph".to_string(),
-        options: hawdb_plan::GraphAlgorithmOptions {
+        options: hawdb_plan_cypher::GraphAlgorithmOptions {
             damping: None,
             max_iterations: Some(2),
             max_levels: Some(1),

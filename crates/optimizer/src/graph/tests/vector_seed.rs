@@ -16,7 +16,7 @@ use super::super::{CascadesOptimizer, OptimizerCatalog};
 use crate::{OptimizerConfig, OptimizerContext, OptimizerSearchDirective, ResourceHints};
 use hawdb_core::Value;
 use hawdb_cypher::RelationshipDirection;
-use hawdb_plan::{
+use hawdb_plan_cypher::{
     LogicalPlan, LogicalPlanRoot, PhysicalPlan, Predicate, VectorExecutionResourceProfile,
     VectorPhysicalPlan,
 };

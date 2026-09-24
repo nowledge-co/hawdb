@@ -19,7 +19,7 @@ rust_library(
         "//crates/core:hawdb_core",
         "//crates/cypher:hawdb_cypher",
         "//crates/expression:hawdb_expression",
-        "//crates/plan:hawdb_plan",
+        "//crates/plan-cypher:hawdb_plan_cypher",
     ],
     proc_macro_deps = all_crate_deps(proc_macro = True),
 )
@@ -46,7 +46,7 @@ rust_test(
     deps = all_crate_deps(normal_dev = True) + [
         ":hawdb_optimizer",
         "//crates/cypher:hawdb_cypher",
-        "//crates/plan:hawdb_plan",
+        "//crates/plan-cypher:hawdb_plan_cypher",
     ],
     proc_macro_deps = all_crate_deps(proc_macro_dev = True),
 )

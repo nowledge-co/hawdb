@@ -15,7 +15,7 @@
 //! Execution memory defaults and admission estimates.
 
 use hawdb_core::{HawDBError, Result, RuntimeTaskContext};
-use hawdb_plan::{PhysicalPlan, PlanChildren, VectorExecutionResourceProfile};
+use hawdb_plan_cypher::{PhysicalPlan, PlanChildren, VectorExecutionResourceProfile};
 use hawdb_storage::MutationLimits;
 use std::num::{NonZeroU64, NonZeroUsize};
 use std::path::PathBuf;
@@ -355,7 +355,7 @@ fn usize_to_u64(value: usize) -> u64 {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use hawdb_plan::Predicate;
+    use hawdb_plan_cypher::Predicate;
 
     fn admission_test_config() -> ExecutionMemoryConfig {
         ExecutionMemoryConfig {
@@ -459,15 +459,15 @@ mod tests {
                 max_parallelism: 3,
                 max_working_memory_bytes: Some(2048),
             },
-            vector_plan: hawdb_plan::VectorPhysicalPlan::TopK {
+            vector_plan: hawdb_plan_cypher::VectorPhysicalPlan::TopK {
                 limit: 4,
-                input: Box::new(hawdb_plan::VectorPhysicalPlan::RawVectorRerank {
+                input: Box::new(hawdb_plan_cypher::VectorPhysicalPlan::RawVectorRerank {
                     embedding_dimension: 2,
-                    input: Box::new(hawdb_plan::VectorPhysicalPlan::VectorCandidateScan {
-                        source: hawdb_plan::VectorCandidateSource::Scalar,
+                    input: Box::new(hawdb_plan_cypher::VectorPhysicalPlan::VectorCandidateScan {
+                        source: hawdb_plan_cypher::VectorCandidateSource::Scalar,
                         embedding_dimension: 2,
                         candidate_limit: 4,
-                        input: Box::new(hawdb_plan::VectorPhysicalPlan::Filter {
+                        input: Box::new(hawdb_plan_cypher::VectorPhysicalPlan::Filter {
                             fields: Vec::new(),
                         }),
                     }),

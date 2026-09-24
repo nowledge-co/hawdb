@@ -63,20 +63,22 @@ fn vector_seed_receives_resolved_runtime_resource_contract() {
         embedding_parameter: "embedding".to_string(),
         output_external_id: false,
         metadata_filters: BTreeMap::new(),
-        resource_profile: hawdb_plan::VectorExecutionResourceProfile {
+        resource_profile: hawdb_plan_cypher::VectorExecutionResourceProfile {
             priority: 200,
             max_parallelism: 4,
             max_working_memory_bytes: Some(2048),
         },
-        vector_plan: hawdb_plan::VectorPhysicalPlan::TopK {
+        vector_plan: hawdb_plan_cypher::VectorPhysicalPlan::TopK {
             limit: 3,
-            input: Box::new(hawdb_plan::VectorPhysicalPlan::RawVectorRerank {
+            input: Box::new(hawdb_plan_cypher::VectorPhysicalPlan::RawVectorRerank {
                 embedding_dimension: 2,
-                input: Box::new(hawdb_plan::VectorPhysicalPlan::VectorCandidateScan {
-                    source: hawdb_plan::VectorCandidateSource::Scalar,
+                input: Box::new(hawdb_plan_cypher::VectorPhysicalPlan::VectorCandidateScan {
+                    source: hawdb_plan_cypher::VectorCandidateSource::Scalar,
                     embedding_dimension: 2,
                     candidate_limit: 3,
-                    input: Box::new(hawdb_plan::VectorPhysicalPlan::Filter { fields: Vec::new() }),
+                    input: Box::new(hawdb_plan_cypher::VectorPhysicalPlan::Filter {
+                        fields: Vec::new(),
+                    }),
                 }),
             }),
         },
@@ -321,7 +323,7 @@ fn node_projection_scan_omits_unrequested_large_properties() {
     let plan = PhysicalPlan::NodeProjectionScanExec {
         variable: "m".to_string(),
         label: "Memory".to_string(),
-        access: hawdb_plan::NodeProjectionAccess::LabelScan,
+        access: hawdb_plan_cypher::NodeProjectionAccess::LabelScan,
         required_properties: vec!["rank".to_string(), "title".to_string()],
         predicate: Some(Predicate::PropertyCompare {
             variable: "m".to_string(),
@@ -388,7 +390,7 @@ fn indexed_node_projection_keeps_large_properties_out_of_pipeline_batches() {
     let plan = PhysicalPlan::NodeProjectionScanExec {
         variable: "m".to_string(),
         label: "Memory".to_string(),
-        access: hawdb_plan::NodeProjectionAccess::PropertyValues {
+        access: hawdb_plan_cypher::NodeProjectionAccess::PropertyValues {
             property: "stable_id".to_string(),
             values: vec![Value::String("memory:1".to_string())],
         },
@@ -1735,15 +1737,19 @@ fn columnar_numeric_fragment_matches_row_pipeline_and_reports_morsels() {
         vec![
             (
                 0,
-                hawdb_plan::PhysicalPlanKind::ProjectExec,
+                hawdb_plan_cypher::PhysicalPlanKind::ProjectExec,
                 Some(parallel.rows.len()),
             ),
             (
                 1,
-                hawdb_plan::PhysicalPlanKind::FilterExec,
+                hawdb_plan_cypher::PhysicalPlanKind::FilterExec,
                 Some(parallel.rows.len()),
             ),
-            (2, hawdb_plan::PhysicalPlanKind::SeqNodeScan, Some(513)),
+            (
+                2,
+                hawdb_plan_cypher::PhysicalPlanKind::SeqNodeScan,
+                Some(513)
+            ),
         ]
     );
     assert_eq!(

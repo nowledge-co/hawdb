@@ -15,7 +15,7 @@
 use crate::binding::{binding_payload_bytes, Binding};
 use crate::{QueryMemoryAccount, QueryMemoryLease};
 use hawdb_core::Result;
-use hawdb_plan::GraphExpansionBudget;
+use hawdb_plan_cypher::GraphExpansionBudget;
 use hawdb_storage::NodeId;
 use std::collections::BTreeSet;
 

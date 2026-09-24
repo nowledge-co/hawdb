@@ -15,7 +15,7 @@
 use super::*;
 use hawdb_core::{PropertyType, SchemaObjectState, TableKind, Value};
 use hawdb_ddl::{SchemaObjectState as DdlState, SchemaPropertyType, SchemaTableKind};
-use hawdb_plan::{Predicate, SetAssignment, SetNodePropertiesReturnMode};
+use hawdb_plan_cypher::{Predicate, SetAssignment, SetNodePropertiesReturnMode};
 use hawdb_storage::PropertyFilter;
 use std::collections::BTreeMap;
 

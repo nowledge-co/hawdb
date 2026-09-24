@@ -14,7 +14,7 @@
 
 use super::*;
 use hawdb_core::PropertyType;
-use hawdb_plan::ComparisonOp;
+use hawdb_plan_cypher::ComparisonOp;
 use hawdb_storage::NodeId;
 use std::collections::BTreeSet;
 

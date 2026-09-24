@@ -16,7 +16,7 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::fmt;
 
 use hawdb_core::{RelationshipDirection, Value};
-use hawdb_plan::{ComparisonOp, LogicalPlan, Predicate, Projection, ProjectionExpression};
+use hawdb_plan_cypher::{ComparisonOp, LogicalPlan, Predicate, Projection, ProjectionExpression};
 use hawdb_sql_syntax::{BinaryOperatorSyntax, GraphEdgeDirection, Span, UnaryOperatorSyntax};
 
 use super::{

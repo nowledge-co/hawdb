@@ -1,6 +1,6 @@
 use super::predicate::{predicate_comparison_truth, PredicateTruth};
 use super::*;
-use hawdb_plan::ScalarBinaryOp;
+use hawdb_plan_cypher::ScalarBinaryOp;
 
 pub fn insert_projected_value(values: &mut BTreeMap<String, Value>, name: &str, value: Value) {
     let mut candidate = name.to_string();
@@ -777,7 +777,7 @@ mod case_tests {
                     otherwise: Some(Box::new(literal(Value::Int(1)))),
                 };
                 let specialized = ProjectionExpression::CaseColumnSearchRank(Box::new(
-                    hawdb_plan::CaseColumnSearchRankProjection {
+                    hawdb_plan_cypher::CaseColumnSearchRankProjection {
                         column: "value".into(),
                         raw_query: raw.clone(),
                         normalized_query: normalized.clone(),
@@ -837,7 +837,7 @@ mod case_tests {
             otherwise: Some(Box::new(literal(Value::Int(2)))),
         };
         let specialized = ProjectionExpression::CaseEntitySearchRank(Box::new(
-            hawdb_plan::CaseEntitySearchRankProjection {
+            hawdb_plan_cypher::CaseEntitySearchRankProjection {
                 variable: "n".into(),
                 name_property: "name".into(),
                 aliases_property: "aliases".into(),

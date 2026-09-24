@@ -17,7 +17,7 @@
 use crate::result_delivery::OutputLimits;
 use crate::ExecutionMemoryConfig;
 use hawdb_core::{RuntimeTaskContext, Value};
-use hawdb_plan::PhysicalPlan;
+use hawdb_plan_cypher::PhysicalPlan;
 use std::collections::BTreeMap;
 
 #[derive(Clone, Copy)]

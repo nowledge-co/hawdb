@@ -35,7 +35,7 @@ use hawdb_core::{
     Catalog, HawDBError, LabelId, RelTypeId, RelationshipDirection, Result, RuntimeTaskContext,
     Value,
 };
-use hawdb_plan::{
+use hawdb_plan_cypher::{
     ComparisonOp, ExactPropertySeekBranch, NodeProjectionAccess, Predicate, Projection,
 };
 use hawdb_storage::{
@@ -1253,7 +1253,7 @@ mod tests {
         fn visit_nodes_by_composite_range_owned(
             &self,
             _label_id: LabelId,
-            _seek: &hawdb_plan::CompositeRangeSeek,
+            _seek: &hawdb_plan_cypher::CompositeRangeSeek,
             _consumer: &mut dyn FnMut(NodeRecord) -> Result<ScanControl>,
         ) -> Result<ScanControl> {
             panic!("composite range scans are not used by adjacency expansion tests")

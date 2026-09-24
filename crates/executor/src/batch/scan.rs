@@ -150,7 +150,7 @@ pub(super) fn stream_index_node_seek_batches(
 pub(super) fn stream_index_node_union_seek_batches(
     variable: &str,
     label: &str,
-    branches: &[hawdb_plan::ExactPropertySeekBranch],
+    branches: &[hawdb_plan_cypher::ExactPropertySeekBranch],
     context: BatchReadContext<'_>,
     execution_limit: ExecutionLimit,
     emit: &mut dyn FnMut(BindingBatch) -> Result<BatchControl>,

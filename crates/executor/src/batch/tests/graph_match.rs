@@ -1,5 +1,5 @@
 use super::*;
-use hawdb_plan::LogicalPlan;
+use hawdb_plan_cypher::LogicalPlan;
 
 // The oracle lowers the generic operators directly, independently of optimizer fast paths.
 fn lower(plan: LogicalPlan) -> PhysicalPlan {
@@ -46,7 +46,7 @@ fn lower(plan: LogicalPlan) -> PhysicalPlan {
 }
 
 fn execute(query: &str) -> Result<Vec<Binding>> {
-    let logical = hawdb_plan::plan_pipeline_query(query, &BTreeMap::new())?;
+    let logical = hawdb_plan_cypher::plan_pipeline_query(query, &BTreeMap::new())?;
     execute_logical(logical)
 }
 
@@ -169,7 +169,7 @@ fn scalar_property_predicates_do_not_read_shadowed_nodes() {
         Value::Map(BTreeMap::from([("id".into(), Value::Int(99))])),
     )]);
     let plan = lower(
-        hawdb_plan::plan_pipeline_query(
+        hawdb_plan_cypher::plan_pipeline_query(
             "MATCH (n:Memory) WITH $replacement AS n WHERE n.id = 99 RETURN n.id AS id",
             &parameters,
         )
@@ -196,7 +196,8 @@ fn match_propagates_errors_cancellation_and_downstream_stop() {
         .to_string()
         .contains("LOWER expression requires a string"));
     let plan = lower(
-        hawdb_plan::plan_pipeline_query("MATCH (n:Memory) RETURN n", &BTreeMap::new()).unwrap(),
+        hawdb_plan_cypher::plan_pipeline_query("MATCH (n:Memory) RETURN n", &BTreeMap::new())
+            .unwrap(),
     );
     let token = hawdb_core::RuntimeCancellationToken::new();
     token.cancel();
@@ -240,7 +241,8 @@ fn match_propagates_errors_cancellation_and_downstream_stop() {
 #[test]
 fn match_respects_state_memory_admission() {
     let plan = lower(
-        hawdb_plan::plan_pipeline_query("MATCH (n:Memory) RETURN n", &BTreeMap::new()).unwrap(),
+        hawdb_plan_cypher::plan_pipeline_query("MATCH (n:Memory) RETURN n", &BTreeMap::new())
+            .unwrap(),
     );
     with_context(None, |context| {
         let memory = ExecutionMemoryConfig {
@@ -265,13 +267,14 @@ fn match_respects_state_memory_admission() {
 #[test]
 fn visibility_filters_inside_optional_matching_and_survives_with() {
     let query = "MATCH (n:Memory) WITH n AS anchor OPTIONAL MATCH (anchor)-[:MENTIONS]->(m:Memory) RETURN anchor.id AS id, m";
-    let logical = hawdb_plan::plan_pipeline_query(query, &BTreeMap::new()).unwrap();
-    let visible =
-        hawdb_plan::apply_node_visibility_predicates(logical, &|variable| Predicate::PropertyIn {
+    let logical = hawdb_plan_cypher::plan_pipeline_query(query, &BTreeMap::new()).unwrap();
+    let visible = hawdb_plan_cypher::apply_node_visibility_predicates(logical, &|variable| {
+        Predicate::PropertyIn {
             variable: variable.to_string(),
             property: "id".to_string(),
             values: vec![Value::Int(1)],
-        });
+        }
+    });
     let rows = execute_logical(visible).unwrap();
     assert_eq!(rows.len(), 1);
     assert_eq!(rows[0].values["id"], Value::Int(1));
@@ -400,7 +403,8 @@ fn consecutive_optional_clauses_preserve_cartesian_multiplicity() {
         };
         for (distinct, expected) in [("", 12), ("DISTINCT ", 5)] {
             let query = format!("MATCH (n:Item {{id: 0}}) OPTIONAL MATCH (n)-[left:OUT]->() OPTIONAL MATCH (n)<-[right:IN]-() RETURN COUNT({distinct}left) + COUNT({distinct}right) AS total");
-            let plan = lower(hawdb_plan::plan_pipeline_query(&query, &BTreeMap::new()).unwrap());
+            let plan =
+                lower(hawdb_plan_cypher::plan_pipeline_query(&query, &BTreeMap::new()).unwrap());
             assert_eq!(run(&plan), Value::Int(expected));
         }
     });

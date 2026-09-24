@@ -15,7 +15,7 @@
 use super::*;
 use crate::graph::costing::estimate_physical_plan_cost;
 use crate::{RuleEvent, StageStats};
-use hawdb_plan::{CompositeRangeSeek, ExactPropertySeekBranch};
+use hawdb_plan_cypher::{CompositeRangeSeek, ExactPropertySeekBranch};
 use std::cell::OnceCell;
 
 const MAX_EXACT_UNION_LOOKUP_VALUES: usize = 64;

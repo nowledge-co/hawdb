@@ -678,7 +678,7 @@ fn apply_access_control_to_logical_plan(
     access_control: &QueryAccessControlContext,
     parameterized_values: bool,
 ) -> LogicalPlan {
-    hawdb_plan::apply_node_visibility_predicates(logical, &|variable| {
+    hawdb_plan_cypher::apply_node_visibility_predicates(logical, &|variable| {
         access_control_node_predicate(variable, access_control, parameterized_values)
     })
 }

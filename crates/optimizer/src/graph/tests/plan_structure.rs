@@ -21,7 +21,7 @@ use crate::{
     PhysicalPlanKind, ScanPruningSupport, VectorPrecision,
 };
 use hawdb_core::Value;
-use hawdb_plan::{
+use hawdb_plan_cypher::{
     AggregateFunction, AggregateTarget, Aggregation, LogicalPlan, NodeProjectionAccess,
     PhysicalOperatorDomain, PhysicalPlan, PhysicalPlanChildren, PhysicalPlanDomainRef, Predicate,
     Projection, ProjectionExpression, SortDirection, SortItem, SortKey,
@@ -589,7 +589,7 @@ fn scalar_node_projection_decodes_only_required_properties() {
             predicate: Predicate::PropertyCompare {
                 variable: "m".to_string(),
                 property: "rank".to_string(),
-                op: hawdb_plan::ComparisonOp::Gte,
+                op: hawdb_plan_cypher::ComparisonOp::Gte,
                 value: Value::Int(10),
             },
             input: Box::new(LogicalPlan::NodeScan {
@@ -777,13 +777,13 @@ fn composite_range_projection_uses_a_contiguous_equality_prefix() {
         Predicate::PropertyCompare {
             variable: "m".to_string(),
             property: "created_at".to_string(),
-            op: hawdb_plan::ComparisonOp::Gte,
+            op: hawdb_plan_cypher::ComparisonOp::Gte,
             value: Value::Int(100),
         },
         Predicate::PropertyCompare {
             variable: "m".to_string(),
             property: "created_at".to_string(),
-            op: hawdb_plan::ComparisonOp::Lt,
+            op: hawdb_plan_cypher::ComparisonOp::Lt,
             value: Value::Int(200),
         },
     ]);
@@ -871,7 +871,7 @@ fn composite_range_projection_rejects_a_gap_in_the_index_prefix() {
             Predicate::PropertyCompare {
                 variable: "m".to_string(),
                 property: "created_at".to_string(),
-                op: hawdb_plan::ComparisonOp::Gte,
+                op: hawdb_plan_cypher::ComparisonOp::Gte,
                 value: Value::Int(100),
             },
         ]),
@@ -1281,7 +1281,7 @@ fn conjunction_access_path_compares_equality_and_range_candidates_by_total_cost(
             Predicate::PropertyCompare {
                 variable: "m".to_string(),
                 property: "created_at".to_string(),
-                op: hawdb_plan::ComparisonOp::Gte,
+                op: hawdb_plan_cypher::ComparisonOp::Gte,
                 value: Value::Int(99),
             },
         ]),

@@ -20,7 +20,7 @@ use super::{blocking_operator_kinds, QueryExecutionObserver, QueryExecutionRepor
 use crate::result_delivery::OutputMetrics;
 use crate::{ExecutionLimit, PipelineMemoryReport, QueryMemoryLedger, ReadExecutionProfile};
 use hawdb_core::Result;
-use hawdb_plan::PhysicalPlan;
+use hawdb_plan_cypher::PhysicalPlan;
 use hawdb_storage::ScanPruningReport;
 
 pub fn read_execution_profile(

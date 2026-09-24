@@ -13,7 +13,7 @@
 // limitations under the License.
 
 use super::super::PhysicalPlan;
-use hawdb_plan::{ComparisonOp, LogicalPlan, Predicate};
+use hawdb_plan_cypher::{ComparisonOp, LogicalPlan, Predicate};
 
 pub(super) fn lower(logical: &LogicalPlan) -> Option<PhysicalPlan> {
     match logical {

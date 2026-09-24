@@ -18,7 +18,7 @@ use crate::store::{
     SourceScanReadLimits,
 };
 use hawdb_core::{LabelId, RelTypeId, RuntimeCancellationToken};
-use hawdb_plan::{
+use hawdb_plan_cypher::{
     BatchMutationOperation, BatchMutationValue, CompositeRangeSeek, NodeProjectionAccess,
     PhysicalPlan, Projection, ProjectionExpression, SetAssignment, SetValue,
 };

@@ -16,7 +16,7 @@
 
 use super::*;
 use hawdb_core::RuntimeCancellationToken;
-use hawdb_plan::ProjectionExpression;
+use hawdb_plan_cypher::ProjectionExpression;
 use hawdb_storage::{NodeId, NodeRecord};
 use std::cell::RefCell;
 use std::collections::BTreeSet;

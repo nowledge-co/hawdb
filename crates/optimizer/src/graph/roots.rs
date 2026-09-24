@@ -14,10 +14,11 @@
 
 use super::OptimizerTrace;
 
-pub use hawdb_plan::{
+pub use hawdb_plan_cypher::{
     FastPathPhysicalPhase, LogicalPhase, LogicalPlanRoot, LoweringReadyLogicalPlanRoot,
     LoweringReadyPhase, PhysicalPhase, PlanPhase, PlanPhaseKind,
 };
 
-pub type PhysicalPlanRoot<P = PhysicalPhase> = hawdb_plan::PhysicalPlanRoot<OptimizerTrace, P>;
-pub type FastPathPhysicalPlanRoot = hawdb_plan::FastPathPhysicalPlanRoot<OptimizerTrace>;
+pub type PhysicalPlanRoot<P = PhysicalPhase> =
+    hawdb_plan_cypher::PhysicalPlanRoot<OptimizerTrace, P>;
+pub type FastPathPhysicalPlanRoot = hawdb_plan_cypher::FastPathPhysicalPlanRoot<OptimizerTrace>;

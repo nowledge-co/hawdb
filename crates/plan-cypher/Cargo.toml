@@ -1,5 +1,5 @@
 [package]
-name = "hawdb-plan"
+name = "hawdb-plan-cypher"
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true

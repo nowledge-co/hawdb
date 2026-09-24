@@ -72,7 +72,7 @@ local resource classes, background admission, and expected-value ranking,
 SQL/PGQ syntax AST, `hawdb-sql` for semantic relational/SQL/PGQ lowering,
 `hawdb-relational` for storage-neutral RowPage DDL/DML compilation,
 strict-append statement/access planning, and shared scalar binding,
-`hawdb-plan` for Cypher logical/physical IR, typed phase roots, deterministic
+`hawdb-plan-cypher` for Cypher logical/physical IR, typed phase roots, deterministic
 fingerprints, explain rendering, and plan-node metadata, and `hawdb-optimizer`
 for Cascades primitives plus graph-specific catalog, costing, access-path, and
 lowering logic. `hawdb-analytics` owns the storage-neutral immutable CSR/CSC
@@ -114,7 +114,7 @@ crates/
   analytics/           immutable CSR/CSC projections and graph algorithms
   compat/              fixtures, comparison, migration gates, shadow protocols
   evidence/            release identity, recovery, redacted diagnostic evidence
-  plan/                logical/physical IR, phase roots, explain, fingerprints
+  plan-cypher/         Cypher logical/physical IR, phase roots, explain, fingerprints
   qos/                 work classes, local admission, background ranking
   optimizer/           Cascades memo/rules/search plus graph cost and lowering
   cypher/              token cursor, parser, AST, parameter model
@@ -245,9 +245,9 @@ across run layouts. Database checkpoint/reopen and failure-before-publication
 tests remain at the root integration boundary.
 
 `src/cypher.rs`, `src/planner.rs`, and `src/optimizer.rs` are compatibility
-re-export facades over their owning crates. `hawdb-plan` depends only on
+re-export facades over their owning crates. `hawdb-plan-cypher` depends only on
 `hawdb-core`, `hawdb-cypher`, and `hawdb-ddl`; `hawdb-optimizer` depends inward
-on `hawdb-plan` and remains free of executor and storage implementations.
+on `hawdb-plan-cypher` and remains free of executor and storage implementations.
 
 `src/analytics.rs` is the compatibility facade and the sole adapter from the
 root `GraphStore` to `hawdb-analytics::ProjectionSource`. The analytics crate
@@ -747,7 +747,7 @@ to justify it.
 The optimizer boundary is:
 
 ```text
-crates/plan/                    logical/physical IR and typed phase roots
+crates/plan-cypher/             Cypher logical/physical IR and typed phase roots
 crates/optimizer/               generic Cascades primitives
 crates/optimizer/src/graph/     graph catalog, costing, rules, and lowering
 src/optimizer.rs                compatibility re-export facade
@@ -804,7 +804,7 @@ properties kept as separate contracts:
 - keep query operators as a smaller closed enum with named payload structs;
   keep child topology owned by the query-node representation
 - keep `PhysicalPlanKind`, `PhysicalPlanClass`, `PlanChildren`, `PlanNode`, and
-  plan histogram helpers beside the IR in `hawdb-plan`
+  plan histogram helpers beside the IR in `hawdb-plan-cypher`
 - keep `OptimizationSearchReport`, `SelectedPlanTrace`, memo/rule primitives,
   and graph-specific costing/lowering in `hawdb-optimizer`
 - keep deterministic fingerprint helpers split by value, predicate, and
@@ -848,7 +848,7 @@ HawDB should use a Cascades model similar to Chryso:
 - `Group`: represents a logical equivalence class.
 - `GroupExpr`: stores an operator plus child group references. Graph-specific
   lowering owns this private payload while public logical operators live in
-  `hawdb-plan`.
+  `hawdb-plan-cypher`.
 - `Rule`: transforms logical expressions into equivalent logical alternatives.
 - `ImplementationRule`: maps logical expressions to physical alternatives.
 - `CostModel`: scores physical alternatives using graph statistics. The current

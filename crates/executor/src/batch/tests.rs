@@ -14,7 +14,7 @@
 
 use super::*;
 use crate::external::NoExternalReadOperator;
-use hawdb_plan::GraphAlgorithmKind;
+use hawdb_plan_cypher::GraphAlgorithmKind;
 use std::cell::Cell;
 
 mod boundaries;
@@ -113,7 +113,7 @@ fn graph_handler_checks_cancellation_inside_its_execution_boundary() {
         let plan = PhysicalPlan::GraphAlgorithm {
             algorithm,
             graph_name: "MemoryGraph".into(),
-            options: hawdb_plan::GraphAlgorithmOptions {
+            options: hawdb_plan_cypher::GraphAlgorithmOptions {
                 damping: None,
                 max_iterations: Some(2),
                 max_levels: Some(1),

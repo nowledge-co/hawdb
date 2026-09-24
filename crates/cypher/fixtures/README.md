@@ -65,5 +65,5 @@ source text and historical provenance when adapting the harness to the new AST.
 Run the default owner and complete local fuzz surface:
 
 ```sh
-bazel test //crates/cypher:presubmit_tests //crates/plan:presubmit_tests //crates/fuzz:hawdb_fuzz_tests //crates/fuzz:hawdb_fuzz_cli_tests //:hawdb_linux_ci_fuzz_smoke_test
+bazel test //crates/cypher:presubmit_tests //crates/plan-cypher:presubmit_tests //crates/fuzz:hawdb_fuzz_tests //crates/fuzz:hawdb_fuzz_cli_tests //:hawdb_linux_ci_fuzz_smoke_test
 ```

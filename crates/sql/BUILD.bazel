@@ -17,7 +17,7 @@ rust_library(
     deps = all_crate_deps(normal = True) + [
         "//crates/core:hawdb_core",
         "//crates/expression:hawdb_expression",
-        "//crates/plan:hawdb_plan",
+        "//crates/plan-cypher:hawdb_plan_cypher",
         "//crates/plan-cache:hawdb_plan_cache",
         "//crates/sql-syntax:hawdb_sql_syntax",
     ],

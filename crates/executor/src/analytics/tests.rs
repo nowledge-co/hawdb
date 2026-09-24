@@ -17,7 +17,7 @@ use crate::binding::binding_memory_bytes;
 use crate::observer::QueryExecutionReports;
 use hawdb_analytics::{ProjectionScanControl, ProjectionSource};
 use hawdb_core::{LabelId, RelTypeId, RuntimeCancellationToken};
-use hawdb_plan::GraphAlgorithmOptions;
+use hawdb_plan_cypher::GraphAlgorithmOptions;
 use hawdb_storage::{NodeId, ProjectedGraphDefinition, PropertyFilter, RelId};
 use std::cell::Cell;
 use std::collections::BTreeSet;

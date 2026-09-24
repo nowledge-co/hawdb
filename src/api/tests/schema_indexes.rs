@@ -2230,7 +2230,9 @@ fn property_histograms_are_bounded_deterministic_samples() {
         .trace
         .selected_plan_cardinality_estimates
         .iter()
-        .find(|estimate| estimate.operator == hawdb_plan::PhysicalPlanKind::NodeProjectionScanExec)
+        .find(|estimate| {
+            estimate.operator == hawdb_plan_cypher::PhysicalPlanKind::NodeProjectionScanExec
+        })
         .unwrap();
     assert_eq!(scan_estimate.estimated_rows, 13);
 

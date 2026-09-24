@@ -14,7 +14,7 @@
 
 use hawdb_core::Value;
 use hawdb_cypher::RelationshipDirection;
-use hawdb_plan::{
+use hawdb_plan_cypher::{
     AggregateFunction, AggregateTarget, Aggregation, CompositeRangeSeek, ExactPropertySeekBranch,
     NodeProjectionAccess, PhysicalPlan, Predicate, Projection, ProjectionExpression,
 };

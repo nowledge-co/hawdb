@@ -13,7 +13,7 @@
 // limitations under the License.
 
 use super::*;
-use hawdb_plan::{Aggregation, SortDirection};
+use hawdb_plan_cypher::{Aggregation, SortDirection};
 
 fn scan(variable: &str) -> LogicalPlan {
     LogicalPlan::NodeScan {

@@ -13,7 +13,7 @@
 // limitations under the License.
 
 use hawdb_core::Value;
-use hawdb_plan::ComparisonOp;
+use hawdb_plan_cypher::ComparisonOp;
 
 pub(super) type ValueRangeBound = (Value, bool);
 pub(super) type ValueRangeBounds = (Option<ValueRangeBound>, Option<ValueRangeBound>);

@@ -372,8 +372,8 @@ dependencies = [
  "hawdb-integrity",
  "hawdb-nowledge-contracts",
  "hawdb-optimizer",
- "hawdb-plan",
  "hawdb-plan-cache",
+ "hawdb-plan-cypher",
  "hawdb-qos",
  "hawdb-query",
  "hawdb-query-policy",
@@ -488,7 +488,7 @@ dependencies = [
  "hawdb-analytics",
  "hawdb-core",
  "hawdb-ddl",
- "hawdb-plan",
+ "hawdb-plan-cypher",
  "hawdb-qos",
  "hawdb-storage",
  "rayon",
@@ -501,8 +501,8 @@ dependencies = [
  "hawdb-core",
  "hawdb-executor",
  "hawdb-optimizer",
- "hawdb-plan",
  "hawdb-plan-cache",
+ "hawdb-plan-cypher",
  "hawdb-qos",
  "hawdb-storage",
  "unicode-width",
@@ -560,18 +560,7 @@ dependencies = [
  "hawdb-core",
  "hawdb-cypher",
  "hawdb-expression",
- "hawdb-plan",
- "serde_json",
-]
-
-[[package]]
-name = "hawdb-plan"
-version = "0.3.0"
-dependencies = [
- "hawdb-core",
- "hawdb-cypher",
- "hawdb-ddl",
- "hawdb-expression",
+ "hawdb-plan-cypher",
  "serde_json",
 ]
 
@@ -582,8 +571,19 @@ dependencies = [
  "hawdb-core",
  "hawdb-cypher",
  "hawdb-optimizer",
- "hawdb-plan",
+ "hawdb-plan-cypher",
  "loom",
+]
+
+[[package]]
+name = "hawdb-plan-cypher"
+version = "0.3.0"
+dependencies = [
+ "hawdb-core",
+ "hawdb-cypher",
+ "hawdb-ddl",
+ "hawdb-expression",
+ "serde_json",
 ]
 
 [[package]]
@@ -698,7 +698,7 @@ dependencies = [
  "hawdb-executor",
  "hawdb-integrity",
  "hawdb-optimizer",
- "hawdb-plan",
+ "hawdb-plan-cypher",
  "hawdb-qos",
  "hawdb-storage",
  "hawdb-telemetry",
@@ -720,8 +720,8 @@ dependencies = [
  "caseless",
  "hawdb-core",
  "hawdb-expression",
- "hawdb-plan",
  "hawdb-plan-cache",
+ "hawdb-plan-cypher",
  "hawdb-sql-syntax",
  "serde",
  "serde_json",
@@ -742,7 +742,7 @@ dependencies = [
  "hawdb-analytics",
  "hawdb-core",
  "hawdb-integrity",
- "hawdb-plan",
+ "hawdb-plan-cypher",
  "hawdb-qos",
  "hawdb-telemetry",
  "rayon",

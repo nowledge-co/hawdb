@@ -19,7 +19,7 @@ use crate::{ExecutionMemoryConfig, QueryMemoryLedger};
 use hawdb_core::{
     Catalog, HawDBError, LabelId, RelTypeId, RuntimeCancellationToken, RuntimeTaskContext, Value,
 };
-use hawdb_plan::ProjectionExpression;
+use hawdb_plan_cypher::ProjectionExpression;
 use hawdb_storage::{NodeId, NodeRecord, RelId, RelRecord};
 use std::collections::BTreeSet;
 use std::num::NonZeroUsize;
@@ -426,7 +426,7 @@ fn pipeline_and_blocking_paths_share_context_and_source_identity() {
 #[test]
 fn aggregate_arithmetic_projects_one_row_for_empty_global_input() {
     use crate::blocking::stream_aggregate_batches;
-    use hawdb_plan::{AggregateFunction, AggregateTarget, Aggregation, ScalarBinaryOp};
+    use hawdb_plan_cypher::{AggregateFunction, AggregateTarget, Aggregation, ScalarBinaryOp};
 
     for row_count in [0, 1, 5] {
         with_context(2, 64 * 1024, |context| {

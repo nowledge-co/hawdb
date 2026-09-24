@@ -8,8 +8,8 @@ test_suite(
 )
 
 rust_library(
-    name = "hawdb_plan",
-    crate_name = "hawdb_plan",
+    name = "hawdb_plan_cypher",
+    crate_name = "hawdb_plan_cypher",
     crate_root = "src/lib.rs",
     srcs = glob(["src/**/*.rs"]),
     edition = "2024",
@@ -24,8 +24,8 @@ rust_library(
 )
 
 rust_test(
-    name = "hawdb_plan_tests",
-    crate = ":hawdb_plan",
+    name = "hawdb_plan_cypher_tests",
+    crate = ":hawdb_plan_cypher",
     compile_data = ["//crates/cypher:migration_corpus_test_data"],
     edition = "2024",
     aliases = aliases(normal_dev = True, proc_macro_dev = True),
@@ -34,7 +34,7 @@ rust_test(
 )
 
 rust_test(
-    name = "hawdb_plan_explain_fuzz_tests",
+    name = "hawdb_plan_cypher_explain_fuzz_tests",
     compile_data = ["//crates/cypher:migration_corpus_test_data"],
     tags = ["manual"],
     args = [
@@ -43,7 +43,7 @@ rust_test(
         "--ignored",
         "--nocapture",
     ],
-    crate = ":hawdb_plan",
+    crate = ":hawdb_plan_cypher",
     edition = "2024",
     aliases = aliases(normal_dev = True, proc_macro_dev = True),
     deps = all_crate_deps(normal_dev = True),

@@ -17,7 +17,7 @@ use super::super::{
 };
 use crate::{OptimizerConfig, PlanCost};
 use hawdb_cypher::RelationshipDirection;
-use hawdb_plan::{
+use hawdb_plan_cypher::{
     AggregateFunction, AggregateTarget, Aggregation, LogicalPlan, Projection, ProjectionExpression,
 };
 use std::collections::BTreeMap;

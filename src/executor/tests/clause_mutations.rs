@@ -6,7 +6,7 @@ fn run(
     query: &str,
     parameters: BTreeMap<String, Value>,
 ) -> Result<Vec<Row>> {
-    let logical = hawdb_plan::plan_pipeline_query(query, &parameters)?;
+    let logical = hawdb_plan_cypher::plan_pipeline_query(query, &parameters)?;
     let physical = hawdb_optimizer::CascadesOptimizer::default().optimize(&logical);
     execute(&physical, catalog, store)
 }

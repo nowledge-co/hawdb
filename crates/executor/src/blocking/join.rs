@@ -15,7 +15,7 @@
 //! Bounded graph equi-join over owned bindings and the shared spill pool.
 
 use super::*;
-use hawdb_plan::HashJoinKey;
+use hawdb_plan_cypher::HashJoinKey;
 use std::hash::BuildHasher;
 
 const OPERATOR: &str = "HashJoinExec";

@@ -16,7 +16,7 @@ use super::*;
 use crate::{visit_plan_with_ids, OptimizerCatalogIndexes, OptimizerCatalogStatistics};
 use hawdb_core::Value;
 use hawdb_cypher::RelationshipDirection;
-use hawdb_plan::{PhysicalPlanKind, Predicate};
+use hawdb_plan_cypher::{PhysicalPlanKind, Predicate};
 use std::collections::BTreeMap;
 
 fn catalog(rows: u64) -> OptimizerCatalog {

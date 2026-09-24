@@ -19,7 +19,7 @@ pub mod seed;
 
 use crate::VectorExecutionReport;
 use hawdb_core::{HawDBError, Result, RuntimeTaskContext};
-use hawdb_plan::VectorPhysicalPlan;
+use hawdb_plan_cypher::VectorPhysicalPlan;
 use std::collections::BTreeMap;
 use std::mem::size_of;
 use std::num::NonZeroUsize;
@@ -135,7 +135,7 @@ mod tests {
         VectorCompressionMode, VectorExecutionBackend, VectorFallbackReasonCode, VectorScoreSource,
     };
     use hawdb_core::RuntimeCancellationToken;
-    use hawdb_plan::VectorCandidateSource;
+    use hawdb_plan_cypher::VectorCandidateSource;
 
     pub(super) fn empty_report() -> VectorExecutionReport {
         VectorExecutionReport {

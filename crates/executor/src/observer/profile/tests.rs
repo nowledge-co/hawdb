@@ -223,7 +223,7 @@ fn events(observer: &QueryExecutionObserver, plan: &PhysicalPlan, rows: usize) {
         observer.record_vector_execution(VectorExecutionReport {
             backend: VectorExecutionBackend::ScalarFlat,
             compression_mode: VectorCompressionMode::Disabled,
-            candidate_source: hawdb_plan::VectorCandidateSource::Scalar,
+            candidate_source: hawdb_plan_cypher::VectorCandidateSource::Scalar,
             backend_selection_reason: None,
             estimated_raw_vector_bytes: Some(128),
             filter_selectivity_per_million: None,

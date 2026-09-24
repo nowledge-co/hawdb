@@ -26,7 +26,7 @@ hawdb-evidence = { path = "../evidence", version = "0.3.0" }
 hawdb-executor = { path = "../executor", version = "0.3.0" }
 hawdb-integrity = { path = "../integrity", version = "0.3.0" }
 hawdb-optimizer = { path = "../optimizer", version = "0.3.0" }
-hawdb-plan = { path = "../plan", version = "0.3.0" }
+hawdb-plan-cypher = { path = "../plan-cypher", version = "0.3.0" }
 hawdb-qos = { path = "../qos", version = "0.3.0" }
 hawdb-storage = { path = "../storage", version = "0.3.0" }
 hawdb-telemetry = { path = "../telemetry", version = "0.3.0" }

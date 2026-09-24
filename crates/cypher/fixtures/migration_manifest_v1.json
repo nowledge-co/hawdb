@@ -1595,7 +1595,7 @@
       "reason": "Only the complete thread-repair literal is frozen. Constructed anonymous-variable pairs and the 10,368-case local campaign remain in the owner tests."
     },
     {
-      "source": "crates/plan/src",
+      "source": "crates/plan-cypher/src",
       "reason": "Physical plan, schema, metadata, fingerprint and vector tests construct typed plans rather than parse query literals; existing assertions are retained."
     },
     {

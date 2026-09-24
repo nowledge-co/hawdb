@@ -14,7 +14,7 @@ use crate::traversal::{
 };
 use crate::{ExecutionLimit, QueryMemoryAccount, QueryMemoryClass, QueryMemoryLease};
 use hawdb_core::{HawDBError, Result, Value};
-use hawdb_plan::{
+use hawdb_plan_cypher::{
     GraphEntityKind, GraphMatchNode, GraphMatchProgram, GraphMatchStep, PhysicalPlan,
 };
 use hawdb_storage::{AdjacencyDirection, NodeId, NodeRecord, RelId};

@@ -15,7 +15,7 @@
 use crate::binding::value_payload_bytes;
 use crate::columnar::ColumnarRowRef;
 use hawdb_core::{HawDBError, Result, Value, ValueRef};
-use hawdb_plan::{PhysicalOperatorId, PhysicalPlanKind};
+use hawdb_plan_cypher::{PhysicalOperatorId, PhysicalPlanKind};
 use std::collections::BTreeMap;
 use std::ops::Index;
 use std::sync::{Arc, OnceLock};

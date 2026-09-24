@@ -19,8 +19,8 @@
 //! rewrites.
 
 pub use crate::logical::{LogicalPlanClass, LogicalPlanKind, LogicalPlanNode};
-pub use hawdb_plan::PhysicalPlanNode as PlanNode;
-pub use hawdb_plan::{
+pub use hawdb_plan_cypher::PhysicalPlanNode as PlanNode;
+pub use hawdb_plan_cypher::{
     plan_class_counts, plan_operator_counts, visit_plan, PhysicalPlanClass, PhysicalPlanKind,
     PhysicalPlanNode, PlanChildren,
 };

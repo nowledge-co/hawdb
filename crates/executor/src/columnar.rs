@@ -15,7 +15,7 @@
 //! Typed columnar batches used by vectorized executor fragments.
 
 use hawdb_core::{HawDBError, LogicalType, Result, Value, ValueRef};
-use hawdb_plan::ComparisonOp;
+use hawdb_plan_cypher::ComparisonOp;
 use hawdb_storage::{RelationalKey, RelationalValue};
 use std::sync::Arc;
 

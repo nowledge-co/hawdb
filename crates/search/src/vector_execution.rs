@@ -25,7 +25,7 @@ use hawdb_executor::{
 use hawdb_optimizer::{
     plan_vector_search, OptimizerContext, QueryFamily, ResourceHints, VectorPrecision,
 };
-use hawdb_plan::VectorSearchLogicalPlan;
+use hawdb_plan_cypher::VectorSearchLogicalPlan;
 use std::collections::BTreeMap;
 #[cfg(feature = "qualification")]
 use std::collections::BTreeSet;

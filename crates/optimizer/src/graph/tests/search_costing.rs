@@ -21,7 +21,7 @@ use crate::{
 };
 use hawdb_core::Value;
 use hawdb_cypher::RelationshipDirection;
-use hawdb_plan::{LogicalPlan, Predicate, Projection, ProjectionExpression};
+use hawdb_plan_cypher::{LogicalPlan, Predicate, Projection, ProjectionExpression};
 use std::collections::BTreeMap;
 
 #[test]

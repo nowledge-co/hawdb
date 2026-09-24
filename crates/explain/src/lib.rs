@@ -21,8 +21,8 @@ pub mod json;
 
 use hawdb_executor::{QueryOutput, ReadExecutionProfile};
 use hawdb_optimizer::{OptimizerTrace, PhysicalOperatorId, PhysicalPlanKind};
-use hawdb_plan::{PhysicalPlan, PhysicalPlanChildren};
 use hawdb_plan_cache::PlanCacheLookup;
+use hawdb_plan_cypher::{PhysicalPlan, PhysicalPlanChildren};
 use hawdb_qos::WorkRequest;
 use hawdb_storage::ScanPruningReport;
 use std::fmt::{Display, Formatter, Write};
