@@ -257,12 +257,16 @@ fn compact_distinct_runs(
     task_context: Option<&RuntimeTaskContext>,
     peak_tracked_bytes: &std::sync::atomic::AtomicUsize,
 ) -> Result<Vec<spill::SpillRun>> {
-    spill::compact_runs(
+    spill::compact_runs_with_memory(
         runs,
         NonZeroUsize::MIN,
-        spill::default_compaction_worker_limit(),
+        spill::CompactionMemory {
+            blocking: blocking_account,
+            spill: spill_budget,
+            worker_limit: spill::default_compaction_worker_limit(),
+        },
         task_context,
-        |left, right| {
+        |left, right, blocking_account, spill_budget| {
             merge_distinct_run_pair(
                 left,
                 right,

@@ -23,6 +23,7 @@ use crate::{
 use hawdb_core::{HawDBError, Result};
 use std::num::NonZeroUsize;
 use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
+use std::sync::Arc;
 
 pub struct OperatorMemoryTracker {
     pub budget_bytes: usize,
@@ -132,8 +133,8 @@ pub struct SpillBudgetTracker {
     pool: std::result::Result<SpillPool, String>,
     pub max_bytes: u64,
     pub max_runs: usize,
-    used_bytes: AtomicU64,
-    run_count: AtomicUsize,
+    used_bytes: Arc<AtomicU64>,
+    run_count: Arc<AtomicUsize>,
     staging_account: Option<QueryMemoryAccount>,
 }
 
@@ -164,8 +165,8 @@ impl SpillBudgetTracker {
             pool: SpillPool::open(memory).map_err(|error| error.to_string()),
             max_bytes: memory.max_spill_bytes.get(),
             max_runs: memory.max_spill_runs.get(),
-            used_bytes: AtomicU64::new(0),
-            run_count: AtomicUsize::new(0),
+            used_bytes: Arc::new(AtomicU64::new(0)),
+            run_count: Arc::new(AtomicUsize::new(0)),
             staging_account: None,
         }
     }
@@ -197,6 +198,28 @@ impl SpillBudgetTracker {
             )),
             ..Self::new(operator, memory)
         }
+    }
+
+    pub(crate) fn staging_budget_bytes(&self) -> usize {
+        self.staging_account
+            .as_ref()
+            .map_or(usize::MAX, |account| account.budget_bytes().get())
+    }
+
+    pub(crate) fn for_merge(&self, staging_bytes: NonZeroUsize) -> Result<Self> {
+        Ok(Self {
+            operator: self.operator,
+            pool: self.pool.clone(),
+            max_bytes: self.max_bytes,
+            max_runs: self.max_runs,
+            used_bytes: Arc::clone(&self.used_bytes),
+            run_count: Arc::clone(&self.run_count),
+            staging_account: self
+                .staging_account
+                .as_ref()
+                .map(|account| account.sub_account(staging_bytes))
+                .transpose()?,
+        })
     }
 
     pub(crate) fn reserve_staging(&self, bytes: usize) -> Result<Option<QueryMemoryLease>> {
