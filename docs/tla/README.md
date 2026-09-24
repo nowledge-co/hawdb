@@ -1386,7 +1386,7 @@ identify implemented paths and remaining acceptance work. The separate
 [`HawDBMvccValidation.tla`](HawDBMvccValidation.tla) checks per-key validation
 against a full-history oracle, including both broad-barrier directions,
 restart without surviving transactions, retained sources that start later
-transactions, and safe tombstone pruning. Its
+transactions, and safe version-history pruning. Its
 [proof and source mapping](MVCC_VALIDATION_PROOF.md) document seven negative
 controls, reachability probes, and the limits of the finite abstraction. The
 older transaction model and its recorded results remain unchanged.

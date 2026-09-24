@@ -355,6 +355,21 @@ impl VersionIndex {
         });
     }
 
+    /// Removes conflict history strictly older than every usable snapshot.
+    /// Absent stamps compare as zero; a removed stamp was already <= every
+    /// protected read epoch. This never removes the canonical record itself.
+    pub(crate) fn prune_before(&mut self, oldest_reader_epoch: u64) {
+        if !self
+            .stamps
+            .iter()
+            .any(|(_, stamp)| stamp.commit_epoch < oldest_reader_epoch)
+        {
+            return;
+        }
+        self.stamps
+            .retain(|_, stamp| stamp.commit_epoch >= oldest_reader_epoch);
+    }
+
     #[doc(hidden)]
     pub fn shares_storage_with(&self, other: &Self) -> bool {
         self.stamps.shares_storage_with(&other.stamps)
@@ -368,6 +383,33 @@ mod tests {
         DEFAULT_MAX_VERSION_WRITE_SET_ENTRIES,
     };
     use crate::NodeId;
+
+    #[test]
+    fn history_pruning_preserves_boundary_and_new_conflicts_for_all_stamp_kinds() {
+        let mut writes = VersionWriteSet::default();
+        writes
+            .record_live(VersionKey::GraphNode(NodeId(1)))
+            .unwrap();
+        writes
+            .record_tombstone(VersionKey::GraphNode(NodeId(2)))
+            .unwrap();
+        writes.record_live(VersionKey::Database).unwrap();
+        writes.record_live(VersionKey::Schema).unwrap();
+        let mut index = VersionIndex::default();
+        index.apply(&writes, 5);
+        let snapshot = index.clone();
+        index.prune_before(5);
+        assert!(index.shares_storage_with(&snapshot));
+        assert_eq!(index.len(), 4);
+        index.prune_before(6);
+        assert!(index.is_empty());
+        assert_eq!(snapshot.len(), 4);
+        assert!(index.first_conflict(&writes, 6).is_none());
+        index.apply(&writes, 7);
+        assert_eq!(index.first_conflict(&writes, 6).unwrap().committed_epoch, 7);
+        index.prune_before(6);
+        assert_eq!(index.len(), 4);
+    }
 
     #[test]
     fn non_reclaiming_prune_preserves_shared_pages() {

@@ -135,7 +135,7 @@ Rollback(tx) ==
 
 Prune(k) ==
     /\ owner = "none"
-    /\ k \in tombstones
+    /\ stamps[k] > 0
     /\ PrunePinned \/ CanPrune(k)
     /\ stamps' = [stamps EXCEPT ![k] = 0]
     /\ tombstones' = tombstones \ {k}
@@ -172,7 +172,7 @@ Next ==
     \/ \E tx \in Transactions, w \in WriteSets, d \in BOOLEAN: Begin(tx, w, d)
     \/ \E tx \in Transactions: Prepare(tx) \/ Reject(tx) \/ Sync(tx)
                                   \/ Publish(tx) \/ Rollback(tx)
-    \/ \E k \in Keys: Prune(k)
+    \/ \E k \in Identities: Prune(k)
     \/ \E tx \in Transactions, w \in WriteSets, d \in BOOLEAN: BeginFromSource(tx, w, d)
     \/ CaptureSource
     \/ DropSource
@@ -220,8 +220,16 @@ NoRestartCommitWitness ==
     ~(restarted /\ \E tx \in Transactions: phase[tx] = "done" /\
           \E i \in 1..Len(history): history[i] = Record(tx))
 NoPruneWitness ==
-    ~(~restarted /\ \E i \in 1..Len(history): history[i].delete /\
+    ~(~restarted /\ owner = "none" /\ \E i \in 1..Len(history): history[i].delete /\
           \E k \in history[i].keys: stamps[k] = 0)
+
+NoLivePruneWitness ==
+    ~(~restarted /\ owner = "none" /\ \E k \in Keys:
+        /\ stamps[k] = 0
+        /\ \E i \in 1..Len(history):
+            /\ ~history[i].delete
+            /\ k \in history[i].keys
+            /\ \A j \in (i + 1)..Len(history): k \notin history[j].keys)
 
 Spec == Init /\ [][Next]_vars
 =============================================================================

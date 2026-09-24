@@ -1778,7 +1778,7 @@ impl Database {
                     )
             }
             None => {
-                self.store.reclaim_version_tombstones();
+                self.store.reclaim_version_history();
                 Ok(())
             }
         };

@@ -3149,6 +3149,106 @@ mod tests {
     use std::num::{NonZeroU64, NonZeroUsize};
 
     #[test]
+    fn checkpoint_reclaims_obsolete_live_version_history_without_losing_rows_or_conflicts() {
+        use crate::version::VersionKey;
+        for durable in [false, true] {
+            let path = unique_test_dir("live_version_history");
+            let mut catalog = Catalog::default();
+            let mut store = if durable {
+                GraphStore::open(&path, &mut catalog).unwrap()
+            } else {
+                GraphStore::default()
+            };
+            let insert_batch = |store: &mut GraphStore, catalog: &mut Catalog| {
+                store
+                    .commit_mutations(
+                        catalog,
+                        (0..8)
+                            .map(|_| GraphMutation::CreateNode {
+                                label: "Memory".into(),
+                                properties: properties([("value", Value::Int(0))]),
+                            })
+                            .collect(),
+                    )
+                    .unwrap();
+            };
+            insert_batch(&mut store, &mut catalog);
+            insert_batch(&mut store, &mut catalog);
+            let older = store.snapshot();
+            insert_batch(&mut store, &mut catalog);
+            let newer = store.snapshot();
+            store.checkpoint(&catalog).unwrap();
+            assert_eq!(store.version_index.len(), 16);
+            assert_eq!(
+                store.version_index.stamp(&VersionKey::GraphNode(NodeId(0))),
+                None
+            );
+            assert!(store
+                .version_index
+                .stamp(&VersionKey::GraphNode(NodeId(8)))
+                .is_some());
+            assert!(older
+                .version_index
+                .stamp(&VersionKey::GraphNode(NodeId(0)))
+                .is_some());
+            assert_eq!(older.node_count_for_label(None), 16);
+            drop(older);
+            store.checkpoint(&catalog).unwrap();
+            assert_eq!(store.version_index.len(), 8);
+            assert_eq!(newer.node_count_for_label(None), 24);
+            drop(newer);
+            store.checkpoint(&catalog).unwrap();
+            assert!(store.version_index.is_empty());
+            assert_eq!(store.node_count_for_label(None), 24);
+
+            // After old history is discarded, new mutations must still stamp
+            // conflicts for transactions that start from the retained data.
+            let mut stale = store.begin_mutation_transaction(&catalog);
+            let update = |value| GraphMutation::SetNodeProperty {
+                label: "Memory".into(),
+                filter: None,
+                property: "value".into(),
+                value: Value::Int(value),
+            };
+            stale
+                .stage_mutation_with_limits(update(1), MutationLimits::default())
+                .unwrap();
+            store
+                .commit_mutations(&mut catalog, vec![update(2)])
+                .unwrap();
+            let epoch = store.commit_epoch;
+            assert!(store
+                .commit_mutation_transaction_and_relational(
+                    &mut catalog,
+                    stale,
+                    RelationalTransaction::default(),
+                    MutationLimits::default()
+                )
+                .unwrap_err()
+                .is_retryable_transaction_conflict());
+            assert_eq!(store.commit_epoch, epoch);
+            store.checkpoint(&catalog).unwrap();
+            assert!(store.version_index.is_empty());
+            if durable {
+                drop(store);
+                catalog = Catalog::default();
+                store = GraphStore::open(&path, &mut catalog).unwrap();
+            }
+            assert_eq!(store.node_count_for_label(None), 24);
+            for id in 0..24 {
+                assert_eq!(
+                    store.node_owned(NodeId(id)).unwrap().unwrap().properties["value"],
+                    Value::Int(2)
+                );
+            }
+            drop(store);
+            if durable {
+                fs::remove_dir_all(path).unwrap();
+            }
+        }
+    }
+
+    #[test]
     fn direct_legacy_commits_invalidate_stale_optimistic_workspaces() {
         for durable in [false, true] {
             for mutation in ["property", "schema", "delete"] {

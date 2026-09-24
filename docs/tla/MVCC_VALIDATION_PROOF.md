@@ -2,7 +2,7 @@
 
 `HawDBMvccValidation.tla` supplements the older whole-epoch optimistic branch
 of `HawDBTransactionConcurrency.tla`. It models the current graph version
-validator, the checkpoint integration of tombstone pruning, and restart with no
+validator, the checkpoint integration of version-history pruning, and restart with no
 surviving transactions. It does not claim that #231/#232 are complete.
 
 ## Independent specification
@@ -43,7 +43,7 @@ still serve or create a transaction at an older epoch.
 - For a broad writer, any intervening record overlaps, including records that
   never wrote a broad stamp. The explicit current-epoch check is therefore
   necessary in addition to checking barrier stamps.
-- A tombstone at `d` is removed only if every pinned epoch is strictly greater
+- Any version stamp at `d` is removed only if every pinned epoch is strictly greater
   than `d`. It cannot witness a conflict for any surviving transaction, and
   transactions created later from an older source are protected by that
   source's own pin. Removing the stamp
@@ -72,7 +72,7 @@ machine-checked proof of the Rust implementation.
 | Broad writes | Database/schema singleton sets; mixed sets containing a barrier collapse to that barrier for conflict semantics |
 | `Begin`, snapshots | Transaction-private snapshot capture in `src/api/concurrent.rs` and `GraphStore::begin_mutation_transaction` |
 | `Prepare`/`Sync`/`Publish` | Externally visible serialized commit boundary; not individual machine instructions or the internal group-sync schedule |
-| `Prune` | `GraphStore::reclaim_version_tombstones` uses the minimum registered storage-snapshot epoch; `VersionIndex::prune_tombstones_before` keeps equality conservatively |
+| `Prune` | `GraphStore::reclaim_version_history` uses the minimum registered storage-snapshot epoch; `VersionIndex::prune_before` keeps equality conservatively |
 | Retained source | `GraphStore::snapshot` registers before the snapshot escapes; `begin_mutation_transaction` and savepoints capture further registered snapshots |
 | `Crash` | Abstract canonical replay plus invalidation of all pre-crash handles; no byte-level WAL decoder, checkpoint or torn-tail model |
 
@@ -109,18 +109,18 @@ invariant violation (a parse error or arbitrary nonzero exit is insufficient):
 | Skip commit validation | `FirstCommitterWins` |
 | Omit epoch check for a broad writer | `ValidationMatchesHistory` |
 | Omit newer barrier stamps for a narrow writer | `ValidationMatchesHistory` |
-| Prune a tombstone despite older pins | `ValidationMatchesHistory` |
+| Prune a version stamp despite older pins | `ValidationMatchesHistory` |
 | Ignore a retained source snapshot that can create a later writer | `ValidationMatchesHistory` |
 | Clear the index while transactions remain active | `ValidationMatchesHistory` |
 | Publish before WAL sync | `DurableBeforeVisible` |
 
-Reachability probes `NoDisjointWitness`, `NoRestartCommitWitness`, and
-`NoPruneWitness` deliberately assert that useful paths do not exist. To run one,
+Reachability probes `NoDisjointWitness`, `NoRestartCommitWitness`,
+`NoPruneWitness`, and `NoLivePruneWitness` deliberately assert that useful paths do not exist. To run one,
 copy the positive `.cfg` to a temporary file, append `INVARIANT` followed by the
 probe name, then run TLC on `HawDBMvccValidation.tla` with that configuration.
 Each must fail with that specific probe, demonstrating respectively a stale
-but disjoint successful commit, a successful post-restart commit, and actual
-tombstone removal without a restart. They are not positive-suite invariants or
+but disjoint successful commit, a successful post-restart commit, actual tombstone removal without a restart, and removal of a live stamp
+without a restart. They are not positive-suite invariants or
 production mutants. Logs must distinguish these expected witnesses from a
 failure of a safety invariant.
 
@@ -177,7 +177,7 @@ raise the minimum after cleanup reads it, making that observed minimum
 conservative. Mutex serialization protects registration and count removal.
 
 After successful durable checkpoint publication, and on the in-memory
-checkpoint path, cleanup removes only tombstones strictly below the minimum.
+checkpoint path, cleanup removes all version stamps strictly below the minimum.
 With no snapshots it uses `commit_epoch.saturating_add(1)`; saturation at the
 maximum epoch conservatively retains equal-epoch stamps. Failed checkpoint
 publication never invokes cleanup. No stamp update enters the WAL or changes
@@ -186,16 +186,26 @@ canonical rows. Existing historical COW maps remain immutable.
 The storage tests cover both durable and in-memory checkpoints, an old source
 that outlives its initial writer, a later writer created from that source,
 savepoint restore after multiple staged statements, exact watermark equality, a newer snapshot that does not block older deletion
-cleanup, preservation of live stamps, and 32 unpinned create/delete/checkpoint
+cleanup, retention of live stamps at equality, and 32 unpinned create/delete/checkpoint
 cycles. Disabling snapshot registration makes the retention test fail before
 its conflicting writer can commit. A separate helper test verifies that a
-cleanup with no eligible tombstones does not detach shared COW pages.
+cleanup with no eligible stamps does not detach shared COW pages.
 
 Cleanup scans the index and may detach shared pages when entries are removed;
 it is checkpoint maintenance, not an extra per-commit scan. This change does
 not establish a global version-memory budget or bounded checkpoint latency.
-Long-lived snapshots may retain deletion stamps, and live stamps are not
-pruned. Full #231 resource qualification remains outstanding.
+Long-lived snapshots may retain conflict stamps and historical COW maps.
+Reclaiming the live index does not bound the total memory owned by snapshots.
+Full #231 resource qualification remains outstanding.
+
+The live-history regression creates 24 records across three epochs, then
+advances snapshot ownership and checks that the live index shrinks from 24 to
+16 to 8 to zero. Historical snapshots retain their original metadata and rows.
+A subsequent conflicting update is still rejected, and durable reopen restores
+all 24 winning values. A helper regression covers live, deleted, database and
+schema stamps, strict equality, shared-page preservation on a no-op cleanup,
+and new conflict publication after pruning. The older public tombstone-only
+helper retains its original semantics; checkpoint uses `prune_before`.
 
 ## Direct mutation coverage
 

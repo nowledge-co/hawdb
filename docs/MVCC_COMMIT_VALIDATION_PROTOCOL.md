@@ -28,7 +28,7 @@ path does not demonstrate per-key optimistic SQL validation.
 | Rebase selection | `commit_with_result` enables it for pessimistic transactions and the narrowly checked conflict-noop-only optimistic transaction shape. |
 | Publication and group sync | `src/api/concurrent/coordinator.rs` serializes commit tasks and retains the database mutex through the shared durability barrier. |
 | Writer snapshot lifetime | `DatabaseTransactionState` owns a `ReaderPin` from snapshot capture through private execution and queued commit; rollback/drop releases it and first-statement refresh replaces it. |
-| Version reclamation | Every `GraphStore::snapshot` registers an epoch in a shared storage registry. Successful durable checkpoint publication and in-memory checkpoint call `reclaim_version_tombstones`, retaining stamps at or after the oldest snapshot epoch. |
+| Version reclamation | Every `GraphStore::snapshot` registers an epoch in a shared storage registry. Successful durable checkpoint publication and in-memory checkpoint call `reclaim_version_history`, retaining stamps at or after the oldest snapshot epoch. |
 | Recovery baseline helper | `VersionIndex::from_live_keys_at_epoch` exists but is not wired into open or replay. The current index starts empty on a new store handle. |
 
 No general serializable isolation, time travel, multi-process writer, or
@@ -177,7 +177,7 @@ Its lock/publication checks remain useful within that restricted model; they
 cannot certify the added per-key executions. The new
 [per-key validation model](tla/MVCC_VALIDATION_PROOF.md) separately checks the
 version-index rule against a full-history oracle, including broad barriers,
-restart, retained source snapshots, and safe tombstone pruning. See the [model scope](tla/README.md#optimistic-and-pessimistic-transaction-publication).
+restart, retained source snapshots, and safe version-history pruning. See the [model scope](tla/README.md#optimistic-and-pessimistic-transaction-publication).
 
 Remaining acceptance work, without reimplementing existing mechanisms:
 
@@ -186,8 +186,9 @@ Remaining acceptance work, without reimplementing existing mechanisms:
    its negative controls do not alone discharge these obligations.
 2. Qualify total version-memory overhead and cleanup cost under representative
    churn and long-lived pins. Checkpoint cleanup now reclaims eligible
-   tombstones, but live stamps (including adjacency identities) are retained,
-   and neither a global byte bound nor bounded checkpoint latency follows.
+   live and deleted stamps, including barriers, but long-lived pins and historical
+   COW maps still retain metadata. Neither a global byte bound nor bounded
+   checkpoint latency follows.
 3. Narrow relational/append identities only with complete constraint and
    recovery coverage. Preserve conservative paths for unsupported shapes.
 4. Qualify canonical crash/reopen equivalence and post-restart conflict behavior
