@@ -28,7 +28,7 @@ use std::sync::Arc;
 mod compaction;
 mod pool;
 
-pub(crate) use compaction::compact_runs;
+pub(crate) use compaction::{compact_runs, default_compaction_worker_limit};
 pub use pool::SpillPoolSnapshot;
 pub(crate) use pool::{spill_pool_snapshot, SpillPool, SpillWriteReservation};
 

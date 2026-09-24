@@ -256,7 +256,7 @@ impl<'runtime, R: ExternalOrderRecord> ExternalTopN<'runtime, R> {
         let (run, mut writer) = self.spill_budget.create_run(self.file_operator)?;
         for row in rows {
             runtime_checkpoint(self.task_context)?;
-            write_record(&mut writer, &row, &mut self.spill_budget)?;
+            write_record(&mut writer, &row, &self.spill_budget)?;
         }
         writer.finish()?;
         self.runs.push(run);
@@ -265,9 +265,11 @@ impl<'runtime, R: ExternalOrderRecord> ExternalTopN<'runtime, R> {
     }
 
     fn compact_runs(&mut self) -> Result<()> {
+        let merge_peak_bytes = std::sync::atomic::AtomicUsize::new(0);
         self.runs = crate::spill::compact_runs(
             std::mem::take(&mut self.runs),
             NonZeroUsize::new(2).expect("two-way merge fan-in"),
+            crate::spill::default_compaction_worker_limit(),
             self.task_context,
             |left, right| {
                 let (run, peak) = merge_run_pair::<R>(
@@ -278,13 +280,16 @@ impl<'runtime, R: ExternalOrderRecord> ExternalTopN<'runtime, R> {
                     self.file_operator,
                     self.memory,
                     self.blocking_account.clone(),
-                    &mut self.spill_budget,
+                    &self.spill_budget,
                     self.task_context,
                 )?;
-                self.merge_peak_bytes = self.merge_peak_bytes.max(peak);
+                merge_peak_bytes.fetch_max(peak, std::sync::atomic::Ordering::Relaxed);
                 Ok(run)
             },
         )?;
+        self.merge_peak_bytes = self
+            .merge_peak_bytes
+            .max(merge_peak_bytes.load(std::sync::atomic::Ordering::Relaxed));
         Ok(())
     }
 
@@ -345,7 +350,7 @@ fn merge_run_pair<R: ExternalOrderRecord>(
     file_operator: &'static str,
     memory: &ExecutionMemoryConfig,
     blocking_account: QueryMemoryAccount,
-    spill_budget: &mut SpillBudgetTracker,
+    spill_budget: &SpillBudgetTracker,
     task_context: Option<&RuntimeTaskContext>,
 ) -> Result<(SpillRun, usize)> {
     let mut readers = [left.reader()?, right.reader()?];
@@ -386,7 +391,7 @@ fn merge_run_pair<R: ExternalOrderRecord>(
 fn write_record<R: ExternalOrderRecord>(
     writer: &mut SpillWriter,
     row: &StableOrderRecord<R>,
-    spill_budget: &mut SpillBudgetTracker,
+    spill_budget: &SpillBudgetTracker,
 ) -> Result<()> {
     let record_len = row.record.encoded_len()?;
     let payload_len = EXTERNAL_ORDER_HEADER_BYTES

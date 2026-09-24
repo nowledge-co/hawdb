@@ -266,7 +266,7 @@ pub(super) fn stream_partial_aggregate_batches(
         runs,
         items,
         memory,
-        &mut spill_budget,
+        &spill_budget,
         &blocking_account,
         context.task_context,
     )?;
@@ -524,13 +524,14 @@ fn compact_partial_runs(
     runs: Vec<spill::SpillRun>,
     items: &[Aggregation],
     memory: &ExecutionMemoryConfig,
-    spill_budget: &mut SpillBudgetTracker,
+    spill_budget: &SpillBudgetTracker,
     blocking_account: &QueryMemoryAccount,
     task_context: Option<&RuntimeTaskContext>,
 ) -> Result<Vec<spill::SpillRun>> {
     spill::compact_runs(
         runs,
         NonZeroUsize::new(2).expect("two-way merge fan-in"),
+        spill::default_compaction_worker_limit(),
         task_context,
         |left, right| {
             merge_partial_run_pair(
@@ -551,7 +552,7 @@ fn merge_partial_run_pair(
     right: &spill::SpillRun,
     items: &[Aggregation],
     memory_budget: NonZeroUsize,
-    spill_budget: &mut SpillBudgetTracker,
+    spill_budget: &SpillBudgetTracker,
     blocking_account: &QueryMemoryAccount,
     task_context: Option<&RuntimeTaskContext>,
 ) -> Result<spill::SpillRun> {
