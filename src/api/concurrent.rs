@@ -196,6 +196,14 @@ impl ConcurrentDatabase {
     }
 
     #[cfg(test)]
+    pub(crate) fn set_group_commit_enqueue_gate(
+        &self,
+        gate: Arc<(Mutex<bool>, Condvar)>,
+    ) -> Result<()> {
+        self.inner.commits.set_group_commit_enqueue_gate(gate)
+    }
+
+    #[cfg(test)]
     pub(crate) fn set_autocommit_read_gate(
         &self,
         snapshot_acquired: Sender<()>,
@@ -615,7 +623,7 @@ impl ConcurrentDatabaseTransaction {
         if self.options.mode == ConcurrentTransactionMode::Optimistic
             && let Err(error) = self.inner.locks.acquire(
                 self.transaction_id,
-                &[LockRequest::database(LockMode::Exclusive)],
+                &[LockRequest::database(LockMode::OptimisticCommit)],
                 started,
                 self.options.lock_timeout,
             )

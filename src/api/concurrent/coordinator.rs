@@ -122,6 +122,16 @@ impl CommitSequencer {
         self.group_commit.set_post_enqueue_barrier(barrier)
     }
 
+    #[cfg(test)]
+    pub(super) fn set_group_commit_enqueue_gate(&self, gate: EnqueueTestGate) -> Result<()> {
+        *self
+            .group_commit
+            .post_enqueue_gate
+            .lock()
+            .map_err(|_| group_commit_coordinator_poisoned_error())? = Some(gate);
+        Ok(())
+    }
+
     fn run_group_commit(&self) -> Result<()> {
         let _leader = GroupCommitLeaderGuard::new(&self.group_commit);
         if let Err(error) = self.wait_for_group_commit_peers() {
@@ -403,12 +413,17 @@ impl QueuedCommit {
     }
 }
 
+#[cfg(test)]
+type EnqueueTestGate = Arc<(Mutex<bool>, Condvar)>;
+
 struct GroupCommitCoordinator {
     config: WalGroupCommitConfig,
     state: Mutex<GroupCommitState>,
     available: Condvar,
     #[cfg(test)]
     post_enqueue_barrier: Mutex<Option<Arc<Barrier>>>,
+    #[cfg(test)]
+    post_enqueue_gate: Mutex<Option<EnqueueTestGate>>,
 }
 
 impl GroupCommitCoordinator {
@@ -419,6 +434,8 @@ impl GroupCommitCoordinator {
             available: Condvar::new(),
             #[cfg(test)]
             post_enqueue_barrier: Mutex::new(None),
+            #[cfg(test)]
+            post_enqueue_gate: Mutex::new(None),
         }
     }
 
@@ -433,6 +450,23 @@ impl GroupCommitCoordinator {
 
     #[cfg(test)]
     fn wait_after_enqueue(&self) -> Result<()> {
+        let gate = self
+            .post_enqueue_gate
+            .lock()
+            .map_err(|_| group_commit_coordinator_poisoned_error())?
+            .clone();
+        if let Some(gate) = gate {
+            let (released, available) = &*gate;
+            let guard = released
+                .lock()
+                .map_err(|_| group_commit_coordinator_poisoned_error())?;
+            drop(
+                available
+                    .wait_while(guard, |released| !*released)
+                    .map_err(|_| group_commit_coordinator_poisoned_error())?,
+            );
+        }
+
         let barrier = self
             .post_enqueue_barrier
             .lock()

@@ -267,3 +267,9 @@ reopen checks connect successful commits to canonical data for that workload.
 This is measurement evidence in addition to the model, not a new fairness or
 performance invariant. In particular, elapsed-time overlap and finite worker
 completion cannot prove scheduler starvation freedom.
+
+Optimistic commit admission now uses a dedicated lock mode compatible with
+itself and incompatible with ordinary S/X owners. The serialized version
+validator remains unchanged. See the [admission proof](OPTIMISTIC_COMMIT_ADMISSION_PROOF.md)
+for ownership through the shared sync, intra-group conflict validation and
+mixed-owner exclusion. Neither model establishes fair writer admission.

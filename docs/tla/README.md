@@ -1389,7 +1389,12 @@ restart without surviving transactions, retained sources that start later
 transactions, and safe version-history pruning. Its
 [proof and source mapping](MVCC_VALIDATION_PROOF.md) document seven negative
 controls, reachability probes, and the limits of the finite abstraction. The
-older transaction model and its recorded results remain unchanged.
+older transaction model and its recorded results remain unchanged. The
+[`HawDBOptimisticCommitAdmission.tla`](HawDBOptimisticCommitAdmission.tla)
+model separately checks concurrent optimistic admission, exclusion against
+ordinary locks, permit lifetime, within-group conflict validation and durable
+acknowledgement. Its [proof](OPTIMISTIC_COMMIT_ADMISSION_PROOF.md) documents
+four negative controls and the limits of composition with the older models.
 
 ## Demand-Paged Index Publication
 

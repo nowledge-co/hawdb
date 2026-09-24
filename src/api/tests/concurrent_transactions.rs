@@ -34,6 +34,143 @@ fn release_autocommit_reads(release: &Arc<(Mutex<bool>, Condvar)>) {
 }
 
 #[test]
+fn optimistic_group_admission_batches_disjoint_writes_and_rejects_overlap() {
+    for overlap in [false, true] {
+        let path = super::unique_test_dir("optimistic_group_admission");
+        let mut database = Database::open(&path).unwrap();
+        database
+            .query("CREATE (:Memory {id: 1, value: 0})")
+            .unwrap();
+        database
+            .query("CREATE (:Memory {id: 2, value: 0})")
+            .unwrap();
+        let config = WalGroupCommitConfig::benchmark_candidate(
+            NonZeroUsize::new(2).unwrap(),
+            NonZeroU64::new(1024 * 1024).unwrap(),
+            Duration::from_millis(5),
+        )
+        .unwrap();
+        let db = ConcurrentDatabase::new_with_wal_group_commit(database, config);
+        let epoch = db.commit_epoch().unwrap();
+        let gate = Arc::new((Mutex::new(false), Condvar::new()));
+        db.set_group_commit_enqueue_gate(Arc::clone(&gate)).unwrap();
+        let ready = Arc::new(Barrier::new(2));
+        let handles = (1..=2)
+            .map(|writer| {
+                let db = db.clone();
+                let ready = Arc::clone(&ready);
+                std::thread::spawn(move || {
+                    let mut tx = db
+                        .begin_transaction(ConcurrentTransactionOptions::optimistic())
+                        .unwrap();
+                    let id = if overlap { 1 } else { writer };
+                    tx.query(&format!(
+                        "MATCH (m:Memory) WHERE m.id = {id} SET m.value = {writer}"
+                    ))
+                    .unwrap();
+                    ready.wait();
+                    tx.commit()
+                })
+            })
+            .collect::<Vec<_>>();
+        let deadline = std::time::Instant::now() + Duration::from_secs(2);
+        while db.wal_group_commit_snapshot().unwrap().submitted_commits < 2
+            && std::time::Instant::now() < deadline
+        {
+            std::thread::sleep(Duration::from_millis(1));
+        }
+        let queued = db.wal_group_commit_snapshot().unwrap().submitted_commits;
+        let mut pessimistic = db
+            .begin_transaction(ConcurrentTransactionOptions::pessimistic(Duration::ZERO))
+            .unwrap();
+        let blocked = pessimistic.query("MATCH (m:Memory) WHERE m.id = 2 SET m.value = 99");
+        pessimistic.rollback();
+
+        // Release even on regression: an exclusive first holder must not leave
+        // the test hung at an unbreakable two-writer enqueue barrier.
+        release_autocommit_reads(&gate);
+        let results = handles
+            .into_iter()
+            .map(|h| h.join().unwrap())
+            .collect::<Vec<_>>();
+        assert_eq!(
+            queued, 2,
+            "both optimistic commit intents must enter the queue"
+        );
+        assert!(blocked
+            .unwrap_err()
+            .to_string()
+            .contains("transaction lock wait timed out"));
+        let accepted = if overlap { 1 } else { 2 };
+        assert_eq!(results.iter().filter(|r| r.is_ok()).count(), accepted);
+        for error in results.iter().filter_map(|r| r.as_ref().err()) {
+            assert!(error.is_retryable_transaction_conflict());
+        }
+        let metrics = db.wal_group_commit_snapshot().unwrap();
+        assert_eq!(metrics.completed_commits, accepted as u64);
+        assert_eq!(metrics.shared_sync_count, 1);
+        assert_eq!(metrics.grouped_wal_entries, accepted as u64);
+        assert_eq!(db.commit_epoch().unwrap(), epoch + accepted as u64);
+        let query = "MATCH (m:Memory) RETURN m.id AS id, m.value AS value ORDER BY id";
+        let rows = db.query(query).unwrap().rows;
+        let winner = results.iter().position(|r| r.is_ok()).unwrap() as i64 + 1;
+        assert_eq!(
+            rows,
+            vec![
+                BTreeMap::from([
+                    ("id".into(), Value::Int(1)),
+                    ("value".into(), Value::Int(if overlap { winner } else { 1 }))
+                ]),
+                BTreeMap::from([
+                    ("id".into(), Value::Int(2)),
+                    ("value".into(), Value::Int(if overlap { 0 } else { 2 }))
+                ]),
+            ]
+        );
+        drop(db);
+        let mut reopened = Database::open(&path).unwrap();
+        assert_eq!(reopened.query(query).unwrap().rows, rows);
+        assert_eq!(reopened.commit_epoch(), epoch + accepted as u64);
+        drop(reopened);
+        std::fs::remove_dir_all(path).unwrap();
+    }
+}
+
+#[test]
+fn optimistic_group_admission_waits_for_pessimistic_owner_and_retires_on_timeout() {
+    let db = Database::new().into_concurrent();
+    db.query("CREATE (:Memory {id: 1, value: 0})").unwrap();
+    let mut owner = db
+        .begin_transaction(ConcurrentTransactionOptions::pessimistic(Duration::ZERO))
+        .unwrap();
+    owner
+        .query("MATCH (m:Memory) WHERE m.id = 1 SET m.value = 1")
+        .unwrap();
+    let mut options = ConcurrentTransactionOptions::optimistic();
+    options.lock_timeout = Duration::ZERO;
+    let mut contender = db.begin_transaction(options).unwrap();
+    contender
+        .query("MATCH (m:Memory) WHERE m.id = 1 SET m.value = 2")
+        .unwrap();
+    assert!(contender
+        .commit()
+        .unwrap_err()
+        .to_string()
+        .contains("transaction lock wait timed out"));
+    owner.commit().unwrap();
+    let mut next = db.begin_transaction(options).unwrap();
+    next.query("MATCH (m:Memory) WHERE m.id = 1 SET m.value = 3")
+        .unwrap();
+    next.commit().unwrap();
+    assert_eq!(
+        db.query("MATCH (m:Memory) RETURN m.value AS value")
+            .unwrap()
+            .rows,
+        vec![BTreeMap::from([("value".into(), Value::Int(3))])]
+    );
+}
+
+#[test]
 fn concurrent_database_checkpoint_publishes_an_immutable_cut() {
     let path = super::unique_test_dir("concurrent_checkpoint_immutable_cut");
     let db = Database::open(&path).unwrap().into_concurrent();

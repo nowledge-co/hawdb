@@ -125,7 +125,7 @@ from 0.996 to 1.873. No case or round was discarded. These short measurements
 do not establish a general durable-throughput or latency guarantee.
 
 Every grouped case used **256 shared syncs for 256 commits**, including all
-4/8-writer rounds. This is not fsync amortization. Source inspection explains a
+4/8-writer rounds. This is not fsync amortization. Source inspection of the measured `5126a98c` revision explains a
 structural restriction: `ConcurrentDatabaseTransaction::commit_with_result`
 acquires `LockRequest::database(LockMode::Exclusive)` for optimistic mode before
 calling `execute_grouped` and releases it only after that call returns. Thus
@@ -135,7 +135,8 @@ Removing that lock without an equivalent pessimistic/optimistic coordination
 protocol would change correctness, not merely scheduling.
 
 The result supports workload-specific memory concurrency and identifies a
-concrete remaining group-admission problem. #232 stays open for that protocol,
+concrete remaining group-admission problem. The admission follow-up replaces that X permit with a dedicated O mode; see
+the [proof](tla/OPTIMISTIC_COMMIT_ADMISSION_PROOF.md). #232 stays open for
 fair admission/starvation coverage, representative durable scaling and
 cross-revision single-stream latency evidence. #231's global memory and full
 recovery proof obligations also remain open.

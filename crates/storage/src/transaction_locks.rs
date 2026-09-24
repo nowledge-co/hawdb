@@ -35,6 +35,11 @@ pub(crate) const DEFAULT_MAX_LOCK_TABLE_BYTES: usize = 16 * 1024 * 1024;
 pub enum LockMode {
     Shared,
     Exclusive,
+    /// Compatible only with other optimistic commit holders. All writes must
+    /// still be validated and published by one serialized commit sequencer.
+    /// This is not a shared read lock and grants no permission to mutate data
+    /// concurrently. The embedded coordinator uses it on the whole database.
+    OptimisticCommit,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
@@ -425,14 +430,12 @@ fn held_lock_estimated_bytes(held: &HeldLock) -> usize {
 }
 
 fn covering_mode(requested: LockMode, held: &[&HeldLock]) -> LockMode {
-    if requested == LockMode::Exclusive
-        || held
-            .iter()
-            .any(|held| held.request.mode == LockMode::Exclusive)
-    {
+    if held.iter().any(|held| held.request.mode != requested) {
+        // Shared and optimistic-commit modes are incomparable: each excludes
+        // holders the other admits. Their only common covering mode is X.
         LockMode::Exclusive
     } else {
-        LockMode::Shared
+        requested
     }
 }
 
@@ -544,11 +547,15 @@ impl WaitForGraph {
 }
 
 fn modes_conflict(left: LockMode, right: LockMode) -> bool {
-    left == LockMode::Exclusive || right == LockMode::Exclusive
+    !matches!(
+        (left, right),
+        (LockMode::Shared, LockMode::Shared)
+            | (LockMode::OptimisticCommit, LockMode::OptimisticCommit)
+    )
 }
 
 fn mode_covers(held: LockMode, requested: LockMode) -> bool {
-    held == LockMode::Exclusive || requested == LockMode::Shared
+    held == LockMode::Exclusive || held == requested
 }
 
 fn target_covers(held: &LockTarget, requested: &LockTarget) -> bool {
@@ -864,6 +871,119 @@ mod tests {
         upper: Bound<RelationalKey>,
     ) -> LockRequest {
         LockRequest::relational_range(mode, "messages", vec!["id".to_string()], lower, upper)
+    }
+
+    #[test]
+    fn optimistic_commit_escalation_covers_incomparable_modes() {
+        let mut table = LockTable::with_limits(LockTableLimits {
+            escalation_entries_per_table: 1,
+            ..LockTableLimits::default()
+        });
+        table
+            .grant(
+                1,
+                LockRequest::graph_adjacency(
+                    LockMode::OptimisticCommit,
+                    7,
+                    Some(1),
+                    GraphAdjacencyDirection::Outgoing,
+                ),
+            )
+            .unwrap();
+        let saved = table.savepoint(1);
+        let request = table.normalized_request(
+            1,
+            LockRequest::graph_adjacency(
+                LockMode::Shared,
+                7,
+                Some(2),
+                GraphAdjacencyDirection::Outgoing,
+            ),
+        );
+        assert_eq!(
+            request,
+            LockRequest::graph_adjacency(
+                LockMode::Exclusive,
+                7,
+                None,
+                GraphAdjacencyDirection::Outgoing,
+            )
+        );
+        table.grant(1, request).unwrap();
+        assert_eq!(table.lock_count(), 1);
+        table.restore_transaction(1, saved);
+        assert!(!table.covers_all(
+            1,
+            &[LockRequest::graph_adjacency(
+                LockMode::Shared,
+                7,
+                Some(1),
+                GraphAdjacencyDirection::Outgoing,
+            )]
+        ));
+        assert!(table.covers_all(
+            1,
+            &[LockRequest::graph_adjacency(
+                LockMode::OptimisticCommit,
+                7,
+                Some(1),
+                GraphAdjacencyDirection::Outgoing,
+            )]
+        ));
+    }
+
+    #[test]
+    fn optimistic_commit_modes_preserve_regular_exclusion_and_coverage() {
+        let modes = [
+            LockMode::Shared,
+            LockMode::Exclusive,
+            LockMode::OptimisticCommit,
+        ];
+        let conflicts = [[false, true, true], [true, true, true], [true, true, false]];
+        let covers = [
+            [true, false, false],
+            [true, true, true],
+            [false, false, true],
+        ];
+        for (i, held) in modes.into_iter().enumerate() {
+            for (j, requested) in modes.into_iter().enumerate() {
+                let mut table = LockTable::default();
+                table.grant(1, LockRequest::database(held)).unwrap();
+                assert_eq!(
+                    !table
+                        .blockers(2, &LockRequest::database(requested))
+                        .is_empty(),
+                    conflicts[i][j],
+                );
+                assert_eq!(
+                    table.covers_all(1, &[LockRequest::database(requested)]),
+                    covers[i][j]
+                );
+                // Database admission must also exclude narrow regular locks.
+                assert_eq!(
+                    !table
+                        .blockers(2, &LockRequest::graph_node(requested, 9))
+                        .is_empty(),
+                    conflicts[i][j],
+                );
+            }
+        }
+        let mut table = LockTable::default();
+        table
+            .grant(1, LockRequest::database(LockMode::OptimisticCommit))
+            .unwrap();
+        table
+            .grant(2, LockRequest::database(LockMode::OptimisticCommit))
+            .unwrap();
+        table.release_transaction(1);
+        assert_eq!(
+            table.blockers(3, &LockRequest::database(LockMode::Shared)),
+            BTreeSet::from([2])
+        );
+        table.release_transaction(2);
+        assert!(table
+            .blockers(3, &LockRequest::database(LockMode::Exclusive))
+            .is_empty());
     }
 
     #[test]

@@ -205,3 +205,15 @@ The late pessimistic lock-acquisition rule remains conservative: after earlier
 successful statements, acquiring a new resource against a changed epoch can
 still require retry. Per-key **write** validation does not validate the earlier
 reads of a newly acquired resource and cannot justify removing that guard.
+
+## Concurrent optimistic commit admission
+
+Optimistic transactions acquire a database `OptimisticCommit` logical lock
+before enqueueing. These permits coexist, but remain incompatible with all
+ordinary shared/exclusive locks until retirement. The commit sequencer still
+validates/applies each task serially, including conflicts with earlier tasks in
+the same unsynced group. This permits shared durability without exposing
+pre-fsync results or weakening pessimistic coordination. See the
+[admission proof and model](tla/OPTIMISTIC_COMMIT_ADMISSION_PROOF.md).
+This is not fair admission; ordinary waiters can still wait behind concurrent
+optimistic holders.
