@@ -287,9 +287,11 @@ commit epoch per transaction.
 
 Optimistic graph writes already use per-key version validation, while relational
 and append operations retain a conservative database version barrier.
-Pessimistic lock-protected rebasing is a separate path. Concurrent transaction
-bodies already execute outside the commit sequencer; validation and publication
-remain serialized. [`MVCC_COMMIT_VALIDATION_PROTOCOL.md`](MVCC_COMMIT_VALIDATION_PROTOCOL.md)
+Pessimistic lock-protected rebasing is a separate path. Transaction-private
+workspaces own a reader pin, including while queued for commit, so checkpoint
+reclamation retains their physical generation until rollback or destruction.
+Concurrent transaction bodies already execute outside the commit sequencer;
+validation and publication remain serialized. [`MVCC_COMMIT_VALIDATION_PROTOCOL.md`](MVCC_COMMIT_VALIDATION_PROTOCOL.md)
 maps the implemented identities and validation rule to source, and records the
 remaining #231/#232 work: integrated tombstone reclamation, per-key model
 coverage, narrower domains, and workload qualification. A new pessimistic lock

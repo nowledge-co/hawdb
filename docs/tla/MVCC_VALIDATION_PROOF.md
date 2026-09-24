@@ -72,7 +72,7 @@ machine-checked proof of the Rust implementation.
 | Broad writes | Database/schema singleton sets; mixed sets containing a barrier collapse to that barrier for conflict semantics |
 | `Begin`, snapshots | Transaction-private snapshot capture in `src/api/concurrent.rs` and `GraphStore::begin_mutation_transaction` |
 | `Prepare`/`Sync`/`Publish` | Externally visible serialized commit boundary; not individual machine instructions or the internal group-sync schedule |
-| `Prune` | `VersionIndex::prune_tombstones_before` with all active writer pins included; production watermark integration remains future work |
+| `Prune` | `VersionIndex::prune_tombstones_before` with all active writer pins included; the cleanup call remains unwired, while transaction-state writer pins now share the reader registry |
 | `Crash` | Abstract canonical replay plus invalidation of all pre-crash handles; no byte-level WAL decoder, checkpoint or torn-tail model |
 
 Two transaction slots represent pin holders that can also write. There is no
@@ -120,6 +120,39 @@ tombstone removal without a restart. They are not positive-suite invariants or
 production mutants. Logs must distinguish these expected witnesses from a
 failure of a safety invariant.
 
+## Writer pin ownership refinement
+
+`DatabaseTransactionState::from_database` captures a `ReaderPin` using the same
+registry and `PublishedReadView` as explicit read transactions. On the concurrent
+path the database sequencer protects capture and workspace construction. On the
+exclusive path the caller holds the database borrow. Thus the pinned epoch and
+physical generation correspond to the captured workspace.
+
+The state owns the pin rather than the submitting `ConcurrentDatabaseTransaction`:
+`take_for_commit` moves the pin with the workspace into the queued task. Moving
+an `Option<ReaderPin>` transfers one owner without running its destructor; the
+emptied submitting state cannot release it. Rollback first discards durable
+views and then takes/drops the pin. Normal destruction drops the pin field
+last, after the workspace fields. Success and error returns drop the queued
+state. If a first pessimistic statement refreshes its snapshot, construction of
+the replacement state registers the new pin before assignment drops the old
+state, while the sequencer excludes concurrent publication. These transitions
+preserve at least one pin for each usable private workspace, and release that
+ownership once it can no longer execute.
+
+This maps a queued workspace to an active pin holder in the abstract model;
+it does not model a separate queue scheduler. Physical generation eligibility
+continues to use the existing registry and generation-reclamation protocol.
+The four `writer_pin` regressions cover actual out-of-core files, transaction
+exits (both modes plus optimistic conflict), first-statement snapshot refresh,
+and transfer to a queued workspace. The out-of-core case originally failed
+because checkpoint deleted `canonical.1.hawdb` while the writer still owned its
+snapshot. It now retains that generation, reclaims unrelated generations 2 and
+3, preserves private read-your-own-writes, and reclaims generation 1 after
+rollback and the next checkpoint. This is a regression-backed ownership
+argument, not a proof that all storage-internal transaction entry points share
+that registry. Version-index tombstone cleanup is still disabled.
+
 ## Reopen regression coverage
 
 `src/api/tests/concurrent_transactions.rs` connects part of the abstract restart
@@ -143,6 +176,6 @@ barrier. Temporarily removing `VersionIndex::apply` from the commit path makes
 both tests fail because the stale writer incorrectly succeeds; this negative
 control is not part of the committed production code.
 
-Still required: source-level completeness of the collector, production writer
-watermark integration and bounded reclamation, canonical recovery tests across
+Still required: source-level completeness of the collector, production version
+cleanup driven by the watermark and bounded reclamation, canonical recovery tests across
 actual WAL/checkpoint boundaries, and the #232 fairness/scaling qualification.

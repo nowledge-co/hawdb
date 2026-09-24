@@ -1,6 +1,6 @@
 # MVCC Commit Validation Protocol
 
-Status: partial implementation for #231 and #232, audited at `a703cc0f`.
+Status: partial implementation for #231 and #232.
 This document separates the current protocol from the remaining acceptance
 work. It does not declare either issue complete.
 
@@ -26,6 +26,7 @@ path does not demonstrate per-key optimistic SQL validation.
 | Private statement execution | `src/api/concurrent.rs`: statements operate on transaction-owned state; `commit_with_result` submits publication to the sequencer. |
 | Rebase selection | `commit_with_result` enables it for pessimistic transactions and the narrowly checked conflict-noop-only optimistic transaction shape. |
 | Publication and group sync | `src/api/concurrent/coordinator.rs` serializes commit tasks and retains the database mutex through the shared durability barrier. |
+| Writer snapshot lifetime | `DatabaseTransactionState` owns a `ReaderPin` from snapshot capture through private execution and queued commit; rollback/drop releases it and first-statement refresh replaces it. |
 | Reclamation helpers | `VersionIndex::prune_tombstones_before` exists and has unit coverage, but no production caller currently invokes it. |
 | Recovery baseline helper | `VersionIndex::from_live_keys_at_epoch` exists but is not wired into open or replay. The current index starts empty on a new store handle. |
 
@@ -178,9 +179,10 @@ Remaining acceptance work, without reimplementing existing mechanisms:
 1. Extend the bounded per-key model evidence to source-level completeness and
    composition with the real recovery/group-sync paths. The finite model and
    its negative controls do not alone discharge these obligations.
-2. Establish complete writer-pin/watermark integration before enabling
-   production tombstone cleanup; demonstrate bounded retained state and
-   progress after pins retire.
+2. Connect version-index cleanup to a safe watermark and demonstrate bounded
+   retained state and progress after pins retire. Transaction-state writer pins
+   now share the reader registry and protect physical generations; production
+   tombstone cleanup remains unwired.
 3. Narrow relational/append identities only with complete constraint and
    recovery coverage. Preserve conservative paths for unsupported shapes.
 4. Qualify canonical crash/reopen equivalence and post-restart conflict behavior

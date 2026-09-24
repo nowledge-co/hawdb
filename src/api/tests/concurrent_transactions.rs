@@ -53,6 +53,178 @@ fn concurrent_database_checkpoint_publishes_an_immutable_cut() {
 }
 
 #[test]
+fn concurrent_writer_pins_canonical_generation_until_rollback() {
+    let path = super::unique_test_dir("writer_generation_pin");
+    let config = crate::DatabaseConfig {
+        storage_residency_mode: crate::StorageResidencyMode::OutOfCore,
+        ..crate::DatabaseConfig::default()
+    };
+    let mut database = Database::open_with_config(&path, config).unwrap();
+    database
+        .query("CREATE (:Memory {id: 1, value: 0})")
+        .unwrap();
+    database.checkpoint().unwrap();
+    let db = database.into_concurrent();
+    let pinned_epoch = db.commit_epoch().unwrap();
+    let mut writer = db
+        .begin_transaction(ConcurrentTransactionOptions::optimistic())
+        .unwrap();
+    writer
+        .query("MATCH (m:Memory) WHERE m.id = 1 SET m.value = 7")
+        .unwrap();
+    for id in 2..=5 {
+        db.query_with_params(
+            "CREATE (:Memory {id: $id, value: 0})",
+            &BTreeMap::from([("id".into(), Value::Int(id))]),
+        )
+        .unwrap();
+        db.checkpoint().unwrap();
+    }
+    // Retain only the writer's old generation, not every intermediate one.
+    assert!(path.join("canonical.1.hawdb").exists());
+    assert!(!path.join("canonical.2.hawdb").exists());
+    assert!(!path.join("canonical.3.hawdb").exists());
+    assert!(path.join("canonical.4.hawdb").exists());
+    assert!(path.join("canonical.5.hawdb").exists());
+    let manifest = std::fs::read_to_string(path.join("manifest.hawdb")).unwrap();
+    assert!(manifest.contains(&format!("oldest_reader_commit_epoch\t{pinned_epoch}\n")));
+    let rows = writer
+        .query("MATCH (m:Memory) RETURN m.id AS id, m.value AS value")
+        .unwrap()
+        .rows;
+    assert_eq!(
+        rows,
+        vec![BTreeMap::from([
+            ("id".into(), Value::Int(1)),
+            ("value".into(), Value::Int(7)),
+        ])]
+    );
+    writer.rollback();
+    db.checkpoint().unwrap();
+    assert!(!path.join("canonical.1.hawdb").exists());
+    let manifest = std::fs::read_to_string(path.join("manifest.hawdb")).unwrap();
+    assert!(manifest.contains("oldest_reader_commit_epoch\tnone\n"));
+    drop(db);
+    std::fs::remove_dir_all(path).unwrap();
+}
+
+#[test]
+fn concurrent_writer_pin_retires_on_every_transaction_exit() {
+    for options in [
+        ConcurrentTransactionOptions::optimistic(),
+        ConcurrentTransactionOptions::pessimistic(Duration::from_secs(1)),
+    ] {
+        for finish in ["commit", "rollback", "drop"] {
+            let db = Database::new().into_concurrent();
+            db.query("CREATE (:Memory {id: 1, value: 0})").unwrap();
+            let epoch = db.commit_epoch().unwrap();
+            let mut tx = db.begin_transaction(options).unwrap();
+            assert_eq!(
+                db.storage_pressure_snapshot()
+                    .unwrap()
+                    .oldest_reader_commit_epoch,
+                Some(epoch)
+            );
+            tx.query("MATCH (m:Memory) WHERE m.id = 1 SET m.value = 1")
+                .unwrap();
+            match finish {
+                "commit" => {
+                    tx.commit().unwrap();
+                }
+                "rollback" => tx.rollback(),
+                "drop" => drop(tx),
+                _ => unreachable!(),
+            }
+            assert_eq!(
+                db.storage_pressure_snapshot()
+                    .unwrap()
+                    .oldest_reader_commit_epoch,
+                None,
+                "{finish}"
+            );
+        }
+    }
+    let db = Database::new().into_concurrent();
+    db.query("CREATE (:Memory {id: 1, value: 0})").unwrap();
+    let mut stale = db
+        .begin_transaction(ConcurrentTransactionOptions::optimistic())
+        .unwrap();
+    stale
+        .query("MATCH (m:Memory) WHERE m.id = 1 SET m.value = 1")
+        .unwrap();
+    db.query("MATCH (m:Memory) WHERE m.id = 1 SET m.value = 2")
+        .unwrap();
+    assert!(stale
+        .commit()
+        .unwrap_err()
+        .is_retryable_transaction_conflict());
+    assert_eq!(
+        db.storage_pressure_snapshot()
+            .unwrap()
+            .oldest_reader_commit_epoch,
+        None
+    );
+}
+
+#[test]
+fn concurrent_writer_pin_refreshes_with_first_pessimistic_statement() {
+    let db = Database::new().into_concurrent();
+    db.query_sql("CREATE TABLE messages (id BIGINT PRIMARY KEY)")
+        .unwrap();
+    let before = db.commit_epoch().unwrap();
+    let mut tx = db
+        .begin_transaction(ConcurrentTransactionOptions::pessimistic(
+            Duration::from_secs(1),
+        ))
+        .unwrap();
+    db.query_sql("INSERT INTO messages (id) VALUES (1)")
+        .unwrap();
+    assert_eq!(
+        db.storage_pressure_snapshot()
+            .unwrap()
+            .oldest_reader_commit_epoch,
+        Some(before)
+    );
+    tx.query_sql("INSERT INTO messages (id) VALUES (2)")
+        .unwrap();
+    assert_eq!(
+        db.storage_pressure_snapshot()
+            .unwrap()
+            .oldest_reader_commit_epoch,
+        Some(before + 1)
+    );
+    tx.rollback();
+    assert_eq!(
+        db.storage_pressure_snapshot()
+            .unwrap()
+            .oldest_reader_commit_epoch,
+        None
+    );
+}
+
+#[test]
+fn writer_pin_moves_with_the_queued_commit_workspace() {
+    let mut db = Database::new();
+    db.query("CREATE (:Memory {id: 1})").unwrap();
+    let mut state = super::super::DatabaseTransactionState::from_database(&db);
+    let epoch = db.commit_epoch();
+    let queued = state.take_for_commit();
+    // Dropping the submitting transaction must not release the queued owner.
+    drop(state);
+    assert_eq!(
+        db.storage_reclamation_watermark()
+            .oldest_reader_commit_epoch,
+        Some(epoch)
+    );
+    drop(queued);
+    assert_eq!(
+        db.storage_reclamation_watermark()
+            .oldest_reader_commit_epoch,
+        None
+    );
+}
+
+#[test]
 fn read_only_autocommit_statements_overlap_after_snapshot_acquisition() {
     let db = Database::new().into_concurrent();
     db.query("CREATE (:Memory {id: 1, title: 'graph'})")

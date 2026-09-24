@@ -723,6 +723,9 @@ pub(super) struct DatabaseTransactionState {
         std::result::Result<Option<crate::store::RelationalTransactionIndexView>, String>,
     relational_rows:
         std::result::Result<Option<crate::store::RelationalTransactionRowView>, String>,
+    // Moves with the private workspace into a queued commit. Checkpoint
+    // reclamation must retain its physical generation until the state retires.
+    snapshot_pin: Option<ReaderPin>,
 }
 
 struct SparseRelationalStatementStage {
@@ -19342,7 +19345,9 @@ impl DatabaseTransactionRuntime {
 
 impl DatabaseTransactionState {
     fn from_database(db: &Database) -> Self {
+        let (_, pin) = db.pin_read_view();
         Self {
+            snapshot_pin: Some(pin),
             graph_transaction: Some(db.store.begin_mutation_transaction(&db.catalog)),
             relational_transaction: hawdb_storage::RelationalTransaction::default(),
             relational_state: db.store.relational_state().clone(),
@@ -19369,6 +19374,7 @@ impl DatabaseTransactionState {
         self.relational_returning.clear();
         self.relational_index = Ok(None);
         self.relational_rows = Ok(None);
+        self.snapshot_pin.take();
     }
 
     pub(crate) fn restore_graph_statement(&mut self, savepoint: GraphMutationSavepoint) {
@@ -19380,6 +19386,7 @@ impl DatabaseTransactionState {
 
     fn take_for_commit(&mut self) -> Self {
         Self {
+            snapshot_pin: self.snapshot_pin.take(),
             graph_transaction: self.graph_transaction.take(),
             relational_transaction: std::mem::take(&mut self.relational_transaction),
             relational_state: std::mem::take(&mut self.relational_state),
