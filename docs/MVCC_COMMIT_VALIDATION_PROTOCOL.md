@@ -29,7 +29,7 @@ path below now has separate per-key validation evidence.
 | Rebase selection | `commit_with_result` enables it for pessimistic transactions and the narrowly checked conflict-noop-only optimistic transaction shape. |
 | Publication and group sync | `src/api/concurrent/coordinator.rs` serializes commit tasks and retains the database mutex through the shared durability barrier. |
 | Writer snapshot lifetime | `DatabaseTransactionState` owns a `ReaderPin` from snapshot capture through private execution and queued commit; rollback/drop releases it and first-statement refresh replaces it. |
-| Version reclamation | Every `GraphStore::snapshot` registers an epoch in a shared storage registry. Successful durable checkpoint publication and in-memory checkpoint call `reclaim_version_history`, retaining stamps at or after the oldest snapshot epoch. |
+| Version reclamation | Every `GraphStore::snapshot` registers an epoch in a shared storage registry. Successful durable checkpoint publication, in-memory checkpoint and current-index budget pressure call `reclaim_version_history`, retaining stamps at or after the oldest snapshot epoch. |
 | Recovery baseline helper | `VersionIndex::from_live_keys_at_epoch` exists but is not wired into open or replay. The current index starts empty on a new store handle. |
 
 No general serializable isolation, time travel, multi-process writer, or
@@ -87,6 +87,35 @@ This is an estimated retained key/write payload budget, excluding B-tree node
 and allocator overhead, spare capacity and the incoming key allocation. It is
 not a global bound across transactions, canonical/history COW pages or snapshot
 lifetimes. The read epoch belongs to the transaction, not this map.
+
+## Current-index payload admission
+
+The production commit path additionally limits the current `VersionIndex` to a
+64 MiB key/stamp estimate (`DEFAULT_MAX_VERSION_INDEX_BYTES`). Its counter
+includes a permanent Database-barrier reservation, even when no barrier stamp
+exists. Updating an existing identity does not consume additional budget.
+Before WAL append, admission counts new identities in the complete write set.
+If it cannot fit, the store first performs the existing safe watermark-based
+history reclamation, then retries admission. Failure returns a storage error
+before WAL/data publication. It does not drop still-required stamps, invalidate
+old readers or substitute a broad conflict identity.
+
+The reservation matters because legacy direct commits publish their Database
+barrier after WAL. They can always use that reserved identity without a new
+post-WAL resource failure. Successful pruning recomputes the current estimate;
+cloned indexes retain their own consistent counter and immutable pages.
+
+This is a bound on the production current-index estimate, not total version
+memory: historical COW roots, B-tree/page overhead, transient copy-on-write
+allocations, spare capacities, and the number of concurrent snapshots remain
+outside it. Low-level `VersionIndex::apply` and `from_live_keys_at_epoch` are
+publication/construction primitives, not admission APIs; the bound is enforced
+by `GraphStore`'s serialized commit path. The latter constructor has no current
+production callers. Reopen resets process-local conflict history as before.
+Long-lived pins can reject index growth; callers must release old snapshots
+and checkpoint before retrying. There is no automatic transaction cancellation.
+The 64 MiB default is a fixed admission policy, not a measured global memory
+requirement or an allocator guarantee.
 
 ## Commit and visibility order
 

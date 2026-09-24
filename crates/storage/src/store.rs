@@ -3149,6 +3149,88 @@ mod tests {
     use std::num::{NonZeroU64, NonZeroUsize};
 
     #[test]
+    fn version_history_budget_rejects_growth_before_wal_and_recovers_after_unpin() {
+        use crate::version::{VersionIndex, VersionKey, VersionStamp};
+        use crate::CowPageWeight;
+        for durable in [false, true] {
+            let path = unique_test_dir("version_history_budget");
+            let mut catalog = Catalog::default();
+            let mut store = if durable {
+                GraphStore::open(&path, &mut catalog).unwrap()
+            } else {
+                GraphStore::default()
+            };
+            store
+                .create_node(&mut catalog, "Memory", properties([]))
+                .unwrap();
+            store.checkpoint(&catalog).unwrap();
+            let reserve = VersionIndex::default().estimated_bytes();
+            let weight = VersionKey::GraphNode(NodeId(0)).cow_page_bytes()
+                + std::mem::size_of::<VersionStamp>();
+            let limit = reserve + 2 * weight;
+            store.version_index = VersionIndex::with_byte_limit(limit);
+            let reader = store.snapshot();
+            let insert = || GraphMutation::CreateNode {
+                label: "Memory".into(),
+                properties: properties([]),
+            };
+            for _ in 0..2 {
+                store
+                    .commit_mutations(&mut catalog, vec![insert()])
+                    .unwrap();
+            }
+            assert_eq!(store.version_index.estimated_bytes(), limit);
+            let epoch = store.commit_epoch();
+            let wal = durable.then(|| fs::read(active_wal_path(&path)).unwrap());
+            let error = store
+                .commit_mutations(&mut catalog, vec![insert()])
+                .unwrap_err();
+            assert!(error
+                .to_string()
+                .contains("version index estimated payload budget exhausted"));
+            assert_eq!(store.commit_epoch(), epoch);
+            assert_eq!(store.node_count_for_label(None), 3);
+            assert_eq!(reader.node_count_for_label(None), 1);
+            assert_eq!(store.version_index.estimated_bytes(), limit);
+            if let Some(wal) = wal {
+                assert_eq!(fs::read(active_wal_path(&path)).unwrap(), wal);
+            }
+            // A legacy direct commit uses its prepaid Database identity even
+            // while the current index is full and an old reader remains pinned.
+            store
+                .create_node(&mut catalog, "Memory", properties([]))
+                .unwrap();
+            assert_eq!(store.version_index.estimated_bytes(), limit);
+            assert!(store.version_index.stamp(&VersionKey::Database).is_some());
+            drop(reader);
+            store.checkpoint(&catalog).unwrap();
+            assert_eq!(store.version_index.estimated_bytes(), reserve);
+            store
+                .commit_mutations(&mut catalog, vec![insert()])
+                .unwrap();
+            assert_eq!(store.node_count_for_label(None), 5);
+            // Without an old external pin, budget pressure itself can safely
+            // retire history; this does not require a checkpoint per commit.
+            for _ in 0..8 {
+                store
+                    .commit_mutations(&mut catalog, vec![insert()])
+                    .unwrap();
+                assert!(store.version_index.estimated_bytes() <= limit);
+            }
+            let epoch = store.commit_epoch();
+            drop(store);
+            if durable {
+                let mut recovered_catalog = Catalog::default();
+                let recovered = GraphStore::open(&path, &mut recovered_catalog).unwrap();
+                assert_eq!(recovered.node_count_for_label(None), 13);
+                assert_eq!(recovered.commit_epoch(), epoch);
+                drop(recovered);
+                fs::remove_dir_all(path).unwrap();
+            }
+        }
+    }
+
+    #[test]
     fn checkpoint_reclaims_obsolete_live_version_history_without_losing_rows_or_conflicts() {
         use crate::version::VersionKey;
         for durable in [false, true] {

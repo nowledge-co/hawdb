@@ -2,7 +2,7 @@
 
 `HawDBMvccValidation.tla` supplements the older whole-epoch optimistic branch
 of `HawDBTransactionConcurrency.tla`. It models the current graph version
-validator, the checkpoint integration of version-history pruning, and restart with no
+validator, checkpoint/pressure integration of version-history pruning, and restart with no
 surviving transactions. It does not claim that #231/#232 are complete.
 
 ## Independent specification
@@ -205,7 +205,7 @@ A subsequent conflicting update is still rejected, and durable reopen restores
 all 24 winning values. A helper regression covers live, deleted, database and
 schema stamps, strict equality, shared-page preservation on a no-op cleanup,
 and new conflict publication after pruning. The older public tombstone-only
-helper retains its original semantics; checkpoint uses `prune_before`.
+helper retains its original semantics; checkpoint and budget pressure use `prune_before`.
 
 ## Direct mutation coverage
 
@@ -320,3 +320,58 @@ an incoming key, B-tree/allocator overhead, spare capacities, all concurrent
 write sets, or retained canonical/snapshot version pages. #231's total version
 memory acceptance remains open. The additional accounting cost is not a
 single-stream latency qualification.
+
+## Current-index budget and reserved barrier
+
+Let D denote the Database identity, r = weight(D), and H the current stamp map.
+The accounting invariant is:
+
+    C(H) = r + sum(k in dom(H) \ {D}, weight(k)).
+
+Weights use the COW key estimate plus `size_of::<VersionStamp>()`. The r term
+is charged even when D is absent. The production limit L defaults to 64 MiB.
+For a deduplicated write set W, admission computes
+
+    Cnext = C(H) + sum(k in W \ (dom(H) union {D}), weight(k)).
+
+Every addition is checked; overflow or Cnext > L rejects before WAL. Initially
+H is empty and C = r <= L. Assuming a previously admitted production state:
+
+- Replacing an existing stamp only changes epoch/disposition, not its weight.
+- Publishing a newly admitted non-D identity adds exactly its preflight weight.
+- Publishing D adds nothing to C, including the legacy direct-commit path that
+  does not carry a typed write set. It cannot exceed the prepaid reservation.
+- Hence applying W after successful admission produces exactly Cnext <= L.
+  Serialized validation/WAL/publication excludes an intervening canonical
+  insertion between admission and application, including grouped callbacks.
+- Safe pruning deletes a subset of stamps and recounts retained non-D weights;
+  C cannot increase. Removing D leaves r reserved. A clone copies the map root,
+  counter and limit; subsequent COW mutation leaves the clone's invariant intact.
+
+Budget-pressure pruning uses precisely the same oldest-snapshot watermark as
+checkpoint pruning, so the existing validator-equivalence proof still applies.
+If the retried footprint does not fit, neither WAL nor canonical user data
+changes. The index may have safely retired obsolete history during the failed
+attempt; that is not a user-data commit. Existing identities remain updateable
+at capacity when their complete footprint introduces no additional identities.
+No live snapshot or required conflict stamp is discarded for budget recovery.
+
+This argument covers the production GraphStore call graph. Low-level public
+VersionIndex construction/publication utilities can build an unadmitted map;
+they do not establish the production bound. Tests configure a small internal
+limit to reach exact capacity, preserve old snapshots, check pre-WAL refusal
+byte-for-byte, exercise a legacy barrier at capacity, then reclaim and resume.
+They also exercise automatic pressure reclamation without checkpointing every
+commit, memory/durable storage, and exact post-reopen row counts/epochs. Removing the
+pre-WAL index admission makes the growth regression fail (0 passed / 1 failed);
+the guard is restored before final checks.
+Unit tests cover live-to-tombstone replacement, equality at the prune boundary,
+reclaimed charge reuse and a retained COW snapshot's independent counter.
+
+The existing TLA+ model abstracts resource admission: a refused commit adds no
+history, and safe Prune remains an allowed transition. No new TLC bound on
+memory is claimed. This source-level induction establishes a current-root
+estimate, not the sum of all retained roots or real allocation peaks. Global
+version memory, sustained pressure cost and single-stream latency qualification
+remain #231 acceptance work. The pressure path can scan/recount the index and
+detach shared COW pages; that cost is not hidden by the constant-time counter.

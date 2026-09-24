@@ -1925,6 +1925,14 @@ impl GraphStore {
         self.poison_on_storage_error(&row_publication_requirement);
         row_publication_requirement?;
         self.validate_constraints_for_ops(&working_catalog, &ops)?;
+        if !self.version_index.admits(&version_writes) {
+            self.reclaim_version_history();
+            if !self.version_index.admits(&version_writes) {
+                return Err(HawDBError::Storage(
+                    "MVCC version index estimated payload budget exhausted; release old snapshots and checkpoint before retrying".into(),
+                ));
+            }
+        }
         let wal_result =
             if preserve_single_create_wal && let [op @ WalOp::CreateNode { .. }] = ops.as_slice() {
                 self.append_durable_wal_single(op.clone())

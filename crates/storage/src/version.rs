@@ -80,6 +80,9 @@ impl Drop for VersionSnapshotPin {
 /// Estimated retained key/write bytes, excluding allocator and B-tree overhead.
 pub const DEFAULT_MAX_VERSION_WRITE_SET_BYTES: usize = crate::DEFAULT_MAX_WAL_RECORD_BYTES;
 
+/// Current-index payload estimate; excludes historical COW roots.
+pub const DEFAULT_MAX_VERSION_INDEX_BYTES: usize = 64 * 1024 * 1024;
+
 pub const DEFAULT_MAX_VERSION_WRITE_SET_ENTRIES: usize = crate::DEFAULT_MAX_WAL_BATCH_OPERATIONS;
 
 /// A mutable identity whose latest committed version participates in optimistic
@@ -288,12 +291,74 @@ pub struct VersionConflict {
 }
 
 /// Mutable version state shared by a live database handle.
-#[derive(Debug, Clone, Default)]
+#[derive(Debug, Clone)]
 pub struct VersionIndex {
     stamps: CowSegmentedMap<VersionKey, VersionStamp>,
+    estimated_bytes: usize,
+    max_estimated_bytes: usize,
+}
+
+impl Default for VersionIndex {
+    fn default() -> Self {
+        Self::with_byte_limit(DEFAULT_MAX_VERSION_INDEX_BYTES)
+    }
 }
 
 impl VersionIndex {
+    pub(crate) fn with_byte_limit(max_estimated_bytes: usize) -> Self {
+        // Reserve the legacy barrier even before it exists, so legacy commit
+        // publication cannot encounter a new admission failure after WAL.
+        let reserved = version_stamp_bytes(&VersionKey::Database);
+        assert!(max_estimated_bytes >= reserved);
+        Self {
+            stamps: CowSegmentedMap::default(),
+            estimated_bytes: reserved,
+            max_estimated_bytes,
+        }
+    }
+
+    /// Includes a permanent reservation for the Database barrier, not allocator
+    /// overhead, spare capacity, or pages retained by other snapshot roots.
+    pub fn estimated_bytes(&self) -> usize {
+        self.estimated_bytes
+    }
+
+    pub(crate) fn admits(&self, writes: &VersionWriteSet) -> bool {
+        let mut bytes = self.estimated_bytes;
+        for (key, _) in writes.iter() {
+            if *key != VersionKey::Database && !self.stamps.contains_key(key) {
+                let Some(next) = bytes.checked_add(version_stamp_bytes(key)) else {
+                    return false;
+                };
+                bytes = next;
+            }
+            if bytes > self.max_estimated_bytes {
+                return false;
+            }
+        }
+        bytes <= self.max_estimated_bytes
+    }
+
+    fn insert_stamp(&mut self, key: VersionKey, stamp: VersionStamp) {
+        if key != VersionKey::Database && !self.stamps.contains_key(&key) {
+            self.estimated_bytes = self
+                .estimated_bytes
+                .saturating_add(version_stamp_bytes(&key));
+        }
+        self.stamps.insert(key, stamp);
+    }
+
+    fn recount_bytes(&mut self) {
+        self.estimated_bytes = self
+            .stamps
+            .iter()
+            .filter(|(key, _)| **key != VersionKey::Database)
+            .fold(
+                version_stamp_bytes(&VersionKey::Database),
+                |bytes, (key, _)| bytes.saturating_add(version_stamp_bytes(key)),
+            );
+    }
+
     /// Creates a conservative baseline for all live identities present in a
     /// recovered checkpoint. WAL replay can then overwrite individual stamps.
     pub fn from_live_keys_at_epoch(
@@ -312,9 +377,12 @@ impl VersionIndex {
                 )
             })
             .collect::<BTreeMap<_, _>>();
-        Self {
+        let mut index = Self {
             stamps: stamps.into(),
-        }
+            ..Self::default()
+        };
+        index.recount_bytes();
+        index
     }
 
     pub fn len(&self) -> usize {
@@ -346,11 +414,13 @@ impl VersionIndex {
 
     /// Publishes every write at `commit_epoch` after its WAL record is durable.
     /// Callers must provide a nonzero epoch derived from the serialized commit
-    /// path, before this method is reached.
+    /// path, before this method is reached. The production commit path must
+    /// successfully admit the write set before WAL; this low-level publication
+    /// primitive and the recovery constructor do not perform admission.
     pub fn apply(&mut self, writes: &VersionWriteSet, commit_epoch: u64) {
         debug_assert_ne!(commit_epoch, 0, "committed version stamps require an epoch");
         for (key, write) in writes.iter() {
-            self.stamps.insert(
+            self.insert_stamp(
                 key.clone(),
                 VersionStamp {
                     commit_epoch,
@@ -365,7 +435,7 @@ impl VersionIndex {
     /// optimistic workspaces cannot overwrite graph or catalog changes.
     pub(crate) fn apply_database_barrier(&mut self, commit_epoch: u64) {
         debug_assert_ne!(commit_epoch, 0, "committed version stamps require an epoch");
-        self.stamps.insert(
+        self.insert_stamp(
             VersionKey::Database,
             VersionStamp {
                 commit_epoch,
@@ -389,6 +459,7 @@ impl VersionIndex {
             stamp.disposition != VersionDisposition::Tombstone
                 || stamp.commit_epoch >= oldest_reader_epoch
         });
+        self.recount_bytes();
     }
 
     /// Removes conflict history strictly older than every usable snapshot.
@@ -404,12 +475,18 @@ impl VersionIndex {
         }
         self.stamps
             .retain(|_, stamp| stamp.commit_epoch >= oldest_reader_epoch);
+        self.recount_bytes();
     }
 
     #[doc(hidden)]
     pub fn shares_storage_with(&self, other: &Self) -> bool {
         self.stamps.shares_storage_with(&other.stamps)
     }
+}
+
+fn version_stamp_bytes(key: &VersionKey) -> usize {
+    key.cow_page_bytes()
+        .saturating_add(std::mem::size_of::<VersionStamp>())
 }
 
 #[cfg(test)]
@@ -419,6 +496,43 @@ mod tests {
         DEFAULT_MAX_VERSION_WRITE_SET_ENTRIES,
     };
     use crate::NodeId;
+
+    #[test]
+    fn version_history_budget_tracks_replacement_pruning_and_reserved_barrier() {
+        use super::version_stamp_bytes;
+        let reserve = version_stamp_bytes(&VersionKey::Database);
+        let key = VersionKey::AppendTable("events".into());
+        let limit = reserve + version_stamp_bytes(&key);
+        let mut index = VersionIndex::with_byte_limit(limit);
+        let mut writes = VersionWriteSet::default();
+        writes.record_live(key.clone()).unwrap();
+        assert!(index.admits(&writes));
+        index.apply(&writes, 1);
+        assert_eq!(index.estimated_bytes(), limit);
+        let snapshot = index.clone();
+        writes.record_tombstone(key.clone()).unwrap();
+        assert!(index.admits(&writes));
+        index.apply(&writes, 2);
+        index.apply_database_barrier(3);
+        assert_eq!(index.estimated_bytes(), limit);
+        let mut growth = VersionWriteSet::default();
+        growth.record_live(VersionKey::Schema).unwrap();
+        assert!(!index.admits(&growth));
+        index.prune_tombstones_before(2);
+        assert_eq!(index.estimated_bytes(), limit);
+        index.prune_tombstones_before(3);
+        assert_eq!(index.estimated_bytes(), reserve);
+        assert_eq!(snapshot.estimated_bytes(), limit);
+        assert_eq!(
+            snapshot.stamp(&key).unwrap().disposition,
+            VersionDisposition::Live
+        );
+        assert!(index.admits(&growth));
+        index.apply(&growth, 4);
+        index.prune_before(5);
+        assert_eq!(index.estimated_bytes(), reserve);
+        assert!(index.is_empty());
+    }
 
     #[test]
     fn history_pruning_preserves_boundary_and_new_conflicts_for_all_stamp_kinds() {
