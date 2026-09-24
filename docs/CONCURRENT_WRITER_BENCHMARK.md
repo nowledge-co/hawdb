@@ -184,3 +184,43 @@ they are not per-case resource budgets or bounds under long-lived snapshots.
 The OS-reported block-operation counters were zero and are not treated as
 physical storage-I/O measurements. Engine sync counters above are the relevant
 amortization evidence.
+
+## Current MVCC qualification: 2026-09-25
+
+The [third receipt](benchmarks/concurrent_writers_macos_2026_09_25_mvcc.json)
+measures engine `56382f61413c49146de7839e925ed13293bb22d4`, after lock fairness,
+admitted transaction lifetimes, failure recovery, append-table identities and
+explicit relational write intents. The unchanged graph benchmark passed all
+90 cases / 23,040 commits / 60 durable reopens. The same host, toolchain, default
+features and five-round protocol apply. No agent-started tests or other builds
+overlapped execution. Raw samples are retained at
+`target/benchmarks/232-concurrent-writers/56382f61-release.jsonl`; the receipt
+records their checksum, the harness hash and the release binary hash.
+
+| Storage | Writers | Control TPS | Concurrent TPS | Paired speedup | Speedup vs 1 writer | Concurrent transaction p95, ms |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: |
+| Memory | 1 | 6,341.2 | 6,407.1 | 1.010 | 1.000 | 0.161 |
+| Memory | 4 | 5,956.0 | 10,965.3 | 1.839 | 1.713 | 0.421 |
+| Memory | 8 | 5,856.7 | 10,885.5 | 1.857 | 1.750 | 1.362 |
+| Durable, ungrouped | 1 | 162.5 | 161.5 | 0.984 | 1.000 | 7.393 |
+| Durable, ungrouped | 4 | 162.4 | 172.4 | 1.062 | 1.080 | 41.498 |
+| Durable, ungrouped | 8 | 155.5 | 169.8 | 1.072 | 1.047 | 116.504 |
+| Durable, grouped candidate | 1 | 159.9 | 161.2 | 1.015 | 1.000 | 7.326 |
+| Durable, grouped candidate | 4 | 163.0 | 573.3 | 3.516 | 3.632 | 8.440 |
+| Durable, grouped candidate | 8 | 160.1 | 1,058.8 | 6.525 | 6.813 | 8.561 |
+
+Grouped 4-writer sync counts were **64, 64, 64, 66, 64**; 8-writer counts
+were **32, 32, 33, 33, 33**, each for 256 commits. Corresponding paired
+throughput ratios span 3.447–3.608 and 5.845–7.307. The current implementation
+therefore retains measurable batching and scaling on this graph workload.
+
+Unfavorable samples remain: ungrouped 1-writer paired ratios span 0.590–0.994,
+ungrouped 4-writer ratios 0.640–1.087, and grouped 1-writer ratios 0.637–1.062.
+These are subsequent runs, not an interleaved cross-revision comparison; no
+claim of single-stream no-regression follows. The benchmark does not measure
+relational collection cost, sustained contention/retries, governed admission
+fairness or long-lived-reader memory. Those acceptance items remain open.
+
+No algorithm or formal model changed in this evidence-only update. The workload
+partition proof and referenced commit-validation/admission proofs above still
+apply. Process CPU/RSS and physical I/O were not collected for this run.
