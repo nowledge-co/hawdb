@@ -19642,7 +19642,9 @@ pub(super) fn execute_concurrent_graph_transaction_query(
     state: &mut DatabaseTransactionState,
     cypher_text: &str,
     parameters: &BTreeMap<String, Value>,
+    task_context: Option<&hawdb_core::RuntimeTaskContext>,
 ) -> Result<GraphTransactionStatementOutcome> {
+    query_runtime::query_runtime_checkpoint(task_context)?;
     let statement = cypher::parse(cypher_text)?;
     let body = statement_body(&statement);
     if matches!(body, cypher::Statement::SetSystemVariable(_)) {
@@ -19667,7 +19669,7 @@ pub(super) fn execute_concurrent_graph_transaction_query(
         cypher_text,
         &statement,
         parameters,
-        None,
+        task_context,
     )
 }
 
@@ -19709,6 +19711,17 @@ pub(super) fn execute_database_transaction_prepared_sql(
     parameters: &[Value],
     options: DatabaseTransactionSqlOptions<'_>,
 ) -> Result<SqlStatementResult> {
+    let admitted_result_bytes = options
+        .task_context
+        .and_then(hawdb_core::RuntimeTaskContext::memory_reservation)
+        .map(|reservation| usize::try_from(reservation.result_bytes()).unwrap_or(usize::MAX));
+    let max_read_result_payload_bytes = match (
+        runtime.config.max_read_result_payload_bytes,
+        admitted_result_bytes,
+    ) {
+        (Some(configured), Some(admitted)) => Some(configured.min(admitted)),
+        (configured, admitted) => configured.or(admitted),
+    };
     reject_locking_select_without_manager(prepared.statement(), options.allow_locking_select)?;
     if !options.allow_system_schema_registry_write
         && hawdb_relational::system_schema::statement_writes_system_schema_registry(
@@ -19733,7 +19746,7 @@ pub(super) fn execute_database_transaction_prepared_sql(
             sql_text,
             parameters,
             runtime.config.max_read_result_rows,
-            runtime.config.max_read_result_payload_bytes,
+            max_read_result_payload_bytes,
             &system_sql::SystemSqlContext {
                 catalog: graph_transaction.catalog(),
                 store: graph_transaction.store(),
@@ -19780,10 +19793,7 @@ pub(super) fn execute_database_transaction_prepared_sql(
             &plan.partition,
             plan.after.as_ref(),
             plan.max_rows,
-            runtime
-                .config
-                .max_read_result_payload_bytes
-                .unwrap_or(usize::MAX),
+            max_read_result_payload_bytes.unwrap_or(usize::MAX),
         )?;
         return Ok(sql_query_result(QueryOutput {
             rows: crate::relational_sql::project_append_rows(&plan, &output.rows)?.into(),
@@ -19809,10 +19819,7 @@ pub(super) fn execute_database_transaction_prepared_sql(
                         &plan.select.partition,
                         plan.select.after.as_ref(),
                         plan.select.max_rows,
-                        runtime
-                            .config
-                            .max_read_result_payload_bytes
-                            .unwrap_or(usize::MAX),
+                        max_read_result_payload_bytes.unwrap_or(usize::MAX),
                     )?
                     .report,
             )
@@ -19868,7 +19875,7 @@ pub(super) fn execute_database_transaction_prepared_sql(
             relational_query_resource_context(
                 &runtime.config,
                 runtime.config.max_read_result_rows,
-                runtime.config.max_read_result_payload_bytes,
+                max_read_result_payload_bytes,
                 options.task_context,
             ),
         )?;

@@ -153,3 +153,9 @@ waking a successor while an unrelated owner remains held; and requester-victim
 selection for a cycle containing a queue dependency. Temporarily omitting
 pending-request blockers from admission makes the overtaking regression fail
 because a new optimistic holder is incorrectly granted.
+
+The additive `begin_admitted_transaction` API now retains one host-admitted
+RuntimeGovernor permit over the whole transaction. See the
+[lease proof](TRANSACTION_ADMISSION_LEASE_PROOF.md). This supplies a governed
+entrypoint; it does not strengthen this lock-request liveness theorem into
+whole-transaction or retry fairness, nor govern callers of the plain entrypoint.

@@ -63,11 +63,19 @@ impl CommitSequencer {
         &self,
         task: impl FnOnce(&mut Database) -> Result<QueryOutput> + Send + 'static,
     ) -> Result<QueryOutput> {
+        self.execute_grouped_with_admission(None, task)
+    }
+
+    pub(super) fn execute_grouped_with_admission(
+        &self,
+        admission: Option<Arc<hawdb_qos::RuntimePermit>>,
+        task: impl FnOnce(&mut Database) -> Result<QueryOutput> + Send + 'static,
+    ) -> Result<QueryOutput> {
         if !self.group_commit.config.is_enabled() {
             let mut database = self.lock()?;
             return task(&mut database);
         }
-        let request = Arc::new(QueuedCommit::new(Box::new(task)));
+        let request = Arc::new(QueuedCommit::new_with_admission(Box::new(task), admission));
         {
             let mut state = self.group_commit.lock_state()?;
             state.metrics.submitted_commits = state.metrics.submitted_commits.saturating_add(1);
@@ -368,13 +376,25 @@ type CommitTask = Box<dyn FnOnce(&mut Database) -> Result<QueryOutput> + Send + 
 struct QueuedCommit {
     task: Mutex<Option<CommitTask>>,
     result: Mutex<Option<Result<QueryOutput>>>,
+    // The task closure is consumed before shared sync. Keep admission on the
+    // request itself so it survives execution, sync and result publication.
+    _admission: Option<Arc<hawdb_qos::RuntimePermit>>,
 }
 
 impl QueuedCommit {
+    #[cfg(test)]
     fn new(task: CommitTask) -> Self {
+        Self::new_with_admission(task, None)
+    }
+
+    fn new_with_admission(
+        task: CommitTask,
+        admission: Option<Arc<hawdb_qos::RuntimePermit>>,
+    ) -> Self {
         Self {
             task: Mutex::new(Some(task)),
             result: Mutex::new(None),
+            _admission: admission,
         }
     }
 
@@ -936,6 +956,33 @@ mod group_commit_tests {
             max_delay,
         )
         .unwrap()
+    }
+
+    #[test]
+    fn queued_admission_outlives_consumed_callback_and_result_delivery() {
+        let governor = hawdb_qos::RuntimeGovernor::detect(
+            hawdb_qos::RuntimeGovernorConfig::shared_host(),
+            hawdb_qos::IoConcurrencyBudget::new(2, 1),
+        );
+        let admission = Arc::new(
+            governor
+                .try_admit(hawdb_qos::RuntimeWorkRequest::mutation(
+                    hawdb_qos::RuntimeWorkPriority::Foreground,
+                    1,
+                ))
+                .unwrap(),
+        );
+        let request = QueuedCommit::new_with_admission(successful_task(), Some(admission.clone()));
+        drop(admission); // The caller can disappear while the queue still owns work.
+        let output = request.take_task().unwrap()(&mut Database::new()).unwrap();
+        assert_eq!(governor.snapshot().active_foreground_tasks, 1);
+        // The callback no longer exists. A real coordinator still has to sync.
+        request.complete(Ok(output)).unwrap();
+        assert_eq!(governor.snapshot().active_foreground_tasks, 1);
+        request.take_result().unwrap().unwrap().unwrap();
+        assert_eq!(governor.snapshot().active_foreground_tasks, 1);
+        drop(request);
+        assert_eq!(governor.snapshot().active_foreground_tasks, 0);
     }
 
     fn successful_task() -> CommitTask {

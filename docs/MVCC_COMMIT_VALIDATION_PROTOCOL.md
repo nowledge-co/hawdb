@@ -218,3 +218,13 @@ pre-fsync results or weakening pessimistic coordination. See the
 The [lock-wait protocol](tla/LOCK_WAIT_FAIRNESS_PROOF.md) now prevents new
 conflicting holders from bypassing an older queued request. This is conditional
 per-request progress, not fairness of whole transactions or their retries.
+
+## Governed transaction lifetime
+
+Hosts can admit one mutation request through their existing RuntimeGovernor and
+pass the permit and task context to `begin_admitted_transaction`. The transaction
+retains admission across statements, queued commit and durability, without a
+second admission. The queue retains an independent owner after callback
+consumption. Plain `begin_transaction` remains caller-managed. See the
+[lease invariant and scope](tla/TRANSACTION_ADMISSION_LEASE_PROOF.md); this does
+not complete whole-transaction fairness or total workspace memory accounting.

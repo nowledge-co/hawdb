@@ -25,6 +25,7 @@ use std::num::{NonZeroU64, NonZeroUsize};
 use std::sync::{mpsc, Arc, Barrier, Condvar, Mutex};
 use std::time::Duration;
 
+mod admission;
 mod read_observation;
 
 fn release_autocommit_reads(release: &Arc<(Mutex<bool>, Condvar)>) {
