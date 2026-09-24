@@ -13,4 +13,5 @@ The negative controls prove that the bounded models exercise these failures:
 - partial batch recovery;
 - manifest publication before segment durability;
 - reclamation of a reader-pinned generation;
-- partial publication of a mixed graph/row/append transaction.
+- partial publication of a mixed graph/row/append transaction;
+- invoking a public request consumer before complete result validation.

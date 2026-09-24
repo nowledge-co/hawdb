@@ -25,6 +25,9 @@ mod clause_normalization;
 #[path = "tests/clause_procedures.rs"]
 mod clause_procedures;
 
+#[path = "tests/request_contract.rs"]
+mod request_contract;
+
 #[path = "tests/shortest_path.rs"]
 mod shortest_path;
 use crate::planner::{
