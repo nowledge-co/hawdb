@@ -626,11 +626,7 @@ mod tests {
             outgoing.insert((NodeId(id), rel_type), all.clone());
         }
 
-        let stats = compute_bounded_path_statistics(
-            &nodes,
-            &outgoing,
-            MAX_BOUNDED_PATH_STAT_HOPS,
-        );
+        let stats = compute_bounded_path_statistics(&nodes, &outgoing, MAX_BOUNDED_PATH_STAT_HOPS);
         assert!(stats.truncated);
         assert!(stats.counts.is_empty());
         assert!(stats.source_distinct_counts.is_empty());
@@ -654,18 +650,26 @@ mod tests {
             outgoing.insert((NodeId(from), rel_type), vec![NodeId(to)]);
         }
 
-        let stats = compute_bounded_path_statistics(
-            &nodes,
-            &outgoing,
-            MAX_BOUNDED_PATH_STAT_HOPS,
-        );
+        let stats = compute_bounded_path_statistics(&nodes, &outgoing, MAX_BOUNDED_PATH_STAT_HOPS);
         assert!(!stats.truncated);
         assert_eq!(stats.counts[&(label, rel_type, label, 1)], 3);
         assert_eq!(stats.counts[&(label, rel_type, label, 2)], 2);
         assert_eq!(stats.counts[&(label, rel_type, label, 3)], 1);
-        assert_eq!(stats.source_distinct_counts[&(label, rel_type, label, 1)], 3);
-        assert_eq!(stats.target_distinct_counts[&(label, rel_type, label, 1)], 3);
-        assert_eq!(stats.source_distinct_counts[&(label, rel_type, label, 3)], 1);
-        assert_eq!(stats.target_distinct_counts[&(label, rel_type, label, 3)], 1);
+        assert_eq!(
+            stats.source_distinct_counts[&(label, rel_type, label, 1)],
+            3
+        );
+        assert_eq!(
+            stats.target_distinct_counts[&(label, rel_type, label, 1)],
+            3
+        );
+        assert_eq!(
+            stats.source_distinct_counts[&(label, rel_type, label, 3)],
+            1
+        );
+        assert_eq!(
+            stats.target_distinct_counts[&(label, rel_type, label, 3)],
+            1
+        );
     }
 }

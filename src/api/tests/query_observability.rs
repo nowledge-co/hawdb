@@ -2118,8 +2118,7 @@ fn configured_commit_lag_defers_statistics_refresh_on_query_path() {
     // Five commits leave lag == 4, still inside the tolerated window; each
     // write's own planning sees a pre-commit epoch, so none recompute.
     for id in 0..5 {
-        db.query(&format!("CREATE (:Memory {{id: {id}}})"))
-            .unwrap();
+        db.query(&format!("CREATE (:Memory {{id: {id}}})")).unwrap();
     }
     let within_boundary = db
         .explain_query("MATCH (m:Memory) RETURN m.id AS id, m.title AS title")
@@ -2152,8 +2151,7 @@ fn configured_commit_lag_defers_statistics_refresh_on_query_path() {
     // Two more commits sit below the new refresh point: the next fresh plan
     // hits the cached statistics.
     for id in 6..8 {
-        db.query(&format!("CREATE (:Memory {{id: {id}}})"))
-            .unwrap();
+        db.query(&format!("CREATE (:Memory {{id: {id}}})")).unwrap();
     }
     let within = db
         .explain_query("MATCH (m:Memory) RETURN m.title AS title")

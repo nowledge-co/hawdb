@@ -2248,7 +2248,39 @@ pub struct NowledgeMemReadSnapshot<'a> {
     output_payload_bytes: usize,
 }
 
-impl NowledgeMemReadSnapshot<'_> {
+impl<'a> NowledgeMemReadSnapshot<'a> {
+    fn new(
+        transaction: crate::DatabaseReadTransaction,
+        budget: NowledgeMemReadSnapshotBudget,
+        projection: Option<&'a NowledgeMemSearchProjection>,
+        out_of_core_projection: Option<&'a NowledgeMemOutOfCoreSearchProjection>,
+    ) -> Self {
+        let freshness = match (projection, out_of_core_projection) {
+            (Some(projection), None) => Some(projection.freshness()),
+            (None, Some(projection)) => Some(projection.freshness()),
+            (None, None) | (Some(_), Some(_)) => None,
+        };
+        Self {
+            transaction,
+            external: SearchProjectionExternalReadOperator {
+                projection,
+                out_of_core_projection,
+                vector_seed_execution_count: 0,
+            },
+            search_projection_source_graph_commit_epoch: freshness
+                .as_ref()
+                .and_then(|value| value.source_graph_commit_epoch),
+            search_projection_durable_source_graph_commit_epoch: freshness
+                .as_ref()
+                .and_then(|value| value.durable_source_graph_commit_epoch),
+            budget,
+            cypher_statement_count: 0,
+            sql_statement_count: 0,
+            output_rows: 0,
+            output_payload_bytes: 0,
+        }
+    }
+
     pub fn commit_epoch(&self) -> u64 {
         self.transaction.commit_epoch()
     }
@@ -2690,6 +2722,7 @@ impl NowledgeMemEmbeddedStoreHandle {
             .graph()
             .database()
             .begin_read_transaction_with_context(&task_context);
+        drop(store);
         operation(&mut transaction)
     }
 
@@ -2699,6 +2732,29 @@ impl NowledgeMemEmbeddedStoreHandle {
     pub fn with_bounded_read_snapshot<T>(
         &self,
         budget: NowledgeMemReadSnapshotBudget,
+        operation: impl FnOnce(&mut NowledgeMemReadSnapshot<'_>) -> Result<T>,
+    ) -> Result<T> {
+        self.with_bounded_read_snapshot_kind(budget, true, operation)
+    }
+
+    /// Executes bounded graph and relational reads without retaining the store
+    /// lock during the callback. Writers can commit while this snapshot lives.
+    ///
+    /// External search projections are deliberately unavailable: vector queries
+    /// fail and the report contains no projection epochs. Use
+    /// `with_bounded_read_snapshot` when a pinned projection is required.
+    pub fn with_bounded_graph_read_snapshot<T>(
+        &self,
+        budget: NowledgeMemReadSnapshotBudget,
+        operation: impl FnOnce(&mut NowledgeMemReadSnapshot<'_>) -> Result<T>,
+    ) -> Result<T> {
+        self.with_bounded_read_snapshot_kind(budget, false, operation)
+    }
+
+    fn with_bounded_read_snapshot_kind<T>(
+        &self,
+        budget: NowledgeMemReadSnapshotBudget,
+        pin_projection: bool,
         operation: impl FnOnce(&mut NowledgeMemReadSnapshot<'_>) -> Result<T>,
     ) -> Result<T> {
         if budget.max_rows == 0 {
@@ -2735,34 +2791,17 @@ impl NowledgeMemEmbeddedStoreHandle {
             .graph
             .database()
             .begin_read_transaction_with_context(&task_context);
-        let projection_freshness = match (
+        if !pin_projection {
+            let mut snapshot = NowledgeMemReadSnapshot::new(transaction, budget, None, None);
+            drop(store);
+            return operation(&mut snapshot);
+        }
+        let mut snapshot = NowledgeMemReadSnapshot::new(
+            transaction,
+            budget,
             store.search_projection.as_ref(),
             store.out_of_core_search_projection.as_ref(),
-        ) {
-            (Some(projection), None) => Some(projection.freshness()),
-            (None, Some(projection)) => Some(projection.freshness()),
-            (None, None) | (Some(_), Some(_)) => None,
-        };
-        let external = SearchProjectionExternalReadOperator {
-            projection: store.search_projection.as_ref(),
-            out_of_core_projection: store.out_of_core_search_projection.as_ref(),
-            vector_seed_execution_count: 0,
-        };
-        let mut snapshot = NowledgeMemReadSnapshot {
-            transaction,
-            external,
-            search_projection_source_graph_commit_epoch: projection_freshness
-                .as_ref()
-                .and_then(|freshness| freshness.source_graph_commit_epoch),
-            search_projection_durable_source_graph_commit_epoch: projection_freshness
-                .as_ref()
-                .and_then(|freshness| freshness.durable_source_graph_commit_epoch),
-            budget,
-            cypher_statement_count: 0,
-            sql_statement_count: 0,
-            output_rows: 0,
-            output_payload_bytes: 0,
-        };
+        );
         operation(&mut snapshot)
     }
 

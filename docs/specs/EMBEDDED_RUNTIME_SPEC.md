@@ -141,9 +141,23 @@ atomicity, recovery, runtime admission, projection generation publication, or a
 bounded multi-statement workflow. New single-query route wrappers and their
 request/output DTOs MUST NOT be added to the embedded facade.
 
-An App workflow that combines Cypher and PostgreSQL reads MUST use
-`NowledgeMemEmbeddedStoreHandle::with_bounded_read_snapshot`. Its report MUST
-identify the pinned commit epoch, the original and remaining row and payload
+A bounded workflow combining Cypher and PostgreSQL reads MUST use one
+`NowledgeMemReadSnapshot` through `with_bounded_graph_read_snapshot` or
+`with_bounded_read_snapshot`. The graph-only entrypoint pins the graph and
+relational state under the embedded store lock, then releases that lock before
+executing the callback. Its resource-admission permit remains live until the
+callback finishes. Writers may commit while the snapshot retains its original
+values and commit epoch. Acquiring a new snapshot still waits for an active
+write transaction; this is not a lock-free admission promise.
+
+`with_bounded_read_snapshot` additionally pins the configured search projection
+and retains the store read lock through the callback. Graph-only snapshots MUST
+report no projection presence or projection epochs and MUST reject external
+vector reads, even when the live store has a projection. A host requiring
+projection consistency MUST use the projection-pinned entrypoint. Neither
+entrypoint transfers host business policy into the database.
+
+The report MUST identify the pinned commit epoch, the original and remaining row and payload
 budgets, and the number of successfully completed Cypher and SQL statements.
 A successful external vector seed increments a separate execution counter;
 projection presence alone is not evidence that a search statement consumed the

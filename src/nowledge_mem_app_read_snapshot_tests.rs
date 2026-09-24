@@ -311,3 +311,182 @@ fn bounded_read_snapshot_enforces_the_cumulative_payload_budget() {
         "unexpected error: {error}"
     );
 }
+
+#[test]
+fn user_keeps_a_stable_graph_and_sql_snapshot_while_a_writer_commits() {
+    // Given a bounded graph/SQL snapshot and a real embedded writer.
+    let handle = app_read_handle();
+    let writer_handle = handle.clone();
+    let (start_tx, start_rx) = std::sync::mpsc::channel();
+    let (done_tx, done_rx) = std::sync::mpsc::channel();
+    let writer = std::thread::spawn(move || {
+        let Ok(()) = start_rx.recv() else { return };
+        let result = writer_handle.with_transaction(|transaction| {
+            transaction.query("MATCH (t:Thread) SET t.title = 'Updated thread'")?;
+            transaction.query_sql("UPDATE thread_messages SET content = 'Updated payload' WHERE content_message_id = 'message-1'")?;
+            Ok(())
+        });
+        done_tx.send(result).unwrap();
+    });
+    let read = |snapshot: &mut super::NowledgeMemReadSnapshot<'_>| -> crate::Result<_> {
+        let graph = snapshot.query_cypher(
+            "MATCH (t:Thread) RETURN t.title AS title LIMIT 1",
+            &BTreeMap::new(),
+            1,
+        )?;
+        let sql = snapshot.query_sql("SELECT content FROM thread_messages LIMIT 1", &[], 1)?;
+        Ok((graph, sql))
+    };
+    let result = handle.with_bounded_graph_read_snapshot(
+        NowledgeMemReadSnapshotBudget {
+            max_rows: 4,
+            max_payload_bytes: 4096,
+        },
+        |snapshot| {
+            let before = read(snapshot)?;
+            let epoch = snapshot.commit_epoch();
+            // When the writer commits before this callback returns.
+            start_tx.send(()).unwrap();
+            let committed = done_rx.recv_timeout(std::time::Duration::from_secs(5));
+            // Return before joining on failure, so regression cannot deadlock cleanup.
+            let committed = committed.map_err(|_| {
+                crate::HawDBError::Execution("writer blocked behind an immutable snapshot".into())
+            })?;
+            committed?;
+            // Then both planes retain the old values and epoch.
+            assert_eq!(read(snapshot)?, before);
+            assert_eq!(snapshot.commit_epoch(), epoch);
+            assert!(!snapshot.report().search_projection_present);
+            assert_eq!(
+                snapshot
+                    .report()
+                    .search_projection_source_graph_commit_epoch,
+                None
+            );
+            Ok((before, epoch))
+        },
+    );
+    drop(start_tx);
+    writer.join().unwrap();
+    let (before, epoch) = result.unwrap();
+    handle
+        .with_bounded_graph_read_snapshot(
+            NowledgeMemReadSnapshotBudget {
+                max_rows: 4,
+                max_payload_bytes: 4096,
+            },
+            |snapshot| {
+                let after = read(snapshot)?;
+                assert_ne!(after.0, before.0);
+                assert_ne!(after.1, before.1);
+                assert!(snapshot.commit_epoch() > epoch);
+                Ok(())
+            },
+        )
+        .unwrap();
+}
+
+#[test]
+#[cfg(feature = "vector-search")]
+fn user_cannot_read_an_unpinned_projection_from_a_graph_snapshot() {
+    let handle = app_read_handle();
+    let query = "CALL vector_search($embedding, topK := 2) YIELD id, score \
+                 MATCH (m:Memory) WHERE m.space_id = $space_id \
+                 RETURN m.id AS memory_id, score LIMIT 1";
+    let parameters = BTreeMap::from([
+        (
+            "embedding".into(),
+            Value::List(vec![Value::Float(1.0), Value::Float(0.0)]),
+        ),
+        ("space_id".into(), Value::String("default".into())),
+    ]);
+    let budget = NowledgeMemReadSnapshotBudget {
+        max_rows: 4,
+        max_payload_bytes: 4096,
+    };
+    // Given a valid vector query against the configured projection.
+    handle
+        .with_bounded_read_snapshot(budget, |snapshot| {
+            assert_eq!(snapshot.query_cypher(query, &parameters, 1)?.rows.len(), 1);
+            Ok(())
+        })
+        .unwrap();
+    // When the same query uses a graph-only snapshot, the projection is unavailable.
+    handle
+        .with_bounded_graph_read_snapshot(budget, |snapshot| {
+            let error = snapshot.query_cypher(query, &parameters, 1).unwrap_err();
+            assert!(matches!(error, crate::HawDBError::Storage(ref message)
+            if message == "nowledge mem search projection is not configured"));
+            assert_eq!(
+                snapshot
+                    .report()
+                    .search_projection_source_graph_commit_epoch,
+                None
+            );
+            assert_eq!(
+                snapshot
+                    .report()
+                    .search_projection_durable_source_graph_commit_epoch,
+                None
+            );
+            Ok(())
+        })
+        .unwrap();
+}
+
+#[test]
+fn user_retains_cumulative_budgets_without_a_projection_lock() {
+    let handle = app_read_handle();
+    handle
+        .with_bounded_graph_read_snapshot(
+            NowledgeMemReadSnapshotBudget {
+                max_rows: 1,
+                max_payload_bytes: 4096,
+            },
+            |snapshot| {
+                snapshot.query_cypher(
+                    "MATCH (m:Memory) RETURN m.id AS value LIMIT 1",
+                    &BTreeMap::new(),
+                    1,
+                )?;
+                assert!(snapshot
+                    .query_sql("SELECT content FROM thread_messages LIMIT 1", &[], 1)
+                    .is_err());
+                assert_eq!(snapshot.report().output_rows, 1);
+                assert_eq!(snapshot.report().remaining_rows, 0);
+                Ok(())
+            },
+        )
+        .unwrap();
+}
+
+#[test]
+fn user_read_transaction_allows_a_writer_to_commit_before_it_finishes() {
+    let handle = app_read_handle();
+    let writer_handle = handle.clone();
+    let (start_tx, start_rx) = std::sync::mpsc::channel();
+    let (done_tx, done_rx) = std::sync::mpsc::channel();
+    let writer = std::thread::spawn(move || {
+        let Ok(()) = start_rx.recv() else { return };
+        let result = writer_handle.with_transaction(|transaction| {
+            transaction.query("MATCH (t:Thread) SET t.title = 'Updated thread'")?;
+            Ok(())
+        });
+        done_tx.send(result).unwrap();
+    });
+    let result = handle.with_read_transaction(4096, |snapshot| {
+        let query = "MATCH (t:Thread) RETURN t.title AS title LIMIT 1";
+        let before = snapshot.query(query)?;
+        start_tx.send(()).unwrap();
+        done_rx
+            .recv_timeout(std::time::Duration::from_secs(5))
+            .map_err(|_| {
+                crate::HawDBError::Execution("writer blocked by read transaction".into())
+            })??;
+        assert_eq!(snapshot.query(query)?, before);
+        Ok(())
+    });
+    drop(start_tx);
+    writer.join().unwrap();
+    result.unwrap();
+}
