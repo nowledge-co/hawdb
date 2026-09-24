@@ -1382,8 +1382,13 @@ all Rust executions. The model has no per-key stamp map or tombstone watermark.
 Its lock/publication checks must not be cited as completion of #231's per-key
 validation, recovery or reclamation proof. The
 [protocol and conditional validation argument](../MVCC_COMMIT_VALIDATION_PROTOCOL.md)
-identify implemented paths and the remaining model work. No model transitions
-or previously recorded TLC results change with this scope clarification.
+identify implemented paths and remaining acceptance work. The separate
+[`HawDBMvccValidation.tla`](HawDBMvccValidation.tla) checks per-key validation
+against a full-history oracle, including both broad-barrier directions,
+restart without surviving transactions, and safe tombstone pruning. Its
+[proof and source mapping](MVCC_VALIDATION_PROOF.md) document six negative
+controls, reachability probes, and the limits of the finite abstraction. The
+older transaction model and its recorded results remain unchanged.
 
 ## Demand-Paged Index Publication
 

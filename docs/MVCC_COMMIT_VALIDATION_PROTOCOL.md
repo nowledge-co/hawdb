@@ -166,12 +166,16 @@ whole-epoch optimistic validation: `OptimisticFirstCommitterWins` requires
 `commitEpoch = baseEpoch + 1`. That property intentionally excludes a successful
 stale but disjoint graph writer and is **not** the current per-key invariant.
 Its lock/publication checks remain useful within that restricted model; they
-cannot certify the added per-key executions. See the [model scope](tla/README.md#optimistic-and-pessimistic-transaction-publication).
+cannot certify the added per-key executions. The new
+[per-key validation model](tla/MVCC_VALIDATION_PROOF.md) separately checks the
+version-index rule against a full-history oracle, including broad barriers,
+restart, and a proposed safe tombstone-pruning integration. See the [model scope](tla/README.md#optimistic-and-pessimistic-transaction-publication).
 
 Remaining acceptance work, without reimplementing existing mechanisms:
 
-1. Model per-key validation, both broad-barrier directions, restart and
-   tombstone reclamation; add a validation-bypass mutant and source mapping.
+1. Extend the bounded per-key model evidence to source-level completeness and
+   composition with the real recovery/group-sync paths. The finite model and
+   its negative controls do not alone discharge these obligations.
 2. Establish complete writer-pin/watermark integration before enabling
    production tombstone cleanup; demonstrate bounded retained state and
    progress after pins retire.
