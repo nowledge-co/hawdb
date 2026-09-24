@@ -1,0 +1,27 @@
+[package]
+name = "hawdb-composition-consumer"
+version = "0.0.0"
+edition = "2024"
+publish = false
+
+# Intentionally independent: workspace dev-dependencies must not unify features.
+[workspace]
+
+[dependencies]
+hawdb = { path = "../..", default-features = false, optional = true }
+
+[features]
+default = []
+database = ["dep:hawdb"]
+text = ["database", "hawdb/full-text-search"]
+vector = ["database", "hawdb/vector-search"]
+runtime = ["database", "hawdb/tokio-runtime"]
+full = ["database", "text", "vector", "runtime", "hawdb/default"]
+
+[profile.release]
+opt-level = 3
+lto = "thin"
+codegen-units = 1
+debug = false
+strip = "none"
+overflow-checks = false

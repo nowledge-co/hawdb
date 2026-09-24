@@ -86,6 +86,9 @@ cargo build --locked --release -p hawdb --no-default-features \
 development and CI compile coverage, but their outputs are not production
 artifacts.
 
+For the current composition/dependency inventory and reproducible external-host
+footprint measurements, see [the composition baseline](docs/COMPOSITION_BASELINE.md).
+
 ### Bazel validation
 
 For the experimental in-memory browser WASM target, see [the WASM guide](docs/WASM.md).
