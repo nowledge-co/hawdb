@@ -15,6 +15,159 @@
 use super::*;
 
 #[test]
+fn with_collect_preserves_distinct_nodes_with_the_same_projected_property() {
+    let mut db = Database::new();
+    db.query("CREATE (:Memory {id: 'same'})-[:SYNTHESIZED_FROM]->(:Memory {id: 'left'})")
+        .unwrap();
+    db.query("CREATE (:Memory {id: 'same'})-[:SYNTHESIZED_FROM]->(:Memory {id: 'right'})")
+        .unwrap();
+    let query = "MATCH (c:Memory)-[:SYNTHESIZED_FROM]->(s:Memory) WHERE c.id IN $ids WITH c, COLLECT(DISTINCT s.id) AS source_ids RETURN c.id, source_ids";
+    // A second identity WITH exercises the production clause-pipeline path.
+    for query in [
+        query.to_string(),
+        query.replace(" RETURN ", " WITH c, source_ids RETURN "),
+    ] {
+        let output = db
+            .query_with_params(
+                &query,
+                &BTreeMap::from([(
+                    "ids".to_string(),
+                    Value::List(vec![Value::String("same".to_string())]),
+                )]),
+            )
+            .unwrap();
+        assert_eq!(output.rows.len(), 2);
+        let mut sources = output
+            .rows
+            .iter()
+            .map(|row| {
+                assert_eq!(row.get("c.id"), Some(&Value::String("same".into())));
+                let Some(Value::List(values)) = row.get("source_ids") else {
+                    panic!("missing collected sources")
+                };
+                assert_eq!(values.len(), 1);
+                let Value::String(source) = &values[0] else {
+                    panic!("invalid source id")
+                };
+                source.clone()
+            })
+            .collect::<Vec<_>>();
+        sources.sort();
+        assert_eq!(sources, ["left", "right"]);
+    }
+}
+
+#[test]
+fn post_aggregate_lookup_applies_pagination_to_expanded_rows() {
+    let mut db = Database::new();
+    db.query(
+        "CREATE (:Memory {id: 'm', space_id: 's'})-[:MENTIONS]->(:Entity {community_id: 'g'})",
+    )
+    .unwrap();
+    db.query("CREATE (:Community {community_id: 'g', name: 'a', description: 'a'})")
+        .unwrap();
+    db.query("CREATE (:Community {community_id: 'g', name: 'b', description: 'b'})")
+        .unwrap();
+    for indexed in [false, true] {
+        if indexed {
+            db.query("CREATE INDEX ON :Community(community_id)")
+                .unwrap();
+        }
+        // A window written on WITH intentionally limits groups before the
+        // lookup. It must remain distinct from the RETURN window below.
+        let before_lookup = db.query_with_params(
+            "MATCH (m:Memory)-[:MENTIONS]->(e:Entity) WHERE m.space_id IN $space_ids AND e.community_id IS NOT NULL WITH e.community_id AS community_id, COUNT(DISTINCT m) AS memory_count ORDER BY memory_count DESC LIMIT $limit OPTIONAL MATCH (c:Community) WHERE c.community_id = community_id RETURN c.name, memory_count, c.description",
+            &BTreeMap::from([
+                ("space_ids".into(), Value::List(vec![Value::String("s".into())])),
+                ("limit".into(), Value::Int(1)),
+            ]),
+        ).unwrap();
+        assert_eq!(before_lookup.rows.len(), 2, "indexed={indexed}");
+        for offset in 0..=3 {
+            for limit in 0..=3 {
+                let output = db.query_with_params(
+            "MATCH (m:Memory)-[:MENTIONS]->(e:Entity) WHERE m.space_id IN $space_ids AND e.community_id IS NOT NULL WITH e.community_id AS community_id, COUNT(DISTINCT m) AS memory_count OPTIONAL MATCH (c:Community) WHERE c.community_id = community_id RETURN c.name, memory_count, c.description ORDER BY memory_count DESC SKIP $offset LIMIT $limit",
+            &BTreeMap::from([
+                ("space_ids".into(), Value::List(vec![Value::String("s".into())])),
+                ("offset".into(), Value::Int(offset)),
+                ("limit".into(), Value::Int(limit)),
+            ]),
+        ).unwrap();
+                assert_eq!(
+                    output.rows.len(),
+                    (2_i64 - offset).max(0).min(limit) as usize,
+                    "indexed={indexed}, offset={offset}, limit={limit}"
+                );
+                for row in &output.rows {
+                    assert_eq!(row.get("memory_count"), Some(&Value::Int(1)));
+                }
+            }
+        }
+    }
+}
+
+#[test]
+fn with_collect_preserves_null_property_groups_and_return_aliases() {
+    let mut db = Database::new();
+    db.query(
+        "CREATE (:Memory {id: 'one', title: null})-[:SYNTHESIZED_FROM]->(:Memory {id: 'left'})",
+    )
+    .unwrap();
+    db.query("CREATE (:Memory {id: 'two'})-[:SYNTHESIZED_FROM]->(:Memory {id: 'right'})")
+        .unwrap();
+    let output = db.query("MATCH (c:Memory)-[:SYNTHESIZED_FROM]->(s:Memory) WITH c, COLLECT(DISTINCT s.id) AS source_ids RETURN c.title AS title, source_ids AS sources").unwrap();
+    assert_eq!(output.rows.len(), 2);
+    for row in &output.rows {
+        assert_eq!(row.get("title"), Some(&Value::Null));
+        assert!(row.get("source_ids").is_none());
+        let Some(Value::List(values)) = row.get("sources") else {
+            panic!("missing aliased sources")
+        };
+        assert_eq!(values.len(), 1);
+    }
+}
+
+#[test]
+fn post_aggregate_lookup_filters_or_extends_missing_groups_before_limit() {
+    let mut db = Database::new();
+    for id in ["missing-1", "missing-2"] {
+        db.query_with_params("CREATE (:Memory {id: $id, space_id: 's'})-[:MENTIONS]->(:Entity {community_id: 'missing'})", &BTreeMap::from([("id".into(), Value::String(id.into()))])).unwrap();
+    }
+    db.query("CREATE (:Memory {id: 'found', space_id: 's'})-[:MENTIONS]->(:Entity {community_id: 'found'})").unwrap();
+    db.query("CREATE (:Community {community_id: 'found', name: 'found', description: 'present'})")
+        .unwrap();
+    for optional in [false, true] {
+        let lookup = if optional { "OPTIONAL MATCH" } else { "MATCH" };
+        let query = format!("MATCH (m:Memory)-[:MENTIONS]->(e:Entity) WHERE m.space_id IN $space_ids AND e.community_id IS NOT NULL WITH e.community_id AS community_id, COUNT(DISTINCT m) AS memory_count {lookup} (c:Community) WHERE c.community_id = community_id RETURN c.name, memory_count, c.description ORDER BY memory_count DESC LIMIT $limit");
+        let output = db
+            .query_with_params(
+                &query,
+                &BTreeMap::from([
+                    (
+                        "space_ids".into(),
+                        Value::List(vec![Value::String("s".into())]),
+                    ),
+                    ("limit".into(), Value::Int(1)),
+                ]),
+            )
+            .unwrap();
+        assert_eq!(output.rows.len(), 1, "optional={optional}");
+        assert_eq!(
+            output.rows[0].get("memory_count"),
+            Some(&Value::Int(if optional { 2 } else { 1 }))
+        );
+        assert_eq!(
+            output.rows[0].get("c.name"),
+            Some(&if optional {
+                Value::Null
+            } else {
+                Value::String("found".into())
+            })
+        );
+    }
+}
+
+#[test]
 fn count_property_ignores_missing_and_null_values() {
     let mut db = Database::new();
     db.query("CREATE (:Memory {id: 1, title: 'One', deleted_at: null})")
