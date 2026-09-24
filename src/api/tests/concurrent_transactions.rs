@@ -288,6 +288,155 @@ fn optimistic_transactions_commit_disjoint_graph_updates_from_one_snapshot() {
     assert_eq!(db.commit_epoch().unwrap(), 4);
 }
 
+// Exercise recovered roots with no checkpoint, an exact checkpoint, and a
+// checkpoint plus a nonempty WAL suffix. Each open creates a fresh version index.
+fn seed_mvcc_recovery_fixture(path: &std::path::Path, layout: &str) -> i64 {
+    let mut db = Database::open(path).unwrap();
+    db.query("CREATE (:Memory {id: 1, value: 0})").unwrap();
+    db.query("CREATE (:Memory {id: 2, value: 0})").unwrap();
+    db.query_sql("CREATE TABLE messages (id BIGINT PRIMARY KEY)")
+        .unwrap();
+    if layout != "wal" {
+        db.checkpoint().unwrap();
+    }
+    if layout == "checkpoint_tail" {
+        db.query("MATCH (m:Memory) WHERE m.id = 1 SET m.value = 1")
+            .unwrap();
+        1
+    } else {
+        0
+    }
+}
+
+#[test]
+fn optimistic_mvcc_reopen_preserves_disjoint_commits_and_same_key_conflicts() {
+    for layout in ["wal", "checkpoint", "checkpoint_tail"] {
+        let path = super::unique_test_dir(&format!("mvcc_reopen_{layout}"));
+        let initial_left = seed_mvcc_recovery_fixture(&path, layout);
+        let db = Database::open(&path).unwrap().into_concurrent();
+        let base_epoch = db.commit_epoch().unwrap();
+        let options = ConcurrentTransactionOptions::optimistic();
+        let mut left = db.begin_transaction(options).unwrap();
+        let mut right = db.begin_transaction(options).unwrap();
+        left.query("MATCH (m:Memory) WHERE m.id = 1 SET m.value = 2")
+            .unwrap();
+        right
+            .query("MATCH (m:Memory) WHERE m.id = 2 SET m.value = 2")
+            .unwrap();
+        left.commit().unwrap();
+        // A reader in the other writer's snapshot must not see the new root.
+        let old = right
+            .query("MATCH (m:Memory) WHERE m.id = 1 RETURN m.value AS value")
+            .unwrap();
+        assert_eq!(old.rows[0]["value"], Value::Int(initial_left), "{layout}");
+        right.commit().unwrap();
+        assert_eq!(db.commit_epoch().unwrap(), base_epoch + 2, "{layout}");
+
+        let read_epoch = db.commit_epoch().unwrap();
+        let mut winner = db.begin_transaction(options).unwrap();
+        let mut loser = db.begin_transaction(options).unwrap();
+        winner
+            .query("MATCH (m:Memory) WHERE m.id = 1 SET m.value = 9")
+            .unwrap();
+        loser
+            .query("MATCH (m:Memory) WHERE m.id = 1 SET m.value = 99")
+            .unwrap();
+        winner.commit().unwrap();
+        let wal = std::fs::read(super::active_wal_path(&path)).unwrap();
+        let error = loser.commit().unwrap_err();
+        assert!(
+            error.is_retryable_transaction_conflict(),
+            "{layout}: {error}"
+        );
+        assert!(matches!(error, HawDBError::TransactionConflict {
+            read_epoch: actual_read, committed_epoch, ref key,
+        } if actual_read == read_epoch && committed_epoch == read_epoch + 1
+            && key == "graph_node"));
+        assert_eq!(db.commit_epoch().unwrap(), read_epoch + 1);
+        assert_eq!(std::fs::read(super::active_wal_path(&path)).unwrap(), wal);
+        let expected = vec![
+            BTreeMap::from([
+                ("id".into(), Value::Int(1)),
+                ("value".into(), Value::Int(9)),
+            ]),
+            BTreeMap::from([
+                ("id".into(), Value::Int(2)),
+                ("value".into(), Value::Int(2)),
+            ]),
+        ];
+        let query = "MATCH (m:Memory) RETURN m.id AS id, m.value AS value ORDER BY id";
+        assert_eq!(db.query(query).unwrap().rows, expected, "{layout}");
+        let committed_epoch = db.commit_epoch().unwrap();
+        drop(db);
+        let mut reopened = Database::open(&path).unwrap();
+        assert_eq!(reopened.commit_epoch(), committed_epoch, "{layout}");
+        assert_eq!(reopened.query(query).unwrap().rows, expected, "{layout}");
+        drop(reopened);
+        std::fs::remove_dir_all(path).unwrap();
+    }
+}
+
+#[test]
+fn optimistic_mvcc_reopen_preserves_both_database_barrier_directions() {
+    for layout in ["wal", "checkpoint", "checkpoint_tail"] {
+        for broad_first in [false, true] {
+            let path = super::unique_test_dir(&format!("mvcc_barrier_{layout}_{broad_first}"));
+            let initial_left = seed_mvcc_recovery_fixture(&path, layout);
+            let db = Database::open(&path).unwrap().into_concurrent();
+            let read_epoch = db.commit_epoch().unwrap();
+            let options = ConcurrentTransactionOptions::optimistic();
+            let mut narrow = db.begin_transaction(options).unwrap();
+            let mut broad = db.begin_transaction(options).unwrap();
+            narrow
+                .query("MATCH (m:Memory) WHERE m.id = 1 SET m.value = 7")
+                .unwrap();
+            broad
+                .query_sql("INSERT INTO messages (id) VALUES (1)")
+                .unwrap();
+            let (winner, loser) = if broad_first {
+                (broad, narrow)
+            } else {
+                (narrow, broad)
+            };
+            winner.commit().unwrap();
+            let wal = std::fs::read(super::active_wal_path(&path)).unwrap();
+            let error = loser.commit().unwrap_err();
+            assert!(
+                error.is_retryable_transaction_conflict(),
+                "{layout}: {error}"
+            );
+            assert!(matches!(error, HawDBError::TransactionConflict {
+                read_epoch: actual_read, committed_epoch, ref key,
+            } if actual_read == read_epoch && committed_epoch == read_epoch + 1
+                && key == "database"));
+            assert_eq!(db.commit_epoch().unwrap(), read_epoch + 1);
+            assert_eq!(std::fs::read(super::active_wal_path(&path)).unwrap(), wal);
+            drop(db);
+
+            let mut reopened = Database::open(&path).unwrap();
+            assert_eq!(reopened.commit_epoch(), read_epoch + 1);
+            let rows = reopened
+                .query("MATCH (m:Memory) WHERE m.id = 1 RETURN m.value AS value")
+                .unwrap()
+                .rows;
+            assert_eq!(
+                rows[0]["value"],
+                Value::Int(if broad_first { initial_left } else { 7 })
+            );
+            assert_eq!(
+                reopened
+                    .query_sql("SELECT id FROM messages")
+                    .unwrap()
+                    .rows
+                    .len(),
+                usize::from(broad_first)
+            );
+            drop(reopened);
+            std::fs::remove_dir_all(path).unwrap();
+        }
+    }
+}
+
 #[test]
 fn optimistic_conflict_noop_commits_converge_to_inserted_and_conflict_results() {
     let db = Database::new().into_concurrent();

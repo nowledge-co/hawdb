@@ -152,6 +152,8 @@ commit behavior must agree with the recovered serial order.
 - `optimistic_transactions_commit_disjoint_graph_updates_from_one_snapshot`;
 - `optimistic_transactions_prepare_in_parallel_and_reject_the_conflicting_committer`;
 - `optimistic_transaction_reads_its_private_workspace`;
+- `optimistic_mvcc_reopen_preserves_disjoint_commits_and_same_key_conflicts`;
+- `optimistic_mvcc_reopen_preserves_both_database_barrier_directions`;
 - `disjoint_primary_key_point_locks_allow_both_pessimistic_writers_to_commit`;
 - `repeated_covered_point_read_keeps_its_snapshot_after_a_disjoint_commit`;
 - `wal_group_commit_shares_one_sync_without_changing_record_order`;

@@ -120,6 +120,29 @@ tombstone removal without a restart. They are not positive-suite invariants or
 production mutants. Logs must distinguish these expected witnesses from a
 failure of a safety invariant.
 
+## Reopen regression coverage
+
+`src/api/tests/concurrent_transactions.rs` connects part of the abstract restart
+argument to the public embedded API:
+
+- `optimistic_mvcc_reopen_preserves_disjoint_commits_and_same_key_conflicts`
+  opens each of three persisted layouts (WAL, checkpoint, checkpoint plus WAL
+  suffix), commits disjoint writes from one snapshot, checks that the other
+  writer still reads the older value, then rejects a same-key writer with the
+  expected typed conflict epochs. A second reopen must restore exactly the
+  accepted rows and commit epoch.
+- `optimistic_mvcc_reopen_preserves_both_database_barrier_directions` runs both
+  graph-before-relational and relational-before-graph commit orders against
+  each layout. The stale committer must report the database barrier conflict;
+  reopening must contain only the winner's mutation.
+
+Each rejection compares raw active WAL bytes and the commit epoch before and
+after rejection. These tests exercise ordinary close/reopen, not process-kill
+crashes or partial writes. They do not cover every canonical identity or schema
+barrier. Temporarily removing `VersionIndex::apply` from the commit path makes
+both tests fail because the stale writer incorrectly succeeds; this negative
+control is not part of the committed production code.
+
 Still required: source-level completeness of the collector, production writer
 watermark integration and bounded reclamation, canonical recovery tests across
 actual WAL/checkpoint boundaries, and the #232 fairness/scaling qualification.
