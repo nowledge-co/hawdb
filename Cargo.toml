@@ -272,6 +272,10 @@ name = "concurrent_snapshot_reads"
 harness = false
 
 [[bench]]
+name = "concurrent_writers"
+harness = false
+
+[[bench]]
 name = "relational_monotonic_append"
 harness = false
 

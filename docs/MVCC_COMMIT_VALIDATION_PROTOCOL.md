@@ -196,7 +196,10 @@ Remaining acceptance work, without reimplementing existing mechanisms:
    process-local stamp history.
 5. Produce the #232 writer scaling, fairness and starvation evidence, plus
    single-stream latency and group-commit comparisons. Existing concurrency
-   unit tests do not substitute for this workload evidence.
+   unit tests do not substitute for this workload evidence. The local
+   [fixed-work writer benchmark](CONCURRENT_WRITER_BENCHMARK.md) provides
+   1/4/8-writer lifecycle controls and full result/reopen checks; its outcomes
+   must be assessed rather than treating the presence of a harness as acceptance.
 
 The late pessimistic lock-acquisition rule remains conservative: after earlier
 successful statements, acquiring a new resource against a changed epoch can

@@ -260,3 +260,10 @@ control is not part of the committed production code.
 Still required: source-level completeness of the collector, global version
 resource bounds and representative reclamation qualification, canonical recovery tests across
 actual WAL/checkpoint boundaries, and the #232 fairness/scaling qualification.
+
+The [fixed-work writer benchmark](../CONCURRENT_WRITER_BENCHMARK.md) maps each
+worker to a disjoint modulo partition of graph identities. Its complete-row and
+reopen checks connect successful commits to canonical data for that workload.
+This is measurement evidence in addition to the model, not a new fairness or
+performance invariant. In particular, elapsed-time overlap and finite worker
+completion cannot prove scheduler starvation freedom.
