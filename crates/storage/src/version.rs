@@ -324,6 +324,20 @@ impl VersionIndex {
         }
     }
 
+    /// Legacy direct mutations do not carry a proven complete write set.
+    /// Publish a broad barrier at their already-committed epoch so older
+    /// optimistic workspaces cannot overwrite graph or catalog changes.
+    pub(crate) fn apply_database_barrier(&mut self, commit_epoch: u64) {
+        debug_assert_ne!(commit_epoch, 0, "committed version stamps require an epoch");
+        self.stamps.insert(
+            VersionKey::Database,
+            VersionStamp {
+                commit_epoch,
+                disposition: VersionDisposition::Live,
+            },
+        );
+    }
+
     /// Removes tombstones only after every pinned reader is newer than the
     /// deletion that created them. Live stamps are retained indefinitely.
     pub fn prune_tombstones_before(&mut self, oldest_reader_epoch: u64) {

@@ -3149,6 +3149,141 @@ mod tests {
     use std::num::{NonZeroU64, NonZeroUsize};
 
     #[test]
+    fn direct_legacy_commits_invalidate_stale_optimistic_workspaces() {
+        for durable in [false, true] {
+            for mutation in ["property", "schema", "delete"] {
+                let path = unique_test_dir("legacy_version_barrier");
+                let mut catalog = Catalog::default();
+                let mut store = if durable {
+                    GraphStore::open(&path, &mut catalog).unwrap()
+                } else {
+                    GraphStore::default()
+                };
+                let id = store
+                    .create_node(
+                        &mut catalog,
+                        "Memory",
+                        properties([("value", Value::Int(0))]),
+                    )
+                    .unwrap();
+                let read_epoch = store.commit_epoch;
+                let mut stale = store.begin_mutation_transaction(&catalog);
+                stale
+                    .stage_mutation_with_limits(
+                        GraphMutation::SetNodeProperty {
+                            label: "Memory".into(),
+                            filter: None,
+                            property: "value".into(),
+                            value: Value::Int(1),
+                        },
+                        MutationLimits::default(),
+                    )
+                    .unwrap();
+                match mutation {
+                    "property" => {
+                        store
+                            .set_node_property(&mut catalog, "Memory", None, "value", Value::Int(2))
+                            .unwrap();
+                    }
+                    "schema" => {
+                        store.create_node_label(&mut catalog, "Other").unwrap();
+                    }
+                    "delete" => {
+                        store
+                            .delete_nodes(&mut catalog, "Memory", None, false)
+                            .unwrap();
+                    }
+                    _ => unreachable!(),
+                }
+                let wal = durable.then(|| fs::read(active_wal_path(&path)).unwrap());
+                let error = store
+                    .commit_mutation_transaction_and_relational(
+                        &mut catalog,
+                        stale,
+                        RelationalTransaction::default(),
+                        MutationLimits::default(),
+                    )
+                    .unwrap_err();
+                assert!(
+                    error.is_retryable_transaction_conflict(),
+                    "{mutation}: {error}"
+                );
+                assert!(matches!(error, HawDBError::TransactionConflict {
+                    read_epoch: actual_read, committed_epoch, ref key,
+                } if actual_read == read_epoch && committed_epoch == read_epoch + 1 && key == "database"));
+                assert_eq!(store.commit_epoch, read_epoch + 1);
+                if let Some(wal) = wal {
+                    assert_eq!(fs::read(active_wal_path(&path)).unwrap(), wal);
+                    drop(store);
+                    catalog = Catalog::default();
+                    store = GraphStore::open(&path, &mut catalog).unwrap();
+                    assert_eq!(store.commit_epoch, read_epoch + 1);
+                }
+                if mutation == "delete" {
+                    assert!(store.node_owned(id).unwrap().is_none());
+                } else {
+                    let node = store.node_owned(id).unwrap().unwrap();
+                    assert_eq!(
+                        node.properties["value"],
+                        Value::Int(if mutation == "property" { 2 } else { 0 })
+                    );
+                }
+                assert_eq!(catalog.label_id("Other").is_some(), mutation == "schema");
+                drop(store);
+                if durable {
+                    fs::remove_dir_all(path).unwrap();
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn rejected_and_noop_legacy_mutations_do_not_invalidate_a_transaction() {
+        let mut store = GraphStore::default();
+        let mut catalog = Catalog::default();
+        let id = store
+            .create_node(
+                &mut catalog,
+                "Memory",
+                properties([("value", Value::Int(i64::MAX))]),
+            )
+            .unwrap();
+        let epoch = store.commit_epoch;
+        let mut transaction = store.begin_mutation_transaction(&catalog);
+        transaction
+            .stage_mutation_with_limits(
+                GraphMutation::SetNodeProperty {
+                    label: "Memory".into(),
+                    filter: None,
+                    property: "value".into(),
+                    value: Value::Int(7),
+                },
+                MutationLimits::default(),
+            )
+            .unwrap();
+        assert!(store
+            .add_int_node_property(&mut catalog, "Memory", None, "value", 1)
+            .is_err());
+        assert!(store
+            .set_node_property(&mut catalog, "Absent", None, "value", Value::Int(1))
+            .unwrap()
+            .is_empty());
+        assert_eq!(store.commit_epoch, epoch);
+        store
+            .commit_mutation_transaction_and_relational(
+                &mut catalog,
+                transaction,
+                RelationalTransaction::default(),
+                MutationLimits::default(),
+            )
+            .unwrap();
+        assert_eq!(
+            store.node_owned(id).unwrap().unwrap().properties["value"],
+            Value::Int(7)
+        );
+    }
+
+    #[test]
     fn version_tombstone_checkpoint_waits_for_storage_snapshots_and_transactions() {
         use crate::version::{VersionDisposition, VersionKey};
         for durable in [false, true] {

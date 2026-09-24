@@ -197,6 +197,33 @@ not establish a global version-memory budget or bounded checkpoint latency.
 Long-lived snapshots may retain deletion stamps, and live stamps are not
 pruned. Full #231 resource qualification remains outstanding.
 
+## Direct mutation coverage
+
+The direct graph/catalog/import helpers finish through
+`GraphStore::finish_non_relational_commit`. They do not provide the normalized
+write set used by `commit_prepared_mutation_ops`, so their already-durable
+publication now also installs a live `Database` stamp at the new epoch.
+This maps to a broad writer in the model: for any older transaction at `E`,
+the newer barrier `V(Database) > E` rejects publication. A transaction started
+after the direct commit has `E >= V(Database)` and is not rejected by that stamp.
+The stamp is a fixed identity; it cannot exhaust the write-set entry limit
+and introduces no new fallible validation after the durable mutation.
+
+This is conservative coverage, not a claim of precise write identities for
+those older helpers. Their direct data, schema and import changes may cause
+unrelated older optimistic writers to retry. The canonical graph transaction
+path continues to use its own collected keys. No-op or rejected direct calls
+that do not complete a commit do not install a barrier.
+
+`direct_legacy_commits_invalidate_stale_optimistic_workspaces` covers property,
+catalog and delete commits in memory and on disk; it checks the retryable
+conflict, unchanged WAL bytes/epoch on rejection, and the preserved winning
+state after reopen. Before the barrier fix the property case let the stale
+writer commit successfully. A separate regression confirms integer-overflow
+rejection and a missing-label no-op leave the original transaction committable.
+The existing model's newer-barrier negative control covers omission of the
+stamp check; no model transitions change with this source mapping.
+
 ## Reopen regression coverage
 
 `src/api/tests/concurrent_transactions.rs` connects part of the abstract restart

@@ -22,6 +22,7 @@ path does not demonstrate per-key optimistic SQL validation.
 | --- | --- |
 | Version storage | `crates/storage/src/version.rs`: `VersionIndex` is a COW map containing the latest epoch and live/tombstone disposition for each recorded identity. |
 | Write-set collection | `crates/storage/src/store/graph_commit.rs`: `collect_version_writes` derives an ordered, deduplicated set from the final canonical operations, before WAL append. |
+| Legacy direct commits | `finish_non_relational_commit` publishes a `Database` stamp after applying an already-durable direct graph/catalog/import mutation. These entry points lack a proven complete narrow write set. |
 | Optimistic validation | `validate_version_writes` checks recorded keys plus database/schema barriers against the transaction's `base_commit_epoch`. Conflicts become retryable `HawDBError::TransactionConflict`. |
 | Private statement execution | `src/api/concurrent.rs`: statements operate on transaction-owned state; `commit_with_result` submits publication to the sequencer. |
 | Rebase selection | `commit_with_result` enables it for pessimistic transactions and the narrowly checked conflict-noop-only optimistic transaction shape. |
@@ -51,12 +52,14 @@ validation.
 | Catalog/index/constraint changes | `Schema` barrier |
 | Relational, relational snapshot, append, graph projection, initial-import marker | `Database` barrier |
 | Nested canonical batch | Recursively collect its operations |
+| Legacy direct graph/catalog/import commit | `Database` barrier at the completed commit epoch |
 
 `RelationalRow`, `RelationalIndex`, `ForeignKey`, and `AppendTable` are reserved
 identities, not emitted by this collector. Narrowing those domains still needs
 complete identity derivation and constraint/recovery coverage. Pessimistic SQL
 point-lock concurrency must not be presented as evidence that these variants
-are active.
+are active. Legacy direct commits likewise use the conservative barrier;
+older optimistic workspaces retry even when their keys appear unrelated.
 
 `VersionWriteSet` contains a `BTreeMap<VersionKey, VersionWrite>` and an entry
 limit, defaulting to `DEFAULT_MAX_WAL_BATCH_OPERATIONS`. Repeated writes to a key
