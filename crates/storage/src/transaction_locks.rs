@@ -20,7 +20,7 @@
 use crate::RelationalKey;
 use hawdb_core::{HawDBError, Result};
 use std::cmp::Ordering;
-use std::collections::{BTreeMap, BTreeSet};
+use std::collections::{BTreeMap, BTreeSet, VecDeque};
 use std::mem::size_of;
 use std::ops::Bound;
 
@@ -265,9 +265,7 @@ impl LockTable {
         self.locks
             .iter()
             .filter(|held| {
-                held.transaction_id != transaction_id
-                    && modes_conflict(held.request.mode, request.mode)
-                    && targets_overlap(&held.request.target, &request.target)
+                held.transaction_id != transaction_id && requests_conflict(&held.request, request)
             })
             .map(|held| held.transaction_id)
             .collect()
@@ -483,6 +481,118 @@ fn bound_estimated_bytes(bound: &Bound<RelationalKey>) -> usize {
             })
             .sum(),
     )
+}
+
+/// Bounded FIFO metadata for requests waiting on logical locks. One request
+/// per transaction may wait at a time; callers serialize all operations with
+/// the granted lock table. Compatible requests may pass older waiters.
+#[derive(Debug, Default)]
+pub struct LockWaitQueue {
+    requests: VecDeque<HeldLock>,
+    estimated_bytes: usize,
+    limits: LockTableLimits,
+}
+
+impl LockWaitQueue {
+    pub fn enqueue(&mut self, transaction_id: u64, request: &LockRequest) -> Result<()> {
+        if let Some(existing) = self
+            .requests
+            .iter()
+            .find(|r| r.transaction_id == transaction_id)
+        {
+            if existing.request == *request {
+                return Ok(());
+            }
+            return Err(HawDBError::Execution(
+                "transaction already has a different pending lock request".into(),
+            ));
+        }
+        let next_entries = self.requests.len().saturating_add(1);
+        let next_bytes = self
+            .estimated_bytes
+            .saturating_add(lock_request_estimated_bytes(request));
+        if next_entries > self.limits.max_entries || next_bytes > self.limits.max_bytes {
+            return Err(HawDBError::Execution(format!(
+                "lock wait queue resource budget exceeded: required_entries={next_entries} max_entries={} required_bytes={next_bytes} max_bytes={}; retry after competing transactions finish",
+                self.limits.max_entries, self.limits.max_bytes,
+            )));
+        }
+        self.requests.push_back(HeldLock {
+            transaction_id,
+            request: request.clone(),
+        });
+        self.estimated_bytes = next_bytes;
+        Ok(())
+    }
+
+    pub fn remove(&mut self, transaction_id: u64) {
+        if let Some(index) = self
+            .requests
+            .iter()
+            .position(|r| r.transaction_id == transaction_id)
+        {
+            let removed = self
+                .requests
+                .remove(index)
+                .expect("located pending request");
+            self.estimated_bytes -= held_lock_estimated_bytes(&removed);
+        }
+    }
+
+    /// A not-yet-enqueued requester is younger than every current waiter.
+    pub fn blockers(&self, transaction_id: u64, request: &LockRequest) -> BTreeSet<u64> {
+        self.requests
+            .iter()
+            .take_while(|r| r.transaction_id != transaction_id)
+            .filter(|r| requests_conflict(&r.request, request))
+            .map(|r| r.transaction_id)
+            .collect()
+    }
+
+    /// Derive dependencies from current ownership and queue order, rather than
+    /// retaining stale edges after grant, timeout, rollback or cancellation.
+    /// The BFS stores only visited waiters and parents, not a quadratic graph.
+    pub fn check_deadlock(&self, transaction_id: u64, locks: &LockTable) -> Result<()> {
+        let requests = self
+            .requests
+            .iter()
+            .map(|pending| (pending.transaction_id, &pending.request))
+            .collect::<BTreeMap<_, _>>();
+        let mut parents = BTreeMap::from([(transaction_id, None)]);
+        let mut pending = VecDeque::from([transaction_id]);
+        while let Some(waiter) = pending.pop_front() {
+            let Some(request) = requests.get(&waiter) else {
+                continue; // An active owner that is not waiting cannot close a cycle.
+            };
+            let mut blockers = locks.blockers(waiter, request);
+            blockers.extend(self.blockers(waiter, request));
+            for blocker in blockers {
+                if blocker == transaction_id {
+                    let mut path = vec![waiter];
+                    let mut cursor = waiter;
+                    while let Some(parent) = parents[&cursor] {
+                        path.push(parent);
+                        cursor = parent;
+                    }
+                    path.reverse();
+                    path.push(transaction_id);
+                    return Err(deadlock_error(transaction_id, &path));
+                }
+                if requests.contains_key(&blocker)
+                    && let std::collections::btree_map::Entry::Vacant(entry) =
+                        parents.entry(blocker)
+                {
+                    entry.insert(Some(waiter));
+                    pending.push_back(blocker);
+                }
+            }
+        }
+        Ok(())
+    }
+}
+
+fn requests_conflict(left: &LockRequest, right: &LockRequest) -> bool {
+    modes_conflict(left.mode, right.mode) && targets_overlap(&left.target, &right.target)
 }
 
 #[derive(Debug, Default)]
@@ -871,6 +981,152 @@ mod tests {
         upper: Bound<RelationalKey>,
     ) -> LockRequest {
         LockRequest::relational_range(mode, "messages", vec!["id".to_string()], lower, upper)
+    }
+
+    #[test]
+    fn wait_queue_preserves_priority_and_allows_compatible_progress() {
+        let mut queue = LockWaitQueue::default();
+        let older = LockRequest::graph_node(LockMode::Exclusive, 1);
+        queue.enqueue(2, &older).unwrap();
+        let compatible = LockRequest::graph_node(LockMode::Exclusive, 2);
+        assert!(queue.blockers(3, &compatible).is_empty());
+        assert_eq!(queue.blockers(3, &older), BTreeSet::from([2]));
+        queue.enqueue(3, &older).unwrap();
+        queue.enqueue(2, &older).unwrap(); // Wakeups must not move the old ticket.
+        assert!(queue.blockers(2, &older).is_empty());
+        assert_eq!(queue.blockers(3, &older), BTreeSet::from([2]));
+        queue.remove(2);
+        assert!(queue.blockers(3, &older).is_empty());
+    }
+
+    #[test]
+    fn wait_queue_admission_is_bounded_atomic_and_refundable() {
+        let request = LockRequest::relational_table(LockMode::Exclusive, "messages");
+        let bytes = lock_request_estimated_bytes(&request);
+        let mut queue = LockWaitQueue {
+            limits: LockTableLimits {
+                max_entries: 1,
+                max_bytes: bytes,
+                ..LockTableLimits::default()
+            },
+            ..LockWaitQueue::default()
+        };
+        queue.enqueue(1, &request).unwrap();
+        queue.enqueue(1, &request).unwrap();
+        assert_eq!(queue.estimated_bytes, bytes);
+        assert!(queue
+            .enqueue(2, &request)
+            .unwrap_err()
+            .to_string()
+            .contains("resource budget exceeded"));
+        assert!(queue
+            .enqueue(1, &LockRequest::database(LockMode::Shared))
+            .is_err());
+        assert_eq!(queue.requests.len(), 1);
+        queue.remove(1);
+        assert_eq!(queue.estimated_bytes, 0);
+        queue.limits.max_bytes = bytes - 1;
+        assert!(queue.enqueue(2, &request).is_err());
+        assert!(queue.requests.is_empty());
+        assert_eq!(queue.estimated_bytes, 0);
+    }
+
+    #[test]
+    fn wait_queue_detects_queue_owner_cycles_without_stale_dependencies() {
+        let mut locks = LockTable::default();
+        locks
+            .grant(1, LockRequest::graph_node(LockMode::Exclusive, 1))
+            .unwrap();
+        let mut queue = LockWaitQueue::default();
+        queue
+            .enqueue(2, &LockRequest::database(LockMode::Exclusive))
+            .unwrap();
+        queue.check_deadlock(2, &locks).unwrap();
+        queue
+            .enqueue(1, &LockRequest::graph_node(LockMode::Exclusive, 2))
+            .unwrap();
+        let error = queue.check_deadlock(1, &locks).unwrap_err();
+        assert!(error
+            .to_string()
+            .contains("transaction 1 selected as victim"));
+        assert!(error.to_string().contains("1 -> 2 -> 1"));
+        queue.remove(2);
+        queue.check_deadlock(1, &locks).unwrap();
+        assert!(queue
+            .blockers(1, &LockRequest::graph_node(LockMode::Exclusive, 2))
+            .is_empty());
+    }
+
+    #[test]
+    fn wait_queue_matches_independent_dependency_graph() {
+        // Literal compatibility matrix and two-bit target sets form an oracle
+        // independent of the production overlap helpers and BFS traversal.
+        let conflict = [[false, true, true], [true, true, true], [true, true, false]];
+        let modes = [
+            LockMode::Shared,
+            LockMode::Exclusive,
+            LockMode::OptimisticCommit,
+        ];
+        let request = |mode: usize, mask: usize| match mask {
+            1 => LockRequest::graph_node(modes[mode], 1),
+            2 => LockRequest::graph_node(modes[mode], 2),
+            _ => LockRequest::database(modes[mode]),
+        };
+        let mut seed = 0x6241_c03a_f723_1875_u64;
+        let mut pick = |n: usize| {
+            seed ^= seed << 13;
+            seed ^= seed >> 7;
+            seed ^= seed << 17;
+            seed as usize % n
+        };
+        for _ in 0..4096 {
+            let held = std::array::from_fn::<_, 3, _>(|_| (pick(3), pick(4)));
+            let wanted = std::array::from_fn::<_, 3, _>(|_| (pick(3), pick(3) + 1));
+            let mut order = [0, 1, 2];
+            order.swap(0, pick(3));
+            order.swap(1, pick(3));
+            let mut locks = LockTable::default();
+            let mut queue = LockWaitQueue::default();
+            for (id, &(mode, mask)) in held.iter().enumerate() {
+                if mask != 0 {
+                    locks.grant(id as u64, request(mode, mask)).unwrap();
+                }
+            }
+            for id in order {
+                queue
+                    .enqueue(id as u64, &request(wanted[id].0, wanted[id].1))
+                    .unwrap();
+            }
+            let mut edges = [[false; 3]; 3];
+            for id in 0..3 {
+                let (mode, mask) = wanted[id];
+                let mut older = BTreeSet::new();
+                for other in order.into_iter().take_while(|&other| other != id) {
+                    if conflict[mode][wanted[other].0] && mask & wanted[other].1 != 0 {
+                        older.insert(other as u64);
+                        edges[id][other] = true;
+                    }
+                }
+                assert_eq!(queue.blockers(id as u64, &request(mode, mask)), older);
+                for other in 0..3 {
+                    edges[id][other] |=
+                        other != id && conflict[mode][held[other].0] && mask & held[other].1 != 0;
+                }
+            }
+            for middle in 0..3 {
+                for from in 0..3 {
+                    for to in 0..3 {
+                        edges[from][to] |= edges[from][middle] && edges[middle][to];
+                    }
+                }
+            }
+            for (id, reachable) in edges.iter().enumerate() {
+                assert_eq!(
+                    queue.check_deadlock(id as u64, &locks).is_err(),
+                    reachable[id]
+                );
+            }
+        }
     }
 
     #[test]

@@ -215,5 +215,6 @@ validates/applies each task serially, including conflicts with earlier tasks in
 the same unsynced group. This permits shared durability without exposing
 pre-fsync results or weakening pessimistic coordination. See the
 [admission proof and model](tla/OPTIMISTIC_COMMIT_ADMISSION_PROOF.md).
-This is not fair admission; ordinary waiters can still wait behind concurrent
-optimistic holders.
+The [lock-wait protocol](tla/LOCK_WAIT_FAIRNESS_PROOF.md) now prevents new
+conflicting holders from bypassing an older queued request. This is conditional
+per-request progress, not fairness of whole transactions or their retries.

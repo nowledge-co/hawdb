@@ -97,9 +97,11 @@ does not model exact queue order, arbitrary lock-target overlap, escalation,
 resource admission, source-level key completeness, or group-sync failure
 poisoning. It is bounded safety evidence plus a conditional inductive argument,
 not an unbounded machine-checked Rust refinement or a proof of composition of
-all existing models. Fairness and starvation remain unproved. In particular,
-new O owners can coexist with existing ones while an ordinary waiter waits;
-this change must not be described as fair admission.
+all existing models. This model does not include waiting order and proves no fairness theorem.
+The subsequent [lock-wait protocol](LOCK_WAIT_FAIRNESS_PROOF.md) prevents
+new conflicting O owners from passing an older ordinary waiter. Its separate
+conditional request-progress theorem must not be generalized to whole
+transactions or retries.
 
 ## Executable checks
 

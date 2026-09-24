@@ -30,6 +30,7 @@ STORAGE_MODELS = [
     "HawDBIndexRecovery",
     "HawDBIndexStatistics",
     "HawDBKnowledgeRetrievalPipeline",
+    "HawDBLockWaitFairness",
     "HawDBMemoryTierRelease",
     "HawDBMvccValidation",
     "HawDBOptimisticCommitAdmission",

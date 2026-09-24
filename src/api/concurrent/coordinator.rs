@@ -12,7 +12,7 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-use super::super::transaction_locks::{LockRequest, LockTable, WaitForGraph};
+use super::super::transaction_locks::{LockRequest, LockTable, LockWaitQueue};
 use super::{
     Database, QueryOutput, WalGroupCommitConfig, WalGroupCommitDelayPolicy, WalGroupCommitSnapshot,
     WalGroupCommitWaitDecision, DEFAULT_WAL_GROUP_COMMIT_MAX_DELAY,
@@ -746,7 +746,7 @@ pub(super) struct LockSavepoint {
 #[derive(Debug, Default)]
 struct LockManagerState {
     locks: LockTable,
-    wait_for: WaitForGraph,
+    waiters: LockWaitQueue,
 }
 
 impl LockManager {
@@ -764,7 +764,7 @@ impl LockManager {
         state
             .locks
             .restore_transaction(transaction_id, savepoint.requests);
-        state.wait_for.clear_waiter(transaction_id);
+        state.waiters.remove(transaction_id);
         drop(state);
         self.available.notify_all();
     }
@@ -777,6 +777,22 @@ impl LockManager {
     }
 
     pub(super) fn acquire(
+        &self,
+        transaction_id: u64,
+        requests: &[LockRequest],
+        started: Instant,
+        timeout: Duration,
+    ) -> Result<()> {
+        let result = self.acquire_inner(transaction_id, requests, started, timeout);
+        if result.is_err() {
+            // acquire_inner retires queue priority under the state mutex on
+            // every fallible exit. Wake successors after publishing removal.
+            self.available.notify_all();
+        }
+        result
+    }
+
+    fn acquire_inner(
         &self,
         transaction_id: u64,
         requests: &[LockRequest],
@@ -802,16 +818,26 @@ impl LockManager {
                 continue;
             }
             loop {
-                let blockers = state.locks.blockers(transaction_id, &request);
+                let mut blockers = state.locks.blockers(transaction_id, &request);
+                blockers.extend(state.waiters.blockers(transaction_id, &request));
                 if blockers.is_empty() {
-                    state.wait_for.clear_waiter(transaction_id);
+                    state.waiters.remove(transaction_id);
                     state.locks.grant(transaction_id, request)?;
                     break;
                 }
-                state.wait_for.register(transaction_id, &blockers)?;
+                let admission = state
+                    .waiters
+                    .enqueue(transaction_id, &request)
+                    .and_then(|()| state.waiters.check_deadlock(transaction_id, &state.locks));
+                if let Err(error) = admission {
+                    // Remove the closing dependency before another waiter can
+                    // inspect the graph and select a second victim.
+                    state.waiters.remove(transaction_id);
+                    return Err(error);
+                }
                 let remaining = timeout.saturating_sub(started.elapsed());
                 if remaining.is_zero() {
-                    state.wait_for.clear_waiter(transaction_id);
+                    state.waiters.remove(transaction_id);
                     return Err(lock_timeout_error(timeout));
                 }
                 let waited = self.available.wait_timeout(state, remaining);
@@ -819,13 +845,13 @@ impl LockManager {
                     Ok(waited) => waited,
                     Err(poisoned) => {
                         let (mut recovered, _) = poisoned.into_inner();
-                        recovered.wait_for.clear_waiter(transaction_id);
+                        recovered.waiters.remove(transaction_id);
                         return Err(lock_manager_poisoned_error());
                     }
                 };
                 state = next;
-                state.wait_for.clear_waiter(transaction_id);
                 if wait.timed_out() {
+                    state.waiters.remove(transaction_id);
                     return Err(lock_timeout_error(timeout));
                 }
             }
@@ -839,7 +865,7 @@ impl LockManager {
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner());
         state.locks.release_transaction(transaction_id);
-        state.wait_for.remove_transaction(transaction_id);
+        state.waiters.remove(transaction_id);
         drop(state);
         self.available.notify_all();
     }
@@ -1221,5 +1247,161 @@ mod group_commit_tests {
             assert_eq!(state.metrics.last_wait_decision, expected_decision);
             assert_eq!(state.metrics.adaptive_delay_clamp_count, expected_clamps);
         }
+    }
+}
+
+#[cfg(test)]
+mod lock_wait_tests {
+    use super::*;
+    use crate::api::transaction_locks::LockMode;
+    use std::sync::mpsc;
+
+    fn acquire(
+        manager: &LockManager,
+        id: u64,
+        request: LockRequest,
+        timeout: Duration,
+    ) -> Result<()> {
+        manager.acquire(id, &[request], Instant::now(), timeout)
+    }
+
+    fn wait_until_queued(manager: &LockManager, id: u64) {
+        let deadline = Instant::now() + Duration::from_secs(2);
+        while !manager
+            .lock_state()
+            .unwrap()
+            .waiters
+            .blockers(u64::MAX, &LockRequest::database(LockMode::Exclusive))
+            .contains(&id)
+        {
+            assert!(Instant::now() < deadline, "waiter did not enter queue");
+            std::thread::sleep(Duration::from_millis(1));
+        }
+    }
+
+    #[test]
+    fn lock_wait_queue_stops_optimistic_arrivals_from_bypassing_older_owner() {
+        let manager = Arc::new(LockManager::default());
+        let optimistic = LockRequest::database(LockMode::OptimisticCommit);
+        acquire(&manager, 1, optimistic.clone(), Duration::ZERO).unwrap();
+        let (granted, received) = mpsc::channel();
+        let (retire, retirement) = mpsc::channel();
+        let other = Arc::clone(&manager);
+        let waiter = std::thread::spawn(move || {
+            acquire(
+                &other,
+                2,
+                LockRequest::database(LockMode::Exclusive),
+                Duration::from_secs(5),
+            )
+            .unwrap();
+            granted.send(()).unwrap();
+            retirement.recv_timeout(Duration::from_secs(5)).unwrap();
+            other.release(2);
+        });
+        wait_until_queued(&manager, 2);
+        for id in 3..35 {
+            let result = acquire(&manager, id, optimistic.clone(), Duration::ZERO);
+            manager.release(id);
+            assert!(result
+                .unwrap_err()
+                .to_string()
+                .contains("transaction lock wait timed out"));
+        }
+        // Already-owned coverage is not a new grant and must remain usable.
+        acquire(&manager, 1, optimistic.clone(), Duration::ZERO).unwrap();
+        manager.release(1);
+        received.recv_timeout(Duration::from_secs(2)).unwrap();
+        assert!(acquire(&manager, 35, optimistic.clone(), Duration::ZERO).is_err());
+        retire.send(()).unwrap();
+        waiter.join().unwrap();
+        acquire(&manager, 36, optimistic, Duration::ZERO).unwrap();
+        manager.release(36);
+    }
+
+    #[test]
+    fn lock_wait_queue_timeout_wakes_successor_without_owner_retirement() {
+        let manager = Arc::new(LockManager::default());
+        acquire(
+            &manager,
+            1,
+            LockRequest::graph_node(LockMode::Shared, 1),
+            Duration::ZERO,
+        )
+        .unwrap();
+        let other = Arc::clone(&manager);
+        let older = std::thread::spawn(move || {
+            acquire(
+                &other,
+                2,
+                LockRequest::database(LockMode::Exclusive),
+                Duration::from_secs(1),
+            )
+        });
+        wait_until_queued(&manager, 2);
+        let (sent, received) = mpsc::channel();
+        let other = Arc::clone(&manager);
+        let younger = std::thread::spawn(move || {
+            let result = acquire(
+                &other,
+                3,
+                LockRequest::graph_node(LockMode::Exclusive, 2),
+                Duration::from_secs(5),
+            );
+            sent.send(result).unwrap();
+            other.release(3);
+        });
+        wait_until_queued(&manager, 3);
+        assert!(older
+            .join()
+            .unwrap()
+            .unwrap_err()
+            .to_string()
+            .contains("transaction lock wait timed out"));
+        received
+            .recv_timeout(Duration::from_secs(2))
+            .unwrap()
+            .unwrap();
+        younger.join().unwrap();
+        assert!(manager
+            .covers_all(1, &[LockRequest::graph_node(LockMode::Shared, 1)])
+            .unwrap());
+        manager.release(1);
+    }
+
+    #[test]
+    fn lock_wait_queue_detects_a_cycle_through_older_queue_priority() {
+        let manager = Arc::new(LockManager::default());
+        acquire(
+            &manager,
+            1,
+            LockRequest::graph_node(LockMode::Exclusive, 1),
+            Duration::ZERO,
+        )
+        .unwrap();
+        let other = Arc::clone(&manager);
+        let waiter = std::thread::spawn(move || {
+            let result = acquire(
+                &other,
+                2,
+                LockRequest::database(LockMode::Exclusive),
+                Duration::from_secs(5),
+            );
+            other.release(2);
+            result
+        });
+        wait_until_queued(&manager, 2);
+        let error = acquire(
+            &manager,
+            1,
+            LockRequest::graph_node(LockMode::Exclusive, 2),
+            Duration::from_secs(1),
+        )
+        .unwrap_err();
+        assert!(error
+            .to_string()
+            .contains("transaction 1 selected as victim"));
+        manager.release(1);
+        waiter.join().unwrap().unwrap();
     }
 }

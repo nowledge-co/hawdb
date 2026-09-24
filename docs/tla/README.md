@@ -1396,7 +1396,12 @@ older transaction model and its recorded results remain unchanged. The
 model separately checks concurrent optimistic admission, exclusion against
 ordinary locks, permit lifetime, within-group conflict validation and durable
 acknowledgement. Its [proof](OPTIMISTIC_COMMIT_ADMISSION_PROOF.md) documents
-four negative controls and the limits of composition with the older models.
+four negative controls and the limits of composition with the older models. The
+[`HawDBLockWaitFairness.tla`](HawDBLockWaitFairness.tla) model checks conflict-aware
+queue order, compatible bypass and eventual service under explicit weak-fairness
+and owner-release assumptions. The [queue/graph proof](LOCK_WAIT_FAIRNESS_PROOF.md)
+separates that one-request temporal result from source-level dynamic deadlock
+checks, bounded metadata admission and remaining whole-transaction fairness.
 
 ## Demand-Paged Index Publication
 
