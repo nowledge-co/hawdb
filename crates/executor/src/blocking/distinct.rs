@@ -177,21 +177,24 @@ impl<'a> DistinctOperator<'a> {
         if !self.distinct.is_empty() {
             self.spill_current_run()?;
         }
-        let mut peak_tracked_bytes = self.tracker.peak_bytes;
+        let peak_tracked_bytes = std::sync::atomic::AtomicUsize::new(self.tracker.peak_bytes);
         self.runs = compact_distinct_runs(
             self.runs,
             self.memory,
-            &mut self.spill_budget,
+            &self.spill_budget,
             &self.blocking_account,
             &self.schemas,
             self.task_context,
-            &mut peak_tracked_bytes,
+            &peak_tracked_bytes,
         )?;
         let schemas = std::mem::take(&mut self.schemas);
         let schema_bytes = schemas.memory_bytes;
         drop(schemas);
         self.tracker.release(schema_bytes);
-        self.record_memory_report(self.input_rows as usize, peak_tracked_bytes);
+        self.record_memory_report(
+            self.input_rows as usize,
+            peak_tracked_bytes.load(std::sync::atomic::Ordering::Relaxed),
+        );
         emit_distinct_run(
             self.runs
                 .first()
@@ -248,26 +251,32 @@ fn spill_distinct_run(
 fn compact_distinct_runs(
     runs: Vec<spill::SpillRun>,
     memory: &ExecutionMemoryConfig,
-    spill_budget: &mut SpillBudgetTracker,
+    spill_budget: &SpillBudgetTracker,
     blocking_account: &QueryMemoryAccount,
     schemas: &DistinctSchemaInterner,
     task_context: Option<&RuntimeTaskContext>,
-    peak_tracked_bytes: &mut usize,
+    peak_tracked_bytes: &std::sync::atomic::AtomicUsize,
 ) -> Result<Vec<spill::SpillRun>> {
-    spill::compact_runs(runs, NonZeroUsize::MIN, task_context, |left, right| {
-        merge_distinct_run_pair(
-            left,
-            right,
-            spill_budget,
-            DistinctMergeContext {
-                memory,
-                blocking_account,
-                schemas,
-                task_context,
-            },
-            peak_tracked_bytes,
-        )
-    })
+    spill::compact_runs(
+        runs,
+        NonZeroUsize::MIN,
+        spill::default_compaction_worker_limit(),
+        task_context,
+        |left, right| {
+            merge_distinct_run_pair(
+                left,
+                right,
+                spill_budget,
+                DistinctMergeContext {
+                    memory,
+                    blocking_account,
+                    schemas,
+                    task_context,
+                },
+                peak_tracked_bytes,
+            )
+        },
+    )
 }
 
 struct DistinctRunRow {
@@ -333,9 +342,9 @@ fn read_distinct_run_row(
 fn merge_distinct_run_pair(
     left: &spill::SpillRun,
     right: &spill::SpillRun,
-    spill_budget: &mut SpillBudgetTracker,
+    spill_budget: &SpillBudgetTracker,
     context: DistinctMergeContext<'_>,
-    peak_tracked_bytes: &mut usize,
+    peak_tracked_bytes: &std::sync::atomic::AtomicUsize,
 ) -> Result<spill::SpillRun> {
     let DistinctMergeContext {
         memory,
@@ -378,11 +387,12 @@ fn merge_distinct_run_pair(
     let (run, mut writer) = spill_budget.create_run("distinct-merge")?;
     loop {
         runtime_checkpoint(task_context)?;
-        *peak_tracked_bytes = (*peak_tracked_bytes).max(
+        peak_tracked_bytes.fetch_max(
             schemas
                 .memory_bytes
                 .saturating_add(left_row.as_ref().map_or(0, |row| row.memory_bytes))
                 .saturating_add(right_row.as_ref().map_or(0, |row| row.memory_bytes)),
+            std::sync::atomic::Ordering::Relaxed,
         );
         let selection = match (&left_row, &right_row) {
             (None, None) => break,

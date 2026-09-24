@@ -202,7 +202,7 @@ impl<'plan, 'runtime> SortOperator<'plan, 'runtime> {
             self.items,
             self.catalog,
             self.memory,
-            &mut self.spill_budget,
+            &self.spill_budget,
             &self.blocking_account,
             self.task_context,
         )?;
@@ -392,7 +392,7 @@ impl<'plan, 'runtime> TopNOperator<'plan, 'runtime> {
                 self.items,
                 self.catalog,
                 self.memory,
-                &mut self.spill_budget,
+                &self.spill_budget,
                 &self.blocking_account,
                 self.task_context,
             )?;
@@ -482,13 +482,14 @@ pub fn compact_sort_runs(
     items: &[SortItem],
     catalog: &Catalog,
     memory: &ExecutionMemoryConfig,
-    spill_budget: &mut SpillBudgetTracker,
+    spill_budget: &SpillBudgetTracker,
     blocking_account: &QueryMemoryAccount,
     task_context: Option<&RuntimeTaskContext>,
 ) -> Result<Vec<spill::SpillRun>> {
     spill::compact_runs(
         runs,
         NonZeroUsize::new(2).expect("two-way merge fan-in"),
+        spill::default_compaction_worker_limit(),
         task_context,
         |left, right| {
             merge_sort_run_pair(
@@ -512,7 +513,7 @@ fn merge_sort_run_pair(
     items: &[SortItem],
     catalog: &Catalog,
     memory: &ExecutionMemoryConfig,
-    spill_budget: &mut SpillBudgetTracker,
+    spill_budget: &SpillBudgetTracker,
     blocking_account: &QueryMemoryAccount,
     task_context: Option<&RuntimeTaskContext>,
 ) -> Result<spill::SpillRun> {

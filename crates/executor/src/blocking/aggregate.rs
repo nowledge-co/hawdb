@@ -741,7 +741,7 @@ pub fn stream_aggregate_batches(
         runs,
         items.len(),
         memory,
-        &mut spill_budget,
+        &spill_budget,
         &primary_account,
         task_context,
     )?;
@@ -797,13 +797,14 @@ fn compact_group_runs(
     runs: Vec<spill::SpillRun>,
     aggregate_input_count: usize,
     memory: &ExecutionMemoryConfig,
-    spill_budget: &mut SpillBudgetTracker,
+    spill_budget: &SpillBudgetTracker,
     blocking_account: &QueryMemoryAccount,
     task_context: Option<&RuntimeTaskContext>,
 ) -> Result<Vec<spill::SpillRun>> {
     spill::compact_runs(
         runs,
         NonZeroUsize::new(2).expect("two-way merge fan-in"),
+        spill::default_compaction_worker_limit(),
         task_context,
         |left, right| {
             merge_group_run_pair(
@@ -825,7 +826,7 @@ fn merge_group_run_pair(
     right: &spill::SpillRun,
     aggregate_input_count: usize,
     memory: &ExecutionMemoryConfig,
-    spill_budget: &mut SpillBudgetTracker,
+    spill_budget: &SpillBudgetTracker,
     blocking_account: &QueryMemoryAccount,
     task_context: Option<&RuntimeTaskContext>,
 ) -> Result<spill::SpillRun> {
