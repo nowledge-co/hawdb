@@ -285,6 +285,11 @@ fn equal_path(left: &Value, right: &Value, path: &[&str]) -> Result<()> {
 }
 
 fn compare_reports(legacy: &Value, compact: &Value) -> Result<Value> {
+    let legacy_manifest_budget = number(legacy, "manifest_budget_bytes")?;
+    let compact_manifest_budget = number(compact, "manifest_budget_bytes")?;
+    if legacy_manifest_budget == 0 || legacy_manifest_budget != compact_manifest_budget {
+        return Err("qualification requires equal nonzero manifest budgets".into());
+    }
     for path in [
         ["source", "document_count"].as_slice(),
         ["source", "source_jsonl_bytes"].as_slice(),
@@ -305,8 +310,8 @@ fn compare_reports(legacy: &Value, compact: &Value) -> Result<Value> {
 
     let legacy_artifact = value(legacy, "actual_lexical_artifact")?;
     let compact_artifact = value(compact, "actual_lexical_artifact")?;
-    if text(legacy_artifact, "layout")? == "HAWDB_LEXICAL_ORDINAL_FST_V1" {
-        return Err("legacy report unexpectedly declares the compact layout".into());
+    if text(legacy_artifact, "layout")? != "legacy-string-postings-v1" {
+        return Err("legacy report does not declare the supported string-postings layout".into());
     }
     if text(compact_artifact, "layout")? != "HAWDB_LEXICAL_ORDINAL_FST_V1" {
         return Err("compact report does not declare the ordinal FST layout".into());
@@ -316,7 +321,10 @@ fn compare_reports(legacy: &Value, compact: &Value) -> Result<Value> {
     if legacy_posting_bytes == 0 || compact_posting_bytes == 0 {
         return Err("qualification reports contain zero posting bytes".into());
     }
-    let order_of_magnitude = legacy_posting_bytes >= compact_posting_bytes.saturating_mul(10);
+    // The largest product is 10 * (2^64 - 1), which fits in u128.
+    // Keep the floating-point ratio below informational, never a gate input.
+    let order_of_magnitude =
+        u128::from(legacy_posting_bytes) >= u128::from(compact_posting_bytes) * 10;
 
     Ok(json!({
         "protocol": "hawdb-search-lexical-corpus-comparison-v1",
@@ -385,6 +393,7 @@ mod tests {
         json!({
             "source": source(),
             "term_policy_max_bytes": 1024,
+            "manifest_budget_bytes": 536870912,
             "actual_lexical_artifact": artifact(layout, posting_bytes),
         })
     }
@@ -425,5 +434,50 @@ mod tests {
         let mut different = compact;
         different["actual_lexical_artifact"]["documents_digest"] = json!(12);
         assert!(compare_reports(&legacy, &different).is_err());
+    }
+
+    #[test]
+    fn comparison_rejects_unqualified_layout_and_manifest_policy() {
+        let legacy = report("legacy-string-postings-v1", 1_000);
+        let compact = report("HAWDB_LEXICAL_ORDINAL_FST_V1", 100);
+        let mut unknown = legacy.clone();
+        unknown["actual_lexical_artifact"]["layout"] = json!("unknown");
+        assert!(compare_reports(&unknown, &compact).is_err());
+        for budget in [Value::Null, json!(0), json!(268435456), json!("536870912")] {
+            let mut different = compact.clone();
+            different["manifest_budget_bytes"] = budget;
+            assert!(compare_reports(&legacy, &different).is_err());
+        }
+        let mut missing = legacy.clone();
+        missing
+            .as_object_mut()
+            .unwrap()
+            .remove("manifest_budget_bytes");
+        assert!(compare_reports(&missing, &compact).is_err());
+        let mut zero_legacy = legacy;
+        let mut zero_compact = compact;
+        zero_legacy["manifest_budget_bytes"] = json!(0);
+        zero_compact["manifest_budget_bytes"] = json!(0);
+        assert!(compare_reports(&zero_legacy, &zero_compact).is_err());
+    }
+
+    #[test]
+    fn comparison_tenfold_gate_is_exact_at_u64_boundaries() {
+        for (legacy_bytes, compact_bytes, expected) in [
+            (999, 100, false),
+            (1_000, 100, true),
+            (1_001, 100, true),
+            (u64::MAX, u64::MAX / 10, true),
+            (u64::MAX, u64::MAX / 10 + 1, false),
+            (u64::MAX, u64::MAX, false),
+        ] {
+            let legacy = report("legacy-string-postings-v1", legacy_bytes);
+            let compact = report("HAWDB_LEXICAL_ORDINAL_FST_V1", compact_bytes);
+            assert_eq!(
+                compare_reports(&legacy, &compact).unwrap()["passes_order_of_magnitude_gate"],
+                expected,
+                "legacy={legacy_bytes}, compact={compact_bytes}"
+            );
+        }
     }
 }
