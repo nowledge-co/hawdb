@@ -15,8 +15,9 @@ is already implemented, not contingent on implementing a new version index.
 Optimistic graph commits use per-key first-committer-wins validation.
 Pessimistic commits can rebase under their acquired locks. The restricted
 optimistic conflict-noop SQL path can also rebase; it recomputes mutation
-outcomes at commit. These are distinct protocols: permitting either rebase
-path does not demonstrate per-key optimistic SQL validation.
+outcomes at commit. These are distinct protocols: permitting either rebase path alone does not
+demonstrate per-key optimistic SQL validation. The qualified explicit-key SQL
+path below now has separate per-key validation evidence.
 
 | Mechanism | Current source and scope |
 | --- | --- |
@@ -52,19 +53,24 @@ validation.
 | Catalog/index/constraint changes | `Schema` barrier |
 | Prepared strict-append rows, including materialized generated-order rows | `AppendTable(table)` live stamp for every written table |
 | Prepared strict-append table creation | `Schema` barrier |
-| Relational, relational snapshot, opaque append WAL, graph projection, initial-import marker | `Database` barrier |
+| Qualified explicit relational insert/replacement or primary-key deletion | `RelationalRow(table, primary_key)`, live or tombstone; every intent is retained, including net-zero effects |
+| Relational predicate/UPSERT/DDL, unique/FK-related tables, opaque relational WAL/snapshot, opaque append WAL, graph projection, initial-import marker | `Database` barrier |
 | Nested canonical batch | Recursively collect its operations |
 | Legacy direct graph/catalog/import commit | `Database` barrier at the completed commit epoch |
 
-`RelationalRow`, `RelationalIndex`, and `ForeignKey` remain reserved identities.
+`RelationalIndex` and `ForeignKey` remain reserved identities.
+`RelationalRow` is now emitted for explicit inserts/replacements and primary-key
+deletes on tables without non-primary uniqueness or incoming/outgoing foreign
+keys. Predicate/UPSERT and unsupported shapes remain broad. The
+[relational intent proof](tla/RELATIONAL_MVCC_PROOF.md) explains why net-change
+capture cannot replace intent collection and records the eligibility boundary.
 Typed strict-append staging now emits `AppendTable` from the same prepared
 transaction that is encoded into WAL. Generated sequence counters are table-wide,
 so different partitions in one table still conflict. The opaque WAL collector
 retains its database fallback because it has no typed preparation evidence.
 See the [append footprint proof](tla/APPEND_MVCC_PROOF.md). Narrowing relational
-identities still needs complete constraint and recovery coverage. Pessimistic SQL
-point-lock concurrency must not be presented as evidence that these variants
-are active. Legacy direct commits likewise use the conservative barrier;
+identities still needs complete constraint and recovery coverage. Pessimistic SQL point-lock concurrency alone is not evidence of complete
+optimistic SQL validation. Legacy direct commits likewise use the conservative barrier;
 older optimistic workspaces retry even when their keys appear unrelated.
 
 `VersionWriteSet` contains a `BTreeMap<VersionKey, VersionWrite>` and an entry
@@ -195,8 +201,8 @@ Remaining acceptance work, without reimplementing existing mechanisms:
    live and deleted stamps, including barriers, but long-lived pins and historical
    COW maps still retain metadata. Neither a global byte bound nor bounded
    checkpoint latency follows.
-3. Narrow relational identities only with complete constraint and recovery
-   coverage. Typed append writes now have table identities; finer partition
+3. Extend relational identities beyond the qualified explicit-key path only
+   with complete predicate/constraint and recovery coverage. Typed append writes now have table identities; finer partition
    identities would require separating table-wide generated-order state.
    Preserve conservative paths for unsupported/opaque shapes.
 4. Qualify canonical crash/reopen equivalence and post-restart conflict behavior

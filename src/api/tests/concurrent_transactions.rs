@@ -28,6 +28,7 @@ use std::time::Duration;
 mod admission;
 mod append_mvcc;
 mod read_observation;
+mod relational_mvcc;
 
 fn release_autocommit_reads(release: &Arc<(Mutex<bool>, Condvar)>) {
     let (released, available) = &**release;
@@ -743,6 +744,11 @@ fn optimistic_mvcc_reopen_preserves_both_database_barrier_directions() {
                 .unwrap();
             broad
                 .query_sql("INSERT INTO messages (id) VALUES (1)")
+                .unwrap();
+            // Plain INSERT now has an explicit row identity. Keep this test's
+            // broad operation explicit: predicate replay retains Database.
+            broad
+                .query_sql("DELETE FROM messages WHERE id = 2")
                 .unwrap();
             let (winner, loser) = if broad_first {
                 (broad, narrow)

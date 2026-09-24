@@ -1406,11 +1406,18 @@ and owner-release assumptions. The [queue/graph proof](LOCK_WAIT_FAIRNESS_PROOF.
 separates that one-request temporal result from source-level dynamic deadlock
 checks, bounded metadata admission and remaining whole-transaction fairness.
 
+[`HawDBRelationalWriteIntent.tla`](HawDBRelationalWriteIntent.tla) compares
+explicit relational write stamps against intent history, including unchanged
+final data and absent-key deletion. Its [source proof](RELATIONAL_MVCC_PROOF.md)
+records the primary-key eligibility boundary, the two negative controls, and
+why changefeed net-change capture cannot serve as an MVCC footprint. It does
+not extend the theorem to predicate replay, uniqueness or FK dependencies.
+
 Typed strict-append rows now use table-level MVCC identities. The
 [append footprint proof](APPEND_MVCC_PROOF.md) derives completeness from row and
 watermark ownership, maps those identities to the existing per-key model, and
 projects multi-table commits onto the one-table generated-order theorem. Opaque
-append WAL and relational writes retain their conservative barriers; the older
+append WAL and unsupported relational writes retain their conservative barriers; the older
 single-table allocator model is not a database-wide sequence allocator.
 
 The [`HawDBTransactionAdmissionLease.tla`](HawDBTransactionAdmissionLease.tla)

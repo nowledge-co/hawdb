@@ -40,7 +40,9 @@ in `HawDBMvccValidation`, rather than needing a new weaker validation rule.
 ## Source correspondence and allocation
 
 `commit_prepared_mutation_ops` starts one bounded VersionWriteSet from final
-graph operations. Relational staging adds its conservative Database identity.
+graph operations. Relational staging adds qualified explicit row identities or
+its conservative Database identity, as described in the
+[relational intent proof](RELATIONAL_MVCC_PROOF.md).
 `collect_append_version_writes` extends that same set from the materialized
 AppendTransaction which is passed directly to `encode_append_wal_batch`.
 Generated writes become ordinary rows during preparation but retain their

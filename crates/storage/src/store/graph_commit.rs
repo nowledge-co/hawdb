@@ -16,7 +16,7 @@
 
 use super::*;
 use hawdb_storage::version::{VersionConflict, VersionKey, VersionWriteSet};
-use hawdb_storage::{wal::WalOp, RelationalError};
+use hawdb_storage::{wal::WalOp, RelationalError, RelationalWrite};
 
 impl GraphStore {
     pub fn commit_mutations(
@@ -1784,6 +1784,19 @@ impl GraphStore {
             .checked_add(1)
             .ok_or_else(|| HawDBError::Storage("commit epoch overflow".to_string()))?;
         if let Some(transaction) = relational_transaction.filter(|value| !value.writes.is_empty()) {
+            crate::relational::admit_transaction(&transaction, self.relational_mutation_limits)
+                .map_err(map_relational_staging_error)?;
+            collect_relational_version_writes(
+                &mut version_writes,
+                &transaction,
+                &self.relational_state,
+            )?;
+            // Detect a stale explicit key before staging can turn its duplicate
+            // INSERT into an ordinary constraint error. Staging is still private;
+            // the complete mixed footprint is checked again before WAL append.
+            if let Some(read_epoch) = mvcc_read_epoch {
+                self.validate_version_writes(&version_writes, read_epoch)?;
+            }
             let authoritative_index = self.authoritative_relational_constraint_index()?;
             let index_limits = self.relational_index_live_capture_limits();
             let row_limits = self.relational_row_live_capture_limits();
@@ -1864,7 +1877,6 @@ impl GraphStore {
             )
             .map_err(|error| HawDBError::Storage(error.to_string()))?;
             staged_relational_primary_key_changes = Some(encoded.primary_key_changes);
-            record_live_version(&mut version_writes, VersionKey::Database)?;
             ops.push(WalOp::Relational {
                 record: Arc::from(encoded.record),
             });
@@ -2516,6 +2528,113 @@ fn collect_version_writes(
     Ok(())
 }
 
+// Intent keys must come from explicit writes, not a net-change capture: a
+// replace followed by restoration, or deletion of an absent key, still has an
+// MVCC write intent. Predicate replay and cross-row constraints stay broad.
+fn collect_relational_version_writes(
+    writes: &mut VersionWriteSet,
+    transaction: &RelationalTransaction,
+    state: &RelationalState,
+) -> Result<()> {
+    let mut tables = BTreeMap::new();
+    for write in &transaction.writes {
+        let table = match write {
+            RelationalWrite::Insert { table, .. }
+            | RelationalWrite::DeleteByPrimaryKey { table, .. } => table,
+            RelationalWrite::CreateTable(_)
+            | RelationalWrite::AddColumn { .. }
+            | RelationalWrite::CreateIndex { .. }
+            | RelationalWrite::Upsert { .. }
+            | RelationalWrite::DeleteWhere { .. }
+            | RelationalWrite::UpdateWhere { .. } => {
+                return record_live_version(writes, VersionKey::Database);
+            }
+        };
+        if let std::collections::btree_map::Entry::Vacant(entry) = tables.entry(table.as_str()) {
+            let Some(schema) = state.table_schema(table) else {
+                return record_live_version(writes, VersionKey::Database);
+            };
+            if schema.primary_key.is_empty()
+                || !schema.unique_constraints.is_empty()
+                || !schema.foreign_keys.is_empty()
+                || schema.indexes.iter().any(|index| index.unique)
+            {
+                return record_live_version(writes, VersionKey::Database);
+            }
+            let Some(positions) = schema
+                .primary_key
+                .iter()
+                .map(|column| schema.column_position(column))
+                .collect::<Option<Vec<_>>>()
+            else {
+                return record_live_version(writes, VersionKey::Database);
+            };
+            entry.insert((schema.columns.len(), positions));
+        }
+        // Leave malformed row/key diagnostics with the existing stager. Do not
+        // index unvalidated input, even for this private footprint calculation.
+        let (columns, positions) = &tables[table.as_str()];
+        let valid_shape = match write {
+            RelationalWrite::Insert { rows, .. } => {
+                rows.iter().all(|row| row.values().len() == *columns)
+            }
+            RelationalWrite::DeleteByPrimaryKey { keys, .. } => {
+                keys.iter().all(|key| key.0.len() == positions.len())
+            }
+            _ => unreachable!("explicit operation was selected above"),
+        };
+        if !valid_shape {
+            return record_live_version(writes, VersionKey::Database);
+        }
+    }
+    // One catalog pass, rather than one scan per touched table. Incoming
+    // references matter too: parent deletion/replacement can cascade elsewhere.
+    if state.table_schemas().any(|schema| {
+        schema
+            .foreign_keys
+            .iter()
+            .any(|key| tables.contains_key(key.referenced_table.as_str()))
+    }) {
+        return record_live_version(writes, VersionKey::Database);
+    }
+    // Admission/classification above completes before any per-key insertion.
+    // Unsupported shapes therefore retain the old one-key Database fallback.
+    for write in &transaction.writes {
+        match write {
+            RelationalWrite::Insert { table, rows, .. } => {
+                let (_, positions) = &tables[table.as_str()];
+                for row in rows {
+                    record_live_version(
+                        writes,
+                        VersionKey::RelationalRow {
+                            table: table.clone(),
+                            primary_key: RelationalKey(
+                                positions
+                                    .iter()
+                                    .map(|position| row.values()[*position].clone())
+                                    .collect(),
+                            ),
+                        },
+                    )?;
+                }
+            }
+            RelationalWrite::DeleteByPrimaryKey { table, keys } => {
+                for key in keys {
+                    record_tombstone_version(
+                        writes,
+                        VersionKey::RelationalRow {
+                            table: table.clone(),
+                            primary_key: key.clone(),
+                        },
+                    )?;
+                }
+            }
+            _ => unreachable!("unsupported transaction returned a Database barrier"),
+        }
+    }
+    Ok(())
+}
+
 // The prepared transaction is the same one encoded into the canonical WAL
 // record. Do not infer a narrow footprint from an opaque WalOp::Append: the
 // generic operation collector intentionally retains its database fallback.
@@ -2578,6 +2697,197 @@ fn map_append_staging_error(error: hawdb_storage::AppendTableError) -> HawDBErro
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn relational_mvcc_fixture() -> (Catalog, GraphStore) {
+        use hawdb_storage::{RelationalColumnSchema, RelationalScalarType, RelationalTableSchema};
+        let mut catalog = Catalog::default();
+        let mut store = GraphStore::default();
+        store
+            .commit_relational_transaction(
+                &mut catalog,
+                RelationalTransaction {
+                    writes: vec![RelationalWrite::CreateTable(RelationalTableSchema {
+                        name: "rows".into(),
+                        columns: vec![
+                            RelationalColumnSchema {
+                                name: "id".into(),
+                                scalar_type: RelationalScalarType::BigInt,
+                                nullable: false,
+                                default: None,
+                            },
+                            RelationalColumnSchema {
+                                name: "body".into(),
+                                scalar_type: RelationalScalarType::Text,
+                                nullable: false,
+                                default: None,
+                            },
+                        ],
+                        primary_key: vec!["id".into()],
+                        unique_constraints: Vec::new(),
+                        foreign_keys: Vec::new(),
+                        indexes: Vec::new(),
+                    })],
+                },
+            )
+            .unwrap();
+        store
+            .commit_relational_transaction(
+                &mut catalog,
+                RelationalTransaction {
+                    writes: vec![
+                        relational_mvcc_insert(1, "original"),
+                        relational_mvcc_insert(2, "original"),
+                    ],
+                },
+            )
+            .unwrap();
+        (catalog, store)
+    }
+
+    fn relational_mvcc_insert(id: i64, body: &str) -> RelationalWrite {
+        RelationalWrite::Insert {
+            table: "rows".into(),
+            rows: vec![hawdb_storage::RelationalRow::new(vec![
+                RelationalValue::BigInt(id),
+                RelationalValue::Text(body.into()),
+            ])],
+            mode: hawdb_storage::RelationalInsertMode::Replace,
+        }
+    }
+
+    fn relational_mvcc_delete(id: i64) -> RelationalWrite {
+        RelationalWrite::DeleteByPrimaryKey {
+            table: "rows".into(),
+            keys: vec![RelationalKey(vec![RelationalValue::BigInt(id)])],
+        }
+    }
+
+    #[test]
+    fn relational_mvcc_intents_survive_net_zero_changes_and_absent_deletion() {
+        for absent in [false, true] {
+            let (mut catalog, mut store) = relational_mvcc_fixture();
+            let first = store.begin_mutation_transaction(&catalog);
+            let stale = store.begin_mutation_transaction(&catalog);
+            let id = if absent { 7 } else { 1 };
+            let writes = if absent {
+                vec![relational_mvcc_delete(id)]
+            } else {
+                vec![
+                    relational_mvcc_insert(id, "temporary"),
+                    relational_mvcc_insert(id, "original"),
+                ]
+            };
+            store
+                .commit_mutation_transaction_and_relational(
+                    &mut catalog,
+                    first,
+                    RelationalTransaction { writes },
+                    MutationLimits::default(),
+                )
+                .unwrap();
+            let epoch = store.commit_epoch();
+            let version_key = VersionKey::RelationalRow {
+                table: "rows".into(),
+                primary_key: RelationalKey(vec![RelationalValue::BigInt(id)]),
+            };
+            let stamp = store.version_index.stamp(&version_key).unwrap();
+            assert_eq!(stamp.commit_epoch, epoch);
+            assert_eq!(
+                stamp.disposition,
+                if absent {
+                    hawdb_storage::version::VersionDisposition::Tombstone
+                } else {
+                    hawdb_storage::version::VersionDisposition::Live
+                }
+            );
+            let error = store
+                .commit_mutation_transaction_and_relational(
+                    &mut catalog,
+                    stale,
+                    RelationalTransaction {
+                        writes: vec![relational_mvcc_insert(id, "must-not-publish")],
+                    },
+                    MutationLimits::default(),
+                )
+                .unwrap_err();
+            assert!(error.is_retryable_transaction_conflict());
+            assert_eq!(store.commit_epoch(), epoch);
+            let row = store
+                .relational_state
+                .row("rows", &RelationalKey(vec![RelationalValue::BigInt(id)]));
+            if absent {
+                assert!(row.is_none());
+            } else {
+                assert_eq!(
+                    row.unwrap().values()[1],
+                    RelationalValue::Text("original".into())
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn relational_mvcc_disjoint_explicit_deletes_and_bounded_intent_collection() {
+        let (mut catalog, mut store) = relational_mvcc_fixture();
+        let first = store.begin_mutation_transaction(&catalog);
+        let second = store.begin_mutation_transaction(&catalog);
+        for (tx, id) in [(first, 1), (second, 2)] {
+            store
+                .commit_mutation_transaction_and_relational(
+                    &mut catalog,
+                    tx,
+                    RelationalTransaction {
+                        writes: vec![relational_mvcc_delete(id)],
+                    },
+                    MutationLimits::default(),
+                )
+                .unwrap();
+        }
+        for id in [1, 2] {
+            assert!(store
+                .relational_state
+                .row("rows", &RelationalKey(vec![RelationalValue::BigInt(id)]))
+                .is_none());
+        }
+        let mut bounded = VersionWriteSet::new(1);
+        let error = collect_relational_version_writes(
+            &mut bounded,
+            &RelationalTransaction {
+                writes: vec![
+                    relational_mvcc_insert(1, "a"),
+                    relational_mvcc_delete(1),
+                    relational_mvcc_insert(2, "b"),
+                ],
+            },
+            &store.relational_state,
+        )
+        .unwrap_err();
+        assert!(error.to_string().contains("1-entry limit"));
+        assert_eq!(bounded.len(), 1);
+        assert_eq!(
+            bounded.iter().next().unwrap().1.disposition,
+            hawdb_storage::version::VersionDisposition::Tombstone
+        );
+        let epoch = store.commit_epoch();
+        store.relational_mutation_limits.max_rows = NonZeroUsize::new(1).unwrap();
+        let error = store
+            .commit_relational_transaction(
+                &mut catalog,
+                RelationalTransaction {
+                    writes: vec![
+                        relational_mvcc_insert(3, "a"),
+                        relational_mvcc_insert(4, "b"),
+                    ],
+                },
+            )
+            .unwrap_err();
+        assert!(error.to_string().contains("max_rows 1"));
+        assert_eq!(store.commit_epoch(), epoch);
+        assert!(store
+            .relational_state
+            .row("rows", &RelationalKey(vec![RelationalValue::BigInt(3)]))
+            .is_none());
+    }
 
     #[test]
     fn append_version_footprint_is_deduplicated_bounded_and_opaque_safe() {
