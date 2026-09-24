@@ -1,211 +1,190 @@
 # MVCC Commit Validation Protocol
 
-Status: design baseline for #231. No per-key version validation is implemented
-yet.
+Status: partial implementation for #231 and #232, audited at `a703cc0f`.
+This document separates the current protocol from the remaining acceptance
+work. It does not declare either issue complete.
 
-## Purpose and boundary
+## Current implementation and boundaries
 
-HawDB already provides immutable COW snapshots, reader generation pins, one
-process-local writer, and manifest-last durable publication. Those mechanisms
-make read snapshots stable, but the current write path still validates a
-transaction against one database-wide `base_commit_epoch`. A commit to an
-unrelated key therefore aborts a transaction that began at the same epoch.
+HawDB has immutable COW snapshots, transaction-private workspaces, one
+process-local database owner, and one serialized WAL publication stream.
+`ConcurrentTransaction` executes statements against its private state outside
+`CommitSequencer`; commit enters the sequencer. Concurrent statement execution
+is already implemented, not contingent on implementing a new version index.
 
-This document defines the storage contract that replaces that coarse check. It
-does not change the following boundaries:
+Optimistic graph commits use per-key first-committer-wins validation.
+Pessimistic commits can rebase under their acquired locks. The restricted
+optimistic conflict-noop SQL path can also rebase; it recomputes mutation
+outcomes at commit. These are distinct protocols: permitting either rebase
+path does not demonstrate per-key optimistic SQL validation.
 
-- One process owns a durable database directory and one WAL publication stream.
-- Commit validation, WAL append, durable sync, and root publication are one
-  serialized critical section.
-- The first isolation level is snapshot isolation, not serializable isolation.
-- Graph and relational statements retain their existing transaction-private
-  workspaces and read-your-own-writes behavior.
-- A non-provable access set remains conservative. It uses a broad version key
-  or the existing lock fallback; it never becomes an unvalidated write.
+| Mechanism | Current source and scope |
+| --- | --- |
+| Version storage | `crates/storage/src/version.rs`: `VersionIndex` is a COW map containing the latest epoch and live/tombstone disposition for each recorded identity. |
+| Write-set collection | `crates/storage/src/store/graph_commit.rs`: `collect_version_writes` derives an ordered, deduplicated set from the final canonical operations, before WAL append. |
+| Optimistic validation | `validate_version_writes` checks recorded keys plus database/schema barriers against the transaction's `base_commit_epoch`. Conflicts become retryable `HawDBError::TransactionConflict`. |
+| Private statement execution | `src/api/concurrent.rs`: statements operate on transaction-owned state; `commit_with_result` submits publication to the sequencer. |
+| Rebase selection | `commit_with_result` enables it for pessimistic transactions and the narrowly checked conflict-noop-only optimistic transaction shape. |
+| Publication and group sync | `src/api/concurrent/coordinator.rs` serializes commit tasks and retains the database mutex through the shared durability barrier. |
+| Reclamation helpers | `VersionIndex::prune_tombstones_before` exists and has unit coverage, but no production caller currently invokes it. |
+| Recovery baseline helper | `VersionIndex::from_live_keys_at_epoch` exists but is not wired into open or replay. The current index starts empty on a new store handle. |
 
-Issue #232 builds concurrent transaction-body execution on this protocol. It
-does not move execution out of the `CommitSequencer` before this protocol has
-durable validation, recovery, and reclamation coverage.
+No general serializable isolation, time travel, multi-process writer, or
+persisted row-version API follows from these mechanisms. Relational predicate
+capture and pessimistic locks have their own contracts; their existence does
+not make graph optimistic validation a serializable read-set validator.
 
-## Why keys, not pages
+## Identities actually emitted
 
-The version identity is per logical write key. A per-page stamp would make two
-unrelated records conflict merely because their COW map page is shared. That
-would preserve the false-conflict ceiling that this work is intended to remove.
+`VersionKey` declares more identities than the commit collector currently uses.
+A declared enum variant alone is not evidence that a domain has fine-grained
+validation.
 
-`VersionKey` is internal storage state. It is not a user-visible row-version or
-time-travel API. Its variants cover every canonical mutation domain:
+| Canonical operation | Recorded identity |
+| --- | --- |
+| Node create/property update | `GraphNode(id)`, live |
+| Node delete | `GraphNode(id)`, tombstone |
+| Relationship create/delete | `GraphRelationship(id)` plus source/outgoing and target/incoming `GraphAdjacency` identities; relationship deletion records a tombstone |
+| Relationship property update | `GraphRelationship(id)`, live |
+| Relationship delete without known endpoints | Relationship tombstone plus conservative `Database` barrier |
+| Catalog/index/constraint changes | `Schema` barrier |
+| Relational, relational snapshot, append, graph projection, initial-import marker | `Database` barrier |
+| Nested canonical batch | Recursively collect its operations |
 
-| Domain | Version identity | Reason |
-| --- | --- | --- |
-| Graph node | Node id | Create, delete, label, and property changes invalidate the same entity key. |
-| Graph relationship | Relationship id | Relationship endpoints, type, and properties share one identity. |
-| Graph adjacency | Node id plus direction | Relationship changes alter bounded adjacency traversal results. |
-| Relational row | Table identity plus primary key | Row update, delete, and primary-key insert conflict at row granularity. |
-| Unique/index entry | Table identity, index identity, and encoded index key | Concurrent inserts or key changes must preserve uniqueness. |
-| Foreign-key target | Referenced table and key | Delete and referencing insert must validate the same constraint identity. |
-| Append sequence | Table identity | Generated-key allocation is one ordered state per table. |
-| Schema/catalog | One schema identity | DDL, constraint, and index changes invalidate every workspace built from the old catalog. |
-| Conservative access | Table or database identity | Unknown graph predicates, joins, and unbounded access sets stay correct before narrower derivation exists. |
+`RelationalRow`, `RelationalIndex`, `ForeignKey`, and `AppendTable` are reserved
+identities, not emitted by this collector. Narrowing those domains still needs
+complete identity derivation and constraint/recovery coverage. Pessimistic SQL
+point-lock concurrency must not be presented as evidence that these variants
+are active.
 
-An operation may produce more than one key. For example, deleting a graph node
-stamps the node, each deleted relationship, and affected adjacency identities;
-an indexed relational update stamps the row plus its old and new index entries.
-Deduplication and ordering happen before validation, so one transaction cannot
-produce conflicting duplicate entries for the same `VersionKey`.
+`VersionWriteSet` contains a `BTreeMap<VersionKey, VersionWrite>` and an entry
+limit, defaulting to `DEFAULT_MAX_WAL_BATCH_OPERATIONS`. Repeated writes to a key
+replace its disposition without consuming another entry. The read epoch belongs
+to the transaction, not this map. The entry cap is not a byte budget for the
+whole version index, and does not bound lifetime tombstone accumulation.
 
-## Snapshot and workspace state
+## Commit and visibility order
 
-Under this protocol, transaction start records a `read_epoch` equal to the
-published commit epoch and captures the existing catalog, graph snapshot,
-relational state, append state, and a reader pin. The private graph and
-relational workspaces continue to serve all reads and writes for the lifetime
-of that transaction.
+The non-rebased path passes the transaction's base epoch into
+`commit_prepared_mutation_ops`. The commit path stages canonical graph,
+relational and append changes against current state, collects their version
+keys, validates them, checks publication requirements and graph constraints,
+and appends the WAL. A version conflict occurs before WAL append or live root
+publication. Earlier staging/constraint errors can occur before version
+validation; not every rejected overlapping operation necessarily returns the
+version-conflict variant.
 
-The planned transaction state also owns a bounded `VersionWriteSet`:
+After successful WAL append, the path applies canonical operations, advances
+`commit_epoch`, and applies the version stamps. These updates are sequential
+Rust operations protected by the sequencer, not one hardware-atomic root swap.
+With group commit enabled, internal roots and stamps may advance before the
+shared fsync so later tasks in that same group can validate against earlier
+ones. The database mutex remains held through `finish_wal_sync_group`, and
+successful requests are delivered after the barrier. A group sync failure
+rejects the requests and poisons the handle; callers must close and reopen.
+Thus the intended boundary is durable-before-external-visibility and successful
+acknowledgement, not an assertion that no internal mutation precedes fsync.
+
+Read-only transactions do not supply a write-validation epoch. Failed
+statements restore their private state/operations; version keys are collected
+from the surviving final operations at commit. There is no independently
+accumulated transaction version-key set requiring a separate savepoint today.
+
+## Validation argument and its limits
+
+Let `E` be a transaction's read epoch, `C` the current commit epoch, `W` its
+collected keys, and `V(k)` the latest recorded epoch (zero if absent). Ignoring
+earlier semantic errors, the current validator accepts exactly when:
 
 ```text
-VersionWriteSet {
-    read_epoch,
-    keys: ordered, deduplicated VersionKey values,
-    broad_scope: optional table or database VersionKey,
-}
+for every k in W: V(k) <= E
+for each b in {Database, Schema}:
+    V(b) <= E and (b not in W or C <= E)
 ```
 
-The write set is derived from the normalized graph operations and relational or
-append mutation outcomes, after a statement succeeds in its private workspace.
-A statement savepoint restores its write-set additions together with the
-workspace when that statement fails. A rollback drops the write set without
-changing live state.
+This gives the following conditional safety argument:
 
-Read-only snapshots do not validate a write set. Snapshot isolation deliberately
-permits read-write skew between disjoint write sets. A future serializable mode
-needs separately specified read/range validation; it must not be inferred from
-this protocol.
+1. Assume the collector includes every conflicting write identity, epochs
+   increase, and relevant stamps have not been removed. If a first commit
+   writes `k` at `c > E`, a later commit with `k` in its set observes
+   `V(k) >= c > E` and rejects before WAL append. Serialization prevents a
+   competing publication between validation and stamp application.
+2. With disjoint keys and no newer database/schema barrier, the first commit
+   changes none of the second commit's tested stamps. Version validation alone
+   therefore permits both. Other constraints, allocation collisions and
+   resource limits can still reject them.
+3. A broad writer rejects any intervening epoch, even if preceding writers
+   emitted only narrow keys. Conversely, a newer broad stamp rejects a stale
+   narrow writer. Both directions are necessary; checking only identical keys
+   would leave the narrow-before-broad direction unprotected.
+4. A deletion stamp at epoch `d` cannot safely be discarded while a transaction
+   with `E < d` can still commit against that identity. The helper retains it
+   when `d >= oldest_reader_epoch` and removes it only when strictly older.
+   This argument assumes the watermark includes **all** active writers as well
+   as readers; helper unit tests do not establish that production integration.
 
-## Commit protocol
+These are deductive arguments about the validation rule under stated
+assumptions, not a machine-checked refinement proof of the Rust implementation.
+In particular, complete key derivation, crash recovery, resource bounds, and
+watermark integration require separate evidence.
 
-When enabled, only the commit sequencer executes these steps. A failed step
-leaves the published root and `VersionIndex` unchanged.
+### Recovery does not require surviving transaction history
 
-1. Reject a transaction that has no active snapshot or has exceeded its
-   write-set memory/key budget.
-2. Normalize and deduplicate its `VersionWriteSet`. Reject an impossible or
-   unsupported identity rather than degrading it to an unprotected narrow key.
-3. For every key, read the latest committed stamp from the live `VersionIndex`.
-   Validation succeeds only when every observed stamp is at most `read_epoch`.
-4. On a newer stamp, return a typed retryable `TransactionConflict` containing
-   the transaction read epoch, current epoch, and the conflicting internal key
-   class. Do not append a WAL entry, advance an epoch, or publish workspace
-   state.
-5. Recheck graph constraints, relational constraints, and append sequence
-   allocation against the same live root used for validation. Their identities
-   are already members of the write set, but constraint evaluation remains the
-   authoritative semantic check.
-6. Build the existing canonical WAL batch. The batch and its stamp update have
-   one candidate commit epoch.
-7. Append and durably sync the WAL batch using the existing group-commit
-   barrier. A sync failure rejects the entire candidate and does not publish
-   its root or stamps.
-8. Publish the canonical root, then atomically set every validated
-   `VersionKey` to the candidate commit epoch. The in-memory publication order
-   is one indivisible sequencer action; readers see either the old root and
-   stamps or the new root and stamps.
+A process restart invalidates every pre-crash transaction. If recovery restores
+a consistent root at epoch `R`, every new transaction starts at `E >= R`.
+All pre-restart stamps would be at most `R`, so omitting them cannot change a
+comparison of the form `V(k) > E`. New commits must still record their stamps,
+and broad writers must still check the current epoch. An empty process-local
+validation index is therefore not, by itself, evidence of corrupt recovery.
 
-The WAL must carry enough information for replay to reconstruct exactly the
-same stamp updates. The preferred representation derives keys deterministically
-from each normalized canonical WAL operation and its persisted schema state.
-If any key cannot be reconstructed unambiguously during replay, the WAL format
-must include the normalized key set in the same record before this protocol is
-enabled. Checkpoint state must persist the current `VersionIndex` or a canonical
-equivalent so reopen never silently resets validation history.
+This supersedes the original proposal's unconditional requirement to persist a
+non-empty version index alongside every non-empty database. It is a conditional
+restart argument, not permission to reset the index while old transactions
+remain alive. Canonical WAL/checkpoint recovery, epoch restoration, and rejection
+of corrupt or incomplete durable state remain mandatory. Exact pre-crash stamp
+identity need not equal post-restart stamp identity; canonical data and observable
+commit behavior must agree with the recovered serial order.
 
-## Persistence and reclamation
+## Existing evidence and remaining work
 
-The planned `VersionIndex` is a COW, ordered storage-owned map from `VersionKey`
-to its last committed epoch. It keeps one latest stamp per live identity, not an
-unbounded heap of version chains. Snapshot readers retain historical COW pages
-through their existing pins, while new commits replace only affected pages.
+`src/api/tests/concurrent_transactions.rs` already includes:
 
-Deletion tombstones are different: their version entries remain until the
-oldest active transaction read epoch is newer than the tombstone epoch.
-Otherwise a transaction that began before the deletion could recreate or update
-the same identity without detecting the conflict. The existing reader registry
-must therefore register concurrent write transactions as well as explicit read
-transactions. A cleanup pass removes a tombstone only after that watermark
-advances and after confirming that no live canonical or constraint state still
-needs the key.
+- `optimistic_transactions_commit_disjoint_graph_updates_from_one_snapshot`;
+- `optimistic_transactions_prepare_in_parallel_and_reject_the_conflicting_committer`;
+- `optimistic_transaction_reads_its_private_workspace`;
+- `disjoint_primary_key_point_locks_allow_both_pessimistic_writers_to_commit`;
+- `repeated_covered_point_read_keeps_its_snapshot_after_a_disjoint_commit`;
+- `wal_group_commit_shares_one_sync_without_changing_record_order`;
+- `wal_group_sync_failure_rejects_commit_and_poisons_until_reopen`.
 
-Checkpoint publication must record the version-index checkpoint identity and
-covered commit epoch with the canonical checkpoint. WAL replay must rebuild or
-validate the index before the database reports itself writable. A checksum,
-decode, or epoch mismatch fails closed; a reconstructed empty index is never a
-valid fallback for a non-empty database.
+The version module separately tests same-key conflict, disjoint keys,
+disposition replacement, entry limits, tombstone watermark boundaries, and COW
+page sharing. These are bounded cases, not full #231/#232 acceptance.
 
-Physical generation reclamation remains governed by the existing pinned
-generation set. Version-index page reclamation follows the same snapshot
-lifetime and cannot delete a physical generation referenced by an active reader.
+The existing [transaction model](tla/HawDBTransactionConcurrency.tla) still uses
+whole-epoch optimistic validation: `OptimisticFirstCommitterWins` requires
+`commitEpoch = baseEpoch + 1`. That property intentionally excludes a successful
+stale but disjoint graph writer and is **not** the current per-key invariant.
+Its lock/publication checks remain useful within that restricted model; they
+cannot certify the added per-key executions. See the [model scope](tla/README.md#optimistic-and-pessimistic-transaction-publication).
 
-## Integration slices
+Remaining acceptance work, without reimplementing existing mechanisms:
 
-Each slice is independently reviewable and preserves the current public
-transaction entry points until the typed conflict variant is introduced.
+1. Model per-key validation, both broad-barrier directions, restart and
+   tombstone reclamation; add a validation-bypass mutant and source mapping.
+2. Establish complete writer-pin/watermark integration before enabling
+   production tombstone cleanup; demonstrate bounded retained state and
+   progress after pins retire.
+3. Narrow relational/append identities only with complete constraint and
+   recovery coverage. Preserve conservative paths for unsupported shapes.
+4. Qualify canonical crash/reopen equivalence and post-restart conflict behavior
+   across WAL/checkpoint boundaries; do not require identical discarded
+   process-local stamp history.
+5. Produce the #232 writer scaling, fairness and starvation evidence, plus
+   single-stream latency and group-commit comparisons. Existing concurrency
+   unit tests do not substitute for this workload evidence.
 
-1. **Storage identity and persistence.** Add internal `VersionKey`,
-   `VersionIndex`, deterministic key derivation for canonical graph,
-   relational, append, constraint, and schema mutations, and checkpoint/WAL
-   replay support. Do not change concurrent execution yet.
-2. **Commit validation.** Replace the `GraphMutationTransaction`
-   `base_commit_epoch` rejection with write-set validation in the serialized
-   commit path. Add `HawDBError::TransactionConflict` as the typed retryable
-   result. Keep all transaction bodies serialized for this slice.
-3. **Snapshot registration and cleanup.** Give write transactions the same
-   epoch/generation pin lifetime as read transactions, retain deletion stamps
-   correctly, and reclaim obsolete tombstones/pages only after the oldest pin
-   advances.
-4. **Concurrent execution (#232).** Snapshot and execute transaction bodies
-   outside `CommitSequencer`; enter it only for validation, WAL append, and
-   publication. Preserve the single WAL stream and existing group-commit
-   behavior.
-5. **Narrower access coverage.** Replace conservative graph/table scopes only
-   when statement analysis can prove a complete write set. Keep broad scopes for
-   joins, unbounded predicates, and unsupported graph shapes.
-
-## Verification gates
-
-The implementation is not ready to activate until all of these are covered by
-source-level tests, model checking, and the repository's required verification
-targets.
-
-- A transaction pinned at epoch `E` observes only epoch-`E` state while later
-  commits and checkpoints complete.
-- Two disjoint graph, relational, and append write sets prepared from one epoch
-  both commit. The same-key, unique-index, foreign-key, adjacency, and schema
-  cases return the typed conflict deterministically without WAL publication.
-- A statement failure and transaction rollback discard their tentative keys.
-  Savepoint restore cannot retain a key from a failed statement.
-- Crash injection before WAL sync, after sync, and during checkpoint/reopen
-  produces the same canonical root and version index as the serial committed
-  order. Torn tails, corrupted stamps, and checkpoint/index mismatches fail
-  closed.
-- A long-lived reader or writer snapshot limits tombstone cleanup but does not
-  freeze unrelated physical-generation reclamation. Releasing the oldest pin
-  enables the next cleanup pass.
-- A new TLA+ model covers snapshot selection, write-set validation, WAL
-  durability, publication, conflicts, and reclamation. It is added to the
-  existing `docs/tla:storage_models` manifest with a mutant that violates
-  validation-before-publication.
-- The #232 writer matrix measures 1/4/8 disjoint writers, verifies one WAL
-  order and no lost updates, and compares single-stream commit latency against
-  the pre-concurrency baseline.
-
-## Explicit non-goals
-
-- No multi-process writer, distributed transaction, or general time-travel
-  interface.
-- No serializable isolation or predicate read-set validation in the first
-  protocol.
-- No weakening of current lock fallbacks, integrity checks, crash recovery, or
-  durable-before-publish ordering to obtain apparent concurrency.
-- No page-level stamp shortcut that reintroduces false conflicts for disjoint
-  records.
+The late pessimistic lock-acquisition rule remains conservative: after earlier
+successful statements, acquiring a new resource against a changed epoch can
+still require retry. Per-key **write** validation does not validate the earlier
+reads of a newly acquired resource and cannot justify removing that guard.

@@ -285,13 +285,15 @@ validation and the durable publication order still run against current state.
 Both transaction modes retain one WAL order, durable-before-publish, and one
 commit epoch per transaction.
 
-Per-key MVCC validation is not active yet. The current commit-epoch check cannot
-distinguish unrelated mutations, so a newer commit may still reject a transaction
-whose logical write set is disjoint. [`MVCC_COMMIT_VALIDATION_PROTOCOL.md`](MVCC_COMMIT_VALIDATION_PROTOCOL.md)
-defines the required storage-owned version identities, validation-before-WAL
-publication sequence, recovery rule, and reader-pin-bounded tombstone cleanup.
-It is the implementation baseline for #231; #232 may move transaction bodies
-out of the sequencer only after that protocol is implemented and verified.
+Optimistic graph writes already use per-key version validation, while relational
+and append operations retain a conservative database version barrier.
+Pessimistic lock-protected rebasing is a separate path. Concurrent transaction
+bodies already execute outside the commit sequencer; validation and publication
+remain serialized. [`MVCC_COMMIT_VALIDATION_PROTOCOL.md`](MVCC_COMMIT_VALIDATION_PROTOCOL.md)
+maps the implemented identities and validation rule to source, and records the
+remaining #231/#232 work: integrated tombstone reclamation, per-key model
+coverage, narrower domains, and workload qualification. A new pessimistic lock
+acquisition after snapshot drift still uses the conservative retry rule above.
 
 Coordinator waits record every blocker in a multi-owner wait-for graph. Adding
 dependencies that close a cycle aborts the current waiter as the deterministic

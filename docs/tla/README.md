@@ -1371,6 +1371,20 @@ acyclic, lock tokens never have multiple owners or exceed the configured set,
 statement rollback preserves the pre-statement lock set, and a crash after WAL
 durability recovers the committed epoch.
 
+### Per-key validation coverage boundary
+
+The optimistic branch above is the earlier whole-epoch protocol, not a model of
+all current optimistic graph commits. `PrepareCommit` requires the base epoch
+to match the published epoch; `OptimisticFirstCommitterWins` asserts
+`commitEpoch = baseEpoch + 1`. The current Rust validator can accept a stale
+snapshot with disjoint graph writes, so that invariant is not a theorem about
+all Rust executions. The model has no per-key stamp map or tombstone watermark.
+Its lock/publication checks must not be cited as completion of #231's per-key
+validation, recovery or reclamation proof. The
+[protocol and conditional validation argument](../MVCC_COMMIT_VALIDATION_PROTOCOL.md)
+identify implemented paths and the remaining model work. No model transitions
+or previously recorded TLC results change with this scope clarification.
+
 ## Demand-Paged Index Publication
 
 `HawDBIndexPublication.tla` models one manifest-selected row/index root pair,
