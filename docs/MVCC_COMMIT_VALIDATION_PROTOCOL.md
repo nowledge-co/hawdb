@@ -21,7 +21,7 @@ path does not demonstrate per-key optimistic SQL validation.
 | Mechanism | Current source and scope |
 | --- | --- |
 | Version storage | `crates/storage/src/version.rs`: `VersionIndex` is a COW map containing the latest epoch and live/tombstone disposition for each recorded identity. |
-| Write-set collection | `crates/storage/src/store/graph_commit.rs`: `collect_version_writes` derives an ordered, deduplicated set from the final canonical operations, before WAL append. |
+| Write-set collection | `crates/storage/src/store/graph_commit.rs`: `collect_version_writes` derives graph keys from final canonical operations; typed relational/append staging extends the same bounded set before WAL append. |
 | Legacy direct commits | `finish_non_relational_commit` publishes a `Database` stamp after applying an already-durable direct graph/catalog/import mutation. These entry points lack a proven complete narrow write set. |
 | Optimistic validation | `validate_version_writes` checks recorded keys plus database/schema barriers against the transaction's `base_commit_epoch`. Conflicts become retryable `HawDBError::TransactionConflict`. |
 | Private statement execution | `src/api/concurrent.rs`: statements operate on transaction-owned state; `commit_with_result` submits publication to the sequencer. |
@@ -50,13 +50,19 @@ validation.
 | Relationship property update | `GraphRelationship(id)`, live |
 | Relationship delete without known endpoints | Relationship tombstone plus conservative `Database` barrier |
 | Catalog/index/constraint changes | `Schema` barrier |
-| Relational, relational snapshot, append, graph projection, initial-import marker | `Database` barrier |
+| Prepared strict-append rows, including materialized generated-order rows | `AppendTable(table)` live stamp for every written table |
+| Prepared strict-append table creation | `Schema` barrier |
+| Relational, relational snapshot, opaque append WAL, graph projection, initial-import marker | `Database` barrier |
 | Nested canonical batch | Recursively collect its operations |
 | Legacy direct graph/catalog/import commit | `Database` barrier at the completed commit epoch |
 
-`RelationalRow`, `RelationalIndex`, `ForeignKey`, and `AppendTable` are reserved
-identities, not emitted by this collector. Narrowing those domains still needs
-complete identity derivation and constraint/recovery coverage. Pessimistic SQL
+`RelationalRow`, `RelationalIndex`, and `ForeignKey` remain reserved identities.
+Typed strict-append staging now emits `AppendTable` from the same prepared
+transaction that is encoded into WAL. Generated sequence counters are table-wide,
+so different partitions in one table still conflict. The opaque WAL collector
+retains its database fallback because it has no typed preparation evidence.
+See the [append footprint proof](tla/APPEND_MVCC_PROOF.md). Narrowing relational
+identities still needs complete constraint and recovery coverage. Pessimistic SQL
 point-lock concurrency must not be presented as evidence that these variants
 are active. Legacy direct commits likewise use the conservative barrier;
 older optimistic workspaces retry even when their keys appear unrelated.
@@ -189,8 +195,10 @@ Remaining acceptance work, without reimplementing existing mechanisms:
    live and deleted stamps, including barriers, but long-lived pins and historical
    COW maps still retain metadata. Neither a global byte bound nor bounded
    checkpoint latency follows.
-3. Narrow relational/append identities only with complete constraint and
-   recovery coverage. Preserve conservative paths for unsupported shapes.
+3. Narrow relational identities only with complete constraint and recovery
+   coverage. Typed append writes now have table identities; finer partition
+   identities would require separating table-wide generated-order state.
+   Preserve conservative paths for unsupported/opaque shapes.
 4. Qualify canonical crash/reopen equivalence and post-restart conflict behavior
    across WAL/checkpoint boundaries; do not require identical discarded
    process-local stamp history.

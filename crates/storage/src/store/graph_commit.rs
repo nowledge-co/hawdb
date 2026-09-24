@@ -1769,6 +1769,9 @@ impl GraphStore {
         if let Some(captured_graph_ops) = captured_graph_ops {
             captured_graph_ops.extend(ops.iter().cloned());
         }
+        // Graph operations are final here. Extend this same bounded set from
+        // typed relational/append staging below, before encoding or WAL append.
+        let mut version_writes = self.version_writes_for_ops(&ops)?;
         let mut staged_relational_state = None;
         let mut staged_relational_index_capture = None;
         let mut staged_relational_row_capture = None;
@@ -1861,6 +1864,7 @@ impl GraphStore {
             )
             .map_err(|error| HawDBError::Storage(error.to_string()))?;
             staged_relational_primary_key_changes = Some(encoded.primary_key_changes);
+            record_live_version(&mut version_writes, VersionKey::Database)?;
             ops.push(WalOp::Relational {
                 record: Arc::from(encoded.record),
             });
@@ -1870,6 +1874,7 @@ impl GraphStore {
                 .append_state
                 .prepare_transaction(&transaction, self.append_mutation_limits)
                 .map_err(map_append_staging_error)?;
+            collect_append_version_writes(&mut version_writes, &prepared.materialized_transaction)?;
             let record =
                 encode_append_wal_batch(next_commit_epoch, &prepared.materialized_transaction)
                     .map_err(|error| HawDBError::Storage(error.to_string()))?;
@@ -1886,7 +1891,6 @@ impl GraphStore {
                 append_mutation_outcomes,
             });
         }
-        let version_writes = self.version_writes_for_ops(&ops)?;
         if let Some(read_epoch) = mvcc_read_epoch {
             self.validate_version_writes(&version_writes, read_epoch)?;
         }
@@ -2512,6 +2516,28 @@ fn collect_version_writes(
     Ok(())
 }
 
+// The prepared transaction is the same one encoded into the canonical WAL
+// record. Do not infer a narrow footprint from an opaque WalOp::Append: the
+// generic operation collector intentionally retains its database fallback.
+fn collect_append_version_writes(
+    writes: &mut VersionWriteSet,
+    transaction: &AppendTransaction,
+) -> Result<()> {
+    for write in &transaction.writes {
+        match write {
+            AppendWrite::CreateTable { .. } => {
+                record_live_version(writes, VersionKey::Schema)?;
+            }
+            AppendWrite::Append { table, .. } | AppendWrite::AppendGenerated { table, .. } => {
+                // Caller-provided watermarks are partition-local, while generated
+                // order is table-wide. A table identity safely covers both.
+                record_live_version(writes, VersionKey::AppendTable(table.clone()))?;
+            }
+        }
+    }
+    Ok(())
+}
+
 fn record_live_version(writes: &mut VersionWriteSet, key: VersionKey) -> Result<()> {
     writes
         .record_live(key)
@@ -2552,6 +2578,48 @@ fn map_append_staging_error(error: hawdb_storage::AppendTableError) -> HawDBErro
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn append_version_footprint_is_deduplicated_bounded_and_opaque_safe() {
+        let transaction = AppendTransaction {
+            writes: vec![
+                AppendWrite::Append {
+                    table: "a".into(),
+                    rows: Vec::new(),
+                },
+                AppendWrite::AppendGenerated {
+                    table: "a".into(),
+                    rows: Vec::new(),
+                },
+                AppendWrite::Append {
+                    table: "b".into(),
+                    rows: Vec::new(),
+                },
+            ],
+        };
+        let mut writes = VersionWriteSet::new(2);
+        collect_append_version_writes(&mut writes, &transaction).unwrap();
+        assert_eq!(writes.len(), 2);
+        assert!(writes.contains_key(&VersionKey::AppendTable("a".into())));
+        assert!(writes.contains_key(&VersionKey::AppendTable("b".into())));
+        let mut bounded = VersionWriteSet::new(1);
+        assert!(collect_append_version_writes(&mut bounded, &transaction)
+            .unwrap_err()
+            .to_string()
+            .contains("1-entry limit"));
+        assert_eq!(bounded.len(), 1);
+        let mut opaque = VersionWriteSet::default();
+        collect_version_writes(
+            &mut opaque,
+            &[WalOp::Append {
+                record: Arc::from([]),
+            }],
+            &mut BTreeMap::new(),
+            &CowSegmentedMap::default(),
+        )
+        .unwrap();
+        assert!(opaque.contains_key(&VersionKey::Database));
+    }
 
     #[test]
     fn append_sequence_exhaustion_remains_structured_at_the_facade_boundary() {
