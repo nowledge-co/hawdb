@@ -2063,22 +2063,30 @@ impl GraphStore {
         if self.durable.is_none() {
             return Ok(());
         }
-        let pressure_signals = self.wal_admission_signals(std::slice::from_ref(&op))?;
-        self.durable
-            .as_mut()
-            .expect("durable store presence was checked")
-            .append_single(op, pressure_signals)
+        let result = (|| {
+            let pressure_signals = self.wal_admission_signals(std::slice::from_ref(&op))?;
+            self.durable
+                .as_mut()
+                .expect("durable store presence was checked")
+                .append_single(op, pressure_signals)
+        })();
+        self.poison_on_storage_error(&result);
+        result
     }
 
     pub(super) fn append_durable_wal_batch(&mut self, ops: &[WalOp]) -> Result<()> {
         if self.durable.is_none() {
             return Ok(());
         }
-        let pressure_signals = self.wal_admission_signals(ops)?;
-        self.durable
-            .as_mut()
-            .expect("durable store presence was checked")
-            .append_batch(ops.to_vec(), pressure_signals)
+        let result = (|| {
+            let pressure_signals = self.wal_admission_signals(ops)?;
+            self.durable
+                .as_mut()
+                .expect("durable store presence was checked")
+                .append_batch(ops.to_vec(), pressure_signals)
+        })();
+        self.poison_on_storage_error(&result);
+        result
     }
 
     fn wal_admission_signals(&self, ops: &[WalOp]) -> Result<StoragePressureSignals> {

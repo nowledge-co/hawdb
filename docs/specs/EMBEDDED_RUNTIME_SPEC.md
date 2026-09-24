@@ -141,9 +141,36 @@ atomicity, recovery, runtime admission, projection generation publication, or a
 bounded multi-statement workflow. New single-query route wrappers and their
 request/output DTOs MUST NOT be added to the embedded facade.
 
-An App workflow that combines Cypher and PostgreSQL reads MUST use
-`NowledgeMemEmbeddedStoreHandle::with_bounded_read_snapshot`. Its report MUST
-identify the pinned commit epoch, the original and remaining row and payload
+A bounded workflow combining Cypher and PostgreSQL reads MUST use one
+`NowledgeMemReadSnapshot` through `with_bounded_graph_read_snapshot` or
+`with_bounded_read_snapshot`. The graph-only entrypoint and `with_read_transaction` acquire the last committed
+canonical view through a short publication lock after admission by the existing
+runtime governor. A writer staging graph and SQL changes MUST NOT block new
+canonical snapshot acquisition for its entire transaction. Each reader owns a
+query context while sharing the immutable view's generation pin. Writers publish
+one consistent catalog, graph, and relational snapshot before returning their
+result. A subsequent reader observes that commit; earlier readers retain their
+original values and commit epoch. Checkpoints MUST refresh the physical view even
+when the logical epoch is unchanged. Replacing the current view releases only
+its own pin reference; the last fork releases the old generation for reclamation.
+
+Fatal canonical integrity or post-WAL apply failures invalidate both current
+storage and previously captured snapshots until close and reopen. The read
+callback's successful return MUST recheck this shared fault state, including a
+fault observed while a writer still holds its guard. Writer unwinding invalidates
+the published source. Ordinary rollback and recoverable append failures preserve
+the last committed state and permit later work. Publication retains the current
+COW roots and one current pin; compaction paths that use only the oldest logical
+epoch may conservatively postpone reclamation until a later checkpoint.
+
+`with_bounded_read_snapshot` additionally pins the configured search projection
+and retains the store read lock through the callback. Graph-only snapshots MUST
+report no projection presence or projection epochs and MUST reject external
+vector reads, even when the live store has a projection. A host requiring
+projection consistency MUST use the projection-pinned entrypoint. Neither
+entrypoint transfers host business policy into the database.
+
+The report MUST identify the pinned commit epoch, the original and remaining row and payload
 budgets, and the number of successfully completed Cypher and SQL statements.
 A successful external vector seed increments a separate execution counter;
 projection presence alone is not evidence that a search statement consumed the

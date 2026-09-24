@@ -757,7 +757,7 @@ pub struct GraphStore {
     residency_mode: StorageResidencyMode,
     auto_materialize_checkpoint_bytes: u64,
     max_out_of_core_delta_bytes: Option<u64>,
-    post_wal_apply_poisoned: bool,
+    post_wal_apply_poisoned: Arc<AtomicBool>,
     integrity_poisoned: Arc<AtomicBool>,
     relational_state: RelationalState,
     append_state: AppendState,
@@ -1397,7 +1397,7 @@ impl GraphStore {
                     .to_string(),
             ));
         }
-        if self.post_wal_apply_poisoned {
+        if self.post_wal_apply_poisoned.load(AtomicOrdering::Acquire) {
             return Err(HawDBError::Storage(
                 "database handle is poisoned after a durable WAL batch failed during in-memory apply; close and reopen the database before issuing more operations"
                     .to_string(),
@@ -1408,7 +1408,7 @@ impl GraphStore {
     }
 
     pub fn post_wal_apply_poisoned(&self) -> bool {
-        self.post_wal_apply_poisoned
+        self.post_wal_apply_poisoned.load(AtomicOrdering::Acquire)
     }
 
     #[doc(hidden)]
@@ -1421,7 +1421,7 @@ impl GraphStore {
     }
 
     pub fn storage_handle_poisoned(&self) -> bool {
-        self.post_wal_apply_poisoned || self.integrity_poisoned.load(AtomicOrdering::Acquire)
+        self.post_wal_apply_poisoned() || self.integrity_poisoned.load(AtomicOrdering::Acquire)
     }
 
     #[doc(hidden)]
@@ -1636,7 +1636,7 @@ impl GraphStore {
             residency_mode: replay_config.residency_mode,
             auto_materialize_checkpoint_bytes: replay_config.auto_materialize_checkpoint_bytes,
             max_out_of_core_delta_bytes: replay_config.max_out_of_core_delta_bytes,
-            post_wal_apply_poisoned: false,
+            post_wal_apply_poisoned: Arc::new(AtomicBool::new(false)),
             integrity_poisoned: Arc::new(AtomicBool::new(false)),
             relational_state: RelationalState::default(),
             append_state: AppendState::default(),
@@ -1795,7 +1795,8 @@ impl GraphStore {
         match durable.finish_wal_sync_group() {
             Ok(flush) => Ok(flush),
             Err(error) => {
-                self.post_wal_apply_poisoned = true;
+                self.post_wal_apply_poisoned
+                    .store(true, AtomicOrdering::Release);
                 Err(error)
             }
         }
@@ -2028,7 +2029,7 @@ impl GraphStore {
             residency_mode: self.residency_mode,
             auto_materialize_checkpoint_bytes: self.auto_materialize_checkpoint_bytes,
             max_out_of_core_delta_bytes: self.max_out_of_core_delta_bytes,
-            post_wal_apply_poisoned: self.post_wal_apply_poisoned,
+            post_wal_apply_poisoned: Arc::clone(&self.post_wal_apply_poisoned),
             integrity_poisoned: Arc::clone(&self.integrity_poisoned),
             relational_state: self.relational_state.clone(),
             append_state: self.append_state.clone(),
@@ -3134,6 +3135,51 @@ mod tests {
     use std::num::{NonZeroU64, NonZeroUsize};
 
     #[test]
+    fn user_snapshot_observes_fatal_single_and_batch_wal_errors_but_allows_recoverable_append() {
+        use super::{set_wal_append_failpoint, WalAppendFailure};
+        for batch in [false, true] {
+            for failure in [
+                WalAppendFailure::PartialWrite,
+                WalAppendFailure::Rollback,
+                WalAppendFailure::Sync,
+            ] {
+                // Given a snapshot captured before an append to a real durable store.
+                let path = unique_test_dir("snapshot_wal_failure");
+                let mut catalog = Catalog::default();
+                let mut store = GraphStore::open(&path, &mut catalog).unwrap();
+                let snapshot = store.snapshot();
+                let op = WalOp::CreateNode {
+                    id: NodeId(0),
+                    label: "Record".into(),
+                    properties: BTreeMap::new(),
+                };
+                // When an append reports either a reversible or an uncertain durable outcome.
+                set_wal_append_failpoint(failure);
+                let result = if batch {
+                    store.append_durable_wal_batch(std::slice::from_ref(&op))
+                } else {
+                    store.append_durable_wal_single(op.clone())
+                };
+                assert!(result.is_err());
+                let fatal = failure != WalAppendFailure::PartialWrite;
+                assert_eq!(
+                    matches!(result, Err(HawDBError::StorageIntegrity(_))),
+                    fatal
+                );
+                // Then old and current views share the fatal state without requiring publication.
+                assert_eq!(snapshot.ensure_usable().is_err(), fatal);
+                assert_eq!(store.ensure_usable().is_err(), fatal);
+                if !fatal {
+                    store.append_durable_wal_single(op).unwrap();
+                }
+                drop(snapshot);
+                drop(store);
+                fs::remove_dir_all(path).unwrap();
+            }
+        }
+    }
+
+    #[test]
     fn residency_facade_preserves_storage_type_identity() {
         assert_eq!(
             TypeId::of::<StorageResidencyReport>(),
@@ -3524,7 +3570,9 @@ mod tests {
         assert_eq!(store.durable.as_ref().unwrap().wal_bytes, wal_bytes);
 
         store.max_out_of_core_delta_bytes = None;
-        store.post_wal_apply_poisoned = true;
+        store
+            .post_wal_apply_poisoned
+            .store(true, std::sync::atomic::Ordering::Release);
         let error = store.append_durable_wal_single(rejected_op).unwrap_err();
         assert!(
             error.to_string().contains("reasons=integrity_poisoned"),

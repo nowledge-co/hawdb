@@ -760,7 +760,45 @@ pub struct DatabaseReadTransaction<S: crate::executor::ExecutionStore = GraphSto
     config: DatabaseConfig,
     projection_relational: Option<ProjectionRelationalReadSnapshot>,
     task_context: Option<hawdb_core::RuntimeTaskContext>,
-    _pin: ReaderPin,
+    _pin: Arc<ReaderPin>,
+}
+
+/// An immutable canonical view that can create independent query contexts.
+/// The shared pin survives publication replacement until the last query drops.
+#[derive(Debug)]
+pub(crate) struct DatabaseReadSnapshot(DatabaseReadTransaction);
+
+impl DatabaseReadSnapshot {
+    pub(crate) fn config(&self) -> &DatabaseConfig {
+        &self.0.config
+    }
+
+    pub(crate) fn ensure_usable(&self) -> Result<()> {
+        self.0.store.ensure_usable()
+    }
+
+    pub(crate) fn begin_read_transaction(
+        &self,
+        task_context: &hawdb_core::RuntimeTaskContext,
+    ) -> Result<DatabaseReadTransaction> {
+        self.ensure_usable()?;
+        let source = &self.0;
+        Ok(DatabaseReadTransaction {
+            catalog: source.catalog.clone(),
+            store: source.store.snapshot(),
+            published_read_view: source.published_read_view,
+            optimizer: source.optimizer.clone(),
+            plan_cache: SharedState::new(PlanCache::new(source.config.max_plan_cache_entries)),
+            relational_plan_template_cache: Arc::clone(&source.relational_plan_template_cache),
+            optimizer_planning_cache: Arc::clone(&source.optimizer_planning_cache),
+            slow_query_snapshot: source.slow_query_snapshot.clone(),
+            statement_summary_snapshot: source.statement_summary_snapshot.clone(),
+            config: source.config.clone(),
+            projection_relational: None,
+            task_context: Some(task_context.clone()),
+            _pin: Arc::clone(&source._pin),
+        })
+    }
 }
 
 #[derive(Debug)]
@@ -1241,6 +1279,10 @@ impl Database {
         }
     }
 
+    pub(crate) fn read_snapshot(&self) -> DatabaseReadSnapshot {
+        DatabaseReadSnapshot(self.begin_read_transaction())
+    }
+
     pub fn begin_read_transaction(&self) -> DatabaseReadTransaction {
         self.begin_read_transaction_inner(None, None)
     }
@@ -1310,7 +1352,7 @@ impl Database {
             config: self.config.clone(),
             projection_relational,
             task_context,
-            _pin: pin,
+            _pin: Arc::new(pin),
         }
     }
 
@@ -1829,6 +1871,10 @@ impl Database {
 
     pub fn storage_recovery_report(&self) -> StorageRecoveryReport {
         self.store.storage_recovery_report()
+    }
+
+    pub(crate) fn poison_on_storage_error<T>(&self, result: &Result<T>) {
+        self.store.poison_on_storage_error(result);
     }
 
     pub fn storage_handle_poisoned(&self) -> bool {
@@ -3595,7 +3641,9 @@ impl Database {
         &self,
         request: &SearchProjectionGraphDeltaRequest,
     ) -> Result<SearchProjectionDelta> {
-        search_projection_graph_delta_for(&self.catalog, &self.store, request)
+        let result = search_projection_graph_delta_for(&self.catalog, &self.store, request);
+        self.store.poison_on_storage_error(&result);
+        result
     }
 
     pub fn apply_search_projection_delta(
@@ -20153,6 +20201,16 @@ fn reject_locking_select_without_manager(
 }
 
 fn commit_database_transaction_state(
+    db: &mut Database,
+    state: &mut DatabaseTransactionState,
+    allow_stale_rebase: bool,
+) -> Result<TransactionCommitResult> {
+    let result = commit_database_transaction_state_inner(db, state, allow_stale_rebase);
+    db.store.poison_on_storage_error(&result);
+    result
+}
+
+fn commit_database_transaction_state_inner(
     db: &mut Database,
     state: &mut DatabaseTransactionState,
     allow_stale_rebase: bool,

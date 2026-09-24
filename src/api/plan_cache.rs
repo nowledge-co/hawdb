@@ -778,21 +778,29 @@ mod tests {
         assert!(refresh.snapshot_refreshed);
 
         // None preserves the legacy refresh-on-every-commit behavior.
-        store.create_node(&mut catalog, "T", node_props(10)).unwrap();
+        store
+            .create_node(&mut catalog, "T", node_props(10))
+            .unwrap();
         let refresh = cache.ensure_statistics(&catalog, &store, true, None);
         assert!(refresh.snapshot_refreshed);
 
         // Some(0) is identical to None.
-        store.create_node(&mut catalog, "T", node_props(11)).unwrap();
+        store
+            .create_node(&mut catalog, "T", node_props(11))
+            .unwrap();
         let refresh = cache.ensure_statistics(&catalog, &store, true, Some(0));
         assert!(refresh.snapshot_refreshed);
 
         // Some(1) tolerates exactly one commit: the first commit does not
         // refresh, the second does — distinguishable from None/Some(0).
-        store.create_node(&mut catalog, "T", node_props(12)).unwrap();
+        store
+            .create_node(&mut catalog, "T", node_props(12))
+            .unwrap();
         let refresh = cache.ensure_statistics(&catalog, &store, true, Some(1));
         assert!(!refresh.snapshot_refreshed);
-        store.create_node(&mut catalog, "T", node_props(13)).unwrap();
+        store
+            .create_node(&mut catalog, "T", node_props(13))
+            .unwrap();
         let refresh = cache.ensure_statistics(&catalog, &store, true, Some(1));
         assert!(refresh.snapshot_refreshed);
 
@@ -864,8 +872,7 @@ mod tests {
     fn schema_key_ignores_descriptor_lifecycle_states() {
         let mut catalog = Catalog::default();
         let table = catalog.get_or_create_table(TableKind::Node, "T");
-        let property =
-            catalog.get_or_create_property(table, "body", PropertyType::String, true);
+        let property = catalog.get_or_create_property(table, "body", PropertyType::String, true);
         let baseline = OptimizerSchemaKey::from_catalog(&catalog);
 
         let mut churned = catalog.clone();
