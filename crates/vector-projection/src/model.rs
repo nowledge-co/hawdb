@@ -17,12 +17,12 @@ use serde::{Deserialize, Serialize};
 
 pub const PROJECTION_PROTOCOL: &str = "hawdb-rabitq-projection";
 pub const PROJECTION_FORMAT_VERSION: u32 = 1;
-pub const DEFAULT_PROJECTION_BIT_WIDTH: u8 = 1;
+pub const DEFAULT_PROJECTION_BIT_WIDTH: u8 = 4;
 pub const PROJECTION_BIT_WIDTH: u8 = DEFAULT_PROJECTION_BIT_WIDTH;
 pub const PROJECTION_ALGORITHM: &str = "rabitq";
 pub const PROJECTION_TRANSFORM: &str = "signed_block_hadamard_v1";
-pub const PROJECTION_QUANTIZER: &str = "rabitq_sign_then_refinement_scalar_1bit_v1";
-const FOUR_BIT_PROJECTION_QUANTIZER: &str = "rabitq_sign_then_refinement_scalar_4bit_v1";
+pub const PROJECTION_QUANTIZER: &str = "rabitq_sign_then_refinement_scalar_4bit_v1";
+const ONE_BIT_PROJECTION_QUANTIZER: &str = "rabitq_sign_then_refinement_scalar_1bit_v1";
 pub const PROJECTION_CALIBRATION: &str = "none";
 pub const DEFAULT_TRANSFORM_SEED: u64 = 0x534b_4549_4e56_5134;
 pub const DEFAULT_SEGMENT_ROWS: usize = 1_024;
@@ -32,8 +32,8 @@ pub(crate) const BUILD_FIXED_WORKING_BYTES: usize = 1_024;
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[repr(u8)]
 pub enum RaBitQBitWidth {
-    #[default]
     One = 1,
+    #[default]
     Four = 4,
 }
 
@@ -44,8 +44,8 @@ impl RaBitQBitWidth {
 
     pub const fn quantizer(self) -> &'static str {
         match self {
-            Self::One => PROJECTION_QUANTIZER,
-            Self::Four => FOUR_BIT_PROJECTION_QUANTIZER,
+            Self::One => ONE_BIT_PROJECTION_QUANTIZER,
+            Self::Four => PROJECTION_QUANTIZER,
         }
     }
 
@@ -454,9 +454,9 @@ mod tests {
     use super::*;
 
     #[test]
-    fn default_bit_width_matches_faiss_standard_rabitq() {
-        assert_eq!(DEFAULT_PROJECTION_BIT_WIDTH, 1);
-        assert_eq!(RaBitQBitWidth::default(), RaBitQBitWidth::One);
+    fn default_bit_width_favors_recall_over_faiss_standard_rabitq() {
+        assert_eq!(DEFAULT_PROJECTION_BIT_WIDTH, 4);
+        assert_eq!(RaBitQBitWidth::default(), RaBitQBitWidth::Four);
         assert_eq!(RaBitQBitWidth::default().quantizer(), PROJECTION_QUANTIZER);
     }
 }

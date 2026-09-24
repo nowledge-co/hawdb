@@ -527,7 +527,9 @@ mod tests {
         let root = unique_test_dir("roundtrip");
         fs::create_dir_all(&root).unwrap();
         let artifact = root.join("search_rabitq.1.hawdb");
-        let config = ProjectionBuildConfig::new(8, ProjectionIdentity::new(1)).with_segment_rows(2);
+        let config = ProjectionBuildConfig::new(8, ProjectionIdentity::new(1))
+            .with_bit_width(RaBitQBitWidth::One)
+            .with_segment_rows(2);
         let mut writer = ProjectionWriter::create(&artifact, config).unwrap();
         writer
             .push(10, &[1.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0])
