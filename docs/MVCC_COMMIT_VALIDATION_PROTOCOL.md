@@ -228,3 +228,12 @@ second admission. The queue retains an independent owner after callback
 consumption. Plain `begin_transaction` remains caller-managed. See the
 [lease invariant and scope](tla/TRANSACTION_ADMISSION_LEASE_PROOF.md); this does
 not complete whole-transaction fairness or total workspace memory accounting.
+
+The optimistic admission model also retains acknowledgement evidence across
+crash and allows complete uncertain WAL records to survive a failed group sync.
+Its prefix invariant does not equate a returned storage error with rollback.
+The two-writer failure regression checks exact serial prefixes, unchanged WAL
+on poisoned-handle rejection, atomic two-node batches, strict torn-tail/LSN
+rejection and fresh-handle commits after reopen. Filesystem/apply/checkpoint
+composition remains outside that finite model; see the updated
+[shared-durability proof](tla/OPTIMISTIC_COMMIT_ADMISSION_PROOF.md).

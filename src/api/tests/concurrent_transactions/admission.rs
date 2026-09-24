@@ -278,3 +278,261 @@ fn admitted_transaction_read_result_budget_is_propagated_to_both_languages() {
         assert_eq!(governor.snapshot().active_foreground_tasks, 0);
     }
 }
+
+#[test]
+fn admitted_group_failure_preserves_conflicts_and_recovers_only_complete_serial_prefixes() {
+    use hawdb_storage::wal::{WalCursorEvent, WalOp, WalOpenOutcome, WalRecordCursor};
+
+    for overlap in [false, true] {
+        let path = super::super::unique_test_dir("admitted_group_failure_prefix");
+        let mut database = Database::open(&path).unwrap();
+        for id in 1..=4 {
+            database
+                .query(&format!("CREATE (:RecoveryPair {{id: {id}, value: 0}})"))
+                .unwrap();
+        }
+        database.checkpoint().unwrap();
+        database
+            .query("CREATE (:AcknowledgedBeforeFailure {value: 99})")
+            .unwrap();
+        let acknowledged_bytes = std::fs::metadata(super::super::active_wal_path(&path))
+            .unwrap()
+            .len();
+        let db = ConcurrentDatabase::new_with_wal_group_commit(
+            database,
+            WalGroupCommitConfig::benchmark_candidate(
+                NonZeroUsize::new(2).unwrap(),
+                NonZeroU64::new(1024 * 1024).unwrap(),
+                Duration::ZERO,
+            )
+            .unwrap(),
+        );
+        let epoch = db.commit_epoch().unwrap();
+        let governor = governor();
+        let query = "MATCH (n:RecoveryPair) RETURN n.id AS id, n.value AS value ORDER BY id";
+        let mut old_reader = db.begin_read_transaction().unwrap();
+        let gate = Arc::new((Mutex::new(false), Condvar::new()));
+        db.set_group_commit_enqueue_gate(gate.clone()).unwrap();
+        // Stage both workspaces before either can publish. Each transaction
+        // mutates two records, so recovery must not expose half of a pair.
+        let transactions = (1..=2).map(|writer| {
+            let mut tx = db.begin_admitted_transaction(ConcurrentTransactionOptions::optimistic(), governor.try_admit(request()).unwrap(), RuntimeTaskContext::default()).unwrap();
+            let first = if overlap { 1 } else { 2 * writer - 1 };
+            tx.query_with_params("MATCH (n:RecoveryPair) WHERE n.id = $first OR n.id = $second SET n.value = $value", &BTreeMap::from([
+                ("first".into(), Value::Int(first)), ("second".into(), Value::Int(first + 1)), ("value".into(), Value::Int(writer)),
+            ])).unwrap();
+            tx
+        }).collect::<Vec<_>>();
+        let handles = transactions
+            .into_iter()
+            .map(|tx| {
+                std::thread::spawn(move || {
+                    // The failpoint is thread-local. Arm each possible group leader.
+                    crate::store::set_wal_group_sync_failpoint(true);
+                    let result = tx.commit();
+                    crate::store::set_wal_group_sync_failpoint(false);
+                    result
+                })
+            })
+            .collect::<Vec<_>>();
+        let deadline = std::time::Instant::now() + Duration::from_secs(5);
+        while db.wal_group_commit_snapshot().unwrap().submitted_commits < 2
+            && std::time::Instant::now() < deadline
+        {
+            std::thread::sleep(Duration::from_millis(1));
+        }
+        let queued = db.wal_group_commit_snapshot().unwrap().submitted_commits;
+        let reserved = governor.snapshot().active_foreground_tasks;
+        release_autocommit_reads(&gate);
+        let errors = handles
+            .into_iter()
+            .map(|h| h.join().unwrap().unwrap_err())
+            .collect::<Vec<_>>();
+        assert_eq!(queued, 2);
+        assert_eq!(reserved, 2);
+        let accepted = if overlap { 1 } else { 2 };
+        assert_eq!(
+            errors
+                .iter()
+                .filter(|e| matches!(e, HawDBError::StorageIntegrity(_)))
+                .count(),
+            accepted
+        );
+        assert_eq!(
+            errors
+                .iter()
+                .filter(|e| e.is_retryable_transaction_conflict())
+                .count(),
+            2 - accepted
+        );
+        for error in errors
+            .iter()
+            .filter(|e| matches!(e, HawDBError::StorageIntegrity(_)))
+        {
+            assert!(error
+                .to_string()
+                .contains("WAL group durability barrier failed"));
+        }
+        assert_eq!(governor.snapshot().active_foreground_tasks, 0);
+        assert_eq!(governor.snapshot().admitted_memory_bytes, 0);
+        let metrics = db.wal_group_commit_snapshot().unwrap();
+        assert_eq!(metrics.group_count, 1);
+        assert_eq!(metrics.completed_commits, 0);
+        assert_eq!(metrics.shared_sync_count, 0);
+        let wal_path = super::super::active_wal_path(&path);
+        let full_wal = std::fs::read(&wal_path).unwrap();
+        assert!(db
+            .query(query)
+            .unwrap_err()
+            .to_string()
+            .contains("close and reopen"));
+        assert!(old_reader
+            .query(query)
+            .unwrap_err()
+            .to_string()
+            .contains("close and reopen"));
+        assert!(db
+            .query("CREATE (:MustNotPublish)")
+            .unwrap_err()
+            .to_string()
+            .contains("close and reopen"));
+        assert!(db
+            .checkpoint()
+            .unwrap_err()
+            .to_string()
+            .contains("close and reopen"));
+        assert_eq!(std::fs::read(&wal_path).unwrap(), full_wal);
+        drop(old_reader);
+        drop(db);
+
+        let WalOpenOutcome::Cursor(mut cursor) = WalRecordCursor::open(&wal_path, None).unwrap()
+        else {
+            panic!("expected a valid WAL header")
+        };
+        let mut records = Vec::new();
+        let mut record_writers = Vec::new();
+        let mut acknowledged_records = 0;
+        loop {
+            match cursor.next().unwrap() {
+                WalCursorEvent::Entry {
+                    start_offset,
+                    encoded_len,
+                    entry,
+                    ..
+                } => {
+                    if start_offset < acknowledged_bytes {
+                        acknowledged_records += 1;
+                        continue;
+                    }
+                    let WalOp::Batch(ops) = entry.op else {
+                        panic!("expected atomic mutation batch")
+                    };
+                    let values = ops
+                        .iter()
+                        .filter_map(|op| match op {
+                            WalOp::SetNodeProperty {
+                                property,
+                                value: Value::Int(writer),
+                                ..
+                            } if property == "value" => Some(*writer),
+                            _ => None,
+                        })
+                        .collect::<Vec<_>>();
+                    assert_eq!(values.len(), 2);
+                    assert_eq!(values[0], values[1]);
+                    assert!((1..=2).contains(&values[0]));
+                    record_writers.push(values[0]);
+                    records.push((start_offset as usize, encoded_len as usize));
+                }
+                WalCursorEvent::Eof => break,
+                _ => panic!("failed sync must retain complete written frames in this fixture"),
+            }
+        }
+        drop(cursor);
+        assert_eq!(acknowledged_records, 1);
+        assert_eq!(records.len(), accepted);
+        assert_eq!(records[0].0 as u64, acknowledged_bytes);
+        if overlap {
+            let winner = errors
+                .iter()
+                .position(|e| matches!(e, HawDBError::StorageIntegrity(_)))
+                .unwrap() as i64
+                + 1;
+            assert_eq!(record_writers, vec![winner]);
+        }
+        // Enumerate every readable surviving prefix of the uncertain group.
+        // These explicit cuts simulate persisted bytes, not a power-loss test.
+        for retained in 0..=records.len() {
+            let end = if retained == 0 {
+                records[0].0
+            } else {
+                let (start, len) = records[retained - 1];
+                start + len
+            };
+            std::fs::write(&wal_path, &full_wal[..end]).unwrap();
+            let mut reopened = Database::open(&path).unwrap();
+            assert_eq!(reopened.commit_epoch(), epoch + retained as u64);
+            let rows = reopened.query(query).unwrap().rows;
+            assert_eq!(rows.len(), 4);
+            assert_eq!(rows[0]["value"], rows[1]["value"]);
+            assert_eq!(rows[2]["value"], rows[3]["value"]);
+            assert_eq!(
+                rows.iter()
+                    .filter(|row| row["value"] != Value::Int(0))
+                    .count(),
+                2 * retained
+            );
+            let mut expected = vec![Value::Int(0); 4];
+            for writer in &record_writers[..retained] {
+                let index = if overlap {
+                    0
+                } else {
+                    2 * (*writer as usize - 1)
+                };
+                expected[index] = Value::Int(*writer);
+                expected[index + 1] = Value::Int(*writer);
+            }
+            assert_eq!(
+                rows.iter()
+                    .map(|row| row["value"].clone())
+                    .collect::<Vec<_>>(),
+                expected
+            );
+            let acknowledged = reopened
+                .query("MATCH (n:AcknowledgedBeforeFailure) RETURN n.value AS value")
+                .unwrap();
+            assert_eq!(acknowledged.rows.len(), 1);
+            assert_eq!(acknowledged.rows[0]["value"], Value::Int(99));
+            drop(reopened);
+        }
+        // A partially surviving frame must fail closed without automatic repair.
+        for (start, len) in &records {
+            let torn = &full_wal[..start + len / 2];
+            std::fs::write(&wal_path, torn).unwrap();
+            assert!(Database::open(&path)
+                .unwrap_err()
+                .to_string()
+                .contains("strict WAL recovery rejected torn tail"));
+            assert_eq!(std::fs::read(&wal_path).unwrap(), torn);
+        }
+        if records.len() == 2 {
+            // Valid individual frames in the wrong order are not a serial
+            // prefix. Recovery must reject their LSN order without repair.
+            let (first_start, first_len) = records[0];
+            let (second_start, second_len) = records[1];
+            let mut reordered = full_wal[..first_start].to_vec();
+            reordered.extend_from_slice(&full_wal[second_start..second_start + second_len]);
+            reordered.extend_from_slice(&full_wal[first_start..first_start + first_len]);
+            std::fs::write(&wal_path, &reordered).unwrap();
+            let error = Database::open(&path).unwrap_err().to_string();
+            assert!(error.contains("LSN") || error.contains("lsn"), "{error}");
+            assert_eq!(std::fs::read(&wal_path).unwrap(), reordered);
+        }
+        std::fs::write(&wal_path, &full_wal).unwrap();
+        let mut reopened = Database::open(&path).unwrap();
+        reopened.query("CREATE (:AfterReopen)").unwrap();
+        assert_eq!(reopened.commit_epoch(), epoch + accepted as u64 + 1);
+        drop(reopened);
+        std::fs::remove_dir_all(path).unwrap();
+    }
+}

@@ -1394,9 +1394,12 @@ controls, reachability probes, and the limits of the finite abstraction. The
 older transaction model and its recorded results remain unchanged. The
 [`HawDBOptimisticCommitAdmission.tla`](HawDBOptimisticCommitAdmission.tla)
 model separately checks concurrent optimistic admission, exclusion against
-ordinary locks, permit lifetime, within-group conflict validation and durable
-acknowledgement. Its [proof](OPTIMISTIC_COMMIT_ADMISSION_PROOF.md) documents
-four negative controls and the limits of composition with the older models. The
+ordinary locks, permit lifetime, within-group conflict validation, sync-failure
+poisoning and acknowledgement retention across terminal crash. Recovery can
+retain an unacknowledged complete suffix but must preserve the original serial
+prefix and every acknowledged record. Its
+[proof](OPTIMISTIC_COMMIT_ADMISSION_PROOF.md) documents eight negative controls,
+four reachability probes and the limits of composition with the older models. The
 [`HawDBLockWaitFairness.tla`](HawDBLockWaitFairness.tla) model checks conflict-aware
 queue order, compatible bypass and eventual service under explicit weak-fairness
 and owner-release assumptions. The [queue/graph proof](LOCK_WAIT_FAIRNESS_PROOF.md)

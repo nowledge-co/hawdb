@@ -73,3 +73,10 @@ Not every private COW allocation is charged. Hosts can retain returned results
 after the transaction releases its permit, and the API does not cap host-created
 threads. Callers must size mutation/result reservations appropriately. Plain
 transactions and autocommit are not implicitly admitted by this new entrypoint.
+
+The grouped-failure integration regression additionally verifies that two
+admitted transactions both refund their reservations when the shared barrier
+fails, including a batch with one validation conflict and one uncertain write.
+The separate [optimistic admission model](OPTIMISTIC_COMMIT_ADMISSION_PROOF.md)
+now covers that failure's acknowledgement and recovered-prefix obligations;
+this does not merge the two models into a full resource/recovery refinement.
