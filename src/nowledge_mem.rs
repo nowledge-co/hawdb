@@ -2139,9 +2139,9 @@ impl crate::executor::ExternalReadOperator for SearchProjectionExternalReadOpera
     }
 }
 
-fn vector_plan_top_k(plan: &hawdb_plan::VectorPhysicalPlan) -> Result<usize> {
+fn vector_plan_top_k(plan: &hawdb_plan_cypher::VectorPhysicalPlan) -> Result<usize> {
     match plan {
-        hawdb_plan::VectorPhysicalPlan::TopK { limit, .. } => Ok(*limit),
+        hawdb_plan_cypher::VectorPhysicalPlan::TopK { limit, .. } => Ok(*limit),
         _ => Err(HawDBError::Execution(
             "vector seed physical plan is missing TopK".to_string(),
         )),
@@ -2149,14 +2149,16 @@ fn vector_plan_top_k(plan: &hawdb_plan::VectorPhysicalPlan) -> Result<usize> {
 }
 
 fn vector_plan_candidate_source(
-    plan: &hawdb_plan::VectorPhysicalPlan,
-) -> Result<hawdb_plan::VectorCandidateSource> {
+    plan: &hawdb_plan_cypher::VectorPhysicalPlan,
+) -> Result<hawdb_plan_cypher::VectorCandidateSource> {
     match plan {
-        hawdb_plan::VectorPhysicalPlan::VectorCandidateScan { source, .. } => Ok(*source),
-        hawdb_plan::VectorPhysicalPlan::ResidualFilter { input, .. }
-        | hawdb_plan::VectorPhysicalPlan::RawVectorRerank { input, .. }
-        | hawdb_plan::VectorPhysicalPlan::TopK { input, .. } => vector_plan_candidate_source(input),
-        hawdb_plan::VectorPhysicalPlan::Filter { .. } => Err(HawDBError::Execution(
+        hawdb_plan_cypher::VectorPhysicalPlan::VectorCandidateScan { source, .. } => Ok(*source),
+        hawdb_plan_cypher::VectorPhysicalPlan::ResidualFilter { input, .. }
+        | hawdb_plan_cypher::VectorPhysicalPlan::RawVectorRerank { input, .. }
+        | hawdb_plan_cypher::VectorPhysicalPlan::TopK { input, .. } => {
+            vector_plan_candidate_source(input)
+        }
+        hawdb_plan_cypher::VectorPhysicalPlan::Filter { .. } => Err(HawDBError::Execution(
             "vector seed physical plan is missing VectorCandidateScan".to_string(),
         )),
     }
@@ -10520,11 +10522,11 @@ mod tests {
         );
         assert_eq!(
             output.report.vector_execution_reports[0].candidate_source,
-            hawdb_plan::VectorCandidateSource::Scalar
+            hawdb_plan_cypher::VectorCandidateSource::Scalar
         );
         assert_eq!(
             output.report.vector_execution_reports[0].backend_selection_reason,
-            Some(hawdb_plan::VectorBackendSelectionReason::CompressionDisabled)
+            Some(hawdb_plan_cypher::VectorBackendSelectionReason::CompressionDisabled)
         );
         assert_eq!(
             output.report.vector_execution_reports[0].estimated_raw_vector_bytes,

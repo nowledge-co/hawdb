@@ -458,7 +458,7 @@
     },
     {
       "path": "crates/sql/src/pgq/lowering/tests.rs",
-      "sha256": "f0bc02c99a0131e04b00e97c583259a1ca0a1977c8b041d813a820fa9fa2d222",
+      "sha256": "60ff3df198db0c07cbc9e1d163553c9c61e2c00f5673f51893499e42a871b81c",
       "case_ids": [
         "case-0125",
         "case-0126",

@@ -16,7 +16,9 @@ use super::super::{
     costing::{estimate_physical_plan_cost, estimate_physical_plan_cost_breakdown},
     OptimizerCatalog, OptimizerCatalogIndexes, OptimizerCatalogStatistics,
 };
-use hawdb_plan::{PhysicalPlan, Predicate, VectorExecutionResourceProfile, VectorPhysicalPlan};
+use hawdb_plan_cypher::{
+    PhysicalPlan, Predicate, VectorExecutionResourceProfile, VectorPhysicalPlan,
+};
 use std::collections::BTreeMap;
 
 fn assert_scalar_cost_matches_breakdown(plan: &PhysicalPlan, catalog: &OptimizerCatalog) {

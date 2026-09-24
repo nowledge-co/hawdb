@@ -17,7 +17,7 @@ use super::super::{
     OptimizerCatalogIndexes, OptimizerCatalogStatistics,
 };
 use crate::OptimizerConfig;
-use hawdb_plan::{
+use hawdb_plan_cypher::{
     LogicalPlan, NodeProjectionAccess, PhysicalPlan, Predicate, Projection, ProjectionExpression,
 };
 use std::collections::BTreeMap;

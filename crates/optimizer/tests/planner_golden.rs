@@ -18,7 +18,7 @@ use hawdb_optimizer::{
     OptimizerCatalogIndexes, OptimizerCatalogStatistics, OptimizerConfig, OptimizerContext,
     QueryFamily, ResourceHints,
 };
-use hawdb_plan::{plan, VectorCandidateSource, VectorSearchLogicalPlan};
+use hawdb_plan_cypher::{plan, VectorCandidateSource, VectorSearchLogicalPlan};
 
 const QUERY: &str = "MATCH (m:Memory) WHERE m.id = 7 RETURN m.title AS title";
 const EXPECTED: &str = include_str!("golden/indexed_memory_lookup.golden");
@@ -96,9 +96,9 @@ fn filtered_vector_pipeline_matches_planner_golden() {
 
 fn render_planner_golden(
     query: &str,
-    logical: &hawdb_plan::LogicalPlan,
-    lowering_input: &hawdb_plan::LogicalPlan,
-    physical: &hawdb_plan::PhysicalPlan,
+    logical: &hawdb_plan_cypher::LogicalPlan,
+    lowering_input: &hawdb_plan_cypher::LogicalPlan,
+    physical: &hawdb_plan_cypher::PhysicalPlan,
     trace: &hawdb_optimizer::OptimizerTrace,
 ) -> String {
     let stages = trace

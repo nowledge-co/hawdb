@@ -22,7 +22,7 @@ use super::{
     pipeline_memory_report_value, scan_pruning_report_value, vector_execution_report_value,
 };
 use hawdb_core::{LabelId, RelTypeId, Value};
-use hawdb_plan::{VectorBackendSelectionReason, VectorCandidateSource};
+use hawdb_plan_cypher::{VectorBackendSelectionReason, VectorCandidateSource};
 use hawdb_storage::{ScanPruningReport, ScanPruningStrategy, ScanPruningTargetKind};
 
 // These complete field inventories pin the old facade output, including fields

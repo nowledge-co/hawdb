@@ -37,7 +37,7 @@ pub(super) fn stream_composite_node_seek_batches(
 pub(super) fn stream_composite_node_range_seek_batches(
     variable: &str,
     label: &str,
-    seek: &hawdb_plan::CompositeRangeSeek,
+    seek: &hawdb_plan_cypher::CompositeRangeSeek,
     context: BatchReadContext<'_>,
     execution_limit: ExecutionLimit,
     emit: &mut dyn FnMut(BindingBatch) -> Result<BatchControl>,

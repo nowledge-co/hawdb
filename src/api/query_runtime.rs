@@ -281,8 +281,8 @@ impl RuntimePlanningContext<'_> {
                     .total_bytes
                 };
                 let mut required_io_slots = 0;
-                hawdb_plan::visit_plan(&optimized.physical_plan, &mut |node| {
-                    if node.kind() == hawdb_plan::PhysicalPlanKind::SourceSegmentScan {
+                hawdb_plan_cypher::visit_plan(&optimized.physical_plan, &mut |node| {
+                    if node.kind() == hawdb_plan_cypher::PhysicalPlanKind::SourceSegmentScan {
                         required_io_slots =
                             required_io_slots.max(crate::executor::SOURCE_SEGMENT_SCAN_IO_DEPTH);
                     }

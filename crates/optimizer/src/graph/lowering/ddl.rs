@@ -13,7 +13,7 @@
 // limitations under the License.
 
 use super::super::PhysicalPlan;
-use hawdb_plan::LogicalPlan;
+use hawdb_plan_cypher::LogicalPlan;
 
 pub(super) fn lower(logical: &LogicalPlan) -> Option<PhysicalPlan> {
     match logical {

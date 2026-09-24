@@ -13,7 +13,7 @@
 // limitations under the License.
 
 use super::super::{OptimizerCatalog, PhysicalPlan};
-use hawdb_plan::NodeProjectionAccess;
+use hawdb_plan_cypher::NodeProjectionAccess;
 use std::collections::{BTreeMap, BTreeSet};
 
 #[cfg(test)]
@@ -105,8 +105,8 @@ impl<'a> PlanBindings<'a> {
                 }
                 for step in &program.steps {
                     let node = match step {
-                        hawdb_plan::GraphMatchStep::Node(node) => node,
-                        hawdb_plan::GraphMatchStep::Expand {
+                        hawdb_plan_cypher::GraphMatchStep::Node(node) => node,
+                        hawdb_plan_cypher::GraphMatchStep::Expand {
                             target,
                             relationship,
                             rel_type,

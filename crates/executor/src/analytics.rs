@@ -27,7 +27,7 @@ use hawdb_analytics::{
     ProjectionMemoryBudget,
 };
 use hawdb_core::{Catalog, HawDBError, Result, RuntimeTaskContext, Value};
-use hawdb_plan::{GraphAlgorithmKind, Predicate};
+use hawdb_plan_cypher::{GraphAlgorithmKind, Predicate};
 use hawdb_storage::{NodeRecord, RelRecord};
 use std::collections::BTreeMap;
 
@@ -45,7 +45,7 @@ pub struct GraphAlgorithmContext<'a> {
 pub struct GraphAlgorithmSpec<'a> {
     pub algorithm: &'a GraphAlgorithmKind,
     pub graph_name: &'a str,
-    pub options: &'a hawdb_plan::GraphAlgorithmOptions,
+    pub options: &'a hawdb_plan_cypher::GraphAlgorithmOptions,
     pub score_column: &'a str,
     pub node_visibility_predicate: &'a Option<Predicate>,
 }

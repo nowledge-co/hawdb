@@ -22,7 +22,7 @@ use crate::{
     QueryMemoryLedger,
 };
 use hawdb_core::{Catalog, HawDBError, Result, RuntimeTaskContext};
-use hawdb_plan::PhysicalPlan;
+use hawdb_plan_cypher::PhysicalPlan;
 use std::num::NonZeroUsize;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -37,7 +37,7 @@ pub type BindingBatch = Vec<Binding>;
 /// propagating consumer stop/error without emitting subsequent batches.
 ///
 /// Generic over the plan-node type `P` so a caller that does not walk a
-/// `hawdb_plan::PhysicalPlan` tree (e.g. `hawdb-relational`, which drives its
+/// `hawdb_plan_cypher::PhysicalPlan` tree (e.g. `hawdb-relational`, which drives its
 /// own row sources) can implement this against a zero-sized marker instead of
 /// fabricating a placeholder graph plan node. Graph call sites are unaffected
 /// by the default.

@@ -13,7 +13,7 @@
 // limitations under the License.
 
 use hawdb_core::{RelationshipDirection, Value};
-use hawdb_plan::*;
+use hawdb_plan_cypher::*;
 use std::collections::BTreeMap;
 
 // Explicit expected capability values are independent of the production classifier.
@@ -58,28 +58,28 @@ pub(super) fn operators() -> Vec<(PhysicalPlan, bool)> {
         ),
         (
             PhysicalPlan::CreateProperty {
-                table_kind: hawdb_plan::SchemaTableKind::Node,
+                table_kind: hawdb_plan_cypher::SchemaTableKind::Node,
                 table: String::new(),
                 property: String::new(),
-                value_type: hawdb_plan::SchemaPropertyType::Any,
+                value_type: hawdb_plan_cypher::SchemaPropertyType::Any,
                 nullable: false,
             },
             false,
         ),
         (
             PhysicalPlan::AlterTableState {
-                table_kind: hawdb_plan::SchemaTableKind::Node,
+                table_kind: hawdb_plan_cypher::SchemaTableKind::Node,
                 table: String::new(),
-                state: hawdb_plan::SchemaObjectState::Public,
+                state: hawdb_plan_cypher::SchemaObjectState::Public,
             },
             false,
         ),
         (
             PhysicalPlan::AlterPropertyState {
-                table_kind: hawdb_plan::SchemaTableKind::Node,
+                table_kind: hawdb_plan_cypher::SchemaTableKind::Node,
                 table: String::new(),
                 property: String::new(),
-                state: hawdb_plan::SchemaObjectState::Public,
+                state: hawdb_plan_cypher::SchemaObjectState::Public,
             },
             false,
         ),
@@ -151,7 +151,7 @@ pub(super) fn operators() -> Vec<(PhysicalPlan, bool)> {
             PhysicalPlan::GraphAlgorithm {
                 algorithm: GraphAlgorithmKind::PageRank,
                 graph_name: String::new(),
-                options: hawdb_plan::GraphAlgorithmOptions {
+                options: hawdb_plan_cypher::GraphAlgorithmOptions {
                     damping: None,
                     max_iterations: Some(1),
                     max_levels: Some(1),
@@ -166,8 +166,8 @@ pub(super) fn operators() -> Vec<(PhysicalPlan, bool)> {
                 embedding_parameter: String::new(),
                 output_external_id: false,
                 metadata_filters: BTreeMap::new(),
-                vector_plan: hawdb_plan::VectorPhysicalPlan::Filter { fields: Vec::new() },
-                resource_profile: hawdb_plan::VectorExecutionResourceProfile {
+                vector_plan: hawdb_plan_cypher::VectorPhysicalPlan::Filter { fields: Vec::new() },
+                resource_profile: hawdb_plan_cypher::VectorExecutionResourceProfile {
                     priority: 0,
                     max_parallelism: 1,
                     max_working_memory_bytes: None,
@@ -406,7 +406,7 @@ pub(super) fn operators() -> Vec<(PhysicalPlan, bool)> {
             PhysicalPlan::NodeProjectionScanExec {
                 variable: String::new(),
                 label: String::new(),
-                access: hawdb_plan::NodeProjectionAccess::LabelScan,
+                access: hawdb_plan_cypher::NodeProjectionAccess::LabelScan,
                 required_properties: Vec::new(),
                 predicate: None,
                 items: Vec::new(),
@@ -491,7 +491,7 @@ pub(super) fn operators() -> Vec<(PhysicalPlan, bool)> {
             PhysicalPlan::IndexNodeCompositeRangeSeek {
                 variable: String::new(),
                 label: String::new(),
-                seek: hawdb_plan::CompositeRangeSeek {
+                seek: hawdb_plan_cypher::CompositeRangeSeek {
                     index_properties: vec!["id".to_string()],
                     equality_prefix: Vec::new(),
                     range_property: "id".to_string(),

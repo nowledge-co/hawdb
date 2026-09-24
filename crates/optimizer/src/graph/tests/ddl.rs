@@ -14,7 +14,7 @@
 
 use crate::CascadesOptimizer;
 use hawdb_core::HawDBError;
-use hawdb_plan::{
+use hawdb_plan_cypher::{
     LogicalPlan, PhysicalPlan, SchemaObjectState, SchemaPropertyType, SchemaTableKind,
 };
 
@@ -78,7 +78,7 @@ fn assert_pipeline(
     counts: &mut Counts,
 ) {
     let statement = hawdb_cypher::parse(input).expect("valid DDL");
-    let logical = hawdb_plan::plan(&statement).expect("valid DDL plan");
+    let logical = hawdb_plan_cypher::plan(&statement).expect("valid DDL plan");
     assert_eq!(logical, expected_logical, "logical DDL: {input}");
     let physical = CascadesOptimizer::default().optimize(&logical);
     assert_eq!(physical, expected_physical, "physical DDL: {input}");

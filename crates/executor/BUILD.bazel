@@ -18,7 +18,7 @@ rust_library(
         "//crates/analytics:hawdb_analytics",
         "//crates/core:hawdb_core",
         "//crates/ddl:hawdb_ddl",
-        "//crates/plan:hawdb_plan",
+        "//crates/plan-cypher:hawdb_plan_cypher",
         "//crates/qos:hawdb_qos",
         "//crates/storage:hawdb_storage",
     ],

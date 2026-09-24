@@ -17,7 +17,7 @@ use crate::{
     PhysicalProperties, PlanCost, PlanCostBreakdown, ScanPruningSupport, StageStats,
     VectorPrecision,
 };
-use hawdb_plan::PhysicalPlan;
+use hawdb_plan_cypher::PhysicalPlan;
 
 mod access_path;
 mod cardinality;

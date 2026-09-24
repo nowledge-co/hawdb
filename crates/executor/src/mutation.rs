@@ -19,7 +19,7 @@
 
 use hawdb_core::{HawDBError, Result};
 use hawdb_ddl::{object_state_to_core, property_type_to_core, table_kind_to_core};
-use hawdb_plan::{PhysicalPlan, RelationshipOnCreateValue, SetValue};
+use hawdb_plan_cypher::{PhysicalPlan, RelationshipOnCreateValue, SetValue};
 use hawdb_storage::{
     ConnectedNodesCreate, GraphMutation, MatchedRelationshipCopyMerge, MatchedRelationshipCreate,
     MatchedRelationshipMerge, MatchedRelationshipRetargetMerge,
@@ -553,11 +553,12 @@ pub fn mutation_command(plan: &PhysicalPlan) -> Result<Option<GraphMutation>> {
 pub fn is_mutation_plan(plan: &PhysicalPlan) -> Result<bool> {
     Ok(matches!(
         plan.class(),
-        hawdb_plan::PhysicalPlanClass::Schema | hawdb_plan::PhysicalPlanClass::Mutation
+        hawdb_plan_cypher::PhysicalPlanClass::Schema
+            | hawdb_plan_cypher::PhysicalPlanClass::Mutation
     ))
 }
 
-pub fn node_set_assignment(assignment: &hawdb_plan::SetAssignment) -> NodeSetAssignment {
+pub fn node_set_assignment(assignment: &hawdb_plan_cypher::SetAssignment) -> NodeSetAssignment {
     NodeSetAssignment {
         property: assignment.property.clone(),
         value: node_set_value(&assignment.value),

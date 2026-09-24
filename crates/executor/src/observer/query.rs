@@ -16,7 +16,7 @@
 
 use super::ExecutionObserver;
 use crate::binding::Binding;
-use hawdb_plan::{visit_plan_with_ids, PhysicalOperatorId, PhysicalPlan};
+use hawdb_plan_cypher::{visit_plan_with_ids, PhysicalOperatorId, PhysicalPlan};
 use hawdb_storage::ScanPruningReport;
 use std::cell::RefCell;
 use std::collections::{BTreeMap, BTreeSet};

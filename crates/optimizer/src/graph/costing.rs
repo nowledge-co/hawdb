@@ -19,7 +19,7 @@ use super::cardinality::{
 use super::{OptimizerCatalog, PhysicalPlan, PlanCost, PlanCostBreakdown};
 use hawdb_core::Value;
 use hawdb_cypher::RelationshipDirection;
-use hawdb_plan::{
+use hawdb_plan_cypher::{
     CompositeRangeSeek, ExactPropertySeekBranch, NodeProjectionAccess, PlanChildren,
     RelationshipCountLeg,
 };
@@ -331,8 +331,8 @@ fn estimate_local_operator_cost(
             let mut bound = std::collections::BTreeSet::new();
             for step in &program.steps {
                 let (node, expanding) = match step {
-                    hawdb_plan::GraphMatchStep::Node(node) => (node, false),
-                    hawdb_plan::GraphMatchStep::Expand { target, .. } => (target, true),
+                    hawdb_plan_cypher::GraphMatchStep::Node(node) => (node, false),
+                    hawdb_plan_cypher::GraphMatchStep::Expand { target, .. } => (target, true),
                 };
                 let newly_bound =
                     bound.insert(&node.variable) && program.introduced.contains(&node.variable);
@@ -571,9 +571,9 @@ fn estimate_local_operator_cost(
     }
 }
 
-fn vector_top_k(plan: &hawdb_plan::VectorPhysicalPlan) -> usize {
+fn vector_top_k(plan: &hawdb_plan_cypher::VectorPhysicalPlan) -> usize {
     match plan {
-        hawdb_plan::VectorPhysicalPlan::TopK { limit, .. } => *limit,
+        hawdb_plan_cypher::VectorPhysicalPlan::TopK { limit, .. } => *limit,
         _ => 1,
     }
 }

@@ -1,7 +1,7 @@
 use super::*;
 
 fn plan(query: &str, parameters: &BTreeMap<String, Value>) -> PhysicalPlan {
-    let logical = hawdb_plan::plan_pipeline_query(query, parameters).unwrap();
+    let logical = hawdb_plan_cypher::plan_pipeline_query(query, parameters).unwrap();
     hawdb_optimizer::CascadesOptimizer::default().optimize(&logical)
 }
 
@@ -29,7 +29,7 @@ impl ExternalReadOperator for Seed {
             report: hawdb_executor::VectorExecutionReport {
                 backend: hawdb_executor::VectorExecutionBackend::ScalarFlat,
                 compression_mode: hawdb_executor::VectorCompressionMode::Disabled,
-                candidate_source: hawdb_plan::VectorCandidateSource::Scalar,
+                candidate_source: hawdb_plan_cypher::VectorCandidateSource::Scalar,
                 backend_selection_reason: None,
                 estimated_raw_vector_bytes: None,
                 filter_selectivity_per_million: None,

@@ -15,7 +15,7 @@
 //! Storage-neutral graph read contract used by execution operators.
 
 use hawdb_core::{Catalog, LabelId, RelTypeId, Result};
-use hawdb_plan::{CompositeRangeSeek, NodeProjectionAccess};
+use hawdb_plan_cypher::{CompositeRangeSeek, NodeProjectionAccess};
 use hawdb_storage::{
     AdjacencyDirection, GraphMutation, MutationLimits, MutationSummary, NodeId, NodeRecord,
     NodeSetAssignment, ProjectedGraphDefinition, ProjectedNodeRecord, PropertyFilter, RelRecord,

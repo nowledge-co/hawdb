@@ -22,7 +22,7 @@ struct RecursiveBindingBatchSource<'a> {
 }
 
 pub(super) fn stream_graph_match_batches(
-    program: &hawdb_plan::GraphMatchProgram,
+    program: &hawdb_plan_cypher::GraphMatchProgram,
     input: Option<&PhysicalPlan>,
     context: BatchReadContext<'_>,
     execution_limit: ExecutionLimit,

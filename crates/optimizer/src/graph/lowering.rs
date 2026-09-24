@@ -33,7 +33,7 @@ use crate::{
 };
 use hawdb_core::Value;
 use hawdb_cypher::RelationshipDirection;
-use hawdb_plan::{
+use hawdb_plan_cypher::{
     AggregateFunction, AggregateTarget, GraphExpansionBudget, LogicalPlan, NodeProjectionAccess,
     Predicate, Projection, ProjectionExpression, SortItem, SortKey,
 };
@@ -477,16 +477,16 @@ impl GroupExpr {
 
 fn push_vector_seed_metadata_filter(
     input: &mut PhysicalPlan,
-    predicate: &hawdb_plan::Predicate,
+    predicate: &hawdb_plan_cypher::Predicate,
     decisions: &mut Vec<String>,
 ) {
-    if let hawdb_plan::Predicate::And(predicates) = predicate {
+    if let hawdb_plan_cypher::Predicate::And(predicates) = predicate {
         for predicate in predicates {
             push_vector_seed_metadata_filter(input, predicate, decisions);
         }
         return;
     }
-    let hawdb_plan::Predicate::PropertyEq {
+    let hawdb_plan_cypher::Predicate::PropertyEq {
         variable,
         property,
         value,
@@ -556,18 +556,18 @@ fn attach_metadata_filter_to_vector_seed(
     true
 }
 
-fn attach_vector_filter_field(plan: &mut hawdb_plan::VectorPhysicalPlan, field: &str) {
+fn attach_vector_filter_field(plan: &mut hawdb_plan_cypher::VectorPhysicalPlan, field: &str) {
     match plan {
-        hawdb_plan::VectorPhysicalPlan::Filter { fields } => {
+        hawdb_plan_cypher::VectorPhysicalPlan::Filter { fields } => {
             if !fields.iter().any(|existing| existing == field) {
                 fields.push(field.to_string());
                 fields.sort();
             }
         }
-        hawdb_plan::VectorPhysicalPlan::VectorCandidateScan { input, .. }
-        | hawdb_plan::VectorPhysicalPlan::ResidualFilter { input, .. }
-        | hawdb_plan::VectorPhysicalPlan::RawVectorRerank { input, .. }
-        | hawdb_plan::VectorPhysicalPlan::TopK { input, .. } => {
+        hawdb_plan_cypher::VectorPhysicalPlan::VectorCandidateScan { input, .. }
+        | hawdb_plan_cypher::VectorPhysicalPlan::ResidualFilter { input, .. }
+        | hawdb_plan_cypher::VectorPhysicalPlan::RawVectorRerank { input, .. }
+        | hawdb_plan_cypher::VectorPhysicalPlan::TopK { input, .. } => {
             attach_vector_filter_field(input, field);
         }
     }
@@ -607,13 +607,15 @@ fn vector_seed_top_k(plan: &PhysicalPlan) -> Option<usize> {
     }
 }
 
-fn vector_plan_top_k(plan: &hawdb_plan::VectorPhysicalPlan) -> Option<usize> {
+fn vector_plan_top_k(plan: &hawdb_plan_cypher::VectorPhysicalPlan) -> Option<usize> {
     match plan {
-        hawdb_plan::VectorPhysicalPlan::TopK { limit, .. } => Some(*limit),
-        hawdb_plan::VectorPhysicalPlan::VectorCandidateScan { input, .. }
-        | hawdb_plan::VectorPhysicalPlan::ResidualFilter { input, .. }
-        | hawdb_plan::VectorPhysicalPlan::RawVectorRerank { input, .. } => vector_plan_top_k(input),
-        hawdb_plan::VectorPhysicalPlan::Filter { .. } => None,
+        hawdb_plan_cypher::VectorPhysicalPlan::TopK { limit, .. } => Some(*limit),
+        hawdb_plan_cypher::VectorPhysicalPlan::VectorCandidateScan { input, .. }
+        | hawdb_plan_cypher::VectorPhysicalPlan::ResidualFilter { input, .. }
+        | hawdb_plan_cypher::VectorPhysicalPlan::RawVectorRerank { input, .. } => {
+            vector_plan_top_k(input)
+        }
+        hawdb_plan_cypher::VectorPhysicalPlan::Filter { .. } => None,
     }
 }
 
@@ -1324,7 +1326,7 @@ fn select_node_projection_scan(
 
 fn select_node_aggregate_required_scan(
     group_keys: &[Projection],
-    items: &[hawdb_plan::Aggregation],
+    items: &[hawdb_plan_cypher::Aggregation],
     input: &PhysicalPlan,
     decisions: &mut Vec<String>,
     stage_events: &mut Vec<StageTrace>,
@@ -1366,7 +1368,7 @@ fn select_node_aggregate_required_scan(
 }
 
 fn collect_aggregate_properties(
-    item: &hawdb_plan::Aggregation,
+    item: &hawdb_plan_cypher::Aggregation,
     variable: &str,
     required: &mut BTreeSet<String>,
 ) -> bool {

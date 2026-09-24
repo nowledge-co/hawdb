@@ -15,7 +15,7 @@
 //! Executor-owned row bindings and deterministic memory accounting.
 
 use hawdb_core::{LabelId, Value};
-use hawdb_plan::SortDirection;
+use hawdb_plan_cypher::SortDirection;
 use hawdb_storage::{NodeRecord, RelRecord};
 use std::cmp::Ordering;
 use std::collections::BTreeMap;

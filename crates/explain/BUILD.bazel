@@ -18,7 +18,7 @@ rust_library(
         "//crates/core:hawdb_core",
         "//crates/executor:hawdb_executor",
         "//crates/optimizer:hawdb_optimizer",
-        "//crates/plan:hawdb_plan",
+        "//crates/plan-cypher:hawdb_plan_cypher",
         "//crates/plan-cache:hawdb_plan_cache",
         "//crates/qos:hawdb_qos",
         "//crates/storage:hawdb_storage",

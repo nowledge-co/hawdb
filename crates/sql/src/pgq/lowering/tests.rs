@@ -15,7 +15,7 @@
 use std::collections::BTreeMap;
 
 use hawdb_core::{RelationshipDirection, Value};
-use hawdb_plan::{LogicalPlan, ProjectionExpression};
+use hawdb_plan_cypher::{LogicalPlan, ProjectionExpression};
 use hawdb_sql_syntax::parse_postgres_select;
 
 use super::*;

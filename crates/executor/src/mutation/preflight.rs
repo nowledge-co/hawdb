@@ -26,7 +26,7 @@ use crate::predicate::{label_ids_for_pattern, node_matches_label_pattern};
 use crate::store::{GraphExecutionRead, GraphExecutionWrite, ScanControl};
 use crate::Row;
 use hawdb_core::{Catalog, HawDBError, Result, RuntimeTaskContext, Value};
-use hawdb_plan::{
+use hawdb_plan_cypher::{
     BatchMutationOperation, BatchMutationValue, PhysicalPlan, Predicate,
     SetNodePropertiesReturnMode,
 };
@@ -392,7 +392,7 @@ fn execute_set_node_properties_return_with_limits(
     variable: &str,
     label: &str,
     predicate: Option<&Predicate>,
-    assignments: &[hawdb_plan::SetAssignment],
+    assignments: &[hawdb_plan_cypher::SetAssignment],
     returns: &SetNodePropertiesReturnMode,
     catalog: &mut Catalog,
     store: &mut dyn GraphExecutionWrite,

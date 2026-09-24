@@ -14,7 +14,7 @@
 
 use super::*;
 use crate::observer::NoopExecutionObserver;
-use hawdb_plan::SortKey;
+use hawdb_plan_cypher::SortKey;
 use std::num::NonZeroU64;
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicU64, Ordering as AtomicOrdering};

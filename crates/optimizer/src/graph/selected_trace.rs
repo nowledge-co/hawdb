@@ -17,7 +17,7 @@ use crate::{
     plan_class_counts, plan_operator_counts, OperatorCardinalityEstimate, OptimizerContext,
     PlanCostBreakdown, SelectedPlanTrace,
 };
-use hawdb_plan::PhysicalOperatorId;
+use hawdb_plan_cypher::PhysicalOperatorId;
 
 #[cfg(test)]
 mod differential;
@@ -77,7 +77,7 @@ mod tests {
         CascadesOptimizer, OptimizationSearchReport, OptimizerCatalogIndexes,
         OptimizerCatalogStatistics, OptimizerContext,
     };
-    use hawdb_plan::PhysicalPlanKind;
+    use hawdb_plan_cypher::PhysicalPlanKind;
 
     #[test]
     fn selected_trace_derives_cardinality_metadata_once_per_operator() {
@@ -94,7 +94,7 @@ mod tests {
             };
             for _ in 0..depth {
                 plan = PhysicalPlan::FilterExec {
-                    predicate: hawdb_plan::Predicate::PropertyEq {
+                    predicate: hawdb_plan_cypher::Predicate::PropertyEq {
                         variable: "n".to_string(),
                         property: "key".to_string(),
                         value: hawdb_core::Value::Int(7),
@@ -182,7 +182,7 @@ mod tests {
         let plan = PhysicalPlan::ProjectExec {
             items: Vec::new(),
             input: Box::new(PhysicalPlan::FilterExec {
-                predicate: hawdb_plan::Predicate::ConstantBool(false),
+                predicate: hawdb_plan_cypher::Predicate::ConstantBool(false),
                 input: Box::new(PhysicalPlan::SeqNodeScan {
                     variable: "n".to_string(),
                     label: "Node".to_string(),

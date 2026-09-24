@@ -1,6 +1,6 @@
 use hawdb_core::{HawDBError, Result, Value};
 use hawdb_cypher as cypher;
-use hawdb_plan::{
+use hawdb_plan_cypher::{
     self as planner, GraphMatchStep, LogicalPlan, PhysicalPlan, Predicate, Projection,
     ProjectionExpression, RelationshipCountFilter, SortItem, SortKey,
 };
@@ -687,41 +687,41 @@ fn bind_physical_plan(plan: &mut PhysicalPlan, parameters: &BTreeMap<String, Val
 }
 
 fn bind_node_projection_access(
-    access: &mut hawdb_plan::NodeProjectionAccess,
+    access: &mut hawdb_plan_cypher::NodeProjectionAccess,
     parameters: &BTreeMap<String, Value>,
 ) -> Result<()> {
     match access {
-        hawdb_plan::NodeProjectionAccess::LabelScan => Ok(()),
-        hawdb_plan::NodeProjectionAccess::PropertyValues { values, .. } => {
+        hawdb_plan_cypher::NodeProjectionAccess::LabelScan => Ok(()),
+        hawdb_plan_cypher::NodeProjectionAccess::PropertyValues { values, .. } => {
             bind_values(values, parameters)
         }
-        hawdb_plan::NodeProjectionAccess::PropertyUnion { branches } => {
+        hawdb_plan_cypher::NodeProjectionAccess::PropertyUnion { branches } => {
             for branch in branches {
                 bind_values(&mut branch.values, parameters)?;
             }
             Ok(())
         }
-        hawdb_plan::NodeProjectionAccess::CompositeEquality { predicates } => {
+        hawdb_plan_cypher::NodeProjectionAccess::CompositeEquality { predicates } => {
             for (_, value) in predicates {
                 bind_value(value, parameters)?;
             }
             Ok(())
         }
-        hawdb_plan::NodeProjectionAccess::CompositeRange { seek } => {
+        hawdb_plan_cypher::NodeProjectionAccess::CompositeRange { seek } => {
             bind_composite_range_seek(seek, parameters)
         }
-        hawdb_plan::NodeProjectionAccess::PropertyRange { lower, upper, .. } => {
+        hawdb_plan_cypher::NodeProjectionAccess::PropertyRange { lower, upper, .. } => {
             for (value, _) in lower.iter_mut().chain(upper.iter_mut()) {
                 bind_value(value, parameters)?;
             }
             Ok(())
         }
-        hawdb_plan::NodeProjectionAccess::FullText { .. } => Ok(()),
+        hawdb_plan_cypher::NodeProjectionAccess::FullText { .. } => Ok(()),
     }
 }
 
 fn bind_composite_range_seek(
-    seek: &mut hawdb_plan::CompositeRangeSeek,
+    seek: &mut hawdb_plan_cypher::CompositeRangeSeek,
     parameters: &BTreeMap<String, Value>,
 ) -> Result<()> {
     for (_, value) in &mut seek.equality_prefix {
@@ -1019,7 +1019,7 @@ mod tests {
     use hawdb_core::Value;
     use hawdb_cypher as cypher;
     use hawdb_optimizer::{CascadesOptimizer, OptimizerCatalog};
-    use hawdb_plan::{
+    use hawdb_plan_cypher::{
         CompositeRangeSeek, ExactPropertySeekBranch, LogicalPlanRoot, NodeProjectionAccess,
         PhysicalPlan,
     };
@@ -1046,7 +1046,7 @@ mod tests {
             .iter()
             .map(|(name, value)| (name.clone(), parameter_marker(name, value, &[])))
             .collect();
-        let logical = hawdb_plan::plan_with_params(&statement, &markers).unwrap();
+        let logical = hawdb_plan_cypher::plan_with_params(&statement, &markers).unwrap();
         let root = CascadesOptimizer::default().optimize_root_with_catalog(
             &LogicalPlanRoot::new(logical),
             &OptimizerCatalog::default(),
@@ -1076,7 +1076,7 @@ mod tests {
                 )
             })
             .collect();
-        let logical = hawdb_plan::plan_pipeline_query(query, &parameters).unwrap();
+        let logical = hawdb_plan_cypher::plan_pipeline_query(query, &parameters).unwrap();
         for name in slots {
             assert_eq!(
                 marker_use_in_logical_plan(&logical, name),
@@ -1102,7 +1102,8 @@ mod tests {
                 .map(|(index, name)| (name.to_string(), Value::Int(base + index as i64)))
                 .collect();
             let rebound = bind_physical_plan_parameters(&template, &parameters, true).unwrap();
-            let fresh = optimize(hawdb_plan::plan_pipeline_query(query, &parameters).unwrap());
+            let fresh =
+                optimize(hawdb_plan_cypher::plan_pipeline_query(query, &parameters).unwrap());
             assert_eq!(rebound.instance_fingerprint(), fresh.instance_fingerprint());
             assert!(!rebound
                 .instance_fingerprint()
@@ -1149,11 +1150,11 @@ mod tests {
             value: parameter_marker(parameter, &Value::Int(0), &[]),
         };
         let template = PhysicalPlan::HashJoinExec {
-            left_key: hawdb_plan::HashJoinKey {
+            left_key: hawdb_plan_cypher::HashJoinKey {
                 variable: "a".into(),
                 property: "key".into(),
             },
-            right_key: hawdb_plan::HashJoinKey {
+            right_key: hawdb_plan_cypher::HashJoinKey {
                 variable: "b".into(),
                 property: "key".into(),
             },

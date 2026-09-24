@@ -36,7 +36,7 @@ _SEARCH_BASE_DEPS = [
     "//crates/executor:hawdb_executor",
     "//crates/integrity:hawdb_integrity",
     "//crates/optimizer:hawdb_optimizer",
-    "//crates/plan:hawdb_plan",
+    "//crates/plan-cypher:hawdb_plan_cypher",
     "//crates/qos:hawdb_qos",
     "//crates/storage:hawdb_storage",
     "//crates/telemetry:hawdb_telemetry",

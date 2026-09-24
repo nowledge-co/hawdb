@@ -21,7 +21,7 @@ use crate::store::{
     SourceScanCandidateVisit, SourceScanReadLimits,
 };
 use hawdb_core::{LabelId, RelTypeId};
-use hawdb_plan::{CompositeRangeSeek, NodeProjectionAccess};
+use hawdb_plan_cypher::{CompositeRangeSeek, NodeProjectionAccess};
 use hawdb_storage::{
     AdjacencyDirection, ProjectedGraphDefinition, ProjectedNodeRecord, RelRecord, ScanPredicate,
 };

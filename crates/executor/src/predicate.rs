@@ -15,7 +15,7 @@
 //! Storage record predicates shared by execution operators.
 
 use hawdb_core::{Catalog, LabelId, Value};
-use hawdb_plan::ComparisonOp;
+use hawdb_plan_cypher::ComparisonOp;
 pub use hawdb_storage::predicate::property_filter_matches as property_filter_matches_values;
 use hawdb_storage::predicate::{comparable_value_ordering, properties_contain_all};
 use hawdb_storage::{NodeRecord, PropertyFilter, RelRecord};

@@ -24,7 +24,7 @@ use super::value_range::{
 use super::{OptimizerCatalog, PhysicalPlan};
 use crate::{OptimizerRule, RuleApplication, RuleId, RuleKind, RulePromise, StageTrace};
 use hawdb_core::Value;
-use hawdb_plan::{LogicalPlan, Predicate};
+use hawdb_plan_cypher::{LogicalPlan, Predicate};
 use std::collections::BTreeMap;
 
 mod candidates;
@@ -704,7 +704,7 @@ mod tests {
             Predicate::PropertyCompare {
                 variable: "m".to_string(),
                 property: "score".to_string(),
-                op: hawdb_plan::ComparisonOp::Gt,
+                op: hawdb_plan_cypher::ComparisonOp::Gt,
                 value: Value::Int(98),
             },
             "IndexNodeRangeSeek",

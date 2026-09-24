@@ -19,7 +19,9 @@ use crate::cardinality_defaults::{
 };
 use hawdb_core::Value;
 use hawdb_cypher::RelationshipDirection;
-use hawdb_plan::{AggregateTarget, Aggregation, Predicate, Projection, ProjectionExpression};
+use hawdb_plan_cypher::{
+    AggregateTarget, Aggregation, Predicate, Projection, ProjectionExpression,
+};
 use std::collections::{BTreeMap, BTreeSet};
 
 mod bindings;

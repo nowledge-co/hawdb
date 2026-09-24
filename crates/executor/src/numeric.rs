@@ -41,7 +41,7 @@ use crate::store::{GraphExecutionRead, ScanControl};
 use crate::SharedExecutorPool;
 use crate::{ExecutionLimit, ExecutionMemoryConfig, QueryMemoryLedger};
 use hawdb_core::{Catalog, HawDBError, Result, RuntimeTaskContext, Value};
-use hawdb_plan::{PhysicalPlan, PlanChildren, Predicate, Projection, ProjectionExpression};
+use hawdb_plan_cypher::{PhysicalPlan, PlanChildren, Predicate, Projection, ProjectionExpression};
 use hawdb_storage::{NodeRecord, ScanPruningReport};
 use lending::{
     admitted_numeric_batch_rows, LendingBatchCursor, NumericNodeBatch, NumericNodeBatchCursor,
@@ -1422,8 +1422,8 @@ mod tests {
     use crate::{ExecutionMemoryConfig, NumericLiteral};
     use hawdb_core::PropertyType;
     use hawdb_core::Value;
-    use hawdb_plan::ComparisonOp;
-    use hawdb_plan::{Projection, ProjectionExpression};
+    use hawdb_plan_cypher::ComparisonOp;
+    use hawdb_plan_cypher::{Projection, ProjectionExpression};
     use hawdb_storage::{NodeId, NodeRecord};
     use std::collections::{BTreeMap, BTreeSet};
     use std::num::NonZeroUsize;

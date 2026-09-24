@@ -54,7 +54,7 @@ use crate::{
     QueryMemoryLedger,
 };
 use hawdb_core::{Catalog, HawDBError, RelationshipDirection, Result, RuntimeTaskContext, Value};
-use hawdb_plan::{
+use hawdb_plan_cypher::{
     Aggregation, PhysicalPlan, PlanChildren, Predicate, Projection, RelationshipCountLeg, SortItem,
 };
 use hawdb_storage::{NodeId, NodeRecord, PropertyFilter, ScanPruningReport};

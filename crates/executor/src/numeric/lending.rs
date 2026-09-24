@@ -315,7 +315,7 @@ mod tests {
             label: "Item",
             property: "score",
             property_type: hawdb_core::PropertyType::Int,
-            predicate: NumericPredicate::Compare(hawdb_plan::ComparisonOp::Gte),
+            predicate: NumericPredicate::Compare(hawdb_plan_cypher::ComparisonOp::Gte),
             expected: crate::columnar::NumericLiteral::Int(0),
             fused_operators: None,
         };
@@ -366,7 +366,7 @@ mod tests {
             label: "Item",
             property: "score",
             property_type: hawdb_core::PropertyType::Float,
-            predicate: NumericPredicate::Compare(hawdb_plan::ComparisonOp::Gt),
+            predicate: NumericPredicate::Compare(hawdb_plan_cypher::ComparisonOp::Gt),
             expected: crate::columnar::NumericLiteral::Float(1.0),
             fused_operators: None,
         };
@@ -387,7 +387,7 @@ mod tests {
             label: "Item",
             property: "score",
             property_type: hawdb_core::PropertyType::Int,
-            predicate: NumericPredicate::Compare(hawdb_plan::ComparisonOp::Gte),
+            predicate: NumericPredicate::Compare(hawdb_plan_cypher::ComparisonOp::Gte),
             expected: crate::columnar::NumericLiteral::Int(2),
             fused_operators: None,
         };

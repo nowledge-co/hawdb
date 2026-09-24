@@ -214,12 +214,12 @@ pub mod mem_integration_readiness {
 /// Compatibility facade for `hawdb-optimizer`.
 pub mod optimizer {
     pub use hawdb_optimizer::*;
-    pub use hawdb_plan::{PhysicalOperatorDomain, PhysicalPlan, PhysicalPlanChildren};
+    pub use hawdb_plan_cypher::{PhysicalOperatorDomain, PhysicalPlan, PhysicalPlanChildren};
 }
 
-/// Compatibility facade for `hawdb-plan`.
+/// Compatibility facade for `hawdb-plan-cypher`.
 pub mod planner {
-    pub use hawdb_plan::*;
+    pub use hawdb_plan_cypher::*;
 }
 
 /// Compatibility re-exports for the readiness-owned previous-wrapper preflight.

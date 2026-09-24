@@ -18,7 +18,7 @@ use crate::store::{
     PrunedNodeScan, PrunedRelationshipScan, SourceScanCandidateRow, SourceScanCandidateVisit,
     SourceScanReadLimits,
 };
-use hawdb_plan::{CompositeRangeSeek, NodeProjectionAccess};
+use hawdb_plan_cypher::{CompositeRangeSeek, NodeProjectionAccess};
 use hawdb_storage::{AdjacencyDirection, ProjectedNodeRecord, ScanPredicate, ScanPruningReport};
 
 impl GraphExecutionRead for Fixture {

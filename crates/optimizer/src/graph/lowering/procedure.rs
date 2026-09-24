@@ -14,7 +14,7 @@
 
 use super::super::PhysicalPlan;
 use crate::{plan_vector_search, OptimizerContext};
-use hawdb_plan::{LogicalPlan, VectorCandidateSource, VectorSearchLogicalPlan};
+use hawdb_plan_cypher::{LogicalPlan, VectorCandidateSource, VectorSearchLogicalPlan};
 
 pub(super) fn lower(
     logical: &LogicalPlan,

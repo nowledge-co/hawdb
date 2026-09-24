@@ -30,7 +30,7 @@ use crate::{
     QueryMemoryClass, QueryMemoryLedger,
 };
 use hawdb_core::{Catalog, HawDBError, Result, RuntimeTaskContext, Value};
-use hawdb_plan::{
+use hawdb_plan_cypher::{
     AggregateFunction, AggregateTarget, Aggregation, PhysicalPlan, Projection, SortDirection,
     SortItem,
 };
@@ -575,7 +575,7 @@ mod tests {
         stream_top_n_batches(
             &input,
             &[SortItem {
-                key: hawdb_plan::SortKey::Column("value".to_string()),
+                key: hawdb_plan_cypher::SortKey::Column("value".to_string()),
                 direction: SortDirection::Asc,
             }],
             1,

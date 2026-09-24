@@ -16,7 +16,9 @@ use super::*;
 use crate::external::tests::empty_report;
 use crate::VectorSeedExecutionRow;
 use hawdb_core::RuntimeCancellationToken;
-use hawdb_plan::{VectorCandidateSource, VectorExecutionResourceProfile, VectorPhysicalPlan};
+use hawdb_plan_cypher::{
+    VectorCandidateSource, VectorExecutionResourceProfile, VectorPhysicalPlan,
+};
 
 fn nz(bytes: usize) -> NonZeroUsize {
     NonZeroUsize::new(bytes).unwrap()

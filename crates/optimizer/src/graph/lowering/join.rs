@@ -13,7 +13,7 @@
 // limitations under the License.
 
 use super::*;
-use hawdb_plan::HashJoinKey;
+use hawdb_plan_cypher::HashJoinKey;
 
 pub(super) fn lower_property_join(
     input: PhysicalPlan,
@@ -133,7 +133,7 @@ fn binds_node(plan: &PhysicalPlan, name: &str) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use hawdb_plan::{plan, visit_plan, PhysicalPlanKind};
+    use hawdb_plan_cypher::{plan, visit_plan, PhysicalPlanKind};
 
     fn optimize(query: &str) -> PhysicalPlan {
         let logical = plan(&hawdb_cypher::parse(query).unwrap()).unwrap();
@@ -190,7 +190,7 @@ mod tests {
                         variable: "a".into(),
                         property: "key".into(),
                     },
-                    direction: hawdb_plan::SortDirection::Asc,
+                    direction: hawdb_plan_cypher::SortDirection::Asc,
                 }],
                 input: Box::new(LogicalPlan::Filter {
                     predicate: Predicate::And(vec![eq("a", "b"), eq("b", "c")]),

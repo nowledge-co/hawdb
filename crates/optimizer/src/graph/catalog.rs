@@ -18,7 +18,7 @@ use crate::cardinality_defaults::{
     SAMPLED_HISTOGRAM_TOTAL_PSEUDOCOUNT,
 };
 use hawdb_core::{Catalog, GraphStatistics, IndexKind, Value};
-use hawdb_plan::ComparisonOp;
+use hawdb_plan_cypher::ComparisonOp;
 use std::collections::{BTreeMap, BTreeSet};
 
 #[derive(Debug, Clone, PartialEq, Eq)]

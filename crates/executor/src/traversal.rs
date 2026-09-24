@@ -36,7 +36,7 @@ use hawdb_core::{
     Catalog, HawDBError, LabelId, RelTypeId, RelationshipDirection, Result, RuntimeTaskContext,
     Value,
 };
-use hawdb_plan::{
+use hawdb_plan_cypher::{
     RelationshipCountFilter, RelationshipCountLeg, ShortestPathProjection,
     ShortestPathProjectionExpression,
 };

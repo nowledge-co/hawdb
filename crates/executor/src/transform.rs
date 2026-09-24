@@ -25,7 +25,7 @@ use crate::pipeline::{
 };
 use crate::ExecutionLimit;
 use hawdb_core::Result;
-use hawdb_plan::{PhysicalPlan, Projection};
+use hawdb_plan_cypher::{PhysicalPlan, Projection};
 use std::cell::Cell;
 use std::collections::BTreeMap;
 

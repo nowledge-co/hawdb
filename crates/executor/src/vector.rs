@@ -12,7 +12,7 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-use hawdb_plan::{VectorBackendSelectionReason, VectorCandidateSource, VectorPhysicalPlan};
+use hawdb_plan_cypher::{VectorBackendSelectionReason, VectorCandidateSource, VectorPhysicalPlan};
 use std::cmp::Ordering;
 use std::collections::BTreeSet;
 use std::fmt::{Display, Formatter};

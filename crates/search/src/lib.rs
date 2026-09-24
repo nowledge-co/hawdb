@@ -30,7 +30,7 @@ use hawdb_optimizer::{
     AdaptiveVectorBackendInput, AdaptiveVectorBackendPolicy, SearchPredicate, SearchPredicateOp,
     SearchPredicateSet, SearchScalarValue, SearchScanPredicateSupport, VectorCompressionPreference,
 };
-use hawdb_plan::{VectorBackendSelectionReason, VectorCandidateSource};
+use hawdb_plan_cypher::{VectorBackendSelectionReason, VectorCandidateSource};
 use hawdb_qos::{
     BackgroundWorkHint, BackgroundWorkPlan, LocalQosPolicy, LocalQosScheduler, LocalQosState,
     QosAdmission, WorkClass, WorkRequest,

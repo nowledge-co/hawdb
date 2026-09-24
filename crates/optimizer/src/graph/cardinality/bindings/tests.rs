@@ -16,7 +16,7 @@ use super::fixtures::*;
 use super::{oracle, PlanBindings, MERGED_ENTRIES};
 use crate::graph::{cardinality, costing, selected_trace, OptimizerCatalog};
 use crate::OptimizerContext;
-use hawdb_plan::{visit_plan_with_ids, PhysicalPlan};
+use hawdb_plan_cypher::{visit_plan_with_ids, PhysicalPlan};
 
 fn catalog(rows: u64, path_mode: usize) -> OptimizerCatalog {
     let mut catalog = OptimizerCatalog::default();

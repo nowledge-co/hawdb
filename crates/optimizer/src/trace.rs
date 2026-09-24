@@ -16,7 +16,7 @@ use crate::cost::{PlanCost, PlanCostBreakdown};
 use crate::properties::PhysicalProperties;
 use crate::search::{RuleEvent, SearchMode};
 use crate::stage::StageTrace;
-use hawdb_plan::{PhysicalOperatorId, PhysicalPlanKind};
+use hawdb_plan_cypher::{PhysicalOperatorId, PhysicalPlanKind};
 use std::collections::BTreeMap;
 
 #[derive(Debug, Clone, PartialEq, Eq)]

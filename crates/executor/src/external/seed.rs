@@ -71,7 +71,7 @@ impl BatchExternalRead for BatchExternalReadAdapter<'_> {
 fn vector_embedding_parameter(
     parameters: &BTreeMap<String, Value>,
     name: &str,
-    vector_plan: &hawdb_plan::VectorPhysicalPlan,
+    vector_plan: &hawdb_plan_cypher::VectorPhysicalPlan,
 ) -> Result<Vec<f32>> {
     let Some(Value::List(values)) = parameters.get(name) else {
         return Err(HawDBError::Semantic(format!(
@@ -106,31 +106,33 @@ fn vector_embedding_parameter(
     Ok(embedding)
 }
 
-fn vector_plan_embedding_dimension(plan: &hawdb_plan::VectorPhysicalPlan) -> usize {
+fn vector_plan_embedding_dimension(plan: &hawdb_plan_cypher::VectorPhysicalPlan) -> usize {
     match plan {
-        hawdb_plan::VectorPhysicalPlan::VectorCandidateScan {
+        hawdb_plan_cypher::VectorPhysicalPlan::VectorCandidateScan {
             embedding_dimension,
             ..
         }
-        | hawdb_plan::VectorPhysicalPlan::RawVectorRerank {
+        | hawdb_plan_cypher::VectorPhysicalPlan::RawVectorRerank {
             embedding_dimension,
             ..
         } => *embedding_dimension,
-        hawdb_plan::VectorPhysicalPlan::ResidualFilter { input, .. }
-        | hawdb_plan::VectorPhysicalPlan::TopK { input, .. } => {
+        hawdb_plan_cypher::VectorPhysicalPlan::ResidualFilter { input, .. }
+        | hawdb_plan_cypher::VectorPhysicalPlan::TopK { input, .. } => {
             vector_plan_embedding_dimension(input)
         }
-        hawdb_plan::VectorPhysicalPlan::Filter { .. } => 0,
+        hawdb_plan_cypher::VectorPhysicalPlan::Filter { .. } => 0,
     }
 }
 
-fn vector_plan_top_k(plan: &hawdb_plan::VectorPhysicalPlan) -> Option<usize> {
+fn vector_plan_top_k(plan: &hawdb_plan_cypher::VectorPhysicalPlan) -> Option<usize> {
     match plan {
-        hawdb_plan::VectorPhysicalPlan::TopK { limit, .. } => Some(*limit),
-        hawdb_plan::VectorPhysicalPlan::VectorCandidateScan { input, .. }
-        | hawdb_plan::VectorPhysicalPlan::RawVectorRerank { input, .. }
-        | hawdb_plan::VectorPhysicalPlan::ResidualFilter { input, .. } => vector_plan_top_k(input),
-        hawdb_plan::VectorPhysicalPlan::Filter { .. } => None,
+        hawdb_plan_cypher::VectorPhysicalPlan::TopK { limit, .. } => Some(*limit),
+        hawdb_plan_cypher::VectorPhysicalPlan::VectorCandidateScan { input, .. }
+        | hawdb_plan_cypher::VectorPhysicalPlan::RawVectorRerank { input, .. }
+        | hawdb_plan_cypher::VectorPhysicalPlan::ResidualFilter { input, .. } => {
+            vector_plan_top_k(input)
+        }
+        hawdb_plan_cypher::VectorPhysicalPlan::Filter { .. } => None,
     }
 }
 
@@ -138,8 +140,8 @@ pub struct VectorSeedScanSpec<'a> {
     pub embedding_parameter: &'a str,
     pub output_external_id: &'a bool,
     pub metadata_filters: &'a BTreeMap<String, String>,
-    pub resource_profile: &'a hawdb_plan::VectorExecutionResourceProfile,
-    pub vector_plan: &'a hawdb_plan::VectorPhysicalPlan,
+    pub resource_profile: &'a hawdb_plan_cypher::VectorExecutionResourceProfile,
+    pub vector_plan: &'a hawdb_plan_cypher::VectorPhysicalPlan,
 }
 
 impl VectorSeedScanSpec<'_> {

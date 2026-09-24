@@ -22,7 +22,7 @@ use crate::{
 };
 use hawdb_core::Value;
 use hawdb_cypher::RelationshipDirection;
-use hawdb_plan::{ComparisonOp, PhysicalPlan, Predicate, Projection, ProjectionExpression};
+use hawdb_plan_cypher::{ComparisonOp, PhysicalPlan, Predicate, Projection, ProjectionExpression};
 use std::collections::BTreeMap;
 
 fn estimate_filter_rows(
