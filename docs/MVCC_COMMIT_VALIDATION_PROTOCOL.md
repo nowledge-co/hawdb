@@ -27,7 +27,7 @@ path does not demonstrate per-key optimistic SQL validation.
 | Rebase selection | `commit_with_result` enables it for pessimistic transactions and the narrowly checked conflict-noop-only optimistic transaction shape. |
 | Publication and group sync | `src/api/concurrent/coordinator.rs` serializes commit tasks and retains the database mutex through the shared durability barrier. |
 | Writer snapshot lifetime | `DatabaseTransactionState` owns a `ReaderPin` from snapshot capture through private execution and queued commit; rollback/drop releases it and first-statement refresh replaces it. |
-| Reclamation helpers | `VersionIndex::prune_tombstones_before` exists and has unit coverage, but no production caller currently invokes it. |
+| Version reclamation | Every `GraphStore::snapshot` registers an epoch in a shared storage registry. Successful durable checkpoint publication and in-memory checkpoint call `reclaim_version_tombstones`, retaining stamps at or after the oldest snapshot epoch. |
 | Recovery baseline helper | `VersionIndex::from_live_keys_at_epoch` exists but is not wired into open or replay. The current index starts empty on a new store handle. |
 
 No general serializable isolation, time travel, multi-process writer, or
@@ -121,8 +121,10 @@ This gives the following conditional safety argument:
 4. A deletion stamp at epoch `d` cannot safely be discarded while a transaction
    with `E < d` can still commit against that identity. The helper retains it
    when `d >= oldest_reader_epoch` and removes it only when strictly older.
-   This argument assumes the watermark includes **all** active writers as well
-   as readers; helper unit tests do not establish that production integration.
+   This argument requires the watermark to include **all** storage snapshots,
+   including sources from which a writer could be created later. The shared
+   storage snapshot registry now supplies that watermark; upper-layer physical
+   generation pins remain a separate mechanism.
 
 These are deductive arguments about the validation rule under stated
 assumptions, not a machine-checked refinement proof of the Rust implementation.
@@ -172,17 +174,17 @@ Its lock/publication checks remain useful within that restricted model; they
 cannot certify the added per-key executions. The new
 [per-key validation model](tla/MVCC_VALIDATION_PROOF.md) separately checks the
 version-index rule against a full-history oracle, including broad barriers,
-restart, and a proposed safe tombstone-pruning integration. See the [model scope](tla/README.md#optimistic-and-pessimistic-transaction-publication).
+restart, retained source snapshots, and safe tombstone pruning. See the [model scope](tla/README.md#optimistic-and-pessimistic-transaction-publication).
 
 Remaining acceptance work, without reimplementing existing mechanisms:
 
 1. Extend the bounded per-key model evidence to source-level completeness and
    composition with the real recovery/group-sync paths. The finite model and
    its negative controls do not alone discharge these obligations.
-2. Connect version-index cleanup to a safe watermark and demonstrate bounded
-   retained state and progress after pins retire. Transaction-state writer pins
-   now share the reader registry and protect physical generations; production
-   tombstone cleanup remains unwired.
+2. Qualify total version-memory overhead and cleanup cost under representative
+   churn and long-lived pins. Checkpoint cleanup now reclaims eligible
+   tombstones, but live stamps (including adjacency identities) are retained,
+   and neither a global byte bound nor bounded checkpoint latency follows.
 3. Narrow relational/append identities only with complete constraint and
    recovery coverage. Preserve conservative paths for unsupported shapes.
 4. Qualify canonical crash/reopen equivalence and post-restart conflict behavior

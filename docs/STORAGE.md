@@ -293,8 +293,10 @@ reclamation retains their physical generation until rollback or destruction.
 Concurrent transaction bodies already execute outside the commit sequencer;
 validation and publication remain serialized. [`MVCC_COMMIT_VALIDATION_PROTOCOL.md`](MVCC_COMMIT_VALIDATION_PROTOCOL.md)
 maps the implemented identities and validation rule to source, and records the
-remaining #231/#232 work: integrated tombstone reclamation, per-key model
-coverage, narrower domains, and workload qualification. A new pessimistic lock
+remaining #231/#232 work: version-memory and reclamation qualification, narrower
+domains, and workload qualification. Checkpoints now clean eligible version
+tombstones using a separate registry of every storage snapshot, including
+sources that could start a later transaction. A new pessimistic lock
 acquisition after snapshot drift still uses the conservative retry rule above.
 
 Coordinator waits record every blocker in a multi-owner wait-for graph. Adding

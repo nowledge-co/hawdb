@@ -1,9 +1,9 @@
 ----------------------- MODULE HawDBMvccValidation -----------------------
-EXTENDS Naturals, Sequences, FiniteSets
+EXTENDS Integers, Naturals, Sequences, FiniteSets
 
 CONSTANTS Transactions, Keys, MaxEpoch,
           SkipValidation, SkipBroadWriterCheck, SkipBarrierStampCheck, PrunePinned,
-          ResetWithActiveTransactions, PublishBeforeSync
+          ResetWithActiveTransactions, PublishBeforeSync, IgnoreSourcePin
 
 Barriers == {"database", "schema"}
 Identities == Keys \union Barriers
@@ -15,12 +15,12 @@ ASSUME /\ Keys # {}
        /\ "none" \notin Transactions
        /\ MaxEpoch \in Nat \ {0}
        /\ {SkipValidation, SkipBroadWriterCheck, SkipBarrierStampCheck, PrunePinned,
-             ResetWithActiveTransactions, PublishBeforeSync} \subseteq BOOLEAN
+             ResetWithActiveTransactions, PublishBeforeSync, IgnoreSourcePin} \subseteq BOOLEAN
 
 VARIABLES phase, readEpoch, writes, deleting, snapshot,
-          history, visible, stamps, tombstones, owner, restarted
+          history, visible, stamps, tombstones, owner, restarted, sourceEpoch
 vars == <<phase, readEpoch, writes, deleting, snapshot,
-          history, visible, stamps, tombstones, owner, restarted>>
+          history, visible, stamps, tombstones, owner, restarted, sourceEpoch>>
 
 EmptyStamps == [k \in Identities |-> 0]
 Record(tx) == [base |-> readEpoch[tx], keys |-> writes[tx], delete |-> deleting[tx]]
@@ -40,7 +40,9 @@ IndexValid(tx) ==
         /\ SkipBroadWriterCheck \/ b \notin writes[tx] \/ visible <= readEpoch[tx]
 
 Pinned == {tx \in Transactions : phase[tx] \in {"active", "prepared", "durable"}}
-CanPrune(k) == \A tx \in Pinned: stamps[k] < readEpoch[tx]
+CanPrune(k) ==
+    /\ \A tx \in Pinned: stamps[k] < readEpoch[tx]
+    /\ IgnoreSourcePin \/ sourceEpoch = -1 \/ stamps[k] < sourceEpoch
 
 Init ==
     /\ phase = [tx \in Transactions |-> "idle"]
@@ -54,8 +56,9 @@ Init ==
     /\ tombstones = {}
     /\ owner = "none"
     /\ restarted = FALSE
+    /\ sourceEpoch = -1
 
-Begin(tx, w, d) ==
+BeginAt(tx, w, d, epoch) ==
     /\ owner = "none"
     /\ phase[tx] = "idle"
     /\ visible < MaxEpoch
@@ -63,11 +66,27 @@ Begin(tx, w, d) ==
     /\ d \in BOOLEAN
     /\ d => ~Broad(w)
     /\ phase' = [phase EXCEPT ![tx] = "active"]
-    /\ readEpoch' = [readEpoch EXCEPT ![tx] = visible]
+    /\ readEpoch' = [readEpoch EXCEPT ![tx] = epoch]
     /\ writes' = [writes EXCEPT ![tx] = w]
     /\ deleting' = [deleting EXCEPT ![tx] = d]
-    /\ snapshot' = [snapshot EXCEPT ![tx] = Prefix(visible)]
-    /\ UNCHANGED <<history, visible, stamps, tombstones, owner, restarted>>
+    /\ snapshot' = [snapshot EXCEPT ![tx] = Prefix(epoch)]
+    /\ UNCHANGED <<history, visible, stamps, tombstones, owner, restarted, sourceEpoch>>
+
+Begin(tx, w, d) == BeginAt(tx, w, d, visible)
+BeginFromSource(tx, w, d) == sourceEpoch >= 0 /\ BeginAt(tx, w, d, sourceEpoch)
+
+CaptureSource ==
+    /\ owner = "none"
+    /\ sourceEpoch = -1
+    /\ sourceEpoch' = visible
+    /\ UNCHANGED <<phase, readEpoch, writes, deleting, snapshot, history,
+                    visible, stamps, tombstones, owner, restarted>>
+
+DropSource ==
+    /\ sourceEpoch >= 0
+    /\ sourceEpoch' = -1
+    /\ UNCHANGED <<phase, readEpoch, writes, deleting, snapshot, history,
+                    visible, stamps, tombstones, owner, restarted>>
 
 Prepare(tx) ==
     /\ owner = "none"
@@ -77,7 +96,7 @@ Prepare(tx) ==
     /\ phase' = [phase EXCEPT ![tx] = "prepared"]
     /\ owner' = tx
     /\ UNCHANGED <<readEpoch, writes, deleting, snapshot, history, visible,
-                    stamps, tombstones, restarted>>
+                    stamps, tombstones, restarted, sourceEpoch>>
 
 Reject(tx) ==
     /\ owner = "none"
@@ -85,7 +104,7 @@ Reject(tx) ==
     /\ ~IndexValid(tx)
     /\ phase' = [phase EXCEPT ![tx] = "rejected"]
     /\ UNCHANGED <<readEpoch, writes, deleting, snapshot, history, visible,
-                    stamps, tombstones, owner, restarted>>
+                    stamps, tombstones, owner, restarted, sourceEpoch>>
 
 Sync(tx) ==
     /\ owner = tx
@@ -93,7 +112,7 @@ Sync(tx) ==
     /\ history' = Append(history, Record(tx))
     /\ phase' = [phase EXCEPT ![tx] = "durable"]
     /\ UNCHANGED <<readEpoch, writes, deleting, snapshot, visible,
-                    stamps, tombstones, owner, restarted>>
+                    stamps, tombstones, owner, restarted, sourceEpoch>>
 
 Publish(tx) ==
     /\ owner = tx
@@ -106,13 +125,13 @@ Publish(tx) ==
                        ELSE tombstones \ writes[tx]
     /\ phase' = [phase EXCEPT ![tx] = "done"]
     /\ owner' = "none"
-    /\ UNCHANGED <<readEpoch, writes, deleting, snapshot, history, restarted>>
+    /\ UNCHANGED <<readEpoch, writes, deleting, snapshot, history, restarted, sourceEpoch>>
 
 Rollback(tx) ==
     /\ phase[tx] = "active"
     /\ phase' = [phase EXCEPT ![tx] = "done"]
     /\ UNCHANGED <<readEpoch, writes, deleting, snapshot, history, visible,
-                    stamps, tombstones, owner, restarted>>
+                    stamps, tombstones, owner, restarted, sourceEpoch>>
 
 Prune(k) ==
     /\ owner = "none"
@@ -121,13 +140,14 @@ Prune(k) ==
     /\ stamps' = [stamps EXCEPT ![k] = 0]
     /\ tombstones' = tombstones \ {k}
     /\ UNCHANGED <<phase, readEpoch, writes, deleting, snapshot,
-                    history, visible, owner, restarted>>
+                    history, visible, owner, restarted, sourceEpoch>>
 
 (* No transaction or snapshot survives a process restart. Canonical replay
    restores the full durable prefix; stamp history is process-local. *)
 Crash ==
     /\ ~restarted
     /\ restarted' = TRUE
+    /\ sourceEpoch' = -1
     /\ visible' = Len(history)
     /\ stamps' = EmptyStamps
     /\ tombstones' = {}
@@ -146,13 +166,16 @@ BadReset ==
     /\ stamps' = EmptyStamps
     /\ tombstones' = {}
     /\ UNCHANGED <<phase, readEpoch, writes, deleting, snapshot,
-                    history, visible, owner, restarted>>
+                    history, visible, owner, restarted, sourceEpoch>>
 
 Next ==
     \/ \E tx \in Transactions, w \in WriteSets, d \in BOOLEAN: Begin(tx, w, d)
     \/ \E tx \in Transactions: Prepare(tx) \/ Reject(tx) \/ Sync(tx)
                                   \/ Publish(tx) \/ Rollback(tx)
     \/ \E k \in Keys: Prune(k)
+    \/ \E tx \in Transactions, w \in WriteSets, d \in BOOLEAN: BeginFromSource(tx, w, d)
+    \/ CaptureSource
+    \/ DropSource
     \/ Crash
     \/ BadReset
 
@@ -169,6 +192,7 @@ TypeInvariant ==
     /\ tombstones \subseteq Keys
     /\ owner \in Transactions \union {"none"}
     /\ restarted \in BOOLEAN
+    /\ sourceEpoch \in -1..visible
 
 DurableBeforeVisible == visible <= Len(history)
 SinglePublisher ==

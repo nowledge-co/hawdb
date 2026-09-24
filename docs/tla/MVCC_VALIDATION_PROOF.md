@@ -2,9 +2,8 @@
 
 `HawDBMvccValidation.tla` supplements the older whole-epoch optimistic branch
 of `HawDBTransactionConcurrency.tla`. It models the current graph version
-validator, a proposed safe integration of the existing tombstone-pruning
-helper, and restart with no surviving transactions. It does not claim that
-production pruning is already integrated or that #231/#232 are complete.
+validator, the checkpoint integration of tombstone pruning, and restart with no
+surviving transactions. It does not claim that #231/#232 are complete.
 
 ## Independent specification
 
@@ -27,8 +26,8 @@ checks every durable record against all intervening overlapping records.
 ## Inductive argument
 
 Assume complete key derivation, monotonically increasing epochs, serialized
-validation/publication, and a pin set containing every transaction that could
-still use an older snapshot.
+validation/publication, and a pin set containing every snapshot that could
+still serve or create a transaction at an older epoch.
 
 - Initially there is no history, all stamps are absent, and both validators
   accept every write set.
@@ -46,7 +45,8 @@ still use an older snapshot.
   necessary in addition to checking barrier stamps.
 - A tombstone at `d` is removed only if every pinned epoch is strictly greater
   than `d`. It cannot witness a conflict for any surviving transaction, and
-  new transactions begin at an epoch at least as large. Removing the stamp
+  transactions created later from an older source are protected by that
+  source's own pin. Removing the stamp
   therefore preserves validator equivalence. Retaining at equality is the
   implementation's conservative boundary.
 - Crash discards all active transactions and restores the durable history
@@ -72,11 +72,13 @@ machine-checked proof of the Rust implementation.
 | Broad writes | Database/schema singleton sets; mixed sets containing a barrier collapse to that barrier for conflict semantics |
 | `Begin`, snapshots | Transaction-private snapshot capture in `src/api/concurrent.rs` and `GraphStore::begin_mutation_transaction` |
 | `Prepare`/`Sync`/`Publish` | Externally visible serialized commit boundary; not individual machine instructions or the internal group-sync schedule |
-| `Prune` | `VersionIndex::prune_tombstones_before` with all active writer pins included; the cleanup call remains unwired, while transaction-state writer pins now share the reader registry |
+| `Prune` | `GraphStore::reclaim_version_tombstones` uses the minimum registered storage-snapshot epoch; `VersionIndex::prune_tombstones_before` keeps equality conservatively |
+| Retained source | `GraphStore::snapshot` registers before the snapshot escapes; `begin_mutation_transaction` and savepoints capture further registered snapshots |
 | `Crash` | Abstract canonical replay plus invalidation of all pre-crash handles; no byte-level WAL decoder, checkpoint or torn-tail model |
 
-Two transaction slots represent pin holders that can also write. There is no
-separate read-only reader population, allocation/uniqueness semantics,
+Two transaction slots and one retained source snapshot represent pin holders.
+The source can create a later transaction at its old epoch. There is no
+unbounded reader population, allocation/uniqueness semantics,
 pessimistic lock acquisition, statement savepoint, page allocator, or byte
 budget. Immutable prefixes abstract snapshots; actual row values and read sets
 are not modeled. Keys come from a finite universe, so bounded model state is
@@ -92,13 +94,14 @@ scripts/check-storage-tla.sh --check-mutants
 ```
 
 The positive model is registered in `storage_models.bzl`. With two transaction
-slots, two narrow keys, both barriers, three commit epochs and at most one
-restart, the model checks types, one publisher, stable snapshots,
+slots, two narrow keys, both barriers, one retained source snapshot, three commit
+epochs and at most one restart, the model checks types, one publisher, stable
+snapshots,
 durable-before-visible, validator equivalence and first-committer-wins.
 Deadlock checking is disabled because bounded completion is an expected
 terminal state; no fairness, starvation or liveness theorem is claimed.
 
-The mutant manifest runs six independent defects and requires the named
+The mutant manifest runs seven independent defects and requires the named
 invariant violation (a parse error or arbitrary nonzero exit is insufficient):
 
 | Defect | Required failure |
@@ -107,6 +110,7 @@ invariant violation (a parse error or arbitrary nonzero exit is insufficient):
 | Omit epoch check for a broad writer | `ValidationMatchesHistory` |
 | Omit newer barrier stamps for a narrow writer | `ValidationMatchesHistory` |
 | Prune a tombstone despite older pins | `ValidationMatchesHistory` |
+| Ignore a retained source snapshot that can create a later writer | `ValidationMatchesHistory` |
 | Clear the index while transactions remain active | `ValidationMatchesHistory` |
 | Publish before WAL sync | `DurableBeforeVisible` |
 
@@ -151,7 +155,47 @@ snapshot. It now retains that generation, reclaims unrelated generations 2 and
 3, preserves private read-your-own-writes, and reclaims generation 1 after
 rollback and the next checkpoint. This is a regression-backed ownership
 argument, not a proof that all storage-internal transaction entry points share
-that registry. Version-index tombstone cleanup is still disabled.
+the upper-layer registry. The storage-level registry described below protects
+version validation independently.
+
+## Storage snapshot watermark and checkpoint cleanup
+
+`VersionSnapshotPins` is a shared epoch/count map. Every `GraphStore::snapshot`
+owns a `VersionSnapshotPin`, so read views, transaction workspaces, savepoints,
+checkpoint sources, and snapshots used to create later transactions all count.
+The original live store has no self-pin. A descendant inherits the minimum of
+its parent's pin epoch and workspace epoch: private statement commits may
+advance the workspace clock, but must never raise the transaction's original
+protection floor. Savepoint restore can therefore discard a parent without
+losing the earlier pin. The abstract model keeps `readEpoch` fixed; the storage
+savepoint regression checks this source-level refinement.
+
+Registering a child occurs while the
+parent still exists; dropping the parent cannot open a gap. A new snapshot of
+the live store cannot race its mutable cleanup borrow. Snapshot drops can only
+raise the minimum after cleanup reads it, making that observed minimum
+conservative. Mutex serialization protects registration and count removal.
+
+After successful durable checkpoint publication, and on the in-memory
+checkpoint path, cleanup removes only tombstones strictly below the minimum.
+With no snapshots it uses `commit_epoch.saturating_add(1)`; saturation at the
+maximum epoch conservatively retains equal-epoch stamps. Failed checkpoint
+publication never invokes cleanup. No stamp update enters the WAL or changes
+canonical rows. Existing historical COW maps remain immutable.
+
+The storage tests cover both durable and in-memory checkpoints, an old source
+that outlives its initial writer, a later writer created from that source,
+savepoint restore after multiple staged statements, exact watermark equality, a newer snapshot that does not block older deletion
+cleanup, preservation of live stamps, and 32 unpinned create/delete/checkpoint
+cycles. Disabling snapshot registration makes the retention test fail before
+its conflicting writer can commit. A separate helper test verifies that a
+cleanup with no eligible tombstones does not detach shared COW pages.
+
+Cleanup scans the index and may detach shared pages when entries are removed;
+it is checkpoint maintenance, not an extra per-commit scan. This change does
+not establish a global version-memory budget or bounded checkpoint latency.
+Long-lived snapshots may retain deletion stamps, and live stamps are not
+pruned. Full #231 resource qualification remains outstanding.
 
 ## Reopen regression coverage
 
@@ -176,6 +220,6 @@ barrier. Temporarily removing `VersionIndex::apply` from the commit path makes
 both tests fail because the stale writer incorrectly succeeds; this negative
 control is not part of the committed production code.
 
-Still required: source-level completeness of the collector, production version
-cleanup driven by the watermark and bounded reclamation, canonical recovery tests across
+Still required: source-level completeness of the collector, global version
+resource bounds and representative reclamation qualification, canonical recovery tests across
 actual WAL/checkpoint boundaries, and the #232 fairness/scaling qualification.

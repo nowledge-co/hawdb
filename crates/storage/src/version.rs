@@ -22,6 +22,60 @@
 use crate::{AdjacencyDirection, CowPageWeight, CowSegmentedMap, NodeId, RelId, RelationalKey};
 use std::collections::BTreeMap;
 use std::fmt::{self, Display, Formatter};
+use std::sync::{Arc, Mutex};
+
+// All storage snapshots register, including transaction workspaces, savepoints,
+// and snapshots from which another transaction might later be created.
+#[derive(Debug, Clone, Default)]
+pub(crate) struct VersionSnapshotPins(Arc<Mutex<BTreeMap<u64, usize>>>);
+
+#[derive(Debug)]
+pub(crate) struct VersionSnapshotPin {
+    epoch: u64,
+    pins: VersionSnapshotPins,
+}
+
+impl VersionSnapshotPins {
+    pub(crate) fn pin(&self, epoch: u64) -> VersionSnapshotPin {
+        let mut pins = self.0.lock().expect("version snapshot pins lock poisoned");
+        *pins.entry(epoch).or_default() += 1;
+        VersionSnapshotPin {
+            epoch,
+            pins: self.clone(),
+        }
+    }
+
+    pub(crate) fn oldest_epoch(&self) -> Option<u64> {
+        self.0
+            .lock()
+            .expect("version snapshot pins lock poisoned")
+            .first_key_value()
+            .map(|(&epoch, _)| epoch)
+    }
+}
+
+impl VersionSnapshotPin {
+    pub(crate) fn epoch(&self) -> u64 {
+        self.epoch
+    }
+}
+
+impl Drop for VersionSnapshotPin {
+    fn drop(&mut self) {
+        let mut pins = self
+            .pins
+            .0
+            .lock()
+            .expect("version snapshot pins lock poisoned");
+        let count = pins
+            .get_mut(&self.epoch)
+            .expect("registered version snapshot pin");
+        *count -= 1;
+        if *count == 0 {
+            pins.remove(&self.epoch);
+        }
+    }
+}
 
 pub const DEFAULT_MAX_VERSION_WRITE_SET_ENTRIES: usize = crate::DEFAULT_MAX_WAL_BATCH_OPERATIONS;
 
@@ -273,6 +327,14 @@ impl VersionIndex {
     /// Removes tombstones only after every pinned reader is newer than the
     /// deletion that created them. Live stamps are retained indefinitely.
     pub fn prune_tombstones_before(&mut self, oldest_reader_epoch: u64) {
+        // A retained snapshot shares these pages. Avoid detaching all pages
+        // when the watermark has not made any tombstone reclaimable.
+        if !self.stamps.iter().any(|(_, stamp)| {
+            stamp.disposition == VersionDisposition::Tombstone
+                && stamp.commit_epoch < oldest_reader_epoch
+        }) {
+            return;
+        }
         self.stamps.retain(|_, stamp| {
             stamp.disposition != VersionDisposition::Tombstone
                 || stamp.commit_epoch >= oldest_reader_epoch
@@ -292,6 +354,23 @@ mod tests {
         DEFAULT_MAX_VERSION_WRITE_SET_ENTRIES,
     };
     use crate::NodeId;
+
+    #[test]
+    fn non_reclaiming_prune_preserves_shared_pages() {
+        let mut writes = VersionWriteSet::default();
+        writes
+            .record_tombstone(VersionKey::GraphNode(NodeId(1)))
+            .unwrap();
+        let mut index = VersionIndex::default();
+        index.apply(&writes, 5);
+        let snapshot = index.clone();
+        index.prune_tombstones_before(5);
+        assert!(index.shares_storage_with(&snapshot));
+        index.prune_tombstones_before(6);
+        assert!(!index.shares_storage_with(&snapshot));
+        assert_eq!(index.len(), 0);
+        assert_eq!(snapshot.len(), 1);
+    }
 
     #[test]
     fn validation_accepts_disjoint_writes_and_rejects_newer_same_key() {

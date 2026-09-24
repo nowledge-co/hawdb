@@ -16,6 +16,6 @@ The negative controls prove that the bounded models exercise these failures:
 - partial publication of a mixed graph/row/append transaction.
 
 The per-key MVCC controls additionally reject skipped validation, either missing
-broad-barrier direction, premature tombstone cleanup, index reset with live
+broad-barrier direction, premature tombstone cleanup, ignored retained source snapshots, index reset with live
 transactions, and publication before sync. See
 [the model proof and scope](../MVCC_VALIDATION_PROOF.md).

@@ -254,6 +254,11 @@ impl ConcurrentDatabase {
         let source = self.inner.commits.lock()?.checkpoint_source()?;
         let prepared = source.prepare()?;
         let Some(prepared) = prepared else {
+            self.inner
+                .commits
+                .lock()?
+                .store
+                .reclaim_version_tombstones();
             return Ok(());
         };
         self.inner

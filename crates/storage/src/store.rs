@@ -722,6 +722,8 @@ pub struct GraphStore {
     next_rel_id: u64,
     commit_epoch: u64,
     version_index: hawdb_storage::version::VersionIndex,
+    version_snapshot_pins: hawdb_storage::version::VersionSnapshotPins,
+    version_snapshot_pin: Option<hawdb_storage::version::VersionSnapshotPin>,
     nodes: CowSegmentedMap<NodeId, NodeRecord>,
     relationships: CowSegmentedMap<RelId, RelRecord>,
     basic_statistics: BasicGraphStatistics,
@@ -1602,6 +1604,8 @@ impl GraphStore {
             next_rel_id: 0,
             commit_epoch: 0,
             version_index: hawdb_storage::version::VersionIndex::default(),
+            version_snapshot_pins: Default::default(),
+            version_snapshot_pin: None,
             nodes: CowSegmentedMap::default(),
             relationships: CowSegmentedMap::default(),
             basic_statistics: BasicGraphStatistics::default(),
@@ -1988,11 +1992,21 @@ impl GraphStore {
     }
 
     pub fn snapshot(&self) -> Self {
+        // Private statement execution can advance commit_epoch without
+        // advancing the transaction's read epoch. A savepoint or descendant
+        // must inherit the original protection floor, even after restore
+        // drops its parent workspace.
+        let pin_epoch = self
+            .version_snapshot_pin
+            .as_ref()
+            .map_or(self.commit_epoch, |pin| pin.epoch().min(self.commit_epoch));
         Self {
             next_node_id: self.next_node_id,
             next_rel_id: self.next_rel_id,
             commit_epoch: self.commit_epoch,
             version_index: self.version_index.clone(),
+            version_snapshot_pins: self.version_snapshot_pins.clone(),
+            version_snapshot_pin: Some(self.version_snapshot_pins.pin(pin_epoch)),
             nodes: self.nodes.clone(),
             relationships: self.relationships.clone(),
             basic_statistics: self.basic_statistics.clone(),
@@ -3133,6 +3147,194 @@ mod tests {
     use std::fs::{self, OpenOptions};
     use std::io::Write;
     use std::num::{NonZeroU64, NonZeroUsize};
+
+    #[test]
+    fn version_tombstone_checkpoint_waits_for_storage_snapshots_and_transactions() {
+        use crate::version::{VersionDisposition, VersionKey};
+        for durable in [false, true] {
+            let path = unique_test_dir("version_tombstone_pins");
+            let mut catalog = Catalog::default();
+            let mut store = if durable {
+                GraphStore::open(&path, &mut catalog).unwrap()
+            } else {
+                GraphStore::default()
+            };
+            let id = store
+                .create_node(
+                    &mut catalog,
+                    "Memory",
+                    properties([("value", Value::Int(0))]),
+                )
+                .unwrap();
+            let key = VersionKey::GraphNode(id);
+            let source = store.snapshot();
+            let mut stale = source.begin_mutation_transaction(&catalog);
+            stale
+                .stage_mutation_with_limits(
+                    GraphMutation::SetNodeProperty {
+                        label: "Memory".into(),
+                        filter: None,
+                        property: "value".into(),
+                        value: Value::Int(1),
+                    },
+                    MutationLimits::default(),
+                )
+                .unwrap();
+            store
+                .commit_mutations(
+                    &mut catalog,
+                    vec![GraphMutation::DeleteNode {
+                        label: "Memory".into(),
+                        filter: None,
+                        detach: false,
+                    }],
+                )
+                .unwrap();
+            let deleted = store.version_index.stamp(&key).unwrap();
+            assert_eq!(deleted.disposition, VersionDisposition::Tombstone);
+            store.checkpoint(&catalog).unwrap();
+            assert_eq!(store.version_index.stamp(&key), Some(deleted));
+            let error = store
+                .commit_mutation_transaction_and_relational(
+                    &mut catalog,
+                    stale,
+                    RelationalTransaction::default(),
+                    MutationLimits::default(),
+                )
+                .unwrap_err();
+            assert!(error.is_retryable_transaction_conflict());
+            // A source snapshot can start a transaction later. It must retain
+            // protection even after the original transaction has retired.
+            let later = source.begin_mutation_transaction(&catalog);
+            drop(source);
+            store.checkpoint(&catalog).unwrap();
+            assert_eq!(store.version_index.stamp(&key), Some(deleted));
+            drop(later);
+            let equal_epoch = store.snapshot();
+            store.checkpoint(&catalog).unwrap();
+            assert_eq!(store.version_index.stamp(&key), Some(deleted));
+            drop(equal_epoch);
+            let next_id = NodeId(store.next_node_id);
+            store
+                .commit_mutations(
+                    &mut catalog,
+                    vec![GraphMutation::CreateNode {
+                        label: "Memory".into(),
+                        properties: properties([("value", Value::Int(2))]),
+                    }],
+                )
+                .unwrap();
+            let newer = store.snapshot();
+            let live_key = VersionKey::GraphNode(next_id);
+            let live = store.version_index.stamp(&live_key).unwrap();
+            store.checkpoint(&catalog).unwrap();
+            assert_eq!(store.version_index.stamp(&key), None);
+            assert_eq!(store.version_index.stamp(&live_key), Some(live));
+            assert_eq!(newer.version_index.stamp(&key), Some(deleted));
+            drop(newer);
+            drop(store);
+            if durable {
+                fs::remove_dir_all(path).unwrap();
+            }
+        }
+    }
+
+    #[test]
+    fn version_tombstone_checkpoint_preserves_base_epoch_after_savepoint_restore() {
+        let mut store = GraphStore::default();
+        let mut catalog = Catalog::default();
+        let id = store
+            .create_node(
+                &mut catalog,
+                "Memory",
+                properties([("value", Value::Int(0))]),
+            )
+            .unwrap();
+        let key = crate::version::VersionKey::GraphNode(id);
+        let mut transaction = store.begin_mutation_transaction(&catalog);
+        for value in 1..=2 {
+            transaction
+                .stage_mutation_with_limits(
+                    GraphMutation::SetNodeProperty {
+                        label: "Memory".into(),
+                        filter: None,
+                        property: "value".into(),
+                        value: Value::Int(value),
+                    },
+                    MutationLimits::default(),
+                )
+                .unwrap();
+        }
+        let savepoint = transaction.savepoint();
+        transaction
+            .stage_mutation_with_limits(
+                GraphMutation::SetNodeProperty {
+                    label: "Memory".into(),
+                    filter: None,
+                    property: "value".into(),
+                    value: Value::Int(3),
+                },
+                MutationLimits::default(),
+            )
+            .unwrap();
+        transaction.restore(savepoint);
+        store
+            .commit_mutations(
+                &mut catalog,
+                vec![GraphMutation::DeleteNode {
+                    label: "Memory".into(),
+                    filter: None,
+                    detach: false,
+                }],
+            )
+            .unwrap();
+        let deleted = store.version_index.stamp(&key).unwrap();
+        store.checkpoint(&catalog).unwrap();
+        assert_eq!(store.version_index.stamp(&key), Some(deleted));
+        assert!(store
+            .commit_mutation_transaction_and_relational(
+                &mut catalog,
+                transaction,
+                RelationalTransaction::default(),
+                MutationLimits::default(),
+            )
+            .unwrap_err()
+            .is_retryable_transaction_conflict());
+    }
+
+    #[test]
+    fn version_tombstone_checkpoint_bounds_unpinned_delete_churn() {
+        let mut store = GraphStore::default();
+        let mut catalog = Catalog::default();
+        for value in 0..32 {
+            store
+                .commit_mutations(
+                    &mut catalog,
+                    vec![GraphMutation::CreateNode {
+                        label: "Memory".into(),
+                        properties: properties([("value", Value::Int(value))]),
+                    }],
+                )
+                .unwrap();
+            store
+                .commit_mutations(
+                    &mut catalog,
+                    vec![GraphMutation::DeleteNode {
+                        label: "Memory".into(),
+                        filter: None,
+                        detach: false,
+                    }],
+                )
+                .unwrap();
+            assert!(store
+                .version_index
+                .stamp(&crate::version::VersionKey::GraphNode(NodeId(value as u64)))
+                .is_some());
+            store.checkpoint(&catalog).unwrap();
+            // Only the schema barrier may remain after all nodes were deleted.
+            assert!(store.version_index.len() <= 1);
+        }
+    }
 
     #[test]
     fn user_snapshot_observes_fatal_single_and_batch_wal_errors_but_allows_recoverable_append() {

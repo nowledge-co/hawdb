@@ -1777,7 +1777,10 @@ impl Database {
                         shadow_admission,
                     )
             }
-            None => Ok(()),
+            None => {
+                self.store.reclaim_version_tombstones();
+                Ok(())
+            }
         };
         if durable && let Some(telemetry) = &self.telemetry {
             telemetry.record_kernel(KernelTelemetry {

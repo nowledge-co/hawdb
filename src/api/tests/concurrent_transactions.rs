@@ -481,6 +481,46 @@ fn seed_mvcc_recovery_fixture(path: &std::path::Path, layout: &str) -> i64 {
 }
 
 #[test]
+fn optimistic_tombstone_conflict_survives_checkpoint_cleanup() {
+    for durable in [false, true] {
+        let path = super::unique_test_dir("optimistic_tombstone_checkpoint");
+        let db = if durable {
+            Database::open(&path).unwrap()
+        } else {
+            Database::new()
+        }
+        .into_concurrent();
+        db.query("CREATE (:Memory {id: 1, value: 0})").unwrap();
+        let mut stale = db
+            .begin_transaction(ConcurrentTransactionOptions::optimistic())
+            .unwrap();
+        stale
+            .query("MATCH (m:Memory) WHERE m.id = 1 SET m.value = 9")
+            .unwrap();
+        db.query("MATCH (m:Memory) WHERE m.id = 1 DELETE m")
+            .unwrap();
+        db.checkpoint().unwrap();
+        let epoch = db.commit_epoch().unwrap();
+        let error = stale.commit().unwrap_err();
+        assert!(error.is_retryable_transaction_conflict());
+        assert!(
+            matches!(error, HawDBError::TransactionConflict { ref key, .. } if key == "graph_node")
+        );
+        assert_eq!(db.commit_epoch().unwrap(), epoch);
+        db.checkpoint().unwrap();
+        assert!(db
+            .query("MATCH (m:Memory) RETURN m.id AS id")
+            .unwrap()
+            .rows
+            .is_empty());
+        drop(db);
+        if durable {
+            std::fs::remove_dir_all(path).unwrap();
+        }
+    }
+}
+
+#[test]
 fn optimistic_mvcc_reopen_preserves_disjoint_commits_and_same_key_conflicts() {
     for layout in ["wal", "checkpoint", "checkpoint_tail"] {
         let path = super::unique_test_dir(&format!("mvcc_reopen_{layout}"));

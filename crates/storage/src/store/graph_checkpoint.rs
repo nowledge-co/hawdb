@@ -131,6 +131,17 @@ impl GraphStore {
         Ok(())
     }
 
+    /// Retires process-local deletion stamps after every storage snapshot has
+    /// advanced. This does not reclaim canonical generations or live stamps.
+    #[doc(hidden)]
+    pub fn reclaim_version_tombstones(&mut self) {
+        let watermark = self
+            .version_snapshot_pins
+            .oldest_epoch()
+            .unwrap_or_else(|| self.commit_epoch.saturating_add(1));
+        self.version_index.prune_tombstones_before(watermark);
+    }
+
     pub fn checkpoint(&mut self, catalog: &Catalog) -> Result<()> {
         self.checkpoint_with_reader_epoch(catalog, None)
     }
@@ -415,6 +426,7 @@ impl GraphStore {
     ) -> Result<()> {
         let Some(prepared) = self.prepare_checkpoint_with_build_config(catalog, build_config)?
         else {
+            self.reclaim_version_tombstones();
             return Ok(());
         };
         self.publish_prepared_checkpoint(prepared, oldest_reader_commit_epoch)
@@ -1179,6 +1191,7 @@ impl GraphStore {
         if let Some(durable) = self.durable.as_mut() {
             durable.reclaim_old_generations(generation, pinned_reader_generations);
         }
+        self.reclaim_version_tombstones();
         Ok(())
     }
 
