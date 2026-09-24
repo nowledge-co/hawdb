@@ -273,3 +273,50 @@ itself and incompatible with ordinary S/X owners. The serialized version
 validator remains unchanged. See the [admission proof](OPTIMISTIC_COMMIT_ADMISSION_PROOF.md)
 for ownership through the shared sync, intra-group conflict validation and
 mixed-owner exclusion. Neither model establishes fair writer admission.
+
+## Write-set byte admission
+
+Let M map resident identities to dispositions, N be its entry limit, B its
+estimated-byte limit, and w(k) be `VersionKey::cow_page_bytes()` plus the inline
+`VersionWrite` size. The implemented invariant is:
+
+    |M| <= N  and  C = sum(k in dom(M), w(k)) <= B.
+
+Here C is `estimated_bytes`; the weight is the existing COW payload estimate,
+not allocator-resident bytes. A key weight that cannot be added representably
+is rejected. The invariant follows by induction on `record` calls:
+
+1. Empty construction sets C = 0 and M empty, including zero limits.
+2. If k is already resident, only its disposition changes. The resident key is
+   preserved, so neither the domain nor any resident weight changes. Admission
+   does not reject this replacement even when either budget is exactly full.
+3. If k is new and the entry budget is full, return before mutation.
+4. Otherwise checked additions compute C + w(k). Overflow or a result greater
+   than B returns before mutation, preserving M and C exactly. A successful
+   addition inserts k and then assigns the computed C. This preserves equality
+   and both inequalities. Clone copies M and C, so it also preserves them.
+
+The public methods cannot delete entries, mutate resident keys or change limits.
+Thus these cases cover all transitions. This is a source-level mathematical
+argument; the existing finite MVCC model does not model byte budgets. It need
+not change: successful collections retain exactly the same complete footprint,
+and rejected collections append no record. Commit proofs remain conditional on
+successful admission. An error after earlier collector insertions discards the
+local partial footprint rather than committing it as a complete write set.
+
+Tests enumerate all 6^4 operation sequences over three identity types and two
+dispositions at four budgets (5,184 cases). An independent index/disposition map
+recomputes the weight sum after every call, including rejection. Boundary tests
+cover a large text primary key, exact fit, one-byte-short rejection, duplicate
+disposition changes at capacity, and equality of the complete map after failure.
+A typed relational commit repeats a long table identity over otherwise small
+rows, exceeding the default version budget while passing row/payload admission;
+it rejects without advancing the commit epoch, stamps or canonical rows. Removing
+the byte guard makes this integration test fail (0 passed / 1 failed); the probe
+was restored before final validation.
+
+This bounds one retained write-set estimate, not allocations while constructing
+an incoming key, B-tree/allocator overhead, spare capacities, all concurrent
+write sets, or retained canonical/snapshot version pages. #231's total version
+memory acceptance remains open. The additional accounting cost is not a
+single-stream latency qualification.

@@ -57,8 +57,8 @@ are checked in one catalog pass rather than once per table. With T touched
 tables, S schemas and F foreign-key edges, dependency checking takes
 O(S + F log(T + 1)) work after classification, and retains only the touched-table
 map and primary-key positions. This does not bound the resident catalog itself.
-The shared VersionWriteSet entry cap applies while adding row keys. A failure
-discards local preparation before WAL or canonical mutation.
+The shared VersionWriteSet entry and estimated-byte caps apply while adding row
+keys. A failure discards local preparation before WAL or canonical mutation.
 
 Optimistic validation runs before relational staging so a stale duplicate INSERT
 produces a typed retryable conflict instead of being masked by the canonical
@@ -104,4 +104,5 @@ fails the disjoint-key integration regression.
 Still open: narrower predicate/UPSERT/constraint footprints, full version-memory
 bounds, complete recovery/refinement composition, retry fairness and workload
 latency qualification. Primary-key and table-name payloads use existing page
-weight accounting; an entry cap is not a global memory guarantee.
+weight accounting; the per-write-set estimate excludes allocator overhead and
+is not a global memory guarantee.

@@ -2868,6 +2868,17 @@ mod tests {
             bounded.iter().next().unwrap().1.disposition,
             hawdb_storage::version::VersionDisposition::Tombstone
         );
+        let mut byte_bounded = VersionWriteSet::with_limits(100, 1);
+        let error = collect_relational_version_writes(
+            &mut byte_bounded,
+            &RelationalTransaction {
+                writes: vec![relational_mvcc_insert(3, "a")],
+            },
+            &store.relational_state,
+        )
+        .unwrap_err();
+        assert!(error.to_string().contains("1-byte estimated payload limit"));
+        assert!(byte_bounded.is_empty());
         let epoch = store.commit_epoch();
         store.relational_mutation_limits.max_rows = NonZeroUsize::new(1).unwrap();
         let error = store
@@ -2886,6 +2897,58 @@ mod tests {
         assert!(store
             .relational_state
             .row("rows", &RelationalKey(vec![RelationalValue::BigInt(3)]))
+            .is_none());
+    }
+
+    #[test]
+    fn relational_mvcc_default_byte_budget_rejects_before_publication() {
+        let (mut catalog, mut store) = relational_mvcc_fixture();
+        // Repeated table identity dominates the footprint while row count and
+        // relational payload remain comfortably within their own admissions.
+        let table = "t".repeat(4096);
+        let mut schema = store.relational_state.table_schema("rows").unwrap().clone();
+        schema.name = table.clone();
+        store
+            .commit_relational_transaction(
+                &mut catalog,
+                RelationalTransaction {
+                    writes: vec![RelationalWrite::CreateTable(schema)],
+                },
+            )
+            .unwrap();
+        let epoch = store.commit_epoch();
+        let stamps = store.version_index.len();
+        let rows = (0..4096)
+            .map(|id| {
+                hawdb_storage::RelationalRow::new(vec![
+                    RelationalValue::BigInt(id),
+                    RelationalValue::Text("a".into()),
+                ])
+            })
+            .collect();
+        let error = store
+            .commit_relational_transaction(
+                &mut catalog,
+                RelationalTransaction {
+                    writes: vec![RelationalWrite::Insert {
+                        table: table.clone(),
+                        rows,
+                        mode: hawdb_storage::RelationalInsertMode::Error,
+                    }],
+                },
+            )
+            .unwrap_err();
+        assert!(
+            error
+                .to_string()
+                .contains("16777216-byte estimated payload limit"),
+            "{error}"
+        );
+        assert_eq!(store.commit_epoch(), epoch);
+        assert_eq!(store.version_index.len(), stamps);
+        assert!(store
+            .relational_state
+            .row(&table, &RelationalKey(vec![RelationalValue::BigInt(0)]))
             .is_none());
     }
 

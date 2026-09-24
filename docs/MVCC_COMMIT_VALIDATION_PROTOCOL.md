@@ -73,11 +73,20 @@ identities still needs complete constraint and recovery coverage. Pessimistic SQ
 optimistic SQL validation. Legacy direct commits likewise use the conservative barrier;
 older optimistic workspaces retry even when their keys appear unrelated.
 
-`VersionWriteSet` contains a `BTreeMap<VersionKey, VersionWrite>` and an entry
-limit, defaulting to `DEFAULT_MAX_WAL_BATCH_OPERATIONS`. Repeated writes to a key
-replace its disposition without consuming another entry. The read epoch belongs
-to the transaction, not this map. The entry cap is not a byte budget for the
-whole version index, and does not bound lifetime tombstone accumulation.
+`VersionWriteSet` contains a `BTreeMap<VersionKey, VersionWrite>` with entry
+and estimated-byte limits. Defaults are `DEFAULT_MAX_WAL_BATCH_OPERATIONS`
+and `DEFAULT_MAX_WAL_RECORD_BYTES` (16 MiB), respectively. `with_limits` permits
+explicit budgets; `new(max_entries)` keeps the default byte budget. Charges use
+`VersionKey::cow_page_bytes()` plus the inline `VersionWrite` size. Repeated keys
+retain their resident key and only replace disposition, without charging again.
+Checked addition rejects overflow or a byte-budget breach before map mutation.
+Collectors propagate failure before WAL publication and discard partial local
+preparation. See the [admission proof](tla/MVCC_VALIDATION_PROOF.md#write-set-byte-admission).
+
+This is an estimated retained key/write payload budget, excluding B-tree node
+and allocator overhead, spare capacity and the incoming key allocation. It is
+not a global bound across transactions, canonical/history COW pages or snapshot
+lifetimes. The read epoch belongs to the transaction, not this map.
 
 ## Commit and visibility order
 

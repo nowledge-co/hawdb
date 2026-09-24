@@ -77,6 +77,9 @@ impl Drop for VersionSnapshotPin {
     }
 }
 
+/// Estimated retained key/write bytes, excluding allocator and B-tree overhead.
+pub const DEFAULT_MAX_VERSION_WRITE_SET_BYTES: usize = crate::DEFAULT_MAX_WAL_RECORD_BYTES;
+
 pub const DEFAULT_MAX_VERSION_WRITE_SET_ENTRIES: usize = crate::DEFAULT_MAX_WAL_BATCH_OPERATIONS;
 
 /// A mutable identity whose latest committed version participates in optimistic
@@ -171,6 +174,8 @@ pub struct VersionWrite {
 pub struct VersionWriteSet {
     writes: BTreeMap<VersionKey, VersionWrite>,
     max_entries: usize,
+    max_bytes: usize,
+    estimated_bytes: usize,
 }
 
 impl Default for VersionWriteSet {
@@ -181,10 +186,21 @@ impl Default for VersionWriteSet {
 
 impl VersionWriteSet {
     pub fn new(max_entries: usize) -> Self {
+        Self::with_limits(max_entries, DEFAULT_MAX_VERSION_WRITE_SET_BYTES)
+    }
+
+    /// Limits retained key/write estimates, not total allocator or process memory.
+    pub fn with_limits(max_entries: usize, max_bytes: usize) -> Self {
         Self {
             writes: BTreeMap::new(),
             max_entries,
+            max_bytes,
+            estimated_bytes: 0,
         }
+    }
+
+    pub fn estimated_bytes(&self) -> usize {
+        self.estimated_bytes
     }
 
     pub fn len(&self) -> usize {
@@ -216,12 +232,27 @@ impl VersionWriteSet {
         key: VersionKey,
         disposition: VersionDisposition,
     ) -> Result<(), VersionWriteSetError> {
-        if !self.writes.contains_key(&key) && self.writes.len() >= self.max_entries {
+        // Preserve the resident key on replacement: equal logical keys may
+        // carry different allocation capacities, which this estimate excludes.
+        if let Some(write) = self.writes.get_mut(&key) {
+            write.disposition = disposition;
+            return Ok(());
+        }
+        if self.writes.len() >= self.max_entries {
             return Err(VersionWriteSetError::LimitExceeded {
                 max_entries: self.max_entries,
             });
         }
+        let next_bytes = key
+            .cow_page_bytes()
+            .checked_add(std::mem::size_of::<VersionWrite>())
+            .and_then(|bytes| self.estimated_bytes.checked_add(bytes))
+            .filter(|bytes| *bytes <= self.max_bytes)
+            .ok_or(VersionWriteSetError::ByteLimitExceeded {
+                max_bytes: self.max_bytes,
+            })?;
         self.writes.insert(key, VersionWrite { disposition });
+        self.estimated_bytes = next_bytes;
         Ok(())
     }
 }
@@ -229,6 +260,7 @@ impl VersionWriteSet {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum VersionWriteSetError {
     LimitExceeded { max_entries: usize },
+    ByteLimitExceeded { max_bytes: usize },
 }
 
 impl Display for VersionWriteSetError {
@@ -237,6 +269,10 @@ impl Display for VersionWriteSetError {
             Self::LimitExceeded { max_entries } => write!(
                 formatter,
                 "transaction version write set exceeds its {max_entries}-entry limit"
+            ),
+            Self::ByteLimitExceeded { max_bytes } => write!(
+                formatter,
+                "transaction version write set exceeds its {max_bytes}-byte estimated payload limit"
             ),
         }
     }
@@ -471,6 +507,98 @@ mod tests {
         assert!(writes
             .record_live(VersionKey::GraphNode(NodeId(2)))
             .is_err());
+    }
+
+    #[test]
+    fn write_set_byte_admission_preserves_replacements_and_rejects_atomically() {
+        use super::{VersionWrite, VersionWriteSetError};
+        use crate::{CowPageWeight, RelationalKey, RelationalValue};
+        let key = VersionKey::RelationalRow {
+            table: "records".into(),
+            primary_key: RelationalKey(vec![RelationalValue::Text("large-key".repeat(100))]),
+        };
+        let bytes = key.cow_page_bytes() + std::mem::size_of::<VersionWrite>();
+        let mut writes = VersionWriteSet::with_limits(10, bytes);
+        writes.record_live(key.clone()).unwrap();
+        assert_eq!(writes.estimated_bytes(), bytes);
+        writes.record_tombstone(key.clone()).unwrap();
+        assert_eq!(writes.estimated_bytes(), bytes);
+        assert_eq!(
+            writes.iter().next().unwrap().1.disposition,
+            VersionDisposition::Tombstone
+        );
+        let before = writes.clone();
+        assert_eq!(
+            writes.record_live(VersionKey::GraphNode(NodeId(2))),
+            Err(VersionWriteSetError::ByteLimitExceeded { max_bytes: bytes })
+        );
+        assert_eq!(writes, before);
+        let mut too_small = VersionWriteSet::with_limits(10, bytes - 1);
+        assert!(matches!(
+            too_small.record_live(key),
+            Err(VersionWriteSetError::ByteLimitExceeded { .. })
+        ));
+        assert!(too_small.is_empty());
+        assert_eq!(too_small.estimated_bytes(), 0);
+    }
+
+    #[test]
+    fn write_set_byte_accounting_matches_independent_sequences() {
+        use crate::CowPageWeight;
+        let keys = [
+            VersionKey::Database,
+            VersionKey::GraphNode(NodeId(1)),
+            VersionKey::AppendTable("events".into()),
+        ];
+        let weights = keys
+            .each_ref()
+            .map(|key| key.cow_page_bytes() + std::mem::size_of::<super::VersionWrite>());
+        // Every four-operation sequence, both dispositions and several byte
+        // boundaries. The oracle stores only key indices and recomputes sums.
+        for budget in [0, weights[0], weights[0] + weights[1], weights.iter().sum()] {
+            for sequence in 0usize..6usize.pow(4) {
+                let mut writes = VersionWriteSet::with_limits(3, budget);
+                let mut expected = std::collections::BTreeMap::new();
+                let mut code = sequence;
+                for _ in 0..4 {
+                    let op = code % 6;
+                    code /= 6;
+                    let id = op / 2;
+                    let disposition = if op % 2 == 0 {
+                        VersionDisposition::Live
+                    } else {
+                        VersionDisposition::Tombstone
+                    };
+                    let old_bytes: usize = expected.keys().map(|id: &usize| weights[*id]).sum();
+                    let admitted = expected.contains_key(&id) || old_bytes + weights[id] <= budget;
+                    let result = if disposition == VersionDisposition::Live {
+                        writes.record_live(keys[id].clone())
+                    } else {
+                        writes.record_tombstone(keys[id].clone())
+                    };
+                    assert_eq!(result.is_ok(), admitted);
+                    if admitted {
+                        expected.insert(id, disposition);
+                    }
+                    assert_eq!(
+                        writes.estimated_bytes(),
+                        expected.keys().map(|id| weights[*id]).sum::<usize>()
+                    );
+                    assert_eq!(writes.len(), expected.len());
+                    for (id, disposition) in &expected {
+                        assert_eq!(
+                            writes
+                                .iter()
+                                .find(|(key, _)| **key == keys[*id])
+                                .unwrap()
+                                .1
+                                .disposition,
+                            *disposition
+                        );
+                    }
+                }
+            }
+        }
     }
 
     #[test]
