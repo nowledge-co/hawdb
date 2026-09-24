@@ -48,13 +48,22 @@ use crate::error::{HawDBError, Result};
 use crate::schema::GraphStatistics;
 use hawdb_integrity::Sha256Digest;
 use hawdb_storage::{
-    AppendGenerationArtifacts, AppendGenerationReader, CanonicalAdjacencyGenerationArtifacts,
-    CanonicalAdjacencyReader, CanonicalSegmentReader, DatabaseDirectoryLease, DurabilityPolicy,
-    FileSegmentRangeReader, GraphDescriptorTreeBuildConfig, ManifestGeneration,
-    PersistentPropertyProjectionReader, RelationalIndexGenerationArtifacts,
-    RelationalOverflowGenerationArtifacts, RelationalRowPageGenerationArtifacts, RelationalState,
-    SegmentCache, StableIdentityMappingError, StableIdentityMappingReader, StorageTelemetrySink,
-    StoreId, WalReplayConfig, WalSyncGroupState,
+    append_table::{AppendGenerationArtifacts, AppendGenerationReader},
+    cache::{ManifestGeneration, SegmentCache, StoreId},
+    canonical::CanonicalSegmentReader,
+    canonical_adjacency::{CanonicalAdjacencyGenerationArtifacts, CanonicalAdjacencyReader},
+    config::{DurabilityPolicy, WalReplayConfig},
+    durability::WalSyncGroupState,
+    graph_descriptor_tree::GraphDescriptorTreeBuildConfig,
+    ownership::DatabaseDirectoryLease,
+    property_projection::PersistentPropertyProjectionReader,
+    relational::{
+        RelationalIndexGenerationArtifacts, RelationalOverflowGenerationArtifacts,
+        RelationalRowPageGenerationArtifacts, RelationalState,
+    },
+    scan::FileSegmentRangeReader,
+    stable_identity::{StableIdentityMappingError, StableIdentityMappingReader},
+    telemetry::StorageTelemetrySink,
 };
 use std::collections::BTreeMap;
 use std::fs::{self, File};
@@ -108,7 +117,7 @@ pub(super) struct DurableStore {
     pub(super) wal_replay_start_lsn: u64,
     pub(super) next_lsn: u64,
     pub(super) wal_bytes: u64,
-    pub(super) wal_tail_repair: Option<hawdb_storage::WalTailRepairReport>,
+    pub(super) wal_tail_repair: Option<hawdb_storage::doctor::WalTailRepairReport>,
     /// Commit epoch recorded in binary WAL records (spec §3.4.3). Advisory:
     /// replay derives commit epochs from LSN order, exactly as before.
     pub(super) wal_commit_epoch: u64,
@@ -244,7 +253,7 @@ impl DurableStore {
                 max_record_bytes: replay_config.max_record_bytes,
                 max_batch_operations: replay_config.max_batch_operations,
                 automatic_tail_repair: (replay_config.recovery_mode
-                    == hawdb_storage::RecoveryMode::AutoRepairTornTail)
+                    == hawdb_storage::config::RecoveryMode::AutoRepairTornTail)
                     .then_some(replay_config),
             },
         )

@@ -21,7 +21,7 @@ use crate::result_delivery::OutputMetrics;
 use crate::{ExecutionLimit, PipelineMemoryReport, QueryMemoryLedger, ReadExecutionProfile};
 use hawdb_core::Result;
 use hawdb_plan_cypher::PhysicalPlan;
-use hawdb_storage::ScanPruningReport;
+use hawdb_storage::scan::ScanPruningReport;
 
 pub fn read_execution_profile(
     plan: &PhysicalPlan,

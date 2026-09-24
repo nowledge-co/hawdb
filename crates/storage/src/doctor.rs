@@ -28,9 +28,9 @@ pub struct WalDoctorOptions {
 impl Default for WalDoctorOptions {
     fn default() -> Self {
         Self {
-            max_wal_bytes: Some(crate::DEFAULT_MAX_WAL_REPLAY_BYTES),
-            max_record_bytes: Some(crate::DEFAULT_MAX_WAL_RECORD_BYTES),
-            max_batch_operations: Some(crate::DEFAULT_MAX_WAL_BATCH_OPERATIONS),
+            max_wal_bytes: Some(crate::config::DEFAULT_MAX_WAL_REPLAY_BYTES),
+            max_record_bytes: Some(crate::config::DEFAULT_MAX_WAL_RECORD_BYTES),
+            max_batch_operations: Some(crate::config::DEFAULT_MAX_WAL_BATCH_OPERATIONS),
         }
     }
 }

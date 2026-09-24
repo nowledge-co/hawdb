@@ -25,8 +25,8 @@ use super::{
     RelationalOverflowRootReader, CANDIDATE_PUBLICATION_TRACE, COMPLETE_PUBLICATION_TRACE,
     RELATIONAL_OVERFLOW_MANIFEST_FILE, RELATIONAL_OVERFLOW_PUBLICATION_LOCK_FILE,
 };
+use crate::durability::{durable_replace_file, sync_directory};
 use crate::relational::RelationalError;
-use crate::{durable_replace_file, sync_directory};
 use hawdb_integrity::{integrity_digest, IntegrityHasher};
 use std::fs::{self, File, OpenOptions};
 use std::io::Write;

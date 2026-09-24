@@ -169,7 +169,7 @@ fn events(observer: &QueryExecutionObserver, plan: &PhysicalPlan, rows: usize) {
         GraphExpansionTruncationReason, VectorCompressionMode, VectorExecutionBackend,
         VectorExecutionReport, VectorScoreSource,
     };
-    use hawdb_storage::{ScanPruningStrategy, ScanPruningTargetKind};
+    use hawdb_storage::scan::{ScanPruningStrategy, ScanPruningTargetKind};
 
     observer.record_operator_start(plan);
     observer.record_operator_output(plan, rows);

@@ -41,7 +41,7 @@ use crate::{decode_search_segment_documents_bounded, validate_search_segment_doc
 use crate::{
     RuntimeCapabilities, RuntimeCapability, SearchLexicalSourcePolicy, SearchLexicalTermPolicy,
 };
-use hawdb_storage::durable_replace_file;
+use hawdb_storage::durability::durable_replace_file;
 use serde::{Deserialize, Serialize};
 use std::cmp::{Ordering as CmpOrdering, Reverse};
 use std::collections::{BTreeMap, BTreeSet, BinaryHeap};

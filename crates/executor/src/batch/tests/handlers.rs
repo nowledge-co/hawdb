@@ -44,7 +44,7 @@ fn graph_algorithm_fixture() -> (Catalog, ReadFixture) {
             rel_type,
             properties: BTreeMap::new(),
         }],
-        definition: Some(hawdb_storage::ProjectedGraphDefinition {
+        definition: Some(hawdb_storage::projection::ProjectedGraphDefinition {
             node_labels: vec!["Memory".to_string()],
             rel_types: vec!["MENTIONS".to_string()],
         }),

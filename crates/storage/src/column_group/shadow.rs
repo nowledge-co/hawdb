@@ -101,8 +101,8 @@ pub const DEFAULT_SHADOW_BUFFER_BUDGET_BYTES: u64 = 64 * 1024 * 1024;
 pub struct ColumnarShadowState {
     pub enabled: bool,
     pub all_dirty: bool,
-    pub dirty: std::collections::BTreeSet<crate::ColumnGroupTableKey>,
-    pub catalog: Option<crate::PublishedColumnGroupCatalog>,
+    pub dirty: std::collections::BTreeSet<crate::column_group::manifest::ColumnGroupTableKey>,
+    pub catalog: Option<crate::column_group::manifest::PublishedColumnGroupCatalog>,
     pub buffer_budget_bytes: u64,
     pub metadata_budget_bytes: u64,
     pub recovery: ColumnarShadowRecoveryStatus,

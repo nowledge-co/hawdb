@@ -21,13 +21,13 @@ use super::{
     RowDeltaValue, COMPLETE_PUBLICATION_TRACE, RELATIONAL_ROW_DELTA_MANIFEST_FILE,
     RELATIONAL_ROW_DELTA_PUBLICATION_LOCK_FILE,
 };
+use crate::durability::{durable_replace_file, sync_directory};
 use crate::relational::row_page::{RelationalRowPageRecoveredValue, RelationalRowPageRootReader};
 use crate::relational::{
     ordered_key::encode_ordered_relational_key, RelationalKey, RelationalOverflowRootReader,
     RelationalRecoverySourceIdentity, RelationalRowChange, RelationalRowChangeCapture,
     RelationalRowChangeCaptureLimits, RelationalRowPagePublicationConfig, RelationalState,
 };
-use crate::{durable_replace_file, sync_directory};
 use std::collections::BTreeMap;
 use std::fs::{self, File, OpenOptions};
 use std::io::Write;

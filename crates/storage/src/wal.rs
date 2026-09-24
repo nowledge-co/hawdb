@@ -22,7 +22,7 @@ use crate::text::{
     encode_string, encode_string_vec, encode_table_kind, encode_value,
 };
 pub use crate::wire;
-use crate::{CowSegmentedMap, NodeId, NodeRecord, RelId, RelRecord};
+use crate::{cow::CowSegmentedMap, NodeId, NodeRecord, RelId, RelRecord};
 pub use group_commit::{
     WalGroupCommitActivation, WalGroupCommitAdaptiveColdStartEvidence,
     WalGroupCommitAdaptivePolicyEvidence, WalGroupCommitAdaptiveSteadyStateEvidence,
@@ -62,7 +62,7 @@ pub fn quarantine_corrupt_wal(
         .ok_or_else(|| HawDBError::Storage("WAL path has no database directory".to_string()))?;
     let quarantine_dir = root.join("quarantine");
     fs::create_dir_all(&quarantine_dir)?;
-    crate::sync_parent_directory(&quarantine_dir)?;
+    crate::durability::sync_parent_directory(&quarantine_dir)?;
 
     let (wal_len, wal_sha256) = wal_file_identity(path)?;
     let quarantine_path = quarantine_dir.join(format!(
@@ -95,16 +95,16 @@ pub fn quarantine_corrupt_wal(
     }
 
     if wal_len > max_quarantine_bytes {
-        crate::sync_parent_directory(&quarantine_path)?;
+        crate::durability::sync_parent_directory(&quarantine_path)?;
         return Ok(());
     }
     if existing_copy {
-        crate::sync_parent_directory(&quarantine_path)?;
+        crate::durability::sync_parent_directory(&quarantine_path)?;
         return Ok(());
     }
 
     copy_wal_exclusive(path, &quarantine_path, (wal_len, wal_sha256))?;
-    crate::sync_parent_directory(&quarantine_path)?;
+    crate::durability::sync_parent_directory(&quarantine_path)?;
     Ok(())
 }
 

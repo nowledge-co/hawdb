@@ -17,13 +17,16 @@ use crate::graph_descriptor_tree::demand::{
     GraphDescriptorTreeScanControl,
 };
 use crate::{
-    content_digest, durable_replace_file, ContentDigest, FileSegmentRangeReader,
-    GraphDescriptorKind, GraphDescriptorPageError, GraphDescriptorTreeArtifactMetadata,
-    GraphDescriptorTreeBuildConfig, GraphDescriptorTreeBuilder, GraphDescriptorTreeError,
-    GraphDescriptorTreeGenerationArtifacts, GraphDescriptorTreePaths,
-    GraphDescriptorTreeRootReader, GraphDescriptorTreeWriteOutput, ManifestGeneration,
-    PreparedGraphDescriptorTree, SegmentCache, SegmentRangeRead, SegmentReadError,
-    SegmentReadRange, StoreId,
+    cache::{content_digest, ContentDigest, ManifestGeneration, SegmentCache, StoreId},
+    durability::durable_replace_file,
+    graph_descriptor_page::{GraphDescriptorKind, GraphDescriptorPageError},
+    graph_descriptor_tree::{
+        GraphDescriptorTreeArtifactMetadata, GraphDescriptorTreeBuildConfig,
+        GraphDescriptorTreeBuilder, GraphDescriptorTreeError,
+        GraphDescriptorTreeGenerationArtifacts, GraphDescriptorTreePaths,
+        GraphDescriptorTreeRootReader, GraphDescriptorTreeWriteOutput, PreparedGraphDescriptorTree,
+    },
+    scan::{FileSegmentRangeReader, SegmentRangeRead, SegmentReadError, SegmentReadRange},
 };
 use hawdb_integrity::{Crc32cHasher, IntegrityHasher, Sha256Digest};
 use std::error::Error;
@@ -1323,7 +1326,7 @@ mod tests {
             output.descriptor_tree.root.kind,
             GraphDescriptorKind::PropertySpill
         );
-        let root_reader = crate::GraphDescriptorTreeRootReader::open_bound(
+        let root_reader = crate::graph_descriptor_tree::GraphDescriptorTreeRootReader::open_bound(
             descriptor_paths.clone(),
             manifest.descriptor_generation_artifacts(),
             GraphDescriptorTreeBuildConfig::default(),

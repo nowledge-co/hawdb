@@ -21,7 +21,7 @@ use hawdb_sql::{
     Expr, ExprKind, SelectProjection, SelectStatement, SqlColumnRef, SqlExpression,
     SqlFunctionArgument, SqlOrderItem, SqlPredicate,
 };
-use hawdb_storage::{RelationalState, RelationalTableSchema};
+use hawdb_storage::relational::{RelationalState, RelationalTableSchema};
 use std::collections::{BTreeMap, BTreeSet};
 use std::sync::Arc;
 

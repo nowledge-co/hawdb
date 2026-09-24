@@ -166,7 +166,7 @@ impl ConsumerRegistry {
             guard
         };
         before_replace()?;
-        hawdb_storage::durable_replace_file(&temporary, &target)?;
+        hawdb_storage::durability::durable_replace_file(&temporary, &target)?;
         drop(guard);
         after_replace()?;
         Ok(())

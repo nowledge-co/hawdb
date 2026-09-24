@@ -17,7 +17,7 @@
 //! The caller owns synchronization, conflict admission, waiting, and wakeups.
 //! This module does not provide a standalone transaction manager.
 
-use crate::RelationalKey;
+use crate::relational::RelationalKey;
 use hawdb_core::{HawDBError, Result};
 use std::cmp::Ordering;
 use std::collections::{BTreeMap, BTreeSet};
@@ -476,7 +476,8 @@ fn bound_estimated_bytes(bound: &Bound<RelationalKey>) -> usize {
         key.0
             .iter()
             .map(|value| {
-                size_of::<crate::RelationalValue>().saturating_add(value.estimated_payload_bytes())
+                size_of::<crate::relational::RelationalValue>()
+                    .saturating_add(value.estimated_payload_bytes())
             })
             .sum(),
     )
@@ -852,7 +853,7 @@ fn deadlock_error(victim: u64, cycle: &[u64]) -> HawDBError {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::RelationalValue;
+    use crate::relational::RelationalValue;
 
     fn key(value: i64) -> RelationalKey {
         RelationalKey(vec![RelationalValue::BigInt(value)])

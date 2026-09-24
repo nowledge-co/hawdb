@@ -26,7 +26,9 @@ impl crate::SystemSqlStore for GraphStore {
         GraphStore::commit_epoch(self)
     }
 
-    fn append_storage_residency_report(&self) -> hawdb_storage::AppendStorageResidencyReport {
+    fn append_storage_residency_report(
+        &self,
+    ) -> hawdb_storage::append_table::AppendStorageResidencyReport {
         GraphStore::append_storage_residency_report(self)
     }
 
@@ -34,13 +36,13 @@ impl crate::SystemSqlStore for GraphStore {
         GraphStore::statistics(self, catalog)
     }
 
-    fn projected_graph_statuses(&self) -> Vec<hawdb_storage::ProjectedGraphStatus> {
+    fn projected_graph_statuses(&self) -> Vec<hawdb_storage::projection::ProjectedGraphStatus> {
         GraphStore::projected_graph_statuses(self)
     }
 
     fn search_projection_changefeed_status(
         &self,
-    ) -> hawdb_storage::SearchProjectionChangefeedStatus {
+    ) -> hawdb_storage::projection::SearchProjectionChangefeedStatus {
         GraphStore::search_projection_changefeed_status(self)
     }
 }

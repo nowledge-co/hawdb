@@ -25,7 +25,7 @@ use crate::{HawDBError, Result};
 use hawdb_core::RuntimeTaskContext;
 use hawdb_executor::QueryMemoryLease;
 use hawdb_integrity::Crc32cHasher;
-use hawdb_storage::durable_replace_file;
+use hawdb_storage::durability::durable_replace_file;
 use std::fs::File;
 use std::io::{Read, Seek, SeekFrom, Write};
 use std::mem::size_of;

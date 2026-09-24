@@ -26,29 +26,32 @@ pub(super) use hawdb_storage::relational_row_workspace::{
 
 use super::{GraphStore, RelationalOverflowCompactionConfig};
 use hawdb_storage::{
-    RelationalConstraintIndex, RelationalError, RelationalHydrationBudget,
-    RelationalIndexChangeCapture, RelationalIndexChangeCaptureLimits, RelationalMutationOutcome,
-    RelationalOverflowReferenceSet, RelationalOverflowReferenceSetBuilder,
-    RelationalOverflowReferenceSortReport, RelationalRecoveryFence,
-    RelationalRecoverySourceIdentity, RelationalReplayAccess, RelationalReplayAccessSet,
-    RelationalRow, RelationalRowChangeCapture, RelationalRowChangeCaptureLimits,
-    RelationalRowDeltaBuilder, RelationalRowDeltaError, RelationalRowDeltaReader,
-    RelationalRowDeltaReport, RelationalRowPageLiveError, RelationalRowPageMutationPlanner,
-    RelationalRowPageProjectedRange, RelationalRowPagePublicationConfig, RelationalRowPageReadView,
-    RelationalRowPageRecoveredValue, RelationalRowPageRootReader,
-    RelationalRowPageSnapshotReadError, RelationalRowPageSnapshotReadLimits,
-    RelationalRowPageSnapshotReader, RelationalRowPageTableDelta, RelationalSparseLiveStage,
-    RelationalSparseRecoveryRow, RelationalState, RelationalTransaction, RelationalValue,
-    StorageResidencyMode,
+    config::StorageResidencyMode,
+    relational::{
+        RelationalConstraintIndex, RelationalError, RelationalHydrationBudget,
+        RelationalIndexChangeCapture, RelationalIndexChangeCaptureLimits,
+        RelationalMutationOutcome, RelationalOverflowReferenceSet,
+        RelationalOverflowReferenceSetBuilder, RelationalOverflowReferenceSortReport,
+        RelationalRecoveryFence, RelationalRecoverySourceIdentity, RelationalReplayAccess,
+        RelationalReplayAccessSet, RelationalRow, RelationalRowChangeCapture,
+        RelationalRowChangeCaptureLimits, RelationalRowDeltaBuilder, RelationalRowDeltaError,
+        RelationalRowDeltaReader, RelationalRowDeltaReport, RelationalRowPageLiveError,
+        RelationalRowPageMutationPlanner, RelationalRowPageProjectedRange,
+        RelationalRowPagePublicationConfig, RelationalRowPageReadView,
+        RelationalRowPageRecoveredValue, RelationalRowPageRootReader,
+        RelationalRowPageSnapshotReadError, RelationalRowPageSnapshotReadLimits,
+        RelationalRowPageSnapshotReader, RelationalRowPageTableDelta, RelationalSparseLiveStage,
+        RelationalSparseRecoveryRow, RelationalState, RelationalTransaction, RelationalValue,
+    },
 };
 use std::collections::{BTreeMap, BTreeSet};
 use std::num::{NonZeroU64, NonZeroUsize};
 use std::ops::Bound;
 use std::sync::Arc;
 
-pub use hawdb_storage::relational::RelationalRowPageRecoveryStatus;
 #[cfg(test)]
-use hawdb_storage::RelationalRowDeltaConfig;
+use hawdb_storage::relational::RelationalRowDeltaConfig;
+pub use hawdb_storage::relational::RelationalRowPageRecoveryStatus;
 
 pub(super) use hawdb_storage::relational::{
     RelationalRowLiveUnavailable, RelationalRowPageServingResources, RelationalRowPageState,
@@ -81,7 +84,7 @@ impl GraphStore {
         if self.residency_mode != StorageResidencyMode::OutOfCore
             || !matches!(
                 self.relational_checkpoint_index_load(),
-                hawdb_storage::RelationalCheckpointIndexLoad::OmitMaterializedPostings
+                hawdb_storage::relational::RelationalCheckpointIndexLoad::OmitMaterializedPostings
             )
             || self.relational_state.is_empty()
         {
@@ -1205,11 +1208,11 @@ impl GraphStore {
                 )
             })?;
             let limits = RelationalRowPageSnapshotReadLimits {
-                demand: hawdb_storage::RelationalRowPageDemandReadLimits {
+                demand: hawdb_storage::relational::RelationalRowPageDemandReadLimits {
                     max_pages: NonZeroUsize::new(table_pages.max(1)).unwrap(),
                     max_rows: NonZeroUsize::new(table_rows.max(1)).unwrap(),
                     max_bytes: NonZeroUsize::new(table_bytes.max(1)).unwrap(),
-                    ..hawdb_storage::RelationalRowPageDemandReadLimits::default()
+                    ..hawdb_storage::relational::RelationalRowPageDemandReadLimits::default()
                 },
                 max_overlay_entries: NonZeroUsize::new(remaining_overlay_entries.max(1)).unwrap(),
                 max_overlay_bytes: NonZeroUsize::new(remaining_overlay_bytes.max(1)).unwrap(),
@@ -1242,17 +1245,17 @@ impl GraphStore {
                     schema.name
                 );
                 match error {
-                    hawdb_storage::RelationalRowPageSnapshotReadError::Corrupt(_)
-                    | hawdb_storage::RelationalRowPageSnapshotReadError::MissingTable(_) => {
-                        crate::error::HawDBError::StorageIntegrity(message)
-                    }
-                    hawdb_storage::RelationalRowPageSnapshotReadError::Stopped(_) => {
+                    hawdb_storage::relational::RelationalRowPageSnapshotReadError::Corrupt(_)
+                    | hawdb_storage::relational::RelationalRowPageSnapshotReadError::MissingTable(
+                        _,
+                    ) => crate::error::HawDBError::StorageIntegrity(message),
+                    hawdb_storage::relational::RelationalRowPageSnapshotReadError::Stopped(_) => {
                         crate::error::HawDBError::Execution(message)
                     }
-                    hawdb_storage::RelationalRowPageSnapshotReadError::Admission(_)
-                    | hawdb_storage::RelationalRowPageSnapshotReadError::Durability(_) => {
-                        crate::error::HawDBError::Storage(message)
-                    }
+                    hawdb_storage::relational::RelationalRowPageSnapshotReadError::Admission(_)
+                    | hawdb_storage::relational::RelationalRowPageSnapshotReadError::Durability(
+                        _,
+                    ) => crate::error::HawDBError::Storage(message),
                 }
             })?;
             if let Some(error) = callback_error {
@@ -1454,17 +1457,19 @@ mod tests {
     use crate::store::GraphStore;
     use hawdb_core::{RuntimeCancellationToken, RuntimeTaskContext};
     use hawdb_storage::{
-        relational_overflow_extent_file, relational_overflow_manifest_generation_file,
-        relational_row_page_manifest_generation_file, DurabilityPolicy, RelationalColumnDefault,
-        RelationalColumnSchema, RelationalComparisonOp, RelationalConflictAction,
-        RelationalHydrationBudget, RelationalIndexMode, RelationalInsertMode, RelationalKey,
-        RelationalMutationLimits, RelationalOverflowConfig, RelationalPredicate, RelationalRow,
-        RelationalRowPagePublicationConfig, RelationalRowPagePublisher,
-        RelationalRowPageRootReader, RelationalRowPageSnapshotReadLimits, RelationalScalarType,
-        RelationalTableSchema, RelationalTransaction, RelationalUpdateAssignment,
-        RelationalUpdateValue, RelationalUpsertAssignment, RelationalUpsertValue, RelationalValue,
-        RelationalWrite, StorageResidencyMode, WalReplayConfig,
-        RELATIONAL_INDEX_RECOVERY_MANIFEST_FILE,
+        config::{DurabilityPolicy, RelationalIndexMode, StorageResidencyMode, WalReplayConfig},
+        relational::{
+            relational_overflow_extent_file, relational_overflow_manifest_generation_file,
+            relational_row_page_manifest_generation_file, RelationalColumnDefault,
+            RelationalColumnSchema, RelationalComparisonOp, RelationalConflictAction,
+            RelationalHydrationBudget, RelationalInsertMode, RelationalKey,
+            RelationalMutationLimits, RelationalOverflowConfig, RelationalPredicate, RelationalRow,
+            RelationalRowPagePublicationConfig, RelationalRowPagePublisher,
+            RelationalRowPageRootReader, RelationalRowPageSnapshotReadLimits, RelationalScalarType,
+            RelationalTableSchema, RelationalTransaction, RelationalUpdateAssignment,
+            RelationalUpdateValue, RelationalUpsertAssignment, RelationalUpsertValue,
+            RelationalValue, RelationalWrite, RELATIONAL_INDEX_RECOVERY_MANIFEST_FILE,
+        },
     };
     use std::collections::BTreeMap;
 
@@ -1506,7 +1511,7 @@ mod tests {
         let view = Arc::clone(store.relational_row_pages.read_view.as_ref().unwrap());
         assert!(matches!(
             view.overlay_value("documents", &key(2)).unwrap(),
-            Some(hawdb_storage::RelationalRowPageRecoveredValue::Present(value))
+            Some(hawdb_storage::relational::RelationalRowPageRecoveredValue::Present(value))
                 if value == row(2, "two")
         ));
         let snapshot = store.snapshot();
@@ -1563,7 +1568,7 @@ mod tests {
         let current = store.relational_row_pages.read_view.as_ref().unwrap();
         assert!(matches!(
             current.overlay_value("documents", &key(3)).unwrap(),
-            Some(hawdb_storage::RelationalRowPageRecoveredValue::Present(value))
+            Some(hawdb_storage::relational::RelationalRowPageRecoveredValue::Present(value))
                 if value == row(3, "three")
         ));
         assert!(!Arc::ptr_eq(&view, current));
@@ -1592,7 +1597,7 @@ mod tests {
             after_graph_commit
                 .overlay_value("documents", &key(3))
                 .unwrap(),
-            Some(hawdb_storage::RelationalRowPageRecoveredValue::Present(value))
+            Some(hawdb_storage::relational::RelationalRowPageRecoveredValue::Present(value))
                 if value == row(3, "three")
         ));
 
@@ -2467,7 +2472,7 @@ mod tests {
         );
         assert!(matches!(
             view.overlay_value("documents", &key(2)).unwrap(),
-            Some(hawdb_storage::RelationalRowPageRecoveredValue::Present(value))
+            Some(hawdb_storage::relational::RelationalRowPageRecoveredValue::Present(value))
                 if value == row(2, "two")
         ));
 
@@ -3030,7 +3035,7 @@ mod tests {
         store.checkpoint(&catalog).unwrap();
         RelationalRowPagePublisher::new(RelationalRowPagePublicationConfig::default())
             .persist_generation(
-                hawdb_storage::RelationalRowPageGenerationRequest {
+                hawdb_storage::relational::RelationalRowPageGenerationRequest {
                     directory: &path,
                     generation: 3,
                     source_commit_epoch: 2,

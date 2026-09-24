@@ -23,11 +23,11 @@ use super::{
     RelationalRowPageTableDelta, CANDIDATE_PUBLICATION_TRACE, COMPLETE_PUBLICATION_TRACE,
     RELATIONAL_ROW_PAGE_MANIFEST_FILE, RELATIONAL_ROW_PAGE_PUBLICATION_LOCK_FILE,
 };
+use crate::durability::{durable_replace_file, sync_directory};
 use crate::relational::{
     RelationalOverflowPublicationError, RelationalOverflowRef, RelationalOverflowRootReader,
     RelationalValue,
 };
-use crate::{durable_replace_file, sync_directory};
 use hawdb_integrity::{integrity_digest, Sha256Digest};
 use std::collections::{BTreeMap, BTreeSet};
 use std::fs::{self, File, OpenOptions};

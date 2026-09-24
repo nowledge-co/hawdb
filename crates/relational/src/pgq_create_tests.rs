@@ -20,7 +20,7 @@ use hawdb_sql::{
     PgqCreateBindErrorCode, PgqDataType, PgqSourceCatalog, PgqSourceColumnSchema,
     PgqSourceForeignKeySchema, PgqSourceTableSchema, PropertyGraphCatalog, SqlDataType,
 };
-use hawdb_storage::{
+use hawdb_storage::relational::{
     RelationalMutationLimits, RelationalOverflowConfig, RelationalScalarType, RelationalState,
 };
 use std::collections::BTreeMap;

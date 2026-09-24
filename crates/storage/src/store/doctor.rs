@@ -19,8 +19,11 @@ use super::{
 use crate::error::{HawDBError, Result};
 use hawdb_integrity::IntegrityHasher;
 pub use hawdb_storage::{
-    DatabaseDirectoryLease, WalDoctorOptions, WalRepairAcknowledgement, WalTailRepairPlan,
-    WalTailRepairReason, WalTailRepairReport, WAL_DOCTOR_REPAIR_PROTOCOL,
+    doctor::{
+        WalDoctorOptions, WalRepairAcknowledgement, WalTailRepairPlan, WalTailRepairReason,
+        WalTailRepairReport, WAL_DOCTOR_REPAIR_PROTOCOL,
+    },
+    ownership::DatabaseDirectoryLease,
 };
 use serde::{Deserialize, Serialize};
 use std::fs::{self, File, OpenOptions};
@@ -90,7 +93,7 @@ pub(super) fn reject_pending_wal_doctor_repair(path: &Path) -> Result<()> {
 // Callers hold the same directory lease used by explicit doctor operations.
 pub(super) fn resume_automatic_wal_tail_repair_locked(
     path: &Path,
-    config: hawdb_storage::WalReplayConfig,
+    config: hawdb_storage::config::WalReplayConfig,
 ) -> Result<Option<WalTailRepairReport>> {
     if pending_repair_records(path)?.is_empty() {
         return Ok(None);
@@ -100,7 +103,7 @@ pub(super) fn resume_automatic_wal_tail_repair_locked(
 
 pub(super) fn automatic_wal_tail_repair_locked(
     path: &Path,
-    config: hawdb_storage::WalReplayConfig,
+    config: hawdb_storage::config::WalReplayConfig,
 ) -> Result<WalTailRepairReport> {
     let options = WalDoctorOptions {
         max_wal_bytes: config.max_bytes,
@@ -672,7 +675,7 @@ fn write_audit_record(path: &Path, record: &WalRepairAuditRecord) -> Result<()> 
         std::io::Write::write_all(&mut file, &encoded)?;
         file.sync_all()?;
     }
-    hawdb_storage::durable_replace_file(&temp_path, path)
+    hawdb_storage::durability::durable_replace_file(&temp_path, path)
         .map_err(|error| HawDBError::Storage(error.to_string()))
 }
 

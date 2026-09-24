@@ -95,20 +95,20 @@ fn generated_append_watermark_survives_checkpoint_and_wal_replay() {
     {
         let mut db = Database::open(&path).unwrap();
         let result = db
-            .append_transaction_with_result(hawdb_storage::AppendTransaction {
-                writes: vec![hawdb_storage::AppendWrite::AppendGenerated {
+            .append_transaction_with_result(hawdb_storage::append_table::AppendTransaction {
+                writes: vec![hawdb_storage::append_table::AppendWrite::AppendGenerated {
                     table: "events".to_string(),
-                    rows: vec![hawdb_storage::AppendGeneratedRow::new(vec![
-                        hawdb_storage::RelationalValue::Text("thread-1".to_string()),
-                        hawdb_storage::RelationalValue::Text("four".to_string()),
+                    rows: vec![hawdb_storage::append_table::AppendGeneratedRow::new(vec![
+                        hawdb_storage::relational::RelationalValue::Text("thread-1".to_string()),
+                        hawdb_storage::relational::RelationalValue::Text("four".to_string()),
                     ])],
                 }],
             })
             .unwrap();
         assert_eq!(
             result.mutations[0].generated_order_keys,
-            vec![hawdb_storage::RelationalKey(vec![
-                hawdb_storage::RelationalValue::BigInt(4),
+            vec![hawdb_storage::relational::RelationalKey(vec![
+                hawdb_storage::relational::RelationalValue::BigInt(4),
             ])]
         );
         let output = db
@@ -1817,14 +1817,14 @@ fn canonical_row_overflow_backup_reopen_and_reclaim_follow_physical_closure() {
         .checkpoint_epoch
         .expect("durable checkpoint generation");
     let first_row_manifest = path.join(
-        hawdb_storage::relational_row_page_manifest_generation_file(first_generation),
+        hawdb_storage::relational::relational_row_page_manifest_generation_file(first_generation),
     );
     let first_overflow_manifest = path.join(
-        hawdb_storage::relational_overflow_manifest_generation_file(first_generation),
+        hawdb_storage::relational::relational_overflow_manifest_generation_file(first_generation),
     );
-    let first_overflow_extent = path.join(hawdb_storage::relational_overflow_extent_file(
-        first_generation,
-    ));
+    let first_overflow_extent = path.join(
+        hawdb_storage::relational::relational_overflow_extent_file(first_generation),
+    );
     assert!(first_row_manifest.exists());
     assert!(first_overflow_manifest.exists());
     assert!(first_overflow_extent.exists());
@@ -1851,7 +1851,7 @@ fn canonical_row_overflow_backup_reopen_and_reclaim_follow_physical_closure() {
     assert!(first_overflow_extent.exists());
     db.backup_to(&backup).unwrap();
     assert!(backup
-        .join(hawdb_storage::relational_overflow_extent_file(
+        .join(hawdb_storage::relational::relational_overflow_extent_file(
             first_generation
         ))
         .exists());
@@ -1900,7 +1900,7 @@ fn canonical_row_overflow_backup_reopen_and_reclaim_follow_physical_closure() {
 fn relational_storage_residency_tracks_checkpoint_live_and_recovery_views() {
     let path = unique_test_dir("relational_storage_residency");
     let bootstrap_config = DatabaseConfig {
-        relational_index_mode: hawdb_storage::RelationalIndexMode::Shadow,
+        relational_index_mode: hawdb_storage::config::RelationalIndexMode::Shadow,
         storage_residency_mode: StorageResidencyMode::OutOfCore,
         segment_cache_capacity_bytes: 64 * 1024,
         ..DatabaseConfig::default()
@@ -1920,7 +1920,7 @@ fn relational_storage_residency_tracks_checkpoint_live_and_recovery_views() {
     drop(db);
 
     let config = DatabaseConfig {
-        relational_index_mode: hawdb_storage::RelationalIndexMode::Authoritative,
+        relational_index_mode: hawdb_storage::config::RelationalIndexMode::Authoritative,
         ..bootstrap_config
     };
     let mut db = Database::open_with_config(&path, config.clone()).unwrap();
@@ -1968,7 +1968,7 @@ fn relational_storage_residency_tracks_checkpoint_live_and_recovery_views() {
     assert_eq!(profile["storage"]["relational_rows"]["serving"], true);
     assert_eq!(
         profile["storage"]["relational_rows"]["recovery_delta_checkpoint_runs"],
-        hawdb_storage::DEFAULT_RELATIONAL_ROW_DELTA_CHECKPOINT_RUNS
+        hawdb_storage::relational::DEFAULT_RELATIONAL_ROW_DELTA_CHECKPOINT_RUNS
     );
     assert_eq!(
         profile["storage"]["relational_rows"]["recovery_delta_checkpoint_recommended"],

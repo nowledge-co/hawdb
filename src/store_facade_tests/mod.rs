@@ -29,9 +29,9 @@ mod row_page_compaction;
 pub use hawdb_storage::store::read_durable_text;
 
 use hawdb_integrity::integrity_digest;
+use hawdb_storage::config::DurableCompression;
 use hawdb_storage::store::checksum_bytes;
 use hawdb_storage::text::envelope::{encode_durable_text, DURABLE_COMPRESSION_HEADER};
-use hawdb_storage::DurableCompression;
 
 pub fn unique_test_dir(name: &str) -> std::path::PathBuf {
     let nanos = std::time::SystemTime::now()

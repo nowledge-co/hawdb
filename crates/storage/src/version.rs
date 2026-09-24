@@ -19,11 +19,17 @@
 //! relational stores; keeping these concerns separate lets a transaction
 //! validate its write set without retaining a second copy of user data.
 
-use crate::{AdjacencyDirection, CowPageWeight, CowSegmentedMap, NodeId, RelId, RelationalKey};
+use crate::{
+    adjacency::AdjacencyDirection,
+    cow::{CowPageWeight, CowSegmentedMap},
+    relational::RelationalKey,
+    NodeId, RelId,
+};
 use std::collections::BTreeMap;
 use std::fmt::{self, Display, Formatter};
 
-pub const DEFAULT_MAX_VERSION_WRITE_SET_ENTRIES: usize = crate::DEFAULT_MAX_WAL_BATCH_OPERATIONS;
+pub const DEFAULT_MAX_VERSION_WRITE_SET_ENTRIES: usize =
+    crate::config::DEFAULT_MAX_WAL_BATCH_OPERATIONS;
 
 /// A mutable identity whose latest committed version participates in optimistic
 /// transaction validation.

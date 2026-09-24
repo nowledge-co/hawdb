@@ -20,11 +20,11 @@
 //! partial logical changes.
 
 use crate::durability::{durable_replace_file, sync_directory, sync_parent_directory};
+use crate::relational::{decode_relational_primary_key, encode_relational_primary_key};
 use crate::relational::{
     decode_relational_row_payload, encode_relational_row_payload, validate_row, RelationalKey,
     RelationalRow, RelationalTableSchema,
 };
-use crate::{decode_relational_primary_key, encode_relational_primary_key};
 use hawdb_integrity::{crc32c, Crc32c, IntegrityDigest, IntegrityHasher, Sha256Digest};
 use std::collections::{BTreeMap, BTreeSet};
 use std::fmt::{self, Display, Formatter};

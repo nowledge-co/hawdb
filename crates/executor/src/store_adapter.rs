@@ -26,8 +26,9 @@ use hawdb_core::{LabelId, RelTypeId};
 use hawdb_plan_cypher::NodeProjectionAccess;
 use hawdb_storage::store::{GraphScanControl, GraphStore};
 use hawdb_storage::{
-    AdjacencyDirection, GraphMutation, MutationLimits, MutationSummary, NodeId, NodeRecord,
-    NodeSetAssignment, ProjectedNodeRecord, PropertyFilter, RelId, RelRecord,
+    adjacency::AdjacencyDirection,
+    mutation::{GraphMutation, MutationLimits, MutationSummary, NodeSetAssignment, PropertyFilter},
+    NodeId, NodeRecord, ProjectedNodeRecord, RelId, RelRecord,
 };
 use std::collections::BTreeSet;
 
@@ -257,13 +258,13 @@ impl GraphExecutionRead for GraphStore {
     fn projected_graph_definition(
         &self,
         name: &str,
-    ) -> Option<hawdb_storage::ProjectedGraphDefinition> {
+    ) -> Option<hawdb_storage::projection::ProjectedGraphDefinition> {
         GraphStore::projected_graph_definition(self, name).cloned()
     }
 
     fn visit_source_scan_candidates(
         &self,
-        predicate: &hawdb_storage::ScanPredicate,
+        predicate: &hawdb_storage::scan::ScanPredicate,
         limits: SourceScanReadLimits,
         task_context: Option<&hawdb_core::RuntimeTaskContext>,
         consumer: &mut dyn FnMut(SourceScanCandidateRow) -> Result<ScanControl>,
@@ -359,7 +360,7 @@ impl GraphExecutionRead for GraphStore {
         direction: AdjacencyDirection,
         filter: &PropertyFilter,
         consumer: &mut dyn FnMut(RelRecord) -> Result<ScanControl>,
-    ) -> Result<(ScanControl, Option<hawdb_storage::ScanPruningReport>)> {
+    ) -> Result<(ScanControl, Option<hawdb_storage::scan::ScanPruningReport>)> {
         let mut consumer_error = None;
         let (control, report) = GraphStore::visit_adjacent_relationships_with_filter_owned(
             self,
@@ -389,7 +390,7 @@ impl GraphExecutionRead for GraphStore {
         filter: &PropertyFilter,
         memory: AdjacencyReadMemory<'_>,
         consumer: &mut dyn FnMut(RelRecord) -> Result<ScanControl>,
-    ) -> Result<(ScanControl, Option<hawdb_storage::ScanPruningReport>)> {
+    ) -> Result<(ScanControl, Option<hawdb_storage::scan::ScanPruningReport>)> {
         let mut entries = Vec::new();
         let mut key_lease = memory
             .account

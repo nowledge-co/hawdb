@@ -13,12 +13,15 @@
 // limitations under the License.
 
 use hawdb_storage::{
-    ImmutableIndexPageLimits, RelationalColumnSchema, RelationalIndexReadLimits,
-    RelationalIndexSchema, RelationalIndexShadowConfig, RelationalIndexShadowReader,
-    RelationalIndexShadowWriter, RelationalInsertMode, RelationalKey, RelationalMutationLimits,
-    RelationalOverflowConfig, RelationalRow, RelationalScalarType, RelationalState,
-    RelationalTableSchema, RelationalTransaction, RelationalValue, RelationalWrite, SegmentCache,
-    StoreId,
+    cache::{SegmentCache, StoreId},
+    index_page::ImmutableIndexPageLimits,
+    relational::{
+        RelationalColumnSchema, RelationalIndexReadLimits, RelationalIndexSchema,
+        RelationalIndexShadowConfig, RelationalIndexShadowReader, RelationalIndexShadowWriter,
+        RelationalInsertMode, RelationalKey, RelationalMutationLimits, RelationalOverflowConfig,
+        RelationalRow, RelationalScalarType, RelationalState, RelationalTableSchema,
+        RelationalTransaction, RelationalValue, RelationalWrite,
+    },
 };
 use serde_json::json;
 use std::hint::black_box;
@@ -126,7 +129,7 @@ fn main() {
 fn lookup(
     reader: &RelationalIndexShadowReader,
     key: &RelationalKey,
-) -> (usize, hawdb_storage::RelationalIndexReadReport) {
+) -> (usize, hawdb_storage::relational::RelationalIndexReadReport) {
     let mut rows = 0usize;
     let report = reader
         .visit_exact_postings(

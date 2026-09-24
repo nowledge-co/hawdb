@@ -16,7 +16,7 @@ use hawdb_optimizer::{
     select_relational_access_path, RelationalAccessPathDescriptor, RelationalAccessPathKind,
 };
 use hawdb_qos::ProcessMemorySnapshot;
-use hawdb_storage::{
+use hawdb_storage::relational::{
     RelationalColumnSchema, RelationalIndexRangeScan, RelationalIndexScanDirection,
     RelationalIndexSchema, RelationalInsertMode, RelationalKey, RelationalRow,
     RelationalScalarType, RelationalStore, RelationalTableSchema, RelationalTransaction,

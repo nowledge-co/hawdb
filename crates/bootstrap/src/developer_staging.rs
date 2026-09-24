@@ -24,7 +24,7 @@ use crate::{
 };
 use hawdb_core::Result;
 use hawdb_integrity::checksum_u64;
-use hawdb_storage::{durable_replace_file, sync_directory};
+use hawdb_storage::durability::{durable_replace_file, sync_directory};
 use std::collections::BTreeMap;
 use std::fs::{self, File};
 use std::io::Write;

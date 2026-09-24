@@ -707,7 +707,7 @@ mod tests {
         stage_hawdb_lightning_bootstrap_export, CanonicalGraphSnapshotExport,
         HawDBLightningBootstrapExport, HawDBLightningRelationalStream,
     };
-    use hawdb_storage::RelationalState;
+    use hawdb_storage::relational::RelationalState;
 
     #[test]
     fn verifies_a_staged_export_through_the_bootstrap_owner() {

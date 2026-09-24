@@ -14,8 +14,8 @@
 
 use crate::row_runtime::RelationalRowStoreReader;
 use hawdb_core::error::Result;
+use hawdb_storage::relational::RelationalRowPageSnapshotReader;
 use hawdb_storage::store::{GraphStore, RelationalTransactionRowView};
-use hawdb_storage::RelationalRowPageSnapshotReader;
 
 #[doc(hidden)]
 pub type RelationalRowReadMode<'a> = crate::row_runtime::RelationalRowReadMode<'a, GraphStore>;

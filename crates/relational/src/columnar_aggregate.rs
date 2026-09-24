@@ -24,7 +24,7 @@ use hawdb_sql::{
     Expr, ExprKind, SelectProjection, SelectStatement, SqlColumnRef, SqlExpression,
     SqlFunctionArgument, SqlValue,
 };
-use hawdb_storage::{RelationalScalarType, RelationalTableSchema, RelationalValue};
+use hawdb_storage::relational::{RelationalScalarType, RelationalTableSchema, RelationalValue};
 use std::num::NonZeroUsize;
 use std::sync::Arc;
 

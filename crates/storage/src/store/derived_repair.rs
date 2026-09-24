@@ -20,7 +20,7 @@ use super::{
 };
 use crate::error::{HawDBError, Result};
 use hawdb_storage::derived_repair::{plan_identity, validate_options, validate_plan};
-pub use hawdb_storage::{
+pub use hawdb_storage::derived_repair::{
     DerivedArtifactHealth, DerivedArtifactHealthReport, DerivedArtifactHealthState,
     DerivedArtifactKind, DerivedArtifactRebuildOptions, DerivedArtifactRepairPlan,
     DerivedArtifactRepairReport, DERIVED_ARTIFACT_REPAIR_PROTOCOL,

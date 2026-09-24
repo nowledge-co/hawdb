@@ -46,7 +46,7 @@ fn with_context<T>(
             rel_type,
             properties: BTreeMap::new(),
         }],
-        definition: Some(hawdb_storage::ProjectedGraphDefinition {
+        definition: Some(hawdb_storage::projection::ProjectedGraphDefinition {
             node_labels: vec!["Memory".into()],
             rel_types: vec!["MENTIONS".into()],
         }),

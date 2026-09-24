@@ -13,13 +13,13 @@
 // limitations under the License.
 
 use super::*;
-use crate::{
+use crate::relational::{
     RelationalColumnSchema, RelationalConstraintIndex, RelationalError, RelationalIndexSchema,
     RelationalIndexShadowConfig, RelationalIndexShadowWriter, RelationalInsertMode,
     RelationalMutationLimits, RelationalOverflowConfig, RelationalRow, RelationalScalarType,
     RelationalState, RelationalTableSchema, RelationalTransaction, RelationalWrite,
 };
-use crate::{RelationalIndexChange, RelationalValue};
+use crate::relational::{RelationalIndexChange, RelationalValue};
 
 const TABLE: &str = "items";
 const INDEX: &str = "items_bucket_rank";

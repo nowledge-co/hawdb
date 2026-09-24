@@ -14,7 +14,7 @@
 
 use super::*;
 use crate::cache::PAGE_INTEGRITY_CHECKS;
-use crate::{
+use crate::cache::{
     content_digest, ManifestGeneration, RepresentationKind, SegmentCache, SegmentCacheKey, StoreId,
 };
 

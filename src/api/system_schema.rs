@@ -26,7 +26,7 @@ use hawdb_relational::system_schema::{
 pub use hawdb_relational::{
     SystemSchemaMigration, SystemSchemaRegistry, SystemSchemaUpgradeReport,
 };
-use hawdb_storage::RelationalState;
+use hawdb_storage::relational::RelationalState;
 
 impl Database {
     pub(super) fn apply_engine_system_schema(&mut self) -> Result<SystemSchemaUpgradeReport> {

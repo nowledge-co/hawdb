@@ -81,7 +81,7 @@ fn storage_owned_projected_artifact_preserves_structural_corruption_fallback() {
         let damaged_text = format!("{damaged_body}checksum\t{checksum}\n");
         let encoded = crate::store::encode_durable_text(
             &damaged_text,
-            hawdb_storage::DurableCompression::default(),
+            hawdb_storage::config::DurableCompression::default(),
         )
         .unwrap();
         std::fs::write(&artifact_path, &encoded).unwrap();

@@ -14,8 +14,8 @@
 
 //! Relational constraint qualification report contracts.
 
+use crate::relational::RelationalKey;
 use crate::relational_index_view::RelationalIndexReadViewReport;
-use crate::RelationalKey;
 
 pub const RELATIONAL_CONSTRAINT_QUALIFICATION_PROTOCOL: &str =
     "hawdb-relational-constraint-qualification-v1";

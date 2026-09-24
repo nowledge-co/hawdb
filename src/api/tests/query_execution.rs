@@ -28,8 +28,9 @@ fn relational_index_read_row_budget_matches_intermediate_limit() {
     assert_eq!(limits.index_read.max_rows.get(), 4_097);
     assert_eq!(
         limits.index_read.max_pages.get(),
-        4_097usize
-            .saturating_mul(hawdb_storage::DEFAULT_RELATIONAL_INDEX_READ_TREE_HEIGHT as usize)
+        4_097usize.saturating_mul(
+            hawdb_storage::relational::DEFAULT_RELATIONAL_INDEX_READ_TREE_HEIGHT as usize
+        )
     );
     assert_eq!(
         limits.index_read.max_bytes.get(),
@@ -37,7 +38,7 @@ fn relational_index_read_row_budget_matches_intermediate_limit() {
             .index_read
             .max_pages
             .get()
-            .saturating_mul(hawdb_storage::DEFAULT_IMMUTABLE_INDEX_PAGE_BYTES)
+            .saturating_mul(hawdb_storage::index_page::DEFAULT_IMMUTABLE_INDEX_PAGE_BYTES)
     );
     assert_eq!(
         limits.index_read.max_file_bytes,
@@ -349,14 +350,16 @@ fn relational_query_index_limits_separate_logical_work_from_file_io() {
 
     let limits = super::super::relational_query_limits_with_payload(&config, None, None);
     let index = limits.index_read;
-    let expected_pages = crate::DEFAULT_MAX_READ_RESULT_ROWS
-        .saturating_mul(hawdb_storage::DEFAULT_RELATIONAL_INDEX_READ_TREE_HEIGHT as usize);
+    let expected_pages = crate::DEFAULT_MAX_READ_RESULT_ROWS.saturating_mul(
+        hawdb_storage::relational::DEFAULT_RELATIONAL_INDEX_READ_TREE_HEIGHT as usize,
+    );
 
     assert_eq!(index.max_rows.get(), crate::DEFAULT_MAX_READ_RESULT_ROWS);
     assert_eq!(index.max_pages.get(), expected_pages);
     assert_eq!(
         index.max_bytes.get(),
-        expected_pages.saturating_mul(hawdb_storage::DEFAULT_IMMUTABLE_INDEX_PAGE_BYTES)
+        expected_pages
+            .saturating_mul(hawdb_storage::index_page::DEFAULT_IMMUTABLE_INDEX_PAGE_BYTES)
     );
     assert_eq!(
         index.max_file_bytes,

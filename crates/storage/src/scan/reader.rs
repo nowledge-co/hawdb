@@ -13,11 +13,11 @@
 // limitations under the License.
 
 use super::{SegmentReadRange, SegmentReadSchedule};
-use crate::io::read_exact_at;
-use crate::{
+use crate::cache::{
     content_digest, ManifestGeneration, RepresentationKind, SegmentBytes, SegmentCache,
     SegmentCacheError, SegmentCacheKey, StoreId,
 };
+use crate::io::read_exact_at;
 use hawdb_core::{RuntimeCancellationReason, RuntimeIoWaveError, RuntimeTaskContext};
 use std::collections::BTreeMap;
 use std::error::Error;

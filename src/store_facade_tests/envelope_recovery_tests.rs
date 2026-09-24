@@ -16,8 +16,8 @@ use crate::store_facade_tests::{
     active_checkpoint_path, refresh_manifest_checkpoint_metadata, unique_test_dir,
 };
 use crate::{Database, DatabaseConfig, HawDBError, Value};
+use hawdb_storage::config::DurableCompression;
 use hawdb_storage::text::envelope::{encode_durable_text, read_durable_text_bytes};
-use hawdb_storage::DurableCompression;
 use std::collections::BTreeMap;
 use std::fs;
 use std::path::{Path, PathBuf};

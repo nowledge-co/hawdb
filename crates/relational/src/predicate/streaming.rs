@@ -18,7 +18,7 @@ use super::compare_value_refs;
 use crate::query_value::{bind_sql_value, value_to_relational};
 use hawdb_core::{HawDBError, Result, Value};
 use hawdb_sql::{ExprKind, SqlColumnRef, SqlComparisonOp, SqlLikeEscape, SqlPredicate};
-use hawdb_storage::{
+use hawdb_storage::relational::{
     RelationalScalarType, RelationalTableSchema, RelationalValue, RelationalValueRef,
 };
 

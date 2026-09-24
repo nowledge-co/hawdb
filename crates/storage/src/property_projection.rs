@@ -21,13 +21,17 @@ use crate::graph_descriptor_tree::demand::{
 };
 use crate::predicate::{comparable_value_ordering, range_bounds_match};
 use crate::{
-    content_digest, durable_replace_file, ContentDigest, FileSegmentRangeReader,
-    GraphDescriptorKind, GraphDescriptorPageError, GraphDescriptorTreeArtifactMetadata,
-    GraphDescriptorTreeBuildConfig, GraphDescriptorTreeBuilder, GraphDescriptorTreeError,
-    GraphDescriptorTreeGenerationArtifacts, GraphDescriptorTreePaths,
-    GraphDescriptorTreeRootReader, GraphDescriptorTreeWriteOutput, ManifestGeneration, NodeId,
-    NodeRecord, PreparedGraphDescriptorTree, RelId, RelRecord, SegmentCache, SegmentRangeRead,
-    SegmentReadError, SegmentReadRange, StoreId,
+    cache::{content_digest, ContentDigest, ManifestGeneration, SegmentCache, StoreId},
+    durability::durable_replace_file,
+    graph_descriptor_page::{GraphDescriptorKind, GraphDescriptorPageError},
+    graph_descriptor_tree::{
+        GraphDescriptorTreeArtifactMetadata, GraphDescriptorTreeBuildConfig,
+        GraphDescriptorTreeBuilder, GraphDescriptorTreeError,
+        GraphDescriptorTreeGenerationArtifacts, GraphDescriptorTreePaths,
+        GraphDescriptorTreeRootReader, GraphDescriptorTreeWriteOutput, PreparedGraphDescriptorTree,
+    },
+    scan::{FileSegmentRangeReader, SegmentRangeRead, SegmentReadError, SegmentReadRange},
+    NodeId, NodeRecord, RelId, RelRecord,
 };
 use hawdb_core::{LabelId, RelTypeId, Value};
 use hawdb_integrity::{Crc32cHasher, IntegrityHasher, Sha256Digest};
@@ -3334,12 +3338,13 @@ mod tests {
             descriptor_tree.root.descriptor_count,
             output.report.block_count
         );
-        let reopened_descriptor_root = crate::GraphDescriptorTreeRootReader::open_bound(
-            descriptor_paths.clone(),
-            output.manifest.descriptor_generation_artifacts(),
-            GraphDescriptorTreeBuildConfig::default(),
-        )
-        .unwrap();
+        let reopened_descriptor_root =
+            crate::graph_descriptor_tree::GraphDescriptorTreeRootReader::open_bound(
+                descriptor_paths.clone(),
+                output.manifest.descriptor_generation_artifacts(),
+                GraphDescriptorTreeBuildConfig::default(),
+            )
+            .unwrap();
         assert_eq!(reopened_descriptor_root.root(), &descriptor_tree.root);
         let data_before = fs::read(&path).unwrap();
         let pages_before = fs::read(&descriptor_paths.page_artifact).unwrap();

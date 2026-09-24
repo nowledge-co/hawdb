@@ -15,8 +15,12 @@
 //! Graph statistics consistency and adjacency consolidation contracts.
 
 use crate::{
-    AdjacencyDirection, AdjacencyGroupConsistencyMismatch, AdjacencyGroupKey, AdjacencyLayout,
-    AdjacencyPostingList, CowSegment, CowSegmentedMap, NodeId, NodeRecord, RelId, RelRecord,
+    adjacency::{
+        AdjacencyDirection, AdjacencyGroupConsistencyMismatch, AdjacencyGroupKey, AdjacencyLayout,
+        AdjacencyPostingList,
+    },
+    cow::{CowSegment, CowSegmentedMap},
+    NodeId, NodeRecord, RelId, RelRecord,
 };
 use hawdb_core::{BasicGraphStatistics, LabelId, RelTypeId, Value};
 use std::collections::{BTreeMap, BTreeSet};

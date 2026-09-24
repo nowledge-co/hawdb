@@ -18,12 +18,12 @@
 mod tests;
 
 use hawdb_core::{HawDBError, Result};
+use hawdb_storage::relational::{
+    RelationalIndexReadLimits, RelationalIndexShadowError, RelationalKey, RelationalState,
+};
 use hawdb_storage::relational_index_view::{
     RelationalIndexProbeStatistics, RelationalIndexReadViewBackendReport,
     RelationalIndexReadViewReport, RelationalTransactionIndexView,
-};
-use hawdb_storage::{
-    RelationalIndexReadLimits, RelationalIndexShadowError, RelationalKey, RelationalState,
 };
 use std::cell::RefCell;
 use std::collections::{BTreeMap, BTreeSet};
@@ -63,7 +63,7 @@ pub trait RelationalIndexStoreReader {
         &self,
         table: &str,
         index: &str,
-        scan: &hawdb_storage::RelationalIndexRangeScan,
+        scan: &hawdb_storage::relational::RelationalIndexRangeScan,
         limits: RelationalIndexReadLimits,
         visit: impl FnMut(&RelationalKey, &RelationalKey) -> bool,
     ) -> Option<std::result::Result<RelationalIndexReadViewReport, RelationalIndexShadowError>>;
@@ -183,7 +183,7 @@ struct RelationalIndexProbe<'input> {
 #[derive(Clone, Copy)]
 enum RelationalIndexProbeSelector<'input> {
     Prefix(&'input RelationalKey),
-    Range(&'input hawdb_storage::RelationalIndexRangeScan),
+    Range(&'input hawdb_storage::relational::RelationalIndexRangeScan),
 }
 
 impl<'a, R: RelationalIndexStoreReader> RelationalIndexRuntime<'a, R> {
@@ -416,7 +416,7 @@ impl<'a, R: RelationalIndexStoreReader> RelationalIndexRuntime<'a, R> {
         state: &RelationalState,
         table: &str,
         index: &str,
-        scan: &hawdb_storage::RelationalIndexRangeScan,
+        scan: &hawdb_storage::relational::RelationalIndexRangeScan,
         mut visit: impl FnMut(&RelationalKey, &RelationalKey) -> Result<bool>,
     ) -> Result<bool> {
         if matches!(
@@ -747,7 +747,7 @@ impl<'a, R: RelationalIndexStoreReader> RelationalIndexRuntime<'a, R> {
                 evidence.exclusive_seek_lookups =
                     checked_add(evidence.exclusive_seek_lookups, 1, "exclusive seek count")?;
             }
-            if scan.direction == hawdb_storage::RelationalIndexScanDirection::Backward {
+            if scan.direction == hawdb_storage::relational::RelationalIndexScanDirection::Backward {
                 evidence.backward_lookups =
                     checked_add(evidence.backward_lookups, 1, "backward lookup count")?;
             }
@@ -818,7 +818,7 @@ fn visit_materialized_range_entries<'state>(
     state: &'state RelationalState,
     table: &str,
     index: &str,
-    scan: &hawdb_storage::RelationalIndexRangeScan,
+    scan: &hawdb_storage::relational::RelationalIndexRangeScan,
     visit: &mut dyn FnMut(&RelationalKey, &RelationalKey) -> Result<bool>,
 ) -> Result<bool> {
     let mut error = None;

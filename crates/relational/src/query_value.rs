@@ -16,7 +16,7 @@
 
 use hawdb_core::{HawDBError, Result, Value};
 use hawdb_sql::{Expr, ExprKind, SqlBound, SqlExpression, SqlValue};
-use hawdb_storage::{RelationalScalarType, RelationalValue, RelationalValueRef};
+use hawdb_storage::relational::{RelationalScalarType, RelationalValue, RelationalValueRef};
 
 pub fn expression_name(expression: &SqlExpression) -> String {
     match expression {

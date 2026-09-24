@@ -98,11 +98,20 @@ use hawdb_storage::column_group::shadow_metadata::{
     TablePropertyTypes, SHADOW_KEY_DICTIONARY_FILE, SHADOW_PASS1_TABLE_OVERHEAD_BYTES,
 };
 use hawdb_storage::{
-    encode_residual_row_properties, ColumnGroupArtifactDescriptor, ColumnGroupError,
-    ColumnGroupManifest, ColumnGroupTableDirectory, ColumnGroupTableDirectoryRef,
-    ColumnGroupTableKey, ColumnGroupTableKind, ColumnGroupWriter, ColumnarShadowCheckpointReport,
-    ColumnarShadowCheckpointStatus, ColumnarShadowRecoveryStatus, PublishedColumnGroupCatalog,
-    COLUMN_GROUP_SHADOW_DIR, DEFAULT_GROUP_ROW_CAPACITY,
+    canonical::encode_residual_row_properties,
+    column_group::{
+        group::{ColumnGroupWriter, DEFAULT_GROUP_ROW_CAPACITY},
+        manifest::{
+            ColumnGroupArtifactDescriptor, ColumnGroupManifest, ColumnGroupTableDirectory,
+            ColumnGroupTableDirectoryRef, ColumnGroupTableKey, ColumnGroupTableKind,
+            PublishedColumnGroupCatalog,
+        },
+        shadow::{
+            ColumnarShadowCheckpointReport, ColumnarShadowCheckpointStatus,
+            ColumnarShadowRecoveryStatus, COLUMN_GROUP_SHADOW_DIR,
+        },
+        ColumnGroupError,
+    },
 };
 
 /// Reserved column id of the node label-set blob column.
@@ -126,9 +135,9 @@ const SHADOW_ENCODER_SCRATCH_MULTIPLIER: u64 = 2;
 /// allowance, which is what makes the shadow converge on any input.
 const SHADOW_STREAMED_FLUSH_ALLOWANCE_BYTES: u64 = 64 * 1024;
 
-pub(super) use hawdb_storage::ColumnarShadowState;
+pub(super) use hawdb_storage::column_group::shadow::ColumnarShadowState;
 #[cfg(test)]
-use hawdb_storage::DEFAULT_SHADOW_BUFFER_BUDGET_BYTES;
+use hawdb_storage::column_group::shadow::DEFAULT_SHADOW_BUFFER_BUDGET_BYTES;
 
 fn shadow_error(error: ColumnGroupError) -> HawDBError {
     HawDBError::Storage(format!("columnar shadow: {error}"))
@@ -187,7 +196,7 @@ fn decode_label_set(bytes: &[u8]) -> Result<BTreeSet<LabelId>> {
 /// byte allowance.
 #[derive(Debug)]
 pub struct ColumnarShadowAdmission {
-    _permit: Option<Box<dyn hawdb_storage::BackgroundWorkPermit>>,
+    _permit: Option<Box<dyn hawdb_storage::background::BackgroundWorkPermit>>,
     /// `None` = unmetered; `Some` = the admitted builder-lifetime bytes.
     allowance_bytes: Option<u64>,
 }
@@ -206,7 +215,10 @@ impl ColumnarShadowAdmission {
         }
     }
 
-    fn owned(permit: Box<dyn hawdb_storage::BackgroundWorkPermit>, allowance_bytes: u64) -> Self {
+    fn owned(
+        permit: Box<dyn hawdb_storage::background::BackgroundWorkPermit>,
+        allowance_bytes: u64,
+    ) -> Self {
         Self {
             _permit: Some(permit),
             allowance_bytes: Some(allowance_bytes),
@@ -577,7 +589,10 @@ impl ShadowCheckpointBuilder {
             Some(ResidualRowBlob::new(&residual_entries)?)
         };
         let label_slice: Option<&[u8]> = label_set.as_deref();
-        let mut byte_columns: Vec<(PropertyId, &dyn hawdb_storage::StreamedBlob)> = Vec::new();
+        let mut byte_columns: Vec<(
+            PropertyId,
+            &dyn hawdb_storage::column_group::group::StreamedBlob,
+        )> = Vec::new();
         if let Some(label) = &label_slice {
             byte_columns.push((LABEL_SET_COLUMN, label));
         }
@@ -762,7 +777,7 @@ fn sweep_superseded_shadow_files(
     catalog: &PublishedColumnGroupCatalog,
 ) -> (usize, usize) {
     let mut keep = BTreeSet::new();
-    keep.insert(hawdb_storage::COLUMN_GROUP_MANIFEST_FILE.to_string());
+    keep.insert(hawdb_storage::column_group::manifest::COLUMN_GROUP_MANIFEST_FILE.to_string());
     keep.insert(SHADOW_KEY_DICTIONARY_FILE.to_string());
     for reference in catalog.manifest().tables() {
         keep.insert(reference.file_name().to_string());
@@ -935,7 +950,7 @@ impl GraphStore {
             return Ok(ColumnarShadowAdmission::unmetered());
         };
         let allowance = self.columnar_shadow_admission_bytes();
-        let request = hawdb_storage::BackgroundWorkRequest {
+        let request = hawdb_storage::background::BackgroundWorkRequest {
             cpu_slots: 1,
             memory_bytes: allowance,
             io_slots: 1,
@@ -1181,7 +1196,10 @@ impl GraphStore {
         let table_count = manifest.tables().len();
         let catalog = manifest.publish(&shadow_root).map_err(shadow_error)?;
         metadata_bytes_written = metadata_bytes_written.saturating_add(
-            fs::metadata(shadow_root.join(hawdb_storage::COLUMN_GROUP_MANIFEST_FILE))?.len(),
+            fs::metadata(
+                shadow_root.join(hawdb_storage::column_group::manifest::COLUMN_GROUP_MANIFEST_FILE),
+            )?
+            .len(),
         );
         // Strictly after the publish succeeded: best-effort reclamation of
         // everything outside the new catalog's reference closure, so disk
@@ -1221,19 +1239,21 @@ mod tests {
     #[test]
     fn root_facade_preserves_storage_columnar_shadow_contract_identity() {
         assert_eq!(
-            TypeId::of::<crate::ColumnarShadowCheckpointStatus>(),
-            TypeId::of::<hawdb_storage::ColumnarShadowCheckpointStatus>()
+            TypeId::of::<crate::column_group::shadow::ColumnarShadowCheckpointStatus>(),
+            TypeId::of::<hawdb_storage::column_group::shadow::ColumnarShadowCheckpointStatus>()
         );
         assert_eq!(
-            TypeId::of::<crate::ColumnarShadowCheckpointReport>(),
-            TypeId::of::<hawdb_storage::ColumnarShadowCheckpointReport>()
+            TypeId::of::<crate::column_group::shadow::ColumnarShadowCheckpointReport>(),
+            TypeId::of::<hawdb_storage::column_group::shadow::ColumnarShadowCheckpointReport>()
         );
         assert_eq!(
-            TypeId::of::<crate::ColumnarShadowRecoveryStatus>(),
-            TypeId::of::<hawdb_storage::ColumnarShadowRecoveryStatus>()
+            TypeId::of::<crate::column_group::shadow::ColumnarShadowRecoveryStatus>(),
+            TypeId::of::<hawdb_storage::column_group::shadow::ColumnarShadowRecoveryStatus>()
         );
     }
-    use hawdb_storage::{decode_residual_row_properties, ColumnGroupReader};
+    use hawdb_storage::{
+        canonical::decode_residual_row_properties, column_group::group::ColumnGroupReader,
+    };
 
     fn unique_shadow_dir(name: &str) -> PathBuf {
         let nanos = std::time::SystemTime::now()
@@ -1301,7 +1321,7 @@ mod tests {
                 // groups omit an empty residual column entirely).
                 let residual = match reader.read_byte_column(RESIDUAL_COLUMN) {
                     Ok(residual) => residual,
-                    Err(hawdb_storage::ColumnGroupError::PropertyMissing(_)) => {
+                    Err(hawdb_storage::column_group::ColumnGroupError::PropertyMissing(_)) => {
                         vec![None; reader.directory().row_count as usize]
                     }
                     Err(error) => panic!("residual column read failed: {error}"),
@@ -2319,7 +2339,7 @@ mod tests {
         // Every remaining artifact belongs to the active closure.
         let catalog_on_disk = ColumnGroupManifest::open(&shadow_root).unwrap().unwrap();
         let mut keep = BTreeSet::new();
-        keep.insert(hawdb_storage::COLUMN_GROUP_MANIFEST_FILE.to_string());
+        keep.insert(hawdb_storage::column_group::manifest::COLUMN_GROUP_MANIFEST_FILE.to_string());
         keep.insert(SHADOW_KEY_DICTIONARY_FILE.to_string());
         for reference in catalog_on_disk.manifest().tables() {
             keep.insert(reference.file_name().to_string());

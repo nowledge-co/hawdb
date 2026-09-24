@@ -17,14 +17,21 @@ use crate::graph_descriptor_tree::demand::{
     GraphDescriptorTreeScanControl,
 };
 use crate::{
-    content_digest, durable_replace_file, wire, ContentDigest, FileSegmentRangeReader,
-    GraphDescriptorKind, GraphDescriptorPageError, GraphDescriptorTreeArtifactMetadata,
-    GraphDescriptorTreeBuildConfig, GraphDescriptorTreeBuilder, GraphDescriptorTreeError,
-    GraphDescriptorTreeGenerationArtifacts, GraphDescriptorTreePaths,
-    GraphDescriptorTreeRootReader, ManifestGeneration, NodeId, NodeRecord,
-    PreparedGraphDescriptorTree, ProjectedNodeRecord, PropertySpillError, PropertySpillManifest,
-    PropertySpillReader, PropertySpillWriteOptions, PropertySpillWriteOutput, PropertySpillWriter,
-    RelId, RelRecord, SegmentCache, SegmentRangeRead, SegmentReadError, SegmentReadRange, StoreId,
+    cache::{content_digest, ContentDigest, ManifestGeneration, SegmentCache, StoreId},
+    durability::durable_replace_file,
+    graph_descriptor_page::{GraphDescriptorKind, GraphDescriptorPageError},
+    graph_descriptor_tree::{
+        GraphDescriptorTreeArtifactMetadata, GraphDescriptorTreeBuildConfig,
+        GraphDescriptorTreeBuilder, GraphDescriptorTreeError,
+        GraphDescriptorTreeGenerationArtifacts, GraphDescriptorTreePaths,
+        GraphDescriptorTreeRootReader, PreparedGraphDescriptorTree,
+    },
+    property_spill::{
+        PropertySpillError, PropertySpillManifest, PropertySpillReader, PropertySpillWriteOptions,
+        PropertySpillWriteOutput, PropertySpillWriter,
+    },
+    scan::{FileSegmentRangeReader, SegmentRangeRead, SegmentReadError, SegmentReadRange},
+    wire, NodeId, NodeRecord, ProjectedNodeRecord, RelId, RelRecord,
 };
 use hawdb_core::{LabelId, RelTypeId, Value};
 use hawdb_integrity::{IntegrityHasher, Sha256Digest};
@@ -2243,7 +2250,7 @@ impl CanonicalSegmentReader {
     fn read_segment(
         &self,
         descriptor: &CanonicalSegmentDescriptor,
-    ) -> Result<crate::SegmentBytes, CanonicalSegmentError> {
+    ) -> Result<crate::cache::SegmentBytes, CanonicalSegmentError> {
         self.read_segment_with_report(descriptor)
             .map(|read| read.payload)
     }
@@ -3822,7 +3829,7 @@ fn write_hashed(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::{PersistentPropertySpillDescriptorTree, PropertySpillConfig};
+    use crate::property_spill::{PersistentPropertySpillDescriptorTree, PropertySpillConfig};
 
     fn collect_descriptors(
         reader: &CanonicalSegmentReader,

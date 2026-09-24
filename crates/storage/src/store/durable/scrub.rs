@@ -25,13 +25,22 @@ use crate::store::{
 };
 use hawdb_integrity::Sha256Digest;
 use hawdb_storage::{
-    append_generation_manifest_file, append_segment_file, decode_relational_checkpoint_file,
-    AppendGenerationReader, AppendPublicationConfig, CanonicalAdjacencyConfig,
-    CanonicalAdjacencyReader, CanonicalSegmentManifest, CanonicalSegmentReader,
-    GraphDescriptorKind, GraphDescriptorTreeBuildConfig, GraphDescriptorTreeGenerationArtifacts,
-    GraphDescriptorTreePaths, GraphDescriptorTreeRootReader, ManifestGeneration,
-    PersistentPropertyProjectionManifest, PropertySpillManifest, RelationalDecodeLimits,
-    StorageScrubReport,
+    append_table::{
+        append_generation_manifest_file, append_segment_file, AppendGenerationReader,
+        AppendPublicationConfig,
+    },
+    backup::StorageScrubReport,
+    cache::ManifestGeneration,
+    canonical::{CanonicalSegmentManifest, CanonicalSegmentReader},
+    canonical_adjacency::{CanonicalAdjacencyConfig, CanonicalAdjacencyReader},
+    graph_descriptor_page::GraphDescriptorKind,
+    graph_descriptor_tree::{
+        GraphDescriptorTreeBuildConfig, GraphDescriptorTreeGenerationArtifacts,
+        GraphDescriptorTreePaths, GraphDescriptorTreeRootReader,
+    },
+    property_projection::PersistentPropertyProjectionManifest,
+    property_spill::PropertySpillManifest,
+    relational::{decode_relational_checkpoint_file, RelationalDecodeLimits},
 };
 use std::collections::BTreeSet;
 use std::fs::{self};
@@ -137,11 +146,11 @@ impl DurableStore {
         }
 
         if let Some(binding) = manifest.relational_index_generation_artifacts {
-            let page_path =
-                self.root_path
-                    .join(hawdb_storage::relational_index_shadow_artifact_file(
-                        binding.generation,
-                    ));
+            let page_path = self.root_path.join(
+                hawdb_storage::relational::relational_index_shadow_artifact_file(
+                    binding.generation,
+                ),
+            );
             scrub.verify_path(
                 &page_path,
                 binding.page_artifact.encoded_len,
@@ -150,7 +159,9 @@ impl DurableStore {
                 "relational index page artifact",
             )?;
             let generation_manifest_path = self.root_path.join(
-                hawdb_storage::relational_index_shadow_manifest_generation_file(binding.generation),
+                hawdb_storage::relational::relational_index_shadow_manifest_generation_file(
+                    binding.generation,
+                ),
             );
             scrub.verify_path(
                 &generation_manifest_path,
@@ -159,13 +170,13 @@ impl DurableStore {
                 binding.manifest_artifact.encoded_sha256,
                 "relational index generation manifest",
             )?;
-            let reader = hawdb_storage::RelationalIndexShadowReader::open_generation(
+            let reader = hawdb_storage::relational::RelationalIndexShadowReader::open_generation(
                 &self.root_path,
-                hawdb_storage::RelationalIndexGenerationIdentity {
+                hawdb_storage::relational::RelationalIndexGenerationIdentity {
                     generation: binding.generation,
                     source_commit_epoch: binding.source_commit_epoch,
                 },
-                hawdb_storage::RelationalIndexShadowConfig::default(),
+                hawdb_storage::relational::RelationalIndexShadowConfig::default(),
             )
             .map_err(|error| HawDBError::Storage(error.to_string()))?;
             if reader.manifest().catalog_schema_digest != binding.catalog_schema_digest
@@ -213,11 +224,11 @@ impl DurableStore {
             .relational_overflow_generation_artifacts
             .expect("validated checkpoint has an overflow binding");
         scrub.verify_path(
-            &self
-                .root_path
-                .join(hawdb_storage::relational_overflow_manifest_generation_file(
+            &self.root_path.join(
+                hawdb_storage::relational::relational_overflow_manifest_generation_file(
                     overflow_binding.generation,
-                )),
+                ),
+            ),
             overflow_binding.manifest_artifact.encoded_len,
             u64::from(overflow_binding.manifest_artifact.encoded_crc32c),
             overflow_binding.manifest_artifact.encoded_sha256,
@@ -226,7 +237,7 @@ impl DurableStore {
         scrub.verify_path(
             &self
                 .root_path
-                .join(hawdb_storage::relational_overflow_extent_file(
+                .join(hawdb_storage::relational::relational_overflow_extent_file(
                     overflow_binding.generation,
                 )),
             overflow_root.manifest().extent_artifact.encoded_len,
@@ -235,11 +246,11 @@ impl DurableStore {
             "relational overflow extent artifact",
         )?;
         scrub.verify_path(
-            &self
-                .root_path
-                .join(hawdb_storage::relational_overflow_descriptor_file(
+            &self.root_path.join(
+                hawdb_storage::relational::relational_overflow_descriptor_file(
                     overflow_binding.generation,
-                )),
+                ),
+            ),
             overflow_root.manifest().descriptor_artifact.encoded_len,
             u64::from(overflow_root.manifest().descriptor_artifact.encoded_crc32c),
             overflow_root.manifest().descriptor_artifact.encoded_sha256,
@@ -251,11 +262,11 @@ impl DurableStore {
             .relational_row_generation_artifacts
             .expect("validated checkpoint has a row-page binding");
         scrub.verify_path(
-            &self
-                .root_path
-                .join(hawdb_storage::relational_row_page_manifest_generation_file(
+            &self.root_path.join(
+                hawdb_storage::relational::relational_row_page_manifest_generation_file(
                     row_binding.generation,
-                )),
+                ),
+            ),
             row_binding.manifest_artifact.encoded_len,
             u64::from(row_binding.manifest_artifact.encoded_crc32c),
             row_binding.manifest_artifact.encoded_sha256,
@@ -263,26 +274,29 @@ impl DurableStore {
         )?;
         for (path, metadata, artifact) in [
             (
-                self.root_path
-                    .join(hawdb_storage::relational_row_page_artifact_file(
+                self.root_path.join(
+                    hawdb_storage::relational::relational_row_page_artifact_file(
                         row_binding.generation,
-                    )),
+                    ),
+                ),
                 row_root.manifest().page_artifact,
                 "relational row-page artifact",
             ),
             (
-                self.root_path
-                    .join(hawdb_storage::relational_row_page_root_descriptor_file(
+                self.root_path.join(
+                    hawdb_storage::relational::relational_row_page_root_descriptor_file(
                         row_binding.generation,
-                    )),
+                    ),
+                ),
                 row_root.manifest().root_descriptor_artifact,
                 "relational row-page descriptor artifact",
             ),
             (
-                self.root_path
-                    .join(hawdb_storage::relational_row_page_root_key_file(
+                self.root_path.join(
+                    hawdb_storage::relational::relational_row_page_root_key_file(
                         row_binding.generation,
-                    )),
+                    ),
+                ),
                 row_root.manifest().root_key_artifact,
                 "relational row-page key artifact",
             ),
@@ -335,14 +349,12 @@ impl DurableStore {
                 "canonical artifact",
             )?;
             let descriptor_paths = GraphDescriptorTreePaths::new(
-                self.root_path
-                    .join(hawdb_storage::canonical_segment_descriptor_page_file(
-                        generation,
-                    )),
-                self.root_path
-                    .join(hawdb_storage::canonical_segment_descriptor_root_file(
-                        generation,
-                    )),
+                self.root_path.join(
+                    hawdb_storage::canonical::canonical_segment_descriptor_page_file(generation),
+                ),
+                self.root_path.join(
+                    hawdb_storage::canonical::canonical_segment_descriptor_root_file(generation),
+                ),
             );
             scrub.verify_path(
                 &descriptor_paths.root_manifest,
@@ -391,14 +403,16 @@ impl DurableStore {
         if let Some(binding) = manifest.canonical_adjacency_generation_artifacts {
             let descriptor_config = GraphDescriptorTreeBuildConfig::default();
             let descriptor_paths = GraphDescriptorTreePaths::new(
-                self.root_path
-                    .join(hawdb_storage::canonical_adjacency_descriptor_page_file(
+                self.root_path.join(
+                    hawdb_storage::canonical_adjacency::canonical_adjacency_descriptor_page_file(
                         binding.generation,
-                    )),
-                self.root_path
-                    .join(hawdb_storage::canonical_adjacency_descriptor_root_file(
+                    ),
+                ),
+                self.root_path.join(
+                    hawdb_storage::canonical_adjacency::canonical_adjacency_descriptor_root_file(
                         binding.generation,
-                    )),
+                    ),
+                ),
             );
             scrub.verify_path(
                 &descriptor_paths.root_manifest,
@@ -495,14 +509,12 @@ impl DurableStore {
                 "property spill artifact",
             )?;
             let descriptor_paths = GraphDescriptorTreePaths::new(
-                self.root_path
-                    .join(hawdb_storage::property_spill_descriptor_page_file(
-                        generation,
-                    )),
-                self.root_path
-                    .join(hawdb_storage::property_spill_descriptor_root_file(
-                        generation,
-                    )),
+                self.root_path.join(
+                    hawdb_storage::property_spill::property_spill_descriptor_page_file(generation),
+                ),
+                self.root_path.join(
+                    hawdb_storage::property_spill::property_spill_descriptor_root_file(generation),
+                ),
             );
             scrub.verify_path(
                 &descriptor_paths.root_manifest,
@@ -578,14 +590,16 @@ impl DurableStore {
                 "property projection artifact",
             )?;
             let descriptor_paths = GraphDescriptorTreePaths::new(
-                self.root_path
-                    .join(hawdb_storage::property_projection_descriptor_page_file(
+                self.root_path.join(
+                    hawdb_storage::property_projection::property_projection_descriptor_page_file(
                         generation,
-                    )),
-                self.root_path
-                    .join(hawdb_storage::property_projection_descriptor_root_file(
+                    ),
+                ),
+                self.root_path.join(
+                    hawdb_storage::property_projection::property_projection_descriptor_root_file(
                         generation,
-                    )),
+                    ),
+                ),
             );
             scrub.verify_path(
                 &descriptor_paths.root_manifest,
@@ -659,14 +673,14 @@ impl DurableStore {
                 overflow_extent_generations.insert(descriptor.physical_generation);
                 overflow_root.hydrate(
                     &descriptor.reference,
-                    &mut hawdb_storage::RelationalHydrationBudget::default(),
+                    &mut hawdb_storage::relational::RelationalHydrationBudget::default(),
                     None,
                 )?;
                 if descriptor.physical_generation != overflow_binding.generation {
                     older_overflow_bytes = older_overflow_bytes
                         .checked_add(descriptor.envelope_bytes)
                         .ok_or_else(|| {
-                            hawdb_storage::RelationalOverflowPublicationError::Admission(
+                            hawdb_storage::relational::RelationalOverflowPublicationError::Admission(
                                 "overflow scrub byte count overflow".to_string(),
                             )
                         })?;
