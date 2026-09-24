@@ -90,7 +90,7 @@ previously durable prefix. `NoBatchWitness` and `NoConflictWitness` are
 intentionally false reachability probes. Copy the positive cfg to a temporary
 file, append `INVARIANT` and the probe name, and run TLC with that cfg. Each
 must fail on that probe, demonstrating an accepted multi-writer batch or a
-successful writer alongside a rejected overlapping writer.
+successful writer alongside a rejected same-key writer within one batch.
 
 The model abstracts a single ordinary lock holder and one-key write sets. It
 does not model exact queue order, arbitrary lock-target overlap, escalation,

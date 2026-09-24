@@ -140,3 +140,47 @@ the [proof](tla/OPTIMISTIC_COMMIT_ADMISSION_PROOF.md). #232 stays open for
 fair admission/starvation coverage, representative durable scaling and
 cross-revision single-stream latency evidence. #231's global memory and full
 recovery proof obligations also remain open.
+
+## Optimistic admission follow-up: 2026-09-25
+
+The [second receipt](benchmarks/concurrent_writers_macos_2026_09_25_admission.json)
+measures engine `804865b7` using the **identical harness hash**, host, features,
+profile, fixture, case order and five-round protocol. No agent-started builds or
+tests overlapped this measurement. It is a subsequent process, not an
+interleaved before/after revision experiment. All 90 cases / 23,040 commits /
+60 durable reopens passed. Raw arrays remain at
+`target/benchmarks/232-concurrent-writers/2026-09-25-admission-release.jsonl`.
+
+| Storage | Writers | Control TPS | Concurrent TPS | Paired speedup | Speedup vs 1 writer | Concurrent transaction p95, ms |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: |
+| Memory | 1 | 6,360.6 | 6,374.8 | 1.005 | 1.000 | 0.163 |
+| Memory | 4 | 5,963.5 | 11,237.0 | 1.896 | 1.767 | 0.404 |
+| Memory | 8 | 5,866.2 | 10,813.5 | 1.852 | 1.725 | 1.521 |
+| Durable, ungrouped | 1 | 162.8 | 159.2 | 0.998 | 1.000 | 7.359 |
+| Durable, ungrouped | 4 | 160.6 | 173.4 | 1.067 | 1.082 | 43.555 |
+| Durable, ungrouped | 8 | 159.8 | 175.7 | 1.091 | 1.094 | 107.022 |
+| Durable, grouped candidate | 1 | 157.9 | 161.4 | 1.022 | 1.000 | 6.617 |
+| Durable, grouped candidate | 4 | 158.6 | 567.1 | 3.594 | 3.662 | 8.442 |
+| Durable, grouped candidate | 8 | 160.2 | 1,086.8 | 6.784 | 6.867 | 8.734 |
+
+All grouped 4-writer cases used **64 syncs for 256 commits**. Grouped 8-writer
+cases used **32, 33, 32, 33 and 37 syncs**, respectively. The previous engine
+used 256 in every grouped case. This supports actual sync amortization on this
+workload; no timing threshold or synthetic forced batch is used in the benchmark.
+The separate regression uses an enqueue gate to verify the safety contract
+deterministically, and is not included in these performance numbers.
+
+Grouped 4-writer candidate/control throughput ratios range from 3.491 to 3.613,
+and 8-writer ratios from 5.797 to 6.969. In contrast, ungrouped 4-writer ratios
+range from **0.630 to 1.127** and grouped 1-writer ratios from **0.619 to 1.634**.
+Those unfavorable samples remain in the receipts. The data establishes a
+workload-specific batching benefit, not general fairness or single-stream
+no-regression. A matched cross-revision latency qualification remains required.
+
+`/usr/bin/time -l` for the entire new process reports 117.04 s wall, 19.06 s user,
+9.23 s system, maximum RSS 28,753,920 bytes, and peak footprint 13,910,544 bytes.
+These process totals include setup, verification, reopen and JSON serialization;
+they are not per-case resource budgets or bounds under long-lived snapshots.
+The OS-reported block-operation counters were zero and are not treated as
+physical storage-I/O measurements. Engine sync counters above are the relevant
+amortization evidence.

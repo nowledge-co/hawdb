@@ -100,5 +100,8 @@ FirstCommitterWins ==
 AcknowledgedDurable ==
     \A t \in Transactions: phase[t] = "done" => \E i \in 1..durable: history[i].tx = t
 NoBatchWitness == ~batched
-NoConflictWitness == ~((\E t \in Transactions: phase[t] = "done") /\ (\E t \in Transactions: phase[t] = "conflict"))
+NoConflictWitness ==
+    ~(\E t, u \in batch:
+        /\ phase[t] = "accepted" /\ phase[u] = "rejected"
+        /\ key[t] = key[u])
 =============================================================================

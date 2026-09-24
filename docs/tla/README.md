@@ -1378,7 +1378,9 @@ all current optimistic graph commits. `PrepareCommit` requires the base epoch
 to match the published epoch; `OptimisticFirstCommitterWins` asserts
 `commitEpoch = baseEpoch + 1`. The current Rust validator can accept a stale
 snapshot with disjoint graph writes, so that invariant is not a theorem about
-all Rust executions. The model has no per-key stamp map or tombstone watermark.
+all Rust executions. Its full-exclusive-span assumption also does not model
+the current compatible optimistic-commit admission permits. The model has no
+per-key stamp map or tombstone watermark.
 Its lock/publication checks must not be cited as completion of #231's per-key
 validation, recovery or reclamation proof. The
 [protocol and conditional validation argument](../MVCC_COMMIT_VALIDATION_PROTOCOL.md)
