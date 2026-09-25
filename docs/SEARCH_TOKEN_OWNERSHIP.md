@@ -26,8 +26,10 @@ same expansion order. The legacy query and mini-delta paths retain untracked
 string ownership and their existing logical limits.
 
 Identifier deduplication admits HashMap table capacity separately. A replacement
-table is admitted while the old table's lease is still held. Each scope releases
-its table before its capacity lease. Source-borrowed keys need no second string;
+table is admitted while the old table's lease is still held. A scope reset drops
+keys but retains both the table capacity and its lease for reuse. Final owner
+destruction releases the table before its capacity lease. Source-borrowed keys
+need no second string;
 owned keys share the emitted payload. Cancellation and consumer failures stop
 traversal without revoking any term that the consumer retained.
 
@@ -61,6 +63,94 @@ remaining entries and their capacity lease, in that drop order. Early return,
 partial iteration and unwind retain that ownership without a caller-local
 keepalive binding. Tracked artifact terms share the original payload admission;
 reserved merge terms still make independently admitted retained copies.
+
+## Safety argument for scope reuse and throttling
+
+This argument describes an admitted traversal using the same `BuildMemory`
+throughout, as constructed by the current private implementation in
+[`control.rs`](../crates/search/src/analyzer_stream/control.rs). Legacy traversal
+without `Control::memory` has no ledger guarantee. The admitted argument assumes the
+pinned capacity envelope bounds actual allocation requests, successful ledger
+reservations enforce the shared budget, and Rust's field destruction order.
+Allocator qualification tests check the first assumption; this is not a proof
+of a future standard-library HashMap layout or an RSS bound.
+
+Let `K` be the current scope's keys, `C` the table capacity, `L` its live capacity
+lease, and `H(C)` the retained-table envelope. The owner invariant is:
+
+1. `|K| <= C`, and every live table is covered by `L >= H(C)`.
+2. Each owned key or emitted admitted term retains its payload lease until the
+   last shared owner is destroyed. Table capacity and term payload are separate
+   charges; borrowed keys do not require an additional string allocation.
+3. The set `K` contains exactly the successfully materialized spellings admitted
+   since the last reset. A failed insertion cannot mark an un-emitted spelling
+   as seen. Consumer failure stops traversal; it does not revoke delivered terms.
+
+The empty owner establishes these properties with `K = {}`, `C = L = 0`.
+Inductively, a duplicate changes neither keys nor capacity. With spare capacity,
+`entry` materializes before insertion; a materialization error leaves the vacant
+entry uninserted. On growth, the old owner remains intact while a separate
+candidate reserves `H(C_new)` and allocates/validates its table. Rejection drops
+candidate storage before its lease and leaves the old owner unchanged. Success
+moves keys into the validated candidate and replaces the old owner, releasing
+old storage before its lease. A subsequent materialization failure may retain a
+larger capacity, but leaves the key set unchanged and that capacity fully charged.
+It is therefore safe to retry; rollback to the original capacity is unnecessary.
+
+Reset maps `(K, C, L)` to `({}, C, L)`. Dropping key owners may release payloads
+that have no consumer, while independently retained consumer terms remain valid.
+The same spelling in a later scope can be emitted again. Destruction drops the
+remaining keys and table before `L`; consumers can outlive the table. Thus reset,
+failed insertion, retry, and destruction preserve all three invariants.
+
+For a sequence of scopes whose cardinalities never exceed the current capacity,
+reset causes **zero table allocations and zero table lease reservations**. Growth
+only follows a new capacity requirement, rather than each scope boundary. The
+tradeoff is that the largest table's charge remains resident until traversal
+ends; this can reduce available budget for later work. It is not a claim of lower
+wall-clock latency or lower peak memory for every input.
+
+For checkpoint throttling, let `S = 1024` and `r` be the remaining skipped work
+points. Initially `r = 0`. At each non-cancelled `Control::check`, `r = 0` performs
+one full checkpoint and on success sets `r = S - 1`; otherwise it decrements `r`.
+Induction gives `0 <= r < S` and full checks at work points `1, 1+S, 1+2S, ...`.
+For `n` successful work points there are exactly `ceil(n/S)` full checkpoints in
+this throttle (zero when `n = 0`). A failed full check returns before advancing
+`r`, so retry cannot skip the failure. Other analyzer checkpoints may add checks.
+
+Cancellation is checked before the throttle, so a cancellation flag observed at
+any work point is immediately passed to the full checkpoint and returned as an
+error. An asynchronously set flag can race with that observation; this is
+cooperative cancellation, not an atomic guarantee about callback delivery. A
+deadline that expires just after a successful check is detected within the next
+`S` control work points, **if traversal reaches them**. This is neither a
+wall-clock latency bound nor a guarantee to detect expiration before a shorter
+traversal finishes. No new claim is made about time inside opaque analyzer calls.
+
+## Issue #537 acceptance mapping
+
+The production changes landed in [#651](https://github.com/nowledge-co/hawdb/pull/651),
+[#666](https://github.com/nowledge-co/hawdb/pull/666), and
+[#668](https://github.com/nowledge-co/hawdb/pull/668). The original issue describes
+older code; its ten items map to the current implementation as follows:
+
+| Item | Current implementation and evidence |
+| --- | --- |
+| 1: checkpoint density | `CheckpointThrottle` bounds full checks; `admitted_tokenizer_throttles_deadline_checks` measures actual checks over 4,096 identifiers; cancellation/unwind regression checks consumer retention and cleanup. |
+| 2: per-scope allocation | `Dedup::reset` clears keys while retaining capacity/lease; `dedup_reset_reuses_its_admitted_table_capacity` checks reuse, and `dedup_shares_owned_text_and_keeps_consumers_alive_after_scope_reset` checks cross-scope re-emission and independent consumer ownership. |
+| 3: duplicate probes | Spare-capacity insertion uses `HashMap::entry`; the full-capacity duplicate fast path avoids replacement admission. `duplicates_need_no_new_admission_with_full_or_spare_capacity` exhausts the remaining budget in both cases. |
+| 4: HashMap envelope duplication | Dedup delegates to `bounds::retained_hash_table_bytes`. The opaque regex cache deliberately retains its separately qualified overlap envelope; these two contracts need not have identical constants. |
+| 5: manual growth rollback | A separately admitted RAII candidate replaces lease grow/shrink rollback. Reusing a Vec growth helper is unnecessary because HashMap replacement transfers key ownership under a different contract. Exact/one-byte-short growth tests check shared-budget overlap and rejection. |
+| 6: lowercase formula | `Text::lowercase` delegates to `bounds::growing_bytes`; exhaustive Unicode scalar and contextual-sigma regressions cover expansion and semantics. |
+| 7: implicit untracked terms | Production has no `From<String>`/`From<&str>` for `Term`; fixture-only conversions are cfg-gated. Explicit `Term::untracked` remains a reviewed escape hatch, not a universal type proof that every caller is admitted. |
+| 8: direct tracked artifact input | `retained_artifact_shares_a_tracked_resident_term_and_its_admission` checks a resident tracked term without relying on a disk round-trip. Shared payloads need no second payload charge. |
+| 9: frequency iterator keepalive | The consuming iterator owns entries and their capacity lease. `frequency_iterator_keeps_the_map_admitted_after_its_analysis_scope_ends` and error/unwind tests exercise ownership beyond the original scope. |
+| 10: failed growth and retry | Candidate rejection releases its lease; failure after committing a larger table retains the correct charge. `rejected_term_materialization_keeps_the_replacement_admitted_for_retry` verifies keys, charge and successful retry. |
+
+The regression suite supplies executable evidence for these invariants, not a
+formal proof of allocator internals or a throughput benchmark. Deadline-check
+counts and capacity reuse are deterministic operation evidence; no measured
+end-to-end speedup is claimed.
 
 ## Capacity model and qualification
 
