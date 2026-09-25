@@ -1406,6 +1406,14 @@ and owner-release assumptions. The [queue/graph proof](LOCK_WAIT_FAIRNESS_PROOF.
 separates that one-request temporal result from source-level dynamic deadlock
 checks, bounded metadata admission and remaining whole-transaction fairness.
 
+[`HawDBVersionHistoryBudget.tla`](HawDBVersionHistoryBudget.tla) checks weighted
+current-index admission, safe pressure reclamation, refusal and the prepaid
+legacy Database barrier. It compares all usable pinned epochs with full-history
+validation and checks the charge against an independent resident-weight sum.
+The [budget proof](MVCC_VALIDATION_PROOF.md#finite-budget-model-and-negative-controls)
+records four negative controls and three reachability probes. Historical COW
+roots and allocator peaks remain outside this current-index estimate.
+
 [`HawDBRelationalWriteIntent.tla`](HawDBRelationalWriteIntent.tla) compares
 explicit relational write stamps against intent history, including unchanged
 final data and absent-key deletion. Its [source proof](RELATIONAL_MVCC_PROOF.md)

@@ -70,6 +70,7 @@ STORAGE_MODELS = [
     "HawDBTransactionConcurrency",
     "HawDBTransactionIndexOverlay",
     "HawDBVerifiedRowPageCache",
+    "HawDBVersionHistoryBudget",
     "HawDBWalDoctor",
     "HawDBWalGroupCommit",
 ]

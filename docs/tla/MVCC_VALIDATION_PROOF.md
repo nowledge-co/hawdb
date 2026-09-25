@@ -368,10 +368,67 @@ the guard is restored before final checks.
 Unit tests cover live-to-tombstone replacement, equality at the prune boundary,
 reclaimed charge reuse and a retained COW snapshot's independent counter.
 
-The existing TLA+ model abstracts resource admission: a refused commit adds no
-history, and safe Prune remains an allowed transition. No new TLC bound on
-memory is claimed. This source-level induction establishes a current-root
-estimate, not the sum of all retained roots or real allocation peaks. Global
+The original MVCC model abstracts resource admission: a refused commit adds no
+history, and safe Prune remains an allowed transition. The separate budget model
+below checks accounting and validation under pressure. This source-level
+induction establishes a current-root estimate, not the sum of all retained roots
+or real allocation peaks. Global
 version memory, sustained pressure cost and single-stream latency qualification
 remain #231 acceptance work. The pressure path can scan/recount the index and
 detach shared COW pages; that cost is not hidden by the constant-time counter.
+
+### Finite budget model and negative controls
+
+`HawDBVersionHistoryBudget.tla` uses three narrow identities (weights 1, 2, 1),
+a Database identity of weight 1, budget 3 and at most four commits. One pinned
+epoch abstracts the oldest retained snapshot. Committers may use that epoch or
+the current epoch, so newer writers can continue while an old reader remains.
+Validation is checked for **every epoch between the oldest pin and current
+state**, against independent full commit history. This is stronger than checking
+only the next selected writer. With no pin, current-epoch validation is checked.
+
+`Commit` validates before pressure reclamation, preflights the resulting full
+footprint and atomically appends history/publishes stamps only if it fits.
+`Refuse` may reclaim safe obsolete stamps but leaves history unchanged. `Prune`
+represents checkpoint reclamation. `Legacy` appends a Database-barrier commit
+without resource admission, exercising the prepaid identity directly. An
+independent sum of resident key weights checks the tracked charge, including
+refund after pruning. Actual resident weight must not exceed charged weight,
+and charged weight must not exceed the budget.
+
+The final positive check explored **158,921 generated / 25,916 distinct states**,
+depth 10, with an empty queue. Three separate false-invariant probes reach
+budget refusal, legacy commit at capacity and successful pressure reclamation
+(`NoRefusalWitness`, `NoLegacyAtCapacityWitness`, `NoPressureReclaimWitness`).
+They demonstrate reachable paths; they are not liveness/fairness theorems.
+
+Four registered mutants must violate the named independent property:
+
+| Mutation | Required violation |
+| --- | --- |
+| Skip the admission limit | `BoundedCurrentPayload` |
+| Prune stamps still needed by the oldest pin | `ValidationMatchesHistory` |
+| Fail to refund pruned weights | `ExactAccounting` |
+| Remove the Database reservation, leaving legacy publication unguarded | `BoundedCurrentPayload` |
+
+Reproduce the positive and negative checks with:
+
+```sh
+bazel test //docs/tla:HawDBVersionHistoryBudget_check
+scripts/check-storage-tla.sh --check-mutants
+```
+
+For a reachability probe, copy the positive `.cfg`, append `INVARIANT` followed
+by the relevant witness name, and run TLC against the same module. Require the
+named invariant violation, not an arbitrary nonzero exit. All three probes and
+all four mutants were checked on the final model; the complete mutant manifest
+now checks 30 named violations.
+
+This model collapses serialized commit/WAL publication into one transition.
+It does not model failed fsync, byte-level replay, historic COW allocations,
+allocator overhead, more than one independent pin holder, integer overflow or
+preemption inside a commit. The older MVCC and group-admission models retain
+those separate boundaries where applicable; this is not their machine-checked
+composition. Production checked arithmetic and the inductive argument cover
+representable budgets. Finite weighted identities are not a proof of total
+process memory bounds. No runtime algorithm changes accompany this model.
