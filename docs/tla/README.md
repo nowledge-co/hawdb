@@ -1918,3 +1918,9 @@ The [execution request contract](../EXECUTION_REQUEST_CONTRACT.md) supplies the
 inductive proof, Rust transition mapping, old-wrapper compatibility exception,
 and profile snapshot lifetime. The model excludes the legacy unbounded consumer's
 incremental-delivery policy, process RSS, and arbitrary operator semantics.
+
+## Governed conflict retry
+
+`HawDBGovernedConflictRetry` models a shared first attempt and capacity escalation
+after conflict, with an explicit starvation control for fixed-weight retries.
+See [the retry-policy proof and workload](GOVERNED_CONFLICT_RETRY_PROOF.md).

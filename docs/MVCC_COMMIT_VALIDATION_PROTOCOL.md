@@ -390,3 +390,9 @@ The memory/durable fixture commits 64 statements atomically ahead of 128
 recurring small transactions and checks exact reopen state and resource refunds.
 This is an explicit host policy, not a default database-wide exclusion or a
 guarantee for arbitrary-size, mixed-priority or ungoverned transaction retries.
+
+The [governed conflict-retry policy](tla/GOVERNED_CONFLICT_RETRY_PROOF.md) qualifies
+a shared first attempt followed by full-capacity admission after a typed
+pre-publication conflict. The host retains its waiter and captures a new snapshot
+after admission; uncertain durability failures are not automatically replayed.
+This is an explicit conditional fallback, not automatic fairness of every retry.

@@ -36,3 +36,7 @@ conflicts from NULL unique values or shared foreign-key parent reads. See the
 The primary-key predicate controls reject extraction through an OR branch and
 omission of absent-row intents; see the
 [predicate replay proof](../PRIMARY_KEY_PREDICATE_MVCC_PROOF.md).
+
+The governed-conflict-retry control rejects publication from a conflicting
+attempt. Its [proof](../GOVERNED_CONFLICT_RETRY_PROOF.md) also records the
+non-escalating retry starvation control and reachable conflict/retry witnesses.
