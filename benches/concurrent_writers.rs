@@ -195,6 +195,24 @@ fn measure(path: &Path, durable: bool, grouped: bool, writers: usize, serial: bo
 }
 
 fn main() {
+    let mut selected_round = None;
+    let mut args = std::env::args().skip(1);
+    while let Some(arg) = args.next() {
+        match arg.as_str() {
+            "--bench" => {} // Cargo supplies this for harness-free benchmarks.
+            "--round" => {
+                assert!(selected_round.is_none(), "--round may appear only once");
+                let round = args
+                    .next()
+                    .expect("--round requires an index")
+                    .parse::<usize>()
+                    .expect("round must be an unsigned integer");
+                assert!(round < ROUNDS, "round must be below {ROUNDS}");
+                selected_round = Some(round);
+            }
+            _ => panic!("unknown benchmark argument: {arg}"),
+        }
+    }
     let root = std::env::temp_dir().join(format!(
         "hawdb-concurrent-writers-{}-{}",
         std::process::id(),
@@ -205,6 +223,9 @@ fn main() {
     ));
     std::fs::create_dir(&root).unwrap();
     for round in 0..ROUNDS {
+        if selected_round.is_some_and(|selected| selected != round) {
+            continue;
+        }
         // Reverse case order every round to reduce consistent order bias.
         let mut cases = Vec::new();
         for (durable, grouped) in [(false, false), (true, false), (true, true)] {

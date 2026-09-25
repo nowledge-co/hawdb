@@ -7,6 +7,7 @@ Bazel's manual benchmarks, outside default CI smoke dispatch.
 ```sh
 cargo test --locked --bench concurrent_writers # correctness smoke, not performance
 cargo bench --locked --bench concurrent_writers
+cargo bench --locked --bench concurrent_writers -- --round 0 # one paired-run round
 bazel run -c opt //:hawdb_bench_concurrent_writers
 ```
 
@@ -30,7 +31,10 @@ durable with group commit disabled, and durable with an explicit benchmark-only
 fixed group-commit candidate (8 entries, 1 MiB target, 100 microsecond wait).
 This does not enable group commit for production. Each release run performs five
 rounds, reversing all case order on alternate rounds. Debug smoke uses 16
-transactions and one round. Debug timings are not qualification evidence.
+transactions and one round. `--round N` selects exactly one existing round and
+retains its alternating case order; release accepts 0..4 and debug accepts only
+0. Out-of-range, missing, duplicate and unknown arguments fail before fixture
+creation. Debug timings are not qualification evidence.
 
 Each JSONL record contains the round, configuration, elapsed time, throughput,
 raw transaction and commit latency samples, nearest-rank p50/p95/max latency,
@@ -224,3 +228,61 @@ fairness or long-lived-reader memory. Those acceptance items remain open.
 No algorithm or formal model changed in this evidence-only update. The workload
 partition proof and referenced commit-validation/admission proofs above still
 apply. Process CPU/RSS and physical I/O were not collected for this run.
+
+## Paired comparison against main: 2026-09-25
+
+The [paired receipt](benchmarks/concurrent_writers_macos_2026_09_25_paired_main.json)
+compares main/PR-base `a703cc0f18f549918c73f454cda521edb4f0fb13` with runtime
+`e542270afa3505fbef089436f5b45ca1bed1fc30`, including byte admission and the read
+snapshot baseline. Both release binaries use the identical new `--round` harness
+and identical Cargo.lock, pinned toolchain, default features and bench profile.
+The temporary detached baseline worktree changes only the benchmark file and
+its harness-free Cargo registration. The candidate changes only the benchmark
+round selector. Binary and harness hashes are in the receipt.
+
+Both executables were built and copied to separate paths before timing. For
+rounds 0..4, invoke each saved executable with `--round N`: baseline then current
+on even rounds, current then baseline on odd rounds. Each invocation retains
+all 18 storage/writer/control cases and the harness's original alternating case
+order. No agent-started build or test overlapped these ten sequential processes.
+This reduces persistent revision-order bias; it does not eliminate filesystem,
+thermal or desktop noise. The host and uncontrolled conditions above still apply.
+
+All **180 cases / 46,080 commits / 120 durable reopens** passed. The receipt
+retains every case without raw arrays, execution order/timestamps and raw-file
+checksums. Raw samples and copied binaries remain under
+`target/benchmarks/232-concurrent-writers/paired-main-e542/`.
+
+The table compares each revision's concurrent candidate (without host mutex).
+TPS and p95 are medians of five case metrics; ratios are medians of the five
+matched-round current/main ratios. Lower latency ratios are better.
+
+| Storage | Writers | Main TPS | Current TPS | TPS ratio | Main commit p95, ms | Current commit p95, ms | Commit p95 ratio |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
+| Memory | 1 | 6329.9 | 6413.3 | 1.019 | 0.046 | 0.046 | 1.008 |
+| Memory | 4 | 10161.4 | 11325.7 | 1.119 | 0.239 | 0.229 | 0.945 |
+| Memory | 8 | 9457.3 | 10672.2 | 1.148 | 1.223 | 1.148 | 0.948 |
+| Durable, ungrouped | 1 | 159.5 | 162.9 | 1.015 | 5.966 | 5.914 | 0.999 |
+| Durable, ungrouped | 4 | 173.2 | 170.4 | 0.990 | 46.230 | 47.395 | 0.968 |
+| Durable, ungrouped | 8 | 169.4 | 174.7 | 1.017 | 98.597 | 94.645 | 1.010 |
+| Durable, grouped | 1 | 157.7 | 158.3 | 1.017 | 6.644 | 6.034 | 0.974 |
+| Durable, grouped | 4 | 165.7 | 509.4 | 3.126 | 37.102 | 7.764 | 0.209 |
+| Durable, grouped | 8 | 162.0 | 787.9 | 4.980 | 97.127 | 9.894 | 0.108 |
+
+Single-writer commit p50 paired ratios are 0.992 (memory), 0.981 (durable
+ungrouped), and 1.000 (durable grouped). Commit p95 ratios are 1.008, 0.999 and
+0.974 respectively. In memory, the medians are 45.667 versus 46.125 microseconds
+for commit p95: a small unfavorable result remains, rather than being rounded
+into a claim of no regression. Individual p95 ratios span 0.855–1.022 in memory,
+0.876–1.114 durable ungrouped, and 0.888–1.158 durable grouped. All samples and
+host-mutex controls remain in the receipt. The ungrouped 4-writer median TPS
+ratio is also unfavorable (0.990).
+
+This supplies matched cross-revision evidence and confirms a workload-specific
+grouping benefit, but **does not close the single-stream no-regression gate**.
+Five short paired rounds and no predeclared tolerance/statistical criterion do
+not establish equivalence; nor does higher throughput prove lower tail latency.
+No memory/fairness or relational-collection acceptance is inferred. The next
+latency qualification must state its workload, tolerated effect and sample
+protocol before measurement. No commit algorithm changed in this benchmark
+update; the workload partition proof above remains applicable.
