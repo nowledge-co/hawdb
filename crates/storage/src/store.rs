@@ -6183,10 +6183,14 @@ mod tests {
                 .unwrap();
             store.checkpoint(&catalog).unwrap();
         }
-        fs::remove_file(
-            path.join(hawdb_storage::property_spill::property_spill_descriptor_root_file(1)),
-        )
-        .unwrap();
+        let descriptor_path =
+            path.join(hawdb_storage::property_spill::property_spill_descriptor_root_file(1));
+        let descriptor_bytes = fs::read(&descriptor_path).unwrap();
+        fs::remove_file(&descriptor_path).unwrap();
+        // I/O error text is platform/localization dependent. Capture this
+        // filesystem's NotFound error instead of assuming Unix wording.
+        let missing = fs::File::open(&descriptor_path).unwrap_err();
+        assert_eq!(missing.kind(), std::io::ErrorKind::NotFound);
         let mut catalog = Catalog::default();
         let error = GraphStore::open_with_durability_and_replay_config(
             &path,
@@ -6195,11 +6199,20 @@ mod tests {
             replay_config,
         )
         .unwrap_err();
-        assert!(
-            error.to_string().contains("No such file")
-                || error.to_string().contains("property spill descriptor"),
-            "unexpected missing property spill descriptor error: {error}"
-        );
+        assert_eq!(error, HawDBError::Storage(missing.to_string()));
+        // Restoring only the selected root must make the same store usable.
+        fs::write(&descriptor_path, descriptor_bytes).unwrap();
+        {
+            let mut catalog = Catalog::default();
+            let store = GraphStore::open_with_durability_and_replay_config(
+                &path,
+                &mut catalog,
+                DurabilityPolicy::default(),
+                replay_config,
+            )
+            .unwrap();
+            assert_eq!(store.node_count_for_label(None), 1);
+        }
         fs::remove_dir_all(path).unwrap();
     }
 
