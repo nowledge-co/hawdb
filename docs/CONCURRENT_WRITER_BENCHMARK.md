@@ -457,3 +457,75 @@ the evidence-collector contract passed after that merge. Model/source proof
 for current-epoch compaction is recorded in
 [the MVCC proof](tla/MVCC_VALIDATION_PROOF.md#current-epoch-candidate-compaction-and-pin-registration);
 this measurement does not introduce another storage transition.
+
+
+## Current-runtime 1/4/8-writer matrix: 2026-09-25
+
+The [receipt](benchmarks/concurrent_writers_macos_2026_09_25_current_matrix.json)
+qualifies runtime `0198bb3d267e0ce239a130d29d8692bd06f9ee8f` against PR fork
+point `a703cc0f18f549918c73f454cda521edb4f0fb13`, using the identical binaries
+and harness from the completed single-stream run. Binary/harness/Cargo.lock
+checksums were verified before reuse. Observed HEAD `dfe0492c` differs only in
+tests, formal models, evidence scripts and documentation; no production
+runtime changed. This is not labelled a comparison with latest main.
+
+The complete protocol was recorded before timing: one separately labelled
+warm-up pair, then five matched rounds 0..4, alternating revision order and
+retaining the harness case order. Every process ran all 18 cases: three storage
+modes, 1/4/8 writers, with and without the same-binary host-mutex control. Each
+case kept 256 commits and exact modulo-partitioned per-worker counts. No build
+or test overlapped timing, no pair was discarded, and no adaptive stop was used.
+
+All **180 measured cases / 46,080 commits / 120 durable reopens** passed, plus
+warm-up **36 cases / 9,216 commits / 24 reopens**. All 12 execution records, 216
+case records, raw/resource logs, binary/harness/lock checksums and sample
+percentiles were verified. Raw arrays and process resource logs remain under
+`target/benchmarks/232-concurrent-writers/paired-matrix-0198bb3d/`. As before,
+resource logs include setup and validation and are not per-case allocation
+or I/O bounds; OS caches, CPU affinity and desktop activity were uncontrolled.
+
+All concurrent-API storage/writer combinations are shown below; host-serialized
+controls, p50/p95 transaction/commit latency and every paired ratio remain in
+the receipt. TPS and p95 are medians of five per-case measurements; ratios are
+medians of matched per-round ratios, not ratios of the displayed medians.
+
+| Storage | Writers | Baseline TPS | Candidate TPS | Paired TPS ratio | Baseline commit p95, ms | Candidate commit p95, ms | Paired p95 ratio |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
+| Memory | 1 | 6,412.7 | 6,666.5 | 1.040 | 0.046 | 0.043 | 0.943 |
+| Memory | 4 | 10,504.4 | 10,767.7 | 1.016 | 0.232 | 0.229 | 0.989 |
+| Memory | 8 | 9,259.8 | 10,431.4 | 1.129 | 1.224 | 1.109 | 0.835 |
+| Durable, ungrouped | 1 | 161.2 | 165.0 | 1.039 | 6.010 | 5.998 | 0.998 |
+| Durable, ungrouped | 4 | 176.1 | 175.5 | 1.030 | 42.190 | 40.005 | 0.849 |
+| Durable, ungrouped | 8 | 177.9 | 181.3 | 1.019 | 96.703 | 91.714 | 0.942 |
+| Durable, grouped | 1 | 162.1 | 165.9 | 1.030 | 5.956 | 6.065 | 1.019 |
+| Durable, grouped | 4 | 172.1 | 578.8 | 3.363 | 35.357 | 7.088 | 0.200 |
+| Durable, grouped | 8 | 168.4 | 1,092.4 | 6.405 | 93.063 | 8.108 | 0.087 |
+
+The grouped multiwriter results have three distinct comparison points:
+
+| Writers | Versus fork-point binary | Versus same-binary host control | Versus candidate one writer | Shared syncs for 256 commits, by round |
+| ---: | ---: | ---: | ---: | --- |
+| 4 | 3.363x | 3.485x | 3.454x | 64, 64, 64, 64, 64 |
+| 8 | 6.405x | 6.497x | 6.596x | 32, 33, 33, 33, 34 |
+
+All five grouped 4-writer paired throughput ratios exceed 3.20 against the
+fork-point binary; all five 8-writer ratios exceed 6.24. The larger individual
+8-writer ratio (11.25) and a slow host-control sample are retained, not excluded.
+The baseline's grouped 4/8-writer cases each needed 256 shared syncs; the
+candidate's observed 64 and 32–34 syncs demonstrate batching for this workload.
+Ungrouped modes do not expose per-commit fsync through the shared-sync counter;
+zero in that counter must not be interpreted as zero durability operations.
+
+Ungrouped durable throughput improves little, and memory throughput is not
+monotonic from four to eight writers. These observations remain part of the
+qualification rather than being hidden behind the grouped speedup. The five
+rounds provide descriptive workload evidence, not confidence intervals or a
+universal throughput/fairness theorem. They do not replace the 40-pair strict
+single-stream latency result above: all four durable latency intervals from
+that dedicated run remain inconclusive, and the overall zero-increase gate
+remains not passed. Sustained arbitrary transaction/retry fairness and broader
+workload/resource qualification also remain open.
+
+The modulo-partition/data oracle, harness and production runtime are unchanged;
+no new algorithm or formal transition is introduced by this receipt. Existing
+MVCC/group-admission and workload-partition arguments keep their stated scope.
