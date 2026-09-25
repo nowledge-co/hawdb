@@ -22,3 +22,8 @@ broad-barrier direction, premature history cleanup, ignored retained source
 snapshots, index reset with live transactions, unsafe current-epoch compaction,
 and publication before sync. See
 [the model proof and scope](../MVCC_VALIDATION_PROOF.md).
+
+The governed-writer progress control rejects younger admission past an older
+full-capacity writer. Its proof also records a separate temporal starvation
+counterexample when the safety assertion is omitted; see
+[the progress proof](../GOVERNED_WRITER_PROGRESS_PROOF.md).

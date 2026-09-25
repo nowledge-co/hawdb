@@ -1874,3 +1874,13 @@ claim: writes accepted under that policy may be lost before the next successful
 checkpoint. Fault-injection, cross-platform recovery, and filesystem tests are
 still required to validate that the implementation refines these models and
 that the environmental assumptions hold.
+
+
+## Governed whole-writer progress
+
+[`HawDBGovernedWriterProgress.tla`](HawDBGovernedWriterProgress.tla) checks eventual
+completion of a full-capacity large transaction under recurring smaller arrivals
+with same-priority FIFO admission, stable resource capacity and eventual owner
+service. See [the source argument, negative controls and executable workload](GOVERNED_WRITER_PROGRESS_PROOF.md).
+This supplements, rather than generalizes, per-request lock fairness; arbitrary
+transaction retry fairness and ungoverned writers remain outside the theorem.

@@ -24,6 +24,7 @@ STORAGE_MODELS = [
     "HawDBGeneratedAppendOrder",
     "HawDBGenerationReclamation",
     "HawDBGossipDelivery",
+    "HawDBGovernedWriterProgress",
     "HawDBGraphDescriptorPaging",
     "HawDBGraphIndexQualification",
     "HawDBIndexPublication",

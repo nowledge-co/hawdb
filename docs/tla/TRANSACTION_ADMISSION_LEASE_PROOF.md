@@ -80,3 +80,11 @@ fails, including a batch with one validation conflict and one uncertain write.
 The separate [optimistic admission model](OPTIMISTIC_COMMIT_ADMISSION_PROOF.md)
 now covers that failure's acknowledgement and recovered-prefix obligations;
 this does not merge the two models into a full resource/recovery refinement.
+
+
+The [governed writer progress qualification](GOVERNED_WRITER_PROGRESS_PROOF.md)
+now supplies a separate conditional whole-transaction result: one same-priority
+writer requests the governor's full CPU capacity, earlier owners eventually
+retire, and all competing writers use that governor. Its recurring-small-writer
+model and memory/durable workload do not establish arbitrary-size or
+ungoverned whole-transaction retry fairness.

@@ -372,3 +372,17 @@ on poisoned-handle rejection, atomic two-node batches, strict torn-tail/LSN
 rejection and fresh-handle commits after reopen. Filesystem/apply/checkpoint
 composition remains outside that finite model; see the updated
 [shared-durability proof](tla/OPTIMISTIC_COMMIT_ADMISSION_PROOF.md).
+
+
+## Conditional progress with full-capacity host admission
+
+A separate [governed writer proof and workload](tla/GOVERNED_WRITER_PROGRESS_PROOF.md)
+now covers a same-priority large writer requesting all CPU slots from a shared
+RuntimeGovernor while smaller requests repeatedly arrive. With stable capacity,
+eventual retirement/service, finite valid work and every mutator participating,
+queue priority lets capacity accumulate, and the retained permit prevents
+competing governed snapshots until the large transaction publishes and retires.
+The memory/durable fixture commits 64 statements atomically ahead of 128
+recurring small transactions and checks exact reopen state and resource refunds.
+This is an explicit host policy, not a default database-wide exclusion or a
+guarantee for arbitrary-size, mixed-priority or ungoverned transaction retries.

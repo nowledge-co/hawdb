@@ -156,6 +156,160 @@ fn admitted_transaction_large_waiter_keeps_priority_until_both_transactions_reti
 }
 
 #[test]
+fn admitted_large_transaction_completes_under_recurring_small_transactions() {
+    const WORKERS: usize = 4;
+    const SMALL_COMMITS: usize = 32;
+    const LARGE_ROWS: usize = 64;
+
+    for durable in [false, true] {
+        let path = super::super::unique_test_dir("admitted_recurring_small_writers");
+        let mut database = if durable {
+            Database::open(&path).unwrap()
+        } else {
+            Database::new()
+        };
+        database
+            .query_sql("CREATE TABLE progress (id BIGINT PRIMARY KEY)")
+            .unwrap();
+        let db = ConcurrentDatabase::new_with_wal_group_commit(
+            database,
+            WalGroupCommitConfig::benchmark_candidate(
+                NonZeroUsize::new(4).unwrap(),
+                NonZeroU64::new(1024 * 1024).unwrap(),
+                Duration::from_micros(100),
+            )
+            .unwrap(),
+        );
+        let governor = governor();
+        let begin = |permit| {
+            db.begin_admitted_transaction(
+                ConcurrentTransactionOptions::optimistic(),
+                permit,
+                RuntimeTaskContext::default(),
+            )
+            .unwrap()
+        };
+        let epoch = db.commit_epoch().unwrap();
+        let mut first = begin(governor.try_admit(request()).unwrap());
+        let mut second = begin(governor.try_admit(request()).unwrap());
+        first
+            .query_sql("INSERT INTO progress (id) VALUES (-1)")
+            .unwrap();
+        second
+            .query_sql("INSERT INTO progress (id) VALUES (-2)")
+            .unwrap();
+        let large = governor.admission_waiter(RuntimeWorkPriority::Foreground);
+        let large_request = request().with_cpu_slots(2);
+        assert!(governor.try_admit_waiter(&large, large_request).is_err());
+        first.commit().unwrap();
+
+        // One slot is available, but younger one-slot requests must not consume
+        // it while the older two-slot transaction waits for the other owner.
+        let (attempted, attempts) = mpsc::channel();
+        let handles = (0..WORKERS)
+            .map(|worker| {
+                let db = db.clone();
+                let governor = governor.clone();
+                let attempted = attempted.clone();
+                std::thread::spawn(move || {
+                    let deadline = std::time::Instant::now() + Duration::from_secs(60);
+                    for iteration in 0..SMALL_COMMITS {
+                        let waiter = governor.admission_waiter(RuntimeWorkPriority::Foreground);
+                        if iteration == 0 {
+                            let probe = governor.try_admit_waiter(&waiter, request());
+                            attempted
+                                .send(matches!(&probe, Err(error) if error.code == RuntimeAdmissionCode::QueuedAhead))
+                                .unwrap();
+                            drop(probe);
+                        }
+                        let permit = loop {
+                            match governor.try_admit_waiter(&waiter, request()) {
+                                Ok(permit) => break permit,
+                                Err(error) => {
+                                    assert!(error.is_retryable(), "{error}");
+                                    assert!(
+                                        std::time::Instant::now() < deadline,
+                                        "small writer {worker} did not make progress: {error}"
+                                    );
+                                    std::thread::sleep(Duration::from_millis(1));
+                                }
+                            }
+                        };
+                        let mut tx = db
+                            .begin_admitted_transaction(
+                                ConcurrentTransactionOptions::optimistic(),
+                                permit,
+                                RuntimeTaskContext::default(),
+                            )
+                            .unwrap();
+                        // Admission occurs before snapshot capture. Even the
+                        // earliest younger writer must see the entire large
+                        // transaction, not a prefix of its 64 statements.
+                        let rows = tx
+                            .query_sql("SELECT id FROM progress WHERE id >= 0 AND id < 64")
+                            .unwrap()
+                            .rows;
+                        assert_eq!(rows.len(), LARGE_ROWS);
+                        let ids = rows.iter().map(|row| match row["id"] {
+                            Value::Int(id) => id,
+                            _ => panic!("expected integer primary key"),
+                        }).collect::<std::collections::BTreeSet<_>>();
+                        assert_eq!(ids, (0..LARGE_ROWS as i64).collect());
+                        let id = 1000 + worker * SMALL_COMMITS + iteration;
+                        tx.query_sql(&format!("INSERT INTO progress (id) VALUES ({id})"))
+                            .unwrap();
+                        tx.commit().unwrap();
+                    }
+                    SMALL_COMMITS
+                })
+            })
+            .collect::<Vec<_>>();
+        drop(attempted);
+        let probes = (0..WORKERS)
+            .map(|_| attempts.recv_timeout(Duration::from_secs(20)).unwrap())
+            .collect::<Vec<_>>();
+        second.commit().unwrap();
+        let mut tx = begin(governor.try_admit_waiter(&large, large_request).unwrap());
+        drop(large);
+        for id in 0..LARGE_ROWS {
+            tx.query_sql(&format!("INSERT INTO progress (id) VALUES ({id})"))
+                .unwrap();
+        }
+        tx.commit().unwrap();
+        let small_commits = handles
+            .into_iter()
+            .map(|handle| handle.join().unwrap())
+            .sum::<usize>();
+        assert!(probes.into_iter().all(|queued| queued));
+        assert_eq!(small_commits, WORKERS * SMALL_COMMITS);
+        assert_eq!(db.commit_epoch().unwrap(), epoch + 3 + small_commits as u64);
+        let resources = governor.snapshot();
+        assert_eq!(resources.active_cpu_slots, 0);
+        assert_eq!(resources.active_foreground_tasks, 0);
+        assert_eq!(resources.admitted_memory_bytes, 0);
+        let expected_ids = [-2, -1]
+            .into_iter()
+            .chain(0..LARGE_ROWS as i64)
+            .chain(1000..1000 + small_commits as i64)
+            .collect::<Vec<_>>();
+        let query = "SELECT id FROM progress ORDER BY id";
+        let rows = db.query_sql(query).unwrap().rows;
+        assert_eq!(rows.len(), expected_ids.len());
+        for (row, id) in rows.iter().zip(&expected_ids) {
+            assert_eq!(row["id"], Value::Int(*id));
+        }
+        drop(db);
+        if durable {
+            let mut reopened = Database::open(&path).unwrap();
+            assert_eq!(reopened.commit_epoch(), epoch + 3 + small_commits as u64);
+            assert_eq!(reopened.query_sql(query).unwrap().rows, rows);
+            drop(reopened);
+            std::fs::remove_dir_all(path).unwrap();
+        }
+    }
+}
+
+#[test]
 fn admitted_transaction_cancellation_while_queued_prevents_publication_and_refunds() {
     let path = super::super::unique_test_dir("admitted_cancel_queued");
     let db = ConcurrentDatabase::new_with_wal_group_commit(

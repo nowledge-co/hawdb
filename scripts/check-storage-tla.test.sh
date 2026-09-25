@@ -172,30 +172,32 @@ export TLA_RESULTS_DIR="$fixture/standalone-failure"
 expect_failure "$fixture/standalone-failure.log" bash "$checker"
 test ! -e "$TLA_RESULTS_DIR/manifest.json"
 
-# Multi-branch liveness logs need complete-graph evidence too.
-fair_repo="$fixture/repo-fair"
-cp -R "$fixture/repo" "$fair_repo"
-rm "$fair_repo/docs/tla/Alpha.tla" "$fair_repo/docs/tla/Alpha.cfg" \
-  "$fair_repo/docs/tla/HawDBCowPagePublication.tla" "$fair_repo/docs/tla/HawDBCowPagePublication.cfg"
-printf 'STORAGE_MODELS = [\n    "HawDBLockWaitFairness",\n]\n' > "$fair_repo/docs/tla/storage_models.bzl"
-model=HawDBLockWaitFairness
-printf '%s\n' "---- MODULE $model ----" '====' > "$fair_repo/docs/tla/$model.tla"
-printf 'SPECIFICATION Spec\n' > "$fair_repo/docs/tla/$model.cfg"
-mkdir "$fixture/fair-valid"
-cp -R "$fixture/valid/Alpha_check.run.tlc-evidence" "$fixture/fair-valid/${model}_check.run.tlc-evidence"
-evidence="$fixture/fair-valid/${model}_check.run.tlc-evidence"
-cp "$fair_repo/docs/tla/$model.tla" "$evidence/module.tla"
-cp "$fair_repo/docs/tla/$model.cfg" "$evidence/model.cfg"
-printf '%s\n' 'Checking 3 branches of temporal properties for the complete state space with 12 total distinct states' \
-  'Model checking completed. No error has been found.' 'Finished in 01s' > "$evidence/tlc.log"
-bash "$fair_repo/scripts/check-storage-tla.sh" --collect-bazel-results "$fixture/fair-valid" "$fixture/fair-results" "$revision"
-for invalid in missing partial; do
-  printf '%s\n' 'Model checking completed. No error has been found.' 'Finished in 01s' > "$evidence/tlc.log"
-  if [[ "$invalid" == partial ]]; then
-    printf '%s\n' 'Checking 3 branches of temporal properties for the current state space' >> "$evidence/tlc.log"
-  fi
-  expect_failure "$fixture/fair-$invalid.log" bash "$fair_repo/scripts/check-storage-tla.sh" \
-    --collect-bazel-results "$fixture/fair-valid" "$fixture/fair-$invalid-results" "$revision"
+# Both lock and whole-writer progress evidence require complete-graph checks.
+for model in HawDBLockWaitFairness HawDBGovernedWriterProgress; do
+  fair_repo="$fixture/repo-$model"
+  cp -R "$fixture/repo" "$fair_repo"
+  rm "$fair_repo/docs/tla/Alpha.tla" "$fair_repo/docs/tla/Alpha.cfg" \
+    "$fair_repo/docs/tla/HawDBCowPagePublication.tla" "$fair_repo/docs/tla/HawDBCowPagePublication.cfg"
+  printf 'STORAGE_MODELS = [\n    "%s",\n]\n' "$model" > "$fair_repo/docs/tla/storage_models.bzl"
+  printf '%s\n' "---- MODULE $model ----" '====' > "$fair_repo/docs/tla/$model.tla"
+  printf 'SPECIFICATION Spec\n' > "$fair_repo/docs/tla/$model.cfg"
+  mkdir "$fixture/$model-valid"
+  cp -R "$fixture/valid/Alpha_check.run.tlc-evidence" "$fixture/$model-valid/${model}_check.run.tlc-evidence"
+  evidence="$fixture/$model-valid/${model}_check.run.tlc-evidence"
+  cp "$fair_repo/docs/tla/$model.tla" "$evidence/module.tla"
+  cp "$fair_repo/docs/tla/$model.cfg" "$evidence/model.cfg"
+  printf '%s\n' 'Checking 3 branches of temporal properties for the complete state space with 12 total distinct states' \
+    'Model checking completed. No error has been found.' 'Finished in 01s' > "$evidence/tlc.log"
+  bash "$fair_repo/scripts/check-storage-tla.sh" --collect-bazel-results "$fixture/$model-valid" "$fixture/$model-results" "$revision"
+  for invalid in missing partial; do
+    printf '%s\n' 'Model checking completed. No error has been found.' 'Finished in 01s' > "$evidence/tlc.log"
+    if [[ "$invalid" == partial ]]; then
+      printf '%s\n' 'Checking 3 branches of temporal properties for the current state space' >> "$evidence/tlc.log"
+    fi
+    expect_failure "$fixture/$model-$invalid.log" bash "$fair_repo/scripts/check-storage-tla.sh" \
+      --collect-bazel-results "$fixture/$model-valid" "$fixture/$model-$invalid-results" "$revision"
+  done
+
 done
 
 printf 'TLA evidence collection contract checks passed\n'
