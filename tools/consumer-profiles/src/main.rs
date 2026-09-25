@@ -134,3 +134,10 @@ fn main() {
     #[cfg(not(feature = "database"))]
     println!("empty-host-ok");
 }
+
+// Keep Cargo and Bazel qualification on the same facade-only workload.
+#[cfg(all(test, feature = "database"))]
+#[test]
+fn consumer_profile_workload() {
+    main();
+}

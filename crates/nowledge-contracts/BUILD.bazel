@@ -41,6 +41,22 @@ rust_library(
     ],
 )
 
+# Keep the graph/text facade and readiness on one search crate identity.
+rust_library(
+    name = "hawdb_nowledge_contracts_graph_text",
+    crate_name = "hawdb_nowledge_contracts",
+    crate_root = "src/lib.rs",
+    srcs = glob(["src/**/*.rs"]),
+    edition = "2024",
+    aliases = aliases(),
+    deps = _NOWLEDGE_CONTRACTS_BASE_DEPS + ["//crates/search:hawdb_search_graph_text"],
+    proc_macro_deps = all_crate_deps(proc_macro = True),
+    visibility = [
+        "//:__pkg__",
+        "//crates/readiness:__pkg__",
+    ],
+)
+
 # Matches Cargo feature unification for the root ACL qualification target.
 rust_library(
     name = "hawdb_nowledge_contracts_acl",
