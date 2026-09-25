@@ -323,6 +323,14 @@ impl VersionIndex {
         self.estimated_bytes
     }
 
+    pub(crate) fn read_baseline(&self, epoch: u64) -> Self {
+        let mut baseline = Self::with_byte_limit(self.max_estimated_bytes);
+        if epoch > 0 {
+            baseline.apply_database_barrier(epoch);
+        }
+        baseline
+    }
+
     pub(crate) fn admits(&self, writes: &VersionWriteSet) -> bool {
         let mut bytes = self.estimated_bytes;
         for (key, _) in writes.iter() {

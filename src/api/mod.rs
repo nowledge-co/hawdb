@@ -788,7 +788,7 @@ impl DatabaseReadSnapshot {
         let source = &self.0;
         Ok(DatabaseReadTransaction {
             catalog: source.catalog.clone(),
-            store: source.store.snapshot(),
+            store: source.store.snapshot_for_read(),
             published_read_view: source.published_read_view,
             optimizer: source.optimizer.clone(),
             plan_cache: SharedState::new(PlanCache::new(source.config.max_plan_cache_entries)),
@@ -1344,7 +1344,7 @@ impl Database {
         let (published_read_view, pin) = self.pin_read_view();
         DatabaseReadTransaction {
             catalog: self.catalog.clone(),
-            store: self.store.snapshot(),
+            store: self.store.snapshot_for_read(),
             published_read_view,
             optimizer: self.optimizer.clone(),
             plan_cache: SharedState::new(PlanCache::new(self.config.max_plan_cache_entries)),

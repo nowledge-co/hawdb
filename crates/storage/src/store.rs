@@ -1991,6 +1991,18 @@ impl GraphStore {
         Ok(mapping)
     }
 
+    /// Captures query data without retaining historical conflict-index pages.
+    /// Read consumers cannot observe the compressed conflict metadata. New
+    /// transactions start at this snapshot's epoch; any older transaction
+    /// submitted to this detached store is conservatively rejected by a barrier.
+    /// Writable workspaces/savepoints must use `snapshot` to retain precision.
+    #[doc(hidden)]
+    pub fn snapshot_for_read(&self) -> Self {
+        let mut snapshot = self.snapshot();
+        snapshot.version_index = self.version_index.read_baseline(self.commit_epoch);
+        snapshot
+    }
+
     pub fn snapshot(&self) -> Self {
         // Private statement execution can advance commit_epoch without
         // advancing the transaction's read epoch. A savepoint or descendant
@@ -3916,6 +3928,117 @@ mod tests {
                     .then_some(offset.saturating_add(25) as u64)
             })
             .expect("selected property projection block exists")
+    }
+
+    #[test]
+    fn read_snapshot_baseline_releases_history_without_losing_data_or_pins() {
+        use crate::version::VersionKey;
+        let mut catalog = Catalog::default();
+        let mut store = GraphStore::default();
+        store
+            .create_node(
+                &mut catalog,
+                "Memory",
+                properties([("value", Value::Int(0))]),
+            )
+            .unwrap();
+        let update = |value| GraphMutation::SetNodeProperty {
+            label: "Memory".into(),
+            filter: None,
+            property: "value".into(),
+            value: Value::Int(value),
+        };
+        let mut old_read_target = store.begin_mutation_transaction(&catalog);
+        let mut old_precise_target = store.begin_mutation_transaction(&catalog);
+        old_read_target
+            .stage_mutation_with_limits(update(1), MutationLimits::default())
+            .unwrap();
+        old_precise_target
+            .stage_mutation_with_limits(update(1), MutationLimits::default())
+            .unwrap();
+        store
+            .commit_mutations(
+                &mut catalog,
+                (0..8)
+                    .map(|_| GraphMutation::CreateNode {
+                        label: "Memory".into(),
+                        properties: properties([("value", Value::Int(0))]),
+                    })
+                    .collect(),
+            )
+            .unwrap();
+        assert!(store.version_index.len() >= 8);
+        let mut precise = store.snapshot();
+        assert!(precise
+            .version_index
+            .shares_storage_with(&store.version_index));
+        let mut read = store.snapshot_for_read();
+        assert_eq!(read.version_index.len(), 1);
+        assert!(!read.version_index.shares_storage_with(&store.version_index));
+        assert!(read.nodes.shares_storage_with(&store.nodes));
+        let epoch = read.commit_epoch();
+        assert_eq!(
+            read.version_index
+                .stamp(&VersionKey::Database)
+                .unwrap()
+                .commit_epoch,
+            epoch
+        );
+        let mut read_catalog = catalog.clone();
+        let error = read
+            .commit_mutation_transaction_and_relational(
+                &mut read_catalog,
+                old_read_target,
+                RelationalTransaction::default(),
+                MutationLimits::default(),
+            )
+            .unwrap_err();
+        assert!(error.is_retryable_transaction_conflict());
+        assert_eq!(read.commit_epoch(), epoch);
+        // The normal workspace still admits the disjoint old writer: only the
+        // explicit read-optimized fork sacrifices historical write precision.
+        precise
+            .commit_mutation_transaction_and_relational(
+                &mut catalog.clone(),
+                old_precise_target,
+                RelationalTransaction::default(),
+                MutationLimits::default(),
+            )
+            .unwrap();
+        drop(precise);
+        let descendant = read.snapshot_for_read();
+        drop(read);
+        store
+            .commit_mutations(&mut catalog, vec![update(2)])
+            .unwrap();
+        store.checkpoint(&catalog).unwrap();
+        assert!(store
+            .version_index
+            .stamp(&VersionKey::GraphNode(NodeId(0)))
+            .is_some());
+        assert_eq!(descendant.commit_epoch(), epoch);
+        assert_eq!(descendant.version_index.len(), 1);
+        for id in 0..9 {
+            assert_eq!(
+                descendant
+                    .node_owned(NodeId(id))
+                    .unwrap()
+                    .unwrap()
+                    .properties["value"],
+                Value::Int(0)
+            );
+            assert_eq!(
+                store.node_owned(NodeId(id)).unwrap().unwrap().properties["value"],
+                Value::Int(2)
+            );
+        }
+        drop(descendant);
+        store.checkpoint(&catalog).unwrap();
+        assert!(store.version_index.is_empty());
+        assert!(GraphStore::default()
+            .snapshot_for_read()
+            .version_index
+            .is_empty());
     }
 
     #[test]

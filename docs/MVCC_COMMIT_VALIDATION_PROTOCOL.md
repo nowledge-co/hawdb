@@ -88,6 +88,22 @@ and allocator overhead, spare capacity and the incoming key allocation. It is
 not a global bound across transactions, canonical/history COW pages or snapshot
 lifetimes. The read epoch belongs to the transaction, not this map.
 
+## Read-consumer metadata
+
+Embedded read transactions, descendants of published read snapshots and runtime
+planning snapshots use `GraphStore::snapshot_for_read`. Their data/catalog view
+and physical/storage pins are unchanged, but they retain only a Database barrier
+at the capture epoch instead of all historical conflict-index pages. Epoch-zero
+captures need no stamp. Writable workspaces/savepoints retain precise indexes
+through the ordinary `snapshot` method.
+
+A new transaction starts at or after capture, so older stamps cannot affect its
+validation. A pre-capture transaction submitted to the low-level read-optimized
+store is conservatively rejected by the barrier. The facade read API rejects
+writes outright. See the [conditional proof](tla/MVCC_VALIDATION_PROOF.md#read-consumer-conflict-baseline).
+This reduces read-consumer conflict metadata to constant size; it does not bound
+all retained data pages, writer snapshots or active pin counts.
+
 ## Current-index payload admission
 
 The production commit path additionally limits the current `VersionIndex` to a

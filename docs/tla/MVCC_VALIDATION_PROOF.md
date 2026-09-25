@@ -432,3 +432,57 @@ those separate boundaries where applicable; this is not their machine-checked
 composition. Production checked arithmetic and the inductive argument cover
 representable budgets. Finite weighted identities are not a proof of total
 process memory bounds. No runtime algorithm changes accompany this model.
+
+## Read-consumer conflict baseline
+
+`GraphStore::snapshot_for_read` shares the same immutable user-data roots as
+`snapshot`, keeps the same inherited storage epoch pin, and replaces only the
+private version index with a Database stamp at capture epoch F (empty at F=0).
+The new index preserves the source's current-index limit and prepaid barrier
+charge. It does not retain the source's historical conflict-index COW pages.
+`Database::begin_read_transaction_inner`, published read-snapshot descendants
+and `runtime_planning_snapshot` use this path. Writable workspaces and savepoints
+continue using `snapshot` with the precise index.
+
+The conditional correctness argument is:
+
+1. Read results and planning consume catalog/data/index roots, not the MVCC
+   conflict stamps. Those roots and publication epoch are copied identically.
+2. Every stamp visible in the source is at most its capture epoch F. For any
+   new transaction created on the captured store, E >= F; therefore all these
+   stamps and the replacement Database stamp satisfy stamp <= E. They cannot
+   witness a conflict. Subsequent private commits publish their ordinary
+   footprints as before, so first-committer-wins applies to post-capture writes.
+3. If an older transaction with E < F is submitted directly to this detached
+   storage snapshot, the Database stamp at F rejects it conservatively. Thus
+   compression cannot permit an overwrite that precise historical validation
+   would have rejected. It can reject a disjoint old transaction, which is why
+   ordinary writable snapshots/savepoints must not use this optimization.
+4. Capturing or discarding this index changes neither the inherited storage pin
+   nor the facade's physical ReaderPin. Canonical history and generations remain
+   protected for old sources/descendants by the existing watermark theorem.
+
+The embedded read-transaction API rejects mutation plans and SQL writes and does
+not expose its store for committing an old transaction. The hidden low-level
+storage helper documents its conservative historical-write contract rather
+than claiming an immutable Rust type. At epoch zero there is no older nonnegative
+read epoch, so an empty baseline is sufficient.
+
+Storage tests check that data pages remain shared but historical version pages
+are not, exact one-stamp cardinality, conservative old-writer refusal versus
+precise disjoint-writer success, unchanged captured values, descendant pin
+lifetime through checkpoint, eventual canonical pruning, and epoch-zero capture.
+Embedded tests cover graph and SQL reads through a published source and its
+independent descendant, mutation refusal, source drop, checkpoints and reopen,
+under Materialized and forced OutOfCore configurations. Restoring the old full
+index in read captures makes the metadata-retention regression fail (0 passed /
+1 failed); the optimized source is restored before final validation.
+
+The existing finite snapshot/pinning model still represents these captured data
+views and pins. Its canonical stamp map is not replaced by the private read
+baseline, and its complete-history equivalence claim does not apply to attempts
+to commit pre-capture transactions into a compressed detached read store. This
+is a source-level argument, not a new composed TLA+ refinement. Each read baseline
+retains constant conflict metadata; data roots, all read-pin counts, writable
+workspaces/savepoints and aggregate historical allocations remain outside a
+global memory bound. No workload latency claim follows from this optimization.
