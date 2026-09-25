@@ -5,8 +5,8 @@ EXTENDS Integers, Naturals, FiniteSets
 (* Query-owned memory is split into operator accounts, but every reserve is *)
 (* checked atomically against both the account budget and one query root.    *)
 (* Failure and cancellation release every lease. Materialized results may   *)
-(* remain charged after execution returns until ownership leaves the query   *)
-(* result boundary; streaming completion cannot retain such a lease.         *)
+(* remain charged at the completion-profile snapshot; the execution scope   *)
+(* then drops the lease. Returned host rows do not carry the query ledger.   *)
 (***************************************************************************)
 
 CONSTANT QueryBudget, AccountBudget, Accounts, ResultAccount,
@@ -90,6 +90,8 @@ Transfer(source, target) ==
     /\ used' = [used EXCEPT ![source] = @ - 1, ![target] = @ + 1]
     /\ UNCHANGED <<peak, status, capacity, payload, owners, leases>>
 
+(* Historical "returned" state names the materialized completion snapshot,
+   before accumulator drop. It does not mean a public QueryRows owns a lease. *)
 ReturnMaterialized ==
     /\ status = "running"
     /\ \A account \in Accounts \ {ResultAccount}: AccountUsed(account) = 0

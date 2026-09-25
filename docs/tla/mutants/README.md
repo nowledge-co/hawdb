@@ -15,7 +15,8 @@ The negative controls prove that the bounded models exercise these failures:
 - reclamation of a reader-pinned generation;
 - partial publication of a mixed graph/row/append transaction;
 - child admission that exceeds the query root;
-- releasing a child reservation while a lease still owns its capacity.
+- releasing a child reservation while a lease still owns its capacity;
+- invoking a public request consumer before complete result validation.
 
 The per-key MVCC controls additionally reject skipped validation, either missing
 broad-barrier direction, premature history cleanup, ignored retained source

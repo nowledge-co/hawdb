@@ -294,8 +294,10 @@ charged until accumulation completes, and an emitted batch releases its lease
 only at the synchronous consumer boundary.
 
 The model distinguishes a streaming completion, which owns no query memory,
-from a materialized-result handoff, which may retain an admitted result lease
-until the caller-owned result is dropped. The handoff is enabled only after the
+from the materialized completion-profile snapshot, which still observes the
+accumulator's result lease. Its historical `returned` state is this snapshot,
+not the lifetime of public `QueryRows`: those rows carry no query ledger lease,
+and the execution scope drops the accounting after sampling the profile. The handoff is enabled only after the
 pipeline, blocking, spill-staging, and morsel-output accounts reach zero, and a
 returned state may retain bytes only in the result account. Failure and
 cancellation release all accounts. TLC checks the root and local bounds, this
@@ -1907,3 +1909,18 @@ The negative controls reject extraction through OR and dropping absent intents.
 [`HawDBConstraintPreservingUpdate.tla`](HawDBConstraintPreservingUpdate.tla)
 enumerates assignment targets and verifies unchanged primary/unique/FK
 projections. See [the eligibility and composition proof](CONSTRAINT_PRESERVING_UPDATE_MVCC_PROOF.md).
+
+## Validated public result delivery
+
+`HawDBValidatedResultDelivery.tla` complements the query-memory ledger model
+with the public request consumer's collection/validation/delivery phases. It
+varies row, payload and result-memory caps over unequal-sized rows and covers
+source failure, cancellation and callback failure. No output may be observable
+before whole-input validation; after validation an interrupted consumer may
+observe only an ordered prefix. Terminal states release the result reservation.
+The early-callback negative control must violate `NoUnvalidatedDelivery`.
+
+The [execution request contract](../EXECUTION_REQUEST_CONTRACT.md) supplies the
+inductive proof, Rust transition mapping, old-wrapper compatibility exception,
+and profile snapshot lifetime. The model excludes the legacy unbounded consumer's
+incremental-delivery policy, process RSS, and arbitrary operator semantics.
