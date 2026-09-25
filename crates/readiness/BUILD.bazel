@@ -54,6 +54,22 @@ rust_library(
     visibility = ["//:__pkg__"],
 )
 
+# Match the graph/text facade across both direct and contract search imports.
+rust_library(
+    name = "hawdb_readiness_graph_text",
+    crate_name = "hawdb_readiness",
+    crate_root = "src/lib.rs",
+    srcs = glob(["src/**/*.rs"]),
+    edition = "2024",
+    aliases = aliases(),
+    deps = _READINESS_BASE_DEPS + [
+        "//crates/nowledge-contracts:hawdb_nowledge_contracts_graph_text",
+        "//crates/search:hawdb_search_graph_text",
+    ],
+    proc_macro_deps = all_crate_deps(proc_macro = True),
+    visibility = ["//:__pkg__"],
+)
+
 # Matches the ACL qualification graph without enabling ACL for the default crate.
 rust_library(
     name = "hawdb_readiness_acl",

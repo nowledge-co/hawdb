@@ -222,26 +222,32 @@ required-features = ["tokio-runtime"]
 [[bench]]
 name = "vector_projection_scan"
 harness = false
+required-features = ["vector-search"]
 
 [[bench]]
 name = "index_advisor_recommendation_quality"
 harness = false
+required-features = ["vector-search"]
 
 [[bench]]
 name = "hnsw_vs_exact_scan"
 harness = false
+required-features = ["vector-search"]
 
 [[bench]]
 name = "vector_projection_delta_fraction"
 harness = false
+required-features = ["vector-search"]
 
 [[bench]]
 name = "vector_projection_topk_contention"
 harness = false
+required-features = ["vector-search"]
 
 [[bench]]
 name = "file_projection_scan"
 harness = false
+required-features = ["vector-search"]
 
 [[bench]]
 name = "aggregate_partial_spill"

@@ -101,6 +101,11 @@ bazel build //:hawdb
 bazel test --test_output=errors //...
 ```
 
+For graph/SQL plus full-text search without vector search or the Tokio adapter,
+use `bazel build //:hawdb_graph_text`. This matches Cargo's
+`--no-default-features --features full-text-search`; it is not a text-only
+database. See [the composition matrix](docs/COMPOSITION_BASELINE.md).
+
 The repository configuration selects Bazel's hermetic `remotejdk_21` runtime
 for Java-backed rules, including `rules_tla`; callers do not need to configure
 `JAVA_HOME`.

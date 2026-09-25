@@ -80,6 +80,25 @@ rust_library(
     ],
 )
 
+# Matches the facade's graph/text profile without native vector dependencies.
+rust_library(
+    name = "hawdb_search_graph_text",
+    crate_name = "hawdb_search",
+    crate_root = "src/lib.rs",
+    crate_features = ["full-text-search"],
+    srcs = glob(["src/**/*.rs"]) + ["tests/support/live_allocation.rs"],
+    edition = "2024",
+    aliases = aliases(),
+    deps = _SEARCH_BASE_DEPS,
+    proc_macro_deps = all_crate_deps(proc_macro = True),
+    visibility = [
+        "//:__pkg__",
+        "//crates/bootstrap:__pkg__",
+        "//crates/nowledge-contracts:__pkg__",
+        "//crates/readiness:__pkg__",
+    ],
+)
+
 # Match Cargo's explicit `hawdb-search/acl` forwarding without enabling ACL
 # for the default library or introducing a production integration target.
 rust_library(

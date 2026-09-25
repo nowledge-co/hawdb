@@ -38,6 +38,19 @@ rust_library(
     visibility = ["//:__pkg__"],
 )
 
+# Keep the graph/text facade on one search crate identity.
+rust_library(
+    name = "hawdb_bootstrap_graph_text",
+    crate_name = "hawdb_bootstrap",
+    crate_root = "src/lib.rs",
+    srcs = glob(["src/**/*.rs"]),
+    edition = "2024",
+    aliases = aliases(),
+    deps = _BOOTSTRAP_BASE_DEPS + ["//crates/search:hawdb_search_graph_text"],
+    proc_macro_deps = all_crate_deps(proc_macro = True),
+    visibility = ["//:__pkg__"],
+)
+
 # Matches Cargo feature unification for the root ACL qualification target
 # without linking a second `hawdb_search` crate with a different feature set.
 rust_library(

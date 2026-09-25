@@ -37,7 +37,7 @@ separate workspace prevents repository dev-dependencies from unifying features.
 | --- | --- | --- | --- |
 | Empty host | none | Prints one marker; no HawDB dependency | Not a database target |
 | Current minimal | `database` | Parameterized graph write, relationship traversal, SQL write/read; rejected text/vector calls | `//:hawdb_minimal` |
-| Graph/text | `text` | The same graph/SQL workload plus indexed text retrieval; rejected vector call | No dedicated matching graph/text preset yet |
+| Graph/text | `text` | The same graph/SQL workload plus indexed text retrieval; rejected vector call | `//:hawdb_graph_text` |
 | Current default | `full` | Graph/SQL, text/vector retrieval, projected PageRank, scheduled schema maintenance, and an admitted blocking database task on an owned Tokio runtime | `//:hawdb` |
 
 “Minimal” names the existing no-default-feature surface, **not** the requested
@@ -46,6 +46,21 @@ still has SQL. The default workload touches the selected optional capabilities
 but is not comprehensive workload or resource qualification. In particular, the
 maintenance probe may have no pending schema work. These are measured host
 programs, not upper bounds for every program linking the library.
+
+The graph/text Bazel facade matches Cargo's `default-features = false` plus
+`features = ["full-text-search"]`. Its bootstrap, application-contract, readiness,
+and search targets share one graph/text search crate identity. The dependency
+boundary test rejects paths to SimSIMD, vector projection, the Tokio adapter,
+or a second default/minimal/ACL variant of these owners. The same facade-only
+consumer source runs under minimal, graph/text, and default Bazel targets;
+successful text queries and typed vector rejection are checked separately from
+dependency exclusion. Existing Cargo features and default Bazel targets are
+unchanged. This profile does not remove SQL or all analytics implementation.
+
+```sh
+bazel build //:hawdb_graph_text
+bazel test //:hawdb_graph_text_consumer_tests //:hawdb_graph_text_dependency_boundary_test
+```
 
 ## Reproduce the evidence
 
@@ -136,8 +151,9 @@ paths (including forbidden build-only dependencies), cycles, and 128 seeded grap
 
 1. Establish actual compile-time exclusion for one useful query/storage profile.
    Start from the inventory rather than treating capability-disable errors as
-   proof of absence. Add equivalent Cargo/Bazel presets and isolated consumers
-   together; the graph/text Bazel gap remains explicit.
+   proof of absence. Extend the equivalent Cargo/Bazel presets and isolated
+   consumers together; the graph/text preset above does not establish arbitrary
+   query-family or storage-backend exclusion.
 2. Keep the generic Cascades memo/rule framework internal and reusable. A reviewed
    host optimizer seam should carry identity, required/provided capabilities and
    bounded resources, with composition identity in plan-cache validity. A narrow
