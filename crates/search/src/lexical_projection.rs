@@ -891,6 +891,42 @@ impl LexicalCorpusStatistics {
         Ok(())
     }
 
+    /// Subtract verified physical versions from the aggregate corpus. Stage the
+    /// small query-term map so even a late invalid retraction changes no state.
+    pub(super) fn retract_documents<'a>(
+        &mut self,
+        retractions: impl IntoIterator<Item = (u64, &'a [String])>,
+    ) -> Result<()> {
+        let invalid = || HawDBError::Storage("invalid lexical corpus retraction".into());
+        let mut staged = self.clone();
+        for (length, terms) in retractions {
+            if terms.iter().any(String::is_empty) || terms.windows(2).any(|pair| pair[0] >= pair[1])
+            {
+                return Err(invalid());
+            }
+            let count = staged.document_count.checked_sub(1).ok_or_else(invalid)?;
+            let total_len = staged
+                .total_document_len
+                .checked_sub(length)
+                .ok_or_else(invalid)?;
+            let count_u64 = u64::try_from(count).map_err(|_| invalid())?;
+            for (term, frequency) in &mut staged.document_frequencies {
+                let removed = u64::from(terms.binary_search(term).is_ok());
+                *frequency = frequency.checked_sub(removed).ok_or_else(invalid)?;
+                if *frequency > count_u64 {
+                    return Err(invalid());
+                }
+            }
+            if count == 0 && total_len != 0 {
+                return Err(invalid());
+            }
+            staged.document_count = count;
+            staged.total_document_len = total_len;
+        }
+        *self = staged;
+        Ok(())
+    }
+
     fn document_frequency(&self, term: &str) -> u64 {
         self.document_frequencies
             .get(term)
@@ -3001,6 +3037,109 @@ fn checksum(bytes: &[u8]) -> u64 {
 mod tests {
     use super::*;
 
+    #[test]
+    fn corpus_retractions_match_rebuilding_every_subset() {
+        let documents = [
+            (5, vec!["graph".to_string()]),
+            (0, vec![]),
+            (7, vec!["graph".to_string(), "memory".to_string()]),
+        ];
+        for mask in 0u8..8 {
+            for reverse in [false, true] {
+                let mut statistics = LexicalCorpusStatistics {
+                    document_count: 3,
+                    total_document_len: 12,
+                    document_frequencies: BTreeMap::from([
+                        ("graph".into(), 2),
+                        ("memory".into(), 1),
+                    ]),
+                    bytes_read: 17,
+                };
+                let mut removed = Vec::new();
+                let mut expected = LexicalCorpusStatistics {
+                    bytes_read: 17,
+                    document_frequencies: BTreeMap::from([
+                        ("graph".into(), 0),
+                        ("memory".into(), 0),
+                    ]),
+                    ..Default::default()
+                };
+                for (index, (length, terms)) in documents.iter().enumerate() {
+                    if mask & (1 << index) != 0 {
+                        removed.push((*length, terms.as_slice()));
+                    } else {
+                        expected.document_count += 1;
+                        expected.total_document_len += length;
+                        for term in terms {
+                            *expected.document_frequencies.get_mut(term).unwrap() += 1;
+                        }
+                    }
+                }
+                if reverse {
+                    removed.reverse();
+                }
+                statistics.retract_documents(removed).unwrap();
+                assert_eq!(statistics, expected, "mask={mask}, reverse={reverse}");
+            }
+        }
+    }
+
+    #[test]
+    fn corpus_retractions_are_exact_and_atomic() {
+        let original = LexicalCorpusStatistics {
+            document_count: 3,
+            total_document_len: 12,
+            document_frequencies: BTreeMap::from([("graph".into(), 2), ("memory".into(), 1)]),
+            bytes_read: 17,
+        };
+        let graph = vec!["graph".to_string()];
+        let memory = vec!["memory".to_string()];
+        let mut actual = original.clone();
+        actual
+            .retract_documents([(4, graph.as_slice()), (3, memory.as_slice())])
+            .unwrap();
+        assert_eq!(
+            actual,
+            LexicalCorpusStatistics {
+                document_count: 1,
+                total_document_len: 5,
+                document_frequencies: BTreeMap::from([("graph".into(), 1), ("memory".into(), 0)]),
+                bytes_read: 17,
+            }
+        );
+        actual.retract_documents([(5, graph.as_slice())]).unwrap();
+        assert_eq!(actual.document_count, 0);
+        assert_eq!(actual.total_document_len, 0);
+        assert!(actual.document_frequencies.values().all(|df| *df == 0));
+
+        let cases = [
+            vec![(4, graph.clone()), (9, memory.clone())], // length underflow after a valid prefix
+            vec![(3, memory.clone()), (3, memory.clone())], // DF underflow
+            vec![(4, graph.clone()), (3, memory.clone()), (4, graph.clone())], // nonzero empty length
+            vec![
+                (4, graph.clone()),
+                (3, memory.clone()),
+                (5, graph.clone()),
+                (0, vec![]),
+            ], // count underflow
+            vec![(4, vec![]), (3, vec![])], // remaining DF exceeds remaining documents
+            vec![(4, vec!["graph".into(), "graph".into()])],
+            vec![(4, vec!["memory".into(), "graph".into()])],
+            vec![(4, vec![String::new()])],
+        ];
+        for retractions in cases {
+            let mut actual = original.clone();
+            assert!(actual
+                .retract_documents(
+                    retractions
+                        .iter()
+                        .map(|(len, terms)| (*len, terms.as_slice()))
+                )
+                .is_err());
+            assert_eq!(actual, original);
+        }
+    }
+
     #[cfg(feature = "full-text-search")]
     mod checkpoint;
     mod robustness;
@@ -3540,6 +3679,97 @@ mod tests {
             .unwrap();
         assert_eq!(filtered.scores, filtered_baseline.scores);
         fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn block_max_pruning_with_retractions_matches_rebuilt_live_corpus() {
+        let root = projection_root("block-max-retractions");
+        let rebuilt_root = projection_root("block-max-retractions-rebuilt");
+        fs::create_dir_all(&root).unwrap();
+        fs::create_dir_all(&rebuilt_root).unwrap();
+        let config = pruning_config(4);
+        let analyzer = SearchAnalyzerLexicon::default();
+        let documents = pruning_corpus_documents();
+        let physical = LexicalProjectionWriter::new(config)
+            .write(&root, 1, Some(7), 11, 13, documents.iter(), &analyzer)
+            .unwrap();
+        // Remove both a high-scoring rare hit and many common-term postings;
+        // physical block bounds survive while live DF and average length change.
+        let removed = |index: usize| index == 0 || index % 5 == 1;
+        let hidden: BTreeSet<_> = documents
+            .iter()
+            .enumerate()
+            .filter(|(index, _)| removed(*index))
+            .map(|(_, document)| document.id.as_str())
+            .collect();
+        let retractions: Vec<_> = documents
+            .iter()
+            .filter(|document| hidden.contains(document.id.as_str()))
+            .map(|document| physical.document_retraction(document, &analyzer).unwrap())
+            .collect();
+        let rebuilt = LexicalProjectionWriter::new(config)
+            .write(
+                &rebuilt_root,
+                1,
+                Some(7),
+                11,
+                13,
+                documents
+                    .iter()
+                    .filter(|document| !hidden.contains(document.id.as_str())),
+                &analyzer,
+            )
+            .unwrap();
+        let terms = BTreeSet::from(["rare".to_string(), "storage".to_string()]);
+        let mut statistics =
+            LexicalCorpusStatistics::aggregate([physical.as_ref()], &terms, config.max_term_bytes)
+                .unwrap();
+        statistics
+            .retract_documents(
+                retractions
+                    .iter()
+                    .map(|(length, terms)| (*length, terms.as_slice())),
+            )
+            .unwrap();
+        let live_statistics =
+            LexicalCorpusStatistics::aggregate([rebuilt.as_ref()], &terms, config.max_term_bytes)
+                .unwrap();
+        assert_eq!(statistics.document_count, live_statistics.document_count);
+        assert_eq!(
+            statistics.total_document_len,
+            live_statistics.total_document_len
+        );
+        assert_eq!(
+            statistics.document_frequencies,
+            live_statistics.document_frequencies
+        );
+        let pruned = physical
+            .score_with_global_statistics_and_pruning(
+                &terms,
+                config.max_term_bytes,
+                Some(4),
+                &statistics,
+                true,
+                |id| Ok(!hidden.contains(id)),
+            )
+            .unwrap();
+        let exhaustive = rebuilt
+            .score_with_global_statistics_and_pruning(
+                &terms,
+                config.max_term_bytes,
+                Some(4),
+                &live_statistics,
+                false,
+                |_| Ok(true),
+            )
+            .unwrap();
+        assert_eq!(pruned.scores, exhaustive.scores);
+        assert!(pruned.blocks_skipped > 0, "fixture must exercise pruning");
+        assert!(pruned.scores.keys().all(|id| !hidden.contains(id.as_str())));
+        drop(physical);
+        drop(rebuilt);
+        fs::remove_dir_all(root).unwrap();
+        fs::remove_dir_all(rebuilt_root).unwrap();
     }
 
     #[test]
