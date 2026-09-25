@@ -747,9 +747,9 @@ fn optimistic_mvcc_reopen_preserves_both_database_barrier_directions() {
                 .query_sql("INSERT INTO messages (id) VALUES (1)")
                 .unwrap();
             // Plain INSERT now has an explicit row identity. Keep this test's
-            // broad operation explicit: predicate replay retains Database.
+            // broad operation explicit: an unbounded key range retains Database.
             broad
-                .query_sql("DELETE FROM messages WHERE id = 2")
+                .query_sql("DELETE FROM messages WHERE id > 1")
                 .unwrap();
             let (winner, loser) = if broad_first {
                 (broad, narrow)

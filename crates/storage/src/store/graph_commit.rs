@@ -2563,13 +2563,60 @@ fn collect_version_writes(
 // Intent keys must come from explicit writes, not a net-change capture: a
 // replace followed by restoration, or deletion of an absent key, still has an
 // MVCC write intent. Pure inserts may claim unique values without mutating
-// another row. Destructive constrained writes and predicate replay stay broad.
+// another row. Complete primary-key predicates bound row-local replay; other
+// predicates and destructive constrained writes stay broad.
 struct RelationalVersionTable {
     columns: usize,
     primary_positions: Vec<usize>,
     unique_indexes: Vec<(String, Vec<usize>)>,
     cross_row_constraints: bool,
     insert_only: bool,
+}
+
+// An equality under only AND ancestors is necessary for a row to match.
+// Never extract through OR/NOT: that would turn a possible key into a bound.
+// Use schema primary-key order and the stager's exact scalar types.
+fn relational_predicate_primary_key(
+    schema: &hawdb_storage::relational::RelationalTableSchema,
+    predicate: &hawdb_storage::relational::RelationalPredicate,
+) -> Option<RelationalKey> {
+    use hawdb_storage::relational::{RelationalComparisonOp, RelationalPredicate};
+
+    if schema.primary_key.is_empty() {
+        return None;
+    }
+    let mut values = vec![None; schema.primary_key.len()];
+    let mut pending = vec![predicate];
+    while let Some(part) = pending.pop() {
+        match part {
+            RelationalPredicate::And(left, right) => {
+                pending.push(right);
+                pending.push(left);
+            }
+            RelationalPredicate::Compare {
+                column,
+                op: RelationalComparisonOp::Eq,
+                value,
+            } => {
+                if let Some(position) = schema.primary_key.iter().position(|key| key == column) {
+                    let column = &schema.columns[schema.column_position(column)?];
+                    if value.scalar_type() != Some(column.scalar_type) {
+                        return None;
+                    }
+                    if values[position].is_some_and(|previous| previous != value) {
+                        return None;
+                    }
+                    values[position] = Some(value);
+                }
+            }
+            _ => {}
+        }
+    }
+    values
+        .into_iter()
+        .map(|value| value.cloned())
+        .collect::<Option<Vec<_>>>()
+        .map(RelationalKey)
 }
 
 fn collect_relational_version_writes(
@@ -2590,13 +2637,13 @@ fn collect_relational_version_writes(
         );
         let table = match write {
             RelationalWrite::Insert { table, .. }
-            | RelationalWrite::DeleteByPrimaryKey { table, .. } => table,
+            | RelationalWrite::DeleteByPrimaryKey { table, .. }
+            | RelationalWrite::DeleteWhere { table, .. }
+            | RelationalWrite::UpdateWhere { table, .. } => table,
             RelationalWrite::CreateTable(_)
             | RelationalWrite::AddColumn { .. }
             | RelationalWrite::CreateIndex { .. }
-            | RelationalWrite::Upsert { .. }
-            | RelationalWrite::DeleteWhere { .. }
-            | RelationalWrite::UpdateWhere { .. } => {
+            | RelationalWrite::Upsert { .. } => {
                 return record_live_version(writes, VersionKey::Database);
             }
         };
@@ -2663,6 +2710,17 @@ fn collect_relational_version_writes(
             RelationalWrite::DeleteByPrimaryKey { keys, .. } => keys
                 .iter()
                 .all(|key| key.0.len() == metadata.primary_positions.len()),
+            RelationalWrite::DeleteWhere { predicate, .. }
+            | RelationalWrite::UpdateWhere { predicate, .. } => {
+                let schema = state.table_schema(table).expect("classified schema");
+                let preserves_primary = match write {
+                    RelationalWrite::UpdateWhere { assignments, .. } => assignments
+                        .iter()
+                        .all(|assignment| !schema.primary_key.contains(&assignment.column)),
+                    _ => true,
+                };
+                preserves_primary && relational_predicate_primary_key(schema, predicate).is_some()
+            }
             _ => unreachable!("explicit operation was selected above"),
         };
         if !valid_shape {
@@ -2738,6 +2796,24 @@ fn collect_relational_version_writes(
                             primary_key: key.clone(),
                         },
                     )?;
+                }
+            }
+            RelationalWrite::DeleteWhere { table, predicate }
+            | RelationalWrite::UpdateWhere {
+                table, predicate, ..
+            } => {
+                let schema = state.table_schema(table).expect("classified schema");
+                let key = VersionKey::RelationalRow {
+                    table: table.clone(),
+                    primary_key: relational_predicate_primary_key(schema, predicate)
+                        .expect("classified primary-key predicate"),
+                };
+                // Keep the intent even for absent rows and false residuals.
+                // Concurrent insertion/update at that key must reject replay.
+                if matches!(write, RelationalWrite::DeleteWhere { .. }) {
+                    record_tombstone_version(writes, key)?;
+                } else {
+                    record_live_version(writes, key)?;
                 }
             }
             _ => unreachable!("unsupported transaction returned a Database barrier"),
@@ -2872,6 +2948,79 @@ mod tests {
         RelationalWrite::DeleteByPrimaryKey {
             table: "rows".into(),
             keys: vec![RelationalKey(vec![RelationalValue::BigInt(id)])],
+        }
+    }
+
+    #[test]
+    fn relational_mvcc_primary_key_predicate_bounds_and_fallbacks() {
+        use hawdb_storage::relational::{
+            RelationalComparisonOp, RelationalPredicate, RelationalUpdateAssignment,
+            RelationalUpdateValue,
+        };
+        let (_, store) = relational_mvcc_fixture();
+        let schema = store.relational_state.table_schema("rows").unwrap();
+        let equal = |column: &str, value| RelationalPredicate::Compare {
+            column: column.into(),
+            op: RelationalComparisonOp::Eq,
+            value,
+        };
+        let point = equal("id", RelationalValue::BigInt(1));
+        let other = equal("id", RelationalValue::BigInt(2));
+        let residual = equal("body", RelationalValue::Text("missing".into()));
+        let and = |left, right| RelationalPredicate::And(Box::new(left), Box::new(right));
+        let or = |left, right| RelationalPredicate::Or(Box::new(left), Box::new(right));
+        for predicate in [
+            point.clone(),
+            and(point.clone(), point.clone()),
+            and(residual.clone(), point.clone()),
+            and(point.clone(), or(residual.clone(), other.clone())),
+        ] {
+            assert_eq!(
+                relational_predicate_primary_key(schema, &predicate),
+                Some(RelationalKey(vec![RelationalValue::BigInt(1)]))
+            );
+        }
+        for predicate in [
+            residual.clone(),
+            or(point.clone(), other.clone()),
+            RelationalPredicate::Not(Box::new(point.clone())),
+            and(point.clone(), other),
+            equal("id", RelationalValue::Null),
+            equal("id", RelationalValue::Text("1".into())),
+            RelationalPredicate::Compare {
+                column: "id".into(),
+                op: RelationalComparisonOp::Lt,
+                value: RelationalValue::BigInt(2),
+            },
+        ] {
+            assert_eq!(relational_predicate_primary_key(schema, &predicate), None);
+        }
+        let mut composite = schema.clone();
+        composite.primary_key = vec!["body".into(), "id".into()];
+        assert_eq!(relational_predicate_primary_key(&composite, &point), None);
+        assert_eq!(
+            relational_predicate_primary_key(&composite, &and(point.clone(), residual)),
+            Some(RelationalKey(vec![
+                RelationalValue::Text("missing".into()),
+                RelationalValue::BigInt(1)
+            ]))
+        );
+        for (column, broad) in [("id", true), ("body", false)] {
+            let transaction = RelationalTransaction {
+                writes: vec![RelationalWrite::UpdateWhere {
+                    table: "rows".into(),
+                    assignments: vec![RelationalUpdateAssignment {
+                        column: column.into(),
+                        value: RelationalUpdateValue::Column(column.into()),
+                    }],
+                    predicate: point.clone(),
+                }],
+            };
+            let mut writes = VersionWriteSet::default();
+            collect_relational_version_writes(&mut writes, &transaction, &store.relational_state)
+                .unwrap();
+            assert_eq!(writes.len(), 1);
+            assert_eq!(writes.contains_key(&VersionKey::Database), broad);
         }
     }
 

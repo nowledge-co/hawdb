@@ -1894,3 +1894,10 @@ including shared-parent reads and broad parent deletion. See the
 [source refinement and coverage](CONSTRAINED_INSERT_MVCC_PROOF.md). The three
 mutants reject missing unique identities, false NULL conflicts and false
 shared-parent write conflicts; destructive constraint work remains broad.
+
+## Complete primary-key predicates
+
+[`HawDBPrimaryKeyPredicate.tla`](HawDBPrimaryKeyPredicate.tla) checks necessary
+key bounds and stable predicate selection across unrelated row changes. See
+[the source induction and replay argument](PRIMARY_KEY_PREDICATE_MVCC_PROOF.md).
+The negative controls reject extraction through OR and dropping absent intents.

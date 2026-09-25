@@ -6,8 +6,10 @@ incoming/outgoing foreign-key edges. Non-unique secondary indexes are allowed.
 Pure Error-mode inserts now additionally qualify on constrained/referenced
 tables: they record primary identities plus non-NULL unique-index identities.
 See [the constrained-insert refinement](CONSTRAINED_INSERT_MVCC_PROOF.md) for
-shared-parent reads and the destructive-write barrier requirement. Predicate
-writes, UPSERT, DDL, malformed shapes and opaque relational WAL remain broad.
+shared-parent reads and the destructive-write barrier requirement. Complete
+primary-key UPDATE/DELETE predicates on unconstrained tables now also qualify;
+see [the predicate replay refinement](PRIMARY_KEY_PREDICATE_MVCC_PROOF.md).
+Other predicates, UPSERT, DDL, malformed shapes and opaque WAL remain broad.
 This does not claim general per-key SQL UPDATE/DELETE or serializable isolation.
 
 ## Why net changes are not write intents
@@ -17,12 +19,14 @@ omits keys whose before and after rows are equal. It cannot establish a complete
 MVCC write set. A replacement followed by restoration and a deletion of an absent
 key still carry explicit write intent. Likewise, deriving keys from a predicate
 replayed at commit can change the set of affected rows relative to the private
-snapshot. No predicate path is narrowed by this change.
+snapshot. Only structurally bounded complete-primary-key predicates are now
+qualified, retaining their key even when no row matches.
 
 For an admitted **unconstrained** table t and its primary-key projection P, define:
 
 - F(Insert(t, rows)) = {(t, P(row)) : row in rows};
 - F(DeleteByPrimaryKey(t, keys)) = {(t, k) : k in keys};
+- F(qualified point-predicate operation on t with key k) = {(t, k)};
 - F(transaction) = union of its operation footprints in statement order.
 
 Every explicit mutation can alter only a row in F. Unique secondary constraints
@@ -100,7 +104,7 @@ then restoration, absent deletion, disjoint explicit deletes, disposition
 replacement, write-set count limits and relational mutation admission.
 Additional cases now permit pure inserts with unique/FK constraints, while
 retaining Database barriers for destructive constrained/referenced writes and
-predicate replay. The older
+unbounded predicate replay. The older
 Database-barrier regression now uses an explicit predicate operation because
 ordinary unconstrained INSERT is no longer broad. Restoring the old implementation
 fails the disjoint-key integration regression.

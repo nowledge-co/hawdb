@@ -440,3 +440,129 @@ fn relational_mvcc_parent_deletion_keeps_both_barrier_directions_for_child_inser
         );
     }
 }
+
+#[test]
+fn relational_mvcc_primary_key_predicates_preserve_replay_and_absent_intents() {
+    use hawdb_storage::config::RelationalIndexMode;
+
+    for (mode, indexes) in [
+        (
+            crate::StorageResidencyMode::Materialized,
+            RelationalIndexMode::Materialized,
+        ),
+        (
+            crate::StorageResidencyMode::OutOfCore,
+            RelationalIndexMode::Materialized,
+        ),
+        (
+            crate::StorageResidencyMode::OutOfCore,
+            RelationalIndexMode::Authoritative,
+        ),
+    ] {
+        for scenario in 0..6 {
+            let path = super::super::unique_test_dir("relational_mvcc_point_predicates");
+            let config = crate::DatabaseConfig {
+                storage_residency_mode: mode,
+                relational_index_mode: indexes,
+                ..crate::DatabaseConfig::default()
+            };
+            let mut seed_config = config.clone();
+            if indexes == RelationalIndexMode::Authoritative {
+                seed_config.relational_index_mode = RelationalIndexMode::Shadow;
+            }
+            let mut database = Database::open_with_config(&path, seed_config).unwrap();
+            database.query_sql("CREATE TABLE records (tenant TEXT, id BIGINT, value BIGINT, PRIMARY KEY (tenant, id))").unwrap();
+            database
+                .query_sql(
+                    "INSERT INTO records (tenant, id, value) VALUES ('a', 1, 0), ('a', 2, 0)",
+                )
+                .unwrap();
+            database.checkpoint().unwrap();
+            drop(database);
+            let database = Database::open_with_config(&path, config.clone()).unwrap();
+            assert_eq!(
+                database
+                    .store
+                    .relational_state()
+                    .canonical_row_metadata_only(),
+                indexes == RelationalIndexMode::Authoritative
+            );
+            let db = database.into_concurrent();
+            let old = db.begin_read_transaction().unwrap();
+            let original = old
+                .query_sql("SELECT * FROM records ORDER BY id")
+                .unwrap()
+                .rows;
+            let epoch = db.commit_epoch().unwrap();
+            let mut first = db
+                .begin_transaction(ConcurrentTransactionOptions::optimistic())
+                .unwrap();
+            let mut second = db
+                .begin_transaction(ConcurrentTransactionOptions::optimistic())
+                .unwrap();
+            let (left, right) = match scenario {
+                0 => ("UPDATE records SET value = value + 11 WHERE id = 1 AND tenant = 'a'", "UPDATE records SET value = value + 12 WHERE tenant = 'a' AND id = 2"),
+                1 => ("DELETE FROM records WHERE id = 1 AND tenant = 'a'", "UPDATE records SET value = 12 WHERE id = 2 AND tenant = 'a'"),
+                2 => ("UPDATE records SET value = 9 WHERE id = 9 AND tenant = 'a'", "INSERT INTO records (tenant, id, value) VALUES ('a', 9, 90)"),
+                3 => ("INSERT INTO records (tenant, id, value) VALUES ('a', 9, 90)", "DELETE FROM records WHERE id = 9 AND tenant = 'a'"),
+                4 => ("UPDATE records SET value = 99 WHERE tenant = 'a' AND id = 1 AND value = 99", "UPDATE records SET value = 1 WHERE tenant = 'a' AND id = 1"),
+                _ => ("UPDATE records SET value = 1 WHERE tenant = 'a' AND id = 1", "DELETE FROM records WHERE tenant = 'a' AND id = 1 AND (value = 1 OR value = 2)"),
+            };
+            first.query_sql(left).unwrap();
+            second.query_sql(right).unwrap();
+            first.commit().unwrap();
+            db.checkpoint().unwrap();
+            let wal = super::super::active_wal_path(&path);
+            let before = std::fs::read(&wal).unwrap();
+            if scenario < 2 {
+                second.commit().unwrap();
+            } else {
+                let error = second.commit().unwrap_err();
+                assert!(
+                    matches!(&error, HawDBError::TransactionConflict { key, .. } if key == "relational_row"),
+                    "{error}"
+                );
+                assert!(error.is_retryable_transaction_conflict());
+                assert_eq!(std::fs::read(&wal).unwrap(), before);
+            }
+            let expected_epoch = epoch + if scenario < 2 { 2 } else { 1 };
+            assert_eq!(db.commit_epoch().unwrap(), expected_epoch);
+            assert_eq!(
+                old.query_sql("SELECT * FROM records ORDER BY id")
+                    .unwrap()
+                    .rows,
+                original
+            );
+            let rows = db
+                .query_sql("SELECT * FROM records ORDER BY id")
+                .unwrap()
+                .rows;
+            let expected = match scenario {
+                0 => vec![(1, 11), (2, 12)],
+                1 => vec![(2, 12)],
+                2 | 4 => vec![(1, 0), (2, 0)],
+                3 => vec![(1, 0), (2, 0), (9, 90)],
+                _ => vec![(1, 1), (2, 0)],
+            };
+            assert_eq!(rows.len(), expected.len());
+            for (row, (id, value)) in rows.iter().zip(expected) {
+                assert_eq!(row["tenant"], Value::String("a".into()));
+                assert_eq!(row["id"], Value::Int(id));
+                assert_eq!(row["value"], Value::Int(value));
+            }
+            drop(old);
+            drop(db);
+            let mut reopened = Database::open_with_config(&path, config).unwrap();
+            assert_eq!(reopened.commit_epoch(), expected_epoch);
+            assert_eq!(
+                reopened
+                    .query_sql("SELECT * FROM records ORDER BY id")
+                    .unwrap()
+                    .rows,
+                rows
+            );
+            drop(reopened);
+            std::fs::remove_dir_all(path).unwrap();
+        }
+    }
+}

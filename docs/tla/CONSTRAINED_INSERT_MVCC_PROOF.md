@@ -10,7 +10,9 @@ This extension qualifies only explicit `RelationalWrite::Insert` with
 `RelationalInsertMode::Error` on constrained or referenced tables. Replace,
 primary-key deletion and other destructive work on those tables remain broad.
 Unconstrained explicit replacements/deletes retain their existing row footprints.
-Predicate replay, UPSERT, DDL and opaque relational WAL remain broad. This does
+Constrained predicate replay, UPSERT, DDL and opaque relational WAL remain broad.
+Unconstrained complete-key predicates have a separate
+[replay refinement](PRIMARY_KEY_PREDICATE_MVCC_PROOF.md). This does
 not narrow arbitrary constraint/cascade work or introduce serializable reads.
 
 ## Identity mapping and validation

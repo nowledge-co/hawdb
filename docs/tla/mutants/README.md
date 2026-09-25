@@ -31,3 +31,7 @@ counterexample when the safety assertion is omitted; see
 The constrained-insert controls check omission of unique stamps and spurious
 conflicts from NULL unique values or shared foreign-key parent reads. See the
 [constrained-insert proof](../CONSTRAINED_INSERT_MVCC_PROOF.md).
+
+The primary-key predicate controls reject extraction through an OR branch and
+omission of absent-row intents; see the
+[predicate replay proof](../PRIMARY_KEY_PREDICATE_MVCC_PROOF.md).
