@@ -154,6 +154,7 @@ pub(super) fn publish_generation(
         Some(task),
         "search out-of-core layout",
     )?;
+    let mut mutation_runs = Vec::new();
     let (mut segments, document_count, documents_digest, segment_id, level, compact_range) =
         match input.active_manifest_update {
             Some(ActiveManifestUpdate::Append {
@@ -182,6 +183,9 @@ pub(super) fn publish_generation(
                     .unwrap_or_default()
                     .checked_add(1)
                     .ok_or_else(|| HawDBError::Storage("search segment id overflow".into()))?;
+                // The active logical count/digest already include every old
+                // retraction. Preserve those exact immutable run references.
+                mutation_runs = active.mutation_runs;
                 (
                     active.segments,
                     document_count,
@@ -497,7 +501,7 @@ pub(super) fn publish_generation(
         format: OUT_OF_CORE_FORMAT.to_string(),
         generation,
         segments,
-        mutation_runs: Vec::new(),
+        mutation_runs,
         document_count,
         documents_digest,
         source_graph_commit_epoch: input.source_graph_commit_epoch,

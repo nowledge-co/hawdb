@@ -354,6 +354,8 @@ pub(super) fn prepare(
     )?;
     writer.set_lexical_term_policy(reader.lexical_term_policy());
     writer.set_max_lexical_manifest_bytes(reader.config().max_lexical_manifest_bytes)?;
+    // Keep dimension-only identity even when this batch has no vectors.
+    writer.embedding_dimension = reader.manifest.embedding_dimension;
     writer.expected_active_generation = Some(reader.generation());
     writer.active_manifest_update = Some(ActiveManifestUpdate::Compact {
         expected_generation: reader.generation(),

@@ -4479,6 +4479,56 @@ mod tests {
     }
 
     #[test]
+    #[cfg(feature = "full-text-search")]
+    fn mutation_append_preserves_retractions_and_logical_identity() {
+        let path = test_dir("mutation-append-preservation");
+        let old = document(0, "team");
+        let live = document(1, "team");
+        publish_two_artifact_manifest(&path, old.clone(), live.clone());
+        install_delete_mutation_run(&path, &old, 0, 3);
+        let reader = mutation_reader_for_test(&path);
+        let run = reader.manifest.mutation_runs[0].clone();
+        let run_bytes = fs::read(path.join(&run.file)).unwrap();
+        let appended = crate::SearchProjectionRow {
+            kind: crate::SearchProjectionKind::Memory,
+            external_id: "999".into(),
+            title: "appended".into(),
+            body: "graph memory".into(),
+            embedding: None,
+            source_id: None,
+            metadata: BTreeMap::new(),
+        };
+        let update = SearchOutOfCoreGenerationWriter::prepare_delta(
+            &reader,
+            crate::SearchProjectionDelta {
+                upserts: vec![appended.clone()],
+                ..Default::default()
+            },
+            Default::default(),
+        )
+        .unwrap();
+        assert_eq!(update.source_read_metrics().hydrated_documents, 0);
+        let (_, build, _) = update.finish().unwrap();
+        assert_eq!(build.document_count, 2);
+        let reopened = mutation_reader_for_test(&path);
+        assert_eq!(reopened.manifest.mutation_runs.len(), 1);
+        assert_eq!(reopened.manifest.mutation_runs[0].file, run.file);
+        assert_eq!(fs::read(path.join(&run.file)).unwrap(), run_bytes);
+        assert_eq!(reopened.manifest.embedding_dimension, Some(2));
+        assert!(reopened
+            .hydrate_documents(std::slice::from_ref(&old.id))
+            .is_err());
+        let ids = [live.id.clone(), "memory:999".into()];
+        let output = reopened.hydrate_documents(&ids).unwrap();
+        assert_eq!(output.documents, vec![live, appended.into_document()]);
+        assert_eq!(reopened.document_count(), 2);
+        assert!(!reopened.visibility.is_visible(0, &old.id));
+        drop(reopened);
+        drop(reader);
+        fs::remove_dir_all(path).unwrap();
+    }
+
+    #[test]
     #[cfg(all(feature = "full-text-search", feature = "vector-search"))]
     fn mutation_rabitq_budget_fallback_is_exact_observable_and_failure_specific() {
         let path = test_dir("mutation-rabitq-budget-fallback");

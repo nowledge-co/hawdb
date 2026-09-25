@@ -194,3 +194,45 @@ fn cleanup_cancellation_reports_retry_and_preserves_completed_deletions() {
     assert_eq!(memory.ledger.snapshot().used_bytes, 0);
     assert!(PreparedCleanup::prepare(&fixture.0, &memory, &task).is_err());
 }
+
+#[test]
+fn failed_closure_discovery_preserves_artifacts_in_both_cleanup_paths() {
+    let fixture = Fixture::new();
+    let (memory, task) = context(directory::scan_bytes(&fixture.0).unwrap());
+    let options = SearchProjectionCleanupOptions::default();
+    let uncertain = SearchProjectionGenerations {
+        out_of_core_discovery_failed: true,
+        rabitq_remove_all: true,
+        ..generations()
+    };
+    let mut retry_state = SearchProjectionCleanupState::default();
+    // Populate pending candidates before discovery fails. Neither retries nor
+    // newly discovered files may use the incomplete retained-generation set.
+    retry_state.run_with_remover(&fixture.0, generations(), options, |_| {
+        Err(io::Error::from(io::ErrorKind::PermissionDenied))
+    });
+    let mut retry_removed = Vec::new();
+    let report = retry_state.run_with_remover(&fixture.0, uncertain.clone(), options, |path| {
+        retry_removed.push(path.file_name().unwrap().to_owned());
+        Ok(())
+    });
+    assert_eq!(report.generation_discovery_failures, 1);
+    assert!(retry_removed
+        .iter()
+        .all(|name| name.to_str().unwrap().contains(".corrupt.")));
+    let mut once_removed = Vec::new();
+    let prepared = PreparedCleanup::prepare(&fixture.0, &memory, &task).unwrap();
+    assert!(
+        prepared.memory.is_some(),
+        "fixture must admit the cleanup scan"
+    );
+    let report = prepared.run_with_remover(&fixture.0, uncertain, options, &task, |path| {
+        once_removed.push(path.file_name().unwrap().to_owned());
+        Ok(())
+    });
+    assert!(report.retry_required);
+    assert_eq!(once_removed, retry_removed);
+    // A later successful closure discovery resumes ordinary reclamation.
+    let report = retry_state.run_with_remover(&fixture.0, generations(), options, |_| Ok(()));
+    assert!(report.deleted_files > 1);
+}

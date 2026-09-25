@@ -29,6 +29,31 @@ also requests a retry while preserving completed deletion counts. The existing
 pending-file and delete-attempt ceilings remain authoritative. No candidate list
 is retained by a completed writer.
 
+## Incomplete closure discovery
+
+A current generation number does not enumerate an incremental manifest's live
+closure. If discovery fails, both the one-shot writer pass and the long-lived
+retry state must preserve every ordinary lexical, content, mutation and RaBitQ
+artifact, even when a partial report supplies current generations or requests
+removal of all RaBitQ files. The shared `CleanupCandidate::is_obsolete` predicate
+now checks this failure before applying generation cutoffs. Independently
+quarantined names retain their existing cleanup treatment.
+
+Let `A` be the set of ordinary artifacts actually referenced by an unknown
+closure and `D` the cleanup deletion set. During failed discovery the predicate
+returns false for every ordinary candidate, so `D` contains no ordinary
+artifact and `A ∩ D` is empty without assuming anything about generation ages.
+This also applies to candidates queued before failure because retries re-evaluate
+the same predicate. After successful discovery, the existing retained-set rule
+resumes. This is a conservative safety argument; it does not establish liveness
+while discovery continues to fail.
+
+`failed_closure_discovery_preserves_artifacts_in_both_cleanup_paths` admits a
+real directory scan, seeds retry candidates, supplies deliberately incomplete
+generation information and checks both paths. It also checks that a later valid
+discovery permits reclamation again. Removing the failure gate makes the test
+fail; a scan that was never admitted cannot satisfy the fixture.
+
 ## Stage and spool lifetime
 
 Stage cleanup is mandatory owned work. Its workspace is admitted before the

@@ -320,6 +320,11 @@ impl<S: AsRef<str>> CleanupCandidate<S> {
         if self.quarantined {
             return true;
         }
+        // Without a validated active closure, its retained generations are
+        // unknown. A current generation number alone cannot prove obsolescence.
+        if generations.out_of_core_discovery_failed {
+            return false;
+        }
         match self.kind {
             CleanupArtifactKind::Lexical => obsolete_generation(
                 self.generation,

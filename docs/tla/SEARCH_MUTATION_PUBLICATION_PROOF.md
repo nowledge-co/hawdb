@@ -345,3 +345,28 @@ pruned scores to an independently rebuilt live corpus, and requires a positive
 skipped-block count. This extends the pruning argument to mutation visibility;
 it does not establish sustained performance or arbitrary floating-point error
 bounds beyond the existing scorer's assumptions.
+
+
+## Incremental append preserves old retractions and vector identity
+
+For a validated closure `(C, R)` and an appended segment `N` whose IDs exceed
+the physical maximum, append publishes `(C ∪ {N}, R)`. Existing run references
+are moved unchanged into the new manifest. Since no entry of `R` targets `N`,
+`visible(C ∪ {N}, R) = visible(C, R) ∪ documents(N)`. The sets are disjoint by
+the append precondition; logical count and additive digest are therefore the
+previous logical values plus the new segment contributions. Appending must not
+subtract old retractions again or discard them. The private guarded-reader
+fixture `mutation_append_preserves_retractions_and_logical_identity` executes
+real preparation/publication/cleanup, reopens the validated closure, compares
+run bytes and checks the old document stays absent without old-content hydration
+during preparation. This is not yet a mutation-writer or compaction proof.
+
+Incremental staging also inherits the active embedding dimension, including a
+dimension with no model name. A vectorless new segment does not imply that the
+remaining active segments are vectorless. Retaining that dimension preserves
+old RaBitQ identity checks for append and partial compaction; any incoming
+incompatible vector still fails the writer's existing dimension validation.
+Tests cover vectorless append and vectorless compaction with an unselected
+vector-bearing segment. The linked [cleanup proof](../SEARCH_CLEANUP_OWNERSHIP.md)
+now additionally treats failed closure discovery as unknown retention rather
+than evidence for deleting old generations.

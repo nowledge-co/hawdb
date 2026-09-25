@@ -139,6 +139,8 @@ impl SearchOutOfCoreGenerationUpdate {
         writer.set_lexical_term_policy(reader.lexical_term_policy());
         writer.set_lexical_source_policy(reader.lexical_source_policy());
         writer.set_max_lexical_manifest_bytes(reader.config().max_lexical_manifest_bytes)?;
+        // Keep dimension-only identity even when this batch has no vectors.
+        writer.embedding_dimension = reader.manifest.embedding_dimension;
         writer.expected_active_generation = Some(reader.generation());
         let can_append = input
             .upserts
