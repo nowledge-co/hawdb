@@ -73,6 +73,7 @@ STORAGE_MODELS = [
     "HawDBTransactionAdmissionLease",
     "HawDBTransactionConcurrency",
     "HawDBTransactionIndexOverlay",
+    "HawDBValidatedResultDelivery",
     "HawDBVerifiedRowPageCache",
     "HawDBVersionHistoryBudget",
     "HawDBWalDoctor",
