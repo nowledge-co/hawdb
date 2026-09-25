@@ -109,3 +109,12 @@ Pipeline migration must also retain cache eligibility independently of WITH
 semantics. The [cache eligibility proof](CYPHER_PLAN_CACHE_ELIGIBILITY.md)
 classifies every clause and procedure: adding WITH clauses must not admit a
 mutation or vector-search procedure that bypasses the legacy plan cache.
+
+## Normalization capability boundary
+
+Equivalence arguments also assume the binder rejects relationship shapes that
+its traversal representation cannot execute consistently. The
+[bounded MATCH binding proof](CYPHER_BOUNDED_MATCH_BINDING.md) makes that
+precondition explicit for both raw and normalized clause plans, including empty
+inputs. The default-entrypoint experiment recorded there is not authorization
+to enable the pipeline globally or weaken the frozen negative-query gates.
