@@ -14,9 +14,14 @@
 
 //! Immutable target-specific retractions for incremental search mutations.
 
-use super::{checksum_bytes, SearchOutOfCoreManifestBody, SearchOutOfCoreMutationRunManifest};
+use super::{
+    checksum_bytes, SearchOutOfCoreConfig, SearchOutOfCoreManifestBody, SearchOutOfCoreMetrics,
+    SearchOutOfCoreMutationRunManifest, SearchOutOfCoreSegmentReader,
+};
 use crate::bounded_file::read_bounded_file;
 use crate::error::{HawDBError, Result};
+use crate::lexical_projection::{DocumentsDigest, LexicalProjectionReader};
+use crate::{SearchAnalyzerLexicon, SearchDocument};
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeSet;
 use std::path::Path;
@@ -41,6 +46,24 @@ pub(super) struct SearchMutationRetraction {
     pub(super) documents_digest: u64,
     pub(super) lexical_document_len: u64,
     pub(super) unique_terms: Vec<String>,
+}
+
+impl SearchMutationRetraction {
+    pub(super) fn from_document(
+        document: &SearchDocument,
+        projection: &LexicalProjectionReader,
+        analyzer: &SearchAnalyzerLexicon,
+    ) -> Result<Self> {
+        let (lexical_document_len, unique_terms) =
+            projection.document_retraction(document, analyzer)?;
+        let mut digest = DocumentsDigest::default();
+        digest.add_bytes(crate::encode_search_document_line(document).as_bytes());
+        Ok(Self {
+            documents_digest: digest.finish(),
+            lexical_document_len,
+            unique_terms,
+        })
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -260,6 +283,67 @@ pub(super) fn validate_closure(
         return Err(HawDBError::Storage(
             "search mutation-run retractions do not match the active manifest identity".to_string(),
         ));
+    }
+    Ok(())
+}
+
+/// Verify each retraction against the immutable version it claims to remove.
+/// Checksums and aggregate identity alone cannot prove that a target exists or
+/// that its term/length contribution is exact. Retain only one hydrated version
+/// at a time; a long run must not accumulate the source corpus in memory.
+pub(super) fn validate_targets(
+    segments: &[SearchOutOfCoreSegmentReader],
+    runs: &[SearchMutationRun],
+    config: &SearchOutOfCoreConfig,
+    analyzer: &SearchAnalyzerLexicon,
+) -> Result<()> {
+    for entry in runs.iter().flat_map(SearchMutationRun::entries) {
+        let missing = || {
+            HawDBError::Storage(
+                "search mutation-run target document is absent from its content segment".into(),
+            )
+        };
+        let artifact = segments
+            .iter()
+            .find(|segment| segment.content_segment_id == entry.target_segment_id)
+            .ok_or_else(missing)?;
+        let id = entry.document_id.as_str();
+        let position = artifact
+            .descriptor
+            .segments
+            .binary_search_by(|segment| {
+                if segment.last_document_id.as_str() < id {
+                    std::cmp::Ordering::Less
+                } else if segment.first_document_id.as_str() > id {
+                    std::cmp::Ordering::Greater
+                } else {
+                    std::cmp::Ordering::Equal
+                }
+            })
+            .map_err(|_| missing())?;
+        if !artifact.lexical_projection.probe_document_id(id)?.present {
+            return Err(missing());
+        }
+        let documents = artifact.read_selected_hydration_segment(
+            config,
+            &artifact.descriptor.segments[position],
+            &BTreeSet::from([entry.document_id.clone()]),
+            config.max_hydrated_bytes.get(),
+            &mut SearchOutOfCoreMetrics::default(),
+        )?;
+        let [document] = documents.as_slice() else {
+            return Err(missing());
+        };
+        let expected = SearchMutationRetraction::from_document(
+            document,
+            &artifact.lexical_projection,
+            analyzer,
+        )?;
+        if entry.retraction != expected {
+            return Err(HawDBError::Storage(
+                "search mutation-run retraction does not match its target document".into(),
+            ));
+        }
     }
     Ok(())
 }

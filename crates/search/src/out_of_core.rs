@@ -2009,8 +2009,8 @@ impl SearchOutOfCoreReader {
                         "search {operation} references unknown segment {segment_id}"
                     ))
                 })?;
-            for document in self.read_selected_hydration_segment(
-                artifact,
+            for document in artifact.read_selected_hydration_segment(
+                &self.config,
                 segment,
                 &ids,
                 self.config.max_hydrated_bytes.get() - hydrated_bytes,
@@ -2498,6 +2498,7 @@ fn load_artifact_closure(
         })
         .collect::<Result<Vec<_>>>()?;
     mutation_run::validate_closure(&manifest, &mutation_runs)?;
+    mutation_run::validate_targets(&segments, &mutation_runs, config, analyzer_lexicon)?;
     Ok((manifest, segments))
 }
 
@@ -4213,27 +4214,42 @@ mod tests {
         target_segment_id: u64,
         run_generation: u64,
     ) {
+        install_edited_mutation_run(path, document, target_segment_id, run_generation, |_| {});
+    }
+
+    fn install_edited_mutation_run(
+        path: &Path,
+        document: &SearchDocument,
+        target_segment_id: u64,
+        run_generation: u64,
+        edit: impl FnOnce(&mut mutation_run::SearchMutationRunEntry),
+    ) {
+        let reader = SearchOutOfCoreReader::open(path).unwrap();
+        let mut entry = mutation_run::SearchMutationRunEntry {
+            document_id: document.id.clone(),
+            target_segment_id,
+            operation: mutation_run::SearchMutationOperation::Delete,
+            retraction: mutation_run::SearchMutationRetraction::from_document(
+                document,
+                &reader.segments[0].lexical_projection,
+                &SearchAnalyzerLexicon::default(),
+            )
+            .unwrap(),
+        };
+        edit(&mut entry);
+        // Recompute both envelope checksums and the manifest aggregate identity.
+        // Invalid fixtures must reach target verification, not fail a checksum.
+        let document_digest = entry.retraction.documents_digest;
         let manifest_path = path.join(OUT_OF_CORE_MANIFEST_FILE);
         let envelope: SearchOutOfCoreManifestEnvelope =
             serde_json::from_slice(&fs::read(&manifest_path).unwrap()).unwrap();
         let mut manifest = envelope.body;
         manifest.generation = run_generation;
         let analyzer_digest = lexical_analyzer_digest(&SearchAnalyzerLexicon::default());
-        let document_digest =
-            lexical_documents_digest(&BTreeMap::from([(document.id.clone(), document.clone())]));
         let run_body = mutation_run::SearchMutationRunBody::new(
             manifest.generation,
             analyzer_digest,
-            vec![mutation_run::SearchMutationRunEntry {
-                document_id: document.id.clone(),
-                target_segment_id,
-                operation: mutation_run::SearchMutationOperation::Delete,
-                retraction: mutation_run::SearchMutationRetraction {
-                    documents_digest: document_digest,
-                    lexical_document_len: 5,
-                    unique_terms: vec!["graph".to_string(), "memory".to_string()],
-                },
-            }],
+            vec![entry],
         )
         .unwrap();
         let run_bytes = run_body.encode().unwrap();
@@ -4249,7 +4265,12 @@ mod tests {
         }];
         manifest.document_count = manifest.document_count.checked_sub(1).unwrap();
         manifest.documents_digest = crate::lexical_projection::DocumentsDigest::replace(
-            manifest.documents_digest,
+            manifest.segments.iter().fold(0, |digest, segment| {
+                crate::lexical_projection::DocumentsDigest::combine(
+                    digest,
+                    segment.documents_digest,
+                )
+            }),
             document_digest,
             0,
         );
@@ -4333,6 +4354,180 @@ mod tests {
         assert!(error
             .to_string()
             .contains("mutation-run artifact length or checksum mismatch"));
+        fs::remove_dir_all(path).unwrap();
+    }
+
+    #[test]
+    fn out_of_core_mutation_retractions_must_match_physical_targets() {
+        for corruption in [
+            "missing_id",
+            "id_gap",
+            "other_id",
+            "digest",
+            "length",
+            "missing_term",
+            "extra_term",
+        ] {
+            let path = test_dir(&format!("mutation-retraction-{corruption}"));
+            let previous = document(0, "team");
+            let mut index = SearchIndex::open(&path).unwrap();
+            index.upsert(previous.clone()).unwrap();
+            index.upsert(document(2, "team")).unwrap();
+            index.checkpoint().unwrap();
+            install_edited_mutation_run(&path, &previous, 0, 2, |entry| match corruption {
+                "missing_id" => entry.document_id = "memory:missing".into(),
+                "id_gap" => entry.document_id = "memory:001".into(),
+                "other_id" => entry.document_id = "memory:002".into(),
+                "digest" => entry.retraction.documents_digest ^= 1,
+                "length" => entry.retraction.lexical_document_len += 1,
+                "missing_term" => {
+                    entry.retraction.unique_terms.pop().unwrap();
+                }
+                "extra_term" => {
+                    entry.retraction.unique_terms.push("zzzzzz".into());
+                }
+                _ => unreachable!(),
+            });
+            let error = load_artifact_closure(
+                &path,
+                &SearchOutOfCoreConfig::default(),
+                &SearchAnalyzerLexicon::default(),
+                SearchLexicalTermPolicy::default(),
+                SearchLexicalSourcePolicy::default(),
+            )
+            .unwrap_err();
+            let expected = if matches!(corruption, "missing_id" | "id_gap") {
+                "target document is absent"
+            } else {
+                "retraction does not match its target document"
+            };
+            assert!(
+                error.to_string().contains(expected),
+                "{corruption}: {error}"
+            );
+            let cleanup = index.retry_projection_cleanup(SearchProjectionCleanupOptions::default());
+            assert!(cleanup.retry_required, "{corruption}");
+            assert!(cleanup.generation_discovery_failures > 0, "{corruption}");
+            assert!(path.join(mutation_run::artifact_file(2)).is_file());
+            fs::remove_dir_all(path).unwrap();
+        }
+    }
+
+    #[test]
+    #[cfg(feature = "full-text-search")]
+    fn out_of_core_mutation_retraction_binds_same_id_to_exact_content_version() {
+        for target in [0, 1] {
+            let path = test_dir(&format!("mutation-target-version-{target}"));
+            let old = document(0, "team");
+            let mut replacement = old.clone();
+            replacement.content = "a different replacement version".into();
+            publish_two_artifact_manifest(&path, old.clone(), replacement);
+            install_delete_mutation_run(&path, &old, target, 3);
+            let result = load_artifact_closure(
+                &path,
+                &SearchOutOfCoreConfig::default(),
+                &SearchAnalyzerLexicon::default(),
+                SearchLexicalTermPolicy::default(),
+                SearchLexicalSourcePolicy::default(),
+            );
+            if target == 0 {
+                assert_eq!(result.unwrap().0.document_count, 1);
+            } else {
+                let error = result.unwrap_err();
+                assert!(
+                    error
+                        .to_string()
+                        .contains("retraction does not match its target document"),
+                    "{error}"
+                );
+            }
+            fs::remove_dir_all(path).unwrap();
+        }
+    }
+
+    #[test]
+    fn out_of_core_mutation_retraction_uses_weighted_analyzer_contributions() {
+        for stopwords in [false, true] {
+            let path = test_dir(&format!("mutation-analyzer-contribution-{stopwords}"));
+            let analyzer = if stopwords {
+                SearchAnalyzerLexicon::empty().with_stopwords(["memory"])
+            } else {
+                SearchAnalyzerLexicon::empty()
+            };
+            let document = SearchDocument {
+                id: "memory:contribution".into(),
+                title: "graph graph".into(),
+                content: "memory graph".into(),
+                embedding: None,
+                metadata: BTreeMap::new(),
+            };
+            let mut writer = SearchOutOfCoreGenerationWriter::create(
+                &path,
+                SearchOutOfCoreGenerationBuildOptions {
+                    analyzer_lexicon: analyzer.clone(),
+                    ..Default::default()
+                },
+            )
+            .unwrap();
+            writer.push(document.clone()).unwrap();
+            writer.finish().unwrap();
+            let (_, segments) = load_artifact_closure(
+                &path,
+                &SearchOutOfCoreConfig::default(),
+                &analyzer,
+                SearchLexicalTermPolicy::default(),
+                SearchLexicalSourcePolicy::default(),
+            )
+            .unwrap();
+            let retraction = mutation_run::SearchMutationRetraction::from_document(
+                &document,
+                &segments[0].lexical_projection,
+                &analyzer,
+            )
+            .unwrap();
+            // Title: graph twice plus graph_graph, each weighted by two.
+            // Body: memory, graph and memory_graph, each weighted by one.
+            // Removing memory leaves the distinct memory_graph phrase intact.
+            assert_eq!(
+                retraction.lexical_document_len,
+                if stopwords { 8 } else { 9 }
+            );
+            assert_eq!(
+                retraction.unique_terms,
+                if stopwords {
+                    vec!["graph", "graph_graph", "memory_graph"]
+                } else {
+                    vec!["graph", "graph_graph", "memory", "memory_graph"]
+                }
+            );
+            assert_eq!(
+                retraction.documents_digest,
+                lexical_documents_digest(&BTreeMap::from([(document.id.clone(), document)]))
+            );
+            fs::remove_dir_all(path).unwrap();
+        }
+    }
+
+    #[test]
+    fn out_of_core_mutation_target_validation_obeys_hydration_budget() {
+        let path = test_dir("mutation-target-hydration-budget");
+        let document = document(0, "team");
+        let mut index = SearchIndex::open(&path).unwrap();
+        index.upsert(document.clone()).unwrap();
+        index.checkpoint().unwrap();
+        install_delete_mutation_run(&path, &document, 0, 2);
+        let error = load_artifact_closure(
+            &path,
+            &SearchOutOfCoreConfig {
+                max_hydrated_bytes: NonZeroU64::new(1).unwrap(),
+                ..SearchOutOfCoreConfig::default()
+            },
+            &SearchAnalyzerLexicon::default(),
+            SearchLexicalTermPolicy::default(),
+            SearchLexicalSourcePolicy::default(),
+        )
+        .unwrap_err();
+        assert!(error.to_string().contains("exceeding 1"), "{error}");
         fs::remove_dir_all(path).unwrap();
     }
 
