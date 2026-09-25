@@ -40,3 +40,6 @@ omission of absent-row intents; see the
 The aged-writer bypass control rejects a younger foreground grant after the
 background large waiter ages; temporal starvation controls and witnesses are
 described in the [aging refinement](../AGED_WRITER_PROGRESS_PROOF.md).
+
+The constraint-preserving update controls reject omitting unique or FK columns
+from eligibility; see the [projection proof](../CONSTRAINT_PRESERVING_UPDATE_MVCC_PROOF.md).

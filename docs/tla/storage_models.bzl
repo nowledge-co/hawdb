@@ -12,6 +12,7 @@ STORAGE_MODELS = [
     "HawDBCompositePropertyProjection",
     "HawDBConcurrentSnapshots",
     "HawDBConstrainedInsertIntent",
+    "HawDBConstraintPreservingUpdate",
     "HawDBContentSourceOwnershipMove",
     "HawDBContentSourceReplacement",
     "HawDBContentSpaceMergeOwnership",

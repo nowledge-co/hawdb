@@ -6,11 +6,13 @@ ordinals and foreign keys from messages/chunks/anchors to documents (see
 Previously any such table forced a Database barrier, so even different documents
 or different child rows sharing a stable parent could not commit from one epoch.
 
-This extension qualifies only explicit `RelationalWrite::Insert` with
+The insert extension qualifies explicit `RelationalWrite::Insert` with
 `RelationalInsertMode::Error` on constrained or referenced tables. Replace,
 primary-key deletion and other destructive work on those tables remain broad.
 Unconstrained explicit replacements/deletes retain their existing row footprints.
-Constrained predicate replay, UPSERT, DDL and opaque relational WAL remain broad.
+Complete-key updates preserving all constraint columns now additionally qualify;
+see [the update refinement](CONSTRAINT_PRESERVING_UPDATE_MVCC_PROOF.md).
+Key-changing constrained predicates, UPSERT, DDL and opaque relational WAL remain broad.
 Unconstrained complete-key predicates have a separate
 [replay refinement](PRIMARY_KEY_PREDICATE_MVCC_PROOF.md). This does
 not narrow arbitrary constraint/cascade work or introduce serializable reads.
@@ -67,14 +69,16 @@ This is safe because every operation that could invalidate that parent or its
 referenced unique value remains broad:
 
 1. Tables with outgoing foreign keys or non-primary uniqueness accept the
-   narrow path only for Error-mode inserts. Replace/delete and mixed sequences
+   narrow path for Error-mode inserts or constraint-preserving point updates.
+   Replace/delete, key-changing updates and mixed unsafe sequences
    return a Database barrier during classification, before any relational keys
    are recorded.
 2. A single catalog scan checks incoming references too. If a touched table has
-   any non-pure-insert operation, an incoming edge makes the transaction broad.
-   The per-table `insert_only` flag is intersected over all its operations, so
+   any operation that neither inserts nor preserves constraint projections, an
+   incoming edge makes the transaction broad. The per-table
+   `preserves_constraint_keys` flag is intersected over all its operations, so
    an earlier insert cannot hide a later destructive write, or vice versa.
-3. Predicate/UPSERT/DDL/opaque paths already remain broad. Schema changes also
+3. Unqualified predicate/UPSERT/DDL/opaque paths already remain broad. Schema changes also
    prevent an old transaction from silently validating under different foreign
    keys or index definitions.
 4. If destructive work commits first, its newer Database stamp rejects the
