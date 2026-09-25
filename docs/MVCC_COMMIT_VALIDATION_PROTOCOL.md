@@ -278,6 +278,14 @@ cannot certify the added per-key executions. The new
 version-index rule against a full-history oracle, including broad barriers,
 restart, retained source snapshots, and safe version-history pruning. See the [model scope](tla/README.md#optimistic-and-pessimistic-transaction-publication).
 
+The [group-admission proof](tla/OPTIMISTIC_COMMIT_ADMISSION_PROOF.md#mixed-domain-subprocess-crash-qualification)
+now also records 28 subprocess crash cases: two residency modes, disjoint or
+overlapping writers, and seven WAL/shared-sync/checkpoint exit points. Exact
+graph, relational and generated-append rows must recover as a complete serial
+prefix, preserving prior acknowledgements; fresh post-restart conflicts and a
+second reopen are checked. This is selected process-loss evidence, not hardware
+power-loss or every-instruction recovery qualification.
+
 Remaining acceptance work, without reimplementing existing mechanisms:
 
 1. Extend the bounded per-key model evidence to source-level completeness and

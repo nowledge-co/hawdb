@@ -27,6 +27,7 @@ use std::time::Duration;
 
 mod admission;
 mod append_mvcc;
+mod crash_recovery;
 mod read_observation;
 mod relational_mvcc;
 

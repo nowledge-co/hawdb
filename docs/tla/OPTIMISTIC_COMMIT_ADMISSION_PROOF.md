@@ -181,3 +181,66 @@ measures scheduling and sync amortization without making them safety invariants.
   rewriting the bytes. Restoring the complete fixture and opening a new handle
   permits a subsequent commit. This is explicit failpoint/persisted-byte evidence,
   not a claim that every crash/OS/filesystem boundary has been exercised.
+
+
+## Mixed-domain subprocess crash qualification
+
+`subprocess_concurrent_crash_recovers_mixed_transactions_as_serial_prefixes`
+adds actual child-process exit to the earlier failed-sync/byte-cut evidence.
+The parent creates checkpointed schemas and nodes, then acknowledges one mixed
+graph/relational/append transaction in WAL before spawning the child. Both child
+workspaces start at that recovered baseline. A releasable enqueue gate admits
+two O owners and fixes queue order as writer 1 then writer 2 before execution.
+Each writer updates one graph node, inserts one explicit relational primary key,
+and appends to its own generated-order table. The overlapping variant shares
+the graph key while keeping the other domains distinct, so rejecting writer 2
+must also prevent its unrelated SQL and append writes from appearing.
+
+For each Materialized/OutOfCore mode and disjoint/overlap variant, the seven
+points below terminate with exit code 86 without Rust stack unwinding. Let N be
+the number of accepted writer records (2 disjoint, 1 overlapping), and C the
+number recovered beyond the previously acknowledged baseline:
+
+| Exit boundary | Required recovered prefix |
+| --- | --- |
+| Before first WAL append | C = 0 |
+| After first complete WAL append, before canonical apply | 0 <= C <= 1 |
+| After first grouped task's canonical application | 0 <= C <= 1 |
+| After both grouped tasks, before shared sync | 0 <= C <= N |
+| After successful shared WAL sync, before result delivery | C = N |
+| Checkpoint payload persisted, before manifest publication | C = N |
+| After checkpoint manifest publication | C = N |
+
+The two coordinator-specific hooks are compiled only for tests. Existing WAL
+and checkpoint process-exit hooks supply the other boundaries. The checkpoint
+cases first verify one shared sync, exact submitted/completed/WAL-entry counts,
+typed overlap rejection and unchanged old-snapshot graph/SQL results. Only then
+do they sync an acknowledgement evidence file outside the database format.
+The parent requires that evidence for checkpoint cases and its absence at earlier
+exit points. It compares every expected graph row, relational row, append payload
+and generated sequence, plus the recovered epoch. Checking the exact first C
+writers rejects a reordered surviving suffix; checking every domain rejects
+partial transaction application. All earlier baseline data must remain.
+A new pair of post-restart writers must again produce first-committer-wins;
+the rejected commit leaves WAL bytes unchanged, and another reopen retains the
+new winner's epoch and value.
+
+The model's history element abstracts an entire compound transaction record.
+For this fixture, define apply(record i) as its graph, relational and append
+changes together. Recovery of exactly H[1..C] implies applying that vector prefix
+in order. The executable oracle independently checks all three components of
+that implication, including generated append order; it does not infer atomicity
+from the graph result or epoch alone. The model's independent acknowledgement
+set maps to the parent's known baseline plus the child's result evidence.
+This extends the source/refinement evidence without changing the abstract
+transition system. A fresh direct TLC run on the unchanged model checked
+115,248 generated / 37,594 distinct states, depth 21, with an empty queue;
+the Bazel model action/test were cached and are reported separately.
+
+All 28 process cases passed. These exits leave the OS alive and do not evict its
+page cache: they qualify abrupt process loss at the selected boundaries, not
+hardware power loss, every filesystem failure, arbitrary instruction interleavings
+or persistence of unsynced bytes. The earlier torn/reordered-frame tests and
+negative model controls remain necessary. Successful sync and strict recovery
+remain assumptions of the conditional serial-prefix theorem, not facts proven
+solely by this subprocess fixture.

@@ -27,6 +27,14 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Barrier;
 use std::sync::{Arc, Condvar, Mutex, MutexGuard};
 
+// Subprocess qualification only; absent from production control planes.
+#[cfg(test)]
+fn group_commit_process_crash(point: &str) {
+    if std::env::var("HAWDB_TEST_GROUP_COMMIT_CRASH_POINT").as_deref() == Ok(point) {
+        std::process::exit(86);
+    }
+}
+
 const ADAPTIVE_FSYNC_BUCKET_COUNT: usize = 100;
 const ADAPTIVE_FSYNC_BUCKET_DURATION: Duration = Duration::from_millis(100);
 const ADAPTIVE_FSYNC_MIN_COMPLETED_SAMPLES: u64 = 8;
@@ -259,6 +267,10 @@ impl CommitSequencer {
             let result_index = completed.len() - 1;
             let result = task(&mut database);
             completed[result_index].1 = result;
+            #[cfg(test)]
+            if completed.len() == 1 {
+                group_commit_process_crash("after_first_group_task");
+            }
             if database.relational_row_schema_checkpoint_required() {
                 break;
             }
@@ -268,6 +280,8 @@ impl CommitSequencer {
             }
         }
 
+        #[cfg(test)]
+        group_commit_process_crash("before_group_sync");
         let flush = database.finish_wal_sync_group();
         Ok(match flush {
             Ok(flush) => {
