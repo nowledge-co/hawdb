@@ -9,6 +9,8 @@ See [the constrained-insert refinement](CONSTRAINED_INSERT_MVCC_PROOF.md) for
 shared-parent reads and the destructive-write barrier requirement. Complete
 primary-key UPDATE/DELETE predicates on unconstrained tables now also qualify;
 see [the predicate replay refinement](PRIMARY_KEY_PREDICATE_MVCC_PROOF.md).
+Point updates preserving all primary/unique/FK columns also qualify on constrained
+tables: see [the preservation proof](CONSTRAINT_PRESERVING_UPDATE_MVCC_PROOF.md).
 Other predicates, UPSERT, DDL, malformed shapes and opaque WAL remain broad.
 This does not claim general per-key SQL UPDATE/DELETE or serializable isolation.
 
@@ -102,7 +104,8 @@ value, pinned readers and writers across checkpoint, byte-identical WAL on
 rejection, reopen and new post-restart conflicts. Storage tests cover replacement
 then restoration, absent deletion, disjoint explicit deletes, disposition
 replacement, write-set count limits and relational mutation admission.
-Additional cases now permit pure inserts with unique/FK constraints, while
+Additional cases now permit pure inserts and constraint-preserving point updates
+with unique/FK constraints, while
 retaining Database barriers for destructive constrained/referenced writes and
 unbounded predicate replay. The older
 Database-barrier regression now uses an explicit predicate operation because

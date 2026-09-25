@@ -40,3 +40,6 @@ omission of absent-row intents; see the
 The governed-conflict-retry control rejects publication from a conflicting
 attempt. Its [proof](../GOVERNED_CONFLICT_RETRY_PROOF.md) also records the
 non-escalating retry starvation control and reachable conflict/retry witnesses.
+
+The constraint-preserving update controls reject omitting unique or FK columns
+from eligibility; see the [projection proof](../CONSTRAINT_PRESERVING_UPDATE_MVCC_PROOF.md).

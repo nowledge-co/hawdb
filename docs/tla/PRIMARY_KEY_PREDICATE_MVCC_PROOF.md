@@ -52,12 +52,13 @@ replay. The collector retains the union of their input identities, including
 net-zero effects. Existing explicit-key insert/delete operations compose by the
 same argument. Any unsupported operation makes the entire transaction broad.
 
-Secondary uniqueness and outgoing/incoming FK dependencies remain excluded for
-predicate writes, as for explicit destructive operations. This prevents an
-assignment/cascade from modifying or depending on unrecorded rows. Pure constrained
-inserts retain their separate eligibility and proof. Non-unique index postings
-are rebuilt against current canonical state under the sequencer and retain their
-primary identity; stale private index roots are not installed.
+DELETE still excludes secondary uniqueness and outgoing/incoming FK dependencies.
+UPDATE can now admit constrained/referenced tables when every assigned column
+preserves all primary/unique/FK projections; see the
+[constraint-preserving refinement](CONSTRAINT_PRESERVING_UPDATE_MVCC_PROOF.md).
+Key-changing work on those tables remains broad. Pure constrained inserts retain
+their separate eligibility and proof. Non-unique postings are rebuilt against
+current canonical state; stale private index roots are not installed.
 
 This proves row-local replay under existing staging/admission success. It does
 not remove the stager's scans, guarantee identical resource costs after unrelated
