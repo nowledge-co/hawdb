@@ -1691,6 +1691,15 @@ without replacing the prior sample. QoS policy decisions remain modeled
 generically by `HawDBRuntimeAdmission.tla`; this model owns the index-refresh
 refinement at the scan and publication boundary.
 
+## Search Mutation Publication
+
+`HawDBSearchMutationPublication.tla` checks a finite search mutation workload
+with repeated replacement, deletion, competing publication and complete-closure
+compaction. It checks target binding, flush-before-selection, stale-base
+rejection and pin-aware reclamation. Five unsafe-transition controls and two
+reachability controls accompany the model. This does not enable mutation-run
+serving; see the [runtime guard and proof scope](SEARCH_MUTATION_PUBLICATION_PROOF.md).
+
 ## Derived Source Segment Publication
 
 `HawDBSourceSegmentPublication.tla` models Source scan sidecars, including the

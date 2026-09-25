@@ -188,9 +188,6 @@ pub struct SearchOutOfCoreReader {
     analyzer_lexicon: SearchAnalyzerLexicon,
     manifest: SearchOutOfCoreManifestBody,
     segments: Vec<SearchOutOfCoreSegmentReader>,
-    // Mutation runs are admitted and validated at open. Serving consumes this
-    // closure only after the shared visibility path is installed.
-    _mutation_runs: Vec<mutation_run::SearchMutationRun>,
     lexical_source_policy: SearchLexicalSourcePolicy,
     lexical_term_policy: SearchLexicalTermPolicy,
     runtime_capabilities: RuntimeCapabilities,
@@ -889,37 +886,22 @@ impl SearchOutOfCoreReader {
         lexical_source_policy: SearchLexicalSourcePolicy,
     ) -> Result<Self> {
         let root = path.as_ref().to_path_buf();
-        let manifest_path = root.join(OUT_OF_CORE_MANIFEST_FILE);
-        let manifest_bytes = read_bounded_file(&manifest_path, MAX_OUT_OF_CORE_MANIFEST_BYTES)?;
-        let manifest = SearchOutOfCoreManifestBody::decode(&manifest_bytes)?;
-        let segments = manifest
-            .segments
-            .iter()
-            .map(|segment| {
-                SearchOutOfCoreSegmentReader::open(
-                    &root,
-                    &config,
-                    &analyzer_lexicon,
-                    lexical_source_policy,
-                    lexical_term_policy,
-                    &manifest,
-                    segment,
-                )
-            })
-            .collect::<Result<Vec<_>>>()?;
-        let mutation_runs = manifest
-            .mutation_runs
-            .iter()
-            .map(|run| {
-                mutation_run::SearchMutationRun::open(
-                    &root,
-                    run,
-                    config.max_mutation_run_bytes.get(),
-                    lexical_analyzer_digest(&analyzer_lexicon),
-                )
-            })
-            .collect::<Result<Vec<_>>>()?;
-        mutation_run::validate_closure(&manifest, &mutation_runs)?;
+        let (manifest, segments) = load_artifact_closure(
+            &root,
+            &config,
+            &analyzer_lexicon,
+            lexical_term_policy,
+            lexical_source_policy,
+        )?;
+        // Artifact integrity is not serving readiness. Until every read path
+        // shares target-bound visibility and retracted statistics, accepting
+        // this closure could return deleted documents with a reduced count.
+        if !manifest.mutation_runs.is_empty() {
+            return Err(HawDBError::Storage(
+                "search mutation-run serving requires shared visibility and retracted statistics"
+                    .into(),
+            ));
+        }
 
         Ok(Self {
             root,
@@ -927,7 +909,6 @@ impl SearchOutOfCoreReader {
             analyzer_lexicon,
             manifest,
             segments,
-            _mutation_runs: mutation_runs,
             lexical_source_policy,
             lexical_term_policy,
             runtime_capabilities: crate::compiled_runtime_capabilities(),
@@ -2462,6 +2443,52 @@ fn file_len_checksum_streaming(path: &Path) -> Result<(u64, u64)> {
     Ok((actual_len, hasher.finish()))
 }
 
+// Cleanup needs the validated artifact closure even when its format is not
+// ready for serving. This helper cannot construct a public query reader.
+fn load_artifact_closure(
+    root: &Path,
+    config: &SearchOutOfCoreConfig,
+    analyzer_lexicon: &SearchAnalyzerLexicon,
+    lexical_term_policy: SearchLexicalTermPolicy,
+    lexical_source_policy: SearchLexicalSourcePolicy,
+) -> Result<(
+    SearchOutOfCoreManifestBody,
+    Vec<SearchOutOfCoreSegmentReader>,
+)> {
+    let manifest_path = root.join(OUT_OF_CORE_MANIFEST_FILE);
+    let manifest_bytes = read_bounded_file(&manifest_path, MAX_OUT_OF_CORE_MANIFEST_BYTES)?;
+    let manifest = SearchOutOfCoreManifestBody::decode(&manifest_bytes)?;
+    let segments = manifest
+        .segments
+        .iter()
+        .map(|segment| {
+            SearchOutOfCoreSegmentReader::open(
+                root,
+                config,
+                analyzer_lexicon,
+                lexical_source_policy,
+                lexical_term_policy,
+                &manifest,
+                segment,
+            )
+        })
+        .collect::<Result<Vec<_>>>()?;
+    let mutation_runs = manifest
+        .mutation_runs
+        .iter()
+        .map(|run| {
+            mutation_run::SearchMutationRun::open(
+                root,
+                run,
+                config.max_mutation_run_bytes.get(),
+                lexical_analyzer_digest(analyzer_lexicon),
+            )
+        })
+        .collect::<Result<Vec<_>>>()?;
+    mutation_run::validate_closure(&manifest, &mutation_runs)?;
+    Ok((manifest, segments))
+}
+
 pub(super) struct PublishedArtifactGenerations {
     pub(super) active_generation: u64,
     pub(super) lexical_generations: BTreeSet<u64>,
@@ -2477,30 +2504,26 @@ pub(super) fn published_artifact_generations(
     if !manifest_path.exists() {
         return Ok(None);
     }
-    let reader = SearchOutOfCoreReader::open_with_config_and_analyzer(
+    let (manifest, _segments) = load_artifact_closure(
         root,
-        SearchOutOfCoreConfig::default(),
-        analyzer_lexicon.clone(),
+        &SearchOutOfCoreConfig::default(),
+        analyzer_lexicon,
+        SearchLexicalTermPolicy::default(),
+        SearchLexicalSourcePolicy::default(),
     )?;
     let mut lexical_generations = BTreeSet::new();
     let mut out_of_core_generations = BTreeSet::new();
     let mut rabitq_generations = BTreeSet::new();
-    for artifact in &reader.manifest.segments {
+    for artifact in &manifest.segments {
         lexical_generations.insert(artifact.generation);
         out_of_core_generations.insert(artifact.generation);
         if artifact.rabitq_artifact_file.is_some() {
             rabitq_generations.insert(artifact.generation);
         }
     }
-    out_of_core_generations.extend(
-        reader
-            .manifest
-            .mutation_runs
-            .iter()
-            .map(|run| run.generation),
-    );
+    out_of_core_generations.extend(manifest.mutation_runs.iter().map(|run| run.generation));
     Ok(Some(PublishedArtifactGenerations {
-        active_generation: reader.generation(),
+        active_generation: manifest.generation,
         lexical_generations,
         out_of_core_generations,
         rabitq_generations,
@@ -4237,10 +4260,11 @@ mod tests {
         let mut index = SearchIndex::open(&path).unwrap();
         index.upsert(document.clone()).unwrap();
         index.checkpoint().unwrap();
+        let old_reader = SearchOutOfCoreReader::open(&path).unwrap();
         install_delete_mutation_run(&path, &document, 0, 2);
 
-        // This cut validates publication state only. Shared serving visibility
-        // is installed with the mutation writer in the next delivery.
+        // Integrity/cleanup can inspect the complete closure, but must not
+        // expose a reader that can hydrate the deleted document.
         let manifest: SearchOutOfCoreManifestEnvelope =
             serde_json::from_slice(&fs::read(path.join(OUT_OF_CORE_MANIFEST_FILE)).unwrap())
                 .unwrap();
@@ -4256,16 +4280,37 @@ mod tests {
         assert!(limited
             .to_string()
             .contains("mutation-run artifact exceeds the configured read budget"));
-        assert_eq!(
-            SearchOutOfCoreReader::open(&path).unwrap().document_count(),
-            0
-        );
+        let error = SearchOutOfCoreReader::open(&path).unwrap_err();
+        assert!(error
+            .to_string()
+            .contains("mutation-run serving requires shared visibility and retracted statistics"));
+        let (validated, _) = load_artifact_closure(
+            &path,
+            &SearchOutOfCoreConfig::default(),
+            &SearchAnalyzerLexicon::default(),
+            SearchLexicalTermPolicy::default(),
+            SearchLexicalSourcePolicy::default(),
+        )
+        .unwrap();
+        assert_eq!(validated.document_count, 0);
         let generations = published_artifact_generations(&path, &SearchAnalyzerLexicon::default())
             .unwrap()
             .unwrap();
         assert_eq!(generations.active_generation, 2);
         assert_eq!(generations.lexical_generations, BTreeSet::from([1]));
         assert_eq!(generations.out_of_core_generations, BTreeSet::from([1, 2]));
+
+        let cleanup = index.retry_projection_cleanup(SearchProjectionCleanupOptions::default());
+        assert_eq!(cleanup.generation_discovery_failures, 0);
+        assert!(!cleanup.retry_required);
+        assert!(path.join(&manifest.body.mutation_runs[0].file).is_file());
+        assert_eq!(
+            old_reader
+                .hydrate_documents(std::slice::from_ref(&document.id))
+                .unwrap()
+                .documents,
+            vec![document.clone()]
+        );
 
         fs::write(
             path.join(&manifest.body.mutation_runs[0].file),
