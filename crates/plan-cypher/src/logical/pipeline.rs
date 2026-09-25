@@ -1036,6 +1036,32 @@ fn is_unaliased_variable(item: &ReturnItem, variable: &str) -> bool {
         )
 }
 
+// GraphMatch's bounded traversal represents endpoints, not a relationship
+// value or per-edge filters. Validate before either GraphMatch execution or
+// normalization to Expand, so empty inputs and lowering cannot bypass it.
+fn validate_bounded_relationship(relationship: &RelationshipPattern) -> Result<()> {
+    if relationship.min_hops == 1 && relationship.max_hops == 1 {
+        return Ok(());
+    }
+    let unsupported = if !relationship.properties.is_empty() {
+        Some("relationship property patterns")
+    } else if relationship.rel_type.is_empty() {
+        Some("untyped relationship patterns")
+    } else if relationship.direction != RelationshipDirection::Outgoing {
+        Some("non-outgoing relationship patterns")
+    } else if relationship.variable.is_some() {
+        Some("relationship variables")
+    } else {
+        None
+    };
+    if let Some(shape) = unsupported {
+        return Err(HawDBError::Semantic(format!(
+            "{shape} are supported only for one-hop patterns"
+        )));
+    }
+    Ok(())
+}
+
 fn bind_read_clauses(
     clauses: &[hawdb_cypher::Clause],
     mut input: Option<LogicalPlan>,
@@ -1083,6 +1109,7 @@ fn bind_read_clauses(
                     let mut source = pattern.first.variable.clone();
                     for step in &pattern.steps {
                         let relationship = &step.relationship;
+                        validate_bounded_relationship(relationship)?;
                         if let Some(variable) = &relationship.variable {
                             scope.bind_graph(
                                 variable,

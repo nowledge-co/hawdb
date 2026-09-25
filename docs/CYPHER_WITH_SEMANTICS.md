@@ -104,3 +104,12 @@ property, and applying final pagination after lookup may examine more rows.
 The existing aggregate/sort/output budgets remain in force; silently combining
 groups or limiting an earlier clause is not a valid resource fallback. No
 schema, persistent format, production API or default budget changes are made.
+
+## Normalization capability boundary
+
+Equivalence arguments also assume the binder rejects relationship shapes that
+its traversal representation cannot execute consistently. The
+[bounded MATCH binding proof](CYPHER_BOUNDED_MATCH_BINDING.md) makes that
+precondition explicit for both raw and normalized clause plans, including empty
+inputs. The default-entrypoint experiment recorded there is not authorization
+to enable the pipeline globally or weaken the frozen negative-query gates.

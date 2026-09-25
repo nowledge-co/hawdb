@@ -20,22 +20,12 @@ use allocation::measure;
 
 use hawdb_search::{SearchDocument, SearchOutOfCoreGenerationWriter, SearchOutOfCoreReader};
 use std::collections::BTreeMap;
-use std::path::PathBuf;
-use std::time::{SystemTime, UNIX_EPOCH};
-
-struct TestDirectory(PathBuf);
-
-impl Drop for TestDirectory {
-    fn drop(&mut self) {
-        let _ = std::fs::remove_dir_all(&self.0);
-    }
-}
+#[path = "support/directory.rs"]
+mod directory;
+use directory::TestDirectory;
 
 fn round_trip(bytes: usize, report: bool) -> usize {
-    let root = TestDirectory(std::env::temp_dir().join(format!(
-        "hawdb-segment-allocation-{}-{}",
-        std::process::id(), SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_nanos(),
-    )));
+    let root = TestDirectory::new("hawdb-segment-allocation");
     let source = SearchDocument {
         id: "large-document".into(),
         title: "segment encoding sentinel".into(),
