@@ -384,17 +384,44 @@ fn marker_errors_fail_closed_without_changing_valid_or_missing_markers() {
 }
 
 #[test]
-fn marker_parent_lookup_errors_cannot_report_a_fresh_projection() {
+fn marker_lookup_errors_cannot_report_a_fresh_projection() {
     let directory = Directory::new();
     let root = directory.0.join("projection");
     create_generation(&root);
     let reader = crate::SearchOutOfCoreReader::open(&root).unwrap();
-    fs::rename(&root, directory.0.join("retained")).unwrap();
-    fs::write(&root, b"not a directory").unwrap();
+    // Unix reports a file sitting where the generation directory was as a
+    // parent lookup error. Windows refuses to rename a directory whose
+    // artifacts stay mapped and reports a file path component as `NotFound`,
+    // so the marker itself is held with an exclusive share mode instead: the
+    // lookup still fails with a non-`NotFound` error the reader must never
+    // read as an absent marker.
+    #[cfg(unix)]
+    {
+        fs::rename(&root, directory.0.join("retained")).unwrap();
+        fs::write(&root, b"not a directory").unwrap();
+    }
+    #[cfg(windows)]
+    let _guards = {
+        use std::os::windows::fs::OpenOptionsExt;
+
+        [crate::FULL_REINDEX_MARKER, crate::METADATA_REPAIR_MARKER].map(|name| {
+            let mut guard = OpenOptions::new()
+                .write(true)
+                .create_new(true)
+                .share_mode(0)
+                .open(root.join(name))
+                .unwrap();
+            guard.write_all(b"rebuild required").unwrap();
+            guard
+        })
+    };
 
     for name in [crate::FULL_REINDEX_MARKER, crate::METADATA_REPAIR_MARKER] {
-        let error = fs::symlink_metadata(root.join(name)).unwrap_err();
-        assert_ne!(error.kind(), io::ErrorKind::NotFound);
+        #[cfg(unix)]
+        {
+            let error = fs::symlink_metadata(root.join(name)).unwrap_err();
+            assert_ne!(error.kind(), io::ErrorKind::NotFound);
+        }
         let (needed, reasons) = marker_status(&reader, name);
         assert!(needed, "a marker lookup error was treated as absence");
         assert_eq!(reasons.len(), 1);
