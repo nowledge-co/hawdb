@@ -1850,6 +1850,10 @@ fn parses_post_aggregate_community_lookup() {
     assert_eq!(lookup.property, "community_id");
     assert_eq!(lookup.column, "other_cid");
     assert_eq!(query.returns.len(), 6);
+    assert_eq!(query.with_order_by.len(), 1);
+    assert!(query.with_limit.is_some());
+    assert!(query.order_by.is_empty());
+    assert!(query.limit.is_none());
 }
 
 #[test]
@@ -1869,6 +1873,9 @@ fn parses_post_aggregate_optional_community_lookup() {
     assert!(lookup.optional);
     assert_eq!(query.order_by.len(), 1);
     assert_eq!(query.returns.len(), 3);
+    assert!(query.limit.is_some());
+    assert!(query.with_order_by.is_empty());
+    assert!(query.with_limit.is_none());
 }
 
 #[test]
