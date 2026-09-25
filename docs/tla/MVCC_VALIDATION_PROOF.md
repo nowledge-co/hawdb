@@ -426,7 +426,9 @@ For a reachability probe, copy the positive `.cfg`, append `INVARIANT` followed
 by the relevant witness name, and run TLC against the same module. Require the
 named invariant violation, not an arbitrary nonzero exit. All four probes and
 all four mutants were checked on the updated model; the complete mutant manifest
-now checks 35 named violations across all registered models.
+checked 35 named violations at `49b50a4c`; after merging main at
+`0198bb3d`, all 37 registered violations (including both query-memory mutants)
+were checked successfully.
 
 This model collapses serialized commit/WAL publication into one transition.
 It does not model failed fsync, byte-level replay, historic COW allocations,

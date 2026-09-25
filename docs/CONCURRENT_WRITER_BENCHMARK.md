@@ -400,3 +400,60 @@ writer selections rejected before fixture output. This harness change does not
 alter the modulo partition, fixed work per case or data/reopen oracle, so the
 existing workload proof is unchanged. No new storage algorithm or TLA+
 transition is introduced by this measurement follow-up.
+
+
+## Current-epoch candidate single-stream result: 2026-09-25
+
+The [complete receipt](benchmarks/concurrent_writers_macos_2026_09_25_tip_compaction.json)
+compares runtime `0198bb3d267e0ce239a130d29d8692bd06f9ee8f` with the same
+PR fork point `a703cc0f18f549918c73f454cda521edb4f0fb13`. The candidate includes
+current-epoch candidate compaction and main through `23391776`. This remains
+a whole-branch comparison, not an isolated causal estimate for compaction or
+a comparison with latest main. The earlier unfavorable result is retained.
+
+The 40-pair protocol, primary endpoints, order-statistic ranks and strict
+zero-increase threshold are unchanged. The protocol was recorded before
+measurement. The baseline binary was reused only after checking its checksum,
+identical harness and Cargo.lock; all 38 candidate workspace artifacts built
+fresh in an isolated Cargo target directory. Six separate release preflight
+cases verified 1,536 commits and four reopens. All builds and tests finished
+before paired timing began. No new temporary worktree was needed.
+
+All **480 measured cases / 122,880 commits / 320 reopens** passed. The warm-up
+contributed another 12 cases / 3,072 commits / 8 reopens, labelled separately.
+All 40 pairs and all host-mutex controls are retained. Raw samples, binaries
+and process-resource logs are under
+`target/benchmarks/232-concurrent-writers/single-stream-0198bb3d/`; the receipt
+records their identities and checksums. Resource logs include fixture setup
+and verification and do not establish per-case memory bounds.
+
+The table uses the same percentile, paired-ratio and simultaneous-interval
+definitions above, with the same independence and uncontrolled-host limitations.
+
+| Storage | Commit metric | Baseline, us | Candidate, us | Paired ratio | Ratio interval | Disposition |
+| --- | --- | ---: | ---: | ---: | --- | --- |
+| Memory | p50 | 45.480 | 42.937 | 0.9465 | [0.9221, 0.9645] | Meets criterion |
+| Memory | p95 | 48.250 | 47.459 | 0.9545 | [0.9457, 0.9699] | Meets criterion |
+| Durable, ungrouped | p50 | 5,719.229 | 5,688.813 | 1.0001 | [0.9841, 1.0104] | Inconclusive |
+| Durable, ungrouped | p95 | 6,079.708 | 6,004.833 | 0.9700 | [0.8876, 1.0150] | Inconclusive |
+| Durable, grouped | p50 | 5,679.980 | 5,704.625 | 1.0051 | [0.9913, 1.0150] | Inconclusive |
+| Durable, grouped | p95 | 6,015.979 | 6,053.750 | 0.9959 | [0.9175, 1.1014] | Inconclusive |
+
+The predeclared strict no-regression gate is **not passed**. Both memory
+endpoints meet the criterion; all four durable endpoints remain inconclusive.
+None has a lower endpoint above 1, but that is not evidence of durable
+equivalence. The paired memory p50/p95 medians improve by about 5.4%/4.5%
+relative to the fork-point baseline in this run.
+Disposition is determined from unrounded interval endpoints; favorable
+throughput or transaction-latency results do not replace the primary endpoints.
+This finite graph workload does not establish performance for all host workloads
+or whole-transaction fairness. #231/#232 retain their other acceptance gaps.
+
+The same runtime passed all 95 locally required Bazel fuzz targets (all
+actually executed), 74 Bazel concurrent-transaction tests and 74 Cargo
+concurrent-transaction tests. Merging main resolved the earlier macOS
+`include_flate_codegen` build blocker. All 37 registered TLA mutant checks and
+the evidence-collector contract passed after that merge. Model/source proof
+for current-epoch compaction is recorded in
+[the MVCC proof](tla/MVCC_VALIDATION_PROOF.md#current-epoch-candidate-compaction-and-pin-registration);
+this measurement does not introduce another storage transition.
