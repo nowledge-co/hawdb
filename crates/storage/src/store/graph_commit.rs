@@ -2570,7 +2570,7 @@ struct RelationalVersionTable {
     primary_positions: Vec<usize>,
     unique_indexes: Vec<(String, Vec<usize>)>,
     cross_row_constraints: bool,
-    insert_only: bool,
+    preserves_constraint_keys: bool,
 }
 
 // An equality under only AND ancestors is necessary for a row to match.
@@ -2628,13 +2628,6 @@ fn collect_relational_version_writes(
 
     let mut tables = BTreeMap::new();
     for write in &transaction.writes {
-        let insert_only = matches!(
-            write,
-            RelationalWrite::Insert {
-                mode: RelationalInsertMode::Error,
-                ..
-            }
-        );
         let table = match write {
             RelationalWrite::Insert { table, .. }
             | RelationalWrite::DeleteByPrimaryKey { table, .. }
@@ -2647,14 +2640,41 @@ fn collect_relational_version_writes(
                 return record_live_version(writes, VersionKey::Database);
             }
         };
+        let Some(schema) = state.table_schema(table) else {
+            return record_live_version(writes, VersionKey::Database);
+        };
+        let preserves_constraint_keys = match write {
+            RelationalWrite::Insert {
+                mode: RelationalInsertMode::Error,
+                ..
+            } => true,
+            RelationalWrite::UpdateWhere { assignments, .. } => {
+                assignments.iter().all(|assignment| {
+                    let column = &assignment.column;
+                    !schema.primary_key.contains(column)
+                        && !schema
+                            .unique_constraints
+                            .iter()
+                            .any(|columns| columns.contains(column))
+                        && !schema
+                            .indexes
+                            .iter()
+                            .any(|index| index.unique && index.columns.contains(column))
+                        && !schema
+                            .foreign_keys
+                            .iter()
+                            .any(|key| key.columns.contains(column))
+                })
+            }
+            _ => false,
+        };
         if let std::collections::btree_map::Entry::Vacant(entry) = tables.entry(table.as_str()) {
-            let Some(schema) = state.table_schema(table) else {
-                return record_live_version(writes, VersionKey::Database);
-            };
             let cross_row_constraints = !schema.unique_constraints.is_empty()
                 || !schema.foreign_keys.is_empty()
                 || schema.indexes.iter().any(|index| index.unique);
-            if schema.primary_key.is_empty() || (cross_row_constraints && !insert_only) {
+            if schema.primary_key.is_empty()
+                || (cross_row_constraints && !preserves_constraint_keys)
+            {
                 return record_live_version(writes, VersionKey::Database);
             }
             let Some(positions) = schema
@@ -2693,14 +2713,14 @@ fn collect_relational_version_writes(
                 primary_positions: positions,
                 unique_indexes,
                 cross_row_constraints,
-                insert_only,
+                preserves_constraint_keys,
             });
         }
         // Leave malformed row/key diagnostics with the existing stager. Do not
         // index unvalidated input, even for this private footprint calculation.
         let metadata = tables.get_mut(table.as_str()).expect("classified table");
-        metadata.insert_only &= insert_only;
-        if metadata.cross_row_constraints && !insert_only {
+        metadata.preserves_constraint_keys &= preserves_constraint_keys;
+        if metadata.cross_row_constraints && !preserves_constraint_keys {
             return record_live_version(writes, VersionKey::Database);
         }
         let valid_shape = match write {
@@ -2729,13 +2749,14 @@ fn collect_relational_version_writes(
     }
     // One catalog pass, rather than one scan per touched table. Incoming
     // references make deletion/replacement broad because they can cascade.
-    // Pure inserts never remove or change a referenced row. Other destructive
-    // operations still publish Database barriers in both conflict directions.
+    // Pure inserts and updates preserving primary/unique/FK columns cannot
+    // invalidate references: valid FK targets must be primary/unique keys.
+    // Other destructive operations keep Database barriers in both directions.
     if state.table_schemas().any(|schema| {
         schema.foreign_keys.iter().any(|key| {
             tables
                 .get(key.referenced_table.as_str())
-                .is_some_and(|metadata| !metadata.insert_only)
+                .is_some_and(|metadata| !metadata.preserves_constraint_keys)
         })
     }) {
         return record_live_version(writes, VersionKey::Database);
@@ -3126,7 +3147,7 @@ mod tests {
     }
 
     #[test]
-    fn relational_mvcc_incoming_foreign_keys_only_narrow_pure_inserts() {
+    fn relational_mvcc_incoming_foreign_keys_keep_destructive_writes_broad() {
         use hawdb_storage::relational::{
             RelationalForeignKeySchema, RelationalInsertMode, RelationalReferentialAction,
         };

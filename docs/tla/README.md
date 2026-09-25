@@ -1904,6 +1904,12 @@ key bounds and stable predicate selection across unrelated row changes. See
 [the source induction and replay argument](PRIMARY_KEY_PREDICATE_MVCC_PROOF.md).
 The negative controls reject extraction through OR and dropping absent intents.
 
+## Updates preserving constraint projections
+
+[`HawDBConstraintPreservingUpdate.tla`](HawDBConstraintPreservingUpdate.tla)
+enumerates assignment targets and verifies unchanged primary/unique/FK
+projections. See [the eligibility and composition proof](CONSTRAINT_PRESERVING_UPDATE_MVCC_PROOF.md).
+
 ## Validated public result delivery
 
 `HawDBValidatedResultDelivery.tla` complements the query-memory ledger model

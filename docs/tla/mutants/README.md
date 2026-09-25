@@ -36,3 +36,6 @@ conflicts from NULL unique values or shared foreign-key parent reads. See the
 The primary-key predicate controls reject extraction through an OR branch and
 omission of absent-row intents; see the
 [predicate replay proof](../PRIMARY_KEY_PREDICATE_MVCC_PROOF.md).
+
+The constraint-preserving update controls reject omitting unique or FK columns
+from eligibility; see the [projection proof](../CONSTRAINT_PRESERVING_UPDATE_MVCC_PROOF.md).
