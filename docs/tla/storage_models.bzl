@@ -50,6 +50,7 @@ STORAGE_MODELS = [
     "HawDBRelationalWalReplayAccess",
     "HawDBRelationalWriteIntent",
     "HawDBRelationshipPropertyProjection",
+    "HawDBRetainedVersionHistory",
     "HawDBRowDeltaRuns",
     "HawDBRowLiveView",
     "HawDBRowPageMutation",

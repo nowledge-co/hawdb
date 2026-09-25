@@ -67,7 +67,7 @@ machine-checked proof of the Rust implementation.
 | Model | Source or explicit assumption |
 | --- | --- |
 | `IndexValid` | `crates/storage/src/store/graph_commit.rs`: `validate_version_writes`; `crates/storage/src/version.rs`: `first_conflict` |
-| Stamp publication | `commit_prepared_mutation_ops` and `VersionIndex::apply` |
+| Stamp publication | `VersionIndex::stage` before WAL, installation in `commit_prepared_mutation_ops` after canonical apply |
 | Write sets | Assumed complete inputs corresponding to `collect_version_writes`; narrow identities abstract graph node/relationship/adjacency classes |
 | Broad writes | Database/schema singleton sets; mixed sets containing a barrier collapse to that barrier for conflict semantics |
 | `Begin`, snapshots | Transaction-private snapshot capture in `src/api/concurrent.rs` and `GraphStore::begin_mutation_transaction` |
@@ -253,7 +253,7 @@ argument to the public embedded API:
 Each rejection compares raw active WAL bytes and the commit epoch before and
 after rejection. These tests exercise ordinary close/reopen, not process-kill
 crashes or partial writes. They do not cover every canonical identity or schema
-barrier. Temporarily removing `VersionIndex::apply` from the commit path makes
+barrier. In the earlier implementation, temporarily removing `VersionIndex::apply` from the commit path made
 both tests fail because the stale writer incorrectly succeeds; this negative
 control is not part of the committed production code.
 
@@ -352,8 +352,9 @@ Budget-pressure pruning uses precisely the same oldest-snapshot watermark as
 checkpoint pruning, so the existing validator-equivalence proof still applies.
 If the retried footprint does not fit, neither WAL nor canonical user data
 changes. The index may have safely retired obsolete history during the failed
-attempt; that is not a user-data commit. Existing identities remain updateable
+attempt; that is not a user-data commit. Existing identities remain admissible under this current-index check
 at capacity when their complete footprint introduces no additional identities.
+The separate shared-history admission below can still reject their new root.
 No live snapshot or required conflict stamp is discarded for budget recovery.
 
 This argument covers the production GraphStore call graph. Low-level public
@@ -534,7 +535,102 @@ regression; the inline implementation is restored before final validation.
 The logical stamp maps in `HawDBMvccValidation` and
 `HawDBVersionHistoryBudget` are unchanged abstractions of A. This section gives
 the source-level representation proof, not a new machine-checked refinement or
-new TLC run. Historical narrow-key roots, transient COW allocations and aggregate
-writer-workspace memory remain open. The change makes future pre-WAL history
-admission possible without introducing a resource failure in the legacy
-post-WAL barrier update; it does not itself finish that aggregate admission.
+new TLC run for this representation change. The shared-history admission below
+uses this inline representation to avoid a new post-WAL failure in legacy
+barrier publication; transient allocator peaks and total workspace memory
+remain separate obligations.
+
+
+## Shared retained-history leases
+
+For one GraphStore open and its descendant snapshots/workspaces, let R be the
+set of live nonempty version-root leases, w(r) their charged non-Database
+payload estimates, U the budget ledger, and L = 256 MiB by default. The invariant is
+
+    U = sum(r in R, w(r)) and 0 <= U <= L.
+
+R counts leases, not handle aliases or physical pages. Different logical roots
+can share pages, so charging each full root is conservative. An empty managed
+index has no lease. Every production nonempty root has one, and every clone of
+that root shares its lease. Low-level unmanaged `apply`/recovery-key construction
+is outside this production call graph; `apply` rejects leased indexes.
+
+The source-level induction is:
+
+1. Empty open initializes U = 0. Snapshot clone shares the lease Arc without
+   changing U. Read baselines use an empty narrow-key map while sharing the same
+   budget lineage, including for later storage-level mutations.
+2. `HistoryBudget::reserve` serializes checked addition and admission under one
+   mutex. Failure changes nothing; success increments U before COW preparation
+   and creates one lease of that size. Concurrent private workspaces cannot both
+   spend the same credit. Arithmetic overflow refuses before mutation.
+3. `VersionIndex::stage` first admits the per-index footprint, then reserves the
+   full resulting non-Database root estimate. Old and candidate roots remain
+   charged simultaneously. A Database-only update shares the unchanged root's
+   lease; it needs no COW map update. Staging is private and occurs before WAL.
+4. After canonical application and epoch advancement, GraphStore moves the
+   prepared index into place. That transfer does not change its lease charge.
+   Cancellation, WAL rejection or replacing an old root drops its reference;
+   only the final Arc owner refunds w(r). The map field drops before the lease
+   field, so final-owner credit cannot be reused before its storage is released.
+5. Safe pruning leaves all eligible conflict stamps intact. If no entry is
+   removable it changes nothing. If all entries are obsolete it installs an
+   empty map before dropping the lease. For partial pruning with multiple lease
+   owners, reserve the **entire input-root** estimate before `retain`: the map
+   implementation copies input pages before filtering, so reserving just the
+   survivors would undercharge that preparation. Refusal keeps extra obsolete
+   stamps, preserving validator safety. After copying/filtering, the new unique
+   lease shrinks to the survivors' estimate and refunds the difference.
+6. Partial pruning with a unique lease reuses that root's existing charge and
+   shrinks afterward. It may still detach pages shared by differently charged
+   roots; each such root already has its own full payload credit. Intermediate
+   allocator/page-restructuring peaks are outside this payload metric.
+7. Legacy Database publication and its pruning change only the inline field.
+   They cannot change U or introduce a history-admission failure after WAL.
+
+Safe pruning may occur before a refused commit, but canonical rows, epoch and
+WAL remain unchanged. Reopen starts a new process-local budget and no old
+transactions survive it, as required by the earlier restart argument. The
+ledger is per open lineage, not global across independent opens or processes.
+
+### Finite retained-root model and evidence
+
+`HawDBRetainedVersionHistory.tla` has three reusable root identities, weights
+1..2, limit 4, three owners and two pending preparations. The reader represents
+a precise retained **storage** snapshot, not the optimized facade read baseline.
+`Capture`, `Stage`, `Finish`, `Publish`, `Drop` and `PruneUnique` model aliasing,
+pre-reservation, copying, shrinking, ownership transfer, cancellation and
+final-owner retirement. Shared partial pruning requires multiple input owners
+and precharges its input weight. Its successful branch is reachable at limit 4.
+
+The independent live-root sum checks exact accounting; other invariants check
+the limit, coverage of in-progress copying and unchanged retained reader weight.
+TLC completed with 148,273 generated / 19,976 distinct states, depth 21 and an
+empty queue. The Bazel TLC action executed; its downstream success-wrapper test
+was cached. This is finite safety evidence, not a machine-checked Rust refinement
+or an allocator/RSS bound.
+
+Four registered mutants independently skip admission, refund on every alias
+drop, omit final-owner refunds, or reserve only the surviving shared-prune
+weight. Their required violations are respectively `BoundedRetainedRoots`,
+`ExactAccounting`, `ExactAccounting` and `CopyingCovered`. Mutants use limit 3
+to expose insufficient copying credit; the positive limit 4 also permits a
+successful shared copy. Named witness checks require reachability of quota
+refusal, cancelled preparation and completed shared partial pruning.
+
+Rust regressions verify exact alias/refund counts, unique/shared/empty pruning,
+shared-prune refusal and success, read-baseline budget lineage, and eight
+simultaneous reservations with credit for exactly one new root. Memory/durable
+integration reaches the aggregate cap, checks unchanged WAL/epoch/data on
+refusal, refunds a failed WAL append, preserves old snapshots, and resumes
+following snapshot retirement/checkpoint. Reopen has exact rows and a fresh
+empty process-local history budget. Temporarily disabling the shared admission
+guard makes the integration regression fail (0 passed / 1 failed); the guard
+was restored before final checks.
+
+The earlier MVCC/current-index models still prove their own conditional
+validation and watermark rules. This model adds lease accounting only: it does
+not model WAL/fsync, key-conflict completeness, fairness, per-handle/pin overhead,
+internal allocator peaks or all concurrently constructed write sets. Composition
+with recovery and representative final-head latency/cleanup qualification
+remain acceptance work for #231/#232.

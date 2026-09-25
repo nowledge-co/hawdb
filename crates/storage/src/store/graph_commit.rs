@@ -1933,6 +1933,15 @@ impl GraphStore {
                 ));
             }
         }
+        let staged_versions = match self.version_index.stage(&version_writes, next_commit_epoch) {
+            Some(staged) => staged,
+            None => {
+                self.reclaim_version_history();
+                self.version_index.stage(&version_writes, next_commit_epoch).ok_or_else(||
+                    HawDBError::Storage("MVCC retained version history budget exhausted; release old snapshots before retrying".into())
+                )?
+            }
+        };
         let wal_result =
             if preserve_single_create_wal && let [op @ WalOp::CreateNode { .. }] = ops.as_slice() {
                 self.append_durable_wal_single(op.clone())
@@ -1962,7 +1971,7 @@ impl GraphStore {
             }
         }
         self.commit_epoch = next_commit_epoch;
-        self.version_index.apply(&version_writes, next_commit_epoch);
+        self.version_index = staged_versions;
         self.publish_relational_index_live_view(staged_relational_index_publication);
         self.publish_relational_row_live_view(staged_relational_row_publication);
         Ok(MutationSummary {

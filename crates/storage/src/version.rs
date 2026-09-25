@@ -19,6 +19,9 @@
 //! relational stores; keeping these concerns separate lets a transaction
 //! validate its write set without retaining a second copy of user data.
 
+mod history_budget;
+use history_budget::{HistoryBudget, HistoryLease};
+
 use crate::{AdjacencyDirection, CowPageWeight, CowSegmentedMap, NodeId, RelId, RelationalKey};
 use std::collections::BTreeMap;
 use std::fmt::{self, Display, Formatter};
@@ -82,6 +85,8 @@ pub const DEFAULT_MAX_VERSION_WRITE_SET_BYTES: usize = crate::DEFAULT_MAX_WAL_RE
 
 /// Current-index payload estimate; excludes historical COW roots.
 pub const DEFAULT_MAX_VERSION_INDEX_BYTES: usize = 64 * 1024 * 1024;
+/// Shared budget for retained/staged non-Database root payload estimates.
+pub const DEFAULT_MAX_RETAINED_VERSION_HISTORY_BYTES: usize = 256 * 1024 * 1024;
 
 pub const DEFAULT_MAX_VERSION_WRITE_SET_ENTRIES: usize = crate::DEFAULT_MAX_WAL_BATCH_OPERATIONS;
 
@@ -299,6 +304,9 @@ pub struct VersionIndex {
     stamps: CowSegmentedMap<VersionKey, VersionStamp>,
     estimated_bytes: usize,
     max_estimated_bytes: usize,
+    history_budget: HistoryBudget,
+    // Drop after the map, so the last holder releases storage before its charge.
+    history_lease: Option<Arc<HistoryLease>>,
 }
 
 impl Default for VersionIndex {
@@ -309,6 +317,13 @@ impl Default for VersionIndex {
 
 impl VersionIndex {
     pub(crate) fn with_byte_limit(max_estimated_bytes: usize) -> Self {
+        Self::with_history_limit(
+            max_estimated_bytes,
+            DEFAULT_MAX_RETAINED_VERSION_HISTORY_BYTES,
+        )
+    }
+
+    pub(crate) fn with_history_limit(max_estimated_bytes: usize, max_history_bytes: usize) -> Self {
         // Reserve the legacy barrier even before it exists, so legacy commit
         // publication cannot encounter a new admission failure after WAL.
         let reserved = version_stamp_bytes(&VersionKey::Database);
@@ -318,6 +333,8 @@ impl VersionIndex {
             stamps: CowSegmentedMap::default(),
             estimated_bytes: reserved,
             max_estimated_bytes,
+            history_budget: HistoryBudget::new(max_history_bytes),
+            history_lease: None,
         }
     }
 
@@ -328,7 +345,14 @@ impl VersionIndex {
     }
 
     pub(crate) fn read_baseline(&self, epoch: u64) -> Self {
-        let mut baseline = Self::with_byte_limit(self.max_estimated_bytes);
+        let mut baseline = Self {
+            database_barrier: None,
+            stamps: CowSegmentedMap::default(),
+            estimated_bytes: version_stamp_bytes(&VersionKey::Database),
+            max_estimated_bytes: self.max_estimated_bytes,
+            history_budget: self.history_budget.clone(),
+            history_lease: None,
+        };
         if epoch > 0 {
             baseline.apply_database_barrier(epoch);
         }
@@ -349,6 +373,40 @@ impl VersionIndex {
             }
         }
         bytes <= self.max_estimated_bytes
+    }
+
+    #[cfg(test)]
+    pub(crate) fn retained_history_bytes(&self) -> usize {
+        self.history_budget.used()
+    }
+
+    /// Reserve the complete candidate root before any COW allocation or WAL.
+    /// The existing root remains charged until its last snapshot is dropped.
+    pub(crate) fn stage(&self, writes: &VersionWriteSet, epoch: u64) -> Option<Self> {
+        if !self.admits(writes) {
+            return None;
+        }
+        let mut bytes = self.estimated_bytes - version_stamp_bytes(&VersionKey::Database);
+        let mut changes_map = false;
+        for (key, _) in writes.iter() {
+            if *key != VersionKey::Database {
+                changes_map = true;
+                if !self.stamps.contains_key(key) {
+                    bytes = bytes.checked_add(version_stamp_bytes(key))?;
+                }
+            }
+        }
+        let lease = if bytes == 0 {
+            None
+        } else if changes_map || self.history_lease.is_none() {
+            Some(self.history_budget.reserve(bytes)?)
+        } else {
+            self.history_lease.clone()
+        };
+        let mut staged = self.clone();
+        staged.history_lease = lease;
+        staged.apply_prepared(writes, epoch);
+        Some(staged)
     }
 
     fn insert_stamp(&mut self, key: VersionKey, stamp: VersionStamp) {
@@ -429,12 +487,19 @@ impl VersionIndex {
         })
     }
 
-    /// Publishes every write at `commit_epoch` after its WAL record is durable.
-    /// Callers must provide a nonzero epoch derived from the serialized commit
-    /// path, before this method is reached. The production commit path must
-    /// successfully admit the write set before WAL; this low-level publication
-    /// primitive and the recovery constructor do not perform admission.
+    /// Applies stamps to an unmanaged index without resource admission.
+    /// Callers must supply a nonzero epoch. Production commits use `stage`
+    /// before WAL, then install that prepared index after canonical application.
+    /// This construction/test primitive rejects indexes holding history leases.
     pub fn apply(&mut self, writes: &VersionWriteSet, commit_epoch: u64) {
+        assert!(
+            self.history_lease.is_none(),
+            "managed history requires a staged update"
+        );
+        self.apply_prepared(writes, commit_epoch);
+    }
+
+    fn apply_prepared(&mut self, writes: &VersionWriteSet, commit_epoch: u64) {
         debug_assert_ne!(commit_epoch, 0, "committed version stamps require an epoch");
         for (key, write) in writes.iter() {
             self.insert_stamp(
@@ -470,19 +535,10 @@ impl VersionIndex {
         }) {
             self.database_barrier = None;
         }
-        // A retained snapshot shares these pages. Avoid detaching all pages
-        // when the watermark has not made any tombstone reclaimable.
-        if !self.stamps.iter().any(|(_, stamp)| {
-            stamp.disposition == VersionDisposition::Tombstone
-                && stamp.commit_epoch < oldest_reader_epoch
-        }) {
-            return;
-        }
-        self.stamps.retain(|_, stamp| {
+        self.prune_map(|stamp| {
             stamp.disposition != VersionDisposition::Tombstone
                 || stamp.commit_epoch >= oldest_reader_epoch
         });
-        self.recount_bytes();
     }
 
     /// Removes conflict history strictly older than every usable snapshot.
@@ -495,16 +551,37 @@ impl VersionIndex {
         {
             self.database_barrier = None;
         }
-        if !self
-            .stamps
-            .iter()
-            .any(|(_, stamp)| stamp.commit_epoch < oldest_reader_epoch)
-        {
+        self.prune_map(|stamp| stamp.commit_epoch >= oldest_reader_epoch);
+    }
+
+    fn prune_map(&mut self, keep: impl Fn(&VersionStamp) -> bool) {
+        if self.stamps.iter().all(|(_, stamp)| keep(stamp)) {
             return;
         }
-        self.stamps
-            .retain(|_, stamp| stamp.commit_epoch >= oldest_reader_epoch);
+        if self.stamps.iter().all(|(_, stamp)| !keep(stamp)) {
+            self.stamps = CowSegmentedMap::default();
+            self.history_lease = None;
+            self.recount_bytes();
+            return;
+        }
+        if let Some(lease) = &self.history_lease
+            && Arc::strong_count(lease) > 1
+        {
+            // retain can copy all input pages before discarding entries, so
+            // reserve the old root's full payload, then refund the removed part.
+            let bytes = self.estimated_bytes - version_stamp_bytes(&VersionKey::Database);
+            let Some(replacement) = self.history_budget.reserve(bytes) else {
+                return; // Retaining extra conflict history is safe under pressure.
+            };
+            self.history_lease = Some(replacement);
+        }
+        self.stamps.retain(|_, stamp| keep(stamp));
         self.recount_bytes();
+        if let Some(lease) = self.history_lease.as_mut() {
+            Arc::get_mut(lease)
+                .expect("pruned root owns its history charge")
+                .shrink(self.estimated_bytes - version_stamp_bytes(&VersionKey::Database));
+        }
     }
 
     /// Tests sharing of non-Database COW pages, not equality of inline barriers.
@@ -526,6 +603,105 @@ mod tests {
         DEFAULT_MAX_VERSION_WRITE_SET_ENTRIES,
     };
     use crate::NodeId;
+
+    #[test]
+    fn retained_history_leases_share_refund_and_bound_partial_pruning() {
+        let reserve = super::version_stamp_bytes(&VersionKey::Database);
+        let key1 = VersionKey::GraphNode(NodeId(1));
+        let key2 = VersionKey::GraphNode(NodeId(2));
+        let weight = super::version_stamp_bytes(&key1);
+        let mut index = VersionIndex::with_history_limit(reserve + 3 * weight, 3 * weight);
+        let budget = index.history_budget.clone();
+        let mut first = VersionWriteSet::default();
+        first.record_live(key1.clone()).unwrap();
+        index = index.stage(&first, 1).unwrap();
+        let old = index.clone();
+        assert_eq!(budget.used(), weight);
+        let mut second = VersionWriteSet::default();
+        second.record_live(key2.clone()).unwrap();
+        let cancelled = index.stage(&second, 2).unwrap();
+        assert_eq!(budget.used(), 3 * weight);
+        drop(cancelled);
+        assert_eq!(budget.used(), weight);
+        index = index.stage(&second, 2).unwrap();
+        let current_snapshot = index.clone();
+        assert_eq!(budget.used(), 3 * weight);
+        assert!(index.stage(&second, 3).is_none());
+        index.apply_database_barrier(3);
+        assert_eq!(budget.used(), 3 * weight);
+        index.prune_before(2);
+        assert!(index.stamp(&key1).is_some()); // copying shared pages cannot fit
+        drop(old);
+        index.prune_before(2);
+        assert!(index.stamp(&key1).is_some()); // still needs a full input-root reserve
+        drop(current_snapshot);
+        index.prune_before(2);
+        assert!(index.stamp(&key1).is_none());
+        assert!(index.stamp(&key2).is_some());
+        assert_eq!(budget.used(), weight);
+        let read = index.read_baseline(3);
+        assert_eq!(read.retained_history_bytes(), weight);
+        let retained = index.clone();
+        index.prune_before(4); // empty replacement requires no copying credit
+        assert!(index.is_empty());
+        assert_eq!(budget.used(), weight);
+        drop(retained);
+        assert_eq!(budget.used(), 0);
+        drop(index);
+        assert_eq!(read.retained_history_bytes(), 0);
+
+        // With enough credit, shared partial pruning copies the full input,
+        // then shrinks its new lease while the old snapshot remains unchanged.
+        let mut index = VersionIndex::with_history_limit(reserve + 3 * weight, 4 * weight);
+        index = index.stage(&first, 1).unwrap();
+        index = index.stage(&second, 2).unwrap();
+        let retained = index.clone();
+        index.prune_before(2);
+        assert!(index.stamp(&key1).is_none());
+        assert!(index.stamp(&key2).is_some());
+        assert!(retained.stamp(&key1).is_some());
+        assert_eq!(index.retained_history_bytes(), 3 * weight);
+        drop(retained);
+        assert_eq!(index.retained_history_bytes(), weight);
+    }
+
+    #[test]
+    fn retained_history_concurrent_reservations_admit_only_available_credit() {
+        let key1 = VersionKey::GraphNode(NodeId(1));
+        let key2 = VersionKey::GraphNode(NodeId(2));
+        let weight = super::version_stamp_bytes(&key1);
+        let reserve = super::version_stamp_bytes(&VersionKey::Database);
+        let mut writes = VersionWriteSet::default();
+        writes.record_live(key1).unwrap();
+        let index = VersionIndex::with_history_limit(reserve + 3 * weight, 3 * weight)
+            .stage(&writes, 1)
+            .unwrap();
+        let budget = index.history_budget.clone();
+        writes = VersionWriteSet::default();
+        writes.record_live(key2).unwrap();
+        let barrier = std::sync::Barrier::new(8);
+        let results = std::thread::scope(|scope| {
+            let handles = (0..8)
+                .map(|_| {
+                    scope.spawn(|| {
+                        let candidate = index.stage(&writes, 2);
+                        barrier.wait();
+                        candidate
+                    })
+                })
+                .collect::<Vec<_>>();
+            handles
+                .into_iter()
+                .map(|handle| handle.join().unwrap())
+                .collect::<Vec<_>>()
+        });
+        assert_eq!(results.iter().filter(|result| result.is_some()).count(), 1);
+        assert_eq!(budget.used(), 3 * weight);
+        drop(results);
+        assert_eq!(budget.used(), weight);
+        drop(index);
+        assert_eq!(budget.used(), 0);
+    }
 
     #[test]
     fn inline_database_barrier_preserves_shared_pages_and_snapshot_values() {

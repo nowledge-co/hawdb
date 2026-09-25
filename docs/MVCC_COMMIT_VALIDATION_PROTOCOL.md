@@ -29,7 +29,7 @@ path below now has separate per-key validation evidence.
 | Rebase selection | `commit_with_result` enables it for pessimistic transactions and the narrowly checked conflict-noop-only optimistic transaction shape. |
 | Publication and group sync | `src/api/concurrent/coordinator.rs` serializes commit tasks and retains the database mutex through the shared durability barrier. |
 | Writer snapshot lifetime | `DatabaseTransactionState` owns a `ReaderPin` from snapshot capture through private execution and queued commit; rollback/drop releases it and first-statement refresh replaces it. |
-| Version reclamation | Every `GraphStore::snapshot` registers an epoch in a shared storage registry. Successful durable checkpoint publication, in-memory checkpoint and current-index budget pressure call `reclaim_version_history`, retaining stamps at or after the oldest snapshot epoch. |
+| Version reclamation | Every `GraphStore::snapshot` registers an epoch in a shared storage registry. Successful durable checkpoint publication, in-memory checkpoint and version-budget pressure call `reclaim_version_history`, retaining stamps at or after the oldest snapshot epoch. |
 | Recovery baseline helper | `VersionIndex::from_live_keys_at_epoch` exists but is not wired into open or replay. The current index starts empty on a new store handle. |
 
 No general serializable isolation, time travel, multi-process writer, or
@@ -126,7 +126,7 @@ This is a bound on the production current-index estimate, not total version
 memory: historical COW roots, B-tree/page overhead, transient copy-on-write
 allocations, spare capacities, and the number of concurrent snapshots remain
 outside it. Low-level `VersionIndex::apply` and `from_live_keys_at_epoch` are
-publication/construction primitives, not admission APIs; the bound is enforced
+unmanaged construction/test primitives, not admission APIs; the bound is enforced
 by `GraphStore`'s serialized commit path. The latter constructor has no current
 production callers. Reopen resets process-local conflict history as before.
 Long-lived pins can reject index growth; callers must release old snapshots
@@ -134,19 +134,51 @@ and checkpoint before retrying. There is no automatic transaction cancellation.
 The 64 MiB default is a fixed admission policy, not a measured global memory
 requirement or an allocator guarantee.
 
+## Shared retained-history admission
+
+Each open GraphStore and its snapshot/workspace descendants share a separate
+256 MiB budget (`DEFAULT_MAX_RETAINED_VERSION_HISTORY_BYTES`) for non-Database
+version-root payload estimates. Clones share one reference-counted lease without
+charging again. A changed candidate root reserves its entire resulting estimate
+before COW preparation or WAL; the previous root stays charged until its final
+holder drops. Different roots may share physical pages and are deliberately
+charged separately. Read baselines retain no narrow-key payload, but inherit the
+same budget for any subsequent low-level storage writes.
+
+After safe reclamation and one retry, insufficient credit returns a storage
+error before WAL/data/epoch publication. Cancellation and WAL refusal drop the
+prepared root and refund its lease. Successful publication installs that root;
+final-owner retirement refunds the old charge. A replacement of existing keys
+can therefore fail this aggregate admission even though it fits the current
+index limit. No snapshot is cancelled automatically.
+
+Partial pruning of a shared root reserves the full input estimate before
+`retain`, because that operation copies input pages before filtering. It refunds
+the removed portion afterward. Insufficient copying credit defers that pruning
+safely. A unique root reuses its charge and shrinks it; replacing a fully obsolete
+root with an empty map requires no copying credit. Inline Database barriers do
+not grow or detach the narrow-key map, so legacy publication remains infallible
+with respect to this admission.
+
+The [lease proof](tla/MVCC_VALIDATION_PROOF.md#shared-retained-history-leases)
+separates this per-open-lineage estimate from total allocator/RSS memory,
+per-handle headers and pin counts, internal transient page restructuring, and
+independent database opens. Neither the 256 MiB default nor conservative whole-root
+charging is a measured workload qualification.
+
 ## Commit and visibility order
 
 The non-rebased path passes the transaction's base epoch into
 `commit_prepared_mutation_ops`. The commit path stages canonical graph,
 relational and append changes against current state, collects their version
 keys, validates them, checks publication requirements and graph constraints,
-and appends the WAL. A version conflict occurs before WAL append or live root
+reserves and prepares the complete version root, and appends the WAL. A version conflict occurs before WAL append or live root
 publication. Earlier staging/constraint errors can occur before version
 validation; not every rejected overlapping operation necessarily returns the
 version-conflict variant.
 
 After successful WAL append, the path applies canonical operations, advances
-`commit_epoch`, and applies the version stamps. These updates are sequential
+`commit_epoch`, and installs the prepared version root. These updates are sequential
 Rust operations protected by the sequencer, not one hardware-atomic root swap.
 With group commit enabled, internal roots and stamps may advance before the
 shared fsync so later tasks in that same group can validate against earlier
@@ -254,7 +286,8 @@ Remaining acceptance work, without reimplementing existing mechanisms:
 2. Qualify total version-memory overhead and cleanup cost under representative
    churn and long-lived pins. Checkpoint cleanup now reclaims eligible
    live and deleted stamps, including barriers, but long-lived pins and historical
-   COW maps still retain metadata. Neither a global byte bound nor bounded
+   COW maps still retain metadata within the shared payload-estimate budget.
+   Allocator and per-handle overhead are excluded; neither a global RSS bound nor bounded
    checkpoint latency follows.
 3. Extend relational identities beyond the qualified explicit-key path only
    with complete predicate/constraint and recovery coverage. Typed append writes now have table identities; finer partition

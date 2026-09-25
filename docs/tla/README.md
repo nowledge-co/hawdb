@@ -1414,6 +1414,15 @@ The [budget proof](MVCC_VALIDATION_PROOF.md#finite-budget-model-and-negative-con
 records four negative controls and three reachability probes. Historical COW
 roots and allocator peaks remain outside this current-index estimate.
 
+[`HawDBRetainedVersionHistory.tla`](HawDBRetainedVersionHistory.tla) separately
+checks the shared budget for retained and staged root payload estimates:
+aliases share credit, candidate preparation reserves before copying, shared
+partial pruning reserves the full input weight, and only final-owner retirement
+refunds a root. Its [lease proof](MVCC_VALIDATION_PROOF.md#shared-retained-history-leases)
+records four mutants and three reachability witnesses. It bounds one open's
+snapshot/workspace lineage, excluding total allocator peaks and per-handle
+metadata; it does not extend the current-index model into a recovery theorem.
+
 [`HawDBRelationalWriteIntent.tla`](HawDBRelationalWriteIntent.tla) compares
 explicit relational write stamps against intent history, including unchanged
 final data and absent-key deletion. Its [source proof](RELATIONAL_MVCC_PROOF.md)

@@ -3161,6 +3161,99 @@ mod tests {
     use std::num::{NonZeroU64, NonZeroUsize};
 
     #[test]
+    fn retained_history_budget_refunds_wal_refusal_and_recovers_after_snapshot_drop() {
+        use crate::version::{VersionIndex, VersionKey, VersionStamp};
+        use crate::CowPageWeight;
+        for durable in [false, true] {
+            let path = unique_test_dir("retained_history_budget");
+            let mut catalog = Catalog::default();
+            let mut store = if durable {
+                GraphStore::open(&path, &mut catalog).unwrap()
+            } else {
+                GraphStore::default()
+            };
+            store
+                .create_node(&mut catalog, "Memory", properties([]))
+                .unwrap();
+            store.checkpoint(&catalog).unwrap();
+            let reserve = VersionIndex::default().estimated_bytes();
+            let weight = VersionKey::GraphNode(NodeId(0)).cow_page_bytes()
+                + std::mem::size_of::<VersionStamp>();
+            store.version_index =
+                VersionIndex::with_history_limit(reserve + 4 * weight, 4 * weight);
+            let insert = || GraphMutation::CreateNode {
+                label: "Memory".into(),
+                properties: properties([]),
+            };
+            store
+                .commit_mutations(&mut catalog, vec![insert()])
+                .unwrap();
+            assert_eq!(store.version_index.retained_history_bytes(), weight);
+            let old = store.snapshot();
+            if durable {
+                let epoch = store.commit_epoch();
+                let wal = fs::read(active_wal_path(&path)).unwrap();
+                store
+                    .durable
+                    .as_mut()
+                    .unwrap()
+                    .set_wal_available_space_override(0);
+                assert!(store
+                    .commit_mutations(&mut catalog, vec![insert()])
+                    .is_err());
+                assert_eq!(store.version_index.retained_history_bytes(), weight);
+                assert_eq!(store.commit_epoch(), epoch);
+                assert_eq!(fs::read(active_wal_path(&path)).unwrap(), wal);
+                store
+                    .durable
+                    .as_mut()
+                    .unwrap()
+                    .set_wal_available_space_override(u64::MAX);
+            }
+            store
+                .commit_mutations(&mut catalog, vec![insert()])
+                .unwrap();
+            assert_eq!(store.version_index.retained_history_bytes(), 3 * weight);
+            let epoch = store.commit_epoch();
+            let wal = durable.then(|| fs::read(active_wal_path(&path)).unwrap());
+            let error = store
+                .commit_mutations(&mut catalog, vec![insert()])
+                .unwrap_err();
+            assert!(
+                error
+                    .to_string()
+                    .contains("retained version history budget exhausted"),
+                "{error}"
+            );
+            assert_eq!(store.commit_epoch(), epoch);
+            assert_eq!(store.node_count_for_label(None), 3);
+            assert_eq!(old.node_count_for_label(None), 2);
+            assert_eq!(store.version_index.retained_history_bytes(), 3 * weight);
+            if let Some(wal) = wal {
+                assert_eq!(fs::read(active_wal_path(&path)).unwrap(), wal);
+            }
+            drop(old);
+            store.checkpoint(&catalog).unwrap();
+            assert_eq!(store.version_index.retained_history_bytes(), 0);
+            store
+                .commit_mutations(&mut catalog, vec![insert()])
+                .unwrap();
+            let epoch = store.commit_epoch();
+            assert_eq!(store.node_count_for_label(None), 4);
+            drop(store);
+            if durable {
+                let mut reopened_catalog = Catalog::default();
+                let reopened = GraphStore::open(&path, &mut reopened_catalog).unwrap();
+                assert_eq!(reopened.commit_epoch(), epoch);
+                assert_eq!(reopened.node_count_for_label(None), 4);
+                assert_eq!(reopened.version_index.retained_history_bytes(), 0);
+                drop(reopened);
+                fs::remove_dir_all(path).unwrap();
+            }
+        }
+    }
+
+    #[test]
     fn version_history_budget_rejects_growth_before_wal_and_recovers_after_unpin() {
         use crate::version::{VersionIndex, VersionKey, VersionStamp};
         use crate::CowPageWeight;
