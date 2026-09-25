@@ -708,10 +708,31 @@ fn access_control_node_predicate(
 pub(super) fn statement_uses_plan_cache(statement: &cypher::Statement) -> bool {
     match statement_body(statement) {
         cypher::Statement::MatchReturn(query) => query.vector_seed.is_none(),
+
+        cypher::Statement::Pipeline(query) => {
+            // Preserve legacy cache boundaries when queries move to clause ASTs.
+            // Eligibility is not a substitute for semantic binding validation.
+            !query.clauses.is_empty()
+                && query.clauses.iter().all(|clause| match &clause.kind {
+                    cypher::ClauseKind::Match { .. }
+                    | cypher::ClauseKind::With(_)
+                    | cypher::ClauseKind::Return(_) => true,
+                    cypher::ClauseKind::Call { procedure, .. } => match &procedure.kind {
+                        cypher::ProcedureCallKind::GraphAlgorithm { .. } => true,
+                        cypher::ProcedureCallKind::VectorSearch(_)
+                        | cypher::ProcedureCallKind::ProjectGraph { .. } => false,
+                    },
+                    cypher::ClauseKind::Unwind { .. }
+                    | cypher::ClauseKind::Create(_)
+                    | cypher::ClauseKind::Merge { .. }
+                    | cypher::ClauseKind::Set(_)
+                    | cypher::ClauseKind::Delete { .. } => false,
+                })
+        }
+
         cypher::Statement::ShortestPathReturn(_)
         | cypher::Statement::MatchNodesReturn(_)
         | cypher::Statement::MatchOptionalRelationshipCountSum(_)
-        | cypher::Statement::Pipeline(_)
         | cypher::Statement::GraphAlgorithm(_) => true,
         _ => false,
     }
@@ -722,6 +743,86 @@ mod tests {
     use super::*;
     use crate::schema::SchemaObjectState;
     use std::collections::BTreeMap;
+
+    #[test]
+    fn pipeline_plan_cache_preserves_legacy_eligibility() {
+        for (query, expected) in [
+            ("MATCH (n:Item) RETURN n.id", true),
+            ("CALL page_rank('g') RETURN node, rank", true),
+            ("CALL louvain('g') RETURN node, level, louvain_id", true),
+            ("CREATE (:Item {id: 1})", false),
+            ("MERGE (:Item {id: 1})", false),
+            ("MATCH (n:Item) SET n.id = 2", false),
+            ("MATCH (n:Item) DELETE n", false),
+            ("MATCH (n:Item) DETACH DELETE n", false),
+            ("UNWIND $rows AS row CREATE (:Item {id: row.id})", false),
+            (
+                "CALL vector_search($embedding, topK := 4) RETURN id, score",
+                false,
+            ),
+            ("CALL project_graph('g', ['Item'], ['LINK'])", false),
+        ] {
+            let legacy = cypher::parse(query).unwrap();
+            let pipeline =
+                cypher::Statement::Pipeline(Box::new(cypher::parse_pipeline(query).unwrap()));
+            assert_eq!(
+                statement_uses_plan_cache(&legacy),
+                expected,
+                "legacy: {query}"
+            );
+            assert_eq!(
+                statement_uses_plan_cache(&pipeline),
+                expected,
+                "pipeline: {query}"
+            );
+            let wrapped = cypher::Statement::CypherQuery(Box::new(cypher::CypherQuery {
+                system_variables: Vec::new(),
+                statement: pipeline,
+            }));
+            assert_eq!(
+                statement_uses_plan_cache(&wrapped),
+                expected,
+                "wrapped: {query}"
+            );
+        }
+    }
+
+    #[test]
+    fn pipeline_plan_cache_checks_every_clause() {
+        let read = cypher::parse_pipeline(
+            "MATCH (n:Item) OPTIONAL MATCH (n)-[:LINK]->(m:Item) WITH n WITH n RETURN n.id",
+        )
+        .unwrap();
+        assert!(statement_uses_plan_cache(&cypher::Statement::Pipeline(
+            Box::new(read.clone())
+        )));
+        for query in [
+            "UNWIND [1] AS id RETURN id",
+            "CREATE (:Item)",
+            "MERGE (:Item {id: 1})",
+            "SET n.id = 2",
+            "DELETE n",
+            "DETACH DELETE n",
+            "CALL vector_search($embedding, topK := 4) RETURN id, score",
+            "CALL project_graph('g', ['Item'], ['LINK'])",
+        ] {
+            let clause = cypher::parse_pipeline(query).unwrap().clauses[0].clone();
+            // Cache eligibility is independent of binding validity and clause position.
+            for position in 0..=read.clauses.len() {
+                let mut pipeline = read.clone();
+                pipeline.clauses.insert(position, clause.clone());
+                assert!(
+                    !statement_uses_plan_cache(&cypher::Statement::Pipeline(Box::new(pipeline))),
+                    "{query} at {position}"
+                );
+            }
+        }
+        let mut empty = read;
+        empty.clauses.clear();
+        assert!(!statement_uses_plan_cache(&cypher::Statement::Pipeline(
+            Box::new(empty)
+        )));
+    }
 
     fn unique_test_dir(name: &str) -> std::path::PathBuf {
         let nanos = std::time::SystemTime::now()

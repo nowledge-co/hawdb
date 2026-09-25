@@ -2170,3 +2170,56 @@ fn configured_commit_lag_defers_statistics_refresh_on_query_path() {
     let output = db.query("MATCH (m:Memory) RETURN m.id AS id").unwrap();
     assert_eq!(output.rows.len(), 8);
 }
+
+#[test]
+fn pipeline_plan_cache_bypasses_vector_procedure() {
+    let db = Database::new();
+    let query =
+        "CALL vector_search($embedding, topK := 4) WITH id, score WITH id, score RETURN id, score";
+    assert!(matches!(
+        crate::cypher::parse(query).unwrap(),
+        crate::cypher::Statement::Pipeline(_)
+    ));
+    let params = BTreeMap::from([(
+        "embedding".to_string(),
+        Value::List(vec![Value::Float(1.0), Value::Float(0.0)]),
+    )]);
+    for _ in 0..2 {
+        let output = db.explain_query_with_params(query, &params).unwrap();
+        assert_eq!(
+            output.plan_cache_lookup,
+            PlanCacheLookup::Bypass(PlanCacheBypassReason::StatementNotCacheable)
+        );
+    }
+    let stats = db.plan_cache_stats();
+    assert_eq!(stats.entries, 0);
+    assert_eq!(stats.misses, 0);
+    assert_eq!(stats.hits, 0);
+    assert_eq!(stats.admissions, 0);
+    assert_eq!(stats.bypasses, 2);
+}
+
+#[test]
+fn pipeline_plan_cache_reuses_reads_with_fresh_parameters() {
+    let mut db = Database::new();
+    db.query("CREATE (:Item {id: 1})").unwrap();
+    db.query("CREATE (:Item {id: 2})").unwrap();
+    let query = "MATCH (n:Item) WHERE n.id = $id WITH n WITH n RETURN n.id AS id";
+    assert!(matches!(
+        crate::cypher::parse(query).unwrap(),
+        crate::cypher::Statement::Pipeline(_)
+    ));
+    for id in [1, 2] {
+        let params = BTreeMap::from([("id".to_string(), Value::Int(id))]);
+        let explain = db.explain_query_with_params(query, &params).unwrap();
+        assert_eq!(explain.plan_cache_lookup, PlanCacheLookup::Miss);
+        let reused = db.explain_query_with_params(query, &params).unwrap();
+        assert_eq!(reused.plan_cache_lookup, PlanCacheLookup::Hit);
+        let output = db.query_with_params(query, &params).unwrap();
+        assert_eq!(
+            output.rows,
+            vec![BTreeMap::from([("id".to_string(), Value::Int(id))])]
+        );
+    }
+    assert_eq!(db.plan_cache_stats().entries, 2);
+}
