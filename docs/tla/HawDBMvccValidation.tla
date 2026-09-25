@@ -3,7 +3,7 @@ EXTENDS Integers, Naturals, Sequences, FiniteSets
 
 CONSTANTS Transactions, Keys, MaxEpoch,
           SkipValidation, SkipBroadWriterCheck, SkipBarrierStampCheck, PrunePinned,
-          ResetWithActiveTransactions, PublishBeforeSync, IgnoreSourcePin
+          ResetWithActiveTransactions, PublishBeforeSync, IgnoreSourcePin, CompactPinned
 
 Barriers == {"database", "schema"}
 Identities == Keys \union Barriers
@@ -15,7 +15,7 @@ ASSUME /\ Keys # {}
        /\ "none" \notin Transactions
        /\ MaxEpoch \in Nat \ {0}
        /\ {SkipValidation, SkipBroadWriterCheck, SkipBarrierStampCheck, PrunePinned,
-             ResetWithActiveTransactions, PublishBeforeSync, IgnoreSourcePin} \subseteq BOOLEAN
+             ResetWithActiveTransactions, PublishBeforeSync, IgnoreSourcePin, CompactPinned} \subseteq BOOLEAN
 
 VARIABLES phase, readEpoch, writes, deleting, snapshot,
           history, visible, stamps, tombstones, owner, restarted, sourceEpoch
@@ -142,6 +142,18 @@ Prune(k) ==
     /\ UNCHANGED <<phase, readEpoch, writes, deleting, snapshot,
                     history, visible, owner, restarted, sourceEpoch>>
 
+(* Abstract the prepared baseline immediately before ordinary publication.
+   Every still-usable epoch must be at the tip; otherwise a new Database
+   barrier could falsely reject an older disjoint writer. *)
+Baseline == [k \in Identities |-> IF k = "database" THEN visible ELSE 0]
+Compact ==
+    /\ owner = "none" /\ Baseline # stamps
+    /\ CompactPinned \/ ((\A tx \in Pinned: readEpoch[tx] >= visible)
+         /\ (IgnoreSourcePin \/ sourceEpoch = -1 \/ sourceEpoch >= visible))
+    /\ stamps' = Baseline /\ tombstones' = {}
+    /\ UNCHANGED <<phase, readEpoch, writes, deleting, snapshot,
+                    history, visible, owner, restarted, sourceEpoch>>
+
 (* No transaction or snapshot survives a process restart. Canonical replay
    restores the full durable prefix; stamp history is process-local. *)
 Crash ==
@@ -178,6 +190,7 @@ Next ==
     \/ DropSource
     \/ Crash
     \/ BadReset
+    \/ Compact
 
 TypeInvariant ==
     /\ phase \in [Transactions -> Phases]
@@ -232,4 +245,9 @@ NoLivePruneWitness ==
             /\ \A j \in (i + 1)..Len(history): k \notin history[j].keys)
 
 Spec == Init /\ [][Next]_vars
+CompactedTip == /\ visible > 0 /\ stamps = Baseline
+                /\ history[visible].keys \subseteq Keys
+NoPinnedTipCompactionWitness == ~(CompactedTip /\ Pinned # {})
+NoSourceTipCompactionWitness == ~(CompactedTip /\ sourceEpoch = visible)
+
 =============================================================================

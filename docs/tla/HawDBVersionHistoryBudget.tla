@@ -62,7 +62,12 @@ Legacy ==
 Prune == /\ SafePruned # stamps
          /\ stamps' = SafePruned /\ charge' = Refund(SafePruned)
          /\ UNCHANGED <<pin,history,refused,legacyAtCapacity,pressureReclaimed>>
-Next == Capture \/ Drop \/ Legacy \/ Prune \/ (\E w \in WriteSets, e \in ({Epoch,pin} \ {-1}): Commit(w,e) \/ Refuse(w,e))
+Baseline == [k \in Ids |-> IF k = D THEN Epoch ELSE 0]
+Compact == /\ Baseline # stamps
+           /\ PrunePinned \/ pin = -1 \/ pin >= Epoch
+           /\ stamps' = Baseline /\ charge' = Refund(Baseline)
+           /\ UNCHANGED <<pin,history,refused,legacyAtCapacity,pressureReclaimed>>
+Next == Capture \/ Drop \/ Legacy \/ Prune \/ Compact \/ (\E w \in WriteSets, e \in ({Epoch,pin} \ {-1}): Commit(w,e) \/ Refuse(w,e))
 TypeInvariant == /\ stamps \in [Ids -> 0..MaxEpoch]
                  /\ charge \in Nat /\ pin \in (-1)..Epoch
                  /\ history \in Seq(WriteSets) /\ Epoch <= MaxEpoch
@@ -74,4 +79,5 @@ ValidationMatchesHistory == \A e \in (IF pin = -1 THEN {Epoch} ELSE pin..Epoch):
 NoRefusalWitness == ~refused
 NoLegacyAtCapacityWitness == ~legacyAtCapacity
 NoPressureReclaimWitness == ~pressureReclaimed
+NoTipCompactionWitness == ~(Epoch > 0 /\ pin = Epoch /\ stamps = Baseline /\ history[Epoch] \subseteq Keys)
 =============================================================================

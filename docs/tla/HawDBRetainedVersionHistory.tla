@@ -40,7 +40,7 @@ Eligible(source,n,prune) ==
     /\ source \in {"canonical","writer"} /\ holder[source] # None
     /\ n \in 1..2
     /\ IF prune THEN (n < weight[holder[source]] /\ Refs(holder[source]) > 1)
-       ELSE n >= weight[holder[source]]
+       ELSE TRUE \* A current-epoch baseline can prepare a smaller new root.
 Stage(p,source,r,n,prune) ==
     /\ holder[p] = None /\ r \notin Live(holder) /\ Eligible(source,n,prune)
     /\ SkipAdmission \/ used + Charge(source,n,prune) <= Limit

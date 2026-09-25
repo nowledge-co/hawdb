@@ -135,6 +135,9 @@ impl GraphStore {
     /// advanced beyond them. Canonical records and generations are unchanged.
     #[doc(hidden)]
     pub fn reclaim_version_history(&mut self) {
+        // Exclusive store access prevents a new capture from this store;
+        // captures from other snapshots inherit an already-live pin floor.
+        // Thus no pin below this watermark can appear before pruning.
         let watermark = self
             .version_snapshot_pins
             .oldest_epoch()

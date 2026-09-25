@@ -43,7 +43,7 @@ still serve or create a transaction at an older epoch.
 - For a broad writer, any intervening record overlaps, including records that
   never wrote a broad stamp. The explicit current-epoch check is therefore
   necessary in addition to checking barrier stamps.
-- Any version stamp at `d` is removed only if every pinned epoch is strictly greater
+- `Prune` removes a version stamp at `d` only if every pinned epoch is strictly greater
   than `d`. It cannot witness a conflict for any surviving transaction, and
   transactions created later from an older source are protected by that
   source's own pin. Removing the stamp
@@ -73,6 +73,7 @@ machine-checked proof of the Rust implementation.
 | `Begin`, snapshots | Transaction-private snapshot capture in `src/api/concurrent.rs` and `GraphStore::begin_mutation_transaction` |
 | `Prepare`/`Sync`/`Publish` | Externally visible serialized commit boundary; not individual machine instructions or the internal group-sync schedule |
 | `Prune` | `GraphStore::reclaim_version_history` uses the minimum registered storage-snapshot epoch; `VersionIndex::prune_before` keeps equality conservatively |
+| `Compact` | `stage_version_index` privately prepares a current-epoch baseline only when all usable pins are at the tip; see the source refinement below |
 | Retained source | `GraphStore::snapshot` registers before the snapshot escapes; `begin_mutation_transaction` and savepoints capture further registered snapshots |
 | `Crash` | Abstract canonical replay plus invalidation of all pre-crash handles; no byte-level WAL decoder, checkpoint or torn-tail model |
 
@@ -101,7 +102,7 @@ durable-before-visible, validator equivalence and first-committer-wins.
 Deadlock checking is disabled because bounded completion is an expected
 terminal state; no fairness, starvation or liveness theorem is claimed.
 
-The mutant manifest runs seven independent defects and requires the named
+The mutant manifest runs eight independent defects and requires the named
 invariant violation (a parse error or arbitrary nonzero exit is insufficient):
 
 | Defect | Required failure |
@@ -113,6 +114,7 @@ invariant violation (a parse error or arbitrary nonzero exit is insufficient):
 | Ignore a retained source snapshot that can create a later writer | `ValidationMatchesHistory` |
 | Clear the index while transactions remain active | `ValidationMatchesHistory` |
 | Publish before WAL sync | `DurableBeforeVisible` |
+| Compact to the current epoch despite an older pin | `ValidationMatchesHistory` |
 
 Reachability probes `NoDisjointWitness`, `NoRestartCommitWitness`,
 `NoPruneWitness`, and `NoLivePruneWitness` deliberately assert that useful paths do not exist. To run one,
@@ -397,10 +399,11 @@ independent sum of resident key weights checks the tracked charge, including
 refund after pruning. Actual resident weight must not exceed charged weight,
 and charged weight must not exceed the budget.
 
-The final positive check explored **158,921 generated / 25,916 distinct states**,
-depth 10, with an empty queue. Three separate false-invariant probes reach
+The final positive check explored **260,965 generated / 38,564 distinct states**,
+depth 10, with an empty queue. Four separate false-invariant probes reach
 budget refusal, legacy commit at capacity and successful pressure reclamation
-(`NoRefusalWitness`, `NoLegacyAtCapacityWitness`, `NoPressureReclaimWitness`).
+(`NoRefusalWitness`, `NoLegacyAtCapacityWitness`, `NoPressureReclaimWitness`),
+and current-epoch baseline compaction with a tip pin (`NoTipCompactionWitness`).
 They demonstrate reachable paths; they are not liveness/fairness theorems.
 
 Four registered mutants must violate the named independent property:
@@ -421,9 +424,9 @@ scripts/check-storage-tla.sh --check-mutants
 
 For a reachability probe, copy the positive `.cfg`, append `INVARIANT` followed
 by the relevant witness name, and run TLC against the same module. Require the
-named invariant violation, not an arbitrary nonzero exit. All three probes and
-all four mutants were checked on the final model; the complete mutant manifest
-now checks 30 named violations.
+named invariant violation, not an arbitrary nonzero exit. All four probes and
+all four mutants were checked on the updated model; the complete mutant manifest
+now checks 35 named violations across all registered models.
 
 This model collapses serialized commit/WAL publication into one transition.
 It does not model failed fsync, byte-level replay, historic COW allocations,
@@ -432,7 +435,8 @@ preemption inside a commit. The older MVCC and group-admission models retain
 those separate boundaries where applicable; this is not their machine-checked
 composition. Production checked arithmetic and the inductive argument cover
 representable budgets. Finite weighted identities are not a proof of total
-process memory bounds. No runtime algorithm changes accompany this model.
+process memory bounds. The current-epoch compaction refinement below extends
+this model alongside the corresponding runtime change.
 
 ## Read-consumer conflict baseline
 
@@ -605,7 +609,7 @@ and precharges its input weight. Its successful branch is reachable at limit 4.
 
 The independent live-root sum checks exact accounting; other invariants check
 the limit, coverage of in-progress copying and unchanged retained reader weight.
-TLC completed with 148,273 generated / 19,976 distinct states, depth 21 and an
+TLC completed with 167,089 generated / 21,320 distinct states, depth 21 and an
 empty queue. The Bazel TLC action executed; its downstream success-wrapper test
 was cached. This is finite safety evidence, not a machine-checked Rust refinement
 or an allocator/RSS bound.
@@ -634,3 +638,83 @@ not model WAL/fsync, key-conflict completeness, fairness, per-handle/pin overhea
 internal allocator peaks or all concurrently constructed write sets. Composition
 with recovery and representative final-head latency/cleanup qualification
 remain acceptance work for #231/#232.
+
+
+## Current-epoch candidate compaction and pin registration
+
+Let C be the exclusively borrowed store's current commit epoch, and P the
+minimum epoch in its shared version-pin registry. Candidate preparation may
+replace prior conflict metadata by B = {Database -> C} (empty at C = 0) only
+when the registry is empty or P >= C. This is distinct from strict-watermark
+pruning: equality is safe for this replacement because every usable writer has
+E >= C. Every previous stamp is <= C, so both old and replacement validators
+accept its prior-history portion. Future commits install their ordinary precise
+write identities at epochs > C, preserving both soundness and completeness.
+If any source or descendant protects E < C, preparation keeps the precise index:
+a new Database barrier at C could falsely reject its disjoint writes.
+
+Reading the pin watermark and acting on it need not hold the registry mutex
+continuously. The Rust-to-model refinement relies on these lifetime facts:
+
+1. `reclaim_version_history` requires `&mut GraphStore`; commit preparation runs
+   under the same exclusive store access. A new snapshot of that store cannot
+   be constructed concurrently. On the concurrent facade, the sequencer supplies
+   that exclusion; Rust borrowing supplies it on the direct path.
+2. A different source can create descendants concurrently, but holds its own
+   registered pin throughout construction. `snapshot` registers the descendant
+   before returning it, at `min(parent pin epoch, source commit epoch)`. Local
+   source commits only advance its commit epoch, so this inherited floor cannot
+   become older than its already-registered ancestor's floor. Savepoint restore
+   retains that same floor rather than replacing it with a newer private epoch.
+3. Thus a registration after the watermark read cannot introduce an epoch below
+   that watermark. Dropping a pin can only increase the minimum. If the registry
+   was empty, no independent old source exists; exclusive store access prevents
+   a new canonical source before reclamation/preparation completes.
+
+The proof depends on registration-before-escape and inherited-floor ownership,
+not merely monotonic canonical epochs. A future unpinned source constructor or
+pin transfer with a registration gap would invalidate both the pruning and the
+compaction refinement, even if the abstract TLC invariants still pass.
+
+`stage_version_index` constructs B privately using the same history-budget
+lineage. It admits the resulting footprint and reserves the complete candidate
+payload while the previous root remains charged. No canonical index is replaced
+until WAL acceptance and canonical application. WAL rejection drops the candidate
+and refunds its lease. A failed admission may perform the existing safe strict
+watermark reclamation and retry once. With an older pin, pressure pruning can
+still recover stamps strictly below that pin; compaction does not replace it.
+
+The MVCC model adds `Compact` outside publication, guarded by all transaction
+and source pins being at the current tip. Since it preserves every usable
+validation decision, it abstracts private preparation followed by successful
+installation; a rejected preparation stutters. The budget model adds the same
+replacement and recomputes its charge. The retained-root model permits normal
+candidate roots smaller than their input (while still reserving their complete
+payload); shared partial pruning retains its stronger input-size reservation.
+These remain separate abstractions, not a composed machine-checked Rust proof.
+
+Updated positive TLC actions completed with empty queues:
+
+| Model | Generated / distinct states | Depth |
+| --- | --- | --- |
+| `HawDBMvccValidation` | 2,131,925 / 691,420 | 19 |
+| `HawDBVersionHistoryBudget` | 260,965 / 38,564 | 10 |
+| `HawDBRetainedVersionHistory` | 167,089 / 21,320 | 21 |
+
+All three Bazel TLC actions executed; their downstream success-wrapper tests
+were cached. All 35 registered mutants produced their required named violations.
+Thirteen separate witness checks reached the six MVCC paths (including
+`NoPinnedTipCompactionWitness` and `NoSourceTipCompactionWitness`), four budget
+paths and three retained-lease paths. These witnesses are expected violations
+of deliberately false reachability assertions, not safety failures.
+
+Memory and durable storage tests cover bounded sequential history, tip-pinned
+WAL refusal with an unchanged canonical root and refunded candidate, old-source
+writers created after intervening commits, a successful disjoint writer and a
+rejected overlapping writer, descendant protection after parent retirement,
+resumption after the final old pin drops, and exact reopen state. A tiny-cap
+fixture independently reaches pressure reclamation while an older pin blocks
+compaction. Removing the compaction pin guard causes the disjoint writer to fail
+with `TransactionConflict` (0 passed / 1 failed); the guard is restored before
+positive checks. Existing tombstone coverage also checks that a precise tip
+snapshot retains its old tombstone after canonical baseline replacement.

@@ -3227,6 +3227,253 @@ mod tests {
     use std::num::{NonZeroU64, NonZeroUsize};
 
     #[test]
+    fn current_epoch_version_baseline_bounds_history_and_preserves_older_sources() {
+        use crate::cow::CowPageWeight;
+        use crate::version::{VersionIndex, VersionKey, VersionStamp};
+        for durable in [false, true] {
+            let path = unique_test_dir("current_epoch_version_baseline");
+            let mut catalog = Catalog::default();
+            let mut store = if durable {
+                GraphStore::open(&path, &mut catalog).unwrap()
+            } else {
+                GraphStore::default()
+            };
+            store
+                .create_node(
+                    &mut catalog,
+                    "Memory",
+                    properties([("value", Value::Int(0))]),
+                )
+                .unwrap();
+            store.checkpoint(&catalog).unwrap();
+            let reserve = VersionIndex::default().estimated_bytes();
+            let weight = VersionKey::GraphNode(NodeId(0)).cow_page_bytes()
+                + std::mem::size_of::<VersionStamp>();
+            for id in 1..=64 {
+                let before = store.commit_epoch();
+                store
+                    .commit_mutations(
+                        &mut catalog,
+                        vec![GraphMutation::CreateNode {
+                            label: "Memory".into(),
+                            properties: properties([("value", Value::Int(0))]),
+                        }],
+                    )
+                    .unwrap();
+                assert_eq!(store.version_index.len(), 2);
+                assert_eq!(store.version_index.estimated_bytes(), reserve + weight);
+                assert_eq!(store.version_index.retained_history_bytes(), weight);
+                assert_eq!(
+                    store
+                        .version_index
+                        .stamp(&VersionKey::Database)
+                        .unwrap()
+                        .commit_epoch,
+                    before
+                );
+                assert_eq!(
+                    store
+                        .version_index
+                        .stamp(&VersionKey::GraphNode(NodeId(id)))
+                        .unwrap()
+                        .commit_epoch,
+                    before + 1
+                );
+            }
+            let update = |id, value| GraphMutation::SetNodeProperty {
+                label: "Memory".into(),
+                filter: Some(PropertyFilter::IdEq {
+                    value: Value::Int(id),
+                }),
+                property: "value".into(),
+                value: Value::Int(value),
+            };
+            if durable {
+                let before = store.snapshot(); // equality at the tip permits baseline preparation
+                let wal = fs::read(active_wal_path(&path)).unwrap();
+                store
+                    .durable
+                    .as_mut()
+                    .unwrap()
+                    .set_wal_available_space_override(0);
+                assert!(store
+                    .commit_mutations(&mut catalog, vec![update(0, 99)])
+                    .is_err());
+                assert_eq!(store.commit_epoch(), before.commit_epoch());
+                assert_eq!(
+                    store.version_index.estimated_bytes(),
+                    before.version_index.estimated_bytes()
+                );
+                assert_eq!(store.version_index.retained_history_bytes(), weight);
+                assert!(store
+                    .version_index
+                    .shares_storage_with(&before.version_index));
+                assert_eq!(
+                    store.version_index.stamp(&VersionKey::Database),
+                    before.version_index.stamp(&VersionKey::Database)
+                );
+                assert_eq!(fs::read(active_wal_path(&path)).unwrap(), wal);
+                store
+                    .durable
+                    .as_mut()
+                    .unwrap()
+                    .set_wal_available_space_override(u64::MAX);
+            }
+            let source = store.snapshot();
+            let source_epoch = source.commit_epoch();
+            store
+                .commit_mutations(&mut catalog, vec![update(1, 10)])
+                .unwrap();
+            store
+                .commit_mutations(&mut catalog, vec![update(2, 20)])
+                .unwrap();
+            // A retained source can create writers after intervening commits.
+            // The unchanged key must remain admissible, the changed key must not.
+            let mut disjoint = source.begin_mutation_transaction(&catalog);
+            let mut overlapping = source.begin_mutation_transaction(&catalog);
+            disjoint
+                .stage_mutation_with_limits(update(0, 30), MutationLimits::default())
+                .unwrap();
+            overlapping
+                .stage_mutation_with_limits(update(1, 99), MutationLimits::default())
+                .unwrap();
+            store
+                .commit_mutation_transaction_and_relational(
+                    &mut catalog,
+                    disjoint,
+                    RelationalTransaction::default(),
+                    MutationLimits::default(),
+                )
+                .unwrap();
+            assert_eq!(
+                store
+                    .version_index
+                    .stamp(&VersionKey::Database)
+                    .unwrap()
+                    .commit_epoch,
+                source_epoch
+            );
+            let epoch = store.commit_epoch();
+            let wal = durable.then(|| fs::read(active_wal_path(&path)).unwrap());
+            assert!(store
+                .commit_mutation_transaction_and_relational(
+                    &mut catalog,
+                    overlapping,
+                    RelationalTransaction::default(),
+                    MutationLimits::default()
+                )
+                .unwrap_err()
+                .is_retryable_transaction_conflict());
+            assert_eq!(store.commit_epoch(), epoch);
+            if let Some(wal) = wal {
+                assert_eq!(fs::read(active_wal_path(&path)).unwrap(), wal);
+            }
+            let descendant = source.snapshot();
+            drop(source);
+            store
+                .commit_mutations(&mut catalog, vec![update(2, 21)])
+                .unwrap();
+            assert_eq!(
+                store
+                    .version_index
+                    .stamp(&VersionKey::Database)
+                    .unwrap()
+                    .commit_epoch,
+                source_epoch
+            );
+            for id in 0..3 {
+                assert_eq!(
+                    descendant
+                        .node_owned(NodeId(id))
+                        .unwrap()
+                        .unwrap()
+                        .properties["value"],
+                    Value::Int(0)
+                );
+            }
+            drop(descendant);
+            let before = store.commit_epoch();
+            store
+                .commit_mutations(&mut catalog, vec![update(0, 31)])
+                .unwrap();
+            assert_eq!(store.version_index.len(), 2);
+            assert_eq!(store.version_index.retained_history_bytes(), weight);
+            assert_eq!(
+                store
+                    .version_index
+                    .stamp(&VersionKey::Database)
+                    .unwrap()
+                    .commit_epoch,
+                before
+            );
+            let epoch = store.commit_epoch();
+            if durable {
+                drop(store);
+                catalog = Catalog::default();
+                store = GraphStore::open(&path, &mut catalog).unwrap();
+            }
+            assert_eq!(store.commit_epoch(), epoch);
+            assert_eq!(store.node_count_for_label(None), 65);
+            for (id, value) in [(0, 31), (1, 10), (2, 21)] {
+                assert_eq!(
+                    store.node_owned(NodeId(id)).unwrap().unwrap().properties["value"],
+                    Value::Int(value)
+                );
+            }
+            drop(store);
+            if durable {
+                fs::remove_dir_all(path).unwrap();
+            }
+        }
+    }
+
+    #[test]
+    fn current_epoch_version_baseline_keeps_pinned_pressure_reclamation_available() {
+        use crate::cow::CowPageWeight;
+        use crate::version::{VersionIndex, VersionKey, VersionStamp};
+        let mut store = GraphStore::default();
+        let mut catalog = Catalog::default();
+        let reserve = VersionIndex::default().estimated_bytes();
+        let weight =
+            VersionKey::GraphNode(NodeId(0)).cow_page_bytes() + std::mem::size_of::<VersionStamp>();
+        store
+            .create_node(&mut catalog, "Memory", properties([]))
+            .unwrap();
+        store.version_index = VersionIndex::with_byte_limit(reserve + weight);
+        let insert = || GraphMutation::CreateNode {
+            label: "Memory".into(),
+            properties: properties([]),
+        };
+        store
+            .commit_mutations(&mut catalog, vec![insert()])
+            .unwrap();
+        store
+            .create_node(&mut catalog, "Memory", properties([]))
+            .unwrap();
+        let reader = store.snapshot();
+        // This direct commit leaves an obsolete narrow stamp below the pin,
+        // while advancing the tip so whole-index baseline preparation is unsafe.
+        store
+            .create_node(&mut catalog, "Memory", properties([]))
+            .unwrap();
+        assert_eq!(store.version_index.estimated_bytes(), reserve + weight);
+        store
+            .commit_mutations(&mut catalog, vec![insert()])
+            .unwrap();
+        assert_eq!(store.version_index.estimated_bytes(), reserve + weight);
+        assert_eq!(store.node_count_for_label(None), 5);
+        assert_eq!(reader.node_count_for_label(None), 3);
+        assert!(store
+            .version_index
+            .stamp(&VersionKey::GraphNode(NodeId(1)))
+            .is_none());
+        assert!(store
+            .version_index
+            .stamp(&VersionKey::GraphNode(NodeId(4)))
+            .is_some());
+    }
+
+    #[test]
     fn retained_history_budget_refunds_wal_refusal_and_recovers_after_snapshot_drop() {
         use crate::cow::CowPageWeight;
         use crate::version::{VersionIndex, VersionKey, VersionStamp};
@@ -3251,6 +3498,7 @@ mod tests {
                 label: "Memory".into(),
                 properties: properties([]),
             };
+            let protection = store.snapshot();
             store
                 .commit_mutations(&mut catalog, vec![insert()])
                 .unwrap();
@@ -3299,6 +3547,7 @@ mod tests {
                 assert_eq!(fs::read(active_wal_path(&path)).unwrap(), wal);
             }
             drop(old);
+            drop(protection);
             store.checkpoint(&catalog).unwrap();
             assert_eq!(store.version_index.retained_history_bytes(), 0);
             store
@@ -3380,8 +3629,8 @@ mod tests {
                 .commit_mutations(&mut catalog, vec![insert()])
                 .unwrap();
             assert_eq!(store.node_count_for_label(None), 5);
-            // Without an old external pin, budget pressure itself can safely
-            // retire history; this does not require a checkpoint per commit.
+            // Without an old external pin, the prepared current-epoch baseline
+            // bounds history without requiring a checkpoint per commit.
             for _ in 0..8 {
                 store
                     .commit_mutations(&mut catalog, vec![insert()])
@@ -3425,11 +3674,13 @@ mod tests {
                     )
                     .unwrap();
             };
+            let protection = store.snapshot();
             insert_batch(&mut store, &mut catalog);
             insert_batch(&mut store, &mut catalog);
             let older = store.snapshot();
             insert_batch(&mut store, &mut catalog);
             let newer = store.snapshot();
+            drop(protection);
             store.checkpoint(&catalog).unwrap();
             assert_eq!(store.version_index.len(), 16);
             assert_eq!(
@@ -3701,7 +3952,6 @@ mod tests {
             let equal_epoch = store.snapshot();
             store.checkpoint(&catalog).unwrap();
             assert_eq!(store.version_index.stamp(&key), Some(deleted));
-            drop(equal_epoch);
             let next_id = NodeId(store.next_node_id);
             store
                 .commit_mutations(
@@ -3718,7 +3968,11 @@ mod tests {
             store.checkpoint(&catalog).unwrap();
             assert_eq!(store.version_index.stamp(&key), None);
             assert_eq!(store.version_index.stamp(&live_key), Some(live));
-            assert_eq!(newer.version_index.stamp(&key), Some(deleted));
+            // The next commit can compact a tip-pinned baseline, while the
+            // precise source captured before that commit remains unchanged.
+            assert_eq!(newer.version_index.stamp(&key), None);
+            assert_eq!(equal_epoch.version_index.stamp(&key), Some(deleted));
+            drop(equal_epoch);
             drop(newer);
             drop(store);
             if durable {

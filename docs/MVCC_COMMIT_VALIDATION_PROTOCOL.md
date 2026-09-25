@@ -134,6 +134,24 @@ and checkpoint before retrying. There is no automatic transaction cancellation.
 The 64 MiB default is a fixed admission policy, not a measured global memory
 requirement or an allocator guarantee.
 
+## Current-epoch candidate baseline
+
+Before preparing the next index, the store checks its shared snapshot pins. If
+none exists or the oldest pin is at least the current commit epoch C, it stages
+from a constant Database barrier at C rather than copying earlier narrow-key
+history. Every usable writer has E >= C, so previous stamps cannot affect its
+validation. New writes still receive their exact identities and next epoch.
+Any older source, workspace or descendant disables this replacement and keeps
+precise conflict history. The candidate still passes both payload admissions;
+WAL rejection refunds it without publishing the baseline.
+
+Exclusive store access and registration-before-escape ensure no older pin can
+appear between reading the minimum and using it. Descendants inherit an
+already-live ancestor floor, including across private commits and savepoints.
+The [source refinement and updated finite models](tla/MVCC_VALIDATION_PROOF.md#current-epoch-candidate-compaction-and-pin-registration)
+state these assumptions explicitly. Strict-watermark pressure/checkpoint
+reclamation remains available when an older pin prevents baseline replacement.
+
 ## Shared retained-history admission
 
 Each open GraphStore and its snapshot/workspace descendants share a separate
