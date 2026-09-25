@@ -117,7 +117,8 @@ before WAL/data publication. It does not drop still-required stamps, invalidate
 old readers or substitute a broad conflict identity.
 
 The reservation matters because legacy direct commits publish their Database
-barrier after WAL. They can always use that reserved identity without a new
+barrier after WAL. That stamp is an inline fixed field; all other stamps remain
+in the COW map, so updating the barrier does not detach shared index pages. They can always use that reserved identity without a new
 post-WAL resource failure. Successful pruning recomputes the current estimate;
 cloned indexes retain their own consistent counter and immutable pages.
 

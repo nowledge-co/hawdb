@@ -293,6 +293,9 @@ pub struct VersionConflict {
 /// Mutable version state shared by a live database handle.
 #[derive(Debug, Clone)]
 pub struct VersionIndex {
+    // Database publication occurs after WAL on legacy paths. Keep this fixed
+    // identity inline so publishing it never detaches a shared COW page.
+    database_barrier: Option<VersionStamp>,
     stamps: CowSegmentedMap<VersionKey, VersionStamp>,
     estimated_bytes: usize,
     max_estimated_bytes: usize,
@@ -311,6 +314,7 @@ impl VersionIndex {
         let reserved = version_stamp_bytes(&VersionKey::Database);
         assert!(max_estimated_bytes >= reserved);
         Self {
+            database_barrier: None,
             stamps: CowSegmentedMap::default(),
             estimated_bytes: reserved,
             max_estimated_bytes,
@@ -348,7 +352,11 @@ impl VersionIndex {
     }
 
     fn insert_stamp(&mut self, key: VersionKey, stamp: VersionStamp) {
-        if key != VersionKey::Database && !self.stamps.contains_key(&key) {
+        if key == VersionKey::Database {
+            self.database_barrier = Some(stamp);
+            return;
+        }
+        if !self.stamps.contains_key(&key) {
             self.estimated_bytes = self
                 .estimated_bytes
                 .saturating_add(version_stamp_bytes(&key));
@@ -357,14 +365,10 @@ impl VersionIndex {
     }
 
     fn recount_bytes(&mut self) {
-        self.estimated_bytes = self
-            .stamps
-            .iter()
-            .filter(|(key, _)| **key != VersionKey::Database)
-            .fold(
-                version_stamp_bytes(&VersionKey::Database),
-                |bytes, (key, _)| bytes.saturating_add(version_stamp_bytes(key)),
-            );
+        self.estimated_bytes = self.stamps.iter().fold(
+            version_stamp_bytes(&VersionKey::Database),
+            |bytes, (key, _)| bytes.saturating_add(version_stamp_bytes(key)),
+        );
     }
 
     /// Creates a conservative baseline for all live identities present in a
@@ -373,7 +377,7 @@ impl VersionIndex {
         keys: impl IntoIterator<Item = VersionKey>,
         commit_epoch: u64,
     ) -> Self {
-        let stamps = keys
+        let mut stamps = keys
             .into_iter()
             .map(|key| {
                 (
@@ -386,6 +390,7 @@ impl VersionIndex {
             })
             .collect::<BTreeMap<_, _>>();
         let mut index = Self {
+            database_barrier: stamps.remove(&VersionKey::Database),
             stamps: stamps.into(),
             ..Self::default()
         };
@@ -394,15 +399,19 @@ impl VersionIndex {
     }
 
     pub fn len(&self) -> usize {
-        self.stamps.len()
+        self.stamps.len() + usize::from(self.database_barrier.is_some())
     }
 
     pub fn is_empty(&self) -> bool {
-        self.stamps.is_empty()
+        self.stamps.is_empty() && self.database_barrier.is_none()
     }
 
     pub fn stamp(&self, key: &VersionKey) -> Option<VersionStamp> {
-        self.stamps.get(key).copied()
+        if *key == VersionKey::Database {
+            self.database_barrier
+        } else {
+            self.stamps.get(key).copied()
+        }
     }
 
     /// Returns the first write-write conflict under first-committer-wins.
@@ -455,6 +464,12 @@ impl VersionIndex {
     /// Removes tombstones only after every pinned reader is newer than the
     /// deletion that created them. Live stamps are retained indefinitely.
     pub fn prune_tombstones_before(&mut self, oldest_reader_epoch: u64) {
+        if self.database_barrier.is_some_and(|stamp| {
+            stamp.disposition == VersionDisposition::Tombstone
+                && stamp.commit_epoch < oldest_reader_epoch
+        }) {
+            self.database_barrier = None;
+        }
         // A retained snapshot shares these pages. Avoid detaching all pages
         // when the watermark has not made any tombstone reclaimable.
         if !self.stamps.iter().any(|(_, stamp)| {
@@ -474,6 +489,12 @@ impl VersionIndex {
     /// Absent stamps compare as zero; a removed stamp was already <= every
     /// protected read epoch. This never removes the canonical record itself.
     pub(crate) fn prune_before(&mut self, oldest_reader_epoch: u64) {
+        if self
+            .database_barrier
+            .is_some_and(|stamp| stamp.commit_epoch < oldest_reader_epoch)
+        {
+            self.database_barrier = None;
+        }
         if !self
             .stamps
             .iter()
@@ -486,6 +507,7 @@ impl VersionIndex {
         self.recount_bytes();
     }
 
+    /// Tests sharing of non-Database COW pages, not equality of inline barriers.
     #[doc(hidden)]
     pub fn shares_storage_with(&self, other: &Self) -> bool {
         self.stamps.shares_storage_with(&other.stamps)
@@ -504,6 +526,104 @@ mod tests {
         DEFAULT_MAX_VERSION_WRITE_SET_ENTRIES,
     };
     use crate::NodeId;
+
+    #[test]
+    fn inline_database_barrier_preserves_shared_pages_and_snapshot_values() {
+        let key = VersionKey::GraphNode(NodeId(1));
+        let mut index = VersionIndex::from_live_keys_at_epoch(
+            [VersionKey::Database, key.clone(), VersionKey::Database],
+            1,
+        );
+        assert_eq!(index.len(), 2);
+        assert_eq!(index.stamps.len(), 1);
+        let old = index.clone();
+        let bytes = index.estimated_bytes();
+        index.apply_database_barrier(2);
+        assert!(index.shares_storage_with(&old));
+        assert_eq!(index.estimated_bytes(), bytes);
+        assert_eq!(index.stamp(&VersionKey::Database).unwrap().commit_epoch, 2);
+        assert_eq!(old.stamp(&VersionKey::Database).unwrap().commit_epoch, 1);
+        let mut writes = VersionWriteSet::default();
+        writes.record_tombstone(VersionKey::Database).unwrap();
+        index.apply(&writes, 3);
+        assert!(index.shares_storage_with(&old));
+        index.prune_tombstones_before(3);
+        assert!(index.stamp(&VersionKey::Database).is_some());
+        index.prune_tombstones_before(4);
+        assert!(index.stamp(&VersionKey::Database).is_none());
+        assert!(index.shares_storage_with(&old));
+        assert_eq!(index.estimated_bytes(), bytes);
+        let read = old.read_baseline(1);
+        assert_eq!(read.len(), 1);
+        assert!(read.stamps.is_empty());
+        writes.record_live(key).unwrap();
+        index.apply(&writes, 4);
+        assert!(!index.shares_storage_with(&old));
+    }
+
+    #[test]
+    fn inline_database_barrier_matches_map_oracle_across_operation_sequences() {
+        use super::VersionStamp;
+        use crate::CowPageWeight;
+        let keys = [
+            VersionKey::Database,
+            VersionKey::Schema,
+            VersionKey::GraphNode(NodeId(1)),
+        ];
+        for sequence in 0usize..8usize.pow(4) {
+            let mut index = VersionIndex::default();
+            let mut expected = std::collections::BTreeMap::new();
+            let mut code = sequence;
+            for epoch in 1..=4 {
+                let snapshot = index.clone();
+                let before = expected.clone();
+                let op = code % 8;
+                code /= 8;
+                if op < 6 {
+                    let key = keys[op / 2].clone();
+                    let disposition = if op % 2 == 0 {
+                        VersionDisposition::Live
+                    } else {
+                        VersionDisposition::Tombstone
+                    };
+                    let mut writes = VersionWriteSet::default();
+                    writes.record(key.clone(), disposition).unwrap();
+                    index.apply(&writes, epoch);
+                    expected.insert(
+                        key,
+                        VersionStamp {
+                            commit_epoch: epoch,
+                            disposition,
+                        },
+                    );
+                } else if op == 6 {
+                    index.prune_tombstones_before(epoch);
+                    expected.retain(|_, stamp: &mut VersionStamp| {
+                        stamp.disposition != VersionDisposition::Tombstone
+                            || stamp.commit_epoch >= epoch
+                    });
+                } else {
+                    index.prune_before(epoch);
+                    expected.retain(|_, stamp: &mut VersionStamp| stamp.commit_epoch >= epoch);
+                }
+                assert_eq!(index.len(), expected.len());
+                assert_eq!(index.is_empty(), expected.is_empty());
+                for key in &keys {
+                    assert_eq!(index.stamp(key), expected.get(key).copied());
+                    assert_eq!(snapshot.stamp(key), before.get(key).copied());
+                }
+                let resident: usize = expected
+                    .keys()
+                    .filter(|key| **key != VersionKey::Database)
+                    .map(|key| key.cow_page_bytes() + std::mem::size_of::<VersionStamp>())
+                    .sum();
+                assert_eq!(
+                    index.estimated_bytes(),
+                    super::version_stamp_bytes(&VersionKey::Database) + resident
+                );
+            }
+        }
+    }
 
     #[test]
     fn version_history_budget_tracks_replacement_pruning_and_reserved_barrier() {

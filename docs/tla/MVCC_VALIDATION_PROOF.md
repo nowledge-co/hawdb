@@ -486,3 +486,55 @@ is a source-level argument, not a new composed TLA+ refinement. Each read baseli
 retains constant conflict metadata; data roots, all read-pin counts, writable
 workspaces/savepoints and aggregate historical allocations remain outside a
 global memory bound. No workload latency claim follows from this optimization.
+
+## Inline Database barrier representation
+
+The Database identity is now an `Option<VersionStamp>` inside VersionIndex;
+all other identities remain in its CowSegmentedMap. This removes a shared-page
+detachment/allocation from the legacy `apply_database_barrier` operation after
+WAL. Read-consumer baselines likewise need no Database entry in a COW page.
+The per-index charge still permanently reserves the same Database weight, so
+this representation change does not weaken the established budget policy.
+
+Define the abstraction A(M,d) = M union {Database -> d} when d is present, and
+A(M,None) = M. The representation invariant is Database not in dom(M).
+Observational equivalence to the previous stamp map follows by induction:
+
+- Empty construction has an empty map and absent inline stamp. Recovery-key
+  construction deduplicates its input, removes Database into the fixed field,
+  and puts only remaining entries in M. Thus A equals the original logical map.
+- Lookup dispatches Database to d and all other identities to M. Length is
+  |M| plus 1 iff d is present; emptiness requires both parts to be empty.
+- Insertion/replacement of Database changes only d. Other insertions change
+  only M. Both therefore perform the same update on A. Last-write disposition
+  and epoch semantics, including low-level Database tombstones, are preserved.
+- Clone copies d and shares M's immutable root. A later barrier update cannot
+  mutate either the clone's fixed field or its shared pages.
+- Both pruning methods apply their original strict-epoch/disposition predicate
+  separately to d and M. Their abstraction equals filtering the original map.
+  Dropping d does not refund its permanent reservation; recount sums only M.
+- The charged estimate remains r + sum(non-Database weights). Admission, conflict
+  validation and all existing watermark arguments therefore see the same
+  logical identities/epochs and the same conservative accounting.
+
+The successful Database insertion branch is a fixed-field assignment followed
+by return. It performs no COW map insertion, page split or historical-key clone.
+This statement is about conflict-barrier publication only, not all operations
+in a legacy commit or allocator behavior elsewhere in the store.
+
+Tests cover recovery construction with duplicate Database keys, independent
+snapshot barrier epochs, live/tombstone replacement, inclusive retention at the
+prune boundary, no COW detachment for barrier-only publication/pruning, and
+ordinary detachment for narrow-key mutation. All 8^4 = 4,096 sequences of writes
+and the two prune modes are compared with an independent BTreeMap reference,
+including retained snapshots and recomputed charge after every operation.
+Restoring COW insertion in the legacy barrier path fails the page-sharing
+regression; the inline implementation is restored before final validation.
+
+The logical stamp maps in `HawDBMvccValidation` and
+`HawDBVersionHistoryBudget` are unchanged abstractions of A. This section gives
+the source-level representation proof, not a new machine-checked refinement or
+new TLC run. Historical narrow-key roots, transient COW allocations and aggregate
+writer-workspace memory remain open. The change makes future pre-WAL history
+admission possible without introducing a resource failure in the legacy
+post-WAL barrier update; it does not itself finish that aggregate admission.
