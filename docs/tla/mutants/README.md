@@ -42,3 +42,6 @@ versions, stale selector publication, publication before artifact durability,
 pinned closure reclamation and orphaned targets after compaction. Two false
 invariants witness repeated replacement and compaction reachability. See the
 [search mutation proof boundary](../SEARCH_MUTATION_PUBLICATION_PROOF.md).
+
+The constraint-preserving update controls reject omitting unique or FK columns
+from eligibility; see the [projection proof](../CONSTRAINT_PRESERVING_UPDATE_MVCC_PROOF.md).
