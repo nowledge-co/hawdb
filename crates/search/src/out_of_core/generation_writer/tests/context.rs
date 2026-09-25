@@ -416,6 +416,13 @@ fn governed_chinese_build_preserves_the_complete_artifact_bytes_and_reopen() {
     fs::remove_dir_all(governed_root).unwrap();
 }
 
+// A denied cleanup pass needs a memory gate sized between the commit tail's
+// working set and the pass's retained scan estimate. Only the Unix estimate
+// (one MiB of glibc `DIR` buffer) leaves room between them; Windows charges
+// fixed find data, where the same margin admits the pass. The deferred-pass
+// contract is covered there by
+// `cancellation_after_commit_returns_the_published_generation_and_cleanup_retry`.
+#[cfg(unix)]
 #[test]
 fn deferred_old_generation_cleanup_does_not_fail_a_committed_build() {
     let root = test_dir("context_deferred_cleanup");
@@ -434,7 +441,8 @@ fn deferred_old_generation_cleanup_does_not_fail_a_committed_build() {
     let memory = writer.memory.clone();
     writer.push(document(1)).unwrap();
     // Memory pressure arrives after artifact construction, immediately before
-    // optional cleanup admission. Publication retains a bounded working margin.
+    // optional cleanup admission. Publication retains a bounded working margin
+    // below the retained scan estimate, so the pass cannot be admitted.
     let held = std::rc::Rc::new(std::cell::RefCell::new(None));
     let capture = held.clone();
     let _gate = crate::generation_cleanup::once::evidence::at(
