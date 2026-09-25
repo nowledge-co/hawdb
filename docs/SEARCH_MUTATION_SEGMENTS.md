@@ -2,10 +2,12 @@
 
 ## Status
 
-Proposed implementation contract for issue #291. This document covers the
-remaining delete and replacement path after append-only publication and bounded
-leveled compaction. It is intentionally specific about the persistent and
-query invariants before those paths change.
+Implementation contract for the remaining work in issue #291 after append-only
+publication and bounded leveled compaction. Mutation-run encoding and integrity
+inspection exist, but production writers do not emit runs. Public readers reject
+nonempty mutation closures until shared serving visibility and retracted
+statistics are implemented. Cleanup can validate and retain those artifacts
+without exposing a query handle.
 
 ## Goal
 
@@ -136,14 +138,19 @@ their pins are released.
 
 ## TLA+ verification boundary
 
-The TLA+ model is deliberately deferred to delivery 2, when mutation runs first
-become persistent manifest artifacts. That delivery must add a model and
-registered configuration before it can proceed to delivery 3. The model must
-cover target binding, stale preparation rejection, publish-last recovery, and
-reader pins retaining a complete selected closure; its mutation and compaction
-actions must also prove that an active target cannot be orphaned. Mutation runs
-must not become selectable or serve requests before that model and its configured
-checks pass.
+[`HawDBSearchMutationPublication`](tla/HawDBSearchMutationPublication.tla) and
+its [proof boundary](tla/SEARCH_MUTATION_PUBLICATION_PROOF.md) now specify the
+publication protocol for a finite repeated-replacement/delete/compaction
+workload. Registered checks cover target binding, stale preparation rejection,
+publish-last durability, pinned closures and orphan-free complete compaction;
+negative controls verify those checks detect their intended failures.
+
+This is a bounded protocol model, not a proof of the future Rust writer, arbitrary
+histories, exact lexical retractions or all serving paths. Extend its refinement
+mapping and tests with subsequent deliveries. Mutation runs must not become
+selectable for query serving merely because artifact integrity or these model
+checks pass. Shared visibility, statistics and all affected serving paths must
+also be complete before removing the reader's capability guard.
 
 ## Compaction
 
