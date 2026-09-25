@@ -566,3 +566,264 @@ fn relational_mvcc_primary_key_predicates_preserve_replay_and_absent_intents() {
         }
     }
 }
+
+#[test]
+fn relational_mvcc_constraint_preserving_updates_keep_disjoint_rows_and_barriers() {
+    use hawdb_storage::config::RelationalIndexMode;
+
+    for (mode, indexes) in [
+        (
+            crate::StorageResidencyMode::Materialized,
+            RelationalIndexMode::Materialized,
+        ),
+        (
+            crate::StorageResidencyMode::OutOfCore,
+            RelationalIndexMode::Materialized,
+        ),
+        (
+            crate::StorageResidencyMode::OutOfCore,
+            RelationalIndexMode::Authoritative,
+        ),
+    ] {
+        // Disjoint, same-key, mixed insert/update, then each constrained column
+        // family with its broad writer first and last.
+        for scenario in 0..11 {
+            let path = super::super::unique_test_dir("relational_mvcc_preserved_constraints");
+            let config = crate::DatabaseConfig {
+                storage_residency_mode: mode,
+                relational_index_mode: indexes,
+                ..crate::DatabaseConfig::default()
+            };
+            let mut seed_config = config.clone();
+            if indexes == RelationalIndexMode::Authoritative {
+                seed_config.relational_index_mode = RelationalIndexMode::Shadow;
+            }
+            let mut database = Database::open_with_config(&path, seed_config).unwrap();
+            database.query_sql("CREATE TABLE documents (id BIGINT PRIMARY KEY, owner TEXT NOT NULL UNIQUE, body BIGINT NOT NULL)").unwrap();
+            database.query_sql("CREATE TABLE chunks (id BIGINT PRIMARY KEY, document BIGINT NOT NULL REFERENCES documents(id), ordinal BIGINT NOT NULL, token TEXT NOT NULL, body BIGINT NOT NULL, UNIQUE (document, ordinal))").unwrap();
+            database
+                .query_sql("CREATE UNIQUE INDEX chunks_token ON chunks (token)")
+                .unwrap();
+            database.query_sql("CREATE TABLE aliases (id BIGINT PRIMARY KEY, owner TEXT NOT NULL REFERENCES documents(owner))").unwrap();
+            database.query_sql("INSERT INTO documents (id, owner, body) VALUES (0, 'seed', 0), (1, 'one', 0), (2, 'two', 0)").unwrap();
+            database.query_sql("INSERT INTO chunks (id, document, ordinal, token, body) VALUES (1, 0, 1, 'one', 0), (2, 0, 2, 'two', 0)").unwrap();
+            database
+                .query_sql("INSERT INTO aliases (id, owner) VALUES (0, 'seed')")
+                .unwrap();
+            database.checkpoint().unwrap();
+            drop(database);
+            let database = Database::open_with_config(&path, config.clone()).unwrap();
+            assert_eq!(
+                database
+                    .store
+                    .relational_state()
+                    .canonical_row_metadata_only(),
+                indexes == RelationalIndexMode::Authoritative
+            );
+            let db = database.into_concurrent();
+            let old = db.begin_read_transaction().unwrap();
+            let old_documents = old
+                .query_sql("SELECT * FROM documents ORDER BY id")
+                .unwrap()
+                .rows;
+            let old_chunks = old
+                .query_sql("SELECT * FROM chunks ORDER BY id")
+                .unwrap()
+                .rows;
+            let epoch = db.commit_epoch().unwrap();
+            let mut first = db
+                .begin_transaction(ConcurrentTransactionOptions::optimistic())
+                .unwrap();
+            let mut second = db
+                .begin_transaction(ConcurrentTransactionOptions::optimistic())
+                .unwrap();
+            if scenario < 3 {
+                for (transaction, writer) in [(&mut first, 1), (&mut second, 2)] {
+                    if scenario == 2 && writer == 1 {
+                        transaction
+                            .query_sql(
+                                "INSERT INTO documents (id, owner, body) VALUES (3, 'three', 0)",
+                            )
+                            .unwrap();
+                    }
+                    transaction
+                        .query_sql_with_params(
+                            "UPDATE documents SET body = body + 10 WHERE id = $1",
+                            &[Value::Int(writer)],
+                        )
+                        .unwrap();
+                    transaction
+                        .query_sql_with_params(
+                            "UPDATE chunks SET body = body + 20 WHERE id = $1",
+                            &[Value::Int(if scenario == 1 { 1 } else { writer })],
+                        )
+                        .unwrap();
+                    if scenario == 2 && writer == 2 {
+                        transaction
+                            .query_sql(
+                                "INSERT INTO documents (id, owner, body) VALUES (4, 'four', 0)",
+                            )
+                            .unwrap();
+                    }
+                }
+            } else {
+                let broad = match (scenario - 3) / 2 {
+                    0 => "UPDATE documents SET owner = 'changed' WHERE id = 1",
+                    1 => "UPDATE chunks SET ordinal = 9 WHERE id = 1",
+                    2 => "UPDATE chunks SET token = 'changed' WHERE id = 1",
+                    _ => "UPDATE chunks SET document = 1 WHERE id = 1",
+                };
+                let narrow = "UPDATE chunks SET body = 20 WHERE id = 2";
+                let safe = if (scenario - 3) / 2 == 0 {
+                    "UPDATE documents SET body = 30 WHERE id = 1"
+                } else {
+                    "UPDATE chunks SET body = 30 WHERE id = 1"
+                };
+                // A safe first statement must not hide a later constraint
+                // assignment; reversing the order must not restore eligibility.
+                if scenario % 2 == 1 {
+                    first.query_sql(safe).unwrap();
+                    first.query_sql(broad).unwrap();
+                    second.query_sql(narrow).unwrap();
+                } else {
+                    first.query_sql(narrow).unwrap();
+                    second.query_sql(broad).unwrap();
+                    second.query_sql(safe).unwrap();
+                }
+            }
+            first.commit().unwrap();
+            db.checkpoint().unwrap();
+            let before_documents = db
+                .query_sql("SELECT * FROM documents ORDER BY id")
+                .unwrap()
+                .rows;
+            let before_chunks = db
+                .query_sql("SELECT * FROM chunks ORDER BY id")
+                .unwrap()
+                .rows;
+            let wal = super::super::active_wal_path(&path);
+            let before_wal = std::fs::read(&wal).unwrap();
+            let success = scenario == 0 || scenario == 2;
+            if success {
+                second.commit().unwrap();
+            } else {
+                let error = second.commit().unwrap_err();
+                let expected_key = if scenario == 1 {
+                    "relational_row"
+                } else {
+                    "database"
+                };
+                assert!(
+                    matches!(&error, HawDBError::TransactionConflict { key, .. } if key == expected_key),
+                    "scenario {scenario}: {error}"
+                );
+                assert!(error.is_retryable_transaction_conflict());
+                assert_eq!(std::fs::read(&wal).unwrap(), before_wal);
+                assert_eq!(
+                    db.query_sql("SELECT * FROM documents ORDER BY id")
+                        .unwrap()
+                        .rows,
+                    before_documents
+                );
+                assert_eq!(
+                    db.query_sql("SELECT * FROM chunks ORDER BY id")
+                        .unwrap()
+                        .rows,
+                    before_chunks
+                );
+            }
+            let expected_epoch = epoch + if success { 2 } else { 1 };
+            assert_eq!(db.commit_epoch().unwrap(), expected_epoch);
+            assert_eq!(
+                old.query_sql("SELECT * FROM documents ORDER BY id")
+                    .unwrap()
+                    .rows,
+                old_documents
+            );
+            assert_eq!(
+                old.query_sql("SELECT * FROM chunks ORDER BY id")
+                    .unwrap()
+                    .rows,
+                old_chunks
+            );
+            let documents = db
+                .query_sql("SELECT * FROM documents ORDER BY id")
+                .unwrap()
+                .rows;
+            let chunks = db
+                .query_sql("SELECT * FROM chunks ORDER BY id")
+                .unwrap()
+                .rows;
+            if scenario < 3 {
+                assert_eq!(documents.len(), if scenario == 2 { 5 } else { 3 });
+                assert_eq!(documents[1]["body"], Value::Int(10));
+                assert_eq!(
+                    documents[2]["body"],
+                    Value::Int(if success { 10 } else { 0 })
+                );
+                assert_eq!(chunks[0]["body"], Value::Int(20));
+                assert_eq!(chunks[1]["body"], Value::Int(if success { 20 } else { 0 }));
+            }
+            drop(old);
+            drop(db);
+            let mut reopened = Database::open_with_config(&path, config).unwrap();
+            assert_eq!(reopened.commit_epoch(), expected_epoch);
+            assert_eq!(
+                reopened
+                    .query_sql("SELECT * FROM documents ORDER BY id")
+                    .unwrap()
+                    .rows,
+                documents
+            );
+            assert_eq!(
+                reopened
+                    .query_sql("SELECT * FROM chunks ORDER BY id")
+                    .unwrap()
+                    .rows,
+                chunks
+            );
+            assert_eq!(
+                reopened
+                    .query_sql("SELECT owner FROM aliases")
+                    .unwrap()
+                    .rows[0]["owner"],
+                Value::String("seed".into())
+            );
+            let previous_body = chunks[1]["body"].clone();
+            let reopened = reopened.into_concurrent();
+            let mut winner = reopened
+                .begin_transaction(ConcurrentTransactionOptions::optimistic())
+                .unwrap();
+            let mut loser = reopened
+                .begin_transaction(ConcurrentTransactionOptions::optimistic())
+                .unwrap();
+            winner
+                .query_sql("UPDATE chunks SET body = body + 1 WHERE id = 2")
+                .unwrap();
+            loser
+                .query_sql("UPDATE chunks SET body = body + 2 WHERE id = 2")
+                .unwrap();
+            winner.commit().unwrap();
+            let wal_before = std::fs::read(&wal).unwrap();
+            let error = loser.commit().unwrap_err();
+            assert!(
+                matches!(&error, HawDBError::TransactionConflict { key, .. } if key == "relational_row"),
+                "{error}"
+            );
+            assert!(error.is_retryable_transaction_conflict());
+            assert_eq!(std::fs::read(&wal).unwrap(), wal_before);
+            let Value::Int(previous_body) = previous_body else {
+                panic!("BIGINT body")
+            };
+            assert_eq!(
+                reopened
+                    .query_sql("SELECT body FROM chunks WHERE id = 2")
+                    .unwrap()
+                    .rows[0]["body"],
+                Value::Int(previous_body + 1)
+            );
+            drop(reopened);
+            std::fs::remove_dir_all(path).unwrap();
+        }
+    }
+}
