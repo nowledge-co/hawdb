@@ -54,16 +54,18 @@ validation.
 | Prepared strict-append rows, including materialized generated-order rows | `AppendTable(table)` live stamp for every written table |
 | Prepared strict-append table creation | `Schema` barrier |
 | Qualified explicit relational insert/replacement or primary-key deletion | `RelationalRow(table, primary_key)`, live or tombstone; every intent is retained, including net-zero effects |
-| Relational predicate/UPSERT/DDL, unique/FK-related tables, opaque relational WAL/snapshot, opaque append WAL, graph projection, initial-import marker | `Database` barrier |
+| Pure relational Error-mode insert with unique/FK constraints or incoming references | `RelationalRow` plus each non-NULL `RelationalIndex` unique identity; shared parent reads are not write identities |
+| Relational predicate/UPSERT/DDL, destructive unique/FK-related writes, opaque relational WAL/snapshot, opaque append WAL, graph projection, initial-import marker | `Database` barrier |
 | Nested canonical batch | Recursively collect its operations |
 | Legacy direct graph/catalog/import commit | `Database` barrier at the completed commit epoch |
 
-`RelationalIndex` and `ForeignKey` remain reserved identities.
-`RelationalRow` is now emitted for explicit inserts/replacements and primary-key
-deletes on tables without non-primary uniqueness or incoming/outgoing foreign
-keys. Predicate/UPSERT and unsupported shapes remain broad. The
-[relational intent proof](tla/RELATIONAL_MVCC_PROOF.md) explains why net-change
-capture cannot replace intent collection and records the eligibility boundary.
+`RelationalIndex` now identifies the unique values of qualified pure inserts;
+`ForeignKey` remains reserved. Unconstrained explicit replacements and primary-key
+deletes keep row identities. Constrained/referenced tables qualify only when all
+of their operations are pure Error-mode inserts; destructive operations keep
+both Database-barrier directions. The [relational intent proof](tla/RELATIONAL_MVCC_PROOF.md)
+and [constrained-insert refinement](tla/CONSTRAINED_INSERT_MVCC_PROOF.md) explain
+NULL handling, shared-parent reads, eligibility and the complete intent union.
 Typed strict-append staging now emits `AppendTable` from the same prepared
 transaction that is encoded into WAL. Generated sequence counters are table-wide,
 so different partitions in one table still conflict. The opaque WAL collector

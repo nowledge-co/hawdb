@@ -1,10 +1,13 @@
 # Explicit relational write intents and MVCC
 
-The supported narrow path consists of Insert (Error or Replace) and
-DeleteByPrimaryKey over tables without non-primary unique constraints,
-declared unique indexes, outgoing foreign keys, or incoming foreign-key edges.
-Non-unique secondary indexes are allowed. Predicate writes, UPSERT, DDL,
-unknown/malformed input shapes and opaque relational WAL keep a Database barrier.
+The original unconstrained narrow path consists of Insert (Error or Replace)
+and DeleteByPrimaryKey over tables without non-primary uniqueness or
+incoming/outgoing foreign-key edges. Non-unique secondary indexes are allowed.
+Pure Error-mode inserts now additionally qualify on constrained/referenced
+tables: they record primary identities plus non-NULL unique-index identities.
+See [the constrained-insert refinement](CONSTRAINED_INSERT_MVCC_PROOF.md) for
+shared-parent reads and the destructive-write barrier requirement. Predicate
+writes, UPSERT, DDL, malformed shapes and opaque relational WAL remain broad.
 This does not claim general per-key SQL UPDATE/DELETE or serializable isolation.
 
 ## Why net changes are not write intents
@@ -16,7 +19,7 @@ key still carry explicit write intent. Likewise, deriving keys from a predicate
 replayed at commit can change the set of affected rows relative to the private
 snapshot. No predicate path is narrowed by this change.
 
-For an admitted table t and its primary-key projection P, define:
+For an admitted **unconstrained** table t and its primary-key projection P, define:
 
 - F(Insert(t, rows)) = {(t, P(row)) : row in rows};
 - F(DeleteByPrimaryKey(t, keys)) = {(t, k) : k in keys};
@@ -55,10 +58,10 @@ The existing relational row/payload admission runs before footprint construction
 One borrowed-name map deduplicates touched table metadata; incoming references
 are checked in one catalog pass rather than once per table. With T touched
 tables, S schemas and F foreign-key edges, dependency checking takes
-O(S + F log(T + 1)) work after classification, and retains only the touched-table
-map and primary-key positions. This does not bound the resident catalog itself.
+O(S + F log(T + 1)) work after classification, and retains the touched-table
+map, primary-key positions and applicable unique-index names/positions. This does not bound the resident catalog itself.
 The shared VersionWriteSet entry and estimated-byte caps apply while adding row
-keys. A failure discards local preparation before WAL or canonical mutation.
+and unique-index keys. A failure discards local preparation before WAL or canonical mutation.
 
 Optimistic validation runs before relational staging so a stale duplicate INSERT
 produces a typed retryable conflict instead of being masked by the canonical
@@ -95,13 +98,14 @@ value, pinned readers and writers across checkpoint, byte-identical WAL on
 rejection, reopen and new post-restart conflicts. Storage tests cover replacement
 then restoration, absent deletion, disjoint explicit deletes, disposition
 replacement, write-set count limits and relational mutation admission.
-Additional cases retain Database barriers for unique constraints, declared
-unique indexes, outgoing/incoming foreign keys and predicate replay. The older
+Additional cases now permit pure inserts with unique/FK constraints, while
+retaining Database barriers for destructive constrained/referenced writes and
+predicate replay. The older
 Database-barrier regression now uses an explicit predicate operation because
 ordinary unconstrained INSERT is no longer broad. Restoring the old implementation
 fails the disjoint-key integration regression.
 
-Still open: narrower predicate/UPSERT/constraint footprints, full version-memory
+Still open: narrower predicate/UPSERT/destructive-constraint footprints, full version-memory
 bounds, complete recovery/refinement composition, retry fairness and workload
 latency qualification. Primary-key and table-name payloads use existing page
 weight accounting; the per-write-set estimate excludes allocator overhead and

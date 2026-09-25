@@ -27,3 +27,7 @@ The governed-writer progress control rejects younger admission past an older
 full-capacity writer. Its proof also records a separate temporal starvation
 counterexample when the safety assertion is omitted; see
 [the progress proof](../GOVERNED_WRITER_PROGRESS_PROOF.md).
+
+The constrained-insert controls check omission of unique stamps and spurious
+conflicts from NULL unique values or shared foreign-key parent reads. See the
+[constrained-insert proof](../CONSTRAINED_INSERT_MVCC_PROOF.md).

@@ -10,6 +10,7 @@ STORAGE_MODELS = [
     "HawDBCompactionVisibility",
     "HawDBCompositePropertyProjection",
     "HawDBConcurrentSnapshots",
+    "HawDBConstrainedInsertIntent",
     "HawDBContentSourceOwnershipMove",
     "HawDBContentSourceReplacement",
     "HawDBContentSpaceMergeOwnership",

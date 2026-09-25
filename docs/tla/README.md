@@ -1884,3 +1884,13 @@ with same-priority FIFO admission, stable resource capacity and eventual owner
 service. See [the source argument, negative controls and executable workload](GOVERNED_WRITER_PROGRESS_PROOF.md).
 This supplements, rather than generalizes, per-request lock fairness; arbitrary
 transaction retry fairness and ungoverned writers remain outside the theorem.
+
+
+## Constrained insert identities
+
+[`HawDBConstrainedInsertIntent.tla`](HawDBConstrainedInsertIntent.tla) compares
+primary/non-NULL unique stamp validation with independent intent history,
+including shared-parent reads and broad parent deletion. See the
+[source refinement and coverage](CONSTRAINED_INSERT_MVCC_PROOF.md). The three
+mutants reject missing unique identities, false NULL conflicts and false
+shared-parent write conflicts; destructive constraint work remains broad.
