@@ -8,6 +8,7 @@ Bazel's manual benchmarks, outside default CI smoke dispatch.
 cargo test --locked --bench concurrent_writers # correctness smoke, not performance
 cargo bench --locked --bench concurrent_writers
 cargo bench --locked --bench concurrent_writers -- --round 0 # one paired-run round
+cargo bench --locked --bench concurrent_writers -- --round 0 --writers 1
 bazel run -c opt //:hawdb_bench_concurrent_writers
 ```
 
@@ -34,7 +35,10 @@ rounds, reversing all case order on alternate rounds. Debug smoke uses 16
 transactions and one round. `--round N` selects exactly one existing round and
 retains its alternating case order; release accepts 0..4 and debug accepts only
 0. Out-of-range, missing, duplicate and unknown arguments fail before fixture
-creation. Debug timings are not qualification evidence.
+creation. `--writers 1|4|8` selects one existing writer count without changing
+its fixture, timing, control or correctness checks. Omission retains the full
+matrix; duplicate, missing and other counts reject before fixture creation.
+Debug timings are not qualification evidence.
 
 Each JSONL record contains the round, configuration, elapsed time, throughput,
 raw transaction and commit latency samples, nearest-rank p50/p95/max latency,
@@ -286,3 +290,113 @@ No memory/fairness or relational-collection acceptance is inferred. The next
 latency qualification must state its workload, tolerated effect and sample
 protocol before measurement. No commit algorithm changed in this benchmark
 update; the workload partition proof above remains applicable.
+
+
+## Shared-history single-stream measurement protocol
+
+The next matched run compares runtime `0b9906f9` (shared retained-history
+admission and inline barriers) against PR-base `a703cc0f`. Both binaries must use
+identical benchmark source including `--writers 1`, Cargo.lock, pinned Rust
+1.97.1, default features and the repository bench profile. Each revision uses a
+separate Cargo target directory to prevent cross-checkout artifact/fingerprint
+collisions. The only baseline
+overlay is that benchmark and its Cargo registration. Build and smoke checks
+finish before any timing; no agent-started build or test overlaps measurement.
+
+This protocol is fixed **before** collecting this run:
+
+- One complete warm-up pair is retained and labelled separately, followed by
+  40 measured pairs. There is no adaptive stopping or sample removal.
+- Each process runs `--round 0 --writers 1` or `--round 1 --writers 1`, alternating
+  round/case order by pair. Revision order is baseline-first for even pairs and
+  candidate-first for odd pairs. All six cases remain: three storage modes,
+  each with and without the host-mutex control. Each case has 256 fixed commits.
+- All cases must pass exact data, epoch, sample-count and applicable durable
+  reopen/group-counter checks. A failed/incomplete run does not qualify.
+- The primary endpoints are commit p50 and p95 in the three storage modes for
+  the concurrent API (six endpoints). Transaction latency, TPS and host-mutex
+  controls are retained as secondary evidence, without selective substitution.
+- For each endpoint, compute one candidate/baseline ratio per measured pair.
+  Report all 40 ratios, their median and a distribution-free order-statistic
+  interval for the population median. Choose ranks using the exact Binomial(40,
+  1/2) tails, allocating 0.05/12 to each of twelve tails. The union bound gives
+  nominal simultaneous 95% coverage for all six two-sided intervals, conditional
+  on independent pairs from the same continuous distribution. Temporal drift
+  can violate that sampling assumption and must remain a limitation.
+- The strict no-regression criterion uses **zero tolerated increase**: every
+  primary interval's upper endpoint must be <= 1.0. A lower endpoint > 1.0 is
+  evidence of regression under the sampling assumptions; intervals crossing 1.0
+  are inconclusive. This measurement criterion does not weaken the issue's
+  requirement or claim that one graph workload qualifies every host workload.
+
+OS caches are not flushed, CPU affinity is not set, and unrelated desktop
+activity is not controlled. These limitations, raw checksums, binary/source
+identities and execution order belong in the result receipt. No throughput,
+latency or fairness theorem follows from the existing workload partition proof.
+
+For n = 40, the selected interval is [ratio_(12), ratio_(29)] with one-based
+ordered ranks. If m is the population median and X counts ratios below m, the
+continuous independent-pair assumption gives X ~ Binomial(40, 1/2). Each failure
+tail is bounded by sum(i=0..11, choose(40,i)) / 2^40 = 0.003213288047845708.
+The union bound over twelve endpoint tails is below 0.05. This derivation is
+about the median of **paired ratios**, not the ratio of two separately pooled
+latency percentiles, and its assumptions remain explicit.
+
+
+## Shared-history single-stream result: 2026-09-25
+
+The [receipt](benchmarks/concurrent_writers_macos_2026_09_25_single_stream.json)
+records both isolated builds, the pre-measurement protocol/checksum, every
+execution and all measured/control/warm-up case results. The exact runtime
+candidate is `0b9906f9e93888bcb124556f39501f9c8cf7a11f`; the baseline is the PR
+fork point `a703cc0f18f549918c73f454cda521edb4f0fb13`. Remote main had meanwhile
+advanced to `5fab55a7` (#752), so this is not labelled a comparison with the
+latest main. The identical harness SHA-256 is
+`c4333113db6cf7430124f7c4283bd87bead17a3c88520ffe151cf03664cb41d5`.
+
+All **480 measured cases / 122,880 commits / 320 durable reopens** passed,
+as did the separately labelled warm-up's 12 cases / 3,072 commits / 8 reopens.
+No measured pair or unfavorable sample was removed. All grouped one-writer
+cases used 256 syncs for 256 commits, as expected without concurrent peers.
+Raw latency arrays, process resource logs and binaries remain under
+`target/benchmarks/232-concurrent-writers/single-stream-0b9906f9/` with checksums
+in the receipt. Process resource logs include setup/verification and are not
+per-case memory or I/O bounds. The earlier shared-target build attempt was
+rejected before timing when Cargo reported a colliding artifact as fresh;
+both recorded binaries were then built from scratch in distinct target directories.
+Their workspace manifest paths/fresh flags and differing binary hashes were
+verified. No build or test overlapped measurement. The temporary baseline
+worktree was cleaned with Bazel and removed.
+
+The six predeclared primary endpoints are below. Latencies are medians of the
+40 per-case percentiles in microseconds; ratios are medians of the 40 paired
+candidate/baseline ratios, not ratios of those displayed medians. Intervals use
+the predeclared simultaneous-coverage construction and retain its sampling
+assumptions and uncontrolled-host limitations.
+
+| Storage | Commit metric | Baseline, us | Candidate, us | Paired ratio | Ratio interval | Disposition |
+| --- | --- | ---: | ---: | ---: | --- | --- |
+| Memory | p50 | 47.709 | 48.979 | 1.0251 | [1.0057, 1.0325] | Regression evidence |
+| Memory | p95 | 58.541 | 59.146 | 1.0246 | [0.9679, 1.0629] | Inconclusive |
+| Durable, ungrouped | p50 | 5,739.917 | 5,751.520 | 1.0035 | [1.0003, 1.0079] | Regression evidence |
+| Durable, ungrouped | p95 | 6,518.270 | 6,613.646 | 1.0015 | [0.8857, 1.1216] | Inconclusive |
+| Durable, grouped | p50 | 5,732.854 | 5,746.083 | 1.0010 | [0.9959, 1.0092] | Inconclusive |
+| Durable, grouped | p95 | 6,604.480 | 6,634.188 | 1.0076 | [0.9744, 1.0472] | Inconclusive |
+
+The strict no-regression gate is **not passed**: two lower endpoints exceed 1,
+and no upper endpoint is at or below 1. The small durable p50 effect is not
+rounded away, and the wide p95 intervals do not establish tail-latency equivalence.
+The receipt also preserves transaction latency, throughput and all host-mutex
+controls; none substitutes for these primary endpoints. This comparison measures
+the complete branch against its fork point, not an isolated causal effect of
+shared-history admission. Profiling or an explicitly controlled follow-up is
+needed before attributing the regression to one change. #231/#232 remain open
+for a correction and final-runtime requalification in addition to their other
+acceptance gaps.
+
+The selected-writer smoke passed 6 cases / 96 commits / 4 reopens, the default
+matrix smoke still passed 18 cases / 288 commits / 12 reopens, and four malformed
+writer selections rejected before fixture output. This harness change does not
+alter the modulo partition, fixed work per case or data/reopen oracle, so the
+existing workload proof is unchanged. No new storage algorithm or TLA+
+transition is introduced by this measurement follow-up.

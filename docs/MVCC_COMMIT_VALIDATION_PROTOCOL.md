@@ -286,6 +286,13 @@ prefix, preserving prior acknowledgements; fresh post-restart conflicts and a
 second reopen are checked. This is selected process-loss evidence, not hardware
 power-loss or every-instruction recovery qualification.
 
+The [40-pair single-stream measurement](CONCURRENT_WRITER_BENCHMARK.md#shared-history-single-stream-result-2026-09-25)
+compares runtime `0b9906f9` against PR-base `a703cc0f` using isolated builds.
+All 480 cases pass correctness, but the predeclared zero-increase latency gate
+fails: memory and ungrouped durable commit p50 show regression evidence, while
+the other four endpoints remain inconclusive. The earlier five-pair result is
+not final-runtime acceptance; correction and requalification remain required.
+
 Remaining acceptance work, without reimplementing existing mechanisms:
 
 1. Extend the bounded per-key model evidence to source-level completeness and

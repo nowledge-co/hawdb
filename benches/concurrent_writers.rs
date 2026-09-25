@@ -196,10 +196,21 @@ fn measure(path: &Path, durable: bool, grouped: bool, writers: usize, serial: bo
 
 fn main() {
     let mut selected_round = None;
+    let mut selected_writers = None;
     let mut args = std::env::args().skip(1);
     while let Some(arg) = args.next() {
         match arg.as_str() {
             "--bench" => {} // Cargo supplies this for harness-free benchmarks.
+            "--writers" => {
+                assert!(selected_writers.is_none(), "--writers may appear only once");
+                let writers = args
+                    .next()
+                    .expect("--writers requires a count")
+                    .parse::<usize>()
+                    .expect("writers must be an unsigned integer");
+                assert!([1, 4, 8].contains(&writers), "writers must be 1, 4 or 8");
+                selected_writers = Some(writers);
+            }
             "--round" => {
                 assert!(selected_round.is_none(), "--round may appear only once");
                 let round = args
@@ -230,6 +241,9 @@ fn main() {
         let mut cases = Vec::new();
         for (durable, grouped) in [(false, false), (true, false), (true, true)] {
             for writers in [1, 4, 8] {
+                if selected_writers.is_some_and(|selected| selected != writers) {
+                    continue;
+                }
                 for serial in [true, false] {
                     cases.push((durable, grouped, writers, serial));
                 }
