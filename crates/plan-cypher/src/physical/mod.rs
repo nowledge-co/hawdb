@@ -18,6 +18,15 @@ use crate::{
     SchemaObjectState, SchemaPropertyType, SchemaTableKind, SetAssignment,
     SetNodePropertiesReturnMode, SetValue, ShortestPathProjection, SortItem,
 };
+
+/// Score column every `VectorSeedScan` row carries: the similarity the vector
+/// projection returned for that row, as a `Value::Float`.
+///
+/// The seed stage produces it once and downstream stages read it by name, which
+/// makes the seed score a declared pipeline value instead of an incidental
+/// binding entry. Scoring specifications take it as their `SearchScore`
+/// feature, and Cypher ranking that follows graph expansion reads this name.
+pub const VECTOR_SEED_SCORE_COLUMN: &str = "score";
 use hawdb_core::Value;
 use hawdb_cypher::RelationshipDirection;
 use std::collections::BTreeMap;
