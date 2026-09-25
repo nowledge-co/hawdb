@@ -622,6 +622,9 @@ pub struct SearchRetrieverReport {
     pub candidate_scan_admitted_working_bytes: usize,
     pub posting_bytes_read: u64,
     pub candidate_postings_visited: u64,
+    /// Posting blocks whose frame-header bound could not reach the retained
+    /// floor, so their payloads were never decoded.
+    pub candidate_blocks_skipped: u64,
     pub segmented_lexical_projection_used: bool,
     pub index_covered_document_count: usize,
     pub index_candidate_document_count: usize,
@@ -3403,15 +3406,17 @@ impl SearchIndex {
             lexical_matching_document_count,
             lexical_postings_visited,
             lexical_bytes_read,
+            lexical_blocks_skipped,
         ) = if let Some(report) = lexical_report {
             (
                 report.scores,
                 report.matching_document_count,
                 report.postings_visited,
                 report.bytes_read,
+                report.blocks_skipped,
             )
         } else {
-            (BTreeMap::new(), 0, 0, 0)
+            (BTreeMap::new(), 0, 0, 0, 0)
         };
         if lexical_snapshot.is_none() {
             for document in &filtered_documents {
@@ -3553,6 +3558,7 @@ impl SearchIndex {
                     .unwrap_or(0),
                 posting_bytes_read: 0,
                 candidate_postings_visited: 0,
+                candidate_blocks_skipped: 0,
                 segmented_lexical_projection_used: false,
                 index_covered_document_count: vector_index_covered_document_count,
                 index_candidate_document_count: vector_index_candidate_document_count,
@@ -3635,6 +3641,7 @@ impl SearchIndex {
                 candidate_scan_admitted_working_bytes: 0,
                 posting_bytes_read: lexical_bytes_read,
                 candidate_postings_visited: lexical_postings_visited,
+                candidate_blocks_skipped: lexical_blocks_skipped,
                 segmented_lexical_projection_used,
                 index_covered_document_count: 0,
                 index_candidate_document_count: 0,

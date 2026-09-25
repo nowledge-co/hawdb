@@ -149,6 +149,75 @@ pub(super) fn decode(bytes: &[u8]) -> Result<Vec<Posting>> {
 }
 
 pub(super) fn decode_prefix(bytes: &[u8]) -> Result<(Vec<Posting>, usize)> {
+    let header = parse_header(bytes)?;
+    let count = header.count;
+    let mode = header.mode;
+    let doc_bits = header.doc_bits;
+    let tf_bits = header.tf_bits;
+    let length = header.length;
+    let payload = &bytes[HEADER_LEN..length];
+    let mut deltas = [0u32; BLOCK_LEN];
+    let mut frequencies = [0u32; BLOCK_LEN];
+    match mode {
+        0 if count == BLOCK_LEN && doc_bits <= 32 && tf_bits <= 32 => {
+            let split = usize::from(doc_bits) * 16;
+            if payload.len() != split + usize::from(tf_bits) * 16 {
+                return Err("invalid bitpack payload length");
+            }
+            unpack(&payload[..split], doc_bits, &mut deltas)?;
+            unpack(&payload[split..], tf_bits, &mut frequencies)?;
+        }
+        1 if count < BLOCK_LEN && doc_bits == 0 && tf_bits == 0 => {}
+        2 if count == BLOCK_LEN && doc_bits == 0 && tf_bits == 0 => {}
+        _ => return Err("invalid posting encoding"),
+    }
+    let mut output = Vec::with_capacity(count);
+    let mut position = 0;
+    let mut ordinal = header.base;
+    let mut actual_max_tf = 0u32;
+    let mut wide = false;
+    for index in 0..count {
+        let (delta, tf) = if mode == 0 {
+            (u64::from(deltas[index]), frequencies[index])
+        } else {
+            let delta = get_varint(payload, &mut position)?;
+            let tf =
+                u32::try_from(get_varint(payload, &mut position)?).map_err(|_| "tf overflow")?;
+            (delta, tf)
+        };
+        if tf == 0 || (index == 0 && delta != 0) || (index > 0 && delta == 0) {
+            return Err("invalid decoded posting");
+        }
+        wide |= delta > u64::from(u32::MAX);
+        ordinal = ordinal.checked_add(delta).ok_or("ordinal overflow")?;
+        actual_max_tf = actual_max_tf.max(tf);
+        output.push(Posting { ordinal, tf });
+    }
+    if ordinal != header.last
+        || (mode != 0 && position != payload.len())
+        || (mode == 2 && !wide)
+        || actual_max_tf.min(u32::from(u16::MAX)) != header.max_tf.min(u32::from(u16::MAX))
+    {
+        return Err("inconsistent posting summary");
+    }
+    Ok((output, length))
+}
+
+/// Frame metadata that does not require decoding the packed postings.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(super) struct FrameHeader {
+    pub(super) count: usize,
+    pub(super) max_tf: u32,
+    pub(super) base: u64,
+    pub(super) last: u64,
+    pub(super) length: usize,
+    mode: u8,
+    doc_bits: u8,
+    tf_bits: u8,
+}
+
+/// Parses and validates one posting frame header without touching its payload.
+pub(super) fn parse_header(bytes: &[u8]) -> Result<FrameHeader> {
     if bytes.len() < HEADER_LEN || &bytes[..4] != b"LXP1" {
         return Err("invalid block envelope");
     }
@@ -172,52 +241,16 @@ pub(super) fn decode_prefix(bytes: &[u8]) -> Result<(Vec<Posting>, usize)> {
     {
         return Err("invalid block header");
     }
-    let payload = &bytes[HEADER_LEN..length];
-    let mut deltas = [0u32; BLOCK_LEN];
-    let mut frequencies = [0u32; BLOCK_LEN];
-    match mode {
-        0 if count == BLOCK_LEN && doc_bits <= 32 && tf_bits <= 32 => {
-            let split = usize::from(doc_bits) * 16;
-            if payload.len() != split + usize::from(tf_bits) * 16 {
-                return Err("invalid bitpack payload length");
-            }
-            unpack(&payload[..split], doc_bits, &mut deltas)?;
-            unpack(&payload[split..], tf_bits, &mut frequencies)?;
-        }
-        1 if count < BLOCK_LEN && doc_bits == 0 && tf_bits == 0 => {}
-        2 if count == BLOCK_LEN && doc_bits == 0 && tf_bits == 0 => {}
-        _ => return Err("invalid posting encoding"),
-    }
-    let mut output = Vec::with_capacity(count);
-    let mut position = 0;
-    let mut ordinal = base;
-    let mut actual_max_tf = 0u32;
-    let mut wide = false;
-    for index in 0..count {
-        let (delta, tf) = if mode == 0 {
-            (u64::from(deltas[index]), frequencies[index])
-        } else {
-            let delta = get_varint(payload, &mut position)?;
-            let tf =
-                u32::try_from(get_varint(payload, &mut position)?).map_err(|_| "tf overflow")?;
-            (delta, tf)
-        };
-        if tf == 0 || (index == 0 && delta != 0) || (index > 0 && delta == 0) {
-            return Err("invalid decoded posting");
-        }
-        wide |= delta > u64::from(u32::MAX);
-        ordinal = ordinal.checked_add(delta).ok_or("ordinal overflow")?;
-        actual_max_tf = actual_max_tf.max(tf);
-        output.push(Posting { ordinal, tf });
-    }
-    if ordinal != last
-        || (mode != 0 && position != payload.len())
-        || (mode == 2 && !wide)
-        || actual_max_tf.min(u32::from(u16::MAX)) as u16 != max_tf
-    {
-        return Err("inconsistent posting summary");
-    }
-    Ok((output, length))
+    Ok(FrameHeader {
+        count,
+        max_tf: u32::from(max_tf),
+        base,
+        last,
+        length,
+        mode,
+        doc_bits,
+        tf_bits,
+    })
 }
 
 #[cfg(test)]
