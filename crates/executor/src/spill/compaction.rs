@@ -20,31 +20,122 @@ use crate::pipeline::runtime_checkpoint;
 use hawdb_core::{HawDBError, Result, RuntimeTaskContext};
 use std::num::NonZeroUsize;
 
-/// Pairs within one compaction level are independent and `merge_level` below
-/// is able to run them concurrently on the shared executor pool, but every
-/// `merge_*_run_pair` caller sizes its `OperatorMemoryTracker` from
-/// `ExecutionMemoryConfig::blocking_operator_bytes` assuming exactly one
-/// merge is charging the operator's shared `QueryMemoryAccount` at a time.
-/// Concurrent merges cloning that same account each stay within their own
-/// tracker's view of the budget while collectively exceeding the account's
-/// real ceiling — dividing a tracker's *local* budget by the worker count
-/// does not fix this correctly (it under-admits single legitimately-sized
-/// items instead), and the real fix (giving concurrent merges their own
-/// correctly-sized share of the account, not just a smaller number to
-/// compare against) is not done. Default to a single worker until that
-/// lands, so every production call site stays exactly as correct as the
-/// pre-parallel implementation; tests pass a larger explicit limit to
-/// exercise and verify the concurrent path pairs are still dispatched over.
+/// Keep concurrency bounded independently of spill-run count. Admission below
+/// reduces this further according to the retained records and query budget.
 pub(crate) fn default_compaction_worker_limit() -> NonZeroUsize {
-    NonZeroUsize::MIN
+    NonZeroUsize::new(4).unwrap()
 }
 
-pub(crate) fn compact_runs(
+pub(crate) struct CompactionMemory<'a> {
+    pub blocking: &'a crate::QueryMemoryAccount,
+    pub spill: &'a crate::kernel::SpillBudgetTracker,
+    pub worker_limit: NonZeroUsize,
+}
+
+/// Reserve an independently sized blocking and staging allowance for every
+/// merge before dispatch. Root/parent reservations survive until all child
+/// accounts and leases drop; low-memory queries run smaller waves, not smaller
+/// records. Completed waves are owned locally until the whole level succeeds.
+pub(crate) fn compact_runs_with_memory(
+    runs: Vec<SpillRun>,
+    final_run_count: NonZeroUsize,
+    memory: CompactionMemory<'_>,
+    task_context: Option<&RuntimeTaskContext>,
+    merge_pair: impl Fn(
+            &SpillRun,
+            &SpillRun,
+            &crate::QueryMemoryAccount,
+            &crate::kernel::SpillBudgetTracker,
+        ) -> Result<SpillRun>
+        + Sync,
+) -> Result<Vec<SpillRun>> {
+    compact_levels(runs, final_run_count, task_context, |pairs| {
+        // Existing retained state (e.g. DISTINCT schemas) keeps its parent
+        // charge. Bounds exceeding a whole serial allowance retain that
+        // allowance, so conservative run maxima never tighten item admission.
+        let serial_budget = memory.blocking.available_bytes().max(1);
+        let mut outputs = Vec::with_capacity(pairs.len());
+        let mut offset = 0;
+        while offset < pairs.len() {
+            runtime_checkpoint(task_context)?;
+            let mut wave = Vec::new();
+            for (index, (left, right)) in pairs
+                .iter()
+                .enumerate()
+                .skip(offset)
+                .take(memory.worker_limit.get())
+            {
+                let opaque = left.merge_record_bytes() == 0 || right.merge_record_bytes() == 0;
+                let record_bytes = if opaque {
+                    // Opaque external codecs do not promise a decoded-size
+                    // bound. Preserve the full serial allowance for them.
+                    serial_budget
+                } else {
+                    left.merge_record_bytes()
+                        .saturating_add(right.merge_record_bytes())
+                        .min(serial_budget)
+                };
+                let staging_bytes = if opaque {
+                    memory.spill.staging_budget_bytes()
+                } else {
+                    left.staging_bytes()
+                        .saturating_add(right.staging_bytes())
+                        .min(memory.spill.staging_budget_bytes())
+                        .max(1)
+                };
+                let admitted = (|| {
+                    let blocking = memory
+                        .blocking
+                        .sub_account(NonZeroUsize::new(record_bytes.max(1)).unwrap())?;
+                    let spill = memory
+                        .spill
+                        .for_merge(NonZeroUsize::new(staging_bytes).unwrap())?;
+                    Ok::<_, HawDBError>((index, blocking, spill))
+                })();
+                match admitted {
+                    Ok(merge) => wave.push(merge),
+                    Err(_) => break, // Release this wave before retrying admission.
+                }
+            }
+            if wave.is_empty() {
+                // Run maxima can occur at different positions. Their sum may
+                // not fit even though the serial working set does. With no
+                // in-flight children, retain the original shared-account path
+                // and let actual allocations enforce both parent/root limits.
+                let (left, right) = &pairs[offset];
+                outputs.push(merge_pair(left, right, memory.blocking, memory.spill)?);
+                offset += 1;
+                continue;
+            }
+            let executor = BoundedExecutor::new(memory.worker_limit);
+            let execute = |(index, blocking, spill): &(
+                usize,
+                crate::QueryMemoryAccount,
+                crate::kernel::SpillBudgetTracker,
+            )| {
+                let (left, right) = &pairs[*index];
+                merge_pair(left, right, blocking, spill)
+            };
+            let results: Vec<Result<SpillRun>> = match task_context {
+                Some(context) => executor
+                    .map_ordered_with_context(&wave, context, execute)
+                    .map_err(|reason| {
+                        HawDBError::Execution(format!("runtime task stopped: {reason}"))
+                    })?,
+                None => executor.map_ordered(&wave, execute),
+            };
+            offset += wave.len();
+            outputs.extend(results.into_iter().collect::<Result<Vec<_>>>()?);
+        }
+        Ok(outputs)
+    })
+}
+
+fn compact_levels(
     mut runs: Vec<SpillRun>,
     final_run_count: NonZeroUsize,
-    worker_limit: NonZeroUsize,
     task_context: Option<&RuntimeTaskContext>,
-    merge_pair: impl Fn(&SpillRun, &SpillRun) -> Result<SpillRun> + Sync,
+    merge: impl Fn(&[(SpillRun, SpillRun)]) -> Result<Vec<SpillRun>>,
 ) -> Result<Vec<SpillRun>> {
     while runs.len() > final_run_count.get() {
         runtime_checkpoint(task_context)?;
@@ -59,47 +150,15 @@ pub(crate) fn compact_runs(
         }
         // Keep every input alive until its replacement has been flushed. On
         // error or unwind, `pairs` and `leftover` still own the not-yet- (or
-        // never-to-be-) merged inputs and `merge_level`'s own collection
+        // never-to-be-) merged inputs and the merge closure's collection
         // releases any sibling outputs it already produced; no partial level
-        // escapes the caller. Note that every pair in the level is still
-        // attempted even after one fails (see `merge_level`) — this is a
-        // deliberate tradeoff of running pairs concurrently, not a bug: the
-        // first-encountered failure is still what's reported, and nothing
-        // that failed partway leaks, but a level does not stop early the way
-        // the old strictly-serial loop did.
-        let mut compacted = merge_level(&pairs, worker_limit, task_context, &merge_pair)?;
+        // escapes the caller. Already dispatched siblings finish before an
+        // error is reported; subsequent waves are not started after failure.
+        let mut compacted = merge(&pairs)?;
         compacted.extend(leftover);
         runs = compacted;
     }
     Ok(runs)
-}
-
-/// Runs every pair in one compaction level concurrently on the shared pool
-/// (falling back to genuinely serial execution only when the pool itself is
-/// unavailable, e.g. on `wasm32-unknown-unknown`), preserving input order in
-/// the result regardless of completion order. A `merge_pair` failure does
-/// not stop sibling pairs already dispatched in the same level — an output
-/// that is itself an `Err` does not short-circuit the other workers, by
-/// `BoundedExecutor`'s own contract — so every pair in the level is still
-/// attempted; `outputs.into_iter().collect()` below is what turns the first
-/// failure into this call's `Err` and releases every successfully produced
-/// sibling output. This holds even at `worker_limit = NonZeroUsize::MIN`:
-/// one worker still drains the whole level's queue before this function's
-/// caller can observe an error, it just does so on a single thread.
-fn merge_level(
-    pairs: &[(SpillRun, SpillRun)],
-    worker_limit: NonZeroUsize,
-    task_context: Option<&RuntimeTaskContext>,
-    merge_pair: &(impl Fn(&SpillRun, &SpillRun) -> Result<SpillRun> + Sync),
-) -> Result<Vec<SpillRun>> {
-    let executor = BoundedExecutor::new(worker_limit);
-    let outputs: Vec<Result<SpillRun>> = match task_context {
-        Some(context) => executor
-            .map_ordered_with_context(pairs, context, |(left, right)| merge_pair(left, right))
-            .map_err(|reason| HawDBError::Execution(format!("runtime task stopped: {reason}")))?,
-        None => executor.map_ordered(pairs, |(left, right)| merge_pair(left, right)),
-    };
-    outputs.into_iter().collect()
 }
 
 #[cfg(test)]

@@ -22,13 +22,15 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::fs::{File, OpenOptions};
 use std::io::{BufReader, BufWriter, Cursor, ErrorKind, Read, Write};
 use std::num::NonZeroUsize;
-use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
 use std::sync::Arc;
 
 mod compaction;
 mod pool;
 
-pub(crate) use compaction::{compact_runs, default_compaction_worker_limit};
+pub(crate) use compaction::{
+    compact_runs_with_memory, default_compaction_worker_limit, CompactionMemory,
+};
 pub use pool::SpillPoolSnapshot;
 pub(crate) use pool::{spill_pool_snapshot, SpillPool, SpillWriteReservation};
 
@@ -39,9 +41,26 @@ static NEXT_SPILL_ID: AtomicU64 = AtomicU64::new(0);
 
 pub struct SpillRun {
     lease: Arc<RunLease>,
+    memory: Arc<RunMemory>,
+}
+
+// Ephemeral bounds collected while producing a run; never persisted or inferred
+// from file lengths. Codecs without a mapped-row bound use serial admission.
+#[derive(Default)]
+struct RunMemory {
+    record: AtomicUsize,
+    staging: AtomicUsize,
 }
 
 impl SpillRun {
+    pub(crate) fn merge_record_bytes(&self) -> usize {
+        self.memory.record.load(Ordering::Relaxed)
+    }
+
+    pub(crate) fn staging_bytes(&self) -> usize {
+        self.memory.staging.load(Ordering::Relaxed)
+    }
+
     pub(crate) fn create_with_buffer_bytes(
         pool: SpillPool,
         operator: &str,
@@ -67,13 +86,16 @@ impl SpillRun {
             match OpenOptions::new().create_new(true).write(true).open(&path) {
                 Ok(file) => {
                     let lease = Arc::new(RunLease::new(path, pool));
+                    let memory = Arc::new(RunMemory::default());
                     return Ok((
                         Self {
                             lease: Arc::clone(&lease),
+                            memory: Arc::clone(&memory),
                         },
                         SpillWriter {
                             writer: BufWriter::with_capacity(buffer_bytes.get(), file),
                             lease,
+                            memory,
                         },
                     ));
                 }
@@ -118,9 +140,14 @@ impl SpillRun {
 pub struct SpillWriter {
     writer: BufWriter<File>,
     lease: Arc<RunLease>,
+    memory: Arc<RunMemory>,
 }
 
 impl SpillWriter {
+    pub(crate) fn note_merge_record_bytes(&self, bytes: usize) {
+        self.memory.record.fetch_max(bytes, Ordering::Relaxed);
+    }
+
     pub fn write(
         &mut self,
         ordinal: u64,
@@ -128,6 +155,10 @@ impl SpillWriter {
         spill_budget: &SpillBudgetTracker,
     ) -> Result<u64> {
         let encoded_len = binding_record_encoded_len(binding)?;
+        self.note_merge_record_bytes(crate::binding::binding_memory_bytes(binding));
+        self.memory
+            .staging
+            .fetch_max(encoded_len, Ordering::Relaxed);
         let _staging_lease = spill_budget.reserve_staging(encoded_len)?;
         let mut payload = Vec::with_capacity(encoded_len);
         write_u64(&mut payload, ordinal)?;
@@ -159,6 +190,9 @@ impl SpillWriter {
         payload: &[u8],
         spill_budget: &SpillBudgetTracker,
     ) -> Result<u64> {
+        self.memory
+            .staging
+            .fetch_max(payload.len(), Ordering::Relaxed);
         let payload_len = u64::try_from(payload.len()).map_err(|_| {
             HawDBError::Execution("spill record exceeds the supported size".to_string())
         })?;

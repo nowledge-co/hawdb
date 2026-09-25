@@ -127,6 +127,7 @@ impl QueryMemoryLedger {
         QueryMemoryAccount {
             ledger: self.clone(),
             account_id,
+            backing: None,
         }
     }
 
@@ -347,9 +348,44 @@ impl QueryMemoryLedger {
 pub struct QueryMemoryAccount {
     ledger: QueryMemoryLedger,
     account_id: u64,
+    // A child ledger owns an up-front reservation in its parent. Every account
+    // and outstanding lease keeps that reservation alive.
+    backing: Option<Arc<QueryMemoryLease>>,
 }
 
 impl QueryMemoryAccount {
+    /// Reserve the entire child allowance before dispatch, without charging
+    /// individual child allocations to the query root a second time.
+    pub(crate) fn sub_account(&self, budget: NonZeroUsize) -> Result<Self> {
+        let backing = Arc::new(self.reserve(budget.get())?);
+        let (class, owner) = {
+            let state = lock_recover(&self.ledger.inner.state);
+            let account = &state.accounts[&self.account_id];
+            (account.class, Arc::clone(&account.owner))
+        };
+        let mut child = QueryMemoryLedger::new(budget).account(class, owner, budget);
+        child.backing = Some(backing);
+        Ok(child)
+    }
+
+    pub(crate) fn budget_bytes(&self) -> NonZeroUsize {
+        NonZeroUsize::new(
+            lock_recover(&self.ledger.inner.state).accounts[&self.account_id].budget_bytes,
+        )
+        .unwrap()
+    }
+
+    pub(crate) fn available_bytes(&self) -> usize {
+        let state = lock_recover(&self.ledger.inner.state);
+        let account = &state.accounts[&self.account_id];
+        account.budget_bytes.saturating_sub(account.used_bytes).min(
+            self.ledger
+                .inner
+                .budget_bytes
+                .saturating_sub(state.used_bytes),
+        )
+    }
+
     pub(crate) fn peak_bytes(&self) -> usize {
         lock_recover(&self.ledger.inner.state).accounts[&self.account_id].peak_bytes
     }
@@ -360,7 +396,9 @@ impl QueryMemoryAccount {
         owner: impl Into<Arc<str>>,
         budget_bytes: NonZeroUsize,
     ) -> Self {
-        self.ledger.account(class, owner, budget_bytes)
+        let mut account = self.ledger.account(class, owner, budget_bytes);
+        account.backing = self.backing.clone();
+        account
     }
 
     pub(crate) fn can_reserve(&self, bytes: usize) -> bool {
@@ -461,6 +499,65 @@ mod hardening_tests;
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn sub_accounts_reserve_parent_capacity_without_double_charging() {
+        let budget = NonZeroUsize::new(100).unwrap();
+        let ledger = QueryMemoryLedger::new(budget);
+        let parent = ledger.account(QueryMemoryClass::BlockingState, "merge", budget);
+        let retained = parent.reserve(10).unwrap();
+        let left = parent.sub_account(NonZeroUsize::new(60).unwrap()).unwrap();
+        let right = parent.sub_account(NonZeroUsize::new(30).unwrap()).unwrap();
+        assert_eq!(parent.available_bytes(), 0);
+        assert!(parent.sub_account(NonZeroUsize::MIN).is_err());
+        let mut left_lease = left.reserve(60).unwrap();
+        let right_lease = right.reserve(30).unwrap();
+        assert!(left_lease.grow(1).is_err());
+        assert_eq!(ledger.snapshot().used_bytes, 100);
+        drop((left, right, retained));
+        assert_eq!(ledger.snapshot().used_bytes, 90);
+        drop(left_lease);
+        assert_eq!(ledger.snapshot().used_bytes, 30);
+        drop(right_lease);
+        assert_eq!(ledger.snapshot().used_bytes, 0);
+        assert_eq!(ledger.snapshot().peak_bytes, 100);
+    }
+
+    #[test]
+    fn nested_accounts_and_siblings_keep_backing_until_last_owner_drops() {
+        let budget = NonZeroUsize::new(8).unwrap();
+        let ledger = QueryMemoryLedger::new(budget);
+        let parent = ledger.account(QueryMemoryClass::BlockingState, "merge", budget);
+        let child = parent.sub_account(budget).unwrap();
+        let sibling = child.sibling(QueryMemoryClass::SpillStaging, "staging", budget);
+        let nested = child.sub_account(NonZeroUsize::new(4).unwrap()).unwrap();
+        assert!(sibling.reserve(5).is_err());
+        let lease = nested.reserve(4).unwrap();
+        drop((parent, child, nested));
+        assert_eq!(ledger.snapshot().used_bytes, 8);
+        drop(lease);
+        assert_eq!(ledger.snapshot().used_bytes, 8);
+        let sibling_lease = sibling.reserve(8).unwrap();
+        drop(sibling);
+        assert_eq!(ledger.snapshot().used_bytes, 8);
+        drop(sibling_lease);
+        assert_eq!(ledger.snapshot().used_bytes, 0);
+    }
+
+    #[test]
+    fn failed_sub_account_admission_does_not_leak_root_capacity() {
+        let budget = NonZeroUsize::new(100).unwrap();
+        let ledger = QueryMemoryLedger::new(budget);
+        let parent = ledger.account(QueryMemoryClass::BlockingState, "merge", budget);
+        let other = ledger.account(QueryMemoryClass::PipelineBatch, "input", budget);
+        let retained = other.reserve(70).unwrap();
+        assert!(parent.sub_account(NonZeroUsize::new(31).unwrap()).is_err());
+        assert_eq!(ledger.snapshot().used_bytes, 70);
+        let child = parent.sub_account(NonZeroUsize::new(30).unwrap()).unwrap();
+        assert!(child.reserve(31).is_err());
+        drop((child, retained));
+        assert_eq!(ledger.snapshot().used_bytes, 0);
+    }
 
     #[test]
     fn sibling_accounts_share_one_root_budget() {

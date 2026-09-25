@@ -784,7 +784,13 @@ fn spill_group_run(
             } else {
                 key.clone()
             };
-            let binding = encode_compact_group_binding(row_key, row.inputs);
+            let row = GroupRunRow {
+                key: row_key,
+                ordinal: row.ordinal,
+                inputs: row.inputs,
+            };
+            writer.note_merge_record_bytes(row.memory_bytes());
+            let binding = encode_compact_group_binding(row.key, row.inputs);
             writer.write(row.ordinal, &binding, spill_budget)?;
         }
     }
@@ -801,12 +807,16 @@ fn compact_group_runs(
     blocking_account: &QueryMemoryAccount,
     task_context: Option<&RuntimeTaskContext>,
 ) -> Result<Vec<spill::SpillRun>> {
-    spill::compact_runs(
+    spill::compact_runs_with_memory(
         runs,
         NonZeroUsize::new(2).expect("two-way merge fan-in"),
-        spill::default_compaction_worker_limit(),
+        spill::CompactionMemory {
+            blocking: blocking_account,
+            spill: spill_budget,
+            worker_limit: spill::default_compaction_worker_limit(),
+        },
         task_context,
-        |left, right| {
+        |left, right, blocking_account, spill_budget| {
             merge_group_run_pair(
                 left,
                 right,
@@ -856,6 +866,7 @@ fn merge_group_run_pair(
         runtime_checkpoint(task_context)?;
         let run_index = entry.run_index;
         let entry_bytes = entry.row.memory_bytes();
+        writer.note_merge_record_bytes(entry_bytes);
         let binding = encode_compact_group_binding(entry.row.key, entry.row.inputs);
         writer.write(entry.row.ordinal, &binding, spill_budget)?;
         tracker.release(entry_bytes);
