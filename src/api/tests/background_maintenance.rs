@@ -54,7 +54,7 @@ fn adjacency_consolidation_is_bounded_and_background_admitted() {
         .create_node(&mut db.catalog, "Source", BTreeMap::new())
         .unwrap();
     let base_degree = crate::store::DENSE_ADJACENCY_DEGREE_THRESHOLD;
-    let delta_count = hawdb_storage::ADJACENCY_DELTA_CONSOLIDATION_ENTRIES;
+    let delta_count = hawdb_storage::adjacency::ADJACENCY_DELTA_CONSOLIDATION_ENTRIES;
     let targets = (0..base_degree + delta_count)
         .map(|_| {
             db.store

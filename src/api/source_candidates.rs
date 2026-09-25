@@ -17,15 +17,18 @@ use crate::error::Result;
 use crate::schema::Catalog;
 use crate::store::{GraphStore, SourceScanCandidateRead};
 use hawdb_storage::{
-    render_source_candidate_page, select_source_candidate, validate_source_candidate_scan_request,
-    ScanSegmentFallback,
+    scan::ScanSegmentFallback,
+    source_scan::{
+        render_source_candidate_page, select_source_candidate,
+        validate_source_candidate_scan_request,
+    },
 };
 use std::num::{NonZeroU64, NonZeroUsize};
 
 const SOURCE_SCAN_IO_DEPTH: usize = 2;
 const SOURCE_SCAN_MAX_COALESCED_BYTES: u64 = 512 * 1024;
 const SOURCE_SCAN_MAX_WAVE_BYTES: u64 = 2 * 1024 * 1024;
-pub use hawdb_storage::{
+pub use hawdb_storage::source_scan::{
     SourceCandidateRow as KnowledgeSourceCandidateRow,
     SourceCandidateScanOrigin as KnowledgeSourceCandidateScanOrigin,
     SourceCandidateScanOutput as KnowledgeSourceCandidateScanOutput,
@@ -145,7 +148,7 @@ fn canonical_fallback(
 mod tests {
     use super::*;
     use crate::{DatabaseConfig, StorageResidencyMode, Value};
-    use hawdb_storage::ScanPredicate;
+    use hawdb_storage::scan::ScanPredicate;
     use std::collections::BTreeMap;
     use std::path::PathBuf;
 

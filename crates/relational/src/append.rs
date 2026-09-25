@@ -21,16 +21,18 @@ use hawdb_sql::{
 };
 use hawdb_sql::{Expr, ExprKind};
 use hawdb_storage::{
-    AppendGeneratedRow, AppendOrderMode, AppendState, AppendTableRow, AppendTableSchema,
-    AppendTransaction, AppendWrite, RelationalColumnDefault, RelationalColumnSchema, RelationalRow,
-    RelationalValue,
+    append_table::{
+        AppendGeneratedRow, AppendOrderMode, AppendState, AppendTableRow, AppendTableSchema,
+        AppendTransaction, AppendWrite,
+    },
+    relational::{RelationalColumnDefault, RelationalColumnSchema, RelationalRow, RelationalValue},
 };
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct AppendSelectPlan {
     pub table: String,
-    pub partition: hawdb_storage::RelationalKey,
-    pub after: Option<hawdb_storage::RelationalKey>,
+    pub partition: hawdb_storage::relational::RelationalKey,
+    pub after: Option<hawdb_storage::relational::RelationalKey>,
     pub max_rows: usize,
     projection: Vec<AppendProjection>,
 }
@@ -405,8 +407,8 @@ fn compile_append_select(
         compile_append_projection(&select.projection, schema, select.from_alias.as_deref())?;
     Ok(AppendSelectPlan {
         table: schema.name.clone(),
-        partition: hawdb_storage::RelationalKey(vec![partition]),
-        after: after.map(|value| hawdb_storage::RelationalKey(vec![value])),
+        partition: hawdb_storage::relational::RelationalKey(vec![partition]),
+        after: after.map(|value| hawdb_storage::relational::RelationalKey(vec![value])),
         max_rows,
         projection,
     })
@@ -579,7 +581,7 @@ pub fn project_append_rows(
 
 pub fn format_append_explain(
     plan: &AppendExplainPlan,
-    report: Option<&hawdb_storage::AppendSegmentReadReport>,
+    report: Option<&hawdb_storage::append_table::AppendSegmentReadReport>,
 ) -> Vec<std::collections::BTreeMap<String, Value>> {
     let mut row = std::collections::BTreeMap::from([
         (

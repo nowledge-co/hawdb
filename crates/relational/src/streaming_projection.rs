@@ -20,7 +20,7 @@ use crate::row_runtime::RelationalReadRowRef;
 use hawdb_core::{HawDBError, Result, Value};
 use hawdb_executor::{QueryRowsBuilder, QuerySchema};
 use hawdb_sql::{Expr, ExprKind, SelectProjection};
-use hawdb_storage::RelationalTableSchema;
+use hawdb_storage::relational::RelationalTableSchema;
 
 #[doc(hidden)]
 pub struct BoundStreamingProjection {
@@ -161,7 +161,7 @@ mod tests {
     use super::*;
     use hawdb_executor::Row;
     use hawdb_sql::SqlStatement;
-    use hawdb_storage::{
+    use hawdb_storage::relational::{
         RelationalColumnSchema, RelationalKey, RelationalProjectedField, RelationalProjectedRow,
         RelationalScalarType, RelationalValue,
     };

@@ -332,7 +332,7 @@ pub(super) fn stream_source_segment_scan_batches(
         return stream_node_scan_batches(variable, "Source", None, context, execution_limit, emit);
     };
     observer.record_scan_pruning_report(ScanPruningReport {
-        target_kind: hawdb_storage::ScanPruningTargetKind::Node,
+        target_kind: hawdb_storage::scan::ScanPruningTargetKind::Node,
         label_id: source_label_id,
         rel_type_id: None,
         strategy: source_scan_pruning_strategy(&storage_predicate),

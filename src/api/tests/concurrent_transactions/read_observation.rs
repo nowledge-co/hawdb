@@ -228,3 +228,67 @@ fn successful_sql_snapshot_read_returns_while_writer_is_active() {
 fn failed_sql_snapshot_read_returns_while_writer_is_active() {
     assert_read_completion_does_not_wait_for_writer(ReadLanguage::Sql, true);
 }
+
+#[test]
+fn read_snapshot_descendants_keep_graph_and_sql_views_across_checkpoint() {
+    for mode in [
+        crate::StorageResidencyMode::Materialized,
+        crate::StorageResidencyMode::OutOfCore,
+    ] {
+        let path = super::super::unique_test_dir("read_snapshot_baseline");
+        let config = DatabaseConfig {
+            storage_residency_mode: mode,
+            ..DatabaseConfig::default()
+        };
+        let mut db = Database::open_with_config(&path, config.clone()).unwrap();
+        db.query("CREATE (:Memory {id: 1, value: 0})").unwrap();
+        db.query_sql("CREATE TABLE records (id BIGINT PRIMARY KEY, body TEXT)")
+            .unwrap();
+        db.query_sql("INSERT INTO records (id, body) VALUES (1, 'old')")
+            .unwrap();
+        db.checkpoint().unwrap();
+        let source = db.read_snapshot();
+        let epoch = db.commit_epoch();
+        db.query("MATCH (n:Memory) SET n.value = 2").unwrap();
+        db.query_sql("UPDATE records SET body = 'new' WHERE id = 1")
+            .unwrap();
+        db.checkpoint().unwrap();
+        let mut read = source
+            .begin_read_transaction(&hawdb_core::RuntimeTaskContext::default())
+            .unwrap();
+        drop(source);
+        db.checkpoint().unwrap();
+        assert_eq!(read.commit_epoch(), epoch);
+        assert_eq!(
+            read.query("MATCH (n:Memory) RETURN n.value AS value")
+                .unwrap()
+                .rows[0]["value"],
+            Value::Int(0)
+        );
+        assert_eq!(
+            read.query_sql("SELECT body FROM records").unwrap().rows[0]["body"],
+            Value::String("old".into())
+        );
+        assert!(read.query("MATCH (n:Memory) SET n.value = 3").is_err());
+        assert!(read
+            .query_sql("UPDATE records SET body = 'bad' WHERE id = 1")
+            .is_err());
+        drop(read);
+        db.checkpoint().unwrap();
+        drop(db);
+        let mut reopened = Database::open_with_config(&path, config).unwrap();
+        assert_eq!(
+            reopened
+                .query("MATCH (n:Memory) RETURN n.value AS value")
+                .unwrap()
+                .rows[0]["value"],
+            Value::Int(2)
+        );
+        assert_eq!(
+            reopened.query_sql("SELECT body FROM records").unwrap().rows[0]["body"],
+            Value::String("new".into())
+        );
+        drop(reopened);
+        std::fs::remove_dir_all(path).unwrap();
+    }
+}

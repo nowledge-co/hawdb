@@ -411,7 +411,7 @@ fn persisted_stable_id_mapping_covers_out_of_core_base_records() {
         let mut db = Database::open_with_config(
             &path,
             DatabaseConfig {
-                storage_residency_mode: hawdb_storage::StorageResidencyMode::OutOfCore,
+                storage_residency_mode: hawdb_storage::config::StorageResidencyMode::OutOfCore,
                 ..DatabaseConfig::default()
             },
         )
@@ -437,7 +437,7 @@ fn persisted_stable_id_mapping_covers_out_of_core_base_records() {
         let mut db = Database::open_with_config(
             &path,
             DatabaseConfig {
-                storage_residency_mode: hawdb_storage::StorageResidencyMode::OutOfCore,
+                storage_residency_mode: hawdb_storage::config::StorageResidencyMode::OutOfCore,
                 ..DatabaseConfig::default()
             },
         )
@@ -447,7 +447,8 @@ fn persisted_stable_id_mapping_covers_out_of_core_base_records() {
             .expect("durable database has a segment cache")
             .resident_bytes;
         assert!(
-            cache_before_export < hawdb_storage::DEFAULT_STABLE_IDENTITY_PAGE_BYTES as u64,
+            cache_before_export
+                < hawdb_storage::stable_identity::DEFAULT_STABLE_IDENTITY_PAGE_BYTES as u64,
             "reopen must keep fixed-size stable identity pages cold"
         );
         let reopened = db
@@ -457,8 +458,9 @@ fn persisted_stable_id_mapping_covers_out_of_core_base_records() {
             db.segment_cache_snapshot()
                 .expect("durable database has a segment cache")
                 .resident_bytes
-                >= cache_before_export
-                    .saturating_add(hawdb_storage::DEFAULT_STABLE_IDENTITY_PAGE_BYTES as u64),
+                >= cache_before_export.saturating_add(
+                    hawdb_storage::stable_identity::DEFAULT_STABLE_IDENTITY_PAGE_BYTES as u64
+                ),
             "explicit export must demand-load the stable identity page"
         );
 
@@ -601,12 +603,13 @@ fn storage_scrub_detects_cold_stable_id_mapping_corruption() {
         db.segment_cache_snapshot()
             .expect("durable database has a segment cache")
             .resident_bytes
-            < hawdb_storage::DEFAULT_STABLE_IDENTITY_PAGE_BYTES as u64,
+            < hawdb_storage::stable_identity::DEFAULT_STABLE_IDENTITY_PAGE_BYTES as u64,
         "stable identity pages must remain cold before scrub"
     );
     let mapping_path = path.join("stable_ids.hawdb");
     let artifact_path =
-        hawdb_storage::stable_identity_generation_artifact_path(&mapping_path, 1).unwrap();
+        hawdb_storage::stable_identity::stable_identity_generation_artifact_path(&mapping_path, 1)
+            .unwrap();
     let mut bytes = std::fs::read(&artifact_path).unwrap();
     *bytes.last_mut().expect("mapping contains one page") ^= 0x80;
     std::fs::write(&artifact_path, bytes).unwrap();
@@ -805,7 +808,7 @@ fn hawdb_lightning_graph_stream_decodes_to_import_ready_snapshot() {
     };
     let relational_stream = HawDBLightningRelationalStream::from_state(
         snapshot.graph_commit_epoch,
-        &hawdb_storage::RelationalState::default(),
+        &hawdb_storage::relational::RelationalState::default(),
     )
     .unwrap();
     let manifest = snapshot.hawdb_lightning_bootstrap_manifest(&relational_stream);
@@ -2986,7 +2989,7 @@ fn hawdb_lightning_initial_import_rejects_stream_without_engine_registry() {
     let export = source.prepare_hawdb_lightning_bootstrap_export().unwrap();
     let relational_stream = HawDBLightningRelationalStream::from_state(
         export.manifest.database_commit_epoch,
-        &hawdb_storage::RelationalState::default(),
+        &hawdb_storage::relational::RelationalState::default(),
     )
     .unwrap();
     let manifest = export

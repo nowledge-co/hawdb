@@ -225,8 +225,8 @@ fn concurrent_update_delete_outcomes_cover_retry_and_both_transaction_modes() {
         1,
     );
     database
-        .query_sql("INSERT INTO items (id, state) VALUES (4, 'winner')")
-        .expect("advance the durable commit epoch");
+        .query_sql("UPDATE items SET state = 'winner' WHERE id = 3")
+        .expect("write the same primary key");
     let conflict = stale
         .commit_with_result()
         .expect_err("stale optimistic outcome must not be confirmed");
@@ -236,7 +236,7 @@ fn concurrent_update_delete_outcomes_cover_retry_and_both_transaction_modes() {
             read_epoch: 4,
             committed_epoch: 5,
             key,
-        } if key == "database"
+        } if key == "relational_row"
     ));
     assert!(conflict.is_retryable_transaction_conflict());
 
@@ -251,6 +251,25 @@ fn concurrent_update_delete_outcomes_cover_retry_and_both_transaction_modes() {
     );
     assert_commit_outcome(
         retry.commit_with_result().expect("commit optimistic retry"),
+        1,
+    );
+
+    let mut disjoint = database
+        .begin_transaction(ConcurrentTransactionOptions::optimistic())
+        .expect("begin disjoint point update");
+    assert_statement_outcome(
+        disjoint
+            .query_sql_with_result("UPDATE items SET state = 'disjoint' WHERE id = 1")
+            .expect("stage disjoint update"),
+        1,
+    );
+    database
+        .query_sql("INSERT INTO items (id, state) VALUES (4, 'unrelated')")
+        .expect("commit another key");
+    assert_commit_outcome(
+        disjoint
+            .commit_with_result()
+            .expect("confirm disjoint outcome"),
         1,
     );
 }

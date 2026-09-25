@@ -437,6 +437,148 @@ fn public_unwind_mutation_batches_direct_and_transactional_bootstrap_rows() {
 }
 
 #[test]
+fn unwind_transaction_matches_sequential_merges_and_wal_for_repeated_keys() {
+    const SINGLE: &str =
+        "MERGE (e:Entity {id: $id}) ON CREATE SET e.name = $name, e.aliases = $aliases";
+    const BATCH: &str = "UNWIND $rows AS row MERGE (e:Entity {id: row.id}) ON CREATE SET e.name = row.name, e.aliases = row.aliases";
+    const READ: &str =
+        "MATCH (e:Entity) RETURN e.id AS id, e.name AS name, e.aliases AS aliases ORDER BY id";
+
+    // Permute duplicate keys and values independently. First creation wins,
+    // including NULL and list properties; an existing key must never change.
+    for seed in 0..8 {
+        let rows = (0..32)
+            .map(|index| {
+                BTreeMap::from([
+                    ("id".to_string(), Value::Int((index * 7 + seed) % 11)),
+                    (
+                        "name".to_string(),
+                        if index % 3 == 0 {
+                            Value::Null
+                        } else {
+                            Value::String(format!("name-{seed}-{index}"))
+                        },
+                    ),
+                    (
+                        "aliases".to_string(),
+                        Value::List(vec![Value::String(format!("alias-{index}"))]),
+                    ),
+                ])
+            })
+            .collect::<Vec<_>>();
+        let mut evidence = Vec::new();
+        for batched in [false, true] {
+            let path = unique_test_dir("unwind_transaction_equivalence");
+            let mut db = Database::open(&path).unwrap();
+            db.query("CREATE (:Entity {id: 0, name: 'existing', aliases: []})")
+                .unwrap();
+            let epoch = db.store.commit_epoch();
+            let prefix = std::fs::read(active_wal_path(&path)).unwrap();
+            let mut transaction = db.begin_transaction();
+            if batched {
+                transaction
+                    .query_with_params(
+                        BATCH,
+                        &BTreeMap::from([(
+                            "rows".to_string(),
+                            Value::List(rows.iter().cloned().map(Value::Map).collect()),
+                        )]),
+                    )
+                    .unwrap();
+            } else {
+                for row in &rows {
+                    transaction.query_with_params(SINGLE, row).unwrap();
+                }
+            }
+            let staged = transaction.query(READ).unwrap();
+            assert_eq!(staged.rows.len(), 11);
+            assert_eq!(std::fs::read(active_wal_path(&path)).unwrap(), prefix);
+            transaction.commit().unwrap();
+            assert_eq!(db.store.commit_epoch(), epoch + 1);
+            let committed_wal = std::fs::read(active_wal_path(&path)).unwrap();
+            assert!(committed_wal.len() > prefix.len());
+            drop(db);
+            let mut reopened = Database::open(&path).unwrap();
+            let recovered = reopened.query(READ).unwrap();
+            assert_eq!(recovered.rows, staged.rows);
+            assert_eq!(
+                recovered.rows[0].get("name"),
+                Some(&Value::String("existing".to_string()))
+            );
+            evidence.push((recovered.rows, committed_wal));
+            drop(reopened);
+            std::fs::remove_dir_all(path).unwrap();
+        }
+        assert_eq!(evidence[0], evidence[1], "seed {seed}");
+    }
+}
+
+#[test]
+fn unwind_transaction_rejection_preserves_prior_statement_and_wal() {
+    let path = unique_test_dir("unwind_statement_savepoint");
+    let config = DatabaseConfig {
+        mutation_limits: hawdb_storage::mutation::MutationLimits {
+            max_operations: std::num::NonZeroUsize::new(2).unwrap(),
+            ..hawdb_storage::mutation::MutationLimits::default()
+        },
+        ..DatabaseConfig::default()
+    };
+    let mut db = Database::open_with_config(&path, config).unwrap();
+    let prefix = std::fs::read(active_wal_path(&path)).unwrap();
+    let mut transaction = db.begin_transaction();
+    transaction.query("CREATE (:Entity {id: 'prior'})").unwrap();
+    let query = "UNWIND $rows AS row CREATE (:Entity {id: row.id})";
+    let parameters = |ids: &[&str]| {
+        BTreeMap::from([(
+            "rows".to_string(),
+            Value::List(
+                ids.iter()
+                    .map(|id| {
+                        Value::Map(BTreeMap::from([(
+                            "id".to_string(),
+                            Value::String((*id).to_string()),
+                        )]))
+                    })
+                    .collect(),
+            ),
+        )])
+    };
+    let error = transaction
+        .query_with_params(query, &parameters(&["a", "b", "c"]))
+        .unwrap_err();
+    assert!(
+        error.to_string().contains("max_mutation_operations"),
+        "{error}"
+    );
+    let read = "MATCH (e:Entity) RETURN e.id AS id ORDER BY id";
+    let staged = transaction.query(read).unwrap();
+    assert_eq!(staged.rows.len(), 1);
+    assert_eq!(
+        staged.rows[0].get("id"),
+        Some(&Value::String("prior".into()))
+    );
+    assert_eq!(std::fs::read(active_wal_path(&path)).unwrap(), prefix);
+    transaction
+        .query_with_params(query, &parameters(&["retry"]))
+        .unwrap();
+    transaction.commit().unwrap();
+    drop(db);
+    let mut reopened = Database::open(&path).unwrap();
+    let recovered = reopened.query(read).unwrap();
+    assert_eq!(recovered.rows.len(), 2);
+    assert_eq!(
+        recovered.rows[0].get("id"),
+        Some(&Value::String("prior".into()))
+    );
+    assert_eq!(
+        recovered.rows[1].get("id"),
+        Some(&Value::String("retry".into()))
+    );
+    drop(reopened);
+    std::fs::remove_dir_all(path).unwrap();
+}
+
+#[test]
 fn returns_relationship_endpoint_properties() {
     let mut db = Database::new();
     db.query("CREATE (:Entity {id: 'left'})-[:RELATES_TO]->(:Entity {id: 'right'})")
@@ -9125,9 +9267,9 @@ fn relational_insert_returning_conflicts_cover_checkpoint_base_and_live_delta() 
 #[test]
 fn relational_insert_returning_result_budget_fails_before_staging() {
     let mut db = Database::new_with_config(DatabaseConfig {
-        mutation_limits: hawdb_storage::MutationLimits {
+        mutation_limits: hawdb_storage::mutation::MutationLimits {
             max_result_rows: NonZeroUsize::new(1).unwrap(),
-            ..hawdb_storage::MutationLimits::default()
+            ..hawdb_storage::mutation::MutationLimits::default()
         },
         ..DatabaseConfig::default()
     });
@@ -9155,9 +9297,9 @@ fn relational_insert_returning_result_budget_fails_before_staging() {
 #[test]
 fn relational_insert_returning_payload_budget_fails_before_staging() {
     let mut db = Database::new_with_config(DatabaseConfig {
-        mutation_limits: hawdb_storage::MutationLimits {
+        mutation_limits: hawdb_storage::mutation::MutationLimits {
             max_result_payload_bytes: NonZeroUsize::new(4).unwrap(),
-            ..hawdb_storage::MutationLimits::default()
+            ..hawdb_storage::mutation::MutationLimits::default()
         },
         ..DatabaseConfig::default()
     });

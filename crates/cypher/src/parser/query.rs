@@ -453,14 +453,20 @@ impl Parser<'_> {
         }
         let distinct = self.consume_keyword("DISTINCT");
         let returns = self.parse_return_items()?;
-        let with_projection_has_window = with_clause.with_projection.is_some();
+        // A later MATCH or aggregate can change cardinality. Preserve the lexical WITH
+        // window separately from RETURN's window instead of folding them.
+        let retain_with_window = with_clause.with_projection.is_some()
+            || post_with_match.is_some()
+            || returns
+                .iter()
+                .any(|item| matches!(item.expression.kind, ReturnExpressionKind::Aggregate(_)));
         let order_by = if self.consume_keyword("ORDER") {
             if !with_order_by.is_empty() {
                 return Err(self.error("ORDER BY is already attached to WITH"));
             }
             self.expect_keyword("BY")?;
             self.parse_order_items()?
-        } else if with_projection_has_window {
+        } else if retain_with_window {
             Vec::new()
         } else {
             with_order_by.clone()
@@ -470,7 +476,7 @@ impl Parser<'_> {
                 return Err(self.error("offset is already attached to WITH"));
             }
             Some(self.parse_value()?)
-        } else if with_projection_has_window {
+        } else if retain_with_window {
             None
         } else {
             with_offset.clone()
@@ -480,26 +486,22 @@ impl Parser<'_> {
                 return Err(self.error("LIMIT is already attached to WITH"));
             }
             Some(self.parse_value()?)
-        } else if with_projection_has_window {
+        } else if retain_with_window {
             None
         } else {
             with_limit.clone()
         };
-        let with_order_by = if with_projection_has_window {
+        let with_order_by = if retain_with_window {
             with_order_by
         } else {
             Vec::new()
         };
-        let with_offset = if with_projection_has_window {
+        let with_offset = if retain_with_window {
             with_offset
         } else {
             None
         };
-        let with_limit = if with_projection_has_window {
-            with_limit
-        } else {
-            None
-        };
+        let with_limit = if retain_with_window { with_limit } else { None };
         Ok(Statement::MatchReturn(Box::new(MatchReturn {
             vector_seed: None,
             variable,

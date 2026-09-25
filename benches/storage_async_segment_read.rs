@@ -19,7 +19,7 @@ use hawdb_qos::{
     RuntimeGovernorConfig, RuntimeMemorySnapshot, RuntimeResourceBudget, RuntimeResourceSnapshot,
     RuntimeWorkPriority, RuntimeWorkRequest,
 };
-use hawdb_storage::{
+use hawdb_storage::scan::{
     FileSegmentRangeReader, SegmentReadExecutor, SegmentReadPool, SegmentReadRange,
     SegmentReadSchedule, SegmentReadScheduler,
 };
@@ -288,7 +288,7 @@ fn measure_blocking(path: &Path, depth: NonZeroUsize, schedule: &SegmentReadSche
                             checksum = accumulate_checksum(checksum, &payload);
                             Ok::<(), Infallible>(())
                         })?;
-                    Ok::<_, hawdb_storage::SegmentReadExecutionError<Infallible>>((
+                    Ok::<_, hawdb_storage::scan::SegmentReadExecutionError<Infallible>>((
                         report.bytes_read,
                         checksum,
                     ))
@@ -368,7 +368,7 @@ fn benchmark_request(depth: NonZeroUsize) -> RuntimeWorkRequest {
     .with_io_wave_slots(depth.get())
 }
 
-fn accumulate_checksum(current: u64, payload: &hawdb_storage::SegmentReadPayload) -> u64 {
+fn accumulate_checksum(current: u64, payload: &hawdb_storage::scan::SegmentReadPayload) -> u64 {
     let segment_id = payload
         .range
         .segment_ids

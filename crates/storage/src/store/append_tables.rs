@@ -16,7 +16,7 @@ use super::*;
 
 impl GraphStore {
     #[doc(hidden)]
-    pub fn append_state(&self) -> &hawdb_storage::AppendState {
+    pub fn append_state(&self) -> &hawdb_storage::append_table::AppendState {
         &self.append_state
     }
 
@@ -36,8 +36,8 @@ impl GraphStore {
     pub fn read_append_partition(
         &self,
         table: &str,
-        partition: &hawdb_storage::RelationalKey,
-        after: Option<&hawdb_storage::RelationalKey>,
+        partition: &hawdb_storage::relational::RelationalKey,
+        after: Option<&hawdb_storage::relational::RelationalKey>,
         max_rows: usize,
     ) -> Result<AppendSegmentReadOutput> {
         self.read_append_partition_bounded(table, partition, after, max_rows, usize::MAX)
@@ -46,8 +46,8 @@ impl GraphStore {
     pub fn read_append_partition_bounded(
         &self,
         table: &str,
-        partition: &hawdb_storage::RelationalKey,
-        after: Option<&hawdb_storage::RelationalKey>,
+        partition: &hawdb_storage::relational::RelationalKey,
+        after: Option<&hawdb_storage::relational::RelationalKey>,
         max_rows: usize,
         max_payload_bytes: usize,
     ) -> Result<AppendSegmentReadOutput> {
@@ -64,10 +64,10 @@ impl GraphStore {
     #[doc(hidden)]
     pub fn read_append_partition_from_state_bounded(
         &self,
-        append_state: &hawdb_storage::AppendState,
+        append_state: &hawdb_storage::append_table::AppendState,
         table: &str,
-        partition: &hawdb_storage::RelationalKey,
-        after: Option<&hawdb_storage::RelationalKey>,
+        partition: &hawdb_storage::relational::RelationalKey,
+        after: Option<&hawdb_storage::relational::RelationalKey>,
         max_rows: usize,
         max_payload_bytes: usize,
     ) -> Result<AppendSegmentReadOutput> {
@@ -96,12 +96,12 @@ impl GraphStore {
                     .output_payload_bytes
                     .checked_add(row_payload_bytes)
                     .ok_or_else(|| {
-                        hawdb_storage::AppendTableError::Admission(
+                        hawdb_storage::append_table::AppendTableError::Admission(
                             "append read payload size overflow".to_string(),
                         )
                     })?;
                 if next_payload_bytes > max_payload_bytes {
-                    return Err(hawdb_storage::AppendTableError::Admission(format!(
+                    return Err(hawdb_storage::append_table::AppendTableError::Admission(format!(
                         "append read produced {next_payload_bytes} payload bytes, exceeding limit {max_payload_bytes}"
                     )));
                 }
@@ -161,7 +161,7 @@ pub(crate) use hawdb_storage::append_table::{append_row_payload_bytes, merge_liv
 #[cfg(test)]
 mod tests {
     use super::*;
-    use hawdb_storage::{
+    use hawdb_storage::relational::{
         RelationalColumnSchema, RelationalInsertMode, RelationalKey, RelationalRow,
         RelationalScalarType, RelationalTableSchema, RelationalValue, RelationalWrite,
     };

@@ -24,8 +24,8 @@ use super::deletion::{encoded_file_len as deletion_vector_file_len, DeletionVect
 use super::encoding::Cursor;
 use super::group::ColumnGroupReader;
 use super::{corrupt, unsupported, ColumnGroupError};
+use crate::cache::ManifestGeneration;
 use crate::durability::durable_replace_file;
-use crate::ManifestGeneration;
 use hawdb_integrity::{crc32c, IntegrityHasher, Sha256Digest, SHA256_BYTES};
 use std::collections::BTreeSet;
 use std::fs::{self, File, OpenOptions};

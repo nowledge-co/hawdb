@@ -26,7 +26,7 @@ use hawdb_optimizer::{
 use hawdb_plan_cache::PlanCacheLookup;
 use hawdb_plan_cypher::{visit_plan, NodeProjectionAccess, PhysicalPlan};
 use hawdb_qos::WorkRequest;
-use hawdb_storage::ScanPruningReport;
+use hawdb_storage::scan::ScanPruningReport;
 use std::collections::BTreeMap;
 
 /// Inputs for structured embedded `EXPLAIN` output.

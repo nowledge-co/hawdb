@@ -42,7 +42,7 @@ use crate::SharedExecutorPool;
 use crate::{ExecutionLimit, ExecutionMemoryConfig, QueryMemoryLedger};
 use hawdb_core::{Catalog, HawDBError, Result, RuntimeTaskContext, Value};
 use hawdb_plan_cypher::{PhysicalPlan, PlanChildren, Predicate, Projection, ProjectionExpression};
-use hawdb_storage::{NodeRecord, ScanPruningReport};
+use hawdb_storage::{scan::ScanPruningReport, NodeRecord};
 use lending::{
     admitted_numeric_batch_rows, LendingBatchCursor, NumericNodeBatch, NumericNodeBatchCursor,
     OwnedNumericBatchBuffer,
@@ -574,10 +574,10 @@ impl<'a> NumericFragment<'a> {
         context
             .observer
             .record_scan_pruning_report(ScanPruningReport {
-                target_kind: hawdb_storage::ScanPruningTargetKind::Node,
+                target_kind: hawdb_storage::scan::ScanPruningTargetKind::Node,
                 label_id: Some(label_id),
                 rel_type_id: None,
-                strategy: hawdb_storage::ScanPruningStrategy::FullLabelScan,
+                strategy: hawdb_storage::scan::ScanPruningStrategy::FullLabelScan,
                 pruned: false,
                 exact_empty: candidate_count == 0,
                 candidate_count_before_pruning: candidate_count,

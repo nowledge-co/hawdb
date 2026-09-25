@@ -14,11 +14,11 @@
 
 use super::*;
 use hawdb_core::Value;
-use hawdb_storage::relational_index_view::RelationalIndexReadView;
-use hawdb_storage::{
+use hawdb_storage::relational::{
     RelationalIndexChangeCapture, RelationalIndexShadowConfig, RelationalIndexShadowReader,
     RelationalIndexShadowWriter, RelationalTransaction,
 };
+use hawdb_storage::relational_index_view::RelationalIndexReadView;
 use std::path::PathBuf;
 use std::sync::Arc;
 
@@ -93,7 +93,7 @@ impl Fixture {
     }
 
     pub fn recovered(&self) -> (Reader, RelationalState, Oracle) {
-        use hawdb_storage::{
+        use hawdb_storage::relational::{
             RelationalIndexRecoveryBuilder, RelationalIndexRecoveryConfig,
             RelationalIndexRecoveryReader, RelationalRecoveryFence,
             RelationalRecoverySourceIdentity,

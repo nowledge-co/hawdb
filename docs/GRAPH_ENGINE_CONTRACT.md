@@ -35,7 +35,7 @@ which is exactly the pattern to extend:
 - `hawdb_search::SearchProjectionSource` — implemented in `src/search.rs`.
 - `hawdb_system_sql::SystemSqlStore` (`crates/system-sql`) — implemented in
   `src/store.rs` (`commit_epoch`, `statistics`, `projected_graph_statuses`, …).
-- Host seams are already abstracted: `hawdb_storage::BackgroundWorkAdmission`
+- Host seams are already abstracted: `hawdb_storage::background::BackgroundWorkAdmission`
   for the QoS governor, `TelemetrySink` for telemetry.
 
 ## Blockers

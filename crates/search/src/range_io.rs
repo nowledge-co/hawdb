@@ -19,7 +19,7 @@ use super::{
 };
 use crate::error::{HawDBError, Result};
 use hawdb_qos::{IoConcurrencyBudget, StorageDeviceProfile};
-use hawdb_storage::{
+use hawdb_storage::scan::{
     FileSegmentRangeReader, SegmentReadExecutor, SegmentReadRange, SegmentReadScheduler,
 };
 use std::collections::BTreeMap;

@@ -768,12 +768,12 @@ fn sidecar_round_trips_payload_ranges_and_exact_cursors() {
     assert_eq!(manifest.segments().len(), 1);
     let plan = manifest.plan_scan(
         4,
-        &crate::ScanPredicate::Eq {
+        &crate::scan::ScanPredicate::Eq {
             property: "id".to_string(),
             value: Value::String("source-1".to_string()),
         },
     );
-    let crate::ScanSegmentAccessPlan::Read(plan) = plan else {
+    let crate::scan::ScanSegmentAccessPlan::Read(plan) = plan else {
         panic!("expected scan");
     };
     assert_eq!(plan.segments.len(), 1);

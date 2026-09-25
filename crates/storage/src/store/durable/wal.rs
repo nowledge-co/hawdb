@@ -23,9 +23,12 @@ use crate::store::{
     WAL_BINARY_FILE_HEADER_BYTES,
 };
 use hawdb_storage::{
-    available_storage_space, durable_replace_file, DurabilityPolicy, StorageDebtController,
-    StoragePressureSignals, WalAppendTelemetry, WalSyncGroupFlush, WalSyncGroupProgress,
-    WalSyncGroupState,
+    config::DurabilityPolicy,
+    durability::{
+        durable_replace_file, WalSyncGroupFlush, WalSyncGroupProgress, WalSyncGroupState,
+    },
+    pressure::{available_storage_space, StorageDebtController, StoragePressureSignals},
+    telemetry::WalAppendTelemetry,
 };
 use std::fs::{self, File, OpenOptions};
 use std::io::Write;
@@ -309,12 +312,12 @@ impl DurableStore {
             .join(",");
         let recovery = if pressure
             .reason_codes
-            .contains(&hawdb_storage::StoragePressureReasonCode::IntegrityPoisoned)
+            .contains(&hawdb_storage::pressure::StoragePressureReasonCode::IntegrityPoisoned)
         {
             "close and reopen the database before retrying"
         } else if pressure
             .reason_codes
-            .contains(&hawdb_storage::StoragePressureReasonCode::FreeSpaceReserve)
+            .contains(&hawdb_storage::pressure::StoragePressureReasonCode::FreeSpaceReserve)
         {
             "free storage space before retrying"
         } else {

@@ -18,7 +18,7 @@
 //! per-generation typed layouts. Graph scanning, publication orchestration,
 //! and the admission token remain in the embedded facade.
 
-use crate::durable_replace_file;
+use crate::durability::durable_replace_file;
 use hawdb_core::{HawDBError, PropertyId, Result, Value};
 use hawdb_integrity::crc32c;
 use std::collections::BTreeMap;

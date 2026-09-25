@@ -283,9 +283,10 @@ pub use hawdb_qos::{
     ProcessMemoryPolicySnapshot, ProcessMemoryProfile, ProcessMemorySnapshot, RuntimeAdmissionCode,
     RuntimeAdmissionError, RuntimeGovernor, RuntimeGovernorConfig, RuntimeGovernorLimits,
     RuntimeGovernorSnapshot, RuntimeIoReservationScope, RuntimeMemoryPressure,
-    RuntimeMemorySnapshot, RuntimeResourceBudget, RuntimeResourceSnapshot, RuntimeTelemetryEvent,
-    RuntimeTelemetryEventKind, RuntimeTelemetrySink, RuntimeWorkKind, RuntimeWorkPriority,
-    RuntimeWorkRequest, StorageDeviceDiscoverySource, StorageDeviceProfile, StorageMediaKind,
+    RuntimeMemorySnapshot, RuntimePermit, RuntimeResourceBudget, RuntimeResourceSnapshot,
+    RuntimeTelemetryEvent, RuntimeTelemetryEventKind, RuntimeTelemetrySink, RuntimeWorkKind,
+    RuntimeWorkPriority, RuntimeWorkRequest, StorageDeviceDiscoverySource, StorageDeviceProfile,
+    StorageMediaKind,
 };
 pub use hawdb_readiness::embedded_query_path::{
     EmbeddedQueryEntrypoint, EmbeddedQueryPathReadiness, EMBEDDED_QUERY_PATH_READINESS_PROTOCOL,
@@ -296,8 +297,7 @@ pub use hawdb_runtime_tokio::{
     TokioRuntimeAdapter, TokioRuntimeConfig, TokioRuntimeError, TokioRuntimeOwnership,
     TokioSegmentReadExecutionError, TokioSegmentReadExecutor, TokioTaskError,
 };
-pub use hawdb_storage::ScanPredicate;
-pub use hawdb_storage::{
+pub use hawdb_storage::projection_generation::{
     decode_projection_relational_member, encode_projection_relational_member,
     ProjectionGenerationBatchLimits, ProjectionGenerationBegin, ProjectionGenerationCursor,
     ProjectionGenerationDigestBuilder, ProjectionGenerationError, ProjectionGenerationGcLimits,
@@ -307,6 +307,7 @@ pub use hawdb_storage::{
     ProjectionGenerationSeal, ProjectionGenerationState, ProjectionGenerationStatus,
     ProjectionGenerationStore, ProjectionGenerationWriter, SealedProjectionGeneration,
 };
+pub use hawdb_storage::scan::ScanPredicate;
 #[cfg(feature = "vector-search")]
 pub use hawdb_vector_projection::{
     KernelPreference as RaBitQKernelPreference,

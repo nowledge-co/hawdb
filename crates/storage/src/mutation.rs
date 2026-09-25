@@ -47,8 +47,8 @@ pub struct MutationLimits {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct MutationSummary {
     pub rows: Vec<BTreeMap<String, Value>>,
-    pub relational_mutation_outcomes: Vec<crate::RelationalMutationOutcome>,
-    pub append_mutation_outcomes: Vec<crate::AppendMutationOutcome>,
+    pub relational_mutation_outcomes: Vec<crate::relational::RelationalMutationOutcome>,
+    pub append_mutation_outcomes: Vec<crate::append_table::AppendMutationOutcome>,
 }
 
 impl Default for MutationLimits {

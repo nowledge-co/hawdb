@@ -26,8 +26,11 @@ use crate::store::{
     MANIFEST_FILE, STABLE_ID_MAPPING_FILE,
 };
 use hawdb_storage::{
-    append_generation_manifest_file, append_segment_file, AppendGenerationReader,
-    AppendPublicationConfig, StorageBackupReport,
+    append_table::{
+        append_generation_manifest_file, append_segment_file, AppendGenerationReader,
+        AppendPublicationConfig,
+    },
+    backup::StorageBackupReport,
 };
 use std::collections::{BTreeMap, BTreeSet};
 use std::fs::{self};
@@ -59,27 +62,39 @@ impl DurableStore {
                 sources.insert(relational_checkpoint_name, relational_checkpoint_path);
             }
             if let Some(binding) = self.relational_index_generation_artifacts {
-                let page_name =
-                    hawdb_storage::relational_index_shadow_artifact_file(binding.generation);
-                let manifest_name = hawdb_storage::relational_index_shadow_manifest_generation_file(
+                let page_name = hawdb_storage::relational::relational_index_shadow_artifact_file(
                     binding.generation,
                 );
+                let manifest_name =
+                    hawdb_storage::relational::relational_index_shadow_manifest_generation_file(
+                        binding.generation,
+                    );
                 sources.insert(page_name.clone(), self.root_path.join(page_name));
                 sources.insert(manifest_name.clone(), self.root_path.join(manifest_name));
             }
             if let Some(binding) = self.relational_row_generation_artifacts {
                 for name in [
-                    hawdb_storage::relational_row_page_root_descriptor_file(binding.generation),
-                    hawdb_storage::relational_row_page_root_key_file(binding.generation),
-                    hawdb_storage::relational_row_page_manifest_generation_file(binding.generation),
+                    hawdb_storage::relational::relational_row_page_root_descriptor_file(
+                        binding.generation,
+                    ),
+                    hawdb_storage::relational::relational_row_page_root_key_file(
+                        binding.generation,
+                    ),
+                    hawdb_storage::relational::relational_row_page_manifest_generation_file(
+                        binding.generation,
+                    ),
                 ] {
                     sources.insert(name.clone(), self.root_path.join(name));
                 }
             }
             if let Some(binding) = self.relational_overflow_generation_artifacts {
                 for name in [
-                    hawdb_storage::relational_overflow_descriptor_file(binding.generation),
-                    hawdb_storage::relational_overflow_manifest_generation_file(binding.generation),
+                    hawdb_storage::relational::relational_overflow_descriptor_file(
+                        binding.generation,
+                    ),
+                    hawdb_storage::relational::relational_overflow_manifest_generation_file(
+                        binding.generation,
+                    ),
                 ] {
                     sources.insert(name.clone(), self.root_path.join(name));
                 }
@@ -108,7 +123,8 @@ impl DurableStore {
                 })
                 .map_err(|error| HawDBError::Storage(error.to_string()))?;
             for physical_generation in overflow_extent_generations {
-                let name = hawdb_storage::relational_overflow_extent_file(physical_generation);
+                let name =
+                    hawdb_storage::relational::relational_overflow_extent_file(physical_generation);
                 sources.insert(name.clone(), self.root_path.join(name));
             }
             let row_root = self.open_bound_relational_row_pages(&overflow_root)?;
@@ -128,7 +144,9 @@ impl DurableStore {
                     .map_err(|error| HawDBError::Storage(error.to_string()))?;
             }
             for physical_generation in row_page_generations {
-                let name = hawdb_storage::relational_row_page_artifact_file(physical_generation);
+                let name = hawdb_storage::relational::relational_row_page_artifact_file(
+                    physical_generation,
+                );
                 sources.insert(name.clone(), self.root_path.join(name));
             }
             if self.canonical_manifest_encoded_len.is_some() {
@@ -143,8 +161,8 @@ impl DurableStore {
                         .join(canonical_manifest_generation_file(generation)),
                 );
                 for name in [
-                    hawdb_storage::canonical_segment_descriptor_page_file(generation),
-                    hawdb_storage::canonical_segment_descriptor_root_file(generation),
+                    hawdb_storage::canonical::canonical_segment_descriptor_page_file(generation),
+                    hawdb_storage::canonical::canonical_segment_descriptor_root_file(generation),
                 ] {
                     sources.insert(name.clone(), self.root_path.join(name));
                 }
@@ -156,8 +174,12 @@ impl DurableStore {
                         .join(canonical_adjacency_artifact_generation_file(generation)),
                 );
                 for name in [
-                    hawdb_storage::canonical_adjacency_descriptor_page_file(generation),
-                    hawdb_storage::canonical_adjacency_descriptor_root_file(generation),
+                    hawdb_storage::canonical_adjacency::canonical_adjacency_descriptor_page_file(
+                        generation,
+                    ),
+                    hawdb_storage::canonical_adjacency::canonical_adjacency_descriptor_root_file(
+                        generation,
+                    ),
                 ] {
                     sources.insert(name.clone(), self.root_path.join(name));
                 }
@@ -174,8 +196,8 @@ impl DurableStore {
                         .join(property_spill_manifest_generation_file(generation)),
                 );
                 for name in [
-                    hawdb_storage::property_spill_descriptor_page_file(generation),
-                    hawdb_storage::property_spill_descriptor_root_file(generation),
+                    hawdb_storage::property_spill::property_spill_descriptor_page_file(generation),
+                    hawdb_storage::property_spill::property_spill_descriptor_root_file(generation),
                 ] {
                     sources.insert(name.clone(), self.root_path.join(name));
                 }
@@ -192,8 +214,12 @@ impl DurableStore {
                         .join(property_projection_manifest_generation_file(generation)),
                 );
                 for name in [
-                    hawdb_storage::property_projection_descriptor_page_file(generation),
-                    hawdb_storage::property_projection_descriptor_root_file(generation),
+                    hawdb_storage::property_projection::property_projection_descriptor_page_file(
+                        generation,
+                    ),
+                    hawdb_storage::property_projection::property_projection_descriptor_root_file(
+                        generation,
+                    ),
                 ] {
                     sources.insert(name.clone(), self.root_path.join(name));
                 }

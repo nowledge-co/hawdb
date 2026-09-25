@@ -15,7 +15,7 @@
 use super::*;
 use hawdb_executor::{BlockingOperatorMemoryReport, QueryRows};
 use hawdb_optimizer::{RelationalJoinEnumerationConfig, RelationalOperatorKind};
-use hawdb_storage::RelationalHydrationBudget;
+use hawdb_storage::relational::RelationalHydrationBudget;
 use std::collections::{BTreeMap, BTreeSet};
 
 type ExpectedNode = (
@@ -143,7 +143,7 @@ impl Case {
         let index = |table: &str| RelationalIndexExecutionEvidence {
             table: table.into(),
             index: if self.kind == 1 {
-                hawdb_storage::RELATIONAL_PRIMARY_INDEX_NAME.into()
+                hawdb_storage::relational::RELATIONAL_PRIMARY_INDEX_NAME.into()
             } else {
                 "idx_x".into()
             },

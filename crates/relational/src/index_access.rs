@@ -13,9 +13,11 @@
 // limitations under the License.
 
 use crate::index_runtime::RelationalIndexStoreReader;
+use hawdb_storage::relational::{
+    RelationalIndexReadLimits, RelationalIndexShadowError, RelationalKey,
+};
 use hawdb_storage::relational_index_view::RelationalIndexReadViewReport;
 use hawdb_storage::store::{GraphStore, RelationalIndexProbeStatistics};
-use hawdb_storage::{RelationalIndexReadLimits, RelationalIndexShadowError, RelationalKey};
 
 #[doc(hidden)]
 pub type RelationalIndexReadMode<'a> =
@@ -63,7 +65,7 @@ impl RelationalIndexStoreReader for GraphStore {
         &self,
         table: &str,
         index: &str,
-        scan: &hawdb_storage::RelationalIndexRangeScan,
+        scan: &hawdb_storage::relational::RelationalIndexRangeScan,
         limits: RelationalIndexReadLimits,
         visit: impl FnMut(&RelationalKey, &RelationalKey) -> bool,
     ) -> Option<std::result::Result<RelationalIndexReadViewReport, RelationalIndexShadowError>>

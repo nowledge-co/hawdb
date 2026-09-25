@@ -21,16 +21,20 @@ use crate::field_plan::RelationalFieldPlan;
 use hawdb_core::RuntimeTaskContext;
 use hawdb_core::{HawDBError, Result};
 use hawdb_storage::{
-    decode_projection_relational_member, encode_relational_primary_key, ProjectionGenerationError,
-    ProjectionGenerationReadLimits, ProjectionGenerationReader, RelationalError,
-    RelationalHydrationBudget, RelationalKey, RelationalProjectedField, RelationalProjectedRow,
-    RelationalProjectedRowView, RelationalRow, RelationalRowPageDemandReadError,
-    RelationalRowPageProjectedFields, RelationalRowPageProjectedRangeFields,
-    RelationalRowPageReadViewIdentity, RelationalRowPageSnapshotPointReport,
-    RelationalRowPageSnapshotPointsReport, RelationalRowPageSnapshotRangeReport,
-    RelationalRowPageSnapshotReadError, RelationalRowPageSnapshotReadLimits,
-    RelationalRowPageSnapshotReader, RelationalRowPageSnapshotRowSource, RelationalState,
-    RelationalValueRef,
+    projection_generation::{
+        decode_projection_relational_member, ProjectionGenerationError,
+        ProjectionGenerationReadLimits, ProjectionGenerationReader,
+    },
+    relational::{
+        encode_relational_primary_key, RelationalError, RelationalHydrationBudget, RelationalKey,
+        RelationalProjectedField, RelationalProjectedRow, RelationalProjectedRowView,
+        RelationalRow, RelationalRowPageDemandReadError, RelationalRowPageProjectedFields,
+        RelationalRowPageProjectedRangeFields, RelationalRowPageReadViewIdentity,
+        RelationalRowPageSnapshotPointReport, RelationalRowPageSnapshotPointsReport,
+        RelationalRowPageSnapshotRangeReport, RelationalRowPageSnapshotReadError,
+        RelationalRowPageSnapshotReadLimits, RelationalRowPageSnapshotReader,
+        RelationalRowPageSnapshotRowSource, RelationalState, RelationalValueRef,
+    },
 };
 use std::cell::RefCell;
 use std::collections::{BTreeMap, BTreeSet};
@@ -82,7 +86,7 @@ impl RelationalReadRow {
         &self.row.primary_key
     }
 
-    pub fn value(&self, ordinal: usize) -> Result<&hawdb_storage::RelationalValue> {
+    pub fn value(&self, ordinal: usize) -> Result<&hawdb_storage::relational::RelationalValue> {
         let field = self
             .row
             .fields
@@ -105,7 +109,7 @@ impl RelationalReadRow {
                     .primary_key
                     .0
                     .iter()
-                    .map(hawdb_storage::RelationalValue::estimated_payload_bytes)
+                    .map(hawdb_storage::relational::RelationalValue::estimated_payload_bytes)
                     .sum::<usize>(),
             )
             .saturating_add(
@@ -113,7 +117,7 @@ impl RelationalReadRow {
                     .fields
                     .iter()
                     .map(|field| {
-                        std::mem::size_of::<hawdb_storage::RelationalProjectedField>()
+                        std::mem::size_of::<hawdb_storage::relational::RelationalProjectedField>()
                             .saturating_add(field.value.estimated_payload_bytes())
                     })
                     .sum::<usize>(),
@@ -635,7 +639,7 @@ impl<'a> RelationalRowRuntime<'a> {
                 let read_result = reader
                     .visit_projected_range_fields_resolving(
                         RelationalRowPageProjectedRangeFields {
-                            range: hawdb_storage::RelationalRowPageProjectedRange {
+                            range: hawdb_storage::relational::RelationalRowPageProjectedRange {
                                 table,
                                 lower: Bound::Unbounded,
                                 upper: Bound::Unbounded,
@@ -722,7 +726,7 @@ impl<'a> RelationalRowRuntime<'a> {
                 let read_result = reader
                     .visit_projected_range_fields_resolving_ref(
                         RelationalRowPageProjectedRangeFields {
-                            range: hawdb_storage::RelationalRowPageProjectedRange {
+                            range: hawdb_storage::relational::RelationalRowPageProjectedRange {
                                 table,
                                 lower: Bound::Unbounded,
                                 upper: Bound::Unbounded,
@@ -828,7 +832,9 @@ impl<'a> RelationalRowRuntime<'a> {
     fn visit_projection_members(
         &self,
         table: &str,
-        visit: &mut dyn FnMut(&hawdb_storage::ProjectionGenerationMember) -> Result<bool>,
+        visit: &mut dyn FnMut(
+            &hawdb_storage::projection_generation::ProjectionGenerationMember,
+        ) -> Result<bool>,
     ) -> Result<bool> {
         let projection = self.projection.as_ref().ok_or_else(|| {
             HawDBError::StorageIntegrity(
@@ -845,8 +851,10 @@ impl<'a> RelationalRowRuntime<'a> {
     fn visit_projection_members_from(
         &self,
         table: &str,
-        mut cursor: Option<hawdb_storage::ProjectionGenerationCursor>,
-        visit: &mut dyn FnMut(&hawdb_storage::ProjectionGenerationMember) -> Result<bool>,
+        mut cursor: Option<hawdb_storage::projection_generation::ProjectionGenerationCursor>,
+        visit: &mut dyn FnMut(
+            &hawdb_storage::projection_generation::ProjectionGenerationMember,
+        ) -> Result<bool>,
     ) -> Result<bool> {
         let projection = self.projection.as_ref().ok_or_else(|| {
             HawDBError::StorageIntegrity(
@@ -889,7 +897,7 @@ impl<'a> RelationalRowRuntime<'a> {
     fn project_projection_member(
         &self,
         table: &str,
-        member: &hawdb_storage::ProjectionGenerationMember,
+        member: &hawdb_storage::projection_generation::ProjectionGenerationMember,
         fields: &[usize],
         hydration_fields: &[usize],
     ) -> Result<RelationalReadRow> {
@@ -961,7 +969,7 @@ impl<'a> RelationalRowRuntime<'a> {
 
     fn record_projection_page(
         &self,
-        report: &hawdb_storage::ProjectionGenerationReadReport,
+        report: &hawdb_storage::projection_generation::ProjectionGenerationReadReport,
     ) -> Result<()> {
         let mut evidence = self.evidence.borrow_mut();
         if evidence.projection_generation.as_deref() != Some(report.generation.as_str())
@@ -1069,7 +1077,7 @@ impl<'a> RelationalRowRuntime<'a> {
                 })
         };
         Ok(RelationalRowPageSnapshotReadLimits {
-            demand: hawdb_storage::RelationalRowPageDemandReadLimits {
+            demand: hawdb_storage::relational::RelationalRowPageDemandReadLimits {
                 max_pages: remaining(self.limits.demand.max_pages, evidence.logical_pages, "page")?,
                 max_rows: remaining(self.limits.demand.max_rows, evidence.rows_visited, "row")?,
                 max_bytes: remaining(self.limits.demand.max_bytes, evidence.logical_bytes, "byte")?,
@@ -1132,7 +1140,7 @@ impl<'a> RelationalRowRuntime<'a> {
     fn record(
         &self,
         identity: RelationalRowPageReadViewIdentity,
-        demand: &hawdb_storage::RelationalRowPageDemandReadReport,
+        demand: &hawdb_storage::relational::RelationalRowPageDemandReadReport,
         overlay_entries: usize,
         overlay_resident_bytes: usize,
     ) -> Result<()> {

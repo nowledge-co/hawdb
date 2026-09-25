@@ -452,6 +452,7 @@ fn spill_sort_run(
     let (run, mut writer) = spill_budget.create_run("sort")?;
     for row in rows.drain(..) {
         runtime_checkpoint(task_context)?;
+        writer.note_merge_record_bytes(row.memory_bytes());
         writer.write(row.ordinal, &row.binding, spill_budget)?;
     }
     runtime_checkpoint(task_context)?;
@@ -470,6 +471,7 @@ pub fn spill_top_n_run(
     let (run, mut writer) = spill_budget.create_run("topn")?;
     for row in rows {
         runtime_checkpoint(task_context)?;
+        writer.note_merge_record_bytes(row.memory_bytes());
         writer.write(row.ordinal, &row.binding, spill_budget)?;
     }
     runtime_checkpoint(task_context)?;
@@ -486,12 +488,16 @@ pub fn compact_sort_runs(
     blocking_account: &QueryMemoryAccount,
     task_context: Option<&RuntimeTaskContext>,
 ) -> Result<Vec<spill::SpillRun>> {
-    spill::compact_runs(
+    spill::compact_runs_with_memory(
         runs,
         NonZeroUsize::new(2).expect("two-way merge fan-in"),
-        spill::default_compaction_worker_limit(),
+        spill::CompactionMemory {
+            blocking: blocking_account,
+            spill: spill_budget,
+            worker_limit: spill::default_compaction_worker_limit(),
+        },
         task_context,
-        |left, right| {
+        |left, right, blocking_account, spill_budget| {
             merge_sort_run_pair(
                 left,
                 right,
@@ -543,6 +549,7 @@ fn merge_sort_run_pair(
     while let Some(entry) = heap.pop() {
         runtime_checkpoint(task_context)?;
         let run_index = entry.run_index;
+        writer.note_merge_record_bytes(entry.row.memory_bytes());
         writer.write(entry.row.ordinal, &entry.row.binding, spill_budget)?;
         tracker.release(entry.row.memory_bytes());
         if let Some(next) = read_sort_merge_entry(

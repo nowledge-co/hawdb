@@ -22,7 +22,8 @@ use crate::relational::{
     encode_relational_table_schema,
 };
 use crate::{
-    RelationalTableSchema, DEFAULT_MAX_WAL_BATCH_OPERATIONS, DEFAULT_MAX_WAL_RECORD_BYTES,
+    config::{DEFAULT_MAX_WAL_BATCH_OPERATIONS, DEFAULT_MAX_WAL_RECORD_BYTES},
+    relational::RelationalTableSchema,
 };
 use hawdb_integrity::{integrity_digest, SHA256_BYTES};
 
@@ -328,7 +329,9 @@ fn decode_envelope(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::{RelationalColumnSchema, RelationalRow, RelationalScalarType, RelationalValue};
+    use crate::relational::{
+        RelationalColumnSchema, RelationalRow, RelationalScalarType, RelationalValue,
+    };
 
     fn transaction() -> AppendTransaction {
         AppendTransaction {

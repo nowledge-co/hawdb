@@ -20,7 +20,7 @@
 use hawdb_core::{HawDBError, Result};
 use hawdb_ddl::{object_state_to_core, property_type_to_core, table_kind_to_core};
 use hawdb_plan_cypher::{PhysicalPlan, RelationshipOnCreateValue, SetValue};
-use hawdb_storage::{
+use hawdb_storage::mutation::{
     ConnectedNodesCreate, GraphMutation, MatchedRelationshipCopyMerge, MatchedRelationshipCreate,
     MatchedRelationshipMerge, MatchedRelationshipRetargetMerge,
     MatchedRelationshipSourceRetargetMerge, NodeSetAssignment, NodeSetValue,

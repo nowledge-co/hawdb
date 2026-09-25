@@ -17,7 +17,7 @@ use super::{
     encode_relational_key, IndexLeafPosting, IndexPageId, RelationalIndexRootDescriptor,
     RelationalIndexShadowError, RelationalIndexShadowReader,
 };
-use crate::{ImmutableIndexPage, ImmutableIndexPageBody, IndexPostingPage};
+use crate::index_page::{ImmutableIndexPage, ImmutableIndexPageBody, IndexPostingPage};
 use std::collections::BTreeMap;
 use std::num::{NonZeroU32, NonZeroUsize};
 
@@ -341,7 +341,7 @@ impl<'a> ReadContext<'a> {
     fn read_root(
         &mut self,
         descriptor: &RelationalIndexRootDescriptor,
-    ) -> Result<crate::IndexRootPage, RelationalIndexShadowError> {
+    ) -> Result<crate::index_page::IndexRootPage, RelationalIndexShadowError> {
         if descriptor.height > self.limits.max_tree_height.get() {
             return Err(self.admission(format!(
                 "index tree height {} exceeds read limit {}",
@@ -488,7 +488,7 @@ impl<'a> ReadContext<'a> {
 
     fn visit_forward_range_leaf(
         &mut self,
-        entries: Vec<crate::IndexLeafEntry>,
+        entries: Vec<crate::index_page::IndexLeafEntry>,
         start: usize,
         prefix: &[u8],
         visit: &mut impl FnMut(&super::RelationalKey, &super::RelationalKey) -> bool,
@@ -613,7 +613,7 @@ impl<'a> ReadContext<'a> {
 
     fn visit_leaf_prefix(
         &mut self,
-        entries: Vec<crate::IndexLeafEntry>,
+        entries: Vec<crate::index_page::IndexLeafEntry>,
         prefix: &[u8],
         visit: &mut impl FnMut(&super::RelationalKey, &super::RelationalKey) -> bool,
     ) -> Result<VisitOutcome, RelationalIndexShadowError> {

@@ -14,7 +14,10 @@
 
 //! Host-neutral Nowledge storage-recovery lifecycle protocol.
 
-use hawdb_storage::{RecoveryMode, StorageOpenTimings, StorageRecoveryReport};
+use hawdb_storage::{
+    config::RecoveryMode,
+    projection::{StorageOpenTimings, StorageRecoveryReport},
+};
 
 pub const NOWLEDGE_MEM_STORAGE_LIFECYCLE_DECISION_PROTOCOL: &str =
     "hawdb-nowledge-mem-storage-lifecycle-decision-v1";

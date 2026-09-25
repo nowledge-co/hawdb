@@ -1798,7 +1798,8 @@ impl GraphStore {
             });
         };
         let mut seed_token = None;
-        let mut estimate_report = hawdb_storage::PersistentPropertyProjectionReadReport::default();
+        let mut estimate_report =
+            hawdb_storage::property_projection::PersistentPropertyProjectionReadReport::default();
         for token in &query_tokens {
             let (estimated_entries, report) = projection
                 .estimate_full_text_token_entries(label_id, property, token)
@@ -1898,7 +1899,8 @@ impl GraphStore {
             _ => false,
         };
         let mut seed_token = None;
-        let mut estimate_report = hawdb_storage::PersistentPropertyProjectionReadReport::default();
+        let mut estimate_report =
+            hawdb_storage::property_projection::PersistentPropertyProjectionReadReport::default();
         for token in &query_tokens {
             let (estimated_entries, report) = projection
                 .estimate_full_text_token_entries(label_id, property, token)
@@ -2034,12 +2036,12 @@ impl GraphStore {
                                 reader
                                     .get_relationship(relationship_id)
                                     .map_err(|error| {
-                                        hawdb_storage::CanonicalAdjacencyError::Source(
+                                        hawdb_storage::canonical_adjacency::CanonicalAdjacencyError::Source(
                                             error.to_string(),
                                         )
                                     })?
                                     .ok_or_else(|| {
-                                        hawdb_storage::CanonicalAdjacencyError::Corrupt(format!(
+                                        hawdb_storage::canonical_adjacency::CanonicalAdjacencyError::Corrupt(format!(
                                             "canonical adjacency references missing relationship {}",
                                             relationship_id.0
                                         ))
@@ -2177,13 +2179,17 @@ impl GraphStore {
                     CanonicalAdjacencyEntry::CanonicalReference { relationship_id } => reader
                         .get_relationship(relationship_id)
                         .map_err(|error| {
-                            hawdb_storage::CanonicalAdjacencyError::Source(error.to_string())
+                            hawdb_storage::canonical_adjacency::CanonicalAdjacencyError::Source(
+                                error.to_string(),
+                            )
                         })?
                         .ok_or_else(|| {
-                            hawdb_storage::CanonicalAdjacencyError::Corrupt(format!(
-                                "canonical adjacency references missing relationship {}",
-                                relationship_id.0
-                            ))
+                            hawdb_storage::canonical_adjacency::CanonicalAdjacencyError::Corrupt(
+                                format!(
+                                    "canonical adjacency references missing relationship {}",
+                                    relationship_id.0
+                                ),
+                            )
                         })?,
                 };
                 if self.relationship_tombstones.contains(&relationship.id)
@@ -3213,7 +3219,7 @@ impl GraphStore {
         let candidate_count = plan.segments.iter().fold(0usize, |count, segment| {
             let segment_count = segment.candidates.as_ref().map_or_else(
                 || segment_row_counts[&segment.segment_id],
-                hawdb_storage::CandidateCursor::remaining,
+                hawdb_storage::scan::CandidateCursor::remaining,
             );
             count.saturating_add(usize::try_from(segment_count).unwrap_or(usize::MAX))
         });
@@ -3293,11 +3299,11 @@ impl GraphStore {
                         continue;
                     }
                     if consumer(row)? == GraphScanControl::Stop {
-                        return Ok(hawdb_storage::SegmentReadControl::Stop);
+                        return Ok(hawdb_storage::scan::SegmentReadControl::Stop);
                     }
                 }
             }
-            Ok::<_, HawDBError>(hawdb_storage::SegmentReadControl::Continue)
+            Ok::<_, HawDBError>(hawdb_storage::scan::SegmentReadControl::Continue)
         };
         let executor = SegmentReadExecutor::new(max_wave_bytes);
         let report = match task_context {
@@ -3465,7 +3471,7 @@ enum RelationshipProjectionProbe<'a> {
         property: &'a str,
         values: Vec<&'a Value>,
         estimated_entries: u64,
-        estimate_report: hawdb_storage::PersistentPropertyProjectionReadReport,
+        estimate_report: hawdb_storage::property_projection::PersistentPropertyProjectionReadReport,
     },
     Range {
         rel_type: RelTypeId,
@@ -3473,7 +3479,7 @@ enum RelationshipProjectionProbe<'a> {
         lower: Option<&'a (Value, bool)>,
         upper: Option<&'a (Value, bool)>,
         estimated_entries: u64,
-        estimate_report: hawdb_storage::PersistentPropertyProjectionReadReport,
+        estimate_report: hawdb_storage::property_projection::PersistentPropertyProjectionReadReport,
     },
 }
 
@@ -3489,7 +3495,9 @@ impl RelationshipProjectionProbe<'_> {
         }
     }
 
-    fn estimate_report(&self) -> hawdb_storage::PersistentPropertyProjectionReadReport {
+    fn estimate_report(
+        &self,
+    ) -> hawdb_storage::property_projection::PersistentPropertyProjectionReadReport {
         match self {
             Self::Equality {
                 estimate_report, ..
@@ -3502,7 +3510,7 @@ impl RelationshipProjectionProbe<'_> {
 
     fn replace_estimate_report(
         &mut self,
-        report: hawdb_storage::PersistentPropertyProjectionReadReport,
+        report: hawdb_storage::property_projection::PersistentPropertyProjectionReadReport,
     ) {
         match self {
             Self::Equality {
@@ -3568,7 +3576,7 @@ impl RelationshipProjectionProbe<'_> {
         >,
     ) -> std::result::Result<
         (
-            hawdb_storage::PersistentPropertyProjectionReadReport,
+            hawdb_storage::property_projection::PersistentPropertyProjectionReadReport,
             CanonicalScanControl,
         ),
         PersistentPropertyProjectionError,
@@ -3614,8 +3622,8 @@ impl RelationshipProjectionProbe<'_> {
 }
 
 fn accumulate_property_projection_report(
-    total: &mut hawdb_storage::PersistentPropertyProjectionReadReport,
-    report: hawdb_storage::PersistentPropertyProjectionReadReport,
+    total: &mut hawdb_storage::property_projection::PersistentPropertyProjectionReadReport,
+    report: hawdb_storage::property_projection::PersistentPropertyProjectionReadReport,
 ) {
     total.descriptor_pages_visited = total
         .descriptor_pages_visited
@@ -3662,7 +3670,8 @@ fn relationship_projection_probe<'a>(
         PropertyFilter::And(filters) => {
             let mut best = None;
             let mut selection_report =
-                hawdb_storage::PersistentPropertyProjectionReadReport::default();
+                hawdb_storage::property_projection::PersistentPropertyProjectionReadReport::default(
+                );
             for filter in filters {
                 let Some(candidate) = relationship_projection_probe(projection, rel_type, filter)?
                 else {
@@ -3719,7 +3728,8 @@ fn relationship_projection_probe<'a>(
                 .collect::<Vec<_>>();
             let mut estimated_entries = 0u64;
             let mut estimate_report =
-                hawdb_storage::PersistentPropertyProjectionReadReport::default();
+                hawdb_storage::property_projection::PersistentPropertyProjectionReadReport::default(
+                );
             for value in &values {
                 let (entries, report) =
                     projection.estimate_relationship_equality_entries(rel_type, property, value)?;

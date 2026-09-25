@@ -16,7 +16,7 @@
 
 use hawdb_core::{HawDBError, Result, RuntimeTaskContext};
 use hawdb_plan_cypher::{PhysicalPlan, PlanChildren, VectorExecutionResourceProfile};
-use hawdb_storage::MutationLimits;
+use hawdb_storage::mutation::MutationLimits;
 use std::num::{NonZeroU64, NonZeroUsize};
 use std::path::PathBuf;
 use std::time::Duration;

@@ -80,6 +80,13 @@ sh_test(
 )
 
 sh_test(
+    name = "consumer_profile_evidence_test",
+    size = "small",
+    srcs = ["scripts/measure-consumer-profiles.test.py"],
+    data = ["scripts/measure-consumer-profiles.py"],
+)
+
+sh_test(
     name = "publish_crates_script_test",
     size = "small",
     srcs = ["scripts/publish-crates.test.sh"],
@@ -154,6 +161,13 @@ _HAWDB_MINIMAL_DEPS = _HAWDB_COMMON_BASE_DEPS + [
     "//crates/search:hawdb_search_minimal",
 ]
 
+_HAWDB_GRAPH_TEXT_DEPS = _HAWDB_COMMON_BASE_DEPS + [
+    "//crates/bootstrap:hawdb_bootstrap_graph_text",
+    "//crates/nowledge-contracts:hawdb_nowledge_contracts_graph_text",
+    "//crates/readiness:hawdb_readiness_graph_text",
+    "//crates/search:hawdb_search_graph_text",
+]
+
 # crate_universe exposes optional normal dependencies to every Bazel target.
 # Keep the native vector dependency owned by targets that enable vector-search.
 _HAWDB_VECTOR_DEPS = [
@@ -179,6 +193,19 @@ rust_library(
     deps = _HAWDB_FULL_DEPS + _HAWDB_VECTOR_DEPS + [
         "//crates/runtime-tokio:hawdb_runtime_tokio",
     ],
+    proc_macro_deps = all_crate_deps(proc_macro = True),
+)
+
+# Matches `--no-default-features --features full-text-search` for embedded hosts.
+rust_library(
+    name = "hawdb_graph_text",
+    crate_name = "hawdb",
+    crate_root = "src/lib.rs",
+    crate_features = ["full-text-search"],
+    srcs = _HAWDB_SRCS,
+    edition = "2024",
+    aliases = aliases(),
+    deps = _HAWDB_GRAPH_TEXT_DEPS,
     proc_macro_deps = all_crate_deps(proc_macro = True),
 )
 
@@ -227,6 +254,60 @@ sh_test(
 )
 
 _HAWDB_STORAGE_CRASH_MATRIX_TEST = "api::tests::storage_recovery::subprocess_crash_matrix_recovers_whole_batches_and_artifact_generations"
+
+# Use the same external consumer source as the isolated Cargo profile matrix.
+[
+    rust_test(
+        name = "hawdb_%s_consumer_tests" % profile,
+        crate_root = "tools/consumer-profiles/src/main.rs",
+        srcs = ["tools/consumer-profiles/src/main.rs"],
+        crate_features = features,
+        edition = "2024",
+        deps = [facade],
+    )
+    for profile, facade, features in [
+        ("minimal", ":hawdb_minimal", ["database"]),
+        ("graph_text", ":hawdb_graph_text", ["database", "text"]),
+        ("default", ":hawdb", ["database", "text", "vector", "runtime", "full"]),
+    ]
+]
+
+[
+    genquery(
+        name = "hawdb_graph_text_%s_dependency_path" % name,
+        expression = "somepath(//:hawdb_graph_text, %s)" % dependency,
+        scope = [":hawdb_graph_text", dependency],
+    )
+    for name, dependency in [
+        ("simsimd", "@crate_index//:simsimd"),
+        ("vector_projection", "//crates/vector-projection:hawdb_vector_projection"),
+        ("tokio_runtime", "//crates/runtime-tokio:hawdb_runtime_tokio"),
+    ]
+]
+
+genquery(
+    name = "hawdb_graph_text_incompatible_variants",
+    expression = 'filter("//crates/(search|bootstrap|nowledge-contracts|readiness):hawdb_(search|bootstrap|nowledge_contracts|readiness)(_minimal|_acl)?$", deps(//:hawdb_graph_text))',
+    scope = [":hawdb_graph_text"],
+)
+
+sh_test(
+    name = "hawdb_graph_text_dependency_boundary_test",
+    size = "small",
+    srcs = ["scripts/check-empty-query-results.sh"],
+    args = [
+        "$(rootpath :hawdb_graph_text_simsimd_dependency_path)",
+        "$(rootpath :hawdb_graph_text_vector_projection_dependency_path)",
+        "$(rootpath :hawdb_graph_text_tokio_runtime_dependency_path)",
+        "$(rootpath :hawdb_graph_text_incompatible_variants)",
+    ],
+    data = [
+        ":hawdb_graph_text_simsimd_dependency_path",
+        ":hawdb_graph_text_vector_projection_dependency_path",
+        ":hawdb_graph_text_tokio_runtime_dependency_path",
+        ":hawdb_graph_text_incompatible_variants",
+    ],
+)
 
 rust_test(
     name = "hawdb_unit_fast_tests",
@@ -333,6 +414,10 @@ test_suite(
 test_suite(
     name = "hawdb_unit_tests",
     tests = [
+        ":hawdb_default_consumer_tests",
+        ":hawdb_graph_text_consumer_tests",
+        ":hawdb_graph_text_dependency_boundary_test",
+        ":hawdb_minimal_consumer_tests",
         ":hawdb_acl_capability_tests",
         ":hawdb_minimal_native_vector_boundary_test",
         ":hawdb_pgq_create_binder_tests",
@@ -344,6 +429,7 @@ test_suite(
         ":hawdb_search_projection_consumer_minimal_tests",
         ":hawdb_execution_request_contract_tests",
         ":hawdb_process_memory_policy_contract_tests",
+        ":hawdb_search_lexical_corpus_qualification_tests",
         ":hawdb_unit_fast_tests",
         ":hawdb_unit_storage_crash_matrix_tests",
     ],
@@ -538,6 +624,16 @@ rust_binary(
     crate_root = "examples/nowledge_previous_wrapper_shadow_adapter.rs",
     crate_features = _HAWDB_DEFAULT_FEATURES,
     srcs = ["examples/nowledge_previous_wrapper_shadow_adapter.rs"],
+    edition = "2024",
+    aliases = aliases(normal = True, proc_macro = True),
+    deps = all_crate_deps(normal = True) + [":hawdb"],
+    proc_macro_deps = all_crate_deps(proc_macro = True),
+)
+
+rust_test(
+    name = "hawdb_search_lexical_corpus_qualification_tests",
+    crate_root = "examples/search_lexical_corpus_qualification.rs",
+    srcs = ["examples/search_lexical_corpus_qualification.rs"],
     edition = "2024",
     aliases = aliases(normal = True, proc_macro = True),
     deps = all_crate_deps(normal = True) + [":hawdb"],

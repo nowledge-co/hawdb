@@ -305,6 +305,25 @@ handoff isolation, and the no-leak terminal-state invariant. The implementation
 records root budget, peak charge, completion charge, and account count in
 `PipelineMemoryReport`.
 
+Spill compaction also refines this model with independently reserved child
+accounts. `CreateChild` charges the child's entire allowance to its blocking or
+staging parent. `GrowChild` changes only the child's payload usage. Account
+owners and leases have separate lifetimes: dropping the last owner must retain
+the backing reservation while even a zero-byte lease survives. The configured
+instance includes two merges with blocking and staging children, five direct
+accounts, a four-unit root, and three-unit local budgets. It explores failed
+second-child admission by permitting the first child to be dropped without
+allocating payload. `ChildLeaseBacked` checks lifetime and child bounds;
+`PeakCoversReservations` includes capacity reserved for future allocation.
+Existing direct-reservation, ownership-transfer, result-handoff, and terminal
+invariants remain enabled. Two negative controls remove admission and release
+backing too early; they must violate `RootBudgetBounded` and `ChildLeaseBacked`.
+
+See [the spill-compaction proof](QUERY_MEMORY_COMPACTION_PROOF.md) for the
+inductive budget argument, run-bound derivation, scheduler correctness, concrete
+Rust transition mapping, and limits of this finite model. TLC is bounded model
+checking, not a machine-checked proof of the Rust implementation.
+
 Relational ordering refines the blocking-state and spill-staging branches with
 `ExternalTopN<RelationalSortRecord>`. Retained state contains typed sort keys,
 layout-slot row locators, and an executor-owned stable ordinal rather than
@@ -1373,6 +1392,78 @@ acyclic, lock tokens never have multiple owners or exceed the configured set,
 statement rollback preserves the pre-statement lock set, and a crash after WAL
 durability recovers the committed epoch.
 
+### Per-key validation coverage boundary
+
+The optimistic branch above is the earlier whole-epoch protocol, not a model of
+all current optimistic graph commits. `PrepareCommit` requires the base epoch
+to match the published epoch; `OptimisticFirstCommitterWins` asserts
+`commitEpoch = baseEpoch + 1`. The current Rust validator can accept a stale
+snapshot with disjoint graph writes, so that invariant is not a theorem about
+all Rust executions. Its full-exclusive-span assumption also does not model
+the current compatible optimistic-commit admission permits. The model has no
+per-key stamp map or tombstone watermark.
+Its lock/publication checks must not be cited as completion of #231's per-key
+validation, recovery or reclamation proof. The
+[protocol and conditional validation argument](../MVCC_COMMIT_VALIDATION_PROTOCOL.md)
+identify implemented paths and remaining acceptance work. The separate
+[`HawDBMvccValidation.tla`](HawDBMvccValidation.tla) checks per-key validation
+against a full-history oracle, including both broad-barrier directions,
+restart without surviving transactions, retained sources that start later
+transactions, and safe version-history pruning. Its
+[proof and source mapping](MVCC_VALIDATION_PROOF.md) document seven negative
+controls, reachability probes, and the limits of the finite abstraction. The
+older transaction model and its recorded results remain unchanged. The
+[`HawDBOptimisticCommitAdmission.tla`](HawDBOptimisticCommitAdmission.tla)
+model separately checks concurrent optimistic admission, exclusion against
+ordinary locks, permit lifetime, within-group conflict validation, sync-failure
+poisoning and acknowledgement retention across terminal crash. Recovery can
+retain an unacknowledged complete suffix but must preserve the original serial
+prefix and every acknowledged record. Its
+[proof](OPTIMISTIC_COMMIT_ADMISSION_PROOF.md) documents eight negative controls,
+four reachability probes and the limits of composition with the older models. The
+[`HawDBLockWaitFairness.tla`](HawDBLockWaitFairness.tla) model checks conflict-aware
+queue order, compatible bypass and eventual service under explicit weak-fairness
+and owner-release assumptions. The [queue/graph proof](LOCK_WAIT_FAIRNESS_PROOF.md)
+separates that one-request temporal result from source-level dynamic deadlock
+checks, bounded metadata admission and remaining whole-transaction fairness.
+
+[`HawDBVersionHistoryBudget.tla`](HawDBVersionHistoryBudget.tla) checks weighted
+current-index admission, safe pressure reclamation, refusal and the prepaid
+legacy Database barrier. It compares all usable pinned epochs with full-history
+validation and checks the charge against an independent resident-weight sum.
+The [budget proof](MVCC_VALIDATION_PROOF.md#finite-budget-model-and-negative-controls)
+records four negative controls and three reachability probes. Historical COW
+roots and allocator peaks remain outside this current-index estimate.
+
+[`HawDBRetainedVersionHistory.tla`](HawDBRetainedVersionHistory.tla) separately
+checks the shared budget for retained and staged root payload estimates:
+aliases share credit, candidate preparation reserves before copying, shared
+partial pruning reserves the full input weight, and only final-owner retirement
+refunds a root. Its [lease proof](MVCC_VALIDATION_PROOF.md#shared-retained-history-leases)
+records four mutants and three reachability witnesses. It bounds one open's
+snapshot/workspace lineage, excluding total allocator peaks and per-handle
+metadata; it does not extend the current-index model into a recovery theorem.
+
+[`HawDBRelationalWriteIntent.tla`](HawDBRelationalWriteIntent.tla) compares
+explicit relational write stamps against intent history, including unchanged
+final data and absent-key deletion. Its [source proof](RELATIONAL_MVCC_PROOF.md)
+records the primary-key eligibility boundary, the two negative controls, and
+why changefeed net-change capture cannot serve as an MVCC footprint. It does
+not extend the theorem to predicate replay, uniqueness or FK dependencies.
+
+Typed strict-append rows now use table-level MVCC identities. The
+[append footprint proof](APPEND_MVCC_PROOF.md) derives completeness from row and
+watermark ownership, maps those identities to the existing per-key model, and
+projects multi-table commits onto the one-table generated-order theorem. Opaque
+append WAL and unsupported relational writes retain their conservative barriers; the older
+single-table allocator model is not a database-wide sequence allocator.
+
+The [`HawDBTransactionAdmissionLease.tla`](HawDBTransactionAdmissionLease.tla)
+model adds caller/request reservation ownership across callback consumption,
+sync and retirement. Its [proof](TRANSACTION_ADMISSION_LEASE_PROOF.md) separates
+RuntimeGovernor leases from logical locks and documents resource-accounting
+and cancellation boundaries. It does not supersede the older recovery models.
+
 ## Demand-Paged Index Publication
 
 `HawDBIndexPublication.tla` models one manifest-selected row/index root pair,
@@ -1786,6 +1877,32 @@ checkpoint. Fault-injection, cross-platform recovery, and filesystem tests are
 still required to validate that the implementation refines these models and
 that the environmental assumptions hold.
 
+
+## Governed whole-writer progress
+
+[`HawDBGovernedWriterProgress.tla`](HawDBGovernedWriterProgress.tla) checks eventual
+completion of a full-capacity large transaction under recurring smaller arrivals
+with same-priority FIFO admission, stable resource capacity and eventual owner
+service. See [the source argument, negative controls and executable workload](GOVERNED_WRITER_PROGRESS_PROOF.md).
+This supplements, rather than generalizes, per-request lock fairness; arbitrary
+transaction retry fairness and ungoverned writers remain outside the theorem.
+
+
+## Constrained insert identities
+
+[`HawDBConstrainedInsertIntent.tla`](HawDBConstrainedInsertIntent.tla) compares
+primary/non-NULL unique stamp validation with independent intent history,
+including shared-parent reads and broad parent deletion. See the
+[source refinement and coverage](CONSTRAINED_INSERT_MVCC_PROOF.md). The three
+mutants reject missing unique identities, false NULL conflicts and false
+shared-parent write conflicts; destructive constraint work remains broad.
+
+## Complete primary-key predicates
+
+[`HawDBPrimaryKeyPredicate.tla`](HawDBPrimaryKeyPredicate.tla) checks necessary
+key bounds and stable predicate selection across unrelated row changes. See
+[the source induction and replay argument](PRIMARY_KEY_PREDICATE_MVCC_PROOF.md).
+The negative controls reject extraction through OR and dropping absent intents.
 
 ## Validated public result delivery
 

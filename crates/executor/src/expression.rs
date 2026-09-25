@@ -28,7 +28,7 @@ use hawdb_plan_cypher::{
     CoalesceDifferenceProjectionTerm, ComparisonOp, DatePart, Predicate, Projection,
     ProjectionExpression, SortDirection, SortItem, SortKey,
 };
-use hawdb_storage::{NodeRecord, PropertyFilter, RelRecord};
+use hawdb_storage::{mutation::PropertyFilter, NodeRecord, RelRecord};
 use std::collections::BTreeMap;
 
 type ValueRangeBound = (Value, bool);

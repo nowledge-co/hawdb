@@ -17,7 +17,7 @@ use hawdb_core::{HawDBError, Result, Value};
 use hawdb_plan_cypher::{
     GraphEntityKind, GraphMatchNode, GraphMatchProgram, GraphMatchStep, PhysicalPlan,
 };
-use hawdb_storage::{AdjacencyDirection, NodeId, NodeRecord, RelId};
+use hawdb_storage::{adjacency::AdjacencyDirection, NodeId, NodeRecord, RelId};
 use std::collections::{BTreeMap, BTreeSet};
 
 const MAX_MATCH_STEPS: usize = 32;

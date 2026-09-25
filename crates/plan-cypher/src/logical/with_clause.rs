@@ -235,16 +235,12 @@ pub(super) fn plan_collect_with_match_return(
             "WITH COLLECT RETURN must start with the grouped variable property".to_string(),
         ));
     };
-    Ok(LogicalPlan::Aggregate {
+    let aggregate = LogicalPlan::Aggregate {
         group_keys: vec![Projection {
-            expression: ProjectionExpression::Property {
+            expression: ProjectionExpression::Variable {
                 variable: variable.clone(),
-                property: property.clone(),
             },
-            name: group_item
-                .alias
-                .clone()
-                .unwrap_or_else(|| format!("{variable}.{property}")),
+            name: variable.clone(),
         }],
         items: vec![Aggregation {
             function: AggregateFunction::Collect,
@@ -256,6 +252,30 @@ pub(super) fn plan_collect_with_match_return(
             name: collect_with.alias.clone(),
         }],
         input: Box::new(input),
+    };
+    // WITH groups by the node, not by the property selected by RETURN.
+    // Distinct nodes can have equal (or missing) projected properties.
+    Ok(LogicalPlan::Project {
+        items: vec![
+            Projection {
+                expression: ProjectionExpression::ColumnProperty {
+                    column: variable.clone(),
+                    property: property.clone(),
+                },
+                name: group_item
+                    .alias
+                    .clone()
+                    .unwrap_or_else(|| format!("{variable}.{property}")),
+            },
+            Projection {
+                expression: ProjectionExpression::Column(collect_with.alias.clone()),
+                name: query.returns[1]
+                    .alias
+                    .clone()
+                    .unwrap_or_else(|| collect_with.alias.clone()),
+            },
+        ],
+        input: Box::new(aggregate),
     })
 }
 
@@ -694,6 +714,35 @@ pub(super) fn plan_aggregate_with_match_return(
             input: Box::new(input),
         };
     }
+    if !query.with_order_by.is_empty() {
+        input = LogicalPlan::Sort {
+            items: plan_sort_items(
+                &BTreeSet::new(),
+                &column_names,
+                &query.with_order_by,
+                parameters,
+            )?,
+            input: Box::new(input),
+        };
+    }
+    let with_offset = query
+        .with_offset
+        .as_ref()
+        .map(|offset| bind_pagination_value(offset, parameters, "offset"))
+        .transpose()?
+        .unwrap_or(0);
+    let with_limit = query
+        .with_limit
+        .as_ref()
+        .map(|limit| bind_pagination_value(limit, parameters, "limit"))
+        .transpose()?;
+    if with_offset > 0 || with_limit.is_some() {
+        input = LogicalPlan::Limit {
+            offset: with_offset,
+            limit: with_limit,
+            input: Box::new(input),
+        };
+    }
     if query
         .returns
         .iter()
@@ -728,6 +777,11 @@ pub(super) fn plan_aggregate_with_match_return(
         }
         return Ok(input);
     }
+    if let Some(lookup) = &query.post_with_match {
+        // A lookup can expand one group into several rows (or remove it).
+        // Final ordering and pagination belong above that cardinality change.
+        input = plan_post_with_node_lookup(input, lookup);
+    }
     if !query.order_by.is_empty() {
         input = LogicalPlan::Sort {
             items: plan_sort_items(&BTreeSet::new(), &column_names, &query.order_by, parameters)?,
@@ -746,14 +800,6 @@ pub(super) fn plan_aggregate_with_match_return(
         .map(|limit| bind_pagination_value(limit, parameters, "limit"))
         .transpose()?;
     if let Some(lookup) = &query.post_with_match {
-        if offset > 0 || limit.is_some() {
-            input = LogicalPlan::Limit {
-                offset,
-                limit,
-                input: Box::new(input),
-            };
-        }
-        input = plan_post_with_node_lookup(input, lookup);
         let lookup_scope = BTreeSet::from([lookup.variable.clone()]);
         let projections = query
             .returns
@@ -762,10 +808,18 @@ pub(super) fn plan_aggregate_with_match_return(
                 plan_projection_with_columns(&lookup_scope, &column_names, item, parameters)
             })
             .collect::<Result<Vec<_>>>()?;
-        return Ok(LogicalPlan::Project {
+        input = LogicalPlan::Project {
             items: projections,
             input: Box::new(input),
-        });
+        };
+        if offset > 0 || limit.is_some() {
+            input = LogicalPlan::Limit {
+                offset,
+                limit,
+                input: Box::new(input),
+            };
+        }
+        return Ok(input);
     }
     let projections = query
         .returns

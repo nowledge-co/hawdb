@@ -31,7 +31,10 @@ use hawdb_plan_cypher::{
     SetNodePropertiesReturnMode,
 };
 use hawdb_storage::mutation::evaluate::evaluate_node_set_value;
-use hawdb_storage::{GraphMutation, MutationLimits, NodeId, NodeSetAssignment};
+use hawdb_storage::{
+    mutation::{GraphMutation, MutationLimits, NodeSetAssignment},
+    NodeId,
+};
 use std::collections::BTreeMap;
 
 pub fn execute_mutation_with_store(

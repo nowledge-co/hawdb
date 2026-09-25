@@ -16,7 +16,7 @@ use hawdb_core::{HawDBError, Result, Value};
 use hawdb_executor::QueryRowRef;
 use hawdb_integrity::IntegrityHasher;
 use hawdb_sql::SqlStatement;
-use hawdb_storage::{
+use hawdb_storage::relational::{
     RelationalMutationLimits, RelationalOverflowConfig, RelationalState, RelationalTransaction,
     RelationalValue, RelationalWrite,
 };
@@ -452,7 +452,7 @@ pub fn is_engine_system_schema_bootstrap(state: &RelationalState) -> Result<bool
 
 fn decode_applied_system_schema_migration_row(
     owner: &str,
-    row: &hawdb_storage::RelationalRow,
+    row: &hawdb_storage::relational::RelationalRow,
 ) -> Result<AppliedSystemSchemaMigration> {
     let version = match row.values().get(2) {
         Some(RelationalValue::BigInt(version)) => u64::try_from(*version).map_err(|_| {
@@ -503,7 +503,7 @@ mod tests {
         validate_system_schema_registry, SystemSchemaMigration, SystemSchemaRegistry,
         ENGINE_SYSTEM_SCHEMA_OWNER,
     };
-    use hawdb_storage::RelationalState;
+    use hawdb_storage::relational::RelationalState;
 
     #[test]
     fn migration_checksum_binds_owner_order_and_statement_boundaries() {

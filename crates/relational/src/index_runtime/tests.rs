@@ -13,7 +13,7 @@
 // limitations under the License.
 
 use super::*;
-use hawdb_storage::{
+use hawdb_storage::relational::{
     RelationalIndexRangeScan, RelationalIndexReadReport, RelationalIndexRecoveryReadReport,
     RelationalIndexScanDirection, RelationalValue,
 };

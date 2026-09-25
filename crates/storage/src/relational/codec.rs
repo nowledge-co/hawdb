@@ -26,8 +26,9 @@ use super::{
     RelationalWrite, Uuid,
 };
 use crate::{
-    ContentDigest, FileSegmentRangeReader, SegmentReadRange, DEFAULT_MAX_CHECKPOINT_ENCODED_BYTES,
-    DEFAULT_MAX_WAL_RECORD_BYTES,
+    cache::ContentDigest,
+    config::{DEFAULT_MAX_CHECKPOINT_ENCODED_BYTES, DEFAULT_MAX_WAL_RECORD_BYTES},
+    scan::{FileSegmentRangeReader, SegmentReadRange},
 };
 use hawdb_integrity::{integrity_digest, IntegrityHasher, Sha256Digest, SHA256_BYTES};
 use std::collections::{BTreeMap, BTreeSet};

@@ -16,7 +16,7 @@ use super::{
     qualification_probe_error, relational_keys_digest, RelationalIndexViewQualificationOptions,
 };
 use crate::store::{GraphStore, HawDBError};
-use hawdb_storage::{
+use hawdb_storage::relational::{
     relational_foreign_key_index_name, RelationalForeignKeySchema, RelationalIndexDefinition,
     RelationalIndexRole, RelationalKey, RelationalScalarType, RelationalState,
     RelationalTableSchema, RelationalValue, RELATIONAL_PRIMARY_INDEX_NAME,
@@ -503,7 +503,7 @@ fn synthetic_value(kind: RelationalScalarType, ordinal: usize, salt: usize) -> R
 
 fn key_from_row(
     schema: &RelationalTableSchema,
-    row: &hawdb_storage::RelationalRow,
+    row: &hawdb_storage::relational::RelationalRow,
     columns: &[String],
 ) -> RelationalKey {
     RelationalKey(

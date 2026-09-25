@@ -17,7 +17,7 @@ use hawdb_core::{
     RuntimeCancellationReason, RuntimeIoWaveError, RuntimeIoWavePermit, RuntimeIoWaveTryAcquire,
     RuntimeTaskContext,
 };
-use hawdb_storage::{
+use hawdb_storage::scan::{
     SegmentRangeReader, SegmentReadControl, SegmentReadError, SegmentReadExecutionReport,
     SegmentReadPayload, SegmentReadSchedule,
 };
@@ -226,7 +226,7 @@ impl TokioSegmentReadExecutor {
     async fn read_chunk<R, E>(
         &self,
         reader: Arc<R>,
-        ranges: &[hawdb_storage::SegmentReadRange],
+        ranges: &[hawdb_storage::scan::SegmentReadRange],
         io_permit: Option<Box<dyn RuntimeIoWavePermit>>,
     ) -> Result<Vec<SegmentReadPayload>, TokioSegmentReadExecutionError<E>>
     where
@@ -342,7 +342,7 @@ mod tests {
         IoConcurrencyBudget, RuntimeGovernor, RuntimeGovernorConfig, RuntimeMemorySnapshot,
         RuntimeResourceBudget, RuntimeResourceSnapshot, RuntimeWorkPriority, RuntimeWorkRequest,
     };
-    use hawdb_storage::{SegmentReadRange, SegmentReadScheduler};
+    use hawdb_storage::scan::{SegmentReadRange, SegmentReadScheduler};
     use std::convert::Infallible;
     use std::future::{poll_fn, Future};
     use std::sync::atomic::{AtomicUsize, Ordering};
@@ -410,7 +410,7 @@ mod tests {
         fn read_range(
             &self,
             range: &SegmentReadRange,
-        ) -> Result<hawdb_storage::SegmentBytes, SegmentReadError> {
+        ) -> Result<hawdb_storage::cache::SegmentBytes, SegmentReadError> {
             let active = self.active.fetch_add(1, Ordering::AcqRel) + 1;
             self.peak.fetch_max(active, Ordering::AcqRel);
             self.reads.fetch_add(1, Ordering::AcqRel);
@@ -463,7 +463,7 @@ mod tests {
         fn read_range(
             &self,
             range: &SegmentReadRange,
-        ) -> Result<hawdb_storage::SegmentBytes, SegmentReadError> {
+        ) -> Result<hawdb_storage::cache::SegmentBytes, SegmentReadError> {
             let active = self.active.fetch_add(1, Ordering::AcqRel) + 1;
             self.reads.fetch_add(1, Ordering::AcqRel);
             self.peak.fetch_max(active, Ordering::AcqRel);
@@ -477,7 +477,7 @@ mod tests {
         fn read_range(
             &self,
             range: &SegmentReadRange,
-        ) -> Result<hawdb_storage::SegmentBytes, SegmentReadError> {
+        ) -> Result<hawdb_storage::cache::SegmentBytes, SegmentReadError> {
             self.active.fetch_add(1, Ordering::AcqRel);
             let result = if range.artifact_id == 1 {
                 Err(SegmentReadError::ArtifactNotFound {
@@ -497,7 +497,7 @@ mod tests {
         fn read_range(
             &self,
             _range: &SegmentReadRange,
-        ) -> Result<hawdb_storage::SegmentBytes, SegmentReadError> {
+        ) -> Result<hawdb_storage::cache::SegmentBytes, SegmentReadError> {
             panic!("injected asynchronous segment read panic");
         }
     }

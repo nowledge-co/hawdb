@@ -1,3 +1,10 @@
 # Keep Java-backed rules independent of the host JDK and JAVA_HOME.
 build --java_runtime_version=remotejdk_21
 build --tool_java_runtime_version=remotejdk_21
+
+# Rust 1.97.1's stripping tool can misalign Mach-O string tables, which macOS
+# 27 rejects when loading proc-macros (rust-lang/rust#157750). Keep execution
+# tools unstripped until the pinned toolchain includes the upstream fix.
+# Target-library/release flags and Linux-host defaults are unaffected.
+build --enable_platform_specific_config
+build:macos --@rules_rust//rust/settings:extra_exec_rustc_flags=-Cstrip=none

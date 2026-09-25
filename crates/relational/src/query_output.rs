@@ -24,7 +24,7 @@ use hawdb_optimizer::{
     RelationalOperatorCardinalityProfile,
 };
 use hawdb_sql::RelationalSqlStageTimings;
-use hawdb_storage::RelationalHydrationBudget;
+use hawdb_storage::relational::RelationalHydrationBudget;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct RelationalQueryLimits {
@@ -36,8 +36,8 @@ pub struct RelationalQueryLimits {
     /// at relational operator boundaries.
     pub max_candidate_work: usize,
     pub hydration: RelationalHydrationBudget,
-    pub index_read: hawdb_storage::RelationalIndexReadLimits,
-    pub row_read: hawdb_storage::RelationalRowPageSnapshotReadLimits,
+    pub index_read: hawdb_storage::relational::RelationalIndexReadLimits,
+    pub row_read: hawdb_storage::relational::RelationalRowPageSnapshotReadLimits,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]

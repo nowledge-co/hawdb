@@ -13,7 +13,7 @@
 // limitations under the License.
 
 use super::*;
-use crate::{RelationalConstraintIndex, RelationalError};
+use crate::relational::{RelationalConstraintIndex, RelationalError};
 use std::cell::RefCell;
 
 #[derive(Debug, Default)]

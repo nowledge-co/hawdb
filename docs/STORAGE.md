@@ -265,6 +265,18 @@ locks, conflicting exclusive locks, inclusive point locks, bounded ranges with
 inclusive or exclusive endpoints, and an unbounded database target that
 overlaps every finer-grained resource.
 
+Hosts that govern writer concurrency can acquire a mutation `RuntimePermit`
+from their existing governor and call
+`begin_admitted_transaction(options, permit, task_context)`. The permit remains
+owned through statements, queued commit, shared durability and result delivery.
+Admission waiting remains with the host's existing governor queue. Cancellation
+is checked cooperatively before statements and the commit boundary; it does not
+interrupt lock waits or turn an already durable success into cancellation.
+Read result limits intersect the admitted and configured budgets. Private
+mutation staging still uses `MutationLimits`; this is not complete allocation
+accounting. Plain transactions remain caller-managed. See the
+[ownership proof](tla/TRANSACTION_ADMISSION_LEASE_PROOF.md).
+
 Simple PostgreSQL reads over a primary key acquire shared point or range locks.
 Full-table reads acquire the full primary-key range. `INSERT` and `ON CONFLICT
 DO NOTHING` acquire exclusive points for the primary key and every declared
@@ -285,13 +297,19 @@ validation and the durable publication order still run against current state.
 Both transaction modes retain one WAL order, durable-before-publish, and one
 commit epoch per transaction.
 
-Per-key MVCC validation is not active yet. The current commit-epoch check cannot
-distinguish unrelated mutations, so a newer commit may still reject a transaction
-whose logical write set is disjoint. [`MVCC_COMMIT_VALIDATION_PROTOCOL.md`](MVCC_COMMIT_VALIDATION_PROTOCOL.md)
-defines the required storage-owned version identities, validation-before-WAL
-publication sequence, recovery rule, and reader-pin-bounded tombstone cleanup.
-It is the implementation baseline for #231; #232 may move transaction bodies
-out of the sequencer only after that protocol is implemented and verified.
+Optimistic graph writes already use per-key version validation, while relational
+and append operations retain a conservative database version barrier.
+Pessimistic lock-protected rebasing is a separate path. Transaction-private
+workspaces own a reader pin, including while queued for commit, so checkpoint
+reclamation retains their physical generation until rollback or destruction.
+Concurrent transaction bodies already execute outside the commit sequencer;
+validation and publication remain serialized. [`MVCC_COMMIT_VALIDATION_PROTOCOL.md`](MVCC_COMMIT_VALIDATION_PROTOCOL.md)
+maps the implemented identities and validation rule to source, and records the
+remaining #231/#232 work: version-memory and reclamation qualification, narrower
+domains, and workload qualification. Checkpoints now clean eligible version
+tombstones using a separate registry of every storage snapshot, including
+sources that could start a later transaction. A new pessimistic lock
+acquisition after snapshot drift still uses the conservative retry rule above.
 
 Coordinator waits record every blocker in a multi-owner wait-for graph. Adding
 dependencies that close a cycle aborts the current waiter as the deterministic

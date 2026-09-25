@@ -1301,7 +1301,9 @@ impl GraphStore {
         catalog: &Catalog,
         commit_epoch: u64,
         ops: &[WalOp],
-        relational_primary_key_changes: Option<hawdb_storage::RelationalPrimaryKeyChangeCapture>,
+        relational_primary_key_changes: Option<
+            hawdb_storage::relational::RelationalPrimaryKeyChangeCapture,
+        >,
     ) {
         let mut upsert_node_ids = BTreeSet::new();
         let mut delete_document_ids = BTreeSet::new();
@@ -1313,17 +1315,17 @@ impl GraphStore {
         );
         let relational_primary_key_changes = relational_primary_key_changes.unwrap_or_else(|| {
             let reason = if wal_ops_contain_relational_snapshot(ops) {
-                Some(hawdb_storage::RelationalPrimaryKeyChangeRebuildReason::SnapshotReplacement)
+                Some(hawdb_storage::relational::RelationalPrimaryKeyChangeRebuildReason::SnapshotReplacement)
             } else if wal_ops_contain_relational_transaction(ops) {
-                Some(hawdb_storage::RelationalPrimaryKeyChangeRebuildReason::MissingWalCapture)
+                Some(hawdb_storage::relational::RelationalPrimaryKeyChangeRebuildReason::MissingWalCapture)
             } else {
                 None
             };
             match reason {
                 Some(reason) => {
-                    hawdb_storage::RelationalPrimaryKeyChangeCapture::RequiresRebuild { reason }
+                    hawdb_storage::relational::RelationalPrimaryKeyChangeCapture::RequiresRebuild { reason }
                 }
-                None => hawdb_storage::RelationalPrimaryKeyChangeCapture::Captured {
+                None => hawdb_storage::relational::RelationalPrimaryKeyChangeCapture::Captured {
                     tables: Vec::new(),
                     encoded_bytes: 0,
                 },
@@ -1354,13 +1356,13 @@ impl GraphStore {
     pub(super) fn relational_primary_key_changes_from_wal_ops(
         &self,
         ops: &[WalOp],
-    ) -> Result<Option<hawdb_storage::RelationalPrimaryKeyChangeCapture>> {
+    ) -> Result<Option<hawdb_storage::relational::RelationalPrimaryKeyChangeCapture>> {
         let mut captures = Vec::new();
         collect_relational_primary_key_changes_from_wal_ops(ops, &mut captures)?;
         if captures.len() > 1 {
             return Ok(Some(
-                hawdb_storage::RelationalPrimaryKeyChangeCapture::RequiresRebuild {
-                    reason: hawdb_storage::RelationalPrimaryKeyChangeRebuildReason::MultipleRelationalTransactions,
+                hawdb_storage::relational::RelationalPrimaryKeyChangeCapture::RequiresRebuild {
+                    reason: hawdb_storage::relational::RelationalPrimaryKeyChangeRebuildReason::MultipleRelationalTransactions,
                 },
             ));
         }
@@ -1821,9 +1823,11 @@ impl GraphStore {
 }
 
 fn omit_internal_search_projection_relational_changes(
-    capture: hawdb_storage::RelationalPrimaryKeyChangeCapture,
-) -> hawdb_storage::RelationalPrimaryKeyChangeCapture {
-    let hawdb_storage::RelationalPrimaryKeyChangeCapture::Captured { mut tables, .. } = capture
+    capture: hawdb_storage::relational::RelationalPrimaryKeyChangeCapture,
+) -> hawdb_storage::relational::RelationalPrimaryKeyChangeCapture {
+    let hawdb_storage::relational::RelationalPrimaryKeyChangeCapture::Captured {
+        mut tables, ..
+    } = capture
     else {
         return capture;
     };
@@ -1833,13 +1837,14 @@ fn omit_internal_search_projection_relational_changes(
         table.primary_keys.iter().fold(
             total.saturating_add(table_bytes),
             |table_total, primary_key| {
-                let key_bytes = hawdb_storage::encode_relational_primary_key(primary_key)
-                    .map_or(0, |encoded| encoded.len());
+                let key_bytes =
+                    hawdb_storage::relational::encode_relational_primary_key(primary_key)
+                        .map_or(0, |encoded| encoded.len());
                 table_total.saturating_add(4).saturating_add(key_bytes)
             },
         )
     });
-    hawdb_storage::RelationalPrimaryKeyChangeCapture::Captured {
+    hawdb_storage::relational::RelationalPrimaryKeyChangeCapture::Captured {
         tables,
         encoded_bytes,
     }
@@ -1847,7 +1852,7 @@ fn omit_internal_search_projection_relational_changes(
 
 fn collect_relational_primary_key_changes_from_wal_ops(
     ops: &[WalOp],
-    captures: &mut Vec<hawdb_storage::RelationalPrimaryKeyChangeCapture>,
+    captures: &mut Vec<hawdb_storage::relational::RelationalPrimaryKeyChangeCapture>,
 ) -> Result<()> {
     for op in ops {
         match op {
@@ -1855,15 +1860,15 @@ fn collect_relational_primary_key_changes_from_wal_ops(
                 let batch = decode_relational_wal_batch(record, RelationalDecodeLimits::wal())
                     .map_err(|error| HawDBError::Storage(error.to_string()))?;
                 captures.push(batch.primary_key_changes.unwrap_or(
-                    hawdb_storage::RelationalPrimaryKeyChangeCapture::RequiresRebuild {
-                        reason: hawdb_storage::RelationalPrimaryKeyChangeRebuildReason::MissingWalCapture,
+                    hawdb_storage::relational::RelationalPrimaryKeyChangeCapture::RequiresRebuild {
+                        reason: hawdb_storage::relational::RelationalPrimaryKeyChangeRebuildReason::MissingWalCapture,
                     },
                 ));
             }
             WalOp::RelationalSnapshot { .. } => captures.push(
-                hawdb_storage::RelationalPrimaryKeyChangeCapture::RequiresRebuild {
+                hawdb_storage::relational::RelationalPrimaryKeyChangeCapture::RequiresRebuild {
                     reason:
-                        hawdb_storage::RelationalPrimaryKeyChangeRebuildReason::SnapshotReplacement,
+                        hawdb_storage::relational::RelationalPrimaryKeyChangeRebuildReason::SnapshotReplacement,
                 },
             ),
             WalOp::Batch(ops) => {

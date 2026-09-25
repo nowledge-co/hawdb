@@ -37,18 +37,23 @@ use crate::sql::{
 use crate::store::DurabilityPolicy;
 use crate::value::Value;
 use hawdb_core::time::{Duration, Instant};
-use hawdb_storage::{
-    AppendTransaction, RelationalConflictAction, RelationalIndexRole, RelationalKey, RelationalRow,
-    RelationalState, RelationalTableSchema, RelationalTransaction, RelationalValue,
-    RelationalWrite, StoragePressureSnapshot, StorageRecoveryReport,
-};
-pub use hawdb_storage::{
+pub use hawdb_storage::wal::{
     WalGroupCommitActivation, WalGroupCommitAdaptiveColdStartEvidence,
     WalGroupCommitAdaptivePolicyEvidence, WalGroupCommitAdaptiveSteadyStateEvidence,
     WalGroupCommitConfig, WalGroupCommitDelayPolicy, WalGroupCommitEvidence,
     WalGroupCommitSnapshot, WalGroupCommitTailLatencyEvidence, WalGroupCommitWaitDecision,
     DEFAULT_WAL_GROUP_COMMIT_MAX_BYTES, DEFAULT_WAL_GROUP_COMMIT_MAX_DELAY,
     DEFAULT_WAL_GROUP_COMMIT_MAX_ENTRIES,
+};
+use hawdb_storage::{
+    append_table::AppendTransaction,
+    pressure::StoragePressureSnapshot,
+    projection::StorageRecoveryReport,
+    relational::{
+        RelationalConflictAction, RelationalIndexRole, RelationalKey, RelationalRow,
+        RelationalState, RelationalTableSchema, RelationalTransaction, RelationalValue,
+        RelationalWrite,
+    },
 };
 use std::collections::BTreeMap;
 use std::ops::Bound;
@@ -127,6 +132,9 @@ pub struct ConcurrentDatabaseTransaction {
     successful_statements: usize,
     abort_reason: Option<String>,
     finished: bool,
+    task_context: Option<hawdb_core::RuntimeTaskContext>,
+    // Dropped after workspace fields; queued requests retain another owner.
+    admission: Option<Arc<hawdb_qos::RuntimePermit>>,
 }
 
 impl ConcurrentDatabase {
@@ -196,6 +204,14 @@ impl ConcurrentDatabase {
     }
 
     #[cfg(test)]
+    pub(crate) fn set_group_commit_enqueue_gate(
+        &self,
+        gate: Arc<(Mutex<bool>, Condvar)>,
+    ) -> Result<()> {
+        self.inner.commits.set_group_commit_enqueue_gate(gate)
+    }
+
+    #[cfg(test)]
     pub(crate) fn set_autocommit_read_gate(
         &self,
         snapshot_acquired: Sender<()>,
@@ -254,6 +270,7 @@ impl ConcurrentDatabase {
         let source = self.inner.commits.lock()?.checkpoint_source()?;
         let prepared = source.prepare()?;
         let Some(prepared) = prepared else {
+            self.inner.commits.lock()?.store.reclaim_version_history();
             return Ok(());
         };
         self.inner
@@ -279,7 +296,37 @@ impl ConcurrentDatabase {
             successful_statements: 0,
             abort_reason: None,
             finished: false,
+            task_context: None,
+            admission: None,
         })
+    }
+
+    /// Begins one transaction using a permit already admitted by the host's
+    /// RuntimeGovernor. The transaction does not acquire a second permit.
+    ///
+    /// Admission precedes snapshot creation and lasts through queued commit,
+    /// durability and result delivery. The caller owns admission waiting and
+    /// must supply a Mutation request with suitable statement/result budgets.
+    /// Existing mutation limits still bound private staging; this permit does
+    /// not account every COW allocation or bound host thread count.
+    pub fn begin_admitted_transaction(
+        &self,
+        options: ConcurrentTransactionOptions,
+        permit: hawdb_qos::RuntimePermit,
+        task_context: hawdb_core::RuntimeTaskContext,
+    ) -> Result<ConcurrentDatabaseTransaction> {
+        if permit.request().kind != hawdb_qos::RuntimeWorkKind::Mutation {
+            return Err(HawDBError::Execution(
+                "concurrent transaction admission requires a mutation permit".into(),
+            ));
+        }
+        let task_context = permit.bind_task_context(task_context);
+        super::query_runtime::query_runtime_checkpoint(Some(&task_context))?;
+        let mut transaction = self.begin_transaction(options)?;
+        super::query_runtime::query_runtime_checkpoint(Some(&task_context))?;
+        transaction.task_context = Some(task_context);
+        transaction.admission = Some(Arc::new(permit));
+        Ok(transaction)
     }
 
     pub fn query(&self, cypher_text: &str) -> Result<QueryOutput> {
@@ -495,6 +542,7 @@ impl ConcurrentDatabaseTransaction {
             &mut self.state,
             cypher_text,
             parameters,
+            self.task_context.as_ref(),
         );
         let outcome = match execution {
             Ok(outcome) => outcome,
@@ -523,6 +571,7 @@ impl ConcurrentDatabaseTransaction {
                 &mut self.state,
                 cypher_text,
                 parameters,
+                self.task_context.as_ref(),
             );
             let replayed = match replayed {
                 Ok(replayed) => replayed,
@@ -585,6 +634,7 @@ impl ConcurrentDatabaseTransaction {
         } else {
             reject_optimistic_locking_select(&prepared)?;
         }
+        self.ensure_active()?;
         let result = execute_database_transaction_prepared_sql(
             &self.runtime,
             &mut self.state,
@@ -594,7 +644,7 @@ impl ConcurrentDatabaseTransaction {
             DatabaseTransactionSqlOptions {
                 allow_system_schema_registry_write: false,
                 allow_locking_select: true,
-                task_context: None,
+                task_context: self.task_context.as_ref(),
             },
         );
         if result.is_ok() {
@@ -614,7 +664,7 @@ impl ConcurrentDatabaseTransaction {
         if self.options.mode == ConcurrentTransactionMode::Optimistic
             && let Err(error) = self.inner.locks.acquire(
                 self.transaction_id,
-                &[LockRequest::database(LockMode::Exclusive)],
+                &[LockRequest::database(LockMode::OptimisticCommit)],
                 started,
                 self.options.lock_timeout,
             )
@@ -638,15 +688,27 @@ impl ConcurrentDatabaseTransaction {
         let mut state = self.state.take_for_commit();
         let committed_result = Arc::new(Mutex::new(None));
         let result_slot = Arc::clone(&committed_result);
-        let result = inner.commits.execute_grouped(move |database| {
-            let result =
-                commit_database_transaction_state(database, &mut state, allow_stale_rebase)?;
-            let output = result.output.clone();
-            *result_slot.lock().map_err(|_| {
-                HawDBError::Execution("concurrent transaction result slot is poisoned".to_string())
-            })? = Some(result);
-            Ok(output)
-        });
+        let task_context = self.task_context.clone();
+        let result =
+            inner
+                .commits
+                .execute_grouped_with_admission(self.admission.clone(), move |database| {
+                    // Cancellation before the commit boundary rejects without WAL.
+                    // Never turn a durable success into cancellation afterward.
+                    super::query_runtime::query_runtime_checkpoint(task_context.as_ref())?;
+                    let result = commit_database_transaction_state(
+                        database,
+                        &mut state,
+                        allow_stale_rebase,
+                    )?;
+                    let output = result.output.clone();
+                    *result_slot.lock().map_err(|_| {
+                        HawDBError::Execution(
+                            "concurrent transaction result slot is poisoned".to_string(),
+                        )
+                    })? = Some(result);
+                    Ok(output)
+                });
         self.inner.locks.release(self.transaction_id);
         self.finished = true;
         result?;
@@ -780,7 +842,7 @@ impl ConcurrentDatabaseTransaction {
                 self.transaction_id
             )));
         }
-        Ok(())
+        super::query_runtime::query_runtime_checkpoint(self.task_context.as_ref())
     }
 
     fn finish_without_commit(&mut self) {
@@ -924,7 +986,7 @@ fn sql_lock_requests(
     prepared: &crate::relational_sql::PreparedRelationalSql,
     parameters: &[Value],
     state: &RelationalState,
-    append_state: &hawdb_storage::AppendState,
+    append_state: &hawdb_storage::append_table::AppendState,
 ) -> Result<Vec<LockRequest>> {
     if prepared.template.parameters.len() != parameters.len() {
         return Err(HawDBError::Semantic(format!(
@@ -1621,7 +1683,8 @@ fn autocommit_read_gate_poisoned_error() -> HawDBError {
 mod tests {
     use super::*;
     use hawdb_storage::{
-        AppendTableSchema, AppendWrite, RelationalColumnSchema, RelationalScalarType,
+        append_table::{AppendTableSchema, AppendWrite},
+        relational::{RelationalColumnSchema, RelationalScalarType},
     };
 
     fn key(value: i64) -> RelationalKey {
@@ -1696,7 +1759,7 @@ mod tests {
 
     #[test]
     fn append_explain_analyze_takes_a_shared_database_lock() {
-        let append_state = hawdb_storage::AppendState::default()
+        let append_state = hawdb_storage::append_table::AppendState::default()
             .stage_transaction(
                 &AppendTransaction {
                     writes: vec![AppendWrite::CreateTable {
@@ -1712,7 +1775,7 @@ mod tests {
                         },
                     }],
                 },
-                hawdb_storage::AppendMutationLimits::default(),
+                hawdb_storage::append_table::AppendMutationLimits::default(),
             )
             .expect("stage append schema");
 

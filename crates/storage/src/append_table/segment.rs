@@ -18,11 +18,11 @@ use super::binary::{
 };
 use super::{AppendTableError, AppendTableRow};
 use crate::relational::overflow::{decode_overflow_envelope, encode_overflow_envelope};
-use crate::relational::{decode_relational_row_payload, encode_relational_row_payload};
-use crate::{
+use crate::relational::{
     decode_relational_primary_key, encode_relational_primary_key, RelationalHydrationBudget,
     RelationalKey, RelationalOverflowConfig, RelationalRow, RelationalScalarType, RelationalValue,
 };
+use crate::relational::{decode_relational_row_payload, encode_relational_row_payload};
 use hawdb_integrity::{integrity_digest, IntegrityHasher, Sha256Digest, SHA256_BYTES};
 use std::collections::{BTreeMap, VecDeque};
 use std::fs::File;
@@ -1565,7 +1565,7 @@ fn validate_config(config: AppendSegmentConfig) -> Result<(), AppendTableError> 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::{RelationalRow, RelationalValue};
+    use crate::relational::{RelationalRow, RelationalValue};
 
     #[test]
     fn read_report_merge_preserves_cache_residency_scope() {

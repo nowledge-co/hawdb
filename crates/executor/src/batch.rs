@@ -57,8 +57,8 @@ use hawdb_core::{Catalog, HawDBError, RelationshipDirection, Result, RuntimeTask
 use hawdb_plan_cypher::{
     Aggregation, PhysicalPlan, PlanChildren, Predicate, Projection, RelationshipCountLeg, SortItem,
 };
-use hawdb_storage::{NodeId, NodeRecord, PropertyFilter, ScanPruningReport};
-use hawdb_storage::{ScanPruningStrategy, ScanPruningTargetKind};
+use hawdb_storage::scan::{ScanPruningStrategy, ScanPruningTargetKind};
+use hawdb_storage::{mutation::PropertyFilter, scan::ScanPruningReport, NodeId, NodeRecord};
 use std::collections::BTreeMap;
 use std::num::{NonZeroU64, NonZeroUsize};
 

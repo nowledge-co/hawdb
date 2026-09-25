@@ -315,6 +315,19 @@ fn normalized_pipeline_frozen_plan_coverage() {
             .map(|case| &case["id"])
             .collect::<Vec<_>>()
     );
-    assert_eq!(exact, 368);
-    assert_eq!(differences.len(), 3);
+    assert_eq!(
+        exact,
+        369,
+        "{}",
+        serde_json::to_string_pretty(&differences).unwrap()
+    );
+    // These two are representation differences, not permission to restore
+    // the incorrect group-key or pre-lookup RETURN window (#757).
+    assert_eq!(
+        differences
+            .iter()
+            .map(|case| case["id"].as_str().unwrap())
+            .collect::<Vec<_>>(),
+        ["probe-0040", "probe-0042"]
+    );
 }

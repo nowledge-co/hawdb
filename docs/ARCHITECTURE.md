@@ -155,6 +155,11 @@ owner, while file-error redaction and public entrypoint checks remain at the
 root. A local-only generated campaign checks coverage and contradictory readiness
 evidence without relaxing any v1 readiness gate.
 
+Storage implementation imports use the existing owner modules instead of a
+flat crate-root export catalog. The embedded `hawdb` facade keeps its public
+names; see [storage module boundaries](STORAGE_MODULE_BOUNDARIES.md) for the
+internal source-path migration and equivalence argument.
+
 Logical transaction lock metadata belongs to the internal
 `hawdb-storage::transaction_locks` module: lock targets and acquisition order,
 compatibility and coverage, budgeted lock residency and escalation, savepoint

@@ -16,7 +16,7 @@ use super::{
     CandidateCursor, PruningDecision, ScanPredicate, SegmentPruner, SegmentReadRange,
     SegmentSummary,
 };
-use crate::ContentDigest;
+use crate::cache::ContentDigest;
 use std::error::Error;
 use std::fmt::{self, Display, Formatter};
 use std::num::NonZeroU64;
@@ -222,7 +222,7 @@ fn validate_segments(segments: &[PersistedScanSegment]) -> Result<(), ScanSegmen
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::FieldSummary;
+    use crate::scan::FieldSummary;
     use hawdb_core::Value;
     use roaring::RoaringTreemap;
 
@@ -257,16 +257,16 @@ mod tests {
         let mut skipped_summary = SegmentSummary::new(0, 2);
         skipped_summary.insert_field(
             "lifecycle_state",
-            FieldSummary::new(2).with_enum_dictionary(crate::EnumDictionaryStats::complete([
-                Value::String("indexed".to_string()),
-            ])),
+            FieldSummary::new(2).with_enum_dictionary(crate::scan::EnumDictionaryStats::complete(
+                [Value::String("indexed".to_string())],
+            )),
         );
         let mut selected_summary = SegmentSummary::new(1, 2);
         selected_summary.insert_field(
             "lifecycle_state",
-            FieldSummary::new(2).with_enum_dictionary(crate::EnumDictionaryStats::complete([
-                Value::String("parsed".to_string()),
-            ])),
+            FieldSummary::new(2).with_enum_dictionary(crate::scan::EnumDictionaryStats::complete(
+                [Value::String("parsed".to_string())],
+            )),
         );
         let manifest = ScanSegmentManifest::new(
             6,

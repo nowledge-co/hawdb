@@ -266,12 +266,16 @@ impl<'runtime, R: ExternalOrderRecord> ExternalTopN<'runtime, R> {
 
     fn compact_runs(&mut self) -> Result<()> {
         let merge_peak_bytes = std::sync::atomic::AtomicUsize::new(0);
-        self.runs = crate::spill::compact_runs(
+        self.runs = crate::spill::compact_runs_with_memory(
             std::mem::take(&mut self.runs),
             NonZeroUsize::new(2).expect("two-way merge fan-in"),
-            crate::spill::default_compaction_worker_limit(),
+            crate::spill::CompactionMemory {
+                blocking: &self.blocking_account,
+                spill: &self.spill_budget,
+                worker_limit: crate::spill::default_compaction_worker_limit(),
+            },
             self.task_context,
-            |left, right| {
+            |left, right, blocking_account, spill_budget| {
                 let (run, peak) = merge_run_pair::<R>(
                     left,
                     right,
@@ -279,8 +283,8 @@ impl<'runtime, R: ExternalOrderRecord> ExternalTopN<'runtime, R> {
                     self.operator,
                     self.file_operator,
                     self.memory,
-                    self.blocking_account.clone(),
-                    &self.spill_budget,
+                    blocking_account.clone(),
+                    spill_budget,
                     self.task_context,
                 )?;
                 merge_peak_bytes.fetch_max(peak, std::sync::atomic::Ordering::Relaxed);

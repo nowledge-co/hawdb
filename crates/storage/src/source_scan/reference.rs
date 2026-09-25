@@ -15,7 +15,7 @@
 //! Test-only wire and bulk-summary oracle, independent of sidecar implementation.
 
 use super::*;
-use crate::{NumericMinMax, ScanScalar};
+use crate::scan::{NumericMinMax, ScanScalar};
 
 pub(super) fn crc(bytes: &[u8]) -> u64 {
     let mut state = u32::MAX;

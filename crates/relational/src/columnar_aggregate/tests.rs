@@ -13,7 +13,7 @@
 // limitations under the License.
 
 use super::*;
-use hawdb_storage::RelationalColumnSchema;
+use hawdb_storage::relational::RelationalColumnSchema;
 
 mod fixtures;
 use fixtures::*;

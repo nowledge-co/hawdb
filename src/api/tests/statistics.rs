@@ -129,7 +129,7 @@ fn explicit_text_index_publishes_payload_free_selectivity() {
 fn out_of_core_index_sample_tracks_wal_churn_and_becomes_stale() {
     let path = unique_test_dir("out_of_core_index_sample_churn");
     let config = DatabaseConfig {
-        storage_residency_mode: hawdb_storage::StorageResidencyMode::OutOfCore,
+        storage_residency_mode: hawdb_storage::config::StorageResidencyMode::OutOfCore,
         ..DatabaseConfig::default()
     };
     let (index_id, composite_index_id) = {

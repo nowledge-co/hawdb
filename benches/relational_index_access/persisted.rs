@@ -18,7 +18,7 @@ use hawdb::{
     Database, DatabaseConfig, DatabaseReadTransaction, ProfiledRelationalSqlQueryOutput,
     QueryStreamOptions, RelationalOperatorKind, RelationalSqlReadProfile, Value,
 };
-use hawdb_storage::{RelationalIndexMode, StorageResidencyMode};
+use hawdb_storage::config::{RelationalIndexMode, StorageResidencyMode};
 use serde_json::json;
 use std::fmt::Write as _;
 use std::hint::black_box;

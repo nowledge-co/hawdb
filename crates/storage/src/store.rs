@@ -24,7 +24,7 @@ use crate::value::Value;
 use hawdb_core::RuntimeTaskContext;
 use hawdb_integrity::{checksum_u64, Sha256Digest};
 use hawdb_storage::mutation::compact_transaction_graph_ops;
-use hawdb_storage::projection_document_id_for_node as search_projection_document_id_for_node;
+use hawdb_storage::projection::projection_document_id_for_node as search_projection_document_id_for_node;
 
 #[derive(Debug)]
 struct RuntimeGovernorBackgroundAdmission(hawdb_qos::RuntimeGovernor);
@@ -34,7 +34,7 @@ struct RuntimeGovernorBackgroundPermit {
     _permit: hawdb_qos::RuntimePermit,
 }
 
-impl hawdb_storage::BackgroundWorkPermit for RuntimeGovernorBackgroundPermit {}
+impl hawdb_storage::background::BackgroundWorkPermit for RuntimeGovernorBackgroundPermit {}
 
 struct RootStorageTelemetry(Arc<dyn TelemetrySink>);
 
@@ -44,8 +44,8 @@ impl std::fmt::Debug for RootStorageTelemetry {
     }
 }
 
-impl hawdb_storage::StorageTelemetrySink for RootStorageTelemetry {
-    fn record_wal_append(&self, event: hawdb_storage::WalAppendTelemetry) {
+impl hawdb_storage::telemetry::StorageTelemetrySink for RootStorageTelemetry {
+    fn record_wal_append(&self, event: hawdb_storage::telemetry::WalAppendTelemetry) {
         self.0.record_kernel(hawdb_telemetry::KernelTelemetry {
             operation: hawdb_telemetry::KernelTelemetryOperation::WalAppend,
             success: event.success,
@@ -58,11 +58,11 @@ impl hawdb_storage::StorageTelemetrySink for RootStorageTelemetry {
     }
 }
 
-impl hawdb_storage::BackgroundWorkAdmission for RuntimeGovernorBackgroundAdmission {
+impl hawdb_storage::background::BackgroundWorkAdmission for RuntimeGovernorBackgroundAdmission {
     fn try_admit(
         &self,
-        request: hawdb_storage::BackgroundWorkRequest,
-    ) -> std::result::Result<Box<dyn hawdb_storage::BackgroundWorkPermit>, String> {
+        request: hawdb_storage::background::BackgroundWorkRequest,
+    ) -> std::result::Result<Box<dyn hawdb_storage::background::BackgroundWorkPermit>, String> {
         self.0
             .try_admit(hawdb_qos::RuntimeWorkRequest {
                 priority: hawdb_qos::RuntimeWorkPriority::Background,
@@ -76,7 +76,7 @@ impl hawdb_storage::BackgroundWorkAdmission for RuntimeGovernorBackgroundAdmissi
             })
             .map(|permit| {
                 Box::new(RuntimeGovernorBackgroundPermit { _permit: permit })
-                    as Box<dyn hawdb_storage::BackgroundWorkPermit>
+                    as Box<dyn hawdb_storage::background::BackgroundWorkPermit>
             })
             .map_err(|error| error.to_string())
     }
@@ -152,6 +152,14 @@ use hawdb_storage::artifact_files::{
     relational_checkpoint_generation_file, storage_generation_for_file, store_id_for_path,
     wal_generation_file,
 };
+pub use hawdb_storage::column_group::shadow::{
+    ColumnarShadowCheckpointReport, ColumnarShadowCheckpointStatus, ColumnarShadowRecoveryStatus,
+    COLUMN_GROUP_SHADOW_DIR,
+};
+#[cfg(test)]
+use hawdb_storage::cow::COW_MAP_TARGET_SEGMENT_BYTES;
+#[doc(hidden)]
+pub use hawdb_storage::durability::{WalSyncGroupFlush, WalSyncGroupProgress};
 use hawdb_storage::graph_constraints::{
     validate_node_property_exists, validate_node_property_exists_constraints,
     validate_node_property_exists_constraints_for_records, validate_node_record_constraints,
@@ -164,6 +172,7 @@ use hawdb_storage::graph_constraints::{
     validate_unique_constraints_for_records, validate_unique_property,
     validate_unique_relationship_property, wal_ops_touched_records,
 };
+use hawdb_storage::graph_index_metrics::GraphIndexReadMetrics;
 #[doc(hidden)]
 pub use hawdb_storage::mutation::evaluate::{
     apply_node_assignments_to_properties, evaluate_node_set_value,
@@ -173,6 +182,9 @@ use hawdb_storage::predicate::{
 };
 use hawdb_storage::projection::artifact::{
     decode_projected_graph_artifacts, split_projected_graph_artifact_checksum,
+};
+pub use hawdb_storage::relational::{
+    RelationalIndexArtifactMetadata, RelationalIndexGenerationArtifacts,
 };
 pub use hawdb_storage::scan::{ScanPrunedNodeScan, ScanPrunedRelationshipScan};
 #[doc(hidden)]
@@ -198,6 +210,9 @@ pub use hawdb_storage::statistics_refresh::{
     retain_supported_property_statistics, retain_valid_index_statistics_samples,
     OptimizerStatisticsRefreshWork,
 };
+pub use hawdb_storage::statistics_refresh::{
+    OptimizerStatisticsRefreshOptions, OptimizerStatisticsRefreshReport,
+};
 #[cfg(test)]
 use hawdb_storage::text::encode_properties;
 #[cfg(test)]
@@ -206,75 +221,110 @@ use hawdb_storage::text::envelope::DURABLE_COMPRESSION_HEADER;
 pub use hawdb_storage::text::envelope::{
     encode_durable_text, read_durable_text_bytes, read_durable_text_bytes_with_limit,
 };
-use hawdb_storage::GraphIndexReadMetrics;
-#[cfg(test)]
-use hawdb_storage::COW_MAP_TARGET_SEGMENT_BYTES;
 use hawdb_storage::{
-    available_storage_space, copy_backup_file, copy_file_with_checksum, decode_append_wal_batch,
-    decode_relational_checkpoint_file_with_index_load,
-    decode_relational_checkpoint_with_index_load, decode_relational_wal_batch,
-    encode_append_wal_batch, encode_relational_checkpoint, file_checksum,
-    persistent_composite_property_identity, sync_parent_directory, validate_new_backup_destination,
-    AdjacencyPostingList, AppendDecodeLimits, AppendGenerationReader, AppendMutationLimits,
-    AppendPublicationConfig, AppendPublicationState, AppendPublisher, AppendState,
-    CanonicalEndpointDirection, CanonicalSegmentError,
-    PersistentPropertyProjectionDefinitionAdmission, PersistentPropertyProjectionRecord,
-    RelationalCheckpointIndexLoad, RelationalDecodeLimits, RelationalMutationLimits,
-    RelationalOverflowConfig, RelationalOverflowPublicationConfig, RelationalOverflowPublisher,
-    RelationalRecoverySourceBuilder, RelationalRowPageGenerationRequest,
-    RelationalRowPagePublicationConfig, RelationalRowPagePublisher, RelationalSparseLiveStage,
-    RelationalState, RelationalTransaction,
+    adjacency::AdjacencyPostingList,
+    append_table::{
+        decode_append_wal_batch, encode_append_wal_batch, AppendDecodeLimits,
+        AppendGenerationReader, AppendMutationLimits, AppendPublicationConfig,
+        AppendPublicationState, AppendPublisher, AppendState,
+    },
+    backup::{
+        copy_backup_file, copy_file_with_checksum, file_checksum, validate_new_backup_destination,
+    },
+    canonical::{CanonicalEndpointDirection, CanonicalSegmentError},
+    durability::sync_parent_directory,
+    pressure::available_storage_space,
+    property_projection::{
+        persistent_composite_property_identity, PersistentPropertyProjectionDefinitionAdmission,
+        PersistentPropertyProjectionRecord,
+    },
+    relational::{
+        decode_relational_checkpoint_file_with_index_load,
+        decode_relational_checkpoint_with_index_load, decode_relational_wal_batch,
+        encode_relational_checkpoint, RelationalCheckpointIndexLoad, RelationalDecodeLimits,
+        RelationalMutationLimits, RelationalOverflowConfig, RelationalOverflowPublicationConfig,
+        RelationalOverflowPublisher, RelationalRecoverySourceBuilder,
+        RelationalRowPageGenerationRequest, RelationalRowPagePublicationConfig,
+        RelationalRowPagePublisher, RelationalSparseLiveStage, RelationalState,
+        RelationalTransaction,
+    },
 };
 pub use hawdb_storage::{
-    AdjacencyDirection, AdjacencyGroupConsistencyMismatch, AdjacencyGroupKey, AdjacencyGroupStats,
-    AdjacencyLayout, AppendGeneratedRow, AppendMutationOutcome, AppendOrderMode,
-    AppendSegmentReadOutput, AppendStorageResidencyReport, AppendTableRow, AppendTableSchema,
-    AppendTransaction, AppendWrite, BackupFileEntry, BackupManifest, CanonicalAdjacencyBuildReport,
-    CanonicalAdjacencyConfig, CanonicalAdjacencyEntry, CanonicalAdjacencyReadReport,
-    CanonicalAdjacencyReader, CanonicalAdjacencyWriter, CanonicalScanControl,
-    CanonicalSegmentConfig, CanonicalSegmentManifest, CanonicalSegmentReader,
-    CanonicalSegmentWriter, ConnectedNodesCreate, DurabilityPolicy, DurableCompression,
-    FileSegmentRangeReader, GraphMutation, ManifestGeneration, MatchedRelationshipCopyMerge,
-    MatchedRelationshipCreate, MatchedRelationshipMerge, MatchedRelationshipRetargetMerge,
-    MatchedRelationshipSourceRetargetMerge, MutationLimits, MutationSummary, NodeId, NodeRecord,
-    NodeSetAssignment, NodeSetValue, OrderedAdjacencyEntry, PersistentPropertyProjectionConfig,
-    PersistentPropertyProjectionDefinition, PersistentPropertyProjectionError,
-    PersistentPropertyProjectionKind, PersistentPropertyProjectionManifest,
-    PersistentPropertyProjectionReader, PersistentPropertyProjectionWriter,
-    ProjectedGraphDefinition, ProjectedGraphStatus, ProjectedNodeRecord, PropertyFilter,
-    PropertyIndexProjectionRebuildAction, PropertySpillConfig, PropertySpillManifest,
-    PropertySpillReader, RecoveryMode, RelId, RelRecord, RelationalColumnSchema,
-    RelationalIndexMode, RelationalIndexReadLimits, RelationalIndexReadReport,
-    RelationalIndexRecoveryReadReport, RelationalKey, RelationalRow, RelationalScalarType,
-    RelationalValue, RelationshipDeleteRequest, RelationshipOnCreatePropertyValue,
-    RelationshipPropertiesUpdate, RelationshipPropertyUpdate, RelationshipSetAssignment,
-    RelationshipTargetNodeDelete, ScanPredicate, ScanPruningReport, ScanPruningStrategy,
-    ScanPruningTargetKind, ScanSegmentAccessPlan, ScanSegmentFallback, ScanSegmentManifest,
-    SchemaMaintenanceAction, SchemaMaintenancePlanItem, SearchProjectionChangefeedReadiness,
-    SearchProjectionChangefeedStatus, SearchProjectionGraphChange, SearchProjectionMutationId,
-    SegmentBytes, SegmentCache, SegmentCacheSnapshot, SegmentRangeReader, SegmentReadError,
-    SegmentReadExecutionError, SegmentReadExecutionReport, SegmentReadExecutor, SegmentReadPayload,
-    SegmentReadRange, SegmentReadSchedule, SegmentReadScheduler, SegmentReadWave,
-    StorageBackupReport, StorageDebtController, StorageOpenTimings, StoragePressureReasonCode,
-    StoragePressureSignals, StoragePressureSnapshot, StoragePressureState,
-    StorageReclamationWatermark, StorageRecoveryReport, StorageResidencyMode, StorageRestoreReport,
-    StorageScrubReport, StoreId, StoreStableIdMapping, WalReplayConfig,
-    STORAGE_PRESSURE_DEFER_RATIO_PER_MILLION, STORAGE_PRESSURE_SOFT_RATIO_PER_MILLION,
-};
-pub use hawdb_storage::{
-    ColumnarShadowCheckpointReport, ColumnarShadowCheckpointStatus, ColumnarShadowRecoveryStatus,
-    COLUMN_GROUP_SHADOW_DIR,
+    adjacency::{
+        AdjacencyDirection, AdjacencyGroupConsistencyMismatch, AdjacencyGroupKey,
+        AdjacencyGroupStats, AdjacencyLayout, OrderedAdjacencyEntry,
+    },
+    append_table::{
+        AppendGeneratedRow, AppendMutationOutcome, AppendOrderMode, AppendSegmentReadOutput,
+        AppendStorageResidencyReport, AppendTableRow, AppendTableSchema, AppendTransaction,
+        AppendWrite,
+    },
+    backup::{
+        BackupFileEntry, BackupManifest, StorageBackupReport, StorageRestoreReport,
+        StorageScrubReport,
+    },
+    cache::{ManifestGeneration, SegmentBytes, SegmentCache, SegmentCacheSnapshot, StoreId},
+    canonical::{
+        CanonicalScanControl, CanonicalSegmentConfig, CanonicalSegmentManifest,
+        CanonicalSegmentReader, CanonicalSegmentWriter,
+    },
+    canonical_adjacency::{
+        CanonicalAdjacencyBuildReport, CanonicalAdjacencyConfig, CanonicalAdjacencyEntry,
+        CanonicalAdjacencyReadReport, CanonicalAdjacencyReader, CanonicalAdjacencyWriter,
+    },
+    config::{
+        DurabilityPolicy, DurableCompression, RecoveryMode, RelationalIndexMode,
+        StorageResidencyMode, WalReplayConfig,
+    },
+    mutation::{
+        ConnectedNodesCreate, GraphMutation, MatchedRelationshipCopyMerge,
+        MatchedRelationshipCreate, MatchedRelationshipMerge, MatchedRelationshipRetargetMerge,
+        MatchedRelationshipSourceRetargetMerge, MutationLimits, MutationSummary, NodeSetAssignment,
+        NodeSetValue, PropertyFilter, RelationshipDeleteRequest, RelationshipOnCreatePropertyValue,
+        RelationshipPropertiesUpdate, RelationshipPropertyUpdate, RelationshipSetAssignment,
+        RelationshipTargetNodeDelete,
+    },
+    pressure::{
+        StorageDebtController, StoragePressureReasonCode, StoragePressureSignals,
+        StoragePressureSnapshot, StoragePressureState, STORAGE_PRESSURE_DEFER_RATIO_PER_MILLION,
+        STORAGE_PRESSURE_SOFT_RATIO_PER_MILLION,
+    },
+    projection::{
+        ProjectedGraphDefinition, ProjectedGraphStatus, PropertyIndexProjectionRebuildAction,
+        SchemaMaintenanceAction, SchemaMaintenancePlanItem, SearchProjectionChangefeedReadiness,
+        SearchProjectionChangefeedStatus, SearchProjectionGraphChange, SearchProjectionMutationId,
+        StorageOpenTimings, StorageReclamationWatermark, StorageRecoveryReport,
+        StoreStableIdMapping,
+    },
+    property_projection::{
+        PersistentPropertyProjectionConfig, PersistentPropertyProjectionDefinition,
+        PersistentPropertyProjectionError, PersistentPropertyProjectionKind,
+        PersistentPropertyProjectionManifest, PersistentPropertyProjectionReader,
+        PersistentPropertyProjectionWriter,
+    },
+    property_spill::{PropertySpillConfig, PropertySpillManifest, PropertySpillReader},
+    relational::{
+        RelationalColumnSchema, RelationalIndexReadLimits, RelationalIndexReadReport,
+        RelationalIndexRecoveryReadReport, RelationalKey, RelationalRow, RelationalScalarType,
+        RelationalValue,
+    },
+    scan::{
+        FileSegmentRangeReader, ScanPredicate, ScanPruningReport, ScanPruningStrategy,
+        ScanPruningTargetKind, ScanSegmentAccessPlan, ScanSegmentFallback, ScanSegmentManifest,
+        SegmentRangeReader, SegmentReadError, SegmentReadExecutionError,
+        SegmentReadExecutionReport, SegmentReadExecutor, SegmentReadPayload, SegmentReadRange,
+        SegmentReadSchedule, SegmentReadScheduler, SegmentReadWave,
+    },
+    NodeId, NodeRecord, ProjectedNodeRecord, RelId, RelRecord,
 };
 use hawdb_storage::{
-    CowSegment, CowSegmentedMap, ProjectedGraphArtifact, ProjectedGraphArtifactData,
+    cow::{CowSegment, CowSegmentedMap},
+    projection::{ProjectedGraphArtifact, ProjectedGraphArtifactData},
 };
 pub use hawdb_storage::{
-    GraphIndexReadMetricsSnapshot, PersistentGraphIndexClass, PublishedReadView,
+    graph_index_metrics::{GraphIndexReadMetricsSnapshot, PersistentGraphIndexClass},
+    read_view::PublishedReadView,
 };
-pub use hawdb_storage::{OptimizerStatisticsRefreshOptions, OptimizerStatisticsRefreshReport};
-pub use hawdb_storage::{RelationalIndexArtifactMetadata, RelationalIndexGenerationArtifacts};
-#[doc(hidden)]
-pub use hawdb_storage::{WalSyncGroupFlush, WalSyncGroupProgress};
 use relational_index_shadow::RelationalIndexShadowState;
 pub use relational_index_shadow::{
     RelationalConstraintQualificationProbeReport, RelationalConstraintQualificationReport,
@@ -722,6 +772,8 @@ pub struct GraphStore {
     next_rel_id: u64,
     commit_epoch: u64,
     version_index: hawdb_storage::version::VersionIndex,
+    version_snapshot_pins: hawdb_storage::version::VersionSnapshotPins,
+    version_snapshot_pin: Option<hawdb_storage::version::VersionSnapshotPin>,
     nodes: CowSegmentedMap<NodeId, NodeRecord>,
     relationships: CowSegmentedMap<RelId, RelRecord>,
     basic_statistics: BasicGraphStatistics,
@@ -744,7 +796,7 @@ pub struct GraphStore {
     max_search_projection_change_log_entries: Option<usize>,
     max_search_projection_change_log_bytes: Option<usize>,
     search_projection_primary_key_capture_limits:
-        hawdb_storage::RelationalPrimaryKeyChangeCaptureLimits,
+        hawdb_storage::relational::RelationalPrimaryKeyChangeCaptureLimits,
     source_scan_manifest: CowSegment<Option<ScanSegmentManifest>>,
     storage_recovery_report: StorageRecoveryReport,
     canonical_base: Option<CanonicalSegmentReader>,
@@ -769,11 +821,11 @@ pub struct GraphStore {
     columnar_shadow: ColumnarShadowState,
     relational_index_shadow: RelationalIndexShadowState,
     relational_row_pages: RelationalRowPageState,
-    projection_generations: Option<hawdb_storage::ProjectionGenerationStore>,
+    projection_generations: Option<hawdb_storage::projection_generation::ProjectionGenerationStore>,
     /// The engine's runtime governor, threaded down from the embedding
     /// layer (`HawDBEmbedded` / `NowledgeMemGraph`) so background shadow
     /// work can request admission. The store never constructs its own.
-    runtime_governor: Option<Arc<dyn hawdb_storage::BackgroundWorkAdmission>>,
+    runtime_governor: Option<Arc<dyn hawdb_storage::background::BackgroundWorkAdmission>>,
     durable: Option<DurableStore>,
 }
 
@@ -781,14 +833,14 @@ impl hawdb_storage::graph_engine::GraphMutationEngine for GraphStore {
     fn plan_schema_maintenance(
         &self,
         catalog: &hawdb_core::Catalog,
-    ) -> Vec<hawdb_storage::SchemaMaintenancePlanItem> {
+    ) -> Vec<hawdb_storage::projection::SchemaMaintenancePlanItem> {
         GraphStore::plan_schema_maintenance(self, catalog)
     }
 
     fn run_schema_maintenance(
         &mut self,
         catalog: &mut hawdb_core::Catalog,
-    ) -> hawdb_core::Result<Vec<hawdb_storage::SchemaMaintenanceAction>> {
+    ) -> hawdb_core::Result<Vec<hawdb_storage::projection::SchemaMaintenanceAction>> {
         GraphStore::run_schema_maintenance(self, catalog)
     }
 
@@ -803,7 +855,7 @@ impl hawdb_storage::graph_engine::GraphMutationEngine for GraphStore {
         &mut self,
         catalog: &hawdb_core::Catalog,
         max_estimated_operations: usize,
-    ) -> Vec<hawdb_storage::PropertyIndexProjectionRebuildAction> {
+    ) -> Vec<hawdb_storage::projection::PropertyIndexProjectionRebuildAction> {
         GraphStore::rebuild_bounded_property_index_projections(
             self,
             catalog,
@@ -811,7 +863,7 @@ impl hawdb_storage::graph_engine::GraphMutationEngine for GraphStore {
         )
     }
 
-    fn scrub_storage(&mut self) -> hawdb_core::Result<hawdb_storage::StorageScrubReport> {
+    fn scrub_storage(&mut self) -> hawdb_core::Result<hawdb_storage::backup::StorageScrubReport> {
         GraphStore::scrub_storage(self)
     }
 
@@ -819,14 +871,14 @@ impl hawdb_storage::graph_engine::GraphMutationEngine for GraphStore {
         &mut self,
         catalog: &hawdb_core::Catalog,
         destination: impl AsRef<std::path::Path>,
-    ) -> hawdb_core::Result<hawdb_storage::StorageBackupReport> {
+    ) -> hawdb_core::Result<hawdb_storage::backup::StorageBackupReport> {
         GraphStore::backup_to(self, catalog, destination)
     }
 
     fn register_projected_graph(
         &mut self,
         name: &str,
-        definition: hawdb_storage::ProjectedGraphDefinition,
+        definition: hawdb_storage::projection::ProjectedGraphDefinition,
     ) -> hawdb_core::Result<()> {
         GraphStore::register_projected_graph(self, name, definition)
     }
@@ -894,9 +946,9 @@ pub trait InternalGraphEngine {
         consumer: impl FnMut(NodeRecord) -> GraphScanControl,
     ) -> Result<GraphScanControl>;
 
-    fn append_state(&self) -> &hawdb_storage::AppendState;
+    fn append_state(&self) -> &hawdb_storage::append_table::AppendState;
 
-    fn relational_state(&self) -> &hawdb_storage::RelationalState;
+    fn relational_state(&self) -> &hawdb_storage::relational::RelationalState;
 
     fn poison_on_storage_error<T>(&self, result: &Result<T>);
 }
@@ -955,11 +1007,11 @@ impl InternalGraphEngine for GraphStore {
         GraphStore::visit_nodes_by_property_owned(self, label_id, property, values, consumer)
     }
 
-    fn append_state(&self) -> &hawdb_storage::AppendState {
+    fn append_state(&self) -> &hawdb_storage::append_table::AppendState {
         GraphStore::append_state(self)
     }
 
-    fn relational_state(&self) -> &hawdb_storage::RelationalState {
+    fn relational_state(&self) -> &hawdb_storage::relational::RelationalState {
         GraphStore::relational_state(self)
     }
 
@@ -973,8 +1025,8 @@ pub use hawdb_storage::relational::{
     RelationalRowPageCompactionConfig, RelationalRowPageCompactionReport,
 };
 pub use hawdb_storage::{
-    RelationalIndexStorageResidencyReport, RelationalRowStorageResidencyReport,
-    StorageResidencyReport,
+    relational_index_view::RelationalIndexStorageResidencyReport,
+    residency::{RelationalRowStorageResidencyReport, StorageResidencyReport},
 };
 
 pub use hawdb_storage::graph_overlay::{GraphNodeIterator, GraphRelationshipIterator};
@@ -1412,7 +1464,9 @@ impl GraphStore {
     }
 
     #[doc(hidden)]
-    pub fn projection_generation_store(&self) -> Result<hawdb_storage::ProjectionGenerationStore> {
+    pub fn projection_generation_store(
+        &self,
+    ) -> Result<hawdb_storage::projection_generation::ProjectionGenerationStore> {
         self.projection_generations.clone().ok_or_else(|| {
             HawDBError::Storage(
                 "projection generation catalog requires a durable database".to_string(),
@@ -1583,7 +1637,7 @@ impl GraphStore {
         let projection_generations = if durable.read_only {
             if projection_generation_root.exists() {
                 Some(
-                    hawdb_storage::ProjectionGenerationStore::open_existing(
+                    hawdb_storage::projection_generation::ProjectionGenerationStore::open_existing(
                         &projection_generation_root,
                     )
                     .map_err(|error| HawDBError::Storage(error.to_string()))?,
@@ -1593,8 +1647,10 @@ impl GraphStore {
             }
         } else {
             Some(
-                hawdb_storage::ProjectionGenerationStore::open(&projection_generation_root)
-                    .map_err(|error| HawDBError::Storage(error.to_string()))?,
+                hawdb_storage::projection_generation::ProjectionGenerationStore::open(
+                    &projection_generation_root,
+                )
+                .map_err(|error| HawDBError::Storage(error.to_string()))?,
             )
         };
         let mut store = Self {
@@ -1602,6 +1658,8 @@ impl GraphStore {
             next_rel_id: 0,
             commit_epoch: 0,
             version_index: hawdb_storage::version::VersionIndex::default(),
+            version_snapshot_pins: Default::default(),
+            version_snapshot_pin: None,
             nodes: CowSegmentedMap::default(),
             relationships: CowSegmentedMap::default(),
             basic_statistics: BasicGraphStatistics::default(),
@@ -1820,7 +1878,7 @@ impl GraphStore {
     pub fn search_projection_changes_after(
         &self,
         commit_epoch: u64,
-    ) -> Vec<hawdb_storage::SearchProjectionChange> {
+    ) -> Vec<hawdb_storage::projection::SearchProjectionChange> {
         self.search_projection_graph_changes_after(commit_epoch)
     }
 
@@ -1860,14 +1918,14 @@ impl GraphStore {
 
     pub fn set_search_projection_primary_key_capture_limits(
         &mut self,
-        limits: hawdb_storage::RelationalPrimaryKeyChangeCaptureLimits,
+        limits: hawdb_storage::relational::RelationalPrimaryKeyChangeCaptureLimits,
     ) {
         self.search_projection_primary_key_capture_limits = limits;
         for change in self.search_projection_graph_changes.iter_mut() {
             if change.relational_primary_key_changes.exceeds_limits(limits) {
                 change.relational_primary_key_changes =
-                    hawdb_storage::RelationalPrimaryKeyChangeCapture::RequiresRebuild {
-                        reason: hawdb_storage::RelationalPrimaryKeyChangeRebuildReason::CaptureLimitExceeded,
+                    hawdb_storage::relational::RelationalPrimaryKeyChangeCapture::RequiresRebuild {
+                        reason: hawdb_storage::relational::RelationalPrimaryKeyChangeRebuildReason::CaptureLimitExceeded,
                     };
             }
         }
@@ -1987,12 +2045,34 @@ impl GraphStore {
         Ok(mapping)
     }
 
+    /// Captures query data without retaining historical conflict-index pages.
+    /// Read consumers cannot observe the compressed conflict metadata. New
+    /// transactions start at this snapshot's epoch; any older transaction
+    /// submitted to this detached store is conservatively rejected by a barrier.
+    /// Writable workspaces/savepoints must use `snapshot` to retain precision.
+    #[doc(hidden)]
+    pub fn snapshot_for_read(&self) -> Self {
+        let mut snapshot = self.snapshot();
+        snapshot.version_index = self.version_index.read_baseline(self.commit_epoch);
+        snapshot
+    }
+
     pub fn snapshot(&self) -> Self {
+        // Private statement execution can advance commit_epoch without
+        // advancing the transaction's read epoch. A savepoint or descendant
+        // must inherit the original protection floor, even after restore
+        // drops its parent workspace.
+        let pin_epoch = self
+            .version_snapshot_pin
+            .as_ref()
+            .map_or(self.commit_epoch, |pin| pin.epoch().min(self.commit_epoch));
         Self {
             next_node_id: self.next_node_id,
             next_rel_id: self.next_rel_id,
             commit_epoch: self.commit_epoch,
             version_index: self.version_index.clone(),
+            version_snapshot_pins: self.version_snapshot_pins.clone(),
+            version_snapshot_pin: Some(self.version_snapshot_pins.pin(pin_epoch)),
             nodes: self.nodes.clone(),
             relationships: self.relationships.clone(),
             basic_statistics: self.basic_statistics.clone(),
@@ -2872,8 +2952,10 @@ fn validate_search_projection_checkpoint_changes(
                 change.commit_epoch
             )));
         }
-        if let hawdb_storage::RelationalPrimaryKeyChangeCapture::Captured { tables, .. } =
-            &change.relational_primary_key_changes
+        if let hawdb_storage::relational::RelationalPrimaryKeyChangeCapture::Captured {
+            tables,
+            ..
+        } = &change.relational_primary_key_changes
         {
             if !tables.windows(2).all(|pair| pair[0].table < pair[1].table) {
                 return Err(HawDBError::Storage(format!(
@@ -2957,7 +3039,7 @@ impl hawdb_storage::graph_engine::GraphReadEngine for GraphStore {
         GraphStore::storage_handle_poisoned(self)
     }
 
-    fn published_read_view(&self) -> hawdb_storage::PublishedReadView {
+    fn published_read_view(&self) -> hawdb_storage::read_view::PublishedReadView {
         GraphStore::published_read_view(self)
     }
 
@@ -2969,15 +3051,15 @@ impl hawdb_storage::graph_engine::GraphReadEngine for GraphStore {
         GraphStore::statistics(self, catalog)
     }
 
-    fn storage_recovery_report(&self) -> hawdb_storage::StorageRecoveryReport {
+    fn storage_recovery_report(&self) -> hawdb_storage::projection::StorageRecoveryReport {
         GraphStore::storage_recovery_report(self)
     }
 
-    fn segment_cache_snapshot(&self) -> Option<hawdb_storage::SegmentCacheSnapshot> {
+    fn segment_cache_snapshot(&self) -> Option<hawdb_storage::cache::SegmentCacheSnapshot> {
         GraphStore::segment_cache_snapshot(self)
     }
 
-    fn storage_residency_report(&self) -> hawdb_storage::StorageResidencyReport {
+    fn storage_residency_report(&self) -> hawdb_storage::residency::StorageResidencyReport {
         GraphStore::storage_residency_report(self)
     }
 
@@ -3008,26 +3090,30 @@ impl hawdb_storage::graph_engine::GraphReadEngine for GraphStore {
 
     fn columnar_shadow_checkpoint_report(
         &self,
-    ) -> Option<hawdb_storage::ColumnarShadowCheckpointReport> {
+    ) -> Option<hawdb_storage::column_group::shadow::ColumnarShadowCheckpointReport> {
         GraphStore::columnar_shadow_checkpoint_report(self)
     }
 
-    fn columnar_shadow_recovery_status(&self) -> hawdb_storage::ColumnarShadowRecoveryStatus {
+    fn columnar_shadow_recovery_status(
+        &self,
+    ) -> hawdb_storage::column_group::shadow::ColumnarShadowRecoveryStatus {
         GraphStore::columnar_shadow_recovery_status(self)
     }
 
-    fn projected_graph_statuses(&self) -> Vec<hawdb_storage::ProjectedGraphStatus> {
+    fn projected_graph_statuses(&self) -> Vec<hawdb_storage::projection::ProjectedGraphStatus> {
         GraphStore::projected_graph_statuses(self)
     }
 
     fn storage_pressure_snapshot(
         &self,
         oldest_reader_commit_epoch: Option<u64>,
-    ) -> hawdb_storage::StoragePressureSnapshot {
+    ) -> hawdb_storage::pressure::StoragePressureSnapshot {
         GraphStore::storage_pressure_snapshot(self, oldest_reader_commit_epoch)
     }
 
-    fn append_storage_residency_report(&self) -> hawdb_storage::AppendStorageResidencyReport {
+    fn append_storage_residency_report(
+        &self,
+    ) -> hawdb_storage::append_table::AppendStorageResidencyReport {
         GraphStore::append_storage_residency_report(self)
     }
 
@@ -3037,7 +3123,7 @@ impl hawdb_storage::graph_engine::GraphReadEngine for GraphStore {
 
     fn relational_index_recovery_report(
         &self,
-    ) -> Option<&hawdb_storage::RelationalIndexRecoveryReport> {
+    ) -> Option<&hawdb_storage::relational::RelationalIndexRecoveryReport> {
         GraphStore::relational_index_recovery_report(self)
     }
 
@@ -3055,11 +3141,14 @@ impl hawdb_storage::graph_engine::GraphReadEngine for GraphStore {
 
     fn search_projection_changefeed_status(
         &self,
-    ) -> hawdb_storage::SearchProjectionChangefeedStatus {
+    ) -> hawdb_storage::projection::SearchProjectionChangefeedStatus {
         GraphStore::search_projection_changefeed_status(self)
     }
 
-    fn append_table_schema(&self, table: &str) -> Option<&hawdb_storage::AppendTableSchema> {
+    fn append_table_schema(
+        &self,
+        table: &str,
+    ) -> Option<&hawdb_storage::append_table::AppendTableSchema> {
         GraphStore::append_table_schema(self, table)
     }
 
@@ -3070,11 +3159,11 @@ impl hawdb_storage::graph_engine::GraphReadEngine for GraphStore {
     fn read_append_partition_bounded(
         &self,
         table: &str,
-        partition: &hawdb_storage::RelationalKey,
-        after: Option<&hawdb_storage::RelationalKey>,
+        partition: &hawdb_storage::relational::RelationalKey,
+        after: Option<&hawdb_storage::relational::RelationalKey>,
         max_rows: usize,
         max_payload_bytes: usize,
-    ) -> hawdb_core::Result<hawdb_storage::AppendSegmentReadOutput> {
+    ) -> hawdb_core::Result<hawdb_storage::append_table::AppendSegmentReadOutput> {
         GraphStore::read_append_partition_bounded(
             self,
             table,
@@ -3122,17 +3211,872 @@ mod tests {
     use crate::value::Value;
     use hawdb_integrity::integrity_digest;
     use hawdb_storage::{
-        DurabilityPolicy, GraphMutation, MutationLimits, RelationalColumnSchema,
-        RelationalHydrationBudget, RelationalInsertMode, RelationalKey, RelationalRow,
-        RelationalScalarType, RelationalTableSchema, RelationalTransaction, RelationalValue,
-        RelationalWrite, RelationshipPropertyUpdate, ScanPredicate, ScanSegmentAccessPlan,
-        ScanSegmentFallback, ScanSegmentManifest, StorageResidencyMode, WalReplayConfig,
+        config::{DurabilityPolicy, StorageResidencyMode, WalReplayConfig},
+        mutation::{GraphMutation, MutationLimits, RelationshipPropertyUpdate},
+        relational::{
+            RelationalColumnSchema, RelationalHydrationBudget, RelationalInsertMode, RelationalKey,
+            RelationalRow, RelationalScalarType, RelationalTableSchema, RelationalTransaction,
+            RelationalValue, RelationalWrite,
+        },
+        scan::{ScanPredicate, ScanSegmentAccessPlan, ScanSegmentFallback, ScanSegmentManifest},
     };
     use std::any::TypeId;
     use std::collections::{BTreeMap, BTreeSet};
     use std::fs::{self, OpenOptions};
     use std::io::Write;
     use std::num::{NonZeroU64, NonZeroUsize};
+
+    #[test]
+    fn current_epoch_version_baseline_bounds_history_and_preserves_older_sources() {
+        use crate::cow::CowPageWeight;
+        use crate::version::{VersionIndex, VersionKey, VersionStamp};
+        for durable in [false, true] {
+            let path = unique_test_dir("current_epoch_version_baseline");
+            let mut catalog = Catalog::default();
+            let mut store = if durable {
+                GraphStore::open(&path, &mut catalog).unwrap()
+            } else {
+                GraphStore::default()
+            };
+            store
+                .create_node(
+                    &mut catalog,
+                    "Memory",
+                    properties([("value", Value::Int(0))]),
+                )
+                .unwrap();
+            store.checkpoint(&catalog).unwrap();
+            let reserve = VersionIndex::default().estimated_bytes();
+            let weight = VersionKey::GraphNode(NodeId(0)).cow_page_bytes()
+                + std::mem::size_of::<VersionStamp>();
+            for id in 1..=64 {
+                let before = store.commit_epoch();
+                store
+                    .commit_mutations(
+                        &mut catalog,
+                        vec![GraphMutation::CreateNode {
+                            label: "Memory".into(),
+                            properties: properties([("value", Value::Int(0))]),
+                        }],
+                    )
+                    .unwrap();
+                assert_eq!(store.version_index.len(), 2);
+                assert_eq!(store.version_index.estimated_bytes(), reserve + weight);
+                assert_eq!(store.version_index.retained_history_bytes(), weight);
+                assert_eq!(
+                    store
+                        .version_index
+                        .stamp(&VersionKey::Database)
+                        .unwrap()
+                        .commit_epoch,
+                    before
+                );
+                assert_eq!(
+                    store
+                        .version_index
+                        .stamp(&VersionKey::GraphNode(NodeId(id)))
+                        .unwrap()
+                        .commit_epoch,
+                    before + 1
+                );
+            }
+            let update = |id, value| GraphMutation::SetNodeProperty {
+                label: "Memory".into(),
+                filter: Some(PropertyFilter::IdEq {
+                    value: Value::Int(id),
+                }),
+                property: "value".into(),
+                value: Value::Int(value),
+            };
+            if durable {
+                let before = store.snapshot(); // equality at the tip permits baseline preparation
+                let wal = fs::read(active_wal_path(&path)).unwrap();
+                store
+                    .durable
+                    .as_mut()
+                    .unwrap()
+                    .set_wal_available_space_override(0);
+                assert!(store
+                    .commit_mutations(&mut catalog, vec![update(0, 99)])
+                    .is_err());
+                assert_eq!(store.commit_epoch(), before.commit_epoch());
+                assert_eq!(
+                    store.version_index.estimated_bytes(),
+                    before.version_index.estimated_bytes()
+                );
+                assert_eq!(store.version_index.retained_history_bytes(), weight);
+                assert!(store
+                    .version_index
+                    .shares_storage_with(&before.version_index));
+                assert_eq!(
+                    store.version_index.stamp(&VersionKey::Database),
+                    before.version_index.stamp(&VersionKey::Database)
+                );
+                assert_eq!(fs::read(active_wal_path(&path)).unwrap(), wal);
+                store
+                    .durable
+                    .as_mut()
+                    .unwrap()
+                    .set_wal_available_space_override(u64::MAX);
+            }
+            let source = store.snapshot();
+            let source_epoch = source.commit_epoch();
+            store
+                .commit_mutations(&mut catalog, vec![update(1, 10)])
+                .unwrap();
+            store
+                .commit_mutations(&mut catalog, vec![update(2, 20)])
+                .unwrap();
+            // A retained source can create writers after intervening commits.
+            // The unchanged key must remain admissible, the changed key must not.
+            let mut disjoint = source.begin_mutation_transaction(&catalog);
+            let mut overlapping = source.begin_mutation_transaction(&catalog);
+            disjoint
+                .stage_mutation_with_limits(update(0, 30), MutationLimits::default())
+                .unwrap();
+            overlapping
+                .stage_mutation_with_limits(update(1, 99), MutationLimits::default())
+                .unwrap();
+            store
+                .commit_mutation_transaction_and_relational(
+                    &mut catalog,
+                    disjoint,
+                    RelationalTransaction::default(),
+                    MutationLimits::default(),
+                )
+                .unwrap();
+            assert_eq!(
+                store
+                    .version_index
+                    .stamp(&VersionKey::Database)
+                    .unwrap()
+                    .commit_epoch,
+                source_epoch
+            );
+            let epoch = store.commit_epoch();
+            let wal = durable.then(|| fs::read(active_wal_path(&path)).unwrap());
+            assert!(store
+                .commit_mutation_transaction_and_relational(
+                    &mut catalog,
+                    overlapping,
+                    RelationalTransaction::default(),
+                    MutationLimits::default()
+                )
+                .unwrap_err()
+                .is_retryable_transaction_conflict());
+            assert_eq!(store.commit_epoch(), epoch);
+            if let Some(wal) = wal {
+                assert_eq!(fs::read(active_wal_path(&path)).unwrap(), wal);
+            }
+            let descendant = source.snapshot();
+            drop(source);
+            store
+                .commit_mutations(&mut catalog, vec![update(2, 21)])
+                .unwrap();
+            assert_eq!(
+                store
+                    .version_index
+                    .stamp(&VersionKey::Database)
+                    .unwrap()
+                    .commit_epoch,
+                source_epoch
+            );
+            for id in 0..3 {
+                assert_eq!(
+                    descendant
+                        .node_owned(NodeId(id))
+                        .unwrap()
+                        .unwrap()
+                        .properties["value"],
+                    Value::Int(0)
+                );
+            }
+            drop(descendant);
+            let before = store.commit_epoch();
+            store
+                .commit_mutations(&mut catalog, vec![update(0, 31)])
+                .unwrap();
+            assert_eq!(store.version_index.len(), 2);
+            assert_eq!(store.version_index.retained_history_bytes(), weight);
+            assert_eq!(
+                store
+                    .version_index
+                    .stamp(&VersionKey::Database)
+                    .unwrap()
+                    .commit_epoch,
+                before
+            );
+            let epoch = store.commit_epoch();
+            if durable {
+                drop(store);
+                catalog = Catalog::default();
+                store = GraphStore::open(&path, &mut catalog).unwrap();
+            }
+            assert_eq!(store.commit_epoch(), epoch);
+            assert_eq!(store.node_count_for_label(None), 65);
+            for (id, value) in [(0, 31), (1, 10), (2, 21)] {
+                assert_eq!(
+                    store.node_owned(NodeId(id)).unwrap().unwrap().properties["value"],
+                    Value::Int(value)
+                );
+            }
+            drop(store);
+            if durable {
+                fs::remove_dir_all(path).unwrap();
+            }
+        }
+    }
+
+    #[test]
+    fn current_epoch_version_baseline_keeps_pinned_pressure_reclamation_available() {
+        use crate::cow::CowPageWeight;
+        use crate::version::{VersionIndex, VersionKey, VersionStamp};
+        let mut store = GraphStore::default();
+        let mut catalog = Catalog::default();
+        let reserve = VersionIndex::default().estimated_bytes();
+        let weight =
+            VersionKey::GraphNode(NodeId(0)).cow_page_bytes() + std::mem::size_of::<VersionStamp>();
+        store
+            .create_node(&mut catalog, "Memory", properties([]))
+            .unwrap();
+        store.version_index = VersionIndex::with_byte_limit(reserve + weight);
+        let insert = || GraphMutation::CreateNode {
+            label: "Memory".into(),
+            properties: properties([]),
+        };
+        store
+            .commit_mutations(&mut catalog, vec![insert()])
+            .unwrap();
+        store
+            .create_node(&mut catalog, "Memory", properties([]))
+            .unwrap();
+        let reader = store.snapshot();
+        // This direct commit leaves an obsolete narrow stamp below the pin,
+        // while advancing the tip so whole-index baseline preparation is unsafe.
+        store
+            .create_node(&mut catalog, "Memory", properties([]))
+            .unwrap();
+        assert_eq!(store.version_index.estimated_bytes(), reserve + weight);
+        store
+            .commit_mutations(&mut catalog, vec![insert()])
+            .unwrap();
+        assert_eq!(store.version_index.estimated_bytes(), reserve + weight);
+        assert_eq!(store.node_count_for_label(None), 5);
+        assert_eq!(reader.node_count_for_label(None), 3);
+        assert!(store
+            .version_index
+            .stamp(&VersionKey::GraphNode(NodeId(1)))
+            .is_none());
+        assert!(store
+            .version_index
+            .stamp(&VersionKey::GraphNode(NodeId(4)))
+            .is_some());
+    }
+
+    #[test]
+    fn retained_history_budget_refunds_wal_refusal_and_recovers_after_snapshot_drop() {
+        use crate::cow::CowPageWeight;
+        use crate::version::{VersionIndex, VersionKey, VersionStamp};
+        for durable in [false, true] {
+            let path = unique_test_dir("retained_history_budget");
+            let mut catalog = Catalog::default();
+            let mut store = if durable {
+                GraphStore::open(&path, &mut catalog).unwrap()
+            } else {
+                GraphStore::default()
+            };
+            store
+                .create_node(&mut catalog, "Memory", properties([]))
+                .unwrap();
+            store.checkpoint(&catalog).unwrap();
+            let reserve = VersionIndex::default().estimated_bytes();
+            let weight = VersionKey::GraphNode(NodeId(0)).cow_page_bytes()
+                + std::mem::size_of::<VersionStamp>();
+            store.version_index =
+                VersionIndex::with_history_limit(reserve + 4 * weight, 4 * weight);
+            let insert = || GraphMutation::CreateNode {
+                label: "Memory".into(),
+                properties: properties([]),
+            };
+            let protection = store.snapshot();
+            store
+                .commit_mutations(&mut catalog, vec![insert()])
+                .unwrap();
+            assert_eq!(store.version_index.retained_history_bytes(), weight);
+            let old = store.snapshot();
+            if durable {
+                let epoch = store.commit_epoch();
+                let wal = fs::read(active_wal_path(&path)).unwrap();
+                store
+                    .durable
+                    .as_mut()
+                    .unwrap()
+                    .set_wal_available_space_override(0);
+                assert!(store
+                    .commit_mutations(&mut catalog, vec![insert()])
+                    .is_err());
+                assert_eq!(store.version_index.retained_history_bytes(), weight);
+                assert_eq!(store.commit_epoch(), epoch);
+                assert_eq!(fs::read(active_wal_path(&path)).unwrap(), wal);
+                store
+                    .durable
+                    .as_mut()
+                    .unwrap()
+                    .set_wal_available_space_override(u64::MAX);
+            }
+            store
+                .commit_mutations(&mut catalog, vec![insert()])
+                .unwrap();
+            assert_eq!(store.version_index.retained_history_bytes(), 3 * weight);
+            let epoch = store.commit_epoch();
+            let wal = durable.then(|| fs::read(active_wal_path(&path)).unwrap());
+            let error = store
+                .commit_mutations(&mut catalog, vec![insert()])
+                .unwrap_err();
+            assert!(
+                error
+                    .to_string()
+                    .contains("retained version history budget exhausted"),
+                "{error}"
+            );
+            assert_eq!(store.commit_epoch(), epoch);
+            assert_eq!(store.node_count_for_label(None), 3);
+            assert_eq!(old.node_count_for_label(None), 2);
+            assert_eq!(store.version_index.retained_history_bytes(), 3 * weight);
+            if let Some(wal) = wal {
+                assert_eq!(fs::read(active_wal_path(&path)).unwrap(), wal);
+            }
+            drop(old);
+            drop(protection);
+            store.checkpoint(&catalog).unwrap();
+            assert_eq!(store.version_index.retained_history_bytes(), 0);
+            store
+                .commit_mutations(&mut catalog, vec![insert()])
+                .unwrap();
+            let epoch = store.commit_epoch();
+            assert_eq!(store.node_count_for_label(None), 4);
+            drop(store);
+            if durable {
+                let mut reopened_catalog = Catalog::default();
+                let reopened = GraphStore::open(&path, &mut reopened_catalog).unwrap();
+                assert_eq!(reopened.commit_epoch(), epoch);
+                assert_eq!(reopened.node_count_for_label(None), 4);
+                assert_eq!(reopened.version_index.retained_history_bytes(), 0);
+                drop(reopened);
+                fs::remove_dir_all(path).unwrap();
+            }
+        }
+    }
+
+    #[test]
+    fn version_history_budget_rejects_growth_before_wal_and_recovers_after_unpin() {
+        use crate::cow::CowPageWeight;
+        use crate::version::{VersionIndex, VersionKey, VersionStamp};
+        for durable in [false, true] {
+            let path = unique_test_dir("version_history_budget");
+            let mut catalog = Catalog::default();
+            let mut store = if durable {
+                GraphStore::open(&path, &mut catalog).unwrap()
+            } else {
+                GraphStore::default()
+            };
+            store
+                .create_node(&mut catalog, "Memory", properties([]))
+                .unwrap();
+            store.checkpoint(&catalog).unwrap();
+            let reserve = VersionIndex::default().estimated_bytes();
+            let weight = VersionKey::GraphNode(NodeId(0)).cow_page_bytes()
+                + std::mem::size_of::<VersionStamp>();
+            let limit = reserve + 2 * weight;
+            store.version_index = VersionIndex::with_byte_limit(limit);
+            let reader = store.snapshot();
+            let insert = || GraphMutation::CreateNode {
+                label: "Memory".into(),
+                properties: properties([]),
+            };
+            for _ in 0..2 {
+                store
+                    .commit_mutations(&mut catalog, vec![insert()])
+                    .unwrap();
+            }
+            assert_eq!(store.version_index.estimated_bytes(), limit);
+            let epoch = store.commit_epoch();
+            let wal = durable.then(|| fs::read(active_wal_path(&path)).unwrap());
+            let error = store
+                .commit_mutations(&mut catalog, vec![insert()])
+                .unwrap_err();
+            assert!(error
+                .to_string()
+                .contains("version index estimated payload budget exhausted"));
+            assert_eq!(store.commit_epoch(), epoch);
+            assert_eq!(store.node_count_for_label(None), 3);
+            assert_eq!(reader.node_count_for_label(None), 1);
+            assert_eq!(store.version_index.estimated_bytes(), limit);
+            if let Some(wal) = wal {
+                assert_eq!(fs::read(active_wal_path(&path)).unwrap(), wal);
+            }
+            // A legacy direct commit uses its prepaid Database identity even
+            // while the current index is full and an old reader remains pinned.
+            store
+                .create_node(&mut catalog, "Memory", properties([]))
+                .unwrap();
+            assert_eq!(store.version_index.estimated_bytes(), limit);
+            assert!(store.version_index.stamp(&VersionKey::Database).is_some());
+            drop(reader);
+            store.checkpoint(&catalog).unwrap();
+            assert_eq!(store.version_index.estimated_bytes(), reserve);
+            store
+                .commit_mutations(&mut catalog, vec![insert()])
+                .unwrap();
+            assert_eq!(store.node_count_for_label(None), 5);
+            // Without an old external pin, the prepared current-epoch baseline
+            // bounds history without requiring a checkpoint per commit.
+            for _ in 0..8 {
+                store
+                    .commit_mutations(&mut catalog, vec![insert()])
+                    .unwrap();
+                assert!(store.version_index.estimated_bytes() <= limit);
+            }
+            let epoch = store.commit_epoch();
+            drop(store);
+            if durable {
+                let mut recovered_catalog = Catalog::default();
+                let recovered = GraphStore::open(&path, &mut recovered_catalog).unwrap();
+                assert_eq!(recovered.node_count_for_label(None), 13);
+                assert_eq!(recovered.commit_epoch(), epoch);
+                drop(recovered);
+                fs::remove_dir_all(path).unwrap();
+            }
+        }
+    }
+
+    #[test]
+    fn checkpoint_reclaims_obsolete_live_version_history_without_losing_rows_or_conflicts() {
+        use crate::version::VersionKey;
+        for durable in [false, true] {
+            let path = unique_test_dir("live_version_history");
+            let mut catalog = Catalog::default();
+            let mut store = if durable {
+                GraphStore::open(&path, &mut catalog).unwrap()
+            } else {
+                GraphStore::default()
+            };
+            let insert_batch = |store: &mut GraphStore, catalog: &mut Catalog| {
+                store
+                    .commit_mutations(
+                        catalog,
+                        (0..8)
+                            .map(|_| GraphMutation::CreateNode {
+                                label: "Memory".into(),
+                                properties: properties([("value", Value::Int(0))]),
+                            })
+                            .collect(),
+                    )
+                    .unwrap();
+            };
+            let protection = store.snapshot();
+            insert_batch(&mut store, &mut catalog);
+            insert_batch(&mut store, &mut catalog);
+            let older = store.snapshot();
+            insert_batch(&mut store, &mut catalog);
+            let newer = store.snapshot();
+            drop(protection);
+            store.checkpoint(&catalog).unwrap();
+            assert_eq!(store.version_index.len(), 16);
+            assert_eq!(
+                store.version_index.stamp(&VersionKey::GraphNode(NodeId(0))),
+                None
+            );
+            assert!(store
+                .version_index
+                .stamp(&VersionKey::GraphNode(NodeId(8)))
+                .is_some());
+            assert!(older
+                .version_index
+                .stamp(&VersionKey::GraphNode(NodeId(0)))
+                .is_some());
+            assert_eq!(older.node_count_for_label(None), 16);
+            drop(older);
+            store.checkpoint(&catalog).unwrap();
+            assert_eq!(store.version_index.len(), 8);
+            assert_eq!(newer.node_count_for_label(None), 24);
+            drop(newer);
+            store.checkpoint(&catalog).unwrap();
+            assert!(store.version_index.is_empty());
+            assert_eq!(store.node_count_for_label(None), 24);
+
+            // After old history is discarded, new mutations must still stamp
+            // conflicts for transactions that start from the retained data.
+            let mut stale = store.begin_mutation_transaction(&catalog);
+            let update = |value| GraphMutation::SetNodeProperty {
+                label: "Memory".into(),
+                filter: None,
+                property: "value".into(),
+                value: Value::Int(value),
+            };
+            stale
+                .stage_mutation_with_limits(update(1), MutationLimits::default())
+                .unwrap();
+            store
+                .commit_mutations(&mut catalog, vec![update(2)])
+                .unwrap();
+            let epoch = store.commit_epoch;
+            assert!(store
+                .commit_mutation_transaction_and_relational(
+                    &mut catalog,
+                    stale,
+                    RelationalTransaction::default(),
+                    MutationLimits::default()
+                )
+                .unwrap_err()
+                .is_retryable_transaction_conflict());
+            assert_eq!(store.commit_epoch, epoch);
+            store.checkpoint(&catalog).unwrap();
+            assert!(store.version_index.is_empty());
+            if durable {
+                drop(store);
+                catalog = Catalog::default();
+                store = GraphStore::open(&path, &mut catalog).unwrap();
+            }
+            assert_eq!(store.node_count_for_label(None), 24);
+            for id in 0..24 {
+                assert_eq!(
+                    store.node_owned(NodeId(id)).unwrap().unwrap().properties["value"],
+                    Value::Int(2)
+                );
+            }
+            drop(store);
+            if durable {
+                fs::remove_dir_all(path).unwrap();
+            }
+        }
+    }
+
+    #[test]
+    fn direct_legacy_commits_invalidate_stale_optimistic_workspaces() {
+        for durable in [false, true] {
+            for mutation in ["property", "schema", "delete"] {
+                let path = unique_test_dir("legacy_version_barrier");
+                let mut catalog = Catalog::default();
+                let mut store = if durable {
+                    GraphStore::open(&path, &mut catalog).unwrap()
+                } else {
+                    GraphStore::default()
+                };
+                let id = store
+                    .create_node(
+                        &mut catalog,
+                        "Memory",
+                        properties([("value", Value::Int(0))]),
+                    )
+                    .unwrap();
+                let read_epoch = store.commit_epoch;
+                let mut stale = store.begin_mutation_transaction(&catalog);
+                stale
+                    .stage_mutation_with_limits(
+                        GraphMutation::SetNodeProperty {
+                            label: "Memory".into(),
+                            filter: None,
+                            property: "value".into(),
+                            value: Value::Int(1),
+                        },
+                        MutationLimits::default(),
+                    )
+                    .unwrap();
+                match mutation {
+                    "property" => {
+                        store
+                            .set_node_property(&mut catalog, "Memory", None, "value", Value::Int(2))
+                            .unwrap();
+                    }
+                    "schema" => {
+                        store.create_node_label(&mut catalog, "Other").unwrap();
+                    }
+                    "delete" => {
+                        store
+                            .delete_nodes(&mut catalog, "Memory", None, false)
+                            .unwrap();
+                    }
+                    _ => unreachable!(),
+                }
+                let wal = durable.then(|| fs::read(active_wal_path(&path)).unwrap());
+                let error = store
+                    .commit_mutation_transaction_and_relational(
+                        &mut catalog,
+                        stale,
+                        RelationalTransaction::default(),
+                        MutationLimits::default(),
+                    )
+                    .unwrap_err();
+                assert!(
+                    error.is_retryable_transaction_conflict(),
+                    "{mutation}: {error}"
+                );
+                assert!(matches!(error, HawDBError::TransactionConflict {
+                    read_epoch: actual_read, committed_epoch, ref key,
+                } if actual_read == read_epoch && committed_epoch == read_epoch + 1 && key == "database"));
+                assert_eq!(store.commit_epoch, read_epoch + 1);
+                if let Some(wal) = wal {
+                    assert_eq!(fs::read(active_wal_path(&path)).unwrap(), wal);
+                    drop(store);
+                    catalog = Catalog::default();
+                    store = GraphStore::open(&path, &mut catalog).unwrap();
+                    assert_eq!(store.commit_epoch, read_epoch + 1);
+                }
+                if mutation == "delete" {
+                    assert!(store.node_owned(id).unwrap().is_none());
+                } else {
+                    let node = store.node_owned(id).unwrap().unwrap();
+                    assert_eq!(
+                        node.properties["value"],
+                        Value::Int(if mutation == "property" { 2 } else { 0 })
+                    );
+                }
+                assert_eq!(catalog.label_id("Other").is_some(), mutation == "schema");
+                drop(store);
+                if durable {
+                    fs::remove_dir_all(path).unwrap();
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn rejected_and_noop_legacy_mutations_do_not_invalidate_a_transaction() {
+        let mut store = GraphStore::default();
+        let mut catalog = Catalog::default();
+        let id = store
+            .create_node(
+                &mut catalog,
+                "Memory",
+                properties([("value", Value::Int(i64::MAX))]),
+            )
+            .unwrap();
+        let epoch = store.commit_epoch;
+        let mut transaction = store.begin_mutation_transaction(&catalog);
+        transaction
+            .stage_mutation_with_limits(
+                GraphMutation::SetNodeProperty {
+                    label: "Memory".into(),
+                    filter: None,
+                    property: "value".into(),
+                    value: Value::Int(7),
+                },
+                MutationLimits::default(),
+            )
+            .unwrap();
+        assert!(store
+            .add_int_node_property(&mut catalog, "Memory", None, "value", 1)
+            .is_err());
+        assert!(store
+            .set_node_property(&mut catalog, "Absent", None, "value", Value::Int(1))
+            .unwrap()
+            .is_empty());
+        assert_eq!(store.commit_epoch, epoch);
+        store
+            .commit_mutation_transaction_and_relational(
+                &mut catalog,
+                transaction,
+                RelationalTransaction::default(),
+                MutationLimits::default(),
+            )
+            .unwrap();
+        assert_eq!(
+            store.node_owned(id).unwrap().unwrap().properties["value"],
+            Value::Int(7)
+        );
+    }
+
+    #[test]
+    fn version_tombstone_checkpoint_waits_for_storage_snapshots_and_transactions() {
+        use crate::version::{VersionDisposition, VersionKey};
+        for durable in [false, true] {
+            let path = unique_test_dir("version_tombstone_pins");
+            let mut catalog = Catalog::default();
+            let mut store = if durable {
+                GraphStore::open(&path, &mut catalog).unwrap()
+            } else {
+                GraphStore::default()
+            };
+            let id = store
+                .create_node(
+                    &mut catalog,
+                    "Memory",
+                    properties([("value", Value::Int(0))]),
+                )
+                .unwrap();
+            let key = VersionKey::GraphNode(id);
+            let source = store.snapshot();
+            let mut stale = source.begin_mutation_transaction(&catalog);
+            stale
+                .stage_mutation_with_limits(
+                    GraphMutation::SetNodeProperty {
+                        label: "Memory".into(),
+                        filter: None,
+                        property: "value".into(),
+                        value: Value::Int(1),
+                    },
+                    MutationLimits::default(),
+                )
+                .unwrap();
+            store
+                .commit_mutations(
+                    &mut catalog,
+                    vec![GraphMutation::DeleteNode {
+                        label: "Memory".into(),
+                        filter: None,
+                        detach: false,
+                    }],
+                )
+                .unwrap();
+            let deleted = store.version_index.stamp(&key).unwrap();
+            assert_eq!(deleted.disposition, VersionDisposition::Tombstone);
+            store.checkpoint(&catalog).unwrap();
+            assert_eq!(store.version_index.stamp(&key), Some(deleted));
+            let error = store
+                .commit_mutation_transaction_and_relational(
+                    &mut catalog,
+                    stale,
+                    RelationalTransaction::default(),
+                    MutationLimits::default(),
+                )
+                .unwrap_err();
+            assert!(error.is_retryable_transaction_conflict());
+            // A source snapshot can start a transaction later. It must retain
+            // protection even after the original transaction has retired.
+            let later = source.begin_mutation_transaction(&catalog);
+            drop(source);
+            store.checkpoint(&catalog).unwrap();
+            assert_eq!(store.version_index.stamp(&key), Some(deleted));
+            drop(later);
+            let equal_epoch = store.snapshot();
+            store.checkpoint(&catalog).unwrap();
+            assert_eq!(store.version_index.stamp(&key), Some(deleted));
+            let next_id = NodeId(store.next_node_id);
+            store
+                .commit_mutations(
+                    &mut catalog,
+                    vec![GraphMutation::CreateNode {
+                        label: "Memory".into(),
+                        properties: properties([("value", Value::Int(2))]),
+                    }],
+                )
+                .unwrap();
+            let newer = store.snapshot();
+            let live_key = VersionKey::GraphNode(next_id);
+            let live = store.version_index.stamp(&live_key).unwrap();
+            store.checkpoint(&catalog).unwrap();
+            assert_eq!(store.version_index.stamp(&key), None);
+            assert_eq!(store.version_index.stamp(&live_key), Some(live));
+            // The next commit can compact a tip-pinned baseline, while the
+            // precise source captured before that commit remains unchanged.
+            assert_eq!(newer.version_index.stamp(&key), None);
+            assert_eq!(equal_epoch.version_index.stamp(&key), Some(deleted));
+            drop(equal_epoch);
+            drop(newer);
+            drop(store);
+            if durable {
+                fs::remove_dir_all(path).unwrap();
+            }
+        }
+    }
+
+    #[test]
+    fn version_tombstone_checkpoint_preserves_base_epoch_after_savepoint_restore() {
+        let mut store = GraphStore::default();
+        let mut catalog = Catalog::default();
+        let id = store
+            .create_node(
+                &mut catalog,
+                "Memory",
+                properties([("value", Value::Int(0))]),
+            )
+            .unwrap();
+        let key = crate::version::VersionKey::GraphNode(id);
+        let mut transaction = store.begin_mutation_transaction(&catalog);
+        for value in 1..=2 {
+            transaction
+                .stage_mutation_with_limits(
+                    GraphMutation::SetNodeProperty {
+                        label: "Memory".into(),
+                        filter: None,
+                        property: "value".into(),
+                        value: Value::Int(value),
+                    },
+                    MutationLimits::default(),
+                )
+                .unwrap();
+        }
+        let savepoint = transaction.savepoint();
+        transaction
+            .stage_mutation_with_limits(
+                GraphMutation::SetNodeProperty {
+                    label: "Memory".into(),
+                    filter: None,
+                    property: "value".into(),
+                    value: Value::Int(3),
+                },
+                MutationLimits::default(),
+            )
+            .unwrap();
+        transaction.restore(savepoint);
+        store
+            .commit_mutations(
+                &mut catalog,
+                vec![GraphMutation::DeleteNode {
+                    label: "Memory".into(),
+                    filter: None,
+                    detach: false,
+                }],
+            )
+            .unwrap();
+        let deleted = store.version_index.stamp(&key).unwrap();
+        store.checkpoint(&catalog).unwrap();
+        assert_eq!(store.version_index.stamp(&key), Some(deleted));
+        assert!(store
+            .commit_mutation_transaction_and_relational(
+                &mut catalog,
+                transaction,
+                RelationalTransaction::default(),
+                MutationLimits::default(),
+            )
+            .unwrap_err()
+            .is_retryable_transaction_conflict());
+    }
+
+    #[test]
+    fn version_tombstone_checkpoint_bounds_unpinned_delete_churn() {
+        let mut store = GraphStore::default();
+        let mut catalog = Catalog::default();
+        for value in 0..32 {
+            store
+                .commit_mutations(
+                    &mut catalog,
+                    vec![GraphMutation::CreateNode {
+                        label: "Memory".into(),
+                        properties: properties([("value", Value::Int(value))]),
+                    }],
+                )
+                .unwrap();
+            store
+                .commit_mutations(
+                    &mut catalog,
+                    vec![GraphMutation::DeleteNode {
+                        label: "Memory".into(),
+                        filter: None,
+                        detach: false,
+                    }],
+                )
+                .unwrap();
+            assert!(store
+                .version_index
+                .stamp(&crate::version::VersionKey::GraphNode(NodeId(value as u64)))
+                .is_some());
+            store.checkpoint(&catalog).unwrap();
+            // Only the schema barrier may remain after all nodes were deleted.
+            assert!(store.version_index.len() <= 1);
+        }
+    }
 
     #[test]
     fn user_snapshot_observes_fatal_single_and_batch_wal_errors_but_allows_recoverable_append() {
@@ -3183,15 +4127,16 @@ mod tests {
     fn residency_facade_preserves_storage_type_identity() {
         assert_eq!(
             TypeId::of::<StorageResidencyReport>(),
-            TypeId::of::<hawdb_storage::StorageResidencyReport>()
+            TypeId::of::<hawdb_storage::residency::StorageResidencyReport>()
         );
         assert_eq!(
             TypeId::of::<RelationalRowStorageResidencyReport>(),
-            TypeId::of::<hawdb_storage::RelationalRowStorageResidencyReport>()
+            TypeId::of::<hawdb_storage::residency::RelationalRowStorageResidencyReport>()
         );
         assert_eq!(
             TypeId::of::<RelationalIndexStorageResidencyReport>(),
-            TypeId::of::<hawdb_storage::RelationalIndexStorageResidencyReport>()
+            TypeId::of::<hawdb_storage::relational_index_view::RelationalIndexStorageResidencyReport>(
+            )
         );
     }
 
@@ -3342,7 +4287,7 @@ mod tests {
             IoConcurrencyBudget, RuntimeGovernor, RuntimeGovernorConfig, RuntimeMemorySnapshot,
             RuntimeResourceBudget, RuntimeResourceSnapshot,
         };
-        use hawdb_storage::{BackgroundWorkAdmission, BackgroundWorkRequest};
+        use hawdb_storage::background::{BackgroundWorkAdmission, BackgroundWorkRequest};
 
         let governor = RuntimeGovernor::new(
             RuntimeGovernorConfig {
@@ -3397,6 +4342,117 @@ mod tests {
                     .then_some(offset.saturating_add(25) as u64)
             })
             .expect("selected property projection block exists")
+    }
+
+    #[test]
+    fn read_snapshot_baseline_releases_history_without_losing_data_or_pins() {
+        use crate::version::VersionKey;
+        let mut catalog = Catalog::default();
+        let mut store = GraphStore::default();
+        store
+            .create_node(
+                &mut catalog,
+                "Memory",
+                properties([("value", Value::Int(0))]),
+            )
+            .unwrap();
+        let update = |value| GraphMutation::SetNodeProperty {
+            label: "Memory".into(),
+            filter: None,
+            property: "value".into(),
+            value: Value::Int(value),
+        };
+        let mut old_read_target = store.begin_mutation_transaction(&catalog);
+        let mut old_precise_target = store.begin_mutation_transaction(&catalog);
+        old_read_target
+            .stage_mutation_with_limits(update(1), MutationLimits::default())
+            .unwrap();
+        old_precise_target
+            .stage_mutation_with_limits(update(1), MutationLimits::default())
+            .unwrap();
+        store
+            .commit_mutations(
+                &mut catalog,
+                (0..8)
+                    .map(|_| GraphMutation::CreateNode {
+                        label: "Memory".into(),
+                        properties: properties([("value", Value::Int(0))]),
+                    })
+                    .collect(),
+            )
+            .unwrap();
+        assert!(store.version_index.len() >= 8);
+        let mut precise = store.snapshot();
+        assert!(precise
+            .version_index
+            .shares_storage_with(&store.version_index));
+        let mut read = store.snapshot_for_read();
+        assert_eq!(read.version_index.len(), 1);
+        assert!(!read.version_index.shares_storage_with(&store.version_index));
+        assert!(read.nodes.shares_storage_with(&store.nodes));
+        let epoch = read.commit_epoch();
+        assert_eq!(
+            read.version_index
+                .stamp(&VersionKey::Database)
+                .unwrap()
+                .commit_epoch,
+            epoch
+        );
+        let mut read_catalog = catalog.clone();
+        let error = read
+            .commit_mutation_transaction_and_relational(
+                &mut read_catalog,
+                old_read_target,
+                RelationalTransaction::default(),
+                MutationLimits::default(),
+            )
+            .unwrap_err();
+        assert!(error.is_retryable_transaction_conflict());
+        assert_eq!(read.commit_epoch(), epoch);
+        // The normal workspace still admits the disjoint old writer: only the
+        // explicit read-optimized fork sacrifices historical write precision.
+        precise
+            .commit_mutation_transaction_and_relational(
+                &mut catalog.clone(),
+                old_precise_target,
+                RelationalTransaction::default(),
+                MutationLimits::default(),
+            )
+            .unwrap();
+        drop(precise);
+        let descendant = read.snapshot_for_read();
+        drop(read);
+        store
+            .commit_mutations(&mut catalog, vec![update(2)])
+            .unwrap();
+        store.checkpoint(&catalog).unwrap();
+        assert!(store
+            .version_index
+            .stamp(&VersionKey::GraphNode(NodeId(0)))
+            .is_some());
+        assert_eq!(descendant.commit_epoch(), epoch);
+        assert_eq!(descendant.version_index.len(), 1);
+        for id in 0..9 {
+            assert_eq!(
+                descendant
+                    .node_owned(NodeId(id))
+                    .unwrap()
+                    .unwrap()
+                    .properties["value"],
+                Value::Int(0)
+            );
+            assert_eq!(
+                store.node_owned(NodeId(id)).unwrap().unwrap().properties["value"],
+                Value::Int(2)
+            );
+        }
+        drop(descendant);
+        store.checkpoint(&catalog).unwrap();
+        assert!(store.version_index.is_empty());
+        assert!(GraphStore::default()
+            .snapshot_for_read()
+            .version_index
+            .is_empty());
     }
 
     #[test]
@@ -3948,8 +5004,8 @@ mod tests {
         let source = store
             .create_node(&mut catalog, "Source", BTreeMap::new())
             .unwrap();
-        let target_count =
-            DENSE_ADJACENCY_DEGREE_THRESHOLD + hawdb_storage::ADJACENCY_DELTA_CONSOLIDATION_ENTRIES;
+        let target_count = DENSE_ADJACENCY_DEGREE_THRESHOLD
+            + hawdb_storage::adjacency::ADJACENCY_DELTA_CONSOLIDATION_ENTRIES;
         let targets = (0..target_count)
             .map(|_| {
                 store
@@ -3974,7 +5030,7 @@ mod tests {
         assert_eq!(plan.group_count, 1);
         assert_eq!(
             plan.delta_entry_count,
-            hawdb_storage::ADJACENCY_DELTA_CONSOLIDATION_ENTRIES
+            hawdb_storage::adjacency::ADJACENCY_DELTA_CONSOLIDATION_ENTRIES
         );
 
         let deferred =
@@ -4232,49 +5288,59 @@ mod tests {
         assert!(report.generation > 0);
         assert_eq!(report.file_count, 26);
         assert!(backup
-            .join(hawdb_storage::append_generation_manifest_file(
-                report.generation
-            ))
+            .join(hawdb_storage::append_table::append_generation_manifest_file(report.generation))
             .exists());
         assert!(backup
-            .join(hawdb_storage::canonical_segment_descriptor_page_file(
-                report.generation
-            ))
+            .join(
+                hawdb_storage::canonical::canonical_segment_descriptor_page_file(report.generation)
+            )
             .exists());
         assert!(backup
-            .join(hawdb_storage::canonical_segment_descriptor_root_file(
-                report.generation
-            ))
+            .join(
+                hawdb_storage::canonical::canonical_segment_descriptor_root_file(report.generation)
+            )
             .exists());
         assert!(backup
-            .join(hawdb_storage::canonical_adjacency_descriptor_page_file(
-                report.generation
-            ))
+            .join(
+                hawdb_storage::canonical_adjacency::canonical_adjacency_descriptor_page_file(
+                    report.generation
+                )
+            )
             .exists());
         assert!(backup
-            .join(hawdb_storage::canonical_adjacency_descriptor_root_file(
-                report.generation
-            ))
+            .join(
+                hawdb_storage::canonical_adjacency::canonical_adjacency_descriptor_root_file(
+                    report.generation
+                )
+            )
             .exists());
         assert!(backup
-            .join(hawdb_storage::property_projection_descriptor_page_file(
-                report.generation
-            ))
+            .join(
+                hawdb_storage::property_projection::property_projection_descriptor_page_file(
+                    report.generation
+                )
+            )
             .exists());
         assert!(backup
-            .join(hawdb_storage::property_projection_descriptor_root_file(
-                report.generation
-            ))
+            .join(
+                hawdb_storage::property_projection::property_projection_descriptor_root_file(
+                    report.generation
+                )
+            )
             .exists());
         assert!(backup
-            .join(hawdb_storage::property_spill_descriptor_page_file(
-                report.generation
-            ))
+            .join(
+                hawdb_storage::property_spill::property_spill_descriptor_page_file(
+                    report.generation
+                )
+            )
             .exists());
         assert!(backup
-            .join(hawdb_storage::property_spill_descriptor_root_file(
-                report.generation
-            ))
+            .join(
+                hawdb_storage::property_spill::property_spill_descriptor_root_file(
+                    report.generation
+                )
+            )
             .exists());
 
         let restore = restore_storage_backup(&backup, &restored).unwrap();
@@ -4537,7 +5603,7 @@ mod tests {
             let residency = store.storage_residency_report();
             assert_eq!(
                 residency.graph_manifest_open_budget_bytes,
-                hawdb_storage::DEFAULT_MAX_GRAPH_MANIFEST_OPEN_BYTES
+                hawdb_storage::config::DEFAULT_MAX_GRAPH_MANIFEST_OPEN_BYTES
             );
             assert!(residency.graph_manifest_encoded_bytes > canonical_manifest_bytes);
         }
@@ -4759,12 +5825,12 @@ mod tests {
             let scrub = adjacency.deep_scrub().unwrap();
             assert_eq!(store.segment_cache_snapshot().unwrap(), cache_before_scrub);
             assert!(!path.join("adjacency.1.manifest.hawdb").exists());
-            let descriptor_reader = hawdb_storage::GraphDescriptorTreeRootReader::open(
-                hawdb_storage::GraphDescriptorTreePaths::new(
-                    path.join(hawdb_storage::canonical_adjacency_descriptor_page_file(1)),
-                    path.join(hawdb_storage::canonical_adjacency_descriptor_root_file(1)),
+            let descriptor_reader = hawdb_storage::graph_descriptor_tree::GraphDescriptorTreeRootReader::open(
+                hawdb_storage::graph_descriptor_tree::GraphDescriptorTreePaths::new(
+                    path.join(hawdb_storage::canonical_adjacency::canonical_adjacency_descriptor_page_file(1)),
+                    path.join(hawdb_storage::canonical_adjacency::canonical_adjacency_descriptor_root_file(1)),
                 ),
-                hawdb_storage::GraphDescriptorTreeBuildConfig::default(),
+                hawdb_storage::graph_descriptor_tree::GraphDescriptorTreeBuildConfig::default(),
             )
             .unwrap();
             assert_eq!(
@@ -4941,10 +6007,18 @@ mod tests {
         )
         .unwrap();
         fs::remove_file(path.join(canonical_adjacency_artifact_generation_file(1))).unwrap();
-        fs::remove_file(path.join(hawdb_storage::canonical_adjacency_descriptor_page_file(1)))
-            .unwrap();
-        fs::remove_file(path.join(hawdb_storage::canonical_adjacency_descriptor_root_file(1)))
-            .unwrap();
+        fs::remove_file(
+            path.join(
+                hawdb_storage::canonical_adjacency::canonical_adjacency_descriptor_page_file(1),
+            ),
+        )
+        .unwrap();
+        fs::remove_file(
+            path.join(
+                hawdb_storage::canonical_adjacency::canonical_adjacency_descriptor_root_file(1),
+            ),
+        )
+        .unwrap();
 
         let mut catalog = Catalog::default();
         let error = GraphStore::open_with_durability_and_replay_config(
@@ -5006,15 +6080,20 @@ mod tests {
             assert_eq!(spill_manifest.value_count, 2);
             assert!(spill_manifest.value_bytes > 64 * 1024);
             assert_eq!(spill_manifest.source_commit_epoch, store.commit_epoch());
-            let descriptor_root = hawdb_storage::GraphDescriptorTreeRootReader::open_bound(
-                hawdb_storage::GraphDescriptorTreePaths::new(
-                    path.join(hawdb_storage::property_spill_descriptor_page_file(1)),
-                    path.join(hawdb_storage::property_spill_descriptor_root_file(1)),
-                ),
-                spill_manifest.descriptor_generation_artifacts(),
-                hawdb_storage::GraphDescriptorTreeBuildConfig::default(),
-            )
-            .unwrap();
+            let descriptor_root =
+                hawdb_storage::graph_descriptor_tree::GraphDescriptorTreeRootReader::open_bound(
+                    hawdb_storage::graph_descriptor_tree::GraphDescriptorTreePaths::new(
+                        path.join(
+                            hawdb_storage::property_spill::property_spill_descriptor_page_file(1),
+                        ),
+                        path.join(
+                            hawdb_storage::property_spill::property_spill_descriptor_root_file(1),
+                        ),
+                    ),
+                    spill_manifest.descriptor_generation_artifacts(),
+                    hawdb_storage::graph_descriptor_tree::GraphDescriptorTreeBuildConfig::default(),
+                )
+                .unwrap();
             assert_eq!(
                 descriptor_root.root().descriptor_count,
                 spill_manifest.block_count
@@ -5104,7 +6183,10 @@ mod tests {
                 .unwrap();
             store.checkpoint(&catalog).unwrap();
         }
-        fs::remove_file(path.join(hawdb_storage::property_spill_descriptor_root_file(1))).unwrap();
+        fs::remove_file(
+            path.join(hawdb_storage::property_spill::property_spill_descriptor_root_file(1)),
+        )
+        .unwrap();
         let mut catalog = Catalog::default();
         let error = GraphStore::open_with_durability_and_replay_config(
             &path,
@@ -5123,7 +6205,7 @@ mod tests {
 
     #[test]
     fn out_of_core_property_projections_merge_wal_delta_and_fail_closed() {
-        use hawdb_storage::PersistentPropertyProjectionKind;
+        use hawdb_storage::property_projection::PersistentPropertyProjectionKind;
         use std::io::{Seek, SeekFrom};
 
         let path = unique_test_dir("property_projection_checkpoint");
@@ -5493,7 +6575,7 @@ mod tests {
 
     #[test]
     fn out_of_core_relationship_property_projection_prunes_and_merges_wal_delta() {
-        use hawdb_storage::PersistentPropertyProjectionKind;
+        use hawdb_storage::property_projection::PersistentPropertyProjectionKind;
         use std::io::{Seek, SeekFrom};
 
         let path = unique_test_dir("relationship_property_projection_checkpoint");
@@ -6814,7 +7896,7 @@ mod tests {
                     upsert_node_ids: vec![0],
                     delete_document_ids: Vec::new(),
                     relational_primary_key_changes:
-                        hawdb_storage::RelationalPrimaryKeyChangeCapture::Captured {
+                        hawdb_storage::relational::RelationalPrimaryKeyChangeCapture::Captured {
                             tables: Vec::new(),
                             encoded_bytes: 0,
                         },
@@ -6824,7 +7906,7 @@ mod tests {
                     upsert_node_ids: Vec::new(),
                     delete_document_ids: vec!["memory:deleted-memory".to_string()],
                     relational_primary_key_changes:
-                        hawdb_storage::RelationalPrimaryKeyChangeCapture::Captured {
+                        hawdb_storage::relational::RelationalPrimaryKeyChangeCapture::Captured {
                             tables: Vec::new(),
                             encoded_bytes: 0,
                         },
@@ -6970,10 +8052,10 @@ mod tests {
         assert!(!path.join("checkpoint.1.hawdb").exists());
         assert!(!path.join("wal.1.hawdb").exists());
         assert!(!path
-            .join(hawdb_storage::canonical_adjacency_descriptor_page_file(1))
+            .join(hawdb_storage::canonical_adjacency::canonical_adjacency_descriptor_page_file(1))
             .exists());
         assert!(!path
-            .join(hawdb_storage::canonical_adjacency_descriptor_root_file(1))
+            .join(hawdb_storage::canonical_adjacency::canonical_adjacency_descriptor_root_file(1))
             .exists());
         assert!(!path.join(".checkpoint.1.prepare").exists());
         drop(source);
@@ -7066,48 +8148,56 @@ mod tests {
                         generation
                     );
                     assert!(path
-                        .join(hawdb_storage::canonical_segment_descriptor_page_file(
+                        .join(
+                            hawdb_storage::canonical::canonical_segment_descriptor_page_file(
+                                generation
+                            )
+                        )
+                        .exists());
+                    assert!(path
+                        .join(
+                            hawdb_storage::canonical::canonical_segment_descriptor_root_file(
+                                generation
+                            )
+                        )
+                        .exists());
+                    assert!(path
+                        .join(hawdb_storage::canonical_adjacency::canonical_adjacency_descriptor_page_file(
                             generation
                         ))
                         .exists());
                     assert!(path
-                        .join(hawdb_storage::canonical_segment_descriptor_root_file(
-                            generation
-                        ))
-                        .exists());
-                    assert!(path
-                        .join(hawdb_storage::canonical_adjacency_descriptor_page_file(
-                            generation
-                        ))
-                        .exists());
-                    assert!(path
-                        .join(hawdb_storage::canonical_adjacency_descriptor_root_file(
+                        .join(hawdb_storage::canonical_adjacency::canonical_adjacency_descriptor_root_file(
                             generation
                         ))
                         .exists());
                 }
                 None => {
                     assert!(!path
-                        .join(hawdb_storage::relational_row_page_manifest_generation_file(
-                            1
-                        ))
+                        .join(
+                            hawdb_storage::relational::relational_row_page_manifest_generation_file(
+                                1
+                            )
+                        )
                         .exists());
                     assert!(!path
-                        .join(hawdb_storage::relational_overflow_manifest_generation_file(
-                            1
-                        ))
+                        .join(
+                            hawdb_storage::relational::relational_overflow_manifest_generation_file(
+                                1
+                            )
+                        )
                         .exists());
                     assert!(!path
-                        .join(hawdb_storage::canonical_segment_descriptor_page_file(1))
+                        .join(hawdb_storage::canonical::canonical_segment_descriptor_page_file(1))
                         .exists());
                     assert!(!path
-                        .join(hawdb_storage::canonical_segment_descriptor_root_file(1))
+                        .join(hawdb_storage::canonical::canonical_segment_descriptor_root_file(1))
                         .exists());
                     assert!(!path
-                        .join(hawdb_storage::canonical_adjacency_descriptor_page_file(1))
+                        .join(hawdb_storage::canonical_adjacency::canonical_adjacency_descriptor_page_file(1))
                         .exists());
                     assert!(!path
-                        .join(hawdb_storage::canonical_adjacency_descriptor_root_file(1))
+                        .join(hawdb_storage::canonical_adjacency::canonical_adjacency_descriptor_root_file(1))
                         .exists());
                 }
             }
@@ -7143,9 +8233,9 @@ mod tests {
         assert!(pressure.generation_reclamation_retry_required);
         assert_eq!(pressure.generation_reclamation_pending_files, 1);
         assert!(pressure.generation_reclamation_pending_bytes > 0);
-        assert!(pressure
-            .reason_codes
-            .contains(&hawdb_storage::StoragePressureReasonCode::GenerationReclamationDebt));
+        assert!(pressure.reason_codes.contains(
+            &hawdb_storage::pressure::StoragePressureReasonCode::GenerationReclamationDebt
+        ));
 
         drop(store);
         let mut recovered_catalog = Catalog::default();
@@ -7163,9 +8253,9 @@ mod tests {
         assert!(!pressure.generation_reclamation_retry_required);
         assert_eq!(pressure.generation_reclamation_pending_files, 0);
         assert_eq!(pressure.generation_reclamation_pending_bytes, 0);
-        assert!(!pressure
-            .reason_codes
-            .contains(&hawdb_storage::StoragePressureReasonCode::GenerationReclamationDebt));
+        assert!(!pressure.reason_codes.contains(
+            &hawdb_storage::pressure::StoragePressureReasonCode::GenerationReclamationDebt
+        ));
 
         drop(recovered);
         let mut reopened_catalog = Catalog::default();
@@ -7194,96 +8284,84 @@ mod tests {
         assert!(!path.join("canonical.1.hawdb").exists());
         assert!(!path.join("canonical.1.manifest.hawdb").exists());
         assert!(!path
-            .join(hawdb_storage::canonical_segment_descriptor_page_file(1))
+            .join(hawdb_storage::canonical::canonical_segment_descriptor_page_file(1))
             .exists());
         assert!(!path
-            .join(hawdb_storage::canonical_segment_descriptor_root_file(1))
+            .join(hawdb_storage::canonical::canonical_segment_descriptor_root_file(1))
             .exists());
         assert!(!path.join("adjacency.1.hawdb").exists());
         assert!(!path.join("adjacency.1.manifest.hawdb").exists());
         assert!(!path
-            .join(hawdb_storage::canonical_adjacency_descriptor_page_file(1))
+            .join(hawdb_storage::canonical_adjacency::canonical_adjacency_descriptor_page_file(1))
             .exists());
         assert!(!path
-            .join(hawdb_storage::canonical_adjacency_descriptor_root_file(1))
+            .join(hawdb_storage::canonical_adjacency::canonical_adjacency_descriptor_root_file(1))
             .exists());
         assert!(!path.join("properties.1.hawdb").exists());
         assert!(!path.join("properties.1.manifest.hawdb").exists());
         assert!(!path.join("property-index.1.hawdb").exists());
         assert!(!path.join("property-index.1.manifest.hawdb").exists());
         assert!(!path
-            .join(hawdb_storage::relational_row_page_manifest_generation_file(
-                1
-            ))
+            .join(hawdb_storage::relational::relational_row_page_manifest_generation_file(1))
             .exists());
         assert!(!path
-            .join(hawdb_storage::relational_overflow_manifest_generation_file(
-                1
-            ))
+            .join(hawdb_storage::relational::relational_overflow_manifest_generation_file(1))
             .exists());
         assert!(path.join("checkpoint.2.hawdb").exists());
         assert!(path.join("wal.2.hawdb").exists());
         assert!(path.join("canonical.2.hawdb").exists());
         assert!(path.join("canonical.2.manifest.hawdb").exists());
         assert!(path
-            .join(hawdb_storage::canonical_segment_descriptor_page_file(2))
+            .join(hawdb_storage::canonical::canonical_segment_descriptor_page_file(2))
             .exists());
         assert!(path
-            .join(hawdb_storage::canonical_segment_descriptor_root_file(2))
+            .join(hawdb_storage::canonical::canonical_segment_descriptor_root_file(2))
             .exists());
         assert!(path.join("adjacency.2.hawdb").exists());
         assert!(!path.join("adjacency.2.manifest.hawdb").exists());
         assert!(path
-            .join(hawdb_storage::canonical_adjacency_descriptor_page_file(2))
+            .join(hawdb_storage::canonical_adjacency::canonical_adjacency_descriptor_page_file(2))
             .exists());
         assert!(path
-            .join(hawdb_storage::canonical_adjacency_descriptor_root_file(2))
+            .join(hawdb_storage::canonical_adjacency::canonical_adjacency_descriptor_root_file(2))
             .exists());
         assert!(path.join("properties.2.hawdb").exists());
         assert!(path.join("properties.2.manifest.hawdb").exists());
         assert!(path.join("property-index.2.hawdb").exists());
         assert!(path.join("property-index.2.manifest.hawdb").exists());
         assert!(path
-            .join(hawdb_storage::relational_row_page_manifest_generation_file(
-                2
-            ))
+            .join(hawdb_storage::relational::relational_row_page_manifest_generation_file(2))
             .exists());
         assert!(path
-            .join(hawdb_storage::relational_overflow_manifest_generation_file(
-                2
-            ))
+            .join(hawdb_storage::relational::relational_overflow_manifest_generation_file(2))
             .exists());
         assert!(path.join("checkpoint.3.hawdb").exists());
         assert!(path.join("wal.3.hawdb").exists());
         assert!(path.join("canonical.3.hawdb").exists());
         assert!(path.join("canonical.3.manifest.hawdb").exists());
         assert!(path
-            .join(hawdb_storage::canonical_segment_descriptor_page_file(3))
+            .join(hawdb_storage::canonical::canonical_segment_descriptor_page_file(3))
             .exists());
         assert!(path
-            .join(hawdb_storage::canonical_segment_descriptor_root_file(3))
+            .join(hawdb_storage::canonical::canonical_segment_descriptor_root_file(3))
             .exists());
         assert!(path.join("adjacency.3.hawdb").exists());
         assert!(!path.join("adjacency.3.manifest.hawdb").exists());
         assert!(path
-            .join(hawdb_storage::canonical_adjacency_descriptor_page_file(3))
+            .join(hawdb_storage::canonical_adjacency::canonical_adjacency_descriptor_page_file(3))
             .exists());
         assert!(path
-            .join(hawdb_storage::canonical_adjacency_descriptor_root_file(3))
+            .join(hawdb_storage::canonical_adjacency::canonical_adjacency_descriptor_root_file(3))
             .exists());
         assert!(path.join("properties.3.hawdb").exists());
         assert!(path.join("properties.3.manifest.hawdb").exists());
         assert!(path.join("property-index.3.hawdb").exists());
         assert!(path.join("property-index.3.manifest.hawdb").exists());
         assert!(path
-            .join(hawdb_storage::relational_row_page_manifest_generation_file(
-                3
-            ))
+            .join(hawdb_storage::relational::relational_row_page_manifest_generation_file(3))
             .exists());
         assert!(path
-            .join(hawdb_storage::relational_overflow_manifest_generation_file(
-                3
-            ))
+            .join(hawdb_storage::relational::relational_overflow_manifest_generation_file(3))
             .exists());
         drop(store);
         std::fs::remove_dir_all(path).unwrap();

@@ -22,7 +22,7 @@ use super::{
     RelationalKey, RelationalOverflowRef, RelationalRow, RelationalScalarType, RelationalValue,
     RelationalValueRef,
 };
-use crate::SegmentBytes;
+use crate::cache::SegmentBytes;
 use hawdb_integrity::{IntegrityHasher, Sha256Digest, SHA256_BYTES};
 use std::fmt;
 use std::num::{NonZeroU64, NonZeroUsize};

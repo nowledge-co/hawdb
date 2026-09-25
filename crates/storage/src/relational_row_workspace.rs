@@ -24,7 +24,7 @@ mod transaction;
 pub use metrics::RelationalMonotonicAppendMetrics;
 pub use transaction::RelationalTransactionRowView;
 
-use crate::{
+use crate::relational::{
     RelationalConstraintIndex, RelationalError, RelationalHydrationBudget,
     RelationalIndexChangeCaptureLimits, RelationalMonotonicAppendHydration, RelationalProjectedRow,
     RelationalReplayAccess, RelationalRow, RelationalRowChangeCaptureLimits,
@@ -83,8 +83,8 @@ impl RelationalConstraintIndex for RelationalProvenAbsenceConstraintIndex<'_> {
         &self,
         table: &str,
         index: &str,
-        key: &crate::RelationalKey,
-        visit: &mut dyn FnMut(&crate::RelationalKey) -> bool,
+        key: &crate::relational::RelationalKey,
+        visit: &mut dyn FnMut(&crate::relational::RelationalKey) -> bool,
     ) -> Result<(), RelationalError> {
         if index == RELATIONAL_PRIMARY_INDEX_NAME
             && self
@@ -445,7 +445,7 @@ impl<'a> RelationalSparseLiveHydrator<'a> {
 
     fn remaining_limits(&self) -> Result<RelationalRowPageSnapshotReadLimits, RelationalError> {
         Ok(RelationalRowPageSnapshotReadLimits {
-            demand: crate::RelationalRowPageDemandReadLimits {
+            demand: crate::relational::RelationalRowPageDemandReadLimits {
                 max_pages: sparse_remaining(self.limits.demand.max_pages, self.pages_read, "page")?,
                 max_rows: sparse_remaining(self.limits.demand.max_rows, self.rows_decoded, "row")?,
                 max_bytes: sparse_remaining(
@@ -504,7 +504,7 @@ impl<'a> RelationalSparseLiveHydrator<'a> {
     fn record_snapshot_read(
         &mut self,
         identity: RelationalRowPageReadViewIdentity,
-        demand: &crate::RelationalRowPageDemandReadReport,
+        demand: &crate::relational::RelationalRowPageDemandReadReport,
         recovery_bytes: u64,
         overlay_entries: usize,
         overlay_resident_bytes: usize,
@@ -665,8 +665,8 @@ fn map_sparse_live_snapshot_error(error: RelationalRowPageSnapshotReadError) -> 
 /// Explicit facade-selected policy for one bounded hydration operation.
 #[derive(Debug, Clone, Copy)]
 pub struct RelationalSparseLiveHydrationOptions {
-    pub mutation_limits: crate::RelationalMutationLimits,
-    pub overflow_config: crate::RelationalOverflowConfig,
+    pub mutation_limits: crate::relational::RelationalMutationLimits,
+    pub overflow_config: crate::relational::RelationalOverflowConfig,
     pub index_capture_limits: RelationalIndexChangeCaptureLimits,
     pub row_capture_limits: RelationalRowChangeCaptureLimits,
     pub monotonic_append_fast_path_enabled: bool,

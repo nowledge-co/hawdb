@@ -18,7 +18,10 @@ use super::{
     RelationalOverflowReferenceSortConfig, RelationalRowPagePublicationConfig,
     RelationalRowPageRewriteConfig,
 };
-use crate::{CanonicalAdjacencyConfig, CanonicalSegmentConfig, PersistentPropertyProjectionConfig};
+use crate::{
+    canonical::CanonicalSegmentConfig, canonical_adjacency::CanonicalAdjacencyConfig,
+    property_projection::PersistentPropertyProjectionConfig,
+};
 use hawdb_core::{HawDBError, Result};
 use std::num::{NonZeroU64, NonZeroUsize};
 
@@ -126,11 +129,11 @@ impl Default for RelationalOverflowCompactionConfig {
             max_scan_bytes: NonZeroUsize::new(1024usize.saturating_mul(1024 * 1024 * 1024))
                 .expect("default overflow compaction read-byte limit is non-zero"),
             max_overlay_entries: NonZeroUsize::new(
-                crate::DEFAULT_RELATIONAL_ROW_SNAPSHOT_OVERLAY_ENTRIES,
+                crate::relational::DEFAULT_RELATIONAL_ROW_SNAPSHOT_OVERLAY_ENTRIES,
             )
             .expect("default overflow compaction overlay entry limit is non-zero"),
             max_overlay_bytes: NonZeroUsize::new(
-                crate::DEFAULT_RELATIONAL_ROW_SNAPSHOT_OVERLAY_BYTES,
+                crate::relational::DEFAULT_RELATIONAL_ROW_SNAPSHOT_OVERLAY_BYTES,
             )
             .expect("default overflow compaction overlay byte limit is non-zero"),
             max_rewrite_bytes: NonZeroU64::new(128 * 1024 * 1024 * 1024)
@@ -153,13 +156,14 @@ impl RelationalOverflowCompactionConfig {
                 "overflow compaction overlay memory exceeds this target".to_string(),
             )
         })?;
-        let page_bytes = crate::DEFAULT_RELATIONAL_ROW_PAGE_BYTES as u64;
+        let page_bytes = crate::relational::DEFAULT_RELATIONAL_ROW_PAGE_BYTES as u64;
         sort_bytes
             .checked_add(overlay_bytes)
             .and_then(|bytes| bytes.checked_add(page_bytes.saturating_mul(2)))
             .and_then(|bytes| {
                 bytes.checked_add(
-                    (crate::DEFAULT_MAX_RELATIONAL_HYDRATION_BYTES as u64).saturating_mul(2),
+                    (crate::relational::DEFAULT_MAX_RELATIONAL_HYDRATION_BYTES as u64)
+                        .saturating_mul(2),
                 )
             })
             .ok_or_else(|| {

@@ -14,7 +14,7 @@
 
 use crate::store_facade_tests::unique_test_dir;
 use crate::{Database, DatabaseConfig, RelationalRowPageCompactionConfig, Value};
-use hawdb_storage::{RelationalIndexMode, StorageResidencyMode};
+use hawdb_storage::config::{RelationalIndexMode, StorageResidencyMode};
 use std::collections::BTreeMap;
 use std::path::Path;
 
@@ -162,14 +162,14 @@ fn row_page_compaction_failure_limits_leave_the_generation_retryable() {
     let generation = before.base_generation.unwrap() + 1;
     for config in [
         RelationalRowPageCompactionConfig {
-            rewrite: hawdb_storage::RelationalRowPageRewriteConfig {
+            rewrite: hawdb_storage::relational::RelationalRowPageRewriteConfig {
                 max_scan_pages: NonZeroU64::new(1).unwrap(),
                 ..Default::default()
             },
             ..Default::default()
         },
         RelationalRowPageCompactionConfig {
-            rewrite: hawdb_storage::RelationalRowPageRewriteConfig {
+            rewrite: hawdb_storage::relational::RelationalRowPageRewriteConfig {
                 max_rewrite_bytes: NonZeroU64::new(1).unwrap(),
                 ..Default::default()
             },
@@ -185,8 +185,8 @@ fn row_page_compaction_failure_limits_leave_the_generation_retryable() {
             before.base_generation
         );
         for artifact in [
-            hawdb_storage::relational_row_page_manifest_generation_file(generation),
-            hawdb_storage::relational_row_page_artifact_file(generation),
+            hawdb_storage::relational::relational_row_page_manifest_generation_file(generation),
+            hawdb_storage::relational::relational_row_page_artifact_file(generation),
             format!("checkpoint.{generation}.hawdb"),
             format!("wal.{generation}.hawdb"),
             format!(".checkpoint.{generation}.prepare"),
@@ -295,9 +295,11 @@ fn row_page_compaction_dirty_and_materialized_limits_release_admission() {
             .join(format!(".checkpoint.{}.prepare", generation + 1))
             .exists());
         assert!(!path
-            .join(hawdb_storage::relational_row_page_manifest_generation_file(
-                generation + 1
-            ))
+            .join(
+                hawdb_storage::relational::relational_row_page_manifest_generation_file(
+                    generation + 1
+                )
+            )
             .exists());
     }
     let report = engine

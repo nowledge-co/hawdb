@@ -12,7 +12,7 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-use super::super::transaction_locks::{LockRequest, LockTable, WaitForGraph};
+use super::super::transaction_locks::{LockRequest, LockTable, LockWaitQueue};
 use super::{
     Database, QueryOutput, WalGroupCommitConfig, WalGroupCommitDelayPolicy, WalGroupCommitSnapshot,
     WalGroupCommitWaitDecision, DEFAULT_WAL_GROUP_COMMIT_MAX_DELAY,
@@ -26,6 +26,14 @@ use std::sync::atomic::{AtomicU64, Ordering};
 #[cfg(test)]
 use std::sync::Barrier;
 use std::sync::{Arc, Condvar, Mutex, MutexGuard};
+
+// Subprocess qualification only; absent from production control planes.
+#[cfg(test)]
+fn group_commit_process_crash(point: &str) {
+    if std::env::var("HAWDB_TEST_GROUP_COMMIT_CRASH_POINT").as_deref() == Ok(point) {
+        std::process::exit(86);
+    }
+}
 
 const ADAPTIVE_FSYNC_BUCKET_COUNT: usize = 100;
 const ADAPTIVE_FSYNC_BUCKET_DURATION: Duration = Duration::from_millis(100);
@@ -63,11 +71,19 @@ impl CommitSequencer {
         &self,
         task: impl FnOnce(&mut Database) -> Result<QueryOutput> + Send + 'static,
     ) -> Result<QueryOutput> {
+        self.execute_grouped_with_admission(None, task)
+    }
+
+    pub(super) fn execute_grouped_with_admission(
+        &self,
+        admission: Option<Arc<hawdb_qos::RuntimePermit>>,
+        task: impl FnOnce(&mut Database) -> Result<QueryOutput> + Send + 'static,
+    ) -> Result<QueryOutput> {
         if !self.group_commit.config.is_enabled() {
             let mut database = self.lock()?;
             return task(&mut database);
         }
-        let request = Arc::new(QueuedCommit::new(Box::new(task)));
+        let request = Arc::new(QueuedCommit::new_with_admission(Box::new(task), admission));
         {
             let mut state = self.group_commit.lock_state()?;
             state.metrics.submitted_commits = state.metrics.submitted_commits.saturating_add(1);
@@ -120,6 +136,16 @@ impl CommitSequencer {
         barrier: Arc<Barrier>,
     ) -> Result<()> {
         self.group_commit.set_post_enqueue_barrier(barrier)
+    }
+
+    #[cfg(test)]
+    pub(super) fn set_group_commit_enqueue_gate(&self, gate: EnqueueTestGate) -> Result<()> {
+        *self
+            .group_commit
+            .post_enqueue_gate
+            .lock()
+            .map_err(|_| group_commit_coordinator_poisoned_error())? = Some(gate);
+        Ok(())
     }
 
     fn run_group_commit(&self) -> Result<()> {
@@ -241,6 +267,10 @@ impl CommitSequencer {
             let result_index = completed.len() - 1;
             let result = task(&mut database);
             completed[result_index].1 = result;
+            #[cfg(test)]
+            if completed.len() == 1 {
+                group_commit_process_crash("after_first_group_task");
+            }
             if database.relational_row_schema_checkpoint_required() {
                 break;
             }
@@ -250,6 +280,8 @@ impl CommitSequencer {
             }
         }
 
+        #[cfg(test)]
+        group_commit_process_crash("before_group_sync");
         let flush = database.finish_wal_sync_group();
         Ok(match flush {
             Ok(flush) => {
@@ -358,13 +390,25 @@ type CommitTask = Box<dyn FnOnce(&mut Database) -> Result<QueryOutput> + Send + 
 struct QueuedCommit {
     task: Mutex<Option<CommitTask>>,
     result: Mutex<Option<Result<QueryOutput>>>,
+    // The task closure is consumed before shared sync. Keep admission on the
+    // request itself so it survives execution, sync and result publication.
+    _admission: Option<Arc<hawdb_qos::RuntimePermit>>,
 }
 
 impl QueuedCommit {
+    #[cfg(test)]
     fn new(task: CommitTask) -> Self {
+        Self::new_with_admission(task, None)
+    }
+
+    fn new_with_admission(
+        task: CommitTask,
+        admission: Option<Arc<hawdb_qos::RuntimePermit>>,
+    ) -> Self {
         Self {
             task: Mutex::new(Some(task)),
             result: Mutex::new(None),
+            _admission: admission,
         }
     }
 
@@ -403,12 +447,17 @@ impl QueuedCommit {
     }
 }
 
+#[cfg(test)]
+type EnqueueTestGate = Arc<(Mutex<bool>, Condvar)>;
+
 struct GroupCommitCoordinator {
     config: WalGroupCommitConfig,
     state: Mutex<GroupCommitState>,
     available: Condvar,
     #[cfg(test)]
     post_enqueue_barrier: Mutex<Option<Arc<Barrier>>>,
+    #[cfg(test)]
+    post_enqueue_gate: Mutex<Option<EnqueueTestGate>>,
 }
 
 impl GroupCommitCoordinator {
@@ -419,6 +468,8 @@ impl GroupCommitCoordinator {
             available: Condvar::new(),
             #[cfg(test)]
             post_enqueue_barrier: Mutex::new(None),
+            #[cfg(test)]
+            post_enqueue_gate: Mutex::new(None),
         }
     }
 
@@ -433,6 +484,23 @@ impl GroupCommitCoordinator {
 
     #[cfg(test)]
     fn wait_after_enqueue(&self) -> Result<()> {
+        let gate = self
+            .post_enqueue_gate
+            .lock()
+            .map_err(|_| group_commit_coordinator_poisoned_error())?
+            .clone();
+        if let Some(gate) = gate {
+            let (released, available) = &*gate;
+            let guard = released
+                .lock()
+                .map_err(|_| group_commit_coordinator_poisoned_error())?;
+            drop(
+                available
+                    .wait_while(guard, |released| !*released)
+                    .map_err(|_| group_commit_coordinator_poisoned_error())?,
+            );
+        }
+
         let barrier = self
             .post_enqueue_barrier
             .lock()
@@ -712,7 +780,7 @@ pub(super) struct LockSavepoint {
 #[derive(Debug, Default)]
 struct LockManagerState {
     locks: LockTable,
-    wait_for: WaitForGraph,
+    waiters: LockWaitQueue,
 }
 
 impl LockManager {
@@ -730,7 +798,7 @@ impl LockManager {
         state
             .locks
             .restore_transaction(transaction_id, savepoint.requests);
-        state.wait_for.clear_waiter(transaction_id);
+        state.waiters.remove(transaction_id);
         drop(state);
         self.available.notify_all();
     }
@@ -743,6 +811,22 @@ impl LockManager {
     }
 
     pub(super) fn acquire(
+        &self,
+        transaction_id: u64,
+        requests: &[LockRequest],
+        started: Instant,
+        timeout: Duration,
+    ) -> Result<()> {
+        let result = self.acquire_inner(transaction_id, requests, started, timeout);
+        if result.is_err() {
+            // acquire_inner retires queue priority under the state mutex on
+            // every fallible exit. Wake successors after publishing removal.
+            self.available.notify_all();
+        }
+        result
+    }
+
+    fn acquire_inner(
         &self,
         transaction_id: u64,
         requests: &[LockRequest],
@@ -768,16 +852,26 @@ impl LockManager {
                 continue;
             }
             loop {
-                let blockers = state.locks.blockers(transaction_id, &request);
+                let mut blockers = state.locks.blockers(transaction_id, &request);
+                blockers.extend(state.waiters.blockers(transaction_id, &request));
                 if blockers.is_empty() {
-                    state.wait_for.clear_waiter(transaction_id);
+                    state.waiters.remove(transaction_id);
                     state.locks.grant(transaction_id, request)?;
                     break;
                 }
-                state.wait_for.register(transaction_id, &blockers)?;
+                let admission = state
+                    .waiters
+                    .enqueue(transaction_id, &request)
+                    .and_then(|()| state.waiters.check_deadlock(transaction_id, &state.locks));
+                if let Err(error) = admission {
+                    // Remove the closing dependency before another waiter can
+                    // inspect the graph and select a second victim.
+                    state.waiters.remove(transaction_id);
+                    return Err(error);
+                }
                 let remaining = timeout.saturating_sub(started.elapsed());
                 if remaining.is_zero() {
-                    state.wait_for.clear_waiter(transaction_id);
+                    state.waiters.remove(transaction_id);
                     return Err(lock_timeout_error(timeout));
                 }
                 let waited = self.available.wait_timeout(state, remaining);
@@ -785,13 +879,13 @@ impl LockManager {
                     Ok(waited) => waited,
                     Err(poisoned) => {
                         let (mut recovered, _) = poisoned.into_inner();
-                        recovered.wait_for.clear_waiter(transaction_id);
+                        recovered.waiters.remove(transaction_id);
                         return Err(lock_manager_poisoned_error());
                     }
                 };
                 state = next;
-                state.wait_for.clear_waiter(transaction_id);
                 if wait.timed_out() {
+                    state.waiters.remove(transaction_id);
                     return Err(lock_timeout_error(timeout));
                 }
             }
@@ -805,7 +899,7 @@ impl LockManager {
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner());
         state.locks.release_transaction(transaction_id);
-        state.wait_for.remove_transaction(transaction_id);
+        state.waiters.remove(transaction_id);
         drop(state);
         self.available.notify_all();
     }
@@ -876,6 +970,33 @@ mod group_commit_tests {
             max_delay,
         )
         .unwrap()
+    }
+
+    #[test]
+    fn queued_admission_outlives_consumed_callback_and_result_delivery() {
+        let governor = hawdb_qos::RuntimeGovernor::detect(
+            hawdb_qos::RuntimeGovernorConfig::shared_host(),
+            hawdb_qos::IoConcurrencyBudget::new(2, 1),
+        );
+        let admission = Arc::new(
+            governor
+                .try_admit(hawdb_qos::RuntimeWorkRequest::mutation(
+                    hawdb_qos::RuntimeWorkPriority::Foreground,
+                    1,
+                ))
+                .unwrap(),
+        );
+        let request = QueuedCommit::new_with_admission(successful_task(), Some(admission.clone()));
+        drop(admission); // The caller can disappear while the queue still owns work.
+        let output = request.take_task().unwrap()(&mut Database::new()).unwrap();
+        assert_eq!(governor.snapshot().active_foreground_tasks, 1);
+        // The callback no longer exists. A real coordinator still has to sync.
+        request.complete(Ok(output)).unwrap();
+        assert_eq!(governor.snapshot().active_foreground_tasks, 1);
+        request.take_result().unwrap().unwrap().unwrap();
+        assert_eq!(governor.snapshot().active_foreground_tasks, 1);
+        drop(request);
+        assert_eq!(governor.snapshot().active_foreground_tasks, 0);
     }
 
     fn successful_task() -> CommitTask {
@@ -1187,5 +1308,161 @@ mod group_commit_tests {
             assert_eq!(state.metrics.last_wait_decision, expected_decision);
             assert_eq!(state.metrics.adaptive_delay_clamp_count, expected_clamps);
         }
+    }
+}
+
+#[cfg(test)]
+mod lock_wait_tests {
+    use super::*;
+    use crate::api::transaction_locks::LockMode;
+    use std::sync::mpsc;
+
+    fn acquire(
+        manager: &LockManager,
+        id: u64,
+        request: LockRequest,
+        timeout: Duration,
+    ) -> Result<()> {
+        manager.acquire(id, &[request], Instant::now(), timeout)
+    }
+
+    fn wait_until_queued(manager: &LockManager, id: u64) {
+        let deadline = Instant::now() + Duration::from_secs(2);
+        while !manager
+            .lock_state()
+            .unwrap()
+            .waiters
+            .blockers(u64::MAX, &LockRequest::database(LockMode::Exclusive))
+            .contains(&id)
+        {
+            assert!(Instant::now() < deadline, "waiter did not enter queue");
+            std::thread::sleep(Duration::from_millis(1));
+        }
+    }
+
+    #[test]
+    fn lock_wait_queue_stops_optimistic_arrivals_from_bypassing_older_owner() {
+        let manager = Arc::new(LockManager::default());
+        let optimistic = LockRequest::database(LockMode::OptimisticCommit);
+        acquire(&manager, 1, optimistic.clone(), Duration::ZERO).unwrap();
+        let (granted, received) = mpsc::channel();
+        let (retire, retirement) = mpsc::channel();
+        let other = Arc::clone(&manager);
+        let waiter = std::thread::spawn(move || {
+            acquire(
+                &other,
+                2,
+                LockRequest::database(LockMode::Exclusive),
+                Duration::from_secs(5),
+            )
+            .unwrap();
+            granted.send(()).unwrap();
+            retirement.recv_timeout(Duration::from_secs(5)).unwrap();
+            other.release(2);
+        });
+        wait_until_queued(&manager, 2);
+        for id in 3..35 {
+            let result = acquire(&manager, id, optimistic.clone(), Duration::ZERO);
+            manager.release(id);
+            assert!(result
+                .unwrap_err()
+                .to_string()
+                .contains("transaction lock wait timed out"));
+        }
+        // Already-owned coverage is not a new grant and must remain usable.
+        acquire(&manager, 1, optimistic.clone(), Duration::ZERO).unwrap();
+        manager.release(1);
+        received.recv_timeout(Duration::from_secs(2)).unwrap();
+        assert!(acquire(&manager, 35, optimistic.clone(), Duration::ZERO).is_err());
+        retire.send(()).unwrap();
+        waiter.join().unwrap();
+        acquire(&manager, 36, optimistic, Duration::ZERO).unwrap();
+        manager.release(36);
+    }
+
+    #[test]
+    fn lock_wait_queue_timeout_wakes_successor_without_owner_retirement() {
+        let manager = Arc::new(LockManager::default());
+        acquire(
+            &manager,
+            1,
+            LockRequest::graph_node(LockMode::Shared, 1),
+            Duration::ZERO,
+        )
+        .unwrap();
+        let other = Arc::clone(&manager);
+        let older = std::thread::spawn(move || {
+            acquire(
+                &other,
+                2,
+                LockRequest::database(LockMode::Exclusive),
+                Duration::from_secs(1),
+            )
+        });
+        wait_until_queued(&manager, 2);
+        let (sent, received) = mpsc::channel();
+        let other = Arc::clone(&manager);
+        let younger = std::thread::spawn(move || {
+            let result = acquire(
+                &other,
+                3,
+                LockRequest::graph_node(LockMode::Exclusive, 2),
+                Duration::from_secs(5),
+            );
+            sent.send(result).unwrap();
+            other.release(3);
+        });
+        wait_until_queued(&manager, 3);
+        assert!(older
+            .join()
+            .unwrap()
+            .unwrap_err()
+            .to_string()
+            .contains("transaction lock wait timed out"));
+        received
+            .recv_timeout(Duration::from_secs(2))
+            .unwrap()
+            .unwrap();
+        younger.join().unwrap();
+        assert!(manager
+            .covers_all(1, &[LockRequest::graph_node(LockMode::Shared, 1)])
+            .unwrap());
+        manager.release(1);
+    }
+
+    #[test]
+    fn lock_wait_queue_detects_a_cycle_through_older_queue_priority() {
+        let manager = Arc::new(LockManager::default());
+        acquire(
+            &manager,
+            1,
+            LockRequest::graph_node(LockMode::Exclusive, 1),
+            Duration::ZERO,
+        )
+        .unwrap();
+        let other = Arc::clone(&manager);
+        let waiter = std::thread::spawn(move || {
+            let result = acquire(
+                &other,
+                2,
+                LockRequest::database(LockMode::Exclusive),
+                Duration::from_secs(5),
+            );
+            other.release(2);
+            result
+        });
+        wait_until_queued(&manager, 2);
+        let error = acquire(
+            &manager,
+            1,
+            LockRequest::graph_node(LockMode::Exclusive, 2),
+            Duration::from_secs(1),
+        )
+        .unwrap_err();
+        assert!(error
+            .to_string()
+            .contains("transaction 1 selected as victim"));
+        manager.release(1);
+        waiter.join().unwrap().unwrap();
     }
 }

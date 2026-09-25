@@ -20,9 +20,9 @@ use hawdb_evidence::{
 };
 use hawdb_executor::QueryStreamReport;
 use hawdb_storage::{
-    GraphIndexReadMetricsSnapshot, PersistentGraphIndexClass,
-    RelationalIndexStorageResidencyReport, RelationalRowStorageResidencyReport,
-    StorageResidencyReport,
+    graph_index_metrics::{GraphIndexReadMetricsSnapshot, PersistentGraphIndexClass},
+    relational_index_view::RelationalIndexStorageResidencyReport,
+    residency::{RelationalRowStorageResidencyReport, StorageResidencyReport},
 };
 
 pub use hawdb_evidence::resource_profile::STORAGE_RESOURCE_PROFILE_PROTOCOL;
@@ -549,7 +549,7 @@ fn graph_index_class_read_json(
 #[cfg(test)]
 mod tests {
     use super::{relational_row_residency_json, StorageResourceProfileLimits};
-    use hawdb_storage::RelationalRowStorageResidencyReport;
+    use hawdb_storage::residency::RelationalRowStorageResidencyReport;
 
     #[test]
     fn limits_reject_zero_budgets() {

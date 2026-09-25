@@ -157,7 +157,7 @@ impl Database {
         let (published_read_view, pin) = self.pin_read_view();
         RuntimePlanningSnapshot {
             catalog: self.catalog.clone(),
-            store: self.store.snapshot(),
+            store: self.store.snapshot_for_read(),
             // Store snapshots omit the writable durable handle and its checkpoint
             // metadata. Freshness must compare the original pinned publication.
             published_read_view,
@@ -796,7 +796,7 @@ mod tests {
 
     #[test]
     fn durable_mutation_planning_preserves_checkpoint_identity() {
-        use hawdb_storage::StorageResidencyMode;
+        use hawdb_storage::config::StorageResidencyMode;
 
         for mode in [
             StorageResidencyMode::Materialized,
