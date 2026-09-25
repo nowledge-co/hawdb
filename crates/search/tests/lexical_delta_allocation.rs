@@ -22,26 +22,9 @@ use allocation::measure;
 use hawdb_search::{SearchDocument, SearchIndex, SearchMode, SearchQueryOptions};
 use std::collections::BTreeMap;
 use std::fmt::Write;
-use std::path::PathBuf;
-use std::time::{SystemTime, UNIX_EPOCH};
-
-struct Fixture(PathBuf);
-
-impl Fixture {
-    fn new(terms: usize) -> Self {
-        Self(std::env::temp_dir().join(format!(
-            "hawdb-delta-allocation-{}-{}-{terms}",
-            std::process::id(),
-            SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_nanos(),
-        )))
-    }
-}
-
-impl Drop for Fixture {
-    fn drop(&mut self) {
-        let _ = std::fs::remove_dir_all(&self.0);
-    }
-}
+#[path = "support/directory.rs"]
+mod directory;
+use directory::TestDirectory;
 
 fn document(content: String) -> SearchDocument {
     SearchDocument {
@@ -88,7 +71,7 @@ fn scores(index: &SearchIndex, expected_hits: usize) -> Vec<(String, f64)> {
 fn retained_base_terms_do_not_multiply_read_update_delete_allocations() {
     let mut measurements = Vec::new();
     for terms in [64, 4096] {
-        let fixture = Fixture::new(terms);
+        let fixture = TestDirectory::new("hawdb-delta-allocation");
         let mut index = SearchIndex::open(&fixture.0).unwrap();
         let mut content = String::new();
         for ordinal in 0..terms {

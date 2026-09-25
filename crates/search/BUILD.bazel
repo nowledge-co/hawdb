@@ -170,6 +170,7 @@ rust_test(
     srcs = [
         "tests/lexical_delta_allocation.rs",
         "tests/support/allocation.rs",
+        "tests/support/directory.rs",
     ],
     crate_features = _SEARCH_DEFAULT_FEATURES,
     edition = "2024",
@@ -481,6 +482,7 @@ rust_test(
     srcs = [
         "tests/segment_allocation.rs",
         "tests/support/allocation.rs",
+        "tests/support/directory.rs",
     ],
     edition = "2024",
     deps = [":hawdb_search"],
@@ -492,6 +494,7 @@ rust_test(
     srcs = [
         "tests/descriptor_allocation.rs",
         "tests/support/allocation.rs",
+        "tests/support/directory.rs",
     ],
     edition = "2024",
     deps = [":hawdb_search"],
