@@ -1,0 +1,9 @@
+{
+  "schema": 1,
+  "profiles": [
+    {"name": "empty", "features": [], "required": [], "excluded": ["hawdb"]},
+    {"name": "minimal", "features": ["database"], "required": ["hawdb", "hawdb-storage", "hawdb-sql", "hawdb-optimizer", "hawdb-analytics", "jieba-rs", "zstd-sys", "rayon"], "excluded": ["hawdb-runtime-tokio", "tokio", "hawdb-vector-projection", "simsimd"]},
+    {"name": "graph-text", "features": ["text"], "required": ["hawdb", "hawdb-search", "jieba-rs", "zstd-sys"], "excluded": ["hawdb-runtime-tokio", "tokio", "hawdb-vector-projection", "simsimd"]},
+    {"name": "default", "features": ["full"], "required": ["hawdb", "hawdb-runtime-tokio", "tokio", "hawdb-vector-projection", "simsimd"], "excluded": []}
+  ]
+}
