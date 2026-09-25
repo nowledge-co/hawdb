@@ -905,6 +905,20 @@ pub(super) struct LexicalProjectionReader {
 }
 
 impl LexicalProjectionReader {
+    /// Reconstruct a version's exact contribution with this reader's analyzer
+    /// admission limits. Used before accepting an immutable mutation retraction.
+    pub(super) fn document_retraction(
+        &self,
+        document: &SearchDocument,
+        analyzer: &SearchAnalyzerLexicon,
+    ) -> Result<(u64, Vec<String>)> {
+        let analyzed = analyze_delta_document(document, analyzer, self.config)?;
+        Ok((
+            u64::from(analyzed.document_len),
+            analyzed.frequencies.into_keys().collect(),
+        ))
+    }
+
     pub(crate) fn document_id_bounds(&self) -> Option<(&str, &str)> {
         let mut blocks = self
             .manifest

@@ -22,6 +22,79 @@ retracted statistics, with differential and recovery coverage. Production
 writers currently publish empty mutation lists; development fixtures with
 nonempty lists now fail open explicitly instead of returning inconsistent data.
 
+## Exact target contribution validation
+
+The runtime now adds `mutation_run::validate_targets` after structural closure
+validation. The following algebraic argument establishes the retraction
+precondition; it is not a machine-checked Rust refinement or a BM25 query proof.
+
+Let `C` be the finite set of physical versions keyed by `(segment_id, id)`. For
+an analyzer `A`, define each version's contribution as
+
+```
+F_A(v) = (1, weighted_length_A(v), t ↦ 1[t ∈ distinct_terms_A(v)])
+D(v)   = DocumentsDigest(encode_search_document_line(v))
+```
+
+Let `R` be the finite list of run entries. Structural validation rejects any
+entry outside the active segment set or any repeated target pair. Target
+validation requires a lexical ID probe and exactly one hydrated record from
+that named content artifact, then compares the recorded length, sorted distinct
+terms and digest to `F_A(v)` and `D(v)`. Hydration checks the selected payload
+range's integrity. Analyzer identity was checked when opening both the content
+and run artifacts. The same admitted analyzer implementation used for lexical
+delta construction computes weighted lengths and term deduplication here.
+
+**Claim.** If these checks accept, every run contribution equals that of a
+unique physical version, and subtracting them from the physical corpus leaves
+exactly the contribution of the unretracted versions.
+
+**Proof.** Existence follows from exact-artifact lookup and hydration; uniqueness
+of the mapping follows from rejection of duplicate target pairs. Exactness
+follows from component-wise equality with the reconstruction (ordered unique
+term lists represent the term indicator function). For the empty prefix,
+`sum(C) - 0 = sum(C)`. Suppose the result holds for the first `j` entries. Entry
+`j+1` names a version still in the remainder, since its target is distinct from
+the previous targets. Subtracting its equal contribution removes exactly that
+summand. Induction gives
+
+```
+sum(v ∈ C, F_A(v)) - sum(r ∈ R, F_A(target(r)))
+    = sum(v ∈ C \ targets(R), F_A(v)).
+```
+
+All integer components are nonnegative because each subtracted summand is
+present. The corresponding digest identity holds in `Z/(2^64)`, using the
+existing reversible modular sum; digest equality alone is not collision-free
+content authentication. This proof assumes valid immutable content artifacts
+and deterministic analysis. It does not prove a writer selected the previously
+visible version, that replacement operations contain their new version, or
+that query code applies the identity. Those obligations remain guarded.
+
+The implementation processes one target at a time. By induction on the loop,
+no prior hydrated target survives into the next iteration. Source hydration and
+analysis retain their existing byte/token limits. This bounds the additional
+source-record lifetime independently of `|R|`; it does not establish a global
+RSS bound for retained run JSON or eliminate repeated range reads.
+
+Runtime evidence:
+
+- `out_of_core_mutation_retractions_must_match_physical_targets` recomputes the
+  outer checksums and aggregate manifest after forging IDs, digest, length or
+  term lists. Missing IDs outside and inside a descriptor range, another
+  existing ID, and fabricated contributions must still fail; cleanup must
+  retain the run and report a discovery failure.
+- `out_of_core_mutation_retraction_binds_same_id_to_exact_content_version`
+  distinguishes two physical versions with the same ID. Only the matching
+  target version is accepted.
+- `out_of_core_mutation_retraction_uses_weighted_analyzer_contributions` checks
+  hand-calculated weighted lengths, unique terms and a stopword policy.
+- `out_of_core_mutation_target_validation_obeys_hydration_budget` requires a
+  target larger than the configured hydration budget to fail.
+- The existing closure test still proves valid deletion inspection, pin-aware
+  retention and public reader rejection. The finite publication model below is
+  unchanged and does not model these payload-level checks.
+
 ## Protocol invariants
 
 For content versions `C` and mutation entries `R`, define

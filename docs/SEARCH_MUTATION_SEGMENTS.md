@@ -9,6 +9,12 @@ nonempty mutation closures until shared serving visibility and retracted
 statistics are implemented. Cleanup can validate and retain those artifacts
 without exposing a query handle.
 
+Closure validation also resolves each retraction to its exact immutable content
+version, hydrates that record under the existing limits, and reconstructs its
+digest, weighted lexical length and distinct terms with the selected analyzer.
+An internally checksummed run with a nonexistent target or fabricated
+contribution is rejected. This is preparation for serving, not its completion.
+
 ## Goal
 
 A checkpoint that changes `K` logical search documents must write search
@@ -43,13 +49,19 @@ specific document in that segment.
 A content segment is an immutable, independently selectable artifact closure:
 
 - documents whose UTF-8 `document_id` values are strictly increasing within the
-  segment, with each segment range strictly after the preceding active segment
-  range in manifest order; replacements must preserve this invariant from #696;
+  content artifact and its descriptor ranges;
 - descriptor, payload, metadata, vector, lexical, and optional RaBitQ
   artifacts;
 - a stable `segment_id` and publication generation;
 - document count and reversible document-set digest contribution;
 - per-segment lexical statistics and vector ordinal mapping.
+
+Content-only append and existing rewrite paths retain the globally ordered,
+non-overlapping range requirement from #696. A future mutation closure must
+allow overlap between content artifacts: a replacement has the same ID as its
+immutable predecessor. Its uniqueness invariant is one *visible* version per
+logical ID, not disjoint physical ranges. Routing and compaction must be adapted
+before that closure is admitted to serving or to existing update paths.
 
 The initial import must publish bounded content segments at the same granularity
 as incremental appends. A manifest entry that owns a corpus-sized lexical or
@@ -117,6 +129,17 @@ The manifest document count and digest follow the same rule. Publication
 subtracts the previous contribution for every mutation target, then adds the
 replacement contribution when present. Both values must agree with a complete
 logical reconstruction in qualification tests.
+
+`mutation_run::validate_targets` checks target existence and exact contributions
+after `validate_closure` checks membership, unique target pairs and aggregate
+identity. It selects the named content artifact, finds the bounded descriptor
+range, probes the lexical ID mapping and hydrates only the selected document.
+It does not route by logical ID across artifacts, which could select a newer
+version. Reanalysis uses the artifact reader's source, term and token limits.
+One hydrated target and its reconstructed terms are retained at a time. Several
+targets in the same range currently repeat range I/O; this is not yet a
+sustained-update performance qualification. The encoded run limit also remains
+per file, not an aggregate decoded-run RSS guarantee.
 
 ## Publication and recovery
 
