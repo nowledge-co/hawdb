@@ -16,8 +16,11 @@
 
 pub(crate) use hawdb_storage::transaction_locks::{
     GraphAdjacencyDirection, GraphAllocationKind, LockMode, LockRequest, LockTable, LockTarget,
-    WaitForGraph, DEFAULT_LOCK_ESCALATION_ENTRIES_PER_TABLE,
+    LockWaitQueue, DEFAULT_LOCK_ESCALATION_ENTRIES_PER_TABLE,
 };
+
+#[cfg(test)]
+pub(crate) use hawdb_storage::transaction_locks::WaitForGraph;
 
 #[cfg(test)]
 mod tests {

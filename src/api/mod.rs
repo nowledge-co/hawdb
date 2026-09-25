@@ -733,6 +733,9 @@ pub(super) struct DatabaseTransactionState {
         std::result::Result<Option<crate::store::RelationalTransactionIndexView>, String>,
     relational_rows:
         std::result::Result<Option<crate::store::RelationalTransactionRowView>, String>,
+    // Moves with the private workspace into a queued commit. Checkpoint
+    // reclamation must retain its physical generation until the state retires.
+    snapshot_pin: Option<ReaderPin>,
 }
 
 struct SparseRelationalStatementStage {
@@ -795,7 +798,7 @@ impl DatabaseReadSnapshot {
         let source = &self.0;
         Ok(DatabaseReadTransaction {
             catalog: source.catalog.clone(),
-            store: source.store.snapshot(),
+            store: source.store.snapshot_for_read(),
             published_read_view: source.published_read_view,
             optimizer: source.optimizer.clone(),
             plan_cache: SharedState::new(PlanCache::new(source.config.max_plan_cache_entries)),
@@ -1353,7 +1356,7 @@ impl Database {
         let (published_read_view, pin) = self.pin_read_view();
         DatabaseReadTransaction {
             catalog: self.catalog.clone(),
-            store: self.store.snapshot(),
+            store: self.store.snapshot_for_read(),
             published_read_view,
             optimizer: self.optimizer.clone(),
             plan_cache: SharedState::new(PlanCache::new(self.config.max_plan_cache_entries)),
@@ -1786,7 +1789,10 @@ impl Database {
                         shadow_admission,
                     )
             }
-            None => Ok(()),
+            None => {
+                self.store.reclaim_version_history();
+                Ok(())
+            }
         };
         if durable && let Some(telemetry) = &self.telemetry {
             telemetry.record_kernel(KernelTelemetry {
@@ -19359,7 +19365,9 @@ impl DatabaseTransactionRuntime {
 
 impl DatabaseTransactionState {
     fn from_database(db: &Database) -> Self {
+        let (_, pin) = db.pin_read_view();
         Self {
+            snapshot_pin: Some(pin),
             graph_transaction: Some(db.store.begin_mutation_transaction(&db.catalog)),
             relational_transaction: hawdb_storage::relational::RelationalTransaction::default(),
             relational_state: db.store.relational_state().clone(),
@@ -19386,6 +19394,7 @@ impl DatabaseTransactionState {
         self.relational_returning.clear();
         self.relational_index = Ok(None);
         self.relational_rows = Ok(None);
+        self.snapshot_pin.take();
     }
 
     pub(crate) fn restore_graph_statement(&mut self, savepoint: GraphMutationSavepoint) {
@@ -19397,6 +19406,7 @@ impl DatabaseTransactionState {
 
     fn take_for_commit(&mut self) -> Self {
         Self {
+            snapshot_pin: self.snapshot_pin.take(),
             graph_transaction: self.graph_transaction.take(),
             relational_transaction: std::mem::take(&mut self.relational_transaction),
             relational_state: std::mem::take(&mut self.relational_state),
@@ -19649,7 +19659,9 @@ pub(super) fn execute_concurrent_graph_transaction_query(
     state: &mut DatabaseTransactionState,
     cypher_text: &str,
     parameters: &BTreeMap<String, Value>,
+    task_context: Option<&hawdb_core::RuntimeTaskContext>,
 ) -> Result<GraphTransactionStatementOutcome> {
+    query_runtime::query_runtime_checkpoint(task_context)?;
     let statement = cypher::parse(cypher_text)?;
     let body = statement_body(&statement);
     if matches!(body, cypher::Statement::SetSystemVariable(_)) {
@@ -19674,7 +19686,7 @@ pub(super) fn execute_concurrent_graph_transaction_query(
         cypher_text,
         &statement,
         parameters,
-        None,
+        task_context,
     )
 }
 
@@ -19716,6 +19728,17 @@ pub(super) fn execute_database_transaction_prepared_sql(
     parameters: &[Value],
     options: DatabaseTransactionSqlOptions<'_>,
 ) -> Result<SqlStatementResult> {
+    let admitted_result_bytes = options
+        .task_context
+        .and_then(hawdb_core::RuntimeTaskContext::memory_reservation)
+        .map(|reservation| usize::try_from(reservation.result_bytes()).unwrap_or(usize::MAX));
+    let max_read_result_payload_bytes = match (
+        runtime.config.max_read_result_payload_bytes,
+        admitted_result_bytes,
+    ) {
+        (Some(configured), Some(admitted)) => Some(configured.min(admitted)),
+        (configured, admitted) => configured.or(admitted),
+    };
     reject_locking_select_without_manager(prepared.statement(), options.allow_locking_select)?;
     if !options.allow_system_schema_registry_write
         && hawdb_relational::system_schema::statement_writes_system_schema_registry(
@@ -19740,7 +19763,7 @@ pub(super) fn execute_database_transaction_prepared_sql(
             sql_text,
             parameters,
             runtime.config.max_read_result_rows,
-            runtime.config.max_read_result_payload_bytes,
+            max_read_result_payload_bytes,
             &system_sql::SystemSqlContext {
                 catalog: graph_transaction.catalog(),
                 store: graph_transaction.store(),
@@ -19787,10 +19810,7 @@ pub(super) fn execute_database_transaction_prepared_sql(
             &plan.partition,
             plan.after.as_ref(),
             plan.max_rows,
-            runtime
-                .config
-                .max_read_result_payload_bytes
-                .unwrap_or(usize::MAX),
+            max_read_result_payload_bytes.unwrap_or(usize::MAX),
         )?;
         return Ok(sql_query_result(QueryOutput {
             rows: crate::relational_sql::project_append_rows(&plan, &output.rows)?.into(),
@@ -19816,10 +19836,7 @@ pub(super) fn execute_database_transaction_prepared_sql(
                         &plan.select.partition,
                         plan.select.after.as_ref(),
                         plan.select.max_rows,
-                        runtime
-                            .config
-                            .max_read_result_payload_bytes
-                            .unwrap_or(usize::MAX),
+                        max_read_result_payload_bytes.unwrap_or(usize::MAX),
                     )?
                     .report,
             )
@@ -19875,7 +19892,7 @@ pub(super) fn execute_database_transaction_prepared_sql(
             relational_query_resource_context(
                 &runtime.config,
                 runtime.config.max_read_result_rows,
-                runtime.config.max_read_result_payload_bytes,
+                max_read_result_payload_bytes,
                 options.task_context,
             ),
         )?;

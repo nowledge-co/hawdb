@@ -1,0 +1,5492 @@
+{
+  "schema": "concurrent-writers-receipt-v1",
+  "date": "2026-09-25",
+  "engine_revision": "804865b731ba8f6e70abd25ae6d766e4073d84dc",
+  "harness_sha256": "71d97aeb7de0fd3e9223dd9c1ce9e86aa9245085279cf5f4f5359d24dcb33fc6",
+  "host": {
+    "model": "Mac15,8",
+    "logical_cpus": 16,
+    "memory_bytes": 137438953472,
+    "os": "macOS 27.0 (26A428)",
+    "rust": "1.97.1",
+    "profile": "bench: opt-level=3, thin LTO, one codegen unit",
+    "features": "default"
+  },
+  "raw_path": "target/benchmarks/232-concurrent-writers/2026-09-25-admission-release.jsonl",
+  "raw_sha256": "7fc3a6278060e5824554c26d8e1e978216a8e35a04048dd041f2e1ae9367c02b",
+  "verified_cases": 90,
+  "verified_commits": 23040,
+  "durable_reopen_checks": 60,
+  "summary": [
+    {
+      "durable": false,
+      "grouped": false,
+      "writers": 1,
+      "control_tps_median": 6360.630243047633,
+      "candidate_tps_median": 6374.845814642294,
+      "paired_speedup_median": 1.0049397062403636,
+      "paired_speedup_min": 0.9884149013698291,
+      "paired_speedup_max": 1.1796950635280645,
+      "single_writer_speedup_median": 1.0,
+      "candidate_transaction_p95_us_median": 163.333,
+      "candidate_commit_p95_us_median": 45.75,
+      "candidate_group_syncs": [
+        0,
+        0,
+        0,
+        0,
+        0
+      ]
+    },
+    {
+      "durable": false,
+      "grouped": false,
+      "writers": 4,
+      "control_tps_median": 5963.462193268681,
+      "candidate_tps_median": 11237.003100052125,
+      "paired_speedup_median": 1.8963009848838166,
+      "paired_speedup_min": 1.8774650701771627,
+      "paired_speedup_max": 1.9652960553948748,
+      "single_writer_speedup_median": 1.7666680540433102,
+      "candidate_transaction_p95_us_median": 403.917,
+      "candidate_commit_p95_us_median": 223.042,
+      "candidate_group_syncs": [
+        0,
+        0,
+        0,
+        0,
+        0
+      ]
+    },
+    {
+      "durable": false,
+      "grouped": false,
+      "writers": 8,
+      "control_tps_median": 5866.166661507037,
+      "candidate_tps_median": 10813.474450864522,
+      "paired_speedup_median": 1.8522992189452023,
+      "paired_speedup_min": 1.6775137059179983,
+      "paired_speedup_max": 1.921874412351904,
+      "single_writer_speedup_median": 1.7248037491667603,
+      "candidate_transaction_p95_us_median": 1521.459,
+      "candidate_commit_p95_us_median": 1167.625,
+      "candidate_group_syncs": [
+        0,
+        0,
+        0,
+        0,
+        0
+      ]
+    },
+    {
+      "durable": true,
+      "grouped": false,
+      "writers": 1,
+      "control_tps_median": 162.81376529966437,
+      "candidate_tps_median": 159.2039264374825,
+      "paired_speedup_median": 0.9975014557645093,
+      "paired_speedup_min": 0.972555357509326,
+      "paired_speedup_max": 1.0069149215063073,
+      "single_writer_speedup_median": 1.0,
+      "candidate_transaction_p95_us_median": 7358.833,
+      "candidate_commit_p95_us_median": 6133.5,
+      "candidate_group_syncs": [
+        0,
+        0,
+        0,
+        0,
+        0
+      ]
+    },
+    {
+      "durable": true,
+      "grouped": false,
+      "writers": 4,
+      "control_tps_median": 160.58263061752126,
+      "candidate_tps_median": 173.4338224979647,
+      "paired_speedup_median": 1.0670941936153104,
+      "paired_speedup_min": 0.6296260031773877,
+      "paired_speedup_max": 1.1265741298877516,
+      "single_writer_speedup_median": 1.0818454327178655,
+      "candidate_transaction_p95_us_median": 43555.375,
+      "candidate_commit_p95_us_median": 33051.125,
+      "candidate_group_syncs": [
+        0,
+        0,
+        0,
+        0,
+        0
+      ]
+    },
+    {
+      "durable": true,
+      "grouped": false,
+      "writers": 8,
+      "control_tps_median": 159.84666788306652,
+      "candidate_tps_median": 175.67212170921425,
+      "paired_speedup_median": 1.090956273290224,
+      "paired_speedup_min": 1.0728297611905628,
+      "paired_speedup_max": 1.8882100792745804,
+      "single_writer_speedup_median": 1.093747239835943,
+      "candidate_transaction_p95_us_median": 107021.75,
+      "candidate_commit_p95_us_median": 86595.917,
+      "candidate_group_syncs": [
+        0,
+        0,
+        0,
+        0,
+        0
+      ]
+    },
+    {
+      "durable": true,
+      "grouped": true,
+      "writers": 1,
+      "control_tps_median": 157.8985755239838,
+      "candidate_tps_median": 161.38493490544954,
+      "paired_speedup_median": 1.0220797392876808,
+      "paired_speedup_min": 0.6193706144116237,
+      "paired_speedup_max": 1.6338043140482041,
+      "single_writer_speedup_median": 1.0,
+      "candidate_transaction_p95_us_median": 6616.709,
+      "candidate_commit_p95_us_median": 6229.75,
+      "candidate_group_syncs": [
+        256,
+        256,
+        256,
+        256,
+        256
+      ]
+    },
+    {
+      "durable": true,
+      "grouped": true,
+      "writers": 4,
+      "control_tps_median": 158.58986353682963,
+      "candidate_tps_median": 567.0552527230697,
+      "paired_speedup_median": 3.5941842134134214,
+      "paired_speedup_min": 3.4911373798975607,
+      "paired_speedup_max": 3.6128053701904483,
+      "single_writer_speedup_median": 3.6621968212384726,
+      "candidate_transaction_p95_us_median": 8441.708,
+      "candidate_commit_p95_us_median": 7664.958,
+      "candidate_group_syncs": [
+        64,
+        64,
+        64,
+        64,
+        64
+      ]
+    },
+    {
+      "durable": true,
+      "grouped": true,
+      "writers": 8,
+      "control_tps_median": 160.20213003125036,
+      "candidate_tps_median": 1086.8036669010442,
+      "paired_speedup_median": 6.7836294144055325,
+      "paired_speedup_min": 5.7969279990770675,
+      "paired_speedup_max": 6.968571237469989,
+      "single_writer_speedup_median": 6.866768098929975,
+      "candidate_transaction_p95_us_median": 8734.125,
+      "candidate_commit_p95_us_median": 8108.875,
+      "candidate_group_syncs": [
+        32,
+        33,
+        32,
+        33,
+        37
+      ]
+    }
+  ],
+  "rounds_without_raw_latency_samples": [
+    {
+      "result": {
+        "commit_latency": {
+          "count": 256,
+          "max_ns": 86584,
+          "p50_ns": 51084,
+          "p95_ns": 61541
+        },
+        "commits": 256,
+        "commits_per_second": 5314.419204666857,
+        "durable": false,
+        "elapsed_ns": 48170833,
+        "group_commit": {
+          "completed": 0,
+          "fsync_micros": 0,
+          "grouped_entries": 0,
+          "shared_syncs": 0,
+          "submitted": 0
+        },
+        "grouped": false,
+        "reopen_verified": false,
+        "serialized_control": true,
+        "transaction_latency": {
+          "count": 256,
+          "max_ns": 372083,
+          "p50_ns": 180542,
+          "p95_ns": 223041
+        },
+        "verified_rows": 256,
+        "workers": [
+          {
+            "commits": 256,
+            "elapsed_ns": 48077666,
+            "worker": 0
+          }
+        ],
+        "writers": 1
+      },
+      "round": 0,
+      "schema": "concurrent-writers-v1",
+      "smoke": false
+    },
+    {
+      "result": {
+        "commit_latency": {
+          "count": 256,
+          "max_ns": 70500,
+          "p50_ns": 44584,
+          "p95_ns": 46250
+        },
+        "commits": 256,
+        "commits_per_second": 6269.3941012642335,
+        "durable": false,
+        "elapsed_ns": 40833292,
+        "group_commit": {
+          "completed": 0,
+          "fsync_micros": 0,
+          "grouped_entries": 0,
+          "shared_syncs": 0,
+          "submitted": 0
+        },
+        "grouped": false,
+        "reopen_verified": false,
+        "serialized_control": false,
+        "transaction_latency": {
+          "count": 256,
+          "max_ns": 200458,
+          "p50_ns": 158708,
+          "p95_ns": 164375
+        },
+        "verified_rows": 256,
+        "workers": [
+          {
+            "commits": 256,
+            "elapsed_ns": 40794875,
+            "worker": 0
+          }
+        ],
+        "writers": 1
+      },
+      "round": 0,
+      "schema": "concurrent-writers-v1",
+      "smoke": false
+    },
+    {
+      "result": {
+        "commit_latency": {
+          "count": 256,
+          "max_ns": 53625,
+          "p50_ns": 44166,
+          "p95_ns": 47375
+        },
+        "commits": 256,
+        "commits_per_second": 5889.406832057008,
+        "durable": false,
+        "elapsed_ns": 43467875,
+        "group_commit": {
+          "completed": 0,
+          "fsync_micros": 0,
+          "grouped_entries": 0,
+          "shared_syncs": 0,
+          "submitted": 0
+        },
+        "grouped": false,
+        "reopen_verified": false,
+        "serialized_control": true,
+        "transaction_latency": {
+          "count": 256,
+          "max_ns": 33026750,
+          "p50_ns": 166833,
+          "p95_ns": 186125
+        },
+        "verified_rows": 256,
+        "workers": [
+          {
+            "commits": 64,
+            "elapsed_ns": 21796042,
+            "worker": 0
+          },
+          {
+            "commits": 64,
+            "elapsed_ns": 43433500,
+            "worker": 1
+          },
+          {
+            "commits": 64,
+            "elapsed_ns": 32799375,
+            "worker": 2
+          },
+          {
+            "commits": 64,
+            "elapsed_ns": 10721667,
+            "worker": 3
+          }
+        ],
+        "writers": 4
+      },
+      "round": 0,
+      "schema": "concurrent-writers-v1",
+      "smoke": false
+    },
+    {
+      "result": {
+        "commit_latency": {
+          "count": 256,
+          "max_ns": 342750,
+          "p50_ns": 194208,
+          "p95_ns": 227708
+        },
+        "commits": 256,
+        "commits_per_second": 11075.93827691109,
+        "durable": false,
+        "elapsed_ns": 23113166,
+        "group_commit": {
+          "completed": 0,
+          "fsync_micros": 0,
+          "grouped_entries": 0,
+          "shared_syncs": 0,
+          "submitted": 0
+        },
+        "grouped": false,
+        "reopen_verified": false,
+        "serialized_control": false,
+        "transaction_latency": {
+          "count": 256,
+          "max_ns": 744125,
+          "p50_ns": 368750,
+          "p95_ns": 409791
+        },
+        "verified_rows": 256,
+        "workers": [
+          {
+            "commits": 64,
+            "elapsed_ns": 22491625,
+            "worker": 0
+          },
+          {
+            "commits": 64,
+            "elapsed_ns": 22815584,
+            "worker": 1
+          },
+          {
+            "commits": 64,
+            "elapsed_ns": 22666417,
+            "worker": 2
+          },
+          {
+            "commits": 64,
+            "elapsed_ns": 23086458,
+            "worker": 3
+          }
+        ],
+        "writers": 4
+      },
+      "round": 0,
+      "schema": "concurrent-writers-v1",
+      "smoke": false
+    },
+    {
+      "result": {
+        "commit_latency": {
+          "count": 256,
+          "max_ns": 53625,
+          "p50_ns": 44791,
+          "p95_ns": 48625
+        },
+        "commits": 256,
+        "commits_per_second": 5721.432268489116,
+        "durable": false,
+        "elapsed_ns": 44744041,
+        "group_commit": {
+          "completed": 0,
+          "fsync_micros": 0,
+          "grouped_entries": 0,
+          "shared_syncs": 0,
+          "submitted": 0
+        },
+        "grouped": false,
+        "reopen_verified": false,
+        "serialized_control": true,
+        "transaction_latency": {
+          "count": 256,
+          "max_ns": 39478583,
+          "p50_ns": 171333,
+          "p95_ns": 192791
+        },
+        "verified_rows": 256,
+        "workers": [
+          {
+            "commits": 32,
+            "elapsed_ns": 33488625,
+            "worker": 0
+          },
+          {
+            "commits": 32,
+            "elapsed_ns": 27793625,
+            "worker": 1
+          },
+          {
+            "commits": 32,
+            "elapsed_ns": 22138375,
+            "worker": 2
+          },
+          {
+            "commits": 32,
+            "elapsed_ns": 11039917,
+            "worker": 3
+          },
+          {
+            "commits": 32,
+            "elapsed_ns": 39295958,
+            "worker": 4
+          },
+          {
+            "commits": 32,
+            "elapsed_ns": 44669792,
+            "worker": 5
+          },
+          {
+            "commits": 32,
+            "elapsed_ns": 16498166,
+            "worker": 6
+          },
+          {
+            "commits": 32,
+            "elapsed_ns": 5499000,
+            "worker": 7
+          }
+        ],
+        "writers": 8
+      },
+      "round": 0,
+      "schema": "concurrent-writers-v1",
+      "smoke": false
+    },
+    {
+      "result": {
+        "commit_latency": {
+          "count": 256,
+          "max_ns": 2755083,
+          "p50_ns": 482000,
+          "p95_ns": 970458
+        },
+        "commits": 256,
+        "commits_per_second": 10813.474450864522,
+        "durable": false,
+        "elapsed_ns": 23674167,
+        "group_commit": {
+          "completed": 0,
+          "fsync_micros": 0,
+          "grouped_entries": 0,
+          "shared_syncs": 0,
+          "submitted": 0
+        },
+        "grouped": false,
+        "reopen_verified": false,
+        "serialized_control": false,
+        "transaction_latency": {
+          "count": 256,
+          "max_ns": 2912959,
+          "p50_ns": 685208,
+          "p95_ns": 1339042
+        },
+        "verified_rows": 256,
+        "workers": [
+          {
+            "commits": 32,
+            "elapsed_ns": 20364417,
+            "worker": 0
+          },
+          {
+            "commits": 32,
+            "elapsed_ns": 23592417,
+            "worker": 1
+          },
+          {
+            "commits": 32,
+            "elapsed_ns": 23313791,
+            "worker": 2
+          },
+          {
+            "commits": 32,
+            "elapsed_ns": 21769458,
+            "worker": 3
+          },
+          {
+            "commits": 32,
+            "elapsed_ns": 22938417,
+            "worker": 4
+          },
+          {
+            "commits": 32,
+            "elapsed_ns": 21868042,
+            "worker": 5
+          },
+          {
+            "commits": 32,
+            "elapsed_ns": 19357208,
+            "worker": 6
+          },
+          {
+            "commits": 32,
+            "elapsed_ns": 23140625,
+            "worker": 7
+          }
+        ],
+        "writers": 8
+      },
+      "round": 0,
+      "schema": "concurrent-writers-v1",
+      "smoke": false
+    },
+    {
+      "result": {
+        "commit_latency": {
+          "count": 256,
+          "max_ns": 7384292,
+          "p50_ns": 5763333,
+          "p95_ns": 6634709
+        },
+        "commits": 256,
+        "commits_per_second": 159.50152453955909,
+        "durable": true,
+        "elapsed_ns": 1605000333,
+        "group_commit": {
+          "completed": 0,
+          "fsync_micros": 0,
+          "grouped_entries": 0,
+          "shared_syncs": 0,
+          "submitted": 0
+        },
+        "grouped": false,
+        "reopen_verified": true,
+        "serialized_control": true,
+        "transaction_latency": {
+          "count": 256,
+          "max_ns": 8387041,
+          "p50_ns": 6409083,
+          "p95_ns": 7335208
+        },
+        "verified_rows": 256,
+        "workers": [
+          {
+            "commits": 256,
+            "elapsed_ns": 1604867917,
+            "worker": 0
+          }
+        ],
+        "writers": 1
+      },
+      "round": 0,
+      "schema": "concurrent-writers-v1",
+      "smoke": false
+    },
+    {
+      "result": {
+        "commit_latency": {
+          "count": 256,
+          "max_ns": 7677458,
+          "p50_ns": 5581250,
+          "p95_ns": 6480041
+        },
+        "commits": 256,
+        "commits_per_second": 159.1030029248688,
+        "durable": true,
+        "elapsed_ns": 1609020542,
+        "group_commit": {
+          "completed": 0,
+          "fsync_micros": 0,
+          "grouped_entries": 0,
+          "shared_syncs": 0,
+          "submitted": 0
+        },
+        "grouped": false,
+        "reopen_verified": true,
+        "serialized_control": false,
+        "transaction_latency": {
+          "count": 256,
+          "max_ns": 8535583,
+          "p50_ns": 6403250,
+          "p95_ns": 7367625
+        },
+        "verified_rows": 256,
+        "workers": [
+          {
+            "commits": 256,
+            "elapsed_ns": 1608915209,
+            "worker": 0
+          }
+        ],
+        "writers": 1
+      },
+      "round": 0,
+      "schema": "concurrent-writers-v1",
+      "smoke": false
+    },
+    {
+      "result": {
+        "commit_latency": {
+          "count": 256,
+          "max_ns": 8635125,
+          "p50_ns": 5536875,
+          "p95_ns": 6456292
+        },
+        "commits": 256,
+        "commits_per_second": 160.58263061752126,
+        "durable": true,
+        "elapsed_ns": 1594194833,
+        "group_commit": {
+          "completed": 0,
+          "fsync_micros": 0,
+          "grouped_entries": 0,
+          "shared_syncs": 0,
+          "submitted": 0
+        },
+        "grouped": false,
+        "reopen_verified": true,
+        "serialized_control": true,
+        "transaction_latency": {
+          "count": 256,
+          "max_ns": 1193524875,
+          "p50_ns": 6383375,
+          "p95_ns": 7433959
+        },
+        "verified_rows": 256,
+        "workers": [
+          {
+            "commits": 64,
+            "elapsed_ns": 1594065625,
+            "worker": 0
+          },
+          {
+            "commits": 64,
+            "elapsed_ns": 389981250,
+            "worker": 1
+          },
+          {
+            "commits": 64,
+            "elapsed_ns": 1110336083,
+            "worker": 2
+          },
+          {
+            "commits": 64,
+            "elapsed_ns": 1184249791,
+            "worker": 3
+          }
+        ],
+        "writers": 4
+      },
+      "round": 0,
+      "schema": "concurrent-writers-v1",
+      "smoke": false
+    },
+    {
+      "result": {
+        "commit_latency": {
+          "count": 256,
+          "max_ns": 151001833,
+          "p50_ns": 16630459,
+          "p95_ns": 33051125
+        },
+        "commits": 256,
+        "commits_per_second": 173.4338224979647,
+        "durable": true,
+        "elapsed_ns": 1476067334,
+        "group_commit": {
+          "completed": 0,
+          "fsync_micros": 0,
+          "grouped_entries": 0,
+          "shared_syncs": 0,
+          "submitted": 0
+        },
+        "grouped": false,
+        "reopen_verified": true,
+        "serialized_control": false,
+        "transaction_latency": {
+          "count": 256,
+          "max_ns": 151661083,
+          "p50_ns": 17531083,
+          "p95_ns": 43555375
+        },
+        "verified_rows": 256,
+        "workers": [
+          {
+            "commits": 64,
+            "elapsed_ns": 1475933042,
+            "worker": 0
+          },
+          {
+            "commits": 64,
+            "elapsed_ns": 1422461708,
+            "worker": 1
+          },
+          {
+            "commits": 64,
+            "elapsed_ns": 1404995125,
+            "worker": 2
+          },
+          {
+            "commits": 64,
+            "elapsed_ns": 1349929792,
+            "worker": 3
+          }
+        ],
+        "writers": 4
+      },
+      "round": 0,
+      "schema": "concurrent-writers-v1",
+      "smoke": false
+    },
+    {
+      "result": {
+        "commit_latency": {
+          "count": 256,
+          "max_ns": 6800292,
+          "p50_ns": 5701291,
+          "p95_ns": 6568041
+        },
+        "commits": 256,
+        "commits_per_second": 160.25219268161263,
+        "durable": true,
+        "elapsed_ns": 1597482042,
+        "group_commit": {
+          "completed": 0,
+          "fsync_micros": 0,
+          "grouped_entries": 0,
+          "shared_syncs": 0,
+          "submitted": 0
+        },
+        "grouped": false,
+        "reopen_verified": true,
+        "serialized_control": true,
+        "transaction_latency": {
+          "count": 256,
+          "max_ns": 1403794417,
+          "p50_ns": 6397750,
+          "p95_ns": 7383666
+        },
+        "verified_rows": 256,
+        "workers": [
+          {
+            "commits": 32,
+            "elapsed_ns": 1397393250,
+            "worker": 0
+          },
+          {
+            "commits": 32,
+            "elapsed_ns": 187185916,
+            "worker": 1
+          },
+          {
+            "commits": 32,
+            "elapsed_ns": 987367083,
+            "worker": 2
+          },
+          {
+            "commits": 32,
+            "elapsed_ns": 381335125,
+            "worker": 3
+          },
+          {
+            "commits": 32,
+            "elapsed_ns": 1192447583,
+            "worker": 4
+          },
+          {
+            "commits": 32,
+            "elapsed_ns": 1597247334,
+            "worker": 5
+          },
+          {
+            "commits": 32,
+            "elapsed_ns": 581364916,
+            "worker": 6
+          },
+          {
+            "commits": 32,
+            "elapsed_ns": 781596500,
+            "worker": 7
+          }
+        ],
+        "writers": 8
+      },
+      "round": 0,
+      "schema": "concurrent-writers-v1",
+      "smoke": false
+    },
+    {
+      "result": {
+        "commit_latency": {
+          "count": 256,
+          "max_ns": 258380125,
+          "p50_ns": 27927584,
+          "p95_ns": 93003000
+        },
+        "commits": 256,
+        "commits_per_second": 174.0184702986852,
+        "durable": true,
+        "elapsed_ns": 1471108208,
+        "group_commit": {
+          "completed": 0,
+          "fsync_micros": 0,
+          "grouped_entries": 0,
+          "shared_syncs": 0,
+          "submitted": 0
+        },
+        "grouped": false,
+        "reopen_verified": true,
+        "serialized_control": false,
+        "transaction_latency": {
+          "count": 256,
+          "max_ns": 259212959,
+          "p50_ns": 29386375,
+          "p95_ns": 99579208
+        },
+        "verified_rows": 256,
+        "workers": [
+          {
+            "commits": 32,
+            "elapsed_ns": 1049097750,
+            "worker": 0
+          },
+          {
+            "commits": 32,
+            "elapsed_ns": 1294410750,
+            "worker": 1
+          },
+          {
+            "commits": 32,
+            "elapsed_ns": 1304564625,
+            "worker": 2
+          },
+          {
+            "commits": 32,
+            "elapsed_ns": 1470935917,
+            "worker": 3
+          },
+          {
+            "commits": 32,
+            "elapsed_ns": 1197980958,
+            "worker": 4
+          },
+          {
+            "commits": 32,
+            "elapsed_ns": 1441404417,
+            "worker": 5
+          },
+          {
+            "commits": 32,
+            "elapsed_ns": 1345071000,
+            "worker": 6
+          },
+          {
+            "commits": 32,
+            "elapsed_ns": 1410393125,
+            "worker": 7
+          }
+        ],
+        "writers": 8
+      },
+      "round": 0,
+      "schema": "concurrent-writers-v1",
+      "smoke": false
+    },
+    {
+      "result": {
+        "commit_latency": {
+          "count": 256,
+          "max_ns": 7369834,
+          "p50_ns": 5754000,
+          "p95_ns": 6080459
+        },
+        "commits": 256,
+        "commits_per_second": 162.30462422358477,
+        "durable": true,
+        "elapsed_ns": 1577281000,
+        "group_commit": {
+          "completed": 256,
+          "fsync_micros": 1298291,
+          "grouped_entries": 256,
+          "shared_syncs": 256,
+          "submitted": 256
+        },
+        "grouped": true,
+        "reopen_verified": true,
+        "serialized_control": true,
+        "transaction_latency": {
+          "count": 256,
+          "max_ns": 8013584,
+          "p50_ns": 6407625,
+          "p95_ns": 6716500
+        },
+        "verified_rows": 256,
+        "workers": [
+          {
+            "commits": 256,
+            "elapsed_ns": 1577167500,
+            "worker": 0
+          }
+        ],
+        "writers": 1
+      },
+      "round": 0,
+      "schema": "concurrent-writers-v1",
+      "smoke": false
+    },
+    {
+      "result": {
+        "commit_latency": {
+          "count": 256,
+          "max_ns": 129076375,
+          "p50_ns": 5682959,
+          "p95_ns": 6847792
+        },
+        "commits": 256,
+        "commits_per_second": 100.5267148272094,
+        "durable": true,
+        "elapsed_ns": 2546586750,
+        "group_commit": {
+          "completed": 256,
+          "fsync_micros": 2255256,
+          "grouped_entries": 256,
+          "shared_syncs": 256,
+          "submitted": 256
+        },
+        "grouped": true,
+        "reopen_verified": true,
+        "serialized_control": false,
+        "transaction_latency": {
+          "count": 256,
+          "max_ns": 129909375,
+          "p50_ns": 6394125,
+          "p95_ns": 7490625
+        },
+        "verified_rows": 256,
+        "workers": [
+          {
+            "commits": 256,
+            "elapsed_ns": 2546433042,
+            "worker": 0
+          }
+        ],
+        "writers": 1
+      },
+      "round": 0,
+      "schema": "concurrent-writers-v1",
+      "smoke": false
+    },
+    {
+      "result": {
+        "commit_latency": {
+          "count": 256,
+          "max_ns": 7661250,
+          "p50_ns": 5676250,
+          "p95_ns": 6746166
+        },
+        "commits": 256,
+        "commits_per_second": 156.9679193748998,
+        "durable": true,
+        "elapsed_ns": 1630906500,
+        "group_commit": {
+          "completed": 256,
+          "fsync_micros": 1332890,
+          "grouped_entries": 256,
+          "shared_syncs": 256,
+          "submitted": 256
+        },
+        "grouped": true,
+        "reopen_verified": true,
+        "serialized_control": true,
+        "transaction_latency": {
+          "count": 256,
+          "max_ns": 1226778417,
+          "p50_ns": 6419584,
+          "p95_ns": 7467833
+        },
+        "verified_rows": 256,
+        "workers": [
+          {
+            "commits": 64,
+            "elapsed_ns": 1220676083,
+            "worker": 0
+          },
+          {
+            "commits": 64,
+            "elapsed_ns": 1630700208,
+            "worker": 1
+          },
+          {
+            "commits": 64,
+            "elapsed_ns": 457663375,
+            "worker": 2
+          },
+          {
+            "commits": 64,
+            "elapsed_ns": 870663541,
+            "worker": 3
+          }
+        ],
+        "writers": 4
+      },
+      "round": 0,
+      "schema": "concurrent-writers-v1",
+      "smoke": false
+    },
+    {
+      "result": {
+        "commit_latency": {
+          "count": 256,
+          "max_ns": 7943292,
+          "p50_ns": 6732625,
+          "p95_ns": 7742250
+        },
+        "commits": 256,
+        "commits_per_second": 547.9965707744592,
+        "durable": true,
+        "elapsed_ns": 467156208,
+        "group_commit": {
+          "completed": 256,
+          "fsync_micros": 337726,
+          "grouped_entries": 256,
+          "shared_syncs": 64,
+          "submitted": 256
+        },
+        "grouped": true,
+        "reopen_verified": true,
+        "serialized_control": false,
+        "transaction_latency": {
+          "count": 256,
+          "max_ns": 8602792,
+          "p50_ns": 7244209,
+          "p95_ns": 8473333
+        },
+        "verified_rows": 256,
+        "workers": [
+          {
+            "commits": 64,
+            "elapsed_ns": 466978542,
+            "worker": 0
+          },
+          {
+            "commits": 64,
+            "elapsed_ns": 466973125,
+            "worker": 1
+          },
+          {
+            "commits": 64,
+            "elapsed_ns": 467050584,
+            "worker": 2
+          },
+          {
+            "commits": 64,
+            "elapsed_ns": 466971125,
+            "worker": 3
+          }
+        ],
+        "writers": 4
+      },
+      "round": 0,
+      "schema": "concurrent-writers-v1",
+      "smoke": false
+    },
+    {
+      "result": {
+        "commit_latency": {
+          "count": 256,
+          "max_ns": 9185292,
+          "p50_ns": 5610750,
+          "p95_ns": 6712042
+        },
+        "commits": 256,
+        "commits_per_second": 158.59402265559103,
+        "durable": true,
+        "elapsed_ns": 1614184417,
+        "group_commit": {
+          "completed": 256,
+          "fsync_micros": 1312986,
+          "grouped_entries": 256,
+          "shared_syncs": 256,
+          "submitted": 256
+        },
+        "grouped": true,
+        "reopen_verified": true,
+        "serialized_control": true,
+        "transaction_latency": {
+          "count": 256,
+          "max_ns": 1419879292,
+          "p50_ns": 6402875,
+          "p95_ns": 7467416
+        },
+        "verified_rows": 256,
+        "workers": [
+          {
+            "commits": 32,
+            "elapsed_ns": 199904417,
+            "worker": 0
+          },
+          {
+            "commits": 32,
+            "elapsed_ns": 1219059125,
+            "worker": 1
+          },
+          {
+            "commits": 32,
+            "elapsed_ns": 1613935084,
+            "worker": 2
+          },
+          {
+            "commits": 32,
+            "elapsed_ns": 1011943542,
+            "worker": 3
+          },
+          {
+            "commits": 32,
+            "elapsed_ns": 601909708,
+            "worker": 4
+          },
+          {
+            "commits": 32,
+            "elapsed_ns": 799888708,
+            "worker": 5
+          },
+          {
+            "commits": 32,
+            "elapsed_ns": 1414976375,
+            "worker": 6
+          },
+          {
+            "commits": 32,
+            "elapsed_ns": 400816000,
+            "worker": 7
+          }
+        ],
+        "writers": 8
+      },
+      "round": 0,
+      "schema": "concurrent-writers-v1",
+      "smoke": false
+    },
+    {
+      "result": {
+        "commit_latency": {
+          "count": 256,
+          "max_ns": 8564583,
+          "p50_ns": 7387250,
+          "p95_ns": 8130791
+        },
+        "commits": 256,
+        "commits_per_second": 1016.397178351207,
+        "durable": true,
+        "elapsed_ns": 251870042,
+        "group_commit": {
+          "completed": 256,
+          "fsync_micros": 161004,
+          "grouped_entries": 256,
+          "shared_syncs": 32,
+          "submitted": 256
+        },
+        "grouped": true,
+        "reopen_verified": true,
+        "serialized_control": false,
+        "transaction_latency": {
+          "count": 256,
+          "max_ns": 9319667,
+          "p50_ns": 8009250,
+          "p95_ns": 8739167
+        },
+        "verified_rows": 256,
+        "workers": [
+          {
+            "commits": 32,
+            "elapsed_ns": 251671708,
+            "worker": 0
+          },
+          {
+            "commits": 32,
+            "elapsed_ns": 251628875,
+            "worker": 1
+          },
+          {
+            "commits": 32,
+            "elapsed_ns": 251644875,
+            "worker": 2
+          },
+          {
+            "commits": 32,
+            "elapsed_ns": 251706875,
+            "worker": 3
+          },
+          {
+            "commits": 32,
+            "elapsed_ns": 251753708,
+            "worker": 4
+          },
+          {
+            "commits": 32,
+            "elapsed_ns": 251761083,
+            "worker": 5
+          },
+          {
+            "commits": 32,
+            "elapsed_ns": 251665583,
+            "worker": 6
+          },
+          {
+            "commits": 32,
+            "elapsed_ns": 251670000,
+            "worker": 7
+          }
+        ],
+        "writers": 8
+      },
+      "round": 0,
+      "schema": "concurrent-writers-v1",
+      "smoke": false
+    },
+    {
+      "result": {
+        "commit_latency": {
+          "count": 256,
+          "max_ns": 8124333,
+          "p50_ns": 6339541,
+          "p95_ns": 7714542
+        },
+        "commits": 256,
+        "commits_per_second": 1108.1929226566315,
+        "durable": true,
+        "elapsed_ns": 231006709,
+        "group_commit": {
+          "completed": 256,
+          "fsync_micros": 160954,
+          "grouped_entries": 256,
+          "shared_syncs": 33,
+          "submitted": 256
+        },
+        "grouped": true,
+        "reopen_verified": true,
+        "serialized_control": false,
+        "transaction_latency": {
+          "count": 256,
+          "max_ns": 14009083,
+          "p50_ns": 7152917,
+          "p95_ns": 8416209
+        },
+        "verified_rows": 256,
+        "workers": [
+          {
+            "commits": 32,
+            "elapsed_ns": 230776250,
+            "worker": 0
+          },
+          {
+            "commits": 32,
+            "elapsed_ns": 230760041,
+            "worker": 1
+          },
+          {
+            "commits": 32,
+            "elapsed_ns": 224938583,
+            "worker": 2
+          },
+          {
+            "commits": 32,
+            "elapsed_ns": 224926000,
+            "worker": 3
+          },
+          {
+            "commits": 32,
+            "elapsed_ns": 230766875,
+            "worker": 4
+          },
+          {
+            "commits": 32,
+            "elapsed_ns": 224915458,
+            "worker": 5
+          },
+          {
+            "commits": 32,
+            "elapsed_ns": 230765584,
+            "worker": 6
+          },
+          {
+            "commits": 32,
+            "elapsed_ns": 225042000,
+            "worker": 7
+          }
+        ],
+        "writers": 8
+      },
+      "round": 1,
+      "schema": "concurrent-writers-v1",
+      "smoke": false
+    },
+    {
+      "result": {
+        "commit_latency": {
+          "count": 256,
+          "max_ns": 8604625,
+          "p50_ns": 5577959,
+          "p95_ns": 6597209
+        },
+        "commits": 256,
+        "commits_per_second": 159.02727903503103,
+        "durable": true,
+        "elapsed_ns": 1609786708,
+        "group_commit": {
+          "completed": 256,
+          "fsync_micros": 1296821,
+          "grouped_entries": 256,
+          "shared_syncs": 256,
+          "submitted": 256
+        },
+        "grouped": true,
+        "reopen_verified": true,
+        "serialized_control": true,
+        "transaction_latency": {
+          "count": 256,
+          "max_ns": 1283225291,
+          "p50_ns": 6391416,
+          "p95_ns": 7484292
+        },
+        "verified_rows": 256,
+        "workers": [
+          {
+            "commits": 32,
+            "elapsed_ns": 199745792,
+            "worker": 0
+          },
+          {
+            "commits": 32,
+            "elapsed_ns": 1214626916,
+            "worker": 1
+          },
+          {
+            "commits": 32,
+            "elapsed_ns": 414705333,
+            "worker": 2
+          },
+          {
+            "commits": 32,
+            "elapsed_ns": 1609595750,
+            "worker": 3
+          },
+          {
+            "commits": 32,
+            "elapsed_ns": 1017555417,
+            "worker": 4
+          },
+          {
+            "commits": 32,
+            "elapsed_ns": 1473618042,
+            "worker": 5
+          },
+          {
+            "commits": 32,
+            "elapsed_ns": 818786375,
+            "worker": 6
+          },
+          {
+            "commits": 32,
+            "elapsed_ns": 616752625,
+            "worker": 7
+          }
+        ],
+        "writers": 8
+      },
+      "round": 1,
+      "schema": "concurrent-writers-v1",
+      "smoke": false
+    },
+    {
+      "result": {
+        "commit_latency": {
+          "count": 256,
+          "max_ns": 7835000,
+          "p50_ns": 6413792,
+          "p95_ns": 7675625
+        },
+        "commits": 256,
+        "commits_per_second": 565.173397527494,
+        "durable": true,
+        "elapsed_ns": 452958333,
+        "group_commit": {
+          "completed": 256,
+          "fsync_micros": 322531,
+          "grouped_entries": 256,
+          "shared_syncs": 64,
+          "submitted": 256
+        },
+        "grouped": true,
+        "reopen_verified": true,
+        "serialized_control": false,
+        "transaction_latency": {
+          "count": 256,
+          "max_ns": 8792791,
+          "p50_ns": 7101125,
+          "p95_ns": 8443834
+        },
+        "verified_rows": 256,
+        "workers": [
+          {
+            "commits": 64,
+            "elapsed_ns": 452773291,
+            "worker": 0
+          },
+          {
+            "commits": 64,
+            "elapsed_ns": 452798417,
+            "worker": 1
+          },
+          {
+            "commits": 64,
+            "elapsed_ns": 452798584,
+            "worker": 2
+          },
+          {
+            "commits": 64,
+            "elapsed_ns": 452754000,
+            "worker": 3
+          }
+        ],
+        "writers": 4
+      },
+      "round": 1,
+      "schema": "concurrent-writers-v1",
+      "smoke": false
+    },
+    {
+      "result": {
+        "commit_latency": {
+          "count": 256,
+          "max_ns": 6977292,
+          "p50_ns": 5579125,
+          "p95_ns": 6083583
+        },
+        "commits": 256,
+        "commits_per_second": 160.94503241415978,
+        "durable": true,
+        "elapsed_ns": 1590605166,
+        "group_commit": {
+          "completed": 256,
+          "fsync_micros": 1294476,
+          "grouped_entries": 256,
+          "shared_syncs": 256,
+          "submitted": 256
+        },
+        "grouped": true,
+        "reopen_verified": true,
+        "serialized_control": true,
+        "transaction_latency": {
+          "count": 256,
+          "max_ns": 1200215583,
+          "p50_ns": 6233459,
+          "p95_ns": 7411125
+        },
+        "verified_rows": 256,
+        "workers": [
+          {
+            "commits": 64,
+            "elapsed_ns": 1590444416,
+            "worker": 0
+          },
+          {
+            "commits": 64,
+            "elapsed_ns": 792464709,
+            "worker": 1
+          },
+          {
+            "commits": 64,
+            "elapsed_ns": 396392333,
+            "worker": 2
+          },
+          {
+            "commits": 64,
+            "elapsed_ns": 1194399291,
+            "worker": 3
+          }
+        ],
+        "writers": 4
+      },
+      "round": 1,
+      "schema": "concurrent-writers-v1",
+      "smoke": false
+    },
+    {
+      "result": {
+        "commit_latency": {
+          "count": 256,
+          "max_ns": 7411917,
+          "p50_ns": 5603750,
+          "p95_ns": 6032917
+        },
+        "commits": 256,
+        "commits_per_second": 161.38493490544954,
+        "durable": true,
+        "elapsed_ns": 1586269500,
+        "group_commit": {
+          "completed": 256,
+          "fsync_micros": 1296542,
+          "grouped_entries": 256,
+          "shared_syncs": 256,
+          "submitted": 256
+        },
+        "grouped": true,
+        "reopen_verified": true,
+        "serialized_control": false,
+        "transaction_latency": {
+          "count": 256,
+          "max_ns": 8108958,
+          "p50_ns": 6219500,
+          "p95_ns": 6559000
+        },
+        "verified_rows": 256,
+        "workers": [
+          {
+            "commits": 256,
+            "elapsed_ns": 1586149500,
+            "worker": 0
+          }
+        ],
+        "writers": 1
+      },
+      "round": 1,
+      "schema": "concurrent-writers-v1",
+      "smoke": false
+    },
+    {
+      "result": {
+        "commit_latency": {
+          "count": 256,
+          "max_ns": 9747958,
+          "p50_ns": 5717625,
+          "p95_ns": 6770875
+        },
+        "commits": 256,
+        "commits_per_second": 157.8985755239838,
+        "durable": true,
+        "elapsed_ns": 1621293917,
+        "group_commit": {
+          "completed": 256,
+          "fsync_micros": 1328459,
+          "grouped_entries": 256,
+          "shared_syncs": 256,
+          "submitted": 256
+        },
+        "grouped": true,
+        "reopen_verified": true,
+        "serialized_control": true,
+        "transaction_latency": {
+          "count": 256,
+          "max_ns": 10431750,
+          "p50_ns": 6392625,
+          "p95_ns": 7429541
+        },
+        "verified_rows": 256,
+        "workers": [
+          {
+            "commits": 256,
+            "elapsed_ns": 1621137000,
+            "worker": 0
+          }
+        ],
+        "writers": 1
+      },
+      "round": 1,
+      "schema": "concurrent-writers-v1",
+      "smoke": false
+    },
+    {
+      "result": {
+        "commit_latency": {
+          "count": 256,
+          "max_ns": 423146958,
+          "p50_ns": 27099791,
+          "p95_ns": 118897209
+        },
+        "commits": 256,
+        "commits_per_second": 179.35176601164974,
+        "durable": true,
+        "elapsed_ns": 1427362583,
+        "group_commit": {
+          "completed": 0,
+          "fsync_micros": 0,
+          "grouped_entries": 0,
+          "shared_syncs": 0,
+          "submitted": 0
+        },
+        "grouped": false,
+        "reopen_verified": true,
+        "serialized_control": false,
+        "transaction_latency": {
+          "count": 256,
+          "max_ns": 423900958,
+          "p50_ns": 28121000,
+          "p95_ns": 124059750
+        },
+        "verified_rows": 256,
+        "workers": [
+          {
+            "commits": 32,
+            "elapsed_ns": 1276828500,
+            "worker": 0
+          },
+          {
+            "commits": 32,
+            "elapsed_ns": 981670542,
+            "worker": 1
+          },
+          {
+            "commits": 32,
+            "elapsed_ns": 1259643500,
+            "worker": 2
+          },
+          {
+            "commits": 32,
+            "elapsed_ns": 1366843708,
+            "worker": 3
+          },
+          {
+            "commits": 32,
+            "elapsed_ns": 1237699958,
+            "worker": 4
+          },
+          {
+            "commits": 32,
+            "elapsed_ns": 1427187625,
+            "worker": 5
+          },
+          {
+            "commits": 32,
+            "elapsed_ns": 1383620875,
+            "worker": 6
+          },
+          {
+            "commits": 32,
+            "elapsed_ns": 1020173500,
+            "worker": 7
+          }
+        ],
+        "writers": 8
+      },
+      "round": 1,
+      "schema": "concurrent-writers-v1",
+      "smoke": false
+    },
+    {
+      "result": {
+        "commit_latency": {
+          "count": 256,
+          "max_ns": 139501750,
+          "p50_ns": 5703792,
+          "p95_ns": 6741041
+        },
+        "commits": 256,
+        "commits_per_second": 94.98506971245158,
+        "durable": true,
+        "elapsed_ns": 2695160416,
+        "group_commit": {
+          "completed": 0,
+          "fsync_micros": 0,
+          "grouped_entries": 0,
+          "shared_syncs": 0,
+          "submitted": 0
+        },
+        "grouped": false,
+        "reopen_verified": true,
+        "serialized_control": true,
+        "transaction_latency": {
+          "count": 256,
+          "max_ns": 2497557167,
+          "p50_ns": 6420250,
+          "p95_ns": 129529084
+        },
+        "verified_rows": 256,
+        "workers": [
+          {
+            "commits": 32,
+            "elapsed_ns": 2288061792,
+            "worker": 0
+          },
+          {
+            "commits": 32,
+            "elapsed_ns": 191221250,
+            "worker": 1
+          },
+          {
+            "commits": 32,
+            "elapsed_ns": 1663404417,
+            "worker": 2
+          },
+          {
+            "commits": 32,
+            "elapsed_ns": 391205000,
+            "worker": 3
+          },
+          {
+            "commits": 32,
+            "elapsed_ns": 2491066750,
+            "worker": 4
+          },
+          {
+            "commits": 32,
+            "elapsed_ns": 1884066666,
+            "worker": 5
+          },
+          {
+            "commits": 32,
+            "elapsed_ns": 2088029250,
+            "worker": 6
+          },
+          {
+            "commits": 32,
+            "elapsed_ns": 2694982083,
+            "worker": 7
+          }
+        ],
+        "writers": 8
+      },
+      "round": 1,
+      "schema": "concurrent-writers-v1",
+      "smoke": false
+    },
+    {
+      "result": {
+        "commit_latency": {
+          "count": 256,
+          "max_ns": 267538333,
+          "p50_ns": 16798834,
+          "p95_ns": 31471125
+        },
+        "commits": 256,
+        "commits_per_second": 169.86004840464642,
+        "durable": true,
+        "elapsed_ns": 1507123084,
+        "group_commit": {
+          "completed": 0,
+          "fsync_micros": 0,
+          "grouped_entries": 0,
+          "shared_syncs": 0,
+          "submitted": 0
+        },
+        "grouped": false,
+        "reopen_verified": true,
+        "serialized_control": false,
+        "transaction_latency": {
+          "count": 256,
+          "max_ns": 268213208,
+          "p50_ns": 17527833,
+          "p95_ns": 41469083
+        },
+        "verified_rows": 256,
+        "workers": [
+          {
+            "commits": 64,
+            "elapsed_ns": 1252954250,
+            "worker": 0
+          },
+          {
+            "commits": 64,
+            "elapsed_ns": 1506947083,
+            "worker": 1
+          },
+          {
+            "commits": 64,
+            "elapsed_ns": 1488449167,
+            "worker": 2
+          },
+          {
+            "commits": 64,
+            "elapsed_ns": 1349818250,
+            "worker": 3
+          }
+        ],
+        "writers": 4
+      },
+      "round": 1,
+      "schema": "concurrent-writers-v1",
+      "smoke": false
+    },
+    {
+      "result": {
+        "commit_latency": {
+          "count": 256,
+          "max_ns": 6822209,
+          "p50_ns": 5730000,
+          "p95_ns": 6644166
+        },
+        "commits": 256,
+        "commits_per_second": 159.17999500040509,
+        "durable": true,
+        "elapsed_ns": 1608242292,
+        "group_commit": {
+          "completed": 0,
+          "fsync_micros": 0,
+          "grouped_entries": 0,
+          "shared_syncs": 0,
+          "submitted": 0
+        },
+        "grouped": false,
+        "reopen_verified": true,
+        "serialized_control": true,
+        "transaction_latency": {
+          "count": 256,
+          "max_ns": 1211791667,
+          "p50_ns": 6407833,
+          "p95_ns": 7372459
+        },
+        "verified_rows": 256,
+        "workers": [
+          {
+            "commits": 64,
+            "elapsed_ns": 408387541,
+            "worker": 0
+          },
+          {
+            "commits": 64,
+            "elapsed_ns": 1206143667,
+            "worker": 1
+          },
+          {
+            "commits": 64,
+            "elapsed_ns": 817297875,
+            "worker": 2
+          },
+          {
+            "commits": 64,
+            "elapsed_ns": 1608114291,
+            "worker": 3
+          }
+        ],
+        "writers": 4
+      },
+      "round": 1,
+      "schema": "concurrent-writers-v1",
+      "smoke": false
+    },
+    {
+      "result": {
+        "commit_latency": {
+          "count": 256,
+          "max_ns": 7875916,
+          "p50_ns": 5789750,
+          "p95_ns": 6761375
+        },
+        "commits": 256,
+        "commits_per_second": 157.13313463537466,
+        "durable": true,
+        "elapsed_ns": 1629191708,
+        "group_commit": {
+          "completed": 0,
+          "fsync_micros": 0,
+          "grouped_entries": 0,
+          "shared_syncs": 0,
+          "submitted": 0
+        },
+        "grouped": false,
+        "reopen_verified": true,
+        "serialized_control": false,
+        "transaction_latency": {
+          "count": 256,
+          "max_ns": 8516750,
+          "p50_ns": 6428209,
+          "p95_ns": 7405708
+        },
+        "verified_rows": 256,
+        "workers": [
+          {
+            "commits": 256,
+            "elapsed_ns": 1629087583,
+            "worker": 0
+          }
+        ],
+        "writers": 1
+      },
+      "round": 1,
+      "schema": "concurrent-writers-v1",
+      "smoke": false
+    },
+    {
+      "result": {
+        "commit_latency": {
+          "count": 256,
+          "max_ns": 7550833,
+          "p50_ns": 5762042,
+          "p95_ns": 6058500
+        },
+        "commits": 256,
+        "commits_per_second": 159.88980095125063,
+        "durable": true,
+        "elapsed_ns": 1601102750,
+        "group_commit": {
+          "completed": 0,
+          "fsync_micros": 0,
+          "grouped_entries": 0,
+          "shared_syncs": 0,
+          "submitted": 0
+        },
+        "grouped": false,
+        "reopen_verified": true,
+        "serialized_control": true,
+        "transaction_latency": {
+          "count": 256,
+          "max_ns": 8186541,
+          "p50_ns": 6409792,
+          "p95_ns": 6609125
+        },
+        "verified_rows": 256,
+        "workers": [
+          {
+            "commits": 256,
+            "elapsed_ns": 1600973583,
+            "worker": 0
+          }
+        ],
+        "writers": 1
+      },
+      "round": 1,
+      "schema": "concurrent-writers-v1",
+      "smoke": false
+    },
+    {
+      "result": {
+        "commit_latency": {
+          "count": 256,
+          "max_ns": 2041583,
+          "p50_ns": 333666,
+          "p95_ns": 1167625
+        },
+        "commits": 256,
+        "commits_per_second": 10495.101063108641,
+        "durable": false,
+        "elapsed_ns": 24392333,
+        "group_commit": {
+          "completed": 0,
+          "fsync_micros": 0,
+          "grouped_entries": 0,
+          "shared_syncs": 0,
+          "submitted": 0
+        },
+        "grouped": false,
+        "reopen_verified": false,
+        "serialized_control": false,
+        "transaction_latency": {
+          "count": 256,
+          "max_ns": 2584292,
+          "p50_ns": 543625,
+          "p95_ns": 1579958
+        },
+        "verified_rows": 256,
+        "workers": [
+          {
+            "commits": 32,
+            "elapsed_ns": 22446791,
+            "worker": 0
+          },
+          {
+            "commits": 32,
+            "elapsed_ns": 22792417,
+            "worker": 1
+          },
+          {
+            "commits": 32,
+            "elapsed_ns": 24026667,
+            "worker": 2
+          },
+          {
+            "commits": 32,
+            "elapsed_ns": 19928458,
+            "worker": 3
+          },
+          {
+            "commits": 32,
+            "elapsed_ns": 22333208,
+            "worker": 4
+          },
+          {
+            "commits": 32,
+            "elapsed_ns": 24333416,
+            "worker": 5
+          },
+          {
+            "commits": 32,
+            "elapsed_ns": 23648000,
+            "worker": 6
+          },
+          {
+            "commits": 32,
+            "elapsed_ns": 21626250,
+            "worker": 7
+          }
+        ],
+        "writers": 8
+      },
+      "round": 1,
+      "schema": "concurrent-writers-v1",
+      "smoke": false
+    },
+    {
+      "result": {
+        "commit_latency": {
+          "count": 256,
+          "max_ns": 49708,
+          "p50_ns": 43583,
+          "p95_ns": 46375
+        },
+        "commits": 256,
+        "commits_per_second": 5905.063418881787,
+        "durable": false,
+        "elapsed_ns": 43352625,
+        "group_commit": {
+          "completed": 0,
+          "fsync_micros": 0,
+          "grouped_entries": 0,
+          "shared_syncs": 0,
+          "submitted": 0
+        },
+        "grouped": false,
+        "reopen_verified": false,
+        "serialized_control": true,
+        "transaction_latency": {
+          "count": 256,
+          "max_ns": 38260542,
+          "p50_ns": 165792,
+          "p95_ns": 185667
+        },
+        "verified_rows": 256,
+        "workers": [
+          {
+            "commits": 32,
+            "elapsed_ns": 16465708,
+            "worker": 0
+          },
+          {
+            "commits": 32,
+            "elapsed_ns": 5535917,
+            "worker": 1
+          },
+          {
+            "commits": 32,
+            "elapsed_ns": 32595542,
+            "worker": 2
+          },
+          {
+            "commits": 32,
+            "elapsed_ns": 38053042,
+            "worker": 3
+          },
+          {
+            "commits": 32,
+            "elapsed_ns": 11063250,
+            "worker": 4
+          },
+          {
+            "commits": 32,
+            "elapsed_ns": 21783125,
+            "worker": 5
+          },
+          {
+            "commits": 32,
+            "elapsed_ns": 27129875,
+            "worker": 6
+          },
+          {
+            "commits": 32,
+            "elapsed_ns": 43292334,
+            "worker": 7
+          }
+        ],
+        "writers": 8
+      },
+      "round": 1,
+      "schema": "concurrent-writers-v1",
+      "smoke": false
+    },
+    {
+      "result": {
+        "commit_latency": {
+          "count": 256,
+          "max_ns": 383042,
+          "p50_ns": 189625,
+          "p95_ns": 221208
+        },
+        "commits": 256,
+        "commits_per_second": 11237.003100052125,
+        "durable": false,
+        "elapsed_ns": 22781875,
+        "group_commit": {
+          "completed": 0,
+          "fsync_micros": 0,
+          "grouped_entries": 0,
+          "shared_syncs": 0,
+          "submitted": 0
+        },
+        "grouped": false,
+        "reopen_verified": false,
+        "serialized_control": false,
+        "transaction_latency": {
+          "count": 256,
+          "max_ns": 716542,
+          "p50_ns": 363708,
+          "p95_ns": 401917
+        },
+        "verified_rows": 256,
+        "workers": [
+          {
+            "commits": 64,
+            "elapsed_ns": 22427250,
+            "worker": 0
+          },
+          {
+            "commits": 64,
+            "elapsed_ns": 22668500,
+            "worker": 1
+          },
+          {
+            "commits": 64,
+            "elapsed_ns": 22595500,
+            "worker": 2
+          },
+          {
+            "commits": 64,
+            "elapsed_ns": 22755125,
+            "worker": 3
+          }
+        ],
+        "writers": 4
+      },
+      "round": 1,
+      "schema": "concurrent-writers-v1",
+      "smoke": false
+    },
+    {
+      "result": {
+        "commit_latency": {
+          "count": 256,
+          "max_ns": 50416,
+          "p50_ns": 44167,
+          "p95_ns": 46875
+        },
+        "commits": 256,
+        "commits_per_second": 5925.748702145297,
+        "durable": false,
+        "elapsed_ns": 43201292,
+        "group_commit": {
+          "completed": 0,
+          "fsync_micros": 0,
+          "grouped_entries": 0,
+          "shared_syncs": 0,
+          "submitted": 0
+        },
+        "grouped": false,
+        "reopen_verified": false,
+        "serialized_control": true,
+        "transaction_latency": {
+          "count": 256,
+          "max_ns": 32911916,
+          "p50_ns": 166875,
+          "p95_ns": 178709
+        },
+        "verified_rows": 256,
+        "workers": [
+          {
+            "commits": 64,
+            "elapsed_ns": 43169958,
+            "worker": 0
+          },
+          {
+            "commits": 64,
+            "elapsed_ns": 32695417,
+            "worker": 1
+          },
+          {
+            "commits": 64,
+            "elapsed_ns": 10727042,
+            "worker": 2
+          },
+          {
+            "commits": 64,
+            "elapsed_ns": 21577125,
+            "worker": 3
+          }
+        ],
+        "writers": 4
+      },
+      "round": 1,
+      "schema": "concurrent-writers-v1",
+      "smoke": false
+    },
+    {
+      "result": {
+        "commit_latency": {
+          "count": 256,
+          "max_ns": 49000,
+          "p50_ns": 43667,
+          "p95_ns": 45292
+        },
+        "commits": 256,
+        "commits_per_second": 6402.654540572521,
+        "durable": false,
+        "elapsed_ns": 39983416,
+        "group_commit": {
+          "completed": 0,
+          "fsync_micros": 0,
+          "grouped_entries": 0,
+          "shared_syncs": 0,
+          "submitted": 0
+        },
+        "grouped": false,
+        "reopen_verified": false,
+        "serialized_control": false,
+        "transaction_latency": {
+          "count": 256,
+          "max_ns": 176209,
+          "p50_ns": 155666,
+          "p95_ns": 159834
+        },
+        "verified_rows": 256,
+        "workers": [
+          {
+            "commits": 256,
+            "elapsed_ns": 39961167,
+            "worker": 0
+          }
+        ],
+        "writers": 1
+      },
+      "round": 1,
+      "schema": "concurrent-writers-v1",
+      "smoke": false
+    },
+    {
+      "result": {
+        "commit_latency": {
+          "count": 256,
+          "max_ns": 55542,
+          "p50_ns": 43875,
+          "p95_ns": 46375
+        },
+        "commits": 256,
+        "commits_per_second": 6379.088550345898,
+        "durable": false,
+        "elapsed_ns": 40131125,
+        "group_commit": {
+          "completed": 0,
+          "fsync_micros": 0,
+          "grouped_entries": 0,
+          "shared_syncs": 0,
+          "submitted": 0
+        },
+        "grouped": false,
+        "reopen_verified": false,
+        "serialized_control": true,
+        "transaction_latency": {
+          "count": 256,
+          "max_ns": 177125,
+          "p50_ns": 155792,
+          "p95_ns": 164000
+        },
+        "verified_rows": 256,
+        "workers": [
+          {
+            "commits": 256,
+            "elapsed_ns": 40115125,
+            "worker": 0
+          }
+        ],
+        "writers": 1
+      },
+      "round": 1,
+      "schema": "concurrent-writers-v1",
+      "smoke": false
+    },
+    {
+      "result": {
+        "commit_latency": {
+          "count": 256,
+          "max_ns": 54209,
+          "p50_ns": 43792,
+          "p95_ns": 45417
+        },
+        "commits": 256,
+        "commits_per_second": 6360.630243047633,
+        "durable": false,
+        "elapsed_ns": 40247584,
+        "group_commit": {
+          "completed": 0,
+          "fsync_micros": 0,
+          "grouped_entries": 0,
+          "shared_syncs": 0,
+          "submitted": 0
+        },
+        "grouped": false,
+        "reopen_verified": false,
+        "serialized_control": true,
+        "transaction_latency": {
+          "count": 256,
+          "max_ns": 175875,
+          "p50_ns": 156750,
+          "p95_ns": 162125
+        },
+        "verified_rows": 256,
+        "workers": [
+          {
+            "commits": 256,
+            "elapsed_ns": 40225167,
+            "worker": 0
+          }
+        ],
+        "writers": 1
+      },
+      "round": 2,
+      "schema": "concurrent-writers-v1",
+      "smoke": false
+    },
+    {
+      "result": {
+        "commit_latency": {
+          "count": 256,
+          "max_ns": 59542,
+          "p50_ns": 43792,
+          "p95_ns": 45709
+        },
+        "commits": 256,
+        "commits_per_second": 6392.04988795186,
+        "durable": false,
+        "elapsed_ns": 40049750,
+        "group_commit": {
+          "completed": 0,
+          "fsync_micros": 0,
+          "grouped_entries": 0,
+          "shared_syncs": 0,
+          "submitted": 0
+        },
+        "grouped": false,
+        "reopen_verified": false,
+        "serialized_control": false,
+        "transaction_latency": {
+          "count": 256,
+          "max_ns": 198875,
+          "p50_ns": 155375,
+          "p95_ns": 160833
+        },
+        "verified_rows": 256,
+        "workers": [
+          {
+            "commits": 256,
+            "elapsed_ns": 40031041,
+            "worker": 0
+          }
+        ],
+        "writers": 1
+      },
+      "round": 2,
+      "schema": "concurrent-writers-v1",
+      "smoke": false
+    },
+    {
+      "result": {
+        "commit_latency": {
+          "count": 256,
+          "max_ns": 56125,
+          "p50_ns": 44084,
+          "p95_ns": 46833
+        },
+        "commits": 256,
+        "commits_per_second": 5963.462193268681,
+        "durable": false,
+        "elapsed_ns": 42928083,
+        "group_commit": {
+          "completed": 0,
+          "fsync_micros": 0,
+          "grouped_entries": 0,
+          "shared_syncs": 0,
+          "submitted": 0
+        },
+        "grouped": false,
+        "reopen_verified": false,
+        "serialized_control": true,
+        "transaction_latency": {
+          "count": 256,
+          "max_ns": 32638458,
+          "p50_ns": 166333,
+          "p95_ns": 179583
+        },
+        "verified_rows": 256,
+        "workers": [
+          {
+            "commits": 64,
+            "elapsed_ns": 42900917,
+            "worker": 0
+          },
+          {
+            "commits": 64,
+            "elapsed_ns": 10443083,
+            "worker": 1
+          },
+          {
+            "commits": 64,
+            "elapsed_ns": 32415375,
+            "worker": 2
+          },
+          {
+            "commits": 64,
+            "elapsed_ns": 21478167,
+            "worker": 3
+          }
+        ],
+        "writers": 4
+      },
+      "round": 2,
+      "schema": "concurrent-writers-v1",
+      "smoke": false
+    },
+    {
+      "result": {
+        "commit_latency": {
+          "count": 256,
+          "max_ns": 389792,
+          "p50_ns": 187917,
+          "p95_ns": 221959
+        },
+        "commits": 256,
+        "commits_per_second": 11196.191965184042,
+        "durable": false,
+        "elapsed_ns": 22864917,
+        "group_commit": {
+          "completed": 0,
+          "fsync_micros": 0,
+          "grouped_entries": 0,
+          "shared_syncs": 0,
+          "submitted": 0
+        },
+        "grouped": false,
+        "reopen_verified": false,
+        "serialized_control": false,
+        "transaction_latency": {
+          "count": 256,
+          "max_ns": 723875,
+          "p50_ns": 359083,
+          "p95_ns": 403917
+        },
+        "verified_rows": 256,
+        "workers": [
+          {
+            "commits": 64,
+            "elapsed_ns": 22823625,
+            "worker": 0
+          },
+          {
+            "commits": 64,
+            "elapsed_ns": 21961209,
+            "worker": 1
+          },
+          {
+            "commits": 64,
+            "elapsed_ns": 21624583,
+            "worker": 2
+          },
+          {
+            "commits": 64,
+            "elapsed_ns": 22437708,
+            "worker": 3
+          }
+        ],
+        "writers": 4
+      },
+      "round": 2,
+      "schema": "concurrent-writers-v1",
+      "smoke": false
+    },
+    {
+      "result": {
+        "commit_latency": {
+          "count": 256,
+          "max_ns": 49834,
+          "p50_ns": 43916,
+          "p95_ns": 46500
+        },
+        "commits": 256,
+        "commits_per_second": 5866.166661507037,
+        "durable": false,
+        "elapsed_ns": 43640083,
+        "group_commit": {
+          "completed": 0,
+          "fsync_micros": 0,
+          "grouped_entries": 0,
+          "shared_syncs": 0,
+          "submitted": 0
+        },
+        "grouped": false,
+        "reopen_verified": false,
+        "serialized_control": true,
+        "transaction_latency": {
+          "count": 256,
+          "max_ns": 38484209,
+          "p50_ns": 167667,
+          "p95_ns": 185000
+        },
+        "verified_rows": 256,
+        "workers": [
+          {
+            "commits": 32,
+            "elapsed_ns": 10685041,
+            "worker": 0
+          },
+          {
+            "commits": 32,
+            "elapsed_ns": 32868625,
+            "worker": 1
+          },
+          {
+            "commits": 32,
+            "elapsed_ns": 38289375,
+            "worker": 2
+          },
+          {
+            "commits": 32,
+            "elapsed_ns": 43599000,
+            "worker": 3
+          },
+          {
+            "commits": 32,
+            "elapsed_ns": 5230750,
+            "worker": 4
+          },
+          {
+            "commits": 32,
+            "elapsed_ns": 16253834,
+            "worker": 5
+          },
+          {
+            "commits": 32,
+            "elapsed_ns": 27362834,
+            "worker": 6
+          },
+          {
+            "commits": 32,
+            "elapsed_ns": 21780250,
+            "worker": 7
+          }
+        ],
+        "writers": 8
+      },
+      "round": 2,
+      "schema": "concurrent-writers-v1",
+      "smoke": false
+    },
+    {
+      "result": {
+        "commit_latency": {
+          "count": 256,
+          "max_ns": 2712458,
+          "p50_ns": 314625,
+          "p95_ns": 1176000
+        },
+        "commits": 256,
+        "commits_per_second": 11274.035605342167,
+        "durable": false,
+        "elapsed_ns": 22707042,
+        "group_commit": {
+          "completed": 0,
+          "fsync_micros": 0,
+          "grouped_entries": 0,
+          "shared_syncs": 0,
+          "submitted": 0
+        },
+        "grouped": false,
+        "reopen_verified": false,
+        "serialized_control": false,
+        "transaction_latency": {
+          "count": 256,
+          "max_ns": 2887875,
+          "p50_ns": 501041,
+          "p95_ns": 1526792
+        },
+        "verified_rows": 256,
+        "workers": [
+          {
+            "commits": 32,
+            "elapsed_ns": 22663917,
+            "worker": 0
+          },
+          {
+            "commits": 32,
+            "elapsed_ns": 21313084,
+            "worker": 1
+          },
+          {
+            "commits": 32,
+            "elapsed_ns": 21045416,
+            "worker": 2
+          },
+          {
+            "commits": 32,
+            "elapsed_ns": 18638334,
+            "worker": 3
+          },
+          {
+            "commits": 32,
+            "elapsed_ns": 20344666,
+            "worker": 4
+          },
+          {
+            "commits": 32,
+            "elapsed_ns": 21597667,
+            "worker": 5
+          },
+          {
+            "commits": 32,
+            "elapsed_ns": 22350375,
+            "worker": 6
+          },
+          {
+            "commits": 32,
+            "elapsed_ns": 22057208,
+            "worker": 7
+          }
+        ],
+        "writers": 8
+      },
+      "round": 2,
+      "schema": "concurrent-writers-v1",
+      "smoke": false
+    },
+    {
+      "result": {
+        "commit_latency": {
+          "count": 256,
+          "max_ns": 6822375,
+          "p50_ns": 5728833,
+          "p95_ns": 6032791
+        },
+        "commits": 256,
+        "commits_per_second": 162.81376529966437,
+        "durable": true,
+        "elapsed_ns": 1572348625,
+        "group_commit": {
+          "completed": 0,
+          "fsync_micros": 0,
+          "grouped_entries": 0,
+          "shared_syncs": 0,
+          "submitted": 0
+        },
+        "grouped": false,
+        "reopen_verified": true,
+        "serialized_control": true,
+        "transaction_latency": {
+          "count": 256,
+          "max_ns": 8481666,
+          "p50_ns": 6384667,
+          "p95_ns": 6559000
+        },
+        "verified_rows": 256,
+        "workers": [
+          {
+            "commits": 256,
+            "elapsed_ns": 1572191834,
+            "worker": 0
+          }
+        ],
+        "writers": 1
+      },
+      "round": 2,
+      "schema": "concurrent-writers-v1",
+      "smoke": false
+    },
+    {
+      "result": {
+        "commit_latency": {
+          "count": 256,
+          "max_ns": 8203167,
+          "p50_ns": 5739583,
+          "p95_ns": 6020666
+        },
+        "commits": 256,
+        "commits_per_second": 163.93960970685788,
+        "durable": true,
+        "elapsed_ns": 1561550625,
+        "group_commit": {
+          "completed": 0,
+          "fsync_micros": 0,
+          "grouped_entries": 0,
+          "shared_syncs": 0,
+          "submitted": 0
+        },
+        "grouped": false,
+        "reopen_verified": true,
+        "serialized_control": false,
+        "transaction_latency": {
+          "count": 256,
+          "max_ns": 8940417,
+          "p50_ns": 6390958,
+          "p95_ns": 6578041
+        },
+        "verified_rows": 256,
+        "workers": [
+          {
+            "commits": 256,
+            "elapsed_ns": 1561413500,
+            "worker": 0
+          }
+        ],
+        "writers": 1
+      },
+      "round": 2,
+      "schema": "concurrent-writers-v1",
+      "smoke": false
+    },
+    {
+      "result": {
+        "commit_latency": {
+          "count": 256,
+          "max_ns": 8894542,
+          "p50_ns": 5070541,
+          "p95_ns": 5986709
+        },
+        "commits": 256,
+        "commits_per_second": 172.32490615739272,
+        "durable": true,
+        "elapsed_ns": 1485565875,
+        "group_commit": {
+          "completed": 0,
+          "fsync_micros": 0,
+          "grouped_entries": 0,
+          "shared_syncs": 0,
+          "submitted": 0
+        },
+        "grouped": false,
+        "reopen_verified": true,
+        "serialized_control": true,
+        "transaction_latency": {
+          "count": 256,
+          "max_ns": 1095998416,
+          "p50_ns": 5576083,
+          "p95_ns": 6549375
+        },
+        "verified_rows": 256,
+        "workers": [
+          {
+            "commits": 64,
+            "elapsed_ns": 1090443709,
+            "worker": 0
+          },
+          {
+            "commits": 64,
+            "elapsed_ns": 1485430292,
+            "worker": 1
+          },
+          {
+            "commits": 64,
+            "elapsed_ns": 355317917,
+            "worker": 2
+          },
+          {
+            "commits": 64,
+            "elapsed_ns": 695563125,
+            "worker": 3
+          }
+        ],
+        "writers": 4
+      },
+      "round": 2,
+      "schema": "concurrent-writers-v1",
+      "smoke": false
+    },
+    {
+      "result": {
+        "commit_latency": {
+          "count": 256,
+          "max_ns": 167418125,
+          "p50_ns": 16629417,
+          "p95_ns": 31968459
+        },
+        "commits": 256,
+        "commits_per_second": 178.60586613957918,
+        "durable": true,
+        "elapsed_ns": 1433323583,
+        "group_commit": {
+          "completed": 0,
+          "fsync_micros": 0,
+          "grouped_entries": 0,
+          "shared_syncs": 0,
+          "submitted": 0
+        },
+        "grouped": false,
+        "reopen_verified": true,
+        "serialized_control": false,
+        "transaction_latency": {
+          "count": 256,
+          "max_ns": 168156667,
+          "p50_ns": 17328875,
+          "p95_ns": 38558458
+        },
+        "verified_rows": 256,
+        "workers": [
+          {
+            "commits": 64,
+            "elapsed_ns": 1433128375,
+            "worker": 0
+          },
+          {
+            "commits": 64,
+            "elapsed_ns": 1182102542,
+            "worker": 1
+          },
+          {
+            "commits": 64,
+            "elapsed_ns": 1421932833,
+            "worker": 2
+          },
+          {
+            "commits": 64,
+            "elapsed_ns": 1347580583,
+            "worker": 3
+          }
+        ],
+        "writers": 4
+      },
+      "round": 2,
+      "schema": "concurrent-writers-v1",
+      "smoke": false
+    },
+    {
+      "result": {
+        "commit_latency": {
+          "count": 256,
+          "max_ns": 6696750,
+          "p50_ns": 5642708,
+          "p95_ns": 5939500
+        },
+        "commits": 256,
+        "commits_per_second": 163.7465029999389,
+        "durable": true,
+        "elapsed_ns": 1563392166,
+        "group_commit": {
+          "completed": 0,
+          "fsync_micros": 0,
+          "grouped_entries": 0,
+          "shared_syncs": 0,
+          "submitted": 0
+        },
+        "grouped": false,
+        "reopen_verified": true,
+        "serialized_control": true,
+        "transaction_latency": {
+          "count": 256,
+          "max_ns": 1370791083,
+          "p50_ns": 6378458,
+          "p95_ns": 6545042
+        },
+        "verified_rows": 256,
+        "workers": [
+          {
+            "commits": 32,
+            "elapsed_ns": 967991167,
+            "worker": 0
+          },
+          {
+            "commits": 32,
+            "elapsed_ns": 577975083,
+            "worker": 1
+          },
+          {
+            "commits": 32,
+            "elapsed_ns": 1166082166,
+            "worker": 2
+          },
+          {
+            "commits": 32,
+            "elapsed_ns": 773014083,
+            "worker": 3
+          },
+          {
+            "commits": 32,
+            "elapsed_ns": 380165042,
+            "worker": 4
+          },
+          {
+            "commits": 32,
+            "elapsed_ns": 1563134916,
+            "worker": 5
+          },
+          {
+            "commits": 32,
+            "elapsed_ns": 183017834,
+            "worker": 6
+          },
+          {
+            "commits": 32,
+            "elapsed_ns": 1364230459,
+            "worker": 7
+          }
+        ],
+        "writers": 8
+      },
+      "round": 2,
+      "schema": "concurrent-writers-v1",
+      "smoke": false
+    },
+    {
+      "result": {
+        "commit_latency": {
+          "count": 256,
+          "max_ns": 264740292,
+          "p50_ns": 27914916,
+          "p95_ns": 86595917
+        },
+        "commits": 256,
+        "commits_per_second": 175.67212170921425,
+        "durable": true,
+        "elapsed_ns": 1457260250,
+        "group_commit": {
+          "completed": 0,
+          "fsync_micros": 0,
+          "grouped_entries": 0,
+          "shared_syncs": 0,
+          "submitted": 0
+        },
+        "grouped": false,
+        "reopen_verified": true,
+        "serialized_control": false,
+        "transaction_latency": {
+          "count": 256,
+          "max_ns": 351406000,
+          "p50_ns": 29454625,
+          "p95_ns": 114806292
+        },
+        "verified_rows": 256,
+        "workers": [
+          {
+            "commits": 32,
+            "elapsed_ns": 1351718958,
+            "worker": 0
+          },
+          {
+            "commits": 32,
+            "elapsed_ns": 1457110917,
+            "worker": 1
+          },
+          {
+            "commits": 32,
+            "elapsed_ns": 1411152917,
+            "worker": 2
+          },
+          {
+            "commits": 32,
+            "elapsed_ns": 1450664541,
+            "worker": 3
+          },
+          {
+            "commits": 32,
+            "elapsed_ns": 1317707875,
+            "worker": 4
+          },
+          {
+            "commits": 32,
+            "elapsed_ns": 1228672208,
+            "worker": 5
+          },
+          {
+            "commits": 32,
+            "elapsed_ns": 1416799833,
+            "worker": 6
+          },
+          {
+            "commits": 32,
+            "elapsed_ns": 1273716416,
+            "worker": 7
+          }
+        ],
+        "writers": 8
+      },
+      "round": 2,
+      "schema": "concurrent-writers-v1",
+      "smoke": false
+    },
+    {
+      "result": {
+        "commit_latency": {
+          "count": 256,
+          "max_ns": 6849875,
+          "p50_ns": 5792583,
+          "p95_ns": 6787292
+        },
+        "commits": 256,
+        "commits_per_second": 156.24476288229783,
+        "durable": true,
+        "elapsed_ns": 1638454917,
+        "group_commit": {
+          "completed": 256,
+          "fsync_micros": 1345366,
+          "grouped_entries": 256,
+          "shared_syncs": 256,
+          "submitted": 256
+        },
+        "grouped": true,
+        "reopen_verified": true,
+        "serialized_control": true,
+        "transaction_latency": {
+          "count": 256,
+          "max_ns": 7590417,
+          "p50_ns": 6444250,
+          "p95_ns": 7450542
+        },
+        "verified_rows": 256,
+        "workers": [
+          {
+            "commits": 256,
+            "elapsed_ns": 1638328333,
+            "worker": 0
+          }
+        ],
+        "writers": 1
+      },
+      "round": 2,
+      "schema": "concurrent-writers-v1",
+      "smoke": false
+    },
+    {
+      "result": {
+        "commit_latency": {
+          "count": 256,
+          "max_ns": 8849792,
+          "p50_ns": 5856625,
+          "p95_ns": 6863875
+        },
+        "commits": 256,
+        "commits_per_second": 150.05281524994825,
+        "durable": true,
+        "elapsed_ns": 1706065958,
+        "group_commit": {
+          "completed": 256,
+          "fsync_micros": 1388783,
+          "grouped_entries": 256,
+          "shared_syncs": 256,
+          "submitted": 256
+        },
+        "grouped": true,
+        "reopen_verified": true,
+        "serialized_control": false,
+        "transaction_latency": {
+          "count": 256,
+          "max_ns": 12416792,
+          "p50_ns": 6474042,
+          "p95_ns": 7509583
+        },
+        "verified_rows": 256,
+        "workers": [
+          {
+            "commits": 256,
+            "elapsed_ns": 1705946292,
+            "worker": 0
+          }
+        ],
+        "writers": 1
+      },
+      "round": 2,
+      "schema": "concurrent-writers-v1",
+      "smoke": false
+    },
+    {
+      "result": {
+        "commit_latency": {
+          "count": 256,
+          "max_ns": 6882375,
+          "p50_ns": 5767750,
+          "p95_ns": 6754875
+        },
+        "commits": 256,
+        "commits_per_second": 156.95704435170762,
+        "durable": true,
+        "elapsed_ns": 1631019500,
+        "group_commit": {
+          "completed": 256,
+          "fsync_micros": 1333663,
+          "grouped_entries": 256,
+          "shared_syncs": 256,
+          "submitted": 256
+        },
+        "grouped": true,
+        "reopen_verified": true,
+        "serialized_control": true,
+        "transaction_latency": {
+          "count": 256,
+          "max_ns": 1229397542,
+          "p50_ns": 6434875,
+          "p95_ns": 7460417
+        },
+        "verified_rows": 256,
+        "workers": [
+          {
+            "commits": 64,
+            "elapsed_ns": 408130375,
+            "worker": 0
+          },
+          {
+            "commits": 64,
+            "elapsed_ns": 1222966250,
+            "worker": 1
+          },
+          {
+            "commits": 64,
+            "elapsed_ns": 817988000,
+            "worker": 2
+          },
+          {
+            "commits": 64,
+            "elapsed_ns": 1630900167,
+            "worker": 3
+          }
+        ],
+        "writers": 4
+      },
+      "round": 2,
+      "schema": "concurrent-writers-v1",
+      "smoke": false
+    },
+    {
+      "result": {
+        "commit_latency": {
+          "count": 256,
+          "max_ns": 7924875,
+          "p50_ns": 6523500,
+          "p95_ns": 7664958
+        },
+        "commits": 256,
+        "commits_per_second": 567.0552527230697,
+        "durable": true,
+        "elapsed_ns": 451455125,
+        "group_commit": {
+          "completed": 256,
+          "fsync_micros": 326873,
+          "grouped_entries": 256,
+          "shared_syncs": 64,
+          "submitted": 256
+        },
+        "grouped": true,
+        "reopen_verified": true,
+        "serialized_control": false,
+        "transaction_latency": {
+          "count": 256,
+          "max_ns": 8541875,
+          "p50_ns": 7386417,
+          "p95_ns": 8441708
+        },
+        "verified_rows": 256,
+        "workers": [
+          {
+            "commits": 64,
+            "elapsed_ns": 451282417,
+            "worker": 0
+          },
+          {
+            "commits": 64,
+            "elapsed_ns": 451279334,
+            "worker": 1
+          },
+          {
+            "commits": 64,
+            "elapsed_ns": 451283667,
+            "worker": 2
+          },
+          {
+            "commits": 64,
+            "elapsed_ns": 451283791,
+            "worker": 3
+          }
+        ],
+        "writers": 4
+      },
+      "round": 2,
+      "schema": "concurrent-writers-v1",
+      "smoke": false
+    },
+    {
+      "result": {
+        "commit_latency": {
+          "count": 256,
+          "max_ns": 6857459,
+          "p50_ns": 5704500,
+          "p95_ns": 6015500
+        },
+        "commits": 256,
+        "commits_per_second": 160.20213003125036,
+        "durable": true,
+        "elapsed_ns": 1597981250,
+        "group_commit": {
+          "completed": 256,
+          "fsync_micros": 1292089,
+          "grouped_entries": 256,
+          "shared_syncs": 256,
+          "submitted": 256
+        },
+        "grouped": true,
+        "reopen_verified": true,
+        "serialized_control": true,
+        "transaction_latency": {
+          "count": 256,
+          "max_ns": 1406265209,
+          "p50_ns": 6414291,
+          "p95_ns": 7394291
+        },
+        "verified_rows": 256,
+        "workers": [
+          {
+            "commits": 32,
+            "elapsed_ns": 1198829250,
+            "worker": 0
+          },
+          {
+            "commits": 32,
+            "elapsed_ns": 402946417,
+            "worker": 1
+          },
+          {
+            "commits": 32,
+            "elapsed_ns": 203933792,
+            "worker": 2
+          },
+          {
+            "commits": 32,
+            "elapsed_ns": 1399829875,
+            "worker": 3
+          },
+          {
+            "commits": 32,
+            "elapsed_ns": 996905833,
+            "worker": 4
+          },
+          {
+            "commits": 32,
+            "elapsed_ns": 1597841417,
+            "worker": 5
+          },
+          {
+            "commits": 32,
+            "elapsed_ns": 795857333,
+            "worker": 6
+          },
+          {
+            "commits": 32,
+            "elapsed_ns": 599932375,
+            "worker": 7
+          }
+        ],
+        "writers": 8
+      },
+      "round": 2,
+      "schema": "concurrent-writers-v1",
+      "smoke": false
+    },
+    {
+      "result": {
+        "commit_latency": {
+          "count": 256,
+          "max_ns": 8815167,
+          "p50_ns": 6799083,
+          "p95_ns": 8108875
+        },
+        "commits": 256,
+        "commits_per_second": 1086.8036669010442,
+        "durable": true,
+        "elapsed_ns": 235553125,
+        "group_commit": {
+          "completed": 256,
+          "fsync_micros": 154011,
+          "grouped_entries": 256,
+          "shared_syncs": 32,
+          "submitted": 256
+        },
+        "grouped": true,
+        "reopen_verified": true,
+        "serialized_control": false,
+        "transaction_latency": {
+          "count": 256,
+          "max_ns": 9181042,
+          "p50_ns": 7404334,
+          "p95_ns": 8537583
+        },
+        "verified_rows": 256,
+        "workers": [
+          {
+            "commits": 32,
+            "elapsed_ns": 235453125,
+            "worker": 0
+          },
+          {
+            "commits": 32,
+            "elapsed_ns": 235421541,
+            "worker": 1
+          },
+          {
+            "commits": 32,
+            "elapsed_ns": 235394625,
+            "worker": 2
+          },
+          {
+            "commits": 32,
+            "elapsed_ns": 235381500,
+            "worker": 3
+          },
+          {
+            "commits": 32,
+            "elapsed_ns": 235415333,
+            "worker": 4
+          },
+          {
+            "commits": 32,
+            "elapsed_ns": 235396042,
+            "worker": 5
+          },
+          {
+            "commits": 32,
+            "elapsed_ns": 235401083,
+            "worker": 6
+          },
+          {
+            "commits": 32,
+            "elapsed_ns": 235390166,
+            "worker": 7
+          }
+        ],
+        "writers": 8
+      },
+      "round": 2,
+      "schema": "concurrent-writers-v1",
+      "smoke": false
+    },
+    {
+      "result": {
+        "commit_latency": {
+          "count": 256,
+          "max_ns": 9921250,
+          "p50_ns": 6501000,
+          "p95_ns": 8195000
+        },
+        "commits": 256,
+        "commits_per_second": 1095.7494926958066,
+        "durable": true,
+        "elapsed_ns": 233630042,
+        "group_commit": {
+          "completed": 256,
+          "fsync_micros": 158930,
+          "grouped_entries": 256,
+          "shared_syncs": 33,
+          "submitted": 256
+        },
+        "grouped": true,
+        "reopen_verified": true,
+        "serialized_control": false,
+        "transaction_latency": {
+          "count": 256,
+          "max_ns": 11174292,
+          "p50_ns": 7301959,
+          "p95_ns": 8734125
+        },
+        "verified_rows": 256,
+        "workers": [
+          {
+            "commits": 32,
+            "elapsed_ns": 233495500,
+            "worker": 0
+          },
+          {
+            "commits": 32,
+            "elapsed_ns": 233497042,
+            "worker": 1
+          },
+          {
+            "commits": 32,
+            "elapsed_ns": 224859917,
+            "worker": 2
+          },
+          {
+            "commits": 32,
+            "elapsed_ns": 233501500,
+            "worker": 3
+          },
+          {
+            "commits": 32,
+            "elapsed_ns": 233502917,
+            "worker": 4
+          },
+          {
+            "commits": 32,
+            "elapsed_ns": 224104958,
+            "worker": 5
+          },
+          {
+            "commits": 32,
+            "elapsed_ns": 233504000,
+            "worker": 6
+          },
+          {
+            "commits": 32,
+            "elapsed_ns": 224135250,
+            "worker": 7
+          }
+        ],
+        "writers": 8
+      },
+      "round": 3,
+      "schema": "concurrent-writers-v1",
+      "smoke": false
+    },
+    {
+      "result": {
+        "commit_latency": {
+          "count": 256,
+          "max_ns": 9764459,
+          "p50_ns": 5679417,
+          "p95_ns": 5959125
+        },
+        "commits": 256,
+        "commits_per_second": 161.52850130181088,
+        "durable": true,
+        "elapsed_ns": 1584859625,
+        "group_commit": {
+          "completed": 256,
+          "fsync_micros": 1274161,
+          "grouped_entries": 256,
+          "shared_syncs": 256,
+          "submitted": 256
+        },
+        "grouped": true,
+        "reopen_verified": true,
+        "serialized_control": true,
+        "transaction_latency": {
+          "count": 256,
+          "max_ns": 1387077292,
+          "p50_ns": 6415708,
+          "p95_ns": 7390125
+        },
+        "verified_rows": 256,
+        "workers": [
+          {
+            "commits": 32,
+            "elapsed_ns": 1183726208,
+            "worker": 0
+          },
+          {
+            "commits": 32,
+            "elapsed_ns": 985692583,
+            "worker": 1
+          },
+          {
+            "commits": 32,
+            "elapsed_ns": 196765375,
+            "worker": 2
+          },
+          {
+            "commits": 32,
+            "elapsed_ns": 1380706291,
+            "worker": 3
+          },
+          {
+            "commits": 32,
+            "elapsed_ns": 786740958,
+            "worker": 4
+          },
+          {
+            "commits": 32,
+            "elapsed_ns": 394753916,
+            "worker": 5
+          },
+          {
+            "commits": 32,
+            "elapsed_ns": 1584724708,
+            "worker": 6
+          },
+          {
+            "commits": 32,
+            "elapsed_ns": 596667875,
+            "worker": 7
+          }
+        ],
+        "writers": 8
+      },
+      "round": 3,
+      "schema": "concurrent-writers-v1",
+      "smoke": false
+    },
+    {
+      "result": {
+        "commit_latency": {
+          "count": 256,
+          "max_ns": 8804042,
+          "p50_ns": 6428750,
+          "p95_ns": 7051875
+        },
+        "commits": 256,
+        "commits_per_second": 570.7863297851263,
+        "durable": true,
+        "elapsed_ns": 448504084,
+        "group_commit": {
+          "completed": 256,
+          "fsync_micros": 323028,
+          "grouped_entries": 256,
+          "shared_syncs": 64,
+          "submitted": 256
+        },
+        "grouped": true,
+        "reopen_verified": true,
+        "serialized_control": false,
+        "transaction_latency": {
+          "count": 256,
+          "max_ns": 9376500,
+          "p50_ns": 7328500,
+          "p95_ns": 7629459
+        },
+        "verified_rows": 256,
+        "workers": [
+          {
+            "commits": 64,
+            "elapsed_ns": 448328667,
+            "worker": 0
+          },
+          {
+            "commits": 64,
+            "elapsed_ns": 448292250,
+            "worker": 1
+          },
+          {
+            "commits": 64,
+            "elapsed_ns": 448308375,
+            "worker": 2
+          },
+          {
+            "commits": 64,
+            "elapsed_ns": 448317375,
+            "worker": 3
+          }
+        ],
+        "writers": 4
+      },
+      "round": 3,
+      "schema": "concurrent-writers-v1",
+      "smoke": false
+    },
+    {
+      "result": {
+        "commit_latency": {
+          "count": 256,
+          "max_ns": 7235667,
+          "p50_ns": 5749334,
+          "p95_ns": 6701500
+        },
+        "commits": 256,
+        "commits_per_second": 158.58986353682963,
+        "durable": true,
+        "elapsed_ns": 1614226750,
+        "group_commit": {
+          "completed": 256,
+          "fsync_micros": 1316639,
+          "grouped_entries": 256,
+          "shared_syncs": 256,
+          "submitted": 256
+        },
+        "grouped": true,
+        "reopen_verified": true,
+        "serialized_control": true,
+        "transaction_latency": {
+          "count": 256,
+          "max_ns": 1214720625,
+          "p50_ns": 6429042,
+          "p95_ns": 7442917
+        },
+        "verified_rows": 256,
+        "workers": [
+          {
+            "commits": 64,
+            "elapsed_ns": 393211625,
+            "worker": 0
+          },
+          {
+            "commits": 64,
+            "elapsed_ns": 1209140375,
+            "worker": 1
+          },
+          {
+            "commits": 64,
+            "elapsed_ns": 1614110625,
+            "worker": 2
+          },
+          {
+            "commits": 64,
+            "elapsed_ns": 803233542,
+            "worker": 3
+          }
+        ],
+        "writers": 4
+      },
+      "round": 3,
+      "schema": "concurrent-writers-v1",
+      "smoke": false
+    },
+    {
+      "result": {
+        "commit_latency": {
+          "count": 256,
+          "max_ns": 14907458,
+          "p50_ns": 5738500,
+          "p95_ns": 6229750
+        },
+        "commits": 256,
+        "commits_per_second": 161.57884832696513,
+        "durable": true,
+        "elapsed_ns": 1584365792,
+        "group_commit": {
+          "completed": 256,
+          "fsync_micros": 1295308,
+          "grouped_entries": 256,
+          "shared_syncs": 256,
+          "submitted": 256
+        },
+        "grouped": true,
+        "reopen_verified": true,
+        "serialized_control": false,
+        "transaction_latency": {
+          "count": 256,
+          "max_ns": 17538875,
+          "p50_ns": 6411917,
+          "p95_ns": 6616709
+        },
+        "verified_rows": 256,
+        "workers": [
+          {
+            "commits": 256,
+            "elapsed_ns": 1584265166,
+            "worker": 0
+          }
+        ],
+        "writers": 1
+      },
+      "round": 3,
+      "schema": "concurrent-writers-v1",
+      "smoke": false
+    },
+    {
+      "result": {
+        "commit_latency": {
+          "count": 256,
+          "max_ns": 116522167,
+          "p50_ns": 5757417,
+          "p95_ns": 6842958
+        },
+        "commits": 256,
+        "commits_per_second": 98.89730791970345,
+        "durable": true,
+        "elapsed_ns": 2588543666,
+        "group_commit": {
+          "completed": 256,
+          "fsync_micros": 2290536,
+          "grouped_entries": 256,
+          "shared_syncs": 256,
+          "submitted": 256
+        },
+        "grouped": true,
+        "reopen_verified": true,
+        "serialized_control": true,
+        "transaction_latency": {
+          "count": 256,
+          "max_ns": 117417875,
+          "p50_ns": 6434500,
+          "p95_ns": 7499583
+        },
+        "verified_rows": 256,
+        "workers": [
+          {
+            "commits": 256,
+            "elapsed_ns": 2588413583,
+            "worker": 0
+          }
+        ],
+        "writers": 1
+      },
+      "round": 3,
+      "schema": "concurrent-writers-v1",
+      "smoke": false
+    },
+    {
+      "result": {
+        "commit_latency": {
+          "count": 256,
+          "max_ns": 374865084,
+          "p50_ns": 27775250,
+          "p95_ns": 67165250
+        },
+        "commits": 256,
+        "commits_per_second": 171.60464817815125,
+        "durable": true,
+        "elapsed_ns": 1491801083,
+        "group_commit": {
+          "completed": 0,
+          "fsync_micros": 0,
+          "grouped_entries": 0,
+          "shared_syncs": 0,
+          "submitted": 0
+        },
+        "grouped": false,
+        "reopen_verified": true,
+        "serialized_control": false,
+        "transaction_latency": {
+          "count": 256,
+          "max_ns": 397456167,
+          "p50_ns": 29423083,
+          "p95_ns": 107021750
+        },
+        "verified_rows": 256,
+        "workers": [
+          {
+            "commits": 32,
+            "elapsed_ns": 1238629625,
+            "worker": 0
+          },
+          {
+            "commits": 32,
+            "elapsed_ns": 1491556500,
+            "worker": 1
+          },
+          {
+            "commits": 32,
+            "elapsed_ns": 1439622000,
+            "worker": 2
+          },
+          {
+            "commits": 32,
+            "elapsed_ns": 1121012166,
+            "worker": 3
+          },
+          {
+            "commits": 32,
+            "elapsed_ns": 1171003333,
+            "worker": 4
+          },
+          {
+            "commits": 32,
+            "elapsed_ns": 1375143291,
+            "worker": 5
+          },
+          {
+            "commits": 32,
+            "elapsed_ns": 1267946541,
+            "worker": 6
+          },
+          {
+            "commits": 32,
+            "elapsed_ns": 1405642250,
+            "worker": 7
+          }
+        ],
+        "writers": 8
+      },
+      "round": 3,
+      "schema": "concurrent-writers-v1",
+      "smoke": false
+    },
+    {
+      "result": {
+        "commit_latency": {
+          "count": 256,
+          "max_ns": 7322875,
+          "p50_ns": 5728791,
+          "p95_ns": 6699791
+        },
+        "commits": 256,
+        "commits_per_second": 157.29745763375774,
+        "durable": true,
+        "elapsed_ns": 1627489750,
+        "group_commit": {
+          "completed": 0,
+          "fsync_micros": 0,
+          "grouped_entries": 0,
+          "shared_syncs": 0,
+          "submitted": 0
+        },
+        "grouped": false,
+        "reopen_verified": true,
+        "serialized_control": true,
+        "transaction_latency": {
+          "count": 256,
+          "max_ns": 1430823959,
+          "p50_ns": 6436833,
+          "p95_ns": 7443792
+        },
+        "verified_rows": 256,
+        "workers": [
+          {
+            "commits": 32,
+            "elapsed_ns": 406469542,
+            "worker": 0
+          },
+          {
+            "commits": 32,
+            "elapsed_ns": 1219489375,
+            "worker": 1
+          },
+          {
+            "commits": 32,
+            "elapsed_ns": 1424476959,
+            "worker": 2
+          },
+          {
+            "commits": 32,
+            "elapsed_ns": 202456125,
+            "worker": 3
+          },
+          {
+            "commits": 32,
+            "elapsed_ns": 1627277791,
+            "worker": 4
+          },
+          {
+            "commits": 32,
+            "elapsed_ns": 1012488000,
+            "worker": 5
+          },
+          {
+            "commits": 32,
+            "elapsed_ns": 808511084,
+            "worker": 6
+          },
+          {
+            "commits": 32,
+            "elapsed_ns": 611493584,
+            "worker": 7
+          }
+        ],
+        "writers": 8
+      },
+      "round": 3,
+      "schema": "concurrent-writers-v1",
+      "smoke": false
+    },
+    {
+      "result": {
+        "commit_latency": {
+          "count": 256,
+          "max_ns": 107142209,
+          "p50_ns": 16645041,
+          "p95_ns": 39580625
+        },
+        "commits": 256,
+        "commits_per_second": 177.8159444884627,
+        "durable": true,
+        "elapsed_ns": 1439690916,
+        "group_commit": {
+          "completed": 0,
+          "fsync_micros": 0,
+          "grouped_entries": 0,
+          "shared_syncs": 0,
+          "submitted": 0
+        },
+        "grouped": false,
+        "reopen_verified": true,
+        "serialized_control": false,
+        "transaction_latency": {
+          "count": 256,
+          "max_ns": 107603292,
+          "p50_ns": 17500334,
+          "p95_ns": 50369209
+        },
+        "verified_rows": 256,
+        "workers": [
+          {
+            "commits": 64,
+            "elapsed_ns": 1367796166,
+            "worker": 0
+          },
+          {
+            "commits": 64,
+            "elapsed_ns": 1239985459,
+            "worker": 1
+          },
+          {
+            "commits": 64,
+            "elapsed_ns": 1317680667,
+            "worker": 2
+          },
+          {
+            "commits": 64,
+            "elapsed_ns": 1439618875,
+            "worker": 3
+          }
+        ],
+        "writers": 4
+      },
+      "round": 3,
+      "schema": "concurrent-writers-v1",
+      "smoke": false
+    },
+    {
+      "result": {
+        "commit_latency": {
+          "count": 256,
+          "max_ns": 8919458,
+          "p50_ns": 5716458,
+          "p95_ns": 6708583
+        },
+        "commits": 256,
+        "commits_per_second": 157.83776652689488,
+        "durable": true,
+        "elapsed_ns": 1621918541,
+        "group_commit": {
+          "completed": 0,
+          "fsync_micros": 0,
+          "grouped_entries": 0,
+          "shared_syncs": 0,
+          "submitted": 0
+        },
+        "grouped": false,
+        "reopen_verified": true,
+        "serialized_control": true,
+        "transaction_latency": {
+          "count": 256,
+          "max_ns": 1223294042,
+          "p50_ns": 6408875,
+          "p95_ns": 7448375
+        },
+        "verified_rows": 256,
+        "workers": [
+          {
+            "commits": 64,
+            "elapsed_ns": 397161500,
+            "worker": 0
+          },
+          {
+            "commits": 64,
+            "elapsed_ns": 1621747916,
+            "worker": 1
+          },
+          {
+            "commits": 64,
+            "elapsed_ns": 1216809667,
+            "worker": 2
+          },
+          {
+            "commits": 64,
+            "elapsed_ns": 815783667,
+            "worker": 3
+          }
+        ],
+        "writers": 4
+      },
+      "round": 3,
+      "schema": "concurrent-writers-v1",
+      "smoke": false
+    },
+    {
+      "result": {
+        "commit_latency": {
+          "count": 256,
+          "max_ns": 6786541,
+          "p50_ns": 5732042,
+          "p95_ns": 6056292
+        },
+        "commits": 256,
+        "commits_per_second": 164.36353947693314,
+        "durable": true,
+        "elapsed_ns": 1557523042,
+        "group_commit": {
+          "completed": 0,
+          "fsync_micros": 0,
+          "grouped_entries": 0,
+          "shared_syncs": 0,
+          "submitted": 0
+        },
+        "grouped": false,
+        "reopen_verified": true,
+        "serialized_control": false,
+        "transaction_latency": {
+          "count": 256,
+          "max_ns": 7427584,
+          "p50_ns": 6382042,
+          "p95_ns": 6572917
+        },
+        "verified_rows": 256,
+        "workers": [
+          {
+            "commits": 256,
+            "elapsed_ns": 1557365458,
+            "worker": 0
+          }
+        ],
+        "writers": 1
+      },
+      "round": 3,
+      "schema": "concurrent-writers-v1",
+      "smoke": false
+    },
+    {
+      "result": {
+        "commit_latency": {
+          "count": 256,
+          "max_ns": 6761125,
+          "p50_ns": 5755625,
+          "p95_ns": 6090708
+        },
+        "commits": 256,
+        "commits_per_second": 163.89300074127203,
+        "durable": true,
+        "elapsed_ns": 1561994709,
+        "group_commit": {
+          "completed": 0,
+          "fsync_micros": 0,
+          "grouped_entries": 0,
+          "shared_syncs": 0,
+          "submitted": 0
+        },
+        "grouped": false,
+        "reopen_verified": true,
+        "serialized_control": true,
+        "transaction_latency": {
+          "count": 256,
+          "max_ns": 7451333,
+          "p50_ns": 6430750,
+          "p95_ns": 6561208
+        },
+        "verified_rows": 256,
+        "workers": [
+          {
+            "commits": 256,
+            "elapsed_ns": 1561882166,
+            "worker": 0
+          }
+        ],
+        "writers": 1
+      },
+      "round": 3,
+      "schema": "concurrent-writers-v1",
+      "smoke": false
+    },
+    {
+      "result": {
+        "commit_latency": {
+          "count": 256,
+          "max_ns": 2337208,
+          "p50_ns": 569000,
+          "p95_ns": 1235792
+        },
+        "commits": 256,
+        "commits_per_second": 9771.878175979693,
+        "durable": false,
+        "elapsed_ns": 26197625,
+        "group_commit": {
+          "completed": 0,
+          "fsync_micros": 0,
+          "grouped_entries": 0,
+          "shared_syncs": 0,
+          "submitted": 0
+        },
+        "grouped": false,
+        "reopen_verified": false,
+        "serialized_control": false,
+        "transaction_latency": {
+          "count": 256,
+          "max_ns": 3012875,
+          "p50_ns": 756708,
+          "p95_ns": 1521459
+        },
+        "verified_rows": 256,
+        "workers": [
+          {
+            "commits": 32,
+            "elapsed_ns": 25326958,
+            "worker": 0
+          },
+          {
+            "commits": 32,
+            "elapsed_ns": 24737000,
+            "worker": 1
+          },
+          {
+            "commits": 32,
+            "elapsed_ns": 24881709,
+            "worker": 2
+          },
+          {
+            "commits": 32,
+            "elapsed_ns": 24275375,
+            "worker": 3
+          },
+          {
+            "commits": 32,
+            "elapsed_ns": 23582083,
+            "worker": 4
+          },
+          {
+            "commits": 32,
+            "elapsed_ns": 25904583,
+            "worker": 5
+          },
+          {
+            "commits": 32,
+            "elapsed_ns": 26154583,
+            "worker": 6
+          },
+          {
+            "commits": 32,
+            "elapsed_ns": 23514667,
+            "worker": 7
+          }
+        ],
+        "writers": 8
+      },
+      "round": 3,
+      "schema": "concurrent-writers-v1",
+      "smoke": false
+    },
+    {
+      "result": {
+        "commit_latency": {
+          "count": 256,
+          "max_ns": 56459,
+          "p50_ns": 43875,
+          "p95_ns": 47916
+        },
+        "commits": 256,
+        "commits_per_second": 5825.215103462988,
+        "durable": false,
+        "elapsed_ns": 43946875,
+        "group_commit": {
+          "completed": 0,
+          "fsync_micros": 0,
+          "grouped_entries": 0,
+          "shared_syncs": 0,
+          "submitted": 0
+        },
+        "grouped": false,
+        "reopen_verified": false,
+        "serialized_control": true,
+        "transaction_latency": {
+          "count": 256,
+          "max_ns": 38943334,
+          "p50_ns": 168542,
+          "p95_ns": 188417
+        },
+        "verified_rows": 256,
+        "workers": [
+          {
+            "commits": 32,
+            "elapsed_ns": 33262625,
+            "worker": 0
+          },
+          {
+            "commits": 32,
+            "elapsed_ns": 27900833,
+            "worker": 1
+          },
+          {
+            "commits": 32,
+            "elapsed_ns": 16874166,
+            "worker": 2
+          },
+          {
+            "commits": 32,
+            "elapsed_ns": 22491084,
+            "worker": 3
+          },
+          {
+            "commits": 32,
+            "elapsed_ns": 11199125,
+            "worker": 4
+          },
+          {
+            "commits": 32,
+            "elapsed_ns": 43909125,
+            "worker": 5
+          },
+          {
+            "commits": 32,
+            "elapsed_ns": 5549209,
+            "worker": 6
+          },
+          {
+            "commits": 32,
+            "elapsed_ns": 38750625,
+            "worker": 7
+          }
+        ],
+        "writers": 8
+      },
+      "round": 3,
+      "schema": "concurrent-writers-v1",
+      "smoke": false
+    },
+    {
+      "result": {
+        "commit_latency": {
+          "count": 256,
+          "max_ns": 520875,
+          "p50_ns": 169208,
+          "p95_ns": 235417
+        },
+        "commits": 256,
+        "commits_per_second": 11881.256862470089,
+        "durable": false,
+        "elapsed_ns": 21546542,
+        "group_commit": {
+          "completed": 0,
+          "fsync_micros": 0,
+          "grouped_entries": 0,
+          "shared_syncs": 0,
+          "submitted": 0
+        },
+        "grouped": false,
+        "reopen_verified": false,
+        "serialized_control": false,
+        "transaction_latency": {
+          "count": 256,
+          "max_ns": 724417,
+          "p50_ns": 344167,
+          "p95_ns": 416292
+        },
+        "verified_rows": 256,
+        "workers": [
+          {
+            "commits": 64,
+            "elapsed_ns": 21089208,
+            "worker": 0
+          },
+          {
+            "commits": 64,
+            "elapsed_ns": 21516792,
+            "worker": 1
+          },
+          {
+            "commits": 64,
+            "elapsed_ns": 21404709,
+            "worker": 2
+          },
+          {
+            "commits": 64,
+            "elapsed_ns": 21466916,
+            "worker": 3
+          }
+        ],
+        "writers": 4
+      },
+      "round": 3,
+      "schema": "concurrent-writers-v1",
+      "smoke": false
+    },
+    {
+      "result": {
+        "commit_latency": {
+          "count": 256,
+          "max_ns": 51166,
+          "p50_ns": 43625,
+          "p95_ns": 46084
+        },
+        "commits": 256,
+        "commits_per_second": 6045.530305653038,
+        "durable": false,
+        "elapsed_ns": 42345334,
+        "group_commit": {
+          "completed": 0,
+          "fsync_micros": 0,
+          "grouped_entries": 0,
+          "shared_syncs": 0,
+          "submitted": 0
+        },
+        "grouped": false,
+        "reopen_verified": false,
+        "serialized_control": true,
+        "transaction_latency": {
+          "count": 256,
+          "max_ns": 32179375,
+          "p50_ns": 162833,
+          "p95_ns": 176875
+        },
+        "verified_rows": 256,
+        "workers": [
+          {
+            "commits": 64,
+            "elapsed_ns": 21195083,
+            "worker": 0
+          },
+          {
+            "commits": 64,
+            "elapsed_ns": 42311000,
+            "worker": 1
+          },
+          {
+            "commits": 64,
+            "elapsed_ns": 31966708,
+            "worker": 2
+          },
+          {
+            "commits": 64,
+            "elapsed_ns": 10371750,
+            "worker": 3
+          }
+        ],
+        "writers": 4
+      },
+      "round": 3,
+      "schema": "concurrent-writers-v1",
+      "smoke": false
+    },
+    {
+      "result": {
+        "commit_latency": {
+          "count": 256,
+          "max_ns": 63958,
+          "p50_ns": 44083,
+          "p95_ns": 45750
+        },
+        "commits": 256,
+        "commits_per_second": 6374.845814642294,
+        "durable": false,
+        "elapsed_ns": 40157834,
+        "group_commit": {
+          "completed": 0,
+          "fsync_micros": 0,
+          "grouped_entries": 0,
+          "shared_syncs": 0,
+          "submitted": 0
+        },
+        "grouped": false,
+        "reopen_verified": false,
+        "serialized_control": false,
+        "transaction_latency": {
+          "count": 256,
+          "max_ns": 192750,
+          "p50_ns": 156833,
+          "p95_ns": 163333
+        },
+        "verified_rows": 256,
+        "workers": [
+          {
+            "commits": 256,
+            "elapsed_ns": 40138208,
+            "worker": 0
+          }
+        ],
+        "writers": 1
+      },
+      "round": 3,
+      "schema": "concurrent-writers-v1",
+      "smoke": false
+    },
+    {
+      "result": {
+        "commit_latency": {
+          "count": 256,
+          "max_ns": 50000,
+          "p50_ns": 44000,
+          "p95_ns": 45584
+        },
+        "commits": 256,
+        "commits_per_second": 6332.186242954361,
+        "durable": false,
+        "elapsed_ns": 40428375,
+        "group_commit": {
+          "completed": 0,
+          "fsync_micros": 0,
+          "grouped_entries": 0,
+          "shared_syncs": 0,
+          "submitted": 0
+        },
+        "grouped": false,
+        "reopen_verified": false,
+        "serialized_control": true,
+        "transaction_latency": {
+          "count": 256,
+          "max_ns": 181125,
+          "p50_ns": 157000,
+          "p95_ns": 164750
+        },
+        "verified_rows": 256,
+        "workers": [
+          {
+            "commits": 256,
+            "elapsed_ns": 40411458,
+            "worker": 0
+          }
+        ],
+        "writers": 1
+      },
+      "round": 3,
+      "schema": "concurrent-writers-v1",
+      "smoke": false
+    },
+    {
+      "result": {
+        "commit_latency": {
+          "count": 256,
+          "max_ns": 49541,
+          "p50_ns": 44250,
+          "p95_ns": 45875
+        },
+        "commits": 256,
+        "commits_per_second": 6398.313884333631,
+        "durable": false,
+        "elapsed_ns": 40010541,
+        "group_commit": {
+          "completed": 0,
+          "fsync_micros": 0,
+          "grouped_entries": 0,
+          "shared_syncs": 0,
+          "submitted": 0
+        },
+        "grouped": false,
+        "reopen_verified": false,
+        "serialized_control": true,
+        "transaction_latency": {
+          "count": 256,
+          "max_ns": 176791,
+          "p50_ns": 156125,
+          "p95_ns": 161333
+        },
+        "verified_rows": 256,
+        "workers": [
+          {
+            "commits": 256,
+            "elapsed_ns": 39991292,
+            "worker": 0
+          }
+        ],
+        "writers": 1
+      },
+      "round": 4,
+      "schema": "concurrent-writers-v1",
+      "smoke": false
+    },
+    {
+      "result": {
+        "commit_latency": {
+          "count": 256,
+          "max_ns": 53041,
+          "p50_ns": 44750,
+          "p95_ns": 46375
+        },
+        "commits": 256,
+        "commits_per_second": 6324.188786916834,
+        "durable": false,
+        "elapsed_ns": 40479500,
+        "group_commit": {
+          "completed": 0,
+          "fsync_micros": 0,
+          "grouped_entries": 0,
+          "shared_syncs": 0,
+          "submitted": 0
+        },
+        "grouped": false,
+        "reopen_verified": false,
+        "serialized_control": false,
+        "transaction_latency": {
+          "count": 256,
+          "max_ns": 177375,
+          "p50_ns": 157458,
+          "p95_ns": 164125
+        },
+        "verified_rows": 256,
+        "workers": [
+          {
+            "commits": 256,
+            "elapsed_ns": 40460333,
+            "worker": 0
+          }
+        ],
+        "writers": 1
+      },
+      "round": 4,
+      "schema": "concurrent-writers-v1",
+      "smoke": false
+    },
+    {
+      "result": {
+        "commit_latency": {
+          "count": 256,
+          "max_ns": 57667,
+          "p50_ns": 43208,
+          "p95_ns": 46750
+        },
+        "commits": 256,
+        "commits_per_second": 6043.015220986221,
+        "durable": false,
+        "elapsed_ns": 42362958,
+        "group_commit": {
+          "completed": 0,
+          "fsync_micros": 0,
+          "grouped_entries": 0,
+          "shared_syncs": 0,
+          "submitted": 0
+        },
+        "grouped": false,
+        "reopen_verified": false,
+        "serialized_control": true,
+        "transaction_latency": {
+          "count": 256,
+          "max_ns": 32116834,
+          "p50_ns": 162417,
+          "p95_ns": 176167
+        },
+        "verified_rows": 256,
+        "workers": [
+          {
+            "commits": 64,
+            "elapsed_ns": 31904917,
+            "worker": 0
+          },
+          {
+            "commits": 64,
+            "elapsed_ns": 42337875,
+            "worker": 1
+          },
+          {
+            "commits": 64,
+            "elapsed_ns": 21147292,
+            "worker": 2
+          },
+          {
+            "commits": 64,
+            "elapsed_ns": 10654833,
+            "worker": 3
+          }
+        ],
+        "writers": 4
+      },
+      "round": 4,
+      "schema": "concurrent-writers-v1",
+      "smoke": false
+    },
+    {
+      "result": {
+        "commit_latency": {
+          "count": 256,
+          "max_ns": 372167,
+          "p50_ns": 175041,
+          "p95_ns": 223042
+        },
+        "commits": 256,
+        "commits_per_second": 11643.000675976245,
+        "durable": false,
+        "elapsed_ns": 21987459,
+        "group_commit": {
+          "completed": 0,
+          "fsync_micros": 0,
+          "grouped_entries": 0,
+          "shared_syncs": 0,
+          "submitted": 0
+        },
+        "grouped": false,
+        "reopen_verified": false,
+        "serialized_control": false,
+        "transaction_latency": {
+          "count": 256,
+          "max_ns": 747625,
+          "p50_ns": 343459,
+          "p95_ns": 402167
+        },
+        "verified_rows": 256,
+        "workers": [
+          {
+            "commits": 64,
+            "elapsed_ns": 21680792,
+            "worker": 0
+          },
+          {
+            "commits": 64,
+            "elapsed_ns": 21523166,
+            "worker": 1
+          },
+          {
+            "commits": 64,
+            "elapsed_ns": 21960084,
+            "worker": 2
+          },
+          {
+            "commits": 64,
+            "elapsed_ns": 21748417,
+            "worker": 3
+          }
+        ],
+        "writers": 4
+      },
+      "round": 4,
+      "schema": "concurrent-writers-v1",
+      "smoke": false
+    },
+    {
+      "result": {
+        "commit_latency": {
+          "count": 256,
+          "max_ns": 54750,
+          "p50_ns": 42708,
+          "p95_ns": 46292
+        },
+        "commits": 256,
+        "commits_per_second": 5966.1606360318765,
+        "durable": false,
+        "elapsed_ns": 42908667,
+        "group_commit": {
+          "completed": 0,
+          "fsync_micros": 0,
+          "grouped_entries": 0,
+          "shared_syncs": 0,
+          "submitted": 0
+        },
+        "grouped": false,
+        "reopen_verified": false,
+        "serialized_control": true,
+        "transaction_latency": {
+          "count": 256,
+          "max_ns": 37794500,
+          "p50_ns": 163625,
+          "p95_ns": 181000
+        },
+        "verified_rows": 256,
+        "workers": [
+          {
+            "commits": 32,
+            "elapsed_ns": 32131791,
+            "worker": 0
+          },
+          {
+            "commits": 32,
+            "elapsed_ns": 21246333,
+            "worker": 1
+          },
+          {
+            "commits": 32,
+            "elapsed_ns": 10589917,
+            "worker": 2
+          },
+          {
+            "commits": 32,
+            "elapsed_ns": 37588083,
+            "worker": 3
+          },
+          {
+            "commits": 32,
+            "elapsed_ns": 26658083,
+            "worker": 4
+          },
+          {
+            "commits": 32,
+            "elapsed_ns": 15868625,
+            "worker": 5
+          },
+          {
+            "commits": 32,
+            "elapsed_ns": 5212625,
+            "worker": 6
+          },
+          {
+            "commits": 32,
+            "elapsed_ns": 42858209,
+            "worker": 7
+          }
+        ],
+        "writers": 8
+      },
+      "round": 4,
+      "schema": "concurrent-writers-v1",
+      "smoke": false
+    },
+    {
+      "result": {
+        "commit_latency": {
+          "count": 256,
+          "max_ns": 1987000,
+          "p50_ns": 346791,
+          "p95_ns": 1089542
+        },
+        "commits": 256,
+        "commits_per_second": 11051.114686223456,
+        "durable": false,
+        "elapsed_ns": 23165084,
+        "group_commit": {
+          "completed": 0,
+          "fsync_micros": 0,
+          "grouped_entries": 0,
+          "shared_syncs": 0,
+          "submitted": 0
+        },
+        "grouped": false,
+        "reopen_verified": false,
+        "serialized_control": false,
+        "transaction_latency": {
+          "count": 256,
+          "max_ns": 2168333,
+          "p50_ns": 651750,
+          "p95_ns": 1385750
+        },
+        "verified_rows": 256,
+        "workers": [
+          {
+            "commits": 32,
+            "elapsed_ns": 22620250,
+            "worker": 0
+          },
+          {
+            "commits": 32,
+            "elapsed_ns": 23099500,
+            "worker": 1
+          },
+          {
+            "commits": 32,
+            "elapsed_ns": 22893958,
+            "worker": 2
+          },
+          {
+            "commits": 32,
+            "elapsed_ns": 21849834,
+            "worker": 3
+          },
+          {
+            "commits": 32,
+            "elapsed_ns": 19211250,
+            "worker": 4
+          },
+          {
+            "commits": 32,
+            "elapsed_ns": 20667250,
+            "worker": 5
+          },
+          {
+            "commits": 32,
+            "elapsed_ns": 22445209,
+            "worker": 6
+          },
+          {
+            "commits": 32,
+            "elapsed_ns": 22554458,
+            "worker": 7
+          }
+        ],
+        "writers": 8
+      },
+      "round": 4,
+      "schema": "concurrent-writers-v1",
+      "smoke": false
+    },
+    {
+      "result": {
+        "commit_latency": {
+          "count": 256,
+          "max_ns": 12718708,
+          "p50_ns": 5724750,
+          "p95_ns": 5938416
+        },
+        "commits": 256,
+        "commits_per_second": 163.69651887497403,
+        "durable": true,
+        "elapsed_ns": 1563869542,
+        "group_commit": {
+          "completed": 0,
+          "fsync_micros": 0,
+          "grouped_entries": 0,
+          "shared_syncs": 0,
+          "submitted": 0
+        },
+        "grouped": false,
+        "reopen_verified": true,
+        "serialized_control": true,
+        "transaction_latency": {
+          "count": 256,
+          "max_ns": 13355958,
+          "p50_ns": 6399083,
+          "p95_ns": 6561000
+        },
+        "verified_rows": 256,
+        "workers": [
+          {
+            "commits": 256,
+            "elapsed_ns": 1563733458,
+            "worker": 0
+          }
+        ],
+        "writers": 1
+      },
+      "round": 4,
+      "schema": "concurrent-writers-v1",
+      "smoke": false
+    },
+    {
+      "result": {
+        "commit_latency": {
+          "count": 256,
+          "max_ns": 7654666,
+          "p50_ns": 5787542,
+          "p95_ns": 6133500
+        },
+        "commits": 256,
+        "commits_per_second": 159.2039264374825,
+        "durable": true,
+        "elapsed_ns": 1608000542,
+        "group_commit": {
+          "completed": 0,
+          "fsync_micros": 0,
+          "grouped_entries": 0,
+          "shared_syncs": 0,
+          "submitted": 0
+        },
+        "grouped": false,
+        "reopen_verified": true,
+        "serialized_control": false,
+        "transaction_latency": {
+          "count": 256,
+          "max_ns": 8298875,
+          "p50_ns": 6438000,
+          "p95_ns": 7358833
+        },
+        "verified_rows": 256,
+        "workers": [
+          {
+            "commits": 256,
+            "elapsed_ns": 1607838292,
+            "worker": 0
+          }
+        ],
+        "writers": 1
+      },
+      "round": 4,
+      "schema": "concurrent-writers-v1",
+      "smoke": false
+    },
+    {
+      "result": {
+        "commit_latency": {
+          "count": 256,
+          "max_ns": 6721791,
+          "p50_ns": 5657541,
+          "p95_ns": 5925208
+        },
+        "commits": 256,
+        "commits_per_second": 165.21553164752717,
+        "durable": true,
+        "elapsed_ns": 1549491125,
+        "group_commit": {
+          "completed": 0,
+          "fsync_micros": 0,
+          "grouped_entries": 0,
+          "shared_syncs": 0,
+          "submitted": 0
+        },
+        "grouped": false,
+        "reopen_verified": true,
+        "serialized_control": true,
+        "transaction_latency": {
+          "count": 256,
+          "max_ns": 1165757125,
+          "p50_ns": 6373042,
+          "p95_ns": 6549084
+        },
+        "verified_rows": 256,
+        "workers": [
+          {
+            "commits": 64,
+            "elapsed_ns": 764331125,
+            "worker": 0
+          },
+          {
+            "commits": 64,
+            "elapsed_ns": 1549310209,
+            "worker": 1
+          },
+          {
+            "commits": 64,
+            "elapsed_ns": 1159334416,
+            "worker": 2
+          },
+          {
+            "commits": 64,
+            "elapsed_ns": 377413000,
+            "worker": 3
+          }
+        ],
+        "writers": 4
+      },
+      "round": 4,
+      "schema": "concurrent-writers-v1",
+      "smoke": false
+    },
+    {
+      "result": {
+        "commit_latency": {
+          "count": 256,
+          "max_ns": 388207000,
+          "p50_ns": 14738292,
+          "p95_ns": 35735666
+        },
+        "commits": 256,
+        "commits_per_second": 104.02399485405975,
+        "durable": true,
+        "elapsed_ns": 2460970667,
+        "group_commit": {
+          "completed": 0,
+          "fsync_micros": 0,
+          "grouped_entries": 0,
+          "shared_syncs": 0,
+          "submitted": 0
+        },
+        "grouped": false,
+        "reopen_verified": true,
+        "serialized_control": false,
+        "transaction_latency": {
+          "count": 256,
+          "max_ns": 647997125,
+          "p50_ns": 21107292,
+          "p95_ns": 44449125
+        },
+        "verified_rows": 256,
+        "workers": [
+          {
+            "commits": 64,
+            "elapsed_ns": 2371868500,
+            "worker": 0
+          },
+          {
+            "commits": 64,
+            "elapsed_ns": 2460843292,
+            "worker": 1
+          },
+          {
+            "commits": 64,
+            "elapsed_ns": 2444327833,
+            "worker": 2
+          },
+          {
+            "commits": 64,
+            "elapsed_ns": 2455212500,
+            "worker": 3
+          }
+        ],
+        "writers": 4
+      },
+      "round": 4,
+      "schema": "concurrent-writers-v1",
+      "smoke": false
+    },
+    {
+      "result": {
+        "commit_latency": {
+          "count": 256,
+          "max_ns": 7528042,
+          "p50_ns": 5649458,
+          "p95_ns": 6047042
+        },
+        "commits": 256,
+        "commits_per_second": 159.84666788306652,
+        "durable": true,
+        "elapsed_ns": 1601534792,
+        "group_commit": {
+          "completed": 0,
+          "fsync_micros": 0,
+          "grouped_entries": 0,
+          "shared_syncs": 0,
+          "submitted": 0
+        },
+        "grouped": false,
+        "reopen_verified": true,
+        "serialized_control": true,
+        "transaction_latency": {
+          "count": 256,
+          "max_ns": 1402918667,
+          "p50_ns": 6413791,
+          "p95_ns": 7464750
+        },
+        "verified_rows": 256,
+        "workers": [
+          {
+            "commits": 32,
+            "elapsed_ns": 195166125,
+            "worker": 0
+          },
+          {
+            "commits": 32,
+            "elapsed_ns": 394224125,
+            "worker": 1
+          },
+          {
+            "commits": 32,
+            "elapsed_ns": 987383333,
+            "worker": 2
+          },
+          {
+            "commits": 32,
+            "elapsed_ns": 1188413208,
+            "worker": 3
+          },
+          {
+            "commits": 32,
+            "elapsed_ns": 588191458,
+            "worker": 4
+          },
+          {
+            "commits": 32,
+            "elapsed_ns": 787313541,
+            "worker": 5
+          },
+          {
+            "commits": 32,
+            "elapsed_ns": 1396488375,
+            "worker": 6
+          },
+          {
+            "commits": 32,
+            "elapsed_ns": 1601424125,
+            "worker": 7
+          }
+        ],
+        "writers": 8
+      },
+      "round": 4,
+      "schema": "concurrent-writers-v1",
+      "smoke": false
+    },
+    {
+      "result": {
+        "commit_latency": {
+          "count": 256,
+          "max_ns": 76411584,
+          "p50_ns": 25524042,
+          "p95_ns": 45201000
+        },
+        "commits": 256,
+        "commits_per_second": 180.79282775078096,
+        "durable": true,
+        "elapsed_ns": 1415985375,
+        "group_commit": {
+          "completed": 0,
+          "fsync_micros": 0,
+          "grouped_entries": 0,
+          "shared_syncs": 0,
+          "submitted": 0
+        },
+        "grouped": false,
+        "reopen_verified": true,
+        "serialized_control": false,
+        "transaction_latency": {
+          "count": 256,
+          "max_ns": 140916709,
+          "p50_ns": 41377166,
+          "p95_ns": 69071209
+        },
+        "verified_rows": 256,
+        "workers": [
+          {
+            "commits": 32,
+            "elapsed_ns": 1404842584,
+            "worker": 0
+          },
+          {
+            "commits": 32,
+            "elapsed_ns": 1338891833,
+            "worker": 1
+          },
+          {
+            "commits": 32,
+            "elapsed_ns": 1370880083,
+            "worker": 2
+          },
+          {
+            "commits": 32,
+            "elapsed_ns": 1415850625,
+            "worker": 3
+          },
+          {
+            "commits": 32,
+            "elapsed_ns": 1311382125,
+            "worker": 4
+          },
+          {
+            "commits": 32,
+            "elapsed_ns": 1344286792,
+            "worker": 5
+          },
+          {
+            "commits": 32,
+            "elapsed_ns": 1410479209,
+            "worker": 6
+          },
+          {
+            "commits": 32,
+            "elapsed_ns": 1382829958,
+            "worker": 7
+          }
+        ],
+        "writers": 8
+      },
+      "round": 4,
+      "schema": "concurrent-writers-v1",
+      "smoke": false
+    },
+    {
+      "result": {
+        "commit_latency": {
+          "count": 256,
+          "max_ns": 6696000,
+          "p50_ns": 5645375,
+          "p95_ns": 6599500
+        },
+        "commits": 256,
+        "commits_per_second": 158.38056290181868,
+        "durable": true,
+        "elapsed_ns": 1616359958,
+        "group_commit": {
+          "completed": 256,
+          "fsync_micros": 1284607,
+          "grouped_entries": 256,
+          "shared_syncs": 256,
+          "submitted": 256
+        },
+        "grouped": true,
+        "reopen_verified": true,
+        "serialized_control": true,
+        "transaction_latency": {
+          "count": 256,
+          "max_ns": 7535167,
+          "p50_ns": 6435791,
+          "p95_ns": 7418000
+        },
+        "verified_rows": 256,
+        "workers": [
+          {
+            "commits": 256,
+            "elapsed_ns": 1616274792,
+            "worker": 0
+          }
+        ],
+        "writers": 1
+      },
+      "round": 4,
+      "schema": "concurrent-writers-v1",
+      "smoke": false
+    },
+    {
+      "result": {
+        "commit_latency": {
+          "count": 256,
+          "max_ns": 6352791,
+          "p50_ns": 5621917,
+          "p95_ns": 5842792
+        },
+        "commits": 256,
+        "commits_per_second": 162.27129519310796,
+        "durable": true,
+        "elapsed_ns": 1577604959,
+        "group_commit": {
+          "completed": 256,
+          "fsync_micros": 1255816,
+          "grouped_entries": 256,
+          "shared_syncs": 256,
+          "submitted": 256
+        },
+        "grouped": true,
+        "reopen_verified": true,
+        "serialized_control": false,
+        "transaction_latency": {
+          "count": 256,
+          "max_ns": 7095417,
+          "p50_ns": 6407167,
+          "p95_ns": 6566708
+        },
+        "verified_rows": 256,
+        "workers": [
+          {
+            "commits": 256,
+            "elapsed_ns": 1577518333,
+            "worker": 0
+          }
+        ],
+        "writers": 1
+      },
+      "round": 4,
+      "schema": "concurrent-writers-v1",
+      "smoke": false
+    },
+    {
+      "result": {
+        "commit_latency": {
+          "count": 256,
+          "max_ns": 9303750,
+          "p50_ns": 5393292,
+          "p95_ns": 5924875
+        },
+        "commits": 256,
+        "commits_per_second": 165.34194858923718,
+        "durable": true,
+        "elapsed_ns": 1548306417,
+        "group_commit": {
+          "completed": 256,
+          "fsync_micros": 1222709,
+          "grouped_entries": 256,
+          "shared_syncs": 256,
+          "submitted": 256
+        },
+        "grouped": true,
+        "reopen_verified": true,
+        "serialized_control": true,
+        "transaction_latency": {
+          "count": 256,
+          "max_ns": 1175212917,
+          "p50_ns": 6234833,
+          "p95_ns": 7396083
+        },
+        "verified_rows": 256,
+        "workers": [
+          {
+            "commits": 64,
+            "elapsed_ns": 1548170667,
+            "worker": 0
+          },
+          {
+            "commits": 64,
+            "elapsed_ns": 375653833,
+            "worker": 1
+          },
+          {
+            "commits": 64,
+            "elapsed_ns": 784799875,
+            "worker": 2
+          },
+          {
+            "commits": 64,
+            "elapsed_ns": 1168693125,
+            "worker": 3
+          }
+        ],
+        "writers": 4
+      },
+      "round": 4,
+      "schema": "concurrent-writers-v1",
+      "smoke": false
+    },
+    {
+      "result": {
+        "commit_latency": {
+          "count": 256,
+          "max_ns": 6912542,
+          "p50_ns": 5922083,
+          "p95_ns": 6855583
+        },
+        "commits": 256,
+        "commits_per_second": 594.2694214344498,
+        "durable": true,
+        "elapsed_ns": 430781041,
+        "group_commit": {
+          "completed": 256,
+          "fsync_micros": 301352,
+          "grouped_entries": 256,
+          "shared_syncs": 64,
+          "submitted": 256
+        },
+        "grouped": true,
+        "reopen_verified": true,
+        "serialized_control": false,
+        "transaction_latency": {
+          "count": 256,
+          "max_ns": 7553833,
+          "p50_ns": 6530375,
+          "p95_ns": 7505625
+        },
+        "verified_rows": 256,
+        "workers": [
+          {
+            "commits": 64,
+            "elapsed_ns": 430625584,
+            "worker": 0
+          },
+          {
+            "commits": 64,
+            "elapsed_ns": 430636292,
+            "worker": 1
+          },
+          {
+            "commits": 64,
+            "elapsed_ns": 430619250,
+            "worker": 2
+          },
+          {
+            "commits": 64,
+            "elapsed_ns": 430626542,
+            "worker": 3
+          }
+        ],
+        "writers": 4
+      },
+      "round": 4,
+      "schema": "concurrent-writers-v1",
+      "smoke": false
+    },
+    {
+      "result": {
+        "commit_latency": {
+          "count": 256,
+          "max_ns": 6778458,
+          "p50_ns": 5525875,
+          "p95_ns": 5829000
+        },
+        "commits": 256,
+        "commits_per_second": 163.67072518918033,
+        "durable": true,
+        "elapsed_ns": 1564116000,
+        "group_commit": {
+          "completed": 256,
+          "fsync_micros": 1225041,
+          "grouped_entries": 256,
+          "shared_syncs": 256,
+          "submitted": 256
+        },
+        "grouped": true,
+        "reopen_verified": true,
+        "serialized_control": true,
+        "transaction_latency": {
+          "count": 256,
+          "max_ns": 1374344666,
+          "p50_ns": 6410333,
+          "p95_ns": 7435959
+        },
+        "verified_rows": 256,
+        "workers": [
+          {
+            "commits": 32,
+            "elapsed_ns": 1563933792,
+            "worker": 0
+          },
+          {
+            "commits": 32,
+            "elapsed_ns": 767989333,
+            "worker": 1
+          },
+          {
+            "commits": 32,
+            "elapsed_ns": 968911333,
+            "worker": 2
+          },
+          {
+            "commits": 32,
+            "elapsed_ns": 187957417,
+            "worker": 3
+          },
+          {
+            "commits": 32,
+            "elapsed_ns": 1367994666,
+            "worker": 4
+          },
+          {
+            "commits": 32,
+            "elapsed_ns": 1171971208,
+            "worker": 5
+          },
+          {
+            "commits": 32,
+            "elapsed_ns": 377982584,
+            "worker": 6
+          },
+          {
+            "commits": 32,
+            "elapsed_ns": 573952000,
+            "worker": 7
+          }
+        ],
+        "writers": 8
+      },
+      "round": 4,
+      "schema": "concurrent-writers-v1",
+      "smoke": false
+    },
+    {
+      "result": {
+        "commit_latency": {
+          "count": 256,
+          "max_ns": 8604959,
+          "p50_ns": 6836834,
+          "p95_ns": 7875125
+        },
+        "commits": 256,
+        "commits_per_second": 948.7874094784078,
+        "durable": true,
+        "elapsed_ns": 269818083,
+        "group_commit": {
+          "completed": 256,
+          "fsync_micros": 173112,
+          "grouped_entries": 256,
+          "shared_syncs": 37,
+          "submitted": 256
+        },
+        "grouped": true,
+        "reopen_verified": true,
+        "serialized_control": false,
+        "transaction_latency": {
+          "count": 256,
+          "max_ns": 21492250,
+          "p50_ns": 7509959,
+          "p95_ns": 13936750
+        },
+        "verified_rows": 256,
+        "workers": [
+          {
+            "commits": 32,
+            "elapsed_ns": 264251500,
+            "worker": 0
+          },
+          {
+            "commits": 32,
+            "elapsed_ns": 258586667,
+            "worker": 1
+          },
+          {
+            "commits": 32,
+            "elapsed_ns": 264237083,
+            "worker": 2
+          },
+          {
+            "commits": 32,
+            "elapsed_ns": 269714750,
+            "worker": 3
+          },
+          {
+            "commits": 32,
+            "elapsed_ns": 258578041,
+            "worker": 4
+          },
+          {
+            "commits": 32,
+            "elapsed_ns": 244705291,
+            "worker": 5
+          },
+          {
+            "commits": 32,
+            "elapsed_ns": 264275417,
+            "worker": 6
+          },
+          {
+            "commits": 32,
+            "elapsed_ns": 264252750,
+            "worker": 7
+          }
+        ],
+        "writers": 8
+      },
+      "round": 4,
+      "schema": "concurrent-writers-v1",
+      "smoke": false
+    }
+  ],
+  "process_including_setup_and_verification": {
+    "real_seconds": 117.04,
+    "user_seconds": 19.06,
+    "system_seconds": 9.23,
+    "max_rss_bytes": 28753920,
+    "peak_memory_footprint_bytes": 13910544
+  },
+  "binary_sha256": "477aa3f5095183a9eb7ee2777a6f71ca6326fbe95fe912fe10be962153b6eff8"
+}

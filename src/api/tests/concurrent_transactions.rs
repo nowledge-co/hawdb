@@ -25,12 +25,153 @@ use std::num::{NonZeroU64, NonZeroUsize};
 use std::sync::{mpsc, Arc, Barrier, Condvar, Mutex};
 use std::time::Duration;
 
+mod admission;
+mod append_mvcc;
+mod crash_recovery;
 mod read_observation;
+mod relational_mvcc;
 
 fn release_autocommit_reads(release: &Arc<(Mutex<bool>, Condvar)>) {
     let (released, available) = &**release;
     *released.lock().unwrap() = true;
     available.notify_all();
+}
+
+#[test]
+fn optimistic_group_admission_batches_disjoint_writes_and_rejects_overlap() {
+    for overlap in [false, true] {
+        let path = super::unique_test_dir("optimistic_group_admission");
+        let mut database = Database::open(&path).unwrap();
+        database
+            .query("CREATE (:Memory {id: 1, value: 0})")
+            .unwrap();
+        database
+            .query("CREATE (:Memory {id: 2, value: 0})")
+            .unwrap();
+        let config = WalGroupCommitConfig::benchmark_candidate(
+            NonZeroUsize::new(2).unwrap(),
+            NonZeroU64::new(1024 * 1024).unwrap(),
+            Duration::from_millis(5),
+        )
+        .unwrap();
+        let db = ConcurrentDatabase::new_with_wal_group_commit(database, config);
+        let epoch = db.commit_epoch().unwrap();
+        let gate = Arc::new((Mutex::new(false), Condvar::new()));
+        db.set_group_commit_enqueue_gate(Arc::clone(&gate)).unwrap();
+        let ready = Arc::new(Barrier::new(2));
+        let handles = (1..=2)
+            .map(|writer| {
+                let db = db.clone();
+                let ready = Arc::clone(&ready);
+                std::thread::spawn(move || {
+                    let mut tx = db
+                        .begin_transaction(ConcurrentTransactionOptions::optimistic())
+                        .unwrap();
+                    let id = if overlap { 1 } else { writer };
+                    tx.query(&format!(
+                        "MATCH (m:Memory) WHERE m.id = {id} SET m.value = {writer}"
+                    ))
+                    .unwrap();
+                    ready.wait();
+                    tx.commit()
+                })
+            })
+            .collect::<Vec<_>>();
+        let deadline = std::time::Instant::now() + Duration::from_secs(2);
+        while db.wal_group_commit_snapshot().unwrap().submitted_commits < 2
+            && std::time::Instant::now() < deadline
+        {
+            std::thread::sleep(Duration::from_millis(1));
+        }
+        let queued = db.wal_group_commit_snapshot().unwrap().submitted_commits;
+        let mut pessimistic = db
+            .begin_transaction(ConcurrentTransactionOptions::pessimistic(Duration::ZERO))
+            .unwrap();
+        let blocked = pessimistic.query("MATCH (m:Memory) WHERE m.id = 2 SET m.value = 99");
+        pessimistic.rollback();
+
+        // Release even on regression: an exclusive first holder must not leave
+        // the test hung at an unbreakable two-writer enqueue barrier.
+        release_autocommit_reads(&gate);
+        let results = handles
+            .into_iter()
+            .map(|h| h.join().unwrap())
+            .collect::<Vec<_>>();
+        assert_eq!(
+            queued, 2,
+            "both optimistic commit intents must enter the queue"
+        );
+        assert!(blocked
+            .unwrap_err()
+            .to_string()
+            .contains("transaction lock wait timed out"));
+        let accepted = if overlap { 1 } else { 2 };
+        assert_eq!(results.iter().filter(|r| r.is_ok()).count(), accepted);
+        for error in results.iter().filter_map(|r| r.as_ref().err()) {
+            assert!(error.is_retryable_transaction_conflict());
+        }
+        let metrics = db.wal_group_commit_snapshot().unwrap();
+        assert_eq!(metrics.completed_commits, accepted as u64);
+        assert_eq!(metrics.shared_sync_count, 1);
+        assert_eq!(metrics.grouped_wal_entries, accepted as u64);
+        assert_eq!(db.commit_epoch().unwrap(), epoch + accepted as u64);
+        let query = "MATCH (m:Memory) RETURN m.id AS id, m.value AS value ORDER BY id";
+        let rows = db.query(query).unwrap().rows;
+        let winner = results.iter().position(|r| r.is_ok()).unwrap() as i64 + 1;
+        assert_eq!(
+            rows,
+            vec![
+                BTreeMap::from([
+                    ("id".into(), Value::Int(1)),
+                    ("value".into(), Value::Int(if overlap { winner } else { 1 }))
+                ]),
+                BTreeMap::from([
+                    ("id".into(), Value::Int(2)),
+                    ("value".into(), Value::Int(if overlap { 0 } else { 2 }))
+                ]),
+            ]
+        );
+        drop(db);
+        let mut reopened = Database::open(&path).unwrap();
+        assert_eq!(reopened.query(query).unwrap().rows, rows);
+        assert_eq!(reopened.commit_epoch(), epoch + accepted as u64);
+        drop(reopened);
+        std::fs::remove_dir_all(path).unwrap();
+    }
+}
+
+#[test]
+fn optimistic_group_admission_waits_for_pessimistic_owner_and_retires_on_timeout() {
+    let db = Database::new().into_concurrent();
+    db.query("CREATE (:Memory {id: 1, value: 0})").unwrap();
+    let mut owner = db
+        .begin_transaction(ConcurrentTransactionOptions::pessimistic(Duration::ZERO))
+        .unwrap();
+    owner
+        .query("MATCH (m:Memory) WHERE m.id = 1 SET m.value = 1")
+        .unwrap();
+    let mut options = ConcurrentTransactionOptions::optimistic();
+    options.lock_timeout = Duration::ZERO;
+    let mut contender = db.begin_transaction(options).unwrap();
+    contender
+        .query("MATCH (m:Memory) WHERE m.id = 1 SET m.value = 2")
+        .unwrap();
+    assert!(contender
+        .commit()
+        .unwrap_err()
+        .to_string()
+        .contains("transaction lock wait timed out"));
+    owner.commit().unwrap();
+    let mut next = db.begin_transaction(options).unwrap();
+    next.query("MATCH (m:Memory) WHERE m.id = 1 SET m.value = 3")
+        .unwrap();
+    next.commit().unwrap();
+    assert_eq!(
+        db.query("MATCH (m:Memory) RETURN m.value AS value")
+            .unwrap()
+            .rows,
+        vec![BTreeMap::from([("value".into(), Value::Int(3))])]
+    );
 }
 
 #[test]
@@ -50,6 +191,178 @@ fn concurrent_database_checkpoint_publishes_an_immutable_cut() {
     assert_eq!(rows.rows[0].get("id"), Some(&Value::Int(1)));
     drop(reopened);
     std::fs::remove_dir_all(path).unwrap();
+}
+
+#[test]
+fn concurrent_writer_pins_canonical_generation_until_rollback() {
+    let path = super::unique_test_dir("writer_generation_pin");
+    let config = crate::DatabaseConfig {
+        storage_residency_mode: crate::StorageResidencyMode::OutOfCore,
+        ..crate::DatabaseConfig::default()
+    };
+    let mut database = Database::open_with_config(&path, config).unwrap();
+    database
+        .query("CREATE (:Memory {id: 1, value: 0})")
+        .unwrap();
+    database.checkpoint().unwrap();
+    let db = database.into_concurrent();
+    let pinned_epoch = db.commit_epoch().unwrap();
+    let mut writer = db
+        .begin_transaction(ConcurrentTransactionOptions::optimistic())
+        .unwrap();
+    writer
+        .query("MATCH (m:Memory) WHERE m.id = 1 SET m.value = 7")
+        .unwrap();
+    for id in 2..=5 {
+        db.query_with_params(
+            "CREATE (:Memory {id: $id, value: 0})",
+            &BTreeMap::from([("id".into(), Value::Int(id))]),
+        )
+        .unwrap();
+        db.checkpoint().unwrap();
+    }
+    // Retain only the writer's old generation, not every intermediate one.
+    assert!(path.join("canonical.1.hawdb").exists());
+    assert!(!path.join("canonical.2.hawdb").exists());
+    assert!(!path.join("canonical.3.hawdb").exists());
+    assert!(path.join("canonical.4.hawdb").exists());
+    assert!(path.join("canonical.5.hawdb").exists());
+    let manifest = std::fs::read_to_string(path.join("manifest.hawdb")).unwrap();
+    assert!(manifest.contains(&format!("oldest_reader_commit_epoch\t{pinned_epoch}\n")));
+    let rows = writer
+        .query("MATCH (m:Memory) RETURN m.id AS id, m.value AS value")
+        .unwrap()
+        .rows;
+    assert_eq!(
+        rows,
+        vec![BTreeMap::from([
+            ("id".into(), Value::Int(1)),
+            ("value".into(), Value::Int(7)),
+        ])]
+    );
+    writer.rollback();
+    db.checkpoint().unwrap();
+    assert!(!path.join("canonical.1.hawdb").exists());
+    let manifest = std::fs::read_to_string(path.join("manifest.hawdb")).unwrap();
+    assert!(manifest.contains("oldest_reader_commit_epoch\tnone\n"));
+    drop(db);
+    std::fs::remove_dir_all(path).unwrap();
+}
+
+#[test]
+fn concurrent_writer_pin_retires_on_every_transaction_exit() {
+    for options in [
+        ConcurrentTransactionOptions::optimistic(),
+        ConcurrentTransactionOptions::pessimistic(Duration::from_secs(1)),
+    ] {
+        for finish in ["commit", "rollback", "drop"] {
+            let db = Database::new().into_concurrent();
+            db.query("CREATE (:Memory {id: 1, value: 0})").unwrap();
+            let epoch = db.commit_epoch().unwrap();
+            let mut tx = db.begin_transaction(options).unwrap();
+            assert_eq!(
+                db.storage_pressure_snapshot()
+                    .unwrap()
+                    .oldest_reader_commit_epoch,
+                Some(epoch)
+            );
+            tx.query("MATCH (m:Memory) WHERE m.id = 1 SET m.value = 1")
+                .unwrap();
+            match finish {
+                "commit" => {
+                    tx.commit().unwrap();
+                }
+                "rollback" => tx.rollback(),
+                "drop" => drop(tx),
+                _ => unreachable!(),
+            }
+            assert_eq!(
+                db.storage_pressure_snapshot()
+                    .unwrap()
+                    .oldest_reader_commit_epoch,
+                None,
+                "{finish}"
+            );
+        }
+    }
+    let db = Database::new().into_concurrent();
+    db.query("CREATE (:Memory {id: 1, value: 0})").unwrap();
+    let mut stale = db
+        .begin_transaction(ConcurrentTransactionOptions::optimistic())
+        .unwrap();
+    stale
+        .query("MATCH (m:Memory) WHERE m.id = 1 SET m.value = 1")
+        .unwrap();
+    db.query("MATCH (m:Memory) WHERE m.id = 1 SET m.value = 2")
+        .unwrap();
+    assert!(stale
+        .commit()
+        .unwrap_err()
+        .is_retryable_transaction_conflict());
+    assert_eq!(
+        db.storage_pressure_snapshot()
+            .unwrap()
+            .oldest_reader_commit_epoch,
+        None
+    );
+}
+
+#[test]
+fn concurrent_writer_pin_refreshes_with_first_pessimistic_statement() {
+    let db = Database::new().into_concurrent();
+    db.query_sql("CREATE TABLE messages (id BIGINT PRIMARY KEY)")
+        .unwrap();
+    let before = db.commit_epoch().unwrap();
+    let mut tx = db
+        .begin_transaction(ConcurrentTransactionOptions::pessimistic(
+            Duration::from_secs(1),
+        ))
+        .unwrap();
+    db.query_sql("INSERT INTO messages (id) VALUES (1)")
+        .unwrap();
+    assert_eq!(
+        db.storage_pressure_snapshot()
+            .unwrap()
+            .oldest_reader_commit_epoch,
+        Some(before)
+    );
+    tx.query_sql("INSERT INTO messages (id) VALUES (2)")
+        .unwrap();
+    assert_eq!(
+        db.storage_pressure_snapshot()
+            .unwrap()
+            .oldest_reader_commit_epoch,
+        Some(before + 1)
+    );
+    tx.rollback();
+    assert_eq!(
+        db.storage_pressure_snapshot()
+            .unwrap()
+            .oldest_reader_commit_epoch,
+        None
+    );
+}
+
+#[test]
+fn writer_pin_moves_with_the_queued_commit_workspace() {
+    let mut db = Database::new();
+    db.query("CREATE (:Memory {id: 1})").unwrap();
+    let mut state = super::super::DatabaseTransactionState::from_database(&db);
+    let epoch = db.commit_epoch();
+    let queued = state.take_for_commit();
+    // Dropping the submitting transaction must not release the queued owner.
+    drop(state);
+    assert_eq!(
+        db.storage_reclamation_watermark()
+            .oldest_reader_commit_epoch,
+        Some(epoch)
+    );
+    drop(queued);
+    assert_eq!(
+        db.storage_reclamation_watermark()
+            .oldest_reader_commit_epoch,
+        None
+    );
 }
 
 #[test]
@@ -286,6 +599,200 @@ fn optimistic_transactions_commit_disjoint_graph_updates_from_one_snapshot() {
         ]
     );
     assert_eq!(db.commit_epoch().unwrap(), 4);
+}
+
+// Exercise recovered roots with no checkpoint, an exact checkpoint, and a
+// checkpoint plus a nonempty WAL suffix. Each open creates a fresh version index.
+fn seed_mvcc_recovery_fixture(path: &std::path::Path, layout: &str) -> i64 {
+    let mut db = Database::open(path).unwrap();
+    db.query("CREATE (:Memory {id: 1, value: 0})").unwrap();
+    db.query("CREATE (:Memory {id: 2, value: 0})").unwrap();
+    db.query_sql("CREATE TABLE messages (id BIGINT PRIMARY KEY)")
+        .unwrap();
+    if layout != "wal" {
+        db.checkpoint().unwrap();
+    }
+    if layout == "checkpoint_tail" {
+        db.query("MATCH (m:Memory) WHERE m.id = 1 SET m.value = 1")
+            .unwrap();
+        1
+    } else {
+        0
+    }
+}
+
+#[test]
+fn optimistic_tombstone_conflict_survives_checkpoint_cleanup() {
+    for durable in [false, true] {
+        let path = super::unique_test_dir("optimistic_tombstone_checkpoint");
+        let db = if durable {
+            Database::open(&path).unwrap()
+        } else {
+            Database::new()
+        }
+        .into_concurrent();
+        db.query("CREATE (:Memory {id: 1, value: 0})").unwrap();
+        let mut stale = db
+            .begin_transaction(ConcurrentTransactionOptions::optimistic())
+            .unwrap();
+        stale
+            .query("MATCH (m:Memory) WHERE m.id = 1 SET m.value = 9")
+            .unwrap();
+        db.query("MATCH (m:Memory) WHERE m.id = 1 DELETE m")
+            .unwrap();
+        db.checkpoint().unwrap();
+        let epoch = db.commit_epoch().unwrap();
+        let error = stale.commit().unwrap_err();
+        assert!(error.is_retryable_transaction_conflict());
+        assert!(
+            matches!(error, HawDBError::TransactionConflict { ref key, .. } if key == "graph_node")
+        );
+        assert_eq!(db.commit_epoch().unwrap(), epoch);
+        db.checkpoint().unwrap();
+        assert!(db
+            .query("MATCH (m:Memory) RETURN m.id AS id")
+            .unwrap()
+            .rows
+            .is_empty());
+        drop(db);
+        if durable {
+            std::fs::remove_dir_all(path).unwrap();
+        }
+    }
+}
+
+#[test]
+fn optimistic_mvcc_reopen_preserves_disjoint_commits_and_same_key_conflicts() {
+    for layout in ["wal", "checkpoint", "checkpoint_tail"] {
+        let path = super::unique_test_dir(&format!("mvcc_reopen_{layout}"));
+        let initial_left = seed_mvcc_recovery_fixture(&path, layout);
+        let db = Database::open(&path).unwrap().into_concurrent();
+        let base_epoch = db.commit_epoch().unwrap();
+        let options = ConcurrentTransactionOptions::optimistic();
+        let mut left = db.begin_transaction(options).unwrap();
+        let mut right = db.begin_transaction(options).unwrap();
+        left.query("MATCH (m:Memory) WHERE m.id = 1 SET m.value = 2")
+            .unwrap();
+        right
+            .query("MATCH (m:Memory) WHERE m.id = 2 SET m.value = 2")
+            .unwrap();
+        left.commit().unwrap();
+        // A reader in the other writer's snapshot must not see the new root.
+        let old = right
+            .query("MATCH (m:Memory) WHERE m.id = 1 RETURN m.value AS value")
+            .unwrap();
+        assert_eq!(old.rows[0]["value"], Value::Int(initial_left), "{layout}");
+        right.commit().unwrap();
+        assert_eq!(db.commit_epoch().unwrap(), base_epoch + 2, "{layout}");
+
+        let read_epoch = db.commit_epoch().unwrap();
+        let mut winner = db.begin_transaction(options).unwrap();
+        let mut loser = db.begin_transaction(options).unwrap();
+        winner
+            .query("MATCH (m:Memory) WHERE m.id = 1 SET m.value = 9")
+            .unwrap();
+        loser
+            .query("MATCH (m:Memory) WHERE m.id = 1 SET m.value = 99")
+            .unwrap();
+        winner.commit().unwrap();
+        let wal = std::fs::read(super::active_wal_path(&path)).unwrap();
+        let error = loser.commit().unwrap_err();
+        assert!(
+            error.is_retryable_transaction_conflict(),
+            "{layout}: {error}"
+        );
+        assert!(matches!(error, HawDBError::TransactionConflict {
+            read_epoch: actual_read, committed_epoch, ref key,
+        } if actual_read == read_epoch && committed_epoch == read_epoch + 1
+            && key == "graph_node"));
+        assert_eq!(db.commit_epoch().unwrap(), read_epoch + 1);
+        assert_eq!(std::fs::read(super::active_wal_path(&path)).unwrap(), wal);
+        let expected = vec![
+            BTreeMap::from([
+                ("id".into(), Value::Int(1)),
+                ("value".into(), Value::Int(9)),
+            ]),
+            BTreeMap::from([
+                ("id".into(), Value::Int(2)),
+                ("value".into(), Value::Int(2)),
+            ]),
+        ];
+        let query = "MATCH (m:Memory) RETURN m.id AS id, m.value AS value ORDER BY id";
+        assert_eq!(db.query(query).unwrap().rows, expected, "{layout}");
+        let committed_epoch = db.commit_epoch().unwrap();
+        drop(db);
+        let mut reopened = Database::open(&path).unwrap();
+        assert_eq!(reopened.commit_epoch(), committed_epoch, "{layout}");
+        assert_eq!(reopened.query(query).unwrap().rows, expected, "{layout}");
+        drop(reopened);
+        std::fs::remove_dir_all(path).unwrap();
+    }
+}
+
+#[test]
+fn optimistic_mvcc_reopen_preserves_both_database_barrier_directions() {
+    for layout in ["wal", "checkpoint", "checkpoint_tail"] {
+        for broad_first in [false, true] {
+            let path = super::unique_test_dir(&format!("mvcc_barrier_{layout}_{broad_first}"));
+            let initial_left = seed_mvcc_recovery_fixture(&path, layout);
+            let db = Database::open(&path).unwrap().into_concurrent();
+            let read_epoch = db.commit_epoch().unwrap();
+            let options = ConcurrentTransactionOptions::optimistic();
+            let mut narrow = db.begin_transaction(options).unwrap();
+            let mut broad = db.begin_transaction(options).unwrap();
+            narrow
+                .query("MATCH (m:Memory) WHERE m.id = 1 SET m.value = 7")
+                .unwrap();
+            broad
+                .query_sql("INSERT INTO messages (id) VALUES (1)")
+                .unwrap();
+            // Plain INSERT now has an explicit row identity. Keep this test's
+            // broad operation explicit: an unbounded key range retains Database.
+            broad
+                .query_sql("DELETE FROM messages WHERE id > 1")
+                .unwrap();
+            let (winner, loser) = if broad_first {
+                (broad, narrow)
+            } else {
+                (narrow, broad)
+            };
+            winner.commit().unwrap();
+            let wal = std::fs::read(super::active_wal_path(&path)).unwrap();
+            let error = loser.commit().unwrap_err();
+            assert!(
+                error.is_retryable_transaction_conflict(),
+                "{layout}: {error}"
+            );
+            assert!(matches!(error, HawDBError::TransactionConflict {
+                read_epoch: actual_read, committed_epoch, ref key,
+            } if actual_read == read_epoch && committed_epoch == read_epoch + 1
+                && key == "database"));
+            assert_eq!(db.commit_epoch().unwrap(), read_epoch + 1);
+            assert_eq!(std::fs::read(super::active_wal_path(&path)).unwrap(), wal);
+            drop(db);
+
+            let mut reopened = Database::open(&path).unwrap();
+            assert_eq!(reopened.commit_epoch(), read_epoch + 1);
+            let rows = reopened
+                .query("MATCH (m:Memory) WHERE m.id = 1 RETURN m.value AS value")
+                .unwrap()
+                .rows;
+            assert_eq!(
+                rows[0]["value"],
+                Value::Int(if broad_first { initial_left } else { 7 })
+            );
+            assert_eq!(
+                reopened
+                    .query_sql("SELECT id FROM messages")
+                    .unwrap()
+                    .rows
+                    .len(),
+                usize::from(broad_first)
+            );
+            drop(reopened);
+            std::fs::remove_dir_all(path).unwrap();
+        }
+    }
 }
 
 #[test]

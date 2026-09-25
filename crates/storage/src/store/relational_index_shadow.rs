@@ -495,6 +495,7 @@ impl GraphStore {
             self.stage_relational_index_live_publication(next_commit_epoch, None);
         let row_publication = self.stage_relational_row_live_publication(next_commit_epoch, None);
         self.commit_epoch = next_commit_epoch;
+        self.version_index.apply_database_barrier(next_commit_epoch);
         self.publish_relational_index_live_view(index_publication);
         self.publish_relational_row_live_view(row_publication);
     }

@@ -4422,7 +4422,7 @@ impl fmt::Display for RelationalError {
 
 impl std::error::Error for RelationalError {}
 
-fn admit_transaction(
+pub(crate) fn admit_transaction(
     transaction: &RelationalTransaction,
     limits: RelationalMutationLimits,
 ) -> Result<(), RelationalError> {

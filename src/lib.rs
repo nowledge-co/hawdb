@@ -283,9 +283,10 @@ pub use hawdb_qos::{
     ProcessMemoryPolicySnapshot, ProcessMemoryProfile, ProcessMemorySnapshot, RuntimeAdmissionCode,
     RuntimeAdmissionError, RuntimeGovernor, RuntimeGovernorConfig, RuntimeGovernorLimits,
     RuntimeGovernorSnapshot, RuntimeIoReservationScope, RuntimeMemoryPressure,
-    RuntimeMemorySnapshot, RuntimeResourceBudget, RuntimeResourceSnapshot, RuntimeTelemetryEvent,
-    RuntimeTelemetryEventKind, RuntimeTelemetrySink, RuntimeWorkKind, RuntimeWorkPriority,
-    RuntimeWorkRequest, StorageDeviceDiscoverySource, StorageDeviceProfile, StorageMediaKind,
+    RuntimeMemorySnapshot, RuntimePermit, RuntimeResourceBudget, RuntimeResourceSnapshot,
+    RuntimeTelemetryEvent, RuntimeTelemetryEventKind, RuntimeTelemetrySink, RuntimeWorkKind,
+    RuntimeWorkPriority, RuntimeWorkRequest, StorageDeviceDiscoverySource, StorageDeviceProfile,
+    StorageMediaKind,
 };
 pub use hawdb_readiness::embedded_query_path::{
     EmbeddedQueryEntrypoint, EmbeddedQueryPathReadiness, EMBEDDED_QUERY_PATH_READINESS_PROTOCOL,
