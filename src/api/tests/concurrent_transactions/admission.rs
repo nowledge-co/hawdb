@@ -690,3 +690,237 @@ fn admitted_group_failure_preserves_conflicts_and_recovers_only_complete_serial_
         std::fs::remove_dir_all(path).unwrap();
     }
 }
+
+#[test]
+fn admitted_conflict_retry_escalates_before_recurring_hot_writers() {
+    const WORKERS: usize = 4;
+    const SMALL_COMMITS: usize = 16;
+    const LARGE_ROWS: usize = 64;
+    for durable in [false, true] {
+        let path = super::super::unique_test_dir("admitted_conflict_escalation");
+        let mut database = if durable {
+            Database::open(&path).unwrap()
+        } else {
+            Database::new()
+        };
+        database
+            .query_sql("CREATE TABLE retry_progress (id BIGINT PRIMARY KEY, value BIGINT NOT NULL)")
+            .unwrap();
+        database
+            .query_sql("INSERT INTO retry_progress (id, value) VALUES (0, 0)")
+            .unwrap();
+        let db = ConcurrentDatabase::new_with_wal_group_commit(
+            database,
+            WalGroupCommitConfig::benchmark_candidate(
+                NonZeroUsize::new(4).unwrap(),
+                NonZeroU64::new(1024 * 1024).unwrap(),
+                Duration::from_micros(100),
+            )
+            .unwrap(),
+        );
+        let governor = governor();
+        let begin = |permit| {
+            db.begin_admitted_transaction(
+                ConcurrentTransactionOptions::optimistic(),
+                permit,
+                RuntimeTaskContext::default(),
+            )
+            .unwrap()
+        };
+        let large_work = |tx: &mut crate::ConcurrentDatabaseTransaction| {
+            tx.query_sql("UPDATE retry_progress SET value = value + 100 WHERE id = 0")
+                .unwrap();
+            for id in 1..=LARGE_ROWS {
+                tx.query_sql_with_params(
+                    "INSERT INTO retry_progress (id, value) VALUES ($1, $1)",
+                    &[Value::Int(id as i64)],
+                )
+                .unwrap();
+            }
+        };
+        let epoch = db.commit_epoch().unwrap();
+        let mut first_attempt = begin(governor.try_admit(request()).unwrap());
+        large_work(&mut first_attempt);
+        let mut winner = begin(governor.try_admit(request()).unwrap());
+        winner
+            .query_sql("UPDATE retry_progress SET value = value + 1 WHERE id = 0")
+            .unwrap();
+        winner.commit().unwrap();
+        // One owner survives the conflict, so escalation must wait without
+        // allowing recurring one-slot work to consume the other free slot.
+        let mut older = begin(governor.try_admit(request()).unwrap());
+        older
+            .query_sql("UPDATE retry_progress SET value = value + 1 WHERE id = 0")
+            .unwrap();
+        let wal_before =
+            durable.then(|| std::fs::read(super::super::active_wal_path(&path)).unwrap());
+        let error = first_attempt.commit().unwrap_err();
+        assert!(
+            matches!(&error, HawDBError::TransactionConflict { key, .. } if key == "relational_row"),
+            "{error}"
+        );
+        assert!(error.is_retryable_transaction_conflict());
+        if let Some(before) = wal_before {
+            assert_eq!(
+                std::fs::read(super::super::active_wal_path(&path)).unwrap(),
+                before
+            );
+        }
+        let rejected = db
+            .query_sql("SELECT id, value FROM retry_progress")
+            .unwrap()
+            .rows;
+        assert_eq!(rejected.len(), 1);
+        assert_eq!(rejected[0]["value"], Value::Int(1));
+        assert_eq!(db.commit_epoch().unwrap(), epoch + 1);
+        assert_eq!(governor.snapshot().active_cpu_slots, 1);
+
+        // This is an explicit host policy: only a known pre-publication
+        // transaction conflict permits replay; uncertain I/O failures do not.
+        let retry = governor.admission_waiter(RuntimeWorkPriority::Foreground);
+        let retry_request = request().with_cpu_slots(2);
+        assert_eq!(
+            governor
+                .try_admit_waiter(&retry, retry_request)
+                .unwrap_err()
+                .code,
+            RuntimeAdmissionCode::CpuSaturated
+        );
+        assert_eq!(
+            governor.try_admit(request()).unwrap_err().code,
+            RuntimeAdmissionCode::QueuedAhead
+        );
+        let (sent, received) = mpsc::channel();
+        let handles = (0..WORKERS)
+            .map(|worker| {
+                let db = db.clone();
+                let governor = governor.clone();
+                let sent = sent.clone();
+                std::thread::spawn(move || {
+                    let deadline = std::time::Instant::now() + Duration::from_secs(60);
+                    let mut sent = Some(sent);
+                    for iteration in 0..SMALL_COMMITS {
+                        loop {
+                            let waiter = governor.admission_waiter(RuntimeWorkPriority::Foreground);
+                            if iteration == 0 {
+                                // All initial requests arrive before the older
+                                // owner retires and before the large retry runs.
+                                if let Some(sent) = sent.take() {
+                                    assert_eq!(
+                                        governor
+                                            .try_admit_waiter(&waiter, request())
+                                            .unwrap_err()
+                                            .code,
+                                        RuntimeAdmissionCode::QueuedAhead
+                                    );
+                                    sent.send(()).unwrap();
+                                }
+                            }
+                            let permit = loop {
+                                match governor.try_admit_waiter(&waiter, request()) {
+                                    Ok(permit) => break permit,
+                                    Err(error) => {
+                                        assert!(error.is_retryable(), "{error}");
+                                        assert!(
+                                            std::time::Instant::now() < deadline,
+                                            "admission timed out: {error}"
+                                        );
+                                        std::thread::sleep(Duration::from_millis(1));
+                                    }
+                                }
+                            };
+                            let mut tx = db
+                                .begin_admitted_transaction(
+                                    ConcurrentTransactionOptions::optimistic(),
+                                    permit,
+                                    RuntimeTaskContext::default(),
+                                )
+                                .unwrap();
+                            let rows = tx
+                                .query_sql(
+                                    "SELECT id FROM retry_progress WHERE id >= 1 AND id <= 64",
+                                )
+                                .unwrap()
+                                .rows;
+                            assert_eq!(rows.len(), LARGE_ROWS);
+                            tx.query_sql(
+                                "UPDATE retry_progress SET value = value + 1 WHERE id = 0",
+                            )
+                            .unwrap();
+                            let id = 1000 + worker * SMALL_COMMITS + iteration;
+                            tx.query_sql_with_params(
+                                "INSERT INTO retry_progress (id, value) VALUES ($1, $1)",
+                                &[Value::Int(id as i64)],
+                            )
+                            .unwrap();
+                            match tx.commit() {
+                                Ok(_) => break,
+                                Err(error) => {
+                                    assert!(error.is_retryable_transaction_conflict(), "{error}");
+                                    assert!(
+                                        std::time::Instant::now() < deadline,
+                                        "small writer retry timed out"
+                                    );
+                                }
+                            }
+                        }
+                    }
+                })
+            })
+            .collect::<Vec<_>>();
+        drop(sent);
+        for _ in 0..WORKERS {
+            received.recv_timeout(Duration::from_secs(20)).unwrap();
+        }
+        older.commit().unwrap();
+        let mut second_attempt = begin(governor.try_admit_waiter(&retry, retry_request).unwrap());
+        drop(retry);
+        assert_eq!(
+            second_attempt
+                .query_sql("SELECT value FROM retry_progress WHERE id = 0")
+                .unwrap()
+                .rows[0]["value"],
+            Value::Int(2)
+        );
+        large_work(&mut second_attempt);
+        second_attempt.commit().unwrap();
+        for handle in handles {
+            handle.join().unwrap();
+        }
+        let rows = db
+            .query_sql("SELECT id, value FROM retry_progress ORDER BY id")
+            .unwrap()
+            .rows;
+        assert_eq!(rows.len(), 1 + LARGE_ROWS + WORKERS * SMALL_COMMITS);
+        assert_eq!(
+            rows[0]["value"],
+            Value::Int((102 + WORKERS * SMALL_COMMITS) as i64)
+        );
+        let ids = (1..=LARGE_ROWS).chain(1000..1000 + WORKERS * SMALL_COMMITS);
+        for (row, id) in rows.iter().skip(1).zip(ids) {
+            assert_eq!(row["id"], Value::Int(id as i64));
+            assert_eq!(row["value"], Value::Int(id as i64));
+        }
+        let final_epoch = epoch + 3 + (WORKERS * SMALL_COMMITS) as u64;
+        assert_eq!(db.commit_epoch().unwrap(), final_epoch);
+        let resources = governor.snapshot();
+        assert_eq!(resources.active_cpu_slots, 0);
+        assert_eq!(resources.active_foreground_tasks, 0);
+        assert_eq!(resources.admitted_memory_bytes, 0);
+        assert_eq!(resources.queued_admission_waiters, 0);
+        drop(db);
+        if durable {
+            let mut reopened = Database::open(&path).unwrap();
+            assert_eq!(reopened.commit_epoch(), final_epoch);
+            assert_eq!(
+                reopened
+                    .query_sql("SELECT id, value FROM retry_progress ORDER BY id")
+                    .unwrap()
+                    .rows,
+                rows
+            );
+            drop(reopened);
+            std::fs::remove_dir_all(path).unwrap();
+        }
+    }
+}
