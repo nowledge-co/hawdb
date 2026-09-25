@@ -1,12 +1,18 @@
-load("@rules_tla//tla:defs.bzl", "tla_check", "tla_test_suite")
+load("@rules_tla//tla:defs.bzl", "tla_check", "tla_library", "tla_test_suite")
 load(":storage_models.bzl", "STORAGE_MODELS")
 
 package(default_visibility = ["//visibility:public"])
+
+tla_library(
+    name = "governed_writer_progress",
+    srcs = ["HawDBGovernedWriterProgress.tla"],
+)
 
 [
     tla_check(
         name = model + "_check",
         config = model + ".cfg",
+        deps = [":governed_writer_progress"] if model == "HawDBAgedWriterProgress" else [],
         module = model + ".tla",
         tags = [
             "storage",

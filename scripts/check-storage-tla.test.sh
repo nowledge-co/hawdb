@@ -173,7 +173,7 @@ expect_failure "$fixture/standalone-failure.log" bash "$checker"
 test ! -e "$TLA_RESULTS_DIR/manifest.json"
 
 # Both lock and whole-writer progress evidence require complete-graph checks.
-for model in HawDBLockWaitFairness HawDBGovernedWriterProgress; do
+for model in HawDBLockWaitFairness HawDBGovernedWriterProgress HawDBAgedWriterProgress; do
   fair_repo="$fixture/repo-$model"
   cp -R "$fixture/repo" "$fair_repo"
   rm "$fair_repo/docs/tla/Alpha.tla" "$fair_repo/docs/tla/Alpha.cfg" \

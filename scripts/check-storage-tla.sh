@@ -105,7 +105,7 @@ verify_tlc_log() {
     printf 'TLA+ complete success evidence is missing or contains an error: %s\n' "$result" >&2
     return 1
   }
-  if [[ "${2:-}" == "HawDBCowPagePublication" || "${2:-}" == "HawDBLockWaitFairness" || "${2:-}" == "HawDBGovernedWriterProgress" ]] &&
+  if [[ "${2:-}" == "HawDBCowPagePublication" || "${2:-}" == "HawDBLockWaitFairness" || "${2:-}" == "HawDBGovernedWriterProgress" || "${2:-}" == "HawDBAgedWriterProgress" ]] &&
     ! grep -Eq '^Checking ([1-9][0-9]* branches of )?temporal properties for the complete state space' "$result"; then
     printf 'TLA+ final complete-state-space liveness evidence is missing: %s\n' "$result" >&2
     return 1
