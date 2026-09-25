@@ -52,9 +52,12 @@ mod tests {
     use super::*;
     use crate::{Database, DatabaseConfig, Value};
     use hawdb_storage::{
-        DurabilityPolicy, RelationalColumnSchema, RelationalInsertMode, RelationalRow,
-        RelationalScalarType, RelationalStore, RelationalTableSchema, RelationalTransaction,
-        RelationalValue, RelationalWrite,
+        config::DurabilityPolicy,
+        relational::{
+            RelationalColumnSchema, RelationalInsertMode, RelationalRow, RelationalScalarType,
+            RelationalStore, RelationalTableSchema, RelationalTransaction, RelationalValue,
+            RelationalWrite,
+        },
     };
     use std::collections::BTreeMap;
 
@@ -1354,7 +1357,7 @@ mod tests {
             std::process::id()
         ));
         let config = DatabaseConfig {
-            relational_index_mode: hawdb_storage::RelationalIndexMode::DemandPaged,
+            relational_index_mode: hawdb_storage::config::RelationalIndexMode::DemandPaged,
             ..DatabaseConfig::default()
         };
         {
@@ -1473,7 +1476,8 @@ mod tests {
                 &path,
                 DurabilityPolicy::default(),
                 DatabaseConfig {
-                    relational_index_mode: hawdb_storage::RelationalIndexMode::Authoritative,
+                    relational_index_mode:
+                        hawdb_storage::config::RelationalIndexMode::Authoritative,
                     ..DatabaseConfig::default()
                 },
             )
@@ -1704,9 +1708,9 @@ mod tests {
         assert_eq!(
             committed.append_mutations[0].generated_order_keys,
             vec![
-                hawdb_storage::RelationalKey(vec![RelationalValue::BigInt(1)]),
-                hawdb_storage::RelationalKey(vec![RelationalValue::BigInt(2)]),
-                hawdb_storage::RelationalKey(vec![RelationalValue::BigInt(3)]),
+                hawdb_storage::relational::RelationalKey(vec![RelationalValue::BigInt(1)]),
+                hawdb_storage::relational::RelationalKey(vec![RelationalValue::BigInt(2)]),
+                hawdb_storage::relational::RelationalKey(vec![RelationalValue::BigInt(3)]),
             ]
         );
 
@@ -2335,7 +2339,7 @@ mod tests {
         ));
         let config = DatabaseConfig {
             segment_cache_capacity_bytes: 64 * 1024,
-            relational_index_mode: hawdb_storage::RelationalIndexMode::DemandPaged,
+            relational_index_mode: hawdb_storage::config::RelationalIndexMode::DemandPaged,
             ..DatabaseConfig::default()
         };
         let published_generation;
@@ -2646,13 +2650,15 @@ mod tests {
         {
             use std::io::{Read, Seek, SeekFrom, Write};
 
-            let page_bytes = hawdb_storage::RelationalIndexShadowConfig::default()
+            let page_bytes = hawdb_storage::relational::RelationalIndexShadowConfig::default()
                 .page_limits
                 .max_page_bytes
                 .get() as u64;
-            let artifact = path.join(hawdb_storage::relational_index_shadow_artifact_file(
-                published_generation,
-            ));
+            let artifact = path.join(
+                hawdb_storage::relational::relational_index_shadow_artifact_file(
+                    published_generation,
+                ),
+            );
             let mut file = std::fs::OpenOptions::new()
                 .read(true)
                 .write(true)
@@ -2676,7 +2682,7 @@ mod tests {
                 &path,
                 DurabilityPolicy::default(),
                 DatabaseConfig {
-                    relational_index_mode: hawdb_storage::RelationalIndexMode::DemandPaged,
+                    relational_index_mode: hawdb_storage::config::RelationalIndexMode::DemandPaged,
                     ..DatabaseConfig::default()
                 },
             )
@@ -2780,7 +2786,7 @@ mod tests {
                 &path,
                 DurabilityPolicy::default(),
                 DatabaseConfig {
-                    relational_index_mode: hawdb_storage::RelationalIndexMode::Shadow,
+                    relational_index_mode: hawdb_storage::config::RelationalIndexMode::Shadow,
                     ..DatabaseConfig::default()
                 },
             )
@@ -2807,7 +2813,8 @@ mod tests {
                 &path,
                 DurabilityPolicy::default(),
                 DatabaseConfig {
-                    relational_index_mode: hawdb_storage::RelationalIndexMode::Authoritative,
+                    relational_index_mode:
+                        hawdb_storage::config::RelationalIndexMode::Authoritative,
                     ..DatabaseConfig::default()
                 },
             )
@@ -2826,7 +2833,8 @@ mod tests {
                 &path,
                 DurabilityPolicy::default(),
                 DatabaseConfig {
-                    relational_index_mode: hawdb_storage::RelationalIndexMode::Authoritative,
+                    relational_index_mode:
+                        hawdb_storage::config::RelationalIndexMode::Authoritative,
                     segment_cache_capacity_bytes: 1,
                     ..DatabaseConfig::default()
                 },
@@ -2861,7 +2869,7 @@ mod tests {
                 &path,
                 DurabilityPolicy::default(),
                 DatabaseConfig {
-                    relational_index_mode: hawdb_storage::RelationalIndexMode::Shadow,
+                    relational_index_mode: hawdb_storage::config::RelationalIndexMode::Shadow,
                     ..DatabaseConfig::default()
                 },
             )
@@ -2893,7 +2901,8 @@ mod tests {
                 &path,
                 DurabilityPolicy::default(),
                 DatabaseConfig {
-                    relational_index_mode: hawdb_storage::RelationalIndexMode::Authoritative,
+                    relational_index_mode:
+                        hawdb_storage::config::RelationalIndexMode::Authoritative,
                     ..DatabaseConfig::default()
                 },
             )
@@ -3471,7 +3480,7 @@ mod tests {
             std::process::id()
         ));
         let config = DatabaseConfig {
-            relational_index_mode: hawdb_storage::RelationalIndexMode::Shadow,
+            relational_index_mode: hawdb_storage::config::RelationalIndexMode::Shadow,
             ..DatabaseConfig::default()
         };
         {
@@ -3586,7 +3595,7 @@ mod tests {
                 &path,
                 DurabilityPolicy::default(),
                 DatabaseConfig {
-                    relational_index_mode: hawdb_storage::RelationalIndexMode::Shadow,
+                    relational_index_mode: hawdb_storage::config::RelationalIndexMode::Shadow,
                     ..DatabaseConfig::default()
                 },
             )
@@ -3642,7 +3651,8 @@ mod tests {
                 &path,
                 DurabilityPolicy::default(),
                 DatabaseConfig {
-                    relational_index_mode: hawdb_storage::RelationalIndexMode::Authoritative,
+                    relational_index_mode:
+                        hawdb_storage::config::RelationalIndexMode::Authoritative,
                     ..DatabaseConfig::default()
                 },
             )
@@ -3716,7 +3726,8 @@ mod tests {
                 &path,
                 DurabilityPolicy::default(),
                 DatabaseConfig {
-                    relational_index_mode: hawdb_storage::RelationalIndexMode::Authoritative,
+                    relational_index_mode:
+                        hawdb_storage::config::RelationalIndexMode::Authoritative,
                     ..DatabaseConfig::default()
                 },
             )
@@ -4525,9 +4536,9 @@ mod tests {
             max_output_payload_bytes,
             max_intermediate_rows: 10_000,
             max_candidate_work: 10_000,
-            hydration: hawdb_storage::RelationalHydrationBudget::default(),
-            index_read: hawdb_storage::RelationalIndexReadLimits::default(),
-            row_read: hawdb_storage::RelationalRowPageSnapshotReadLimits::default(),
+            hydration: hawdb_storage::relational::RelationalHydrationBudget::default(),
+            index_read: hawdb_storage::relational::RelationalIndexReadLimits::default(),
+            row_read: hawdb_storage::relational::RelationalRowPageSnapshotReadLimits::default(),
         }
     }
 

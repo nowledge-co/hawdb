@@ -38,7 +38,7 @@ use hawdb_optimizer::{
 use hawdb_sql::{
     RelationalSqlStageTimings, SelectStatement, SqlColumnRef, SqlJoinKind, SqlPredicate,
 };
-use hawdb_storage::{
+use hawdb_storage::relational::{
     RelationalIndexRangeScan, RelationalIndexScanDirection, RelationalKey, RelationalState,
 };
 use std::collections::{BTreeMap, BTreeSet};

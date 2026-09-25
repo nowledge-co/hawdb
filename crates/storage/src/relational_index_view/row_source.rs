@@ -14,7 +14,7 @@
 
 //! Canonical paged rows used to build and validate relational indexes.
 
-use crate::{
+use crate::relational::{
     RelationalHydrationBudget, RelationalIndexRowSource, RelationalIndexShadowError, RelationalKey,
     RelationalRow, RelationalRowPageProjectedRange, RelationalRowPageSnapshotReadError,
     RelationalRowPageSnapshotReadLimits, RelationalRowPageSnapshotReader, RelationalState,

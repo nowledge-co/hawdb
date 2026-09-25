@@ -315,7 +315,7 @@ fn repeated_default_projection_names_preserve_each_result_value() {
 #[test]
 fn match_expansion_checks_cancellation_before_rejecting_target_labels() {
     use crate::traversal::{visit_one_hop_relationships_with_context, OneHopRelationshipSpec};
-    use hawdb_storage::{AdjacencyDirection, RelRecord};
+    use hawdb_storage::{adjacency::AdjacencyDirection, RelRecord};
     with_context(None, |context| {
         let token = hawdb_core::RuntimeCancellationToken::new();
         let task = RuntimeTaskContext::without_deadline(token.clone());

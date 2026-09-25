@@ -269,14 +269,22 @@ fn target_files(kind: DerivedArtifactKind, generation: u64) -> Vec<String> {
     match kind {
         DerivedArtifactKind::CanonicalAdjacency => vec![
             canonical_adjacency_artifact_generation_file(generation),
-            hawdb_storage::canonical_adjacency_descriptor_page_file(generation),
-            hawdb_storage::canonical_adjacency_descriptor_root_file(generation),
+            hawdb_storage::canonical_adjacency::canonical_adjacency_descriptor_page_file(
+                generation,
+            ),
+            hawdb_storage::canonical_adjacency::canonical_adjacency_descriptor_root_file(
+                generation,
+            ),
         ],
         DerivedArtifactKind::PersistentPropertyProjection => vec![
             property_projection_artifact_generation_file(generation),
             property_projection_manifest_generation_file(generation),
-            hawdb_storage::property_projection_descriptor_page_file(generation),
-            hawdb_storage::property_projection_descriptor_root_file(generation),
+            hawdb_storage::property_projection::property_projection_descriptor_page_file(
+                generation,
+            ),
+            hawdb_storage::property_projection::property_projection_descriptor_root_file(
+                generation,
+            ),
         ],
     }
 }
@@ -300,7 +308,7 @@ fn write_audit_record(path: &Path, record: &DerivedRepairAuditRecord) -> Result<
         file.write_all(&encoded)?;
         file.sync_all()?;
     }
-    hawdb_storage::durable_replace_file(&temporary, path)
+    hawdb_storage::durability::durable_replace_file(&temporary, path)
         .map_err(|error| HawDBError::Storage(error.to_string()))
 }
 

@@ -15,7 +15,7 @@
 //! Copy-on-write segment primitives backing the in-memory graph store
 //! snapshots.
 
-use crate::{AdjacencyPostingList, NodeId, NodeRecord, RelId, RelRecord};
+use crate::{adjacency::AdjacencyPostingList, NodeId, NodeRecord, RelId, RelRecord};
 use hawdb_core::{LabelId, RelTypeId, Value};
 use std::collections::{BTreeMap, BTreeSet};
 use std::ops::{Deref, DerefMut};

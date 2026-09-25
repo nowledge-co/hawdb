@@ -30,19 +30,38 @@ use crate::store::{
     PROPERTY_SPILL_MANIFEST_MAX_BYTES,
 };
 use hawdb_storage::{
-    durable_replace_file, CanonicalAdjacencyConfig, CanonicalAdjacencyReader,
-    CanonicalAdjacencyWriter, CanonicalSegmentConfig, CanonicalSegmentError,
-    CanonicalSegmentManifest, CanonicalSegmentReader, CanonicalSegmentWriter, DurableCompression,
-    GraphDescriptorKind, GraphDescriptorTreeBuildConfig, GraphDescriptorTreeGenerationArtifacts,
-    GraphDescriptorTreePaths, GraphDescriptorTreeRootReader, ManifestGeneration, NodeRecord,
-    PersistentPropertyProjectionConfig, PersistentPropertyProjectionDefinition,
-    PersistentPropertyProjectionDescriptorTree, PersistentPropertyProjectionManifest,
-    PersistentPropertyProjectionReader, PersistentPropertyProjectionRecord,
-    PersistentPropertyProjectionWriter, PersistentPropertySpillDescriptorTree, PropertySpillConfig,
-    PropertySpillManifest, PropertySpillReader, PropertySpillWriteOptions, RelRecord,
-    ScanSegmentManifest, SegmentCache, StableIdentityKey, StableIdentityMappingConfig,
-    StableIdentityMappingReader, StableIdentityMappingWriter, StableIdentityMaterializeLimits,
-    StoreId, StoreStableIdMapping,
+    cache::{ManifestGeneration, SegmentCache, StoreId},
+    canonical::{
+        CanonicalSegmentConfig, CanonicalSegmentError, CanonicalSegmentManifest,
+        CanonicalSegmentReader, CanonicalSegmentWriter,
+    },
+    canonical_adjacency::{
+        CanonicalAdjacencyConfig, CanonicalAdjacencyReader, CanonicalAdjacencyWriter,
+    },
+    config::DurableCompression,
+    durability::durable_replace_file,
+    graph_descriptor_page::GraphDescriptorKind,
+    graph_descriptor_tree::{
+        GraphDescriptorTreeBuildConfig, GraphDescriptorTreeGenerationArtifacts,
+        GraphDescriptorTreePaths, GraphDescriptorTreeRootReader,
+    },
+    projection::StoreStableIdMapping,
+    property_projection::{
+        PersistentPropertyProjectionConfig, PersistentPropertyProjectionDefinition,
+        PersistentPropertyProjectionDescriptorTree, PersistentPropertyProjectionManifest,
+        PersistentPropertyProjectionReader, PersistentPropertyProjectionRecord,
+        PersistentPropertyProjectionWriter,
+    },
+    property_spill::{
+        PersistentPropertySpillDescriptorTree, PropertySpillConfig, PropertySpillManifest,
+        PropertySpillReader, PropertySpillWriteOptions,
+    },
+    scan::ScanSegmentManifest,
+    stable_identity::{
+        StableIdentityKey, StableIdentityMappingConfig, StableIdentityMappingReader,
+        StableIdentityMappingWriter, StableIdentityMaterializeLimits,
+    },
+    NodeRecord, RelRecord,
 };
 use std::collections::BTreeMap;
 use std::fs::{self, File};
@@ -95,14 +114,12 @@ impl DurableStore {
             .join(property_spill_artifact_generation_file(generation));
         let property_descriptor_tree = PersistentPropertySpillDescriptorTree::new(
             GraphDescriptorTreePaths::new(
-                self.root_path
-                    .join(hawdb_storage::property_spill_descriptor_page_file(
-                        generation,
-                    )),
-                self.root_path
-                    .join(hawdb_storage::property_spill_descriptor_root_file(
-                        generation,
-                    )),
+                self.root_path.join(
+                    hawdb_storage::property_spill::property_spill_descriptor_page_file(generation),
+                ),
+                self.root_path.join(
+                    hawdb_storage::property_spill::property_spill_descriptor_root_file(generation),
+                ),
             ),
             GraphDescriptorTreeBuildConfig::default(),
         );
@@ -164,21 +181,26 @@ impl DurableStore {
     ) -> Result<CanonicalAdjacencyCheckpointArtifacts>
     where
         R: IntoIterator<
-            Item = std::result::Result<RelRecord, hawdb_storage::CanonicalAdjacencyError>,
+            Item = std::result::Result<
+                RelRecord,
+                hawdb_storage::canonical_adjacency::CanonicalAdjacencyError,
+            >,
         >,
     {
         let artifact_path = self
             .root_path
             .join(canonical_adjacency_artifact_generation_file(generation));
         let descriptor_paths = GraphDescriptorTreePaths::new(
-            self.root_path
-                .join(hawdb_storage::canonical_adjacency_descriptor_page_file(
+            self.root_path.join(
+                hawdb_storage::canonical_adjacency::canonical_adjacency_descriptor_page_file(
                     generation,
-                )),
-            self.root_path
-                .join(hawdb_storage::canonical_adjacency_descriptor_root_file(
+                ),
+            ),
+            self.root_path.join(
+                hawdb_storage::canonical_adjacency::canonical_adjacency_descriptor_root_file(
                     generation,
-                )),
+                ),
+            ),
         );
         let descriptor_config = GraphDescriptorTreeBuildConfig {
             max_page_artifact_bytes: config.max_spill_bytes,
@@ -237,7 +259,7 @@ impl DurableStore {
         N: IntoIterator<
             Item = std::result::Result<
                 PersistentPropertyProjectionRecord,
-                hawdb_storage::PersistentPropertyProjectionError,
+                hawdb_storage::property_projection::PersistentPropertyProjectionError,
             >,
         >,
     {
@@ -245,14 +267,16 @@ impl DurableStore {
             .root_path
             .join(property_projection_artifact_generation_file(generation));
         let descriptor_paths = GraphDescriptorTreePaths::new(
-            self.root_path
-                .join(hawdb_storage::property_projection_descriptor_page_file(
+            self.root_path.join(
+                hawdb_storage::property_projection::property_projection_descriptor_page_file(
                     generation,
-                )),
-            self.root_path
-                .join(hawdb_storage::property_projection_descriptor_root_file(
+                ),
+            ),
+            self.root_path.join(
+                hawdb_storage::property_projection::property_projection_descriptor_root_file(
                     generation,
-                )),
+                ),
+            ),
         );
         let output = PersistentPropertyProjectionWriter::new(config)
             .write_fallible(
@@ -413,7 +437,7 @@ impl DurableStore {
 
     pub(in crate::store) fn open_bound_relational_overflow(
         &self,
-    ) -> Result<hawdb_storage::RelationalOverflowRootReader> {
+    ) -> Result<hawdb_storage::relational::RelationalOverflowRootReader> {
         let binding = self
             .relational_overflow_generation_artifacts
             .ok_or_else(|| {
@@ -422,28 +446,29 @@ impl DurableStore {
                         .to_string(),
                 )
             })?;
-        let reader = hawdb_storage::RelationalOverflowRootReader::open_bound_generation(
-            &self.root_path,
-            binding,
-            hawdb_storage::RelationalOverflowPublicationConfig::default(),
-        )
-        .map_err(|error| HawDBError::Storage(error.to_string()))?;
+        let reader =
+            hawdb_storage::relational::RelationalOverflowRootReader::open_bound_generation(
+                &self.root_path,
+                binding,
+                hawdb_storage::relational::RelationalOverflowPublicationConfig::default(),
+            )
+            .map_err(|error| HawDBError::Storage(error.to_string()))?;
         Ok(reader)
     }
 
     pub(in crate::store) fn open_bound_relational_row_pages(
         &self,
-        overflow_root: &hawdb_storage::RelationalOverflowRootReader,
-    ) -> Result<hawdb_storage::RelationalRowPageRootReader> {
+        overflow_root: &hawdb_storage::relational::RelationalOverflowRootReader,
+    ) -> Result<hawdb_storage::relational::RelationalRowPageRootReader> {
         let binding = self.relational_row_generation_artifacts.ok_or_else(|| {
             HawDBError::Storage(
                 "published checkpoint has no relational row-page generation binding".to_string(),
             )
         })?;
-        let reader = hawdb_storage::RelationalRowPageRootReader::open_bound_generation(
+        let reader = hawdb_storage::relational::RelationalRowPageRootReader::open_bound_generation(
             &self.root_path,
             binding,
-            hawdb_storage::RelationalRowPagePublicationConfig::default(),
+            hawdb_storage::relational::RelationalRowPagePublicationConfig::default(),
         )
         .map_err(|error| HawDBError::Storage(error.to_string()))?;
         let manifest = reader.manifest();
@@ -598,12 +623,12 @@ fn load_published_property_spills(
     }
     let descriptor_tree = PersistentPropertySpillDescriptorTree::new(
         GraphDescriptorTreePaths::new(
-            root.join(hawdb_storage::property_spill_descriptor_page_file(
-                generation,
-            )),
-            root.join(hawdb_storage::property_spill_descriptor_root_file(
-                generation,
-            )),
+            root.join(
+                hawdb_storage::property_spill::property_spill_descriptor_page_file(generation),
+            ),
+            root.join(
+                hawdb_storage::property_spill::property_spill_descriptor_root_file(generation),
+            ),
         ),
         GraphDescriptorTreeBuildConfig::default(),
     );
@@ -684,12 +709,16 @@ pub(in crate::store) fn load_published_property_projection(
         manifest,
         PersistentPropertyProjectionDescriptorTree::new(
             GraphDescriptorTreePaths::new(
-                root.join(hawdb_storage::property_projection_descriptor_page_file(
-                    generation,
-                )),
-                root.join(hawdb_storage::property_projection_descriptor_root_file(
-                    generation,
-                )),
+                root.join(
+                    hawdb_storage::property_projection::property_projection_descriptor_page_file(
+                        generation,
+                    ),
+                ),
+                root.join(
+                    hawdb_storage::property_projection::property_projection_descriptor_root_file(
+                        generation,
+                    ),
+                ),
             ),
             GraphDescriptorTreeBuildConfig::default(),
         ),
@@ -728,12 +757,16 @@ pub(in crate::store) fn load_published_canonical_adjacency(
     )?;
     let descriptor_config = GraphDescriptorTreeBuildConfig::default();
     let descriptor_paths = GraphDescriptorTreePaths::new(
-        root.join(hawdb_storage::canonical_adjacency_descriptor_page_file(
-            generation,
-        )),
-        root.join(hawdb_storage::canonical_adjacency_descriptor_root_file(
-            generation,
-        )),
+        root.join(
+            hawdb_storage::canonical_adjacency::canonical_adjacency_descriptor_page_file(
+                generation,
+            ),
+        ),
+        root.join(
+            hawdb_storage::canonical_adjacency::canonical_adjacency_descriptor_root_file(
+                generation,
+            ),
+        ),
     );
     let root_reader = GraphDescriptorTreeRootReader::open_bound(
         descriptor_paths,

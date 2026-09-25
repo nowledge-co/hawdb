@@ -22,7 +22,7 @@ use crate::query_runtime_preflight::NowledgeQueryRuntimePreflightProbe;
 use hawdb_core::HawDBError;
 use hawdb_evidence::inventory::REQUIRED_NOWLEDGE_REPLACEMENT_QUERY_FAMILIES;
 use hawdb_route_ownership::graph::REQUIRED_NOWLEDGE_MEM_BOUNDED_READ_ROUTES;
-use hawdb_storage::ScanPruningReport;
+use hawdb_storage::scan::ScanPruningReport;
 use std::collections::{BTreeMap, BTreeSet};
 
 #[derive(Debug, Clone, PartialEq, Eq)]

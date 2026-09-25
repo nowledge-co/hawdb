@@ -20,7 +20,7 @@
 //! separate from query activation: the page artifact becomes durable first,
 //! and the small selecting root is replaced last.
 
-use crate::durable_replace_file;
+use crate::durability::durable_replace_file;
 use crate::graph_descriptor_page::{
     decode_page_ref, encode_page_ref, GraphDescriptorKind, GraphDescriptorPageError,
     GraphDescriptorPageLimits, GraphDescriptorPageRef,

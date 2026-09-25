@@ -21,8 +21,9 @@
 
 use hawdb_core::{LabelId, Value};
 use hawdb_storage::{
-    CanonicalSegmentConfig, CanonicalSegmentReader, CanonicalSegmentWriter, NodeId, NodeRecord,
-    SegmentCache, StoreId,
+    cache::{SegmentCache, StoreId},
+    canonical::{CanonicalSegmentConfig, CanonicalSegmentReader, CanonicalSegmentWriter},
+    NodeId, NodeRecord,
 };
 use serde_json::json;
 use std::collections::{BTreeMap, BTreeSet};
@@ -96,7 +97,7 @@ fn measure(name: &str, segment_bytes: u64) -> serde_json::Value {
     let manifest = CanonicalSegmentWriter::new(config)
         .write_fallible(
             &path,
-            hawdb_storage::ManifestGeneration(1),
+            hawdb_storage::cache::ManifestGeneration(1),
             nodes,
             Vec::new(),
         )

@@ -19,9 +19,13 @@ use super::recovery::RelationalRowPageRecoveryStatus;
 use crate::cache::SegmentCache;
 use crate::relational_row_workspace::RelationalMonotonicAppendMetrics;
 use crate::{
-    RelationalOverflowRootReader, RelationalRowChangeCapture, RelationalRowChangeCaptureLimits,
-    RelationalRowPageLiveError, RelationalRowPageReadView, RelationalRowPageReadViewIdentity,
-    RelationalRowStorageResidencyReport, RelationalState, StoreId,
+    cache::StoreId,
+    relational::{
+        RelationalOverflowRootReader, RelationalRowChangeCapture, RelationalRowChangeCaptureLimits,
+        RelationalRowPageLiveError, RelationalRowPageReadView, RelationalRowPageReadViewIdentity,
+        RelationalState,
+    },
+    residency::RelationalRowStorageResidencyReport,
 };
 use std::sync::Arc;
 

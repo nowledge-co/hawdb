@@ -22,7 +22,12 @@
 mod history_budget;
 use history_budget::{HistoryBudget, HistoryLease};
 
-use crate::{AdjacencyDirection, CowPageWeight, CowSegmentedMap, NodeId, RelId, RelationalKey};
+use crate::{
+    adjacency::AdjacencyDirection,
+    cow::{CowPageWeight, CowSegmentedMap},
+    relational::RelationalKey,
+    NodeId, RelId,
+};
 use std::collections::BTreeMap;
 use std::fmt::{self, Display, Formatter};
 use std::sync::{Arc, Mutex};
@@ -81,14 +86,15 @@ impl Drop for VersionSnapshotPin {
 }
 
 /// Estimated retained key/write bytes, excluding allocator and B-tree overhead.
-pub const DEFAULT_MAX_VERSION_WRITE_SET_BYTES: usize = crate::DEFAULT_MAX_WAL_RECORD_BYTES;
+pub const DEFAULT_MAX_VERSION_WRITE_SET_BYTES: usize = crate::config::DEFAULT_MAX_WAL_RECORD_BYTES;
 
 /// Current-index payload estimate; excludes historical COW roots.
 pub const DEFAULT_MAX_VERSION_INDEX_BYTES: usize = 64 * 1024 * 1024;
 /// Shared budget for retained/staged non-Database root payload estimates.
 pub const DEFAULT_MAX_RETAINED_VERSION_HISTORY_BYTES: usize = 256 * 1024 * 1024;
 
-pub const DEFAULT_MAX_VERSION_WRITE_SET_ENTRIES: usize = crate::DEFAULT_MAX_WAL_BATCH_OPERATIONS;
+pub const DEFAULT_MAX_VERSION_WRITE_SET_ENTRIES: usize =
+    crate::config::DEFAULT_MAX_WAL_BATCH_OPERATIONS;
 
 /// A mutable identity whose latest committed version participates in optimistic
 /// transaction validation.
@@ -740,7 +746,7 @@ mod tests {
     #[test]
     fn inline_database_barrier_matches_map_oracle_across_operation_sequences() {
         use super::VersionStamp;
-        use crate::CowPageWeight;
+        use crate::cow::CowPageWeight;
         let keys = [
             VersionKey::Database,
             VersionKey::Schema,
@@ -930,7 +936,10 @@ mod tests {
     #[test]
     fn write_set_byte_admission_preserves_replacements_and_rejects_atomically() {
         use super::{VersionWrite, VersionWriteSetError};
-        use crate::{CowPageWeight, RelationalKey, RelationalValue};
+        use crate::{
+            cow::CowPageWeight,
+            relational::{RelationalKey, RelationalValue},
+        };
         let key = VersionKey::RelationalRow {
             table: "records".into(),
             primary_key: RelationalKey(vec![RelationalValue::Text("large-key".repeat(100))]),
@@ -962,7 +971,7 @@ mod tests {
 
     #[test]
     fn write_set_byte_accounting_matches_independent_sequences() {
-        use crate::CowPageWeight;
+        use crate::cow::CowPageWeight;
         let keys = [
             VersionKey::Database,
             VersionKey::GraphNode(NodeId(1)),

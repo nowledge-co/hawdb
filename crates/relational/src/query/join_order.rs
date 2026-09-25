@@ -54,7 +54,7 @@ use hawdb_sql::{
 mod implementations;
 mod scopes;
 use hawdb_sql::timing::measure_nanos;
-use hawdb_storage::{RelationalState, RelationalTableSchema};
+use hawdb_storage::relational::{RelationalState, RelationalTableSchema};
 use implementations::{prepare_join_implementations, PreparedJoinImplementation};
 pub(super) use scopes::bind_from_scopes;
 use std::collections::{BTreeMap, BTreeSet};

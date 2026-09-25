@@ -17,7 +17,9 @@ use hawdb_executor::columnar::RelationalRowLocator;
 use hawdb_executor::external_order::ExternalOrderRecord;
 use hawdb_expression::BindingId;
 use hawdb_sql::{SqlNullOrder, SqlOrderDirection};
-use hawdb_storage::{RelationalKey, RelationalScalarType, RelationalTableSchema, RelationalValue};
+use hawdb_storage::relational::{
+    RelationalKey, RelationalScalarType, RelationalTableSchema, RelationalValue,
+};
 use std::cmp::Ordering;
 use std::io::{Cursor, Read};
 
@@ -613,7 +615,7 @@ fn invalid_typed_record(reason: &str) -> HawDBError {
 mod tests {
     use super::*;
     use hawdb_executor::binding::value_memory_bytes;
-    use hawdb_storage::RelationalColumnSchema;
+    use hawdb_storage::relational::RelationalColumnSchema;
     use std::collections::BTreeMap;
 
     use hawdb_core::Value;

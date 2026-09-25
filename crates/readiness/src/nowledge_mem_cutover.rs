@@ -226,7 +226,7 @@ mod tests {
         bounded_read_evidence::NowledgeMemGraphMode,
         nowledge_mem_runtime_status::{NowledgeMemProductionStatus, NowledgeMemRuntimeStatus},
     };
-    use hawdb_storage::SearchProjectionChangefeedStatus;
+    use hawdb_storage::projection::SearchProjectionChangefeedStatus;
 
     #[test]
     fn active_import_fails_closed_without_catch_up_evidence() {

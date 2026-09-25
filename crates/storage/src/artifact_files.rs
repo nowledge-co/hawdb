@@ -14,7 +14,7 @@
 
 //! Naming and parsing helpers for generation-suffixed storage artifact files.
 
-use crate::{sync_parent_directory, StoreId};
+use crate::{cache::StoreId, durability::sync_parent_directory};
 use hawdb_core::Result;
 use hawdb_integrity::checksum_u64;
 use std::fs;

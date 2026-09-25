@@ -125,7 +125,7 @@ fn seeded_shortest_paths_match_full_path_bfs_including_order_and_multiplicity() 
         random ^= random << 17;
         random
     };
-    let visible = hawdb_storage::PropertyFilter::Eq {
+    let visible = hawdb_storage::mutation::PropertyFilter::Eq {
         property: "visible".to_string(),
         value: Value::Bool(true),
     };

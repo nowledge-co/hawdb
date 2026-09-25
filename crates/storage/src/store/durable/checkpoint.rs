@@ -31,9 +31,11 @@ use crate::store::{
     verify_integrity, wal_generation_file, CheckpointPublishStage, PROJECTED_GRAPHS_FILE,
 };
 use hawdb_storage::{
-    durable_replace_file, encode_relational_checkpoint_to_writer, DurableCompression,
-    FileSegmentRangeReader, ManifestGeneration, RelationalDecodeLimits, RelationalState,
-    WalReplayConfig,
+    cache::ManifestGeneration,
+    config::{DurableCompression, WalReplayConfig},
+    durability::durable_replace_file,
+    relational::{encode_relational_checkpoint_to_writer, RelationalDecodeLimits, RelationalState},
+    scan::FileSegmentRangeReader,
 };
 use std::fs::{self, File};
 use std::io::Write;
@@ -191,28 +193,36 @@ impl DurableStore {
             wal_generation_file(generation),
             canonical_artifact_generation_file(generation),
             canonical_manifest_generation_file(generation),
-            hawdb_storage::canonical_segment_descriptor_page_file(generation),
-            hawdb_storage::canonical_segment_descriptor_root_file(generation),
+            hawdb_storage::canonical::canonical_segment_descriptor_page_file(generation),
+            hawdb_storage::canonical::canonical_segment_descriptor_root_file(generation),
             canonical_adjacency_artifact_generation_file(generation),
-            hawdb_storage::canonical_adjacency_descriptor_page_file(generation),
-            hawdb_storage::canonical_adjacency_descriptor_root_file(generation),
+            hawdb_storage::canonical_adjacency::canonical_adjacency_descriptor_page_file(
+                generation,
+            ),
+            hawdb_storage::canonical_adjacency::canonical_adjacency_descriptor_root_file(
+                generation,
+            ),
             property_spill_artifact_generation_file(generation),
             property_spill_manifest_generation_file(generation),
-            hawdb_storage::property_spill_descriptor_page_file(generation),
-            hawdb_storage::property_spill_descriptor_root_file(generation),
+            hawdb_storage::property_spill::property_spill_descriptor_page_file(generation),
+            hawdb_storage::property_spill::property_spill_descriptor_root_file(generation),
             property_projection_artifact_generation_file(generation),
             property_projection_manifest_generation_file(generation),
-            hawdb_storage::property_projection_descriptor_page_file(generation),
-            hawdb_storage::property_projection_descriptor_root_file(generation),
-            hawdb_storage::relational_index_shadow_artifact_file(generation),
-            hawdb_storage::relational_index_shadow_manifest_generation_file(generation),
-            hawdb_storage::relational_row_page_artifact_file(generation),
-            hawdb_storage::relational_row_page_root_descriptor_file(generation),
-            hawdb_storage::relational_row_page_root_key_file(generation),
-            hawdb_storage::relational_row_page_manifest_generation_file(generation),
-            hawdb_storage::relational_overflow_extent_file(generation),
-            hawdb_storage::relational_overflow_descriptor_file(generation),
-            hawdb_storage::relational_overflow_manifest_generation_file(generation),
+            hawdb_storage::property_projection::property_projection_descriptor_page_file(
+                generation,
+            ),
+            hawdb_storage::property_projection::property_projection_descriptor_root_file(
+                generation,
+            ),
+            hawdb_storage::relational::relational_index_shadow_artifact_file(generation),
+            hawdb_storage::relational::relational_index_shadow_manifest_generation_file(generation),
+            hawdb_storage::relational::relational_row_page_artifact_file(generation),
+            hawdb_storage::relational::relational_row_page_root_descriptor_file(generation),
+            hawdb_storage::relational::relational_row_page_root_key_file(generation),
+            hawdb_storage::relational::relational_row_page_manifest_generation_file(generation),
+            hawdb_storage::relational::relational_overflow_extent_file(generation),
+            hawdb_storage::relational::relational_overflow_descriptor_file(generation),
+            hawdb_storage::relational::relational_overflow_manifest_generation_file(generation),
         ] {
             match fs::remove_file(self.root_path.join(file)) {
                 Ok(()) => {}

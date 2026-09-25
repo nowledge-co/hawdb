@@ -49,20 +49,25 @@ pub use hawdb_storage::relational_index_view::{
 use super::{GraphStore, HawDBError};
 use hawdb_integrity::IntegrityHasher;
 #[cfg(test)]
-use hawdb_storage::{relational_index_shadow_artifact_file, RelationalIndexMode};
 use hawdb_storage::{
-    relational_index_shadow_manifest_generation_file, RelationalCheckpointIndexLoad,
-    RelationalIndexChangeCapture, RelationalIndexChangeCaptureLimits, RelationalIndexRangeScan,
-    RelationalIndexReadLimits, RelationalIndexRecoveryBuilder, RelationalIndexRecoveryConfig,
-    RelationalIndexRecoveryReader, RelationalIndexRecoveryReport, RelationalIndexRole,
-    RelationalIndexShadowBuildReport, RelationalIndexShadowConfig, RelationalIndexShadowError,
-    RelationalIndexShadowReader, RelationalIndexShadowWriter, RelationalKey,
-    RelationalOverflowPublicationConfig, RelationalOverflowRootReader, RelationalRecoveryFence,
-    RelationalRecoverySourceIdentity, RelationalReplayAccessSet,
-    RelationalRowPagePublicationConfig, RelationalRowPageReadView, RelationalRowPageRootReader,
-    RelationalRowPageSnapshotReader, RelationalScalarType, RelationalSparseRecoveryStage,
-    RelationalTableSchema, RelationalTransaction, RelationalValue, StorageResidencyMode,
-    RELATIONAL_PRIMARY_INDEX_NAME,
+    config::RelationalIndexMode, relational::relational_index_shadow_artifact_file,
+};
+use hawdb_storage::{
+    config::StorageResidencyMode,
+    relational::{
+        relational_index_shadow_manifest_generation_file, RelationalCheckpointIndexLoad,
+        RelationalIndexChangeCapture, RelationalIndexChangeCaptureLimits, RelationalIndexRangeScan,
+        RelationalIndexReadLimits, RelationalIndexRecoveryBuilder, RelationalIndexRecoveryConfig,
+        RelationalIndexRecoveryReader, RelationalIndexRecoveryReport, RelationalIndexRole,
+        RelationalIndexShadowBuildReport, RelationalIndexShadowConfig, RelationalIndexShadowError,
+        RelationalIndexShadowReader, RelationalIndexShadowWriter, RelationalKey,
+        RelationalOverflowPublicationConfig, RelationalOverflowRootReader, RelationalRecoveryFence,
+        RelationalRecoverySourceIdentity, RelationalReplayAccessSet,
+        RelationalRowPagePublicationConfig, RelationalRowPageReadView, RelationalRowPageRootReader,
+        RelationalRowPageSnapshotReader, RelationalScalarType, RelationalSparseRecoveryStage,
+        RelationalTableSchema, RelationalTransaction, RelationalValue,
+        RELATIONAL_PRIMARY_INDEX_NAME,
+    },
 };
 use std::{collections::BTreeSet, sync::Arc};
 
@@ -350,9 +355,10 @@ impl GraphStore {
 
     fn open_base_relational_index_read_view(
         &self,
-    ) -> Result<Arc<RelationalIndexReadView>, hawdb_storage::RelationalIndexShadowError> {
+    ) -> Result<Arc<RelationalIndexReadView>, hawdb_storage::relational::RelationalIndexShadowError>
+    {
         let durable = self.durable.as_ref().ok_or_else(|| {
-            hawdb_storage::RelationalIndexShadowError::Admission(
+            hawdb_storage::relational::RelationalIndexShadowError::Admission(
                 "relational index read view requires a durable store".to_string(),
             )
         })?;
@@ -386,9 +392,10 @@ impl GraphStore {
         &self,
         recovered_commit_epoch: u64,
         expected_recovery_source: RelationalRecoverySourceIdentity,
-    ) -> Result<Arc<RelationalIndexReadView>, hawdb_storage::RelationalIndexShadowError> {
+    ) -> Result<Arc<RelationalIndexReadView>, hawdb_storage::relational::RelationalIndexShadowError>
+    {
         let durable = self.durable.as_ref().ok_or_else(|| {
-            hawdb_storage::RelationalIndexShadowError::Admission(
+            hawdb_storage::relational::RelationalIndexShadowError::Admission(
                 "relational index read view requires a durable store".to_string(),
             )
         })?;
@@ -944,7 +951,7 @@ impl GraphStore {
         transaction: RelationalTransaction,
         replay_access: Option<RelationalReplayAccessSet>,
         expected_epoch: u64,
-    ) -> Result<(), hawdb_storage::RelationalError> {
+    ) -> Result<(), hawdb_storage::relational::RelationalError> {
         let authoritative = self
             .relational_index_shadow
             .mode
@@ -955,7 +962,7 @@ impl GraphStore {
             .as_ref()
             .map(RelationalIndexRecoveryBuilder::capture_limits);
         if authoritative && index_limits.is_none() {
-            return Err(hawdb_storage::RelationalError::Corruption(
+            return Err(hawdb_storage::relational::RelationalError::Corruption(
                 "authoritative relational index recovery requires a bound base generation and writable recovery-delta builder"
                     .to_string(),
             ));
@@ -964,7 +971,7 @@ impl GraphStore {
         let (next, index_capture, row_capture) = match (index_limits, row_limits) {
             (Some(index_limits), Some(row_limits)) if authoritative => {
                 let replay_access = replay_access.as_ref().ok_or_else(|| {
-                    hawdb_storage::RelationalError::Corruption(
+                    hawdb_storage::relational::RelationalError::Corruption(
                         "authoritative relational WAL is missing its exact replay access set"
                             .to_string(),
                     )
@@ -1206,11 +1213,14 @@ mod tests {
     use crate::schema::Catalog;
     use hawdb_storage::relational_index_view::RelationalIndexReadViewKind;
     use hawdb_storage::{
-        DurabilityPolicy, RelationalColumnSchema, RelationalConflictAction,
-        RelationalForeignKeySchema, RelationalIndexSchema, RelationalInsertMode, RelationalKey,
-        RelationalReferentialAction, RelationalRow, RelationalScalarType, RelationalTableSchema,
-        RelationalTransaction, RelationalUpsertAssignment, RelationalUpsertValue, RelationalValue,
-        RelationalWrite, WalReplayConfig,
+        config::{DurabilityPolicy, WalReplayConfig},
+        relational::{
+            RelationalColumnSchema, RelationalConflictAction, RelationalForeignKeySchema,
+            RelationalIndexSchema, RelationalInsertMode, RelationalKey,
+            RelationalReferentialAction, RelationalRow, RelationalScalarType,
+            RelationalTableSchema, RelationalTransaction, RelationalUpsertAssignment,
+            RelationalUpsertValue, RelationalValue, RelationalWrite,
+        },
     };
     use std::num::NonZeroUsize;
 
@@ -1220,15 +1230,15 @@ mod tests {
         use std::any::TypeId;
 
         assert_eq!(
-            TypeId::of::<crate::RelationalIndexReadViewReport>(),
+            TypeId::of::<crate::relational_index_view::RelationalIndexReadViewReport>(),
             TypeId::of::<owner::RelationalIndexReadViewReport>()
         );
         assert_eq!(
-            TypeId::of::<crate::RelationalIndexReadViewBackendReport>(),
+            TypeId::of::<crate::relational_index_view::RelationalIndexReadViewBackendReport>(),
             TypeId::of::<owner::RelationalIndexReadViewBackendReport>()
         );
         assert_eq!(
-            TypeId::of::<crate::RelationalIndexStorageResidencyReport>(),
+            TypeId::of::<crate::relational_index_view::RelationalIndexStorageResidencyReport>(),
             TypeId::of::<owner::RelationalIndexStorageResidencyReport>()
         );
     }
@@ -1244,7 +1254,7 @@ mod tests {
             std::process::id()
         ));
         let replay = WalReplayConfig {
-            relational_index_mode: hawdb_storage::RelationalIndexMode::Shadow,
+            relational_index_mode: hawdb_storage::config::RelationalIndexMode::Shadow,
             ..WalReplayConfig::default()
         };
         let published_identity;
@@ -1289,11 +1299,11 @@ mod tests {
                             }),
                             RelationalWrite::Insert {
                                 table: "documents".to_string(),
-                                rows: vec![hawdb_storage::RelationalRow::new(vec![
+                                rows: vec![hawdb_storage::relational::RelationalRow::new(vec![
                                     RelationalValue::Text("doc-1".to_string()),
                                     RelationalValue::Text("owner-1".to_string()),
                                 ])],
-                                mode: hawdb_storage::RelationalInsertMode::Error,
+                                mode: hawdb_storage::relational::RelationalInsertMode::Error,
                             },
                         ],
                     },
@@ -1414,7 +1424,7 @@ mod tests {
                 &mut catalog,
                 DurabilityPolicy::default(),
                 WalReplayConfig {
-                    relational_index_mode: hawdb_storage::RelationalIndexMode::DemandPaged,
+                    relational_index_mode: hawdb_storage::config::RelationalIndexMode::DemandPaged,
                     ..WalReplayConfig::default()
                 },
             )
@@ -1445,7 +1455,7 @@ mod tests {
             std::process::id()
         ));
         let replay = WalReplayConfig {
-            relational_index_mode: hawdb_storage::RelationalIndexMode::Shadow,
+            relational_index_mode: hawdb_storage::config::RelationalIndexMode::Shadow,
             ..WalReplayConfig::default()
         };
         let oversized_id = "x".repeat(
@@ -1499,9 +1509,7 @@ mod tests {
                 .join(relational_index_shadow_manifest_generation_file(generation))
                 .exists());
             assert!(!path
-                .join(hawdb_storage::relational_index_shadow_artifact_file(
-                    generation
-                ))
+                .join(hawdb_storage::relational::relational_index_shadow_artifact_file(generation))
                 .exists());
             assert_eq!(store.relational_state().row_count("documents"), 1);
         }
@@ -1564,7 +1572,7 @@ mod tests {
                 .expect("publish legacy unbound candidate");
         }
         assert!(path
-            .join(hawdb_storage::RELATIONAL_INDEX_SHADOW_MANIFEST_FILE)
+            .join(hawdb_storage::relational::RELATIONAL_INDEX_SHADOW_MANIFEST_FILE)
             .exists());
 
         let mut catalog = Catalog::default();
@@ -1604,7 +1612,7 @@ mod tests {
         let restored = path.with_extension("restored");
         let corrupt_restored = path.with_extension("corrupt-restored");
         let replay = WalReplayConfig {
-            relational_index_mode: hawdb_storage::RelationalIndexMode::Shadow,
+            relational_index_mode: hawdb_storage::config::RelationalIndexMode::Shadow,
             ..WalReplayConfig::default()
         };
         let binding;
@@ -1716,7 +1724,7 @@ mod tests {
             std::process::id()
         ));
         let replay = WalReplayConfig {
-            relational_index_mode: hawdb_storage::RelationalIndexMode::Shadow,
+            relational_index_mode: hawdb_storage::config::RelationalIndexMode::Shadow,
             ..WalReplayConfig::default()
         };
         let mut catalog = Catalog::default();
@@ -1799,7 +1807,7 @@ mod tests {
             std::process::id()
         ));
         let replay = WalReplayConfig {
-            relational_index_mode: hawdb_storage::RelationalIndexMode::Shadow,
+            relational_index_mode: hawdb_storage::config::RelationalIndexMode::Shadow,
             ..WalReplayConfig::default()
         };
         let selected_generation;
@@ -1827,11 +1835,11 @@ mod tests {
                     RelationalTransaction {
                         writes: vec![RelationalWrite::Insert {
                             table: "documents".to_string(),
-                            rows: vec![hawdb_storage::RelationalRow::new(vec![
+                            rows: vec![hawdb_storage::relational::RelationalRow::new(vec![
                                 RelationalValue::Text("doc-2".to_string()),
                                 RelationalValue::Text("owner-2".to_string()),
                             ])],
-                            mode: hawdb_storage::RelationalInsertMode::Error,
+                            mode: hawdb_storage::relational::RelationalInsertMode::Error,
                         }],
                     },
                 )
@@ -1873,9 +1881,11 @@ mod tests {
                 ))
                 .exists());
             assert!(!path
-                .join(hawdb_storage::relational_index_shadow_artifact_file(
-                    abandoned_generation,
-                ))
+                .join(
+                    hawdb_storage::relational::relational_index_shadow_artifact_file(
+                        abandoned_generation,
+                    )
+                )
                 .exists());
         }
         std::fs::remove_dir_all(path).expect("remove abandoned candidate fixture");
@@ -1892,7 +1902,7 @@ mod tests {
             std::process::id()
         ));
         let replay = WalReplayConfig {
-            relational_index_mode: hawdb_storage::RelationalIndexMode::Shadow,
+            relational_index_mode: hawdb_storage::config::RelationalIndexMode::Shadow,
             ..WalReplayConfig::default()
         };
         {
@@ -1943,11 +1953,11 @@ mod tests {
                     RelationalTransaction {
                         writes: vec![RelationalWrite::Insert {
                             table: "documents".to_string(),
-                            rows: vec![hawdb_storage::RelationalRow::new(vec![
+                            rows: vec![hawdb_storage::relational::RelationalRow::new(vec![
                                 RelationalValue::Text("doc-2".to_string()),
                                 RelationalValue::Text("owner-1".to_string()),
                             ])],
-                            mode: hawdb_storage::RelationalInsertMode::Error,
+                            mode: hawdb_storage::relational::RelationalInsertMode::Error,
                         }],
                     },
                 )
@@ -2067,7 +2077,7 @@ mod tests {
                 )
             }));
             assert!(path
-                .join(hawdb_storage::RELATIONAL_INDEX_RECOVERY_MANIFEST_FILE)
+                .join(hawdb_storage::relational::RELATIONAL_INDEX_RECOVERY_MANIFEST_FILE)
                 .exists());
         }
         std::fs::remove_dir_all(path).expect("remove recovery replay fixture");
@@ -2317,9 +2327,8 @@ mod tests {
                 replay,
             )
             .expect("open cold constraint corruption reader");
-            let artifact = path.join(hawdb_storage::relational_index_shadow_artifact_file(
-                generation,
-            ));
+            let artifact = path
+                .join(hawdb_storage::relational::relational_index_shadow_artifact_file(generation));
             let mut file = std::fs::OpenOptions::new()
                 .read(true)
                 .write(true)
@@ -2356,7 +2365,7 @@ mod tests {
             std::process::id()
         ));
         let replay = WalReplayConfig {
-            relational_index_mode: hawdb_storage::RelationalIndexMode::Shadow,
+            relational_index_mode: hawdb_storage::config::RelationalIndexMode::Shadow,
             ..WalReplayConfig::default()
         };
         {
@@ -2886,7 +2895,7 @@ mod tests {
             std::process::id()
         ));
         let replay = WalReplayConfig {
-            relational_index_mode: hawdb_storage::RelationalIndexMode::Shadow,
+            relational_index_mode: hawdb_storage::config::RelationalIndexMode::Shadow,
             ..WalReplayConfig::default()
         };
         let mut catalog = Catalog::default();
@@ -2977,11 +2986,11 @@ mod tests {
                 }),
                 RelationalWrite::Insert {
                     table: "documents".to_string(),
-                    rows: vec![hawdb_storage::RelationalRow::new(vec![
+                    rows: vec![hawdb_storage::relational::RelationalRow::new(vec![
                         RelationalValue::Text(first_id.to_string()),
                         RelationalValue::Text("owner-1".to_string()),
                     ])],
-                    mode: hawdb_storage::RelationalInsertMode::Error,
+                    mode: hawdb_storage::relational::RelationalInsertMode::Error,
                 },
             ],
         }

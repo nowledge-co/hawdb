@@ -23,8 +23,11 @@ use hawdb_plan_cypher::{
     PhysicalPlan, Projection, ProjectionExpression, SetAssignment, SetValue,
 };
 use hawdb_storage::{
-    AdjacencyDirection, GraphMutation, MutationSummary, NodeRecord, ProjectedGraphDefinition,
-    ProjectedNodeRecord, PropertyFilter, RelRecord, ScanPredicate, ScanPruningReport,
+    adjacency::AdjacencyDirection,
+    mutation::{GraphMutation, MutationSummary, PropertyFilter},
+    projection::ProjectedGraphDefinition,
+    scan::{ScanPredicate, ScanPruningReport},
+    NodeRecord, ProjectedNodeRecord, RelRecord,
 };
 use std::collections::BTreeSet;
 use std::num::NonZeroUsize;
@@ -507,11 +510,11 @@ fn expected_write(kind: usize, ids: Vec<NodeId>) -> Write {
             vec![
                 NodeSetAssignment {
                     property: "score".into(),
-                    value: hawdb_storage::NodeSetValue::AddInt { amount: 3 },
+                    value: hawdb_storage::mutation::NodeSetValue::AddInt { amount: 3 },
                 },
                 NodeSetAssignment {
                     property: "score".into(),
-                    value: hawdb_storage::NodeSetValue::AddInt { amount: 7 },
+                    value: hawdb_storage::mutation::NodeSetValue::AddInt { amount: 7 },
                 },
             ],
         )

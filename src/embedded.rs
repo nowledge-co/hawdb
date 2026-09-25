@@ -29,7 +29,7 @@ use hawdb_qos::{
 #[cfg(test)]
 use hawdb_readiness::embedded_query_path::EMBEDDED_QUERY_PATH_READINESS_PROTOCOL;
 use hawdb_readiness::embedded_query_path::{EmbeddedQueryEntrypoint, EmbeddedQueryPathReadiness};
-use hawdb_storage::SegmentReadScheduler;
+use hawdb_storage::scan::SegmentReadScheduler;
 use std::collections::BTreeMap;
 use std::error::Error;
 use std::fmt::{self, Display, Formatter};
@@ -466,7 +466,7 @@ fn default_database_config(profile: EmbeddedDeploymentProfile) -> DatabaseConfig
             max_wal_replay_bytes: Some(128 * 1024 * 1024),
             max_wal_record_bytes: Some(4 * 1024 * 1024),
             max_wal_batch_operations: Some(25_000),
-            mutation_limits: hawdb_storage::MutationLimits {
+            mutation_limits: hawdb_storage::mutation::MutationLimits {
                 max_affected_rows: std::num::NonZeroUsize::new(25_000).unwrap(),
                 max_operations: std::num::NonZeroUsize::new(25_000).unwrap(),
                 max_result_rows: std::num::NonZeroUsize::new(512).unwrap(),
@@ -478,7 +478,7 @@ fn default_database_config(profile: EmbeddedDeploymentProfile) -> DatabaseConfig
             max_search_projection_change_log_entries: Some(512),
             max_search_projection_change_log_bytes: Some(8 * 1024 * 1024),
             search_projection_relational_change_limits:
-                hawdb_storage::RelationalPrimaryKeyChangeCaptureLimits {
+                hawdb_storage::relational::RelationalPrimaryKeyChangeCaptureLimits {
                     max_entries: std::num::NonZeroUsize::new(512).unwrap(),
                     max_bytes: std::num::NonZeroUsize::new(16 * 1024).unwrap(),
                 },

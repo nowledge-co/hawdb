@@ -13,7 +13,7 @@
 // limitations under the License.
 
 use self::binary::compare_rows;
-use crate::{
+use crate::relational::{
     RelationalColumnDefault, RelationalColumnSchema, RelationalKey, RelationalRow,
     RelationalScalarType, RelationalValue,
 };
@@ -1232,7 +1232,7 @@ pub fn append_read_payload_overflow() -> AppendTableError {
 }
 
 pub fn merge_live_read_report(
-    report: &mut crate::AppendSegmentReadReport,
+    report: &mut crate::append_table::AppendSegmentReadReport,
     rows_returned: usize,
     batches_examined: usize,
     batches_pruned: usize,
@@ -1249,7 +1249,7 @@ pub fn merge_live_read_report(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::RelationalScalarType;
+    use crate::relational::RelationalScalarType;
 
     #[test]
     fn admission_size_overflow_fails_closed() {

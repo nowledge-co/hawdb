@@ -13,7 +13,7 @@
 // limitations under the License.
 
 use hawdb_qos::ProcessMemorySnapshot;
-use hawdb_storage::{
+use hawdb_storage::relational::{
     RelationalColumnSchema, RelationalHydrationBudget, RelationalInsertMode, RelationalKey,
     RelationalMutationLimits, RelationalOverflowConfig, RelationalRow, RelationalScalarType,
     RelationalStore, RelationalTableSchema, RelationalTransaction, RelationalValue,

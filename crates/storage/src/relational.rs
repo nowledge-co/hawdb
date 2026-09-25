@@ -13,8 +13,8 @@
 // limitations under the License.
 
 use crate::{
-    FileSegmentRangeReader, SegmentRangeReader, SegmentReadRange, SnapshotCommitError,
-    SnapshotCoordinator, SnapshotReadGuard,
+    scan::{FileSegmentRangeReader, SegmentRangeReader, SegmentReadRange},
+    snapshot::{SnapshotCommitError, SnapshotCoordinator, SnapshotReadGuard},
 };
 use hawdb_core::{LogicalType, Uuid};
 use hawdb_integrity::Sha256Digest;
@@ -1874,7 +1874,7 @@ impl RelationalOverflowSegment {
 
 enum RelationalOverflowRead<'a> {
     Inline(&'a [u8]),
-    FileRange(crate::SegmentBytes),
+    FileRange(crate::cache::SegmentBytes),
 }
 
 impl std::ops::Deref for RelationalOverflowRead<'_> {

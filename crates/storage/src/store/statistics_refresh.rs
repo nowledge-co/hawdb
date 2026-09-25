@@ -330,11 +330,11 @@ mod facade_tests {
     fn root_facade_preserves_storage_statistics_refresh_contract_identity() {
         assert_eq!(
             TypeId::of::<OptimizerStatisticsRefreshOptions>(),
-            TypeId::of::<hawdb_storage::OptimizerStatisticsRefreshOptions>()
+            TypeId::of::<hawdb_storage::statistics_refresh::OptimizerStatisticsRefreshOptions>()
         );
         assert_eq!(
             TypeId::of::<OptimizerStatisticsRefreshReport>(),
-            TypeId::of::<hawdb_storage::OptimizerStatisticsRefreshReport>()
+            TypeId::of::<hawdb_storage::statistics_refresh::OptimizerStatisticsRefreshReport>()
         );
         assert_eq!(
             TypeId::of::<OptimizerStatisticsRefreshWork>(),

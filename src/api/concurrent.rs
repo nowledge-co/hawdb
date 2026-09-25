@@ -37,18 +37,23 @@ use crate::sql::{
 use crate::store::DurabilityPolicy;
 use crate::value::Value;
 use hawdb_core::time::{Duration, Instant};
-use hawdb_storage::{
-    AppendTransaction, RelationalConflictAction, RelationalIndexRole, RelationalKey, RelationalRow,
-    RelationalState, RelationalTableSchema, RelationalTransaction, RelationalValue,
-    RelationalWrite, StoragePressureSnapshot, StorageRecoveryReport,
-};
-pub use hawdb_storage::{
+pub use hawdb_storage::wal::{
     WalGroupCommitActivation, WalGroupCommitAdaptiveColdStartEvidence,
     WalGroupCommitAdaptivePolicyEvidence, WalGroupCommitAdaptiveSteadyStateEvidence,
     WalGroupCommitConfig, WalGroupCommitDelayPolicy, WalGroupCommitEvidence,
     WalGroupCommitSnapshot, WalGroupCommitTailLatencyEvidence, WalGroupCommitWaitDecision,
     DEFAULT_WAL_GROUP_COMMIT_MAX_BYTES, DEFAULT_WAL_GROUP_COMMIT_MAX_DELAY,
     DEFAULT_WAL_GROUP_COMMIT_MAX_ENTRIES,
+};
+use hawdb_storage::{
+    append_table::AppendTransaction,
+    pressure::StoragePressureSnapshot,
+    projection::StorageRecoveryReport,
+    relational::{
+        RelationalConflictAction, RelationalIndexRole, RelationalKey, RelationalRow,
+        RelationalState, RelationalTableSchema, RelationalTransaction, RelationalValue,
+        RelationalWrite,
+    },
 };
 use std::collections::BTreeMap;
 use std::ops::Bound;
@@ -981,7 +986,7 @@ fn sql_lock_requests(
     prepared: &crate::relational_sql::PreparedRelationalSql,
     parameters: &[Value],
     state: &RelationalState,
-    append_state: &hawdb_storage::AppendState,
+    append_state: &hawdb_storage::append_table::AppendState,
 ) -> Result<Vec<LockRequest>> {
     if prepared.template.parameters.len() != parameters.len() {
         return Err(HawDBError::Semantic(format!(
@@ -1678,7 +1683,8 @@ fn autocommit_read_gate_poisoned_error() -> HawDBError {
 mod tests {
     use super::*;
     use hawdb_storage::{
-        AppendTableSchema, AppendWrite, RelationalColumnSchema, RelationalScalarType,
+        append_table::{AppendTableSchema, AppendWrite},
+        relational::{RelationalColumnSchema, RelationalScalarType},
     };
 
     fn key(value: i64) -> RelationalKey {
@@ -1753,7 +1759,7 @@ mod tests {
 
     #[test]
     fn append_explain_analyze_takes_a_shared_database_lock() {
-        let append_state = hawdb_storage::AppendState::default()
+        let append_state = hawdb_storage::append_table::AppendState::default()
             .stage_transaction(
                 &AppendTransaction {
                     writes: vec![AppendWrite::CreateTable {
@@ -1769,7 +1775,7 @@ mod tests {
                         },
                     }],
                 },
-                hawdb_storage::AppendMutationLimits::default(),
+                hawdb_storage::append_table::AppendMutationLimits::default(),
             )
             .expect("stage append schema");
 

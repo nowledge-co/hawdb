@@ -19,8 +19,8 @@
 
 use crate::cow::CowSegment;
 use crate::{
-    CanonicalNodeIterator, CanonicalRelationshipIterator, CanonicalSegmentError, NodeId,
-    NodeRecord, RelId, RelRecord,
+    canonical::{CanonicalNodeIterator, CanonicalRelationshipIterator, CanonicalSegmentError},
+    NodeId, NodeRecord, RelId, RelRecord,
 };
 use hawdb_core::{HawDBError, Result};
 use std::collections::BTreeSet;

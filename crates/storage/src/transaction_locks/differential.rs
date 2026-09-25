@@ -13,7 +13,7 @@
 // limitations under the License.
 
 use super::*;
-use crate::RelationalValue;
+use crate::relational::RelationalValue;
 use std::collections::VecDeque;
 
 #[derive(Clone)]

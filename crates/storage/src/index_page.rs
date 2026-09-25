@@ -336,7 +336,7 @@ impl ImmutableIndexPage {
     }
 
     pub(crate) fn decode_cached_slot(
-        slot: &crate::SegmentCacheLease,
+        slot: &crate::cache::SegmentCacheLease,
         limits: ImmutableIndexPageLimits,
     ) -> Result<Self, ImmutableIndexPageError> {
         Self::decode_slot_inner(slot, limits, slot.page_integrity_verified())

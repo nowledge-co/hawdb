@@ -280,7 +280,7 @@ pub struct DatabaseConfig {
     pub max_read_result_rows: Option<usize>,
     pub max_read_result_payload_bytes: Option<usize>,
     pub execution_memory: executor::ExecutionMemoryConfig,
-    pub mutation_limits: hawdb_storage::MutationLimits,
+    pub mutation_limits: hawdb_storage::mutation::MutationLimits,
     /// Maximum memo groups available to graph and relational optimizer search.
     pub max_optimizer_groups: Option<usize>,
     /// Maximum memo expressions available to relational join enumeration.
@@ -301,7 +301,7 @@ pub struct DatabaseConfig {
     /// Cache hits consume the separately derived logical traversal budget only.
     pub max_relational_index_read_bytes: NonZeroUsize,
     pub max_relational_hydration_bytes: NonZeroUsize,
-    pub storage_residency_mode: hawdb_storage::StorageResidencyMode,
+    pub storage_residency_mode: hawdb_storage::config::StorageResidencyMode,
     pub auto_materialize_checkpoint_bytes: u64,
     pub max_out_of_core_delta_bytes: Option<u64>,
     /// Derived columnar shadow double-write: every checkpoint also
@@ -311,14 +311,14 @@ pub struct DatabaseConfig {
     /// never served from the shadow.
     pub graph_columnar_shadow_checkpoint: bool,
     /// Persistent relational-index publication and read activation mode.
-    pub relational_index_mode: hawdb_storage::RelationalIndexMode,
+    pub relational_index_mode: hawdb_storage::config::RelationalIndexMode,
     /// Enables the metadata-only monotonic INSERT fast path for RowPage tables.
     /// Disabled by default until workload qualification explicitly activates it.
     pub relational_monotonic_append_fast_path: bool,
     pub max_search_projection_change_log_entries: Option<usize>,
     pub max_search_projection_change_log_bytes: Option<usize>,
     pub search_projection_relational_change_limits:
-        hawdb_storage::RelationalPrimaryKeyChangeCaptureLimits,
+        hawdb_storage::relational::RelationalPrimaryKeyChangeCaptureLimits,
     /// Maximum entries per graph physical-plan or relational SQL-template cache.
     pub max_plan_cache_entries: Option<usize>,
     /// Commit-epoch lag tolerated before the inline query path recomputes
@@ -368,34 +368,36 @@ fn relational_query_limits_with_payload(
     // reaches its intermediate-row limit can still produce an admitted result.
     let max_row_read_rows = max_intermediate_rows.saturating_add(max_output_rows).max(1);
     let max_scan_pages = max_intermediate_rows
-        .div_ceil(hawdb_storage::DEFAULT_RELATIONAL_ROW_PAGE_ROWS)
+        .div_ceil(hawdb_storage::relational::DEFAULT_RELATIONAL_ROW_PAGE_ROWS)
         .max(1);
     let max_row_read_pages = max_scan_pages.saturating_add(max_output_rows).max(1);
     let max_row_read_bytes = max_row_read_pages
-        .saturating_mul(hawdb_storage::DEFAULT_RELATIONAL_ROW_PAGE_BYTES)
+        .saturating_mul(hawdb_storage::relational::DEFAULT_RELATIONAL_ROW_PAGE_BYTES)
         .max(1);
     // Logical index traversal includes cache hits and must scale with the
     // statement's admitted intermediate rows. Physical index reads retain a
     // separate fixed I/O ceiling so a warm cache cannot disable query bounds.
     let max_index_read_pages = max_intermediate_rows
-        .saturating_mul(hawdb_storage::DEFAULT_RELATIONAL_INDEX_READ_TREE_HEIGHT as usize)
+        .saturating_mul(
+            hawdb_storage::relational::DEFAULT_RELATIONAL_INDEX_READ_TREE_HEIGHT as usize,
+        )
         .max(1);
     let max_index_read_bytes = max_index_read_pages
-        .saturating_mul(hawdb_storage::DEFAULT_IMMUTABLE_INDEX_PAGE_BYTES)
+        .saturating_mul(hawdb_storage::index_page::DEFAULT_IMMUTABLE_INDEX_PAGE_BYTES)
         .max(1);
     crate::relational_sql::RelationalQueryLimits {
         max_output_rows,
         max_output_payload_bytes,
         max_intermediate_rows,
         max_candidate_work: max_intermediate_rows,
-        hydration: hawdb_storage::RelationalHydrationBudget {
+        hydration: hawdb_storage::relational::RelationalHydrationBudget {
             max_rows: max_row_read_rows,
             max_compressed_bytes: config.max_relational_hydration_bytes.get(),
             max_decompressed_bytes: config.max_relational_hydration_bytes.get(),
             max_memory_bytes: config.max_relational_hydration_bytes.get(),
-            ..hawdb_storage::RelationalHydrationBudget::default()
+            ..hawdb_storage::relational::RelationalHydrationBudget::default()
         },
-        index_read: hawdb_storage::RelationalIndexReadLimits {
+        index_read: hawdb_storage::relational::RelationalIndexReadLimits {
             max_pages: NonZeroUsize::new(max_index_read_pages)
                 .expect("relational index query page budget is non-zero"),
             max_rows: NonZeroUsize::new(max_intermediate_rows.max(1))
@@ -403,19 +405,19 @@ fn relational_query_limits_with_payload(
             max_bytes: NonZeroUsize::new(max_index_read_bytes)
                 .expect("relational index query byte budget is non-zero"),
             max_file_bytes: config.max_relational_index_read_bytes.get(),
-            ..hawdb_storage::RelationalIndexReadLimits::default()
+            ..hawdb_storage::relational::RelationalIndexReadLimits::default()
         },
-        row_read: hawdb_storage::RelationalRowPageSnapshotReadLimits {
-            demand: hawdb_storage::RelationalRowPageDemandReadLimits {
+        row_read: hawdb_storage::relational::RelationalRowPageSnapshotReadLimits {
+            demand: hawdb_storage::relational::RelationalRowPageDemandReadLimits {
                 max_pages: NonZeroUsize::new(max_row_read_pages)
                     .expect("relational row query page budget is non-zero"),
                 max_rows: NonZeroUsize::new(max_row_read_rows)
                     .expect("relational row query row budget is non-zero"),
                 max_bytes: NonZeroUsize::new(max_row_read_bytes)
                     .expect("relational row query byte budget is non-zero"),
-                ..hawdb_storage::RelationalRowPageDemandReadLimits::default()
+                ..hawdb_storage::relational::RelationalRowPageDemandReadLimits::default()
             },
-            ..hawdb_storage::RelationalRowPageSnapshotReadLimits::default()
+            ..hawdb_storage::relational::RelationalRowPageSnapshotReadLimits::default()
         },
     }
 }
@@ -462,16 +464,16 @@ fn relational_index_read_mode<
     store: &'a R,
 ) -> hawdb_relational::index_runtime::RelationalIndexReadMode<'a, R> {
     match config.relational_index_mode {
-        hawdb_storage::RelationalIndexMode::Materialized => {
+        hawdb_storage::config::RelationalIndexMode::Materialized => {
             hawdb_relational::index_runtime::RelationalIndexReadMode::Materialized
         }
-        hawdb_storage::RelationalIndexMode::Shadow => {
+        hawdb_storage::config::RelationalIndexMode::Shadow => {
             hawdb_relational::index_runtime::RelationalIndexReadMode::Shadow(store)
         }
-        hawdb_storage::RelationalIndexMode::DemandPaged => {
+        hawdb_storage::config::RelationalIndexMode::DemandPaged => {
             hawdb_relational::index_runtime::RelationalIndexReadMode::DemandPaged(store)
         }
-        hawdb_storage::RelationalIndexMode::Authoritative => {
+        hawdb_storage::config::RelationalIndexMode::Authoritative => {
             hawdb_relational::index_runtime::RelationalIndexReadMode::Authoritative(store)
         }
     }
@@ -484,33 +486,41 @@ impl Default for DatabaseConfig {
             max_read_result_rows: Some(DEFAULT_MAX_READ_RESULT_ROWS),
             max_read_result_payload_bytes: Some(DEFAULT_MAX_READ_RESULT_PAYLOAD_BYTES),
             execution_memory: executor::ExecutionMemoryConfig::default(),
-            mutation_limits: hawdb_storage::MutationLimits::default(),
+            mutation_limits: hawdb_storage::mutation::MutationLimits::default(),
             max_optimizer_groups: None,
             max_relational_join_expressions: None,
             recovery_mode: RecoveryMode::default(),
-            max_wal_replay_entries: Some(hawdb_storage::DEFAULT_MAX_WAL_REPLAY_ENTRIES),
-            max_wal_replay_bytes: Some(hawdb_storage::DEFAULT_MAX_WAL_REPLAY_BYTES),
-            max_wal_quarantine_bytes: hawdb_storage::DEFAULT_MAX_WAL_QUARANTINE_BYTES,
-            max_wal_record_bytes: Some(hawdb_storage::DEFAULT_MAX_WAL_RECORD_BYTES),
-            max_wal_batch_operations: Some(hawdb_storage::DEFAULT_MAX_WAL_BATCH_OPERATIONS),
-            max_checkpoint_encoded_bytes: Some(hawdb_storage::DEFAULT_MAX_CHECKPOINT_ENCODED_BYTES),
-            max_checkpoint_decoded_bytes: Some(hawdb_storage::DEFAULT_MAX_CHECKPOINT_DECODED_BYTES),
-            segment_cache_capacity_bytes: hawdb_storage::DEFAULT_SEGMENT_CACHE_CAPACITY_BYTES,
-            max_graph_manifest_open_bytes: hawdb_storage::DEFAULT_MAX_GRAPH_MANIFEST_OPEN_BYTES,
+            max_wal_replay_entries: Some(hawdb_storage::config::DEFAULT_MAX_WAL_REPLAY_ENTRIES),
+            max_wal_replay_bytes: Some(hawdb_storage::config::DEFAULT_MAX_WAL_REPLAY_BYTES),
+            max_wal_quarantine_bytes: hawdb_storage::config::DEFAULT_MAX_WAL_QUARANTINE_BYTES,
+            max_wal_record_bytes: Some(hawdb_storage::config::DEFAULT_MAX_WAL_RECORD_BYTES),
+            max_wal_batch_operations: Some(hawdb_storage::config::DEFAULT_MAX_WAL_BATCH_OPERATIONS),
+            max_checkpoint_encoded_bytes: Some(
+                hawdb_storage::config::DEFAULT_MAX_CHECKPOINT_ENCODED_BYTES,
+            ),
+            max_checkpoint_decoded_bytes: Some(
+                hawdb_storage::config::DEFAULT_MAX_CHECKPOINT_DECODED_BYTES,
+            ),
+            segment_cache_capacity_bytes:
+                hawdb_storage::config::DEFAULT_SEGMENT_CACHE_CAPACITY_BYTES,
+            max_graph_manifest_open_bytes:
+                hawdb_storage::config::DEFAULT_MAX_GRAPH_MANIFEST_OPEN_BYTES,
             max_relational_index_read_bytes: NonZeroUsize::new(
-                hawdb_storage::DEFAULT_RELATIONAL_INDEX_READ_BYTES,
+                hawdb_storage::relational::DEFAULT_RELATIONAL_INDEX_READ_BYTES,
             )
             .expect("default relational index read byte budget is non-zero"),
             max_relational_hydration_bytes: NonZeroUsize::new(
-                hawdb_storage::DEFAULT_MAX_RELATIONAL_HYDRATION_BYTES,
+                hawdb_storage::relational::DEFAULT_MAX_RELATIONAL_HYDRATION_BYTES,
             )
             .expect("default relational hydration byte budget is non-zero"),
-            storage_residency_mode: hawdb_storage::StorageResidencyMode::Auto,
+            storage_residency_mode: hawdb_storage::config::StorageResidencyMode::Auto,
             auto_materialize_checkpoint_bytes:
-                hawdb_storage::DEFAULT_AUTO_MATERIALIZE_CHECKPOINT_BYTES,
-            max_out_of_core_delta_bytes: Some(hawdb_storage::DEFAULT_MAX_OUT_OF_CORE_DELTA_BYTES),
+                hawdb_storage::config::DEFAULT_AUTO_MATERIALIZE_CHECKPOINT_BYTES,
+            max_out_of_core_delta_bytes: Some(
+                hawdb_storage::config::DEFAULT_MAX_OUT_OF_CORE_DELTA_BYTES,
+            ),
             graph_columnar_shadow_checkpoint: false,
-            relational_index_mode: hawdb_storage::RelationalIndexMode::default(),
+            relational_index_mode: hawdb_storage::config::RelationalIndexMode::default(),
             relational_monotonic_append_fast_path: false,
             max_search_projection_change_log_entries: Some(
                 DEFAULT_SEARCH_PROJECTION_CHANGE_LOG_MAX_ENTRIES,
@@ -574,14 +584,14 @@ pub struct SqlStatementResult {
 pub struct TransactionCommitResult {
     pub output: QueryOutput,
     pub mutations: Vec<RelationalMutationResult>,
-    pub append_mutations: Vec<hawdb_storage::AppendMutationOutcome>,
+    pub append_mutations: Vec<hawdb_storage::append_table::AppendMutationOutcome>,
 }
 
 /// Confirmed generated order-key assignments from one durable append commit.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct AppendCommitResult {
     pub commit_epoch: u64,
-    pub mutations: Vec<hawdb_storage::AppendMutationOutcome>,
+    pub mutations: Vec<hawdb_storage::append_table::AppendMutationOutcome>,
 }
 
 #[cfg(test)]
@@ -713,10 +723,10 @@ pub(super) struct DatabaseTransactionRuntime {
 #[derive(Debug)]
 pub(super) struct DatabaseTransactionState {
     graph_transaction: Option<GraphMutationTransaction>,
-    relational_transaction: hawdb_storage::RelationalTransaction,
-    relational_state: hawdb_storage::RelationalState,
-    append_transaction: hawdb_storage::AppendTransaction,
-    append_state: hawdb_storage::AppendState,
+    relational_transaction: hawdb_storage::relational::RelationalTransaction,
+    relational_state: hawdb_storage::relational::RelationalState,
+    append_transaction: hawdb_storage::append_table::AppendTransaction,
+    append_state: hawdb_storage::append_table::AppendState,
     pending_generated_append_tables: BTreeSet<String>,
     relational_returning: Vec<Option<crate::relational_sql::RelationalReturningProjection>>,
     relational_index:
@@ -729,10 +739,10 @@ pub(super) struct DatabaseTransactionState {
 }
 
 struct SparseRelationalStatementStage {
-    state: hawdb_storage::RelationalState,
-    mutation_outcomes: Vec<hawdb_storage::RelationalMutationOutcome>,
-    index_capture: hawdb_storage::RelationalIndexChangeCapture,
-    row_capture: hawdb_storage::RelationalRowChangeCapture,
+    state: hawdb_storage::relational::RelationalState,
+    mutation_outcomes: Vec<hawdb_storage::relational::RelationalMutationOutcome>,
+    index_capture: hawdb_storage::relational::RelationalIndexChangeCapture,
+    row_capture: hawdb_storage::relational::RelationalRowChangeCapture,
 }
 
 pub(super) struct GraphTransactionStatementOutcome {
@@ -807,7 +817,7 @@ impl DatabaseReadSnapshot {
 #[derive(Debug)]
 struct ProjectionRelationalReadSnapshot {
     binding: ProjectionRelationalReadBinding,
-    reader: hawdb_storage::ProjectionGenerationReader,
+    reader: hawdb_storage::projection_generation::ProjectionGenerationReader,
 }
 
 struct ReadStreamingExecutionContext<'a> {
@@ -893,7 +903,9 @@ impl Database {
     ///
     /// Candidate construction and publication stay on the embedded library
     /// path. In-memory databases do not expose a durable generation catalog.
-    pub fn projection_generation_store(&self) -> Result<hawdb_storage::ProjectionGenerationStore> {
+    pub fn projection_generation_store(
+        &self,
+    ) -> Result<hawdb_storage::projection_generation::ProjectionGenerationStore> {
         self.store.projection_generation_store()
     }
 
@@ -902,8 +914,8 @@ impl Database {
     pub fn encode_projection_relational_row(
         &self,
         table: &str,
-        row: hawdb_storage::RelationalRow,
-    ) -> Result<hawdb_storage::ProjectionGenerationMember> {
+        row: hawdb_storage::relational::RelationalRow,
+    ) -> Result<hawdb_storage::projection_generation::ProjectionGenerationMember> {
         let schema = self
             .store
             .relational_state()
@@ -913,13 +925,13 @@ impl Database {
                     "projection relational table {table} has no durable PostgreSQL schema"
                 ))
             })?;
-        hawdb_storage::encode_projection_relational_member(schema, row).map_err(|error| match error
-        {
-            hawdb_storage::ProjectionGenerationError::Corruption(message) => {
-                HawDBError::StorageIntegrity(message)
-            }
-            error => HawDBError::Execution(error.to_string()),
-        })
+        hawdb_storage::projection_generation::encode_projection_relational_member(schema, row)
+            .map_err(|error| match error {
+                hawdb_storage::projection_generation::ProjectionGenerationError::Corruption(
+                    message,
+                ) => HawDBError::StorageIntegrity(message),
+                error => HawDBError::Execution(error.to_string()),
+            })
     }
 
     pub fn new() -> Self {
@@ -990,7 +1002,7 @@ impl Database {
 
     pub(crate) fn search_projection_changefeed_status(
         &self,
-    ) -> hawdb_storage::SearchProjectionChangefeedStatus {
+    ) -> hawdb_storage::projection::SearchProjectionChangefeedStatus {
         self.store.search_projection_changefeed_status()
     }
 
@@ -999,7 +1011,7 @@ impl Database {
         search_index: &SearchIndex,
         require_restart_recoverable: bool,
         max_operations: Option<usize>,
-    ) -> hawdb_storage::SearchProjectionChangefeedReadiness {
+    ) -> hawdb_storage::projection::SearchProjectionChangefeedReadiness {
         let freshness = search_index.projection_freshness();
         self.store
             .search_projection_changefeed_status()
@@ -1631,8 +1643,8 @@ impl Database {
     pub fn read_append_partition(
         &self,
         table: &str,
-        partition: &hawdb_storage::RelationalKey,
-        after: Option<&hawdb_storage::RelationalKey>,
+        partition: &hawdb_storage::relational::RelationalKey,
+        after: Option<&hawdb_storage::relational::RelationalKey>,
         max_rows: usize,
     ) -> Result<AppendSegmentReadOutput> {
         let max_rows = self
@@ -1649,8 +1661,8 @@ impl Database {
     pub fn read_append_partition_bounded(
         &self,
         table: &str,
-        partition: &hawdb_storage::RelationalKey,
-        after: Option<&hawdb_storage::RelationalKey>,
+        partition: &hawdb_storage::relational::RelationalKey,
+        after: Option<&hawdb_storage::relational::RelationalKey>,
         max_rows: usize,
         max_payload_bytes: usize,
     ) -> Result<AppendSegmentReadOutput> {
@@ -1938,7 +1950,7 @@ impl Database {
     /// the most recent open.
     pub fn relational_index_recovery_report(
         &self,
-    ) -> Option<&hawdb_storage::RelationalIndexRecoveryReport> {
+    ) -> Option<&hawdb_storage::relational::RelationalIndexRecoveryReport> {
         self.store.relational_index_recovery_report()
     }
 
@@ -2232,9 +2244,9 @@ impl Database {
         };
         let relational_state = if blocker_codes.is_empty() {
             Some(
-                hawdb_storage::decode_relational_checkpoint(
+                hawdb_storage::relational::decode_relational_checkpoint(
                     encoded_relational_stream,
-                    hawdb_storage::RelationalDecodeLimits::checkpoint(),
+                    hawdb_storage::relational::RelationalDecodeLimits::checkpoint(),
                 )
                 .map_err(|error| HawDBError::Storage(error.to_string()))?
                 .state,
@@ -3320,7 +3332,7 @@ impl Database {
         let mut upsert_node_ids = BTreeSet::new();
         let mut delete_document_ids = BTreeSet::new();
         let mut relational_primary_keys =
-            BTreeMap::<String, BTreeSet<hawdb_storage::RelationalKey>>::new();
+            BTreeMap::<String, BTreeSet<hawdb_storage::relational::RelationalKey>>::new();
         let mut complete_through_commit_epoch = source_commit_epoch;
         let mut truncated_by_budget = false;
         for change in self
@@ -3328,8 +3340,13 @@ impl Database {
             .search_projection_changes_after(source_commit_epoch)
         {
             let tables = match &change.relational_primary_key_changes {
-                hawdb_storage::RelationalPrimaryKeyChangeCapture::Captured { tables, .. } => tables,
-                hawdb_storage::RelationalPrimaryKeyChangeCapture::RequiresRebuild { reason } => {
+                hawdb_storage::relational::RelationalPrimaryKeyChangeCapture::Captured {
+                    tables,
+                    ..
+                } => tables,
+                hawdb_storage::relational::RelationalPrimaryKeyChangeCapture::RequiresRebuild {
+                    reason,
+                } => {
                     return Err(HawDBError::Storage(format!(
                         "search projection relational change at commit epoch {} requires a full rebuild: {reason:?}",
                         change.commit_epoch
@@ -3406,12 +3423,12 @@ impl Database {
             },
             relational_primary_keys
                 .into_iter()
-                .map(
-                    |(table, primary_keys)| hawdb_storage::RelationalTablePrimaryKeyChanges {
+                .map(|(table, primary_keys)| {
+                    hawdb_storage::relational::RelationalTablePrimaryKeyChanges {
                         table,
                         primary_keys: primary_keys.into_iter().collect(),
-                    },
-                )
+                    }
+                })
                 .collect(),
         )))
     }
@@ -19352,9 +19369,9 @@ impl DatabaseTransactionState {
         Self {
             snapshot_pin: Some(pin),
             graph_transaction: Some(db.store.begin_mutation_transaction(&db.catalog)),
-            relational_transaction: hawdb_storage::RelationalTransaction::default(),
+            relational_transaction: hawdb_storage::relational::RelationalTransaction::default(),
             relational_state: db.store.relational_state().clone(),
-            append_transaction: hawdb_storage::AppendTransaction::default(),
+            append_transaction: hawdb_storage::append_table::AppendTransaction::default(),
             append_state: db.store.append_state().clone(),
             pending_generated_append_tables: BTreeSet::new(),
             relational_returning: Vec::new(),
@@ -19420,7 +19437,7 @@ impl DatabaseTransactionState {
 
     fn stage_sparse_authoritative_relational_statement(
         &self,
-        transaction: hawdb_storage::RelationalTransaction,
+        transaction: hawdb_storage::relational::RelationalTransaction,
     ) -> Result<Option<SparseRelationalStatementStage>> {
         let rows = match &self.relational_rows {
             Ok(Some(rows)) => rows,
@@ -19506,7 +19523,7 @@ fn execute_graph_transaction_statement(
             PhysicalPlan::SetNodePropertiesReturn {
                 returns: crate::planner::SetNodePropertiesReturnMode::Count { .. },
                 ..
-            } => hawdb_storage::MutationLimits {
+            } => hawdb_storage::mutation::MutationLimits {
                 max_result_rows: runtime.config.mutation_limits.max_affected_rows,
                 max_result_payload_bytes: std::num::NonZeroUsize::new(usize::MAX)
                     .expect("usize::MAX is non-zero"),
@@ -19909,13 +19926,15 @@ pub(super) fn execute_database_transaction_prepared_sql(
             .append_state
             .stage_provisional_transaction(
                 &transaction,
-                hawdb_storage::AppendMutationLimits::default(),
+                hawdb_storage::append_table::AppendMutationLimits::default(),
             )
             .map_err(map_transaction_append_error)?;
         state
             .pending_generated_append_tables
             .extend(transaction.writes.iter().filter_map(|write| match write {
-                hawdb_storage::AppendWrite::AppendGenerated { table, rows } if !rows.is_empty() => {
+                hawdb_storage::append_table::AppendWrite::AppendGenerated { table, rows }
+                    if !rows.is_empty() =>
+                {
                     Some(table.clone())
                 }
                 _ => None,
@@ -19970,8 +19989,8 @@ pub(super) fn execute_database_transaction_prepared_sql(
                 .relational_state
                 .stage_transaction_with_authoritative_index_and_outcomes(
                     transaction.clone(),
-                    hawdb_storage::RelationalMutationLimits::default(),
-                    hawdb_storage::RelationalOverflowConfig::default(),
+                    hawdb_storage::relational::RelationalMutationLimits::default(),
+                    hawdb_storage::relational::RelationalOverflowConfig::default(),
                     index.capture_limits(),
                     index,
                 )
@@ -19984,8 +20003,8 @@ pub(super) fn execute_database_transaction_prepared_sql(
             .relational_state
             .stage_transaction_with_outcomes(
                 transaction.clone(),
-                hawdb_storage::RelationalMutationLimits::default(),
-                hawdb_storage::RelationalOverflowConfig::default(),
+                hawdb_storage::relational::RelationalMutationLimits::default(),
+                hawdb_storage::relational::RelationalOverflowConfig::default(),
             )
             .map_err(map_transaction_relational_error)?
     };
@@ -20074,10 +20093,10 @@ fn sql_query_result(output: QueryOutput) -> SqlStatementResult {
 }
 
 fn project_relational_mutation_outcome(
-    outcome: &hawdb_storage::RelationalMutationOutcome,
+    outcome: &hawdb_storage::relational::RelationalMutationOutcome,
     returning: Option<&crate::relational_sql::RelationalReturningProjection>,
-    state: &hawdb_storage::RelationalState,
-    limits: hawdb_storage::MutationLimits,
+    state: &hawdb_storage::relational::RelationalState,
+    limits: hawdb_storage::mutation::MutationLimits,
     provisional: bool,
 ) -> Result<RelationalMutationResult> {
     if outcome.affected_rows > limits.max_affected_rows.get() {
@@ -20146,24 +20165,34 @@ fn project_relational_mutation_outcome(
     })
 }
 
-fn relational_value_to_query_value(value: &hawdb_storage::RelationalValue) -> Result<Value> {
+fn relational_value_to_query_value(
+    value: &hawdb_storage::relational::RelationalValue,
+) -> Result<Value> {
     match value {
-        hawdb_storage::RelationalValue::Null => Ok(Value::Null),
-        hawdb_storage::RelationalValue::Boolean(value) => Ok(Value::Bool(*value)),
-        hawdb_storage::RelationalValue::BigInt(value) => Ok(Value::Int(*value)),
-        hawdb_storage::RelationalValue::DoublePrecision(value) => Ok(Value::Float(*value)),
-        hawdb_storage::RelationalValue::Text(value) => Ok(Value::String(value.clone())),
-        hawdb_storage::RelationalValue::Bytea(value) => Ok(Value::Binary(value.clone())),
-        hawdb_storage::RelationalValue::Uuid(value) => Ok(Value::Uuid(*value)),
-        hawdb_storage::RelationalValue::Overflow(_) => Err(HawDBError::StorageIntegrity(
-            "logical relational mutation outcome contains an overflow reference".to_string(),
-        )),
+        hawdb_storage::relational::RelationalValue::Null => Ok(Value::Null),
+        hawdb_storage::relational::RelationalValue::Boolean(value) => Ok(Value::Bool(*value)),
+        hawdb_storage::relational::RelationalValue::BigInt(value) => Ok(Value::Int(*value)),
+        hawdb_storage::relational::RelationalValue::DoublePrecision(value) => {
+            Ok(Value::Float(*value))
+        }
+        hawdb_storage::relational::RelationalValue::Text(value) => Ok(Value::String(value.clone())),
+        hawdb_storage::relational::RelationalValue::Bytea(value) => {
+            Ok(Value::Binary(value.clone()))
+        }
+        hawdb_storage::relational::RelationalValue::Uuid(value) => Ok(Value::Uuid(*value)),
+        hawdb_storage::relational::RelationalValue::Overflow(_) => {
+            Err(HawDBError::StorageIntegrity(
+                "logical relational mutation outcome contains an overflow reference".to_string(),
+            ))
+        }
     }
 }
 
-fn map_transaction_append_error(error: hawdb_storage::AppendTableError) -> HawDBError {
+fn map_transaction_append_error(
+    error: hawdb_storage::append_table::AppendTableError,
+) -> HawDBError {
     match error {
-        hawdb_storage::AppendTableError::SequenceExhausted {
+        hawdb_storage::append_table::AppendTableError::SequenceExhausted {
             table,
             watermark,
             requested,
@@ -20172,27 +20201,29 @@ fn map_transaction_append_error(error: hawdb_storage::AppendTableError) -> HawDB
             watermark,
             requested,
         },
-        hawdb_storage::AppendTableError::Corruption(message)
-        | hawdb_storage::AppendTableError::Durability(message) => {
+        hawdb_storage::append_table::AppendTableError::Corruption(message)
+        | hawdb_storage::append_table::AppendTableError::Durability(message) => {
             HawDBError::StorageIntegrity(message)
         }
-        error @ (hawdb_storage::AppendTableError::Admission(_)
-        | hawdb_storage::AppendTableError::Schema(_)
-        | hawdb_storage::AppendTableError::Constraint(_)) => {
+        error @ (hawdb_storage::append_table::AppendTableError::Admission(_)
+        | hawdb_storage::append_table::AppendTableError::Schema(_)
+        | hawdb_storage::append_table::AppendTableError::Constraint(_)) => {
             HawDBError::Execution(error.to_string())
         }
     }
 }
 
-fn map_transaction_relational_error(error: hawdb_storage::RelationalError) -> HawDBError {
+fn map_transaction_relational_error(
+    error: hawdb_storage::relational::RelationalError,
+) -> HawDBError {
     match error {
-        hawdb_storage::RelationalError::Corruption(message)
-        | hawdb_storage::RelationalError::Durability(message) => {
+        hawdb_storage::relational::RelationalError::Corruption(message)
+        | hawdb_storage::relational::RelationalError::Durability(message) => {
             HawDBError::StorageIntegrity(message)
         }
-        error @ (hawdb_storage::RelationalError::Admission(_)
-        | hawdb_storage::RelationalError::Schema(_)
-        | hawdb_storage::RelationalError::Constraint(_)) => {
+        error @ (hawdb_storage::relational::RelationalError::Admission(_)
+        | hawdb_storage::relational::RelationalError::Schema(_)
+        | hawdb_storage::relational::RelationalError::Constraint(_)) => {
             HawDBError::Execution(error.to_string())
         }
     }
@@ -20466,7 +20497,7 @@ impl DatabaseSession<'_> {
                 let summary = self.db.store.commit_mutation_transaction_and_relational(
                     &mut self.db.catalog,
                     transaction,
-                    hawdb_storage::RelationalTransaction::default(),
+                    hawdb_storage::relational::RelationalTransaction::default(),
                     self.db.config.mutation_limits,
                 )?;
                 Ok(QueryOutput {
@@ -21814,7 +21845,7 @@ fn single_import_label(node: &CanonicalSnapshotNode) -> Result<String> {
     }
 }
 
-fn relational_state_counts(state: &hawdb_storage::RelationalState) -> (usize, usize) {
+fn relational_state_counts(state: &hawdb_storage::relational::RelationalState) -> (usize, usize) {
     let table_count = state.table_schemas().count();
     let row_count = state
         .table_schemas()

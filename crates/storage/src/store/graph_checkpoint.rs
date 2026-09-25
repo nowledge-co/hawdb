@@ -17,7 +17,7 @@
 use super::*;
 
 struct ExactRelationalOverflowCheckpoint<'a> {
-    references: &'a hawdb_storage::RelationalOverflowReferenceSet,
+    references: &'a hawdb_storage::relational::RelationalOverflowReferenceSet,
     scan: relational_row_pages::RelationalOverflowClosureScanReport,
     admitted_memory_bytes: u64,
     max_rewrite_bytes: NonZeroU64,
@@ -37,10 +37,10 @@ fn row_compaction_checkpoint(task: &RuntimeTaskContext) -> Result<()> {
 }
 
 fn row_compaction_publication_error(
-    error: hawdb_storage::RelationalRowPagePublicationError,
+    error: hawdb_storage::relational::RelationalRowPagePublicationError,
 ) -> HawDBError {
     match error {
-        hawdb_storage::RelationalRowPagePublicationError::Corrupt(_) => {
+        hawdb_storage::relational::RelationalRowPagePublicationError::Corrupt(_) => {
             HawDBError::StorageIntegrity(error.to_string())
         }
         _ => HawDBError::Storage(error.to_string()),
@@ -48,20 +48,20 @@ fn row_compaction_publication_error(
 }
 
 fn exact_overflow_publication_error(
-    error: hawdb_storage::RelationalOverflowPublicationError,
+    error: hawdb_storage::relational::RelationalOverflowPublicationError,
 ) -> HawDBError {
     let message = error.to_string();
     match error {
-        hawdb_storage::RelationalOverflowPublicationError::Corrupt(_)
-        | hawdb_storage::RelationalOverflowPublicationError::MissingExtent(_) => {
+        hawdb_storage::relational::RelationalOverflowPublicationError::Corrupt(_)
+        | hawdb_storage::relational::RelationalOverflowPublicationError::MissingExtent(_) => {
             HawDBError::StorageIntegrity(message)
         }
-        hawdb_storage::RelationalOverflowPublicationError::Admission(_)
-        | hawdb_storage::RelationalOverflowPublicationError::Durability(_)
-        | hawdb_storage::RelationalOverflowPublicationError::StaleGeneration { .. } => {
-            HawDBError::Storage(message)
-        }
-        hawdb_storage::RelationalOverflowPublicationError::Stopped(_) => {
+        hawdb_storage::relational::RelationalOverflowPublicationError::Admission(_)
+        | hawdb_storage::relational::RelationalOverflowPublicationError::Durability(_)
+        | hawdb_storage::relational::RelationalOverflowPublicationError::StaleGeneration {
+            ..
+        } => HawDBError::Storage(message),
+        hawdb_storage::relational::RelationalOverflowPublicationError::Stopped(_) => {
             HawDBError::Execution(message)
         }
     }
@@ -215,7 +215,7 @@ impl GraphStore {
         let _permit = match &self.runtime_governor {
             Some(governor) => Some(
                 governor
-                    .try_admit(hawdb_storage::BackgroundWorkRequest {
+                    .try_admit(hawdb_storage::background::BackgroundWorkRequest {
                         cpu_slots: 1,
                         memory_bytes: admitted_memory_bytes,
                         io_slots: 1,
@@ -327,7 +327,7 @@ impl GraphStore {
         let _permit = match &self.runtime_governor {
             Some(governor) => Some(
                 governor
-                    .try_admit(hawdb_storage::BackgroundWorkRequest {
+                    .try_admit(hawdb_storage::background::BackgroundWorkRequest {
                         cpu_slots: 1,
                         memory_bytes: admitted_memory_bytes,
                         io_slots: 1,
@@ -521,7 +521,7 @@ impl GraphStore {
                     record
                         .map(PersistentPropertyProjectionRecord::Node)
                         .map_err(|error| {
-                            hawdb_storage::PersistentPropertyProjectionError::Source(
+                            hawdb_storage::property_projection::PersistentPropertyProjectionError::Source(
                                 error.to_string(),
                             )
                         })
@@ -533,7 +533,7 @@ impl GraphStore {
                     record
                         .map(PersistentPropertyProjectionRecord::Relationship)
                         .map_err(|error| {
-                            hawdb_storage::PersistentPropertyProjectionError::Source(
+                            hawdb_storage::property_projection::PersistentPropertyProjectionError::Source(
                                 error.to_string(),
                             )
                         })
@@ -616,7 +616,9 @@ impl GraphStore {
                 .inspect(|record| self.poison_on_storage_error(record))
                 .map(|record| {
                     record.map_err(|error| {
-                        hawdb_storage::CanonicalAdjacencyError::Source(error.to_string())
+                        hawdb_storage::canonical_adjacency::CanonicalAdjacencyError::Source(
+                            error.to_string(),
+                        )
                     })
                 })
         });
@@ -799,7 +801,7 @@ impl GraphStore {
                 })?;
                 overflow_publisher
                     .persist_generation_exact_references(
-                        hawdb_storage::RelationalOverflowExactGenerationRequest {
+                        hawdb_storage::relational::RelationalOverflowExactGenerationRequest {
                             directory: durable.root_path(),
                             generation,
                             source_commit_epoch: commit_epoch,
@@ -895,7 +897,7 @@ impl GraphStore {
                         admitted_memory_bytes: exact.admitted_memory_bytes,
                     });
             let relational_overflow_root =
-                hawdb_storage::RelationalOverflowRootReader::open_generation(
+                hawdb_storage::relational::RelationalOverflowRootReader::open_generation(
                     durable.root_path(),
                     generation,
                     overflow_publication_config,
@@ -932,12 +934,13 @@ impl GraphStore {
             let relational_row_compaction_report = row_compaction
                 .as_ref()
                 .map(|compaction| {
-                    let root = hawdb_storage::RelationalRowPageRootReader::open_generation(
-                        durable.root_path(),
-                        generation,
-                        row_publication_config,
-                    )
-                    .map_err(row_compaction_publication_error)?;
+                    let root =
+                        hawdb_storage::relational::RelationalRowPageRootReader::open_generation(
+                            durable.root_path(),
+                            generation,
+                            row_publication_config,
+                        )
+                        .map_err(row_compaction_publication_error)?;
                     Ok::<_, HawDBError>(RelationalRowPageCompactionReport {
                         source_commit_epoch: commit_epoch,
                         published_generation: generation,

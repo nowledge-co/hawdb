@@ -17,12 +17,17 @@
 use crate::artifact_files::{checkpoint_generation_file, wal_generation_file};
 use crate::text::parse_u64;
 use crate::{
-    durable_replace_file, AppendGenerationArtifacts, AppendSegmentArtifactMetadata,
-    CanonicalAdjacencyArtifactMetadata, CanonicalAdjacencyGenerationArtifacts,
-    GraphDescriptorTreeArtifactMetadata, RelationalIndexArtifactMetadata,
-    RelationalIndexGenerationArtifacts, RelationalOverflowArtifactMetadata,
-    RelationalOverflowGenerationArtifacts, RelationalRowPageArtifactMetadata,
-    RelationalRowPageGenerationArtifacts,
+    append_table::{AppendGenerationArtifacts, AppendSegmentArtifactMetadata},
+    canonical_adjacency::{
+        CanonicalAdjacencyArtifactMetadata, CanonicalAdjacencyGenerationArtifacts,
+    },
+    durability::durable_replace_file,
+    graph_descriptor_tree::GraphDescriptorTreeArtifactMetadata,
+    relational::{
+        RelationalIndexArtifactMetadata, RelationalIndexGenerationArtifacts,
+        RelationalOverflowArtifactMetadata, RelationalOverflowGenerationArtifacts,
+        RelationalRowPageArtifactMetadata, RelationalRowPageGenerationArtifacts,
+    },
 };
 use hawdb_core::{HawDBError, Result};
 use hawdb_integrity::{checksum_u64 as checksum_bytes, Sha256Digest};

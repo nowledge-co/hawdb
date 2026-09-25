@@ -25,11 +25,17 @@ use super::{
 use crate::cache::SegmentCacheIdentity;
 use crate::io::read_exact_at;
 use crate::{
-    content_digest, durable_replace_file, ImmutableIndexPage, ImmutableIndexPageBody,
-    ImmutableIndexPageError, ImmutableIndexPageLimits, IndexIdentity, IndexInteriorEntry,
-    IndexInteriorPage, IndexLeafEntry, IndexLeafPage, IndexLeafPosting, IndexPageId,
-    IndexPostingPage, IndexRootPage, IndexRowId, ManifestGeneration, RepresentationKind,
-    SegmentCache, SegmentCacheError, SegmentCacheKey, StoreId,
+    cache::{
+        content_digest, ManifestGeneration, RepresentationKind, SegmentCache, SegmentCacheError,
+        SegmentCacheKey, StoreId,
+    },
+    durability::durable_replace_file,
+    index_page::{
+        ImmutableIndexPage, ImmutableIndexPageBody, ImmutableIndexPageError,
+        ImmutableIndexPageLimits, IndexIdentity, IndexInteriorEntry, IndexInteriorPage,
+        IndexLeafEntry, IndexLeafPage, IndexLeafPosting, IndexPageId, IndexPostingPage,
+        IndexRootPage, IndexRowId,
+    },
 };
 use hawdb_integrity::{
     integrity_digest, IntegrityDigest, IntegrityHasher, Sha256Digest, SHA256_BYTES,
@@ -631,9 +637,9 @@ impl RelationalIndexShadowState {
     pub fn residency_report(
         &self,
         commit_epoch: u64,
-    ) -> crate::RelationalIndexStorageResidencyReport {
+    ) -> crate::relational_index_view::RelationalIndexStorageResidencyReport {
         self.current_read_view(commit_epoch).map_or_else(
-            crate::RelationalIndexStorageResidencyReport::default,
+            crate::relational_index_view::RelationalIndexStorageResidencyReport::default,
             |view| view.residency_report(),
         )
     }

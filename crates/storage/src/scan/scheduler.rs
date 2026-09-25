@@ -12,7 +12,7 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-use crate::ContentDigest;
+use crate::cache::ContentDigest;
 use std::num::{NonZeroU64, NonZeroUsize};
 
 #[derive(Debug, Clone, PartialEq, Eq)]

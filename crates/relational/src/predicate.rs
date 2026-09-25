@@ -16,7 +16,7 @@
 
 use hawdb_core::{HawDBError, Result, Value};
 use hawdb_sql::{Expr, ExprKind, SqlColumnRef, SqlComparisonOp, SqlPredicate, SqlValue};
-use hawdb_storage::{RelationalScalarType, RelationalValue, RelationalValueRef};
+use hawdb_storage::relational::{RelationalScalarType, RelationalValue, RelationalValueRef};
 
 use crate::query_value::{bind_sql_value, value_to_relational_as};
 

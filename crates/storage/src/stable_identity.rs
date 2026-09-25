@@ -15,9 +15,13 @@
 use crate::cache::SegmentCacheIdentity;
 use crate::io::read_exact_at;
 use crate::{
-    content_digest, decode_residual_row_properties, durable_replace_file,
-    encode_residual_row_properties, sync_parent_directory, ManifestGeneration, RepresentationKind,
-    SegmentCache, SegmentCacheError, SegmentCacheKey, StoreId, StoreStableIdMapping,
+    cache::{
+        content_digest, ManifestGeneration, RepresentationKind, SegmentCache, SegmentCacheError,
+        SegmentCacheKey, StoreId,
+    },
+    canonical::{decode_residual_row_properties, encode_residual_row_properties},
+    durability::{durable_replace_file, sync_parent_directory},
+    projection::StoreStableIdMapping,
 };
 use hawdb_core::Value;
 use hawdb_integrity::{IntegrityHasher, SHA256_BYTES};
@@ -1564,7 +1568,7 @@ fn decode_page_slot(
 }
 
 fn decode_cached_page_slot(
-    slot: &crate::SegmentCacheLease,
+    slot: &crate::cache::SegmentCacheLease,
     expected_generation: u64,
     expected_page_id: u64,
     config: StableIdentityMappingConfig,

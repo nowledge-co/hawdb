@@ -16,7 +16,10 @@
 
 use super::*;
 use hawdb_storage::version::{VersionConflict, VersionKey, VersionWriteSet};
-use hawdb_storage::{wal::WalOp, RelationalError, RelationalWrite};
+use hawdb_storage::{
+    relational::{RelationalError, RelationalWrite},
+    wal::WalOp,
+};
 
 impl GraphStore {
     pub fn commit_mutations(
@@ -1853,9 +1856,9 @@ impl GraphStore {
                         index_limits,
                         row_limits,
                         self.search_projection_primary_key_capture_limits,
-                        authoritative_index
-                            .as_ref()
-                            .map(|index| index as &dyn hawdb_storage::RelationalConstraintIndex),
+                        authoritative_index.as_ref().map(|index| {
+                            index as &dyn hawdb_storage::relational::RelationalConstraintIndex
+                        }),
                     )
                     .map_err(map_relational_staging_error)?
             };
@@ -1866,10 +1869,10 @@ impl GraphStore {
             let replay_access = staged.replay_access.filter(|_| {
                 matches!(
                     staged_relational_row_capture.as_ref(),
-                    Some(hawdb_storage::RelationalRowChangeCapture::Captured { .. })
+                    Some(hawdb_storage::relational::RelationalRowChangeCapture::Captured { .. })
                 )
             });
-            let encoded = hawdb_storage::encode_relational_wal_batch_with_captures(
+            let encoded = hawdb_storage::relational::encode_relational_wal_batch_with_captures(
                 next_commit_epoch,
                 &transaction,
                 replay_access.as_ref(),
@@ -2696,9 +2699,9 @@ fn map_relational_staging_error(error: RelationalError) -> HawDBError {
     }
 }
 
-fn map_append_staging_error(error: hawdb_storage::AppendTableError) -> HawDBError {
+fn map_append_staging_error(error: hawdb_storage::append_table::AppendTableError) -> HawDBError {
     match error {
-        hawdb_storage::AppendTableError::SequenceExhausted {
+        hawdb_storage::append_table::AppendTableError::SequenceExhausted {
             table,
             watermark,
             requested,
@@ -2716,7 +2719,9 @@ mod tests {
     use super::*;
 
     fn relational_mvcc_fixture() -> (Catalog, GraphStore) {
-        use hawdb_storage::{RelationalColumnSchema, RelationalScalarType, RelationalTableSchema};
+        use hawdb_storage::relational::{
+            RelationalColumnSchema, RelationalScalarType, RelationalTableSchema,
+        };
         let mut catalog = Catalog::default();
         let mut store = GraphStore::default();
         store
@@ -2764,11 +2769,11 @@ mod tests {
     fn relational_mvcc_insert(id: i64, body: &str) -> RelationalWrite {
         RelationalWrite::Insert {
             table: "rows".into(),
-            rows: vec![hawdb_storage::RelationalRow::new(vec![
+            rows: vec![hawdb_storage::relational::RelationalRow::new(vec![
                 RelationalValue::BigInt(id),
                 RelationalValue::Text(body.into()),
             ])],
-            mode: hawdb_storage::RelationalInsertMode::Replace,
+            mode: hawdb_storage::relational::RelationalInsertMode::Replace,
         }
     }
 
@@ -2937,7 +2942,7 @@ mod tests {
         let stamps = store.version_index.len();
         let rows = (0..4096)
             .map(|id| {
-                hawdb_storage::RelationalRow::new(vec![
+                hawdb_storage::relational::RelationalRow::new(vec![
                     RelationalValue::BigInt(id),
                     RelationalValue::Text("a".into()),
                 ])
@@ -2950,7 +2955,7 @@ mod tests {
                     writes: vec![RelationalWrite::Insert {
                         table: table.clone(),
                         rows,
-                        mode: hawdb_storage::RelationalInsertMode::Error,
+                        mode: hawdb_storage::relational::RelationalInsertMode::Error,
                     }],
                 },
             )
@@ -3013,11 +3018,13 @@ mod tests {
 
     #[test]
     fn append_sequence_exhaustion_remains_structured_at_the_facade_boundary() {
-        let error = map_append_staging_error(hawdb_storage::AppendTableError::SequenceExhausted {
-            table: "events".to_string(),
-            watermark: i64::MAX,
-            requested: 1,
-        });
+        let error = map_append_staging_error(
+            hawdb_storage::append_table::AppendTableError::SequenceExhausted {
+                table: "events".to_string(),
+                watermark: i64::MAX,
+                requested: 1,
+            },
+        );
 
         assert!(matches!(
             error,

@@ -13,7 +13,7 @@
 // limitations under the License.
 
 use super::{AppendTableError, AppendTableRow};
-use crate::RelationalError;
+use crate::relational::RelationalError;
 use std::cmp::Ordering;
 
 #[derive(Default)]

@@ -22,7 +22,7 @@ use super::{
     AppendSegmentReadReport, AppendSegmentReader, AppendSegmentWriter, AppendTableError,
     AppendTableRow, AppendTableSchema, AppendTransaction, AppendWrite,
 };
-use crate::{durable_replace_file, RelationalKey};
+use crate::{durability::durable_replace_file, relational::RelationalKey};
 use hawdb_integrity::{integrity_digest, Sha256Digest, SHA256_BYTES};
 use std::collections::BTreeMap;
 use std::fs::{self, File};
@@ -1044,7 +1044,9 @@ fn durability(context: &'static str) -> impl FnOnce(std::io::Error) -> AppendTab
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::{RelationalColumnSchema, RelationalRow, RelationalScalarType, RelationalValue};
+    use crate::relational::{
+        RelationalColumnSchema, RelationalRow, RelationalScalarType, RelationalValue,
+    };
     use std::time::{SystemTime, UNIX_EPOCH};
 
     fn directory(name: &str) -> PathBuf {

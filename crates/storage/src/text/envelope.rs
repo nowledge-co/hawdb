@@ -18,7 +18,7 @@
 //! envelope bytes, validation order, and caller-supplied decoded byte limit.
 
 use super::parse_u64;
-use crate::DurableCompression;
+use crate::config::DurableCompression;
 use hawdb_core::{HawDBError, Result};
 use hawdb_integrity::checksum_u64 as checksum_bytes;
 use std::collections::BTreeSet;

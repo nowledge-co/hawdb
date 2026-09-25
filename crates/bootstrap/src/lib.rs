@@ -21,8 +21,11 @@
 use hawdb_core::{HawDBError, Result, Value};
 use hawdb_search::{SearchProjectionDelta, SearchProjectionFreshness, SearchProjectionKind};
 use hawdb_storage::{
-    decode_relational_checkpoint, encode_relational_checkpoint, RelationalDecodeLimits,
-    RelationalState, StoreStableIdMapping,
+    projection::StoreStableIdMapping,
+    relational::{
+        decode_relational_checkpoint, encode_relational_checkpoint, RelationalDecodeLimits,
+        RelationalState,
+    },
 };
 use std::collections::{BTreeMap, BTreeSet};
 

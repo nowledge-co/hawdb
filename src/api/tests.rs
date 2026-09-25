@@ -9125,9 +9125,9 @@ fn relational_insert_returning_conflicts_cover_checkpoint_base_and_live_delta() 
 #[test]
 fn relational_insert_returning_result_budget_fails_before_staging() {
     let mut db = Database::new_with_config(DatabaseConfig {
-        mutation_limits: hawdb_storage::MutationLimits {
+        mutation_limits: hawdb_storage::mutation::MutationLimits {
             max_result_rows: NonZeroUsize::new(1).unwrap(),
-            ..hawdb_storage::MutationLimits::default()
+            ..hawdb_storage::mutation::MutationLimits::default()
         },
         ..DatabaseConfig::default()
     });
@@ -9155,9 +9155,9 @@ fn relational_insert_returning_result_budget_fails_before_staging() {
 #[test]
 fn relational_insert_returning_payload_budget_fails_before_staging() {
     let mut db = Database::new_with_config(DatabaseConfig {
-        mutation_limits: hawdb_storage::MutationLimits {
+        mutation_limits: hawdb_storage::mutation::MutationLimits {
             max_result_payload_bytes: NonZeroUsize::new(4).unwrap(),
-            ..hawdb_storage::MutationLimits::default()
+            ..hawdb_storage::mutation::MutationLimits::default()
         },
         ..DatabaseConfig::default()
     });

@@ -14,7 +14,10 @@
 
 //! Shared graph property-index map aliases.
 
-use crate::{CowSegment, CowSegmentedMap, NodeId, RelId};
+use crate::{
+    cow::{CowSegment, CowSegmentedMap},
+    NodeId, RelId,
+};
 use hawdb_core::{LabelId, RelTypeId, Value};
 use std::collections::BTreeSet;
 

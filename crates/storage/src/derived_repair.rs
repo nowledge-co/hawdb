@@ -19,9 +19,12 @@
 //! reopening, and repair application.
 
 use crate::{
-    CanonicalAdjacencyConfig, PersistentPropertyProjectionConfig,
-    DEFAULT_MAX_GRAPH_MANIFEST_OPEN_BYTES, DEFAULT_MAX_WAL_REPLAY_BYTES,
-    DEFAULT_MAX_WAL_REPLAY_ENTRIES,
+    canonical_adjacency::CanonicalAdjacencyConfig,
+    config::{
+        DEFAULT_MAX_GRAPH_MANIFEST_OPEN_BYTES, DEFAULT_MAX_WAL_REPLAY_BYTES,
+        DEFAULT_MAX_WAL_REPLAY_ENTRIES,
+    },
+    property_projection::PersistentPropertyProjectionConfig,
 };
 use hawdb_core::{HawDBError, Result};
 use serde::{Deserialize, Serialize};

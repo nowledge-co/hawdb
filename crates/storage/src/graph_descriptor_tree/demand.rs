@@ -19,13 +19,13 @@ use super::{
     GraphDescriptorTreeRoot, GraphDescriptorTreeRootReader,
 };
 use crate::cache::SegmentCacheIdentity;
+use crate::cache::{
+    content_digest, ManifestGeneration, RepresentationKind, SegmentCache, SegmentCacheError,
+    SegmentCacheKey, StoreId,
+};
 use crate::graph_descriptor_page::{
     GraphDescriptorKind, GraphDescriptorPageError, GraphDescriptorPageRef,
     ImmutableGraphDescriptorPage, ImmutableGraphDescriptorPageBody,
-};
-use crate::{
-    content_digest, ManifestGeneration, RepresentationKind, SegmentCache, SegmentCacheError,
-    SegmentCacheKey, StoreId,
 };
 use hawdb_integrity::IntegrityHasher;
 use std::collections::BTreeSet;

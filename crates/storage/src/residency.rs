@@ -14,7 +14,10 @@
 
 //! Storage-owned residency snapshots for host resource accounting.
 
-use crate::{GraphIndexReadMetricsSnapshot, RelationalIndexStorageResidencyReport};
+use crate::{
+    graph_index_metrics::GraphIndexReadMetricsSnapshot,
+    relational_index_view::RelationalIndexStorageResidencyReport,
+};
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct StorageResidencyReport {

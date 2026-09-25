@@ -17,7 +17,7 @@ use super::{
     RelationalIndexProbeStatistics, RelationalIndexReadSelector, RelationalIndexReadView,
     RelationalIndexReadViewReport,
 };
-use crate::{
+use crate::relational::{
     RelationalConstraintIndex, RelationalError, RelationalIndexChange,
     RelationalIndexChangeCapture, RelationalIndexChangeCaptureLimits, RelationalIndexChangeKind,
     RelationalIndexRangeScan, RelationalIndexReadLimits, RelationalIndexScanDirection,
@@ -777,7 +777,7 @@ fn relational_read_error(error: RelationalError) -> RelationalIndexShadowError {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::RelationalValue;
+    use crate::relational::RelationalValue;
 
     #[test]
     fn transaction_overlay_admission_is_cumulative_and_atomic() {

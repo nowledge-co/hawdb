@@ -23,7 +23,8 @@ use crate::store::{
 use hawdb_core::{LabelId, RelTypeId};
 use hawdb_plan_cypher::{CompositeRangeSeek, NodeProjectionAccess};
 use hawdb_storage::{
-    AdjacencyDirection, ProjectedGraphDefinition, ProjectedNodeRecord, RelRecord, ScanPredicate,
+    adjacency::AdjacencyDirection, projection::ProjectedGraphDefinition, scan::ScanPredicate,
+    ProjectedNodeRecord, RelRecord,
 };
 use std::collections::BTreeSet;
 
@@ -200,7 +201,7 @@ impl GraphExecutionRead for ReadFixture {
             graph_epoch: 1,
             skipped_segment_count: 0,
             candidate_count: candidates.len(),
-            report: hawdb_storage::SegmentReadExecutionReport {
+            report: hawdb_storage::scan::SegmentReadExecutionReport {
                 wave_count: 1,
                 range_count: 1,
                 bytes_read: 1,

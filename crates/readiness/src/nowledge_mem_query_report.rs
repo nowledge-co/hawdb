@@ -24,7 +24,7 @@ use hawdb_executor::{
     VectorExecutionReport,
 };
 use hawdb_plan_cache::PlanCacheLookup;
-use hawdb_storage::{ScanPruningReport, ScanPruningStrategy};
+use hawdb_storage::scan::{ScanPruningReport, ScanPruningStrategy};
 use std::collections::{BTreeMap, BTreeSet};
 
 pub use hawdb_evidence::inventory::NOWLEDGE_MEM_QUERY_REPORT_PROTOCOL;

@@ -14,8 +14,8 @@
 
 //! Relational index view qualification report contracts.
 
+use crate::relational::{RelationalIndexReadLimits, RelationalKey};
 use crate::relational_index_view::RelationalIndexReadViewReport;
-use crate::{RelationalIndexReadLimits, RelationalKey};
 use std::num::NonZeroUsize;
 
 pub const RELATIONAL_INDEX_VIEW_QUALIFICATION_PROTOCOL: &str =

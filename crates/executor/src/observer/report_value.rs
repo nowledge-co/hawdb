@@ -19,7 +19,7 @@ use crate::{
     VectorExecutionReport,
 };
 use hawdb_core::Value;
-use hawdb_storage::{ScanPruningReport, ScanPruningStrategy};
+use hawdb_storage::scan::{ScanPruningReport, ScanPruningStrategy};
 use std::collections::BTreeMap;
 
 pub fn blocking_operator_memory_report_value(report: &BlockingOperatorMemoryReport) -> Value {

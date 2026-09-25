@@ -14,15 +14,21 @@
 
 use super::*;
 use hawdb_storage::{
-    encode_projection_relational_member, ImmutableRelationalRowPage,
-    ProjectionGenerationBatchLimits, ProjectionGenerationBegin, ProjectionGenerationDigestBuilder,
-    ProjectionGenerationIdentity, ProjectionGenerationStore, RelationalOverflowPublicationConfig,
-    RelationalOverflowPublisher, RelationalOverflowRootReader, RelationalRecoveryFence,
-    RelationalRecoverySourceIdentity, RelationalRowChangeCapture, RelationalRowDeltaBuilder,
-    RelationalRowDeltaConfig, RelationalRowDeltaReader, RelationalRowDeltaTableMetadata,
-    RelationalRowPageEntry, RelationalRowPageId, RelationalRowPagePublicationConfig,
-    RelationalRowPagePublisher, RelationalRowPageReadView, RelationalRowPageRootReader,
-    RelationalRowPageTableDelta, RelationalTransaction, SegmentCache, StoreId,
+    cache::{SegmentCache, StoreId},
+    projection_generation::{
+        encode_projection_relational_member, ProjectionGenerationBatchLimits,
+        ProjectionGenerationBegin, ProjectionGenerationDigestBuilder, ProjectionGenerationIdentity,
+        ProjectionGenerationStore,
+    },
+    relational::{
+        ImmutableRelationalRowPage, RelationalOverflowPublicationConfig,
+        RelationalOverflowPublisher, RelationalOverflowRootReader, RelationalRecoveryFence,
+        RelationalRecoverySourceIdentity, RelationalRowChangeCapture, RelationalRowDeltaBuilder,
+        RelationalRowDeltaConfig, RelationalRowDeltaReader, RelationalRowDeltaTableMetadata,
+        RelationalRowPageEntry, RelationalRowPageId, RelationalRowPagePublicationConfig,
+        RelationalRowPagePublisher, RelationalRowPageReadView, RelationalRowPageRootReader,
+        RelationalRowPageTableDelta, RelationalTransaction,
+    },
 };
 use std::num::{NonZeroU32, NonZeroU64};
 use std::path::PathBuf;

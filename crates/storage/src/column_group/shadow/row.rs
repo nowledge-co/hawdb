@@ -15,8 +15,11 @@
 //! Row representation kernels for the derived graph columnar shadow.
 
 use crate::{
-    residual_row_properties_encoded_len, write_residual_row_properties, ColumnGroupTableKey,
-    ColumnGroupTableKind, StreamedBlob,
+    canonical::{residual_row_properties_encoded_len, write_residual_row_properties},
+    column_group::{
+        group::StreamedBlob,
+        manifest::{ColumnGroupTableKey, ColumnGroupTableKind},
+    },
 };
 use hawdb_core::{HawDBError, LabelId, RelTypeId, Result, Value};
 use std::collections::BTreeSet;

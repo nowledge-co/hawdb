@@ -21,7 +21,7 @@ use crate::store::{
     parse_relational_row_page_artifact_generation_file, remove_generation_reclamation_candidate,
     storage_generation_for_file, sync_parent_dir,
 };
-use hawdb_storage::{
+use hawdb_storage::append_table::{
     append_generation_manifest_file, AppendGenerationManifest, AppendPublicationConfig,
 };
 use std::collections::BTreeSet;
@@ -147,18 +147,17 @@ impl DurableStore {
         let mut overflow_extent_generations = BTreeSet::new();
 
         for &generation in retained_generations {
-            let overflow_manifest =
-                self.root_path
-                    .join(hawdb_storage::relational_overflow_manifest_generation_file(
-                        generation,
-                    ));
+            let overflow_manifest = self.root_path.join(
+                hawdb_storage::relational::relational_overflow_manifest_generation_file(generation),
+            );
             if overflow_manifest.exists() {
-                let overflow = hawdb_storage::RelationalOverflowRootReader::open_generation(
-                    &self.root_path,
-                    generation,
-                    hawdb_storage::RelationalOverflowPublicationConfig::default(),
-                )
-                .map_err(|error| HawDBError::Storage(error.to_string()))?;
+                let overflow =
+                    hawdb_storage::relational::RelationalOverflowRootReader::open_generation(
+                        &self.root_path,
+                        generation,
+                        hawdb_storage::relational::RelationalOverflowPublicationConfig::default(),
+                    )
+                    .map_err(|error| HawDBError::Storage(error.to_string()))?;
                 overflow
                     .visit_descriptors(|descriptor| {
                         overflow_extent_generations.insert(descriptor.physical_generation);
@@ -167,16 +166,14 @@ impl DurableStore {
                     .map_err(|error| HawDBError::Storage(error.to_string()))?;
             }
 
-            let row_manifest =
-                self.root_path
-                    .join(hawdb_storage::relational_row_page_manifest_generation_file(
-                        generation,
-                    ));
+            let row_manifest = self.root_path.join(
+                hawdb_storage::relational::relational_row_page_manifest_generation_file(generation),
+            );
             if row_manifest.exists() {
-                let rows = hawdb_storage::RelationalRowPageRootReader::open_generation(
+                let rows = hawdb_storage::relational::RelationalRowPageRootReader::open_generation(
                     &self.root_path,
                     generation,
-                    hawdb_storage::RelationalRowPagePublicationConfig::default(),
+                    hawdb_storage::relational::RelationalRowPagePublicationConfig::default(),
                 )
                 .map_err(|error| HawDBError::Storage(error.to_string()))?;
                 let tables = rows

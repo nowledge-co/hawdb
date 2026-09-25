@@ -14,7 +14,7 @@
 
 use crate::SearchProjectionDelta;
 use hawdb_qos::{BackgroundWorkHint, BackgroundWorkPlan, WorkClass, WorkRequest};
-use hawdb_storage::RelationalTablePrimaryKeyChanges;
+use hawdb_storage::relational::RelationalTablePrimaryKeyChanges;
 
 /// A bounded graph-derived delta to apply to a search projection.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]

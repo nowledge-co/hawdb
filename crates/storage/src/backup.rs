@@ -23,7 +23,7 @@ use crate::artifact_files::{
     parse_relational_index_manifest_generation_file, parse_relational_overflow_generation_file,
     parse_relational_row_generation_file,
 };
-use crate::durable_replace_file;
+use crate::durability::durable_replace_file;
 use hawdb_core::{HawDBError, Result};
 use hawdb_integrity::{checksum_u64, IntegrityHasher, Sha256Digest};
 use std::collections::BTreeSet;

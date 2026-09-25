@@ -23,11 +23,15 @@ use crate::text::{
     parse_usize,
 };
 use crate::{
-    artifact_binding::DurableArtifactMetadata, decode_relational_primary_key,
-    durable_manifest::validate_storage_version, durable_manifest::STORAGE_VERSION,
-    encode_relational_primary_key, NodeId, NodeRecord, ProjectedGraphDefinition, RelId, RelRecord,
-    RelationalPrimaryKeyChangeCapture, RelationalPrimaryKeyChangeRebuildReason,
-    RelationalTablePrimaryKeyChanges, SearchProjectionGraphChange,
+    artifact_binding::DurableArtifactMetadata,
+    durable_manifest::{validate_storage_version, STORAGE_VERSION},
+    projection::{ProjectedGraphDefinition, SearchProjectionGraphChange},
+    relational::{
+        decode_relational_primary_key, encode_relational_primary_key,
+        RelationalPrimaryKeyChangeCapture, RelationalPrimaryKeyChangeRebuildReason,
+        RelationalTablePrimaryKeyChanges,
+    },
+    NodeId, NodeRecord, RelId, RelRecord,
 };
 use hawdb_core::{
     BasicGraphStatistics, Catalog, ConstraintId, ConstraintSubject, GraphStatistics, HawDBError,

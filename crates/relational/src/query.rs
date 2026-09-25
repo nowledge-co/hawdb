@@ -50,8 +50,8 @@ use hawdb_sql::{
     SqlJoinKind, SqlNullOrder, SqlOrderDirection, SqlPredicate, SqlStatement, SqlValue,
 };
 #[cfg(test)]
-use hawdb_storage::RelationalHydrationBudget;
-use hawdb_storage::{
+use hawdb_storage::relational::RelationalHydrationBudget;
+use hawdb_storage::relational::{
     relational_unique_index_name, RelationalIndexRangeScan, RelationalIndexScanDirection,
     RelationalKey, RelationalScalarType, RelationalState, RelationalTableSchema, RelationalValue,
 };
@@ -283,12 +283,12 @@ impl RelationalIndexStoreReader for crate::RelationalMaterializedReader {
         _table: &str,
         _index: &str,
         _prefix: &RelationalKey,
-        _limits: hawdb_storage::RelationalIndexReadLimits,
+        _limits: hawdb_storage::relational::RelationalIndexReadLimits,
         _visit: impl FnMut(&RelationalKey, &RelationalKey) -> bool,
     ) -> Option<
         std::result::Result<
             hawdb_storage::relational_index_view::RelationalIndexReadViewReport,
-            hawdb_storage::RelationalIndexShadowError,
+            hawdb_storage::relational::RelationalIndexShadowError,
         >,
     > {
         None
@@ -299,12 +299,12 @@ impl RelationalIndexStoreReader for crate::RelationalMaterializedReader {
         _table: &str,
         _index: &str,
         _prefixes: &[RelationalKey],
-        _limits: hawdb_storage::RelationalIndexReadLimits,
+        _limits: hawdb_storage::relational::RelationalIndexReadLimits,
         _visit: impl FnMut(&RelationalKey, &RelationalKey) -> bool,
     ) -> Option<
         std::result::Result<
             hawdb_storage::relational_index_view::RelationalIndexReadViewReport,
-            hawdb_storage::RelationalIndexShadowError,
+            hawdb_storage::relational::RelationalIndexShadowError,
         >,
     > {
         None
@@ -314,13 +314,13 @@ impl RelationalIndexStoreReader for crate::RelationalMaterializedReader {
         &self,
         _table: &str,
         _index: &str,
-        _scan: &hawdb_storage::RelationalIndexRangeScan,
-        _limits: hawdb_storage::RelationalIndexReadLimits,
+        _scan: &hawdb_storage::relational::RelationalIndexRangeScan,
+        _limits: hawdb_storage::relational::RelationalIndexReadLimits,
         _visit: impl FnMut(&RelationalKey, &RelationalKey) -> bool,
     ) -> Option<
         std::result::Result<
             hawdb_storage::relational_index_view::RelationalIndexReadViewReport,
-            hawdb_storage::RelationalIndexShadowError,
+            hawdb_storage::relational::RelationalIndexShadowError,
         >,
     > {
         None
@@ -333,14 +333,14 @@ impl RelationalRowStoreReader for crate::RelationalMaterializedReader {
 
     fn open_relational_row_snapshot_reader(
         &self,
-    ) -> Result<Option<hawdb_storage::RelationalRowPageSnapshotReader>> {
+    ) -> Result<Option<hawdb_storage::relational::RelationalRowPageSnapshotReader>> {
         Ok(None)
     }
 
     fn open_relational_transaction_row_snapshot_reader(
         &self,
         _rows: &Self::TransactionRows,
-    ) -> Result<hawdb_storage::RelationalRowPageSnapshotReader> {
+    ) -> Result<hawdb_storage::relational::RelationalRowPageSnapshotReader> {
         Err(HawDBError::Execution(
             "materialized relational reader does not expose transaction rows".to_string(),
         ))

@@ -12,7 +12,7 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-use crate::{NodeId, NodeRecord, RelId, RelationalPrimaryKeyChangeCapture};
+use crate::{relational::RelationalPrimaryKeyChangeCapture, NodeId, NodeRecord, RelId};
 use hawdb_core::{Catalog, SchemaObjectState, Value};
 use std::collections::BTreeMap;
 
@@ -243,7 +243,7 @@ pub struct StorageReclamationWatermark {
 pub struct StorageRecoveryReport {
     pub open_timings: StorageOpenTimings,
     pub durable: bool,
-    pub recovery_mode: crate::RecoveryMode,
+    pub recovery_mode: crate::config::RecoveryMode,
     pub max_wal_replay_entries: Option<usize>,
     pub max_wal_replay_bytes: Option<u64>,
     pub max_wal_record_bytes: Option<usize>,
