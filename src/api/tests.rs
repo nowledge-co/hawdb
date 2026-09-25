@@ -517,9 +517,9 @@ fn unwind_transaction_matches_sequential_merges_and_wal_for_repeated_keys() {
 fn unwind_transaction_rejection_preserves_prior_statement_and_wal() {
     let path = unique_test_dir("unwind_statement_savepoint");
     let config = DatabaseConfig {
-        mutation_limits: hawdb_storage::MutationLimits {
+        mutation_limits: hawdb_storage::mutation::MutationLimits {
             max_operations: std::num::NonZeroUsize::new(2).unwrap(),
-            ..hawdb_storage::MutationLimits::default()
+            ..hawdb_storage::mutation::MutationLimits::default()
         },
         ..DatabaseConfig::default()
     };
