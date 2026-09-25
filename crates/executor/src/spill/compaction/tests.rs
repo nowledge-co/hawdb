@@ -164,13 +164,23 @@ fn check_case(values: Vec<Vec<u64>>, final_count: usize, worker_limit: NonZeroUs
     let token = RuntimeCancellationToken::new();
     let context = RuntimeTaskContext::without_deadline(token.clone());
     let observed = Mutex::new(Vec::new());
+    let blocking = fixture.ledger.account(
+        crate::QueryMemoryClass::BlockingState,
+        "compaction oracle",
+        fixture.memory.blocking_operator_bytes,
+    );
     let outcome = catch_unwind(AssertUnwindSafe(|| {
-        compact_runs(
+        compact_runs_with_memory(
             runs,
             NonZeroUsize::new(final_count).unwrap(),
-            worker_limit,
+            CompactionMemory {
+                blocking: &blocking,
+                spill: &budget,
+                worker_limit,
+            },
             Some(&context),
-            |left, right| {
+            |left, right, child, budget| {
+                let _lease = child.reserve(child.budget_bytes().get())?;
                 runtime_checkpoint(Some(&context))?;
                 let pair = (read_run(left)?, read_run(right)?);
                 let injected_at = match exit {
@@ -186,7 +196,7 @@ fn check_case(values: Vec<Vec<u64>>, final_count: usize, worker_limit: NonZeroUs
                     writer.write(
                         value,
                         &Binding::scalar("value", Value::Int(value as i64)),
-                        &budget,
+                        budget,
                     )?;
                     if injected_at.is_some() {
                         match exit {
@@ -243,14 +253,8 @@ fn check_case(values: Vec<Vec<u64>>, final_count: usize, worker_limit: NonZeroUs
                 payload.downcast_ref::<&str>(),
                 Some(&"injected merge panic")
             );
-            // A pair's failure does not stop sibling pairs already
-            // dispatched in the same level (an output that is itself an
-            // `Err`/panic does not short-circuit other workers — see
-            // `merge_level`'s doc comment) even at `worker_limit =
-            // NonZeroUsize::MIN`: one worker still drains the whole level
-            // before the caller observes the failure. So the only invariant
-            // that holds regardless of `worker_limit` is that the injected
-            // pair was in fact attempted, not an exact attempted count.
+            // Dispatched siblings may finish, but later waves never start
+            // after failure. The injected pair must have been attempted.
             assert!(observed.contains(&expected_pairs[at]));
         }
         _ => {
@@ -299,6 +303,201 @@ fn concurrent_worker_limit() -> NonZeroUsize {
     NonZeroUsize::new(8).unwrap()
 }
 
+fn copy_pair(left: &SpillRun, right: &SpillRun, budget: &SpillBudgetTracker) -> Result<SpillRun> {
+    let (output, mut writer) = budget.create_run("accounted-merge")?;
+    for input in [left, right] {
+        writer.note_merge_record_bytes(input.merge_record_bytes());
+        for value in read_run(input)? {
+            writer.write(
+                value,
+                &Binding::scalar("value", Value::Int(value as i64)),
+                budget,
+            )?;
+        }
+    }
+    writer.finish()?;
+    Ok(output)
+}
+
+#[test]
+fn independent_merge_allowances_admit_real_concurrency_and_preserve_large_items() {
+    use crate::concurrent::SharedExecutorPool;
+    use std::sync::Condvar;
+    use std::time::Duration;
+
+    for tight in [false, true] {
+        let fixture = Fixture::new();
+        let mut budget = fixture.budget();
+        let runs: Vec<_> = (0..4)
+            .map(|i| write_run(&[i], &mut budget).unwrap())
+            .collect();
+        let pair_bytes = runs[0].merge_record_bytes() * 2;
+        let parent_bytes = if tight {
+            pair_bytes + 1
+        } else {
+            pair_bytes * 2 + 1
+        };
+        let blocking = fixture.ledger.account(
+            crate::QueryMemoryClass::BlockingState,
+            "concurrent merges",
+            NonZeroUsize::new(parent_bytes).unwrap(),
+        );
+        // Models DISTINCT's schema state, retained throughout compaction.
+        let retained = blocking.reserve(1).unwrap();
+        let worker_limit = NonZeroUsize::new(2).unwrap();
+        let can_overlap = !tight
+            && SharedExecutorPool::shared_bounded(worker_limit)
+                .is_ok_and(|pool| pool.worker_count() >= 2);
+        let arrivals = Mutex::new(0usize);
+        let ready = Condvar::new();
+        let outputs = compact_runs_with_memory(
+            runs,
+            NonZeroUsize::new(2).unwrap(),
+            CompactionMemory {
+                blocking: &blocking,
+                spill: &budget,
+                worker_limit,
+            },
+            None,
+            |left, right, child, spill| {
+                assert_eq!(child.budget_bytes().get(), pair_bytes);
+                // A complete merge fits even when its records exceed a naive
+                // parent_budget / worker_count / fan_in item allowance.
+                let _lease = child.reserve(pair_bytes)?;
+                assert!(child.reserve(1).is_err());
+                assert!(blocking.peak_bytes() <= parent_bytes);
+                let mut count = arrivals.lock().unwrap();
+                *count += 1;
+                ready.notify_all();
+                if can_overlap {
+                    let (count, timeout) = ready
+                        .wait_timeout_while(count, Duration::from_secs(10), |count| *count < 2)
+                        .unwrap();
+                    assert!(!timeout.timed_out(), "two admitted merges must overlap");
+                    drop(count);
+                } else {
+                    drop(count);
+                }
+                copy_pair(left, right, spill)
+            },
+        )
+        .unwrap();
+        assert_eq!(*arrivals.lock().unwrap(), 2);
+        assert_eq!(
+            outputs
+                .iter()
+                .map(|run| read_run(run).unwrap())
+                .collect::<Vec<_>>(),
+            vec![vec![0, 1], vec![2, 3]]
+        );
+        assert_eq!(blocking.peak_bytes(), parent_bytes);
+        assert_eq!(fixture.ledger.snapshot().used_bytes, 1);
+        assert_eq!(budget.run_count(), 6);
+        drop((outputs, retained));
+        fixture.assert_released();
+    }
+}
+
+#[test]
+fn conservative_root_bounds_fall_back_without_rejecting_a_serial_working_set() {
+    let mut fixture = Fixture::new();
+    let row_bytes = crate::binding::binding_memory_bytes(&Binding::scalar("value", Value::Int(0)));
+    let staging_bytes =
+        crate::spill::binding_record_encoded_len(&Binding::scalar("value", Value::Int(0))).unwrap();
+    // Both row heads and one staging payload fit. Reserving maxima for two
+    // payloads does not; the original serial query must still succeed.
+    fixture.ledger =
+        QueryMemoryLedger::new(NonZeroUsize::new(row_bytes * 2 + staging_bytes).unwrap());
+    let mut budget = fixture.budget();
+    let runs = (0..4)
+        .map(|i| write_run(&[i], &mut budget).unwrap())
+        .collect();
+    let blocking = fixture.ledger.account(
+        crate::QueryMemoryClass::BlockingState,
+        "tight root",
+        fixture.memory.blocking_operator_bytes,
+    );
+    let output = compact_runs_with_memory(
+        runs,
+        NonZeroUsize::new(2).unwrap(),
+        CompactionMemory {
+            blocking: &blocking,
+            spill: &budget,
+            worker_limit: default_compaction_worker_limit(),
+        },
+        None,
+        |left, right, child, spill| {
+            assert_eq!(child.budget_bytes(), blocking.budget_bytes());
+            let _rows = child.reserve(row_bytes * 2)?;
+            copy_pair(left, right, spill)
+        },
+    )
+    .unwrap();
+    assert_eq!(
+        fixture.ledger.snapshot().peak_bytes,
+        row_bytes * 2 + staging_bytes
+    );
+    assert_eq!(budget.run_count(), 6);
+    drop(output);
+    fixture.assert_released();
+}
+
+#[test]
+fn unequal_run_bounds_survive_multiple_levels_and_shared_staging_limits() {
+    for staging_cap in [64, 1024] {
+        let fixture = Fixture::new();
+        let budget = SpillBudgetTracker::with_ledger_staging_budget(
+            "compaction",
+            &fixture.memory,
+            &fixture.ledger,
+            NonZeroUsize::new(staging_cap).unwrap(),
+        );
+        let runs = (0..9)
+            .map(|i| {
+                let (run, mut writer) = budget.create_run("unequal").unwrap();
+                writer.note_merge_record_bytes(544 + i * 32);
+                writer
+                    .write(
+                        i as u64,
+                        &Binding::scalar("value", Value::Int(i as i64)),
+                        &budget,
+                    )
+                    .unwrap();
+                writer.finish().unwrap();
+                run
+            })
+            .collect();
+        let blocking = fixture.ledger.account(
+            crate::QueryMemoryClass::BlockingState,
+            "unequal",
+            NonZeroUsize::new(4096).unwrap(),
+        );
+        let output = compact_runs_with_memory(
+            runs,
+            NonZeroUsize::MIN,
+            CompactionMemory {
+                blocking: &blocking,
+                spill: &budget,
+                worker_limit: default_compaction_worker_limit(),
+            },
+            None,
+            |left, right, child, spill| {
+                let expected = left.merge_record_bytes() + right.merge_record_bytes();
+                assert_eq!(child.budget_bytes().get(), expected);
+                let _rows = child.reserve(expected)?;
+                let _staging = spill.reserve_staging(1)?;
+                copy_pair(left, right, spill)
+            },
+        )
+        .unwrap();
+        assert_eq!(read_run(&output[0]).unwrap(), (0..9).collect::<Vec<_>>());
+        assert_eq!(budget.run_count(), 17);
+        assert!(budget.staging_peak_bytes() <= staging_cap);
+        drop(output);
+        fixture.assert_released();
+    }
+}
+
 #[test]
 fn real_runs_match_pairwise_reference_at_both_final_fanins() {
     for count in 0..=17 {
@@ -331,63 +530,36 @@ fn concurrent_compaction_matches_serial_byte_for_byte() {
             let input = values(count, 100);
             let fixture = Fixture::new();
             let mut budget = fixture.budget();
-            let serial_runs: Vec<SpillRun> = input
-                .iter()
-                .map(|values| write_run(values, &mut budget).unwrap())
-                .collect();
-            let serial_output = compact_runs(
-                serial_runs,
-                NonZeroUsize::new(final_count).unwrap(),
-                NonZeroUsize::MIN,
-                None,
-                |left, right| {
-                    let (output, mut writer) = budget.create_run("serial-merge")?;
-                    for value in read_run(left)?.into_iter().chain(read_run(right)?) {
-                        writer.write(
-                            value,
-                            &Binding::scalar("value", Value::Int(value as i64)),
-                            &budget,
-                        )?;
-                    }
-                    writer.finish()?;
-                    Ok(output)
-                },
-            )
-            .unwrap();
-            let serial_values = serial_output
-                .iter()
-                .map(|run| read_run(run).unwrap())
-                .collect::<Vec<_>>();
-            drop(serial_output);
-
-            let concurrent_runs: Vec<SpillRun> = input
-                .iter()
-                .map(|values| write_run(values, &mut budget).unwrap())
-                .collect();
-            let concurrent_output = compact_runs(
-                concurrent_runs,
-                NonZeroUsize::new(final_count).unwrap(),
-                concurrent_worker_limit(),
-                None,
-                |left, right| {
-                    let (output, mut writer) = budget.create_run("concurrent-merge")?;
-                    for value in read_run(left)?.into_iter().chain(read_run(right)?) {
-                        writer.write(
-                            value,
-                            &Binding::scalar("value", Value::Int(value as i64)),
-                            &budget,
-                        )?;
-                    }
-                    writer.finish()?;
-                    Ok(output)
-                },
-            )
-            .unwrap();
-            let concurrent_values = concurrent_output
-                .iter()
-                .map(|run| read_run(run).unwrap())
-                .collect::<Vec<_>>();
-            drop(concurrent_output);
+            let blocking = fixture.ledger.account(
+                crate::QueryMemoryClass::BlockingState,
+                "parity",
+                fixture.memory.blocking_operator_bytes,
+            );
+            let mut run_case = |worker_limit| {
+                let runs = input
+                    .iter()
+                    .map(|values| write_run(values, &mut budget).unwrap())
+                    .collect();
+                let output = compact_runs_with_memory(
+                    runs,
+                    NonZeroUsize::new(final_count).unwrap(),
+                    CompactionMemory {
+                        blocking: &blocking,
+                        spill: &budget,
+                        worker_limit,
+                    },
+                    None,
+                    |left, right, _, spill| copy_pair(left, right, spill),
+                )
+                .unwrap();
+                output
+                    .iter()
+                    .map(|run| std::fs::read(run.lease.path()).unwrap())
+                    .collect::<Vec<_>>()
+            };
+            let serial_values = run_case(NonZeroUsize::MIN);
+            let concurrent_values = run_case(concurrent_worker_limit());
+            fixture.assert_released();
 
             assert_eq!(
                 serial_values, concurrent_values,
@@ -432,12 +604,21 @@ fn cancelled_levels_release_runs_without_calling_the_merger() {
         let token = RuntimeCancellationToken::new();
         token.cancel();
         let context = RuntimeTaskContext::without_deadline(token);
-        let result = compact_runs(
+        let blocking = fixture.ledger.account(
+            crate::QueryMemoryClass::BlockingState,
+            "cancelled",
+            fixture.memory.blocking_operator_bytes,
+        );
+        let result = compact_runs_with_memory(
             runs,
             NonZeroUsize::MIN,
-            worker_limit,
+            CompactionMemory {
+                blocking: &blocking,
+                spill: &budget,
+                worker_limit,
+            },
             Some(&context),
-            |_, _| panic!("a cancelled level must not invoke its merger"),
+            |_, _, _, _| panic!("a cancelled level must not invoke its merger"),
         );
         assert!(result.is_err());
         fixture.assert_released();
@@ -473,6 +654,6 @@ fn compaction_differential_campaign() {
         }
     }
     println!(
-        "Spill compaction differential: 256 successful and {failures} failing real-file fixtures, both final fan-ins and worker limits"
+        "Spill compaction differential: 512 successful and {failures} failing real-file fixtures, both final fan-ins and worker limits"
     );
 }

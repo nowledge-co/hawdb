@@ -102,6 +102,12 @@ The repository configuration selects Bazel's hermetic `remotejdk_21` runtime
 for Java-backed rules, including `rules_tla`; callers do not need to configure
 `JAVA_HOME`.
 
+On macOS hosts, Bazel also keeps Rust execution tools (including proc-macros)
+unstripped. This avoids a [Mach-O alignment bug](https://github.com/rust-lang/rust/issues/157750)
+in the pinned Rust 1.97.1 toolchain that prevents macOS 27 from loading generated
+dynamic libraries. Target-library flags and Linux-host defaults are unchanged.
+Remove this workaround once the pinned toolchain includes the upstream fix.
+
 The Bazel graph covers the root library and CLI tests plus every Cargo workspace
 crate, including the Tokio runtime, Linux cgroup parser, optimizer fuzz library,
 vector projection, and synthetic qualification workload. CI checks that every

@@ -86,6 +86,30 @@ fn dedup_shares_owned_text_and_keeps_consumers_alive_after_scope_reset() {
         .is_none());
     assert_eq!(memory.ledger.snapshot().used_bytes, before);
     assert_eq!(emitted.as_ptr(), address);
+    let table_bytes = dedup._memory.as_ref().unwrap().bytes();
+    dedup.reset();
+    assert!(dedup.terms.is_empty());
+    assert_eq!(
+        memory.ledger.snapshot().used_bytes,
+        table_bytes + payload_bytes
+    );
+    // A new scope may emit the same spelling again. The old consumer keeps its
+    // payload alive independently of the reused table and the new payload.
+    let next = dedup
+        .insert(Text::Borrowed("owned text"), control)
+        .unwrap()
+        .unwrap();
+    assert_eq!(next.as_str(), emitted.as_str());
+    assert_ne!(next.as_ptr(), emitted.as_ptr());
+    assert_eq!(
+        memory.ledger.snapshot().used_bytes,
+        table_bytes + 2 * payload_bytes
+    );
+    drop(next);
+    assert_eq!(
+        memory.ledger.snapshot().used_bytes,
+        table_bytes + payload_bytes
+    );
     drop(dedup);
     assert_eq!(memory.ledger.snapshot().used_bytes, payload_bytes);
     assert_eq!(emitted.as_str(), "owned text");

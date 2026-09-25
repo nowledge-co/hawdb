@@ -491,6 +491,7 @@ fn spill_partial_group_run(
     let (sorted, _) = std::mem::take(groups).into_sorted();
     for (key, group) in sorted {
         runtime_checkpoint(task_context)?;
+        writer.note_merge_record_bytes(partial_group_memory_bytes(&key, &group.states));
         let binding = encode_partial_binding(key, group.states)?;
         writer.write(group.ordinal, &binding, spill_budget)?;
     }
@@ -528,12 +529,16 @@ fn compact_partial_runs(
     blocking_account: &QueryMemoryAccount,
     task_context: Option<&RuntimeTaskContext>,
 ) -> Result<Vec<spill::SpillRun>> {
-    spill::compact_runs(
+    spill::compact_runs_with_memory(
         runs,
         NonZeroUsize::new(2).expect("two-way merge fan-in"),
-        spill::default_compaction_worker_limit(),
+        spill::CompactionMemory {
+            blocking: blocking_account,
+            spill: spill_budget,
+            worker_limit: spill::default_compaction_worker_limit(),
+        },
         task_context,
-        |left, right| {
+        |left, right, blocking_account, spill_budget| {
             merge_partial_run_pair(
                 left,
                 right,
@@ -585,6 +590,7 @@ fn merge_partial_run_pair(
             advance_right,
             released_bytes,
         } = selection;
+        writer.note_merge_record_bytes(row.memory_bytes());
         let binding = encode_partial_binding(row.key, row.states)?;
         writer.write(row.ordinal, &binding, spill_budget)?;
         tracker.release(released_bytes);

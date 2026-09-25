@@ -1,7 +1,7 @@
-# Storage TLA+ Negative Controls
+# Storage and Query Memory TLA+ Negative Controls
 
-These configurations enable one deliberately unsafe transition in a
-storage model. They are not production specifications and must never enter the
+These configurations enable one deliberately unsafe transition in a storage
+or query-memory model. They are not production specifications and must never enter the
 positive `storage_models` suite. `scripts/check-storage-tla.sh --check-mutants`
 runs each configuration and succeeds only when TLC reports the invariant named
 in `mutants.txt`.
@@ -13,9 +13,12 @@ The negative controls prove that the bounded models exercise these failures:
 - partial batch recovery;
 - manifest publication before segment durability;
 - reclamation of a reader-pinned generation;
-- partial publication of a mixed graph/row/append transaction.
+- partial publication of a mixed graph/row/append transaction;
+- child admission that exceeds the query root;
+- releasing a child reservation while a lease still owns its capacity.
 
 The per-key MVCC controls additionally reject skipped validation, either missing
-broad-barrier direction, premature tombstone cleanup, ignored retained source snapshots, index reset with live
-transactions, and publication before sync. See
+broad-barrier direction, premature history cleanup, ignored retained source
+snapshots, index reset with live transactions, unsafe current-epoch compaction,
+and publication before sync. See
 [the model proof and scope](../MVCC_VALIDATION_PROOF.md).

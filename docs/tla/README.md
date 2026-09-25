@@ -303,6 +303,25 @@ handoff isolation, and the no-leak terminal-state invariant. The implementation
 records root budget, peak charge, completion charge, and account count in
 `PipelineMemoryReport`.
 
+Spill compaction also refines this model with independently reserved child
+accounts. `CreateChild` charges the child's entire allowance to its blocking or
+staging parent. `GrowChild` changes only the child's payload usage. Account
+owners and leases have separate lifetimes: dropping the last owner must retain
+the backing reservation while even a zero-byte lease survives. The configured
+instance includes two merges with blocking and staging children, five direct
+accounts, a four-unit root, and three-unit local budgets. It explores failed
+second-child admission by permitting the first child to be dropped without
+allocating payload. `ChildLeaseBacked` checks lifetime and child bounds;
+`PeakCoversReservations` includes capacity reserved for future allocation.
+Existing direct-reservation, ownership-transfer, result-handoff, and terminal
+invariants remain enabled. Two negative controls remove admission and release
+backing too early; they must violate `RootBudgetBounded` and `ChildLeaseBacked`.
+
+See [the spill-compaction proof](QUERY_MEMORY_COMPACTION_PROOF.md) for the
+inductive budget argument, run-bound derivation, scheduler correctness, concrete
+Rust transition mapping, and limits of this finite model. TLC is bounded model
+checking, not a machine-checked proof of the Rust implementation.
+
 Relational ordering refines the blocking-state and spill-staging branches with
 `ExternalTopN<RelationalSortRecord>`. Retained state contains typed sort keys,
 layout-slot row locators, and an executor-owned stable ordinal rather than
