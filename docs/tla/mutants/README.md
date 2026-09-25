@@ -41,5 +41,11 @@ The governed-conflict-retry control rejects publication from a conflicting
 attempt. Its [proof](../GOVERNED_CONFLICT_RETRY_PROOF.md) also records the
 non-escalating retry starvation control and reachable conflict/retry witnesses.
 
+The search mutation publication controls reject global-ID masking of replacement
+versions, stale selector publication, publication before artifact durability,
+pinned closure reclamation and orphaned targets after compaction. Two false
+invariants witness repeated replacement and compaction reachability. See the
+[search mutation proof boundary](../SEARCH_MUTATION_PUBLICATION_PROOF.md).
+
 The constraint-preserving update controls reject omitting unique or FK columns
 from eligibility; see the [projection proof](../CONSTRAINT_PRESERVING_UPDATE_MVCC_PROOF.md).

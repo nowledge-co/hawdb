@@ -321,3 +321,54 @@ fn anonymous_relationship_endpoints_support_count_reads() {
         .unwrap();
     assert_eq!(output.rows[0].get("total"), Some(&Value::Int(2)));
 }
+
+#[test]
+fn pipeline_bounded_match_validation_is_independent_of_graph_contents() {
+    for populated in [false, true] {
+        let mut db = Database::new();
+        if populated {
+            db.query("CREATE (:Node {id: 1})-[:LINK {weight: 10}]->(:Node {id: 2})")
+                .unwrap();
+            db.query("CREATE (:Node {id: 3})").unwrap();
+            db.query(
+                "MATCH (a:Node {id: 2}), (b:Node {id: 3}) CREATE (a)-[:LINK {weight: 20}]->(b)",
+            )
+            .unwrap();
+        }
+        for pattern in [
+            "(a:Node)-[r:LINK*1..2]->(b:Node)",
+            "(a:Node)-[:LINK*1..2 {weight: 10}]->(b:Node)",
+            "(a:Node)-[*1..2]->(b:Node)",
+            "(a:Node)<-[:LINK*1..2]-(b:Node)",
+            "(a:Node)-[:LINK*1..2]-(b:Node)",
+        ] {
+            let query = format!("MATCH {pattern} WITH a, b WITH a, b RETURN b.id AS id");
+            let error = db.query(&query).unwrap_err();
+            assert!(
+                matches!(error, crate::error::HawDBError::Semantic(ref message)
+                if message.contains("supported only for one-hop patterns")),
+                "populated={populated}: {query}: {error}"
+            );
+        }
+        let output = db.query("MATCH (a:Node {id: 1})-[:LINK*1..2]->(b:Node) WITH b WITH b RETURN b.id AS id ORDER BY id").unwrap();
+        let ids = output
+            .rows
+            .iter()
+            .map(|row| row.get("id").unwrap().clone())
+            .collect::<Vec<_>>();
+        assert_eq!(
+            ids,
+            if populated {
+                vec![Value::Int(2), Value::Int(3)]
+            } else {
+                vec![]
+            }
+        );
+        let output = db.query("MATCH (a:Node {id: 1})-[r:LINK]->(b:Node) WITH b, r WITH b, r RETURN b.id AS id, r.weight AS weight").unwrap();
+        assert_eq!(output.rows.len(), usize::from(populated));
+        if populated {
+            assert_eq!(output.rows[0].get("id"), Some(&Value::Int(2)));
+            assert_eq!(output.rows[0].get("weight"), Some(&Value::Int(10)));
+        }
+    }
+}

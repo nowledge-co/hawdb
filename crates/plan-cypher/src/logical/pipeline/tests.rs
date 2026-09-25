@@ -459,3 +459,44 @@ fn derives_thread_repair_stats_only_for_the_complete_fixed_schema_pipeline() {
     let plan = plan_pipeline_query(&non_schema_query, &BTreeMap::new()).unwrap();
     assert!(!matches!(plan, LogicalPlan::ThreadRepairStats { .. }));
 }
+
+#[test]
+fn bounded_match_rejects_unrepresentable_relationship_shapes_before_normalization() {
+    for range in ["0..1", "1..2", "2..2"] {
+        for pattern in [
+            format!("(a:Node)-[r:LINK*{range}]->(b:Node)"),
+            format!("(a:Node)-[:LINK*{range} {{weight: 1}}]->(b:Node)"),
+            format!("(a:Node)-[*{range}]->(b:Node)"),
+            format!("(a:Node)<-[:LINK*{range}]-(b:Node)"),
+            format!("(a:Node)-[:LINK*{range}]-(b:Node)"),
+        ] {
+            for prefix in ["MATCH", "OPTIONAL MATCH"] {
+                let query = format!("{prefix} {pattern} RETURN b.id");
+                hawdb_cypher::parse_pipeline(&query).unwrap();
+                for plan in [
+                    plan_pipeline_query(&query, &BTreeMap::new()),
+                    plan_normalized_pipeline_query(&query, &BTreeMap::new()),
+                ] {
+                    assert!(
+                        matches!(plan, Err(HawDBError::Semantic(ref message))
+                        if message.contains("supported only for one-hop patterns")),
+                        "{query}: {plan:?}"
+                    );
+                }
+            }
+        }
+    }
+    for pattern in [
+        "(a:Node)-[r:LINK]->(b:Node)",
+        "(a:Node)-[:LINK {weight: 1}]->(b:Node)",
+        "(a:Node)-[]->(b:Node)",
+        "(a:Node)<-[:LINK]-(b:Node)",
+        "(a:Node)-[:LINK]-(b:Node)",
+        "(a:Node)-[:LINK*0..1]->(b:Node)",
+        "(a:Node)-[:LINK*1..2]->(b:Node {id: 2})",
+    ] {
+        let query = format!("MATCH {pattern} RETURN b.id");
+        plan_pipeline_query(&query, &BTreeMap::new()).unwrap();
+        plan_normalized_pipeline_query(&query, &BTreeMap::new()).unwrap();
+    }
+}
