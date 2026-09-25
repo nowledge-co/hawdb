@@ -33,9 +33,13 @@ use hawdb_sql::{
     SqlOrderItem, SqlPredicate, SqlStatement, SqlValue,
 };
 use hawdb_storage::{
-    AppendOrderMode, AppendState, AppendStorageResidencyReport, ProjectedGraphStatus,
-    RelationalColumnDefault, RelationalIndexMode, RelationalScalarType, RelationalState,
-    RelationalTableSchema, RelationalValue, SearchProjectionChangefeedStatus, StorageResidencyMode,
+    append_table::{AppendOrderMode, AppendState, AppendStorageResidencyReport},
+    config::{RelationalIndexMode, StorageResidencyMode},
+    projection::{ProjectedGraphStatus, SearchProjectionChangefeedStatus},
+    relational::{
+        RelationalColumnDefault, RelationalScalarType, RelationalState, RelationalTableSchema,
+        RelationalValue,
+    },
 };
 use std::cmp::Ordering;
 use std::collections::{BTreeMap, VecDeque};

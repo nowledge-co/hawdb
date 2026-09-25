@@ -16,7 +16,7 @@
 
 use super::*;
 use hawdb_storage::version::{VersionConflict, VersionKey, VersionWriteSet};
-use hawdb_storage::{wal::WalOp, RelationalError};
+use hawdb_storage::{relational::RelationalError, wal::WalOp};
 
 impl GraphStore {
     pub fn commit_mutations(
@@ -1837,9 +1837,9 @@ impl GraphStore {
                         index_limits,
                         row_limits,
                         self.search_projection_primary_key_capture_limits,
-                        authoritative_index
-                            .as_ref()
-                            .map(|index| index as &dyn hawdb_storage::RelationalConstraintIndex),
+                        authoritative_index.as_ref().map(|index| {
+                            index as &dyn hawdb_storage::relational::RelationalConstraintIndex
+                        }),
                     )
                     .map_err(map_relational_staging_error)?
             };
@@ -1850,10 +1850,10 @@ impl GraphStore {
             let replay_access = staged.replay_access.filter(|_| {
                 matches!(
                     staged_relational_row_capture.as_ref(),
-                    Some(hawdb_storage::RelationalRowChangeCapture::Captured { .. })
+                    Some(hawdb_storage::relational::RelationalRowChangeCapture::Captured { .. })
                 )
             });
-            let encoded = hawdb_storage::encode_relational_wal_batch_with_captures(
+            let encoded = hawdb_storage::relational::encode_relational_wal_batch_with_captures(
                 next_commit_epoch,
                 &transaction,
                 replay_access.as_ref(),
@@ -2534,9 +2534,9 @@ fn map_relational_staging_error(error: RelationalError) -> HawDBError {
     }
 }
 
-fn map_append_staging_error(error: hawdb_storage::AppendTableError) -> HawDBError {
+fn map_append_staging_error(error: hawdb_storage::append_table::AppendTableError) -> HawDBError {
     match error {
-        hawdb_storage::AppendTableError::SequenceExhausted {
+        hawdb_storage::append_table::AppendTableError::SequenceExhausted {
             table,
             watermark,
             requested,
@@ -2555,11 +2555,13 @@ mod tests {
 
     #[test]
     fn append_sequence_exhaustion_remains_structured_at_the_facade_boundary() {
-        let error = map_append_staging_error(hawdb_storage::AppendTableError::SequenceExhausted {
-            table: "events".to_string(),
-            watermark: i64::MAX,
-            requested: 1,
-        });
+        let error = map_append_staging_error(
+            hawdb_storage::append_table::AppendTableError::SequenceExhausted {
+                table: "events".to_string(),
+                watermark: i64::MAX,
+                requested: 1,
+            },
+        );
 
         assert!(matches!(
             error,

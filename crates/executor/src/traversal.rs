@@ -40,7 +40,9 @@ use hawdb_plan_cypher::{
     RelationshipCountFilter, RelationshipCountLeg, ShortestPathProjection,
     ShortestPathProjectionExpression,
 };
-use hawdb_storage::{AdjacencyDirection, NodeId, NodeRecord, PropertyFilter, RelRecord};
+use hawdb_storage::{
+    adjacency::AdjacencyDirection, mutation::PropertyFilter, NodeId, NodeRecord, RelRecord,
+};
 use std::collections::BTreeMap;
 use std::num::NonZeroUsize;
 

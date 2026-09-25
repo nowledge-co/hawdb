@@ -17,9 +17,11 @@
 use hawdb_core::{Catalog, LabelId, RelTypeId, Result};
 use hawdb_plan_cypher::{CompositeRangeSeek, NodeProjectionAccess};
 use hawdb_storage::{
-    AdjacencyDirection, GraphMutation, MutationLimits, MutationSummary, NodeId, NodeRecord,
-    NodeSetAssignment, ProjectedGraphDefinition, ProjectedNodeRecord, PropertyFilter, RelRecord,
-    ScanPredicate, ScanPruningReport, ScanSegmentFallback, SegmentReadExecutionReport,
+    adjacency::AdjacencyDirection,
+    mutation::{GraphMutation, MutationLimits, MutationSummary, NodeSetAssignment, PropertyFilter},
+    projection::ProjectedGraphDefinition,
+    scan::{ScanPredicate, ScanPruningReport, ScanSegmentFallback, SegmentReadExecutionReport},
+    NodeId, NodeRecord, ProjectedNodeRecord, RelRecord,
 };
 use std::collections::BTreeSet;
 use std::num::{NonZeroU64, NonZeroUsize};

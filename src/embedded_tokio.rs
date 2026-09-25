@@ -887,7 +887,7 @@ mod tests {
 
     #[test]
     fn checkpointed_and_reopened_facade_accepts_mutations() {
-        use hawdb_storage::StorageResidencyMode;
+        use hawdb_storage::config::StorageResidencyMode;
 
         for mode in [
             StorageResidencyMode::Materialized,
@@ -989,7 +989,7 @@ mod tests {
         config.execution_memory.blocking_operator_bytes =
             std::num::NonZeroUsize::new(4096).unwrap();
         config.max_wal_record_bytes = Some(1024);
-        config.mutation_limits = hawdb_storage::MutationLimits {
+        config.mutation_limits = hawdb_storage::mutation::MutationLimits {
             max_affected_rows: std::num::NonZeroUsize::new(3).unwrap(),
             max_operations: std::num::NonZeroUsize::new(2).unwrap(),
             max_result_rows: std::num::NonZeroUsize::new(4).unwrap(),

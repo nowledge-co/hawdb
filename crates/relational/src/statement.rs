@@ -23,7 +23,7 @@ use hawdb_sql::{
     SqlArithmeticOperand, SqlAssignmentValue, SqlComparisonOp, SqlConflictAction, SqlPredicate,
     SqlReferentialAction, SqlStatement, SqlTableConstraint, SqlTableStorage, SqlValue,
 };
-use hawdb_storage::{
+use hawdb_storage::relational::{
     RelationalBigIntArithmeticOperator, RelationalBigIntOperand, RelationalColumnDefault,
     RelationalColumnSchema, RelationalComparisonOp, RelationalConflictAction,
     RelationalForeignKeySchema, RelationalIndexSchema, RelationalInsertMode, RelationalPredicate,

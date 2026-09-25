@@ -38,10 +38,10 @@ use super::zone::{ChunkZoneMap, ZONE_MAP_RECORD_BYTES};
 #[cfg(test)]
 use super::DeletionVectorBinding;
 use super::{corrupt, unsupported, ColumnGroupError, COLUMN_GROUP_MAGIC};
+use crate::cache::ManifestGeneration;
 use crate::durability::durable_replace_file;
 use crate::io::read_exact_at;
 use crate::scan::RangeBound;
-use crate::ManifestGeneration;
 use hawdb_core::{PropertyId, Value};
 use hawdb_integrity::crc32c;
 use std::fs::{self, File};

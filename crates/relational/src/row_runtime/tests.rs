@@ -15,8 +15,10 @@
 use super::*;
 use hawdb_core::{RuntimeCancellationToken, Value};
 use hawdb_storage::{
-    ProjectionGenerationReadReport, RelationalRowPageDemandReadReport,
-    RelationalRowPageSnapshotReader, RelationalValue,
+    projection_generation::ProjectionGenerationReadReport,
+    relational::{
+        RelationalRowPageDemandReadReport, RelationalRowPageSnapshotReader, RelationalValue,
+    },
 };
 use std::cell::Cell;
 

@@ -16,7 +16,7 @@ use super::*;
 use crate::query_value::*;
 use crate::row_runtime::RelationalReadRowRef;
 use hawdb_sql::{SqlBound, SqlStatement, SqlValue};
-use hawdb_storage::{
+use hawdb_storage::relational::{
     RelationalColumnSchema, RelationalKey, RelationalOverflowRef, RelationalProjectedField,
     RelationalProjectedRow, RelationalTableSchema,
 };

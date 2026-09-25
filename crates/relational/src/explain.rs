@@ -473,7 +473,9 @@ fn relational_index_evidence<'a>(
     descriptor: &RelationalAccessPathDescriptor,
 ) -> Option<&'a RelationalIndexExecutionEvidence> {
     let physical_index = match descriptor.kind {
-        RelationalAccessPathKind::PrimaryKey => hawdb_storage::RELATIONAL_PRIMARY_INDEX_NAME,
+        RelationalAccessPathKind::PrimaryKey => {
+            hawdb_storage::relational::RELATIONAL_PRIMARY_INDEX_NAME
+        }
         RelationalAccessPathKind::Index => descriptor.name.as_str(),
         RelationalAccessPathKind::FullScan => return None,
     };

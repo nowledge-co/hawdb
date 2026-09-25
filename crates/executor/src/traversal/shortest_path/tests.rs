@@ -20,7 +20,9 @@ use crate::store::{
 };
 use hawdb_plan_cypher::{CompositeRangeSeek, NodeProjectionAccess};
 use hawdb_storage::{
-    ProjectedGraphDefinition, ProjectedNodeRecord, RelId, ScanPredicate, ScanPruningReport,
+    projection::ProjectedGraphDefinition,
+    scan::{ScanPredicate, ScanPruningReport},
+    ProjectedNodeRecord, RelId,
 };
 use std::cell::Cell;
 use std::collections::BTreeSet;

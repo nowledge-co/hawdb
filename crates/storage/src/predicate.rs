@@ -14,7 +14,7 @@
 
 //! Record predicates shared by graph mutations, execution, and persistent projections.
 
-use crate::PropertyFilter;
+use crate::mutation::PropertyFilter;
 use hawdb_core::Value;
 use std::collections::BTreeMap;
 

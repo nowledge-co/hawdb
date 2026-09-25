@@ -30,8 +30,11 @@ use super::{
     RelationalIndexShadowConfig, RelationalIndexShadowError, RelationalIndexShadowReader,
 };
 use crate::{
-    durable_replace_file, ContentDigest, ManifestGeneration, RepresentationKind, SegmentCache,
-    SegmentCacheError, SegmentCacheKey, StoreId,
+    cache::{
+        ContentDigest, ManifestGeneration, RepresentationKind, SegmentCache, SegmentCacheError,
+        SegmentCacheKey, StoreId,
+    },
+    durability::durable_replace_file,
 };
 use hawdb_integrity::{IntegrityDigest, IntegrityHasher, Sha256Digest, SHA256_BYTES};
 use std::collections::{BTreeMap, BTreeSet};

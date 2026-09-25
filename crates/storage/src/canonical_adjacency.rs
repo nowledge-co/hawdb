@@ -18,13 +18,17 @@ use crate::graph_descriptor_tree::demand::{
     GraphDescriptorTreeScanControl,
 };
 use crate::{
-    content_digest, durable_replace_file, AdjacencyDirection, AdjacencyLayout, ContentDigest,
-    FileSegmentRangeReader, GraphDescriptorKind, GraphDescriptorPageError,
-    GraphDescriptorTreeArtifactMetadata, GraphDescriptorTreeBuildConfig,
-    GraphDescriptorTreeBuilder, GraphDescriptorTreeError, GraphDescriptorTreePaths,
-    GraphDescriptorTreeRootReader, GraphDescriptorTreeWriteOutput, ManifestGeneration, NodeId,
-    PreparedGraphDescriptorTree, RelRecord, SegmentCache, SegmentRangeRead, SegmentReadError,
-    SegmentReadRange, StoreId,
+    adjacency::{AdjacencyDirection, AdjacencyLayout},
+    cache::{content_digest, ContentDigest, ManifestGeneration, SegmentCache, StoreId},
+    durability::durable_replace_file,
+    graph_descriptor_page::{GraphDescriptorKind, GraphDescriptorPageError},
+    graph_descriptor_tree::{
+        GraphDescriptorTreeArtifactMetadata, GraphDescriptorTreeBuildConfig,
+        GraphDescriptorTreeBuilder, GraphDescriptorTreeError, GraphDescriptorTreePaths,
+        GraphDescriptorTreeRootReader, GraphDescriptorTreeWriteOutput, PreparedGraphDescriptorTree,
+    },
+    scan::{FileSegmentRangeReader, SegmentRangeRead, SegmentReadError, SegmentReadRange},
+    NodeId, RelRecord,
 };
 use hawdb_core::{RelTypeId, Value};
 use hawdb_integrity::{Crc32cHasher, IntegrityHasher, Sha256Digest};
@@ -2624,7 +2628,7 @@ mod tests {
             root.join(canonical_adjacency_descriptor_root_file(7)),
         );
         let descriptor_config = GraphDescriptorTreeBuildConfig {
-            page_limits: crate::GraphDescriptorPageLimits {
+            page_limits: crate::graph_descriptor_page::GraphDescriptorPageLimits {
                 max_page_bytes: NonZeroUsize::new(512).unwrap(),
                 max_entries: NonZeroUsize::new(4).unwrap(),
                 max_key_bytes: NonZeroUsize::new(64).unwrap(),
@@ -2665,9 +2669,11 @@ mod tests {
                 .unwrap()
         );
         assert!(adjacency_path.exists());
-        let reader =
-            crate::GraphDescriptorTreeRootReader::open(descriptor_paths, descriptor_config)
-                .unwrap();
+        let reader = crate::graph_descriptor_tree::GraphDescriptorTreeRootReader::open(
+            descriptor_paths,
+            descriptor_config,
+        )
+        .unwrap();
         assert_eq!(reader.root(), &descriptor_tree.root);
         assert_eq!(reader.report().page_payload_bytes_read, 0);
         fs::remove_dir_all(root).unwrap();
@@ -2738,7 +2744,7 @@ mod tests {
             root.join(canonical_adjacency_descriptor_root_file(7)),
         );
         let descriptor_config = GraphDescriptorTreeBuildConfig {
-            page_limits: crate::GraphDescriptorPageLimits {
+            page_limits: crate::graph_descriptor_page::GraphDescriptorPageLimits {
                 max_page_bytes: NonZeroUsize::new(512).unwrap(),
                 max_entries: NonZeroUsize::new(4).unwrap(),
                 max_key_bytes: NonZeroUsize::new(64).unwrap(),

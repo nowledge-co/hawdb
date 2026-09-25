@@ -63,7 +63,7 @@ fn measure(declared_indexes: usize) -> serde_json::Value {
     let config = DatabaseConfig {
         // Pin the residency mode so the comparison is not silently decided by
         // the artifact happening to cross the auto-materialize threshold.
-        storage_residency_mode: hawdb_storage::StorageResidencyMode::Materialized,
+        storage_residency_mode: hawdb_storage::config::StorageResidencyMode::Materialized,
         ..DatabaseConfig::default()
     };
     {

@@ -13,7 +13,7 @@
 // limitations under the License.
 
 use super::*;
-use hawdb_storage::RelationalOverflowRef;
+use hawdb_storage::relational::RelationalOverflowRef;
 
 pub(super) const PROJECTION: &str = "COUNT(*) AS rows, COUNT(r.n) AS present, SUM(n) AS total, COALESCE(SUM(n), NULL, 0, 9) AS fallback, SUM(OCTET_LENGTH(body)) AS body_bytes, SUM(OCTET_LENGTH(payload)) AS payload_bytes, COUNT(body) AS body_present";
 

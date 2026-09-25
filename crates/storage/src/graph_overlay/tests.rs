@@ -14,8 +14,8 @@
 
 use super::*;
 use crate::{
-    CanonicalSegmentConfig, CanonicalSegmentReader, CanonicalSegmentWriter, ManifestGeneration,
-    SegmentCache, StoreId,
+    cache::{ManifestGeneration, SegmentCache, StoreId},
+    canonical::{CanonicalSegmentConfig, CanonicalSegmentReader, CanonicalSegmentWriter},
 };
 use hawdb_core::{LabelId, RelTypeId, Value};
 use std::collections::BTreeMap;
@@ -336,7 +336,7 @@ fn construction_and_early_drop_do_not_drain_checkpoint() {
 struct Fixture {
     directory: PathBuf,
     path: PathBuf,
-    manifest: crate::CanonicalSegmentManifest,
+    manifest: crate::canonical::CanonicalSegmentManifest,
 }
 
 impl Fixture {

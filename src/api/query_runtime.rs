@@ -796,7 +796,7 @@ mod tests {
 
     #[test]
     fn durable_mutation_planning_preserves_checkpoint_identity() {
-        use hawdb_storage::StorageResidencyMode;
+        use hawdb_storage::config::StorageResidencyMode;
 
         for mode in [
             StorageResidencyMode::Materialized,

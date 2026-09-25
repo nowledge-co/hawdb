@@ -12,7 +12,7 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-use crate::ManifestGeneration;
+use crate::cache::ManifestGeneration;
 
 /// The immutable identity of one published database read.
 ///

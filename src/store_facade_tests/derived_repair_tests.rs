@@ -31,35 +31,35 @@ use std::time::{SystemTime, UNIX_EPOCH};
 fn root_facade_preserves_storage_repair_contract_type_identity() {
     assert_eq!(
         TypeId::of::<DerivedArtifactKind>(),
-        TypeId::of::<hawdb_storage::DerivedArtifactKind>()
+        TypeId::of::<hawdb_storage::derived_repair::DerivedArtifactKind>()
     );
     assert_eq!(
         TypeId::of::<DerivedArtifactHealthState>(),
-        TypeId::of::<hawdb_storage::DerivedArtifactHealthState>()
+        TypeId::of::<hawdb_storage::derived_repair::DerivedArtifactHealthState>()
     );
     assert_eq!(
         TypeId::of::<DerivedArtifactHealth>(),
-        TypeId::of::<hawdb_storage::DerivedArtifactHealth>()
+        TypeId::of::<hawdb_storage::derived_repair::DerivedArtifactHealth>()
     );
     assert_eq!(
         TypeId::of::<DerivedArtifactHealthReport>(),
-        TypeId::of::<hawdb_storage::DerivedArtifactHealthReport>()
+        TypeId::of::<hawdb_storage::derived_repair::DerivedArtifactHealthReport>()
     );
     assert_eq!(
         TypeId::of::<DerivedArtifactRepairPlan>(),
-        TypeId::of::<hawdb_storage::DerivedArtifactRepairPlan>()
+        TypeId::of::<hawdb_storage::derived_repair::DerivedArtifactRepairPlan>()
     );
     assert_eq!(
         TypeId::of::<DerivedArtifactRebuildOptions>(),
-        TypeId::of::<hawdb_storage::DerivedArtifactRebuildOptions>()
+        TypeId::of::<hawdb_storage::derived_repair::DerivedArtifactRebuildOptions>()
     );
     assert_eq!(
         TypeId::of::<DerivedArtifactRepairReport>(),
-        TypeId::of::<hawdb_storage::DerivedArtifactRepairReport>()
+        TypeId::of::<hawdb_storage::derived_repair::DerivedArtifactRepairReport>()
     );
     assert_eq!(
         DerivedArtifactRebuildOptions::default(),
-        hawdb_storage::DerivedArtifactRebuildOptions::default()
+        hawdb_storage::derived_repair::DerivedArtifactRebuildOptions::default()
     );
 }
 

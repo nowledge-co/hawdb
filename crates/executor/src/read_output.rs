@@ -15,7 +15,7 @@
 //! Public output contracts for bounded and streaming read execution.
 
 use crate::{QueryOutput, ReadExecutionProfile};
-use hawdb_storage::ScanPruningReport;
+use hawdb_storage::scan::ScanPruningReport;
 
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub struct QueryStreamOptions {

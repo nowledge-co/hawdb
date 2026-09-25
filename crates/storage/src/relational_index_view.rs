@@ -37,7 +37,7 @@ pub use qualification::{
 pub use row_source::{map_index_row_snapshot_error, CanonicalRelationalIndexRowSource};
 pub use transaction::RelationalTransactionIndexView;
 
-use crate::{
+use crate::relational::{
     RelationalIndexChangeCapture, RelationalIndexChangeCaptureLimits, RelationalIndexChangeKind,
     RelationalIndexRangeScan, RelationalIndexReadLimits, RelationalIndexReadReport,
     RelationalIndexRecoveryReadReport, RelationalIndexRecoveryReader, RelationalIndexScanDirection,

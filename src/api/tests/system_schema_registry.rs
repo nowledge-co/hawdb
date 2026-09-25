@@ -214,7 +214,7 @@ fn read_only_out_of_core_open_validates_system_schema_through_canonical_rows() {
         let mut db = Database::open_with_config(
             &path,
             DatabaseConfig {
-                relational_index_mode: hawdb_storage::RelationalIndexMode::Shadow,
+                relational_index_mode: hawdb_storage::config::RelationalIndexMode::Shadow,
                 ..DatabaseConfig::default()
             },
         )
@@ -235,8 +235,8 @@ fn read_only_out_of_core_open_validates_system_schema_through_canonical_rows() {
         &path,
         DatabaseConfig {
             read_only: true,
-            storage_residency_mode: hawdb_storage::StorageResidencyMode::OutOfCore,
-            relational_index_mode: hawdb_storage::RelationalIndexMode::Authoritative,
+            storage_residency_mode: hawdb_storage::config::StorageResidencyMode::OutOfCore,
+            relational_index_mode: hawdb_storage::config::RelationalIndexMode::Authoritative,
             ..DatabaseConfig::default()
         },
     )
@@ -268,15 +268,15 @@ fn read_only_out_of_core_open_validates_system_schema_through_canonical_rows() {
 fn writable_metadata_only_transaction_checkpoints_rows_and_indexes() {
     let path = unique_test_dir("writable_metadata_only_transaction");
     let config = DatabaseConfig {
-        storage_residency_mode: hawdb_storage::StorageResidencyMode::OutOfCore,
-        relational_index_mode: hawdb_storage::RelationalIndexMode::Authoritative,
+        storage_residency_mode: hawdb_storage::config::StorageResidencyMode::OutOfCore,
+        relational_index_mode: hawdb_storage::config::RelationalIndexMode::Authoritative,
         ..DatabaseConfig::default()
     };
     {
         let mut db = Database::open_with_config(
             &path,
             DatabaseConfig {
-                relational_index_mode: hawdb_storage::RelationalIndexMode::Shadow,
+                relational_index_mode: hawdb_storage::config::RelationalIndexMode::Shadow,
                 ..DatabaseConfig::default()
             },
         )

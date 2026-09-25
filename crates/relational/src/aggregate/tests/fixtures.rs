@@ -13,7 +13,7 @@
 // limitations under the License.
 
 use super::*;
-use hawdb_storage::RelationalOverflowRef;
+use hawdb_storage::relational::RelationalOverflowRef;
 use std::collections::BTreeMap;
 
 pub(super) type TestRow = [RelationalValue; 7];

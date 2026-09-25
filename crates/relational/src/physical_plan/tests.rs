@@ -467,10 +467,10 @@ fn prepared_validation_rejects_divergent_statement_access_and_execution_before_r
 
 #[test]
 fn authoritative_transaction_statistics_do_not_enable_materialized_merge() {
+    use hawdb_storage::relational::{RelationalIndexShadowReader, RelationalIndexShadowWriter};
     use hawdb_storage::relational_index_view::{
         RelationalIndexReadView, RelationalTransactionIndexView,
     };
-    use hawdb_storage::{RelationalIndexShadowReader, RelationalIndexShadowWriter};
     let state = state();
     let directory = std::env::temp_dir().join(format!(
         "hawdb-physical-plan-{}",

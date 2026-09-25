@@ -39,8 +39,12 @@ use hawdb_plan_cypher::{
     ComparisonOp, ExactPropertySeekBranch, NodeProjectionAccess, Predicate, Projection,
 };
 use hawdb_storage::{
-    AdjacencyDirection, NodeId, NodeRecord, ProjectedNodeRecord, PropertyFilter, RangeBound,
-    ScanPredicate, ScanPruningReport, ScanPruningStrategy, ScanPruningTargetKind,
+    adjacency::AdjacencyDirection,
+    mutation::PropertyFilter,
+    scan::{
+        RangeBound, ScanPredicate, ScanPruningReport, ScanPruningStrategy, ScanPruningTargetKind,
+    },
+    NodeId, NodeRecord, ProjectedNodeRecord,
 };
 use std::collections::{BTreeMap, BTreeSet};
 use std::num::NonZeroUsize;
@@ -1187,7 +1191,7 @@ mod tests {
     use super::*;
     use crate::observer::NoopExecutionObserver;
     use crate::store::{PrunedNodeScan, PrunedRelationshipScan};
-    use hawdb_storage::{AdjacencyDirection, RelId, RelRecord};
+    use hawdb_storage::{adjacency::AdjacencyDirection, RelId, RelRecord};
     use std::cell::Cell;
 
     struct HighDegreeStore {
@@ -1283,7 +1287,7 @@ mod tests {
         fn projected_graph_definition(
             &self,
             _name: &str,
-        ) -> Option<hawdb_storage::ProjectedGraphDefinition> {
+        ) -> Option<hawdb_storage::projection::ProjectedGraphDefinition> {
             panic!("graph projections are not used by adjacency expansion tests")
         }
 

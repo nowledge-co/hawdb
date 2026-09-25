@@ -20,16 +20,19 @@
 use hawdb_core::RuntimeTaskContext;
 use hawdb_integrity::Sha256Digest;
 use hawdb_storage::{
-    RelationalColumnSchema, RelationalInsertMode, RelationalOverflowPublicationConfig,
-    RelationalOverflowPublisher, RelationalOverflowRootReader, RelationalRecoveryFence,
-    RelationalRecoverySourceBuilder, RelationalRecoverySourceIdentity, RelationalRow,
-    RelationalRowChange, RelationalRowChangeCapture, RelationalRowDeltaBuilder,
-    RelationalRowDeltaConfig, RelationalRowDeltaReader, RelationalRowDeltaTableMetadata,
-    RelationalRowPageProjectedRange, RelationalRowPagePublicationConfig,
-    RelationalRowPagePublisher, RelationalRowPageReadView, RelationalRowPageRootReader,
-    RelationalRowPageSnapshotReadLimits, RelationalRowPageSnapshotReader, RelationalScalarType,
-    RelationalState, RelationalStore, RelationalTableSchema, RelationalTransaction,
-    RelationalValue, RelationalWrite, SegmentCache, StoreId,
+    cache::{SegmentCache, StoreId},
+    relational::{
+        RelationalColumnSchema, RelationalInsertMode, RelationalOverflowPublicationConfig,
+        RelationalOverflowPublisher, RelationalOverflowRootReader, RelationalRecoveryFence,
+        RelationalRecoverySourceBuilder, RelationalRecoverySourceIdentity, RelationalRow,
+        RelationalRowChange, RelationalRowChangeCapture, RelationalRowDeltaBuilder,
+        RelationalRowDeltaConfig, RelationalRowDeltaReader, RelationalRowDeltaTableMetadata,
+        RelationalRowPageProjectedRange, RelationalRowPagePublicationConfig,
+        RelationalRowPagePublisher, RelationalRowPageReadView, RelationalRowPageRootReader,
+        RelationalRowPageSnapshotReadLimits, RelationalRowPageSnapshotReader, RelationalScalarType,
+        RelationalState, RelationalStore, RelationalTableSchema, RelationalTransaction,
+        RelationalValue, RelationalWrite,
+    },
 };
 use serde_json::json;
 use std::hint::black_box;
@@ -333,7 +336,7 @@ fn captured_rows(version: usize) -> RelationalRowChangeCapture {
 fn captured_change(id: i64, version: usize) -> RelationalRowChange {
     RelationalRowChange {
         table: TABLE.to_string(),
-        primary_key: hawdb_storage::RelationalKey(vec![RelationalValue::BigInt(id)]),
+        primary_key: hawdb_storage::relational::RelationalKey(vec![RelationalValue::BigInt(id)]),
         row: Some(row(id, version)),
     }
 }

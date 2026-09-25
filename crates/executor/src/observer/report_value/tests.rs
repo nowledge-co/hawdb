@@ -23,7 +23,7 @@ use super::{
 };
 use hawdb_core::{LabelId, RelTypeId, Value};
 use hawdb_plan_cypher::{VectorBackendSelectionReason, VectorCandidateSource};
-use hawdb_storage::{ScanPruningReport, ScanPruningStrategy, ScanPruningTargetKind};
+use hawdb_storage::scan::{ScanPruningReport, ScanPruningStrategy, ScanPruningTargetKind};
 
 // These complete field inventories pin the old facade output, including fields
 // deliberately absent from the value encoding. They are not production helpers.

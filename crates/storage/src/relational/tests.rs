@@ -2917,15 +2917,15 @@ fn checkpoint_file_keeps_overflow_out_of_resident_state_and_checks_size_before_r
         decode_relational_checkpoint_file(&path, RelationalDecodeLimits::checkpoint())
             .expect("decode file-backed checkpoint");
     assert_eq!(decoded.state.file_backed_overflow_segment_count(), 1);
-    let cache = Arc::new(crate::SegmentCache::new(checkpoint.len() as u64));
+    let cache = Arc::new(crate::cache::SegmentCache::new(checkpoint.len() as u64));
     let segment = decoded.state.overflow_segments.values_mut().next().unwrap();
     let RelationalOverflowSegment::FileRange { reader, range } = segment else {
         panic!("checkpoint overflow must remain file backed");
     };
     let mut cached_reader = FileSegmentRangeReader::new().with_cache(
         Arc::clone(&cache),
-        crate::StoreId(1),
-        crate::ManifestGeneration(1),
+        crate::cache::StoreId(1),
+        crate::cache::ManifestGeneration(1),
     );
     cached_reader.register(range.artifact_id, &path);
     *reader = Arc::new(cached_reader);
@@ -3326,11 +3326,11 @@ fn relational_index_shadow_publishes_generation_fenced_cold_pages() {
         std::process::id()
     ));
     let config = RelationalIndexShadowConfig {
-        page_limits: crate::ImmutableIndexPageLimits {
+        page_limits: crate::index_page::ImmutableIndexPageLimits {
             max_page_bytes: std::num::NonZeroUsize::new(4096).unwrap(),
             max_entries: std::num::NonZeroUsize::new(2).unwrap(),
             max_inline_postings: std::num::NonZeroUsize::new(2).unwrap(),
-            ..crate::ImmutableIndexPageLimits::default()
+            ..crate::index_page::ImmutableIndexPageLimits::default()
         },
         ..RelationalIndexShadowConfig::default()
     };
@@ -3416,13 +3416,13 @@ fn relational_index_shadow_publishes_generation_fenced_cold_pages() {
     file.sync_all().expect("sync page corruption");
     let cold_reader = RelationalIndexShadowReader::open(&directory, 2, 41, config)
         .expect("cold open must not scan page payloads");
-    let first_page = crate::IndexPageId::new(std::num::NonZeroU64::new(1).unwrap());
+    let first_page = crate::index_page::IndexPageId::new(std::num::NonZeroU64::new(1).unwrap());
     assert!(matches!(
         cold_reader.read_page(first_page),
         Err(RelationalIndexShadowError::Corrupt(_))
     ));
     assert!(cold_reader.is_poisoned());
-    let second_page = crate::IndexPageId::new(std::num::NonZeroU64::new(2).unwrap());
+    let second_page = crate::index_page::IndexPageId::new(std::num::NonZeroU64::new(2).unwrap());
     assert!(matches!(
         cold_reader.read_page(second_page),
         Err(RelationalIndexShadowError::Corrupt(message)) if message.contains("poisoned")
@@ -3476,10 +3476,10 @@ fn relational_index_shadow_range_seek_traverses_multiple_pages_in_both_direction
         std::process::id()
     ));
     let config = RelationalIndexShadowConfig {
-        page_limits: crate::ImmutableIndexPageLimits {
+        page_limits: crate::index_page::ImmutableIndexPageLimits {
             max_page_bytes: std::num::NonZeroUsize::new(1024).unwrap(),
             max_entries: std::num::NonZeroUsize::new(2).unwrap(),
-            ..crate::ImmutableIndexPageLimits::default()
+            ..crate::index_page::ImmutableIndexPageLimits::default()
         },
         ..RelationalIndexShadowConfig::default()
     };
@@ -3796,11 +3796,11 @@ fn relational_index_shadow_streams_rows_without_materialized_postings() {
         std::process::id()
     ));
     let config = RelationalIndexShadowConfig {
-        page_limits: crate::ImmutableIndexPageLimits {
+        page_limits: crate::index_page::ImmutableIndexPageLimits {
             max_page_bytes: std::num::NonZeroUsize::new(1024).unwrap(),
             max_entries: std::num::NonZeroUsize::new(2).unwrap(),
             max_inline_postings: std::num::NonZeroUsize::new(2).unwrap(),
-            ..crate::ImmutableIndexPageLimits::default()
+            ..crate::index_page::ImmutableIndexPageLimits::default()
         },
         max_sort_memory_bytes: std::num::NonZeroUsize::new(32 * 1024).unwrap(),
         max_sort_runs: std::num::NonZeroUsize::new(128).unwrap(),
@@ -4251,11 +4251,11 @@ fn relational_index_shadow_demand_reads_match_materialized_oracle() {
         std::process::id()
     ));
     let config = RelationalIndexShadowConfig {
-        page_limits: crate::ImmutableIndexPageLimits {
+        page_limits: crate::index_page::ImmutableIndexPageLimits {
             max_page_bytes: std::num::NonZeroUsize::new(1024).unwrap(),
             max_entries: std::num::NonZeroUsize::new(2).unwrap(),
             max_inline_postings: std::num::NonZeroUsize::new(2).unwrap(),
-            ..crate::ImmutableIndexPageLimits::default()
+            ..crate::index_page::ImmutableIndexPageLimits::default()
         },
         ..RelationalIndexShadowConfig::default()
     };
@@ -4447,12 +4447,12 @@ fn relational_index_shadow_demand_reads_match_materialized_oracle() {
     ));
     assert!(!reader.is_poisoned());
 
-    let page_cache = std::sync::Arc::new(crate::SegmentCache::new(16 * 1024));
+    let page_cache = std::sync::Arc::new(crate::cache::SegmentCache::new(16 * 1024));
     let cached_reader = RelationalIndexShadowReader::open_latest_with_cache(
         &directory,
         config,
         std::sync::Arc::clone(&page_cache),
-        crate::StoreId(41),
+        crate::cache::StoreId(41),
     )
     .expect("open demand-read fixture with an empty page cache");
     assert_eq!(page_cache.snapshot().resident_bytes, 0);
@@ -4546,12 +4546,12 @@ fn relational_index_shadow_demand_reads_match_materialized_oracle() {
     assert_eq!(page_cache.snapshot().pinned_bytes, 0);
     assert!(!cached_reader.is_poisoned());
 
-    let evicting_cache = std::sync::Arc::new(crate::SegmentCache::new(2 * 1024));
+    let evicting_cache = std::sync::Arc::new(crate::cache::SegmentCache::new(2 * 1024));
     let evicting_reader = RelationalIndexShadowReader::open_latest_with_cache(
         &directory,
         config,
         std::sync::Arc::clone(&evicting_cache),
-        crate::StoreId(43),
+        crate::cache::StoreId(43),
     )
     .expect("open demand-read fixture with an evicting cache");
     let mut evicted = Vec::new();
@@ -4573,12 +4573,12 @@ fn relational_index_shadow_demand_reads_match_materialized_oracle() {
     assert!(eviction.resident_bytes <= eviction.capacity_bytes);
     assert_eq!(eviction.pinned_bytes, 0);
 
-    let undersized_cache = std::sync::Arc::new(crate::SegmentCache::new(512));
+    let undersized_cache = std::sync::Arc::new(crate::cache::SegmentCache::new(512));
     let uncached_reader = RelationalIndexShadowReader::open_latest_with_cache(
         &directory,
         config,
         std::sync::Arc::clone(&undersized_cache),
-        crate::StoreId(42),
+        crate::cache::StoreId(42),
     )
     .expect("open demand-read fixture with an undersized cache");
     let mut uncached = Vec::new();
@@ -4606,26 +4606,26 @@ fn relational_index_shadow_demand_reads_match_materialized_oracle() {
         .root("documents", "documents_owner_idx")
         .expect("owner root descriptor");
     let identity = crate::cache::SegmentCacheIdentity {
-        store_id: crate::StoreId(41),
-        manifest_generation: crate::ManifestGeneration(1),
+        store_id: crate::cache::StoreId(41),
+        manifest_generation: crate::cache::ManifestGeneration(1),
         segment_id: root_descriptor.root_page_id.get(),
-        representation: crate::RepresentationKind::RelationalIndexPageSlot,
+        representation: crate::cache::RepresentationKind::RelationalIndexPageSlot,
     };
     let verified = page_cache.get_by_identity(&identity).unwrap();
     assert!(verified.page_integrity_verified());
     for corrupt_offset in [48, 52] {
         let mut corrupt = verified.to_vec();
         corrupt[corrupt_offset] ^= 1;
-        let raw_cache = std::sync::Arc::new(crate::SegmentCache::new(16 * 1024));
+        let raw_cache = std::sync::Arc::new(crate::cache::SegmentCache::new(16 * 1024));
         drop(
             raw_cache
                 .insert(
-                    crate::SegmentCacheKey {
+                    crate::cache::SegmentCacheKey {
                         store_id: identity.store_id,
                         manifest_generation: identity.manifest_generation,
                         segment_id: identity.segment_id,
                         representation: identity.representation,
-                        content_digest: crate::content_digest(&corrupt),
+                        content_digest: crate::cache::content_digest(&corrupt),
                     },
                     corrupt,
                 )
@@ -4652,7 +4652,8 @@ fn relational_index_shadow_demand_reads_match_materialized_oracle() {
     let mut interior_page = reader
         .read_page(root.child)
         .expect("read owner interior before semantic corruption");
-    let crate::ImmutableIndexPageBody::Interior(interior) = &mut interior_page.body else {
+    let crate::index_page::ImmutableIndexPageBody::Interior(interior) = &mut interior_page.body
+    else {
         panic!("small-page fixture must build an interior owner page");
     };
     interior
@@ -4757,11 +4758,11 @@ fn relational_index_wal_deltas_merge_with_cold_base_and_stay_bounded() {
         std::process::id()
     ));
     let shadow_config = RelationalIndexShadowConfig {
-        page_limits: crate::ImmutableIndexPageLimits {
+        page_limits: crate::index_page::ImmutableIndexPageLimits {
             max_page_bytes: std::num::NonZeroUsize::new(1024).unwrap(),
             max_entries: std::num::NonZeroUsize::new(2).unwrap(),
             max_inline_postings: std::num::NonZeroUsize::new(2).unwrap(),
-            ..crate::ImmutableIndexPageLimits::default()
+            ..crate::index_page::ImmutableIndexPageLimits::default()
         },
         ..RelationalIndexShadowConfig::default()
     };
@@ -4984,14 +4985,14 @@ fn relational_index_wal_deltas_merge_with_cold_base_and_stay_bounded() {
     ));
     assert!(!reader.is_poisoned());
 
-    let page_cache = std::sync::Arc::new(crate::SegmentCache::new(64 * 1024));
+    let page_cache = std::sync::Arc::new(crate::cache::SegmentCache::new(64 * 1024));
     let cached_reader = RelationalIndexRecoveryReader::open_latest_with_cache(
         &directory,
         RelationalRecoveryFence::new(4, recovery_source),
         shadow_config,
         recovery_config,
         std::sync::Arc::clone(&page_cache),
-        crate::StoreId(73),
+        crate::cache::StoreId(73),
     )
     .expect("open recovery reader with a shared empty page cache");
     assert_eq!(page_cache.snapshot().resident_bytes, 0);

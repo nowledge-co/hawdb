@@ -38,7 +38,7 @@ use hawdb_core::PropertyId;
 use std::error::Error;
 use std::fmt::{self, Display, Formatter};
 
-use crate::ManifestGeneration;
+use crate::cache::ManifestGeneration;
 
 /// Magic bytes framing a column group artifact (header and footer).
 pub const COLUMN_GROUP_MAGIC: &[u8; 9] = b"SKNCOLG01";

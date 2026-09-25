@@ -23,9 +23,14 @@ use crate::text::{
     parse_i64, parse_u64,
 };
 use crate::{
-    durable_replace_file, DateTimeMinMax, DurableCompression, EnumDictionaryStats, FieldSummary,
-    NodeRecord, PersistedScanSegment, ScanPredicate, ScanSegmentFallback, ScanSegmentManifest,
-    SegmentPayloadRange, SegmentReadExecutionReport, SegmentSummary,
+    config::DurableCompression,
+    durability::durable_replace_file,
+    scan::{
+        DateTimeMinMax, EnumDictionaryStats, FieldSummary, PersistedScanSegment, ScanPredicate,
+        ScanSegmentFallback, ScanSegmentManifest, SegmentPayloadRange, SegmentReadExecutionReport,
+        SegmentSummary,
+    },
+    NodeRecord,
 };
 use hawdb_core::schema::LabelId;
 use hawdb_core::{HawDBError, Result, Value};
@@ -603,14 +608,18 @@ fn encode_descriptor(projection: &SourceScanProjection) -> Result<String> {
             ));
             for (value, row_ids) in &summary.exact_values {
                 let encoded_value = match value {
-                    crate::ScanScalar::Bool(value) => encode_value(&Value::Bool(*value)),
-                    crate::ScanScalar::Int(value) => encode_value(&Value::Int(*value)),
-                    crate::ScanScalar::Float(value) => {
+                    crate::scan::ScanScalar::Bool(value) => encode_value(&Value::Bool(*value)),
+                    crate::scan::ScanScalar::Int(value) => encode_value(&Value::Int(*value)),
+                    crate::scan::ScanScalar::Float(value) => {
                         encode_value(&Value::Float(f64::from_bits(*value)))
                     }
-                    crate::ScanScalar::String(value) => encode_value(&Value::String(value.clone())),
-                    crate::ScanScalar::Binary(value) => encode_value(&Value::Binary(value.clone())),
-                    crate::ScanScalar::Uuid(value) => encode_value(&Value::Uuid(*value)),
+                    crate::scan::ScanScalar::String(value) => {
+                        encode_value(&Value::String(value.clone()))
+                    }
+                    crate::scan::ScanScalar::Binary(value) => {
+                        encode_value(&Value::Binary(value.clone()))
+                    }
+                    crate::scan::ScanScalar::Uuid(value) => encode_value(&Value::Uuid(*value)),
                 };
                 body.push_str(&format!(
                     "exact\t{}\t{}\t{}\n",
@@ -823,12 +832,12 @@ fn encode_enum_dictionary(dictionary: Option<&EnumDictionaryStats>) -> String {
             .iter()
             .map(|value| {
                 let value = match value {
-                    crate::ScanScalar::Bool(value) => Value::Bool(*value),
-                    crate::ScanScalar::Int(value) => Value::Int(*value),
-                    crate::ScanScalar::Float(value) => Value::Float(f64::from_bits(*value)),
-                    crate::ScanScalar::String(value) => Value::String(value.clone()),
-                    crate::ScanScalar::Binary(value) => Value::Binary(value.clone()),
-                    crate::ScanScalar::Uuid(value) => Value::Uuid(*value),
+                    crate::scan::ScanScalar::Bool(value) => Value::Bool(*value),
+                    crate::scan::ScanScalar::Int(value) => Value::Int(*value),
+                    crate::scan::ScanScalar::Float(value) => Value::Float(f64::from_bits(*value)),
+                    crate::scan::ScanScalar::String(value) => Value::String(value.clone()),
+                    crate::scan::ScanScalar::Binary(value) => Value::Binary(value.clone()),
+                    crate::scan::ScanScalar::Uuid(value) => Value::Uuid(*value),
                 };
                 encode_string(&encode_value(&value))
             })

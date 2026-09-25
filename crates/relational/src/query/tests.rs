@@ -21,7 +21,7 @@ use hawdb_optimizer::{
     RelationalJoinPlanningAttempt, RelationalJoinPlanningStrategy, RelationalJoinRightInput,
     RelationalJoinSelectivity, RelationalOperatorKind,
 };
-use hawdb_storage::{RelationalMutationLimits, RelationalOverflowConfig};
+use hawdb_storage::relational::{RelationalMutationLimits, RelationalOverflowConfig};
 use std::num::{NonZeroU64, NonZeroUsize};
 
 mod columnar_aggregate;
@@ -37,8 +37,8 @@ fn candidate_work_has_an_independent_budget_and_checkpoint() {
         max_intermediate_rows: 1,
         max_candidate_work: 1,
         hydration: RelationalHydrationBudget::default(),
-        index_read: hawdb_storage::RelationalIndexReadLimits::default(),
-        row_read: hawdb_storage::RelationalRowPageSnapshotReadLimits::default(),
+        index_read: hawdb_storage::relational::RelationalIndexReadLimits::default(),
+        row_read: hawdb_storage::relational::RelationalRowPageSnapshotReadLimits::default(),
     };
     let cancellation = hawdb_core::RuntimeCancellationToken::new();
     let task_context = hawdb_core::RuntimeTaskContext::without_deadline(cancellation.clone());
@@ -100,8 +100,8 @@ fn batched_index_join_limits() -> RelationalQueryLimits {
         max_intermediate_rows: 128,
         max_candidate_work: 128,
         hydration: RelationalHydrationBudget::default(),
-        index_read: hawdb_storage::RelationalIndexReadLimits::default(),
-        row_read: hawdb_storage::RelationalRowPageSnapshotReadLimits::default(),
+        index_read: hawdb_storage::relational::RelationalIndexReadLimits::default(),
+        row_read: hawdb_storage::relational::RelationalRowPageSnapshotReadLimits::default(),
     }
 }
 
@@ -1063,8 +1063,8 @@ fn prepared_bushy_physical_join_plan_materializes_the_composite_right_input_once
         max_intermediate_rows: 128,
         max_candidate_work: 128,
         hydration: RelationalHydrationBudget::default(),
-        index_read: hawdb_storage::RelationalIndexReadLimits::default(),
-        row_read: hawdb_storage::RelationalRowPageSnapshotReadLimits::default(),
+        index_read: hawdb_storage::relational::RelationalIndexReadLimits::default(),
+        row_read: hawdb_storage::relational::RelationalRowPageSnapshotReadLimits::default(),
     };
     let mut binding_nanos = 0;
     let planned = join_order::plan_select_join_order(

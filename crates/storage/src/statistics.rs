@@ -23,7 +23,7 @@ use crate::statistics_refresh::{
     relationship_property_supports_optimizer_statistics, sample_histogram_values,
     MAX_BOUNDED_PATH_STAT_HOPS, MAX_BOUNDED_PATH_STAT_VISITS, MAX_PROPERTY_HISTOGRAM_VALUES,
 };
-use crate::{CowSegmentedMap, NodeId, NodeRecord, RelId, RelRecord};
+use crate::{cow::CowSegmentedMap, NodeId, NodeRecord, RelId, RelRecord};
 use hawdb_core::{
     BasicGraphStatistics, Catalog, GraphStatistics, IndexId, IndexKind, IndexStatisticsSample,
     LabelId, RelTypeId, Value,

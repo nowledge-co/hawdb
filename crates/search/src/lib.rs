@@ -36,8 +36,11 @@ use hawdb_qos::{
     QosAdmission, WorkClass, WorkRequest,
 };
 use hawdb_storage::{
-    durable_replace_file, EnumDictionaryStats, FieldSummary, RangeBound, ScanPredicate,
-    SegmentPruner, SegmentReadRange, SegmentSummary,
+    durability::durable_replace_file,
+    scan::{
+        EnumDictionaryStats, FieldSummary, RangeBound, ScanPredicate, SegmentPruner,
+        SegmentReadRange, SegmentSummary,
+    },
 };
 use hawdb_storage::{NodeId, NodeRecord};
 use hawdb_telemetry::{KernelTelemetry, KernelTelemetryOperation, TelemetrySink};
@@ -376,7 +379,7 @@ pub fn search_projection_document_id_for_node(
     catalog: &Catalog,
     node: &NodeRecord,
 ) -> Option<String> {
-    hawdb_storage::projection_document_id_for_node(catalog, node)
+    hawdb_storage::projection::projection_document_id_for_node(catalog, node)
 }
 
 pub fn search_projection_document_id_for_label_and_properties(
@@ -384,7 +387,9 @@ pub fn search_projection_document_id_for_label_and_properties(
     properties: &BTreeMap<String, Value>,
     node_id: NodeId,
 ) -> Option<String> {
-    hawdb_storage::projection_document_id_for_label_and_properties(label, properties, node_id)
+    hawdb_storage::projection::projection_document_id_for_label_and_properties(
+        label, properties, node_id,
+    )
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -7760,7 +7765,7 @@ mod tests {
     use super::*;
     mod feature_contract;
     #[cfg(feature = "full-text-search")]
-    use hawdb_storage::{FileSegmentRangeReader, SegmentReadExecutor, SegmentReadScheduler};
+    use hawdb_storage::scan::{FileSegmentRangeReader, SegmentReadExecutor, SegmentReadScheduler};
     use std::cell::Cell;
     #[cfg(feature = "full-text-search")]
     use std::num::{NonZeroU64, NonZeroUsize};

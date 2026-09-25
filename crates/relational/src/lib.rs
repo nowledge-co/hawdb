@@ -97,13 +97,16 @@ impl index_runtime::RelationalIndexStoreReader for RelationalMaterializedReader 
         &self,
         _table: &str,
         _index: &str,
-        _prefix: &hawdb_storage::RelationalKey,
-        _limits: hawdb_storage::RelationalIndexReadLimits,
-        _visit: impl FnMut(&hawdb_storage::RelationalKey, &hawdb_storage::RelationalKey) -> bool,
+        _prefix: &hawdb_storage::relational::RelationalKey,
+        _limits: hawdb_storage::relational::RelationalIndexReadLimits,
+        _visit: impl FnMut(
+            &hawdb_storage::relational::RelationalKey,
+            &hawdb_storage::relational::RelationalKey,
+        ) -> bool,
     ) -> Option<
         std::result::Result<
             hawdb_storage::relational_index_view::RelationalIndexReadViewReport,
-            hawdb_storage::RelationalIndexShadowError,
+            hawdb_storage::relational::RelationalIndexShadowError,
         >,
     > {
         None
@@ -113,13 +116,16 @@ impl index_runtime::RelationalIndexStoreReader for RelationalMaterializedReader 
         &self,
         _table: &str,
         _index: &str,
-        _prefixes: &[hawdb_storage::RelationalKey],
-        _limits: hawdb_storage::RelationalIndexReadLimits,
-        _visit: impl FnMut(&hawdb_storage::RelationalKey, &hawdb_storage::RelationalKey) -> bool,
+        _prefixes: &[hawdb_storage::relational::RelationalKey],
+        _limits: hawdb_storage::relational::RelationalIndexReadLimits,
+        _visit: impl FnMut(
+            &hawdb_storage::relational::RelationalKey,
+            &hawdb_storage::relational::RelationalKey,
+        ) -> bool,
     ) -> Option<
         std::result::Result<
             hawdb_storage::relational_index_view::RelationalIndexReadViewReport,
-            hawdb_storage::RelationalIndexShadowError,
+            hawdb_storage::relational::RelationalIndexShadowError,
         >,
     > {
         None
@@ -129,13 +135,16 @@ impl index_runtime::RelationalIndexStoreReader for RelationalMaterializedReader 
         &self,
         _table: &str,
         _index: &str,
-        _scan: &hawdb_storage::RelationalIndexRangeScan,
-        _limits: hawdb_storage::RelationalIndexReadLimits,
-        _visit: impl FnMut(&hawdb_storage::RelationalKey, &hawdb_storage::RelationalKey) -> bool,
+        _scan: &hawdb_storage::relational::RelationalIndexRangeScan,
+        _limits: hawdb_storage::relational::RelationalIndexReadLimits,
+        _visit: impl FnMut(
+            &hawdb_storage::relational::RelationalKey,
+            &hawdb_storage::relational::RelationalKey,
+        ) -> bool,
     ) -> Option<
         std::result::Result<
             hawdb_storage::relational_index_view::RelationalIndexReadViewReport,
-            hawdb_storage::RelationalIndexShadowError,
+            hawdb_storage::relational::RelationalIndexShadowError,
         >,
     > {
         None
@@ -147,14 +156,15 @@ impl row_runtime::RelationalRowStoreReader for RelationalMaterializedReader {
 
     fn open_relational_row_snapshot_reader(
         &self,
-    ) -> hawdb_core::Result<Option<hawdb_storage::RelationalRowPageSnapshotReader>> {
+    ) -> hawdb_core::Result<Option<hawdb_storage::relational::RelationalRowPageSnapshotReader>>
+    {
         Ok(None)
     }
 
     fn open_relational_transaction_row_snapshot_reader(
         &self,
         _rows: &Self::TransactionRows,
-    ) -> hawdb_core::Result<hawdb_storage::RelationalRowPageSnapshotReader> {
+    ) -> hawdb_core::Result<hawdb_storage::relational::RelationalRowPageSnapshotReader> {
         Err(hawdb_core::HawDBError::Execution(
             "materialized relational reader does not expose transaction rows".to_string(),
         ))
@@ -163,7 +173,7 @@ impl row_runtime::RelationalRowStoreReader for RelationalMaterializedReader {
 
 use hawdb_core::{HawDBError, Result, Value};
 use hawdb_sql::{SqlColumnDefault, SqlColumnDefinition, SqlDataType, SqlValue};
-use hawdb_storage::{
+use hawdb_storage::relational::{
     RelationalColumnDefault, RelationalColumnSchema, RelationalScalarType, RelationalValue,
 };
 
@@ -283,7 +293,7 @@ pub fn reject_non_public_schema(schema: Option<&str>) -> Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use hawdb_storage::{AppendOrderMode, AppendState, AppendTableSchema};
+    use hawdb_storage::append_table::{AppendOrderMode, AppendState, AppendTableSchema};
 
     #[test]
     fn append_select_compiles_from_storage_neutral_sql_ir() {

@@ -21,8 +21,12 @@
 //! facade itself consumes.
 
 use crate::{
-    AppendSegmentReadOutput, AppendTableSchema, PublishedReadView, RelationalKey,
-    SegmentCacheSnapshot, StorageRecoveryReport, StorageResidencyReport,
+    append_table::{AppendSegmentReadOutput, AppendTableSchema},
+    cache::SegmentCacheSnapshot,
+    projection::StorageRecoveryReport,
+    read_view::PublishedReadView,
+    relational::RelationalKey,
+    residency::StorageResidencyReport,
 };
 use hawdb_core::{BasicGraphStatistics, Catalog, GraphStatistics, Result};
 
@@ -59,22 +63,28 @@ pub trait GraphReadEngine {
         catalog: &Catalog,
     ) -> crate::consistency::PropertyIndexConsistencyReport;
 
-    fn columnar_shadow_checkpoint_report(&self) -> Option<crate::ColumnarShadowCheckpointReport>;
+    fn columnar_shadow_checkpoint_report(
+        &self,
+    ) -> Option<crate::column_group::shadow::ColumnarShadowCheckpointReport>;
 
-    fn columnar_shadow_recovery_status(&self) -> crate::ColumnarShadowRecoveryStatus;
+    fn columnar_shadow_recovery_status(
+        &self,
+    ) -> crate::column_group::shadow::ColumnarShadowRecoveryStatus;
 
-    fn projected_graph_statuses(&self) -> Vec<crate::ProjectedGraphStatus>;
+    fn projected_graph_statuses(&self) -> Vec<crate::projection::ProjectedGraphStatus>;
 
     fn storage_pressure_snapshot(
         &self,
         oldest_reader_commit_epoch: Option<u64>,
-    ) -> crate::StoragePressureSnapshot;
+    ) -> crate::pressure::StoragePressureSnapshot;
 
-    fn append_storage_residency_report(&self) -> crate::AppendStorageResidencyReport;
+    fn append_storage_residency_report(&self) -> crate::append_table::AppendStorageResidencyReport;
 
     fn columnar_shadow_admission_bytes(&self) -> u64;
 
-    fn relational_index_recovery_report(&self) -> Option<&crate::RelationalIndexRecoveryReport>;
+    fn relational_index_recovery_report(
+        &self,
+    ) -> Option<&crate::relational::RelationalIndexRecoveryReport>;
 
     fn relational_index_shadow_checkpoint_report(
         &self,
@@ -84,7 +94,9 @@ pub trait GraphReadEngine {
         &self,
     ) -> &crate::relational::RelationalIndexShadowRecoveryStatus;
 
-    fn search_projection_changefeed_status(&self) -> crate::SearchProjectionChangefeedStatus;
+    fn search_projection_changefeed_status(
+        &self,
+    ) -> crate::projection::SearchProjectionChangefeedStatus;
 
     fn append_table_schema(&self, table: &str) -> Option<&AppendTableSchema>;
 
@@ -111,12 +123,15 @@ pub trait GraphReadEngine {
 /// (`commit_mutation_with_limits` and friends). These are the storage-lifecycle
 /// operations the facade schedules directly.
 pub trait GraphMutationEngine {
-    fn plan_schema_maintenance(&self, catalog: &Catalog) -> Vec<crate::SchemaMaintenancePlanItem>;
+    fn plan_schema_maintenance(
+        &self,
+        catalog: &Catalog,
+    ) -> Vec<crate::projection::SchemaMaintenancePlanItem>;
 
     fn run_schema_maintenance(
         &mut self,
         catalog: &mut Catalog,
-    ) -> Result<Vec<crate::SchemaMaintenanceAction>>;
+    ) -> Result<Vec<crate::projection::SchemaMaintenanceAction>>;
 
     fn rebuild_projected_graph_artifacts(&mut self, catalog: &Catalog) -> Result<()>;
 
@@ -124,19 +139,19 @@ pub trait GraphMutationEngine {
         &mut self,
         catalog: &Catalog,
         max_estimated_operations: usize,
-    ) -> Vec<crate::PropertyIndexProjectionRebuildAction>;
+    ) -> Vec<crate::projection::PropertyIndexProjectionRebuildAction>;
 
-    fn scrub_storage(&mut self) -> Result<crate::StorageScrubReport>;
+    fn scrub_storage(&mut self) -> Result<crate::backup::StorageScrubReport>;
 
     fn backup_to(
         &mut self,
         catalog: &Catalog,
         destination: impl AsRef<std::path::Path>,
-    ) -> Result<crate::StorageBackupReport>;
+    ) -> Result<crate::backup::StorageBackupReport>;
 
     fn register_projected_graph(
         &mut self,
         name: &str,
-        definition: crate::ProjectedGraphDefinition,
+        definition: crate::projection::ProjectedGraphDefinition,
     ) -> Result<()>;
 }

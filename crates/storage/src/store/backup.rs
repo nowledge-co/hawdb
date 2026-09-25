@@ -32,18 +32,33 @@ use super::{
 };
 use crate::error::{HawDBError, Result};
 use hawdb_storage::{
-    append_generation_manifest_file, append_segment_file, decode_relational_checkpoint_file,
-    validate_backup_file_name, AppendGenerationReader, AppendPublicationConfig,
-    CanonicalAdjacencyConfig, CanonicalAdjacencyReader, CanonicalSegmentConfig,
-    CanonicalSegmentManifest, CanonicalSegmentReader, GraphDescriptorKind,
-    GraphDescriptorTreeBuildConfig, GraphDescriptorTreeGenerationArtifacts,
-    GraphDescriptorTreePaths, GraphDescriptorTreeRootReader, ManifestGeneration,
-    PersistentPropertyProjectionConfig, PersistentPropertyProjectionDescriptorTree,
-    PersistentPropertyProjectionManifest, PersistentPropertyProjectionReader,
-    PersistentPropertySpillDescriptorTree, PropertySpillConfig, PropertySpillManifest,
-    PropertySpillReader, RelationalDecodeLimits, RelationalIndexArtifactMetadata,
-    RelationalIndexGenerationIdentity, RelationalIndexShadowConfig, RelationalIndexShadowReader,
-    SegmentCache, StableIdentityMappingConfig, StableIdentityMappingReader, StorageRestoreReport,
+    append_table::{
+        append_generation_manifest_file, append_segment_file, AppendGenerationReader,
+        AppendPublicationConfig,
+    },
+    backup::{validate_backup_file_name, StorageRestoreReport},
+    cache::{ManifestGeneration, SegmentCache},
+    canonical::{CanonicalSegmentConfig, CanonicalSegmentManifest, CanonicalSegmentReader},
+    canonical_adjacency::{CanonicalAdjacencyConfig, CanonicalAdjacencyReader},
+    graph_descriptor_page::GraphDescriptorKind,
+    graph_descriptor_tree::{
+        GraphDescriptorTreeBuildConfig, GraphDescriptorTreeGenerationArtifacts,
+        GraphDescriptorTreePaths, GraphDescriptorTreeRootReader,
+    },
+    property_projection::{
+        PersistentPropertyProjectionConfig, PersistentPropertyProjectionDescriptorTree,
+        PersistentPropertyProjectionManifest, PersistentPropertyProjectionReader,
+    },
+    property_spill::{
+        PersistentPropertySpillDescriptorTree, PropertySpillConfig, PropertySpillManifest,
+        PropertySpillReader,
+    },
+    relational::{
+        decode_relational_checkpoint_file, RelationalDecodeLimits, RelationalIndexArtifactMetadata,
+        RelationalIndexGenerationIdentity, RelationalIndexShadowConfig,
+        RelationalIndexShadowReader,
+    },
+    stable_identity::{StableIdentityMappingConfig, StableIdentityMappingReader},
 };
 use std::collections::BTreeSet;
 use std::fs;
@@ -111,7 +126,7 @@ pub(super) fn validate_backup_files(
     let checkpoint_text = read_durable_text_bytes_with_limit(
         &fs::read(root.join(&checkpoint_name))?,
         "checkpoint",
-        Some(hawdb_storage::DEFAULT_MAX_CHECKPOINT_DECODED_BYTES),
+        Some(hawdb_storage::config::DEFAULT_MAX_CHECKPOINT_DECODED_BYTES),
     )?;
     let (checkpoint_body, checkpoint_checksum) = split_checkpoint_checksum(&checkpoint_text)?;
     if checkpoint_checksum != checksum_bytes(checkpoint_body.as_bytes()) {
@@ -174,9 +189,9 @@ pub(super) fn validate_backup_files(
         let canonical_manifest_name = canonical_manifest_generation_file(generation);
         let canonical_artifact_name = canonical_artifact_generation_file(generation);
         let descriptor_page_name =
-            hawdb_storage::canonical_segment_descriptor_page_file(generation);
+            hawdb_storage::canonical::canonical_segment_descriptor_page_file(generation);
         let descriptor_root_name =
-            hawdb_storage::canonical_segment_descriptor_root_file(generation);
+            hawdb_storage::canonical::canonical_segment_descriptor_root_file(generation);
         for required in [
             canonical_manifest_name.as_str(),
             canonical_artifact_name.as_str(),
@@ -299,9 +314,13 @@ pub(super) fn validate_backup_files(
     if let Some(binding) = manifest.canonical_adjacency_generation_artifacts {
         let adjacency_artifact_name = canonical_adjacency_artifact_generation_file(generation);
         let descriptor_page_name =
-            hawdb_storage::canonical_adjacency_descriptor_page_file(generation);
+            hawdb_storage::canonical_adjacency::canonical_adjacency_descriptor_page_file(
+                generation,
+            );
         let descriptor_root_name =
-            hawdb_storage::canonical_adjacency_descriptor_root_file(generation);
+            hawdb_storage::canonical_adjacency::canonical_adjacency_descriptor_root_file(
+                generation,
+            );
         for required in [
             adjacency_artifact_name.as_str(),
             descriptor_page_name.as_str(),
@@ -395,9 +414,13 @@ pub(super) fn validate_backup_files(
         let projection_manifest_name = property_projection_manifest_generation_file(generation);
         let projection_artifact_name = property_projection_artifact_generation_file(generation);
         let descriptor_page_name =
-            hawdb_storage::property_projection_descriptor_page_file(generation);
+            hawdb_storage::property_projection::property_projection_descriptor_page_file(
+                generation,
+            );
         let descriptor_root_name =
-            hawdb_storage::property_projection_descriptor_root_file(generation);
+            hawdb_storage::property_projection::property_projection_descriptor_root_file(
+                generation,
+            );
         for required in [
             projection_manifest_name.as_str(),
             projection_artifact_name.as_str(),
@@ -624,8 +647,10 @@ fn validate_backup_property_spills(
     };
     let property_manifest_name = property_spill_manifest_generation_file(generation);
     let property_artifact_name = property_spill_artifact_generation_file(generation);
-    let descriptor_page_name = hawdb_storage::property_spill_descriptor_page_file(generation);
-    let descriptor_root_name = hawdb_storage::property_spill_descriptor_root_file(generation);
+    let descriptor_page_name =
+        hawdb_storage::property_spill::property_spill_descriptor_page_file(generation);
+    let descriptor_root_name =
+        hawdb_storage::property_spill::property_spill_descriptor_root_file(generation);
     for required in [
         property_manifest_name.as_str(),
         property_artifact_name.as_str(),
@@ -775,7 +800,9 @@ fn validate_backup_relational_roots(
             .ok_or_else(|| HawDBError::Storage(format!("backup is missing bound file: {name}")))
     };
     let overflow_manifest_name =
-        hawdb_storage::relational_overflow_manifest_generation_file(overflow_binding.generation);
+        hawdb_storage::relational::relational_overflow_manifest_generation_file(
+            overflow_binding.generation,
+        );
     let overflow_manifest_file = require(&overflow_manifest_name)?;
     if overflow_manifest_file.encoded_len != overflow_binding.manifest_artifact.encoded_len
         || overflow_manifest_file.encoded_checksum
@@ -786,10 +813,10 @@ fn validate_backup_relational_roots(
             "backup relational overflow manifest does not match its canonical binding".to_string(),
         ));
     }
-    let overflow = hawdb_storage::RelationalOverflowRootReader::open_generation(
+    let overflow = hawdb_storage::relational::RelationalOverflowRootReader::open_generation(
         root,
         overflow_binding.generation,
-        hawdb_storage::RelationalOverflowPublicationConfig::default(),
+        hawdb_storage::relational::RelationalOverflowPublicationConfig::default(),
     )
     .map_err(|error| HawDBError::Storage(error.to_string()))?;
     if overflow.manifest().source_commit_epoch != overflow_binding.source_commit_epoch
@@ -801,11 +828,13 @@ fn validate_backup_relational_roots(
     }
     for (name, metadata) in [
         (
-            hawdb_storage::relational_overflow_extent_file(overflow_binding.generation),
+            hawdb_storage::relational::relational_overflow_extent_file(overflow_binding.generation),
             overflow.manifest().extent_artifact,
         ),
         (
-            hawdb_storage::relational_overflow_descriptor_file(overflow_binding.generation),
+            hawdb_storage::relational::relational_overflow_descriptor_file(
+                overflow_binding.generation,
+            ),
             overflow.manifest().descriptor_artifact,
         ),
     ] {
@@ -821,17 +850,19 @@ fn validate_backup_relational_roots(
     }
     let mut expected_overflow_files = BTreeSet::from([
         overflow_manifest_name,
-        hawdb_storage::relational_overflow_descriptor_file(overflow_binding.generation),
-        hawdb_storage::relational_overflow_extent_file(overflow_binding.generation),
+        hawdb_storage::relational::relational_overflow_descriptor_file(overflow_binding.generation),
+        hawdb_storage::relational::relational_overflow_extent_file(overflow_binding.generation),
     ]);
     overflow
         .visit_descriptors(|descriptor| {
-            expected_overflow_files.insert(hawdb_storage::relational_overflow_extent_file(
-                descriptor.physical_generation,
-            ));
+            expected_overflow_files.insert(
+                hawdb_storage::relational::relational_overflow_extent_file(
+                    descriptor.physical_generation,
+                ),
+            );
             overflow.hydrate(
                 &descriptor.reference,
-                &mut hawdb_storage::RelationalHydrationBudget::default(),
+                &mut hawdb_storage::relational::RelationalHydrationBudget::default(),
                 None,
             )?;
             Ok(())
@@ -843,8 +874,9 @@ fn validate_backup_relational_roots(
         ));
     }
 
-    let row_manifest_name =
-        hawdb_storage::relational_row_page_manifest_generation_file(row_binding.generation);
+    let row_manifest_name = hawdb_storage::relational::relational_row_page_manifest_generation_file(
+        row_binding.generation,
+    );
     let row_manifest_file = require(&row_manifest_name)?;
     if row_manifest_file.encoded_len != row_binding.manifest_artifact.encoded_len
         || row_manifest_file.encoded_checksum
@@ -855,10 +887,10 @@ fn validate_backup_relational_roots(
             "backup relational row-page manifest does not match its canonical binding".to_string(),
         ));
     }
-    let row = hawdb_storage::RelationalRowPageRootReader::open_generation(
+    let row = hawdb_storage::relational::RelationalRowPageRootReader::open_generation(
         root,
         row_binding.generation,
-        hawdb_storage::RelationalRowPagePublicationConfig::default(),
+        hawdb_storage::relational::RelationalRowPagePublicationConfig::default(),
     )
     .map_err(|error| HawDBError::Storage(error.to_string()))?;
     if row.manifest().source_commit_epoch != row_binding.source_commit_epoch
@@ -872,15 +904,17 @@ fn validate_backup_relational_roots(
         .map_err(|error| HawDBError::Storage(error.to_string()))?;
     for (name, metadata) in [
         (
-            hawdb_storage::relational_row_page_artifact_file(row_binding.generation),
+            hawdb_storage::relational::relational_row_page_artifact_file(row_binding.generation),
             row.manifest().page_artifact,
         ),
         (
-            hawdb_storage::relational_row_page_root_descriptor_file(row_binding.generation),
+            hawdb_storage::relational::relational_row_page_root_descriptor_file(
+                row_binding.generation,
+            ),
             row.manifest().root_descriptor_artifact,
         ),
         (
-            hawdb_storage::relational_row_page_root_key_file(row_binding.generation),
+            hawdb_storage::relational::relational_row_page_root_key_file(row_binding.generation),
             row.manifest().root_key_artifact,
         ),
     ] {
@@ -896,9 +930,9 @@ fn validate_backup_relational_roots(
     }
     let mut expected_row_files = BTreeSet::from([
         row_manifest_name,
-        hawdb_storage::relational_row_page_root_descriptor_file(row_binding.generation),
-        hawdb_storage::relational_row_page_root_key_file(row_binding.generation),
-        hawdb_storage::relational_row_page_artifact_file(row_binding.generation),
+        hawdb_storage::relational::relational_row_page_root_descriptor_file(row_binding.generation),
+        hawdb_storage::relational::relational_row_page_root_key_file(row_binding.generation),
+        hawdb_storage::relational::relational_row_page_artifact_file(row_binding.generation),
     ]);
     let tables = row
         .manifest()
@@ -908,9 +942,11 @@ fn validate_backup_relational_roots(
         .collect::<Vec<_>>();
     for table in tables {
         row.visit_table_pages(&table, |descriptor| {
-            expected_row_files.insert(hawdb_storage::relational_row_page_artifact_file(
-                descriptor.physical_generation,
-            ));
+            expected_row_files.insert(
+                hawdb_storage::relational::relational_row_page_artifact_file(
+                    descriptor.physical_generation,
+                ),
+            );
             row.read_page(descriptor)?;
             Ok(())
         })
@@ -945,9 +981,12 @@ fn validate_backup_relational_index_generation(
                 .to_string(),
         ));
     };
-    let page_name = hawdb_storage::relational_index_shadow_artifact_file(binding.generation);
+    let page_name =
+        hawdb_storage::relational::relational_index_shadow_artifact_file(binding.generation);
     let generation_manifest_name =
-        hawdb_storage::relational_index_shadow_manifest_generation_file(binding.generation);
+        hawdb_storage::relational::relational_index_shadow_manifest_generation_file(
+            binding.generation,
+        );
     let page = files
         .iter()
         .find(|file| file.name == page_name)

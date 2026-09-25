@@ -266,8 +266,8 @@ fn unified_search_projection_changefeed_captures_relational_primary_keys() {
     );
     assert_eq!(
         batch.relational_primary_key_changes()[0].primary_keys,
-        vec![hawdb_storage::RelationalKey(vec![
-            hawdb_storage::RelationalValue::BigInt(1)
+        vec![hawdb_storage::relational::RelationalKey(vec![
+            hawdb_storage::relational::RelationalValue::BigInt(1)
         ])]
     );
     assert_eq!(batch.operation_count(), 1);
@@ -360,7 +360,7 @@ fn conflict_noop_returning_does_not_emit_a_relational_changefeed_mutation() {
 fn relational_changefeed_overflow_requires_rebuild_without_rejecting_commit() {
     let mut db = Database::new_with_config(DatabaseConfig {
         search_projection_relational_change_limits:
-            hawdb_storage::RelationalPrimaryKeyChangeCaptureLimits {
+            hawdb_storage::relational::RelationalPrimaryKeyChangeCaptureLimits {
                 max_entries: NonZeroUsize::new(1).unwrap(),
                 max_bytes: NonZeroUsize::new(1024).unwrap(),
             },
@@ -410,8 +410,8 @@ fn relational_changefeed_resumes_from_wal_after_restart() {
     assert_eq!(batch.relational_primary_key_changes().len(), 1);
     assert_eq!(
         batch.relational_primary_key_changes()[0].primary_keys,
-        vec![hawdb_storage::RelationalKey(vec![
-            hawdb_storage::RelationalValue::BigInt(7)
+        vec![hawdb_storage::relational::RelationalKey(vec![
+            hawdb_storage::relational::RelationalValue::BigInt(7)
         ])]
     );
     assert!(db.search_projection_changefeed_status().restart_recoverable);
@@ -442,8 +442,8 @@ fn relational_changefeed_resumes_from_checkpoint_after_restart() {
     assert_eq!(batch.relational_primary_key_changes().len(), 1);
     assert_eq!(
         batch.relational_primary_key_changes()[0].primary_keys,
-        vec![hawdb_storage::RelationalKey(vec![
-            hawdb_storage::RelationalValue::BigInt(11)
+        vec![hawdb_storage::relational::RelationalKey(vec![
+            hawdb_storage::relational::RelationalValue::BigInt(11)
         ])]
     );
 

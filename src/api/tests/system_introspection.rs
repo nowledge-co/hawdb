@@ -23,8 +23,8 @@ fn system_sql_exposes_runtime_configuration_and_capabilities() {
     let mut db = Database::new_with_config(DatabaseConfig {
         max_read_result_rows: Some(16),
         max_read_result_payload_bytes: Some(4096),
-        storage_residency_mode: hawdb_storage::StorageResidencyMode::OutOfCore,
-        relational_index_mode: hawdb_storage::RelationalIndexMode::DemandPaged,
+        storage_residency_mode: hawdb_storage::config::StorageResidencyMode::OutOfCore,
+        relational_index_mode: hawdb_storage::config::RelationalIndexMode::DemandPaged,
         runtime_capabilities: capabilities,
         ..DatabaseConfig::default()
     });

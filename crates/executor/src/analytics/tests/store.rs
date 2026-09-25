@@ -19,7 +19,11 @@ use crate::store::{
     SourceScanReadLimits,
 };
 use hawdb_plan_cypher::{CompositeRangeSeek, NodeProjectionAccess};
-use hawdb_storage::{AdjacencyDirection, ProjectedNodeRecord, ScanPredicate, ScanPruningReport};
+use hawdb_storage::{
+    adjacency::AdjacencyDirection,
+    scan::{ScanPredicate, ScanPruningReport},
+    ProjectedNodeRecord,
+};
 
 impl GraphExecutionRead for Fixture {
     fn is_out_of_core(&self) -> bool {

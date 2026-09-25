@@ -14,7 +14,9 @@
 
 use crate::{SearchIndex, SearchProjectionCatchUpReport};
 use hawdb_core::{HawDBError, Result};
-use hawdb_storage::{SearchProjectionChangefeedReadiness, SearchProjectionChangefeedStatus};
+use hawdb_storage::projection::{
+    SearchProjectionChangefeedReadiness, SearchProjectionChangefeedStatus,
+};
 use std::fmt;
 use std::num::NonZeroU64;
 

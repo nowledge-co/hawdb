@@ -20,7 +20,7 @@
 use crate::bounded_read_evidence::NowledgeMemGraphMode;
 use hawdb_route_ownership::graph::NowledgeMemRouteOwnershipReadinessReport;
 use hawdb_search::SearchProjectionFreshness;
-use hawdb_storage::{SearchProjectionChangefeedStatus, SearchProjectionMutationId};
+use hawdb_storage::projection::{SearchProjectionChangefeedStatus, SearchProjectionMutationId};
 
 pub const NOWLEDGE_MEM_RUNTIME_STATUS_PROTOCOL: &str = "hawdb-nowledge-mem-runtime-status-v1";
 pub const NOWLEDGE_MEM_PRODUCTION_STATUS_PROTOCOL: &str = "hawdb-nowledge-mem-production-status-v1";
@@ -242,7 +242,7 @@ impl NowledgeMemProductionStatus {
 mod tests {
     use super::{NowledgeMemProductionStatus, NowledgeMemRuntimeStatus};
     use crate::bounded_read_evidence::NowledgeMemGraphMode;
-    use hawdb_storage::{SearchProjectionChangefeedStatus, SearchProjectionMutationId};
+    use hawdb_storage::projection::{SearchProjectionChangefeedStatus, SearchProjectionMutationId};
 
     fn changefeed() -> SearchProjectionChangefeedStatus {
         SearchProjectionChangefeedStatus {

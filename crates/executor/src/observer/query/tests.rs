@@ -68,7 +68,7 @@ fn typed_reports_preserve_contents_order_and_last_vector_count() {
         GraphExpansionTruncationReason, VectorCompressionMode, VectorExecutionBackend,
         VectorExecutionReport, VectorScoreSource,
     };
-    use hawdb_storage::{ScanPruningStrategy, ScanPruningTargetKind};
+    use hawdb_storage::scan::{ScanPruningStrategy, ScanPruningTargetKind};
 
     let observer = QueryExecutionObserver::default();
     assert_eq!(observer.current_vector_rerank_count(), 0);

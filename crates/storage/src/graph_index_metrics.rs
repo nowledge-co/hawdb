@@ -12,7 +12,10 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-use crate::{CanonicalAdjacencyReadReport, PersistentPropertyProjectionReadReport};
+use crate::{
+    canonical_adjacency::CanonicalAdjacencyReadReport,
+    property_projection::PersistentPropertyProjectionReadReport,
+};
 use std::sync::atomic::{AtomicU64, Ordering};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
