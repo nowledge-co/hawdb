@@ -1505,6 +1505,7 @@ impl SearchOutOfCoreReader {
             SearchMode::Hybrid => options.rank_window,
             SearchMode::Vector => Some(0),
         };
+        let mut lexical_blocks_skipped = 0u64;
         let (text_scores, text_matching_count, lexical_postings_visited, lexical_bytes_read) =
             if text_available && mode != SearchMode::Vector {
                 let lexical_statistics = LexicalCorpusStatistics::aggregate(
@@ -1519,19 +1520,28 @@ impl SearchOutOfCoreReader {
                 let mut postings_visited = 0u64;
                 let mut bytes_read = lexical_statistics.bytes_read();
                 for segment in &self.segments {
-                    let report = segment.lexical_projection.score_with_global_statistics(
-                        &query_terms,
-                        self.lexical_term_policy.max_term_bytes(),
-                        retained_text_limit,
-                        &lexical_statistics,
-                        |id| candidate_set.contains(id, &mut metrics),
-                    )?;
+                    // Hybrid fusion consumes the retained window only, so a
+                    // pruned pass is invisible there. Text mode reports
+                    // `matching_count` as its total hit count, which skipping
+                    // would change, so it keeps the exhaustive pass.
+                    let report = segment
+                        .lexical_projection
+                        .score_with_global_statistics_and_pruning(
+                            &query_terms,
+                            self.lexical_term_policy.max_term_bytes(),
+                            retained_text_limit,
+                            &lexical_statistics,
+                            mode == SearchMode::Hybrid,
+                            |id| candidate_set.contains(id, &mut metrics),
+                        )?;
                     matching_document_count = matching_document_count
                         .checked_add(report.matching_document_count)
                         .ok_or_else(|| {
                             HawDBError::Storage("search text match count overflow".to_string())
                         })?;
                     postings_visited = postings_visited.saturating_add(report.postings_visited);
+                    lexical_blocks_skipped =
+                        lexical_blocks_skipped.saturating_add(report.blocks_skipped);
                     bytes_read = bytes_read.saturating_add(report.bytes_read);
                     for (id, score) in report.scores {
                         if scores.insert(id.clone(), score).is_some() {
@@ -1635,6 +1645,7 @@ impl SearchOutOfCoreReader {
                     .candidate_scan_admitted_working_bytes,
                 posting_bytes_read: 0,
                 candidate_postings_visited: 0,
+                candidate_blocks_skipped: 0,
                 segmented_lexical_projection_used: false,
                 index_covered_document_count: vector_scan.vector_document_count,
                 index_candidate_document_count: vector_scan.vector_document_count,
@@ -1701,6 +1712,7 @@ impl SearchOutOfCoreReader {
                 candidate_scan_admitted_working_bytes: 0,
                 posting_bytes_read: lexical_bytes_read,
                 candidate_postings_visited: lexical_postings_visited,
+                candidate_blocks_skipped: lexical_blocks_skipped,
                 segmented_lexical_projection_used: true,
                 index_covered_document_count: 0,
                 index_candidate_document_count: 0,

@@ -196,6 +196,11 @@ pub(super) struct LexicalProjectionConfig {
     pub query_memory_bytes: NonZeroU64,
     pub max_query_score_entries: NonZeroUsize,
     pub mini_delta_bytes: NonZeroU64,
+    /// Candidate postings below this count fall back to exhaustive scoring.
+    /// Block skipping still needs an explicit opt-in from the caller because it
+    /// changes `matching_document_count` (`LexicalQueryReport`), which the text
+    /// route uses as its total hit count.
+    pub pruning_min_postings: u64,
 }
 
 impl Default for LexicalProjectionConfig {
@@ -215,6 +220,7 @@ impl Default for LexicalProjectionConfig {
             query_memory_bytes: NonZeroU64::new(128 * 1024 * 1024).unwrap(),
             max_query_score_entries: NonZeroUsize::new(1_000_000).unwrap(),
             mini_delta_bytes: NonZeroU64::new(8 * 1024 * 1024).unwrap(),
+            pruning_min_postings: BLOCK_MAX_PRUNING_MIN_POSTINGS,
         }
     }
 }
@@ -836,6 +842,9 @@ pub(super) struct LexicalQueryReport {
     pub postings_visited: u64,
     pub bytes_read: u64,
     pub document_bytes_read: u64,
+    /// Posting blocks whose frame-header bound put every posting below the
+    /// retained floor, so their payloads were never decoded.
+    pub blocks_skipped: u64,
 }
 
 /// Exact corpus statistics for scoring a disjoint lexical artifact set.
@@ -1236,16 +1245,22 @@ impl LexicalProjectionReader {
             max_term_bytes,
             retained_score_limit,
             None,
+            false,
             allowed,
         )
     }
 
-    pub(super) fn score_with_global_statistics(
+    /// Scores one generation while optionally skipping posting blocks whose
+    /// frame-header bound cannot reach the retained floor. Callers that report
+    /// `matching_document_count` as a user-visible total (the text route) must
+    /// pass `false`: skipping changes that count, not the retained window.
+    pub(super) fn score_with_global_statistics_and_pruning(
         &self,
         query_terms: &BTreeSet<String>,
         max_term_bytes: NonZeroU64,
         retained_score_limit: Option<usize>,
         statistics: &LexicalCorpusStatistics,
+        prune_blocks: bool,
         allowed: impl FnMut(&str) -> Result<bool>,
     ) -> Result<LexicalQueryReport> {
         self.score_with_term_limit_and_statistics(
@@ -1254,6 +1269,7 @@ impl LexicalProjectionReader {
             max_term_bytes,
             retained_score_limit,
             Some(statistics),
+            prune_blocks,
             allowed,
         )
     }
@@ -1266,6 +1282,7 @@ impl LexicalProjectionReader {
         max_term_bytes: NonZeroU64,
         retained_score_limit: Option<usize>,
         global_statistics: Option<&LexicalCorpusStatistics>,
+        prune_blocks: bool,
         mut allowed: impl FnMut(&str) -> Result<bool>,
     ) -> Result<LexicalQueryReport> {
         self.validate_term_limit(max_term_bytes)?;
@@ -1369,65 +1386,94 @@ impl LexicalProjectionReader {
         )?;
         let mut streams = Vec::new();
         let mut stream_idf = Vec::new();
+        let mut candidate_postings = 0u64;
         for term in query_terms {
             let df = document_frequency.get(term).copied().unwrap_or(0);
+            candidate_postings = candidate_postings.saturating_add(df as u64);
             if df > 0 {
                 streams.push(TermPostingStream::new(self, term));
                 stream_idf.push(idf(document_count, df));
             }
         }
-        let mut heap = BinaryHeap::new();
         let mut documents = DocumentLookup::new(self);
-        for (index, stream) in streams.iter_mut().enumerate() {
-            if let Some(posting) = stream.next()? {
-                heap.push(Reverse((posting.ordinal, index, posting)));
+        let mut group: Vec<(usize, Posting)> = Vec::new();
+        let mut order: Vec<(u64, usize)> = Vec::with_capacity(streams.len());
+        let mut blocks_skipped = 0u64;
+        let prune = prune_blocks
+            && collector.has_floor()
+            && candidate_postings >= self.config.pruning_min_postings;
+        loop {
+            order.clear();
+            for (index, stream) in streams.iter_mut().enumerate() {
+                if let Some(ordinal) = stream.peek_ordinal()? {
+                    order.push((ordinal, index));
+                }
             }
-        }
-        while let Some(Reverse((ordinal, stream_index, posting))) = heap.pop() {
+            if order.is_empty() {
+                break;
+            }
+            order.sort_unstable();
+            let ordinal = order[0].0;
+            if prune && let Some(floor) = collector.floor() {
+                // Block-Max WAND pivot: cursors are examined in ordinal order
+                // until their summed per-block bounds reach the retained floor.
+                // Every document below that pivot scores below the floor, so
+                // advancing the cursors past it cannot change the top-k.
+                let mut upper = 0.0;
+                let mut pivot = None;
+                for &(candidate, index) in &order {
+                    upper +=
+                        streams[index].block_upper_bound(stream_idf[index], average_document_len);
+                    if upper >= floor {
+                        pivot = Some(candidate);
+                        break;
+                    }
+                }
+                match pivot {
+                    // No cursor can reach the floor: the remaining documents
+                    // cannot enter the retained window, so every unread block
+                    // stays unread.
+                    None => {
+                        for stream in &streams {
+                            blocks_skipped = blocks_skipped.saturating_add(stream.unread_blocks());
+                        }
+                        break;
+                    }
+                    Some(pivot) if pivot > ordinal => {
+                        for &(candidate, index) in &order {
+                            if candidate < pivot {
+                                streams[index].skip_to(pivot)?;
+                            }
+                        }
+                        continue;
+                    }
+                    Some(_) => {}
+                }
+            }
+            group.clear();
+            for (index, stream) in streams.iter_mut().enumerate() {
+                if stream.peek_ordinal()? == Some(ordinal) {
+                    let posting = stream.take().expect("peeked lexical posting exists");
+                    group.push((index, posting));
+                }
+            }
             let (document_id, document_len) = documents.get(ordinal)?;
-            validate_posting_length(&posting, document_len)?;
-            let mut score = 0.0;
-            if (global_statistics.is_some() || !delta.overrides(&document_id))
-                && allowed(&document_id)?
-            {
-                score += bm25_term_score(
-                    stream_idf[stream_index],
-                    posting.term_frequency,
-                    document_len,
-                    average_document_len,
-                );
-            }
-            if let Some(next) = streams[stream_index].next()? {
-                heap.push(Reverse((next.ordinal, stream_index, next)));
-            }
-            while heap
-                .peek()
-                .is_some_and(|Reverse((next_ordinal, _, _))| *next_ordinal == ordinal)
-            {
-                let Reverse((_, next_stream_index, next_posting)) =
-                    heap.pop().expect("peeked lexical posting exists");
-                validate_posting_length(&next_posting, document_len)?;
-                if (global_statistics.is_some() || !delta.overrides(&document_id))
-                    && allowed(&document_id)?
-                {
-                    score += bm25_term_score(
-                        stream_idf[next_stream_index],
-                        next_posting.term_frequency,
-                        document_len,
-                        average_document_len,
-                    );
-                }
-                if let Some(next) = streams[next_stream_index].next()? {
-                    heap.push(Reverse((next.ordinal, next_stream_index, next)));
-                }
-            }
-            if score > 0.0 {
-                collector.push(document_id, score)?;
-            }
+            score_document(
+                document_id,
+                document_len,
+                &group,
+                &stream_idf,
+                delta,
+                global_statistics,
+                average_document_len,
+                &mut allowed,
+                &mut collector,
+            )?;
         }
         for stream in &streams {
             postings_visited = postings_visited.saturating_add(stream.postings_visited);
             bytes_read = bytes_read.saturating_add(stream.bytes_read);
+            blocks_skipped = blocks_skipped.saturating_add(stream.blocks_skipped);
         }
         if global_statistics.is_none() {
             for (id, document) in &delta.upserts {
@@ -1462,6 +1508,7 @@ impl LexicalProjectionReader {
             postings_visited,
             bytes_read: bytes_read.saturating_add(documents.bytes_read),
             document_bytes_read: documents.bytes_read,
+            blocks_skipped,
         })
     }
 
@@ -1507,8 +1554,12 @@ struct TermPostingStream<'a> {
     blocks: Vec<&'a BlockDescriptor>,
     block_index: usize,
     current: std::vec::IntoIter<Posting>,
+    peeked: Option<Posting>,
+    /// Frame-header bounds of the block whose postings are materialized next.
+    bounds: Option<PostingBlockBounds>,
     postings_visited: u64,
     bytes_read: u64,
+    blocks_skipped: u64,
 }
 
 impl<'a> TermPostingStream<'a> {
@@ -1520,22 +1571,94 @@ impl<'a> TermPostingStream<'a> {
             blocks,
             block_index: 0,
             current: Vec::new().into_iter(),
+            peeked: None,
+            bounds: None,
             postings_visited: 0,
             bytes_read: 0,
+            blocks_skipped: 0,
         }
     }
 
-    fn next(&mut self) -> Result<Option<Posting>> {
+    fn peek(&mut self) -> Result<Option<&Posting>> {
+        if self.peeked.is_none() {
+            self.peeked = self.advance()?;
+        }
+        Ok(self.peeked.as_ref())
+    }
+
+    fn peek_ordinal(&mut self) -> Result<Option<u64>> {
+        Ok(self.peek()?.map(|posting| posting.ordinal))
+    }
+
+    fn take(&mut self) -> Option<Posting> {
+        self.peeked.take()
+    }
+
+    /// Upper bound of the block that will serve the next posting. Streaming
+    /// without a bound must never prune, so the absent case stays unbounded.
+    fn block_upper_bound(&self, idf: f64, average_document_len: f64) -> f64 {
+        self.bounds.map_or(f64::INFINITY, |bounds| {
+            bm25_term_upper_bound(idf, bounds.max_tf, average_document_len)
+        })
+    }
+
+    /// Drops postings below `target`, skipping whole blocks whose frame-header
+    /// bound cannot reach it without decoding their payloads.
+    fn skip_to(&mut self, target: u64) -> Result<()> {
+        loop {
+            while let Some(posting) = self.peek()? {
+                if posting.ordinal >= target {
+                    return Ok(());
+                }
+                self.peeked = None;
+            }
+            if !self.load_next_block_above(target)? {
+                return Ok(());
+            }
+        }
+    }
+
+    /// Blocks pruning left unread because the query stopped early.
+    fn unread_blocks(&self) -> u64 {
+        u64::try_from(self.blocks.len().saturating_sub(self.block_index)).unwrap_or(u64::MAX)
+    }
+
+    fn advance(&mut self) -> Result<Option<Posting>> {
         loop {
             if let Some(posting) = self.current.next() {
                 return Ok(Some(posting));
             }
-            let Some(block) = self.blocks.get(self.block_index).copied() else {
+            if !self.load_next_block_above(0)? {
+                self.bounds = None;
                 return Ok(None);
+            }
+        }
+    }
+
+    /// Decodes the next block that can serve a posting at or above `target`.
+    /// A block whose frame-header bound falls below `target` is counted and
+    /// skipped with its payload left undecoded.
+    fn load_next_block_above(&mut self, target: u64) -> Result<bool> {
+        loop {
+            let Some(block) = self.blocks.get(self.block_index).copied() else {
+                return Ok(false);
             };
             self.block_index = self.block_index.saturating_add(1);
             let bytes = self.projection.read_block(block)?;
             self.bytes_read = self.bytes_read.saturating_add(bytes.len() as u64);
+            let Some(bounds) = term_block_bounds(
+                &bytes,
+                self.projection.manifest.generation,
+                block,
+                self.term,
+            )?
+            else {
+                continue;
+            };
+            if bounds.last < target {
+                self.blocks_skipped = self.blocks_skipped.saturating_add(1);
+                continue;
+            }
             let mut postings = Vec::new();
             decode_posting_block_for_term(
                 &bytes,
@@ -1557,7 +1680,9 @@ impl<'a> TermPostingStream<'a> {
                     Ok(())
                 },
             )?;
+            self.bounds = Some(bounds);
             self.current = postings.into_iter();
+            return Ok(true);
         }
     }
 }
@@ -1664,6 +1789,23 @@ impl ScoreCollector {
                 .collect(),
         }
     }
+
+    /// Whether the retained set can bound a query at all.
+    fn has_floor(&self) -> bool {
+        matches!(&self.storage, ScoreStorage::TopK { limit, .. } if *limit > 0)
+    }
+
+    /// Lowest retained score once the rank window is full. A document whose score
+    /// cannot strictly exceed it cannot enter the retained set.
+    fn floor(&self) -> Option<f64> {
+        let ScoreStorage::TopK { limit, heap } = &self.storage else {
+            return None;
+        };
+        if *limit == 0 || heap.len() < *limit {
+            return None;
+        }
+        heap.peek().map(|Reverse(worst)| worst.score)
+    }
 }
 
 fn idf(document_count: usize, document_frequency: usize) -> f64 {
@@ -1677,6 +1819,118 @@ fn bm25_term_score(idf: f64, frequency: u32, document_len: u32, average_len: f64
     let denominator = frequency
         + BM25_K1 * (1.0 - BM25_B + BM25_B * f64::from(document_len) / average_len.max(1.0));
     idf * (frequency * (BM25_K1 + 1.0)) / denominator
+}
+
+/// Candidate postings below this bound fall back to exhaustive scoring: block
+/// bounds cost more than the blocks they can skip on short doclists.
+const BLOCK_MAX_PRUNING_MIN_POSTINGS: u64 = 4_096;
+
+/// Largest contribution one posting block can add to a document. BM25 falls with
+/// document length, so the shortest possible document bounds the block's maximum
+/// term frequency from above.
+fn bm25_term_upper_bound(idf: f64, max_frequency: u32, average_len: f64) -> f64 {
+    bm25_term_score(idf, max_frequency, 0, average_len)
+}
+
+/// Scores one document from the postings every stream holds for it.
+#[allow(clippy::too_many_arguments)]
+fn score_document(
+    document_id: String,
+    document_len: u32,
+    postings: &[(usize, Posting)],
+    stream_idf: &[f64],
+    delta: &LexicalMiniDelta,
+    global_statistics: Option<&LexicalCorpusStatistics>,
+    average_document_len: f64,
+    allowed: &mut impl FnMut(&str) -> Result<bool>,
+    collector: &mut ScoreCollector,
+) -> Result<()> {
+    let mut score = 0.0;
+    for (index, posting) in postings {
+        validate_posting_length(posting, document_len)?;
+        if (global_statistics.is_some() || !delta.overrides(&document_id)) && allowed(&document_id)?
+        {
+            score += bm25_term_score(
+                stream_idf[*index],
+                posting.term_frequency,
+                document_len,
+                average_document_len,
+            );
+        }
+    }
+    if score > 0.0 {
+        collector.push(document_id, score)?;
+    }
+    Ok(())
+}
+
+/// Frame-header bounds of one term inside one posting block.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+struct PostingBlockBounds {
+    last: u64,
+    max_tf: u32,
+}
+
+/// Reads the term's frame headers inside one posting block without decoding any
+/// posting payload. Returns `None` when the block does not cover the term.
+fn term_block_bounds(
+    bytes: &[u8],
+    generation: u64,
+    descriptor: &BlockDescriptor,
+    term: &str,
+) -> Result<Option<PostingBlockBounds>> {
+    let block = split_posting_block(bytes, generation, descriptor)?;
+    if term < descriptor.min_key.as_str() || term > descriptor.max_key.as_str() {
+        return Err(HawDBError::Storage(
+            "lexical posting block does not cover the requested term".to_string(),
+        ));
+    }
+    dictionary_map(block.dictionary, |dictionary| {
+        let Some(value) = dictionary.get(term) else {
+            return Ok(None);
+        };
+        let (offset, document_frequency) = unpack_dictionary_value(value)?;
+        if document_frequency > block.count {
+            return Err(HawDBError::Storage(
+                "lexical term dictionary count exceeds its block".to_string(),
+            ));
+        }
+        let mut position = offset;
+        let mut decoded = 0u32;
+        let mut bounds: Option<PostingBlockBounds> = None;
+        while decoded < document_frequency {
+            let frame =
+                posting_codec::parse_header(block.payload.get(position..).ok_or_else(|| {
+                    HawDBError::Storage("lexical term offset exceeds payload".to_string())
+                })?)
+                .map_err(|error| {
+                    HawDBError::Storage(format!("invalid lexical posting frame: {error}"))
+                })?;
+            let frame_count = u32::try_from(frame.count).map_err(|_| {
+                HawDBError::Storage("lexical posting frame count exceeds u32".to_string())
+            })?;
+            if frame_count > document_frequency - decoded {
+                return Err(HawDBError::Storage(
+                    "lexical posting frames exceed the term document frequency".to_string(),
+                ));
+            }
+            bounds = Some(match bounds {
+                None => PostingBlockBounds {
+                    last: frame.last,
+                    max_tf: frame.max_tf,
+                },
+                Some(current) => PostingBlockBounds {
+                    last: current.last.max(frame.last),
+                    max_tf: current.max_tf.max(frame.max_tf),
+                },
+            });
+            position = position.checked_add(frame.length).ok_or_else(|| {
+                HawDBError::Storage("lexical posting frame offset overflows".to_string())
+            })?;
+            decoded = decoded.saturating_add(frame_count);
+        }
+        Ok(bounds)
+    })
 }
 
 pub(super) struct LexicalProjectionWriter<'workspace> {
@@ -3044,6 +3298,279 @@ mod tests {
         assert!(report.scores["a"].is_finite());
         assert!(report.scores["a"] > 0.0);
         assert_eq!(report.bytes_read, 0);
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    fn pruning_config(pruning_min_postings: u64) -> LexicalProjectionConfig {
+        LexicalProjectionConfig {
+            target_block_bytes: NonZeroU64::new(256).unwrap(),
+            max_block_bytes: NonZeroU64::new(512).unwrap(),
+            pruning_min_postings,
+            ..LexicalProjectionConfig::default()
+        }
+    }
+
+    fn pruning_corpus_documents() -> Vec<SearchDocument> {
+        (0..512u32)
+            .map(|index| {
+                let mut content = String::new();
+                for _ in 0..(index % 9 + 1) {
+                    content.push_str("storage ");
+                }
+                // The high-idf term is sparse and spread out, and it fills the
+                // retained window by itself, so the floor stays far above the
+                // frequent low-idf term's block bounds and the cursors skip
+                // whole blocks between the sparse hits.
+                if index % 64 == 0 {
+                    content.push_str("rare ");
+                }
+                if index % 3 == 0 {
+                    content.push_str("graph ");
+                }
+                document(&format!("doc-{index:04}"), "title", &content)
+            })
+            .collect()
+    }
+
+    fn pruning_corpus_reader(
+        root: &Path,
+        config: LexicalProjectionConfig,
+    ) -> std::sync::Arc<LexicalProjectionReader> {
+        let analyzer = SearchAnalyzerLexicon::default();
+        let documents = pruning_corpus_documents();
+        LexicalProjectionWriter::new(config)
+            .write(root, 1, Some(7), 11, 13, documents.iter(), &analyzer)
+            .unwrap()
+    }
+
+    #[test]
+    #[ignore = "developer measurement: builds a large doclist to compare pruned and exhaustive passes"]
+    fn block_max_pruning_measurement_on_a_large_doclist() {
+        let root = projection_root("block-max-pruning-measurement");
+        let _ = fs::remove_dir_all(&root);
+        fs::create_dir_all(&root).unwrap();
+        let analyzer = SearchAnalyzerLexicon::default();
+        let documents: Vec<SearchDocument> = (0..16_384u32)
+            .map(|index| {
+                let mut content = String::new();
+                for _ in 0..(index % 9 + 1) {
+                    content.push_str("storage ");
+                }
+                if index % 256 == 0 {
+                    content.push_str("rare ");
+                }
+                document(&format!("doc-{index:05}"), "title", &content)
+            })
+            .collect();
+        let config = pruning_config(BLOCK_MAX_PRUNING_MIN_POSTINGS);
+        let _ = LexicalProjectionWriter::new(config)
+            .write(&root, 1, Some(7), 11, 13, documents.iter(), &analyzer)
+            .unwrap();
+        let terms = BTreeSet::from(["rare".to_string(), "storage".to_string()]);
+        let max_term_bytes = config.max_term_bytes;
+
+        let reader = LexicalProjectionReader::load(&root, Some(7), 11, 13, config)
+            .unwrap()
+            .unwrap();
+        let statistics =
+            LexicalCorpusStatistics::aggregate([reader.as_ref()], &terms, max_term_bytes).unwrap();
+        let started = std::time::Instant::now();
+        let baseline = reader
+            .score_with_global_statistics_and_pruning(
+                &terms,
+                max_term_bytes,
+                Some(10),
+                &statistics,
+                false,
+                |_| Ok(true),
+            )
+            .unwrap();
+        let exhaustive_millis = started.elapsed().as_millis();
+
+        let started = std::time::Instant::now();
+        let pruned = reader
+            .score_with_global_statistics_and_pruning(
+                &terms,
+                max_term_bytes,
+                Some(10),
+                &statistics,
+                true,
+                |_| Ok(true),
+            )
+            .unwrap();
+        let pruned_millis = started.elapsed().as_millis();
+
+        println!(
+            "exhaustive: postings={} bytes={} millis={exhaustive_millis}",
+            baseline.postings_visited, baseline.bytes_read
+        );
+        println!(
+            "pruned: postings={} bytes={} blocks_skipped={} millis={pruned_millis}",
+            pruned.postings_visited, pruned.bytes_read, pruned.blocks_skipped
+        );
+        assert_eq!(pruned.scores, baseline.scores);
+        assert!(pruned.blocks_skipped > 0);
+        assert!(pruned.postings_visited < baseline.postings_visited);
+        assert!(pruned.bytes_read < baseline.bytes_read);
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn term_block_bounds_match_decoded_postings() {
+        let root = projection_root("block-max-bounds");
+        let _ = fs::remove_dir_all(&root);
+        fs::create_dir_all(&root).unwrap();
+        let config = pruning_config(u64::MAX);
+        let reader = pruning_corpus_reader(&root, config);
+
+        let mut checked = 0;
+        for term in ["storage", "rare", "graph"] {
+            for block in reader.posting_blocks(term) {
+                let bytes = reader.read_block(block).unwrap();
+                let bounds = term_block_bounds(&bytes, reader.manifest.generation, block, term)
+                    .unwrap()
+                    .expect("the block covers the term");
+                let mut last = 0u64;
+                let mut max_tf = 0u32;
+                decode_posting_block_for_term(
+                    &bytes,
+                    reader.manifest.generation,
+                    block,
+                    term,
+                    |entry| {
+                        last = last.max(entry.ordinal);
+                        max_tf = max_tf.max(entry.tf);
+                        Ok(())
+                    },
+                )
+                .unwrap();
+                assert_eq!(bounds.last, last, "{term} block last ordinal");
+                assert_eq!(bounds.max_tf, max_tf, "{term} block maximum frequency");
+                checked += 1;
+            }
+        }
+        assert!(checked > 0);
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn block_max_pruning_returns_the_exhaustive_retained_window() {
+        let root = projection_root("block-max-pruning-differential");
+        let _ = fs::remove_dir_all(&root);
+        fs::create_dir_all(&root).unwrap();
+        let config = pruning_config(u64::MAX);
+        let _ = pruning_corpus_reader(&root, config);
+        let terms = BTreeSet::from(["rare".to_string(), "storage".to_string()]);
+        let max_term_bytes = config.max_term_bytes;
+
+        let exhaustive = LexicalProjectionReader::load(&root, Some(7), 11, 13, config)
+            .unwrap()
+            .unwrap();
+        let statistics =
+            LexicalCorpusStatistics::aggregate([exhaustive.as_ref()], &terms, max_term_bytes)
+                .unwrap();
+        let baseline = exhaustive
+            .score_with_global_statistics_and_pruning(
+                &terms,
+                max_term_bytes,
+                Some(4),
+                &statistics,
+                false,
+                |_| Ok(true),
+            )
+            .unwrap();
+
+        let pruned = LexicalProjectionReader::load(&root, Some(7), 11, 13, pruning_config(4))
+            .unwrap()
+            .unwrap();
+        let report = pruned
+            .score_with_global_statistics_and_pruning(
+                &terms,
+                max_term_bytes,
+                Some(4),
+                &statistics,
+                true,
+                |_| Ok(true),
+            )
+            .unwrap();
+
+        assert_eq!(report.scores, baseline.scores);
+        assert!(
+            report.blocks_skipped > 0,
+            "a dominant low-idf term must let pruning skip blocks"
+        );
+        assert!(report.postings_visited < baseline.postings_visited);
+        // Skipped documents are not visited, so the matching tally is a lower
+        // bound. Callers that report it as a total keep pruning disabled.
+        assert!(report.matching_document_count < baseline.matching_document_count);
+
+        let filtered = pruned
+            .score_with_global_statistics_and_pruning(
+                &terms,
+                max_term_bytes,
+                Some(4),
+                &statistics,
+                true,
+                |id| Ok(!id.ends_with("00")),
+            )
+            .unwrap();
+        let filtered_baseline = exhaustive
+            .score_with_global_statistics_and_pruning(
+                &terms,
+                max_term_bytes,
+                Some(4),
+                &statistics,
+                false,
+                |id| Ok(!id.ends_with("00")),
+            )
+            .unwrap();
+        assert_eq!(filtered.scores, filtered_baseline.scores);
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn short_doclists_fall_back_to_exhaustive_scoring() {
+        let root = projection_root("block-max-pruning-fallback");
+        let _ = fs::remove_dir_all(&root);
+        fs::create_dir_all(&root).unwrap();
+        let config = pruning_config(BLOCK_MAX_PRUNING_MIN_POSTINGS);
+        let _ = pruning_corpus_reader(&root, config);
+        let terms = BTreeSet::from(["rare".to_string(), "storage".to_string()]);
+        let max_term_bytes = config.max_term_bytes;
+
+        let reader = LexicalProjectionReader::load(&root, Some(7), 11, 13, config)
+            .unwrap()
+            .unwrap();
+        let statistics =
+            LexicalCorpusStatistics::aggregate([reader.as_ref()], &terms, max_term_bytes).unwrap();
+        let report = reader
+            .score_with_global_statistics_and_pruning(
+                &terms,
+                max_term_bytes,
+                Some(4),
+                &statistics,
+                true,
+                |_| Ok(true),
+            )
+            .unwrap();
+        let baseline = reader
+            .score_with_global_statistics_and_pruning(
+                &terms,
+                max_term_bytes,
+                Some(4),
+                &statistics,
+                false,
+                |_| Ok(true),
+            )
+            .unwrap();
+
+        assert_eq!(report.blocks_skipped, 0);
+        assert_eq!(report.scores, baseline.scores);
+        assert_eq!(report.postings_visited, baseline.postings_visited);
+        assert_eq!(
+            report.matching_document_count,
+            baseline.matching_document_count
+        );
         fs::remove_dir_all(root).unwrap();
     }
 }

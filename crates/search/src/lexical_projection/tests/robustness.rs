@@ -227,22 +227,24 @@ fn global_statistics_preserve_scores_across_disjoint_projection_layers() {
     .unwrap();
 
     let mut layered_scores = left
-        .score_with_global_statistics(
+        .score_with_global_statistics_and_pruning(
             &terms,
             crate::SearchLexicalTermPolicy::default().max_term_bytes(),
             None,
             &statistics,
+            false,
             |_| Ok(true),
         )
         .unwrap()
         .scores;
     layered_scores.extend(
         right
-            .score_with_global_statistics(
+            .score_with_global_statistics_and_pruning(
                 &terms,
                 crate::SearchLexicalTermPolicy::default().max_term_bytes(),
                 None,
                 &statistics,
+                false,
                 |_| Ok(true),
             )
             .unwrap()
