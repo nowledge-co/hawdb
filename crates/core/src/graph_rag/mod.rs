@@ -18,6 +18,7 @@ use std::fmt::Write;
 
 mod fingerprint;
 mod query_generation;
+mod scoring;
 mod topology;
 
 use fingerprint::schema_context_fingerprint;
@@ -26,6 +27,10 @@ pub use query_generation::{
     GraphRagQueryParameterCardinality, GraphRagQueryParameterError,
     GraphRagQueryParameterRequirement, GraphRagQueryPattern, GraphRagQueryPredicate,
     GraphRagQueryPredicateOperator, GraphRagQueryProjection, MAX_GRAPH_RAG_QUERY_LIMIT,
+};
+pub use scoring::{
+    DecayTerm, ScoreFeature, ScoringEvaluation, ScoringFeatureSource, ScoringSpec,
+    ScoringSpecError, ScoringTerm,
 };
 use topology::{common_path_summaries, route_summaries};
 
