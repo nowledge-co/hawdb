@@ -440,9 +440,12 @@ pub(super) fn execute_blocking_projection<'a>(
     } else {
         let locator_layout = match tree_execution {
             Some(execution) => relational_physical_join_plan_locator_layout(state, execution.tree)?,
-            None => {
-                relational_locator_layout(&select.from.name, base_qualifier, base_schema, joins)?
-            }
+            None => relational_locator_layout(
+                &select.from_table().name,
+                base_qualifier,
+                base_schema,
+                joins,
+            )?,
         };
         let mut order = ExternalTopN::new(
             "TopNExec",
@@ -674,7 +677,7 @@ pub(super) fn projected_order_columns(
                             } if name.name == column.name
                                 && column.qualifier.as_deref().is_none_or(|qualifier| {
                                     name.qualifier.as_deref() == Some(qualifier)
-                                        || select.from.name == qualifier
+                                        || select.from_table().name == qualifier
                                         || select.from_alias.as_deref() == Some(qualifier)
                                 }) =>
                             {

@@ -902,12 +902,12 @@ impl PreparedRelationalAccessPlan {
             let base_qualifier = statement
                 .from_alias
                 .as_deref()
-                .unwrap_or(statement.from.name.as_str());
+                .unwrap_or(statement.from_table().name.as_str());
             let join = &statement.joins[0];
             let right_qualifier = join.alias.as_deref().unwrap_or(join.table.name.as_str());
             let left = RelationalPhysicalJoinNode::relation(
                 BindingId::new(0),
-                statement.from.name.clone(),
+                statement.from_table().name.clone(),
                 base_qualifier.to_string(),
                 RelationalPhysicalAccess::Base(self.base_access.clone()),
             );
@@ -959,11 +959,11 @@ impl PreparedRelationalAccessPlan {
             let base_qualifier = statement
                 .from_alias
                 .as_deref()
-                .unwrap_or(statement.from.name.as_str());
+                .unwrap_or(statement.from_table().name.as_str());
             let right_qualifier = join.alias.as_deref().unwrap_or(join.table.name.as_str());
             let left = RelationalPhysicalJoinNode::relation(
                 BindingId::new(0),
-                statement.from.name.clone(),
+                statement.from_table().name.clone(),
                 base_qualifier.to_string(),
                 RelationalPhysicalAccess::Base(self.base_access.clone()),
             );
@@ -1007,10 +1007,10 @@ impl PreparedRelationalAccessPlan {
         let base_qualifier = statement
             .from_alias
             .as_deref()
-            .unwrap_or(statement.from.name.as_str());
+            .unwrap_or(statement.from_table().name.as_str());
         let mut root = RelationalPhysicalJoinNode::relation(
             base_binding,
-            statement.from.name.clone(),
+            statement.from_table().name.clone(),
             base_qualifier.to_string(),
             RelationalPhysicalAccess::Base(self.base_access.clone()),
         );
@@ -1126,8 +1126,11 @@ impl PreparedRelationalExecutionDescriptor {
                 select.selection.as_ref(),
                 &access_plan.base_access.descriptor,
                 &access_order_by,
-                &select.from.name,
-                select.from_alias.as_deref().unwrap_or(&select.from.name),
+                &select.from_table().name,
+                select
+                    .from_alias
+                    .as_deref()
+                    .unwrap_or(&select.from_table().name),
             );
         let mode = if ordered_index_projection {
             PreparedRelationalExecutionMode::OrderedIndexProjection

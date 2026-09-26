@@ -82,13 +82,18 @@ pub(super) fn execute_select<'state>(
         memory_ledger,
         task_context,
     } = execution;
-    let base_schema = state.table_schema(&select.from.name).ok_or_else(|| {
-        HawDBError::Semantic(format!("unknown relational table {}", select.from.name))
-    })?;
+    let base_schema = state
+        .table_schema(&select.from_table().name)
+        .ok_or_else(|| {
+            HawDBError::Semantic(format!(
+                "unknown relational table {}",
+                select.from_table().name
+            ))
+        })?;
     let base_qualifier = select
         .from_alias
         .clone()
-        .unwrap_or_else(|| select.from.name.clone());
+        .unwrap_or_else(|| select.from_table().name.clone());
     let base_access = &prepared.access_plan.base_access;
     let (access_path, join_access_paths) = prepared_access_descriptors(&prepared.access_plan);
     let mut planned_joins = Vec::with_capacity(select.joins.len());

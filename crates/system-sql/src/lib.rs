@@ -258,8 +258,11 @@ enum SystemTable {
 
 #[doc(hidden)]
 pub fn is_virtual_catalog_select(select: &SelectStatement) -> bool {
+    let Some(from) = &select.from else {
+        return false;
+    };
     matches!(
-        (select.from.schema.as_deref(), select.from.name.as_str()),
+        (from.schema.as_deref(), from.name.as_str()),
         (Some("system" | "information_schema" | "pg_catalog"), _)
             | (None, "pg_tables" | "pg_indexes")
     )
@@ -2173,7 +2176,8 @@ fn compare_ordered_rows(left: &Row, right: &Row, order_by: &[SqlOrderItem]) -> O
 }
 
 fn system_table(select: &SelectStatement) -> Result<SystemTable> {
-    match (select.from.schema.as_deref(), select.from.name.as_str()) {
+    let from = select.from_table();
+    match (from.schema.as_deref(), from.name.as_str()) {
         (Some("system"), "tables") => Ok(SystemTable::Tables),
         (Some("system"), "properties") => Ok(SystemTable::Properties),
         (Some("system"), "indexes") => Ok(SystemTable::Indexes),
@@ -2496,9 +2500,10 @@ fn table_columns(table: SystemTable) -> &'static [&'static str] {
 }
 
 fn format_table_name(select: &SelectStatement) -> String {
-    match &select.from.schema {
-        Some(schema) => format!("{schema}.{}", select.from.name),
-        None => select.from.name.clone(),
+    let from = select.from_table();
+    match &from.schema {
+        Some(schema) => format!("{schema}.{}", from.name),
+        None => from.name.clone(),
     }
 }
 

@@ -135,8 +135,11 @@ pub(super) fn resolve_projection_column_type(
     state: &RelationalState,
     column: &SqlColumnRef,
 ) -> Result<RelationalScalarType> {
-    let base_qualifier = select.from_alias.as_deref().unwrap_or(&select.from.name);
-    let base = std::iter::once((select.from.name.as_str(), base_qualifier));
+    let base_qualifier = select
+        .from_alias
+        .as_deref()
+        .unwrap_or(&select.from_table().name);
+    let base = std::iter::once((select.from_table().name.as_str(), base_qualifier));
     let joins = select.joins.iter().map(|join| {
         (
             join.table.name.as_str(),
@@ -304,6 +307,19 @@ pub(super) fn evaluate_projection_expression(
         } if name == "uuidv7" && arguments.is_empty() => {
             Ok(RelationalValue::Uuid(hawdb_core::generate_uuidv7()?))
         }
+        Expr {
+            kind:
+                ExprKind::Function {
+                    name,
+                    arguments,
+                    distinct: false,
+                    filter: None,
+                },
+            ..
+        } if name == "version" && arguments.is_empty() => Ok(RelationalValue::Text(format!(
+            "HawDB {} (PostgreSQL-dialect SQL)",
+            env!("CARGO_PKG_VERSION")
+        ))),
         Expr {
             kind:
                 ExprKind::Function {

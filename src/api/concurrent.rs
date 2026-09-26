@@ -996,7 +996,12 @@ fn sql_lock_requests(
         )));
     }
     let append_lock_mode = match prepared.statement() {
-        SqlStatement::Select(select) if append_state.schema(&select.from.name).is_some() => {
+        SqlStatement::Select(select)
+            if select
+                .from
+                .as_ref()
+                .is_some_and(|from| append_state.schema(&from.name).is_some()) =>
+        {
             Some(LockMode::Shared)
         }
         SqlStatement::Explain(explain)
@@ -1004,7 +1009,10 @@ fn sql_lock_requests(
                 && matches!(
                     explain.statement.as_ref(),
                     SqlStatement::Select(select)
-                        if append_state.schema(&select.from.name).is_some()
+                        if select
+                            .from
+                            .as_ref()
+                            .is_some_and(|from| append_state.schema(&from.name).is_some())
                 ) =>
         {
             Some(LockMode::Shared)
@@ -1169,7 +1177,7 @@ fn select_lock_requests(
     if !select.joins.is_empty() {
         let mut requests = vec![LockRequest::relational_table(
             mode,
-            select.from.name.clone(),
+            select.from_table().name.clone(),
         )];
         requests.extend(
             select
@@ -1179,10 +1187,10 @@ fn select_lock_requests(
         );
         return requests;
     }
-    if !is_public_table(&select.from) {
+    if !is_public_table(select.from_table()) {
         return vec![LockRequest::database(mode)];
     }
-    let Some(schema) = state.table_schema(&select.from.name) else {
+    let Some(schema) = state.table_schema(&select.from_table().name) else {
         return vec![LockRequest::database(mode)];
     };
     let ranges = match &select.selection {
@@ -1190,14 +1198,14 @@ fn select_lock_requests(
         Some(predicate) if schema.primary_key.len() == 1 => single_key_ranges(
             predicate,
             &schema.primary_key[0],
-            &select.from,
+            select.from_table(),
             select.from_alias.as_deref(),
             parameters,
         ),
         Some(predicate) => composite_key_point(
             predicate,
             &schema.primary_key,
-            &select.from,
+            select.from_table(),
             select.from_alias.as_deref(),
             parameters,
         )
@@ -1206,7 +1214,7 @@ fn select_lock_requests(
     let Some(ranges) = ranges else {
         return vec![LockRequest::relational_table(
             mode,
-            select.from.name.clone(),
+            select.from_table().name.clone(),
         )];
     };
     ranges
@@ -1214,7 +1222,7 @@ fn select_lock_requests(
         .map(|(lower, upper)| {
             LockRequest::relational_range(
                 mode,
-                select.from.name.clone(),
+                select.from_table().name.clone(),
                 schema.primary_key.clone(),
                 lower,
                 upper,
