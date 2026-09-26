@@ -37,6 +37,10 @@ The primary-key predicate controls reject extraction through an OR branch and
 omission of absent-row intents; see the
 [predicate replay proof](../PRIMARY_KEY_PREDICATE_MVCC_PROOF.md).
 
+The aged-writer bypass control rejects a younger foreground grant after the
+background large waiter ages; temporal starvation controls and witnesses are
+described in the [aging refinement](../AGED_WRITER_PROGRESS_PROOF.md).
+
 The governed-conflict-retry control rejects publication from a conflicting
 attempt. Its [proof](../GOVERNED_CONFLICT_RETRY_PROOF.md) also records the
 non-escalating retry starvation control and reachable conflict/retry witnesses.

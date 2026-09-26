@@ -7,9 +7,11 @@ unconditional fairness for every HawDB transaction or close #232.
 
 ## Contract and assumptions
 
-All competing mutation callers use the same RuntimeGovernor, the same
-foreground priority, and `begin_admitted_transaction`. The large request needs
-all C CPU slots, where C > 1; each small request needs one. The large waiter is
+The original instance has all competing mutation callers use the same
+RuntimeGovernor, foreground priority, and `begin_admitted_transaction`. The
+[aged-background refinement](AGED_WRITER_PROGRESS_PROOF.md) also covers one
+background large waiter competing with foreground small writers. The large
+request needs all C CPU slots, where C > 1; each small request needs one. The large waiter is
 retained across resource refusals and preserves its original queue position.
 Capacity and other admission limits stay sufficient for the request. Previously
 admitted owners eventually complete or otherwise retire, and the host eventually
@@ -20,10 +22,10 @@ commit, durability operation and result delivery eventually complete.
 
 The full-capacity request is a host-selected policy, not an automatic database
 lock or a new default. A transaction requesting fewer slots may overlap smaller
-writers and can still conflict. Other priorities, admission limit changes,
-background aging, abandoned owners, unscheduled callers and retry policies
-require separate arguments. The plain transaction and autocommit entrypoints
-are not implicitly governed by this contract.
+writers and can still conflict. Admission limit changes, arbitrary priority
+mixes, abandoned owners, unscheduled callers and retry policies require separate
+arguments; the refinement covers only its stated mix. The plain transaction and
+autocommit entrypoints are not implicitly governed by this contract.
 
 ## Source-level progress argument
 
@@ -73,7 +75,9 @@ while the large writer waits, exclusive capacity ownership by the large writer,
 and whole large publication. Under weak fairness of admission and each owner's
 work, commit and retirement, `LargeCompletes` requires eventual retirement of
 the large transaction. This checks an infinite-behavior property over the finite
-state graph, not merely a bounded number of arrivals.
+state graph, not merely a bounded number of arrivals. The original cfg sets
+`BackgroundLarge = FALSE` and `DisableAging = FALSE`; `aged` is initially true
+and the added aging transition is disabled, preserving this instance’s graph.
 
 The configured instance completed with **140 generated / 77 distinct states**,
 depth 20, an empty queue, and completed temporal checking over the whole graph.
@@ -113,7 +117,9 @@ priority/constraint/recovery composition proof.
 ## Executable workload
 
 `admitted_large_transaction_completes_under_recurring_small_transactions` runs
-in memory and durable grouped mode. Two older one-slot transactions stage
+in memory and durable grouped mode, for both foreground and aged-background
+large requests. The latter waits for the public aging deadline while both slots
+remain held, before running the same workload and assertions. Two older one-slot transactions stage
 disjoint SQL inserts. A two-slot large waiter queues, then one older transaction
 commits. Four worker threads submit younger one-slot requests while one slot is
 free; each must observe `QueuedAhead`. After the other older writer commits,
@@ -137,8 +143,8 @@ blocking sort inside that reservation.
 
 This provides a concrete sustained-arrival qualification for the stated host
 policy. Arbitrary-size concurrent transactions, whole-transaction retry fairness
-without full-capacity admission, mixed priorities and uncontrolled callers
-remain outside this result and remain #232 acceptance work.
+without full-capacity admission, other priority mixes and uncontrolled callers
+remain outside these results and remain #232 acceptance work.
 
 The [conflict-retry policy](GOVERNED_CONFLICT_RETRY_PROOF.md) now connects an
 ordinary shared first attempt, pre-publication conflict rejection, persistent

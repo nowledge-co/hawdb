@@ -1934,6 +1934,12 @@ inductive proof, Rust transition mapping, old-wrapper compatibility exception,
 and profile snapshot lifetime. The model excludes the legacy unbounded consumer's
 incremental-delivery policy, process RSS, and arbitrary operator semantics.
 
+## Aged background transaction progress
+
+`HawDBAgedWriterProgress` instantiates the shared governed-writer model with
+background aging and recurring foreground arrivals. See the
+[conditional progress proof and executable boundary](AGED_WRITER_PROGRESS_PROOF.md).
+
 ## Governed conflict retry
 
 `HawDBGovernedConflictRetry` models a shared first attempt and capacity escalation

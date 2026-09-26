@@ -161,7 +161,12 @@ fn admitted_large_transaction_completes_under_recurring_small_transactions() {
     const SMALL_COMMITS: usize = 32;
     const LARGE_ROWS: usize = 64;
 
-    for durable in [false, true] {
+    for (durable, priority) in [
+        (false, RuntimeWorkPriority::Foreground),
+        (true, RuntimeWorkPriority::Foreground),
+        (false, RuntimeWorkPriority::Background),
+        (true, RuntimeWorkPriority::Background),
+    ] {
         let path = super::super::unique_test_dir("admitted_recurring_small_writers");
         let mut database = if durable {
             Database::open(&path).unwrap()
@@ -198,13 +203,27 @@ fn admitted_large_transaction_completes_under_recurring_small_transactions() {
         second
             .query_sql("INSERT INTO progress (id) VALUES (-2)")
             .unwrap();
-        let large = governor.admission_waiter(RuntimeWorkPriority::Foreground);
-        let large_request = request().with_cpu_slots(2);
+        let large = governor.admission_waiter(priority);
+        let mut large_request = request().with_cpu_slots(2);
+        large_request.priority = priority;
         assert!(governor.try_admit_waiter(&large, large_request).is_err());
+        // Hold both slots until the public aging deadline has passed. This
+        // checks the actual clock-based boundary without depending on how fast
+        // the setup runs or exposing a test-only governor control plane.
+        if priority == RuntimeWorkPriority::Background {
+            while let Some(deadline) = large.next_priority_change_at() {
+                std::thread::sleep(deadline.saturating_duration_since(std::time::Instant::now()));
+            }
+        }
         first.commit().unwrap();
 
         // One slot is available, but younger one-slot requests must not consume
         // it while the older two-slot transaction waits for the other owner.
+        // This includes direct callers that do not create a queued waiter.
+        assert_eq!(
+            governor.try_admit(request()).unwrap_err().code,
+            RuntimeAdmissionCode::QueuedAhead
+        );
         let (attempted, attempts) = mpsc::channel();
         let handles = (0..WORKERS)
             .map(|worker| {
@@ -286,6 +305,7 @@ fn admitted_large_transaction_completes_under_recurring_small_transactions() {
         let resources = governor.snapshot();
         assert_eq!(resources.active_cpu_slots, 0);
         assert_eq!(resources.active_foreground_tasks, 0);
+        assert_eq!(resources.active_background_tasks, 0);
         assert_eq!(resources.admitted_memory_bytes, 0);
         let expected_ids = [-2, -1]
             .into_iter()

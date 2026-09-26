@@ -1,0 +1,3 @@
+------------------- MODULE HawDBAgedWriterProgress -------------------
+EXTENDS HawDBGovernedWriterProgress
+=============================================================================
