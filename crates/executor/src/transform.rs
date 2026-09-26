@@ -185,5 +185,76 @@ pub fn stream_limit_batches(
     )
 }
 
+/// Ranks input rows with a typed scoring specification and keeps the best
+/// `limit` rows, so the full candidate set is never materialized: the retained
+/// buffer stays within the rank window.
+#[allow(clippy::too_many_arguments)]
+pub fn stream_scoring_rerank_batches(
+    input: &PhysicalPlan,
+    score_column: &str,
+    spec: &hawdb_core::graph_rag::ScoringSpec,
+    limit: usize,
+    source: &mut dyn BindingBatchSource,
+    context: BatchExecutionContext<'_>,
+    execution_limit: ExecutionLimit,
+    emit: &mut dyn FnMut(BindingBatch) -> Result<BatchControl>,
+) -> Result<BatchControl> {
+    let retained_limit = match execution_limit.output_rows {
+        Some(parent) => limit.min(parent),
+        None => limit,
+    };
+    let reference_time = crate::scoring::reference_time_millis();
+    let mut retained: Vec<(f64, usize, Binding)> = Vec::new();
+    let mut order = 0usize;
+    source.execute(input, ExecutionLimit { output_rows: None }, &mut |batch| {
+        for binding in batch {
+            let features = crate::scoring::BindingScoreFeatures::new(&binding, score_column);
+            let evaluation = spec.evaluate(&features, reference_time);
+            retained.push((evaluation.combined_score, order, binding));
+            order = order.saturating_add(1);
+            // Amortized truncation keeps the buffer proportional to the rank
+            // window instead of the candidate count.
+            if retained.len() > retained_limit.saturating_mul(2).max(1) {
+                retain_best_scored(&mut retained, retained_limit);
+            }
+        }
+        Ok(BatchControl::Continue)
+    })?;
+    retain_best_scored(&mut retained, retained_limit);
+
+    let mut output = TransformBatchBuilder::new(
+        "ScoringRerankExec",
+        context.memory.batch_rows.get(),
+        context.memory.batch_payload_bytes,
+        context.memory_ledger,
+    )?;
+    for (score, _, mut binding) in retained {
+        binding.values.insert(
+            hawdb_plan_cypher::SCORING_RERANK_SCORE_COLUMN.to_string(),
+            hawdb_core::Value::Float(score),
+        );
+        output.reserve_before_allocation()?;
+        output.push(binding);
+        if output.is_full() && output.emit(emit)? == BatchControl::Stop {
+            return Ok(BatchControl::Stop);
+        }
+    }
+    if !output.is_empty() && output.emit(emit)? == BatchControl::Stop {
+        return Ok(BatchControl::Stop);
+    }
+    Ok(BatchControl::Continue)
+}
+
+pub(crate) fn retain_best_scored(retained: &mut Vec<(f64, usize, Binding)>, limit: usize) {
+    retained.sort_by(|left, right| {
+        right
+            .0
+            .partial_cmp(&left.0)
+            .unwrap_or(std::cmp::Ordering::Equal)
+            .then_with(|| left.1.cmp(&right.1))
+    });
+    retained.truncate(limit);
+}
+
 #[cfg(test)]
 mod tests;

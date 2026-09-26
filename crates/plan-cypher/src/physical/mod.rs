@@ -27,6 +27,10 @@ use crate::{
 /// binding entry. Scoring specifications take it as their `SearchScore`
 /// feature, and Cypher ranking that follows graph expansion reads this name.
 pub const VECTOR_SEED_SCORE_COLUMN: &str = "score";
+
+/// Column `ScoringRerankExec` writes the combined score into, so downstream
+/// stages and EXPLAIN can read the value the rerank decided on.
+pub const SCORING_RERANK_SCORE_COLUMN: &str = "scoring_rerank_score";
 use hawdb_core::Value;
 use hawdb_cypher::RelationshipDirection;
 use std::collections::BTreeMap;
@@ -577,6 +581,15 @@ pub enum PhysicalPlan {
     LimitExec {
         offset: usize,
         limit: Option<usize>,
+        input: Box<PhysicalPlan>,
+    },
+    /// Ranks input rows with a typed scoring specification and keeps the best
+    /// `limit` of them, so the full candidate set is never materialized.
+    ScoringRerankExec {
+        /// Row column that carries the search score.
+        score_column: String,
+        spec: hawdb_core::graph_rag::ScoringSpec,
+        limit: usize,
         input: Box<PhysicalPlan>,
     },
 }

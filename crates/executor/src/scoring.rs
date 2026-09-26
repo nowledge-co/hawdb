@@ -72,6 +72,15 @@ impl ScoringFeatureSource for BindingScoreFeatures<'_> {
     }
 }
 
+/// Wall clock the specification ages timestamp features against, in epoch
+/// milliseconds.
+pub fn reference_time_millis() -> u64 {
+    hawdb_core::time::SystemTime::now()
+        .duration_since(hawdb_core::time::UNIX_EPOCH)
+        .map(|elapsed| u64::try_from(elapsed.as_millis()).unwrap_or(u64::MAX))
+        .unwrap_or(0)
+}
+
 #[cfg(test)]
 mod tests {
     use super::BindingScoreFeatures;
@@ -169,5 +178,28 @@ mod tests {
         assert!(evaluation
             .missing_features
             .contains(&ScoreFeature::SearchScore));
+    }
+
+    #[test]
+    fn rerank_keeps_the_best_rows_with_a_deterministic_tie_break() {
+        let row = |value: i64| Binding {
+            values: BTreeMap::from([("value".to_string(), Value::Int(value))]),
+            nodes: BTreeMap::new(),
+            relationships: BTreeMap::new(),
+        };
+        let mut retained = vec![
+            (1.0, 0usize, row(0)),
+            (3.0, 1, row(1)),
+            (3.0, 2, row(2)),
+            (2.0, 3, row(3)),
+        ];
+        crate::transform::retain_best_scored(&mut retained, 3);
+        let order: Vec<usize> = retained.iter().map(|(_, order, _)| *order).collect();
+        // Highest score first, and equal scores keep their input order.
+        assert_eq!(order, vec![1, 2, 3]);
+        assert_eq!(retained.len(), 3);
+
+        crate::transform::retain_best_scored(&mut retained, 0);
+        assert!(retained.is_empty());
     }
 }

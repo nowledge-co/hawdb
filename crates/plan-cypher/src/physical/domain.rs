@@ -157,7 +157,8 @@ impl PhysicalPlan {
             | PhysicalPlan::DistinctExec { .. }
             | PhysicalPlan::SortExec { .. }
             | PhysicalPlan::TopNExec { .. }
-            | PhysicalPlan::LimitExec { .. } => {
+            | PhysicalPlan::LimitExec { .. }
+            | PhysicalPlan::ScoringRerankExec { .. } => {
                 PhysicalPlanDomainRef::Relational(RelationalPhysicalPlanRef::new(self))
             }
             PhysicalPlan::ProjectGraph { .. }

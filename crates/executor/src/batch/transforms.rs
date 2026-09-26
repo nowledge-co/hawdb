@@ -168,3 +168,25 @@ pub(super) fn stream_limit_batches(
         emit,
     )
 }
+
+pub(super) fn stream_scoring_rerank_batches(
+    input: &PhysicalPlan,
+    score_column: &str,
+    spec: &hawdb_core::graph_rag::ScoringSpec,
+    limit: usize,
+    context: BatchReadContext<'_>,
+    execution_limit: ExecutionLimit,
+    emit: &mut dyn FnMut(BindingBatch) -> Result<BatchControl>,
+) -> Result<BatchControl> {
+    let mut source = PreparedTransformSource { context };
+    executor_transform::stream_scoring_rerank_batches(
+        input,
+        score_column,
+        spec,
+        limit,
+        &mut source,
+        context.kernel_context(),
+        execution_limit,
+        emit,
+    )
+}
