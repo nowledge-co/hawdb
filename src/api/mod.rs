@@ -4523,8 +4523,9 @@ impl<S: crate::executor::ExecutionStore> KnowledgeRetrievalGraphContext<'_, S> {
             &evidence,
             &graph_seed_search.seeds,
             &graph_context_search.paths,
-            request.candidate_scoring,
-        );
+            &request.candidate_scoring,
+            scoring_reference_time_millis(),
+        )?;
         pipeline.retain_working(knowledge_candidates_memory_bytes(&candidates))?;
         let candidate_total_count = candidates.len();
         pipeline.enter(KnowledgeRetrievalStage::TopK)?;
@@ -4848,18 +4849,65 @@ impl<S: crate::executor::ExecutionStore> KnowledgeRetrievalGraphContext<'_, S> {
         evidence
     }
 
+    /// Score-breakdown inputs for one rerank candidate. Canonical node records
+    /// are only loaded when the policy asks for property features.
+    fn knowledge_candidate_score_breakdown_for(
+        &self,
+        scoring: &KnowledgeCandidateScoringPolicy,
+        needs_properties: bool,
+        search_score: Option<f64>,
+        graph_seed_score: Option<f64>,
+        node_id: Option<NodeId>,
+        reference_time_millis: u64,
+    ) -> Result<KnowledgeCandidateScoreBreakdown> {
+        let node = if needs_properties {
+            node_id
+                .map(|node_id| self.store.node_owned(node_id))
+                .transpose()?
+                .flatten()
+        } else {
+            None
+        };
+        let source = KnowledgeCandidateFeatureSource {
+            search_score,
+            graph_seed_score,
+            // Every candidate is a retrieval seed or a graph seed, so its
+            // distance from a seed is zero; expanded nodes only appear as
+            // graph context today.
+            hop_distance: Some(0),
+            node: node.as_ref(),
+        };
+        Ok(knowledge_candidate_score_breakdown(
+            &source,
+            scoring,
+            reference_time_millis,
+        ))
+    }
+
     fn knowledge_candidates(
         &self,
         search: &SearchResultSet,
         evidence: &[KnowledgeEvidence],
         graph_seeds: &[KnowledgeGraphSeedCandidate],
         graph_context_paths: &[KnowledgeGraphContextCandidate],
-        scoring: KnowledgeCandidateScoringPolicy,
-    ) -> Vec<KnowledgeCandidate> {
+        scoring: &KnowledgeCandidateScoringPolicy,
+        reference_time_millis: u64,
+    ) -> Result<Vec<KnowledgeCandidate>> {
+        let needs_properties = matches!(
+            scoring,
+            KnowledgeCandidateScoringPolicy::Spec(spec)
+                if spec.needs_canonical_node_properties()
+        );
         let mut candidates = Vec::with_capacity(search.hits.len());
         for (index, (hit, evidence)) in search.hits.iter().zip(evidence.iter()).enumerate() {
-            let score_breakdown =
-                knowledge_candidate_score_breakdown(Some(hit.score), None, scoring);
+            let score_breakdown = self.knowledge_candidate_score_breakdown_for(
+                scoring,
+                needs_properties,
+                Some(hit.score),
+                None,
+                evidence.canonical_node_id.map(NodeId),
+                reference_time_millis,
+            )?;
             candidates.push(KnowledgeCandidate {
                 id: hit.id.clone(),
                 canonical_node_id: evidence.canonical_node_id,
@@ -4885,11 +4933,14 @@ impl<S: crate::executor::ExecutionStore> KnowledgeRetrievalGraphContext<'_, S> {
                 .iter_mut()
                 .find(|candidate| candidate.canonical_node_id == Some(seed.node_id.0))
             {
-                candidate.score_breakdown = knowledge_candidate_score_breakdown(
+                candidate.score_breakdown = self.knowledge_candidate_score_breakdown_for(
+                    scoring,
+                    needs_properties,
                     candidate.score_breakdown.search_score,
                     Some(seed.score),
-                    scoring,
-                );
+                    Some(seed.node_id),
+                    reference_time_millis,
+                )?;
                 candidate.score = candidate.score_breakdown.combined_score;
                 if !candidate
                     .merged_sources
@@ -4907,8 +4958,14 @@ impl<S: crate::executor::ExecutionStore> KnowledgeRetrievalGraphContext<'_, S> {
                 candidate.graph_context_path_count += seed_graph_context_path_count;
                 continue;
             }
-            let score_breakdown =
-                knowledge_candidate_score_breakdown(None, Some(seed.score), scoring);
+            let score_breakdown = self.knowledge_candidate_score_breakdown_for(
+                scoring,
+                needs_properties,
+                None,
+                Some(seed.score),
+                Some(seed.node_id),
+                reference_time_millis,
+            )?;
             candidates.push(KnowledgeCandidate {
                 id: seed_candidate_id,
                 canonical_node_id: Some(seed.node_id.0),
@@ -4932,7 +4989,7 @@ impl<S: crate::executor::ExecutionStore> KnowledgeRetrievalGraphContext<'_, S> {
                 .then_with(|| left.source_rank.cmp(&right.source_rank))
                 .then_with(|| left.id.cmp(&right.id))
         });
-        candidates
+        Ok(candidates)
     }
 
     fn hydrate_knowledge_output(
@@ -6064,10 +6121,12 @@ fn knowledge_graph_expansion_scope_filters(
 }
 
 fn knowledge_candidate_score_breakdown(
-    search_score: Option<f64>,
-    graph_seed_score: Option<f64>,
-    scoring: KnowledgeCandidateScoringPolicy,
+    source: &impl ScoringFeatureSource,
+    scoring: &KnowledgeCandidateScoringPolicy,
+    reference_time_millis: u64,
 ) -> KnowledgeCandidateScoreBreakdown {
+    let search_score = source.search_score();
+    let graph_seed_score = source.graph_seed_score();
     let combined_score = match scoring {
         KnowledgeCandidateScoringPolicy::Max => search_score
             .into_iter()
@@ -6080,12 +6139,64 @@ fn knowledge_candidate_score_breakdown(
             search_score.unwrap_or(0.0) * search_weight
                 + graph_seed_score.unwrap_or(0.0) * graph_seed_weight
         }
+        KnowledgeCandidateScoringPolicy::Spec(spec) => {
+            let evaluation = spec.evaluate(source, reference_time_millis);
+            return KnowledgeCandidateScoreBreakdown {
+                search_score,
+                graph_seed_score,
+                combined_score: evaluation.combined_score,
+                scoring_spec: Some(evaluation),
+            };
+        }
     };
     KnowledgeCandidateScoreBreakdown {
         search_score,
         graph_seed_score,
         combined_score,
+        scoring_spec: None,
     }
+}
+
+/// Canonical feature values for one rerank candidate.
+struct KnowledgeCandidateFeatureSource<'a> {
+    search_score: Option<f64>,
+    graph_seed_score: Option<f64>,
+    hop_distance: Option<usize>,
+    node: Option<&'a NodeRecord>,
+}
+
+impl ScoringFeatureSource for KnowledgeCandidateFeatureSource<'_> {
+    fn search_score(&self) -> Option<f64> {
+        self.search_score
+    }
+
+    fn graph_seed_score(&self) -> Option<f64> {
+        self.graph_seed_score
+    }
+
+    fn hop_distance(&self) -> Option<usize> {
+        self.hop_distance
+    }
+
+    fn numeric_property(&self, property: &str) -> Option<f64> {
+        knowledge_graph_seed_filter_numeric_value(self.node?, property)
+    }
+
+    /// Canonical timestamps are epoch milliseconds; fractional and string
+    /// encodings are reported as missing rather than guessed.
+    fn timestamp_millis(&self, property: &str) -> Option<u64> {
+        match self.node?.properties.get(property)? {
+            Value::Int(millis) => u64::try_from(*millis).ok(),
+            _ => None,
+        }
+    }
+}
+
+fn scoring_reference_time_millis() -> u64 {
+    hawdb_core::time::SystemTime::now()
+        .duration_since(hawdb_core::time::UNIX_EPOCH)
+        .map(|elapsed| u64::try_from(elapsed.as_millis()).unwrap_or(u64::MAX))
+        .unwrap_or(0)
 }
 
 fn graph_seed_score(
