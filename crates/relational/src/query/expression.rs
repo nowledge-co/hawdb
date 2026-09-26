@@ -313,6 +313,18 @@ pub(super) fn evaluate_projection_expression(
                     filter: None,
                 },
             ..
+        } if name == "version" && arguments.is_empty() => {
+            Ok(RelationalValue::Text(crate::postgres_version_string()))
+        }
+        Expr {
+            kind:
+                ExprKind::Function {
+                    name,
+                    arguments,
+                    distinct: false,
+                    filter: None,
+                },
+            ..
         } if name == "coalesce" => evaluate_coalesce(arguments, row, parameters),
         Expr {
             kind: ExprKind::Function { name, .. },

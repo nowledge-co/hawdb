@@ -641,7 +641,7 @@ fn lower_function_expression(
             distinct,
             filter,
         }),
-        "max" | "coalesce" | "octet_length" | "uuidv7" if filter.is_none() => {
+        "max" | "coalesce" | "octet_length" | "uuidv7" | "version" if filter.is_none() => {
             Ok(ExprKind::Function {
                 name: name.clone(),
                 arguments,
@@ -649,7 +649,7 @@ fn lower_function_expression(
                 filter,
             })
         }
-        "max" | "coalesce" | "octet_length" | "uuidv7" => Err(HawDBError::Semantic(
+        "max" | "coalesce" | "octet_length" | "uuidv7" | "version" => Err(HawDBError::Semantic(
             "FILTER is supported only for COUNT and SUM aggregates".to_string(),
         )),
         _ => Err(HawDBError::Semantic(format!(

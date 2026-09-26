@@ -51,6 +51,15 @@ pub use append::{
 };
 pub use system_schema::{SystemSchemaMigration, SystemSchemaRegistry, SystemSchemaUpgradeReport};
 
+/// Version banner `version()` reports, mirroring the PostgreSQL-dialect SQL
+/// surface the relational layer emulates.
+pub(crate) fn postgres_version_string() -> String {
+    format!(
+        "HawDB {} (PostgreSQL-dialect SQL)",
+        env!("CARGO_PKG_VERSION")
+    )
+}
+
 // These are internal ownership seams. Hosts continue to use the embedded facade.
 #[doc(hidden)]
 pub use read_profile::{

@@ -38,6 +38,7 @@ struct BoundStreamingColumn {
 enum BoundStreamingValue {
     Column(usize),
     UuidV7,
+    Version,
 }
 
 impl BoundStreamingProjection {
@@ -90,6 +91,21 @@ impl BoundStreamingProjection {
                             output_name: alias.clone().unwrap_or_else(|| name.clone()),
                         });
                     }
+                    Expr {
+                        kind:
+                            ExprKind::Function {
+                                name,
+                                arguments,
+                                distinct: false,
+                                filter: None,
+                            },
+                        ..
+                    } if name == "version" && arguments.is_empty() => {
+                        columns.push(BoundStreamingColumn {
+                            value: BoundStreamingValue::Version,
+                            output_name: alias.clone().unwrap_or_else(|| name.clone()),
+                        });
+                    }
                     _ => {
                         return Err(HawDBError::Semantic(
                             "non-aggregate relational projection expressions are not supported"
@@ -139,6 +155,7 @@ impl BoundStreamingProjection {
                     relational_ref_to_value(row.value(ordinal)?)?
                 }
                 BoundStreamingValue::UuidV7 => Value::Uuid(hawdb_core::generate_uuidv7()?),
+                BoundStreamingValue::Version => Value::String(crate::postgres_version_string()),
             };
             *payload_bytes =
                 payload_bytes.saturating_add(hawdb_executor::query_value_payload_bytes(&value));

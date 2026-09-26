@@ -190,6 +190,27 @@ fn relational_projection_coalesce_rejects_invalid_types_before_scanning() {
 }
 
 #[test]
+fn relational_projection_version_reports_the_engine_banner() {
+    let mut database = projection_fixture();
+
+    let output = database
+        .query_sql("SELECT version() AS version FROM feeds LIMIT 1")
+        .expect("project version()");
+    assert_eq!(output.rows.len(), 1);
+    let version = output.rows[0]
+        .get("version")
+        .cloned()
+        .unwrap_or_else(|| panic!("missing version column"));
+    assert_eq!(
+        version,
+        Value::String(format!(
+            "HawDB {} (PostgreSQL-dialect SQL)",
+            env!("CARGO_PKG_VERSION")
+        ))
+    );
+}
+
+#[test]
 fn relational_projection_coalesce_keeps_result_limits() {
     let mut database = projection_fixture();
 
