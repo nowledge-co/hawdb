@@ -95,6 +95,85 @@ Runtime evidence:
   retention and public reader rejection. The finite publication model below is
   unchanged and does not model these payload-level checks.
 
+## Shared predicate and staged statistics implementation
+
+The in-progress read implementation retains validated runs in
+`MutationVisibility`. For one run, strictly ordered unique document IDs make
+binary search return its unique matching ID exactly when that ID is present.
+Testing the returned entry's target segment, then taking the disjunction over
+runs, is therefore equivalent to existence of the exact physical target pair.
+Negating that disjunction implements `visible(C, R)` below. It deliberately does
+not negate existence of the logical ID alone: repeated replacements may retract
+versions in segments 7 and 8 while leaving the same ID in segment 9 visible.
+
+`LexicalCorpusStatistics::retract_documents` implements the subtraction identity
+above for the bounded query-term map. It rejects malformed term sets and checked
+count, length or DF underflow; after each subtraction it also requires every
+queried DF to be at most the remaining document count, and an empty corpus to
+have zero length. Query terms absent from a version contribute zero. By the
+distinct-target induction above, valid physical retractions satisfy these
+conditions in any order. The implementation mutates a clone and assigns it back
+only after the entire sequence succeeds. Thus rejection at any prefix preserves
+all original statistics, including byte-read evidence. Content-only queries skip
+this staging allocation.
+
+`corpus_retractions_match_rebuilding_every_subset` checks all subsets of a
+three-version corpus, including a zero-token document, in both forward and
+reverse order against a fresh sum of the remaining contributions.
+`corpus_retractions_are_exact_and_atomic` exercises valid subtraction to an
+empty corpus and failures after a valid prefix. The repeated-replacement
+visibility test distinguishes physical versions with the same ID.
+
+An internal guarded-reader fixture compares deletion and replacement reads
+against a rebuilt one-segment corpus, including text scores, scalar vector and
+hybrid results, metadata filters and hydration. It also exercises a RaBitQ
+allowlist with a hidden predecessor. This fixture intentionally bypasses only
+the public capability guard after full artifact validation. It does not prove
+that all serving obligations are complete: writer publication and
+mutation-aware compaction remain unfinished. The public guard
+is still mandatory, and these tests do not authorize removing it.
+
+## Layout-independent RaBitQ candidate ordering
+
+Mutation closures can overlap physical ID ranges. Therefore `(layer, ordinal)`
+is not a logical tie-breaker: with a one-candidate budget, a live `z` in an older
+layer would beat replacement `a` in a later layer at the same approximate score,
+whereas the ID-ordered merged projection selects `a`.
+
+For mutation closures, `retain_logical_projection_hits` maps each layer's local
+candidates to visible logical IDs before global heap retention. Missing,
+duplicate, unordered or hidden ordinal mappings fail. `LayeredProjectionHit`
+orders equal scores by ascending logical ID. Content-only closures preserve
+physical ordering and avoid this metadata I/O. This argument assumes immutable
+valid artifacts and one visible version per logical ID; establishing that
+writer invariant and enabling the reader are separate remaining obligations.
+
+For a fixed total candidate order, each layer's local top K contains every
+candidate from that layer that could belong to the global top K: an excluded
+candidate already has K better candidates in its own layer. Within an artifact,
+ordinal order agrees with ID order, so local tie ordering restricts the global
+logical ordering consistently. It is therefore sufficient to retain the best K
+from the union of local top K lists. The bounded heap maintains this by induction
+on candidate insertion: insert while under capacity, otherwise discard a
+candidate no better than the worst retained one, or replace that worst one.
+Resolving IDs only after truncation would not satisfy this proof.
+
+ID capacities are charged before modifying the heap, including credit for an
+evicted ID. An admission failure leaves the heap and byte count unchanged and
+propagates as an error rather than returning partial candidates. Subsequent
+projection scans subtract retained ID bytes from their working budget. The
+allowlist is dropped before mapping, and retained tie IDs are released before
+raw rerank creates its own ID collector. Metadata payload decoding retains its
+separate existing range/decoder limits; this is not an aggregate RSS proof.
+
+`mutation_rabitq_equal_scores_match_merged_logical_id_order` exercises the
+one-candidate overlapping replacement case against a rebuilt projection. The
+negative control restores physical tie selection and must choose the wrong ID.
+`logical_candidate_ties_ignore_layer_order_and_reject_over_budget_atomically`
+checks heap selection and unchanged state on ID-budget failure. The top-K
+argument concerns a shared approximate scoring order, not equality of ANN and
+exact nearest-neighbor recall or a proof of numeric kernels.
+
 ## Protocol invariants
 
 For content versions `C` and mutation entries `R`, define
@@ -188,3 +267,106 @@ The positive configured graph has 3,267 generated states, 629 distinct states,
 zero states left on the queue and depth 22. Record the tested source revision,
 negative-control outcomes and Rust regression results in the PR; counts are
 specific to this configuration.
+
+
+## Aggregate run admission and failure-specific fallback
+
+Let `L` be `max_mutation_working_bytes`, `R_i` the retained charge after `i`
+runs, `B_i` the input capacity, `D_i` the decode preflight bound, and `I_i`
+the reserved target-index charge. Initialization admits the outer run vector
+and active-segment index. Before reading, the loader checks the previous
+retained charge plus twice the encoded length and read scratch. Before serde,
+it requires `R_i + B_i + D_i + I_i <= L`. Successful decode measures owned
+capacities `O_i`, requires `O_i <= D_i`, and retains only `O_i + I_i`.
+Thus, assuming the preflight bounds below, induction gives `R_i <= L` at every
+prefix and admission of each transient decode alongside prior ownership.
+A rejected admission does not change the counter. Streaming body checksums
+avoid a second full serialized body allocation.
+
+The schema-specific scanner counts objects, arrays and scalar strings outside
+quoted/escaped content. Scalar strings matter because retraction terms are a
+`Vec<String>`, not a vector of JSON objects. Three times the element-header
+counts conservatively cover pinned geometric growth with old/new allocation
+overlap; array minima cover small allocations. Encoded input length covers
+owned string payloads, while eight times the longest token plus fixed scratch
+covers token decoding/error workspace. These are implementation-dependent
+bounds for the pinned Rust/serde behavior, not a language-level allocator or
+RSS theorem. Validation sets reserve the existing conservative per-entry
+allowance. Content mappings, target hydration/analysis, allocator metadata and
+OS residency are outside this run-capacity claim.
+
+`mutation_decode_preflight_covers_scalar_terms_and_escaped_strings` checks
+tracked peak allocations for small through 16,385-term arrays and escaped
+Unicode/long strings. `mutation_working_budget_rejects_combined_runs_before_second_decode`
+checks a one-byte boundary and two individually admissible runs that cannot
+coexist; failed admission preserves the counter. The public-loader fixture
+checks wiring and the zero-run exemption. These finite tests supplement the
+conditional induction; they do not prove all serde inputs or whole-process RSS.
+
+For vector fallback, partition compressed failures into typed `Budget` and
+`Failure`. Native `ResourceBudgetExceeded` maps to the former; other native
+errors and ordinary `HawDBError` conversions map to the latter, regardless of
+message text. `Required` propagates either partition. `Preferred` discards the
+compressed attempt only for `Budget`, then invokes the same scalar path as
+`Disabled` with identical visibility, candidates, limits and task context.
+Consequently, if that scalar invocation succeeds its result is the exact scalar
+result; otherwise the query fails without publishing partial candidates.
+Accumulated I/O remains recorded, and the report marks the fallback explicitly.
+The admitted-byte receipt conservatively records the available cap, not a
+measured allocation peak. Cancellation checkpoints still apply to the retry.
+
+The guarded mutation fixture compares this retry against `Disabled`, checks
+that `Required` fails at the allowlist/block budget boundary, and verifies
+cancellation fails and dimension mismatch retains its distinct existing report. Corruption is checked on reopen,
+after dropping immutable mappings. A separate typed-error test includes
+misleading budget text in corruption, invalid-vector, unsupported-kernel and
+I/O errors; none is classified as a resource fallback. These arguments do not
+authorize modifying mapped files or removing the public mutation-reader guard.
+
+
+## Composition with lexical block-max pruning
+
+Physical posting bounds remain valid after hiding versions: the maximum term
+frequency of a subset cannot exceed the original block maximum. Both scoring
+and its upper bound use the same retracted live-corpus DF, count and average
+length. For valid positive live DF, IDF is nonnegative; BM25 increases with
+term frequency and decreases with document length. Therefore evaluating the
+physical maximum TF at length zero still bounds every visible posting, even
+when retractions change IDF and average length. Hidden records never enter the
+collector, so its floor is formed only from live candidates. Existing strict
+skip/tie rules thus preserve the live retained window. A term with live DF zero
+has no visible contributor and its stream can be omitted entirely.
+
+The out-of-core hybrid path composes pruning with the target-bound visibility
+predicate; text mode keeps exhaustive counting. The regression
+`block_max_pruning_with_retractions_matches_rebuilt_live_corpus` removes a
+high-scoring rare hit and common postings, compares retracted statistics and
+pruned scores to an independently rebuilt live corpus, and requires a positive
+skipped-block count. This extends the pruning argument to mutation visibility;
+it does not establish sustained performance or arbitrary floating-point error
+bounds beyond the existing scorer's assumptions.
+
+
+## Incremental append preserves old retractions and vector identity
+
+For a validated closure `(C, R)` and an appended segment `N` whose IDs exceed
+the physical maximum, append publishes `(C ∪ {N}, R)`. Existing run references
+are moved unchanged into the new manifest. Since no entry of `R` targets `N`,
+`visible(C ∪ {N}, R) = visible(C, R) ∪ documents(N)`. The sets are disjoint by
+the append precondition; logical count and additive digest are therefore the
+previous logical values plus the new segment contributions. Appending must not
+subtract old retractions again or discard them. The private guarded-reader
+fixture `mutation_append_preserves_retractions_and_logical_identity` executes
+real preparation/publication/cleanup, reopens the validated closure, compares
+run bytes and checks the old document stays absent without old-content hydration
+during preparation. This is not yet a mutation-writer or compaction proof.
+
+Incremental staging also inherits the active embedding dimension, including a
+dimension with no model name. A vectorless new segment does not imply that the
+remaining active segments are vectorless. Retaining that dimension preserves
+old RaBitQ identity checks for append and partial compaction; any incoming
+incompatible vector still fails the writer's existing dimension validation.
+Tests cover vectorless append and vectorless compaction with an unselected
+vector-bearing segment. The linked [cleanup proof](../SEARCH_CLEANUP_OWNERSHIP.md)
+now additionally treats failed closure discovery as unknown retention rather
+than evidence for deleting old generations.

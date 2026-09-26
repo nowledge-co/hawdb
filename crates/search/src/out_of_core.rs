@@ -85,8 +85,11 @@ pub struct SearchOutOfCoreConfig {
     pub max_compressed_segment_bytes: NonZeroU64,
     pub max_uncompressed_segment_bytes: NonZeroU64,
     pub max_descriptor_bytes: NonZeroU64,
-    /// Caller-selected bound for one decoded mutation-run artifact.
+    /// Caller-selected encoded size bound for one mutation-run artifact.
     pub max_mutation_run_bytes: NonZeroU64,
+    /// Aggregate mutation-run buffers, decoded ownership and validation indexes.
+    /// Content artifacts and one-target hydration/analysis use their own limits.
+    pub max_mutation_working_bytes: NonZeroU64,
     /// Caller-selected encoded lexical manifest limit, including private decoding.
     /// Prepared generation updates inherit this limit and require it to fit `isize`.
     pub max_lexical_manifest_bytes: NonZeroU64,
@@ -110,6 +113,7 @@ impl Default for SearchOutOfCoreConfig {
             max_uncompressed_segment_bytes: NonZeroU64::new(256 * 1024 * 1024).unwrap(),
             max_descriptor_bytes: NonZeroU64::new(256 * 1024 * 1024).unwrap(),
             max_mutation_run_bytes: NonZeroU64::new(64 * 1024 * 1024).unwrap(),
+            max_mutation_working_bytes: NonZeroU64::new(128 * 1024 * 1024).unwrap(),
             max_lexical_manifest_bytes: NonZeroU64::new(DEFAULT_MAX_MANIFEST_BYTES).unwrap(),
             max_candidate_spill_bytes: NonZeroU64::new(4 * 1024 * 1024 * 1024).unwrap(),
             max_candidate_block_bytes: NonZeroU64::new(16 * 1024 * 1024).unwrap(),
@@ -188,6 +192,7 @@ pub struct SearchOutOfCoreReader {
     analyzer_lexicon: SearchAnalyzerLexicon,
     manifest: SearchOutOfCoreManifestBody,
     segments: Vec<SearchOutOfCoreSegmentReader>,
+    visibility: mutation_run::MutationVisibility,
     lexical_source_policy: SearchLexicalSourcePolicy,
     lexical_term_policy: SearchLexicalTermPolicy,
     runtime_capabilities: RuntimeCapabilities,
@@ -886,7 +891,7 @@ impl SearchOutOfCoreReader {
         lexical_source_policy: SearchLexicalSourcePolicy,
     ) -> Result<Self> {
         let root = path.as_ref().to_path_buf();
-        let (manifest, segments) = load_artifact_closure(
+        let (manifest, segments, visibility) = load_artifact_closure(
             &root,
             &config,
             &analyzer_lexicon,
@@ -909,6 +914,7 @@ impl SearchOutOfCoreReader {
             analyzer_lexicon,
             manifest,
             segments,
+            visibility,
             lexical_source_policy,
             lexical_term_policy,
             runtime_capabilities: crate::compiled_runtime_capabilities(),
@@ -1489,13 +1495,23 @@ impl SearchOutOfCoreReader {
         let mut lexical_blocks_skipped = 0u64;
         let (text_scores, text_matching_count, lexical_postings_visited, lexical_bytes_read) =
             if text_available && mode != SearchMode::Vector {
-                let lexical_statistics = LexicalCorpusStatistics::aggregate(
+                let mut lexical_statistics = LexicalCorpusStatistics::aggregate(
                     self.segments
                         .iter()
                         .map(|segment| segment.lexical_projection.as_ref()),
                     &query_terms,
                     self.lexical_term_policy.max_term_bytes(),
                 )?;
+                if !self.visibility.is_empty() {
+                    lexical_statistics.retract_documents(self.visibility.retractions().map(
+                        |entry| {
+                            (
+                                entry.retraction.lexical_document_len,
+                                entry.retraction.unique_terms.as_slice(),
+                            )
+                        },
+                    ))?;
+                }
                 let mut scores = BTreeMap::new();
                 let mut matching_document_count = 0usize;
                 let mut postings_visited = 0u64;
@@ -1513,7 +1529,10 @@ impl SearchOutOfCoreReader {
                             retained_text_limit,
                             &lexical_statistics,
                             mode == SearchMode::Hybrid,
-                            |id| candidate_set.contains(id, &mut metrics),
+                            |id| {
+                                Ok(self.visibility.is_visible(segment.content_segment_id, id)
+                                    && candidate_set.contains(id, &mut metrics)?)
+                            },
                         )?;
                     matching_document_count = matching_document_count
                         .checked_add(report.matching_document_count)
@@ -2059,6 +2078,9 @@ impl SearchOutOfCoreReader {
         let mut route = None;
         let mut lexical_document_bytes_read = 0u64;
         for (artifact_index, artifact) in self.segments.iter().enumerate() {
+            if !self.visibility.is_visible(artifact.content_segment_id, id) {
+                continue;
+            }
             let Ok(index) = artifact.descriptor.segments.binary_search_by(|segment| {
                 if segment.last_document_id.as_str() < id {
                     CmpOrdering::Less
@@ -2258,7 +2280,7 @@ impl SearchOutOfCoreReader {
         report.persisted_segment_descriptor_used = true;
         let mut field_pruning = SearchFieldPruningAccumulator::new(predicates);
 
-        if predicates.is_empty() {
+        if predicates.is_empty() && self.visibility.is_empty() {
             report.field_summaries = field_pruning.into_reports();
             return Ok(CandidateSet::All(self.manifest.document_count));
         }
@@ -2283,23 +2305,32 @@ impl SearchOutOfCoreReader {
 
         for (layer, artifact) in self.segments.iter().enumerate() {
             for segment in &artifact.descriptor.segments {
+                let visible_count = self
+                    .visibility
+                    .visible_count(artifact.content_segment_id, segment)?;
                 field_pruning.observe_persisted_segment(segment, predicates);
                 if !segment.may_match_predicates(predicates) {
                     report.pruned_segment_count = report.pruned_segment_count.saturating_add(1);
                     report.segment_pruned_document_count = report
                         .segment_pruned_document_count
-                        .saturating_add(segment.document_count);
+                        .saturating_add(visible_count);
                     blocks.push(CandidateBlock::empty(layer, segment));
                     continue;
                 }
                 report.scanned_segment_count = report.scanned_segment_count.saturating_add(1);
                 report.segment_scanned_document_count = report
                     .segment_scanned_document_count
-                    .saturating_add(segment.document_count);
+                    .saturating_add(visible_count);
                 let documents = self.read_metadata_segment(artifact, segment, metrics)?;
                 let mut encoded = Vec::new();
                 let mut block_cardinality = 0usize;
                 for document in documents {
+                    if !self
+                        .visibility
+                        .is_visible(artifact.content_segment_id, &document.id)
+                    {
+                        continue;
+                    }
                     let candidate = SearchDocument {
                         id: document.id,
                         title: String::new(),
@@ -2466,6 +2497,7 @@ fn load_artifact_closure(
 ) -> Result<(
     SearchOutOfCoreManifestBody,
     Vec<SearchOutOfCoreSegmentReader>,
+    mutation_run::MutationVisibility,
 )> {
     let manifest_path = root.join(OUT_OF_CORE_MANIFEST_FILE);
     let manifest_bytes = read_bounded_file(&manifest_path, MAX_OUT_OF_CORE_MANIFEST_BYTES)?;
@@ -2485,21 +2517,40 @@ fn load_artifact_closure(
             )
         })
         .collect::<Result<Vec<_>>>()?;
-    let mutation_runs = manifest
-        .mutation_runs
-        .iter()
-        .map(|run| {
-            mutation_run::SearchMutationRun::open(
-                root,
-                run,
-                config.max_mutation_run_bytes.get(),
-                lexical_analyzer_digest(analyzer_lexicon),
-            )
-        })
-        .collect::<Result<Vec<_>>>()?;
+    let mut mutation_budget = mutation_run::MutationRunBudget::new(
+        config.max_mutation_working_bytes.get(),
+        manifest.mutation_runs.len(),
+        manifest.segments.len(),
+    )?;
+    let mut mutation_runs = Vec::new();
+    mutation_runs
+        .try_reserve_exact(manifest.mutation_runs.len())
+        .map_err(|error| {
+            HawDBError::Storage(format!(
+                "search mutation-run list allocation failed: {error}"
+            ))
+        })?;
+    if mutation_runs.capacity() > manifest.mutation_runs.len() {
+        return Err(HawDBError::Storage(
+            "search mutation-run list exceeded admitted capacity".into(),
+        ));
+    }
+    for run in &manifest.mutation_runs {
+        mutation_runs.push(mutation_run::SearchMutationRun::open(
+            root,
+            run,
+            config.max_mutation_run_bytes.get(),
+            lexical_analyzer_digest(analyzer_lexicon),
+            &mut mutation_budget,
+        )?);
+    }
     mutation_run::validate_closure(&manifest, &mutation_runs)?;
     mutation_run::validate_targets(&segments, &mutation_runs, config, analyzer_lexicon)?;
-    Ok((manifest, segments))
+    Ok((
+        manifest,
+        segments,
+        mutation_run::MutationVisibility::from_validated_runs(mutation_runs),
+    ))
 }
 
 pub(super) struct PublishedArtifactGenerations {
@@ -2517,7 +2568,7 @@ pub(super) fn published_artifact_generations(
     if !manifest_path.exists() {
         return Ok(None);
     }
-    let (manifest, _segments) = load_artifact_closure(
+    let (manifest, _segments, _visibility) = load_artifact_closure(
         root,
         &SearchOutOfCoreConfig::default(),
         analyzer_lexicon,
@@ -2811,6 +2862,14 @@ enum CandidateSet {
 }
 
 impl CandidateSet {
+    #[cfg(feature = "vector-search")]
+    fn vector_allowlist_working_bytes(&self, layer: usize) -> Result<u64> {
+        match self {
+            Self::All(_) => Ok(0),
+            Self::Spilled(set) => set.vector_allowlist_layout(layer).map(|(_, bytes)| bytes),
+        }
+    }
+
     fn cardinality(&self) -> usize {
         match self {
             Self::All(cardinality) => *cardinality,
@@ -3050,13 +3109,7 @@ impl SpilledCandidateSet {
     }
 
     #[cfg(feature = "vector-search")]
-    fn vector_ordinals_for_layer(
-        &self,
-        layer: usize,
-        max_bytes: u64,
-        task_context: Option<&crate::RuntimeTaskContext>,
-        metrics: &mut SearchOutOfCoreMetrics,
-    ) -> Result<Vec<u64>> {
+    fn vector_allowlist_layout(&self, layer: usize) -> Result<(usize, u64)> {
         let cardinality = self
             .blocks
             .iter()
@@ -3082,6 +3135,18 @@ impl SpilledCandidateSet {
             .ok_or_else(|| {
                 HawDBError::Storage("search vector allowlist working set overflow".to_string())
             })?;
+        Ok((cardinality, required_working_bytes))
+    }
+
+    #[cfg(feature = "vector-search")]
+    fn vector_ordinals_for_layer(
+        &self,
+        layer: usize,
+        max_bytes: u64,
+        task_context: Option<&crate::RuntimeTaskContext>,
+        metrics: &mut SearchOutOfCoreMetrics,
+    ) -> Result<Vec<u64>> {
+        let (cardinality, required_working_bytes) = self.vector_allowlist_layout(layer)?;
         if required_working_bytes > max_bytes {
             return Err(HawDBError::Storage(format!(
                 "search vector candidate allowlist and block require {required_working_bytes} bytes, exceeding {max_bytes}"
@@ -4171,8 +4236,27 @@ mod tests {
         next_document: SearchDocument,
         next_options: SearchOutOfCoreGenerationBuildOptions,
     ) {
+        publish_two_artifact_manifest_with_initial_documents(
+            path,
+            vec![initial_document],
+            initial_options,
+            next_document,
+            next_options,
+        );
+    }
+
+    #[cfg(feature = "full-text-search")]
+    fn publish_two_artifact_manifest_with_initial_documents(
+        path: &Path,
+        initial_documents: Vec<SearchDocument>,
+        initial_options: SearchOutOfCoreGenerationBuildOptions,
+        next_document: SearchDocument,
+        next_options: SearchOutOfCoreGenerationBuildOptions,
+    ) {
         let mut initial = SearchOutOfCoreGenerationWriter::create(path, initial_options).unwrap();
-        initial.push(initial_document).unwrap();
+        for document in initial_documents {
+            initial.push(document).unwrap();
+        }
         initial.finish().unwrap();
 
         let manifest_path = path.join(OUT_OF_CORE_MANIFEST_FILE);
@@ -4195,7 +4279,14 @@ mod tests {
         let mut next_segment = body.segments.pop().expect("next manifest has one segment");
         next_segment.segment_id = 1;
         body.segments = vec![initial_segment, next_segment];
-        body.document_count = 2;
+        body.document_count = body
+            .segments
+            .iter()
+            .map(|segment| segment.document_count)
+            .sum();
+        body.documents_digest = body.segments.iter().fold(0, |digest, segment| {
+            crate::lexical_projection::DocumentsDigest::combine(digest, segment.documents_digest)
+        });
         let body_bytes = serde_json::to_vec(&body).unwrap();
         fs::write(
             &manifest_path,
@@ -4317,7 +4408,7 @@ mod tests {
         assert!(error
             .to_string()
             .contains("mutation-run serving requires shared visibility and retracted statistics"));
-        let (validated, _) = load_artifact_closure(
+        let (validated, _, _) = load_artifact_closure(
             &path,
             &SearchOutOfCoreConfig::default(),
             &SearchAnalyzerLexicon::default(),
@@ -4355,6 +4446,333 @@ mod tests {
             .to_string()
             .contains("mutation-run artifact length or checksum mismatch"));
         fs::remove_dir_all(path).unwrap();
+    }
+
+    // Test the shared read implementation while the public constructor remains
+    // guarded. This is not a production capability switch: writer/compaction,
+    // aggregate run admission and layout-independent RaBitQ ties are unfinished.
+    #[cfg(feature = "full-text-search")]
+    fn mutation_reader_for_test(path: &Path) -> SearchOutOfCoreReader {
+        let config = SearchOutOfCoreConfig::default();
+        let analyzer_lexicon = SearchAnalyzerLexicon::default();
+        let lexical_term_policy = SearchLexicalTermPolicy::default();
+        let lexical_source_policy = SearchLexicalSourcePolicy::default();
+        let (manifest, segments, visibility) = load_artifact_closure(
+            path,
+            &config,
+            &analyzer_lexicon,
+            lexical_term_policy,
+            lexical_source_policy,
+        )
+        .unwrap();
+        SearchOutOfCoreReader {
+            root: path.to_path_buf(),
+            config,
+            analyzer_lexicon,
+            manifest,
+            segments,
+            visibility,
+            lexical_source_policy,
+            lexical_term_policy,
+            runtime_capabilities: crate::compiled_runtime_capabilities(),
+        }
+    }
+
+    #[test]
+    #[cfg(feature = "full-text-search")]
+    fn mutation_append_preserves_retractions_and_logical_identity() {
+        let path = test_dir("mutation-append-preservation");
+        let old = document(0, "team");
+        let live = document(1, "team");
+        publish_two_artifact_manifest(&path, old.clone(), live.clone());
+        install_delete_mutation_run(&path, &old, 0, 3);
+        let reader = mutation_reader_for_test(&path);
+        let run = reader.manifest.mutation_runs[0].clone();
+        let run_bytes = fs::read(path.join(&run.file)).unwrap();
+        let appended = crate::SearchProjectionRow {
+            kind: crate::SearchProjectionKind::Memory,
+            external_id: "999".into(),
+            title: "appended".into(),
+            body: "graph memory".into(),
+            embedding: None,
+            source_id: None,
+            metadata: BTreeMap::new(),
+        };
+        let update = SearchOutOfCoreGenerationWriter::prepare_delta(
+            &reader,
+            crate::SearchProjectionDelta {
+                upserts: vec![appended.clone()],
+                ..Default::default()
+            },
+            Default::default(),
+        )
+        .unwrap();
+        assert_eq!(update.source_read_metrics().hydrated_documents, 0);
+        let (_, build, _) = update.finish().unwrap();
+        assert_eq!(build.document_count, 2);
+        let reopened = mutation_reader_for_test(&path);
+        assert_eq!(reopened.manifest.mutation_runs.len(), 1);
+        assert_eq!(reopened.manifest.mutation_runs[0].file, run.file);
+        assert_eq!(fs::read(path.join(&run.file)).unwrap(), run_bytes);
+        assert_eq!(reopened.manifest.embedding_dimension, Some(2));
+        assert!(reopened
+            .hydrate_documents(std::slice::from_ref(&old.id))
+            .is_err());
+        let ids = [live.id.clone(), "memory:999".into()];
+        let output = reopened.hydrate_documents(&ids).unwrap();
+        assert_eq!(output.documents, vec![live, appended.into_document()]);
+        assert_eq!(reopened.document_count(), 2);
+        assert!(!reopened.visibility.is_visible(0, &old.id));
+        drop(reopened);
+        drop(reader);
+        fs::remove_dir_all(path).unwrap();
+    }
+
+    #[test]
+    #[cfg(all(feature = "full-text-search", feature = "vector-search"))]
+    fn mutation_rabitq_budget_fallback_is_exact_observable_and_failure_specific() {
+        let path = test_dir("mutation-rabitq-budget-fallback");
+        let old = document(0, "team");
+        let unchanged = document(1, "team");
+        let mut replacement = old.clone();
+        replacement.content = "updated graph memory".into();
+        replacement.embedding = Some(vec![16.0, 1.0]);
+        publish_two_artifact_manifest_with_initial_documents(
+            &path,
+            vec![old.clone(), unchanged],
+            Default::default(),
+            replacement,
+            Default::default(),
+        );
+        install_edited_mutation_run(&path, &old, 0, 3, |entry| {
+            entry.operation = mutation_run::SearchMutationOperation::Replace
+        });
+        let mut reader = mutation_reader_for_test(&path);
+        reader.config.max_vector_candidates = NonZeroUsize::new(4).unwrap();
+        // Enough for the retained headers and scalar scoring of two live IDs,
+        // but only one byte remains for the ordinal allowlist plus its block.
+        let budget = vector_serving::candidate_working_bytes(4).unwrap() + 1;
+        reader.config.max_vector_search_working_bytes = NonZeroUsize::new(budget).unwrap();
+        let search = |reader: &SearchOutOfCoreReader, mode| {
+            reader.search_with_options_compressed_vector_projection_mode(
+                "",
+                Some(&[1.0, 16.0]),
+                SearchMode::Vector,
+                options(1, None),
+                mode,
+            )
+        };
+        let expected = search(&reader, CompressedVectorSearchMode::Disabled).unwrap();
+        let error = search(&reader, CompressedVectorSearchMode::Required).unwrap_err();
+        assert!(
+            error
+                .to_string()
+                .contains("candidate allowlist and block require"),
+            "{error}"
+        );
+        let actual = search(&reader, CompressedVectorSearchMode::Preferred).unwrap();
+        assert_search_parity(&expected.result, &actual.result);
+        assert!(actual
+            .result
+            .fallback_reason_codes
+            .contains(&SearchFallbackReasonCode::CompressedVectorBudgetExceeded));
+
+        let cancellation = crate::RuntimeCancellationToken::new();
+        let task = crate::RuntimeTaskContext::without_deadline(cancellation.clone());
+        assert!(cancellation.cancel());
+        let error = reader
+            .search_with_options_compressed_vector_projection_execution_options(
+                "",
+                Some(&[1.0, 16.0]),
+                SearchMode::Vector,
+                options(1, None),
+                CompressedVectorSearchMode::Preferred,
+                VectorSearchExecutionOptions::bounded(NonZeroUsize::MIN, budget, Some(&task)),
+            )
+            .unwrap_err();
+        assert!(error.to_string().contains("cancelled"), "{error}");
+
+        reader.config.max_vector_search_working_bytes =
+            SearchOutOfCoreConfig::default().max_vector_search_working_bytes;
+        let mismatch = reader
+            .search_with_options_compressed_vector_projection_mode(
+                "",
+                Some(&[1.0]),
+                SearchMode::Vector,
+                options(1, None),
+                CompressedVectorSearchMode::Preferred,
+            )
+            .unwrap();
+        assert!(mismatch
+            .result
+            .fallback_reason_codes
+            .contains(&SearchFallbackReasonCode::VectorDimensionMismatch));
+        assert!(!mismatch
+            .result
+            .fallback_reason_codes
+            .contains(&SearchFallbackReasonCode::CompressedVectorBudgetExceeded));
+
+        // Mapped artifacts are immutable for the reader's lifetime. Drop the
+        // mapping before corrupting files, then verify open rejects corruption.
+        let segments = reader.manifest.segments.clone();
+        drop(reader);
+        for segment in &segments {
+            let artifact = segment.rabitq_artifact_file.as_ref().unwrap();
+            fs::write(path.join(artifact), b"truncated projection").unwrap();
+        }
+        let error = SearchOutOfCoreReader::open(&path).unwrap_err();
+        assert!(error.to_string().contains("RaBitQ artifact"), "{error}");
+        fs::remove_dir_all(path).unwrap();
+    }
+
+    #[test]
+    #[cfg(all(feature = "full-text-search", feature = "vector-search"))]
+    fn mutation_rabitq_equal_scores_match_merged_logical_id_order() {
+        let path = test_dir("mutation-rabitq-ties");
+        let merged_path = test_dir("mutation-rabitq-ties-merged");
+        let mut old = document(0, "team");
+        old.embedding = Some(vec![1.0, 1.0]);
+        let mut replacement = old.clone();
+        replacement.content = "updated graph memory".into();
+        let mut unchanged = document(1, "team");
+        unchanged.embedding = replacement.embedding.clone();
+        publish_two_artifact_manifest_with_initial_documents(
+            &path,
+            vec![old.clone(), unchanged.clone()],
+            Default::default(),
+            replacement.clone(),
+            Default::default(),
+        );
+        install_edited_mutation_run(&path, &old, 0, 3, |entry| {
+            entry.operation = mutation_run::SearchMutationOperation::Replace
+        });
+        let mut reader = mutation_reader_for_test(&path);
+        reader.config.max_vector_candidates = NonZeroUsize::new(1).unwrap();
+        let mut writer =
+            SearchOutOfCoreGenerationWriter::create(&merged_path, Default::default()).unwrap();
+        writer.push(replacement).unwrap();
+        writer.push(unchanged).unwrap();
+        writer.finish().unwrap();
+        let mut merged = SearchOutOfCoreReader::open(&merged_path).unwrap();
+        merged.config.max_vector_candidates = NonZeroUsize::new(1).unwrap();
+        let search = |reader: &SearchOutOfCoreReader| {
+            reader
+                .search_with_options_compressed_vector_projection_mode(
+                    "",
+                    Some(&[1.0, 1.0]),
+                    SearchMode::Vector,
+                    options(1, None),
+                    CompressedVectorSearchMode::Required,
+                )
+                .unwrap()
+        };
+        let expected = search(&merged);
+        let actual = search(&reader);
+        assert_eq!(expected.result.hits[0].id, "memory:000");
+        assert_search_parity(&expected.result, &actual.result);
+        fs::remove_dir_all(path).unwrap();
+        fs::remove_dir_all(merged_path).unwrap();
+    }
+
+    #[test]
+    #[cfg(feature = "full-text-search")]
+    fn mutation_visibility_matches_merged_reads_for_delete_and_replace() {
+        for replace in [false, true] {
+            let path = test_dir(&format!("mutation-visible-{replace}"));
+            let merged_path = test_dir(&format!("mutation-merged-{replace}"));
+            let old = document(0, "old-space");
+            let mut live = if replace {
+                old.clone()
+            } else {
+                document(1, "live-space")
+            };
+            live.title = "graph replacement".into();
+            live.content = "memory current version".into();
+            live.metadata.insert("space_id".into(), "live-space".into());
+            live.embedding = Some(vec![16.0, 1.0]);
+            publish_two_artifact_manifest(&path, old.clone(), live.clone());
+            install_edited_mutation_run(&path, &old, 0, 3, |entry| {
+                if replace {
+                    entry.operation = mutation_run::SearchMutationOperation::Replace;
+                }
+            });
+            assert!(SearchOutOfCoreReader::open(&path)
+                .unwrap_err()
+                .to_string()
+                .contains("serving requires"));
+            let reader = mutation_reader_for_test(&path);
+            let mut merged =
+                SearchOutOfCoreGenerationWriter::create(&merged_path, Default::default()).unwrap();
+            merged.push(live.clone()).unwrap();
+            merged.finish().unwrap();
+            let merged = SearchOutOfCoreReader::open(&merged_path).unwrap();
+
+            assert_eq!(reader.document_count(), 1);
+            assert_eq!(
+                reader
+                    .hydrate_documents(std::slice::from_ref(&live.id))
+                    .unwrap()
+                    .documents,
+                vec![live.clone()]
+            );
+            if !replace {
+                assert!(reader
+                    .hydrate_documents(std::slice::from_ref(&old.id))
+                    .is_err());
+            }
+            let mut modes = vec![SearchMode::Text];
+            #[cfg(feature = "vector-search")]
+            modes.extend([SearchMode::Vector, SearchMode::Hybrid]);
+            for mode in modes.drain(..) {
+                for filter in [None, Some("old-space"), Some("live-space")] {
+                    let mut options = options(10, None);
+                    if let Some(space) = filter {
+                        options
+                            .metadata_filters
+                            .insert("space_id".into(), space.into());
+                    }
+                    let expected = merged
+                        .search_with_options("graph", Some(&[1.0, 16.0]), mode, options.clone())
+                        .unwrap();
+                    let actual = reader
+                        .search_with_options("graph", Some(&[1.0, 16.0]), mode, options)
+                        .unwrap();
+                    assert_search_parity(&expected.result, &actual.result);
+                }
+            }
+            assert_eq!(
+                reader
+                    .search_with_options("storage", None, SearchMode::Text, options(10, None))
+                    .unwrap()
+                    .result
+                    .total_hits,
+                0
+            );
+            #[cfg(feature = "vector-search")]
+            {
+                let actual = reader
+                    .search_with_options_compressed_vector_projection_mode(
+                        "",
+                        Some(&[1.0, 16.0]),
+                        SearchMode::Vector,
+                        options(10, None),
+                        CompressedVectorSearchMode::Required,
+                    )
+                    .unwrap();
+                let expected = merged
+                    .search_with_options_compressed_vector_projection_mode(
+                        "",
+                        Some(&[1.0, 16.0]),
+                        SearchMode::Vector,
+                        options(10, None),
+                        CompressedVectorSearchMode::Required,
+                    )
+                    .unwrap();
+                assert_search_parity(&expected.result, &actual.result);
+            }
+            fs::remove_dir_all(path).unwrap();
+            fs::remove_dir_all(merged_path).unwrap();
+        }
     }
 
     #[test]
@@ -4471,7 +4889,7 @@ mod tests {
             .unwrap();
             writer.push(document.clone()).unwrap();
             writer.finish().unwrap();
-            let (_, segments) = load_artifact_closure(
+            let (_, segments, _) = load_artifact_closure(
                 &path,
                 &SearchOutOfCoreConfig::default(),
                 &analyzer,
@@ -4506,6 +4924,27 @@ mod tests {
             );
             fs::remove_dir_all(path).unwrap();
         }
+    }
+
+    #[test]
+    fn out_of_core_mutation_working_budget_is_enforced_only_for_mutation_closures() {
+        let path = test_dir("mutation-working-budget");
+        let document = document(0, "team");
+        let mut index = SearchIndex::open(&path).unwrap();
+        index.upsert(document.clone()).unwrap();
+        index.checkpoint().unwrap();
+        let config = SearchOutOfCoreConfig {
+            max_mutation_working_bytes: NonZeroU64::MIN,
+            ..Default::default()
+        };
+        SearchOutOfCoreReader::open_with_config(&path, config.clone()).unwrap();
+        install_delete_mutation_run(&path, &document, 0, 2);
+        let error = SearchOutOfCoreReader::open_with_config(&path, config).unwrap_err();
+        assert!(
+            error.to_string().contains("mutation-run working set"),
+            "{error}"
+        );
+        fs::remove_dir_all(path).unwrap();
     }
 
     #[test]

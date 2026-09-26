@@ -777,3 +777,53 @@ fn delta_finish_rechecks_consumer_ownership_before_publication() {
         }
     }
 }
+
+#[test]
+fn vectorless_append_preserves_dimension_only_identity() {
+    let root = Fixture::new();
+    let mut initial = SearchOutOfCoreGenerationWriter::create(&root.0, Default::default()).unwrap();
+    let mut vector_row = row("a");
+    vector_row.embedding = Some(vec![1.0, 0.0]);
+    initial.push(vector_row.clone().into_document()).unwrap();
+    initial.finish().unwrap();
+    append(&root.0, row("z"));
+    let reader = SearchOutOfCoreReader::open(&root.0).unwrap();
+    assert_eq!(reader.manifest.embedding_dimension, Some(2));
+    assert!(reader.manifest.embedding_model.is_none());
+    assert_eq!(
+        reader
+            .hydrate_documents(&["memory:a".into(), "memory:z".into()])
+            .unwrap()
+            .documents,
+        vec![vector_row.into_document(), row("z").into_document()]
+    );
+}
+
+#[test]
+fn vectorless_compaction_preserves_dimension_of_unselected_segments() {
+    let root = Fixture::new();
+    append(&root.0, row("h"));
+    let mut vector_row = row("z");
+    vector_row.embedding = Some(vec![1.0, 0.0]);
+    append(&root.0, vector_row.clone());
+    let reader = SearchOutOfCoreReader::open(&root.0).unwrap();
+    assert_eq!(reader.manifest.embedding_dimension, Some(2));
+    let report = SearchOutOfCoreGenerationWriter::compact_segments(
+        &reader,
+        Default::default(),
+        Default::default(),
+    )
+    .unwrap()
+    .unwrap();
+    assert_eq!(report.source_segment_count(), 2);
+    let reopened = SearchOutOfCoreReader::open(&root.0).unwrap();
+    assert_eq!(reopened.manifest.embedding_dimension, Some(2));
+    assert_eq!(
+        reopened
+            .hydrate_documents(&["memory:z".into()])
+            .unwrap()
+            .documents,
+        vec![vector_row.into_document()]
+    );
+    assert_eq!(reopened.document_count(), 5);
+}

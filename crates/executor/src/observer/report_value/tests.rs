@@ -521,6 +521,7 @@ fn vector_fixture(data: &mut Data, case: usize) -> (VectorExecutionReport, Value
         VectorFallbackReasonCode::VectorIndexEmpty,
         VectorFallbackReasonCode::VectorDimensionMismatch,
         VectorFallbackReasonCode::CompressedVectorProjectionUnavailable,
+        VectorFallbackReasonCode::CompressedVectorBudgetExceeded,
         VectorFallbackReasonCode::QueryEmbeddingMissing,
     ];
     let (backend, backend_name) = backends[case % 4];
@@ -672,6 +673,7 @@ fn vector_fixture(data: &mut Data, case: usize) -> (VectorExecutionReport, Value
                         "vector_index_empty",
                         "vector_dimension_mismatch",
                         "compressed_vector_projection_unavailable",
+                        "compressed_vector_budget_exceeded",
                         "query_embedding_missing",
                     ]
                     .into_iter()

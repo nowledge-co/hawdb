@@ -15,6 +15,24 @@ digest, weighted lexical length and distinct terms with the selected analyzer.
 An internally checksummed run with a nonexistent target or fabricated
 contribution is rejected. This is preparation for serving, not its completion.
 
+## Read implementation in progress
+
+Validated runs now feed a shared target-bound predicate in text scoring, scalar
+vector scoring, metadata candidates and hydration. Query-term corpus statistics
+subtract exact retractions with checked arithmetic and atomic rejection. The
+metadata candidate file also provides live vector ordinals before RaBitQ search.
+For mutation closures, logical IDs are resolved before global approximate top-K
+retention so equal scores do not depend on physical layer order. The updated
+[proof boundary](tla/SEARCH_MUTATION_PUBLICATION_PROOF.md) describes these kernels
+and their assumptions.
+
+Internal differential fixtures exercise these paths after validation while the
+public constructor still rejects mutation closures. Aggregate run admission and
+typed, observable budget fallback are implemented in the guarded read path.
+Writer installation, mutation-aware compaction and sustained qualification are
+still required. This work does not
+make mutation serving publicly available.
+
 ## Goal
 
 A checkpoint that changes `K` logical search documents must write search
@@ -139,7 +157,20 @@ version. Reanalysis uses the artifact reader's source, term and token limits.
 One hydrated target and its reconstructed terms are retained at a time. Several
 targets in the same range currently repeat range I/O; this is not yet a
 sustained-update performance qualification. The encoded run limit also remains
-per file, not an aggregate decoded-run RSS guarantee.
+per file. `max_mutation_working_bytes` separately admits the aggregate run
+buffers, decoded ownership and closure-validation indexes (default 128 MiB).
+Each decode must fit alongside all previously retained runs. This counts
+requested capacities under the pinned allocator-facing collection behavior,
+not process RSS; content artifacts and one-target hydration/analysis retain
+their independent limits.
+
+In `Preferred` mode, only a typed compressed-search resource-budget error
+restarts exact scalar scoring with the same visibility, candidate set and task
+context. Reports include `compressed_vector_budget_exceeded`; `Required`
+propagates the error. Cancellation, invalid input and corruption errors do not
+trigger this fallback. Mapped projection files must remain immutable while a
+reader is alive; open validates checksums, and explicit deep verification can
+revalidate mapped payloads.
 
 ## Publication and recovery
 
