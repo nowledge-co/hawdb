@@ -397,3 +397,9 @@ The [aged-background writer refinement](tla/AGED_WRITER_PROGRESS_PROOF.md) exten
 the full-capacity governed progress policy to one background large waiter under
 recurring foreground arrivals, assuming deadline passage and fair host retry.
 Partial-capacity retry fairness and arbitrary priority mixtures remain separate.
+
+The [governed conflict-retry policy](tla/GOVERNED_CONFLICT_RETRY_PROOF.md) qualifies
+a shared first attempt followed by full-capacity admission after a typed
+pre-publication conflict. The host retains its waiter and captures a new snapshot
+after admission; uncertain durability failures are not automatically replayed.
+This is an explicit conditional fallback, not automatic fairness of every retry.

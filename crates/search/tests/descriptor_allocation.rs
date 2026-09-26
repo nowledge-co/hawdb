@@ -20,22 +20,12 @@ use allocation::measure;
 
 use hawdb_search::{SearchDocument, SearchOutOfCoreGenerationWriter, SearchOutOfCoreReader};
 use std::collections::BTreeMap;
-use std::path::PathBuf;
-use std::time::{SystemTime, UNIX_EPOCH};
-
-struct TestDirectory(PathBuf);
-
-impl Drop for TestDirectory {
-    fn drop(&mut self) {
-        let _ = std::fs::remove_dir_all(&self.0);
-    }
-}
+#[path = "support/directory.rs"]
+mod directory;
+use directory::TestDirectory;
 
 fn round_trip(bytes: usize, report: bool) -> usize {
-    let root = TestDirectory(std::env::temp_dir().join(format!(
-        "hawdb-descriptor-allocation-{}-{}",
-        std::process::id(), SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_nanos(),
-    )));
+    let root = TestDirectory::new("hawdb-descriptor-allocation");
     let mut value = " ".repeat(bytes);
     value.replace_range(..1, "x");
     value.replace_range(bytes - 1.., "y");
@@ -84,11 +74,7 @@ fn generation_descriptor_avoids_materializing_hex_dictionary() {
 }
 
 fn repeated_labels(count: usize, json: bool) -> (usize, usize) {
-    let root = TestDirectory(std::env::temp_dir().join(format!(
-        "hawdb-descriptor-labels-{}-{}",
-        std::process::id(),
-        SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_nanos(),
-    )));
+    let root = TestDirectory::new("hawdb-descriptor-labels");
     let value = if json {
         format!("[{}\"x\"]", "\"x\",".repeat(count - 1))
     } else {
@@ -136,4 +122,50 @@ fn generation_descriptor_does_not_collect_repeated_labels() {
             "json={json}, small={small:?}, large={large:?}, growth={growth}"
         );
     }
+}
+
+#[test]
+fn concurrent_projection_fixtures_keep_independent_directories() {
+    let publish = std::sync::Barrier::new(2);
+    let mut roots = std::thread::scope(|scope| {
+        let tasks: Vec<_> = (0..2)
+            .map(|index| {
+                let publish = &publish;
+                scope.spawn(move || {
+                    let root = TestDirectory::new("hawdb-descriptor-concurrent");
+                    let mut writer =
+                        SearchOutOfCoreGenerationWriter::create(&root.0, Default::default())
+                            .unwrap();
+                    writer
+                        .push(SearchDocument {
+                            id: format!("document-{index}"),
+                            title: String::new(),
+                            content: String::new(),
+                            embedding: None,
+                            metadata: BTreeMap::new(),
+                        })
+                        .unwrap();
+                    publish.wait();
+                    assert_eq!(writer.finish().unwrap().document_count, 1);
+                    root
+                })
+            })
+            .collect();
+        tasks
+            .into_iter()
+            .map(|task| task.join().unwrap())
+            .collect::<Vec<_>>()
+    });
+    assert_ne!(roots[0].0, roots[1].0);
+    let removed = roots.remove(0);
+    let removed_path = removed.0.clone();
+    drop(removed);
+    assert!(!removed_path.exists());
+    let reader = SearchOutOfCoreReader::open(&roots[0].0).unwrap();
+    let documents = reader
+        .hydrate_documents(&["document-1".to_string()])
+        .unwrap()
+        .documents;
+    assert_eq!(documents.len(), 1);
+    assert_eq!(documents[0].id, "document-1");
 }

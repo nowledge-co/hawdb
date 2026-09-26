@@ -41,6 +41,10 @@ The aged-writer bypass control rejects a younger foreground grant after the
 background large waiter ages; temporal starvation controls and witnesses are
 described in the [aging refinement](../AGED_WRITER_PROGRESS_PROOF.md).
 
+The governed-conflict-retry control rejects publication from a conflicting
+attempt. Its [proof](../GOVERNED_CONFLICT_RETRY_PROOF.md) also records the
+non-escalating retry starvation control and reachable conflict/retry witnesses.
+
 The search mutation publication controls reject global-ID masking of replacement
 versions, stale selector publication, publication before artifact durability,
 pinned closure reclamation and orphaned targets after compaction. Two false

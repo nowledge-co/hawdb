@@ -217,3 +217,32 @@ Outer publication and delta hydration now use the integrated
 [context facade](SEARCH_GENERATION_CONTEXT.md). Shared host policy, general large-input support and removal of the 4 MiB
 source guard remain unqualified. The original #206 corpus acceptance criteria
 and approved validation-only budgets are unchanged.
+
+## Allocation fixture directory ownership
+
+Filesystem-backed allocation probes use `tests/support/directory.rs` to reserve
+an empty directory before creating a search projection. PID plus wall-clock
+nanoseconds was not a uniqueness guarantee: descriptor tests share a warm-up
+helper and can observe the same clock tick. The Unix publication registry is
+keyed by `(device, inode)`, not by a single process-wide publisher flag. Aliased
+fixture roots can therefore both trigger the correct publication exclusion and
+let one fixture's cleanup remove the other's files.
+
+For the replacement helper, the successful `create_dir` is the ownership
+linearization point. Only that success constructs a cleanup owner; an existing
+path is skipped, never adopted or removed. The checked atomic sequence assigns
+distinct candidates within a process without relying on time or wrapping. Atomic
+modification order is sufficient, so relaxed ordering is appropriate; no payload
+is published through the counter. Across process/PID reuse, exclusive filesystem
+creation still arbitrates an existing candidate. Assuming the temporary directory
+is not externally renamed/deleted, two live owners cannot own the same path:
+the later `create_dir` would return AlreadyExists until the earlier owner removes
+it. Drop removes only the path that its owner successfully reserved.
+
+The helper is shared by descriptor, segment and lexical-delta allocation probes.
+Reservation occurs before the measured allocator window, and the thread-local
+allocator counters and allocation limits are unchanged. A synchronized two-writer
+regression publishes into independent roots, drops one fixture, and hydrates the
+other afterward. A pre-fix probe that freezes the clock and synchronizes the two
+descriptor warm-ups reproduces the publication/cleanup failure. This is fixture
+ownership reasoning, not a change to or new proof of the production lock protocol.

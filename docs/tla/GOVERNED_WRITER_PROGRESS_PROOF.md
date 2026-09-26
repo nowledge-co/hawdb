@@ -145,3 +145,8 @@ This provides a concrete sustained-arrival qualification for the stated host
 policy. Arbitrary-size concurrent transactions, whole-transaction retry fairness
 without full-capacity admission, other priority mixes and uncontrolled callers
 remain outside these results and remain #232 acceptance work.
+
+The [conflict-retry policy](GOVERNED_CONFLICT_RETRY_PROOF.md) now connects an
+ordinary shared first attempt, pre-publication conflict rejection, persistent
+retry admission and a fresh full-capacity attempt. It establishes conditional
+completion for that explicit host policy, not for arbitrary fixed-weight retries.
