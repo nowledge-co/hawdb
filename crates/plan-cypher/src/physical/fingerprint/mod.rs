@@ -1287,6 +1287,22 @@ impl PhysicalPlan {
                 input.write_instance_fingerprint(output);
                 output.push(')');
             }
+            PhysicalPlan::ScoringRerankExec {
+                score_column,
+                spec,
+                limit,
+                input,
+            } => {
+                output.push_str("ScoringRerankExec(score_column=");
+                write_identifier(output, score_column);
+                output.push_str(",limit=");
+                output.push_str(&limit.to_string());
+                output.push_str(",spec=");
+                output.push_str(&spec.shape_fingerprint());
+                output.push_str(",input=");
+                input.write_instance_fingerprint(output);
+                output.push(')');
+            }
         }
     }
 }

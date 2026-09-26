@@ -864,6 +864,22 @@ fn dispatch_batch_operator<D: BatchDispatch>(plan: &PhysicalPlan, dispatch: D) -
                 stream_sort_batches(input, items, context, execution_limit, emit)
             })
         }
+        PhysicalPlan::ScoringRerankExec {
+            score_column,
+            spec,
+            limit,
+            input,
+        } => dispatch.supported(|context, execution_limit, emit| {
+            stream_scoring_rerank_batches(
+                input,
+                score_column,
+                spec,
+                *limit,
+                context,
+                execution_limit,
+                emit,
+            )
+        }),
         PhysicalPlan::AggregateExec {
             group_keys,
             items,
