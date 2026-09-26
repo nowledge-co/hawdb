@@ -43,13 +43,12 @@ use hawdb_executor::{
 use hawdb_expression::{BindingId, SortDirection, SortItem, SortKey};
 use hawdb_optimizer::{
     select_relational_access_path, RelationalAccessPathDescriptor, RelationalAccessPathKind,
-    RelationalJoinEnumerationConfig, RelationalJoinPlanningDirective,
+    RelationalJoinEnumerationConfig, RelationalJoinPlanningDirective, RelationalJoinPlanningReason,
 };
 use hawdb_sql::{
     SelectProjection, SelectStatement, SqlColumnRef, SqlExpression, SqlFunctionArgument,
     SqlJoinKind, SqlNullOrder, SqlOrderDirection, SqlPredicate, SqlStatement, SqlValue,
 };
-#[cfg(test)]
 use hawdb_storage::relational::RelationalHydrationBudget;
 use hawdb_storage::relational::{
     relational_unique_index_name, RelationalIndexRangeScan, RelationalIndexScanDirection,
@@ -347,6 +346,55 @@ impl RelationalRowStoreReader for crate::RelationalMaterializedReader {
     }
 }
 
+/// Evaluates a FROM-less `SELECT` (e.g. `SELECT version();`) directly against
+/// a synthetic zero-binding row, bypassing catalog resolution, access-path
+/// selection, and join planning entirely — there is no table to resolve a
+/// path against. Reuses `expression::project_bound_row` unchanged, so a
+/// FROM-less projection that references a column fails exactly the way it
+/// would against a real table with no matching binding.
+fn execute_fromless_select(
+    select: &SelectStatement,
+    parameters: &[Value],
+    stage_timings: RelationalSqlStageTimings,
+    hydration: RelationalHydrationBudget,
+) -> Result<RelationalQueryOutput> {
+    let row = expression::project_bound_row(&BoundRow::default(), &select.projection, parameters)?;
+    let access_path = RelationalAccessPathDescriptor {
+        kind: RelationalAccessPathKind::FullScan,
+        name: "(no table)".to_string(),
+        index_columns: Vec::new(),
+        access_columns: BTreeSet::new(),
+        equality_prefix_len: 0,
+        order_prefix_len: 0,
+        exclusive_range: false,
+        reverse_order: false,
+        unique_point: false,
+        covering: false,
+        requires_row_fetch: false,
+        estimated_rows: 1,
+    };
+    Ok(RelationalQueryOutput {
+        rows: QueryRows::from(vec![row]),
+        stage_timings,
+        join_planning: RelationalJoinPlanningOutcome::not_eligible(
+            RelationalJoinPlanningReason::NoJoin,
+            Vec::new(),
+            RelationalJoinEnumerationConfig::default(),
+        ),
+        operator_cardinality_profiles: Vec::new(),
+        intermediate_rows: 0,
+        hydration,
+        access_path,
+        join_access_paths: Vec::new(),
+        index_execution_evidence: Vec::new(),
+        row_execution_evidence: RelationalRowExecutionEvidence {
+            runtime_path: "no_from_clause",
+            ..RelationalRowExecutionEvidence::default()
+        },
+        blocking_operator_memory_reports: Vec::new(),
+    })
+}
+
 pub fn execute_prepared_relational_query_with_resources<'a, R: RelationalQueryStoreReader>(
     prepared_sql: PreparedRelationalSql,
     parameters: &[Value],
@@ -371,6 +419,14 @@ pub fn execute_prepared_relational_query_with_resources<'a, R: RelationalQuerySt
     };
     match prepared.statement {
         SqlStatement::Select(select) => {
+            if select.from.is_none() {
+                return execute_fromless_select(
+                    &select,
+                    parameters,
+                    initial_stage_timings,
+                    resources.limits.hydration,
+                );
+            }
             let prepared = prepare_relational_select(
                 select,
                 parameters,
@@ -389,6 +445,11 @@ pub fn execute_prepared_relational_query_with_resources<'a, R: RelationalQuerySt
                     "EXPLAIN only supports relational SELECT".to_string(),
                 ));
             };
+            if select.from.is_none() {
+                return Err(HawDBError::Semantic(
+                    "EXPLAIN does not support a FROM-less SELECT".to_string(),
+                ));
+            }
             let prepared = prepare_relational_select(
                 select,
                 parameters,

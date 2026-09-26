@@ -19889,9 +19889,13 @@ pub(super) fn execute_database_transaction_prepared_sql(
         .map(sql_query_result);
     }
     let pending_generated_read_table = match prepared.statement() {
-        crate::sql::SqlStatement::Select(select) => Some(select.from.name.as_str()),
+        crate::sql::SqlStatement::Select(select) => {
+            select.from.as_ref().map(|from| from.name.as_str())
+        }
         crate::sql::SqlStatement::Explain(explain) => match explain.statement.as_ref() {
-            crate::sql::SqlStatement::Select(select) => Some(select.from.name.as_str()),
+            crate::sql::SqlStatement::Select(select) => {
+                select.from.as_ref().map(|from| from.name.as_str())
+            }
             _ => None,
         },
         _ => None,

@@ -82,18 +82,18 @@ pub(super) fn execute_ordered_index_projection<'a>(
                 ))
             })?;
             let row = row_runtime
-                .read_output_point(&select.from.name, locator.primary_key())?
+                .read_output_point(&select.from_table().name, locator.primary_key())?
                 .ok_or_else(|| {
                     HawDBError::StorageIntegrity(format!(
                         "relational index {name} on table {} points to missing row {:?}",
-                        select.from.name,
+                        select.from_table().name,
                         locator.primary_key()
                     ))
                 })?;
             let bound = BoundRow {
                 bindings: vec![Binding {
                     binding: BindingId::new(0),
-                    table: &select.from.name,
+                    table: &select.from_table().name,
                     qualifier: base_qualifier,
                     schema: base_schema,
                     row: Some(row),
@@ -120,7 +120,7 @@ pub(super) fn execute_ordered_index_projection<'a>(
         pipeline.begin_operator_pipeline();
         let fully_consumed = index_runtime.visit_range_entries(
             state,
-            &select.from.name,
+            &select.from_table().name,
             name,
             scan,
             |_, primary_key| {
@@ -262,13 +262,17 @@ pub(super) fn execute_borrowed_streaming_full_scan(
                 predicate,
                 parameters,
                 schema,
-                &select.from.name,
+                &select.from_table().name,
                 qualifier,
             )
         })
         .transpose()?;
-    let projection =
-        BoundStreamingProjection::bind(&select.projection, schema, &select.from.name, qualifier)?;
+    let projection = BoundStreamingProjection::bind(
+        &select.projection,
+        schema,
+        &select.from_table().name,
+        qualifier,
+    )?;
     let mut offset = usize::try_from(bind_bound(select.offset, parameters, "OFFSET")?.unwrap_or(0))
         .map_err(|_| HawDBError::Semantic("SQL OFFSET is too large".to_string()))?;
     let requested = bind_bound(select.limit, parameters, "LIMIT")?
@@ -286,7 +290,7 @@ pub(super) fn execute_borrowed_streaming_full_scan(
     let mut payload_bytes = 0usize;
     if requested != 0 {
         pipeline.begin_operator_pipeline();
-        let fully_consumed = row_runtime.visit_all_ref(&select.from.name, |row| {
+        let fully_consumed = row_runtime.visit_all_ref(&select.from_table().name, |row| {
             pipeline.account_operator_row(RelationalOperatorId::from_plan_index(0))?;
             if predicate
                 .as_ref()

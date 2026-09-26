@@ -212,3 +212,18 @@ fn sort_that_needs_disk_spill_fails_explicitly() {
         1
     );
 }
+
+#[test]
+fn fromless_select_evaluates_once_and_rejects_column_references() {
+    let mut db = Database::new();
+    let output = db
+        .query_sql("SELECT 1 AS one, version() AS server_version")
+        .unwrap();
+    assert_eq!(output.rows.len(), 1);
+    assert_eq!(output.rows[0].get("one"), Some(&Value::Int(1)));
+    assert!(matches!(
+        output.rows[0].get("server_version"),
+        Some(Value::String(version)) if version.starts_with("HawDB ")
+    ));
+    assert!(db.query_sql("SELECT does_not_exist").is_err());
+}

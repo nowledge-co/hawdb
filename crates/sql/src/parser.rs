@@ -139,36 +139,37 @@ fn lower_select_statement(query: &sqlparser::ast::Query) -> Result<SqlStatement>
             "unsupported PostgreSQL SELECT feature".to_string(),
         ));
     }
-    if select.from.is_empty() {
-        return Err(HawDBError::Semantic(
-            "PostgreSQL SELECT requires at least one FROM item".to_string(),
-        ));
-    }
-    let from = &select.from[0];
-    let (from_name, from_alias) = lower_table_factor(&from.relation)?;
     let projection = lower_projection(&select.projection)?;
     let distinct = lower_distinct(select.distinct.as_ref())?;
-    let mut joins = from
-        .joins
-        .iter()
-        .map(|join| lower_join(join, 0))
-        .collect::<Result<Vec<_>>>()?;
-    for from in &select.from[1..] {
-        let on_scope_start = joins.len() + 1;
-        let (table, alias) = lower_table_factor(&from.relation)?;
-        joins.push(SqlJoin {
-            kind: SqlJoinKind::Inner,
-            table,
-            alias,
-            on: crate::Expr::value(SqlValue::Literal(Value::Bool(true))),
-            on_scope_start,
-        });
-        for join in &from.joins {
-            joins.push(lower_join(join, on_scope_start)?);
-        }
-    }
 
-    Ok(SqlStatement::Select(SelectStatement {
+    let (from_name, from_alias, joins) = if select.from.is_empty() {
+        (None, None, Vec::new())
+    } else {
+        let from = &select.from[0];
+        let (from_name, from_alias) = lower_table_factor(&from.relation)?;
+        let mut joins = from
+            .joins
+            .iter()
+            .map(|join| lower_join(join, 0))
+            .collect::<Result<Vec<_>>>()?;
+        for from in &select.from[1..] {
+            let on_scope_start = joins.len() + 1;
+            let (table, alias) = lower_table_factor(&from.relation)?;
+            joins.push(SqlJoin {
+                kind: SqlJoinKind::Inner,
+                table,
+                alias,
+                on: crate::Expr::value(SqlValue::Literal(Value::Bool(true))),
+                on_scope_start,
+            });
+            for join in &from.joins {
+                joins.push(lower_join(join, on_scope_start)?);
+            }
+        }
+        (Some(from_name), from_alias, joins)
+    };
+
+    let statement = SelectStatement {
         projection,
         distinct,
         from: from_name,
@@ -189,7 +190,23 @@ fn lower_select_statement(query: &sqlparser::ast::Query) -> Result<SqlStatement>
         limit: lower_limit(query.limit_clause.as_ref())?,
         offset: lower_offset(query.limit_clause.as_ref())?,
         lock_strength: lower_lock_strength(&query.locks)?,
-    }))
+    };
+
+    if statement.from.is_none()
+        && (statement.selection.is_some()
+            || !statement.group_by.is_empty()
+            || statement.having.is_some()
+            || !statement.order_by.is_empty()
+            || statement.limit.is_some()
+            || statement.offset.is_some()
+            || statement.lock_strength.is_some())
+    {
+        return Err(HawDBError::Semantic(
+            "PostgreSQL SELECT without FROM does not support WHERE, GROUP BY, HAVING, ORDER BY, LIMIT, OFFSET, or locking clauses".to_string(),
+        ));
+    }
+
+    Ok(SqlStatement::Select(statement))
 }
 
 fn lower_lock_strength(locks: &[LockClause]) -> Result<Option<SqlLockStrength>> {
@@ -641,7 +658,7 @@ fn lower_function_expression(
             distinct,
             filter,
         }),
-        "max" | "coalesce" | "octet_length" | "uuidv7" if filter.is_none() => {
+        "max" | "coalesce" | "octet_length" | "uuidv7" | "version" if filter.is_none() => {
             Ok(ExprKind::Function {
                 name: name.clone(),
                 arguments,
@@ -649,7 +666,7 @@ fn lower_function_expression(
                 filter,
             })
         }
-        "max" | "coalesce" | "octet_length" | "uuidv7" => Err(HawDBError::Semantic(
+        "max" | "coalesce" | "octet_length" | "uuidv7" | "version" => Err(HawDBError::Semantic(
             "FILTER is supported only for COUNT and SUM aggregates".to_string(),
         )),
         _ => Err(HawDBError::Semantic(format!(

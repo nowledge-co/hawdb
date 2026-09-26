@@ -119,10 +119,13 @@ fn check_case(case: &Case) {
                     assert_eq!(predicate, select.selection.as_ref());
                     assert_eq!(access, &case.descriptor());
                     assert_eq!(order, &select.order_by);
-                    assert_eq!(table, select.from.name);
+                    assert_eq!(table, select.from_table().name);
                     assert_eq!(
                         qualifier,
-                        select.from_alias.as_deref().unwrap_or(&select.from.name)
+                        select
+                            .from_alias
+                            .as_deref()
+                            .unwrap_or(&select.from_table().name)
                     );
                     covered
                 },
