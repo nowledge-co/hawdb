@@ -11,8 +11,10 @@ entries in the relevant blocks. It also persists the maximum encoded term
 length, so reader-side lexical-term policy admission remains valid even when a
 block's lexicographic endpoints are shorter than an interior term. The format
 remains the basis for
-[#206](https://github.com/nowledge-co/hawdb/issues/206) and the future
-[#292](https://github.com/nowledge-co/hawdb/issues/292) pruning work.
+[#206](https://github.com/nowledge-co/hawdb/issues/206) and now carries the
+block-max pruning layer of
+[#292](https://github.com/nowledge-co/hawdb/issues/292), documented under
+Block-Max Pruning below.
 
 HawDB is still in its development-only storage phase. A format change creates
 a new greenfield baseline and development artifacts must be recreated; readers
@@ -195,11 +197,44 @@ which depends on it.
   ordinal-only property intact for the (common) case where a candidate is
   filtered out, avoiding a string resolution that scoring didn't otherwise
   need. This is an open decision for the implementing PR, not resolved here.
-- **`max_term_frequency` is reserved, not consumed, by this spec.** This
-  spec's own scan path does not do block-skip scoring; it populates the
-  field so #292 can implement WAND-style pruning against it without a
-  further format bump. #292's differential-test and `blocks_skipped`
-  observability requirements apply once that layer lands, not to this one.
+- **`max_term_frequency` is consumed by the pruning layer.** This spec's own
+  scan path does not do block-skip scoring; it populates the field so #292
+  can prune against it without a further format bump. That layer has landed,
+  and the contract below is normative for it.
+
+### Block-Max Pruning (#292)
+
+- **Bounds come from posting frame headers.** A term's frames inside one
+  postings block yield `first`, `last`, and `max_tf` by parsing frame headers
+  only, so a skipped block's posting payload is never decoded.
+- **Pruning needs a floor, and callers opt in.** It applies only when the
+  caller passes `prune_blocks` and the score collector holds a full rank
+  window; the floor is that window's lowest retained score. The text route
+  reports `matching_document_count` as its total hit count and therefore keeps
+  the exhaustive pass, while hybrid fusion consumes the retained window only
+  and opts in.
+- **Correctness is exactness.** The pivot rule skips a document range only
+  while the summed per-block bounds of the cursors that can still reach it
+  stay strictly below the floor, so a skipped document cannot displace a
+  retained one and the retained window (ids and scores) is identical to
+  exhaustive evaluation. When no cursor can reach the floor the pass stops and
+  leaves those blocks unread.
+- **Fallback.** Candidate postings below
+  `LexicalProjectionConfig::pruning_min_postings` are scored exhaustively:
+  short doclists gain nothing from bound checks.
+- **Observability.** `LexicalQueryReport::blocks_skipped` counts posting
+  blocks the pass left undecoded, reported as
+  `SearchRetrieverReport::candidate_blocks_skipped`. Under pruning,
+  `postings_visited`, `bytes_read`, and `matching_document_count` are lower
+  bounds instead of exhaustive tallies.
+- **Verification.** `block_max_pruning_returns_the_exhaustive_retained_window`
+  compares the pruned and exhaustive retained windows, including a filtered
+  callback; `term_block_bounds_match_decoded_postings` pins the header-only
+  bounds against decoded postings; and
+  `short_doclists_fall_back_to_exhaustive_scoring` covers the threshold
+  fallback. The ignored developer measurement
+  `block_max_pruning_measurement_on_a_large_doclist` records skipped blocks,
+  postings, bytes, and wall clock for a 16k-document hot-term doclist.
 
 ## Resource Contract
 
