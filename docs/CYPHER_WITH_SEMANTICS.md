@@ -105,6 +105,11 @@ The existing aggregate/sort/output budgets remain in force; silently combining
 groups or limiting an earlier clause is not a valid resource fallback. No
 schema, persistent format, production API or default budget changes are made.
 
+Pipeline migration must also retain cache eligibility independently of WITH
+semantics. The [cache eligibility proof](CYPHER_PLAN_CACHE_ELIGIBILITY.md)
+classifies every clause and procedure: adding WITH clauses must not admit a
+mutation or vector-search procedure that bypasses the legacy plan cache.
+
 ## Normalization capability boundary
 
 Equivalence arguments also assume the binder rejects relationship shapes that

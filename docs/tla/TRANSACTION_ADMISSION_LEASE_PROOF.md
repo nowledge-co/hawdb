@@ -88,3 +88,8 @@ writer requests the governor's full CPU capacity, earlier owners eventually
 retire, and all competing writers use that governor. Its recurring-small-writer
 model and memory/durable workload do not establish arbitrary-size or
 ungoverned whole-transaction retry fairness.
+
+The [conflict-retry policy](GOVERNED_CONFLICT_RETRY_PROOF.md) now connects an
+ordinary shared first attempt, pre-publication conflict rejection, persistent
+retry admission and a fresh full-capacity attempt. It establishes conditional
+completion for that explicit host policy, not for arbitrary fixed-weight retries.
