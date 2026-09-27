@@ -23,11 +23,9 @@ use crate::immutable_object::{
 };
 use crate::wal::{WalCursorEvent, WalOpenOutcome, WalRecordCursor};
 use std::fmt::{self, Display, Formatter};
-use std::fs;
+use std::fs::{self, File, OpenOptions};
 use std::io::Read;
-use std::path::Path;
-#[cfg(test)]
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct SealedWalPublication {
@@ -36,6 +34,14 @@ pub struct SealedWalPublication {
     pub end_lsn: u64,
     pub object: ObjectReference,
     pub outcome: PublishOutcome,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PreparedWalRotation {
+    pub sealed: SealedWalPublication,
+    pub next_generation: u64,
+    pub next_start_lsn: u64,
+    pub next_wal_path: PathBuf,
 }
 
 #[derive(Debug)]
@@ -234,6 +240,77 @@ pub fn seal_wal_file(
     })
 }
 
+/// Publishes the closed WAL and prepares its empty successor.
+///
+/// The old WAL remains untouched and the caller's head remains authoritative;
+/// a later selector publication must make the successor visible before writes
+/// are allowed to use it.  The caller owns the publication barrier and must
+/// keep it until that selector boundary is complete.
+pub fn prepare_wal_rotation(
+    old_path: &Path,
+    next_path: &Path,
+    expected_generation: u64,
+    next_generation: u64,
+    expected_start_lsn: u64,
+    max_bytes: u64,
+    store: &mut ImmutableObjectStore,
+) -> Result<PreparedWalRotation, SealedWalError> {
+    if next_generation <= expected_generation {
+        return Err(SealedWalError::GenerationMismatch {
+            expected: expected_generation.saturating_add(1),
+            actual: next_generation,
+        });
+    }
+    let sealed = seal_wal_file(
+        old_path,
+        expected_generation,
+        expected_start_lsn,
+        max_bytes,
+        store,
+    )?;
+    let next_start_lsn = sealed.end_lsn;
+    let header = crate::wal::frame::encode_binary_wal_header(next_generation, next_start_lsn);
+    let mut file = match OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .open(next_path)
+    {
+        Ok(file) => file,
+        Err(source) => {
+            return Err(SealedWalError::Io {
+                operation: "create successor WAL",
+                source,
+            });
+        }
+    };
+    if let Err(source) = write_and_sync_header(&mut file, &header) {
+        let _ = fs::remove_file(next_path);
+        return Err(SealedWalError::Io {
+            operation: "write and sync successor WAL",
+            source,
+        });
+    }
+    if let Err(source) = crate::durability::sync_parent_directory(next_path) {
+        return Err(SealedWalError::Io {
+            operation: "sync successor WAL directory",
+            source,
+        });
+    }
+    Ok(PreparedWalRotation {
+        sealed,
+        next_generation,
+        next_start_lsn,
+        next_wal_path: next_path.to_path_buf(),
+    })
+}
+
+fn write_and_sync_header(file: &mut File, header: &[u8]) -> std::io::Result<()> {
+    use std::io::Write;
+
+    file.write_all(header)?;
+    file.sync_all()
+}
+
 fn max_record_limit(max_bytes: u64) -> usize {
     usize::try_from(max_bytes.min(usize::MAX as u64)).unwrap_or(usize::MAX)
 }
@@ -358,6 +435,27 @@ mod tests {
             Err(SealedWalError::GenerationMismatch { .. })
         ));
         assert!(!directory.join("objects/sealed-wal").exists());
+        fs::remove_dir_all(directory).unwrap();
+    }
+
+    #[test]
+    fn prepares_successor_without_switching_the_old_wal() {
+        let directory = root("rotation");
+        fs::create_dir_all(&directory).unwrap();
+        let old_path = directory.join("active.wal");
+        let next_path = directory.join("next.wal");
+        let old_bytes = wal_bytes(4, 10, &[10, 11]);
+        fs::write(&old_path, &old_bytes).unwrap();
+        let mut objects = ImmutableObjectStore::open(&directory).unwrap();
+        let prepared =
+            prepare_wal_rotation(&old_path, &next_path, 4, 5, 10, 1 << 20, &mut objects).unwrap();
+        assert_eq!(prepared.next_start_lsn, 12);
+        assert_eq!(fs::read(&old_path).unwrap(), old_bytes);
+        let successor = fs::read(&next_path).unwrap();
+        assert_eq!(
+            crate::wal::frame::decode_binary_wal_header(&successor).unwrap(),
+            (5, 12)
+        );
         fs::remove_dir_all(directory).unwrap();
     }
 }

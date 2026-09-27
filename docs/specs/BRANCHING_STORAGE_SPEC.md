@@ -258,6 +258,18 @@ corresponds to exactly the validated WAL interval; no partial suffix can be
 selected. Rotation, new-WAL creation, head switching, and crash recovery remain
 separate protocol obligations.
 
+`prepare_wal_rotation` extends that boundary without acknowledging a head
+switch. It first obtains the validated sealed-WAL result, derives the
+successor start LSN from the validated end LSN, creates the successor with
+`create_new`, writes its exact binary header, synchronizes the file, and then
+synchronizes its parent directory. The old WAL is retained byte-for-byte. By
+the sequence of durable prerequisites, a caller can expose the successor only
+after its complete header is durable; a failure before selector publication
+leaves the old head and old WAL authoritative, while a failed candidate is
+removed where its outcome is known. The remaining uncertain directory-sync
+case is returned as an error and must be handled by the caller's publication
+poison/reopen protocol.
+
 ## Locks and publication ownership
 
 Project metadata serialization and the branch writer lease are separate. One
