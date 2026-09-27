@@ -155,6 +155,7 @@ pub struct ChildBranchHeadRequest {
 
 #[derive(Debug, Clone, Copy)]
 pub struct ChildBranchSourceExpectation {
+    pub branch_id: [u8; 16],
     pub physical_generation: u64,
     pub logical_commit_epoch: u64,
     pub sealed_root: ObjectReference,
@@ -262,6 +263,9 @@ pub fn create_child_branch_head_from_parent(
 ) -> Result<BranchHead, BranchHeadError> {
     let parent = read_branch_head(parent_head_path)?;
     if parent.project_id != request.project_id {
+        return Err(BranchHeadError::BranchIdentityMismatch);
+    }
+    if parent.branch_id != expected_parent.branch_id {
         return Err(BranchHeadError::BranchIdentityMismatch);
     }
     if parent.physical_generation != expected_parent.physical_generation {
@@ -866,6 +870,7 @@ mod tests {
             wal_path: wal_path.clone(),
         };
         let mut stale = ChildBranchSourceExpectation {
+            branch_id: parent.branch_id,
             physical_generation: parent.physical_generation,
             logical_commit_epoch: parent.logical_commit_epoch,
             sealed_root: parent.sealed_root,

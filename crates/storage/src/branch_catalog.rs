@@ -764,6 +764,11 @@ pub fn create_branch_from_parent(
             "catalog and child head sealed-root digests differ",
         ));
     }
+    if request.parent_id.as_uuid().as_bytes() != &expected_parent.branch_id {
+        return Err(BranchCreateError::InconsistentRequest(
+            "catalog parent and selected parent head differ",
+        ));
+    }
     let reservation =
         reserve_create_file(catalog_path, request).map_err(BranchCreateError::Catalog)?;
     let child_head_path = child_head_request.head_path.clone();
@@ -1498,6 +1503,7 @@ mod tests {
             &child_head_path,
             child_request,
             ChildBranchSourceExpectation {
+                branch_id: parent.branch_id,
                 physical_generation: 4,
                 logical_commit_epoch: 7,
                 sealed_root: root,
@@ -1597,6 +1603,7 @@ mod tests {
                 wal_path: child_wal_path.clone(),
             },
             ChildBranchSourceExpectation {
+                branch_id: parent.branch_id,
                 physical_generation: 4,
                 logical_commit_epoch: 7,
                 sealed_root: root,
