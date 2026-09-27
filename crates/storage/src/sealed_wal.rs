@@ -291,6 +291,7 @@ pub fn prepare_wal_rotation(
         });
     }
     if let Err(source) = crate::durability::sync_parent_directory(next_path) {
+        let _ = fs::remove_file(next_path);
         return Err(SealedWalError::Io {
             operation: "sync successor WAL directory",
             source,
@@ -351,6 +352,7 @@ fn map_io<T>(operation: &'static str, result: std::io::Result<T>) -> Result<T, S
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::durability::fail_sync_directory_for;
     use crate::wal::{binary::encode_binary_wal_record, frame::*, WalEntry, WalOp};
     use std::time::{SystemTime, UNIX_EPOCH};
 
@@ -456,6 +458,29 @@ mod tests {
             crate::wal::frame::decode_binary_wal_header(&successor).unwrap(),
             (5, 12)
         );
+        fs::remove_dir_all(directory).unwrap();
+    }
+
+    #[test]
+    fn failed_successor_directory_sync_cleans_file_for_retry() {
+        let directory = root("rotation-sync-failure");
+        fs::create_dir_all(&directory).unwrap();
+        let old_path = directory.join("active.wal");
+        let next_path = directory.join("next.wal");
+        fs::write(&old_path, wal_bytes(4, 10, &[10, 11])).unwrap();
+        let mut objects = ImmutableObjectStore::open(&directory).unwrap();
+        {
+            let _guard = fail_sync_directory_for(&directory);
+            assert!(matches!(
+                prepare_wal_rotation(&old_path, &next_path, 4, 5, 10, 1 << 20, &mut objects),
+                Err(SealedWalError::Io {
+                    operation: "sync successor WAL directory",
+                    ..
+                })
+            ));
+        }
+        assert!(!next_path.exists());
+        prepare_wal_rotation(&old_path, &next_path, 4, 5, 10, 1 << 20, &mut objects).unwrap();
         fs::remove_dir_all(directory).unwrap();
     }
 }

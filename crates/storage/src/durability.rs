@@ -106,6 +106,8 @@ pub fn durable_replace_file(source: &Path, destination: &Path) -> io::Result<()>
 thread_local! {
     static DURABLE_REPLACE_FAILURE_DESTINATION: std::cell::RefCell<Option<OsString>> =
         const { std::cell::RefCell::new(None) };
+    static SYNC_DIRECTORY_FAILURE: std::cell::RefCell<Option<std::path::PathBuf>> =
+        const { std::cell::RefCell::new(None) };
 }
 
 #[cfg(test)]
@@ -132,6 +134,30 @@ pub(crate) fn fail_durable_replace_for_destination(
         current.replace(Some(destination.into()));
     });
     DurableReplaceFailureGuard
+}
+
+#[cfg(test)]
+pub(crate) struct SyncDirectoryFailureGuard;
+
+#[cfg(test)]
+impl Drop for SyncDirectoryFailureGuard {
+    fn drop(&mut self) {
+        SYNC_DIRECTORY_FAILURE.with(|path| {
+            path.replace(None);
+        });
+    }
+}
+
+#[cfg(test)]
+pub(crate) fn fail_sync_directory_for(directory: &Path) -> SyncDirectoryFailureGuard {
+    SYNC_DIRECTORY_FAILURE.with(|current| {
+        assert!(
+            current.borrow().is_none(),
+            "sync directory failure injection must not be nested"
+        );
+        current.replace(Some(directory.to_path_buf()));
+    });
+    SyncDirectoryFailureGuard
 }
 
 #[cfg(test)]
@@ -164,6 +190,24 @@ pub fn sync_parent_directory(path: &Path) -> io::Result<()> {
 
 /// Persists pending directory entry changes when supported by the platform.
 pub fn sync_directory(directory: &Path) -> io::Result<()> {
+    #[cfg(test)]
+    {
+        let should_fail = SYNC_DIRECTORY_FAILURE.with(|expected| {
+            expected
+                .borrow()
+                .as_ref()
+                .is_some_and(|path| path == directory)
+        });
+        if should_fail {
+            return Err(io::Error::new(
+                io::ErrorKind::PermissionDenied,
+                format!(
+                    "injected directory sync failure for {}",
+                    directory.display()
+                ),
+            ));
+        }
+    }
     #[cfg(windows)]
     {
         let _ = directory;
