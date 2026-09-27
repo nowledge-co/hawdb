@@ -592,6 +592,24 @@ objects protected since mark are retained. Deletions and directory cleanup
 are restart-idempotent, and failure reports retained/reclaimed counts and bytes
 without changing a successful logical-delete receipt into a false failure.
 
+### Conservative immutable-object sweep implementation
+
+`ImmutableObjectStore::reclaim_unreachable` implements the storage-only part of
+this protocol. Its caller supplies the complete object inventory currently
+owned by the catalog/lease layer and the sealed-root references that survived
+the mark phase; the object store never treats a directory listing or a
+filename as an ownership proof. Before unlinking anything it reads and
+identity-validates every reachable root, recursively decodes each sealed root
+to mark its checkpoint and sealed-WAL references, and validates every
+inventoried candidate. Therefore an unreadable root, closure member, or
+candidate fails before the first deletion, while files outside the explicit
+inventory remain untouched. A missing unreachable candidate is accepted as an
+already-completed unlink, so retry after a crash is idempotent; a missing
+reachable object remains fatal. The returned typed report counts retained
+inventory entries and reclaimed objects/bytes. Branch leases, pending catalog
+records, and directory cleanup still belong to the caller and must be included
+in the inventory/root snapshot before invoking this primitive.
+
 ## Model and implementation qualification
 
 [`HawDBBranchLifecycle.tla`](../tla/HawDBBranchLifecycle.tla) models two branches,
