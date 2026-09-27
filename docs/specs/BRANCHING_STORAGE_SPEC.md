@@ -484,6 +484,27 @@ Create then follows these durable transitions:
    replay. Failure before step 2 leaves no branch; unreferenced objects are
    later collectible. Failure after step 2 requires recovery, not a new ID.
 
+The current storage implementation makes steps 2--4 explicit in
+`branch_catalog::create_branch_from_parent`. `reserve_create_file` durably
+records `Creating` and returns the exact metadata revision used by completion.
+`create_child_branch_head_from_parent` reads the parent selector and rejects a
+generation, commit epoch, project identity, or sealed-root mismatch before it
+creates either child file. `create_child_branch_head` creates the child WAL and
+head with exclusive creation, syncs both files and their parent directory, and
+holds the child directory lease through catalog completion. Therefore, by
+induction over these durable boundaries, a successful `Ready` record implies a
+complete private child WAL/head pair whose root is the validated parent root;
+the parent selector and mutable WAL are never modified.
+
+`recover_create_file` is the corresponding restart transition. A missing head
+or WAL is a known incomplete operation and becomes terminal `Deleted`; a
+complete pair must match the catalog project/branch identity, source epoch,
+root digest, WAL generation, start LSN, length, and digest before `Creating`
+can become `Ready`. Any mismatch or uncertain I/O leaves `Creating` unchanged
+and retains the candidate for a later retry. This proves the implementation's
+old-or-new admission boundary, while full logical-data replay remains a
+database integration obligation.
+
 If the parent advances or is subsequently deleted, the child's base digest and
 parent UUID remain unchanged. Lineage does not retain the parent's directory;
 the child's own root references retain the required immutable objects.
