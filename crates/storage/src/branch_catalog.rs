@@ -6,6 +6,10 @@
 //! checksummed so a future publisher can reject an incomplete or ambiguous
 //! catalog before changing any durable selector.
 
+use crate::branch_head::{
+    create_child_branch_head_from_parent, BranchHead, BranchHeadError, ChildBranchHeadRequest,
+    ChildBranchSourceExpectation,
+};
 use crate::durability;
 use hawdb_core::Uuid;
 use hawdb_integrity::crc32c;
@@ -704,6 +708,80 @@ pub fn complete_create_file(
     write_catalog(path, &catalog).map_err(CatalogFileTransitionError::Io)
 }
 
+/// Aborts a reserved child create after a known pre-publication failure.
+pub fn abort_create_file(
+    path: &Path,
+    reservation: CreateReservation,
+) -> Result<(), CatalogFileTransitionError> {
+    let mut catalog = read_catalog(path).map_err(CatalogFileTransitionError::Io)?;
+    catalog
+        .abort_create(reservation.id, reservation.metadata_revision)
+        .map_err(CatalogFileTransitionError::Transition)?;
+    write_catalog(path, &catalog).map_err(CatalogFileTransitionError::Io)
+}
+
+#[derive(Debug)]
+pub enum BranchCreateError {
+    Catalog(CatalogFileTransitionError),
+    Head(BranchHeadError),
+    InconsistentRequest(&'static str),
+}
+
+impl Display for BranchCreateError {
+    fn fmt(&self, formatter: &mut Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::Catalog(error) => Display::fmt(error, formatter),
+            Self::Head(error) => Display::fmt(error, formatter),
+            Self::InconsistentRequest(message) => formatter.write_str(message),
+        }
+    }
+}
+
+impl std::error::Error for BranchCreateError {}
+
+/// Reserves the catalog record, creates the isolated child head/WAL, and
+/// completes the record only after both files are durable. Known child-file
+/// failures abort the reservation; an uncertain catalog completion leaves the
+/// `Creating` record for deterministic recovery on the next open.
+pub fn create_branch_from_parent(
+    catalog_path: &Path,
+    parent_head_path: &Path,
+    child_head_request: ChildBranchHeadRequest,
+    expected_parent: ChildBranchSourceExpectation,
+    max_active_wal_bytes: u64,
+    request: CreateRequest,
+) -> Result<BranchHead, BranchCreateError> {
+    if request.id.as_uuid().as_bytes() != &child_head_request.branch_id {
+        return Err(BranchCreateError::InconsistentRequest(
+            "catalog and child head branch IDs differ",
+        ));
+    }
+    if request.base_root_digest != *child_head_request.sealed_root.sha256.as_bytes() {
+        return Err(BranchCreateError::InconsistentRequest(
+            "catalog and child head sealed-root digests differ",
+        ));
+    }
+    let reservation =
+        reserve_create_file(catalog_path, request).map_err(BranchCreateError::Catalog)?;
+    let child_head_path = child_head_request.head_path.clone();
+    match create_child_branch_head_from_parent(
+        parent_head_path,
+        &child_head_path,
+        child_head_request,
+        expected_parent,
+        max_active_wal_bytes,
+    ) {
+        Ok(head) => {
+            complete_create_file(catalog_path, reservation).map_err(BranchCreateError::Catalog)?;
+            Ok(head)
+        }
+        Err(error) => {
+            let _ = abort_create_file(catalog_path, reservation);
+            Err(BranchCreateError::Head(error))
+        }
+    }
+}
+
 /// Stable project metadata lock.  It is separate from branch writer leases so
 /// independent branch handles can write their own WALs while catalog updates
 /// remain serialized.
@@ -1238,6 +1316,71 @@ mod tests {
                 .state,
             BranchState::Ready
         );
+        fs::remove_dir_all(directory).unwrap();
+    }
+
+    #[test]
+    fn create_branch_from_parent_completes_catalog_after_child_files() {
+        let (directory, catalog_path) = temporary_catalog_path();
+        write_catalog(&catalog_path, &catalog()).unwrap();
+        let parent_head_path = directory.join("parent.head");
+        let child_head_path = directory.join("child.head");
+        let child_wal_path = directory.join("child.wal");
+        let root = crate::immutable_object::ObjectReference::for_bytes(
+            crate::immutable_object::ObjectKind::SealedRoot,
+            1,
+            b"parent-root",
+        );
+        let parent = BranchHead {
+            project_id: *catalog().project_id.as_uuid().as_bytes(),
+            branch_id: *id(1).as_uuid().as_bytes(),
+            physical_generation: 4,
+            sealed_root: root,
+            logical_commit_epoch: 7,
+            active_wal: crate::branch_head::ActiveWalIdentity {
+                generation: 5,
+                replay_start_lsn: 20,
+                byte_length: 1,
+                sha256: hawdb_integrity::sha256(b"x"),
+            },
+        };
+        fs::write(&parent_head_path, parent.encode().unwrap()).unwrap();
+        let mut request = create_request();
+        request.base_root_digest = *root.sha256.as_bytes();
+        let child = create_branch_from_parent(
+            &catalog_path,
+            &parent_head_path,
+            ChildBranchHeadRequest {
+                project_id: parent.project_id,
+                branch_id: *request.id.as_uuid().as_bytes(),
+                sealed_root: root,
+                logical_commit_epoch: 7,
+                active_wal_generation: 1,
+                replay_start_lsn: 42,
+                head_path: child_head_path.clone(),
+                wal_path: child_wal_path.clone(),
+            },
+            ChildBranchSourceExpectation {
+                physical_generation: 4,
+                logical_commit_epoch: 7,
+                sealed_root: root,
+            },
+            1024,
+            request,
+        )
+        .unwrap();
+        assert_eq!(child.sealed_root, root);
+        assert_eq!(
+            read_catalog(&catalog_path)
+                .unwrap()
+                .branches
+                .last()
+                .unwrap()
+                .state,
+            BranchState::Ready
+        );
+        assert!(child_head_path.is_file());
+        assert!(child_wal_path.is_file());
         fs::remove_dir_all(directory).unwrap();
     }
 

@@ -149,6 +149,7 @@ pub struct ChildBranchHeadRequest {
     pub logical_commit_epoch: u64,
     pub active_wal_generation: u64,
     pub replay_start_lsn: u64,
+    pub head_path: PathBuf,
     pub wal_path: PathBuf,
 }
 
@@ -816,6 +817,7 @@ mod tests {
                 logical_commit_epoch: 12,
                 active_wal_generation: 1,
                 replay_start_lsn: 99,
+                head_path: head_path.clone(),
                 wal_path: wal_path.clone(),
             },
             1024,
@@ -835,6 +837,7 @@ mod tests {
                     logical_commit_epoch: 12,
                     active_wal_generation: 1,
                     replay_start_lsn: 99,
+                    head_path: path("child-head-existing"),
                     wal_path: wal_path.clone(),
                 },
                 1024,
@@ -859,6 +862,7 @@ mod tests {
             logical_commit_epoch: parent.logical_commit_epoch,
             active_wal_generation: 1,
             replay_start_lsn: 99,
+            head_path: child_path.clone(),
             wal_path: wal_path.clone(),
         };
         let mut stale = ChildBranchSourceExpectation {
