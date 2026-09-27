@@ -57,6 +57,8 @@ pub mod graph_index_metrics;
 pub mod graph_overlay;
 pub use hawdb_core::ids;
 pub use hawdb_core::ids::{NodeId, NodeRecord, ProjectedNodeRecord, RelId, RelRecord};
+#[doc(hidden)]
+pub mod immutable_object;
 pub mod index_page;
 #[doc(hidden)]
 pub mod io;

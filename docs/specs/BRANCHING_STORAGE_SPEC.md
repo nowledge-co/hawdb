@@ -179,6 +179,40 @@ directory publication before a selector can refer to it. Existing
 to overwrite an immutable object. Uncertain sync/replace results poison the
 affected publication handle until reopen; the caller receives no success.
 
+### Immutable object publication kernel
+
+`crates/storage/src/immutable_object.rs` implements the first #779 publication
+boundary. Its reference is `(kind, format_version, byte_length, sha256)`. The
+SHA-256 input is the fixed domain tag, the one-byte kind, the little-endian
+format version and byte length, followed by the exact payload bytes. Therefore
+two different object families or format versions cannot silently share an
+identity, and a reference computed from a payload is deterministic.
+
+The publication argument is an induction over the operation's checked stages:
+
+1. Before staging, the reference validator establishes the identity and size
+   invariant for the caller's bytes.
+2. A private staging file is created with `create_new`, written completely, and
+   synchronized. A bounded read-back recomputes its length, full bytes, and
+   domain-separated digest, so the installed candidate satisfies the same
+   invariant before it can become visible.
+3. Installation uses an exclusive hard link into the kind directory. If the
+   destination already exists, the publisher reads and compares the complete
+   bytes and reference; it never replaces that path. Consequently, every
+   successful destination names exactly one validated immutable payload, even
+   when two publishers race.
+4. The object and staging directory entries are synchronized before success is
+   reported. An error after exclusive installation is publication-uncertain and
+   poisons that in-memory publisher; reopening creates a fresh publisher which
+   revalidates the existing object. Thus an uncertain result cannot be retried
+   through a possibly stale handle or acknowledged as a durable selector.
+
+This is a source-linked deductive proof of the publication kernel's identity,
+exclusive-installation, and fail-closed boundaries. It does not prove the
+future sealed-root closure, WAL interval ordering, filesystem crash model, or
+the branch selector protocol; those remain obligations of the later #779
+stages.
+
 ## Locks and publication ownership
 
 Project metadata serialization and the branch writer lease are separate. One
