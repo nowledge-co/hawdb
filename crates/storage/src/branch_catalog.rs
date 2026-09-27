@@ -143,6 +143,34 @@ pub enum CatalogTransitionError {
     Validation(CatalogError),
 }
 
+impl Display for CatalogTransitionError {
+    fn fmt(&self, formatter: &mut Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::Conflict(message) => write!(formatter, "branch catalog conflict: {message}"),
+            Self::InvalidState(message) => {
+                write!(formatter, "invalid branch catalog state: {message}")
+            }
+            Self::MissingBranch => formatter.write_str("branch catalog branch is missing"),
+            Self::MissingParent => formatter.write_str("branch catalog parent is missing"),
+            Self::StaleRevision { expected, actual } => write!(
+                formatter,
+                "branch catalog revision mismatch: expected {expected}, found {actual}"
+            ),
+            Self::Overflow(field) => write!(formatter, "branch catalog {field} overflow"),
+            Self::Validation(error) => error.fmt(formatter),
+        }
+    }
+}
+
+impl std::error::Error for CatalogTransitionError {
+    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+        match self {
+            Self::Validation(error) => Some(error),
+            _ => None,
+        }
+    }
+}
+
 impl Catalog {
     pub fn validate(&self) -> Result<(), CatalogError> {
         if self.branches.len() > MAX_BRANCHES as usize {
@@ -173,6 +201,9 @@ impl Catalog {
                     return Err(CatalogError::InvalidState(
                         "main branch cannot have a parent",
                     ));
+                }
+                if matches!(branch.state, BranchState::Deleting | BranchState::Deleted) {
+                    return Err(CatalogError::InvalidState("main branch cannot be deleted"));
                 }
             }
             if branch.parent_id == Some(branch.id) {
@@ -355,9 +386,12 @@ impl Catalog {
             return Err(CatalogTransitionError::Conflict("name is reserved"));
         }
         let index = self.index_at_revision(id, expected_metadata_revision)?;
-        if self.branches[index].state == BranchState::Deleted {
+        if !matches!(
+            self.branches[index].state,
+            BranchState::Ready | BranchState::Expired
+        ) {
             return Err(CatalogTransitionError::InvalidState(
-                "deleted branch cannot be renamed",
+                "only a ready or expired branch can be renamed",
             ));
         }
         if self.branches.iter().any(|branch| {
@@ -384,6 +418,11 @@ impl Catalog {
     ) -> Result<(), CatalogTransitionError> {
         let index = self.index_at_revision(id, expected_metadata_revision)?;
         let branch = &self.branches[index];
+        if branch.name.as_str() == "main" {
+            return Err(CatalogTransitionError::InvalidState(
+                "main branch cannot expire",
+            ));
+        }
         if branch.state != BranchState::Ready {
             return Err(CatalogTransitionError::InvalidState(
                 "only a ready branch can expire",
