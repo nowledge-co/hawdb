@@ -10,6 +10,7 @@
 use crate::immutable_object::{
     ImmutableObjectError, ImmutableObjectStore, ObjectKind, ObjectReference,
 };
+use crate::sealed_root::{SealedRoot, SealedRootError, SealedWalReference};
 use std::collections::BTreeSet;
 use std::fmt::{self, Display, Formatter};
 use std::fs;
@@ -25,6 +26,27 @@ pub struct CheckpointArtifactInput {
 pub struct PublishedCheckpointClosure {
     pub references: Vec<ObjectReference>,
     pub total_bytes: u64,
+}
+
+/// Builds the root metadata only after every checkpoint artifact has been
+/// published and validated.  WAL references are supplied by the sealing
+/// boundary and remain ordered/interval-checked by `SealedRoot::validate`.
+pub fn build_sealed_root(
+    closure: &PublishedCheckpointClosure,
+    checkpoint_epoch: u64,
+    commit_epoch: u64,
+    wal_replay_start_lsn: u64,
+    sealed_wals: Vec<SealedWalReference>,
+) -> Result<SealedRoot, SealedRootError> {
+    let root = SealedRoot {
+        checkpoint_epoch,
+        commit_epoch,
+        wal_replay_start_lsn,
+        checkpoint_references: closure.references.clone(),
+        sealed_wals,
+    };
+    root.validate()?;
+    Ok(root)
 }
 
 #[derive(Debug)]
@@ -181,5 +203,20 @@ mod tests {
         )
         .unwrap_err();
         assert!(matches!(error, CheckpointClosureError::Io { .. }));
+    }
+
+    #[test]
+    fn root_builder_accepts_only_the_published_closure() {
+        let dir = TempDir::new();
+        let file = dir.path().join("checkpoint");
+        fs::write(&file, b"checkpoint").unwrap();
+        let mut store = ImmutableObjectStore::open(dir.path().join("objects")).unwrap();
+        let closure = publish_checkpoint_closure(
+            &mut store,
+            &[input(file, ObjectKind::Checkpoint, b"checkpoint")],
+        )
+        .unwrap();
+        let root = build_sealed_root(&closure, 3, 4, 10, Vec::new()).unwrap();
+        assert_eq!(root.checkpoint_references, closure.references);
     }
 }
