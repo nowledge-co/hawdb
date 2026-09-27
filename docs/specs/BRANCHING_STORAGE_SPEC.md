@@ -260,7 +260,10 @@ exclusive immutable publisher. Therefore induction over the input list gives:
 This proof covers the no-inference and per-artifact identity boundary. It does
 not claim that the caller has enumerated every artifact family; the manifest
 reader and the eventual active-writer/head handoff must provide that complete
-list before a root or selector can be published.
+list before a root or selector can be published. `build_sealed_root` then
+copies only that returned canonical reference set and delegates epoch and WAL
+interval validation to the sealed-root codec. Thus root construction cannot
+silently add an unpublished checkpoint dependency or bypass interval checks.
 
 ### Sealed WAL validation boundary
 
