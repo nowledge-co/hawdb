@@ -195,6 +195,34 @@ impl ImmutableObjectStore {
             .join(reference.path_component())
     }
 
+    /// Reads an immutable object after validating its complete reference.
+    /// Reopen paths use this instead of trusting an object filename or length.
+    pub fn read(&self, reference: ObjectReference) -> Result<Vec<u8>, ImmutableObjectError> {
+        let path = self.object_path(reference);
+        let metadata = map_io(
+            "read immutable object metadata",
+            fs::symlink_metadata(&path),
+        )?;
+        if !metadata.file_type().is_file() || metadata.len() > self.max_object_bytes {
+            return Err(ImmutableObjectError::ExistingObjectCorrupt { path });
+        }
+        let capacity = usize::try_from(metadata.len())
+            .map_err(|_| ImmutableObjectError::ExistingObjectCorrupt { path: path.clone() })?;
+        let mut bytes = Vec::with_capacity(capacity);
+        let mut file = map_io("open immutable object", File::open(&path))?;
+        file.read_to_end(&mut bytes)
+            .map_err(|source| ImmutableObjectError::Io {
+                operation: "read immutable object",
+                source,
+            })?;
+        if bytes.len() as u64 != metadata.len()
+            || validate_reference(reference, &bytes, self.max_object_bytes).is_err()
+        {
+            return Err(ImmutableObjectError::ExistingObjectCorrupt { path });
+        }
+        Ok(bytes)
+    }
+
     pub fn publish(
         &mut self,
         reference: ObjectReference,
@@ -454,6 +482,26 @@ mod tests {
             reopened.publish(reference, payload).unwrap(),
             PublishOutcome::Reused
         );
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn reopened_store_reads_only_the_exact_immutable_reference() {
+        let root = test_root("reopen-read");
+        let payload = b"sealed root bytes";
+        let reference = ObjectReference::for_bytes(ObjectKind::SealedRoot, 1, payload);
+        let mut store = ImmutableObjectStore::open(&root).unwrap();
+        store.publish(reference, payload).unwrap();
+        drop(store);
+
+        let reopened = ImmutableObjectStore::open(&root).unwrap();
+        assert_eq!(reopened.read(reference).unwrap(), payload);
+        let corrupt = reopened.object_path(reference);
+        fs::write(corrupt, b"different bytes").unwrap();
+        assert!(matches!(
+            reopened.read(reference),
+            Err(ImmutableObjectError::ExistingObjectCorrupt { .. })
+        ));
         fs::remove_dir_all(root).unwrap();
     }
 
