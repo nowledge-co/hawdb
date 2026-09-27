@@ -275,6 +275,13 @@ the proof compositional: manifest bindings prove names and expected identity,
 family readers prove their internal transitive ranges, and the publisher
 proves byte-for-byte immutable installation.
 
+`CheckpointClosurePlan` makes the family-reader obligation executable. Before
+publication each canonical, adjacency, property, relational, and append family
+must either contribute its validated descendants or be explicitly marked
+empty. The plan rejects duplicate family decisions and rejects publication
+with any undecided family, so a caller cannot accidentally turn a partial
+manifest walk into a branch root.
+
 ### Sealed WAL validation boundary
 
 `crates/storage/src/sealed_wal.rs` validates one stable binary WAL generation

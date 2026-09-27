@@ -28,6 +28,89 @@ pub struct PublishedCheckpointClosure {
     pub total_bytes: u64,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+pub enum CheckpointArtifactFamily {
+    Canonical,
+    Adjacency,
+    PropertySpill,
+    PropertyProjection,
+    RelationalRow,
+    RelationalOverflow,
+    RelationalIndex,
+    Append,
+}
+
+const ALL_FAMILIES: [CheckpointArtifactFamily; 8] = [
+    CheckpointArtifactFamily::Canonical,
+    CheckpointArtifactFamily::Adjacency,
+    CheckpointArtifactFamily::PropertySpill,
+    CheckpointArtifactFamily::PropertyProjection,
+    CheckpointArtifactFamily::RelationalRow,
+    CheckpointArtifactFamily::RelationalOverflow,
+    CheckpointArtifactFamily::RelationalIndex,
+    CheckpointArtifactFamily::Append,
+];
+
+/// Accumulates the manifest bindings and the descendant artifacts proven by
+/// each family reader.  A caller must explicitly mark every family present or
+/// absent before publication; omission cannot silently become an incomplete
+/// closure.
+#[derive(Debug, Default)]
+pub struct CheckpointClosurePlan {
+    inputs: Vec<CheckpointArtifactInput>,
+    completed_families: BTreeSet<CheckpointArtifactFamily>,
+}
+
+impl CheckpointClosurePlan {
+    pub fn new(inputs: Vec<CheckpointArtifactInput>) -> Self {
+        Self {
+            inputs,
+            completed_families: BTreeSet::new(),
+        }
+    }
+
+    pub fn add_family_artifacts(
+        &mut self,
+        family: CheckpointArtifactFamily,
+        inputs: impl IntoIterator<Item = CheckpointArtifactInput>,
+    ) -> Result<(), CheckpointClosureError> {
+        self.complete_family(family)?;
+        self.inputs.extend(inputs);
+        Ok(())
+    }
+
+    pub fn mark_family_empty(
+        &mut self,
+        family: CheckpointArtifactFamily,
+    ) -> Result<(), CheckpointClosureError> {
+        self.complete_family(family)
+    }
+
+    pub fn publish(
+        self,
+        store: &mut ImmutableObjectStore,
+    ) -> Result<PublishedCheckpointClosure, CheckpointClosureError> {
+        let missing = ALL_FAMILIES
+            .into_iter()
+            .filter(|family| !self.completed_families.contains(family))
+            .collect::<Vec<_>>();
+        if !missing.is_empty() {
+            return Err(CheckpointClosureError::Incomplete { missing });
+        }
+        publish_checkpoint_closure(store, &self.inputs)
+    }
+
+    fn complete_family(
+        &mut self,
+        family: CheckpointArtifactFamily,
+    ) -> Result<(), CheckpointClosureError> {
+        if !self.completed_families.insert(family) {
+            return Err(CheckpointClosureError::FamilyAlreadyBound(family));
+        }
+        Ok(())
+    }
+}
+
 /// Builds the root metadata only after every checkpoint artifact has been
 /// published and validated.  WAL references are supplied by the sealing
 /// boundary and remain ordered/interval-checked by `SealedRoot::validate`.
@@ -55,6 +138,10 @@ pub enum CheckpointClosureError {
     DuplicatePath(PathBuf),
     DuplicateReference(ObjectReference),
     InvalidKind(ObjectKind),
+    FamilyAlreadyBound(CheckpointArtifactFamily),
+    Incomplete {
+        missing: Vec<CheckpointArtifactFamily>,
+    },
     Io {
         path: PathBuf,
         source: std::io::Error,
@@ -71,6 +158,15 @@ impl Display for CheckpointClosureError {
                 write!(f, "checkpoint closure repeats {reference:?}")
             }
             Self::InvalidKind(kind) => write!(f, "invalid checkpoint closure object kind {kind:?}"),
+            Self::FamilyAlreadyBound(family) => {
+                write!(f, "checkpoint closure family is already bound: {family:?}")
+            }
+            Self::Incomplete { missing } => {
+                write!(
+                    f,
+                    "checkpoint closure is missing family decisions: {missing:?}"
+                )
+            }
             Self::Io { path, source } => {
                 write!(f, "read checkpoint artifact {}: {source}", path.display())
             }
@@ -218,5 +314,22 @@ mod tests {
         .unwrap();
         let root = build_sealed_root(&closure, 3, 4, 10, Vec::new()).unwrap();
         assert_eq!(root.checkpoint_references, closure.references);
+    }
+
+    #[test]
+    fn plan_requires_an_explicit_decision_for_each_family() {
+        let dir = TempDir::new();
+        let file = dir.path().join("checkpoint");
+        fs::write(&file, b"checkpoint").unwrap();
+        let reference = ObjectReference::for_bytes(ObjectKind::Checkpoint, 1, b"checkpoint");
+        let mut plan = CheckpointClosurePlan::new(vec![CheckpointArtifactInput {
+            path: file,
+            reference,
+        }]);
+        plan.mark_family_empty(CheckpointArtifactFamily::Canonical)
+            .unwrap();
+        let mut store = ImmutableObjectStore::open(dir.path().join("objects")).unwrap();
+        let error = plan.publish(&mut store).unwrap_err();
+        assert!(matches!(error, CheckpointClosureError::Incomplete { .. }));
     }
 }
