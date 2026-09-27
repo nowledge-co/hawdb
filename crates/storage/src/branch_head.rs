@@ -24,9 +24,7 @@ use hawdb_integrity::{crc32c, IntegrityHasher, Sha256Digest};
 use std::fmt::{self, Display, Formatter};
 use std::fs::{self, File, OpenOptions};
 use std::io::{self, Read, Write};
-use std::path::Path;
-#[cfg(test)]
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
 
 const MAGIC: &[u8; 12] = b"HAWDBHEADV1\0";
@@ -140,6 +138,108 @@ pub fn publish_prepared_wal_rotation_with_root(
         },
     )
     .map_err(WalRotationPublicationError::Head)
+}
+
+/// Inputs for creating a child branch's independent writable head.
+#[derive(Debug, Clone)]
+pub struct ChildBranchHeadRequest {
+    pub project_id: [u8; 16],
+    pub branch_id: [u8; 16],
+    pub sealed_root: ObjectReference,
+    pub logical_commit_epoch: u64,
+    pub active_wal_generation: u64,
+    pub replay_start_lsn: u64,
+    pub wal_path: PathBuf,
+}
+
+/// Creates the child branch's private empty WAL and selector.
+///
+/// The sealed root is shared by reference; no parent data is copied. Both
+/// files use exclusive creation and are synchronized before the function
+/// returns, so an interrupted create cannot expose a partially written head.
+pub fn create_child_branch_head(
+    head_path: &Path,
+    request: ChildBranchHeadRequest,
+    max_active_wal_bytes: u64,
+) -> Result<BranchHead, BranchHeadError> {
+    if request.active_wal_generation == 0 {
+        return Err(BranchHeadError::InvalidWalIdentity);
+    }
+    let header = crate::wal::frame::encode_binary_wal_header(
+        request.active_wal_generation,
+        request.replay_start_lsn,
+    );
+    let mut wal = OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .open(&request.wal_path)
+        .map_err(|source| BranchHeadError::Io {
+            operation: "create child active WAL",
+            source,
+        })?;
+    if let Err(source) = wal.write_all(&header).and_then(|_| wal.sync_all()) {
+        let _ = fs::remove_file(&request.wal_path);
+        return Err(BranchHeadError::Io {
+            operation: "write and sync child active WAL",
+            source,
+        });
+    }
+    if let Err(source) = crate::durability::sync_parent_directory(&request.wal_path) {
+        let _ = fs::remove_file(&request.wal_path);
+        return Err(BranchHeadError::Io {
+            operation: "sync child active WAL directory",
+            source,
+        });
+    }
+    let active_wal = active_wal_identity_from_file(
+        &request.wal_path,
+        request.active_wal_generation,
+        request.replay_start_lsn,
+        max_active_wal_bytes,
+    )?;
+    let head = BranchHead {
+        project_id: request.project_id,
+        branch_id: request.branch_id,
+        physical_generation: 1,
+        sealed_root: request.sealed_root,
+        logical_commit_epoch: request.logical_commit_epoch,
+        active_wal,
+    };
+    let encoded = head.encode()?;
+    let mut selector = match OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .open(head_path)
+    {
+        Ok(file) => file,
+        Err(source) => {
+            let _ = fs::remove_file(&request.wal_path);
+            return Err(BranchHeadError::Io {
+                operation: "create child branch head",
+                source,
+            });
+        }
+    };
+    if let Err(source) = selector
+        .write_all(&encoded)
+        .and_then(|_| selector.sync_all())
+    {
+        let _ = fs::remove_file(head_path);
+        let _ = fs::remove_file(&request.wal_path);
+        return Err(BranchHeadError::Io {
+            operation: "write and sync child branch head",
+            source,
+        });
+    }
+    if let Err(source) = crate::durability::sync_parent_directory(head_path) {
+        let _ = fs::remove_file(head_path);
+        let _ = fs::remove_file(&request.wal_path);
+        return Err(BranchHeadError::Io {
+            operation: "sync child branch head directory",
+            source,
+        });
+    }
+    Ok(head)
 }
 
 #[derive(Debug)]
@@ -656,6 +756,49 @@ mod tests {
             Err(BranchHeadError::InvalidWalIdentity)
         ));
         fs::remove_file(file).unwrap();
+    }
+
+    #[test]
+    fn child_head_creation_shares_root_and_creates_private_wal() {
+        let head_path = path("child-head");
+        let wal_path = path("child-wal");
+        let root = ObjectReference::for_bytes(ObjectKind::SealedRoot, 1, b"parent-root");
+        let child = create_child_branch_head(
+            &head_path,
+            ChildBranchHeadRequest {
+                project_id: [3; 16],
+                branch_id: [4; 16],
+                sealed_root: root,
+                logical_commit_epoch: 12,
+                active_wal_generation: 1,
+                replay_start_lsn: 99,
+                wal_path: wal_path.clone(),
+            },
+            1024,
+        )
+        .unwrap();
+        assert_eq!(child.physical_generation, 1);
+        assert_eq!(child.sealed_root, root);
+        assert_eq!(read_branch_head(&head_path).unwrap(), child);
+        assert!(wal_path.exists());
+        assert!(matches!(
+            create_child_branch_head(
+                &path("child-head-existing"),
+                ChildBranchHeadRequest {
+                    project_id: [3; 16],
+                    branch_id: [4; 16],
+                    sealed_root: root,
+                    logical_commit_epoch: 12,
+                    active_wal_generation: 1,
+                    replay_start_lsn: 99,
+                    wal_path: wal_path.clone(),
+                },
+                1024,
+            ),
+            Err(BranchHeadError::Io { .. })
+        ));
+        fs::remove_file(head_path).unwrap();
+        fs::remove_file(wal_path).unwrap();
     }
 
     #[test]
