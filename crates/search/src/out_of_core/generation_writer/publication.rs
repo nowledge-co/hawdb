@@ -424,6 +424,10 @@ pub(super) fn publish_generation(
                     .unwrap_or_default()
                     .checked_add(1)
                     .ok_or_else(|| HawDBError::Storage("search segment id overflow".into()))?;
+                // The selected range contains no mutation targets (selection
+                // filters those ranges), so existing runs remain valid and
+                // must stay in the active closure.
+                mutation_runs = active.mutation_runs;
                 (
                     active.segments,
                     active.document_count,

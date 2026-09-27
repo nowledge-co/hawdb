@@ -29,9 +29,9 @@ Internal differential fixtures exercise these paths after validation. Aggregate
 run admission and typed, observable budget fallback are implemented in the read
 path. The continuation writer prepares target-bound runs for clean readers as
 well as existing closures and publishes replacements or delete-only manifests.
-Compaction currently defers whenever a mutation closure is present until its
-target references can be rewritten atomically; sustained qualification is still
-required.
+Compaction defers ranges containing mutation targets until those references
+can be rewritten atomically; unaffected ranges retain the existing runs and may
+compact. Sustained qualification is still required.
 
 ## Goal
 
@@ -266,8 +266,8 @@ development-only HawDB manifests.
 The delta path selects mutation publication for a reader that already owns a
 validated closure, or for a clean reader when an update targets a currently
 visible document. New IDs on a clean reader remain append-only. The public
-constructor validates and serves mutation closures; compaction defers while its
-old target references cannot yet be rewritten atomically.
+constructor validates and serves mutation closures; compaction defers ranges
+whose old target references cannot yet be rewritten atomically.
 
 Preparation resolves each unique requested ID against current visibility. It
 reads one bounded descriptor payload range at a time with the operation's
@@ -289,4 +289,5 @@ The existing generation lease/CAS and manifest-last commit boundary apply.
 Cancellation, stale-generation rejection and budget failure leave the old
 manifest unchanged. Mutation-aware compaction and sustained
 RSS/write-amplification qualification remain explicit unfinished requirements.
-The compaction deferral is fail-closed and leaves the active manifest unchanged.
+Ranges containing mutation targets defer fail-closed; unaffected ranges retain
+existing runs while compacting.

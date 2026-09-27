@@ -418,5 +418,5 @@ Budget and cancellation fixtures compare active-manifest bytes before/after
 failure. These do not prove power-loss recovery or bounded sustained load.
 The branch is reachable for validated mutation readers and clean readers whose
 updates target a visible document. New-ID appends remain on the append path.
-Compaction defers while its old target references cannot be rewritten atomically;
+Compaction defers ranges while their old target references cannot be rewritten atomically;
 the remaining power-loss and sustained O(K) qualification gates are open.
