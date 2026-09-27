@@ -239,6 +239,29 @@ not yet populated from every live checkpoint artifact family, and the codec
 does not itself seal a WAL, publish a root, or prove crash recovery; those
 remain integration obligations of #779.
 
+### Explicit checkpoint-closure publication
+
+`crates/storage/src/checkpoint_closure.rs` defines the boundary between a
+validated durable manifest and immutable object publication. The caller gives
+one input for every manifest-bound artifact; the publisher never scans the
+directory and never derives a dependency from a filename. For each input it
+first proves path and typed-reference uniqueness, reads the complete file,
+recomputes the domain-separated object identity, and only then invokes the
+exclusive immutable publisher. Therefore induction over the input list gives:
+
+1. every returned reference denotes exactly the bytes named by one explicit
+   manifest binding;
+2. a missing file, wrong kind, digest/length mismatch, duplicate path, or
+   duplicate reference aborts before that binding is acknowledged; and
+3. the returned references are a deterministic sorted set suitable for the
+   sealed-root encoder, while already-published earlier objects remain safe to
+   share and are never replaced.
+
+This proof covers the no-inference and per-artifact identity boundary. It does
+not claim that the caller has enumerated every artifact family; the manifest
+reader and the eventual active-writer/head handoff must provide that complete
+list before a root or selector can be published.
+
 ### Sealed WAL validation boundary
 
 `crates/storage/src/sealed_wal.rs` validates one stable binary WAL generation
