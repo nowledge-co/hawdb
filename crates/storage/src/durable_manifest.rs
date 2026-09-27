@@ -14,7 +14,12 @@
 
 //! The v1 durable manifest codec and publication binding validation.
 
-use crate::artifact_files::{checkpoint_generation_file, wal_generation_file};
+use crate::artifact_files::{
+    canonical_adjacency_artifact_generation_file, canonical_manifest_generation_file,
+    checkpoint_generation_file, property_projection_manifest_generation_file,
+    property_spill_manifest_generation_file, wal_generation_file,
+};
+use crate::checkpoint_closure::CheckpointArtifactInput;
 use crate::text::parse_u64;
 use crate::{
     append_table::{AppendGenerationArtifacts, AppendSegmentArtifactMetadata},
@@ -407,6 +412,133 @@ impl DurableManifest {
 
     pub fn wal_path(self, root: &Path) -> PathBuf {
         root.join(wal_generation_file(self.wal_generation))
+    }
+
+    /// Returns the manifest-bound files whose identities are known without
+    /// scanning the storage directory.  Physical data pages and descriptor
+    /// descendants are added by their validated family readers before a root
+    /// is published.
+    pub fn manifest_artifact_inputs(self, root: &Path) -> Result<Vec<CheckpointArtifactInput>> {
+        self.validate()?;
+        let generation = self.checkpoint_generation.ok_or_else(|| {
+            HawDBError::Storage("manifest artifact inputs require a checkpoint generation".into())
+        })?;
+        let mut inputs = Vec::new();
+        let mut add = |path: PathBuf, kind, len: Option<u64>, sha| -> Result<()> {
+            let (Some(byte_length), Some(sha256)) = (len, sha) else {
+                return Err(HawDBError::Storage(format!(
+                    "manifest binding is incomplete for {}",
+                    path.display()
+                )));
+            };
+            inputs.push(CheckpointArtifactInput {
+                path,
+                reference: crate::immutable_object::ObjectReference {
+                    kind,
+                    format_version: 1,
+                    byte_length,
+                    sha256,
+                },
+            });
+            Ok(())
+        };
+        add(
+            self.checkpoint_path(root),
+            crate::immutable_object::ObjectKind::Checkpoint,
+            self.checkpoint_encoded_len,
+            self.checkpoint_encoded_sha256,
+        )?;
+        if self.canonical_manifest_encoded_len.is_some() {
+            add(
+                root.join(canonical_manifest_generation_file(generation)),
+                crate::immutable_object::ObjectKind::CheckpointArtifact,
+                self.canonical_manifest_encoded_len,
+                self.canonical_manifest_encoded_sha256,
+            )?;
+        }
+        if let Some(binding) = self.canonical_adjacency_generation_artifacts {
+            add(
+                root.join(canonical_adjacency_artifact_generation_file(
+                    binding.generation,
+                )),
+                crate::immutable_object::ObjectKind::CheckpointArtifact,
+                Some(binding.adjacency_artifact.encoded_len),
+                Some(binding.adjacency_artifact.encoded_sha256),
+            )?;
+            add(
+                root.join(
+                    crate::canonical_adjacency::canonical_adjacency_descriptor_root_file(
+                        binding.generation,
+                    ),
+                ),
+                crate::immutable_object::ObjectKind::CheckpointArtifact,
+                Some(binding.descriptor_root_artifact.encoded_len),
+                Some(binding.descriptor_root_artifact.encoded_sha256),
+            )?;
+        }
+        if self.property_spill_manifest_encoded_len.is_some() {
+            add(
+                root.join(property_spill_manifest_generation_file(generation)),
+                crate::immutable_object::ObjectKind::CheckpointArtifact,
+                self.property_spill_manifest_encoded_len,
+                self.property_spill_manifest_encoded_sha256,
+            )?;
+        }
+        if self.property_projection_manifest_encoded_len.is_some() {
+            add(
+                root.join(property_projection_manifest_generation_file(generation)),
+                crate::immutable_object::ObjectKind::CheckpointArtifact,
+                self.property_projection_manifest_encoded_len,
+                self.property_projection_manifest_encoded_sha256,
+            )?;
+        }
+        if let Some(binding) = self.relational_row_generation_artifacts {
+            add(
+                root.join(
+                    crate::relational::relational_row_page_manifest_generation_file(
+                        binding.generation,
+                    ),
+                ),
+                crate::immutable_object::ObjectKind::CheckpointArtifact,
+                Some(binding.manifest_artifact.encoded_len),
+                Some(binding.manifest_artifact.encoded_sha256),
+            )?;
+        }
+        if let Some(binding) = self.relational_overflow_generation_artifacts {
+            add(
+                root.join(
+                    crate::relational::relational_overflow_manifest_generation_file(
+                        binding.generation,
+                    ),
+                ),
+                crate::immutable_object::ObjectKind::CheckpointArtifact,
+                Some(binding.manifest_artifact.encoded_len),
+                Some(binding.manifest_artifact.encoded_sha256),
+            )?;
+        }
+        if let Some(binding) = self.relational_index_generation_artifacts {
+            add(
+                root.join(
+                    crate::relational::relational_index_shadow_manifest_generation_file(
+                        binding.generation,
+                    ),
+                ),
+                crate::immutable_object::ObjectKind::CheckpointArtifact,
+                Some(binding.manifest_artifact.encoded_len),
+                Some(binding.manifest_artifact.encoded_sha256),
+            )?;
+        }
+        if let Some(binding) = self.append_generation_artifacts {
+            add(
+                root.join(crate::append_table::append_generation_manifest_file(
+                    binding.generation,
+                )),
+                crate::immutable_object::ObjectKind::CheckpointArtifact,
+                Some(binding.manifest_artifact.encoded_len),
+                Some(binding.manifest_artifact.encoded_sha256),
+            )?;
+        }
+        Ok(inputs)
     }
 
     pub fn validate(self) -> Result<()> {

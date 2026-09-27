@@ -265,6 +265,16 @@ copies only that returned canonical reference set and delegates epoch and WAL
 interval validation to the sealed-root codec. Thus root construction cannot
 silently add an unpublished checkpoint dependency or bypass interval checks.
 
+`DurableManifest::manifest_artifact_inputs` is the first manifest-side
+population boundary. It derives the known checkpoint, manifest, adjacency,
+relational, and append manifest paths from validated generation bindings and
+their recorded lengths/digests; it never enumerates directory entries. Each
+family reader must append its physical pages and descriptor descendants from
+the decoded manifest before calling the closure publisher. This split keeps
+the proof compositional: manifest bindings prove names and expected identity,
+family readers prove their internal transitive ranges, and the publisher
+proves byte-for-byte immutable installation.
+
 ### Sealed WAL validation boundary
 
 `crates/storage/src/sealed_wal.rs` validates one stable binary WAL generation
