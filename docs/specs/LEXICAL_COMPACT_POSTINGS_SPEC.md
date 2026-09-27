@@ -219,6 +219,20 @@ which depends on it.
   retained one and the retained window (ids and scores) is identical to
   exhaustive evaluation. When no cursor can reach the floor the pass stops and
   leaves those blocks unread.
+
+  **Soundness argument.** For term cursor `t` and posting block `b`, let
+  `U(t,b)` be the header-derived BM25 contribution bound and let `F` be the
+  current lowest score in a full top-`k` heap. The header invariants establish
+  `score_t(d) ≤ U(t,b)` for every document `d` in `b`; document filtering only
+  removes candidates. Therefore, if the pivot's reachable cursors satisfy
+  `Σ_t U(t,b_t) < F`, every document in the skipped range has total score
+  strictly below `F` and cannot enter the retained window. If the inequality
+  is not strict, the range remains eligible and is decoded. By induction over
+  cursor advances, every omitted range is ineligible at the floor that caused
+  the skip, while every eligible range is evaluated by the exhaustive scorer;
+  the retained IDs, scores, and tie order are consequently unchanged. This is
+  a source-linked deductive proof over the checked frame headers, not a
+  machine-checked refinement of the Rust implementation.
 - **Fallback.** Candidate postings below
   `LexicalProjectionConfig::pruning_min_postings` are scored exhaustively:
   short doclists gain nothing from bound checks.
