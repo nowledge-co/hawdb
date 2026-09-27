@@ -13,7 +13,6 @@
 // limitations under the License.
 
 use super::*;
-use crate::immutable_object::ObjectKind;
 use std::collections::BTreeMap;
 
 mod fixtures;
@@ -114,18 +113,10 @@ fn published() -> DurableManifest {
 
 #[test]
 fn manifest_artifact_inputs_are_explicit_and_non_scanning() {
-    let inputs = published()
+    let error = published()
         .manifest_artifact_inputs(Path::new("/checkpoint-root"))
-        .unwrap();
-    assert!(inputs.len() >= 8);
-    assert!(inputs
-        .iter()
-        .all(|input| input.path.starts_with("/checkpoint-root")));
-    assert_eq!(inputs[0].reference.kind, ObjectKind::Checkpoint);
-    assert!(inputs
-        .iter()
-        .skip(1)
-        .all(|input| input.reference.kind == ObjectKind::CheckpointArtifact));
+        .unwrap_err();
+    assert!(error.to_string().contains("read manifest-bound artifact"));
 }
 
 fn fields(text: &str) -> Vec<(String, String)> {

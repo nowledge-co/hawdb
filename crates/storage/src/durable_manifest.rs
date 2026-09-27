@@ -424,21 +424,34 @@ impl DurableManifest {
             HawDBError::Storage("manifest artifact inputs require a checkpoint generation".into())
         })?;
         let mut inputs = Vec::new();
-        let mut add = |path: PathBuf, kind, len: Option<u64>, sha| -> Result<()> {
-            let (Some(byte_length), Some(sha256)) = (len, sha) else {
+        let mut add = |path: PathBuf, kind, len, sha| -> Result<()> {
+            let (Some(byte_length), Some(content_sha256)) = (len, sha) else {
                 return Err(HawDBError::Storage(format!(
                     "manifest binding is incomplete for {}",
                     path.display()
                 )));
             };
+            let bytes = fs::read(&path).map_err(|error| {
+                HawDBError::Storage(format!(
+                    "read manifest-bound artifact {}: {error}",
+                    path.display()
+                ))
+            })?;
+            if bytes.len() as u64 != byte_length {
+                return Err(HawDBError::Storage(format!(
+                    "manifest-bound artifact {} length differs from its binding",
+                    path.display()
+                )));
+            }
+            if hawdb_integrity::sha256(&bytes) != content_sha256 {
+                return Err(HawDBError::Storage(format!(
+                    "manifest-bound artifact {} digest differs from its binding",
+                    path.display()
+                )));
+            }
             inputs.push(CheckpointArtifactInput {
                 path,
-                reference: crate::immutable_object::ObjectReference {
-                    kind,
-                    format_version: 1,
-                    byte_length,
-                    sha256,
-                },
+                reference: crate::immutable_object::ObjectReference::for_bytes(kind, 1, &bytes),
             });
             Ok(())
         };
