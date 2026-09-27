@@ -4777,6 +4777,21 @@ mod tests {
         install_delete_mutation_run(&path, &old, 0, 3);
         let reader = mutation_reader_for_test(&path);
         let physical = serde_json::to_vec(&reader.manifest.segments).unwrap();
+        let corpus_artifact_bytes: u64 = reader
+            .manifest
+            .segments
+            .iter()
+            .map(|segment| {
+                segment
+                    .descriptor_len
+                    .saturating_add(segment.payload_len)
+                    .saturating_add(segment.metadata_payload_len)
+                    .saturating_add(segment.vector_payload_len)
+                    .saturating_add(segment.layout_len)
+                    .saturating_add(segment.lexical_manifest_len)
+                    .saturating_add(segment.rabitq_artifact_len.unwrap_or_default())
+            })
+            .sum();
         let before_payloads: Vec<_> = reader
             .manifest
             .segments
@@ -4807,6 +4822,12 @@ mod tests {
         assert_eq!(build.document_count, 1);
         assert_eq!(build.document_payload_bytes, 0);
         assert_eq!(build.lexical_artifact_bytes, 0);
+        assert!(
+            build.generation_bytes < corpus_artifact_bytes,
+            "delete-only checkpoint rewrote the corpus: {} >= {}",
+            build.generation_bytes,
+            corpus_artifact_bytes
+        );
         assert!(stale
             .finish()
             .unwrap_err()

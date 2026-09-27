@@ -253,7 +253,9 @@ contracts are complete.
   or alter a retraction count; open and publication fail closed.
 - Resource bounds: assert `K`-proportional new artifact bytes, admitted build
   memory, query memory, and scheduler accounting over sustained mutation and
-  compaction workloads.
+  compaction workloads. The delete-only publication regression also compares
+  the new manifest/run bytes with the complete pre-existing content closure
+  and proves that no content artifact is rewritten.
 - Qualification: record before/after checkpoint bytes and write amplification
   against the host-selected production corpus, then run the existing full
   read-equivalence and recovery gates.
