@@ -898,16 +898,6 @@ impl SearchOutOfCoreReader {
             lexical_term_policy,
             lexical_source_policy,
         )?;
-        // Artifact integrity is not serving readiness. Until every read path
-        // shares target-bound visibility and retracted statistics, accepting
-        // this closure could return deleted documents with a reduced count.
-        if !manifest.mutation_runs.is_empty() {
-            return Err(HawDBError::Storage(
-                "search mutation-run serving requires shared visibility and retracted statistics"
-                    .into(),
-            ));
-        }
-
         Ok(Self {
             root,
             config,
@@ -4387,8 +4377,9 @@ mod tests {
         let old_reader = SearchOutOfCoreReader::open(&path).unwrap();
         install_delete_mutation_run(&path, &document, 0, 2);
 
-        // Integrity/cleanup can inspect the complete closure, but must not
-        // expose a reader that can hydrate the deleted document.
+        // Integrity/cleanup and the public reader must agree on the complete
+        // closure: the deleted physical version is retained for target-bound
+        // validation but is not visible through hydration or search.
         let manifest: SearchOutOfCoreManifestEnvelope =
             serde_json::from_slice(&fs::read(path.join(OUT_OF_CORE_MANIFEST_FILE)).unwrap())
                 .unwrap();
@@ -4404,10 +4395,11 @@ mod tests {
         assert!(limited
             .to_string()
             .contains("mutation-run artifact exceeds the configured read budget"));
-        let error = SearchOutOfCoreReader::open(&path).unwrap_err();
-        assert!(error
-            .to_string()
-            .contains("mutation-run serving requires shared visibility and retracted statistics"));
+        let reopened = SearchOutOfCoreReader::open(&path).unwrap();
+        assert_eq!(reopened.document_count(), 0);
+        assert!(reopened
+            .hydrate_documents(std::slice::from_ref(&document.id))
+            .is_err());
         let (validated, _, _) = load_artifact_closure(
             &path,
             &SearchOutOfCoreConfig::default(),
@@ -4448,9 +4440,8 @@ mod tests {
         fs::remove_dir_all(path).unwrap();
     }
 
-    // Test the shared read implementation while the public constructor remains
-    // guarded. This is not a production capability switch: writer/compaction,
-    // aggregate run admission and layout-independent RaBitQ ties are unfinished.
+    // Test the shared read implementation through the public constructor. The
+    // mutation writer and compaction lifecycle remain covered separately.
     #[cfg(feature = "full-text-search")]
     fn mutation_reader_for_test(path: &Path) -> SearchOutOfCoreReader {
         let config = SearchOutOfCoreConfig::default();
@@ -4966,11 +4957,7 @@ mod tests {
                     entry.operation = mutation_run::SearchMutationOperation::Replace;
                 }
             });
-            assert!(SearchOutOfCoreReader::open(&path)
-                .unwrap_err()
-                .to_string()
-                .contains("serving requires"));
-            let reader = mutation_reader_for_test(&path);
+            let reader = SearchOutOfCoreReader::open(&path).unwrap();
             let mut merged =
                 SearchOutOfCoreGenerationWriter::create(&merged_path, Default::default()).unwrap();
             merged.push(live.clone()).unwrap();
@@ -5043,6 +5030,37 @@ mod tests {
             fs::remove_dir_all(path).unwrap();
             fs::remove_dir_all(merged_path).unwrap();
         }
+    }
+
+    #[test]
+    #[cfg(feature = "full-text-search")]
+    fn mutation_closure_defers_compaction_until_targets_can_be_rewritten() {
+        let path = test_dir("mutation-compaction-guard");
+        let old = document(0, "old-space");
+        publish_two_artifact_manifest(&path, old.clone(), document(1, "live-space"));
+        install_delete_mutation_run(&path, &old, 0, 3);
+        let reader = SearchOutOfCoreReader::open(&path).unwrap();
+        let policy =
+            crate::out_of_core::generation_writer::SearchOutOfCoreSegmentCompactionPolicy::default(
+            );
+        assert!(
+            SearchOutOfCoreGenerationWriter::segment_compaction_work_plan(
+                &reader,
+                policy,
+                hawdb_qos::BackgroundWorkHint::default(),
+            )
+            .unwrap()
+            .is_none()
+        );
+        assert!(SearchOutOfCoreGenerationWriter::compact_segments(
+            &reader,
+            policy,
+            Default::default(),
+        )
+        .unwrap()
+        .is_none());
+        drop(reader);
+        fs::remove_dir_all(path).unwrap();
     }
 
     #[test]

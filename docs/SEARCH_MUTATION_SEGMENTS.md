@@ -3,11 +3,10 @@
 ## Status
 
 Implementation contract for the remaining work in issue #291 after append-only
-publication and bounded leveled compaction. Mutation-run encoding, integrity inspection and a guarded continuation writer
-exist. Ordinary content-only updates still use the established writer paths. Public readers reject
-nonempty mutation closures until shared serving visibility and retracted
-statistics are implemented. Cleanup can validate and retain those artifacts
-without exposing a query handle.
+publication and bounded leveled compaction. Mutation-run encoding, integrity
+inspection, shared serving visibility and a continuation writer exist. Ordinary
+new-ID updates still use the append path; updates to visible IDs publish a
+target-bound mutation run. Cleanup can validate and retain those artifacts.
 
 Closure validation also resolves each retraction to its exact immutable content
 version, hydrates that record under the existing limits, and reconstructs its
@@ -26,14 +25,13 @@ retention so equal scores do not depend on physical layer order. The updated
 [proof boundary](tla/SEARCH_MUTATION_PUBLICATION_PROOF.md) describes these kernels
 and their assumptions.
 
-Internal differential fixtures exercise these paths after validation while the
-public constructor still rejects mutation closures. Aggregate run admission and
-typed, observable budget fallback are implemented in the guarded read path.
-A continuation writer now prepares target-bound runs and publishes replacements
-or delete-only manifests for validated internal mutation readers. Initial-run
-activation, mutation-aware compaction and sustained qualification are still
-required. This work does not
-make mutation serving publicly available.
+Internal differential fixtures exercise these paths after validation. Aggregate
+run admission and typed, observable budget fallback are implemented in the read
+path. The continuation writer prepares target-bound runs for clean readers as
+well as existing closures and publishes replacements or delete-only manifests.
+Compaction currently defers whenever a mutation closure is present until its
+target references can be rewritten atomically; sustained qualification is still
+required.
 
 ## Goal
 
@@ -263,14 +261,13 @@ inside HawDB, a partial-result fallback, or a compatibility migration for old
 development-only HawDB manifests.
 
 
-## Guarded continuation writer
+## Incremental mutation writer
 
-The current delta path selects mutation publication only for a reader that
-already owns a validated mutation closure. Public construction still rejects
-such closures; internal lifecycle fixtures exercise the path. This is a staging
-boundary while compaction is incomplete, not the final feature-selection rule.
-Once all lifecycle paths are ready, ordinary updates must enter this same path
-without requiring an existing run.
+The delta path selects mutation publication for a reader that already owns a
+validated closure, or for a clean reader when an update targets a currently
+visible document. New IDs on a clean reader remain append-only. The public
+constructor validates and serves mutation closures; compaction defers while its
+old target references cannot yet be rewritten atomically.
 
 Preparation resolves each unique requested ID against current visibility. It
 reads one bounded descriptor payload range at a time with the operation's
@@ -290,5 +287,6 @@ can publish just a new manifest (including source-epoch progress).
 
 The existing generation lease/CAS and manifest-last commit boundary apply.
 Cancellation, stale-generation rejection and budget failure leave the old
-manifest unchanged. The public guard, mutation-aware compaction and sustained
+manifest unchanged. Mutation-aware compaction and sustained
 RSS/write-amplification qualification remain explicit unfinished requirements.
+The compaction deferral is fail-closed and leaves the active manifest unchanged.

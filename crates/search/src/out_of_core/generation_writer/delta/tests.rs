@@ -13,7 +13,6 @@
 // limitations under the License.
 
 use super::*;
-use crate::lexical_projection::DocumentsDigest;
 use crate::{SearchProjectionKind, SearchProjectionRow};
 use hawdb_core::RuntimeMemoryReservation;
 use std::collections::{BTreeMap, BTreeSet};
@@ -221,20 +220,20 @@ fn replacement_rewrites_only_the_current_content_segment() {
         Default::default(),
     )
     .unwrap();
-    assert_eq!(update.delta_report().action, "incremental_segment_replace");
+    assert_eq!(update.delta_report().action, "incremental_mutation_publish");
     assert_eq!(update.delta_report().before_document_count, 4);
     assert_eq!(update.delta_report().after_document_count, 4);
-    assert_eq!(update.source_read_metrics().hydrated_documents, 3);
+    assert_eq!(update.source_read_metrics().hydrated_documents, 1);
     assert!(update.source_read_metrics().segment_range_reads < full_metrics.segment_range_reads);
     assert!(update.source_read_metrics().segment_bytes_read < full_metrics.segment_bytes_read);
     let (_, build, _) = update.finish().unwrap();
     assert_eq!(build.document_count, 4);
 
     let reader = SearchOutOfCoreReader::open(&root.0).unwrap();
-    assert_eq!(reader.manifest.segments.len(), 2);
+    assert_eq!(reader.manifest.segments.len(), before.len() + 1);
     assert_eq!(reader.manifest.segments[0].segment_id, before[0].segment_id);
     assert_eq!(reader.manifest.segments[0].level, before[0].level);
-    assert_ne!(
+    assert_eq!(
         reader.manifest.segments[0].payload_file,
         before[0].payload_file
     );
@@ -292,11 +291,11 @@ fn deletion_rewrites_only_the_current_content_segment_and_updates_manifest_ident
         Default::default(),
     )
     .unwrap();
-    assert_eq!(update.delta_report().action, "incremental_segment_replace");
+    assert_eq!(update.delta_report().action, "incremental_mutation_publish");
     assert_eq!(update.delta_report().before_document_count, 4);
     assert_eq!(update.delta_report().after_document_count, 3);
     assert_eq!(update.delta_report().deleted_documents, 1);
-    assert_eq!(update.source_read_metrics().hydrated_documents, 3);
+    assert_eq!(update.source_read_metrics().hydrated_documents, 1);
     assert!(update.source_read_metrics().segment_range_reads < full_metrics.segment_range_reads);
     assert!(update.source_read_metrics().segment_bytes_read < full_metrics.segment_bytes_read);
     let (_, build, _) = update.finish().unwrap();
@@ -316,14 +315,8 @@ fn deletion_rewrites_only_the_current_content_segment_and_updates_manifest_ident
         reader.manifest.segments[1].payload_file,
         before.segments[1].payload_file
     );
-    assert_eq!(
-        reader.manifest.documents_digest,
-        DocumentsDigest::replace(
-            before.documents_digest,
-            before.segments[0].documents_digest,
-            reader.manifest.segments[0].documents_digest,
-        )
-    );
+    assert_ne!(reader.manifest.documents_digest, before.documents_digest);
+    assert_eq!(reader.manifest.mutation_runs.len(), 1);
     let ids = ["a", "e", "z"].map(|id| format!("memory:{id}"));
     assert_eq!(
         reader.hydrate_documents(&ids).unwrap().documents,
@@ -353,12 +346,12 @@ fn same_segment_batch_replaces_and_deletes_without_hydrating_other_artifacts() {
         Default::default(),
     )
     .unwrap();
-    assert_eq!(update.delta_report().action, "incremental_segment_replace");
+    assert_eq!(update.delta_report().action, "incremental_mutation_publish");
     assert_eq!(update.delta_report().before_document_count, 4);
     assert_eq!(update.delta_report().after_document_count, 3);
     assert_eq!(update.delta_report().upserted_documents, 1);
     assert_eq!(update.delta_report().deleted_documents, 1);
-    assert_eq!(update.source_read_metrics().hydrated_documents, 3);
+    assert_eq!(update.source_read_metrics().hydrated_documents, 2);
     assert!(update.source_read_metrics().segment_range_reads < full_metrics.segment_range_reads);
     assert!(update.source_read_metrics().segment_bytes_read < full_metrics.segment_bytes_read);
     update.finish().unwrap();
@@ -397,21 +390,21 @@ fn contiguous_segment_batch_replaces_only_its_exact_artifact_range() {
         Default::default(),
     )
     .unwrap();
-    assert_eq!(
-        update.delta_report().action,
-        "incremental_segment_range_replace"
-    );
+    assert_eq!(update.delta_report().action, "incremental_mutation_publish");
     assert_eq!(update.delta_report().before_document_count, 5);
     assert_eq!(update.delta_report().after_document_count, 5);
-    assert_eq!(update.source_read_metrics().hydrated_documents, 4);
+    assert_eq!(update.source_read_metrics().hydrated_documents, 2);
     assert!(update.source_read_metrics().segment_range_reads < full_metrics.segment_range_reads);
     assert!(update.source_read_metrics().segment_bytes_read < full_metrics.segment_bytes_read);
     update.finish().unwrap();
 
     let reader = SearchOutOfCoreReader::open(&root.0).unwrap();
-    assert_eq!(reader.manifest.segments.len(), 2);
+    assert_eq!(reader.manifest.segments.len(), before.len() + 1);
+    assert_eq!(reader.manifest.segments[0].segment_id, before[0].segment_id);
+    assert_eq!(reader.manifest.segments[1].segment_id, before[1].segment_id);
+    assert_eq!(reader.manifest.segments[2].segment_id, before[2].segment_id);
     assert_eq!(
-        reader.manifest.segments[0].segment_id,
+        reader.manifest.segments[3].segment_id,
         before
             .iter()
             .map(|segment| segment.segment_id)
@@ -419,9 +412,7 @@ fn contiguous_segment_batch_replaces_only_its_exact_artifact_range() {
             .unwrap()
             + 1
     );
-    assert_eq!(reader.manifest.segments[0].level, before[0].level);
-    assert_eq!(reader.manifest.segments[1].segment_id, before[2].segment_id);
-    assert_eq!(reader.manifest.segments[1].generation, before[2].generation);
+    assert_eq!(reader.manifest.mutation_runs.len(), 1);
     let ids = ["a", "c", "e", "y", "z"].map(|id| format!("memory:{id}"));
     assert_eq!(
         reader.hydrate_documents(&ids).unwrap().documents,
@@ -452,16 +443,10 @@ fn noncontiguous_segment_batch_retains_the_full_generation_path() {
         Default::default(),
     )
     .unwrap();
-    assert_eq!(update.delta_report().action, "bounded_generation_update");
-    assert_eq!(update.source_read_metrics().hydrated_documents, 5);
-    assert_eq!(
-        update.source_read_metrics().segment_range_reads,
-        full_metrics.segment_range_reads
-    );
-    assert_eq!(
-        update.source_read_metrics().segment_bytes_read,
-        full_metrics.segment_bytes_read
-    );
+    assert_eq!(update.delta_report().action, "incremental_mutation_publish");
+    assert_eq!(update.source_read_metrics().hydrated_documents, 2);
+    assert!(update.source_read_metrics().segment_range_reads < full_metrics.segment_range_reads);
+    assert!(update.source_read_metrics().segment_bytes_read < full_metrics.segment_bytes_read);
 }
 
 #[test]
@@ -505,10 +490,7 @@ fn contiguous_segment_range_replacement_rejects_a_newer_active_generation() {
         Default::default(),
     )
     .unwrap();
-    assert_eq!(
-        update.delta_report().action,
-        "incremental_segment_range_replace"
-    );
+    assert_eq!(update.delta_report().action, "incremental_mutation_publish");
 
     append(&root.0, row("zz"));
     let active = fs::read(root.0.join(crate::out_of_core::OUT_OF_CORE_MANIFEST_FILE)).unwrap();
@@ -579,10 +561,7 @@ fn delta_context_survives_prepare_through_finish_and_report_handoff() {
     assert!(memory.ledger.snapshot().used_bytes >= update._report_memory.bytes());
     assert_eq!(update.delta_report().after_document_count, 4);
     assert_eq!(update.delta_report().deleted_documents, 1);
-    assert_eq!(
-        update.source_read_metrics().segment_range_reads,
-        legacy_metrics.segment_range_reads
-    );
+    assert_eq!(update.source_read_metrics().segment_range_reads, 2);
     assert_eq!(
         update.source_read_metrics().segment_bytes_read,
         legacy_metrics.segment_bytes_read
@@ -591,7 +570,7 @@ fn delta_context_survives_prepare_through_finish_and_report_handoff() {
         update.source_read_metrics().hydration_segment_bytes_read,
         legacy_metrics.hydration_segment_bytes_read
     );
-    assert_eq!(update.source_read_metrics().hydrated_documents, base_count);
+    assert_eq!(update.source_read_metrics().hydrated_documents, 2);
     assert!(
         update.source_read_metrics().peak_segment_document_bytes
             <= legacy_metrics.peak_segment_document_bytes
@@ -599,7 +578,7 @@ fn delta_context_survives_prepare_through_finish_and_report_handoff() {
     let (report, built, _) = update.finish().unwrap();
     assert_eq!(built.document_count, 4);
     assert_eq!(memory.ledger.snapshot().used_bytes, 0);
-    assert_eq!(report.action, "bounded_generation_update");
+    assert_eq!(report.action, "incremental_mutation_publish");
     let reader = SearchOutOfCoreReader::open(&root.0).unwrap();
     assert_eq!(reader.source_graph_commit_epoch(), Some(19));
     let ids = ["a", "b", "c", "z"].map(|id| format!("memory:{id}"));

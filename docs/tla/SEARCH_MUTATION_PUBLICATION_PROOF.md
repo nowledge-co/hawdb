@@ -124,14 +124,13 @@ reverse order against a fresh sum of the remaining contributions.
 empty corpus and failures after a valid prefix. The repeated-replacement
 visibility test distinguishes physical versions with the same ID.
 
-An internal guarded-reader fixture compares deletion and replacement reads
+The public reader fixture compares deletion and replacement reads
 against a rebuilt one-segment corpus, including text scores, scalar vector and
 hybrid results, metadata filters and hydration. It also exercises a RaBitQ
-allowlist with a hidden predecessor. This fixture intentionally bypasses only
-the public capability guard after full artifact validation. It does not prove
-that all serving obligations are complete: writer publication and
-mutation-aware compaction remain unfinished. The public guard
-is still mandatory, and these tests do not authorize removing it.
+allowlist with a hidden predecessor. The fixture uses the same closure
+validation as the public constructor. It does not prove that all lifecycle
+obligations are complete: mutation-aware compaction currently defers when a
+closure is present, and sustained resource qualification remains unfinished.
 
 ## Layout-independent RaBitQ candidate ordering
 
@@ -409,7 +408,7 @@ durably replaced. Any earlier error leaves the active closure unchanged; staged
 or orphan files cannot become selectable through that unchanged manifest.
 There is no new claim about an OS error after rename but before directory sync:
 that boundary follows the existing storage contract. The finite TLA+ protocol
-model is unchanged; this argument maps the guarded continuation path to its
+model is unchanged; this argument maps the incremental mutation path to its
 publish-last/CAS steps, not to a machine-checked Rust refinement.
 
 Fixtures cover delete-only byte accounting and unchanged content references,
@@ -417,6 +416,7 @@ missing/repeated deletes, competing prepared writers, replacement/revival
 against a rebuilt lexical corpus, repeated replacement and deletion to empty.
 Budget and cancellation fixtures compare active-manifest bytes before/after
 failure. These do not prove power-loss recovery or bounded sustained load.
-The branch is intentionally reachable only from internal validated mutation
-readers until compaction and initial-run activation are implemented; ordinary
-public updates do not yet obtain the required O(K) mutation publication.
+The branch is reachable for validated mutation readers and clean readers whose
+updates target a visible document. New-ID appends remain on the append path.
+Compaction defers while its old target references cannot be rewritten atomically;
+the remaining power-loss and sustained O(K) qualification gates are open.

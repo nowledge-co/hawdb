@@ -386,6 +386,14 @@ fn select(
     policy: SearchOutOfCoreSegmentCompactionPolicy,
     task: &RuntimeTaskContext,
 ) -> Result<Option<Selection>> {
+    // A compacted artifact has a new content-segment identity. Until the
+    // mutation-run references can be rewritten atomically alongside that
+    // identity, selecting a closure would either leave stale targets or lose
+    // retractions. Fail closed and let the caller retry after the mutation
+    // aware compaction path is enabled.
+    if !reader.visibility.is_empty() {
+        return Ok(None);
+    }
     let fan_in = policy.level_fan_in.get();
     if let Some(selection) = select_with_fan_in(reader, policy, fan_in, true, task)? {
         return Ok(Some(selection));

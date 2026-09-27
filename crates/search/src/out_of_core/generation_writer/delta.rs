@@ -119,9 +119,6 @@ impl SearchOutOfCoreGenerationUpdate {
         let input = input::Pending::new(delta, &memory, &task)?;
         let mut options = super::context_memory::Options::new(options, &memory, &task)?;
         options.bind_delta_identity(reader, source_graph_commit_epoch_after)?;
-        let report_memory = memory
-            .retained
-            .reserve("search_projection".len() * 2 + "bounded_generation_update".len())?;
         let mut input = input.convert(&task)?;
         validate_delta_ids(
             input.upserts.make_contiguous(),
@@ -143,10 +140,26 @@ impl SearchOutOfCoreGenerationUpdate {
         // Keep dimension-only identity even when this batch has no vectors.
         writer.embedding_dimension = reader.manifest.embedding_dimension;
         writer.expected_active_generation = Some(reader.generation());
-        // Transitional staging boundary: only validated internal mutation
-        // readers reach this branch until mutation-aware compaction is ready.
-        // The public constructor still rejects nonempty mutation closures.
-        if !reader.visibility.is_empty() {
+        // Route an update through the mutation artifact whenever the reader
+        // already has a validated closure, or when this clean reader update
+        // targets a currently visible document. New IDs on a clean reader
+        // remain the append path; an existing ID must retain its old physical
+        // version and publish an exact target-bound retraction instead of
+        // rewriting the whole owning segment.
+        let targets_existing_document = input
+            .upserts
+            .iter()
+            .map(|document| document.id.as_str())
+            .chain(input.deletes.iter().map(String::as_str))
+            .try_fold(false, |found, id| {
+                reader
+                    .resolve_mutation_segment(id)
+                    .map(|segment| found || segment.is_some())
+            })?;
+        if !reader.visibility.is_empty() || targets_existing_document {
+            let report_memory = memory
+                .retained
+                .reserve("search_projection".len() * 2 + "incremental_mutation_publish".len())?;
             let (mutations, deleted_documents, source_read_metrics) =
                 mutation::Prepared::prepare(reader, &input, &memory, &task)?;
             let after_document_count = before_document_count
@@ -184,6 +197,9 @@ impl SearchOutOfCoreGenerationUpdate {
             .front()
             .map_or(Ok(false), |upsert| reader.can_append_after(&upsert.id))?;
         if input.deletes.is_empty() && can_append {
+            let report_memory = memory
+                .retained
+                .reserve("search_projection".len() * 2 + "incremental_segment_append".len())?;
             let after_document_count = before_document_count
                 .checked_add(upserted_documents)
                 .ok_or_else(|| HawDBError::Storage("search document count overflow".into()))?;
@@ -217,6 +233,9 @@ impl SearchOutOfCoreGenerationUpdate {
             // established full-generation path until removal is an explicit
             // manifest operation.
             if target.document_count > input.deletes.len() {
+                let report_memory = memory
+                    .retained
+                    .reserve("search_projection".len() * 2 + target.action().len())?;
                 writer.active_manifest_update =
                     Some(target.active_manifest_update(reader.generation()));
                 let mut deleted_documents = 0usize;
@@ -318,6 +337,9 @@ impl SearchOutOfCoreGenerationUpdate {
         }
         drop(input);
         checkpoint(&task)?;
+        let report_memory = memory
+            .retained
+            .reserve("search_projection".len() * 2 + "bounded_generation_update".len())?;
 
         Ok(Self {
             delta_report: SearchProjectionDeltaReport {
