@@ -550,3 +550,46 @@ fn compaction_replace_faults_never_publish_a_partial_closure() {
         "all injected replace boundaries failed"
     );
 }
+
+#[test]
+fn compaction_process_abort_never_publishes_a_partial_closure() {
+    let root = append_only_root("compaction_process_abort", 2);
+    let before = fs::read(root.join(OUT_OF_CORE_MANIFEST_FILE)).unwrap();
+    let executable = std::env::current_exe().unwrap();
+    let child = std::process::Command::new(executable)
+        .arg("--exact")
+        .arg("out_of_core::generation_writer::tests::compaction::compaction_process_abort_worker")
+        .arg("--nocapture")
+        .env("HAWDB_TEST_ABORT_REPLACE_AT", "1")
+        .env("HAWDB_TEST_COMPACTION_ROOT", &root)
+        .env("RUST_TEST_THREADS", "1")
+        .status()
+        .unwrap();
+    assert!(!child.success(), "the worker must be terminated at publish");
+    assert_eq!(
+        fs::read(root.join(OUT_OF_CORE_MANIFEST_FILE)).unwrap(),
+        before
+    );
+    let reopened = SearchOutOfCoreReader::open(&root).unwrap();
+    assert_eq!(reopened.document_count(), 2);
+    drop(reopened);
+    // A real process crash cannot run Drop; recovery ignores this orphaned
+    // stage and later maintenance removes it. The active closure is still
+    // complete and authoritative.
+    assert_eq!(stage_directories(&root), 1);
+    fs::remove_dir_all(root).unwrap();
+}
+
+#[test]
+fn compaction_process_abort_worker() {
+    let Ok(root) = std::env::var("HAWDB_TEST_COMPACTION_ROOT") else {
+        return;
+    };
+    let root = PathBuf::from(root);
+    let reader = SearchOutOfCoreReader::open(&root).unwrap();
+    let _ = SearchOutOfCoreGenerationWriter::compact_segments(
+        &reader,
+        policy(256 * 1024 * 1024),
+        Default::default(),
+    );
+}

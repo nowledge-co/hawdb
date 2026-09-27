@@ -486,5 +486,9 @@ For every reachable boundary, the old manifest remains byte-identical, reopen
 selects exactly the prior document set, and the private stage is gone;
 unreachable failpoint numbers are treated as no-ops. This enumerates the
 publication edges in the current implementation and provides executable
-evidence for the publish-last invariant, while an actual host power cut still
-belongs to the platform qualification described above.
+evidence for the publish-last invariant. The companion
+`compaction_process_abort_never_publishes_a_partial_closure` test runs the
+same compaction in a child process and terminates it at the first rename; the
+parent then reopens the old closure and observes the orphaned private stage.
+That models process loss, while an actual host power cut and filesystem
+reordering still belong to the platform qualification described above.
