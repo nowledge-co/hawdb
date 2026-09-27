@@ -253,6 +253,24 @@ existing closure size. This is a deterministic structural guard for `K`-sized
 updates; it is not the representative tens-of-GB benchmark or a process-RSS
 qualification.
 
+The reproducible benchmark `search_mutation` supplies that measurement hook. It
+builds a complete immutable generation, applies `K` delete mutations through
+`prepare_delta`, reopens the result, and emits JSON containing the full-build
+bytes, mutation-checkpoint bytes, ratio, elapsed time, source bytes read,
+hydrated-document count, and process-memory samples. Set
+`HAWDB_SEARCH_MUTATION_BENCH_DOCUMENTS` and
+`HAWDB_SEARCH_MUTATION_BENCH_TOUCHES` to scale the fixture; for example:
+
+```sh
+HAWDB_SEARCH_MUTATION_BENCH_DOCUMENTS=200000 \
+HAWDB_SEARCH_MUTATION_BENCH_TOUCHES=100 \
+cargo bench --locked --bench search_mutation
+```
+
+The benchmark is an evidence generator, not a release qualification by itself:
+the resulting JSON must be recorded against the host-selected production corpus
+and paired with sustained RSS and crash-recovery runs.
+
 - Differential: build the same logical corpus as one segment and as append,
   delete, and replace mutation runs; assert identical IDs, ordering, total hits,
   text scores, scalar vector scores, and hybrid results.
