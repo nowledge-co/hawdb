@@ -5321,6 +5321,7 @@ mod tests {
         let policy = SearchOutOfCoreSegmentCompactionPolicy::default()
             .with_level_zero_target_bytes(NonZeroU64::new(8 * 1024).unwrap())
             .unwrap();
+        let mut compaction_count = 0;
         for round in 0..4 {
             let reader = SearchOutOfCoreReader::open(&path).unwrap();
             let mut replaced = document(round, "replacement-space");
@@ -5371,6 +5372,7 @@ mod tests {
             )
             .unwrap();
             if let Some(report) = &compaction {
+                compaction_count += 1;
                 assert!(report.source_segment_count() >= 2);
                 assert!(report.source_bytes() > 0);
                 assert!(report.build().document_count > 0);
@@ -5395,6 +5397,10 @@ mod tests {
             );
             drop(reopened);
         }
+        assert!(
+            compaction_count > 0,
+            "sustained fixture must compact at least once"
+        );
         fs::remove_dir_all(path).unwrap();
     }
 
