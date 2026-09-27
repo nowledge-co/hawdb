@@ -239,6 +239,25 @@ not yet populated from every live checkpoint artifact family, and the codec
 does not itself seal a WAL, publish a root, or prove crash recovery; those
 remain integration obligations of #779.
 
+### Sealed WAL validation boundary
+
+`crates/storage/src/sealed_wal.rs` validates one stable binary WAL generation
+and hands its exact bytes to the immutable-object publisher. The caller must
+hold the source publication barrier; this helper intentionally does not close
+the active writer or switch a branch head.
+
+Its proof is a prefix induction over cursor events. The WAL reader first proves
+the generation header and replay-start LSN. For each `Entry`, the next expected
+LSN is the previous LSN plus one, so the induction preserves a contiguous
+half-open interval. A corrupt record or torn tail exits before publication,
+while `Eof` is accepted only after the complete valid prefix. The file is then
+read with the original bounded length and rejected if its length changes during
+the read. Only those bytes are passed to the content-addressed publisher, which
+rechecks their identity before installation. Thus a successful publication
+corresponds to exactly the validated WAL interval; no partial suffix can be
+selected. Rotation, new-WAL creation, head switching, and crash recovery remain
+separate protocol obligations.
+
 ## Locks and publication ownership
 
 Project metadata serialization and the branch writer lease are separate. One

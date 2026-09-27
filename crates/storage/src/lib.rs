@@ -71,6 +71,8 @@ pub mod pressure;
 pub mod projection;
 #[doc(hidden)]
 pub mod sealed_root;
+#[doc(hidden)]
+pub mod sealed_wal;
 
 // Compatibility shims so the graph kernel can move into this crate without
 // edit churn: the kernel addresses these items through `crate::error`,
