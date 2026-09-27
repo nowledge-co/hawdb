@@ -6,6 +6,7 @@ STORAGE_MODELS = [
     "HawDBAppendSegmentPublication",
     "HawDBAppendTable",
     "HawDBBoundedMorselMerge",
+    "HawDBBranchLifecycle",
     "HawDBColumnGroupManifest",
     "HawDBColumnarShadowIntegration",
     "HawDBCompactionVisibility",

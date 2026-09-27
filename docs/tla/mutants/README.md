@@ -51,5 +51,12 @@ pinned closure reclamation and orphaned targets after compaction. Two false
 invariants witness repeated replacement and compaction reachability. See the
 [search mutation proof boundary](../SEARCH_MUTATION_PUBLICATION_PROOF.md).
 
+The branch lifecycle controls reject early head publication, child writes to
+the parent's head, omission of pending-create roots, stale mark/sweep decisions,
+deletion under lease, and expired opens. Separate false invariants witness
+create completion/abort and delete recovery after crash, concurrent writers,
+expiry under an existing handle, and independent writes. See the
+[branch lifecycle proof boundary](../BRANCH_LIFECYCLE_PROOF.md).
+
 The constraint-preserving update controls reject omitting unique or FK columns
 from eligibility; see the [projection proof](../CONSTRAINT_PRESERVING_UPDATE_MVCC_PROOF.md).
