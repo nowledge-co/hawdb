@@ -35,6 +35,8 @@ pub(super) struct CompactionMutationRewrite {
     pub(super) entries: Vec<crate::out_of_core::mutation_run::SearchMutationRunEntry>,
     pub(super) analyzer_digest: u64,
     pub(super) max_run_bytes: u64,
+    pub(super) reopen_budget: crate::out_of_core::mutation_run::MutationRunBudget,
+    pub(super) _memory: hawdb_executor::QueryMemoryLease,
 }
 
 #[derive(Debug)]
@@ -225,8 +227,12 @@ pub(super) fn publish_generation(
             )
         })
         .transpose()?;
-    if let (Some(mutation), Some(encoded)) = (input.mutations, &mutation_bytes) {
-        mutation.reopen_budget.admit_encoded_extension(
+    let reopen_budget = input
+        .mutations
+        .map(|mutation| &mutation.reopen_budget)
+        .or_else(|| compaction_rewrite.map(|rewrite| &rewrite.reopen_budget));
+    if let (Some(budget), Some(encoded)) = (reopen_budget, &mutation_bytes) {
+        budget.admit_encoded_extension(
             &encoded.bytes,
             mutation_entries.map_or(0, |entries| entries.len()),
         )?;

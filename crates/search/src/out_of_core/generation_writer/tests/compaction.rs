@@ -71,6 +71,139 @@ fn policy(bytes: u64) -> SearchOutOfCoreSegmentCompactionPolicy {
     .unwrap()
 }
 
+fn partial_mutation_root(name: &str) -> PathBuf {
+    let root = append_only_root(name, 2);
+    let reader = SearchOutOfCoreReader::open(&root).unwrap();
+    SearchOutOfCoreGenerationWriter::prepare_delta(
+        &reader,
+        SearchProjectionDelta {
+            upserts: (2..12).map(appended_row).collect(),
+            ..Default::default()
+        },
+        Default::default(),
+    )
+    .unwrap()
+    .finish()
+    .unwrap();
+    for deleted in [vec![0, 2, 3, 4, 5, 6], vec![7, 8, 9, 10, 11]] {
+        let reader = SearchOutOfCoreReader::open(&root).unwrap();
+        SearchOutOfCoreGenerationWriter::prepare_delta(
+            &reader,
+            SearchProjectionDelta {
+                deletes: deleted
+                    .into_iter()
+                    .map(|number| format!("memory:{number:06}"))
+                    .collect(),
+                ..Default::default()
+            },
+            Default::default(),
+        )
+        .unwrap()
+        .finish()
+        .unwrap();
+    }
+    root
+}
+
+#[test]
+fn mutation_compaction_planning_does_not_copy_retained_runs() {
+    let _serial = crate::test_allocation::serial();
+    let root = partial_mutation_root("mutation_compaction_planning");
+    let reader = SearchOutOfCoreReader::open(&root).unwrap();
+    assert_eq!(reader.manifest.mutation_runs.len(), 2);
+    let retained_bytes: usize = reader
+        .visibility
+        .retractions()
+        .filter(|entry| entry.target_segment_id == 2)
+        .map(|entry| {
+            std::mem::size_of_val(entry)
+                + entry.document_id.len()
+                + entry.retraction.unique_terms.len() * std::mem::size_of::<String>()
+                + entry
+                    .retraction
+                    .unique_terms
+                    .iter()
+                    .map(String::len)
+                    .sum::<usize>()
+        })
+        .sum();
+    let (plan, peak) = crate::test_allocation::measure(|| {
+        SearchOutOfCoreGenerationWriter::segment_compaction_work_plan(
+            &reader,
+            policy(256 * 1024 * 1024),
+            BackgroundWorkHint::default(),
+        )
+        .unwrap()
+    });
+    assert!(plan.is_some());
+    assert!(
+        peak < retained_bytes,
+        "peak={peak}, retained={retained_bytes}"
+    );
+    drop(reader);
+    fs::remove_dir_all(root).unwrap();
+}
+
+#[test]
+fn mutation_compaction_rejects_a_rewrite_that_cannot_reopen_with_its_budget() {
+    let root = partial_mutation_root("mutation_compaction_reopen_budget");
+    let reader = SearchOutOfCoreReader::open(&root).unwrap();
+    // Find an admitted limit for the two existing runs. Decoding one combined
+    // run needs a larger transient buffer despite removing one target entry.
+    let mut low = 1;
+    let mut high = reader.config.max_mutation_working_bytes.get();
+    while low < high {
+        let middle = low + (high - low) / 2;
+        if reader
+            .visibility
+            .publication_budget(middle, reader.manifest.segments.len(), false)
+            .is_ok()
+        {
+            high = middle;
+        } else {
+            low = middle + 1;
+        }
+    }
+    let config = super::super::super::SearchOutOfCoreConfig {
+        max_mutation_working_bytes: NonZeroU64::new(low).unwrap(),
+        ..Default::default()
+    };
+    let reader = SearchOutOfCoreReader::open_with_config(&root, config.clone()).unwrap();
+    let before = fs::read(root.join(OUT_OF_CORE_MANIFEST_FILE)).unwrap();
+    let error = SearchOutOfCoreGenerationWriter::compact_segments(
+        &reader,
+        policy(256 * 1024 * 1024),
+        Default::default(),
+    )
+    .unwrap_err();
+    assert!(
+        error.to_string().contains("mutation-run working set"),
+        "{error}"
+    );
+    assert_eq!(
+        fs::read(root.join(OUT_OF_CORE_MANIFEST_FILE)).unwrap(),
+        before
+    );
+    assert_eq!(stage_directories(&root), 0);
+    let reopened = SearchOutOfCoreReader::open_with_config(&root, config).unwrap();
+    assert_eq!(reopened.document_count(), 1);
+    assert_eq!(reopened.manifest.mutation_runs.len(), 2);
+    // Raising the read limit permits the same partial compaction to publish.
+    let reader = SearchOutOfCoreReader::open(&root).unwrap();
+    SearchOutOfCoreGenerationWriter::compact_segments(
+        &reader,
+        policy(256 * 1024 * 1024),
+        Default::default(),
+    )
+    .unwrap()
+    .unwrap();
+    let reopened = SearchOutOfCoreReader::open(&root).unwrap();
+    assert_eq!(reopened.document_count(), 1);
+    assert_eq!(reopened.manifest.mutation_runs.len(), 1);
+    assert_eq!(reopened.manifest.mutation_runs[0].entry_count, 10);
+    fs::remove_dir_all(root).unwrap();
+}
+
 fn ids(documents: usize) -> Vec<String> {
     (0..documents)
         .map(|number| format!("memory:{number:06}"))

@@ -43,6 +43,7 @@ fn multiply(left: u64, right: usize) -> Result<u64> {
 
 /// Prefix admission for all run ownership, plus the later closure-validation
 /// sets. Transient read/serde space is checked without retaining its charge.
+#[derive(Debug)]
 pub(super) struct MutationRunBudget {
     limit: u64,
     retained: u64,

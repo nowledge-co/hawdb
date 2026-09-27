@@ -12,9 +12,9 @@ Closure validation also resolves each retraction to its exact immutable content
 version, hydrates that record under the existing limits, and reconstructs its
 digest, weighted lexical length and distinct terms with the selected analyzer.
 An internally checksummed run with a nonexistent target or fabricated
-contribution is rejected. This is preparation for serving, not its completion.
+contribution is rejected before the reader serves the closure.
 
-## Read implementation in progress
+## Read implementation
 
 Validated runs now feed a shared target-bound predicate in text scoring, scalar
 vector scoring, metadata candidates and hydration. Query-term corpus statistics
@@ -77,11 +77,11 @@ A content segment is an immutable, independently selectable artifact closure:
 - per-segment lexical statistics and vector ordinal mapping.
 
 Content-only append and existing rewrite paths retain the globally ordered,
-non-overlapping range requirement from #696. A future mutation closure must
-allow overlap between content artifacts: a replacement has the same ID as its
+non-overlapping range requirement from #696. Mutation closures allow overlap
+between content artifacts: a replacement has the same ID as its
 immutable predecessor. Its uniqueness invariant is one *visible* version per
-logical ID, not disjoint physical ranges. Routing and compaction must be adapted
-before that closure is admitted to serving or to existing update paths.
+logical ID, not disjoint physical ranges. Routing and compaction use the shared
+target-bound visibility predicate for these overlapping artifacts.
 
 The initial import must publish bounded content segments at the same granularity
 as incremental appends. A manifest entry that owns a corpus-sized lexical or
@@ -222,6 +222,12 @@ Leveled selection remains bounded by the existing input-byte policy. If the
 visibility closure would exceed the selected budget, the run is deferred rather
 than widening the operation or silently retaining a partial result. QoS
 admission and cancellation use the scheduled compaction API introduced by #704.
+Selection borrows retractions without copying them before QoS admission.
+Preparation charges the retained entries, IDs, and term capacities to the build
+memory ledger and keeps that reservation until the writer releases them.
+Publication checks the rewritten run against the reader's aggregate reopen
+budget before installing artifacts: combining individually admitted runs can
+increase the transient decode requirement. Failure preserves the active manifest.
 
 ## Delivery order
 
@@ -339,8 +345,8 @@ development-only HawDB manifests.
 The delta path selects mutation publication for a reader that already owns a
 validated closure, or for a clean reader when an update targets a currently
 visible document. New IDs on a clean reader remain append-only. The public
-constructor validates and serves mutation closures; compaction defers ranges
-whose old target references cannot yet be rewritten atomically.
+constructor validates and serves mutation closures; compaction absorbs selected
+targets and atomically rewrites references to outside segments.
 
 Preparation resolves each unique requested ID against current visibility. It
 reads one bounded descriptor payload range at a time with the operation's
@@ -360,7 +366,7 @@ can publish just a new manifest (including source-epoch progress).
 
 The existing generation lease/CAS and manifest-last commit boundary apply.
 Cancellation, stale-generation rejection and budget failure leave the old
-manifest unchanged. Mutation-aware compaction and sustained
-RSS/write-amplification qualification remain explicit unfinished requirements.
-Ranges containing mutation targets defer fail-closed; unaffected ranges retain
-existing runs while compacting.
+manifest unchanged. Mutation-aware compaction supports complete and partial
+closures; unaffected ranges retain existing runs while compacting. Sustained
+RSS/write-amplification and host power-loss qualification remain explicit
+unfinished requirements in issue #291.

@@ -277,8 +277,8 @@ A syntax error or unrelated failure does not count as a successful control.
 The append publication model covers content-only checkpoint/WAL ordering and
 pin retention. It does not imply mutation visibility: adding a tombstone changes
 both the logical live set and the artifact closure. This model adds that bounded
-protocol obligation, while the runtime gate prevents treating it as completed
-serving support. The Source sidecar model remains about graph-epoch binding and
+protocol obligation; the runtime validates target contributions and applies the
+shared visibility predicate before serving. The Source sidecar model remains about graph-epoch binding and
 is not a substitute for this search mutation contract.
 
 Issue #291 still requires crash/power-loss qualification across the real
@@ -332,6 +332,18 @@ checks a one-byte boundary and two individually admissible runs that cannot
 coexist; failed admission preserves the counter. The public-loader fixture
 checks wiring and the zero-run exemption. These finite tests supplement the
 conditional induction; they do not prove all serde inputs or whole-process RSS.
+
+Compaction selection borrows run entries before QoS admission. Preparation
+reserves copied entry slots, IDs and term capacities in the build ledger; the
+writer retains that lease through publication or discard. A rewritten run uses
+a fresh `MutationRunBudget` for the resulting content closure and checks its
+encoded decode bound before installing artifacts. This check is necessary even
+when fewer entries survive: combining runs can increase transient decode space.
+`mutation_compaction_planning_does_not_copy_retained_runs` measures planning
+allocations, and
+`mutation_compaction_rejects_a_rewrite_that_cannot_reopen_with_its_budget`
+starts with an admitted two-run closure and verifies rejection preserves its
+manifest and reopenability; a larger budget permits the same compaction.
 
 For vector fallback, partition compressed failures into typed `Budget` and
 `Failure`. Native `ResourceBudgetExceeded` maps to the former; other native
