@@ -179,6 +179,33 @@ directory publication before a selector can refer to it. Existing
 to overwrite an immutable object. Uncertain sync/replace results poison the
 affected publication handle until reopen; the caller receives no success.
 
+### Catalog codec invariants
+
+The first storage implementation slice uses a fixed v1 header, little-endian
+integer fields, length-prefixed bounded ASCII strings, UUID-order branch
+records, and a CRC32C over every byte before the checksum footer. Decoding
+rejects an unknown header/version, a truncated field, an invalid UTF-8 or
+out-of-limit string, an unknown enum or optional-value marker, duplicate UUIDs
+or names, a checksum mismatch, and trailing bytes. The project UUID is not a
+branch UUID; `main` is parentless; generated `agent/` names are accepted only
+as already-generated catalog values, while the custom-name constructor rejects
+both reserved forms.
+
+The codec's safety argument is by induction over the record stream. The reader
+starts at the header boundary and advances only after a checked slice exists;
+therefore every successfully decoded field is within the checksum-covered
+prefix. The per-record validation invariant establishes a non-nil UUID, a
+valid name, bounded request metadata, and a legal lifecycle state. Assuming it
+for the first *n* records, duplicate detection against the sorted UUID/name
+order and validation of record *n+1* preserve the invariant for *n+1*. After
+the declared count, the exact-end check proves that no unparsed bytes can be
+treated as catalog state. Encoding sorts records before emitting them and
+recomputes the checksum over the complete prefix, so equivalent validated
+catalogs have one byte representation and any byte mutation is rejected unless
+the integrity footer is also recomputed. This is a source-linked deductive
+proof of codec boundaries; it is not a machine-checked refinement of the
+future publication protocol.
+
 ## Locks and publication ownership
 
 Project metadata serialization and the branch writer lease are separate. One

@@ -27,6 +27,8 @@ pub mod artifact_binding;
 pub mod artifact_files;
 pub mod background;
 pub mod backup;
+#[doc(hidden)]
+pub mod branch_catalog;
 pub mod cache;
 pub mod canonical;
 pub mod canonical_adjacency;
