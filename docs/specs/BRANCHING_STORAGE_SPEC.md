@@ -315,6 +315,12 @@ removed where its outcome is known. The remaining uncertain directory-sync
 case is returned as an error and must be handled by the caller's publication
 poison/reopen protocol.
 
+If that parent-directory synchronization fails after the successor file has
+been written, `prepare_wal_rotation` removes the known candidate before
+returning. The retry invariant is therefore preserved: a subsequent attempt
+can use the same successor path and `create_new` remains exclusive, while the
+old WAL and head stay authoritative throughout.
+
 ### Branch-head selector codec and CAS
 
 `crates/storage/src/branch_head.rs` defines the v1 branch-head selector. It
