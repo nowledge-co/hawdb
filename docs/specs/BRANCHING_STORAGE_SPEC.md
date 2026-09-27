@@ -268,7 +268,9 @@ silently add an unpublished checkpoint dependency or bypass interval checks.
 `DurableManifest::manifest_artifact_inputs` is the first manifest-side
 population boundary. It derives the known checkpoint, manifest, adjacency,
 relational, and append manifest paths from validated generation bindings and
-their recorded lengths/digests; it never enumerates directory entries. Each
+their recorded lengths/raw content digests; it verifies those bytes first and
+only then derives the domain-separated immutable identity, so the two digest
+domains cannot be confused. It never enumerates directory entries. Each
 family reader must append its physical pages and descriptor descendants from
 the decoded manifest before calling the closure publisher. This split keeps
 the proof compositional: manifest bindings prove names and expected identity,
