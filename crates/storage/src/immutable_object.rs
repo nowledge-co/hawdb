@@ -51,7 +51,7 @@ impl ObjectKind {
     }
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct ObjectReference {
     pub kind: ObjectKind,
     pub format_version: u16,

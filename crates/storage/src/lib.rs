@@ -69,6 +69,8 @@ pub mod ownership;
 pub mod predicate;
 pub mod pressure;
 pub mod projection;
+#[doc(hidden)]
+pub mod sealed_root;
 
 // Compatibility shims so the graph kernel can move into this crate without
 // edit churn: the kernel addresses these items through `crate::error`,

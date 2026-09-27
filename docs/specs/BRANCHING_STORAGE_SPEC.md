@@ -213,6 +213,32 @@ future sealed-root closure, WAL interval ordering, filesystem crash model, or
 the branch selector protocol; those remain obligations of the later #779
 stages.
 
+### Sealed-root reference codec
+
+`crates/storage/src/sealed_root.rs` provides the bounded v1 metadata codec for
+the next #779 stage. A root contains a nonempty canonical checkpoint-reference
+list, a checkpoint and commit epoch, a replay-start LSN, and zero or more
+sealed-WAL references. Each WAL interval is half-open, strictly nonempty, and
+must begin exactly where the previous interval ended. Checkpoint and WAL
+references are restricted to their object kinds and nonzero format versions.
+
+The codec proof follows the reader offset by induction. Every fixed-width read
+checks the remaining slice before advancing, so each decoded field belongs to
+the checksum-covered prefix. The declared counts are checked against bounded
+limits before vector allocation. Checkpoint references must be strictly
+increasing under their complete typed identity, while the WAL invariant carries
+the expected next LSN from one record to the next; therefore duplicates,
+overlaps, and gaps cannot enter a validated root. Exact-end checking rejects
+unparsed bytes, and the CRC32C footer rejects mutations before validation. The
+encoder emits the same field order and validated lists, so equivalent roots
+have one byte representation and their sealed-root object identity is
+deterministic.
+
+This proves codec boundaries and interval admission only. The references are
+not yet populated from every live checkpoint artifact family, and the codec
+does not itself seal a WAL, publish a root, or prove crash recovery; those
+remain integration obligations of #779.
+
 ## Locks and publication ownership
 
 Project metadata serialization and the branch writer lease are separate. One
