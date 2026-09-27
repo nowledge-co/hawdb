@@ -1431,6 +1431,83 @@ mod tests {
     }
 
     #[test]
+    fn recovery_completes_a_pending_create_when_files_are_already_durable() {
+        let (directory, catalog_path) = temporary_catalog_path();
+        write_catalog(&catalog_path, &catalog()).unwrap();
+        let parent_head_path = directory.join("parent.head");
+        let child_directory = directory.join("child");
+        let child_head_path = child_directory.join("child.head");
+        let child_wal_path = child_directory.join("child.wal");
+        fs::create_dir_all(&child_directory).unwrap();
+        let root = crate::immutable_object::ObjectReference::for_bytes(
+            crate::immutable_object::ObjectKind::SealedRoot,
+            1,
+            b"parent-root",
+        );
+        let parent = BranchHead {
+            project_id: *catalog().project_id.as_uuid().as_bytes(),
+            branch_id: *id(1).as_uuid().as_bytes(),
+            physical_generation: 4,
+            sealed_root: root,
+            logical_commit_epoch: 7,
+            active_wal: crate::branch_head::ActiveWalIdentity {
+                generation: 5,
+                replay_start_lsn: 20,
+                byte_length: 1,
+                sha256: hawdb_integrity::sha256(b"x"),
+            },
+        };
+        fs::write(&parent_head_path, parent.encode().unwrap()).unwrap();
+        let mut request = create_request();
+        request.base_root_digest = *root.sha256.as_bytes();
+        let reservation = reserve_create_file(&catalog_path, request.clone()).unwrap();
+        let child_request = ChildBranchHeadRequest {
+            project_id: parent.project_id,
+            branch_id: *request.id.as_uuid().as_bytes(),
+            sealed_root: root,
+            logical_commit_epoch: 7,
+            active_wal_generation: 1,
+            replay_start_lsn: 42,
+            head_path: child_head_path.clone(),
+            wal_path: child_wal_path.clone(),
+        };
+        create_child_branch_head_from_parent(
+            &parent_head_path,
+            &child_head_path,
+            child_request,
+            ChildBranchSourceExpectation {
+                physical_generation: 4,
+                logical_commit_epoch: 7,
+                sealed_root: root,
+            },
+            1024,
+        )
+        .unwrap();
+        assert_eq!(
+            recover_create_file(
+                &catalog_path,
+                reservation.id,
+                &child_head_path,
+                &child_wal_path,
+                1024,
+            )
+            .unwrap(),
+            CreateRecoveryOutcome::Completed
+        );
+        assert_eq!(
+            read_catalog(&catalog_path)
+                .unwrap()
+                .branches
+                .iter()
+                .find(|branch| branch.id == reservation.id)
+                .unwrap()
+                .state,
+            BranchState::Ready
+        );
+        fs::remove_dir_all(directory).unwrap();
+    }
+
+    #[test]
     fn create_branch_from_parent_completes_catalog_after_child_files() {
         let (directory, catalog_path) = temporary_catalog_path();
         write_catalog(&catalog_path, &catalog()).unwrap();
