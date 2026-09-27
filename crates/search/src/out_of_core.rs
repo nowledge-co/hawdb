@@ -4440,6 +4440,58 @@ mod tests {
         fs::remove_dir_all(path).unwrap();
     }
 
+    #[test]
+    fn mutation_publication_recovery_ignores_orphaned_run_after_manifest_failure() {
+        let path = test_dir("mutation-publication-recovery");
+        let document = document(0, "team");
+        let mut index = SearchIndex::open(&path).unwrap();
+        index.upsert(document.clone()).unwrap();
+        index.checkpoint().unwrap();
+
+        install_delete_mutation_run(&path, &document, 0, 2);
+        let active_manifest = path.join(OUT_OF_CORE_MANIFEST_FILE);
+        let published = fs::read(&active_manifest).unwrap();
+        let envelope: SearchOutOfCoreManifestEnvelope = serde_json::from_slice(&published).unwrap();
+        let mutation_run = envelope.body.mutation_runs[0].file.clone();
+        fs::copy(
+            path.join(&mutation_run),
+            path.join(mutation_run::artifact_file(3)),
+        )
+        .unwrap();
+
+        // A process crash after the run file is durable but before the
+        // manifest publish must leave the previous committed generation
+        // selectable. Recovery must not infer a mutation closure from the
+        // orphaned artifact alone.
+        fs::write(&active_manifest, b"torn manifest tail").unwrap();
+        drop(index);
+        let mut retry = SearchOutOfCoreGenerationWriter::create(&path, Default::default()).unwrap();
+        retry.push(document.clone()).unwrap();
+        let report = retry.finish().unwrap();
+        assert_eq!(report.generation, 2);
+        let recovered = SearchOutOfCoreReader::open(&path).unwrap();
+        assert_eq!(recovered.generation(), 2);
+        assert_eq!(recovered.document_count(), 1);
+        assert_eq!(
+            recovered
+                .hydrate_documents(std::slice::from_ref(&document.id))
+                .unwrap()
+                .documents,
+            vec![document]
+        );
+        drop(recovered);
+
+        assert!(path.join(mutation_run::artifact_file(3)).exists());
+        let active: SearchOutOfCoreManifestEnvelope =
+            serde_json::from_slice(&fs::read(&active_manifest).unwrap()).unwrap();
+        assert!(active
+            .body
+            .mutation_runs
+            .iter()
+            .all(|run| run.generation != 3));
+        fs::remove_dir_all(path).unwrap();
+    }
+
     // Test the shared read implementation through the public constructor. The
     // mutation writer and compaction lifecycle remain covered separately.
     #[cfg(feature = "full-text-search")]

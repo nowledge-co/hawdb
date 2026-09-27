@@ -93,7 +93,7 @@ Runtime evidence:
 - `out_of_core_mutation_target_validation_obeys_hydration_budget` requires a
   target larger than the configured hydration budget to fail.
 - The existing closure test still proves valid deletion inspection, pin-aware
-  retention and public reader rejection. The finite publication model below is
+  retention and public reader serving of a validated closure. The finite publication model below is
   unchanged and does not model these payload-level checks.
 
 ## Shared predicate and staged statistics implementation
@@ -129,9 +129,9 @@ The public reader fixture compares deletion and replacement reads
 against a rebuilt one-segment corpus, including text scores, scalar vector and
 hybrid results, metadata filters and hydration. It also exercises a RaBitQ
 allowlist with a hidden predecessor. The fixture uses the same closure
-validation as the public constructor. It does not prove that all lifecycle
-obligations are complete: mutation-aware compaction currently defers when a
-closure is present, and sustained resource qualification remains unfinished.
+validation as the public constructor. Complete target closures are absorbed by
+compaction; partial closures still defer to the future multi-run rewrite, and
+sustained resource qualification remains unfinished.
 
 ## Layout-independent RaBitQ candidate ordering
 
@@ -209,6 +209,14 @@ replacement leaves the complete new closure. This assumes atomic durable
 selector replacement and truthful successful file durability, rather than
 proving those primitives from filesystem behavior.
 
+The byte-level recovery regression additionally writes a durable mutation run,
+then replaces the active selector with an invalid/torn value before reopening
+through the writer. Recovery chooses the last generation-specific manifest;
+the orphaned run remains unreferenced and cannot hide the committed document.
+This establishes the state-machine boundary for a failed selector publish, but
+does not model arbitrary filesystem reorderings or claim power-loss durability
+for an unverified storage device.
+
 Pinning adds the selected closure to the protected union. Cleanup removes only
 files outside that union; releasing a pin may shrink it but cannot remove the
 active closure. During complete-closure compaction, each visible logical value
@@ -250,10 +258,10 @@ protocol obligation, while the runtime gate prevents treating it as completed
 serving support. The Source sidecar model remains about graph-epoch binding and
 is not a substitute for this search mutation contract.
 
-Issue #291 still requires writer integration, exact retracted statistics,
-shared visibility across all query/hydration paths, RaBitQ handling, bounded
-visibility-closure compaction and sustained workload qualification. Model
-success alone does not authorize enabling any of those paths.
+Issue #291 still requires the multi-run partial-closure rewrite, crash/power-loss
+qualification across the real publication paths, and sustained workload
+write-amplification/RSS qualification. Model success alone does not authorize
+enabling any of those paths.
 
 ## Verification
 

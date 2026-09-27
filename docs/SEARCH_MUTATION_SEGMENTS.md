@@ -30,8 +30,10 @@ run admission and typed, observable budget fallback are implemented in the read
 path. The continuation writer prepares target-bound runs for clean readers as
 well as existing closures and publishes replacements or delete-only manifests.
 Compaction defers ranges containing mutation targets until those references
-can be rewritten atomically; unaffected ranges retain the existing runs and may
-compact. Sustained qualification is still required.
+can be rewritten atomically; a range containing the complete target closure
+materializes only visible documents and removes those runs, while unaffected
+ranges retain the existing runs and may compact. Sustained qualification is
+still required.
 
 ## Goal
 
@@ -188,7 +190,9 @@ Mutation preparation has four ordered stages:
 No mutation artifact is selectable before the manifest replacement. A cancelled,
 failed, or stale preparation deletes its private stage and leaves the active
 manifest unchanged. Existing readers retain their complete old closure until
-their pins are released.
+their pins are released. If a process stops after an artifact is durable but
+before manifest replacement, recovery selects the last complete generation and
+ignores the orphan; the mutation recovery regression exercises that boundary.
 
 ## TLA+ verification boundary
 
