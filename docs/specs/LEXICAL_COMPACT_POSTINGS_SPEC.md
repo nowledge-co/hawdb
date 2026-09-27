@@ -242,7 +242,13 @@ which depends on it.
   100,196 postings and 4,692,478 bytes exhaustively versus 100,041 postings
   and 2,826,173 bytes with 31 blocks skipped, while retaining identical IDs
   and scores. This is a synthetic CJK baseline, not a millions-of-documents
-  production qualification.
+  production qualification. A release-profile run at 1,000,000 documents
+  visited 1,001,954 postings and 46,923,286 bytes exhaustively versus
+  1,001,894 postings and 27,489,231 bytes with 12 blocks skipped; wall time
+  was 262 ms versus 164 ms, with identical IDs and scores. Runs at this scale
+  may set `HAWDB_BLOCK_MAX_CJK_MANIFEST_BYTES` above the default manifest
+  admission limit. The fixture remains synthetic and does not substitute for
+  the real export's out-of-core qualification.
 
 ## Resource Contract
 

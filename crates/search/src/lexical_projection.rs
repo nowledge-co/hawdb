@@ -3450,7 +3450,14 @@ mod tests {
                 document(&format!("cjk-{index:06}"), "标题", &content)
             })
             .collect();
-        let config = pruning_config(BLOCK_MAX_PRUNING_MIN_POSTINGS);
+        let mut config = pruning_config(BLOCK_MAX_PRUNING_MIN_POSTINGS);
+        config.max_manifest_bytes = NonZeroU64::new(
+            std::env::var("HAWDB_BLOCK_MAX_CJK_MANIFEST_BYTES")
+                .ok()
+                .and_then(|value| value.parse::<u64>().ok())
+                .unwrap_or(1024 * 1024 * 1024),
+        )
+        .expect("CJK manifest budget must be positive");
         let _ = LexicalProjectionWriter::new(config)
             .write(&root, 1, Some(7), 11, 13, documents.iter(), &analyzer)
             .unwrap();
