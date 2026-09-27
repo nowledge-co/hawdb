@@ -119,6 +119,30 @@ pub struct Catalog {
     pub branches: Vec<BranchRecord>,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct CreateRequest {
+    pub id: BranchId,
+    pub name: BranchName,
+    pub parent_id: BranchId,
+    pub source_commit_epoch: u64,
+    pub base_root_digest: [u8; DIGEST_BYTES],
+    pub owner: Option<String>,
+    pub expires_at_unix_seconds: Option<i64>,
+    pub request_key: String,
+    pub request_fingerprint: [u8; DIGEST_BYTES],
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum CatalogTransitionError {
+    Conflict(&'static str),
+    InvalidState(&'static str),
+    MissingBranch,
+    MissingParent,
+    StaleRevision { expected: u64, actual: u64 },
+    Overflow(&'static str),
+    Validation(CatalogError),
+}
+
 impl Catalog {
     pub fn validate(&self) -> Result<(), CatalogError> {
         if self.branches.len() > MAX_BRANCHES as usize {
@@ -134,7 +158,7 @@ impl Catalog {
         let mut names = BTreeSet::new();
         let mut main_count = 0;
         for branch in &self.branches {
-            if !names.insert(branch.name.clone()) {
+            if branch.state != BranchState::Deleted && !names.insert(branch.name.clone()) {
                 return Err(CatalogError::Duplicate("branch name"));
             }
             if branch.id == self.project_id {
@@ -191,6 +215,272 @@ impl Catalog {
             return Err(CatalogError::Duplicate("main branch"));
         }
         Ok(())
+    }
+
+    /// Reserve a branch identity and name before any child files are created.
+    /// Replaying the same request key and fingerprint returns the original ID;
+    /// a reused key with different input is always a conflict.
+    pub fn reserve_create(
+        &mut self,
+        request: CreateRequest,
+    ) -> Result<BranchId, CatalogTransitionError> {
+        if let Some(existing) = self
+            .branches
+            .iter()
+            .find(|branch| branch.create_request_key == request.request_key)
+        {
+            if existing.request_fingerprint == request.request_fingerprint {
+                return Ok(existing.id);
+            }
+            return Err(CatalogTransitionError::Conflict(
+                "create request key has a different fingerprint",
+            ));
+        }
+        let parent = self
+            .branches
+            .iter()
+            .find(|branch| branch.id == request.parent_id)
+            .ok_or(CatalogTransitionError::MissingParent)?;
+        if parent.state != BranchState::Ready {
+            return Err(CatalogTransitionError::InvalidState(
+                "create parent is not ready",
+            ));
+        }
+        if parent.source_commit_epoch != request.source_commit_epoch {
+            return Err(CatalogTransitionError::Conflict(
+                "create source revision is stale",
+            ));
+        }
+        if self.branches.iter().any(|branch| branch.id == request.id) {
+            return Err(CatalogTransitionError::Conflict(
+                "branch UUID is already used",
+            ));
+        }
+        if self
+            .branches
+            .iter()
+            .any(|branch| branch.name == request.name && branch.state != BranchState::Deleted)
+        {
+            return Err(CatalogTransitionError::Conflict("branch name is reserved"));
+        }
+        let catalog_revision = self.next_revision()?;
+        let mut candidate = self.clone();
+        candidate.revision = catalog_revision;
+        candidate.branches.push(BranchRecord {
+            id: request.id,
+            name: request.name,
+            parent_id: Some(request.parent_id),
+            source_commit_epoch: request.source_commit_epoch,
+            base_root_digest: Some(request.base_root_digest),
+            metadata_revision: 1,
+            state: BranchState::Creating,
+            owner: request.owner,
+            expires_at_unix_seconds: request.expires_at_unix_seconds,
+            create_request_key: request.request_key,
+            request_fingerprint: request.request_fingerprint,
+            create_outcome: CreateOutcome::Pending,
+        });
+        candidate
+            .validate()
+            .map_err(CatalogTransitionError::Validation)?;
+        *self = candidate;
+        Ok(request.id)
+    }
+
+    pub fn complete_create(
+        &mut self,
+        id: BranchId,
+        expected_metadata_revision: u64,
+    ) -> Result<(), CatalogTransitionError> {
+        self.transition_create(id, expected_metadata_revision, CreateOutcome::Succeeded)
+    }
+
+    pub fn abort_create(
+        &mut self,
+        id: BranchId,
+        expected_metadata_revision: u64,
+    ) -> Result<(), CatalogTransitionError> {
+        self.transition_create(id, expected_metadata_revision, CreateOutcome::Aborted)
+    }
+
+    fn transition_create(
+        &mut self,
+        id: BranchId,
+        expected_metadata_revision: u64,
+        outcome: CreateOutcome,
+    ) -> Result<(), CatalogTransitionError> {
+        let index = self
+            .branches
+            .iter()
+            .position(|branch| branch.id == id)
+            .ok_or(CatalogTransitionError::MissingBranch)?;
+        let branch = &self.branches[index];
+        if branch.metadata_revision != expected_metadata_revision {
+            return Err(CatalogTransitionError::StaleRevision {
+                expected: expected_metadata_revision,
+                actual: branch.metadata_revision,
+            });
+        }
+        if branch.state != BranchState::Creating || branch.create_outcome != CreateOutcome::Pending
+        {
+            return Err(CatalogTransitionError::InvalidState(
+                "create transition requires a pending reservation",
+            ));
+        }
+        let mut candidate = self.clone();
+        let catalog_revision = candidate.next_revision()?;
+        let metadata_revision = candidate.next_metadata_revision(index)?;
+        candidate.revision = catalog_revision;
+        candidate.branches[index].metadata_revision = metadata_revision;
+        candidate.branches[index].create_outcome = outcome;
+        candidate.branches[index].state = match outcome {
+            CreateOutcome::Succeeded => BranchState::Ready,
+            CreateOutcome::Aborted => BranchState::Deleted,
+            CreateOutcome::Pending => unreachable!("pending is rejected above"),
+        };
+        candidate
+            .validate()
+            .map_err(CatalogTransitionError::Validation)?;
+        *self = candidate;
+        Ok(())
+    }
+
+    pub fn rename(
+        &mut self,
+        id: BranchId,
+        expected_metadata_revision: u64,
+        new_name: BranchName,
+    ) -> Result<(), CatalogTransitionError> {
+        if new_name.as_str() == "main" || new_name.as_str().starts_with("agent/") {
+            return Err(CatalogTransitionError::Conflict("name is reserved"));
+        }
+        let index = self.index_at_revision(id, expected_metadata_revision)?;
+        if self.branches[index].state == BranchState::Deleted {
+            return Err(CatalogTransitionError::InvalidState(
+                "deleted branch cannot be renamed",
+            ));
+        }
+        if self.branches.iter().any(|branch| {
+            branch.id != id && branch.name == new_name && branch.state != BranchState::Deleted
+        }) {
+            return Err(CatalogTransitionError::Conflict("branch name is reserved"));
+        }
+        let mut candidate = self.clone();
+        candidate.revision = candidate.next_revision()?;
+        candidate.branches[index].metadata_revision = candidate.next_metadata_revision(index)?;
+        candidate.branches[index].name = new_name;
+        candidate
+            .validate()
+            .map_err(CatalogTransitionError::Validation)?;
+        *self = candidate;
+        Ok(())
+    }
+
+    pub fn expire(
+        &mut self,
+        id: BranchId,
+        expected_metadata_revision: u64,
+        now_unix_seconds: i64,
+    ) -> Result<(), CatalogTransitionError> {
+        let index = self.index_at_revision(id, expected_metadata_revision)?;
+        let branch = &self.branches[index];
+        if branch.state != BranchState::Ready {
+            return Err(CatalogTransitionError::InvalidState(
+                "only a ready branch can expire",
+            ));
+        }
+        if branch
+            .expires_at_unix_seconds
+            .is_none_or(|expires_at| expires_at > now_unix_seconds)
+        {
+            return Err(CatalogTransitionError::InvalidState(
+                "branch expiry is not due",
+            ));
+        }
+        self.transition_state(index, BranchState::Expired)
+    }
+
+    pub fn begin_delete(
+        &mut self,
+        id: BranchId,
+        expected_metadata_revision: u64,
+    ) -> Result<(), CatalogTransitionError> {
+        let index = self.index_at_revision(id, expected_metadata_revision)?;
+        let branch = &self.branches[index];
+        if branch.name.as_str() == "main" {
+            return Err(CatalogTransitionError::InvalidState(
+                "main branch is protected",
+            ));
+        }
+        if !matches!(branch.state, BranchState::Ready | BranchState::Expired) {
+            return Err(CatalogTransitionError::InvalidState(
+                "branch is not deletable",
+            ));
+        }
+        self.transition_state(index, BranchState::Deleting)
+    }
+
+    pub fn finish_delete(
+        &mut self,
+        id: BranchId,
+        expected_metadata_revision: u64,
+    ) -> Result<(), CatalogTransitionError> {
+        let index = self.index_at_revision(id, expected_metadata_revision)?;
+        if self.branches[index].state != BranchState::Deleting {
+            return Err(CatalogTransitionError::InvalidState(
+                "delete finalization requires a deleting branch",
+            ));
+        }
+        self.transition_state(index, BranchState::Deleted)
+    }
+
+    fn index_at_revision(
+        &self,
+        id: BranchId,
+        expected_metadata_revision: u64,
+    ) -> Result<usize, CatalogTransitionError> {
+        let index = self
+            .branches
+            .iter()
+            .position(|branch| branch.id == id)
+            .ok_or(CatalogTransitionError::MissingBranch)?;
+        let actual = self.branches[index].metadata_revision;
+        if actual != expected_metadata_revision {
+            return Err(CatalogTransitionError::StaleRevision {
+                expected: expected_metadata_revision,
+                actual,
+            });
+        }
+        Ok(index)
+    }
+
+    fn transition_state(
+        &mut self,
+        index: usize,
+        state: BranchState,
+    ) -> Result<(), CatalogTransitionError> {
+        let mut candidate = self.clone();
+        candidate.revision = candidate.next_revision()?;
+        candidate.branches[index].metadata_revision = candidate.next_metadata_revision(index)?;
+        candidate.branches[index].state = state;
+        candidate
+            .validate()
+            .map_err(CatalogTransitionError::Validation)?;
+        *self = candidate;
+        Ok(())
+    }
+
+    fn next_revision(&self) -> Result<u64, CatalogTransitionError> {
+        self.revision
+            .checked_add(1)
+            .ok_or(CatalogTransitionError::Overflow("catalog revision"))
+    }
+
+    fn next_metadata_revision(&self, index: usize) -> Result<u64, CatalogTransitionError> {
+        self.branches[index]
+            .metadata_revision
+            .checked_add(1)
+            .ok_or(CatalogTransitionError::Overflow("branch metadata revision"))
     }
 
     /// Encode in UUID order.  Sorting is part of the codec contract, so two
@@ -742,6 +1032,20 @@ mod tests {
         }
     }
 
+    fn create_request() -> CreateRequest {
+        CreateRequest {
+            id: id(3),
+            name: BranchName::new("third").unwrap(),
+            parent_id: id(1),
+            source_commit_epoch: 7,
+            base_root_digest: [3; DIGEST_BYTES],
+            owner: Some("worker-1".to_string()),
+            expires_at_unix_seconds: Some(100),
+            request_key: "create-third".to_string(),
+            request_fingerprint: [9; DIGEST_BYTES],
+        }
+    }
+
     fn temporary_catalog_path() -> (PathBuf, PathBuf) {
         let directory = std::env::temp_dir().join(format!(
             "hawdb-branch-catalog-{}-{}",
@@ -882,6 +1186,67 @@ mod tests {
             duplicate.encode(),
             Err(CatalogError::Duplicate("branch UUID"))
         );
+    }
+
+    #[test]
+    fn lifecycle_transitions_are_idempotent_and_revision_bound() {
+        let mut catalog = catalog();
+        let request = create_request();
+        let before = catalog.encode().unwrap();
+        assert_eq!(catalog.reserve_create(request.clone()).unwrap(), id(3));
+        assert_eq!(catalog.branches.len(), 3);
+        assert_eq!(catalog.branches[2].state, BranchState::Creating);
+        assert_eq!(catalog.reserve_create(request).unwrap(), id(3));
+        assert_eq!(catalog.encode().unwrap(), catalog.encode().unwrap());
+        assert_ne!(catalog.encode().unwrap(), before);
+
+        assert_eq!(
+            catalog.complete_create(id(3), 99),
+            Err(CatalogTransitionError::StaleRevision {
+                expected: 99,
+                actual: 1
+            })
+        );
+        catalog.complete_create(id(3), 1).unwrap();
+        assert_eq!(catalog.branches[2].state, BranchState::Ready);
+        catalog
+            .rename(id(3), 2, BranchName::new("renamed").unwrap())
+            .unwrap();
+        catalog.expire(id(3), 3, 100).unwrap();
+        catalog.begin_delete(id(3), 4).unwrap();
+        catalog.finish_delete(id(3), 5).unwrap();
+        assert_eq!(catalog.branches[2].state, BranchState::Deleted);
+
+        let mut reused = create_request();
+        reused.id = id(4);
+        reused.name = BranchName::new("renamed").unwrap();
+        reused.request_key = "create-reused-name".to_string();
+        reused.request_fingerprint = [10; DIGEST_BYTES];
+        assert_eq!(catalog.reserve_create(reused).unwrap(), id(4));
+    }
+
+    #[test]
+    fn failed_reservation_and_cas_leave_catalog_bytes_unchanged() {
+        let mut catalog = catalog();
+        let mut request = create_request();
+        request.source_commit_epoch = 8;
+        let before = catalog.encode().unwrap();
+        assert_eq!(
+            catalog.reserve_create(request),
+            Err(CatalogTransitionError::Conflict(
+                "create source revision is stale"
+            ))
+        );
+        assert_eq!(catalog.encode().unwrap(), before);
+
+        assert_eq!(
+            catalog.rename(id(1), 99, BranchName::new("renamed").unwrap()),
+            Err(CatalogTransitionError::StaleRevision {
+                expected: 99,
+                actual: 3
+            })
+        );
+        assert_eq!(catalog.encode().unwrap(), before);
     }
 
     #[test]

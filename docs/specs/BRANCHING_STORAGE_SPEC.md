@@ -206,6 +206,23 @@ the integrity footer is also recomputed. This is a source-linked deductive
 proof of codec boundaries; it is not a machine-checked refinement of the
 future publication protocol.
 
+The catalog state transitions use the same candidate-validation discipline. A
+new reservation first checks the request receipt, parent identity/state/source
+epoch, UUID/name uniqueness, and checked revision increments. Replaying an
+identical key and fingerprint returns the retained UUID without changing any
+byte; a different fingerprint is a conflict. Completion and abort accept only
+`Creating/Pending`, while rename, expiry, and the two delete phases each accept
+only their predecessor state and the caller's exact metadata revision. Every
+successful transition increments the catalog revision and the branch revision,
+validates the complete candidate, and swaps it into the handle only after
+validation. Thus, by induction over successful transitions, uniqueness,
+parent-reference closure, protected `main`, and the lifecycle-state graph are
+preserved; a failed precondition leaves the previous candidate untouched. The
+metadata lock serializes these read/modify/validate/publish steps, while the
+durable candidate protocol makes the replacement boundary explicit. This is a
+protocol proof over the current implementation seam; branch sealing, object
+publication, and crash recovery remain separate proof obligations.
+
 ## Locks and publication ownership
 
 Project metadata serialization and the branch writer lease are separate. One
