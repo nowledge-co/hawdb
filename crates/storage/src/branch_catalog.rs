@@ -854,6 +854,28 @@ pub fn recover_create_file(
         }
         Err(error) => return Err(BranchCreateError::Head(error)),
     };
+    if head.project_id != *catalog.project_id.as_uuid().as_bytes()
+        || head.branch_id != *branch_id.as_uuid().as_bytes()
+        || branch.base_root_digest != Some(*head.sealed_root.sha256.as_bytes())
+        || branch.source_commit_epoch != head.logical_commit_epoch
+    {
+        return Err(BranchCreateError::InconsistentRequest(
+            "pending child metadata does not match its head",
+        ));
+    }
+    match fs::metadata(child_wal_path) {
+        Ok(_) => {}
+        Err(source) if source.kind() == io::ErrorKind::NotFound => {
+            abort_create_file(catalog_path, reservation).map_err(BranchCreateError::Catalog)?;
+            return Ok(CreateRecoveryOutcome::Aborted);
+        }
+        Err(source) => {
+            return Err(BranchCreateError::Head(BranchHeadError::Io {
+                operation: "read pending child WAL metadata",
+                source,
+            }));
+        }
+    }
     let wal = crate::branch_head::active_wal_identity_from_file(
         child_wal_path,
         head.active_wal.generation,
