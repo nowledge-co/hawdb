@@ -1375,6 +1375,7 @@ mod tests {
         fs::write(&parent_head_path, parent.encode().unwrap()).unwrap();
         let mut request = create_request();
         request.base_root_digest = *root.sha256.as_bytes();
+        let child_id = request.id;
         let child = create_branch_from_parent(
             &catalog_path,
             &parent_head_path,
@@ -1414,6 +1415,20 @@ mod tests {
             Err(DatabaseDirectoryLeaseError::AlreadyOpen)
         ));
         drop(child);
+        let reopened = crate::branch_head::read_branch_head(&child_head_path).unwrap();
+        assert_eq!(reopened.sealed_root, root);
+        assert_eq!(
+            read_catalog(&catalog_path)
+                .unwrap()
+                .branches
+                .iter()
+                .find(|branch| branch.id == child_id)
+                .unwrap()
+                .state,
+            BranchState::Ready
+        );
+        let reopened_lease = DatabaseDirectoryLease::acquire(&child_directory).unwrap();
+        drop(reopened_lease);
         fs::remove_dir_all(directory).unwrap();
     }
 
