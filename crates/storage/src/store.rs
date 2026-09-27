@@ -3051,6 +3051,20 @@ impl hawdb_storage::graph_engine::GraphReadEngine for GraphStore {
         GraphStore::statistics(self, catalog)
     }
 
+    fn supports_ordered_node_range(&self, label: LabelId, property: &str) -> bool {
+        self.canonical_base.is_none()
+            || self
+                .persistent_property_projection
+                .as_ref()
+                .is_some_and(|projection| {
+                    projection.manifest().supports(
+                        label,
+                        property,
+                        PersistentPropertyProjectionKind::Range,
+                    )
+                })
+    }
+
     fn storage_recovery_report(&self) -> hawdb_storage::projection::StorageRecoveryReport {
         GraphStore::storage_recovery_report(self)
     }

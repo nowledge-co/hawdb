@@ -2107,9 +2107,61 @@ impl PersistentPropertyProjectionReader {
         label_id: LabelId,
         property: &str,
         kind: PersistentPropertyProjectionKind,
+        value_matches: impl FnMut(&Value) -> bool,
+        block_matches: impl FnMut(&PersistentPropertyProjectionBlockDescriptor) -> bool,
+        consumer: &mut impl FnMut(
+            NodeId,
+        )
+            -> Result<CanonicalScanControl, PersistentPropertyProjectionError>,
+    ) -> Result<
+        (PersistentPropertyProjectionReadReport, CanonicalScanControl),
+        PersistentPropertyProjectionError,
+    > {
+        self.scan_entries(
+            label_id,
+            property,
+            kind,
+            value_matches,
+            block_matches,
+            &mut |_, id| consumer(id),
+        )
+    }
+
+    /// Streams complete range entries in `(Value::cmp, NodeId)` order.
+    pub(crate) fn scan_range_entries(
+        &self,
+        label_id: LabelId,
+        property: &str,
+        lower: Option<&(Value, bool)>,
+        upper: Option<&(Value, bool)>,
+        mut consumer: impl FnMut(
+            &Value,
+            NodeId,
+        )
+            -> Result<CanonicalScanControl, PersistentPropertyProjectionError>,
+    ) -> Result<
+        (PersistentPropertyProjectionReadReport, CanonicalScanControl),
+        PersistentPropertyProjectionError,
+    > {
+        self.scan_entries(
+            label_id,
+            property,
+            PersistentPropertyProjectionKind::Range,
+            |value| range_bounds_match(value, lower, upper),
+            |block| range_block_might_match(block, lower, upper),
+            &mut consumer,
+        )
+    }
+
+    fn scan_entries(
+        &self,
+        label_id: LabelId,
+        property: &str,
+        kind: PersistentPropertyProjectionKind,
         mut value_matches: impl FnMut(&Value) -> bool,
         mut block_matches: impl FnMut(&PersistentPropertyProjectionBlockDescriptor) -> bool,
         consumer: &mut impl FnMut(
+            &Value,
             NodeId,
         )
             -> Result<CanonicalScanControl, PersistentPropertyProjectionError>,
@@ -2263,6 +2315,7 @@ impl PersistentPropertyProjectionReader {
         report: &mut PersistentPropertyProjectionReadReport,
         value_matches: &mut impl FnMut(&Value) -> bool,
         consumer: &mut impl FnMut(
+            &Value,
             NodeId,
         )
             -> Result<CanonicalScanControl, PersistentPropertyProjectionError>,
@@ -2316,7 +2369,7 @@ impl PersistentPropertyProjectionReader {
                                 "property projection candidate accounting overflow".to_string(),
                             )
                         })?;
-                    control = consumer(node_id)?;
+                    control = consumer(&value, node_id)?;
                 }
                 Ok(())
             },

@@ -110,6 +110,26 @@ impl From<&QueryAccessControlContext> for AccessControlPlanCacheKey {
 pub(super) struct OptimizerEnvironmentKey {
     schema: OptimizerSchemaKey,
     statistics_generation: u64,
+    ordered_range_indexes: Vec<(String, String)>,
+}
+
+fn ordered_range_indexes<R: hawdb_storage::graph_engine::GraphReadEngine>(
+    catalog: &Catalog,
+    store: &R,
+) -> Vec<(String, String)> {
+    catalog
+        .property_indexes()
+        .filter_map(|index| {
+            (index.kind == IndexKind::Range
+                && store.supports_ordered_node_range(index.label_id, &index.property))
+            .then(|| {
+                catalog
+                    .label_name(index.label_id)
+                    .map(|label| (label.to_string(), index.property.clone()))
+            })
+            .flatten()
+        })
+        .collect()
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
@@ -245,10 +265,15 @@ impl OptimizerSchemaKey {
 
 impl OptimizerEnvironmentKey {
     /// A prepared query may reuse a physical plan across data and statistics
-    /// generations because those affect cost only. Schema changes can alter an
-    /// operator's legality and therefore require re-planning.
-    pub(super) fn is_execution_compatible(&self, catalog: &Catalog) -> bool {
+    /// generations because those affect cost only. Schema and runtime ordering
+    /// capabilities affect legality and therefore require re-planning.
+    pub(super) fn is_execution_compatible<R: hawdb_storage::graph_engine::GraphReadEngine>(
+        &self,
+        catalog: &Catalog,
+        store: &R,
+    ) -> bool {
         self.schema == OptimizerSchemaKey::from_catalog(catalog)
+            && self.ordered_range_indexes == ordered_range_indexes(catalog, store)
     }
 }
 
@@ -275,6 +300,7 @@ impl OptimizerPlanningCache {
         OptimizerEnvironmentKey {
             schema: OptimizerSchemaKey::from_catalog(catalog),
             statistics_generation: self.statistics_generation,
+            ordered_range_indexes: ordered_range_indexes(catalog, store),
         }
     }
 
@@ -370,9 +396,10 @@ impl OptimizerPlanningCache {
         let environment = OptimizerEnvironmentKey {
             schema: OptimizerSchemaKey::from_catalog(catalog),
             statistics_generation: self.statistics_generation,
+            ordered_range_indexes: ordered_range_indexes(catalog, store),
         };
-        // The catalog is a pure function of the schema and the published
-        // statistics, both captured by `environment` (statistics_generation
+        // The catalog depends on runtime capabilities as well as schema and
+        // published statistics, all captured by `environment` (statistics_generation
         // bumps whenever the published snapshot changes). Comparing against
         // the live commit epoch would miss on every unrelated commit even
         // though the inputs are unchanged.
@@ -392,7 +419,10 @@ impl OptimizerPlanningCache {
             };
         }
 
-        let optimized = Arc::new(optimizer_catalog_from_graph_statistics(catalog, statistics));
+        let optimized = Arc::new(
+            optimizer_catalog_from_graph_statistics(catalog, statistics)
+                .with_ordered_range_indexes(environment.ordered_range_indexes.clone()),
+        );
         decisions.push(format!(
             "optimizer catalog cache refresh: statistics_epoch={} statistics_generation={} graph_commit_epoch={}",
             statistics.computed_at_commit_epoch,

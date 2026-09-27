@@ -59,7 +59,9 @@ impl RuntimePlanningSnapshot {
             && prepared
                 .optimizer_environment
                 .as_ref()
-                .is_none_or(|environment| environment.is_execution_compatible(&database.catalog))
+                .is_none_or(|environment| {
+                    environment.is_execution_compatible(&database.catalog, &database.store)
+                })
     }
 
     pub(crate) fn prepare(
@@ -134,11 +136,15 @@ impl PreparedRuntimeQuery {
         )
     }
 
-    pub(super) fn into_execution(self, catalog: &Catalog) -> (String, PreparedRuntimeExecution) {
+    pub(super) fn into_execution<R: hawdb_storage::graph_engine::GraphReadEngine>(
+        self,
+        catalog: &Catalog,
+        store: &R,
+    ) -> (String, PreparedRuntimeExecution) {
         let environment_matches = self
             .optimizer_environment
             .as_ref()
-            .is_some_and(|prepared| prepared.is_execution_compatible(catalog));
+            .is_some_and(|prepared| prepared.is_execution_compatible(catalog, store));
         (
             self.cypher_text,
             PreparedRuntimeExecution {
@@ -396,7 +402,7 @@ impl Database {
         prepared: PreparedRuntimeQuery,
         parameters: &BTreeMap<String, Value>,
     ) -> Result<QueryOutput> {
-        let (cypher_text, prepared) = prepared.into_execution(&self.catalog);
+        let (cypher_text, prepared) = prepared.into_execution(&self.catalog, &self.store);
         let mut external = executor::NoExternalReadOperator;
         self.query_with_params_trace_and_external_prepared(
             &cypher_text,
@@ -443,7 +449,7 @@ impl Database {
         parameters: &BTreeMap<String, Value>,
         task_context: &hawdb_core::RuntimeTaskContext,
     ) -> Result<QueryOutput> {
-        let (cypher_text, prepared) = prepared.into_execution(&self.catalog);
+        let (cypher_text, prepared) = prepared.into_execution(&self.catalog, &self.store);
         let mut external = executor::NoExternalReadOperator;
         self.query_with_params_trace_and_external_prepared(
             &cypher_text,
@@ -980,7 +986,7 @@ mod tests {
         let (_, reusable) = db
             .prepare_runtime_query(query.to_string(), &parameters)
             .unwrap()
-            .into_execution(&db.catalog);
+            .into_execution(&db.catalog, &db.store);
         assert!(reusable.optimized.is_some());
 
         let reusable_after_data_change = db
@@ -988,7 +994,7 @@ mod tests {
             .unwrap();
         db.query("CREATE (:Memory {id: 'newer'})").unwrap();
         let (_, reusable_after_data_change) =
-            reusable_after_data_change.into_execution(&db.catalog);
+            reusable_after_data_change.into_execution(&db.catalog, &db.store);
         assert!(reusable_after_data_change.optimized.is_some());
     }
 

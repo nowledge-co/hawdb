@@ -177,6 +177,7 @@ mod mutation_guards;
 mod mutation_persistence;
 mod nowledge_graph_adapter;
 mod optional_match;
+mod ordered_range;
 mod pagerank;
 mod predicates;
 mod projected_graph_artifacts;
