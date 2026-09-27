@@ -152,6 +152,13 @@ pub struct ChildBranchHeadRequest {
     pub wal_path: PathBuf,
 }
 
+#[derive(Debug, Clone, Copy)]
+pub struct ChildBranchSourceExpectation {
+    pub physical_generation: u64,
+    pub logical_commit_epoch: u64,
+    pub sealed_root: ObjectReference,
+}
+
 /// Creates the child branch's private empty WAL and selector.
 ///
 /// The sealed root is shared by reference; no parent data is copied. Both
@@ -242,6 +249,39 @@ pub fn create_child_branch_head(
     Ok(head)
 }
 
+/// Creates a child head only when the selected parent head still names the
+/// expected sealed source revision.  The parent selector is read but never
+/// modified, so a stale request cannot alter parent state.
+pub fn create_child_branch_head_from_parent(
+    parent_head_path: &Path,
+    child_head_path: &Path,
+    request: ChildBranchHeadRequest,
+    expected_parent: ChildBranchSourceExpectation,
+    max_active_wal_bytes: u64,
+) -> Result<BranchHead, BranchHeadError> {
+    let parent = read_branch_head(parent_head_path)?;
+    if parent.project_id != request.project_id {
+        return Err(BranchHeadError::BranchIdentityMismatch);
+    }
+    if parent.physical_generation != expected_parent.physical_generation {
+        return Err(BranchHeadError::StaleGeneration {
+            expected: expected_parent.physical_generation,
+            actual: parent.physical_generation,
+        });
+    }
+    if parent.logical_commit_epoch != expected_parent.logical_commit_epoch
+        || parent.sealed_root != expected_parent.sealed_root
+    {
+        return Err(BranchHeadError::ParentSourceMismatch);
+    }
+    if request.sealed_root != parent.sealed_root
+        || request.logical_commit_epoch != parent.logical_commit_epoch
+    {
+        return Err(BranchHeadError::ParentSourceMismatch);
+    }
+    create_child_branch_head(child_head_path, request, max_active_wal_bytes)
+}
+
 #[derive(Debug)]
 pub enum BranchHeadError {
     Io {
@@ -262,6 +302,7 @@ pub enum BranchHeadError {
         actual: u64,
     },
     BranchIdentityMismatch,
+    ParentSourceMismatch,
     CandidatePublicationUncertain {
         source: io::Error,
     },
@@ -292,6 +333,9 @@ impl Display for BranchHeadError {
             }
             Self::BranchIdentityMismatch => {
                 formatter.write_str("branch head identity does not match the selected branch")
+            }
+            Self::ParentSourceMismatch => {
+                formatter.write_str("parent branch source revision does not match")
             }
             Self::CandidatePublicationUncertain { source } => {
                 write!(formatter, "branch head publication is uncertain: {source}")
@@ -799,6 +843,44 @@ mod tests {
         ));
         fs::remove_file(head_path).unwrap();
         fs::remove_file(wal_path).unwrap();
+    }
+
+    #[test]
+    fn child_creation_rejects_stale_parent_source_before_writing() {
+        let parent_path = path("parent-source");
+        let child_path = path("stale-child-head");
+        let wal_path = path("stale-child-wal");
+        let parent = sample();
+        fs::write(&parent_path, parent.encode().unwrap()).unwrap();
+        let request = ChildBranchHeadRequest {
+            project_id: parent.project_id,
+            branch_id: [7; 16],
+            sealed_root: parent.sealed_root,
+            logical_commit_epoch: parent.logical_commit_epoch,
+            active_wal_generation: 1,
+            replay_start_lsn: 99,
+            wal_path: wal_path.clone(),
+        };
+        let mut stale = ChildBranchSourceExpectation {
+            physical_generation: parent.physical_generation,
+            logical_commit_epoch: parent.logical_commit_epoch,
+            sealed_root: parent.sealed_root,
+        };
+        stale.logical_commit_epoch += 1;
+        assert!(matches!(
+            create_child_branch_head_from_parent(
+                &parent_path,
+                &child_path,
+                request.clone(),
+                stale,
+                1024,
+            ),
+            Err(BranchHeadError::ParentSourceMismatch)
+        ));
+        assert!(!child_path.exists());
+        assert!(!wal_path.exists());
+        assert_eq!(read_branch_head(&parent_path).unwrap(), parent);
+        fs::remove_file(parent_path).unwrap();
     }
 
     #[test]
