@@ -8,6 +8,7 @@
 
 use hawdb_core::Uuid;
 use hawdb_integrity::crc32c;
+use std::collections::BTreeSet;
 use std::fmt::{self, Display, Formatter};
 
 const MAGIC: &[u8; 8] = b"HBCATV1\0";
@@ -122,12 +123,13 @@ impl Catalog {
             if pair[0].id == pair[1].id {
                 return Err(CatalogError::Duplicate("branch UUID"));
             }
-            if pair[0].name == pair[1].name {
-                return Err(CatalogError::Duplicate("branch name"));
-            }
         }
+        let mut names = BTreeSet::new();
         let mut main_count = 0;
         for branch in &self.branches {
+            if !names.insert(branch.name.clone()) {
+                return Err(CatalogError::Duplicate("branch name"));
+            }
             if branch.id == self.project_id {
                 return Err(CatalogError::InvalidIdentity(
                     "project UUID and branch UUID must be distinct",
@@ -146,6 +148,21 @@ impl Catalog {
                 return Err(CatalogError::InvalidState(
                     "branch cannot be its own parent",
                 ));
+            }
+            if let Some(parent_id) = branch.parent_id
+                && !self
+                    .branches
+                    .iter()
+                    .any(|candidate| candidate.id == parent_id)
+            {
+                return Err(CatalogError::InvalidIdentity(
+                    "branch parent UUID is not present in the catalog",
+                ));
+            }
+            if branch.name.as_str().starts_with("agent/")
+                && branch.name.as_str() != format!("agent/{}", branch.id.as_uuid())
+            {
+                return Err(CatalogError::InvalidName);
             }
             validate_bounded_string(
                 &branch.create_request_key,
@@ -262,6 +279,9 @@ fn validate_catalog_name(value: &str) -> Result<(), CatalogError> {
         {
             return Err(CatalogError::InvalidName);
         }
+        if component.bytes().any(|byte| byte.is_ascii_whitespace()) {
+            return Err(CatalogError::InvalidName);
+        }
     }
     Ok(())
 }
@@ -274,10 +294,7 @@ fn validate_bounded_string(
     if value.is_empty() || value.len() > maximum || !value.is_ascii() {
         return Err(CatalogError::Limit(field));
     }
-    if value
-        .bytes()
-        .any(|byte| byte.is_ascii_whitespace() || byte.is_ascii_control())
-    {
+    if value.bytes().any(|byte| byte.is_ascii_control()) {
         return Err(CatalogError::InvalidName);
     }
     Ok(())
@@ -636,7 +653,8 @@ mod tests {
         main.name = BranchName::from_encoded("main".to_string()).unwrap();
         main.parent_id = None;
         let mut generated = record(2, "generated");
-        generated.name = BranchName::from_encoded("agent/generated".to_string()).unwrap();
+        generated.name =
+            BranchName::from_encoded(format!("agent/{}", generated.id.as_uuid())).unwrap();
         generated.parent_id = Some(main.id);
         let catalog = Catalog {
             project_id: id(99),
