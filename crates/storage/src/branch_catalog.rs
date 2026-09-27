@@ -809,6 +809,65 @@ pub struct BranchCreateResult {
     pub lease: DatabaseDirectoryLease,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum CreateRecoveryOutcome {
+    Completed,
+    Aborted,
+}
+
+/// Recovers a pending child creation after process interruption.  A complete
+/// and valid child head/WAL pair is promoted to `Ready`; a known absent pair
+/// is aborted.  Any other filesystem or integrity error leaves `Creating`
+/// untouched so a later open can retry conservatively.
+pub fn recover_create_file(
+    catalog_path: &Path,
+    branch_id: BranchId,
+    child_head_path: &Path,
+    child_wal_path: &Path,
+    max_active_wal_bytes: u64,
+) -> Result<CreateRecoveryOutcome, BranchCreateError> {
+    let catalog = read_catalog(catalog_path)
+        .map_err(|error| BranchCreateError::Catalog(CatalogFileTransitionError::Io(error)))?;
+    let branch = catalog
+        .branches
+        .iter()
+        .find(|branch| branch.id == branch_id)
+        .ok_or(BranchCreateError::Catalog(
+            CatalogFileTransitionError::Transition(CatalogTransitionError::MissingBranch),
+        ))?;
+    if branch.state != BranchState::Creating || branch.create_outcome != CreateOutcome::Pending {
+        return Err(BranchCreateError::Catalog(
+            CatalogFileTransitionError::Transition(CatalogTransitionError::InvalidState(
+                "recovery requires a pending child create",
+            )),
+        ));
+    }
+    let reservation = CreateReservation {
+        id: branch_id,
+        metadata_revision: branch.metadata_revision,
+    };
+    let head = match crate::branch_head::read_branch_head(child_head_path) {
+        Ok(head) => head,
+        Err(BranchHeadError::Io { source, .. }) if source.kind() == io::ErrorKind::NotFound => {
+            abort_create_file(catalog_path, reservation).map_err(BranchCreateError::Catalog)?;
+            return Ok(CreateRecoveryOutcome::Aborted);
+        }
+        Err(error) => return Err(BranchCreateError::Head(error)),
+    };
+    let wal = crate::branch_head::active_wal_identity_from_file(
+        child_wal_path,
+        head.active_wal.generation,
+        head.active_wal.replay_start_lsn,
+        max_active_wal_bytes,
+    )
+    .map_err(BranchCreateError::Head)?;
+    if wal != head.active_wal {
+        return Err(BranchCreateError::Head(BranchHeadError::InvalidWalIdentity));
+    }
+    complete_create_file(catalog_path, reservation).map_err(BranchCreateError::Catalog)?;
+    Ok(CreateRecoveryOutcome::Completed)
+}
+
 /// Stable project metadata lock.  It is separate from branch writer leases so
 /// independent branch handles can write their own WALs while catalog updates
 /// remain serialized.
@@ -1343,6 +1402,31 @@ mod tests {
                 .state,
             BranchState::Ready
         );
+        fs::remove_dir_all(directory).unwrap();
+    }
+
+    #[test]
+    fn interrupted_create_without_child_files_is_aborted_on_recovery() {
+        let (directory, path) = temporary_catalog_path();
+        write_catalog(&path, &catalog()).unwrap();
+        let reservation = reserve_create_file(&path, create_request()).unwrap();
+        let outcome = recover_create_file(
+            &path,
+            reservation.id,
+            &directory.join("missing.head"),
+            &directory.join("missing.wal"),
+            1024,
+        )
+        .unwrap();
+        assert_eq!(outcome, CreateRecoveryOutcome::Aborted);
+        let recovered = read_catalog(&path).unwrap();
+        let branch = recovered
+            .branches
+            .iter()
+            .find(|branch| branch.id == reservation.id)
+            .unwrap();
+        assert_eq!(branch.state, BranchState::Deleted);
+        assert_eq!(branch.create_outcome, CreateOutcome::Aborted);
         fs::remove_dir_all(directory).unwrap();
     }
 
