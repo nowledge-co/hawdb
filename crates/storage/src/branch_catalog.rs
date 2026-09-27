@@ -11,6 +11,7 @@ use crate::branch_head::{
     ChildBranchSourceExpectation,
 };
 use crate::durability;
+use crate::ownership::{DatabaseDirectoryLease, DatabaseDirectoryLeaseError};
 use hawdb_core::Uuid;
 use hawdb_integrity::crc32c;
 use std::collections::BTreeSet;
@@ -724,6 +725,7 @@ pub fn abort_create_file(
 pub enum BranchCreateError {
     Catalog(CatalogFileTransitionError),
     Head(BranchHeadError),
+    Lease(DatabaseDirectoryLeaseError),
     InconsistentRequest(&'static str),
 }
 
@@ -732,6 +734,7 @@ impl Display for BranchCreateError {
         match self {
             Self::Catalog(error) => Display::fmt(error, formatter),
             Self::Head(error) => Display::fmt(error, formatter),
+            Self::Lease(error) => Display::fmt(error, formatter),
             Self::InconsistentRequest(message) => formatter.write_str(message),
         }
     }
@@ -750,7 +753,7 @@ pub fn create_branch_from_parent(
     expected_parent: ChildBranchSourceExpectation,
     max_active_wal_bytes: u64,
     request: CreateRequest,
-) -> Result<BranchHead, BranchCreateError> {
+) -> Result<BranchCreateResult, BranchCreateError> {
     if request.id.as_uuid().as_bytes() != &child_head_request.branch_id {
         return Err(BranchCreateError::InconsistentRequest(
             "catalog and child head branch IDs differ",
@@ -764,6 +767,24 @@ pub fn create_branch_from_parent(
     let reservation =
         reserve_create_file(catalog_path, request).map_err(BranchCreateError::Catalog)?;
     let child_head_path = child_head_request.head_path.clone();
+    let child_directory = child_head_path
+        .parent()
+        .filter(|parent| !parent.as_os_str().is_empty())
+        .unwrap_or_else(|| Path::new("."));
+    if let Err(error) = fs::create_dir_all(child_directory) {
+        let _ = abort_create_file(catalog_path, reservation);
+        return Err(BranchCreateError::Head(BranchHeadError::Io {
+            operation: "create child branch directory",
+            source: error,
+        }));
+    }
+    let lease = match DatabaseDirectoryLease::acquire(child_directory) {
+        Ok(lease) => lease,
+        Err(error) => {
+            let _ = abort_create_file(catalog_path, reservation);
+            return Err(BranchCreateError::Lease(error));
+        }
+    };
     match create_child_branch_head_from_parent(
         parent_head_path,
         &child_head_path,
@@ -773,13 +794,19 @@ pub fn create_branch_from_parent(
     ) {
         Ok(head) => {
             complete_create_file(catalog_path, reservation).map_err(BranchCreateError::Catalog)?;
-            Ok(head)
+            Ok(BranchCreateResult { head, lease })
         }
         Err(error) => {
             let _ = abort_create_file(catalog_path, reservation);
             Err(BranchCreateError::Head(error))
         }
     }
+}
+
+#[derive(Debug)]
+pub struct BranchCreateResult {
+    pub head: BranchHead,
+    pub lease: DatabaseDirectoryLease,
 }
 
 /// Stable project metadata lock.  It is separate from branch writer leases so
@@ -1324,8 +1351,9 @@ mod tests {
         let (directory, catalog_path) = temporary_catalog_path();
         write_catalog(&catalog_path, &catalog()).unwrap();
         let parent_head_path = directory.join("parent.head");
-        let child_head_path = directory.join("child.head");
-        let child_wal_path = directory.join("child.wal");
+        let child_directory = directory.join("child");
+        let child_head_path = child_directory.join("child.head");
+        let child_wal_path = child_directory.join("child.wal");
         let root = crate::immutable_object::ObjectReference::for_bytes(
             crate::immutable_object::ObjectKind::SealedRoot,
             1,
@@ -1369,7 +1397,7 @@ mod tests {
             request,
         )
         .unwrap();
-        assert_eq!(child.sealed_root, root);
+        assert_eq!(child.head.sealed_root, root);
         assert_eq!(
             read_catalog(&catalog_path)
                 .unwrap()
@@ -1381,6 +1409,11 @@ mod tests {
         );
         assert!(child_head_path.is_file());
         assert!(child_wal_path.is_file());
+        assert!(matches!(
+            DatabaseDirectoryLease::acquire(&child_directory),
+            Err(DatabaseDirectoryLeaseError::AlreadyOpen)
+        ));
+        drop(child);
         fs::remove_dir_all(directory).unwrap();
     }
 
