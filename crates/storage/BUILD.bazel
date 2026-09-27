@@ -36,6 +36,7 @@ rust_test(
 
 rust_test(
     name = "hawdb_storage_shadow_metadata_fuzz_tests",
+    size = "small",
     args = [
         "column_group::shadow_metadata::tests::differential::shadow_metadata_differential_campaign",
         "--exact",
@@ -100,6 +101,7 @@ rust_test(
 
 rust_test(
     name = "hawdb_storage_artifact_binding_fuzz_tests",
+    size = "small",
     args = [
         "artifact_binding::tests::artifact_binding_state_machine_campaign",
         "--exact",
@@ -116,6 +118,7 @@ rust_test(
 
 rust_test(
     name = "hawdb_storage_durable_manifest_fuzz_tests",
+    size = "small",
     args = [
         "durable_manifest::tests::durable_manifest_differential_campaign",
         "--exact",
@@ -148,6 +151,7 @@ rust_test(
 
 rust_test(
     name = "hawdb_storage_projected_artifact_fuzz_tests",
+    size = "small",
     args = [
         "projection::artifact::tests::projected_artifact_differential_campaign",
         "--exact",
@@ -164,6 +168,7 @@ rust_test(
 
 rust_test(
     name = "hawdb_storage_set_value_fuzz_tests",
+    size = "small",
     args = [
         "mutation::evaluate::tests::set_value_differential_campaign",
         "--exact",
@@ -180,6 +185,7 @@ rust_test(
 
 rust_test(
     name = "hawdb_storage_durable_envelope_fuzz_tests",
+    size = "small",
     args = [
         "text::envelope::tests::durable_envelope_differential_campaign",
         "--exact",
@@ -196,6 +202,7 @@ rust_test(
 
 rust_test(
     name = "hawdb_storage_graph_constraints_fuzz_tests",
+    size = "small",
     args = [
         "graph_constraints::tests::graph_constraints_differential_campaign",
         "--exact",
@@ -212,6 +219,7 @@ rust_test(
 
 rust_test(
     name = "hawdb_storage_sharded_cache_fuzz_tests",
+    size = "small",
     args = [
         "cache::shard_tests::sharded_cache_state_machine_campaign",
         "--exact",
@@ -228,6 +236,7 @@ rust_test(
 
 rust_test(
     name = "hawdb_storage_transaction_locks_fuzz_tests",
+    size = "small",
     args = [
         "transaction_locks::differential::transaction_locks_differential_campaign",
         "--exact",
@@ -244,6 +253,7 @@ rust_test(
 
 rust_test(
     name = "hawdb_storage_text_fuzz_tests",
+    size = "small",
     args = [
         "text::tests::recovery_text_differential_campaign",
         "--exact",
@@ -259,6 +269,7 @@ rust_test(
 
 rust_test(
     name = "hawdb_storage_statistics_refresh_fuzz_tests",
+    size = "small",
     args = [
         "statistics_refresh::tests::statistics_refresh_differential_campaign",
         "--exact",
@@ -277,6 +288,7 @@ rust_test(
 [
     rust_test(
         name = "hawdb_storage_%s_hex_fuzz_tests" % decoder,
+        size = "small",
         args = [
             "%s::hex_tests::persisted_hex_differential_campaign" % decoder,
             "--exact",
@@ -294,6 +306,7 @@ rust_test(
 
 rust_test(
     name = "hawdb_storage_file_lock_fuzz_tests",
+    size = "small",
     args = [
         "publication_lock_state_machine_campaign",
         "--ignored",
@@ -325,6 +338,7 @@ rust_test(
 
 rust_test(
     name = "hawdb_storage_positioned_read_fuzz_tests",
+    size = "small",
     args = [
         "io::tests::positioned_read_differential_campaign",
         "--exact",
@@ -341,6 +355,7 @@ rust_test(
 
 rust_test(
     name = "hawdb_storage_transaction_compaction_fuzz_tests",
+    size = "small",
     args = [
         "mutation::compact::tests::transaction_compaction_differential_campaign",
         "--exact",

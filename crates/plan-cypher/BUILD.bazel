@@ -35,6 +35,7 @@ rust_test(
 
 rust_test(
     name = "hawdb_plan_cypher_explain_fuzz_tests",
+    size = "small",
     compile_data = ["//crates/cypher:migration_corpus_test_data"],
     tags = ["manual"],
     args = [

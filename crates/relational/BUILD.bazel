@@ -9,6 +9,7 @@ test_suite(
 
 rust_test(
     name = "hawdb_relational_physical_plan_fuzz_tests",
+    size = "small",
     args = [
         "physical_plan::tests::physical_plan_differential_campaign",
         "--exact",
@@ -44,6 +45,7 @@ rust_library(
 
 rust_test(
     name = "hawdb_relational_qualification_fuzz_tests",
+    size = "small",
     args = [
         "predicate::tests::qualification_differential_campaign",
         "--exact",
@@ -60,6 +62,7 @@ rust_test(
 
 rust_test(
     name = "hawdb_relational_columnar_aggregate_fuzz_tests",
+    size = "small",
     args = [
         "columnar_aggregate::tests::columnar_aggregate_differential_campaign",
         "--exact",
@@ -76,6 +79,7 @@ rust_test(
 
 rust_test(
     name = "hawdb_relational_statement_fuzz_tests",
+    size = "small",
     args = [
         "statement::tests::statement_compilation_differential_campaign",
         "--exact",
@@ -133,6 +137,7 @@ rust_test(
 
 rust_test(
     name = "hawdb_relational_field_plan_fuzz_tests",
+    size = "small",
     args = [
         "field_plan::tests::field_planning_differential_campaign",
         "--exact",
