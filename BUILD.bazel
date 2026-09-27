@@ -349,6 +349,7 @@ rust_test(
 
 rust_test(
     name = "hawdb_scan_callback_fuzz_tests",
+    size = "small",
     args = [
         "executor::columnar::scan_error_tests::scan_callback_differential_campaign",
         "--exact",
@@ -390,6 +391,7 @@ rust_test(
 
 rust_test(
     name = "hawdb_concurrent_key_range_fuzz_tests",
+    size = "small",
     args = [
         "api::concurrent::key_range_tests::key_range_differential_campaign",
         "--exact",

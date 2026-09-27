@@ -876,6 +876,7 @@ fn bounded_delta_merge_publishes_without_full_document_residency() {
     )
     .unwrap();
     assert_eq!(update.delta_report().after_document_count, 300);
+    assert_eq!(update.delta_report().action, "incremental_mutation_publish");
     assert!(update.source_read_metrics().peak_segment_document_bytes > 0);
     let (_, build, _) = update.finish().unwrap();
     assert_eq!(build.resident_document_count, 0);
@@ -883,6 +884,8 @@ fn bounded_delta_merge_publishes_without_full_document_residency() {
 
     let new_reader = super::super::SearchOutOfCoreReader::open(&root).unwrap();
     assert_eq!(new_reader.source_graph_commit_epoch(), Some(18));
+    assert_eq!(new_reader.manifest.mutation_runs.len(), 1);
+    assert_eq!(new_reader.manifest.segments.len(), 2);
     assert!(new_reader
         .hydrate_documents(&["memory:added".to_string()])
         .is_ok());

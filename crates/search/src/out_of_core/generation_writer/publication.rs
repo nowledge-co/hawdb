@@ -31,7 +31,19 @@ use std::path::Path;
 use super::io::GenerationIo;
 
 #[derive(Debug)]
+pub(super) struct CompactionMutationRewrite {
+    pub(super) entries: Vec<crate::out_of_core::mutation_run::SearchMutationRunEntry>,
+    pub(super) analyzer_digest: u64,
+    pub(super) max_run_bytes: u64,
+    pub(super) reopen_budget: crate::out_of_core::mutation_run::MutationRunBudget,
+    pub(super) _memory: hawdb_executor::QueryMemoryLease,
+}
+
+#[derive(Debug)]
 pub(super) enum ActiveManifestUpdate {
+    Mutate {
+        expected_generation: u64,
+    },
     Append {
         expected_generation: u64,
     },
@@ -55,6 +67,9 @@ pub(super) enum ActiveManifestUpdate {
         last_segment_id: u64,
         segment_count: usize,
         target_level: u32,
+        expected_document_count: usize,
+        expected_documents_digest: u64,
+        mutation_rewrite: Option<CompactionMutationRewrite>,
     },
 }
 
@@ -65,6 +80,7 @@ pub(super) struct PublishGenerationInput<'a> {
     pub(super) document_count: usize,
     pub(super) documents_digest: u64,
     pub(super) active_manifest_update: Option<&'a ActiveManifestUpdate>,
+    pub(super) mutations: Option<&'a super::delta::mutation::Prepared>,
     pub(super) source_graph_commit_epoch: Option<u64>,
     pub(super) import_source_graph_commit_epoch: Option<u64>,
     pub(super) embedding_manifest: Option<&'a SearchEmbeddingManifest>,
@@ -79,6 +95,8 @@ pub(super) struct PublishGenerationInput<'a> {
 }
 
 pub(super) struct PublishedGeneration {
+    pub(super) content_published: bool,
+    pub(super) lexical_generation: u64,
     pub(super) manifest_bytes: u64,
     pub(super) generation_bytes: u64,
     pub(super) document_count: usize,
@@ -154,8 +172,122 @@ pub(super) fn publish_generation(
         Some(task),
         "search out-of-core layout",
     )?;
+    let compaction_rewrite = match input.active_manifest_update {
+        Some(ActiveManifestUpdate::Compact {
+            mutation_rewrite, ..
+        }) => mutation_rewrite.as_ref(),
+        _ => None,
+    };
+    let mutation_entries = input
+        .mutations
+        .map(|mutation| mutation.entries.as_slice())
+        .or_else(|| compaction_rewrite.map(|rewrite| rewrite.entries.as_slice()));
+    let mutation_analyzer_digest = input
+        .mutations
+        .map(|mutation| mutation.analyzer_digest)
+        .or_else(|| compaction_rewrite.map(|rewrite| rewrite.analyzer_digest));
+    let mutation_max_run_bytes = input
+        .mutations
+        .map(|mutation| mutation.max_run_bytes)
+        .or_else(|| compaction_rewrite.map(|rewrite| rewrite.max_run_bytes));
+    if mutation_entries.is_some()
+        && (mutation_analyzer_digest.is_none() || mutation_max_run_bytes.is_none())
+    {
+        return Err(HawDBError::Storage(
+            "mutation publication is missing its encoding policy".into(),
+        ));
+    }
+    let mutation_analyzer_digest = mutation_analyzer_digest.unwrap_or_default();
+    let mutation_max_run_bytes = mutation_max_run_bytes.unwrap_or_default();
+    let mutation_name = mutation_entries
+        .filter(|entries| !entries.is_empty())
+        .map(|_| Name::generated("search_projection_mutation_run.", generation, memory, task))
+        .transpose()?;
+    #[derive(serde::Serialize)]
+    struct MutationBody<'a> {
+        format: &'static str,
+        generation: u64,
+        analyzer_digest: u64,
+        entries: &'a [crate::out_of_core::mutation_run::SearchMutationRunEntry],
+    }
+    let mutation_bytes = mutation_entries
+        .filter(|entries| !entries.is_empty())
+        .map(|entries| {
+            json::encode_with_context(
+                &MutationBody {
+                    format: crate::out_of_core::mutation_run::MUTATION_RUN_FORMAT,
+                    generation,
+                    analyzer_digest: mutation_analyzer_digest,
+                    entries,
+                },
+                mutation_max_run_bytes,
+                memory,
+                task,
+                "search mutation run",
+            )
+        })
+        .transpose()?;
+    let reopen_budget = input
+        .mutations
+        .map(|mutation| &mutation.reopen_budget)
+        .or_else(|| compaction_rewrite.map(|rewrite| &rewrite.reopen_budget));
+    if let (Some(budget), Some(encoded)) = (reopen_budget, &mutation_bytes) {
+        budget.admit_encoded_extension(
+            &encoded.bytes,
+            mutation_entries.map_or(0, |entries| entries.len()),
+        )?;
+    }
+    let mut mutation_runs = Vec::new();
     let (mut segments, document_count, documents_digest, segment_id, level, compact_range) =
         match input.active_manifest_update {
+            Some(ActiveManifestUpdate::Mutate {
+                expected_generation,
+            }) => {
+                let active_bytes = read_bounded_file(
+                    &input.root.join(OUT_OF_CORE_MANIFEST_FILE),
+                    MAX_OUT_OF_CORE_MANIFEST_BYTES,
+                )?;
+                let active = SearchOutOfCoreManifestBody::decode(&active_bytes)?;
+                if active.generation != *expected_generation {
+                    return Err(HawDBError::Storage(
+                        "mutation publication base generation changed".into(),
+                    ));
+                }
+                let mutation = input.mutations.ok_or_else(|| {
+                    HawDBError::Storage("mutation publication has no prepared retractions".into())
+                })?;
+                let count = active
+                    .document_count
+                    .checked_sub(mutation.entries.len())
+                    .and_then(|count| count.checked_add(input.document_count))
+                    .ok_or_else(|| {
+                        HawDBError::Storage("mutation publication document count overflows".into())
+                    })?;
+                let digest =
+                    mutation
+                        .entries
+                        .iter()
+                        .fold(active.documents_digest, |digest, entry| {
+                            DocumentsDigest::replace(digest, entry.retraction.documents_digest, 0)
+                        });
+                let segment_id = active
+                    .segments
+                    .iter()
+                    .map(|segment| segment.segment_id)
+                    .max()
+                    .unwrap_or_default()
+                    .checked_add(1)
+                    .ok_or_else(|| HawDBError::Storage("search segment id overflow".into()))?;
+                mutation_runs = active.mutation_runs;
+                (
+                    active.segments,
+                    count,
+                    DocumentsDigest::combine(digest, input.documents_digest),
+                    segment_id,
+                    0,
+                    None,
+                )
+            }
             Some(ActiveManifestUpdate::Append {
                 expected_generation,
             }) => {
@@ -182,6 +314,9 @@ pub(super) fn publish_generation(
                     .unwrap_or_default()
                     .checked_add(1)
                     .ok_or_else(|| HawDBError::Storage("search segment id overflow".into()))?;
+                // The active logical count/digest already include every old
+                // retraction. Preserve those exact immutable run references.
+                mutation_runs = active.mutation_runs;
                 (
                     active.segments,
                     document_count,
@@ -256,6 +391,9 @@ pub(super) fn publish_generation(
                 last_segment_id,
                 segment_count,
                 target_level,
+                expected_document_count,
+                expected_documents_digest,
+                mutation_rewrite,
             }) => {
                 if *segment_count < 2 {
                     return Err(HawDBError::Storage(
@@ -304,19 +442,8 @@ pub(super) fn publish_generation(
                         "search segment compaction source levels do not match its target".into(),
                     ));
                 }
-                let selected_document_count =
-                    selected.iter().try_fold(0usize, |total, segment| {
-                        total.checked_add(segment.document_count).ok_or_else(|| {
-                            HawDBError::Storage(
-                                "search segment compaction document count overflows".into(),
-                            )
-                        })
-                    })?;
-                let selected_documents_digest = selected.iter().fold(0u64, |digest, segment| {
-                    DocumentsDigest::combine(digest, segment.documents_digest)
-                });
-                if selected_document_count != input.document_count
-                    || selected_documents_digest != input.documents_digest
+                if input.document_count != *expected_document_count
+                    || input.documents_digest != *expected_documents_digest
                 {
                     return Err(HawDBError::Storage(
                         "search segment compaction staged documents do not match the active selection"
@@ -331,6 +458,12 @@ pub(super) fn publish_generation(
                     .unwrap_or_default()
                     .checked_add(1)
                     .ok_or_else(|| HawDBError::Storage("search segment id overflow".into()))?;
+                // A rewrite marker means at least one target belongs to this
+                // range. Its retained entries target segments outside the
+                // range; entries for selected segments were absorbed.
+                if mutation_rewrite.is_none() {
+                    mutation_runs = active.mutation_runs;
+                }
                 (
                     active.segments,
                     active.document_count,
@@ -488,16 +621,51 @@ pub(super) fn publish_generation(
         documents_digest: input.documents_digest,
         source_graph_commit_epoch: input.source_graph_commit_epoch,
     };
-    if let Some((start, end)) = compact_range {
+    let publish_content = input.mutations.is_none() || input.document_count != 0;
+    if !publish_content {
+        // Delete-only/no-op mutation publication reuses all immutable content.
+        // Empty staging artifacts are discarded with the stage directory.
+    } else if let Some((start, end)) = compact_range {
         segments.splice(start..end, std::iter::once(new_segment));
     } else {
         segments.push(new_segment);
     }
+    let _mutation_reference_memory = match (&mutation_name, &mutation_bytes, mutation_entries) {
+        (Some(name), Some(encoded), Some(entries)) => {
+            let capacity = crate::build_memory::checked_add(mutation_runs.len(), 1)?
+                .max(mutation_runs.capacity());
+            let lease = memory.retained.reserve(crate::build_memory::checked_add(
+                crate::build_memory::checked_mul(
+                    capacity,
+                    std::mem::size_of::<super::super::SearchOutOfCoreMutationRunManifest>(),
+                )?,
+                name.as_str().len(),
+            )?)?;
+            mutation_runs.try_reserve_exact(1).map_err(|error| {
+                HawDBError::Execution(format!("cannot grow mutation manifest: {error}"))
+            })?;
+            if mutation_runs.capacity() > capacity {
+                return Err(HawDBError::Execution(
+                    "mutation manifest exceeds admission".into(),
+                ));
+            }
+            mutation_runs.push(super::super::SearchOutOfCoreMutationRunManifest {
+                generation,
+                file: name.as_str().to_owned(),
+                len: encoded.bytes.len() as u64,
+                checksum: crate::checksum_bytes(&encoded.bytes),
+                entry_count: entries.len(),
+                analyzer_digest: mutation_analyzer_digest,
+            });
+            Some(lease)
+        }
+        _ => None,
+    };
     let manifest = SearchOutOfCoreManifestBody {
         format: OUT_OF_CORE_FORMAT.to_string(),
         generation,
         segments,
-        mutation_runs: Vec::new(),
+        mutation_runs,
         document_count,
         documents_digest,
         source_graph_commit_epoch: input.source_graph_commit_epoch,
@@ -515,6 +683,12 @@ pub(super) fn publish_generation(
     };
     let _validation = memory.spool.reserve(3 * 128)?;
     manifest.validate_names()?;
+    let lexical_generation = manifest
+        .segments
+        .iter()
+        .map(|segment| segment.generation)
+        .max()
+        .ok_or_else(|| HawDBError::Storage("publication has no content closure".into()))?;
     let manifest = json::prepare(
         &manifest,
         u64::MAX,
@@ -522,7 +696,7 @@ pub(super) fn publish_generation(
         "search out-of-core manifest",
     )?;
     drop(_validation);
-    let generation_bytes = [
+    let content_generation_bytes = [
         descriptor_len,
         payload_len,
         metadata_payload_len,
@@ -530,12 +704,25 @@ pub(super) fn publish_generation(
         layout.len() as u64,
         lexical_manifest_len,
         lexical_artifact_len,
-        manifest.len() as u64,
         input.rabitq.map_or(0, |artifact| artifact.artifact_bytes),
     ]
     .into_iter()
     .try_fold(0u64, |total, bytes| total.checked_add(bytes))
     .ok_or_else(|| HawDBError::Storage("search generation size overflow".to_string()))?;
+    let generation_bytes = (if publish_content {
+        content_generation_bytes
+    } else {
+        0
+    })
+    .checked_add(manifest.len() as u64)
+    .and_then(|bytes| {
+        bytes.checked_add(
+            mutation_bytes
+                .as_ref()
+                .map_or(0, |encoded| encoded.bytes.len() as u64),
+        )
+    })
+    .ok_or_else(|| HawDBError::Storage("mutation generation size overflows".into()))?;
     if generation_bytes > input.max_generation_bytes {
         return Err(HawDBError::Storage(format!(
             "search generation requires {generation_bytes} published bytes, exceeding {}",
@@ -546,91 +733,107 @@ pub(super) fn publish_generation(
     let layout_bytes = layout.encode(memory, task)?;
     let manifest_bytes = manifest.encode(memory, task)?;
 
-    io.link(
-        &descriptor_source,
-        &io.path(input.root, descriptor_file.as_ref())?,
-    )?;
-    io.link(
-        &payload_source,
-        &io.path(input.root, payload_file.as_ref())?,
-    )?;
-    io.link(
-        &metadata_source,
-        &io.path(input.root, metadata_payload_file.as_ref())?,
-    )?;
-    io.link(
-        &vector_source,
-        &io.path(input.root, vector_payload_file.as_ref())?,
-    )?;
-    io.link(
-        &lexical_artifact_source,
-        &io.path(input.root, Path::new(input.lexical_artifact_name))?,
-    )?;
-    if let Some(rabitq) = input.rabitq {
+    if publish_content {
         io.link(
-            &io.path(input.stage, rabitq.file_name.as_ref())?,
-            &io.path(input.root, rabitq.file_name.as_ref())?,
+            &descriptor_source,
+            &io.path(input.root, descriptor_file.as_ref())?,
         )?;
-    }
-    io.link(
-        &lexical_manifest_source,
-        &io.path(input.root, lexical_manifest_file.as_ref())?,
-    )?;
-    io.write(
-        &io.path(input.root, layout_file.as_ref())?,
-        &layout_bytes.bytes,
-    )?;
+        io.link(
+            &payload_source,
+            &io.path(input.root, payload_file.as_ref())?,
+        )?;
+        io.link(
+            &metadata_source,
+            &io.path(input.root, metadata_payload_file.as_ref())?,
+        )?;
+        io.link(
+            &vector_source,
+            &io.path(input.root, vector_payload_file.as_ref())?,
+        )?;
+        io.link(
+            &lexical_artifact_source,
+            &io.path(input.root, Path::new(input.lexical_artifact_name))?,
+        )?;
+        if let Some(rabitq) = input.rabitq {
+            io.link(
+                &io.path(input.stage, rabitq.file_name.as_ref())?,
+                &io.path(input.root, rabitq.file_name.as_ref())?,
+            )?;
+        }
+        io.link(
+            &lexical_manifest_source,
+            &io.path(input.root, lexical_manifest_file.as_ref())?,
+        )?;
+        io.write(
+            &io.path(input.root, layout_file.as_ref())?,
+            &layout_bytes.bytes,
+        )?;
 
-    io.verify(
-        &io.path(input.root, descriptor_file.as_ref())?,
-        descriptor_len,
-        Some(descriptor_checksum),
-        "descriptor",
-    )?;
-    if let Some(rabitq) = input.rabitq {
         io.verify(
-            &io.path(input.root, rabitq.file_name.as_ref())?,
-            rabitq.artifact_bytes,
-            Some(rabitq.artifact_checksum),
-            "RaBitQ artifact",
+            &io.path(input.root, descriptor_file.as_ref())?,
+            descriptor_len,
+            Some(descriptor_checksum),
+            "descriptor",
+        )?;
+        if let Some(rabitq) = input.rabitq {
+            io.verify(
+                &io.path(input.root, rabitq.file_name.as_ref())?,
+                rabitq.artifact_bytes,
+                Some(rabitq.artifact_checksum),
+                "RaBitQ artifact",
+            )?;
+        }
+        io.verify(
+            &io.path(input.root, payload_file.as_ref())?,
+            payload_len,
+            None,
+            "document payload",
+        )?;
+        io.verify(
+            &io.path(input.root, metadata_payload_file.as_ref())?,
+            metadata_payload_len,
+            None,
+            "metadata payload",
+        )?;
+        io.verify(
+            &io.path(input.root, vector_payload_file.as_ref())?,
+            vector_payload_len,
+            None,
+            "vector payload",
+        )?;
+        io.verify(
+            &io.path(input.root, lexical_manifest_file.as_ref())?,
+            lexical_manifest_len,
+            Some(lexical_manifest_checksum),
+            "lexical manifest",
+        )?;
+        io.verify(
+            &io.path(input.root, Path::new(input.lexical_artifact_name))?,
+            lexical_artifact_len,
+            None,
+            "lexical artifact",
         )?;
     }
-    io.verify(
-        &io.path(input.root, payload_file.as_ref())?,
-        payload_len,
-        None,
-        "document payload",
-    )?;
-    io.verify(
-        &io.path(input.root, metadata_payload_file.as_ref())?,
-        metadata_payload_len,
-        None,
-        "metadata payload",
-    )?;
-    io.verify(
-        &io.path(input.root, vector_payload_file.as_ref())?,
-        vector_payload_len,
-        None,
-        "vector payload",
-    )?;
-    io.verify(
-        &io.path(input.root, lexical_manifest_file.as_ref())?,
-        lexical_manifest_len,
-        Some(lexical_manifest_checksum),
-        "lexical manifest",
-    )?;
-    io.verify(
-        &io.path(input.root, Path::new(input.lexical_artifact_name))?,
-        lexical_artifact_len,
-        None,
-        "lexical artifact",
-    )?;
+    if let (Some(name), Some(encoded)) = (&mutation_name, &mutation_bytes) {
+        let staged = io.path(input.stage, name.as_ref())?;
+        let published = io.path(input.root, name.as_ref())?;
+        io.write(&staged, &encoded.bytes)?;
+        io.link(&staged, &published)?;
+        io.verify(
+            &published,
+            encoded.bytes.len() as u64,
+            Some(crate::checksum_bytes(&encoded.bytes)),
+            "mutation run",
+        )?;
+    }
 
     io.write(
         &io.path(input.root, Path::new(OUT_OF_CORE_MANIFEST_FILE))?,
         &manifest_bytes.bytes,
     )?;
     Ok(PublishedGeneration {
+        content_published: publish_content,
+        lexical_generation,
         manifest_bytes: manifest_bytes.bytes.len() as u64,
         generation_bytes,
         document_count,

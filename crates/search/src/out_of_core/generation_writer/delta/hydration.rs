@@ -40,6 +40,70 @@ pub(super) fn visit(
     visit_range(reader, 0, reader.segments.len(), memory, task, consumer)
 }
 
+pub(super) fn visit_target(
+    reader: &SearchOutOfCoreReader,
+    id: &str,
+    memory: &BuildMemory,
+    task: &RuntimeTaskContext,
+    consumer: &mut dyn FnMut(
+        u64,
+        &crate::lexical_projection::LexicalProjectionReader,
+        AdmittedDocument,
+    ) -> Result<()>,
+) -> Result<SearchOutOfCoreMetrics> {
+    checkpoint(task)?;
+    let Some(route) = reader.segment_for_document(id)? else {
+        return Ok(SearchOutOfCoreMetrics::default());
+    };
+    let artifact = &reader.segments[route.artifact_index];
+    let range = route
+        .segment
+        .payload_range
+        .ok_or_else(|| invalid("segment has no payload range"))?;
+    let mut found = false;
+    let peak = read_segment(
+        RangeReader {
+            file: &artifact.payload,
+            offset: range.offset,
+            remaining: range.length,
+        },
+        range.length,
+        range.checksum,
+        route.segment,
+        reader.config.max_uncompressed_segment_bytes.get(),
+        memory,
+        task,
+        &mut |document| {
+            if document.id == id {
+                if found {
+                    return Err(invalid("duplicate mutation target document"));
+                }
+                found = true;
+                consumer(
+                    artifact.content_segment_id,
+                    &artifact.lexical_projection,
+                    document,
+                )?;
+            }
+            Ok(())
+        },
+    )?;
+    if !found {
+        return Err(invalid(
+            "mutation target disappeared from its content range",
+        ));
+    }
+    Ok(SearchOutOfCoreMetrics {
+        segment_range_reads: 1,
+        segment_bytes_read: range.length,
+        hydration_segment_bytes_read: range.length,
+        peak_segment_document_bytes: peak,
+        hydrated_documents: 1,
+        lexical_document_bytes_read: route.lexical_document_bytes_read,
+        ..Default::default()
+    })
+}
+
 pub(in crate::out_of_core::generation_writer) fn visit_range(
     reader: &SearchOutOfCoreReader,
     start: usize,
@@ -47,6 +111,19 @@ pub(in crate::out_of_core::generation_writer) fn visit_range(
     memory: &BuildMemory,
     task: &RuntimeTaskContext,
     consumer: &mut dyn FnMut(AdmittedDocument) -> Result<()>,
+) -> Result<SearchOutOfCoreMetrics> {
+    visit_range_with_segment(reader, start, end, memory, task, &mut |_, document| {
+        consumer(document)
+    })
+}
+
+pub(in crate::out_of_core::generation_writer) fn visit_range_with_segment(
+    reader: &SearchOutOfCoreReader,
+    start: usize,
+    end: usize,
+    memory: &BuildMemory,
+    task: &RuntimeTaskContext,
+    consumer: &mut dyn FnMut(u64, AdmittedDocument) -> Result<()>,
 ) -> Result<SearchOutOfCoreMetrics> {
     let artifacts = reader.segments.get(start..end).ok_or_else(|| {
         invalid("search generation update selected an invalid manifest artifact range")
@@ -83,7 +160,7 @@ pub(in crate::out_of_core::generation_writer) fn visit_range(
                 task,
                 &mut |document| {
                     hydrated_documents = hydrated_documents.saturating_add(1);
-                    consumer(document)
+                    consumer(artifact.content_segment_id, document)
                 },
             )?;
             metrics.segment_range_reads = metrics.segment_range_reads.saturating_add(1);

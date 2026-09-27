@@ -219,6 +219,20 @@ which depends on it.
   retained one and the retained window (ids and scores) is identical to
   exhaustive evaluation. When no cursor can reach the floor the pass stops and
   leaves those blocks unread.
+
+  **Soundness argument.** For term cursor `t` and posting block `b`, let
+  `U(t,b)` be the header-derived BM25 contribution bound and let `F` be the
+  current lowest score in a full top-`k` heap. The header invariants establish
+  `score_t(d) ≤ U(t,b)` for every document `d` in `b`; document filtering only
+  removes candidates. Therefore, if the pivot's reachable cursors satisfy
+  `Σ_t U(t,b_t) < F`, every document in the skipped range has total score
+  strictly below `F` and cannot enter the retained window. If the inequality
+  is not strict, the range remains eligible and is decoded. By induction over
+  cursor advances, every omitted range is ineligible at the floor that caused
+  the skip, while every eligible range is evaluated by the exhaustive scorer;
+  the retained IDs, scores, and tie order are consequently unchanged. This is
+  a source-linked deductive proof over the checked frame headers, not a
+  machine-checked refinement of the Rust implementation.
 - **Fallback.** Candidate postings below
   `LexicalProjectionConfig::pruning_min_postings` are scored exhaustively:
   short doclists gain nothing from bound checks.
@@ -234,7 +248,21 @@ which depends on it.
   `short_doclists_fall_back_to_exhaustive_scoring` covers the threshold
   fallback. The ignored developer measurement
   `block_max_pruning_measurement_on_a_large_doclist` records skipped blocks,
-  postings, bytes, and wall clock for a 16k-document hot-term doclist.
+  postings, bytes, and wall clock for a 16k-document hot-term doclist. The
+  corpus-shaped CJK measurement
+  `block_max_pruning_cjk_measurement_on_long_doclist` uses the same exactness
+  comparison with a frequent Chinese 2-gram and a sparse term; set
+  `HAWDB_BLOCK_MAX_CJK_DOCUMENTS` to scale it. At 100,000 documents it visited
+  100,196 postings and 4,692,478 bytes exhaustively versus 100,041 postings
+  and 2,826,173 bytes with 31 blocks skipped, while retaining identical IDs
+  and scores. This is a synthetic CJK baseline, not a millions-of-documents
+  production qualification. A release-profile run at 1,000,000 documents
+  visited 1,001,954 postings and 46,923,286 bytes exhaustively versus
+  1,001,894 postings and 27,489,231 bytes with 12 blocks skipped; wall time
+  was 262 ms versus 164 ms, with identical IDs and scores. Runs at this scale
+  may set `HAWDB_BLOCK_MAX_CJK_MANIFEST_BYTES` above the default manifest
+  admission limit. The fixture remains synthetic and does not substitute for
+  the real export's out-of-core qualification.
 
 ## Resource Contract
 

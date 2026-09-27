@@ -36,6 +36,7 @@ rust_test(
 
 rust_test(
     name = "hawdb_batch_dispatch_fuzz_tests",
+    size = "small",
     args = [
         "batch::tests::dispatch::batch_dispatch_campaign",
         "--exact",
@@ -55,6 +56,7 @@ rust_test(
         name = name,
         srcs = ["tests/morsel_oracle.rs"],
         crate_root = "tests/morsel_oracle.rs",
+        size = "small",
         args = args,
         tags = tags,
         edition = "2024",
@@ -83,6 +85,7 @@ test_suite(
 
 rust_test(
     name = "hawdb_execution_report_value_fuzz_tests",
+    size = "small",
     args = [
         "observer::report_value::tests::execution_report_value_differential_campaign",
         "--exact",
@@ -99,6 +102,7 @@ rust_test(
 
 rust_test(
     name = "hawdb_execution_lifecycle_fuzz_tests",
+    size = "small",
     args = [
         "observer::profile::tests::execution_lifecycle_differential_campaign",
         "--exact",
@@ -115,6 +119,7 @@ rust_test(
 
 rust_test(
     name = "hawdb_result_delivery_fuzz_tests",
+    size = "small",
     args = [
         "result_delivery::tests::differential::result_delivery_differential_campaign",
         "--exact",
@@ -131,6 +136,7 @@ rust_test(
 
 rust_test(
     name = "hawdb_numeric_execution_fuzz_tests",
+    size = "small",
     args = [
         "numeric::differential::numeric_execution_differential_campaign",
         "--exact",
@@ -162,6 +168,7 @@ rust_test(
 
 rust_test(
     name = "hawdb_query_observer_fuzz_tests",
+    size = "small",
     args = [
         "observer::query::tests::query_observer_event_differential_campaign",
         "--exact",
@@ -178,6 +185,7 @@ rust_test(
 
 rust_test(
     name = "hawdb_mutation_lowering_fuzz_tests",
+    size = "small",
     args = [
         "mutation::tests::mutation_lowering_differential_campaign",
         "--exact",
@@ -194,6 +202,7 @@ rust_test(
 
 rust_test(
     name = "hawdb_mutation_preflight_fuzz_tests",
+    size = "small",
     args = [
         "mutation::preflight::tests::mutation_preflight_differential_campaign",
         "--exact",
@@ -210,6 +219,7 @@ rust_test(
 
 rust_test(
     name = "hawdb_sort_merge_account_fuzz_tests",
+    size = "small",
     args = [
         "blocking::sort::tests::sort_merge_account_differential_campaign",
         "--exact",
@@ -226,6 +236,7 @@ rust_test(
 
 rust_test(
     name = "hawdb_transform_fuzz_tests",
+    size = "small",
     args = [
         "transform::tests::transform_differential_campaign",
         "--exact",
@@ -242,6 +253,7 @@ rust_test(
 
 rust_test(
     name = "hawdb_graph_algorithm_fuzz_tests",
+    size = "small",
     args = [
         "analytics::tests::differential::graph_algorithm_differential_campaign",
         "--exact",
@@ -258,6 +270,7 @@ rust_test(
 
 rust_test(
     name = "hawdb_vector_seed_fuzz_tests",
+    size = "small",
     args = [
         "external::seed::tests::differential::vector_seed_differential_campaign",
         "--exact",

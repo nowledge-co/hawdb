@@ -176,6 +176,10 @@ fn vector_observability_codes_have_stable_strings() {
         VectorFallbackReasonCode::CompressedVectorProjectionUnavailable.as_str(),
         "compressed_vector_projection_unavailable"
     );
+    assert_eq!(
+        VectorFallbackReasonCode::CompressedVectorBudgetExceeded.as_str(),
+        "compressed_vector_budget_exceeded"
+    );
 }
 
 #[test]

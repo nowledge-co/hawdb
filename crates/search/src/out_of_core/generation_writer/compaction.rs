@@ -15,12 +15,14 @@
 //! Bounded leveled compaction for immutable append-only search segments.
 
 use super::{
-    context_memory::Options, delta::hydration, publication::ActiveManifestUpdate,
+    context_memory::Options,
+    delta::hydration,
+    publication::{ActiveManifestUpdate, CompactionMutationRewrite},
     SearchOutOfCoreGenerationBuildOptions, SearchOutOfCoreGenerationBuildReport,
     SearchOutOfCoreGenerationWriter,
 };
 use crate::build_control::checkpoint;
-use crate::build_memory::BuildMemory;
+use crate::build_memory::{checked_add, checked_mul, reserve_capacity, BuildMemory};
 use crate::error::{HawDBError, Result};
 use crate::{SearchOutOfCoreMetrics, SearchOutOfCoreReader};
 use hawdb_core::{RuntimeCapability, RuntimeTaskContext};
@@ -249,6 +251,9 @@ struct Selection {
     source_level: u32,
     target_level: u32,
     document_count: usize,
+    logical_document_count: usize,
+    logical_documents_digest: u64,
+    rewrite_mutations: bool,
     source_bytes: u64,
 }
 
@@ -344,6 +349,7 @@ pub(super) fn prepare(
     };
 
     let memory = BuildMemory::new(&task)?;
+    let mutation_rewrite = prepare_mutation_rewrite(reader, &selection, &memory, &task)?;
     let mut options = Options::new(options, &memory, &task)?;
     options.bind_delta_identity(reader, reader.source_graph_commit_epoch())?;
     let mut writer = SearchOutOfCoreGenerationWriter::create_with_memory(
@@ -354,6 +360,8 @@ pub(super) fn prepare(
     )?;
     writer.set_lexical_term_policy(reader.lexical_term_policy());
     writer.set_max_lexical_manifest_bytes(reader.config().max_lexical_manifest_bytes)?;
+    // Keep dimension-only identity even when this batch has no vectors.
+    writer.embedding_dimension = reader.manifest.embedding_dimension;
     writer.expected_active_generation = Some(reader.generation());
     writer.active_manifest_update = Some(ActiveManifestUpdate::Compact {
         expected_generation: reader.generation(),
@@ -361,15 +369,27 @@ pub(super) fn prepare(
         last_segment_id: selection.last_segment_id,
         segment_count: selection.end - selection.start,
         target_level: selection.target_level,
+        expected_document_count: selection.logical_document_count,
+        expected_documents_digest: selection.logical_documents_digest,
+        mutation_rewrite,
     });
     let task_context = writer.task_context.clone();
-    let source_read_metrics = hydration::visit_range(
+    let source_read_metrics = hydration::visit_range_with_segment(
         reader,
         selection.start,
         selection.end,
         &memory,
         &task_context,
-        &mut |document| writer.push_inner(document),
+        &mut |content_segment_id, document| {
+            if reader
+                .visibility
+                .is_visible(content_segment_id, &document.id)
+            {
+                writer.push_inner(document)
+            } else {
+                Ok(())
+            }
+        },
     )?;
     Ok(Some(SearchOutOfCoreSegmentCompaction {
         writer,
@@ -408,6 +428,13 @@ fn select_with_fan_in(
     for start in 0..=reader.manifest.segments.len() - fan_in {
         checkpoint(task)?;
         let candidates = &reader.manifest.segments[start..start + fan_in];
+        let contains_segment = |id| candidates.iter().any(|segment| segment.segment_id == id);
+        // A compacted artifact gets a new content-segment identity. Targets in
+        // this range are absorbed; retain only entries targeting segments that
+        // remain active outside the range and publish them as a new run.
+        let contains_target = candidates
+            .iter()
+            .any(|segment| reader.visibility.has_target_segment(segment.segment_id));
         let source_level = candidates[0].level;
         if candidates
             .iter()
@@ -430,6 +457,36 @@ fn select_with_fan_in(
                 HawDBError::Storage("search segment document count overflows".into())
             })
         })?;
+        let logical_document_count = document_count
+            .checked_sub(
+                reader
+                    .visibility
+                    .retractions()
+                    .filter(|entry| contains_segment(entry.target_segment_id))
+                    .count(),
+            )
+            .ok_or_else(|| {
+                HawDBError::Storage("search segment compaction visible count underflows".into())
+            })?;
+        let logical_documents_digest = reader
+            .visibility
+            .retractions()
+            .filter(|entry| contains_segment(entry.target_segment_id))
+            .fold(
+                candidates.iter().fold(0u64, |digest, segment| {
+                    crate::lexical_projection::DocumentsDigest::combine(
+                        digest,
+                        segment.documents_digest,
+                    )
+                }),
+                |digest, entry| {
+                    crate::lexical_projection::DocumentsDigest::replace(
+                        digest,
+                        entry.retraction.documents_digest,
+                        0,
+                    )
+                },
+            );
         let max_level = (policy.level_count.get() - 1).max(source_level);
         let target_level = source_level.saturating_add(1).min(max_level);
         let candidate = Selection {
@@ -440,6 +497,9 @@ fn select_with_fan_in(
             source_level,
             target_level,
             document_count,
+            logical_document_count,
+            logical_documents_digest,
+            rewrite_mutations: contains_target,
             source_bytes,
         };
         if selected
@@ -450,6 +510,75 @@ fn select_with_fan_in(
         }
     }
     Ok(selected)
+}
+
+fn prepare_mutation_rewrite(
+    reader: &SearchOutOfCoreReader,
+    selection: &Selection,
+    memory: &BuildMemory,
+    task: &RuntimeTaskContext,
+) -> Result<Option<CompactionMutationRewrite>> {
+    if !selection.rewrite_mutations {
+        return Ok(None);
+    }
+    // Selection also runs before QoS admission. Copy retained retractions only
+    // during preparation, and keep their charge until the writer drops them.
+    let candidates = &reader.manifest.segments[selection.start..selection.end];
+    let retained_entries = || {
+        reader.visibility.retractions().filter(|entry| {
+            !candidates
+                .iter()
+                .any(|segment| segment.segment_id == entry.target_segment_id)
+        })
+    };
+    let mut lease = memory.retained.reserve(0)?;
+    let mut entries = Vec::new();
+    reserve_capacity(&mut entries, retained_entries().count(), &mut lease)?;
+    for entry in retained_entries() {
+        checkpoint(task)?;
+        let terms = &entry.retraction.unique_terms;
+        let mut bytes = checked_add(
+            entry.document_id.len(),
+            checked_mul(terms.len(), std::mem::size_of::<String>())?,
+        )?;
+        for term in terms {
+            checkpoint(task)?;
+            bytes = checked_add(bytes, term.len())?;
+        }
+        lease.grow(bytes)?;
+        let owned = entry.clone();
+        if owned.document_id.capacity() > entry.document_id.len()
+            || owned.retraction.unique_terms.capacity() > terms.len()
+            || owned
+                .retraction
+                .unique_terms
+                .iter()
+                .zip(terms)
+                .any(|(copy, source)| copy.capacity() > source.len())
+        {
+            return Err(HawDBError::Execution(
+                "compaction mutation entries exceed admission".into(),
+            ));
+        }
+        entries.push(owned);
+    }
+    entries.sort_unstable_by(|left, right| {
+        left.document_id
+            .cmp(&right.document_id)
+            .then_with(|| left.target_segment_id.cmp(&right.target_segment_id))
+    });
+    let reopen_budget = crate::out_of_core::mutation_run::MutationRunBudget::new(
+        reader.config.max_mutation_working_bytes.get(),
+        usize::from(!entries.is_empty()),
+        reader.manifest.segments.len() - (selection.end - selection.start) + 1,
+    )?;
+    Ok(Some(CompactionMutationRewrite {
+        entries,
+        analyzer_digest: crate::lexical_projection::analyzer_digest(reader.analyzer_lexicon()),
+        max_run_bytes: reader.config.max_mutation_run_bytes.get(),
+        reopen_budget,
+        _memory: lease,
+    }))
 }
 
 fn segment_bytes(segment: &crate::out_of_core::SearchOutOfCoreSegmentManifest) -> Result<u64> {

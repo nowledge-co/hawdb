@@ -27,6 +27,7 @@ use hawdb_core::RuntimeTaskContext;
 use hawdb_executor::QueryMemoryLease;
 
 mod input;
+pub(super) mod mutation;
 
 pub(super) mod hydration;
 
@@ -118,9 +119,6 @@ impl SearchOutOfCoreGenerationUpdate {
         let input = input::Pending::new(delta, &memory, &task)?;
         let mut options = super::context_memory::Options::new(options, &memory, &task)?;
         options.bind_delta_identity(reader, source_graph_commit_epoch_after)?;
-        let report_memory = memory
-            .retained
-            .reserve("search_projection".len() * 2 + "bounded_generation_update".len())?;
         let mut input = input.convert(&task)?;
         validate_delta_ids(
             input.upserts.make_contiguous(),
@@ -139,12 +137,69 @@ impl SearchOutOfCoreGenerationUpdate {
         writer.set_lexical_term_policy(reader.lexical_term_policy());
         writer.set_lexical_source_policy(reader.lexical_source_policy());
         writer.set_max_lexical_manifest_bytes(reader.config().max_lexical_manifest_bytes)?;
+        // Keep dimension-only identity even when this batch has no vectors.
+        writer.embedding_dimension = reader.manifest.embedding_dimension;
         writer.expected_active_generation = Some(reader.generation());
+        // Route an update through the mutation artifact whenever the reader
+        // already has a validated closure, or when this clean reader update
+        // targets a currently visible document. New IDs on a clean reader
+        // remain the append path; an existing ID must retain its old physical
+        // version and publish an exact target-bound retraction instead of
+        // rewriting the whole owning segment.
+        let targets_existing_document = input
+            .upserts
+            .iter()
+            .map(|document| document.id.as_str())
+            .chain(input.deletes.iter().map(String::as_str))
+            .try_fold(false, |found, id| {
+                reader
+                    .resolve_mutation_segment(id)
+                    .map(|segment| found || segment.is_some())
+            })?;
+        if !reader.visibility.is_empty() || targets_existing_document {
+            let report_memory = memory
+                .retained
+                .reserve("search_projection".len() * 2 + "incremental_mutation_publish".len())?;
+            let (mutations, deleted_documents, source_read_metrics) =
+                mutation::Prepared::prepare(reader, &input, &memory, &task)?;
+            let after_document_count = before_document_count
+                .checked_sub(mutations.entries.len())
+                .and_then(|count| count.checked_add(upserted_documents))
+                .ok_or_else(|| HawDBError::Storage("mutation logical count overflows".into()))?;
+            while !input.upserts.is_empty() {
+                writer.push_inner(input.pop_upsert())?;
+            }
+            writer.mutations = Some(mutations);
+            writer.active_manifest_update = Some(ActiveManifestUpdate::Mutate {
+                expected_generation: reader.generation(),
+            });
+            return Ok(Self {
+                delta_report: SearchProjectionDeltaReport {
+                    artifact_type: "search_projection".into(),
+                    name: "search_projection".into(),
+                    action: "incremental_mutation_publish".into(),
+                    before_document_count,
+                    after_document_count,
+                    upserted_documents,
+                    deleted_documents,
+                    operation_count,
+                    source_graph_commit_epoch_before,
+                    source_graph_commit_epoch_after,
+                    source_graph_commit_epoch_updated: epoch_updated,
+                },
+                writer,
+                source_read_metrics,
+                _report_memory: report_memory,
+            });
+        }
         let can_append = input
             .upserts
             .front()
             .map_or(Ok(false), |upsert| reader.can_append_after(&upsert.id))?;
         if input.deletes.is_empty() && can_append {
+            let report_memory = memory
+                .retained
+                .reserve("search_projection".len() * 2 + "incremental_segment_append".len())?;
             let after_document_count = before_document_count
                 .checked_add(upserted_documents)
                 .ok_or_else(|| HawDBError::Storage("search document count overflow".into()))?;
@@ -178,6 +233,9 @@ impl SearchOutOfCoreGenerationUpdate {
             // established full-generation path until removal is an explicit
             // manifest operation.
             if target.document_count > input.deletes.len() {
+                let report_memory = memory
+                    .retained
+                    .reserve("search_projection".len() * 2 + target.action().len())?;
                 writer.active_manifest_update =
                     Some(target.active_manifest_update(reader.generation()));
                 let mut deleted_documents = 0usize;
@@ -279,6 +337,9 @@ impl SearchOutOfCoreGenerationUpdate {
         }
         drop(input);
         checkpoint(&task)?;
+        let report_memory = memory
+            .retained
+            .reserve("search_projection".len() * 2 + "bounded_generation_update".len())?;
 
         Ok(Self {
             delta_report: SearchProjectionDeltaReport {

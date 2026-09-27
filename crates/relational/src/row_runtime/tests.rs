@@ -793,52 +793,74 @@ fn projection_identity_and_table_selection_are_fail_closed() {
 fn differential_campaign(seeds: u64, cases: usize) {
     let fixture = Fixture::new();
     let task = RuntimeTaskContext::default();
-    for seed in 0..seeds {
-        let mut random = seed.wrapping_add(1);
-        for case in 0..cases {
-            random = random
-                .wrapping_mul(6364136223846793005)
-                .wrapping_add(1442695040888963407);
-            let (sql, scanned, output) = SHAPES[(random as usize) % SHAPES.len()];
-            let ids = [
-                ((random >> 8) % 12) as i64 - 2,
-                ((random >> 16) % 12) as i64 - 2,
-                ((random >> 24) % 12) as i64 - 2,
-            ];
-            let keys = [key(ids[0]), key(ids[1]), key(ids[2]), key(ids[0])];
-            let expected_batch = keys
-                .iter()
-                .filter_map(|key| {
-                    expected(&fixture.state, key, scanned).map(|row| (key.clone(), row))
+    // Every seed only reads the shared fixture/task and builds its own
+    // runtime per case, so seeds are independent and safe to run concurrently.
+    let workers = std::thread::available_parallelism()
+        .map_or(1, |count| count.get() as u64)
+        .min(seeds.max(1));
+    std::thread::scope(|scope| {
+        let handles: Vec<_> = (0..workers)
+            .map(|worker| {
+                let fixture = &fixture;
+                let task = &task;
+                scope.spawn(move || {
+                    let mut seed = worker;
+                    while seed < seeds {
+                        run_seed(fixture, task, seed, cases);
+                        seed += workers;
+                    }
                 })
+            })
+            .collect();
+        for handle in handles {
+            handle.join().unwrap();
+        }
+    });
+    fixture.remove();
+}
+
+fn run_seed(fixture: &Fixture, task: &RuntimeTaskContext, seed: u64, cases: usize) {
+    let mut random = seed.wrapping_add(1);
+    for case in 0..cases {
+        random = random
+            .wrapping_mul(6364136223846793005)
+            .wrapping_add(1442695040888963407);
+        let (sql, scanned, output) = SHAPES[(random as usize) % SHAPES.len()];
+        let ids = [
+            ((random >> 8) % 12) as i64 - 2,
+            ((random >> 16) % 12) as i64 - 2,
+            ((random >> 24) % 12) as i64 - 2,
+        ];
+        let keys = [key(ids[0]), key(ids[1]), key(ids[2]), key(ids[0])];
+        let expected_batch = keys
+            .iter()
+            .filter_map(|key| expected(&fixture.state, key, scanned).map(|row| (key.clone(), row)))
+            .collect::<BTreeMap<_, _>>();
+        for mode in 0..3 {
+            let runtime = fixture.runtime(mode, sql, task);
+            let actual = runtime
+                .read_points("docs", &keys)
+                .unwrap()
+                .into_iter()
+                .map(|(key, row)| (key, values(&row, scanned)))
                 .collect::<BTreeMap<_, _>>();
-            for mode in 0..3 {
-                let runtime = fixture.runtime(mode, sql, &task);
+            assert_eq!(
+                actual, expected_batch,
+                "seed={seed}, case={case}, mode={mode}, sql={sql}"
+            );
+            for key in &keys {
                 let actual = runtime
-                    .read_points("docs", &keys)
+                    .read_output_point("docs", key)
                     .unwrap()
-                    .into_iter()
-                    .map(|(key, row)| (key, values(&row, scanned)))
-                    .collect::<BTreeMap<_, _>>();
+                    .map(|row| values(&row, output));
                 assert_eq!(
-                    actual, expected_batch,
+                    actual,
+                    expected(&fixture.state, key, output),
                     "seed={seed}, case={case}, mode={mode}, sql={sql}"
                 );
-                for key in &keys {
-                    let actual = runtime
-                        .read_output_point("docs", key)
-                        .unwrap()
-                        .map(|row| values(&row, output));
-                    assert_eq!(
-                        actual,
-                        expected(&fixture.state, key, output),
-                        "seed={seed}, case={case}, mode={mode}, sql={sql}"
-                    );
-                }
             }
         }
     }
-    fixture.remove();
 }
 
 #[test]

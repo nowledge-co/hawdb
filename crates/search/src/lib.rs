@@ -493,6 +493,7 @@ pub enum SearchFallbackReasonCode {
     VectorDimensionMismatch,
     VectorIndexEmpty,
     CompressedVectorProjectionUnavailable,
+    CompressedVectorBudgetExceeded,
     QueryEmbeddingMissing,
     TextQueryEmpty,
 }
@@ -504,6 +505,9 @@ impl SearchFallbackReasonCode {
             SearchFallbackReasonCode::VectorIndexEmpty => "vector_index_empty",
             SearchFallbackReasonCode::CompressedVectorProjectionUnavailable => {
                 "compressed_vector_projection_unavailable"
+            }
+            SearchFallbackReasonCode::CompressedVectorBudgetExceeded => {
+                "compressed_vector_budget_exceeded"
             }
             SearchFallbackReasonCode::QueryEmbeddingMissing => "query_embedding_missing",
             SearchFallbackReasonCode::TextQueryEmpty => "text_query_empty",
@@ -520,6 +524,9 @@ impl FromStr for SearchFallbackReasonCode {
             "vector_index_empty" => Ok(SearchFallbackReasonCode::VectorIndexEmpty),
             "compressed_vector_projection_unavailable" => {
                 Ok(SearchFallbackReasonCode::CompressedVectorProjectionUnavailable)
+            }
+            "compressed_vector_budget_exceeded" => {
+                Ok(SearchFallbackReasonCode::CompressedVectorBudgetExceeded)
             }
             "query_embedding_missing" => Ok(SearchFallbackReasonCode::QueryEmbeddingMissing),
             "text_query_empty" => Ok(SearchFallbackReasonCode::TextQueryEmpty),
@@ -9326,6 +9333,10 @@ mod tests {
             (
                 SearchFallbackReasonCode::CompressedVectorProjectionUnavailable,
                 "compressed_vector_projection_unavailable",
+            ),
+            (
+                SearchFallbackReasonCode::CompressedVectorBudgetExceeded,
+                "compressed_vector_budget_exceeded",
             ),
             (
                 SearchFallbackReasonCode::QueryEmbeddingMissing,

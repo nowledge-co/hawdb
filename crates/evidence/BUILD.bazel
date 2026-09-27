@@ -32,6 +32,7 @@ rust_test(
 
 rust_test(
     name = "hawdb_inventory_health_fuzz_tests",
+    size = "small",
     tags = ["manual"],
     args = [
         "inventory::differential::inventory_health_differential_campaign",
@@ -48,6 +49,7 @@ rust_test(
 
 rust_test(
     name = "hawdb_source_inventory_fuzz_tests",
+    size = "small",
     tags = ["manual"],
     args = [
         "query_inventory::scanner::differential::source_inventory_differential_campaign",
@@ -64,6 +66,7 @@ rust_test(
 
 rust_test(
     name = "hawdb_resource_profile_fuzz_tests",
+    size = "small",
     tags = ["manual"],
     args = [
         "resource_profile::tests::resource_profile_differential_campaign",

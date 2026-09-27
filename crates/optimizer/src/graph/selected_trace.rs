@@ -35,7 +35,7 @@ pub(super) fn selected_plan_trace(
         fingerprint: plan.fingerprint(),
         cost: cost_breakdown.as_plan_cost(),
         cost_breakdown,
-        properties: properties::selected_plan_properties(plan),
+        properties: properties::selected_plan_properties(plan, catalog),
         cardinality_estimates,
         operator_counts: plan_operator_counts(plan),
         class_counts: plan_class_counts(plan),

@@ -1127,7 +1127,7 @@ fn source_index_seek_remains_preferred_over_segment_scan() {
 }
 
 #[test]
-fn selected_plan_properties_report_distribution_and_sort_ordering() {
+fn selected_plan_properties_drop_ordering_when_projection_replaces_sort_column() {
     let logical = LogicalPlan::Limit {
         offset: 0,
         limit: Some(10),
@@ -1159,10 +1159,9 @@ fn selected_plan_properties_report_distribution_and_sort_ordering() {
         trace.selected_plan_properties.distribution,
         Distribution::Single
     );
-    assert_eq!(
-        trace.selected_plan_properties.ordering,
-        vec!["title asc".to_string()]
-    );
+    // Sort sees the scalar column before Project assigns it from m.title.
+    // Replacing the sorted values cannot preserve their ordering guarantee.
+    assert!(trace.selected_plan_properties.ordering.is_empty());
     assert_eq!(
         trace.selected_plan_properties.scan_pruning,
         ScanPruningSupport::Label

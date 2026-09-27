@@ -2218,6 +2218,9 @@ fn vector_fallback_reason_code(
         SearchFallbackReasonCode::CompressedVectorProjectionUnavailable => {
             Some(hawdb_executor::VectorFallbackReasonCode::CompressedVectorProjectionUnavailable)
         }
+        SearchFallbackReasonCode::CompressedVectorBudgetExceeded => {
+            Some(hawdb_executor::VectorFallbackReasonCode::CompressedVectorBudgetExceeded)
+        }
         SearchFallbackReasonCode::QueryEmbeddingMissing => {
             Some(hawdb_executor::VectorFallbackReasonCode::QueryEmbeddingMissing)
         }
