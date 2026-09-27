@@ -886,6 +886,12 @@ mod tests {
             ),
             Err(BranchHeadError::ParentSourceMismatch)
         ));
+        stale.logical_commit_epoch = parent.logical_commit_epoch;
+        stale.branch_id = [8; 16];
+        assert!(matches!(
+            create_child_branch_head_from_parent(&parent_path, &child_path, request, stale, 1024,),
+            Err(BranchHeadError::BranchIdentityMismatch)
+        ));
         assert!(!child_path.exists());
         assert!(!wal_path.exists());
         assert_eq!(read_branch_head(&parent_path).unwrap(), parent);
