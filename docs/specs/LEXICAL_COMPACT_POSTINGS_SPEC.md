@@ -234,7 +234,15 @@ which depends on it.
   `short_doclists_fall_back_to_exhaustive_scoring` covers the threshold
   fallback. The ignored developer measurement
   `block_max_pruning_measurement_on_a_large_doclist` records skipped blocks,
-  postings, bytes, and wall clock for a 16k-document hot-term doclist.
+  postings, bytes, and wall clock for a 16k-document hot-term doclist. The
+  corpus-shaped CJK measurement
+  `block_max_pruning_cjk_measurement_on_long_doclist` uses the same exactness
+  comparison with a frequent Chinese 2-gram and a sparse term; set
+  `HAWDB_BLOCK_MAX_CJK_DOCUMENTS` to scale it. At 100,000 documents it visited
+  100,196 postings and 4,692,478 bytes exhaustively versus 100,041 postings
+  and 2,826,173 bytes with 31 blocks skipped, while retaining identical IDs
+  and scores. This is a synthetic CJK baseline, not a millions-of-documents
+  production qualification.
 
 ## Resource Contract
 

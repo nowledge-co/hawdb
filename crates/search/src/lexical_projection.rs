@@ -3430,6 +3430,77 @@ mod tests {
     }
 
     #[test]
+    #[ignore = "developer measurement: builds a corpus-shaped CJK long doclist"]
+    fn block_max_pruning_cjk_measurement_on_long_doclist() {
+        let root = projection_root("block-max-pruning-cjk-measurement");
+        let _ = fs::remove_dir_all(&root);
+        fs::create_dir_all(&root).unwrap();
+        let analyzer = SearchAnalyzerLexicon::default();
+        let document_count = std::env::var("HAWDB_BLOCK_MAX_CJK_DOCUMENTS")
+            .ok()
+            .and_then(|value| value.parse::<u32>().ok())
+            .unwrap_or(100_000);
+        assert!(document_count >= 512);
+        let documents: Vec<SearchDocument> = (0..document_count)
+            .map(|index| {
+                let mut content = "数据库检索 ".repeat((index % 3 + 1) as usize);
+                if index % 512 == 0 {
+                    content.push_str("稀有查询 ");
+                }
+                document(&format!("cjk-{index:06}"), "标题", &content)
+            })
+            .collect();
+        let config = pruning_config(BLOCK_MAX_PRUNING_MIN_POSTINGS);
+        let _ = LexicalProjectionWriter::new(config)
+            .write(&root, 1, Some(7), 11, 13, documents.iter(), &analyzer)
+            .unwrap();
+        let terms = BTreeSet::from(["数据库".to_string(), "稀有".to_string()]);
+        let max_term_bytes = config.max_term_bytes;
+        let reader = LexicalProjectionReader::load(&root, Some(7), 11, 13, config)
+            .unwrap()
+            .unwrap();
+        let statistics =
+            LexicalCorpusStatistics::aggregate([reader.as_ref()], &terms, max_term_bytes).unwrap();
+        let started = std::time::Instant::now();
+        let exhaustive = reader
+            .score_with_global_statistics_and_pruning(
+                &terms,
+                max_term_bytes,
+                Some(10),
+                &statistics,
+                false,
+                |_| Ok(true),
+            )
+            .unwrap();
+        let exhaustive_millis = started.elapsed().as_millis();
+        let started = std::time::Instant::now();
+        let pruned = reader
+            .score_with_global_statistics_and_pruning(
+                &terms,
+                max_term_bytes,
+                Some(10),
+                &statistics,
+                true,
+                |_| Ok(true),
+            )
+            .unwrap();
+        let pruned_millis = started.elapsed().as_millis();
+        println!(
+            "cjk_exhaustive: documents={document_count} postings={} bytes={} millis={exhaustive_millis}",
+            exhaustive.postings_visited, exhaustive.bytes_read
+        );
+        println!(
+            "cjk_pruned: documents={document_count} postings={} bytes={} blocks_skipped={} millis={pruned_millis}",
+            pruned.postings_visited, pruned.bytes_read, pruned.blocks_skipped
+        );
+        assert_eq!(pruned.scores, exhaustive.scores);
+        assert!(pruned.blocks_skipped > 0);
+        assert!(pruned.postings_visited < exhaustive.postings_visited);
+        assert!(pruned.bytes_read < exhaustive.bytes_read);
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
     fn term_block_bounds_match_decoded_postings() {
         let root = projection_root("block-max-bounds");
         let _ = fs::remove_dir_all(&root);
