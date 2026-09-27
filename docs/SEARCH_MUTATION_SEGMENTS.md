@@ -91,7 +91,7 @@ rewrite that full artifact.
 ### Mutation run
 
 A mutation run is an immutable, checksummed artifact published with one
-checkpoint. Entries are sorted by document ID and contain:
+checkpoint. Entries are sorted by `(document_id, target_segment_id)` and contain:
 
 - `document_id`;
 - the exact `target_segment_id` that supplied the visible previous version;

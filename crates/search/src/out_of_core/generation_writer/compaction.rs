@@ -508,17 +508,25 @@ fn select_with_fan_in(
             .as_ref()
             .is_none_or(|current: &Selection| source_level < current.source_level)
         {
-            candidate.mutation_rewrite = contains_target.then(|| CompactionMutationRewrite {
-                entries: reader
+            candidate.mutation_rewrite = contains_target.then(|| {
+                let mut entries = reader
                     .visibility
                     .retractions()
                     .filter(|entry| !candidate_ids.contains(&entry.target_segment_id))
                     .cloned()
-                    .collect(),
-                analyzer_digest: crate::lexical_projection::analyzer_digest(
-                    reader.analyzer_lexicon(),
-                ),
-                max_run_bytes: reader.config.max_mutation_run_bytes.get(),
+                    .collect::<Vec<_>>();
+                entries.sort_by(|left, right| {
+                    left.document_id
+                        .cmp(&right.document_id)
+                        .then_with(|| left.target_segment_id.cmp(&right.target_segment_id))
+                });
+                CompactionMutationRewrite {
+                    entries,
+                    analyzer_digest: crate::lexical_projection::analyzer_digest(
+                        reader.analyzer_lexicon(),
+                    ),
+                    max_run_bytes: reader.config.max_mutation_run_bytes.get(),
+                }
             });
             selected = Some(candidate);
         }

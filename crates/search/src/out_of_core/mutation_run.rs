@@ -259,10 +259,19 @@ impl MutationVisibility {
 
     pub(super) fn is_visible(&self, segment_id: u64, document_id: &str) -> bool {
         !self.runs.iter().any(|run| {
-            run.entries()
-                .binary_search_by(|entry| entry.document_id.as_str().cmp(document_id))
-                .ok()
-                .is_some_and(|index| run.entries()[index].target_segment_id == segment_id)
+            let entries = run.entries();
+            let Ok(mut index) =
+                entries.binary_search_by(|entry| entry.document_id.as_str().cmp(document_id))
+            else {
+                return false;
+            };
+            while index > 0 && entries[index - 1].document_id == document_id {
+                index -= 1;
+            }
+            entries[index..]
+                .iter()
+                .take_while(|entry| entry.document_id == document_id)
+                .any(|entry| entry.target_segment_id == segment_id)
         })
     }
 
@@ -354,14 +363,13 @@ impl SearchMutationRunBody {
                 "search mutation-run header or entries are invalid".to_string(),
             ));
         }
-        let mut previous_document_id = None;
+        let mut previous_key: Option<(&str, u64)> = None;
         for entry in &self.entries {
-            if entry.document_id.is_empty()
-                || previous_document_id
-                    .is_some_and(|previous: &String| previous >= &entry.document_id)
+            let key = (entry.document_id.as_str(), entry.target_segment_id);
+            if entry.document_id.is_empty() || previous_key.is_some_and(|previous| previous >= key)
             {
                 return Err(HawDBError::Storage(
-                    "search mutation-run entries are not strictly ordered by document id"
+                    "search mutation-run entries are not ordered by document and target segment"
                         .to_string(),
                 ));
             }
@@ -376,7 +384,7 @@ impl SearchMutationRunBody {
                 }
                 previous_term = Some(term);
             }
-            previous_document_id = Some(&entry.document_id);
+            previous_key = Some(key);
         }
         Ok(())
     }
@@ -742,15 +750,29 @@ mod tests {
             assert_eq!(visibility.is_visible(segment, "memory:001"), segment == 9);
             assert!(visibility.is_visible(segment, "memory:002"));
         }
+        let mut combined = entry("memory:001");
+        combined.target_segment_id = 8;
+        let combined_visibility =
+            MutationVisibility::from_validated_runs(vec![SearchMutationRun {
+                open_working_bytes: 0,
+                body: SearchMutationRunBody::new(5, 5, vec![entry("memory:001"), combined])
+                    .unwrap(),
+            }]);
+        assert!(!combined_visibility.is_visible(7, "memory:001"));
+        assert!(!combined_visibility.is_visible(8, "memory:001"));
+        assert!(combined_visibility.is_visible(9, "memory:001"));
         assert!(MutationVisibility::default().is_visible(7, "memory:001"));
     }
 
     #[test]
-    fn encoding_requires_sorted_unique_document_and_term_entries() {
+    fn encoding_requires_ordered_document_target_and_term_entries() {
         assert!(
             SearchMutationRunBody::new(3, 5, vec![entry("memory:002"), entry("memory:001")])
                 .is_err()
         );
+        let mut same_document = entry("memory:001");
+        same_document.target_segment_id = 8;
+        assert!(SearchMutationRunBody::new(3, 5, vec![entry("memory:001"), same_document]).is_ok());
         let mut repeated_term = entry("memory:001");
         repeated_term
             .retraction

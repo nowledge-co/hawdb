@@ -100,10 +100,11 @@ Runtime evidence:
 ## Shared predicate and staged statistics implementation
 
 The in-progress read implementation retains validated runs in
-`MutationVisibility`. For one run, strictly ordered unique document IDs make
-binary search return its unique matching ID exactly when that ID is present.
-Testing the returned entry's target segment, then taking the disjunction over
-runs, is therefore equivalent to existence of the exact physical target pair.
+`MutationVisibility`. For one run, entries are ordered by
+`(document_id, target_segment_id)`; a binary-search lower bound followed by a
+bounded equal-ID scan finds every physical target for that logical ID. Testing
+the target segment across that range, then taking the disjunction over runs, is
+therefore equivalent to existence of the exact physical target pair.
 Negating that disjunction implements `visible(C, R)` below. It deliberately does
 not negate existence of the logical ID alone: repeated replacements may retract
 versions in segments 7 and 8 while leaving the same ID in segment 9 visible.
