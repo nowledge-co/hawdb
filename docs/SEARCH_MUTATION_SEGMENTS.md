@@ -271,6 +271,16 @@ The benchmark is an evidence generator, not a release qualification by itself:
 the resulting JSON must be recorded against the host-selected production corpus
 and paired with sustained RSS and crash-recovery runs.
 
+The current corpus-shaped run uses the issue #291 scale (334,844 documents and
+100 deletes) with the deterministic fixture above. On the local release build it
+reported 68,285,256 bytes for the full generation and 34,733 bytes for the
+mutation checkpoint (0.0509%), with 109,100 source-segment bytes read and 100
+documents hydrated. The full build took 21.6 s and the mutation checkpoint took
+0.68 s; the process RSS sample grew by 53,805,056 bytes. This is a useful
+write-amplification baseline at the measured corpus size, but it remains a
+synthetic-content run and does not close the sustained-RSS or crash-recovery
+qualification gates.
+
 - Differential: build the same logical corpus as one segment and as append,
   delete, and replace mutation runs; assert identical IDs, ordering, total hits,
   text scores, scalar vector scores, and hybrid results.
