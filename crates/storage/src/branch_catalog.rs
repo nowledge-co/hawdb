@@ -1530,6 +1530,30 @@ mod tests {
     }
 
     #[test]
+    fn recovery_keeps_creating_for_corrupt_child_head() {
+        let (directory, path) = temporary_catalog_path();
+        write_catalog(&path, &catalog()).unwrap();
+        let reservation = reserve_create_file(&path, create_request()).unwrap();
+        let head_path = directory.join("corrupt.head");
+        let wal_path = directory.join("corrupt.wal");
+        fs::write(&head_path, b"corrupt").unwrap();
+        let error =
+            recover_create_file(&path, reservation.id, &head_path, &wal_path, 1024).unwrap_err();
+        assert!(matches!(error, BranchCreateError::Head(_)));
+        assert_eq!(
+            read_catalog(&path)
+                .unwrap()
+                .branches
+                .iter()
+                .find(|branch| branch.id == reservation.id)
+                .unwrap()
+                .state,
+            BranchState::Creating
+        );
+        fs::remove_dir_all(directory).unwrap();
+    }
+
+    #[test]
     fn create_branch_from_parent_completes_catalog_after_child_files() {
         let (directory, catalog_path) = temporary_catalog_path();
         write_catalog(&catalog_path, &catalog()).unwrap();
