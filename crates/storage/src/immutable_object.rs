@@ -20,6 +20,7 @@
 //! reference; an immutable path is never replaced.
 
 use hawdb_integrity::{IntegrityHasher, Sha256Digest};
+use std::collections::BTreeSet;
 use std::fmt::{self, Display, Formatter};
 use std::fs::{self, File, OpenOptions};
 use std::io::{self, Read, Write};
@@ -101,6 +102,9 @@ pub enum ImmutableObjectError {
     PublicationUncertain {
         source: io::Error,
     },
+    InvalidSealedRoot {
+        source: crate::sealed_root::SealedRootError,
+    },
 }
 
 impl Display for ImmutableObjectError {
@@ -135,6 +139,12 @@ impl Display for ImmutableObjectError {
                     "immutable object publication is uncertain: {source}"
                 )
             }
+            Self::InvalidSealedRoot { source } => {
+                write!(
+                    formatter,
+                    "sealed root is invalid for reachability: {source}"
+                )
+            }
         }
     }
 }
@@ -143,9 +153,18 @@ impl std::error::Error for ImmutableObjectError {
     fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
         match self {
             Self::Io { source, .. } | Self::PublicationUncertain { source } => Some(source),
+            Self::InvalidSealedRoot { source } => Some(source),
             _ => None,
         }
     }
+}
+
+/// The result of one conservative immutable-object sweep.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct ReclamationReport {
+    pub retained_objects: u64,
+    pub reclaimed_objects: u64,
+    pub reclaimed_bytes: u64,
 }
 
 /// Owns the immutable-object namespace for one project.
@@ -221,6 +240,83 @@ impl ImmutableObjectStore {
             return Err(ImmutableObjectError::ExistingObjectCorrupt { path });
         }
         Ok(bytes)
+    }
+
+    /// Reclaims only explicitly inventoried objects that are unreachable from
+    /// the supplied sealed roots.
+    ///
+    /// The inventory is an ownership boundary supplied by the catalog/lease
+    /// layer. Unknown files are never scanned or deleted. Every inventoried
+    /// object is fully verified before the first unlink, and sealed roots are
+    /// decoded to mark their checkpoint and WAL closure. Any unreadable or
+    /// malformed input fails the operation before sweeping begins, so an
+    /// incomplete catalog or interrupted mark phase retains all candidates.
+    pub fn reclaim_unreachable(
+        &mut self,
+        inventory: &[ObjectReference],
+        roots: &[ObjectReference],
+    ) -> Result<ReclamationReport, ImmutableObjectError> {
+        if self.poisoned {
+            return Err(ImmutableObjectError::PublisherPoisoned);
+        }
+
+        let inventory: BTreeSet<_> = inventory.iter().copied().collect();
+        let mut reachable = BTreeSet::new();
+        let mut pending = roots.to_vec();
+        while let Some(reference) = pending.pop() {
+            if !reachable.insert(reference) {
+                continue;
+            }
+            let bytes = self.read(reference)?;
+            if reference.kind == ObjectKind::SealedRoot {
+                let root = crate::sealed_root::SealedRoot::decode(&bytes)
+                    .map_err(|source| ImmutableObjectError::InvalidSealedRoot { source })?;
+                pending.extend(root.checkpoint_references);
+                pending.extend(root.sealed_wals.into_iter().map(|wal| wal.object));
+            }
+        }
+
+        // Verify the complete caller-owned inventory before deleting anything.
+        // A missing unreachable candidate is an idempotent remnant of an
+        // earlier sweep; a missing reachable object remains fatal.
+        for reference in &inventory {
+            match self.read(*reference) {
+                Ok(_) => {}
+                Err(ImmutableObjectError::Io { source, .. })
+                    if source.kind() == io::ErrorKind::NotFound
+                        && !reachable.contains(reference) => {}
+                Err(error) => return Err(error),
+            }
+        }
+
+        let mut report = ReclamationReport {
+            retained_objects: inventory.intersection(&reachable).count() as u64,
+            reclaimed_objects: 0,
+            reclaimed_bytes: 0,
+        };
+        for reference in inventory.difference(&reachable) {
+            let path = self.object_path(*reference);
+            match fs::remove_file(&path) {
+                Ok(()) => {
+                    crate::durability::sync_parent_directory(&path).map_err(|source| {
+                        ImmutableObjectError::Io {
+                            operation: "sync immutable object directory after reclamation",
+                            source,
+                        }
+                    })?;
+                }
+                Err(source) if source.kind() == io::ErrorKind::NotFound => {}
+                Err(source) => {
+                    return Err(ImmutableObjectError::Io {
+                        operation: "remove unreachable immutable object",
+                        source,
+                    });
+                }
+            }
+            report.reclaimed_objects += 1;
+            report.reclaimed_bytes = report.reclaimed_bytes.saturating_add(reference.byte_length);
+        }
+        Ok(report)
     }
 
     pub fn publish(
@@ -434,6 +530,7 @@ fn fail_next_publication_sync() -> PublicationSyncFailureGuard {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::sealed_root::{SealedRoot, SealedWalReference};
     use std::time::{SystemTime, UNIX_EPOCH};
 
     fn test_root(label: &str) -> PathBuf {
@@ -585,6 +682,107 @@ mod tests {
         assert!(outcomes.contains(&PublishOutcome::Reused));
         let store = ImmutableObjectStore::open(&root).unwrap();
         assert_eq!(fs::read(store.object_path(reference)).unwrap(), payload);
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn reclamation_marks_sealed_root_closure_and_removes_only_orphans() {
+        let root = test_root("reclamation");
+        let mut store = ImmutableObjectStore::open(&root).unwrap();
+        let checkpoint = b"checkpoint bytes";
+        let wal = b"sealed wal bytes";
+        let orphan = b"orphan bytes";
+        let checkpoint_reference =
+            ObjectReference::for_bytes(ObjectKind::Checkpoint, 1, checkpoint);
+        let wal_reference = ObjectReference::for_bytes(ObjectKind::SealedWal, 1, wal);
+        let orphan_reference =
+            ObjectReference::for_bytes(ObjectKind::CheckpointArtifact, 1, orphan);
+        let sealed_root = SealedRoot {
+            checkpoint_epoch: 1,
+            commit_epoch: 1,
+            wal_replay_start_lsn: 0,
+            checkpoint_references: vec![checkpoint_reference],
+            sealed_wals: vec![SealedWalReference {
+                start_lsn: 0,
+                end_lsn: 1,
+                object: wal_reference,
+            }],
+        };
+        let sealed_root_bytes = sealed_root.encode().unwrap();
+        let sealed_root_reference =
+            ObjectReference::for_bytes(ObjectKind::SealedRoot, 1, &sealed_root_bytes);
+
+        store.publish(checkpoint_reference, checkpoint).unwrap();
+        store.publish(wal_reference, wal).unwrap();
+        store.publish(orphan_reference, orphan).unwrap();
+        store
+            .publish(sealed_root_reference, &sealed_root_bytes)
+            .unwrap();
+
+        let report = store
+            .reclaim_unreachable(
+                &[
+                    sealed_root_reference,
+                    checkpoint_reference,
+                    wal_reference,
+                    orphan_reference,
+                ],
+                &[sealed_root_reference],
+            )
+            .unwrap();
+        assert_eq!(report.retained_objects, 3);
+        assert_eq!(report.reclaimed_objects, 1);
+        assert_eq!(report.reclaimed_bytes, orphan.len() as u64);
+        assert!(store.read(sealed_root_reference).is_ok());
+        assert!(store.read(checkpoint_reference).is_ok());
+        assert!(store.read(wal_reference).is_ok());
+        assert!(matches!(
+            store.read(orphan_reference),
+            Err(ImmutableObjectError::Io { .. })
+        ));
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn reclamation_retains_unknown_files_and_aborts_before_sweep_on_corruption() {
+        let root = test_root("reclamation-retention");
+        let mut store = ImmutableObjectStore::open(&root).unwrap();
+        let orphan = b"orphan bytes";
+        let orphan_reference = ObjectReference::for_bytes(ObjectKind::Checkpoint, 1, orphan);
+        store.publish(orphan_reference, orphan).unwrap();
+        let unknown = root.join("objects").join("checkpoint").join("unknown-file");
+        fs::write(&unknown, b"unlisted object").unwrap();
+        let second = b"second orphan";
+        let second_reference = ObjectReference::for_bytes(ObjectKind::Checkpoint, 1, second);
+        store.publish(second_reference, second).unwrap();
+        fs::write(store.object_path(orphan_reference), b"tampered").unwrap();
+
+        assert!(matches!(
+            store.reclaim_unreachable(&[orphan_reference, second_reference], &[]),
+            Err(ImmutableObjectError::ExistingObjectCorrupt { .. })
+        ));
+        assert!(store.object_path(second_reference).exists());
+        assert!(unknown.exists());
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn reclamation_retry_is_idempotent_after_a_prior_unlink() {
+        let root = test_root("reclamation-retry");
+        let mut store = ImmutableObjectStore::open(&root).unwrap();
+        let first = b"first orphan";
+        let second = b"second orphan";
+        let first_reference = ObjectReference::for_bytes(ObjectKind::Checkpoint, 1, first);
+        let second_reference = ObjectReference::for_bytes(ObjectKind::Checkpoint, 1, second);
+        store.publish(first_reference, first).unwrap();
+        store.publish(second_reference, second).unwrap();
+        fs::remove_file(store.object_path(first_reference)).unwrap();
+
+        let report = store
+            .reclaim_unreachable(&[first_reference, second_reference], &[])
+            .unwrap();
+        assert_eq!(report.reclaimed_objects, 2);
+        assert_eq!(report.reclaimed_bytes, (first.len() + second.len()) as u64);
         fs::remove_dir_all(root).unwrap();
     }
 }
