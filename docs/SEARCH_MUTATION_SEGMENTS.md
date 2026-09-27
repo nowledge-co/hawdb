@@ -243,6 +243,16 @@ contracts are complete.
 
 ## Verification matrix
 
+The current bounded checkpoint regression is
+`mutation_delete_publication_reuses_content_and_repeated_delete_is_a_noop`.
+It retains two immutable content segments, publishes a delete-only mutation,
+and compares the new manifest plus mutation-run bytes with the pre-existing
+content closure. The test requires zero new document, metadata, vector, or
+lexical artifact bytes and requires the published bytes to stay below the
+existing closure size. This is a deterministic structural guard for `K`-sized
+updates; it is not the representative tens-of-GB benchmark or a process-RSS
+qualification.
+
 - Differential: build the same logical corpus as one segment and as append,
   delete, and replace mutation runs; assert identical IDs, ordering, total hits,
   text scores, scalar vector scores, and hybrid results.
