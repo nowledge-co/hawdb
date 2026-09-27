@@ -6,10 +6,15 @@
 //! checksummed so a future publisher can reject an incomplete or ambiguous
 //! catalog before changing any durable selector.
 
+use crate::durability;
 use hawdb_core::Uuid;
 use hawdb_integrity::crc32c;
 use std::collections::BTreeSet;
 use std::fmt::{self, Display, Formatter};
+use std::fs::{self, OpenOptions};
+use std::io::{self, Read, Write};
+use std::path::Path;
+use std::sync::atomic::{AtomicU64, Ordering};
 
 const MAGIC: &[u8; 8] = b"HBCATV1\0";
 const VERSION: u16 = 1;
@@ -19,6 +24,7 @@ const MAX_NAME_BYTES: usize = 128;
 const MAX_OWNER_BYTES: usize = 256;
 const MAX_REQUEST_KEY_BYTES: usize = 256;
 const DIGEST_BYTES: usize = 32;
+static CANDIDATE_SEQUENCE: AtomicU64 = AtomicU64::new(0);
 
 /// Stable project-scoped branch identity.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
@@ -254,6 +260,61 @@ impl Catalog {
         catalog.validate()?;
         Ok(catalog)
     }
+}
+
+/// Read a published catalog after applying the same byte bound as the decoder.
+pub fn read_catalog(path: &Path) -> io::Result<Catalog> {
+    let length = fs::metadata(path)?.len();
+    if length > MAX_CATALOG_BYTES as u64 {
+        return Err(invalid_data("branch catalog exceeds its byte limit"));
+    }
+    let mut file = fs::File::open(path)?;
+    let mut encoded = Vec::with_capacity(length as usize);
+    file.read_to_end(&mut encoded)?;
+    Catalog::decode(&encoded).map_err(|error| invalid_data(error.to_string()))
+}
+
+/// Publish a catalog with candidate-file sync followed by atomic replacement.
+///
+/// The destination is never opened for writing.  A failed write or sync removes
+/// only its private candidate; a failed replacement is returned without retry,
+/// because the caller cannot infer whether the directory operation reached the
+/// filesystem.  The caller must reopen before attempting another publication.
+pub fn write_catalog(path: &Path, catalog: &Catalog) -> io::Result<()> {
+    let encoded = catalog
+        .encode()
+        .map_err(|error| invalid_data(error.to_string()))?;
+    let parent = path
+        .parent()
+        .filter(|parent| !parent.as_os_str().is_empty())
+        .ok_or_else(|| invalid_data("branch catalog destination has no parent"))?;
+    let sequence = CANDIDATE_SEQUENCE.fetch_add(1, Ordering::Relaxed);
+    let candidate = parent.join(format!(
+        ".{}.candidate-{}-{}",
+        path.file_name()
+            .and_then(|name| name.to_str())
+            .unwrap_or("catalog"),
+        std::process::id(),
+        sequence
+    ));
+    let result = (|| {
+        let mut file = OpenOptions::new()
+            .create_new(true)
+            .write(true)
+            .open(&candidate)?;
+        file.write_all(&encoded)?;
+        file.sync_all()?;
+        drop(file);
+        durability::durable_replace_file(&candidate, path)
+    })();
+    if result.is_err() {
+        let _ = fs::remove_file(&candidate);
+    }
+    result
+}
+
+fn invalid_data(message: impl Into<String>) -> io::Error {
+    io::Error::new(io::ErrorKind::InvalidData, message.into())
 }
 
 fn validate_name(value: &str) -> Result<(), CatalogError> {
@@ -612,6 +673,10 @@ impl std::error::Error for CatalogError {}
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::path::PathBuf;
+    use std::sync::atomic::AtomicUsize;
+
+    static DIRECTORY_SEQUENCE: AtomicUsize = AtomicUsize::new(0);
 
     fn id(byte: u8) -> BranchId {
         BranchId::new(Uuid::from_bytes([byte; 16])).unwrap()
@@ -632,6 +697,25 @@ mod tests {
             request_fingerprint: [byte.wrapping_add(1); DIGEST_BYTES],
             create_outcome: CreateOutcome::Succeeded,
         }
+    }
+
+    fn catalog() -> Catalog {
+        Catalog {
+            project_id: id(99),
+            revision: 11,
+            branches: vec![record(2, "second"), record(1, "first")],
+        }
+    }
+
+    fn temporary_catalog_path() -> (PathBuf, PathBuf) {
+        let directory = std::env::temp_dir().join(format!(
+            "hawdb-branch-catalog-{}-{}",
+            std::process::id(),
+            DIRECTORY_SEQUENCE.fetch_add(1, Ordering::Relaxed)
+        ));
+        fs::create_dir(&directory).unwrap();
+        let path = directory.join("catalog.hawdb");
+        (directory, path)
     }
 
     #[test]
@@ -667,11 +751,7 @@ mod tests {
 
     #[test]
     fn codec_is_deterministic_and_round_trips_unsorted_records() {
-        let catalog = Catalog {
-            project_id: id(99),
-            revision: 11,
-            branches: vec![record(2, "second"), record(1, "first")],
-        };
+        let catalog = catalog();
         let mut reversed = catalog.clone();
         reversed.branches.reverse();
         let encoded = catalog.encode().unwrap();
@@ -679,6 +759,52 @@ mod tests {
         let mut expected = catalog.clone();
         expected.branches.sort_by_key(|branch| branch.id);
         assert_eq!(Catalog::decode(&encoded).unwrap(), expected);
+    }
+
+    #[test]
+    fn file_publication_syncs_and_reopens_the_canonical_catalog() {
+        let (directory, path) = temporary_catalog_path();
+        let catalog = catalog();
+        write_catalog(&path, &catalog).unwrap();
+        assert_eq!(read_catalog(&path).unwrap().revision, catalog.revision);
+        assert!(directory
+            .read_dir()
+            .unwrap()
+            .all(|entry| entry.unwrap().file_name() == "catalog.hawdb"));
+        fs::remove_dir_all(directory).unwrap();
+    }
+
+    #[test]
+    fn file_publication_failure_keeps_previous_bytes_and_cleans_candidate() {
+        let (directory, path) = temporary_catalog_path();
+        let first = catalog();
+        write_catalog(&path, &first).unwrap();
+        let before = fs::read(&path).unwrap();
+        let _failure = durability::fail_durable_replace_for_destination("catalog.hawdb");
+        assert!(write_catalog(
+            &path,
+            &Catalog {
+                revision: 12,
+                ..first
+            }
+        )
+        .is_err());
+        assert_eq!(fs::read(&path).unwrap(), before);
+        assert!(directory
+            .read_dir()
+            .unwrap()
+            .all(|entry| entry.unwrap().file_name() == "catalog.hawdb"));
+        fs::remove_dir_all(directory).unwrap();
+    }
+
+    #[test]
+    fn read_rejects_an_oversized_catalog_before_loading_bytes() {
+        let (directory, path) = temporary_catalog_path();
+        let file = fs::File::create(&path).unwrap();
+        file.set_len((MAX_CATALOG_BYTES + 1) as u64).unwrap();
+        let error = read_catalog(&path).unwrap_err();
+        assert_eq!(error.kind(), io::ErrorKind::InvalidData);
+        fs::remove_dir_all(directory).unwrap();
     }
 
     #[test]
