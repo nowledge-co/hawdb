@@ -644,6 +644,66 @@ pub fn write_catalog(path: &Path, catalog: &Catalog) -> io::Result<()> {
     result
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct CreateReservation {
+    pub id: BranchId,
+    pub metadata_revision: u64,
+}
+
+#[derive(Debug)]
+pub enum CatalogFileTransitionError {
+    Io(io::Error),
+    Transition(CatalogTransitionError),
+}
+
+impl Display for CatalogFileTransitionError {
+    fn fmt(&self, formatter: &mut Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::Io(error) => Display::fmt(error, formatter),
+            Self::Transition(error) => Display::fmt(error, formatter),
+        }
+    }
+}
+
+impl std::error::Error for CatalogFileTransitionError {}
+
+/// Reserves a child branch in the durable catalog before child files are made.
+/// The returned metadata revision binds the later completion transition.
+pub fn reserve_create_file(
+    path: &Path,
+    request: CreateRequest,
+) -> Result<CreateReservation, CatalogFileTransitionError> {
+    let mut catalog = read_catalog(path).map_err(CatalogFileTransitionError::Io)?;
+    let id = catalog
+        .reserve_create(request)
+        .map_err(CatalogFileTransitionError::Transition)?;
+    let metadata_revision = catalog
+        .branches
+        .iter()
+        .find(|branch| branch.id == id)
+        .map(|branch| branch.metadata_revision)
+        .ok_or(CatalogFileTransitionError::Transition(
+            CatalogTransitionError::MissingBranch,
+        ))?;
+    write_catalog(path, &catalog).map_err(CatalogFileTransitionError::Io)?;
+    Ok(CreateReservation {
+        id,
+        metadata_revision,
+    })
+}
+
+/// Marks a previously reserved child ready after its head and WAL are durable.
+pub fn complete_create_file(
+    path: &Path,
+    reservation: CreateReservation,
+) -> Result<(), CatalogFileTransitionError> {
+    let mut catalog = read_catalog(path).map_err(CatalogFileTransitionError::Io)?;
+    catalog
+        .complete_create(reservation.id, reservation.metadata_revision)
+        .map_err(CatalogFileTransitionError::Transition)?;
+    write_catalog(path, &catalog).map_err(CatalogFileTransitionError::Io)
+}
+
 /// Stable project metadata lock.  It is separate from branch writer leases so
 /// independent branch handles can write their own WALs while catalog updates
 /// remain serialized.
@@ -1147,6 +1207,37 @@ mod tests {
         assert_eq!(read_catalog(&path).unwrap().revision, catalog.revision);
         assert!(path.is_file());
         assert!(directory.join(METADATA_LOCK_FILE).is_file());
+        fs::remove_dir_all(directory).unwrap();
+    }
+
+    #[test]
+    fn file_create_reservation_and_completion_are_restart_visible() {
+        let (directory, path) = temporary_catalog_path();
+        write_catalog(&path, &catalog()).unwrap();
+        let reservation = reserve_create_file(&path, create_request()).unwrap();
+        let pending = read_catalog(&path).unwrap();
+        assert_eq!(pending.revision, 12);
+        assert_eq!(pending.branches.len(), 3);
+        assert_eq!(
+            pending
+                .branches
+                .iter()
+                .find(|branch| branch.id == reservation.id)
+                .unwrap()
+                .state,
+            BranchState::Creating
+        );
+        complete_create_file(&path, reservation).unwrap();
+        let ready = read_catalog(&path).unwrap();
+        assert_eq!(
+            ready
+                .branches
+                .iter()
+                .find(|branch| branch.id == reservation.id)
+                .unwrap()
+                .state,
+            BranchState::Ready
+        );
         fs::remove_dir_all(directory).unwrap();
     }
 
