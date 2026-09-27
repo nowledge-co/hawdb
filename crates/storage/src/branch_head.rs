@@ -16,7 +16,7 @@
 
 use crate::durability::durable_replace_file;
 use crate::immutable_object::{ObjectKind, ObjectReference};
-use hawdb_integrity::{crc32c, Sha256Digest};
+use hawdb_integrity::{crc32c, IntegrityHasher, Sha256Digest};
 use std::fmt::{self, Display, Formatter};
 use std::fs::{self, File, OpenOptions};
 use std::io::{self, Read, Write};
@@ -215,6 +215,41 @@ pub fn read_branch_head(path: &Path) -> Result<BranchHead, BranchHeadError> {
     let mut bytes = Vec::with_capacity(usize::try_from(length).unwrap_or(usize::MAX));
     map_io("read branch head", file.read_to_end(&mut bytes))?;
     BranchHead::decode(&bytes)
+}
+
+/// Computes the identity a branch head records for its active WAL file.
+///
+/// The caller must have completed the WAL rotation preparation and hold the
+/// source publication barrier.  The file is read in full and bounded before
+/// its identity is returned; a path name or metadata length alone is never
+/// accepted as an active-WAL identity.
+pub fn active_wal_identity_from_file(
+    path: &Path,
+    generation: u64,
+    replay_start_lsn: u64,
+    max_bytes: u64,
+) -> Result<ActiveWalIdentity, BranchHeadError> {
+    if generation == 0 {
+        return Err(BranchHeadError::InvalidWalIdentity);
+    }
+    let length = map_io("read active WAL metadata", fs::metadata(path))?.len();
+    if length > max_bytes {
+        return Err(BranchHeadError::InvalidWalIdentity);
+    }
+    let mut file = map_io("open active WAL", File::open(path))?;
+    let mut bytes = Vec::with_capacity(usize::try_from(length).unwrap_or(usize::MAX));
+    map_io("read active WAL", file.read_to_end(&mut bytes))?;
+    if bytes.len() as u64 != length {
+        return Err(BranchHeadError::InvalidWalIdentity);
+    }
+    let mut hasher = IntegrityHasher::new();
+    hasher.update(&bytes);
+    Ok(ActiveWalIdentity {
+        generation,
+        replay_start_lsn,
+        byte_length: length,
+        sha256: hasher.finish().sha256,
+    })
 }
 
 /// Publishes a newer selector after an exact generation and identity check.
@@ -457,6 +492,23 @@ mod tests {
             Err(BranchHeadError::CandidatePublicationUncertain { .. })
         ));
         assert_eq!(fs::read(&file).unwrap(), old_bytes);
+        fs::remove_file(file).unwrap();
+    }
+
+    #[test]
+    fn active_wal_identity_binds_complete_successor_bytes() {
+        let file = path("active-wal");
+        let bytes = b"successor-wal-header-and-record";
+        fs::write(&file, bytes).unwrap();
+        let identity = active_wal_identity_from_file(&file, 7, 42, 1024).unwrap();
+        assert_eq!(identity.generation, 7);
+        assert_eq!(identity.replay_start_lsn, 42);
+        assert_eq!(identity.byte_length, bytes.len() as u64);
+        assert_eq!(identity.sha256, hawdb_integrity::sha256(bytes));
+        assert!(matches!(
+            active_wal_identity_from_file(&file, 7, 42, 1),
+            Err(BranchHeadError::InvalidWalIdentity)
+        ));
         fs::remove_file(file).unwrap();
     }
 }

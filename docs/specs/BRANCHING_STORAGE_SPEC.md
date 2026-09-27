@@ -314,6 +314,14 @@ selected. A successful replacement selects one complete old or new selector;
 the later crash-recovery integration must still prove how an uncertain
 filesystem result is poisoned and reopened.
 
+`active_wal_identity_from_file` supplies the active-WAL binding used by that
+selector. It reads the complete bounded successor file and hashes those exact
+bytes; the path and metadata length are never sufficient evidence. Thus, if a
+rotation preparation has made the successor header durable, the recorded
+length and digest identify the same byte image that recovery will open. A
+length-limit failure occurs before an identity is returned, preserving the
+old head as the only acknowledged selector.
+
 ## Locks and publication ownership
 
 Project metadata serialization and the branch writer lease are separate. One
