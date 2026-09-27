@@ -502,3 +502,51 @@ fn staged_compaction_rejects_a_newer_active_generation() {
     drop(reader);
     fs::remove_dir_all(root).unwrap();
 }
+
+#[test]
+fn compaction_replace_faults_never_publish_a_partial_closure() {
+    // The publication order has eight artifact replacements plus the active
+    // manifest on vector-enabled builds. Exercise every replacement boundary;
+    // a failure at any one of them must leave the old selector authoritative.
+    let mut completed_at = None;
+    for replace_number in 1..=10 {
+        let root = append_only_root(&format!("compaction_replace_fault_{replace_number}"), 2);
+        let before = fs::read(root.join(OUT_OF_CORE_MANIFEST_FILE)).unwrap();
+        let reader = SearchOutOfCoreReader::open(&root).unwrap();
+        super::super::io::fail_replace_at(replace_number);
+        let result = SearchOutOfCoreGenerationWriter::compact_segments(
+            &reader,
+            policy(256 * 1024 * 1024),
+            Default::default(),
+        );
+        super::super::io::fail_replace_at(0);
+        match result {
+            Err(error) => {
+                assert!(error
+                    .to_string()
+                    .contains("injected publication replace failure"));
+                assert_eq!(
+                    fs::read(root.join(OUT_OF_CORE_MANIFEST_FILE)).unwrap(),
+                    before
+                );
+                drop(reader);
+                let reopened = SearchOutOfCoreReader::open(&root).unwrap();
+                assert_eq!(reopened.document_count(), 2);
+                assert_eq!(stage_directories(&root), 0);
+                drop(reopened);
+            }
+            Ok(_) => {
+                // The exact count is target-dependent when RaBitQ is disabled.
+                completed_at = Some(replace_number);
+                drop(reader);
+                fs::remove_dir_all(root).unwrap();
+                break;
+            }
+        }
+        fs::remove_dir_all(root).unwrap();
+    }
+    assert!(
+        completed_at.is_some(),
+        "all injected replace boundaries failed"
+    );
+}

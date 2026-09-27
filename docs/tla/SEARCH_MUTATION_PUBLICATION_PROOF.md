@@ -477,3 +477,14 @@ publication transition is observationally atomic at this boundary: either the
 new manifest is committed with its complete closure, or the old closure stays
 selected. Filesystem power loss between individual durability calls still
 requires the platform fault-injection qualification.
+
+The test-only `GenerationIo::replace` failpoint strengthens this boundary
+without adding a production control plane. The
+`compaction_replace_faults_never_publish_a_partial_closure` regression injects
+an interruption at each artifact rename, including the active-manifest rename.
+For every reachable boundary, the old manifest remains byte-identical, reopen
+selects exactly the prior document set, and the private stage is gone;
+unreachable failpoint numbers are treated as no-ops. This enumerates the
+publication edges in the current implementation and provides executable
+evidence for the publish-last invariant, while an actual host power cut still
+belongs to the platform qualification described above.

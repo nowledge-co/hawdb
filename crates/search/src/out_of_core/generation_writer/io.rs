@@ -24,10 +24,38 @@ use hawdb_core::RuntimeTaskContext;
 use hawdb_executor::QueryMemoryLease;
 use hawdb_integrity::Crc32cHasher;
 use hawdb_storage::durability::durable_replace_file;
+#[cfg(test)]
+use std::cell::Cell;
 use std::fs::{self, File, OpenOptions};
 use std::io::{Read, Write};
 use std::path::Path;
 use std::sync::atomic::Ordering;
+
+#[cfg(test)]
+thread_local! {
+    static FAIL_REPLACE_AT: Cell<u64> = const { Cell::new(0) };
+}
+
+#[cfg(test)]
+pub(super) fn fail_replace_at(replace_number: u64) {
+    FAIL_REPLACE_AT.with(|remaining| remaining.set(replace_number));
+}
+
+#[cfg(test)]
+fn should_fail_replace() -> bool {
+    FAIL_REPLACE_AT.with(|remaining| {
+        let current = remaining.get();
+        if current == 0 {
+            false
+        } else if current == 1 {
+            remaining.set(0);
+            true
+        } else {
+            remaining.set(current - 1);
+            false
+        }
+    })
+}
 
 pub(super) struct GenerationIo<'a> {
     memory: &'a BuildMemory,
@@ -206,6 +234,12 @@ impl<'a> GenerationIo<'a> {
     }
 
     fn replace(&self, temporary: &mut Temporary, target: &Path) -> Result<()> {
+        #[cfg(test)]
+        if should_fail_replace() {
+            return Err(crate::HawDBError::Storage(
+                "injected publication replace failure".into(),
+            ));
+        }
         self.replace_with(temporary, target, durable_replace_file)
     }
 
