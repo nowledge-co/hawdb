@@ -3,24 +3,24 @@
 ## Runtime boundary
 
 `SearchOutOfCoreReader::open_with_lexical_policies` validates the complete
-artifact closure and rejects any nonempty mutation-run list before constructing
-a public reader. `load_artifact_closure` is private and returns integrity data,
-not a query handle. Cleanup uses that helper, so rejecting an unsupported serving
-format does not prevent discovery and retention of its artifacts.
+artifact closure before constructing a public reader. The validated reader now
+shares target-bound visibility, retracted lexical statistics, metadata
+candidate filtering, hydration and vector allowlists across every serving path.
+Malformed, over-budget, or target-invalid mutation artifacts still fail closed;
+cleanup can inspect and retain the same closure without exposing a partial one.
 
-All public reader constructors delegate to the guarded constructor. Therefore
-any successfully constructed reader has an empty mutation-run list. Its existing
-text, vector and hydration paths cannot silently ignore a mutation. Previously a
-valid one-document deletion reported `document_count == 0` while hydration still
-returned that document. The regression rejects that public open, preserves
-validation errors for corrupt/over-budget runs, and checks that cleanup succeeds
-and an already-open reader retains its previous snapshot.
+A successfully constructed reader may therefore contain a nonempty mutation-run
+list, but every query path resolves `(content_segment_id, document_id)` before
+returning a logical version. A delete contributes no visible document and a
+replacement leaves only its fresh version visible. The public reader fixture
+compares these results with a rebuilt one-segment corpus, including text,
+scalar-vector, hybrid, metadata and hydration behavior.
 
-This is an interim capability boundary, not implementation of mutation queries.
-Remove it only when all read paths share target-bound visibility and exact
-retracted statistics, with differential and recovery coverage. Production
-writers currently publish empty mutation lists; development fixtures with
-nonempty lists now fail open explicitly instead of returning inconsistent data.
+This is a serving contract for validated immutable closures. Compaction remains
+bounded: a selected range containing all active mutation targets can absorb the
+visible documents and remove the absorbed runs; a partial target closure is
+left for the later multi-run rewrite. Sustained workload, power-loss recovery
+and whole-process RSS qualification remain separate gates.
 
 ## Exact target contribution validation
 
@@ -69,7 +69,8 @@ existing reversible modular sum; digest equality alone is not collision-free
 content authentication. This proof assumes valid immutable content artifacts
 and deterministic analysis. It does not prove a writer selected the previously
 visible version, that replacement operations contain their new version, or
-that query code applies the identity. Those obligations remain guarded.
+that query code applies the identity. Those obligations are established by the shared serving-path differential
+fixtures; writer selection and compaction closure are proved separately below.
 
 The implementation processes one target at a time. By induction on the loop,
 no prior hydrated target survives into the next iteration. Source hydration and
@@ -200,7 +201,7 @@ adds only the predecessor-bound mutation. Binding a later replacement to the
 currently visible version prevents retracting the same predecessor twice.
 A global ID mask would hide both versions and violate this argument.
 
-Preparation does not change selection. Flushing adds durable files; the guarded
+Preparation does not change selection. Flushing adds durable files; the active
 selector replacement switches to an entire candidate closure. A stale candidate
 is discarded, preventing it from resurrecting a version removed by a concurrent
 publication. A crash before replacement leaves the old selector; a crash after
@@ -314,13 +315,12 @@ Accumulated I/O remains recorded, and the report marks the fallback explicitly.
 The admitted-byte receipt conservatively records the available cap, not a
 measured allocation peak. Cancellation checkpoints still apply to the retry.
 
-The guarded mutation fixture compares this retry against `Disabled`, checks
+The mutation serving fixture compares this retry against `Disabled`, checks
 that `Required` fails at the allowlist/block budget boundary, and verifies
-cancellation fails and dimension mismatch retains its distinct existing report. Corruption is checked on reopen,
-after dropping immutable mappings. A separate typed-error test includes
-misleading budget text in corruption, invalid-vector, unsupported-kernel and
-I/O errors; none is classified as a resource fallback. These arguments do not
-authorize modifying mapped files or removing the public mutation-reader guard.
+cancellation fails and dimension mismatch retains its distinct existing report.
+Corruption is checked on reopen, after dropping immutable mappings. A separate
+typed-error test includes misleading budget text in corruption, invalid-vector,
+unsupported-kernel and I/O errors; none is classified as a resource fallback.
 
 
 ## Composition with lexical block-max pruning
@@ -354,11 +354,12 @@ are moved unchanged into the new manifest. Since no entry of `R` targets `N`,
 `visible(C ∪ {N}, R) = visible(C, R) ∪ documents(N)`. The sets are disjoint by
 the append precondition; logical count and additive digest are therefore the
 previous logical values plus the new segment contributions. Appending must not
-subtract old retractions again or discard them. The private guarded-reader
-fixture `mutation_append_preserves_retractions_and_logical_identity` executes
-real preparation/publication/cleanup, reopens the validated closure, compares
-run bytes and checks the old document stays absent without old-content hydration
-during preparation. This is not yet a mutation-writer or compaction proof.
+subtract old retractions again or discard them. The public fixture
+`mutation_append_preserves_retractions_and_logical_identity` executes real
+preparation/publication/cleanup, reopens the validated closure, compares run
+bytes and checks the old document stays absent without old-content hydration
+during preparation. The complete-closure compaction fixture additionally proves
+that the selected visible corpus reopens without stale mutation targets.
 
 Incremental staging also inherits the active embedding dimension, including a
 dimension with no model name. A vectorless new segment does not imply that the
@@ -418,5 +419,6 @@ Budget and cancellation fixtures compare active-manifest bytes before/after
 failure. These do not prove power-loss recovery or bounded sustained load.
 The branch is reachable for validated mutation readers and clean readers whose
 updates target a visible document. New-ID appends remain on the append path.
-Compaction defers ranges while their old target references cannot be rewritten atomically;
-the remaining power-loss and sustained O(K) qualification gates are open.
+Complete target closures can be absorbed by compaction; partial target closures
+defer until a multi-run rewrite is available. The remaining power-loss and
+sustained O(K) qualification gates are open.

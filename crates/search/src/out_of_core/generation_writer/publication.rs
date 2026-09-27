@@ -58,6 +58,8 @@ pub(super) enum ActiveManifestUpdate {
         last_segment_id: u64,
         segment_count: usize,
         target_level: u32,
+        expected_document_count: usize,
+        expected_documents_digest: u64,
     },
 }
 
@@ -349,6 +351,8 @@ pub(super) fn publish_generation(
                 last_segment_id,
                 segment_count,
                 target_level,
+                expected_document_count,
+                expected_documents_digest,
             }) => {
                 if *segment_count < 2 {
                     return Err(HawDBError::Storage(
@@ -397,19 +401,8 @@ pub(super) fn publish_generation(
                         "search segment compaction source levels do not match its target".into(),
                     ));
                 }
-                let selected_document_count =
-                    selected.iter().try_fold(0usize, |total, segment| {
-                        total.checked_add(segment.document_count).ok_or_else(|| {
-                            HawDBError::Storage(
-                                "search segment compaction document count overflows".into(),
-                            )
-                        })
-                    })?;
-                let selected_documents_digest = selected.iter().fold(0u64, |digest, segment| {
-                    DocumentsDigest::combine(digest, segment.documents_digest)
-                });
-                if selected_document_count != input.document_count
-                    || selected_documents_digest != input.documents_digest
+                if input.document_count != *expected_document_count
+                    || input.documents_digest != *expected_documents_digest
                 {
                     return Err(HawDBError::Storage(
                         "search segment compaction staged documents do not match the active selection"
@@ -424,10 +417,21 @@ pub(super) fn publish_generation(
                     .unwrap_or_default()
                     .checked_add(1)
                     .ok_or_else(|| HawDBError::Storage("search segment id overflow".into()))?;
-                // The selected range contains no mutation targets (selection
-                // filters those ranges), so existing runs remain valid and
-                // must stay in the active closure.
-                mutation_runs = active.mutation_runs;
+                // If every selected physical document survived, existing run
+                // targets remain valid. A smaller staged count means this
+                // compaction absorbed the complete target closure, so the
+                // old runs must be removed with the old content segments.
+                let selected_physical_count =
+                    selected.iter().try_fold(0usize, |total, segment| {
+                        total.checked_add(segment.document_count).ok_or_else(|| {
+                            HawDBError::Storage(
+                                "search segment compaction document count overflows".into(),
+                            )
+                        })
+                    })?;
+                if input.document_count == selected_physical_count {
+                    mutation_runs = active.mutation_runs;
+                }
                 (
                     active.segments,
                     active.document_count,

@@ -249,6 +249,8 @@ struct Selection {
     source_level: u32,
     target_level: u32,
     document_count: usize,
+    logical_document_count: usize,
+    logical_documents_digest: u64,
     source_bytes: u64,
 }
 
@@ -363,15 +365,26 @@ pub(super) fn prepare(
         last_segment_id: selection.last_segment_id,
         segment_count: selection.end - selection.start,
         target_level: selection.target_level,
+        expected_document_count: selection.logical_document_count,
+        expected_documents_digest: selection.logical_documents_digest,
     });
     let task_context = writer.task_context.clone();
-    let source_read_metrics = hydration::visit_range(
+    let source_read_metrics = hydration::visit_range_with_segment(
         reader,
         selection.start,
         selection.end,
         &memory,
         &task_context,
-        &mut |document| writer.push_inner(document),
+        &mut |content_segment_id, document| {
+            if reader
+                .visibility
+                .is_visible(content_segment_id, &document.id)
+            {
+                writer.push_inner(document)
+            } else {
+                Ok(())
+            }
+        },
     )?;
     Ok(Some(SearchOutOfCoreSegmentCompaction {
         writer,
@@ -410,13 +423,18 @@ fn select_with_fan_in(
     for start in 0..=reader.manifest.segments.len() - fan_in {
         checkpoint(task)?;
         let candidates = &reader.manifest.segments[start..start + fan_in];
-        // A compacted artifact gets a new content-segment identity. Retraction
-        // targets inside this range therefore need a coordinated run rewrite;
-        // defer only those ranges and continue to compact unaffected ranges.
-        if candidates
+        let candidate_ids = candidates
             .iter()
-            .any(|segment| reader.visibility.has_target_segment(segment.segment_id))
-        {
+            .map(|segment| segment.segment_id)
+            .collect::<Vec<_>>();
+        // A compacted artifact gets a new content-segment identity. If this
+        // range contains mutation targets, it is safe only when every target
+        // is absorbed by the same rewrite; otherwise leave the range for a
+        // later multi-run rewrite and continue looking for an unaffected one.
+        let contains_target = candidate_ids
+            .iter()
+            .any(|segment_id| reader.visibility.has_target_segment(*segment_id));
+        if contains_target && reader.visibility.has_target_outside(&candidate_ids) {
             continue;
         }
         let source_level = candidates[0].level;
@@ -441,6 +459,36 @@ fn select_with_fan_in(
                 HawDBError::Storage("search segment document count overflows".into())
             })
         })?;
+        let logical_document_count = document_count
+            .checked_sub(
+                reader
+                    .visibility
+                    .retractions()
+                    .filter(|entry| candidate_ids.contains(&entry.target_segment_id))
+                    .count(),
+            )
+            .ok_or_else(|| {
+                HawDBError::Storage("search segment compaction visible count underflows".into())
+            })?;
+        let logical_documents_digest = reader
+            .visibility
+            .retractions()
+            .filter(|entry| candidate_ids.contains(&entry.target_segment_id))
+            .fold(
+                candidates.iter().fold(0u64, |digest, segment| {
+                    crate::lexical_projection::DocumentsDigest::combine(
+                        digest,
+                        segment.documents_digest,
+                    )
+                }),
+                |digest, entry| {
+                    crate::lexical_projection::DocumentsDigest::replace(
+                        digest,
+                        entry.retraction.documents_digest,
+                        0,
+                    )
+                },
+            );
         let max_level = (policy.level_count.get() - 1).max(source_level);
         let target_level = source_level.saturating_add(1).min(max_level);
         let candidate = Selection {
@@ -451,6 +499,8 @@ fn select_with_fan_in(
             source_level,
             target_level,
             document_count,
+            logical_document_count,
+            logical_documents_digest,
             source_bytes,
         };
         if selected

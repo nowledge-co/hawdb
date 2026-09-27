@@ -112,6 +112,19 @@ pub(in crate::out_of_core::generation_writer) fn visit_range(
     task: &RuntimeTaskContext,
     consumer: &mut dyn FnMut(AdmittedDocument) -> Result<()>,
 ) -> Result<SearchOutOfCoreMetrics> {
+    visit_range_with_segment(reader, start, end, memory, task, &mut |_, document| {
+        consumer(document)
+    })
+}
+
+pub(in crate::out_of_core::generation_writer) fn visit_range_with_segment(
+    reader: &SearchOutOfCoreReader,
+    start: usize,
+    end: usize,
+    memory: &BuildMemory,
+    task: &RuntimeTaskContext,
+    consumer: &mut dyn FnMut(u64, AdmittedDocument) -> Result<()>,
+) -> Result<SearchOutOfCoreMetrics> {
     let artifacts = reader.segments.get(start..end).ok_or_else(|| {
         invalid("search generation update selected an invalid manifest artifact range")
     })?;
@@ -147,7 +160,7 @@ pub(in crate::out_of_core::generation_writer) fn visit_range(
                 task,
                 &mut |document| {
                     hydrated_documents = hydrated_documents.saturating_add(1);
-                    consumer(document)
+                    consumer(artifact.content_segment_id, document)
                 },
             )?;
             metrics.segment_range_reads = metrics.segment_range_reads.saturating_add(1);

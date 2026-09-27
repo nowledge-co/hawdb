@@ -5034,10 +5034,11 @@ mod tests {
 
     #[test]
     #[cfg(feature = "full-text-search")]
-    fn mutation_closure_defers_compaction_until_targets_can_be_rewritten() {
+    fn mutation_compaction_absorbs_a_complete_target_closure() {
         let path = test_dir("mutation-compaction-guard");
         let old = document(0, "old-space");
-        publish_two_artifact_manifest(&path, old.clone(), document(1, "live-space"));
+        let live = document(1, "live-space");
+        publish_two_artifact_manifest(&path, old.clone(), live.clone());
         install_delete_mutation_run(&path, &old, 0, 3);
         let reader = SearchOutOfCoreReader::open(&path).unwrap();
         let policy =
@@ -5050,16 +5051,24 @@ mod tests {
                 hawdb_qos::BackgroundWorkHint::default(),
             )
             .unwrap()
-            .is_none()
+            .is_some()
         );
-        assert!(SearchOutOfCoreGenerationWriter::compact_segments(
-            &reader,
-            policy,
-            Default::default(),
-        )
-        .unwrap()
-        .is_none());
+        let report =
+            SearchOutOfCoreGenerationWriter::compact_segments(&reader, policy, Default::default())
+                .unwrap()
+                .unwrap();
+        assert_eq!(report.build().document_count, 1);
         drop(reader);
+        let reopened = SearchOutOfCoreReader::open(&path).unwrap();
+        assert!(reopened.manifest.mutation_runs.is_empty());
+        assert_eq!(reopened.manifest.segments.len(), 1);
+        assert_eq!(
+            reopened
+                .hydrate_documents(std::slice::from_ref(&live.id))
+                .unwrap()
+                .documents,
+            vec![live]
+        );
         fs::remove_dir_all(path).unwrap();
     }
 

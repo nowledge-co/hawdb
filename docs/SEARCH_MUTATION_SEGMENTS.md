@@ -199,21 +199,20 @@ workload. Registered checks cover target binding, stale preparation rejection,
 publish-last durability, pinned closures and orphan-free complete compaction;
 negative controls verify those checks detect their intended failures.
 
-This is a bounded protocol model, not a proof of the future Rust writer, arbitrary
-histories, exact lexical retractions or all serving paths. Extend its refinement
-mapping and tests with subsequent deliveries. Mutation runs must not become
-selectable for query serving merely because artifact integrity or these model
-checks pass. Shared visibility, statistics and all affected serving paths must
-also be complete before removing the reader's capability guard.
+This is a bounded protocol model, not a proof of arbitrary histories, exact
+lexical retractions or whole-process resource behavior. The current Rust serving
+paths implement the shared visibility/statistics contract covered by the
+fixtures below; the model remains a conditional refinement boundary and must be
+extended as later lifecycle states land.
 
 ## Compaction
 
 Content and mutation runs compact as one logical closure. A compaction that
 selects a target content segment must also select every active mutation entry
-that targets it. It materializes only visible documents into the replacement
-content segment and drops the corresponding mutation entries. A mutation run
-may be removed only when every target it contains has been materialized or is
-otherwise no longer active.
+that targets it. When the selected range contains the complete active target
+closure, it materializes only visible documents into the replacement content
+segment and drops the corresponding mutation entries. A partial target closure
+is deferred until a multi-run rewrite can preserve entries outside the range.
 
 Leveled selection remains bounded by the existing input-byte policy. If the
 visibility closure would exceed the selected budget, the run is deferred rather
@@ -230,8 +229,9 @@ admission and cancellation use the scheduled compaction API introduced by #704.
    visibility plus retracted corpus statistics.
 4. Apply the same predicate to hydration and scalar vector reads; add RaBitQ
    allowlist/fallback behavior.
-5. Make compaction absorb visibility closures, then qualify sustained
-   append/update/delete workloads and write amplification.
+5. Absorb complete visibility closures during compaction, add the multi-run
+   rewrite for partial closures, then qualify sustained append/update/delete
+   workloads and write amplification.
 
 Each delivery remains a separate reviewable change. Later cuts must not expose
 mutation artifacts to serving before the shared visibility and statistic
