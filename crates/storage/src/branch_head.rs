@@ -15,7 +15,10 @@
 //! Versioned branch-head selector and generation-checked publication.
 
 use crate::durability::durable_replace_file;
-use crate::immutable_object::{ObjectKind, ObjectReference};
+use crate::immutable_object::{
+    ImmutableObjectError, ImmutableObjectStore, ObjectKind, ObjectReference,
+};
+use crate::sealed_root::{SealedRoot, SealedRootError};
 use crate::sealed_wal::PreparedWalRotation;
 use hawdb_integrity::{crc32c, IntegrityHasher, Sha256Digest};
 use std::fmt::{self, Display, Formatter};
@@ -58,6 +61,85 @@ pub struct PreparedWalRotationHeadRequest<'a> {
     pub logical_commit_epoch: u64,
     pub prepared: &'a PreparedWalRotation,
     pub max_active_wal_bytes: u64,
+}
+
+#[derive(Debug, Clone, Copy)]
+pub struct PreparedWalRootPublicationRequest<'a> {
+    pub expected_current_generation: u64,
+    pub project_id: [u8; 16],
+    pub branch_id: [u8; 16],
+    pub logical_commit_epoch: u64,
+    pub prepared: &'a PreparedWalRotation,
+    pub max_active_wal_bytes: u64,
+}
+
+/// Errors returned by the complete sealed-root and WAL handoff.
+#[derive(Debug)]
+pub enum WalRotationPublicationError {
+    Root(SealedRootError),
+    Immutable(ImmutableObjectError),
+    Head(BranchHeadError),
+    SealedWalMissing,
+}
+
+impl Display for WalRotationPublicationError {
+    fn fmt(&self, formatter: &mut Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::Root(error) => Display::fmt(error, formatter),
+            Self::Immutable(error) => Display::fmt(error, formatter),
+            Self::Head(error) => Display::fmt(error, formatter),
+            Self::SealedWalMissing => {
+                formatter.write_str("sealed root does not reference the prepared WAL")
+            }
+        }
+    }
+}
+
+impl std::error::Error for WalRotationPublicationError {}
+
+/// Publishes a sealed root and adopts the prepared successor WAL atomically
+/// from the selector's point of view.
+///
+/// The caller must hold the branch publication barrier.  The root object is
+/// published first, then the head selector is switched last.  If head
+/// publication fails, the old head remains authoritative and the new root is
+/// harmlessly unreachable for later reclamation.  The root must reference the
+/// exact sealed WAL produced by `prepared`; accepting a root that omits it
+/// would make the head's replay boundary unverifiable.
+pub fn publish_prepared_wal_rotation_with_root(
+    path: &Path,
+    request: PreparedWalRootPublicationRequest<'_>,
+    root: &SealedRoot,
+    objects: &mut ImmutableObjectStore,
+) -> Result<BranchHead, WalRotationPublicationError> {
+    root.validate().map_err(WalRotationPublicationError::Root)?;
+    if !root.sealed_wals.iter().any(|wal| {
+        wal.start_lsn == request.prepared.sealed.start_lsn
+            && wal.end_lsn == request.prepared.sealed.end_lsn
+            && wal.object == request.prepared.sealed.object
+    }) {
+        return Err(WalRotationPublicationError::SealedWalMissing);
+    }
+    let encoded_root = root.encode().map_err(WalRotationPublicationError::Root)?;
+    let root_reference = root
+        .object_reference()
+        .map_err(WalRotationPublicationError::Root)?;
+    objects
+        .publish(root_reference, &encoded_root)
+        .map_err(WalRotationPublicationError::Immutable)?;
+    publish_prepared_wal_rotation(
+        path,
+        PreparedWalRotationHeadRequest {
+            expected_current_generation: request.expected_current_generation,
+            project_id: request.project_id,
+            branch_id: request.branch_id,
+            sealed_root: root_reference,
+            logical_commit_epoch: request.logical_commit_epoch,
+            prepared: request.prepared,
+            max_active_wal_bytes: request.max_active_wal_bytes,
+        },
+    )
+    .map_err(WalRotationPublicationError::Head)
 }
 
 #[derive(Debug)]
@@ -442,8 +524,10 @@ impl<'a> Reader<'a> {
 mod tests {
     use super::*;
     use crate::durability::fail_durable_replace_for_destination;
+    use crate::immutable_object::ImmutableObjectStore;
     use crate::immutable_object::ObjectKind;
     use crate::immutable_object::PublishOutcome;
+    use crate::sealed_root::{SealedRoot, SealedWalReference};
     use crate::sealed_wal::SealedWalPublication;
     use std::time::{SystemTime, UNIX_EPOCH};
 
@@ -469,6 +553,14 @@ mod tests {
             .unwrap()
             .as_nanos();
         std::env::temp_dir().join(format!("hawdb-head-{label}-{nanos}.hawdb"))
+    }
+
+    fn directory(label: &str) -> PathBuf {
+        let nanos = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        std::env::temp_dir().join(format!("hawdb-head-{label}-{nanos}"))
     }
 
     #[test]
@@ -604,5 +696,117 @@ mod tests {
         assert_eq!(read_branch_head(&head_path).unwrap(), next);
         fs::remove_file(head_path).unwrap();
         fs::remove_file(next_path).unwrap();
+    }
+
+    #[test]
+    fn complete_rotation_publishes_root_before_switching_head() {
+        let head_path = path("complete-rotation-head");
+        let next_path = path("complete-rotation-next");
+        let object_root = directory("complete-rotation-objects");
+        let old = sample();
+        fs::write(&head_path, old.encode().unwrap()).unwrap();
+        let successor = b"durable-successor-header";
+        fs::write(&next_path, successor).unwrap();
+        let mut objects = ImmutableObjectStore::open(&object_root).unwrap();
+        let checkpoint = b"checkpoint";
+        let checkpoint_ref = ObjectReference::for_bytes(ObjectKind::Checkpoint, 1, checkpoint);
+        objects.publish(checkpoint_ref, checkpoint).unwrap();
+        let sealed = ObjectReference::for_bytes(ObjectKind::SealedWal, 1, b"sealed");
+        let prepared = PreparedWalRotation {
+            sealed: SealedWalPublication {
+                generation: old.active_wal.generation,
+                start_lsn: old.active_wal.replay_start_lsn,
+                end_lsn: 42,
+                object: sealed,
+                outcome: PublishOutcome::Published,
+            },
+            next_generation: old.active_wal.generation + 1,
+            next_start_lsn: 42,
+            next_wal_path: next_path.clone(),
+        };
+        let root = SealedRoot {
+            checkpoint_epoch: 9,
+            commit_epoch: 10,
+            wal_replay_start_lsn: 20,
+            checkpoint_references: vec![checkpoint_ref],
+            sealed_wals: vec![SealedWalReference {
+                start_lsn: 20,
+                end_lsn: 42,
+                object: sealed,
+            }],
+        };
+        let next = publish_prepared_wal_rotation_with_root(
+            &head_path,
+            PreparedWalRootPublicationRequest {
+                expected_current_generation: old.physical_generation,
+                project_id: old.project_id,
+                branch_id: old.branch_id,
+                logical_commit_epoch: 10,
+                prepared: &prepared,
+                max_active_wal_bytes: 1024,
+            },
+            &root,
+            &mut objects,
+        )
+        .unwrap();
+        assert_eq!(next.sealed_root, root.object_reference().unwrap());
+        assert_eq!(read_branch_head(&head_path).unwrap(), next);
+        assert!(objects.object_path(next.sealed_root).exists());
+        fs::remove_file(head_path).unwrap();
+        fs::remove_file(next_path).unwrap();
+        fs::remove_dir_all(object_root).unwrap();
+    }
+
+    #[test]
+    fn complete_rotation_rejects_root_omitting_prepared_wal() {
+        let head_path = path("missing-wal-head");
+        let next_path = path("missing-wal-next");
+        let object_root = directory("missing-wal-objects");
+        let old = sample();
+        fs::write(&head_path, old.encode().unwrap()).unwrap();
+        fs::write(&next_path, b"successor").unwrap();
+        let mut objects = ImmutableObjectStore::open(&object_root).unwrap();
+        let checkpoint_ref = ObjectReference::for_bytes(ObjectKind::Checkpoint, 1, b"checkpoint");
+        objects.publish(checkpoint_ref, b"checkpoint").unwrap();
+        let prepared = PreparedWalRotation {
+            sealed: SealedWalPublication {
+                generation: old.active_wal.generation,
+                start_lsn: old.active_wal.replay_start_lsn,
+                end_lsn: 42,
+                object: ObjectReference::for_bytes(ObjectKind::SealedWal, 1, b"sealed"),
+                outcome: PublishOutcome::Published,
+            },
+            next_generation: old.active_wal.generation + 1,
+            next_start_lsn: 42,
+            next_wal_path: next_path.clone(),
+        };
+        let root = SealedRoot {
+            checkpoint_epoch: 9,
+            commit_epoch: 10,
+            wal_replay_start_lsn: 20,
+            checkpoint_references: vec![checkpoint_ref],
+            sealed_wals: Vec::new(),
+        };
+        assert!(matches!(
+            publish_prepared_wal_rotation_with_root(
+                &head_path,
+                PreparedWalRootPublicationRequest {
+                    expected_current_generation: old.physical_generation,
+                    project_id: old.project_id,
+                    branch_id: old.branch_id,
+                    logical_commit_epoch: 10,
+                    prepared: &prepared,
+                    max_active_wal_bytes: 1024,
+                },
+                &root,
+                &mut objects,
+            ),
+            Err(WalRotationPublicationError::SealedWalMissing)
+        ));
+        assert_eq!(read_branch_head(&head_path).unwrap(), old);
+        assert!(!object_root.join("objects").join("sealed-root").exists());
+        fs::remove_file(head_path).unwrap();
+        fs::remove_file(next_path).unwrap();
+        fs::remove_dir_all(object_root).unwrap();
     }
 }

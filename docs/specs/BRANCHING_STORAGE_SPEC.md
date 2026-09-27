@@ -360,6 +360,21 @@ identity is exactly the successor byte image prepared by the preceding
 rotation step. The sealed root is an explicit precondition, so this helper
 cannot acknowledge a head that has not already named an immutable root.
 
+`publish_prepared_wal_rotation_with_root` closes the root-to-head ordering
+boundary for the integrated handoff. It validates the supplied root, requires
+that its ordered WAL references contain the exact `(start_lsn, end_lsn, object)`
+tuple returned by rotation preparation, encodes the root, and publishes that
+immutable root object before invoking the selector publication above. Induction
+over the root's validated references shows that every object named by the new
+selector was already installed before the selector became visible. If root
+publication fails, the old selector remains authoritative; if selector
+publication fails, the newly published root is unreachable and therefore safe
+for later conservative reclamation. A root omitting the prepared WAL is
+rejected before either publication, so the head cannot acknowledge a replay
+range that the root does not prove. This is the ordering proof for the handoff
+helper; crash recovery still needs filesystem-level old-or-new integration
+tests in the branch-opening work.
+
 ## Locks and publication ownership
 
 Project metadata serialization and the branch writer lease are separate. One
