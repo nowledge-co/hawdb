@@ -5271,6 +5271,134 @@ mod tests {
     }
 
     #[test]
+    #[cfg(feature = "full-text-search")]
+    fn mutation_sustained_replacements_append_and_compaction_reopen_each_round() {
+        let path = test_dir("mutation-sustained-rounds");
+        let mut initial = SearchOutOfCoreGenerationWriter::create(
+            &path,
+            SearchOutOfCoreGenerationBuildOptions {
+                ..Default::default()
+            },
+        )
+        .unwrap();
+        initial.push(document(0, "team")).unwrap();
+        initial.finish().unwrap();
+        for number in 1..32 {
+            let reader = SearchOutOfCoreReader::open(&path).unwrap();
+            let mut appended = document(number % 16, "team");
+            appended.id = format!("memory:{number:03}");
+            appended
+                .metadata
+                .insert("external_id".to_string(), number.to_string());
+            let row = crate::SearchProjectionRow {
+                kind: crate::SearchProjectionKind::Memory,
+                external_id: format!("{number:03}"),
+                title: appended.title.clone(),
+                body: appended.content.clone(),
+                embedding: appended.embedding.clone(),
+                source_id: None,
+                metadata: appended.metadata.clone(),
+            };
+            SearchOutOfCoreGenerationWriter::prepare_delta(
+                &reader,
+                crate::SearchProjectionDelta {
+                    upserts: vec![row],
+                    ..Default::default()
+                },
+                Default::default(),
+            )
+            .unwrap()
+            .finish()
+            .unwrap();
+        }
+        let initial_reader = SearchOutOfCoreReader::open(&path).unwrap();
+        assert!(
+            initial_reader.manifest.segments.len() >= 2,
+            "the sustained fixture must contain multiple immutable segments"
+        );
+        drop(initial_reader);
+
+        let policy = SearchOutOfCoreSegmentCompactionPolicy::default()
+            .with_level_zero_target_bytes(NonZeroU64::new(8 * 1024).unwrap())
+            .unwrap();
+        for round in 0..4 {
+            let reader = SearchOutOfCoreReader::open(&path).unwrap();
+            let mut replaced = document(round, "replacement-space");
+            replaced
+                .metadata
+                .insert("external_id".to_string(), format!("{round:03}"));
+            let mut appended = document(0, "append-space");
+            appended.id = format!("memory:{:03}", 100 + round);
+            appended
+                .metadata
+                .insert("external_id".to_string(), (100 + round).to_string());
+            let replacement_row = crate::SearchProjectionRow {
+                kind: crate::SearchProjectionKind::Memory,
+                external_id: format!("{round:03}"),
+                title: replaced.title.clone(),
+                body: replaced.content.clone(),
+                embedding: replaced.embedding.clone(),
+                source_id: None,
+                metadata: replaced.metadata.clone(),
+            };
+            let appended_row = crate::SearchProjectionRow {
+                kind: crate::SearchProjectionKind::Memory,
+                external_id: format!("{:03}", 100 + round),
+                title: appended.title.clone(),
+                body: appended.content.clone(),
+                embedding: appended.embedding.clone(),
+                source_id: None,
+                metadata: appended.metadata.clone(),
+            };
+            SearchOutOfCoreGenerationWriter::prepare_delta(
+                &reader,
+                crate::SearchProjectionDelta {
+                    upserts: vec![replacement_row, appended_row],
+                    ..Default::default()
+                },
+                Default::default(),
+            )
+            .unwrap()
+            .finish()
+            .unwrap();
+            drop(reader);
+
+            let reader = SearchOutOfCoreReader::open(&path).unwrap();
+            let compaction = SearchOutOfCoreGenerationWriter::compact_segments(
+                &reader,
+                policy,
+                Default::default(),
+            )
+            .unwrap();
+            if let Some(report) = &compaction {
+                assert!(report.source_segment_count() >= 2);
+                assert!(report.source_bytes() > 0);
+                assert!(report.build().document_count > 0);
+            }
+            drop(reader);
+
+            let reopened = SearchOutOfCoreReader::open(&path).unwrap();
+            assert_eq!(reopened.document_count(), 33 + round);
+            assert_eq!(
+                reopened
+                    .hydrate_documents(&[replaced.id.clone()])
+                    .unwrap()
+                    .documents,
+                vec![replaced]
+            );
+            assert_eq!(
+                reopened
+                    .hydrate_documents(&[appended.id.clone()])
+                    .unwrap()
+                    .documents,
+                vec![appended]
+            );
+            drop(reopened);
+        }
+        fs::remove_dir_all(path).unwrap();
+    }
+
+    #[test]
     fn out_of_core_mutation_retractions_must_match_physical_targets() {
         for corruption in [
             "missing_id",

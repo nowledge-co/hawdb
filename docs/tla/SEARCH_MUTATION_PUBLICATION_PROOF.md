@@ -452,3 +452,18 @@ updates target a visible document. New-ID appends remain on the append path.
 Complete target closures can be absorbed by compaction; partial target closures
 are rewritten into a bounded outside-target run. The remaining power-loss and
 sustained O(K) qualification gates are open.
+
+The sustained lifecycle regression
+`mutation_sustained_replacements_append_and_compaction_reopen_each_round`
+provides the corresponding finite induction check. At the start of round `i`,
+the reopened manifest has one visible version for every logical ID and a valid
+immutable closure. The delta targets one visible version and appends one fresh
+ID; the guarded-publication equation above therefore yields exactly one fewer
+old version plus the two requested output versions. Compaction either leaves
+the closure unchanged or replaces an adjacent same-level range with a digest-
+preserving segment, while rewriting any outside-target mutation entries. A
+successful reopen re-establishes the induction hypothesis for round `i+1`.
+The test executes four rounds and checks document counts, replacement and
+append hydration after every reopen. This is a finite state-machine witness,
+not a proof of arbitrary-length RSS stability; the benchmark and production
+corpus qualification remain separate.
