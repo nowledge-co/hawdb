@@ -467,3 +467,13 @@ The test executes four rounds and checks document counts, replacement and
 append hydration after every reopen. This is a finite state-machine witness,
 not a proof of arbitrary-length RSS stability; the benchmark and production
 corpus qualification remain separate.
+
+`mutation_compaction_publication_failure_preserves_the_active_closure` covers
+the failure edge of the same transition. It exhausts the admitted published-
+byte budget after the compaction candidate has been staged, then checks byte-
+for-byte manifest identity, successful reopen of the old closure, retained
+mutation visibility, and removal of the private stage directory. Thus the
+publication transition is observationally atomic at this boundary: either the
+new manifest is committed with its complete closure, or the old closure stays
+selected. Filesystem power loss between individual durability calls still
+requires the platform fault-injection qualification.

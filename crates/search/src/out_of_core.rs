@@ -5272,6 +5272,44 @@ mod tests {
 
     #[test]
     #[cfg(feature = "full-text-search")]
+    fn mutation_compaction_publication_failure_preserves_the_active_closure() {
+        let path = test_dir("mutation-compaction-publication-failure");
+        let old = document(0, "old-space");
+        let live = document(1, "live-space");
+        publish_two_artifact_manifest(&path, old.clone(), live.clone());
+        install_delete_mutation_run(&path, &old, 0, 3);
+        let before = fs::read(path.join(OUT_OF_CORE_MANIFEST_FILE)).unwrap();
+        let reader = SearchOutOfCoreReader::open(&path).unwrap();
+        let error = SearchOutOfCoreGenerationWriter::compact_segments(
+            &reader,
+            SearchOutOfCoreSegmentCompactionPolicy::default(),
+            SearchOutOfCoreGenerationBuildOptions {
+                max_generation_bytes: NonZeroU64::MIN,
+                ..Default::default()
+            },
+        )
+        .unwrap_err();
+        assert!(error.to_string().contains("published bytes"), "{error}");
+        assert_eq!(
+            fs::read(path.join(OUT_OF_CORE_MANIFEST_FILE)).unwrap(),
+            before
+        );
+        drop(reader);
+        let reopened = SearchOutOfCoreReader::open(&path).unwrap();
+        assert_eq!(reopened.document_count(), 1);
+        assert!(reopened.manifest.mutation_runs.len() == 1);
+        assert!(fs::read_dir(&path)
+            .unwrap()
+            .filter_map(|entry| entry.ok())
+            .all(|entry| !entry
+                .file_name()
+                .to_string_lossy()
+                .starts_with(".search-generation.")));
+        fs::remove_dir_all(path).unwrap();
+    }
+
+    #[test]
+    #[cfg(feature = "full-text-search")]
     fn mutation_sustained_replacements_append_and_compaction_reopen_each_round() {
         let path = test_dir("mutation-sustained-rounds");
         let mut initial = SearchOutOfCoreGenerationWriter::create(
